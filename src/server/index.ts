@@ -8,6 +8,7 @@ import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
 import { sessionsRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
+import { agentsMd } from "./routes/agents-md.js";
 import {
 	handleWsOpen,
 	handleWsMessage,
@@ -34,6 +35,7 @@ api.route("/v1", health);
 api.route("/v1", ingest);
 api.route("/v1", sessionsRouter);
 api.route("/v1", settingsRouter);
+api.route("/v1", agentsMd);
 
 app.route("/api", api);
 
