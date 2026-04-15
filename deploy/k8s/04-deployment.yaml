@@ -17,7 +17,8 @@ spec:
     spec:
       containers:
       - name: agentpulse
-        image: agentpulse:latest
+        image: 192.168.10.222:30500/agentpulse:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 3000
           name: http
