@@ -1,0 +1,59 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: agentpulse-https
+  namespace: agentpulse
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    # Hook ingestion endpoints - API key auth only, no Authentik
+    # Agents (Claude Code / Codex CLI) can't do OIDC, so these bypass forwardAuth
+    - match: Host(`agentpulse.xmojo.net`) && PathPrefix(`/api/v1/hooks`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # WebSocket endpoint - no forwardAuth (clients auth via messages)
+    - match: Host(`agentpulse.xmojo.net`) && PathPrefix(`/api/v1/ws`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # Health check - public
+    - match: Host(`agentpulse.xmojo.net`) && Path(`/api/v1/health`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # All other routes (dashboard + API) - Authentik protected
+    - match: Host(`agentpulse.xmojo.net`)
+      kind: Rule
+      middlewares:
+        - name: agentpulse-forwardauth
+      services:
+        - name: agentpulse
+          port: 3000
+  tls:
+    secretName: wildcard-xmojo-net-production-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: agentpulse-http
+  namespace: agentpulse
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`agentpulse.xmojo.net`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+      middlewares:
+        - name: https-redirect
+          namespace: agentpulse

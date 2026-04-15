@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentpulse-config
+  namespace: agentpulse
+  labels:
+    app: agentpulse
+data:
+  PORT: "3000"
+  HOST: "0.0.0.0"
+  PUBLIC_URL: "https://agentpulse.xmojo.net"
+  LOG_LEVEL: "info"
+  NODE_ENV: "production"

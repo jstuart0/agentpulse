@@ -7,6 +7,7 @@ import { ensureDefaultApiKey } from "./auth/api-key.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
 import { sessionsRouter } from "./routes/sessions.js";
+import { settingsRouter } from "./routes/settings.js";
 import {
 	handleWsOpen,
 	handleWsMessage,
@@ -32,6 +33,7 @@ const api = new Hono();
 api.route("/v1", health);
 api.route("/v1", ingest);
 api.route("/v1", sessionsRouter);
+api.route("/v1", settingsRouter);
 
 app.route("/api", api);
 

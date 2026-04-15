@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentpulse
+  namespace: agentpulse
+  labels:
+    app: agentpulse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentpulse
+  template:
+    metadata:
+      labels:
+        app: agentpulse
+    spec:
+      containers:
+      - name: agentpulse
+        image: agentpulse:latest
+        ports:
+        - containerPort: 3000
+          name: http
+        env:
+        - name: TZ
+          value: "America/New_York"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: agentpulse-secrets
+              key: DATABASE_URL
+        - name: AGENTPULSE_INITIAL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agentpulse-secrets
+              key: AGENTPULSE_INITIAL_API_KEY
+        envFrom:
+        - configMapRef:
+            name: agentpulse-config
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: agentpulse-data

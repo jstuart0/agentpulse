@@ -1,0 +1,26 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: agentpulse-forwardauth
+  namespace: agentpulse
+spec:
+  forwardAuth:
+    address: http://authentik-server.authentik.svc.cluster.local/outpost.goauthentik.io/auth/traefik
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-authentik-username
+      - X-authentik-groups
+      - X-authentik-email
+      - X-authentik-name
+      - X-authentik-uid
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+  namespace: agentpulse
+spec:
+  redirectScheme:
+    permanent: true
+    port: "443"
+    scheme: https
