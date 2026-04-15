@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/
+.env
+.env.local
+*.db
+*.db-journal
+*.db-wal
+.DS_Store
+.vite/
+thoughts/local/
