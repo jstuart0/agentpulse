@@ -1,0 +1,67 @@
+import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+
+export const sessions = sqliteTable("sessions", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	sessionId: text("session_id").notNull().unique(),
+	agentType: text("agent_type").notNull(), // claude_code | codex_cli
+	status: text("status").notNull().default("active"), // active | idle | completed | failed
+	cwd: text("cwd"),
+	transcriptPath: text("transcript_path"),
+	model: text("model"),
+	startedAt: text("started_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	lastActivityAt: text("last_activity_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	endedAt: text("ended_at"),
+	semanticStatus: text("semantic_status"), // researching | implementing | testing | etc.
+	currentTask: text("current_task"),
+	planSummary: text("plan_summary", { mode: "json" }).$type<string[]>(),
+	totalToolUses: integer("total_tool_uses").notNull().default(0),
+	metadata: text("metadata", { mode: "json" })
+		.$type<Record<string, unknown>>()
+		.default({}),
+});
+
+export const events = sqliteTable("events", {
+	id: integer("id").primaryKey({ autoIncrement: true }),
+	sessionId: text("session_id")
+		.notNull()
+		.references(() => sessions.sessionId),
+	eventType: text("event_type").notNull(),
+	toolName: text("tool_name"),
+	toolInput: text("tool_input", { mode: "json" }).$type<Record<string, unknown>>(),
+	toolResponse: text("tool_response"),
+	rawPayload: text("raw_payload", { mode: "json" })
+		.$type<Record<string, unknown>>()
+		.notNull(),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});
+
+export const apiKeys = sqliteTable("api_keys", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	name: text("name").notNull(),
+	keyHash: text("key_hash").notNull().unique(),
+	keyPrefix: text("key_prefix").notNull(),
+	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	lastUsedAt: text("last_used_at"),
+});
+
+export const settings = sqliteTable("settings", {
+	key: text("key").primaryKey(),
+	value: text("value", { mode: "json" }).$type<unknown>().notNull(),
+	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});

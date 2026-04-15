@@ -1,0 +1,16 @@
+services:
+  agentpulse:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - HOST=0.0.0.0
+      - LOG_LEVEL=debug
+      - PUBLIC_URL=http://localhost:3000
+    volumes:
+      - agentpulse-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  agentpulse-data:
