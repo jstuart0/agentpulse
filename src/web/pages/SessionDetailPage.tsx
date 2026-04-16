@@ -175,6 +175,45 @@ function RightPanel({ session }: { session: Session }) {
 	);
 }
 
+function InlineRename({ sessionId, currentName, onRenamed }: { sessionId: string; currentName: string; onRenamed: (name: string) => void }) {
+	const [editing, setEditing] = useState(false);
+	const [value, setValue] = useState(currentName);
+
+	async function save() {
+		if (!value.trim()) { setEditing(false); return; }
+		await fetch(`/api/v1/sessions/${sessionId}/rename`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name: value.trim() }),
+		});
+		onRenamed(value.trim());
+		setEditing(false);
+	}
+
+	if (editing) {
+		return (
+			<input
+				autoFocus
+				value={value}
+				onChange={(e) => setValue(e.target.value)}
+				onBlur={save}
+				onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+				className="font-mono font-bold text-sm bg-background border border-primary/30 rounded px-2.5 py-1 w-40 focus:outline-none focus:ring-1 focus:ring-primary"
+			/>
+		);
+	}
+
+	return (
+		<span
+			onClick={() => { setEditing(true); setValue(currentName); }}
+			title="Click to rename"
+			className="font-mono font-bold text-sm text-primary bg-primary/10 border border-primary/20 rounded px-2.5 py-1 cursor-pointer hover:bg-primary/20 transition-colors"
+		>
+			{currentName}
+		</span>
+	);
+}
+
 export function SessionDetailPage() {
 	const { sessionId } = useParams<{ sessionId: string }>();
 	const navigate = useNavigate();
@@ -247,9 +286,11 @@ export function SessionDetailPage() {
 						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
 					</svg>
 				</button>
-				<span className="font-mono font-bold text-sm text-primary bg-primary/10 border border-primary/20 rounded px-2.5 py-1">
-					{displayName}
-				</span>
+				<InlineRename
+					sessionId={session.sessionId}
+					currentName={displayName}
+					onRenamed={(name) => setSession({ ...session, displayName: name })}
+				/>
 				{session.isWorking && (
 					<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5">
 						<span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" />
