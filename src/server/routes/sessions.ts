@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getSessions, getSession, getStats } from "../services/session-tracker.js";
 import { db } from "../db/client.js";
-import { events } from "../db/schema.js";
+import { events, sessions } from "../db/schema.js";
 import { eq, desc } from "drizzle-orm";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 
@@ -59,6 +59,19 @@ sessionsRouter.get("/sessions/:sessionId/timeline", async (c) => {
 		.offset(offset);
 
 	return c.json({ events: sessionEvents });
+});
+
+// PUT /api/v1/sessions/:sessionId/notes - Save notes for a session
+sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
+	const sessionId = c.req.param("sessionId");
+	const { notes } = await c.req.json<{ notes: string }>();
+
+	await db
+		.update(sessions)
+		.set({ notes: notes ?? "" })
+		.where(eq(sessions.sessionId, sessionId));
+
+	return c.json({ ok: true });
 });
 
 export { sessionsRouter };

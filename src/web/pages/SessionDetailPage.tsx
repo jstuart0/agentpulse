@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { AgentTypeBadge } from "../components/AgentTypeBadge.js";
@@ -7,6 +7,53 @@ import { formatDuration, formatTimeAgo } from "../lib/utils.js";
 import { api } from "../lib/api.js";
 import { useEventStore } from "../stores/event-store.js";
 import type { Session, SessionEvent } from "../../shared/types.js";
+
+function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNotes: string }) {
+	const [notes, setNotes] = useState(initialNotes);
+	const [saving, setSaving] = useState(false);
+	const [lastSaved, setLastSaved] = useState<string | null>(null);
+	const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+	// Auto-save 1 second after user stops typing
+	const scheduleAutosave = useCallback(
+		(value: string) => {
+			if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+			saveTimeoutRef.current = setTimeout(async () => {
+				setSaving(true);
+				try {
+					await fetch(`/api/v1/sessions/${sessionId}/notes`, {
+						method: "PUT",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ notes: value }),
+					});
+					setLastSaved(new Date().toLocaleTimeString());
+				} catch {}
+				setSaving(false);
+			}, 1000);
+		},
+		[sessionId],
+	);
+
+	return (
+		<div className="flex flex-col h-full">
+			<div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0">
+				<span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notes</span>
+				<span className="text-[10px] text-muted-foreground">
+					{saving ? "Saving..." : lastSaved ? `Saved ${lastSaved}` : ""}
+				</span>
+			</div>
+			<textarea
+				value={notes}
+				onChange={(e) => {
+					setNotes(e.target.value);
+					scheduleAutosave(e.target.value);
+				}}
+				placeholder="Write notes about this session..."
+				className="flex-1 w-full resize-none bg-transparent p-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
+			/>
+		</div>
+	);
+}
 
 function extractPrompt(event: SessionEvent): string | null {
 	if (event.eventType === "UserPromptSubmit") {
@@ -181,9 +228,10 @@ export function SessionDetailPage() {
 				</div>
 			</div>
 
-			{/* Scrollable content */}
-			<div className="flex-1 overflow-auto">
-				<div className="max-w-4xl p-6">
+			{/* Main content: timeline + notes side by side */}
+			<div className="flex-1 flex min-h-0">
+				{/* Timeline (left) */}
+				<div className="flex-1 overflow-auto p-6">
 					{/* Session info card */}
 					{(session.semanticStatus || session.currentTask || session.planSummary) && (
 						<div className="border border-border bg-card rounded-lg p-4 mb-4">
@@ -264,6 +312,11 @@ export function SessionDetailPage() {
 						)}
 						<div ref={timelineEndRef} />
 					</div>
+				</div>
+
+				{/* Notes panel (right) */}
+				<div className="w-72 flex-shrink-0 border-l border-border bg-card/50">
+					<NotesPanel sessionId={session.sessionId} initialNotes={session.notes || ""} />
 				</div>
 			</div>
 		</div>

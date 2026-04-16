@@ -97,6 +97,7 @@ export function initializeDatabase() {
 	// Migrations: add columns that may not exist on older databases
 	const migrations = [
 		"ALTER TABLE sessions ADD COLUMN display_name TEXT",
+		"ALTER TABLE sessions ADD COLUMN notes TEXT DEFAULT ''",
 	];
 
 	for (const migration of migrations) {
