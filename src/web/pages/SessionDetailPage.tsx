@@ -76,6 +76,105 @@ function PromptBubble({ text, time }: { text: string; time: string }) {
 	);
 }
 
+function ClaudeMdPanel({ cwd }: { cwd: string | null }) {
+	const [content, setContent] = useState("");
+	const [filePath, setFilePath] = useState("");
+	const [loading, setLoading] = useState(true);
+	const [saving, setSaving] = useState(false);
+	const [saveMsg, setSaveMsg] = useState("");
+
+	useEffect(() => {
+		if (!cwd) { setLoading(false); return; }
+		fetch(`/api/v1/agents-md?path=${encodeURIComponent(cwd)}`)
+			.then((r) => r.json())
+			.then((data) => {
+				const file = data.files?.find((f: { exists: boolean }) => f.exists) || data.files?.[0];
+				if (file) {
+					setContent(file.content || "");
+					setFilePath(file.path);
+				}
+			})
+			.catch(() => {})
+			.finally(() => setLoading(false));
+	}, [cwd]);
+
+	async function handleSave() {
+		if (!filePath) return;
+		setSaving(true);
+		try {
+			await fetch("/api/v1/agents-md", {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ path: filePath, content }),
+			});
+			setSaveMsg("Saved");
+			setTimeout(() => setSaveMsg(""), 2000);
+		} catch { setSaveMsg("Error"); }
+		setSaving(false);
+	}
+
+	if (loading) return <div className="p-3 text-xs text-muted-foreground">Loading...</div>;
+	if (!cwd) return <div className="p-3 text-xs text-muted-foreground">No project path</div>;
+
+	return (
+		<div className="flex flex-col h-full">
+			<div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0">
+				<span className="text-[10px] text-muted-foreground truncate">{filePath.split("/").pop()}</span>
+				<div className="flex items-center gap-2">
+					<span className="text-[10px] text-muted-foreground">{saveMsg}</span>
+					<button
+						onClick={handleSave}
+						disabled={saving}
+						className="text-[10px] rounded px-2 py-0.5 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+					>
+						{saving ? "..." : "Save"}
+					</button>
+				</div>
+			</div>
+			<textarea
+				value={content}
+				onChange={(e) => setContent(e.target.value)}
+				className="flex-1 w-full resize-none bg-transparent p-3 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none leading-relaxed"
+				placeholder="No CLAUDE.md found"
+			/>
+		</div>
+	);
+}
+
+function RightPanel({ session }: { session: Session }) {
+	const [tab, setTab] = useState<"notes" | "claudemd">("notes");
+
+	return (
+		<div className="w-80 flex-shrink-0 border-l border-border bg-card/50 flex flex-col">
+			<div className="flex border-b border-border flex-shrink-0">
+				<button
+					onClick={() => setTab("notes")}
+					className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+						tab === "notes" ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"
+					}`}
+				>
+					Notes
+				</button>
+				<button
+					onClick={() => setTab("claudemd")}
+					className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+						tab === "claudemd" ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"
+					}`}
+				>
+					CLAUDE.md
+				</button>
+			</div>
+			<div className="flex-1 min-h-0">
+				{tab === "notes" ? (
+					<NotesPanel sessionId={session.sessionId} initialNotes={session.notes || ""} />
+				) : (
+					<ClaudeMdPanel cwd={session.cwd} />
+				)}
+			</div>
+		</div>
+	);
+}
+
 export function SessionDetailPage() {
 	const { sessionId } = useParams<{ sessionId: string }>();
 	const navigate = useNavigate();
@@ -184,10 +283,8 @@ export function SessionDetailPage() {
 					</div>
 				</div>
 
-				{/* Notes panel (right) */}
-				<div className="w-72 flex-shrink-0 border-l border-border bg-card/50">
-					<NotesPanel sessionId={session.sessionId} initialNotes={session.notes || ""} />
-				</div>
+				{/* Right panel: Notes / CLAUDE.md tabs */}
+				<RightPanel session={session} />
 			</div>
 		</div>
 	);
