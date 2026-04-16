@@ -7,36 +7,22 @@ spec:
   entryPoints:
     - websecure
   routes:
-    # Hook ingestion endpoints - API key auth only, no Authentik
-    # Agents (Claude Code / Codex CLI) can't do OIDC, so these bypass forwardAuth
-    - match: Host(`agentpulse.xmojo.net`) && PathPrefix(`/api/v1/hooks`)
+    # All API routes bypass Authentik - they use API key auth instead
+    # This covers hooks, sessions, settings, WebSocket, health
+    - match: Host(`agentpulse.xmojo.net`) && PathPrefix(`/api/`)
       kind: Rule
       services:
         - name: agentpulse
           port: 3000
 
-    # WebSocket endpoint - no forwardAuth (clients auth via messages)
-    - match: Host(`agentpulse.xmojo.net`) && PathPrefix(`/api/v1/ws`)
-      kind: Rule
-      services:
-        - name: agentpulse
-          port: 3000
-
-    # Health check - public
-    - match: Host(`agentpulse.xmojo.net`) && Path(`/api/v1/health`)
-      kind: Rule
-      services:
-        - name: agentpulse
-          port: 3000
-
-    # Setup script - public (curl -sSL .../setup.sh | bash)
+    # Setup script - public
     - match: Host(`agentpulse.xmojo.net`) && Path(`/setup.sh`)
       kind: Rule
       services:
         - name: agentpulse
           port: 3000
 
-    # All other routes (dashboard + API) - Authentik protected
+    # Dashboard frontend - Authentik protected
     - match: Host(`agentpulse.xmojo.net`)
       kind: Rule
       middlewares:

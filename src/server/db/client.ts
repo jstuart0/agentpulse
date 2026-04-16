@@ -94,6 +94,20 @@ export function initializeDatabase() {
 		CREATE INDEX IF NOT EXISTS idx_events_event_type ON events(event_type);
 	`);
 
+	// Migrations: add columns that may not exist on older databases
+	const migrations = [
+		"ALTER TABLE sessions ADD COLUMN display_name TEXT",
+	];
+
+	for (const migration of migrations) {
+		try {
+			sqlite.exec(migration);
+			console.log(`[db] Migration applied: ${migration.slice(0, 60)}`);
+		} catch {
+			// Column already exists -- ignore
+		}
+	}
+
 	sqlite.close();
 	console.log("[db] Database initialized");
 }
