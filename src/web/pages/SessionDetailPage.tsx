@@ -76,7 +76,7 @@ function PromptBubble({ text, time }: { text: string; time: string }) {
 	);
 }
 
-function ClaudeMdPanel({ session }: { session: Session }) {
+function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathChanged?: (path: string) => void }) {
 	const [content, setContent] = useState("");
 	const [filePath, setFilePath] = useState("");
 	const [loading, setLoading] = useState(true);
@@ -125,6 +125,7 @@ function ClaudeMdPanel({ session }: { session: Session }) {
 				body: JSON.stringify({ content, path: newPath }),
 			});
 			setFilePath(newPath);
+			onPathChanged?.(newPath);
 			setSaveMsg(`Created ${preferredFile}`);
 			setTimeout(() => setSaveMsg(""), 2000);
 		} catch { setSaveMsg("Error"); }
@@ -184,9 +185,9 @@ function ClaudeMdPanel({ session }: { session: Session }) {
 
 function RightPanel({ session }: { session: Session }) {
 	const [tab, setTab] = useState<"notes" | "claudemd">("notes");
-	// Show actual filename from path if available, otherwise infer from agent type
-	const mdLabel = session.claudeMdPath
-		? session.claudeMdPath.split("/").pop() || "CLAUDE.md"
+	const [mdPath, setMdPath] = useState(session.claudeMdPath || "");
+	const mdLabel = mdPath
+		? mdPath.split("/").pop() || "CLAUDE.md"
 		: session.agentType === "codex_cli" ? "AGENTS.md" : "CLAUDE.md";
 
 	return (
@@ -213,7 +214,7 @@ function RightPanel({ session }: { session: Session }) {
 				{tab === "notes" ? (
 					<NotesPanel sessionId={session.sessionId} initialNotes={session.notes || ""} />
 				) : (
-					<ClaudeMdPanel session={session} />
+					<ClaudeMdPanel session={session} onPathChanged={setMdPath} />
 				)}
 			</div>
 		</div>
