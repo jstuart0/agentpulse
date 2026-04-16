@@ -128,6 +128,7 @@ console.log("  ║           AgentPulse v0.1.0               ║");
 console.log("  ╠═══════════════════════════════════════════╣");
 console.log(`  ║  Server:  http://${config.host}:${config.port}          ║`);
 console.log(`  ║  DB:      ${config.useSqlite ? "SQLite" : "PostgreSQL"}                       ║`);
+console.log(`  ║  Auth:    ${config.disableAuth ? "DISABLED" : "API Key + Authentik"}              ║`);
 console.log(`  ║  WS:      ws://${config.host}:${config.port}/api/v1/ws   ║`);
 console.log("  ╚═══════════════════════════════════════════╝");
 console.log("");

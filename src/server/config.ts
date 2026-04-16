@@ -5,6 +5,7 @@ export const config = {
 	publicUrl: process.env.PUBLIC_URL || "http://localhost:3000",
 	logLevel: (process.env.LOG_LEVEL || "info") as "debug" | "info" | "warn" | "error",
 	initialApiKey: process.env.AGENTPULSE_INITIAL_API_KEY || "",
+	disableAuth: process.env.DISABLE_AUTH === "true",
 	isProduction: process.env.NODE_ENV === "production",
 
 	get useSqlite(): boolean {

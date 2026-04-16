@@ -1,5 +1,6 @@
 import type { Context, Next } from "hono";
 import { verifyApiKey } from "./api-key.js";
+import { config } from "../config.js";
 
 export interface AuthUser {
 	source: "authentik" | "api_key";
@@ -37,8 +38,14 @@ export async function getAuthUser(c: Context): Promise<AuthUser | null> {
 }
 
 // Middleware: require API key auth (for hook endpoints)
+// Skipped entirely when DISABLE_AUTH=true
 export function requireApiKey() {
 	return async (c: Context, next: Next) => {
+		if (config.disableAuth) {
+			c.set("authUser", { source: "api_key", name: "anonymous", id: "anonymous" });
+			return next();
+		}
+
 		const authHeader = c.req.header("Authorization");
 		if (!authHeader?.startsWith("Bearer ")) {
 			return c.json({ error: "Missing API key" }, 401);
@@ -56,8 +63,14 @@ export function requireApiKey() {
 }
 
 // Middleware: require any auth (Authentik or API key)
+// Skipped entirely when DISABLE_AUTH=true
 export function requireAuth() {
 	return async (c: Context, next: Next) => {
+		if (config.disableAuth) {
+			c.set("authUser", { source: "api_key", name: "anonymous", id: "anonymous" });
+			return next();
+		}
+
 		const user = await getAuthUser(c);
 		if (!user) {
 			return c.json({ error: "Unauthorized" }, 401);
