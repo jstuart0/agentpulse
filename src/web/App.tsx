@@ -11,6 +11,7 @@ export function App() {
 		<Routes>
 			<Route element={<Layout />}>
 				<Route path="/" element={<DashboardPage />} />
+				<Route path="/sessions" element={<DashboardPage />} />
 				<Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
 				<Route path="/setup" element={<SetupPage />} />
 				<Route path="/editor" element={<AgentsMdPage />} />
