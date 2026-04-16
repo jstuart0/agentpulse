@@ -43,6 +43,7 @@ export function initializeDatabase() {
 		CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,
 			session_id TEXT NOT NULL UNIQUE,
+			display_name TEXT,
 			agent_type TEXT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'active',
 			cwd TEXT,

@@ -170,24 +170,36 @@ export function SessionDetailPage() {
 	const systemEvents = ["SessionStart", "SessionEnd"];
 	const toolEvents = ["PreToolUse", "PostToolUse"];
 
-	return (
-		<div className="p-6 h-full flex flex-col max-w-4xl">
-			{/* Back button */}
-			<button
-				onClick={() => navigate("/")}
-				className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-4 transition-colors"
-			>
-				<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-					<path
-						strokeLinecap="round"
-						strokeLinejoin="round"
-						strokeWidth={2}
-						d="M15 19l-7-7 7-7"
-					/>
-				</svg>
-				Back
-			</button>
+	const displayName = session.displayName || session.sessionId.slice(0, 8);
 
+	return (
+		<div className="h-full flex flex-col max-w-4xl">
+			{/* Sticky session name bar - always visible */}
+			<div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border px-6 py-2 flex items-center gap-3 flex-shrink-0">
+				<button
+					onClick={() => navigate("/")}
+					className="text-muted-foreground hover:text-foreground transition-colors"
+				>
+					<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+					</svg>
+				</button>
+				<span className="font-mono font-bold text-sm text-primary bg-primary/10 border border-primary/20 rounded px-2.5 py-0.5">
+					{displayName}
+				</span>
+				<span className="text-xs text-muted-foreground truncate">
+					{session.cwd?.split("/").pop()}
+				</span>
+				<div className="ml-auto flex items-center gap-2">
+					<AgentTypeBadge agentType={session.agentType} />
+					<StatusBadge status={session.status} />
+					{session.semanticStatus && (
+						<StatusBadge status={session.semanticStatus} variant="semantic" />
+					)}
+				</div>
+			</div>
+
+			<div className="flex-1 flex flex-col min-h-0 p-6">
 			{/* Session header */}
 			<div className="border border-border bg-card rounded-lg p-5 mb-4 flex-shrink-0">
 				<div className="flex items-start justify-between mb-3">
@@ -196,10 +208,6 @@ export function SessionDetailPage() {
 							{session.cwd?.split("/").pop() || "Session"}
 						</h1>
 						<p className="text-xs text-muted-foreground">{session.cwd}</p>
-					</div>
-					<div className="flex items-center gap-2">
-						<AgentTypeBadge agentType={session.agentType} />
-						<StatusBadge status={session.status} />
 					</div>
 				</div>
 
@@ -324,6 +332,7 @@ export function SessionDetailPage() {
 					<div ref={timelineEndRef} />
 				</div>
 			</div>
+		</div>
 		</div>
 	);
 }

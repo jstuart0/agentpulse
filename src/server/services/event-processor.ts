@@ -2,6 +2,7 @@ import { db } from "../db/client.js";
 import { sessions, events } from "../db/schema.js";
 import { eq, sql } from "drizzle-orm";
 import type { AgentType, HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
+import { generateSessionName } from "./name-generator.js";
 
 // Detect agent type from headers or payload
 export function detectAgentType(
@@ -35,9 +36,10 @@ export async function processHookEvent(
 	const isNew = existing.length === 0;
 
 	if (isNew) {
-		// Create new session
+		// Create new session with a friendly display name
 		await db.insert(sessions).values({
 			sessionId,
+			displayName: generateSessionName(),
 			agentType,
 			status: "active",
 			cwd: payload.cwd || null,

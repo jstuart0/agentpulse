@@ -88,6 +88,7 @@ export interface SemanticStatusUpdate {
 export interface Session {
 	id: string;
 	sessionId: string;
+	displayName: string | null;
 	agentType: AgentType;
 	status: SessionStatus;
 	cwd: string | null;

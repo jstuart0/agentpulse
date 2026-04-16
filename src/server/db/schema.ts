@@ -6,6 +6,7 @@ export const sessions = sqliteTable("sessions", {
 		.primaryKey()
 		.$defaultFn(() => crypto.randomUUID()),
 	sessionId: text("session_id").notNull().unique(),
+	displayName: text("display_name"), // Human-friendly name like "brave-falcon"
 	agentType: text("agent_type").notNull(), // claude_code | codex_cli
 	status: text("status").notNull().default("active"), // active | idle | completed | failed
 	cwd: text("cwd"),
