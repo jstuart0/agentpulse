@@ -196,6 +196,9 @@ mkdir -p "\$RELAY_DIR/logs"
 
 cat > "\$RELAY_DIR/relay.ts" << 'INNER_EOF'
 #!/usr/bin/env bun
+import { readFile, writeFile, access } from "fs/promises";
+import { constants } from "fs";
+import { join } from "path";
 const args = process.argv.slice(2);
 let remoteUrl = "", port = 4000, apiKey = "";
 for (let i = 0; i < args.length; i++) {
@@ -204,11 +207,31 @@ for (let i = 0; i < args.length; i++) {
   else if (!args[i].startsWith("--")) remoteUrl = args[i].replace(/\\/$/, "");
 }
 if (!remoteUrl) { console.error("Usage: relay.ts <url> [--port N] [--key K]"); process.exit(1); }
+async function fe(p:string){try{await access(p,constants.F_OK);return true}catch{return false}}
 Bun.serve({
   port, hostname: "127.0.0.1",
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname === "/api/v1/health") return Response.json({ status: "ok", relay: true, remote: remoteUrl });
+    // Handle agents-md locally (remote can't read local files)
+    if (url.pathname === "/api/v1/agents-md" && req.method === "GET") {
+      const pp = url.searchParams.get("path");
+      if (!pp || pp.includes("..")) return Response.json({ error: "Invalid" }, { status: 400 });
+      const files = [];
+      for (const n of ["CLAUDE.md","AGENTS.md"]) {
+        const fp = join(pp, n); const ex = await fe(fp);
+        let c = ""; if (ex) try { c = await readFile(fp, "utf-8") } catch {}
+        files.push({ name: n, path: fp, content: c, exists: ex });
+      }
+      return Response.json({ files, projectPath: pp });
+    }
+    if (url.pathname === "/api/v1/agents-md" && req.method === "PUT") {
+      const { path: fp, content: c } = await req.json() as any;
+      if (!fp || fp.includes("..")) return Response.json({ error: "Invalid" }, { status: 400 });
+      const bn = fp.split("/").pop() || "";
+      if (!["CLAUDE.md","AGENTS.md"].includes(bn)) return Response.json({ error: "Not allowed" }, { status: 400 });
+      try { await writeFile(fp, c, "utf-8"); return Response.json({ ok: true }); } catch(e) { return Response.json({ error: String(e) }, { status: 500 }); }
+    }
     if (url.pathname.startsWith("/api/")) {
       try {
         const headers = new Headers();

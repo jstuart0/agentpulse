@@ -119,7 +119,16 @@ function ClaudeMdPanel({ cwd }: { cwd: string | null }) {
 	return (
 		<div className="flex flex-col h-full">
 			<div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0">
-				<span className="text-[10px] text-muted-foreground truncate">{filePath.split("/").pop()}</span>
+				<div className="flex items-center gap-2 min-w-0">
+					<span className="text-[10px] text-muted-foreground truncate">{filePath.split("/").pop()}</span>
+					<span className={`text-[10px] px-1.5 py-0 rounded ${
+						content.length > 15000 ? "text-red-400 bg-red-500/10" :
+						content.length > 8000 ? "text-amber-400 bg-amber-500/10" :
+						"text-muted-foreground bg-muted/50"
+					}`}>
+						{(content.length / 1024).toFixed(1)}KB
+					</span>
+				</div>
 				<div className="flex items-center gap-2">
 					<span className="text-[10px] text-muted-foreground">{saveMsg}</span>
 					<button
