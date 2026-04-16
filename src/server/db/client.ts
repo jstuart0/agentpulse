@@ -101,6 +101,10 @@ export function initializeDatabase() {
 		"ALTER TABLE sessions ADD COLUMN is_working INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE sessions ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE sessions ADD COLUMN git_branch TEXT",
+		"ALTER TABLE sessions ADD COLUMN claude_md_content TEXT",
+		"ALTER TABLE sessions ADD COLUMN claude_md_path TEXT",
+		"ALTER TABLE sessions ADD COLUMN claude_md_checksum TEXT",
+		"ALTER TABLE sessions ADD COLUMN claude_md_updated_at TEXT",
 	];
 
 	for (const migration of migrations) {

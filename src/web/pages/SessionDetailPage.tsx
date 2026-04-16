@@ -76,7 +76,7 @@ function PromptBubble({ text, time }: { text: string; time: string }) {
 	);
 }
 
-function ClaudeMdPanel({ cwd }: { cwd: string | null }) {
+function ClaudeMdPanel({ sessionId }: { sessionId: string }) {
 	const [content, setContent] = useState("");
 	const [filePath, setFilePath] = useState("");
 	const [loading, setLoading] = useState(true);
@@ -84,28 +84,23 @@ function ClaudeMdPanel({ cwd }: { cwd: string | null }) {
 	const [saveMsg, setSaveMsg] = useState("");
 
 	useEffect(() => {
-		if (!cwd) { setLoading(false); return; }
-		fetch(`/api/v1/agents-md?path=${encodeURIComponent(cwd)}`)
+		fetch(`/api/v1/sessions/${sessionId}/claude-md`)
 			.then((r) => r.json())
 			.then((data) => {
-				const file = data.files?.find((f: { exists: boolean }) => f.exists) || data.files?.[0];
-				if (file) {
-					setContent(file.content || "");
-					setFilePath(file.path);
-				}
+				setContent(data.content || "");
+				setFilePath(data.path || "");
 			})
 			.catch(() => {})
 			.finally(() => setLoading(false));
-	}, [cwd]);
+	}, [sessionId]);
 
 	async function handleSave() {
-		if (!filePath) return;
 		setSaving(true);
 		try {
-			await fetch("/api/v1/agents-md", {
+			await fetch(`/api/v1/sessions/${sessionId}/claude-md`, {
 				method: "PUT",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ path: filePath, content }),
+				body: JSON.stringify({ content, path: filePath }),
 			});
 			setSaveMsg("Saved");
 			setTimeout(() => setSaveMsg(""), 2000);
@@ -114,7 +109,6 @@ function ClaudeMdPanel({ cwd }: { cwd: string | null }) {
 	}
 
 	if (loading) return <div className="p-3 text-xs text-muted-foreground">Loading...</div>;
-	if (!cwd) return <div className="p-3 text-xs text-muted-foreground">No project path</div>;
 
 	return (
 		<div className="flex flex-col h-full">
@@ -177,7 +171,7 @@ function RightPanel({ session }: { session: Session }) {
 				{tab === "notes" ? (
 					<NotesPanel sessionId={session.sessionId} initialNotes={session.notes || ""} />
 				) : (
-					<ClaudeMdPanel cwd={session.cwd} />
+					<ClaudeMdPanel sessionId={session.sessionId} />
 				)}
 			</div>
 		</div>

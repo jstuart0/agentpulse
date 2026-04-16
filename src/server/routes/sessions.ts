@@ -161,6 +161,59 @@ sessionsRouter.get("/sessions/search", async (c) => {
 	return c.json({ sessions: allResults, total: allResults.length });
 });
 
+// Compute a simple hash for sync detection
+async function computeChecksum(content: string): Promise<string> {
+	const data = new TextEncoder().encode(content);
+	const hash = await crypto.subtle.digest("SHA-256", data);
+	return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+}
+
+// GET /api/v1/sessions/:sessionId/claude-md - Get CLAUDE.md content from DB
+sessionsRouter.get("/sessions/:sessionId/claude-md", async (c) => {
+	const sessionId = c.req.param("sessionId");
+	const [session] = await db
+		.select({
+			claudeMdContent: sessions.claudeMdContent,
+			claudeMdPath: sessions.claudeMdPath,
+			claudeMdChecksum: sessions.claudeMdChecksum,
+			claudeMdUpdatedAt: sessions.claudeMdUpdatedAt,
+		})
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+
+	if (!session) return c.json({ error: "Session not found" }, 404);
+
+	return c.json({
+		content: session.claudeMdContent || "",
+		path: session.claudeMdPath || "",
+		checksum: session.claudeMdChecksum || "",
+		updatedAt: session.claudeMdUpdatedAt || null,
+	});
+});
+
+// PUT /api/v1/sessions/:sessionId/claude-md - Save CLAUDE.md content to DB
+sessionsRouter.put("/sessions/:sessionId/claude-md", async (c) => {
+	const sessionId = c.req.param("sessionId");
+	const { content, path } = await c.req.json<{ content: string; path?: string }>();
+
+	const now = new Date().toISOString();
+	const checksum = await computeChecksum(content);
+	const updates: Record<string, unknown> = {
+		claudeMdContent: content,
+		claudeMdChecksum: checksum,
+		claudeMdUpdatedAt: now,
+	};
+	if (path) updates.claudeMdPath = path;
+
+	await db
+		.update(sessions)
+		.set(updates)
+		.where(eq(sessions.sessionId, sessionId));
+
+	return c.json({ ok: true, checksum });
+});
+
 // PUT /api/v1/sessions/:sessionId/archive - Archive a session
 sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 	const sessionId = c.req.param("sessionId");

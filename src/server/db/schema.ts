@@ -26,6 +26,10 @@ export const sessions = sqliteTable("sessions", {
 	isWorking: integer("is_working", { mode: "boolean" }).notNull().default(false),
 	isPinned: integer("is_pinned", { mode: "boolean" }).notNull().default(false),
 	gitBranch: text("git_branch"),
+	claudeMdContent: text("claude_md_content"),
+	claudeMdPath: text("claude_md_path"),
+	claudeMdChecksum: text("claude_md_checksum"),
+	claudeMdUpdatedAt: text("claude_md_updated_at"),
 	notes: text("notes").default(""),
 	metadata: text("metadata", { mode: "json" })
 		.$type<Record<string, unknown>>()

@@ -105,6 +105,9 @@ export interface Session {
 	isWorking: boolean;
 	isPinned: boolean;
 	gitBranch: string | null;
+	claudeMdContent: string | null;
+	claudeMdPath: string | null;
+	claudeMdUpdatedAt: string | null;
 	notes: string | null;
 	metadata: Record<string, unknown>;
 }
