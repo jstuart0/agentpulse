@@ -2,12 +2,30 @@ import { useEffect, useRef, useCallback } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { useEventStore } from "../stores/event-store.js";
 
+function sendNotification(title: string, body: string) {
+	if (!("Notification" in window)) return;
+	if (Notification.permission === "granted") {
+		new Notification(title, { body, icon: "/favicon.ico" });
+	}
+}
+
+export function useNotificationPermission() {
+	useEffect(() => {
+		if ("Notification" in window && Notification.permission === "default") {
+			Notification.requestPermission();
+		}
+	}, []);
+}
+
 export function useWebSocket() {
 	const wsRef = useRef<WebSocket | null>(null);
 	const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 	const updateSession = useSessionStore((s) => s.updateSession);
 	const addSession = useSessionStore((s) => s.addSession);
 	const addLiveEvent = useEventStore((s) => s.addLiveEvent);
+
+	// Track previous isWorking state to detect transitions
+	const workingRef = useRef<Map<string, boolean>>(new Map());
 
 	const connect = useCallback(() => {
 		const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -29,10 +47,28 @@ export function useWebSocket() {
 				switch (msg.type) {
 					case "session_created":
 						addSession(msg.data.session);
+						sendNotification(
+							"New session",
+							`${msg.data.session.displayName || "Session"} started in ${msg.data.session.cwd?.split("/").pop() || "unknown"}`,
+						);
 						break;
-					case "session_updated":
-						updateSession(msg.data.session);
+					case "session_updated": {
+						const session = msg.data.session;
+						const wasWorking = workingRef.current.get(session.sessionId);
+						const name = session.displayName || session.sessionId?.slice(0, 8);
+
+						// Notify when agent stops working (finished a turn)
+						if (wasWorking && !session.isWorking && document.hidden) {
+							sendNotification(
+								`${name} finished`,
+								session.currentTask || `Done in ${session.cwd?.split("/").pop() || "unknown"}`,
+							);
+						}
+
+						workingRef.current.set(session.sessionId, session.isWorking);
+						updateSession(session);
 						break;
+					}
 					case "session_ended":
 						updateSession(msg.data.session);
 						break;

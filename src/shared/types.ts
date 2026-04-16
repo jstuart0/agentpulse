@@ -103,6 +103,8 @@ export interface Session {
 	planSummary: string[] | null;
 	totalToolUses: number;
 	isWorking: boolean;
+	isPinned: boolean;
+	gitBranch: string | null;
 	notes: string | null;
 	metadata: Record<string, unknown>;
 }

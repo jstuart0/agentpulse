@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "../lib/utils.js";
 
@@ -9,11 +10,59 @@ const navItems = [
 ];
 
 export function Layout() {
+	const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
 	return (
 		<div className="flex h-screen bg-background">
-			{/* Sidebar */}
-			<aside className="w-56 flex-shrink-0 border-r border-border bg-card flex flex-col">
-				{/* Logo */}
+			{/* Mobile top bar */}
+			<div className="md:hidden fixed top-0 left-0 right-0 z-20 bg-card border-b border-border px-4 py-3 flex items-center justify-between">
+				<div className="flex items-center gap-2">
+					<div className="w-6 h-6 rounded bg-primary/20 flex items-center justify-center">
+						<svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+						</svg>
+					</div>
+					<span className="text-sm font-bold text-foreground">AgentPulse</span>
+				</div>
+				<button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="text-muted-foreground p-1">
+					<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						{mobileMenuOpen
+							? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+							: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+						}
+					</svg>
+				</button>
+			</div>
+
+			{/* Mobile menu overlay */}
+			{mobileMenuOpen && (
+				<div className="md:hidden fixed inset-0 z-10 bg-black/50" onClick={() => setMobileMenuOpen(false)}>
+					<nav className="absolute top-14 left-0 right-0 bg-card border-b border-border p-2 space-y-0.5" onClick={(e) => e.stopPropagation()}>
+						{navItems.map((item) => (
+							<NavLink
+								key={item.to}
+								to={item.to}
+								end={item.to === "/"}
+								onClick={() => setMobileMenuOpen(false)}
+								className={({ isActive }) =>
+									cn(
+										"flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors",
+										isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground",
+									)
+								}
+							>
+								<svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d={item.icon} />
+								</svg>
+								{item.label}
+							</NavLink>
+						))}
+					</nav>
+				</div>
+			)}
+
+			{/* Desktop sidebar */}
+			<aside className="hidden md:flex w-56 flex-shrink-0 border-r border-border bg-card flex-col">
 				<div className="px-4 py-5 border-b border-border">
 					<div className="flex items-center gap-2">
 						<div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
@@ -27,8 +76,6 @@ export function Layout() {
 						</div>
 					</div>
 				</div>
-
-				{/* Nav */}
 				<nav className="flex-1 px-2 py-3 space-y-0.5">
 					{navItems.map((item) => (
 						<NavLink
@@ -38,9 +85,7 @@ export function Layout() {
 							className={({ isActive }) =>
 								cn(
 									"flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-									isActive
-										? "bg-primary/10 text-primary"
-										: "text-muted-foreground hover:text-foreground hover:bg-accent",
+									isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-accent",
 								)
 							}
 						>
@@ -51,17 +96,13 @@ export function Layout() {
 						</NavLink>
 					))}
 				</nav>
-
-				{/* Footer */}
 				<div className="px-4 py-3 border-t border-border">
-					<p className="text-[10px] text-muted-foreground">
-						Open Source - MIT License
-					</p>
+					<p className="text-[10px] text-muted-foreground">Open Source - MIT License</p>
 				</div>
 			</aside>
 
 			{/* Main content */}
-			<main className="flex-1 overflow-auto">
+			<main className="flex-1 overflow-auto mt-14 md:mt-0">
 				<Outlet />
 			</main>
 		</div>

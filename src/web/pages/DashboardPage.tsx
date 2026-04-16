@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { SessionGrid } from "../components/SessionGrid.js";
 import { useSessions } from "../hooks/useSessions.js";
 import { useWebSocket } from "../hooks/useWebSocket.js";
-import type { DashboardStats } from "../../shared/types.js";
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
 	return (
@@ -19,13 +18,28 @@ export function DashboardPage() {
 	useWebSocket();
 
 	const [filter, setFilter] = useState<string>("active");
+	const [search, setSearch] = useState("");
 
-	const filteredSessions =
+	// Filter by status
+	let filtered =
 		filter === "all"
 			? sessions.filter((s) => s.status !== "archived")
 			: sessions.filter((s) => s.status === filter);
 
+	// Filter by search
+	if (search.trim()) {
+		const q = search.toLowerCase();
+		filtered = filtered.filter(
+			(s) =>
+				(s.displayName || "").toLowerCase().includes(q) ||
+				(s.cwd || "").toLowerCase().includes(q) ||
+				(s.currentTask || "").toLowerCase().includes(q) ||
+				(s.gitBranch || "").toLowerCase().includes(q),
+		);
+	}
+
 	const activeSessions = sessions.filter((s) => s.status === "active");
+	const workingCount = sessions.filter((s) => s.isWorking).length;
 
 	return (
 		<div className="p-6">
@@ -44,7 +58,7 @@ export function DashboardPage() {
 				<StatCard
 					label="Active Sessions"
 					value={stats?.activeSessions ?? 0}
-					sub={`${activeSessions.filter((s) => s.agentType === "claude_code").length} Claude, ${activeSessions.filter((s) => s.agentType === "codex_cli").length} Codex`}
+					sub={workingCount > 0 ? `${workingCount} working now` : undefined}
 				/>
 				<StatCard
 					label="Sessions Today"
@@ -60,30 +74,50 @@ export function DashboardPage() {
 				/>
 			</div>
 
-			{/* Filter tabs */}
-			<div className="flex gap-1 mb-4 bg-muted rounded-lg p-1 w-fit">
-				{["active", "idle", "completed", "archived", "all"].map((f) => (
-					<button
-						key={f}
-						onClick={() => setFilter(f)}
-						className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-							filter === f
-								? "bg-background text-foreground shadow-sm"
-								: "text-muted-foreground hover:text-foreground"
-						}`}
-					>
-						{f.charAt(0).toUpperCase() + f.slice(1)}
-						<span className="ml-1 text-muted-foreground">
-							({f === "all"
-								? sessions.filter((s) => s.status !== "archived").length
-								: sessions.filter((s) => s.status === f).length})
-						</span>
-					</button>
-				))}
+			{/* Search + Filter */}
+			<div className="flex items-center gap-3 mb-4">
+				<div className="flex gap-1 bg-muted rounded-lg p-1">
+					{["active", "idle", "completed", "archived", "all"].map((f) => (
+						<button
+							key={f}
+							onClick={() => setFilter(f)}
+							className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+								filter === f
+									? "bg-background text-foreground shadow-sm"
+									: "text-muted-foreground hover:text-foreground"
+							}`}
+						>
+							{f.charAt(0).toUpperCase() + f.slice(1)}
+							<span className="ml-1 text-muted-foreground">
+								({f === "all"
+									? sessions.filter((s) => s.status !== "archived").length
+									: sessions.filter((s) => s.status === f).length})
+							</span>
+						</button>
+					))}
+				</div>
+
+				<div className="relative flex-1 max-w-xs">
+					<svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+					</svg>
+					<input
+						type="text"
+						value={search}
+						onChange={(e) => setSearch(e.target.value)}
+						placeholder="Search sessions..."
+						className="w-full rounded-md border border-input bg-background pl-8 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+					/>
+					{search && (
+						<button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+							<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+						</button>
+					)}
+				</div>
 			</div>
 
 			{/* Session Grid */}
-			<SessionGrid sessions={filteredSessions} isLoading={isLoading} />
+			<SessionGrid sessions={filtered} isLoading={isLoading} />
 		</div>
 	);
 }

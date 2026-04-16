@@ -99,6 +99,8 @@ export function initializeDatabase() {
 		"ALTER TABLE sessions ADD COLUMN display_name TEXT",
 		"ALTER TABLE sessions ADD COLUMN notes TEXT DEFAULT ''",
 		"ALTER TABLE sessions ADD COLUMN is_working INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE sessions ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE sessions ADD COLUMN git_branch TEXT",
 	];
 
 	for (const migration of migrations) {

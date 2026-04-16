@@ -90,6 +90,23 @@ export async function processHookEvent(
 		updates.currentTask = payload.task_subject;
 	}
 
+	// Try to extract git branch from tool responses
+	if (eventType === "PostToolUse" && payload.tool_name === "Bash" && payload.tool_response) {
+		const response = typeof payload.tool_response === "string"
+			? payload.tool_response
+			: JSON.stringify(payload.tool_response);
+		const input = payload.tool_input as Record<string, unknown> | undefined;
+		const command = typeof input?.command === "string" ? input.command : "";
+
+		// Match "git branch", "git status", etc. responses that contain branch info
+		if (command.includes("git") && (command.includes("branch") || command.includes("status") || command.includes("rev-parse"))) {
+			const branchMatch = response.match(/(?:On branch |^\* |HEAD -> )([^\s,)]+)/m);
+			if (branchMatch) {
+				updates.gitBranch = branchMatch[1];
+			}
+		}
+	}
+
 	await db.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
 
 	// Store the event

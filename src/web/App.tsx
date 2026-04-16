@@ -5,8 +5,10 @@ import { SessionDetailPage } from "./pages/SessionDetailPage.js";
 import { SetupPage } from "./pages/SetupPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
 import { AgentsMdPage } from "./pages/AgentsMdPage.js";
+import { useNotificationPermission } from "./hooks/useWebSocket.js";
 
 export function App() {
+	useNotificationPermission();
 	return (
 		<Routes>
 			<Route element={<Layout />}>

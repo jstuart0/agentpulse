@@ -262,7 +262,31 @@ export function SessionDetailPage() {
 				<span className="text-xs text-muted-foreground">
 					{formatDuration(session.startedAt)}
 				</span>
+				{session.gitBranch && (
+					<span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">
+						{session.gitBranch}
+					</span>
+				)}
 				<div className="ml-auto flex items-center gap-2">
+					<button
+						onClick={(e) => {
+							e.stopPropagation();
+							const prompts = allEvents
+								.map((ev) => {
+									const raw = ev.rawPayload as Record<string, unknown>;
+									return typeof raw?.prompt === "string" ? raw.prompt : null;
+								})
+								.filter(Boolean);
+							const md = `# ${displayName}\n\n**Project:** ${session.cwd}\n**Agent:** ${session.agentType}\n**Started:** ${session.startedAt}\n**Tools:** ${session.totalToolUses}\n${session.gitBranch ? `**Branch:** ${session.gitBranch}\n` : ""}\n${session.notes ? `## Notes\n\n${session.notes}\n\n` : ""}## Prompts\n\n${prompts.map((p, i) => `${i + 1}. ${p}`).join("\n")}\n`;
+							navigator.clipboard.writeText(md);
+						}}
+						title="Export as Markdown"
+						className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+					>
+						<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+						</svg>
+					</button>
 					<span className="text-xs text-muted-foreground">{session.totalToolUses} tools</span>
 					<AgentTypeBadge agentType={session.agentType} />
 					<StatusBadge status={session.status} />

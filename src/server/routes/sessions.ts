@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { getSessions, getSession, getStats } from "../services/session-tracker.js";
 import { db } from "../db/client.js";
 import { events, sessions } from "../db/schema.js";
-import { eq, desc, inArray } from "drizzle-orm";
+import { eq, desc, inArray, sql, like } from "drizzle-orm";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 
 // Only show user prompts in the timeline
@@ -82,6 +82,83 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 		.where(eq(sessions.sessionId, sessionId));
 
 	return c.json({ ok: true });
+});
+
+// PUT /api/v1/sessions/:sessionId/rename - Rename a session
+sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
+	const sessionId = c.req.param("sessionId");
+	const { name } = await c.req.json<{ name: string }>();
+
+	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
+
+	await db
+		.update(sessions)
+		.set({ displayName: name.trim() })
+		.where(eq(sessions.sessionId, sessionId));
+
+	return c.json({ ok: true });
+});
+
+// PUT /api/v1/sessions/:sessionId/pin - Toggle pin
+sessionsRouter.put("/sessions/:sessionId/pin", async (c) => {
+	const sessionId = c.req.param("sessionId");
+	const { pinned } = await c.req.json<{ pinned: boolean }>();
+
+	await db
+		.update(sessions)
+		.set({ isPinned: pinned })
+		.where(eq(sessions.sessionId, sessionId));
+
+	return c.json({ ok: true });
+});
+
+// GET /api/v1/sessions/search - Search sessions by prompt text or project
+sessionsRouter.get("/sessions/search", async (c) => {
+	const q = c.req.query("q") || "";
+	if (!q.trim()) return c.json({ sessions: [], total: 0 });
+
+	const searchTerm = `%${q.trim()}%`;
+
+	// Search in session cwd/displayName and in prompt events
+	const matchingSessions = await db
+		.select()
+		.from(sessions)
+		.where(
+			sql`${sessions.cwd} LIKE ${searchTerm} OR ${sessions.displayName} LIKE ${searchTerm} OR ${sessions.currentTask} LIKE ${searchTerm} OR ${sessions.notes} LIKE ${searchTerm}`,
+		)
+		.orderBy(desc(sessions.lastActivityAt))
+		.limit(50);
+
+	// Also search in prompts
+	const matchingEvents = await db
+		.select({ sessionId: events.sessionId })
+		.from(events)
+		.where(
+			sql`${events.eventType} = 'UserPromptSubmit' AND ${events.rawPayload} LIKE ${searchTerm}`,
+		)
+		.groupBy(events.sessionId)
+		.limit(50);
+
+	// Merge results
+	const sessionIds = new Set([
+		...matchingSessions.map((s) => s.sessionId),
+		...matchingEvents.map((e) => e.sessionId),
+	]);
+
+	// Fetch full session objects for event matches
+	const additionalIds = matchingEvents
+		.map((e) => e.sessionId)
+		.filter((id) => !matchingSessions.some((s) => s.sessionId === id));
+
+	let allResults = [...matchingSessions];
+	if (additionalIds.length > 0) {
+		for (const id of additionalIds) {
+			const [s] = await db.select().from(sessions).where(eq(sessions.sessionId, id)).limit(1);
+			if (s) allResults.push(s);
+		}
+	}
+
+	return c.json({ sessions: allResults, total: allResults.length });
 });
 
 // PUT /api/v1/sessions/:sessionId/archive - Archive a session
