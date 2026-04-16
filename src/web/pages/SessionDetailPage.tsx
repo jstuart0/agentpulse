@@ -146,6 +146,7 @@ function ClaudeMdPanel({ sessionId }: { sessionId: string }) {
 
 function RightPanel({ session }: { session: Session }) {
 	const [tab, setTab] = useState<"notes" | "claudemd">("notes");
+	const mdLabel = session.agentType === "codex_cli" ? "AGENTS.md" : "CLAUDE.md";
 
 	return (
 		<div className="w-80 flex-shrink-0 border-l border-border bg-card/50 flex flex-col">
@@ -164,7 +165,7 @@ function RightPanel({ session }: { session: Session }) {
 						tab === "claudemd" ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"
 					}`}
 				>
-					CLAUDE.md
+					{mdLabel}
 				</button>
 			</div>
 			<div className="flex-1 min-h-0">

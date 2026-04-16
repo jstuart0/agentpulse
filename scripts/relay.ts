@@ -35,8 +35,12 @@ function authHeaders(): Record<string, string> {
 
 // ── Upload CLAUDE.md to server on session start ─────────────────────
 
-async function uploadClaudeMd(sessionId: string, cwd: string) {
-	for (const name of ["CLAUDE.md", "AGENTS.md"]) {
+async function uploadClaudeMd(sessionId: string, cwd: string, agentType?: string) {
+	// Codex uses AGENTS.md, Claude Code uses CLAUDE.md -- check the right one first
+	const files = agentType === "codex_cli"
+		? ["AGENTS.md", "CLAUDE.md"]
+		: ["CLAUDE.md", "AGENTS.md"];
+	for (const name of files) {
 		const filePath = join(cwd, name);
 		if (await fileExists(filePath)) {
 			try {
@@ -158,9 +162,9 @@ Bun.serve({
 					try {
 						const bodyText = await req.clone().text();
 						const payload = JSON.parse(bodyText);
+						const agentType = req.headers.get("X-Agent-Type") || undefined;
 						if (payload.hook_event_name === "SessionStart" && payload.cwd) {
-							// Fire and forget -- don't delay the hook response
-							uploadClaudeMd(payload.session_id, payload.cwd).catch(() => {});
+							uploadClaudeMd(payload.session_id, payload.cwd, agentType).catch(() => {});
 						}
 					} catch {}
 				}
