@@ -29,7 +29,10 @@ import { sessions, settings } from "../db/schema.js";
 import { eq, count } from "drizzle-orm";
 import { config } from "../config.js";
 
-const TELEMETRY_ENDPOINT = process.env.TELEMETRY_ENDPOINT || "https://telemetry-agentpulse.xmojo.net/v1/ping";
+// Telemetry reports anonymous usage data to the AgentPulse project maintainers.
+// This helps us understand adoption and prioritize improvements.
+// Opt out with AGENTPULSE_TELEMETRY=off or DO_NOT_TRACK=1.
+const TELEMETRY_ENDPOINT = "https://telemetry-agentpulse.xmojo.net/v1/ping";
 const PING_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const VERSION = "0.1.0";
 
