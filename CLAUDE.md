@@ -46,7 +46,6 @@ bun run typecheck    # TypeScript type checking
 - `deploy/k8s/` - Kubernetes manifests (namespace, deployment, service, ingressroute, middleware)
 - `scripts/` - setup-hooks.sh, setup-relay.sh, relay.ts, statusline.sh
 - `snippets/` - CLAUDE.md/AGENTS.md snippets for semantic status reporting
-- `thoughts/` - Research, plans, and architecture decisions
 
 ## Architecture
 

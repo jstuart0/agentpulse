@@ -4,7 +4,6 @@ import { DashboardPage } from "./pages/DashboardPage.js";
 import { SessionDetailPage } from "./pages/SessionDetailPage.js";
 import { SetupPage } from "./pages/SetupPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
-import { AgentsMdPage } from "./pages/AgentsMdPage.js";
 import { useNotificationPermission } from "./hooks/useWebSocket.js";
 
 export function App() {
@@ -16,7 +15,6 @@ export function App() {
 				<Route path="/sessions" element={<DashboardPage />} />
 				<Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
 				<Route path="/setup" element={<SetupPage />} />
-				<Route path="/editor" element={<AgentsMdPage />} />
 				<Route path="/settings" element={<SettingsPage />} />
 			</Route>
 		</Routes>
