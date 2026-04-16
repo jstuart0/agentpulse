@@ -15,56 +15,45 @@ Track what your Claude Code and Codex CLI agents are doing across all your termi
 - **Self-hosted** -- runs on your own infrastructure, no cloud dependency
 - **Configurable database** -- SQLite (default) or PostgreSQL
 
-## Quick Start
+## Install
+
+### 1. Start the server (pick one)
 
 ```bash
-# Clone the repo
-git clone https://github.com/jaystuart/agentpulse.git
-cd agentpulse
+# Docker (easiest -- no dependencies needed)
+docker run -d -p 3000:3000 -v agentpulse-data:/app/data --name agentpulse ghcr.io/jaystuart/agentpulse
 
-# Install dependencies
-bun install
+# Or with Bun
+git clone https://github.com/jaystuart/agentpulse.git && cd agentpulse
+bun install && bun run build && bun run start
 
-# Start development server
-bun run dev
-
-# Open http://localhost:5173
-```
-
-## Configure Agent Hooks
-
-### Claude Code
-
-Add to `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [{ "matcher": "", "hooks": [{ "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "claude_code" } }] }],
-    "Stop": [{ "matcher": "", "hooks": [{ "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "claude_code" } }] }],
-    "PostToolUse": [{ "matcher": "", "hooks": [{ "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "claude_code" } }] }]
-  }
-}
-```
-
-### Codex CLI
-
-Add to `~/.codex/hooks.json`:
-
-```json
-{
-  "hooks": [
-    { "event": "SessionStart", "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "codex_cli" } },
-    { "event": "Stop", "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "codex_cli" } }
-  ]
-}
-```
-
-## Docker
-
-```bash
+# Or docker-compose
+git clone https://github.com/jaystuart/agentpulse.git && cd agentpulse
 docker compose up -d
 ```
+
+### 2. Connect your agents (one command)
+
+```bash
+# If your server has auth disabled (DISABLE_AUTH=true):
+curl -sSL http://localhost:3000/setup.sh | bash
+
+# If your server requires an API key (shown in server logs on first start):
+curl -sSL http://localhost:3000/setup.sh | bash -s -- --key ap_YOUR_KEY
+
+# For a remote server:
+curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-server.com --key ap_YOUR_KEY
+```
+
+That's it. Open `http://localhost:3000` and start a new Claude Code or Codex session.
+
+### What the setup does
+
+- Configures Claude Code hooks in `~/.claude/settings.json` (10 events)
+- Configures Codex CLI hooks in `~/.codex/hooks.json` (5 events)
+- Enables the Codex hooks feature flag
+- Adds `AGENTPULSE_API_KEY` to your shell profile (if key provided)
+- Sends a test event to verify connectivity
 
 ## Kubernetes
 

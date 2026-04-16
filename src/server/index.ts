@@ -9,6 +9,7 @@ import { ingest } from "./routes/ingest.js";
 import { sessionsRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
 import { agentsMd } from "./routes/agents-md.js";
+import { setup as setupRoute } from "./routes/setup.js";
 import {
 	handleWsOpen,
 	handleWsMessage,
@@ -38,6 +39,9 @@ api.route("/v1", settingsRouter);
 api.route("/v1", agentsMd);
 
 app.route("/api", api);
+
+// Setup script endpoint (outside /api so it's at /setup.sh)
+app.route("/", setupRoute);
 
 // Serve static frontend in production
 if (config.isProduction) {

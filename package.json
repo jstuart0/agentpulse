@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Real-time AI agent session monitor for Claude Code and Codex CLI",
   "type": "module",
+  "bin": {
+    "agentpulse": "./bin/cli.ts"
+  },
   "scripts": {
     "dev": "concurrently \"bun run dev:server\" \"bun run dev:web\"",
     "dev:server": "bun --watch src/server/index.ts",
