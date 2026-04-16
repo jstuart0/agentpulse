@@ -86,7 +86,30 @@ curl -sSL http://localhost:3000/setup.sh | bash
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
 
-**Option B: Local collector + remote dashboard (shared database)**
+**Option B: Remote server with local relay (recommended for k8s/VPS)**
+
+One command sets up a persistent relay that auto-starts on login:
+
+```bash
+bash scripts/setup-relay.sh --url https://your-server.com --key ap_YOUR_KEY
+```
+
+This:
+- Installs a tiny relay at `~/.agentpulse/relay.ts`
+- Creates a macOS LaunchAgent that starts on login and restarts if it crashes
+- Configures Claude Code + Codex hooks to point at `localhost:4000`
+- Starts the relay immediately
+
+Your agents send events to `localhost:4000` (allowed by Claude Code), the relay forwards them to your remote server. Dashboard is at your remote URL.
+
+```
+Manage the relay:
+  Stop:    launchctl unload ~/Library/LaunchAgents/dev.agentpulse.relay.plist
+  Start:   launchctl load ~/Library/LaunchAgents/dev.agentpulse.relay.plist
+  Logs:    tail -f ~/.agentpulse/logs/relay.log
+```
+
+**Option C: Local collector + remote dashboard (shared database)**
 
 Run a local instance for hook collection and a remote instance for the dashboard, both pointing at the same PostgreSQL database:
 
