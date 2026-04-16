@@ -40,9 +40,9 @@ Add to `~/.claude/settings.json`:
 ```json
 {
   "hooks": {
-    "SessionStart": [{ "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "claude_code" } }],
-    "Stop": [{ "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "claude_code" } }],
-    "PostToolUse": [{ "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "claude_code" } }]
+    "SessionStart": [{ "matcher": "", "hooks": [{ "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "claude_code" } }] }],
+    "Stop": [{ "matcher": "", "hooks": [{ "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "claude_code" } }] }],
+    "PostToolUse": [{ "matcher": "", "hooks": [{ "type": "http", "url": "http://localhost:3000/api/v1/hooks", "async": true, "headers": { "Authorization": "Bearer YOUR_API_KEY", "X-Agent-Type": "claude_code" } }] }]
   }
 }
 ```

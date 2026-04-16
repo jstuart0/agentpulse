@@ -15,14 +15,19 @@ export function SetupPage() {
 		for (const event of hookEvents) {
 			hooks[event] = [
 				{
-					type: "http",
-					url: `${serverUrl}/api/v1/hooks`,
-					async: true,
-					allowedEnvVars: ["AGENTPULSE_API_KEY"],
-					headers: {
-						Authorization: "Bearer $AGENTPULSE_API_KEY",
-						"X-Agent-Type": "claude_code",
-					},
+					matcher: "",
+					hooks: [
+						{
+							type: "http",
+							url: `${serverUrl}/api/v1/hooks`,
+							async: true,
+							allowedEnvVars: ["AGENTPULSE_API_KEY"],
+							headers: {
+								Authorization: "Bearer $AGENTPULSE_API_KEY",
+								"X-Agent-Type": "claude_code",
+							},
+						},
+					],
 				},
 			];
 		}

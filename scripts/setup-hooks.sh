@@ -73,7 +73,7 @@ if [[ "$AGENT_TYPE" == "claude_code" ]]; then
     if [[ $i -gt 0 ]]; then
       HOOKS_JSON+=","
     fi
-    HOOKS_JSON+="\"${EVENT}\":[{\"type\":\"http\",\"url\":\"${AGENTPULSE_URL}/api/v1/hooks\",\"async\":true,\"allowedEnvVars\":[\"AGENTPULSE_API_KEY\"],\"headers\":{\"Authorization\":\"Bearer \$AGENTPULSE_API_KEY\",\"X-Agent-Type\":\"claude_code\"}}]"
+    HOOKS_JSON+="\"${EVENT}\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"http\",\"url\":\"${AGENTPULSE_URL}/api/v1/hooks\",\"async\":true,\"allowedEnvVars\":[\"AGENTPULSE_API_KEY\"],\"headers\":{\"Authorization\":\"Bearer \$AGENTPULSE_API_KEY\",\"X-Agent-Type\":\"claude_code\"}}]}]"
   done
   HOOKS_JSON+="}"
 
