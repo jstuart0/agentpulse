@@ -2,10 +2,8 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { AgentTypeBadge } from "../components/AgentTypeBadge.js";
-import { PlanTracker } from "../components/PlanTracker.js";
 import { formatDuration, formatTimeAgo } from "../lib/utils.js";
 import { api } from "../lib/api.js";
-import { useEventStore } from "../stores/event-store.js";
 import type { Session, SessionEvent } from "../../shared/types.js";
 
 function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNotes: string }) {
@@ -78,41 +76,6 @@ function PromptBubble({ text, time }: { text: string; time: string }) {
 	);
 }
 
-function ToolEvent({ event }: { event: SessionEvent }) {
-	const input = event.toolInput
-		? typeof event.toolInput === "object"
-			? JSON.stringify(event.toolInput).slice(0, 150)
-			: String(event.toolInput).slice(0, 150)
-		: null;
-
-	return (
-		<div className="flex items-start gap-2 px-2">
-			<div className="flex-shrink-0 w-6 h-6 rounded-full bg-muted/50 flex items-center justify-center mt-0.5">
-				<span className="text-[10px] font-medium text-muted-foreground">
-					{event.toolName?.[0] || "E"}
-				</span>
-			</div>
-			<div className="flex-1 min-w-0">
-				<div className="flex items-center gap-2">
-					{event.toolName && (
-						<span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">
-							{event.toolName}
-						</span>
-					)}
-					<span className="text-[10px] text-muted-foreground/60 ml-auto">
-						{formatTimeAgo(event.createdAt)}
-					</span>
-				</div>
-				{input && (
-					<p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
-						{input}
-					</p>
-				)}
-			</div>
-		</div>
-	);
-}
-
 export function SessionDetailPage() {
 	const { sessionId } = useParams<{ sessionId: string }>();
 	const navigate = useNavigate();
@@ -121,7 +84,7 @@ export function SessionDetailPage() {
 	const [loading, setLoading] = useState(true);
 	const timelineEndRef = useRef<HTMLDivElement>(null);
 
-	const liveEvents = useEventStore((s) => s.liveEvents.get(sessionId || "") || []);
+	// Removed live event merging -- just use DB events with fast polling
 
 	useEffect(() => {
 		if (!sessionId) return;
@@ -137,13 +100,13 @@ export function SessionDetailPage() {
 			}
 		}
 		fetchData();
-		const interval = setInterval(fetchData, 10_000);
+		const interval = setInterval(fetchData, 3_000); // Fast refresh for near-realtime
 		return () => clearInterval(interval);
 	}, [sessionId]);
 
 	useEffect(() => {
 		timelineEndRef.current?.scrollIntoView({ behavior: "smooth" });
-	}, [events.length, liveEvents.length]);
+	}, [events.length]);
 
 	if (loading) {
 		return (
@@ -170,35 +133,11 @@ export function SessionDetailPage() {
 
 	const displayName = session.displayName || session.sessionId.slice(0, 8);
 
-	// Build chronological event list
-	// Skip tool events (PreToolUse, PostToolUse) -- they're noise.
-	// Show: prompts, session lifecycle, tasks, subagents, stops (as dividers)
-	const skipEvents = new Set(["PreToolUse", "PostToolUse"]);
+	// Only show user prompts and key system events
+	const showEvents = new Set(["UserPromptSubmit", "SessionStart", "SessionEnd", "TaskCreated", "TaskCompleted", "SubagentStart", "SubagentStop"]);
 	const allEvents = [...events]
 		.reverse()
-		.filter((e) => !skipEvents.has(e.eventType));
-
-	// Append live events not already in DB
-	for (const le of liveEvents) {
-		if (skipEvents.has(le.eventType)) continue;
-		const alreadyExists = events.some(
-			(e) =>
-				e.eventType === le.eventType &&
-				Math.abs(new Date(e.createdAt).getTime() - new Date(le.createdAt).getTime()) < 2000,
-		);
-		if (!alreadyExists) {
-			allEvents.push({
-				id: Date.now() + Math.random(),
-				sessionId: le.sessionId,
-				eventType: le.eventType,
-				toolName: le.toolName,
-				toolInput: le.toolInput,
-				toolResponse: null,
-				rawPayload: le.prompt ? { prompt: le.prompt } : {},
-				createdAt: le.createdAt,
-			} as SessionEvent);
-		}
-	}
+		.filter((e) => showEvents.has(e.eventType));
 
 	return (
 		<div className="flex flex-col h-full">
@@ -232,22 +171,6 @@ export function SessionDetailPage() {
 			<div className="flex-1 flex min-h-0">
 				{/* Timeline (left) */}
 				<div className="flex-1 overflow-auto p-6">
-					{/* Session info card */}
-					{(session.semanticStatus || session.currentTask || session.planSummary) && (
-						<div className="border border-border bg-card rounded-lg p-4 mb-4">
-							{session.semanticStatus && (
-								<div className="flex items-center gap-2 mb-1">
-									<StatusBadge status={session.semanticStatus} variant="semantic" />
-									{session.currentTask && (
-										<span className="text-xs text-foreground">{session.currentTask}</span>
-									)}
-								</div>
-							)}
-							<PlanTracker plan={session.planSummary} />
-						</div>
-					)}
-
-					{/* Timeline */}
 					<div className="space-y-3">
 						{allEvents.length === 0 ? (
 							<p className="text-sm text-muted-foreground text-center py-8">
@@ -267,18 +190,6 @@ export function SessionDetailPage() {
 											<span className="text-[10px] text-muted-foreground/50 bg-muted/30 px-3 py-1 rounded-full">
 												{event.eventType} -- {formatTimeAgo(event.createdAt)}
 											</span>
-										</div>
-									);
-								}
-
-								if (event.eventType === "PostToolUse") {
-									return <ToolEvent key={event.id} event={event} />;
-								}
-
-								if (event.eventType === "Stop") {
-									return (
-										<div key={event.id} className="flex justify-center py-1">
-											<span className="text-[10px] text-muted-foreground/30">---</span>
 										</div>
 									);
 								}
@@ -307,7 +218,7 @@ export function SessionDetailPage() {
 									);
 								}
 
-								return <ToolEvent key={event.id} event={event} />;
+								return null;
 							})
 						)}
 						<div ref={timelineEndRef} />
