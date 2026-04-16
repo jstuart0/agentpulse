@@ -10,6 +10,7 @@
     "dev": "concurrently \"bun run dev:server\" \"bun run dev:web\"",
     "dev:server": "bun --watch src/server/index.ts",
     "dev:web": "vite",
+    "prototype:codex-managed": "bun scripts/codex-managed-prototype.ts",
     "build": "vite build && bun run build:server",
     "build:server": "bun build src/server/index.ts --outdir dist/server --target bun",
     "start": "NODE_ENV=production bun dist/server/index.js",

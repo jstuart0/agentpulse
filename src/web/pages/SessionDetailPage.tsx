@@ -260,6 +260,40 @@ function InlineRename({ sessionId, currentName, onRenamed }: { sessionId: string
 	);
 }
 
+function CodexStatusHint({ displayName }: { displayName: string }) {
+	const [copied, setCopied] = useState(false);
+	const renameCommand = `/rename ${displayName}`;
+
+	async function copyRenameCommand() {
+		try {
+			await navigator.clipboard.writeText(renameCommand);
+			setCopied(true);
+			setTimeout(() => setCopied(false), 1500);
+		} catch {}
+	}
+
+	return (
+		<div className="mx-6 mt-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5">
+			<div className="flex items-start justify-between gap-3">
+				<div className="min-w-0">
+					<p className="text-xs font-medium text-foreground">Show this name inside Codex</p>
+					<p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+						Run <span className="font-mono text-foreground">{renameCommand}</span> in Codex, then enable
+						{" "}<span className="font-mono text-foreground">thread-title</span> in <span className="font-mono text-foreground">/statusline</span>.
+						This uses Codex&apos;s built-in status line instead of terminal-specific hacks.
+					</p>
+				</div>
+				<button
+					onClick={copyRenameCommand}
+					className="flex-shrink-0 rounded border border-primary/30 px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/10 transition-colors"
+				>
+					{copied ? "Copied" : "Copy"}
+				</button>
+			</div>
+		</div>
+	);
+}
+
 export function SessionDetailPage() {
 	const { sessionId } = useParams<{ sessionId: string }>();
 	const navigate = useNavigate();
@@ -379,6 +413,10 @@ export function SessionDetailPage() {
 					<StatusBadge status={session.status} />
 				</div>
 			</div>
+
+			{session.agentType === "codex_cli" && (
+				<CodexStatusHint displayName={displayName} />
+			)}
 
 			{/* Main content: timeline + notes side by side */}
 			<div className="flex-1 flex min-h-0">
