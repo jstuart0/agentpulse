@@ -46,7 +46,6 @@ bun run typecheck    # TypeScript type checking
 - `deploy/k8s/` - Kubernetes manifests (namespace, deployment, service, ingressroute, middleware)
 - `scripts/` - setup-hooks.sh, setup-relay.sh, relay.ts, statusline.sh
 - `snippets/` - CLAUDE.md/AGENTS.md snippets for semantic status reporting
-- `telemetry-worker/` - Cloudflare Worker for anonymous telemetry collection
 - `thoughts/` - Research, plans, and architecture decisions
 
 ## Architecture
@@ -119,4 +118,4 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - **K8s (thor):** `kubectl apply -f deploy/k8s/` (uses Authentik SSO + Traefik IngressRoute)
 - **Relay:** `curl -sSL https://server/setup-relay.sh | bash -s -- --key ap_xxx`
 - **Docker image:** `ghcr.io/YOUR_ORG/agentpulse:latest` (linux/amd64)
-- **Telemetry:** `your-telemetry-host (Cloudflare Worker + D1)` (Cloudflare Worker + D1)
+- **Telemetry:** Anonymous pings to project maintainers (opt-out with AGENTPULSE_TELEMETRY=off)
