@@ -21,8 +21,18 @@ if [ "$EVENT" = "SessionStart" ] && [ -n "$SESSION_ID" ]; then
   NAME=$(curl -sf "${RELAY}/api/v1/sessions/${SESSION_ID}" 2>/dev/null \
     | grep -o '"displayName":"[^"]*"' | cut -d'"' -f4)
   if [ -n "$NAME" ] && [ "$NAME" != "null" ]; then
-    # Set terminal title via ANSI escape (works in most terminals)
+    # Write session name to a file for shell prompt integration
+    echo "$NAME" > ~/.agentpulse/current-session-name 2>/dev/null || true
+    # Set terminal title via ANSI escape
     printf '\033]0;%s\007' "[$NAME] codex" > /dev/tty 2>/dev/null || true
+  fi
+fi
+
+# Clear session name file on session end so prompt goes back to normal
+if [ "$EVENT" = "SessionEnd" ] || [ "$EVENT" = "Stop" ]; then
+  # Only clear on SessionEnd, not Stop (Stop fires every turn)
+  if [ "$EVENT" = "SessionEnd" ]; then
+    rm -f ~/.agentpulse/current-session-name 2>/dev/null || true
   fi
 fi
 
