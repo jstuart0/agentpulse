@@ -7,7 +7,10 @@ const setup = new Hono();
 // Usage: curl -sSL https://agentpulse.xmojo.net/setup.sh | bash
 // Or:    curl -sSL https://agentpulse.xmojo.net/setup.sh | bash -s -- --key ap_xxx
 setup.get("/setup.sh", (c) => {
-	const serverUrl = config.publicUrl || `http://localhost:${config.port}`;
+	// Detect the port from the request URL so hooks always point to localhost
+	const requestHost = c.req.header("Host") || `localhost:${config.port}`;
+	const requestPort = requestHost.includes(":") ? requestHost.split(":")[1] : config.port.toString();
+	const defaultLocalUrl = `http://localhost:${requestPort}`;
 
 	const script = `#!/usr/bin/env bash
 set -euo pipefail
@@ -17,13 +20,15 @@ set -euo pipefail
 #  Configures Claude Code + Codex CLI to report to AgentPulse
 # ───────────────────────────────────────────────────
 
-SERVER_URL="${serverUrl}"
+# Hooks MUST point to localhost -- Claude Code and Codex block
+# HTTP hooks to remote/private IPs as a security measure.
+HOOK_URL="${defaultLocalUrl}"
 API_KEY=""
 
 while [[ \$# -gt 0 ]]; do
   case \$1 in
     --key) API_KEY="\$2"; shift 2 ;;
-    --url) SERVER_URL="\$2"; shift 2 ;;
+    --url) HOOK_URL="\$2"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -31,7 +36,7 @@ done
 echo ""
 echo "  AgentPulse Setup"
 echo "  ────────────────"
-echo "  Server: \$SERVER_URL"
+echo "  Hooks will point to: \$HOOK_URL"
 echo ""
 
 # ── Claude Code ──
@@ -47,9 +52,9 @@ for i in "\${!EVENTS[@]}"; do
   EVENT="\${EVENTS[\$i]}"
   [[ \$i -gt 0 ]] && HOOKS_JSON+=","
   if [[ -n "\$API_KEY" ]]; then
-    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${SERVER_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
+    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
   else
-    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${SERVER_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
+    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
   fi
 done
 HOOKS_JSON+="}"
@@ -80,9 +85,9 @@ CODEX_HOOKS="["
 for i in "\${!CODEX_EVENTS[@]}"; do
   [[ \$i -gt 0 ]] && CODEX_HOOKS+=","
   if [[ -n "\$API_KEY" ]]; then
-    CODEX_HOOKS+="{\\"event\\":\\"\${CODEX_EVENTS[\$i]}\\",\\"type\\":\\"http\\",\\"url\\":\\"\${SERVER_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"codex_cli\\"}}"
+    CODEX_HOOKS+="{\\"event\\":\\"\${CODEX_EVENTS[\$i]}\\",\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"codex_cli\\"}}"
   else
-    CODEX_HOOKS+="{\\"event\\":\\"\${CODEX_EVENTS[\$i]}\\",\\"type\\":\\"http\\",\\"url\\":\\"\${SERVER_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"X-Agent-Type\\":\\"codex_cli\\"}}"
+    CODEX_HOOKS+="{\\"event\\":\\"\${CODEX_EVENTS[\$i]}\\",\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"X-Agent-Type\\":\\"codex_cli\\"}}"
   fi
 done
 CODEX_HOOKS+="]"
@@ -104,17 +109,17 @@ if [[ -n "\$API_KEY" ]]; then
     echo "" >> "\$PROFILE"
     echo "# AgentPulse" >> "\$PROFILE"
     echo "export AGENTPULSE_API_KEY=\\"\$API_KEY\\"" >> "\$PROFILE"
-    echo "export AGENTPULSE_URL=\\"\$SERVER_URL\\"" >> "\$PROFILE"
+    echo "export AGENTPULSE_URL=\\"\$HOOK_URL\\"" >> "\$PROFILE"
     echo "  ✓ Added env vars to \$PROFILE"
   fi
 fi
 
 # ── Verify ──
 
-if curl -sf "\$SERVER_URL/api/v1/health" >/dev/null 2>&1; then
+if curl -sf "\$HOOK_URL/api/v1/health" >/dev/null 2>&1; then
   echo "  ✓ Server reachable"
 else
-  echo "  ! Server not reachable at \$SERVER_URL"
+  echo "  ! Server not reachable at \$HOOK_URL"
 fi
 
 echo ""
