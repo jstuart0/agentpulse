@@ -15,8 +15,14 @@ spec:
         - name: agentpulse
           port: 3000
 
-    # Setup script - public
+    # Setup scripts - public
     - match: Host(`agentpulse.xmojo.net`) && Path(`/setup.sh`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.xmojo.net`) && Path(`/setup-relay.sh`)
       kind: Rule
       services:
         - name: agentpulse

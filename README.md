@@ -88,15 +88,16 @@ curl -sSL http://localhost:3000/setup.sh | bash
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 
-One command sets up a persistent relay that auto-starts on login:
+If AgentPulse runs on a remote server, one command sets up everything -- no repo clone needed:
 
 ```bash
-bash scripts/setup-relay.sh --url https://your-server.com --key ap_YOUR_KEY
+curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
 ```
 
-This:
+That single command:
+- Installs Bun if you don't have it
 - Installs a tiny relay at `~/.agentpulse/relay.ts`
-- Creates a macOS LaunchAgent that starts on login and restarts if it crashes
+- Creates a macOS LaunchAgent (or Linux systemd service) that auto-starts on login
 - Configures Claude Code + Codex hooks to point at `localhost:4000`
 - Starts the relay immediately
 
@@ -107,6 +108,7 @@ Manage the relay:
   Stop:    launchctl unload ~/Library/LaunchAgents/dev.agentpulse.relay.plist
   Start:   launchctl load ~/Library/LaunchAgents/dev.agentpulse.relay.plist
   Logs:    tail -f ~/.agentpulse/logs/relay.log
+  Config:  cat ~/.agentpulse/config.json
 ```
 
 **Option C: Local collector + remote dashboard (shared database)**
