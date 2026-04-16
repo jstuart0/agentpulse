@@ -88,7 +88,9 @@ curl -sSL http://localhost:3000/setup.sh | bash
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 
-If AgentPulse runs on a remote server, one command sets up everything -- no repo clone needed:
+Run AgentPulse on a server you can access from anywhere -- your phone, tablet, another machine. Check on long-running agent tasks while you're away from your desk. See if that 30-minute refactor finished, whether an agent hit an error, or what all your sessions are working on -- without being at your computer.
+
+One command sets up everything, no repo clone needed:
 
 ```bash
 curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
@@ -101,7 +103,7 @@ That single command:
 - Configures Claude Code + Codex hooks to point at `localhost:4000`
 - Starts the relay immediately
 
-Your agents send events to `localhost:4000` (allowed by Claude Code), the relay forwards them to your remote server. Dashboard is at your remote URL.
+Your agents send events to `localhost:4000` (allowed by Claude Code), the relay forwards them to your remote server. Open the dashboard from any device to monitor your agents in real time.
 
 ```
 Manage the relay:
