@@ -32,6 +32,9 @@ ingest.post("/hooks", requireApiKey(), async (c) => {
 				sessionId,
 				eventType: payload.hook_event_name,
 				toolName: payload.tool_name,
+				prompt: payload.prompt || null,
+				toolInput: payload.tool_input || null,
+				createdAt: new Date().toISOString(),
 			});
 		}
 

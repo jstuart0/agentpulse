@@ -1,11 +1,13 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useSessionStore } from "../stores/session-store.js";
+import { useEventStore } from "../stores/event-store.js";
 
 export function useWebSocket() {
 	const wsRef = useRef<WebSocket | null>(null);
 	const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 	const updateSession = useSessionStore((s) => s.updateSession);
 	const addSession = useSessionStore((s) => s.addSession);
+	const addLiveEvent = useEventStore((s) => s.addLiveEvent);
 
 	const connect = useCallback(() => {
 		const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -17,7 +19,6 @@ export function useWebSocket() {
 
 		ws.onopen = () => {
 			console.log("[ws] Connected");
-			// Subscribe to all session updates
 			ws.send(JSON.stringify({ type: "subscribe", channels: ["sessions"] }));
 		};
 
@@ -36,10 +37,16 @@ export function useWebSocket() {
 						updateSession(msg.data.session);
 						break;
 					case "new_event":
-						// Trigger a refresh of the session detail if viewing it
+						addLiveEvent({
+							sessionId: msg.data.sessionId,
+							eventType: msg.data.eventType,
+							toolName: msg.data.toolName || null,
+							prompt: msg.data.prompt || null,
+							toolInput: msg.data.toolInput || null,
+							createdAt: msg.data.createdAt || new Date().toISOString(),
+						});
 						break;
 					case "heartbeat":
-						// Connection alive
 						break;
 				}
 			} catch {
@@ -55,7 +62,7 @@ export function useWebSocket() {
 		ws.onerror = () => {
 			ws.close();
 		};
-	}, [updateSession, addSession]);
+	}, [updateSession, addSession, addLiveEvent]);
 
 	useEffect(() => {
 		connect();
