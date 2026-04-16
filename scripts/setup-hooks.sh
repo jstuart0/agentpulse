@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # AgentPulse Hook Setup Script
-# Usage: bash setup-hooks.sh --url https://agentpulse.xmojo.net --key ap_xxxxx
-# Or:    curl -sSL https://agentpulse.xmojo.net/setup.sh | bash -s -- --url https://agentpulse.xmojo.net --key ap_xxxxx
+# Usage: bash setup-hooks.sh --url https://your-server.com --key ap_xxxxx
+# Or:    curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-server.com --key ap_xxxxx
 
 AGENTPULSE_URL=""
 AGENTPULSE_KEY=""
@@ -23,7 +23,7 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: setup-hooks.sh --url <server_url> --key <api_key>"
       echo ""
       echo "Options:"
-      echo "  --url    AgentPulse server URL (e.g. https://agentpulse.xmojo.net)"
+      echo "  --url    AgentPulse server URL (e.g. https://your-server.com)"
       echo "  --key    API key (starts with ap_)"
       echo "  --agent  Agent type: claude_code (default) or codex_cli"
       echo "  --scope  Scope: global (default) or project"

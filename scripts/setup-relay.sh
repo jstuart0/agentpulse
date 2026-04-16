@@ -37,7 +37,7 @@ done
 
 if [[ -z "$REMOTE_URL" ]]; then
   echo "Error: --url is required (your remote AgentPulse server)"
-  echo "Example: bash setup-relay.sh --url https://agentpulse.xmojo.net --key ap_xxx"
+  echo "Example: bash setup-relay.sh --url https://your-server.com --key ap_xxx"
   exit 1
 fi
 

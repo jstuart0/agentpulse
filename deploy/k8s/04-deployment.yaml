@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: agentpulse
-        image: 192.168.10.222:30500/agentpulse:latest
+        image: ghcr.io/YOUR_ORG/agentpulse:latest  # Replace with your registry
         imagePullPolicy: Always
         ports:
         - containerPort: 3000

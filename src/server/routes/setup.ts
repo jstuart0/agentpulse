@@ -4,8 +4,8 @@ import { config } from "../config.js";
 const setup = new Hono();
 
 // GET /setup.sh - Serve a self-contained install script
-// Usage: curl -sSL https://agentpulse.xmojo.net/setup.sh | bash
-// Or:    curl -sSL https://agentpulse.xmojo.net/setup.sh | bash -s -- --key ap_xxx
+// Usage: curl -sSL https://your-server.com/setup.sh | bash
+// Or:    curl -sSL https://your-server.com/setup.sh | bash -s -- --key ap_xxx
 setup.get("/setup.sh", (c) => {
 	// Detect the port from the request URL so hooks always point to localhost
 	const requestHost = c.req.header("Host") || `localhost:${config.port}`;
@@ -136,7 +136,7 @@ echo ""
 });
 
 // GET /setup-relay.sh - Self-contained relay setup for remote server users
-// Usage: curl -sSL https://agentpulse.xmojo.net/setup-relay.sh | bash -s -- --key ap_xxx
+// Usage: curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_xxx
 setup.get("/setup-relay.sh", (c) => {
 	const serverUrl = config.publicUrl || `https://${c.req.header("Host")}`;
 

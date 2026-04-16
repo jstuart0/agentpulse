@@ -8,6 +8,6 @@ metadata:
 data:
   PORT: "3000"
   HOST: "0.0.0.0"
-  PUBLIC_URL: "https://agentpulse.xmojo.net"
+  PUBLIC_URL: "https://agentpulse.example.com"
   LOG_LEVEL: "info"
   NODE_ENV: "production"

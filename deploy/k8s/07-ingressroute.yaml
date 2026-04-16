@@ -9,27 +9,27 @@ spec:
   routes:
     # All API routes bypass Authentik - they use API key auth instead
     # This covers hooks, sessions, settings, WebSocket, health
-    - match: Host(`agentpulse.xmojo.net`) && PathPrefix(`/api/`)
+    - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/`)
       kind: Rule
       services:
         - name: agentpulse
           port: 3000
 
     # Setup scripts - public
-    - match: Host(`agentpulse.xmojo.net`) && Path(`/setup.sh`)
+    - match: Host(`agentpulse.example.com`) && Path(`/setup.sh`)
       kind: Rule
       services:
         - name: agentpulse
           port: 3000
 
-    - match: Host(`agentpulse.xmojo.net`) && Path(`/setup-relay.sh`)
+    - match: Host(`agentpulse.example.com`) && Path(`/setup-relay.sh`)
       kind: Rule
       services:
         - name: agentpulse
           port: 3000
 
     # Dashboard frontend - Authentik protected
-    - match: Host(`agentpulse.xmojo.net`)
+    - match: Host(`agentpulse.example.com`)
       kind: Rule
       middlewares:
         - name: agentpulse-forwardauth
@@ -48,7 +48,7 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: Host(`agentpulse.xmojo.net`)
+    - match: Host(`agentpulse.example.com`)
       kind: Rule
       services:
         - name: agentpulse
