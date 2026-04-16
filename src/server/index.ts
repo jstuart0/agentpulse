@@ -42,16 +42,38 @@ app.route("/api", api);
 // Serve static frontend in production
 if (config.isProduction) {
 	const staticDir = join(import.meta.dir, "../../dist/web");
+
+	const MIME_TYPES: Record<string, string> = {
+		".html": "text/html; charset=utf-8",
+		".js": "application/javascript; charset=utf-8",
+		".css": "text/css; charset=utf-8",
+		".json": "application/json",
+		".svg": "image/svg+xml",
+		".png": "image/png",
+		".ico": "image/x-icon",
+		".woff": "font/woff",
+		".woff2": "font/woff2",
+	};
+
+	function getMimeType(path: string): string {
+		const ext = path.slice(path.lastIndexOf("."));
+		return MIME_TYPES[ext] || "application/octet-stream";
+	}
+
 	if (existsSync(staticDir)) {
 		app.get("*", async (c) => {
 			const reqPath = c.req.path === "/" ? "/index.html" : c.req.path;
 			const filePath = join(staticDir, reqPath);
 			const file = Bun.file(filePath);
 			if (await file.exists()) {
-				return new Response(file);
+				return new Response(file, {
+					headers: { "Content-Type": getMimeType(filePath) },
+				});
 			}
-			// SPA fallback
-			return new Response(Bun.file(join(staticDir, "index.html")));
+			// SPA fallback - serve index.html for client-side routing
+			return new Response(Bun.file(join(staticDir, "index.html")), {
+				headers: { "Content-Type": "text/html; charset=utf-8" },
+			});
 		});
 	}
 }
