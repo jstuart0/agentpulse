@@ -62,13 +62,19 @@ const localChecksums = new Map<string, string>();
 
 async function syncClaudeMdToDisk() {
 	try {
-		const res = await fetch(`${remoteUrl}/api/v1/sessions?limit=20&status=active`, {
+		const res = await fetch(`${remoteUrl}/api/v1/sessions?limit=20`, {
 			headers: authHeaders(),
 			signal: AbortSignal.timeout(5000),
 		});
-		const data = await res.json() as { sessions: Array<{ sessionId: string; claudeMdPath?: string; claudeMdChecksum?: string; claudeMdContent?: string }> };
+		const data = await res.json() as { sessions: Array<{ sessionId: string; cwd?: string; status?: string; claudeMdPath?: string; claudeMdChecksum?: string; claudeMdContent?: string }> };
 
 		for (const session of data.sessions || []) {
+			// Backfill: if session has a cwd but no CLAUDE.md uploaded yet, upload it now
+			if (!session.claudeMdChecksum && session.cwd) {
+				uploadClaudeMd(session.sessionId, session.cwd).catch(() => {});
+				continue;
+			}
+
 			if (!session.claudeMdPath || !session.claudeMdChecksum) continue;
 
 			const lastKnown = localChecksums.get(session.sessionId);
