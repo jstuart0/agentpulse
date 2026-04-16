@@ -13,7 +13,7 @@ AgentPulse is a real-time web dashboard for monitoring AI coding agent sessions 
 - **Database:** SQLite (default) or PostgreSQL (configurable via DATABASE_URL)
 - **ORM:** Drizzle
 - **Real-time:** WebSocket (native Bun) + 3s polling fallback
-- **Telemetry:** Cloudflare Worker + D1 at your-telemetry-host (Cloudflare Worker + D1)
+- **Telemetry:** Cloudflare Worker + D1 at telemetry-agentpulse.xmojo.net
 - **Linting:** Biome
 
 ## Commands
@@ -46,6 +46,8 @@ bun run typecheck    # TypeScript type checking
 - `deploy/k8s/` - Kubernetes manifests (namespace, deployment, service, ingressroute, middleware)
 - `scripts/` - setup-hooks.sh, setup-relay.sh, relay.ts, statusline.sh
 - `snippets/` - CLAUDE.md/AGENTS.md snippets for semantic status reporting
+- `telemetry-worker/` - Cloudflare Worker for anonymous telemetry collection
+- `thoughts/` - Research, plans, and architecture decisions
 
 ## Architecture
 
@@ -116,5 +118,5 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - **Local:** `docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true`
 - **K8s (thor):** `kubectl apply -f deploy/k8s/` (uses Authentik SSO + Traefik IngressRoute)
 - **Relay:** `curl -sSL https://server/setup-relay.sh | bash -s -- --key ap_xxx`
-- **Docker image:** `ghcr.io/YOUR_ORG/agentpulse:latest` (linux/amd64)
-- **Telemetry:** Anonymous pings to project maintainers (opt-out with AGENTPULSE_TELEMETRY=off)
+- **Docker image:** `192.168.10.222:30500/agentpulse:latest` (linux/amd64)
+- **Telemetry:** `telemetry-agentpulse.xmojo.net` (Cloudflare Worker + D1)
