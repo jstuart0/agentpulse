@@ -76,15 +76,21 @@ function PromptBubble({ text, time }: { text: string; time: string }) {
 	);
 }
 
-function ClaudeMdPanel({ sessionId }: { sessionId: string }) {
+function ClaudeMdPanel({ session }: { session: Session }) {
 	const [content, setContent] = useState("");
 	const [filePath, setFilePath] = useState("");
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
 	const [saveMsg, setSaveMsg] = useState("");
 
+	// Detect if we fell back to the other file
+	const preferredFile = session.agentType === "codex_cli" ? "AGENTS.md" : "CLAUDE.md";
+	const alternateFile = session.agentType === "codex_cli" ? "CLAUDE.md" : "AGENTS.md";
+	const currentFile = filePath ? filePath.split("/").pop() || "" : "";
+	const isFallback = currentFile !== "" && currentFile !== preferredFile;
+
 	useEffect(() => {
-		fetch(`/api/v1/sessions/${sessionId}/claude-md`)
+		fetch(`/api/v1/sessions/${session.sessionId}/claude-md`)
 			.then((r) => r.json())
 			.then((data) => {
 				setContent(data.content || "");
@@ -92,12 +98,12 @@ function ClaudeMdPanel({ sessionId }: { sessionId: string }) {
 			})
 			.catch(() => {})
 			.finally(() => setLoading(false));
-	}, [sessionId]);
+	}, [session.sessionId]);
 
 	async function handleSave() {
 		setSaving(true);
 		try {
-			await fetch(`/api/v1/sessions/${sessionId}/claude-md`, {
+			await fetch(`/api/v1/sessions/${session.sessionId}/claude-md`, {
 				method: "PUT",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ content, path: filePath }),
@@ -108,13 +114,45 @@ function ClaudeMdPanel({ sessionId }: { sessionId: string }) {
 		setSaving(false);
 	}
 
+	async function handleCreatePreferred() {
+		if (!session.cwd) return;
+		const newPath = session.cwd + "/" + preferredFile;
+		setSaving(true);
+		try {
+			await fetch(`/api/v1/sessions/${session.sessionId}/claude-md`, {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ content, path: newPath }),
+			});
+			setFilePath(newPath);
+			setSaveMsg(`Created ${preferredFile}`);
+			setTimeout(() => setSaveMsg(""), 2000);
+		} catch { setSaveMsg("Error"); }
+		setSaving(false);
+	}
+
 	if (loading) return <div className="p-3 text-xs text-muted-foreground">Loading...</div>;
 
 	return (
 		<div className="flex flex-col h-full">
+			{/* Fallback notice */}
+			{isFallback && (
+				<div className="px-3 py-2 bg-amber-500/10 border-b border-amber-500/20 flex items-center justify-between">
+					<span className="text-[10px] text-amber-400">
+						No {preferredFile} found -- showing {currentFile}
+					</span>
+					<button
+						onClick={handleCreatePreferred}
+						disabled={saving}
+						className="text-[10px] rounded px-2 py-0.5 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
+					>
+						Create {preferredFile}
+					</button>
+				</div>
+			)}
 			<div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0">
 				<div className="flex items-center gap-2 min-w-0">
-					<span className="text-[10px] text-muted-foreground truncate">{filePath.split("/").pop()}</span>
+					<span className="text-[10px] text-muted-foreground truncate">{currentFile || "No file"}</span>
 					<span className={`text-[10px] px-1.5 py-0 rounded ${
 						content.length > 15000 ? "text-red-400 bg-red-500/10" :
 						content.length > 8000 ? "text-amber-400 bg-amber-500/10" :
@@ -175,7 +213,7 @@ function RightPanel({ session }: { session: Session }) {
 				{tab === "notes" ? (
 					<NotesPanel sessionId={session.sessionId} initialNotes={session.notes || ""} />
 				) : (
-					<ClaudeMdPanel sessionId={session.sessionId} />
+					<ClaudeMdPanel session={session} />
 				)}
 			</div>
 		</div>
