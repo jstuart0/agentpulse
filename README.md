@@ -88,6 +88,8 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 | `PUBLIC_URL` | `http://localhost:3000` | Public URL (used in setup script) |
 | `DISABLE_AUTH` | `false` | Skip all authentication |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `AGENTPULSE_TELEMETRY` | `on` | Set `off` to disable anonymous telemetry |
+| `DO_NOT_TRACK` | | Set `1` to disable telemetry (standard) |
 
 ## What the setup script does
 
