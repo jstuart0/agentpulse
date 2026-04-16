@@ -18,10 +18,12 @@ export function DashboardPage() {
 	const { sessions, stats, isLoading } = useSessions();
 	useWebSocket();
 
-	const [filter, setFilter] = useState<string>("all");
+	const [filter, setFilter] = useState<string>("active");
 
 	const filteredSessions =
-		filter === "all" ? sessions : sessions.filter((s) => s.status === filter);
+		filter === "all"
+			? sessions.filter((s) => s.status !== "archived")
+			: sessions.filter((s) => s.status === filter);
 
 	const activeSessions = sessions.filter((s) => s.status === "active");
 
@@ -60,7 +62,7 @@ export function DashboardPage() {
 
 			{/* Filter tabs */}
 			<div className="flex gap-1 mb-4 bg-muted rounded-lg p-1 w-fit">
-				{["all", "active", "idle", "completed"].map((f) => (
+				{["active", "idle", "completed", "archived", "all"].map((f) => (
 					<button
 						key={f}
 						onClick={() => setFilter(f)}
@@ -71,11 +73,11 @@ export function DashboardPage() {
 						}`}
 					>
 						{f.charAt(0).toUpperCase() + f.slice(1)}
-						{f !== "all" && (
-							<span className="ml-1 text-muted-foreground">
-								({sessions.filter((s) => f === "all" || s.status === f).length})
-							</span>
-						)}
+						<span className="ml-1 text-muted-foreground">
+							({f === "all"
+								? sessions.filter((s) => s.status !== "archived").length
+								: sessions.filter((s) => s.status === f).length})
+						</span>
 					</button>
 				))}
 			</div>

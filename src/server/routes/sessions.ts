@@ -84,4 +84,27 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 	return c.json({ ok: true });
 });
 
+// PUT /api/v1/sessions/:sessionId/archive - Archive a session
+sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
+	const sessionId = c.req.param("sessionId");
+
+	await db
+		.update(sessions)
+		.set({ status: "archived", endedAt: new Date().toISOString() })
+		.where(eq(sessions.sessionId, sessionId));
+
+	return c.json({ ok: true });
+});
+
+// DELETE /api/v1/sessions/:sessionId - Delete a session and its events
+sessionsRouter.delete("/sessions/:sessionId", async (c) => {
+	const sessionId = c.req.param("sessionId");
+
+	// Delete events first (foreign key)
+	await db.delete(events).where(eq(events.sessionId, sessionId));
+	await db.delete(sessions).where(eq(sessions.sessionId, sessionId));
+
+	return c.json({ ok: true });
+});
+
 export { sessionsRouter };

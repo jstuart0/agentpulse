@@ -14,6 +14,7 @@ export const SESSION_STATUSES = [
 	"idle",
 	"completed",
 	"failed",
+	"archived",
 ] as const;
 
 export const AGENT_TYPES = ["claude_code", "codex_cli"] as const;
@@ -24,6 +25,7 @@ export const STATUS_COLORS: Record<string, string> = {
 	idle: "bg-amber-500",
 	completed: "bg-slate-500",
 	failed: "bg-red-500",
+	archived: "bg-zinc-600",
 };
 
 export const SEMANTIC_STATUS_COLORS: Record<string, string> = {

@@ -6,7 +6,8 @@ export type SessionStatus =
 	| "active"
 	| "idle"
 	| "completed"
-	| "failed";
+	| "failed"
+	| "archived";
 
 // Semantic status reported by agents via CLAUDE.md snippet
 export type SemanticStatus =
