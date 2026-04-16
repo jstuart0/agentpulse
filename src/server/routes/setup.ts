@@ -1,5 +1,7 @@
 import { Hono } from "hono";
 import { config } from "../config.js";
+import { readFileSync } from "fs";
+import { join } from "path";
 
 const setup = new Hono();
 
@@ -131,6 +133,25 @@ echo ""
 		headers: {
 			"Content-Type": "text/plain; charset=utf-8",
 			"Content-Disposition": "inline; filename=setup.sh",
+		},
+	});
+});
+
+// GET /install-local.sh - Serve the local Bun+SQLite installer
+// Usage: curl -sSL http://localhost:3000/install-local.sh | bash
+setup.get("/install-local.sh", (c) => {
+	const requestHost = c.req.header("Host") || `localhost:${config.port}`;
+	const requestPort = requestHost.includes(":") ? requestHost.split(":")[1] : config.port.toString();
+	const defaultLocalUrl = `http://localhost:${requestPort}`;
+	const installScriptPath = join(import.meta.dir, "../../../scripts/install-local.sh");
+
+	let script = readFileSync(installScriptPath, "utf-8");
+	script = script.replace('PUBLIC_URL=""', `PUBLIC_URL="${defaultLocalUrl}"`);
+
+	return new Response(script, {
+		headers: {
+			"Content-Type": "text/plain; charset=utf-8",
+			"Content-Disposition": "inline; filename=install-local.sh",
 		},
 	});
 });

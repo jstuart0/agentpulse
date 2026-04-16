@@ -30,10 +30,9 @@ Each session gets a random memorable name (like `bold-falcon`) so you can match 
 docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jaystuart/agentpulse
 ```
 
-> No Docker? Use `git clone` + Bun instead:
+> No Docker? Use the local installer instead:
 > ```bash
-> git clone https://github.com/jaystuart/agentpulse.git && cd agentpulse
-> bun install && bun run build && DISABLE_AUTH=true bun run start
+> curl -fsSL http://localhost:3000/install-local.sh | bash
 > ```
 
 ### Step 2: Connect your agents
@@ -160,6 +159,54 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 - **Default:** SQLite (zero config, stored at `./data/agentpulse.db`)
 - **Production:** Set `DATABASE_URL=postgresql://user:pass@host:5432/agentpulse`
 
+## Local install without Docker
+
+If you want a normal local service using Bun + SQLite instead of Docker, use the installer:
+
+```bash
+curl -fsSL http://localhost:3000/install-local.sh | bash
+```
+
+What it does:
+
+- installs Bun if needed
+- clones AgentPulse to `~/.agentpulse/app`
+- builds the app
+- stores SQLite data in `~/.agentpulse/data`
+- starts AgentPulse as a local service
+  - macOS: `launchd`
+  - Linux: `systemd --user` when available
+- prints the follow-up hook setup command
+
+After it finishes:
+
+```bash
+curl -sSL http://localhost:3000/setup.sh | bash
+```
+
+Useful installer options:
+
+```bash
+curl -fsSL http://localhost:3000/install-local.sh | bash -s -- \
+  --port 4000 \
+  --public-url http://localhost:4000 \
+  --data-dir "$HOME/.agentpulse/data"
+```
+
+If you do want to install directly from GitHub instead of an existing AgentPulse host:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash
+```
+
+Manual start after install:
+
+```bash
+cd ~/.agentpulse/app
+export $(cat .env.local | xargs)
+bun run start
+```
+
 ### All environment variables
 
 | Variable | Default | Description |
@@ -168,6 +215,8 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 | `HOST` | `0.0.0.0` | Bind address |
 | `DATABASE_URL` | (empty = SQLite) | PostgreSQL connection string |
 | `PUBLIC_URL` | `http://localhost:3000` | Public URL (used in setup script) |
+| `DATA_DIR` | `./data` | Base directory for local SQLite storage |
+| `SQLITE_PATH` | `${DATA_DIR}/agentpulse.db` | Override the SQLite database file path |
 | `DISABLE_AUTH` | `false` | Skip all authentication |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `AGENTPULSE_TELEMETRY` | `on` | Set `off` to disable anonymous telemetry |

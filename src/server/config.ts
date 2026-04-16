@@ -7,12 +7,15 @@ export const config = {
 	initialApiKey: process.env.AGENTPULSE_INITIAL_API_KEY || "",
 	disableAuth: process.env.DISABLE_AUTH === "true",
 	isProduction: process.env.NODE_ENV === "production",
+	dataDir: process.env.DATA_DIR || "./data",
+	sqlitePathOverride: process.env.SQLITE_PATH || "",
 
 	get useSqlite(): boolean {
 		return !this.databaseUrl || !this.databaseUrl.startsWith("postgres");
 	},
 
 	get sqlitePath(): string {
-		return "./data/agentpulse.db";
+		if (this.sqlitePathOverride) return this.sqlitePathOverride;
+		return `${this.dataDir}/agentpulse.db`;
 	},
 };
