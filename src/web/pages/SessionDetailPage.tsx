@@ -133,11 +133,8 @@ export function SessionDetailPage() {
 
 	const displayName = session.displayName || session.sessionId.slice(0, 8);
 
-	// Only show user prompts and key system events
-	const showEvents = new Set(["UserPromptSubmit", "SessionStart", "SessionEnd", "TaskCreated", "TaskCompleted", "SubagentStart", "SubagentStop"]);
-	const allEvents = [...events]
-		.reverse()
-		.filter((e) => showEvents.has(e.eventType));
+	// Server already filters to UserPromptSubmit only -- just reverse to chronological
+	const allEvents = [...events].reverse();
 
 	return (
 		<div className="flex flex-col h-full">
@@ -179,46 +176,8 @@ export function SessionDetailPage() {
 						) : (
 							allEvents.map((event) => {
 								const prompt = extractPrompt(event);
-
-								if (prompt) {
-									return <PromptBubble key={event.id} text={prompt} time={event.createdAt} />;
-								}
-
-								if (event.eventType === "SessionStart" || event.eventType === "SessionEnd") {
-									return (
-										<div key={event.id} className="flex justify-center">
-											<span className="text-[10px] text-muted-foreground/50 bg-muted/30 px-3 py-1 rounded-full">
-												{event.eventType} -- {formatTimeAgo(event.createdAt)}
-											</span>
-										</div>
-									);
-								}
-
-								if (event.eventType === "TaskCreated" || event.eventType === "TaskCompleted") {
-									const raw = event.rawPayload as Record<string, unknown>;
-									const subject = typeof raw?.task_subject === "string" ? raw.task_subject : "";
-									return (
-										<div key={event.id} className="flex justify-center">
-											<span className="text-[10px] text-muted-foreground/50 bg-muted/30 px-3 py-1 rounded-full">
-												{event.eventType === "TaskCreated" ? "Task:" : "Done:"} {subject || event.eventType}
-											</span>
-										</div>
-									);
-								}
-
-								if (event.eventType === "SubagentStart" || event.eventType === "SubagentStop") {
-									const raw = event.rawPayload as Record<string, unknown>;
-									return (
-										<div key={event.id} className="flex justify-center">
-											<span className="text-[10px] text-muted-foreground/50 bg-indigo-500/10 text-indigo-400 px-3 py-1 rounded-full">
-												{event.eventType === "SubagentStart" ? "Spawned" : "Finished"}{" "}
-												{typeof raw?.agent_type === "string" ? raw.agent_type : "agent"}
-											</span>
-										</div>
-									);
-								}
-
-								return null;
+								if (!prompt) return null;
+								return <PromptBubble key={event.id} text={prompt} time={event.createdAt} />;
 							})
 						)}
 						<div ref={timelineEndRef} />
