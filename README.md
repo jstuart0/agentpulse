@@ -90,6 +90,8 @@ curl -sSL http://localhost:3000/setup.sh | bash
 
 Run AgentPulse on a server you can access from anywhere -- your phone, tablet, another machine. Check on long-running agent tasks while you're away from your desk. See if that 30-minute refactor finished, whether an agent hit an error, or what all your sessions are working on -- without being at your computer.
 
+Multiple machines can report to the same dashboard. Run the relay setup on your MacBook, your Linux build server, a cloud VM -- every agent session across all your machines shows up in one place. One dashboard to rule them all.
+
 One command sets up everything, no repo clone needed:
 
 ```bash
