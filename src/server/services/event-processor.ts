@@ -64,6 +64,15 @@ export async function processHookEvent(
 	if (eventType === "SessionEnd") {
 		updates.status = "completed";
 		updates.endedAt = now;
+		updates.isWorking = false;
+	}
+
+	// Track working state: agent is working between prompt/tool start and Stop
+	if (eventType === "UserPromptSubmit" || eventType === "PreToolUse") {
+		updates.isWorking = true;
+	}
+	if (eventType === "Stop") {
+		updates.isWorking = false;
 	}
 
 	// Increment tool use count for tool events

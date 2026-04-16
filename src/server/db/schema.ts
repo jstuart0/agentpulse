@@ -23,6 +23,7 @@ export const sessions = sqliteTable("sessions", {
 	currentTask: text("current_task"),
 	planSummary: text("plan_summary", { mode: "json" }).$type<string[]>(),
 	totalToolUses: integer("total_tool_uses").notNull().default(0),
+	isWorking: integer("is_working", { mode: "boolean" }).notNull().default(false),
 	notes: text("notes").default(""),
 	metadata: text("metadata", { mode: "json" })
 		.$type<Record<string, unknown>>()

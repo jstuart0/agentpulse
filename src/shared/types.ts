@@ -102,6 +102,7 @@ export interface Session {
 	currentTask: string | null;
 	planSummary: string[] | null;
 	totalToolUses: number;
+	isWorking: boolean;
 	notes: string | null;
 	metadata: Record<string, unknown>;
 }

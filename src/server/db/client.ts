@@ -98,6 +98,7 @@ export function initializeDatabase() {
 	const migrations = [
 		"ALTER TABLE sessions ADD COLUMN display_name TEXT",
 		"ALTER TABLE sessions ADD COLUMN notes TEXT DEFAULT ''",
+		"ALTER TABLE sessions ADD COLUMN is_working INTEGER NOT NULL DEFAULT 0",
 	];
 
 	for (const migration of migrations) {

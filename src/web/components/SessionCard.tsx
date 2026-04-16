@@ -39,9 +39,17 @@ export function SessionCard({ session }: SessionCardProps) {
 		>
 			{/* Session name badge + actions */}
 			<div className="flex items-center justify-between gap-2 mb-2">
-				<span className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5">
-					{name}
-				</span>
+				<div className="flex items-center gap-2">
+					<span className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5">
+						{name}
+					</span>
+					{session.isWorking && (
+						<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5">
+							<span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" />
+							working
+						</span>
+					)}
+				</div>
 				<div className="flex items-center gap-1">
 					{/* Archive/Delete buttons - show on hover for inactive sessions */}
 					{isInactive && (
