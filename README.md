@@ -1,5 +1,7 @@
 # AgentPulse
 
+![AgentPulse](src/web/assets/agentpulse-social.jpg)
+
 **See what all your AI coding agents are doing -- in one place, in real time.**
 
 If you run multiple Claude Code or Codex CLI sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.

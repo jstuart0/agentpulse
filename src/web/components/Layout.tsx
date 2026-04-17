@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "../lib/utils.js";
+import brandIcon from "../assets/agentpulse-icon.svg";
 
 const navItems = [
 	{ to: "/", label: "Dashboard", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
@@ -17,10 +18,8 @@ export function Layout() {
 			{/* Mobile top bar */}
 			<div className="md:hidden fixed top-0 left-0 right-0 z-20 bg-card border-b border-border px-4 py-3 flex items-center justify-between">
 				<div className="flex items-center gap-2">
-					<div className="w-6 h-6 rounded bg-primary/20 flex items-center justify-center">
-						<svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-						</svg>
+					<div className="w-6 h-6 rounded-md bg-primary/10 ring-1 ring-primary/20 flex items-center justify-center overflow-hidden">
+						<img src={brandIcon} alt="" className="w-4 h-4" />
 					</div>
 					<span className="text-sm font-bold text-foreground">AgentPulse</span>
 				</div>
@@ -65,10 +64,8 @@ export function Layout() {
 			<aside className="hidden md:flex w-56 flex-shrink-0 border-r border-border bg-card flex-col">
 				<div className="px-4 py-5 border-b border-border">
 					<div className="flex items-center gap-2">
-						<div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
-							<svg className="w-5 h-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-							</svg>
+						<div className="w-8 h-8 rounded-lg bg-primary/10 ring-1 ring-primary/20 flex items-center justify-center overflow-hidden">
+							<img src={brandIcon} alt="" className="w-5 h-5" />
 						</div>
 						<div>
 							<span className="text-sm font-bold text-foreground">AgentPulse</span>

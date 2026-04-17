@@ -1,0 +1,14 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+<stop offset="0%" stop-color="#2AA8FF"/>
+<stop offset="100%" stop-color="#35FF8D"/>
+</linearGradient>
+</defs>
+
+<polyline points="120,256 200,256 230,210 256,320 290,230 320,256 400,256"
+stroke="url(#g)" stroke-width="10" fill="none"/>
+
+<circle cx="400" cy="256" r="8" fill="#35FF8D"/>
+
+</svg>
