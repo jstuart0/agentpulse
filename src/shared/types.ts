@@ -137,6 +137,21 @@ export interface SessionEvent {
 	createdAt: string;
 }
 
+export interface LiveSessionEvent {
+	id?: number;
+	sessionId: string;
+	eventType: string;
+	category: EventCategory | null;
+	content: string | null;
+	isNoise: boolean;
+	providerEventType: string | null;
+	toolName: string | null;
+	toolInput: Record<string, unknown> | null;
+	toolResponse: string | null;
+	rawPayload: Record<string, unknown>;
+	createdAt: string;
+}
+
 // API key info (never includes the actual key)
 export interface ApiKeyInfo {
 	id: string;

@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { SessionGrid } from "../components/SessionGrid.js";
 import { useSessions } from "../hooks/useSessions.js";
-import { useWebSocket } from "../hooks/useWebSocket.js";
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
 	return (
@@ -15,7 +14,6 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
 
 export function DashboardPage() {
 	const { sessions, stats, isLoading } = useSessions();
-	useWebSocket();
 
 	const [filter, setFilter] = useState<string>("active");
 	const [search, setSearch] = useState("");

@@ -6,6 +6,7 @@ import { formatDuration, formatTimeAgo } from "../lib/utils.js";
 import { api } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
 import type { EventCategory, Session, SessionEvent } from "../../shared/types.js";
+import { useEventStore } from "../stores/event-store.js";
 
 function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNotes: string }) {
 	const [notes, setNotes] = useState(initialNotes);
@@ -272,6 +273,30 @@ function getVisibleEvents(
 	});
 }
 
+function eventKey(event: Pick<SessionEvent, "id" | "eventType" | "category" | "content" | "createdAt" | "providerEventType" | "rawPayload">) {
+	const transcriptId =
+		(typeof event.rawPayload?.transcript_uuid === "string" && event.rawPayload.transcript_uuid) ||
+		(typeof event.rawPayload?.transcript_timestamp === "string" && event.rawPayload.transcript_timestamp) ||
+		"";
+	return [
+		event.id || 0,
+		event.eventType,
+		event.category || "",
+		event.content || "",
+		event.createdAt,
+		event.providerEventType || "",
+		transcriptId,
+	].join("::");
+}
+
+function mergeSessionEvents(baseEvents: SessionEvent[], liveEvents: SessionEvent[]) {
+	const merged = new Map<string, SessionEvent>();
+	for (const event of [...baseEvents, ...liveEvents]) {
+		merged.set(eventKey(event), event);
+	}
+	return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathChanged?: (path: string) => void }) {
 	const [content, setContent] = useState("");
 	const [filePath, setFilePath] = useState("");
@@ -501,6 +526,8 @@ export function SessionDetailPage() {
 	const [showNoisyTools, setShowNoisyTools] = useState(false);
 	const [showSystem, setShowSystem] = useState(true);
 	const timelineEndRef = useRef<HTMLDivElement>(null);
+	const liveEventsMap = useEventStore((s) => s.liveEvents);
+	const clearLiveEvents = useEventStore((s) => s.clearSession);
 
 	// Removed live event merging -- just use DB events with fast polling
 
@@ -518,9 +545,12 @@ export function SessionDetailPage() {
 			}
 		}
 		fetchData();
-		const interval = setInterval(fetchData, 3_000); // Fast refresh for near-realtime
-		return () => clearInterval(interval);
-	}, [sessionId]);
+		const interval = setInterval(fetchData, 10_000);
+		return () => {
+			clearInterval(interval);
+			clearLiveEvents(sessionId);
+		};
+	}, [sessionId, clearLiveEvents]);
 
 	useEffect(() => {
 		timelineEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -550,7 +580,8 @@ export function SessionDetailPage() {
 	}
 
 	const displayName = session.displayName || session.sessionId.slice(0, 8);
-	const allEvents = [...events].reverse();
+	const liveEvents = ((sessionId && liveEventsMap.get(sessionId)) || []) as SessionEvent[];
+	const allEvents = mergeSessionEvents([...events].reverse(), liveEvents);
 	const visibleEvents = getVisibleEvents(allEvents, mode, showTools || mode === "debug", showNoisyTools, showSystem);
 
 	return (

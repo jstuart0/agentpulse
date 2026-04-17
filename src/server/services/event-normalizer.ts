@@ -6,7 +6,7 @@ import type {
 	SemanticStatus,
 } from "../../shared/types.js";
 
-interface NormalizedEvent {
+export interface NormalizedEvent {
 	eventType: string;
 	category: EventCategory;
 	content: string | null;
@@ -205,6 +205,24 @@ export function normalizeStatusEvents(update: SemanticStatusUpdate): NormalizedE
 	}
 
 	return normalized;
+}
+
+export function createAssistantTranscriptEvent(
+	content: string,
+	rawPayload: Record<string, unknown>,
+	providerEventType: string,
+): NormalizedEvent {
+	return {
+		eventType: "TranscriptAssistantMessage",
+		category: "assistant_message",
+		content,
+		isNoise: false,
+		providerEventType,
+		toolName: null,
+		toolInput: null,
+		toolResponse: null,
+		rawPayload,
+	};
 }
 
 function formatSemanticStatus(status: SemanticStatus): string {

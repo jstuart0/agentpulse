@@ -3,12 +3,31 @@ import { sessions, events } from "../db/schema.js";
 import { eq, sql } from "drizzle-orm";
 import type { AgentType, HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
 import { generateSessionName } from "./name-generator.js";
-import { normalizeHookEvent, normalizeStatusEvents } from "./event-normalizer.js";
+import { normalizeHookEvent, normalizeStatusEvents, type NormalizedEvent } from "./event-normalizer.js";
 
-type NormalizedInsertEvent = ReturnType<typeof normalizeHookEvent>[number];
+function buildDedupKey(event: {
+	eventType: string;
+	category: string | null;
+	content: string | null;
+	providerEventType: string | null;
+	rawPayload?: Record<string, unknown>;
+}) {
+	const transcriptId = typeof event.rawPayload?.transcript_uuid === "string"
+		? event.rawPayload.transcript_uuid
+		: typeof event.rawPayload?.transcript_timestamp === "string"
+			? event.rawPayload.transcript_timestamp
+			: "";
+	return [
+		event.eventType || "",
+		event.category || "",
+		event.content || "",
+		event.providerEventType || "",
+		transcriptId,
+	].join("::");
+}
 
-async function insertNormalizedEvents(sessionId: string, normalizedEvents: NormalizedInsertEvent[]) {
-	if (normalizedEvents.length === 0) return;
+export async function insertNormalizedEvents(sessionId: string, normalizedEvents: NormalizedEvent[]) {
+	if (normalizedEvents.length === 0) return [];
 
 	const recentEvents = await db
 		.select({
@@ -23,29 +42,17 @@ async function insertNormalizedEvents(sessionId: string, normalizedEvents: Norma
 		.limit(10);
 
 	const seen = new Set(
-		recentEvents.map((event) =>
-			[
-				event.eventType || "",
-				event.category || "",
-				event.content || "",
-				event.providerEventType || "",
-			].join("::"),
-		),
+		recentEvents.map((event) => buildDedupKey({ ...event })),
 	);
 
 	const deduped = normalizedEvents.filter((event) => {
-		const key = [
-			event.eventType || "",
-			event.category || "",
-			event.content || "",
-			event.providerEventType || "",
-		].join("::");
+		const key = buildDedupKey(event);
 		if (seen.has(key)) return false;
 		seen.add(key);
 		return true;
 	});
 
-	if (deduped.length === 0) return;
+	if (deduped.length === 0) return [];
 
 	await db.insert(events).values(
 		deduped.map((event) => ({
@@ -61,6 +68,21 @@ async function insertNormalizedEvents(sessionId: string, normalizedEvents: Norma
 			rawPayload: event.rawPayload,
 		})),
 	);
+
+	return deduped.map((event) => ({
+		id: 0,
+		sessionId,
+		eventType: event.eventType,
+		category: event.category,
+		content: event.content,
+		isNoise: event.isNoise,
+		providerEventType: event.providerEventType,
+		toolName: event.toolName,
+		toolInput: event.toolInput,
+		toolResponse: event.toolResponse,
+		rawPayload: event.rawPayload,
+		createdAt: new Date().toISOString(),
+	}));
 }
 
 // Detect agent type from headers or payload

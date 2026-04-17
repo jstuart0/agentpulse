@@ -1,18 +1,10 @@
 import { create } from "zustand";
-
-export interface LiveEvent {
-	sessionId: string;
-	eventType: string;
-	toolName: string | null;
-	prompt: string | null;
-	toolInput: Record<string, unknown> | null;
-	createdAt: string;
-}
+import type { LiveSessionEvent } from "../../shared/types.js";
 
 interface EventStore {
 	// Live events pushed via WebSocket, keyed by sessionId
-	liveEvents: Map<string, LiveEvent[]>;
-	addLiveEvent: (event: LiveEvent) => void;
+	liveEvents: Map<string, LiveSessionEvent[]>;
+	addLiveEvent: (event: LiveSessionEvent) => void;
 	clearSession: (sessionId: string) => void;
 }
 

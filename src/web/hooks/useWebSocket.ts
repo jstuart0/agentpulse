@@ -73,14 +73,7 @@ export function useWebSocket() {
 						updateSession(msg.data.session);
 						break;
 					case "new_event":
-						addLiveEvent({
-							sessionId: msg.data.sessionId,
-							eventType: msg.data.eventType,
-							toolName: msg.data.toolName || null,
-							prompt: msg.data.prompt || null,
-							toolInput: msg.data.toolInput || null,
-							createdAt: msg.data.createdAt || new Date().toISOString(),
-						});
+						addLiveEvent(msg.data);
 						break;
 					case "heartbeat":
 						break;

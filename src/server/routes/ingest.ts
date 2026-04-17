@@ -3,6 +3,7 @@ import { requireApiKey } from "../auth/middleware.js";
 import { processHookEvent, detectAgentType, processStatusUpdate } from "../services/event-processor.js";
 import { broadcast } from "../ws/handler.js";
 import { getSession } from "../services/session-tracker.js";
+import { normalizeHookEvent } from "../services/event-normalizer.js";
 import type { HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
 
 const ingest = new Hono();
@@ -28,14 +29,22 @@ ingest.post("/hooks", requireApiKey(), async (c) => {
 				session,
 			});
 
-			broadcast("new_event", {
-				sessionId,
-				eventType: payload.hook_event_name,
-				toolName: payload.tool_name,
-				prompt: payload.prompt || null,
-				toolInput: payload.tool_input || null,
-				createdAt: new Date().toISOString(),
-			});
+			for (const event of normalizeHookEvent(payload, agentType)) {
+				broadcast("new_event", {
+					id: 0,
+					sessionId,
+					eventType: event.eventType,
+					category: event.category,
+					content: event.content,
+					isNoise: event.isNoise,
+					providerEventType: event.providerEventType,
+					toolName: event.toolName,
+					toolInput: event.toolInput,
+					toolResponse: event.toolResponse,
+					rawPayload: event.rawPayload,
+					createdAt: new Date().toISOString(),
+				});
+			}
 		}
 
 		return c.json({ ok: true });
