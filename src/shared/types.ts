@@ -85,6 +85,15 @@ export interface SemanticStatusUpdate {
 	plan?: string[];
 }
 
+export type EventCategory =
+	| "prompt"
+	| "assistant_message"
+	| "progress_update"
+	| "plan_update"
+	| "tool_event"
+	| "status_update"
+	| "system_event";
+
 // Session as returned by the API
 export interface Session {
 	id: string;
@@ -117,6 +126,10 @@ export interface SessionEvent {
 	id: number;
 	sessionId: string;
 	eventType: string;
+	category: EventCategory | null;
+	content: string | null;
+	isNoise: boolean;
+	providerEventType: string | null;
 	toolName: string | null;
 	toolInput: Record<string, unknown> | null;
 	toolResponse: string | null;

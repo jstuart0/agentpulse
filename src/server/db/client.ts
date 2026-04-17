@@ -63,6 +63,10 @@ export function initializeDatabase() {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL REFERENCES sessions(session_id),
 			event_type TEXT NOT NULL,
+			category TEXT,
+			content TEXT,
+			is_noise INTEGER NOT NULL DEFAULT 0,
+			provider_event_type TEXT,
 			tool_name TEXT,
 			tool_input TEXT,
 			tool_response TEXT,
@@ -105,6 +109,10 @@ export function initializeDatabase() {
 		"ALTER TABLE sessions ADD COLUMN claude_md_path TEXT",
 		"ALTER TABLE sessions ADD COLUMN claude_md_checksum TEXT",
 		"ALTER TABLE sessions ADD COLUMN claude_md_updated_at TEXT",
+		"ALTER TABLE events ADD COLUMN category TEXT",
+		"ALTER TABLE events ADD COLUMN content TEXT",
+		"ALTER TABLE events ADD COLUMN is_noise INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE events ADD COLUMN provider_event_type TEXT",
 	];
 
 	for (const migration of migrations) {

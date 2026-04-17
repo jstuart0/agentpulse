@@ -3,6 +3,65 @@ import { sessions, events } from "../db/schema.js";
 import { eq, sql } from "drizzle-orm";
 import type { AgentType, HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
 import { generateSessionName } from "./name-generator.js";
+import { normalizeHookEvent, normalizeStatusEvents } from "./event-normalizer.js";
+
+type NormalizedInsertEvent = ReturnType<typeof normalizeHookEvent>[number];
+
+async function insertNormalizedEvents(sessionId: string, normalizedEvents: NormalizedInsertEvent[]) {
+	if (normalizedEvents.length === 0) return;
+
+	const recentEvents = await db
+		.select({
+			eventType: events.eventType,
+			category: events.category,
+			content: events.content,
+			providerEventType: events.providerEventType,
+		})
+		.from(events)
+		.where(eq(events.sessionId, sessionId))
+		.orderBy(sql`${events.id} DESC`)
+		.limit(10);
+
+	const seen = new Set(
+		recentEvents.map((event) =>
+			[
+				event.eventType || "",
+				event.category || "",
+				event.content || "",
+				event.providerEventType || "",
+			].join("::"),
+		),
+	);
+
+	const deduped = normalizedEvents.filter((event) => {
+		const key = [
+			event.eventType || "",
+			event.category || "",
+			event.content || "",
+			event.providerEventType || "",
+		].join("::");
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+
+	if (deduped.length === 0) return;
+
+	await db.insert(events).values(
+		deduped.map((event) => ({
+			sessionId,
+			eventType: event.eventType,
+			category: event.category,
+			content: event.content,
+			isNoise: event.isNoise,
+			providerEventType: event.providerEventType,
+			toolName: event.toolName,
+			toolInput: event.toolInput,
+			toolResponse: event.toolResponse,
+			rawPayload: event.rawPayload,
+		})),
+	);
+}
 
 // Detect agent type from headers or payload
 export function detectAgentType(
@@ -109,21 +168,9 @@ export async function processHookEvent(
 
 	await db.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
 
-	// Store the event
-	const toolResponse = payload.tool_response
-		? typeof payload.tool_response === "string"
-			? payload.tool_response.slice(0, 2000) // Truncate large responses
-			: JSON.stringify(payload.tool_response).slice(0, 2000)
-		: null;
-
-	await db.insert(events).values({
-		sessionId,
-		eventType,
-		toolName: payload.tool_name || null,
-		toolInput: payload.tool_input || null,
-		toolResponse,
-		rawPayload: payload as unknown as Record<string, unknown>,
-	});
+	// Store normalized timeline events
+	const normalizedEvents = normalizeHookEvent(payload, agentType);
+	await insertNormalizedEvents(sessionId, normalizedEvents);
 
 	return { sessionId, isNew };
 }
@@ -150,6 +197,9 @@ export async function processStatusUpdate(update: SemanticStatusUpdate): Promise
 	if (update.plan) updates.planSummary = update.plan;
 
 	await db.update(sessions).set(updates).where(eq(sessions.sessionId, update.session_id));
+
+	const normalizedEvents = normalizeStatusEvents(update);
+	await insertNormalizedEvents(update.session_id, normalizedEvents);
 
 	return true;
 }

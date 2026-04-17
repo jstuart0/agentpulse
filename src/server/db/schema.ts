@@ -42,6 +42,10 @@ export const events = sqliteTable("events", {
 		.notNull()
 		.references(() => sessions.sessionId),
 	eventType: text("event_type").notNull(),
+	category: text("category"),
+	content: text("content"),
+	isNoise: integer("is_noise", { mode: "boolean" }).notNull().default(false),
+	providerEventType: text("provider_event_type"),
 	toolName: text("tool_name"),
 	toolInput: text("tool_input", { mode: "json" }).$type<Record<string, unknown>>(),
 	toolResponse: text("tool_response"),

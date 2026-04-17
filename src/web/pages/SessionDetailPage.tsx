@@ -4,7 +4,8 @@ import { StatusBadge } from "../components/StatusBadge.js";
 import { AgentTypeBadge } from "../components/AgentTypeBadge.js";
 import { formatDuration, formatTimeAgo } from "../lib/utils.js";
 import { api } from "../lib/api.js";
-import type { Session, SessionEvent } from "../../shared/types.js";
+import { cn } from "../lib/utils.js";
+import type { EventCategory, Session, SessionEvent } from "../../shared/types.js";
 
 function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNotes: string }) {
 	const [notes, setNotes] = useState(initialNotes);
@@ -53,13 +54,7 @@ function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNot
 	);
 }
 
-function extractPrompt(event: SessionEvent): string | null {
-	if (event.eventType === "UserPromptSubmit") {
-		const raw = event.rawPayload as Record<string, unknown>;
-		if (typeof raw?.prompt === "string") return raw.prompt;
-	}
-	return null;
-}
+type TimelineMode = "prompts" | "conversation" | "progress" | "debug";
 
 function PromptBubble({ text, time }: { text: string; time: string }) {
 	return (
@@ -74,6 +69,207 @@ function PromptBubble({ text, time }: { text: string; time: string }) {
 			</div>
 		</div>
 	);
+}
+
+function AssistantBubble({ text, time }: { text: string; time: string }) {
+	return (
+		<div className="flex justify-start">
+			<div className="max-w-[80%]">
+				<div className="rounded-2xl rounded-bl-sm bg-sky-500/10 border border-sky-500/20 px-4 py-3">
+					<p className="text-sm text-foreground whitespace-pre-wrap">{text}</p>
+				</div>
+				<p className="text-[10px] text-muted-foreground mt-1">
+					{formatTimeAgo(time)}
+				</p>
+			</div>
+		</div>
+	);
+}
+
+function TimelineCard({
+	text,
+	time,
+	label,
+	tone = "default",
+}: {
+	text: string;
+	time: string;
+	label: string;
+	tone?: "default" | "emerald" | "amber" | "muted";
+}) {
+	const toneClasses = {
+		default: "border-border bg-card/60",
+		emerald: "border-emerald-500/20 bg-emerald-500/10",
+		amber: "border-amber-500/20 bg-amber-500/10",
+		muted: "border-border/70 bg-muted/30",
+	};
+
+	return (
+		<div className={cn("rounded-xl border px-3 py-2.5", toneClasses[tone])}>
+			<div className="flex items-center justify-between gap-3">
+				<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
+				<span className="text-[10px] text-muted-foreground">{formatTimeAgo(time)}</span>
+			</div>
+			<p className="mt-1.5 text-sm text-foreground whitespace-pre-wrap">{text}</p>
+		</div>
+	);
+}
+
+function ModeButton({
+	active,
+	label,
+	onClick,
+}: {
+	active: boolean;
+	label: string;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			onClick={onClick}
+			className={cn(
+				"rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+				active
+					? "bg-primary text-primary-foreground"
+					: "text-muted-foreground hover:text-foreground hover:bg-muted",
+			)}
+		>
+			{label}
+		</button>
+	);
+}
+
+function FilterToggle({
+	active,
+	label,
+	onClick,
+	disabled = false,
+}: {
+	active: boolean;
+	label: string;
+	onClick: () => void;
+	disabled?: boolean;
+}) {
+	return (
+		<button
+			onClick={onClick}
+			disabled={disabled}
+			className={cn(
+				"rounded-full border px-2.5 py-1 text-[10px] font-medium transition-colors",
+				active
+					? "border-primary/30 bg-primary/10 text-primary"
+					: "border-border text-muted-foreground hover:text-foreground hover:bg-muted",
+				disabled && "cursor-not-allowed opacity-50",
+			)}
+		>
+			{label}
+		</button>
+	);
+}
+
+function buildExportMarkdown(displayName: string, session: Session, allEvents: SessionEvent[]) {
+	const transcript = allEvents
+		.map((event) => {
+			if (event.category === "prompt" && event.content) {
+				return `## Prompt\n\n${event.content}`;
+			}
+			if (event.category === "assistant_message" && event.content) {
+				return `## Response\n\n${event.content}`;
+			}
+			if (
+				(event.category === "progress_update" ||
+					event.category === "plan_update" ||
+					event.category === "status_update") &&
+				event.content
+			) {
+				return `## Progress\n\n${event.content}`;
+			}
+			return null;
+		})
+		.filter(Boolean)
+		.join("\n\n");
+
+	return `# ${displayName}
+
+**Project:** ${session.cwd}
+**Agent:** ${session.agentType}
+**Started:** ${session.startedAt}
+**Tools:** ${session.totalToolUses}
+${session.gitBranch ? `**Branch:** ${session.gitBranch}\n` : ""}${session.notes ? `## Notes
+
+${session.notes}
+
+` : ""}${transcript ? `## Timeline
+
+${transcript}
+` : ""}`;
+}
+
+function eventLabel(category: EventCategory | null): string {
+	switch (category) {
+		case "assistant_message":
+			return "Response";
+		case "progress_update":
+			return "Progress";
+		case "plan_update":
+			return "Plan";
+		case "status_update":
+			return "Status";
+		case "tool_event":
+			return "Tool";
+		case "system_event":
+			return "System";
+		default:
+			return "Event";
+	}
+}
+
+function getBaseCategories(mode: TimelineMode): Set<EventCategory> {
+	switch (mode) {
+		case "prompts":
+			return new Set(["prompt"]);
+		case "conversation":
+			return new Set(["prompt", "assistant_message"]);
+		case "progress":
+			return new Set([
+				"prompt",
+				"assistant_message",
+				"progress_update",
+				"plan_update",
+				"status_update",
+				"system_event",
+			]);
+		case "debug":
+			return new Set([
+				"prompt",
+				"assistant_message",
+				"progress_update",
+				"plan_update",
+				"status_update",
+				"tool_event",
+				"system_event",
+			]);
+	}
+}
+
+function getVisibleEvents(
+	allEvents: SessionEvent[],
+	mode: TimelineMode,
+	showTools: boolean,
+	showNoisyTools: boolean,
+	showSystem: boolean,
+) {
+	const categories = getBaseCategories(mode);
+	if (showTools) categories.add("tool_event");
+	if (!showSystem) categories.delete("system_event");
+
+	return allEvents.filter((event) => {
+		if (!event.category || !categories.has(event.category)) return false;
+		if (event.category === "tool_event" && !showTools && mode !== "debug") return false;
+		if (event.category === "tool_event" && !showNoisyTools && event.isNoise) return false;
+		if (!event.content && event.category !== "tool_event") return false;
+		return true;
+	});
 }
 
 function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathChanged?: (path: string) => void }) {
@@ -300,6 +496,10 @@ export function SessionDetailPage() {
 	const [session, setSession] = useState<Session | null>(null);
 	const [events, setEvents] = useState<SessionEvent[]>([]);
 	const [loading, setLoading] = useState(true);
+	const [mode, setMode] = useState<TimelineMode>("progress");
+	const [showTools, setShowTools] = useState(false);
+	const [showNoisyTools, setShowNoisyTools] = useState(false);
+	const [showSystem, setShowSystem] = useState(true);
 	const timelineEndRef = useRef<HTMLDivElement>(null);
 
 	// Removed live event merging -- just use DB events with fast polling
@@ -350,9 +550,8 @@ export function SessionDetailPage() {
 	}
 
 	const displayName = session.displayName || session.sessionId.slice(0, 8);
-
-	// Server already filters to UserPromptSubmit only -- just reverse to chronological
 	const allEvents = [...events].reverse();
+	const visibleEvents = getVisibleEvents(allEvents, mode, showTools || mode === "debug", showNoisyTools, showSystem);
 
 	return (
 		<div className="flex flex-col h-full">
@@ -392,14 +591,7 @@ export function SessionDetailPage() {
 					<button
 						onClick={(e) => {
 							e.stopPropagation();
-							const prompts = allEvents
-								.map((ev) => {
-									const raw = ev.rawPayload as Record<string, unknown>;
-									return typeof raw?.prompt === "string" ? raw.prompt : null;
-								})
-								.filter(Boolean);
-							const md = `# ${displayName}\n\n**Project:** ${session.cwd}\n**Agent:** ${session.agentType}\n**Started:** ${session.startedAt}\n**Tools:** ${session.totalToolUses}\n${session.gitBranch ? `**Branch:** ${session.gitBranch}\n` : ""}\n${session.notes ? `## Notes\n\n${session.notes}\n\n` : ""}## Prompts\n\n${prompts.map((p, i) => `${i + 1}. ${p}`).join("\n")}\n`;
-							navigator.clipboard.writeText(md);
+							navigator.clipboard.writeText(buildExportMarkdown(displayName, session, allEvents));
 						}}
 						title="Export as Markdown"
 						className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
@@ -422,16 +614,68 @@ export function SessionDetailPage() {
 			<div className="flex-1 flex min-h-0">
 				{/* Timeline (left) */}
 				<div className="flex-1 overflow-auto p-6">
+					<div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
+						<div className="flex flex-wrap items-center gap-2">
+							<ModeButton active={mode === "prompts"} label="Prompts" onClick={() => setMode("prompts")} />
+							<ModeButton active={mode === "conversation"} label="Conversation" onClick={() => setMode("conversation")} />
+							<ModeButton active={mode === "progress"} label="Progress" onClick={() => setMode("progress")} />
+							<ModeButton active={mode === "debug"} label="Debug" onClick={() => setMode("debug")} />
+						</div>
+						<div className="flex flex-wrap items-center gap-2">
+							<FilterToggle
+								active={showSystem}
+								label="System"
+								onClick={() => setShowSystem((value) => !value)}
+								disabled={mode === "prompts" || mode === "conversation"}
+							/>
+							<FilterToggle
+								active={showTools || mode === "debug"}
+								label="Tools"
+								onClick={() => setShowTools((value) => !value)}
+							/>
+							<FilterToggle
+								active={showNoisyTools}
+								label="Noisy"
+								onClick={() => setShowNoisyTools((value) => !value)}
+								disabled={!(showTools || mode === "debug")}
+							/>
+						</div>
+					</div>
 					<div className="space-y-3">
-						{allEvents.length === 0 ? (
+						{visibleEvents.length === 0 ? (
 							<p className="text-sm text-muted-foreground text-center py-8">
-								Waiting for events...
+								No events match this view yet.
 							</p>
 						) : (
-							allEvents.map((event) => {
-								const prompt = extractPrompt(event);
-								if (!prompt) return null;
-								return <PromptBubble key={event.id} text={prompt} time={event.createdAt} />;
+							visibleEvents.map((event) => {
+								if (event.category === "prompt" && event.content) {
+									return <PromptBubble key={event.id} text={event.content} time={event.createdAt} />;
+								}
+								if (event.category === "assistant_message" && event.content) {
+									return <AssistantBubble key={event.id} text={event.content} time={event.createdAt} />;
+								}
+								if (event.category === "tool_event") {
+									const detail = event.content || event.toolName || event.eventType;
+									return (
+										<TimelineCard
+											key={event.id}
+											label={eventLabel(event.category)}
+											text={detail}
+											time={event.createdAt}
+											tone={event.isNoise ? "muted" : "amber"}
+										/>
+									);
+								}
+								if (!event.content) return null;
+								return (
+									<TimelineCard
+										key={event.id}
+										label={eventLabel(event.category)}
+										text={event.content}
+										time={event.createdAt}
+										tone={event.category === "status_update" ? "emerald" : "default"}
+									/>
+								);
 							})
 						)}
 						<div ref={timelineEndRef} />

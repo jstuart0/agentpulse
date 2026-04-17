@@ -2,11 +2,8 @@ import { Hono } from "hono";
 import { getSessions, getSession, getStats } from "../services/session-tracker.js";
 import { db } from "../db/client.js";
 import { events, sessions } from "../db/schema.js";
-import { eq, desc, inArray, sql, like } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
-
-// Only show user prompts in the timeline
-const TIMELINE_EVENT_TYPES = ["UserPromptSubmit"];
 
 const sessionsRouter = new Hono();
 
@@ -36,7 +33,7 @@ sessionsRouter.get("/sessions/:sessionId", async (c) => {
 		return c.json({ error: "Session not found" }, 404);
 	}
 
-	// Get timeline events (only prompts + system events, not tool calls)
+	// Get timeline events for the detail page; the UI handles mode filtering.
 	const sessionEvents = await db
 		.select()
 		.from(events)
@@ -46,12 +43,7 @@ sessionsRouter.get("/sessions/:sessionId", async (c) => {
 		.orderBy(desc(events.createdAt))
 		.limit(500);
 
-	// Filter to timeline-worthy events server-side
-	const timelineEvents = sessionEvents.filter((e) =>
-		TIMELINE_EVENT_TYPES.includes(e.eventType),
-	);
-
-	return c.json({ session, events: timelineEvents });
+	return c.json({ session, events: sessionEvents });
 });
 
 // GET /api/v1/sessions/:sessionId/timeline - Paginated event timeline
