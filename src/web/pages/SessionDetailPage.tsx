@@ -555,6 +555,21 @@ export function SessionDetailPage() {
 		};
 	}, [sessionId, clearLiveEvents]);
 
+	const liveEvents = ((sessionId && liveEventsMap.get(sessionId)) || []) as SessionEvent[];
+	const allEvents = mergeSessionEvents([...events].reverse(), liveEvents);
+	const visibleEvents = getVisibleEvents(allEvents, mode, showTools || mode === "debug", showNoisyTools, showSystem);
+
+	useEffect(() => {
+		const hasNewEvents = allEvents.length > previousEventCountRef.current;
+		const behavior = previousEventCountRef.current === 0 ? "auto" : "smooth";
+
+		if (hasNewEvents && shouldFollowTimelineRef.current) {
+			timelineEndRef.current?.scrollIntoView({ behavior });
+		}
+
+		previousEventCountRef.current = allEvents.length;
+	}, [allEvents.length]);
+
 	if (loading) {
 		return (
 			<div className="p-6">
@@ -579,20 +594,6 @@ export function SessionDetailPage() {
 	}
 
 	const displayName = session.displayName || session.sessionId.slice(0, 8);
-	const liveEvents = ((sessionId && liveEventsMap.get(sessionId)) || []) as SessionEvent[];
-	const allEvents = mergeSessionEvents([...events].reverse(), liveEvents);
-	const visibleEvents = getVisibleEvents(allEvents, mode, showTools || mode === "debug", showNoisyTools, showSystem);
-
-	useEffect(() => {
-		const hasNewEvents = allEvents.length > previousEventCountRef.current;
-		const behavior = previousEventCountRef.current === 0 ? "auto" : "smooth";
-
-		if (hasNewEvents && shouldFollowTimelineRef.current) {
-			timelineEndRef.current?.scrollIntoView({ behavior });
-		}
-
-		previousEventCountRef.current = allEvents.length;
-	}, [allEvents.length]);
 
 	function handleTimelineScroll() {
 		const container = timelineContainerRef.current;
