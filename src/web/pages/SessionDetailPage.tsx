@@ -525,7 +525,10 @@ export function SessionDetailPage() {
 	const [showTools, setShowTools] = useState(false);
 	const [showNoisyTools, setShowNoisyTools] = useState(false);
 	const [showSystem, setShowSystem] = useState(true);
+	const timelineContainerRef = useRef<HTMLDivElement>(null);
 	const timelineEndRef = useRef<HTMLDivElement>(null);
+	const shouldFollowTimelineRef = useRef(true);
+	const previousEventCountRef = useRef(0);
 	const liveEventsMap = useEventStore((s) => s.liveEvents);
 	const clearLiveEvents = useEventStore((s) => s.clearSession);
 
@@ -551,10 +554,6 @@ export function SessionDetailPage() {
 			clearLiveEvents(sessionId);
 		};
 	}, [sessionId, clearLiveEvents]);
-
-	useEffect(() => {
-		timelineEndRef.current?.scrollIntoView({ behavior: "smooth" });
-	}, [events.length]);
 
 	if (loading) {
 		return (
@@ -583,6 +582,26 @@ export function SessionDetailPage() {
 	const liveEvents = ((sessionId && liveEventsMap.get(sessionId)) || []) as SessionEvent[];
 	const allEvents = mergeSessionEvents([...events].reverse(), liveEvents);
 	const visibleEvents = getVisibleEvents(allEvents, mode, showTools || mode === "debug", showNoisyTools, showSystem);
+
+	useEffect(() => {
+		const hasNewEvents = allEvents.length > previousEventCountRef.current;
+		const behavior = previousEventCountRef.current === 0 ? "auto" : "smooth";
+
+		if (hasNewEvents && shouldFollowTimelineRef.current) {
+			timelineEndRef.current?.scrollIntoView({ behavior });
+		}
+
+		previousEventCountRef.current = allEvents.length;
+	}, [allEvents.length]);
+
+	function handleTimelineScroll() {
+		const container = timelineContainerRef.current;
+		if (!container) return;
+
+		const distanceFromBottom =
+			container.scrollHeight - container.scrollTop - container.clientHeight;
+		shouldFollowTimelineRef.current = distanceFromBottom < 96;
+	}
 
 	return (
 		<div className="flex flex-col h-full">
@@ -644,7 +663,11 @@ export function SessionDetailPage() {
 			{/* Main content: timeline + notes side by side */}
 			<div className="flex-1 flex min-h-0">
 				{/* Timeline (left) */}
-				<div className="flex-1 overflow-auto p-6">
+				<div
+					ref={timelineContainerRef}
+					onScroll={handleTimelineScroll}
+					className="flex-1 overflow-auto p-6"
+				>
 					<div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
 						<div className="flex flex-wrap items-center gap-2">
 							<ModeButton active={mode === "prompts"} label="Prompts" onClick={() => setMode("prompts")} />
@@ -680,16 +703,16 @@ export function SessionDetailPage() {
 						) : (
 							visibleEvents.map((event) => {
 								if (event.category === "prompt" && event.content) {
-									return <PromptBubble key={event.id} text={event.content} time={event.createdAt} />;
+									return <PromptBubble key={eventKey(event)} text={event.content} time={event.createdAt} />;
 								}
 								if (event.category === "assistant_message" && event.content) {
-									return <AssistantBubble key={event.id} text={event.content} time={event.createdAt} />;
+									return <AssistantBubble key={eventKey(event)} text={event.content} time={event.createdAt} />;
 								}
 								if (event.category === "tool_event") {
 									const detail = event.content || event.toolName || event.eventType;
 									return (
 										<TimelineCard
-											key={event.id}
+											key={eventKey(event)}
 											label={eventLabel(event.category)}
 											text={detail}
 											time={event.createdAt}
@@ -700,7 +723,7 @@ export function SessionDetailPage() {
 								if (!event.content) return null;
 								return (
 									<TimelineCard
-										key={event.id}
+										key={eventKey(event)}
 										label={eventLabel(event.category)}
 										text={event.content}
 										time={event.createdAt}
