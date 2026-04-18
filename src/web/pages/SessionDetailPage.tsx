@@ -412,7 +412,7 @@ function RightPanel({ session }: { session: Session }) {
 		: session.agentType === "codex_cli" ? "AGENTS.md" : "CLAUDE.md";
 
 	return (
-		<div className="w-80 flex-shrink-0 border-l border-border bg-card/50 flex flex-col">
+		<div className="w-full md:w-80 md:flex-shrink-0 border-t md:border-t-0 md:border-l border-border bg-card/50 flex flex-col min-h-[18rem] md:min-h-0">
 			<div className="flex border-b border-border flex-shrink-0">
 				<button
 					onClick={() => setTab("notes")}
@@ -608,7 +608,7 @@ export function SessionDetailPage() {
 		<div className="flex flex-col h-full">
 			{/* Sticky session name bar */}
 			<div className="sticky top-0 z-10 bg-background border-b border-border flex-shrink-0">
-				<div className="px-6 py-2.5 flex flex-wrap items-center gap-3">
+				<div className="px-3 md:px-6 py-2.5 flex flex-wrap items-center gap-2 md:gap-3">
 					<button
 						onClick={() => navigate("/")}
 						className="text-muted-foreground hover:text-foreground transition-colors"
@@ -639,7 +639,7 @@ export function SessionDetailPage() {
 							{session.gitBranch}
 						</span>
 					)}
-					<div className="ml-auto flex items-center gap-2">
+					<div className="flex items-center gap-2 md:ml-auto">
 						<button
 							onClick={(e) => {
 								e.stopPropagation();
@@ -657,7 +657,7 @@ export function SessionDetailPage() {
 						<StatusBadge status={session.status} />
 					</div>
 				</div>
-				<div className="px-6 py-2 border-t border-border/70 flex flex-wrap items-center justify-between gap-3">
+				<div className="px-3 md:px-6 py-2 border-t border-border/70 flex flex-col items-start gap-2 md:flex-row md:flex-wrap md:items-center md:justify-between md:gap-3">
 					<div className="flex flex-wrap items-center gap-2">
 						<ModeButton active={mode === "prompts"} label="Prompts" onClick={() => setMode("prompts")} />
 						<ModeButton active={mode === "conversation"} label="Conversation" onClick={() => setMode("conversation")} />
@@ -691,12 +691,12 @@ export function SessionDetailPage() {
 			)}
 
 			{/* Main content: timeline + notes side by side */}
-			<div className="flex-1 flex min-h-0">
+			<div className="flex-1 flex min-h-0 flex-col md:flex-row">
 				{/* Timeline (left) */}
 				<div
 					ref={timelineContainerRef}
 					onScroll={handleTimelineScroll}
-					className="flex-1 overflow-auto p-6"
+					className="flex-1 overflow-auto p-3 md:p-6"
 				>
 					<div className="space-y-3">
 						{visibleEvents.length === 0 ? (

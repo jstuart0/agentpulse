@@ -94,8 +94,8 @@ export function SettingsPage() {
 	}
 
 	return (
-		<div className="p-6 max-w-3xl">
-			<h1 className="text-2xl font-bold text-foreground mb-2">Settings</h1>
+		<div className="p-3 md:p-6 max-w-3xl">
+			<h1 className="text-xl md:text-2xl font-bold text-foreground mb-2">Settings</h1>
 			<p className="text-sm text-muted-foreground mb-6">
 				Manage API keys, appearance, and dashboard configuration.
 			</p>
@@ -103,7 +103,7 @@ export function SettingsPage() {
 			{/* Appearance */}
 			<section className="border border-border bg-card rounded-lg p-5 mb-6">
 				<h2 className="text-sm font-semibold mb-3">Appearance</h2>
-				<div className="flex items-center justify-between">
+				<div className="flex items-center justify-between gap-4">
 					<div>
 						<p className="text-sm text-foreground">Theme</p>
 						<p className="text-xs text-muted-foreground">Toggle between dark and light mode</p>
@@ -235,14 +235,14 @@ export function SettingsPage() {
 					</div>
 				)}
 
-				<div className="flex gap-2 mb-4">
+				<div className="flex flex-col sm:flex-row gap-2 mb-4">
 					<input
 						type="text"
 						value={newKeyName}
 						onChange={(e) => setNewKeyName(e.target.value)}
 						placeholder="Key name (e.g. macbook-hooks)"
 						onKeyDown={(e) => e.key === "Enter" && handleCreateKey()}
-						className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+							className="flex-1 min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 					/>
 					<button
 						onClick={handleCreateKey}
@@ -269,7 +269,7 @@ export function SettingsPage() {
 						{apiKeys.map((key) => (
 							<div
 								key={key.id}
-								className={`flex items-center justify-between rounded-md border px-4 py-3 ${
+								className={`flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between rounded-md border px-4 py-3 ${
 									key.isActive
 										? "border-border bg-background"
 										: "border-border/50 bg-muted/30 opacity-60"
@@ -286,7 +286,7 @@ export function SettingsPage() {
 											</span>
 										)}
 									</div>
-									<div className="flex items-center gap-3 mt-0.5">
+									<div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-0.5">
 										<code className="text-xs text-muted-foreground font-mono">
 											{key.keyPrefix}...
 										</code>
@@ -317,22 +317,22 @@ export function SettingsPage() {
 			{/* Server Info */}
 			<section className="border border-border bg-card rounded-lg p-5">
 				<h2 className="text-sm font-semibold mb-3">Server Info</h2>
-				<div className="grid grid-cols-2 gap-3 text-sm">
+				<div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
 					<div>
 						<p className="text-muted-foreground text-xs">Version</p>
 						<p className="font-medium">0.1.0</p>
 					</div>
 					<div>
 						<p className="text-muted-foreground text-xs">Public URL</p>
-						<p className="font-medium">{window.location.origin}</p>
+						<p className="font-medium break-all">{window.location.origin}</p>
 					</div>
 					<div>
 						<p className="text-muted-foreground text-xs">API Endpoint</p>
-						<p className="font-mono text-xs">{window.location.origin}/api/v1/hooks</p>
+						<p className="font-mono text-xs break-all">{window.location.origin}/api/v1/hooks</p>
 					</div>
 					<div>
 						<p className="text-muted-foreground text-xs">WebSocket</p>
-						<p className="font-mono text-xs">
+						<p className="font-mono text-xs break-all">
 							{window.location.protocol === "https:" ? "wss:" : "ws:"}//
 							{window.location.host}/api/v1/ws
 						</p>

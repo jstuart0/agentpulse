@@ -40,19 +40,19 @@ export function DashboardPage() {
 	const workingCount = sessions.filter((s) => s.isWorking).length;
 
 	return (
-		<div className="p-6">
+		<div className="p-3 md:p-6">
 			{/* Header */}
-			<div className="flex items-center justify-between mb-6">
+			<div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-4 md:mb-6">
 				<div>
-					<h1 className="text-2xl font-bold text-foreground">Dashboard</h1>
-					<p className="text-sm text-muted-foreground mt-0.5">
+					<h1 className="text-xl md:text-2xl font-bold text-foreground">Dashboard</h1>
+					<p className="text-sm text-muted-foreground mt-0.5 max-w-xl">
 						Monitor your AI coding agents in real time
 					</p>
 				</div>
 			</div>
 
 			{/* KPI Row */}
-			<div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+			<div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4 mb-4 md:mb-6">
 				<StatCard
 					label="Active Sessions"
 					value={stats?.activeSessions ?? 0}
@@ -73,13 +73,13 @@ export function DashboardPage() {
 			</div>
 
 			{/* Search + Filter */}
-			<div className="flex items-center gap-3 mb-4">
-				<div className="flex gap-1 bg-muted rounded-lg p-1">
+			<div className="flex flex-col gap-3 mb-4">
+				<div className="flex gap-1 bg-muted rounded-lg p-1 overflow-x-auto scrollbar-none">
 					{["active", "idle", "completed", "archived", "all"].map((f) => (
 						<button
 							key={f}
 							onClick={() => setFilter(f)}
-							className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+							className={`shrink-0 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
 								filter === f
 									? "bg-background text-foreground shadow-sm"
 									: "text-muted-foreground hover:text-foreground"
@@ -95,7 +95,7 @@ export function DashboardPage() {
 					))}
 				</div>
 
-				<div className="relative flex-1 max-w-xs">
+				<div className="relative w-full md:max-w-xs">
 					<svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
 					</svg>

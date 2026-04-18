@@ -10,7 +10,7 @@ interface SessionGridProps {
 export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
 	if (isLoading) {
 		return (
-			<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+			<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
 				{Array.from({ length: 4 }).map((_, i) => (
 					<div key={i} className="rounded-lg border border-border bg-card p-4 animate-pulse">
 						<div className="h-4 bg-muted rounded w-3/4 mb-3" />
@@ -56,7 +56,7 @@ export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
 	// If only 1 project or few sessions, show flat grid
 	if (groups.size <= 1 || sessions.length <= 4) {
 		return (
-			<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+			<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
 				{sorted.map((session) => (
 					<SessionCard key={session.sessionId} session={session} />
 				))}
@@ -66,19 +66,19 @@ export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
 
 	// Multiple projects: group them
 	return (
-		<div className="space-y-6">
+		<div className="space-y-5 md:space-y-6">
 			{Array.from(groups.entries()).map(([project, projectSessions]) => (
 				<div key={project}>
-					<div className="flex items-center gap-2 mb-3">
+					<div className="flex flex-col items-start gap-1.5 mb-3 md:flex-row md:items-center md:gap-2">
 						<h3 className="text-sm font-semibold text-foreground">
 							{extractProjectName(project)}
 						</h3>
 						<span className="text-xs text-muted-foreground">
 							{projectSessions.length} session{projectSessions.length !== 1 ? "s" : ""}
 						</span>
-						<span className="text-[10px] text-muted-foreground truncate max-w-xs">{project}</span>
+						<span className="text-[10px] text-muted-foreground break-all md:truncate md:max-w-xs">{project}</span>
 					</div>
-					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
 						{projectSessions.map((session) => (
 							<SessionCard key={session.sessionId} session={session} />
 						))}

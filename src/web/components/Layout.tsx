@@ -14,14 +14,14 @@ export function Layout() {
 	const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
 	return (
-		<div className="flex h-screen bg-background">
+		<div className="flex h-dvh bg-background">
 			{/* Mobile top bar */}
-			<div className="md:hidden fixed top-0 left-0 right-0 z-20 bg-card border-b border-border px-4 py-3 flex items-center justify-between">
-				<div className="flex items-center gap-2">
+			<div className="md:hidden fixed top-0 left-0 right-0 z-20 bg-card border-b border-border px-3 py-2.5 flex items-center justify-between">
+				<div className="flex items-center gap-2 min-w-0">
 					<div className="w-8 h-8 rounded-lg bg-[#0B1220] flex items-center justify-center overflow-hidden shadow-[0_0_20px_rgba(42,168,255,0.08)]">
 						<img src={brandIcon} alt="" className="w-8 h-8" />
 					</div>
-					<span className="text-sm font-bold text-foreground">AgentPulse</span>
+					<span className="text-sm font-bold text-foreground truncate">AgentPulse</span>
 				</div>
 				<button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="text-muted-foreground p-1">
 					<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -99,7 +99,7 @@ export function Layout() {
 			</aside>
 
 			{/* Main content */}
-			<main className="flex-1 overflow-auto mt-14 md:mt-0">
+			<main className="flex-1 overflow-x-hidden overflow-y-auto mt-14 md:mt-0">
 				<Outlet />
 			</main>
 		</div>

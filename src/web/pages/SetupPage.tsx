@@ -52,8 +52,8 @@ export function SetupPage() {
 	const configFile = agentType === "claude_code" ? "~/.claude/settings.json" : "~/.codex/hooks.json";
 
 	return (
-		<div className="p-6 max-w-3xl">
-			<h1 className="text-2xl font-bold text-foreground mb-2">Setup</h1>
+		<div className="p-3 md:p-6 max-w-3xl">
+			<h1 className="text-xl md:text-2xl font-bold text-foreground mb-2">Setup</h1>
 			<p className="text-sm text-muted-foreground mb-6">
 				Configure your AI agents to report their activity to AgentPulse.
 			</p>
@@ -82,7 +82,7 @@ export function SetupPage() {
 					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">2</span>
 					Agent Type
 				</h2>
-				<div className="flex gap-2">
+				<div className="flex flex-col sm:flex-row gap-2">
 					<button
 						onClick={() => setAgentType("claude_code")}
 						className={`flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
@@ -154,7 +154,7 @@ export function SetupPage() {
 				<p className="text-xs text-muted-foreground mb-3">
 					Add this to your shell profile (~/.zshrc or ~/.bashrc):
 				</p>
-				<pre className="bg-background border border-border rounded-md p-3 text-xs">
+				<pre className="bg-background border border-border rounded-md p-3 text-xs overflow-x-auto">
 					<code>export AGENTPULSE_API_KEY="{apiKey || "YOUR_API_KEY"}"</code>
 				</pre>
 			</div>
