@@ -607,53 +607,82 @@ export function SessionDetailPage() {
 	return (
 		<div className="flex flex-col h-full">
 			{/* Sticky session name bar */}
-			<div className="sticky top-0 z-10 bg-background border-b border-border px-6 py-2.5 flex items-center gap-3 flex-shrink-0">
-				<button
-					onClick={() => navigate("/")}
-					className="text-muted-foreground hover:text-foreground transition-colors"
-				>
-					<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-					</svg>
-				</button>
-				<InlineRename
-					sessionId={session.sessionId}
-					currentName={displayName}
-					onRenamed={(name) => setSession({ ...session, displayName: name })}
-				/>
-				{session.isWorking && (
-					<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5">
-						<span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" />
-						working
-					</span>
-				)}
-				<span className="text-xs text-muted-foreground truncate">
-					{session.cwd?.split("/").pop()}
-				</span>
-				<span className="text-xs text-muted-foreground">
-					{formatDuration(session.startedAt)}
-				</span>
-				{session.gitBranch && (
-					<span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">
-						{session.gitBranch}
-					</span>
-				)}
-				<div className="ml-auto flex items-center gap-2">
+			<div className="sticky top-0 z-10 bg-background border-b border-border flex-shrink-0">
+				<div className="px-6 py-2.5 flex flex-wrap items-center gap-3">
 					<button
-						onClick={(e) => {
-							e.stopPropagation();
-							navigator.clipboard.writeText(buildExportMarkdown(displayName, session, allEvents));
-						}}
-						title="Export as Markdown"
-						className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+						onClick={() => navigate("/")}
+						className="text-muted-foreground hover:text-foreground transition-colors"
 					>
 						<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+							<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
 						</svg>
 					</button>
-					<span className="text-xs text-muted-foreground">{session.totalToolUses} tools</span>
-					<AgentTypeBadge agentType={session.agentType} />
-					<StatusBadge status={session.status} />
+					<InlineRename
+						sessionId={session.sessionId}
+						currentName={displayName}
+						onRenamed={(name) => setSession({ ...session, displayName: name })}
+					/>
+					{session.isWorking && (
+						<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5">
+							<span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" />
+							working
+						</span>
+					)}
+					<span className="text-xs text-muted-foreground truncate">
+						{session.cwd?.split("/").pop()}
+					</span>
+					<span className="text-xs text-muted-foreground">
+						{formatDuration(session.startedAt)}
+					</span>
+					{session.gitBranch && (
+						<span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">
+							{session.gitBranch}
+						</span>
+					)}
+					<div className="ml-auto flex items-center gap-2">
+						<button
+							onClick={(e) => {
+								e.stopPropagation();
+								navigator.clipboard.writeText(buildExportMarkdown(displayName, session, allEvents));
+							}}
+							title="Export as Markdown"
+							className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+						>
+							<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+							</svg>
+						</button>
+						<span className="text-xs text-muted-foreground">{session.totalToolUses} tools</span>
+						<AgentTypeBadge agentType={session.agentType} />
+						<StatusBadge status={session.status} />
+					</div>
+				</div>
+				<div className="px-6 py-2 border-t border-border/70 flex flex-wrap items-center justify-between gap-3">
+					<div className="flex flex-wrap items-center gap-2">
+						<ModeButton active={mode === "prompts"} label="Prompts" onClick={() => setMode("prompts")} />
+						<ModeButton active={mode === "conversation"} label="Conversation" onClick={() => setMode("conversation")} />
+						<ModeButton active={mode === "progress"} label="Progress" onClick={() => setMode("progress")} />
+						<ModeButton active={mode === "debug"} label="Debug" onClick={() => setMode("debug")} />
+					</div>
+					<div className="flex flex-wrap items-center gap-2">
+						<FilterToggle
+							active={showSystem}
+							label="System"
+							onClick={() => setShowSystem((value) => !value)}
+							disabled={mode === "prompts" || mode === "conversation"}
+						/>
+						<FilterToggle
+							active={showTools || mode === "debug"}
+							label="Tools"
+							onClick={() => setShowTools((value) => !value)}
+						/>
+						<FilterToggle
+							active={showNoisyTools}
+							label="Noisy"
+							onClick={() => setShowNoisyTools((value) => !value)}
+							disabled={!(showTools || mode === "debug")}
+						/>
+					</div>
 				</div>
 			</div>
 
@@ -669,33 +698,6 @@ export function SessionDetailPage() {
 					onScroll={handleTimelineScroll}
 					className="flex-1 overflow-auto p-6"
 				>
-					<div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
-						<div className="flex flex-wrap items-center gap-2">
-							<ModeButton active={mode === "prompts"} label="Prompts" onClick={() => setMode("prompts")} />
-							<ModeButton active={mode === "conversation"} label="Conversation" onClick={() => setMode("conversation")} />
-							<ModeButton active={mode === "progress"} label="Progress" onClick={() => setMode("progress")} />
-							<ModeButton active={mode === "debug"} label="Debug" onClick={() => setMode("debug")} />
-						</div>
-						<div className="flex flex-wrap items-center gap-2">
-							<FilterToggle
-								active={showSystem}
-								label="System"
-								onClick={() => setShowSystem((value) => !value)}
-								disabled={mode === "prompts" || mode === "conversation"}
-							/>
-							<FilterToggle
-								active={showTools || mode === "debug"}
-								label="Tools"
-								onClick={() => setShowTools((value) => !value)}
-							/>
-							<FilterToggle
-								active={showNoisyTools}
-								label="Noisy"
-								onClick={() => setShowNoisyTools((value) => !value)}
-								disabled={!(showTools || mode === "debug")}
-							/>
-						</div>
-					</div>
 					<div className="space-y-3">
 						{visibleEvents.length === 0 ? (
 							<p className="text-sm text-muted-foreground text-center py-8">
