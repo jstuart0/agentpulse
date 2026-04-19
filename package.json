@@ -22,7 +22,10 @@
     "db:studio": "drizzle-kit studio",
     "check": "biome check .",
     "check:fix": "biome check --write .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:no-raw-fetch": "bash scripts/check-no-raw-fetch.sh",
+    "check:no-sync-transcript-io": "bash scripts/check-no-sync-transcript-io.sh",
+    "check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.3.1",
