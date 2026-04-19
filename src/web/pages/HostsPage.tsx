@@ -124,6 +124,12 @@ export function HostsPage() {
 		return "bg-sky-500/10 text-sky-400";
 	}
 
+	const connectedCount = supervisors.filter((supervisor) => supervisor.status === "connected").length;
+	const interactiveReadyCount = supervisors.filter(
+		(supervisor) => supervisor.capabilities.interactiveTerminalControl?.available,
+	).length;
+	const revokedCount = supervisors.filter((supervisor) => supervisor.enrollmentState === "revoked").length;
+
 	return (
 		<div className="p-3 md:p-6">
 			<div className="max-w-6xl space-y-6">
@@ -255,6 +261,24 @@ export function HostsPage() {
 					</div>
 				</div>
 
+				<div className="grid gap-3 md:grid-cols-3">
+					<div className="rounded-lg border border-border bg-card px-4 py-3">
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Connected</div>
+						<div className="mt-1 text-2xl font-semibold text-foreground">{connectedCount}</div>
+						<div className="mt-1 text-xs text-muted-foreground">Hosts currently heartbeating.</div>
+					</div>
+					<div className="rounded-lg border border-border bg-card px-4 py-3">
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Interactive Ready</div>
+						<div className="mt-1 text-2xl font-semibold text-foreground">{interactiveReadyCount}</div>
+						<div className="mt-1 text-xs text-muted-foreground">Hosts that can hand prompts back into live terminals.</div>
+					</div>
+					<div className="rounded-lg border border-border bg-card px-4 py-3">
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Revoked</div>
+						<div className="mt-1 text-2xl font-semibold text-foreground">{revokedCount}</div>
+						<div className="mt-1 text-xs text-muted-foreground">Hosts whose scoped credentials have been disabled.</div>
+					</div>
+				</div>
+
 				{error && (
 					<div className="rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-300">
 						{error}
@@ -262,10 +286,21 @@ export function HostsPage() {
 				)}
 
 				{loading ? (
-					<div className="text-sm text-muted-foreground">Loading hosts...</div>
+					<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+						{Array.from({ length: 3 }).map((_, index) => (
+							<div key={index} className="h-72 animate-pulse rounded-lg border border-border bg-card" />
+						))}
+					</div>
 				) : supervisors.length === 0 ? (
-					<div className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">
-						No supervisors are registered.
+					<div className="rounded-lg border border-dashed border-border p-6">
+						<div className="text-sm font-medium text-foreground">No hosts are registered yet.</div>
+						<div className="mt-2 max-w-2xl text-sm text-muted-foreground">
+							Create an enrollment token above, then start a supervisor on the target machine with
+							<code className="mx-1 rounded bg-background px-1.5 py-0.5 text-foreground">
+								AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN=&lt;token&gt; bun run supervisor
+							</code>
+							to attach it here.
+						</div>
 					</div>
 				) : (
 					<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">

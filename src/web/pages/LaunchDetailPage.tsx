@@ -55,6 +55,7 @@ export function LaunchDetailPage() {
 	const [launch, setLaunch] = useState<LaunchRequest | null>(null);
 	const [linkedSession, setLinkedSession] = useState<Session | null>(null);
 	const [loading, setLoading] = useState(true);
+	const [refreshing, setRefreshing] = useState(false);
 
 	useEffect(() => {
 		if (!launchId) return;
@@ -79,6 +80,7 @@ export function LaunchDetailPage() {
 		if (!launchId || !launch || !activeStatuses.has(launch.status)) return;
 		const interval = setInterval(async () => {
 			try {
+				setRefreshing(true);
 				const data = (await api.getLaunch(launchId)) as {
 					launchRequest: LaunchRequest;
 					session?: Session | null;
@@ -87,6 +89,8 @@ export function LaunchDetailPage() {
 				setLinkedSession((data.session as Session | null) ?? null);
 			} catch (error) {
 				console.error("Failed to refresh launch request", error);
+			} finally {
+				setRefreshing(false);
 			}
 		}, 1500);
 		return () => clearInterval(interval);
@@ -120,6 +124,18 @@ export function LaunchDetailPage() {
 					activity?: Array<{ kind: string; text: string; timestamp: string }>;
 			  }) ?? null)
 			: null;
+	const nextStepMessage =
+		launch.requestedLaunchMode === "headless"
+			? linkedSession
+				? "The workspace is live. Watch Activity for streamed output and send follow-up prompts from the session workspace."
+				: "Waiting for the session workspace to attach. Headless output will continue streaming here."
+			: launch.requestedLaunchMode === "interactive_terminal"
+				? linkedSession
+					? "The host terminal owns control. AgentPulse mirrors the session and links you into the workspace for observability."
+					: "The terminal session launched on the host. Waiting for the linked workspace to attach."
+				: linkedSession
+					? "Managed Codex control is active. Open the workspace to observe the session and its thread sync state."
+					: "Managed Codex is launching. Waiting for the linked workspace to attach.";
 
 	return (
 		<div className="p-3 md:p-6">
@@ -134,9 +150,21 @@ export function LaunchDetailPage() {
 							{launch.agentType === "claude_code" ? "Claude Code" : "Codex CLI"} · {launchModeLabels[launch.requestedLaunchMode]}
 						</p>
 					</div>
-					<div className="rounded-full border border-border px-3 py-1 text-xs font-medium text-foreground">
-						{launch.status}
+					<div className="flex items-center gap-2">
+						{activeStatuses.has(launch.status) && (
+							<span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-300">
+								{refreshing ? "Refreshing…" : "Live"}
+							</span>
+						)}
+						<div className="rounded-full border border-border px-3 py-1 text-xs font-medium text-foreground">
+							{launch.status}
+						</div>
 					</div>
+				</div>
+
+				<div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+					<div className="text-sm font-medium text-foreground">What happens next</div>
+					<div className="mt-1 text-sm text-muted-foreground">{nextStepMessage}</div>
 				</div>
 
 				<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -162,7 +190,7 @@ export function LaunchDetailPage() {
 						)}
 						{launch.error && (
 							<div>
-								<div className="text-xs text-red-300">Error</div>
+						<div className="text-xs text-red-300">Error</div>
 								<div className="mt-1 text-sm text-red-200">{launch.error}</div>
 							</div>
 						)}
@@ -205,7 +233,7 @@ export function LaunchDetailPage() {
 							</Link>
 						) : null}
 					</div>
-					<div className="mt-3 rounded-md bg-background/60 p-3 text-xs">
+						<div className="mt-3 rounded-md bg-background/60 p-3 text-xs">
 						{linkedSession ? (
 							<div className="space-y-1.5">
 								<div className="font-medium text-foreground">

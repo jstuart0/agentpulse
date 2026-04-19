@@ -291,6 +291,8 @@ export function TemplatesPage() {
 	const canCreateLaunch =
 		Boolean(preview) &&
 		(routingPolicy !== "manual_target" || Boolean(targetSupervisorId));
+	const connectedHostsCount = supervisors.filter((supervisor) => supervisor.status === "connected").length;
+	const compatibleHostsCount = compatibleHosts.filter((item) => item.compatibility.ok).length;
 
 	return (
 		<div className="p-3 md:p-6">
@@ -323,6 +325,30 @@ export function TemplatesPage() {
 						</span>
 					</div>
 				</div>
+
+				<div className="grid gap-3 md:grid-cols-3">
+					<div className="rounded-lg border border-border bg-card px-4 py-3">
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Connected Hosts</div>
+						<div className="mt-1 text-2xl font-semibold text-foreground">{connectedHostsCount}</div>
+						<div className="mt-1 text-xs text-muted-foreground">Supervisors ready to claim launches right now.</div>
+					</div>
+					<div className="rounded-lg border border-border bg-card px-4 py-3">
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Compatible Hosts</div>
+						<div className="mt-1 text-2xl font-semibold text-foreground">{compatibleHostsCount}</div>
+						<div className="mt-1 text-xs text-muted-foreground">Hosts that match the current preview and launch mode.</div>
+					</div>
+					<div className="rounded-lg border border-border bg-card px-4 py-3">
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Recent Launches</div>
+						<div className="mt-1 text-2xl font-semibold text-foreground">{recentLaunches.length}</div>
+						<div className="mt-1 text-xs text-muted-foreground">Latest requests visible from this browser session.</div>
+					</div>
+				</div>
+
+				{supervisors.length === 0 && (
+					<div className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+						No hosts are registered yet. You can still save templates now, but launches will stay unclaimable until a supervisor is enrolled from the Hosts screen.
+					</div>
+				)}
 
 				<div className="grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)_minmax(0,1fr)]">
 					<TemplateListPanel
