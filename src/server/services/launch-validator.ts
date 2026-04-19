@@ -1,9 +1,9 @@
-import { relative, resolve } from "path";
 import { HTTPException } from "hono/http-exception";
 import { db } from "../db/client.js";
 import { launchRequests } from "../db/schema.js";
 import { getConnectedSupervisor, listSupervisors } from "./supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
+import { validateAgainstSupervisor } from "./launch-compatibility.js";
 import type {
 	LaunchRequest,
 	LaunchRequestInput,
@@ -48,68 +48,6 @@ function mapLaunchRequest(row: typeof launchRequests.$inferSelect): LaunchReques
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 	};
-}
-
-function isWithinTrustedRoot(cwd: string, roots: string[]) {
-	const resolvedCwd = resolve(cwd);
-	for (const root of roots.map((value) => resolve(value))) {
-		const rel = relative(root, resolvedCwd);
-		if (!rel || (!rel.startsWith("..") && !rel.includes(`..${process.platform === "win32" ? "\\" : "/"}`))) {
-			return true;
-		}
-	}
-	return false;
-}
-
-export function validateAgainstSupervisor(
-	template: SessionTemplateInput,
-	supervisor: SupervisorRecord,
-	requestedLaunchMode: LaunchRequest["requestedLaunchMode"],
-) {
-	const warnings: string[] = [];
-	const errors: string[] = [];
-
-	if (!supervisor.capabilities.agentTypes.includes(template.agentType)) {
-		errors.push(`${supervisor.hostName} does not advertise support for ${template.agentType}.`);
-	}
-	if (!supervisor.capabilities.launchModes.includes(requestedLaunchMode)) {
-		errors.push(`${supervisor.hostName} does not support ${requestedLaunchMode} launch mode.`);
-	}
-	if (template.agentType === "claude_code" && !supervisor.capabilities.executables?.claude?.available) {
-		errors.push(`${supervisor.hostName} cannot launch Claude Code because the claude executable is not configured or not on PATH.`);
-	}
-	if (template.agentType === "codex_cli" && !supervisor.capabilities.executables?.codex?.available) {
-		errors.push(`${supervisor.hostName} cannot launch Codex because the codex executable is not configured or not on PATH.`);
-	}
-	if (!isWithinTrustedRoot(template.cwd, supervisor.trustedRoots)) {
-		errors.push("Working directory is outside the supervisor's trusted roots.");
-	}
-	if (!template.model) {
-		warnings.push("No explicit model selected. The provider default will be used.");
-	}
-	if (requestedLaunchMode === "interactive_terminal" && supervisor.capabilities.terminalSupport.length === 0) {
-		errors.push(`${supervisor.hostName} does not advertise terminal support for interactive launches.`);
-	}
-	if (requestedLaunchMode === "headless" && template.agentType !== "claude_code") {
-		errors.push("Headless launch mode currently applies to Claude Code only.");
-	}
-	if (requestedLaunchMode === "managed_codex" && template.agentType !== "codex_cli") {
-		errors.push("managed_codex launch mode only applies to Codex CLI templates.");
-	}
-	if (requestedLaunchMode === "interactive_terminal" && template.agentType === "claude_code") {
-		warnings.push("Interactive launches open on the selected host's terminal, not inside AgentPulse.");
-		if (!supervisor.capabilities.interactiveTerminalControl?.available) {
-			warnings.push(
-				supervisor.capabilities.interactiveTerminalControl?.reason ||
-					"AgentPulse cannot yet hand prompts back into the live terminal on this host.",
-			);
-		}
-	}
-	if (requestedLaunchMode === "headless") {
-		warnings.push("Headless launches stream visible Claude output back into AgentPulse and exit when the task completes.");
-	}
-
-	return { warnings, errors };
 }
 
 async function resolveSupervisorForLaunch(

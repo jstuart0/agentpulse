@@ -8,6 +8,7 @@ import type {
 	SessionTemplate,
 	SessionTemplateInput,
 	SupervisorRecord,
+	TemplateHostCompatibility,
 	TemplatePreview,
 } from "../../shared/types.js";
 import { api } from "../lib/api.js";
@@ -17,7 +18,6 @@ import {
 	defaultLaunchModeForAgent,
 	envToLines,
 	type AgentFilter,
-	getHostCompatibility,
 	getLaunchModeOptions,
 	parseEnvLines,
 	parseTags,
@@ -65,6 +65,8 @@ export function TemplatesPage() {
 				env: parseEnvLines(envText),
 				tags: parseTags(tagsText),
 				launchMode,
+				requestedSupervisorId: routingPolicy === "manual_target" ? targetSupervisorId || null : null,
+				routingPolicy,
 			};
 			try {
 				const result = (await api.previewTemplate(body)) as TemplatePreview;
@@ -77,7 +79,7 @@ export function TemplatesPage() {
 		}, 250);
 
 		return () => clearTimeout(timeout);
-	}, [draft, envText, tagsText]);
+	}, [draft, envText, tagsText, launchMode, routingPolicy, targetSupervisorId]);
 
 	useEffect(() => {
 		if (!getLaunchModeOptions(draft.agentType).some((option) => option.value === launchMode)) {
@@ -257,13 +259,27 @@ export function TemplatesPage() {
 	const connectedSupervisor = supervisors.find((supervisor) => supervisor.status === "connected");
 	const selectedSupervisor =
 		supervisors.find((supervisor) => supervisor.id === targetSupervisorId) ?? connectedSupervisor ?? null;
+	const hostCompatibilityMap = new Map(
+		(preview?.hostCompatibility ?? []).map((compatibility) => [compatibility.supervisorId, compatibility]),
+	);
 	const compatibleHosts = supervisors.map((supervisor) => ({
 		supervisor,
-		compatibility: getHostCompatibility(draft, supervisor, launchMode),
+		compatibility:
+			hostCompatibilityMap.get(supervisor.id) ??
+			({
+				supervisorId: supervisor.id,
+				hostName: supervisor.hostName,
+				status: supervisor.status,
+				platform: supervisor.platform,
+				arch: supervisor.arch,
+				ok: false,
+				errors: ["Preview unavailable for this host."],
+				warnings: [],
+				executablePath: null,
+			} satisfies TemplateHostCompatibility),
 	}));
 	const firstCapableHost =
-		compatibleHosts.find((candidate) => candidate.supervisor.status === "connected" && candidate.compatibility.ok)
-			?.supervisor ?? null;
+		supervisors.find((supervisor) => supervisor.id === preview?.firstCapableHostId) ?? null;
 	const effectiveLaunchSpec = preview
 		? {
 				...preview.launchSpec,

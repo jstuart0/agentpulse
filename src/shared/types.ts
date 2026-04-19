@@ -299,6 +299,18 @@ export interface ProviderLaunchGuidance {
 	notes: string[];
 }
 
+export interface TemplateHostCompatibility {
+	supervisorId: string;
+	hostName: string;
+	status: SupervisorStatus;
+	platform: string;
+	arch: string;
+	ok: boolean;
+	errors: string[];
+	warnings: string[];
+	executablePath: string | null;
+}
+
 export interface TemplatePreview {
 	normalizedTemplate: SessionTemplateInput;
 	launchSpec: LaunchSpec;
@@ -307,6 +319,8 @@ export interface TemplatePreview {
 		codexCli: ProviderLaunchGuidance;
 	};
 	warnings: string[];
+	hostCompatibility: TemplateHostCompatibility[];
+	firstCapableHostId: string | null;
 }
 
 export type SupervisorStatus = "connected" | "stale" | "offline";

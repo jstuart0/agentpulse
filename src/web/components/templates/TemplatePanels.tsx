@@ -9,13 +9,13 @@ import type {
 	SessionTemplate,
 	SessionTemplateInput,
 	SupervisorRecord,
+	TemplateHostCompatibility,
 	TemplatePreview,
 } from "../../../shared/types.js";
 import {
 	approvalPolicies,
 	type AgentFilter,
 	formatLaunchTime,
-	getHostCompatibility,
 	launchModeLabels,
 	sandboxModes,
 } from "./utils.js";
@@ -105,7 +105,7 @@ export function TemplateEditorPanel(props: {
 	supervisors: SupervisorRecord[];
 	compatibleHosts: Array<{
 		supervisor: SupervisorRecord;
-		compatibility: ReturnType<typeof getHostCompatibility>;
+		compatibility: TemplateHostCompatibility;
 	}>;
 	launchModeOptions: Array<{ value: LaunchMode; label: string; description: string }>;
 	selectedLaunchMode?: { value: LaunchMode; label: string; description: string };
@@ -463,4 +463,3 @@ export function TemplatePreviewPanel({
 		</section>
 	);
 }
-

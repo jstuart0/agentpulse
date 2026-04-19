@@ -1,9 +1,12 @@
 import { existsSync } from "fs";
 import { resolve, isAbsolute } from "path";
+import { buildTemplateHostCompatibility } from "./launch-compatibility.js";
+import { listSupervisors } from "./supervisor-registry.js";
 import type {
 	AgentType,
 	ApprovalPolicy,
 	LaunchMode,
+	LaunchRoutingPolicy,
 	LaunchSpec,
 	ProviderLaunchGuidance,
 	SandboxMode,
@@ -150,11 +153,16 @@ function buildProviderGuidance(
 	};
 }
 
-export function buildTemplatePreview(
+export async function buildTemplatePreview(
 	input: Partial<SessionTemplateInput>,
-	requestedLaunchMode: LaunchMode = "interactive_terminal",
-): TemplatePreview {
+	options?: {
+		requestedLaunchMode?: LaunchMode;
+		requestedSupervisorId?: string | null;
+		routingPolicy?: LaunchRoutingPolicy | null;
+	},
+): Promise<TemplatePreview> {
 	const normalizedTemplate = normalizeTemplateInput(input);
+	const requestedLaunchMode = options?.requestedLaunchMode ?? "interactive_terminal";
 	const launchCorrelationId = crypto.randomUUID();
 	const providerCommand = normalizedTemplate.agentType === "claude_code" ? "claude" : "codex";
 	const instructionsFile =
@@ -181,6 +189,13 @@ export function buildTemplatePreview(
 	};
 
 	const validation = validateTemplateInput(normalizedTemplate);
+	const supervisors = await listSupervisors();
+	const hostCompatibility = supervisors.map((supervisor) =>
+		buildTemplateHostCompatibility(normalizedTemplate, supervisor, requestedLaunchMode),
+	);
+	const firstCapableHostId =
+		hostCompatibility.find((candidate) => candidate.status === "connected" && candidate.ok)?.supervisorId ??
+		null;
 
 	return {
 		normalizedTemplate,
@@ -200,5 +215,7 @@ export function buildTemplatePreview(
 			),
 		},
 		warnings: validation.warnings,
+		hostCompatibility,
+		firstCapableHostId,
 	};
 }

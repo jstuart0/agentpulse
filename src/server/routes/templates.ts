@@ -147,8 +147,18 @@ templatesRouter.post("/templates/:id/duplicate", async (c) => {
 });
 
 templatesRouter.post("/templates/preview", async (c) => {
-	const body = await c.req.json<Partial<SessionTemplateInput> & { launchMode?: LaunchMode }>();
-	const preview = buildTemplatePreview(body, body.launchMode ?? "interactive_terminal");
+	const body = await c.req.json<
+		Partial<SessionTemplateInput> & {
+			launchMode?: LaunchMode;
+			requestedSupervisorId?: string | null;
+			routingPolicy?: "manual_target" | "first_capable_host" | null;
+		}
+	>();
+	const preview = await buildTemplatePreview(body, {
+		requestedLaunchMode: body.launchMode ?? "interactive_terminal",
+		requestedSupervisorId: body.requestedSupervisorId ?? null,
+		routingPolicy: body.routingPolicy ?? null,
+	});
 	const { errors } = validateTemplateInput(preview.normalizedTemplate);
 	if (errors.length > 0) {
 		return c.json({ error: errors.join(" "), preview }, 400);
