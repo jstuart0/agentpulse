@@ -3,7 +3,7 @@ import { desc, eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { sessionTemplates } from "../db/schema.js";
 import { buildTemplatePreview, normalizeTemplateInput, validateTemplateInput } from "../services/template-preview.js";
-import type { AgentType, SessionTemplateInput } from "../../shared/types.js";
+import type { AgentType, LaunchMode, SessionTemplateInput } from "../../shared/types.js";
 
 const templatesRouter = new Hono();
 
@@ -147,8 +147,8 @@ templatesRouter.post("/templates/:id/duplicate", async (c) => {
 });
 
 templatesRouter.post("/templates/preview", async (c) => {
-	const body = await c.req.json<Partial<SessionTemplateInput>>();
-	const preview = buildTemplatePreview(body);
+	const body = await c.req.json<Partial<SessionTemplateInput> & { launchMode?: LaunchMode }>();
+	const preview = buildTemplatePreview(body, body.launchMode ?? "interactive_terminal");
 	const { errors } = validateTemplateInput(preview.normalizedTemplate);
 	if (errors.length > 0) {
 		return c.json({ error: errors.join(" "), preview }, 400);

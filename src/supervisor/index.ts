@@ -1,5 +1,5 @@
 import { loadSupervisorConfig, saveSupervisorConfig } from "./config.js";
-import { launchClaudeRequest } from "./providers/claude.js";
+import { launchClaudeHeadlessRequest, launchClaudeInteractiveRequest } from "./providers/claude.js";
 import type { ControlAction, LaunchRequest, ManagedSession, Session } from "../shared/types.js";
 import {
 	launchManagedCodexRequest,
@@ -126,7 +126,31 @@ async function main() {
 		});
 
 		try {
-			const result = await launchClaudeRequest(launch);
+			if (launch.requestedLaunchMode === "headless") {
+				const result = await launchClaudeHeadlessRequest(launch, async (update) => {
+					await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+						method: "POST",
+						body: JSON.stringify({
+							status: update.status,
+							pid: update.pid ?? null,
+							error: update.error ?? null,
+							providerLaunchMetadata: update.providerLaunchMetadata,
+						}),
+					});
+				});
+				await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+					method: "POST",
+					body: JSON.stringify({
+						status: "running",
+						pid: result.pid,
+						providerLaunchMetadata: result.metadata,
+					}),
+				});
+				void result.monitor;
+				return;
+			}
+
+			const result = await launchClaudeInteractiveRequest(launch);
 			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
 				method: "POST",
 				body: JSON.stringify({

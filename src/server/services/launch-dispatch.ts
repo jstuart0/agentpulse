@@ -80,8 +80,18 @@ export async function updateLaunchDispatchStatus(input: {
 			updates.providerLaunchMetadata = input.providerLaunchMetadata;
 		}
 	}
+	if (input.status === "completed") {
+		updates.dispatchFinishedAt = now;
+		updates.pid = input.pid ?? row.pid ?? null;
+		if (input.providerLaunchMetadata) {
+			updates.providerLaunchMetadata = input.providerLaunchMetadata;
+		}
+	}
 	if (input.status === "failed" || input.status === "cancelled") {
 		updates.dispatchFinishedAt = now;
+		if (input.providerLaunchMetadata) {
+			updates.providerLaunchMetadata = input.providerLaunchMetadata;
+		}
 	}
 
 	const [updated] = await db

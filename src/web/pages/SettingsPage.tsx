@@ -4,6 +4,11 @@ import type { ApiKeyInfo, LaunchRequest, SupervisorRecord } from "../../shared/t
 import { APP_API_BASE, BROWSER_WS_PATH } from "../lib/paths.js";
 
 const BASE = APP_API_BASE;
+const launchModeLabels = {
+	headless: "Headless task",
+	interactive_terminal: "Interactive terminal",
+	managed_codex: "Managed Codex",
+} as const;
 
 export function SettingsPage() {
 	const [apiKeys, setApiKeys] = useState<ApiKeyInfo[]>([]);
@@ -206,7 +211,9 @@ export function SettingsPage() {
 									<div className="text-sm font-medium text-foreground">
 										{launch.agentType === "claude_code" ? "Claude Code" : "Codex CLI"}
 									</div>
-									<span className="text-xs text-muted-foreground">{launch.status}</span>
+									<span className="text-xs text-muted-foreground">
+										{launch.status} · {launchModeLabels[launch.requestedLaunchMode]}
+									</span>
 								</div>
 								<div className="mt-1 break-all text-xs text-muted-foreground">
 									{launch.cwd}

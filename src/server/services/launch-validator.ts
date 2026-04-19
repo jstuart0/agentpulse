@@ -87,8 +87,20 @@ export function validateAgainstSupervisor(
 	if (!template.model) {
 		warnings.push("No explicit model selected. The provider default will be used.");
 	}
+	if (requestedLaunchMode === "interactive_terminal" && supervisor.capabilities.terminalSupport.length === 0) {
+		errors.push(`${supervisor.hostName} does not advertise terminal support for interactive launches.`);
+	}
+	if (requestedLaunchMode === "headless" && template.agentType !== "claude_code") {
+		errors.push("Headless launch mode currently applies to Claude Code only.");
+	}
 	if (requestedLaunchMode === "managed_codex" && template.agentType !== "codex_cli") {
 		errors.push("managed_codex launch mode only applies to Codex CLI templates.");
+	}
+	if (requestedLaunchMode === "interactive_terminal" && template.agentType === "claude_code") {
+		warnings.push("Interactive launches open on the selected host's terminal, not inside AgentPulse.");
+	}
+	if (requestedLaunchMode === "headless") {
+		warnings.push("Headless launches stream visible Claude output back into AgentPulse and exit when the task completes.");
 	}
 
 	return { warnings, errors };

@@ -3,6 +3,7 @@ import { resolve, isAbsolute } from "path";
 import type {
 	AgentType,
 	ApprovalPolicy,
+	LaunchMode,
 	LaunchSpec,
 	ProviderLaunchGuidance,
 	SandboxMode,
@@ -108,25 +109,37 @@ function buildProviderGuidance(
 	agentType: AgentType,
 	template: SessionTemplateInput,
 	correlationId: string,
+	requestedLaunchMode: LaunchMode,
 ): ProviderLaunchGuidance {
 	const base = [`cd ${quoteShell(template.cwd)}`];
 	const provider = agentType === "claude_code" ? "claude" : "codex";
 	const args: string[] = [];
 
 	if (template.model) args.push(`--model ${quoteShell(template.model)}`);
+	if (agentType === "claude_code" && requestedLaunchMode === "headless") {
+		args.push("--print", "--output-format", "stream-json");
+	}
 
 	const command = [provider, ...args].join(" ");
 	const notes =
 		agentType === "claude_code"
-			? [
-					"Preview only. AgentPulse is not launching Claude Code yet.",
-					`Consider keeping reusable instructions in CLAUDE.md and passing the task prompt when starting the session.`,
-					`Future launch correlation id: ${correlationId}`,
-			  ]
+			? requestedLaunchMode === "headless"
+				? [
+						"Headless mode runs Claude in non-interactive print mode and captures visible output back into AgentPulse.",
+						"Use this when you want to dispatch a task from the dashboard and inspect progress/output without owning a terminal.",
+						`Launch correlation id: ${correlationId}`,
+				  ]
+				: [
+						"Interactive terminal mode opens a real terminal-backed Claude session on the selected host.",
+						"Use this when you want to keep driving the session in Claude itself while AgentPulse observes it.",
+						`Launch correlation id: ${correlationId}`,
+				  ]
 			: [
-					"Preview only. AgentPulse is not launching Codex yet.",
+					requestedLaunchMode === "managed_codex"
+						? "Managed Codex mode launches through the app-server control channel and keeps thread-title sync active."
+						: "Preview only. Codex interactive/headless launch paths are not implemented yet.",
 					"Enable thread-title in /statusline later if you want the managed session name visible in the TUI.",
-					`Future launch correlation id: ${correlationId}`,
+					`Launch correlation id: ${correlationId}`,
 			  ];
 
 	return {
@@ -137,7 +150,10 @@ function buildProviderGuidance(
 	};
 }
 
-export function buildTemplatePreview(input: Partial<SessionTemplateInput>): TemplatePreview {
+export function buildTemplatePreview(
+	input: Partial<SessionTemplateInput>,
+	requestedLaunchMode: LaunchMode = "interactive_terminal",
+): TemplatePreview {
 	const normalizedTemplate = normalizeTemplateInput(input);
 	const launchCorrelationId = crypto.randomUUID();
 	const providerCommand = normalizedTemplate.agentType === "claude_code" ? "claude" : "codex";
@@ -149,7 +165,7 @@ export function buildTemplatePreview(input: Partial<SessionTemplateInput>): Temp
 		launchCorrelationId,
 		managedMode: "unmanaged_preview",
 		agentType: normalizedTemplate.agentType,
-		launchMode: "interactive_terminal",
+		launchMode: requestedLaunchMode,
 		cwd: normalizedTemplate.cwd,
 		model: normalizedTemplate.model ?? null,
 		approvalPolicy: normalizedTemplate.approvalPolicy ?? null,
@@ -170,8 +186,18 @@ export function buildTemplatePreview(input: Partial<SessionTemplateInput>): Temp
 		normalizedTemplate,
 		launchSpec,
 		guidance: {
-			claudeCode: buildProviderGuidance("claude_code", normalizedTemplate, launchCorrelationId),
-			codexCli: buildProviderGuidance("codex_cli", normalizedTemplate, launchCorrelationId),
+			claudeCode: buildProviderGuidance(
+				"claude_code",
+				normalizedTemplate,
+				launchCorrelationId,
+				requestedLaunchMode,
+			),
+			codexCli: buildProviderGuidance(
+				"codex_cli",
+				normalizedTemplate,
+				launchCorrelationId,
+				requestedLaunchMode,
+			),
 		},
 		warnings: validation.warnings,
 	};

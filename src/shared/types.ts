@@ -318,6 +318,7 @@ export type LaunchRequestStatus =
 	| "launching"
 	| "awaiting_session"
 	| "running"
+	| "completed"
 	| "failed"
 	| "cancelled";
 

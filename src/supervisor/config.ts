@@ -18,6 +18,7 @@ export interface SupervisorConfig {
 	capabilities: SupervisorRegistrationInput["capabilities"];
 	claudeCommand?: string;
 	codexCommand?: string;
+	terminalPreference?: string;
 }
 
 const defaultConfigPath = join(homedir(), ".agentpulse", "supervisor.json");
@@ -46,13 +47,14 @@ function buildDefaultConfig(): SupervisorConfig {
 		trustedRoots: [join(homedir(), "dev")],
 		claudeCommand: process.env.AGENTPULSE_CLAUDE_COMMAND,
 		codexCommand: process.env.AGENTPULSE_CODEX_COMMAND,
+		terminalPreference: process.env.AGENTPULSE_TERMINAL_APP,
 		capabilities: {
 			version: 1,
 			agentTypes: ["claude_code", "codex_cli"],
-			launchModes: ["interactive_terminal", "managed_codex"],
+			launchModes: ["headless", "managed_codex"],
 			os: currentOs(),
 			terminalSupport: [],
-			features: ["can_write_agents_md", "can_write_claude_md", "managed_codex"],
+			features: ["can_write_agents_md", "can_write_claude_md", "managed_codex", "headless_claude"],
 		},
 	};
 }
@@ -94,13 +96,52 @@ function resolveExecutable(command: string | undefined, fallback: string) {
 	} as const;
 }
 
+function detectTerminalSupport(config: SupervisorConfig) {
+	const detected: string[] = [];
+	const preference = config.terminalPreference?.trim();
+	const os = currentOs();
+
+	if (preference) {
+		detected.push(preference);
+	}
+
+	if (os === "macos") {
+		if (canExecute("/usr/bin/osascript")) detected.push("terminal_app");
+	}
+
+	if (os === "linux") {
+		for (const candidate of ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"]) {
+			if (resolveExecutable(undefined, candidate).resolvedPath) detected.push(candidate);
+		}
+	}
+
+	if (os === "windows") {
+		detected.push("windows_terminal");
+	}
+
+	return [...new Set(detected)];
+}
+
 function withExecutableCapabilities(config: SupervisorConfig): SupervisorConfig {
 	const claude = resolveExecutable(config.claudeCommand, "claude");
 	const codex = resolveExecutable(config.codexCommand, "codex");
+	const terminalSupport = detectTerminalSupport(config);
+	const launchModes: SupervisorRegistrationInput["capabilities"]["launchModes"] = ["headless"];
+	if (terminalSupport.length > 0) launchModes.push("interactive_terminal");
+	if (codex.resolvedPath) launchModes.push("managed_codex");
 	return {
 		...config,
 		capabilities: {
 			...config.capabilities,
+			launchModes,
+			terminalSupport,
+			features: [
+				"can_write_agents_md",
+				"can_write_claude_md",
+				"headless_claude",
+				...(terminalSupport.length > 0 ? ["interactive_terminal"] : []),
+				...(codex.resolvedPath ? ["managed_codex"] : []),
+			],
 			executables: {
 				claude: {
 					available: Boolean(claude.resolvedPath),

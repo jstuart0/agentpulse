@@ -146,7 +146,7 @@ supervisorsRouter.post("/supervisors/:id/launches/:launchId/status", requireSupe
 	const supervisorId = c.req.param("id") ?? "";
 	const launchId = c.req.param("launchId") ?? "";
 	const body = await c.req.json<{
-		status: "launching" | "awaiting_session" | "running" | "failed" | "cancelled";
+		status: "launching" | "awaiting_session" | "running" | "completed" | "failed" | "cancelled";
 		error?: string | null;
 		pid?: number | null;
 		providerLaunchMetadata?: Record<string, unknown> | null;

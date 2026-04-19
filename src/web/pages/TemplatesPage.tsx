@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { format } from "date-fns";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import type {
 	AgentType,
 	ApprovalPolicy,
@@ -50,6 +50,41 @@ function createBlankTemplate(agentType: AgentType = "codex_cli"): SessionTemplat
 		tags: [],
 		isFavorite: false,
 	};
+}
+
+const launchModeLabels: Record<LaunchMode, string> = {
+	headless: "Headless task",
+	interactive_terminal: "Interactive terminal",
+	managed_codex: "Managed Codex",
+};
+
+function getLaunchModeOptions(agentType: AgentType) {
+	if (agentType === "claude_code") {
+		return [
+			{
+				value: "headless" as const,
+				label: launchModeLabels.headless,
+				description: "Dispatch a task from AgentPulse, capture visible output, and finish in the dashboard.",
+			},
+			{
+				value: "interactive_terminal" as const,
+				label: launchModeLabels.interactive_terminal,
+				description: "Open a real Claude session on the host so you can keep driving it there while AgentPulse observes.",
+			},
+		];
+	}
+
+	return [
+		{
+			value: "managed_codex" as const,
+			label: launchModeLabels.managed_codex,
+			description: "Launch Codex through the managed app-server path with thread-title sync and lifecycle control.",
+		},
+	];
+}
+
+function defaultLaunchModeForAgent(agentType: AgentType): LaunchMode {
+	return agentType === "claude_code" ? "headless" : "managed_codex";
 }
 
 function parseEnvLines(raw: string): Record<string, string> {
@@ -141,6 +176,7 @@ function getHostCompatibility(
 }
 
 export function TemplatesPage() {
+	const navigate = useNavigate();
 	const [templates, setTemplates] = useState<SessionTemplate[]>([]);
 	const [agentFilter, setAgentFilter] = useState<AgentFilter>("all");
 	const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -156,7 +192,7 @@ export function TemplatesPage() {
 	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
 	const [lastCreatedLaunch, setLastCreatedLaunch] = useState<LaunchRequest | null>(null);
 	const [launching, setLaunching] = useState(false);
-	const [launchMode, setLaunchMode] = useState<LaunchMode>("managed_codex");
+	const [launchMode, setLaunchMode] = useState<LaunchMode>(defaultLaunchModeForAgent("codex_cli"));
 	const [routingPolicy, setRoutingPolicy] = useState<LaunchRoutingPolicy>("manual_target");
 	const [targetSupervisorId, setTargetSupervisorId] = useState<string>("");
 
@@ -179,6 +215,7 @@ export function TemplatesPage() {
 				...draft,
 				env: parseEnvLines(envText),
 				tags: parseTags(tagsText),
+				launchMode,
 			};
 			try {
 				const result = (await api.previewTemplate(body)) as TemplatePreview;
@@ -194,8 +231,8 @@ export function TemplatesPage() {
 	}, [draft, envText, tagsText]);
 
 	useEffect(() => {
-		if (draft.agentType === "claude_code" && launchMode === "managed_codex") {
-			setLaunchMode("interactive_terminal");
+		if (!getLaunchModeOptions(draft.agentType).some((option) => option.value === launchMode)) {
+			setLaunchMode(defaultLaunchModeForAgent(draft.agentType));
 		}
 	}, [draft.agentType, launchMode]);
 
@@ -255,7 +292,7 @@ export function TemplatesPage() {
 		setEnvText(envToLines(template.env));
 		setTagsText(tagsToString(template.tags));
 		setStatusMessage("");
-		setLaunchMode(template.agentType === "codex_cli" ? "managed_codex" : "interactive_terminal");
+		setLaunchMode(defaultLaunchModeForAgent(template.agentType));
 	}
 
 	function resetEditor(agentType: AgentType = draft.agentType) {
@@ -264,7 +301,7 @@ export function TemplatesPage() {
 		setEnvText("");
 		setTagsText("");
 		setStatusMessage("");
-		setLaunchMode(agentType === "codex_cli" ? "managed_codex" : "interactive_terminal");
+		setLaunchMode(defaultLaunchModeForAgent(agentType));
 	}
 
 	function updateDraft<K extends keyof SessionTemplateInput>(key: K, value: SessionTemplateInput[K]) {
@@ -354,12 +391,13 @@ export function TemplatesPage() {
 			setLastCreatedLaunch(result.launchRequest);
 			setStatusMessage(
 				result.launchRequest.status === "validated" || result.launchRequest.status === "queued"
-					? `Launch request created for ${result.supervisor.hostName}.`
+					? `Launch request created for ${result.supervisor.hostName}. Opening live launch detail…`
 					: result.launchRequest.validationSummary ||
 						result.launchRequest.error ||
 						"Launch request rejected.",
 			);
 			await loadPhaseTwoData();
+			navigate(`/launches/${result.launchRequest.id}`);
 		} catch (error) {
 			setStatusMessage(error instanceof Error ? error.message : "Launch validation failed.");
 		} finally {
@@ -383,6 +421,11 @@ export function TemplatesPage() {
 				launchMode,
 			}
 		: null;
+	const launchModeOptions = getLaunchModeOptions(draft.agentType);
+	const selectedLaunchMode = launchModeOptions.find((option) => option.value === launchMode) ?? launchModeOptions[0];
+	const canCreateLaunch =
+		Boolean(preview) &&
+		(routingPolicy !== "manual_target" || Boolean(targetSupervisorId));
 
 	return (
 		<div className="p-3 md:p-6">
@@ -614,11 +657,15 @@ export function TemplatesPage() {
 									onChange={(e) => setLaunchMode(e.target.value as LaunchMode)}
 									className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
 								>
-									<option value="interactive_terminal">Interactive terminal</option>
-									{draft.agentType === "codex_cli" && (
-										<option value="managed_codex">Managed Codex</option>
-									)}
+									{launchModeOptions.map((option) => (
+										<option key={option.value} value={option.value}>
+											{option.label}
+										</option>
+									))}
 								</select>
+								<div className="mt-1 text-xs text-muted-foreground">
+									{selectedLaunchMode?.description}
+								</div>
 							</label>
 						</div>
 
@@ -769,7 +816,7 @@ export function TemplatesPage() {
 							</button>
 							<button
 								onClick={handleValidateLaunch}
-								disabled={!preview || launching || !selectedSupervisor}
+								disabled={!canCreateLaunch || launching}
 								className="rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
 							>
 								{launching ? "Launching..." : "Create Launch Request"}
@@ -783,7 +830,7 @@ export function TemplatesPage() {
 								<div className="flex flex-wrap items-center justify-between gap-3">
 									<div>
 										<div className="font-medium text-foreground">
-											Latest launch: {lastCreatedLaunch.status}
+											Latest launch: {lastCreatedLaunch.status} · {launchModeLabels[lastCreatedLaunch.requestedLaunchMode]}
 										</div>
 										<div className="mt-1 text-muted-foreground">
 											{formatLaunchTime(lastCreatedLaunch.createdAt)}
@@ -922,7 +969,7 @@ export function TemplatesPage() {
 														</span>
 														<div className="text-right">
 															<span className="text-muted-foreground">
-																{launch.status} · {launch.requestedLaunchMode}
+																{launch.status} · {launchModeLabels[launch.requestedLaunchMode]}
 															</span>
 															{formatLaunchTime(launch.createdAt) && (
 																<div className="mt-1 text-[10px] text-muted-foreground">
