@@ -17,6 +17,7 @@ export type SandboxMode =
 
 export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
 export type ProviderSyncState = "pending" | "synced" | "failed";
+export type LaunchRoutingPolicy = "manual_target" | "first_capable_host";
 export type ControlActionType = "stop" | "retry" | "fork" | "resume" | "rename";
 export type ControlActionStatus = "queued" | "running" | "succeeded" | "failed";
 
@@ -158,6 +159,8 @@ export interface ManagedSession {
 	providerCapabilitySnapshot: Record<string, unknown> | null;
 	activeControlActionId: string | null;
 	controlLockExpiresAt: string | null;
+	hostName: string | null;
+	hostAffinityReason: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -360,6 +363,9 @@ export interface LaunchRequest {
 	launchSpec: LaunchSpec;
 	requestedBy: string | null;
 	requestedSupervisorId: string | null;
+	routingPolicy: LaunchRoutingPolicy | null;
+	resolvedSupervisorId: string | null;
+	routingDecision: Record<string, unknown> | null;
 	claimedBySupervisorId: string | null;
 	claimToken: string | null;
 	status: LaunchRequestStatus;
@@ -438,6 +444,7 @@ export interface LaunchRequestInput {
 	templateId?: string | null;
 	requestedSupervisorId?: string | null;
 	requestedLaunchMode?: LaunchMode;
+	routingPolicy?: LaunchRoutingPolicy | null;
 	template: SessionTemplateInput;
 	launchSpec: LaunchSpec;
 }

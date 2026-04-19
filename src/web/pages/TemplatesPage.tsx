@@ -96,6 +96,7 @@ export function TemplatesPage() {
 	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
 	const [launching, setLaunching] = useState(false);
 	const [launchMode, setLaunchMode] = useState<LaunchMode>("managed_codex");
+	const [targetSupervisorId, setTargetSupervisorId] = useState<string>("");
 
 	useEffect(() => {
 		loadTemplates();
@@ -161,6 +162,12 @@ export function TemplatesPage() {
 				api.getLaunches() as Promise<{ launches: LaunchRequest[] }>,
 			]);
 			setSupervisors(supervisorsRes.supervisors ?? []);
+			if (!targetSupervisorId && supervisorsRes.supervisors?.length) {
+				setTargetSupervisorId(
+					supervisorsRes.supervisors.find((item) => item.status === "connected")?.id ||
+						supervisorsRes.supervisors[0].id,
+				);
+			}
 			setRecentLaunches((launchesRes.launches ?? []).slice(0, 5));
 		} catch (error) {
 			console.error("Failed to load orchestration status", error);
@@ -266,6 +273,7 @@ export function TemplatesPage() {
 		try {
 			const result = (await api.createLaunch({
 				templateId: selectedId,
+				requestedSupervisorId: targetSupervisorId || undefined,
 				template: {
 					...draft,
 					env: parseEnvLines(envText),
@@ -288,6 +296,8 @@ export function TemplatesPage() {
 	}
 
 	const connectedSupervisor = supervisors.find((supervisor) => supervisor.status === "connected");
+	const selectedSupervisor =
+		supervisors.find((supervisor) => supervisor.id === targetSupervisorId) ?? connectedSupervisor ?? null;
 	const effectiveLaunchSpec = preview
 		? {
 				...preview.launchSpec,
@@ -316,8 +326,8 @@ export function TemplatesPage() {
 							New Template
 						</button>
 						<span className="text-xs text-muted-foreground">
-							{connectedSupervisor
-								? `Supervisor connected: ${connectedSupervisor.hostName}`
+							{selectedSupervisor
+								? `Target host: ${selectedSupervisor.hostName}`
 								: "No connected supervisor"}
 						</span>
 					</div>
@@ -530,6 +540,22 @@ export function TemplatesPage() {
 						</div>
 
 						<label className="block space-y-1.5 text-sm">
+							<span className="text-foreground">Target Host</span>
+							<select
+								value={targetSupervisorId}
+								onChange={(e) => setTargetSupervisorId(e.target.value)}
+								className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+							>
+								<option value="">Select a host</option>
+								{supervisors.map((supervisor) => (
+									<option key={supervisor.id} value={supervisor.id}>
+										{supervisor.hostName} · {supervisor.status}
+									</option>
+								))}
+							</select>
+						</label>
+
+						<label className="block space-y-1.5 text-sm">
 							<span className="text-foreground">Base Instructions</span>
 							<textarea
 								value={draft.baseInstructions}
@@ -596,7 +622,7 @@ export function TemplatesPage() {
 							</button>
 							<button
 								onClick={handleValidateLaunch}
-								disabled={!preview || launching || !connectedSupervisor}
+								disabled={!preview || launching || !selectedSupervisor}
 								className="rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
 							>
 								{launching ? "Launching..." : "Create Launch Request"}
@@ -619,12 +645,12 @@ export function TemplatesPage() {
 						<div className="rounded-md border border-border bg-background/60 p-3 text-xs">
 							<div className="font-medium text-foreground">
 								{connectedSupervisor
-									? `Validated against ${connectedSupervisor.hostName}`
+									? `Validated against ${selectedSupervisor?.hostName ?? connectedSupervisor.hostName}`
 									: "No connected supervisor"}
 							</div>
 							<div className="mt-1 text-muted-foreground">
-								{connectedSupervisor
-									? `Trusted roots: ${connectedSupervisor.trustedRoots.join(", ") || "none"}`
+								{selectedSupervisor
+									? `Trusted roots: ${selectedSupervisor.trustedRoots.join(", ") || "none"}`
 									: "Start the local supervisor before creating launch requests."}
 							</div>
 						</div>

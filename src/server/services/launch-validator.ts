@@ -29,6 +29,9 @@ function mapLaunchRequest(row: typeof launchRequests.$inferSelect): LaunchReques
 		launchSpec: row.launchSpec as unknown as LaunchSpec,
 		requestedBy: row.requestedBy,
 		requestedSupervisorId: row.requestedSupervisorId,
+		routingPolicy: (row.routingPolicy as LaunchRequest["routingPolicy"]) ?? null,
+		resolvedSupervisorId: row.resolvedSupervisorId ?? null,
+		routingDecision: (row.routingDecision as Record<string, unknown> | null) ?? null,
 		claimedBySupervisorId: row.claimedBySupervisorId,
 		claimToken: row.claimToken,
 		status: row.status as LaunchRequestStatus,
@@ -97,6 +100,7 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 	}
 
 	const requestedLaunchMode = input.requestedLaunchMode ?? input.launchSpec.launchMode ?? "interactive_terminal";
+	const routingPolicy = input.routingPolicy ?? "manual_target";
 	const supervisorValidation = validateAgainstSupervisor(
 		normalizedTemplate,
 		supervisor,
@@ -128,6 +132,12 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 			launchSpec: input.launchSpec as unknown as Record<string, unknown>,
 			requestedBy: "local-user",
 			requestedSupervisorId: supervisor.id,
+			routingPolicy,
+			resolvedSupervisorId: supervisor.id,
+			routingDecision: {
+				type: routingPolicy,
+				targetSupervisorId: supervisor.id,
+			},
 			status,
 			error: supervisorValidation.errors.join(" ") || null,
 			validationWarnings: warnings,

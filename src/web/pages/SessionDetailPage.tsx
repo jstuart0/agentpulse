@@ -534,6 +534,11 @@ function ManagedCodexStatus({
 					<p className="text-xs font-medium text-foreground">Managed Codex</p>
 					<p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
 						Thread title sync is managed by AgentPulse.
+						{managedSession.hostName && (
+							<>
+								{" "}Host <span className="font-mono text-foreground">{managedSession.hostName}</span>.
+							</>
+						)}
 						{managedSession.providerThreadId && (
 							<>
 								{" "}Thread <span className="font-mono text-foreground">{managedSession.providerThreadId}</span>.

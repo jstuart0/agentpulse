@@ -141,6 +141,9 @@ export function initializeDatabase() {
 			launch_spec_json TEXT NOT NULL DEFAULT '{}',
 			requested_by TEXT,
 			requested_supervisor_id TEXT,
+			routing_policy TEXT,
+			resolved_supervisor_id TEXT,
+			routing_decision_json TEXT,
 			claimed_by_supervisor_id TEXT,
 			claim_token TEXT,
 			status TEXT NOT NULL DEFAULT 'draft',
@@ -174,6 +177,8 @@ export function initializeDatabase() {
 			provider_capability_snapshot_json TEXT,
 			active_control_action_id TEXT,
 			control_lock_expires_at TEXT,
+			host_name TEXT,
+			host_affinity_reason TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
@@ -240,6 +245,9 @@ export function initializeDatabase() {
 		"ALTER TABLE supervisors ADD COLUMN config_schema_version INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE supervisors ADD COLUMN heartbeat_lease_expires_at TEXT NOT NULL DEFAULT (datetime('now', '+90 seconds'))",
 		"ALTER TABLE launch_requests ADD COLUMN requested_launch_mode TEXT NOT NULL DEFAULT 'interactive_terminal'",
+		"ALTER TABLE launch_requests ADD COLUMN routing_policy TEXT",
+		"ALTER TABLE launch_requests ADD COLUMN resolved_supervisor_id TEXT",
+		"ALTER TABLE launch_requests ADD COLUMN routing_decision_json TEXT",
 		"ALTER TABLE launch_requests ADD COLUMN validation_warnings_json TEXT NOT NULL DEFAULT '[]'",
 		"ALTER TABLE launch_requests ADD COLUMN validation_summary TEXT",
 		"ALTER TABLE launch_requests ADD COLUMN claimed_by_supervisor_id TEXT",
@@ -261,6 +269,8 @@ export function initializeDatabase() {
 		"ALTER TABLE managed_sessions ADD COLUMN provider_capability_snapshot_json TEXT",
 		"ALTER TABLE managed_sessions ADD COLUMN active_control_action_id TEXT",
 		"ALTER TABLE managed_sessions ADD COLUMN control_lock_expires_at TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN host_name TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN host_affinity_reason TEXT",
 	];
 
 	for (const migration of migrations) {

@@ -166,6 +166,10 @@ export const launchRequests = sqliteTable("launch_requests", {
 		.default({}),
 	requestedBy: text("requested_by"),
 	requestedSupervisorId: text("requested_supervisor_id"),
+	routingPolicy: text("routing_policy"),
+	resolvedSupervisorId: text("resolved_supervisor_id"),
+	routingDecision: text("routing_decision_json", { mode: "json" })
+		.$type<Record<string, unknown>>(),
 	claimedBySupervisorId: text("claimed_by_supervisor_id"),
 	claimToken: text("claim_token"),
 	status: text("status").notNull().default("draft"),
@@ -208,6 +212,8 @@ export const managedSessions = sqliteTable("managed_sessions", {
 		.$type<Record<string, unknown>>(),
 	activeControlActionId: text("active_control_action_id"),
 	controlLockExpiresAt: text("control_lock_expires_at"),
+	hostName: text("host_name"),
+	hostAffinityReason: text("host_affinity_reason"),
 	createdAt: text("created_at")
 		.notNull()
 		.default(sql`(datetime('now'))`),

@@ -1,6 +1,6 @@
 import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { managedSessions, sessions } from "../db/schema.js";
+import { managedSessions, sessions, supervisors } from "../db/schema.js";
 import { generateSessionName } from "./name-generator.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import type {
@@ -33,6 +33,8 @@ function mapManagedSession(row: typeof managedSessions.$inferSelect): ManagedSes
 			(row.providerCapabilitySnapshot as Record<string, unknown> | null) ?? null,
 		activeControlActionId: row.activeControlActionId ?? null,
 		controlLockExpiresAt: row.controlLockExpiresAt ?? null,
+		hostName: row.hostName ?? null,
+		hostAffinityReason: row.hostAffinityReason ?? null,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 	};
@@ -100,6 +102,11 @@ export async function upsertManagedSessionState(
 		.limit(1);
 
 	const desiredTitle = input.desiredThreadTitle ?? currentSession?.displayName ?? null;
+	const [supervisor] = await db
+		.select()
+		.from(supervisors)
+		.where(eq(supervisors.id, supervisorId))
+		.limit(1);
 	const launchRequestId = input.launchRequestId ?? existingManaged?.launchRequestId ?? input.sessionId;
 	const providerSessionId = input.providerSessionId ?? existingManaged?.providerSessionId ?? null;
 	const providerThreadId = input.providerThreadId ?? existingManaged?.providerThreadId ?? null;
@@ -132,6 +139,8 @@ export async function upsertManagedSessionState(
 			providerCapabilitySnapshot,
 			createdAt: timestamp,
 			updatedAt: timestamp,
+			hostName: existingManaged?.hostName ?? supervisor?.hostName ?? null,
+			hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
 		})
 		.onConflictDoUpdate({
 			target: managedSessions.sessionId,
@@ -150,6 +159,8 @@ export async function upsertManagedSessionState(
 				lastProviderSyncAt,
 				providerProtocolVersion,
 				providerCapabilitySnapshot,
+				hostName: existingManaged?.hostName ?? supervisor?.hostName ?? null,
+				hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
 				updatedAt: timestamp,
 			},
 		});
