@@ -279,6 +279,68 @@ function WorkspaceTabButton({
 	);
 }
 
+function SessionPromptComposer({
+	session,
+	onSubmitted,
+}: {
+	session: Session;
+	onSubmitted: () => Promise<void>;
+}) {
+	const [prompt, setPrompt] = useState("");
+	const [sending, setSending] = useState(false);
+	const isClaudeManaged = session.agentType === "claude_code" && Boolean(session.managedSession);
+	if (!isClaudeManaged) return null;
+
+	const interactive = session.managedSession?.managedState === "interactive_terminal";
+	const label = interactive ? "Send to terminal" : "Send task";
+	const hint = interactive
+		? "This resumes the live Claude terminal session on the selected host with your next prompt."
+		: "This runs a follow-up headless turn inside the same Claude session and streams the visible output back here.";
+
+	async function submit() {
+		const clean = prompt.trim();
+		if (!clean) return;
+		setSending(true);
+		try {
+			await api.sendSessionPrompt(session.sessionId, clean);
+			setPrompt("");
+			await onSubmitted();
+		} catch (error) {
+			console.error("Failed to send prompt", error);
+		} finally {
+			setSending(false);
+		}
+	}
+
+	return (
+		<div className="border-t border-border bg-card/80 px-3 py-3 md:px-6">
+			<div className="flex flex-col gap-3">
+				<div className="text-[11px] text-muted-foreground">{hint}</div>
+				<div className="flex flex-col gap-2 md:flex-row">
+					<textarea
+						value={prompt}
+						onChange={(e) => setPrompt(e.target.value)}
+						placeholder={interactive ? "What should the interactive Claude session do next?" : "Describe the next task for this headless session."}
+						className="min-h-20 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+					/>
+					<div className="flex flex-col gap-2 md:w-40">
+						<button
+							onClick={submit}
+							disabled={sending || !prompt.trim()}
+							className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+						>
+							{sending ? "Sending..." : label}
+						</button>
+						<div className="text-[11px] text-muted-foreground">
+							{interactive ? "AgentPulse will also log the prompt in the session timeline." : "Visible output lands in Activity and Launch."}
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	);
+}
+
 function SummaryField({ label, value, mono = false }: { label: string; value: string | null | undefined; mono?: boolean }) {
 	if (!value) return null;
 	return (
@@ -905,29 +967,31 @@ export function SessionDetailPage() {
 	const liveEventsMap = useEventStore((s) => s.liveEvents);
 	const clearLiveEvents = useEventStore((s) => s.clearSession);
 
+	const loadSessionWorkspace = useCallback(async () => {
+		if (!sessionId) return;
+		try {
+			const data = await api.getSession(sessionId);
+			setSession(data.session as Session);
+			setEvents(data.events as SessionEvent[]);
+			setControlActions((data.controlActions as ControlAction[]) || []);
+		} catch (err) {
+			console.error("Failed to fetch session:", err);
+		} finally {
+			setLoading(false);
+		}
+	}, [sessionId]);
+
 	// Removed live event merging -- just use DB events with fast polling
 
 	useEffect(() => {
 		if (!sessionId) return;
-		async function fetchData() {
-			try {
-				const data = await api.getSession(sessionId!);
-				setSession(data.session as Session);
-				setEvents(data.events as SessionEvent[]);
-				setControlActions((data.controlActions as ControlAction[]) || []);
-			} catch (err) {
-				console.error("Failed to fetch session:", err);
-			} finally {
-				setLoading(false);
-			}
-		}
-		fetchData();
-		const interval = setInterval(fetchData, 10_000);
+		loadSessionWorkspace();
+		const interval = setInterval(loadSessionWorkspace, 10_000);
 		return () => {
 			clearInterval(interval);
 			clearLiveEvents(sessionId);
 		};
-	}, [sessionId, clearLiveEvents]);
+	}, [sessionId, clearLiveEvents, loadSessionWorkspace]);
 
 	const liveEvents = ((sessionId && liveEventsMap.get(sessionId)) || []) as SessionEvent[];
 	const allEvents = mergeSessionEvents([...events].reverse(), liveEvents);
@@ -981,10 +1045,7 @@ export function SessionDetailPage() {
 		if (!sessionId) return;
 		try {
 			await api.stopSession(sessionId);
-			const data = await api.getSession(sessionId);
-			setSession(data.session as Session);
-			setEvents(data.events as SessionEvent[]);
-			setControlActions((data.controlActions as ControlAction[]) || []);
+			await loadSessionWorkspace();
 		} catch (error) {
 			console.error("Failed to stop session:", error);
 		}
@@ -1247,6 +1308,9 @@ export function SessionDetailPage() {
 					<div className="p-6 text-sm text-muted-foreground">No linked launch for this session.</div>
 				)}
 			</div>
+			{session.agentType === "claude_code" && session.managedSession ? (
+				<SessionPromptComposer session={session} onSubmitted={loadSessionWorkspace} />
+			) : null}
 		</div>
 	);
 }

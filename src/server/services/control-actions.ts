@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { controlActions, launchRequests, managedSessions } from "../db/schema.js";
+import { controlActions, launchRequests, managedSessions, sessions } from "../db/schema.js";
 import type {
 	ControlAction,
 	ControlActionStatus,
@@ -65,6 +65,69 @@ export async function queueStopAction(sessionId: string) {
 			requestedBy: "local-user",
 			status: "queued",
 			metadata: {},
+			createdAt: timestamp,
+			updatedAt: timestamp,
+		})
+		.returning();
+
+	await db
+		.update(managedSessions)
+		.set({
+			activeControlActionId: action.id,
+			controlLockExpiresAt: lockExpiryIso(),
+			updatedAt: timestamp,
+		})
+		.where(eq(managedSessions.sessionId, sessionId));
+
+	return mapControlAction(action);
+}
+
+export async function queuePromptAction(sessionId: string, prompt: string) {
+	const cleanPrompt = prompt.trim();
+	if (!cleanPrompt) throw new Error("Prompt is required.");
+
+	const [managed] = await db
+		.select()
+		.from(managedSessions)
+		.where(eq(managedSessions.sessionId, sessionId))
+		.limit(1);
+	if (!managed) throw new Error("Session is not managed.");
+	if (managed.activeControlActionId) {
+		throw new Error("Another control action is already in progress for this session.");
+	}
+
+	const [session] = await db
+		.select()
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (!session) throw new Error("Session not found.");
+
+	const [launch] = await db
+		.select()
+		.from(launchRequests)
+		.where(eq(launchRequests.id, managed.launchRequestId))
+		.limit(1);
+	if (!launch) throw new Error("Launch request not found.");
+
+	const timestamp = nowIso();
+	const [action] = await db
+		.insert(controlActions)
+		.values({
+			sessionId,
+			launchRequestId: managed.launchRequestId,
+			actionType: "prompt",
+			requestedBy: "local-user",
+			status: "queued",
+			metadata: {
+				prompt: cleanPrompt,
+				agentType: session.agentType,
+				cwd: session.cwd,
+				model: session.model,
+				managedState: managed.managedState,
+				launchMode: launch.requestedLaunchMode,
+				env: launch.env ?? {},
+			},
 			createdAt: timestamp,
 			updatedAt: timestamp,
 		})

@@ -46,6 +46,12 @@ export const api = {
 			method: "POST",
 		}),
 
+	sendSessionPrompt: (sessionId: string, prompt: string) =>
+		request<unknown>(`/sessions/${sessionId}/prompt`, {
+			method: "POST",
+			body: JSON.stringify({ prompt }),
+		}),
+
 	retrySession: (sessionId: string) =>
 		request<unknown>(`/sessions/${sessionId}/retry`, {
 			method: "POST",

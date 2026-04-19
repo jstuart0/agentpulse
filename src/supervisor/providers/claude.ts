@@ -28,6 +28,15 @@ type LaunchCallbacks = {
 	reportEvents: (events: ManagedSessionEventInput[]) => Promise<void>;
 };
 
+type ClaudePromptAction = {
+	sessionId: string;
+	prompt: string;
+	cwd: string;
+	model?: string | null;
+	env?: Record<string, string>;
+	managedState?: string | null;
+};
+
 type ActivityEntry = {
 	kind: "assistant" | "status" | "tool" | "error";
 	text: string;
@@ -200,7 +209,7 @@ function activityToManagedEvent(activity: ActivityEntry): ManagedSessionEventInp
 	};
 }
 
-function buildBaseArgs(launch: LaunchRequest, executable: string) {
+function buildLaunchBaseArgs(launch: LaunchRequest, executable: string) {
 	const args = [executable, "--session-id", launch.launchCorrelationId];
 	if (launch.model) {
 		args.push("--model", launch.model);
@@ -211,8 +220,20 @@ function buildBaseArgs(launch: LaunchRequest, executable: string) {
 	return args;
 }
 
+function buildResumeBaseArgs(action: ClaudePromptAction, executable: string) {
+	const args = [executable, "--resume", action.sessionId];
+	if (action.model) {
+		args.push("--model", action.model);
+	}
+	return args;
+}
+
 function buildPrompt(launch: LaunchRequest) {
 	return launch.taskPrompt.trim() || "Continue working on this project.";
+}
+
+function buildActionPrompt(action: ClaudePromptAction) {
+	return action.prompt.trim();
 }
 
 function buildLaunchEnv(launch: LaunchRequest) {
@@ -223,10 +244,25 @@ function buildLaunchEnv(launch: LaunchRequest) {
 	};
 }
 
+function buildActionEnv(action: ClaudePromptAction) {
+	return {
+		...process.env,
+		...(action.env ?? {}),
+		AGENTPULSE_LAUNCH_CORRELATION_ID: action.sessionId,
+	};
+}
+
 function buildTerminalExports(launch: LaunchRequest) {
 	return {
 		...launch.env,
 		AGENTPULSE_LAUNCH_CORRELATION_ID: launch.launchCorrelationId,
+	};
+}
+
+function buildActionTerminalExports(action: ClaudePromptAction) {
+	return {
+		...(action.env ?? {}),
+		AGENTPULSE_LAUNCH_CORRELATION_ID: action.sessionId,
 	};
 }
 
@@ -308,7 +344,7 @@ export async function launchClaudeInteractiveRequest(
 	const config = await loadSupervisorConfig();
 	const executable =
 		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
-	const args = buildBaseArgs(launch, executable);
+	const args = buildLaunchBaseArgs(launch, executable);
 	args.push(buildPrompt(launch));
 
 	const shellCommand = [
@@ -393,7 +429,7 @@ export async function launchClaudeHeadlessRequest(
 	const config = await loadSupervisorConfig();
 	const executable =
 		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
-	const args = buildBaseArgs(launch, executable);
+	const args = buildLaunchBaseArgs(launch, executable);
 	args.push(
 		"--print",
 		"--verbose",
@@ -596,5 +632,269 @@ export async function launchClaudeHeadlessRequest(
 		pid: proc.pid,
 		metadata,
 		monitor,
+	};
+}
+
+export async function promptClaudeHeadlessSession(
+	action: ClaudePromptAction,
+	reportProgress: (update: HeadlessProgressUpdate) => Promise<void>,
+	callbacks?: LaunchCallbacks,
+) {
+	const config = await loadSupervisorConfig();
+	const executable =
+		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
+	const args = buildResumeBaseArgs(action, executable);
+	args.push(
+		"--print",
+		"--verbose",
+		"--output-format",
+		"stream-json",
+		"--include-partial-messages",
+		buildActionPrompt(action),
+	);
+
+	const metadata: LaunchMetadata & {
+		executionState: "running" | "completed" | "failed";
+		output: {
+			assistantPreview: string;
+			stderrPreview: string;
+			activity: ActivityEntry[];
+			rawEventCount: number;
+		};
+	} = {
+		mode: "headless",
+		command: args,
+		resolvedExecutable: executable,
+		startedAt: new Date().toISOString(),
+		executionState: "running",
+		output: {
+			assistantPreview: "",
+			stderrPreview: "",
+			activity: [],
+			rawEventCount: 0,
+		},
+	};
+
+	const proc = Bun.spawn({
+		cmd: args,
+		cwd: action.cwd,
+		env: buildActionEnv(action),
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+
+	if (callbacks) {
+		await callbacks.reportState({
+			sessionId: action.sessionId,
+			agentType: "claude_code",
+			cwd: action.cwd,
+			model: action.model ?? null,
+			status: "active",
+			managedState: "headless",
+			providerSessionId: action.sessionId,
+			correlationSource: "launch_correlation_id",
+			metadata: {
+				launchMode: "headless",
+				pid: proc.pid ?? null,
+				executionState: "running",
+			},
+		});
+		await callbacks.reportEvents([
+			{
+				eventType: "HeadlessPromptSubmitted",
+				category: "prompt",
+				content: action.prompt,
+				rawPayload: { source: "agentpulse_workspace" },
+			},
+		]);
+	}
+
+	let lastReportAt = 0;
+	let emittedActivityCount = 0;
+	const flushProgress = async () => {
+		const now = Date.now();
+		if (now - lastReportAt < 750) return;
+		lastReportAt = now;
+		if (callbacks && metadata.output.activity.length > emittedActivityCount) {
+			const newActivity = metadata.output.activity.slice(emittedActivityCount);
+			emittedActivityCount = metadata.output.activity.length;
+			await callbacks.reportEvents(newActivity.map(activityToManagedEvent));
+		}
+		if (callbacks) {
+			await callbacks.reportState({
+				sessionId: action.sessionId,
+				agentType: "claude_code",
+				cwd: action.cwd,
+				model: action.model ?? null,
+				status: "active",
+				managedState: "headless",
+				providerSessionId: action.sessionId,
+				correlationSource: "launch_correlation_id",
+				metadata: {
+					launchMode: "headless",
+					pid: proc.pid ?? null,
+					executionState: metadata.executionState,
+				},
+			});
+		}
+		await reportProgress({
+			status: "running",
+			pid: proc.pid,
+			providerLaunchMetadata: metadata,
+		});
+	};
+
+	const stdoutTask = readTextStream(proc.stdout, async (line) => {
+		const summarized = summarizeStreamLine(line);
+		if (!summarized) return;
+		metadata.output.rawEventCount += 1;
+		if (summarized.assistantDelta) {
+			metadata.output.assistantPreview = appendAssistantDelta(
+				metadata.output.assistantPreview,
+				summarized.assistantDelta,
+			);
+		}
+		if (summarized.activity) {
+			metadata.output.activity = pushActivity(metadata.output.activity, summarized.activity);
+		}
+		await flushProgress();
+	});
+
+	const stderrTask = readTextStream(proc.stderr, async (line) => {
+		const cleaned = sanitizeCliText(line);
+		if (!cleaned) return;
+		metadata.output.stderrPreview = appendTail(metadata.output.stderrPreview, `${cleaned}\n`);
+		metadata.output.activity = pushActivity(metadata.output.activity, {
+			kind: "error",
+			text: cleaned,
+			timestamp: new Date().toISOString(),
+		});
+		await flushProgress();
+	});
+
+	const monitor = (async () => {
+		const [exitCode] = await Promise.all([proc.exited, stdoutTask, stderrTask]);
+		metadata.executionState = exitCode === 0 ? "completed" : "failed";
+		metadata.completedAt = new Date().toISOString();
+		metadata.exitCode = exitCode;
+		metadata.durationMs =
+			new Date(metadata.completedAt as string).getTime() - new Date(metadata.startedAt).getTime();
+
+		if (callbacks) {
+			if (metadata.output.activity.length > emittedActivityCount) {
+				const newActivity = metadata.output.activity.slice(emittedActivityCount);
+				emittedActivityCount = metadata.output.activity.length;
+				await callbacks.reportEvents(newActivity.map(activityToManagedEvent));
+			}
+			await callbacks.reportState({
+				sessionId: action.sessionId,
+				agentType: "claude_code",
+				cwd: action.cwd,
+				model: action.model ?? null,
+				status: exitCode === 0 ? "completed" : "failed",
+				managedState: exitCode === 0 ? "completed" : "failed",
+				providerSessionId: action.sessionId,
+				correlationSource: "launch_correlation_id",
+				metadata: {
+					launchMode: "headless",
+					pid: proc.pid ?? null,
+					executionState: metadata.executionState,
+					exitCode,
+				},
+			});
+			await callbacks.reportEvents([
+				{
+					eventType: exitCode === 0 ? "HeadlessPromptCompleted" : "HeadlessPromptFailed",
+					category: "system_event",
+					content:
+						exitCode === 0
+							? "Headless follow-up task completed."
+							: metadata.output.stderrPreview || `Headless follow-up failed with exit code ${exitCode}.`,
+					rawPayload: { source: "agentpulse_workspace", exitCode },
+				},
+			]);
+		}
+
+		await reportProgress({
+			status: exitCode === 0 ? "completed" : "failed",
+			pid: proc.pid,
+			error: exitCode === 0 ? null : metadata.output.stderrPreview || `Claude exited with code ${exitCode}`,
+			providerLaunchMetadata: metadata,
+		});
+	})();
+
+	return { pid: proc.pid, metadata, monitor };
+}
+
+export async function promptClaudeInteractiveSession(
+	action: ClaudePromptAction,
+	callbacks?: LaunchCallbacks,
+) {
+	const config = await loadSupervisorConfig();
+	const executable =
+		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
+	const args = buildResumeBaseArgs(action, executable);
+	args.push(buildActionPrompt(action));
+
+	const shellCommand = [
+		`cd ${quoteShell(action.cwd)}`,
+		...Object.entries(buildActionTerminalExports(action)).map(([key, value]) => `export ${key}=${quoteShell(String(value))}`),
+		`exec ${args.map((value) => quoteShell(value)).join(" ")}`,
+	].join("; ");
+
+	let proc;
+	if (config.capabilities.os === "macos") {
+		proc = await openMacTerminal(shellCommand, config.terminalPreference);
+	} else if (config.capabilities.os === "linux") {
+		proc = await openLinuxTerminal(shellCommand, config.capabilities.terminalSupport);
+	} else {
+		throw new Error(`Interactive terminal prompts are not implemented on ${config.capabilities.os}.`);
+	}
+	proc.unref();
+
+	if (callbacks) {
+		await callbacks.reportState({
+			sessionId: action.sessionId,
+			agentType: "claude_code",
+			cwd: action.cwd,
+			model: action.model ?? null,
+			status: "active",
+			managedState: "interactive_terminal",
+			providerSessionId: action.sessionId,
+			correlationSource: "launch_correlation_id",
+			metadata: {
+				launchMode: "interactive_terminal",
+				pid: proc.pid ?? null,
+			},
+		});
+		await callbacks.reportEvents([
+			{
+				eventType: "InteractivePromptSubmitted",
+				category: "prompt",
+				content: action.prompt,
+				rawPayload: { source: "agentpulse_workspace" },
+			},
+			{
+				eventType: "InteractivePromptHandedOff",
+				category: "system_event",
+				content: "Prompt handed off to the host terminal session.",
+				rawPayload: { source: "agentpulse_workspace", pid: proc.pid ?? null },
+			},
+		]);
+	}
+
+	return {
+		pid: proc.pid ?? null,
+		metadata: {
+			mode: "interactive_terminal",
+			command: args,
+			resolvedExecutable: executable,
+			startedAt: new Date().toISOString(),
+			terminalSupport: config.capabilities.terminalSupport,
+			terminalPreference: config.terminalPreference ?? null,
+			shellCommand,
+			resume: true,
+		} satisfies LaunchMetadata,
 	};
 }

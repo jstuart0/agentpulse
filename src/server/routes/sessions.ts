@@ -6,6 +6,7 @@ import { eq, desc, sql } from "drizzle-orm";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 import {
 	listControlActionsForSession,
+	queuePromptAction,
 	queueStopAction,
 	retryLaunchForSession,
 } from "../services/control-actions.js";
@@ -127,6 +128,16 @@ sessionsRouter.post("/sessions/:sessionId/stop", async (c) => {
 		return c.json({ action }, 202);
 	} catch (error) {
 		return c.json({ error: error instanceof Error ? error.message : "Unable to queue stop" }, 400);
+	}
+});
+
+sessionsRouter.post("/sessions/:sessionId/prompt", async (c) => {
+	try {
+		const body = await c.req.json<{ prompt?: string }>();
+		const action = await queuePromptAction(c.req.param("sessionId"), body.prompt || "");
+		return c.json({ action }, 202);
+	} catch (error) {
+		return c.json({ error: error instanceof Error ? error.message : "Unable to queue prompt" }, 400);
 	}
 });
 

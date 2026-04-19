@@ -18,7 +18,7 @@ export type SandboxMode =
 export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
 export type ProviderSyncState = "pending" | "synced" | "failed";
 export type LaunchRoutingPolicy = "manual_target" | "first_capable_host";
-export type ControlActionType = "stop" | "retry" | "fork" | "resume" | "rename";
+export type ControlActionType = "stop" | "retry" | "fork" | "resume" | "rename" | "prompt";
 export type ControlActionStatus = "queued" | "running" | "succeeded" | "failed";
 
 // Session lifecycle status

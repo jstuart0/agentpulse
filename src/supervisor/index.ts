@@ -1,5 +1,10 @@
 import { loadSupervisorConfig, saveSupervisorConfig } from "./config.js";
-import { launchClaudeHeadlessRequest, launchClaudeInteractiveRequest } from "./providers/claude.js";
+import {
+	launchClaudeHeadlessRequest,
+	launchClaudeInteractiveRequest,
+	promptClaudeHeadlessSession,
+	promptClaudeInteractiveSession,
+} from "./providers/claude.js";
 import type {
 	ControlAction,
 	LaunchRequest,
@@ -289,6 +294,115 @@ async function main() {
 								status: "failed",
 								error:
 									error instanceof Error ? error.message : "Failed to stop managed session",
+							}),
+						},
+					);
+				}
+				return;
+			}
+
+			if (result.action.actionType === "prompt" && result.action.sessionId) {
+				const metadata = (result.action.metadata ?? {}) as Record<string, unknown>;
+				const prompt = typeof metadata.prompt === "string" ? metadata.prompt : "";
+				const cwd = typeof metadata.cwd === "string" ? metadata.cwd : "";
+				const model = typeof metadata.model === "string" ? metadata.model : null;
+				const managedState =
+					typeof metadata.managedState === "string" ? metadata.managedState : null;
+				const env =
+					metadata.env && typeof metadata.env === "object" && !Array.isArray(metadata.env)
+						? (metadata.env as Record<string, string>)
+						: {};
+				const claudeCallbacks = {
+					reportState: async (body: ManagedSessionStateInput) =>
+						(await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
+							method: "POST",
+							body: JSON.stringify(body),
+						})) as { session: Session; managedSession: ManagedSession },
+					reportEvents: async (events: ManagedSessionEventInput[]) => {
+						await request(
+							`/supervisors/${registration.supervisor.id}/managed-sessions/${result.action!.sessionId}/events`,
+							{
+								method: "POST",
+								body: JSON.stringify({ events }),
+							},
+						);
+					},
+				};
+
+				try {
+					if (!prompt || !cwd) {
+						throw new Error("Prompt action is missing prompt or working directory.");
+					}
+
+					if (managedState === "interactive_terminal") {
+						const response = await promptClaudeInteractiveSession(
+							{
+								sessionId: result.action.sessionId,
+								prompt,
+								cwd,
+								model,
+								env,
+								managedState,
+							},
+							claudeCallbacks,
+						);
+						await request(
+							`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
+							{
+								method: "POST",
+								body: JSON.stringify({
+									status: "succeeded",
+									metadata: response.metadata,
+								}),
+							},
+						);
+						return;
+					}
+
+					const response = await promptClaudeHeadlessSession(
+						{
+							sessionId: result.action.sessionId,
+							prompt,
+							cwd,
+							model,
+							env,
+							managedState,
+						},
+						async () => {},
+						claudeCallbacks,
+					);
+					void response.monitor.then(async () => {
+						await request(
+							`/supervisors/${registration.supervisor.id}/control-actions/${result.action!.id}/status`,
+							{
+								method: "POST",
+								body: JSON.stringify({
+									status: "succeeded",
+									metadata: response.metadata,
+								}),
+							},
+						);
+					}).catch(async (error) => {
+						await request(
+							`/supervisors/${registration.supervisor.id}/control-actions/${result.action!.id}/status`,
+							{
+								method: "POST",
+								body: JSON.stringify({
+									status: "failed",
+									error: error instanceof Error ? error.message : "Failed to execute prompt",
+								}),
+							},
+						);
+					});
+						return;
+				} catch (error) {
+					await request(
+						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
+						{
+							method: "POST",
+							body: JSON.stringify({
+								status: "failed",
+								error: error instanceof Error ? error.message : "Failed to execute prompt action",
 							}),
 						},
 					);
