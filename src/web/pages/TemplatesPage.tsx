@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { format } from "date-fns";
 import type {
 	AgentType,
 	ApprovalPolicy,
@@ -79,6 +80,13 @@ function parseTags(raw: string) {
 		.split(",")
 		.map((tag) => tag.trim())
 		.filter(Boolean);
+}
+
+function formatLaunchTime(value: string | null | undefined) {
+	if (!value) return null;
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return value;
+	return format(date, "MMM d, yyyy h:mm:ss a");
 }
 
 function isWithinTrustedRoot(cwd: string, roots: string[]) {
@@ -884,9 +892,16 @@ export function TemplatesPage() {
 																? "Claude Code"
 																: "Codex CLI"}
 														</span>
-														<span className="text-muted-foreground">
-															{launch.status} · {launch.requestedLaunchMode}
-														</span>
+														<div className="text-right">
+															<span className="text-muted-foreground">
+																{launch.status} · {launch.requestedLaunchMode}
+															</span>
+															{formatLaunchTime(launch.createdAt) && (
+																<div className="mt-1 text-[10px] text-muted-foreground">
+																	{formatLaunchTime(launch.createdAt)}
+																</div>
+															)}
+														</div>
 													</div>
 													<div className="mt-1 break-all text-muted-foreground">
 														{launch.cwd}
@@ -894,6 +909,11 @@ export function TemplatesPage() {
 													{launch.validationSummary && (
 														<div className="mt-1 text-muted-foreground">
 															{launch.validationSummary}
+														</div>
+													)}
+													{launch.error && (
+														<div className="mt-1 text-red-300">
+															{launch.error}
 														</div>
 													)}
 												</div>
