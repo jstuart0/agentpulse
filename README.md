@@ -24,26 +24,27 @@ Your terminal tabs                          AgentPulse dashboard
 
 Each session gets a random memorable name (like `bold-falcon`) so you can match the dashboard to your terminal tabs at a glance. Click any session to see a live chat-style timeline of your prompts and the agent's tool usage.
 
-## Quick start (2 commands)
+## Quick start
 
-### Step 1: Start the server
+### Easiest local install: 1 command
 
-```bash
-docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jaystuart/agentpulse
-```
-
-> No Docker? Use the local installer instead:
-> ```bash
-> curl -fsSL http://localhost:3000/install-local.sh | bash
-> ```
-
-### Step 2: Connect your agents
+This installs AgentPulse locally with Bun + SQLite, starts it as a service, and configures Claude Code + Codex hooks automatically.
 
 ```bash
-curl -sSL http://localhost:3000/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash
 ```
 
-**Done.** Open [http://localhost:3000](http://localhost:3000) and start a new Claude Code or Codex session in another tab. It will appear on the dashboard within seconds.
+When it finishes, open [http://localhost:3000](http://localhost:3000) and start a new Claude Code or Codex session.
+
+### Docker install: 1 shell line
+
+If you prefer Docker, this starts the container, waits for health, and configures hooks:
+
+```bash
+docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jaystuart/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -sSL http://localhost:3000/setup.sh | bash
+```
+
+**Done.** Open [http://localhost:3000](http://localhost:3000) and new agent sessions will appear within seconds.
 
 > **Why localhost?** Claude Code and Codex block HTTP hooks to remote/private IPs as a security measure. Only `localhost` / `127.0.0.1` is allowed. This keeps things simple -- one Docker container on your machine, no networking to configure. If port 3000 is taken, use any free port:
 > ```bash
@@ -60,6 +61,65 @@ curl -sSL http://localhost:3000/setup.sh | bash
 - **Random session names** -- each session gets a name like `brave-falcon` so you can tell them apart
 - **CLAUDE.md editor** -- view and edit your agent instruction files from the dashboard
 - **Setup page** -- generates hook config you can copy-paste, or use the one-liner above
+
+## Install paths
+
+### 1. Local service with Bun + SQLite
+
+Recommended for most OSS users. No Docker, no Postgres, no Kubernetes.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash
+```
+
+What it does:
+
+- installs Bun if needed
+- clones AgentPulse to `~/.agentpulse/app`
+- builds the app
+- stores SQLite data in `~/.agentpulse/data`
+- starts AgentPulse as a local service
+  - macOS: `launchd`
+  - Linux: `systemd --user` when available
+- configures Claude Code + Codex hooks automatically when auth is disabled or an API key is provided
+
+Useful options:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash -s -- \
+  --port 4000 \
+  --public-url http://localhost:4000 \
+  --data-dir "$HOME/.agentpulse/data"
+```
+
+If you want auth enabled from the start:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash -s -- \
+  --disable-auth false \
+  --api-key ap_your_key_here
+```
+
+### 2. Local Docker container
+
+Best if you already use Docker locally.
+
+```bash
+docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jaystuart/agentpulse
+curl -sSL http://localhost:3000/setup.sh | bash
+```
+
+### 3. Remote dashboard + local hooks
+
+Best if you want to monitor sessions from other devices while your agents still run on your laptop/workstation.
+
+Use the relay installer:
+
+```bash
+curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
+```
+
+That installs a local relay on `localhost:4000`, configures hooks automatically, and forwards events to your remote AgentPulse server.
 
 ## Advanced: Remote dashboard + local hooks
 
@@ -162,54 +222,6 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 - **Default:** SQLite (zero config, stored at `./data/agentpulse.db`)
 - **Production:** Set `DATABASE_URL=postgresql://user:pass@host:5432/agentpulse`
 
-## Local install without Docker
-
-If you want a normal local service using Bun + SQLite instead of Docker, use the installer:
-
-```bash
-curl -fsSL http://localhost:3000/install-local.sh | bash
-```
-
-What it does:
-
-- installs Bun if needed
-- clones AgentPulse to `~/.agentpulse/app`
-- builds the app
-- stores SQLite data in `~/.agentpulse/data`
-- starts AgentPulse as a local service
-  - macOS: `launchd`
-  - Linux: `systemd --user` when available
-- prints the follow-up hook setup command
-
-After it finishes:
-
-```bash
-curl -sSL http://localhost:3000/setup.sh | bash
-```
-
-Useful installer options:
-
-```bash
-curl -fsSL http://localhost:3000/install-local.sh | bash -s -- \
-  --port 4000 \
-  --public-url http://localhost:4000 \
-  --data-dir "$HOME/.agentpulse/data"
-```
-
-If you do want to install directly from GitHub instead of an existing AgentPulse host:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash
-```
-
-Manual start after install:
-
-```bash
-cd ~/.agentpulse/app
-export $(cat .env.local | xargs)
-bun run start
-```
-
 ### All environment variables
 
 | Variable | Default | Description |
@@ -235,6 +247,31 @@ Running `curl -sSL .../setup.sh | bash` configures:
 4. **Verify** -- sends a test event to confirm connectivity
 
 All hooks use `async: true` so they never slow down your agents.
+
+## Manage a local install
+
+### macOS
+
+```bash
+launchctl unload ~/Library/LaunchAgents/dev.agentpulse.local.plist
+launchctl load ~/Library/LaunchAgents/dev.agentpulse.local.plist
+tail -f ~/.agentpulse/logs/agentpulse.out.log
+```
+
+### Linux
+
+```bash
+systemctl --user restart agentpulse
+journalctl --user -u agentpulse -f
+```
+
+### Manual start
+
+```bash
+cd ~/.agentpulse/app
+export $(cat .env.local | xargs)
+bun run start
+```
 
 ## Deploy on Kubernetes
 

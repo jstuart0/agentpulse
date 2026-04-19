@@ -12,6 +12,8 @@ PORT="3000"
 HOST="0.0.0.0"
 PUBLIC_URL=""
 DISABLE_AUTH="true"
+API_KEY=""
+AUTO_HOOKS="true"
 SERVICE_MODE="auto"
 SERVICE_NAME="agentpulse"
 
@@ -25,6 +27,8 @@ while [[ $# -gt 0 ]]; do
     --host) HOST="$2"; shift 2 ;;
     --public-url) PUBLIC_URL="$2"; shift 2 ;;
     --disable-auth) DISABLE_AUTH="$2"; shift 2 ;;
+    --api-key) API_KEY="$2"; shift 2 ;;
+    --skip-hooks) AUTO_HOOKS="false"; shift 1 ;;
     --service) SERVICE_MODE="$2"; shift 2 ;;
     -h|--help)
       cat <<EOF
@@ -42,6 +46,8 @@ Options:
   --host <host>            Bind host (default: 0.0.0.0)
   --public-url <url>       Public URL used for setup.sh output
   --disable-auth <bool>    Set DISABLE_AUTH (default: true)
+  --api-key <key>          Set AGENTPULSE_INITIAL_API_KEY
+  --skip-hooks             Do not auto-run setup.sh after install
   --service <mode>         auto | none | systemd | launchd
 EOF
       exit 0
@@ -64,6 +70,7 @@ echo "  Repo:       ${REPO_URL} (${REPO_REF})"
 echo "  Install:    ${INSTALL_DIR}"
 echo "  Data:       ${DATA_DIR}"
 echo "  URL:        ${PUBLIC_URL}"
+echo "  Hooks:      ${AUTO_HOOKS}"
 echo "  Service:    ${SERVICE_MODE}"
 echo ""
 
@@ -121,6 +128,7 @@ PORT=${PORT}
 HOST=${HOST}
 PUBLIC_URL=${PUBLIC_URL}
 DISABLE_AUTH=${DISABLE_AUTH}
+AGENTPULSE_INITIAL_API_KEY=${API_KEY}
 DATA_DIR=${DATA_DIR}
 SQLITE_PATH=${DATA_DIR}/agentpulse.db
 NODE_ENV=production
@@ -176,6 +184,7 @@ create_launchd() {
     <key>HOST</key><string>${HOST}</string>
     <key>PUBLIC_URL</key><string>${PUBLIC_URL}</string>
     <key>DISABLE_AUTH</key><string>${DISABLE_AUTH}</string>
+    <key>AGENTPULSE_INITIAL_API_KEY</key><string>${API_KEY}</string>
     <key>DATA_DIR</key><string>${DATA_DIR}</string>
     <key>SQLITE_PATH</key><string>${DATA_DIR}/agentpulse.db</string>
     <key>NODE_ENV</key><string>production</string>
@@ -233,9 +242,28 @@ for _ in $(seq 1 30); do
   if curl -fsSL "${PUBLIC_URL}/api/v1/health" >/dev/null 2>&1; then
     echo "  ✓ AgentPulse is running at ${PUBLIC_URL}"
     echo ""
-    echo "  Next step:"
-    echo "    curl -sSL ${PUBLIC_URL}/setup.sh | bash"
-    echo ""
+    if [[ "${AUTO_HOOKS}" == "true" ]]; then
+      if [[ "${DISABLE_AUTH}" == "true" ]]; then
+        echo "  Configuring Claude Code + Codex hooks..."
+        curl -fsSL "${PUBLIC_URL}/setup.sh" | bash
+        echo ""
+        echo "  ✓ Hooks configured"
+      elif [[ -n "${API_KEY}" ]]; then
+        echo "  Configuring Claude Code + Codex hooks with API key..."
+        curl -fsSL "${PUBLIC_URL}/setup.sh" | bash -s -- --key "${API_KEY}"
+        echo ""
+        echo "  ✓ Hooks configured"
+      else
+        echo "  ! Skipping automatic hook setup because auth is enabled and no --api-key was provided."
+        echo "    Run this next:"
+        echo "      curl -sSL ${PUBLIC_URL}/setup.sh | bash -s -- --key ap_YOUR_KEY"
+        echo ""
+      fi
+    else
+      echo "  Next step:"
+      echo "    curl -sSL ${PUBLIC_URL}/setup.sh | bash"
+      echo ""
+    fi
     echo "  Open:"
     echo "    ${PUBLIC_URL}"
     exit 0
