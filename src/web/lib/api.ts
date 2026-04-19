@@ -90,10 +90,33 @@ export const api = {
 
 	getSupervisor: (id: string) => request<{ supervisor: unknown }>(`/supervisors/${id}`),
 
+	enrollSupervisor: (body: { name?: string; expiresAt?: string | null }) =>
+		request<{
+			token: string;
+			info: {
+				id: string;
+				name: string;
+				tokenPrefix: string;
+				isActive: boolean;
+				expiresAt: string | null;
+				createdAt: string;
+				usedAt: string | null;
+				revokedAt: string | null;
+			};
+		}>("/supervisors/enroll", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
 	registerSupervisor: (body: unknown) =>
 		request<unknown>("/supervisors/register", {
 			method: "POST",
 			body: JSON.stringify(body),
+		}),
+
+	revokeSupervisor: (id: string) =>
+		request<{ ok: true }>(`/supervisors/${id}/revoke`, {
+			method: "POST",
 		}),
 
 	heartbeatSupervisor: (id: string) =>
