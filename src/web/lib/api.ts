@@ -36,5 +36,42 @@ export const api = {
 
 	getStats: () => request<unknown>("/sessions/stats"),
 
+	getTemplates: (params?: { agent_type?: string }) => {
+		const query = new URLSearchParams();
+		if (params?.agent_type) query.set("agent_type", params.agent_type);
+		const qs = query.toString();
+		return request<{ templates: unknown[]; total: number }>(`/templates${qs ? `?${qs}` : ""}`);
+	},
+
+	getTemplate: (id: string) => request<{ template: unknown }>(`/templates/${id}`),
+
+	createTemplate: (body: unknown) =>
+		request<{ template: unknown }>("/templates", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
+	updateTemplate: (id: string, body: unknown) =>
+		request<{ template: unknown }>(`/templates/${id}`, {
+			method: "PUT",
+			body: JSON.stringify(body),
+		}),
+
+	deleteTemplate: (id: string) =>
+		request<{ ok: true }>(`/templates/${id}`, {
+			method: "DELETE",
+		}),
+
+	duplicateTemplate: (id: string) =>
+		request<{ template: unknown }>(`/templates/${id}/duplicate`, {
+			method: "POST",
+		}),
+
+	previewTemplate: (body: unknown) =>
+		request<unknown>("/templates/preview", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
 	getHealth: () => request<{ status: string }>("/health"),
 };

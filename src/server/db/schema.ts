@@ -78,3 +78,33 @@ export const settings = sqliteTable("settings", {
 		.notNull()
 		.default(sql`(datetime('now'))`),
 });
+
+export const sessionTemplates = sqliteTable("session_templates", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	name: text("name").notNull(),
+	description: text("description"),
+	agentType: text("agent_type").notNull(),
+	cwd: text("cwd").notNull(),
+	baseInstructions: text("base_instructions").notNull().default(""),
+	taskPrompt: text("task_prompt").notNull().default(""),
+	model: text("model"),
+	approvalPolicy: text("approval_policy"),
+	sandboxMode: text("sandbox_mode"),
+	env: text("env", { mode: "json" })
+		.$type<Record<string, string>>()
+		.notNull()
+		.default({}),
+	tags: text("tags", { mode: "json" })
+		.$type<string[]>()
+		.notNull()
+		.default([]),
+	isFavorite: integer("is_favorite", { mode: "boolean" }).notNull().default(false),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});

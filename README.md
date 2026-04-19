@@ -55,6 +55,7 @@ curl -sSL http://localhost:3000/setup.sh | bash
 
 - **Dashboard** -- grid of all sessions with status, project name, session name, duration, and tool use count
 - **Session detail** -- click a session to see a chat-style timeline with your prompts as blue bubbles and tool usage inline
+- **Session templates** -- save reusable Claude Code and Codex session setups, then preview normalized launch specs and command guidance before launch automation exists
 - **Real-time updates** -- everything updates live via WebSocket, no refreshing needed
 - **Random session names** -- each session gets a name like `brave-falcon` so you can tell them apart
 - **CLAUDE.md editor** -- view and edit your agent instruction files from the dashboard

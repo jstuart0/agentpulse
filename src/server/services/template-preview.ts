@@ -1,0 +1,177 @@
+import { existsSync } from "fs";
+import { resolve, isAbsolute } from "path";
+import type {
+	AgentType,
+	ApprovalPolicy,
+	LaunchSpec,
+	ProviderLaunchGuidance,
+	SandboxMode,
+	SessionTemplateInput,
+	TemplatePreview,
+} from "../../shared/types.js";
+
+const VALID_AGENT_TYPES: AgentType[] = ["claude_code", "codex_cli"];
+const SUSPICIOUS_ENV_NAMES = new Set([
+	"OPENAI_API_KEY",
+	"ANTHROPIC_API_KEY",
+	"AWS_SECRET_ACCESS_KEY",
+	"GITHUB_TOKEN",
+	"SSH_AUTH_SOCK",
+]);
+
+function sanitizeString(value: unknown, fallback = ""): string {
+	if (typeof value !== "string") return fallback;
+	return value.replace(/\0/g, "").trim();
+}
+
+function sanitizeNullableString(value: unknown): string | null {
+	const sanitized = sanitizeString(value);
+	return sanitized.length > 0 ? sanitized : null;
+}
+
+function sanitizeEnv(env: unknown): Record<string, string> {
+	if (!env || typeof env !== "object" || Array.isArray(env)) return {};
+	const result: Record<string, string> = {};
+	for (const [key, rawValue] of Object.entries(env)) {
+		const cleanKey = sanitizeString(key);
+		if (!cleanKey) continue;
+		if (typeof rawValue !== "string") continue;
+		result[cleanKey] = rawValue.replace(/\0/g, "").trim();
+	}
+	return result;
+}
+
+function sanitizeTags(tags: unknown): string[] {
+	if (!Array.isArray(tags)) return [];
+	return tags
+		.map((tag) => sanitizeString(tag))
+		.filter(Boolean)
+		.slice(0, 20);
+}
+
+function quoteShell(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function normalizeTemplateInput(input: Partial<SessionTemplateInput>): SessionTemplateInput {
+	const agentType = VALID_AGENT_TYPES.includes(input.agentType as AgentType)
+		? (input.agentType as AgentType)
+		: "codex_cli";
+	const cwdInput = sanitizeString(input.cwd);
+	const cwd = cwdInput ? (isAbsolute(cwdInput) ? cwdInput : resolve(process.cwd(), cwdInput)) : "";
+	return {
+		name: sanitizeString(input.name),
+		description: sanitizeNullableString(input.description),
+		agentType,
+		cwd,
+		baseInstructions: sanitizeString(input.baseInstructions),
+		taskPrompt: sanitizeString(input.taskPrompt),
+		model: sanitizeNullableString(input.model),
+		approvalPolicy: (sanitizeNullableString(input.approvalPolicy) as ApprovalPolicy | null) ?? null,
+		sandboxMode: (sanitizeNullableString(input.sandboxMode) as SandboxMode | null) ?? null,
+		env: sanitizeEnv(input.env),
+		tags: sanitizeTags(input.tags),
+		isFavorite: Boolean(input.isFavorite),
+	};
+}
+
+export function validateTemplateInput(input: SessionTemplateInput) {
+	const errors: string[] = [];
+	const warnings: string[] = [];
+	const baseInstructions = input.baseInstructions ?? "";
+	const taskPrompt = input.taskPrompt ?? "";
+	const env = input.env ?? {};
+
+	if (!input.name) errors.push("Name is required.");
+	if (!VALID_AGENT_TYPES.includes(input.agentType)) errors.push("Agent type must be claude_code or codex_cli.");
+	if (!input.cwd) errors.push("Working directory is required.");
+
+	if (input.name.length > 120) errors.push("Name must be 120 characters or fewer.");
+	if (baseInstructions.length > 20000) errors.push("Base instructions must be 20,000 characters or fewer.");
+	if (taskPrompt.length > 12000) errors.push("Task prompt must be 12,000 characters or fewer.");
+
+	if (input.cwd && !existsSync(input.cwd)) warnings.push("Working directory does not exist on this machine.");
+	if (!baseInstructions) warnings.push("Base instructions are empty.");
+	if (!taskPrompt) warnings.push("Task prompt is empty.");
+	if (baseInstructions.length > 8000) warnings.push("Base instructions are unusually large.");
+
+	for (const envName of Object.keys(env)) {
+		if (SUSPICIOUS_ENV_NAMES.has(envName)) {
+			warnings.push(`Environment variable ${envName} looks like a secret and should probably stay outside a saved template.`);
+		}
+	}
+
+	return { errors, warnings };
+}
+
+function buildProviderGuidance(
+	agentType: AgentType,
+	template: SessionTemplateInput,
+	correlationId: string,
+): ProviderLaunchGuidance {
+	const base = [`cd ${quoteShell(template.cwd)}`];
+	const provider = agentType === "claude_code" ? "claude" : "codex";
+	const args: string[] = [];
+
+	if (template.model) args.push(`--model ${quoteShell(template.model)}`);
+
+	const command = [provider, ...args].join(" ");
+	const notes =
+		agentType === "claude_code"
+			? [
+					"Preview only. AgentPulse is not launching Claude Code yet.",
+					`Consider keeping reusable instructions in CLAUDE.md and passing the task prompt when starting the session.`,
+					`Future launch correlation id: ${correlationId}`,
+			  ]
+			: [
+					"Preview only. AgentPulse is not launching Codex yet.",
+					"Enable thread-title in /statusline later if you want the managed session name visible in the TUI.",
+					`Future launch correlation id: ${correlationId}`,
+			  ];
+
+	return {
+		label: agentType === "claude_code" ? "Claude Code" : "Codex CLI",
+		command: [...base, command].join(" && "),
+		recommended: agentType === template.agentType,
+		notes,
+	};
+}
+
+export function buildTemplatePreview(input: Partial<SessionTemplateInput>): TemplatePreview {
+	const normalizedTemplate = normalizeTemplateInput(input);
+	const launchCorrelationId = crypto.randomUUID();
+	const providerCommand = normalizedTemplate.agentType === "claude_code" ? "claude" : "codex";
+	const instructionsFile =
+		normalizedTemplate.agentType === "claude_code" ? "CLAUDE.md" : "AGENTS.md";
+
+	const launchSpec: LaunchSpec = {
+		version: 1,
+		launchCorrelationId,
+		managedMode: "unmanaged_preview",
+		agentType: normalizedTemplate.agentType,
+		cwd: normalizedTemplate.cwd,
+		model: normalizedTemplate.model ?? null,
+		approvalPolicy: normalizedTemplate.approvalPolicy ?? null,
+		sandboxMode: normalizedTemplate.sandboxMode ?? null,
+		baseInstructions: normalizedTemplate.baseInstructions ?? "",
+		taskPrompt: normalizedTemplate.taskPrompt ?? "",
+		env: normalizedTemplate.env ?? {},
+		providerConfig: {
+			command: providerCommand,
+			cliArgs: normalizedTemplate.model ? ["--model", normalizedTemplate.model] : [],
+			instructionsFile,
+		},
+	};
+
+	const validation = validateTemplateInput(normalizedTemplate);
+
+	return {
+		normalizedTemplate,
+		launchSpec,
+		guidance: {
+			claudeCode: buildProviderGuidance("claude_code", normalizedTemplate, launchCorrelationId),
+			codexCli: buildProviderGuidance("codex_cli", normalizedTemplate, launchCorrelationId),
+		},
+		warnings: validation.warnings,
+	};
+}

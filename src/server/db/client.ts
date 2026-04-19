@@ -90,12 +90,32 @@ export function initializeDatabase() {
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
 
+		CREATE TABLE IF NOT EXISTS session_templates (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT,
+			agent_type TEXT NOT NULL,
+			cwd TEXT NOT NULL,
+			base_instructions TEXT NOT NULL DEFAULT '',
+			task_prompt TEXT NOT NULL DEFAULT '',
+			model TEXT,
+			approval_policy TEXT,
+			sandbox_mode TEXT,
+			env TEXT NOT NULL DEFAULT '{}',
+			tags TEXT NOT NULL DEFAULT '[]',
+			is_favorite INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+
 		CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 		CREATE INDEX IF NOT EXISTS idx_sessions_agent_type ON sessions(agent_type);
 		CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity_at);
 		CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
 		CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
 		CREATE INDEX IF NOT EXISTS idx_events_event_type ON events(event_type);
+		CREATE INDEX IF NOT EXISTS idx_templates_agent_type ON session_templates(agent_type);
+		CREATE INDEX IF NOT EXISTS idx_templates_updated_at ON session_templates(updated_at);
 	`);
 
 	// Migrations: add columns that may not exist on older databases
@@ -113,6 +133,17 @@ export function initializeDatabase() {
 		"ALTER TABLE events ADD COLUMN content TEXT",
 		"ALTER TABLE events ADD COLUMN is_noise INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE events ADD COLUMN provider_event_type TEXT",
+		"ALTER TABLE session_templates ADD COLUMN description TEXT",
+		"ALTER TABLE session_templates ADD COLUMN base_instructions TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE session_templates ADD COLUMN task_prompt TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE session_templates ADD COLUMN model TEXT",
+		"ALTER TABLE session_templates ADD COLUMN approval_policy TEXT",
+		"ALTER TABLE session_templates ADD COLUMN sandbox_mode TEXT",
+		"ALTER TABLE session_templates ADD COLUMN env TEXT NOT NULL DEFAULT '{}'",
+		"ALTER TABLE session_templates ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
+		"ALTER TABLE session_templates ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE session_templates ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'))",
+		"ALTER TABLE session_templates ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
 	];
 
 	for (const migration of migrations) {

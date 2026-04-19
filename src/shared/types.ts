@@ -1,6 +1,20 @@
 // Agent types supported
 export type AgentType = "claude_code" | "codex_cli";
 
+export type ApprovalPolicy =
+	| "default"
+	| "suggest"
+	| "auto"
+	| "manual"
+	| "untrusted"
+	| "on-failure";
+
+export type SandboxMode =
+	| "default"
+	| "workspace-write"
+	| "read-only"
+	| "danger-full-access";
+
 // Session lifecycle status
 export type SessionStatus =
 	| "active"
@@ -193,4 +207,73 @@ export interface AppSettings {
 	publicUrl: string;
 	sessionTimeoutMinutes: number;
 	eventsRetentionDays: number;
+}
+
+export interface SessionTemplate {
+	id: string;
+	name: string;
+	description: string | null;
+	agentType: AgentType;
+	cwd: string;
+	baseInstructions: string;
+	taskPrompt: string;
+	model: string | null;
+	approvalPolicy: ApprovalPolicy | null;
+	sandboxMode: SandboxMode | null;
+	env: Record<string, string>;
+	tags: string[];
+	isFavorite: boolean;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface SessionTemplateInput {
+	name: string;
+	description?: string | null;
+	agentType: AgentType;
+	cwd: string;
+	baseInstructions?: string;
+	taskPrompt?: string;
+	model?: string | null;
+	approvalPolicy?: ApprovalPolicy | null;
+	sandboxMode?: SandboxMode | null;
+	env?: Record<string, string>;
+	tags?: string[];
+	isFavorite?: boolean;
+}
+
+export interface LaunchSpec {
+	version: 1;
+	launchCorrelationId: string;
+	managedMode: "unmanaged_preview";
+	agentType: AgentType;
+	cwd: string;
+	model: string | null;
+	approvalPolicy: ApprovalPolicy | null;
+	sandboxMode: SandboxMode | null;
+	baseInstructions: string;
+	taskPrompt: string;
+	env: Record<string, string>;
+	providerConfig: {
+		command: string;
+		cliArgs: string[];
+		instructionsFile: "CLAUDE.md" | "AGENTS.md";
+	};
+}
+
+export interface ProviderLaunchGuidance {
+	label: string;
+	command: string;
+	recommended: boolean;
+	notes: string[];
+}
+
+export interface TemplatePreview {
+	normalizedTemplate: SessionTemplateInput;
+	launchSpec: LaunchSpec;
+	guidance: {
+		claudeCode: ProviderLaunchGuidance;
+		codexCli: ProviderLaunchGuidance;
+	};
+	warnings: string[];
 }
