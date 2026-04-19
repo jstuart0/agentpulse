@@ -2,9 +2,11 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { AgentTypeBadge } from "../components/AgentTypeBadge.js";
+import { MarkdownContent } from "../components/MarkdownContent.js";
 import { formatDuration, formatTimeAgo } from "../lib/utils.js";
 import { api } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
+import { APP_API_BASE } from "../lib/paths.js";
 import type { ControlAction, EventCategory, Session, SessionEvent } from "../../shared/types.js";
 import { useEventStore } from "../stores/event-store.js";
 
@@ -12,6 +14,7 @@ function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNot
 	const [notes, setNotes] = useState(initialNotes);
 	const [saving, setSaving] = useState(false);
 	const [lastSaved, setLastSaved] = useState<string | null>(null);
+	const [mode, setMode] = useState<"edit" | "preview">("edit");
 	const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
 	// Auto-save 1 second after user stops typing
@@ -21,7 +24,7 @@ function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNot
 			saveTimeoutRef.current = setTimeout(async () => {
 				setSaving(true);
 				try {
-					await fetch(`/api/v1/sessions/${sessionId}/notes`, {
+					await fetch(`${APP_API_BASE}/sessions/${sessionId}/notes`, {
 						method: "PUT",
 						headers: { "Content-Type": "application/json" },
 						body: JSON.stringify({ notes: value }),
@@ -37,20 +40,34 @@ function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNot
 	return (
 		<div className="flex flex-col h-full">
 			<div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0">
-				<span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notes</span>
-				<span className="text-[10px] text-muted-foreground">
-					{saving ? "Saving..." : lastSaved ? `Saved ${lastSaved}` : ""}
-				</span>
+				<div className="flex items-center gap-2">
+					<span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notes</span>
+					<div className="flex items-center rounded-md border border-border p-0.5">
+						<ModeButton active={mode === "edit"} label="Edit" onClick={() => setMode("edit")} />
+						<ModeButton active={mode === "preview"} label="Preview" onClick={() => setMode("preview")} />
+					</div>
+				</div>
+				<span className="text-[10px] text-muted-foreground">{saving ? "Saving..." : lastSaved ? `Saved ${lastSaved}` : ""}</span>
 			</div>
-			<textarea
-				value={notes}
-				onChange={(e) => {
-					setNotes(e.target.value);
-					scheduleAutosave(e.target.value);
-				}}
-				placeholder="Write notes about this session..."
-				className="flex-1 w-full resize-none bg-transparent p-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
-			/>
+			{mode === "edit" ? (
+				<textarea
+					value={notes}
+					onChange={(e) => {
+						setNotes(e.target.value);
+						scheduleAutosave(e.target.value);
+					}}
+					placeholder="Write notes about this session..."
+					className="flex-1 w-full resize-none bg-transparent p-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
+				/>
+			) : (
+				<div className="flex-1 overflow-y-auto p-3">
+					{notes.trim() ? (
+						<MarkdownContent content={notes} />
+					) : (
+						<div className="text-sm text-muted-foreground">No notes yet.</div>
+					)}
+				</div>
+			)}
 		</div>
 	);
 }
@@ -62,7 +79,7 @@ function PromptBubble({ text, time }: { text: string; time: string }) {
 		<div className="flex justify-end">
 			<div className="max-w-[80%]">
 				<div className="rounded-2xl rounded-br-sm bg-primary/15 border border-primary/20 px-4 py-3">
-					<p className="text-sm text-foreground whitespace-pre-wrap">{text}</p>
+					<MarkdownContent content={text} compact />
 				</div>
 				<p className="text-[10px] text-muted-foreground mt-1 text-right">
 					{formatTimeAgo(time)}
@@ -77,7 +94,7 @@ function AssistantBubble({ text, time }: { text: string; time: string }) {
 		<div className="flex justify-start">
 			<div className="max-w-[80%]">
 				<div className="rounded-2xl rounded-bl-sm bg-sky-500/10 border border-sky-500/20 px-4 py-3">
-					<p className="text-sm text-foreground whitespace-pre-wrap">{text}</p>
+					<MarkdownContent content={text} compact />
 				</div>
 				<p className="text-[10px] text-muted-foreground mt-1">
 					{formatTimeAgo(time)}
@@ -111,7 +128,9 @@ function TimelineCard({
 				<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
 				<span className="text-[10px] text-muted-foreground">{formatTimeAgo(time)}</span>
 			</div>
-			<p className="mt-1.5 text-sm text-foreground whitespace-pre-wrap">{text}</p>
+			<div className="mt-1.5">
+				<MarkdownContent content={text} compact />
+			</div>
 		</div>
 	);
 }
@@ -303,6 +322,7 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
 	const [saveMsg, setSaveMsg] = useState("");
+	const [mode, setMode] = useState<"edit" | "preview">("edit");
 
 	// Detect if we fell back to the other file
 	const preferredFile = session.agentType === "codex_cli" ? "AGENTS.md" : "CLAUDE.md";
@@ -311,7 +331,7 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 	const isFallback = currentFile !== "" && currentFile !== preferredFile;
 
 	useEffect(() => {
-		fetch(`/api/v1/sessions/${session.sessionId}/claude-md`)
+		fetch(`${APP_API_BASE}/sessions/${session.sessionId}/claude-md`)
 			.then((r) => r.json())
 			.then((data) => {
 				setContent(data.content || "");
@@ -324,7 +344,7 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 	async function handleSave() {
 		setSaving(true);
 		try {
-			await fetch(`/api/v1/sessions/${session.sessionId}/claude-md`, {
+			await fetch(`${APP_API_BASE}/sessions/${session.sessionId}/claude-md`, {
 				method: "PUT",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ content, path: filePath }),
@@ -340,7 +360,7 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 		const newPath = session.cwd + "/" + preferredFile;
 		setSaving(true);
 		try {
-			await fetch(`/api/v1/sessions/${session.sessionId}/claude-md`, {
+			await fetch(`${APP_API_BASE}/sessions/${session.sessionId}/claude-md`, {
 				method: "PUT",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ content, path: newPath }),
@@ -382,6 +402,10 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 					}`}>
 						{(content.length / 1024).toFixed(1)}KB
 					</span>
+					<div className="flex items-center rounded-md border border-border p-0.5">
+						<ModeButton active={mode === "edit"} label="Edit" onClick={() => setMode("edit")} />
+						<ModeButton active={mode === "preview"} label="Preview" onClick={() => setMode("preview")} />
+					</div>
 				</div>
 				<div className="flex items-center gap-2">
 					<span className="text-[10px] text-muted-foreground">{saveMsg}</span>
@@ -394,12 +418,22 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 					</button>
 				</div>
 			</div>
-			<textarea
-				value={content}
-				onChange={(e) => setContent(e.target.value)}
-				className="flex-1 w-full resize-none bg-transparent p-3 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none leading-relaxed"
-				placeholder="No CLAUDE.md found"
-			/>
+			{mode === "edit" ? (
+				<textarea
+					value={content}
+					onChange={(e) => setContent(e.target.value)}
+					className="flex-1 w-full resize-none bg-transparent p-3 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none leading-relaxed"
+					placeholder="No CLAUDE.md found"
+				/>
+			) : (
+				<div className="flex-1 overflow-y-auto p-3">
+					{content.trim() ? (
+						<MarkdownContent content={content} />
+					) : (
+						<div className="text-sm text-muted-foreground">No {alternateFile} or {preferredFile} content found.</div>
+					)}
+				</div>
+			)}
 		</div>
 	);
 }
@@ -448,7 +482,7 @@ function InlineRename({ sessionId, currentName, onRenamed }: { sessionId: string
 
 	async function save() {
 		if (!value.trim()) { setEditing(false); return; }
-		await fetch(`/api/v1/sessions/${sessionId}/rename`, {
+		await fetch(`${APP_API_BASE}/sessions/${sessionId}/rename`, {
 			method: "PUT",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ name: value.trim() }),

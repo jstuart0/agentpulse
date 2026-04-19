@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import type { ApiKeyInfo, LaunchRequest, SupervisorRecord } from "../../shared/types.js";
+import { APP_API_BASE, BROWSER_WS_PATH } from "../lib/paths.js";
 
-const BASE = "/api/v1";
+const BASE = APP_API_BASE;
 
 export function SettingsPage() {
 	const [apiKeys, setApiKeys] = useState<ApiKeyInfo[]>([]);
@@ -433,7 +434,8 @@ export function SettingsPage() {
 						<p className="text-muted-foreground text-xs">WebSocket</p>
 						<p className="font-mono text-xs break-all">
 							{window.location.protocol === "https:" ? "wss:" : "ws:"}//
-							{window.location.host}/api/v1/ws
+							{window.location.host}
+							{BROWSER_WS_PATH}
 						</p>
 					</div>
 				</div>

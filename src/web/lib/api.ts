@@ -1,4 +1,6 @@
-const BASE_URL = "/api/v1";
+import { APP_API_BASE } from "./paths.js";
+
+const BASE_URL = APP_API_BASE;
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	const res = await fetch(`${BASE_URL}${path}`, {
