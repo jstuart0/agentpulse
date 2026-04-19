@@ -154,6 +154,7 @@ export function TemplatesPage() {
 	const [statusMessage, setStatusMessage] = useState("");
 	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
 	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
+	const [lastCreatedLaunch, setLastCreatedLaunch] = useState<LaunchRequest | null>(null);
 	const [launching, setLaunching] = useState(false);
 	const [launchMode, setLaunchMode] = useState<LaunchMode>("managed_codex");
 	const [routingPolicy, setRoutingPolicy] = useState<LaunchRoutingPolicy>("manual_target");
@@ -273,6 +274,7 @@ export function TemplatesPage() {
 	async function handleSave() {
 		setSaving(true);
 		setStatusMessage("");
+		setLastCreatedLaunch(null);
 		const payload = {
 			...draft,
 			env: parseEnvLines(envText),
@@ -349,10 +351,13 @@ export function TemplatesPage() {
 				launchSpec: effectiveLaunchSpec ?? preview.launchSpec,
 				requestedLaunchMode: launchMode,
 			})) as { launchRequest: LaunchRequest; supervisor: SupervisorRecord };
+			setLastCreatedLaunch(result.launchRequest);
 			setStatusMessage(
-				result.launchRequest.status === "validated"
+				result.launchRequest.status === "validated" || result.launchRequest.status === "queued"
 					? `Launch request created for ${result.supervisor.hostName}.`
-					: result.launchRequest.validationSummary || "Launch request rejected.",
+					: result.launchRequest.validationSummary ||
+						result.launchRequest.error ||
+						"Launch request rejected.",
 			);
 			await loadPhaseTwoData();
 		} catch (error) {
@@ -773,6 +778,27 @@ export function TemplatesPage() {
 								<span className="text-xs text-muted-foreground">{statusMessage}</span>
 							)}
 						</div>
+						{lastCreatedLaunch && (
+							<div className="rounded-md border border-border bg-background/50 px-3 py-2 text-xs">
+								<div className="flex flex-wrap items-center justify-between gap-3">
+									<div>
+										<div className="font-medium text-foreground">
+											Latest launch: {lastCreatedLaunch.status}
+										</div>
+										<div className="mt-1 text-muted-foreground">
+											{formatLaunchTime(lastCreatedLaunch.createdAt)}
+											{lastCreatedLaunch.error ? ` · ${lastCreatedLaunch.error}` : ""}
+										</div>
+									</div>
+									<Link
+										to={`/launches/${lastCreatedLaunch.id}`}
+										className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-accent transition-colors"
+									>
+										View launch
+									</Link>
+								</div>
+							</div>
+						)}
 					</section>
 
 					<section className="rounded-lg border border-border bg-card p-4 space-y-4">
