@@ -28,7 +28,7 @@ Each session gets a random memorable name (like `bold-falcon`) so you can match 
 
 ### Easiest local install: 1 command
 
-This installs AgentPulse locally with Bun + SQLite, starts it as a service, and configures Claude Code + Codex hooks automatically.
+This installs AgentPulse locally with Bun + SQLite, starts the web app and local supervisor as services, and configures Claude Code + Codex hooks automatically.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash
@@ -44,7 +44,10 @@ If you prefer Docker, this starts the container, waits for health, and configure
 docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jaystuart/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -sSL http://localhost:3000/setup.sh | bash
 ```
 
-**Done.** Open [http://localhost:3000](http://localhost:3000) and new agent sessions will appear within seconds.
+**Done.** Open [http://localhost:3000](http://localhost:3000) and you have:
+- live session observability
+- local launch/control via the supervisor
+- Claude Code + Codex hooks already configured
 
 > **Why localhost?** Claude Code and Codex block HTTP hooks to remote/private IPs as a security measure. Only `localhost` / `127.0.0.1` is allowed. This keeps things simple -- one Docker container on your machine, no networking to configure. If port 3000 is taken, use any free port:
 > ```bash
@@ -66,7 +69,7 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 
 ### 1. Local service with Bun + SQLite
 
-Recommended for most OSS users. No Docker, no Postgres, no Kubernetes.
+Recommended for most OSS users. No Docker, no Postgres, no Kubernetes. This is the full single-machine setup: dashboard, hooks, and local supervisor/control plane.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash
@@ -81,7 +84,10 @@ What it does:
 - starts AgentPulse as a local service
   - macOS: `launchd`
   - Linux: `systemd --user` when available
+- writes `~/.agentpulse/supervisor.json`
+- starts the local supervisor service on the same machine
 - configures Claude Code + Codex hooks automatically when auth is disabled or an API key is provided
+- gives you local live-session control without extra manual setup on the same machine
 
 Useful options:
 
@@ -98,6 +104,12 @@ If you want auth enabled from the start:
 curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash -s -- \
   --disable-auth false \
   --api-key ap_your_key_here
+```
+
+If you only want observability and do not want the local supervisor/control plane:
+
+```bash
+curl -fsSL https://agentpulse.xmojo.net/install-local.sh | bash -s -- --skip-supervisor
 ```
 
 ### 2. Local Docker container
@@ -256,6 +268,7 @@ All hooks use `async: true` so they never slow down your agents.
 launchctl unload ~/Library/LaunchAgents/dev.agentpulse.local.plist
 launchctl load ~/Library/LaunchAgents/dev.agentpulse.local.plist
 tail -f ~/.agentpulse/logs/agentpulse.out.log
+tail -f ~/.agentpulse/logs/supervisor.out.log
 ```
 
 ### Linux
