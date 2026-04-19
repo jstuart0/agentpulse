@@ -90,12 +90,13 @@ export const api = {
 
 	getSupervisor: (id: string) => request<{ supervisor: unknown }>(`/supervisors/${id}`),
 
-	enrollSupervisor: (body: { name?: string; expiresAt?: string | null }) =>
+	enrollSupervisor: (body: { name?: string; expiresAt?: string | null; supervisorId?: string | null }) =>
 		request<{
 			token: string;
 			info: {
 				id: string;
 				name: string;
+				supervisorId?: string | null;
 				tokenPrefix: string;
 				isActive: boolean;
 				expiresAt: string | null;
@@ -106,6 +107,25 @@ export const api = {
 		}>("/supervisors/enroll", {
 			method: "POST",
 			body: JSON.stringify(body),
+		}),
+
+	rotateSupervisor: (id: string, body?: { expiresAt?: string | null }) =>
+		request<{
+			token: string;
+			info: {
+				id: string;
+				name: string;
+				supervisorId?: string | null;
+				tokenPrefix: string;
+				isActive: boolean;
+				expiresAt: string | null;
+				createdAt: string;
+				usedAt: string | null;
+				revokedAt: string | null;
+			};
+		}>(`/supervisors/${id}/rotate`, {
+			method: "POST",
+			body: JSON.stringify(body ?? {}),
 		}),
 
 	registerSupervisor: (body: unknown) =>

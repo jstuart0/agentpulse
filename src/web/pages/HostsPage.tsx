@@ -10,11 +10,14 @@ export function HostsPage() {
 	const [enrollExpiresAt, setEnrollExpiresAt] = useState("");
 	const [creatingToken, setCreatingToken] = useState(false);
 	const [revokingId, setRevokingId] = useState<string | null>(null);
+	const [rotatingId, setRotatingId] = useState<string | null>(null);
 	const [error, setError] = useState("");
 	const [createdToken, setCreatedToken] = useState<{
 		token: string;
 		name: string;
 		expiresAt: string | null;
+		mode: "enroll" | "rotate";
+		hostName?: string | null;
 	} | null>(null);
 
 	async function loadSupervisors(showInitialLoader = false) {
@@ -52,6 +55,8 @@ export function HostsPage() {
 				token: result.token,
 				name: result.info.name,
 				expiresAt: result.info.expiresAt,
+				mode: "enroll",
+				hostName: null,
 			});
 			setEnrollName("");
 			setEnrollExpiresAt("");
@@ -84,6 +89,26 @@ export function HostsPage() {
 			setError("Failed to revoke host.");
 		} finally {
 			setRevokingId(null);
+		}
+	}
+
+	async function handleRotateSupervisor(supervisor: SupervisorRecord) {
+		setRotatingId(supervisor.id);
+		setError("");
+		try {
+			const result = await api.rotateSupervisor(supervisor.id, {});
+			setCreatedToken({
+				token: result.token,
+				name: result.info.name,
+				expiresAt: result.info.expiresAt,
+				mode: "rotate",
+				hostName: supervisor.hostName,
+			});
+		} catch (err) {
+			console.error("Failed to rotate supervisor credential:", err);
+			setError("Failed to create re-enrollment token.");
+		} finally {
+			setRotatingId(null);
 		}
 	}
 
@@ -164,7 +189,11 @@ export function HostsPage() {
 							<div className="mt-4 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4">
 								<div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
 									<div>
-										<div className="text-sm font-medium text-foreground">Enrollment token created</div>
+										<div className="text-sm font-medium text-foreground">
+											{createdToken.mode === "rotate"
+												? `Re-enrollment token created${createdToken.hostName ? ` for ${createdToken.hostName}` : ""}`
+												: "Enrollment token created"}
+										</div>
 										<div className="mt-1 text-xs text-muted-foreground">
 											This is only shown once. Save it before closing this page.
 										</div>
@@ -192,6 +221,11 @@ export function HostsPage() {
 										{" "}
 										<code className="text-foreground">bun run supervisor</code>
 									</div>
+									{createdToken.mode === "rotate" && (
+										<div>
+											This token re-enrolls the existing host and replaces its scoped credential.
+										</div>
+									)}
 									<div>
 										Name:
 										{" "}
@@ -299,13 +333,22 @@ export function HostsPage() {
 											? "Supervisor access revoked"
 											: "Scoped credential active"}
 									</div>
-									<button
-										onClick={() => handleRevokeSupervisor(supervisor.id)}
-										disabled={supervisor.enrollmentState === "revoked" || revokingId === supervisor.id}
-										className="inline-flex h-8 items-center justify-center rounded-md border border-red-500/30 px-3 text-xs text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-									>
-										{revokingId === supervisor.id ? "Revoking..." : "Revoke"}
-									</button>
+									<div className="flex items-center gap-2">
+										<button
+											onClick={() => handleRotateSupervisor(supervisor)}
+											disabled={supervisor.enrollmentState === "revoked" || rotatingId === supervisor.id}
+											className="inline-flex h-8 items-center justify-center rounded-md border border-border px-3 text-xs text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+										>
+											{rotatingId === supervisor.id ? "Rotating..." : "Rotate"}
+										</button>
+										<button
+											onClick={() => handleRevokeSupervisor(supervisor.id)}
+											disabled={supervisor.enrollmentState === "revoked" || revokingId === supervisor.id}
+											className="inline-flex h-8 items-center justify-center rounded-md border border-red-500/30 px-3 text-xs text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+										>
+											{revokingId === supervisor.id ? "Revoking..." : "Revoke"}
+										</button>
+									</div>
 								</div>
 							</div>
 						))}

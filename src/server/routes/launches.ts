@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { desc, eq } from "drizzle-orm";
+import { HTTPException } from "hono/http-exception";
 import type { LaunchRequestInput } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { launchRequests } from "../db/schema.js";
@@ -26,9 +27,19 @@ launchesRouter.get("/launches/:id", async (c) => {
 });
 
 launchesRouter.post("/launches", async (c) => {
-	const body = await c.req.json<LaunchRequestInput>();
-	const result = await createValidatedLaunchRequest(body);
-	return c.json(result, result.launchRequest.status === "validated" ? 201 : 200);
+	try {
+		const body = await c.req.json<LaunchRequestInput>();
+		const result = await createValidatedLaunchRequest(body);
+		return c.json(result, result.launchRequest.status === "validated" ? 201 : 200);
+	} catch (error) {
+		if (error instanceof HTTPException) {
+			return c.json({ error: error.message }, error.status);
+		}
+		return c.json(
+			{ error: error instanceof Error ? error.message : "Launch validation failed" },
+			400,
+		);
+	}
 });
 
 export { launchesRouter };

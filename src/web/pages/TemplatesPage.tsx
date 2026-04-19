@@ -4,6 +4,7 @@ import type {
 	ApprovalPolicy,
 	LaunchMode,
 	LaunchRequest,
+	LaunchRoutingPolicy,
 	SandboxMode,
 	SessionTemplate,
 	SessionTemplateInput,
@@ -80,6 +81,43 @@ function parseTags(raw: string) {
 		.filter(Boolean);
 }
 
+function isWithinTrustedRoot(cwd: string, roots: string[]) {
+	const normalizedCwd = cwd.trim().replace(/\\/g, "/");
+	if (!normalizedCwd) return true;
+	return roots.some((root) => {
+		const normalizedRoot = root.replace(/\\/g, "/");
+		return normalizedCwd === normalizedRoot || normalizedCwd.startsWith(`${normalizedRoot}/`);
+	});
+}
+
+function getHostCompatibility(
+	template: SessionTemplateInput,
+	supervisor: SupervisorRecord,
+	requestedLaunchMode: LaunchMode,
+) {
+	const errors: string[] = [];
+	const warnings: string[] = [];
+
+	if (!supervisor.capabilities.agentTypes.includes(template.agentType)) {
+		errors.push(`Does not support ${template.agentType === "claude_code" ? "Claude Code" : "Codex CLI"}.`);
+	}
+	if (!supervisor.capabilities.launchModes.includes(requestedLaunchMode)) {
+		errors.push(`Does not support ${requestedLaunchMode}.`);
+	}
+	if (template.cwd.trim() && !isWithinTrustedRoot(template.cwd, supervisor.trustedRoots)) {
+		errors.push("Working directory is outside trusted roots.");
+	}
+	if (!template.model?.trim()) {
+		warnings.push("Will use the provider default model.");
+	}
+
+	return {
+		ok: errors.length === 0,
+		errors,
+		warnings,
+	};
+}
+
 export function TemplatesPage() {
 	const [templates, setTemplates] = useState<SessionTemplate[]>([]);
 	const [agentFilter, setAgentFilter] = useState<AgentFilter>("all");
@@ -96,6 +134,7 @@ export function TemplatesPage() {
 	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
 	const [launching, setLaunching] = useState(false);
 	const [launchMode, setLaunchMode] = useState<LaunchMode>("managed_codex");
+	const [routingPolicy, setRoutingPolicy] = useState<LaunchRoutingPolicy>("manual_target");
 	const [targetSupervisorId, setTargetSupervisorId] = useState<string>("");
 
 	useEffect(() => {
@@ -268,12 +307,18 @@ export function TemplatesPage() {
 
 	async function handleValidateLaunch() {
 		if (!preview) return;
+		if (routingPolicy === "manual_target" && !targetSupervisorId) {
+			setStatusMessage("Select a target host or switch to first capable host routing.");
+			return;
+		}
 		setLaunching(true);
 		setStatusMessage("");
 		try {
 			const result = (await api.createLaunch({
 				templateId: selectedId,
-				requestedSupervisorId: targetSupervisorId || undefined,
+				requestedSupervisorId:
+					routingPolicy === "manual_target" ? targetSupervisorId || undefined : undefined,
+				routingPolicy,
 				template: {
 					...draft,
 					env: parseEnvLines(envText),
@@ -298,6 +343,13 @@ export function TemplatesPage() {
 	const connectedSupervisor = supervisors.find((supervisor) => supervisor.status === "connected");
 	const selectedSupervisor =
 		supervisors.find((supervisor) => supervisor.id === targetSupervisorId) ?? connectedSupervisor ?? null;
+	const compatibleHosts = supervisors.map((supervisor) => ({
+		supervisor,
+		compatibility: getHostCompatibility(draft, supervisor, launchMode),
+	}));
+	const firstCapableHost =
+		compatibleHosts.find((candidate) => candidate.supervisor.status === "connected" && candidate.compatibility.ok)
+			?.supervisor ?? null;
 	const effectiveLaunchSpec = preview
 		? {
 				...preview.launchSpec,
@@ -326,9 +378,13 @@ export function TemplatesPage() {
 							New Template
 						</button>
 						<span className="text-xs text-muted-foreground">
-							{selectedSupervisor
-								? `Target host: ${selectedSupervisor.hostName}`
-								: "No connected supervisor"}
+							{routingPolicy === "manual_target"
+								? selectedSupervisor
+									? `Target host: ${selectedSupervisor.hostName}`
+									: "No target host selected"
+								: firstCapableHost
+									? `Routing: first capable host (${firstCapableHost.hostName})`
+									: "Routing: first capable host"}
 						</span>
 					</div>
 				</div>
@@ -540,13 +596,28 @@ export function TemplatesPage() {
 						</div>
 
 						<label className="block space-y-1.5 text-sm">
+							<span className="text-foreground">Routing Policy</span>
+							<select
+								value={routingPolicy}
+								onChange={(e) => setRoutingPolicy(e.target.value as LaunchRoutingPolicy)}
+								className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+							>
+								<option value="manual_target">Manual target</option>
+								<option value="first_capable_host">First capable host</option>
+							</select>
+						</label>
+
+						<label className="block space-y-1.5 text-sm">
 							<span className="text-foreground">Target Host</span>
 							<select
 								value={targetSupervisorId}
 								onChange={(e) => setTargetSupervisorId(e.target.value)}
+								disabled={routingPolicy !== "manual_target"}
 								className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
 							>
-								<option value="">Select a host</option>
+								<option value="">
+									{routingPolicy === "manual_target" ? "Select a host" : "Managed by routing policy"}
+								</option>
 								{supervisors.map((supervisor) => (
 									<option key={supervisor.id} value={supervisor.id}>
 										{supervisor.hostName} · {supervisor.status}
@@ -554,6 +625,50 @@ export function TemplatesPage() {
 								))}
 							</select>
 						</label>
+
+						<div className="rounded-md border border-border bg-background/40 p-3">
+							<div className="text-xs font-medium text-foreground">Host compatibility</div>
+							<div className="mt-2 space-y-2">
+								{compatibleHosts.map(({ supervisor, compatibility }) => (
+									<div
+										key={supervisor.id}
+										className="rounded-md border border-border/70 px-3 py-2 text-xs"
+									>
+										<div className="flex items-center justify-between gap-2">
+											<span className="font-medium text-foreground">
+												{supervisor.hostName}
+											</span>
+											<span
+												className={
+													compatibility.ok
+														? "rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-400"
+														: "rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] text-red-400"
+												}
+											>
+												{compatibility.ok ? "compatible" : "blocked"}
+											</span>
+										</div>
+										<div className="mt-1 text-muted-foreground">
+											{supervisor.status} · {supervisor.platform} · {supervisor.arch}
+										</div>
+										{compatibility.errors.length > 0 && (
+											<div className="mt-2 space-y-1 text-red-300">
+												{compatibility.errors.map((error) => (
+													<div key={error}>{error}</div>
+												))}
+											</div>
+										)}
+										{compatibility.errors.length === 0 && compatibility.warnings.length > 0 && (
+											<div className="mt-2 space-y-1 text-amber-300">
+												{compatibility.warnings.map((warning) => (
+													<div key={warning}>{warning}</div>
+												))}
+											</div>
+										)}
+									</div>
+								))}
+							</div>
+						</div>
 
 						<label className="block space-y-1.5 text-sm">
 							<span className="text-foreground">Base Instructions</span>

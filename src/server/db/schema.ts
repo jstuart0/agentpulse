@@ -148,6 +148,7 @@ export const supervisorEnrollmentTokens = sqliteTable("supervisor_enrollment_tok
 		.primaryKey()
 		.$defaultFn(() => crypto.randomUUID()),
 	name: text("name").notNull(),
+	supervisorId: text("supervisor_id"),
 	tokenHash: text("token_hash").notNull().unique(),
 	tokenPrefix: text("token_prefix").notNull(),
 	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),

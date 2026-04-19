@@ -129,6 +129,7 @@ export function initializeDatabase() {
 		CREATE TABLE IF NOT EXISTS supervisor_enrollment_tokens (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
+			supervisor_id TEXT,
 			token_hash TEXT NOT NULL UNIQUE,
 			token_prefix TEXT NOT NULL,
 			is_active INTEGER NOT NULL DEFAULT 1,
@@ -272,6 +273,7 @@ export function initializeDatabase() {
 		"ALTER TABLE supervisors ADD COLUMN config_schema_version INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE supervisors ADD COLUMN heartbeat_lease_expires_at TEXT NOT NULL DEFAULT (datetime('now', '+90 seconds'))",
 		"ALTER TABLE supervisors ADD COLUMN enrollment_state TEXT NOT NULL DEFAULT 'active'",
+		"ALTER TABLE supervisor_enrollment_tokens ADD COLUMN supervisor_id TEXT",
 		"ALTER TABLE launch_requests ADD COLUMN requested_launch_mode TEXT NOT NULL DEFAULT 'interactive_terminal'",
 		"ALTER TABLE launch_requests ADD COLUMN routing_policy TEXT",
 		"ALTER TABLE launch_requests ADD COLUMN resolved_supervisor_id TEXT",

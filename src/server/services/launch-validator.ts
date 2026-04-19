@@ -1,7 +1,8 @@
 import { relative, resolve } from "path";
+import { HTTPException } from "hono/http-exception";
 import { db } from "../db/client.js";
 import { launchRequests } from "../db/schema.js";
-import { getConnectedSupervisor } from "./supervisor-registry.js";
+import { getConnectedSupervisor, listSupervisors } from "./supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
 import type {
 	LaunchRequest,
@@ -60,7 +61,7 @@ function isWithinTrustedRoot(cwd: string, roots: string[]) {
 	return false;
 }
 
-function validateAgainstSupervisor(
+export function validateAgainstSupervisor(
 	template: SessionTemplateInput,
 	supervisor: SupervisorRecord,
 	requestedLaunchMode: LaunchRequest["requestedLaunchMode"],
@@ -87,25 +88,102 @@ function validateAgainstSupervisor(
 	return { warnings, errors };
 }
 
+async function resolveSupervisorForLaunch(
+	normalizedTemplate: SessionTemplateInput,
+	requestedSupervisorId: string | null | undefined,
+	routingPolicy: LaunchRequest["routingPolicy"],
+	requestedLaunchMode: LaunchRequest["requestedLaunchMode"],
+) {
+	if (requestedSupervisorId) {
+		const supervisor = await getConnectedSupervisor(requestedSupervisorId);
+		if (!supervisor) {
+			throw new HTTPException(400, { message: "Selected host is not connected." });
+		}
+		const validation = validateAgainstSupervisor(
+			normalizedTemplate,
+			supervisor,
+			requestedLaunchMode,
+		);
+		return {
+			supervisor,
+			validation,
+			routingDecision: {
+				type: routingPolicy ?? "manual_target",
+				targetSupervisorId: supervisor.id,
+			},
+		};
+	}
+
+	if (routingPolicy !== "first_capable_host") {
+		throw new HTTPException(400, {
+			message: "Select a target host or choose a routing policy.",
+		});
+	}
+
+	const supervisors = (await listSupervisors()).filter((supervisor) => supervisor.status === "connected");
+	if (supervisors.length === 0) {
+		throw new HTTPException(400, {
+			message: "No connected supervisor is available for routing.",
+		});
+	}
+
+	const evaluated = supervisors.map((supervisor) => ({
+		supervisor,
+		validation: validateAgainstSupervisor(normalizedTemplate, supervisor, requestedLaunchMode),
+	}));
+	const match = evaluated.find((candidate) => candidate.validation.errors.length === 0);
+	if (!match) {
+		return {
+			supervisor: supervisors[0],
+			validation: {
+				warnings: [],
+				errors: evaluated.flatMap((candidate) =>
+					candidate.validation.errors.map((error) => `${candidate.supervisor.hostName}: ${error}`),
+				),
+			},
+			routingDecision: {
+				type: "first_capable_host",
+				evaluatedHosts: evaluated.map((candidate) => ({
+					supervisorId: candidate.supervisor.id,
+					hostName: candidate.supervisor.hostName,
+					errors: candidate.validation.errors,
+				})),
+			},
+		};
+	}
+
+	return {
+		supervisor: match.supervisor,
+		validation: match.validation,
+		routingDecision: {
+			type: "first_capable_host",
+			targetSupervisorId: match.supervisor.id,
+			evaluatedHosts: evaluated.map((candidate) => ({
+				supervisorId: candidate.supervisor.id,
+				hostName: candidate.supervisor.hostName,
+				errors: candidate.validation.errors,
+			})),
+		},
+	};
+}
+
 export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 	const normalizedTemplate = normalizeTemplateInput(input.template);
 	const templateValidation = validateTemplateInput(normalizedTemplate);
 	if (templateValidation.errors.length > 0) {
-		throw new Error(templateValidation.errors.join(" "));
-	}
-
-	const supervisor = await getConnectedSupervisor(input.requestedSupervisorId ?? null);
-	if (!supervisor) {
-		throw new Error("No connected supervisor is available for validation.");
+		throw new HTTPException(400, { message: templateValidation.errors.join(" ") });
 	}
 
 	const requestedLaunchMode = input.requestedLaunchMode ?? input.launchSpec.launchMode ?? "interactive_terminal";
-	const routingPolicy = input.routingPolicy ?? "manual_target";
-	const supervisorValidation = validateAgainstSupervisor(
+	const routingPolicy = input.routingPolicy ?? (input.requestedSupervisorId ? "manual_target" : null);
+	const resolved = await resolveSupervisorForLaunch(
 		normalizedTemplate,
-		supervisor,
+		input.requestedSupervisorId ?? null,
+		routingPolicy,
 		requestedLaunchMode,
 	);
+	const supervisor = resolved.supervisor;
+	const supervisorValidation = resolved.validation;
 
 	const warnings = [...templateValidation.warnings, ...supervisorValidation.warnings];
 	const status: LaunchRequestStatus = supervisorValidation.errors.length > 0 ? "rejected" : "validated";
@@ -131,13 +209,10 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 			env: normalizedTemplate.env ?? {},
 			launchSpec: input.launchSpec as unknown as Record<string, unknown>,
 			requestedBy: "local-user",
-			requestedSupervisorId: supervisor.id,
+			requestedSupervisorId: input.requestedSupervisorId ?? null,
 			routingPolicy,
 			resolvedSupervisorId: supervisor.id,
-			routingDecision: {
-				type: routingPolicy,
-				targetSupervisorId: supervisor.id,
-			},
+			routingDecision: resolved.routingDecision,
 			status,
 			error: supervisorValidation.errors.join(" ") || null,
 			validationWarnings: warnings,

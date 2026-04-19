@@ -445,6 +445,7 @@ export interface SupervisorRegistrationInput {
 export interface SupervisorEnrollmentTokenInfo {
 	id: string;
 	name: string;
+	supervisorId?: string | null;
 	tokenPrefix: string;
 	isActive: boolean;
 	expiresAt: string | null;

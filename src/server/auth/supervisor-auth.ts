@@ -33,6 +33,7 @@ function mapEnrollment(row: typeof supervisorEnrollmentTokens.$inferSelect): Sup
 	return {
 		id: row.id,
 		name: row.name,
+		supervisorId: row.supervisorId ?? null,
 		tokenPrefix: row.tokenPrefix,
 		isActive: row.isActive,
 		expiresAt: row.expiresAt ?? null,
@@ -42,7 +43,11 @@ function mapEnrollment(row: typeof supervisorEnrollmentTokens.$inferSelect): Sup
 	};
 }
 
-export async function createSupervisorEnrollmentToken(name: string, expiresAt?: string | null) {
+export async function createSupervisorEnrollmentToken(
+	name: string,
+	expiresAt?: string | null,
+	supervisorId?: string | null,
+) {
 	const token = generateToken("ape_");
 	const tokenHash = await hashToken(token);
 	const tokenPrefix = token.slice(0, 11);
@@ -51,6 +56,7 @@ export async function createSupervisorEnrollmentToken(name: string, expiresAt?: 
 		.insert(supervisorEnrollmentTokens)
 		.values({
 			name,
+			supervisorId: supervisorId ?? null,
 			tokenHash,
 			tokenPrefix,
 			expiresAt: expiresAt ?? null,
@@ -113,6 +119,17 @@ export async function createSupervisorCredential(supervisorId: string, name: str
 			name,
 			tokenHash,
 			tokenPrefix,
+		})
+		.onConflictDoUpdate({
+			target: supervisorCredentials.supervisorId,
+			set: {
+				name,
+				tokenHash,
+				tokenPrefix,
+				isActive: true,
+				lastUsedAt: null,
+				revokedAt: null,
+			},
 		})
 		.returning();
 

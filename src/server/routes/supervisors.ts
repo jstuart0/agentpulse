@@ -11,6 +11,7 @@ import {
 	createSupervisorEnrollmentToken,
 	extractSupervisorToken,
 	revokeSupervisorCredential,
+	verifyEnrollmentToken,
 	verifySupervisorCredential,
 } from "../auth/supervisor-auth.js";
 import { config } from "../config.js";
@@ -50,14 +51,32 @@ supervisorsRouter.get("/supervisors/:id", requireAuth(), async (c) => {
 });
 
 supervisorsRouter.post("/supervisors/enroll", requireAuth(), async (c) => {
-	const body = await c.req.json<{ name?: string; expiresAt?: string | null }>();
-	const result = await createSupervisorEnrollmentToken(body.name?.trim() || "supervisor", body.expiresAt ?? null);
+	const body = await c.req.json<{ name?: string; expiresAt?: string | null; supervisorId?: string | null }>();
+	const result = await createSupervisorEnrollmentToken(
+		body.name?.trim() || "supervisor",
+		body.expiresAt ?? null,
+		body.supervisorId ?? null,
+	);
+	return c.json(result, 201);
+});
+
+supervisorsRouter.post("/supervisors/:id/rotate", requireAuth(), async (c) => {
+	const supervisorId = c.req.param("id") ?? "";
+	const supervisor = await getSupervisor(supervisorId);
+	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
+	const body = await c.req.json<{ expiresAt?: string | null }>();
+	const result = await createSupervisorEnrollmentToken(
+		`rotate:${supervisor.hostName}`,
+		body.expiresAt ?? null,
+		supervisorId,
+	);
 	return c.json(result, 201);
 });
 
 supervisorsRouter.post("/supervisors/register", async (c) => {
 	const body = await c.req.json<SupervisorRegistrationInput>();
-	if (!body.hostName || !body.platform || !body.arch || !body.version) {
+	const registrationInput: SupervisorRegistrationInput = { ...body };
+	if (!registrationInput.hostName || !registrationInput.platform || !registrationInput.arch || !registrationInput.version) {
 		return c.json({ error: "Missing required supervisor fields" }, 400);
 	}
 
@@ -70,18 +89,27 @@ supervisorsRouter.post("/supervisors/register", async (c) => {
 			credential = await verifySupervisorCredential(token);
 		}
 		if (credential) {
-			if (body.id && credential.supervisorId !== body.id) {
+			if (registrationInput.id && credential.supervisorId !== registrationInput.id) {
 				return c.json({ error: "Supervisor credential does not match requested supervisor id" }, 403);
 			}
-		} else if (body.enrollmentToken) {
-			const consumed = await consumeEnrollmentToken(body.enrollmentToken);
-			if (!consumed) return c.json({ error: "Invalid enrollment token" }, 401);
+		} else if (registrationInput.enrollmentToken) {
+			const verifiedEnrollment = await verifyEnrollmentToken(registrationInput.enrollmentToken);
+			if (!verifiedEnrollment) return c.json({ error: "Invalid enrollment token" }, 401);
+			if (verifiedEnrollment.supervisorId) {
+				if (registrationInput.id && registrationInput.id !== verifiedEnrollment.supervisorId) {
+					return c.json({ error: "Enrollment token is scoped to a different supervisor" }, 403);
+				}
+				registrationInput.id = verifiedEnrollment.supervisorId;
+			}
+			const consumed = await consumeEnrollmentToken(registrationInput.enrollmentToken);
+			if (!consumed) return c.json({ error: "Enrollment token is no longer valid" }, 409);
 		} else {
 			return c.json({ error: "Supervisor registration requires enrollment token or credential" }, 401);
 		}
 	}
-	const result = await registerSupervisor(body);
+	const result = await registerSupervisor(registrationInput);
 	if (!credential) {
+		await revokeSupervisorCredential(result.supervisor.id);
 		const issued = await createSupervisorCredential(
 			result.supervisor.id,
 			`supervisor:${result.supervisor.hostName}`,
