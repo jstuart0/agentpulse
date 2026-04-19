@@ -335,10 +335,17 @@ export interface LaunchRequest {
 	launchSpec: LaunchSpec;
 	requestedBy: string | null;
 	requestedSupervisorId: string | null;
+	claimedBySupervisorId: string | null;
+	claimToken: string | null;
 	status: LaunchRequestStatus;
 	error: string | null;
 	validationWarnings: string[];
 	validationSummary: string | null;
+	dispatchStartedAt: string | null;
+	dispatchFinishedAt: string | null;
+	awaitingSessionDeadlineAt: string | null;
+	pid: number | null;
+	providerLaunchMetadata: Record<string, unknown> | null;
 	createdAt: string;
 	updatedAt: string;
 }

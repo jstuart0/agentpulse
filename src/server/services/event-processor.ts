@@ -4,6 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import type { AgentType, HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
 import { generateSessionName } from "./name-generator.js";
 import { normalizeHookEvent, normalizeStatusEvents, type NormalizedEvent } from "./event-normalizer.js";
+import { enrichObservedSession } from "./correlation-enricher.js";
 
 function buildDedupKey(event: {
 	eventType: string;
@@ -189,6 +190,10 @@ export async function processHookEvent(
 	}
 
 	await db.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+
+	if (isNew || eventType === "SessionStart") {
+		await enrichObservedSession(sessionId);
+	}
 
 	// Store normalized timeline events
 	const normalizedEvents = normalizeHookEvent(payload, agentType);

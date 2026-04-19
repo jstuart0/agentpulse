@@ -166,6 +166,8 @@ export const launchRequests = sqliteTable("launch_requests", {
 		.default({}),
 	requestedBy: text("requested_by"),
 	requestedSupervisorId: text("requested_supervisor_id"),
+	claimedBySupervisorId: text("claimed_by_supervisor_id"),
+	claimToken: text("claim_token"),
 	status: text("status").notNull().default("draft"),
 	error: text("error"),
 	validationWarnings: text("validation_warnings_json", { mode: "json" })
@@ -173,6 +175,12 @@ export const launchRequests = sqliteTable("launch_requests", {
 		.notNull()
 		.default([]),
 	validationSummary: text("validation_summary"),
+	dispatchStartedAt: text("dispatch_started_at"),
+	dispatchFinishedAt: text("dispatch_finished_at"),
+	awaitingSessionDeadlineAt: text("awaiting_session_deadline_at"),
+	pid: integer("pid"),
+	providerLaunchMetadata: text("provider_launch_metadata_json", { mode: "json" })
+		.$type<Record<string, unknown>>(),
 	createdAt: text("created_at")
 		.notNull()
 		.default(sql`(datetime('now'))`),
@@ -187,6 +195,7 @@ export const managedSessions = sqliteTable("managed_sessions", {
 	supervisorId: text("supervisor_id").notNull(),
 	providerSessionId: text("provider_session_id"),
 	managedState: text("managed_state").notNull().default("pending"),
+	correlationSource: text("correlation_source"),
 	createdAt: text("created_at")
 		.notNull()
 		.default(sql`(datetime('now'))`),

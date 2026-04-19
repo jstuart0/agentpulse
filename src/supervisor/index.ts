@@ -1,4 +1,6 @@
 import { loadSupervisorConfig, saveSupervisorConfig } from "./config.js";
+import { launchClaudeRequest } from "./providers/claude.js";
+import type { LaunchRequest } from "../shared/types.js";
 
 async function request(path: string, options?: RequestInit) {
 	const config = await loadSupervisorConfig();
@@ -47,6 +49,60 @@ async function main() {
 	console.log(
 		`[supervisor] Registered ${registration.supervisor.hostName} (${registration.supervisor.id})`,
 	);
+
+	async function dispatchLaunch(launch: LaunchRequest) {
+		if (launch.agentType !== "claude_code") {
+			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+				method: "POST",
+				body: JSON.stringify({
+					status: "failed",
+					error: "Phase 3 dispatch currently supports Claude Code only.",
+				}),
+			});
+			return;
+		}
+
+		await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+			method: "POST",
+			body: JSON.stringify({
+				status: "launching",
+			}),
+		});
+
+		try {
+			const result = await launchClaudeRequest(launch);
+			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+				method: "POST",
+				body: JSON.stringify({
+					status: "awaiting_session",
+					pid: result.pid,
+					providerLaunchMetadata: result.metadata,
+				}),
+			});
+		} catch (error) {
+			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+				method: "POST",
+				body: JSON.stringify({
+					status: "failed",
+					error: error instanceof Error ? error.message : "Launch failed",
+				}),
+			});
+		}
+	}
+
+	setInterval(async () => {
+		try {
+			const result = (await request(
+				`/supervisors/${registration.supervisor.id}/launches/claim`,
+				{ method: "POST" },
+			)) as { launchRequest: LaunchRequest | null };
+			if (result.launchRequest) {
+				await dispatchLaunch(result.launchRequest);
+			}
+		} catch (error) {
+			console.error("[supervisor] claim failed", error);
+		}
+	}, 3_000);
 
 	setInterval(async () => {
 		try {

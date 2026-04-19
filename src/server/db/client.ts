@@ -141,10 +141,17 @@ export function initializeDatabase() {
 			launch_spec_json TEXT NOT NULL DEFAULT '{}',
 			requested_by TEXT,
 			requested_supervisor_id TEXT,
+			claimed_by_supervisor_id TEXT,
+			claim_token TEXT,
 			status TEXT NOT NULL DEFAULT 'draft',
 			error TEXT,
 			validation_warnings_json TEXT NOT NULL DEFAULT '[]',
 			validation_summary TEXT,
+			dispatch_started_at TEXT,
+			dispatch_finished_at TEXT,
+			awaiting_session_deadline_at TEXT,
+			pid INTEGER,
+			provider_launch_metadata_json TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
@@ -155,6 +162,7 @@ export function initializeDatabase() {
 			supervisor_id TEXT NOT NULL,
 			provider_session_id TEXT,
 			managed_state TEXT NOT NULL DEFAULT 'pending',
+			correlation_source TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
@@ -205,6 +213,14 @@ export function initializeDatabase() {
 		"ALTER TABLE launch_requests ADD COLUMN requested_launch_mode TEXT NOT NULL DEFAULT 'interactive_terminal'",
 		"ALTER TABLE launch_requests ADD COLUMN validation_warnings_json TEXT NOT NULL DEFAULT '[]'",
 		"ALTER TABLE launch_requests ADD COLUMN validation_summary TEXT",
+		"ALTER TABLE launch_requests ADD COLUMN claimed_by_supervisor_id TEXT",
+		"ALTER TABLE launch_requests ADD COLUMN claim_token TEXT",
+		"ALTER TABLE launch_requests ADD COLUMN dispatch_started_at TEXT",
+		"ALTER TABLE launch_requests ADD COLUMN dispatch_finished_at TEXT",
+		"ALTER TABLE launch_requests ADD COLUMN awaiting_session_deadline_at TEXT",
+		"ALTER TABLE launch_requests ADD COLUMN pid INTEGER",
+		"ALTER TABLE launch_requests ADD COLUMN provider_launch_metadata_json TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN correlation_source TEXT",
 	];
 
 	for (const migration of migrations) {
