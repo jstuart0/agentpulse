@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { ArrowDownToLine, ArrowUpToLine } from "lucide-react";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { AgentTypeBadge } from "../components/AgentTypeBadge.js";
 import { MarkdownContent } from "../components/MarkdownContent.js";
@@ -21,15 +22,19 @@ function ScrollJumpControls({
 		<div className="flex items-center gap-1">
 			<button
 				onClick={onTop}
-				className="rounded border border-border px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+				title="Jump to top"
+				aria-label="Jump to top"
+				className="rounded border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
 			>
-				Top
+				<ArrowUpToLine className="h-3.5 w-3.5" />
 			</button>
 			<button
 				onClick={onBottom}
-				className="rounded border border-border px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+				title="Jump to bottom"
+				aria-label="Jump to bottom"
+				className="rounded border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
 			>
-				Bottom
+				<ArrowDownToLine className="h-3.5 w-3.5" />
 			</button>
 		</div>
 	);
