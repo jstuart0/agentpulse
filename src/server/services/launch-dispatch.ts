@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { launchRequests, managedSessions } from "../db/schema.js";
+import { launchRequests } from "../db/schema.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import type { LaunchRequestStatus } from "../../shared/types.js";
 
@@ -103,7 +103,7 @@ export async function updateLaunchDispatchStatus(input: {
 	return updated ? mapLaunchRequest(updated) : null;
 }
 
-export async function linkObservedSessionToLaunch(sessionId: string, supervisorId?: string | null) {
+export async function findPendingLaunchForObservedSession(sessionId: string) {
 	const [row] = await db
 		.select()
 		.from(launchRequests)
@@ -115,55 +115,11 @@ export async function linkObservedSessionToLaunch(sessionId: string, supervisorI
 		)
 		.limit(1);
 
-	if (!row) return null;
+	return row ? mapLaunchRequest(row) : null;
+}
 
+export async function markLaunchRunning(launchId: string) {
 	const timestamp = nowIso();
-	const [existingManaged] = await db
-		.select()
-		.from(managedSessions)
-		.where(eq(managedSessions.sessionId, sessionId))
-		.limit(1);
-	await db
-		.insert(managedSessions)
-		.values({
-			sessionId,
-			launchRequestId: row.id,
-			supervisorId: supervisorId ?? row.claimedBySupervisorId ?? row.requestedSupervisorId ?? "unknown",
-			providerSessionId: existingManaged?.providerSessionId ?? sessionId,
-			providerThreadId: existingManaged?.providerThreadId ?? null,
-			managedState: existingManaged?.managedState ?? "linked",
-			correlationSource: existingManaged?.correlationSource ?? "session_id",
-			desiredThreadTitle: existingManaged?.desiredThreadTitle ?? null,
-			providerThreadTitle: existingManaged?.providerThreadTitle ?? null,
-			providerSyncState: existingManaged?.providerSyncState ?? "pending",
-			providerSyncError: existingManaged?.providerSyncError ?? null,
-			lastProviderSyncAt: existingManaged?.lastProviderSyncAt ?? null,
-			providerProtocolVersion: existingManaged?.providerProtocolVersion ?? null,
-			providerCapabilitySnapshot: existingManaged?.providerCapabilitySnapshot ?? null,
-			createdAt: timestamp,
-			updatedAt: timestamp,
-		})
-		.onConflictDoUpdate({
-			target: managedSessions.sessionId,
-			set: {
-				launchRequestId: row.id,
-				supervisorId:
-					supervisorId ?? row.claimedBySupervisorId ?? row.requestedSupervisorId ?? "unknown",
-				providerSessionId: existingManaged?.providerSessionId ?? sessionId,
-				providerThreadId: existingManaged?.providerThreadId ?? null,
-				managedState: existingManaged?.managedState ?? "linked",
-				correlationSource: existingManaged?.correlationSource ?? "session_id",
-				desiredThreadTitle: existingManaged?.desiredThreadTitle ?? null,
-				providerThreadTitle: existingManaged?.providerThreadTitle ?? null,
-				providerSyncState: existingManaged?.providerSyncState ?? "pending",
-				providerSyncError: existingManaged?.providerSyncError ?? null,
-				lastProviderSyncAt: existingManaged?.lastProviderSyncAt ?? null,
-				providerProtocolVersion: existingManaged?.providerProtocolVersion ?? null,
-				providerCapabilitySnapshot: existingManaged?.providerCapabilitySnapshot ?? null,
-				updatedAt: timestamp,
-			},
-		});
-
 	const [updated] = await db
 		.update(launchRequests)
 		.set({
@@ -171,7 +127,7 @@ export async function linkObservedSessionToLaunch(sessionId: string, supervisorI
 			dispatchFinishedAt: timestamp,
 			updatedAt: timestamp,
 		})
-		.where(eq(launchRequests.id, row.id))
+		.where(eq(launchRequests.id, launchId))
 		.returning();
 
 	return updated ? mapLaunchRequest(updated) : null;

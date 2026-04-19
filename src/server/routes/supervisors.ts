@@ -24,7 +24,6 @@ import {
 } from "../services/supervisor-registry.js";
 import {
 	claimNextLaunchRequest,
-	linkObservedSessionToLaunch,
 	updateLaunchDispatchStatus,
 } from "../services/launch-dispatch.js";
 import {
@@ -32,9 +31,10 @@ import {
 	listManagedSessionsNeedingSync,
 	upsertManagedSessionState,
 } from "../services/managed-session-state.js";
-import { broadcast, broadcastToSession } from "../ws/handler.js";
+import { notifySessionEvents, notifySessionUpdated } from "../services/notifier.js";
 import { getSession } from "../services/session-tracker.js";
 import { claimNextControlAction, updateControlAction } from "../services/control-actions.js";
+import { enrichObservedSession } from "../services/correlation-enricher.js";
 
 const supervisorsRouter = new Hono();
 
@@ -168,8 +168,8 @@ supervisorsRouter.post("/supervisors/:id/managed-session-state", requireSupervis
 	const body = await c.req.json<ManagedSessionStateInput>();
 	if (!body.sessionId) return c.json({ error: "sessionId is required" }, 400);
 	const result = await upsertManagedSessionState(supervisorId, body);
-	await linkObservedSessionToLaunch(body.sessionId, supervisorId);
-	broadcast("session_updated", { session: result.session });
+	await enrichObservedSession(body.sessionId, supervisorId);
+	notifySessionUpdated(result.session);
 	return c.json(result);
 });
 
@@ -179,10 +179,8 @@ supervisorsRouter.post("/supervisors/:id/managed-sessions/:sessionId/events", re
 	const inserted = await appendManagedSessionEvents(sessionId, body.events ?? []);
 	const session = await getSession(sessionId);
 	if (session) {
-		broadcast("session_updated", { session });
-		for (const event of inserted) {
-			broadcastToSession(sessionId, "new_event", event);
-		}
+		notifySessionUpdated(session);
+		notifySessionEvents(sessionId, inserted);
 	}
 	return c.json({ events: inserted });
 });

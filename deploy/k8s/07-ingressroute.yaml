@@ -7,8 +7,6 @@ spec:
   entryPoints:
     - websecure
   routes:
-    # All API routes bypass Authentik - they use API key auth instead
-    # This covers hooks, sessions, settings, WebSocket, health
     - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/`)
       kind: Rule
       services:

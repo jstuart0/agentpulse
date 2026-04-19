@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { StatusBadge } from "./StatusBadge.js";
 import { AgentTypeBadge } from "./AgentTypeBadge.js";
 import { formatDuration, extractProjectName } from "../lib/utils.js";
-import { APP_API_BASE } from "../lib/paths.js";
+import { api } from "../lib/api.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { Session } from "../../shared/types.js";
 
@@ -24,11 +24,7 @@ export function SessionCard({ session }: SessionCardProps) {
 
 	async function handleRename() {
 		if (!newName.trim()) { setRenaming(false); return; }
-		await fetch(`${APP_API_BASE}/sessions/${session.sessionId}/rename`, {
-			method: "PUT",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ name: newName.trim() }),
-		});
+		await api.renameSession(session.sessionId, newName.trim());
 		updateSession({ ...session, displayName: newName.trim() });
 		setRenaming(false);
 	}
@@ -36,24 +32,20 @@ export function SessionCard({ session }: SessionCardProps) {
 	async function handlePin(e: React.MouseEvent) {
 		e.stopPropagation();
 		const pinned = !session.isPinned;
-		await fetch(`${APP_API_BASE}/sessions/${session.sessionId}/pin`, {
-			method: "PUT",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ pinned }),
-		});
+		await api.updateSessionPin(session.sessionId, pinned);
 		updateSession({ ...session, isPinned: pinned });
 	}
 
 	async function handleArchive(e: React.MouseEvent) {
 		e.stopPropagation();
-		await fetch(`${APP_API_BASE}/sessions/${session.sessionId}/archive`, { method: "PUT" });
+		await api.archiveSession(session.sessionId);
 		updateSession({ ...session, status: "archived" });
 	}
 
 	async function handleDelete(e: React.MouseEvent) {
 		e.stopPropagation();
 		if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
-		await fetch(`${APP_API_BASE}/sessions/${session.sessionId}`, { method: "DELETE" });
+		await api.deleteSession(session.sessionId);
 		removeSession(session.sessionId);
 	}
 

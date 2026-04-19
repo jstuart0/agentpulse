@@ -120,3 +120,15 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - **Relay:** `curl -sSL https://server/setup-relay.sh | bash -s -- --key ap_xxx`
 - **Docker image:** `192.168.10.222:30500/agentpulse:latest` (linux/amd64)
 - **Telemetry:** `telemetry-agentpulse.xmojo.net` (Cloudflare Worker + D1)
+
+## OSS Hygiene
+
+When preparing changes for commit or push to the public repository:
+
+- sanitize environment-specific values first
+- never commit real domains, internal IPs, API keys, hostnames, personal paths, cluster details, or private infrastructure identifiers unless they are intentionally public
+- if a local working change requires private values to function, replace them with safe placeholders before commit
+- after push, you may restore local/private values in the working tree if needed, but do not leave them committed
+- treat deployment manifests, setup scripts, config files, screenshots, and docs as high-risk for accidental private leakage
+
+Public git history is the source of truth. Local convenience must not leak into commits.

@@ -1,4 +1,5 @@
 import { APP_API_BASE } from "./paths.js";
+import type { LaunchRequest, Session, SessionEvent, SupervisorRecord, ControlAction } from "../../shared/types.js";
 
 const BASE_URL = APP_API_BASE;
 
@@ -25,21 +26,58 @@ export const api = {
 		if (params?.agent_type) query.set("agent_type", params.agent_type);
 		if (params?.limit) query.set("limit", String(params.limit));
 		const qs = query.toString();
-		return request<{ sessions: unknown[]; total: number }>(`/sessions${qs ? `?${qs}` : ""}`);
+		return request<{ sessions: Session[]; total: number }>(`/sessions${qs ? `?${qs}` : ""}`);
 	},
 
 	getSession: (sessionId: string) =>
-		request<{ session: unknown; events: unknown[]; controlActions?: unknown[] }>(`/sessions/${sessionId}`),
+		request<{ session: Session; events: SessionEvent[]; controlActions?: ControlAction[] }>(`/sessions/${sessionId}`),
 
 	getTimeline: (sessionId: string, limit = 50, offset = 0) =>
-		request<{ events: unknown[] }>(
+		request<{ events: SessionEvent[] }>(
 			`/sessions/${sessionId}/timeline?limit=${limit}&offset=${offset}`,
 		),
 
 	getStats: () => request<unknown>("/sessions/stats"),
 
 	getSessionControlActions: (sessionId: string) =>
-		request<{ controlActions: unknown[] }>(`/sessions/${sessionId}/control-actions`),
+		request<{ controlActions: ControlAction[] }>(`/sessions/${sessionId}/control-actions`),
+
+	renameSession: (sessionId: string, name: string) =>
+		request<{ ok: true }>(`/sessions/${sessionId}/rename`, {
+			method: "PUT",
+			body: JSON.stringify({ name }),
+		}),
+
+	updateSessionPin: (sessionId: string, pinned: boolean) =>
+		request<{ ok: true }>(`/sessions/${sessionId}/pin`, {
+			method: "PUT",
+			body: JSON.stringify({ pinned }),
+		}),
+
+	archiveSession: (sessionId: string) =>
+		request<{ ok: true }>(`/sessions/${sessionId}/archive`, {
+			method: "PUT",
+		}),
+
+	deleteSession: (sessionId: string) =>
+		request<{ ok: true }>(`/sessions/${sessionId}`, {
+			method: "DELETE",
+		}),
+
+	saveSessionNotes: (sessionId: string, notes: string) =>
+		request<{ ok: true }>(`/sessions/${sessionId}/notes`, {
+			method: "PUT",
+			body: JSON.stringify({ notes }),
+		}),
+
+	getSessionInstructions: (sessionId: string) =>
+		request<{ content?: string; path?: string }>(`/sessions/${sessionId}/claude-md`),
+
+	saveSessionInstructions: (sessionId: string, body: { content: string; path: string }) =>
+		request<{ ok: true }>(`/sessions/${sessionId}/claude-md`, {
+			method: "PUT",
+			body: JSON.stringify(body),
+		}),
 
 	stopSession: (sessionId: string) =>
 		request<unknown>(`/sessions/${sessionId}/stop`, {
@@ -94,9 +132,9 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
-	getSupervisors: () => request<{ supervisors: unknown[]; total: number }>("/supervisors"),
+	getSupervisors: () => request<{ supervisors: SupervisorRecord[]; total: number }>("/supervisors"),
 
-	getSupervisor: (id: string) => request<{ supervisor: unknown }>(`/supervisors/${id}`),
+	getSupervisor: (id: string) => request<{ supervisor: SupervisorRecord }>(`/supervisors/${id}`),
 
 	enrollSupervisor: (body: { name?: string; expiresAt?: string | null; supervisorId?: string | null }) =>
 		request<{
@@ -152,14 +190,45 @@ export const api = {
 			method: "POST",
 		}),
 
-	getLaunches: () => request<{ launches: unknown[]; total: number }>("/launches"),
+	getLaunches: () => request<{ launches: LaunchRequest[]; total: number }>("/launches"),
 
-	getLaunch: (id: string) => request<{ launchRequest: unknown }>(`/launches/${id}`),
+	getLaunch: (id: string) => request<{ launchRequest: LaunchRequest }>(`/launches/${id}`),
 
 	createLaunch: (body: unknown) =>
 		request<unknown>("/launches", {
 			method: "POST",
 			body: JSON.stringify(body),
+		}),
+
+	getSettings: () => request<Record<string, unknown>>("/settings"),
+
+	saveSetting: (key: string, value: unknown) =>
+		request<{ ok: true }>("/settings", {
+			method: "PUT",
+			body: JSON.stringify({ key, value }),
+		}),
+
+	getApiKeys: () =>
+		request<{
+			keys: Array<{
+				id: string;
+				name: string;
+				keyPrefix: string;
+				isActive: boolean;
+				createdAt: string;
+				lastUsedAt: string | null;
+			}>;
+		}>("/api-keys"),
+
+	createApiKey: (name: string) =>
+		request<{ id: string; key: string; name: string; message: string }>("/api-keys", {
+			method: "POST",
+			body: JSON.stringify({ name }),
+		}),
+
+	revokeApiKey: (id: string) =>
+		request<{ ok: true }>(`/api-keys/${id}`, {
+			method: "DELETE",
 		}),
 
 	getHealth: () => request<{ status: string }>("/health"),

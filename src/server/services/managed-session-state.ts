@@ -198,6 +198,73 @@ export async function appendManagedSessionEvents(
 	return insertNormalizedEvents(sessionId, normalized);
 }
 
+export async function attachManagedSessionToLaunch(input: {
+	sessionId: string;
+	launchRequestId: string;
+	supervisorId: string;
+	correlationSource?: string | null;
+}) {
+	const timestamp = nowIso();
+	const [existingManaged] = await db
+		.select()
+		.from(managedSessions)
+		.where(eq(managedSessions.sessionId, input.sessionId))
+		.limit(1);
+
+	await db
+		.insert(managedSessions)
+		.values({
+			sessionId: input.sessionId,
+			launchRequestId: input.launchRequestId,
+			supervisorId: input.supervisorId,
+			providerSessionId: existingManaged?.providerSessionId ?? input.sessionId,
+			providerThreadId: existingManaged?.providerThreadId ?? null,
+			managedState: existingManaged?.managedState ?? "linked",
+			correlationSource: input.correlationSource ?? existingManaged?.correlationSource ?? "session_id",
+			desiredThreadTitle: existingManaged?.desiredThreadTitle ?? null,
+			providerThreadTitle: existingManaged?.providerThreadTitle ?? null,
+			providerSyncState: existingManaged?.providerSyncState ?? "pending",
+			providerSyncError: existingManaged?.providerSyncError ?? null,
+			lastProviderSyncAt: existingManaged?.lastProviderSyncAt ?? null,
+			providerProtocolVersion: existingManaged?.providerProtocolVersion ?? null,
+			providerCapabilitySnapshot: existingManaged?.providerCapabilitySnapshot ?? null,
+			hostName: existingManaged?.hostName ?? null,
+			hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
+			createdAt: timestamp,
+			updatedAt: timestamp,
+		})
+		.onConflictDoUpdate({
+			target: managedSessions.sessionId,
+			set: {
+				launchRequestId: input.launchRequestId,
+				supervisorId: input.supervisorId,
+				providerSessionId: existingManaged?.providerSessionId ?? input.sessionId,
+				providerThreadId: existingManaged?.providerThreadId ?? null,
+				managedState: existingManaged?.managedState ?? "linked",
+				correlationSource:
+					input.correlationSource ?? existingManaged?.correlationSource ?? "session_id",
+				desiredThreadTitle: existingManaged?.desiredThreadTitle ?? null,
+				providerThreadTitle: existingManaged?.providerThreadTitle ?? null,
+				providerSyncState: existingManaged?.providerSyncState ?? "pending",
+				providerSyncError: existingManaged?.providerSyncError ?? null,
+				lastProviderSyncAt: existingManaged?.lastProviderSyncAt ?? null,
+				providerProtocolVersion: existingManaged?.providerProtocolVersion ?? null,
+				providerCapabilitySnapshot: existingManaged?.providerCapabilitySnapshot ?? null,
+				hostName: existingManaged?.hostName ?? null,
+				hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
+				updatedAt: timestamp,
+			},
+		});
+
+	const [managedRow] = await db
+		.select()
+		.from(managedSessions)
+		.where(eq(managedSessions.sessionId, input.sessionId))
+		.limit(1);
+
+	return managedRow ? mapManagedSession(managedRow) : null;
+}
+
 export async function listManagedSessionsNeedingSync(supervisorId: string) {
 	const rows = await db
 		.select()

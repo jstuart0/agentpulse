@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ApiKeyInfo, LaunchRequest, SupervisorRecord } from "../../shared/types.js";
-import { APP_API_BASE, BROWSER_WS_PATH } from "../lib/paths.js";
+import { BROWSER_WS_PATH } from "../lib/paths.js";
+import { api } from "../lib/api.js";
 
-const BASE = APP_API_BASE;
 const launchModeLabels = {
 	headless: "Headless task",
 	interactive_terminal: "Interactive terminal",
@@ -27,10 +27,10 @@ export function SettingsPage() {
 		async function load() {
 			try {
 				const [keysRes, settingsRes, supervisorsRes, launchesRes] = await Promise.all([
-					fetch(`${BASE}/api-keys`).then((r) => r.json()),
-					fetch(`${BASE}/settings`).then((r) => r.json()),
-					fetch(`${BASE}/supervisors`).then((r) => r.json()),
-					fetch(`${BASE}/launches`).then((r) => r.json()),
+					api.getApiKeys(),
+					api.getSettings(),
+					api.getSupervisors(),
+					api.getLaunches(),
 				]);
 				setApiKeys(keysRes.keys || []);
 				setSettings(settingsRes || {});
@@ -50,18 +50,13 @@ export function SettingsPage() {
 		if (!newKeyName.trim()) return;
 
 		try {
-			const res = await fetch(`${BASE}/api-keys`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ name: newKeyName.trim() }),
-			});
-			const data = await res.json();
+			const data = await api.createApiKey(newKeyName.trim());
 
 			if (data.key) {
 				setNewKeyValue(data.key);
 				setNewKeyName("");
 				// Refresh key list
-				const keysRes = await fetch(`${BASE}/api-keys`).then((r) => r.json());
+				const keysRes = await api.getApiKeys();
 				setApiKeys(keysRes.keys || []);
 			}
 		} catch (err) {
@@ -72,7 +67,7 @@ export function SettingsPage() {
 	// Revoke API key
 	async function handleRevokeKey(id: string) {
 		try {
-			await fetch(`${BASE}/api-keys/${id}`, { method: "DELETE" });
+			await api.revokeApiKey(id);
 			setApiKeys((prev) => prev.map((k) => (k.id === id ? { ...k, isActive: false } : k)));
 		} catch (err) {
 			console.error("Failed to revoke key:", err);
@@ -85,21 +80,13 @@ export function SettingsPage() {
 		setTheme(next);
 		document.documentElement.classList.toggle("dark", next === "dark");
 		// Persist
-		fetch(`${BASE}/settings`, {
-			method: "PUT",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ key: "theme", value: next }),
-		}).catch(() => {});
+		void api.saveSetting("theme", next).catch(() => {});
 	}
 
 	// Save a setting
 	async function saveSetting(key: string, value: unknown) {
 		try {
-			await fetch(`${BASE}/settings`, {
-				method: "PUT",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ key, value }),
-			});
+			await api.saveSetting(key, value);
 			setSettings((prev) => ({ ...prev, [key]: value }));
 		} catch (err) {
 			console.error("Failed to save setting:", err);

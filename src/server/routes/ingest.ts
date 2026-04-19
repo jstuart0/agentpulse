@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { requireApiKey } from "../auth/middleware.js";
 import { processHookEvent, detectAgentType, processStatusUpdate } from "../services/event-processor.js";
-import { broadcast } from "../ws/handler.js";
+import { notifyChannel, notifySessionCreated, notifySessionUpdated } from "../services/notifier.js";
 import { getSession } from "../services/session-tracker.js";
 import { normalizeHookEvent } from "../services/event-normalizer.js";
 import type { HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
@@ -25,12 +25,14 @@ ingest.post("/hooks", requireApiKey(), async (c) => {
 		// Broadcast to WebSocket subscribers
 		const session = await getSession(sessionId);
 		if (session) {
-			broadcast(isNew ? "session_created" : "session_updated", {
-				session,
-			});
+			if (isNew) {
+				notifySessionCreated(session);
+			} else {
+				notifySessionUpdated(session);
+			}
 
 			for (const event of normalizeHookEvent(payload, agentType)) {
-				broadcast("new_event", {
+				notifyChannel("new_event", {
 					id: 0,
 					sessionId,
 					eventType: event.eventType,
@@ -68,7 +70,7 @@ ingest.post("/hooks/status", requireApiKey(), async (c) => {
 		if (success) {
 			const session = await getSession(update.session_id);
 			if (session) {
-				broadcast("session_updated", { session });
+				notifySessionUpdated(session);
 			}
 		}
 

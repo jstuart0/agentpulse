@@ -7,7 +7,6 @@ import { MarkdownContent } from "../components/MarkdownContent.js";
 import { formatDuration, formatTimeAgo } from "../lib/utils.js";
 import { api } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
-import { APP_API_BASE } from "../lib/paths.js";
 import type { ControlAction, EventCategory, LaunchRequest, Session, SessionEvent } from "../../shared/types.js";
 import { useEventStore } from "../stores/event-store.js";
 
@@ -56,11 +55,7 @@ function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNot
 			saveTimeoutRef.current = setTimeout(async () => {
 				setSaving(true);
 				try {
-					await fetch(`${APP_API_BASE}/sessions/${sessionId}/notes`, {
-						method: "PUT",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ notes: value }),
-					});
+					await api.saveSessionNotes(sessionId, value);
 					setLastSaved(new Date().toLocaleTimeString());
 				} catch {}
 				setSaving(false);
@@ -672,8 +667,7 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 	const isFallback = currentFile !== "" && currentFile !== preferredFile;
 
 	useEffect(() => {
-		fetch(`${APP_API_BASE}/sessions/${session.sessionId}/claude-md`)
-			.then((r) => r.json())
+		api.getSessionInstructions(session.sessionId)
 			.then((data) => {
 				setContent(data.content || "");
 				setFilePath(data.path || "");
@@ -685,11 +679,7 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 	async function handleSave() {
 		setSaving(true);
 		try {
-			await fetch(`${APP_API_BASE}/sessions/${session.sessionId}/claude-md`, {
-				method: "PUT",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ content, path: filePath }),
-			});
+			await api.saveSessionInstructions(session.sessionId, { content, path: filePath });
 			setSaveMsg("Saved");
 			setTimeout(() => setSaveMsg(""), 2000);
 		} catch { setSaveMsg("Error"); }
@@ -701,11 +691,7 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 		const newPath = session.cwd + "/" + preferredFile;
 		setSaving(true);
 		try {
-			await fetch(`${APP_API_BASE}/sessions/${session.sessionId}/claude-md`, {
-				method: "PUT",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ content, path: newPath }),
-			});
+			await api.saveSessionInstructions(session.sessionId, { content, path: newPath });
 			setFilePath(newPath);
 			onPathChanged?.(newPath);
 			setSaveMsg(`Created ${preferredFile}`);
@@ -846,11 +832,7 @@ function InlineRename({ sessionId, currentName, onRenamed }: { sessionId: string
 
 	async function save() {
 		if (!value.trim()) { setEditing(false); return; }
-		await fetch(`${APP_API_BASE}/sessions/${sessionId}/rename`, {
-			method: "PUT",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ name: value.trim() }),
-		});
+		await api.renameSession(sessionId, value.trim());
 		onRenamed(value.trim());
 		setEditing(false);
 	}
