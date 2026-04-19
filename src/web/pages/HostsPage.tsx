@@ -316,6 +316,17 @@ export function HostsPage() {
 										</div>
 									</div>
 									<div>
+										<div className="text-muted-foreground">Executables</div>
+										<div className="mt-1 text-foreground">
+											<div>
+												Claude: {supervisor.capabilities.executables?.claude?.resolvedPath || "Unavailable"}
+											</div>
+											<div>
+												Codex: {supervisor.capabilities.executables?.codex?.resolvedPath || "Unavailable"}
+											</div>
+										</div>
+									</div>
+									<div>
 										<div className="text-muted-foreground">Trusted roots</div>
 										<div className="mt-1 break-all text-foreground">
 											{supervisor.trustedRoots.join(", ") || "None"}

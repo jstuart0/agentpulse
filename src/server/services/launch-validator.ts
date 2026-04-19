@@ -75,6 +75,12 @@ export function validateAgainstSupervisor(
 	if (!supervisor.capabilities.launchModes.includes(requestedLaunchMode)) {
 		errors.push(`${supervisor.hostName} does not support ${requestedLaunchMode} launch mode.`);
 	}
+	if (template.agentType === "claude_code" && !supervisor.capabilities.executables?.claude?.available) {
+		errors.push(`${supervisor.hostName} cannot launch Claude Code because the claude executable is not configured or not on PATH.`);
+	}
+	if (template.agentType === "codex_cli" && !supervisor.capabilities.executables?.codex?.available) {
+		errors.push(`${supervisor.hostName} cannot launch Codex because the codex executable is not configured or not on PATH.`);
+	}
 	if (!isWithinTrustedRoot(template.cwd, supervisor.trustedRoots)) {
 		errors.push("Working directory is outside the supervisor's trusted roots.");
 	}

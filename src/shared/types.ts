@@ -328,6 +328,20 @@ export interface SupervisorCapabilities {
 	os: "macos" | "linux" | "windows" | "unknown";
 	terminalSupport: string[];
 	features: string[];
+	executables?: {
+		claude?: {
+			available: boolean;
+			command: string;
+			resolvedPath: string | null;
+			source: "auto" | "config";
+		};
+		codex?: {
+			available: boolean;
+			command: string;
+			resolvedPath: string | null;
+			source: "auto" | "config";
+		};
+	};
 }
 
 export interface SupervisorRecord {

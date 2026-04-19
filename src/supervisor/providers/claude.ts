@@ -1,8 +1,12 @@
+import { loadSupervisorConfig } from "../config.js";
 import type { LaunchRequest } from "../../shared/types.js";
 
 export async function launchClaudeRequest(launch: LaunchRequest) {
+	const config = await loadSupervisorConfig();
+	const executable =
+		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
 	const args = [
-		"claude",
+		executable,
 		"--session-id",
 		launch.launchCorrelationId,
 		"--print",
@@ -20,6 +24,7 @@ export async function launchClaudeRequest(launch: LaunchRequest) {
 			metadata: {
 				dryRun: true,
 				command: args,
+				resolvedExecutable: config.capabilities.executables?.claude?.resolvedPath ?? null,
 			},
 		};
 	}
@@ -40,6 +45,7 @@ export async function launchClaudeRequest(launch: LaunchRequest) {
 		pid: proc.pid,
 		metadata: {
 			command: args,
+			resolvedExecutable: config.capabilities.executables?.claude?.resolvedPath ?? executable,
 		},
 	};
 }

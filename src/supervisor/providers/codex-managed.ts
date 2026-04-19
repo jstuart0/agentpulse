@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
+import { loadSupervisorConfig } from "../config.js";
 import type {
 	LaunchRequest,
 	ManagedSessionEventInput,
@@ -179,8 +180,11 @@ async function findFreePort() {
 	});
 }
 
-function spawnServer(url: string): ChildProcess {
-	return spawn("codex", ["app-server", "--listen", url], {
+async function spawnServer(url: string): Promise<ChildProcess> {
+	const config = await loadSupervisorConfig();
+	const executable =
+		config.capabilities.executables?.codex?.resolvedPath || config.codexCommand || "codex";
+	return spawn(executable, ["app-server", "--listen", url], {
 		stdio: ["ignore", "pipe", "pipe"],
 		env: process.env,
 	});
@@ -277,7 +281,7 @@ export async function launchManagedCodexRequest(
 
 	const port = await findFreePort();
 	const url = `ws://127.0.0.1:${port}`;
-	const serverProcess = spawnServer(url);
+	const serverProcess = await spawnServer(url);
 	const client = await waitForServer(url);
 	const initResult = await client.request<Record<string, unknown>>("initialize", {
 		clientInfo: {

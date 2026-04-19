@@ -104,11 +104,24 @@ function getHostCompatibility(
 	if (!supervisor.capabilities.launchModes.includes(requestedLaunchMode)) {
 		errors.push(`Does not support ${requestedLaunchMode}.`);
 	}
+	if (template.agentType === "claude_code" && !supervisor.capabilities.executables?.claude?.available) {
+		errors.push("Claude executable is not configured or not on PATH.");
+	}
+	if (template.agentType === "codex_cli" && !supervisor.capabilities.executables?.codex?.available) {
+		errors.push("Codex executable is not configured or not on PATH.");
+	}
 	if (template.cwd.trim() && !isWithinTrustedRoot(template.cwd, supervisor.trustedRoots)) {
 		errors.push("Working directory is outside trusted roots.");
 	}
 	if (!template.model?.trim()) {
 		warnings.push("Will use the provider default model.");
+	}
+	const executablePath =
+		template.agentType === "claude_code"
+			? supervisor.capabilities.executables?.claude?.resolvedPath
+			: supervisor.capabilities.executables?.codex?.resolvedPath;
+	if (executablePath) {
+		warnings.push(`Using ${executablePath}.`);
 	}
 
 	return {
@@ -650,6 +663,11 @@ export function TemplatesPage() {
 										</div>
 										<div className="mt-1 text-muted-foreground">
 											{supervisor.status} · {supervisor.platform} · {supervisor.arch}
+										</div>
+										<div className="mt-1 text-muted-foreground">
+											{draft.agentType === "claude_code"
+												? `Claude: ${supervisor.capabilities.executables?.claude?.resolvedPath || "Unavailable"}`
+												: `Codex: ${supervisor.capabilities.executables?.codex?.resolvedPath || "Unavailable"}`}
 										</div>
 										{compatibility.errors.length > 0 && (
 											<div className="mt-2 space-y-1 text-red-300">
