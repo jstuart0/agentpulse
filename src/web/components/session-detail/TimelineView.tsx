@@ -84,31 +84,72 @@ function collapseEquivalentEvents(events: SessionEvent[]) {
 	return collapsed;
 }
 
-export function PromptBubble({ text, time }: { text: string; time: string }) {
+export function sourceLabel(source: EventSource) {
+	switch (source) {
+		case "observed_hook":
+			return "Hook";
+		case "observed_status":
+			return "Status";
+		case "observed_transcript":
+			return "Transcript";
+		case "managed_control":
+			return "Control";
+		case "launch_system":
+			return "Launch";
+	}
+}
+
+function SourceBadge({ source }: { source: EventSource }) {
+	return (
+		<span className="rounded-full border border-border/70 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+			{sourceLabel(source)}
+		</span>
+	);
+}
+
+export function PromptBubble({
+	text,
+	time,
+	source,
+}: {
+	text: string;
+	time: string;
+	source?: EventSource;
+}) {
 	return (
 		<div className="flex justify-end">
 			<div className="max-w-[80%]">
 				<div className="rounded-2xl rounded-br-sm bg-primary/15 border border-primary/20 px-4 py-3">
 					<MarkdownContent content={text} compact />
 				</div>
-				<p className="text-[10px] text-muted-foreground mt-1 text-right">
-					{formatTimeAgo(time)}
-				</p>
+				<div className="mt-1 flex items-center justify-end gap-2">
+					{source ? <SourceBadge source={source} /> : null}
+					<p className="text-[10px] text-muted-foreground text-right">{formatTimeAgo(time)}</p>
+				</div>
 			</div>
 		</div>
 	);
 }
 
-export function AssistantBubble({ text, time }: { text: string; time: string }) {
+export function AssistantBubble({
+	text,
+	time,
+	source,
+}: {
+	text: string;
+	time: string;
+	source?: EventSource;
+}) {
 	return (
 		<div className="flex justify-start">
 			<div className="max-w-[80%]">
 				<div className="rounded-2xl rounded-bl-sm bg-sky-500/10 border border-sky-500/20 px-4 py-3">
 					<MarkdownContent content={text} compact />
 				</div>
-				<p className="text-[10px] text-muted-foreground mt-1">
-					{formatTimeAgo(time)}
-				</p>
+				<div className="mt-1 flex items-center gap-2">
+					<p className="text-[10px] text-muted-foreground">{formatTimeAgo(time)}</p>
+					{source ? <SourceBadge source={source} /> : null}
+				</div>
 			</div>
 		</div>
 	);
@@ -119,11 +160,13 @@ export function TimelineCard({
 	time,
 	label,
 	tone = "default",
+	source,
 }: {
 	text: string;
 	time: string;
 	label: string;
 	tone?: "default" | "emerald" | "amber" | "muted";
+	source?: EventSource;
 }) {
 	const toneClasses = {
 		default: "border-border bg-card/60",
@@ -135,7 +178,10 @@ export function TimelineCard({
 	return (
 		<div className={cn("rounded-xl border px-3 py-2.5", toneClasses[tone])}>
 			<div className="flex items-center justify-between gap-3">
-				<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
+				<div className="flex items-center gap-2">
+					<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
+					{source ? <SourceBadge source={source} /> : null}
+				</div>
 				<span className="text-[10px] text-muted-foreground">{formatTimeAgo(time)}</span>
 			</div>
 			<div className="mt-1.5">

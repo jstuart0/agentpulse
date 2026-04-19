@@ -420,10 +420,24 @@ export function SessionDetailPage() {
 							) : (
 								visibleEvents.map((event) => {
 									if (event.category === "prompt" && event.content) {
-										return <PromptBubble key={eventKey(event)} text={event.content} time={event.createdAt} />;
+										return (
+											<PromptBubble
+												key={eventKey(event)}
+												text={event.content}
+												time={event.createdAt}
+												source={mode === "debug" ? event.source : undefined}
+											/>
+										);
 									}
 									if (event.category === "assistant_message" && event.content) {
-										return <AssistantBubble key={eventKey(event)} text={event.content} time={event.createdAt} />;
+										return (
+											<AssistantBubble
+												key={eventKey(event)}
+												text={event.content}
+												time={event.createdAt}
+												source={mode === "debug" ? event.source : undefined}
+											/>
+										);
 									}
 									if (event.category === "tool_event") {
 										const detail = event.content || event.toolName || event.eventType;
@@ -434,6 +448,7 @@ export function SessionDetailPage() {
 												text={detail}
 												time={event.createdAt}
 												tone={event.isNoise ? "muted" : "amber"}
+												source={mode === "debug" ? event.source : undefined}
 											/>
 										);
 									}
@@ -445,6 +460,7 @@ export function SessionDetailPage() {
 											text={event.content}
 											time={event.createdAt}
 											tone={event.category === "status_update" ? "emerald" : "default"}
+											source={mode === "debug" ? event.source : undefined}
 										/>
 									);
 								})
