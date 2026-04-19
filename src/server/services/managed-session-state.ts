@@ -187,6 +187,7 @@ export async function appendManagedSessionEvents(
 	const normalized = events.map((event) => ({
 		eventType: event.eventType,
 		category: event.category,
+		source: event.source ?? (event.category === "prompt" ? "managed_control" : "launch_system"),
 		content: event.content ?? null,
 		isNoise: event.isNoise ?? false,
 		providerEventType: event.providerEventType ?? null,

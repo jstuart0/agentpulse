@@ -1,6 +1,7 @@
 import type {
 	AgentType,
 	EventCategory,
+	EventSource,
 	HookEventPayload,
 	SemanticStatusUpdate,
 	SemanticStatus,
@@ -9,6 +10,7 @@ import type {
 export interface NormalizedEvent {
 	eventType: string;
 	category: EventCategory;
+	source: EventSource;
 	content: string | null;
 	isNoise: boolean;
 	providerEventType: string | null;
@@ -96,6 +98,7 @@ export function normalizeHookEvent(
 		normalized.push({
 			eventType,
 			category: "prompt",
+			source: "observed_hook",
 			content: payload.prompt,
 			isNoise: false,
 			providerEventType: eventType,
@@ -108,6 +111,7 @@ export function normalizeHookEvent(
 		normalized.push({
 			eventType,
 			category: "tool_event",
+			source: "observed_hook",
 			content: formatToolContent(eventType, payload.tool_name),
 			isNoise: isNoisyTool(payload.tool_name, payload),
 			providerEventType: eventType,
@@ -126,6 +130,7 @@ export function normalizeHookEvent(
 				eventType === "SubagentStop"
 					? "progress_update"
 					: "system_event",
+			source: "observed_hook",
 			content: normalizeSystemEvent(payload, agentType),
 			isNoise: false,
 			providerEventType: eventType,
@@ -141,6 +146,7 @@ export function normalizeHookEvent(
 		normalized.push({
 			eventType: "AssistantMessage",
 			category: "assistant_message",
+			source: "observed_hook",
 			content: assistantMessage,
 			isNoise: false,
 			providerEventType: eventType,
@@ -166,6 +172,7 @@ export function normalizeStatusEvents(update: SemanticStatusUpdate): NormalizedE
 		normalized.push({
 			eventType: "SemanticStatusUpdate",
 			category: "status_update",
+			source: "observed_status",
 			content: formatSemanticStatus(update.status),
 			isNoise: false,
 			providerEventType: "semantic_status",
@@ -180,6 +187,7 @@ export function normalizeStatusEvents(update: SemanticStatusUpdate): NormalizedE
 		normalized.push({
 			eventType: "TaskStatusUpdate",
 			category: "progress_update",
+			source: "observed_status",
 			content: update.task.trim(),
 			isNoise: false,
 			providerEventType: "semantic_task",
@@ -194,6 +202,7 @@ export function normalizeStatusEvents(update: SemanticStatusUpdate): NormalizedE
 		normalized.push({
 			eventType: "PlanSummaryUpdate",
 			category: "plan_update",
+			source: "observed_status",
 			content: update.plan.join("\n"),
 			isNoise: false,
 			providerEventType: "semantic_plan",
@@ -215,6 +224,7 @@ export function createAssistantTranscriptEvent(
 	return {
 		eventType: "TranscriptAssistantMessage",
 		category: "assistant_message",
+		source: "observed_transcript",
 		content,
 		isNoise: false,
 		providerEventType,

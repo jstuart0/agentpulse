@@ -37,6 +37,7 @@ ingest.post("/hooks", requireApiKey(), async (c) => {
 					sessionId,
 					eventType: event.eventType,
 					category: event.category,
+					source: event.source,
 					content: event.content,
 					isNoise: event.isNoise,
 					providerEventType: event.providerEventType,

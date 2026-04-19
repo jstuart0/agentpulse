@@ -43,6 +43,7 @@ export const events = sqliteTable("events", {
 		.references(() => sessions.sessionId),
 	eventType: text("event_type").notNull(),
 	category: text("category"),
+	source: text("source").notNull().default("observed_hook"),
 	content: text("content"),
 	isNoise: integer("is_noise", { mode: "boolean" }).notNull().default(false),
 	providerEventType: text("provider_event_type"),

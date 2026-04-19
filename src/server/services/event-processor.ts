@@ -9,6 +9,7 @@ import { enrichObservedSession } from "./correlation-enricher.js";
 function buildDedupKey(event: {
 	eventType: string;
 	category: string | null;
+	source: string;
 	content: string | null;
 	providerEventType: string | null;
 	rawPayload?: Record<string, unknown>;
@@ -21,6 +22,7 @@ function buildDedupKey(event: {
 	return [
 		event.eventType || "",
 		event.category || "",
+		event.source || "",
 		event.content || "",
 		event.providerEventType || "",
 		transcriptId,
@@ -34,6 +36,7 @@ export async function insertNormalizedEvents(sessionId: string, normalizedEvents
 		.select({
 			eventType: events.eventType,
 			category: events.category,
+			source: events.source,
 			content: events.content,
 			providerEventType: events.providerEventType,
 		})
@@ -60,6 +63,7 @@ export async function insertNormalizedEvents(sessionId: string, normalizedEvents
 			sessionId,
 			eventType: event.eventType,
 			category: event.category,
+			source: event.source,
 			content: event.content,
 			isNoise: event.isNoise,
 			providerEventType: event.providerEventType,
@@ -75,6 +79,7 @@ export async function insertNormalizedEvents(sessionId: string, normalizedEvents
 		sessionId,
 		eventType: event.eventType,
 		category: event.category,
+		source: event.source,
 		content: event.content,
 		isNoise: event.isNoise,
 		providerEventType: event.providerEventType,

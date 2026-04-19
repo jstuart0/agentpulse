@@ -20,6 +20,12 @@ export type ProviderSyncState = "pending" | "synced" | "failed";
 export type LaunchRoutingPolicy = "manual_target" | "first_capable_host";
 export type ControlActionType = "stop" | "retry" | "fork" | "resume" | "rename" | "prompt";
 export type ControlActionStatus = "queued" | "running" | "succeeded" | "failed";
+export type EventSource =
+	| "observed_hook"
+	| "observed_status"
+	| "observed_transcript"
+	| "managed_control"
+	| "launch_system";
 
 // Session lifecycle status
 export type SessionStatus =
@@ -171,6 +177,7 @@ export interface SessionEvent {
 	sessionId: string;
 	eventType: string;
 	category: EventCategory | null;
+	source: EventSource;
 	content: string | null;
 	isNoise: boolean;
 	providerEventType: string | null;
@@ -186,6 +193,7 @@ export interface LiveSessionEvent {
 	sessionId: string;
 	eventType: string;
 	category: EventCategory | null;
+	source: EventSource;
 	content: string | null;
 	isNoise: boolean;
 	providerEventType: string | null;
@@ -456,6 +464,7 @@ export interface ManagedSessionStateInput {
 export interface ManagedSessionEventInput {
 	eventType: string;
 	category: EventCategory;
+	source?: EventSource;
 	content?: string | null;
 	isNoise?: boolean;
 	providerEventType?: string | null;

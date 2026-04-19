@@ -135,7 +135,7 @@ export function getVisibleEvents(
 export function eventKey(
 	event: Pick<
 		SessionEvent,
-		"id" | "eventType" | "category" | "content" | "createdAt" | "providerEventType" | "rawPayload"
+		"id" | "eventType" | "category" | "source" | "content" | "createdAt" | "providerEventType" | "rawPayload"
 	>,
 ) {
 	const transcriptId =
@@ -146,6 +146,7 @@ export function eventKey(
 		event.id || 0,
 		event.eventType,
 		event.category || "",
+		event.source,
 		event.content || "",
 		event.createdAt,
 		event.providerEventType || "",
@@ -160,4 +161,3 @@ export function mergeSessionEvents(baseEvents: SessionEvent[], liveEvents: Sessi
 	}
 	return Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
-
