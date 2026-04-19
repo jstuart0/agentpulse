@@ -27,7 +27,7 @@ export const api = {
 	},
 
 	getSession: (sessionId: string) =>
-		request<{ session: unknown; events: unknown[] }>(`/sessions/${sessionId}`),
+		request<{ session: unknown; events: unknown[]; controlActions?: unknown[] }>(`/sessions/${sessionId}`),
 
 	getTimeline: (sessionId: string, limit = 50, offset = 0) =>
 		request<{ events: unknown[] }>(
@@ -35,6 +35,19 @@ export const api = {
 		),
 
 	getStats: () => request<unknown>("/sessions/stats"),
+
+	getSessionControlActions: (sessionId: string) =>
+		request<{ controlActions: unknown[] }>(`/sessions/${sessionId}/control-actions`),
+
+	stopSession: (sessionId: string) =>
+		request<unknown>(`/sessions/${sessionId}/stop`, {
+			method: "POST",
+		}),
+
+	retrySession: (sessionId: string) =>
+		request<unknown>(`/sessions/${sessionId}/retry`, {
+			method: "POST",
+		}),
 
 	getTemplates: (params?: { agent_type?: string }) => {
 		const query = new URLSearchParams();

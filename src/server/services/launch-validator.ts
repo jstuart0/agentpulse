@@ -40,6 +40,7 @@ function mapLaunchRequest(row: typeof launchRequests.$inferSelect): LaunchReques
 		awaitingSessionDeadlineAt: row.awaitingSessionDeadlineAt,
 		pid: row.pid ?? null,
 		providerLaunchMetadata: (row.providerLaunchMetadata as Record<string, unknown> | null) ?? null,
+		retryOfLaunchRequestId: row.retryOfLaunchRequestId ?? null,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 	};

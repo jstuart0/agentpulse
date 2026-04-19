@@ -5,7 +5,7 @@ import { AgentTypeBadge } from "../components/AgentTypeBadge.js";
 import { formatDuration, formatTimeAgo } from "../lib/utils.js";
 import { api } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
-import type { EventCategory, Session, SessionEvent } from "../../shared/types.js";
+import type { ControlAction, EventCategory, Session, SessionEvent } from "../../shared/types.js";
 import { useEventStore } from "../stores/event-store.js";
 
 function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNotes: string }) {
@@ -562,6 +562,7 @@ export function SessionDetailPage() {
 	const navigate = useNavigate();
 	const [session, setSession] = useState<Session | null>(null);
 	const [events, setEvents] = useState<SessionEvent[]>([]);
+	const [controlActions, setControlActions] = useState<ControlAction[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [mode, setMode] = useState<TimelineMode>("progress");
 	const [showTools, setShowTools] = useState(false);
@@ -583,6 +584,7 @@ export function SessionDetailPage() {
 				const data = await api.getSession(sessionId!);
 				setSession(data.session as Session);
 				setEvents(data.events as SessionEvent[]);
+				setControlActions((data.controlActions as ControlAction[]) || []);
 			} catch (err) {
 				console.error("Failed to fetch session:", err);
 			} finally {
@@ -636,6 +638,20 @@ export function SessionDetailPage() {
 	}
 
 	const displayName = session.displayName || session.sessionId.slice(0, 8);
+	const canStop = session.agentType === "codex_cli" && session.managedSession?.managedState === "managed";
+
+	async function handleStop() {
+		if (!sessionId) return;
+		try {
+			await api.stopSession(sessionId);
+			const data = await api.getSession(sessionId);
+			setSession(data.session as Session);
+			setEvents(data.events as SessionEvent[]);
+			setControlActions((data.controlActions as ControlAction[]) || []);
+		} catch (error) {
+			console.error("Failed to stop session:", error);
+		}
+	}
 
 	function handleTimelineScroll() {
 		const container = timelineContainerRef.current;
@@ -682,6 +698,14 @@ export function SessionDetailPage() {
 						</span>
 					)}
 					<div className="flex items-center gap-2 md:ml-auto">
+						{canStop && (
+							<button
+								onClick={handleStop}
+								className="rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-300 hover:bg-red-500/20 transition-colors"
+							>
+								Stop
+							</button>
+						)}
 						<button
 							onClick={(e) => {
 								e.stopPropagation();
@@ -733,6 +757,23 @@ export function SessionDetailPage() {
 			) : session.agentType === "codex_cli" ? (
 				<CodexStatusHint displayName={displayName} />
 			) : null}
+
+			{controlActions.length > 0 && (
+				<div className="mx-6 mt-3 rounded-lg border border-border bg-card px-3 py-2.5">
+					<div className="text-xs font-medium text-foreground">Control History</div>
+					<div className="mt-2 space-y-1.5">
+						{controlActions.slice(-5).reverse().map((action) => (
+							<div key={action.id} className="flex items-center justify-between gap-3 text-[11px]">
+								<span className="text-muted-foreground">
+									{action.actionType}
+									{action.error ? `: ${action.error}` : ""}
+								</span>
+								<span className="font-mono text-foreground">{action.status}</span>
+							</div>
+						))}
+					</div>
+				</div>
+			)}
 
 			{/* Main content: timeline + notes side by side */}
 			<div className="flex-1 flex min-h-0 flex-col md:flex-row">

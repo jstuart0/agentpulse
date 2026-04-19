@@ -154,6 +154,8 @@ type ManagedCodexRuntime = {
 	serverProcess: ChildProcess | null;
 	currentThreadTitle: string | null;
 	protocolVersion: string | null;
+	activeTurnId: string | null;
+	intentionalClose: boolean;
 	syncTitle: (title: string) => Promise<void>;
 	dispose: () => void;
 };
@@ -265,6 +267,8 @@ export async function launchManagedCodexRequest(
 				serverProcess: null,
 				currentThreadTitle: desiredState.session.displayName,
 				protocolVersion: "dry-run",
+				activeTurnId: null,
+				intentionalClose: false,
 				syncTitle: async () => {},
 				dispose: () => {},
 			} satisfies ManagedCodexRuntime,
@@ -364,11 +368,14 @@ export async function launchManagedCodexRequest(
 		currentThreadTitle: bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8),
 		protocolVersion:
 			typeof initResult?.protocolVersion === "string" ? initResult.protocolVersion : "app-server",
+		activeTurnId: null,
+		intentionalClose: false,
 		syncTitle: async (title: string) => {
 			await syncTitle(title);
 			runtime.currentThreadTitle = title;
 		},
 		dispose: () => {
+			runtime.intentionalClose = true;
 			try {
 				client.close();
 			} catch {}
@@ -433,6 +440,7 @@ export async function launchManagedCodexRequest(
 		}
 
 		if (notification.method === "turn/completed") {
+			runtime.activeTurnId = null;
 			await callbacks.reportState({
 				sessionId: launch.launchCorrelationId,
 				launchRequestId: launch.id,
@@ -443,6 +451,10 @@ export async function launchManagedCodexRequest(
 	});
 
 	client.onClose(async (error) => {
+		if (runtime.intentionalClose) {
+			runtimes.delete(launch.launchCorrelationId);
+			return;
+		}
 		await callbacks.reportState({
 			sessionId: launch.launchCorrelationId,
 			launchRequestId: launch.id,
@@ -465,12 +477,13 @@ export async function launchManagedCodexRequest(
 	]);
 
 	const prompt = buildPrompt(launch);
-	await client.request("turn/start", {
+	const turn = await client.request<{ turn: { id: string } }>("turn/start", {
 		threadId,
 		input: [{ type: "text", text: prompt }],
 		cwd: launch.cwd,
 		model: launch.model ?? undefined,
 	});
+	runtime.activeTurnId = turn.turn.id;
 
 	return {
 		pid: serverProcess.pid ?? 0,
@@ -481,6 +494,26 @@ export async function launchManagedCodexRequest(
 		},
 		runtime,
 	};
+}
+
+export async function stopManagedCodexSession(sessionId: string) {
+	const runtime = runtimes.get(sessionId);
+	if (!runtime) {
+		throw new Error("Managed Codex runtime is not available on this supervisor.");
+	}
+
+	if (runtime.client && runtime.activeTurnId) {
+		try {
+			await runtime.client.request("turn/interrupt", {
+				threadId: runtime.threadId,
+				turnId: runtime.activeTurnId,
+			});
+		} catch {
+			// Fall through to cleanup even if interrupt fails.
+		}
+	}
+
+	runtime.dispose();
 }
 
 export async function reconcileManagedCodexTitles(

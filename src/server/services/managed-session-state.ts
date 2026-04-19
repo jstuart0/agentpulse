@@ -31,6 +31,8 @@ function mapManagedSession(row: typeof managedSessions.$inferSelect): ManagedSes
 		providerProtocolVersion: row.providerProtocolVersion ?? null,
 		providerCapabilitySnapshot:
 			(row.providerCapabilitySnapshot as Record<string, unknown> | null) ?? null,
+		activeControlActionId: row.activeControlActionId ?? null,
+		controlLockExpiresAt: row.controlLockExpiresAt ?? null,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 	};
@@ -98,6 +100,7 @@ export async function upsertManagedSessionState(
 		.limit(1);
 
 	const desiredTitle = input.desiredThreadTitle ?? currentSession?.displayName ?? null;
+	const launchRequestId = input.launchRequestId ?? existingManaged?.launchRequestId ?? input.sessionId;
 	const providerSessionId = input.providerSessionId ?? existingManaged?.providerSessionId ?? null;
 	const providerThreadId = input.providerThreadId ?? existingManaged?.providerThreadId ?? null;
 	const providerThreadTitle = input.providerThreadTitle ?? existingManaged?.providerThreadTitle ?? null;
@@ -114,7 +117,7 @@ export async function upsertManagedSessionState(
 		.insert(managedSessions)
 		.values({
 			sessionId: input.sessionId,
-			launchRequestId: input.launchRequestId ?? input.sessionId,
+			launchRequestId,
 			supervisorId,
 			providerSessionId,
 			providerThreadId,
@@ -133,7 +136,7 @@ export async function upsertManagedSessionState(
 		.onConflictDoUpdate({
 			target: managedSessions.sessionId,
 			set: {
-				launchRequestId: input.launchRequestId ?? input.sessionId,
+				launchRequestId,
 				supervisorId,
 				providerSessionId,
 				providerThreadId,

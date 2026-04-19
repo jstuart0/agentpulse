@@ -22,6 +22,7 @@ import {
 } from "../services/managed-session-state.js";
 import { broadcast, broadcastToSession } from "../ws/handler.js";
 import { getSession } from "../services/session-tracker.js";
+import { claimNextControlAction, updateControlAction } from "../services/control-actions.js";
 
 const supervisorsRouter = new Hono();
 
@@ -100,6 +101,28 @@ supervisorsRouter.post("/supervisors/:id/managed-sessions/:sessionId/events", as
 supervisorsRouter.get("/supervisors/:id/provider-sync", async (c) => {
 	const managedSessions = await listManagedSessionsNeedingSync(c.req.param("id"));
 	return c.json({ managedSessions });
+});
+
+supervisorsRouter.post("/supervisors/:id/control-actions/claim", async (c) => {
+	const action = await claimNextControlAction(c.req.param("id"));
+	return c.json({ action });
+});
+
+supervisorsRouter.post("/supervisors/:id/control-actions/:actionId/status", async (c) => {
+	const body = await c.req.json<{
+		status: "running" | "succeeded" | "failed";
+		error?: string | null;
+		metadata?: Record<string, unknown> | null;
+	}>();
+	const action = await updateControlAction({
+		actionId: c.req.param("actionId"),
+		supervisorId: c.req.param("id"),
+		status: body.status,
+		error: body.error,
+		metadata: body.metadata ?? null,
+	});
+	if (!action) return c.json({ error: "Control action not found" }, 404);
+	return c.json({ action });
 });
 
 export { supervisorsRouter };

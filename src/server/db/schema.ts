@@ -181,6 +181,7 @@ export const launchRequests = sqliteTable("launch_requests", {
 	pid: integer("pid"),
 	providerLaunchMetadata: text("provider_launch_metadata_json", { mode: "json" })
 		.$type<Record<string, unknown>>(),
+	retryOfLaunchRequestId: text("retry_of_launch_request_id"),
 	createdAt: text("created_at")
 		.notNull()
 		.default(sql`(datetime('now'))`),
@@ -205,6 +206,30 @@ export const managedSessions = sqliteTable("managed_sessions", {
 	providerProtocolVersion: text("provider_protocol_version"),
 	providerCapabilitySnapshot: text("provider_capability_snapshot_json", { mode: "json" })
 		.$type<Record<string, unknown>>(),
+	activeControlActionId: text("active_control_action_id"),
+	controlLockExpiresAt: text("control_lock_expires_at"),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});
+
+export const controlActions = sqliteTable("control_actions", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	sessionId: text("session_id"),
+	launchRequestId: text("launch_request_id"),
+	actionType: text("action_type").notNull(),
+	requestedBy: text("requested_by"),
+	status: text("status").notNull().default("queued"),
+	error: text("error"),
+	metadata: text("metadata_json", { mode: "json" }).$type<Record<string, unknown>>(),
+	idempotencyKey: text("idempotency_key"),
+	claimedBySupervisorId: text("claimed_by_supervisor_id"),
+	finishedAt: text("finished_at"),
 	createdAt: text("created_at")
 		.notNull()
 		.default(sql`(datetime('now'))`),

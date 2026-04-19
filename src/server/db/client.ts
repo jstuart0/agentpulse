@@ -152,6 +152,7 @@ export function initializeDatabase() {
 			awaiting_session_deadline_at TEXT,
 			pid INTEGER,
 			provider_launch_metadata_json TEXT,
+			retry_of_launch_request_id TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
@@ -171,6 +172,24 @@ export function initializeDatabase() {
 			last_provider_sync_at TEXT,
 			provider_protocol_version TEXT,
 			provider_capability_snapshot_json TEXT,
+			active_control_action_id TEXT,
+			control_lock_expires_at TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS control_actions (
+			id TEXT PRIMARY KEY,
+			session_id TEXT,
+			launch_request_id TEXT,
+			action_type TEXT NOT NULL,
+			requested_by TEXT,
+			status TEXT NOT NULL DEFAULT 'queued',
+			error TEXT,
+			metadata_json TEXT,
+			idempotency_key TEXT,
+			claimed_by_supervisor_id TEXT,
+			finished_at TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
@@ -187,6 +206,8 @@ export function initializeDatabase() {
 		CREATE INDEX IF NOT EXISTS idx_supervisors_lease ON supervisors(heartbeat_lease_expires_at);
 		CREATE INDEX IF NOT EXISTS idx_launch_requests_status ON launch_requests(status);
 		CREATE INDEX IF NOT EXISTS idx_launch_requests_supervisor ON launch_requests(requested_supervisor_id);
+		CREATE INDEX IF NOT EXISTS idx_control_actions_session ON control_actions(session_id);
+		CREATE INDEX IF NOT EXISTS idx_control_actions_status ON control_actions(status);
 	`);
 
 	// Migrations: add columns that may not exist on older databases
@@ -228,6 +249,7 @@ export function initializeDatabase() {
 		"ALTER TABLE launch_requests ADD COLUMN awaiting_session_deadline_at TEXT",
 		"ALTER TABLE launch_requests ADD COLUMN pid INTEGER",
 		"ALTER TABLE launch_requests ADD COLUMN provider_launch_metadata_json TEXT",
+		"ALTER TABLE launch_requests ADD COLUMN retry_of_launch_request_id TEXT",
 		"ALTER TABLE managed_sessions ADD COLUMN correlation_source TEXT",
 		"ALTER TABLE managed_sessions ADD COLUMN provider_thread_id TEXT",
 		"ALTER TABLE managed_sessions ADD COLUMN desired_thread_title TEXT",
@@ -237,6 +259,8 @@ export function initializeDatabase() {
 		"ALTER TABLE managed_sessions ADD COLUMN last_provider_sync_at TEXT",
 		"ALTER TABLE managed_sessions ADD COLUMN provider_protocol_version TEXT",
 		"ALTER TABLE managed_sessions ADD COLUMN provider_capability_snapshot_json TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN active_control_action_id TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN control_lock_expires_at TEXT",
 	];
 
 	for (const migration of migrations) {

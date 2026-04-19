@@ -17,6 +17,8 @@ export type SandboxMode =
 
 export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
 export type ProviderSyncState = "pending" | "synced" | "failed";
+export type ControlActionType = "stop" | "retry" | "fork" | "resume" | "rename";
+export type ControlActionStatus = "queued" | "running" | "succeeded" | "failed";
 
 // Session lifecycle status
 export type SessionStatus =
@@ -154,6 +156,8 @@ export interface ManagedSession {
 	lastProviderSyncAt: string | null;
 	providerProtocolVersion: string | null;
 	providerCapabilitySnapshot: Record<string, unknown> | null;
+	activeControlActionId: string | null;
+	controlLockExpiresAt: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -367,6 +371,23 @@ export interface LaunchRequest {
 	awaitingSessionDeadlineAt: string | null;
 	pid: number | null;
 	providerLaunchMetadata: Record<string, unknown> | null;
+	retryOfLaunchRequestId: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface ControlAction {
+	id: string;
+	sessionId: string | null;
+	launchRequestId: string | null;
+	actionType: ControlActionType;
+	requestedBy: string | null;
+	status: ControlActionStatus;
+	error: string | null;
+	metadata: Record<string, unknown> | null;
+	idempotencyKey: string | null;
+	claimedBySupervisorId: string | null;
+	finishedAt: string | null;
 	createdAt: string;
 	updatedAt: string;
 }

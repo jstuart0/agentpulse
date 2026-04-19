@@ -4,6 +4,11 @@ import { db } from "../db/client.js";
 import { events, managedSessions, sessions } from "../db/schema.js";
 import { eq, desc, sql } from "drizzle-orm";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
+import {
+	listControlActionsForSession,
+	queueStopAction,
+	retryLaunchForSession,
+} from "../services/control-actions.js";
 
 const sessionsRouter = new Hono();
 
@@ -43,7 +48,9 @@ sessionsRouter.get("/sessions/:sessionId", async (c) => {
 		.orderBy(desc(events.createdAt))
 		.limit(500);
 
-	return c.json({ session, events: sessionEvents });
+	const controlActions = await listControlActionsForSession(sessionId);
+
+	return c.json({ session, events: sessionEvents, controlActions });
 });
 
 // GET /api/v1/sessions/:sessionId/timeline - Paginated event timeline
@@ -107,6 +114,37 @@ sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 	}
 
 	return c.json({ ok: true });
+});
+
+sessionsRouter.get("/sessions/:sessionId/control-actions", async (c) => {
+	const actions = await listControlActionsForSession(c.req.param("sessionId"));
+	return c.json({ controlActions: actions });
+});
+
+sessionsRouter.post("/sessions/:sessionId/stop", async (c) => {
+	try {
+		const action = await queueStopAction(c.req.param("sessionId"));
+		return c.json({ action }, 202);
+	} catch (error) {
+		return c.json({ error: error instanceof Error ? error.message : "Unable to queue stop" }, 400);
+	}
+});
+
+sessionsRouter.post("/sessions/:sessionId/retry", async (c) => {
+	try {
+		const result = await retryLaunchForSession(c.req.param("sessionId"));
+		return c.json(result, 201);
+	} catch (error) {
+		return c.json({ error: error instanceof Error ? error.message : "Unable to retry" }, 400);
+	}
+});
+
+sessionsRouter.post("/sessions/:sessionId/fork", async (c) => {
+	return c.json({ error: "Fork is not implemented yet for this provider." }, 501);
+});
+
+sessionsRouter.post("/sessions/:sessionId/resume", async (c) => {
+	return c.json({ error: "Resume is not implemented yet for this provider." }, 501);
 });
 
 // PUT /api/v1/sessions/:sessionId/pin - Toggle pin

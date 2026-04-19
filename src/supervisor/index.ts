@@ -1,9 +1,10 @@
 import { loadSupervisorConfig, saveSupervisorConfig } from "./config.js";
 import { launchClaudeRequest } from "./providers/claude.js";
-import type { LaunchRequest, ManagedSession, Session } from "../shared/types.js";
+import type { ControlAction, LaunchRequest, ManagedSession, Session } from "../shared/types.js";
 import {
 	launchManagedCodexRequest,
 	reconcileManagedCodexTitles,
+	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
 
 async function request(path: string, options?: RequestInit) {
@@ -180,6 +181,79 @@ async function main() {
 			console.error("[supervisor] provider sync failed", error);
 		}
 	}, 3_000);
+
+	setInterval(async () => {
+		try {
+			const result = (await request(
+				`/supervisors/${registration.supervisor.id}/control-actions/claim`,
+				{ method: "POST" },
+			)) as { action: ControlAction | null };
+			if (!result.action) return;
+
+			if (result.action.actionType === "stop" && result.action.sessionId) {
+				try {
+					await stopManagedCodexSession(result.action.sessionId);
+					await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
+						method: "POST",
+						body: JSON.stringify({
+							sessionId: result.action.sessionId,
+							status: "completed",
+							managedState: "stopped",
+							providerSyncState: "synced",
+						}),
+					});
+					await request(
+						`/supervisors/${registration.supervisor.id}/managed-sessions/${result.action.sessionId}/events`,
+						{
+							method: "POST",
+							body: JSON.stringify({
+								events: [
+									{
+										eventType: "ManagedSessionStopped",
+										category: "system_event",
+										content: "Managed session stopped by operator.",
+									},
+								],
+							}),
+						},
+					);
+					await request(
+						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
+						{
+							method: "POST",
+							body: JSON.stringify({ status: "succeeded" }),
+						},
+					);
+				} catch (error) {
+					await request(
+						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
+						{
+							method: "POST",
+							body: JSON.stringify({
+								status: "failed",
+								error:
+									error instanceof Error ? error.message : "Failed to stop managed session",
+							}),
+						},
+					);
+				}
+				return;
+			}
+
+			await request(
+				`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
+				{
+					method: "POST",
+					body: JSON.stringify({
+						status: "failed",
+						error: `Unsupported control action: ${result.action.actionType}`,
+					}),
+				},
+			);
+		} catch (error) {
+			console.error("[supervisor] control action failed", error);
+		}
+	}, 2_000);
 }
 
 main().catch((error) => {
