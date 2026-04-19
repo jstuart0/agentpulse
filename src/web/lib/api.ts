@@ -73,5 +73,30 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
+	getSupervisors: () => request<{ supervisors: unknown[]; total: number }>("/supervisors"),
+
+	getSupervisor: (id: string) => request<{ supervisor: unknown }>(`/supervisors/${id}`),
+
+	registerSupervisor: (body: unknown) =>
+		request<unknown>("/supervisors/register", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
+	heartbeatSupervisor: (id: string) =>
+		request<unknown>(`/supervisors/${id}/heartbeat`, {
+			method: "POST",
+		}),
+
+	getLaunches: () => request<{ launches: unknown[]; total: number }>("/launches"),
+
+	getLaunch: (id: string) => request<{ launchRequest: unknown }>(`/launches/${id}`),
+
+	createLaunch: (body: unknown) =>
+		request<unknown>("/launches", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
 	getHealth: () => request<{ status: string }>("/health"),
 };

@@ -9,6 +9,8 @@ import { ingest } from "./routes/ingest.js";
 import { sessionsRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
 import { templatesRouter } from "./routes/templates.js";
+import { supervisorsRouter } from "./routes/supervisors.js";
+import { launchesRouter } from "./routes/launches.js";
 import { setup as setupRoute } from "./routes/setup.js";
 import {
 	handleWsOpen,
@@ -39,6 +41,8 @@ api.route("/v1", ingest);
 api.route("/v1", sessionsRouter);
 api.route("/v1", settingsRouter);
 api.route("/v1", templatesRouter);
+api.route("/v1", supervisorsRouter);
+api.route("/v1", launchesRouter);
 
 app.route("/api", api);
 

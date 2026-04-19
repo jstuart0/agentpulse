@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import type {
 	AgentType,
 	ApprovalPolicy,
+	LaunchRequest,
 	SandboxMode,
 	SessionTemplate,
 	SessionTemplateInput,
+	SupervisorRecord,
 	TemplatePreview,
 } from "../../shared/types.js";
 import { api } from "../lib/api.js";
@@ -89,10 +91,17 @@ export function TemplatesPage() {
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
 	const [statusMessage, setStatusMessage] = useState("");
+	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
+	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
+	const [launching, setLaunching] = useState(false);
 
 	useEffect(() => {
 		loadTemplates();
 	}, [agentFilter]);
+
+	useEffect(() => {
+		loadPhaseTwoData();
+	}, []);
 
 	useEffect(() => {
 		const timeout = setTimeout(async () => {
@@ -134,6 +143,19 @@ export function TemplatesPage() {
 			}
 		} finally {
 			setLoading(false);
+		}
+	}
+
+	async function loadPhaseTwoData() {
+		try {
+			const [supervisorsRes, launchesRes] = await Promise.all([
+				api.getSupervisors() as Promise<{ supervisors: SupervisorRecord[] }>,
+				api.getLaunches() as Promise<{ launches: LaunchRequest[] }>,
+			]);
+			setSupervisors(supervisorsRes.supervisors ?? []);
+			setRecentLaunches((launchesRes.launches ?? []).slice(0, 5));
+		} catch (error) {
+			console.error("Failed to load orchestration status", error);
 		}
 	}
 
@@ -227,6 +249,35 @@ export function TemplatesPage() {
 		}
 	}
 
+	async function handleValidateLaunch() {
+		if (!preview) return;
+		setLaunching(true);
+		setStatusMessage("");
+		try {
+			const result = (await api.createLaunch({
+				templateId: selectedId,
+				template: {
+					...draft,
+					env: parseEnvLines(envText),
+					tags: parseTags(tagsText),
+				},
+				launchSpec: preview.launchSpec,
+			})) as { launchRequest: LaunchRequest; supervisor: SupervisorRecord };
+			setStatusMessage(
+				result.launchRequest.status === "validated"
+					? `Launch request validated for ${result.supervisor.hostName}.`
+					: result.launchRequest.validationSummary || "Launch request rejected.",
+			);
+			await loadPhaseTwoData();
+		} catch (error) {
+			setStatusMessage(error instanceof Error ? error.message : "Launch validation failed.");
+		} finally {
+			setLaunching(false);
+		}
+	}
+
+	const connectedSupervisor = supervisors.find((supervisor) => supervisor.status === "connected");
+
 	return (
 		<div className="p-3 md:p-6">
 			<div className="max-w-7xl space-y-6">
@@ -240,12 +291,19 @@ export function TemplatesPage() {
 							saves and previews launch specs. Nothing is launched from AgentPulse yet.
 						</p>
 					</div>
-					<button
-						onClick={() => resetEditor()}
-						className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-					>
-						New Template
-					</button>
+					<div className="flex flex-col items-start gap-2 md:items-end">
+						<button
+							onClick={() => resetEditor()}
+							className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+						>
+							New Template
+						</button>
+						<span className="text-xs text-muted-foreground">
+							{connectedSupervisor
+								? `Supervisor connected: ${connectedSupervisor.hostName}`
+								: "No connected supervisor"}
+						</span>
+					</div>
 				</div>
 
 				<div className="grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)_minmax(0,1fr)]">
@@ -506,6 +564,13 @@ export function TemplatesPage() {
 							>
 								Reset
 							</button>
+							<button
+								onClick={handleValidateLaunch}
+								disabled={!preview || launching || !connectedSupervisor}
+								className="rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
+							>
+								{launching ? "Validating..." : "Validate Launch Request"}
+							</button>
 							{statusMessage && (
 								<span className="text-xs text-muted-foreground">{statusMessage}</span>
 							)}
@@ -519,6 +584,19 @@ export function TemplatesPage() {
 								This is the normalized launch contract AgentPulse will use later. Nothing
 								is being started here.
 							</p>
+						</div>
+
+						<div className="rounded-md border border-border bg-background/60 p-3 text-xs">
+							<div className="font-medium text-foreground">
+								{connectedSupervisor
+									? `Validated against ${connectedSupervisor.hostName}`
+									: "No connected supervisor"}
+							</div>
+							<div className="mt-1 text-muted-foreground">
+								{connectedSupervisor
+									? `Trusted roots: ${connectedSupervisor.trustedRoots.join(", ") || "none"}`
+									: "Start the local supervisor before creating launch requests."}
+							</div>
 						</div>
 
 						{previewError ? (
@@ -599,6 +677,41 @@ export function TemplatesPage() {
 										{JSON.stringify(preview.launchSpec, null, 2)}
 									</pre>
 								</div>
+
+								{recentLaunches.length > 0 && (
+									<div className="rounded-md border border-border p-3">
+										<div className="text-xs uppercase tracking-wide text-muted-foreground mb-2">
+											Recent launch requests
+										</div>
+										<div className="space-y-2">
+											{recentLaunches.map((launch) => (
+												<div
+													key={launch.id}
+													className="rounded-md bg-background/60 px-3 py-2 text-xs"
+												>
+													<div className="flex items-center justify-between gap-2">
+														<span className="font-medium text-foreground">
+															{launch.agentType === "claude_code"
+																? "Claude Code"
+																: "Codex CLI"}
+														</span>
+														<span className="text-muted-foreground">
+															{launch.status}
+														</span>
+													</div>
+													<div className="mt-1 break-all text-muted-foreground">
+														{launch.cwd}
+													</div>
+													{launch.validationSummary && (
+														<div className="mt-1 text-muted-foreground">
+															{launch.validationSummary}
+														</div>
+													)}
+												</div>
+											))}
+										</div>
+									</div>
+								)}
 							</div>
 						) : (
 							<div className="text-sm text-muted-foreground">

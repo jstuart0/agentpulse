@@ -15,6 +15,8 @@ export type SandboxMode =
 	| "read-only"
 	| "danger-full-access";
 
+export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
+
 // Session lifecycle status
 export type SessionStatus =
 	| "active"
@@ -247,6 +249,7 @@ export interface LaunchSpec {
 	launchCorrelationId: string;
 	managedMode: "unmanaged_preview";
 	agentType: AgentType;
+	launchMode?: LaunchMode;
 	cwd: string;
 	model: string | null;
 	approvalPolicy: ApprovalPolicy | null;
@@ -276,4 +279,86 @@ export interface TemplatePreview {
 		codexCli: ProviderLaunchGuidance;
 	};
 	warnings: string[];
+}
+
+export type SupervisorStatus = "connected" | "stale" | "offline";
+export type LaunchRequestStatus =
+	| "draft"
+	| "queued"
+	| "validated"
+	| "rejected"
+	| "launching"
+	| "awaiting_session"
+	| "running"
+	| "failed"
+	| "cancelled";
+
+export interface SupervisorCapabilities {
+	version: 1;
+	agentTypes: AgentType[];
+	launchModes: LaunchMode[];
+	os: "macos" | "linux" | "windows" | "unknown";
+	terminalSupport: string[];
+	features: string[];
+}
+
+export interface SupervisorRecord {
+	id: string;
+	hostName: string;
+	platform: string;
+	arch: string;
+	version: string;
+	capabilities: SupervisorCapabilities;
+	trustedRoots: string[];
+	status: SupervisorStatus;
+	capabilitySchemaVersion: number;
+	configSchemaVersion: number;
+	lastHeartbeatAt: string;
+	heartbeatLeaseExpiresAt: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface LaunchRequest {
+	id: string;
+	templateId: string | null;
+	launchCorrelationId: string;
+	agentType: AgentType;
+	cwd: string;
+	baseInstructions: string;
+	taskPrompt: string;
+	model: string | null;
+	approvalPolicy: ApprovalPolicy | null;
+	sandboxMode: SandboxMode | null;
+	requestedLaunchMode: LaunchMode;
+	env: Record<string, string>;
+	launchSpec: LaunchSpec;
+	requestedBy: string | null;
+	requestedSupervisorId: string | null;
+	status: LaunchRequestStatus;
+	error: string | null;
+	validationWarnings: string[];
+	validationSummary: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface SupervisorRegistrationInput {
+	id?: string;
+	hostName: string;
+	platform: string;
+	arch: string;
+	version: string;
+	capabilities: SupervisorCapabilities;
+	trustedRoots: string[];
+	capabilitySchemaVersion?: number;
+	configSchemaVersion?: number;
+}
+
+export interface LaunchRequestInput {
+	templateId?: string | null;
+	requestedSupervisorId?: string | null;
+	requestedLaunchMode?: LaunchMode;
+	template: SessionTemplateInput;
+	launchSpec: LaunchSpec;
 }

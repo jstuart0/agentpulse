@@ -108,6 +108,57 @@ export function initializeDatabase() {
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
 
+		CREATE TABLE IF NOT EXISTS supervisors (
+			id TEXT PRIMARY KEY,
+			host_name TEXT NOT NULL,
+			platform TEXT NOT NULL,
+			arch TEXT NOT NULL,
+			version TEXT NOT NULL,
+			capabilities_json TEXT NOT NULL DEFAULT '{}',
+			trusted_roots_json TEXT NOT NULL DEFAULT '[]',
+			status TEXT NOT NULL DEFAULT 'connected',
+			capability_schema_version INTEGER NOT NULL DEFAULT 1,
+			config_schema_version INTEGER NOT NULL DEFAULT 1,
+			last_heartbeat_at TEXT NOT NULL DEFAULT (datetime('now')),
+			heartbeat_lease_expires_at TEXT NOT NULL DEFAULT (datetime('now', '+90 seconds')),
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS launch_requests (
+			id TEXT PRIMARY KEY,
+			template_id TEXT,
+			launch_correlation_id TEXT NOT NULL UNIQUE,
+			agent_type TEXT NOT NULL,
+			cwd TEXT NOT NULL,
+			base_instructions TEXT NOT NULL DEFAULT '',
+			task_prompt TEXT NOT NULL DEFAULT '',
+			model TEXT,
+			approval_policy TEXT,
+			sandbox_mode TEXT,
+			requested_launch_mode TEXT NOT NULL DEFAULT 'interactive_terminal',
+			env_json TEXT NOT NULL DEFAULT '{}',
+			launch_spec_json TEXT NOT NULL DEFAULT '{}',
+			requested_by TEXT,
+			requested_supervisor_id TEXT,
+			status TEXT NOT NULL DEFAULT 'draft',
+			error TEXT,
+			validation_warnings_json TEXT NOT NULL DEFAULT '[]',
+			validation_summary TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS managed_sessions (
+			session_id TEXT PRIMARY KEY,
+			launch_request_id TEXT NOT NULL,
+			supervisor_id TEXT NOT NULL,
+			provider_session_id TEXT,
+			managed_state TEXT NOT NULL DEFAULT 'pending',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+
 		CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 		CREATE INDEX IF NOT EXISTS idx_sessions_agent_type ON sessions(agent_type);
 		CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity_at);
@@ -116,6 +167,10 @@ export function initializeDatabase() {
 		CREATE INDEX IF NOT EXISTS idx_events_event_type ON events(event_type);
 		CREATE INDEX IF NOT EXISTS idx_templates_agent_type ON session_templates(agent_type);
 		CREATE INDEX IF NOT EXISTS idx_templates_updated_at ON session_templates(updated_at);
+		CREATE INDEX IF NOT EXISTS idx_supervisors_status ON supervisors(status);
+		CREATE INDEX IF NOT EXISTS idx_supervisors_lease ON supervisors(heartbeat_lease_expires_at);
+		CREATE INDEX IF NOT EXISTS idx_launch_requests_status ON launch_requests(status);
+		CREATE INDEX IF NOT EXISTS idx_launch_requests_supervisor ON launch_requests(requested_supervisor_id);
 	`);
 
 	// Migrations: add columns that may not exist on older databases
@@ -144,6 +199,12 @@ export function initializeDatabase() {
 		"ALTER TABLE session_templates ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE session_templates ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'))",
 		"ALTER TABLE session_templates ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
+		"ALTER TABLE supervisors ADD COLUMN capability_schema_version INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE supervisors ADD COLUMN config_schema_version INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE supervisors ADD COLUMN heartbeat_lease_expires_at TEXT NOT NULL DEFAULT (datetime('now', '+90 seconds'))",
+		"ALTER TABLE launch_requests ADD COLUMN requested_launch_mode TEXT NOT NULL DEFAULT 'interactive_terminal'",
+		"ALTER TABLE launch_requests ADD COLUMN validation_warnings_json TEXT NOT NULL DEFAULT '[]'",
+		"ALTER TABLE launch_requests ADD COLUMN validation_summary TEXT",
 	];
 
 	for (const migration of migrations) {

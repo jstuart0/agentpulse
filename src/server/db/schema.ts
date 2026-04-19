@@ -108,3 +108,89 @@ export const sessionTemplates = sqliteTable("session_templates", {
 		.notNull()
 		.default(sql`(datetime('now'))`),
 });
+
+export const supervisors = sqliteTable("supervisors", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	hostName: text("host_name").notNull(),
+	platform: text("platform").notNull(),
+	arch: text("arch").notNull(),
+	version: text("version").notNull(),
+	capabilities: text("capabilities_json", { mode: "json" })
+		.$type<Record<string, unknown>>()
+		.notNull()
+		.default({}),
+	trustedRoots: text("trusted_roots_json", { mode: "json" })
+		.$type<string[]>()
+		.notNull()
+		.default([]),
+	status: text("status").notNull().default("connected"),
+	capabilitySchemaVersion: integer("capability_schema_version").notNull().default(1),
+	configSchemaVersion: integer("config_schema_version").notNull().default(1),
+	lastHeartbeatAt: text("last_heartbeat_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	heartbeatLeaseExpiresAt: text("heartbeat_lease_expires_at")
+		.notNull()
+		.default(sql`(datetime('now', '+90 seconds'))`),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});
+
+export const launchRequests = sqliteTable("launch_requests", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	templateId: text("template_id"),
+	launchCorrelationId: text("launch_correlation_id").notNull().unique(),
+	agentType: text("agent_type").notNull(),
+	cwd: text("cwd").notNull(),
+	baseInstructions: text("base_instructions").notNull().default(""),
+	taskPrompt: text("task_prompt").notNull().default(""),
+	model: text("model"),
+	approvalPolicy: text("approval_policy"),
+	sandboxMode: text("sandbox_mode"),
+	requestedLaunchMode: text("requested_launch_mode").notNull().default("interactive_terminal"),
+	env: text("env_json", { mode: "json" })
+		.$type<Record<string, string>>()
+		.notNull()
+		.default({}),
+	launchSpec: text("launch_spec_json", { mode: "json" })
+		.$type<Record<string, unknown>>()
+		.notNull()
+		.default({}),
+	requestedBy: text("requested_by"),
+	requestedSupervisorId: text("requested_supervisor_id"),
+	status: text("status").notNull().default("draft"),
+	error: text("error"),
+	validationWarnings: text("validation_warnings_json", { mode: "json" })
+		.$type<string[]>()
+		.notNull()
+		.default([]),
+	validationSummary: text("validation_summary"),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});
+
+export const managedSessions = sqliteTable("managed_sessions", {
+	sessionId: text("session_id").primaryKey(),
+	launchRequestId: text("launch_request_id").notNull(),
+	supervisorId: text("supervisor_id").notNull(),
+	providerSessionId: text("provider_session_id"),
+	managedState: text("managed_state").notNull().default("pending"),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});

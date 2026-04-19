@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ApiKeyInfo } from "../../shared/types.js";
+import type { ApiKeyInfo, LaunchRequest, SupervisorRecord } from "../../shared/types.js";
 
 const BASE = "/api/v1";
 
@@ -12,17 +12,23 @@ export function SettingsPage() {
 		document.documentElement.classList.contains("dark") ? "dark" : "light",
 	);
 	const [settings, setSettings] = useState<Record<string, unknown>>({});
+	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
+	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
 
 	// Fetch API keys and settings
 	useEffect(() => {
 		async function load() {
 			try {
-				const [keysRes, settingsRes] = await Promise.all([
+				const [keysRes, settingsRes, supervisorsRes, launchesRes] = await Promise.all([
 					fetch(`${BASE}/api-keys`).then((r) => r.json()),
 					fetch(`${BASE}/settings`).then((r) => r.json()),
+					fetch(`${BASE}/supervisors`).then((r) => r.json()),
+					fetch(`${BASE}/launches`).then((r) => r.json()),
 				]);
 				setApiKeys(keysRes.keys || []);
 				setSettings(settingsRes || {});
+				setSupervisors(supervisorsRes.supervisors || []);
+				setRecentLaunches((launchesRes.launches || []).slice(0, 5));
 			} catch (err) {
 				console.error("Failed to load settings:", err);
 			} finally {
@@ -119,6 +125,99 @@ export function SettingsPage() {
 						/>
 					</button>
 				</div>
+			</section>
+
+			{/* Supervisor Status */}
+			<section className="border border-border bg-card rounded-lg p-5 mb-6">
+				<h2 className="text-sm font-semibold mb-1">Local Supervisor</h2>
+				<p className="text-xs text-muted-foreground mb-4">
+					Phase 2 orchestration uses a local supervisor for capability reporting and
+					launch validation. No sessions are launched yet.
+				</p>
+
+				{supervisors.length === 0 ? (
+					<div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+						No supervisor registered. Run <code className="font-mono">bun run supervisor</code>
+						{" "}to register this machine.
+					</div>
+				) : (
+					<div className="space-y-3">
+						{supervisors.map((supervisor) => (
+							<div key={supervisor.id} className="rounded-md border border-border p-4">
+								<div className="flex flex-wrap items-center justify-between gap-2">
+									<div>
+										<div className="text-sm font-medium text-foreground">
+											{supervisor.hostName}
+										</div>
+										<div className="text-xs text-muted-foreground">
+											{supervisor.platform} / {supervisor.arch} / v{supervisor.version}
+										</div>
+									</div>
+									<span
+										className={`rounded-full px-2 py-0.5 text-[10px] ${
+											supervisor.status === "connected"
+												? "bg-emerald-500/10 text-emerald-400"
+												: supervisor.status === "stale"
+													? "bg-amber-500/10 text-amber-400"
+													: "bg-red-500/10 text-red-400"
+										}`}
+									>
+										{supervisor.status}
+									</span>
+								</div>
+								<div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs text-muted-foreground">
+									<div>
+										<div className="font-medium text-foreground mb-1">Trusted roots</div>
+										<div className="break-all">
+											{supervisor.trustedRoots.join(", ") || "none"}
+										</div>
+									</div>
+									<div>
+										<div className="font-medium text-foreground mb-1">Capabilities</div>
+										<div>
+											{supervisor.capabilities.agentTypes.join(", ") || "none"} /{" "}
+											{supervisor.capabilities.launchModes.join(", ") || "none"}
+										</div>
+									</div>
+								</div>
+							</div>
+						))}
+					</div>
+				)}
+			</section>
+
+			{/* Launch Validation */}
+			<section className="border border-border bg-card rounded-lg p-5 mb-6">
+				<h2 className="text-sm font-semibold mb-1">Recent Launch Validation</h2>
+				<p className="text-xs text-muted-foreground mb-4">
+					Validated launch requests are stored here before dispatch exists.
+				</p>
+				{recentLaunches.length === 0 ? (
+					<div className="text-sm text-muted-foreground">
+						No launch requests yet. Use the Templates page to validate one.
+					</div>
+				) : (
+					<div className="space-y-2">
+						{recentLaunches.map((launch) => (
+							<div key={launch.id} className="rounded-md border border-border p-3">
+								<div className="flex items-center justify-between gap-2">
+									<div className="text-sm font-medium text-foreground">
+										{launch.agentType === "claude_code" ? "Claude Code" : "Codex CLI"}
+									</div>
+									<span className="text-xs text-muted-foreground">{launch.status}</span>
+								</div>
+								<div className="mt-1 break-all text-xs text-muted-foreground">
+									{launch.cwd}
+								</div>
+								{launch.validationSummary && (
+									<div className="mt-1 text-xs text-muted-foreground">
+										{launch.validationSummary}
+									</div>
+								)}
+							</div>
+						))}
+					</div>
+				)}
 			</section>
 
 			{/* Session Configuration */}

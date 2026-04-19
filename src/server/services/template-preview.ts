@@ -149,6 +149,7 @@ export function buildTemplatePreview(input: Partial<SessionTemplateInput>): Temp
 		launchCorrelationId,
 		managedMode: "unmanaged_preview",
 		agentType: normalizedTemplate.agentType,
+		launchMode: "interactive_terminal",
 		cwd: normalizedTemplate.cwd,
 		model: normalizedTemplate.model ?? null,
 		approvalPolicy: normalizedTemplate.approvalPolicy ?? null,
