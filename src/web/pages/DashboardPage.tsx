@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { SessionGrid } from "../components/SessionGrid.js";
 import { useSessions } from "../hooks/useSessions.js";
+import { formatDuration } from "../lib/utils.js";
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
 	return (
@@ -13,10 +15,12 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
 }
 
 export function DashboardPage() {
+	const navigate = useNavigate();
 	const { sessions, stats, isLoading } = useSessions();
 
 	const [filter, setFilter] = useState<string>("active");
 	const [search, setSearch] = useState("");
+	const [selectedActiveSessionId, setSelectedActiveSessionId] = useState<string | null>(null);
 
 	// Filter by status
 	let filtered =
@@ -36,8 +40,26 @@ export function DashboardPage() {
 		);
 	}
 
-	const activeSessions = sessions.filter((s) => s.status === "active");
+	const activeSessions = useMemo(
+		() =>
+			sessions
+				.filter((s) => s.status === "active")
+				.sort((a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime()),
+		[sessions],
+	);
 	const workingCount = sessions.filter((s) => s.isWorking).length;
+	const selectedActiveSession =
+		activeSessions.find((session) => session.sessionId === selectedActiveSessionId) ?? activeSessions[0] ?? null;
+
+	useEffect(() => {
+		if (!activeSessions.length) {
+			setSelectedActiveSessionId(null);
+			return;
+		}
+		if (!selectedActiveSessionId || !activeSessions.some((session) => session.sessionId === selectedActiveSessionId)) {
+			setSelectedActiveSessionId(activeSessions[0].sessionId);
+		}
+	}, [activeSessions, selectedActiveSessionId]);
 
 	return (
 		<div className="p-3 md:p-6">
@@ -113,6 +135,107 @@ export function DashboardPage() {
 					)}
 				</div>
 			</div>
+
+			{activeSessions.length > 0 && (
+				<div className="mb-4 rounded-lg border border-border bg-card">
+					<div className="border-b border-border px-3 py-2.5 md:px-4">
+						<div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+							<div>
+								<h2 className="text-sm font-semibold text-foreground">Live Sessions</h2>
+								<p className="text-xs text-muted-foreground">
+									Quick-switch between active sessions without hunting through the grid.
+								</p>
+							</div>
+							<div className="text-xs text-muted-foreground">
+								{activeSessions.length} active · {workingCount} working
+							</div>
+						</div>
+					</div>
+
+					<div className="border-b border-border px-2 py-2 md:px-3">
+						<div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+							{activeSessions.map((session) => {
+								const label = session.displayName || session.sessionId.slice(0, 8);
+								const isSelected = session.sessionId === selectedActiveSession?.sessionId;
+								return (
+									<button
+										key={session.sessionId}
+										onClick={() => setSelectedActiveSessionId(session.sessionId)}
+										className={`min-w-0 shrink-0 rounded-lg border px-3 py-2 text-left transition-colors ${
+											isSelected
+												? "border-primary/30 bg-primary/10 text-primary"
+												: "border-border bg-background text-foreground hover:bg-accent"
+										}`}
+									>
+										<div className="flex items-center gap-2">
+											<span className="truncate text-sm font-medium">{label}</span>
+											{session.isWorking && (
+												<span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
+													<span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse-dot" />
+													Working
+												</span>
+											)}
+										</div>
+										<div className="mt-1 truncate text-[11px] text-muted-foreground">
+											{session.cwd?.split("/").pop() || "No project"}
+										</div>
+									</button>
+								);
+							})}
+						</div>
+					</div>
+
+					{selectedActiveSession && (
+						<div className="grid gap-4 px-3 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:px-4">
+							<div className="min-w-0">
+								<div className="flex flex-wrap items-center gap-2">
+									<div className="text-sm font-semibold text-foreground">
+										{selectedActiveSession.displayName || selectedActiveSession.sessionId.slice(0, 8)}
+									</div>
+									<span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+										{selectedActiveSession.agentType === "claude_code" ? "Claude Code" : "Codex CLI"}
+									</span>
+									<span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+										{selectedActiveSession.status}
+									</span>
+								</div>
+								<div className="mt-2 grid gap-2 text-xs text-muted-foreground md:grid-cols-2 xl:grid-cols-4">
+									<div>
+										<span className="text-foreground">Project:</span>{" "}
+										{selectedActiveSession.cwd || "Unknown"}
+									</div>
+									<div>
+										<span className="text-foreground">Current task:</span>{" "}
+										{selectedActiveSession.currentTask || "No task reported"}
+									</div>
+									<div>
+										<span className="text-foreground">Last activity:</span>{" "}
+										{formatDuration(selectedActiveSession.lastActivityAt)}
+									</div>
+									<div>
+										<span className="text-foreground">Tools:</span>{" "}
+										{selectedActiveSession.totalToolUses}
+									</div>
+								</div>
+							</div>
+							<div className="flex items-start gap-2">
+								<button
+									onClick={() => navigate(`/sessions/${selectedActiveSession.sessionId}`)}
+									className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+								>
+									Open Workspace
+								</button>
+								<button
+									onClick={() => navigate(`/sessions/${selectedActiveSession.sessionId}?tab=activity`)}
+									className="rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors"
+								>
+									Open Activity
+								</button>
+							</div>
+						</div>
+					)}
+				</div>
+			)}
 
 			{/* Session Grid */}
 			<SessionGrid sessions={filtered} isLoading={isLoading} />
