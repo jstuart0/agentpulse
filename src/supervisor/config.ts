@@ -36,7 +36,7 @@ export async function loadSupervisorConfig() {
 		capabilities: {
 			version: 1,
 			agentTypes: ["claude_code", "codex_cli"],
-			launchModes: ["interactive_terminal"],
+			launchModes: ["interactive_terminal", "managed_codex"],
 			os:
 				platform() === "darwin"
 					? "macos"
@@ -46,7 +46,7 @@ export async function loadSupervisorConfig() {
 							? "windows"
 							: "unknown",
 			terminalSupport: [],
-			features: ["can_write_agents_md", "can_write_claude_md"],
+			features: ["can_write_agents_md", "can_write_claude_md", "managed_codex"],
 		},
 	} satisfies SupervisorConfig;
 }

@@ -3,6 +3,7 @@ import { sessions } from "../db/schema.js";
 import { eq, and, lt, ne, sql, desc, count } from "drizzle-orm";
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_END_TIMEOUT_MS } from "../../shared/constants.js";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
+import { getManagedSession } from "./managed-session-state.js";
 
 // Get all sessions with optional filters
 export async function getSessions(filters?: {
@@ -46,7 +47,9 @@ export async function getSession(sessionId: string) {
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);
-	return session || null;
+	if (!session) return null;
+	const managedSession = await getManagedSession(sessionId);
+	return { ...session, managedSession };
 }
 
 // Get dashboard stats

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getSessions, getSession, getStats } from "../services/session-tracker.js";
 import { db } from "../db/client.js";
-import { events, sessions } from "../db/schema.js";
+import { events, managedSessions, sessions } from "../db/schema.js";
 import { eq, desc, sql } from "drizzle-orm";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 
@@ -87,6 +87,24 @@ sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 		.update(sessions)
 		.set({ displayName: name.trim() })
 		.where(eq(sessions.sessionId, sessionId));
+
+	const [managed] = await db
+		.select()
+		.from(managedSessions)
+		.where(eq(managedSessions.sessionId, sessionId))
+		.limit(1);
+
+	if (managed) {
+		await db
+			.update(managedSessions)
+			.set({
+				desiredThreadTitle: name.trim(),
+				providerSyncState: "pending",
+				providerSyncError: null,
+				updatedAt: new Date().toISOString(),
+			})
+			.where(eq(managedSessions.sessionId, sessionId));
+	}
 
 	return c.json({ ok: true });
 });

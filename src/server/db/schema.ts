@@ -194,8 +194,17 @@ export const managedSessions = sqliteTable("managed_sessions", {
 	launchRequestId: text("launch_request_id").notNull(),
 	supervisorId: text("supervisor_id").notNull(),
 	providerSessionId: text("provider_session_id"),
+	providerThreadId: text("provider_thread_id"),
 	managedState: text("managed_state").notNull().default("pending"),
 	correlationSource: text("correlation_source"),
+	desiredThreadTitle: text("desired_thread_title"),
+	providerThreadTitle: text("provider_thread_title"),
+	providerSyncState: text("provider_sync_state").notNull().default("pending"),
+	providerSyncError: text("provider_sync_error"),
+	lastProviderSyncAt: text("last_provider_sync_at"),
+	providerProtocolVersion: text("provider_protocol_version"),
+	providerCapabilitySnapshot: text("provider_capability_snapshot_json", { mode: "json" })
+		.$type<Record<string, unknown>>(),
 	createdAt: text("created_at")
 		.notNull()
 		.default(sql`(datetime('now'))`),

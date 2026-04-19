@@ -161,8 +161,16 @@ export function initializeDatabase() {
 			launch_request_id TEXT NOT NULL,
 			supervisor_id TEXT NOT NULL,
 			provider_session_id TEXT,
+			provider_thread_id TEXT,
 			managed_state TEXT NOT NULL DEFAULT 'pending',
 			correlation_source TEXT,
+			desired_thread_title TEXT,
+			provider_thread_title TEXT,
+			provider_sync_state TEXT NOT NULL DEFAULT 'pending',
+			provider_sync_error TEXT,
+			last_provider_sync_at TEXT,
+			provider_protocol_version TEXT,
+			provider_capability_snapshot_json TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
@@ -221,6 +229,14 @@ export function initializeDatabase() {
 		"ALTER TABLE launch_requests ADD COLUMN pid INTEGER",
 		"ALTER TABLE launch_requests ADD COLUMN provider_launch_metadata_json TEXT",
 		"ALTER TABLE managed_sessions ADD COLUMN correlation_source TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN provider_thread_id TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN desired_thread_title TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN provider_thread_title TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN provider_sync_state TEXT NOT NULL DEFAULT 'pending'",
+		"ALTER TABLE managed_sessions ADD COLUMN provider_sync_error TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN last_provider_sync_at TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN provider_protocol_version TEXT",
+		"ALTER TABLE managed_sessions ADD COLUMN provider_capability_snapshot_json TEXT",
 	];
 
 	for (const migration of migrations) {

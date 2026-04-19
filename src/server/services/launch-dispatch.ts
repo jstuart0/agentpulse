@@ -73,6 +73,13 @@ export async function updateLaunchDispatchStatus(input: {
 		updates.pid = input.pid ?? null;
 		updates.providerLaunchMetadata = input.providerLaunchMetadata ?? {};
 	}
+	if (input.status === "running") {
+		updates.dispatchFinishedAt = now;
+		updates.pid = input.pid ?? row.pid ?? null;
+		if (input.providerLaunchMetadata) {
+			updates.providerLaunchMetadata = input.providerLaunchMetadata;
+		}
+	}
 	if (input.status === "failed" || input.status === "cancelled") {
 		updates.dispatchFinishedAt = now;
 	}
@@ -101,15 +108,28 @@ export async function linkObservedSessionToLaunch(sessionId: string, supervisorI
 	if (!row) return null;
 
 	const timestamp = nowIso();
+	const [existingManaged] = await db
+		.select()
+		.from(managedSessions)
+		.where(eq(managedSessions.sessionId, sessionId))
+		.limit(1);
 	await db
 		.insert(managedSessions)
 		.values({
 			sessionId,
 			launchRequestId: row.id,
 			supervisorId: supervisorId ?? row.claimedBySupervisorId ?? row.requestedSupervisorId ?? "unknown",
-			providerSessionId: sessionId,
-			managedState: "linked",
-			correlationSource: "session_id",
+			providerSessionId: existingManaged?.providerSessionId ?? sessionId,
+			providerThreadId: existingManaged?.providerThreadId ?? null,
+			managedState: existingManaged?.managedState ?? "linked",
+			correlationSource: existingManaged?.correlationSource ?? "session_id",
+			desiredThreadTitle: existingManaged?.desiredThreadTitle ?? null,
+			providerThreadTitle: existingManaged?.providerThreadTitle ?? null,
+			providerSyncState: existingManaged?.providerSyncState ?? "pending",
+			providerSyncError: existingManaged?.providerSyncError ?? null,
+			lastProviderSyncAt: existingManaged?.lastProviderSyncAt ?? null,
+			providerProtocolVersion: existingManaged?.providerProtocolVersion ?? null,
+			providerCapabilitySnapshot: existingManaged?.providerCapabilitySnapshot ?? null,
 			createdAt: timestamp,
 			updatedAt: timestamp,
 		})
@@ -119,9 +139,17 @@ export async function linkObservedSessionToLaunch(sessionId: string, supervisorI
 				launchRequestId: row.id,
 				supervisorId:
 					supervisorId ?? row.claimedBySupervisorId ?? row.requestedSupervisorId ?? "unknown",
-				providerSessionId: sessionId,
-				managedState: "linked",
-				correlationSource: "session_id",
+				providerSessionId: existingManaged?.providerSessionId ?? sessionId,
+				providerThreadId: existingManaged?.providerThreadId ?? null,
+				managedState: existingManaged?.managedState ?? "linked",
+				correlationSource: existingManaged?.correlationSource ?? "session_id",
+				desiredThreadTitle: existingManaged?.desiredThreadTitle ?? null,
+				providerThreadTitle: existingManaged?.providerThreadTitle ?? null,
+				providerSyncState: existingManaged?.providerSyncState ?? "pending",
+				providerSyncError: existingManaged?.providerSyncError ?? null,
+				lastProviderSyncAt: existingManaged?.lastProviderSyncAt ?? null,
+				providerProtocolVersion: existingManaged?.providerProtocolVersion ?? null,
+				providerCapabilitySnapshot: existingManaged?.providerCapabilitySnapshot ?? null,
 				updatedAt: timestamp,
 			},
 		});

@@ -1,6 +1,10 @@
 import { loadSupervisorConfig, saveSupervisorConfig } from "./config.js";
 import { launchClaudeRequest } from "./providers/claude.js";
-import type { LaunchRequest } from "../shared/types.js";
+import type { LaunchRequest, ManagedSession, Session } from "../shared/types.js";
+import {
+	launchManagedCodexRequest,
+	reconcileManagedCodexTitles,
+} from "./providers/codex-managed.js";
 
 async function request(path: string, options?: RequestInit) {
 	const config = await loadSupervisorConfig();
@@ -51,6 +55,52 @@ async function main() {
 	);
 
 	async function dispatchLaunch(launch: LaunchRequest) {
+		if (launch.agentType === "codex_cli" && launch.requestedLaunchMode === "managed_codex") {
+			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+				method: "POST",
+				body: JSON.stringify({
+					status: "launching",
+				}),
+			});
+
+			try {
+				const result = await launchManagedCodexRequest(launch, {
+					reportState: async (body) =>
+						(await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
+							method: "POST",
+							body: JSON.stringify(body),
+						})) as { session: Session; managedSession: ManagedSession },
+					reportEvents: async (events) => {
+						await request(
+							`/supervisors/${registration.supervisor.id}/managed-sessions/${launch.launchCorrelationId}/events`,
+							{
+								method: "POST",
+								body: JSON.stringify({ events }),
+							},
+						);
+					},
+				});
+				await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+					method: "POST",
+					body: JSON.stringify({
+						status: "running",
+						pid: result.pid,
+						providerLaunchMetadata: result.metadata,
+					}),
+				});
+				return;
+			} catch (error) {
+				await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+					method: "POST",
+					body: JSON.stringify({
+						status: "failed",
+						error: error instanceof Error ? error.message : "Managed Codex launch failed",
+					}),
+				});
+				return;
+			}
+		}
+
 		if (launch.agentType !== "claude_code") {
 			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
 				method: "POST",
@@ -114,6 +164,22 @@ async function main() {
 			console.error("[supervisor] heartbeat failed", error);
 		}
 	}, registration.heartbeatIntervalMs);
+
+	setInterval(async () => {
+		try {
+			const result = (await request(
+				`/supervisors/${registration.supervisor.id}/provider-sync`,
+			)) as { managedSessions: ManagedSession[] };
+			await reconcileManagedCodexTitles(result.managedSessions ?? [], async (body) => {
+				return (await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
+					method: "POST",
+					body: JSON.stringify(body),
+				})) as { session: Session; managedSession: ManagedSession };
+			});
+		} catch (error) {
+			console.error("[supervisor] provider sync failed", error);
+		}
+	}, 3_000);
 }
 
 main().catch((error) => {

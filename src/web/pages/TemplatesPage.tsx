@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type {
 	AgentType,
 	ApprovalPolicy,
+	LaunchMode,
 	LaunchRequest,
 	SandboxMode,
 	SessionTemplate,
@@ -94,6 +95,7 @@ export function TemplatesPage() {
 	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
 	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
 	const [launching, setLaunching] = useState(false);
+	const [launchMode, setLaunchMode] = useState<LaunchMode>("managed_codex");
 
 	useEffect(() => {
 		loadTemplates();
@@ -127,6 +129,12 @@ export function TemplatesPage() {
 
 		return () => clearTimeout(timeout);
 	}, [draft, envText, tagsText]);
+
+	useEffect(() => {
+		if (draft.agentType === "claude_code" && launchMode === "managed_codex") {
+			setLaunchMode("interactive_terminal");
+		}
+	}, [draft.agentType, launchMode]);
 
 	async function loadTemplates() {
 		setLoading(true);
@@ -178,6 +186,7 @@ export function TemplatesPage() {
 		setEnvText(envToLines(template.env));
 		setTagsText(tagsToString(template.tags));
 		setStatusMessage("");
+		setLaunchMode(template.agentType === "codex_cli" ? "managed_codex" : "interactive_terminal");
 	}
 
 	function resetEditor(agentType: AgentType = draft.agentType) {
@@ -186,6 +195,7 @@ export function TemplatesPage() {
 		setEnvText("");
 		setTagsText("");
 		setStatusMessage("");
+		setLaunchMode(agentType === "codex_cli" ? "managed_codex" : "interactive_terminal");
 	}
 
 	function updateDraft<K extends keyof SessionTemplateInput>(key: K, value: SessionTemplateInput[K]) {
@@ -261,11 +271,12 @@ export function TemplatesPage() {
 					env: parseEnvLines(envText),
 					tags: parseTags(tagsText),
 				},
-				launchSpec: preview.launchSpec,
+				launchSpec: effectiveLaunchSpec ?? preview.launchSpec,
+				requestedLaunchMode: launchMode,
 			})) as { launchRequest: LaunchRequest; supervisor: SupervisorRecord };
 			setStatusMessage(
 				result.launchRequest.status === "validated"
-					? `Launch request validated for ${result.supervisor.hostName}.`
+					? `Launch request created for ${result.supervisor.hostName}.`
 					: result.launchRequest.validationSummary || "Launch request rejected.",
 			);
 			await loadPhaseTwoData();
@@ -277,6 +288,12 @@ export function TemplatesPage() {
 	}
 
 	const connectedSupervisor = supervisors.find((supervisor) => supervisor.status === "connected");
+	const effectiveLaunchSpec = preview
+		? {
+				...preview.launchSpec,
+				launchMode,
+			}
+		: null;
 
 	return (
 		<div className="p-3 md:p-6">
@@ -287,8 +304,8 @@ export function TemplatesPage() {
 							Session Templates
 						</h1>
 						<p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-							Define reusable Claude Code and Codex session setups. This phase only
-							saves and previews launch specs. Nothing is launched from AgentPulse yet.
+							Define reusable Claude Code and Codex session setups. Launch requests are
+							executed automatically when a connected supervisor can claim them.
 						</p>
 					</div>
 					<div className="flex flex-col items-start gap-2 md:items-end">
@@ -381,8 +398,8 @@ export function TemplatesPage() {
 									{selectedId ? "Edit Template" : "Create Template"}
 								</h2>
 								<p className="text-xs text-muted-foreground mt-1">
-									Saved templates become the future launch contract. For now they are
-									preview-only.
+									Saved templates define the launch contract AgentPulse hands to the
+									supervisor.
 								</p>
 							</div>
 							<div className="flex gap-2">
@@ -497,6 +514,19 @@ export function TemplatesPage() {
 									))}
 								</select>
 							</label>
+							<label className="space-y-1.5 text-sm">
+								<span className="text-foreground">Launch Mode</span>
+								<select
+									value={launchMode}
+									onChange={(e) => setLaunchMode(e.target.value as LaunchMode)}
+									className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+								>
+									<option value="interactive_terminal">Interactive terminal</option>
+									{draft.agentType === "codex_cli" && (
+										<option value="managed_codex">Managed Codex</option>
+									)}
+								</select>
+							</label>
 						</div>
 
 						<label className="block space-y-1.5 text-sm">
@@ -569,7 +599,7 @@ export function TemplatesPage() {
 								disabled={!preview || launching || !connectedSupervisor}
 								className="rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
 							>
-								{launching ? "Validating..." : "Validate Launch Request"}
+								{launching ? "Launching..." : "Create Launch Request"}
 							</button>
 							{statusMessage && (
 								<span className="text-xs text-muted-foreground">{statusMessage}</span>
@@ -581,8 +611,8 @@ export function TemplatesPage() {
 						<div>
 							<h2 className="text-sm font-semibold text-foreground">Launch Preview</h2>
 							<p className="text-xs text-muted-foreground mt-1">
-								This is the normalized launch contract AgentPulse will use later. Nothing
-								is being started here.
+								This is the normalized launch contract AgentPulse hands to the
+								supervisor. The preview itself does not start anything.
 							</p>
 						</div>
 
@@ -665,7 +695,7 @@ export function TemplatesPage() {
 										<button
 											onClick={() =>
 												navigator.clipboard.writeText(
-													JSON.stringify(preview.launchSpec, null, 2),
+													JSON.stringify(effectiveLaunchSpec, null, 2),
 												)
 											}
 											className="rounded-md bg-muted px-2.5 py-1 text-[11px] text-foreground hover:bg-accent transition-colors"
@@ -674,7 +704,7 @@ export function TemplatesPage() {
 										</button>
 									</div>
 									<pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs text-foreground">
-										{JSON.stringify(preview.launchSpec, null, 2)}
+										{JSON.stringify(effectiveLaunchSpec, null, 2)}
 									</pre>
 								</div>
 
@@ -696,7 +726,7 @@ export function TemplatesPage() {
 																: "Codex CLI"}
 														</span>
 														<span className="text-muted-foreground">
-															{launch.status}
+															{launch.status} · {launch.requestedLaunchMode}
 														</span>
 													</div>
 													<div className="mt-1 break-all text-muted-foreground">

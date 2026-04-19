@@ -1,12 +1,27 @@
 import { Hono } from "hono";
-import type { SupervisorRegistrationInput } from "../../shared/types.js";
+import type {
+	ManagedSessionEventInput,
+	ManagedSessionStateInput,
+	SupervisorRegistrationInput,
+} from "../../shared/types.js";
 import {
 	getSupervisor,
 	heartbeatSupervisor,
 	listSupervisors,
 	registerSupervisor,
 } from "../services/supervisor-registry.js";
-import { claimNextLaunchRequest, updateLaunchDispatchStatus } from "../services/launch-dispatch.js";
+import {
+	claimNextLaunchRequest,
+	linkObservedSessionToLaunch,
+	updateLaunchDispatchStatus,
+} from "../services/launch-dispatch.js";
+import {
+	appendManagedSessionEvents,
+	listManagedSessionsNeedingSync,
+	upsertManagedSessionState,
+} from "../services/managed-session-state.js";
+import { broadcast, broadcastToSession } from "../ws/handler.js";
+import { getSession } from "../services/session-tracker.js";
 
 const supervisorsRouter = new Hono();
 
@@ -43,7 +58,7 @@ supervisorsRouter.post("/supervisors/:id/launches/claim", async (c) => {
 
 supervisorsRouter.post("/supervisors/:id/launches/:launchId/status", async (c) => {
 	const body = await c.req.json<{
-		status: "launching" | "awaiting_session" | "failed" | "cancelled";
+		status: "launching" | "awaiting_session" | "running" | "failed" | "cancelled";
 		error?: string | null;
 		pid?: number | null;
 		providerLaunchMetadata?: Record<string, unknown> | null;
@@ -58,6 +73,33 @@ supervisorsRouter.post("/supervisors/:id/launches/:launchId/status", async (c) =
 	});
 	if (!launchRequest) return c.json({ error: "Launch request not found" }, 404);
 	return c.json({ launchRequest });
+});
+
+supervisorsRouter.post("/supervisors/:id/managed-session-state", async (c) => {
+	const body = await c.req.json<ManagedSessionStateInput>();
+	if (!body.sessionId) return c.json({ error: "sessionId is required" }, 400);
+	const result = await upsertManagedSessionState(c.req.param("id"), body);
+	await linkObservedSessionToLaunch(body.sessionId, c.req.param("id"));
+	broadcast("session_updated", { session: result.session });
+	return c.json(result);
+});
+
+supervisorsRouter.post("/supervisors/:id/managed-sessions/:sessionId/events", async (c) => {
+	const body = await c.req.json<{ events: ManagedSessionEventInput[] }>();
+	const inserted = await appendManagedSessionEvents(c.req.param("sessionId"), body.events ?? []);
+	const session = await getSession(c.req.param("sessionId"));
+	if (session) {
+		broadcast("session_updated", { session });
+		for (const event of inserted) {
+			broadcastToSession(c.req.param("sessionId"), "new_event", event);
+		}
+	}
+	return c.json({ events: inserted });
+});
+
+supervisorsRouter.get("/supervisors/:id/provider-sync", async (c) => {
+	const managedSessions = await listManagedSessionsNeedingSync(c.req.param("id"));
+	return c.json({ managedSessions });
 });
 
 export { supervisorsRouter };

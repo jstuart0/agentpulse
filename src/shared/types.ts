@@ -16,6 +16,7 @@ export type SandboxMode =
 	| "danger-full-access";
 
 export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
+export type ProviderSyncState = "pending" | "synced" | "failed";
 
 // Session lifecycle status
 export type SessionStatus =
@@ -135,6 +136,26 @@ export interface Session {
 	claudeMdUpdatedAt: string | null;
 	notes: string | null;
 	metadata: Record<string, unknown>;
+	managedSession?: ManagedSession | null;
+}
+
+export interface ManagedSession {
+	sessionId: string;
+	launchRequestId: string;
+	supervisorId: string;
+	providerSessionId: string | null;
+	providerThreadId: string | null;
+	managedState: string;
+	correlationSource: string | null;
+	desiredThreadTitle: string | null;
+	providerThreadTitle: string | null;
+	providerSyncState: ProviderSyncState;
+	providerSyncError: string | null;
+	lastProviderSyncAt: string | null;
+	providerProtocolVersion: string | null;
+	providerCapabilitySnapshot: Record<string, unknown> | null;
+	createdAt: string;
+	updatedAt: string;
 }
 
 // Event as returned by the API
@@ -348,6 +369,36 @@ export interface LaunchRequest {
 	providerLaunchMetadata: Record<string, unknown> | null;
 	createdAt: string;
 	updatedAt: string;
+}
+
+export interface ManagedSessionStateInput {
+	sessionId: string;
+	agentType?: AgentType;
+	cwd?: string | null;
+	model?: string | null;
+	status?: SessionStatus;
+	managedState?: string;
+	launchRequestId?: string | null;
+	providerSessionId?: string | null;
+	providerThreadId?: string | null;
+	correlationSource?: string | null;
+	desiredThreadTitle?: string | null;
+	providerThreadTitle?: string | null;
+	providerSyncState?: ProviderSyncState;
+	providerSyncError?: string | null;
+	lastProviderSyncAt?: string | null;
+	providerProtocolVersion?: string | null;
+	providerCapabilitySnapshot?: Record<string, unknown> | null;
+	metadata?: Record<string, unknown> | null;
+}
+
+export interface ManagedSessionEventInput {
+	eventType: string;
+	category: EventCategory;
+	content?: string | null;
+	isNoise?: boolean;
+	providerEventType?: string | null;
+	rawPayload?: Record<string, unknown>;
 }
 
 export interface SupervisorRegistrationInput {
