@@ -32,6 +32,12 @@ spec:
         - name: agentpulse
           port: 3000
 
+    - match: Host(`agentpulse.example.com`) && Path(`/install-local.ps1`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
     # Dashboard frontend - Authentik protected
     - match: Host(`agentpulse.example.com`)
       kind: Rule

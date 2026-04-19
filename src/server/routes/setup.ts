@@ -156,6 +156,25 @@ setup.get("/install-local.sh", (c) => {
 	});
 });
 
+// GET /install-local.ps1 - Serve the local Bun+SQLite installer for Windows
+// Usage: irm http://localhost:3000/install-local.ps1 | iex
+setup.get("/install-local.ps1", (c) => {
+	const requestHost = c.req.header("Host") || `localhost:${config.port}`;
+	const requestPort = requestHost.includes(":") ? requestHost.split(":")[1] : config.port.toString();
+	const defaultLocalUrl = `http://localhost:${requestPort}`;
+	const installScriptPath = join(import.meta.dir, "../../../scripts/install-local.ps1");
+
+	let script = readFileSync(installScriptPath, "utf-8");
+	script = script.replace('[string]$PublicUrl = ""', `[string]$PublicUrl = "${defaultLocalUrl}"`);
+
+	return new Response(script, {
+		headers: {
+			"Content-Type": "text/plain; charset=utf-8",
+			"Content-Disposition": "inline; filename=install-local.ps1",
+		},
+	});
+});
+
 // GET /setup-relay.sh - Self-contained relay setup for remote server users
 // Usage: curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_xxx
 setup.get("/setup-relay.sh", (c) => {

@@ -28,10 +28,18 @@ Each session gets a random memorable name (like `bold-falcon`) so you can match 
 
 ### Easiest local install: 1 command
 
+macOS / Linux:
+
 This installs AgentPulse locally with Bun + SQLite, starts the web app and local supervisor as services, and configures Claude Code + Codex hooks automatically.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash
+```
+
+Windows:
+
+```powershell
+irm https://agentpulse.xmojo.net/install-local.ps1 | iex
 ```
 
 When it finishes, open [http://localhost:3000](http://localhost:3000) and start a new Claude Code or Codex session.
@@ -71,8 +79,16 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 
 Recommended for most OSS users. No Docker, no Postgres, no Kubernetes. This is the full single-machine setup: dashboard, hooks, and local supervisor/control plane.
 
+macOS / Linux:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash
+```
+
+Windows:
+
+```powershell
+irm https://agentpulse.xmojo.net/install-local.ps1 | iex
 ```
 
 What it does:
@@ -91,6 +107,8 @@ What it does:
 
 Useful options:
 
+macOS / Linux:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash -s -- \
   --port 4000 \
@@ -98,7 +116,16 @@ curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/i
   --data-dir "$HOME/.agentpulse/data"
 ```
 
+Windows:
+
+```powershell
+iwr https://agentpulse.xmojo.net/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-local.ps1" -Port 4000 -PublicUrl http://localhost:4000 -DataDir "$HOME\.agentpulse\data"
+```
+
 If you want auth enabled from the start:
+
+macOS / Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash -s -- \
@@ -106,10 +133,26 @@ curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/i
   --api-key ap_your_key_here
 ```
 
+Windows:
+
+```powershell
+iwr https://agentpulse.xmojo.net/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-local.ps1" -DisableAuth:$false -ApiKey ap_your_key_here
+```
+
 If you only want observability and do not want the local supervisor/control plane:
+
+macOS / Linux:
 
 ```bash
 curl -fsSL https://agentpulse.xmojo.net/install-local.sh | bash -s -- --skip-supervisor
+```
+
+Windows:
+
+```powershell
+iwr https://agentpulse.xmojo.net/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-local.ps1" -SkipSupervisor
 ```
 
 ### 2. Local Docker container
@@ -276,6 +319,15 @@ tail -f ~/.agentpulse/logs/supervisor.out.log
 ```bash
 systemctl --user restart agentpulse
 journalctl --user -u agentpulse -f
+```
+
+### Windows
+
+```powershell
+Get-ScheduledTask AgentPulseLocal
+Get-ScheduledTask AgentPulseSupervisor
+Get-Content "$HOME\.agentpulse\logs\agentpulse.out.log" -Wait
+Get-Content "$HOME\.agentpulse\logs\supervisor.out.log" -Wait
 ```
 
 ### Manual start
