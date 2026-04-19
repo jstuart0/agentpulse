@@ -145,10 +145,27 @@ export function SetupPage() {
 				</div>
 			)}
 
+			<div className="border border-border bg-card rounded-lg p-5 mb-4">
+				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
+					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
+						{agentType === "codex_cli" ? "5" : "4"}
+					</span>
+					Supervisor Enrollment
+				</h2>
+				<p className="text-xs text-muted-foreground">
+					For orchestration and managed sessions, create host enrollment tokens on the
+					{" "}<span className="font-mono text-foreground">Hosts</span> page. That issues a one-time
+					token a machine can exchange for a persistent scoped supervisor credential. Use
+					{" "}<span className="font-mono text-foreground">Rotate</span> to re-enroll a host and
+					replace its credential, or <span className="font-mono text-foreground">Revoke</span> to
+					cut off future supervisor access.
+				</p>
+			</div>
+
 			{/* Step 4: Environment variable */}
 			<div className="border border-border bg-card rounded-lg p-5 mb-4">
 				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
-					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">{agentType === "codex_cli" ? "5" : "4"}</span>
+					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">{agentType === "codex_cli" ? "6" : "5"}</span>
 					Set Environment Variable
 				</h2>
 				<p className="text-xs text-muted-foreground mb-3">
@@ -162,7 +179,7 @@ export function SetupPage() {
 			{/* Step 5: CLAUDE.md snippet */}
 			<div className="border border-border bg-card rounded-lg p-5">
 				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
-					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">{agentType === "codex_cli" ? "6" : "5"}</span>
+					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">{agentType === "codex_cli" ? "7" : "6"}</span>
 					Optional: Add Status Snippet to {agentType === "claude_code" ? "CLAUDE.md" : "AGENTS.md"}
 				</h2>
 				<p className="text-xs text-muted-foreground mb-3">

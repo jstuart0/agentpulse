@@ -1,6 +1,32 @@
 // Agent types supported
 export type AgentType = "claude_code" | "codex_cli";
 
+export type ApprovalPolicy =
+	| "default"
+	| "suggest"
+	| "auto"
+	| "manual"
+	| "untrusted"
+	| "on-failure";
+
+export type SandboxMode =
+	| "default"
+	| "workspace-write"
+	| "read-only"
+	| "danger-full-access";
+
+export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
+export type ProviderSyncState = "pending" | "synced" | "failed";
+export type LaunchRoutingPolicy = "manual_target" | "first_capable_host";
+export type ControlActionType = "stop" | "retry" | "fork" | "resume" | "rename" | "prompt";
+export type ControlActionStatus = "queued" | "running" | "succeeded" | "failed";
+export type EventSource =
+	| "observed_hook"
+	| "observed_status"
+	| "observed_transcript"
+	| "managed_control"
+	| "launch_system";
+
 // Session lifecycle status
 export type SessionStatus =
 	| "active"
@@ -119,6 +145,30 @@ export interface Session {
 	claudeMdUpdatedAt: string | null;
 	notes: string | null;
 	metadata: Record<string, unknown>;
+	managedSession?: ManagedSession | null;
+}
+
+export interface ManagedSession {
+	sessionId: string;
+	launchRequestId: string;
+	supervisorId: string;
+	providerSessionId: string | null;
+	providerThreadId: string | null;
+	managedState: string;
+	correlationSource: string | null;
+	desiredThreadTitle: string | null;
+	providerThreadTitle: string | null;
+	providerSyncState: ProviderSyncState;
+	providerSyncError: string | null;
+	lastProviderSyncAt: string | null;
+	providerProtocolVersion: string | null;
+	providerCapabilitySnapshot: Record<string, unknown> | null;
+	activeControlActionId: string | null;
+	controlLockExpiresAt: string | null;
+	hostName: string | null;
+	hostAffinityReason: string | null;
+	createdAt: string;
+	updatedAt: string;
 }
 
 // Event as returned by the API
@@ -127,6 +177,7 @@ export interface SessionEvent {
 	sessionId: string;
 	eventType: string;
 	category: EventCategory | null;
+	source: EventSource;
 	content: string | null;
 	isNoise: boolean;
 	providerEventType: string | null;
@@ -142,6 +193,7 @@ export interface LiveSessionEvent {
 	sessionId: string;
 	eventType: string;
 	category: EventCategory | null;
+	source: EventSource;
 	content: string | null;
 	isNoise: boolean;
 	providerEventType: string | null;
@@ -193,4 +245,262 @@ export interface AppSettings {
 	publicUrl: string;
 	sessionTimeoutMinutes: number;
 	eventsRetentionDays: number;
+}
+
+export interface SessionTemplate {
+	id: string;
+	name: string;
+	description: string | null;
+	agentType: AgentType;
+	cwd: string;
+	baseInstructions: string;
+	taskPrompt: string;
+	model: string | null;
+	approvalPolicy: ApprovalPolicy | null;
+	sandboxMode: SandboxMode | null;
+	env: Record<string, string>;
+	tags: string[];
+	isFavorite: boolean;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface SessionTemplateInput {
+	name: string;
+	description?: string | null;
+	agentType: AgentType;
+	cwd: string;
+	baseInstructions?: string;
+	taskPrompt?: string;
+	model?: string | null;
+	approvalPolicy?: ApprovalPolicy | null;
+	sandboxMode?: SandboxMode | null;
+	env?: Record<string, string>;
+	tags?: string[];
+	isFavorite?: boolean;
+}
+
+export interface LaunchSpec {
+	version: 1;
+	launchCorrelationId: string;
+	managedMode: "unmanaged_preview";
+	agentType: AgentType;
+	launchMode?: LaunchMode;
+	cwd: string;
+	model: string | null;
+	approvalPolicy: ApprovalPolicy | null;
+	sandboxMode: SandboxMode | null;
+	baseInstructions: string;
+	taskPrompt: string;
+	env: Record<string, string>;
+	providerConfig: {
+		command: string;
+		cliArgs: string[];
+		instructionsFile: "CLAUDE.md" | "AGENTS.md";
+	};
+}
+
+export interface ProviderLaunchGuidance {
+	label: string;
+	command: string;
+	recommended: boolean;
+	notes: string[];
+}
+
+export interface TemplateHostCompatibility {
+	supervisorId: string;
+	hostName: string;
+	status: SupervisorStatus;
+	platform: string;
+	arch: string;
+	ok: boolean;
+	errors: string[];
+	warnings: string[];
+	executablePath: string | null;
+}
+
+export interface TemplatePreview {
+	normalizedTemplate: SessionTemplateInput;
+	launchSpec: LaunchSpec;
+	guidance: {
+		claudeCode: ProviderLaunchGuidance;
+		codexCli: ProviderLaunchGuidance;
+	};
+	warnings: string[];
+	hostCompatibility: TemplateHostCompatibility[];
+	firstCapableHostId: string | null;
+}
+
+export type SupervisorStatus = "connected" | "stale" | "offline";
+export type LaunchRequestStatus =
+	| "draft"
+	| "queued"
+	| "validated"
+	| "rejected"
+	| "launching"
+	| "awaiting_session"
+	| "running"
+	| "completed"
+	| "failed"
+	| "cancelled";
+
+export interface SupervisorCapabilities {
+	version: 1;
+	agentTypes: AgentType[];
+	launchModes: LaunchMode[];
+	os: "macos" | "linux" | "windows" | "unknown";
+	terminalSupport: string[];
+	features: string[];
+	interactiveTerminalControl?: {
+		available: boolean;
+		reason: string | null;
+	};
+	executables?: {
+		claude?: {
+			available: boolean;
+			command: string;
+			resolvedPath: string | null;
+			source: "auto" | "config";
+		};
+		codex?: {
+			available: boolean;
+			command: string;
+			resolvedPath: string | null;
+			source: "auto" | "config";
+		};
+	};
+}
+
+export interface SupervisorRecord {
+	id: string;
+	hostName: string;
+	platform: string;
+	arch: string;
+	version: string;
+	capabilities: SupervisorCapabilities;
+	trustedRoots: string[];
+	status: SupervisorStatus;
+	capabilitySchemaVersion: number;
+	configSchemaVersion: number;
+	lastHeartbeatAt: string;
+	heartbeatLeaseExpiresAt: string;
+	enrollmentState?: "pending" | "active" | "revoked";
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface LaunchRequest {
+	id: string;
+	templateId: string | null;
+	launchCorrelationId: string;
+	agentType: AgentType;
+	cwd: string;
+	baseInstructions: string;
+	taskPrompt: string;
+	model: string | null;
+	approvalPolicy: ApprovalPolicy | null;
+	sandboxMode: SandboxMode | null;
+	requestedLaunchMode: LaunchMode;
+	env: Record<string, string>;
+	launchSpec: LaunchSpec;
+	requestedBy: string | null;
+	requestedSupervisorId: string | null;
+	routingPolicy: LaunchRoutingPolicy | null;
+	resolvedSupervisorId: string | null;
+	routingDecision: Record<string, unknown> | null;
+	claimedBySupervisorId: string | null;
+	claimToken: string | null;
+	status: LaunchRequestStatus;
+	error: string | null;
+	validationWarnings: string[];
+	validationSummary: string | null;
+	dispatchStartedAt: string | null;
+	dispatchFinishedAt: string | null;
+	awaitingSessionDeadlineAt: string | null;
+	pid: number | null;
+	providerLaunchMetadata: Record<string, unknown> | null;
+	retryOfLaunchRequestId: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface ControlAction {
+	id: string;
+	sessionId: string | null;
+	launchRequestId: string | null;
+	actionType: ControlActionType;
+	requestedBy: string | null;
+	status: ControlActionStatus;
+	error: string | null;
+	metadata: Record<string, unknown> | null;
+	idempotencyKey: string | null;
+	claimedBySupervisorId: string | null;
+	finishedAt: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface ManagedSessionStateInput {
+	sessionId: string;
+	agentType?: AgentType;
+	cwd?: string | null;
+	model?: string | null;
+	status?: SessionStatus;
+	managedState?: string;
+	launchRequestId?: string | null;
+	providerSessionId?: string | null;
+	providerThreadId?: string | null;
+	correlationSource?: string | null;
+	desiredThreadTitle?: string | null;
+	providerThreadTitle?: string | null;
+	providerSyncState?: ProviderSyncState;
+	providerSyncError?: string | null;
+	lastProviderSyncAt?: string | null;
+	providerProtocolVersion?: string | null;
+	providerCapabilitySnapshot?: Record<string, unknown> | null;
+	metadata?: Record<string, unknown> | null;
+}
+
+export interface ManagedSessionEventInput {
+	eventType: string;
+	category: EventCategory;
+	source?: EventSource;
+	content?: string | null;
+	isNoise?: boolean;
+	providerEventType?: string | null;
+	rawPayload?: Record<string, unknown>;
+}
+
+export interface SupervisorRegistrationInput {
+	id?: string;
+	enrollmentToken?: string;
+	hostName: string;
+	platform: string;
+	arch: string;
+	version: string;
+	capabilities: SupervisorCapabilities;
+	trustedRoots: string[];
+	capabilitySchemaVersion?: number;
+	configSchemaVersion?: number;
+}
+
+export interface SupervisorEnrollmentTokenInfo {
+	id: string;
+	name: string;
+	supervisorId?: string | null;
+	tokenPrefix: string;
+	isActive: boolean;
+	expiresAt: string | null;
+	createdAt: string;
+	usedAt: string | null;
+	revokedAt: string | null;
+}
+
+export interface LaunchRequestInput {
+	templateId?: string | null;
+	requestedSupervisorId?: string | null;
+	requestedLaunchMode?: LaunchMode;
+	routingPolicy?: LaunchRoutingPolicy | null;
+	template: SessionTemplateInput;
+	launchSpec: LaunchSpec;
 }

@@ -1,11 +1,14 @@
-import { readFileSync, statSync, existsSync } from "fs";
+import { readFile, stat } from "fs/promises";
 import { db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
 import { and, eq, isNotNull, ne } from "drizzle-orm";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { createAssistantTranscriptEvent, type NormalizedEvent } from "./event-normalizer.js";
-import { broadcastToSession } from "../ws/handler.js";
+import { notifySessionEvents } from "./notifier.js";
 import type { AgentType, Session } from "../../shared/types.js";
+
+const TRANSCRIPT_SYNC_INTERVAL_MS = 1000;
+const TRANSCRIPT_SYNC_BATCH_SIZE = 10;
 
 type TranscriptCursor = {
 	offset?: number;
@@ -94,14 +97,19 @@ function parseTranscriptDelta(agentType: AgentType, lines: string[]): Normalized
 }
 
 async function syncTranscriptForSession(session: SessionWithMetadata) {
-	if (!session.transcriptPath || !existsSync(session.transcriptPath)) return;
+	if (!session.transcriptPath) return;
 
 	const cursor = getTranscriptCursor(session.metadata);
 	const offset = cursor.offset ?? 0;
-	const stat = statSync(session.transcriptPath);
-	if (stat.size <= offset) return;
+	let transcriptStat;
+	try {
+		transcriptStat = await stat(session.transcriptPath);
+	} catch {
+		return;
+	}
+	if (transcriptStat.size <= offset) return;
 
-	const buffer = readFileSync(session.transcriptPath);
+	const buffer = await readFile(session.transcriptPath);
 	const text = buffer.subarray(offset).toString("utf8");
 	const lines = text.split("\n").filter(Boolean);
 	if (lines.length === 0) {
@@ -110,7 +118,7 @@ async function syncTranscriptForSession(session: SessionWithMetadata) {
 			.set({
 				metadata: {
 					...(session.metadata || {}),
-					transcriptCursor: { offset: stat.size },
+					transcriptCursor: { offset: transcriptStat.size },
 				},
 			})
 			.where(eq(sessions.sessionId, session.sessionId));
@@ -121,9 +129,7 @@ async function syncTranscriptForSession(session: SessionWithMetadata) {
 	const insertedEvents = await insertNormalizedEvents(session.sessionId, normalizedEvents);
 
 	if (insertedEvents.length > 0) {
-		for (const event of insertedEvents) {
-			broadcastToSession(session.sessionId, "new_event", event);
-		}
+		notifySessionEvents(session.sessionId, insertedEvents);
 	}
 
 	await db
@@ -131,10 +137,22 @@ async function syncTranscriptForSession(session: SessionWithMetadata) {
 		.set({
 			metadata: {
 				...(session.metadata || {}),
-				transcriptCursor: { offset: stat.size },
+				transcriptCursor: { offset: transcriptStat.size },
 			},
 		})
 		.where(eq(sessions.sessionId, session.sessionId));
+}
+
+async function syncTranscriptBatch(batch: SessionWithMetadata[]) {
+	const results = await Promise.allSettled(
+		batch.map((session) => syncTranscriptForSession(session)),
+	);
+
+	for (const result of results) {
+		if (result.status === "rejected") {
+			console.error("[transcript-sync] Session sync error:", result.reason);
+		}
+	}
 }
 
 export function startTranscriptSync() {
@@ -156,11 +174,12 @@ export function startTranscriptSync() {
 					),
 				);
 
-			for (const session of activeSessions) {
-				await syncTranscriptForSession(session as SessionWithMetadata);
+			for (let index = 0; index < activeSessions.length; index += TRANSCRIPT_SYNC_BATCH_SIZE) {
+				const batch = activeSessions.slice(index, index + TRANSCRIPT_SYNC_BATCH_SIZE) as SessionWithMetadata[];
+				await syncTranscriptBatch(batch);
 			}
 		} catch (err) {
 			console.error("[transcript-sync] Error:", err);
 		}
-	}, 1000);
+	}, TRANSCRIPT_SYNC_INTERVAL_MS);
 }

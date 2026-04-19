@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
-import type { ApiKeyInfo } from "../../shared/types.js";
+import { Link } from "react-router-dom";
+import type { ApiKeyInfo, LaunchRequest, SupervisorRecord } from "../../shared/types.js";
+import { BROWSER_WS_PATH } from "../lib/paths.js";
+import { api } from "../lib/api.js";
 
-const BASE = "/api/v1";
+const launchModeLabels = {
+	headless: "Headless task",
+	interactive_terminal: "Interactive terminal",
+	managed_codex: "Managed Codex",
+} as const;
 
 export function SettingsPage() {
 	const [apiKeys, setApiKeys] = useState<ApiKeyInfo[]>([]);
@@ -12,17 +19,23 @@ export function SettingsPage() {
 		document.documentElement.classList.contains("dark") ? "dark" : "light",
 	);
 	const [settings, setSettings] = useState<Record<string, unknown>>({});
+	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
+	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
 
 	// Fetch API keys and settings
 	useEffect(() => {
 		async function load() {
 			try {
-				const [keysRes, settingsRes] = await Promise.all([
-					fetch(`${BASE}/api-keys`).then((r) => r.json()),
-					fetch(`${BASE}/settings`).then((r) => r.json()),
+				const [keysRes, settingsRes, supervisorsRes, launchesRes] = await Promise.all([
+					api.getApiKeys(),
+					api.getSettings(),
+					api.getSupervisors(),
+					api.getLaunches(),
 				]);
 				setApiKeys(keysRes.keys || []);
 				setSettings(settingsRes || {});
+				setSupervisors(supervisorsRes.supervisors || []);
+				setRecentLaunches((launchesRes.launches || []).slice(0, 5));
 			} catch (err) {
 				console.error("Failed to load settings:", err);
 			} finally {
@@ -37,18 +50,13 @@ export function SettingsPage() {
 		if (!newKeyName.trim()) return;
 
 		try {
-			const res = await fetch(`${BASE}/api-keys`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ name: newKeyName.trim() }),
-			});
-			const data = await res.json();
+			const data = await api.createApiKey(newKeyName.trim());
 
 			if (data.key) {
 				setNewKeyValue(data.key);
 				setNewKeyName("");
 				// Refresh key list
-				const keysRes = await fetch(`${BASE}/api-keys`).then((r) => r.json());
+				const keysRes = await api.getApiKeys();
 				setApiKeys(keysRes.keys || []);
 			}
 		} catch (err) {
@@ -59,7 +67,7 @@ export function SettingsPage() {
 	// Revoke API key
 	async function handleRevokeKey(id: string) {
 		try {
-			await fetch(`${BASE}/api-keys/${id}`, { method: "DELETE" });
+			await api.revokeApiKey(id);
 			setApiKeys((prev) => prev.map((k) => (k.id === id ? { ...k, isActive: false } : k)));
 		} catch (err) {
 			console.error("Failed to revoke key:", err);
@@ -72,21 +80,13 @@ export function SettingsPage() {
 		setTheme(next);
 		document.documentElement.classList.toggle("dark", next === "dark");
 		// Persist
-		fetch(`${BASE}/settings`, {
-			method: "PUT",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ key: "theme", value: next }),
-		}).catch(() => {});
+		void api.saveSetting("theme", next).catch(() => {});
 	}
 
 	// Save a setting
 	async function saveSetting(key: string, value: unknown) {
 		try {
-			await fetch(`${BASE}/settings`, {
-				method: "PUT",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ key, value }),
-			});
+			await api.saveSetting(key, value);
 			setSettings((prev) => ({ ...prev, [key]: value }));
 		} catch (err) {
 			console.error("Failed to save setting:", err);
@@ -119,6 +119,101 @@ export function SettingsPage() {
 						/>
 					</button>
 				</div>
+			</section>
+
+			{/* Supervisor Status */}
+			<section className="border border-border bg-card rounded-lg p-5 mb-6">
+				<h2 className="text-sm font-semibold mb-1">Local Supervisor</h2>
+				<p className="text-xs text-muted-foreground mb-4">
+					Phase 2 orchestration uses a local supervisor for capability reporting and
+					launch validation. No sessions are launched yet.
+				</p>
+
+				{supervisors.length === 0 ? (
+					<div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
+						No supervisor registered. Run <code className="font-mono">bun run supervisor</code>
+						{" "}to register this machine.
+					</div>
+				) : (
+					<div className="space-y-3">
+						{supervisors.map((supervisor) => (
+							<div key={supervisor.id} className="rounded-md border border-border p-4">
+								<div className="flex flex-wrap items-center justify-between gap-2">
+									<div>
+										<div className="text-sm font-medium text-foreground">
+											{supervisor.hostName}
+										</div>
+										<div className="text-xs text-muted-foreground">
+											{supervisor.platform} / {supervisor.arch} / v{supervisor.version}
+										</div>
+									</div>
+									<span
+										className={`rounded-full px-2 py-0.5 text-[10px] ${
+											supervisor.status === "connected"
+												? "bg-emerald-500/10 text-emerald-400"
+												: supervisor.status === "stale"
+													? "bg-amber-500/10 text-amber-400"
+													: "bg-red-500/10 text-red-400"
+										}`}
+									>
+										{supervisor.status}
+									</span>
+								</div>
+								<div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs text-muted-foreground">
+									<div>
+										<div className="font-medium text-foreground mb-1">Trusted roots</div>
+										<div className="break-all">
+											{supervisor.trustedRoots.join(", ") || "none"}
+										</div>
+									</div>
+									<div>
+										<div className="font-medium text-foreground mb-1">Capabilities</div>
+										<div>
+											{supervisor.capabilities.agentTypes.join(", ") || "none"} /{" "}
+											{supervisor.capabilities.launchModes.join(", ") || "none"}
+										</div>
+									</div>
+								</div>
+							</div>
+						))}
+					</div>
+				)}
+			</section>
+
+			{/* Launch Validation */}
+			<section className="border border-border bg-card rounded-lg p-5 mb-6">
+				<h2 className="text-sm font-semibold mb-1">Recent Launch Validation</h2>
+				<p className="text-xs text-muted-foreground mb-4">
+					Validated launch requests are stored here before dispatch exists.
+				</p>
+				{recentLaunches.length === 0 ? (
+					<div className="text-sm text-muted-foreground">
+						No launch requests yet. Use the Templates page to validate one.
+					</div>
+				) : (
+					<div className="space-y-2">
+						{recentLaunches.map((launch) => (
+							<Link key={launch.id} to={`/launches/${launch.id}`} className="block rounded-md border border-border p-3 transition-colors hover:bg-accent/40">
+								<div className="flex items-center justify-between gap-2">
+									<div className="text-sm font-medium text-foreground">
+										{launch.agentType === "claude_code" ? "Claude Code" : "Codex CLI"}
+									</div>
+									<span className="text-xs text-muted-foreground">
+										{launch.status} · {launchModeLabels[launch.requestedLaunchMode]}
+									</span>
+								</div>
+								<div className="mt-1 break-all text-xs text-muted-foreground">
+									{launch.cwd}
+								</div>
+								{launch.validationSummary && (
+									<div className="mt-1 text-xs text-muted-foreground">
+										{launch.validationSummary}
+									</div>
+								)}
+							</Link>
+						))}
+					</div>
+				)}
 			</section>
 
 			{/* Session Configuration */}
@@ -334,7 +429,8 @@ export function SettingsPage() {
 						<p className="text-muted-foreground text-xs">WebSocket</p>
 						<p className="font-mono text-xs break-all">
 							{window.location.protocol === "https:" ? "wss:" : "ws:"}//
-							{window.location.host}/api/v1/ws
+							{window.location.host}
+							{BROWSER_WS_PATH}
 						</p>
 					</div>
 				</div>

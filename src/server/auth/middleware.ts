@@ -1,5 +1,6 @@
 import type { Context, Next } from "hono";
 import { verifyApiKey } from "./api-key.js";
+import { extractSupervisorToken, verifySupervisorCredential } from "./supervisor-auth.js";
 import { config } from "../config.js";
 
 export interface AuthUser {
@@ -76,6 +77,35 @@ export function requireAuth() {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
 		c.set("authUser", user);
+		await next();
+	};
+}
+
+export function requireSupervisorAuth() {
+	return async (c: Context, next: Next) => {
+		if (config.disableAuth) {
+			c.set("authUser", { source: "api_key", name: "anonymous", id: "anonymous" });
+			return next();
+		}
+
+		const token = extractSupervisorToken({
+			get: (name: string) => c.req.header(name) ?? null,
+		});
+		if (!token) {
+			return c.json({ error: "Missing supervisor credential" }, 401);
+		}
+
+		const credential = await verifySupervisorCredential(token);
+		if (!credential) {
+			return c.json({ error: "Invalid supervisor credential" }, 401);
+		}
+
+		const routeSupervisorId = c.req.param("id");
+		if (routeSupervisorId && credential.supervisorId !== routeSupervisorId) {
+			return c.json({ error: "Supervisor credential does not match target supervisor" }, 403);
+		}
+
+		c.set("authUser", { source: "api_key", name: credential.name, id: credential.supervisorId });
 		await next();
 	};
 }

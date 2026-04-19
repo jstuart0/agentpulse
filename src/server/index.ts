@@ -8,6 +8,9 @@ import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
 import { sessionsRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
+import { templatesRouter } from "./routes/templates.js";
+import { supervisorsRouter } from "./routes/supervisors.js";
+import { launchesRouter } from "./routes/launches.js";
 import { setup as setupRoute } from "./routes/setup.js";
 import {
 	handleWsOpen,
@@ -37,8 +40,12 @@ api.route("/v1", health);
 api.route("/v1", ingest);
 api.route("/v1", sessionsRouter);
 api.route("/v1", settingsRouter);
+api.route("/v1", templatesRouter);
+api.route("/v1", supervisorsRouter);
+api.route("/v1", launchesRouter);
 
 app.route("/api", api);
+app.route("/app-api", api);
 
 // Setup script endpoint (outside /api so it's at /setup.sh)
 app.route("/", setupRoute);
@@ -91,7 +98,7 @@ const server = Bun.serve({
 		const url = new URL(req.url);
 
 		// Handle WebSocket upgrade
-		if (url.pathname === "/api/v1/ws") {
+		if (url.pathname === "/api/v1/ws" || url.pathname === "/app-api/v1/ws") {
 			const s = server as { upgrade(req: Request): boolean };
 			const upgraded = s.upgrade(req);
 			if (upgraded) return undefined as unknown as Response;

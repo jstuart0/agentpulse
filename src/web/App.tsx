@@ -4,6 +4,9 @@ import { DashboardPage } from "./pages/DashboardPage.js";
 import { SessionDetailPage } from "./pages/SessionDetailPage.js";
 import { SetupPage } from "./pages/SetupPage.js";
 import { SettingsPage } from "./pages/SettingsPage.js";
+import { TemplatesPage } from "./pages/TemplatesPage.js";
+import { HostsPage } from "./pages/HostsPage.js";
+import { LaunchDetailPage } from "./pages/LaunchDetailPage.js";
 import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js";
 
 export function App() {
@@ -15,6 +18,9 @@ export function App() {
 				<Route path="/" element={<DashboardPage />} />
 				<Route path="/sessions" element={<DashboardPage />} />
 				<Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
+				<Route path="/templates" element={<TemplatesPage />} />
+				<Route path="/launches/:launchId" element={<LaunchDetailPage />} />
+				<Route path="/hosts" element={<HostsPage />} />
 				<Route path="/setup" element={<SetupPage />} />
 				<Route path="/settings" element={<SettingsPage />} />
 			</Route>
