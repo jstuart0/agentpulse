@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams, Link } from "react-router-dom";
 import { ArrowDownToLine, ArrowUpToLine } from "lucide-react";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { AgentTypeBadge } from "../components/AgentTypeBadge.js";
@@ -8,7 +8,7 @@ import { formatDuration, formatTimeAgo } from "../lib/utils.js";
 import { api } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
 import { APP_API_BASE } from "../lib/paths.js";
-import type { ControlAction, EventCategory, Session, SessionEvent } from "../../shared/types.js";
+import type { ControlAction, EventCategory, LaunchRequest, Session, SessionEvent } from "../../shared/types.js";
 import { useEventStore } from "../stores/event-store.js";
 
 function ScrollJumpControls({
@@ -128,6 +128,7 @@ function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNot
 }
 
 type TimelineMode = "prompts" | "conversation" | "progress" | "debug";
+type WorkspaceTab = "overview" | "activity" | "notes" | "instructions" | "launch";
 
 function PromptBubble({ text, time }: { text: string; time: string }) {
 	return (
@@ -239,6 +240,167 @@ function FilterToggle({
 		>
 			{label}
 		</button>
+	);
+}
+
+function WorkspaceTabButton({
+	active,
+	label,
+	badge,
+	onClick,
+}: {
+	active: boolean;
+	label: string;
+	badge?: string | null;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			onClick={onClick}
+			className={cn(
+				"inline-flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors",
+				active
+					? "bg-primary text-primary-foreground"
+					: "text-muted-foreground hover:text-foreground hover:bg-muted",
+			)}
+		>
+			<span>{label}</span>
+			{badge ? (
+				<span
+					className={cn(
+						"rounded-full px-1.5 py-0.5 text-[10px]",
+						active ? "bg-primary-foreground/15 text-primary-foreground" : "bg-amber-500/10 text-amber-400",
+					)}
+				>
+					{badge}
+				</span>
+			) : null}
+		</button>
+	);
+}
+
+function SummaryField({ label, value, mono = false }: { label: string; value: string | null | undefined; mono?: boolean }) {
+	if (!value) return null;
+	return (
+		<div className="rounded-md border border-border bg-background/60 p-3">
+			<div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+			<div className={cn("mt-1 text-sm text-foreground", mono && "font-mono break-all text-xs")}>{value}</div>
+		</div>
+	);
+}
+
+function EmbeddedLaunchPanel({ launchId }: { launchId: string }) {
+	const [launch, setLaunch] = useState<LaunchRequest | null>(null);
+	const [loading, setLoading] = useState(true);
+
+	useEffect(() => {
+		let cancelled = false;
+		async function load() {
+			try {
+				const data = (await api.getLaunch(launchId)) as { launchRequest: LaunchRequest };
+				if (!cancelled) setLaunch(data.launchRequest);
+			} catch (error) {
+				console.error("Failed to load linked launch", error);
+			} finally {
+				if (!cancelled) setLoading(false);
+			}
+		}
+		load();
+		const interval = setInterval(load, 2000);
+		return () => {
+			cancelled = true;
+			clearInterval(interval);
+		};
+	}, [launchId]);
+
+	if (loading) {
+		return <div className="p-4 text-sm text-muted-foreground">Loading launch…</div>;
+	}
+	if (!launch) {
+		return <div className="p-4 text-sm text-muted-foreground">Linked launch not found.</div>;
+	}
+
+	const modeLabel =
+		launch.requestedLaunchMode === "headless"
+			? "Headless task"
+			: launch.requestedLaunchMode === "interactive_terminal"
+				? "Interactive terminal"
+				: "Managed Codex";
+	const output = launch.providerLaunchMetadata?.output as
+		| {
+				assistantPreview?: string;
+				stderrPreview?: string;
+				activity?: Array<{ kind: string; text: string; timestamp: string }>;
+		  }
+		| undefined;
+
+	return (
+		<div className="space-y-4 p-3 md:p-6">
+			<div className="flex flex-wrap items-start justify-between gap-3">
+				<div>
+					<div className="text-sm font-semibold text-foreground">Launch</div>
+					<div className="mt-1 text-xs text-muted-foreground">
+						{launch.status} · {modeLabel}
+					</div>
+				</div>
+				<Link
+					to={`/launches/${launch.id}`}
+					className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"
+				>
+					Open full launch detail
+				</Link>
+			</div>
+
+			<div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+				<SummaryField label="Created" value={launch.createdAt} />
+				<SummaryField label="Host" value={launch.resolvedSupervisorId} mono />
+				<SummaryField label="PID" value={launch.pid != null ? String(launch.pid) : null} mono />
+				<SummaryField label="Validation" value={launch.validationSummary} />
+			</div>
+
+			{launch.error ? (
+				<div className="rounded-lg border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-200">
+					{launch.error}
+				</div>
+			) : null}
+
+			{output ? (
+				<div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+					<div className="rounded-lg border border-border bg-card p-4">
+						<div className="text-sm font-semibold text-foreground">Visible output</div>
+						<pre className="mt-3 min-h-40 overflow-x-auto rounded-md bg-background/60 p-3 text-xs text-foreground whitespace-pre-wrap break-words">
+							{output.assistantPreview?.trim() || "Waiting for visible output…"}
+						</pre>
+						{output.stderrPreview?.trim() ? (
+							<pre className="mt-3 overflow-x-auto rounded-md bg-red-500/5 p-3 text-xs text-red-200 whitespace-pre-wrap break-words">
+								{output.stderrPreview}
+							</pre>
+						) : null}
+					</div>
+					<div className="rounded-lg border border-border bg-card p-4">
+						<div className="text-sm font-semibold text-foreground">Recent activity</div>
+						<div className="mt-3 space-y-2">
+							{output.activity?.length ? (
+								output.activity.map((entry, index) => (
+									<div key={`${entry.timestamp}-${index}`} className="rounded-md bg-background/60 p-3">
+										<div className="text-[10px] uppercase tracking-wide text-muted-foreground">{entry.kind}</div>
+										<div className="mt-1 whitespace-pre-wrap break-words text-xs text-foreground">{entry.text}</div>
+									</div>
+								))
+							) : (
+								<div className="text-sm text-muted-foreground">No activity yet.</div>
+							)}
+						</div>
+					</div>
+				</div>
+			) : (
+				<div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
+					{launch.requestedLaunchMode === "interactive_terminal"
+						? "This launch opened on the selected host terminal. Use that terminal to drive the session while AgentPulse observes it here."
+						: "No provider output captured yet."}
+				</div>
+			)}
+		</div>
 	);
 }
 
@@ -721,6 +883,7 @@ function ManagedClaudeStatus({
 export function SessionDetailPage() {
 	const { sessionId } = useParams<{ sessionId: string }>();
 	const navigate = useNavigate();
+	const [searchParams, setSearchParams] = useSearchParams();
 	const [session, setSession] = useState<Session | null>(null);
 	const [events, setEvents] = useState<SessionEvent[]>([]);
 	const [controlActions, setControlActions] = useState<ControlAction[]>([]);
@@ -729,6 +892,12 @@ export function SessionDetailPage() {
 	const [showTools, setShowTools] = useState(false);
 	const [showNoisyTools, setShowNoisyTools] = useState(false);
 	const [showSystem, setShowSystem] = useState(true);
+	const requestedTab = searchParams.get("tab") as WorkspaceTab | null;
+	const initialWorkspaceTab: WorkspaceTab =
+		requestedTab && ["overview", "activity", "notes", "instructions", "launch"].includes(requestedTab)
+			? requestedTab
+			: "activity";
+	const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(initialWorkspaceTab);
 	const timelineContainerRef = useRef<HTMLDivElement>(null);
 	const timelineEndRef = useRef<HTMLDivElement>(null);
 	const shouldFollowTimelineRef = useRef(true);
@@ -763,6 +932,13 @@ export function SessionDetailPage() {
 	const liveEvents = ((sessionId && liveEventsMap.get(sessionId)) || []) as SessionEvent[];
 	const allEvents = mergeSessionEvents([...events].reverse(), liveEvents);
 	const visibleEvents = getVisibleEvents(allEvents, mode, showTools || mode === "debug", showNoisyTools, showSystem);
+
+	useEffect(() => {
+		const requested = searchParams.get("tab");
+		if (requested && ["overview", "activity", "notes", "instructions", "launch"].includes(requested)) {
+			setWorkspaceTab(requested as WorkspaceTab);
+		}
+	}, [searchParams]);
 
 	useEffect(() => {
 		const hasNewEvents = allEvents.length > previousEventCountRef.current;
@@ -834,6 +1010,13 @@ export function SessionDetailPage() {
 			behavior: "smooth",
 		});
 		shouldFollowTimelineRef.current = true;
+	}
+
+	function selectWorkspaceTab(tab: WorkspaceTab) {
+		setWorkspaceTab(tab);
+		const next = new URLSearchParams(searchParams);
+		next.set("tab", tab);
+		setSearchParams(next, { replace: true });
 	}
 
 	return (
@@ -908,30 +1091,60 @@ export function SessionDetailPage() {
 				</div>
 				<div className="px-3 md:px-6 py-2 border-t border-border/70 flex flex-col items-start gap-2 md:flex-row md:flex-wrap md:items-center md:justify-between md:gap-3">
 					<div className="flex flex-wrap items-center gap-2">
-						<ModeButton active={mode === "prompts"} label="Prompts" onClick={() => setMode("prompts")} />
-						<ModeButton active={mode === "conversation"} label="Conversation" onClick={() => setMode("conversation")} />
-						<ModeButton active={mode === "progress"} label="Progress" onClick={() => setMode("progress")} />
-						<ModeButton active={mode === "debug"} label="Debug" onClick={() => setMode("debug")} />
+						<WorkspaceTabButton
+							active={workspaceTab === "overview"}
+							label="Overview"
+							onClick={() => selectWorkspaceTab("overview")}
+						/>
+						<WorkspaceTabButton
+							active={workspaceTab === "activity"}
+							label="Activity"
+							badge={session.isWorking ? "Working" : null}
+							onClick={() => selectWorkspaceTab("activity")}
+						/>
+						<WorkspaceTabButton
+							active={workspaceTab === "notes"}
+							label="Notes"
+							onClick={() => selectWorkspaceTab("notes")}
+						/>
+						<WorkspaceTabButton
+							active={workspaceTab === "instructions"}
+							label={session.agentType === "codex_cli" ? "AGENTS.md" : "CLAUDE.md"}
+							onClick={() => selectWorkspaceTab("instructions")}
+						/>
+						{session.managedSession?.launchRequestId && (
+							<WorkspaceTabButton
+								active={workspaceTab === "launch"}
+								label="Launch"
+								onClick={() => selectWorkspaceTab("launch")}
+							/>
+						)}
 					</div>
-					<div className="flex flex-wrap items-center gap-2">
-						<FilterToggle
-							active={showSystem}
-							label="System"
-							onClick={() => setShowSystem((value) => !value)}
-							disabled={mode === "prompts" || mode === "conversation"}
-						/>
-						<FilterToggle
-							active={showTools || mode === "debug"}
-							label="Tools"
-							onClick={() => setShowTools((value) => !value)}
-						/>
-						<FilterToggle
-							active={showNoisyTools}
-							label="Noisy"
-							onClick={() => setShowNoisyTools((value) => !value)}
-							disabled={!(showTools || mode === "debug")}
-						/>
-					</div>
+					{workspaceTab === "activity" && (
+						<div className="flex flex-wrap items-center gap-2">
+							<ModeButton active={mode === "prompts"} label="Prompts" onClick={() => setMode("prompts")} />
+							<ModeButton active={mode === "conversation"} label="Conversation" onClick={() => setMode("conversation")} />
+							<ModeButton active={mode === "progress"} label="Progress" onClick={() => setMode("progress")} />
+							<ModeButton active={mode === "debug"} label="Debug" onClick={() => setMode("debug")} />
+							<FilterToggle
+								active={showSystem}
+								label="System"
+								onClick={() => setShowSystem((value) => !value)}
+								disabled={mode === "prompts" || mode === "conversation"}
+							/>
+							<FilterToggle
+								active={showTools || mode === "debug"}
+								label="Tools"
+								onClick={() => setShowTools((value) => !value)}
+							/>
+							<FilterToggle
+								active={showNoisyTools}
+								label="Noisy"
+								onClick={() => setShowNoisyTools((value) => !value)}
+								disabled={!(showTools || mode === "debug")}
+							/>
+						</div>
+					)}
 				</div>
 			</div>
 
@@ -960,57 +1173,79 @@ export function SessionDetailPage() {
 				</div>
 			)}
 
-			{/* Main content: timeline + notes side by side */}
-			<div className="flex-1 flex min-h-0 flex-col md:flex-row">
-				{/* Timeline (left) */}
-				<div
-					ref={timelineContainerRef}
-					onScroll={handleTimelineScroll}
-					className="flex-1 overflow-auto p-3 md:p-6"
-				>
-					<div className="space-y-3">
-						{visibleEvents.length === 0 ? (
-							<p className="text-sm text-muted-foreground text-center py-8">
-								No events match this view yet.
-							</p>
-						) : (
-							visibleEvents.map((event) => {
-								if (event.category === "prompt" && event.content) {
-									return <PromptBubble key={eventKey(event)} text={event.content} time={event.createdAt} />;
-								}
-								if (event.category === "assistant_message" && event.content) {
-									return <AssistantBubble key={eventKey(event)} text={event.content} time={event.createdAt} />;
-								}
-								if (event.category === "tool_event") {
-									const detail = event.content || event.toolName || event.eventType;
+			<div className="flex-1 min-h-0">
+				{workspaceTab === "overview" ? (
+					<div className="grid gap-4 p-3 md:p-6 md:grid-cols-2 xl:grid-cols-4">
+						<SummaryField label="Project" value={session.cwd} mono />
+						<SummaryField label="Agent" value={session.agentType} />
+						<SummaryField label="Started" value={session.startedAt} />
+						<SummaryField label="Status" value={session.status} />
+						<SummaryField label="Model" value={session.model} />
+						<SummaryField label="Branch" value={session.gitBranch} mono />
+						<SummaryField label="Current task" value={session.currentTask} />
+						<SummaryField label="Tools" value={String(session.totalToolUses)} />
+						{session.managedSession?.hostName ? (
+							<SummaryField label="Host" value={session.managedSession.hostName} mono />
+						) : null}
+						{session.managedSession?.launchRequestId ? (
+							<SummaryField label="Launch request" value={session.managedSession.launchRequestId} mono />
+						) : null}
+					</div>
+				) : workspaceTab === "activity" ? (
+					<div
+						ref={timelineContainerRef}
+						onScroll={handleTimelineScroll}
+						className="h-full overflow-auto p-3 md:p-6"
+					>
+						<div className="space-y-3">
+							{visibleEvents.length === 0 ? (
+								<p className="text-sm text-muted-foreground text-center py-8">
+									No events match this view yet.
+								</p>
+							) : (
+								visibleEvents.map((event) => {
+									if (event.category === "prompt" && event.content) {
+										return <PromptBubble key={eventKey(event)} text={event.content} time={event.createdAt} />;
+									}
+									if (event.category === "assistant_message" && event.content) {
+										return <AssistantBubble key={eventKey(event)} text={event.content} time={event.createdAt} />;
+									}
+									if (event.category === "tool_event") {
+										const detail = event.content || event.toolName || event.eventType;
+										return (
+											<TimelineCard
+												key={eventKey(event)}
+												label={eventLabel(event.category)}
+												text={detail}
+												time={event.createdAt}
+												tone={event.isNoise ? "muted" : "amber"}
+											/>
+										);
+									}
+									if (!event.content) return null;
 									return (
 										<TimelineCard
 											key={eventKey(event)}
 											label={eventLabel(event.category)}
-											text={detail}
+											text={event.content}
 											time={event.createdAt}
-											tone={event.isNoise ? "muted" : "amber"}
+											tone={event.category === "status_update" ? "emerald" : "default"}
 										/>
 									);
-								}
-								if (!event.content) return null;
-								return (
-									<TimelineCard
-										key={eventKey(event)}
-										label={eventLabel(event.category)}
-										text={event.content}
-										time={event.createdAt}
-										tone={event.category === "status_update" ? "emerald" : "default"}
-									/>
-								);
-							})
-						)}
-						<div ref={timelineEndRef} />
+								})
+							)}
+							<div ref={timelineEndRef} />
+						</div>
 					</div>
-				</div>
-
-				{/* Right panel: Notes / CLAUDE.md tabs */}
-				<RightPanel session={session} />
+				) : workspaceTab === "notes" ? (
+					<NotesPanel sessionId={session.sessionId} initialNotes={session.notes || ""} />
+				) : workspaceTab === "instructions" ? (
+					<ClaudeMdPanel session={session} />
+				) : session.managedSession?.launchRequestId ? (
+					<EmbeddedLaunchPanel launchId={session.managedSession.launchRequestId} />
+				) : (
+					<div className="p-6 text-sm text-muted-foreground">No linked launch for this session.</div>
+				)}
 			</div>
 		</div>
 	);

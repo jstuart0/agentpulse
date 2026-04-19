@@ -198,10 +198,10 @@ export function LaunchDetailPage() {
 						</div>
 						{linkedSession ? (
 							<Link
-								to={`/sessions/${linkedSession.sessionId}`}
+								to={`/sessions/${linkedSession.sessionId}?tab=launch`}
 								className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"
 							>
-								Open session
+								Open workspace
 							</Link>
 						) : null}
 					</div>
