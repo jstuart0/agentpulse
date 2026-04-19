@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { ApiKeyInfo, LaunchRequest, SupervisorRecord } from "../../shared/types.js";
 import { APP_API_BASE, BROWSER_WS_PATH } from "../lib/paths.js";
 
@@ -200,7 +201,7 @@ export function SettingsPage() {
 				) : (
 					<div className="space-y-2">
 						{recentLaunches.map((launch) => (
-							<div key={launch.id} className="rounded-md border border-border p-3">
+							<Link key={launch.id} to={`/launches/${launch.id}`} className="block rounded-md border border-border p-3 transition-colors hover:bg-accent/40">
 								<div className="flex items-center justify-between gap-2">
 									<div className="text-sm font-medium text-foreground">
 										{launch.agentType === "claude_code" ? "Claude Code" : "Codex CLI"}
@@ -215,7 +216,7 @@ export function SettingsPage() {
 										{launch.validationSummary}
 									</div>
 								)}
-							</div>
+							</Link>
 						))}
 					</div>
 				)}

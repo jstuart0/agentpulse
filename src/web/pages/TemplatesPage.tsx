@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { format } from "date-fns";
+import { Link } from "react-router-dom";
 import type {
 	AgentType,
 	ApprovalPolicy,
@@ -882,9 +883,10 @@ export function TemplatesPage() {
 										</div>
 										<div className="space-y-2">
 											{recentLaunches.map((launch) => (
-												<div
+												<Link
 													key={launch.id}
-													className="rounded-md bg-background/60 px-3 py-2 text-xs"
+													to={`/launches/${launch.id}`}
+													className="block rounded-md bg-background/60 px-3 py-2 text-xs transition-colors hover:bg-background"
 												>
 													<div className="flex items-center justify-between gap-2">
 														<span className="font-medium text-foreground">
@@ -916,7 +918,7 @@ export function TemplatesPage() {
 															{launch.error}
 														</div>
 													)}
-												</div>
+												</Link>
 											))}
 										</div>
 									</div>
