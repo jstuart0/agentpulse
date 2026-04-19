@@ -1,39 +1,20 @@
 import { MarkdownContent } from "../MarkdownContent.js";
 import { cn, formatTimeAgo } from "../../lib/utils.js";
+import {
+	EVENT_DUPLICATE_WINDOW_MS,
+	EVENT_SOURCE_PRIORITY,
+	PROMPT_MIRROR_WINDOW_MS,
+	areNearInTime,
+	isPromptMirrorSourcePair,
+	normalizeComparableContent,
+} from "../../../shared/event-authority.js";
 import type { EventCategory, EventSource, SessionEvent } from "../../../shared/types.js";
 
 export type TimelineMode = "prompts" | "conversation" | "progress" | "debug";
 
-const UI_DUPLICATE_WINDOW_MS = 15_000;
-const UI_PROMPT_MIRROR_WINDOW_MS = 8_000;
-
-const SOURCE_PRIORITY: Record<EventSource, number> = {
-	observed_transcript: 50,
-	observed_status: 40,
-	observed_hook: 35,
-	managed_control: 20,
-	launch_system: 10,
-};
-
-function normalizeComparableContent(content: string | null | undefined) {
-	return (content || "").trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function parseEventTime(value: string | null | undefined) {
-	const timestamp = value ? Date.parse(value) : NaN;
-	return Number.isFinite(timestamp) ? timestamp : null;
-}
-
-function areNearInTime(left: string | null | undefined, right: string | null | undefined, windowMs: number) {
-	const leftMs = parseEventTime(left);
-	const rightMs = parseEventTime(right);
-	if (leftMs == null || rightMs == null) return false;
-	return Math.abs(leftMs - rightMs) <= windowMs;
-}
-
 function chooseHigherAuthorityEvent(left: SessionEvent, right: SessionEvent) {
-	const leftPriority = SOURCE_PRIORITY[left.source] ?? 0;
-	const rightPriority = SOURCE_PRIORITY[right.source] ?? 0;
+	const leftPriority = EVENT_SOURCE_PRIORITY[left.source] ?? 0;
+	const rightPriority = EVENT_SOURCE_PRIORITY[right.source] ?? 0;
 	if (leftPriority !== rightPriority) return leftPriority > rightPriority ? left : right;
 	return left.createdAt >= right.createdAt ? left : right;
 }
@@ -43,7 +24,7 @@ function isAssistantAuthorityDuplicate(left: SessionEvent, right: SessionEvent) 
 	const leftContent = normalizeComparableContent(left.content);
 	const rightContent = normalizeComparableContent(right.content);
 	if (!leftContent || leftContent !== rightContent) return false;
-	return areNearInTime(left.createdAt, right.createdAt, UI_DUPLICATE_WINDOW_MS);
+	return areNearInTime(left.createdAt, right.createdAt, EVENT_DUPLICATE_WINDOW_MS);
 }
 
 function isPromptMirrorDuplicate(left: SessionEvent, right: SessionEvent) {
@@ -51,11 +32,8 @@ function isPromptMirrorDuplicate(left: SessionEvent, right: SessionEvent) {
 	const leftContent = normalizeComparableContent(left.content);
 	const rightContent = normalizeComparableContent(right.content);
 	if (!leftContent || leftContent !== rightContent) return false;
-	const mirroredSources =
-		(left.source === "managed_control" && right.source === "observed_hook") ||
-		(left.source === "observed_hook" && right.source === "managed_control");
-	if (!mirroredSources) return false;
-	return areNearInTime(left.createdAt, right.createdAt, UI_PROMPT_MIRROR_WINDOW_MS);
+	if (!isPromptMirrorSourcePair(left.source, right.source)) return false;
+	return areNearInTime(left.createdAt, right.createdAt, PROMPT_MIRROR_WINDOW_MS);
 }
 
 function collapseEquivalentEvents(events: SessionEvent[]) {

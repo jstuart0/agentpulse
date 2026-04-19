@@ -8,44 +8,19 @@ import type {
 	HookEventPayload,
 	SemanticStatusUpdate,
 } from "../../shared/types.js";
+import {
+	EVENT_DUPLICATE_WINDOW_MS,
+	areNearInTime,
+	getEventSourcePriority,
+	normalizeComparableContent,
+} from "../../shared/event-authority.js";
 import { generateSessionName } from "./name-generator.js";
 import { normalizeHookEvent, normalizeStatusEvents, type NormalizedEvent } from "./event-normalizer.js";
 import { enrichObservedSession } from "./correlation-enricher.js";
 
-const DUPLICATE_WINDOW_MS = 15_000;
-
-const SOURCE_PRIORITY: Record<EventSource, number> = {
-	observed_transcript: 50,
-	observed_status: 40,
-	observed_hook: 35,
-	managed_control: 20,
-	launch_system: 10,
-};
-
-function normalizeComparableContent(content: string | null | undefined) {
-	return (content || "").trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function parseEventTime(value: string | null | undefined) {
-	const timestamp = value ? Date.parse(value) : NaN;
-	return Number.isFinite(timestamp) ? timestamp : null;
-}
-
-function areNearInTime(left: string | null | undefined, right: string | null | undefined, windowMs: number) {
-	const leftMs = parseEventTime(left);
-	const rightMs = parseEventTime(right);
-	if (leftMs == null || rightMs == null) return false;
-	return Math.abs(leftMs - rightMs) <= windowMs;
-}
-
-function getSourcePriority(source: EventSource | string | null | undefined) {
-	if (!source) return 0;
-	return SOURCE_PRIORITY[source as EventSource] ?? 0;
-}
-
 function chooseHigherAuthorityEvent<T extends { source: EventSource | string; createdAt?: string | null }>(left: T, right: T) {
-	const leftPriority = getSourcePriority(left.source);
-	const rightPriority = getSourcePriority(right.source);
+	const leftPriority = getEventSourcePriority(left.source);
+	const rightPriority = getEventSourcePriority(right.source);
 	if (leftPriority !== rightPriority) return leftPriority > rightPriority ? left : right;
 	return (left.createdAt || "") >= (right.createdAt || "") ? left : right;
 }
@@ -62,8 +37,8 @@ function isAssistantAuthorityDuplicate(existing: AuthorityComparableEvent, incom
 	if (existing.category !== "assistant_message" || incoming.category !== "assistant_message") return false;
 	if (!normalizeComparableContent(existing.content) || !normalizeComparableContent(incoming.content)) return false;
 	if (normalizeComparableContent(existing.content) !== normalizeComparableContent(incoming.content)) return false;
-	if (!areNearInTime(existing.createdAt, incoming.createdAt, DUPLICATE_WINDOW_MS)) return false;
-	return getSourcePriority(existing.source) !== getSourcePriority(incoming.source);
+	if (!areNearInTime(existing.createdAt, incoming.createdAt, EVENT_DUPLICATE_WINDOW_MS)) return false;
+	return getEventSourcePriority(existing.source) !== getEventSourcePriority(incoming.source);
 }
 
 function buildDedupKey(event: {
