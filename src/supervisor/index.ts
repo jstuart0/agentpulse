@@ -12,6 +12,7 @@ async function request(path: string, options?: RequestInit) {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
+	if (config.supervisorCredential) headers["X-AgentPulse-Supervisor-Token"] = config.supervisorCredential;
 	if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
 
 	const res = await fetch(`${config.serverUrl}/api/v1${path}`, {
@@ -30,6 +31,7 @@ async function main() {
 		method: "POST",
 		body: JSON.stringify({
 			id: config.id,
+			enrollmentToken: config.enrollmentToken,
 			hostName: config.hostName,
 			platform: config.platform,
 			arch: config.arch,
@@ -42,12 +44,15 @@ async function main() {
 	})) as {
 		supervisor: { id: string; hostName: string };
 		heartbeatIntervalMs: number;
+		supervisorCredential?: string;
 	};
 
-	if (config.id !== registration.supervisor.id) {
+	if (config.id !== registration.supervisor.id || registration.supervisorCredential) {
 		await saveSupervisorConfig({
 			...config,
 			id: registration.supervisor.id,
+			enrollmentToken: undefined,
+			supervisorCredential: registration.supervisorCredential ?? config.supervisorCredential,
 		});
 	}
 

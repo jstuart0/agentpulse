@@ -6,6 +6,8 @@ import type { SupervisorRegistrationInput } from "../shared/types.js";
 export interface SupervisorConfig {
 	serverUrl: string;
 	apiKey?: string;
+	supervisorCredential?: string;
+	enrollmentToken?: string;
 	id?: string;
 	hostName: string;
 	platform: string;
@@ -27,6 +29,8 @@ export async function loadSupervisorConfig() {
 	return {
 		serverUrl: process.env.AGENTPULSE_SERVER_URL || "http://localhost:3000",
 		apiKey: process.env.AGENTPULSE_API_KEY,
+		supervisorCredential: process.env.AGENTPULSE_SUPERVISOR_CREDENTIAL,
+		enrollmentToken: process.env.AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN,
 		id: process.env.AGENTPULSE_SUPERVISOR_ID,
 		hostName: hostname(),
 		platform: platform(),

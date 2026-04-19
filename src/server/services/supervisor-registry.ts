@@ -18,7 +18,8 @@ function leaseExpiryIso(base = Date.now()) {
 	return new Date(base + HEARTBEAT_LEASE_MS).toISOString();
 }
 
-function deriveStatus(leaseExpiry: string): SupervisorStatus {
+function deriveStatus(leaseExpiry: string, enrollmentState?: string | null): SupervisorStatus {
+	if (enrollmentState === "revoked") return "offline";
 	const expiry = Date.parse(leaseExpiry);
 	const now = Date.now();
 	if (Number.isNaN(expiry)) return "offline";
@@ -43,11 +44,12 @@ function mapSupervisor(row: typeof supervisors.$inferSelect): SupervisorRecord {
 			features: [],
 		}) as unknown as SupervisorCapabilities,
 		trustedRoots: row.trustedRoots ?? [],
-		status: deriveStatus(row.heartbeatLeaseExpiresAt),
+		status: deriveStatus(row.heartbeatLeaseExpiresAt, row.enrollmentState),
 		capabilitySchemaVersion: row.capabilitySchemaVersion,
 		configSchemaVersion: row.configSchemaVersion,
 		lastHeartbeatAt: row.lastHeartbeatAt,
 		heartbeatLeaseExpiresAt: row.heartbeatLeaseExpiresAt,
+		enrollmentState: (row.enrollmentState as SupervisorRecord["enrollmentState"]) ?? "active",
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 	};
@@ -73,6 +75,7 @@ export async function registerSupervisor(input: SupervisorRegistrationInput) {
 			configSchemaVersion: input.configSchemaVersion ?? 1,
 			lastHeartbeatAt: timestamp,
 			heartbeatLeaseExpiresAt: leaseExpiry,
+			enrollmentState: "active",
 			createdAt: timestamp,
 			updatedAt: timestamp,
 		})
@@ -90,6 +93,7 @@ export async function registerSupervisor(input: SupervisorRegistrationInput) {
 				configSchemaVersion: input.configSchemaVersion ?? 1,
 				lastHeartbeatAt: timestamp,
 				heartbeatLeaseExpiresAt: leaseExpiry,
+				enrollmentState: "active",
 				updatedAt: timestamp,
 			},
 		});
@@ -151,4 +155,16 @@ export async function getConnectedSupervisor(id?: string | null) {
 		.limit(1);
 
 	return row ? mapSupervisor(row) : null;
+}
+
+export async function revokeSupervisor(id: string) {
+	await db
+		.update(supervisors)
+		.set({
+			status: "offline",
+			enrollmentState: "revoked",
+			heartbeatLeaseExpiresAt: nowIso(),
+			updatedAt: nowIso(),
+		})
+		.where(eq(supervisors.id, id));
 }

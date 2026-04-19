@@ -134,10 +134,43 @@ export const supervisors = sqliteTable("supervisors", {
 	heartbeatLeaseExpiresAt: text("heartbeat_lease_expires_at")
 		.notNull()
 		.default(sql`(datetime('now', '+90 seconds'))`),
+	enrollmentState: text("enrollment_state").notNull().default("active"),
 	createdAt: text("created_at")
 		.notNull()
 		.default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});
+
+export const supervisorEnrollmentTokens = sqliteTable("supervisor_enrollment_tokens", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	name: text("name").notNull(),
+	tokenHash: text("token_hash").notNull().unique(),
+	tokenPrefix: text("token_prefix").notNull(),
+	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+	expiresAt: text("expires_at"),
+	usedAt: text("used_at"),
+	revokedAt: text("revoked_at"),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});
+
+export const supervisorCredentials = sqliteTable("supervisor_credentials", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	supervisorId: text("supervisor_id").notNull().unique(),
+	name: text("name").notNull(),
+	tokenHash: text("token_hash").notNull().unique(),
+	tokenPrefix: text("token_prefix").notNull(),
+	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+	lastUsedAt: text("last_used_at"),
+	revokedAt: text("revoked_at"),
+	createdAt: text("created_at")
 		.notNull()
 		.default(sql`(datetime('now'))`),
 });

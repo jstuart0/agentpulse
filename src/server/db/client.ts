@@ -121,8 +121,33 @@ export function initializeDatabase() {
 			config_schema_version INTEGER NOT NULL DEFAULT 1,
 			last_heartbeat_at TEXT NOT NULL DEFAULT (datetime('now')),
 			heartbeat_lease_expires_at TEXT NOT NULL DEFAULT (datetime('now', '+90 seconds')),
+			enrollment_state TEXT NOT NULL DEFAULT 'active',
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS supervisor_enrollment_tokens (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			token_hash TEXT NOT NULL UNIQUE,
+			token_prefix TEXT NOT NULL,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			expires_at TEXT,
+			used_at TEXT,
+			revoked_at TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS supervisor_credentials (
+			id TEXT PRIMARY KEY,
+			supervisor_id TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL,
+			token_hash TEXT NOT NULL UNIQUE,
+			token_prefix TEXT NOT NULL,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			last_used_at TEXT,
+			revoked_at TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
 
 		CREATE TABLE IF NOT EXISTS launch_requests (
@@ -209,6 +234,8 @@ export function initializeDatabase() {
 		CREATE INDEX IF NOT EXISTS idx_templates_updated_at ON session_templates(updated_at);
 		CREATE INDEX IF NOT EXISTS idx_supervisors_status ON supervisors(status);
 		CREATE INDEX IF NOT EXISTS idx_supervisors_lease ON supervisors(heartbeat_lease_expires_at);
+		CREATE INDEX IF NOT EXISTS idx_supervisor_enrollment_active ON supervisor_enrollment_tokens(is_active);
+		CREATE INDEX IF NOT EXISTS idx_supervisor_credentials_supervisor ON supervisor_credentials(supervisor_id);
 		CREATE INDEX IF NOT EXISTS idx_launch_requests_status ON launch_requests(status);
 		CREATE INDEX IF NOT EXISTS idx_launch_requests_supervisor ON launch_requests(requested_supervisor_id);
 		CREATE INDEX IF NOT EXISTS idx_control_actions_session ON control_actions(session_id);
@@ -244,6 +271,7 @@ export function initializeDatabase() {
 		"ALTER TABLE supervisors ADD COLUMN capability_schema_version INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE supervisors ADD COLUMN config_schema_version INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE supervisors ADD COLUMN heartbeat_lease_expires_at TEXT NOT NULL DEFAULT (datetime('now', '+90 seconds'))",
+		"ALTER TABLE supervisors ADD COLUMN enrollment_state TEXT NOT NULL DEFAULT 'active'",
 		"ALTER TABLE launch_requests ADD COLUMN requested_launch_mode TEXT NOT NULL DEFAULT 'interactive_terminal'",
 		"ALTER TABLE launch_requests ADD COLUMN routing_policy TEXT",
 		"ALTER TABLE launch_requests ADD COLUMN resolved_supervisor_id TEXT",

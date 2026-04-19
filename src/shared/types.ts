@@ -343,6 +343,7 @@ export interface SupervisorRecord {
 	configSchemaVersion: number;
 	lastHeartbeatAt: string;
 	heartbeatLeaseExpiresAt: string;
+	enrollmentState?: "pending" | "active" | "revoked";
 	createdAt: string;
 	updatedAt: string;
 }
@@ -430,6 +431,7 @@ export interface ManagedSessionEventInput {
 
 export interface SupervisorRegistrationInput {
 	id?: string;
+	enrollmentToken?: string;
 	hostName: string;
 	platform: string;
 	arch: string;
@@ -438,6 +440,17 @@ export interface SupervisorRegistrationInput {
 	trustedRoots: string[];
 	capabilitySchemaVersion?: number;
 	configSchemaVersion?: number;
+}
+
+export interface SupervisorEnrollmentTokenInfo {
+	id: string;
+	name: string;
+	tokenPrefix: string;
+	isActive: boolean;
+	expiresAt: string | null;
+	createdAt: string;
+	usedAt: string | null;
+	revokedAt: string | null;
 }
 
 export interface LaunchRequestInput {
