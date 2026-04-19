@@ -10,12 +10,39 @@ import { APP_API_BASE } from "../lib/paths.js";
 import type { ControlAction, EventCategory, Session, SessionEvent } from "../../shared/types.js";
 import { useEventStore } from "../stores/event-store.js";
 
+function ScrollJumpControls({
+	onTop,
+	onBottom,
+}: {
+	onTop: () => void;
+	onBottom: () => void;
+}) {
+	return (
+		<div className="flex items-center gap-1">
+			<button
+				onClick={onTop}
+				className="rounded border border-border px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+			>
+				Top
+			</button>
+			<button
+				onClick={onBottom}
+				className="rounded border border-border px-2 py-1 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+			>
+				Bottom
+			</button>
+		</div>
+	);
+}
+
 function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNotes: string }) {
 	const [notes, setNotes] = useState(initialNotes);
 	const [saving, setSaving] = useState(false);
 	const [lastSaved, setLastSaved] = useState<string | null>(null);
 	const [mode, setMode] = useState<"edit" | "preview">("edit");
 	const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+	const editRef = useRef<HTMLTextAreaElement>(null);
+	const previewRef = useRef<HTMLDivElement>(null);
 
 	// Auto-save 1 second after user stops typing
 	const scheduleAutosave = useCallback(
@@ -46,11 +73,34 @@ function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNot
 						<ModeButton active={mode === "edit"} label="Edit" onClick={() => setMode("edit")} />
 						<ModeButton active={mode === "preview"} label="Preview" onClick={() => setMode("preview")} />
 					</div>
+					<ScrollJumpControls
+						onTop={() => {
+							if (mode === "edit") {
+								editRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+							} else {
+								previewRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+							}
+						}}
+						onBottom={() => {
+							if (mode === "edit" && editRef.current) {
+								editRef.current.scrollTo({
+									top: editRef.current.scrollHeight,
+									behavior: "smooth",
+								});
+							} else if (previewRef.current) {
+								previewRef.current.scrollTo({
+									top: previewRef.current.scrollHeight,
+									behavior: "smooth",
+								});
+							}
+						}}
+					/>
 				</div>
 				<span className="text-[10px] text-muted-foreground">{saving ? "Saving..." : lastSaved ? `Saved ${lastSaved}` : ""}</span>
 			</div>
 			{mode === "edit" ? (
 				<textarea
+					ref={editRef}
 					value={notes}
 					onChange={(e) => {
 						setNotes(e.target.value);
@@ -60,7 +110,7 @@ function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNot
 					className="flex-1 w-full resize-none bg-transparent p-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
 				/>
 			) : (
-				<div className="flex-1 overflow-y-auto p-3">
+				<div ref={previewRef} className="flex-1 overflow-y-auto p-3">
 					{notes.trim() ? (
 						<MarkdownContent content={notes} />
 					) : (
@@ -323,6 +373,8 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 	const [saving, setSaving] = useState(false);
 	const [saveMsg, setSaveMsg] = useState("");
 	const [mode, setMode] = useState<"edit" | "preview">("edit");
+	const editRef = useRef<HTMLTextAreaElement>(null);
+	const previewRef = useRef<HTMLDivElement>(null);
 
 	// Detect if we fell back to the other file
 	const preferredFile = session.agentType === "codex_cli" ? "AGENTS.md" : "CLAUDE.md";
@@ -406,6 +458,28 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 						<ModeButton active={mode === "edit"} label="Edit" onClick={() => setMode("edit")} />
 						<ModeButton active={mode === "preview"} label="Preview" onClick={() => setMode("preview")} />
 					</div>
+					<ScrollJumpControls
+						onTop={() => {
+							if (mode === "edit") {
+								editRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+							} else {
+								previewRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+							}
+						}}
+						onBottom={() => {
+							if (mode === "edit" && editRef.current) {
+								editRef.current.scrollTo({
+									top: editRef.current.scrollHeight,
+									behavior: "smooth",
+								});
+							} else if (previewRef.current) {
+								previewRef.current.scrollTo({
+									top: previewRef.current.scrollHeight,
+									behavior: "smooth",
+								});
+							}
+						}}
+					/>
 				</div>
 				<div className="flex items-center gap-2">
 					<span className="text-[10px] text-muted-foreground">{saveMsg}</span>
@@ -420,13 +494,14 @@ function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathCha
 			</div>
 			{mode === "edit" ? (
 				<textarea
+					ref={editRef}
 					value={content}
 					onChange={(e) => setContent(e.target.value)}
 					className="flex-1 w-full resize-none bg-transparent p-3 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none leading-relaxed"
 					placeholder="No CLAUDE.md found"
 				/>
 			) : (
-				<div className="flex-1 overflow-y-auto p-3">
+				<div ref={previewRef} className="flex-1 overflow-y-auto p-3">
 					{content.trim() ? (
 						<MarkdownContent content={content} />
 					) : (
@@ -701,6 +776,19 @@ export function SessionDetailPage() {
 		shouldFollowTimelineRef.current = distanceFromBottom < 96;
 	}
 
+	function jumpTimelineTop() {
+		timelineContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+		shouldFollowTimelineRef.current = false;
+	}
+
+	function jumpTimelineBottom() {
+		timelineContainerRef.current?.scrollTo({
+			top: timelineContainerRef.current.scrollHeight,
+			behavior: "smooth",
+		});
+		shouldFollowTimelineRef.current = true;
+	}
+
 	return (
 		<div className="flex flex-col h-full">
 			{/* Sticky session name bar */}
@@ -737,6 +825,7 @@ export function SessionDetailPage() {
 						</span>
 					)}
 					<div className="flex items-center gap-2 md:ml-auto">
+						<ScrollJumpControls onTop={jumpTimelineTop} onBottom={jumpTimelineBottom} />
 						{canStop && (
 							<button
 								onClick={handleStop}
