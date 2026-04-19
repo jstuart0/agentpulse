@@ -314,7 +314,7 @@ function SessionPromptComposer({
 			: null;
 	const label = interactive ? "Send to terminal" : "Send task";
 	const hint = interactive
-		? "This resumes the live Claude terminal session on the selected host with your next prompt."
+		? "This sends your prompt into the owned interactive Claude session and keeps the terminal and workspace on the same session."
 		: "This runs a follow-up headless turn inside the same Claude session and streams the visible output back here.";
 
 	useEffect(() => {

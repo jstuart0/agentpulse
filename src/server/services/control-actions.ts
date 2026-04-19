@@ -188,6 +188,12 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 					!Array.isArray(sessionMetadata.terminalOwner)
 						? (sessionMetadata.terminalOwner as Record<string, unknown>)
 						: null,
+				interactiveBridge:
+					sessionMetadata.interactiveBridge &&
+					typeof sessionMetadata.interactiveBridge === "object" &&
+					!Array.isArray(sessionMetadata.interactiveBridge)
+						? (sessionMetadata.interactiveBridge as Record<string, unknown>)
+						: null,
 			},
 			createdAt: timestamp,
 			updatedAt: timestamp,

@@ -1,4 +1,9 @@
 import { spawn } from "node:child_process";
+import { createConnection } from "node:net";
+import { mkdir, chmod } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadSupervisorConfig } from "../config.js";
 import type {
 	LaunchRequest,
@@ -36,6 +41,7 @@ type ClaudePromptAction = {
 	env?: Record<string, string>;
 	managedState?: string | null;
 	terminalOwner?: Record<string, unknown> | null;
+	interactiveBridge?: Record<string, unknown> | null;
 };
 
 type ActivityEntry = {
@@ -47,6 +53,12 @@ type ActivityEntry = {
 type TerminalOwner = {
 	app: "Terminal" | "iTerm";
 	windowId: string | null;
+};
+
+type InteractiveBridge = {
+	socketPath: string;
+	configPath: string;
+	controlDir: string;
 };
 
 const MAX_PREVIEW_CHARS = 12_000;
@@ -280,6 +292,40 @@ function buildActionTerminalExports(action: ClaudePromptAction) {
 	};
 }
 
+const bridgeScriptPath = fileURLToPath(
+	new URL("../../../scripts/claude_terminal_bridge.py", import.meta.url),
+);
+
+async function createInteractiveBridge(
+	launch: LaunchRequest,
+	config: Awaited<ReturnType<typeof loadSupervisorConfig>>,
+	command: string[],
+) {
+	const controlDir = join(homedir(), ".agentpulse", "interactive", launch.launchCorrelationId);
+	const socketPath = join(controlDir, "control.sock");
+	const configPath = join(controlDir, "bridge.json");
+	await mkdir(controlDir, { recursive: true });
+	await chmod(controlDir, 0o700);
+	const bridgeConfig = {
+		session_id: launch.launchCorrelationId,
+		cwd: launch.cwd,
+		command,
+		env: buildLaunchEnv(launch),
+		server_url: config.serverUrl,
+		supervisor_id: config.id ?? "",
+		supervisor_token: config.supervisorCredential ?? null,
+		api_key: config.apiKey ?? null,
+		socket_path: socketPath,
+	};
+	await Bun.write(configPath, JSON.stringify(bridgeConfig, null, 2));
+	await chmod(configPath, 0o600);
+	return {
+		socketPath,
+		configPath,
+		controlDir,
+	} satisfies InteractiveBridge;
+}
+
 async function readTextStream(
 	stream: ReadableStream<Uint8Array>,
 	onLine: (line: string) => Promise<void> | void,
@@ -386,11 +432,17 @@ export async function launchClaudeInteractiveRequest(
 		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
 	const args = buildLaunchBaseArgs(launch, executable);
 	args.push(buildPrompt(launch));
+	const bridge = await createInteractiveBridge(launch, config, args);
+	const bridgeCommand = [
+		"python3",
+		bridgeScriptPath,
+		"--config",
+		bridge.configPath,
+	];
 
 	const shellCommand = [
 		`cd ${quoteShell(launch.cwd)}`,
-		...Object.entries(buildTerminalExports(launch)).map(([key, value]) => `export ${key}=${quoteShell(String(value))}`),
-		`exec ${args.map((value) => quoteShell(value)).join(" ")}`,
+		`exec ${bridgeCommand.map((value) => quoteShell(value)).join(" ")}`,
 	].join("; ");
 
 	if (process.env.AGENTPULSE_SUPERVISOR_DRY_RUN === "true") {
@@ -398,11 +450,12 @@ export async function launchClaudeInteractiveRequest(
 			pid: 0,
 			metadata: {
 				mode: "interactive_terminal",
-				command: args,
+				command: bridgeCommand,
 				resolvedExecutable: executable,
 				startedAt: new Date().toISOString(),
 				terminalSupport: config.capabilities.terminalSupport,
 				shellCommand,
+				interactiveBridge: bridge,
 				dryRun: true,
 			} satisfies LaunchMetadata,
 		};
@@ -437,6 +490,7 @@ export async function launchClaudeInteractiveRequest(
 				launchMode: "interactive_terminal",
 				pid: proc.pid ?? null,
 				terminalOwner,
+				interactiveBridge: bridge,
 			},
 		});
 		await callbacks.reportEvents([
@@ -448,6 +502,7 @@ export async function launchClaudeInteractiveRequest(
 					launchMode: "interactive_terminal",
 					pid: proc.pid ?? null,
 					terminalOwner,
+					interactiveBridge: bridge,
 				},
 			},
 		]);
@@ -457,13 +512,14 @@ export async function launchClaudeInteractiveRequest(
 		pid: proc.pid ?? null,
 		metadata: {
 			mode: "interactive_terminal",
-			command: args,
+			command: bridgeCommand,
 			resolvedExecutable: executable,
 			startedAt: new Date().toISOString(),
 			terminalSupport: config.capabilities.terminalSupport,
 			terminalPreference: config.terminalPreference ?? null,
 			shellCommand,
 			terminalOwner,
+			interactiveBridge: bridge,
 		} satisfies LaunchMetadata,
 	};
 }
@@ -885,61 +941,34 @@ export async function promptClaudeInteractiveSession(
 	callbacks?: LaunchCallbacks,
 ) {
 	const config = await loadSupervisorConfig();
-	const metadataRecord = action as ClaudePromptAction & { terminalOwner?: Record<string, unknown> | null };
-	const terminalOwner =
-		metadataRecord.terminalOwner &&
-		typeof metadataRecord.terminalOwner === "object" &&
-		!Array.isArray(metadataRecord.terminalOwner) &&
-		typeof metadataRecord.terminalOwner.app === "string"
+	const interactiveBridge =
+		action.interactiveBridge &&
+		typeof action.interactiveBridge === "object" &&
+		!Array.isArray(action.interactiveBridge) &&
+		typeof action.interactiveBridge.socketPath === "string"
 			? ({
-					app:
-						metadataRecord.terminalOwner.app === "iTerm" ? "iTerm" : "Terminal",
-					windowId:
-						typeof metadataRecord.terminalOwner.windowId === "string"
-							? metadataRecord.terminalOwner.windowId
-							: null,
-				} satisfies TerminalOwner)
+					socketPath: action.interactiveBridge.socketPath,
+					configPath:
+						typeof action.interactiveBridge.configPath === "string"
+							? action.interactiveBridge.configPath
+							: "",
+					controlDir:
+						typeof action.interactiveBridge.controlDir === "string"
+							? action.interactiveBridge.controlDir
+							: "",
+				} satisfies InteractiveBridge)
 			: null;
-	if (config.capabilities.os !== "macos" || !terminalOwner?.windowId) {
-		throw new Error("Interactive prompt injection is currently only supported for owned macOS terminal sessions.");
+	if (!interactiveBridge?.socketPath) {
+		throw new Error("Interactive prompt handoff is unavailable because this session is not using an owned interactive bridge.");
 	}
 
-	const appScript =
-		terminalOwner.app === "iTerm"
-			? [
-					`tell application "iTerm"`,
-					`activate`,
-					`repeat with w in windows`,
-					`if (id of w as text) is "${escapeAppleScript(terminalOwner.windowId)}" then`,
-					`select w`,
-					`exit repeat`,
-					`end if`,
-					`end repeat`,
-					`end tell`,
-			  ]
-			: [
-					`tell application "Terminal"`,
-					`activate`,
-					`repeat with w in windows`,
-					`if (id of w as text) is "${escapeAppleScript(terminalOwner.windowId)}" then`,
-					`set index of w to 1`,
-					`exit repeat`,
-					`end if`,
-					`end repeat`,
-					`end tell`,
-			  ];
-	const escapedPrompt = action.prompt.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-	await runAppleScript([
-		...appScript,
-		`delay 0.2`,
-		`set the clipboard to "${escapedPrompt}"`,
-		`tell application "System Events"`,
-		`tell process "${systemEventsProcessName(terminalOwner.app)}"`,
-		`keystroke "v" using command down`,
-		`key code 36`,
-		`end tell`,
-		`end tell`,
-	]);
+	await new Promise<void>((resolve, reject) => {
+		const socket = createConnection(interactiveBridge.socketPath, () => {
+			socket.end(`${action.prompt}\n`);
+		});
+		socket.on("close", () => resolve());
+		socket.on("error", (error) => reject(error));
+	});
 
 	if (callbacks) {
 		await callbacks.reportState({
@@ -954,7 +983,8 @@ export async function promptClaudeInteractiveSession(
 			providerCapabilitySnapshot: config.capabilities as unknown as Record<string, unknown>,
 				metadata: {
 					launchMode: "interactive_terminal",
-					terminalOwner,
+					terminalOwner: action.terminalOwner ?? null,
+					interactiveBridge,
 				},
 			});
 		await callbacks.reportEvents([
@@ -967,8 +997,8 @@ export async function promptClaudeInteractiveSession(
 			{
 				eventType: "InteractivePromptHandedOff",
 				category: "system_event",
-				content: "Prompt handed off to the host terminal session.",
-				rawPayload: { source: "agentpulse_workspace", terminalOwner },
+				content: "Prompt handed off to the owned interactive Claude session.",
+				rawPayload: { source: "agentpulse_workspace", interactiveBridge },
 			},
 		]);
 	}
@@ -982,7 +1012,8 @@ export async function promptClaudeInteractiveSession(
 			startedAt: new Date().toISOString(),
 			terminalSupport: config.capabilities.terminalSupport,
 			terminalPreference: config.terminalPreference ?? null,
-			terminalOwner,
+			terminalOwner: action.terminalOwner ?? null,
+			interactiveBridge,
 			resume: true,
 		} satisfies LaunchMetadata,
 	};

@@ -123,57 +123,17 @@ function detectTerminalSupport(config: SupervisorConfig) {
 }
 
 function detectInteractiveTerminalControl(os: SupervisorRegistrationInput["capabilities"]["os"]) {
-	if (os !== "macos") {
+	if (!resolveExecutable(undefined, "python3").resolvedPath) {
 		return {
 			available: false,
-			reason: "Interactive prompt handoff is only implemented for macOS right now.",
+			reason: "python3 is required for the interactive session bridge.",
 		};
 	}
 
-	if (!canExecute("/usr/bin/osascript")) {
+	if (os !== "macos" && os !== "linux") {
 		return {
 			available: false,
-			reason: "osascript is unavailable on this host.",
-		};
-	}
-
-	const probe = Bun.spawnSync({
-		cmd: [
-			"/usr/bin/osascript",
-			"-e",
-			'tell application "System Events"',
-			"-e",
-			"UI elements enabled",
-			"-e",
-			"end tell",
-		],
-		stdout: "pipe",
-		stderr: "pipe",
-		timeout: 1500,
-	});
-
-	if (probe.signalCode === "SIGTERM") {
-		return {
-			available: false,
-			reason: "Timed out checking macOS Accessibility access for interactive prompt handoff.",
-		};
-	}
-
-	if (probe.exitCode !== 0) {
-		const stderr = new TextDecoder().decode(probe.stderr).trim();
-		return {
-			available: false,
-			reason:
-				stderr ||
-				"macOS Accessibility permission is not granted for interactive prompt handoff.",
-		};
-	}
-
-	const stdout = new TextDecoder().decode(probe.stdout).trim().toLowerCase();
-	if (stdout !== "true") {
-		return {
-			available: false,
-			reason: "macOS Accessibility is disabled for the AgentPulse supervisor.",
+			reason: "Interactive prompt handoff is only implemented for macOS and Linux right now.",
 		};
 	}
 

@@ -318,6 +318,12 @@ async function main() {
 					!Array.isArray(metadata.terminalOwner)
 						? (metadata.terminalOwner as Record<string, unknown>)
 						: null;
+				const interactiveBridge =
+					metadata.interactiveBridge &&
+					typeof metadata.interactiveBridge === "object" &&
+					!Array.isArray(metadata.interactiveBridge)
+						? (metadata.interactiveBridge as Record<string, unknown>)
+						: null;
 				const claudeCallbacks = {
 					reportState: async (body: ManagedSessionStateInput) =>
 						(await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
@@ -350,6 +356,7 @@ async function main() {
 								env,
 								managedState,
 								terminalOwner,
+								interactiveBridge,
 							},
 							claudeCallbacks,
 						);
