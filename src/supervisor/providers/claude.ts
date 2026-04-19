@@ -1,6 +1,12 @@
 import { spawn } from "node:child_process";
 import { loadSupervisorConfig } from "../config.js";
-import type { LaunchRequest } from "../../shared/types.js";
+import type {
+	LaunchRequest,
+	ManagedSessionEventInput,
+	ManagedSessionStateInput,
+	ManagedSession,
+	Session,
+} from "../../shared/types.js";
 
 type LaunchMetadata = {
 	mode: "headless" | "interactive_terminal";
@@ -15,6 +21,11 @@ type HeadlessProgressUpdate = {
 	pid?: number | null;
 	error?: string | null;
 	providerLaunchMetadata: Record<string, unknown>;
+};
+
+type LaunchCallbacks = {
+	reportState: (input: ManagedSessionStateInput) => Promise<{ session: Session; managedSession: ManagedSession }>;
+	reportEvents: (events: ManagedSessionEventInput[]) => Promise<void>;
 };
 
 type ActivityEntry = {
@@ -164,6 +175,31 @@ function appendAssistantDelta(current: string, next: string) {
 	return appendTail(current, `${cleanNext}\n`);
 }
 
+function activityToManagedEvent(activity: ActivityEntry): ManagedSessionEventInput {
+	if (activity.kind === "assistant") {
+		return {
+			eventType: "HeadlessAssistantMessage",
+			category: "assistant_message",
+			content: activity.text,
+			rawPayload: { source: "claude_headless", timestamp: activity.timestamp },
+		};
+	}
+	if (activity.kind === "error") {
+		return {
+			eventType: "HeadlessError",
+			category: "status_update",
+			content: activity.text,
+			rawPayload: { source: "claude_headless", timestamp: activity.timestamp, level: "error" },
+		};
+	}
+	return {
+		eventType: "HeadlessStatus",
+		category: "progress_update",
+		content: activity.text,
+		rawPayload: { source: "claude_headless", timestamp: activity.timestamp, kind: activity.kind },
+	};
+}
+
 function buildBaseArgs(launch: LaunchRequest, executable: string) {
 	const args = [executable, "--session-id", launch.launchCorrelationId];
 	if (launch.model) {
@@ -265,7 +301,10 @@ async function openLinuxTerminal(command: string, terminalSupport: string[]) {
 	return spawn(choice, ["-e", "bash", "-lc", command], { stdio: "ignore", detached: true });
 }
 
-export async function launchClaudeInteractiveRequest(launch: LaunchRequest) {
+export async function launchClaudeInteractiveRequest(
+	launch: LaunchRequest,
+	callbacks?: LaunchCallbacks,
+) {
 	const config = await loadSupervisorConfig();
 	const executable =
 		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
@@ -303,6 +342,35 @@ export async function launchClaudeInteractiveRequest(launch: LaunchRequest) {
 	}
 	proc.unref();
 
+	if (callbacks) {
+		await callbacks.reportState({
+			sessionId: launch.launchCorrelationId,
+			launchRequestId: launch.id,
+			agentType: "claude_code",
+			cwd: launch.cwd,
+			model: launch.model ?? null,
+			status: "active",
+			managedState: "interactive_terminal",
+			providerSessionId: launch.launchCorrelationId,
+			correlationSource: "launch_correlation_id",
+			metadata: {
+				launchMode: "interactive_terminal",
+				pid: proc.pid ?? null,
+			},
+		});
+		await callbacks.reportEvents([
+			{
+				eventType: "InteractiveSessionLaunched",
+				category: "system_event",
+				content: "Interactive Claude session opened on the selected host terminal.",
+				rawPayload: {
+					launchMode: "interactive_terminal",
+					pid: proc.pid ?? null,
+				},
+			},
+		]);
+	}
+
 	return {
 		pid: proc.pid ?? null,
 		metadata: {
@@ -320,6 +388,7 @@ export async function launchClaudeInteractiveRequest(launch: LaunchRequest) {
 export async function launchClaudeHeadlessRequest(
 	launch: LaunchRequest,
 	reportProgress: (update: HeadlessProgressUpdate) => Promise<void>,
+	callbacks?: LaunchCallbacks,
 ) {
 	const config = await loadSupervisorConfig();
 	const executable =
@@ -375,11 +444,64 @@ export async function launchClaudeHeadlessRequest(
 		stderr: "pipe",
 	});
 
+	if (callbacks) {
+		await callbacks.reportState({
+			sessionId: launch.launchCorrelationId,
+			launchRequestId: launch.id,
+			agentType: "claude_code",
+			cwd: launch.cwd,
+			model: launch.model ?? null,
+			status: "active",
+			managedState: "headless",
+			providerSessionId: launch.launchCorrelationId,
+			correlationSource: "launch_correlation_id",
+			metadata: {
+				launchMode: "headless",
+				pid: proc.pid ?? null,
+			},
+		});
+		await callbacks.reportEvents([
+			{
+				eventType: "HeadlessTaskStarted",
+				category: "system_event",
+				content: "Headless Claude task started from AgentPulse.",
+				rawPayload: {
+					launchMode: "headless",
+					pid: proc.pid ?? null,
+				},
+			},
+		]);
+	}
+
 	let lastReportAt = 0;
+	let emittedActivityCount = 0;
 	const flushProgress = async (force = false) => {
 		const now = Date.now();
 		if (!force && now - lastReportAt < 750) return;
 		lastReportAt = now;
+		if (callbacks && metadata.output.activity.length > emittedActivityCount) {
+			const newActivity = metadata.output.activity.slice(emittedActivityCount);
+			emittedActivityCount = metadata.output.activity.length;
+			await callbacks.reportEvents(newActivity.map(activityToManagedEvent));
+		}
+		if (callbacks) {
+			await callbacks.reportState({
+				sessionId: launch.launchCorrelationId,
+				launchRequestId: launch.id,
+				agentType: "claude_code",
+				cwd: launch.cwd,
+				model: launch.model ?? null,
+				status: "active",
+				managedState: "headless",
+				providerSessionId: launch.launchCorrelationId,
+				correlationSource: "launch_correlation_id",
+				metadata: {
+					launchMode: "headless",
+					pid: proc.pid ?? null,
+					executionState: metadata.executionState,
+				},
+			});
+		}
 		await reportProgress({
 			status: "running",
 			pid: proc.pid,
@@ -422,6 +544,45 @@ export async function launchClaudeHeadlessRequest(
 		metadata.exitCode = exitCode;
 		metadata.durationMs =
 			new Date(metadata.completedAt as string).getTime() - new Date(metadata.startedAt).getTime();
+
+		if (callbacks) {
+			if (metadata.output.activity.length > emittedActivityCount) {
+				const newActivity = metadata.output.activity.slice(emittedActivityCount);
+				emittedActivityCount = metadata.output.activity.length;
+				await callbacks.reportEvents(newActivity.map(activityToManagedEvent));
+			}
+			await callbacks.reportState({
+				sessionId: launch.launchCorrelationId,
+				launchRequestId: launch.id,
+				agentType: "claude_code",
+				cwd: launch.cwd,
+				model: launch.model ?? null,
+				status: exitCode === 0 ? "completed" : "failed",
+				managedState: exitCode === 0 ? "completed" : "failed",
+				providerSessionId: launch.launchCorrelationId,
+				correlationSource: "launch_correlation_id",
+				metadata: {
+					launchMode: "headless",
+					pid: proc.pid ?? null,
+					executionState: metadata.executionState,
+					exitCode,
+				},
+			});
+			await callbacks.reportEvents([
+				{
+					eventType: exitCode === 0 ? "HeadlessTaskCompleted" : "HeadlessTaskFailed",
+					category: "system_event",
+					content:
+						exitCode === 0
+							? "Headless Claude task completed."
+							: metadata.output.stderrPreview || `Headless Claude task failed with exit code ${exitCode}.`,
+					rawPayload: {
+						launchMode: "headless",
+						exitCode,
+					},
+				},
+			]);
+		}
 
 		await reportProgress({
 			status: exitCode === 0 ? "completed" : "failed",

@@ -1,6 +1,13 @@
 import { loadSupervisorConfig, saveSupervisorConfig } from "./config.js";
 import { launchClaudeHeadlessRequest, launchClaudeInteractiveRequest } from "./providers/claude.js";
-import type { ControlAction, LaunchRequest, ManagedSession, Session } from "../shared/types.js";
+import type {
+	ControlAction,
+	LaunchRequest,
+	ManagedSession,
+	ManagedSessionEventInput,
+	ManagedSessionStateInput,
+	Session,
+} from "../shared/types.js";
 import {
 	launchManagedCodexRequest,
 	reconcileManagedCodexTitles,
@@ -126,18 +133,38 @@ async function main() {
 		});
 
 		try {
-			if (launch.requestedLaunchMode === "headless") {
-				const result = await launchClaudeHeadlessRequest(launch, async (update) => {
-					await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+			const claudeCallbacks = {
+				reportState: async (body: ManagedSessionStateInput) =>
+					(await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
 						method: "POST",
-						body: JSON.stringify({
-							status: update.status,
-							pid: update.pid ?? null,
-							error: update.error ?? null,
-							providerLaunchMetadata: update.providerLaunchMetadata,
-						}),
-					});
-				});
+						body: JSON.stringify(body),
+					})) as { session: Session; managedSession: ManagedSession },
+				reportEvents: async (events: ManagedSessionEventInput[]) => {
+					await request(
+						`/supervisors/${registration.supervisor.id}/managed-sessions/${launch.launchCorrelationId}/events`,
+						{
+							method: "POST",
+							body: JSON.stringify({ events }),
+						},
+					);
+				},
+			};
+			if (launch.requestedLaunchMode === "headless") {
+				const result = await launchClaudeHeadlessRequest(
+					launch,
+					async (update) => {
+						await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+							method: "POST",
+							body: JSON.stringify({
+								status: update.status,
+								pid: update.pid ?? null,
+								error: update.error ?? null,
+								providerLaunchMetadata: update.providerLaunchMetadata,
+							}),
+						});
+					},
+					claudeCallbacks,
+				);
 				await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
 					method: "POST",
 					body: JSON.stringify({
@@ -150,7 +177,7 @@ async function main() {
 				return;
 			}
 
-			const result = await launchClaudeInteractiveRequest(launch);
+			const result = await launchClaudeInteractiveRequest(launch, claudeCallbacks);
 			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
 				method: "POST",
 				body: JSON.stringify({

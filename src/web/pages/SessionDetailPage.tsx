@@ -676,6 +676,48 @@ function ManagedCodexStatus({
 	);
 }
 
+function ManagedClaudeStatus({
+	managedSession,
+}: {
+	managedSession: NonNullable<Session["managedSession"]>;
+}) {
+	const tone =
+		managedSession.managedState === "completed"
+			? "text-emerald-400 border-emerald-500/20 bg-emerald-500/10"
+			: managedSession.managedState === "failed"
+				? "text-red-400 border-red-500/20 bg-red-500/10"
+				: "text-sky-400 border-sky-500/20 bg-sky-500/10";
+	const mode =
+		managedSession.managedState === "headless"
+			? "Headless Claude"
+			: managedSession.managedState === "interactive_terminal"
+				? "Interactive Claude"
+				: "Launched Claude";
+
+	return (
+		<div className="mx-6 mt-3 rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2.5">
+			<div className="flex flex-wrap items-start justify-between gap-3">
+				<div className="min-w-0">
+					<p className="text-xs font-medium text-foreground">{mode}</p>
+					<p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+						{managedSession.managedState === "interactive_terminal"
+							? "This session is controlled in the host terminal and mirrored here for observability."
+							: "This session was launched from AgentPulse and streams visible progress into the session timeline."}
+						{managedSession.hostName && (
+							<>
+								{" "}Host <span className="font-mono text-foreground">{managedSession.hostName}</span>.
+							</>
+						)}
+					</p>
+				</div>
+				<span className={`rounded-full border px-2 py-1 text-[10px] font-medium ${tone}`}>
+					{managedSession.managedState}
+				</span>
+			</div>
+		</div>
+	);
+}
+
 export function SessionDetailPage() {
 	const { sessionId } = useParams<{ sessionId: string }>();
 	const navigate = useNavigate();
@@ -831,6 +873,14 @@ export function SessionDetailPage() {
 					)}
 					<div className="flex items-center gap-2 md:ml-auto">
 						<ScrollJumpControls onTop={jumpTimelineTop} onBottom={jumpTimelineBottom} />
+						{session.managedSession?.launchRequestId && (
+							<button
+								onClick={() => navigate(`/launches/${session.managedSession?.launchRequestId}`)}
+								className="rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-accent transition-colors"
+							>
+								View launch
+							</button>
+						)}
 						{canStop && (
 							<button
 								onClick={handleStop}
@@ -887,6 +937,8 @@ export function SessionDetailPage() {
 
 			{session.agentType === "codex_cli" && session.managedSession ? (
 				<ManagedCodexStatus managedSession={session.managedSession} />
+			) : session.agentType === "claude_code" && session.managedSession ? (
+				<ManagedClaudeStatus managedSession={session.managedSession} />
 			) : session.agentType === "codex_cli" ? (
 				<CodexStatusHint displayName={displayName} />
 			) : null}

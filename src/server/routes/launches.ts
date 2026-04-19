@@ -5,6 +5,7 @@ import type { LaunchRequestInput } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { launchRequests } from "../db/schema.js";
 import { createValidatedLaunchRequest, mapLaunchRequest } from "../services/launch-validator.js";
+import { getSession } from "../services/session-tracker.js";
 
 const launchesRouter = new Hono();
 
@@ -23,7 +24,9 @@ launchesRouter.get("/launches/:id", async (c) => {
 		.where(eq(launchRequests.id, c.req.param("id")))
 		.limit(1);
 	if (!row) return c.json({ error: "Launch request not found" }, 404);
-	return c.json({ launchRequest: mapLaunchRequest(row) });
+	const launchRequest = mapLaunchRequest(row);
+	const session = await getSession(launchRequest.launchCorrelationId);
+	return c.json({ launchRequest, session });
 });
 
 launchesRouter.post("/launches", async (c) => {

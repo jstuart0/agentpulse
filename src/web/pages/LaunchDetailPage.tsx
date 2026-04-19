@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { format } from "date-fns";
-import type { LaunchMode, LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
+import type { LaunchMode, LaunchRequest, LaunchRequestStatus, Session } from "../../shared/types.js";
 import { api } from "../lib/api.js";
 
 function formatDateTime(value: string | null | undefined) {
@@ -53,14 +53,19 @@ export function LaunchDetailPage() {
 	const { launchId } = useParams<{ launchId: string }>();
 	const navigate = useNavigate();
 	const [launch, setLaunch] = useState<LaunchRequest | null>(null);
+	const [linkedSession, setLinkedSession] = useState<Session | null>(null);
 	const [loading, setLoading] = useState(true);
 
 	useEffect(() => {
 		if (!launchId) return;
 		async function load() {
 			try {
-				const data = (await api.getLaunch(launchId!)) as { launchRequest: LaunchRequest };
+				const data = (await api.getLaunch(launchId!)) as {
+					launchRequest: LaunchRequest;
+					session?: Session | null;
+				};
 				setLaunch(data.launchRequest);
+				setLinkedSession((data.session as Session | null) ?? null);
 			} catch (error) {
 				console.error("Failed to load launch request", error);
 			} finally {
@@ -74,8 +79,12 @@ export function LaunchDetailPage() {
 		if (!launchId || !launch || !activeStatuses.has(launch.status)) return;
 		const interval = setInterval(async () => {
 			try {
-				const data = (await api.getLaunch(launchId)) as { launchRequest: LaunchRequest };
+				const data = (await api.getLaunch(launchId)) as {
+					launchRequest: LaunchRequest;
+					session?: Session | null;
+				};
 				setLaunch(data.launchRequest);
+				setLinkedSession((data.session as Session | null) ?? null);
 			} catch (error) {
 				console.error("Failed to refresh launch request", error);
 			}
@@ -173,6 +182,48 @@ export function LaunchDetailPage() {
 							</div>
 						) : (
 							<div className="text-sm text-muted-foreground">No validation warnings.</div>
+						)}
+					</div>
+				</div>
+
+				<div className="rounded-lg border border-border bg-card p-4">
+					<div className="flex flex-wrap items-start justify-between gap-3">
+						<div>
+							<div className="text-sm font-semibold text-foreground">Session workspace</div>
+							<div className="mt-1 text-xs text-muted-foreground">
+								{launch.requestedLaunchMode === "headless"
+									? "Headless launches stream progress here and into the linked session timeline."
+									: "Interactive launches open on the selected host terminal and mirror into the linked session as observability data arrives."}
+							</div>
+						</div>
+						{linkedSession ? (
+							<Link
+								to={`/sessions/${linkedSession.sessionId}`}
+								className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"
+							>
+								Open session
+							</Link>
+						) : null}
+					</div>
+					<div className="mt-3 rounded-md bg-background/60 p-3 text-xs">
+						{linkedSession ? (
+							<div className="space-y-1.5">
+								<div className="font-medium text-foreground">
+									{linkedSession.displayName || linkedSession.sessionId.slice(0, 8)}
+								</div>
+								<div className="text-muted-foreground">
+									{linkedSession.status} · {linkedSession.cwd || "No working directory"}
+								</div>
+								{launch.requestedLaunchMode === "interactive_terminal" && (
+									<div className="text-muted-foreground">
+										Control this session in the opened host terminal. AgentPulse is the observability surface for it.
+									</div>
+								)}
+							</div>
+						) : (
+							<div className="text-muted-foreground">
+								Waiting for the linked session workspace to materialize.
+							</div>
 						)}
 					</div>
 				</div>
