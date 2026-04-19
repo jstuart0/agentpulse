@@ -327,6 +327,21 @@ export function HostsPage() {
 										</div>
 									</div>
 									<div>
+										<div className="text-muted-foreground">Interactive control</div>
+										<div className="mt-1 text-foreground">
+											<div>
+												{supervisor.capabilities.interactiveTerminalControl?.available
+													? "Ready"
+													: "Launch-only"}
+											</div>
+											{supervisor.capabilities.interactiveTerminalControl?.reason && (
+												<div className="mt-1 text-[11px] text-amber-300">
+													{supervisor.capabilities.interactiveTerminalControl.reason}
+												</div>
+											)}
+										</div>
+									</div>
+									<div>
 										<div className="text-muted-foreground">Trusted roots</div>
 										<div className="mt-1 break-all text-foreground">
 											{supervisor.trustedRoots.join(", ") || "None"}

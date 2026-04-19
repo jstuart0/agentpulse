@@ -122,10 +122,72 @@ function detectTerminalSupport(config: SupervisorConfig) {
 	return [...new Set(detected)];
 }
 
+function detectInteractiveTerminalControl(os: SupervisorRegistrationInput["capabilities"]["os"]) {
+	if (os !== "macos") {
+		return {
+			available: false,
+			reason: "Interactive prompt handoff is only implemented for macOS right now.",
+		};
+	}
+
+	if (!canExecute("/usr/bin/osascript")) {
+		return {
+			available: false,
+			reason: "osascript is unavailable on this host.",
+		};
+	}
+
+	const probe = Bun.spawnSync({
+		cmd: [
+			"/usr/bin/osascript",
+			"-e",
+			'tell application "System Events"',
+			"-e",
+			"UI elements enabled",
+			"-e",
+			"end tell",
+		],
+		stdout: "pipe",
+		stderr: "pipe",
+		timeout: 1500,
+	});
+
+	if (probe.signalCode === "SIGTERM") {
+		return {
+			available: false,
+			reason: "Timed out checking macOS Accessibility access for interactive prompt handoff.",
+		};
+	}
+
+	if (probe.exitCode !== 0) {
+		const stderr = new TextDecoder().decode(probe.stderr).trim();
+		return {
+			available: false,
+			reason:
+				stderr ||
+				"macOS Accessibility permission is not granted for interactive prompt handoff.",
+		};
+	}
+
+	const stdout = new TextDecoder().decode(probe.stdout).trim().toLowerCase();
+	if (stdout !== "true") {
+		return {
+			available: false,
+			reason: "macOS Accessibility is disabled for the AgentPulse supervisor.",
+		};
+	}
+
+	return {
+		available: true,
+		reason: null,
+	};
+}
+
 function withExecutableCapabilities(config: SupervisorConfig): SupervisorConfig {
 	const claude = resolveExecutable(config.claudeCommand, "claude");
 	const codex = resolveExecutable(config.codexCommand, "codex");
 	const terminalSupport = detectTerminalSupport(config);
+	const interactiveTerminalControl = detectInteractiveTerminalControl(currentOs());
 	const launchModes: SupervisorRegistrationInput["capabilities"]["launchModes"] = ["headless"];
 	if (terminalSupport.length > 0) launchModes.push("interactive_terminal");
 	if (codex.resolvedPath) launchModes.push("managed_codex");
@@ -140,8 +202,10 @@ function withExecutableCapabilities(config: SupervisorConfig): SupervisorConfig 
 				"can_write_claude_md",
 				"headless_claude",
 				...(terminalSupport.length > 0 ? ["interactive_terminal"] : []),
+				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),
 				...(codex.resolvedPath ? ["managed_codex"] : []),
 			],
+			interactiveTerminalControl,
 			executables: {
 				claude: {
 					available: Boolean(claude.resolvedPath),

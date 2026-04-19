@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNotNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { controlActions, launchRequests, managedSessions, sessions } from "../db/schema.js";
 import type {
@@ -15,6 +15,55 @@ function nowIso() {
 
 function lockExpiryIso() {
 	return new Date(Date.now() + 90_000).toISOString();
+}
+
+async function expireStaleControlLock(sessionId: string) {
+	const [managed] = await db
+		.select()
+		.from(managedSessions)
+		.where(eq(managedSessions.sessionId, sessionId))
+		.limit(1);
+	if (!managed?.activeControlActionId || !managed.controlLockExpiresAt) return;
+	if (new Date(managed.controlLockExpiresAt).getTime() > Date.now()) return;
+
+	const timestamp = nowIso();
+	await db
+		.update(controlActions)
+		.set({
+			status: "failed",
+			error: "Control action timed out waiting for supervisor completion.",
+			finishedAt: timestamp,
+			updatedAt: timestamp,
+		})
+		.where(eq(controlActions.id, managed.activeControlActionId));
+
+	await db
+		.update(managedSessions)
+		.set({
+			activeControlActionId: null,
+			controlLockExpiresAt: null,
+			updatedAt: timestamp,
+		})
+		.where(eq(managedSessions.sessionId, sessionId));
+}
+
+async function expireStaleControlLocksForSupervisor(supervisorId: string) {
+	const stale = await db
+		.select({
+			sessionId: managedSessions.sessionId,
+		})
+		.from(managedSessions)
+		.where(
+			and(
+				eq(managedSessions.supervisorId, supervisorId),
+				isNotNull(managedSessions.activeControlActionId),
+				isNotNull(managedSessions.controlLockExpiresAt),
+			),
+		);
+
+	for (const row of stale) {
+		await expireStaleControlLock(row.sessionId);
+	}
 }
 
 function mapControlAction(row: typeof controlActions.$inferSelect): ControlAction {
@@ -45,6 +94,7 @@ export async function listControlActionsForSession(sessionId: string) {
 }
 
 export async function queueStopAction(sessionId: string) {
+	await expireStaleControlLock(sessionId);
 	const [managed] = await db
 		.select()
 		.from(managedSessions)
@@ -85,6 +135,7 @@ export async function queueStopAction(sessionId: string) {
 export async function queuePromptAction(sessionId: string, prompt: string) {
 	const cleanPrompt = prompt.trim();
 	if (!cleanPrompt) throw new Error("Prompt is required.");
+	await expireStaleControlLock(sessionId);
 
 	const [managed] = await db
 		.select()
@@ -102,6 +153,10 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);
 	if (!session) throw new Error("Session not found.");
+	const sessionMetadata =
+		session.metadata && typeof session.metadata === "object" && !Array.isArray(session.metadata)
+			? (session.metadata as Record<string, unknown>)
+			: {};
 
 	const [launch] = await db
 		.select()
@@ -127,6 +182,12 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 				managedState: managed.managedState,
 				launchMode: launch.requestedLaunchMode,
 				env: launch.env ?? {},
+				terminalOwner:
+					sessionMetadata.terminalOwner &&
+					typeof sessionMetadata.terminalOwner === "object" &&
+					!Array.isArray(sessionMetadata.terminalOwner)
+						? (sessionMetadata.terminalOwner as Record<string, unknown>)
+						: null,
 			},
 			createdAt: timestamp,
 			updatedAt: timestamp,
@@ -220,6 +281,7 @@ export async function retryLaunchForSession(sessionId: string) {
 }
 
 export async function claimNextControlAction(supervisorId: string) {
+	await expireStaleControlLocksForSupervisor(supervisorId);
 	const [row] = await db
 		.select({
 			action: controlActions,

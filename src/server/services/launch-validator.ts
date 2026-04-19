@@ -98,6 +98,12 @@ export function validateAgainstSupervisor(
 	}
 	if (requestedLaunchMode === "interactive_terminal" && template.agentType === "claude_code") {
 		warnings.push("Interactive launches open on the selected host's terminal, not inside AgentPulse.");
+		if (!supervisor.capabilities.interactiveTerminalControl?.available) {
+			warnings.push(
+				supervisor.capabilities.interactiveTerminalControl?.reason ||
+					"AgentPulse cannot yet hand prompts back into the live terminal on this host.",
+			);
+		}
 	}
 	if (requestedLaunchMode === "headless") {
 		warnings.push("Headless launches stream visible Claude output back into AgentPulse and exit when the task completes.");
@@ -210,12 +216,21 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 			? `Validated for ${supervisor.hostName}`
 			: `Rejected by ${supervisor.hostName}: ${supervisorValidation.errors.join(" ")}`;
 
+	const launchCorrelationId =
+		typeof input.launchSpec.launchCorrelationId === "string" && input.launchSpec.launchCorrelationId.trim()
+			? input.launchSpec.launchCorrelationId.trim()
+			: crypto.randomUUID();
+	const normalizedLaunchSpec: LaunchSpec = {
+		...input.launchSpec,
+		launchCorrelationId,
+	};
+
 	const now = new Date().toISOString();
 	const [row] = await db
 		.insert(launchRequests)
 		.values({
 			templateId: input.templateId ?? null,
-			launchCorrelationId: input.launchSpec.launchCorrelationId,
+			launchCorrelationId,
 			agentType: normalizedTemplate.agentType,
 			cwd: normalizedTemplate.cwd,
 			baseInstructions: normalizedTemplate.baseInstructions ?? "",
@@ -225,7 +240,7 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 			sandboxMode: normalizedTemplate.sandboxMode ?? null,
 			requestedLaunchMode,
 			env: normalizedTemplate.env ?? {},
-			launchSpec: input.launchSpec as unknown as Record<string, unknown>,
+			launchSpec: normalizedLaunchSpec as unknown as Record<string, unknown>,
 			requestedBy: "local-user",
 			requestedSupervisorId: input.requestedSupervisorId ?? null,
 			routingPolicy,

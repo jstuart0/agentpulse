@@ -312,6 +312,12 @@ async function main() {
 					metadata.env && typeof metadata.env === "object" && !Array.isArray(metadata.env)
 						? (metadata.env as Record<string, string>)
 						: {};
+				const terminalOwner =
+					metadata.terminalOwner &&
+					typeof metadata.terminalOwner === "object" &&
+					!Array.isArray(metadata.terminalOwner)
+						? (metadata.terminalOwner as Record<string, unknown>)
+						: null;
 				const claudeCallbacks = {
 					reportState: async (body: ManagedSessionStateInput) =>
 						(await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
@@ -343,6 +349,7 @@ async function main() {
 								model,
 								env,
 								managedState,
+								terminalOwner,
 							},
 							claudeCallbacks,
 						);

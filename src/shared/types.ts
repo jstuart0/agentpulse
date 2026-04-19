@@ -329,6 +329,10 @@ export interface SupervisorCapabilities {
 	os: "macos" | "linux" | "windows" | "unknown";
 	terminalSupport: string[];
 	features: string[];
+	interactiveTerminalControl?: {
+		available: boolean;
+		reason: string | null;
+	};
 	executables?: {
 		claude?: {
 			available: boolean;

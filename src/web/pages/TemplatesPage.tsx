@@ -160,6 +160,16 @@ function getHostCompatibility(
 	if (!template.model?.trim()) {
 		warnings.push("Will use the provider default model.");
 	}
+	if (
+		requestedLaunchMode === "interactive_terminal" &&
+		template.agentType === "claude_code" &&
+		!supervisor.capabilities.interactiveTerminalControl?.available
+	) {
+		warnings.push(
+			supervisor.capabilities.interactiveTerminalControl?.reason ||
+				"Interactive prompt handoff from AgentPulse is not ready on this host.",
+		);
+	}
 	const executablePath =
 		template.agentType === "claude_code"
 			? supervisor.capabilities.executables?.claude?.resolvedPath

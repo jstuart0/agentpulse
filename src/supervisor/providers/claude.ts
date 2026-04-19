@@ -35,12 +35,18 @@ type ClaudePromptAction = {
 	model?: string | null;
 	env?: Record<string, string>;
 	managedState?: string | null;
+	terminalOwner?: Record<string, unknown> | null;
 };
 
 type ActivityEntry = {
 	kind: "assistant" | "status" | "tool" | "error";
 	text: string;
 	timestamp: string;
+};
+
+type TerminalOwner = {
+	app: "Terminal" | "iTerm";
+	windowId: string | null;
 };
 
 const MAX_PREVIEW_CHARS = 12_000;
@@ -53,6 +59,14 @@ function quoteShell(value: string) {
 
 function escapeAppleScript(value: string) {
 	return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function appleScriptArgs(lines: string[]) {
+	return lines.flatMap((line) => ["-e", line]);
+}
+
+function systemEventsProcessName(app: TerminalOwner["app"]) {
+	return app === "iTerm" ? "iTerm2" : "Terminal";
 }
 
 function sanitizeCliText(value: string) {
@@ -294,30 +308,56 @@ async function readTextStream(
 	}
 }
 
+async function runAppleScript(lines: string[], timeoutMs = 5000) {
+	const proc = Bun.spawnSync({
+		cmd: ["/usr/bin/osascript", ...appleScriptArgs(lines)],
+		stdout: "pipe",
+		stderr: "pipe",
+		timeout: timeoutMs,
+	});
+	if (proc.signalCode === "SIGTERM") {
+		throw new Error(
+			"AppleScript timed out. AgentPulse needs macOS Automation/Accessibility permission to control Terminal for interactive prompt handoff.",
+		);
+	}
+	if (proc.exitCode !== 0) {
+		const stderr = new TextDecoder().decode(proc.stderr).trim();
+		if (stderr.includes("Not authorized") || stderr.includes("not allowed assistive access")) {
+			throw new Error(
+				"AgentPulse is not authorized to control Terminal. Enable Automation and Accessibility permissions for the AgentPulse supervisor process.",
+			);
+		}
+		throw new Error(stderr || "AppleScript command failed.");
+	}
+	return new TextDecoder().decode(proc.stdout).trim();
+}
+
 async function openMacTerminal(command: string, terminalPreference?: string) {
 	const app = terminalPreference?.toLowerCase().includes("iterm") ? "iTerm" : "Terminal";
 	if (app === "iTerm") {
 		const script = [
 			`tell application "iTerm"`,
 			`activate`,
-			`if (count of windows) = 0 then create window with default profile`,
+			`create window with default profile`,
 			`tell current session of current window to write text "${escapeAppleScript(command)}"`,
+			`delay 0.2`,
+			`return (id of current window as text)`,
 			`end tell`,
 		];
-		return spawn("/usr/bin/osascript", script.flatMap((line) => ["-e", line]), {
-			stdio: "ignore",
-			detached: true,
-		});
+		const windowId = await runAppleScript(script);
+		return { pid: null, owner: { app, windowId } satisfies TerminalOwner };
 	}
 
 	const script = [
-		`tell application "Terminal" to activate`,
-		`tell application "Terminal" to do script "${escapeAppleScript(command)}"`,
+		`tell application "Terminal"`,
+		`activate`,
+		`do script "${escapeAppleScript(command)}"`,
+		`delay 0.2`,
+		`return (id of front window as text)`,
+		`end tell`,
 	];
-	return spawn("/usr/bin/osascript", script.flatMap((line) => ["-e", line]), {
-		stdio: "ignore",
-		detached: true,
-	});
+	const windowId = await runAppleScript(script);
+	return { pid: null, owner: { app, windowId } satisfies TerminalOwner };
 }
 
 async function openLinuxTerminal(command: string, terminalSupport: string[]) {
@@ -369,14 +409,17 @@ export async function launchClaudeInteractiveRequest(
 	}
 
 	let proc;
+	let terminalOwner: TerminalOwner | null = null;
 	if (config.capabilities.os === "macos") {
-		proc = await openMacTerminal(shellCommand, config.terminalPreference);
+		const opened = await openMacTerminal(shellCommand, config.terminalPreference);
+		proc = opened;
+		terminalOwner = opened.owner;
 	} else if (config.capabilities.os === "linux") {
 		proc = await openLinuxTerminal(shellCommand, config.capabilities.terminalSupport);
 	} else {
 		throw new Error(`Interactive terminal launches are not implemented on ${config.capabilities.os}.`);
 	}
-	proc.unref();
+	if ("unref" in proc && typeof proc.unref === "function") proc.unref();
 
 	if (callbacks) {
 		await callbacks.reportState({
@@ -389,9 +432,11 @@ export async function launchClaudeInteractiveRequest(
 			managedState: "interactive_terminal",
 			providerSessionId: launch.launchCorrelationId,
 			correlationSource: "launch_correlation_id",
+			providerCapabilitySnapshot: config.capabilities as unknown as Record<string, unknown>,
 			metadata: {
 				launchMode: "interactive_terminal",
 				pid: proc.pid ?? null,
+				terminalOwner,
 			},
 		});
 		await callbacks.reportEvents([
@@ -402,6 +447,7 @@ export async function launchClaudeInteractiveRequest(
 				rawPayload: {
 					launchMode: "interactive_terminal",
 					pid: proc.pid ?? null,
+					terminalOwner,
 				},
 			},
 		]);
@@ -417,6 +463,7 @@ export async function launchClaudeInteractiveRequest(
 			terminalSupport: config.capabilities.terminalSupport,
 			terminalPreference: config.terminalPreference ?? null,
 			shellCommand,
+			terminalOwner,
 		} satisfies LaunchMetadata,
 	};
 }
@@ -491,6 +538,7 @@ export async function launchClaudeHeadlessRequest(
 			managedState: "headless",
 			providerSessionId: launch.launchCorrelationId,
 			correlationSource: "launch_correlation_id",
+			providerCapabilitySnapshot: config.capabilities as unknown as Record<string, unknown>,
 			metadata: {
 				launchMode: "headless",
 				pid: proc.pid ?? null,
@@ -531,6 +579,7 @@ export async function launchClaudeHeadlessRequest(
 				managedState: "headless",
 				providerSessionId: launch.launchCorrelationId,
 				correlationSource: "launch_correlation_id",
+				providerCapabilitySnapshot: config.capabilities as unknown as Record<string, unknown>,
 				metadata: {
 					launchMode: "headless",
 					pid: proc.pid ?? null,
@@ -597,6 +646,7 @@ export async function launchClaudeHeadlessRequest(
 				managedState: exitCode === 0 ? "completed" : "failed",
 				providerSessionId: launch.launchCorrelationId,
 				correlationSource: "launch_correlation_id",
+				providerCapabilitySnapshot: config.capabilities as unknown as Record<string, unknown>,
 				metadata: {
 					launchMode: "headless",
 					pid: proc.pid ?? null,
@@ -694,6 +744,7 @@ export async function promptClaudeHeadlessSession(
 			managedState: "headless",
 			providerSessionId: action.sessionId,
 			correlationSource: "launch_correlation_id",
+			providerCapabilitySnapshot: config.capabilities as unknown as Record<string, unknown>,
 			metadata: {
 				launchMode: "headless",
 				pid: proc.pid ?? null,
@@ -731,6 +782,7 @@ export async function promptClaudeHeadlessSession(
 				managedState: "headless",
 				providerSessionId: action.sessionId,
 				correlationSource: "launch_correlation_id",
+				providerCapabilitySnapshot: config.capabilities as unknown as Record<string, unknown>,
 				metadata: {
 					launchMode: "headless",
 					pid: proc.pid ?? null,
@@ -796,6 +848,7 @@ export async function promptClaudeHeadlessSession(
 				managedState: exitCode === 0 ? "completed" : "failed",
 				providerSessionId: action.sessionId,
 				correlationSource: "launch_correlation_id",
+				providerCapabilitySnapshot: config.capabilities as unknown as Record<string, unknown>,
 				metadata: {
 					launchMode: "headless",
 					pid: proc.pid ?? null,
@@ -832,26 +885,61 @@ export async function promptClaudeInteractiveSession(
 	callbacks?: LaunchCallbacks,
 ) {
 	const config = await loadSupervisorConfig();
-	const executable =
-		config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude";
-	const args = buildResumeBaseArgs(action, executable);
-	args.push(buildActionPrompt(action));
-
-	const shellCommand = [
-		`cd ${quoteShell(action.cwd)}`,
-		...Object.entries(buildActionTerminalExports(action)).map(([key, value]) => `export ${key}=${quoteShell(String(value))}`),
-		`exec ${args.map((value) => quoteShell(value)).join(" ")}`,
-	].join("; ");
-
-	let proc;
-	if (config.capabilities.os === "macos") {
-		proc = await openMacTerminal(shellCommand, config.terminalPreference);
-	} else if (config.capabilities.os === "linux") {
-		proc = await openLinuxTerminal(shellCommand, config.capabilities.terminalSupport);
-	} else {
-		throw new Error(`Interactive terminal prompts are not implemented on ${config.capabilities.os}.`);
+	const metadataRecord = action as ClaudePromptAction & { terminalOwner?: Record<string, unknown> | null };
+	const terminalOwner =
+		metadataRecord.terminalOwner &&
+		typeof metadataRecord.terminalOwner === "object" &&
+		!Array.isArray(metadataRecord.terminalOwner) &&
+		typeof metadataRecord.terminalOwner.app === "string"
+			? ({
+					app:
+						metadataRecord.terminalOwner.app === "iTerm" ? "iTerm" : "Terminal",
+					windowId:
+						typeof metadataRecord.terminalOwner.windowId === "string"
+							? metadataRecord.terminalOwner.windowId
+							: null,
+				} satisfies TerminalOwner)
+			: null;
+	if (config.capabilities.os !== "macos" || !terminalOwner?.windowId) {
+		throw new Error("Interactive prompt injection is currently only supported for owned macOS terminal sessions.");
 	}
-	proc.unref();
+
+	const appScript =
+		terminalOwner.app === "iTerm"
+			? [
+					`tell application "iTerm"`,
+					`activate`,
+					`repeat with w in windows`,
+					`if (id of w as text) is "${escapeAppleScript(terminalOwner.windowId)}" then`,
+					`select w`,
+					`exit repeat`,
+					`end if`,
+					`end repeat`,
+					`end tell`,
+			  ]
+			: [
+					`tell application "Terminal"`,
+					`activate`,
+					`repeat with w in windows`,
+					`if (id of w as text) is "${escapeAppleScript(terminalOwner.windowId)}" then`,
+					`set index of w to 1`,
+					`exit repeat`,
+					`end if`,
+					`end repeat`,
+					`end tell`,
+			  ];
+	const escapedPrompt = action.prompt.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+	await runAppleScript([
+		...appScript,
+		`delay 0.2`,
+		`set the clipboard to "${escapedPrompt}"`,
+		`tell application "System Events"`,
+		`tell process "${systemEventsProcessName(terminalOwner.app)}"`,
+		`keystroke "v" using command down`,
+		`key code 36`,
+		`end tell`,
+		`end tell`,
+	]);
 
 	if (callbacks) {
 		await callbacks.reportState({
@@ -863,11 +951,12 @@ export async function promptClaudeInteractiveSession(
 			managedState: "interactive_terminal",
 			providerSessionId: action.sessionId,
 			correlationSource: "launch_correlation_id",
-			metadata: {
-				launchMode: "interactive_terminal",
-				pid: proc.pid ?? null,
-			},
-		});
+			providerCapabilitySnapshot: config.capabilities as unknown as Record<string, unknown>,
+				metadata: {
+					launchMode: "interactive_terminal",
+					terminalOwner,
+				},
+			});
 		await callbacks.reportEvents([
 			{
 				eventType: "InteractivePromptSubmitted",
@@ -879,21 +968,21 @@ export async function promptClaudeInteractiveSession(
 				eventType: "InteractivePromptHandedOff",
 				category: "system_event",
 				content: "Prompt handed off to the host terminal session.",
-				rawPayload: { source: "agentpulse_workspace", pid: proc.pid ?? null },
+				rawPayload: { source: "agentpulse_workspace", terminalOwner },
 			},
 		]);
 	}
 
 	return {
-		pid: proc.pid ?? null,
+		pid: null,
 		metadata: {
 			mode: "interactive_terminal",
-			command: args,
-			resolvedExecutable: executable,
+			command: [],
+			resolvedExecutable: config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude",
 			startedAt: new Date().toISOString(),
 			terminalSupport: config.capabilities.terminalSupport,
 			terminalPreference: config.terminalPreference ?? null,
-			shellCommand,
+			terminalOwner,
 			resume: true,
 		} satisfies LaunchMetadata,
 	};
