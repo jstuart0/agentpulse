@@ -20,9 +20,13 @@ import {
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
+import { validateAiStartupConfig } from "./services/ai/feature.js";
 import { existsSync } from "fs";
 import { join } from "path";
 import { getAuthUserFromHeaders } from "./auth/middleware.js";
+
+// Fail fast if AI is enabled but the instance secrets key is missing or weak.
+validateAiStartupConfig();
 
 // Initialize database
 initializeDatabase();

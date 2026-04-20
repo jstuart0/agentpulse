@@ -10,6 +10,13 @@ export const config = {
 	dataDir: process.env.DATA_DIR || "./data",
 	sqlitePathOverride: process.env.SQLITE_PATH || "",
 
+	// AI watcher feature — two-level opt-in. AGENTPULSE_AI_ENABLED gates the
+	// feature surface at boot (tables, routes, UI); a runtime settings toggle
+	// controls whether the compiled-in feature actually runs. When enabled,
+	// AGENTPULSE_SECRETS_KEY must be set — it encrypts provider credentials.
+	aiEnabled: process.env.AGENTPULSE_AI_ENABLED === "true",
+	secretsKey: process.env.AGENTPULSE_SECRETS_KEY || "",
+
 	get useSqlite(): boolean {
 		return !this.databaseUrl || !this.databaseUrl.startsWith("postgres");
 	},
