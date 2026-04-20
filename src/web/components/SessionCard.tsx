@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { StatusBadge } from "./StatusBadge.js";
 import { AgentTypeBadge } from "./AgentTypeBadge.js";
-import { formatDuration, extractProjectName } from "../lib/utils.js";
+import { formatDuration, extractProjectName, getSessionMode } from "../lib/utils.js";
 import { api } from "../lib/api.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { Session } from "../../shared/types.js";
@@ -21,6 +21,7 @@ export function SessionCard({ session }: SessionCardProps) {
 	const projectName = extractProjectName(session.cwd);
 	const name = session.displayName || session.sessionId?.slice(0, 8) || "session";
 	const isInactive = session.status === "completed" || session.status === "archived" || session.status === "failed";
+	const modeStyle = getSessionMode(session);
 
 	async function handleRename() {
 		if (!newName.trim()) { setRenaming(false); return; }
@@ -52,10 +53,15 @@ export function SessionCard({ session }: SessionCardProps) {
 	return (
 		<div
 			onClick={() => navigate(`/sessions/${session.sessionId}`)}
-			className={`group cursor-pointer rounded-lg border bg-card p-3 md:p-4 transition-all hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5 ${
+			className={`group relative cursor-pointer overflow-hidden rounded-lg border bg-card p-3 md:p-4 pl-4 md:pl-5 transition-all hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5 ${
 				session.isPinned ? "border-amber-500/30 bg-amber-500/[0.02]" : "border-border"
 			}`}
 		>
+			{/* Mode accent bar */}
+			<div
+				aria-hidden="true"
+				className={`absolute left-0 top-0 bottom-0 w-1 ${modeStyle.barClass}`}
+			/>
 			{/* Top row: name + working + status + actions */}
 			<div className="flex items-center justify-between gap-2 mb-2">
 				<div className="flex items-center gap-2 min-w-0">
@@ -129,9 +135,15 @@ export function SessionCard({ session }: SessionCardProps) {
 				</div>
 			</div>
 
-			{/* Agent type + duration + tools */}
+			{/* Agent type + mode + duration + tools */}
 			<div className="flex items-center gap-2">
 				<AgentTypeBadge agentType={session.agentType} />
+				<span
+					title={`Session mode: ${modeStyle.label}`}
+					className={`flex-shrink-0 text-[10px] font-mono rounded border px-1.5 py-0 ${modeStyle.chipClass}`}
+				>
+					{modeStyle.label}
+				</span>
 				<span className="text-xs text-muted-foreground">{formatDuration(session.startedAt)}</span>
 				<span className="text-xs text-muted-foreground ml-auto">{session.totalToolUses} tools</span>
 			</div>
