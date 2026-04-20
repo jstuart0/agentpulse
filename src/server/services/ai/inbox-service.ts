@@ -3,6 +3,7 @@ import { db } from "../../db/client.js";
 import { sessions, watcherProposals } from "../../db/schema.js";
 import type { HealthState } from "./classifier.js";
 import { listAllOpenHitl } from "./hitl-service.js";
+import { activeSnoozeSet, listActiveSnoozes } from "./inbox-snooze-service.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 import { getProposal } from "./proposals-service.js";
 
@@ -84,6 +85,7 @@ const _HIGH_SEVERITY_HEALTH: HealthState[] = ["stuck", "risky", "blocked"];
  */
 export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 	const limit = filter.limit ?? DEFAULT_LIMIT;
+	const now = new Date();
 	const items: InboxWorkItem[] = [];
 
 	// ---- 1. Open HITL requests ----------------------------------------
@@ -212,6 +214,14 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 	}
 	if (filter.severity) {
 		out = out.filter((i) => i.severity === filter.severity);
+	}
+
+	// Filter out snoozed items. Active snoozes are (kind, targetId) tuples;
+	// for failed_proposal the targetId is the proposal id (item.id).
+	const snoozeRecords = await listActiveSnoozes(now);
+	if (snoozeRecords.length > 0) {
+		const snoozed = activeSnoozeSet(snoozeRecords);
+		out = out.filter((i) => !snoozed.has(`${i.kind}:${i.id}`));
 	}
 
 	// Sort: high severity first, newest first within each bucket.

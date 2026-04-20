@@ -355,6 +355,22 @@ export const notificationChannels = sqliteTable("notification_channels", {
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
+// aiInboxSnoozes — per-item mute for operator inbox cards. Only failed
+// proposals exposed via UI today, but the table is kind-agnostic so the
+// stuck/risky/HITL surfaces can opt in later.
+export const aiInboxSnoozes = sqliteTable("ai_inbox_snoozes", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	kind: text("kind").notNull(), // hitl | stuck | risky | failed_proposal
+	targetId: text("target_id").notNull(),
+	snoozedUntil: text("snoozed_until").notNull(),
+	createdBy: text("created_by"),
+	reason: text("reason"),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
 // aiHitlRequests — first-class table for open HITL requests. Separated
 // from watcherProposals so proposal persistence and HITL workflow don't
 // collapse together; future remote channels (Phase 7) register here.

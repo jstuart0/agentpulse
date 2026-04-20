@@ -25,6 +25,13 @@ import {
 import { resolveHitlRequest, supersedeOpenHitl } from "../services/ai/hitl-service.js";
 import { type InboxWorkItem, buildInbox } from "../services/ai/inbox-service.js";
 import {
+	type InboxKind,
+	listActiveSnoozes,
+	snoozeItem,
+	unsnooze,
+	unsnoozeTarget,
+} from "../services/ai/inbox-snooze-service.js";
+import {
 	intelligenceForSession,
 	intelligenceForSessions,
 } from "../services/ai/intelligence-service.js";
@@ -295,6 +302,66 @@ aiRouter.post("/ai/templates/distill", async (c) => {
 		draft,
 		provenance: provenanceMetadata(draft, body.baseTemplateId ?? null),
 	});
+});
+
+const INBOX_KINDS: InboxKind[] = ["hitl", "stuck", "risky", "failed_proposal"];
+
+aiRouter.get("/ai/inbox/snoozes", async (c) => {
+	if (!isAiBuildEnabled()) return c.json({ error: "ai_disabled" }, 404);
+	const rows = await listActiveSnoozes();
+	return c.json({ snoozes: rows });
+});
+
+aiRouter.post("/ai/inbox/snooze", async (c) => {
+	const gate = await requireAiBuild(c);
+	if (gate) return gate;
+	const body = await c.req.json<{
+		kind: InboxKind;
+		targetId: string;
+		durationMs: number;
+		reason?: string | null;
+	}>();
+	if (!INBOX_KINDS.includes(body.kind)) {
+		return c.json({ error: "invalid kind" }, 400);
+	}
+	if (!body.targetId) {
+		return c.json({ error: "targetId required" }, 400);
+	}
+	const duration = Number(body.durationMs);
+	if (!Number.isFinite(duration) || duration <= 0) {
+		return c.json({ error: "durationMs must be a positive number" }, 400);
+	}
+	// Cap at 30 days so a misclick can't mute an inbox item forever.
+	const capped = Math.min(duration, 30 * 24 * 60 * 60 * 1000);
+	const until = new Date(Date.now() + capped);
+	const snooze = await snoozeItem({
+		kind: body.kind,
+		targetId: body.targetId,
+		until,
+		reason: body.reason ?? null,
+	});
+	return c.json({ snooze });
+});
+
+aiRouter.delete("/ai/inbox/snooze/:id", async (c) => {
+	const gate = await requireAiBuild(c);
+	if (gate) return gate;
+	const id = c.req.param("id") ?? "";
+	const ok = await unsnooze(id);
+	if (!ok) return c.json({ error: "snooze not found" }, 404);
+	return c.json({ ok: true });
+});
+
+aiRouter.delete("/ai/inbox/snooze", async (c) => {
+	const gate = await requireAiBuild(c);
+	if (gate) return gate;
+	const kind = c.req.query("kind") as InboxKind | undefined;
+	const targetId = c.req.query("targetId");
+	if (!kind || !INBOX_KINDS.includes(kind) || !targetId) {
+		return c.json({ error: "kind + targetId required" }, 400);
+	}
+	const ok = await unsnoozeTarget(kind, targetId);
+	return c.json({ ok });
 });
 
 /**

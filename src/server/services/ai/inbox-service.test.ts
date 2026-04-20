@@ -2,8 +2,11 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
 const { db, initializeDatabase } = await import("../../db/client.js");
-const { aiHitlRequests, events, sessions, watcherProposals } = await import("../../db/schema.js");
+const { aiHitlRequests, aiInboxSnoozes, events, sessions, watcherProposals } = await import(
+	"../../db/schema.js"
+);
 const { buildInbox } = await import("./inbox-service.js");
+const { snoozeItem } = await import("./inbox-snooze-service.js");
 const { completeProposalAsHitl, createPendingProposal, failProposal } = await import(
 	"./proposals-service.js"
 );
@@ -13,6 +16,7 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
+	await db.delete(aiInboxSnoozes).execute();
 	await db.delete(aiHitlRequests).execute();
 	await db.delete(watcherProposals).execute();
 	await db.delete(events).execute();
@@ -108,5 +112,24 @@ describe("inbox-service", () => {
 		await failProposal({ id: p2.id, errorSubType: "y", errorMessage: "b" });
 		const inbox = await buildInbox({ sessionId: "sA" });
 		expect(inbox.items.every((i) => i.sessionId === "sA")).toBe(true);
+	});
+
+	test("snoozed failed proposals are hidden from the inbox", async () => {
+		await mkSession("snz");
+		const p = await createPendingProposal({
+			sessionId: "snz",
+			providerId: "prov",
+		});
+		await failProposal({ id: p.id, errorSubType: "rate", errorMessage: "r" });
+		const before = await buildInbox();
+		expect(before.items.some((i) => i.kind === "failed_proposal")).toBe(true);
+
+		await snoozeItem({
+			kind: "failed_proposal",
+			targetId: p.id,
+			until: new Date(Date.now() + 60_000),
+		});
+		const after = await buildInbox();
+		expect(after.items.some((i) => i.kind === "failed_proposal" && i.id === p.id)).toBe(false);
 	});
 });

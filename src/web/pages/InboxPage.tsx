@@ -210,11 +210,78 @@ function InboxCard({
 							(item.errorMessage ?? "unknown error")
 						)}
 					</div>
-					<div className="text-[10px] text-muted-foreground mt-1">{relTime(item.at)}</div>
+					<div className="flex items-center gap-2 mt-2">
+						<SnoozeDropdown
+							disabled={busy}
+							onSnooze={async (ms) => {
+								setBusy(true);
+								setErr(null);
+								try {
+									await api.snoozeInboxItem({
+										kind: "failed_proposal",
+										targetId: item.id,
+										durationMs: ms,
+									});
+									onResolved();
+								} catch (e) {
+									setErr(e instanceof Error ? e.message : String(e));
+								} finally {
+									setBusy(false);
+								}
+							}}
+						/>
+						<span className="text-[10px] text-muted-foreground ml-auto">{relTime(item.at)}</span>
+					</div>
 				</>
 			)}
 
 			{err && <div className="mt-2 text-[11px] text-red-300">{err}</div>}
+		</div>
+	);
+}
+
+const SNOOZE_OPTIONS: Array<{ label: string; ms: number }> = [
+	{ label: "1h", ms: 60 * 60 * 1000 },
+	{ label: "4h", ms: 4 * 60 * 60 * 1000 },
+	{ label: "24h", ms: 24 * 60 * 60 * 1000 },
+	{ label: "7d", ms: 7 * 24 * 60 * 60 * 1000 },
+];
+
+function SnoozeDropdown({
+	disabled,
+	onSnooze,
+}: {
+	disabled?: boolean;
+	onSnooze: (ms: number) => void | Promise<void>;
+}) {
+	const [open, setOpen] = useState(false);
+	return (
+		<div className="relative">
+			<button
+				type="button"
+				disabled={disabled}
+				onClick={() => setOpen((v) => !v)}
+				className="text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted disabled:opacity-50"
+			>
+				Snooze ▾
+			</button>
+			{open && (
+				<div className="absolute top-full left-0 mt-1 z-10 rounded border border-border bg-card shadow-lg">
+					{SNOOZE_OPTIONS.map((opt) => (
+						<button
+							type="button"
+							key={opt.label}
+							onClick={() => {
+								setOpen(false);
+								void onSnooze(opt.ms);
+							}}
+							className="block w-full text-left text-xs px-3 py-1.5 hover:bg-muted"
+						>
+							{opt.label}
+						</button>
+					))}
+				</div>
+			)}
 		</div>
 	);
 }

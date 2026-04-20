@@ -332,6 +332,21 @@ export function initializeDatabase() {
 			ON ai_watcher_runs(session_id)
 			WHERE status IN ('queued', 'claimed', 'running');
 
+		CREATE TABLE IF NOT EXISTS ai_inbox_snoozes (
+			id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			snoozed_until TEXT NOT NULL,
+			created_by TEXT,
+			reason TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_inbox_snoozes_target
+			ON ai_inbox_snoozes(kind, target_id);
+		CREATE INDEX IF NOT EXISTS idx_ai_inbox_snoozes_until
+			ON ai_inbox_snoozes(snoozed_until);
+
 		CREATE TABLE IF NOT EXISTS notification_channels (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL DEFAULT 'local',

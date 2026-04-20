@@ -340,6 +340,22 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
+	listInboxSnoozes: () => request<{ snoozes: InboxSnooze[] }>("/ai/inbox/snoozes"),
+	snoozeInboxItem: (body: {
+		kind: InboxWorkItem["kind"];
+		targetId: string;
+		durationMs: number;
+		reason?: string | null;
+	}) =>
+		request<{ snooze: InboxSnooze }>("/ai/inbox/snooze", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+	unsnoozeInboxItem: (id: string) =>
+		request<{ ok: true }>(`/ai/inbox/snooze/${id}`, {
+			method: "DELETE",
+		}),
+
 	getDigest: (params?: { fresh?: boolean }) =>
 		request<Digest>(`/ai/digest${params?.fresh ? "?fresh=1" : ""}`),
 	refreshDigest: () => request<Digest>("/ai/digest/refresh", { method: "POST" }),
@@ -444,6 +460,16 @@ export interface Inbox {
 	items: InboxWorkItem[];
 	total: number;
 	byKind: Record<InboxWorkItem["kind"], number>;
+}
+
+export interface InboxSnooze {
+	id: string;
+	kind: InboxWorkItem["kind"];
+	targetId: string;
+	snoozedUntil: string;
+	reason: string | null;
+	createdAt: string;
+	updatedAt: string;
 }
 
 export interface RepoDigestSession {
