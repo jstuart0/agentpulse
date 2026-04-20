@@ -1,9 +1,14 @@
 import { db } from "../db/client.js";
-import { sessions } from "../db/schema.js";
-import { eq, and, lt, ne, sql, desc, count } from "drizzle-orm";
+import { managedSessions, sessions, supervisors } from "../db/schema.js";
+import { eq, and, inArray, lt, ne, notInArray, sql, desc, count } from "drizzle-orm";
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_END_TIMEOUT_MS } from "../../shared/constants.js";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { getManagedSession } from "./managed-session-state.js";
+
+// Managed states that indicate an agent process is still running under a live
+// supervisor. Sessions in these states must not be auto-completed by staleness
+// checks — the supervisor will report terminal state when the process exits.
+const LIVE_MANAGED_STATES = ["interactive_terminal", "headless", "managed", "pending"] as const;
 
 // Get all sessions with optional filters
 export async function getSessions(filters?: {
@@ -94,11 +99,29 @@ export async function getStats() {
 	};
 }
 
-// Mark stale sessions as idle or completed
+// Mark stale sessions as idle or completed. Sessions whose managed process is
+// still running under a connected supervisor are skipped — those only flip to
+// terminal state when the supervisor reports the process exited.
 export async function updateStaleSessions(): Promise<number> {
 	const now = Date.now();
 	const idleCutoff = new Date(now - SESSION_IDLE_TIMEOUT_MS).toISOString();
 	const endCutoff = new Date(now - SESSION_END_TIMEOUT_MS).toISOString();
+
+	const liveManagedRows = await db
+		.select({ sessionId: managedSessions.sessionId })
+		.from(managedSessions)
+		.innerJoin(supervisors, eq(managedSessions.supervisorId, supervisors.id))
+		.where(
+			and(
+				inArray(managedSessions.managedState, LIVE_MANAGED_STATES as unknown as string[]),
+				eq(supervisors.status, "connected"),
+			),
+		);
+	const liveSessionIds = liveManagedRows.map((r) => r.sessionId);
+
+	const excludeLive = liveSessionIds.length > 0
+		? notInArray(sessions.sessionId, liveSessionIds)
+		: undefined;
 
 	// Mark sessions as idle if no activity for 5 minutes
 	await db
@@ -108,6 +131,7 @@ export async function updateStaleSessions(): Promise<number> {
 			and(
 				eq(sessions.status, "active"),
 				lt(sessions.lastActivityAt, idleCutoff),
+				...(excludeLive ? [excludeLive] : []),
 			),
 		);
 
@@ -123,6 +147,7 @@ export async function updateStaleSessions(): Promise<number> {
 				ne(sessions.status, "completed"),
 				ne(sessions.status, "failed"),
 				lt(sessions.lastActivityAt, endCutoff),
+				...(excludeLive ? [excludeLive] : []),
 			),
 		)
 		.returning();
