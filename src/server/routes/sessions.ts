@@ -10,8 +10,10 @@ import {
 	queueStopAction,
 	retryLaunchForSession,
 } from "../services/control-actions.js";
+import { requireAuth } from "../auth/middleware.js";
 
 const sessionsRouter = new Hono();
+sessionsRouter.use("*", requireAuth());
 
 // GET /api/v1/sessions - List sessions
 sessionsRouter.get("/sessions", async (c) => {

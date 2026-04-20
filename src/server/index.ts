@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
@@ -23,6 +22,7 @@ import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
 import { existsSync } from "fs";
 import { join } from "path";
+import { getAuthUserFromHeaders } from "./auth/middleware.js";
 
 // Initialize database
 initializeDatabase();
@@ -31,7 +31,6 @@ initializeDatabase();
 const app = new Hono();
 
 // Global middleware
-app.use("*", cors());
 app.use("*", logger());
 
 // API routes
@@ -94,11 +93,17 @@ if (config.isProduction) {
 const server = Bun.serve({
 	port: config.port,
 	hostname: config.host,
-	fetch(req: Request, server: unknown) {
+	async fetch(req: Request, server: unknown) {
 		const url = new URL(req.url);
 
 		// Handle WebSocket upgrade
 		if (url.pathname === "/api/v1/ws" || url.pathname === "/app-api/v1/ws") {
+			const authUser = config.disableAuth
+				? { source: "api_key", name: "anonymous", id: "anonymous" }
+				: await getAuthUserFromHeaders(req.headers);
+			if (!authUser) {
+				return new Response("Unauthorized", { status: 401 });
+			}
 			const s = server as { upgrade(req: Request): boolean };
 			const upgraded = s.upgrade(req);
 			if (upgraded) return undefined as unknown as Response;
@@ -148,8 +153,14 @@ console.log(`  ║  WS:      ws://${config.host}:${config.port}/api/v1/ws   ║`
 console.log("  ╚═══════════════════════════════════════════╝");
 console.log("");
 if (defaultKey) {
-	console.log(`  Default API Key: ${defaultKey}`);
-	console.log("     Add this to your shell profile:");
-	console.log(`     export AGENTPULSE_API_KEY="${defaultKey}"`);
-	console.log("");
+	if (config.isProduction) {
+		console.log("  Default API key created.");
+		console.log("     Retrieve it from the database or create a replacement in Settings.");
+		console.log("");
+	} else {
+		console.log(`  Default API Key: ${defaultKey}`);
+		console.log("     Add this to your shell profile:");
+		console.log(`     export AGENTPULSE_API_KEY="${defaultKey}"`);
+		console.log("");
+	}
 }

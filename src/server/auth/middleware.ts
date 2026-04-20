@@ -9,20 +9,23 @@ export interface AuthUser {
 	id?: string;
 }
 
-// Extract auth user from request (Authentik headers or API key)
-export async function getAuthUser(c: Context): Promise<AuthUser | null> {
-	// Check 1: Authentik forwardAuth headers (set by Traefik)
-	const authentikUser = c.req.header("X-authentik-username");
+export async function getAuthUserFromHeaders(
+	headers: Headers | { get(name: string): string | null },
+): Promise<AuthUser | null> {
+	if (config.disableAuth) {
+		return { source: "api_key", name: "anonymous", id: "anonymous" };
+	}
+
+	const authentikUser = headers.get("X-authentik-username");
 	if (authentikUser) {
 		return {
 			source: "authentik",
 			name: authentikUser,
-			id: c.req.header("X-authentik-uid") || undefined,
+			id: headers.get("X-authentik-uid") || undefined,
 		};
 	}
 
-	// Check 2: Bearer token (API key)
-	const authHeader = c.req.header("Authorization");
+	const authHeader = headers.get("Authorization");
 	if (authHeader?.startsWith("Bearer ")) {
 		const token = authHeader.slice(7);
 		const keyRecord = await verifyApiKey(token);
@@ -36,6 +39,13 @@ export async function getAuthUser(c: Context): Promise<AuthUser | null> {
 	}
 
 	return null;
+}
+
+// Extract auth user from request (Authentik headers or API key)
+export async function getAuthUser(c: Context): Promise<AuthUser | null> {
+	return getAuthUserFromHeaders({
+		get: (name: string) => c.req.header(name) ?? null,
+	});
 }
 
 // Middleware: require API key auth (for hook endpoints)

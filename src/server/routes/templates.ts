@@ -4,8 +4,10 @@ import { db } from "../db/client.js";
 import { sessionTemplates } from "../db/schema.js";
 import { buildTemplatePreview, normalizeTemplateInput, validateTemplateInput } from "../services/template-preview.js";
 import type { AgentType, LaunchMode, SessionTemplateInput } from "../../shared/types.js";
+import { requireAuth } from "../auth/middleware.js";
 
 const templatesRouter = new Hono();
+templatesRouter.use("*", requireAuth());
 
 function mapTemplate(row: typeof sessionTemplates.$inferSelect) {
 	return {

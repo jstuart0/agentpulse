@@ -7,7 +7,25 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/`)
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/health`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/hooks`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/hooks/status`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/v1/supervisors`)
       kind: Rule
       services:
         - name: agentpulse

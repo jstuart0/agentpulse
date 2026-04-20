@@ -6,8 +6,10 @@ import { db } from "../db/client.js";
 import { launchRequests } from "../db/schema.js";
 import { createValidatedLaunchRequest, mapLaunchRequest } from "../services/launch-validator.js";
 import { getSession } from "../services/session-tracker.js";
+import { requireAuth } from "../auth/middleware.js";
 
 const launchesRouter = new Hono();
+launchesRouter.use("*", requireAuth());
 
 launchesRouter.get("/launches", async (c) => {
 	const rows = await db.select().from(launchRequests).orderBy(desc(launchRequests.createdAt));

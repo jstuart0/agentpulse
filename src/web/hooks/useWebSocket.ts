@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { useEventStore } from "../stores/event-store.js";
+import { BROWSER_WS_PATH } from "../lib/paths.js";
 
 function sendNotification(title: string, body: string) {
 	if (!("Notification" in window)) return;
@@ -30,7 +31,7 @@ export function useWebSocket() {
 	const connect = useCallback(() => {
 		const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 		const host = window.location.host;
-		const url = `${protocol}//${host}/api/v1/ws`;
+		const url = `${protocol}//${host}${BROWSER_WS_PATH}`;
 
 		const ws = new WebSocket(url);
 		wsRef.current = ws;

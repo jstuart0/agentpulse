@@ -3,8 +3,10 @@ import { db } from "../db/client.js";
 import { settings, apiKeys } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { createApiKey } from "../auth/api-key.js";
+import { requireAuth } from "../auth/middleware.js";
 
 const settingsRouter = new Hono();
+settingsRouter.use("*", requireAuth());
 
 // GET /api/v1/settings - Get all settings
 settingsRouter.get("/settings", async (c) => {
