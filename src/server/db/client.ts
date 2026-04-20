@@ -244,6 +244,71 @@ export function initializeDatabase() {
 		CREATE INDEX IF NOT EXISTS idx_control_actions_status ON control_actions(status);
 	`);
 
+	// AI watcher tables — only created when the feature is compiled in.
+	// Per the watcher plan, a non-AI install keeps its DB footprint identical.
+	if (config.aiEnabled) {
+		sqlite.exec(`
+			CREATE TABLE IF NOT EXISTS llm_providers (
+				id TEXT PRIMARY KEY,
+				user_id TEXT NOT NULL DEFAULT 'local',
+				name TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				model TEXT NOT NULL,
+				base_url TEXT,
+				credential_ciphertext TEXT NOT NULL,
+				credential_hint TEXT NOT NULL,
+				is_default INTEGER NOT NULL DEFAULT 0,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+			);
+
+			CREATE TABLE IF NOT EXISTS watcher_configs (
+				session_id TEXT PRIMARY KEY,
+				enabled INTEGER NOT NULL DEFAULT 0,
+				provider_id TEXT NOT NULL,
+				policy TEXT NOT NULL DEFAULT 'ask_always',
+				channel_id TEXT,
+				max_continuations INTEGER NOT NULL DEFAULT 10,
+				continuations_used INTEGER NOT NULL DEFAULT 0,
+				max_daily_cents INTEGER,
+				system_prompt TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_watcher_configs_enabled ON watcher_configs(enabled);
+
+			CREATE TABLE IF NOT EXISTS ai_daily_spend (
+				user_id TEXT NOT NULL,
+				date TEXT NOT NULL,
+				spend_cents INTEGER NOT NULL DEFAULT 0,
+				updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+				PRIMARY KEY (user_id, date)
+			);
+
+			CREATE TABLE IF NOT EXISTS watcher_proposals (
+				id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL,
+				provider_id TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'pending',
+				decision TEXT,
+				next_prompt TEXT,
+				report_summary TEXT,
+				raw_response_json TEXT,
+				trigger_event_id TEXT,
+				tokens_in INTEGER NOT NULL DEFAULT 0,
+				tokens_out INTEGER NOT NULL DEFAULT 0,
+				cost_cents INTEGER NOT NULL DEFAULT 0,
+				usage_estimated INTEGER NOT NULL DEFAULT 0,
+				error_sub_type TEXT,
+				error_message TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+			);
+			CREATE INDEX IF NOT EXISTS idx_watcher_proposals_session ON watcher_proposals(session_id);
+			CREATE INDEX IF NOT EXISTS idx_watcher_proposals_state ON watcher_proposals(state);
+		`);
+	}
+
 	// Migrations: add columns that may not exist on older databases
 	const migrations = [
 		"ALTER TABLE sessions ADD COLUMN display_name TEXT",
@@ -303,6 +368,11 @@ export function initializeDatabase() {
 		"ALTER TABLE managed_sessions ADD COLUMN control_lock_expires_at TEXT",
 		"ALTER TABLE managed_sessions ADD COLUMN host_name TEXT",
 		"ALTER TABLE managed_sessions ADD COLUMN host_affinity_reason TEXT",
+		// AI watcher session-level columns (safe additive)
+		"ALTER TABLE sessions ADD COLUMN watcher_state TEXT",
+		"ALTER TABLE sessions ADD COLUMN watcher_last_run_at TEXT",
+		"ALTER TABLE sessions ADD COLUMN watcher_last_user_prompt_at TEXT",
+		"ALTER TABLE sessions ADD COLUMN ai_spend_cents INTEGER NOT NULL DEFAULT 0",
 	];
 
 	for (const migration of migrations) {

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 export const sessions = sqliteTable("sessions", {
@@ -34,6 +34,11 @@ export const sessions = sqliteTable("sessions", {
 	metadata: text("metadata", { mode: "json" })
 		.$type<Record<string, unknown>>()
 		.default({}),
+	// AI watcher fields (nullable; only meaningful when the feature is enabled)
+	watcherState: text("watcher_state"),
+	watcherLastRunAt: text("watcher_last_run_at"),
+	watcherLastUserPromptAt: text("watcher_last_user_prompt_at"),
+	aiSpendCents: integer("ai_spend_cents").notNull().default(0),
 });
 
 export const events = sqliteTable("events", {
@@ -271,6 +276,88 @@ export const controlActions = sqliteTable("control_actions", {
 	idempotencyKey: text("idempotency_key"),
 	claimedBySupervisorId: text("claimed_by_supervisor_id"),
 	finishedAt: text("finished_at"),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});
+
+// ---------------------------------------------------------------------------
+// AI watcher (opt-in feature, gated by AGENTPULSE_AI_ENABLED at boot)
+// ---------------------------------------------------------------------------
+
+export const llmProviders = sqliteTable("llm_providers", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	userId: text("user_id").notNull().default("local"),
+	name: text("name").notNull(),
+	kind: text("kind").notNull(), // anthropic | openai | google | openrouter | openai_compatible
+	model: text("model").notNull(),
+	baseUrl: text("base_url"),
+	credentialCiphertext: text("credential_ciphertext").notNull(),
+	credentialHint: text("credential_hint").notNull(),
+	isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});
+
+export const watcherConfigs = sqliteTable("watcher_configs", {
+	sessionId: text("session_id").primaryKey(),
+	enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+	providerId: text("provider_id").notNull(),
+	policy: text("policy").notNull().default("ask_always"), // ask_always | ask_on_risk | auto
+	channelId: text("channel_id"),
+	maxContinuations: integer("max_continuations").notNull().default(10),
+	continuationsUsed: integer("continuations_used").notNull().default(0),
+	maxDailyCents: integer("max_daily_cents"),
+	systemPrompt: text("system_prompt"),
+	createdAt: text("created_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+});
+
+export const aiDailySpend = sqliteTable("ai_daily_spend", {
+	userId: text("user_id").notNull(),
+	date: text("date").notNull(), // YYYY-MM-DD local time
+	spendCents: integer("spend_cents").notNull().default(0),
+	updatedAt: text("updated_at")
+		.notNull()
+		.default(sql`(datetime('now'))`),
+}, (t) => ({
+	pk: primaryKey({ columns: [t.userId, t.date] }),
+}));
+
+// watcherProposals — first-class table so open proposals and HITL state
+// survive server restarts and don't depend only on timeline events.
+export const watcherProposals = sqliteTable("watcher_proposals", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	sessionId: text("session_id").notNull(),
+	providerId: text("provider_id").notNull(),
+	state: text("state").notNull().default("pending"),
+	// pending | complete | hitl_waiting | hitl_applied | hitl_declined | cancelled | failed
+	decision: text("decision"), // continue | ask | report | stop | wait
+	nextPrompt: text("next_prompt"),
+	reportSummary: text("report_summary"),
+	rawResponse: text("raw_response_json", { mode: "json" }).$type<Record<string, unknown>>(),
+	triggerEventId: text("trigger_event_id"),
+	tokensIn: integer("tokens_in").notNull().default(0),
+	tokensOut: integer("tokens_out").notNull().default(0),
+	costCents: integer("cost_cents").notNull().default(0),
+	usageEstimated: integer("usage_estimated", { mode: "boolean" }).notNull().default(false),
+	errorSubType: text("error_sub_type"),
+	errorMessage: text("error_message"),
 	createdAt: text("created_at")
 		.notNull()
 		.default(sql`(datetime('now'))`),
