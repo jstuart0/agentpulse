@@ -338,6 +338,8 @@ create_supervisor_launchd() {
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>StandardOutPath</key>
   <string>${LOG_DIR}/supervisor.out.log</string>
   <key>StandardErrorPath</key>

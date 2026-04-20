@@ -19,6 +19,8 @@ import {
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
 
+const REQUEST_TIMEOUT_MS = 15_000;
+
 async function request(path: string, options?: RequestInit) {
 	const config = await loadSupervisorConfig();
 	const headers: Record<string, string> = {
@@ -30,6 +32,7 @@ async function request(path: string, options?: RequestInit) {
 	const res = await fetch(`${config.serverUrl}/api/v1${path}`, {
 		...options,
 		headers,
+		signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 	});
 	if (!res.ok) {
 		throw new Error(`Supervisor request failed: ${res.status} ${res.statusText}`);
@@ -71,6 +74,18 @@ async function main() {
 	console.log(
 		`[supervisor] Registered ${registration.supervisor.hostName} (${registration.supervisor.id})`,
 	);
+
+	let lastHeartbeatOkAt = Date.now();
+	const watchdogStaleMs = Math.max(registration.heartbeatIntervalMs * 3, 90_000);
+	setInterval(() => {
+		const staleMs = Date.now() - lastHeartbeatOkAt;
+		if (staleMs > watchdogStaleMs) {
+			console.error(
+				`[supervisor] watchdog: no successful heartbeat in ${Math.round(staleMs / 1000)}s — exiting for launchd/systemd restart`,
+			);
+			process.exit(1);
+		}
+	}, Math.max(10_000, Math.floor(registration.heartbeatIntervalMs / 2))).unref();
 
 	async function dispatchLaunch(launch: LaunchRequest) {
 		if (launch.agentType === "codex_cli" && launch.requestedLaunchMode === "managed_codex") {
@@ -221,6 +236,7 @@ async function main() {
 			await request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
 				method: "POST",
 			});
+			lastHeartbeatOkAt = Date.now();
 			console.log("[supervisor] heartbeat ok");
 		} catch (error) {
 			console.error("[supervisor] heartbeat failed", error);
