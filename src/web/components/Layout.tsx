@@ -1,8 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "../lib/utils.js";
 import { SessionTabs } from "./SessionTabs.js";
 import brandIcon from "../assets/agentpulse-icon.svg";
+
+const SIDEBAR_STORAGE_KEY = "agentpulse.sidebarCollapsed";
+
+function loadSidebarCollapsed(): boolean {
+	if (typeof localStorage === "undefined") return false;
+	return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
+}
 
 const navItems = [
 	{ to: "/", label: "Dashboard", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
@@ -15,6 +22,15 @@ const navItems = [
 
 export function Layout() {
 	const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+	const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
+
+	useEffect(() => {
+		try {
+			localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? "1" : "0");
+		} catch {
+			// storage unavailable — ignore
+		}
+	}, [sidebarCollapsed]);
 
 	return (
 		<div className="flex h-dvh bg-background">
@@ -69,32 +85,68 @@ export function Layout() {
 			)}
 
 			{/* Desktop sidebar */}
-			<aside className="hidden md:flex w-[220px] flex-shrink-0 border-r border-border bg-card/50 flex-col">
-				{/* Brand */}
-				<div className="px-4 py-5 border-b border-border">
-					<div className="flex items-center gap-2.5">
-						<div className="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden glow-primary-sm">
-							<img src={brandIcon} alt="" className="w-9 h-9" />
+			<aside
+				className={cn(
+					"hidden md:flex flex-shrink-0 border-r border-border bg-card/50 flex-col transition-[width] duration-200",
+					sidebarCollapsed ? "w-[56px]" : "w-[220px]",
+				)}
+			>
+				{/* Brand + collapse toggle */}
+				<div className={cn("border-b border-border flex items-center", sidebarCollapsed ? "px-2 py-4 justify-center" : "px-4 py-5 justify-between gap-2")}>
+					<div className={cn("flex items-center min-w-0", sidebarCollapsed ? "" : "gap-2.5")}>
+						<div className={cn("rounded-xl flex items-center justify-center overflow-hidden glow-primary-sm flex-shrink-0", sidebarCollapsed ? "w-8 h-8" : "w-9 h-9")}>
+							<img src={brandIcon} alt="" className={cn(sidebarCollapsed ? "w-8 h-8" : "w-9 h-9")} />
 						</div>
-						<div>
-							<span className="text-[13px] font-bold tracking-tight text-foreground">AgentPulse</span>
-							<div className="flex items-center gap-1 mt-0.5">
-								<span className="text-[9px] font-mono text-primary/70 bg-primary/8 px-1 py-0.5 rounded leading-none">CMD CENTER</span>
+						{!sidebarCollapsed && (
+							<div className="min-w-0">
+								<span className="text-[13px] font-bold tracking-tight text-foreground">AgentPulse</span>
+								<div className="flex items-center gap-1 mt-0.5">
+									<span className="text-[9px] font-mono text-primary/70 bg-primary/8 px-1 py-0.5 rounded leading-none">CMD CENTER</span>
+								</div>
 							</div>
-						</div>
+						)}
 					</div>
+					{!sidebarCollapsed && (
+						<button
+							type="button"
+							onClick={() => setSidebarCollapsed(true)}
+							title="Collapse sidebar"
+							aria-label="Collapse sidebar"
+							className="text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded p-1 flex-shrink-0 transition-colors"
+						>
+							<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+								<path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+							</svg>
+						</button>
+					)}
 				</div>
 
+				{sidebarCollapsed && (
+					<button
+						type="button"
+						onClick={() => setSidebarCollapsed(false)}
+						title="Expand sidebar"
+						aria-label="Expand sidebar"
+						className="mx-2 mt-2 text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded p-1.5 flex items-center justify-center transition-colors"
+					>
+						<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+							<path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+						</svg>
+					</button>
+				)}
+
 				{/* Navigation */}
-				<nav className="flex-1 px-2 py-3 space-y-0.5">
+				<nav className={cn("flex-1 py-3 space-y-0.5", sidebarCollapsed ? "px-2" : "px-2")}>
 					{navItems.map((item) => (
 						<NavLink
 							key={item.to}
 							to={item.to}
 							end={item.to === "/"}
+							title={sidebarCollapsed ? item.label : undefined}
 							className={({ isActive }) =>
 								cn(
-									"group flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-all duration-200",
+									"group flex items-center rounded-lg text-[13px] font-medium transition-all duration-200",
+									sidebarCollapsed ? "justify-center p-2" : "gap-3 px-3 py-2",
 									isActive
 										? "bg-primary/10 text-primary border border-primary/15"
 										: "text-muted-foreground hover:text-foreground hover:bg-accent/50 border border-transparent",
@@ -102,9 +154,7 @@ export function Layout() {
 							}
 						>
 							<svg
-								className={cn(
-									"w-[15px] h-[15px] flex-shrink-0 transition-colors",
-								)}
+								className="w-[15px] h-[15px] flex-shrink-0 transition-colors"
 								fill="none"
 								viewBox="0 0 24 24"
 								stroke="currentColor"
@@ -112,17 +162,19 @@ export function Layout() {
 							>
 								<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
 							</svg>
-							{item.label}
+							{!sidebarCollapsed && item.label}
 						</NavLink>
 					))}
 				</nav>
 
 				{/* Footer */}
-				<div className="px-4 py-3 border-t border-border">
-					<p className="text-[10px] font-mono text-muted-foreground/60 tracking-wide uppercase">
-						Open Source &middot; MIT
-					</p>
-				</div>
+				{!sidebarCollapsed && (
+					<div className="px-4 py-3 border-t border-border">
+						<p className="text-[10px] font-mono text-muted-foreground/60 tracking-wide uppercase">
+							Open Source &middot; MIT
+						</p>
+					</div>
+				)}
 			</aside>
 
 			{/* Main content */}

@@ -60,14 +60,18 @@ export function SessionTabs() {
 							aria-selected={active}
 							tabIndex={0}
 							title={tab.displayName}
-							className={`group relative flex items-center gap-2 pl-3 pr-1.5 py-1.5 flex-shrink-0 cursor-pointer transition-colors border-r border-border/60 focus:outline-none focus:ring-1 focus:ring-primary/50 ${
+							className={`group relative flex items-center gap-2 pl-3 pr-1.5 py-2 flex-shrink-0 cursor-pointer transition-colors border-r border-border/60 focus:outline-none focus:ring-1 focus:ring-primary/50 ${
 								active
-									? "bg-card text-foreground"
-									: "bg-transparent text-muted-foreground hover:bg-card/50 hover:text-foreground"
+									? "bg-background text-foreground"
+									: "bg-transparent text-muted-foreground hover:bg-card/60 hover:text-foreground"
 							}`}
 						>
 							<span className={`absolute left-0 top-0 bottom-0 w-[3px] ${modeStyle.barClass}`} aria-hidden="true" />
-							<span className="text-xs font-mono max-w-[9rem] md:max-w-[11rem] truncate">
+							<span
+								aria-hidden="true"
+								className={`absolute left-0 right-0 bottom-0 h-[2px] transition-opacity ${active ? "bg-primary opacity-100" : "bg-transparent opacity-0"}`}
+							/>
+							<span className={`text-xs font-mono max-w-[9rem] md:max-w-[11rem] truncate ${active ? "font-semibold" : ""}`}>
 								{tab.displayName}
 							</span>
 							<button
