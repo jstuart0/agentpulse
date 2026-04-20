@@ -4,6 +4,7 @@ import type { ApiKeyInfo, LaunchRequest, SupervisorRecord } from "../../shared/t
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { api } from "../lib/api.js";
 import { persistTheme, resolveInitialTheme, type AppTheme } from "../lib/theme.js";
+import { AiSettingsPanel } from "../components/settings/AiSettingsPanel.js";
 
 const launchModeLabels = {
 	headless: "Headless task",
@@ -293,6 +294,15 @@ export function SettingsPage() {
 						/>
 					</div>
 				</div>
+			</section>
+
+			{/* AI watcher */}
+			<section className="border border-border bg-card rounded-lg p-5 mb-6 relative">
+				<h2 className="text-sm font-semibold mb-1">AI watcher</h2>
+				<p className="text-xs text-muted-foreground mb-4">
+					Attach an LLM to any session. Watcher proposals require human approval.
+				</p>
+				<AiSettingsPanel />
 			</section>
 
 			{/* API Keys */}

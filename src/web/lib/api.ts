@@ -232,4 +232,152 @@ export const api = {
 		}),
 
 	getHealth: () => request<{ status: string }>("/health"),
+
+	// --- AI watcher ---
+	getAiStatus: () =>
+		request<{ build: boolean; runtime: boolean; killSwitch: boolean; active: boolean }>(
+			"/ai/status",
+		),
+	updateAiStatus: (body: { enabled?: boolean; killSwitch?: boolean }) =>
+		request<{ build: boolean; runtime: boolean; killSwitch: boolean; active: boolean }>(
+			"/ai/status",
+			{ method: "PUT", body: JSON.stringify(body) },
+		),
+
+	getAiProviders: () =>
+		request<{ providers: AiProvider[]; defaultProviderId: string | null }>("/ai/providers"),
+	createAiProvider: (body: AiProviderCreate) =>
+		request<{ provider: AiProvider }>("/ai/providers", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+	updateAiProvider: (id: string, body: AiProviderUpdate) =>
+		request<{ provider: AiProvider }>(`/ai/providers/${id}`, {
+			method: "PUT",
+			body: JSON.stringify(body),
+		}),
+	deleteAiProvider: (id: string) =>
+		request<{ ok: true }>(`/ai/providers/${id}`, { method: "DELETE" }),
+
+	getAiWatcher: (sessionId: string) =>
+		request<{ config: AiWatcherConfig | null; proposals: AiProposal[] }>(
+			`/ai/sessions/${sessionId}/watcher`,
+		),
+	updateAiWatcher: (sessionId: string, body: AiWatcherConfigUpdate) =>
+		request<{ config: AiWatcherConfig }>(`/ai/sessions/${sessionId}/watcher`, {
+			method: "PUT",
+			body: JSON.stringify(body),
+		}),
+	deleteAiWatcher: (sessionId: string) =>
+		request<{ ok: true }>(`/ai/sessions/${sessionId}/watcher`, { method: "DELETE" }),
+
+	decideAiProposal: (
+		id: string,
+		body: { action: "approve" | "decline" | "custom"; customPrompt?: string },
+	) =>
+		request<{ ok: true; dispatched: boolean; prompt?: string | null }>(
+			`/ai/proposals/${id}/decision`,
+			{ method: "POST", body: JSON.stringify(body) },
+		),
+
+	aiRedactorDryRun: (sample: string, userRules?: string[]) =>
+		request<{
+			text: string;
+			hits: Array<{ rule: string; position: number; originalLength: number; replacement: string }>;
+		}>("/ai/redactor/dry-run", {
+			method: "POST",
+			body: JSON.stringify({ sample, userRules }),
+		}),
+
+	getAiSpend: () => request<{ date: string; spendCents: number }>("/ai/spend"),
 };
+
+export type AiProviderKind =
+	| "anthropic"
+	| "openai"
+	| "google"
+	| "openrouter"
+	| "openai_compatible";
+
+export interface AiProvider {
+	id: string;
+	userId: string;
+	name: string;
+	kind: AiProviderKind;
+	model: string;
+	baseUrl: string | null;
+	credentialHint: string;
+	isDefault: boolean;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface AiProviderCreate {
+	name: string;
+	kind: AiProviderKind;
+	model: string;
+	baseUrl?: string;
+	apiKey: string;
+	isDefault?: boolean;
+}
+
+export interface AiProviderUpdate {
+	name?: string;
+	model?: string;
+	baseUrl?: string;
+	apiKey?: string;
+	isDefault?: boolean;
+}
+
+export type AiWatcherPolicy = "ask_always" | "ask_on_risk" | "auto";
+
+export interface AiWatcherConfig {
+	sessionId: string;
+	enabled: boolean;
+	providerId: string;
+	policy: AiWatcherPolicy;
+	channelId: string | null;
+	maxContinuations: number;
+	continuationsUsed: number;
+	maxDailyCents: number | null;
+	systemPrompt: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface AiWatcherConfigUpdate {
+	enabled?: boolean;
+	providerId?: string;
+	policy?: AiWatcherPolicy;
+	channelId?: string | null;
+	maxContinuations?: number;
+	maxDailyCents?: number | null;
+	systemPrompt?: string | null;
+}
+
+export interface AiProposal {
+	id: string;
+	sessionId: string;
+	providerId: string;
+	state:
+		| "pending"
+		| "complete"
+		| "hitl_waiting"
+		| "hitl_applied"
+		| "hitl_declined"
+		| "cancelled"
+		| "failed";
+	decision: "continue" | "ask" | "report" | "stop" | "wait" | null;
+	nextPrompt: string | null;
+	reportSummary: string | null;
+	rawResponse: Record<string, unknown> | null;
+	triggerEventId: string | null;
+	tokensIn: number;
+	tokensOut: number;
+	costCents: number;
+	usageEstimated: boolean;
+	errorSubType: string | null;
+	errorMessage: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
