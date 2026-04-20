@@ -118,7 +118,16 @@ export type EventCategory =
 	| "plan_update"
 	| "tool_event"
 	| "status_update"
-	| "system_event";
+	| "system_event"
+	// AI watcher categories (only present when the AI feature is enabled)
+	| "ai_proposal_pending"
+	| "ai_proposal"
+	| "ai_report"
+	| "ai_hitl_request"
+	| "ai_hitl_response"
+	| "ai_continue_sent"
+	| "ai_continue_blocked"
+	| "ai_error";
 
 // Session as returned by the API
 export interface Session {

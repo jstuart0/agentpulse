@@ -21,6 +21,7 @@ import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
 import { validateAiStartupConfig } from "./services/ai/feature.js";
+import { maybeStartWatcherRunner } from "./services/ai/runner.js";
 import { existsSync } from "fs";
 import { join } from "path";
 import { getAuthUserFromHeaders } from "./auth/middleware.js";
@@ -130,6 +131,7 @@ startHeartbeat();
 // Start anonymous telemetry (opt-out with AGENTPULSE_TELEMETRY=off)
 startTelemetry();
 startTranscriptSync();
+void maybeStartWatcherRunner();
 
 // Periodically check for stale sessions (every 60 seconds)
 setInterval(async () => {
