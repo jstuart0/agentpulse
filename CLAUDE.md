@@ -67,6 +67,31 @@ Agent (Claude Code / Codex)
 - `events` - id, session_id, event_type, tool_name, tool_input, tool_response, raw_payload, created_at
 - `api_keys` - id, name, key_hash, key_prefix, is_active, timestamps
 - `settings` - key, value, updated_at
+- AI control plane (always created; runtime gated by `AGENTPULSE_AI_ENABLED`):
+  - `llm_providers`, `watcher_configs`, `watcher_proposals`, `ai_daily_spend`
+  - `ai_watcher_runs` — durable wake queue with lease-based claiming
+  - `ai_hitl_requests` — first-class HITL workflow separate from proposals
+  - `notification_channels` — remote delivery targets (Telegram/webhook/email)
+  - `session_templates.metadata` — distilled-template provenance JSON
+
+### AI control plane features
+- Session intelligence classifier exposes `health` + reasonCode via
+  `GET /api/v1/ai/sessions/:id/intelligence` and batch endpoint.
+- Operator inbox at `/inbox` aggregates open HITL, stuck/risky sessions,
+  and failed proposals as a discriminated-union read model.
+- Project digest at `/digest` groups recent sessions by cwd with daily
+  cache invalidated on refresh.
+- Template distillation: `POST /ai/templates/distill` returns a draft
+  template with provenance; user still reviews before saving.
+- Launch recommendation: `POST /launches/recommendation` produces an
+  advisory RecommendedLaunch; existing validator remains authoritative.
+- Risk classes: `GET/PUT /ai/risk-classes` configure what counts as
+  risky for `ask_on_risk` policy. Defaults cover destructive commands,
+  credential references, and recent test failures.
+- Diagnostics: `GET /api/v1/ai/diagnostics` returns queue depth,
+  flags, and OTel configuration. Structured `ai_metric` log events
+  are emitted on every wake enqueue and run completion; opt-in
+  OTel forwarding via `AGENTPULSE_OTEL_ENDPOINT`.
 
 ### Auth (two modes)
 - `DISABLE_AUTH=true` - No auth, all endpoints open (default for local use)

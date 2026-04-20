@@ -12,6 +12,7 @@ import { intelligenceForSession } from "./intelligence-service.js";
 import { priceCompletion } from "./llm/pricing.js";
 import { getAdapter } from "./llm/registry.js";
 import { LlmError } from "./llm/types.js";
+import { emitAiMetric } from "./metrics.js";
 import { parseDecision } from "./parser.js";
 import {
 	cancelOpenHitl,
@@ -124,9 +125,18 @@ export class WatcherRunner {
 				sessionId,
 				triggerEventId,
 				triggerKind,
-			}).catch((err) => {
-				console.error(`[ai-watcher] enqueue failed for ${sessionId}:`, err);
-			});
+			})
+				.then((run) => {
+					emitAiMetric({
+						name: "watcher_run_queued",
+						sessionId,
+						runId: run.id,
+						attempt: run.attemptCount,
+					});
+				})
+				.catch((err) => {
+					console.error(`[ai-watcher] enqueue failed for ${sessionId}:`, err);
+				});
 		}, DEBOUNCE_MS);
 		this.scheduled.set(sessionId, {
 			timer,
@@ -171,17 +181,41 @@ export class WatcherRunner {
 		this.inFlight.add(sessionId);
 		await markRunning(run.id);
 
+		const startedAt = Date.now();
 		try {
 			const result = await this.evaluateInner(sessionId, run);
 			if (result.kind === "ok") {
 				await markSucceeded({ id: run.id, proposalId: result.proposalId ?? null });
+				emitAiMetric({
+					name: "watcher_run_completed",
+					sessionId,
+					runId: run.id,
+					outcome: "succeeded",
+					durationMs: Date.now() - startedAt,
+				});
 			} else {
 				await markFailed({ id: run.id, errorSubType: result.errorSubType });
+				emitAiMetric({
+					name: "watcher_run_completed",
+					sessionId,
+					runId: run.id,
+					outcome: "failed",
+					durationMs: Date.now() - startedAt,
+					errorSubType: result.errorSubType,
+				});
 			}
 		} catch (err) {
 			const sub = err instanceof LlmError ? err.subType : "unknown";
 			console.error(`[ai-watcher] ${sessionId} eval threw:`, err);
 			await markFailed({ id: run.id, errorSubType: sub });
+			emitAiMetric({
+				name: "watcher_run_completed",
+				sessionId,
+				runId: run.id,
+				outcome: "failed",
+				durationMs: Date.now() - startedAt,
+				errorSubType: sub,
+			});
 		} finally {
 			this.inFlight.delete(sessionId);
 		}

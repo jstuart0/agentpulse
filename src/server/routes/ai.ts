@@ -29,6 +29,7 @@ import {
 	intelligenceForSessions,
 } from "../services/ai/intelligence-service.js";
 import type { ProviderKind } from "../services/ai/llm/types.js";
+import { emitAiMetric } from "../services/ai/metrics.js";
 import {
 	cancelOpenHitl,
 	getProposal,
@@ -52,6 +53,7 @@ import {
 	getWatcherConfig,
 	upsertWatcherConfig,
 } from "../services/ai/watcher-config-service.js";
+import { queueSnapshot } from "../services/ai/watcher-runs-service.js";
 
 const aiRouter = new Hono();
 aiRouter.use("*", requireAuth());
@@ -531,6 +533,38 @@ aiRouter.post("/ai/redactor/dry-run", async (c) => {
 // --------------------------------------------------------------------------
 // Spend summary
 // --------------------------------------------------------------------------
+
+// --------------------------------------------------------------------------
+// Diagnostics (Phase 8)
+// --------------------------------------------------------------------------
+
+aiRouter.get("/ai/diagnostics", async (c) => {
+	const gate = await requireAiBuild(c);
+	if (gate) return gate;
+	const snap = await queueSnapshot();
+	emitAiMetric({
+		name: "watcher_run_queued",
+		sessionId: "__diagnostics__",
+		runId: "snapshot",
+		attempt: 0,
+	});
+	const todayISO = new Date().toISOString().slice(0, 10);
+	return c.json({
+		generatedAt: new Date().toISOString(),
+		queue: snap,
+		today: todayISO,
+		flags: {
+			build: isAiBuildEnabled(),
+			runtime: await isAiRuntimeEnabled(),
+			killSwitch: await isKillSwitchActive(),
+			classifierEnabled: await isClassifierEnabled(),
+			classifierAffectsRunner: await classifierAffectsRunner(),
+		},
+		otel: {
+			endpoint: process.env.AGENTPULSE_OTEL_ENDPOINT ? "configured" : "none",
+		},
+	});
+});
 
 aiRouter.get("/ai/spend", async (c) => {
 	const gate = await requireAiBuild(c);
