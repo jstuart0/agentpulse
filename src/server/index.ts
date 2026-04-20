@@ -11,6 +11,7 @@ import { templatesRouter } from "./routes/templates.js";
 import { supervisorsRouter } from "./routes/supervisors.js";
 import { launchesRouter } from "./routes/launches.js";
 import { setup as setupRoute } from "./routes/setup.js";
+import { aiRouter } from "./routes/ai.js";
 import {
 	handleWsOpen,
 	handleWsMessage,
@@ -47,6 +48,7 @@ api.route("/v1", settingsRouter);
 api.route("/v1", templatesRouter);
 api.route("/v1", supervisorsRouter);
 api.route("/v1", launchesRouter);
+api.route("/v1", aiRouter);
 
 app.route("/api", api);
 app.route("/app-api", api);
