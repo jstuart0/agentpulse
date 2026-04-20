@@ -43,6 +43,7 @@ import {
 	updateProvider,
 } from "../services/ai/providers-service.js";
 import { parseUserRules, redactDryRun } from "../services/ai/redactor.js";
+import { getRiskClasses, setRiskClasses } from "../services/ai/risk-classes.js";
 import { getTodaySpendCents } from "../services/ai/spend-service.js";
 import { distillTemplate, provenanceMetadata } from "../services/ai/template-distillation.js";
 import {
@@ -239,6 +240,35 @@ aiRouter.post("/ai/digest/refresh", async (c) => {
 });
 
 // --------------------------------------------------------------------------
+// Risk classes (Phase 7)
+// --------------------------------------------------------------------------
+
+aiRouter.get("/ai/risk-classes", async (c) => {
+	if (!isAiBuildEnabled()) return c.json({ error: "ai_disabled" }, 404);
+	const config = await getRiskClasses();
+	return c.json(config);
+});
+
+aiRouter.put("/ai/risk-classes", async (c) => {
+	const gate = await requireAiActive(c);
+	if (gate) return gate;
+	const body = await c.req.json<{
+		version: number;
+		classes: Array<{
+			id: string;
+			label: string;
+			match: Record<string, unknown>;
+			policyOverride: "ask" | "stop";
+		}>;
+	}>();
+	if (!body || !Array.isArray(body.classes)) {
+		return c.json({ error: "Invalid risk class config" }, 400);
+	}
+	await setRiskClasses(body as Parameters<typeof setRiskClasses>[0]);
+	return c.json(await getRiskClasses());
+});
+
+// --------------------------------------------------------------------------
 // Template distillation (Phase 5)
 // --------------------------------------------------------------------------
 
@@ -383,12 +413,11 @@ aiRouter.put("/ai/sessions/:sessionId/watcher", async (c) => {
 		systemPrompt?: string | null;
 	}>();
 
-	// Phase 1: always force ask_always for observed sessions is done inside
-	// the runner via continuability; we accept any policy here so the user
-	// can toggle. But refuse "auto" unconditionally for Phase 1.
-	if (body.policy === "auto") {
-		return c.json({ error: "Autonomous policy not available in this build." }, 400);
-	}
+	// Phase 7: auto policy is allowed but gated. The runner itself enforces
+	// that auto-dispatch only happens when the session is managed and the
+	// supervisor is live; all other cases fall back to HITL. We accept the
+	// policy here without forcing additional checks — the runner is the
+	// authoritative gate.
 
 	const config = await upsertWatcherConfig({ sessionId, ...body });
 	return c.json({ config });

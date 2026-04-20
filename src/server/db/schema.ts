@@ -338,6 +338,23 @@ export const aiWatcherRuns = sqliteTable("ai_watcher_runs", {
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
+// notificationChannels — Phase 7 remote delivery targets (Telegram,
+// webhook, email). Keep the table minimal; the runner and HITL service
+// only need channel_id foreign-key reach-back.
+export const notificationChannels = sqliteTable("notification_channels", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	userId: text("user_id").notNull().default("local"),
+	kind: text("kind").notNull(), // telegram | webhook | email
+	label: text("label").notNull(),
+	credentialCiphertext: text("credential_ciphertext"),
+	config: text("config_json", { mode: "json" }).$type<Record<string, unknown>>(),
+	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
 // aiHitlRequests — first-class table for open HITL requests. Separated
 // from watcherProposals so proposal persistence and HITL workflow don't
 // collapse together; future remote channels (Phase 7) register here.

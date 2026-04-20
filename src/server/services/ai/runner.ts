@@ -21,6 +21,7 @@ import {
 	failProposal,
 } from "./proposals-service.js";
 import { getProvider, getProviderApiKey } from "./providers-service.js";
+import { evaluateRisk, getRiskClasses } from "./risk-classes.js";
 import { addSpendCents, checkSpendBudget } from "./spend-service.js";
 import { getWatcherConfig } from "./watcher-config-service.js";
 import {
@@ -496,10 +497,47 @@ export class WatcherRunner {
 				});
 				askProposal = decision.nextPrompt;
 				askWhy = `Auto-dispatch blocked by safety filter (${filter.rule}). Approve explicitly to send.`;
+			} else if (config.policy === "ask_on_risk") {
+				// Phase 7: evaluate configured risk classes and escalate on any hit.
+				const riskConfig = await getRiskClasses();
+				const hits = evaluateRisk(riskConfig, {
+					proposedPrompt: decision.nextPrompt,
+					recentToolEvents: recent.map((e) => ({
+						category: e.category,
+						toolResponse: e.toolResponse,
+						source: e.source,
+						eventType: e.eventType,
+					})),
+				});
+				if (hits.length > 0) {
+					askProposal = decision.nextPrompt;
+					askWhy = `Risk class(es) matched: ${hits.map((h) => h.label).join(", ")}`;
+					await emitAiEvent({
+						sessionId,
+						category: "ai_continue_blocked",
+						eventType: "AiRiskBlocked",
+						content: askWhy,
+						rawPayload: {
+							proposal_id: pending.id,
+							risk_hits: hits,
+						},
+					});
+				} else {
+					nextPrompt = decision.nextPrompt;
+				}
 			} else if (config.policy === "auto") {
-				// Phase 1 never auto-dispatches — flag in rawResponse and route to HITL.
-				nextPrompt = decision.nextPrompt;
+				// Phase 7: auto-dispatch is available only for explicitly-trusted
+				// managed sessions where the supervisor is live. We still record
+				// the ai_continue_sent event for audit; actual prompt delivery
+				// remains the control-actions queue's responsibility.
+				if (managed?.supervisorConnected) {
+					nextPrompt = decision.nextPrompt;
+				} else {
+					askProposal = decision.nextPrompt;
+					askWhy = "auto policy requires a connected supervisor; routing to HITL";
+				}
 			} else {
+				// ask_always — current default.
 				nextPrompt = decision.nextPrompt;
 			}
 		} else {
@@ -509,6 +547,37 @@ export class WatcherRunner {
 
 		// Any prior open HITL is superseded when a newer one opens.
 		await cancelOpenHitl(sessionId, "superseded");
+
+		// Phase 7 auto-dispatch path. When the user has explicitly opted
+		// into `auto`, the supervisor is live, no risk class tripped, and
+		// the dispatch filter accepts the prompt, we skip HITL and record
+		// an ai_continue_sent audit event immediately. The actual prompt
+		// delivery into the managed session remains the control-actions
+		// queue's job — this phase only lifts the HITL gate, not adds
+		// new dispatch plumbing.
+		const autoDispatch = config.policy === "auto" && nextPrompt !== null;
+		if (autoDispatch) {
+			await completeProposal({
+				id: pending.id,
+				decision: decision.decision,
+				nextPrompt,
+				reportSummary: null,
+				rawResponse: { raw: responseText, decision, auto: true },
+				tokensIn: usageInput,
+				tokensOut: usageOutput,
+				costCents,
+				usageEstimated,
+			});
+			await emitAiEvent({
+				sessionId,
+				category: "ai_continue_sent",
+				eventType: "AiContinueSent",
+				content: nextPrompt ?? "",
+				rawPayload: { proposal_id: pending.id, action: "auto" },
+			});
+			await stampWatcherState(sessionId, "idle");
+			return { kind: "ok", proposalId: pending.id };
+		}
 
 		// Persist the proposal and open a durable HITL request. The
 		// proposal's physical state is "complete" (the LLM work is done);

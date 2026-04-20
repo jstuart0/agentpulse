@@ -332,6 +332,18 @@ export function initializeDatabase() {
 			ON ai_watcher_runs(session_id)
 			WHERE status IN ('queued', 'claimed', 'running');
 
+		CREATE TABLE IF NOT EXISTS notification_channels (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL DEFAULT 'local',
+			kind TEXT NOT NULL,
+			label TEXT NOT NULL,
+			credential_ciphertext TEXT,
+			config_json TEXT,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+
 		CREATE TABLE IF NOT EXISTS ai_hitl_requests (
 			id TEXT PRIMARY KEY,
 			proposal_id TEXT NOT NULL,
