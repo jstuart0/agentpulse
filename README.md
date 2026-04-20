@@ -2,9 +2,22 @@
 
 ![AgentPulse](src/web/assets/agentpulse-social.jpg)
 
-**See what all your AI coding agents are doing -- in one place, in real time.**
+**Command center for AI coding agents across all your machines.**
 
 If you run multiple Claude Code or Codex CLI sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.
+
+## What AgentPulse is
+
+AgentPulse has two major modes:
+
+- **Observability** -- watch Claude Code and Codex sessions in real time, with prompts, responses, progress, notes, and session history in one dashboard
+- **Orchestration** -- launch and manage sessions from AgentPulse itself with templates, supervisors, headless tasks, interactive sessions, retries, and host routing
+
+You can run AgentPulse as:
+
+- **observability only** -- hooks + dashboard, no supervisor/control plane
+- **full local orchestration** -- hooks + dashboard + local supervisor for launch/control on the same machine
+- **remote dashboard** -- relay local events to a remote AgentPulse instance
 
 ## How it works
 
@@ -67,7 +80,8 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 
 - **Dashboard** -- grid of all sessions with status, project name, session name, duration, and tool use count
 - **Session detail** -- click a session to see a chat-style timeline with your prompts as blue bubbles and tool usage inline
-- **Session templates** -- save reusable Claude Code and Codex session setups, then preview normalized launch specs and command guidance before launch automation exists
+- **Session templates** -- save reusable Claude Code and Codex session setups, preview normalized launch specs, and route launches to the right host
+- **Orchestration** -- launch headless or interactive sessions from AgentPulse, track launch status, retry, stop, and manage sessions through the local supervisor
 - **Real-time updates** -- everything updates live via WebSocket, no refreshing needed
 - **Random session names** -- each session gets a name like `brave-falcon` so you can tell them apart
 - **CLAUDE.md editor** -- view and edit your agent instruction files from the dashboard
@@ -154,6 +168,13 @@ Windows:
 iwr https://agentpulse.xmojo.net/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-local.ps1" -SkipSupervisor
 ```
+
+That observability-only mode still gives you:
+
+- live session monitoring
+- prompts, responses, and progress in the dashboard
+- notes and instruction-file editing
+- remote viewing if you later use the relay path
 
 ### 2. Local Docker container
 

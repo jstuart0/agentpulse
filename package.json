@@ -1,7 +1,7 @@
 {
   "name": "agentpulse",
   "version": "0.1.0",
-  "description": "Real-time AI agent session monitor for Claude Code and Codex CLI",
+  "description": "Command center for AI coding agents across all your machines",
   "type": "module",
   "bin": {
     "agentpulse": "./bin/cli.ts"

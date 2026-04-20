@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-AgentPulse is a real-time web dashboard for monitoring AI coding agent sessions (Claude Code and Codex CLI). It receives hook events from active sessions and displays them in a live dashboard with chat-style prompt history, session notes, and remote monitoring.
+AgentPulse is the command center for AI coding agents across all your machines. It monitors, orchestrates, and manages Claude Code and Codex CLI sessions from a single dashboard with chat-style prompt history, session notes, templates, managed launches, and remote access from any device.
 
 ## Tech Stack
 

@@ -9,7 +9,7 @@ const command = args[0] || "start";
 
 function printHelp() {
 	console.log(`
-  AgentPulse - Real-time AI agent session monitor
+  AgentPulse - Command center for AI coding agents across all your machines
 
   Usage:
     npx agentpulse              Start the server

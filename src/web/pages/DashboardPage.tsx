@@ -68,7 +68,7 @@ export function DashboardPage() {
 				<div>
 					<h1 className="text-xl md:text-2xl font-bold text-foreground">Dashboard</h1>
 					<p className="text-sm text-muted-foreground mt-0.5 max-w-xl">
-						Monitor your AI coding agents in real time
+						Your AI coding agents, all in one place
 					</p>
 				</div>
 			</div>
