@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { eq } from "drizzle-orm";
 import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { settings } from "../db/schema.js";
+import { emitAiEvent } from "../services/ai/ai-events.js";
+import { checkDispatch } from "../services/ai/dispatch-filter.js";
 import {
 	AI_KILL_SWITCH_KEY,
 	AI_RUNTIME_ENABLED_KEY,
@@ -12,6 +13,13 @@ import {
 	isAiRuntimeEnabled,
 	isKillSwitchActive,
 } from "../services/ai/feature.js";
+import type { ProviderKind } from "../services/ai/llm/types.js";
+import {
+	cancelOpenHitl,
+	getProposal,
+	listProposalsForSession,
+	resolveProposalHitl,
+} from "../services/ai/proposals-service.js";
 import {
 	createProvider,
 	deleteProvider,
@@ -19,23 +27,14 @@ import {
 	listProviders,
 	updateProvider,
 } from "../services/ai/providers-service.js";
+import { parseUserRules, redactDryRun } from "../services/ai/redactor.js";
+import { getTodaySpendCents } from "../services/ai/spend-service.js";
 import {
+	type WatcherPolicy,
 	deleteWatcherConfig,
 	getWatcherConfig,
 	upsertWatcherConfig,
-	type WatcherPolicy,
 } from "../services/ai/watcher-config-service.js";
-import { getTodaySpendCents } from "../services/ai/spend-service.js";
-import {
-	cancelOpenHitl,
-	getProposal,
-	listProposalsForSession,
-	setProposalState,
-} from "../services/ai/proposals-service.js";
-import { emitAiEvent } from "../services/ai/ai-events.js";
-import { checkDispatch } from "../services/ai/dispatch-filter.js";
-import { parseUserRules, redactDryRun } from "../services/ai/redactor.js";
-import type { ProviderKind } from "../services/ai/llm/types.js";
 
 const aiRouter = new Hono();
 aiRouter.use("*", requireAuth());
@@ -213,10 +212,7 @@ aiRouter.put("/ai/sessions/:sessionId/watcher", async (c) => {
 	// the runner via continuability; we accept any policy here so the user
 	// can toggle. But refuse "auto" unconditionally for Phase 1.
 	if (body.policy === "auto") {
-		return c.json(
-			{ error: "Autonomous policy not available in this build." },
-			400,
-		);
+		return c.json({ error: "Autonomous policy not available in this build." }, 400);
 	}
 
 	const config = await upsertWatcherConfig({ sessionId, ...body });
@@ -256,7 +252,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 		body.action === "custom"
 			? (body.customPrompt ?? "").trim()
 			: body.action === "approve"
-				? proposal.nextPrompt ?? ""
+				? (proposal.nextPrompt ?? "")
 				: null;
 
 	if (body.action !== "decline") {
@@ -277,7 +273,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 	}
 
 	if (body.action === "decline") {
-		await setProposalState(id, "hitl_declined");
+		await resolveProposalHitl({ proposalId: id, action: "decline" });
 		await emitAiEvent({
 			sessionId: proposal.sessionId,
 			category: "ai_hitl_response",
@@ -293,7 +289,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 	// queue is Phase 3+ scope. Phase 1 surfaces the approved prompt as an
 	// event so the user can see what would have been sent and, for
 	// managed sessions, copy/paste or kick off manually.
-	await setProposalState(id, "hitl_applied");
+	await resolveProposalHitl({ proposalId: id, action: body.action, replyText: nextPrompt });
 	await emitAiEvent({
 		sessionId: proposal.sessionId,
 		category: "ai_hitl_response",

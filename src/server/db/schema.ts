@@ -1,5 +1,5 @@
-import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
+import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const sessions = sqliteTable("sessions", {
 	id: text("id")
@@ -12,12 +12,8 @@ export const sessions = sqliteTable("sessions", {
 	cwd: text("cwd"),
 	transcriptPath: text("transcript_path"),
 	model: text("model"),
-	startedAt: text("started_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
-	lastActivityAt: text("last_activity_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	startedAt: text("started_at").notNull().default(sql`(datetime('now'))`),
+	lastActivityAt: text("last_activity_at").notNull().default(sql`(datetime('now'))`),
 	endedAt: text("ended_at"),
 	semanticStatus: text("semantic_status"), // researching | implementing | testing | etc.
 	currentTask: text("current_task"),
@@ -31,9 +27,7 @@ export const sessions = sqliteTable("sessions", {
 	claudeMdChecksum: text("claude_md_checksum"),
 	claudeMdUpdatedAt: text("claude_md_updated_at"),
 	notes: text("notes").default(""),
-	metadata: text("metadata", { mode: "json" })
-		.$type<Record<string, unknown>>()
-		.default({}),
+	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>().default({}),
 	// AI watcher fields (nullable; only meaningful when the feature is enabled)
 	watcherState: text("watcher_state"),
 	watcherLastRunAt: text("watcher_last_run_at"),
@@ -55,12 +49,8 @@ export const events = sqliteTable("events", {
 	toolName: text("tool_name"),
 	toolInput: text("tool_input", { mode: "json" }).$type<Record<string, unknown>>(),
 	toolResponse: text("tool_response"),
-	rawPayload: text("raw_payload", { mode: "json" })
-		.$type<Record<string, unknown>>()
-		.notNull(),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	rawPayload: text("raw_payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
 export const apiKeys = sqliteTable("api_keys", {
@@ -71,18 +61,14 @@ export const apiKeys = sqliteTable("api_keys", {
 	keyHash: text("key_hash").notNull().unique(),
 	keyPrefix: text("key_prefix").notNull(),
 	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	lastUsedAt: text("last_used_at"),
 });
 
 export const settings = sqliteTable("settings", {
 	key: text("key").primaryKey(),
 	value: text("value", { mode: "json" }).$type<unknown>().notNull(),
-	updatedAt: text("updated_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
 export const sessionTemplates = sqliteTable("session_templates", {
@@ -98,21 +84,11 @@ export const sessionTemplates = sqliteTable("session_templates", {
 	model: text("model"),
 	approvalPolicy: text("approval_policy"),
 	sandboxMode: text("sandbox_mode"),
-	env: text("env", { mode: "json" })
-		.$type<Record<string, string>>()
-		.notNull()
-		.default({}),
-	tags: text("tags", { mode: "json" })
-		.$type<string[]>()
-		.notNull()
-		.default([]),
+	env: text("env", { mode: "json" }).$type<Record<string, string>>().notNull().default({}),
+	tags: text("tags", { mode: "json" }).$type<string[]>().notNull().default([]),
 	isFavorite: integer("is_favorite", { mode: "boolean" }).notNull().default(false),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
-	updatedAt: text("updated_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
 export const supervisors = sqliteTable("supervisors", {
@@ -134,19 +110,13 @@ export const supervisors = sqliteTable("supervisors", {
 	status: text("status").notNull().default("connected"),
 	capabilitySchemaVersion: integer("capability_schema_version").notNull().default(1),
 	configSchemaVersion: integer("config_schema_version").notNull().default(1),
-	lastHeartbeatAt: text("last_heartbeat_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	lastHeartbeatAt: text("last_heartbeat_at").notNull().default(sql`(datetime('now'))`),
 	heartbeatLeaseExpiresAt: text("heartbeat_lease_expires_at")
 		.notNull()
 		.default(sql`(datetime('now', '+90 seconds'))`),
 	enrollmentState: text("enrollment_state").notNull().default("active"),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
-	updatedAt: text("updated_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
 export const supervisorEnrollmentTokens = sqliteTable("supervisor_enrollment_tokens", {
@@ -161,9 +131,7 @@ export const supervisorEnrollmentTokens = sqliteTable("supervisor_enrollment_tok
 	expiresAt: text("expires_at"),
 	usedAt: text("used_at"),
 	revokedAt: text("revoked_at"),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
 export const supervisorCredentials = sqliteTable("supervisor_credentials", {
@@ -177,9 +145,7 @@ export const supervisorCredentials = sqliteTable("supervisor_credentials", {
 	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
 	lastUsedAt: text("last_used_at"),
 	revokedAt: text("revoked_at"),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
 export const launchRequests = sqliteTable("launch_requests", {
@@ -196,10 +162,7 @@ export const launchRequests = sqliteTable("launch_requests", {
 	approvalPolicy: text("approval_policy"),
 	sandboxMode: text("sandbox_mode"),
 	requestedLaunchMode: text("requested_launch_mode").notNull().default("interactive_terminal"),
-	env: text("env_json", { mode: "json" })
-		.$type<Record<string, string>>()
-		.notNull()
-		.default({}),
+	env: text("env_json", { mode: "json" }).$type<Record<string, string>>().notNull().default({}),
 	launchSpec: text("launch_spec_json", { mode: "json" })
 		.$type<Record<string, unknown>>()
 		.notNull()
@@ -208,8 +171,7 @@ export const launchRequests = sqliteTable("launch_requests", {
 	requestedSupervisorId: text("requested_supervisor_id"),
 	routingPolicy: text("routing_policy"),
 	resolvedSupervisorId: text("resolved_supervisor_id"),
-	routingDecision: text("routing_decision_json", { mode: "json" })
-		.$type<Record<string, unknown>>(),
+	routingDecision: text("routing_decision_json", { mode: "json" }).$type<Record<string, unknown>>(),
 	claimedBySupervisorId: text("claimed_by_supervisor_id"),
 	claimToken: text("claim_token"),
 	status: text("status").notNull().default("draft"),
@@ -223,15 +185,12 @@ export const launchRequests = sqliteTable("launch_requests", {
 	dispatchFinishedAt: text("dispatch_finished_at"),
 	awaitingSessionDeadlineAt: text("awaiting_session_deadline_at"),
 	pid: integer("pid"),
-	providerLaunchMetadata: text("provider_launch_metadata_json", { mode: "json" })
-		.$type<Record<string, unknown>>(),
+	providerLaunchMetadata: text("provider_launch_metadata_json", { mode: "json" }).$type<
+		Record<string, unknown>
+	>(),
 	retryOfLaunchRequestId: text("retry_of_launch_request_id"),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
-	updatedAt: text("updated_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
 export const managedSessions = sqliteTable("managed_sessions", {
@@ -248,18 +207,15 @@ export const managedSessions = sqliteTable("managed_sessions", {
 	providerSyncError: text("provider_sync_error"),
 	lastProviderSyncAt: text("last_provider_sync_at"),
 	providerProtocolVersion: text("provider_protocol_version"),
-	providerCapabilitySnapshot: text("provider_capability_snapshot_json", { mode: "json" })
-		.$type<Record<string, unknown>>(),
+	providerCapabilitySnapshot: text("provider_capability_snapshot_json", { mode: "json" }).$type<
+		Record<string, unknown>
+	>(),
 	activeControlActionId: text("active_control_action_id"),
 	controlLockExpiresAt: text("control_lock_expires_at"),
 	hostName: text("host_name"),
 	hostAffinityReason: text("host_affinity_reason"),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
-	updatedAt: text("updated_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
 export const controlActions = sqliteTable("control_actions", {
@@ -276,12 +232,8 @@ export const controlActions = sqliteTable("control_actions", {
 	idempotencyKey: text("idempotency_key"),
 	claimedBySupervisorId: text("claimed_by_supervisor_id"),
 	finishedAt: text("finished_at"),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
-	updatedAt: text("updated_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
 // ---------------------------------------------------------------------------
@@ -300,12 +252,8 @@ export const llmProviders = sqliteTable("llm_providers", {
 	credentialCiphertext: text("credential_ciphertext").notNull(),
 	credentialHint: text("credential_hint").notNull(),
 	isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
-	updatedAt: text("updated_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
 export const watcherConfigs = sqliteTable("watcher_configs", {
@@ -318,24 +266,22 @@ export const watcherConfigs = sqliteTable("watcher_configs", {
 	continuationsUsed: integer("continuations_used").notNull().default(0),
 	maxDailyCents: integer("max_daily_cents"),
 	systemPrompt: text("system_prompt"),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
-	updatedAt: text("updated_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
-export const aiDailySpend = sqliteTable("ai_daily_spend", {
-	userId: text("user_id").notNull(),
-	date: text("date").notNull(), // YYYY-MM-DD local time
-	spendCents: integer("spend_cents").notNull().default(0),
-	updatedAt: text("updated_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
-}, (t) => ({
-	pk: primaryKey({ columns: [t.userId, t.date] }),
-}));
+export const aiDailySpend = sqliteTable(
+	"ai_daily_spend",
+	{
+		userId: text("user_id").notNull(),
+		date: text("date").notNull(), // YYYY-MM-DD local time
+		spendCents: integer("spend_cents").notNull().default(0),
+		updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+	},
+	(t) => ({
+		pk: primaryKey({ columns: [t.userId, t.date] }),
+	}),
+);
 
 // watcherProposals — first-class table so open proposals and HITL state
 // survive server restarts and don't depend only on timeline events.
@@ -347,6 +293,7 @@ export const watcherProposals = sqliteTable("watcher_proposals", {
 	providerId: text("provider_id").notNull(),
 	state: text("state").notNull().default("pending"),
 	// pending | complete | hitl_waiting | hitl_applied | hitl_declined | cancelled | failed
+	// (hitl_* states are legacy; Phase 1+ HITL workflow lives in ai_hitl_requests.)
 	decision: text("decision"), // continue | ask | report | stop | wait
 	nextPrompt: text("next_prompt"),
 	reportSummary: text("report_summary"),
@@ -358,10 +305,51 @@ export const watcherProposals = sqliteTable("watcher_proposals", {
 	usageEstimated: integer("usage_estimated", { mode: "boolean" }).notNull().default(false),
 	errorSubType: text("error_sub_type"),
 	errorMessage: text("error_message"),
-	createdAt: text("created_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
-	updatedAt: text("updated_at")
-		.notNull()
-		.default(sql`(datetime('now'))`),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// aiWatcherRuns — durable wake queue. A run is the unit of watcher work
+// between the moment an event triggers a wake and the moment the runner
+// has finished evaluating that session. Status transitions:
+// queued → claimed → running → (succeeded | failed | expired | cancelled).
+export const aiWatcherRuns = sqliteTable("ai_watcher_runs", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	sessionId: text("session_id").notNull(),
+	triggerEventId: integer("trigger_event_id"),
+	triggerKind: text("trigger_kind").notNull(),
+	// idle | stop | error | plan_completed | manual
+	status: text("status").notNull().default("queued"),
+	// queued | claimed | running | succeeded | failed | expired | cancelled
+	dedupeKey: text("dedupe_key").notNull(),
+	leaseOwner: text("lease_owner"),
+	leaseExpiresAt: text("lease_expires_at"),
+	attemptCount: integer("attempt_count").notNull().default(0),
+	lastErrorSubType: text("last_error_sub_type"),
+	claimedAt: text("claimed_at"),
+	completedAt: text("completed_at"),
+	proposalId: text("proposal_id"),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// aiHitlRequests — first-class table for open HITL requests. Separated
+// from watcherProposals so proposal persistence and HITL workflow don't
+// collapse together; future remote channels (Phase 7) register here.
+export const aiHitlRequests = sqliteTable("ai_hitl_requests", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	proposalId: text("proposal_id").notNull(),
+	sessionId: text("session_id").notNull(),
+	channelId: text("channel_id"),
+	status: text("status").notNull().default("awaiting_reply"),
+	// draft | awaiting_reply | applied | declined | timed_out | superseded
+	replyKind: text("reply_kind"), // approve | decline | custom
+	replyText: text("reply_text"),
+	expiresAt: text("expires_at"),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });

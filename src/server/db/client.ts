@@ -1,9 +1,9 @@
-import { drizzle } from "drizzle-orm/bun-sqlite";
 import { Database } from "bun:sqlite";
+import { existsSync, mkdirSync } from "fs";
+import { dirname } from "path";
+import { drizzle } from "drizzle-orm/bun-sqlite";
 import { config } from "../config.js";
 import * as schema from "./schema.js";
-import { mkdirSync, existsSync } from "fs";
-import { dirname } from "path";
 
 function createDatabase() {
 	if (config.useSqlite) {
@@ -244,70 +244,112 @@ export function initializeDatabase() {
 		CREATE INDEX IF NOT EXISTS idx_control_actions_status ON control_actions(status);
 	`);
 
-	// AI watcher tables — only created when the feature is compiled in.
-	// Per the watcher plan, a non-AI install keeps its DB footprint identical.
-	if (config.aiEnabled) {
-		sqlite.exec(`
-			CREATE TABLE IF NOT EXISTS llm_providers (
-				id TEXT PRIMARY KEY,
-				user_id TEXT NOT NULL DEFAULT 'local',
-				name TEXT NOT NULL,
-				kind TEXT NOT NULL,
-				model TEXT NOT NULL,
-				base_url TEXT,
-				credential_ciphertext TEXT NOT NULL,
-				credential_hint TEXT NOT NULL,
-				is_default INTEGER NOT NULL DEFAULT 0,
-				created_at TEXT NOT NULL DEFAULT (datetime('now')),
-				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-			);
+	// AI watcher tables are always created. The AGENTPULSE_AI_ENABLED flag
+	// gates runtime service startup, not schema shape, so migrations are
+	// deterministic across environments (Phase 1 of AI control-plane plan).
+	sqlite.exec(`
+		CREATE TABLE IF NOT EXISTS llm_providers (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL DEFAULT 'local',
+			name TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			model TEXT NOT NULL,
+			base_url TEXT,
+			credential_ciphertext TEXT NOT NULL,
+			credential_hint TEXT NOT NULL,
+			is_default INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
 
-			CREATE TABLE IF NOT EXISTS watcher_configs (
-				session_id TEXT PRIMARY KEY,
-				enabled INTEGER NOT NULL DEFAULT 0,
-				provider_id TEXT NOT NULL,
-				policy TEXT NOT NULL DEFAULT 'ask_always',
-				channel_id TEXT,
-				max_continuations INTEGER NOT NULL DEFAULT 10,
-				continuations_used INTEGER NOT NULL DEFAULT 0,
-				max_daily_cents INTEGER,
-				system_prompt TEXT,
-				created_at TEXT NOT NULL DEFAULT (datetime('now')),
-				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-			);
-			CREATE INDEX IF NOT EXISTS idx_watcher_configs_enabled ON watcher_configs(enabled);
+		CREATE TABLE IF NOT EXISTS watcher_configs (
+			session_id TEXT PRIMARY KEY,
+			enabled INTEGER NOT NULL DEFAULT 0,
+			provider_id TEXT NOT NULL,
+			policy TEXT NOT NULL DEFAULT 'ask_always',
+			channel_id TEXT,
+			max_continuations INTEGER NOT NULL DEFAULT 10,
+			continuations_used INTEGER NOT NULL DEFAULT 0,
+			max_daily_cents INTEGER,
+			system_prompt TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_watcher_configs_enabled ON watcher_configs(enabled);
 
-			CREATE TABLE IF NOT EXISTS ai_daily_spend (
-				user_id TEXT NOT NULL,
-				date TEXT NOT NULL,
-				spend_cents INTEGER NOT NULL DEFAULT 0,
-				updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-				PRIMARY KEY (user_id, date)
-			);
+		CREATE TABLE IF NOT EXISTS ai_daily_spend (
+			user_id TEXT NOT NULL,
+			date TEXT NOT NULL,
+			spend_cents INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (user_id, date)
+		);
 
-			CREATE TABLE IF NOT EXISTS watcher_proposals (
-				id TEXT PRIMARY KEY,
-				session_id TEXT NOT NULL,
-				provider_id TEXT NOT NULL,
-				state TEXT NOT NULL DEFAULT 'pending',
-				decision TEXT,
-				next_prompt TEXT,
-				report_summary TEXT,
-				raw_response_json TEXT,
-				trigger_event_id TEXT,
-				tokens_in INTEGER NOT NULL DEFAULT 0,
-				tokens_out INTEGER NOT NULL DEFAULT 0,
-				cost_cents INTEGER NOT NULL DEFAULT 0,
-				usage_estimated INTEGER NOT NULL DEFAULT 0,
-				error_sub_type TEXT,
-				error_message TEXT,
-				created_at TEXT NOT NULL DEFAULT (datetime('now')),
-				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-			);
-			CREATE INDEX IF NOT EXISTS idx_watcher_proposals_session ON watcher_proposals(session_id);
-			CREATE INDEX IF NOT EXISTS idx_watcher_proposals_state ON watcher_proposals(state);
-		`);
-	}
+		CREATE TABLE IF NOT EXISTS watcher_proposals (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			provider_id TEXT NOT NULL,
+			state TEXT NOT NULL DEFAULT 'pending',
+			decision TEXT,
+			next_prompt TEXT,
+			report_summary TEXT,
+			raw_response_json TEXT,
+			trigger_event_id TEXT,
+			tokens_in INTEGER NOT NULL DEFAULT 0,
+			tokens_out INTEGER NOT NULL DEFAULT 0,
+			cost_cents INTEGER NOT NULL DEFAULT 0,
+			usage_estimated INTEGER NOT NULL DEFAULT 0,
+			error_sub_type TEXT,
+			error_message TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_watcher_proposals_session ON watcher_proposals(session_id);
+		CREATE INDEX IF NOT EXISTS idx_watcher_proposals_state ON watcher_proposals(state);
+
+		CREATE TABLE IF NOT EXISTS ai_watcher_runs (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			trigger_event_id INTEGER,
+			trigger_kind TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'queued',
+			dedupe_key TEXT NOT NULL,
+			lease_owner TEXT,
+			lease_expires_at TEXT,
+			attempt_count INTEGER NOT NULL DEFAULT 0,
+			last_error_sub_type TEXT,
+			claimed_at TEXT,
+			completed_at TEXT,
+			proposal_id TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_ai_watcher_runs_status_lease
+			ON ai_watcher_runs(status, lease_expires_at);
+		CREATE INDEX IF NOT EXISTS idx_ai_watcher_runs_session_created
+			ON ai_watcher_runs(session_id, created_at DESC);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_watcher_runs_open_per_session
+			ON ai_watcher_runs(session_id)
+			WHERE status IN ('queued', 'claimed', 'running');
+
+		CREATE TABLE IF NOT EXISTS ai_hitl_requests (
+			id TEXT PRIMARY KEY,
+			proposal_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			channel_id TEXT,
+			status TEXT NOT NULL DEFAULT 'awaiting_reply',
+			reply_kind TEXT,
+			reply_text TEXT,
+			expires_at TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_ai_hitl_requests_session_status
+			ON ai_hitl_requests(session_id, status);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_hitl_requests_open_per_session
+			ON ai_hitl_requests(session_id)
+			WHERE status = 'awaiting_reply';
+	`);
 
 	// Migrations: add columns that may not exist on older databases
 	const migrations = [
@@ -382,6 +424,29 @@ export function initializeDatabase() {
 		} catch {
 			// Column already exists -- ignore
 		}
+	}
+
+	// Phase 1 AI control-plane migration: backfill ai_hitl_requests for any
+	// open watcher_proposals that still carry legacy `hitl_waiting` state.
+	// Idempotent — only inserts when no hitl_request row already exists.
+	try {
+		sqlite.exec(`
+			INSERT INTO ai_hitl_requests (id, proposal_id, session_id, status, created_at, updated_at)
+			SELECT
+				lower(hex(randomblob(16))),
+				p.id,
+				p.session_id,
+				'awaiting_reply',
+				p.updated_at,
+				p.updated_at
+			FROM watcher_proposals p
+			WHERE p.state = 'hitl_waiting'
+			AND NOT EXISTS (
+				SELECT 1 FROM ai_hitl_requests h WHERE h.proposal_id = p.id
+			)
+		`);
+	} catch (err) {
+		console.warn("[db] HITL backfill skipped:", err);
 	}
 
 	sqlite.close();
