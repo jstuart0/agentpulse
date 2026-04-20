@@ -4,6 +4,11 @@ import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { settings } from "../db/schema.js";
 import { emitAiEvent } from "../services/ai/ai-events.js";
+import {
+	buildDigest,
+	getDailyDigest,
+	invalidateDigestCache,
+} from "../services/ai/digest-service.js";
 import { checkDispatch } from "../services/ai/dispatch-filter.js";
 import {
 	AI_CLASSIFIER_AFFECTS_RUNNER_KEY,
@@ -211,6 +216,25 @@ aiRouter.post("/ai/inbox/hitl/:id/decide", async (c) => {
 	});
 	if (!resolved) return c.json({ error: "hitl not found" }, 404);
 	return c.json({ hitl: resolved });
+});
+
+// --------------------------------------------------------------------------
+// Project digest (Phase 4)
+// --------------------------------------------------------------------------
+
+aiRouter.get("/ai/digest", async (c) => {
+	if (!isAiBuildEnabled()) return c.json({ error: "ai_disabled" }, 404);
+	const fresh = c.req.query("fresh") === "1";
+	const digest = fresh ? await buildDigest() : await getDailyDigest();
+	return c.json(digest);
+});
+
+aiRouter.post("/ai/digest/refresh", async (c) => {
+	const gate = await requireAiBuild(c);
+	if (gate) return gate;
+	invalidateDigestCache();
+	const digest = await buildDigest();
+	return c.json(digest);
 });
 
 /**

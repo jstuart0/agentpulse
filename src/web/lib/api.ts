@@ -339,6 +339,10 @@ export const api = {
 			method: "POST",
 			body: JSON.stringify(body),
 		}),
+
+	getDigest: (params?: { fresh?: boolean }) =>
+		request<Digest>(`/ai/digest${params?.fresh ? "?fresh=1" : ""}`),
+	refreshDigest: () => request<Digest>("/ai/digest/refresh", { method: "POST" }),
 };
 
 export type InboxSeverity = "normal" | "high";
@@ -389,6 +393,45 @@ export interface Inbox {
 	items: InboxWorkItem[];
 	total: number;
 	byKind: Record<InboxWorkItem["kind"], number>;
+}
+
+export interface RepoDigestSession {
+	sessionId: string;
+	displayName: string | null;
+	status: string;
+	health: string | null;
+	healthReason: string | null;
+	lastActivityAt: string;
+	totalToolUses: number;
+}
+
+export interface RepoDigest {
+	repoKey: string;
+	cwd: string | null;
+	projectName: string;
+	activeCount: number;
+	blockedCount: number;
+	stuckCount: number;
+	completedToday: number;
+	failedToday: number;
+	topPlanCompletions: string[];
+	notableFailures: Array<{ sessionId: string; message: string | null; at: string }>;
+	sessions: RepoDigestSession[];
+}
+
+export interface Digest {
+	generatedAt: string;
+	windowStart: string;
+	windowEnd: string;
+	totals: {
+		repos: number;
+		sessions: number;
+		active: number;
+		blocked: number;
+		stuck: number;
+		completedToday: number;
+	};
+	repos: RepoDigest[];
 }
 
 export type AiProviderKind = "anthropic" | "openai" | "google" | "openrouter" | "openai_compatible";

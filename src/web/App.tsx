@@ -29,6 +29,9 @@ const LaunchDetailPage = lazy(() =>
 const InboxPage = lazy(() =>
 	import("./pages/InboxPage.js").then((module) => ({ default: module.InboxPage })),
 );
+const DigestPage = lazy(() =>
+	import("./pages/DigestPage.js").then((module) => ({ default: module.DigestPage })),
+);
 
 function RouteFallback() {
 	return (
@@ -88,6 +91,7 @@ export function App() {
 					<Route path="/templates" element={<TemplatesPage />} />
 					<Route path="/launches/:launchId" element={<LaunchDetailPage />} />
 					<Route path="/inbox" element={<InboxPage />} />
+					<Route path="/digest" element={<DigestPage />} />
 					<Route path="/hosts" element={<HostsPage />} />
 					<Route path="/setup" element={<SetupPage />} />
 					<Route path="/settings" element={<SettingsPage />} />
