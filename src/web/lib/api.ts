@@ -312,7 +312,84 @@ export const api = {
 		}),
 
 	getAiSpend: () => request<{ date: string; spendCents: number }>("/ai/spend"),
+
+	getAiInbox: (params?: {
+		kinds?: InboxWorkItem["kind"][];
+		sessionId?: string;
+		severity?: "high" | "normal";
+		limit?: number;
+	}) => {
+		const qs = new URLSearchParams();
+		if (params?.kinds?.length) qs.set("kinds", params.kinds.join(","));
+		if (params?.sessionId) qs.set("sessionId", params.sessionId);
+		if (params?.severity) qs.set("severity", params.severity);
+		if (params?.limit) qs.set("limit", String(params.limit));
+		return request<Inbox>(`/ai/inbox${qs.toString() ? `?${qs}` : ""}`);
+	},
+	decideInboxHitl: (
+		id: string,
+		body: { action: "approve" | "decline" | "custom"; customPrompt?: string },
+	) =>
+		request<{ hitl: { id: string; status: string } }>(`/ai/inbox/hitl/${id}/decide`, {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+	batchDeclineInbox: (body: { hitlIds?: string[]; sessionIds?: string[] }) =>
+		request<{ closed: number }>("/ai/inbox/batch-decline", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
 };
+
+export type InboxSeverity = "normal" | "high";
+export type InboxWorkItem =
+	| {
+			kind: "hitl";
+			id: string;
+			sessionId: string;
+			sessionName: string | null;
+			proposalId: string;
+			decision: "continue" | "ask";
+			prompt: string;
+			why: string | null;
+			openedAt: string;
+			severity: InboxSeverity;
+	  }
+	| {
+			kind: "stuck";
+			id: string;
+			sessionId: string;
+			sessionName: string | null;
+			since: string;
+			reason: string;
+			evidence: string[];
+			severity: InboxSeverity;
+	  }
+	| {
+			kind: "risky";
+			id: string;
+			sessionId: string;
+			sessionName: string | null;
+			reason: string;
+			evidence: string[];
+			severity: InboxSeverity;
+	  }
+	| {
+			kind: "failed_proposal";
+			id: string;
+			sessionId: string;
+			sessionName: string | null;
+			errorSubType: string | null;
+			errorMessage: string | null;
+			at: string;
+			severity: InboxSeverity;
+	  };
+
+export interface Inbox {
+	items: InboxWorkItem[];
+	total: number;
+	byKind: Record<InboxWorkItem["kind"], number>;
+}
 
 export type AiProviderKind = "anthropic" | "openai" | "google" | "openrouter" | "openai_compatible";
 

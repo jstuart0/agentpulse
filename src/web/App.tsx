@@ -1,17 +1,34 @@
 import { Suspense, lazy, useEffect } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout.js";
 import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js";
 import { api } from "./lib/api.js";
 import { applyTheme, getStoredTheme } from "./lib/theme.js";
 
-const DashboardPage = lazy(() => import("./pages/DashboardPage.js").then((module) => ({ default: module.DashboardPage })));
-const SessionDetailPage = lazy(() => import("./pages/SessionDetailPage.js").then((module) => ({ default: module.SessionDetailPage })));
-const SetupPage = lazy(() => import("./pages/SetupPage.js").then((module) => ({ default: module.SetupPage })));
-const SettingsPage = lazy(() => import("./pages/SettingsPage.js").then((module) => ({ default: module.SettingsPage })));
-const TemplatesPage = lazy(() => import("./pages/TemplatesPage.js").then((module) => ({ default: module.TemplatesPage })));
-const HostsPage = lazy(() => import("./pages/HostsPage.js").then((module) => ({ default: module.HostsPage })));
-const LaunchDetailPage = lazy(() => import("./pages/LaunchDetailPage.js").then((module) => ({ default: module.LaunchDetailPage })));
+const DashboardPage = lazy(() =>
+	import("./pages/DashboardPage.js").then((module) => ({ default: module.DashboardPage })),
+);
+const SessionDetailPage = lazy(() =>
+	import("./pages/SessionDetailPage.js").then((module) => ({ default: module.SessionDetailPage })),
+);
+const SetupPage = lazy(() =>
+	import("./pages/SetupPage.js").then((module) => ({ default: module.SetupPage })),
+);
+const SettingsPage = lazy(() =>
+	import("./pages/SettingsPage.js").then((module) => ({ default: module.SettingsPage })),
+);
+const TemplatesPage = lazy(() =>
+	import("./pages/TemplatesPage.js").then((module) => ({ default: module.TemplatesPage })),
+);
+const HostsPage = lazy(() =>
+	import("./pages/HostsPage.js").then((module) => ({ default: module.HostsPage })),
+);
+const LaunchDetailPage = lazy(() =>
+	import("./pages/LaunchDetailPage.js").then((module) => ({ default: module.LaunchDetailPage })),
+);
+const InboxPage = lazy(() =>
+	import("./pages/InboxPage.js").then((module) => ({ default: module.InboxPage })),
+);
 
 function RouteFallback() {
 	return (
@@ -70,6 +87,7 @@ export function App() {
 					<Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
 					<Route path="/templates" element={<TemplatesPage />} />
 					<Route path="/launches/:launchId" element={<LaunchDetailPage />} />
+					<Route path="/inbox" element={<InboxPage />} />
 					<Route path="/hosts" element={<HostsPage />} />
 					<Route path="/setup" element={<SetupPage />} />
 					<Route path="/settings" element={<SettingsPage />} />

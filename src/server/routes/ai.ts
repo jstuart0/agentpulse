@@ -17,6 +17,8 @@ import {
 	isClassifierEnabled,
 	isKillSwitchActive,
 } from "../services/ai/feature.js";
+import { resolveHitlRequest, supersedeOpenHitl } from "../services/ai/hitl-service.js";
+import { type InboxWorkItem, buildInbox } from "../services/ai/inbox-service.js";
 import {
 	intelligenceForSession,
 	intelligenceForSessions,
@@ -167,6 +169,71 @@ aiRouter.post("/ai/intelligence/batch", async (c) => {
 	const out: Record<string, unknown> = {};
 	for (const [id, intel] of map) out[id] = intel;
 	return c.json({ intelligence: out });
+});
+
+// --------------------------------------------------------------------------
+// Operator inbox (Phase 3)
+// --------------------------------------------------------------------------
+
+aiRouter.get("/ai/inbox", async (c) => {
+	if (!isAiBuildEnabled()) return c.json({ error: "ai_disabled" }, 404);
+	const kindsParam = c.req.query("kinds");
+	const sessionId = c.req.query("sessionId") ?? undefined;
+	const severityParam = c.req.query("severity");
+	const limit = Number(c.req.query("limit") ?? "100");
+	const kinds: InboxWorkItem["kind"][] | undefined = kindsParam
+		? (kindsParam.split(",").filter(Boolean) as InboxWorkItem["kind"][])
+		: undefined;
+	const severity =
+		severityParam === "high" || severityParam === "normal" ? severityParam : undefined;
+	const inbox = await buildInbox({
+		kinds,
+		sessionId,
+		severity,
+		limit: Number.isFinite(limit) ? Math.max(1, Math.min(500, limit)) : 100,
+	});
+	return c.json(inbox);
+});
+
+aiRouter.post("/ai/inbox/hitl/:id/decide", async (c) => {
+	const gate = await requireAiActive(c);
+	if (gate) return gate;
+	const id = c.req.param("id") ?? "";
+	const body = await c.req.json<{
+		action: "approve" | "decline" | "custom";
+		customPrompt?: string;
+	}>();
+	const resolved = await resolveHitlRequest({
+		id,
+		status: body.action === "decline" ? "declined" : "applied",
+		replyKind: body.action,
+		replyText: body.action === "custom" ? (body.customPrompt ?? null) : null,
+	});
+	if (!resolved) return c.json({ error: "hitl not found" }, 404);
+	return c.json({ hitl: resolved });
+});
+
+/**
+ * Batch decline / snooze is the only safe batch action per the plan.
+ * Approve-all is intentionally not available.
+ */
+aiRouter.post("/ai/inbox/batch-decline", async (c) => {
+	const gate = await requireAiActive(c);
+	if (gate) return gate;
+	const body = await c.req.json<{ hitlIds?: string[]; sessionIds?: string[] }>();
+	let closed = 0;
+	for (const hid of body.hitlIds ?? []) {
+		const r = await resolveHitlRequest({
+			id: hid,
+			status: "declined",
+			replyKind: "decline",
+		});
+		if (r) closed++;
+	}
+	for (const sid of body.sessionIds ?? []) {
+		closed += await supersedeOpenHitl(sid);
+	}
+	return c.json({ closed });
 });
 
 // --------------------------------------------------------------------------
