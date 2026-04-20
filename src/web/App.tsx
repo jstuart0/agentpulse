@@ -1,7 +1,9 @@
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { Routes, Route } from "react-router-dom";
 import { Layout } from "./components/Layout.js";
 import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js";
+import { api } from "./lib/api.js";
+import { applyTheme, getStoredTheme } from "./lib/theme.js";
 
 const DashboardPage = lazy(() => import("./pages/DashboardPage.js").then((module) => ({ default: module.DashboardPage })));
 const SessionDetailPage = lazy(() => import("./pages/SessionDetailPage.js").then((module) => ({ default: module.SessionDetailPage })));
@@ -30,6 +32,35 @@ function RouteFallback() {
 export function App() {
 	useNotificationPermission();
 	useWebSocket();
+
+	useEffect(() => {
+		let cancelled = false;
+
+		async function syncTheme() {
+			try {
+				const settings = await api.getSettings();
+				const savedTheme = settings.theme;
+				if (!cancelled && (savedTheme === "dark" || savedTheme === "light")) {
+					applyTheme(savedTheme);
+					window.localStorage.setItem("agentpulse-theme", savedTheme);
+					return;
+				}
+			} catch {
+				// Ignore settings load failure and keep local theme.
+			}
+
+			if (!cancelled) {
+				const stored = getStoredTheme();
+				if (stored) applyTheme(stored);
+			}
+		}
+
+		void syncTheme();
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
 	return (
 		<Suspense fallback={<RouteFallback />}>
 			<Routes>

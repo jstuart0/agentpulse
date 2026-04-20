@@ -20,7 +20,7 @@ export function Layout() {
 			{/* Mobile top bar */}
 			<div className="md:hidden fixed top-0 left-0 right-0 z-20 bg-card border-b border-border px-3 py-2.5 flex items-center justify-between">
 				<div className="flex items-center gap-2 min-w-0">
-					<div className="w-8 h-8 rounded-lg bg-[#0B1220] flex items-center justify-center overflow-hidden shadow-[0_0_20px_rgba(42,168,255,0.08)]">
+					<div className="w-8 h-8 rounded-lg border border-primary/20 bg-primary/10 flex items-center justify-center overflow-hidden shadow-[0_0_20px_rgba(42,168,255,0.08)]">
 						<img src={brandIcon} alt="" className="w-8 h-8" />
 					</div>
 					<span className="text-sm font-bold text-foreground truncate">AgentPulse</span>
@@ -66,7 +66,7 @@ export function Layout() {
 			<aside className="hidden md:flex w-56 flex-shrink-0 border-r border-border bg-card flex-col">
 				<div className="px-4 py-5 border-b border-border">
 					<div className="flex items-center gap-2">
-						<div className="w-10 h-10 rounded-xl bg-[#0B1220] flex items-center justify-center overflow-hidden shadow-[0_0_24px_rgba(42,168,255,0.08)]">
+						<div className="w-10 h-10 rounded-xl border border-primary/20 bg-primary/10 flex items-center justify-center overflow-hidden shadow-[0_0_24px_rgba(42,168,255,0.08)]">
 							<img src={brandIcon} alt="" className="w-10 h-10" />
 						</div>
 						<div>

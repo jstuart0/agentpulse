@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
 	<meta charset="UTF-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -15,6 +15,21 @@
 	<meta name="twitter:image" content="/assets/agentpulse-social.jpg" />
 	<link rel="icon" type="image/svg+xml" href="/assets/agentpulse-icon.svg" />
 	<link rel="apple-touch-icon" href="/assets/agentpulse-social.jpg" />
+	<script>
+		(() => {
+			try {
+				const stored = localStorage.getItem("agentpulse-theme");
+				const theme = stored === "light" || stored === "dark"
+					? stored
+					: (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+				document.documentElement.classList.toggle("dark", theme === "dark");
+				document.documentElement.dataset.theme = theme;
+			} catch {
+				document.documentElement.classList.add("dark");
+				document.documentElement.dataset.theme = "dark";
+			}
+		})();
+	</script>
 </head>
 <body class="bg-background text-foreground">
 	<div id="root"></div>

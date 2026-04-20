@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { ApiKeyInfo, LaunchRequest, SupervisorRecord } from "../../shared/types.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { api } from "../lib/api.js";
+import { persistTheme, resolveInitialTheme, type AppTheme } from "../lib/theme.js";
 
 const launchModeLabels = {
 	headless: "Headless task",
@@ -15,9 +16,7 @@ export function SettingsPage() {
 	const [newKeyName, setNewKeyName] = useState("");
 	const [newKeyValue, setNewKeyValue] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
-	const [theme, setTheme] = useState<"dark" | "light">(
-		document.documentElement.classList.contains("dark") ? "dark" : "light",
-	);
+	const [theme, setTheme] = useState<AppTheme>(resolveInitialTheme());
 	const [settings, setSettings] = useState<Record<string, unknown>>({});
 	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
 	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
@@ -36,6 +35,10 @@ export function SettingsPage() {
 				setSettings(settingsRes || {});
 				setSupervisors(supervisorsRes.supervisors || []);
 				setRecentLaunches((launchesRes.launches || []).slice(0, 5));
+				if (settingsRes.theme === "dark" || settingsRes.theme === "light") {
+					setTheme(settingsRes.theme);
+					persistTheme(settingsRes.theme);
+				}
 			} catch (err) {
 				console.error("Failed to load settings:", err);
 			} finally {
@@ -76,9 +79,9 @@ export function SettingsPage() {
 
 	// Toggle theme
 	function handleThemeToggle() {
-		const next = theme === "dark" ? "light" : "dark";
+		const next: AppTheme = theme === "dark" ? "light" : "dark";
 		setTheme(next);
-		document.documentElement.classList.toggle("dark", next === "dark");
+		persistTheme(next);
 		// Persist
 		void api.saveSetting("theme", next).catch(() => {});
 	}
@@ -114,7 +117,7 @@ export function SettingsPage() {
 						style={{ backgroundColor: theme === "dark" ? "hsl(var(--primary))" : "hsl(var(--muted))" }}
 					>
 						<span
-							className="inline-block h-4 w-4 rounded-full bg-white transition-transform"
+							className="inline-block h-4 w-4 rounded-full bg-card border border-border transition-transform"
 							style={{ transform: theme === "dark" ? "translateX(24px)" : "translateX(4px)" }}
 						/>
 					</button>
