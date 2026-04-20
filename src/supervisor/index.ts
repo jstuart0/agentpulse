@@ -18,6 +18,7 @@ import {
 	reconcileManagedCodexTitles,
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
+import { startCodexObserver } from "./services/codex-observer.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -74,6 +75,15 @@ async function main() {
 	console.log(
 		`[supervisor] Registered ${registration.supervisor.hostName} (${registration.supervisor.id})`,
 	);
+
+	// Observe local Codex rollout files and forward events as hooks, so
+	// sessions appear even when Codex's own HTTP hooks don't fire.
+	void startCodexObserver({
+		serverUrl: config.serverUrl,
+		apiKey: config.apiKey ?? null,
+	}).catch((error) => {
+		console.error("[codex-observer] failed to start:", error);
+	});
 
 	let lastHeartbeatOkAt = Date.now();
 	const watchdogStaleMs = Math.max(registration.heartbeatIntervalMs * 3, 90_000);
