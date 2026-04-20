@@ -1,12 +1,14 @@
-import { Hono } from "hono";
 import { desc, eq } from "drizzle-orm";
+import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import type { LaunchRequestInput } from "../../shared/types.js";
+import type { LaunchRequestInput, SessionTemplateInput } from "../../shared/types.js";
+import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { launchRequests } from "../db/schema.js";
+import { isAiBuildEnabled } from "../services/ai/feature.js";
+import { recommendLaunch } from "../services/ai/launch-recommender.js";
 import { createValidatedLaunchRequest, mapLaunchRequest } from "../services/launch-validator.js";
 import { getSession } from "../services/session-tracker.js";
-import { requireAuth } from "../auth/middleware.js";
 
 const launchesRouter = new Hono();
 launchesRouter.use("*", requireAuth());
@@ -45,6 +47,31 @@ launchesRouter.post("/launches", async (c) => {
 			400,
 		);
 	}
+});
+
+/**
+ * Phase 6 recommendation endpoint. Advisory only: launch preview and
+ * the existing validator still resolve the authoritative launch spec.
+ * This endpoint returns a RecommendedLaunch object operators accept or
+ * override from the preview UI.
+ */
+launchesRouter.post("/launches/recommendation", async (c) => {
+	if (!isAiBuildEnabled()) {
+		// Recommendation logic is deterministic and safe to expose even
+		// without the AI provider feature; but the plan gates this behind
+		// the AI build flag so non-AI installs keep the same surface.
+		return c.json({ error: "ai_disabled" }, 404);
+	}
+	const body = await c.req.json<{
+		template: SessionTemplateInput;
+		preferredSupervisorId?: string | null;
+	}>();
+	if (!body.template) return c.json({ error: "template required" }, 400);
+	const recommendation = await recommendLaunch({
+		template: body.template,
+		preferredSupervisorId: body.preferredSupervisorId ?? null,
+	});
+	return c.json({ recommendation });
 });
 
 export { launchesRouter };

@@ -344,6 +344,15 @@ export const api = {
 		request<Digest>(`/ai/digest${params?.fresh ? "?fresh=1" : ""}`),
 	refreshDigest: () => request<Digest>("/ai/digest/refresh", { method: "POST" }),
 
+	getLaunchRecommendation: (body: {
+		template: Record<string, unknown>;
+		preferredSupervisorId?: string | null;
+	}) =>
+		request<{ recommendation: LaunchRecommendation }>("/launches/recommendation", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
 	distillTemplate: (body: {
 		sessionId: string;
 		baseTemplateId?: string | null;
@@ -358,6 +367,23 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 };
+
+export interface LaunchRecommendation {
+	agentType: string;
+	model: string | null;
+	launchMode: string;
+	suggestedSupervisorId: string | null;
+	suggestedSupervisorHost: string | null;
+	rationale: string[];
+	warnings: string[];
+	alternatives: Array<{
+		agentType?: string;
+		model?: string | null;
+		launchMode?: string;
+		reason: string;
+	}>;
+	confidence: number;
+}
 
 export interface TemplateDraftResponse {
 	source: {
