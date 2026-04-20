@@ -10,7 +10,7 @@ import {
 } from "../../../shared/event-authority.js";
 import type { EventCategory, EventSource, SessionEvent } from "../../../shared/types.js";
 
-export type TimelineMode = "prompts" | "conversation" | "progress" | "debug";
+export type TimelineMode = "prompts" | "conversation" | "progress" | "terminal" | "debug";
 
 function chooseHigherAuthorityEvent(left: SessionEvent, right: SessionEvent) {
 	const leftPriority = EVENT_SOURCE_PRIORITY[left.source] ?? 0;
@@ -203,6 +203,16 @@ function getBaseCategories(mode: TimelineMode): Set<EventCategory> {
 				"status_update",
 				"system_event",
 			]);
+		case "terminal":
+			return new Set([
+				"prompt",
+				"assistant_message",
+				"progress_update",
+				"plan_update",
+				"status_update",
+				"tool_event",
+				"system_event",
+			]);
 		case "debug":
 			return new Set([
 				"prompt",
@@ -229,7 +239,7 @@ export function getVisibleEvents(
 
 	return allEvents.filter((event) => {
 		if (!event.category || !categories.has(event.category)) return false;
-		if (event.category === "tool_event" && !showTools && mode !== "debug") return false;
+		if (event.category === "tool_event" && !showTools && mode !== "debug" && mode !== "terminal") return false;
 		if (event.category === "tool_event" && !showNoisyTools && event.isNoise) return false;
 		if (!event.content && event.category !== "tool_event") return false;
 		return true;

@@ -21,6 +21,7 @@ import {
 	mergeSessionEvents,
 } from "../components/session-detail/TimelineView.js";
 import { CodexStatusHint, ManagedCodexStatus, ManagedClaudeStatus } from "../components/session-detail/StatusHints.js";
+import { ToolCallBlock } from "../components/session-detail/ToolCallBlock.js";
 
 type WorkspaceTab = "overview" | "activity" | "notes" | "instructions" | "launch";
 
@@ -161,7 +162,7 @@ export function SessionDetailPage() {
 
 	const liveEvents = ((sessionId && liveEventsMap.get(sessionId)) || []) as SessionEvent[];
 	const allEvents = mergeSessionEvents([...events].reverse(), liveEvents);
-	const visibleEvents = getVisibleEvents(allEvents, mode, showTools || mode === "debug", showNoisyTools, showSystem);
+	const visibleEvents = getVisibleEvents(allEvents, mode, showTools || mode === "debug" || mode === "terminal", showNoisyTools, showSystem);
 
 	useEffect(() => {
 		const requested = searchParams.get("tab");
@@ -352,6 +353,7 @@ export function SessionDetailPage() {
 							<ModeButton active={mode === "prompts"} label="Prompts" onClick={() => setMode("prompts")} />
 							<ModeButton active={mode === "conversation"} label="Conversation" onClick={() => setMode("conversation")} />
 							<ModeButton active={mode === "progress"} label="Progress" onClick={() => setMode("progress")} />
+							<ModeButton active={mode === "terminal"} label="Terminal" onClick={() => setMode("terminal")} />
 							<ModeButton active={mode === "debug"} label="Debug" onClick={() => setMode("debug")} />
 							<FilterToggle
 								active={showSystem}
@@ -360,7 +362,7 @@ export function SessionDetailPage() {
 								disabled={mode === "prompts" || mode === "conversation"}
 							/>
 							<FilterToggle
-								active={showTools || mode === "debug"}
+								active={showTools || mode === "debug" || mode === "terminal"}
 								label="Tools"
 								onClick={() => setShowTools((value) => !value)}
 							/>
@@ -368,7 +370,7 @@ export function SessionDetailPage() {
 								active={showNoisyTools}
 								label="Noisy"
 								onClick={() => setShowNoisyTools((value) => !value)}
-								disabled={!(showTools || mode === "debug")}
+								disabled={!(showTools || mode === "debug" || mode === "terminal")}
 							/>
 						</div>
 					)}
@@ -424,11 +426,39 @@ export function SessionDetailPage() {
 						onScroll={handleTimelineScroll}
 						className="h-full overflow-auto p-3 md:p-6"
 					>
-						<div className="space-y-3">
+						<div className={mode === "terminal" ? "space-y-4" : "space-y-3"}>
 							{visibleEvents.length === 0 ? (
 								<p className="text-sm text-muted-foreground text-center py-8">
 									No events match this view yet.
 								</p>
+							) : mode === "terminal" ? (
+								visibleEvents.map((event) => {
+									if (event.category === "prompt" && event.content) {
+										return (
+											<div key={eventKey(event)} className="font-mono text-[13px] leading-6">
+												<span className="text-primary select-none mr-1">&gt;</span>
+												<span className="whitespace-pre-wrap break-words text-foreground">{event.content}</span>
+											</div>
+										);
+									}
+									if (event.category === "assistant_message" && event.content) {
+										return (
+											<div key={eventKey(event)} className="text-sm leading-6 whitespace-pre-wrap break-words text-foreground/90">
+												{event.content}
+											</div>
+										);
+									}
+									if (event.category === "tool_event") {
+										return <ToolCallBlock key={eventKey(event)} event={event} />;
+									}
+									if (!event.content) return null;
+									return (
+										<div key={eventKey(event)} className="font-mono text-[12px] leading-5 text-muted-foreground whitespace-pre-wrap break-words">
+											<span className="uppercase tracking-wider mr-2 text-[10px]">{eventLabel(event.category)}</span>
+											{event.content}
+										</div>
+									);
+								})
 							) : (
 								visibleEvents.map((event) => {
 									if (event.category === "prompt" && event.content) {
