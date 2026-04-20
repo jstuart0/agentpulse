@@ -58,10 +58,11 @@ describe("anthropic adapter", () => {
 				transcriptPrompt: "y",
 				model: "claude-sonnet-4-6",
 			})
-			.catch((e) => e as LlmError);
+			.catch((e: unknown) => e);
 		expect(err).toBeInstanceOf(LlmError);
-		expect(err.subType).toBe("permanent_auth");
-		expect(err.status).toBe(401);
+		const llm = err as LlmError;
+		expect(llm.subType).toBe("permanent_auth");
+		expect(llm.status).toBe(401);
 	});
 
 	test("normalizes 429 to transient_rate_limit", async () => {
@@ -73,8 +74,9 @@ describe("anthropic adapter", () => {
 				transcriptPrompt: "y",
 				model: "claude-sonnet-4-6",
 			})
-			.catch((e) => e as LlmError);
-		expect(err.subType).toBe("transient_rate_limit");
+			.catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(LlmError);
+		expect((err as LlmError).subType).toBe("transient_rate_limit");
 	});
 
 	test("normalizes 500 to transient_timeout (retryable)", async () => {
@@ -86,8 +88,9 @@ describe("anthropic adapter", () => {
 				transcriptPrompt: "y",
 				model: "claude-sonnet-4-6",
 			})
-			.catch((e) => e as LlmError);
-		expect(err.subType).toBe("transient_timeout");
+			.catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(LlmError);
+		expect((err as LlmError).subType).toBe("transient_timeout");
 	});
 
 	test("estimates tokens when usage is missing", async () => {
@@ -165,8 +168,9 @@ describe("openai-compatible adapter", () => {
 		});
 		const err = await adapter
 			.complete({ systemPrompt: "s", transcriptPrompt: "u", model: "x" })
-			.catch((e) => e as LlmError);
-		expect(err.subType).toBe("permanent_auth");
+			.catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(LlmError);
+		expect((err as LlmError).subType).toBe("permanent_auth");
 	});
 });
 
