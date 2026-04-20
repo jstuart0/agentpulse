@@ -6,6 +6,7 @@ import { formatDuration } from "../lib/utils.js";
 import { api } from "../lib/api.js";
 import type { ControlAction, EventCategory, LaunchRequest, Session, SessionEvent } from "../../shared/types.js";
 import { useEventStore } from "../stores/event-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 import { NotesPanel, ClaudeMdPanel, EmbeddedLaunchPanel, SummaryField } from "../components/session-detail/Panels.js";
 import { ScrollJumpControls, ModeButton, FilterToggle, WorkspaceTabButton } from "../components/session-detail/SharedControls.js";
@@ -138,6 +139,17 @@ export function SessionDetailPage() {
 	}, [sessionId]);
 
 	// Removed live event merging -- just use DB events with fast polling
+
+	// On sessionId change, warm the header from the cached dashboard list so
+	// switching tabs feels instant. Timeline still refetches in the background.
+	useEffect(() => {
+		if (!sessionId) return;
+		const cached = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
+		setSession(cached ?? null);
+		setEvents([]);
+		setControlActions([]);
+		setLoading(!cached);
+	}, [sessionId]);
 
 	useEffect(() => {
 		if (!sessionId) return;
