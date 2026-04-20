@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "../lib/utils.js";
+import { SessionTabs } from "./SessionTabs.js";
 import brandIcon from "../assets/agentpulse-icon.svg";
 
 const navItems = [
@@ -126,6 +127,7 @@ export function Layout() {
 
 			{/* Main content */}
 			<main className="flex-1 overflow-x-hidden overflow-y-auto mt-14 md:mt-0 bg-dots">
+				<SessionTabs />
 				<Outlet />
 			</main>
 		</div>

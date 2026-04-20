@@ -6,6 +6,7 @@ import { formatDuration } from "../lib/utils.js";
 import { api } from "../lib/api.js";
 import type { ControlAction, EventCategory, LaunchRequest, Session, SessionEvent } from "../../shared/types.js";
 import { useEventStore } from "../stores/event-store.js";
+import { useTabsStore } from "../stores/tabs-store.js";
 import { NotesPanel, ClaudeMdPanel, EmbeddedLaunchPanel, SummaryField } from "../components/session-detail/Panels.js";
 import { ScrollJumpControls, ModeButton, FilterToggle, WorkspaceTabButton } from "../components/session-detail/SharedControls.js";
 import { SessionPromptComposer } from "../components/session-detail/SessionPromptComposer.js";
@@ -146,6 +147,17 @@ export function SessionDetailPage() {
 			clearLiveEvents(sessionId);
 		};
 	}, [sessionId, clearLiveEvents, loadSessionWorkspace]);
+
+	const openTab = useTabsStore((s) => s.open);
+	useEffect(() => {
+		if (!session) return;
+		openTab({
+			sessionId: session.sessionId,
+			displayName: session.displayName ?? session.sessionId.slice(0, 8),
+			agentType: session.agentType,
+			managedState: session.managedSession?.managedState ?? null,
+		});
+	}, [session, openTab]);
 
 	const liveEvents = ((sessionId && liveEventsMap.get(sessionId)) || []) as SessionEvent[];
 	const allEvents = mergeSessionEvents([...events].reverse(), liveEvents);

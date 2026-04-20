@@ -5,6 +5,7 @@ import { AgentTypeBadge } from "./AgentTypeBadge.js";
 import { formatDuration, extractProjectName, getSessionMode } from "../lib/utils.js";
 import { api } from "../lib/api.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useTabsStore } from "../stores/tabs-store.js";
 import type { Session } from "../../shared/types.js";
 
 interface SessionCardProps {
@@ -15,6 +16,7 @@ export function SessionCard({ session }: SessionCardProps) {
 	const navigate = useNavigate();
 	const removeSession = useSessionStore((s) => s.removeSession);
 	const updateSession = useSessionStore((s) => s.updateSession);
+	const closeTab = useTabsStore((s) => s.close);
 	const [renaming, setRenaming] = useState(false);
 	const [newName, setNewName] = useState(session.displayName || "");
 
@@ -48,6 +50,7 @@ export function SessionCard({ session }: SessionCardProps) {
 		if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
 		await api.deleteSession(session.sessionId);
 		removeSession(session.sessionId);
+		closeTab(session.sessionId);
 	}
 
 	return (
