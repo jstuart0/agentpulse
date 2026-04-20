@@ -23,8 +23,9 @@ import {
 } from "../components/session-detail/TimelineView.js";
 import { CodexStatusHint, ManagedCodexStatus, ManagedClaudeStatus } from "../components/session-detail/StatusHints.js";
 import { ToolCallBlock } from "../components/session-detail/ToolCallBlock.js";
+import { AiPanel } from "../components/session-detail/AiPanel.js";
 
-type WorkspaceTab = "overview" | "activity" | "notes" | "instructions" | "launch";
+type WorkspaceTab = "overview" | "activity" | "notes" | "instructions" | "launch" | "ai";
 
 function buildExportMarkdown(displayName: string, session: Session, allEvents: SessionEvent[]) {
 	const transcript = allEvents
@@ -113,7 +114,7 @@ export function SessionDetailPage() {
 	const [showSystem, setShowSystem] = useState(true);
 	const requestedTab = searchParams.get("tab") as WorkspaceTab | null;
 	const initialWorkspaceTab: WorkspaceTab =
-		requestedTab && ["overview", "activity", "notes", "instructions", "launch"].includes(requestedTab)
+		requestedTab && ["overview", "activity", "notes", "instructions", "launch", "ai"].includes(requestedTab)
 			? requestedTab
 			: "activity";
 	const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(initialWorkspaceTab);
@@ -178,7 +179,7 @@ export function SessionDetailPage() {
 
 	useEffect(() => {
 		const requested = searchParams.get("tab");
-		if (requested && ["overview", "activity", "notes", "instructions", "launch"].includes(requested)) {
+		if (requested && ["overview", "activity", "notes", "instructions", "launch", "ai"].includes(requested)) {
 			setWorkspaceTab(requested as WorkspaceTab);
 		}
 	}, [searchParams]);
@@ -359,6 +360,11 @@ export function SessionDetailPage() {
 								onClick={() => selectWorkspaceTab("launch")}
 							/>
 						)}
+						<WorkspaceTabButton
+							active={workspaceTab === "ai"}
+							label="AI"
+							onClick={() => selectWorkspaceTab("ai")}
+						/>
 					</div>
 					{workspaceTab === "activity" && (
 						<div className="flex flex-wrap items-center gap-2">
@@ -526,6 +532,11 @@ export function SessionDetailPage() {
 					<NotesPanel sessionId={session.sessionId} initialNotes={session.notes || ""} />
 				) : workspaceTab === "instructions" ? (
 					<ClaudeMdPanel session={session} />
+				) : workspaceTab === "ai" ? (
+					<AiPanel
+						sessionId={session.sessionId}
+						sessionIsManaged={Boolean(session.managedSession)}
+					/>
 				) : session.managedSession?.launchRequestId ? (
 					<EmbeddedLaunchPanel launchId={session.managedSession.launchRequestId} />
 				) : (
