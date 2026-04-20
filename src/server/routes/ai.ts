@@ -44,6 +44,7 @@ import {
 } from "../services/ai/providers-service.js";
 import { parseUserRules, redactDryRun } from "../services/ai/redactor.js";
 import { getTodaySpendCents } from "../services/ai/spend-service.js";
+import { distillTemplate, provenanceMetadata } from "../services/ai/template-distillation.js";
 import {
 	type WatcherPolicy,
 	deleteWatcherConfig,
@@ -235,6 +236,33 @@ aiRouter.post("/ai/digest/refresh", async (c) => {
 	invalidateDigestCache();
 	const digest = await buildDigest();
 	return c.json(digest);
+});
+
+// --------------------------------------------------------------------------
+// Template distillation (Phase 5)
+// --------------------------------------------------------------------------
+
+aiRouter.post("/ai/templates/distill", async (c) => {
+	const gate = await requireAiBuild(c);
+	if (gate) return gate;
+	const body = await c.req.json<{
+		sessionId: string;
+		baseTemplateId?: string | null;
+		providerId?: string | null;
+		model?: string | null;
+	}>();
+	if (!body.sessionId) return c.json({ error: "sessionId required" }, 400);
+	const draft = await distillTemplate({
+		sessionId: body.sessionId,
+		baseTemplateId: body.baseTemplateId ?? null,
+		providerId: body.providerId ?? null,
+		model: body.model ?? null,
+	});
+	if (!draft) return c.json({ error: "session not found" }, 404);
+	return c.json({
+		draft,
+		provenance: provenanceMetadata(draft, body.baseTemplateId ?? null),
+	});
 });
 
 /**

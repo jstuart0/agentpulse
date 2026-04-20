@@ -87,6 +87,9 @@ export const sessionTemplates = sqliteTable("session_templates", {
 	env: text("env", { mode: "json" }).$type<Record<string, string>>().notNull().default({}),
 	tags: text("tags", { mode: "json" }).$type<string[]>().notNull().default([]),
 	isFavorite: integer("is_favorite", { mode: "boolean" }).notNull().default(false),
+	// Phase 5 provenance: nullable JSON for distilled templates. Manually
+	// authored templates leave this null.
+	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });

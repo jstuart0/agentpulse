@@ -343,7 +343,32 @@ export const api = {
 	getDigest: (params?: { fresh?: boolean }) =>
 		request<Digest>(`/ai/digest${params?.fresh ? "?fresh=1" : ""}`),
 	refreshDigest: () => request<Digest>("/ai/digest/refresh", { method: "POST" }),
+
+	distillTemplate: (body: {
+		sessionId: string;
+		baseTemplateId?: string | null;
+		providerId?: string | null;
+		model?: string | null;
+	}) =>
+		request<{
+			draft: TemplateDraftResponse;
+			provenance: Record<string, unknown>;
+		}>("/ai/templates/distill", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
 };
+
+export interface TemplateDraftResponse {
+	source: {
+		fromSessionIds: string[];
+		generatedAt: string;
+		providerId?: string | null;
+		model?: string | null;
+	};
+	draft: Record<string, unknown>;
+	notes: string[];
+}
 
 export type InboxSeverity = "normal" | "high";
 export type InboxWorkItem =

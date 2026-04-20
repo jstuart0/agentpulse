@@ -415,6 +415,8 @@ export function initializeDatabase() {
 		"ALTER TABLE sessions ADD COLUMN watcher_last_run_at TEXT",
 		"ALTER TABLE sessions ADD COLUMN watcher_last_user_prompt_at TEXT",
 		"ALTER TABLE sessions ADD COLUMN ai_spend_cents INTEGER NOT NULL DEFAULT 0",
+		// Phase 5: template provenance (ai_distillation | null for manual).
+		"ALTER TABLE session_templates ADD COLUMN metadata TEXT",
 	];
 
 	for (const migration of migrations) {
