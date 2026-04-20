@@ -30,7 +30,7 @@ export function SessionTabs() {
 	}
 
 	return (
-		<div className="sticky top-0 z-10 surface-glass border-b border-border">
+		<div className="flex-shrink-0 z-20 surface-glass border-b border-border">
 			<div
 				className="flex items-stretch overflow-x-auto px-1 md:px-2"
 				style={{ scrollbarWidth: "thin" }}

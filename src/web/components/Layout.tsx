@@ -177,11 +177,13 @@ export function Layout() {
 				)}
 			</aside>
 
-			{/* Main content */}
-			<main className="flex-1 overflow-x-hidden overflow-y-auto mt-14 md:mt-0 bg-dots">
+			{/* Main column: tabs strip + scrollable content */}
+			<div className="flex flex-col flex-1 min-w-0 mt-14 md:mt-0">
 				<SessionTabs />
-				<Outlet />
-			</main>
+				<main className="flex-1 overflow-x-hidden overflow-y-auto bg-dots">
+					<Outlet />
+				</main>
+			</div>
 		</div>
 	);
 }
