@@ -18,18 +18,21 @@ export function Layout() {
 	return (
 		<div className="flex h-dvh bg-background">
 			{/* Mobile top bar */}
-			<div className="md:hidden fixed top-0 left-0 right-0 z-20 bg-card border-b border-border px-3 py-2.5 flex items-center justify-between">
-				<div className="flex items-center gap-2 min-w-0">
-					<div className="w-8 h-8 rounded-lg border border-primary/20 bg-primary/10 flex items-center justify-center overflow-hidden shadow-[0_0_20px_rgba(42,168,255,0.08)]">
+			<div className="md:hidden fixed top-0 left-0 right-0 z-20 surface-glass border-b border-border px-3 py-2.5 flex items-center justify-between">
+				<div className="flex items-center gap-2.5 min-w-0">
+					<div className="w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden glow-primary-sm">
 						<img src={brandIcon} alt="" className="w-8 h-8" />
 					</div>
-					<span className="text-sm font-bold text-foreground truncate">AgentPulse</span>
+					<div className="flex items-center gap-1.5">
+						<span className="text-sm font-semibold tracking-tight text-foreground truncate">AgentPulse</span>
+						<span className="text-[9px] font-mono text-primary/60 bg-primary/8 px-1 py-0.5 rounded">CMD</span>
+					</div>
 				</div>
-				<button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="text-muted-foreground p-1">
-					<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="text-muted-foreground p-1.5 hover:text-foreground transition-colors">
+					<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
 						{mobileMenuOpen
-							? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-							: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+							? <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+							: <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
 						}
 					</svg>
 				</button>
@@ -37,8 +40,8 @@ export function Layout() {
 
 			{/* Mobile menu overlay */}
 			{mobileMenuOpen && (
-				<div className="md:hidden fixed inset-0 z-10 bg-black/50" onClick={() => setMobileMenuOpen(false)}>
-					<nav className="absolute top-14 left-0 right-0 bg-card border-b border-border p-2 space-y-0.5" onClick={(e) => e.stopPropagation()}>
+				<div className="md:hidden fixed inset-0 z-10 bg-black/60 backdrop-blur-sm animate-fade" onClick={() => setMobileMenuOpen(false)}>
+					<nav className="absolute top-14 left-0 right-0 surface-glass border-b border-border p-2 space-y-0.5 animate-in" onClick={(e) => e.stopPropagation()}>
 						{navItems.map((item) => (
 							<NavLink
 								key={item.to}
@@ -47,13 +50,15 @@ export function Layout() {
 								onClick={() => setMobileMenuOpen(false)}
 								className={({ isActive }) =>
 									cn(
-										"flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors",
-										isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground",
+										"flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all",
+										isActive
+											? "bg-primary/10 text-primary glow-primary-sm"
+											: "text-muted-foreground hover:text-foreground hover:bg-accent/50",
 									)
 								}
 							>
-								<svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d={item.icon} />
+								<svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+									<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
 								</svg>
 								{item.label}
 							</NavLink>
@@ -63,18 +68,23 @@ export function Layout() {
 			)}
 
 			{/* Desktop sidebar */}
-			<aside className="hidden md:flex w-56 flex-shrink-0 border-r border-border bg-card flex-col">
+			<aside className="hidden md:flex w-[220px] flex-shrink-0 border-r border-border bg-card/50 flex-col">
+				{/* Brand */}
 				<div className="px-4 py-5 border-b border-border">
-					<div className="flex items-center gap-2">
-						<div className="w-10 h-10 rounded-xl border border-primary/20 bg-primary/10 flex items-center justify-center overflow-hidden shadow-[0_0_24px_rgba(42,168,255,0.08)]">
-							<img src={brandIcon} alt="" className="w-10 h-10" />
+					<div className="flex items-center gap-2.5">
+						<div className="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden glow-primary-sm">
+							<img src={brandIcon} alt="" className="w-9 h-9" />
 						</div>
 						<div>
-							<span className="text-sm font-bold text-foreground">AgentPulse</span>
-							<span className="block text-[10px] text-muted-foreground leading-none">v0.1.0</span>
+							<span className="text-[13px] font-bold tracking-tight text-foreground">AgentPulse</span>
+							<div className="flex items-center gap-1 mt-0.5">
+								<span className="text-[9px] font-mono text-primary/70 bg-primary/8 px-1 py-0.5 rounded leading-none">CMD CENTER</span>
+							</div>
 						</div>
 					</div>
 				</div>
+
+				{/* Navigation */}
 				<nav className="flex-1 px-2 py-3 space-y-0.5">
 					{navItems.map((item) => (
 						<NavLink
@@ -83,25 +93,39 @@ export function Layout() {
 							end={item.to === "/"}
 							className={({ isActive }) =>
 								cn(
-									"flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-									isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-accent",
+									"group flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-all duration-200",
+									isActive
+										? "bg-primary/10 text-primary border border-primary/15"
+										: "text-muted-foreground hover:text-foreground hover:bg-accent/50 border border-transparent",
 								)
 							}
 						>
-							<svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-								<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d={item.icon} />
+							<svg
+								className={cn(
+									"w-[15px] h-[15px] flex-shrink-0 transition-colors",
+								)}
+								fill="none"
+								viewBox="0 0 24 24"
+								stroke="currentColor"
+								strokeWidth={1.5}
+							>
+								<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
 							</svg>
 							{item.label}
 						</NavLink>
 					))}
 				</nav>
+
+				{/* Footer */}
 				<div className="px-4 py-3 border-t border-border">
-					<p className="text-[10px] text-muted-foreground">Open Source - MIT License</p>
+					<p className="text-[10px] font-mono text-muted-foreground/60 tracking-wide uppercase">
+						Open Source &middot; MIT
+					</p>
 				</div>
 			</aside>
 
 			{/* Main content */}
-			<main className="flex-1 overflow-x-hidden overflow-y-auto mt-14 md:mt-0">
+			<main className="flex-1 overflow-x-hidden overflow-y-auto mt-14 md:mt-0 bg-dots">
 				<Outlet />
 			</main>
 		</div>

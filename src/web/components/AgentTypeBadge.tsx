@@ -13,14 +13,17 @@ export function AgentTypeBadge({ agentType, className }: AgentTypeBadgeProps) {
 	return (
 		<span
 			className={cn(
-				"inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium",
+				"inline-flex items-center gap-1 rounded-md px-1.5 py-[2px] text-[10px] font-mono font-semibold tracking-wider uppercase border",
 				isClaude
-					? "bg-orange-500/10 text-orange-400 border border-orange-500/20"
-					: "bg-green-500/10 text-green-400 border border-green-500/20",
+					? "bg-orange-500/8 text-orange-400/90 border-orange-500/15"
+					: "bg-green-500/8 text-green-400/90 border-green-500/15",
 				className,
 			)}
 		>
-			<span className="text-[10px]">{isClaude ? "C" : "X"}</span>
+			<span className={cn(
+				"w-1.5 h-1.5 rounded-full",
+				isClaude ? "bg-orange-400/70" : "bg-green-400/70",
+			)} />
 			{label}
 		</span>
 	);

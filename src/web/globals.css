@@ -1,48 +1,58 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
 	:root {
-		--background: 0 0% 100%;
-		--foreground: 222.2 84% 4.9%;
+		--background: 210 20% 98%;
+		--foreground: 220 25% 10%;
 		--card: 0 0% 100%;
-		--card-foreground: 222.2 84% 4.9%;
-		--primary: 221.2 83.2% 53.3%;
-		--primary-foreground: 210 40% 98%;
-		--secondary: 210 40% 96.1%;
-		--secondary-foreground: 222.2 47.4% 11.2%;
-		--muted: 210 40% 96.1%;
-		--muted-foreground: 215.4 16.3% 46.9%;
-		--accent: 210 40% 96.1%;
-		--accent-foreground: 222.2 47.4% 11.2%;
-		--destructive: 0 84.2% 60.2%;
-		--destructive-foreground: 210 40% 98%;
-		--border: 214.3 31.8% 91.4%;
-		--input: 214.3 31.8% 91.4%;
-		--ring: 221.2 83.2% 53.3%;
-		--radius: 0.5rem;
+		--card-foreground: 220 25% 10%;
+		--primary: 173 80% 40%;
+		--primary-foreground: 0 0% 100%;
+		--secondary: 210 20% 93%;
+		--secondary-foreground: 220 25% 15%;
+		--muted: 210 15% 93%;
+		--muted-foreground: 215 14% 50%;
+		--accent: 210 20% 93%;
+		--accent-foreground: 220 25% 15%;
+		--destructive: 0 72% 51%;
+		--destructive-foreground: 0 0% 100%;
+		--border: 214 20% 88%;
+		--input: 214 20% 88%;
+		--ring: 173 80% 40%;
+		--radius: 0.625rem;
+
+		--glow-primary: 173 80% 40%;
+		--surface-elevated: 0 0% 100%;
+		--surface-sunken: 210 20% 95%;
 	}
 
 	.dark {
-		--background: 222.2 84% 4.9%;
-		--foreground: 210 40% 98%;
-		--card: 222.2 84% 7%;
-		--card-foreground: 210 40% 98%;
-		--primary: 217.2 91.2% 59.8%;
-		--primary-foreground: 222.2 47.4% 11.2%;
-		--secondary: 217.2 32.6% 17.5%;
-		--secondary-foreground: 210 40% 98%;
-		--muted: 217.2 32.6% 17.5%;
-		--muted-foreground: 215 20.2% 65.1%;
-		--accent: 217.2 32.6% 17.5%;
-		--accent-foreground: 210 40% 98%;
-		--destructive: 0 62.8% 30.6%;
-		--destructive-foreground: 210 40% 98%;
-		--border: 217.2 32.6% 17.5%;
-		--input: 217.2 32.6% 17.5%;
-		--ring: 224.3 76.3% 48%;
-		--radius: 0.5rem;
+		--background: 225 35% 5.5%;
+		--foreground: 210 30% 92%;
+		--card: 225 30% 8%;
+		--card-foreground: 210 30% 92%;
+		--primary: 173 80% 46%;
+		--primary-foreground: 225 35% 5.5%;
+		--secondary: 225 20% 14%;
+		--secondary-foreground: 210 30% 92%;
+		--muted: 225 20% 14%;
+		--muted-foreground: 215 15% 55%;
+		--accent: 225 20% 14%;
+		--accent-foreground: 210 30% 92%;
+		--destructive: 0 62% 35%;
+		--destructive-foreground: 210 30% 92%;
+		--border: 225 18% 15%;
+		--input: 225 18% 15%;
+		--ring: 173 80% 46%;
+		--radius: 0.625rem;
+
+		--glow-primary: 173 80% 46%;
+		--surface-elevated: 225 25% 10%;
+		--surface-sunken: 225 35% 4%;
 	}
 }
 
@@ -50,34 +60,175 @@
 	* {
 		@apply border-border;
 	}
+	html {
+		font-family: 'Outfit', system-ui, -apple-system, sans-serif;
+	}
 	body {
 		@apply bg-background text-foreground;
 		font-feature-settings: "rlig" 1, "calt" 1;
 	}
+	code, pre, .font-mono {
+		font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace !important;
+	}
 }
 
-/* Pulse animation for active status */
+/* ── Mission Control Grid ── */
+.bg-grid {
+	background-image:
+		linear-gradient(to right, hsl(var(--border) / 0.3) 1px, transparent 1px),
+		linear-gradient(to bottom, hsl(var(--border) / 0.3) 1px, transparent 1px);
+	background-size: 24px 24px;
+}
+
+.bg-grid-dense {
+	background-image:
+		linear-gradient(to right, hsl(var(--border) / 0.15) 1px, transparent 1px),
+		linear-gradient(to bottom, hsl(var(--border) / 0.15) 1px, transparent 1px);
+	background-size: 12px 12px;
+}
+
+/* ── Dot pattern ── */
+.bg-dots {
+	background-image: radial-gradient(circle, hsl(var(--border) / 0.4) 1px, transparent 1px);
+	background-size: 16px 16px;
+}
+
+/* ── Glow effects ── */
+.glow-primary {
+	box-shadow: 0 0 20px hsl(var(--glow-primary) / 0.15),
+	            0 0 60px hsl(var(--glow-primary) / 0.05);
+}
+
+.glow-primary-sm {
+	box-shadow: 0 0 8px hsl(var(--glow-primary) / 0.2),
+	            0 0 24px hsl(var(--glow-primary) / 0.06);
+}
+
+.glow-status-active {
+	box-shadow: 0 0 8px hsl(160 84% 39% / 0.3);
+}
+
+.glow-status-working {
+	box-shadow: 0 0 8px hsl(38 92% 50% / 0.3);
+}
+
+/* ── Surface glass ── */
+.surface-glass {
+	background: hsl(var(--card) / 0.7);
+	backdrop-filter: blur(12px) saturate(1.3);
+	-webkit-backdrop-filter: blur(12px) saturate(1.3);
+}
+
+.surface-elevated {
+	background: hsl(var(--surface-elevated));
+}
+
+.surface-sunken {
+	background: hsl(var(--surface-sunken));
+}
+
+/* ── Pulse animation for active status ── */
 @keyframes pulse-dot {
-	0%, 100% { opacity: 1; }
-	50% { opacity: 0.4; }
+	0%, 100% { opacity: 1; transform: scale(1); }
+	50% { opacity: 0.4; transform: scale(0.85); }
 }
 
 .animate-pulse-dot {
 	animation: pulse-dot 2s ease-in-out infinite;
 }
 
-/* Scrollbar styling */
+/* ── Scan line (subtle, for working state) ── */
+@keyframes scan-line {
+	0% { transform: translateY(-100%); }
+	100% { transform: translateY(100%); }
+}
+
+.animate-scan {
+	position: relative;
+	overflow: hidden;
+}
+.animate-scan::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(
+		180deg,
+		transparent 0%,
+		hsl(var(--primary) / 0.04) 45%,
+		hsl(var(--primary) / 0.08) 50%,
+		hsl(var(--primary) / 0.04) 55%,
+		transparent 100%
+	);
+	animation: scan-line 3s ease-in-out infinite;
+	pointer-events: none;
+}
+
+/* ── Entrance animations ── */
+@keyframes fade-in-up {
+	0% { opacity: 0; transform: translateY(8px); }
+	100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+	0% { opacity: 0; }
+	100% { opacity: 1; }
+}
+
+.animate-in {
+	animation: fade-in-up 0.4s ease-out both;
+}
+
+.animate-fade {
+	animation: fade-in 0.3s ease-out both;
+}
+
+/* ── Stagger children ── */
+.stagger-children > * {
+	animation: fade-in-up 0.35s ease-out both;
+}
+.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2) { animation-delay: 50ms; }
+.stagger-children > *:nth-child(3) { animation-delay: 100ms; }
+.stagger-children > *:nth-child(4) { animation-delay: 150ms; }
+.stagger-children > *:nth-child(5) { animation-delay: 200ms; }
+.stagger-children > *:nth-child(6) { animation-delay: 250ms; }
+.stagger-children > *:nth-child(7) { animation-delay: 300ms; }
+.stagger-children > *:nth-child(8) { animation-delay: 350ms; }
+
+/* ── KPI number animation ── */
+@keyframes count-up {
+	0% { opacity: 0; transform: translateY(4px); }
+	100% { opacity: 1; transform: translateY(0); }
+}
+
+.animate-count {
+	animation: count-up 0.5s ease-out both;
+}
+
+/* ── Scrollbar ── */
 ::-webkit-scrollbar {
-	width: 6px;
-	height: 6px;
+	width: 5px;
+	height: 5px;
 }
 ::-webkit-scrollbar-track {
 	background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-	background: hsl(var(--muted));
-	border-radius: 3px;
+	background: hsl(var(--border));
+	border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb:hover {
-	background: hsl(var(--muted-foreground));
+	background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* ── Focus visible ── */
+*:focus-visible {
+	outline: 2px solid hsl(var(--ring));
+	outline-offset: 2px;
+}
+
+/* ── Selection ── */
+::selection {
+	background: hsl(var(--primary) / 0.25);
+	color: hsl(var(--foreground));
 }

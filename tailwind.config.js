@@ -4,6 +4,10 @@ export default {
 	content: ["./src/web/**/*.{ts,tsx,html}"],
 	theme: {
 		extend: {
+			fontFamily: {
+				sans: ["'Outfit'", "system-ui", "-apple-system", "sans-serif"],
+				mono: ["'JetBrains Mono'", "ui-monospace", "'Cascadia Code'", "monospace"],
+			},
 			colors: {
 				border: "hsl(var(--border))",
 				input: "hsl(var(--input))",
