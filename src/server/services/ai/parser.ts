@@ -69,16 +69,33 @@ export function parseDecision(raw: string): ParseResult {
 		return { ok: false, error: "Empty response from model", schemaViolation: false };
 	}
 
-	const cleaned = stripCodeFence(raw.trim());
+	const cleaned = stripThinkTag(raw.trim());
 	let parsed: unknown;
+
+	// Pass 1: strict JSON parse on the think-stripped, fence-stripped text.
+	// This keeps prose rejection tight for well-behaved models.
 	try {
-		parsed = JSON.parse(cleaned);
-	} catch (err) {
-		return {
-			ok: false,
-			error: `Invalid JSON: ${(err as Error).message}`,
-			schemaViolation: false,
-		};
+		parsed = JSON.parse(stripCodeFence(cleaned));
+	} catch {
+		// Pass 2: locate a balanced JSON object in the response if the model
+		// sprinkled prose around it (common with chat-tuned local models).
+		const extracted = extractJsonObject(cleaned);
+		if (!extracted) {
+			return {
+				ok: false,
+				error: "No JSON object found in response",
+				schemaViolation: false,
+			};
+		}
+		try {
+			parsed = JSON.parse(extracted);
+		} catch (err) {
+			return {
+				ok: false,
+				error: `Invalid JSON: ${(err as Error).message}`,
+				schemaViolation: false,
+			};
+		}
 	}
 
 	if (!isObject(parsed)) {
@@ -177,10 +194,55 @@ function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Strip any leading <think>...</think> block emitted by reasoning models. */
+function stripThinkTag(input: string): string {
+	const close = input.lastIndexOf("</think>");
+	if (close < 0) return input;
+	return input.slice(close + "</think>".length).trim();
+}
+
 function stripCodeFence(input: string): string {
 	if (!input.startsWith("```")) return input;
-	// ```json\n...\n``` or ```\n...\n```
 	const fenceMatch = input.match(/^```(?:json)?\n?([\s\S]*?)\n?```$/);
 	if (fenceMatch) return fenceMatch[1];
 	return input;
+}
+
+/**
+ * Last-resort JSON object extractor for messy LLM output. Walks the string,
+ * tracking brace depth with string-awareness so `}` inside strings doesn't
+ * close the object. Returns the first balanced top-level JSON object found
+ * or null.
+ */
+function extractJsonObject(input: string): string | null {
+	let depth = 0;
+	let start = -1;
+	let inString = false;
+	let escape = false;
+	for (let i = 0; i < input.length; i++) {
+		const ch = input[i];
+		if (escape) {
+			escape = false;
+			continue;
+		}
+		if (ch === "\\") {
+			escape = true;
+			continue;
+		}
+		if (ch === '"') {
+			inString = !inString;
+			continue;
+		}
+		if (inString) continue;
+		if (ch === "{") {
+			if (depth === 0) start = i;
+			depth++;
+		} else if (ch === "}") {
+			depth--;
+			if (depth === 0 && start >= 0) {
+				return input.slice(start, i + 1);
+			}
+		}
+	}
+	return null;
 }

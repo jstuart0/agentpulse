@@ -178,10 +178,11 @@ async function run() {
 				}),
 			});
 
-			// Wait for the debounced runner. ~2.5s for the debounce + LLM round-trip.
+			// Wait for the debounced runner. Larger models on Mac Studio take
+			// 30-60s for cold completions, so budget generously.
 			console.log("  (waiting for watcher to wake)");
 			let proposal: Record<string, unknown> | null = null;
-			const deadline = Date.now() + 45_000;
+			const deadline = Date.now() + 180_000;
 			while (Date.now() < deadline) {
 				const { proposals } = await req<{ proposals: Array<Record<string, unknown>> }>(
 					`/ai/sessions/${sessionId}/watcher`,
@@ -202,9 +203,13 @@ async function run() {
 
 			const state = proposal.state;
 			const decision = proposal.decision;
+			const raw = (proposal.rawResponse as Record<string, unknown> | null) ?? null;
+			const decisionObj = raw?.decision as Record<string, unknown> | undefined;
 			const content =
 				(proposal.nextPrompt as string | null) ||
 				(proposal.reportSummary as string | null) ||
+				(decisionObj?.proposal as string | null) ||
+				(decisionObj?.nextPrompt as string | null) ||
 				(proposal.errorMessage as string | null) ||
 				"(empty)";
 			const cost = proposal.costCents as number;

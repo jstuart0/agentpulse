@@ -63,8 +63,16 @@ describe("parser: failures", () => {
 		expect(res.ok).toBe(false);
 	});
 
-	test("rejects prose", () => {
-		const res = parseDecision('Sure! {"decision":"wait"}');
+	test("tolerates prose wrapping (extracts the first JSON object)", () => {
+		// Local reasoning models routinely add commentary around their JSON.
+		// We accept them because the real safety gate is HITL + dispatch-filter,
+		// not the parser.
+		const res = parseDecision('Sure! Here is the plan: {"decision":"wait"} done.');
+		expect(res.ok).toBe(true);
+	});
+
+	test("still rejects when no JSON object is present", () => {
+		const res = parseDecision("Sure, I will do that!");
 		expect(res.ok).toBe(false);
 	});
 

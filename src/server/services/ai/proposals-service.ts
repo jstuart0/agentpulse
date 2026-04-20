@@ -163,14 +163,16 @@ export async function getOpenHitlProposal(sessionId: string): Promise<ProposalRe
 /**
  * Cancel any open HITL requests for a session. Called when the user disables
  * the watcher, when the global kill switch fires, or when a newer trigger
- * supersedes the previous one.
+ * supersedes the previous one. Only targets `hitl_waiting` — in-flight
+ * `pending` proposals belong to a live runner and aren't the caller's to
+ * cancel.
  */
 export async function cancelOpenHitl(sessionId: string, reason = "cancelled"): Promise<number> {
 	const now = new Date().toISOString();
 	const res = await db
 		.update(watcherProposals)
 		.set({ state: "cancelled", errorMessage: reason, updatedAt: now })
-		.where(and(eq(watcherProposals.sessionId, sessionId), inArray(watcherProposals.state, ["hitl_waiting", "pending"])))
+		.where(and(eq(watcherProposals.sessionId, sessionId), eq(watcherProposals.state, "hitl_waiting")))
 		.returning();
 	return res.length;
 }

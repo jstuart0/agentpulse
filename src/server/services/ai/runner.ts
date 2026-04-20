@@ -3,7 +3,7 @@ import { db } from "../../db/client.js";
 import { sessions, managedSessions, supervisors } from "../../db/schema.js";
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import { sessionBus } from "../notifier.js";
-import { isAiActive } from "./feature.js";
+import { isAiActive, isAiBuildEnabled } from "./feature.js";
 import { buildWatcherContext } from "./context.js";
 import { classifyContinuability } from "./continuability.js";
 import { parseDecision } from "./parser.js";
@@ -53,6 +53,7 @@ interface ScheduledRun {
  */
 export class WatcherRunner {
 	private readonly scheduled = new Map<string, ScheduledRun>();
+	private readonly inFlight = new Set<string>();
 	private started = false;
 
 	start(): void {
@@ -93,6 +94,19 @@ export class WatcherRunner {
 	private async evaluate(sessionId: string, trigger?: SessionEvent): Promise<void> {
 		if (!(await isAiActive())) return;
 
+		// Skip if another evaluate is already running for this session — we
+		// don't want two concurrent LLM calls stepping on each other's
+		// pending proposals.
+		if (this.inFlight.has(sessionId)) return;
+		this.inFlight.add(sessionId);
+		try {
+			await this.evaluateInner(sessionId, trigger);
+		} finally {
+			this.inFlight.delete(sessionId);
+		}
+	}
+
+	private async evaluateInner(sessionId: string, trigger?: SessionEvent): Promise<void> {
 		const config = await getWatcherConfig(sessionId);
 		if (!config || !config.enabled) return;
 
@@ -468,10 +482,15 @@ async function loadManagedContext(sessionId: string): Promise<
 // Single instance used by server bootstrap.
 export const watcherRunner = new WatcherRunner();
 
-/** Boot the watcher runner, but only when the AI feature is enabled at build time. */
+/**
+ * Boot the watcher runner whenever the feature is compiled in. Runtime
+ * toggle + kill-switch + per-session config are checked on every wake, so
+ * the runner can stay live and react as soon as a user flips those on
+ * without needing a server restart.
+ */
 export async function maybeStartWatcherRunner(): Promise<void> {
-	if (!(await isAiActive())) {
-		console.log("[ai-watcher] feature off at boot; runner idle");
+	if (!isAiBuildEnabled()) {
+		console.log("[ai-watcher] feature not compiled in; runner idle");
 		return;
 	}
 	watcherRunner.start();
