@@ -1,5 +1,11 @@
+import type {
+	ControlAction,
+	LaunchRequest,
+	Session,
+	SessionEvent,
+	SupervisorRecord,
+} from "../../shared/types.js";
 import { APP_API_BASE } from "./paths.js";
-import type { LaunchRequest, Session, SessionEvent, SupervisorRecord, ControlAction } from "../../shared/types.js";
 
 const BASE_URL = APP_API_BASE;
 
@@ -30,7 +36,9 @@ export const api = {
 	},
 
 	getSession: (sessionId: string) =>
-		request<{ session: Session; events: SessionEvent[]; controlActions?: ControlAction[] }>(`/sessions/${sessionId}`),
+		request<{ session: Session; events: SessionEvent[]; controlActions?: ControlAction[] }>(
+			`/sessions/${sessionId}`,
+		),
 
 	getTimeline: (sessionId: string, limit = 50, offset = 0) =>
 		request<{ events: SessionEvent[] }>(
@@ -136,7 +144,11 @@ export const api = {
 
 	getSupervisor: (id: string) => request<{ supervisor: SupervisorRecord }>(`/supervisors/${id}`),
 
-	enrollSupervisor: (body: { name?: string; expiresAt?: string | null; supervisorId?: string | null }) =>
+	enrollSupervisor: (body: {
+		name?: string;
+		expiresAt?: string | null;
+		supervisorId?: string | null;
+	}) =>
 		request<{
 			token: string;
 			info: {
@@ -234,15 +246,25 @@ export const api = {
 	getHealth: () => request<{ status: string }>("/health"),
 
 	// --- AI watcher ---
-	getAiStatus: () =>
-		request<{ build: boolean; runtime: boolean; killSwitch: boolean; active: boolean }>(
-			"/ai/status",
-		),
-	updateAiStatus: (body: { enabled?: boolean; killSwitch?: boolean }) =>
-		request<{ build: boolean; runtime: boolean; killSwitch: boolean; active: boolean }>(
-			"/ai/status",
-			{ method: "PUT", body: JSON.stringify(body) },
-		),
+	getAiStatus: () => request<AiStatusResponse>("/ai/status"),
+	updateAiStatus: (body: {
+		enabled?: boolean;
+		killSwitch?: boolean;
+		classifierEnabled?: boolean;
+		classifierAffectsRunner?: boolean;
+	}) =>
+		request<AiStatusResponse>("/ai/status", {
+			method: "PUT",
+			body: JSON.stringify(body),
+		}),
+
+	getSessionIntelligence: (sessionId: string) =>
+		request<{ intelligence: SessionIntelligence }>(`/ai/sessions/${sessionId}/intelligence`),
+	getIntelligenceBatch: (sessionIds: string[]) =>
+		request<{ intelligence: Record<string, SessionIntelligence> }>("/ai/intelligence/batch", {
+			method: "POST",
+			body: JSON.stringify({ sessionIds }),
+		}),
 
 	getAiProviders: () =>
 		request<{ providers: AiProvider[]; defaultProviderId: string | null }>("/ai/providers"),
@@ -292,12 +314,7 @@ export const api = {
 	getAiSpend: () => request<{ date: string; spendCents: number }>("/ai/spend"),
 };
 
-export type AiProviderKind =
-	| "anthropic"
-	| "openai"
-	| "google"
-	| "openrouter"
-	| "openai_compatible";
+export type AiProviderKind = "anthropic" | "openai" | "google" | "openrouter" | "openai_compatible";
 
 export interface AiProvider {
 	id: string;
@@ -342,6 +359,26 @@ export interface AiWatcherConfig {
 	maxDailyCents: number | null;
 	systemPrompt: string | null;
 	createdAt: string;
+	updatedAt: string;
+}
+
+export interface AiStatusResponse {
+	build: boolean;
+	runtime: boolean;
+	killSwitch: boolean;
+	active: boolean;
+	classifierEnabled?: boolean;
+	classifierAffectsRunner?: boolean;
+}
+
+export type SessionHealthState = "healthy" | "blocked" | "stuck" | "risky" | "complete_candidate";
+
+export interface SessionIntelligence {
+	health: SessionHealthState;
+	reasonCode: string;
+	explanation: string;
+	confidence: number;
+	evidence: string[];
 	updatedAt: string;
 }
 

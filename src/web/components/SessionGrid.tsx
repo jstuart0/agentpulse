@@ -1,13 +1,46 @@
-import { SessionCard } from "./SessionCard.js";
-import { extractProjectName } from "../lib/utils.js";
+import { useEffect, useState } from "react";
 import type { Session } from "../../shared/types.js";
+import { type SessionIntelligence, api } from "../lib/api.js";
+import { extractProjectName } from "../lib/utils.js";
+import { SessionCard } from "./SessionCard.js";
 
 interface SessionGridProps {
 	sessions: Session[];
 	isLoading: boolean;
 }
 
+function useSessionIntelligence(
+	sessions: Session[],
+): Record<string, SessionIntelligence | undefined> {
+	const [map, setMap] = useState<Record<string, SessionIntelligence | undefined>>({});
+	const activeIds = sessions
+		.filter((s) => s.status === "active" || s.status === "idle")
+		.map((s) => s.sessionId);
+	const key = activeIds.sort().join(",");
+
+	useEffect(() => {
+		if (activeIds.length === 0) return;
+		let cancelled = false;
+		api
+			.getIntelligenceBatch(activeIds)
+			.then((res) => {
+				if (cancelled) return;
+				setMap(res.intelligence ?? {});
+			})
+			.catch(() => {
+				// Silent: classifier may be disabled or AI feature off.
+			});
+		return () => {
+			cancelled = true;
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [key]);
+
+	return map;
+}
+
 export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
+	const intelligence = useSessionIntelligence(sessions);
 	if (isLoading) {
 		return (
 			<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
@@ -25,8 +58,18 @@ export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
 	if (sessions.length === 0) {
 		return (
 			<div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-				<svg className="w-16 h-16 mb-4 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-					<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+				<svg
+					className="w-16 h-16 mb-4 opacity-30"
+					fill="none"
+					viewBox="0 0 24 24"
+					stroke="currentColor"
+				>
+					<path
+						strokeLinecap="round"
+						strokeLinejoin="round"
+						strokeWidth={1.5}
+						d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+					/>
 				</svg>
 				<p className="text-lg font-medium mb-1">No sessions</p>
 				<p className="text-sm">Try a different filter or start a new agent session.</p>
@@ -38,7 +81,13 @@ export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
 	const sorted = [...sessions].sort((a, b) => {
 		if (a.isPinned && !b.isPinned) return -1;
 		if (!a.isPinned && b.isPinned) return 1;
-		const statusOrder: Record<string, number> = { active: 0, idle: 1, completed: 2, failed: 3, archived: 4 };
+		const statusOrder: Record<string, number> = {
+			active: 0,
+			idle: 1,
+			completed: 2,
+			failed: 3,
+			archived: 4,
+		};
 		const statusDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
 		if (statusDiff !== 0) return statusDiff;
 		return new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime();
@@ -58,7 +107,11 @@ export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
 		return (
 			<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
 				{sorted.map((session) => (
-					<SessionCard key={session.sessionId} session={session} />
+					<SessionCard
+						key={session.sessionId}
+						session={session}
+						intelligence={intelligence[session.sessionId]}
+					/>
 				))}
 			</div>
 		);
@@ -70,17 +123,21 @@ export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
 			{Array.from(groups.entries()).map(([project, projectSessions]) => (
 				<div key={project}>
 					<div className="flex flex-col items-start gap-1.5 mb-3 md:flex-row md:items-center md:gap-2">
-						<h3 className="text-sm font-semibold text-foreground">
-							{extractProjectName(project)}
-						</h3>
+						<h3 className="text-sm font-semibold text-foreground">{extractProjectName(project)}</h3>
 						<span className="text-xs text-muted-foreground">
 							{projectSessions.length} session{projectSessions.length !== 1 ? "s" : ""}
 						</span>
-						<span className="text-[10px] text-muted-foreground break-all md:truncate md:max-w-xs">{project}</span>
+						<span className="text-[10px] text-muted-foreground break-all md:truncate md:max-w-xs">
+							{project}
+						</span>
 					</div>
 					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
 						{projectSessions.map((session) => (
-							<SessionCard key={session.sessionId} session={session} />
+							<SessionCard
+								key={session.sessionId}
+								session={session}
+								intelligence={intelligence[session.sessionId]}
+							/>
 						))}
 					</div>
 				</div>

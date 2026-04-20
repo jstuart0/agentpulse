@@ -7,7 +7,8 @@ import { emitAiEvent, loadRecentEvents, stampUserPrompt, stampWatcherState } fro
 import { buildWatcherContext } from "./context.js";
 import { classifyContinuability } from "./continuability.js";
 import { checkDispatch } from "./dispatch-filter.js";
-import { isAiActive, isAiBuildEnabled } from "./feature.js";
+import { classifierAffectsRunner, isAiActive, isAiBuildEnabled } from "./feature.js";
+import { intelligenceForSession } from "./intelligence-service.js";
 import { priceCompletion } from "./llm/pricing.js";
 import { getAdapter } from "./llm/registry.js";
 import { LlmError } from "./llm/types.js";
@@ -264,12 +265,32 @@ export class WatcherRunner {
 			rawPayload: { proposal_id: pending.id, run_id: run.id },
 		});
 
+		// Phase 2 hook: fold the classifier's summary into the prompt only
+		// when the operator has enabled `ai.classifierAffectsRunner`. Off by
+		// default — badges work without runner integration.
+		let intelligenceHint: Parameters<typeof buildWatcherContext>[0]["intelligenceHint"];
+		if (await classifierAffectsRunner()) {
+			try {
+				const intel = await intelligenceForSession(sessionId);
+				if (intel) {
+					intelligenceHint = {
+						health: intel.health,
+						reasonCode: intel.reasonCode,
+						explanation: intel.explanation,
+					};
+				}
+			} catch (err) {
+				console.warn(`[ai-watcher] classifier hint failed for ${sessionId}:`, err);
+			}
+		}
+
 		// Build prompt, call LLM.
 		const ctx = buildWatcherContext({
 			session: session as unknown as Session,
 			events: recent,
 			triggerType: run.triggerKind,
 			customSystemPrompt: config.systemPrompt,
+			intelligenceHint,
 		});
 
 		const apiKey = await getProviderApiKey(provider.id);

@@ -6,13 +6,21 @@ import { settings } from "../db/schema.js";
 import { emitAiEvent } from "../services/ai/ai-events.js";
 import { checkDispatch } from "../services/ai/dispatch-filter.js";
 import {
+	AI_CLASSIFIER_AFFECTS_RUNNER_KEY,
+	AI_CLASSIFIER_ENABLED_KEY,
 	AI_KILL_SWITCH_KEY,
 	AI_RUNTIME_ENABLED_KEY,
+	classifierAffectsRunner,
 	isAiActive,
 	isAiBuildEnabled,
 	isAiRuntimeEnabled,
+	isClassifierEnabled,
 	isKillSwitchActive,
 } from "../services/ai/feature.js";
+import {
+	intelligenceForSession,
+	intelligenceForSessions,
+} from "../services/ai/intelligence-service.js";
 import type { ProviderKind } from "../services/ai/llm/types.js";
 import {
 	cancelOpenHitl,
@@ -77,32 +85,46 @@ aiRouter.get("/ai/status", async (c) => {
 	const runtime = await isAiRuntimeEnabled();
 	const killSwitch = await isKillSwitchActive();
 	const active = await isAiActive();
-	return c.json({ build, runtime, killSwitch, active });
+	const classifierEnabled = await isClassifierEnabled();
+	const classifierRunnerInput = await classifierAffectsRunner();
+	return c.json({
+		build,
+		runtime,
+		killSwitch,
+		active,
+		classifierEnabled,
+		classifierAffectsRunner: classifierRunnerInput,
+	});
 });
 
 aiRouter.put("/ai/status", async (c) => {
 	const gate = await requireAiBuild(c);
 	if (gate) return gate;
-	const body = await c.req.json<{ enabled?: boolean; killSwitch?: boolean }>();
+	const body = await c.req.json<{
+		enabled?: boolean;
+		killSwitch?: boolean;
+		classifierEnabled?: boolean;
+		classifierAffectsRunner?: boolean;
+	}>();
 	const now = new Date().toISOString();
 
-	if (body.enabled !== undefined) {
+	const upsert = async (key: string, value: unknown) => {
 		await db
 			.insert(settings)
-			.values({ key: AI_RUNTIME_ENABLED_KEY, value: body.enabled, updatedAt: now })
+			.values({ key, value, updatedAt: now })
 			.onConflictDoUpdate({
 				target: settings.key,
-				set: { value: body.enabled, updatedAt: now },
+				set: { value, updatedAt: now },
 			});
+	};
+
+	if (body.enabled !== undefined) await upsert(AI_RUNTIME_ENABLED_KEY, body.enabled);
+	if (body.killSwitch !== undefined) await upsert(AI_KILL_SWITCH_KEY, body.killSwitch);
+	if (body.classifierEnabled !== undefined) {
+		await upsert(AI_CLASSIFIER_ENABLED_KEY, body.classifierEnabled);
 	}
-	if (body.killSwitch !== undefined) {
-		await db
-			.insert(settings)
-			.values({ key: AI_KILL_SWITCH_KEY, value: body.killSwitch, updatedAt: now })
-			.onConflictDoUpdate({
-				target: settings.key,
-				set: { value: body.killSwitch, updatedAt: now },
-			});
+	if (body.classifierAffectsRunner !== undefined) {
+		await upsert(AI_CLASSIFIER_AFFECTS_RUNNER_KEY, body.classifierAffectsRunner);
 	}
 
 	return c.json({
@@ -110,7 +132,41 @@ aiRouter.put("/ai/status", async (c) => {
 		runtime: await isAiRuntimeEnabled(),
 		killSwitch: await isKillSwitchActive(),
 		active: await isAiActive(),
+		classifierEnabled: await isClassifierEnabled(),
+		classifierAffectsRunner: await classifierAffectsRunner(),
 	});
+});
+
+// --------------------------------------------------------------------------
+// Session intelligence (Phase 2 classifier)
+// --------------------------------------------------------------------------
+
+aiRouter.get("/ai/sessions/:sessionId/intelligence", async (c) => {
+	if (!isAiBuildEnabled()) {
+		return c.json({ error: "ai_disabled" }, 404);
+	}
+	if (!(await isClassifierEnabled())) {
+		return c.json({ error: "classifier_disabled" }, 409);
+	}
+	const sessionId = c.req.param("sessionId") ?? "";
+	const intel = await intelligenceForSession(sessionId);
+	if (!intel) return c.json({ error: "Session not found" }, 404);
+	return c.json({ intelligence: intel });
+});
+
+aiRouter.post("/ai/intelligence/batch", async (c) => {
+	if (!isAiBuildEnabled()) {
+		return c.json({ error: "ai_disabled" }, 404);
+	}
+	if (!(await isClassifierEnabled())) {
+		return c.json({ intelligence: {} });
+	}
+	const body = await c.req.json<{ sessionIds: string[] }>();
+	const ids = Array.isArray(body.sessionIds) ? body.sessionIds.slice(0, 200) : [];
+	const map = await intelligenceForSessions(ids);
+	const out: Record<string, unknown> = {};
+	for (const [id, intel] of map) out[id] = intel;
+	return c.json({ intelligence: out });
 });
 
 // --------------------------------------------------------------------------
