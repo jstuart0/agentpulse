@@ -46,7 +46,7 @@ macOS / Linux:
 This installs AgentPulse locally with Bun + SQLite, starts the web app and local supervisor as services, and configures Claude Code + Codex hooks automatically.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | bash
 ```
 
 Windows:
@@ -62,7 +62,7 @@ When it finishes, open [http://localhost:3000](http://localhost:3000) and start 
 If you prefer Docker, this starts the container, waits for health, and configures hooks:
 
 ```bash
-docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jaystuart/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -sSL http://localhost:3000/setup.sh | bash
+docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -sSL http://localhost:3000/setup.sh | bash
 ```
 
 **Done.** Open [http://localhost:3000](http://localhost:3000) and you have:
@@ -72,7 +72,7 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 
 > **Why localhost?** Claude Code and Codex block HTTP hooks to remote/private IPs as a security measure. Only `localhost` / `127.0.0.1` is allowed. This keeps things simple -- one Docker container on your machine, no networking to configure. If port 3000 is taken, use any free port:
 > ```bash
-> docker run -d -p 4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jaystuart/agentpulse
+> docker run -d -p 4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
 > curl -sSL http://localhost:4000/setup.sh | bash
 > ```
 
@@ -96,7 +96,7 @@ Recommended for most OSS users. No Docker, no Postgres, no Kubernetes. This is t
 macOS / Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | bash
 ```
 
 Windows:
@@ -124,7 +124,7 @@ Useful options:
 macOS / Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | bash -s -- \
   --port 4000 \
   --public-url http://localhost:4000 \
   --data-dir "$HOME/.agentpulse/data"
@@ -142,7 +142,7 @@ If you want auth enabled from the start:
 macOS / Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jaystuart/agentpulse/main/scripts/install-local.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | bash -s -- \
   --disable-auth false \
   --api-key ap_your_key_here
 ```
@@ -181,7 +181,7 @@ That observability-only mode still gives you:
 Best if you already use Docker locally.
 
 ```bash
-docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jaystuart/agentpulse
+docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
 curl -sSL http://localhost:3000/setup.sh | bash
 ```
 
@@ -219,7 +219,7 @@ Your Mac                                    Your server / k8s cluster
 Run AgentPulse on your machine, bind to `0.0.0.0` so other devices on your LAN can view the dashboard:
 
 ```bash
-docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e HOST=0.0.0.0 --restart unless-stopped --name agentpulse ghcr.io/jaystuart/agentpulse
+docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e HOST=0.0.0.0 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
 curl -sSL http://localhost:3000/setup.sh | bash
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
@@ -259,7 +259,7 @@ Run a local instance for hook collection and a remote instance for the dashboard
 
 ```bash
 # On your machine (hooks point here)
-docker run -d -p 3000:3000 -e DISABLE_AUTH=true -e DATABASE_URL=postgresql://user:pass@db-host:5432/agentpulse --restart unless-stopped --name agentpulse ghcr.io/jaystuart/agentpulse
+docker run -d -p 3000:3000 -e DISABLE_AUTH=true -e DATABASE_URL=postgresql://user:pass@db-host:5432/agentpulse --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
 curl -sSL http://localhost:3000/setup.sh | bash
 
 # On your server (dashboard accessed from anywhere)
@@ -374,7 +374,7 @@ kubectl apply -f deploy/k8s/
 ## Develop
 
 ```bash
-git clone https://github.com/jaystuart/agentpulse.git
+git clone https://github.com/jstuart0/agentpulse.git
 cd agentpulse
 bun install
 bun run dev        # starts API server + Vite dev server
