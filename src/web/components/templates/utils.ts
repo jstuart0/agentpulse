@@ -5,7 +5,6 @@ import type {
 	LaunchMode,
 	SandboxMode,
 	SessionTemplateInput,
-	SupervisorRecord,
 } from "../../../shared/types.js";
 
 export type AgentFilter = "all" | AgentType;
@@ -118,63 +117,10 @@ export function formatLaunchTime(value: string | null | undefined) {
 	return format(date, "MMM d, yyyy h:mm:ss a");
 }
 
-function isWithinTrustedRoot(cwd: string, roots: string[]) {
-	const normalizedCwd = cwd.trim().replace(/\\/g, "/");
-	if (!normalizedCwd) return true;
-	return roots.some((root) => {
-		const normalizedRoot = root.replace(/\\/g, "/");
-		return normalizedCwd === normalizedRoot || normalizedCwd.startsWith(`${normalizedRoot}/`);
-	});
-}
-
-export function getHostCompatibility(
-	template: SessionTemplateInput,
-	supervisor: SupervisorRecord,
-	requestedLaunchMode: LaunchMode,
-) {
-	const errors: string[] = [];
-	const warnings: string[] = [];
-
-	if (!supervisor.capabilities.agentTypes.includes(template.agentType)) {
-		errors.push(`Does not support ${template.agentType === "claude_code" ? "Claude Code" : "Codex CLI"}.`);
-	}
-	if (!supervisor.capabilities.launchModes.includes(requestedLaunchMode)) {
-		errors.push(`Does not support ${requestedLaunchMode}.`);
-	}
-	if (template.agentType === "claude_code" && !supervisor.capabilities.executables?.claude?.available) {
-		errors.push("Claude executable is not configured or not on PATH.");
-	}
-	if (template.agentType === "codex_cli" && !supervisor.capabilities.executables?.codex?.available) {
-		errors.push("Codex executable is not configured or not on PATH.");
-	}
-	if (template.cwd.trim() && !isWithinTrustedRoot(template.cwd, supervisor.trustedRoots)) {
-		errors.push("Working directory is outside trusted roots.");
-	}
-	if (!template.model?.trim()) {
-		warnings.push("Will use the provider default model.");
-	}
-	if (
-		requestedLaunchMode === "interactive_terminal" &&
-		template.agentType === "claude_code" &&
-		!supervisor.capabilities.interactiveTerminalControl?.available
-	) {
-		warnings.push(
-			supervisor.capabilities.interactiveTerminalControl?.reason ||
-				"Interactive prompt handoff from AgentPulse is not ready on this host.",
-		);
-	}
-	const executablePath =
-		template.agentType === "claude_code"
-			? supervisor.capabilities.executables?.claude?.resolvedPath
-			: supervisor.capabilities.executables?.codex?.resolvedPath;
-	if (executablePath) {
-		warnings.push(`Using ${executablePath}.`);
-	}
-
-	return {
-		ok: errors.length === 0,
-		errors,
-		warnings,
-	};
-}
+// WS6 Validation unification: host-compatibility rules (trusted roots,
+// executable presence, launch-mode support, interactive-terminal
+// readiness) live exclusively in the backend's template-preview service
+// and are surfaced via TemplatePreview.hostCompatibility. Do not
+// reintroduce rule computation on the browser — render preview results
+// only.
 

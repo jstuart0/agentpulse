@@ -16,7 +16,7 @@ import {
 } from "../../shared/event-authority.js";
 import { generateSessionName } from "./name-generator.js";
 import { normalizeHookEvent, normalizeStatusEvents, type NormalizedEvent } from "./event-normalizer.js";
-import { enrichObservedSession } from "./correlation-enricher.js";
+import { associateObservedSession } from "./launch-dispatch.js";
 
 function chooseHigherAuthorityEvent<T extends { source: EventSource | string; createdAt?: string | null }>(left: T, right: T) {
 	const leftPriority = getEventSourcePriority(left.source);
@@ -270,7 +270,7 @@ export async function processHookEvent(
 	await db.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
 
 	if (isNew || eventType === "SessionStart") {
-		await enrichObservedSession(sessionId);
+		await associateObservedSession({ sessionId });
 	}
 
 	// Store normalized timeline events

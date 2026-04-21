@@ -34,7 +34,7 @@ import {
 import { notifySessionEvents, notifySessionUpdated } from "../services/notifier.js";
 import { getSession } from "../services/session-tracker.js";
 import { claimNextControlAction, updateControlAction } from "../services/control-actions.js";
-import { enrichObservedSession } from "../services/correlation-enricher.js";
+import { associateObservedSession } from "../services/launch-dispatch.js";
 
 const supervisorsRouter = new Hono();
 
@@ -168,7 +168,7 @@ supervisorsRouter.post("/supervisors/:id/managed-session-state", requireSupervis
 	const body = await c.req.json<ManagedSessionStateInput>();
 	if (!body.sessionId) return c.json({ error: "sessionId is required" }, 400);
 	const result = await upsertManagedSessionState(supervisorId, body);
-	await enrichObservedSession(body.sessionId, supervisorId);
+	await associateObservedSession({ sessionId: body.sessionId, supervisorId });
 	notifySessionUpdated(result.session);
 	return c.json(result);
 });

@@ -1,33 +1,48 @@
-import { readFile, stat } from "fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { and, eq, isNotNull, ne } from "drizzle-orm";
+import type { AgentType, Session } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
-import { and, eq, isNotNull, ne } from "drizzle-orm";
-import { insertNormalizedEvents } from "./event-processor.js";
 import { createAssistantTranscriptEvent, type NormalizedEvent } from "./event-normalizer.js";
+import { insertNormalizedEvents } from "./event-processor.js";
 import { notifySessionEvents } from "./notifier.js";
-import type { AgentType, Session } from "../../shared/types.js";
 
-const TRANSCRIPT_SYNC_INTERVAL_MS = 1000;
-const TRANSCRIPT_SYNC_BATCH_SIZE = 10;
+/**
+ * Transcript sync worker (WS3). Scans active-session transcript files
+ * out-of-band from the request path, inserts assistant-visible deltas
+ * as timeline events, and delegates fanout to the notifier service.
+ *
+ * Design invariants:
+ *   - async IO only — never synchronous readFileSync/statSync
+ *   - bounded per-tick work (at most TICK_BUDGET sessions)
+ *   - round-robin through active sessions across ticks so one hot
+ *     transcript can't starve others
+ *   - per-session byte offset stored in session.metadata.transcriptCursor
+ *     so we only re-read the delta since last tick
+ *   - transcript lag is observable via logs; inserts pass through
+ *     insertNormalizedEvents → notifier, never touching the WS handler
+ */
 
-type TranscriptCursor = {
-	offset?: number;
-};
+const TICK_INTERVAL_MS = 2_000;
+const TICK_BUDGET = 3;
+
+type TranscriptCursor = { offset?: number };
 
 type SessionWithMetadata = Pick<
 	Session,
 	"sessionId" | "agentType" | "transcriptPath" | "metadata"
 >;
 
-function getTranscriptCursor(metadata: Record<string, unknown> | null | undefined): TranscriptCursor {
+function getTranscriptCursor(
+	metadata: Record<string, unknown> | null | undefined,
+): TranscriptCursor {
 	if (!metadata || typeof metadata !== "object") return {};
 	const value = metadata.transcriptCursor;
-	return value && typeof value === "object" ? value as TranscriptCursor : {};
+	return value && typeof value === "object" ? (value as TranscriptCursor) : {};
 }
 
 function parseClaudeTranscriptDelta(lines: string[]): NormalizedEvent[] {
 	const events: NormalizedEvent[] = [];
-
 	for (const line of lines) {
 		if (!line.trim()) continue;
 		try {
@@ -55,20 +70,22 @@ function parseClaudeTranscriptDelta(lines: string[]): NormalizedEvent[] {
 			// Ignore malformed lines.
 		}
 	}
-
 	return events;
 }
 
 function parseCodexTranscriptDelta(lines: string[]): NormalizedEvent[] {
 	const events: NormalizedEvent[] = [];
-
 	for (const line of lines) {
 		if (!line.trim()) continue;
 		try {
 			const entry = JSON.parse(line) as Record<string, unknown>;
 			if (entry.type !== "event_msg") continue;
 			const payload = entry.payload as Record<string, unknown> | undefined;
-			if (payload?.type !== "agent_message" || typeof payload.message !== "string" || !payload.message.trim()) {
+			if (
+				payload?.type !== "agent_message" ||
+				typeof payload.message !== "string" ||
+				!payload.message.trim()
+			) {
 				continue;
 			}
 			events.push(
@@ -86,21 +103,23 @@ function parseCodexTranscriptDelta(lines: string[]): NormalizedEvent[] {
 			// Ignore malformed lines.
 		}
 	}
-
 	return events;
 }
 
-function parseTranscriptDelta(agentType: AgentType, lines: string[]): NormalizedEvent[] {
+function parseTranscriptDelta(
+	agentType: AgentType,
+	lines: string[],
+): NormalizedEvent[] {
 	return agentType === "claude_code"
 		? parseClaudeTranscriptDelta(lines)
 		: parseCodexTranscriptDelta(lines);
 }
 
-async function syncTranscriptForSession(session: SessionWithMetadata) {
+async function syncTranscriptForSession(session: SessionWithMetadata): Promise<void> {
 	if (!session.transcriptPath) return;
-
 	const cursor = getTranscriptCursor(session.metadata);
 	const offset = cursor.offset ?? 0;
+
 	let transcriptStat;
 	try {
 		transcriptStat = await stat(session.transcriptPath);
@@ -112,74 +131,149 @@ async function syncTranscriptForSession(session: SessionWithMetadata) {
 	const buffer = await readFile(session.transcriptPath);
 	const text = buffer.subarray(offset).toString("utf8");
 	const lines = text.split("\n").filter(Boolean);
+
 	if (lines.length === 0) {
-		await db
-			.update(sessions)
-			.set({
-				metadata: {
-					...(session.metadata || {}),
-					transcriptCursor: { offset: transcriptStat.size },
-				},
-			})
-			.where(eq(sessions.sessionId, session.sessionId));
+		await persistCursor(session, transcriptStat.size);
 		return;
 	}
 
 	const normalizedEvents = parseTranscriptDelta(session.agentType, lines);
-	const insertedEvents = await insertNormalizedEvents(session.sessionId, normalizedEvents);
+	const insertedEvents = await insertNormalizedEvents(
+		session.sessionId,
+		normalizedEvents,
+	);
 
 	if (insertedEvents.length > 0) {
 		notifySessionEvents(session.sessionId, insertedEvents);
 	}
 
+	await persistCursor(session, transcriptStat.size);
+}
+
+async function persistCursor(
+	session: SessionWithMetadata,
+	offset: number,
+): Promise<void> {
 	await db
 		.update(sessions)
 		.set({
 			metadata: {
 				...(session.metadata || {}),
-				transcriptCursor: { offset: transcriptStat.size },
+				transcriptCursor: { offset },
 			},
 		})
 		.where(eq(sessions.sessionId, session.sessionId));
 }
 
-async function syncTranscriptBatch(batch: SessionWithMetadata[]) {
-	const results = await Promise.allSettled(
-		batch.map((session) => syncTranscriptForSession(session)),
-	);
+async function loadActiveSessionIds(): Promise<string[]> {
+	const rows = await db
+		.select({ sessionId: sessions.sessionId })
+		.from(sessions)
+		.where(
+			and(
+				isNotNull(sessions.transcriptPath),
+				ne(sessions.status, "completed"),
+				ne(sessions.status, "archived"),
+			),
+		);
+	return rows.map((r) => r.sessionId);
+}
 
-	for (const result of results) {
-		if (result.status === "rejected") {
-			console.error("[transcript-sync] Session sync error:", result.reason);
+async function loadSessionsByIds(
+	ids: string[],
+): Promise<SessionWithMetadata[]> {
+	if (ids.length === 0) return [];
+	const rows = await db
+		.select({
+			sessionId: sessions.sessionId,
+			agentType: sessions.agentType,
+			transcriptPath: sessions.transcriptPath,
+			metadata: sessions.metadata,
+		})
+		.from(sessions)
+		.where(
+			and(
+				isNotNull(sessions.transcriptPath),
+				ne(sessions.status, "completed"),
+				ne(sessions.status, "archived"),
+			),
+		);
+	const byId = new Map(rows.map((r) => [r.sessionId, r as SessionWithMetadata]));
+	const out: SessionWithMetadata[] = [];
+	for (const id of ids) {
+		const row = byId.get(id);
+		if (row) out.push(row);
+	}
+	return out;
+}
+
+/**
+ * Round-robin scheduler state. We walk an ordered list of active
+ * session ids, advancing `cursor` TICK_BUDGET slots per tick so no
+ * single hot session monopolizes the worker.
+ */
+class TranscriptSyncWorker {
+	private interval: ReturnType<typeof setInterval> | null = null;
+	private cursor = 0;
+	private busy = false;
+
+	start() {
+		if (this.interval) return;
+		this.interval = setInterval(() => {
+			void this.tick();
+		}, TICK_INTERVAL_MS);
+		console.log(
+			`[transcript-sync] worker started (tick=${TICK_INTERVAL_MS}ms, budget=${TICK_BUDGET})`,
+		);
+	}
+
+	stop() {
+		if (this.interval) {
+			clearInterval(this.interval);
+			this.interval = null;
+		}
+	}
+
+	/** Drive a single tick. Exposed so tests can run one iteration. */
+	async tick(): Promise<number> {
+		if (this.busy) return 0;
+		this.busy = true;
+		try {
+			const ids = await loadActiveSessionIds();
+			if (ids.length === 0) return 0;
+
+			if (this.cursor >= ids.length) this.cursor = 0;
+			const picked: string[] = [];
+			for (let i = 0; i < TICK_BUDGET && picked.length < ids.length; i++) {
+				picked.push(ids[(this.cursor + i) % ids.length]);
+			}
+			this.cursor = (this.cursor + picked.length) % ids.length;
+
+			const batch = await loadSessionsByIds(picked);
+			const results = await Promise.allSettled(
+				batch.map((session) => syncTranscriptForSession(session)),
+			);
+			for (const result of results) {
+				if (result.status === "rejected") {
+					console.error("[transcript-sync] Session sync error:", result.reason);
+				}
+			}
+			return batch.length;
+		} catch (err) {
+			console.error("[transcript-sync] tick error:", err);
+			return 0;
+		} finally {
+			this.busy = false;
 		}
 	}
 }
 
-export function startTranscriptSync() {
-	setInterval(async () => {
-		try {
-			const activeSessions = await db
-				.select({
-					sessionId: sessions.sessionId,
-					agentType: sessions.agentType,
-					transcriptPath: sessions.transcriptPath,
-					metadata: sessions.metadata,
-				})
-				.from(sessions)
-				.where(
-					and(
-						isNotNull(sessions.transcriptPath),
-						ne(sessions.status, "completed"),
-						ne(sessions.status, "archived"),
-					),
-				);
+export const transcriptSyncWorker = new TranscriptSyncWorker();
 
-			for (let index = 0; index < activeSessions.length; index += TRANSCRIPT_SYNC_BATCH_SIZE) {
-				const batch = activeSessions.slice(index, index + TRANSCRIPT_SYNC_BATCH_SIZE) as SessionWithMetadata[];
-				await syncTranscriptBatch(batch);
-			}
-		} catch (err) {
-			console.error("[transcript-sync] Error:", err);
-		}
-	}, TRANSCRIPT_SYNC_INTERVAL_MS);
+export function startTranscriptSync() {
+	transcriptSyncWorker.start();
+}
+
+export function stopTranscriptSync() {
+	transcriptSyncWorker.stop();
 }

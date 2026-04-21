@@ -14,6 +14,7 @@ import { getAdapter } from "./llm/registry.js";
 import { LlmError } from "./llm/types.js";
 import { emitAiMetric } from "./metrics.js";
 import { parseDecision } from "./parser.js";
+import { RunLeaser } from "./run-leaser.js";
 import {
 	cancelOpenHitl,
 	completeProposal,
@@ -28,13 +29,11 @@ import { getWatcherConfig } from "./watcher-config-service.js";
 import {
 	type WatcherRunRecord,
 	type WatcherRunTriggerKind,
-	claimNextRun,
 	enqueueRun,
 	markCancelled,
 	markFailed,
 	markRunning,
 	markSucceeded,
-	reclaimExpiredLeases,
 } from "./watcher-runs-service.js";
 
 const DEBOUNCE_MS = 1_500;
@@ -62,23 +61,17 @@ export class WatcherRunner {
 	private readonly scheduled = new Map<string, ScheduledRun>();
 	private readonly inFlight = new Set<string>();
 	private started = false;
-	private leasePoller: ReturnType<typeof setInterval> | null = null;
 	private readonly leaseOwner = `watcher-${process.pid}-${Date.now()}`;
-	private leaserBusy = false;
+	private readonly leaser = new RunLeaser({
+		leaseOwner: this.leaseOwner,
+		leaseDurationMs: LEASE_DURATION_MS,
+		intervalMs: LEASE_POLL_INTERVAL_MS,
+		processRun: (run) => this.processRun(run),
+	});
 
 	async start(): Promise<void> {
 		if (this.started) return;
 		this.started = true;
-
-		// Reclaim any runs left behind by a previous process.
-		try {
-			const reclaimed = await reclaimExpiredLeases();
-			if (reclaimed > 0) {
-				console.log(`[ai-watcher] reclaimed ${reclaimed} expired runs on startup`);
-			}
-		} catch (err) {
-			console.warn("[ai-watcher] startup reclaim failed:", err);
-		}
 
 		sessionBus.on("session_event", ({ sessionId, event }) => {
 			// Stamp user prompts immediately so race-control can see them even
@@ -93,18 +86,12 @@ export class WatcherRunner {
 			this.scheduleWake(session.sessionId);
 		});
 
-		this.leasePoller = setInterval(() => {
-			void this.drainLeases();
-		}, LEASE_POLL_INTERVAL_MS);
-
+		await this.leaser.start();
 		console.log("[ai-watcher] runner started");
 	}
 
 	stop(): void {
-		if (this.leasePoller) {
-			clearInterval(this.leasePoller);
-			this.leasePoller = null;
-		}
+		this.leaser.stop();
 		for (const entry of this.scheduled.values()) clearTimeout(entry.timer);
 		this.scheduled.clear();
 		this.started = false;
@@ -143,29 +130,6 @@ export class WatcherRunner {
 			lastTriggerId: trigger?.id,
 			lastTriggerKind: triggerKind,
 		});
-	}
-
-	/** Poll the durable queue and drain any claimed runs. */
-	private async drainLeases(): Promise<void> {
-		if (this.leaserBusy) return;
-		if (!(await isAiActive())) return;
-		this.leaserBusy = true;
-		try {
-			// Keep draining until the queue is empty for this tick.
-			// eslint-disable-next-line no-constant-condition
-			while (true) {
-				const run = await claimNextRun({
-					leaseOwner: this.leaseOwner,
-					leaseDurationMs: LEASE_DURATION_MS,
-				});
-				if (!run) return;
-				await this.processRun(run);
-			}
-		} catch (err) {
-			console.error("[ai-watcher] lease drain failed:", err);
-		} finally {
-			this.leaserBusy = false;
-		}
 	}
 
 	/** Process a single claimed run. */

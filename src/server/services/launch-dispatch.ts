@@ -1,8 +1,10 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
+import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { launchRequests } from "../db/schema.js";
+import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import { mapLaunchRequest } from "./launch-validator.js";
-import type { LaunchRequestStatus } from "../../shared/types.js";
+import { attachManagedSessionToLaunch } from "./managed-session-state.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -131,4 +133,32 @@ export async function markLaunchRunning(launchId: string) {
 		.returning();
 
 	return updated ? mapLaunchRequest(updated) : null;
+}
+
+/**
+ * WS1 ownership contract. Given an observed session id, resolve the
+ * pending launch it matches (pure), attach the managed-session row (via
+ * the managed-session-state writer), and transition the launch to
+ * `running` (this file's own writer). All launch-status transitions for
+ * observed correlation live here — routes and hook processors don't
+ * compose these writes directly.
+ */
+export async function associateObservedSession(input: {
+	sessionId: string;
+	supervisorId?: string | null;
+}): Promise<LaunchRequest | null> {
+	const resolution = await resolveObservedSessionCorrelation(
+		input.sessionId,
+		input.supervisorId ?? null,
+	);
+	if (!resolution) return null;
+
+	await attachManagedSessionToLaunch({
+		sessionId: input.sessionId,
+		launchRequestId: resolution.launchRequest.id,
+		supervisorId: resolution.resolvedSupervisorId,
+		correlationSource: "session_id",
+	});
+
+	return markLaunchRunning(resolution.launchRequest.id);
 }
