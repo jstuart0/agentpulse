@@ -3,7 +3,7 @@ import { and, eq, isNotNull, ne } from "drizzle-orm";
 import type { AgentType, Session } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { sessions } from "../db/schema.js";
-import { createAssistantTranscriptEvent, type NormalizedEvent } from "./event-normalizer.js";
+import { type NormalizedEvent, createAssistantTranscriptEvent } from "./event-normalizer.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { notifySessionEvents } from "./notifier.js";
 
@@ -28,10 +28,7 @@ const TICK_BUDGET = 3;
 
 type TranscriptCursor = { offset?: number };
 
-type SessionWithMetadata = Pick<
-	Session,
-	"sessionId" | "agentType" | "transcriptPath" | "metadata"
->;
+type SessionWithMetadata = Pick<Session, "sessionId" | "agentType" | "transcriptPath" | "metadata">;
 
 function getTranscriptCursor(
 	metadata: Record<string, unknown> | null | undefined,
@@ -106,10 +103,7 @@ function parseCodexTranscriptDelta(lines: string[]): NormalizedEvent[] {
 	return events;
 }
 
-function parseTranscriptDelta(
-	agentType: AgentType,
-	lines: string[],
-): NormalizedEvent[] {
+function parseTranscriptDelta(agentType: AgentType, lines: string[]): NormalizedEvent[] {
 	return agentType === "claude_code"
 		? parseClaudeTranscriptDelta(lines)
 		: parseCodexTranscriptDelta(lines);
@@ -138,10 +132,7 @@ async function syncTranscriptForSession(session: SessionWithMetadata): Promise<v
 	}
 
 	const normalizedEvents = parseTranscriptDelta(session.agentType, lines);
-	const insertedEvents = await insertNormalizedEvents(
-		session.sessionId,
-		normalizedEvents,
-	);
+	const insertedEvents = await insertNormalizedEvents(session.sessionId, normalizedEvents);
 
 	if (insertedEvents.length > 0) {
 		notifySessionEvents(session.sessionId, insertedEvents);
@@ -150,10 +141,7 @@ async function syncTranscriptForSession(session: SessionWithMetadata): Promise<v
 	await persistCursor(session, transcriptStat.size);
 }
 
-async function persistCursor(
-	session: SessionWithMetadata,
-	offset: number,
-): Promise<void> {
+async function persistCursor(session: SessionWithMetadata, offset: number): Promise<void> {
 	await db
 		.update(sessions)
 		.set({
@@ -179,9 +167,7 @@ async function loadActiveSessionIds(): Promise<string[]> {
 	return rows.map((r) => r.sessionId);
 }
 
-async function loadSessionsByIds(
-	ids: string[],
-): Promise<SessionWithMetadata[]> {
+async function loadSessionsByIds(ids: string[]): Promise<SessionWithMetadata[]> {
 	if (ids.length === 0) return [];
 	const rows = await db
 		.select({

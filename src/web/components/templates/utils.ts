@@ -56,12 +56,14 @@ export function getLaunchModeOptions(agentType: AgentType) {
 			{
 				value: "headless" as const,
 				label: launchModeLabels.headless,
-				description: "Dispatch a task from AgentPulse, capture visible output, and finish in the dashboard.",
+				description:
+					"Dispatch a task from AgentPulse, capture visible output, and finish in the dashboard.",
 			},
 			{
 				value: "interactive_terminal" as const,
 				label: launchModeLabels.interactive_terminal,
-				description: "Open a real Claude session on the host so you can keep driving it there while AgentPulse observes.",
+				description:
+					"Open a real Claude session on the host so you can keep driving it there while AgentPulse observes.",
 			},
 		];
 	}
@@ -70,7 +72,8 @@ export function getLaunchModeOptions(agentType: AgentType) {
 		{
 			value: "managed_codex" as const,
 			label: launchModeLabels.managed_codex,
-			description: "Launch Codex through the managed app-server path with thread-title sync and lifecycle control.",
+			description:
+				"Launch Codex through the managed app-server path with thread-title sync and lifecycle control.",
 		},
 	];
 }
@@ -123,4 +126,3 @@ export function formatLaunchTime(value: string | null | undefined) {
 // and are surfaced via TemplatePreview.hostCompatibility. Do not
 // reintroduce rule computation on the browser — render preview results
 // only.
-

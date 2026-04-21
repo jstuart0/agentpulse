@@ -1,8 +1,8 @@
 import { isAiActive } from "./feature.js";
 import {
+	type WatcherRunRecord,
 	claimNextRun,
 	reclaimExpiredLeases,
-	type WatcherRunRecord,
 } from "./watcher-runs-service.js";
 
 /**

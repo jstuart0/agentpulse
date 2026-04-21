@@ -11,18 +11,22 @@ import type {
 	TemplateHostCompatibility,
 	TemplatePreview,
 } from "../../shared/types.js";
-import { api } from "../lib/api.js";
-import { TemplateEditorPanel, TemplateListPanel, TemplatePreviewPanel } from "../components/templates/TemplatePanels.js";
 import {
+	TemplateEditorPanel,
+	TemplateListPanel,
+	TemplatePreviewPanel,
+} from "../components/templates/TemplatePanels.js";
+import {
+	type AgentFilter,
 	createBlankTemplate,
 	defaultLaunchModeForAgent,
 	envToLines,
-	type AgentFilter,
 	getLaunchModeOptions,
 	parseEnvLines,
 	parseTags,
 	tagsToString,
 } from "../components/templates/utils.js";
+import { api } from "../lib/api.js";
 
 export function TemplatesPage() {
 	const navigate = useNavigate();
@@ -65,7 +69,8 @@ export function TemplatesPage() {
 				env: parseEnvLines(envText),
 				tags: parseTags(tagsText),
 				launchMode,
-				requestedSupervisorId: routingPolicy === "manual_target" ? targetSupervisorId || null : null,
+				requestedSupervisorId:
+					routingPolicy === "manual_target" ? targetSupervisorId || null : null,
 				routingPolicy,
 			};
 			try {
@@ -155,7 +160,10 @@ export function TemplatesPage() {
 		setLaunchMode(defaultLaunchModeForAgent(agentType));
 	}
 
-	function updateDraft<K extends keyof SessionTemplateInput>(key: K, value: SessionTemplateInput[K]) {
+	function updateDraft<K extends keyof SessionTemplateInput>(
+		key: K,
+		value: SessionTemplateInput[K],
+	) {
 		setDraft((current) => ({ ...current, [key]: value }));
 	}
 
@@ -244,8 +252,8 @@ export function TemplatesPage() {
 				result.launchRequest.status === "validated" || result.launchRequest.status === "queued"
 					? `Launch request created for ${result.supervisor.hostName}. Opening live launch detail…`
 					: result.launchRequest.validationSummary ||
-						result.launchRequest.error ||
-						"Launch request rejected.",
+							result.launchRequest.error ||
+							"Launch request rejected.",
 			);
 			await loadPhaseTwoData();
 			navigate(`/launches/${result.launchRequest.id}`);
@@ -258,9 +266,14 @@ export function TemplatesPage() {
 
 	const connectedSupervisor = supervisors.find((supervisor) => supervisor.status === "connected");
 	const selectedSupervisor =
-		supervisors.find((supervisor) => supervisor.id === targetSupervisorId) ?? connectedSupervisor ?? null;
+		supervisors.find((supervisor) => supervisor.id === targetSupervisorId) ??
+		connectedSupervisor ??
+		null;
 	const hostCompatibilityMap = new Map(
-		(preview?.hostCompatibility ?? []).map((compatibility) => [compatibility.supervisorId, compatibility]),
+		(preview?.hostCompatibility ?? []).map((compatibility) => [
+			compatibility.supervisorId,
+			compatibility,
+		]),
 	);
 	const compatibleHosts = supervisors.map((supervisor) => ({
 		supervisor,
@@ -287,11 +300,13 @@ export function TemplatesPage() {
 			}
 		: null;
 	const launchModeOptions = getLaunchModeOptions(draft.agentType);
-	const selectedLaunchMode = launchModeOptions.find((option) => option.value === launchMode) ?? launchModeOptions[0];
+	const selectedLaunchMode =
+		launchModeOptions.find((option) => option.value === launchMode) ?? launchModeOptions[0];
 	const canCreateLaunch =
-		Boolean(preview) &&
-		(routingPolicy !== "manual_target" || Boolean(targetSupervisorId));
-	const connectedHostsCount = supervisors.filter((supervisor) => supervisor.status === "connected").length;
+		Boolean(preview) && (routingPolicy !== "manual_target" || Boolean(targetSupervisorId));
+	const connectedHostsCount = supervisors.filter(
+		(supervisor) => supervisor.status === "connected",
+	).length;
 	const compatibleHostsCount = compatibleHosts.filter((item) => item.compatibility.ok).length;
 
 	return (
@@ -299,12 +314,10 @@ export function TemplatesPage() {
 			<div className="max-w-7xl space-y-6">
 				<div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
 					<div>
-						<h1 className="text-xl md:text-2xl font-bold text-foreground">
-							Session Templates
-						</h1>
+						<h1 className="text-xl md:text-2xl font-bold text-foreground">Session Templates</h1>
 						<p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-							Define reusable Claude Code and Codex session setups. Launch requests are
-							executed automatically when a connected supervisor can claim them.
+							Define reusable Claude Code and Codex session setups. Launch requests are executed
+							automatically when a connected supervisor can claim them.
 						</p>
 					</div>
 					<div className="flex flex-col items-start gap-2 md:items-end">
@@ -328,25 +341,42 @@ export function TemplatesPage() {
 
 				<div className="grid gap-3 md:grid-cols-3">
 					<div className="rounded-lg border border-border bg-card px-4 py-3">
-						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Connected Hosts</div>
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Connected Hosts
+						</div>
 						<div className="mt-1 text-2xl font-semibold text-foreground">{connectedHostsCount}</div>
-						<div className="mt-1 text-xs text-muted-foreground">Supervisors ready to claim launches right now.</div>
+						<div className="mt-1 text-xs text-muted-foreground">
+							Supervisors ready to claim launches right now.
+						</div>
 					</div>
 					<div className="rounded-lg border border-border bg-card px-4 py-3">
-						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Compatible Hosts</div>
-						<div className="mt-1 text-2xl font-semibold text-foreground">{compatibleHostsCount}</div>
-						<div className="mt-1 text-xs text-muted-foreground">Hosts that match the current preview and launch mode.</div>
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Compatible Hosts
+						</div>
+						<div className="mt-1 text-2xl font-semibold text-foreground">
+							{compatibleHostsCount}
+						</div>
+						<div className="mt-1 text-xs text-muted-foreground">
+							Hosts that match the current preview and launch mode.
+						</div>
 					</div>
 					<div className="rounded-lg border border-border bg-card px-4 py-3">
-						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Recent Launches</div>
-						<div className="mt-1 text-2xl font-semibold text-foreground">{recentLaunches.length}</div>
-						<div className="mt-1 text-xs text-muted-foreground">Latest requests visible from this browser session.</div>
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Recent Launches
+						</div>
+						<div className="mt-1 text-2xl font-semibold text-foreground">
+							{recentLaunches.length}
+						</div>
+						<div className="mt-1 text-xs text-muted-foreground">
+							Latest requests visible from this browser session.
+						</div>
 					</div>
 				</div>
 
 				{supervisors.length === 0 && (
 					<div className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
-						No hosts are registered yet. You can still save templates now, but launches will stay unclaimable until a supervisor is enrolled from the Hosts screen.
+						No hosts are registered yet. You can still save templates now, but launches will stay
+						unclaimable until a supervisor is enrolled from the Hosts screen.
 					</div>
 				)}
 
