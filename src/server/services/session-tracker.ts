@@ -1,8 +1,8 @@
+import { and, count, desc, eq, inArray, lt, notInArray, sql } from "drizzle-orm";
+import { SESSION_END_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "../../shared/constants.js";
+import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { managedSessions, sessions, supervisors } from "../db/schema.js";
-import { eq, and, inArray, lt, ne, notInArray, sql, desc, count } from "drizzle-orm";
-import { SESSION_IDLE_TIMEOUT_MS, SESSION_END_TIMEOUT_MS } from "../../shared/constants.js";
-import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { getManagedSession } from "./managed-session-state.js";
 
 // Managed states that indicate an agent process is still running under a live
@@ -38,9 +38,8 @@ export async function getSessions(filters?: {
 
 	// Get total count
 	const countQuery = db.select({ count: count() }).from(sessions);
-	const [{ count: total }] = conditions.length > 0
-		? await countQuery.where(and(...conditions))
-		: await countQuery;
+	const [{ count: total }] =
+		conditions.length > 0 ? await countQuery.where(and(...conditions)) : await countQuery;
 
 	return { sessions: rows, total };
 }
@@ -99,13 +98,32 @@ export async function getStats() {
 	};
 }
 
-// Mark stale sessions as idle or completed. Sessions whose managed process is
-// still running under a connected supervisor are skipped — those only flip to
-// terminal state when the supervisor reports the process exited.
+// Recovery cutoff for sessions stuck with isWorking=true. If an agent
+// crashed without sending Stop, the working flag can stay latched
+// forever. After this many ms with no activity we clear the flag so
+// the regular active → idle → completed flow can resume.
+const STUCK_WORKING_RECOVERY_MS = 2 * SESSION_END_TIMEOUT_MS;
+
+/**
+ * Advance stale sessions through the lifecycle:
+ *   active  → idle       when !isWorking and no activity for idle timeout
+ *   idle    → completed  when no activity for end timeout
+ *
+ * Working sessions never transition automatically — the user rule is
+ * that isWorking=true must block idle/completed until Stop arrives.
+ * Sessions whose managed process is still running under a connected
+ * supervisor are skipped entirely; those flip to terminal state when
+ * the supervisor reports the process exited.
+ *
+ * Stuck-working recovery: if isWorking=true but there has been no
+ * activity for 2× the end timeout, we assume the agent crashed and
+ * clear the flag so the normal flow can run on the next tick.
+ */
 export async function updateStaleSessions(): Promise<number> {
 	const now = Date.now();
 	const idleCutoff = new Date(now - SESSION_IDLE_TIMEOUT_MS).toISOString();
 	const endCutoff = new Date(now - SESSION_END_TIMEOUT_MS).toISOString();
+	const stuckWorkingCutoff = new Date(now - STUCK_WORKING_RECOVERY_MS).toISOString();
 
 	const liveManagedRows = await db
 		.select({ sessionId: managedSessions.sessionId })
@@ -119,23 +137,41 @@ export async function updateStaleSessions(): Promise<number> {
 		);
 	const liveSessionIds = liveManagedRows.map((r) => r.sessionId);
 
-	const excludeLive = liveSessionIds.length > 0
-		? notInArray(sessions.sessionId, liveSessionIds)
-		: undefined;
+	const excludeLive =
+		liveSessionIds.length > 0 ? notInArray(sessions.sessionId, liveSessionIds) : undefined;
 
-	// Mark sessions as idle if no activity for 5 minutes
+	// Stuck-working recovery: clear isWorking on sessions that have been
+	// silent for far too long. Runs first so the idle transition below
+	// can pick them up on the same tick.
+	await db
+		.update(sessions)
+		.set({ isWorking: false })
+		.where(
+			and(
+				eq(sessions.isWorking, true),
+				lt(sessions.lastActivityAt, stuckWorkingCutoff),
+				...(excludeLive ? [excludeLive] : []),
+			),
+		);
+
+	// active → idle: only when the session is NOT currently working.
 	await db
 		.update(sessions)
 		.set({ status: "idle" })
 		.where(
 			and(
 				eq(sessions.status, "active"),
+				eq(sessions.isWorking, false),
 				lt(sessions.lastActivityAt, idleCutoff),
 				...(excludeLive ? [excludeLive] : []),
 			),
 		);
 
-	// Mark sessions as completed if no activity for 30 minutes
+	// idle → completed: requires the session to have already moved to
+	// idle, which by the rule above means it was not working when it
+	// went idle. This enforces the user-visible progression
+	//   working → not-working → idle → completed
+	// rather than letting an active session skip straight to completed.
 	const result = await db
 		.update(sessions)
 		.set({
@@ -144,8 +180,7 @@ export async function updateStaleSessions(): Promise<number> {
 		})
 		.where(
 			and(
-				ne(sessions.status, "completed"),
-				ne(sessions.status, "failed"),
+				eq(sessions.status, "idle"),
 				lt(sessions.lastActivityAt, endCutoff),
 				...(excludeLive ? [excludeLive] : []),
 			),

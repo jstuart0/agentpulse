@@ -70,48 +70,174 @@ mkdir -p "$RELAY_DIR"
 
 cat > "$RELAY_DIR/relay.ts" << 'RELAY_EOF'
 #!/usr/bin/env bun
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "fs/promises";
+import { join } from "path";
 const args = process.argv.slice(2);
 let remoteUrl = "", port = 4000, apiKey = "";
+const RELAY_FETCH_TIMEOUT_MS = 8000;
+const RELAY_IDLE_TIMEOUT_S = 30;
+const HOOK_RETRY_BASE_MS = 2000;
+const HOOK_RETRY_MAX_MS = 60000;
+const HOOK_RETRY_POLL_MS = 5000;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--port" && args[i+1]) port = Number(args[++i]);
   else if (args[i] === "--key" && args[i+1]) apiKey = args[++i];
   else if (!args[i].startsWith("--")) remoteUrl = args[i].replace(/\/$/, "");
 }
 if (!remoteUrl) { console.error("Usage: relay.ts <url> [--port N] [--key K]"); process.exit(1); }
-
+const relayDir = import.meta.dir;
+const hookQueueDir = join(relayDir, "hook-queue");
+const hookPendingDir = join(hookQueueDir, "pending");
+const hookProcessingDir = join(hookQueueDir, "processing");
+let queueRunning = false;
+let queueTimer = null;
+const relayState = {
+  lastHookEnqueuedAt: null,
+  lastHookForwardedAt: null,
+  lastHookFailureAt: null,
+  lastHookError: null,
+  consecutiveHookFailures: 0,
+};
+async function ensureQueueDirs() {
+  await mkdir(hookPendingDir, { recursive: true });
+  await mkdir(hookProcessingDir, { recursive: true });
+}
+function nextBackoffMs(attempts) {
+  return Math.min(HOOK_RETRY_MAX_MS, HOOK_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1));
+}
+function scheduleQueue(delayMs = 0) {
+  if (queueTimer) clearTimeout(queueTimer);
+  queueTimer = setTimeout(() => {
+    queueTimer = null;
+    void processHookQueue();
+  }, delayMs);
+}
+async function forwardApiRequest(input) {
+  const headers = new Headers();
+  headers.set("Content-Type", input.contentType || "application/json");
+  if (apiKey) headers.set("Authorization", `Bearer ${apiKey}`);
+  if (input.agentType) headers.set("X-Agent-Type", input.agentType);
+  const res = await fetch(`${remoteUrl}${input.pathname}${input.search}`, {
+    method: input.method,
+    headers,
+    body: input.method !== "GET" ? input.body : undefined,
+    signal: AbortSignal.timeout(RELAY_FETCH_TIMEOUT_MS),
+  });
+  return new Response(await res.text(), {
+    status: res.status,
+    headers: { "Content-Type": res.headers.get("Content-Type") || "application/json" },
+  });
+}
+async function enqueueHook(req, url) {
+  await ensureQueueDirs();
+  const item = {
+    id: crypto.randomUUID(),
+    pathname: url.pathname,
+    search: url.search,
+    method: req.method,
+    contentType: req.headers.get("Content-Type") || "application/json",
+    agentType: req.headers.get("X-Agent-Type"),
+    body: await req.text(),
+    createdAt: new Date().toISOString(),
+    attempts: 0,
+    nextAttemptAt: new Date().toISOString(),
+    lastError: null,
+  };
+  await writeFile(join(hookPendingDir, `${Date.now()}-${item.id}.json`), JSON.stringify(item), "utf-8");
+  relayState.lastHookEnqueuedAt = item.createdAt;
+  scheduleQueue();
+  return item.id;
+}
+async function leaseNextHook() {
+  await ensureQueueDirs();
+  const fileNames = (await readdir(hookPendingDir)).filter((name) => name.endsWith(".json")).sort();
+  const now = Date.now();
+  for (const fileName of fileNames) {
+    const pendingPath = join(hookPendingDir, fileName);
+    try {
+      const item = JSON.parse(await readFile(pendingPath, "utf-8"));
+      if (Date.parse(item.nextAttemptAt) > now) continue;
+      await rename(pendingPath, join(hookProcessingDir, fileName));
+      return { fileName, item };
+    } catch {
+      try { await unlink(pendingPath); } catch {}
+    }
+  }
+  return null;
+}
+async function processHookQueue() {
+  if (queueRunning) return;
+  queueRunning = true;
+  try {
+    while (true) {
+      const leased = await leaseNextHook();
+      if (!leased) break;
+      try {
+        await forwardApiRequest(leased.item);
+        try { await unlink(join(hookProcessingDir, leased.fileName)); } catch {}
+        relayState.lastHookForwardedAt = new Date().toISOString();
+        relayState.lastHookError = null;
+        relayState.consecutiveHookFailures = 0;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const updated = {
+          ...leased.item,
+          attempts: leased.item.attempts + 1,
+          lastError: message,
+          nextAttemptAt: new Date(Date.now() + nextBackoffMs(leased.item.attempts + 1)).toISOString(),
+        };
+        await writeFile(join(hookPendingDir, leased.fileName), JSON.stringify(updated), "utf-8");
+        try { await unlink(join(hookProcessingDir, leased.fileName)); } catch {}
+        relayState.lastHookFailureAt = new Date().toISOString();
+        relayState.lastHookError = message;
+        relayState.consecutiveHookFailures += 1;
+        scheduleQueue(nextBackoffMs(updated.attempts));
+      }
+    }
+  } finally {
+    queueRunning = false;
+  }
+}
+async function queueDiagnostics() {
+  await ensureQueueDirs();
+  const pending = (await readdir(hookPendingDir)).filter((name) => name.endsWith(".json"));
+  const processing = (await readdir(hookProcessingDir)).filter((name) => name.endsWith(".json"));
+  return { pending: pending.length, processing: processing.length, ...relayState };
+}
 Bun.serve({
-  port, hostname: "127.0.0.1",
+  port, hostname: "127.0.0.1", idleTimeout: RELAY_IDLE_TIMEOUT_S,
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname === "/api/v1/health") {
       return Response.json({ status: "ok", relay: true, remote: remoteUrl });
     }
+    if (url.pathname === "/api/v1/relay/diagnostics") {
+      return Response.json({ status: "ok", relay: true, remote: remoteUrl, queue: await queueDiagnostics() });
+    }
+    if (url.pathname.startsWith("/api/v1/hooks")) {
+      const queueId = await enqueueHook(req, url);
+      return Response.json({ ok: true, relayed: false, queued: true, queueId });
+    }
     if (url.pathname.startsWith("/api/")) {
       try {
-        const headers = new Headers();
-        headers.set("Content-Type", req.headers.get("Content-Type") || "application/json");
-        if (apiKey) headers.set("Authorization", `Bearer ${apiKey}`);
-        const agentType = req.headers.get("X-Agent-Type");
-        if (agentType) headers.set("X-Agent-Type", agentType);
-        const body = req.method !== "GET" ? await req.text() : undefined;
-        const res = await fetch(`${remoteUrl}${url.pathname}${url.search}`, {
-          method: req.method, headers, body,
-          signal: AbortSignal.timeout(10000),
-        });
-        const rb = await res.text();
-        return new Response(rb, {
-          status: res.status,
-          headers: { "Content-Type": res.headers.get("Content-Type") || "application/json" },
+        return await forwardApiRequest({
+          pathname: url.pathname,
+          search: url.search,
+          method: req.method,
+          contentType: req.headers.get("Content-Type") || "application/json",
+          agentType: req.headers.get("X-Agent-Type"),
+          body: req.method !== "GET" ? await req.text() : undefined,
         });
       } catch {
-        if (url.pathname.includes("/hooks")) return Response.json({ ok: true, relayed: false });
         return Response.json({ error: "Relay failed" }, { status: 502 });
       }
     }
     return Response.redirect(remoteUrl + url.pathname, 302);
   },
 });
-console.log(`AgentPulse Relay: localhost:${port} -> ${remoteUrl}`);
+setInterval(() => { void processHookQueue(); }, HOOK_RETRY_POLL_MS);
+void ensureQueueDirs().then(() => scheduleQueue(250));
+console.log(`AgentPulse Relay: localhost:${port} -> ${remoteUrl} (queued hook forwarding)`);
 RELAY_EOF
 
 # Save config

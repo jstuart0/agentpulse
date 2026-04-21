@@ -1,6 +1,10 @@
-import { db } from "../db/client.js";
-import { sessions, events } from "../db/schema.js";
 import { eq, inArray, sql } from "drizzle-orm";
+import {
+	EVENT_DUPLICATE_WINDOW_MS,
+	areNearInTime,
+	getEventSourcePriority,
+	normalizeComparableContent,
+} from "../../shared/event-authority.js";
 import type {
 	AgentType,
 	EventCategory,
@@ -8,17 +12,19 @@ import type {
 	HookEventPayload,
 	SemanticStatusUpdate,
 } from "../../shared/types.js";
+import { db } from "../db/client.js";
+import { events, sessions } from "../db/schema.js";
 import {
-	EVENT_DUPLICATE_WINDOW_MS,
-	areNearInTime,
-	getEventSourcePriority,
-	normalizeComparableContent,
-} from "../../shared/event-authority.js";
-import { generateSessionName } from "./name-generator.js";
-import { normalizeHookEvent, normalizeStatusEvents, type NormalizedEvent } from "./event-normalizer.js";
+	type NormalizedEvent,
+	normalizeHookEvent,
+	normalizeStatusEvents,
+} from "./event-normalizer.js";
 import { associateObservedSession } from "./launch-dispatch.js";
+import { generateSessionName } from "./name-generator.js";
 
-function chooseHigherAuthorityEvent<T extends { source: EventSource | string; createdAt?: string | null }>(left: T, right: T) {
+function chooseHigherAuthorityEvent<
+	T extends { source: EventSource | string; createdAt?: string | null },
+>(left: T, right: T) {
 	const leftPriority = getEventSourcePriority(left.source);
 	const rightPriority = getEventSourcePriority(right.source);
 	if (leftPriority !== rightPriority) return leftPriority > rightPriority ? left : right;
@@ -33,11 +39,21 @@ type AuthorityComparableEvent = {
 	createdAt?: string | null;
 };
 
-function isAssistantAuthorityDuplicate(existing: AuthorityComparableEvent, incoming: AuthorityComparableEvent) {
-	if (existing.category !== "assistant_message" || incoming.category !== "assistant_message") return false;
-	if (!normalizeComparableContent(existing.content) || !normalizeComparableContent(incoming.content)) return false;
-	if (normalizeComparableContent(existing.content) !== normalizeComparableContent(incoming.content)) return false;
-	if (!areNearInTime(existing.createdAt, incoming.createdAt, EVENT_DUPLICATE_WINDOW_MS)) return false;
+function isAssistantAuthorityDuplicate(
+	existing: AuthorityComparableEvent,
+	incoming: AuthorityComparableEvent,
+) {
+	if (existing.category !== "assistant_message" || incoming.category !== "assistant_message")
+		return false;
+	if (
+		!normalizeComparableContent(existing.content) ||
+		!normalizeComparableContent(incoming.content)
+	)
+		return false;
+	if (normalizeComparableContent(existing.content) !== normalizeComparableContent(incoming.content))
+		return false;
+	if (!areNearInTime(existing.createdAt, incoming.createdAt, EVENT_DUPLICATE_WINDOW_MS))
+		return false;
 	return getEventSourcePriority(existing.source) !== getEventSourcePriority(incoming.source);
 }
 
@@ -49,11 +65,12 @@ function buildDedupKey(event: {
 	providerEventType: string | null;
 	rawPayload?: Record<string, unknown>;
 }) {
-	const transcriptId = typeof event.rawPayload?.transcript_uuid === "string"
-		? event.rawPayload.transcript_uuid
-		: typeof event.rawPayload?.transcript_timestamp === "string"
-			? event.rawPayload.transcript_timestamp
-			: "";
+	const transcriptId =
+		typeof event.rawPayload?.transcript_uuid === "string"
+			? event.rawPayload.transcript_uuid
+			: typeof event.rawPayload?.transcript_timestamp === "string"
+				? event.rawPayload.transcript_timestamp
+				: "";
 	return [
 		event.eventType || "",
 		event.category || "",
@@ -64,7 +81,10 @@ function buildDedupKey(event: {
 	].join("::");
 }
 
-export async function insertNormalizedEvents(sessionId: string, normalizedEvents: NormalizedEvent[]) {
+export async function insertNormalizedEvents(
+	sessionId: string,
+	normalizedEvents: NormalizedEvent[],
+) {
 	if (normalizedEvents.length === 0) return [];
 	const nowIso = new Date().toISOString();
 
@@ -83,9 +103,7 @@ export async function insertNormalizedEvents(sessionId: string, normalizedEvents
 		.orderBy(sql`${events.id} DESC`)
 		.limit(50);
 
-	const seen = new Set(
-		recentEvents.map((event) => buildDedupKey({ ...event })),
-	);
+	const seen = new Set(recentEvents.map((event) => buildDedupKey({ ...event })));
 	const deleteIds = new Set<number>();
 	const retained: Array<NormalizedEvent & { createdAt: string }> = [];
 	const authorityPool: AuthorityComparableEvent[] = recentEvents.map((event) => ({
@@ -211,10 +229,15 @@ export async function processHookEvent(
 		});
 	}
 
-	// Update session based on event type
+	// Update session based on event type. Any event other than SessionEnd
+	// reanimates the session back to "active" — including events that
+	// arrive after the lifecycle ticked it over to idle or completed.
+	// We also clear endedAt so the reanimated session doesn't carry a
+	// stale terminal timestamp forward.
 	const updates: Record<string, unknown> = {
 		lastActivityAt: now,
 		status: "active",
+		endedAt: null,
 	};
 
 	if (payload.cwd) updates.cwd = payload.cwd;
@@ -252,14 +275,18 @@ export async function processHookEvent(
 
 	// Try to extract git branch from tool responses
 	if (eventType === "PostToolUse" && payload.tool_name === "Bash" && payload.tool_response) {
-		const response = typeof payload.tool_response === "string"
-			? payload.tool_response
-			: JSON.stringify(payload.tool_response);
+		const response =
+			typeof payload.tool_response === "string"
+				? payload.tool_response
+				: JSON.stringify(payload.tool_response);
 		const input = payload.tool_input as Record<string, unknown> | undefined;
 		const command = typeof input?.command === "string" ? input.command : "";
 
 		// Match "git branch", "git status", etc. responses that contain branch info
-		if (command.includes("git") && (command.includes("branch") || command.includes("status") || command.includes("rev-parse"))) {
+		if (
+			command.includes("git") &&
+			(command.includes("branch") || command.includes("status") || command.includes("rev-parse"))
+		) {
 			const branchMatch = response.match(/(?:On branch |^\* |HEAD -> )([^\s,)]+)/m);
 			if (branchMatch) {
 				updates.gitBranch = branchMatch[1];
