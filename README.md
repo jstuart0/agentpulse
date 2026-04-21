@@ -13,6 +13,8 @@ AgentPulse has two major modes:
 - **Observability** -- watch Claude Code and Codex sessions in real time, with prompts, responses, progress, notes, and session history in one dashboard
 - **Orchestration** -- launch and manage sessions from AgentPulse itself with templates, supervisors, headless tasks, interactive sessions, retries, and host routing
 
+Plus an **AI Labs** layer that's very new and explicitly experimental -- see [the Labs section below](#ai-labs-experimental).
+
 You can run AgentPulse as:
 
 - **observability only** -- hooks + dashboard, no supervisor/control plane
@@ -86,6 +88,70 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 - **Random session names** -- each session gets a name like `brave-falcon` so you can tell them apart
 - **CLAUDE.md editor** -- view and edit your agent instruction files from the dashboard
 - **Setup page** -- generates hook config you can copy-paste, or use the one-liner above
+- **AI Labs (experimental)** -- optional AI layer that watches sessions, classifies health, proposes next steps with human-in-the-loop approval, aggregates daily project digests, and more. Each feature is behind its own Labs toggle. See below.
+
+## AI Labs (experimental)
+
+> **Heads up:** the AI layer is new, shipping under explicit Labs framing. Every feature is toggleable under **Settings → Labs**. Contracts, UI, and defaults may change. Disable any toggle if it gets in your way -- nothing else in AgentPulse depends on it.
+
+When enabled, AgentPulse can use an LLM provider you choose (Anthropic, OpenAI, OpenRouter, Google, or any OpenAI-compatible endpoint like Ollama / LM Studio / vLLM) to do the following. All AI work is **human-in-the-loop by default**: the watcher proposes, you approve or decline, and the runtime records every step as an auditable event.
+
+### Capabilities
+
+- **Session watcher** -- on each handoff (a `Stop` event, idle pause, plan completion, or error), the watcher reads recent events, redacts secrets via a configurable rule list, and asks the configured provider to emit one JSON decision: `continue` (with a next prompt), `ask` (route to HITL), `report` (summarize), `stop`, or `wait`. Proposals land in a durable queue so they survive server restarts.
+- **Per-session config** -- provider, policy (`ask_always` / `ask_on_risk` / `auto`), daily spend cap, max continuations, optional custom system prompt, all from the session detail **AI** tab.
+- **Session intelligence classifier** -- deterministic heuristic flags sessions as `healthy` / `blocked` / `stuck` / `risky` / `complete_candidate` with a one-sentence reason. Shows as a chip on dashboard cards. Optionally feeds back into watcher decisions.
+- **Operator inbox** -- single `/inbox` view that aggregates open HITL requests, stuck / risky sessions, and recently failed proposals across every session. Approve / decline HITL inline, snooze noisy failed proposals for 1h / 4h / 24h / 7d, or batch decline.
+- **Project digest** -- `/digest` rolls up the last 24 hours of activity grouped by working directory: active / blocked / stuck / completed counts per repo, top plan completions, notable failures. Cached daily, manual refresh available.
+- **Template distillation** (API only) -- `POST /api/v1/ai/templates/distill` generates a reviewable `SessionTemplateInput` draft from a successful session, with provenance metadata.
+- **Launch recommendation** (API only) -- `POST /api/v1/launches/recommendation` returns an advisory agent + model + host suggestion based on prior completions at the same cwd. The existing launch validator is still the resolver of record.
+- **Risk classes + ask_on_risk** (API only) -- configurable list of risk matchers (destructive command patterns, credential references, recent test failures) that escalate a proposed `continue` to HITL regardless of policy. See `GET /api/v1/ai/risk-classes`.
+- **Guarded `auto` policy** -- dispatch without HITL only when the session is managed, the supervisor is connected, no risk class matched, and the dispatch-filter accepts the prompt. Every other case still routes to HITL. Everything is auditable via `ai_continue_sent` events.
+- **Spend + kill switch** -- per-user daily spend cap, a global kill switch in Settings that immediately pauses all watchers, and HITL requests carry optional timeouts that auto-expire if ignored.
+- **Observability** -- every wake emits a structured JSON log line prefixed with `ai_metric` (watcher run queued / completed, HITL resolution latency, classifier distribution, etc.). Pipe them into Loki / Datadog / Splunk / Elastic. Optional OTLP forwarding via `AGENTPULSE_OTEL_ENDPOINT`. A `/api/v1/ai/diagnostics` endpoint returns a point-in-time queue and flag snapshot for in-dashboard viewing.
+
+### Enable it
+
+AI is gated by two build-time env vars and a runtime toggle:
+
+```bash
+# Compile AI in at boot
+AGENTPULSE_AI_ENABLED=true
+
+# 32+ character random string used to encrypt provider credentials at rest.
+# Required whenever AGENTPULSE_AI_ENABLED=true; AgentPulse refuses to start otherwise.
+AGENTPULSE_SECRETS_KEY=<your-random-string>
+
+# Optional: forward ai_metric log events to an OTLP-compatible collector
+AGENTPULSE_OTEL_ENDPOINT=https://otel.example.com/v1/metrics
+```
+
+Once those are set, open **Settings → AI watcher**, add a provider (an API key, or a local Ollama / LM Studio URL -- no key needed), then flip **AI enabled** on. AI work does not start until you also enable the watcher per-session from the session **AI** tab.
+
+### Labs flags
+
+Each AI surface has its own Labs toggle under **Settings → Labs**:
+
+| Flag | Default | Effect when off |
+|---|---|---|
+| `inbox` | on | Hides the `/inbox` nav link |
+| `digest` | on | Hides the `/digest` nav link |
+| `aiSessionTab` | on | Hides the **AI** tab in session detail |
+| `intelligenceBadges` | on | Hides the health chip on dashboard session cards |
+| `aiSettingsPanel` | on | Hides the entire **AI watcher** section in Settings |
+| `templateDistillation` | off | Experimental, API-only for now |
+| `launchRecommendation` | off | Experimental, API-only for now |
+| `riskClasses` | off | Experimental, API-only for now |
+
+Direct URLs (`/inbox`, `/digest`, etc.) stay reachable when a flag is off -- toggling a flag hides it from the nav, not from bookmarks.
+
+### Safety posture
+
+- **HITL by default** -- a Claude/Codex watcher can propose, but `auto`-dispatch only runs when the session is managed and the supervisor is connected.
+- **Dispatch filter** -- every prompt (watcher-proposed or user-approved) is screened against a deny-list of destructive / injection-flavored patterns before dispatch.
+- **Redactor** -- transcripts are scrubbed of common secret patterns before being sent to any provider, with a dry-run preview available.
+- **Prompt injection hardening** -- user transcripts are embedded in an explicit `<transcript>` UNTRUSTED block with instructions for the model to treat the contents as data.
+- **Kill switch** -- flipping the single kill-switch setting pauses every watcher instantly; no per-session unwinding needed.
 
 ## Install paths
 
@@ -312,6 +378,9 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `AGENTPULSE_TELEMETRY` | `on` | Set `off` to disable anonymous telemetry |
 | `DO_NOT_TRACK` | | Set `1` to disable telemetry (standard) |
+| `AGENTPULSE_AI_ENABLED` | `false` | Compile the AI Labs layer in at boot. Off = zero AI services, routes, or UI (non-AI install footprint is identical to pre-AI). |
+| `AGENTPULSE_SECRETS_KEY` | | Required when `AGENTPULSE_AI_ENABLED=true`. 32+ random chars; encrypts provider credentials at rest (AES-256-GCM). |
+| `AGENTPULSE_OTEL_ENDPOINT` | | Optional OTLP metrics endpoint. When set, `ai_metric` log events are also forwarded as OTLP. |
 
 ## What the setup script does
 
