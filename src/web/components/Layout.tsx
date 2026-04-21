@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { NavLink, Outlet } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
 import { cn } from "../lib/utils.js";
@@ -101,46 +102,53 @@ export function Layout() {
 				</button>
 			</div>
 
-			{/* Mobile menu overlay */}
-			{mobileMenuOpen && (
-				<div
-					className="md:hidden fixed inset-0 z-30 bg-black/60 backdrop-blur-sm animate-fade"
-					onClick={() => setMobileMenuOpen(false)}
-				>
-					<nav
-						className="absolute top-14 left-0 right-0 surface-glass border-b border-border p-2 space-y-0.5 animate-in"
-						onClick={(e) => e.stopPropagation()}
+			{/* Mobile menu overlay — rendered via portal to <body> so it
+			    escapes the Layout stacking context. iOS Safari has a
+			    known bug where `sticky` children of an inner scroll
+			    container can paint above `fixed` elements from an outer
+			    ancestor regardless of z-index; the portal avoids that
+			    class of issues entirely. */}
+			{mobileMenuOpen &&
+				createPortal(
+					<div
+						className="md:hidden fixed inset-0 z-30 bg-black/60 backdrop-blur-sm animate-fade"
+						onClick={() => setMobileMenuOpen(false)}
 					>
-						{navItems.map((item) => (
-							<NavLink
-								key={item.to}
-								to={item.to}
-								end={item.to === "/"}
-								onClick={() => setMobileMenuOpen(false)}
-								className={({ isActive }) =>
-									cn(
-										"flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all",
-										isActive
-											? "bg-primary/10 text-primary glow-primary-sm"
-											: "text-muted-foreground hover:text-foreground hover:bg-accent/50",
-									)
-								}
-							>
-								<svg
-									className="w-4 h-4 flex-shrink-0"
-									fill="none"
-									viewBox="0 0 24 24"
-									stroke="currentColor"
-									strokeWidth={1.5}
+						<nav
+							className="absolute top-14 left-0 right-0 surface-glass border-b border-border p-2 space-y-0.5 animate-in"
+							onClick={(e) => e.stopPropagation()}
+						>
+							{navItems.map((item) => (
+								<NavLink
+									key={item.to}
+									to={item.to}
+									end={item.to === "/"}
+									onClick={() => setMobileMenuOpen(false)}
+									className={({ isActive }) =>
+										cn(
+											"flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all",
+											isActive
+												? "bg-primary/10 text-primary glow-primary-sm"
+												: "text-muted-foreground hover:text-foreground hover:bg-accent/50",
+										)
+									}
 								>
-									<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
-								</svg>
-								{item.label}
-							</NavLink>
-						))}
-					</nav>
-				</div>
-			)}
+									<svg
+										className="w-4 h-4 flex-shrink-0"
+										fill="none"
+										viewBox="0 0 24 24"
+										stroke="currentColor"
+										strokeWidth={1.5}
+									>
+										<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
+									</svg>
+									{item.label}
+								</NavLink>
+							))}
+						</nav>
+					</div>,
+					document.body,
+				)}
 
 			{/* Desktop sidebar */}
 			<aside
