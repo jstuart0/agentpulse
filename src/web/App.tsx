@@ -4,6 +4,7 @@ import { Layout } from "./components/Layout.js";
 import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js";
 import { api } from "./lib/api.js";
 import { applyTheme, getStoredTheme } from "./lib/theme.js";
+import { useLabsStore } from "./stores/labs-store.js";
 
 const DashboardPage = lazy(() =>
 	import("./pages/DashboardPage.js").then((module) => ({ default: module.DashboardPage })),
@@ -52,6 +53,11 @@ function RouteFallback() {
 export function App() {
 	useNotificationPermission();
 	useWebSocket();
+	const loadLabs = useLabsStore((s) => s.load);
+
+	useEffect(() => {
+		void loadLabs();
+	}, [loadLabs]);
 
 	useEffect(() => {
 		let cancelled = false;

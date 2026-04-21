@@ -245,6 +245,14 @@ export const api = {
 
 	getHealth: () => request<{ status: string }>("/health"),
 
+	// --- Labs flags ---
+	getLabsFlags: () => request<{ flags: LabsFlags; registry: LabsFlagDefinition[] }>("/labs/flags"),
+	setLabsFlag: (flag: LabsFlag, enabled: boolean) =>
+		request<{ flags: LabsFlags }>(`/labs/flags/${flag}`, {
+			method: "PUT",
+			body: JSON.stringify({ enabled }),
+		}),
+
 	// --- AI watcher ---
 	getAiStatus: () => request<AiStatusResponse>("/ai/status"),
 	updateAiStatus: (body: {
@@ -383,6 +391,25 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 };
+
+export type LabsFlag =
+	| "inbox"
+	| "digest"
+	| "aiSessionTab"
+	| "intelligenceBadges"
+	| "aiSettingsPanel"
+	| "templateDistillation"
+	| "launchRecommendation"
+	| "riskClasses";
+
+export type LabsFlags = Record<LabsFlag, boolean>;
+
+export interface LabsFlagDefinition {
+	key: LabsFlag;
+	label: string;
+	description: string;
+	defaultEnabled: boolean;
+}
 
 export interface LaunchRecommendation {
 	agentType: string;

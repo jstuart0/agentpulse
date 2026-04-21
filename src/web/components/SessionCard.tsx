@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import type { Session } from "../../shared/types.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
 import { extractProjectName, formatDuration, getSessionMode } from "../lib/utils.js";
+import { useLabsStore } from "../stores/labs-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 import { AgentTypeBadge } from "./AgentTypeBadge.js";
@@ -15,6 +16,7 @@ interface SessionCardProps {
 }
 
 export function SessionCard({ session, intelligence }: SessionCardProps) {
+	const intelligenceEnabled = useLabsStore((s) => s.isEnabled("intelligenceBadges"));
 	const navigate = useNavigate();
 	const removeSession = useSessionStore((s) => s.removeSession);
 	const updateSession = useSessionStore((s) => s.updateSession);
@@ -247,7 +249,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 				>
 					{modeStyle.label}
 				</span>
-				{intelligence && <IntelligenceBadge intelligence={intelligence} />}
+				{intelligenceEnabled && intelligence && <IntelligenceBadge intelligence={intelligence} />}
 				<span className="text-xs text-muted-foreground">{formatDuration(session.startedAt)}</span>
 				<span className="text-xs text-muted-foreground ml-auto">{session.totalToolUses} tools</span>
 			</div>

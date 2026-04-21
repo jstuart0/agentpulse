@@ -1,31 +1,27 @@
+import { existsSync } from "fs";
+import { join } from "path";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
+import { ensureDefaultApiKey } from "./auth/api-key.js";
+import { getAuthUserFromHeaders } from "./auth/middleware.js";
 import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
-import { ensureDefaultApiKey } from "./auth/api-key.js";
+import { aiRouter } from "./routes/ai.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
+import { labsRouter } from "./routes/labs.js";
+import { launchesRouter } from "./routes/launches.js";
 import { sessionsRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
-import { templatesRouter } from "./routes/templates.js";
-import { supervisorsRouter } from "./routes/supervisors.js";
-import { launchesRouter } from "./routes/launches.js";
 import { setup as setupRoute } from "./routes/setup.js";
-import { aiRouter } from "./routes/ai.js";
-import {
-	handleWsOpen,
-	handleWsMessage,
-	handleWsClose,
-	startHeartbeat,
-} from "./ws/handler.js";
+import { supervisorsRouter } from "./routes/supervisors.js";
+import { templatesRouter } from "./routes/templates.js";
+import { validateAiStartupConfig } from "./services/ai/feature.js";
+import { maybeStartWatcherRunner } from "./services/ai/runner.js";
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
-import { validateAiStartupConfig } from "./services/ai/feature.js";
-import { maybeStartWatcherRunner } from "./services/ai/runner.js";
-import { existsSync } from "fs";
-import { join } from "path";
-import { getAuthUserFromHeaders } from "./auth/middleware.js";
+import { handleWsClose, handleWsMessage, handleWsOpen, startHeartbeat } from "./ws/handler.js";
 
 // Fail fast if AI is enabled but the instance secrets key is missing or weak.
 validateAiStartupConfig();
@@ -49,6 +45,7 @@ api.route("/v1", templatesRouter);
 api.route("/v1", supervisorsRouter);
 api.route("/v1", launchesRouter);
 api.route("/v1", aiRouter);
+api.route("/v1", labsRouter);
 
 app.route("/api", api);
 app.route("/app-api", api);
@@ -156,7 +153,9 @@ console.log("  ║           AgentPulse v0.1.0               ║");
 console.log("  ╠═══════════════════════════════════════════╣");
 console.log(`  ║  Server:  http://${config.host}:${config.port}          ║`);
 console.log(`  ║  DB:      ${config.useSqlite ? "SQLite" : "PostgreSQL"}                       ║`);
-console.log(`  ║  Auth:    ${config.disableAuth ? "DISABLED" : "API Key + Authentik"}              ║`);
+console.log(
+	`  ║  Auth:    ${config.disableAuth ? "DISABLED" : "API Key + Authentik"}              ║`,
+);
 console.log(`  ║  WS:      ws://${config.host}:${config.port}/api/v1/ws   ║`);
 console.log("  ╚═══════════════════════════════════════════╝");
 console.log("");

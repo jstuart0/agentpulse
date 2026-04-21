@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, Outlet } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
+import type { LabsFlag } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
+import { useLabsStore } from "../stores/labs-store.js";
+import { LabsBadge } from "./LabsBadge.js";
 import { SessionTabs } from "./SessionTabs.js";
 
 const SIDEBAR_STORAGE_KEY = "agentpulse.sidebarCollapsed";
@@ -12,7 +15,14 @@ function loadSidebarCollapsed(): boolean {
 	return localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
 }
 
-const navItems = [
+type NavItem = {
+	to: string;
+	label: string;
+	icon: string;
+	labsFlag?: LabsFlag;
+};
+
+const navItems: NavItem[] = [
 	{
 		to: "/",
 		label: "Dashboard",
@@ -23,11 +33,13 @@ const navItems = [
 		to: "/inbox",
 		label: "Inbox",
 		icon: "M3 8l9 6 9-6m-18 0v10a2 2 0 002 2h14a2 2 0 002-2V8m-18 0V6a2 2 0 012-2h14a2 2 0 012 2v2",
+		labsFlag: "inbox",
 	},
 	{
 		to: "/digest",
 		label: "Digest",
 		icon: "M9 17v-6h13v6M9 17a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2h2a2 2 0 012 2v6zm3-4l2 2 4-4",
+		labsFlag: "digest",
 	},
 	{
 		to: "/templates",
@@ -50,6 +62,12 @@ const navItems = [
 export function Layout() {
 	const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
+	const labsFlags = useLabsStore((s) => s.flags);
+	// Hide nav items whose labs flag is explicitly disabled. When flags
+	// haven't loaded yet, show everything (flags === null).
+	const visibleNavItems = navItems.filter(
+		(item) => !item.labsFlag || labsFlags === null || labsFlags[item.labsFlag] !== false,
+	);
 
 	useEffect(() => {
 		try {
@@ -118,7 +136,7 @@ export function Layout() {
 							className="absolute top-14 left-0 right-0 surface-glass border-b border-border p-2 space-y-0.5 animate-in"
 							onClick={(e) => e.stopPropagation()}
 						>
-							{navItems.map((item) => (
+							{visibleNavItems.map((item) => (
 								<NavLink
 									key={item.to}
 									to={item.to}
@@ -142,7 +160,8 @@ export function Layout() {
 									>
 										<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
 									</svg>
-									{item.label}
+									<span className="flex-1">{item.label}</span>
+									{item.labsFlag && <LabsBadge />}
 								</NavLink>
 							))}
 						</nav>
@@ -233,7 +252,7 @@ export function Layout() {
 
 				{/* Navigation */}
 				<nav className={cn("flex-1 py-3 space-y-0.5", sidebarCollapsed ? "px-2" : "px-2")}>
-					{navItems.map((item) => (
+					{visibleNavItems.map((item) => (
 						<NavLink
 							key={item.to}
 							to={item.to}
@@ -258,7 +277,12 @@ export function Layout() {
 							>
 								<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
 							</svg>
-							{!sidebarCollapsed && item.label}
+							{!sidebarCollapsed && (
+								<>
+									<span className="flex-1">{item.label}</span>
+									{item.labsFlag && <LabsBadge />}
+								</>
+							)}
 						</NavLink>
 					))}
 				</nav>
