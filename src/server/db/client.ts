@@ -511,11 +511,40 @@ export function initializeDatabase() {
 	];
 
 	for (const migration of migrations) {
-		try {
-			sqlite.exec(migration);
-			console.log(`[db] Migration applied: ${migration.slice(0, 60)}`);
-		} catch {
-			// Column already exists -- ignore
+		// Retry on lock contention — during rolling k8s updates the old
+		// pod still holds the SQLite writer briefly while the new pod
+		// boots. A silently-skipped ALTER TABLE leaves the new pod with
+		// a schema that doesn't match the code.
+		let attempts = 0;
+		while (attempts < 8) {
+			try {
+				sqlite.exec(migration);
+				console.log(`[db] Migration applied: ${migration.slice(0, 60)}`);
+				break;
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				const locked = /database is locked|SQLITE_BUSY/i.test(message);
+				if (locked) {
+					attempts += 1;
+					const backoffMs = 250 * 2 ** attempts;
+					console.warn(
+						`[db] Migration locked (attempt ${attempts}); retrying in ${backoffMs}ms`,
+					);
+					// Bun's sync sleep blocks the event loop — fine here
+					// because initializeDatabase already runs synchronously
+					// during boot before anything else starts listening.
+					Bun.sleepSync(backoffMs);
+					continue;
+				}
+				// Non-lock errors (column exists, duplicate index, etc.) are
+				// the expected idempotent path — ignore and move on.
+				break;
+			}
+		}
+		if (attempts >= 8) {
+			throw new Error(
+				`[db] Migration never completed after 8 attempts due to lock contention: ${migration.slice(0, 80)}`,
+			);
 		}
 	}
 
