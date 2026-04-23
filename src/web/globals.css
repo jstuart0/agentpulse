@@ -62,6 +62,13 @@
 	}
 	html {
 		font-family: "Outfit", system-ui, -apple-system, sans-serif;
+		/* Paired with the Tailwind .dark class toggle — tells CSS
+		   `light-dark()` values (used by project color tints) which
+		   branch to resolve. */
+		color-scheme: light;
+	}
+	html.dark {
+		color-scheme: dark;
 	}
 	body {
 		@apply bg-background text-foreground;

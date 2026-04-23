@@ -97,13 +97,16 @@ export function projectColor(cwd: string | null): ProjectColor | null {
 	const key = extractProjectName(cwd);
 	if (!key || key === "Unknown") return null;
 	const hue = hueFromString(key);
+	// CSS light-dark() resolves per html.dark class (we pair it with
+	// color-scheme: light / dark in globals.css). Light theme gets a
+	// true pastel wash (high lightness, low saturation); dark theme
+	// gets a deeper saturated pastel that reads against the dot-grid
+	// background.
 	return {
 		hue,
-		// Dark-pastel opaque — replaces bg-card, renders as a soft wash
-		// that's still visibly "a card" on the dots background.
-		bg: `hsl(${hue} 28% 13%)`,
-		border: `hsl(${hue} 40% 38%)`,
-		accent: `hsl(${hue} 65% 65%)`,
+		bg: `light-dark(hsl(${hue} 55% 94%), hsl(${hue} 28% 13%))`,
+		border: `light-dark(hsl(${hue} 45% 78%), hsl(${hue} 40% 38%))`,
+		accent: `light-dark(hsl(${hue} 55% 55%), hsl(${hue} 65% 65%))`,
 	};
 }
 
