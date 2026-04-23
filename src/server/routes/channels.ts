@@ -10,12 +10,16 @@ import {
 	findActiveChannelByChatId,
 	findPendingByEnrollmentCode,
 	getChannel,
+	getChannelStats,
 	listChannels,
 } from "../services/channels/channels-service.js";
 import {
 	answerCallbackQuery,
 	deleteTelegramWebhook,
+	getTelegramBotInfo,
+	getTelegramWebhookInfo,
 	sendTelegramPlain,
+	sendTelegramTest,
 	setTelegramWebhook,
 } from "../services/channels/telegram.js";
 import { parseHitlCallbackData } from "../services/channels/types.js";
@@ -215,6 +219,46 @@ channelsRouter.post("/channels/telegram/teardown-webhook", async (c) => {
 	if (!config.telegramBotToken) return c.json({ error: "TELEGRAM_BOT_TOKEN not set" }, 400);
 	await deleteTelegramWebhook();
 	return c.json({ ok: true });
+});
+
+channelsRouter.get("/channels/telegram/bot-info", async (c) => {
+	if (!config.telegramBotToken) return c.json({ error: "TELEGRAM_BOT_TOKEN not set" }, 400);
+	const res = await getTelegramBotInfo();
+	if (!res.ok) return c.json({ error: res.error }, 502);
+	return c.json({ bot: res.info });
+});
+
+channelsRouter.get("/channels/telegram/webhook-info", async (c) => {
+	if (!config.telegramBotToken) return c.json({ error: "TELEGRAM_BOT_TOKEN not set" }, 400);
+	const res = await getTelegramWebhookInfo();
+	if (!res.ok) return c.json({ error: res.error }, 502);
+	const expectedUrl = config.publicUrl
+		? `${config.publicUrl.replace(/\/$/, "")}/api/v1/channels/telegram/webhook`
+		: null;
+	return c.json({
+		webhook: res.info,
+		expectedUrl,
+		matchesExpected: expectedUrl ? res.info.url === expectedUrl : null,
+	});
+});
+
+channelsRouter.post("/channels/:id/test", async (c) => {
+	const id = c.req.param("id") ?? "";
+	const ch = await getChannel(id);
+	if (!ch) return c.json({ error: "Channel not found" }, 404);
+	if (ch.kind !== "telegram") return c.json({ error: "Test only supported for telegram" }, 400);
+	if (!ch.verifiedAt) return c.json({ error: "Channel is not verified" }, 400);
+	const res = await sendTelegramTest(id);
+	if (!res.ok) return c.json({ error: res.error ?? "send failed" }, 502);
+	return c.json({ ok: true, externalMessageId: res.externalMessageId });
+});
+
+channelsRouter.get("/channels/:id/stats", async (c) => {
+	const id = c.req.param("id") ?? "";
+	const ch = await getChannel(id);
+	if (!ch) return c.json({ error: "Channel not found" }, 404);
+	const stats = await getChannelStats(id);
+	return c.json({ stats });
 });
 
 export { channelsRouter };

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/client.js";
-import { notificationChannels } from "../../db/schema.js";
+import { aiHitlRequests, notificationChannels, watcherConfigs } from "../../db/schema.js";
 import { decryptSecret, encryptSecret } from "../ai/secrets.js";
 import type { NotificationChannelKind, NotificationChannelRecord } from "./types.js";
 
@@ -177,6 +177,50 @@ export async function deleteChannel(id: string): Promise<boolean> {
  * by the Telegram webhook handler to route inbound callback_query
  * updates back to the right channel row without trusting client input.
  */
+export interface ChannelStats {
+	assignedSessionCount: number;
+	hitlTotal: number;
+	hitlOpen: number;
+	hitlResolved: number;
+	lastHitlAt: string | null;
+}
+
+/**
+ * Aggregate usage stats for a channel. Used by the Settings UI to
+ * tell the operator how many sessions route through this channel,
+ * how many HITL requests have flowed, and when the last one landed.
+ */
+export async function getChannelStats(channelId: string): Promise<ChannelStats> {
+	const [assigned] = await db
+		.select({ count: sql<number>`count(*)` })
+		.from(watcherConfigs)
+		.where(eq(watcherConfigs.channelId, channelId));
+
+	const hitlRows = await db
+		.select({
+			status: aiHitlRequests.status,
+			createdAt: aiHitlRequests.createdAt,
+		})
+		.from(aiHitlRequests)
+		.where(eq(aiHitlRequests.channelId, channelId))
+		.orderBy(desc(aiHitlRequests.createdAt));
+
+	const hitlTotal = hitlRows.length;
+	const hitlOpen = hitlRows.filter((r) => r.status === "awaiting_reply").length;
+	const hitlResolved = hitlRows.filter(
+		(r) => r.status === "applied" || r.status === "declined",
+	).length;
+	const lastHitlAt = hitlRows[0]?.createdAt ?? null;
+
+	return {
+		assignedSessionCount: Number(assigned?.count ?? 0),
+		hitlTotal,
+		hitlOpen,
+		hitlResolved,
+		lastHitlAt,
+	};
+}
+
 export async function findActiveChannelByChatId(
 	chatId: string,
 ): Promise<NotificationChannelRecord | null> {

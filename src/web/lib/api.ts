@@ -267,6 +267,18 @@ export const api = {
 		request<{ ok: true }>("/channels/telegram/teardown-webhook", {
 			method: "POST",
 		}),
+	getTelegramBotInfo: () => request<{ bot: TelegramBotInfo }>("/channels/telegram/bot-info"),
+	getTelegramWebhookInfo: () =>
+		request<{
+			webhook: TelegramWebhookInfo;
+			expectedUrl: string | null;
+			matchesExpected: boolean | null;
+		}>("/channels/telegram/webhook-info"),
+	testChannel: (id: string) =>
+		request<{ ok: true; externalMessageId?: string }>(`/channels/${id}/test`, {
+			method: "POST",
+		}),
+	getChannelStats: (id: string) => request<{ stats: ChannelStats }>(`/channels/${id}/stats`),
 
 	// --- Labs flags ---
 	getLabsFlags: () => request<{ flags: LabsFlags; registry: LabsFlagDefinition[] }>("/labs/flags"),
@@ -414,6 +426,32 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 };
+
+export interface TelegramBotInfo {
+	id: number;
+	username: string | null;
+	firstName: string | null;
+	canJoinGroups: boolean;
+	supportsInlineQueries: boolean;
+}
+
+export interface TelegramWebhookInfo {
+	url: string;
+	hasCustomCertificate: boolean;
+	pendingUpdateCount: number;
+	lastErrorDate: number | null;
+	lastErrorMessage: string | null;
+	maxConnections: number | null;
+	allowedUpdates: string[];
+}
+
+export interface ChannelStats {
+	assignedSessionCount: number;
+	hitlTotal: number;
+	hitlOpen: number;
+	hitlResolved: number;
+	lastHitlAt: string | null;
+}
 
 export type NotificationChannelKind = "telegram" | "webhook" | "email";
 

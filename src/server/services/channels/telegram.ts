@@ -179,3 +179,99 @@ export async function answerCallbackQuery(callbackQueryId: string, text?: string
 		// ignore
 	});
 }
+
+export interface TelegramBotInfo {
+	id: number;
+	username: string | null;
+	firstName: string | null;
+	canJoinGroups: boolean;
+	supportsInlineQueries: boolean;
+}
+
+export async function getTelegramBotInfo(): Promise<
+	{ ok: true; info: TelegramBotInfo } | { ok: false; error: string }
+> {
+	const res = await callTelegram<{
+		id: number;
+		is_bot: boolean;
+		first_name?: string;
+		username?: string;
+		can_join_groups?: boolean;
+		supports_inline_queries?: boolean;
+	}>("getMe", {});
+	if (!res.ok) return { ok: false, error: res.description };
+	return {
+		ok: true,
+		info: {
+			id: res.result.id,
+			username: res.result.username ?? null,
+			firstName: res.result.first_name ?? null,
+			canJoinGroups: Boolean(res.result.can_join_groups),
+			supportsInlineQueries: Boolean(res.result.supports_inline_queries),
+		},
+	};
+}
+
+export interface TelegramWebhookInfo {
+	url: string;
+	hasCustomCertificate: boolean;
+	pendingUpdateCount: number;
+	lastErrorDate: number | null;
+	lastErrorMessage: string | null;
+	maxConnections: number | null;
+	allowedUpdates: string[];
+}
+
+export async function getTelegramWebhookInfo(): Promise<
+	{ ok: true; info: TelegramWebhookInfo } | { ok: false; error: string }
+> {
+	const res = await callTelegram<{
+		url: string;
+		has_custom_certificate: boolean;
+		pending_update_count: number;
+		last_error_date?: number;
+		last_error_message?: string;
+		max_connections?: number;
+		allowed_updates?: string[];
+	}>("getWebhookInfo", {});
+	if (!res.ok) return { ok: false, error: res.description };
+	return {
+		ok: true,
+		info: {
+			url: res.result.url,
+			hasCustomCertificate: res.result.has_custom_certificate,
+			pendingUpdateCount: res.result.pending_update_count,
+			lastErrorDate: res.result.last_error_date ?? null,
+			lastErrorMessage: res.result.last_error_message ?? null,
+			maxConnections: res.result.max_connections ?? null,
+			allowedUpdates: res.result.allowed_updates ?? [],
+		},
+	};
+}
+
+/**
+ * Send a standalone test message to a verified Telegram channel so the
+ * user can confirm end-to-end delivery without needing a real HITL.
+ * Uses the same formatting as a real HITL message but with inert
+ * callback_data so taps are acknowledged but no HITL is resolved.
+ */
+export async function sendTelegramTest(channelId: string): Promise<ChannelDeliveryResult> {
+	if (!config.telegramBotToken) return { ok: false, error: "TELEGRAM_BOT_TOKEN not set" };
+	const cred = await (await import("./channels-service.js")).getChannelCredential(channelId);
+	if (!cred?.chatId) return { ok: false, error: "Channel has no stored chat id" };
+	const res = await callTelegram<{ message_id: number }>("sendMessage", {
+		chat_id: cred.chatId,
+		text: "*AgentPulse* · test delivery\nIf you see this, the channel is wired up correctly\\. The buttons below are inert\\.",
+		parse_mode: "MarkdownV2",
+		reply_markup: {
+			inline_keyboard: [
+				[
+					{ text: "✅ Approve (test)", callback_data: "test:noop" },
+					{ text: "❌ Decline (test)", callback_data: "test:noop" },
+				],
+			],
+		},
+	});
+	if (!res.ok) return { ok: false, error: res.description };
+	return { ok: true, externalMessageId: String(res.result.message_id) };
+}
