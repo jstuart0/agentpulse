@@ -1,12 +1,14 @@
 import { useLocation, useNavigate } from "react-router-dom";
-import { getSessionMode } from "../lib/utils.js";
+import { getSessionMode, projectColor } from "../lib/utils.js";
 import { useTabsStore } from "../stores/tabs-store.js";
+import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 
 export function SessionTabs() {
 	const tabs = useTabsStore((s) => s.tabs);
 	const close = useTabsStore((s) => s.close);
 	const location = useLocation();
 	const navigate = useNavigate();
+	const projectColorsEnabled = useUiPrefsStore((s) => s.projectColors);
 
 	if (tabs.length === 0) return null;
 
@@ -40,6 +42,12 @@ export function SessionTabs() {
 						managedSession: tab.managedState ? { managedState: tab.managedState } : null,
 					});
 					const active = tab.sessionId === currentSessionId;
+					const color = projectColorsEnabled ? projectColor(tab.cwd ?? null) : null;
+					// Active tab keeps the plain bg for maximum contrast —
+					// color goes on the left rail only. Inactive tabs get a
+					// muted hue tint so the tab strip visually groups by repo.
+					const tabStyle =
+						color && !active ? { backgroundColor: color.bg } : undefined;
 					return (
 						<div
 							key={tab.sessionId}
@@ -60,10 +68,11 @@ export function SessionTabs() {
 							aria-selected={active}
 							tabIndex={0}
 							title={tab.displayName}
+							style={tabStyle}
 							className={`group relative flex items-center gap-2 pl-3 pr-1.5 py-2 flex-shrink-0 cursor-pointer transition-colors border-r border-border/60 focus:outline-none focus:ring-1 focus:ring-primary/50 ${
 								active
 									? "bg-background text-foreground"
-									: "bg-transparent text-muted-foreground hover:bg-card/60 hover:text-foreground"
+									: "text-muted-foreground hover:bg-card/60 hover:text-foreground"
 							}`}
 						>
 							<span

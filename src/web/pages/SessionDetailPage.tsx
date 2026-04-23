@@ -106,6 +106,7 @@ export function SessionDetailPage() {
 			displayName: session.displayName ?? session.sessionId.slice(0, 8),
 			agentType: session.agentType,
 			managedState: session.managedSession?.managedState ?? null,
+			cwd: session.cwd ?? null,
 		});
 	}, [session, openTab]);
 

@@ -6,6 +6,12 @@ export interface OpenTab {
 	displayName: string;
 	agentType: AgentType;
 	managedState: string | null;
+	/**
+	 * Session working directory — used for the per-project color tint
+	 * on the tab bar. Optional so tabs persisted before this field
+	 * existed still load without being filtered out.
+	 */
+	cwd?: string | null;
 }
 
 const STORAGE_KEY = "agentpulse.openTabs";
