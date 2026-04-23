@@ -313,20 +313,35 @@ export const api = {
 			webhookSecretConfigured: boolean;
 			source: "db" | "env" | "missing";
 			botTokenHint: string | null;
+			deliveryMode: "webhook" | "polling";
+			polling: {
+				running: boolean;
+				lastPollAt: string | null;
+				updatesReceived: number;
+				lastError: string | null;
+			} | null;
 		}>("/channels/telegram/credentials"),
 	saveTelegramCredentials: (body: {
 		botToken?: string;
 		webhookSecret?: string;
 		rotateWebhookSecret?: boolean;
 		publicUrl?: string;
+		deliveryMode?: "webhook" | "polling";
 	}) =>
 		request<{
 			ok: true;
 			source: "db" | "env" | "missing";
 			botTokenHint: string | null;
 			webhookSecretConfigured: boolean;
+			deliveryMode: "webhook" | "polling";
 			bot: TelegramBotInfo | null;
 			webhook: { ok: boolean; url?: string; error?: string };
+			polling: {
+				running: boolean;
+				lastPollAt: string | null;
+				updatesReceived: number;
+				lastError: string | null;
+			} | null;
 		}>("/channels/telegram/credentials", {
 			method: "POST",
 			body: JSON.stringify(body),

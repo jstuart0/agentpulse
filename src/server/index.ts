@@ -9,6 +9,7 @@ import { initializeDatabase } from "./db/client.js";
 import { aiRouter } from "./routes/ai.js";
 import { authRouter } from "./routes/auth.js";
 import { channelsRouter, telegramWebhookRouter } from "./routes/channels.js";
+import { handleTelegramUpdate } from "./routes/channels.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
 import { labsRouter } from "./routes/labs.js";
@@ -20,7 +21,12 @@ import { supervisorsRouter } from "./routes/supervisors.js";
 import { templatesRouter } from "./routes/templates.js";
 import { validateAiStartupConfig } from "./services/ai/feature.js";
 import { maybeStartWatcherRunner } from "./services/ai/runner.js";
-import { initTelegramCredentials } from "./services/channels/telegram-credentials.js";
+import {
+	getTelegramBotToken,
+	getTelegramDeliveryMode,
+	initTelegramCredentials,
+} from "./services/channels/telegram-credentials.js";
+import { startTelegramPolling } from "./services/channels/telegram-poller.js";
 import { ensureBootstrapAdmin } from "./services/local-auth-bootstrap.js";
 import { reapExpiredSessions } from "./services/local-auth-service.js";
 import { updateStaleSessions } from "./services/session-tracker.js";
@@ -151,9 +157,17 @@ void ensureBootstrapAdmin();
 // getTelegramWebhookSecret() return the DB-stored value (not the env
 // fallback) the moment a request lands. Non-blocking; if the DB is
 // unreachable on boot the fallback kicks in and we retry lazily.
-void initTelegramCredentials().catch((err) => {
-	console.error("[telegram-credentials] warmup failed:", err);
-});
+void initTelegramCredentials()
+	.then(async () => {
+		// Auto-resume polling if that's the persisted delivery mode. In
+		// webhook mode Telegram will push on its own so nothing to do here.
+		if (getTelegramBotToken() && getTelegramDeliveryMode() === "polling") {
+			await startTelegramPolling(handleTelegramUpdate);
+		}
+	})
+	.catch((err) => {
+		console.error("[telegram-credentials] warmup failed:", err);
+	});
 setInterval(
 	() => {
 		void reapExpiredSessions().catch(() => {

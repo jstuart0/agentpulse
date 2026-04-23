@@ -24,14 +24,18 @@ import { decryptSecret, encryptSecret } from "../ai/secrets.js";
 
 const SETTINGS_KEY = "telegram:credentials";
 
+export type TelegramDeliveryMode = "webhook" | "polling";
+
 interface StoredCreds {
 	botTokenCiphertext?: string;
 	webhookSecretCiphertext?: string;
+	deliveryMode?: TelegramDeliveryMode;
 }
 
 interface TelegramCredentials {
 	botToken: string | null;
 	webhookSecret: string | null;
+	deliveryMode: TelegramDeliveryMode;
 	source: "db" | "env" | "missing";
 }
 
@@ -40,10 +44,13 @@ let cached: TelegramCredentials | null = null;
 function readEnvCreds(): TelegramCredentials {
 	const botToken = config.telegramBotToken || null;
 	const webhookSecret = config.telegramWebhookSecret || null;
+	// Env-configured deployments usually have a webhook already set up
+	// (that's the only way they worked before this feature). Default to
+	// webhook mode so behavior doesn't silently change under them.
 	if (botToken || webhookSecret) {
-		return { botToken, webhookSecret, source: "env" };
+		return { botToken, webhookSecret, deliveryMode: "webhook", source: "env" };
 	}
-	return { botToken: null, webhookSecret: null, source: "missing" };
+	return { botToken: null, webhookSecret: null, deliveryMode: "polling", source: "missing" };
 }
 
 async function readDbCreds(): Promise<TelegramCredentials | null> {
@@ -60,7 +67,11 @@ async function readDbCreds(): Promise<TelegramCredentials | null> {
 			? decryptSecret(stored.webhookSecretCiphertext)
 			: null;
 		if (!botToken && !webhookSecret) return null;
-		return { botToken, webhookSecret, source: "db" };
+		// New installs default to polling (works behind NAT, no public
+		// URL required). Stored rows that pre-date this default keep
+		// whatever they had explicitly set.
+		const deliveryMode: TelegramDeliveryMode = stored.deliveryMode ?? "polling";
+		return { botToken, webhookSecret, deliveryMode, source: "db" };
 	} catch (err) {
 		console.error("[telegram-credentials] decrypt failed; falling back to env:", err);
 		return null;
@@ -112,6 +123,11 @@ export function getTelegramCredentialsSource(): "db" | "env" | "missing" {
 	return cached.source;
 }
 
+export function getTelegramDeliveryMode(): TelegramDeliveryMode {
+	if (!cached) cached = readEnvCreds();
+	return cached.deliveryMode;
+}
+
 /**
  * Four-char suffix hint for UI display. Never leaks the full token
  * back to the client — the raw value is write-once at save time.
@@ -126,6 +142,7 @@ export function getTelegramBotTokenHint(): string | null {
 export interface SaveTelegramCredentialsInput {
 	botToken?: string | null;
 	webhookSecret?: string | null;
+	deliveryMode?: TelegramDeliveryMode;
 }
 
 /**
@@ -155,6 +172,7 @@ export async function saveTelegramCredentials(
 				: input.webhookSecret.length > 0
 					? encryptSecret(input.webhookSecret)
 					: undefined,
+		deliveryMode: input.deliveryMode ?? existing.deliveryMode,
 	};
 
 	const now = new Date().toISOString();

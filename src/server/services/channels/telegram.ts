@@ -252,6 +252,51 @@ export async function getTelegramWebhookInfo(): Promise<
 }
 
 /**
+ * Minimal Telegram update types exposed so the webhook route and the
+ * long-poll service can share one handler. The full Telegram shape has
+ * dozens of fields we don't use; we only pick what the enrollment +
+ * HITL-callback flows look at.
+ */
+export interface TelegramMessage {
+	message_id: number;
+	chat: { id: number; type: string };
+	text?: string;
+	from?: { id: number; username?: string };
+}
+
+export interface TelegramCallbackQuery {
+	id: string;
+	data?: string;
+	message?: TelegramMessage;
+	from: { id: number; username?: string };
+}
+
+export interface TelegramUpdate {
+	update_id: number;
+	message?: TelegramMessage;
+	callback_query?: TelegramCallbackQuery;
+}
+
+/**
+ * Long-polling `getUpdates` call. Used when the instance can't accept
+ * a webhook (home-lab, NAT, private DNS). Telegram holds the request
+ * open for up to `timeout` seconds if nothing is waiting, then
+ * returns an empty array.
+ */
+export async function getTelegramUpdates(input: {
+	offset?: number;
+	timeout?: number;
+}): Promise<{ ok: true; updates: TelegramUpdate[] } | { ok: false; error: string }> {
+	const res = await callTelegram<TelegramUpdate[]>("getUpdates", {
+		offset: input.offset ?? 0,
+		timeout: input.timeout ?? 25,
+		allowed_updates: ["message", "callback_query"],
+	});
+	if (!res.ok) return { ok: false, error: res.description };
+	return { ok: true, updates: res.result };
+}
+
+/**
  * Send a standalone test message to a verified Telegram channel so the
  * user can confirm end-to-end delivery without needing a real HITL.
  * Uses the same formatting as a real HITL message but with inert
