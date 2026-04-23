@@ -1,7 +1,7 @@
-import { and, desc, eq, gt } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
+import type { EventCategory, SessionEvent } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { events, sessions } from "../../db/schema.js";
-import type { EventCategory, SessionEvent } from "../../../shared/types.js";
 import { notifySessionEvents } from "../notifier.js";
 
 /**
@@ -59,10 +59,7 @@ export async function emitAiEvent(params: {
  * Load the last N events for a session, newest-last. Used by the context
  * builder and continuability predicate.
  */
-export async function loadRecentEvents(
-	sessionId: string,
-	limit = 60,
-): Promise<SessionEvent[]> {
+export async function loadRecentEvents(sessionId: string, limit = 60): Promise<SessionEvent[]> {
 	const rows = await db
 		.select()
 		.from(events)
@@ -71,21 +68,23 @@ export async function loadRecentEvents(
 		.limit(limit);
 	// Drizzle returned newest-first; flip for chronological iteration.
 	return rows
-		.map((row): SessionEvent => ({
-			id: row.id,
-			sessionId: row.sessionId,
-			eventType: row.eventType,
-			category: (row.category as EventCategory) ?? null,
-			source: row.source as SessionEvent["source"],
-			content: row.content,
-			isNoise: row.isNoise,
-			providerEventType: row.providerEventType,
-			toolName: row.toolName,
-			toolInput: row.toolInput as Record<string, unknown> | null,
-			toolResponse: row.toolResponse,
-			rawPayload: (row.rawPayload as Record<string, unknown>) ?? {},
-			createdAt: row.createdAt,
-		}))
+		.map(
+			(row): SessionEvent => ({
+				id: row.id,
+				sessionId: row.sessionId,
+				eventType: row.eventType,
+				category: (row.category as EventCategory) ?? null,
+				source: row.source as SessionEvent["source"],
+				content: row.content,
+				isNoise: row.isNoise,
+				providerEventType: row.providerEventType,
+				toolName: row.toolName,
+				toolInput: row.toolInput as Record<string, unknown> | null,
+				toolResponse: row.toolResponse,
+				rawPayload: (row.rawPayload as Record<string, unknown>) ?? {},
+				createdAt: row.createdAt,
+			}),
+		)
 		.reverse();
 }
 
@@ -94,10 +93,7 @@ export async function loadRecentEvents(
  * badges. Broadcast happens via the caller (usually notifySessionUpdated
  * after it refreshes the session snapshot).
  */
-export async function stampWatcherState(
-	sessionId: string,
-	state: string,
-): Promise<void> {
+export async function stampWatcherState(sessionId: string, state: string): Promise<void> {
 	await db
 		.update(sessions)
 		.set({ watcherState: state, watcherLastRunAt: new Date().toISOString() })

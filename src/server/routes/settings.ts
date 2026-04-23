@@ -1,9 +1,9 @@
-import { Hono } from "hono";
-import { db } from "../db/client.js";
-import { settings, apiKeys } from "../db/schema.js";
 import { eq } from "drizzle-orm";
+import { Hono } from "hono";
 import { createApiKey } from "../auth/api-key.js";
 import { requireAuth } from "../auth/middleware.js";
+import { db } from "../db/client.js";
+import { apiKeys, settings } from "../db/schema.js";
 
 const settingsRouter = new Hono();
 settingsRouter.use("*", requireAuth());
@@ -76,20 +76,13 @@ settingsRouter.post("/api-keys", async (c) => {
 settingsRouter.delete("/api-keys/:id", async (c) => {
 	const id = c.req.param("id");
 
-	const [existing] = await db
-		.select()
-		.from(apiKeys)
-		.where(eq(apiKeys.id, id))
-		.limit(1);
+	const [existing] = await db.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
 
 	if (!existing) {
 		return c.json({ error: "API key not found" }, 404);
 	}
 
-	await db
-		.update(apiKeys)
-		.set({ isActive: false })
-		.where(eq(apiKeys.id, id));
+	await db.update(apiKeys).set({ isActive: false }).where(eq(apiKeys.id, id));
 
 	return c.json({ ok: true });
 });

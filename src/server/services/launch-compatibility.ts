@@ -1,11 +1,19 @@
 import { relative, resolve } from "path";
-import type { LaunchMode, SessionTemplateInput, SupervisorRecord, TemplateHostCompatibility } from "../../shared/types.js";
+import type {
+	LaunchMode,
+	SessionTemplateInput,
+	SupervisorRecord,
+	TemplateHostCompatibility,
+} from "../../shared/types.js";
 
 function isWithinTrustedRoot(cwd: string, roots: string[]) {
 	const resolvedCwd = resolve(cwd);
 	for (const root of roots.map((value) => resolve(value))) {
 		const rel = relative(root, resolvedCwd);
-		if (!rel || (!rel.startsWith("..") && !rel.includes(`..${process.platform === "win32" ? "\\" : "/"}`))) {
+		if (
+			!rel ||
+			(!rel.startsWith("..") && !rel.includes(`..${process.platform === "win32" ? "\\" : "/"}`))
+		) {
 			return true;
 		}
 	}
@@ -26,11 +34,21 @@ export function validateAgainstSupervisor(
 	if (!supervisor.capabilities.launchModes.includes(requestedLaunchMode)) {
 		errors.push(`${supervisor.hostName} does not support ${requestedLaunchMode} launch mode.`);
 	}
-	if (template.agentType === "claude_code" && !supervisor.capabilities.executables?.claude?.available) {
-		errors.push(`${supervisor.hostName} cannot launch Claude Code because the claude executable is not configured or not on PATH.`);
+	if (
+		template.agentType === "claude_code" &&
+		!supervisor.capabilities.executables?.claude?.available
+	) {
+		errors.push(
+			`${supervisor.hostName} cannot launch Claude Code because the claude executable is not configured or not on PATH.`,
+		);
 	}
-	if (template.agentType === "codex_cli" && !supervisor.capabilities.executables?.codex?.available) {
-		errors.push(`${supervisor.hostName} cannot launch Codex because the codex executable is not configured or not on PATH.`);
+	if (
+		template.agentType === "codex_cli" &&
+		!supervisor.capabilities.executables?.codex?.available
+	) {
+		errors.push(
+			`${supervisor.hostName} cannot launch Codex because the codex executable is not configured or not on PATH.`,
+		);
 	}
 	if (!isWithinTrustedRoot(template.cwd, supervisor.trustedRoots)) {
 		errors.push("Working directory is outside the supervisor's trusted roots.");
@@ -38,8 +56,13 @@ export function validateAgainstSupervisor(
 	if (!template.model) {
 		warnings.push("No explicit model selected. The provider default will be used.");
 	}
-	if (requestedLaunchMode === "interactive_terminal" && supervisor.capabilities.terminalSupport.length === 0) {
-		errors.push(`${supervisor.hostName} does not advertise terminal support for interactive launches.`);
+	if (
+		requestedLaunchMode === "interactive_terminal" &&
+		supervisor.capabilities.terminalSupport.length === 0
+	) {
+		errors.push(
+			`${supervisor.hostName} does not advertise terminal support for interactive launches.`,
+		);
 	}
 	if (requestedLaunchMode === "headless" && template.agentType !== "claude_code") {
 		errors.push("Headless launch mode currently applies to Claude Code only.");
@@ -48,7 +71,9 @@ export function validateAgainstSupervisor(
 		errors.push("managed_codex launch mode only applies to Codex CLI templates.");
 	}
 	if (requestedLaunchMode === "interactive_terminal" && template.agentType === "claude_code") {
-		warnings.push("Interactive launches open on the selected host's terminal, not inside AgentPulse.");
+		warnings.push(
+			"Interactive launches open on the selected host's terminal, not inside AgentPulse.",
+		);
 		if (!supervisor.capabilities.interactiveTerminalControl?.available) {
 			warnings.push(
 				supervisor.capabilities.interactiveTerminalControl?.reason ||
@@ -57,7 +82,9 @@ export function validateAgainstSupervisor(
 		}
 	}
 	if (requestedLaunchMode === "headless") {
-		warnings.push("Headless launches stream visible Claude output back into AgentPulse and exit when the task completes.");
+		warnings.push(
+			"Headless launches stream visible Claude output back into AgentPulse and exit when the task completes.",
+		);
 	}
 
 	return { warnings, errors };
@@ -71,8 +98,8 @@ export function buildTemplateHostCompatibility(
 	const validation = validateAgainstSupervisor(template, supervisor, requestedLaunchMode);
 	const executablePath =
 		template.agentType === "claude_code"
-			? supervisor.capabilities.executables?.claude?.resolvedPath ?? null
-			: supervisor.capabilities.executables?.codex?.resolvedPath ?? null;
+			? (supervisor.capabilities.executables?.claude?.resolvedPath ?? null)
+			: (supervisor.capabilities.executables?.codex?.resolvedPath ?? null);
 
 	return {
 		supervisorId: supervisor.id,
@@ -86,4 +113,3 @@ export function buildTemplateHostCompatibility(
 		executablePath,
 	};
 }
-

@@ -404,6 +404,8 @@ export function initializeDatabase() {
 		CREATE TABLE IF NOT EXISTS ask_threads (
 			id TEXT PRIMARY KEY,
 			title TEXT,
+			origin TEXT NOT NULL DEFAULT 'web',
+			telegram_chat_id TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
 			archived_at TEXT
@@ -411,6 +413,9 @@ export function initializeDatabase() {
 		CREATE INDEX IF NOT EXISTS idx_ask_threads_updated
 			ON ask_threads(updated_at DESC)
 			WHERE archived_at IS NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_ask_threads_telegram_chat
+			ON ask_threads(telegram_chat_id)
+			WHERE telegram_chat_id IS NOT NULL AND archived_at IS NULL;
 
 		CREATE TABLE IF NOT EXISTS ask_messages (
 			id TEXT PRIMARY KEY,
@@ -495,6 +500,9 @@ export function initializeDatabase() {
 		"ALTER TABLE session_templates ADD COLUMN metadata TEXT",
 		// Phase 7 channel verification.
 		"ALTER TABLE notification_channels ADD COLUMN verified_at TEXT",
+		// Ask-via-Telegram: origin + Telegram chat mapping.
+		"ALTER TABLE ask_threads ADD COLUMN origin TEXT NOT NULL DEFAULT 'web'",
+		"ALTER TABLE ask_threads ADD COLUMN telegram_chat_id TEXT",
 	];
 
 	for (const migration of migrations) {

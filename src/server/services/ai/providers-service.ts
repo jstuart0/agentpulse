@@ -2,7 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { llmProviders } from "../../db/schema.js";
 import type { ProviderKind } from "./llm/types.js";
-import { credentialHint, encryptSecret, decryptSecret } from "./secrets.js";
+import { credentialHint, decryptSecret, encryptSecret } from "./secrets.js";
 
 export interface ProviderRecord {
 	id: string;
@@ -84,20 +84,12 @@ export async function listProviders(userId = "local"): Promise<ProviderRecord[]>
 }
 
 export async function getProvider(id: string): Promise<ProviderRecord | null> {
-	const [row] = await db
-		.select()
-		.from(llmProviders)
-		.where(eq(llmProviders.id, id))
-		.limit(1);
+	const [row] = await db.select().from(llmProviders).where(eq(llmProviders.id, id)).limit(1);
 	return row ? toRecord(row) : null;
 }
 
 export async function getProviderApiKey(id: string): Promise<string | null> {
-	const [row] = await db
-		.select()
-		.from(llmProviders)
-		.where(eq(llmProviders.id, id))
-		.limit(1);
+	const [row] = await db.select().from(llmProviders).where(eq(llmProviders.id, id)).limit(1);
 	if (!row) return null;
 	return decryptSecret(row.credentialCiphertext);
 }
@@ -119,7 +111,10 @@ export interface UpdateProviderInput {
 	isDefault?: boolean;
 }
 
-export async function updateProvider(id: string, input: UpdateProviderInput): Promise<ProviderRecord | null> {
+export async function updateProvider(
+	id: string,
+	input: UpdateProviderInput,
+): Promise<ProviderRecord | null> {
 	const existing = await getProvider(id);
 	if (!existing) return null;
 	const now = new Date().toISOString();
@@ -128,9 +123,7 @@ export async function updateProvider(id: string, input: UpdateProviderInput): Pr
 		await db
 			.update(llmProviders)
 			.set({ isDefault: false, updatedAt: now })
-			.where(
-				and(eq(llmProviders.userId, existing.userId), eq(llmProviders.isDefault, true)),
-			);
+			.where(and(eq(llmProviders.userId, existing.userId), eq(llmProviders.isDefault, true)));
 	}
 
 	const updates: Partial<typeof llmProviders.$inferInsert> = { updatedAt: now };

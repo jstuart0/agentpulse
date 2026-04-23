@@ -69,9 +69,8 @@ export async function upsertWatcherConfig(
 	const existing = await getWatcherConfig(input.sessionId);
 
 	// Per plan: continuationsUsed resets when enabled flips false -> true.
-	const shouldResetCounter =
-		existing && !existing.enabled && input.enabled === true;
-	const continuationsUsed = shouldResetCounter ? 0 : existing?.continuationsUsed ?? 0;
+	const shouldResetCounter = existing && !existing.enabled && input.enabled === true;
+	const continuationsUsed = shouldResetCounter ? 0 : (existing?.continuationsUsed ?? 0);
 
 	if (!existing) {
 		if (!input.providerId) {

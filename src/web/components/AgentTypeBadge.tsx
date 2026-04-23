@@ -1,5 +1,5 @@
-import { cn } from "../lib/utils.js";
 import { AGENT_TYPE_LABELS } from "../../shared/constants.js";
+import { cn } from "../lib/utils.js";
 
 interface AgentTypeBadgeProps {
 	agentType: string;
@@ -20,10 +20,12 @@ export function AgentTypeBadge({ agentType, className }: AgentTypeBadgeProps) {
 				className,
 			)}
 		>
-			<span className={cn(
-				"w-1.5 h-1.5 rounded-full",
-				isClaude ? "bg-orange-400/70" : "bg-green-400/70",
-			)} />
+			<span
+				className={cn(
+					"w-1.5 h-1.5 rounded-full",
+					isClaude ? "bg-orange-400/70" : "bg-green-400/70",
+				)}
+			/>
 			{label}
 		</span>
 	);

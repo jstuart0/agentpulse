@@ -7,12 +7,7 @@
  * use) stays inside the adapter.
  */
 
-export type ProviderKind =
-	| "anthropic"
-	| "openai"
-	| "google"
-	| "openrouter"
-	| "openai_compatible";
+export type ProviderKind = "anthropic" | "openai" | "google" | "openrouter" | "openai_compatible";
 
 export interface LlmRequest {
 	/** Stable across a session — candidate for provider prompt caching. */

@@ -37,7 +37,10 @@ export const DEFAULT_RULES: DispatchRule[] = [
 	{ name: "read_aws", pattern: /\b(?:cat|base64|tar|cp|mv)\s+[^\n]*\.aws\b/i },
 	{ name: "history_delete", pattern: /\bhistory\s+-c\b/i },
 	// Destructive git operations the watcher should never initiate unprompted.
-	{ name: "git_force_push_main", pattern: /\bgit\s+push\s+(?:[^\n]*\s)?-f[^\n]*\s(?:main|master)\b/i },
+	{
+		name: "git_force_push_main",
+		pattern: /\bgit\s+push\s+(?:[^\n]*\s)?-f[^\n]*\s(?:main|master)\b/i,
+	},
 	{ name: "git_reset_hard_remote", pattern: /\bgit\s+reset\s+--hard\s+origin\//i },
 	// DB destruction.
 	{ name: "drop_database", pattern: /\bDROP\s+(?:DATABASE|TABLE)\b/i },
@@ -50,10 +53,7 @@ const MAX_LENGTH_CHARS = 4000;
  * Check an outgoing continuation prompt against the deny-list and length cap.
  * Runs fast; meant to sit right before control-action dispatch.
  */
-export function checkDispatch(
-	nextPrompt: string,
-	extraRules: DispatchRule[] = [],
-): FilterResult {
+export function checkDispatch(nextPrompt: string, extraRules: DispatchRule[] = []): FilterResult {
 	if (typeof nextPrompt !== "string") {
 		return { allowed: false, reason: "Prompt is not a string", rule: "invalid_input" };
 	}

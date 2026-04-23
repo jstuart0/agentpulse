@@ -1,12 +1,12 @@
 import { and, asc, eq, isNotNull } from "drizzle-orm";
-import { db } from "../db/client.js";
-import { controlActions, launchRequests, managedSessions, sessions } from "../db/schema.js";
 import type {
 	ControlAction,
 	ControlActionStatus,
 	ControlActionType,
 	LaunchRequest,
 } from "../../shared/types.js";
+import { db } from "../db/client.js";
+import { controlActions, launchRequests, managedSessions, sessions } from "../db/schema.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 
 function nowIso() {
@@ -294,12 +294,7 @@ export async function claimNextControlAction(supervisorId: string) {
 		})
 		.from(controlActions)
 		.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
-		.where(
-			and(
-				eq(controlActions.status, "queued"),
-				eq(managedSessions.supervisorId, supervisorId),
-			),
-		)
+		.where(and(eq(controlActions.status, "queued"), eq(managedSessions.supervisorId, supervisorId)))
 		.orderBy(asc(controlActions.createdAt))
 		.limit(1);
 

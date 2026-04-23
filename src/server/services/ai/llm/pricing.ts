@@ -46,11 +46,7 @@ const FREE_KINDS: ProviderKind[] = ["openai_compatible"];
  * When the model isn't in the rate table, uses a conservative default of
  * 50c/1M input + 200c/1M output so the cap math still engages.
  */
-export function priceCompletion(
-	kind: ProviderKind,
-	model: string,
-	usage: LlmUsage,
-): number {
+export function priceCompletion(kind: ProviderKind, model: string, usage: LlmUsage): number {
 	if (FREE_KINDS.includes(kind)) return 0;
 
 	const rate = MODEL_RATES.find((r) => r.match.test(model))?.rate ?? {
@@ -60,9 +56,10 @@ export function priceCompletion(
 
 	const inputTokens = usage.inputTokens - (usage.cacheReadTokens ?? 0);
 	const inputCost = (inputTokens * rate.inputPer1M) / 1_000_000;
-	const cacheCost = rate.cacheReadPer1M && usage.cacheReadTokens
-		? (usage.cacheReadTokens * rate.cacheReadPer1M) / 1_000_000
-		: 0;
+	const cacheCost =
+		rate.cacheReadPer1M && usage.cacheReadTokens
+			? (usage.cacheReadTokens * rate.cacheReadPer1M) / 1_000_000
+			: 0;
 	const outputCost = (usage.outputTokens * rate.outputPer1M) / 1_000_000;
 
 	// Round up — err on the side of "spend slightly more than advertised"

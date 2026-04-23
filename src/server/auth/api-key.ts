@@ -1,6 +1,6 @@
+import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { apiKeys } from "../db/schema.js";
-import { eq } from "drizzle-orm";
 
 // Generate a new API key: ap_<32 random hex chars>
 export function generateApiKey(): string {
@@ -41,19 +41,13 @@ export async function createApiKey(name: string): Promise<{ key: string; id: str
 }
 
 // Verify an API key and return the key record if valid
-export async function verifyApiKey(
-	key: string,
-): Promise<{ id: string; name: string } | null> {
+export async function verifyApiKey(key: string): Promise<{ id: string; name: string } | null> {
 	if (!key || !key.startsWith("ap_")) {
 		return null;
 	}
 
 	const keyHash = await hashKey(key);
-	const [record] = await db
-		.select()
-		.from(apiKeys)
-		.where(eq(apiKeys.keyHash, keyHash))
-		.limit(1);
+	const [record] = await db.select().from(apiKeys).where(eq(apiKeys.keyHash, keyHash)).limit(1);
 
 	if (!record || !record.isActive) {
 		return null;

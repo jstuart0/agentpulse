@@ -46,7 +46,9 @@ describe("Ask resolver", () => {
 		await insertSession({ id: "s1", displayName: "brave-falcon", cwd: "/home/me/agentpulse" });
 		await insertSession({ id: "s2", displayName: "calm-river", cwd: "/home/me/other-thing" });
 
-		const hits = await resolveCandidateSessions({ message: "how is the agentpulse session doing?" });
+		const hits = await resolveCandidateSessions({
+			message: "how is the agentpulse session doing?",
+		});
 		expect(hits.map((h) => h.sessionId)).toContain("s1");
 		expect(hits.map((h) => h.sessionId)).not.toContain("s2");
 	});

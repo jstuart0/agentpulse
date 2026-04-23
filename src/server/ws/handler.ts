@@ -1,6 +1,6 @@
 import type { ServerWebSocket } from "bun";
-import type { WsMessage, WsMessageType } from "../../shared/types.js";
 import { WS_HEARTBEAT_INTERVAL_MS } from "../../shared/constants.js";
+import type { WsMessage, WsMessageType } from "../../shared/types.js";
 
 interface WsClient {
 	ws: ServerWebSocket<unknown>;

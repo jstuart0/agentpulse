@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
+import type { SupervisorEnrollmentTokenInfo } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { supervisorCredentials, supervisorEnrollmentTokens } from "../db/schema.js";
-import type { SupervisorEnrollmentTokenInfo } from "../../shared/types.js";
 
 function generateToken(prefix: string): string {
 	const bytes = new Uint8Array(16);
@@ -29,7 +29,9 @@ export function extractSupervisorToken(headers: Headers | { get(name: string): s
 	return null;
 }
 
-function mapEnrollment(row: typeof supervisorEnrollmentTokens.$inferSelect): SupervisorEnrollmentTokenInfo {
+function mapEnrollment(
+	row: typeof supervisorEnrollmentTokens.$inferSelect,
+): SupervisorEnrollmentTokenInfo {
 	return {
 		id: row.id,
 		name: row.name,

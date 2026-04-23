@@ -1,12 +1,12 @@
 import { and, desc, eq, gt } from "drizzle-orm";
-import { db } from "../db/client.js";
-import { supervisors } from "../db/schema.js";
 import type {
 	SupervisorCapabilities,
 	SupervisorRecord,
 	SupervisorRegistrationInput,
 	SupervisorStatus,
 } from "../../shared/types.js";
+import { db } from "../db/client.js";
+import { supervisors } from "../db/schema.js";
 
 const HEARTBEAT_LEASE_MS = 90_000;
 

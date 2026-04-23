@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
-import { api, type InboxWorkItem, type LabsFlag } from "../lib/api.js";
+import { type InboxWorkItem, type LabsFlag, api } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useUserStore } from "../stores/user-store.js";
@@ -129,8 +129,8 @@ export function Layout() {
 				<button
 					onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
 					className="text-muted-foreground p-1.5 hover:text-foreground transition-colors"
-									>
-										<svg
+				>
+					<svg
 						className="w-5 h-5"
 						fill="none"
 						viewBox="0 0 24 24"
@@ -205,16 +205,16 @@ export function Layout() {
 										viewBox="0 0 24 24"
 										stroke="currentColor"
 										strokeWidth={1.5}
-										>
-											<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
-										</svg>
-										<span className="flex-1">{item.label}</span>
-										{item.to === "/inbox" && inboxIndicator && (
-											<InboxNavPills total={inboxIndicator.total} hasNew={inboxIndicator.hasNew} />
-										)}
-										{item.labsFlag && <LabsBadge />}
-									</NavLink>
-								))}
+									>
+										<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
+									</svg>
+									<span className="flex-1">{item.label}</span>
+									{item.to === "/inbox" && inboxIndicator && (
+										<InboxNavPills total={inboxIndicator.total} hasNew={inboxIndicator.hasNew} />
+									)}
+									{item.labsFlag && <LabsBadge />}
+								</NavLink>
+							))}
 
 							<div className="mt-2 pt-2 border-t border-border/70 space-y-0.5">
 								<div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">

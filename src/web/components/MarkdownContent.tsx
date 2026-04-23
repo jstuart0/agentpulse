@@ -56,10 +56,7 @@ export function MarkdownContent({
 						const inline = !className;
 						if (inline) {
 							return (
-								<code
-									className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.9em]"
-									{...props}
-								>
+								<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.9em]" {...props}>
 									{children}
 								</code>
 							);

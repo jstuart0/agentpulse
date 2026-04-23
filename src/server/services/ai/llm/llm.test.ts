@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createAnthropicAdapter } from "./anthropic.js";
 import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
 import { priceCompletion } from "./pricing.js";
-import { estimateTokens, LlmError } from "./types.js";
+import { LlmError, estimateTokens } from "./types.js";
 
 const originalFetch = globalThis.fetch;
 let capturedRequests: Array<{ url: string; init: RequestInit }> = [];
@@ -142,10 +142,7 @@ describe("openai-compatible adapter", () => {
 
 	test("uses fallback 'ollama' token when apiKey is empty", async () => {
 		mockFetch(
-			new Response(
-				JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
-				{ status: 200 },
-			),
+			new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }),
 		);
 		const adapter = createOpenAICompatibleAdapter({
 			apiKey: "",

@@ -1,11 +1,11 @@
 import {
-	classifyHttpError,
-	estimateTokens,
-	LlmError,
 	type LlmAdapter,
+	LlmError,
 	type LlmRequest,
 	type LlmResponse,
 	type ProviderKind,
+	classifyHttpError,
+	estimateTokens,
 } from "./types.js";
 
 interface OpenAICompatibleParams {
@@ -26,9 +26,7 @@ interface OpenAICompatibleParams {
  * - LM Studio (baseUrl = http://host:1234/v1)
  * - vLLM, llama.cpp server, etc.
  */
-export function createOpenAICompatibleAdapter(
-	params: OpenAICompatibleParams,
-): LlmAdapter {
+export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): LlmAdapter {
 	const apiKey = params.apiKey;
 	const baseUrl = params.baseUrl.replace(/\/+$/, "");
 	const kind = params.kind ?? "openai_compatible";
@@ -65,28 +63,14 @@ export function createOpenAICompatibleAdapter(
 				});
 			} catch (err) {
 				if (err instanceof Error && err.name === "TimeoutError") {
-					throw new LlmError(
-						"transient_timeout",
-						`${kind} request timed out`,
-						undefined,
-						err,
-					);
+					throw new LlmError("transient_timeout", `${kind} request timed out`, undefined, err);
 				}
-				throw new LlmError(
-					"unknown",
-					`${kind} request failed: ${err}`,
-					undefined,
-					err,
-				);
+				throw new LlmError("unknown", `${kind} request failed: ${err}`, undefined, err);
 			}
 
 			if (!response.ok) {
 				const { subType, body: errBody, status } = await classifyHttpError(response);
-				throw new LlmError(
-					subType,
-					`${kind} ${status}: ${errBody.slice(0, 300)}`,
-					status,
-				);
+				throw new LlmError(subType, `${kind} ${status}: ${errBody.slice(0, 300)}`, status);
 			}
 
 			const json = (await response.json()) as {
@@ -107,8 +91,7 @@ export function createOpenAICompatibleAdapter(
 				text,
 				usage: {
 					inputTokens:
-						usage.prompt_tokens ??
-						estimateTokens(request.systemPrompt + request.transcriptPrompt),
+						usage.prompt_tokens ?? estimateTokens(request.systemPrompt + request.transcriptPrompt),
 					outputTokens: usage.completion_tokens ?? estimateTokens(text),
 					estimated: usage.prompt_tokens === undefined,
 				},

@@ -219,6 +219,21 @@ export function TelegramChannelPanel() {
 		}
 	}
 
+	async function handleAskToggle(id: string, askEnabled: boolean) {
+		try {
+			await api.updateChannelConfig(id, { askEnabled });
+			showToast(
+				"ok",
+				askEnabled
+					? "Ask enabled — DMs to this chat will get LLM replies."
+					: "Ask disabled — the bot will ignore free-form messages on this channel.",
+			);
+			await load();
+		} catch (err) {
+			showToast("err", err instanceof Error ? err.message : String(err));
+		}
+	}
+
 	async function handleTest(id: string) {
 		try {
 			await api.testChannel(id);
@@ -322,6 +337,7 @@ export function TelegramChannelPanel() {
 				stats={statsByChannel}
 				onTest={handleTest}
 				onDelete={handleDelete}
+				onAskToggle={handleAskToggle}
 			/>
 		</div>
 	);
@@ -571,11 +587,13 @@ function ChannelList({
 	stats,
 	onTest,
 	onDelete,
+	onAskToggle,
 }: {
 	channels: NotificationChannelRecord[];
 	stats: Record<string, ChannelStats>;
 	onTest: (id: string) => void;
 	onDelete: (id: string) => void;
+	onAskToggle: (id: string, askEnabled: boolean) => void;
 }) {
 	if (channels.length === 0) {
 		return (
@@ -624,6 +642,24 @@ function ChannelList({
 								</button>
 							</div>
 						</div>
+						{ch.verifiedAt && (
+							<label className="flex items-center gap-2 text-[11px] text-muted-foreground cursor-pointer">
+								<input
+									type="checkbox"
+									checked={
+										!(ch.config && (ch.config as Record<string, unknown>).askEnabled === false)
+									}
+									onChange={(e) => onAskToggle(ch.id, e.target.checked)}
+									className="h-3.5 w-3.5"
+								/>
+								<span>
+									Answer free-form DMs via the Ask assistant
+									<span className="ml-1 text-muted-foreground/70">
+										(requires Labs → Ask assistant)
+									</span>
+								</span>
+							</label>
+						)}
 						{s && (
 							<div className="flex flex-wrap gap-3 text-[10px] text-muted-foreground">
 								<span>

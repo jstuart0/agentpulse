@@ -124,11 +124,15 @@ export function HostsPage() {
 		return "bg-sky-500/10 text-sky-400";
 	}
 
-	const connectedCount = supervisors.filter((supervisor) => supervisor.status === "connected").length;
+	const connectedCount = supervisors.filter(
+		(supervisor) => supervisor.status === "connected",
+	).length;
 	const interactiveReadyCount = supervisors.filter(
 		(supervisor) => supervisor.capabilities.interactiveTerminalControl?.available,
 	).length;
-	const revokedCount = supervisors.filter((supervisor) => supervisor.enrollmentState === "revoked").length;
+	const revokedCount = supervisors.filter(
+		(supervisor) => supervisor.enrollmentState === "revoked",
+	).length;
 
 	return (
 		<div className="p-3 md:p-6">
@@ -216,16 +220,13 @@ export function HostsPage() {
 								</code>
 								<div className="mt-3 space-y-1 text-xs text-muted-foreground">
 									<div>
-										Use with:
-										{" "}
+										Use with:{" "}
 										<code className="text-foreground">
 											AGENTPULSE_SUPERVISOR_ENROLLMENT_TOKEN={createdToken.token}
 										</code>
 									</div>
 									<div>
-										Then run:
-										{" "}
-										<code className="text-foreground">bun run supervisor</code>
+										Then run: <code className="text-foreground">bun run supervisor</code>
 									</div>
 									{createdToken.mode === "rotate" && (
 										<div>
@@ -233,15 +234,11 @@ export function HostsPage() {
 										</div>
 									)}
 									<div>
-										Name:
-										{" "}
-										<span className="text-foreground">{createdToken.name}</span>
+										Name: <span className="text-foreground">{createdToken.name}</span>
 										{createdToken.expiresAt ? (
 											<>
 												{" "}
-												· Expires
-												{" "}
-												<span className="text-foreground">{createdToken.expiresAt}</span>
+												· Expires <span className="text-foreground">{createdToken.expiresAt}</span>
 											</>
 										) : null}
 									</div>
@@ -263,19 +260,29 @@ export function HostsPage() {
 
 				<div className="grid gap-3 md:grid-cols-3">
 					<div className="rounded-lg border border-border bg-card px-4 py-3">
-						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Connected</div>
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Connected
+						</div>
 						<div className="mt-1 text-2xl font-semibold text-foreground">{connectedCount}</div>
 						<div className="mt-1 text-xs text-muted-foreground">Hosts currently heartbeating.</div>
 					</div>
 					<div className="rounded-lg border border-border bg-card px-4 py-3">
-						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Interactive Ready</div>
-						<div className="mt-1 text-2xl font-semibold text-foreground">{interactiveReadyCount}</div>
-						<div className="mt-1 text-xs text-muted-foreground">Hosts that can hand prompts back into live terminals.</div>
+						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+							Interactive Ready
+						</div>
+						<div className="mt-1 text-2xl font-semibold text-foreground">
+							{interactiveReadyCount}
+						</div>
+						<div className="mt-1 text-xs text-muted-foreground">
+							Hosts that can hand prompts back into live terminals.
+						</div>
 					</div>
 					<div className="rounded-lg border border-border bg-card px-4 py-3">
 						<div className="text-[11px] uppercase tracking-wide text-muted-foreground">Revoked</div>
 						<div className="mt-1 text-2xl font-semibold text-foreground">{revokedCount}</div>
-						<div className="mt-1 text-xs text-muted-foreground">Hosts whose scoped credentials have been disabled.</div>
+						<div className="mt-1 text-xs text-muted-foreground">
+							Hosts whose scoped credentials have been disabled.
+						</div>
 					</div>
 				</div>
 
@@ -288,7 +295,10 @@ export function HostsPage() {
 				{loading ? (
 					<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
 						{Array.from({ length: 3 }).map((_, index) => (
-							<div key={index} className="h-72 animate-pulse rounded-lg border border-border bg-card" />
+							<div
+								key={index}
+								className="h-72 animate-pulse rounded-lg border border-border bg-card"
+							/>
 						))}
 					</div>
 				) : supervisors.length === 0 ? (
@@ -316,7 +326,9 @@ export function HostsPage() {
 										</div>
 									</div>
 									<div className="flex flex-col items-end gap-2">
-										<span className={`rounded-full px-2 py-1 text-[10px] font-medium ${statusClasses(supervisor.status)}`}>
+										<span
+											className={`rounded-full px-2 py-1 text-[10px] font-medium ${statusClasses(supervisor.status)}`}
+										>
 											{supervisor.status}
 										</span>
 										<span
@@ -354,10 +366,12 @@ export function HostsPage() {
 										<div className="text-muted-foreground">Executables</div>
 										<div className="mt-1 text-foreground">
 											<div>
-												Claude: {supervisor.capabilities.executables?.claude?.resolvedPath || "Unavailable"}
+												Claude:{" "}
+												{supervisor.capabilities.executables?.claude?.resolvedPath || "Unavailable"}
 											</div>
 											<div>
-												Codex: {supervisor.capabilities.executables?.codex?.resolvedPath || "Unavailable"}
+												Codex:{" "}
+												{supervisor.capabilities.executables?.codex?.resolvedPath || "Unavailable"}
 											</div>
 										</div>
 									</div>
@@ -397,14 +411,18 @@ export function HostsPage() {
 									<div className="flex items-center gap-2">
 										<button
 											onClick={() => handleRotateSupervisor(supervisor)}
-											disabled={supervisor.enrollmentState === "revoked" || rotatingId === supervisor.id}
+											disabled={
+												supervisor.enrollmentState === "revoked" || rotatingId === supervisor.id
+											}
 											className="inline-flex h-8 items-center justify-center rounded-md border border-border px-3 text-xs text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
 										>
 											{rotatingId === supervisor.id ? "Rotating..." : "Rotate"}
 										</button>
 										<button
 											onClick={() => handleRevokeSupervisor(supervisor.id)}
-											disabled={supervisor.enrollmentState === "revoked" || revokingId === supervisor.id}
+											disabled={
+												supervisor.enrollmentState === "revoked" || revokingId === supervisor.id
+											}
 											className="inline-flex h-8 items-center justify-center rounded-md border border-red-500/30 px-3 text-xs text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
 										>
 											{revokingId === supervisor.id ? "Revoking..." : "Revoke"}

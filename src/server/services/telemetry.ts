@@ -24,10 +24,10 @@
  *   - Project paths or file contents
  */
 
+import { count, eq } from "drizzle-orm";
+import { config } from "../config.js";
 import { db } from "../db/client.js";
 import { sessions, settings } from "../db/schema.js";
-import { eq, count } from "drizzle-orm";
-import { config } from "../config.js";
 
 // Telemetry reports anonymous usage data to the AgentPulse project maintainers.
 // This helps us understand adoption and prioritize improvements.

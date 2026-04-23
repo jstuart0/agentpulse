@@ -1,7 +1,7 @@
 import { useEffect } from "react";
-import { useSessionStore } from "../stores/session-store.js";
+import type { DashboardStats, Session } from "../../shared/types.js";
 import { api } from "../lib/api.js";
-import type { Session, DashboardStats } from "../../shared/types.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 export function useSessions() {
 	const { sessions, stats, setSessions, setStats, isLoading, setLoading } = useSessionStore();

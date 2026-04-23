@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
@@ -61,28 +61,28 @@
 		@apply border-border;
 	}
 	html {
-		font-family: 'Outfit', system-ui, -apple-system, sans-serif;
+		font-family: "Outfit", system-ui, -apple-system, sans-serif;
 	}
 	body {
 		@apply bg-background text-foreground;
 		font-feature-settings: "rlig" 1, "calt" 1;
 	}
-	code, pre, .font-mono {
-		font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace !important;
+	code,
+	pre,
+	.font-mono {
+		font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", monospace !important;
 	}
 }
 
 /* ── Mission Control Grid ── */
 .bg-grid {
-	background-image:
-		linear-gradient(to right, hsl(var(--border) / 0.3) 1px, transparent 1px),
+	background-image: linear-gradient(to right, hsl(var(--border) / 0.3) 1px, transparent 1px),
 		linear-gradient(to bottom, hsl(var(--border) / 0.3) 1px, transparent 1px);
 	background-size: 24px 24px;
 }
 
 .bg-grid-dense {
-	background-image:
-		linear-gradient(to right, hsl(var(--border) / 0.15) 1px, transparent 1px),
+	background-image: linear-gradient(to right, hsl(var(--border) / 0.15) 1px, transparent 1px),
 		linear-gradient(to bottom, hsl(var(--border) / 0.15) 1px, transparent 1px);
 	background-size: 12px 12px;
 }
@@ -95,13 +95,11 @@
 
 /* ── Glow effects ── */
 .glow-primary {
-	box-shadow: 0 0 20px hsl(var(--glow-primary) / 0.15),
-	            0 0 60px hsl(var(--glow-primary) / 0.05);
+	box-shadow: 0 0 20px hsl(var(--glow-primary) / 0.15), 0 0 60px hsl(var(--glow-primary) / 0.05);
 }
 
 .glow-primary-sm {
-	box-shadow: 0 0 8px hsl(var(--glow-primary) / 0.2),
-	            0 0 24px hsl(var(--glow-primary) / 0.06);
+	box-shadow: 0 0 8px hsl(var(--glow-primary) / 0.2), 0 0 24px hsl(var(--glow-primary) / 0.06);
 }
 
 .glow-status-active {
@@ -129,8 +127,15 @@
 
 /* ── Pulse animation for active status ── */
 @keyframes pulse-dot {
-	0%, 100% { opacity: 1; transform: scale(1); }
-	50% { opacity: 0.4; transform: scale(0.85); }
+	0%,
+	100% {
+		opacity: 1;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 0.4;
+		transform: scale(0.85);
+	}
 }
 
 .animate-pulse-dot {
@@ -139,8 +144,12 @@
 
 /* ── Scan line (subtle, for working state) ── */
 @keyframes scan-line {
-	0% { transform: translateY(-100%); }
-	100% { transform: translateY(100%); }
+	0% {
+		transform: translateY(-100%);
+	}
+	100% {
+		transform: translateY(100%);
+	}
 }
 
 .animate-scan {
@@ -148,7 +157,7 @@
 	overflow: hidden;
 }
 .animate-scan::after {
-	content: '';
+	content: "";
 	position: absolute;
 	inset: 0;
 	background: linear-gradient(
@@ -165,13 +174,23 @@
 
 /* ── Entrance animations ── */
 @keyframes fade-in-up {
-	0% { opacity: 0; transform: translateY(8px); }
-	100% { opacity: 1; transform: translateY(0); }
+	0% {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	100% {
+		opacity: 1;
+		transform: translateY(0);
+	}
 }
 
 @keyframes fade-in {
-	0% { opacity: 0; }
-	100% { opacity: 1; }
+	0% {
+		opacity: 0;
+	}
+	100% {
+		opacity: 1;
+	}
 }
 
 .animate-in {
@@ -186,19 +205,41 @@
 .stagger-children > * {
 	animation: fade-in-up 0.35s ease-out both;
 }
-.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
-.stagger-children > *:nth-child(2) { animation-delay: 50ms; }
-.stagger-children > *:nth-child(3) { animation-delay: 100ms; }
-.stagger-children > *:nth-child(4) { animation-delay: 150ms; }
-.stagger-children > *:nth-child(5) { animation-delay: 200ms; }
-.stagger-children > *:nth-child(6) { animation-delay: 250ms; }
-.stagger-children > *:nth-child(7) { animation-delay: 300ms; }
-.stagger-children > *:nth-child(8) { animation-delay: 350ms; }
+.stagger-children > *:nth-child(1) {
+	animation-delay: 0ms;
+}
+.stagger-children > *:nth-child(2) {
+	animation-delay: 50ms;
+}
+.stagger-children > *:nth-child(3) {
+	animation-delay: 100ms;
+}
+.stagger-children > *:nth-child(4) {
+	animation-delay: 150ms;
+}
+.stagger-children > *:nth-child(5) {
+	animation-delay: 200ms;
+}
+.stagger-children > *:nth-child(6) {
+	animation-delay: 250ms;
+}
+.stagger-children > *:nth-child(7) {
+	animation-delay: 300ms;
+}
+.stagger-children > *:nth-child(8) {
+	animation-delay: 350ms;
+}
 
 /* ── KPI number animation ── */
 @keyframes count-up {
-	0% { opacity: 0; transform: translateY(4px); }
-	100% { opacity: 1; transform: translateY(0); }
+	0% {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	100% {
+		opacity: 1;
+		transform: translateY(0);
+	}
 }
 
 .animate-count {

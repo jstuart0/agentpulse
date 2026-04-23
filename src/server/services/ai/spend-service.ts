@@ -72,9 +72,10 @@ export async function checkSpendBudget(
 ): Promise<SpendCheck> {
 	const spent = await getTodaySpendCents(userId);
 	const globalCap = DEFAULT_DAILY_CAP_CENTS;
-	const cap = perSessionCapCents && perSessionCapCents > 0
-		? Math.min(globalCap, perSessionCapCents)
-		: globalCap;
+	const cap =
+		perSessionCapCents && perSessionCapCents > 0
+			? Math.min(globalCap, perSessionCapCents)
+			: globalCap;
 	if (spent + expectedCostCents >= cap) {
 		return {
 			allowed: false,

@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import { requireAuth } from "../auth/middleware.js";
 import { config } from "../config.js";
 import { emitAiEvent } from "../services/ai/ai-events.js";
+import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import { getHitlRequest, resolveHitlRequest } from "../services/ai/hitl-service.js";
+import { findOrCreateTelegramThread, runAskTurn } from "../services/ask/ask-service.js";
 import {
 	completeEnrollment,
 	createPendingChannel,
@@ -12,6 +14,7 @@ import {
 	getChannel,
 	getChannelStats,
 	listChannels,
+	updateChannelConfig,
 } from "../services/channels/channels-service.js";
 import {
 	type TelegramDeliveryMode,
@@ -42,6 +45,7 @@ import {
 	setTelegramWebhook,
 } from "../services/channels/telegram.js";
 import { parseHitlCallbackData } from "../services/channels/types.js";
+import { isLabsFlagEnabled } from "../services/labs-service.js";
 
 /**
  * Public Telegram webhook lives on its own router so the
@@ -71,9 +75,10 @@ telegramWebhookRouter.post("/channels/telegram/webhook", async (c) => {
 });
 
 /**
- * Process a Telegram update (from webhook *or* long-poll). Two shapes
- * we care about: `/start <code>` for enrollment, and `callback_query`
- * for HITL approve/decline taps. Everything else is ignored silently.
+ * Process a Telegram update (from webhook *or* long-poll). Shapes we
+ * care about: `/start <code>` enrollment, `callback_query` HITL taps,
+ * and plain-text messages from enrolled chats (routed into the Ask
+ * assistant when that labs feature is enabled and the channel opts in).
  */
 async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
 	if (update.message?.text?.startsWith("/start ")) {
@@ -82,7 +87,117 @@ async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
 	}
 	if (update.callback_query) {
 		await handleHitlCallback(update.callback_query);
+		return;
 	}
+	if (update.message?.text) {
+		await handleTelegramAskMessage(update.message);
+	}
+}
+
+async function handleTelegramAskMessage(message: TelegramMessage): Promise<void> {
+	const text = message.text?.trim();
+	if (!text) return;
+	// Bot commands that aren't `/start <code>` fall through to the ask
+	// path too — we strip the leading slash so the LLM sees intent.
+	const normalized = text.startsWith("/") ? text.replace(/^\/\S+\s*/, "") : text;
+	if (!normalized) return;
+	const chatId = String(message.chat.id);
+
+	// Feature gate: ask assistant labs flag must be on. Otherwise do
+	// nothing (silent so unexpected DMs don't leak auto-replies).
+	if (!isAiBuildEnabled() || !(await isAiActive())) return;
+	if (!(await isLabsFlagEnabled("askAssistant"))) return;
+
+	const channel = await findActiveChannelByChatId(chatId);
+	if (!channel) {
+		// Not an enrolled chat. Reply once so the user understands why
+		// we're not answering — avoid ignore-loops with no explanation.
+		await telegramSendMessage(
+			chatId,
+			"👋 This chat isn't linked to AgentPulse yet. Open Settings → Telegram to enroll.",
+		);
+		return;
+	}
+	// Per-channel opt-out: admins can flip `askEnabled: false` in the
+	// channel config to silence the assistant for a chat even if labs
+	// is on globally.
+	if (channel.config && (channel.config as Record<string, unknown>).askEnabled === false) {
+		return;
+	}
+
+	const thread = await findOrCreateTelegramThread({
+		telegramChatId: chatId,
+		seedTitle: normalized,
+	});
+
+	// Typing indicator so the user sees the bot is thinking.
+	await telegramChatAction(chatId, "typing").catch(() => {
+		// ignore — informational only
+	});
+
+	try {
+		const res = await runAskTurn({
+			threadId: thread.id,
+			message: normalized,
+			origin: "telegram",
+			telegramChatId: chatId,
+		});
+		await telegramSendMessage(
+			chatId,
+			res.assistantMessage.errorMessage
+				? `⚠️ ${res.assistantMessage.content}`
+				: res.assistantMessage.content,
+		);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error("[telegram-ask] turn failed:", msg);
+		await telegramSendMessage(chatId, `⚠️ Couldn't answer that one: ${msg.slice(0, 400)}`).catch(
+			() => {
+				// ignore
+			},
+		);
+	}
+}
+
+/**
+ * Plain sendMessage that splits over 4096-char chunks (Telegram's cap).
+ * Uses the global bot token; falls through silently if it isn't set.
+ */
+async function telegramSendMessage(chatId: string, text: string): Promise<void> {
+	const token = getTelegramBotToken();
+	if (!token) return;
+	// Telegram caps at 4096; leave room for a continuation indicator.
+	const LIMIT = 3800;
+	const chunks: string[] = [];
+	let remaining = text;
+	while (remaining.length > LIMIT) {
+		// Prefer splitting on a newline near the limit so we don't chop
+		// mid-sentence.
+		const cutAt = remaining.lastIndexOf("\n", LIMIT);
+		const end = cutAt > LIMIT / 2 ? cutAt : LIMIT;
+		chunks.push(remaining.slice(0, end));
+		remaining = remaining.slice(end).replace(/^\s+/, "");
+	}
+	if (remaining) chunks.push(remaining);
+	for (const part of chunks) {
+		await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ chat_id: chatId, text: part }),
+		}).catch(() => {
+			// best-effort; let the caller's error handler surface failures
+		});
+	}
+}
+
+async function telegramChatAction(chatId: string, action: "typing"): Promise<void> {
+	const token = getTelegramBotToken();
+	if (!token) return;
+	await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ chat_id: chatId, action }),
+	});
 }
 
 async function handleEnrollmentStart(message: TelegramMessage): Promise<void> {
@@ -226,6 +341,24 @@ channelsRouter.delete("/channels/:id", auth, async (c) => {
 	const ok = await deleteChannel(id);
 	if (!ok) return c.json({ error: "Channel not found" }, 404);
 	return c.json({ ok: true });
+});
+
+/**
+ * Patch per-channel config flags (currently: askEnabled). Rejects any
+ * key not on the allow-list so callers can't poke at enrollment codes
+ * or status strings through this endpoint.
+ */
+channelsRouter.patch("/channels/:id/config", auth, async (c) => {
+	const id = c.req.param("id") ?? "";
+	const body = await c.req.json<{ askEnabled?: boolean }>();
+	const patch: Record<string, unknown> = {};
+	if (typeof body.askEnabled === "boolean") patch.askEnabled = body.askEnabled;
+	if (Object.keys(patch).length === 0) {
+		return c.json({ error: "No supported fields in body" }, 400);
+	}
+	const updated = await updateChannelConfig(id, patch);
+	if (!updated) return c.json({ error: "Channel not found" }, 404);
+	return c.json({ channel: updated });
 });
 
 channelsRouter.get("/channels/:id", auth, async (c) => {

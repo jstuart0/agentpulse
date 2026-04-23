@@ -154,6 +154,29 @@ export async function completeEnrollment(input: {
 	return getChannel(input.channelId);
 }
 
+/**
+ * Merge a partial config update into the channel row without touching
+ * anything else. Used to flip per-channel toggles like `askEnabled`
+ * without rewriting the credential or label.
+ */
+export async function updateChannelConfig(
+	id: string,
+	patch: Record<string, unknown>,
+): Promise<NotificationChannelRecord | null> {
+	const [existing] = await db
+		.select()
+		.from(notificationChannels)
+		.where(eq(notificationChannels.id, id))
+		.limit(1);
+	if (!existing) return null;
+	const merged = { ...(existing.config ?? {}), ...patch };
+	await db
+		.update(notificationChannels)
+		.set({ config: merged, updatedAt: new Date().toISOString() })
+		.where(eq(notificationChannels.id, id));
+	return getChannel(id);
+}
+
 export async function deactivateChannel(id: string): Promise<boolean> {
 	const now = new Date().toISOString();
 	const rows = await db

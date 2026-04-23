@@ -1,6 +1,6 @@
 import { useLocation, useNavigate } from "react-router-dom";
-import { useTabsStore } from "../stores/tabs-store.js";
 import { getSessionMode } from "../lib/utils.js";
+import { useTabsStore } from "../stores/tabs-store.js";
 
 export function SessionTabs() {
 	const tabs = useTabsStore((s) => s.tabs);
@@ -66,12 +66,17 @@ export function SessionTabs() {
 									: "bg-transparent text-muted-foreground hover:bg-card/60 hover:text-foreground"
 							}`}
 						>
-							<span className={`absolute left-0 top-0 bottom-0 w-[3px] ${modeStyle.barClass}`} aria-hidden="true" />
+							<span
+								className={`absolute left-0 top-0 bottom-0 w-[3px] ${modeStyle.barClass}`}
+								aria-hidden="true"
+							/>
 							<span
 								aria-hidden="true"
 								className={`absolute left-0 right-0 bottom-0 h-[2px] transition-opacity ${active ? "bg-primary opacity-100" : "bg-transparent opacity-0"}`}
 							/>
-							<span className={`text-xs font-mono max-w-[9rem] md:max-w-[11rem] truncate ${active ? "font-semibold" : ""}`}>
+							<span
+								className={`text-xs font-mono max-w-[9rem] md:max-w-[11rem] truncate ${active ? "font-semibold" : ""}`}
+							>
 								{tab.displayName}
 							</span>
 							<button
@@ -83,7 +88,13 @@ export function SessionTabs() {
 								aria-label={`Close ${tab.displayName}`}
 								className="rounded p-0.5 text-muted-foreground/70 hover:text-foreground hover:bg-muted/60 opacity-60 group-hover:opacity-100 transition-opacity"
 							>
-								<svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2}>
+								<svg
+									className="w-3 h-3"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth={2.2}
+								>
 									<path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
 								</svg>
 							</button>
