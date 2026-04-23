@@ -14,8 +14,10 @@ export function TopBar() {
 	const signOutUrl = useUserStore((s) => s.signOutUrl);
 	const disableAuth = useUserStore((s) => s.disableAuth);
 
+	// relative + z-30 lifts TopBar above SessionTabs (z-20 below it in
+	// DOM order) so the dropdown menus aren't painted under the tab strip.
 	return (
-		<div className="hidden md:flex items-center justify-end gap-2 px-6 py-2 border-b border-border bg-background/90 backdrop-blur-sm flex-shrink-0">
+		<div className="hidden md:flex relative z-30 items-center justify-end gap-2 px-6 py-2 border-b border-border bg-background/90 backdrop-blur-sm flex-shrink-0">
 			<AdminMenu />
 			<UserMenu user={user} signOutUrl={signOutUrl} disableAuth={disableAuth} />
 		</div>
