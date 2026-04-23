@@ -53,6 +53,34 @@ export const events = sqliteTable("events", {
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
+// Local accounts: username + argon2id password hash + optional role.
+// Coexists with Authentik forwardauth (which bypasses this table) and
+// DISABLE_AUTH=true. See src/server/services/local-auth-service.ts.
+export const users = sqliteTable("users", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	username: text("username").notNull().unique(),
+	passwordHash: text("password_hash").notNull(),
+	role: text("role").notNull().default("user"), // user | admin
+	disabledAt: text("disabled_at"),
+	lastLoginAt: text("last_login_at"),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// Active local-auth sessions. Primary key is the hash of the session
+// token, not the token itself — a stolen DB row cannot reconstruct a
+// usable cookie. Expired rows are reaped on read.
+export const authSessions = sqliteTable("auth_sessions", {
+	tokenHash: text("token_hash").primaryKey(),
+	userId: text("user_id").notNull(),
+	expiresAt: text("expires_at").notNull(),
+	userAgent: text("user_agent"),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	lastSeenAt: text("last_seen_at").notNull().default(sql`(datetime('now'))`),
+});
+
 export const apiKeys = sqliteTable("api_keys", {
 	id: text("id")
 		.primaryKey()

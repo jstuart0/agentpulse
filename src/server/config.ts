@@ -23,6 +23,15 @@ export const config = {
 	telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
 	telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || "",
 
+	// Local accounts. When DISABLE_AUTH=false (default), local username+
+	// password auth is always available. Bootstrap a first admin by
+	// setting AGENTPULSE_LOCAL_ADMIN_USERNAME / _PASSWORD; first-run
+	// signup is otherwise gated by AGENTPULSE_ALLOW_SIGNUP and only fires
+	// when the users table is empty.
+	allowSignup: process.env.AGENTPULSE_ALLOW_SIGNUP !== "false",
+	localAdminUsername: process.env.AGENTPULSE_LOCAL_ADMIN_USERNAME || "",
+	localAdminPassword: process.env.AGENTPULSE_LOCAL_ADMIN_PASSWORD || "",
+
 	get useSqlite(): boolean {
 		return !this.databaseUrl || !this.databaseUrl.startsWith("postgres");
 	},

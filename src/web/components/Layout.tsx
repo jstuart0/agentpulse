@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
 import type { LabsFlag } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
@@ -65,6 +65,21 @@ export function Layout() {
 	const labsFlags = useLabsStore((s) => s.flags);
 	const user = useUserStore((s) => s.user);
 	const signOutUrl = useUserStore((s) => s.signOutUrl);
+	const reloadUser = useUserStore((s) => s.load);
+	const navigate = useNavigate();
+
+	async function handleSignOut() {
+		setMobileMenuOpen(false);
+		if (signOutUrl?.startsWith("/api/")) {
+			// Local session: POST to our logout endpoint and bounce to /login.
+			await fetch(signOutUrl, { method: "POST", credentials: "same-origin" }).catch(() => {});
+			await reloadUser();
+			navigate("/login", { replace: true });
+		} else if (signOutUrl) {
+			// Authentik (or external): hard-navigate so the outpost handles it.
+			window.location.assign(signOutUrl);
+		}
+	}
 	// Hide nav items whose labs flag is explicitly disabled. When flags
 	// haven't loaded yet, show everything (flags === null).
 	const visibleNavItems = navItems.filter(
@@ -146,7 +161,11 @@ export function Layout() {
 									<div className="min-w-0 flex-1">
 										<div className="text-sm text-foreground truncate">{user.name}</div>
 										<div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-											{user.source === "authentik" ? "Authentik" : "API key"}
+											{user.source === "authentik"
+												? "Authentik"
+												: user.source === "local"
+													? "Local account"
+													: "API key"}
 										</div>
 									</div>
 								</div>
@@ -203,12 +222,13 @@ export function Layout() {
 									</NavLink>
 								))}
 								{signOutUrl && (
-									<a
-										href={signOutUrl}
-										className="block rounded-lg px-3 py-2 text-sm text-red-300 hover:bg-red-500/10"
+									<button
+										type="button"
+										onClick={handleSignOut}
+										className="block w-full text-left rounded-lg px-3 py-2 text-sm text-red-300 hover:bg-red-500/10"
 									>
 										Sign out
-									</a>
+									</button>
 								)}
 							</div>
 						</nav>

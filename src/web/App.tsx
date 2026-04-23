@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect } from "react";
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Layout } from "./components/Layout.js";
 import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js";
 import { api } from "./lib/api.js";
@@ -34,6 +34,26 @@ const InboxPage = lazy(() =>
 const DigestPage = lazy(() =>
 	import("./pages/DigestPage.js").then((module) => ({ default: module.DigestPage })),
 );
+const LoginPage = lazy(() =>
+	import("./pages/LoginPage.js").then((module) => ({ default: module.LoginPage })),
+);
+
+/**
+ * Redirects unauthenticated users to /login. Only guards routes inside
+ * the Layout shell — /login itself and the login bootstrap flow stay
+ * public. While auth state is still loading we show the route fallback
+ * rather than a flash of login.
+ */
+function AuthGate({ children }: { children: React.ReactNode }) {
+	const loaded = useUserStore((s) => s.loaded);
+	const authenticated = useUserStore((s) => s.authenticated);
+	const disableAuth = useUserStore((s) => s.disableAuth);
+	const location = useLocation();
+
+	if (!loaded) return <RouteFallback />;
+	if (disableAuth || authenticated) return <>{children}</>;
+	return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+}
 
 function RouteFallback() {
 	return (
@@ -93,7 +113,14 @@ export function App() {
 	return (
 		<Suspense fallback={<RouteFallback />}>
 			<Routes>
-				<Route element={<Layout />}>
+				<Route path="/login" element={<LoginPage />} />
+				<Route
+					element={
+						<AuthGate>
+							<Layout />
+						</AuthGate>
+					}
+				>
 					<Route path="/" element={<DashboardPage />} />
 					<Route path="/sessions" element={<DashboardPage />} />
 					<Route path="/sessions/:sessionId" element={<SessionDetailPage />} />

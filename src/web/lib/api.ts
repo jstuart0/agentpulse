@@ -247,9 +247,16 @@ export const api = {
 
 	getAuthMe: () =>
 		request<{
-			user: { name: string; source: "authentik" | "api_key"; id: string | null };
+			authenticated: boolean;
+			user: {
+				name: string;
+				source: "authentik" | "api_key" | "local";
+				id: string | null;
+				role: "user" | "admin" | null;
+			} | null;
 			signOutUrl: string | null;
 			disableAuth: boolean;
+			allowSignup: boolean;
 		}>("/auth/me"),
 
 	// --- Notification channels (Telegram, etc.) ---

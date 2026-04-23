@@ -20,6 +20,8 @@ import { supervisorsRouter } from "./routes/supervisors.js";
 import { templatesRouter } from "./routes/templates.js";
 import { validateAiStartupConfig } from "./services/ai/feature.js";
 import { maybeStartWatcherRunner } from "./services/ai/runner.js";
+import { ensureBootstrapAdmin } from "./services/local-auth-bootstrap.js";
+import { reapExpiredSessions } from "./services/local-auth-service.js";
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
@@ -135,6 +137,15 @@ startHeartbeat();
 startTelemetry();
 startTranscriptSync();
 void maybeStartWatcherRunner();
+void ensureBootstrapAdmin();
+setInterval(
+	() => {
+		void reapExpiredSessions().catch(() => {
+			// ignore transient errors; the next tick will retry
+		});
+	},
+	60 * 60 * 1000,
+);
 
 // Periodically check for stale sessions (every 60 seconds)
 setInterval(async () => {

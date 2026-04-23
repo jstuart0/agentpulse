@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { useUserStore } from "../stores/user-store.js";
 
 /**
@@ -75,14 +75,36 @@ function UserMenu({
 	signOutUrl,
 	disableAuth,
 }: {
-	user: { name: string; source: "authentik" | "api_key" } | null;
+	user: { name: string; source: "authentik" | "api_key" | "local" } | null;
 	signOutUrl: string | null;
 	disableAuth: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 	const ref = useDropdownClose(() => setOpen(false));
+	const navigate = useNavigate();
+	const reloadUser = useUserStore((s) => s.load);
 	const label = user?.name ?? (disableAuth ? "anonymous" : "signed out");
 	const initial = label.charAt(0).toUpperCase();
+	const sourceLabel =
+		user?.source === "authentik"
+			? "Authentik"
+			: user?.source === "local"
+				? "Local account"
+				: "API key";
+	const isLocal = user?.source === "local";
+
+	async function handleSignOut() {
+		setOpen(false);
+		if (signOutUrl?.startsWith("/api/")) {
+			// Local session: hit our logout endpoint and bounce to /login.
+			await fetch(signOutUrl, { method: "POST", credentials: "same-origin" }).catch(() => {});
+			await reloadUser();
+			navigate("/login", { replace: true });
+		} else if (signOutUrl) {
+			// Authentik (or any external): hard-navigate so the outpost handles it.
+			window.location.assign(signOutUrl);
+		}
+	}
 
 	return (
 		<div className="relative" ref={ref}>
@@ -112,17 +134,25 @@ function UserMenu({
 				<MenuPanel onClose={() => setOpen(false)} align="right">
 					{user && (
 						<div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-							Signed in · {user.source === "authentik" ? "Authentik" : "API key"}
+							Signed in · {sourceLabel}
 						</div>
 					)}
 					<MenuLink to="/settings" label="Settings" onClick={() => setOpen(false)} />
+					{isLocal && (
+						<MenuLink
+							to="/settings?panel=account"
+							label="Change password"
+							onClick={() => setOpen(false)}
+						/>
+					)}
 					{signOutUrl && (
-						<a
-							href={signOutUrl}
-							className="block px-3 py-2 text-xs text-red-300 hover:bg-red-500/10"
+						<button
+							type="button"
+							onClick={handleSignOut}
+							className="block w-full text-left px-3 py-2 text-xs text-red-300 hover:bg-red-500/10"
 						>
 							Sign out
-						</a>
+						</button>
 					)}
 					{disableAuth && (
 						<div className="px-3 py-2 text-[10px] text-muted-foreground">
