@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type AiProvider, type AiProviderKind } from "../../lib/api.js";
+import { type AiProvider, type AiProviderKind, api } from "../../lib/api.js";
 
 type Status = { build: boolean; runtime: boolean; killSwitch: boolean; active: boolean };
 
@@ -90,8 +90,7 @@ export function AiSettingsPanel() {
 		return (
 			<div className="rounded-lg border border-border bg-card/30 p-4 text-sm text-muted-foreground">
 				AI watcher is not compiled into this build. Set{" "}
-				<code className="text-xs bg-muted px-1 py-0.5 rounded">AGENTPULSE_AI_ENABLED=true</code>{" "}
-				and{" "}
+				<code className="text-xs bg-muted px-1 py-0.5 rounded">AGENTPULSE_AI_ENABLED=true</code> and{" "}
 				<code className="text-xs bg-muted px-1 py-0.5 rounded">AGENTPULSE_SECRETS_KEY</code> at
 				server boot to enable.
 			</div>
@@ -154,9 +153,7 @@ export function AiSettingsPanel() {
 				</div>
 				<div className="border-t border-border pt-3 text-xs text-muted-foreground">
 					Today's spend:{" "}
-					<span className="font-mono text-foreground">
-						${(spendCents / 100).toFixed(2)}
-					</span>
+					<span className="font-mono text-foreground">${(spendCents / 100).toFixed(2)}</span>
 				</div>
 			</div>
 
@@ -244,6 +241,41 @@ function ProviderForm({
 		apiKey: "",
 		isDefault: false,
 	});
+	const [availableModels, setAvailableModels] = useState<string[] | null>(null);
+	const [loadingModels, setLoadingModels] = useState(false);
+	const [modelsError, setModelsError] = useState<string | null>(null);
+
+	async function handleLoadModels() {
+		setLoadingModels(true);
+		setModelsError(null);
+		try {
+			const res = await api.probeAiProviderModels({
+				kind: form.kind,
+				baseUrl: form.baseUrl.trim() || undefined,
+				apiKey: form.apiKey || undefined,
+			});
+			setAvailableModels(res.models.map((m) => m.id));
+			// If the current model input doesn't match anything the server
+			// reports, fall through and let the user pick one. If the list
+			// is empty, keep the free-form input so they can still type.
+			if (res.models.length > 0 && !res.models.some((m) => m.id === form.model)) {
+				setForm((f) => ({ ...f, model: res.models[0].id }));
+			}
+		} catch (err) {
+			setAvailableModels(null);
+			setModelsError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setLoadingModels(false);
+		}
+	}
+
+	// Invalidate a loaded list whenever the connection details change —
+	// picking from a stale list would silently save a model the new
+	// endpoint doesn't have.
+	const resetLoadedModels = () => {
+		if (availableModels !== null) setAvailableModels(null);
+		if (modelsError) setModelsError(null);
+	};
 
 	if (!open) {
 		return (
@@ -279,6 +311,8 @@ function ProviderForm({
 				apiKey: "",
 				isDefault: false,
 			});
+			setAvailableModels(null);
+			setModelsError(null);
 			onCreated();
 		} catch (err) {
 			onError(String(err));
@@ -296,7 +330,10 @@ function ProviderForm({
 				<label className="text-[10px] uppercase tracking-wider text-muted-foreground">Kind</label>
 				<select
 					value={form.kind}
-					onChange={(e) => setForm({ ...form, kind: e.target.value as AiProviderKind })}
+					onChange={(e) => {
+						setForm({ ...form, kind: e.target.value as AiProviderKind });
+						resetLoadedModels();
+					}}
 					className="w-full text-xs bg-background border border-border rounded px-2 py-1"
 				>
 					{PROVIDER_KINDS.map((k) => (
@@ -312,17 +349,14 @@ function ProviderForm({
 				onChange={(v) => setForm({ ...form, name: v })}
 				placeholder="e.g. Claude main"
 			/>
-			<Input
-				label="Model"
-				value={form.model}
-				onChange={(v) => setForm({ ...form, model: v })}
-				placeholder={PROVIDER_KINDS.find((k) => k.value === form.kind)?.hint ?? ""}
-			/>
 			{(form.kind === "openai_compatible" || form.kind === "openrouter") && (
 				<Input
 					label="Base URL"
 					value={form.baseUrl}
-					onChange={(v) => setForm({ ...form, baseUrl: v })}
+					onChange={(v) => {
+						setForm({ ...form, baseUrl: v });
+						resetLoadedModels();
+					}}
 					placeholder={
 						form.kind === "openrouter"
 							? "https://openrouter.ai/api/v1"
@@ -334,9 +368,56 @@ function ProviderForm({
 				label="API key"
 				type="password"
 				value={form.apiKey}
-				onChange={(v) => setForm({ ...form, apiKey: v })}
+				onChange={(v) => {
+					setForm({ ...form, apiKey: v });
+					resetLoadedModels();
+				}}
 				placeholder={form.kind === "openai_compatible" ? "(any string works for Ollama)" : "sk-…"}
 			/>
+
+			<div className="space-y-1">
+				<div className="flex items-center justify-between">
+					<label className="text-[10px] uppercase tracking-wider text-muted-foreground">
+						Model
+					</label>
+					<button
+						type="button"
+						onClick={handleLoadModels}
+						disabled={loadingModels}
+						className="text-[10px] text-primary hover:underline disabled:opacity-50"
+						title="Ask the target server what models it has loaded"
+					>
+						{loadingModels ? "Loading…" : "Load available models"}
+					</button>
+				</div>
+				{availableModels && availableModels.length > 0 ? (
+					<select
+						value={form.model}
+						onChange={(e) => setForm({ ...form, model: e.target.value })}
+						className="w-full text-xs bg-background border border-border rounded px-2 py-1"
+					>
+						{availableModels.map((m) => (
+							<option key={m} value={m}>
+								{m}
+							</option>
+						))}
+					</select>
+				) : (
+					<input
+						type="text"
+						value={form.model}
+						onChange={(e) => setForm({ ...form, model: e.target.value })}
+						placeholder={PROVIDER_KINDS.find((k) => k.value === form.kind)?.hint ?? ""}
+						className="w-full text-xs bg-background border border-border rounded px-2 py-1"
+					/>
+				)}
+				{availableModels && availableModels.length === 0 && (
+					<p className="text-[10px] text-amber-300">
+						Server reached but reported no models. Load one there first, or type an id by hand.
+					</p>
+				)}
+				{modelsError && <p className="text-[10px] text-red-300">{modelsError}</p>}
+			</div>
 			<label className="flex items-center gap-2 text-xs">
 				<input
 					type="checkbox"
@@ -413,8 +494,7 @@ function RedactorPreview() {
 		<div className="rounded-lg border border-border bg-card/30 p-4 space-y-2">
 			<div className="text-sm font-semibold">Redactor preview</div>
 			<div className="text-xs text-muted-foreground">
-				Paste sample text to see what the redactor would scrub before any transcript
-				reaches an LLM.
+				Paste sample text to see what the redactor would scrub before any transcript reaches an LLM.
 			</div>
 			<textarea
 				value={sample}
