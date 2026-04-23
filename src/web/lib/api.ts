@@ -273,21 +273,56 @@ export const api = {
 		}>("/channels", { method: "POST", body: JSON.stringify(body) }),
 	getChannel: (id: string) => request<{ channel: NotificationChannelRecord }>(`/channels/${id}`),
 	deleteChannel: (id: string) => request<{ ok: true }>(`/channels/${id}`, { method: "DELETE" }),
-	setupTelegramWebhook: () =>
+	setupTelegramWebhook: (publicUrl?: string) =>
 		request<{ ok: true; webhookUrl: string }>("/channels/telegram/setup-webhook", {
 			method: "POST",
+			body: JSON.stringify({ publicUrl }),
 		}),
 	teardownTelegramWebhook: () =>
 		request<{ ok: true }>("/channels/telegram/teardown-webhook", {
 			method: "POST",
 		}),
 	getTelegramBotInfo: () => request<{ bot: TelegramBotInfo }>("/channels/telegram/bot-info"),
-	getTelegramWebhookInfo: () =>
-		request<{
+	getTelegramWebhookInfo: (publicUrl?: string) => {
+		const qs = publicUrl ? `?publicUrl=${encodeURIComponent(publicUrl)}` : "";
+		return request<{
 			webhook: TelegramWebhookInfo;
 			expectedUrl: string | null;
 			matchesExpected: boolean | null;
-		}>("/channels/telegram/webhook-info"),
+		}>(`/channels/telegram/webhook-info${qs}`);
+	},
+
+	// --- In-app credential management ---
+	getTelegramCredentials: () =>
+		request<{
+			configured: boolean;
+			webhookSecretConfigured: boolean;
+			source: "db" | "env" | "missing";
+			botTokenHint: string | null;
+		}>("/channels/telegram/credentials"),
+	saveTelegramCredentials: (body: {
+		botToken?: string;
+		webhookSecret?: string;
+		rotateWebhookSecret?: boolean;
+		publicUrl?: string;
+	}) =>
+		request<{
+			ok: true;
+			source: "db" | "env" | "missing";
+			botTokenHint: string | null;
+			webhookSecretConfigured: boolean;
+			bot: TelegramBotInfo | null;
+			webhook: { ok: boolean; url?: string; error?: string };
+		}>("/channels/telegram/credentials", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+	clearTelegramCredentials: () =>
+		request<{
+			ok: true;
+			source: "db" | "env" | "missing";
+			botTokenHint: string | null;
+		}>("/channels/telegram/credentials", { method: "DELETE" }),
 	testChannel: (id: string) =>
 		request<{ ok: true; externalMessageId?: string }>(`/channels/${id}/test`, {
 			method: "POST",

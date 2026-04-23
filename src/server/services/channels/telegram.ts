@@ -1,5 +1,5 @@
-import { config } from "../../config.js";
 import { getChannelCredential } from "./channels-service.js";
+import { getTelegramBotToken } from "./telegram-credentials.js";
 import {
 	type ChannelDeliveryResult,
 	type NotificationChannelAdapter,
@@ -13,23 +13,25 @@ import {
  * Inbound updates are delivered to `/api/v1/channels/telegram/webhook`
  * (see src/server/routes/channels.ts).
  *
- * The bot token is instance-wide (TELEGRAM_BOT_TOKEN env var). Each
- * enrolled channel row stores its own encrypted `chatId` so messages
- * target the right Telegram DM.
+ * The bot token is instance-wide. It lives encrypted in the settings
+ * table (preferred) or as the legacy TELEGRAM_BOT_TOKEN env var, and is
+ * exposed via `getTelegramBotToken()` so the call site doesn't have to
+ * care which source the credential came from. Each enrolled channel
+ * row stores its own encrypted `chatId` for routing.
  */
 
 const API_BASE = "https://api.telegram.org";
 
 function apiUrl(method: string): string {
-	return `${API_BASE}/bot${config.telegramBotToken}/${method}`;
+	return `${API_BASE}/bot${getTelegramBotToken()}/${method}`;
 }
 
 async function callTelegram<T>(
 	method: string,
 	body: Record<string, unknown>,
 ): Promise<{ ok: true; result: T } | { ok: false; description: string }> {
-	if (!config.telegramBotToken) {
-		return { ok: false, description: "TELEGRAM_BOT_TOKEN not configured" };
+	if (!getTelegramBotToken()) {
+		return { ok: false, description: "Telegram bot token not configured" };
 	}
 	const res = await fetch(apiUrl(method), {
 		method: "POST",
@@ -52,7 +54,7 @@ export const telegramAdapter: NotificationChannelAdapter = {
 	kind: "telegram",
 
 	isConfigured(): boolean {
-		return Boolean(config.telegramBotToken);
+		return Boolean(getTelegramBotToken());
 	},
 
 	async send(
@@ -60,7 +62,7 @@ export const telegramAdapter: NotificationChannelAdapter = {
 		input: SendChannelMessageInput,
 	): Promise<ChannelDeliveryResult> {
 		if (!this.isConfigured()) {
-			return { ok: false, error: "TELEGRAM_BOT_TOKEN not set" };
+			return { ok: false, error: "Telegram bot token not configured" };
 		}
 		if (!channel.verifiedAt) {
 			return { ok: false, error: "Channel is not verified yet" };
@@ -133,7 +135,7 @@ function escapeMd(text: string): string {
  * we ignore failures so a flaky Telegram doesn't block the HITL path.
  */
 export async function sendTelegramPlain(channelId: string, text: string): Promise<void> {
-	if (!config.telegramBotToken) return;
+	if (!getTelegramBotToken()) return;
 	const cred = await getChannelCredential(channelId);
 	if (!cred?.chatId) return;
 	await callTelegram("sendMessage", {
@@ -256,7 +258,7 @@ export async function getTelegramWebhookInfo(): Promise<
  * callback_data so taps are acknowledged but no HITL is resolved.
  */
 export async function sendTelegramTest(channelId: string): Promise<ChannelDeliveryResult> {
-	if (!config.telegramBotToken) return { ok: false, error: "TELEGRAM_BOT_TOKEN not set" };
+	if (!getTelegramBotToken()) return { ok: false, error: "Telegram bot token not configured" };
 	const cred = await (await import("./channels-service.js")).getChannelCredential(channelId);
 	if (!cred?.chatId) return { ok: false, error: "Channel has no stored chat id" };
 	const res = await callTelegram<{ message_id: number }>("sendMessage", {

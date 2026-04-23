@@ -14,6 +14,15 @@ import {
 	listChannels,
 } from "../services/channels/channels-service.js";
 import {
+	clearTelegramCredentials,
+	generateWebhookSecret,
+	getTelegramBotToken,
+	getTelegramBotTokenHint,
+	getTelegramCredentialsSource,
+	getTelegramWebhookSecret,
+	saveTelegramCredentials,
+} from "../services/channels/telegram-credentials.js";
+import {
 	answerCallbackQuery,
 	deleteTelegramWebhook,
 	getTelegramBotInfo,
@@ -33,9 +42,9 @@ const channelsRouter = new Hono();
  * echoes back (set via setWebhook).
  */
 channelsRouter.post("/channels/telegram/webhook", async (c) => {
-	if (!config.telegramBotToken) return c.json({ error: "telegram_disabled" }, 404);
+	if (!getTelegramBotToken()) return c.json({ error: "telegram_disabled" }, 404);
 	const providedSecret = c.req.header("X-Telegram-Bot-Api-Secret-Token") ?? "";
-	if (!config.telegramWebhookSecret || providedSecret !== config.telegramWebhookSecret) {
+	if (!getTelegramWebhookSecret() || providedSecret !== getTelegramWebhookSecret()) {
 		return c.json({ error: "invalid secret" }, 401);
 	}
 
@@ -76,8 +85,8 @@ async function handleEnrollmentStart(message: TelegramMessage): Promise<void> {
 }
 
 async function sendEnrollmentReply(chatId: string, text: string): Promise<void> {
-	if (!config.telegramBotToken) return;
-	await fetch(`https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`, {
+	if (!getTelegramBotToken()) return;
+	await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendMessage`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ chat_id: chatId, text }),
@@ -155,15 +164,15 @@ channelsRouter.get("/channels", async (c) => {
 	return c.json({
 		channels,
 		bot: {
-			configured: Boolean(config.telegramBotToken),
-			webhookSecretConfigured: Boolean(config.telegramWebhookSecret),
+			configured: Boolean(getTelegramBotToken()),
+			webhookSecretConfigured: Boolean(getTelegramWebhookSecret()),
 		},
 	});
 });
 
 channelsRouter.post("/channels", async (c) => {
-	if (!config.telegramBotToken) {
-		return c.json({ error: "TELEGRAM_BOT_TOKEN not configured" }, 400);
+	if (!getTelegramBotToken()) {
+		return c.json({ error: "Telegram bot token not configured" }, 400);
 	}
 	const body = await c.req.json<{
 		kind: "telegram";
@@ -198,43 +207,191 @@ channelsRouter.get("/channels/:id", async (c) => {
 	return c.json({ channel: ch });
 });
 
+function resolvePublicUrl(candidate: unknown): string | null {
+	const fromBody = typeof candidate === "string" ? candidate.trim() : "";
+	const chosen = fromBody || config.publicUrl || "";
+	if (!chosen) return null;
+	// Defensive: reject localhost except when the env was explicitly set
+	// that way (e.g. tunneled). Telegram rejects non-public URLs anyway,
+	// but a sharper error message is nicer than a 400 from Telegram.
+	try {
+		const u = new URL(chosen);
+		if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+		return chosen.replace(/\/$/, "");
+	} catch {
+		return null;
+	}
+}
+
 /**
- * Idempotent setup: point the Telegram webhook at PUBLIC_URL + path.
- * Requires TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET. Admins run
- * this once after configuring the bot in BotFather.
+ * Idempotent setup: point the Telegram webhook at <publicUrl> + path.
+ * Accepts an optional `publicUrl` in the body so the UI can pass
+ * `window.location.origin` — saves admins from having to set the
+ * PUBLIC_URL env var just for this.
  */
 channelsRouter.post("/channels/telegram/setup-webhook", async (c) => {
-	if (!config.telegramBotToken) return c.json({ error: "TELEGRAM_BOT_TOKEN not set" }, 400);
-	if (!config.telegramWebhookSecret) {
-		return c.json({ error: "TELEGRAM_WEBHOOK_SECRET not set" }, 400);
+	if (!getTelegramBotToken()) return c.json({ error: "Telegram bot token not configured" }, 400);
+	if (!getTelegramWebhookSecret()) {
+		return c.json({ error: "Telegram webhook secret not configured" }, 400);
 	}
-	if (!config.publicUrl) return c.json({ error: "PUBLIC_URL not set" }, 400);
-	const url = `${config.publicUrl.replace(/\/$/, "")}/api/v1/channels/telegram/webhook`;
-	const res = await setTelegramWebhook(url, config.telegramWebhookSecret);
+	const body = await c.req.json<{ publicUrl?: string }>().catch(() => ({ publicUrl: undefined }));
+	const base = resolvePublicUrl(body.publicUrl);
+	if (!base) {
+		return c.json({ error: "Provide a public HTTPS URL — Telegram can't reach localhost." }, 400);
+	}
+	const url = `${base}/api/v1/channels/telegram/webhook`;
+	const res = await setTelegramWebhook(url, getTelegramWebhookSecret());
 	if (!res.ok) return c.json({ error: res.description ?? "setWebhook failed" }, 502);
 	return c.json({ ok: true, webhookUrl: url });
 });
 
+/**
+ * --- In-app credential management ---
+ * Replaces the old env-var-only flow. Admins paste their bot token
+ * (from @BotFather); if no webhook secret is provided, a strong one is
+ * generated server-side. On save we immediately validate the token via
+ * getMe, and auto-register the webhook when a public URL is known so
+ * the enrollment flow works end-to-end without a second click.
+ */
+channelsRouter.get("/channels/telegram/credentials", async (c) => {
+	return c.json({
+		configured: Boolean(getTelegramBotToken()),
+		webhookSecretConfigured: Boolean(getTelegramWebhookSecret()),
+		source: getTelegramCredentialsSource(),
+		botTokenHint: getTelegramBotTokenHint(),
+	});
+});
+
+channelsRouter.post("/channels/telegram/credentials", async (c) => {
+	const body = await c.req.json<{
+		botToken?: string;
+		webhookSecret?: string;
+		rotateWebhookSecret?: boolean;
+		publicUrl?: string;
+	}>();
+
+	const trimmedToken = typeof body.botToken === "string" ? body.botToken.trim() : "";
+	const explicitSecret = typeof body.webhookSecret === "string" ? body.webhookSecret.trim() : "";
+
+	// A token is required on first save or when rotating. If nothing is
+	// being changed at all we reject to avoid silent no-ops.
+	if (!trimmedToken && !explicitSecret && !body.rotateWebhookSecret) {
+		return c.json({ error: "Provide a bot token or request a webhook secret rotation." }, 400);
+	}
+
+	// Basic shape check so we don't save an obviously-bogus token.
+	// Telegram tokens look like `123456:ABC-DEF…` (digits:base64ish).
+	if (trimmedToken && !/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(trimmedToken)) {
+		return c.json(
+			{ error: "That doesn't look like a Telegram bot token. Expected 123456:ABC..." },
+			400,
+		);
+	}
+
+	// If the caller provided an explicit secret, sanity-check length
+	// (Telegram requires 1–256 chars; we enforce 24+ for real entropy).
+	if (explicitSecret && (explicitSecret.length < 24 || explicitSecret.length > 256)) {
+		return c.json({ error: "Webhook secret must be 24–256 characters." }, 400);
+	}
+
+	// Decide the secret to persist. Precedence:
+	//   1. explicitly provided
+	//   2. rotate flag -> generate a fresh one
+	//   3. no existing secret -> generate one
+	//   4. otherwise keep the existing secret untouched
+	let secretToPersist: string | null | undefined = null; // null = preserve existing
+	if (explicitSecret) {
+		secretToPersist = explicitSecret;
+	} else if (body.rotateWebhookSecret || !getTelegramWebhookSecret()) {
+		secretToPersist = generateWebhookSecret();
+	}
+
+	// Validate the token before persisting: we swap the cache token,
+	// call getMe, and roll back on failure.
+	if (trimmedToken) {
+		const priorToken = getTelegramBotToken();
+		const priorSecret = getTelegramWebhookSecret();
+		await saveTelegramCredentials({
+			botToken: trimmedToken,
+			webhookSecret: secretToPersist,
+		});
+		const probe = await getTelegramBotInfo();
+		if (!probe.ok) {
+			await saveTelegramCredentials({
+				botToken: priorToken || "",
+				webhookSecret: priorSecret || "",
+			});
+			return c.json(
+				{
+					error: `Telegram rejected the token: ${probe.error}. Double-check it with @BotFather.`,
+				},
+				400,
+			);
+		}
+	} else if (secretToPersist !== null) {
+		await saveTelegramCredentials({ webhookSecret: secretToPersist });
+	}
+
+	// Opportunistic webhook registration. Failures are non-fatal — the
+	// admin can click "Re-send webhook" later.
+	const base = resolvePublicUrl(body.publicUrl);
+	let webhookResult: { ok: boolean; url?: string; error?: string } = { ok: false };
+	if (base) {
+		const url = `${base}/api/v1/channels/telegram/webhook`;
+		const res = await setTelegramWebhook(url, getTelegramWebhookSecret());
+		webhookResult = res.ok ? { ok: true, url } : { ok: false, error: res.description };
+	}
+
+	const botInfo = await getTelegramBotInfo();
+
+	return c.json({
+		ok: true,
+		source: getTelegramCredentialsSource(),
+		botTokenHint: getTelegramBotTokenHint(),
+		webhookSecretConfigured: Boolean(getTelegramWebhookSecret()),
+		bot: botInfo.ok ? botInfo.info : null,
+		webhook: webhookResult,
+	});
+});
+
+channelsRouter.delete("/channels/telegram/credentials", async (c) => {
+	if (getTelegramBotToken()) {
+		await deleteTelegramWebhook().catch(() => {
+			// ignore — we're wiping credentials regardless of Telegram's
+			// ability to tell us the webhook got cleared
+		});
+	}
+	await clearTelegramCredentials();
+	return c.json({
+		ok: true,
+		source: getTelegramCredentialsSource(),
+		botTokenHint: getTelegramBotTokenHint(),
+	});
+});
+
 channelsRouter.post("/channels/telegram/teardown-webhook", async (c) => {
-	if (!config.telegramBotToken) return c.json({ error: "TELEGRAM_BOT_TOKEN not set" }, 400);
+	if (!getTelegramBotToken()) return c.json({ error: "Telegram bot token not configured" }, 400);
 	await deleteTelegramWebhook();
 	return c.json({ ok: true });
 });
 
 channelsRouter.get("/channels/telegram/bot-info", async (c) => {
-	if (!config.telegramBotToken) return c.json({ error: "TELEGRAM_BOT_TOKEN not set" }, 400);
+	if (!getTelegramBotToken()) return c.json({ error: "Telegram bot token not configured" }, 400);
 	const res = await getTelegramBotInfo();
 	if (!res.ok) return c.json({ error: res.error }, 502);
 	return c.json({ bot: res.info });
 });
 
 channelsRouter.get("/channels/telegram/webhook-info", async (c) => {
-	if (!config.telegramBotToken) return c.json({ error: "TELEGRAM_BOT_TOKEN not set" }, 400);
+	if (!getTelegramBotToken()) return c.json({ error: "Telegram bot token not configured" }, 400);
 	const res = await getTelegramWebhookInfo();
 	if (!res.ok) return c.json({ error: res.error }, 502);
-	const expectedUrl = config.publicUrl
-		? `${config.publicUrl.replace(/\/$/, "")}/api/v1/channels/telegram/webhook`
-		: null;
+	// Prefer an explicit ?publicUrl= (UI passes window.location.origin)
+	// so "matchesExpected" reflects reality for admins who never set the
+	// env var.
+	const publicUrlParam = c.req.query("publicUrl");
+	const base = resolvePublicUrl(publicUrlParam);
+	const expectedUrl = base ? `${base}/api/v1/channels/telegram/webhook` : null;
 	return c.json({
 		webhook: res.info,
 		expectedUrl,

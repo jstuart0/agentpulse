@@ -8,6 +8,13 @@ import {
 	api,
 } from "../../lib/api.js";
 
+interface CredentialsState {
+	configured: boolean;
+	webhookSecretConfigured: boolean;
+	source: "db" | "env" | "missing";
+	botTokenHint: string | null;
+}
+
 /**
  * First-class Telegram enrollment + status panel. Shows bot identity,
  * live webhook status, a rich enrollment UI (deep link + copy + QR),
@@ -19,6 +26,7 @@ export function TelegramChannelPanel() {
 		configured: boolean;
 		webhookSecretConfigured: boolean;
 	} | null>(null);
+	const [creds, setCreds] = useState<CredentialsState | null>(null);
 	const [botInfo, setBotInfo] = useState<TelegramBotInfo | null>(null);
 	const [webhookInfo, setWebhookInfo] = useState<TelegramWebhookInfo | null>(null);
 	const [webhookMatchesExpected, setWebhookMatchesExpected] = useState<boolean | null>(null);
@@ -31,6 +39,8 @@ export function TelegramChannelPanel() {
 		enrollmentCode: string;
 	} | null>(null);
 
+	const publicUrl = typeof window !== "undefined" ? window.location.origin : "";
+
 	const showToast = useCallback((kind: "ok" | "err", text: string) => {
 		setToast({ kind, text });
 		setTimeout(() => setToast(null), 4000);
@@ -39,9 +49,10 @@ export function TelegramChannelPanel() {
 	const load = useCallback(async () => {
 		setLoading(true);
 		try {
-			const res = await api.getChannels();
+			const [res, credRes] = await Promise.all([api.getChannels(), api.getTelegramCredentials()]);
 			setChannels(res.channels);
 			setBot(res.bot);
+			setCreds(credRes);
 
 			// Fetch stats in parallel for each channel.
 			const statsEntries = await Promise.all(
@@ -67,7 +78,7 @@ export function TelegramChannelPanel() {
 					.then((r) => setBotInfo(r.bot))
 					.catch(() => setBotInfo(null));
 				void api
-					.getTelegramWebhookInfo()
+					.getTelegramWebhookInfo(publicUrl)
 					.then((r) => {
 						setWebhookInfo(r.webhook);
 						setWebhookMatchesExpected(r.matchesExpected);
@@ -76,13 +87,17 @@ export function TelegramChannelPanel() {
 						setWebhookInfo(null);
 						setWebhookMatchesExpected(null);
 					});
+			} else {
+				setBotInfo(null);
+				setWebhookInfo(null);
+				setWebhookMatchesExpected(null);
 			}
 		} catch (err) {
 			showToast("err", err instanceof Error ? err.message : String(err));
 		} finally {
 			setLoading(false);
 		}
-	}, [showToast]);
+	}, [showToast, publicUrl]);
 
 	useEffect(() => {
 		void load();
@@ -139,8 +154,50 @@ export function TelegramChannelPanel() {
 
 	async function handleSetupWebhook() {
 		try {
-			await api.setupTelegramWebhook();
+			await api.setupTelegramWebhook(publicUrl);
 			showToast("ok", "Webhook set. Telegram will now deliver updates here.");
+			await load();
+		} catch (err) {
+			showToast("err", err instanceof Error ? err.message : String(err));
+		}
+	}
+
+	async function handleSaveCredentials(input: {
+		botToken?: string;
+		webhookSecret?: string;
+		rotateWebhookSecret?: boolean;
+	}): Promise<{ ok: boolean; error?: string }> {
+		try {
+			const res = await api.saveTelegramCredentials({ ...input, publicUrl });
+			if (res.webhook.ok) {
+				showToast("ok", "Saved. Webhook is live — you can add channels now.");
+			} else if (res.bot) {
+				showToast(
+					"ok",
+					`Saved. Webhook didn't auto-register (${res.webhook.error ?? "unknown"}); click "Set webhook" after you confirm the public URL.`,
+				);
+			} else {
+				showToast("ok", "Saved.");
+			}
+			await load();
+			return { ok: true };
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			showToast("err", msg);
+			return { ok: false, error: msg };
+		}
+	}
+
+	async function handleClearCredentials() {
+		if (
+			!confirm(
+				"Remove the Telegram bot token from this instance? All existing channels will stop receiving HITL updates until a new token is added.",
+			)
+		)
+			return;
+		try {
+			await api.clearTelegramCredentials();
+			showToast("ok", "Bot token removed.");
 			await load();
 		} catch (err) {
 			showToast("err", err instanceof Error ? err.message : String(err));
@@ -167,23 +224,40 @@ export function TelegramChannelPanel() {
 
 	if (loading) return <div className="text-sm text-muted-foreground">Loading…</div>;
 
+	const toastBar = toast ? (
+		<div
+			className={`rounded-md border px-3 py-2 text-xs ${
+				toast.kind === "ok"
+					? "border-emerald-500/30 bg-emerald-500/5 text-emerald-200"
+					: "border-red-500/30 bg-red-500/5 text-red-200"
+			}`}
+		>
+			{toast.text}
+		</div>
+	) : null;
+
+	// No bot token anywhere (DB or env) → show the paste-token wizard.
+	// Previously this was a wall of env-var docs. Now the whole flow —
+	// paste the token, auto-generate the webhook secret, auto-register
+	// the webhook — happens in one button press.
 	if (!bot?.configured) {
-		return <EnvVarGuidance missing="TELEGRAM_BOT_TOKEN" />;
+		return (
+			<div className="space-y-4">
+				{toastBar}
+				<BotCredentialsWizard publicUrl={publicUrl} onSave={handleSaveCredentials} />
+			</div>
+		);
 	}
 
 	return (
 		<div className="space-y-4">
-			{toast && (
-				<div
-					className={`rounded-md border px-3 py-2 text-xs ${
-						toast.kind === "ok"
-							? "border-emerald-500/30 bg-emerald-500/5 text-emerald-200"
-							: "border-red-500/30 bg-red-500/5 text-red-200"
-					}`}
-				>
-					{toast.text}
-				</div>
-			)}
+			{toastBar}
+
+			<BotCredentialsStatus
+				creds={creds}
+				onRotateSecret={() => handleSaveCredentials({ rotateWebhookSecret: true })}
+				onClear={handleClearCredentials}
+			/>
 
 			<BotHeader
 				bot={bot}
@@ -298,7 +372,12 @@ function BotHeader({
 					</span>
 				)}
 			</div>
-			{!bot.webhookSecretConfigured && <EnvVarGuidance missing="TELEGRAM_WEBHOOK_SECRET" compact />}
+			{!bot.webhookSecretConfigured && (
+				<div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-200">
+					No webhook secret is set. Click <em>Rotate webhook secret</em> in the status bar above to
+					generate a strong one — Telegram uses it to verify every callback.
+				</div>
+			)}
 		</div>
 	);
 }
@@ -527,45 +606,228 @@ function ChannelList({
 	);
 }
 
-function EnvVarGuidance({
-	missing,
-	compact = false,
+function BotCredentialsWizard({
+	publicUrl,
+	onSave,
 }: {
-	missing: "TELEGRAM_BOT_TOKEN" | "TELEGRAM_WEBHOOK_SECRET";
-	compact?: boolean;
+	publicUrl: string;
+	onSave: (input: {
+		botToken?: string;
+		webhookSecret?: string;
+	}) => Promise<{ ok: boolean; error?: string }>;
 }) {
-	const blurb =
-		missing === "TELEGRAM_BOT_TOKEN"
-			? "Talk to @BotFather on Telegram to create a bot and get a token."
-			: "Generate a random ≥24-char string. Telegram echoes it back on every webhook callback so AgentPulse can verify the sender.";
+	const [token, setToken] = useState("");
+	const [showAdvanced, setShowAdvanced] = useState(false);
+	const [customSecret, setCustomSecret] = useState("");
+	const [submitting, setSubmitting] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	async function handleSubmit(e: React.FormEvent) {
+		e.preventDefault();
+		setError(null);
+		if (!token.trim()) {
+			setError("Paste your bot token from @BotFather to continue.");
+			return;
+		}
+		setSubmitting(true);
+		const res = await onSave({
+			botToken: token.trim(),
+			webhookSecret: customSecret.trim() || undefined,
+		});
+		setSubmitting(false);
+		if (!res.ok) {
+			setError(res.error ?? "Save failed.");
+			return;
+		}
+		setToken("");
+		setCustomSecret("");
+	}
+
+	const publicUrlLooksProd = /^https:\/\//i.test(publicUrl);
+
 	return (
-		<div
-			className={`rounded-md border border-amber-500/30 bg-amber-500/5 ${compact ? "p-2" : "p-3"} text-xs text-amber-200 space-y-2`}
+		<form
+			onSubmit={handleSubmit}
+			className="rounded-lg border border-primary/20 bg-primary/5 p-4 space-y-4"
 		>
 			<div>
-				<code className="font-mono">{missing}</code> is not set. {blurb}
+				<h3 className="text-sm font-semibold text-foreground">Connect your Telegram bot</h3>
+				<p className="text-xs text-muted-foreground mt-1">
+					Two-minute setup, no command line. Your bot token is stored encrypted in the DB
+					(AES-256-GCM) — never logged, never shown back to the UI after save.
+				</p>
 			</div>
-			<details>
-				<summary className="cursor-pointer text-amber-300 hover:text-amber-200">
-					Where do I set this?
+
+			<ol className="space-y-3 text-xs text-foreground">
+				<li className="flex gap-2">
+					<span className="w-5 h-5 shrink-0 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex items-center justify-center">
+						1
+					</span>
+					<div>
+						Open Telegram and DM{" "}
+						<a
+							href="https://t.me/BotFather"
+							target="_blank"
+							rel="noreferrer"
+							className="text-primary hover:underline"
+						>
+							@BotFather
+						</a>
+						. Send <code className="font-mono">/newbot</code>, pick a name, and copy the token it
+						hands you (looks like <code className="font-mono">123456:ABC-DEF…</code>).
+					</div>
+				</li>
+				<li className="flex gap-2">
+					<span className="w-5 h-5 shrink-0 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex items-center justify-center">
+						2
+					</span>
+					<div className="flex-1">
+						Paste the token below and hit save. A webhook secret is auto-generated, and this
+						instance points Telegram&apos;s webhook at{" "}
+						<code className="font-mono break-all">
+							{publicUrl}/api/v1/channels/telegram/webhook
+						</code>{" "}
+						automatically.
+					</div>
+				</li>
+				<li className="flex gap-2">
+					<span className="w-5 h-5 shrink-0 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex items-center justify-center">
+						3
+					</span>
+					<div>
+						Add one or more channels (phone, team DM…) and enroll by scanning the QR or tapping the
+						deep link. HITL requests will flow to every verified channel.
+					</div>
+				</li>
+			</ol>
+
+			<div className="space-y-1.5">
+				<label htmlFor="telegram-token" className="text-xs font-medium text-foreground">
+					Bot token
+				</label>
+				<input
+					id="telegram-token"
+					type="password"
+					autoComplete="off"
+					value={token}
+					onChange={(e) => setToken(e.target.value)}
+					placeholder="123456:ABC-DEF…"
+					className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+				/>
+			</div>
+
+			<details
+				open={showAdvanced}
+				onToggle={(e) => setShowAdvanced((e.target as HTMLDetailsElement).open)}
+				className="text-xs"
+			>
+				<summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+					Advanced: bring your own webhook secret
 				</summary>
-				<div className="mt-2 space-y-2 text-amber-100/90">
-					<div>
-						<div className="font-semibold text-amber-200">Docker:</div>
-						<pre className="bg-background/50 rounded p-2 overflow-x-auto font-mono text-[10px]">{`docker run -e ${missing}=<value> ...`}</pre>
-					</div>
-					<div>
-						<div className="font-semibold text-amber-200">Local (macOS / Linux):</div>
-						<pre className="bg-background/50 rounded p-2 overflow-x-auto font-mono text-[10px]">{`echo '${missing}=<value>' >> ~/.agentpulse/.env.local
-# restart the service`}</pre>
-					</div>
-					<div>
-						<div className="font-semibold text-amber-200">Kubernetes:</div>
-						<pre className="bg-background/50 rounded p-2 overflow-x-auto font-mono text-[10px]">{`kubectl -n <ns> patch secret agentpulse-secrets \\
-  --type=json -p='[{"op":"add","path":"/data/${missing}","value":"'$(echo -n "<value>" | base64)'"}]'`}</pre>
-					</div>
+				<div className="mt-2 space-y-1.5">
+					<input
+						type="text"
+						autoComplete="off"
+						value={customSecret}
+						onChange={(e) => setCustomSecret(e.target.value)}
+						placeholder="Leave blank to auto-generate (recommended)"
+						className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring font-mono"
+					/>
+					<p className="text-[11px] text-muted-foreground">
+						Must be 24–256 chars. Used to verify that incoming webhooks came from Telegram.
+					</p>
 				</div>
 			</details>
+
+			{!publicUrlLooksProd && (
+				<div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-200">
+					This tab&apos;s URL ({publicUrl || "unknown"}) isn&apos;t HTTPS. Telegram will reject the
+					webhook. Deploy AgentPulse behind HTTPS (or a tunnel like Cloudflared / ngrok) before
+					saving.
+				</div>
+			)}
+
+			{error && (
+				<div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-200">
+					{error}
+				</div>
+			)}
+
+			<div className="flex items-center justify-between gap-2">
+				<span className="text-[11px] text-muted-foreground">
+					You can rotate or remove the token later without downtime.
+				</span>
+				<button
+					type="submit"
+					disabled={submitting || !token.trim() || !publicUrlLooksProd}
+					className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+				>
+					{submitting ? "Validating…" : "Save & activate"}
+				</button>
+			</div>
+		</form>
+	);
+}
+
+function BotCredentialsStatus({
+	creds,
+	onRotateSecret,
+	onClear,
+}: {
+	creds: CredentialsState | null;
+	onRotateSecret: () => Promise<{ ok: boolean }>;
+	onClear: () => void;
+}) {
+	const [rotating, setRotating] = useState(false);
+	if (!creds) return null;
+	async function doRotate() {
+		setRotating(true);
+		try {
+			await onRotateSecret();
+		} finally {
+			setRotating(false);
+		}
+	}
+	const sourceLabel =
+		creds.source === "db"
+			? "stored in this instance"
+			: creds.source === "env"
+				? "loaded from environment"
+				: "missing";
+	return (
+		<div className="rounded-md border border-border bg-background/40 p-3 text-xs space-y-2">
+			<div className="flex items-center justify-between gap-3">
+				<div>
+					<div className="text-foreground font-medium">Bot credentials</div>
+					<div className="text-[11px] text-muted-foreground mt-0.5">
+						Token {creds.botTokenHint ?? "—"} · {sourceLabel}
+					</div>
+				</div>
+				<div className="flex gap-1">
+					<button
+						type="button"
+						onClick={doRotate}
+						disabled={rotating}
+						className="text-[11px] px-2 py-1 rounded border border-border text-foreground hover:bg-muted disabled:opacity-50"
+					>
+						{rotating ? "Rotating…" : "Rotate webhook secret"}
+					</button>
+					<button
+						type="button"
+						onClick={onClear}
+						className="text-[11px] px-2 py-1 rounded border border-border text-red-300 hover:bg-red-500/10"
+					>
+						Remove
+					</button>
+				</div>
+			</div>
+			{creds.source === "env" && (
+				<p className="text-[11px] text-amber-300">
+					These credentials are coming from environment variables (legacy path). Save through the
+					form above to migrate them into the encrypted settings table — you&apos;ll be able to
+					rotate without a restart.
+				</p>
+			)}
 		</div>
 	);
 }
