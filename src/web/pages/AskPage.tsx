@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { MarkdownContent } from "../components/MarkdownContent.js";
 import {
 	type AskMessage,
 	type AskThread,
@@ -387,7 +388,9 @@ function MessageBubble({ msg }: { msg: AskMessage }) {
 	return (
 		<div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
 			<div
-				className={`max-w-[85%] rounded-lg px-3 py-2 text-xs whitespace-pre-wrap ${
+				className={`max-w-[85%] rounded-lg px-3 py-2 text-xs ${
+					isUser ? "whitespace-pre-wrap" : ""
+				} ${
 					isUser
 						? "bg-primary/15 text-primary-foreground/90 border border-primary/30"
 						: msg.errorMessage
@@ -395,14 +398,19 @@ function MessageBubble({ msg }: { msg: AskMessage }) {
 							: "bg-card border border-border text-foreground"
 				}`}
 			>
-				<div>
-				{msg.content || (
+				{isUser ? (
+					<div>{msg.content}</div>
+				) : msg.content ? (
+					// Render assistant replies as markdown — Qwen/Claude/etc.
+					// emit headers, lists, inline code, fenced blocks, etc. that
+					// would otherwise show as raw syntax in a plain <div>.
+					<MarkdownContent content={msg.content} className="text-xs" compact />
+				) : (
 					<span className="inline-flex items-center gap-2 text-muted-foreground">
 						<span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
 						Thinking…
 					</span>
 				)}
-			</div>
 				{msg.errorMessage && (
 					<div className="mt-1 text-[10px] text-red-300/80">Details: {msg.errorMessage}</div>
 				)}
