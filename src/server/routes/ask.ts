@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import { requireAuth } from "../auth/middleware.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import {
@@ -106,38 +107,26 @@ askRouter.post("/ai/ask/stream", async (c) => {
 	if (!body.message || typeof body.message !== "string") {
 		return c.json({ error: "message required" }, 400);
 	}
-	const encoder = new TextEncoder();
-	const stream = new ReadableStream({
-		async start(controller) {
-			const write = (event: unknown) => {
-				controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-			};
-			try {
-				for await (const evt of runAskTurnStream({
-					threadId: body.threadId ?? null,
-					message: body.message ?? "",
-					sessionIds: body.sessionIds,
-					origin: "web",
-				})) {
-					write(evt);
-				}
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				write({ kind: "error", message, assistantMessage: null });
-			} finally {
-				controller.close();
+	// X-Accel-Buffering tells nginx/Traefik to stop response buffering so
+	// the browser sees each delta as it's written. Hono's streamSSE sets
+	// the Transfer-Encoding / Content-Type headers itself.
+	c.header("X-Accel-Buffering", "no");
+	return streamSSE(c, async (stream) => {
+		try {
+			for await (const evt of runAskTurnStream({
+				threadId: body.threadId ?? null,
+				message: body.message ?? "",
+				sessionIds: body.sessionIds,
+				origin: "web",
+			})) {
+				await stream.writeSSE({ data: JSON.stringify(evt) });
 			}
-		},
-	});
-	return new Response(stream, {
-		headers: {
-			"Content-Type": "text/event-stream; charset=utf-8",
-			"Cache-Control": "no-cache, no-transform",
-			Connection: "keep-alive",
-			// Signal to Traefik / reverse proxies to stop buffering so
-			// the browser sees each delta immediately.
-			"X-Accel-Buffering": "no",
-		},
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			await stream.writeSSE({
+				data: JSON.stringify({ kind: "error", message, assistantMessage: null }),
+			});
+		}
 	});
 });
 
