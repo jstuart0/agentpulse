@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
-import type { LabsFlag } from "../lib/api.js";
+import { api, type InboxWorkItem, type LabsFlag } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useUserStore } from "../stores/user-store.js";
@@ -17,6 +17,8 @@ const ADMIN_DRAWER_LINKS = [
 ];
 
 const SIDEBAR_STORAGE_KEY = "agentpulse.sidebarCollapsed";
+const INBOX_VIEWED_AT_STORAGE_KEY = "agentpulse.inboxLastViewedAt";
+const INBOX_VIEWED_TOTAL_STORAGE_KEY = "agentpulse.inboxLastViewedTotal";
 
 function loadSidebarCollapsed(): boolean {
 	if (typeof localStorage === "undefined") return false;
@@ -73,6 +75,11 @@ export function Layout() {
 	const signOutUrl = useUserStore((s) => s.signOutUrl);
 	const reloadUser = useUserStore((s) => s.load);
 	const navigate = useNavigate();
+	const location = useLocation();
+	const inboxIndicator = useInboxIndicator(
+		labsFlags === null || labsFlags.inbox !== false,
+		location.pathname === "/inbox",
+	);
 
 	async function handleSignOut() {
 		setMobileMenuOpen(false);
@@ -122,8 +129,8 @@ export function Layout() {
 				<button
 					onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
 					className="text-muted-foreground p-1.5 hover:text-foreground transition-colors"
-				>
-					<svg
+									>
+										<svg
 						className="w-5 h-5"
 						fill="none"
 						viewBox="0 0 24 24"
@@ -198,13 +205,16 @@ export function Layout() {
 										viewBox="0 0 24 24"
 										stroke="currentColor"
 										strokeWidth={1.5}
-									>
-										<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
-									</svg>
-									<span className="flex-1">{item.label}</span>
-									{item.labsFlag && <LabsBadge />}
-								</NavLink>
-							))}
+										>
+											<path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
+										</svg>
+										<span className="flex-1">{item.label}</span>
+										{item.to === "/inbox" && inboxIndicator && (
+											<InboxNavPills total={inboxIndicator.total} hasNew={inboxIndicator.hasNew} />
+										)}
+										{item.labsFlag && <LabsBadge />}
+									</NavLink>
+								))}
 
 							<div className="mt-2 pt-2 border-t border-border/70 space-y-0.5">
 								<div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -353,6 +363,9 @@ export function Layout() {
 							{!sidebarCollapsed && (
 								<>
 									<span className="flex-1">{item.label}</span>
+									{item.to === "/inbox" && inboxIndicator && (
+										<InboxNavPills total={inboxIndicator.total} hasNew={inboxIndicator.hasNew} />
+									)}
 									{item.labsFlag && <LabsBadge />}
 								</>
 							)}
@@ -379,5 +392,111 @@ export function Layout() {
 				</main>
 			</div>
 		</div>
+	);
+}
+
+function InboxNavPills({ total, hasNew }: { total: number; hasNew: boolean }) {
+	if (total <= 0 && !hasNew) return null;
+
+	return (
+		<span className="flex items-center gap-1">
+			{total > 0 && (
+				<span className="inline-flex min-w-5 items-center justify-center rounded-full border border-border bg-background px-1.5 py-0.5 text-[10px] font-mono leading-none text-foreground">
+					{total > 99 ? "99+" : total}
+				</span>
+			)}
+			{hasNew && (
+				<span className="inline-flex items-center justify-center rounded-full border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none tracking-wide text-primary">
+					New
+				</span>
+			)}
+		</span>
+	);
+}
+
+function loadInboxViewedAt(): number {
+	if (typeof localStorage === "undefined") return 0;
+	const raw = localStorage.getItem(INBOX_VIEWED_AT_STORAGE_KEY);
+	if (!raw) return 0;
+	const value = Number(raw);
+	return Number.isFinite(value) ? value : 0;
+}
+
+function loadInboxViewedTotal(): number {
+	if (typeof localStorage === "undefined") return 0;
+	const raw = localStorage.getItem(INBOX_VIEWED_TOTAL_STORAGE_KEY);
+	if (!raw) return 0;
+	const value = Number(raw);
+	return Number.isFinite(value) ? value : 0;
+}
+
+function timestampForInboxItem(item: InboxWorkItem): number {
+	switch (item.kind) {
+		case "hitl":
+			return Date.parse(item.openedAt);
+		case "stuck":
+			return Date.parse(item.since);
+		case "failed_proposal":
+			return Date.parse(item.at);
+		case "risky":
+			return 0;
+		default:
+			return 0;
+	}
+}
+
+function useInboxIndicator(enabled: boolean, viewingInbox: boolean) {
+	const [total, setTotal] = useState(0);
+	const [latestItemAt, setLatestItemAt] = useState(0);
+	const [lastViewedAt, setLastViewedAt] = useState(loadInboxViewedAt);
+	const [lastViewedTotal, setLastViewedTotal] = useState(loadInboxViewedTotal);
+
+	useEffect(() => {
+		if (!enabled) {
+			setTotal(0);
+			setLatestItemAt(0);
+			return;
+		}
+
+		let cancelled = false;
+
+		async function load() {
+			try {
+				const inbox = await api.getAiInbox({ limit: 1 });
+				if (cancelled) return;
+				setTotal(inbox.total);
+				setLatestItemAt(inbox.items[0] ? timestampForInboxItem(inbox.items[0]) : 0);
+			} catch {
+				if (cancelled) return;
+			}
+		}
+
+		void load();
+		const interval = setInterval(load, 15_000);
+		return () => {
+			cancelled = true;
+			clearInterval(interval);
+		};
+	}, [enabled]);
+
+	useEffect(() => {
+		if (!enabled || !viewingInbox) return;
+		const nextViewedAt = Math.max(Date.now(), latestItemAt);
+		try {
+			localStorage.setItem(INBOX_VIEWED_AT_STORAGE_KEY, String(nextViewedAt));
+			localStorage.setItem(INBOX_VIEWED_TOTAL_STORAGE_KEY, String(total));
+		} catch {
+			// ignore storage failures
+		}
+		setLastViewedAt(nextViewedAt);
+		setLastViewedTotal(total);
+	}, [enabled, viewingInbox, latestItemAt, total]);
+
+	return useMemo(
+		() => ({
+			total,
+			hasNew: total > 0 && (latestItemAt > lastViewedAt || total > lastViewedTotal),
+		}),
+		[total, latestItemAt, lastViewedAt, lastViewedTotal],
 	);
 }

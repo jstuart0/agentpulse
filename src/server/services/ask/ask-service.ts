@@ -212,12 +212,16 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 	});
 
 	// Resolve candidate sessions (or honor the explicit pin list).
+	// "Tell me everything" style queries signal the user wants breadth —
+	// bump the limit so we pull the full active pool instead of the top 5.
+	const breadthHints = /\b(all|every|everything|across|overall|each)\b/i;
+	const wantsBreadth = breadthHints.test(text);
 	const resolved =
 		input.sessionIds && input.sessionIds.length > 0
 			? await fetchSessionsById(input.sessionIds)
 			: await resolveCandidateSessions({
 					message: text,
-					limit: 5,
+					limit: wantsBreadth ? 20 : 5,
 					fallbackToActive: true,
 				});
 	const context = await buildAskContext({ resolved });
