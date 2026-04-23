@@ -402,6 +402,16 @@ export const api = {
 	deleteAiProvider: (id: string) =>
 		request<{ ok: true }>(`/ai/providers/${id}`, { method: "DELETE" }),
 
+	probeAiProviderModels: (body: {
+		kind: AiProviderKind;
+		baseUrl?: string;
+		apiKey?: string;
+	}) =>
+		request<{ models: Array<{ id: string; description?: string }> }>("/ai/providers/probe-models", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
 	getAiWatcher: (sessionId: string) =>
 		request<{ config: AiWatcherConfig | null; proposals: AiProposal[] }>(
 			`/ai/sessions/${sessionId}/watcher`,
