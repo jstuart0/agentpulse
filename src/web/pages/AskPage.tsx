@@ -1,0 +1,327 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { type AskMessage, type AskThread, api } from "../lib/api.js";
+
+/**
+ * Global Ask chat. Left column: thread list. Right column: messages for
+ * the selected thread + composer. The composer stays enabled while a
+ * reply is in flight — sending a second message will just queue after
+ * the assistant message lands (one turn at a time).
+ */
+
+export function AskPage() {
+	const [searchParams, setSearchParams] = useSearchParams();
+	const activeThreadId = searchParams.get("thread");
+	const [threads, setThreads] = useState<AskThread[]>([]);
+	const [messages, setMessages] = useState<AskMessage[]>([]);
+	const [loadingThreads, setLoadingThreads] = useState(true);
+	const [loadingMessages, setLoadingMessages] = useState(false);
+	const [sending, setSending] = useState(false);
+	const [draft, setDraft] = useState("");
+	const [error, setError] = useState<string | null>(null);
+	const scrollerRef = useRef<HTMLDivElement>(null);
+
+	const reloadThreads = useCallback(async () => {
+		try {
+			const res = await api.getAskThreads();
+			setThreads(res.threads);
+			setLoadingThreads(false);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+			setLoadingThreads(false);
+		}
+	}, []);
+
+	useEffect(() => {
+		void reloadThreads();
+	}, [reloadThreads]);
+
+	useEffect(() => {
+		if (!activeThreadId) {
+			setMessages([]);
+			return;
+		}
+		let cancelled = false;
+		setLoadingMessages(true);
+		api
+			.getAskThread(activeThreadId)
+			.then((res) => {
+				if (cancelled) return;
+				setMessages(res.messages);
+			})
+			.catch((err) => {
+				if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+			})
+			.finally(() => {
+				if (!cancelled) setLoadingMessages(false);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [activeThreadId]);
+
+	useEffect(() => {
+		// Auto-scroll to newest message on content change.
+		const el = scrollerRef.current;
+		if (el) el.scrollTop = el.scrollHeight;
+	}, [messages.length, sending]);
+
+	function selectThread(id: string | null) {
+		if (id) setSearchParams({ thread: id });
+		else setSearchParams({});
+	}
+
+	async function handleNewThread() {
+		selectThread(null);
+		setMessages([]);
+		setDraft("");
+		setError(null);
+	}
+
+	async function handleDelete(id: string) {
+		if (!confirm("Delete this conversation?")) return;
+		try {
+			await api.deleteAskThread(id);
+			if (activeThreadId === id) selectThread(null);
+			await reloadThreads();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		}
+	}
+
+	async function handleSend(e?: React.FormEvent) {
+		e?.preventDefault();
+		const text = draft.trim();
+		if (!text || sending) return;
+		setSending(true);
+		setError(null);
+		const optimisticUser: AskMessage = {
+			id: `pending-${Date.now()}`,
+			threadId: activeThreadId ?? "pending",
+			role: "user",
+			content: text,
+			contextSessionIds: null,
+			tokensIn: null,
+			tokensOut: null,
+			errorMessage: null,
+			createdAt: new Date().toISOString(),
+		};
+		setMessages((prev) => [...prev, optimisticUser]);
+		setDraft("");
+		try {
+			const res = await api.sendAskMessage({ threadId: activeThreadId, message: text });
+			if (!activeThreadId) selectThread(res.thread.id);
+			// Swap optimistic user message for real one + append the reply.
+			setMessages((prev) => {
+				const without = prev.filter((m) => m.id !== optimisticUser.id);
+				return [...without, res.userMessage, res.assistantMessage];
+			});
+			await reloadThreads();
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			setError(msg);
+			// Remove the optimistic message so the user can retry.
+			setMessages((prev) => prev.filter((m) => m.id !== optimisticUser.id));
+		} finally {
+			setSending(false);
+		}
+	}
+
+	return (
+		<div className="flex h-full min-h-0">
+			{/* Thread sidebar */}
+			<aside className="hidden md:flex w-60 flex-shrink-0 flex-col border-r border-border bg-card/30">
+				<div className="p-3 border-b border-border">
+					<button
+						type="button"
+						onClick={handleNewThread}
+						className="w-full rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+					>
+						New conversation
+					</button>
+				</div>
+				<div className="flex-1 overflow-y-auto">
+					{loadingThreads ? (
+						<div className="p-3 text-xs text-muted-foreground">Loading…</div>
+					) : threads.length === 0 ? (
+						<div className="p-3 text-xs text-muted-foreground">
+							No conversations yet. Ask a question to start.
+						</div>
+					) : (
+						<ul>
+							{threads.map((t) => (
+								<li key={t.id}>
+									<button
+										type="button"
+										onClick={() => selectThread(t.id)}
+										className={`w-full text-left px-3 py-2 text-xs hover:bg-muted ${
+											t.id === activeThreadId ? "bg-muted text-foreground" : "text-muted-foreground"
+										}`}
+									>
+										<div className="truncate">{t.title || "Untitled"}</div>
+										<div className="text-[10px] text-muted-foreground/70 mt-0.5 flex items-center justify-between">
+											<span>{relTime(t.updatedAt)}</span>
+											<button
+												type="button"
+												onClick={(e) => {
+													e.stopPropagation();
+													void handleDelete(t.id);
+												}}
+												className="text-muted-foreground/50 hover:text-red-300"
+											>
+												delete
+											</button>
+										</div>
+									</button>
+								</li>
+							))}
+						</ul>
+					)}
+				</div>
+			</aside>
+
+			{/* Conversation column */}
+			<div className="flex-1 flex flex-col min-w-0">
+				<div className="px-4 py-3 border-b border-border flex items-center justify-between">
+					<div>
+						<h1 className="text-sm font-semibold text-foreground">Ask</h1>
+						<p className="text-[11px] text-muted-foreground">
+							Chat about your running sessions. Uses the default LLM provider configured in Settings
+							→ AI.
+						</p>
+					</div>
+				</div>
+
+				<div ref={scrollerRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+					{!activeThreadId && messages.length === 0 && <WelcomeHints onPick={(q) => setDraft(q)} />}
+					{loadingMessages && (
+						<div className="text-xs text-muted-foreground">Loading messages…</div>
+					)}
+					{messages.map((m) => (
+						<MessageBubble key={m.id} msg={m} />
+					))}
+					{sending && (
+						<div className="max-w-[85%] rounded-lg border border-border bg-card/40 px-3 py-2 text-xs text-muted-foreground">
+							<span className="inline-flex items-center gap-2">
+								<span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+								Thinking…
+							</span>
+						</div>
+					)}
+					{error && (
+						<div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-200">
+							{error}
+						</div>
+					)}
+				</div>
+
+				<form onSubmit={handleSend} className="border-t border-border p-3 flex items-end gap-2">
+					<textarea
+						value={draft}
+						onChange={(e) => setDraft(e.target.value)}
+						onKeyDown={(e) => {
+							if (e.key === "Enter" && !e.shiftKey) {
+								e.preventDefault();
+								void handleSend();
+							}
+						}}
+						placeholder="Ask about a session (Enter to send, Shift+Enter for newline)"
+						rows={2}
+						className="flex-1 min-w-0 resize-y rounded-md border border-input bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+					/>
+					<button
+						type="submit"
+						disabled={sending || !draft.trim()}
+						className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+					>
+						{sending ? "Sending…" : "Send"}
+					</button>
+				</form>
+			</div>
+		</div>
+	);
+}
+
+function WelcomeHints({ onPick }: { onPick: (q: string) => void }) {
+	const hints = [
+		"Which session is working on AgentPulse right now?",
+		"Any sessions stuck or needing my attention?",
+		"Summarize what my agents did today.",
+		"What's the last thing the watcher proposed?",
+	];
+	return (
+		<div className="rounded-lg border border-border bg-card/40 p-4 text-xs space-y-3 max-w-xl">
+			<div className="text-foreground font-semibold">Ask anything about your sessions</div>
+			<p className="text-muted-foreground">
+				Ask uses your configured LLM to answer questions about the live state of your agents. Try
+				one of these to get started:
+			</p>
+			<ul className="space-y-1.5">
+				{hints.map((h) => (
+					<li key={h}>
+						<button
+							type="button"
+							onClick={() => onPick(h)}
+							className="text-left text-primary hover:underline"
+						>
+							{h}
+						</button>
+					</li>
+				))}
+			</ul>
+			<p className="text-[11px] text-muted-foreground">
+				Responses are grounded in the resolver's pick of your most relevant sessions — the assistant
+				won't invent sessions it doesn't see.
+			</p>
+		</div>
+	);
+}
+
+function MessageBubble({ msg }: { msg: AskMessage }) {
+	const isUser = msg.role === "user";
+	return (
+		<div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+			<div
+				className={`max-w-[85%] rounded-lg px-3 py-2 text-xs whitespace-pre-wrap ${
+					isUser
+						? "bg-primary/15 text-primary-foreground/90 border border-primary/30"
+						: msg.errorMessage
+							? "bg-red-500/10 text-red-200 border border-red-500/30"
+							: "bg-card border border-border text-foreground"
+				}`}
+			>
+				<div>{msg.content}</div>
+				{msg.errorMessage && (
+					<div className="mt-1 text-[10px] text-red-300/80">Details: {msg.errorMessage}</div>
+				)}
+				{!isUser && msg.contextSessionIds && msg.contextSessionIds.length > 0 && (
+					<div className="mt-2 flex flex-wrap gap-1">
+						{msg.contextSessionIds.map((id) => (
+							<Link
+								key={id}
+								to={`/sessions/${id}`}
+								className="text-[10px] rounded border border-border bg-background/60 px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
+							>
+								{id.slice(0, 8)}
+							</Link>
+						))}
+					</div>
+				)}
+				<div className="mt-1 text-[10px] text-muted-foreground/60">
+					{new Date(msg.createdAt).toLocaleTimeString()}
+				</div>
+			</div>
+		</div>
+	);
+}
+
+function relTime(iso: string): string {
+	const diff = Date.now() - new Date(iso).getTime();
+	const m = Math.floor(diff / 60000);
+	if (m < 1) return "just now";
+	if (m < 60) return `${m}m ago`;
+	const h = Math.floor(m / 60);
+	if (h < 24) return `${h}h ago`;
+	const d = Math.floor(h / 24);
+	return `${d}d ago`;
+}

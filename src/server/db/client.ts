@@ -400,6 +400,31 @@ export function initializeDatabase() {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_hitl_requests_open_per_session
 			ON ai_hitl_requests(session_id)
 			WHERE status = 'awaiting_reply';
+
+		CREATE TABLE IF NOT EXISTS ask_threads (
+			id TEXT PRIMARY KEY,
+			title TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			archived_at TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_ask_threads_updated
+			ON ask_threads(updated_at DESC)
+			WHERE archived_at IS NULL;
+
+		CREATE TABLE IF NOT EXISTS ask_messages (
+			id TEXT PRIMARY KEY,
+			thread_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			context_session_ids TEXT,
+			tokens_in INTEGER,
+			tokens_out INTEGER,
+			error_message TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_ask_messages_thread
+			ON ask_messages(thread_id, created_at);
 	`);
 
 	// Migrations: add columns that may not exist on older databases

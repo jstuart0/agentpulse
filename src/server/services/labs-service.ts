@@ -31,7 +31,8 @@ export type LabsFlag =
 	| "templateDistillation"
 	| "launchRecommendation"
 	| "riskClasses"
-	| "telegramChannel";
+	| "telegramChannel"
+	| "askAssistant";
 
 export const LABS_REGISTRY: readonly LabsFlagDefinition[] = [
 	{
@@ -87,6 +88,13 @@ export const LABS_REGISTRY: readonly LabsFlagDefinition[] = [
 		label: "Telegram HITL channel",
 		description:
 			"Deliver HITL requests to a Telegram chat with inline Approve / Decline buttons. Requires TELEGRAM_BOT_TOKEN + TELEGRAM_WEBHOOK_SECRET.",
+		defaultEnabled: false,
+	},
+	{
+		key: "askAssistant",
+		label: "Ask assistant",
+		description:
+			"Global chat that answers questions about your running sessions. Uses the default LLM provider configured in AI settings.",
 		defaultEnabled: false,
 	},
 ] as const;
