@@ -196,7 +196,7 @@ const defaultKey = await ensureDefaultApiKey();
 
 console.log("");
 console.log("  ╔═══════════════════════════════════════════╗");
-console.log("  ║           AgentPulse v0.1.0               ║");
+console.log("  ║        AgentPulse v0.2.0-pre.1            ║");
 console.log("  ╠═══════════════════════════════════════════╣");
 console.log(`  ║  Server:  http://${config.host}:${config.port}          ║`);
 console.log(`  ║  DB:      ${config.useSqlite ? "SQLite" : "PostgreSQL"}                       ║`);
