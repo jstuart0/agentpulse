@@ -108,7 +108,9 @@ export function WorkspaceTabButton({
 				<span
 					className={cn(
 						"rounded-full px-1.5 py-0.5 text-[10px]",
-						active ? "bg-primary-foreground/15 text-primary-foreground" : "bg-amber-500/10 text-amber-400",
+						active
+							? "bg-primary-foreground/15 text-primary-foreground"
+							: "bg-amber-500/10 text-amber-400",
 					)}
 				>
 					{badge}
@@ -117,4 +119,3 @@ export function WorkspaceTabButton({
 		</button>
 	);
 }
-

@@ -1,10 +1,10 @@
 import {
-	classifyHttpError,
-	estimateTokens,
-	LlmError,
 	type LlmAdapter,
+	LlmError,
 	type LlmRequest,
 	type LlmResponse,
+	classifyHttpError,
+	estimateTokens,
 } from "./types.js";
 
 interface AnthropicRequestParams {
@@ -65,11 +65,7 @@ export function createAnthropicAdapter(params: AnthropicRequestParams): LlmAdapt
 
 			if (!response.ok) {
 				const { subType, body: errBody, status } = await classifyHttpError(response);
-				throw new LlmError(
-					subType,
-					`Anthropic ${status}: ${errBody.slice(0, 300)}`,
-					status,
-				);
+				throw new LlmError(subType, `Anthropic ${status}: ${errBody.slice(0, 300)}`, status);
 			}
 
 			const json = (await response.json()) as {

@@ -14,9 +14,7 @@ const AUTH_TAG_LENGTH = 16;
 
 function deriveKey(salt: Buffer): Buffer {
 	if (!config.secretsKey) {
-		throw new Error(
-			"AGENTPULSE_SECRETS_KEY is not set; AI credential operations are unavailable.",
-		);
+		throw new Error("AGENTPULSE_SECRETS_KEY is not set; AI credential operations are unavailable.");
 	}
 	// scryptSync is CPU-bound but fine for infrequent encrypt/decrypt of
 	// credentials (not per-request). N=16384 is the Node default.
@@ -53,10 +51,7 @@ export function decryptSecret(ciphertextBase64: string): string {
 	}
 	const salt = buf.subarray(0, SALT_LENGTH);
 	const iv = buf.subarray(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
-	const authTag = buf.subarray(
-		SALT_LENGTH + IV_LENGTH,
-		SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH,
-	);
+	const authTag = buf.subarray(SALT_LENGTH + IV_LENGTH, SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH);
 	const ciphertext = buf.subarray(SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH);
 	const key = deriveKey(salt);
 	const decipher = createDecipheriv("aes-256-gcm", key, iv);

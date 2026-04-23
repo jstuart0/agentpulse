@@ -95,7 +95,8 @@ describe("redactor: default rules", () => {
 	});
 
 	test("returns hit details", () => {
-		const input = "ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890AB sk-ant-api03-abcdefghijklmnopqrstuvwxyz12";
+		const input =
+			"ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890AB sk-ant-api03-abcdefghijklmnopqrstuvwxyz12";
 		const { hits } = redact(input);
 		const ruleNames = hits.map((h) => h.rule).sort();
 		expect(ruleNames).toEqual(["anthropic_api_key", "github_token"]);

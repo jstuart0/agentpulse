@@ -112,10 +112,7 @@ export const DEFAULT_RULES: RedactionRule[] = [
  * The function is pure and order-sensitive: earlier rules run first, and
  * overlapping matches go to whichever rule matched first.
  */
-export function redact(
-	input: string,
-	extraRules: RedactionRule[] = [],
-): RedactionResult {
+export function redact(input: string, extraRules: RedactionRule[] = []): RedactionResult {
 	const hits: RedactionHit[] = [];
 	if (!input) return { text: input ?? "", hits };
 	const allRules = [...DEFAULT_RULES, ...extraRules];
@@ -128,7 +125,8 @@ export function redact(
 			// `args` penultimate value is the offset in the *current* `text`.
 			// We record the offset into the post-redaction text; that's enough
 			// for UIs that want to highlight a replacement region.
-			const offset = typeof args[args.length - 2] === "number" ? (args[args.length - 2] as number) : 0;
+			const offset =
+				typeof args[args.length - 2] === "number" ? (args[args.length - 2] as number) : 0;
 			const replacement =
 				typeof rule.replacement === "function" ? rule.replacement(match) : rule.replacement;
 			hits.push({

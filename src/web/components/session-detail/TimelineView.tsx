@@ -1,5 +1,3 @@
-import { MarkdownContent } from "../MarkdownContent.js";
-import { cn, formatTimeAgo } from "../../lib/utils.js";
 import {
 	EVENT_DUPLICATE_WINDOW_MS,
 	EVENT_SOURCE_PRIORITY,
@@ -9,6 +7,8 @@ import {
 	normalizeComparableContent,
 } from "../../../shared/event-authority.js";
 import type { EventCategory, EventSource, SessionEvent } from "../../../shared/types.js";
+import { cn, formatTimeAgo } from "../../lib/utils.js";
+import { MarkdownContent } from "../MarkdownContent.js";
 
 export type TimelineMode = "prompts" | "conversation" | "progress" | "terminal" | "debug";
 
@@ -157,7 +157,9 @@ export function TimelineCard({
 		<div className={cn("rounded-xl border px-3 py-2.5", toneClasses[tone])}>
 			<div className="flex items-center justify-between gap-3">
 				<div className="flex items-center gap-2">
-					<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
+					<span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+						{label}
+					</span>
 					{source ? <SourceBadge source={source} /> : null}
 				</div>
 				<span className="text-[10px] text-muted-foreground">{formatTimeAgo(time)}</span>
@@ -239,7 +241,8 @@ export function getVisibleEvents(
 
 	return allEvents.filter((event) => {
 		if (!event.category || !categories.has(event.category)) return false;
-		if (event.category === "tool_event" && !showTools && mode !== "debug" && mode !== "terminal") return false;
+		if (event.category === "tool_event" && !showTools && mode !== "debug" && mode !== "terminal")
+			return false;
 		if (event.category === "tool_event" && !showNoisyTools && event.isNoise) return false;
 		if (!event.content && event.category !== "tool_event") return false;
 		return true;
@@ -249,12 +252,20 @@ export function getVisibleEvents(
 export function eventKey(
 	event: Pick<
 		SessionEvent,
-		"id" | "eventType" | "category" | "source" | "content" | "createdAt" | "providerEventType" | "rawPayload"
+		| "id"
+		| "eventType"
+		| "category"
+		| "source"
+		| "content"
+		| "createdAt"
+		| "providerEventType"
+		| "rawPayload"
 	>,
 ) {
 	const transcriptId =
 		(typeof event.rawPayload?.transcript_uuid === "string" && event.rawPayload.transcript_uuid) ||
-		(typeof event.rawPayload?.transcript_timestamp === "string" && event.rawPayload.transcript_timestamp) ||
+		(typeof event.rawPayload?.transcript_timestamp === "string" &&
+			event.rawPayload.transcript_timestamp) ||
 		"";
 	return [
 		event.id || 0,

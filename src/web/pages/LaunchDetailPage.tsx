@@ -1,7 +1,12 @@
+import { format } from "date-fns";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { format } from "date-fns";
-import type { LaunchMode, LaunchRequest, LaunchRequestStatus, Session } from "../../shared/types.js";
+import type {
+	LaunchMode,
+	LaunchRequest,
+	LaunchRequestStatus,
+	Session,
+} from "../../shared/types.js";
 import { api } from "../lib/api.js";
 
 function formatDateTime(value: string | null | undefined) {
@@ -24,7 +29,11 @@ function KeyValue({
 	return (
 		<div>
 			<div className="text-xs text-muted-foreground">{label}</div>
-			<div className={mono ? "mt-1 break-all font-mono text-xs text-foreground" : "mt-1 text-sm text-foreground"}>
+			<div
+				className={
+					mono ? "mt-1 break-all font-mono text-xs text-foreground" : "mt-1 text-sm text-foreground"
+				}
+			>
 				{value}
 			</div>
 		</div>
@@ -104,7 +113,10 @@ export function LaunchDetailPage() {
 		return (
 			<div className="p-6">
 				<div className="text-sm text-muted-foreground">Launch request not found.</div>
-				<button onClick={() => navigate("/templates")} className="mt-3 text-sm text-primary hover:underline">
+				<button
+					onClick={() => navigate("/templates")}
+					className="mt-3 text-sm text-primary hover:underline"
+				>
 					Back to templates
 				</button>
 			</div>
@@ -122,7 +134,7 @@ export function LaunchDetailPage() {
 					stderrPreview?: string;
 					rawEventCount?: number;
 					activity?: Array<{ kind: string; text: string; timestamp: string }>;
-			  }) ?? null)
+				}) ?? null)
 			: null;
 	const nextStepMessage =
 		launch.requestedLaunchMode === "headless"
@@ -142,12 +154,16 @@ export function LaunchDetailPage() {
 			<div className="mx-auto max-w-5xl space-y-6">
 				<div className="flex flex-wrap items-start justify-between gap-3">
 					<div>
-						<button onClick={() => navigate(-1)} className="text-sm text-muted-foreground hover:text-foreground">
+						<button
+							onClick={() => navigate(-1)}
+							className="text-sm text-muted-foreground hover:text-foreground"
+						>
 							← Back
 						</button>
 						<h1 className="mt-2 text-xl font-bold text-foreground">Launch Request</h1>
 						<p className="mt-1 text-sm text-muted-foreground">
-							{launch.agentType === "claude_code" ? "Claude Code" : "Codex CLI"} · {launchModeLabels[launch.requestedLaunchMode]}
+							{launch.agentType === "claude_code" ? "Claude Code" : "Codex CLI"} ·{" "}
+							{launchModeLabels[launch.requestedLaunchMode]}
 						</p>
 					</div>
 					<div className="flex items-center gap-2">
@@ -182,7 +198,10 @@ export function LaunchDetailPage() {
 						<div className="text-sm font-semibold text-foreground">Dispatch</div>
 						<KeyValue label="Started" value={formatDateTime(launch.dispatchStartedAt)} />
 						<KeyValue label="Finished" value={formatDateTime(launch.dispatchFinishedAt)} />
-						<KeyValue label="Awaiting session deadline" value={formatDateTime(launch.awaitingSessionDeadlineAt)} />
+						<KeyValue
+							label="Awaiting session deadline"
+							value={formatDateTime(launch.awaitingSessionDeadlineAt)}
+						/>
 						<KeyValue label="Claimed by supervisor" value={launch.claimedBySupervisorId} mono />
 						<KeyValue label="PID" value={launch.pid != null ? String(launch.pid) : null} mono />
 						{providerMetadata && typeof providerMetadata.executionState === "string" && (
@@ -190,7 +209,7 @@ export function LaunchDetailPage() {
 						)}
 						{launch.error && (
 							<div>
-						<div className="text-xs text-red-300">Error</div>
+								<div className="text-xs text-red-300">Error</div>
 								<div className="mt-1 text-sm text-red-200">{launch.error}</div>
 							</div>
 						)}
@@ -198,7 +217,9 @@ export function LaunchDetailPage() {
 
 					<div className="rounded-lg border border-border bg-card p-4 space-y-3">
 						<div className="text-sm font-semibold text-foreground">Validation</div>
-						{launch.validationSummary && <KeyValue label="Summary" value={launch.validationSummary} />}
+						{launch.validationSummary && (
+							<KeyValue label="Summary" value={launch.validationSummary} />
+						)}
 						{launch.validationWarnings.length > 0 ? (
 							<div>
 								<div className="text-xs text-amber-300">Warnings</div>
@@ -233,7 +254,7 @@ export function LaunchDetailPage() {
 							</Link>
 						) : null}
 					</div>
-						<div className="mt-3 rounded-md bg-background/60 p-3 text-xs">
+					<div className="mt-3 rounded-md bg-background/60 p-3 text-xs">
 						{linkedSession ? (
 							<div className="space-y-1.5">
 								<div className="font-medium text-foreground">
@@ -244,7 +265,8 @@ export function LaunchDetailPage() {
 								</div>
 								{launch.requestedLaunchMode === "interactive_terminal" && (
 									<div className="text-muted-foreground">
-										Control this session in the opened host terminal. AgentPulse is the observability surface for it.
+										Control this session in the opened host terminal. AgentPulse is the
+										observability surface for it.
 									</div>
 								)}
 							</div>
@@ -290,7 +312,10 @@ export function LaunchDetailPage() {
 							<div className="mt-3 space-y-2">
 								{headlessOutput.activity?.length ? (
 									headlessOutput.activity.map((entry, index) => (
-										<div key={`${entry.timestamp}-${index}`} className="rounded-md bg-background/60 p-3">
+										<div
+											key={`${entry.timestamp}-${index}`}
+											className="rounded-md bg-background/60 p-3"
+										>
 											<div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
 												<span>{formatActivityKind(entry.kind)}</span>
 												<span>{formatDateTime(entry.timestamp)}</span>

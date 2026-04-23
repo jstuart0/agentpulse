@@ -1,16 +1,16 @@
+import { desc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import { getSessions, getSession, getStats } from "../services/session-tracker.js";
+import type { AgentType, SessionStatus } from "../../shared/types.js";
+import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { events, managedSessions, sessions } from "../db/schema.js";
-import { eq, desc, sql } from "drizzle-orm";
-import type { AgentType, SessionStatus } from "../../shared/types.js";
 import {
 	listControlActionsForSession,
 	queuePromptAction,
 	queueStopAction,
 	retryLaunchForSession,
 } from "../services/control-actions.js";
-import { requireAuth } from "../auth/middleware.js";
+import { getSession, getSessions, getStats } from "../services/session-tracker.js";
 
 const sessionsRouter = new Hono();
 sessionsRouter.use("*", requireAuth());
@@ -45,9 +45,7 @@ sessionsRouter.get("/sessions/:sessionId", async (c) => {
 	const sessionEvents = await db
 		.select()
 		.from(events)
-		.where(
-			eq(events.sessionId, sessionId),
-		)
+		.where(eq(events.sessionId, sessionId))
 		.orderBy(desc(events.createdAt))
 		.limit(500);
 
@@ -139,7 +137,10 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c) => {
 		const action = await queuePromptAction(c.req.param("sessionId"), body.prompt || "");
 		return c.json({ action }, 202);
 	} catch (error) {
-		return c.json({ error: error instanceof Error ? error.message : "Unable to queue prompt" }, 400);
+		return c.json(
+			{ error: error instanceof Error ? error.message : "Unable to queue prompt" },
+			400,
+		);
 	}
 });
 
@@ -165,10 +166,7 @@ sessionsRouter.put("/sessions/:sessionId/pin", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { pinned } = await c.req.json<{ pinned: boolean }>();
 
-	await db
-		.update(sessions)
-		.set({ isPinned: pinned })
-		.where(eq(sessions.sessionId, sessionId));
+	await db.update(sessions).set({ isPinned: pinned }).where(eq(sessions.sessionId, sessionId));
 
 	return c.json({ ok: true });
 });
@@ -211,7 +209,7 @@ sessionsRouter.get("/sessions/search", async (c) => {
 		.map((e) => e.sessionId)
 		.filter((id) => !matchingSessions.some((s) => s.sessionId === id));
 
-	let allResults = [...matchingSessions];
+	const allResults = [...matchingSessions];
 	if (additionalIds.length > 0) {
 		for (const id of additionalIds) {
 			const [s] = await db.select().from(sessions).where(eq(sessions.sessionId, id)).limit(1);
@@ -226,7 +224,10 @@ sessionsRouter.get("/sessions/search", async (c) => {
 async function computeChecksum(content: string): Promise<string> {
 	const data = new TextEncoder().encode(content);
 	const hash = await crypto.subtle.digest("SHA-256", data);
-	return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+	return Array.from(new Uint8Array(hash))
+		.map((b) => b.toString(16).padStart(2, "0"))
+		.join("")
+		.slice(0, 16);
 }
 
 // GET /api/v1/sessions/:sessionId/claude-md - Get CLAUDE.md content from DB
@@ -267,10 +268,7 @@ sessionsRouter.put("/sessions/:sessionId/claude-md", async (c) => {
 	};
 	if (path) updates.claudeMdPath = path;
 
-	await db
-		.update(sessions)
-		.set(updates)
-		.where(eq(sessions.sessionId, sessionId));
+	await db.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
 
 	return c.json({ ok: true, checksum });
 });

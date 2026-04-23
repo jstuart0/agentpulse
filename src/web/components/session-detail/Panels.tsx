@@ -3,10 +3,12 @@ import { Link } from "react-router-dom";
 import type { LaunchRequest, Session } from "../../../shared/types.js";
 import { api } from "../../lib/api.js";
 import { MarkdownContent } from "../MarkdownContent.js";
-import { formatTimeAgo } from "../../lib/utils.js";
 import { ModeButton, ScrollJumpControls } from "./SharedControls.js";
 
-export function NotesPanel({ sessionId, initialNotes }: { sessionId: string; initialNotes: string }) {
+export function NotesPanel({
+	sessionId,
+	initialNotes,
+}: { sessionId: string; initialNotes: string }) {
 	const [notes, setNotes] = useState(initialNotes);
 	const [saving, setSaving] = useState(false);
 	const [lastSaved, setLastSaved] = useState<string | null>(null);
@@ -34,23 +36,38 @@ export function NotesPanel({ sessionId, initialNotes }: { sessionId: string; ini
 		<div className="flex flex-col h-full">
 			<div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0">
 				<div className="flex items-center gap-2">
-					<span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notes</span>
+					<span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+						Notes
+					</span>
 					<div className="flex items-center rounded-md border border-border p-0.5">
 						<ModeButton active={mode === "edit"} label="Edit" onClick={() => setMode("edit")} />
-						<ModeButton active={mode === "preview"} label="Preview" onClick={() => setMode("preview")} />
+						<ModeButton
+							active={mode === "preview"}
+							label="Preview"
+							onClick={() => setMode("preview")}
+						/>
 					</div>
 					<ScrollJumpControls
-						onTop={() => (mode === "edit" ? editRef.current?.scrollTo({ top: 0, behavior: "smooth" }) : previewRef.current?.scrollTo({ top: 0, behavior: "smooth" }))}
+						onTop={() =>
+							mode === "edit"
+								? editRef.current?.scrollTo({ top: 0, behavior: "smooth" })
+								: previewRef.current?.scrollTo({ top: 0, behavior: "smooth" })
+						}
 						onBottom={() => {
 							if (mode === "edit" && editRef.current) {
 								editRef.current.scrollTo({ top: editRef.current.scrollHeight, behavior: "smooth" });
 							} else if (previewRef.current) {
-								previewRef.current.scrollTo({ top: previewRef.current.scrollHeight, behavior: "smooth" });
+								previewRef.current.scrollTo({
+									top: previewRef.current.scrollHeight,
+									behavior: "smooth",
+								});
 							}
 						}}
 					/>
 				</div>
-				<span className="text-[10px] text-muted-foreground">{saving ? "Saving..." : lastSaved ? `Saved ${lastSaved}` : ""}</span>
+				<span className="text-[10px] text-muted-foreground">
+					{saving ? "Saving..." : lastSaved ? `Saved ${lastSaved}` : ""}
+				</span>
 			</div>
 			{mode === "edit" ? (
 				<textarea
@@ -65,14 +82,21 @@ export function NotesPanel({ sessionId, initialNotes }: { sessionId: string; ini
 				/>
 			) : (
 				<div ref={previewRef} className="flex-1 overflow-y-auto p-3">
-					{notes.trim() ? <MarkdownContent content={notes} /> : <div className="text-sm text-muted-foreground">No notes yet.</div>}
+					{notes.trim() ? (
+						<MarkdownContent content={notes} />
+					) : (
+						<div className="text-sm text-muted-foreground">No notes yet.</div>
+					)}
 				</div>
 			)}
 		</div>
 	);
 }
 
-export function ClaudeMdPanel({ session, onPathChanged }: { session: Session; onPathChanged?: (path: string) => void }) {
+export function ClaudeMdPanel({
+	session,
+	onPathChanged,
+}: { session: Session; onPathChanged?: (path: string) => void }) {
 	const [content, setContent] = useState("");
 	const [filePath, setFilePath] = useState("");
 	const [loading, setLoading] = useState(true);
@@ -120,7 +144,9 @@ export function ClaudeMdPanel({ session, onPathChanged }: { session: Session; on
 		<div className="flex flex-col h-full">
 			{isFallback && (
 				<div className="px-3 py-2 bg-amber-500/10 border-b border-amber-500/20 flex items-center justify-between">
-					<span className="text-[10px] text-amber-400">No {preferredFile} found -- showing {currentFile}</span>
+					<span className="text-[10px] text-amber-400">
+						No {preferredFile} found -- showing {currentFile}
+					</span>
 					<button
 						onClick={() => {
 							if (!session.cwd) return;
@@ -135,25 +161,42 @@ export function ClaudeMdPanel({ session, onPathChanged }: { session: Session; on
 			)}
 			<div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0">
 				<div className="flex items-center gap-2 min-w-0">
-					<span className="text-[10px] text-muted-foreground truncate">{currentFile || "No file"}</span>
-					<span className={`text-[10px] px-1.5 py-0 rounded ${
-						content.length > 15000 ? "text-red-400 bg-red-500/10" :
-						content.length > 8000 ? "text-amber-400 bg-amber-500/10" :
-						"text-muted-foreground bg-muted/50"
-					}`}>
+					<span className="text-[10px] text-muted-foreground truncate">
+						{currentFile || "No file"}
+					</span>
+					<span
+						className={`text-[10px] px-1.5 py-0 rounded ${
+							content.length > 15000
+								? "text-red-400 bg-red-500/10"
+								: content.length > 8000
+									? "text-amber-400 bg-amber-500/10"
+									: "text-muted-foreground bg-muted/50"
+						}`}
+					>
 						{(content.length / 1024).toFixed(1)}KB
 					</span>
 					<div className="flex items-center rounded-md border border-border p-0.5">
 						<ModeButton active={mode === "edit"} label="Edit" onClick={() => setMode("edit")} />
-						<ModeButton active={mode === "preview"} label="Preview" onClick={() => setMode("preview")} />
+						<ModeButton
+							active={mode === "preview"}
+							label="Preview"
+							onClick={() => setMode("preview")}
+						/>
 					</div>
 					<ScrollJumpControls
-						onTop={() => (mode === "edit" ? editRef.current?.scrollTo({ top: 0, behavior: "smooth" }) : previewRef.current?.scrollTo({ top: 0, behavior: "smooth" }))}
+						onTop={() =>
+							mode === "edit"
+								? editRef.current?.scrollTo({ top: 0, behavior: "smooth" })
+								: previewRef.current?.scrollTo({ top: 0, behavior: "smooth" })
+						}
 						onBottom={() => {
 							if (mode === "edit" && editRef.current) {
 								editRef.current.scrollTo({ top: editRef.current.scrollHeight, behavior: "smooth" });
 							} else if (previewRef.current) {
-								previewRef.current.scrollTo({ top: previewRef.current.scrollHeight, behavior: "smooth" });
+								previewRef.current.scrollTo({
+									top: previewRef.current.scrollHeight,
+									behavior: "smooth",
+								});
 							}
 						}}
 					/>
@@ -182,7 +225,9 @@ export function ClaudeMdPanel({ session, onPathChanged }: { session: Session; on
 					{content.trim() ? (
 						<MarkdownContent content={content} />
 					) : (
-						<div className="text-sm text-muted-foreground">No {alternateFile} or {preferredFile} content found.</div>
+						<div className="text-sm text-muted-foreground">
+							No {alternateFile} or {preferredFile} content found.
+						</div>
 					)}
 				</div>
 			)}
@@ -190,12 +235,18 @@ export function ClaudeMdPanel({ session, onPathChanged }: { session: Session; on
 	);
 }
 
-export function SummaryField({ label, value, mono = false }: { label: string; value: string | null | undefined; mono?: boolean }) {
+export function SummaryField({
+	label,
+	value,
+	mono = false,
+}: { label: string; value: string | null | undefined; mono?: boolean }) {
 	if (!value) return null;
 	return (
 		<div className="rounded-md border border-border bg-background/60 p-3">
 			<div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-			<div className={`mt-1 text-sm text-foreground ${mono ? "font-mono break-all text-xs" : ""}`}>{value}</div>
+			<div className={`mt-1 text-sm text-foreground ${mono ? "font-mono break-all text-xs" : ""}`}>
+				{value}
+			</div>
 		</div>
 	);
 }
@@ -225,7 +276,8 @@ export function EmbeddedLaunchPanel({ launchId }: { launchId: string }) {
 	}, [launchId]);
 
 	if (loading) return <div className="p-4 text-sm text-muted-foreground">Loading launch…</div>;
-	if (!launch) return <div className="p-4 text-sm text-muted-foreground">Linked launch not found.</div>;
+	if (!launch)
+		return <div className="p-4 text-sm text-muted-foreground">Linked launch not found.</div>;
 
 	const modeLabel =
 		launch.requestedLaunchMode === "headless"
@@ -246,9 +298,14 @@ export function EmbeddedLaunchPanel({ launchId }: { launchId: string }) {
 			<div className="flex flex-wrap items-start justify-between gap-3">
 				<div>
 					<div className="text-sm font-semibold text-foreground">Launch</div>
-					<div className="mt-1 text-xs text-muted-foreground">{launch.status} · {modeLabel}</div>
+					<div className="mt-1 text-xs text-muted-foreground">
+						{launch.status} · {modeLabel}
+					</div>
 				</div>
-				<Link to={`/launches/${launch.id}`} className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-colors">
+				<Link
+					to={`/launches/${launch.id}`}
+					className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent transition-colors"
+				>
 					Open full launch detail
 				</Link>
 			</div>
@@ -261,7 +318,9 @@ export function EmbeddedLaunchPanel({ launchId }: { launchId: string }) {
 			</div>
 
 			{launch.error ? (
-				<div className="rounded-lg border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-200">{launch.error}</div>
+				<div className="rounded-lg border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-200">
+					{launch.error}
+				</div>
 			) : null}
 
 			{output ? (
@@ -282,9 +341,16 @@ export function EmbeddedLaunchPanel({ launchId }: { launchId: string }) {
 						<div className="mt-3 space-y-2">
 							{output.activity?.length ? (
 								output.activity.map((entry, index) => (
-									<div key={`${entry.timestamp}-${index}`} className="rounded-md bg-background/60 p-3">
-										<div className="text-[10px] uppercase tracking-wide text-muted-foreground">{entry.kind}</div>
-										<div className="mt-1 whitespace-pre-wrap break-words text-xs text-foreground">{entry.text}</div>
+									<div
+										key={`${entry.timestamp}-${index}`}
+										className="rounded-md bg-background/60 p-3"
+									>
+										<div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+											{entry.kind}
+										</div>
+										<div className="mt-1 whitespace-pre-wrap break-words text-xs text-foreground">
+											{entry.text}
+										</div>
 									</div>
 								))
 							) : (
@@ -303,4 +369,3 @@ export function EmbeddedLaunchPanel({ launchId }: { launchId: string }) {
 		</div>
 	);
 }
-

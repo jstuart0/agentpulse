@@ -25,11 +25,7 @@ export interface ContinuabilityInput {
 const DEFAULT_USER_PROMPT_LOCKOUT_MS = 30_000;
 const DEFAULT_AI_CONTINUE_LOCKOUT_MS = 30_000;
 
-const CONTINUABLE_MANAGED_STATES = new Set([
-	"interactive_terminal",
-	"headless",
-	"managed",
-]);
+const CONTINUABLE_MANAGED_STATES = new Set(["interactive_terminal", "headless", "managed"]);
 
 /**
  * Classify whether the watcher is allowed to continue vs. report vs. do nothing.
@@ -69,14 +65,10 @@ export function classifyContinuability(input: ContinuabilityInput): WatcherEligi
 
 	const now = Date.now();
 	const recentUserPrompt = recentEvents.some(
-		(e) =>
-			e.category === "prompt" &&
-			now - parseTime(e.createdAt) < userPromptLockoutMs,
+		(e) => e.category === "prompt" && now - parseTime(e.createdAt) < userPromptLockoutMs,
 	);
 	const recentAiContinue = recentEvents.some(
-		(e) =>
-			e.category === "ai_continue_sent" &&
-			now - parseTime(e.createdAt) < aiContinueLockoutMs,
+		(e) => e.category === "ai_continue_sent" && now - parseTime(e.createdAt) < aiContinueLockoutMs,
 	);
 
 	// Observed session (no managedSession row) — report-only by architecture.

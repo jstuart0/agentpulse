@@ -1,17 +1,16 @@
 import { HTTPException } from "hono/http-exception";
-import { db } from "../db/client.js";
-import { launchRequests } from "../db/schema.js";
-import { getConnectedSupervisor, listSupervisors } from "./supervisor-registry.js";
-import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
-import { validateAgainstSupervisor } from "./launch-compatibility.js";
 import type {
 	LaunchRequest,
 	LaunchRequestInput,
 	LaunchRequestStatus,
 	LaunchSpec,
 	SessionTemplateInput,
-	SupervisorRecord,
 } from "../../shared/types.js";
+import { db } from "../db/client.js";
+import { launchRequests } from "../db/schema.js";
+import { validateAgainstSupervisor } from "./launch-compatibility.js";
+import { getConnectedSupervisor, listSupervisors } from "./supervisor-registry.js";
+import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
 
 function mapLaunchRequest(row: typeof launchRequests.$inferSelect): LaunchRequest {
 	return {
@@ -82,7 +81,9 @@ async function resolveSupervisorForLaunch(
 		});
 	}
 
-	const supervisors = (await listSupervisors()).filter((supervisor) => supervisor.status === "connected");
+	const supervisors = (await listSupervisors()).filter(
+		(supervisor) => supervisor.status === "connected",
+	);
 	if (supervisors.length === 0) {
 		throw new HTTPException(400, {
 			message: "No connected supervisor is available for routing.",
@@ -136,8 +137,10 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 		throw new HTTPException(400, { message: templateValidation.errors.join(" ") });
 	}
 
-	const requestedLaunchMode = input.requestedLaunchMode ?? input.launchSpec.launchMode ?? "interactive_terminal";
-	const routingPolicy = input.routingPolicy ?? (input.requestedSupervisorId ? "manual_target" : null);
+	const requestedLaunchMode =
+		input.requestedLaunchMode ?? input.launchSpec.launchMode ?? "interactive_terminal";
+	const routingPolicy =
+		input.routingPolicy ?? (input.requestedSupervisorId ? "manual_target" : null);
 	const resolved = await resolveSupervisorForLaunch(
 		normalizedTemplate,
 		input.requestedSupervisorId ?? null,
@@ -148,14 +151,16 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 	const supervisorValidation = resolved.validation;
 
 	const warnings = [...templateValidation.warnings, ...supervisorValidation.warnings];
-	const status: LaunchRequestStatus = supervisorValidation.errors.length > 0 ? "rejected" : "validated";
+	const status: LaunchRequestStatus =
+		supervisorValidation.errors.length > 0 ? "rejected" : "validated";
 	const summary =
 		status === "validated"
 			? `Validated for ${supervisor.hostName}`
 			: `Rejected by ${supervisor.hostName}: ${supervisorValidation.errors.join(" ")}`;
 
 	const launchCorrelationId =
-		typeof input.launchSpec.launchCorrelationId === "string" && input.launchSpec.launchCorrelationId.trim()
+		typeof input.launchSpec.launchCorrelationId === "string" &&
+		input.launchSpec.launchCorrelationId.trim()
 			? input.launchSpec.launchCorrelationId.trim()
 			: crypto.randomUUID();
 	const normalizedLaunchSpec: LaunchSpec = {

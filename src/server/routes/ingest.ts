@@ -1,10 +1,14 @@
 import { Hono } from "hono";
+import type { HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
 import { requireApiKey } from "../auth/middleware.js";
-import { processHookEvent, detectAgentType, processStatusUpdate } from "../services/event-processor.js";
+import { normalizeHookEvent } from "../services/event-normalizer.js";
+import {
+	detectAgentType,
+	processHookEvent,
+	processStatusUpdate,
+} from "../services/event-processor.js";
 import { notifyChannel, notifySessionCreated, notifySessionUpdated } from "../services/notifier.js";
 import { getSession } from "../services/session-tracker.js";
-import { normalizeHookEvent } from "../services/event-normalizer.js";
-import type { HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
 
 const ingest = new Hono();
 

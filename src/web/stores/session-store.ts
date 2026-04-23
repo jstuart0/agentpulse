@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Session, DashboardStats } from "../../shared/types.js";
+import type { DashboardStats, Session } from "../../shared/types.js";
 
 interface SessionStore {
 	sessions: Session[];
@@ -32,16 +32,16 @@ export const useSessionStore = create<SessionStore>((set) => ({
 		set((state) => {
 			// Don't add duplicates
 			if (state.sessions.some((s) => s.sessionId === session.sessionId)) {
-				return { sessions: state.sessions.map((s) => (s.sessionId === session.sessionId ? session : s)) };
+				return {
+					sessions: state.sessions.map((s) => (s.sessionId === session.sessionId ? session : s)),
+				};
 			}
 			return { sessions: [session, ...state.sessions] };
 		}),
 
 	updateSession: (session) =>
 		set((state) => ({
-			sessions: state.sessions.map((s) =>
-				s.sessionId === session.sessionId ? session : s,
-			),
+			sessions: state.sessions.map((s) => (s.sessionId === session.sessionId ? session : s)),
 		})),
 
 	removeSession: (sessionId) =>

@@ -67,13 +67,25 @@ function summarizeInput(toolName: string, input: Record<string, unknown> | null)
 }
 
 function headerLabel(toolName: string): string {
-	if (toolName === "Edit" || toolName === "MultiEdit" || toolName === "Write" || toolName === "NotebookEdit") {
+	if (
+		toolName === "Edit" ||
+		toolName === "MultiEdit" ||
+		toolName === "Write" ||
+		toolName === "NotebookEdit"
+	) {
 		return "Update";
 	}
 	return toolName;
 }
 
-function renderDiff(oldStr: string, newStr: string): { added: number; removed: number; lines: Array<{ kind: "add" | "remove" | "context"; text: string }> } {
+function renderDiff(
+	oldStr: string,
+	newStr: string,
+): {
+	added: number;
+	removed: number;
+	lines: Array<{ kind: "add" | "remove" | "context"; text: string }>;
+} {
 	// Minimal line-level diff — good enough for quick visual, not a full LCS diff.
 	// For common Edit use case (replacing a small contiguous block), this shows
 	// all old lines as removed followed by all new lines as added.
@@ -81,7 +93,12 @@ function renderDiff(oldStr: string, newStr: string): { added: number; removed: n
 	const newLines = newStr.split("\n");
 	const lines: Array<{ kind: "add" | "remove" | "context"; text: string }> = [];
 	let shared = 0;
-	while (shared < oldLines.length && shared < newLines.length && oldLines[shared] === newLines[shared]) shared++;
+	while (
+		shared < oldLines.length &&
+		shared < newLines.length &&
+		oldLines[shared] === newLines[shared]
+	)
+		shared++;
 	for (let i = 0; i < shared; i++) lines.push({ kind: "context", text: oldLines[i] });
 	for (let i = shared; i < oldLines.length; i++) lines.push({ kind: "remove", text: oldLines[i] });
 	for (let i = shared; i < newLines.length; i++) lines.push({ kind: "add", text: newLines[i] });
@@ -95,10 +112,13 @@ function DiffView({ oldStr, newStr }: { oldStr: string; newStr: string }) {
 	const { added, removed, lines } = renderDiff(oldStr, newStr);
 	const shouldCollapse = !expanded && lines.length > MAX_INLINE_LINES;
 	const displayed = shouldCollapse ? lines.slice(0, MAX_INLINE_LINES) : lines;
-	const summary = [
-		added > 0 ? `Added ${added} line${added === 1 ? "" : "s"}` : null,
-		removed > 0 ? `Removed ${removed} line${removed === 1 ? "" : "s"}` : null,
-	].filter(Boolean).join(", ") || "No changes";
+	const summary =
+		[
+			added > 0 ? `Added ${added} line${added === 1 ? "" : "s"}` : null,
+			removed > 0 ? `Removed ${removed} line${removed === 1 ? "" : "s"}` : null,
+		]
+			.filter(Boolean)
+			.join(", ") || "No changes";
 
 	return (
 		<div className="font-mono text-[12px] leading-5">
@@ -130,7 +150,8 @@ function DiffView({ oldStr, newStr }: { oldStr: string; newStr: string }) {
 						onClick={() => setExpanded(true)}
 						className="text-xs text-primary hover:underline mt-1"
 					>
-						Show {lines.length - MAX_INLINE_LINES} more line{lines.length - MAX_INLINE_LINES === 1 ? "" : "s"}
+						Show {lines.length - MAX_INLINE_LINES} more line
+						{lines.length - MAX_INLINE_LINES === 1 ? "" : "s"}
 					</button>
 				)}
 			</div>
@@ -142,7 +163,9 @@ function ResponseBody({ text }: { text: string }) {
 	const [expanded, setExpanded] = useState(false);
 	const trimmed = text.replace(/\s+$/, "");
 	if (!trimmed) return null;
-	const tooLong = !expanded && (trimmed.length > MAX_INLINE_CHARS || trimmed.split("\n").length > MAX_INLINE_LINES);
+	const tooLong =
+		!expanded &&
+		(trimmed.length > MAX_INLINE_CHARS || trimmed.split("\n").length > MAX_INLINE_LINES);
 	const display = tooLong
 		? trimmed.split("\n").slice(0, MAX_INLINE_LINES).join("\n").slice(0, MAX_INLINE_CHARS)
 		: trimmed;
@@ -167,7 +190,8 @@ function flattenResponse(response: unknown): string {
 	if (typeof response === "string") return response;
 	const rec = asRecord(response);
 	if (rec) {
-		const text = asString(rec.text) ?? asString(rec.content) ?? asString(rec.output) ?? asString(rec.stdout);
+		const text =
+			asString(rec.text) ?? asString(rec.content) ?? asString(rec.output) ?? asString(rec.stdout);
 		if (text) return text;
 		try {
 			return JSON.stringify(response, null, 2);
@@ -223,7 +247,11 @@ export function ToolCallBlock({ event }: { event: SessionEvent }) {
 							<span className="whitespace-pre-wrap break-all">{bashCommand}</span>
 						</div>
 						{responseText ? (
-							<pre className="whitespace-pre-wrap break-all m-0 mt-0.5 text-muted-foreground">{responseText.length > MAX_INLINE_CHARS ? `${responseText.slice(0, MAX_INLINE_CHARS)}…` : responseText}</pre>
+							<pre className="whitespace-pre-wrap break-all m-0 mt-0.5 text-muted-foreground">
+								{responseText.length > MAX_INLINE_CHARS
+									? `${responseText.slice(0, MAX_INLINE_CHARS)}…`
+									: responseText}
+							</pre>
 						) : null}
 					</div>
 				) : responseText ? (

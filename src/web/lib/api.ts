@@ -352,6 +352,12 @@ export const api = {
 			source: "db" | "env" | "missing";
 			botTokenHint: string | null;
 		}>("/channels/telegram/credentials", { method: "DELETE" }),
+	updateChannelConfig: (id: string, body: { askEnabled?: boolean }) =>
+		request<{ channel: NotificationChannelRecord }>(`/channels/${id}/config`, {
+			method: "PATCH",
+			body: JSON.stringify(body),
+		}),
+
 	testChannel: (id: string) =>
 		request<{ ok: true; externalMessageId?: string }>(`/channels/${id}/test`, {
 			method: "POST",
@@ -720,6 +726,8 @@ export interface Digest {
 export interface AskThread {
 	id: string;
 	title: string | null;
+	origin: "web" | "telegram";
+	telegramChatId: string | null;
 	createdAt: string;
 	updatedAt: string;
 	archivedAt: string | null;

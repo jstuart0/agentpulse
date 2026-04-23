@@ -20,6 +20,10 @@ export function AskPage() {
 	const [draft, setDraft] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const scrollerRef = useRef<HTMLDivElement>(null);
+	// Telegram-origin threads are view-only on the web — answers delivered
+	// back through Telegram, not the HTTP response. Track the active
+	// thread's origin so we can gate the composer.
+	const [activeThreadOrigin, setActiveThreadOrigin] = useState<"web" | "telegram" | null>(null);
 
 	const reloadThreads = useCallback(async () => {
 		try {
@@ -39,6 +43,7 @@ export function AskPage() {
 	useEffect(() => {
 		if (!activeThreadId) {
 			setMessages([]);
+			setActiveThreadOrigin(null);
 			return;
 		}
 		let cancelled = false;
@@ -48,6 +53,7 @@ export function AskPage() {
 			.then((res) => {
 				if (cancelled) return;
 				setMessages(res.messages);
+				setActiveThreadOrigin(res.thread.origin);
 			})
 			.catch((err) => {
 				if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -158,7 +164,14 @@ export function AskPage() {
 											t.id === activeThreadId ? "bg-muted text-foreground" : "text-muted-foreground"
 										}`}
 									>
-										<div className="truncate">{t.title || "Untitled"}</div>
+										<div className="flex items-center gap-1.5 min-w-0">
+											<span className="truncate flex-1">{t.title || "Untitled"}</span>
+											{t.origin === "telegram" && (
+												<span className="shrink-0 text-[9px] rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 px-1 py-0.5 uppercase tracking-wider">
+													Telegram
+												</span>
+											)}
+										</div>
 										<div className="text-[10px] text-muted-foreground/70 mt-0.5 flex items-center justify-between">
 											<span>{relTime(t.updatedAt)}</span>
 											<button
@@ -215,6 +228,12 @@ export function AskPage() {
 					)}
 				</div>
 
+				{activeThreadOrigin === "telegram" && (
+					<div className="border-t border-border px-4 py-2 text-[11px] text-sky-300 bg-sky-500/5">
+						This thread lives in Telegram. Reply from your DM with the bot — answers are only
+						delivered back through the channel they came from.
+					</div>
+				)}
 				<form onSubmit={handleSend} className="border-t border-border p-3 flex items-end gap-2">
 					<textarea
 						value={draft}
@@ -225,13 +244,18 @@ export function AskPage() {
 								void handleSend();
 							}
 						}}
-						placeholder="Ask about a session (Enter to send, Shift+Enter for newline)"
+						placeholder={
+							activeThreadOrigin === "telegram"
+								? "Reply from Telegram — this thread is read-only on the web."
+								: "Ask about a session (Enter to send, Shift+Enter for newline)"
+						}
 						rows={2}
-						className="flex-1 min-w-0 resize-y rounded-md border border-input bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+						disabled={activeThreadOrigin === "telegram"}
+						className="flex-1 min-w-0 resize-y rounded-md border border-input bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60 disabled:cursor-not-allowed"
 					/>
 					<button
 						type="submit"
-						disabled={sending || !draft.trim()}
+						disabled={sending || !draft.trim() || activeThreadOrigin === "telegram"}
 						className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
 					>
 						{sending ? "Sending…" : "Send"}

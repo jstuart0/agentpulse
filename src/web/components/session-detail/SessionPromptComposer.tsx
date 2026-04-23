@@ -27,7 +27,7 @@ export function SessionPromptComposer({
 			: null;
 	const interactiveControlReady = interactive
 		? (interactiveControlState?.available ??
-			capabilitySnapshot?.interactiveTerminalControl?.available) !== false
+				capabilitySnapshot?.interactiveTerminalControl?.available) !== false
 		: true;
 	const interactiveControlReason =
 		interactive && !interactiveControlReady
@@ -120,4 +120,3 @@ export function SessionPromptComposer({
 		</div>
 	);
 }
-

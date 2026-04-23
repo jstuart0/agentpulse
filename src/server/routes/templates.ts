@@ -1,10 +1,14 @@
-import { Hono } from "hono";
 import { desc, eq } from "drizzle-orm";
-import { db } from "../db/client.js";
-import { sessionTemplates } from "../db/schema.js";
-import { buildTemplatePreview, normalizeTemplateInput, validateTemplateInput } from "../services/template-preview.js";
+import { Hono } from "hono";
 import type { AgentType, LaunchMode, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
+import { db } from "../db/client.js";
+import { sessionTemplates } from "../db/schema.js";
+import {
+	buildTemplatePreview,
+	normalizeTemplateInput,
+	validateTemplateInput,
+} from "../services/template-preview.js";
 
 const templatesRouter = new Hono();
 templatesRouter.use("*", requireAuth());
@@ -43,7 +47,11 @@ templatesRouter.get("/templates", async (c) => {
 
 templatesRouter.get("/templates/:id", async (c) => {
 	const id = c.req.param("id");
-	const [row] = await db.select().from(sessionTemplates).where(eq(sessionTemplates.id, id)).limit(1);
+	const [row] = await db
+		.select()
+		.from(sessionTemplates)
+		.where(eq(sessionTemplates.id, id))
+		.limit(1);
 	if (!row) return c.json({ error: "Template not found" }, 404);
 	return c.json({ template: mapTemplate(row) });
 });
@@ -85,7 +93,11 @@ templatesRouter.put("/templates/:id", async (c) => {
 	const { errors } = validateTemplateInput(normalized);
 	if (errors.length > 0) return c.json({ error: errors.join(" ") }, 400);
 
-	const [existing] = await db.select().from(sessionTemplates).where(eq(sessionTemplates.id, id)).limit(1);
+	const [existing] = await db
+		.select()
+		.from(sessionTemplates)
+		.where(eq(sessionTemplates.id, id))
+		.limit(1);
 	if (!existing) return c.json({ error: "Template not found" }, 404);
 
 	const [row] = await db
@@ -113,7 +125,11 @@ templatesRouter.put("/templates/:id", async (c) => {
 
 templatesRouter.delete("/templates/:id", async (c) => {
 	const id = c.req.param("id");
-	const [existing] = await db.select().from(sessionTemplates).where(eq(sessionTemplates.id, id)).limit(1);
+	const [existing] = await db
+		.select()
+		.from(sessionTemplates)
+		.where(eq(sessionTemplates.id, id))
+		.limit(1);
 	if (!existing) return c.json({ error: "Template not found" }, 404);
 	await db.delete(sessionTemplates).where(eq(sessionTemplates.id, id));
 	return c.json({ ok: true });
@@ -121,7 +137,11 @@ templatesRouter.delete("/templates/:id", async (c) => {
 
 templatesRouter.post("/templates/:id/duplicate", async (c) => {
 	const id = c.req.param("id");
-	const [existing] = await db.select().from(sessionTemplates).where(eq(sessionTemplates.id, id)).limit(1);
+	const [existing] = await db
+		.select()
+		.from(sessionTemplates)
+		.where(eq(sessionTemplates.id, id))
+		.limit(1);
 	if (!existing) return c.json({ error: "Template not found" }, 404);
 
 	const now = new Date().toISOString();

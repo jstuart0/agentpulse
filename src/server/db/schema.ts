@@ -410,6 +410,14 @@ export const askThreads = sqliteTable("ask_threads", {
 		.primaryKey()
 		.$defaultFn(() => crypto.randomUUID()),
 	title: text("title"),
+	// Which surface the thread was started from. Delivery follows origin —
+	// the handler for each surface only writes back through that same
+	// surface, so a Telegram-origin thread never pushes a reply to the
+	// web UI and vice versa.
+	origin: text("origin").notNull().default("web"), // web | telegram
+	// For origin=telegram: the chat id that started (and owns) the thread.
+	// One-to-one per chat so follow-up DMs reuse the same thread.
+	telegramChatId: text("telegram_chat_id"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 	archivedAt: text("archived_at"),

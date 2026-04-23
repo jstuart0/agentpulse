@@ -18,12 +18,12 @@ function load(): OpenTab[] {
 		if (!raw) return [];
 		const parsed = JSON.parse(raw) as unknown;
 		if (!Array.isArray(parsed)) return [];
-		return parsed.slice(0, MAX_TABS).filter(
-			(t): t is OpenTab =>
-				typeof t === "object" &&
-				t !== null &&
-				typeof (t as OpenTab).sessionId === "string",
-		);
+		return parsed
+			.slice(0, MAX_TABS)
+			.filter(
+				(t): t is OpenTab =>
+					typeof t === "object" && t !== null && typeof (t as OpenTab).sessionId === "string",
+			);
 	} catch {
 		return [];
 	}

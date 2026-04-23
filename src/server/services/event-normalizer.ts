@@ -3,8 +3,8 @@ import type {
 	EventCategory,
 	EventSource,
 	HookEventPayload,
-	SemanticStatusUpdate,
 	SemanticStatus,
+	SemanticStatusUpdate,
 } from "../../shared/types.js";
 
 export interface NormalizedEvent {

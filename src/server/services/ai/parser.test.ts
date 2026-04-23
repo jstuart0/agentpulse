@@ -100,9 +100,7 @@ describe("parser: failures", () => {
 	});
 
 	test("rejects report with invalid status", () => {
-		const res = parseDecision(
-			'{"decision":"report","summary":"s","status":"weird"}',
-		);
+		const res = parseDecision('{"decision":"report","summary":"s","status":"weird"}');
 		expect(res.ok).toBe(false);
 	});
 

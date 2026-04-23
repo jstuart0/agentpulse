@@ -1,7 +1,7 @@
-import { useEffect, useRef, useCallback } from "react";
-import { useSessionStore } from "../stores/session-store.js";
-import { useEventStore } from "../stores/event-store.js";
+import { useCallback, useEffect, useRef } from "react";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
+import { useEventStore } from "../stores/event-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 function sendNotification(title: string, body: string) {
 	if (!("Notification" in window)) return;

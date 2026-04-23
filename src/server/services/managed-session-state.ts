@@ -1,14 +1,14 @@
 import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
-import { db } from "../db/client.js";
-import { managedSessions, sessions, supervisors } from "../db/schema.js";
-import { generateSessionName } from "./name-generator.js";
-import { insertNormalizedEvents } from "./event-processor.js";
 import type {
 	ManagedSession,
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
 	Session,
 } from "../../shared/types.js";
+import { db } from "../db/client.js";
+import { managedSessions, sessions, supervisors } from "../db/schema.js";
+import { insertNormalizedEvents } from "./event-processor.js";
+import { generateSessionName } from "./name-generator.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -107,11 +107,14 @@ export async function upsertManagedSessionState(
 		.from(supervisors)
 		.where(eq(supervisors.id, supervisorId))
 		.limit(1);
-	const launchRequestId = input.launchRequestId ?? existingManaged?.launchRequestId ?? input.sessionId;
+	const launchRequestId =
+		input.launchRequestId ?? existingManaged?.launchRequestId ?? input.sessionId;
 	const providerSessionId = input.providerSessionId ?? existingManaged?.providerSessionId ?? null;
 	const providerThreadId = input.providerThreadId ?? existingManaged?.providerThreadId ?? null;
-	const providerThreadTitle = input.providerThreadTitle ?? existingManaged?.providerThreadTitle ?? null;
-	const providerSyncState = input.providerSyncState ?? existingManaged?.providerSyncState ?? "pending";
+	const providerThreadTitle =
+		input.providerThreadTitle ?? existingManaged?.providerThreadTitle ?? null;
+	const providerSyncState =
+		input.providerSyncState ?? existingManaged?.providerSyncState ?? "pending";
 	const providerSyncError = input.providerSyncError ?? existingManaged?.providerSyncError ?? null;
 	const lastProviderSyncAt =
 		input.lastProviderSyncAt ?? existingManaged?.lastProviderSyncAt ?? null;
@@ -129,7 +132,8 @@ export async function upsertManagedSessionState(
 			providerSessionId,
 			providerThreadId,
 			managedState: input.managedState ?? existingManaged?.managedState ?? "managed",
-			correlationSource: input.correlationSource ?? existingManaged?.correlationSource ?? "session_id",
+			correlationSource:
+				input.correlationSource ?? existingManaged?.correlationSource ?? "session_id",
 			desiredThreadTitle: desiredTitle,
 			providerThreadTitle,
 			providerSyncState,
@@ -221,7 +225,8 @@ export async function attachManagedSessionToLaunch(input: {
 			providerSessionId: existingManaged?.providerSessionId ?? input.sessionId,
 			providerThreadId: existingManaged?.providerThreadId ?? null,
 			managedState: existingManaged?.managedState ?? "linked",
-			correlationSource: input.correlationSource ?? existingManaged?.correlationSource ?? "session_id",
+			correlationSource:
+				input.correlationSource ?? existingManaged?.correlationSource ?? "session_id",
 			desiredThreadTitle: existingManaged?.desiredThreadTitle ?? null,
 			providerThreadTitle: existingManaged?.providerThreadTitle ?? null,
 			providerSyncState: existingManaged?.providerSyncState ?? "pending",

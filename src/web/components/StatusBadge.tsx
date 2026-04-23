@@ -1,7 +1,12 @@
 import { cn } from "../lib/utils.js";
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; dot?: string; glow?: string }> = {
-	active: { bg: "bg-emerald-500/12", text: "text-emerald-400", dot: "bg-emerald-400", glow: "glow-status-active" },
+	active: {
+		bg: "bg-emerald-500/12",
+		text: "text-emerald-400",
+		dot: "bg-emerald-400",
+		glow: "glow-status-active",
+	},
 	idle: { bg: "bg-amber-500/12", text: "text-amber-400", dot: "bg-amber-400" },
 	completed: { bg: "bg-slate-500/12", text: "text-slate-400" },
 	failed: { bg: "bg-red-500/12", text: "text-red-400" },
@@ -26,9 +31,10 @@ interface StatusBadgeProps {
 }
 
 export function StatusBadge({ status, variant = "session", className }: StatusBadgeProps) {
-	const styles = variant === "semantic"
-		? SEMANTIC_STYLES[status] || { bg: "bg-slate-500/12", text: "text-slate-400" }
-		: STATUS_STYLES[status] || { bg: "bg-slate-500/12", text: "text-slate-400" };
+	const styles =
+		variant === "semantic"
+			? SEMANTIC_STYLES[status] || { bg: "bg-slate-500/12", text: "text-slate-400" }
+			: STATUS_STYLES[status] || { bg: "bg-slate-500/12", text: "text-slate-400" };
 
 	const sessionStyle = variant === "session" ? STATUS_STYLES[status] : undefined;
 	const isActive = status === "active";

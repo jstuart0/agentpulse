@@ -1,6 +1,6 @@
-import type { LlmAdapter, ProviderKind } from "./types.js";
 import { createAnthropicAdapter } from "./anthropic.js";
 import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
+import type { LlmAdapter, ProviderKind } from "./types.js";
 
 export interface ProviderConfig {
 	kind: ProviderKind;
