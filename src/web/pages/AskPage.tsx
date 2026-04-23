@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { type AskMessage, type AskThread, api } from "../lib/api.js";
+import {
+	type AskMessage,
+	type AskThread,
+	api,
+	looksLikeAuthBounce,
+	triggerAuthReload,
+} from "../lib/api.js";
 import { APP_API_BASE } from "../lib/paths.js";
 
 /**
@@ -130,14 +136,31 @@ export function AskPage() {
 		setDraft("");
 
 		try {
-			const res = await fetch(`${APP_API_BASE}/ai/ask/stream`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					threadId: activeThreadId,
-					message: text,
-				}),
-			});
+			let res: Response;
+			try {
+				res = await fetch(`${APP_API_BASE}/ai/ask/stream`, {
+					method: "POST",
+					credentials: "same-origin",
+					redirect: "manual",
+					headers: {
+						"Content-Type": "application/json",
+						Accept: "text/event-stream",
+					},
+					body: JSON.stringify({
+						threadId: activeThreadId,
+						message: text,
+					}),
+				});
+			} catch (err) {
+				if (err instanceof TypeError) {
+					triggerAuthReload(`ask-stream fetch threw (${err.message})`);
+				}
+				throw err;
+			}
+			if (looksLikeAuthBounce(res)) {
+				triggerAuthReload("ask-stream auth-bounce");
+				throw new Error("Session expired; reloading to reauthenticate.");
+			}
 			if (!res.ok || !res.body) {
 				const bodyText = await res.text().catch(() => "");
 				throw new Error(bodyText || `HTTP ${res.status}`);
@@ -183,7 +206,14 @@ export function AskPage() {
 			await reloadThreads();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			setError(msg);
+			// Surface the specific browser error so a generic "failed to
+			// fetch" at least hints what went wrong (check /ai/ask/stream
+			// in the Network panel for the real response).
+			setError(
+				msg === "Failed to fetch"
+					? "Failed to fetch — the stream endpoint didn't respond. Check browser devtools → Network → /ai/ask/stream for details."
+					: msg,
+			);
 			setMessages((prev) =>
 				prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAssistantId),
 			);
