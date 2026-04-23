@@ -30,7 +30,8 @@ export type LabsFlag =
 	| "aiSettingsPanel"
 	| "templateDistillation"
 	| "launchRecommendation"
-	| "riskClasses";
+	| "riskClasses"
+	| "telegramChannel";
 
 export const LABS_REGISTRY: readonly LabsFlagDefinition[] = [
 	{
@@ -79,6 +80,13 @@ export const LABS_REGISTRY: readonly LabsFlagDefinition[] = [
 		key: "riskClasses",
 		label: "Risk classes + ask_on_risk policy",
 		description: "Configurable risk-class evaluation for auto/ask_on_risk policies (API only).",
+		defaultEnabled: false,
+	},
+	{
+		key: "telegramChannel",
+		label: "Telegram HITL channel",
+		description:
+			"Deliver HITL requests to a Telegram chat with inline Approve / Decline buttons. Requires TELEGRAM_BOT_TOKEN + TELEGRAM_WEBHOOK_SECRET.",
 		defaultEnabled: false,
 	},
 ] as const;

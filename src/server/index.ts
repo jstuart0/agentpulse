@@ -7,6 +7,7 @@ import { getAuthUserFromHeaders } from "./auth/middleware.js";
 import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
 import { aiRouter } from "./routes/ai.js";
+import { channelsRouter } from "./routes/channels.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
 import { labsRouter } from "./routes/labs.js";
@@ -46,6 +47,7 @@ api.route("/v1", supervisorsRouter);
 api.route("/v1", launchesRouter);
 api.route("/v1", aiRouter);
 api.route("/v1", labsRouter);
+api.route("/v1", channelsRouter);
 
 app.route("/api", api);
 app.route("/app-api", api);

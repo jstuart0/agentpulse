@@ -31,6 +31,14 @@ spec:
         - name: agentpulse
           port: 3000
 
+    # Telegram webhook - public (HMAC-authenticated via
+    # X-Telegram-Bot-Api-Secret-Token header). Must bypass Authentik.
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/channels/telegram/webhook`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
     # Setup scripts - public
     - match: Host(`agentpulse.example.com`) && Path(`/setup.sh`)
       kind: Rule

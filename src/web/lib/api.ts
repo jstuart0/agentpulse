@@ -245,6 +245,29 @@ export const api = {
 
 	getHealth: () => request<{ status: string }>("/health"),
 
+	// --- Notification channels (Telegram, etc.) ---
+	getChannels: () =>
+		request<{
+			channels: NotificationChannelRecord[];
+			bot: { configured: boolean; webhookSecretConfigured: boolean };
+		}>("/channels"),
+	createChannel: (body: { kind: "telegram"; label?: string }) =>
+		request<{
+			channel: NotificationChannelRecord;
+			enrollmentCode: string;
+			instructions: string;
+		}>("/channels", { method: "POST", body: JSON.stringify(body) }),
+	getChannel: (id: string) => request<{ channel: NotificationChannelRecord }>(`/channels/${id}`),
+	deleteChannel: (id: string) => request<{ ok: true }>(`/channels/${id}`, { method: "DELETE" }),
+	setupTelegramWebhook: () =>
+		request<{ ok: true; webhookUrl: string }>("/channels/telegram/setup-webhook", {
+			method: "POST",
+		}),
+	teardownTelegramWebhook: () =>
+		request<{ ok: true }>("/channels/telegram/teardown-webhook", {
+			method: "POST",
+		}),
+
 	// --- Labs flags ---
 	getLabsFlags: () => request<{ flags: LabsFlags; registry: LabsFlagDefinition[] }>("/labs/flags"),
 	setLabsFlag: (flag: LabsFlag, enabled: boolean) =>
@@ -392,6 +415,20 @@ export const api = {
 		}),
 };
 
+export type NotificationChannelKind = "telegram" | "webhook" | "email";
+
+export interface NotificationChannelRecord {
+	id: string;
+	userId: string;
+	kind: NotificationChannelKind;
+	label: string;
+	config: Record<string, unknown> | null;
+	isActive: boolean;
+	verifiedAt: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
 export type LabsFlag =
 	| "inbox"
 	| "digest"
@@ -400,7 +437,8 @@ export type LabsFlag =
 	| "aiSettingsPanel"
 	| "templateDistillation"
 	| "launchRecommendation"
-	| "riskClasses";
+	| "riskClasses"
+	| "telegramChannel";
 
 export type LabsFlags = Record<LabsFlag, boolean>;
 

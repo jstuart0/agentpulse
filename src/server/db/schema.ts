@@ -351,6 +351,7 @@ export const notificationChannels = sqliteTable("notification_channels", {
 	credentialCiphertext: text("credential_ciphertext"),
 	config: text("config_json", { mode: "json" }).$type<Record<string, unknown>>(),
 	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+	verifiedAt: text("verified_at"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });

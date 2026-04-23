@@ -17,6 +17,12 @@ export const config = {
 	aiEnabled: process.env.AGENTPULSE_AI_ENABLED === "true",
 	secretsKey: process.env.AGENTPULSE_SECRETS_KEY || "",
 
+	// Telegram HITL channel — instance-wide bot token serves every
+	// per-user channel enrollment. When unset, Telegram features stay
+	// dark regardless of the labs flag.
+	telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || "",
+	telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || "",
+
 	get useSqlite(): boolean {
 		return !this.databaseUrl || !this.databaseUrl.startsWith("postgres");
 	},

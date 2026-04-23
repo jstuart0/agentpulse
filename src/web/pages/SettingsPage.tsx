@@ -4,6 +4,7 @@ import type { ApiKeyInfo, LaunchRequest, SupervisorRecord } from "../../shared/t
 import { LabsBadge } from "../components/LabsBadge.js";
 import { AiSettingsPanel } from "../components/settings/AiSettingsPanel.js";
 import { LabsPanel } from "../components/settings/LabsPanel.js";
+import { TelegramChannelPanel } from "../components/settings/TelegramChannelPanel.js";
 import { api } from "../lib/api.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { type AppTheme, persistTheme, resolveInitialTheme } from "../lib/theme.js";
@@ -17,6 +18,7 @@ const launchModeLabels = {
 
 export function SettingsPage() {
 	const aiSettingsEnabled = useLabsStore((s) => s.isEnabled("aiSettingsPanel"));
+	const telegramEnabled = useLabsStore((s) => s.isEnabled("telegramChannel"));
 	const [apiKeys, setApiKeys] = useState<ApiKeyInfo[]>([]);
 	const [newKeyName, setNewKeyName] = useState("");
 	const [newKeyValue, setNewKeyValue] = useState<string | null>(null);
@@ -310,6 +312,21 @@ export function SettingsPage() {
 						Attach an LLM to any session. Watcher proposals require human approval.
 					</p>
 					<AiSettingsPanel />
+				</section>
+			)}
+
+			{/* Telegram HITL channels */}
+			{telegramEnabled && (
+				<section className="border border-border bg-card rounded-lg p-5 mb-6 relative">
+					<div className="flex items-center gap-2 mb-1">
+						<h2 className="text-sm font-semibold">Telegram HITL channel</h2>
+						<LabsBadge />
+					</div>
+					<p className="text-xs text-muted-foreground mb-4">
+						Forward watcher HITL requests to a Telegram chat with inline Approve / Decline buttons.
+						Enrolled channels can be assigned per session on the session AI tab.
+					</p>
+					<TelegramChannelPanel />
 				</section>
 			)}
 

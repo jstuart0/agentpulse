@@ -355,6 +355,7 @@ export function initializeDatabase() {
 			credential_ciphertext TEXT,
 			config_json TEXT,
 			is_active INTEGER NOT NULL DEFAULT 1,
+			verified_at TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
@@ -444,6 +445,8 @@ export function initializeDatabase() {
 		"ALTER TABLE sessions ADD COLUMN ai_spend_cents INTEGER NOT NULL DEFAULT 0",
 		// Phase 5: template provenance (ai_distillation | null for manual).
 		"ALTER TABLE session_templates ADD COLUMN metadata TEXT",
+		// Phase 7 channel verification.
+		"ALTER TABLE notification_channels ADD COLUMN verified_at TEXT",
 	];
 
 	for (const migration of migrations) {

@@ -142,8 +142,34 @@ Each AI surface has its own Labs toggle under **Settings → Labs**:
 | `templateDistillation` | off | Experimental, API-only for now |
 | `launchRecommendation` | off | Experimental, API-only for now |
 | `riskClasses` | off | Experimental, API-only for now |
+| `telegramChannel` | off | Forward HITL requests to a Telegram chat with inline Approve / Decline buttons (requires `TELEGRAM_BOT_TOKEN` + `TELEGRAM_WEBHOOK_SECRET`) |
 
 Direct URLs (`/inbox`, `/digest`, etc.) stay reachable when a flag is off -- toggling a flag hides it from the nav, not from bookmarks.
+
+### Telegram HITL (experimental, `labs.telegramChannel`)
+
+When enabled, the watcher can forward HITL requests to a Telegram chat with inline **Approve / Decline** buttons instead of (or in addition to) the in-app inbox. Useful for approving continuations from your phone while an agent is running somewhere else.
+
+Enable it:
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and get the bot token.
+2. Generate a webhook secret (`openssl rand -hex 24`) and set both env vars:
+   ```bash
+   TELEGRAM_BOT_TOKEN=<token from BotFather>
+   TELEGRAM_WEBHOOK_SECRET=<≥24 random chars>
+   ```
+3. Restart AgentPulse. Open **Settings → Labs** and flip `telegramChannel` on.
+4. A new **Telegram HITL channel** section appears in Settings. Click **Set webhook** once — it points Telegram at `PUBLIC_URL/api/v1/channels/telegram/webhook`.
+5. Click **Generate code**. Copy the `/start <code>` shown and DM it to your bot. The bot confirms the link.
+6. On any session, open the **AI** tab and assign that channel in the watcher config.
+
+From then on, any HITL that watcher opens for that session is sent to Telegram. Tapping **Approve** routes through the same HITL-resolve path as the in-app button: the `ai_hitl_response` and `ai_continue_sent` events fire identically, just annotated with `channel: telegram`.
+
+Safety notes:
+- The bot token is instance-wide; every chat that's enrolled via `/start` shares the same bot. The chat id itself is encrypted at rest with `AGENTPULSE_SECRETS_KEY`.
+- The webhook route validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET` on every request, so a lucky guesser still can't forge approvals.
+- An approval tapped in Telegram is cross-checked against the HITL row's `channel_id` before any resolve happens — a user who learns a HITL id cannot use a different chat to act on it.
+- Delivery failures never block the in-app HITL path. If Telegram is down or slow, approve/decline still works from the dashboard or `/inbox`.
 
 ### Safety posture
 
@@ -381,6 +407,8 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 | `AGENTPULSE_AI_ENABLED` | `false` | Compile the AI Labs layer in at boot. Off = zero AI services, routes, or UI (non-AI install footprint is identical to pre-AI). |
 | `AGENTPULSE_SECRETS_KEY` | | Required when `AGENTPULSE_AI_ENABLED=true`. 32+ random chars; encrypts provider credentials at rest (AES-256-GCM). |
 | `AGENTPULSE_OTEL_ENDPOINT` | | Optional OTLP metrics endpoint. When set, `ai_metric` log events are also forwarded as OTLP. |
+| `TELEGRAM_BOT_TOKEN` | | Instance-wide Telegram bot token (get one from @BotFather). Required to enable the Telegram HITL channel. |
+| `TELEGRAM_WEBHOOK_SECRET` | | Shared secret Telegram echoes back on every webhook callback. ≥24 random chars. Required when `TELEGRAM_BOT_TOKEN` is set. |
 
 ## What the setup script does
 
