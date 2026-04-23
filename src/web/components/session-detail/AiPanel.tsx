@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-	api,
 	type AiProposal,
 	type AiProvider,
 	type AiWatcherConfig,
 	type AiWatcherPolicy,
+	type NotificationChannelRecord,
+	api,
 } from "../../lib/api.js";
+import { useLabsStore } from "../../stores/labs-store.js";
 
 interface AiPanelProps {
 	sessionId: string;
@@ -17,9 +19,11 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 	const [providers, setProviders] = useState<AiProvider[]>([]);
 	const [config, setConfig] = useState<AiWatcherConfig | null>(null);
 	const [proposals, setProposals] = useState<AiProposal[]>([]);
+	const [channels, setChannels] = useState<NotificationChannelRecord[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [banner, setBanner] = useState<{ kind: "error" | "info"; text: string } | null>(null);
 	const [advancedOpen, setAdvancedOpen] = useState(false);
+	const telegramEnabled = useLabsStore((s) => s.isEnabled("telegramChannel"));
 
 	const reload = useCallback(async () => {
 		try {
@@ -29,19 +33,24 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 				setLoading(false);
 				return;
 			}
-			const [p, w] = await Promise.all([
-				api.getAiProviders(),
-				api.getAiWatcher(sessionId),
-			]);
+			const [p, w] = await Promise.all([api.getAiProviders(), api.getAiWatcher(sessionId)]);
 			setProviders(p.providers);
 			setConfig(w.config);
 			setProposals(w.proposals);
+			if (telegramEnabled) {
+				try {
+					const ch = await api.getChannels();
+					setChannels(ch.channels.filter((c) => c.verifiedAt && c.isActive));
+				} catch {
+					setChannels([]);
+				}
+			}
 		} catch (err) {
 			setBanner({ kind: "error", text: String(err) });
 		} finally {
 			setLoading(false);
 		}
-	}, [sessionId]);
+	}, [sessionId, telegramEnabled]);
 
 	useEffect(() => {
 		void reload();
@@ -97,7 +106,11 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 	if (featureActive === false) {
 		return (
 			<div className="p-6 text-sm text-muted-foreground">
-				AI watcher is disabled. Enable it in <a href="/settings" className="text-primary hover:underline">Settings</a>.
+				AI watcher is disabled. Enable it in{" "}
+				<a href="/settings" className="text-primary hover:underline">
+					Settings
+				</a>
+				.
 			</div>
 		);
 	}
@@ -105,7 +118,11 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 	if (providers.length === 0) {
 		return (
 			<div className="p-6 text-sm text-muted-foreground">
-				Add a provider in <a href="/settings" className="text-primary hover:underline">Settings</a> to enable a watcher on this session.
+				Add a provider in{" "}
+				<a href="/settings" className="text-primary hover:underline">
+					Settings
+				</a>{" "}
+				to enable a watcher on this session.
 			</div>
 		);
 	}
@@ -189,8 +206,7 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 										{p.nextPrompt || p.reportSummary || p.errorMessage || "(no content)"}
 									</div>
 									<div className="text-muted-foreground mt-0.5">
-										{new Date(p.createdAt).toLocaleString()} ·{" "}
-										{p.tokensIn}/{p.tokensOut} tok
+										{new Date(p.createdAt).toLocaleString()} · {p.tokensIn}/{p.tokensOut} tok
 										{p.costCents > 0 ? ` · ¢${p.costCents}` : ""}
 										{p.usageEstimated ? " (est)" : ""}
 									</div>
@@ -256,6 +272,36 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 								className="w-full bg-background border border-border rounded px-2 py-1 font-mono text-[11px]"
 							/>
 						</Field>
+						{telegramEnabled && (
+							<Field
+								label={
+									<span className="flex items-center gap-1.5">
+										Notification channel
+										<span className="rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[9px] font-semibold uppercase px-1 py-0.5">
+											Labs
+										</span>
+									</span>
+								}
+							>
+								<select
+									value={config.channelId ?? ""}
+									onChange={(e) => updateConfigField("channelId", e.target.value || null)}
+									className="w-full bg-background border border-border rounded px-2 py-1"
+								>
+									<option value="">In-app only</option>
+									{channels.map((ch) => (
+										<option key={ch.id} value={ch.id}>
+											{ch.label} · {ch.kind}
+										</option>
+									))}
+								</select>
+								<div className="mt-1 text-[10px] text-muted-foreground">
+									{channels.length === 0
+										? "No verified channels. Enroll one in Settings → Telegram HITL channel."
+										: "HITL requests will be delivered here in addition to the in-app inbox."}
+								</div>
+							</Field>
+						)}
 					</div>
 				</details>
 			)}
@@ -293,18 +339,32 @@ function ProposalBadge({ state, decision }: { state: string; decision: string | 
 		return <span className={`${base} bg-red-500/10 text-red-300 border-red-500/30`}>failed</span>;
 	}
 	if (state === "hitl_waiting") {
-		return <span className={`${base} bg-amber-500/10 text-amber-300 border-amber-500/30`}>awaiting</span>;
+		return (
+			<span className={`${base} bg-amber-500/10 text-amber-300 border-amber-500/30`}>awaiting</span>
+		);
 	}
 	if (state === "hitl_declined") {
-		return <span className={`${base} bg-muted/40 text-muted-foreground border-border`}>declined</span>;
+		return (
+			<span className={`${base} bg-muted/40 text-muted-foreground border-border`}>declined</span>
+		);
 	}
 	if (state === "hitl_applied") {
-		return <span className={`${base} bg-emerald-500/10 text-emerald-300 border-emerald-500/30`}>applied</span>;
+		return (
+			<span className={`${base} bg-emerald-500/10 text-emerald-300 border-emerald-500/30`}>
+				applied
+			</span>
+		);
 	}
 	if (state === "cancelled") {
-		return <span className={`${base} bg-muted/40 text-muted-foreground border-border`}>cancelled</span>;
+		return (
+			<span className={`${base} bg-muted/40 text-muted-foreground border-border`}>cancelled</span>
+		);
 	}
-	return <span className={`${base} bg-card text-muted-foreground border-border`}>{decision ?? state}</span>;
+	return (
+		<span className={`${base} bg-card text-muted-foreground border-border`}>
+			{decision ?? state}
+		</span>
+	);
 }
 
 function HitlCard({
@@ -345,9 +405,7 @@ function HitlCard({
 					{new Date(proposal.createdAt).toLocaleTimeString()}
 				</span>
 			</div>
-			<div className="text-xs text-muted-foreground">
-				Proposed next prompt:
-			</div>
+			<div className="text-xs text-muted-foreground">Proposed next prompt:</div>
 			<pre className="text-xs font-mono bg-background border border-border rounded p-3 whitespace-pre-wrap break-words">
 				{proposal.nextPrompt || proposal.reportSummary || "(no content)"}
 			</pre>
@@ -420,7 +478,7 @@ function HitlCard({
 	);
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
 	return (
 		<div>
 			<label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">

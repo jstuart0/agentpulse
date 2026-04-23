@@ -2,19 +2,19 @@ import { eq } from "drizzle-orm";
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { managedSessions, sessions, supervisors } from "../../db/schema.js";
+import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { sessionBus } from "../notifier.js";
 import { emitAiEvent, loadRecentEvents, stampUserPrompt, stampWatcherState } from "./ai-events.js";
 import { buildWatcherContext } from "./context.js";
 import { classifyContinuability } from "./continuability.js";
 import { checkDispatch } from "./dispatch-filter.js";
-import { classifierAffectsRunner, isAiActive, isAiBuildEnabled } from "./feature.js";
+import { classifierAffectsRunner, isAiBuildEnabled } from "./feature.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 import { priceCompletion } from "./llm/pricing.js";
 import { getAdapter } from "./llm/registry.js";
 import { LlmError } from "./llm/types.js";
 import { emitAiMetric } from "./metrics.js";
 import { parseDecision } from "./parser.js";
-import { RunLeaser } from "./run-leaser.js";
 import {
 	cancelOpenHitl,
 	completeProposal,
@@ -24,6 +24,7 @@ import {
 } from "./proposals-service.js";
 import { getProvider, getProviderApiKey } from "./providers-service.js";
 import { evaluateRisk, getRiskClasses } from "./risk-classes.js";
+import { RunLeaser } from "./run-leaser.js";
 import { addSpendCents, checkSpendBudget } from "./spend-service.js";
 import { getWatcherConfig } from "./watcher-config-service.js";
 import {
@@ -581,7 +582,7 @@ export class WatcherRunner {
 		// proposal's physical state is "complete" (the LLM work is done);
 		// the HITL workflow lives in ai_hitl_requests and is surfaced as
 		// "hitl_waiting" via derivation for UI compatibility.
-		await completeProposalAsHitl({
+		const hitlOpen = await completeProposalAsHitl({
 			id: pending.id,
 			decision: decision.decision,
 			nextPrompt,
@@ -593,6 +594,43 @@ export class WatcherRunner {
 			usageEstimated,
 			channelId: config.channelId ?? null,
 		});
+
+		// If the session's watcher config points at a notification channel,
+		// best-effort dispatch the HITL there (Telegram, etc). Delivery
+		// failures never block the in-app approval path.
+		if (config.channelId && hitlOpen.hitlId) {
+			const [freshSession] = await db
+				.select({ displayName: sessions.displayName })
+				.from(sessions)
+				.where(eq(sessions.sessionId, sessionId))
+				.limit(1);
+			const promptForChannel = nextPrompt ?? askProposal ?? "";
+			const delivery = await dispatchHitlToChannel({
+				channelId: config.channelId,
+				message: {
+					hitlId: hitlOpen.hitlId,
+					proposalId: pending.id,
+					sessionId,
+					sessionDisplayName: freshSession?.displayName ?? null,
+					decision: decision.decision === "continue" ? "continue" : "ask",
+					prompt: promptForChannel,
+					why: askWhy ?? null,
+				},
+			});
+			if (!delivery.ok) {
+				await emitAiEvent({
+					sessionId,
+					category: "ai_error",
+					eventType: "ChannelDeliveryFailed",
+					content: `Channel delivery failed: ${delivery.error ?? "unknown"}`,
+					rawPayload: {
+						sub_type: "channel_delivery_failed",
+						proposal_id: pending.id,
+						channel_id: config.channelId,
+					},
+				});
+			}
+		}
 
 		await emitAiEvent({
 			sessionId,

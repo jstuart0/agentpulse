@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { LabsBadge } from "../components/LabsBadge.js";
 import { type Digest, type RepoDigest, api } from "../lib/api.js";
 
 /**
@@ -32,7 +33,10 @@ export function DigestPage() {
 		<div className="p-4 md:p-6 space-y-4 max-w-5xl mx-auto">
 			<header className="flex items-center justify-between gap-2">
 				<div>
-					<h1 className="text-xl font-semibold">Project digest</h1>
+					<div className="flex items-center gap-2">
+						<h1 className="text-xl font-semibold">Project digest</h1>
+						<LabsBadge />
+					</div>
 					<p className="text-xs text-muted-foreground">
 						Last 24 hours, grouped by repository. Auto-refreshed daily.
 					</p>

@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ApiKeyInfo, LaunchRequest, SupervisorRecord } from "../../shared/types.js";
-import { BROWSER_WS_PATH } from "../lib/paths.js";
-import { api } from "../lib/api.js";
-import { persistTheme, resolveInitialTheme, type AppTheme } from "../lib/theme.js";
+import { LabsBadge } from "../components/LabsBadge.js";
 import { AiSettingsPanel } from "../components/settings/AiSettingsPanel.js";
+import { LabsPanel } from "../components/settings/LabsPanel.js";
+import { TelegramChannelPanel } from "../components/settings/TelegramChannelPanel.js";
+import { api } from "../lib/api.js";
+import { BROWSER_WS_PATH } from "../lib/paths.js";
+import { type AppTheme, persistTheme, resolveInitialTheme } from "../lib/theme.js";
+import { useLabsStore } from "../stores/labs-store.js";
 
 const launchModeLabels = {
 	headless: "Headless task",
@@ -13,6 +17,8 @@ const launchModeLabels = {
 } as const;
 
 export function SettingsPage() {
+	const aiSettingsEnabled = useLabsStore((s) => s.isEnabled("aiSettingsPanel"));
+	const telegramEnabled = useLabsStore((s) => s.isEnabled("telegramChannel"));
 	const [apiKeys, setApiKeys] = useState<ApiKeyInfo[]>([]);
 	const [newKeyName, setNewKeyName] = useState("");
 	const [newKeyValue, setNewKeyValue] = useState<string | null>(null);
@@ -115,7 +121,9 @@ export function SettingsPage() {
 					<button
 						onClick={handleThemeToggle}
 						className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-						style={{ backgroundColor: theme === "dark" ? "hsl(var(--primary))" : "hsl(var(--muted))" }}
+						style={{
+							backgroundColor: theme === "dark" ? "hsl(var(--primary))" : "hsl(var(--muted))",
+						}}
 					>
 						<span
 							className="inline-block h-4 w-4 rounded-full bg-card border border-border transition-transform"
@@ -129,14 +137,14 @@ export function SettingsPage() {
 			<section className="border border-border bg-card rounded-lg p-5 mb-6">
 				<h2 className="text-sm font-semibold mb-1">Local Supervisor</h2>
 				<p className="text-xs text-muted-foreground mb-4">
-					Phase 2 orchestration uses a local supervisor for capability reporting and
-					launch validation. No sessions are launched yet.
+					Phase 2 orchestration uses a local supervisor for capability reporting and launch
+					validation. No sessions are launched yet.
 				</p>
 
 				{supervisors.length === 0 ? (
 					<div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
-						No supervisor registered. Run <code className="font-mono">bun run supervisor</code>
-						{" "}to register this machine.
+						No supervisor registered. Run <code className="font-mono">bun run supervisor</code> to
+						register this machine.
 					</div>
 				) : (
 					<div className="space-y-3">
@@ -144,9 +152,7 @@ export function SettingsPage() {
 							<div key={supervisor.id} className="rounded-md border border-border p-4">
 								<div className="flex flex-wrap items-center justify-between gap-2">
 									<div>
-										<div className="text-sm font-medium text-foreground">
-											{supervisor.hostName}
-										</div>
+										<div className="text-sm font-medium text-foreground">{supervisor.hostName}</div>
 										<div className="text-xs text-muted-foreground">
 											{supervisor.platform} / {supervisor.arch} / v{supervisor.version}
 										</div>
@@ -166,9 +172,7 @@ export function SettingsPage() {
 								<div className="mt-3 grid gap-3 sm:grid-cols-2 text-xs text-muted-foreground">
 									<div>
 										<div className="font-medium text-foreground mb-1">Trusted roots</div>
-										<div className="break-all">
-											{supervisor.trustedRoots.join(", ") || "none"}
-										</div>
+										<div className="break-all">{supervisor.trustedRoots.join(", ") || "none"}</div>
 									</div>
 									<div>
 										<div className="font-medium text-foreground mb-1">Capabilities</div>
@@ -197,7 +201,11 @@ export function SettingsPage() {
 				) : (
 					<div className="space-y-2">
 						{recentLaunches.map((launch) => (
-							<Link key={launch.id} to={`/launches/${launch.id}`} className="block rounded-md border border-border p-3 transition-colors hover:bg-accent/40">
+							<Link
+								key={launch.id}
+								to={`/launches/${launch.id}`}
+								className="block rounded-md border border-border p-3 transition-colors hover:bg-accent/40"
+							>
 								<div className="flex items-center justify-between gap-2">
 									<div className="text-sm font-medium text-foreground">
 										{launch.agentType === "claude_code" ? "Claude Code" : "Codex CLI"}
@@ -206,9 +214,7 @@ export function SettingsPage() {
 										{launch.status} · {launchModeLabels[launch.requestedLaunchMode]}
 									</span>
 								</div>
-								<div className="mt-1 break-all text-xs text-muted-foreground">
-									{launch.cwd}
-								</div>
+								<div className="mt-1 break-all text-xs text-muted-foreground">{launch.cwd}</div>
 								{launch.validationSummary && (
 									<div className="mt-1 text-xs text-muted-foreground">
 										{launch.validationSummary}
@@ -226,9 +232,7 @@ export function SettingsPage() {
 
 				<div className="space-y-4">
 					<div>
-						<label className="text-sm text-foreground block mb-1">
-							Idle Timeout (minutes)
-						</label>
+						<label className="text-sm text-foreground block mb-1">Idle Timeout (minutes)</label>
 						<p className="text-xs text-muted-foreground mb-2">
 							Sessions with no activity for this long are marked idle.
 						</p>
@@ -241,17 +245,13 @@ export function SettingsPage() {
 							}
 							min={1}
 							max={60}
-							onBlur={(e) =>
-								saveSetting("sessionIdleTimeoutMinutes", Number(e.target.value))
-							}
+							onBlur={(e) => saveSetting("sessionIdleTimeoutMinutes", Number(e.target.value))}
 							className="w-24 rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 						/>
 					</div>
 
 					<div>
-						<label className="text-sm text-foreground block mb-1">
-							End Timeout (minutes)
-						</label>
+						<label className="text-sm text-foreground block mb-1">End Timeout (minutes)</label>
 						<p className="text-xs text-muted-foreground mb-2">
 							Sessions with no activity for this long are marked completed.
 						</p>
@@ -264,46 +264,71 @@ export function SettingsPage() {
 							}
 							min={5}
 							max={1440}
-							onBlur={(e) =>
-								saveSetting("sessionEndTimeoutMinutes", Number(e.target.value))
-							}
+							onBlur={(e) => saveSetting("sessionEndTimeoutMinutes", Number(e.target.value))}
 							className="w-24 rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 						/>
 					</div>
 
 					<div>
-						<label className="text-sm text-foreground block mb-1">
-							Event Retention (days)
-						</label>
+						<label className="text-sm text-foreground block mb-1">Event Retention (days)</label>
 						<p className="text-xs text-muted-foreground mb-2">
 							Events older than this are automatically cleaned up.
 						</p>
 						<input
 							type="number"
 							defaultValue={
-								typeof settings.eventsRetentionDays === "number"
-									? settings.eventsRetentionDays
-									: 30
+								typeof settings.eventsRetentionDays === "number" ? settings.eventsRetentionDays : 30
 							}
 							min={1}
 							max={365}
-							onBlur={(e) =>
-								saveSetting("eventsRetentionDays", Number(e.target.value))
-							}
+							onBlur={(e) => saveSetting("eventsRetentionDays", Number(e.target.value))}
 							className="w-24 rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 						/>
 					</div>
 				</div>
 			</section>
 
-			{/* AI watcher */}
+			{/* Labs */}
 			<section className="border border-border bg-card rounded-lg p-5 mb-6 relative">
-				<h2 className="text-sm font-semibold mb-1">AI watcher</h2>
+				<div className="flex items-center gap-2 mb-1">
+					<h2 className="text-sm font-semibold">Labs</h2>
+					<LabsBadge />
+				</div>
 				<p className="text-xs text-muted-foreground mb-4">
-					Attach an LLM to any session. Watcher proposals require human approval.
+					Experimental features. Toggles here hide the related nav items, tabs, and surfaces from
+					the rest of the app. Defaults preserve what's already shipped.
 				</p>
-				<AiSettingsPanel />
+				<LabsPanel />
 			</section>
+
+			{/* AI watcher */}
+			{aiSettingsEnabled && (
+				<section className="border border-border bg-card rounded-lg p-5 mb-6 relative">
+					<div className="flex items-center gap-2 mb-1">
+						<h2 className="text-sm font-semibold">AI watcher</h2>
+						<LabsBadge />
+					</div>
+					<p className="text-xs text-muted-foreground mb-4">
+						Attach an LLM to any session. Watcher proposals require human approval.
+					</p>
+					<AiSettingsPanel />
+				</section>
+			)}
+
+			{/* Telegram HITL channels */}
+			{telegramEnabled && (
+				<section className="border border-border bg-card rounded-lg p-5 mb-6 relative">
+					<div className="flex items-center gap-2 mb-1">
+						<h2 className="text-sm font-semibold">Telegram HITL channel</h2>
+						<LabsBadge />
+					</div>
+					<p className="text-xs text-muted-foreground mb-4">
+						Forward watcher HITL requests to a Telegram chat with inline Approve / Decline buttons.
+						Enrolled channels can be assigned per session on the session AI tab.
+					</p>
+					<TelegramChannelPanel />
+				</section>
+			)}
 
 			{/* API Keys */}
 			<section className="border border-border bg-card rounded-lg p-5 mb-6">
@@ -315,9 +340,7 @@ export function SettingsPage() {
 				{/* New key creation */}
 				{newKeyValue && (
 					<div className="mb-4 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-4">
-						<p className="text-sm font-medium text-emerald-400 mb-1">
-							New API key created
-						</p>
+						<p className="text-sm font-medium text-emerald-400 mb-1">New API key created</p>
 						<p className="text-xs text-muted-foreground mb-2">
 							Copy this key now -- it will not be shown again.
 						</p>
@@ -350,7 +373,7 @@ export function SettingsPage() {
 						onChange={(e) => setNewKeyName(e.target.value)}
 						placeholder="Key name (e.g. macbook-hooks)"
 						onKeyDown={(e) => e.key === "Enter" && handleCreateKey()}
-							className="flex-1 min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+						className="flex-1 min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 					/>
 					<button
 						onClick={handleCreateKey}
@@ -385,9 +408,7 @@ export function SettingsPage() {
 							>
 								<div className="min-w-0 flex-1">
 									<div className="flex items-center gap-2">
-										<span className="text-sm font-medium text-foreground">
-											{key.name}
-										</span>
+										<span className="text-sm font-medium text-foreground">{key.name}</span>
 										{!key.isActive && (
 											<span className="text-[10px] rounded bg-red-500/10 text-red-400 px-1.5 py-0.5">
 												revoked

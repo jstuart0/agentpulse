@@ -1,7 +1,7 @@
-import { Hono } from "hono";
-import { config } from "../config.js";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { Hono } from "hono";
+import { config } from "../config.js";
 
 const setup = new Hono();
 
@@ -11,7 +11,9 @@ const setup = new Hono();
 setup.get("/setup.sh", (c) => {
 	// Detect the port from the request URL so hooks always point to localhost
 	const requestHost = c.req.header("Host") || `localhost:${config.port}`;
-	const requestPort = requestHost.includes(":") ? requestHost.split(":")[1] : config.port.toString();
+	const requestPort = requestHost.includes(":")
+		? requestHost.split(":")[1]
+		: config.port.toString();
 	const defaultLocalUrl = `http://localhost:${requestPort}`;
 
 	const script = `#!/usr/bin/env bash
@@ -141,7 +143,9 @@ echo ""
 // Usage: curl -sSL http://localhost:3000/install-local.sh | bash
 setup.get("/install-local.sh", (c) => {
 	const requestHost = c.req.header("Host") || `localhost:${config.port}`;
-	const requestPort = requestHost.includes(":") ? requestHost.split(":")[1] : config.port.toString();
+	const requestPort = requestHost.includes(":")
+		? requestHost.split(":")[1]
+		: config.port.toString();
 	const defaultLocalUrl = `http://localhost:${requestPort}`;
 	const installScriptPath = join(import.meta.dir, "../../../scripts/install-local.sh");
 
@@ -160,7 +164,9 @@ setup.get("/install-local.sh", (c) => {
 // Usage: irm http://localhost:3000/install-local.ps1 | iex
 setup.get("/install-local.ps1", (c) => {
 	const requestHost = c.req.header("Host") || `localhost:${config.port}`;
-	const requestPort = requestHost.includes(":") ? requestHost.split(":")[1] : config.port.toString();
+	const requestPort = requestHost.includes(":")
+		? requestHost.split(":")[1]
+		: config.port.toString();
 	const defaultLocalUrl = `http://localhost:${requestPort}`;
 	const installScriptPath = join(import.meta.dir, "../../../scripts/install-local.ps1");
 
@@ -311,7 +317,7 @@ async function enqueueHook(req:Request, url:URL) {
     nextAttemptAt: new Date().toISOString(),
     lastError: null,
   };
-  await writeFile(join(hookPendingDir, `${Date.now()}-${item.id}.json`), JSON.stringify(item), "utf-8");
+  await writeFile(join(hookPendingDir, \`\${Date.now()}-\${item.id}.json\`), JSON.stringify(item), "utf-8");
   relayState.lastHookEnqueuedAt = item.createdAt;
   scheduleQueue();
   return item.id;

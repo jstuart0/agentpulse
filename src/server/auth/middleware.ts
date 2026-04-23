@@ -1,12 +1,23 @@
 import type { Context, Next } from "hono";
+import { config } from "../config.js";
+import { SESSION_COOKIE_NAME, getUserBySessionToken } from "../services/local-auth-service.js";
 import { verifyApiKey } from "./api-key.js";
 import { extractSupervisorToken, verifySupervisorCredential } from "./supervisor-auth.js";
-import { config } from "../config.js";
 
 export interface AuthUser {
-	source: "authentik" | "api_key";
+	source: "authentik" | "api_key" | "local";
 	name: string;
 	id?: string;
+	role?: "user" | "admin";
+}
+
+function parseCookieHeader(cookieHeader: string | null, name: string): string | null {
+	if (!cookieHeader) return null;
+	for (const part of cookieHeader.split(";")) {
+		const [rawKey, ...rest] = part.split("=");
+		if (rawKey?.trim() === name) return decodeURIComponent(rest.join("=").trim());
+	}
+	return null;
 }
 
 export async function getAuthUserFromHeaders(
@@ -16,6 +27,7 @@ export async function getAuthUserFromHeaders(
 		return { source: "api_key", name: "anonymous", id: "anonymous" };
 	}
 
+	// 1. Authentik forwardauth (Traefik adds these headers upstream).
 	const authentikUser = headers.get("X-authentik-username");
 	if (authentikUser) {
 		return {
@@ -25,6 +37,22 @@ export async function getAuthUserFromHeaders(
 		};
 	}
 
+	// 2. Local session cookie (ap_session).
+	const cookieHeader = headers.get("cookie") ?? headers.get("Cookie");
+	const sessionToken = parseCookieHeader(cookieHeader, SESSION_COOKIE_NAME);
+	if (sessionToken) {
+		const user = await getUserBySessionToken(sessionToken);
+		if (user) {
+			return {
+				source: "local",
+				name: user.username,
+				id: user.id,
+				role: user.role,
+			};
+		}
+	}
+
+	// 3. API key bearer (hook ingest + programmatic clients).
 	const authHeader = headers.get("Authorization");
 	if (authHeader?.startsWith("Bearer ")) {
 		const token = authHeader.slice(7);

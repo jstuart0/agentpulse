@@ -75,6 +75,29 @@ export function initializeDatabase() {
 			created_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
 
+		CREATE TABLE IF NOT EXISTS users (
+			id TEXT PRIMARY KEY,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL DEFAULT 'user',
+			disabled_at TEXT,
+			last_login_at TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+
+		CREATE TABLE IF NOT EXISTS auth_sessions (
+			token_hash TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			user_agent TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+		CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
+
 		CREATE TABLE IF NOT EXISTS api_keys (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -355,6 +378,7 @@ export function initializeDatabase() {
 			credential_ciphertext TEXT,
 			config_json TEXT,
 			is_active INTEGER NOT NULL DEFAULT 1,
+			verified_at TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
@@ -444,6 +468,8 @@ export function initializeDatabase() {
 		"ALTER TABLE sessions ADD COLUMN ai_spend_cents INTEGER NOT NULL DEFAULT 0",
 		// Phase 5: template provenance (ai_distillation | null for manual).
 		"ALTER TABLE session_templates ADD COLUMN metadata TEXT",
+		// Phase 7 channel verification.
+		"ALTER TABLE notification_channels ADD COLUMN verified_at TEXT",
 	];
 
 	for (const migration of migrations) {

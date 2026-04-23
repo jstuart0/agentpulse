@@ -245,6 +245,63 @@ export const api = {
 
 	getHealth: () => request<{ status: string }>("/health"),
 
+	getAuthMe: () =>
+		request<{
+			authenticated: boolean;
+			user: {
+				name: string;
+				source: "authentik" | "api_key" | "local";
+				id: string | null;
+				role: "user" | "admin" | null;
+			} | null;
+			signOutUrl: string | null;
+			disableAuth: boolean;
+			allowSignup: boolean;
+		}>("/auth/me"),
+
+	// --- Notification channels (Telegram, etc.) ---
+	getChannels: () =>
+		request<{
+			channels: NotificationChannelRecord[];
+			bot: { configured: boolean; webhookSecretConfigured: boolean };
+		}>("/channels"),
+	createChannel: (body: { kind: "telegram"; label?: string }) =>
+		request<{
+			channel: NotificationChannelRecord;
+			enrollmentCode: string;
+			instructions: string;
+		}>("/channels", { method: "POST", body: JSON.stringify(body) }),
+	getChannel: (id: string) => request<{ channel: NotificationChannelRecord }>(`/channels/${id}`),
+	deleteChannel: (id: string) => request<{ ok: true }>(`/channels/${id}`, { method: "DELETE" }),
+	setupTelegramWebhook: () =>
+		request<{ ok: true; webhookUrl: string }>("/channels/telegram/setup-webhook", {
+			method: "POST",
+		}),
+	teardownTelegramWebhook: () =>
+		request<{ ok: true }>("/channels/telegram/teardown-webhook", {
+			method: "POST",
+		}),
+	getTelegramBotInfo: () => request<{ bot: TelegramBotInfo }>("/channels/telegram/bot-info"),
+	getTelegramWebhookInfo: () =>
+		request<{
+			webhook: TelegramWebhookInfo;
+			expectedUrl: string | null;
+			matchesExpected: boolean | null;
+		}>("/channels/telegram/webhook-info"),
+	testChannel: (id: string) =>
+		request<{ ok: true; externalMessageId?: string }>(`/channels/${id}/test`, {
+			method: "POST",
+		}),
+	getChannelStats: (id: string) => request<{ stats: ChannelStats }>(`/channels/${id}/stats`),
+
+	// --- Labs flags ---
+	getLabsFlags: () => request<{ flags: LabsFlags; registry: LabsFlagDefinition[] }>("/labs/flags"),
+	setLabsFlag: (flag: LabsFlag, enabled: boolean) =>
+		request<{ flags: LabsFlags }>(`/labs/flags/${flag}`, {
+			method: "PUT",
+			body: JSON.stringify({ enabled }),
+		}),
+
 	// --- AI watcher ---
 	getAiStatus: () => request<AiStatusResponse>("/ai/status"),
 	updateAiStatus: (body: {
@@ -383,6 +440,66 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 };
+
+export interface TelegramBotInfo {
+	id: number;
+	username: string | null;
+	firstName: string | null;
+	canJoinGroups: boolean;
+	supportsInlineQueries: boolean;
+}
+
+export interface TelegramWebhookInfo {
+	url: string;
+	hasCustomCertificate: boolean;
+	pendingUpdateCount: number;
+	lastErrorDate: number | null;
+	lastErrorMessage: string | null;
+	maxConnections: number | null;
+	allowedUpdates: string[];
+}
+
+export interface ChannelStats {
+	assignedSessionCount: number;
+	hitlTotal: number;
+	hitlOpen: number;
+	hitlResolved: number;
+	lastHitlAt: string | null;
+}
+
+export type NotificationChannelKind = "telegram" | "webhook" | "email";
+
+export interface NotificationChannelRecord {
+	id: string;
+	userId: string;
+	kind: NotificationChannelKind;
+	label: string;
+	config: Record<string, unknown> | null;
+	isActive: boolean;
+	verifiedAt: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export type LabsFlag =
+	| "inbox"
+	| "digest"
+	| "aiSessionTab"
+	| "intelligenceBadges"
+	| "aiSettingsPanel"
+	| "templateDistillation"
+	| "launchRecommendation"
+	| "riskClasses"
+	| "telegramChannel";
+
+export type LabsFlags = Record<LabsFlag, boolean>;
+
+export interface LabsFlagDefinition {
+	key: LabsFlag;
+	label: string;
+	description: string;
+	defaultEnabled: boolean;
+}
 
 export interface LaunchRecommendation {
 	agentType: string;

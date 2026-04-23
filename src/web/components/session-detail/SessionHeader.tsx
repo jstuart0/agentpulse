@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import { formatDuration } from "../../lib/utils.js";
+import { useLabsStore } from "../../stores/labs-store.js";
 import { AgentTypeBadge } from "../AgentTypeBadge.js";
 import { StatusBadge } from "../StatusBadge.js";
 import { InlineRename } from "./InlineRename.js";
@@ -74,6 +75,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 	} = props;
 	const navigate = useNavigate();
 	const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+	const aiTabEnabled = useLabsStore((s) => s.isEnabled("aiSessionTab"));
 
 	const canStop =
 		session.agentType === "codex_cli" && session.managedSession?.managedState === "managed";
@@ -212,11 +214,13 @@ export function SessionHeader(props: SessionHeaderProps) {
 							onClick={() => onSelectTab("launch")}
 						/>
 					)}
-					<WorkspaceTabButton
-						active={workspaceTab === "ai"}
-						label="AI"
-						onClick={() => onSelectTab("ai")}
-					/>
+					{aiTabEnabled && (
+						<WorkspaceTabButton
+							active={workspaceTab === "ai"}
+							label="AI"
+							onClick={() => onSelectTab("ai")}
+						/>
+					)}
 				</div>
 				{workspaceTab === "activity" && (
 					<>
