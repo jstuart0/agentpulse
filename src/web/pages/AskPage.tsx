@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { type AskMessage, type AskThread, api } from "../lib/api.js";
+import { APP_API_BASE } from "../lib/paths.js";
 
 /**
  * Global Ask chat. Left column: thread list. Right column: messages for
@@ -101,8 +102,10 @@ export function AskPage() {
 		if (!text || sending) return;
 		setSending(true);
 		setError(null);
+		const optimisticUserId = `pending-user-${Date.now()}`;
+		const optimisticAssistantId = `pending-assistant-${Date.now()}`;
 		const optimisticUser: AskMessage = {
-			id: `pending-${Date.now()}`,
+			id: optimisticUserId,
 			threadId: activeThreadId ?? "pending",
 			role: "user",
 			content: text,
@@ -112,22 +115,78 @@ export function AskPage() {
 			errorMessage: null,
 			createdAt: new Date().toISOString(),
 		};
-		setMessages((prev) => [...prev, optimisticUser]);
+		const optimisticAssistant: AskMessage = {
+			id: optimisticAssistantId,
+			threadId: activeThreadId ?? "pending",
+			role: "assistant",
+			content: "",
+			contextSessionIds: null,
+			tokensIn: null,
+			tokensOut: null,
+			errorMessage: null,
+			createdAt: new Date().toISOString(),
+		};
+		setMessages((prev) => [...prev, optimisticUser, optimisticAssistant]);
 		setDraft("");
+
 		try {
-			const res = await api.sendAskMessage({ threadId: activeThreadId, message: text });
-			if (!activeThreadId) selectThread(res.thread.id);
-			// Swap optimistic user message for real one + append the reply.
-			setMessages((prev) => {
-				const without = prev.filter((m) => m.id !== optimisticUser.id);
-				return [...without, res.userMessage, res.assistantMessage];
+			const res = await fetch(`${APP_API_BASE}/ai/ask/stream`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					threadId: activeThreadId,
+					message: text,
+				}),
+			});
+			if (!res.ok || !res.body) {
+				const bodyText = await res.text().catch(() => "");
+				throw new Error(bodyText || `HTTP ${res.status}`);
+			}
+			await consumeAskStream(res.body, {
+				onStart: (evt) => {
+					if (!activeThreadId) selectThread(evt.thread.id);
+					setMessages((prev) =>
+						prev.map((m) => {
+							if (m.id === optimisticUserId) return evt.userMessage;
+							if (m.id === optimisticAssistantId) {
+								return { ...m, contextSessionIds: evt.includedSessionIds };
+							}
+							return m;
+						}),
+					);
+				},
+				onDelta: (delta) => {
+					setMessages((prev) =>
+						prev.map((m) =>
+							m.id === optimisticAssistantId
+								? { ...m, content: (m.content ?? "") + delta }
+								: m,
+						),
+					);
+				},
+				onDone: (finalMsg) => {
+					setMessages((prev) =>
+						prev.map((m) => (m.id === optimisticAssistantId ? finalMsg : m)),
+					);
+				},
+				onError: (message, finalMsg) => {
+					setError(message);
+					if (finalMsg) {
+						setMessages((prev) =>
+							prev.map((m) => (m.id === optimisticAssistantId ? finalMsg : m)),
+						);
+					} else {
+						setMessages((prev) => prev.filter((m) => m.id !== optimisticAssistantId));
+					}
+				},
 			});
 			await reloadThreads();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			setError(msg);
-			// Remove the optimistic message so the user can retry.
-			setMessages((prev) => prev.filter((m) => m.id !== optimisticUser.id));
+			setMessages((prev) =>
+				prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAssistantId),
+			);
 		} finally {
 			setSending(false);
 		}
@@ -213,14 +272,6 @@ export function AskPage() {
 					{messages.map((m) => (
 						<MessageBubble key={m.id} msg={m} />
 					))}
-					{sending && (
-						<div className="max-w-[85%] rounded-lg border border-border bg-card/40 px-3 py-2 text-xs text-muted-foreground">
-							<span className="inline-flex items-center gap-2">
-								<span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-								Thinking…
-							</span>
-						</div>
-					)}
 					{error && (
 						<div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-200">
 							{error}
@@ -314,7 +365,14 @@ function MessageBubble({ msg }: { msg: AskMessage }) {
 							: "bg-card border border-border text-foreground"
 				}`}
 			>
-				<div>{msg.content}</div>
+				<div>
+				{msg.content || (
+					<span className="inline-flex items-center gap-2 text-muted-foreground">
+						<span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+						Thinking…
+					</span>
+				)}
+			</div>
 				{msg.errorMessage && (
 					<div className="mt-1 text-[10px] text-red-300/80">Details: {msg.errorMessage}</div>
 				)}
@@ -337,6 +395,71 @@ function MessageBubble({ msg }: { msg: AskMessage }) {
 			</div>
 		</div>
 	);
+}
+
+async function consumeAskStream(
+	body: ReadableStream<Uint8Array>,
+	handlers: {
+		onStart: (evt: {
+			thread: AskThread;
+			userMessage: AskMessage;
+			includedSessionIds: string[];
+		}) => void;
+		onDelta: (delta: string) => void;
+		onDone: (message: AskMessage) => void;
+		onError: (message: string, finalMessage: AskMessage | null) => void;
+	},
+): Promise<void> {
+	const reader = body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	try {
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+			let sep = buffer.indexOf("\n\n");
+			while (sep !== -1) {
+				const frame = buffer.slice(0, sep);
+				buffer = buffer.slice(sep + 2);
+				sep = buffer.indexOf("\n\n");
+				for (const line of frame.split("\n")) {
+					if (!line.startsWith("data:")) continue;
+					const payload = line.slice(5).trim();
+					if (!payload) continue;
+					let evt: Record<string, unknown>;
+					try {
+						evt = JSON.parse(payload);
+					} catch {
+						continue;
+					}
+					const kind = evt.kind as string | undefined;
+					if (kind === "start") {
+						handlers.onStart({
+							thread: evt.thread as AskThread,
+							userMessage: evt.userMessage as AskMessage,
+							includedSessionIds: (evt.includedSessionIds as string[]) ?? [],
+						});
+					} else if (kind === "delta") {
+						handlers.onDelta((evt.delta as string) ?? "");
+					} else if (kind === "done") {
+						handlers.onDone(evt.assistantMessage as AskMessage);
+					} else if (kind === "error") {
+						handlers.onError(
+							(evt.message as string) ?? "stream error",
+							(evt.assistantMessage as AskMessage | null) ?? null,
+						);
+					}
+				}
+			}
+		}
+	} finally {
+		try {
+			reader.releaseLock();
+		} catch {
+			// Reader already released — ignore.
+		}
+	}
 }
 
 function relTime(iso: string): string {

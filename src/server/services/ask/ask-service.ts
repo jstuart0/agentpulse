@@ -249,12 +249,23 @@ async function getDefaultLlm(): Promise<
 	return { adapter, provider: full };
 }
 
-export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
+/**
+ * Shared setup path: validates origin, creates/looks-up the thread,
+ * persists the user message, runs the resolver + context builder, and
+ * preps the transcript the LLM will see. Both the sync and streaming
+ * turn implementations hand-off to the LLM from here.
+ */
+async function prepareTurn(input: AskTurnInput): Promise<{
+	thread: AskThreadRecord;
+	userMessage: AskMessageRecord;
+	context: Awaited<ReturnType<typeof buildAskContext>>;
+	transcript: string;
+	text: string;
+}> {
 	const text = input.message.trim();
 	if (!text) throw new Error("Empty message.");
 
 	const callerOrigin: AskThreadOrigin = input.origin ?? "web";
-
 	if (input.threadId) {
 		const existing = await getThread(input.threadId);
 		if (existing && existing.origin !== callerOrigin) {
@@ -270,15 +281,12 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		origin: callerOrigin,
 		telegramChatId: input.telegramChatId,
 	});
-	const userMsg = await appendMessage({
+	const userMessage = await appendMessage({
 		threadId: thread.id,
 		role: "user",
 		content: text,
 	});
 
-	// Resolve candidate sessions (or honor the explicit pin list).
-	// "Tell me everything" style queries signal the user wants breadth —
-	// bump the limit so we pull the full active pool instead of the top 5.
 	const breadthHints = /\b(all|every|everything|across|overall|each)\b/i;
 	const wantsBreadth = breadthHints.test(text);
 	const resolved =
@@ -291,8 +299,16 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 				});
 	const context = await buildAskContext({ resolved });
 
-	// Grab recent conversation so the LLM has continuity.
 	const history = await listMessages(thread.id);
+	const transcript = [renderHistory(history), context.block, `USER: ${text}`]
+		.filter(Boolean)
+		.join("\n\n");
+	return { thread, userMessage, context, transcript, text };
+}
+
+export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
+	const { thread, userMessage, context, transcript } = await prepareTurn(input);
+
 	const llm = await getDefaultLlm();
 	if ("error" in llm) {
 		const errMsg = await appendMessage({
@@ -304,15 +320,11 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		});
 		return {
 			thread,
-			userMessage: userMsg,
+			userMessage,
 			assistantMessage: errMsg,
 			includedSessionIds: context.includedSessionIds,
 		};
 	}
-
-	const transcript = [renderHistory(history), context.block, `USER: ${text}`]
-		.filter(Boolean)
-		.join("\n\n");
 
 	try {
 		const res = await llm.adapter.complete({
@@ -324,7 +336,7 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 			timeoutMs: 60_000,
 		});
 		const reply = res.text.trim() || "(no response)";
-		const assistantMsg = await appendMessage({
+		const assistantMessage = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
 			content: reply,
@@ -334,13 +346,13 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		});
 		return {
 			thread,
-			userMessage: userMsg,
-			assistantMessage: assistantMsg,
+			userMessage,
+			assistantMessage,
 			includedSessionIds: context.includedSessionIds,
 		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		const assistantMsg = await appendMessage({
+		const assistantMessage = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
 			content:
@@ -350,9 +362,100 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		});
 		return {
 			thread,
-			userMessage: userMsg,
-			assistantMessage: assistantMsg,
+			userMessage,
+			assistantMessage,
 			includedSessionIds: context.includedSessionIds,
 		};
 	}
+}
+
+export type AskStreamEvent =
+	| {
+			kind: "start";
+			thread: AskThreadRecord;
+			userMessage: AskMessageRecord;
+			includedSessionIds: string[];
+	  }
+	| { kind: "delta"; delta: string }
+	| { kind: "done"; assistantMessage: AskMessageRecord }
+	| { kind: "error"; message: string; assistantMessage: AskMessageRecord };
+
+/**
+ * Streaming counterpart to runAskTurn. Persists the same rows the sync
+ * path does, but yields intermediate `delta` events so an SSE caller
+ * can render tokens as they arrive. The final `done` event carries the
+ * complete persisted assistant message (so the client can stop caring
+ * about the deltas once it lands).
+ */
+export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskStreamEvent> {
+	const { thread, userMessage, context, transcript } = await prepareTurn(input);
+	yield {
+		kind: "start",
+		thread,
+		userMessage,
+		includedSessionIds: context.includedSessionIds,
+	};
+
+	const llm = await getDefaultLlm();
+	if ("error" in llm) {
+		const errMsg = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: llm.error,
+			contextSessionIds: context.includedSessionIds,
+			errorMessage: llm.error,
+		});
+		yield { kind: "error", message: llm.error, assistantMessage: errMsg };
+		return;
+	}
+
+	// Lazy import to avoid making every caller of ask-service pull in
+	// the LLM streaming helpers when they don't use streaming.
+	const { streamWithFallback } = await import("../ai/llm/types.js");
+	let collected = "";
+	let tokensIn: number | undefined;
+	let tokensOut: number | undefined;
+
+	try {
+		for await (const evt of streamWithFallback(llm.adapter, {
+			systemPrompt: ASK_SYSTEM_PROMPT,
+			transcriptPrompt: transcript,
+			model: llm.provider.model,
+			maxTokens: 800,
+			temperature: 0.3,
+			timeoutMs: 60_000,
+		})) {
+			if (evt.kind === "delta") {
+				collected += evt.text;
+				yield { kind: "delta", delta: evt.text };
+			} else {
+				tokensIn = evt.response.usage.inputTokens;
+				tokensOut = evt.response.usage.outputTokens;
+			}
+		}
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		const errMsg = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content:
+				collected.trim() ||
+				"I couldn't reach the LLM provider just now. Check Settings → AI.",
+			contextSessionIds: context.includedSessionIds,
+			errorMessage: message,
+		});
+		yield { kind: "error", message, assistantMessage: errMsg };
+		return;
+	}
+
+	const reply = collected.trim() || "(no response)";
+	const assistantMessage = await appendMessage({
+		threadId: thread.id,
+		role: "assistant",
+		content: reply,
+		contextSessionIds: context.includedSessionIds,
+		tokensIn: tokensIn ?? null,
+		tokensOut: tokensOut ?? null,
+	});
+	yield { kind: "done", assistantMessage };
 }

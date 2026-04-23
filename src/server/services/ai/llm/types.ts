@@ -82,9 +82,42 @@ export async function classifyHttpError(
 	return { subType: "unknown", body, status };
 }
 
+/**
+ * One event from a streaming completion. Adapters emit zero or more
+ * `delta` events followed by exactly one `done` event. Errors are
+ * surfaced by throwing from the iterator, same as `complete`.
+ */
+export type LlmStreamEvent =
+	| { kind: "delta"; text: string }
+	| { kind: "done"; response: LlmResponse };
+
 export interface LlmAdapter {
 	readonly kind: ProviderKind;
 	complete(request: LlmRequest): Promise<LlmResponse>;
+	/**
+	 * Optional streaming API. Adapters that don't implement this can be
+	 * wrapped by a fallback that calls `complete` and emits the full text
+	 * as a single delta (see `streamWithFallback` in this module).
+	 */
+	completeStream?(request: LlmRequest): AsyncIterable<LlmStreamEvent>;
+}
+
+/**
+ * Wrap an adapter so callers can always iterate. For providers that
+ * don't implement real streaming we just call `complete` and emit one
+ * big delta — the caller code path stays identical.
+ */
+export async function* streamWithFallback(
+	adapter: LlmAdapter,
+	request: LlmRequest,
+): AsyncIterable<LlmStreamEvent> {
+	if (adapter.completeStream) {
+		for await (const evt of adapter.completeStream(request)) yield evt;
+		return;
+	}
+	const response = await adapter.complete(request);
+	if (response.text) yield { kind: "delta", text: response.text };
+	yield { kind: "done", response };
 }
 
 /** Conservative character-based estimate used when providers don't report usage. */
