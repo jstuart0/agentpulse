@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { FirstRunWelcome } from "../components/FirstRunWelcome.js";
 import { SessionGrid } from "../components/SessionGrid.js";
 import { useSessions } from "../hooks/useSessions.js";
 import { formatDuration } from "../lib/utils.js";
@@ -44,22 +45,50 @@ export function DashboardPage() {
 		() =>
 			sessions
 				.filter((s) => s.status === "active")
-				.sort((a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime()),
+				.sort(
+					(a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
+				),
 		[sessions],
 	);
 	const workingCount = sessions.filter((s) => s.isWorking).length;
 	const selectedActiveSession =
-		activeSessions.find((session) => session.sessionId === selectedActiveSessionId) ?? activeSessions[0] ?? null;
+		activeSessions.find((session) => session.sessionId === selectedActiveSessionId) ??
+		activeSessions[0] ??
+		null;
 
 	useEffect(() => {
 		if (!activeSessions.length) {
 			setSelectedActiveSessionId(null);
 			return;
 		}
-		if (!selectedActiveSessionId || !activeSessions.some((session) => session.sessionId === selectedActiveSessionId)) {
+		if (
+			!selectedActiveSessionId ||
+			!activeSessions.some((session) => session.sessionId === selectedActiveSessionId)
+		) {
 			setSelectedActiveSessionId(activeSessions[0].sessionId);
 		}
 	}, [activeSessions, selectedActiveSessionId]);
+
+	// A fresh install has zero sessions *and* has finished its first fetch
+	// (sessions.length === 0 && !isLoading). In that case, skip the KPI/filter
+	// chrome entirely and show the Getting-Started card — it collapses the
+	// three first-run tasks (mint API key, install hook, start agent) into
+	// one screen so new users don't have to hunt through Setup / Settings.
+	const showFirstRun = !isLoading && sessions.length === 0;
+
+	if (showFirstRun) {
+		return (
+			<div className="p-3 md:p-6 max-w-3xl">
+				<div className="mb-4">
+					<h1 className="text-xl md:text-2xl font-bold text-foreground">Dashboard</h1>
+					<p className="text-sm text-muted-foreground mt-0.5">
+						No sessions yet — follow the steps below to wire up your first agent.
+					</p>
+				</div>
+				<FirstRunWelcome serverUrl={window.location.origin} />
+			</div>
+		);
+	}
 
 	return (
 		<div className="p-3 md:p-6">
@@ -80,18 +109,9 @@ export function DashboardPage() {
 					value={stats?.activeSessions ?? 0}
 					sub={workingCount > 0 ? `${workingCount} working now` : undefined}
 				/>
-				<StatCard
-					label="Sessions Today"
-					value={stats?.totalSessionsToday ?? 0}
-				/>
-				<StatCard
-					label="Tool Uses Today"
-					value={stats?.totalToolUsesToday ?? 0}
-				/>
-				<StatCard
-					label="Total Sessions"
-					value={sessions.length}
-				/>
+				<StatCard label="Sessions Today" value={stats?.totalSessionsToday ?? 0} />
+				<StatCard label="Tool Uses Today" value={stats?.totalToolUsesToday ?? 0} />
+				<StatCard label="Total Sessions" value={sessions.length} />
 			</div>
 
 			{/* Search + Filter */}
@@ -109,17 +129,29 @@ export function DashboardPage() {
 						>
 							{f.charAt(0).toUpperCase() + f.slice(1)}
 							<span className="ml-1 text-muted-foreground">
-								({f === "all"
+								(
+								{f === "all"
 									? sessions.filter((s) => s.status !== "archived").length
-									: sessions.filter((s) => s.status === f).length})
+									: sessions.filter((s) => s.status === f).length}
+								)
 							</span>
 						</button>
 					))}
 				</div>
 
 				<div className="relative w-full md:max-w-xs">
-					<svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-						<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+					<svg
+						className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground"
+						fill="none"
+						viewBox="0 0 24 24"
+						stroke="currentColor"
+					>
+						<path
+							strokeLinecap="round"
+							strokeLinejoin="round"
+							strokeWidth={2}
+							d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+						/>
 					</svg>
 					<input
 						type="text"
@@ -129,8 +161,18 @@ export function DashboardPage() {
 						className="w-full rounded-md border border-input bg-background pl-8 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
 					/>
 					{search && (
-						<button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-							<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+						<button
+							onClick={() => setSearch("")}
+							className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+						>
+							<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path
+									strokeLinecap="round"
+									strokeLinejoin="round"
+									strokeWidth={2}
+									d="M6 18L18 6M6 6l12 12"
+								/>
+							</svg>
 						</button>
 					)}
 				</div>
@@ -190,10 +232,13 @@ export function DashboardPage() {
 							<div className="min-w-0">
 								<div className="flex flex-wrap items-center gap-2">
 									<div className="text-sm font-semibold text-foreground">
-										{selectedActiveSession.displayName || selectedActiveSession.sessionId.slice(0, 8)}
+										{selectedActiveSession.displayName ||
+											selectedActiveSession.sessionId.slice(0, 8)}
 									</div>
 									<span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-										{selectedActiveSession.agentType === "claude_code" ? "Claude Code" : "Codex CLI"}
+										{selectedActiveSession.agentType === "claude_code"
+											? "Claude Code"
+											: "Codex CLI"}
 									</span>
 									<span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
 										{selectedActiveSession.status}
@@ -226,7 +271,9 @@ export function DashboardPage() {
 									Open Workspace
 								</button>
 								<button
-									onClick={() => navigate(`/sessions/${selectedActiveSession.sessionId}?tab=activity`)}
+									onClick={() =>
+										navigate(`/sessions/${selectedActiveSession.sessionId}?tab=activity`)
+									}
 									className="rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors"
 								>
 									Open Activity
