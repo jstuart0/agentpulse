@@ -1,6 +1,5 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { streamSSE } from "hono/streaming";
 import { requireAuth } from "../auth/middleware.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import {
@@ -107,26 +106,47 @@ askRouter.post("/ai/ask/stream", async (c) => {
 	if (!body.message || typeof body.message !== "string") {
 		return c.json({ error: "message required" }, 400);
 	}
-	// X-Accel-Buffering tells nginx/Traefik to stop response buffering so
-	// the browser sees each delta as it's written. Hono's streamSSE sets
-	// the Transfer-Encoding / Content-Type headers itself.
-	c.header("X-Accel-Buffering", "no");
-	return streamSSE(c, async (stream) => {
-		try {
-			for await (const evt of runAskTurnStream({
-				threadId: body.threadId ?? null,
-				message: body.message ?? "",
-				sessionIds: body.sessionIds,
-				origin: "web",
-			})) {
-				await stream.writeSSE({ data: JSON.stringify(evt) });
+	// Build the SSE stream by hand instead of using hono/streaming. That
+	// helper sets `Transfer-Encoding: chunked` which is a connection-
+	// specific header forbidden by HTTP/2 — Traefik terminates HTTP/2
+	// with the browser, sees the header, and the browser rejects the
+	// response with ERR_HTTP2_PROTOCOL_ERROR. Plain `new Response(stream)`
+	// lets Bun/Traefik handle framing natively (HTTP/2 DATA frames or
+	// HTTP/1.1 chunked, picked per-connection).
+	const encoder = new TextEncoder();
+	const stream = new ReadableStream<Uint8Array>({
+		async start(controller) {
+			const write = (event: unknown) => {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+			};
+			// Send an initial :ping comment so some strict proxies flush
+			// the response headers to the client immediately, before any
+			// LLM token has been generated.
+			controller.enqueue(encoder.encode(": stream-open\n\n"));
+			try {
+				for await (const evt of runAskTurnStream({
+					threadId: body.threadId ?? null,
+					message: body.message ?? "",
+					sessionIds: body.sessionIds,
+					origin: "web",
+				})) {
+					write(evt);
+				}
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				write({ kind: "error", message, assistantMessage: null });
+			} finally {
+				controller.close();
 			}
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			await stream.writeSSE({
-				data: JSON.stringify({ kind: "error", message, assistantMessage: null }),
-			});
-		}
+		},
+	});
+	return new Response(stream, {
+		status: 200,
+		headers: {
+			"Content-Type": "text/event-stream; charset=utf-8",
+			"Cache-Control": "no-cache, no-transform",
+			"X-Accel-Buffering": "no",
+		},
 	});
 });
 
