@@ -8,7 +8,7 @@ import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
 import { aiRouter } from "./routes/ai.js";
 import { authRouter } from "./routes/auth.js";
-import { channelsRouter } from "./routes/channels.js";
+import { channelsRouter, telegramWebhookRouter } from "./routes/channels.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
 import { labsRouter } from "./routes/labs.js";
@@ -51,6 +51,10 @@ api.route("/v1", supervisorsRouter);
 api.route("/v1", launchesRouter);
 api.route("/v1", aiRouter);
 api.route("/v1", labsRouter);
+// Public Telegram webhook MUST be mounted before channelsRouter so the
+// `use("/channels/*", requireAuth())` guards inside channelsRouter can
+// never get a chance to match Telegram's callback path.
+api.route("/v1", telegramWebhookRouter);
 api.route("/v1", channelsRouter);
 api.route("/v1", authRouter);
 

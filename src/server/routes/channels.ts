@@ -33,15 +33,20 @@ import {
 } from "../services/channels/telegram.js";
 import { parseHitlCallbackData } from "../services/channels/types.js";
 
-const channelsRouter = new Hono();
-
 /**
- * --- Public Telegram webhook ---
- * Registered BEFORE requireAuth middleware so Telegram's callback can
- * reach us. Authentication is the shared secret token header Telegram
- * echoes back (set via setWebhook).
+ * Public Telegram webhook lives on its own router so the
+ * `use("/channels/*", requireAuth())` middleware on `channelsRouter`
+ * can't reach it. Hono's `use(path, ...)` matches all routes that fit
+ * the pattern on the same router, regardless of registration order —
+ * so co-hosting a public route with auth'd CRUD on the same Hono
+ * instance silently 401'd the webhook. Split routers is the clean fix.
+ *
+ * Authentication is the shared secret token Telegram echoes in the
+ * `X-Telegram-Bot-Api-Secret-Token` header (set via setWebhook).
  */
-channelsRouter.post("/channels/telegram/webhook", async (c) => {
+const telegramWebhookRouter = new Hono();
+
+telegramWebhookRouter.post("/channels/telegram/webhook", async (c) => {
 	if (!getTelegramBotToken()) return c.json({ error: "telegram_disabled" }, 404);
 	const providedSecret = c.req.header("X-Telegram-Bot-Api-Secret-Token") ?? "";
 	if (!getTelegramWebhookSecret() || providedSecret !== getTelegramWebhookSecret()) {
@@ -156,6 +161,7 @@ async function handleHitlCallback(cb: TelegramCallbackQuery): Promise<void> {
 
 // --- Authenticated admin CRUD below ---
 
+const channelsRouter = new Hono();
 channelsRouter.use("/channels", requireAuth());
 channelsRouter.use("/channels/*", requireAuth());
 
@@ -241,7 +247,10 @@ channelsRouter.post("/channels/telegram/setup-webhook", async (c) => {
 	}
 	const url = `${base}/api/v1/channels/telegram/webhook`;
 	const res = await setTelegramWebhook(url, getTelegramWebhookSecret());
-	if (!res.ok) return c.json({ error: res.description ?? "setWebhook failed" }, 502);
+	if (!res.ok) {
+		console.error(`[telegram] setWebhook failed for ${url}: ${res.description ?? "unknown"}`);
+		return c.json({ error: `Telegram refused the webhook: ${res.description ?? "unknown"}` }, 502);
+	}
 	return c.json({ ok: true, webhookUrl: url });
 });
 
@@ -418,7 +427,7 @@ channelsRouter.get("/channels/:id/stats", async (c) => {
 	return c.json({ stats });
 });
 
-export { channelsRouter };
+export { channelsRouter, telegramWebhookRouter };
 
 // --- Telegram update types (minimal, typed by hand so we don't pull in a lib) ---
 
