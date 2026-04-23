@@ -34,6 +34,9 @@ const InboxPage = lazy(() =>
 const DigestPage = lazy(() =>
 	import("./pages/DigestPage.js").then((module) => ({ default: module.DigestPage })),
 );
+const AskPage = lazy(() =>
+	import("./pages/AskPage.js").then((module) => ({ default: module.AskPage })),
+);
 const LoginPage = lazy(() =>
 	import("./pages/LoginPage.js").then((module) => ({ default: module.LoginPage })),
 );
@@ -128,6 +131,7 @@ export function App() {
 					<Route path="/launches/:launchId" element={<LaunchDetailPage />} />
 					<Route path="/inbox" element={<InboxPage />} />
 					<Route path="/digest" element={<DigestPage />} />
+					<Route path="/ask" element={<AskPage />} />
 					<Route path="/hosts" element={<HostsPage />} />
 					<Route path="/setup" element={<SetupPage />} />
 					<Route path="/settings" element={<SettingsPage />} />

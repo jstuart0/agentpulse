@@ -402,6 +402,20 @@ export const api = {
 	deleteAiProvider: (id: string) =>
 		request<{ ok: true }>(`/ai/providers/${id}`, { method: "DELETE" }),
 
+	// --- Ask (global chat) ---
+	getAskThreads: () => request<{ threads: AskThread[] }>("/ai/ask/threads"),
+	getAskThread: (id: string) =>
+		request<{ thread: AskThread; messages: AskMessage[] }>(`/ai/ask/threads/${id}`),
+	deleteAskThread: (id: string) =>
+		request<{ ok: true }>(`/ai/ask/threads/${id}`, { method: "DELETE" }),
+	sendAskMessage: (body: { threadId?: string | null; message: string; sessionIds?: string[] }) =>
+		request<{
+			thread: AskThread;
+			userMessage: AskMessage;
+			assistantMessage: AskMessage;
+			includedSessionIds: string[];
+		}>("/ai/ask", { method: "POST", body: JSON.stringify(body) }),
+
 	probeAiProviderModels: (body: {
 		kind: AiProviderKind;
 		baseUrl?: string;
@@ -564,7 +578,8 @@ export type LabsFlag =
 	| "templateDistillation"
 	| "launchRecommendation"
 	| "riskClasses"
-	| "telegramChannel";
+	| "telegramChannel"
+	| "askAssistant";
 
 export type LabsFlags = Record<LabsFlag, boolean>;
 
@@ -700,6 +715,26 @@ export interface Digest {
 		completedToday: number;
 	};
 	repos: RepoDigest[];
+}
+
+export interface AskThread {
+	id: string;
+	title: string | null;
+	createdAt: string;
+	updatedAt: string;
+	archivedAt: string | null;
+}
+
+export interface AskMessage {
+	id: string;
+	threadId: string;
+	role: "user" | "assistant" | "system";
+	content: string;
+	contextSessionIds: string[] | null;
+	tokensIn: number | null;
+	tokensOut: number | null;
+	errorMessage: string | null;
+	createdAt: string;
 }
 
 export type AiProviderKind = "anthropic" | "openai" | "google" | "openrouter" | "openai_compatible";

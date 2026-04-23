@@ -400,6 +400,35 @@ export const aiInboxSnoozes = sqliteTable("ai_inbox_snoozes", {
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
+// askThreads / askMessages — conversation state for the global "Ask"
+// assistant. Threads are keyed by uuid; messages are ordered by
+// created_at. `contextSessionIds` records which sessions the resolver
+// surfaced to the LLM when generating that message, so the UI can
+// render clickable provenance chips without re-running the resolver.
+export const askThreads = sqliteTable("ask_threads", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	title: text("title"),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+	archivedAt: text("archived_at"),
+});
+
+export const askMessages = sqliteTable("ask_messages", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	threadId: text("thread_id").notNull(),
+	role: text("role").notNull(), // user | assistant | system
+	content: text("content").notNull(),
+	contextSessionIds: text("context_session_ids", { mode: "json" }).$type<string[]>(),
+	tokensIn: integer("tokens_in"),
+	tokensOut: integer("tokens_out"),
+	errorMessage: text("error_message"),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
 // aiHitlRequests — first-class table for open HITL requests. Separated
 // from watcherProposals so proposal persistence and HITL workflow don't
 // collapse together; future remote channels (Phase 7) register here.
