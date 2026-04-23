@@ -245,6 +245,13 @@ export const api = {
 
 	getHealth: () => request<{ status: string }>("/health"),
 
+	getAuthMe: () =>
+		request<{
+			user: { name: string; source: "authentik" | "api_key"; id: string | null };
+			signOutUrl: string | null;
+			disableAuth: boolean;
+		}>("/auth/me"),
+
 	// --- Notification channels (Telegram, etc.) ---
 	getChannels: () =>
 		request<{

@@ -5,8 +5,16 @@ import brandIcon from "../assets/agentpulse-icon.svg";
 import type { LabsFlag } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
 import { useLabsStore } from "../stores/labs-store.js";
+import { useUserStore } from "../stores/user-store.js";
 import { LabsBadge } from "./LabsBadge.js";
 import { SessionTabs } from "./SessionTabs.js";
+import { TopBar } from "./TopBar.js";
+
+const ADMIN_DRAWER_LINKS = [
+	{ to: "/setup", label: "Setup" },
+	{ to: "/hosts", label: "Hosts" },
+	{ to: "/settings", label: "Settings" },
+];
 
 const SIDEBAR_STORAGE_KEY = "agentpulse.sidebarCollapsed";
 
@@ -46,23 +54,17 @@ const navItems: NavItem[] = [
 		label: "Templates",
 		icon: "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586A2 2 0 0114 3.586l3.414 3.414A2 2 0 0118 8.414V19a2 2 0 01-2 2z",
 	},
-	{ to: "/hosts", label: "Hosts", icon: "M3 7h18M6 11h12M8 15h8M5 19h14" },
-	{
-		to: "/setup",
-		label: "Setup",
-		icon: "M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4",
-	},
-	{
-		to: "/settings",
-		label: "Settings",
-		icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z",
-	},
+	// Setup / Hosts / Settings used to live here. They moved into the
+	// top-bar Admin / User dropdowns so the side nav stays focused on
+	// content/workflow destinations.
 ];
 
 export function Layout() {
 	const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
 	const labsFlags = useLabsStore((s) => s.flags);
+	const user = useUserStore((s) => s.user);
+	const signOutUrl = useUserStore((s) => s.signOutUrl);
 	// Hide nav items whose labs flag is explicitly disabled. When flags
 	// haven't loaded yet, show everything (flags === null).
 	const visibleNavItems = navItems.filter(
@@ -133,9 +135,23 @@ export function Layout() {
 						onClick={() => setMobileMenuOpen(false)}
 					>
 						<nav
-							className="absolute top-14 left-0 right-0 surface-glass border-b border-border p-2 space-y-0.5 animate-in"
+							className="absolute top-14 left-0 right-0 surface-glass border-b border-border p-2 space-y-0.5 animate-in max-h-[calc(100vh-3.5rem)] overflow-y-auto"
 							onClick={(e) => e.stopPropagation()}
 						>
+							{user && (
+								<div className="flex items-center gap-2 px-3 py-2 mb-1 border-b border-border/70">
+									<span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-primary/15 text-primary text-xs font-bold">
+										{user.name.charAt(0).toUpperCase()}
+									</span>
+									<div className="min-w-0 flex-1">
+										<div className="text-sm text-foreground truncate">{user.name}</div>
+										<div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+											{user.source === "authentik" ? "Authentik" : "API key"}
+										</div>
+									</div>
+								</div>
+							)}
+
 							{visibleNavItems.map((item) => (
 								<NavLink
 									key={item.to}
@@ -164,6 +180,37 @@ export function Layout() {
 									{item.labsFlag && <LabsBadge />}
 								</NavLink>
 							))}
+
+							<div className="mt-2 pt-2 border-t border-border/70 space-y-0.5">
+								<div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+									Admin
+								</div>
+								{ADMIN_DRAWER_LINKS.map((item) => (
+									<NavLink
+										key={item.to}
+										to={item.to}
+										onClick={() => setMobileMenuOpen(false)}
+										className={({ isActive }) =>
+											cn(
+												"block rounded-lg px-3 py-2 text-sm transition-all",
+												isActive
+													? "bg-primary/10 text-primary"
+													: "text-muted-foreground hover:text-foreground hover:bg-accent/50",
+											)
+										}
+									>
+										{item.label}
+									</NavLink>
+								))}
+								{signOutUrl && (
+									<a
+										href={signOutUrl}
+										className="block rounded-lg px-3 py-2 text-sm text-red-300 hover:bg-red-500/10"
+									>
+										Sign out
+									</a>
+								)}
+							</div>
 						</nav>
 					</div>,
 					document.body,
@@ -297,8 +344,9 @@ export function Layout() {
 				)}
 			</aside>
 
-			{/* Main column: tabs strip + scrollable content */}
+			{/* Main column: top bar (Admin + User) + tabs strip + scrollable content */}
 			<div className="flex flex-col flex-1 min-w-0 mt-14 md:mt-0">
+				<TopBar />
 				<SessionTabs />
 				<main className="flex-1 overflow-x-hidden overflow-y-auto bg-dots">
 					<Outlet />

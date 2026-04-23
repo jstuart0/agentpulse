@@ -5,6 +5,7 @@ import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js
 import { api } from "./lib/api.js";
 import { applyTheme, getStoredTheme } from "./lib/theme.js";
 import { useLabsStore } from "./stores/labs-store.js";
+import { useUserStore } from "./stores/user-store.js";
 
 const DashboardPage = lazy(() =>
 	import("./pages/DashboardPage.js").then((module) => ({ default: module.DashboardPage })),
@@ -54,10 +55,12 @@ export function App() {
 	useNotificationPermission();
 	useWebSocket();
 	const loadLabs = useLabsStore((s) => s.load);
+	const loadUser = useUserStore((s) => s.load);
 
 	useEffect(() => {
 		void loadLabs();
-	}, [loadLabs]);
+		void loadUser();
+	}, [loadLabs, loadUser]);
 
 	useEffect(() => {
 		let cancelled = false;

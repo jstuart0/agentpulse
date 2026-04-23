@@ -7,6 +7,7 @@ import { getAuthUserFromHeaders } from "./auth/middleware.js";
 import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
 import { aiRouter } from "./routes/ai.js";
+import { authRouter } from "./routes/auth.js";
 import { channelsRouter } from "./routes/channels.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
@@ -48,6 +49,7 @@ api.route("/v1", launchesRouter);
 api.route("/v1", aiRouter);
 api.route("/v1", labsRouter);
 api.route("/v1", channelsRouter);
+api.route("/v1", authRouter);
 
 app.route("/api", api);
 app.route("/app-api", api);
