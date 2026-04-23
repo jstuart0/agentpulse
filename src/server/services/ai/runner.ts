@@ -82,10 +82,15 @@ export class WatcherRunner {
 			}
 			this.scheduleWake(sessionId, event);
 		});
-
-		sessionBus.on("session_updated", (session) => {
-			this.scheduleWake(session.sessionId);
-		});
+		// Intentionally no `session_updated` listener: every hook ingest,
+		// every supervisor heartbeat, and the 60-second stale-session tick
+		// all emit that. Wiring it up here schedules a trigger-less
+		// "manual" run each time, which churns the queue (hundreds of
+		// no-op rows per active session per hour) even though dedupe
+		// short-circuits the LLM call. The `session_event` stream above
+		// already covers every trigger the watcher actually wants to
+		// respond to (UserPromptSubmit, Stop, TaskCompleted, ai_error,
+		// plan_update, etc.).
 
 		await this.leaser.start();
 		console.log("[ai-watcher] runner started");
