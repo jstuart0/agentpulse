@@ -19,7 +19,21 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	});
 
 	if (!res.ok) {
-		throw new Error(`API error: ${res.status} ${res.statusText}`);
+		// Try to surface the server-side `{error: string}` body so callers
+		// get something actionable instead of a generic "502 Bad Gateway".
+		let detail: string | null = null;
+		try {
+			const body = (await res.clone().json()) as { error?: string };
+			if (body?.error) detail = body.error;
+		} catch {
+			try {
+				const text = await res.clone().text();
+				if (text?.trim()) detail = text.trim().slice(0, 500);
+			} catch {
+				// ignore — we'll fall back to statusText
+			}
+		}
+		throw new Error(detail ?? `API error: ${res.status} ${res.statusText}`);
 	}
 
 	return res.json();
