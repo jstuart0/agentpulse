@@ -20,6 +20,7 @@ import { supervisorsRouter } from "./routes/supervisors.js";
 import { templatesRouter } from "./routes/templates.js";
 import { validateAiStartupConfig } from "./services/ai/feature.js";
 import { maybeStartWatcherRunner } from "./services/ai/runner.js";
+import { initTelegramCredentials } from "./services/channels/telegram-credentials.js";
 import { ensureBootstrapAdmin } from "./services/local-auth-bootstrap.js";
 import { reapExpiredSessions } from "./services/local-auth-service.js";
 import { updateStaleSessions } from "./services/session-tracker.js";
@@ -138,6 +139,13 @@ startTelemetry();
 startTranscriptSync();
 void maybeStartWatcherRunner();
 void ensureBootstrapAdmin();
+// Warm the Telegram credential cache so getTelegramBotToken() /
+// getTelegramWebhookSecret() return the DB-stored value (not the env
+// fallback) the moment a request lands. Non-blocking; if the DB is
+// unreachable on boot the fallback kicks in and we retry lazily.
+void initTelegramCredentials().catch((err) => {
+	console.error("[telegram-credentials] warmup failed:", err);
+});
 setInterval(
 	() => {
 		void reapExpiredSessions().catch(() => {
