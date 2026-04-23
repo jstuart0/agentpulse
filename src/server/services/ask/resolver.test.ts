@@ -37,8 +37,6 @@ async function insertSession(input: {
 			isWorking: input.isWorking ?? false,
 			lastActivityAt: now,
 			startedAt: now,
-			createdAt: now,
-			updatedAt: now,
 		})
 		.execute();
 }
