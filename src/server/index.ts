@@ -51,12 +51,16 @@ api.route("/v1", supervisorsRouter);
 api.route("/v1", launchesRouter);
 api.route("/v1", aiRouter);
 api.route("/v1", labsRouter);
-// Public Telegram webhook MUST be mounted before channelsRouter so the
-// `use("/channels/*", requireAuth())` guards inside channelsRouter can
-// never get a chance to match Telegram's callback path.
-api.route("/v1", telegramWebhookRouter);
 api.route("/v1", channelsRouter);
 api.route("/v1", authRouter);
+
+// Public Telegram webhook lives OUTSIDE the `api` bundle. Other routers
+// in that bundle register `.use("*", requireAuth())`, and Hono merges
+// those wildcard middlewares across the whole parent router — which
+// means anything inside `api` can get shadowed by their auth guard.
+// Mounting the webhook on the root app sidesteps that entirely.
+app.route("/api/v1", telegramWebhookRouter);
+app.route("/app-api/v1", telegramWebhookRouter);
 
 app.route("/api", api);
 app.route("/app-api", api);
