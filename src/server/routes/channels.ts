@@ -14,15 +14,25 @@ import {
 	listChannels,
 } from "../services/channels/channels-service.js";
 import {
+	type TelegramDeliveryMode,
 	clearTelegramCredentials,
 	generateWebhookSecret,
 	getTelegramBotToken,
 	getTelegramBotTokenHint,
 	getTelegramCredentialsSource,
+	getTelegramDeliveryMode,
 	getTelegramWebhookSecret,
 	saveTelegramCredentials,
 } from "../services/channels/telegram-credentials.js";
 import {
+	getTelegramPollerStatus,
+	startTelegramPolling,
+	stopTelegramPolling,
+} from "../services/channels/telegram-poller.js";
+import {
+	type TelegramCallbackQuery,
+	type TelegramMessage,
+	type TelegramUpdate,
 	answerCallbackQuery,
 	deleteTelegramWebhook,
 	getTelegramBotInfo,
@@ -56,20 +66,24 @@ telegramWebhookRouter.post("/channels/telegram/webhook", async (c) => {
 	const update = (await c.req.json().catch(() => null)) as TelegramUpdate | null;
 	if (!update) return c.json({ ok: true });
 
-	// Enrollment: `/start <code>` DM from a new user.
-	if (update.message?.text?.startsWith("/start ")) {
-		await handleEnrollmentStart(update.message);
-		return c.json({ ok: true });
-	}
-
-	// HITL resolve: callback_query with encoded data.
-	if (update.callback_query) {
-		await handleHitlCallback(update.callback_query);
-		return c.json({ ok: true });
-	}
-
+	await handleTelegramUpdate(update);
 	return c.json({ ok: true });
 });
+
+/**
+ * Process a Telegram update (from webhook *or* long-poll). Two shapes
+ * we care about: `/start <code>` for enrollment, and `callback_query`
+ * for HITL approve/decline taps. Everything else is ignored silently.
+ */
+async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
+	if (update.message?.text?.startsWith("/start ")) {
+		await handleEnrollmentStart(update.message);
+		return;
+	}
+	if (update.callback_query) {
+		await handleHitlCallback(update.callback_query);
+	}
+}
 
 async function handleEnrollmentStart(message: TelegramMessage): Promise<void> {
 	const code = (message.text ?? "").slice("/start ".length).trim();
@@ -276,6 +290,8 @@ channelsRouter.get("/channels/telegram/credentials", auth, async (c) => {
 		webhookSecretConfigured: Boolean(getTelegramWebhookSecret()),
 		source: getTelegramCredentialsSource(),
 		botTokenHint: getTelegramBotTokenHint(),
+		deliveryMode: getTelegramDeliveryMode(),
+		polling: getTelegramPollerStatus(),
 	});
 });
 
@@ -285,14 +301,20 @@ channelsRouter.post("/channels/telegram/credentials", auth, async (c) => {
 		webhookSecret?: string;
 		rotateWebhookSecret?: boolean;
 		publicUrl?: string;
+		deliveryMode?: TelegramDeliveryMode;
 	}>();
 
 	const trimmedToken = typeof body.botToken === "string" ? body.botToken.trim() : "";
 	const explicitSecret = typeof body.webhookSecret === "string" ? body.webhookSecret.trim() : "";
+	const requestedMode: TelegramDeliveryMode | undefined =
+		body.deliveryMode === "webhook" || body.deliveryMode === "polling"
+			? body.deliveryMode
+			: undefined;
 
 	// A token is required on first save or when rotating. If nothing is
-	// being changed at all we reject to avoid silent no-ops.
-	if (!trimmedToken && !explicitSecret && !body.rotateWebhookSecret) {
+	// being changed at all (not even a delivery-mode flip) we reject to
+	// avoid silent no-ops.
+	if (!trimmedToken && !explicitSecret && !body.rotateWebhookSecret && !requestedMode) {
 		return c.json({ error: "Provide a bot token or request a webhook secret rotation." }, 400);
 	}
 
@@ -331,6 +353,7 @@ channelsRouter.post("/channels/telegram/credentials", auth, async (c) => {
 		await saveTelegramCredentials({
 			botToken: trimmedToken,
 			webhookSecret: secretToPersist,
+			deliveryMode: requestedMode,
 		});
 		const probe = await getTelegramBotInfo();
 		if (!probe.ok) {
@@ -345,18 +368,36 @@ channelsRouter.post("/channels/telegram/credentials", auth, async (c) => {
 				400,
 			);
 		}
-	} else if (secretToPersist !== null) {
-		await saveTelegramCredentials({ webhookSecret: secretToPersist });
+	} else if (secretToPersist !== null || requestedMode) {
+		await saveTelegramCredentials({
+			webhookSecret: secretToPersist,
+			deliveryMode: requestedMode,
+		});
 	}
 
-	// Opportunistic webhook registration. Failures are non-fatal — the
-	// admin can click "Re-send webhook" later.
-	const base = resolvePublicUrl(body.publicUrl);
+	// Flip the delivery machinery to match the persisted mode. Webhook
+	// and polling are mutually exclusive at Telegram's end (setWebhook
+	// and getUpdates conflict), so the caller must always be in exactly
+	// one state — no partial transitions.
+	const effectiveMode = getTelegramDeliveryMode();
 	let webhookResult: { ok: boolean; url?: string; error?: string } = { ok: false };
-	if (base) {
-		const url = `${base}/api/v1/channels/telegram/webhook`;
-		const res = await setTelegramWebhook(url, getTelegramWebhookSecret());
-		webhookResult = res.ok ? { ok: true, url } : { ok: false, error: res.description };
+	if (effectiveMode === "webhook") {
+		await stopTelegramPolling();
+		const base = resolvePublicUrl(body.publicUrl);
+		if (base) {
+			const url = `${base}/api/v1/channels/telegram/webhook`;
+			const res = await setTelegramWebhook(url, getTelegramWebhookSecret());
+			webhookResult = res.ok ? { ok: true, url } : { ok: false, error: res.description };
+		} else {
+			webhookResult = { ok: false, error: "no public URL provided" };
+		}
+	} else {
+		// Polling mode: make sure any webhook is torn down, then start
+		// the long-poll loop.
+		await deleteTelegramWebhook().catch(() => {
+			// ignore
+		});
+		await startTelegramPolling(handleTelegramUpdate);
 	}
 
 	const botInfo = await getTelegramBotInfo();
@@ -366,8 +407,10 @@ channelsRouter.post("/channels/telegram/credentials", auth, async (c) => {
 		source: getTelegramCredentialsSource(),
 		botTokenHint: getTelegramBotTokenHint(),
 		webhookSecretConfigured: Boolean(getTelegramWebhookSecret()),
+		deliveryMode: effectiveMode,
 		bot: botInfo.ok ? botInfo.info : null,
 		webhook: webhookResult,
+		polling: getTelegramPollerStatus(),
 	});
 });
 
@@ -378,6 +421,7 @@ channelsRouter.delete("/channels/telegram/credentials", auth, async (c) => {
 			// ability to tell us the webhook got cleared
 		});
 	}
+	await stopTelegramPolling();
 	await clearTelegramCredentials();
 	return c.json({
 		ok: true,
@@ -435,26 +479,4 @@ channelsRouter.get("/channels/:id/stats", auth, async (c) => {
 	return c.json({ stats });
 });
 
-export { channelsRouter, telegramWebhookRouter };
-
-// --- Telegram update types (minimal, typed by hand so we don't pull in a lib) ---
-
-interface TelegramUpdate {
-	update_id: number;
-	message?: TelegramMessage;
-	callback_query?: TelegramCallbackQuery;
-}
-
-interface TelegramMessage {
-	message_id: number;
-	chat: { id: number; type: string };
-	text?: string;
-	from?: { id: number; username?: string };
-}
-
-interface TelegramCallbackQuery {
-	id: string;
-	data?: string;
-	message?: TelegramMessage;
-	from: { id: number; username?: string };
-}
+export { channelsRouter, telegramWebhookRouter, handleTelegramUpdate };

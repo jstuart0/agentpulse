@@ -13,6 +13,13 @@ interface CredentialsState {
 	webhookSecretConfigured: boolean;
 	source: "db" | "env" | "missing";
 	botTokenHint: string | null;
+	deliveryMode: "webhook" | "polling";
+	polling: {
+		running: boolean;
+		lastPollAt: string | null;
+		updatesReceived: number;
+		lastError: string | null;
+	} | null;
 }
 
 /**
@@ -166,15 +173,23 @@ export function TelegramChannelPanel() {
 		botToken?: string;
 		webhookSecret?: string;
 		rotateWebhookSecret?: boolean;
+		deliveryMode?: "webhook" | "polling";
 	}): Promise<{ ok: boolean; error?: string }> {
 		try {
 			const res = await api.saveTelegramCredentials({ ...input, publicUrl });
-			if (res.webhook.ok) {
+			if (res.deliveryMode === "polling") {
+				showToast(
+					"ok",
+					res.polling?.running
+						? "Saved. Polling Telegram — you can add channels now."
+						: "Saved. Polling will start momentarily.",
+				);
+			} else if (res.webhook.ok) {
 				showToast("ok", "Saved. Webhook is live — you can add channels now.");
 			} else if (res.bot) {
 				showToast(
 					"ok",
-					`Saved. Webhook didn't auto-register (${res.webhook.error ?? "unknown"}); click "Set webhook" after you confirm the public URL.`,
+					`Saved. Webhook didn't register (${res.webhook.error ?? "unknown"}). Try polling mode below if this instance isn't publicly reachable.`,
 				);
 			} else {
 				showToast("ok", "Saved.");
@@ -257,6 +272,7 @@ export function TelegramChannelPanel() {
 				creds={creds}
 				onRotateSecret={() => handleSaveCredentials({ rotateWebhookSecret: true })}
 				onClear={handleClearCredentials}
+				onSwitchMode={(mode) => handleSaveCredentials({ deliveryMode: mode })}
 			/>
 
 			<BotHeader
@@ -264,6 +280,8 @@ export function TelegramChannelPanel() {
 				info={botInfo}
 				webhook={webhookInfo}
 				webhookMatchesExpected={webhookMatchesExpected}
+				deliveryMode={creds?.deliveryMode ?? "webhook"}
+				polling={creds?.polling ?? null}
 				onSetupWebhook={handleSetupWebhook}
 			/>
 
@@ -291,7 +309,12 @@ export function TelegramChannelPanel() {
 				label={label}
 				onLabelChange={setLabel}
 				onCreate={handleCreate}
-				botReady={Boolean(botInfo?.username) && webhookMatchesExpected !== false}
+				botReady={
+					Boolean(botInfo?.username) &&
+					(creds?.deliveryMode === "polling"
+						? Boolean(creds?.polling?.running)
+						: webhookMatchesExpected !== false)
+				}
 			/>
 
 			<ChannelList
@@ -311,12 +334,16 @@ function BotHeader({
 	info,
 	webhook,
 	webhookMatchesExpected,
+	deliveryMode,
+	polling,
 	onSetupWebhook,
 }: {
 	bot: { configured: boolean; webhookSecretConfigured: boolean };
 	info: TelegramBotInfo | null;
 	webhook: TelegramWebhookInfo | null;
 	webhookMatchesExpected: boolean | null;
+	deliveryMode: "webhook" | "polling";
+	polling: CredentialsState["polling"];
 	onSetupWebhook: () => void;
 }) {
 	const webhookStatus = (() => {
@@ -328,10 +355,19 @@ function BotHeader({
 			return { tone: "err", text: `error: ${webhook.lastErrorMessage}` };
 		return { tone: "ok", text: "live" };
 	})();
+
+	const pollingStatus = (() => {
+		if (!polling) return { tone: "warn", text: "unknown" };
+		if (polling.lastError) return { tone: "err", text: `error: ${polling.lastError}` };
+		if (polling.running) return { tone: "ok", text: "running" };
+		return { tone: "warn", text: "stopped" };
+	})();
+
+	const status = deliveryMode === "polling" ? pollingStatus : webhookStatus;
 	const toneClass =
-		webhookStatus.tone === "ok"
+		status.tone === "ok"
 			? "text-emerald-300"
-			: webhookStatus.tone === "err"
+			: status.tone === "err"
 				? "text-red-300"
 				: "text-amber-300";
 
@@ -346,33 +382,47 @@ function BotHeader({
 						)}
 					</div>
 					<div className="text-[11px] text-muted-foreground mt-0.5">
-						Bot token: {bot.configured ? "set" : "missing"} · webhook secret:{" "}
-						{bot.webhookSecretConfigured ? "set" : "missing"}
+						Delivery: {deliveryMode} · bot token: {bot.configured ? "set" : "missing"}
+						{deliveryMode === "webhook" && (
+							<> · webhook secret: {bot.webhookSecretConfigured ? "set" : "missing"}</>
+						)}
 					</div>
 				</div>
-				<button
-					type="button"
-					onClick={onSetupWebhook}
-					disabled={!bot.webhookSecretConfigured}
-					className="text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted disabled:opacity-50"
-				>
-					{webhookStatus.text === "live" ? "Re-send webhook" : "Set webhook"}
-				</button>
+				{deliveryMode === "webhook" && (
+					<button
+						type="button"
+						onClick={onSetupWebhook}
+						disabled={!bot.webhookSecretConfigured}
+						className="text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted disabled:opacity-50"
+					>
+						{webhookStatus.text === "live" ? "Re-send webhook" : "Set webhook"}
+					</button>
+				)}
 			</div>
 			<div className="flex flex-wrap items-center gap-2 text-[11px]">
-				<span className={`font-mono ${toneClass}`}>● webhook {webhookStatus.text}</span>
-				{webhook?.pendingUpdateCount != null && (
+				<span className={`font-mono ${toneClass}`}>
+					● {deliveryMode === "polling" ? "polling" : "webhook"} {status.text}
+				</span>
+				{deliveryMode === "webhook" && webhook?.pendingUpdateCount != null && (
 					<span className="text-muted-foreground">
 						pending updates: {webhook.pendingUpdateCount}
 					</span>
 				)}
-				{webhook?.lastErrorDate && (
+				{deliveryMode === "webhook" && webhook?.lastErrorDate && (
 					<span className="text-muted-foreground">
 						last error: {new Date(webhook.lastErrorDate * 1000).toLocaleString()}
 					</span>
 				)}
+				{deliveryMode === "polling" && polling?.lastPollAt && (
+					<span className="text-muted-foreground">
+						last poll: {new Date(polling.lastPollAt).toLocaleTimeString()}
+					</span>
+				)}
+				{deliveryMode === "polling" && polling && (
+					<span className="text-muted-foreground">updates: {polling.updatesReceived}</span>
+				)}
 			</div>
-			{!bot.webhookSecretConfigured && (
+			{deliveryMode === "webhook" && !bot.webhookSecretConfigured && (
 				<div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-200">
 					No webhook secret is set. Click <em>Rotate webhook secret</em> in the status bar above to
 					generate a strong one — Telegram uses it to verify every callback.
@@ -614,9 +664,11 @@ function BotCredentialsWizard({
 	onSave: (input: {
 		botToken?: string;
 		webhookSecret?: string;
+		deliveryMode?: "webhook" | "polling";
 	}) => Promise<{ ok: boolean; error?: string }>;
 }) {
 	const [token, setToken] = useState("");
+	const [mode, setMode] = useState<"webhook" | "polling">("polling");
 	const [showAdvanced, setShowAdvanced] = useState(false);
 	const [customSecret, setCustomSecret] = useState("");
 	const [submitting, setSubmitting] = useState(false);
@@ -633,6 +685,7 @@ function BotCredentialsWizard({
 		const res = await onSave({
 			botToken: token.trim(),
 			webhookSecret: customSecret.trim() || undefined,
+			deliveryMode: mode,
 		});
 		setSubmitting(false);
 		if (!res.ok) {
@@ -681,25 +734,61 @@ function BotCredentialsWizard({
 					<span className="w-5 h-5 shrink-0 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex items-center justify-center">
 						2
 					</span>
-					<div className="flex-1">
-						Paste the token below and hit save. A webhook secret is auto-generated, and this
-						instance points Telegram&apos;s webhook at{" "}
-						<code className="font-mono break-all">
-							{publicUrl}/api/v1/channels/telegram/webhook
-						</code>{" "}
-						automatically.
-					</div>
-				</li>
-				<li className="flex gap-2">
-					<span className="w-5 h-5 shrink-0 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex items-center justify-center">
-						3
-					</span>
-					<div>
-						Add one or more channels (phone, team DM…) and enroll by scanning the QR or tapping the
-						deep link. HITL requests will flow to every verified channel.
-					</div>
+					<div>Pick how AgentPulse should receive Telegram updates:</div>
 				</li>
 			</ol>
+
+			<div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+				<label
+					className={`cursor-pointer rounded-md border p-3 text-xs transition-colors ${
+						mode === "polling"
+							? "border-primary/50 bg-primary/10"
+							: "border-border bg-background/40 hover:bg-muted"
+					}`}
+				>
+					<input
+						type="radio"
+						name="delivery-mode"
+						value="polling"
+						checked={mode === "polling"}
+						onChange={() => setMode("polling")}
+						className="sr-only"
+					/>
+					<div className="font-semibold text-foreground">Polling</div>
+					<div className="mt-1 text-muted-foreground">
+						AgentPulse dials out to Telegram on a loop. Works from any network — home-lab, NAT,
+						air-gapped. No public URL needed. 1–2 second delivery latency.
+					</div>
+					<div className="mt-1 text-emerald-300">
+						✓ Recommended if AgentPulse isn&apos;t publicly reachable
+					</div>
+				</label>
+				<label
+					className={`cursor-pointer rounded-md border p-3 text-xs transition-colors ${
+						mode === "webhook"
+							? "border-primary/50 bg-primary/10"
+							: "border-border bg-background/40 hover:bg-muted"
+					}`}
+				>
+					<input
+						type="radio"
+						name="delivery-mode"
+						value="webhook"
+						checked={mode === "webhook"}
+						onChange={() => setMode("webhook")}
+						className="sr-only"
+					/>
+					<div className="font-semibold text-foreground">Webhook</div>
+					<div className="mt-1 text-muted-foreground">
+						Telegram pushes updates to{" "}
+						<code className="font-mono break-all">
+							{publicUrl}/api/v1/channels/telegram/webhook
+						</code>
+						. Instant delivery, less outbound traffic, but this instance must be reachable over the
+						public internet.
+					</div>
+				</label>
+			</div>
 
 			<div className="space-y-1.5">
 				<label htmlFor="telegram-token" className="text-xs font-medium text-foreground">
@@ -716,34 +805,36 @@ function BotCredentialsWizard({
 				/>
 			</div>
 
-			<details
-				open={showAdvanced}
-				onToggle={(e) => setShowAdvanced((e.target as HTMLDetailsElement).open)}
-				className="text-xs"
-			>
-				<summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-					Advanced: bring your own webhook secret
-				</summary>
-				<div className="mt-2 space-y-1.5">
-					<input
-						type="text"
-						autoComplete="off"
-						value={customSecret}
-						onChange={(e) => setCustomSecret(e.target.value)}
-						placeholder="Leave blank to auto-generate (recommended)"
-						className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring font-mono"
-					/>
-					<p className="text-[11px] text-muted-foreground">
-						Must be 24–256 chars. Used to verify that incoming webhooks came from Telegram.
-					</p>
-				</div>
-			</details>
+			{mode === "webhook" && (
+				<details
+					open={showAdvanced}
+					onToggle={(e) => setShowAdvanced((e.target as HTMLDetailsElement).open)}
+					className="text-xs"
+				>
+					<summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+						Advanced: bring your own webhook secret
+					</summary>
+					<div className="mt-2 space-y-1.5">
+						<input
+							type="text"
+							autoComplete="off"
+							value={customSecret}
+							onChange={(e) => setCustomSecret(e.target.value)}
+							placeholder="Leave blank to auto-generate (recommended)"
+							className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring font-mono"
+						/>
+						<p className="text-[11px] text-muted-foreground">
+							Must be 24–256 chars. Used to verify that incoming webhooks came from Telegram.
+						</p>
+					</div>
+				</details>
+			)}
 
-			{!publicUrlLooksProd && (
+			{mode === "webhook" && !publicUrlLooksProd && (
 				<div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-200">
 					This tab&apos;s URL ({publicUrl || "unknown"}) isn&apos;t HTTPS. Telegram will reject the
-					webhook. Deploy AgentPulse behind HTTPS (or a tunnel like Cloudflared / ngrok) before
-					saving.
+					webhook. Pick Polling above, or deploy AgentPulse behind HTTPS (or a tunnel like
+					Cloudflared / ngrok) before saving.
 				</div>
 			)}
 
@@ -759,7 +850,7 @@ function BotCredentialsWizard({
 				</span>
 				<button
 					type="submit"
-					disabled={submitting || !token.trim() || !publicUrlLooksProd}
+					disabled={submitting || !token.trim() || (mode === "webhook" && !publicUrlLooksProd)}
 					className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
 				>
 					{submitting ? "Validating…" : "Save & activate"}
@@ -773,12 +864,15 @@ function BotCredentialsStatus({
 	creds,
 	onRotateSecret,
 	onClear,
+	onSwitchMode,
 }: {
 	creds: CredentialsState | null;
 	onRotateSecret: () => Promise<{ ok: boolean }>;
 	onClear: () => void;
+	onSwitchMode: (mode: "webhook" | "polling") => Promise<{ ok: boolean }>;
 }) {
 	const [rotating, setRotating] = useState(false);
+	const [switching, setSwitching] = useState(false);
 	if (!creds) return null;
 	async function doRotate() {
 		setRotating(true);
@@ -788,30 +882,55 @@ function BotCredentialsStatus({
 			setRotating(false);
 		}
 	}
+	async function doSwitch(mode: "webhook" | "polling") {
+		setSwitching(true);
+		try {
+			await onSwitchMode(mode);
+		} finally {
+			setSwitching(false);
+		}
+	}
 	const sourceLabel =
 		creds.source === "db"
 			? "stored in this instance"
 			: creds.source === "env"
 				? "loaded from environment"
 				: "missing";
+	const otherMode = creds.deliveryMode === "webhook" ? "polling" : "webhook";
 	return (
 		<div className="rounded-md border border-border bg-background/40 p-3 text-xs space-y-2">
-			<div className="flex items-center justify-between gap-3">
+			<div className="flex items-center justify-between gap-3 flex-wrap">
 				<div>
 					<div className="text-foreground font-medium">Bot credentials</div>
 					<div className="text-[11px] text-muted-foreground mt-0.5">
-						Token {creds.botTokenHint ?? "—"} · {sourceLabel}
+						Token {creds.botTokenHint ?? "—"} · {sourceLabel} · delivery:{" "}
+						<span className="text-foreground">{creds.deliveryMode}</span>
 					</div>
 				</div>
-				<div className="flex gap-1">
+				<div className="flex gap-1 flex-wrap">
 					<button
 						type="button"
-						onClick={doRotate}
-						disabled={rotating}
+						onClick={() => doSwitch(otherMode)}
+						disabled={switching}
 						className="text-[11px] px-2 py-1 rounded border border-border text-foreground hover:bg-muted disabled:opacity-50"
+						title={
+							otherMode === "polling"
+								? "Use long-polling — works without a public URL"
+								: "Use a Telegram webhook — requires this instance to be publicly reachable"
+						}
 					>
-						{rotating ? "Rotating…" : "Rotate webhook secret"}
+						{switching ? "Switching…" : `Switch to ${otherMode}`}
 					</button>
+					{creds.deliveryMode === "webhook" && (
+						<button
+							type="button"
+							onClick={doRotate}
+							disabled={rotating}
+							className="text-[11px] px-2 py-1 rounded border border-border text-foreground hover:bg-muted disabled:opacity-50"
+						>
+							{rotating ? "Rotating…" : "Rotate webhook secret"}
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={onClear}
