@@ -8,6 +8,7 @@ import {
 	listMessages,
 	listThreads,
 	runAskTurn,
+	runAskTurnStream,
 } from "../services/ask/ask-service.js";
 import { isLabsFlagEnabled } from "../services/labs-service.js";
 
@@ -85,6 +86,59 @@ askRouter.post("/ai/ask", async (c) => {
 		const message = err instanceof Error ? err.message : String(err);
 		return c.json({ error: message }, 500);
 	}
+});
+
+/**
+ * SSE streaming turn. Emits `start` → zero or more `delta` → `done` /
+ * `error`. Each frame is a JSON payload on a `data:` line. Web UI
+ * subscribes to deltas so tokens render as they arrive; Telegram keeps
+ * using the non-streaming `/ai/ask` endpoint because Telegram's rate
+ * limits make per-token message edits hostile.
+ */
+askRouter.post("/ai/ask/stream", async (c) => {
+	const gate = await ensureEnabled(c);
+	if (gate) return gate;
+	const body = await c.req.json<{
+		threadId?: string | null;
+		message?: string;
+		sessionIds?: string[];
+	}>();
+	if (!body.message || typeof body.message !== "string") {
+		return c.json({ error: "message required" }, 400);
+	}
+	const encoder = new TextEncoder();
+	const stream = new ReadableStream({
+		async start(controller) {
+			const write = (event: unknown) => {
+				controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+			};
+			try {
+				for await (const evt of runAskTurnStream({
+					threadId: body.threadId ?? null,
+					message: body.message ?? "",
+					sessionIds: body.sessionIds,
+					origin: "web",
+				})) {
+					write(evt);
+				}
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				write({ kind: "error", message, assistantMessage: null });
+			} finally {
+				controller.close();
+			}
+		},
+	});
+	return new Response(stream, {
+		headers: {
+			"Content-Type": "text/event-stream; charset=utf-8",
+			"Cache-Control": "no-cache, no-transform",
+			Connection: "keep-alive",
+			// Signal to Traefik / reverse proxies to stop buffering so
+			// the browser sees each delta immediately.
+			"X-Accel-Buffering": "no",
+		},
+	});
 });
 
 export { askRouter };
