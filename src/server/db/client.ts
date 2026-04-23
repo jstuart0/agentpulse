@@ -413,9 +413,9 @@ export function initializeDatabase() {
 		CREATE INDEX IF NOT EXISTS idx_ask_threads_updated
 			ON ask_threads(updated_at DESC)
 			WHERE archived_at IS NULL;
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_ask_threads_telegram_chat
-			ON ask_threads(telegram_chat_id)
-			WHERE telegram_chat_id IS NOT NULL AND archived_at IS NULL;
+		-- The telegram_chat_id index lives in the migrations array below so
+		-- it can run AFTER the ALTER TABLE that adds the column on DBs
+		-- created before origin/telegram_chat_id existed.
 
 		CREATE TABLE IF NOT EXISTS ask_messages (
 			id TEXT PRIMARY KEY,
@@ -503,6 +503,11 @@ export function initializeDatabase() {
 		// Ask-via-Telegram: origin + Telegram chat mapping.
 		"ALTER TABLE ask_threads ADD COLUMN origin TEXT NOT NULL DEFAULT 'web'",
 		"ALTER TABLE ask_threads ADD COLUMN telegram_chat_id TEXT",
+		// Index depends on the column above — keep it in the try/catch
+		// migration list so it gets created regardless of whether the
+		// DB was created fresh (column present) or legacy (column added
+		// by the ALTER above).
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_ask_threads_telegram_chat ON ask_threads(telegram_chat_id) WHERE telegram_chat_id IS NOT NULL AND archived_at IS NULL",
 	];
 
 	for (const migration of migrations) {
