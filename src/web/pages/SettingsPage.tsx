@@ -8,6 +8,7 @@ import { TelegramChannelPanel } from "../components/settings/TelegramChannelPane
 import { api } from "../lib/api.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { type AppTheme, persistTheme, resolveInitialTheme } from "../lib/theme.js";
+import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
 
 const launchModeLabels = {
@@ -113,7 +114,7 @@ export function SettingsPage() {
 			{/* Appearance */}
 			<section className="border border-border bg-card rounded-lg p-5 mb-6">
 				<h2 className="text-sm font-semibold mb-3">Appearance</h2>
-				<div className="flex items-center justify-between gap-4">
+				<div className="flex items-center justify-between gap-4 mb-4">
 					<div>
 						<p className="text-sm text-foreground">Theme</p>
 						<p className="text-xs text-muted-foreground">Toggle between dark and light mode</p>
@@ -131,6 +132,7 @@ export function SettingsPage() {
 						/>
 					</button>
 				</div>
+				<ProjectColorsToggle />
 			</section>
 
 			{/* Supervisor Status */}
@@ -469,6 +471,36 @@ export function SettingsPage() {
 					</div>
 				</div>
 			</section>
+		</div>
+	);
+}
+
+function ProjectColorsToggle() {
+	const enabled = useUiPrefsStore((s) => s.projectColors);
+	const setProjectColors = useUiPrefsStore((s) => s.setProjectColors);
+	return (
+		<div className="flex items-center justify-between gap-4 border-t border-border pt-4">
+			<div>
+				<p className="text-sm text-foreground">Project color tint</p>
+				<p className="text-xs text-muted-foreground">
+					Tint session cards and tabs by working directory so multi-repo dashboards
+					group visually at a glance.
+				</p>
+			</div>
+			<button
+				type="button"
+				onClick={() => setProjectColors(!enabled)}
+				className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+				style={{
+					backgroundColor: enabled ? "hsl(var(--primary))" : "hsl(var(--muted))",
+				}}
+				aria-pressed={enabled}
+			>
+				<span
+					className="inline-block h-4 w-4 rounded-full bg-card border border-border transition-transform"
+					style={{ transform: enabled ? "translateX(24px)" : "translateX(4px)" }}
+				/>
+			</button>
 		</div>
 	);
 }

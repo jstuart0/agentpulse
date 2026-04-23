@@ -47,6 +47,66 @@ export function extractProjectName(cwd: string | null): string {
 	return parts[parts.length - 1] || "Unknown";
 }
 
+/**
+ * Deterministic hash → hue mapping so every "project" (last path
+ * segment of cwd) gets a stable pastel color across renders and
+ * across reloads. Two sessions in different branches of the same
+ * repo share a color; two sessions in different repos don't.
+ *
+ * We live in a dark-mode-first app, so the returned values are tuned
+ * to show as subtle tints: low-saturation 8% alpha bg, mid-saturation
+ * 30% alpha border. Bright enough to scan-group a grid, muted enough
+ * not to fight the status badges and agent-type chips inside the card.
+ */
+
+export interface ProjectColor {
+	/** CSS background-color value, subtle tint. */
+	bg: string;
+	/** CSS border-color value, slightly louder than bg. */
+	border: string;
+	/** Strong accent for the left rail / tab underline. */
+	accent: string;
+	/** Final resolved hue (0-359) — exposed for callers that want text. */
+	hue: number;
+}
+
+function hueFromString(input: string): number {
+	if (!input) return 0;
+	let h = 0;
+	for (let i = 0; i < input.length; i += 1) {
+		h = (h * 31 + input.charCodeAt(i)) | 0;
+	}
+	// Spread across a curated band of hues that all produce pleasant
+	// pastels in dark mode. Avoid the 50–80 range (yellows) which read
+	// as warning, and 0–15 (pure red) which reads as error.
+	const BANDS = [
+		[20, 48], // amber / orange
+		[90, 160], // green / teal
+		[170, 220], // cyan / blue
+		[230, 270], // indigo / violet
+		[280, 320], // purple / magenta
+		[330, 360], // pink / rose
+	];
+	const band = BANDS[Math.abs(h) % BANDS.length];
+	const offset = Math.abs(h >> 8) % (band[1] - band[0] + 1);
+	return band[0] + offset;
+}
+
+export function projectColor(cwd: string | null): ProjectColor | null {
+	if (!cwd) return null;
+	const key = extractProjectName(cwd);
+	if (!key || key === "Unknown") return null;
+	const hue = hueFromString(key);
+	return {
+		hue,
+		// Dark-pastel opaque — replaces bg-card, renders as a soft wash
+		// that's still visibly "a card" on the dots background.
+		bg: `hsl(${hue} 28% 13%)`,
+		border: `hsl(${hue} 40% 38%)`,
+		accent: `hsl(${hue} 65% 65%)`,
+	};
+}
+
 export type SessionMode = "observed" | "interactive" | "headless" | "managed";
 
 export interface SessionModeStyle {

@@ -2,10 +2,16 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Session } from "../../shared/types.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
-import { extractProjectName, formatDuration, getSessionMode } from "../lib/utils.js";
+import {
+	extractProjectName,
+	formatDuration,
+	getSessionMode,
+	projectColor,
+} from "../lib/utils.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
+import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 import { AgentTypeBadge } from "./AgentTypeBadge.js";
 import { IntelligenceBadge } from "./IntelligenceBadge.js";
 import { StatusBadge } from "./StatusBadge.js";
@@ -29,6 +35,12 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	const isInactive =
 		session.status === "completed" || session.status === "archived" || session.status === "failed";
 	const modeStyle = getSessionMode(session);
+	const projectColorsEnabled = useUiPrefsStore((s) => s.projectColors);
+	// Deterministic tint per project so sessions in the same repo
+	// group visually on the grid and tab bar. Pinned sessions keep
+	// their amber theme — don't double-color them. Skips entirely
+	// when the user has disabled colors in Settings.
+	const color = projectColorsEnabled ? projectColor(session.cwd) : null;
 
 	async function handleRename() {
 		if (!newName.trim()) {
@@ -64,6 +76,14 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	return (
 		<div
 			onClick={() => navigate(`/sessions/${session.sessionId}`)}
+			// Inline style carries the per-project hue. Replaces bg-card
+			// with a dark-pastel tint tuned to read as "same repo" at a
+			// glance. Pinned sessions keep their amber treatment.
+			style={
+				!session.isPinned && color
+					? { backgroundColor: color.bg, borderColor: color.border }
+					: undefined
+			}
 			className={`group relative cursor-pointer overflow-hidden rounded-lg border bg-card p-3 md:p-4 pl-4 md:pl-5 transition-all hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5 ${
 				session.isPinned ? "border-amber-500/30 bg-amber-500/[0.02]" : "border-border"
 			}`}
