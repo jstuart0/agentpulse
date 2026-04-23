@@ -9,14 +9,75 @@ import { APP_API_BASE } from "./paths.js";
 
 const BASE_URL = APP_API_BASE;
 
+/**
+ * When Traefik's Authentik forwardauth sees an expired session it
+ * 302s our API fetches to `auth.xmojo.net`, which the browser then
+ * blocks as a cross-origin redirect (CORS). With the default `fetch`
+ * redirect policy the user just sees `TypeError: Failed to fetch`
+ * every time they touch the app.
+ *
+ * We set `redirect: "manual"` so cross-origin redirects surface as
+ * an `opaqueredirect` response (type = "opaqueredirect", status = 0)
+ * instead of being followed. When that happens we can tell the
+ * browser to do a top-level navigation reload — which DOES follow
+ * Authentik's redirect, lets the user reauth, and returns them to
+ * the app with a fresh cookie. Net effect: expired sessions heal
+ * themselves silently instead of surfacing as cryptic errors.
+ *
+ * The same check fires on `TypeError: Failed to fetch` — that's what
+ * browsers throw when some older paths still auto-follow the redirect
+ * and then hit CORS.
+ */
+let authBounceInFlight = false;
+
+export function triggerAuthReload(reason: string): void {
+	if (authBounceInFlight) return;
+	if (typeof window === "undefined") return;
+	authBounceInFlight = true;
+	console.warn(`[api] ${reason} — reloading to reacquire auth`);
+	// Defer a tick so any error logs get flushed before the nav.
+	setTimeout(() => {
+		window.location.reload();
+	}, 50);
+}
+
+export function looksLikeAuthBounce(res: Response): boolean {
+	// Cross-origin 3xx that the browser refused to follow.
+	if (res.type === "opaqueredirect") return true;
+	// Some proxies return 401/403 with a Location header; we don't have
+	// access to the header when the response is opaque, so fall back
+	// to blank-status detection (status 0 happens on some error paths).
+	if (res.status === 0) return true;
+	return false;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-	const res = await fetch(`${BASE_URL}${path}`, {
-		headers: {
-			"Content-Type": "application/json",
-			...options?.headers,
-		},
-		...options,
-	});
+	let res: Response;
+	try {
+		res = await fetch(`${BASE_URL}${path}`, {
+			redirect: "manual",
+			credentials: "same-origin",
+			headers: {
+				"Content-Type": "application/json",
+				...options?.headers,
+			},
+			...options,
+		});
+	} catch (err) {
+		// Failed to fetch = cross-origin redirect blocked by CORS OR
+		// network error. Either way, reload — the worst case is one
+		// extra full-page refresh.
+		if (err instanceof TypeError) {
+			triggerAuthReload(`fetch threw (${err.message})`);
+		}
+		throw err;
+	}
+
+	if (looksLikeAuthBounce(res)) {
+		triggerAuthReload(`auth-bounce on ${path}`);
+		// Throw so callers don't try to JSON-parse the opaque response.
+		throw new Error("Session expired; reloading to reauthenticate.");
+	}
 
 	if (!res.ok) {
 		// Try to surface the server-side `{error: string}` body so callers

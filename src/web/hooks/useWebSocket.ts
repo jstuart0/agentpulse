@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { triggerAuthReload } from "../lib/api.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { useEventStore } from "../stores/event-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -27,6 +28,11 @@ export function useWebSocket() {
 
 	// Track previous isWorking state to detect transitions
 	const workingRef = useRef<Map<string, boolean>>(new Map());
+	// Count of consecutive WS failures with no successful open between
+	// them. After a few in a row we assume Authentik expired and ask
+	// the app to reload (top-level nav completes the reauth dance).
+	const consecutiveFailuresRef = useRef(0);
+	const FAILURE_RELOAD_THRESHOLD = 3;
 
 	const connect = useCallback(() => {
 		const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -38,6 +44,7 @@ export function useWebSocket() {
 
 		ws.onopen = () => {
 			console.log("[ws] Connected");
+			consecutiveFailuresRef.current = 0;
 			ws.send(JSON.stringify({ type: "subscribe", channels: ["sessions"] }));
 		};
 
@@ -85,7 +92,16 @@ export function useWebSocket() {
 		};
 
 		ws.onclose = () => {
-			console.log("[ws] Disconnected, reconnecting in 3s...");
+			consecutiveFailuresRef.current += 1;
+			if (consecutiveFailuresRef.current >= FAILURE_RELOAD_THRESHOLD) {
+				triggerAuthReload(
+					`ws failed ${consecutiveFailuresRef.current}× in a row (likely Authentik expired)`,
+				);
+				return;
+			}
+			console.log(
+				`[ws] Disconnected (attempt ${consecutiveFailuresRef.current}), reconnecting in 3s…`,
+			);
 			reconnectTimeoutRef.current = setTimeout(connect, 3000);
 		};
 
