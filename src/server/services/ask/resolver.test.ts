@@ -81,4 +81,115 @@ describe("Ask resolver", () => {
 		const hits = await fetchSessionsById(["a", "c"]);
 		expect(hits.map((h) => h.sessionId).sort()).toEqual(["a", "c"]);
 	});
+
+	test("stopword-only tokens are dropped before scoring", async () => {
+		await insertSession({ id: "api", displayName: "api-gateway", cwd: "/srv/api" });
+		await insertSession({ id: "other", displayName: "unrelated-name", cwd: "/srv/other" });
+
+		// "is the api session healthy?" — stopwords "is", "the", "session" are
+		// in STOPWORDS; "api" and "healthy" survive tokenization. The API
+		// session should match via "api"; the other session matches nothing.
+		const hits = await resolveCandidateSessions({
+			message: "is the api session healthy?",
+		});
+		const ids = hits.map((h) => h.sessionId);
+		expect(ids).toContain("api");
+		expect(ids).not.toContain("other");
+	});
+
+	test("multi-keyword hits in cwd outrank single-keyword hits", async () => {
+		await insertSession({
+			id: "both",
+			displayName: "alpha",
+			cwd: "/repos/sourcebridge/oauth-provider",
+		});
+		await insertSession({
+			id: "one",
+			displayName: "beta",
+			cwd: "/repos/sourcebridge/ui",
+		});
+
+		const hits = await resolveCandidateSessions({
+			message: "the sourcebridge oauth session",
+		});
+		expect(hits[0].sessionId).toBe("both");
+		expect(hits.map((h) => h.sessionId)).toContain("one");
+	});
+
+	test("ties break by lastActivityAt descending", async () => {
+		// Two sessions that score identically on "target": the newer one
+		// must come first. We set lastActivityAt manually to avoid racing
+		// on the default datetime('now') clock tick.
+		const older = "2020-01-01T00:00:00.000Z";
+		const newer = "2030-01-01T00:00:00.000Z";
+		await db
+			.insert(sessions)
+			.values({
+				sessionId: "old-tie",
+				agentType: "claude_code",
+				displayName: "target",
+				status: "active",
+				cwd: "/tmp",
+				isWorking: false,
+				lastActivityAt: older,
+				startedAt: older,
+			})
+			.execute();
+		await db
+			.insert(sessions)
+			.values({
+				sessionId: "new-tie",
+				agentType: "claude_code",
+				displayName: "target",
+				status: "active",
+				cwd: "/tmp",
+				isWorking: false,
+				lastActivityAt: newer,
+				startedAt: newer,
+			})
+			.execute();
+
+		const hits = await resolveCandidateSessions({ message: "target" });
+		// Both matched identically (same scoring inputs); newer one should win the tie.
+		expect(hits[0].sessionId).toBe("new-tie");
+		expect(hits[1].sessionId).toBe("old-tie");
+		expect(hits[0].score).toBe(hits[1].score);
+	});
+
+	test("fetchSessionsById preserves input order", async () => {
+		await insertSession({ id: "a", displayName: "one" });
+		await insertSession({ id: "b", displayName: "two" });
+		await insertSession({ id: "c", displayName: "three" });
+
+		// Passing ["b", "a"] must return in that order, not alphabetic / insertion order.
+		const hits = await fetchSessionsById(["b", "a"]);
+		expect(hits.map((h) => h.sessionId)).toEqual(["b", "a"]);
+	});
+
+	test("archived sessions are excluded from the resolver pool", async () => {
+		// Status not in { active, idle } and not isWorking=true must NOT
+		// leak into matches. We insert with a status ("archived") the schema
+		// accepts (text column, no CHECK constraint) but the resolver's
+		// WHERE clause filters out.
+		await db
+			.insert(sessions)
+			.values({
+				sessionId: "archived-one",
+				agentType: "claude_code",
+				displayName: "archived-target",
+				// biome-ignore lint/suspicious/noExplicitAny: schema is permissive text
+				status: "archived" as any,
+				cwd: "/tmp",
+				isWorking: false,
+				lastActivityAt: new Date().toISOString(),
+				startedAt: new Date().toISOString(),
+			})
+			.execute();
+		await insertSession({ id: "active-one", displayName: "archived-target" });
+
+		const hits = await resolveCandidateSessions({ message: "archived-target" });
+		const ids = hits.map((h) => h.sessionId);
+		expect(ids).toContain("active-one");
+		expect(ids).not.toContain("archived-one");
+	});
 });
