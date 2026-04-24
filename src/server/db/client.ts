@@ -569,6 +569,75 @@ export function initializeDatabase() {
 		console.warn("[db] HITL backfill skipped:", err);
 	}
 
+	// Search backend bootstrap. The SQLite FTS5 virtual tables + triggers
+	// live here so they're created in the same transaction window as the
+	// rest of the schema. Kept inline rather than imported so we avoid a
+	// circular dependency with services that read from `db` itself.
+	try {
+		sqlite.exec(`
+			CREATE VIRTUAL TABLE IF NOT EXISTS search_sessions_fts USING fts5(
+				session_id UNINDEXED,
+				display_name, cwd, current_task, notes,
+				agent_type UNINDEXED,
+				status UNINDEXED,
+				last_activity_at UNINDEXED,
+				tokenize = 'porter unicode61 remove_diacritics 1'
+			);
+			CREATE VIRTUAL TABLE IF NOT EXISTS search_events_fts USING fts5(
+				event_id UNINDEXED,
+				session_id UNINDEXED,
+				event_type UNINDEXED,
+				text,
+				created_at UNINDEXED,
+				tokenize = 'porter unicode61 remove_diacritics 1'
+			);
+			CREATE TRIGGER IF NOT EXISTS trg_sessions_ai_fts AFTER INSERT ON sessions
+			BEGIN
+				INSERT INTO search_sessions_fts(session_id, display_name, cwd, current_task, notes, agent_type, status, last_activity_at)
+				VALUES (NEW.session_id, NEW.display_name, NEW.cwd, NEW.current_task, NEW.notes, NEW.agent_type, NEW.status, NEW.last_activity_at);
+			END;
+			CREATE TRIGGER IF NOT EXISTS trg_sessions_au_fts AFTER UPDATE ON sessions
+			BEGIN
+				DELETE FROM search_sessions_fts WHERE session_id = OLD.session_id;
+				INSERT INTO search_sessions_fts(session_id, display_name, cwd, current_task, notes, agent_type, status, last_activity_at)
+				VALUES (NEW.session_id, NEW.display_name, NEW.cwd, NEW.current_task, NEW.notes, NEW.agent_type, NEW.status, NEW.last_activity_at);
+			END;
+			CREATE TRIGGER IF NOT EXISTS trg_sessions_ad_fts AFTER DELETE ON sessions
+			BEGIN
+				DELETE FROM search_sessions_fts WHERE session_id = OLD.session_id;
+				DELETE FROM search_events_fts WHERE session_id = OLD.session_id;
+			END;
+			CREATE TRIGGER IF NOT EXISTS trg_events_ai_fts AFTER INSERT ON events
+			WHEN NEW.event_type IN (
+				'UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted',
+				'SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest'
+			)
+			BEGIN
+				INSERT INTO search_events_fts(event_id, session_id, event_type, text, created_at)
+				VALUES (
+					NEW.id,
+					NEW.session_id,
+					NEW.event_type,
+					COALESCE(
+						json_extract(NEW.raw_payload, '$.prompt'),
+						json_extract(NEW.raw_payload, '$.message'),
+						json_extract(NEW.raw_payload, '$.summary'),
+						json_extract(NEW.raw_payload, '$.why'),
+						json_extract(NEW.raw_payload, '$.title'),
+						NEW.content, ''
+					),
+					NEW.created_at
+				);
+			END;
+			CREATE TRIGGER IF NOT EXISTS trg_events_ad_fts AFTER DELETE ON events
+			BEGIN
+				DELETE FROM search_events_fts WHERE event_id = OLD.id;
+			END;
+		`);
+	} catch (err) {
+		console.warn("[db] FTS5 search index bootstrap failed:", err);
+	}
+
 	sqlite.close();
 	console.log("[db] Database initialized");
 }

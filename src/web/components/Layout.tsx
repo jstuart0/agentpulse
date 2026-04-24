@@ -40,6 +40,11 @@ const navItems: NavItem[] = [
 	},
 	{ to: "/sessions", label: "Sessions", icon: "M4 6h16M4 10h16M4 14h16M4 18h16" },
 	{
+		to: "/search",
+		label: "Search",
+		icon: "M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z",
+	},
+	{
 		to: "/inbox",
 		label: "Inbox",
 		icon: "M3 8l9 6 9-6m-18 0v10a2 2 0 002 2h14a2 2 0 002-2V8m-18 0V6a2 2 0 012-2h14a2 2 0 012 2v2",

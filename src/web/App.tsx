@@ -37,6 +37,9 @@ const DigestPage = lazy(() =>
 const AskPage = lazy(() =>
 	import("./pages/AskPage.js").then((module) => ({ default: module.AskPage })),
 );
+const SearchPage = lazy(() =>
+	import("./pages/SearchPage.js").then((module) => ({ default: module.SearchPage })),
+);
 const LoginPage = lazy(() =>
 	import("./pages/LoginPage.js").then((module) => ({ default: module.LoginPage })),
 );
@@ -132,6 +135,7 @@ export function App() {
 					<Route path="/inbox" element={<InboxPage />} />
 					<Route path="/digest" element={<DigestPage />} />
 					<Route path="/ask" element={<AskPage />} />
+					<Route path="/search" element={<SearchPage />} />
 					<Route path="/hosts" element={<HostsPage />} />
 					<Route path="/setup" element={<SetupPage />} />
 					<Route path="/settings" element={<SettingsPage />} />

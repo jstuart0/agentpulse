@@ -101,6 +101,53 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+	search: (filters: {
+		q: string;
+		sessionId?: string;
+		cwd?: string;
+		agentType?: "claude_code" | "codex_cli";
+		sessionStatus?: "active" | "idle" | "completed" | "archived";
+		eventType?: string;
+		since?: string;
+		until?: string;
+		kinds?: Array<"session" | "event">;
+		limit?: number;
+		offset?: number;
+	}) => {
+		const qs = new URLSearchParams();
+		qs.set("q", filters.q);
+		if (filters.sessionId) qs.set("sessionId", filters.sessionId);
+		if (filters.cwd) qs.set("cwd", filters.cwd);
+		if (filters.agentType) qs.set("agentType", filters.agentType);
+		if (filters.sessionStatus) qs.set("sessionStatus", filters.sessionStatus);
+		if (filters.eventType) qs.set("eventType", filters.eventType);
+		if (filters.since) qs.set("since", filters.since);
+		if (filters.until) qs.set("until", filters.until);
+		if (filters.kinds?.length) qs.set("kinds", filters.kinds.join(","));
+		if (filters.limit) qs.set("limit", String(filters.limit));
+		if (filters.offset) qs.set("offset", String(filters.offset));
+		return request<{
+			hits: Array<{
+				kind: "session" | "event";
+				sessionId: string;
+				eventId: number | null;
+				eventType: string | null;
+				snippet: string;
+				score: number;
+				timestamp: string;
+				sessionDisplayName: string | null;
+				sessionCwd: string | null;
+			}>;
+			total: number;
+			backend: string;
+		}>(`/search?${qs.toString()}`);
+	},
+
+	rebuildSearchIndex: () =>
+		request<{ ok: true; sessionsIndexed: number; eventsIndexed: number }>("/search/rebuild", {
+			method: "POST",
+		}),
+
 	getSessions: (params?: { status?: string; agent_type?: string; limit?: number }) => {
 		const query = new URLSearchParams();
 		if (params?.status) query.set("status", params.status);
