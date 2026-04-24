@@ -10,3 +10,8 @@ data/
 .vite/
 thoughts/
 docs/
+
+# Private Kustomize overlays. The OSS-clean base lives at deploy/k8s/.
+# Environment-specific overlays (real image registry, cluster hostnames,
+# TLS secret names) go under deploy/k8s-*/ and must never be committed.
+deploy/k8s-*/
