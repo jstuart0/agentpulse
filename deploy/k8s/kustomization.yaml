@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: agentpulse
+
+# OSS-clean base. Values in these manifests are placeholders:
+#   - image: ghcr.io/YOUR_ORG/agentpulse:latest
+#   - host: agentpulse.example.com
+#   - database: your-postgres-host
+#   - tls secretName: agentpulse-tls
+#
+# Deploy the base directly for a quick kick-the-tires run, but for
+# anything real build an overlay that patches the placeholders with
+# your environment-specific values. See deploy/README-kustomize.md
+# for an example overlay skeleton.
+
+# 01-secret-template.yaml is intentionally excluded — it holds
+# placeholder DATABASE_URL + API key values. Create the real Secret
+# out of band (copy the template, fill in the values, apply) or
+# manage it in your overlay via a generator. Leaving it in the base
+# would let `kubectl apply -k` overwrite real secrets with dummies.
+
+resources:
+  - 00-namespace.yaml
+  - 02-configmap.yaml
+  - 03-pvc.yaml
+  - 04-deployment.yaml
+  - 05-service.yaml
+  - 06-middleware.yaml
+  - 07-ingressroute.yaml

@@ -73,7 +73,7 @@ spec:
         - name: agentpulse
           port: 3000
   tls:
-    secretName: wildcard-xmojo-net-production-tls
+    secretName: agentpulse-tls
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
