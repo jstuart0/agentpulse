@@ -170,14 +170,20 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 export async function fetchSessionsById(ids: string[]): Promise<ResolvedSession[]> {
 	if (ids.length === 0) return [];
 	const rows = await db.select().from(sessions).where(inArray(sessions.sessionId, ids));
-	return rows.map((row) => ({
-		sessionId: row.sessionId,
-		displayName: row.displayName,
-		cwd: row.cwd,
-		status: row.status,
-		isWorking: Boolean(row.isWorking),
-		agentType: row.agentType ?? "unknown",
-		lastActivityAt: row.lastActivityAt,
-		score: 100, // explicitly-picked rows always rank first
-	}));
+	// SQLite's IN clause doesn't preserve input order; re-order rows to match
+	// the caller's id list so "@mention"-style references in the UI stay stable.
+	const byId = new Map(rows.map((row) => [row.sessionId, row]));
+	return ids
+		.map((id) => byId.get(id))
+		.filter((row): row is (typeof rows)[number] => Boolean(row))
+		.map((row) => ({
+			sessionId: row.sessionId,
+			displayName: row.displayName,
+			cwd: row.cwd,
+			status: row.status,
+			isWorking: Boolean(row.isWorking),
+			agentType: row.agentType ?? "unknown",
+			lastActivityAt: row.lastActivityAt,
+			score: 100, // explicitly-picked rows always rank first
+		}));
 }
