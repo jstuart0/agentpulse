@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { events, sessions } from "../../db/schema.js";
+import { getSearchBackend } from "../search/index.js";
 import type { ResolvedSession } from "./resolver.js";
 
 /**
@@ -40,12 +41,48 @@ const MEANINGFUL_EVENT_TYPES = new Set([
 	"AiHitlRequest",
 ]);
 
-async function loadSnapshot(sessionId: string): Promise<SessionSnapshot | null> {
+async function loadSnapshot(sessionId: string, ftsQuery?: string): Promise<SessionSnapshot | null> {
 	const [row] = await db.select().from(sessions).where(eq(sessions.sessionId, sessionId)).limit(1);
 	if (!row) return null;
 
+	// If we have an FTS query, pull the top matching events for THIS
+	// session first — those are the rows the resolver surfaced it for
+	// in the first place, and the LLM needs to see them to spot the
+	// match. Falls back to the most-recent tail when no query or when
+	// FTS yields nothing.
+	const matchedEventIds: number[] = [];
+	if (ftsQuery?.trim()) {
+		try {
+			const hits = await getSearchBackend().search({
+				q: ftsQuery,
+				kinds: ["event"],
+				mode: "or",
+				sessionId,
+				limit: 6,
+			});
+			for (const hit of hits.hits) {
+				if (hit.eventId != null) matchedEventIds.push(hit.eventId);
+			}
+		} catch {
+			// Fall back to recent tail.
+		}
+	}
+
+	const matched = matchedEventIds.length
+		? await db
+				.select({
+					eventType: events.eventType,
+					content: events.content,
+					toolName: events.toolName,
+					createdAt: events.createdAt,
+				})
+				.from(events)
+				.where(inArray(events.id, matchedEventIds))
+		: [];
+
 	// Pull a compact tail of the timeline. Filter aggressive noise (raw
 	// PreToolUse / PostToolUse get summarized via totalToolUses instead).
+	const tailLimit = Math.max(6, 12 - matched.length);
 	const raw = await db
 		.select({
 			eventType: events.eventType,
@@ -58,16 +95,25 @@ async function loadSnapshot(sessionId: string): Promise<SessionSnapshot | null> 
 			and(eq(events.sessionId, sessionId), inArray(events.eventType, [...MEANINGFUL_EVENT_TYPES])),
 		)
 		.orderBy(desc(events.createdAt))
-		.limit(12);
+		.limit(tailLimit);
 
-	const recent = raw
-		.reverse() // oldest-first for chronological reading
-		.map((ev) => ({
-			when: ev.createdAt,
-			type: ev.eventType,
-			detail:
-				(ev.content ?? "").toString().slice(0, 280) || (ev.toolName ? `tool: ${ev.toolName}` : ""),
-		}));
+	// De-dupe by timestamp+type — matched rows often overlap the tail.
+	const seen = new Set<string>();
+	const combined = [...matched, ...raw]
+		.filter((ev) => {
+			const key = `${ev.createdAt}::${ev.eventType}`;
+			if (seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		})
+		.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+	const recent = combined.map((ev) => ({
+		when: ev.createdAt,
+		type: ev.eventType,
+		detail:
+			(ev.content ?? "").toString().slice(0, 280) || (ev.toolName ? `tool: ${ev.toolName}` : ""),
+	}));
 
 	return {
 		sessionId: row.sessionId,
@@ -118,6 +164,15 @@ export interface BuildAskContextInput {
 	resolved: ResolvedSession[];
 	/** Hint so the prompt can note ambiguity. */
 	keyword?: string;
+	/**
+	 * FTS query (lexical tokens plus any LLM-expanded terms) the
+	 * resolver used to surface these sessions. When provided, each
+	 * session's snapshot prepends its top 6 matching events so the
+	 * LLM sees the actual rows that caused the match rather than just
+	 * the most-recent-12 tail. Leave undefined for callers that don't
+	 * have a query (e.g. explicit @mentions).
+	 */
+	ftsQuery?: string;
 }
 
 export interface AskContext {
@@ -137,7 +192,7 @@ export async function buildAskContext(input: BuildAskContextInput): Promise<AskC
 	}
 	const snapshots: SessionSnapshot[] = [];
 	for (const r of input.resolved) {
-		const snap = await loadSnapshot(r.sessionId);
+		const snap = await loadSnapshot(r.sessionId, input.ftsQuery);
 		if (snap) snapshots.push(snap);
 	}
 	const body = snapshots.map(renderSnapshot).join("\n\n");
