@@ -6,33 +6,38 @@ import { config } from "../config.js";
 import * as schema from "./schema.js";
 
 function createDatabase() {
-	if (config.useSqlite) {
-		const dbPath = config.sqlitePath;
-		const dir = dirname(dbPath);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
-		}
-		const sqlite = new Database(dbPath);
-		sqlite.exec("PRAGMA journal_mode = WAL;");
-		sqlite.exec("PRAGMA foreign_keys = ON;");
-		return drizzle(sqlite, { schema });
-	}
-
-	// PostgreSQL support can be added here with drizzle-orm/postgres-js
-	// For now, fall back to SQLite
-	console.warn("PostgreSQL not yet configured, falling back to SQLite");
 	const dbPath = config.sqlitePath;
 	const dir = dirname(dbPath);
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true });
 	}
+	if (!config.useSqlite) {
+		// Postgres backend isn't implemented yet — see issue #12. We fall back
+		// to SQLite so tests/dev don't break; the actual Postgres deploy path
+		// logs a warning at boot.
+		console.warn("PostgreSQL not yet configured, falling back to SQLite");
+	}
 	const sqlite = new Database(dbPath);
 	sqlite.exec("PRAGMA journal_mode = WAL;");
 	sqlite.exec("PRAGMA foreign_keys = ON;");
-	return drizzle(sqlite, { schema });
+	// Block + retry for up to 5s on transient SQLITE_BUSY (e.g. a concurrent
+	// writer committing while a secondary reader — like the FTS backend —
+	// tries to prepare a statement). Without this, short read races surface
+	// as immediate 500s in /api/v1/search and similar paths.
+	sqlite.exec("PRAGMA busy_timeout = 5000;");
+	return { db: drizzle(sqlite, { schema }), sqlite };
 }
 
-export const db = createDatabase();
+const created = createDatabase();
+export const db = created.db;
+/**
+ * Raw bun:sqlite handle for callers that need lower-level access than
+ * drizzle exposes (FTS5 MATCH queries, pragma reads, ad-hoc maintenance).
+ * Share this rather than opening a second `new Database(...)` — a second
+ * connection fights the first one for the WAL snapshot and surfaces as
+ * intermittent "no such table" / SQLITE_BUSY errors under load.
+ */
+export const sqlite = created.sqlite;
 export type Db = typeof db;
 
 // Initialize database tables
@@ -636,6 +641,73 @@ export function initializeDatabase() {
 		`);
 	} catch (err) {
 		console.warn("[db] FTS5 search index bootstrap failed:", err);
+	}
+
+	// Backfill FTS from pre-existing rows the triggers never saw. The
+	// triggers only fire on INSERT/UPDATE/DELETE going forward — anything
+	// that existed before the triggers were installed is invisible to
+	// search until we re-index it. We detect the gap by comparing row
+	// counts and only pay the cost when it's real (idempotent on fresh
+	// installs where both counts are 0).
+	try {
+		const sessionsCount =
+			(sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n ?? 0;
+		const ftsSessionsCount =
+			(sqlite.prepare("SELECT COUNT(*) AS n FROM search_sessions_fts").get() as { n: number }).n ??
+			0;
+		const eventsCount =
+			(sqlite.prepare("SELECT COUNT(*) AS n FROM events").get() as { n: number }).n ?? 0;
+		const ftsEventsCount =
+			(sqlite.prepare("SELECT COUNT(*) AS n FROM search_events_fts").get() as { n: number }).n ?? 0;
+		const needsSessionBackfill = sessionsCount > ftsSessionsCount;
+		const needsEventBackfill = eventsCount > ftsEventsCount;
+		if (needsSessionBackfill || needsEventBackfill) {
+			console.log(
+				`[db] Backfilling FTS index: sessions ${ftsSessionsCount}/${sessionsCount}, events ${ftsEventsCount}/${eventsCount}`,
+			);
+			sqlite.exec("BEGIN;");
+			try {
+				if (needsSessionBackfill) {
+					sqlite.exec(`
+						DELETE FROM search_sessions_fts;
+						INSERT INTO search_sessions_fts(session_id, display_name, cwd, current_task, notes, agent_type, status, last_activity_at)
+						SELECT session_id, display_name, cwd, current_task, notes, agent_type, status, last_activity_at
+						FROM sessions;
+					`);
+				}
+				if (needsEventBackfill) {
+					sqlite.exec(`
+						DELETE FROM search_events_fts;
+						INSERT INTO search_events_fts(event_id, session_id, event_type, text, created_at)
+						SELECT
+							id,
+							session_id,
+							event_type,
+							COALESCE(
+								json_extract(raw_payload, '$.prompt'),
+								json_extract(raw_payload, '$.message'),
+								json_extract(raw_payload, '$.summary'),
+								json_extract(raw_payload, '$.why'),
+								json_extract(raw_payload, '$.title'),
+								content, ''
+							),
+							created_at
+						FROM events
+						WHERE event_type IN (
+							'UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted',
+							'SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest'
+						);
+					`);
+				}
+				sqlite.exec("COMMIT;");
+			} catch (err) {
+				sqlite.exec("ROLLBACK;");
+				throw err;
+			}
+			console.log("[db] FTS backfill complete");
+		}
+	} catch (err) {
+		console.warn("[db] FTS backfill skipped:", err);
 	}
 
 	sqlite.close();

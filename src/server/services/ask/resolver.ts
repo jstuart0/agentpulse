@@ -1,6 +1,7 @@
-import { desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { sessions } from "../../db/schema.js";
+import { getSearchBackend } from "../search/index.js";
 
 /**
  * Resolver: map a user's free-form message ("how's the agentpulse session?",
@@ -122,6 +123,33 @@ export interface ResolveInput {
 	fallbackToActive?: boolean;
 }
 
+/**
+ * Run the FTS backend against the user's message to find sessions whose
+ * *event content* mentions the terms — metadata-only substring matching
+ * can't see prompts, assistant messages, or reports. Returns a map of
+ * sessionId → best FTS score (0..1), empty if FTS is unavailable or the
+ * query yielded nothing. Intentionally swallows errors so Ask keeps
+ * working even if the search backend isn't healthy (pre-bootstrap, on
+ * a Postgres install without tsvector yet, etc.).
+ */
+async function ftsScoresForMessage(message: string): Promise<Map<string, number>> {
+	const scores = new Map<string, number>();
+	try {
+		const result = await getSearchBackend().search({
+			q: message,
+			kinds: ["event", "session"],
+			limit: 40,
+		});
+		for (const hit of result.hits) {
+			const prev = scores.get(hit.sessionId) ?? 0;
+			if (hit.score > prev) scores.set(hit.sessionId, hit.score);
+		}
+	} catch {
+		// Silent fallback — Ask is still useful without FTS.
+	}
+	return scores;
+}
+
 export async function resolveCandidateSessions(input: ResolveInput): Promise<ResolvedSession[]> {
 	const limit = input.limit ?? 5;
 	const tokens = tokenize(input.message);
@@ -137,7 +165,46 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 		.orderBy(desc(sessions.lastActivityAt))
 		.limit(80);
 
-	const scoredAll = pool.map((row) => ({ row, score: scoreSession(tokens, row) }));
+	// FTS-driven pool extension. Sessions whose event content matches the
+	// user's message but that fell outside the recency window (e.g. a
+	// question about "coupled" when the relevant session is weeks old)
+	// would otherwise be invisible. Fetch missing sessions by id and
+	// merge them in. Only meaningful when the user gave us tokens.
+	const ftsScores = tokens.length > 0 ? await ftsScoresForMessage(input.message) : new Map();
+	let extendedPool = pool;
+	if (ftsScores.size > 0) {
+		const known = new Set(pool.map((r) => r.sessionId));
+		const missingIds = [...ftsScores.keys()].filter((id) => !known.has(id));
+		if (missingIds.length > 0) {
+			// Apply the same status filter the initial pool uses — FTS can
+			// surface archived/completed sessions otherwise, and existing
+			// callers expect them to stay hidden.
+			const extra = await db
+				.select()
+				.from(sessions)
+				.where(
+					and(
+						inArray(sessions.sessionId, missingIds),
+						or(
+							eq(sessions.status, "active"),
+							eq(sessions.status, "idle"),
+							eq(sessions.isWorking, true),
+						),
+					),
+				);
+			extendedPool = pool.concat(extra);
+		}
+	}
+
+	const scoredAll = extendedPool.map((row) => {
+		let score = scoreSession(tokens, row);
+		const ftsBoost = ftsScores.get(row.sessionId);
+		// Weight FTS high enough that a strong event-content match beats
+		// a weak metadata substring hit, but not so high that substring
+		// matches on the displayName (worth 5) get drowned out.
+		if (ftsBoost !== undefined) score += ftsBoost * 4;
+		return { row, score };
+	});
 	const hasAnyMatch = scoredAll.some((s) => s.score > 0);
 	// If we had keywords but nothing matched them, treat it as an
 	// ambiguous "tell me about my agents" case — fall back to active
