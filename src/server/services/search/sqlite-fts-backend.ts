@@ -1,5 +1,5 @@
-import { Database } from "bun:sqlite";
-import { config } from "../../config.js";
+import type { Database } from "bun:sqlite";
+import { sqlite as sharedSqlite } from "../../db/client.js";
 import type { SearchBackend, SearchFilters, SearchHit, SearchResult } from "./types.js";
 
 /**
@@ -130,7 +130,12 @@ export class SqliteFtsBackend implements SearchBackend {
 	private readonly db: Database;
 
 	constructor(db?: Database) {
-		this.db = db ?? new Database(config.sqlitePath);
+		// Share the drizzle-owned connection by default. Opening a second
+		// connection to the same WAL file works but causes intermittent
+		// SQLITE_BUSY / snapshot-misses under concurrent writes; reusing
+		// the primary connection eliminates the race entirely. Tests
+		// pass their own in-memory/file-backed Database explicitly.
+		this.db = db ?? sharedSqlite;
 	}
 
 	async initialize(): Promise<void> {
