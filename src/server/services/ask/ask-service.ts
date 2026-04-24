@@ -9,6 +9,7 @@ import {
 	getProvider,
 	getProviderApiKey,
 } from "../ai/providers-service.js";
+import { getSemanticEnricher } from "../ai/semantic-enricher.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
 import { fetchSessionsById, resolveCandidateSessions } from "./resolver.js";
 
@@ -289,6 +290,10 @@ async function prepareTurn(input: AskTurnInput): Promise<{
 
 	const breadthHints = /\b(all|every|everything|across|overall|each)\b/i;
 	const wantsBreadth = breadthHints.test(text);
+	// Build the semantic enricher once per turn. Returns null when AI
+	// isn't active or no default provider — the resolver then falls back
+	// to lexical-only search automatically.
+	const enricher = await getSemanticEnricher();
 	const resolved =
 		input.sessionIds && input.sessionIds.length > 0
 			? await fetchSessionsById(input.sessionIds)
@@ -296,6 +301,7 @@ async function prepareTurn(input: AskTurnInput): Promise<{
 					message: text,
 					limit: wantsBreadth ? 20 : 5,
 					fallbackToActive: true,
+					enricher,
 				});
 	const context = await buildAskContext({ resolved });
 
