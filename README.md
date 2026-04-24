@@ -194,7 +194,7 @@ Safety notes:
 
 ### 1. Local service with Bun + SQLite
 
-Recommended for most OSS users. No Docker, no Postgres, no Kubernetes. This is the full single-machine setup: dashboard, hooks, and local supervisor/control plane.
+Recommended for most OSS users. No Docker, no Kubernetes. This is the full single-machine setup: dashboard, hooks, and local supervisor/control plane.
 
 macOS / Linux:
 
@@ -311,10 +311,10 @@ Your Mac                                    Your server / k8s cluster
 │ Claude Code / Codex  │                   │  AgentPulse (remote)     │
 │   hooks → localhost  │                   │  https://pulse.mynet.com │
 │                      │                   │  Authentik SSO           │
-│ AgentPulse (local)   │── shared DB ─────>│  PostgreSQL              │
-│   localhost:3000     │   (optional)      │                          │
-│   collects events    │                   │  Browse from any device  │
-└──────────────────────┘                   └──────────────────────────┘
+│ local relay          │─── hooks ────────>│  SQLite (single file)    │
+│   forwards events    │                   │                          │
+└──────────────────────┘                   │  Browse from any device  │
+                                           └──────────────────────────┘
 ```
 
 **Option A: Local-only with port access from other devices**
@@ -356,22 +356,6 @@ Manage the relay:
   Config:  cat ~/.agentpulse/config.json
 ```
 
-**Option C: Local collector + remote dashboard (shared database)**
-
-Run a local instance for hook collection and a remote instance for the dashboard, both pointing at the same PostgreSQL database:
-
-```bash
-# On your machine (hooks point here)
-docker run -d -p 3000:3000 -e DISABLE_AUTH=true -e DATABASE_URL=postgresql://user:pass@db-host:5432/agentpulse --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-curl -sSL http://localhost:3000/setup.sh | bash
-
-# On your server (dashboard accessed from anywhere)
-# Deploy with k8s manifests in deploy/k8s/ pointing at the same DATABASE_URL
-kubectl apply -f deploy/k8s/
-```
-
-Both instances read/write the same database, so the remote dashboard shows everything the local collector receives.
-
 **Option C: Kubernetes with Authentik SSO**
 
 See `deploy/k8s/` for full manifests including Traefik IngressRoute with split auth (hooks bypass Authentik, dashboard is SSO-protected). The IngressRoute has separate rules so `/api/v1/hooks` uses API key auth while everything else goes through Authentik forwardAuth.
@@ -398,8 +382,9 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 
 ### Database
 
-- **Default:** SQLite (zero config, stored at `./data/agentpulse.db`)
-- **Production:** Set `DATABASE_URL=postgresql://user:pass@host:5432/agentpulse`
+SQLite (stored at `./data/agentpulse.db`). Zero-config, single-file, handles home-lab and small-team scale comfortably.
+
+> **PostgreSQL is on the roadmap but not implemented yet.** The `DATABASE_URL` env var is parsed but ignored — setting it today silently falls back to SQLite. If you need multi-replica scale-out, track progress in [the Postgres backend issue](https://github.com/jstuart0/agentpulse/issues) or hold off until it lands.
 
 ### All environment variables
 
@@ -407,7 +392,6 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port |
 | `HOST` | `0.0.0.0` | Bind address |
-| `DATABASE_URL` | (empty = SQLite) | PostgreSQL connection string |
 | `PUBLIC_URL` | `http://localhost:3000` | Public URL (used in setup script) |
 | `DATA_DIR` | `./data` | Base directory for local SQLite storage |
 | `SQLITE_PATH` | `${DATA_DIR}/agentpulse.db` | Override the SQLite database file path |
@@ -498,7 +482,7 @@ bun run dev        # starts API server + Vite dev server
 
 ## Tech stack
 
-[Bun](https://bun.sh) + [Hono](https://hono.dev) + [React 19](https://react.dev) + [TailwindCSS](https://tailwindcss.com) + [Drizzle ORM](https://orm.drizzle.team) + [Zustand](https://zustand.docs.pmnd.rs) + SQLite/PostgreSQL
+[Bun](https://bun.sh) + [Hono](https://hono.dev) + [React 19](https://react.dev) + [TailwindCSS](https://tailwindcss.com) + [Drizzle ORM](https://orm.drizzle.team) + [Zustand](https://zustand.docs.pmnd.rs) + SQLite
 
 ## Community & Contributing
 

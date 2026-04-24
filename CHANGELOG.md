@@ -21,6 +21,17 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   runtime impact — but if you were importing this helper directly, you
   can now trust the result to match your input list.
 
+### Fixed — documentation
+
+- **Postgres backend is not yet implemented.** The README, wiki
+  (Architecture, Deployment, FAQ, Roadmap) previously claimed Postgres
+  support via `DATABASE_URL`. The env var is parsed but downstream code
+  ignores it — setting `DATABASE_URL=postgres://…` silently falls back
+  to SQLite with a warning log. Docs now say so clearly, point to the
+  tracking issue (#12), and drop the "multi-replica via Postgres"
+  claim from the Scale-out section. Full phased backend-port plan is
+  in `thoughts/2026-04-24-postgres-backend-plan.md`.
+
 ## [0.2.0-pre.1] — 2026-04-23
 
 First pre-release after 0.1.0. Focused on making setup friction-free
