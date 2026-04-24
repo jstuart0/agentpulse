@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { sessions } from "../../db/schema.js";
+import type { SemanticEnricher } from "../ai/semantic-enricher.js";
 import { getSearchBackend } from "../search/index.js";
 
 /**
@@ -121,6 +122,14 @@ export interface ResolveInput {
 	 * message had specific hits.
 	 */
 	fallbackToActive?: boolean;
+	/**
+	 * Optional semantic enricher (LLM query expansion today, vector
+	 * similarity later). When provided, we broaden the FTS query with
+	 * the enricher's extraTerms and merge its directHits into the
+	 * candidate pool — letting Ask find sessions whose event content is
+	 * paraphrased but not literal. Null / undefined = lexical-only.
+	 */
+	enricher?: SemanticEnricher | null;
 }
 
 /**
@@ -137,13 +146,28 @@ export interface ResolveInput {
  * "coupled") practically never matches a single document; OR'ing the
  * content words ("tightly" OR "coupled" OR "code") gets us back to
  * something useful.
+ *
+ * `extraTerms` come from the semantic enricher — LLM-generated synonyms
+ * / related jargon today, open to vector-driven term suggestions later.
+ * We merge them with the lexical tokens and dedupe before ORing.
  */
-async function ftsScoresForMessage(tokens: string[]): Promise<Map<string, number>> {
+async function ftsScoresForMessage(
+	tokens: string[],
+	extraTerms: string[] = [],
+): Promise<Map<string, number>> {
 	const scores = new Map<string, number>();
-	if (tokens.length === 0) return scores;
+	const seen = new Set<string>();
+	const merged: string[] = [];
+	for (const t of [...tokens, ...extraTerms]) {
+		const normalized = t.trim().toLowerCase();
+		if (!normalized || seen.has(normalized)) continue;
+		seen.add(normalized);
+		merged.push(normalized);
+	}
+	if (merged.length === 0) return scores;
 	try {
 		const result = await getSearchBackend().search({
-			q: tokens.join(" "),
+			q: merged.join(" "),
 			kinds: ["event", "session"],
 			mode: "or",
 			limit: 40,
@@ -173,12 +197,26 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 		.orderBy(desc(sessions.lastActivityAt))
 		.limit(80);
 
+	// Semantic enrichment (LLM expansion today, vector similarity later).
+	// When an enricher is attached, we widen the FTS query with its
+	// extraTerms and fold its directHits into the score map. This is
+	// where "search for meaning, not exact words" becomes real.
+	const enrichment = input.enricher ? await input.enricher.enrich(input.message) : null;
+
 	// FTS-driven pool extension. Sessions whose event content matches the
 	// user's message but that fell outside the recency window (e.g. a
 	// question about "coupled" when the relevant session is weeks old)
 	// would otherwise be invisible. Fetch missing sessions by id and
 	// merge them in. Only meaningful when the user gave us tokens.
-	const ftsScores = await ftsScoresForMessage(tokens);
+	const ftsScores = await ftsScoresForMessage(tokens, enrichment?.extraTerms ?? []);
+	// Fold in the enricher's direct hits (vector search populates this;
+	// LLM expansion leaves it empty).
+	if (enrichment) {
+		for (const [sessionId, score] of enrichment.directHits) {
+			const prev = ftsScores.get(sessionId) ?? 0;
+			if (score > prev) ftsScores.set(sessionId, score);
+		}
+	}
 	let extendedPool = pool;
 	if (ftsScores.size > 0) {
 		const known = new Set(pool.map((r) => r.sessionId));
