@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, or } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { sessions } from "../../db/schema.js";
 import type { SemanticEnricher } from "../ai/semantic-enricher.js";
@@ -222,22 +222,15 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 		const known = new Set(pool.map((r) => r.sessionId));
 		const missingIds = [...ftsScores.keys()].filter((id) => !known.has(id));
 		if (missingIds.length > 0) {
-			// Apply the same status filter the initial pool uses — FTS can
-			// surface archived/completed sessions otherwise, and existing
-			// callers expect them to stay hidden.
+			// FTS just told us these sessions semantically match the user's
+			// question — trust that signal and include completed ones too.
+			// We still hide `archived` sessions (user intent: "don't show
+			// these") but anything else is fair game; "find the session
+			// where I did X" is often a question about past, finished work.
 			const extra = await db
 				.select()
 				.from(sessions)
-				.where(
-					and(
-						inArray(sessions.sessionId, missingIds),
-						or(
-							eq(sessions.status, "active"),
-							eq(sessions.status, "idle"),
-							eq(sessions.isWorking, true),
-						),
-					),
-				);
+				.where(and(inArray(sessions.sessionId, missingIds), ne(sessions.status, "archived")));
 			extendedPool = pool.concat(extra);
 		}
 	}

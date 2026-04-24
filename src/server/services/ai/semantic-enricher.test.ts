@@ -38,4 +38,16 @@ describe("parseExpansion", () => {
 		const out = parseExpansion("coupled, and, or, the, refactor");
 		expect(out).toEqual(["coupled", "refactor"]);
 	});
+
+	test("strips qwen <think>…</think> blocks before parsing", () => {
+		const out = parseExpansion(
+			"<think>Hmm, the user wants synonyms for coupling.</think>\ncoupled, coupling, decouple, refactor",
+		);
+		expect(out).toEqual(["coupled", "coupling", "decouple", "refactor"]);
+	});
+
+	test("handles unclosed <think> at EOF (truncated reasoning)", () => {
+		const out = parseExpansion("auth, oauth, login<think>wait let me reconsider");
+		expect(out).toEqual(["auth", "oauth", "login"]);
+	});
 });
