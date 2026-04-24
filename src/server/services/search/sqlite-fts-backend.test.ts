@@ -114,6 +114,29 @@ describe("SqliteFtsBackend", () => {
 		expect(res.hits[0].snippet).toContain("</mark>");
 	});
 
+	test("default AND mode requires every token; OR mode requires any", async () => {
+		await insertSession("s1");
+		await insertSession("s2");
+		await insertEvent("s1", "UserPromptSubmit", { prompt: "refactor the tightly coupled code" });
+		await insertEvent("s2", "UserPromptSubmit", { prompt: "ship the Kubernetes rollout" });
+
+		const backend = freshBackend();
+
+		// AND: only s1 has both "tightly" and "coupled" in a single document.
+		const andRes = await backend.search({ q: "tightly coupled kubernetes", kinds: ["event"] });
+		expect(andRes.hits.length).toBe(0);
+
+		// OR: s1 matches on "tightly"/"coupled", s2 matches on "kubernetes".
+		const orRes = await backend.search({
+			q: "tightly coupled kubernetes",
+			kinds: ["event"],
+			mode: "or",
+		});
+		const ids = new Set(orRes.hits.map((h) => h.sessionId));
+		expect(ids.has("s1")).toBe(true);
+		expect(ids.has("s2")).toBe(true);
+	});
+
 	test("filters by eventType", async () => {
 		await insertSession("s1");
 		await insertEvent("s1", "UserPromptSubmit", { prompt: "deploy the staging build" });
