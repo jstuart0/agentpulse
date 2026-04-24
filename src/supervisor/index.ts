@@ -1,10 +1,3 @@
-import { loadSupervisorConfig, saveSupervisorConfig } from "./config.js";
-import {
-	launchClaudeHeadlessRequest,
-	launchClaudeInteractiveRequest,
-	promptClaudeHeadlessSession,
-	promptClaudeInteractiveSession,
-} from "./providers/claude.js";
 import type {
 	ControlAction,
 	LaunchRequest,
@@ -13,6 +6,13 @@ import type {
 	ManagedSessionStateInput,
 	Session,
 } from "../shared/types.js";
+import { loadSupervisorConfig, saveSupervisorConfig } from "./config.js";
+import {
+	launchClaudeHeadlessRequest,
+	launchClaudeInteractiveRequest,
+	promptClaudeHeadlessSession,
+	promptClaudeInteractiveSession,
+} from "./providers/claude.js";
 import {
 	launchManagedCodexRequest,
 	reconcileManagedCodexTitles,
@@ -27,7 +27,8 @@ async function request(path: string, options?: RequestInit) {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	if (config.supervisorCredential) headers["X-AgentPulse-Supervisor-Token"] = config.supervisorCredential;
+	if (config.supervisorCredential)
+		headers["X-AgentPulse-Supervisor-Token"] = config.supervisorCredential;
 	if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
 
 	const res = await fetch(`${config.serverUrl}/api/v1${path}`, {
@@ -87,15 +88,18 @@ async function main() {
 
 	let lastHeartbeatOkAt = Date.now();
 	const watchdogStaleMs = Math.max(registration.heartbeatIntervalMs * 3, 90_000);
-	setInterval(() => {
-		const staleMs = Date.now() - lastHeartbeatOkAt;
-		if (staleMs > watchdogStaleMs) {
-			console.error(
-				`[supervisor] watchdog: no successful heartbeat in ${Math.round(staleMs / 1000)}s — exiting for launchd/systemd restart`,
-			);
-			process.exit(1);
-		}
-	}, Math.max(10_000, Math.floor(registration.heartbeatIntervalMs / 2))).unref();
+	setInterval(
+		() => {
+			const staleMs = Date.now() - lastHeartbeatOkAt;
+			if (staleMs > watchdogStaleMs) {
+				console.error(
+					`[supervisor] watchdog: no successful heartbeat in ${Math.round(staleMs / 1000)}s — exiting for launchd/systemd restart`,
+				);
+				process.exit(1);
+			}
+		},
+		Math.max(10_000, Math.floor(registration.heartbeatIntervalMs / 2)),
+	).unref();
 
 	async function dispatchLaunch(launch: LaunchRequest) {
 		if (launch.agentType === "codex_cli" && launch.requestedLaunchMode === "managed_codex") {
@@ -183,15 +187,18 @@ async function main() {
 				const result = await launchClaudeHeadlessRequest(
 					launch,
 					async (update) => {
-						await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
-							method: "POST",
-							body: JSON.stringify({
-								status: update.status,
-								pid: update.pid ?? null,
-								error: update.error ?? null,
-								providerLaunchMetadata: update.providerLaunchMetadata,
-							}),
-						});
+						await request(
+							`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`,
+							{
+								method: "POST",
+								body: JSON.stringify({
+									status: update.status,
+									pid: update.pid ?? null,
+									error: update.error ?? null,
+									providerLaunchMetadata: update.providerLaunchMetadata,
+								}),
+							},
+						);
 					},
 					claudeCallbacks,
 				);
@@ -229,10 +236,9 @@ async function main() {
 
 	setInterval(async () => {
 		try {
-			const result = (await request(
-				`/supervisors/${registration.supervisor.id}/launches/claim`,
-				{ method: "POST" },
-			)) as { launchRequest: LaunchRequest | null };
+			const result = (await request(`/supervisors/${registration.supervisor.id}/launches/claim`, {
+				method: "POST",
+			})) as { launchRequest: LaunchRequest | null };
 			if (result.launchRequest) {
 				await dispatchLaunch(result.launchRequest);
 			}
@@ -318,8 +324,7 @@ async function main() {
 							method: "POST",
 							body: JSON.stringify({
 								status: "failed",
-								error:
-									error instanceof Error ? error.message : "Failed to stop managed session",
+								error: error instanceof Error ? error.message : "Failed to stop managed session",
 							}),
 						},
 					);
@@ -358,7 +363,7 @@ async function main() {
 						})) as { session: Session; managedSession: ManagedSession },
 					reportEvents: async (events: ManagedSessionEventInput[]) => {
 						await request(
-							`/supervisors/${registration.supervisor.id}/managed-sessions/${result.action!.sessionId}/events`,
+							`/supervisors/${registration.supervisor.id}/managed-sessions/${result.action?.sessionId}/events`,
 							{
 								method: "POST",
 								body: JSON.stringify({ events }),
@@ -411,30 +416,32 @@ async function main() {
 						async () => {},
 						claudeCallbacks,
 					);
-					void response.monitor.then(async () => {
-						await request(
-							`/supervisors/${registration.supervisor.id}/control-actions/${result.action!.id}/status`,
-							{
-								method: "POST",
-								body: JSON.stringify({
-									status: "succeeded",
-									metadata: response.metadata,
-								}),
-							},
-						);
-					}).catch(async (error) => {
-						await request(
-							`/supervisors/${registration.supervisor.id}/control-actions/${result.action!.id}/status`,
-							{
-								method: "POST",
-								body: JSON.stringify({
-									status: "failed",
-									error: error instanceof Error ? error.message : "Failed to execute prompt",
-								}),
-							},
-						);
-					});
-						return;
+					void response.monitor
+						.then(async () => {
+							await request(
+								`/supervisors/${registration.supervisor.id}/control-actions/${result.action?.id}/status`,
+								{
+									method: "POST",
+									body: JSON.stringify({
+										status: "succeeded",
+										metadata: response.metadata,
+									}),
+								},
+							);
+						})
+						.catch(async (error) => {
+							await request(
+								`/supervisors/${registration.supervisor.id}/control-actions/${result.action?.id}/status`,
+								{
+									method: "POST",
+									body: JSON.stringify({
+										status: "failed",
+										error: error instanceof Error ? error.message : "Failed to execute prompt",
+									}),
+								},
+							);
+						});
+					return;
 				} catch (error) {
 					await request(
 						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,

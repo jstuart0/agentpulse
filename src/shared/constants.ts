@@ -9,13 +9,7 @@ export const SEMANTIC_STATUSES = [
 	"waiting",
 ] as const;
 
-export const SESSION_STATUSES = [
-	"active",
-	"idle",
-	"completed",
-	"failed",
-	"archived",
-] as const;
+export const SESSION_STATUSES = ["active", "idle", "completed", "failed", "archived"] as const;
 
 export const AGENT_TYPES = ["claude_code", "codex_cli"] as const;
 

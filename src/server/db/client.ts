@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { config } from "../config.js";
 import * as schema from "./schema.js";
@@ -527,9 +527,7 @@ export function initializeDatabase() {
 				if (locked) {
 					attempts += 1;
 					const backoffMs = 250 * 2 ** attempts;
-					console.warn(
-						`[db] Migration locked (attempt ${attempts}); retrying in ${backoffMs}ms`,
-					);
+					console.warn(`[db] Migration locked (attempt ${attempts}); retrying in ${backoffMs}ms`);
 					// Bun's sync sleep blocks the event loop — fine here
 					// because initializeDatabase already runs synchronously
 					// during boot before anything else starts listening.

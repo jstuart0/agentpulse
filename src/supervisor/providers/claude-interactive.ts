@@ -1,11 +1,11 @@
+import { spawn } from "node:child_process";
+import { chmod, mkdir } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { mkdir, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
-import { loadSupervisorConfig } from "../config.js";
 import type { LaunchRequest } from "../../shared/types.js";
+import { loadSupervisorConfig } from "../config.js";
 import type {
 	ClaudePromptAction,
 	InteractiveBridge,
@@ -85,12 +85,12 @@ async function openMacTerminal(command: string, terminalPreference?: string) {
 	if (app === "iTerm") {
 		const script = [
 			`tell application "iTerm"`,
-			`activate`,
-			`create window with default profile`,
+			"activate",
+			"create window with default profile",
 			`tell current session of current window to write text "${escapeAppleScript(command)}"`,
-			`delay 0.2`,
-			`return (id of current window as text)`,
-			`end tell`,
+			"delay 0.2",
+			"return (id of current window as text)",
+			"end tell",
 		];
 		const windowId = await runAppleScript(script);
 		return { pid: null, owner: { app, windowId } satisfies TerminalOwner };
@@ -98,11 +98,11 @@ async function openMacTerminal(command: string, terminalPreference?: string) {
 
 	const script = [
 		`tell application "Terminal"`,
-		`activate`,
+		"activate",
 		`do script "${escapeAppleScript(command)}"`,
-		`delay 0.2`,
-		`return (id of front window as text)`,
-		`end tell`,
+		"delay 0.2",
+		"return (id of front window as text)",
+		"end tell",
 	];
 	const windowId = await runAppleScript(script);
 	return { pid: null, owner: { app, windowId } satisfies TerminalOwner };
@@ -135,12 +135,7 @@ export async function launchClaudeInteractiveRequest(
 	const args = buildLaunchBaseArgs(launch, executable);
 	args.push(launch.taskPrompt.trim() || "Continue working on this project.");
 	const bridge = await createInteractiveBridge(launch, config, args);
-	const bridgeCommand = [
-		"python3",
-		bridgeScriptPath,
-		"--config",
-		bridge.configPath,
-	];
+	const bridgeCommand = ["python3", bridgeScriptPath, "--config", bridge.configPath];
 
 	const shellCommand = [
 		`cd ${quoteShell(launch.cwd)}`,
@@ -172,7 +167,9 @@ export async function launchClaudeInteractiveRequest(
 	} else if (config.capabilities.os === "linux") {
 		proc = await openLinuxTerminal(shellCommand, config.capabilities.terminalSupport);
 	} else {
-		throw new Error(`Interactive terminal launches are not implemented on ${config.capabilities.os}.`);
+		throw new Error(
+			`Interactive terminal launches are not implemented on ${config.capabilities.os}.`,
+		);
 	}
 	if ("unref" in proc && typeof proc.unref === "function") proc.unref();
 
@@ -249,7 +246,9 @@ export async function promptClaudeInteractiveSession(
 				} satisfies InteractiveBridge)
 			: null;
 	if (!interactiveBridge?.socketPath) {
-		throw new Error("Interactive prompt handoff is unavailable because this session is not using an owned interactive bridge.");
+		throw new Error(
+			"Interactive prompt handoff is unavailable because this session is not using an owned interactive bridge.",
+		);
 	}
 
 	await new Promise<void>((resolve, reject) => {
@@ -298,7 +297,8 @@ export async function promptClaudeInteractiveSession(
 		metadata: {
 			mode: "interactive_terminal",
 			command: [],
-			resolvedExecutable: config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude",
+			resolvedExecutable:
+				config.capabilities.executables?.claude?.resolvedPath || config.claudeCommand || "claude",
 			startedAt: new Date().toISOString(),
 			terminalSupport: config.capabilities.terminalSupport,
 			terminalPreference: config.terminalPreference ?? null,
@@ -308,4 +308,3 @@ export async function promptClaudeInteractiveSession(
 		} satisfies LaunchMetadata,
 	};
 }
-

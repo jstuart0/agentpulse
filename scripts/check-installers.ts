@@ -1,4 +1,4 @@
-import { readFile } from "fs/promises";
+import { readFile } from "node:fs/promises";
 
 async function mustInclude(path: string, expected: string) {
 	const content = await readFile(path, "utf8");
@@ -8,7 +8,7 @@ async function mustInclude(path: string, expected: string) {
 }
 
 async function main() {
-	await mustInclude("scripts/install-local.sh", "AUTO_SUPERVISOR=\"true\"");
+	await mustInclude("scripts/install-local.sh", 'AUTO_SUPERVISOR="true"');
 	await mustInclude("scripts/install-local.sh", "run supervisor");
 	await mustInclude("scripts/install-local.ps1", "AgentPulseSupervisor");
 	await mustInclude("scripts/install-local.ps1", "run supervisor");

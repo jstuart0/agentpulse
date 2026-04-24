@@ -1,7 +1,7 @@
-import { homedir, hostname, platform, arch } from "os";
-import { delimiter, isAbsolute, join } from "path";
-import { mkdir } from "fs/promises";
-import { accessSync, constants } from "fs";
+import { constants, accessSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { arch, homedir, hostname, platform } from "node:os";
+import { delimiter, isAbsolute, join } from "node:path";
 import type { SupervisorRegistrationInput } from "../shared/types.js";
 
 export interface SupervisorConfig {

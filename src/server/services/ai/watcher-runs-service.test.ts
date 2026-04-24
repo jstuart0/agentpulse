@@ -114,7 +114,7 @@ describe("watcher-runs-service", () => {
 	});
 
 	test("reclaim expired leases expires runs past max attempts", async () => {
-		const run = await enqueueRun({ sessionId: "s6", triggerKind: "idle" });
+		const _run = await enqueueRun({ sessionId: "s6", triggerKind: "idle" });
 		await claimNextRun({ leaseOwner: "owner-1", leaseDurationMs: 10_000 });
 		// Bump attempt count above ceiling.
 		await db.update(aiWatcherRuns).set({ attemptCount: 3 }).execute();

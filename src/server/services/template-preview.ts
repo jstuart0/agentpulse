@@ -1,5 +1,5 @@
-import { existsSync } from "fs";
-import { isAbsolute, resolve } from "path";
+import { existsSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import type {
 	AgentType,
 	ApprovalPolicy,

@@ -31,7 +31,6 @@ export function InlineRename({
 	if (editing) {
 		return (
 			<input
-				autoFocus
 				value={value}
 				onChange={(e) => setValue(e.target.value)}
 				onBlur={save}

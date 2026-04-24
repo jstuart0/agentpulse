@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { loadSupervisorConfig } from "../config.js";
 
@@ -30,7 +30,10 @@ type RpcWaiter = {
 export class RpcClient {
 	private ws: WebSocket;
 	private nextId = 1;
-	private pending = new Map<JsonRpcId, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+	private pending = new Map<
+		JsonRpcId,
+		{ resolve: (value: any) => void; reject: (error: Error) => void }
+	>();
 	private notifications: JsonRpcNotification[] = [];
 	private waiters: RpcWaiter[] = [];
 	private listeners = new Set<(notification: JsonRpcNotification) => void>();

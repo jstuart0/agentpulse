@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { spawn } from "node:child_process";
 /**
  * End-to-end AI watcher live test.
  *
@@ -12,10 +13,9 @@
  *     {"name":"openrouter-sonnet","kind":"openrouter","model":"anthropic/claude-3.5-sonnet","baseUrl":"https://openrouter.ai/api/v1","apiKey":"sk-or-..."}
  *   ]' bun scripts/ai-live-test.ts
  */
-import { mkdtempSync, rmSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
-import { spawn } from "child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 interface ProviderSpec {
 	name: string;
@@ -27,9 +27,7 @@ interface ProviderSpec {
 
 const providersEnv = process.env.AGENTPULSE_LIVE_TEST_PROVIDERS;
 if (!providersEnv) {
-	console.error(
-		"Set AGENTPULSE_LIVE_TEST_PROVIDERS to a JSON array. See file header for format.",
-	);
+	console.error("Set AGENTPULSE_LIVE_TEST_PROVIDERS to a JSON array. See file header for format.");
 	process.exit(2);
 }
 
@@ -50,21 +48,17 @@ console.log(`[live-test] data dir: ${dataDir}`);
 console.log(`[live-test] listening on ${port}`);
 console.log(`[live-test] testing ${providers.length} provider(s)`);
 
-const server = spawn(
-	"bun",
-	["src/server/index.ts"],
-	{
-		env: {
-			...process.env,
-			AGENTPULSE_AI_ENABLED: "true",
-			AGENTPULSE_SECRETS_KEY: secretsKey,
-			DATA_DIR: dataDir,
-			DISABLE_AUTH: "true",
-			PORT: String(port),
-		},
-		stdio: ["ignore", "pipe", "pipe"],
+const server = spawn("bun", ["src/server/index.ts"], {
+	env: {
+		...process.env,
+		AGENTPULSE_AI_ENABLED: "true",
+		AGENTPULSE_SECRETS_KEY: secretsKey,
+		DATA_DIR: dataDir,
+		DISABLE_AUTH: "true",
+		PORT: String(port),
 	},
-);
+	stdio: ["ignore", "pipe", "pipe"],
+});
 server.stdout?.on("data", () => {});
 server.stderr?.on("data", (d) => {
 	const s = String(d);
@@ -101,7 +95,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 	return res.json() as Promise<T>;
 }
 
-async function seedSession(sessionId: string, cwd: string, displayName: string): Promise<void> {
+async function seedSession(sessionId: string, cwd: string, _displayName: string): Promise<void> {
 	// We use the ingest endpoint to get a realistic session + event trail.
 	const postHook = (payload: Record<string, unknown>) =>
 		fetch(`${BASE}/hooks`, {
@@ -216,9 +210,7 @@ async function run() {
 			const tokens = `${proposal.tokensIn}/${proposal.tokensOut}`;
 			const detail = `state=${state} decision=${decision} tokens=${tokens} cost=¢${cost}`;
 			console.log(`  ${detail}`);
-			console.log(
-				`  content: ${content.length > 200 ? `${content.slice(0, 200)}…` : content}`,
-			);
+			console.log(`  content: ${content.length > 200 ? `${content.slice(0, 200)}…` : content}`);
 			results.push({ provider: label, outcome: String(state), detail: content.slice(0, 400) });
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);

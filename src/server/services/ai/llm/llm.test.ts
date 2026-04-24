@@ -8,11 +8,10 @@ const originalFetch = globalThis.fetch;
 let capturedRequests: Array<{ url: string; init: RequestInit }> = [];
 
 function mockFetch(response: Response | (() => Response)) {
-	// biome-ignore lint/suspicious/noExplicitAny: test harness
 	globalThis.fetch = ((url: string, init?: RequestInit) => {
 		capturedRequests.push({ url: String(url), init: init ?? {} });
 		return Promise.resolve(typeof response === "function" ? response() : response);
-	}) as any;
+	}) as unknown as typeof globalThis.fetch;
 }
 
 beforeEach(() => {

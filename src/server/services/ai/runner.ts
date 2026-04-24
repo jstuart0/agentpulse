@@ -719,10 +719,19 @@ export async function maybeStartWatcherRunner(): Promise<void> {
 	await watcherRunner.start();
 }
 
-/** Cancel all in-memory debounce timers — used by tests or kill-switch flip. */
+/**
+ * Cancel all in-memory debounce timers — used by tests or kill-switch flip.
+ *
+ * Bracket-access on the private `scheduled` field is intentional: TS would
+ * block a direct `.scheduled` here (private), but the bracket form is
+ * allowed and leaves in-class encapsulation intact. Biome's
+ * `useLiteralKeys` is lowered to warn elsewhere in this file via ignore.
+ */
 export function clearAllScheduled(): void {
+	// biome-ignore lint/complexity/useLiteralKeys: private field escape hatch
 	for (const entry of watcherRunner["scheduled"].values()) {
 		clearTimeout(entry.timer);
 	}
+	// biome-ignore lint/complexity/useLiteralKeys: private field escape hatch
 	watcherRunner["scheduled"].clear();
 }

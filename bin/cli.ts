@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { generateApiKey } from "../src/server/auth/api-key.js";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const args = process.argv.slice(2);
 const command = args[0] || "start";
@@ -80,8 +79,16 @@ async function setup() {
 	});
 
 	const claudeEvents = [
-		"SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "Stop",
-		"SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted", "UserPromptSubmit",
+		"SessionStart",
+		"SessionEnd",
+		"PreToolUse",
+		"PostToolUse",
+		"Stop",
+		"SubagentStart",
+		"SubagentStop",
+		"TaskCreated",
+		"TaskCompleted",
+		"UserPromptSubmit",
 	];
 
 	const hooks: Record<string, unknown[]> = {};
@@ -90,11 +97,11 @@ async function setup() {
 	}
 
 	claudeSettings.hooks = {
-		...(claudeSettings.hooks as Record<string, unknown> || {}),
+		...((claudeSettings.hooks as Record<string, unknown>) || {}),
 		...hooks,
 	};
 
-	writeFileSync(claudeSettingsPath, JSON.stringify(claudeSettings, null, 2) + "\n");
+	writeFileSync(claudeSettingsPath, `${JSON.stringify(claudeSettings, null, 2)}\n`);
 	console.log(`  ✓ Claude Code hooks → ${claudeSettingsPath}`);
 
 	// ── Codex CLI ──
@@ -115,7 +122,7 @@ async function setup() {
 	}));
 
 	const codexHooksPath = join(codexDir, "hooks.json");
-	writeFileSync(codexHooksPath, JSON.stringify({ hooks: codexHooks }, null, 2) + "\n");
+	writeFileSync(codexHooksPath, `${JSON.stringify({ hooks: codexHooks }, null, 2)}\n`);
 	console.log(`  ✓ Codex CLI hooks  → ${codexHooksPath}`);
 
 	// Enable hooks feature in codex config.toml
@@ -123,12 +130,12 @@ async function setup() {
 	if (existsSync(codexConfigPath)) {
 		const content = readFileSync(codexConfigPath, "utf-8");
 		if (!content.includes("codex_hooks")) {
-			writeFileSync(codexConfigPath, content + "\n[features]\ncodex_hooks = true\n");
-			console.log(`  ✓ Codex hooks enabled in config.toml`);
+			writeFileSync(codexConfigPath, `${content}\n[features]\ncodex_hooks = true\n`);
+			console.log("  ✓ Codex hooks enabled in config.toml");
 		}
 	} else {
 		writeFileSync(codexConfigPath, "[features]\ncodex_hooks = true\n");
-		console.log(`  ✓ Codex config.toml created with hooks enabled`);
+		console.log("  ✓ Codex config.toml created with hooks enabled");
 	}
 
 	// ── Shell env ──
@@ -148,8 +155,7 @@ async function setup() {
 		if (!profileContent.includes("AGENTPULSE_API_KEY")) {
 			writeFileSync(
 				profile,
-				profileContent +
-					`\n# AgentPulse\nexport AGENTPULSE_API_KEY="${key}"\nexport AGENTPULSE_URL="${url}"\n`,
+				`${profileContent}\n# AgentPulse\nexport AGENTPULSE_API_KEY="${key}"\nexport AGENTPULSE_URL="${url}"\n`,
 			);
 			added = true;
 		}

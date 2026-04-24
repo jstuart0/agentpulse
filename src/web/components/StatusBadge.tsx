@@ -45,7 +45,7 @@ export function StatusBadge({ status, variant = "session", className }: StatusBa
 				"inline-flex items-center gap-1.5 rounded-md px-2 py-[3px] text-[11px] font-semibold tracking-wide uppercase border",
 				styles.bg,
 				styles.text,
-				`border-current/10`,
+				"border-current/10",
 				sessionStyle?.glow,
 				className,
 			)}

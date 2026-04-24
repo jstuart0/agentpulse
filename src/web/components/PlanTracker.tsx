@@ -15,8 +15,11 @@ export function PlanTracker({ plan, className }: PlanTrackerProps) {
 					const isDone = i < plan.findIndex((s) => s.startsWith(">>"));
 
 					return (
+						// Plan step text + index is stable enough to key on —
+						// both the text and its position need to match for it
+						// to be the same step.
 						<div
-							key={i}
+							key={`${i}-${step}`}
 							className={`flex items-center gap-2 text-xs ${
 								isCurrent
 									? "text-primary font-medium"

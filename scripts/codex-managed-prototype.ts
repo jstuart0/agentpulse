@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 
 type JsonRpcId = number;
 
@@ -38,7 +38,10 @@ type ThreadReadResult = {
 class RpcClient {
 	private ws: WebSocket;
 	private nextId = 1;
-	private pending = new Map<JsonRpcId, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+	private pending = new Map<
+		JsonRpcId,
+		{ resolve: (value: unknown) => void; reject: (error: Error) => void }
+	>();
 	private notifications: JsonRpcNotification[] = [];
 	private waiters: Array<{
 		method: string;
@@ -275,17 +278,23 @@ async function run() {
 			const thread = await startThread(client, cwd);
 			await setThreadName(client, thread.id, name);
 			const updated = await readThread(client, thread.id);
-			console.log(JSON.stringify({
-				ok: true,
-				mode: "demo",
-				url,
-				threadId: updated.thread.id,
-				threadName: updated.thread.name,
-				cwd: updated.thread.cwd,
-				status: updated.thread.status,
-				source: updated.thread.source,
-				nextStep: `Connect a Codex TUI to ${url} with: codex --remote ${url}`,
-			}, null, 2));
+			console.log(
+				JSON.stringify(
+					{
+						ok: true,
+						mode: "demo",
+						url,
+						threadId: updated.thread.id,
+						threadName: updated.thread.name,
+						cwd: updated.thread.cwd,
+						status: updated.thread.status,
+						source: updated.thread.source,
+						nextStep: `Connect a Codex TUI to ${url} with: codex --remote ${url}`,
+					},
+					null,
+					2,
+				),
+			);
 			return;
 		}
 
@@ -294,16 +303,22 @@ async function run() {
 			if (!name) throw new Error("--name is required for set-name");
 			await setThreadName(client, threadId, name);
 			const updated = await readThread(client, threadId);
-			console.log(JSON.stringify({
-				ok: true,
-				mode: "set-name",
-				url,
-				threadId: updated.thread.id,
-				threadName: updated.thread.name,
-				cwd: updated.thread.cwd,
-				status: updated.thread.status,
-				source: updated.thread.source,
-			}, null, 2));
+			console.log(
+				JSON.stringify(
+					{
+						ok: true,
+						mode: "set-name",
+						url,
+						threadId: updated.thread.id,
+						threadName: updated.thread.name,
+						cwd: updated.thread.cwd,
+						status: updated.thread.status,
+						source: updated.thread.source,
+					},
+					null,
+					2,
+				),
+			);
 			return;
 		}
 

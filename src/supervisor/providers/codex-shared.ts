@@ -23,7 +23,9 @@ export type ManagedCodexRuntime = {
 };
 
 export type LaunchCallbacks = {
-	reportState: (input: ManagedSessionStateInput) => Promise<{ session: Session; managedSession: ManagedSession }>;
+	reportState: (
+		input: ManagedSessionStateInput,
+	) => Promise<{ session: Session; managedSession: ManagedSession }>;
 	reportEvents: (events: ManagedSessionEventInput[]) => Promise<void>;
 };
 
@@ -41,7 +43,11 @@ export function buildPrompt(launch: LaunchRequest) {
 export function extractText(value: unknown): string {
 	if (typeof value === "string") return value;
 	if (!value || typeof value !== "object") return "";
-	if (Array.isArray(value)) return value.map((item) => extractText(item)).filter(Boolean).join("");
+	if (Array.isArray(value))
+		return value
+			.map((item) => extractText(item))
+			.filter(Boolean)
+			.join("");
 	const record = value as Record<string, unknown>;
 	if (typeof record.text === "string") return record.text;
 	if (typeof record.delta === "string") return record.delta;

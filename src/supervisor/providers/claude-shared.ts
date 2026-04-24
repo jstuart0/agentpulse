@@ -22,7 +22,9 @@ export type HeadlessProgressUpdate = {
 };
 
 export type LaunchCallbacks = {
-	reportState: (input: ManagedSessionStateInput) => Promise<{ session: Session; managedSession: ManagedSession }>;
+	reportState: (
+		input: ManagedSessionStateInput,
+	) => Promise<{ session: Session; managedSession: ManagedSession }>;
 	reportEvents: (events: ManagedSessionEventInput[]) => Promise<void>;
 };
 
@@ -88,7 +90,11 @@ export function pushActivity(entries: ActivityEntry[], entry: ActivityEntry) {
 function extractVisibleText(value: unknown): string {
 	if (typeof value === "string") return value;
 	if (!value || typeof value !== "object") return "";
-	if (Array.isArray(value)) return value.map((item) => extractVisibleText(item)).filter(Boolean).join("");
+	if (Array.isArray(value))
+		return value
+			.map((item) => extractVisibleText(item))
+			.filter(Boolean)
+			.join("");
 	const record = value as Record<string, unknown>;
 	for (const key of ["text", "delta", "message", "result", "content", "completion"]) {
 		const candidate = extractVisibleText(record[key]);
@@ -97,7 +103,9 @@ function extractVisibleText(value: unknown): string {
 	return "";
 }
 
-export function summarizeStreamLine(line: string): { activity?: ActivityEntry; assistantDelta?: string } | null {
+export function summarizeStreamLine(
+	line: string,
+): { activity?: ActivityEntry; assistantDelta?: string } | null {
 	const timestamp = new Date().toISOString();
 	const trimmed = line.trim();
 	if (!trimmed) return null;
@@ -294,4 +302,3 @@ export async function readTextStream(
 		reader.releaseLock();
 	}
 }
-

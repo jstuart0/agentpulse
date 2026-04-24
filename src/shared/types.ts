@@ -1,19 +1,9 @@
 // Agent types supported
 export type AgentType = "claude_code" | "codex_cli";
 
-export type ApprovalPolicy =
-	| "default"
-	| "suggest"
-	| "auto"
-	| "manual"
-	| "untrusted"
-	| "on-failure";
+export type ApprovalPolicy = "default" | "suggest" | "auto" | "manual" | "untrusted" | "on-failure";
 
-export type SandboxMode =
-	| "default"
-	| "workspace-write"
-	| "read-only"
-	| "danger-full-access";
+export type SandboxMode = "default" | "workspace-write" | "read-only" | "danger-full-access";
 
 export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
 export type ProviderSyncState = "pending" | "synced" | "failed";
@@ -28,12 +18,7 @@ export type EventSource =
 	| "launch_system";
 
 // Session lifecycle status
-export type SessionStatus =
-	| "active"
-	| "idle"
-	| "completed"
-	| "failed"
-	| "archived";
+export type SessionStatus = "active" | "idle" | "completed" | "failed" | "archived";
 
 // Semantic status reported by agents via CLAUDE.md snippet
 export type SemanticStatus =

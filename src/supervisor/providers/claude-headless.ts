@@ -1,5 +1,5 @@
-import { loadSupervisorConfig } from "../config.js";
 import type { LaunchRequest } from "../../shared/types.js";
+import { loadSupervisorConfig } from "../config.js";
 import type {
 	ClaudePromptAction,
 	HeadlessProgressUpdate,
@@ -27,7 +27,11 @@ type HeadlessLaunchMetadata = LaunchMetadata & {
 	output: {
 		assistantPreview: string;
 		stderrPreview: string;
-		activity: Array<{ kind: "assistant" | "status" | "tool" | "error"; text: string; timestamp: string }>;
+		activity: Array<{
+			kind: "assistant" | "status" | "tool" | "error";
+			text: string;
+			timestamp: string;
+		}>;
 		rawEventCount: number;
 	};
 };
@@ -38,7 +42,10 @@ type HeadlessLaunchResult = {
 	monitor: Promise<void>;
 };
 
-function createHeadlessMetadata(args: string[], resolvedExecutable: string): HeadlessLaunchMetadata {
+function createHeadlessMetadata(
+	args: string[],
+	resolvedExecutable: string,
+): HeadlessLaunchMetadata {
 	return {
 		mode: "headless",
 		command: args,
@@ -64,10 +71,29 @@ async function streamHeadlessClaude(opts: {
 	metadata: HeadlessLaunchMetadata;
 	reportProgress: (update: HeadlessProgressUpdate) => Promise<void>;
 	callbacks?: LaunchCallbacks;
-	startEvent: { eventType: string; category: "system_event" | "prompt"; content: string; rawPayload: Record<string, unknown> };
-	completionEvent: { success: string; failurePrefix: string; failurePayload?: Record<string, unknown> };
+	startEvent: {
+		eventType: string;
+		category: "system_event" | "prompt";
+		content: string;
+		rawPayload: Record<string, unknown>;
+	};
+	completionEvent: {
+		success: string;
+		failurePrefix: string;
+		failurePayload?: Record<string, unknown>;
+	};
 }) {
-	const { sessionId, launchRequestId, cwd, model, configCapabilities, proc, metadata, reportProgress, callbacks } = opts;
+	const {
+		sessionId,
+		launchRequestId,
+		cwd,
+		model,
+		configCapabilities,
+		proc,
+		metadata,
+		reportProgress,
+		callbacks,
+	} = opts;
 	let lastReportAt = 0;
 	let emittedActivityCount = 0;
 
@@ -189,7 +215,8 @@ async function streamHeadlessClaude(opts: {
 			});
 			await callbacks.reportEvents([
 				{
-					eventType: exitCode === 0 ? `${opts.completionEvent.success}` : opts.completionEvent.failurePrefix,
+					eventType:
+						exitCode === 0 ? `${opts.completionEvent.success}` : opts.completionEvent.failurePrefix,
 					category: "system_event",
 					content:
 						exitCode === 0
@@ -197,7 +224,10 @@ async function streamHeadlessClaude(opts: {
 								? "Headless Claude task completed."
 								: "Headless follow-up task completed."
 							: metadata.output.stderrPreview || `Claude exited with code ${exitCode}`,
-					rawPayload: exitCode === 0 ? opts.startEvent.rawPayload : { ...(opts.completionEvent.failurePayload ?? {}), exitCode },
+					rawPayload:
+						exitCode === 0
+							? opts.startEvent.rawPayload
+							: { ...(opts.completionEvent.failurePayload ?? {}), exitCode },
 				},
 			]);
 		}
@@ -205,7 +235,10 @@ async function streamHeadlessClaude(opts: {
 		await reportProgress({
 			status: exitCode === 0 ? "completed" : "failed",
 			pid: proc.pid,
-			error: exitCode === 0 ? null : metadata.output.stderrPreview || `Claude exited with code ${exitCode}`,
+			error:
+				exitCode === 0
+					? null
+					: metadata.output.stderrPreview || `Claude exited with code ${exitCode}`,
 			providerLaunchMetadata: metadata,
 		});
 	})();

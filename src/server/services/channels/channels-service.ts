@@ -141,7 +141,7 @@ export async function completeEnrollment(input: {
 		status: "verified",
 	} as Record<string, unknown>;
 	// Strip the enrollment code — single-use.
-	delete config.enrollmentCode;
+	config.enrollmentCode = undefined;
 	await db
 		.update(notificationChannels)
 		.set({
