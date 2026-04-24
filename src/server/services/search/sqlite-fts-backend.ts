@@ -252,15 +252,19 @@ export class SqliteFtsBackend implements SearchBackend {
 		// query like `pre-index` or `auth:refactor` would otherwise be parsed
 		// as a column filter or a NOT clause, throwing `no such column: …`.
 		// Strategy: split on whitespace, wrap each token as a double-quoted
-		// phrase (doubling any embedded `"`), then AND them together. Users
-		// who want OR semantics can issue multiple searches.
+		// phrase (doubling any embedded `"`), then join by the configured
+		// operator. Default AND mirrors what a user typing in the search
+		// box expects; OR is for programmatic callers (Ask resolver) that
+		// hand us a full sentence where requiring every token narrows to
+		// zero hits.
 		const tokens = q
 			.split(/\s+/)
 			.map((t) => t.trim())
 			.filter(Boolean)
 			.map((t) => `"${t.replace(/"/g, '""')}"`);
 		if (tokens.length === 0) return { hits: [], total: 0, backend: this.name };
-		const ftsQuery = tokens.join(" ");
+		const joiner = filters.mode === "or" ? " OR " : " ";
+		const ftsQuery = tokens.join(joiner);
 
 		const hits: SearchHit[] = [];
 		let total = 0;

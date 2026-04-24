@@ -43,6 +43,15 @@ export interface SearchFilters {
 	limit?: number;
 	/** Skip N results. Default 0. */
 	offset?: number;
+	/**
+	 * How multi-token queries combine. `and` (default) requires every
+	 * token to appear — right for a user typing in the search box, where
+	 * specificity narrows results. `or` requires any token — right for
+	 * programmatic callers like the Ask resolver, where a full sentence
+	 * would otherwise AND together into zero hits. Both modes still
+	 * phrase-quote individual tokens to dodge FTS5's special chars.
+	 */
+	mode?: "and" | "or";
 }
 
 export interface SearchHit {

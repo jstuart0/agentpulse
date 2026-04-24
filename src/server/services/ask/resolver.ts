@@ -131,13 +131,21 @@ export interface ResolveInput {
  * query yielded nothing. Intentionally swallows errors so Ask keeps
  * working even if the search backend isn't healthy (pre-bootstrap, on
  * a Postgres install without tsvector yet, etc.).
+ *
+ * Note we pass only the stopword-filtered tokens and use OR mode. The
+ * full message ANDed together ("find", "a", "session", …, "tightly",
+ * "coupled") practically never matches a single document; OR'ing the
+ * content words ("tightly" OR "coupled" OR "code") gets us back to
+ * something useful.
  */
-async function ftsScoresForMessage(message: string): Promise<Map<string, number>> {
+async function ftsScoresForMessage(tokens: string[]): Promise<Map<string, number>> {
 	const scores = new Map<string, number>();
+	if (tokens.length === 0) return scores;
 	try {
 		const result = await getSearchBackend().search({
-			q: message,
+			q: tokens.join(" "),
 			kinds: ["event", "session"],
+			mode: "or",
 			limit: 40,
 		});
 		for (const hit of result.hits) {
@@ -170,7 +178,7 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 	// question about "coupled" when the relevant session is weeks old)
 	// would otherwise be invisible. Fetch missing sessions by id and
 	// merge them in. Only meaningful when the user gave us tokens.
-	const ftsScores = tokens.length > 0 ? await ftsScoresForMessage(input.message) : new Map();
+	const ftsScores = await ftsScoresForMessage(tokens);
 	let extendedPool = pool;
 	if (ftsScores.size > 0) {
 		const known = new Set(pool.map((r) => r.sessionId));
