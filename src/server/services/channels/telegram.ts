@@ -109,7 +109,7 @@ function formatHitlMessage(input: SendChannelMessageInput): string {
 	const sessionLabel = input.sessionDisplayName ?? input.sessionId.slice(0, 8);
 	const decision = input.decision === "continue" ? "continue" : "ask";
 	const lines = [
-		`*AgentPulse* · HITL request`,
+		"*AgentPulse* · HITL request",
 		`Session: \`${escapeMd(sessionLabel)}\``,
 		`Decision: \`${decision}\``,
 	];

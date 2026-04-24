@@ -101,11 +101,11 @@ function renderSnapshot(s: SessionSnapshot): string {
 	if (s.currentTask) lines.push(`- current task: ${s.currentTask}`);
 	lines.push(`- last activity: ${s.lastActivityAt}`);
 	if (s.planSummary && s.planSummary.length > 0) {
-		lines.push(`- plan:`);
+		lines.push("- plan:");
 		for (const step of s.planSummary.slice(0, 8)) lines.push(`   - ${step}`);
 	}
 	if (s.recentEvents.length > 0) {
-		lines.push(`- recent events (oldest → newest):`);
+		lines.push("- recent events (oldest → newest):");
 		for (const ev of s.recentEvents) {
 			const detail = ev.detail.replace(/\s+/g, " ").slice(0, 200);
 			lines.push(`   - [${ev.when}] ${ev.type}: ${detail || "(no body)"}`);

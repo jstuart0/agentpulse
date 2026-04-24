@@ -2,20 +2,36 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  # Cancel superseded runs on the same PR/branch so we don't burn
+  # minutes on out-of-date commits.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
-    name: Lint, Typecheck, Build
+    name: Lint, Typecheck, Test, Build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Cache bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -28,6 +44,9 @@ jobs:
 
       - name: Typecheck
         run: bun run typecheck
+
+      - name: Tests
+        run: bun test
 
       - name: Build frontend
         run: bunx vite build

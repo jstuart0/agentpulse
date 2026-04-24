@@ -138,11 +138,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 
 			if (!response.ok || !response.body) {
 				const { subType, body: errBody, status } = await classifyHttpError(response);
-				throw new LlmError(
-					subType,
-					`${kind} stream ${status}: ${errBody.slice(0, 300)}`,
-					status,
-				);
+				throw new LlmError(subType, `${kind} stream ${status}: ${errBody.slice(0, 300)}`, status);
 			}
 
 			const reader = response.body.getReader();

@@ -182,23 +182,17 @@ export function AskPage() {
 				onDelta: (delta) => {
 					setMessages((prev) =>
 						prev.map((m) =>
-							m.id === optimisticAssistantId
-								? { ...m, content: (m.content ?? "") + delta }
-								: m,
+							m.id === optimisticAssistantId ? { ...m, content: (m.content ?? "") + delta } : m,
 						),
 					);
 				},
 				onDone: (finalMsg) => {
-					setMessages((prev) =>
-						prev.map((m) => (m.id === optimisticAssistantId ? finalMsg : m)),
-					);
+					setMessages((prev) => prev.map((m) => (m.id === optimisticAssistantId ? finalMsg : m)));
 				},
 				onError: (message, finalMsg) => {
 					setError(message);
 					if (finalMsg) {
-						setMessages((prev) =>
-							prev.map((m) => (m.id === optimisticAssistantId ? finalMsg : m)),
-						);
+						setMessages((prev) => prev.map((m) => (m.id === optimisticAssistantId ? finalMsg : m)));
 					} else {
 						setMessages((prev) => prev.filter((m) => m.id !== optimisticAssistantId));
 					}

@@ -1,5 +1,6 @@
 # AgentPulse
 
+[![CI](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.2.0--pre.1-blue)](https://github.com/jstuart0/agentpulse/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun-000?logo=bun)](https://bun.sh)

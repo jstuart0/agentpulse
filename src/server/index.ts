@@ -1,5 +1,5 @@
-import { existsSync } from "fs";
-import { join } from "path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { ensureDefaultApiKey } from "./auth/api-key.js";
@@ -117,7 +117,7 @@ if (config.isProduction) {
 
 // Start server with WebSocket support
 // Bun.serve handles both HTTP and WS on the same port
-const server = Bun.serve({
+const _server = Bun.serve({
 	port: config.port,
 	hostname: config.host,
 	async fetch(req: Request, server: unknown) {

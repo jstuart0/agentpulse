@@ -1,7 +1,7 @@
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
-import { open } from "fs/promises";
-import { homedir } from "os";
-import { join } from "path";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const CODEX_SESSIONS_ROOT = join(homedir(), ".codex", "sessions");
 const STATE_FILE = join(homedir(), ".agentpulse", "codex-observer-state.json");

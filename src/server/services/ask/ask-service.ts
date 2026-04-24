@@ -439,8 +439,7 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 			threadId: thread.id,
 			role: "assistant",
 			content:
-				collected.trim() ||
-				"I couldn't reach the LLM provider just now. Check Settings → AI.",
+				collected.trim() || "I couldn't reach the LLM provider just now. Check Settings → AI.",
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: message,
 		});

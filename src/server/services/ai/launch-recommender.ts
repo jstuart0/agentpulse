@@ -93,7 +93,7 @@ export async function recommendLaunch(input: RecommenderInput): Promise<Recommen
 		}
 	} else if (priorAtCwd.length > 0) {
 		warnings.push(
-			`Prior sessions at this cwd exist but none completed — tune template before dispatch`,
+			"Prior sessions at this cwd exist but none completed — tune template before dispatch",
 		);
 	} else if (cwd) {
 		rationale.push(`No prior sessions at ${cwd} — starting with template defaults`);

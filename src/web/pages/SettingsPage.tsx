@@ -8,8 +8,8 @@ import { TelegramChannelPanel } from "../components/settings/TelegramChannelPane
 import { api } from "../lib/api.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { type AppTheme, persistTheme, resolveInitialTheme } from "../lib/theme.js";
-import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
+import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 
 const launchModeLabels = {
 	headless: "Headless task",
@@ -464,7 +464,7 @@ export function SettingsPage() {
 					<div>
 						<p className="text-muted-foreground text-xs">WebSocket</p>
 						<p className="font-mono text-xs break-all">
-							{window.location.protocol === "https:" ? "wss:" : "ws:"}//
+							{`${window.location.protocol === "https:" ? "wss" : "ws"}://`}
 							{window.location.host}
 							{BROWSER_WS_PATH}
 						</p>
@@ -483,8 +483,8 @@ function ProjectColorsToggle() {
 			<div>
 				<p className="text-sm text-foreground">Project color tint</p>
 				<p className="text-xs text-muted-foreground">
-					Tint session cards and tabs by working directory so multi-repo dashboards
-					group visually at a glance.
+					Tint session cards and tabs by working directory so multi-repo dashboards group visually
+					at a glance.
 				</p>
 			</div>
 			<button

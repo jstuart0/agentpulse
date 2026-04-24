@@ -2,12 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Session } from "../../shared/types.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
-import {
-	extractProjectName,
-	formatDuration,
-	getSessionMode,
-	projectColor,
-} from "../lib/utils.js";
+import { extractProjectName, formatDuration, getSessionMode, projectColor } from "../lib/utils.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
@@ -101,7 +96,6 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 					)}
 					{renaming ? (
 						<input
-							autoFocus
 							value={newName}
 							onChange={(e) => setNewName(e.target.value)}
 							onBlur={handleRename}

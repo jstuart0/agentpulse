@@ -1,22 +1,15 @@
-import type {
-	LaunchRequest,
-	ManagedSession,
-} from "../../shared/types.js";
-import type { JsonRpcNotification } from "./codex-rpc.js";
-import { RpcClient, findFreePort, spawnServer, waitForServer } from "./codex-rpc.js";
+import type { LaunchRequest, ManagedSession } from "../../shared/types.js";
+import { findFreePort, spawnServer, waitForServer } from "./codex-rpc.js";
 import {
-	buildPrompt,
-	extractText,
 	type LaunchCallbacks,
 	type ManagedCodexRuntime,
+	buildPrompt,
+	extractText,
 } from "./codex-shared.js";
 
 const runtimes = new Map<string, ManagedCodexRuntime>();
 
-export async function launchManagedCodexRequest(
-	launch: LaunchRequest,
-	callbacks: LaunchCallbacks,
-) {
+export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks: LaunchCallbacks) {
 	if (process.env.AGENTPULSE_SUPERVISOR_DRY_RUN === "true") {
 		const threadId = crypto.randomUUID();
 		const desiredState = await callbacks.reportState({
@@ -75,15 +68,14 @@ export async function launchManagedCodexRequest(
 		},
 	});
 
-	const started = await client.request<{ thread: { id: string; cwd: string; status: unknown; source: string } }>(
-		"thread/start",
-		{
-			cwd: launch.cwd,
-			experimentalRawEvents: false,
-			persistExtendedHistory: true,
-			sessionStartSource: "startup",
-		},
-	);
+	const started = await client.request<{
+		thread: { id: string; cwd: string; status: unknown; source: string };
+	}>("thread/start", {
+		cwd: launch.cwd,
+		experimentalRawEvents: false,
+		persistExtendedHistory: true,
+		sessionStartSource: "startup",
+	});
 	const threadId = started.thread.id;
 
 	const bootstrap = await callbacks.reportState({

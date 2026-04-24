@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "crypto";
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
 import { config } from "../../config.js";
 
 // AES-256-GCM with a scrypt-derived key. The on-disk ciphertext format is:

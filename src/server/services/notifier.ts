@@ -1,4 +1,4 @@
-import { EventEmitter } from "events";
+import { EventEmitter } from "node:events";
 import type { Session, SessionEvent, WsMessageType } from "../../shared/types.js";
 import { broadcast, broadcastToSession } from "../ws/handler.js";
 

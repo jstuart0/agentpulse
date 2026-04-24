@@ -16,11 +16,15 @@ export function normalizeComparableContent(content: string | null | undefined) {
 }
 
 export function parseEventTime(value: string | null | undefined) {
-	const timestamp = value ? Date.parse(value) : NaN;
+	const timestamp = value ? Date.parse(value) : Number.NaN;
 	return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-export function areNearInTime(left: string | null | undefined, right: string | null | undefined, windowMs: number) {
+export function areNearInTime(
+	left: string | null | undefined,
+	right: string | null | undefined,
+	windowMs: number,
+) {
 	const leftMs = parseEventTime(left);
 	const rightMs = parseEventTime(right);
 	if (leftMs == null || rightMs == null) return false;
@@ -32,7 +36,10 @@ export function getEventSourcePriority(source: EventSource | string | null | und
 	return EVENT_SOURCE_PRIORITY[source as EventSource] ?? 0;
 }
 
-export function isPromptMirrorSourcePair(left: EventSource | string | null | undefined, right: EventSource | string | null | undefined) {
+export function isPromptMirrorSourcePair(
+	left: EventSource | string | null | undefined,
+	right: EventSource | string | null | undefined,
+) {
 	return (
 		(left === "managed_control" && right === "observed_hook") ||
 		(left === "observed_hook" && right === "managed_control")

@@ -1,4 +1,4 @@
-import { relative, resolve } from "path";
+import { relative, resolve } from "node:path";
 import type {
 	LaunchMode,
 	SessionTemplateInput,

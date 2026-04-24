@@ -1,18 +1,20 @@
 #!/usr/bin/env bun
 import {
-	access,
 	constants,
+	access,
 	mkdir,
 	readFile,
 	readdir,
 	rename,
 	unlink,
 	writeFile,
-} from "fs/promises";
-import { join } from "path";
+} from "node:fs/promises";
+import { join } from "node:path";
 
 const args = process.argv.slice(2);
-let remoteUrl = "", port = 4000, apiKey = "";
+let remoteUrl = "";
+let port = 4000;
+let apiKey = "";
 const RELAY_FETCH_TIMEOUT_MS = 8_000;
 const RELAY_IDLE_TIMEOUT_S = 30;
 const HOOK_RETRY_BASE_MS = 2_000;
@@ -57,7 +59,7 @@ const relayState = {
 };
 
 let queueRunning = false;
-let queueScheduled = false;
+let _queueScheduled = false;
 let queueTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function fileExists(path: string) {
@@ -90,8 +92,7 @@ function authHeaders(): Record<string, string> {
 }
 
 async function uploadClaudeMd(sessionId: string, cwd: string, agentType?: string) {
-	const files =
-		agentType === "codex_cli" ? ["AGENTS.md", "CLAUDE.md"] : ["CLAUDE.md", "AGENTS.md"];
+	const files = agentType === "codex_cli" ? ["AGENTS.md", "CLAUDE.md"] : ["CLAUDE.md", "AGENTS.md"];
 	for (const name of files) {
 		const filePath = join(cwd, name);
 		if (!(await fileExists(filePath))) continue;
@@ -205,7 +206,7 @@ function nextBackoffMs(attempts: number) {
 
 function scheduleQueue(delayMs = 0) {
 	if (queueTimer) clearTimeout(queueTimer);
-	queueScheduled = true;
+	_queueScheduled = true;
 	queueTimer = setTimeout(() => {
 		queueTimer = null;
 		void processHookQueue();
@@ -235,9 +236,19 @@ async function enqueueHook(req: Request, url: URL) {
 	scheduleQueue();
 
 	try {
-		const payload = JSON.parse(body) as { hook_event_name?: string; session_id?: string; cwd?: string };
-		if (url.pathname === "/api/v1/hooks" && payload.hook_event_name === "SessionStart" && payload.cwd) {
-			uploadClaudeMd(payload.session_id || "", payload.cwd, item.agentType || undefined).catch(() => {});
+		const payload = JSON.parse(body) as {
+			hook_event_name?: string;
+			session_id?: string;
+			cwd?: string;
+		};
+		if (
+			url.pathname === "/api/v1/hooks" &&
+			payload.hook_event_name === "SessionStart" &&
+			payload.cwd
+		) {
+			uploadClaudeMd(payload.session_id || "", payload.cwd, item.agentType || undefined).catch(
+				() => {},
+			);
 		}
 	} catch {}
 
@@ -305,7 +316,7 @@ async function completeHookSuccess(fileName: string) {
 async function processHookQueue() {
 	if (queueRunning) return;
 	queueRunning = true;
-	queueScheduled = false;
+	_queueScheduled = false;
 
 	try {
 		while (true) {
@@ -339,7 +350,9 @@ async function getQueueDiagnostics() {
 
 	for (const fileName of pending) {
 		try {
-			const item = JSON.parse(await readFile(join(hookPendingDir, fileName), "utf-8")) as HookQueueItem;
+			const item = JSON.parse(
+				await readFile(join(hookPendingDir, fileName), "utf-8"),
+			) as HookQueueItem;
 			if (!oldestPendingAt || item.createdAt < oldestPendingAt) oldestPendingAt = item.createdAt;
 		} catch {}
 	}

@@ -3,9 +3,9 @@
 // helper lets the AI test suite coordinate on a single temp DB and clean
 // between tests rather than fighting over module state.
 
-import { mkdtempSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const TMP = mkdtempSync(join(tmpdir(), "ap-ai-test-"));
 process.env.SQLITE_PATH ??= join(TMP, "test.db");

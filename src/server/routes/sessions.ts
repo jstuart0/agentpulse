@@ -199,7 +199,7 @@ sessionsRouter.get("/sessions/search", async (c) => {
 		.limit(50);
 
 	// Merge results
-	const sessionIds = new Set([
+	const _sessionIds = new Set([
 		...matchingSessions.map((s) => s.sessionId),
 		...matchingEvents.map((e) => e.sessionId),
 	]);

@@ -109,10 +109,10 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 			proposal.decision === "continue" || proposal.decision === "ask" ? proposal.decision : "ask";
 		const prompt = proposal.nextPrompt ?? proposal.reportSummary ?? "";
 		const why = (
-			(proposal.rawResponse as Record<string, unknown> | null)?.["decision"] as
+			(proposal.rawResponse as Record<string, unknown> | null)?.decision as
 				| Record<string, unknown>
 				| undefined
-		)?.["why"] as string | undefined;
+		)?.why as string | undefined;
 		items.push({
 			kind: "hitl",
 			id: h.id,

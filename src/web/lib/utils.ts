@@ -10,7 +10,7 @@ function parseDate(dateStr: string): number {
 	// Already ISO format
 	if (dateStr.includes("T")) return new Date(dateStr).getTime();
 	// SQLite format: "YYYY-MM-DD HH:MM:SS" -- treat as UTC
-	return new Date(dateStr.replace(" ", "T") + "Z").getTime();
+	return new Date(`${dateStr.replace(" ", "T")}Z`).getTime();
 }
 
 export function formatDuration(startedAt: string): string {
