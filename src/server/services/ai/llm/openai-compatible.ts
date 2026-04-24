@@ -48,6 +48,14 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 					{ role: "system", content: request.systemPrompt },
 					{ role: "user", content: request.transcriptPrompt },
 				],
+				// Thinking-mode opt-outs. Qwen3 and similar reasoning models
+				// consume the whole output window on CoT by default, leaving
+				// `content` empty. These params disable that:
+				//   - `think: false` — Ollama (≥0.7.0)
+				//   - `chat_template_kwargs.enable_thinking: false` — vLLM / SGLang
+				// Servers that don't recognize them ignore them harmlessly.
+				think: false,
+				chat_template_kwargs: { enable_thinking: false },
 			};
 
 			let response: Response;
@@ -76,7 +84,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 
 			const json = (await response.json()) as {
 				choices?: Array<{
-					message?: { content?: string | null };
+					message?: { content?: string | null; reasoning?: string | null };
 					finish_reason?: string;
 				}>;
 				usage?: {
@@ -85,7 +93,14 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 				};
 			};
 
-			const text = json.choices?.[0]?.message?.content ?? "";
+			// Fall back to `reasoning` when `content` is empty. Some servers
+			// (Ollama / vLLM serving Qwen3) return the thinking block as a
+			// separate `reasoning` field and an empty `content` if the
+			// answer itself didn't fit in the output budget. Better to
+			// return the raw reasoning text than an empty string — the
+			// caller can still mine comma-separated candidates out of it.
+			const choice = json.choices?.[0]?.message;
+			const text = choice?.content?.trim() ? choice.content : (choice?.reasoning ?? "");
 			const usage = json.usage ?? {};
 
 			return {
