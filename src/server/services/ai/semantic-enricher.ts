@@ -66,13 +66,21 @@ export class LlmQueryExpander implements SemanticEnricher {
 		try {
 			const res = await this.adapter.complete({
 				systemPrompt: SYSTEM_PROMPT,
-				transcriptPrompt: `Question: ${trimmed}\nTerms:`,
+				// `/no_think` is a Qwen3 directive — it suppresses the default
+				// `<think>…</think>` reasoning block that otherwise consumes
+				// the entire output window (we observed maxTokens getting
+				// swallowed by CoT with nothing left for the actual list).
+				// Other providers harmlessly ignore the directive.
+				transcriptPrompt: `/no_think\nQuestion: ${trimmed}\nTerms:`,
 				model: this.model,
-				maxTokens: 120,
+				// Generous ceiling so that even models that can't be talked
+				// out of thinking still have room for the real answer after
+				// the CoT block; parseExpansion strips any leading <think>.
+				maxTokens: 400,
 				// Low but non-zero: we want some variation in synonym choice
 				// without the model going off the rails.
 				temperature: 0.3,
-				timeoutMs: 8000,
+				timeoutMs: 15_000,
 			});
 			const extraTerms = parseExpansion(res.text);
 			return { extraTerms, directHits: new Map() };
@@ -99,6 +107,11 @@ const SYSTEM_PROMPT =
  */
 export function parseExpansion(text: string): string[] {
 	const body = text
+		// Strip Qwen-style <think>…</think> reasoning blocks first. They
+		// can appear at the top of the output or (less commonly) mid-
+		// response when the model flip-flops. `[\s\S]` to match newlines.
+		.replace(/<think>[\s\S]*?<\/think>/gi, "")
+		.replace(/<think>[\s\S]*$/i, "") // unclosed think at EOF
 		// Strip anything before a likely list start: a word followed by comma
 		// or the first ":" / "-" if it appears in the preamble.
 		.replace(/^[\s\S]*?:\s*/, "")
