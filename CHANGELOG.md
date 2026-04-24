@@ -7,7 +7,19 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
-Nothing currently unreleased on `main` beyond the sections below.
+### Added
+
+- Expanded Ask resolver test coverage — stopword filtering, multi-keyword
+  ranking, tie-break ordering, archived-session exclusion, and explicit-id
+  order preservation (#10, merged via #11 from @mvanhorn).
+
+### Changed
+
+- `fetchSessionsById(ids)` in `src/server/services/ask/resolver.ts` now
+  returns rows in the caller's input order instead of SQLite's
+  insertion/rowid order. Internal callers don't rely on ordering, so no
+  runtime impact — but if you were importing this helper directly, you
+  can now trust the result to match your input list.
 
 ## [0.2.0-pre.1] — 2026-04-23
 
