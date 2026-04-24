@@ -123,6 +123,19 @@ askRouter.post("/ai/ask/stream", async (c) => {
 			// the response headers to the client immediately, before any
 			// LLM token has been generated.
 			controller.enqueue(encoder.encode(": stream-open\n\n"));
+			// Keep the TCP connection warm while the resolver / enricher /
+			// LLM warmup runs. Without this, local setups that take 15-20s
+			// to emit the first real token trip browser or proxy idle
+			// timeouts and surface to the user as a generic "network error".
+			// 5s cadence is well under any sane idle threshold.
+			const keepAlive = setInterval(() => {
+				try {
+					controller.enqueue(encoder.encode(": keepalive\n\n"));
+				} catch {
+					// Controller already closed — stop pinging.
+					clearInterval(keepAlive);
+				}
+			}, 5_000);
 			try {
 				for await (const evt of runAskTurnStream({
 					threadId: body.threadId ?? null,
@@ -136,6 +149,7 @@ askRouter.post("/ai/ask/stream", async (c) => {
 				const message = err instanceof Error ? err.message : String(err);
 				write({ kind: "error", message, assistantMessage: null });
 			} finally {
+				clearInterval(keepAlive);
 				controller.close();
 			}
 		},
