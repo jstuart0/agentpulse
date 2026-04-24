@@ -166,15 +166,32 @@ async function ftsScoresForMessage(
 	}
 	if (merged.length === 0) return scores;
 	try {
+		// Bump the limit generously — we aggregate many hits per session
+		// into one score and need enough coverage that a session with
+		// lots of weak matches can still outrank one with a single
+		// strong hit on a rare synonym.
 		const result = await getSearchBackend().search({
 			q: merged.join(" "),
 			kinds: ["event", "session"],
 			mode: "or",
-			limit: 40,
+			limit: 200,
 		});
+		// BM25 penalizes high-frequency documents per-hit, so taking the
+		// per-session max underrates the session that's *actually about*
+		// the topic (many mentions, each scored moderately) vs. a session
+		// with one rare-term match. Fold in a count-based boost:
+		//   sessionScore = maxHit + log1p(totalHits) × 0.1
+		// `× 0.1` keeps the boost gentle — it acts as a tie-breaker
+		// between comparable max scores rather than swamping them.
+		const perSession = new Map<string, { max: number; count: number }>();
 		for (const hit of result.hits) {
-			const prev = scores.get(hit.sessionId) ?? 0;
-			if (hit.score > prev) scores.set(hit.sessionId, hit.score);
+			const entry = perSession.get(hit.sessionId) ?? { max: 0, count: 0 };
+			if (hit.score > entry.max) entry.max = hit.score;
+			entry.count += 1;
+			perSession.set(hit.sessionId, entry);
+		}
+		for (const [sessionId, { max, count }] of perSession) {
+			scores.set(sessionId, max + Math.log1p(count) * 0.1);
 		}
 	} catch {
 		// Silent fallback — Ask is still useful without FTS.
