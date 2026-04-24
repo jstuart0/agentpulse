@@ -303,7 +303,12 @@ async function prepareTurn(input: AskTurnInput): Promise<{
 					fallbackToActive: true,
 					enricher,
 				});
-	const context = await buildAskContext({ resolved });
+	// Hand the FTS query to the context builder so per-session snapshots
+	// include the events that *matched* — not just the most-recent 12.
+	// Skip when the caller passed explicit sessionIds (no resolver query
+	// to hand over).
+	const ftsQuery = input.sessionIds && input.sessionIds.length > 0 ? undefined : text;
+	const context = await buildAskContext({ resolved, ftsQuery });
 
 	const history = await listMessages(thread.id);
 	const transcript = [renderHistory(history), context.block, `USER: ${text}`]
