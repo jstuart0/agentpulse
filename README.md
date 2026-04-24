@@ -1,10 +1,16 @@
 # AgentPulse
 
-![AgentPulse](src/web/assets/agentpulse-social.jpg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.2.0--pre.1-blue)](https://github.com/jstuart0/agentpulse/releases)
+[![Bun](https://img.shields.io/badge/runtime-Bun-000?logo=bun)](https://bun.sh)
+[![Self-hosted](https://img.shields.io/badge/self--hosted-✓-green)](https://github.com/awesome-selfhosted/awesome-selfhosted)
+[![Wiki](https://img.shields.io/badge/docs-wiki-informational)](https://github.com/jstuart0/agentpulse/wiki)
 
 **Command center for AI coding agents across all your machines.**
 
 If you run multiple Claude Code or Codex CLI sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.
+
+![AgentPulse dashboard — live view of every active Claude Code / Codex session](src/web/assets/screenshots/agentpulse-dashboard.png)
 
 ## What AgentPulse is
 
@@ -80,6 +86,8 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 
 ## What you'll see
 
+![Session detail — chat-style timeline with inline tool usage](src/web/assets/screenshots/agentpulse-session.png)
+
 - **Dashboard** -- grid of all sessions with status, project name, session name, duration, and tool use count
 - **Session detail** -- click a session to see a chat-style timeline with your prompts as blue bubbles and tool usage inline
 - **Session templates** -- save reusable Claude Code and Codex session setups, preview normalized launch specs, and route launches to the right host
@@ -91,6 +99,8 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 - **AI Labs (experimental)** -- optional AI layer that watches sessions, classifies health, proposes next steps with human-in-the-loop approval, aggregates daily project digests, and more. Each feature is behind its own Labs toggle. See below.
 
 ## AI Labs (experimental)
+
+![Ask assistant — grounded conversational interface over live session state](src/web/assets/screenshots/agentpulse-ask.png)
 
 > **Heads up:** the AI layer is new, shipping under explicit Labs framing. Every feature is toggleable under **Settings → Labs**. Contracts, UI, and defaults may change. Disable any toggle if it gets in your way -- nothing else in AgentPulse depends on it.
 
@@ -488,6 +498,14 @@ bun run dev        # starts API server + Vite dev server
 ## Tech stack
 
 [Bun](https://bun.sh) + [Hono](https://hono.dev) + [React 19](https://react.dev) + [TailwindCSS](https://tailwindcss.com) + [Drizzle ORM](https://orm.drizzle.team) + [Zustand](https://zustand.docs.pmnd.rs) + SQLite/PostgreSQL
+
+## Community & Contributing
+
+- 📘 **[Wiki](https://github.com/jstuart0/agentpulse/wiki)** — Getting Started, Architecture, AI Watcher deep-dive, Ask assistant, Telegram setup, Deployment, FAQ, Roadmap.
+- 🧰 **[Good first issues](https://github.com/jstuart0/agentpulse/labels/good%20first%20issue)** — 10 starter tickets with file paths + acceptance criteria: new LLM adapters (Mistral, Cohere), new notification channels (Slack, Discord), a11y polish, diagnostic CLI, CI workflow, more test coverage.
+- 🐛 **[Issues](https://github.com/jstuart0/agentpulse/issues)** — bug reports + feature requests welcome.
+- 📜 **[CHANGELOG](CHANGELOG.md)** — every release, with the reason behind each change.
+- 🤝 **[Contributing guide](https://github.com/jstuart0/agentpulse/wiki/Contributing)** — dev setup, repo layout, conventions, gotchas.
 
 ## License
 
