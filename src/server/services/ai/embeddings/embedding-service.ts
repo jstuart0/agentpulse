@@ -351,10 +351,17 @@ export async function runBackfill(): Promise<BackfillProgress> {
  */
 export async function startBackfillIfNeeded(): Promise<void> {
 	if (!isVectorSearchBuildEnabled()) return;
+	const adapter = await resolveEmbeddingAdapter();
+	if (!adapter) {
+		console.warn(
+			"[embeddings] vector search built in but no embedding provider — Settings → AI → Vector search will surface a clearer error.",
+		);
+		return;
+	}
 	const progress = await getBackfillProgress();
 	if (progress.pending > 0 && !progress.running) {
 		console.log(
-			`[embeddings] starting backfill: ${progress.pending} events to index with ${progress.model}`,
+			`[embeddings] starting backfill: ${progress.pending} events to index with ${adapter.model}`,
 		);
 		// Fire and forget — the server doesn't wait for backfill to finish.
 		void runBackfill();

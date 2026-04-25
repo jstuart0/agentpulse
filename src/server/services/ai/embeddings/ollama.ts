@@ -20,7 +20,11 @@ export interface OllamaEmbeddingParams {
 export async function createOllamaEmbeddingAdapter(
 	params: OllamaEmbeddingParams,
 ): Promise<EmbeddingAdapter> {
-	const baseUrl = params.baseUrl.replace(/\/+$/, "");
+	// Ollama exposes embeddings at `/api/embed` (root-level), but our LLM
+	// provider records typically store the OpenAI-compatible chat URL
+	// `…:11434/v1`. Strip a trailing `/v1` (with or without slash) so we
+	// hit the right endpoint regardless of how the provider URL was saved.
+	const baseUrl = params.baseUrl.replace(/\/+$/, "").replace(/\/v1$/i, "");
 	const model = params.model;
 
 	let dim = params.dim;
