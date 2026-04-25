@@ -15,3 +15,6 @@ docs/
 # Environment-specific overlays (real image registry, cluster hostnames,
 # TLS secret names) go under deploy/k8s-*/ and must never be committed.
 deploy/k8s-*/
+
+# Claude Code per-project state (scheduled task locks, etc.)
+.claude/
