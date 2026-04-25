@@ -7,30 +7,185 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.2.0-pre.2] — 2026-04-25
+
+The "find any past conversation" release. Three new layers stack on
+top of session state so Ask actually works across compaction
+boundaries and across past completed work — full-text first, then
+LLM query expansion, then optional vector embeddings for true
+semantic recall. No breaking changes.
+
 ### Added
 
-- Expanded Ask resolver test coverage — stopword filtering, multi-keyword
-  ranking, tie-break ordering, archived-session exclusion, and explicit-id
-  order preservation (#10, merged via #11 from @mvanhorn).
+#### Full-text search (`/search`)
+
+- New SQLite FTS5 backend behind a `SearchBackend` interface so a
+  Postgres `tsvector` impl can slot in later without changing
+  routes or UI. Two virtual tables (sessions + events), porter +
+  unicode61 tokenizer, BM25 ranking normalized to 0..1.
+- Triggers on `INSERT`/`UPDATE`/`DELETE` of `sessions` and
+  `events` keep both indexes in sync. Event indexing filters to
+  meaningful types (`UserPromptSubmit`, `AssistantMessage`,
+  `Stop`, `TaskCreated`/`TaskCompleted`, `SubagentStop`,
+  `SessionEnd`, `AiProposal`, `AiReport`, `AiHitlRequest`).
+- Boot-time backfill detects row-count divergence between source
+  tables and FTS and re-indexes the gap in a single transaction —
+  upgrades from 0.2.0-pre.1 light up retroactively without manual
+  rebuild.
+- Query escaping: tokens are phrase-quoted before MATCH so inputs
+  with `-`, `:`, `(`, etc. don't get parsed as FTS5 operators.
+  New `mode: "and" | "or"` filter — AND default for the search
+  box, OR for programmatic callers.
+- New `/search` page with URL-stateful filter UI (agentType,
+  status, eventType, kind), `<mark>`-highlighted snippets, links
+  back to the originating session and event.
+- New `GET /api/v1/search` and `POST /api/v1/search/rebuild`.
+
+#### Semantic Ask (LLM query expansion)
+
+- Pluggable `SemanticEnricher` interface returning `extraTerms`
+  (lexical synonyms) and `directHits` (sessionId → score). Vector
+  enrichment populates the latter, leaves the former empty;
+  `LlmQueryExpander` does the inverse.
+- `LlmQueryExpander` calls the default LLM provider with a tight
+  prompt asking for 5–10 comma-separated synonym terms. Output
+  parser tolerates chatty preamble, numbered lists, quotes, and
+  unclosed `<think>` blocks. Caps at 15 deduped terms.
+- New `CompositeEnricher` runs multiple enrichers in parallel and
+  unions their results — so vector + LLM expansion compose
+  cleanly when both are configured. One enricher failing doesn't
+  poison the other.
+- Ask resolver now folds the enricher's `extraTerms` and
+  `directHits` into its FTS query and pool extension. `keen-worm`
+  (or whatever your "I worked on coupling for two days" session
+  is) finally surfaces even when the user's question paraphrases
+  rather than quotes the original work.
+- Ask context builder pulls each session's **top FTS-matching
+  events**, not just the most-recent tail, so the LLM sees the
+  evidence that earned each session a spot in the candidate list.
+
+#### Vector search — install-time-optional, AI-gated
+
+- New `AGENTPULSE_VECTOR_SEARCH=true` build flag (off by default,
+  zero overhead unset). When set, creates an `event_embeddings`
+  table (event_id PK, model, dim, vector BLOB), a delete-cascade
+  trigger, and the Settings → AI → Vector search subsection.
+- `EmbeddingAdapter` interface with an `OllamaEmbeddingAdapter`
+  implementation (uses `/api/embed` batched, falls back to legacy
+  `/api/embeddings` per-input on older Ollama versions). Strips a
+  trailing `/v1` from the LLM provider's baseUrl so the OpenAI-
+  compatible chat URL works as the embedding host without
+  reconfiguration.
+- Default embedding model **`mxbai-embed-large`** (335M params,
+  1024-dim, top-5 MTEB English in its weight class, ~30–60ms per
+  embed). Switchable in Settings to **`qwen3-embedding:8b`**
+  (8B, 4096-dim, top-tier MTEB, ~200–500ms per embed) for
+  installs with the headroom.
+- Ingest hooks fire-and-forget `embedEvent(id)` from the session
+  bus listener — adds zero latency to the hook hot path. Boot-
+  time backfill kicks off a background task when row counts
+  diverge and reports progress through the Settings UI.
+- New `VectorEmbeddingEnricher` brute-force scans event vectors
+  for the active model, computes cosine similarity, aggregates
+  per-session as `max + log1p(count) × 0.05`. Filters out hits
+  below a 0.4 floor (typical noise threshold for unit-normalized
+  retrieval models). Sub-100ms over ~10K vectors; sqlite-vss can
+  slot in around 100K events.
+- Settings UI: enable toggle, model picker (datalist with
+  recommended models + hints), live-polling indexing progress
+  bar, "Re-index now" button.
+- Endpoints: `GET/PUT /api/v1/ai/vector-search/status`,
+  `POST /api/v1/ai/vector-search/rebuild`.
+
+#### Other additions
+
+- Resolver tests (#10, merged via #11 from @mvanhorn) — stopword
+  filtering, multi-keyword ranking, tie-break ordering,
+  archived-session exclusion, explicit-id order preservation.
+- Kustomize base + overlay pattern (`deploy/k8s/kustomization.yaml`,
+  `deploy/README-kustomize.md`). Environment-specific overlays
+  go under gitignored `deploy/k8s-*/` so private values
+  (registry, hostnames, TLS secret) never leak into the OSS
+  base. Full apply flow: `kubectl apply -k deploy/k8s-<name>/`.
 
 ### Changed
 
-- `fetchSessionsById(ids)` in `src/server/services/ask/resolver.ts` now
-  returns rows in the caller's input order instead of SQLite's
-  insertion/rowid order. Internal callers don't rely on ordering, so no
-  runtime impact — but if you were importing this helper directly, you
-  can now trust the result to match your input list.
+- `fetchSessionsById(ids)` returns rows in the caller's input
+  order instead of SQLite rowid order. Internal callers don't
+  rely on ordering; external importers can now trust the result
+  to match the input list.
+- Ask resolver no longer excludes completed sessions when FTS
+  surfaces them. "Find a session where I worked on X" was always
+  going to be about past finished work; the active-only filter
+  hid the right answer.
+- FTS-surfaced session ranking now uses
+  `max(score) + log1p(count) × 0.1` per session, not just max.
+  BM25 penalizes high-frequency documents; a session *about* the
+  topic (many moderate hits) was losing to one with a single
+  rare-term bullseye.
+- LLM provider's openai-compatible adapter:
+  - Adds `think: false` (Ollama ≥0.7) and
+    `chat_template_kwargs.enable_thinking: false` (vLLM/SGLang)
+    to suppress reasoning blocks that consumed the entire output
+    window without producing the answer.
+  - Falls back to `choices[0].message.reasoning` when `content`
+    is empty so Qwen3 thinking-mode responses surface useful text
+    even when the answer didn't fit in the budget.
+- `event_processor.insertNormalizedEvents` returns real DB row
+  IDs via `.returning()` instead of `id: 0` placeholders.
+  Required for ingest-time vector indexing; consumers who relied
+  on the placeholder behavior… don't exist (verified across the
+  repo).
+- Memory limit bumped 512Mi → 1Gi in the base deployment;
+  homelab overlay further bumps to 2Gi to absorb Ask streams +
+  enricher LLM fetch buffering on bigger workloads.
+- TLS secret name in the base IngressRoute scrubbed from a
+  cluster-specific wildcard name to the placeholder
+  `agentpulse-tls`. Real cert names go in the gitignored
+  overlay.
+
+### Fixed
+
+- **Search returned 500 in 2ms** under any concurrent ingest
+  load. The FTS backend was opening a second `bun:sqlite`
+  connection that raced the primary connection's WAL snapshot.
+  Now shares the drizzle-owned handle with `PRAGMA
+  busy_timeout = 5000` so brief writer collisions block + retry
+  instead of throwing.
+- **Ask SSE stream dropped during enricher warmup.** With LLM
+  expansion in front of the main Ask call, time-to-first-token
+  on local-Qwen setups climbed to 15–20s. The route now emits
+  `: keepalive\n\n` every 5s while the model is warming, so the
+  browser / Traefik don't time out the idle connection.
+- **Vector backfill stuck at 22 events** with `running: true`.
+  Events without extractable text (`Stop`, `SubagentStop`,
+  `SessionEnd` with no content) were correctly skipped, but the
+  next batch query's LEFT JOIN re-surfaced them indefinitely.
+  Now writes a `dim=0` placeholder row so the join excludes them
+  from future batches; the cosine query already filters by
+  `dim = adapter.dim` so placeholders are invisible to lookups.
+- **Pre-existing FTS data wasn't indexed** on upgrades — triggers
+  only fire on new writes. The boot-time backfill (above) closes
+  this gap automatically.
+- **Ollama embed URL hit `/v1/api/embed` (404)** when the LLM
+  provider's `baseUrl` ended in `/v1` (the standard OpenAI-
+  compatible chat path). Embed adapter now strips a trailing
+  `/v1` before building the embed URL.
+- **Pod OOMed mid-Ask-stream** under 512Mi limit (exit 137).
+  Memory bumped + responsible code paths tightened.
+- **AND-mode FTS query of full Ask message** practically never
+  matched — every token had to appear in one document. The Ask
+  resolver now passes only the stopword-filtered tokens and uses
+  OR mode; users still get AND in the search box where
+  specificity is the goal.
 
 ### Fixed — documentation
 
-- **Postgres backend is not yet implemented.** The README, wiki
-  (Architecture, Deployment, FAQ, Roadmap) previously claimed Postgres
-  support via `DATABASE_URL`. The env var is parsed but downstream code
-  ignores it — setting `DATABASE_URL=postgres://…` silently falls back
-  to SQLite with a warning log. Docs now say so clearly, point to the
-  tracking issue (#12), and drop the "multi-replica via Postgres"
-  claim from the Scale-out section. Full phased backend-port plan is
-  in `thoughts/2026-04-24-postgres-backend-plan.md`.
+- Postgres backend is not yet implemented. README, wiki, and
+  release notes previously implied `DATABASE_URL=postgres://…`
+  works; it doesn't (parses, then falls back to SQLite with a
+  warning). Tracking issue #12. Phased port plan in
+  `thoughts/2026-04-24-postgres-backend-plan.md`.
 
 ## [0.2.0-pre.1] — 2026-04-23
 
