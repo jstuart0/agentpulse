@@ -47,6 +47,36 @@ export async function isAiActive(): Promise<boolean> {
 	return true;
 }
 
+/**
+ * Vector-search opt-in. Three-tier gate, mirroring the AI watcher pattern:
+ *   1. Build flag — config.vectorSearchEnabled (env AGENTPULSE_VECTOR_SEARCH).
+ *      When false, no embeddings table, no UI, no embed calls.
+ *   2. AI feature must be active (provider configured / runtime on).
+ *   3. Settings toggle — `vectorSearch.enabled`.
+ */
+export const VECTOR_SEARCH_ENABLED_KEY = "vectorSearch.enabled";
+export const VECTOR_SEARCH_MODEL_KEY = "vectorSearch.model";
+export const VECTOR_SEARCH_PROVIDER_ID_KEY = "vectorSearch.providerId";
+
+/** Default embedding model — best balance of quality vs. embed-time on a
+ *  Mac Studio. mxbai-embed-large is top-5 MTEB English in its weight class. */
+export const DEFAULT_EMBEDDING_MODEL = "mxbai-embed-large";
+
+export function isVectorSearchBuildEnabled(): boolean {
+	return config.vectorSearchEnabled;
+}
+
+export async function isVectorSearchActive(): Promise<boolean> {
+	if (!isVectorSearchBuildEnabled()) return false;
+	if (!(await isAiActive())) return false;
+	const [row] = await db
+		.select()
+		.from(settings)
+		.where(eq(settings.key, VECTOR_SEARCH_ENABLED_KEY))
+		.limit(1);
+	return row?.value === true;
+}
+
 /** Read the classifier runtime toggle. Default: true (badges are cheap). */
 export async function isClassifierEnabled(): Promise<boolean> {
 	if (!isAiBuildEnabled()) return false;

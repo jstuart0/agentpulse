@@ -493,6 +493,43 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
+	// --- Vector search ---
+	getVectorSearchStatus: () =>
+		request<{
+			build: boolean;
+			active: boolean;
+			enabled: boolean;
+			model: string;
+			providerId: string | null;
+			progress: {
+				total: number;
+				embedded: number;
+				pending: number;
+				model: string | null;
+				running: boolean;
+				startedAt: string | null;
+				finishedAt: string | null;
+				error: string | null;
+			} | null;
+		}>("/ai/vector-search/status"),
+	updateVectorSearchStatus: (body: {
+		enabled?: boolean;
+		model?: string | null;
+		providerId?: string | null;
+	}) =>
+		request<{
+			build: boolean;
+			active: boolean;
+			progress: unknown;
+		}>("/ai/vector-search/status", {
+			method: "PUT",
+			body: JSON.stringify(body),
+		}),
+	rebuildVectorIndex: () =>
+		request<{ ok: boolean; started: boolean }>("/ai/vector-search/rebuild", {
+			method: "POST",
+		}),
+
 	getSessionIntelligence: (sessionId: string) =>
 		request<{ intelligence: SessionIntelligence }>(`/ai/sessions/${sessionId}/intelligence`),
 	getIntelligenceBatch: (sessionIds: string[]) =>

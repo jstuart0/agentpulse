@@ -21,6 +21,7 @@ import { settingsRouter } from "./routes/settings.js";
 import { setup as setupRoute } from "./routes/setup.js";
 import { supervisorsRouter } from "./routes/supervisors.js";
 import { templatesRouter } from "./routes/templates.js";
+import { embedEvent, startBackfillIfNeeded } from "./services/ai/embeddings/embedding-service.js";
 import { validateAiStartupConfig } from "./services/ai/feature.js";
 import { maybeStartWatcherRunner } from "./services/ai/runner.js";
 import {
@@ -31,6 +32,7 @@ import {
 import { startTelegramPolling } from "./services/channels/telegram-poller.js";
 import { ensureBootstrapAdmin } from "./services/local-auth-bootstrap.js";
 import { reapExpiredSessions } from "./services/local-auth-service.js";
+import { sessionBus } from "./services/notifier.js";
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
@@ -156,6 +158,14 @@ startHeartbeat();
 startTelemetry();
 startTranscriptSync();
 void maybeStartWatcherRunner();
+
+// Vector search: kick off any backfill that's pending and wire ingest
+// → fire-and-forget embed. Both no-op when AGENTPULSE_VECTOR_SEARCH is
+// unset, so this is safe to call unconditionally.
+void startBackfillIfNeeded();
+sessionBus.on("session_event", ({ event }) => {
+	if (event.id > 0) void embedEvent(event.id);
+});
 void ensureBootstrapAdmin();
 // Warm the Telegram credential cache so getTelegramBotToken() /
 // getTelegramWebhookSecret() return the DB-stored value (not the env

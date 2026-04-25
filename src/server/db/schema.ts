@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { blob, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const sessions = sqliteTable("sessions", {
 	id: text("id")
@@ -299,6 +299,24 @@ export const watcherConfigs = sqliteTable("watcher_configs", {
 	systemPrompt: text("system_prompt"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
+/**
+ * Per-event embedding vectors for the semantic search backend. Created
+ * only when AGENTPULSE_VECTOR_SEARCH=true at boot — see initializeDatabase.
+ *
+ * `vector` is a Buffer of float32 values (dim × 4 bytes). The `model`
+ * column lets us tolerate model swaps: if the user picks a different
+ * embedding model, rows with the stale model name get re-indexed
+ * lazily; cosine queries filter by the active model so we never mix
+ * dimensions in one query.
+ */
+export const eventEmbeddings = sqliteTable("event_embeddings", {
+	eventId: integer("event_id").primaryKey(),
+	model: text("model").notNull(),
+	dim: integer("dim").notNull(),
+	vector: blob("vector", { mode: "buffer" }).notNull(),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
 export const aiDailySpend = sqliteTable(

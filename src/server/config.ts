@@ -17,6 +17,13 @@ export const config = {
 	aiEnabled: process.env.AGENTPULSE_AI_ENABLED === "true",
 	secretsKey: process.env.AGENTPULSE_SECRETS_KEY || "",
 
+	// Vector embeddings for semantic search — third-tier opt-in beyond the AI
+	// flag. AGENTPULSE_VECTOR_SEARCH gates the embeddings table, ingest
+	// indexing, and Settings UI. Unset = the feature is invisible (no table,
+	// no UI, no embed calls). Set = surface is built; users still toggle on
+	// at runtime in Settings.
+	vectorSearchEnabled: process.env.AGENTPULSE_VECTOR_SEARCH === "true",
+
 	// Telegram HITL channel — instance-wide bot token serves every
 	// per-user channel enrollment. When unset, Telegram features stay
 	// dark regardless of the labs flag.
