@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { type AiProvider, type AiProviderKind, api } from "../../lib/api.js";
+import { VectorSearchSection } from "./VectorSearchSection.js";
 
 type Status = { build: boolean; runtime: boolean; killSwitch: boolean; active: boolean };
 
@@ -215,6 +216,9 @@ export function AiSettingsPanel() {
 					</ul>
 				)}
 			</div>
+
+			{/* Vector search — only renders when the build flag is on */}
+			<VectorSearchSection />
 
 			{/* Redactor preview */}
 			<RedactorPreview />

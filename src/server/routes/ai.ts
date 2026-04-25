@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { requireAuth } from "../auth/middleware.js";
@@ -10,17 +11,24 @@ import {
 	invalidateDigestCache,
 } from "../services/ai/digest-service.js";
 import { checkDispatch } from "../services/ai/dispatch-filter.js";
+import { getBackfillProgress, runBackfill } from "../services/ai/embeddings/embedding-service.js";
 import {
 	AI_CLASSIFIER_AFFECTS_RUNNER_KEY,
 	AI_CLASSIFIER_ENABLED_KEY,
 	AI_KILL_SWITCH_KEY,
 	AI_RUNTIME_ENABLED_KEY,
+	DEFAULT_EMBEDDING_MODEL,
+	VECTOR_SEARCH_ENABLED_KEY,
+	VECTOR_SEARCH_MODEL_KEY,
+	VECTOR_SEARCH_PROVIDER_ID_KEY,
 	classifierAffectsRunner,
 	isAiActive,
 	isAiBuildEnabled,
 	isAiRuntimeEnabled,
 	isClassifierEnabled,
 	isKillSwitchActive,
+	isVectorSearchActive,
+	isVectorSearchBuildEnabled,
 } from "../services/ai/feature.js";
 import { resolveHitlRequest, supersedeOpenHitl } from "../services/ai/hitl-service.js";
 import { type InboxWorkItem, buildInbox } from "../services/ai/inbox-service.js";
@@ -154,6 +162,84 @@ aiRouter.put("/ai/status", async (c) => {
 		classifierEnabled: await isClassifierEnabled(),
 		classifierAffectsRunner: await classifierAffectsRunner(),
 	});
+});
+
+// --------------------------------------------------------------------------
+// Vector search (semantic similarity over event embeddings)
+// --------------------------------------------------------------------------
+
+aiRouter.get("/ai/vector-search/status", async (c) => {
+	const build = isVectorSearchBuildEnabled();
+	const active = await isVectorSearchActive();
+	const [enabledRow] = await db
+		.select()
+		.from(settings)
+		.where(eq(settings.key, VECTOR_SEARCH_ENABLED_KEY))
+		.limit(1);
+	const [modelRow] = await db
+		.select()
+		.from(settings)
+		.where(eq(settings.key, VECTOR_SEARCH_MODEL_KEY))
+		.limit(1);
+	const [providerRow] = await db
+		.select()
+		.from(settings)
+		.where(eq(settings.key, VECTOR_SEARCH_PROVIDER_ID_KEY))
+		.limit(1);
+	const progress = build ? await getBackfillProgress() : null;
+	return c.json({
+		build,
+		active,
+		enabled: enabledRow?.value === true,
+		model: (modelRow?.value as string | undefined) ?? DEFAULT_EMBEDDING_MODEL,
+		providerId: (providerRow?.value as string | undefined) ?? null,
+		progress,
+	});
+});
+
+aiRouter.put("/ai/vector-search/status", async (c) => {
+	const gate = await requireAiBuild(c);
+	if (gate) return gate;
+	if (!isVectorSearchBuildEnabled()) {
+		return c.json({ error: "Vector search build flag is off." }, 400);
+	}
+	const body = await c.req.json<{
+		enabled?: boolean;
+		model?: string | null;
+		providerId?: string | null;
+	}>();
+	const now = new Date().toISOString();
+	const upsert = async (key: string, value: unknown) => {
+		await db
+			.insert(settings)
+			.values({ key, value, updatedAt: now })
+			.onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: now } });
+	};
+	if (body.enabled !== undefined) await upsert(VECTOR_SEARCH_ENABLED_KEY, body.enabled);
+	if (body.model !== undefined) {
+		await upsert(VECTOR_SEARCH_MODEL_KEY, body.model || DEFAULT_EMBEDDING_MODEL);
+	}
+	if (body.providerId !== undefined) {
+		await upsert(VECTOR_SEARCH_PROVIDER_ID_KEY, body.providerId ?? "");
+	}
+	const progress = await getBackfillProgress();
+	return c.json({
+		build: isVectorSearchBuildEnabled(),
+		active: await isVectorSearchActive(),
+		progress,
+	});
+});
+
+aiRouter.post("/ai/vector-search/rebuild", async (c) => {
+	const gate = await requireAiBuild(c);
+	if (gate) return gate;
+	if (!isVectorSearchBuildEnabled()) {
+		return c.json({ error: "Vector search build flag is off." }, 400);
+	}
+	// Fire-and-forget so the request returns fast; clients poll
+	// /ai/vector-search/status for progress.
+	void runBackfill();
+	return c.json({ ok: true, started: true });
 });
 
 // --------------------------------------------------------------------------

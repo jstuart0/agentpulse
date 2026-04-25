@@ -515,6 +515,20 @@ export function initializeDatabase() {
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_ask_threads_telegram_chat ON ask_threads(telegram_chat_id) WHERE telegram_chat_id IS NOT NULL AND archived_at IS NULL",
 	];
 
+	// Vector search opt-in. The embeddings table only materializes when
+	// the build flag is on so installs that don't need this feature stay
+	// lean (no extra column, no extra writes, no boot-time backfill).
+	if (config.vectorSearchEnabled) {
+		migrations.push(
+			"CREATE TABLE IF NOT EXISTS event_embeddings (event_id INTEGER PRIMARY KEY, model TEXT NOT NULL, dim INTEGER NOT NULL, vector BLOB NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))",
+			// FK-style cascade via trigger (we don't define a real FK on
+			// events.id because the events table doesn't have ON DELETE
+			// cascade configured and we don't want to retrofit one here).
+			"CREATE TRIGGER IF NOT EXISTS trg_events_ad_embeddings AFTER DELETE ON events BEGIN DELETE FROM event_embeddings WHERE event_id = OLD.id; END",
+			"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model ON event_embeddings(model)",
+		);
+	}
+
 	for (const migration of migrations) {
 		// Retry on lock contention — during rolling k8s updates the old
 		// pod still holds the SQLite writer briefly while the new pod

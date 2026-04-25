@@ -149,24 +149,27 @@ export async function insertNormalizedEvents(
 
 	if (retained.length === 0) return [];
 
-	await db.insert(events).values(
-		retained.map((event) => ({
-			sessionId,
-			eventType: event.eventType,
-			category: event.category,
-			source: event.source,
-			content: event.content,
-			isNoise: event.isNoise,
-			providerEventType: event.providerEventType,
-			toolName: event.toolName,
-			toolInput: event.toolInput,
-			toolResponse: event.toolResponse,
-			rawPayload: event.rawPayload,
-		})),
-	);
+	const inserted = await db
+		.insert(events)
+		.values(
+			retained.map((event) => ({
+				sessionId,
+				eventType: event.eventType,
+				category: event.category,
+				source: event.source,
+				content: event.content,
+				isNoise: event.isNoise,
+				providerEventType: event.providerEventType,
+				toolName: event.toolName,
+				toolInput: event.toolInput,
+				toolResponse: event.toolResponse,
+				rawPayload: event.rawPayload,
+			})),
+		)
+		.returning({ id: events.id });
 
-	return retained.map((event) => ({
-		id: 0,
+	return retained.map((event, i) => ({
+		id: inserted[i]?.id ?? 0,
 		sessionId,
 		eventType: event.eventType,
 		category: event.category,

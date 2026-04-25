@@ -139,10 +139,52 @@ export function parseExpansion(text: string): string[] {
 }
 
 /**
+ * Composes multiple enrichers and unions their results. Used when
+ * both LLM expansion AND vector embeddings are configured — we want
+ * the strengths of both:
+ *   - LLM expansion: jargon precision (the synonym list catches
+ *     domain terms the user actually used in past prompts).
+ *   - Vector embeddings: paraphrase recall (matches "spaghetti
+ *     monolith" → "tightly coupled" without sharing any word).
+ *
+ * Runs the inner enrichers in parallel; one failing fast (e.g. LLM
+ * timeout) doesn't block the other. extraTerms get deduped; directHits
+ * keep the max score per session across enrichers.
+ */
+export class CompositeEnricher implements SemanticEnricher {
+	readonly name = "llm-expansion" as const;
+
+	constructor(private readonly enrichers: SemanticEnricher[]) {}
+
+	async enrich(query: string): Promise<EnrichmentResult> {
+		const results = await Promise.all(
+			this.enrichers.map((e) => e.enrich(query).catch(() => EMPTY_ENRICHMENT)),
+		);
+		const seen = new Set<string>();
+		const extraTerms: string[] = [];
+		const directHits = new Map<string, number>();
+		for (const r of results) {
+			for (const term of r.extraTerms) {
+				const t = term.trim().toLowerCase();
+				if (!t || seen.has(t)) continue;
+				seen.add(t);
+				extraTerms.push(term);
+			}
+			for (const [sessionId, score] of r.directHits) {
+				const prev = directHits.get(sessionId) ?? 0;
+				if (score > prev) directHits.set(sessionId, score);
+			}
+		}
+		return { extraTerms, directHits };
+	}
+}
+
+/**
  * Factory. Returns `null` when AI isn't compiled in, runtime-enabled,
  * or when no default provider is configured — lets callers cleanly
  * fall back to lexical-only search without having to check those
- * conditions themselves.
+ * conditions themselves. When vector search is also active, composes
+ * LLM expansion + vector enrichment.
  */
 export async function getSemanticEnricher(): Promise<SemanticEnricher | null> {
 	if (!(await isAiActive())) return null;
@@ -157,5 +199,11 @@ export async function getSemanticEnricher(): Promise<SemanticEnricher | null> {
 		apiKey,
 		baseUrl: full.baseUrl ?? undefined,
 	});
-	return new LlmQueryExpander(adapter, full.model);
+	const llmExpander = new LlmQueryExpander(adapter, full.model);
+
+	// Lazy import keeps the embeddings module out of the no-flag path.
+	const { getVectorEnricher } = await import("./embeddings/vector-enricher.js");
+	const vector = await getVectorEnricher();
+	if (!vector) return llmExpander;
+	return new CompositeEnricher([llmExpander, vector]);
 }
