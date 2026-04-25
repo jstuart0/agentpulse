@@ -29,8 +29,8 @@ const RECOMMENDED_MODELS = [
 		hint: "335M params · 1024-dim · solid retrieval baseline",
 	},
 	{
-		id: "qwen3-embedding-8b",
-		label: "qwen3-embedding-8b (max quality)",
+		id: "qwen3-embedding:8b",
+		label: "qwen3-embedding:8b (max quality)",
 		hint: "8B params · 4096-dim · ~200-500ms/embed · top MTEB scores; slow backfill",
 	},
 ];
