@@ -277,6 +277,16 @@ export async function runBackfill(): Promise<BackfillProgress> {
 
 			const texts: string[] = [];
 			const ids: number[] = [];
+			// Placeholder INSERT for events that have no extractable text.
+			// Without it, the LEFT JOIN keeps re-surfacing them on every
+			// batch query and the loop never makes forward progress (we
+			// burned 22 events × N pods diagnosing exactly this). dim=0 +
+			// empty buffer is silently filtered by the cosine query
+			// (which requires dim = adapter.dim).
+			const skipMarker = sqlite.prepare(
+				"INSERT OR IGNORE INTO event_embeddings (event_id, model, dim, vector, created_at) " +
+					"VALUES (?, ?, 0, X'', datetime('now'))",
+			);
 			for (const row of batch) {
 				const parsed =
 					typeof row.rawPayload === "string"
@@ -287,6 +297,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 					content: row.content,
 				});
 				if (!text.trim()) {
+					skipMarker.run(row.id, adapter.model);
 					processed += 1;
 					continue;
 				}
