@@ -481,6 +481,16 @@ async function executeSessionDeleteAction(
 	});
 }
 
+type KindExecutor = (request: ActionRequest, resolvedBy: string) => Promise<ResolveResult>;
+
+const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
+	launch_request: executeLaunchAction,
+	add_project: executeAddProjectAction,
+	session_stop: executeSessionStopAction,
+	session_archive: executeSessionArchiveAction,
+	session_delete: executeSessionDeleteAction,
+};
+
 export async function resolveActionRequest(args: {
 	id: string;
 	decision: "applied" | "declined";
@@ -542,29 +552,17 @@ export async function resolveActionRequest(args: {
 		return { ok: false, reason: "failed", failureReason: "Unsupported action kind" };
 	}
 
-	if (request.kind === "add_project") {
-		return executeAddProjectAction(request, resolvedBy);
+	const executor = KIND_EXECUTORS[request.kind];
+	if (!executor) {
+		await conditionalUpdate(id, "applying", {
+			status: "failed",
+			failureReason: `Unsupported action kind: ${request.kind}`,
+		});
+		return {
+			ok: false,
+			reason: "failed",
+			failureReason: `Unsupported action kind: ${request.kind}`,
+		};
 	}
-
-	if (request.kind === "launch_request") {
-		return executeLaunchAction(request, resolvedBy);
-	}
-
-	if (request.kind === "session_stop") {
-		return executeSessionStopAction(request, resolvedBy);
-	}
-
-	if (request.kind === "session_archive") {
-		return executeSessionArchiveAction(request, resolvedBy);
-	}
-
-	if (request.kind === "session_delete") {
-		return executeSessionDeleteAction(request, resolvedBy);
-	}
-
-	await conditionalUpdate(id, "applying", {
-		status: "failed",
-		failureReason: `Unsupported action kind: ${request.kind}`,
-	});
-	return { ok: false, reason: "failed", failureReason: `Unsupported action kind: ${request.kind}` };
+	return executor(request, resolvedBy);
 }
