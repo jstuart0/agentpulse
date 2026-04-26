@@ -30,7 +30,7 @@ export interface SearchFilters {
 	/** Filter by agent type. */
 	agentType?: "claude_code" | "codex_cli";
 	/** Filter by session status. */
-	sessionStatus?: "active" | "idle" | "completed" | "archived";
+	sessionStatus?: "active" | "idle" | "completed" | "archived" | "failed";
 	/** Restrict to one event type (PreToolUse, UserPromptSubmit, etc.). */
 	eventType?: string;
 	/** ISO-8601 timestamp lower bound (inclusive). */

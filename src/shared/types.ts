@@ -170,6 +170,7 @@ export interface Session {
 	notes: string | null;
 	metadata: Record<string, unknown>;
 	projectId: string | null;
+	isArchived: boolean;
 	managedSession?: ManagedSession | null;
 }
 

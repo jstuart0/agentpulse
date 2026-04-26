@@ -5,41 +5,20 @@ import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { projects, sessionTemplates } from "../db/schema.js";
 import { ensureProjectForCwd, getProject } from "../services/projects/projects-service.js";
-import { normalizeCwd } from "../services/projects/resolver.js";
 import {
 	buildTemplatePreview,
 	normalizeTemplateInput,
 	validateTemplateInput,
 } from "../services/template-preview.js";
+import { resolveTemplateWithProject } from "../services/templates/template-project-resolver.js";
 import {
-	parseOverrides,
-	resolveTemplateWithProject,
-} from "../services/templates/template-project-resolver.js";
+	deleteTemplate,
+	mapTemplate,
+	updateTemplate,
+} from "../services/templates/templates-service.js";
 
 const templatesRouter = new Hono();
 templatesRouter.use("*", requireAuth());
-
-function mapTemplate(row: typeof sessionTemplates.$inferSelect) {
-	return {
-		id: row.id,
-		projectId: row.projectId ?? null,
-		overriddenFields: Array.from(parseOverrides(row.templateProjectOverrides)),
-		name: row.name,
-		description: row.description,
-		agentType: row.agentType,
-		cwd: row.cwd,
-		baseInstructions: row.baseInstructions,
-		taskPrompt: row.taskPrompt,
-		model: row.model,
-		approvalPolicy: row.approvalPolicy,
-		sandboxMode: row.sandboxMode,
-		env: row.env ?? {},
-		tags: row.tags ?? [],
-		isFavorite: row.isFavorite,
-		createdAt: row.createdAt,
-		updatedAt: row.updatedAt,
-	};
-}
 
 templatesRouter.get("/templates", async (c) => {
 	const agentType = c.req.query("agent_type") as AgentType | undefined;
@@ -155,83 +134,22 @@ templatesRouter.put("/templates/:id", async (c) => {
 	const body = await c.req.json<
 		SessionTemplateInput & { projectId?: string | null; overriddenFields?: string[] }
 	>();
-	const normalized = normalizeTemplateInput(body);
-	const { errors } = validateTemplateInput(normalized);
-	if (errors.length > 0) return c.json({ error: errors.join(" ") }, 400);
-
-	const [existing] = await db
-		.select()
-		.from(sessionTemplates)
-		.where(eq(sessionTemplates.id, id))
-		.limit(1);
-	if (!existing) return c.json({ error: "Template not found" }, 404);
-
-	const cwdChanged = normalizeCwd(normalized.cwd) !== normalizeCwd(existing.cwd);
-	const bodyHasExplicitProjectId = "projectId" in body;
-	const explicitProjectId = bodyHasExplicitProjectId ? (body.projectId ?? null) : undefined;
-
-	let resolvedProjectId: string | null;
-	if (bodyHasExplicitProjectId && explicitProjectId !== null) {
-		// Explicit non-null id: honour it directly.
-		resolvedProjectId = body.projectId as string;
-	} else if (
-		(explicitProjectId === null || !bodyHasExplicitProjectId) &&
-		(cwdChanged || existing.projectId === null) &&
-		normalized.cwd.trim() !== ""
-	) {
-		// No explicit id AND (cwd changed OR no existing link): auto-link/create.
-		const result = await ensureProjectForCwd({
-			cwd: normalized.cwd,
-			defaultAgentType: normalized.agentType,
-			defaultModel: normalized.model ?? null,
-		});
-		if ("error" in result) return c.json({ error: result.error }, 500);
-		resolvedProjectId = result.project.id;
-	} else if (bodyHasExplicitProjectId) {
-		// Explicit null and cwd unchanged: user cleared the link.
-		resolvedProjectId = null;
-	} else {
-		// Key absent from body, cwd unchanged, existing link present: preserve it.
-		resolvedProjectId = existing.projectId ?? null;
-	}
-
-	const [row] = await db
-		.update(sessionTemplates)
-		.set({
-			name: normalized.name,
-			description: normalized.description,
-			agentType: normalized.agentType,
-			cwd: normalized.cwd,
-			baseInstructions: normalized.baseInstructions,
-			taskPrompt: normalized.taskPrompt,
-			model: normalized.model,
-			approvalPolicy: normalized.approvalPolicy,
-			sandboxMode: normalized.sandboxMode,
-			env: normalized.env,
-			tags: normalized.tags,
-			isFavorite: normalized.isFavorite ?? false,
-			projectId: resolvedProjectId,
-			templateProjectOverrides:
-				"overriddenFields" in body
-					? (body.overriddenFields ?? null)
-					: existing.templateProjectOverrides,
-			updatedAt: new Date().toISOString(),
-		})
-		.where(eq(sessionTemplates.id, id))
-		.returning();
-
-	return c.json({ template: mapTemplate(row) });
+	const result = await updateTemplate(id, body);
+	if (!result.ok) return c.json({ error: result.error }, result.status);
+	return c.json({
+		template: {
+			...result.template,
+			agentType: result.agentType,
+			cwd: result.cwd,
+			model: result.model,
+		},
+	});
 });
 
 templatesRouter.delete("/templates/:id", async (c) => {
 	const id = c.req.param("id");
-	const [existing] = await db
-		.select()
-		.from(sessionTemplates)
-		.where(eq(sessionTemplates.id, id))
-		.limit(1);
-	if (!existing) return c.json({ error: "Template not found" }, 404);
-	await db.delete(sessionTemplates).where(eq(sessionTemplates.id, id));
+	const result = await deleteTemplate(id);
+	if (!result.ok) return c.json({ error: result.error }, result.status);
 	return c.json({ ok: true });
 });
 

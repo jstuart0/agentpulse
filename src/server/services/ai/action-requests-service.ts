@@ -51,7 +51,18 @@ export interface AddProjectActionPayload {
 }
 
 export interface CreateActionRequestInput {
-	kind: "launch_request" | "add_project";
+	kind:
+		| "launch_request"
+		| "add_project"
+		| "session_stop"
+		| "session_archive"
+		| "session_delete"
+		| "edit_project"
+		| "delete_project"
+		| "edit_template"
+		| "delete_template"
+		| "add_channel"
+		| "create_alert_rule";
 	question: string;
 	payload: ActionRequestPayload | AddProjectActionPayload | Record<string, unknown>;
 	origin: "web" | "telegram";

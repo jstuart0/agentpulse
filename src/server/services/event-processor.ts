@@ -329,6 +329,21 @@ export async function processHookEvent(
 	return { sessionId, isNew };
 }
 
+/**
+ * P3 write path: mark a session as failed.
+ *
+ * Called from launch-dispatch when a launch_request transitions to "failed"
+ * and the session has never produced a SessionEnd event (i.e. the agent never
+ * started cleanly). Slice 6 alert-rule evaluation will be wired here.
+ */
+export async function markSessionFailed(sessionId: string): Promise<void> {
+	const now = new Date().toISOString();
+	await db
+		.update(sessions)
+		.set({ status: "failed", endedAt: now, isWorking: false })
+		.where(eq(sessions.sessionId, sessionId));
+}
+
 // Process a semantic status update from CLAUDE.md snippet
 export async function processStatusUpdate(update: SemanticStatusUpdate): Promise<boolean> {
 	const existing = await db

@@ -3,6 +3,7 @@ import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { launchRequests } from "../db/schema.js";
 import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
+import { markSessionFailed } from "./event-processor.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { attachManagedSessionToLaunch } from "./managed-session-state.js";
 
@@ -101,6 +102,15 @@ export async function updateLaunchDispatchStatus(input: {
 		.set(updates)
 		.where(eq(launchRequests.id, input.launchId))
 		.returning();
+
+	// P3: propagate launch failure to the correlated session so
+	// sessions.status = "failed" is written via event-processor.ts,
+	// the integration point Slice 6 alert-rule evaluation hooks into.
+	if (input.status === "failed" && updated?.launchCorrelationId) {
+		await markSessionFailed(updated.launchCorrelationId).catch((err) => {
+			console.warn("[launch-dispatch] markSessionFailed skipped:", err);
+		});
+	}
 
 	return updated ? mapLaunchRequest(updated) : null;
 }

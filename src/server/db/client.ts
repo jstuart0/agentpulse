@@ -570,6 +570,8 @@ export function initializeDatabase() {
 		`CREATE INDEX IF NOT EXISTS idx_pending_project_drafts_thread
 			ON ai_pending_project_drafts(ask_thread_id, status)
 			WHERE status IN ('drafting', 'pending_approval')`,
+		// P2: is_archived column — keeps archival orthogonal to session status.
+		"ALTER TABLE sessions ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

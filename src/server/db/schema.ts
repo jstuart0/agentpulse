@@ -30,6 +30,9 @@ export const sessions = sqliteTable("sessions", {
 	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>().default({}),
 	// Nullable FK to projects.id, resolved by longest-prefix cwd match.
 	projectId: text("project_id"),
+	// P2: archival flag — orthogonal to status so a failed/completed session
+	// can be archived without changing its terminal status value.
+	isArchived: integer("is_archived", { mode: "boolean" }).notNull().default(false),
 	// AI watcher fields (nullable; only meaningful when the feature is enabled)
 	watcherState: text("watcher_state"),
 	watcherLastRunAt: text("watcher_last_run_at"),
