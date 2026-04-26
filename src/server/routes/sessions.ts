@@ -1,4 +1,4 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lte, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
@@ -219,6 +219,49 @@ sessionsRouter.get("/sessions/search", async (c) => {
 	}
 
 	return c.json({ sessions: allResults, total: allResults.length });
+});
+
+// GET /api/v1/sessions/:sessionId/events/:eventId/context - Event context window
+sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => {
+	const sessionId = c.req.param("sessionId");
+	const eventId = Number(c.req.param("eventId"));
+	const rawAround = Number(c.req.query("around") ?? 20);
+	const around = Math.max(1, Math.min(100, Number.isFinite(rawAround) ? rawAround : 20));
+
+	if (!Number.isInteger(eventId) || eventId <= 0) {
+		return c.json({ error: "Invalid eventId" }, 404);
+	}
+
+	// Verify the target event exists and belongs to this session.
+	const [target] = await db
+		.select()
+		.from(events)
+		.where(and(eq(events.id, eventId), eq(events.sessionId, sessionId)))
+		.limit(1);
+
+	if (!target) {
+		return c.json({ error: "Event not found" }, 404);
+	}
+
+	// Events at or before the target (includes target itself), newest first.
+	const before = await db
+		.select()
+		.from(events)
+		.where(and(eq(events.sessionId, sessionId), lte(events.id, eventId)))
+		.orderBy(desc(events.id))
+		.limit(around + 1);
+
+	// Events strictly after the target, oldest first.
+	const after = await db
+		.select()
+		.from(events)
+		.where(and(eq(events.sessionId, sessionId), gt(events.id, eventId)))
+		.orderBy(asc(events.id))
+		.limit(around);
+
+	const combined = [...before.reverse(), ...after];
+
+	return c.json({ events: combined, target: { id: eventId } });
 });
 
 // Compute a simple hash for sync detection

@@ -1,4 +1,4 @@
-import { type RefObject, forwardRef } from "react";
+import { type ReactNode, type RefObject, forwardRef } from "react";
 import type { SessionEvent } from "../../../shared/types.js";
 import {
 	AssistantBubble,
@@ -15,6 +15,7 @@ interface ActivityTimelineProps {
 	mode: TimelineMode;
 	onScroll: () => void;
 	endRef: RefObject<HTMLDivElement | null>;
+	loadingContext?: boolean;
 }
 
 /**
@@ -25,18 +26,21 @@ interface ActivityTimelineProps {
  * parent only supplies the event list and the scroll handler.
  */
 export const ActivityTimeline = forwardRef<HTMLDivElement, ActivityTimelineProps>(
-	({ visibleEvents, mode, onScroll, endRef }, containerRef) => {
+	({ visibleEvents, mode, onScroll, endRef, loadingContext }, containerRef) => {
 		return (
 			<div ref={containerRef} onScroll={onScroll} className="h-full overflow-auto p-3 md:p-6">
+				{loadingContext ? (
+					<p className="text-xs text-muted-foreground text-center pb-2">Loading older context…</p>
+				) : null}
 				<div className={mode === "terminal" ? "space-y-4" : "space-y-3"}>
 					{visibleEvents.length === 0 ? (
 						<p className="text-sm text-muted-foreground text-center py-8">
 							No events match this view yet.
 						</p>
 					) : mode === "terminal" ? (
-						visibleEvents.map((event) => renderTerminalEvent(event))
+						visibleEvents.map((event) => stampedItem(event, renderTerminalEvent(event)))
 					) : (
-						visibleEvents.map((event) => renderBubbleEvent(event, mode))
+						visibleEvents.map((event) => stampedItem(event, renderBubbleEvent(event, mode)))
 					)}
 					<div ref={endRef} />
 				</div>
@@ -47,10 +51,34 @@ export const ActivityTimeline = forwardRef<HTMLDivElement, ActivityTimelineProps
 
 ActivityTimeline.displayName = "ActivityTimeline";
 
+/**
+ * Wraps a rendered timeline item in a thin container that carries the DOM id
+ * used by the scroll/flash effect. Persisted DB rows (id > 0) get
+ * `id="event-{id}"`. WebSocket-only events (no persisted id) get a
+ * `data-event-key` attribute instead — search hits always reference persisted
+ * rows so they will always find the id-stamped element.
+ */
+function stampedItem(event: SessionEvent, child: ReactNode) {
+	if (child === null) return null;
+	const key = eventKey(event);
+	if (event.id) {
+		return (
+			<div key={key} id={`event-${event.id}`}>
+				{child}
+			</div>
+		);
+	}
+	return (
+		<div key={key} data-event-key={key}>
+			{child}
+		</div>
+	);
+}
+
 function renderTerminalEvent(event: SessionEvent) {
 	if (event.category === "prompt" && event.content) {
 		return (
-			<div key={eventKey(event)} className="font-mono text-[13px] leading-6">
+			<div className="font-mono text-[13px] leading-6">
 				<span className="text-primary select-none mr-1">&gt;</span>
 				<span className="whitespace-pre-wrap break-words text-foreground">{event.content}</span>
 			</div>
@@ -58,23 +86,17 @@ function renderTerminalEvent(event: SessionEvent) {
 	}
 	if (event.category === "assistant_message" && event.content) {
 		return (
-			<div
-				key={eventKey(event)}
-				className="text-sm leading-6 whitespace-pre-wrap break-words text-foreground/90"
-			>
+			<div className="text-sm leading-6 whitespace-pre-wrap break-words text-foreground/90">
 				{event.content}
 			</div>
 		);
 	}
 	if (event.category === "tool_event") {
-		return <ToolCallBlock key={eventKey(event)} event={event} />;
+		return <ToolCallBlock event={event} />;
 	}
 	if (!event.content) return null;
 	return (
-		<div
-			key={eventKey(event)}
-			className="font-mono text-[12px] leading-5 text-muted-foreground whitespace-pre-wrap break-words"
-		>
+		<div className="font-mono text-[12px] leading-5 text-muted-foreground whitespace-pre-wrap break-words">
 			<span className="uppercase tracking-wider mr-2 text-[10px]">
 				{eventLabel(event.category)}
 			</span>
@@ -87,7 +109,6 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode) {
 	if (event.category === "prompt" && event.content) {
 		return (
 			<PromptBubble
-				key={eventKey(event)}
 				text={event.content}
 				time={event.createdAt}
 				source={mode === "debug" ? event.source : undefined}
@@ -97,7 +118,6 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode) {
 	if (event.category === "assistant_message" && event.content) {
 		return (
 			<AssistantBubble
-				key={eventKey(event)}
 				text={event.content}
 				time={event.createdAt}
 				source={mode === "debug" ? event.source : undefined}
@@ -108,7 +128,6 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode) {
 		const detail = event.content || event.toolName || event.eventType;
 		return (
 			<TimelineCard
-				key={eventKey(event)}
 				label={eventLabel(event.category)}
 				text={detail}
 				time={event.createdAt}
@@ -120,7 +139,6 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode) {
 	if (!event.content) return null;
 	return (
 		<TimelineCard
-			key={eventKey(event)}
 			label={eventLabel(event.category)}
 			text={event.content}
 			time={event.createdAt}

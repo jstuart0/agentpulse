@@ -31,6 +31,14 @@ import { useEventStore } from "../stores/event-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 
+/** Merge new events into the existing persisted events array, de-duped by id, sorted asc. */
+function insertEvents(existing: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
+	const byId = new Map<number, SessionEvent>();
+	for (const e of existing) byId.set(e.id, e);
+	for (const e of incoming) byId.set(e.id, e);
+	return Array.from(byId.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 /**
  * Session detail page — after WS5 decomposition this file is pure
  * orchestration: data loading, polling, scroll coordination, and
@@ -57,12 +65,22 @@ export function SessionDetailPage() {
 		requestedTab && WORKSPACE_TABS.includes(requestedTab) ? requestedTab : "activity";
 	const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(initialWorkspaceTab);
 
+	const [loadingContext, setLoadingContext] = useState(false);
+	const [contextNotFound, setContextNotFound] = useState(false);
+
 	const timelineContainerRef = useRef<HTMLDivElement>(null);
 	const timelineEndRef = useRef<HTMLDivElement>(null);
 	const shouldFollowTimelineRef = useRef(true);
 	const previousEventCountRef = useRef(0);
 	const liveEventsMap = useEventStore((s) => s.liveEvents);
 	const clearLiveEvents = useEventStore((s) => s.clearSession);
+
+	// Tracks which (sessionId, eventId) combo has already been flashed so that
+	// incoming WebSocket events don't re-trigger the scroll/flash.
+	const flashedRef = useRef<{ sessionId: string | null; eventId: string | null }>({
+		sessionId: null,
+		eventId: null,
+	});
 
 	const loadSessionWorkspace = useCallback(async () => {
 		if (!sessionId) return;
@@ -97,6 +115,59 @@ export function SessionDetailPage() {
 			clearLiveEvents(sessionId);
 		};
 	}, [sessionId, clearLiveEvents, loadSessionWorkspace]);
+
+	// Reset the flash guard whenever we navigate to a different session so that
+	// back-and-forth navigation re-runs the scroll/flash for each destination.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: sessionId is the trigger, not a value read inside the callback
+	useEffect(() => {
+		flashedRef.current = { sessionId: null, eventId: null };
+	}, [sessionId]);
+
+	// Read the URL hash and scroll-and-flash the matching event once it appears
+	// in the DOM. Depends on both sessionId and events.length:
+	// - sessionId: re-arms on navigation
+	// - events.length: retries when the event list grows (async load / WS events)
+	// The ref guard ensures exactly one flash per (sessionId, eventId) pair.
+	useEffect(() => {
+		if (workspaceTab !== "activity") return;
+		if (!session) return;
+		const hash = window.location.hash;
+		const m = hash.match(/^#event-(\d+)$/);
+		if (!m) return;
+		const eventId = m[1];
+		if (flashedRef.current.sessionId === sessionId && flashedRef.current.eventId === eventId) {
+			return;
+		}
+		const el = document.getElementById(`event-${eventId}`);
+		if (el) {
+			flashedRef.current = { sessionId: sessionId ?? null, eventId };
+			el.scrollIntoView({ behavior: "smooth", block: "center" });
+			el.classList.add("event-flash");
+			const t = setTimeout(() => el.classList.remove("event-flash"), 2200);
+			return () => clearTimeout(t);
+		}
+		// Element not in DOM yet. If the events list has loaded (length > 0) and
+		// we still can't find it, the event is outside the loaded window — fetch
+		// the context window from the server and splice it in.
+		if (events.length === 0) return;
+		if (loadingContext) return;
+		setLoadingContext(true);
+		setContextNotFound(false);
+		api
+			.getEventContext(sessionId ?? "", Number(eventId))
+			.then((res) => {
+				setEvents((prev) => insertEvents(prev, res.events as SessionEvent[]));
+			})
+			.catch(() => {
+				flashedRef.current = { sessionId: sessionId ?? null, eventId };
+				setContextNotFound(true);
+			})
+			.finally(() => {
+				setLoadingContext(false);
+			});
+		// Why both deps: events.length re-triggers after context splice so the
+		// flash runs once the DOM has the newly inserted event.
+	}, [workspaceTab, sessionId, session, events.length, loadingContext]);
 
 	const openTab = useTabsStore((s) => s.open);
 	useEffect(() => {
@@ -258,13 +329,23 @@ export function SessionDetailPage() {
 						) : null}
 					</div>
 				) : workspaceTab === "activity" ? (
-					<ActivityTimeline
-						ref={timelineContainerRef}
-						endRef={timelineEndRef}
-						visibleEvents={visibleEvents}
-						mode={mode}
-						onScroll={handleTimelineScroll}
-					/>
+					<>
+						{contextNotFound ? (
+							<div className="px-4 pt-2">
+								<p className="text-xs text-amber-500/80 text-center">
+									The linked event could not be found — it may have been deleted.
+								</p>
+							</div>
+						) : null}
+						<ActivityTimeline
+							ref={timelineContainerRef}
+							endRef={timelineEndRef}
+							visibleEvents={visibleEvents}
+							mode={mode}
+							onScroll={handleTimelineScroll}
+							loadingContext={loadingContext}
+						/>
+					</>
 				) : workspaceTab === "notes" ? (
 					<NotesPanel sessionId={session.sessionId} initialNotes={session.notes || ""} />
 				) : workspaceTab === "instructions" ? (

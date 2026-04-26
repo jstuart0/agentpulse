@@ -681,6 +681,12 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
+	// --- Event context (for deep-link scroll to older events) ---
+	getEventContext: (sessionId: string, eventId: number, around = 20) =>
+		request<{ events: SessionEvent[]; target: { id: number } }>(
+			`/sessions/${sessionId}/events/${eventId}/context?around=${around}`,
+		),
+
 	// --- Projects ---
 	listProjects: () => request<{ projects: Project[]; total: number }>("/projects"),
 	getProject: (id: string) => request<{ project: Project }>(`/projects/${id}`),
