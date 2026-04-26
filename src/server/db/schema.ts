@@ -28,6 +28,8 @@ export const sessions = sqliteTable("sessions", {
 	claudeMdUpdatedAt: text("claude_md_updated_at"),
 	notes: text("notes").default(""),
 	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>().default({}),
+	// Nullable FK to projects.id, resolved by longest-prefix cwd match.
+	projectId: text("project_id"),
 	// AI watcher fields (nullable; only meaningful when the feature is enabled)
 	watcherState: text("watcher_state"),
 	watcherLastRunAt: text("watcher_last_run_at"),
@@ -414,6 +416,24 @@ export const aiInboxSnoozes = sqliteTable("ai_inbox_snoozes", {
 	snoozedUntil: text("snoozed_until").notNull(),
 	createdBy: text("created_by"),
 	reason: text("reason"),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
+export const projects = sqliteTable("projects", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	name: text("name").notNull().unique(),
+	cwd: text("cwd").notNull(),
+	githubRepoUrl: text("github_repo_url"),
+	defaultAgentType: text("default_agent_type"),
+	defaultModel: text("default_model"),
+	defaultLaunchMode: text("default_launch_mode"),
+	notes: text("notes"),
+	tags: text("tags", { mode: "json" }).$type<string[]>(),
+	isFavorite: integer("is_favorite", { mode: "boolean" }).notNull().default(false),
+	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });

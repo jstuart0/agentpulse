@@ -19,10 +19,11 @@ sessionsRouter.use("*", requireAuth());
 sessionsRouter.get("/sessions", async (c) => {
 	const status = c.req.query("status") as SessionStatus | undefined;
 	const agentType = c.req.query("agent_type") as AgentType | undefined;
+	const projectId = c.req.query("projectId") as string | undefined;
 	const limit = Number(c.req.query("limit") || 50);
 	const offset = Number(c.req.query("offset") || 0);
 
-	const result = await getSessions({ status, agentType, limit, offset });
+	const result = await getSessions({ status, agentType, projectId, limit, offset });
 	return c.json(result);
 });
 

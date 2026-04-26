@@ -21,6 +21,8 @@ import {
 } from "./event-normalizer.js";
 import { associateObservedSession } from "./launch-dispatch.js";
 import { generateSessionName } from "./name-generator.js";
+import { getCachedProjects } from "./projects/cache.js";
+import { resolveProjectIdForCwd } from "./projects/resolver.js";
 
 function chooseHigherAuthorityEvent<
 	T extends { source: EventSource | string; createdAt?: string | null },
@@ -298,6 +300,23 @@ export async function processHookEvent(
 	}
 
 	await db.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+
+	// Resolve project_id based on cwd. Compare against the persisted value
+	// so we only write when it actually changed.
+	const [upserted] = await db
+		.select({ id: sessions.id, cwd: sessions.cwd, projectId: sessions.projectId })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (upserted) {
+		const resolvedProjectId = resolveProjectIdForCwd(upserted.cwd, getCachedProjects());
+		if (resolvedProjectId !== upserted.projectId) {
+			await db
+				.update(sessions)
+				.set({ projectId: resolvedProjectId })
+				.where(eq(sessions.id, upserted.id));
+		}
+	}
 
 	if (isNew || eventType === "SessionStart") {
 		await associateObservedSession({ sessionId });

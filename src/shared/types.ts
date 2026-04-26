@@ -114,6 +114,36 @@ export type EventCategory =
 	| "ai_continue_blocked"
 	| "ai_error";
 
+// Project as returned by the API
+export interface Project {
+	id: string;
+	name: string;
+	cwd: string;
+	githubRepoUrl: string | null;
+	defaultAgentType: AgentType | null;
+	defaultModel: string | null;
+	defaultLaunchMode: LaunchMode | null;
+	notes: string | null;
+	tags: string[];
+	isFavorite: boolean;
+	metadata: Record<string, unknown>;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface ProjectInput {
+	name: string;
+	cwd: string;
+	githubRepoUrl?: string | null;
+	defaultAgentType?: AgentType | null;
+	defaultModel?: string | null;
+	defaultLaunchMode?: LaunchMode | null;
+	notes?: string | null;
+	tags?: string[] | null;
+	isFavorite?: boolean;
+	metadata?: Record<string, unknown> | null;
+}
+
 // Session as returned by the API
 export interface Session {
 	id: string;
@@ -139,6 +169,7 @@ export interface Session {
 	claudeMdUpdatedAt: string | null;
 	notes: string | null;
 	metadata: Record<string, unknown>;
+	projectId: string | null;
 	managedSession?: ManagedSession | null;
 }
 

@@ -1,6 +1,8 @@
 import type {
 	ControlAction,
 	LaunchRequest,
+	Project,
+	ProjectInput,
 	Session,
 	SessionEvent,
 	SupervisorRecord,
@@ -678,6 +680,26 @@ export const api = {
 			method: "POST",
 			body: JSON.stringify(body),
 		}),
+
+	// --- Projects ---
+	listProjects: () => request<{ projects: Project[]; total: number }>("/projects"),
+	getProject: (id: string) => request<{ project: Project }>(`/projects/${id}`),
+	createProject: (body: ProjectInput) =>
+		request<{ project: Project }>("/projects", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+	updateProject: (id: string, body: Partial<ProjectInput>) =>
+		request<{ project: Project }>(`/projects/${id}`, {
+			method: "PUT",
+			body: JSON.stringify(body),
+		}),
+	deleteProject: (id: string) =>
+		request<{ ok: true }>(`/projects/${id}`, {
+			method: "DELETE",
+		}),
+	getProjectSessions: (id: string) =>
+		request<{ sessions: Session[]; total: number }>(`/projects/${id}/sessions`),
 };
 
 export interface TelegramBotInfo {

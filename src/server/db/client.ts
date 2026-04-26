@@ -513,6 +513,25 @@ export function initializeDatabase() {
 		// DB was created fresh (column present) or legacy (column added
 		// by the ALTER above).
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_ask_threads_telegram_chat ON ask_threads(telegram_chat_id) WHERE telegram_chat_id IS NOT NULL AND archived_at IS NULL",
+		// Phase 1: projects registry
+		`CREATE TABLE IF NOT EXISTS projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			cwd TEXT NOT NULL,
+			github_repo_url TEXT,
+			default_agent_type TEXT,
+			default_model TEXT,
+			default_launch_mode TEXT,
+			notes TEXT,
+			tags TEXT,
+			is_favorite INTEGER NOT NULL DEFAULT 0,
+			metadata TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_projects_cwd ON projects(cwd)",
+		"ALTER TABLE sessions ADD COLUMN project_id TEXT",
+		"CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id)",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

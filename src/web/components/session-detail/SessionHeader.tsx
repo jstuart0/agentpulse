@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import { formatDuration } from "../../lib/utils.js";
 import { useLabsStore } from "../../stores/labs-store.js";
+import { useProjectsStore } from "../../stores/projects-store.js";
 import { AgentTypeBadge } from "../AgentTypeBadge.js";
 import { StatusBadge } from "../StatusBadge.js";
 import { InlineRename } from "./InlineRename.js";
@@ -76,6 +77,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 	const navigate = useNavigate();
 	const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 	const aiTabEnabled = useLabsStore((s) => s.isEnabled("aiSessionTab"));
+	const linkedProject = useProjectsStore((s) => s.getById(session.projectId));
 
 	const canStop =
 		session.agentType === "codex_cli" && session.managedSession?.managedState === "managed";
@@ -122,6 +124,15 @@ export function SessionHeader(props: SessionHeaderProps) {
 						<span className="hidden md:inline text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">
 							{session.gitBranch}
 						</span>
+					)}
+					{linkedProject && (
+						<NavLink
+							to="/projects"
+							className="hidden md:inline text-[10px] font-medium text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-1.5 py-0.5 hover:bg-blue-500/20 transition-colors"
+							title={`Project: ${linkedProject.name}`}
+						>
+							{linkedProject.name}
+						</NavLink>
 					)}
 				</div>
 
