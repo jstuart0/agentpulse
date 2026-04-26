@@ -1,0 +1,33 @@
+import type { InboxWorkItem } from "../../../lib/api.js";
+
+const styles: Record<InboxWorkItem["kind"], string> = {
+	hitl: "bg-primary/10 text-primary border-primary/30",
+	stuck: "bg-red-500/10 text-red-300 border-red-500/30",
+	risky: "bg-amber-500/10 text-amber-300 border-amber-500/30",
+	failed_proposal: "bg-muted text-muted-foreground border-border",
+	action_launch: "bg-blue-500/10 text-blue-300 border-blue-500/30",
+	action_add_project: "bg-teal-500/10 text-teal-300 border-teal-500/30",
+	action_session_stop: "bg-red-500/10 text-red-300 border-red-500/30",
+	action_session_archive: "bg-slate-500/10 text-slate-300 border-slate-500/30",
+	action_session_delete: "bg-red-500/10 text-red-300 border-red-500/30",
+};
+
+const labels: Record<InboxWorkItem["kind"], string> = {
+	hitl: "HITL",
+	stuck: "stuck",
+	risky: "risky",
+	failed_proposal: "failed",
+	action_launch: "launch",
+	action_add_project: "new project",
+	action_session_stop: "stop session",
+	action_session_archive: "archive session",
+	action_session_delete: "delete session",
+};
+
+export function KindBadge({ kind }: { kind: InboxWorkItem["kind"] }) {
+	return (
+		<span className={`text-[10px] font-semibold rounded px-1.5 py-0.5 border ${styles[kind]}`}>
+			{labels[kind]}
+		</span>
+	);
+}

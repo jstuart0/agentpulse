@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { ActionAddProjectCard } from "../components/inbox/ActionAddProjectCard.js";
+import { ActionLaunchCard } from "../components/inbox/ActionLaunchCard.js";
+import { ActionSessionArchiveCard } from "../components/inbox/ActionSessionArchiveCard.js";
+import { ActionSessionDeleteCard } from "../components/inbox/ActionSessionDeleteCard.js";
+import { ActionSessionStopCard } from "../components/inbox/ActionSessionStopCard.js";
+import { FailedProposalCard } from "../components/inbox/FailedProposalCard.js";
+import { HitlCard } from "../components/inbox/HitlCard.js";
+import { RiskyCard } from "../components/inbox/RiskyCard.js";
+import { StuckCard } from "../components/inbox/StuckCard.js";
 import { LabsBadge } from "../components/LabsBadge.js";
 import { type Inbox, type InboxWorkItem, api } from "../lib/api.js";
 
@@ -31,6 +39,90 @@ export function InboxPage() {
 	useEffect(() => {
 		void reload();
 	}, [reload]);
+
+	async function handleHitlDecide(id: string, action: "approve" | "decline") {
+		await api.decideInboxHitl(id, { action });
+		reload();
+	}
+
+	async function handleActionDecide(id: string, decision: "applied" | "declined") {
+		await api.decideActionRequest(id, { decision });
+		reload();
+	}
+
+	async function handleSnooze(
+		id: string,
+		kind: InboxWorkItem["kind"],
+		durationMs: number,
+	) {
+		await api.snoozeInboxItem({ kind, targetId: id, durationMs });
+		reload();
+	}
+
+	function renderCard(item: InboxWorkItem) {
+		switch (item.kind) {
+			case "hitl":
+				return (
+					<HitlCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleHitlDecide}
+					/>
+				);
+			case "stuck":
+				return <StuckCard key={`${item.kind}:${item.id}`} item={item} />;
+			case "risky":
+				return <RiskyCard key={`${item.kind}:${item.id}`} item={item} />;
+			case "failed_proposal":
+				return (
+					<FailedProposalCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onSnooze={handleSnooze}
+					/>
+				);
+			case "action_launch":
+				return (
+					<ActionLaunchCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
+			case "action_add_project":
+				return (
+					<ActionAddProjectCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
+			case "action_session_stop":
+				return (
+					<ActionSessionStopCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
+			case "action_session_archive":
+				return (
+					<ActionSessionArchiveCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
+			case "action_session_delete":
+				return (
+					<ActionSessionDeleteCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
+		}
+	}
 
 	return (
 		<div className="p-4 md:p-6 space-y-4 max-w-5xl mx-auto">
@@ -84,11 +176,7 @@ export function InboxPage() {
 					Inbox empty. Nothing needs your attention.
 				</div>
 			) : (
-				<div className="space-y-3">
-					{inbox?.items.map((item) => (
-						<InboxCard key={`${item.kind}:${item.id}`} item={item} onResolved={reload} />
-					))}
-				</div>
+				<div className="space-y-3">{inbox?.items.map((item) => renderCard(item))}</div>
 			)}
 
 			{inbox && (
@@ -107,412 +195,4 @@ export function InboxPage() {
 			)}
 		</div>
 	);
-}
-
-function InboxCard({
-	item,
-	onResolved,
-}: {
-	item: InboxWorkItem;
-	onResolved: () => void;
-}) {
-	const [busy, setBusy] = useState(false);
-	const [err, setErr] = useState<string | null>(null);
-
-	// action_launch and action_add_project items have no session.
-	const sessionLink =
-		item.kind !== "action_launch" && item.kind !== "action_add_project" ? (
-			<Link to={`/sessions/${item.sessionId}`} className="text-primary hover:underline font-medium">
-				{item.sessionName ?? item.sessionId.slice(0, 8)}
-			</Link>
-		) : null;
-
-	const isActionRequest =
-		item.kind === "action_launch" ||
-		item.kind === "action_add_project" ||
-		item.kind === "action_session_stop" ||
-		item.kind === "action_session_archive" ||
-		item.kind === "action_session_delete";
-
-	async function handleDecide(action: "approve" | "decline") {
-		if (item.kind !== "hitl") return;
-		setBusy(true);
-		setErr(null);
-		try {
-			await api.decideInboxHitl(item.id, { action });
-			onResolved();
-		} catch (e) {
-			setErr(e instanceof Error ? e.message : String(e));
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	async function handleActionDecide(decision: "applied" | "declined") {
-		if (!isActionRequest) return;
-		setBusy(true);
-		setErr(null);
-		try {
-			await api.decideActionRequest(item.id, { decision });
-			onResolved();
-		} catch (e) {
-			setErr(e instanceof Error ? e.message : String(e));
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	const sevClass =
-		item.severity === "high"
-			? "border-red-500/30 bg-red-500/5"
-			: item.severity === "info"
-				? "border-blue-500/30 bg-blue-500/5"
-				: "border-border bg-card";
-
-	return (
-		<div className={`rounded-lg border p-4 ${sevClass}`}>
-			<div className="flex items-center justify-between gap-2 mb-2">
-				<div className="flex items-center gap-2">
-					<KindBadge kind={item.kind} />
-					{sessionLink}
-					{item.kind === "action_launch" && (
-						<span className="text-sm font-medium">
-							{item.parentSessionId
-								? `Resume of ${item.parentSessionName ?? item.parentSessionId.slice(0, 8)}`
-								: item.projectName}
-						</span>
-					)}
-					{item.kind === "action_add_project" && (
-						<span className="text-sm font-medium">New project request</span>
-					)}
-				</div>
-				<span
-					className={`text-[10px] font-mono rounded px-1.5 py-0.5 border ${
-						item.severity === "high"
-							? "border-red-500/30 text-red-300"
-							: item.severity === "info"
-								? "border-blue-500/30 text-blue-300"
-								: "border-border text-muted-foreground"
-					}`}
-				>
-					{item.severity}
-				</span>
-			</div>
-
-			{item.kind === "hitl" && (
-				<>
-					<div className="text-xs text-muted-foreground mb-2">
-						Decision: <span className="font-mono">{item.decision}</span>
-						{item.why ? ` — ${item.why}` : ""}
-					</div>
-					{item.prompt && (
-						<pre className="text-xs font-mono bg-background/50 border border-border rounded p-2 whitespace-pre-wrap break-words max-h-40 overflow-auto">
-							{item.prompt}
-						</pre>
-					)}
-					<div className="flex items-center gap-2 mt-3">
-						<button
-							type="button"
-							disabled={busy}
-							onClick={() => handleDecide("approve")}
-							className="text-xs px-3 py-1 rounded bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 disabled:opacity-50"
-						>
-							Approve
-						</button>
-						<button
-							type="button"
-							disabled={busy}
-							onClick={() => handleDecide("decline")}
-							className="text-xs px-3 py-1 rounded border border-border hover:bg-muted disabled:opacity-50"
-						>
-							Decline
-						</button>
-						<span className="text-[10px] text-muted-foreground ml-auto">
-							{relTime(item.openedAt)}
-						</span>
-					</div>
-				</>
-			)}
-
-			{(item.kind === "stuck" || item.kind === "risky") && (
-				<>
-					<div className="text-xs text-muted-foreground mb-1">
-						Reason: <span className="font-mono">{item.reason}</span>
-					</div>
-					{item.evidence.length > 0 && (
-						<ul className="text-[11px] text-muted-foreground list-disc list-inside">
-							{item.evidence.slice(0, 4).map((e) => (
-								<li key={e} className="font-mono">
-									{e}
-								</li>
-							))}
-						</ul>
-					)}
-				</>
-			)}
-
-			{item.kind === "action_launch" && (
-				<>
-					<div className="text-xs text-muted-foreground mb-2 space-y-1">
-						{item.parentSessionId && (
-							<div className="font-medium text-blue-300">
-								Resume of{" "}
-								<strong>{item.parentSessionName ?? item.parentSessionId.slice(0, 8)}</strong>
-							</div>
-						)}
-						<div>
-							Agent:{" "}
-							<span className="font-mono">
-								{String((item.template as Record<string, unknown>).agentType ?? "—")}
-							</span>
-							{" · "}
-							Mode: <span className="font-mono">{item.requestedLaunchMode}</span>
-							{" · "}
-							Origin: <span className="font-mono">{item.origin}</span>
-						</div>
-						<div className="font-mono text-[10px] break-all">
-							{String((item.template as Record<string, unknown>).cwd ?? item.launchSpec?.cwd ?? "")}
-						</div>
-						{(item.template as Record<string, unknown>).taskPrompt ? (
-							<div className="italic">
-								Task: {String((item.template as Record<string, unknown>).taskPrompt)}
-							</div>
-						) : null}
-					</div>
-					<div className="flex items-center gap-2 mt-3">
-						<button
-							type="button"
-							disabled={busy}
-							onClick={() => handleActionDecide("applied")}
-							className="text-xs px-3 py-1 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-50"
-						>
-							Approve
-						</button>
-						<button
-							type="button"
-							disabled={busy}
-							onClick={() => handleActionDecide("declined")}
-							className="text-xs px-3 py-1 rounded border border-border hover:bg-muted disabled:opacity-50"
-						>
-							Decline
-						</button>
-						<span className="text-[10px] text-muted-foreground ml-auto">
-							{relTime(item.createdAt)}
-						</span>
-					</div>
-				</>
-			)}
-
-			{item.kind === "action_add_project" && (
-				<>
-					<div className="text-xs text-muted-foreground mb-2 space-y-1">
-						<div>
-							Name: <span className="font-mono">{item.projectName}</span>
-						</div>
-						<div className="font-mono text-[10px] break-all">{item.projectCwd}</div>
-						{item.defaultAgentType && (
-							<div>
-								Agent: <span className="font-mono">{item.defaultAgentType}</span>
-							</div>
-						)}
-						{item.defaultLaunchMode && (
-							<div>
-								Mode: <span className="font-mono">{item.defaultLaunchMode}</span>
-							</div>
-						)}
-						{item.defaultModel && (
-							<div>
-								Model: <span className="font-mono">{item.defaultModel}</span>
-							</div>
-						)}
-						<div>
-							Origin: <span className="font-mono">{item.origin}</span>
-						</div>
-					</div>
-					<div className="flex items-center gap-2 mt-3">
-						<button
-							type="button"
-							disabled={busy}
-							onClick={() => handleActionDecide("applied")}
-							className="text-xs px-3 py-1 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-50"
-						>
-							Approve
-						</button>
-						<button
-							type="button"
-							disabled={busy}
-							onClick={() => handleActionDecide("declined")}
-							className="text-xs px-3 py-1 rounded border border-border hover:bg-muted disabled:opacity-50"
-						>
-							Decline
-						</button>
-						<span className="text-[10px] text-muted-foreground ml-auto">
-							{relTime(item.createdAt)}
-						</span>
-					</div>
-				</>
-			)}
-
-			{(item.kind === "action_session_stop" ||
-				item.kind === "action_session_archive" ||
-				item.kind === "action_session_delete") && (
-				<>
-					<div className="text-xs text-muted-foreground mb-2 space-y-1">
-						<div>
-							Origin: <span className="font-mono">{item.origin}</span>
-						</div>
-					</div>
-					<div className="flex items-center gap-2 mt-3">
-						<button
-							type="button"
-							disabled={busy}
-							onClick={() => handleActionDecide("applied")}
-							className="text-xs px-3 py-1 rounded bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 disabled:opacity-50"
-						>
-							Approve
-						</button>
-						<button
-							type="button"
-							disabled={busy}
-							onClick={() => handleActionDecide("declined")}
-							className="text-xs px-3 py-1 rounded border border-border hover:bg-muted disabled:opacity-50"
-						>
-							Decline
-						</button>
-						<span className="text-[10px] text-muted-foreground ml-auto">
-							{relTime(item.createdAt)}
-						</span>
-					</div>
-				</>
-			)}
-
-			{item.kind === "failed_proposal" && (
-				<>
-					<div className="text-xs text-muted-foreground">
-						{item.errorSubType ? (
-							<>
-								<span className="font-mono">{item.errorSubType}</span>
-								{item.errorMessage ? `: ${item.errorMessage}` : ""}
-							</>
-						) : (
-							(item.errorMessage ?? "unknown error")
-						)}
-					</div>
-					<div className="flex items-center gap-2 mt-2">
-						<SnoozeDropdown
-							disabled={busy}
-							onSnooze={async (ms) => {
-								setBusy(true);
-								setErr(null);
-								try {
-									await api.snoozeInboxItem({
-										kind: "failed_proposal",
-										targetId: item.id,
-										durationMs: ms,
-									});
-									onResolved();
-								} catch (e) {
-									setErr(e instanceof Error ? e.message : String(e));
-								} finally {
-									setBusy(false);
-								}
-							}}
-						/>
-						<span className="text-[10px] text-muted-foreground ml-auto">{relTime(item.at)}</span>
-					</div>
-				</>
-			)}
-
-			{err && <div className="mt-2 text-[11px] text-red-300">{err}</div>}
-		</div>
-	);
-}
-
-const SNOOZE_OPTIONS: Array<{ label: string; ms: number }> = [
-	{ label: "1h", ms: 60 * 60 * 1000 },
-	{ label: "4h", ms: 4 * 60 * 60 * 1000 },
-	{ label: "24h", ms: 24 * 60 * 60 * 1000 },
-	{ label: "7d", ms: 7 * 24 * 60 * 60 * 1000 },
-];
-
-function SnoozeDropdown({
-	disabled,
-	onSnooze,
-}: {
-	disabled?: boolean;
-	onSnooze: (ms: number) => void | Promise<void>;
-}) {
-	const [open, setOpen] = useState(false);
-	return (
-		<div className="relative">
-			<button
-				type="button"
-				disabled={disabled}
-				onClick={() => setOpen((v) => !v)}
-				className="text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted disabled:opacity-50"
-			>
-				Snooze ▾
-			</button>
-			{open && (
-				<div className="absolute top-full left-0 mt-1 z-10 rounded border border-border bg-card shadow-lg">
-					{SNOOZE_OPTIONS.map((opt) => (
-						<button
-							type="button"
-							key={opt.label}
-							onClick={() => {
-								setOpen(false);
-								void onSnooze(opt.ms);
-							}}
-							className="block w-full text-left text-xs px-3 py-1.5 hover:bg-muted"
-						>
-							{opt.label}
-						</button>
-					))}
-				</div>
-			)}
-		</div>
-	);
-}
-
-function KindBadge({ kind }: { kind: InboxWorkItem["kind"] }) {
-	const styles: Record<InboxWorkItem["kind"], string> = {
-		hitl: "bg-primary/10 text-primary border-primary/30",
-		stuck: "bg-red-500/10 text-red-300 border-red-500/30",
-		risky: "bg-amber-500/10 text-amber-300 border-amber-500/30",
-		failed_proposal: "bg-muted text-muted-foreground border-border",
-		action_launch: "bg-blue-500/10 text-blue-300 border-blue-500/30",
-		action_add_project: "bg-teal-500/10 text-teal-300 border-teal-500/30",
-		action_session_stop: "bg-red-500/10 text-red-300 border-red-500/30",
-		action_session_archive: "bg-slate-500/10 text-slate-300 border-slate-500/30",
-		action_session_delete: "bg-red-500/10 text-red-300 border-red-500/30",
-	};
-	const labels: Record<InboxWorkItem["kind"], string> = {
-		hitl: "HITL",
-		stuck: "stuck",
-		risky: "risky",
-		failed_proposal: "failed",
-		action_launch: "launch",
-		action_add_project: "new project",
-		action_session_stop: "stop session",
-		action_session_archive: "archive session",
-		action_session_delete: "delete session",
-	};
-	return (
-		<span className={`text-[10px] font-semibold rounded px-1.5 py-0.5 border ${styles[kind]}`}>
-			{labels[kind]}
-		</span>
-	);
-}
-
-function relTime(iso: string): string {
-	const ts = iso.includes("T") ? iso : `${iso.replace(" ", "T")}Z`;
-	const diff = Date.now() - new Date(ts).getTime();
-	const s = Math.floor(diff / 1000);
-	if (s < 60) return `${s}s ago`;
-	const m = Math.floor(s / 60);
-	if (m < 60) return `${m}m ago`;
-	const h = Math.floor(m / 60);
-	if (h < 24) return `${h}h ago`;
-	const d = Math.floor(h / 24);
-	return `${d}d ago`;
 }
