@@ -10,7 +10,10 @@ import {
 	getProviderApiKey,
 } from "../ai/providers-service.js";
 import { getSemanticEnricher } from "../ai/semantic-enricher.js";
+import { getCachedProjects } from "../projects/cache.js";
+import { handleAskLaunchIntent } from "./ask-launch-handler.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
+import { detectLaunchIntent } from "./launch-intent-detector.js";
 import { fetchSessionsById, resolveCandidateSessions } from "./resolver.js";
 
 /**
@@ -318,14 +321,39 @@ async function prepareTurn(input: AskTurnInput): Promise<{
 }
 
 export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
-	const { thread, userMessage, context, transcript } = await prepareTurn(input);
+	const { thread, userMessage, context, transcript, text } = await prepareTurn(input);
+
+	// Launch-intent intercept: runs after the user message is persisted so the
+	// thread exists. Short-circuits the normal Ask LLM call when a launch is queued.
+	const intent = await detectLaunchIntent(text, getCachedProjects());
+	if (intent.kind === "launch") {
+		const launchResult = await handleAskLaunchIntent({
+			intent,
+			origin: input.origin ?? "web",
+			threadId: thread.id,
+			telegramChatId: input.telegramChatId,
+		});
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: launchResult.replyText,
+			contextSessionIds: [],
+		});
+		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+	}
+
+	let preamble = "";
+	if (intent.kind === "classifier_failed") {
+		preamble =
+			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
+	}
 
 	const llm = await getDefaultLlm();
 	if ("error" in llm) {
 		const errMsg = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
-			content: llm.error,
+			content: preamble + llm.error,
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: llm.error,
 		});
@@ -346,7 +374,7 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 			temperature: 0.3,
 			timeoutMs: 60_000,
 		});
-		const reply = res.text.trim() || "(no response)";
+		const reply = preamble + (res.text.trim() || "(no response)");
 		const assistantMessage = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
@@ -366,8 +394,7 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		const assistantMessage = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
-			content:
-				"I couldn't reach the LLM provider just now. See the inline error and check Settings → AI.",
+			content: `${preamble}I couldn't reach the LLM provider just now. See the inline error and check Settings → AI.`,
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: message,
 		});
@@ -399,13 +426,43 @@ export type AskStreamEvent =
  * about the deltas once it lands).
  */
 export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskStreamEvent> {
-	const { thread, userMessage, context, transcript } = await prepareTurn(input);
+	const { thread, userMessage, context, transcript, text } = await prepareTurn(input);
+
+	// Launch-intent intercept for streaming path.
+	const intent = await detectLaunchIntent(text, getCachedProjects());
+	if (intent.kind === "launch") {
+		const launchResult = await handleAskLaunchIntent({
+			intent,
+			origin: input.origin ?? "web",
+			threadId: thread.id,
+			telegramChatId: input.telegramChatId,
+		});
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: launchResult.replyText,
+			contextSessionIds: [],
+		});
+		yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+		yield { kind: "delta", delta: launchResult.replyText };
+		yield { kind: "done", assistantMessage };
+		return;
+	}
+
 	yield {
 		kind: "start",
 		thread,
 		userMessage,
 		includedSessionIds: context.includedSessionIds,
 	};
+
+	// For classifier_failed: emit preamble as first delta, then continue normally.
+	let preamble = "";
+	if (intent.kind === "classifier_failed") {
+		preamble =
+			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
+		yield { kind: "delta", delta: preamble };
+	}
 
 	const llm = await getDefaultLlm();
 	if ("error" in llm) {
@@ -450,7 +507,8 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 			threadId: thread.id,
 			role: "assistant",
 			content:
-				collected.trim() || "I couldn't reach the LLM provider just now. Check Settings → AI.",
+				preamble +
+				(collected.trim() || "I couldn't reach the LLM provider just now. Check Settings → AI."),
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: message,
 		});
@@ -458,7 +516,7 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		return;
 	}
 
-	const reply = collected.trim() || "(no response)";
+	const reply = preamble + (collected.trim() || "(no response)");
 	const assistantMessage = await appendMessage({
 		threadId: thread.id,
 		role: "assistant",

@@ -49,6 +49,27 @@ export async function addSpendCents(
 		.where(eq(sessions.sessionId, sessionId));
 }
 
+/**
+ * Record spend that isn't attributable to a specific session (e.g. the
+ * launch-intent classifier runs before a session exists). Only updates the
+ * daily spend table; does NOT touch sessions.ai_spend_cents.
+ */
+export async function addGlobalSpendCents(cents: number, userId = "local"): Promise<void> {
+	if (cents <= 0) return;
+	const date = today();
+	const now = new Date().toISOString();
+	await db
+		.insert(aiDailySpend)
+		.values({ userId, date, spendCents: cents, updatedAt: now })
+		.onConflictDoUpdate({
+			target: [aiDailySpend.userId, aiDailySpend.date],
+			set: {
+				spendCents: sql`${aiDailySpend.spendCents} + ${cents}`,
+				updatedAt: now,
+			},
+		});
+}
+
 const DEFAULT_DAILY_CAP_CENTS = 500; // $5/day per plan
 
 export interface SpendCheck {

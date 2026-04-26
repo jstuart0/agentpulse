@@ -475,6 +475,47 @@ export const askMessages = sqliteTable("ask_messages", {
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
+// aiActionRequests — operator-approval queue for AI-initiated actions that
+// are NOT session-scoped (contrast: ai_hitl_requests, which requires a
+// sessionId and calls supersedeOpenHitl on every new row for the same
+// session). Launch requests live here; future kinds (e.g. "project_clone")
+// can share the same table via the `kind` discriminator.
+//
+// Status lifecycle:
+//   awaiting_reply → applying   (atomic conditional UPDATE; racing approvals
+//                                are serialised here — see action-requests-service.ts)
+//   applying       → applied    (execute succeeded; result_event_id set)
+//   applying       → failed     (execute threw; failure_reason set)
+//   applying       → expired    (no capable supervisor at execute time)
+//   awaiting_reply → declined   (user declined)
+//   awaiting_reply → superseded (future per-project de-dup feature)
+export const aiActionRequests = sqliteTable("ai_action_requests", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	kind: text("kind").notNull(),
+	// ^ "launch_request" is the only kind in v1; leave untyped so future
+	// kinds can land without a schema migration.
+	status: text("status").notNull().default("awaiting_reply"),
+	failureReason: text("failure_reason"),
+	question: text("question").notNull(),
+	payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+	origin: text("origin").notNull(),
+	// ^ "web" | "telegram"
+	channelId: text("channel_id"),
+	// ^ notification_channels.id (UUID) when origin="telegram".
+	// NOT the raw Telegram chat id — same identifier HITL uses.
+	// Inbound callbacks are authed via findActiveChannelByChatId(chatId)
+	// then matched against this UUID. See channels.ts:243-250 for precedent.
+	askThreadId: text("ask_thread_id"),
+	resolvedAt: text("resolved_at"),
+	resolvedBy: text("resolved_by"),
+	resultEventId: text("result_event_id"),
+	// ^ launchRequestId on successful apply; used for traceability
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
 // aiHitlRequests — first-class table for open HITL requests. Separated
 // from watcherProposals so proposal persistence and HITL workflow don't
 // collapse together; future remote channels (Phase 7) register here.

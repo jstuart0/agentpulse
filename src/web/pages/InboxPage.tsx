@@ -55,6 +55,7 @@ export function InboxPage() {
 						<option value="stuck">Stuck</option>
 						<option value="risky">Risky</option>
 						<option value="failed_proposal">Failed</option>
+						<option value="action_launch">Launch requests</option>
 					</select>
 					<button
 						type="button"
@@ -93,6 +94,7 @@ export function InboxPage() {
 					<span>stuck: {inbox.byKind.stuck}</span>
 					<span>risky: {inbox.byKind.risky}</span>
 					<span>failed: {inbox.byKind.failed_proposal}</span>
+					<span>launches: {inbox.byKind.action_launch}</span>
 				</footer>
 			)}
 		</div>
@@ -109,11 +111,13 @@ function InboxCard({
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 
-	const sessionLink = (
-		<Link to={`/sessions/${item.sessionId}`} className="text-primary hover:underline font-medium">
-			{item.sessionName ?? item.sessionId.slice(0, 8)}
-		</Link>
-	);
+	// action_launch items have no session — only render a session link for kinds that have one.
+	const sessionLink =
+		item.kind !== "action_launch" ? (
+			<Link to={`/sessions/${item.sessionId}`} className="text-primary hover:underline font-medium">
+				{item.sessionName ?? item.sessionId.slice(0, 8)}
+			</Link>
+		) : null;
 
 	async function handleDecide(action: "approve" | "decline") {
 		if (item.kind !== "hitl") return;
@@ -129,8 +133,26 @@ function InboxCard({
 		}
 	}
 
+	async function handleActionDecide(decision: "applied" | "declined") {
+		if (item.kind !== "action_launch") return;
+		setBusy(true);
+		setErr(null);
+		try {
+			await api.decideActionRequest(item.id, { decision });
+			onResolved();
+		} catch (e) {
+			setErr(e instanceof Error ? e.message : String(e));
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	const sevClass =
-		item.severity === "high" ? "border-red-500/30 bg-red-500/5" : "border-border bg-card";
+		item.severity === "high"
+			? "border-red-500/30 bg-red-500/5"
+			: item.severity === "info"
+				? "border-blue-500/30 bg-blue-500/5"
+				: "border-border bg-card";
 
 	return (
 		<div className={`rounded-lg border p-4 ${sevClass}`}>
@@ -138,12 +160,17 @@ function InboxCard({
 				<div className="flex items-center gap-2">
 					<KindBadge kind={item.kind} />
 					{sessionLink}
+					{item.kind === "action_launch" && (
+						<span className="text-sm font-medium">{item.projectName}</span>
+					)}
 				</div>
 				<span
 					className={`text-[10px] font-mono rounded px-1.5 py-0.5 border ${
 						item.severity === "high"
 							? "border-red-500/30 text-red-300"
-							: "border-border text-muted-foreground"
+							: item.severity === "info"
+								? "border-blue-500/30 text-blue-300"
+								: "border-border text-muted-foreground"
 					}`}
 				>
 					{item.severity}
@@ -199,6 +226,52 @@ function InboxCard({
 							))}
 						</ul>
 					)}
+				</>
+			)}
+
+			{item.kind === "action_launch" && (
+				<>
+					<div className="text-xs text-muted-foreground mb-2 space-y-1">
+						<div>
+							Agent:{" "}
+							<span className="font-mono">
+								{String((item.template as Record<string, unknown>).agentType ?? "—")}
+							</span>
+							{" · "}
+							Mode: <span className="font-mono">{item.requestedLaunchMode}</span>
+							{" · "}
+							Origin: <span className="font-mono">{item.origin}</span>
+						</div>
+						<div className="font-mono text-[10px] break-all">
+							{String((item.template as Record<string, unknown>).cwd ?? item.launchSpec?.cwd ?? "")}
+						</div>
+						{(item.template as Record<string, unknown>).taskPrompt ? (
+							<div className="italic">
+								Task: {String((item.template as Record<string, unknown>).taskPrompt)}
+							</div>
+						) : null}
+					</div>
+					<div className="flex items-center gap-2 mt-3">
+						<button
+							type="button"
+							disabled={busy}
+							onClick={() => handleActionDecide("applied")}
+							className="text-xs px-3 py-1 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-50"
+						>
+							Approve
+						</button>
+						<button
+							type="button"
+							disabled={busy}
+							onClick={() => handleActionDecide("declined")}
+							className="text-xs px-3 py-1 rounded border border-border hover:bg-muted disabled:opacity-50"
+						>
+							Decline
+						</button>
+						<span className="text-[10px] text-muted-foreground ml-auto">
+							{relTime(item.createdAt)}
+						</span>
+					</div>
 				</>
 			)}
 
@@ -296,12 +369,14 @@ function KindBadge({ kind }: { kind: InboxWorkItem["kind"] }) {
 		stuck: "bg-red-500/10 text-red-300 border-red-500/30",
 		risky: "bg-amber-500/10 text-amber-300 border-amber-500/30",
 		failed_proposal: "bg-muted text-muted-foreground border-border",
+		action_launch: "bg-blue-500/10 text-blue-300 border-blue-500/30",
 	};
 	const labels: Record<InboxWorkItem["kind"], string> = {
 		hitl: "HITL",
 		stuck: "stuck",
 		risky: "risky",
 		failed_proposal: "failed",
+		action_launch: "launch",
 	};
 	return (
 		<span className={`text-[10px] font-semibold rounded px-1.5 py-0.5 border ${styles[kind]}`}>

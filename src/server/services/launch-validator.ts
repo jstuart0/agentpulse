@@ -8,7 +8,7 @@ import type {
 } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { launchRequests } from "../db/schema.js";
-import { validateAgainstSupervisor } from "./launch-compatibility.js";
+import { pickFirstCapableSupervisor, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { getConnectedSupervisor, listSupervisors } from "./supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";
 
@@ -94,7 +94,14 @@ async function resolveSupervisorForLaunch(
 		supervisor,
 		validation: validateAgainstSupervisor(normalizedTemplate, supervisor, requestedLaunchMode),
 	}));
-	const match = evaluated.find((candidate) => candidate.validation.errors.length === 0);
+	const capableSupervisor = pickFirstCapableSupervisor(
+		normalizedTemplate,
+		requestedLaunchMode,
+		supervisors,
+	);
+	const match = capableSupervisor
+		? (evaluated.find((c) => c.supervisor.id === capableSupervisor.id) ?? null)
+		: null;
 	if (!match) {
 		return {
 			supervisor: supervisors[0],

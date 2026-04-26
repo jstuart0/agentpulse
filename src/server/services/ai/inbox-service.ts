@@ -1,6 +1,8 @@
 import { desc, eq, inArray } from "drizzle-orm";
+import type { LaunchMode, LaunchSpec, SessionTemplateInput } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { sessions, watcherProposals } from "../../db/schema.js";
+import { listOpenActionRequests } from "./action-requests-service.js";
 import type { HealthState } from "./classifier.js";
 import { listAllOpenHitl } from "./hitl-service.js";
 import { activeSnoozeSet, listActiveSnoozes } from "./inbox-snooze-service.js";
@@ -12,7 +14,7 @@ import { getProposal } from "./proposals-service.js";
  * UI can render each kind distinctly without string-sniffing.
  */
 
-export type InboxSeverity = "normal" | "high";
+export type InboxSeverity = "normal" | "high" | "info";
 
 export type InboxWorkItem =
 	| {
@@ -55,6 +57,23 @@ export type InboxWorkItem =
 			errorMessage: string | null;
 			at: string;
 			severity: InboxSeverity;
+	  }
+	| {
+			// Action requests are NOT session-scoped. sessionId/sessionName are
+			// always null — the UI must branch on kind to avoid rendering a broken
+			// session link. See InboxPage.tsx for the conditional renderer.
+			kind: "action_launch";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectId: string;
+			projectName: string;
+			template: SessionTemplateInput;
+			launchSpec: LaunchSpec;
+			requestedLaunchMode: LaunchMode;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {
@@ -204,12 +223,35 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		});
 	}
 
+	// ---- 4. Open action requests (launch approvals) -------------------
+	const openActions = await listOpenActionRequests();
+	for (const a of openActions) {
+		if (a.kind !== "launch_request") continue;
+		const payload = a.payload;
+		items.push({
+			kind: "action_launch",
+			id: a.id,
+			sessionId: null,
+			sessionName: null,
+			severity: "info",
+			createdAt: a.createdAt,
+			projectId: payload.projectId,
+			projectName: payload.projectName ?? payload.projectId,
+			template: payload.template,
+			launchSpec: payload.launchSpec,
+			requestedLaunchMode: payload.requestedLaunchMode,
+			origin: a.origin,
+		});
+	}
+
 	// ---- Filter / sort ------------------------------------------------
 	let out = items;
 	if (filter.kinds && filter.kinds.length > 0) {
 		out = out.filter((i) => filter.kinds?.includes(i.kind));
 	}
 	if (filter.sessionId) {
+		// action_launch items have null sessionId — they are always excluded
+		// when filtering by sessionId, which is correct.
 		out = out.filter((i) => i.sessionId === filter.sessionId);
 	}
 	if (filter.severity) {
@@ -224,11 +266,12 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		out = out.filter((i) => !snoozed.has(`${i.kind}:${i.id}`));
 	}
 
-	// Sort: high severity first, newest first within each bucket.
+	// Sort: high severity first, info last, newest first within each bucket.
 	out.sort((a, b) => {
-		const sevA = a.severity === "high" ? 0 : 1;
-		const sevB = b.severity === "high" ? 0 : 1;
-		if (sevA !== sevB) return sevA - sevB;
+		const sevRank = (s: InboxSeverity) => (s === "high" ? 0 : s === "normal" ? 1 : 2);
+		const rankA = sevRank(a.severity);
+		const rankB = sevRank(b.severity);
+		if (rankA !== rankB) return rankA - rankB;
 		return cmpNewestFirst(a, b);
 	});
 
@@ -239,6 +282,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		stuck: 0,
 		risky: 0,
 		failed_proposal: 0,
+		action_launch: 0,
 	};
 	for (const i of out) byKind[i.kind]++;
 
@@ -259,6 +303,8 @@ function timestampFor(item: InboxWorkItem): number {
 				? item.at
 				: item.kind === "stuck"
 					? item.since
-					: new Date().toISOString();
+					: item.kind === "action_launch"
+						? item.createdAt
+						: new Date().toISOString();
 	return ts.includes("T") ? new Date(ts).getTime() : new Date(`${ts.replace(" ", "T")}Z`).getTime();
 }

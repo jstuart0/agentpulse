@@ -69,3 +69,31 @@ export function parseHitlCallbackData(raw: string): HitlCallbackData | null {
 	if (action !== "approve" && action !== "decline") return null;
 	return { hitlId: parts[1], action };
 }
+
+/**
+ * Callback data for ai_action_requests inline buttons.
+ * Shape: `act:<action>:<id>` — `<id>` is a UUID (may contain hyphens
+ * but no colons) so splitting on ":" with index 1 and 2 is safe here;
+ * we join remaining parts in case the id ever changes format.
+ */
+export interface ActionCallbackData {
+	actionRequestId: string;
+	action: "approve" | "decline";
+}
+
+export function encodeActionCallbackData(data: ActionCallbackData): string {
+	return `act:${data.action}:${data.actionRequestId}`;
+}
+
+export function parseActionCallbackData(raw: string): ActionCallbackData | null {
+	if (!raw.startsWith("act:")) return null;
+	// act:<action>:<uuid>
+	const withoutPrefix = raw.slice("act:".length);
+	const colonIdx = withoutPrefix.indexOf(":");
+	if (colonIdx === -1) return null;
+	const action = withoutPrefix.slice(0, colonIdx);
+	if (action !== "approve" && action !== "decline") return null;
+	const actionRequestId = withoutPrefix.slice(colonIdx + 1);
+	if (!actionRequestId) return null;
+	return { actionRequestId, action };
+}

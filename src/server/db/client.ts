@@ -532,6 +532,24 @@ export function initializeDatabase() {
 		"CREATE INDEX IF NOT EXISTS idx_projects_cwd ON projects(cwd)",
 		"ALTER TABLE sessions ADD COLUMN project_id TEXT",
 		"CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id)",
+		// Phase 3: AI-initiated action requests (launch approvals etc.)
+		`CREATE TABLE IF NOT EXISTS ai_action_requests (
+			id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'awaiting_reply',
+			failure_reason TEXT,
+			question TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			origin TEXT NOT NULL,
+			channel_id TEXT,
+			ask_thread_id TEXT,
+			resolved_at TEXT,
+			resolved_by TEXT,
+			result_event_id TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_ai_action_requests_status ON ai_action_requests(status)",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

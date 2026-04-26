@@ -1,16 +1,23 @@
 import { db } from "../../db/client.js";
 import { projects } from "../../db/schema.js";
-import type { ProjectRecord } from "./resolver.js";
 
 // In-process cache. Single-Bun-process assumption is fine for the
 // homelab deployment. If AgentPulse ever moves to multi-instance,
 // this becomes per-instance and needs a refresh signal (e.g. Postgres
 // LISTEN/NOTIFY or polling) — flagged as a future concern, not a blocker.
 
-let cached: ProjectRecord[] = [];
+// Extended from the base ProjectRecord (id + cwd) to include name,
+// which the launch-intent detector needs for keyword matching and LLM context.
+export interface CachedProject {
+	id: string;
+	name: string;
+	cwd: string;
+}
+
+let cached: CachedProject[] = [];
 let version = 0;
 
-export function getCachedProjects(): ProjectRecord[] {
+export function getCachedProjects(): CachedProject[] {
 	return cached;
 }
 
@@ -20,7 +27,9 @@ export async function bumpVersionAndReload(): Promise<void> {
 }
 
 async function reloadCache(): Promise<void> {
-	const rows = await db.select({ id: projects.id, cwd: projects.cwd }).from(projects);
+	const rows = await db
+		.select({ id: projects.id, name: projects.name, cwd: projects.cwd })
+		.from(projects);
 	cached = rows;
 }
 

@@ -86,8 +86,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 		// get something actionable instead of a generic "502 Bad Gateway".
 		let detail: string | null = null;
 		try {
-			const body = (await res.clone().json()) as { error?: string };
-			if (body?.error) detail = body.error;
+			const body = (await res.clone().json()) as { error?: string; message?: string };
+			if (body?.message) detail = body.message;
+			else if (body?.error) detail = body.error;
 		} catch {
 			try {
 				const text = await res.clone().text();
@@ -654,6 +655,14 @@ export const api = {
 			method: "DELETE",
 		}),
 
+	listOpenActionRequests: () => request<{ actionRequests: InboxWorkItem[] }>("/ai/action-requests"),
+
+	decideActionRequest: (id: string, body: { decision: "applied" | "declined" }) =>
+		request<{ actionRequest: Record<string, unknown> }>(`/ai/action-requests/${id}/decide`, {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
 	getDigest: (params?: { fresh?: boolean }) =>
 		request<Digest>(`/ai/digest${params?.fresh ? "?fresh=1" : ""}`),
 	refreshDigest: () => request<Digest>("/ai/digest/refresh", { method: "POST" }),
@@ -797,7 +806,7 @@ export interface TemplateDraftResponse {
 	notes: string[];
 }
 
-export type InboxSeverity = "normal" | "high";
+export type InboxSeverity = "normal" | "high" | "info";
 export type InboxWorkItem =
 	| {
 			kind: "hitl";
@@ -839,6 +848,20 @@ export type InboxWorkItem =
 			errorMessage: string | null;
 			at: string;
 			severity: InboxSeverity;
+	  }
+	| {
+			kind: "action_launch";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectId: string;
+			projectName: string;
+			template: Record<string, unknown>;
+			launchSpec: Record<string, unknown>;
+			requestedLaunchMode: string;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {

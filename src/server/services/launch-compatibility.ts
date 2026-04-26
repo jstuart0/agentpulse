@@ -1,6 +1,8 @@
 import { relative, resolve } from "node:path";
 import type {
+	AgentType,
 	LaunchMode,
+	LaunchSpec,
 	SessionTemplateInput,
 	SupervisorRecord,
 	TemplateHostCompatibility,
@@ -88,6 +90,77 @@ export function validateAgainstSupervisor(
 	}
 
 	return { warnings, errors };
+}
+
+/**
+ * Pure: return the first supervisor from `supervisors` that passes
+ * validateAgainstSupervisor with zero errors, or null if none qualify.
+ * Extracted so action-requests-service and ask-launch-handler can
+ * perform supervisor selection without the async listSupervisors() call.
+ */
+export function pickFirstCapableSupervisor(
+	template: SessionTemplateInput,
+	mode: LaunchMode,
+	supervisors: SupervisorRecord[],
+): SupervisorRecord | null {
+	for (const s of supervisors) {
+		const { errors } = validateAgainstSupervisor(template, s, mode);
+		if (errors.length === 0) return s;
+	}
+	return null;
+}
+
+function quoteShellForSpec(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function providerCommandForSpec(agentType: AgentType): string {
+	return agentType === "claude_code" ? "claude" : "codex";
+}
+
+/**
+ * Pure: construct a LaunchSpec from a normalized template + chosen mode +
+ * chosen supervisor. Does not call any DB or async function.
+ *
+ * Required because LaunchRequestInput.launchSpec is mandatory and is
+ * dereferenced at launch-validator.ts:140-141. Action requests must persist
+ * a real LaunchSpec at creation time so the executor can pass it through
+ * without re-deriving it (unless the supervisor changed at execute time,
+ * in which case the executor calls this again for the rerouted supervisor).
+ */
+export function buildLaunchSpec(
+	template: SessionTemplateInput,
+	mode: LaunchMode,
+	_supervisor: SupervisorRecord,
+): LaunchSpec {
+	const agentType = template.agentType;
+	const command = providerCommandForSpec(agentType);
+	const instructionsFile: "CLAUDE.md" | "AGENTS.md" =
+		agentType === "claude_code" ? "CLAUDE.md" : "AGENTS.md";
+	const cliArgs: string[] = [];
+	if (template.model) cliArgs.push("--model", quoteShellForSpec(template.model));
+	if (agentType === "claude_code" && mode === "headless") {
+		cliArgs.push("--print", "--output-format", "stream-json");
+	}
+	return {
+		version: 1,
+		launchCorrelationId: crypto.randomUUID(),
+		managedMode: "unmanaged_preview",
+		agentType,
+		launchMode: mode,
+		cwd: template.cwd,
+		model: template.model ?? null,
+		approvalPolicy: template.approvalPolicy ?? null,
+		sandboxMode: template.sandboxMode ?? null,
+		baseInstructions: template.baseInstructions ?? "",
+		taskPrompt: template.taskPrompt ?? "",
+		env: template.env ?? {},
+		providerConfig: {
+			command,
+			cliArgs,
+			instructionsFile,
+		},
+	};
 }
 
 export function buildTemplateHostCompatibility(
