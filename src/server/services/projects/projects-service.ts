@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { eq, or, sql } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { projects, sessionTemplates, sessions } from "../../db/schema.js";
@@ -183,6 +184,71 @@ export async function updateProject(
 	}
 
 	return { project: row };
+}
+
+export async function getProjectByCwd(normalizedCwd: string): Promise<ProjectRow | null> {
+	const rows = await db.select({ id: projects.id, cwd: projects.cwd }).from(projects);
+	for (const row of rows) {
+		if (normalizeCwd(row.cwd) === normalizedCwd) {
+			const [full] = await db.select().from(projects).where(eq(projects.id, row.id)).limit(1);
+			return full ?? null;
+		}
+	}
+	return null;
+}
+
+const NAME_MAX_SEED = 78;
+const NAME_SUFFIX_CAP = 50;
+
+export type EnsureProjectInput = {
+	cwd: string;
+	defaultAgentType?: string | null;
+	defaultModel?: string | null;
+};
+
+export async function ensureProjectForCwd(
+	input: EnsureProjectInput,
+): Promise<{ project: ProjectRow; created: boolean } | { error: string }> {
+	const normalizedCwd = normalizeCwd(input.cwd);
+
+	const existing = await getProjectByCwd(normalizedCwd);
+	if (existing) return { project: existing, created: false };
+
+	const seed = (basename(normalizedCwd) || "project").slice(0, NAME_MAX_SEED);
+
+	// Find a unique name by appending numeric suffix when seed is already taken.
+	let candidateName = seed;
+	let attempt = 1;
+	while (true) {
+		const conflict = await getProjectByName(candidateName);
+		if (!conflict) break;
+		attempt += 1;
+		if (attempt > NAME_SUFFIX_CAP) {
+			return {
+				error: `Could not generate a unique project name for cwd "${normalizedCwd}" after ${NAME_SUFFIX_CAP} attempts`,
+			};
+		}
+		candidateName = `${seed}-${attempt}`;
+	}
+
+	const result = await createProject({
+		name: candidateName,
+		cwd: normalizedCwd,
+		defaultAgentType: input.defaultAgentType ?? null,
+		defaultModel: input.defaultModel ?? null,
+	});
+
+	if (result.conflict) {
+		// A concurrent request created a project for this cwd between our check
+		// and our insert. Re-fetch and return it as a non-created result.
+		const refetched = await getProjectByCwd(normalizedCwd);
+		if (refetched) return { project: refetched, created: false };
+		return { error: `Concurrent project creation conflict for cwd "${normalizedCwd}"` };
+	}
+
+	// result.conflict is falsy here, so project is defined
+	const project = result.project as ProjectRow;
+	return { project, created: true };
 }
 
 export async function deleteProject(id: string): Promise<boolean> {

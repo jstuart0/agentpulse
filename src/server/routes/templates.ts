@@ -4,7 +4,8 @@ import type { AgentType, LaunchMode, SessionTemplateInput } from "../../shared/t
 import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { projects, sessionTemplates } from "../db/schema.js";
-import { getProject } from "../services/projects/projects-service.js";
+import { ensureProjectForCwd, getProject } from "../services/projects/projects-service.js";
+import { normalizeCwd } from "../services/projects/resolver.js";
 import {
 	buildTemplatePreview,
 	normalizeTemplateInput,
@@ -112,6 +113,17 @@ templatesRouter.post("/templates", async (c) => {
 	const { errors } = validateTemplateInput(normalized);
 	if (errors.length > 0) return c.json({ error: errors.join(" ") }, 400);
 
+	let resolvedProjectId: string | null = body.projectId ?? null;
+	if (resolvedProjectId === null && normalized.cwd.trim() !== "") {
+		const result = await ensureProjectForCwd({
+			cwd: normalized.cwd,
+			defaultAgentType: normalized.agentType,
+			defaultModel: normalized.model ?? null,
+		});
+		if ("error" in result) return c.json({ error: result.error }, 500);
+		resolvedProjectId = result.project.id;
+	}
+
 	const now = new Date().toISOString();
 	const [row] = await db
 		.insert(sessionTemplates)
@@ -128,7 +140,7 @@ templatesRouter.post("/templates", async (c) => {
 			env: normalized.env,
 			tags: normalized.tags,
 			isFavorite: normalized.isFavorite ?? false,
-			projectId: body.projectId ?? null,
+			projectId: resolvedProjectId,
 			templateProjectOverrides: body.overriddenFields?.length ? body.overriddenFields : null,
 			createdAt: now,
 			updatedAt: now,
@@ -154,6 +166,35 @@ templatesRouter.put("/templates/:id", async (c) => {
 		.limit(1);
 	if (!existing) return c.json({ error: "Template not found" }, 404);
 
+	const cwdChanged = normalizeCwd(normalized.cwd) !== normalizeCwd(existing.cwd);
+	const bodyHasExplicitProjectId = "projectId" in body;
+	const explicitProjectId = bodyHasExplicitProjectId ? (body.projectId ?? null) : undefined;
+
+	let resolvedProjectId: string | null;
+	if (bodyHasExplicitProjectId && explicitProjectId !== null) {
+		// Explicit non-null id: honour it directly.
+		resolvedProjectId = body.projectId as string;
+	} else if (
+		(explicitProjectId === null || !bodyHasExplicitProjectId) &&
+		(cwdChanged || existing.projectId === null) &&
+		normalized.cwd.trim() !== ""
+	) {
+		// No explicit id AND (cwd changed OR no existing link): auto-link/create.
+		const result = await ensureProjectForCwd({
+			cwd: normalized.cwd,
+			defaultAgentType: normalized.agentType,
+			defaultModel: normalized.model ?? null,
+		});
+		if ("error" in result) return c.json({ error: result.error }, 500);
+		resolvedProjectId = result.project.id;
+	} else if (bodyHasExplicitProjectId) {
+		// Explicit null and cwd unchanged: user cleared the link.
+		resolvedProjectId = null;
+	} else {
+		// Key absent from body, cwd unchanged, existing link present: preserve it.
+		resolvedProjectId = existing.projectId ?? null;
+	}
+
 	const [row] = await db
 		.update(sessionTemplates)
 		.set({
@@ -169,7 +210,7 @@ templatesRouter.put("/templates/:id", async (c) => {
 			env: normalized.env,
 			tags: normalized.tags,
 			isFavorite: normalized.isFavorite ?? false,
-			projectId: "projectId" in body ? (body.projectId ?? null) : existing.projectId,
+			projectId: resolvedProjectId,
 			templateProjectOverrides:
 				"overriddenFields" in body
 					? (body.overriddenFields ?? null)

@@ -50,12 +50,7 @@ const LAST_EVENT_KIND_KEY = "telemetry:last_event_kind";
 const LAST_PAYLOAD_KEY = "telemetry:last_payload";
 
 type TelemetryEventKind = "first_boot" | "heartbeat";
-export type TelemetryInstallClass =
-	| "production"
-	| "self_hosted_real"
-	| "dev"
-	| "test"
-	| "ci";
+export type TelemetryInstallClass = "production" | "self_hosted_real" | "dev" | "test" | "ci";
 export type TelemetryReleaseChannel = "stable" | "prerelease" | "dev";
 
 interface TelemetryPing {
@@ -129,11 +124,7 @@ function detectInstallClass(releaseChannel: TelemetryReleaseChannel): TelemetryI
 }
 
 async function getSettingValue<T>(key: string): Promise<T | null> {
-	const [existing] = await db
-		.select()
-		.from(settings)
-		.where(eq(settings.key, key))
-		.limit(1);
+	const [existing] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
 	return (existing?.value as T | undefined) ?? null;
 }
 

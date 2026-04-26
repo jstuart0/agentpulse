@@ -168,7 +168,7 @@ export function TemplateEditorPanel(props: {
 					onChange={(e) => onSetLinkedProject(e.target.value || null)}
 					className={normalInputClass}
 				>
-					<option value="">Manual entry / no project</option>
+					<option value="">Auto (match by directory)</option>
 					{projects.map((p) => (
 						<option key={p.id} value={p.id}>
 							{p.name} — {p.cwd}
