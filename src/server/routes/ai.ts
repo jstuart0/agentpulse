@@ -822,7 +822,32 @@ aiRouter.post("/ai/action-requests/:id/decide", async (c) => {
 		);
 	}
 
-	const actionLabel = updated?.kind === "add_project" ? "Project creation" : "Launch";
+	const actionLabel = ((kind: string | undefined): string => {
+		switch (kind) {
+			case "add_project":
+				return "Project creation";
+			case "session_stop":
+				return "Stop";
+			case "session_archive":
+				return "Archive";
+			case "session_delete":
+				return "Delete";
+			case "edit_project":
+				return "Project edit";
+			case "delete_project":
+				return "Project delete";
+			case "edit_template":
+				return "Template edit";
+			case "delete_template":
+				return "Template delete";
+			case "add_channel":
+				return "Channel setup";
+			case "create_alert_rule":
+				return "Alert rule";
+			default:
+				return "Launch";
+		}
+	})(updated?.kind);
 
 	if (result.reason === "expired") {
 		return c.json(

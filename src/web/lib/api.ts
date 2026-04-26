@@ -881,6 +881,33 @@ export type InboxWorkItem =
 			defaultModel: string | null;
 			defaultLaunchMode: string | null;
 			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_stop";
+			id: string;
+			sessionId: string;
+			sessionName: string | null;
+			severity: "high";
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_archive";
+			id: string;
+			sessionId: string;
+			sessionName: string | null;
+			severity: "normal";
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_delete";
+			id: string;
+			sessionId: string;
+			sessionName: string | null;
+			severity: "high";
+			createdAt: string;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {

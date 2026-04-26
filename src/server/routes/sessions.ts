@@ -317,14 +317,14 @@ sessionsRouter.put("/sessions/:sessionId/claude-md", async (c) => {
 	return c.json({ ok: true, checksum });
 });
 
-// PUT /api/v1/sessions/:sessionId/archive - Archive a session
+// PUT /api/v1/sessions/:sessionId/archive - Toggle archive flag (is_archived boolean)
 sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 	const sessionId = c.req.param("sessionId");
+	const body = await c.req.json<{ archived?: boolean }>().catch(() => ({ archived: true }));
+	// Default to archiving (true) when the caller omits the field.
+	const archived = (body as { archived?: boolean }).archived !== false;
 
-	await db
-		.update(sessions)
-		.set({ status: "archived", endedAt: new Date().toISOString() })
-		.where(eq(sessions.sessionId, sessionId));
+	await db.update(sessions).set({ isArchived: archived }).where(eq(sessions.sessionId, sessionId));
 
 	return c.json({ ok: true });
 });

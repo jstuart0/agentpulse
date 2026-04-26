@@ -276,6 +276,155 @@ export function addProjectGatePasses(message: string): boolean {
 	return ADD_PROJECT_VERBS.some((v) => lower.includes(v));
 }
 
+const SESSION_ACTION_VERBS = [
+	"pin",
+	"unpin",
+	"archive",
+	"stop",
+	"rename",
+	"add note",
+	"add a note",
+	"note for",
+	"delete session",
+];
+
+/**
+ * Pure synchronous gate: returns true if the message looks like a
+ * single-session action request (pin, unpin, archive, stop, rename,
+ * add note, delete). Intentionally broad — the LLM classifier
+ * confirms intent and rejects false positives like "stop worrying".
+ */
+export function sessionActionGatePasses(message: string): boolean {
+	const lower = message.toLowerCase();
+	return SESSION_ACTION_VERBS.some((v) => lower.includes(v));
+}
+
+export type SessionActionKind =
+	| { kind: "session_action" }
+	| { kind: "none" }
+	| { kind: "classifier_failed"; error: string };
+
+export interface SessionActionIntent {
+	action: "pin" | "unpin" | "rename" | "add_note" | "archive" | "stop" | "delete";
+	sessionHint: string | null;
+	noteText: string | null;
+	newName: string | null;
+}
+
+const SESSION_ACTION_CLASSIFIER_PROMPT = `You are a session-action classifier for AgentPulse.
+Determine whether the user wants to perform an action on a SINGLE session.
+
+Actions: pin | unpin | rename | add_note | archive | stop | delete
+
+Respond with JSON (no markdown, no backticks):
+
+If NOT a session action, or if the request targets MULTIPLE sessions (uses "all", "every", "older than", "each", etc.):
+{"intent":"none"}
+
+If YES (single session action):
+{
+  "intent": "session_action",
+  "action": "pin|unpin|rename|add_note|archive|stop|delete",
+  "sessionHint": "<session name fragment or null>",
+  "noteText": "<note content if action=add_note, else null>",
+  "newName": "<new name if action=rename, else null>"
+}
+
+Rules:
+- sessionHint: any name, cwd fragment, or description the user gave to identify ONE specific session. Null if no hint.
+- If the request targets multiple sessions or uses bulk qualifiers, return intent:none.
+- "stop worrying", "stop the music", etc. are NOT session actions — return intent:none.
+- Respond ONLY with the JSON object.`;
+
+export async function detectSessionActionIntent(
+	message: string,
+): Promise<SessionActionKind & { intent?: SessionActionIntent }> {
+	const provider = await getDefaultProvider();
+	if (!provider) {
+		return {
+			kind: "classifier_failed",
+			error: "No default LLM provider configured — cannot classify session action intent.",
+		};
+	}
+	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
+	if (!full) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider record disappeared — check Settings → AI.",
+		};
+	}
+	const apiKey = await getProviderApiKey(provider.id);
+	if (apiKey === null) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider credentials are unreadable.",
+		};
+	}
+
+	const ESTIMATED_COST_CENTS = 1;
+	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
+	if (!spendCheck.allowed) {
+		return { kind: "none" };
+	}
+
+	const adapter = getAdapter({
+		kind: full.kind,
+		apiKey,
+		baseUrl: full.baseUrl ?? undefined,
+	});
+
+	try {
+		const res = await adapter.complete({
+			systemPrompt: SESSION_ACTION_CLASSIFIER_PROMPT,
+			transcriptPrompt: `User message: ${message}`,
+			model: full.model,
+			maxTokens: 200,
+			temperature: 0.0,
+			timeoutMs: 8_000,
+		});
+
+		const actualCents = res.usage.estimated
+			? ESTIMATED_COST_CENTS
+			: Math.max(
+					1,
+					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
+				);
+		void addGlobalSpendCents(actualCents).catch(() => {});
+
+		const raw = res.text.trim();
+		let parsed: Record<string, unknown>;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return {
+				kind: "classifier_failed",
+				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+			};
+		}
+
+		if (parsed.intent === "none") return { kind: "none" };
+		if (parsed.intent !== "session_action") return { kind: "none" };
+
+		const validActions = ["pin", "unpin", "rename", "add_note", "archive", "stop", "delete"];
+		if (!validActions.includes(parsed.action as string)) return { kind: "none" };
+
+		return {
+			kind: "session_action",
+			intent: {
+				action: parsed.action as SessionActionIntent["action"],
+				sessionHint: typeof parsed.sessionHint === "string" ? parsed.sessionHint : null,
+				noteText: typeof parsed.noteText === "string" ? parsed.noteText : null,
+				newName: typeof parsed.newName === "string" ? parsed.newName : null,
+			},
+		};
+	} catch (err) {
+		return {
+			kind: "classifier_failed",
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
 const ADD_PROJECT_SYSTEM_PROMPT = `You are an add-project-intent classifier for AgentPulse.
 
 The user may be requesting to add a new project to AgentPulse. Extract what you can from their message.

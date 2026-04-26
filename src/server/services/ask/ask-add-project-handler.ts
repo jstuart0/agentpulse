@@ -7,8 +7,8 @@ import {
 } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
-import { getTelegramBotToken } from "../channels/telegram-credentials.js";
 import type { LaunchIntent } from "./launch-intent-detector.js";
+import { sendTelegramActionRequest } from "./telegram-helpers.js";
 
 export interface HandleAddProjectArgs {
 	origin: "web" | "telegram";
@@ -176,35 +176,6 @@ function buildSummaryText(fields: Partial<ProjectDraftFields>): string {
 	return lines.join("\n");
 }
 
-// ---- Telegram inline-button send (best-effort) -----------------------
-async function sendTelegramActionRequest(
-	chatId: string,
-	actionRequestId: string,
-	summary: string,
-): Promise<void> {
-	const token = getTelegramBotToken();
-	if (!token) return;
-	const keyboard = {
-		inline_keyboard: [
-			[
-				{ text: "Approve", callback_data: `act:approve:${actionRequestId}` },
-				{ text: "Decline", callback_data: `act:decline:${actionRequestId}` },
-			],
-		],
-	};
-	await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			chat_id: chatId,
-			text: `AgentPulse · New project request\n\n${summary}`,
-			reply_markup: keyboard,
-		}),
-	}).catch((err) => {
-		console.warn("[ask-add-project] Telegram send failed:", err);
-	});
-}
-
 function sqlNow(): string {
 	return new Date().toISOString();
 }
@@ -247,7 +218,12 @@ async function transitionToPendingApproval(
 		.where(eq(aiPendingProjectDrafts.id, draft.id));
 
 	if (draft.origin === "telegram" && telegramChatId) {
-		await sendTelegramActionRequest(telegramChatId, actionRequest.id, summary);
+		await sendTelegramActionRequest(
+			telegramChatId,
+			actionRequest.id,
+			summary,
+			"New project request",
+		);
 	}
 
 	const inboxRef =

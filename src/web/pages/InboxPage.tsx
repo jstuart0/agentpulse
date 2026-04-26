@@ -57,6 +57,9 @@ export function InboxPage() {
 						<option value="failed_proposal">Failed</option>
 						<option value="action_launch">Launch requests</option>
 						<option value="action_add_project">Project requests</option>
+						<option value="action_session_stop">Session stop</option>
+						<option value="action_session_archive">Session archive</option>
+						<option value="action_session_delete">Session delete</option>
 					</select>
 					<button
 						type="button"
@@ -97,6 +100,9 @@ export function InboxPage() {
 					<span>failed: {inbox.byKind.failed_proposal}</span>
 					<span>launches: {inbox.byKind.action_launch}</span>
 					<span>projects: {inbox.byKind.action_add_project}</span>
+					<span>stops: {inbox.byKind.action_session_stop}</span>
+					<span>archives: {inbox.byKind.action_session_archive}</span>
+					<span>deletes: {inbox.byKind.action_session_delete}</span>
 				</footer>
 			)}
 		</div>
@@ -121,6 +127,13 @@ function InboxCard({
 			</Link>
 		) : null;
 
+	const isActionRequest =
+		item.kind === "action_launch" ||
+		item.kind === "action_add_project" ||
+		item.kind === "action_session_stop" ||
+		item.kind === "action_session_archive" ||
+		item.kind === "action_session_delete";
+
 	async function handleDecide(action: "approve" | "decline") {
 		if (item.kind !== "hitl") return;
 		setBusy(true);
@@ -136,7 +149,7 @@ function InboxCard({
 	}
 
 	async function handleActionDecide(decision: "applied" | "declined") {
-		if (item.kind !== "action_launch" && item.kind !== "action_add_project") return;
+		if (!isActionRequest) return;
 		setBusy(true);
 		setErr(null);
 		try {
@@ -330,6 +343,39 @@ function InboxCard({
 				</>
 			)}
 
+			{(item.kind === "action_session_stop" ||
+				item.kind === "action_session_archive" ||
+				item.kind === "action_session_delete") && (
+				<>
+					<div className="text-xs text-muted-foreground mb-2 space-y-1">
+						<div>
+							Origin: <span className="font-mono">{item.origin}</span>
+						</div>
+					</div>
+					<div className="flex items-center gap-2 mt-3">
+						<button
+							type="button"
+							disabled={busy}
+							onClick={() => handleActionDecide("applied")}
+							className="text-xs px-3 py-1 rounded bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 disabled:opacity-50"
+						>
+							Approve
+						</button>
+						<button
+							type="button"
+							disabled={busy}
+							onClick={() => handleActionDecide("declined")}
+							className="text-xs px-3 py-1 rounded border border-border hover:bg-muted disabled:opacity-50"
+						>
+							Decline
+						</button>
+						<span className="text-[10px] text-muted-foreground ml-auto">
+							{relTime(item.createdAt)}
+						</span>
+					</div>
+				</>
+			)}
+
 			{item.kind === "failed_proposal" && (
 				<>
 					<div className="text-xs text-muted-foreground">
@@ -426,6 +472,9 @@ function KindBadge({ kind }: { kind: InboxWorkItem["kind"] }) {
 		failed_proposal: "bg-muted text-muted-foreground border-border",
 		action_launch: "bg-blue-500/10 text-blue-300 border-blue-500/30",
 		action_add_project: "bg-teal-500/10 text-teal-300 border-teal-500/30",
+		action_session_stop: "bg-red-500/10 text-red-300 border-red-500/30",
+		action_session_archive: "bg-slate-500/10 text-slate-300 border-slate-500/30",
+		action_session_delete: "bg-red-500/10 text-red-300 border-red-500/30",
 	};
 	const labels: Record<InboxWorkItem["kind"], string> = {
 		hitl: "HITL",
@@ -434,6 +483,9 @@ function KindBadge({ kind }: { kind: InboxWorkItem["kind"] }) {
 		failed_proposal: "failed",
 		action_launch: "launch",
 		action_add_project: "new project",
+		action_session_stop: "stop session",
+		action_session_archive: "archive session",
+		action_session_delete: "delete session",
 	};
 	return (
 		<span className={`text-[10px] font-semibold rounded px-1.5 py-0.5 border ${styles[kind]}`}>

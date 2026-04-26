@@ -19,13 +19,16 @@ import {
 import { handleDigestQuery } from "./ask-digest-handler.js";
 import { handleAskLaunchIntent } from "./ask-launch-handler.js";
 import { handleNlSearch } from "./ask-search-handler.js";
+import { handleSessionAction } from "./ask-session-action-handler.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
 import {
 	addProjectGatePasses,
 	detectAddProjectIntent,
 	detectLaunchIntent,
+	detectSessionActionIntent,
 	digestGatePasses,
 	searchGatePasses,
+	sessionActionGatePasses,
 } from "./launch-intent-detector.js";
 import { fetchSessionsById, resolveCandidateSessions } from "./resolver.js";
 
@@ -401,6 +404,25 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		}
 	}
 
+	// 2d. Session action gate — pin/unpin/add_note/rename execute immediately;
+	//     stop/archive/delete create action_request for approval.
+	if (sessionActionGatePasses(text)) {
+		const sessionActionResult = await detectSessionActionIntent(text);
+		if (sessionActionResult.kind === "session_action" && sessionActionResult.intent) {
+			const actionResult = await handleSessionAction(sessionActionResult.intent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: actionResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (sessionActionResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a session-action request but the classifier failed: ${sessionActionResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
 	// 3. Launch-intent intercept: runs after the user message is persisted so the
 	//    thread exists. Short-circuits the normal Ask LLM call when a launch is queued.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
@@ -577,6 +599,27 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 			yield { kind: "delta", delta: searchReply };
 			yield { kind: "done", assistantMessage };
 			return;
+		}
+	}
+
+	// 2d. Session action gate — streaming path short-circuit.
+	if (sessionActionGatePasses(text)) {
+		const sessionActionResult = await detectSessionActionIntent(text);
+		if (sessionActionResult.kind === "session_action" && sessionActionResult.intent) {
+			const actionResult = await handleSessionAction(sessionActionResult.intent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: actionResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: actionResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (sessionActionResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a session-action request but the classifier failed: ${sessionActionResult.error}. Answering as a general question.)_\n\n`;
 		}
 	}
 

@@ -1,13 +1,21 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { LaunchMode, LaunchSpec, SessionTemplateInput } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
-import { aiActionRequests, aiPendingProjectDrafts } from "../../db/schema.js";
+import {
+	events,
+	aiActionRequests,
+	aiPendingProjectDrafts,
+	managedSessions,
+	sessions,
+} from "../../db/schema.js";
 import type { ProjectDraftFields } from "../../db/schema.js";
 import { getChannelCredential } from "../channels/channels-service.js";
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
+import { queueStopAction } from "../control-actions.js";
 import { buildLaunchSpec, pickFirstCapableSupervisor } from "../launch-compatibility.js";
 import { createValidatedLaunchRequest } from "../launch-validator.js";
 import { createProject } from "../projects/projects-service.js";
+import { getSearchBackend } from "../search/index.js";
 import { listSupervisors } from "../supervisor-registry.js";
 
 export type ActionRequestStatus =
@@ -48,6 +56,11 @@ export interface ActionRequest {
 export interface AddProjectActionPayload {
 	draftFields: ProjectDraftFields;
 	draftId: string;
+}
+
+export interface SessionActionPayload {
+	sessionId: string;
+	sessionDisplayName: string | null;
 }
 
 export interface CreateActionRequestInput {
@@ -365,6 +378,109 @@ async function executeAddProjectAction(
 	}
 }
 
+// ---- Session mutation executors -----------------------------------------
+
+/**
+ * Shared helper for session-mutation executors: verifies the session still
+ * exists before running the mutation, marks applied/failed, and notifies.
+ * Keeps the three executors free of duplicated pre-check / error-handling code.
+ */
+async function executeSessionMutation(
+	request: ActionRequest,
+	resolvedBy: string,
+	mutationFn: (sessionId: string) => Promise<void>,
+): Promise<ResolveResult> {
+	const payload = request.payload as unknown as SessionActionPayload;
+	const { origin, channelId, askThreadId } = request;
+	const sessionName = payload.sessionDisplayName ?? payload.sessionId;
+
+	// Pre-check: the session may have been deleted between approval creation
+	// and execution. If so, mark failed immediately rather than throwing.
+	const [existing] = await db
+		.select({ sessionId: sessions.sessionId })
+		.from(sessions)
+		.where(eq(sessions.sessionId, payload.sessionId))
+		.limit(1);
+
+	if (!existing) {
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: `Session ${payload.sessionId} no longer exists`,
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			channelId,
+			askThreadId,
+			`Could not apply — session **${sessionName}** no longer exists.`,
+		);
+		return { ok: false, reason: "failed", failureReason: "Session no longer exists" };
+	}
+
+	try {
+		await mutationFn(payload.sessionId);
+		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
+		await notifyOriginUser(origin, channelId, askThreadId, `Action applied to **${sessionName}**.`);
+		return { ok: true, status: "applied" };
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			channelId,
+			askThreadId,
+			`Action failed for **${sessionName}**: ${reason.slice(0, 400)}`,
+		);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+}
+
+async function executeSessionStopAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	return executeSessionMutation(request, resolvedBy, async (sessionId) => {
+		// Verify managed_sessions at execute time — the session may have
+		// transitioned from managed to hook-only (rare but possible on renames
+		// that discard the managed row).
+		const [managed] = await db
+			.select({ sessionId: managedSessions.sessionId })
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, sessionId))
+			.limit(1);
+		if (!managed) {
+			throw new Error("Session is not managed by AgentPulse");
+		}
+		await queueStopAction(sessionId);
+	});
+}
+
+async function executeSessionArchiveAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	return executeSessionMutation(request, resolvedBy, async (sessionId) => {
+		await db.update(sessions).set({ isArchived: true }).where(eq(sessions.sessionId, sessionId));
+	});
+}
+
+async function executeSessionDeleteAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	return executeSessionMutation(request, resolvedBy, async (sessionId) => {
+		// Remove FTS index entries first, then the events, then the session row.
+		const backend = getSearchBackend();
+		await backend.removeSession(sessionId);
+		await db.delete(events).where(eq(events.sessionId, sessionId));
+		await db.delete(sessions).where(eq(sessions.sessionId, sessionId));
+	});
+}
+
 export async function resolveActionRequest(args: {
 	id: string;
 	decision: "applied" | "declined";
@@ -432,6 +548,18 @@ export async function resolveActionRequest(args: {
 
 	if (request.kind === "launch_request") {
 		return executeLaunchAction(request, resolvedBy);
+	}
+
+	if (request.kind === "session_stop") {
+		return executeSessionStopAction(request, resolvedBy);
+	}
+
+	if (request.kind === "session_archive") {
+		return executeSessionArchiveAction(request, resolvedBy);
+	}
+
+	if (request.kind === "session_delete") {
+		return executeSessionDeleteAction(request, resolvedBy);
 	}
 
 	await conditionalUpdate(id, "applying", {

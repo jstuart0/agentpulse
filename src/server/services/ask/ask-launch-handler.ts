@@ -1,7 +1,6 @@
 import type { AgentType, LaunchMode, SessionTemplateInput } from "../../../shared/types.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
-import { getTelegramBotToken } from "../channels/telegram-credentials.js";
 import {
 	buildLaunchSpec,
 	pickFirstCapableSupervisor,
@@ -11,6 +10,7 @@ import { getProjectByName, listProjects } from "../projects/projects-service.js"
 import { listSupervisors } from "../supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "../template-preview.js";
 import type { LaunchIntent } from "./launch-intent-detector.js";
+import { sendTelegramActionRequest } from "./telegram-helpers.js";
 
 export interface HandleAskLaunchIntentArgs {
 	intent: Extract<LaunchIntent, { kind: "launch" }>;
@@ -23,44 +23,6 @@ export interface HandleAskLaunchIntentArgs {
 export interface HandleAskLaunchIntentResult {
 	replyText: string;
 	actionRequestId: string | null;
-}
-
-/**
- * Send an inline-button Telegram message for the action request.
- * Best-effort — failures are logged but don't block the reply.
- */
-async function sendTelegramActionRequest(
-	chatId: string,
-	actionRequestId: string,
-	question: string,
-): Promise<void> {
-	const token = getTelegramBotToken();
-	if (!token) return;
-	const keyboard = {
-		inline_keyboard: [
-			[
-				{
-					text: "Approve",
-					callback_data: `act:approve:${actionRequestId}`,
-				},
-				{
-					text: "Decline",
-					callback_data: `act:decline:${actionRequestId}`,
-				},
-			],
-		],
-	};
-	await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			chat_id: chatId,
-			text: `AgentPulse · Launch request\n\n${question}`,
-			reply_markup: keyboard,
-		}),
-	}).catch((err) => {
-		console.warn("[ask-launch] Telegram send failed:", err);
-	});
 }
 
 export async function handleAskLaunchIntent(
@@ -207,7 +169,7 @@ export async function handleAskLaunchIntent(
 
 	// === Step 6: Send Telegram inline buttons if origin=telegram ===
 	if (origin === "telegram" && telegramChatId) {
-		await sendTelegramActionRequest(telegramChatId, actionRequest.id, question);
+		await sendTelegramActionRequest(telegramChatId, actionRequest.id, question, "Launch request");
 	}
 
 	const inboxRef = origin === "telegram" ? "via the Telegram buttons I just sent" : "in the inbox";

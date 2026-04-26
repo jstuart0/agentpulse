@@ -89,6 +89,33 @@ export type InboxWorkItem =
 			defaultModel: string | null;
 			defaultLaunchMode: string | null;
 			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_stop";
+			id: string; // action_request id
+			sessionId: string;
+			sessionName: string | null;
+			severity: "high";
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_archive";
+			id: string; // action_request id
+			sessionId: string;
+			sessionName: string | null;
+			severity: "normal";
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_delete";
+			id: string; // action_request id
+			sessionId: string;
+			sessionName: string | null;
+			severity: "high";
+			createdAt: string;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {
@@ -238,7 +265,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		});
 	}
 
-	// ---- 4. Open action requests (launch approvals + add-project) ----
+	// ---- 4. Open action requests (launch approvals + add-project + session mutations) ----
 	const openActions = await listOpenActionRequests();
 	for (const a of openActions) {
 		if (a.kind === "launch_request") {
@@ -271,6 +298,48 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				defaultAgentType: payload.draftFields?.defaultAgentType ?? null,
 				defaultModel: payload.draftFields?.defaultModel ?? null,
 				defaultLaunchMode: payload.draftFields?.defaultLaunchMode ?? null,
+				origin: a.origin,
+			});
+		} else if (a.kind === "session_stop") {
+			const payload = a.payload as unknown as {
+				sessionId: string;
+				sessionDisplayName: string | null;
+			};
+			items.push({
+				kind: "action_session_stop",
+				id: a.id,
+				sessionId: payload.sessionId,
+				sessionName: payload.sessionDisplayName ?? null,
+				severity: "high",
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "session_archive") {
+			const payload = a.payload as unknown as {
+				sessionId: string;
+				sessionDisplayName: string | null;
+			};
+			items.push({
+				kind: "action_session_archive",
+				id: a.id,
+				sessionId: payload.sessionId,
+				sessionName: payload.sessionDisplayName ?? null,
+				severity: "normal",
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "session_delete") {
+			const payload = a.payload as unknown as {
+				sessionId: string;
+				sessionDisplayName: string | null;
+			};
+			items.push({
+				kind: "action_session_delete",
+				id: a.id,
+				sessionId: payload.sessionId,
+				sessionName: payload.sessionDisplayName ?? null,
+				severity: "high",
+				createdAt: a.createdAt,
 				origin: a.origin,
 			});
 		}
@@ -316,6 +385,9 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		failed_proposal: 0,
 		action_launch: 0,
 		action_add_project: 0,
+		action_session_stop: 0,
+		action_session_archive: 0,
+		action_session_delete: 0,
 	};
 	for (const i of out) byKind[i.kind]++;
 
@@ -336,7 +408,11 @@ function timestampFor(item: InboxWorkItem): number {
 				? item.at
 				: item.kind === "stuck"
 					? item.since
-					: item.kind === "action_launch" || item.kind === "action_add_project"
+					: item.kind === "action_launch" ||
+							item.kind === "action_add_project" ||
+							item.kind === "action_session_stop" ||
+							item.kind === "action_session_archive" ||
+							item.kind === "action_session_delete"
 						? item.createdAt
 						: new Date().toISOString();
 	return ts.includes("T") ? new Date(ts).getTime() : new Date(`${ts.replace(" ", "T")}Z`).getTime();
