@@ -16,12 +16,16 @@ import {
 	handleAddProjectContinuation,
 	handleNewAddProjectIntent,
 } from "./ask-add-project-handler.js";
+import { handleDigestQuery } from "./ask-digest-handler.js";
 import { handleAskLaunchIntent } from "./ask-launch-handler.js";
+import { handleNlSearch } from "./ask-search-handler.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
 import {
 	addProjectGatePasses,
 	detectAddProjectIntent,
 	detectLaunchIntent,
+	digestGatePasses,
+	searchGatePasses,
 } from "./launch-intent-detector.js";
 import { fetchSessionsById, resolveCandidateSessions } from "./resolver.js";
 
@@ -370,6 +374,33 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		}
 	}
 
+	// 2b. Digest gate — read-only, no action_request, no LLM call.
+	if (digestGatePasses(text)) {
+		const digestReply = await handleDigestQuery(text);
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: digestReply,
+			contextSessionIds: [],
+		});
+		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+	}
+
+	// 2c. NL search gate — read-only, no action_request, no LLM call.
+	//     Returns null on zero results so the LLM can answer conversationally.
+	if (searchGatePasses(text)) {
+		const searchReply = await handleNlSearch(text, getCachedProjects());
+		if (searchReply !== null) {
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: searchReply,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+	}
+
 	// 3. Launch-intent intercept: runs after the user message is persisted so the
 	//    thread exists. Short-circuits the normal Ask LLM call when a launch is queued.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
@@ -514,6 +545,38 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		}
 		if (addIntent.kind === "classifier_failed") {
 			preamble = `_(Heads up: I tried to detect a project-creation request but the classifier failed: ${addIntent.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2b. Digest gate — streaming path short-circuit.
+	if (digestGatePasses(text)) {
+		const digestReply = await handleDigestQuery(text);
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: digestReply,
+			contextSessionIds: [],
+		});
+		yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+		yield { kind: "delta", delta: digestReply };
+		yield { kind: "done", assistantMessage };
+		return;
+	}
+
+	// 2c. NL search gate — streaming path short-circuit.
+	if (searchGatePasses(text)) {
+		const searchReply = await handleNlSearch(text, getCachedProjects());
+		if (searchReply !== null) {
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: searchReply,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: searchReply };
+			yield { kind: "done", assistantMessage };
+			return;
 		}
 	}
 

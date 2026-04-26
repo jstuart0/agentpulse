@@ -205,6 +205,60 @@ export async function detectLaunchIntent(
 	}
 }
 
+const SEARCH_TRIGGERS = [
+	"find session",
+	"search session",
+	"show me session",
+	"what sessions",
+	"which sessions",
+	"list sessions",
+	"any sessions",
+	"sessions about",
+	"sessions with",
+	"sessions that",
+	"sessions on",
+	"sessions for",
+	"stuck sessions",
+	"failed sessions",
+	"active sessions",
+	"completed sessions",
+	"what's stuck",
+	"what is stuck",
+	"broken sessions",
+	"crashed sessions",
+];
+
+/**
+ * Pure synchronous gate: returns true if the message looks like an NL
+ * session-search request. Conservative — false negatives fall through to
+ * the normal Ask LLM which can answer conversationally.
+ */
+export function searchGatePasses(message: string): boolean {
+	const lower = message.toLowerCase();
+	return SEARCH_TRIGGERS.some((t) => lower.includes(t));
+}
+
+const DIGEST_TRIGGERS = [
+	"what happened",
+	"give me a digest",
+	"daily digest",
+	"session digest",
+	"activity summary",
+	"what's going on",
+	"what is going on",
+	"overview of",
+	"summary of sessions",
+];
+
+/**
+ * Pure synchronous gate: returns true if the message looks like a digest
+ * or activity-summary request.
+ */
+export function digestGatePasses(message: string): boolean {
+	const lower = message.toLowerCase();
+	return DIGEST_TRIGGERS.some((t) => lower.includes(t));
+}
+
 const ADD_PROJECT_VERBS = [
 	"add project",
 	"create project",
