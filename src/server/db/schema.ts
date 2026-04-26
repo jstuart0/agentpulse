@@ -234,6 +234,7 @@ export const launchRequests = sqliteTable("launch_requests", {
 		Record<string, unknown>
 	>(),
 	retryOfLaunchRequestId: text("retry_of_launch_request_id"),
+	parentSessionId: text("parent_session_id"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });

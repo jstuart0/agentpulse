@@ -176,7 +176,11 @@ function InboxCard({
 					<KindBadge kind={item.kind} />
 					{sessionLink}
 					{item.kind === "action_launch" && (
-						<span className="text-sm font-medium">{item.projectName}</span>
+						<span className="text-sm font-medium">
+							{item.parentSessionId
+								? `Resume of ${item.parentSessionName ?? item.parentSessionId.slice(0, 8)}`
+								: item.projectName}
+						</span>
 					)}
 					{item.kind === "action_add_project" && (
 						<span className="text-sm font-medium">New project request</span>
@@ -250,6 +254,12 @@ function InboxCard({
 			{item.kind === "action_launch" && (
 				<>
 					<div className="text-xs text-muted-foreground mb-2 space-y-1">
+						{item.parentSessionId && (
+							<div className="font-medium text-blue-300">
+								Resume of{" "}
+								<strong>{item.parentSessionName ?? item.parentSessionId.slice(0, 8)}</strong>
+							</div>
+						)}
 						<div>
 							Agent:{" "}
 							<span className="font-mono">

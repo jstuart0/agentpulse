@@ -451,6 +451,165 @@ Rules:
 - Only return fields the user explicitly stated. All fields default to null.
 - Respond ONLY with the JSON object.`;
 
+// ---- Resume intent --------------------------------------------------------
+//
+// Resume gate runs BEFORE the launch gate. The classifier system prompt
+// explicitly lists known project names so "continue agentpulse with: …"
+// is rejected as a project name, not resolved as a session hint.
+
+export interface ResumeIntent {
+	kind: "resume";
+	sessionHint: string | null;
+	newPrompt: string | null;
+	agentType?: AgentType;
+	mode?: LaunchMode;
+}
+
+export type ResumeDetectResult =
+	| { kind: "none" }
+	| { kind: "classifier_failed"; error: string }
+	| ResumeIntent;
+
+const RESUME_VERBS = [
+	"resume",
+	"continue",
+	"pick up",
+	"restart with",
+	"continue with",
+	"follow up on",
+	"follow up with",
+];
+
+/**
+ * Pure synchronous gate: true if the message contains any resume verb.
+ * The downstream LLM classifier rejects false positives (e.g. "continue reading").
+ */
+export function resumeGatePasses(message: string): boolean {
+	const lower = message.toLowerCase();
+	return RESUME_VERBS.some((v) => lower.includes(v));
+}
+
+const RESUME_SYSTEM_PROMPT = (projectNames: string[]): string =>
+	`You are a session-resume classifier for AgentPulse.
+
+Known project names (these are project names, NOT session names): ${projectNames.map((n) => `"${n}"`).join(", ")}
+
+Respond with JSON (no markdown, no backticks):
+
+If NOT a resume request, OR if the identifier refers to a known project name rather than a session:
+{"intent":"none"}
+
+If YES:
+{
+  "intent": "resume",
+  "sessionHint": "<session name or description fragment>",
+  "newPrompt": "<the task or prompt to start the new session with, or null>",
+  "agentType": "claude_code|codex_cli|null",
+  "mode": "interactive_terminal|headless|null"
+}
+
+Rules:
+- sessionHint: the description used to identify the target parent session. Must be a session name or fragment, NOT a project name. If the identifier matches a known project name, return intent:none.
+- newPrompt: text after "with:", "with this:", or a natural "to <verb>..." phrase. If no explicit new prompt is present, return null.
+- Use the ": " separator or explicit "with:" phrase as a high-confidence resume signal.
+- "continue reading", "continue watching", or other non-session phrases must return intent:none.
+- Respond ONLY with the JSON object.`;
+
+export async function detectResumeIntent(
+	message: string,
+	projectNames: string[],
+): Promise<ResumeDetectResult> {
+	const provider = await getDefaultProvider();
+	if (!provider) {
+		return {
+			kind: "classifier_failed",
+			error: "No default LLM provider configured — cannot classify resume intent.",
+		};
+	}
+	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
+	if (!full) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider record disappeared — check Settings → AI.",
+		};
+	}
+	const apiKey = await getProviderApiKey(provider.id);
+	if (apiKey === null) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider credentials are unreadable.",
+		};
+	}
+
+	const ESTIMATED_COST_CENTS = 1;
+	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
+	if (!spendCheck.allowed) {
+		return { kind: "none" };
+	}
+
+	const adapter = getAdapter({
+		kind: full.kind,
+		apiKey,
+		baseUrl: full.baseUrl ?? undefined,
+	});
+
+	try {
+		const res = await adapter.complete({
+			systemPrompt: RESUME_SYSTEM_PROMPT(projectNames),
+			transcriptPrompt: `User message: ${message}`,
+			model: full.model,
+			maxTokens: 200,
+			temperature: 0.0,
+			timeoutMs: 8_000,
+		});
+
+		const actualCents = res.usage.estimated
+			? ESTIMATED_COST_CENTS
+			: Math.max(
+					1,
+					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
+				);
+		void addGlobalSpendCents(actualCents).catch(() => {});
+
+		const raw = res.text.trim();
+		let parsed: Record<string, unknown>;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return {
+				kind: "classifier_failed",
+				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+			};
+		}
+
+		if (parsed.intent === "none") return { kind: "none" };
+		if (parsed.intent !== "resume") return { kind: "none" };
+
+		const agentType =
+			parsed.agentType === "claude_code" || parsed.agentType === "codex_cli"
+				? (parsed.agentType as AgentType)
+				: undefined;
+
+		const mode =
+			parsed.mode === "interactive_terminal" || parsed.mode === "headless"
+				? (parsed.mode as LaunchMode)
+				: undefined;
+
+		return {
+			kind: "resume",
+			sessionHint: typeof parsed.sessionHint === "string" ? parsed.sessionHint : null,
+			newPrompt: typeof parsed.newPrompt === "string" && parsed.newPrompt ? parsed.newPrompt : null,
+			agentType,
+			mode,
+		};
+	} catch (err) {
+		return {
+			kind: "classifier_failed",
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
 export async function detectAddProjectIntent(message: string): Promise<LaunchIntent> {
 	const provider = await getDefaultProvider();
 	if (!provider) {

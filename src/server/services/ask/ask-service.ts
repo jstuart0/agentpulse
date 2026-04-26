@@ -18,6 +18,7 @@ import {
 } from "./ask-add-project-handler.js";
 import { handleDigestQuery } from "./ask-digest-handler.js";
 import { handleAskLaunchIntent } from "./ask-launch-handler.js";
+import { handleResumeIntent } from "./ask-resume-handler.js";
 import { handleNlSearch } from "./ask-search-handler.js";
 import { handleSessionAction } from "./ask-session-action-handler.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
@@ -25,8 +26,10 @@ import {
 	addProjectGatePasses,
 	detectAddProjectIntent,
 	detectLaunchIntent,
+	detectResumeIntent,
 	detectSessionActionIntent,
 	digestGatePasses,
+	resumeGatePasses,
 	searchGatePasses,
 	sessionActionGatePasses,
 } from "./launch-intent-detector.js";
@@ -423,6 +426,35 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		}
 	}
 
+	// 2e. Resume gate — checked before launch so "continue <name> with: …" resolves
+	//     as a session resume, not a project launch. The classifier rejects project
+	//     names and generic "continue" phrases that aren't session references.
+	if (resumeGatePasses(text)) {
+		const projects = getCachedProjects();
+		const resumeResult = await detectResumeIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (resumeResult.kind === "resume") {
+			const resumeHandlerResult = await handleResumeIntent({
+				intent: resumeResult,
+				origin,
+				threadId: thread.id,
+				telegramChatId: input.telegramChatId,
+			});
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: resumeHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (resumeResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a resume request but the classifier failed: ${resumeResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
 	// 3. Launch-intent intercept: runs after the user message is persisted so the
 	//    thread exists. Short-circuits the normal Ask LLM call when a launch is queued.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
@@ -620,6 +652,36 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		}
 		if (sessionActionResult.kind === "classifier_failed" && !preamble) {
 			preamble = `_(Heads up: I tried to detect a session-action request but the classifier failed: ${sessionActionResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2e. Resume gate — streaming path short-circuit.
+	if (resumeGatePasses(text)) {
+		const projects = getCachedProjects();
+		const resumeResult = await detectResumeIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (resumeResult.kind === "resume") {
+			const resumeHandlerResult = await handleResumeIntent({
+				intent: resumeResult,
+				origin,
+				threadId: thread.id,
+				telegramChatId: input.telegramChatId,
+			});
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: resumeHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: resumeHandlerResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (resumeResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a resume request but the classifier failed: ${resumeResult.error}. Answering as a general question.)_\n\n`;
 		}
 	}
 

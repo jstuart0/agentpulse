@@ -75,6 +75,9 @@ export type InboxWorkItem =
 			launchSpec: LaunchSpec;
 			requestedLaunchMode: LaunchMode;
 			origin: "web" | "telegram";
+			/** Present when this launch was created by a resume intent. */
+			parentSessionId: string | null;
+			parentSessionName: string | null;
 	  }
 	| {
 			kind: "action_add_project";
@@ -270,6 +273,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 	for (const a of openActions) {
 		if (a.kind === "launch_request") {
 			const payload = a.payload;
+			const rawPayload = payload as unknown as Record<string, unknown>;
 			items.push({
 				kind: "action_launch",
 				id: a.id,
@@ -283,6 +287,10 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				launchSpec: payload.launchSpec,
 				requestedLaunchMode: payload.requestedLaunchMode,
 				origin: a.origin,
+				parentSessionId:
+					typeof rawPayload.parentSessionId === "string" ? rawPayload.parentSessionId : null,
+				parentSessionName:
+					typeof rawPayload.parentSessionName === "string" ? rawPayload.parentSessionName : null,
 			});
 		} else if (a.kind === "add_project") {
 			const payload = a.payload as unknown as AddProjectActionPayload;

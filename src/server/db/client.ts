@@ -572,6 +572,8 @@ export function initializeDatabase() {
 			WHERE status IN ('drafting', 'pending_approval')`,
 		// P2: is_archived column — keeps archival orthogonal to session status.
 		"ALTER TABLE sessions ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
+		// Slice 3: resume traceability — nullable, pipeline does not read it.
+		"ALTER TABLE launch_requests ADD COLUMN parent_session_id TEXT",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

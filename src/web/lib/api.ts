@@ -867,6 +867,8 @@ export type InboxWorkItem =
 			launchSpec: Record<string, unknown>;
 			requestedLaunchMode: string;
 			origin: "web" | "telegram";
+			parentSessionId: string | null;
+			parentSessionName: string | null;
 	  }
 	| {
 			kind: "action_add_project";
