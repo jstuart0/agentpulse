@@ -550,6 +550,10 @@ export function initializeDatabase() {
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
 		"CREATE INDEX IF NOT EXISTS idx_ai_action_requests_status ON ai_action_requests(status)",
+		// Phase A: template ↔ project linkage
+		"ALTER TABLE session_templates ADD COLUMN project_id TEXT",
+		"ALTER TABLE session_templates ADD COLUMN template_project_overrides TEXT",
+		"CREATE INDEX IF NOT EXISTS idx_session_templates_project_id ON session_templates(project_id) WHERE project_id IS NOT NULL",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

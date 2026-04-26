@@ -120,6 +120,15 @@ export const sessionTemplates = sqliteTable("session_templates", {
 	// Phase 5 provenance: nullable JSON for distilled templates. Manually
 	// authored templates leave this null.
 	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+	// Phase A: project linkage. Nullable FK to projects.id — no FK constraint
+	// (follows existing pattern; SQLite FK enforcement requires pragma).
+	projectId: text("project_id"),
+	// JSON array of field names the user explicitly overrode (e.g. ["agentType"]).
+	// Null/[] means all project-provided fields are inherited. Using a JSON
+	// sentinel column rather than per-field nullable booleans avoids 4+ new
+	// columns; SQLite ALTER TABLE cannot change NOT NULL on agentType/cwd so
+	// we cannot make those columns nullable cheaply — the sentinel sidesteps this.
+	templateProjectOverrides: text("template_project_overrides", { mode: "json" }).$type<string[]>(),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });

@@ -5,6 +5,8 @@ import type {
 	LaunchMode,
 	LaunchRequest,
 	LaunchRoutingPolicy,
+	Project,
+	ResolvedProjectData,
 	SessionTemplate,
 	SessionTemplateInput,
 	SupervisorRecord,
@@ -49,12 +51,19 @@ export function TemplatesPage() {
 	const [routingPolicy, setRoutingPolicy] = useState<LaunchRoutingPolicy>("manual_target");
 	const [targetSupervisorId, setTargetSupervisorId] = useState<string>("");
 
+	// Phase A: project linkage state
+	const [projects, setProjects] = useState<Project[]>([]);
+	const [linkedProjectId, setLinkedProjectId] = useState<string | null>(null);
+	const [overriddenFields, setOverriddenFields] = useState<Set<string>>(new Set());
+	const [resolvedProject, setResolvedProject] = useState<ResolvedProjectData | null>(null);
+
 	useEffect(() => {
 		loadTemplates();
 	}, [agentFilter]);
 
 	useEffect(() => {
 		loadPhaseTwoData();
+		loadProjects();
 	}, []);
 
 	useEffect(() => {
@@ -110,6 +119,15 @@ export function TemplatesPage() {
 		}
 	}
 
+	async function loadProjects() {
+		try {
+			const result = (await api.listProjects()) as { projects: Project[] };
+			setProjects(result.projects ?? []);
+		} catch {
+			// Non-fatal — projects dropdown stays empty
+		}
+	}
+
 	async function loadPhaseTwoData() {
 		try {
 			const [supervisorsRes, launchesRes] = await Promise.all([
@@ -149,6 +167,20 @@ export function TemplatesPage() {
 		setTagsText(tagsToString(template.tags));
 		setStatusMessage("");
 		setLaunchMode(defaultLaunchModeForAgent(template.agentType));
+		// Restore project linkage state from list response
+		setLinkedProjectId(template.projectId);
+		setOverriddenFields(new Set(template.overriddenFields));
+		// Fetch detail to get resolvedProject
+		void loadTemplateDetail(template.id);
+	}
+
+	async function loadTemplateDetail(id: string) {
+		try {
+			const result = await api.getTemplate(id);
+			setResolvedProject(result.resolvedProject);
+		} catch {
+			setResolvedProject(null);
+		}
 	}
 
 	function resetEditor(agentType: AgentType = draft.agentType) {
@@ -158,6 +190,9 @@ export function TemplatesPage() {
 		setTagsText("");
 		setStatusMessage("");
 		setLaunchMode(defaultLaunchModeForAgent(agentType));
+		setLinkedProjectId(null);
+		setOverriddenFields(new Set());
+		setResolvedProject(null);
 	}
 
 	function updateDraft<K extends keyof SessionTemplateInput>(
@@ -165,6 +200,63 @@ export function TemplatesPage() {
 		value: SessionTemplateInput[K],
 	) {
 		setDraft((current) => ({ ...current, [key]: value }));
+	}
+
+	function handleSetLinkedProject(projectId: string | null) {
+		setLinkedProjectId(projectId);
+		setOverriddenFields(new Set()); // reset all overrides when project changes
+		if (!projectId) {
+			setResolvedProject(null);
+			return;
+		}
+		const project = projects.find((p) => p.id === projectId) ?? null;
+		if (!project) {
+			setResolvedProject(null);
+			return;
+		}
+		// Pre-fill draft from project values (only non-null project values auto-fill)
+		setDraft((current) => ({
+			...current,
+			cwd: project.cwd,
+			...(project.defaultAgentType ? { agentType: project.defaultAgentType } : {}),
+			...(project.defaultModel ? { model: project.defaultModel } : {}),
+		}));
+		// Pre-fill launchMode from project if set
+		if (project.defaultLaunchMode) {
+			setLaunchMode(project.defaultLaunchMode as LaunchMode);
+		}
+		setResolvedProject({
+			id: project.id,
+			name: project.name,
+			cwd: project.cwd,
+			defaultAgentType: project.defaultAgentType,
+			defaultModel: project.defaultModel,
+			defaultLaunchMode: project.defaultLaunchMode,
+		});
+	}
+
+	function handleOverrideField(fieldName: string) {
+		setOverriddenFields((prev) => new Set([...prev, fieldName]));
+	}
+
+	function handleResetField(fieldName: string) {
+		setOverriddenFields((prev) => {
+			const next = new Set(prev);
+			next.delete(fieldName);
+			return next;
+		});
+		// Refill the field from the project value
+		if (!resolvedProject) return;
+		if (fieldName === "cwd") {
+			setDraft((current) => ({ ...current, cwd: resolvedProject.cwd }));
+		} else if (fieldName === "agentType" && resolvedProject.defaultAgentType) {
+			setDraft((current) => ({
+				...current,
+				agentType: resolvedProject.defaultAgentType as AgentType,
+			}));
+		} else if (fieldName === "model") {
+			setDraft((current) => ({ ...current, model: resolvedProject.defaultModel ?? "" }));
+		}
 	}
 
 	async function handleSave() {
@@ -175,6 +267,8 @@ export function TemplatesPage() {
 			...draft,
 			env: parseEnvLines(envText),
 			tags: parseTags(tagsText),
+			projectId: linkedProjectId,
+			overriddenFields: Array.from(overriddenFields),
 		};
 		try {
 			if (selectedId) {
@@ -406,12 +500,19 @@ export function TemplatesPage() {
 						statusMessage={statusMessage}
 						canCreateLaunch={canCreateLaunch}
 						lastCreatedLaunch={lastCreatedLaunch}
+						projects={projects}
+						linkedProjectId={linkedProjectId}
+						overriddenFields={overriddenFields}
+						resolvedProject={resolvedProject}
 						onUpdateDraft={updateDraft}
 						onSetEnvText={setEnvText}
 						onSetTagsText={setTagsText}
 						onSetLaunchMode={setLaunchMode}
 						onSetRoutingPolicy={setRoutingPolicy}
 						onSetTargetSupervisorId={setTargetSupervisorId}
+						onSetLinkedProject={handleSetLinkedProject}
+						onOverrideField={handleOverrideField}
+						onResetField={handleResetField}
 						onSave={handleSave}
 						onReset={() => resetEditor(draft.agentType)}
 						onDelete={handleDelete}

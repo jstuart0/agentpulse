@@ -3,8 +3,10 @@ import type {
 	LaunchRequest,
 	Project,
 	ProjectInput,
+	ResolvedProjectData,
 	Session,
 	SessionEvent,
+	SessionTemplate,
 	SupervisorRecord,
 } from "../../shared/types.js";
 import { APP_API_BASE } from "./paths.js";
@@ -235,7 +237,10 @@ export const api = {
 		return request<{ templates: unknown[]; total: number }>(`/templates${qs ? `?${qs}` : ""}`);
 	},
 
-	getTemplate: (id: string) => request<{ template: unknown }>(`/templates/${id}`),
+	getTemplate: (id: string) =>
+		request<{ template: SessionTemplate; resolvedProject: ResolvedProjectData | null }>(
+			`/templates/${id}`,
+		),
 
 	createTemplate: (body: unknown) =>
 		request<{ template: unknown }>("/templates", {

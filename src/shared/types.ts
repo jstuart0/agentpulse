@@ -272,8 +272,21 @@ export interface AppSettings {
 	eventsRetentionDays: number;
 }
 
+// Subset of Project returned alongside GET /templates/:id for the editor to
+// derive inherited vs. overridden field state without a separate projects fetch.
+export interface ResolvedProjectData {
+	id: string;
+	name: string;
+	cwd: string;
+	defaultAgentType: AgentType | null;
+	defaultModel: string | null;
+	defaultLaunchMode: LaunchMode | null;
+}
+
 export interface SessionTemplate {
 	id: string;
+	projectId: string | null;
+	overriddenFields: string[];
 	name: string;
 	description: string | null;
 	agentType: AgentType;

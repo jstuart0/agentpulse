@@ -1,14 +1,19 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AgentType, LaunchMode, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
-import { sessionTemplates } from "../db/schema.js";
+import { projects, sessionTemplates } from "../db/schema.js";
+import { getProject } from "../services/projects/projects-service.js";
 import {
 	buildTemplatePreview,
 	normalizeTemplateInput,
 	validateTemplateInput,
 } from "../services/template-preview.js";
+import {
+	parseOverrides,
+	resolveTemplateWithProject,
+} from "../services/templates/template-project-resolver.js";
 
 const templatesRouter = new Hono();
 templatesRouter.use("*", requireAuth());
@@ -16,6 +21,8 @@ templatesRouter.use("*", requireAuth());
 function mapTemplate(row: typeof sessionTemplates.$inferSelect) {
 	return {
 		id: row.id,
+		projectId: row.projectId ?? null,
+		overriddenFields: Array.from(parseOverrides(row.templateProjectOverrides)),
 		name: row.name,
 		description: row.description,
 		agentType: row.agentType,
@@ -42,7 +49,27 @@ templatesRouter.get("/templates", async (c) => {
 				.orderBy(desc(sessionTemplates.updatedAt), desc(sessionTemplates.createdAt))
 		: await query.orderBy(desc(sessionTemplates.updatedAt), desc(sessionTemplates.createdAt));
 
-	return c.json({ templates: rows.map(mapTemplate), total: rows.length });
+	// Batch-fetch all linked projects in one query — one extra query regardless
+	// of list size. Templates with no projectId short-circuit in the resolver.
+	const linkedIds = [...new Set(rows.map((r) => r.projectId).filter(Boolean))] as string[];
+	const projectMap = new Map<string, typeof projects.$inferSelect>();
+	if (linkedIds.length > 0) {
+		const linked = await db.select().from(projects).where(inArray(projects.id, linkedIds));
+		for (const p of linked) projectMap.set(p.id, p);
+	}
+
+	const mapped = rows.map((row) => {
+		const project = row.projectId ? (projectMap.get(row.projectId) ?? null) : null;
+		const resolved = resolveTemplateWithProject(row, project);
+		return {
+			...mapTemplate(row),
+			agentType: resolved.agentType,
+			cwd: resolved.cwd,
+			model: resolved.model,
+		};
+	});
+
+	return c.json({ templates: mapped, total: mapped.length });
 });
 
 templatesRouter.get("/templates/:id", async (c) => {
@@ -53,11 +80,34 @@ templatesRouter.get("/templates/:id", async (c) => {
 		.where(eq(sessionTemplates.id, id))
 		.limit(1);
 	if (!row) return c.json({ error: "Template not found" }, 404);
-	return c.json({ template: mapTemplate(row) });
+
+	const project = row.projectId ? await getProject(row.projectId) : null;
+	const resolved = resolveTemplateWithProject(row, project);
+
+	return c.json({
+		template: {
+			...mapTemplate(row),
+			agentType: resolved.agentType,
+			cwd: resolved.cwd,
+			model: resolved.model,
+		},
+		resolvedProject: project
+			? {
+					id: project.id,
+					name: project.name,
+					cwd: project.cwd,
+					defaultAgentType: project.defaultAgentType,
+					defaultModel: project.defaultModel,
+					defaultLaunchMode: project.defaultLaunchMode,
+				}
+			: null,
+	});
 });
 
 templatesRouter.post("/templates", async (c) => {
-	const body = await c.req.json<SessionTemplateInput>();
+	const body = await c.req.json<
+		SessionTemplateInput & { projectId?: string | null; overriddenFields?: string[] }
+	>();
 	const normalized = normalizeTemplateInput(body);
 	const { errors } = validateTemplateInput(normalized);
 	if (errors.length > 0) return c.json({ error: errors.join(" ") }, 400);
@@ -78,6 +128,8 @@ templatesRouter.post("/templates", async (c) => {
 			env: normalized.env,
 			tags: normalized.tags,
 			isFavorite: normalized.isFavorite ?? false,
+			projectId: body.projectId ?? null,
+			templateProjectOverrides: body.overriddenFields?.length ? body.overriddenFields : null,
 			createdAt: now,
 			updatedAt: now,
 		})
@@ -88,7 +140,9 @@ templatesRouter.post("/templates", async (c) => {
 
 templatesRouter.put("/templates/:id", async (c) => {
 	const id = c.req.param("id");
-	const body = await c.req.json<SessionTemplateInput>();
+	const body = await c.req.json<
+		SessionTemplateInput & { projectId?: string | null; overriddenFields?: string[] }
+	>();
 	const normalized = normalizeTemplateInput(body);
 	const { errors } = validateTemplateInput(normalized);
 	if (errors.length > 0) return c.json({ error: errors.join(" ") }, 400);
@@ -115,6 +169,11 @@ templatesRouter.put("/templates/:id", async (c) => {
 			env: normalized.env,
 			tags: normalized.tags,
 			isFavorite: normalized.isFavorite ?? false,
+			projectId: "projectId" in body ? (body.projectId ?? null) : existing.projectId,
+			templateProjectOverrides:
+				"overriddenFields" in body
+					? (body.overriddenFields ?? null)
+					: existing.templateProjectOverrides,
 			updatedAt: new Date().toISOString(),
 		})
 		.where(eq(sessionTemplates.id, id))
@@ -160,6 +219,8 @@ templatesRouter.post("/templates/:id/duplicate", async (c) => {
 			env: existing.env ?? {},
 			tags: existing.tags ?? [],
 			isFavorite: false,
+			projectId: existing.projectId,
+			templateProjectOverrides: existing.templateProjectOverrides,
 			createdAt: now,
 			updatedAt: now,
 		})
