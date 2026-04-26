@@ -399,11 +399,20 @@ SQLite (stored at `./data/agentpulse.db`). Zero-config, single-file, handles hom
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `AGENTPULSE_TELEMETRY` | `on` | Set `off` to disable anonymous telemetry |
 | `DO_NOT_TRACK` | | Set `1` to disable telemetry (standard) |
+| `AGENTPULSE_TELEMETRY_MODE` | inferred | Telemetry install class override: `self_hosted_real`, `production`, `dev`, `test`, or `ci` |
+| `AGENTPULSE_TELEMETRY_TEST` | | Set `1` to force this install to report as `test` |
 | `AGENTPULSE_AI_ENABLED` | `false` | Compile the AI Labs layer in at boot. Off = zero AI services, routes, or UI (non-AI install footprint is identical to pre-AI). |
 | `AGENTPULSE_SECRETS_KEY` | | Required when `AGENTPULSE_AI_ENABLED=true`. 32+ random chars; encrypts provider credentials at rest (AES-256-GCM). |
 | `AGENTPULSE_OTEL_ENDPOINT` | | Optional OTLP metrics endpoint. When set, `ai_metric` log events are also forwarded as OTLP. |
 | `TELEGRAM_BOT_TOKEN` | | Instance-wide Telegram bot token (get one from @BotFather). Required to enable the Telegram HITL channel. |
 | `TELEGRAM_WEBHOOK_SECRET` | | Shared secret Telegram echoes back on every webhook callback. ≥24 random chars. Required when `TELEGRAM_BOT_TOKEN` is set. |
+
+Telemetry classification defaults:
+
+- `CI=true` reports as `ci`
+- prerelease/dev builds report as `dev`
+- stable production builds report as `self_hosted_real`
+- set `AGENTPULSE_TELEMETRY_MODE=test` or `AGENTPULSE_TELEMETRY_TEST=1` for local/test deployments so they do not pollute real-world usage counts
 
 ## What the setup script does
 
