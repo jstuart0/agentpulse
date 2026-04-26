@@ -11,9 +11,18 @@ import {
 } from "../ai/providers-service.js";
 import { getSemanticEnricher } from "../ai/semantic-enricher.js";
 import { getCachedProjects } from "../projects/cache.js";
+import {
+	getOpenDraftForThread,
+	handleAddProjectContinuation,
+	handleNewAddProjectIntent,
+} from "./ask-add-project-handler.js";
 import { handleAskLaunchIntent } from "./ask-launch-handler.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
-import { detectLaunchIntent } from "./launch-intent-detector.js";
+import {
+	addProjectGatePasses,
+	detectAddProjectIntent,
+	detectLaunchIntent,
+} from "./launch-intent-detector.js";
 import { fetchSessionsById, resolveCandidateSessions } from "./resolver.js";
 
 /**
@@ -323,13 +332,51 @@ async function prepareTurn(input: AskTurnInput): Promise<{
 export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 	const { thread, userMessage, context, transcript, text } = await prepareTurn(input);
 
-	// Launch-intent intercept: runs after the user message is persisted so the
-	// thread exists. Short-circuits the normal Ask LLM call when a launch is queued.
+	const origin = input.origin ?? "web";
+	const askArgs = { origin, threadId: thread.id, telegramChatId: input.telegramChatId };
+
+	// 1. Open-draft continuation check — runs BEFORE any intent gate so that
+	//    mid-draft replies (including "skip") are parsed by the draft handler.
+	const openDraft = await getOpenDraftForThread(thread.id);
+	if (openDraft?.status === "drafting") {
+		const contResult = await handleAddProjectContinuation(text, askArgs);
+		if (contResult !== null) {
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: contResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+	}
+
+	// 2. Add-project gate + classifier
+	let preamble = "";
+	if (addProjectGatePasses(text)) {
+		const addIntent = await detectAddProjectIntent(text);
+		if (addIntent.kind === "add_project") {
+			const addResult = await handleNewAddProjectIntent(addIntent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: addResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (addIntent.kind === "classifier_failed") {
+			preamble = `_(Heads up: I tried to detect a project-creation request but the classifier failed: ${addIntent.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 3. Launch-intent intercept: runs after the user message is persisted so the
+	//    thread exists. Short-circuits the normal Ask LLM call when a launch is queued.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
 	if (intent.kind === "launch") {
 		const launchResult = await handleAskLaunchIntent({
 			intent,
-			origin: input.origin ?? "web",
+			origin,
 			threadId: thread.id,
 			telegramChatId: input.telegramChatId,
 		});
@@ -342,8 +389,7 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
 	}
 
-	let preamble = "";
-	if (intent.kind === "classifier_failed") {
+	if (intent.kind === "classifier_failed" && !preamble) {
 		preamble =
 			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
 	}
@@ -428,12 +474,55 @@ export type AskStreamEvent =
 export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskStreamEvent> {
 	const { thread, userMessage, context, transcript, text } = await prepareTurn(input);
 
-	// Launch-intent intercept for streaming path.
+	const origin = input.origin ?? "web";
+	const askArgs = { origin, threadId: thread.id, telegramChatId: input.telegramChatId };
+
+	// 1. Open-draft continuation check — runs BEFORE any intent gate.
+	const openDraft = await getOpenDraftForThread(thread.id);
+	if (openDraft?.status === "drafting") {
+		const contResult = await handleAddProjectContinuation(text, askArgs);
+		if (contResult !== null) {
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: contResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: contResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+	}
+
+	// 2. Add-project gate + classifier
+	let preamble = "";
+	if (addProjectGatePasses(text)) {
+		const addIntent = await detectAddProjectIntent(text);
+		if (addIntent.kind === "add_project") {
+			const addResult = await handleNewAddProjectIntent(addIntent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: addResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: addResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (addIntent.kind === "classifier_failed") {
+			preamble = `_(Heads up: I tried to detect a project-creation request but the classifier failed: ${addIntent.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 3. Launch-intent intercept for streaming path.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
 	if (intent.kind === "launch") {
 		const launchResult = await handleAskLaunchIntent({
 			intent,
-			origin: input.origin ?? "web",
+			origin,
 			threadId: thread.id,
 			telegramChatId: input.telegramChatId,
 		});
@@ -457,10 +546,11 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 	};
 
 	// For classifier_failed: emit preamble as first delta, then continue normally.
-	let preamble = "";
-	if (intent.kind === "classifier_failed") {
+	if (!preamble && intent.kind === "classifier_failed") {
 		preamble =
 			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
+	}
+	if (preamble) {
 		yield { kind: "delta", delta: preamble };
 	}
 

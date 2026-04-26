@@ -1,4 +1,5 @@
 import type { AgentType, LaunchMode } from "../../../shared/types.js";
+import type { ProjectDraftFields } from "../../db/schema.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
@@ -13,6 +14,10 @@ export type LaunchIntent =
 			mode?: LaunchMode;
 			taskHint?: string;
 			agentType?: AgentType;
+	  }
+	| {
+			kind: "add_project";
+			initialFields: Partial<ProjectDraftFields>;
 	  };
 
 const LAUNCH_VERBS = ["open", "launch", "start", "spin up", "fire up", "boot", "kick off"];
@@ -192,6 +197,149 @@ export async function detectLaunchIntent(
 			taskHint,
 			agentType,
 		};
+	} catch (err) {
+		return {
+			kind: "classifier_failed",
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
+const ADD_PROJECT_VERBS = [
+	"add project",
+	"create project",
+	"new project",
+	"add a project",
+	"create a project",
+];
+
+/**
+ * Pure synchronous gate for add-project intent. Intentionally loose
+ * (no project-name requirement) — the LLM classifier confirms intent.
+ */
+export function addProjectGatePasses(message: string): boolean {
+	const lower = message.toLowerCase();
+	return ADD_PROJECT_VERBS.some((v) => lower.includes(v));
+}
+
+const ADD_PROJECT_SYSTEM_PROMPT = `You are an add-project-intent classifier for AgentPulse.
+
+The user may be requesting to add a new project to AgentPulse. Extract what you can from their message.
+
+Respond with JSON (no markdown, no backticks):
+
+If this is NOT an add-project request:
+{"intent":"none"}
+
+If this IS an add-project request:
+{
+  "intent": "add_project",
+  "name": "<project name or null>",
+  "cwd": "<absolute directory path or null>",
+  "defaultAgentType": "claude_code|codex_cli|null",
+  "defaultModel": "<model string or null>",
+  "defaultLaunchMode": "interactive_terminal|headless|managed_codex|null",
+  "githubRepoUrl": "<url or null>"
+}
+
+Rules:
+- name: extract if the user provided one. Must be 1-80 chars. Null if not provided.
+- cwd: extract if the user provided an absolute path (starts with /). Null if not provided.
+- Only return fields the user explicitly stated. All fields default to null.
+- Respond ONLY with the JSON object.`;
+
+export async function detectAddProjectIntent(message: string): Promise<LaunchIntent> {
+	const provider = await getDefaultProvider();
+	if (!provider) {
+		return {
+			kind: "classifier_failed",
+			error: "No default LLM provider configured — cannot classify add-project intent.",
+		};
+	}
+	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
+	if (!full) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider record disappeared — check Settings → AI.",
+		};
+	}
+	const apiKey = await getProviderApiKey(provider.id);
+	if (apiKey === null) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider credentials are unreadable.",
+		};
+	}
+
+	const ESTIMATED_COST_CENTS = 1;
+	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
+	if (!spendCheck.allowed) {
+		return { kind: "none" };
+	}
+
+	const adapter = getAdapter({
+		kind: full.kind,
+		apiKey,
+		baseUrl: full.baseUrl ?? undefined,
+	});
+
+	try {
+		const res = await adapter.complete({
+			systemPrompt: ADD_PROJECT_SYSTEM_PROMPT,
+			transcriptPrompt: `User message: ${message}`,
+			model: full.model,
+			maxTokens: 200,
+			temperature: 0.0,
+			timeoutMs: 8_000,
+		});
+
+		const actualCents = res.usage.estimated
+			? ESTIMATED_COST_CENTS
+			: Math.max(
+					1,
+					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
+				);
+		void addGlobalSpendCents(actualCents).catch(() => {});
+
+		const raw = res.text.trim();
+		let parsed: Record<string, unknown>;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return {
+				kind: "classifier_failed",
+				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+			};
+		}
+
+		if (parsed.intent === "none") return { kind: "none" };
+		if (parsed.intent !== "add_project") return { kind: "none" };
+
+		const initialFields: Partial<ProjectDraftFields> = {};
+		if (typeof parsed.name === "string" && parsed.name.length > 0 && parsed.name.length <= 80) {
+			initialFields.name = parsed.name;
+		}
+		if (typeof parsed.cwd === "string" && parsed.cwd.startsWith("/")) {
+			initialFields.cwd = parsed.cwd;
+		}
+		if (parsed.defaultAgentType === "claude_code" || parsed.defaultAgentType === "codex_cli") {
+			initialFields.defaultAgentType = parsed.defaultAgentType;
+		}
+		if (typeof parsed.defaultModel === "string" && parsed.defaultModel) {
+			initialFields.defaultModel = parsed.defaultModel;
+		}
+		if (
+			parsed.defaultLaunchMode === "interactive_terminal" ||
+			parsed.defaultLaunchMode === "headless" ||
+			parsed.defaultLaunchMode === "managed_codex"
+		) {
+			initialFields.defaultLaunchMode = parsed.defaultLaunchMode;
+		}
+		if (typeof parsed.githubRepoUrl === "string" && parsed.githubRepoUrl.startsWith("https://")) {
+			initialFields.githubRepoUrl = parsed.githubRepoUrl;
+		}
+
+		return { kind: "add_project", initialFields };
 	} catch (err) {
 		return {
 			kind: "classifier_failed",

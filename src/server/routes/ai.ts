@@ -822,12 +822,14 @@ aiRouter.post("/ai/action-requests/:id/decide", async (c) => {
 		);
 	}
 
+	const actionLabel = updated?.kind === "add_project" ? "Project creation" : "Launch";
+
 	if (result.reason === "expired") {
 		return c.json(
 			{
 				error: "expired",
 				failureReason: result.failureReason,
-				message: `Launch couldn't proceed: ${result.failureReason}`,
+				message: `${actionLabel} couldn't proceed: ${result.failureReason}`,
 				actionRequest: updated,
 			},
 			422,
@@ -839,7 +841,7 @@ aiRouter.post("/ai/action-requests/:id/decide", async (c) => {
 		{
 			error: "failed",
 			failureReason: result.failureReason,
-			message: `Launch failed: ${result.failureReason}`,
+			message: `${actionLabel} failed: ${result.failureReason}`,
 			actionRequest: updated,
 		},
 		422,

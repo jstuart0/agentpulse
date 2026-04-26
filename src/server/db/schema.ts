@@ -543,3 +543,50 @@ export const aiHitlRequests = sqliteTable("ai_hitl_requests", {
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
+
+// ProjectDraftFields — partial record collected turn-by-turn during
+// AI-driven "add project" flows. Required fields: name, cwd.
+export interface ProjectDraftFields {
+	name?: string;
+	cwd?: string;
+	defaultAgentType?: string | null;
+	defaultModel?: string | null;
+	defaultLaunchMode?: string | null;
+	githubRepoUrl?: string | null;
+}
+
+// NextQuestion — which field we're currently collecting and how many
+// failed parse attempts have occurred (max 3 before draft expires).
+export interface NextQuestion {
+	field: keyof ProjectDraftFields;
+	prompt: string;
+	retryCount: number;
+}
+
+// aiPendingProjectDrafts — in-flight multi-turn project creation state.
+// One open draft per ask_thread_id; a new "add project" intent supersedes
+// any existing open draft for the same thread.
+//
+// Status lifecycle:
+//   drafting         → pending_approval (all required fields filled)
+//   drafting         → superseded       (new intent fires for same thread)
+//   drafting         → expired          (retry cap hit on a required field)
+//   pending_approval → applied          (action_request resolved to applied)
+//   pending_approval → declined         (action_request resolved to declined)
+//   pending_approval → superseded       (new intent while waiting)
+export const aiPendingProjectDrafts = sqliteTable("ai_pending_project_drafts", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	askThreadId: text("ask_thread_id").notNull(),
+	channelId: text("channel_id"),
+	// ^ notification_channels.id UUID, only set for telegram origin
+	origin: text("origin").notNull(),
+	// ^ "web" | "telegram"
+	draftFields: text("draft_fields", { mode: "json" }).$type<ProjectDraftFields>().notNull(),
+	nextQuestion: text("next_question", { mode: "json" }).$type<NextQuestion>().notNull(),
+	status: text("status").notNull().default("drafting"),
+	actionRequestId: text("action_request_id"),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});

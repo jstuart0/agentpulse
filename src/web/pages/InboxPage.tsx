@@ -56,6 +56,7 @@ export function InboxPage() {
 						<option value="risky">Risky</option>
 						<option value="failed_proposal">Failed</option>
 						<option value="action_launch">Launch requests</option>
+						<option value="action_add_project">Project requests</option>
 					</select>
 					<button
 						type="button"
@@ -95,6 +96,7 @@ export function InboxPage() {
 					<span>risky: {inbox.byKind.risky}</span>
 					<span>failed: {inbox.byKind.failed_proposal}</span>
 					<span>launches: {inbox.byKind.action_launch}</span>
+					<span>projects: {inbox.byKind.action_add_project}</span>
 				</footer>
 			)}
 		</div>
@@ -111,9 +113,9 @@ function InboxCard({
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 
-	// action_launch items have no session — only render a session link for kinds that have one.
+	// action_launch and action_add_project items have no session.
 	const sessionLink =
-		item.kind !== "action_launch" ? (
+		item.kind !== "action_launch" && item.kind !== "action_add_project" ? (
 			<Link to={`/sessions/${item.sessionId}`} className="text-primary hover:underline font-medium">
 				{item.sessionName ?? item.sessionId.slice(0, 8)}
 			</Link>
@@ -134,7 +136,7 @@ function InboxCard({
 	}
 
 	async function handleActionDecide(decision: "applied" | "declined") {
-		if (item.kind !== "action_launch") return;
+		if (item.kind !== "action_launch" && item.kind !== "action_add_project") return;
 		setBusy(true);
 		setErr(null);
 		try {
@@ -162,6 +164,9 @@ function InboxCard({
 					{sessionLink}
 					{item.kind === "action_launch" && (
 						<span className="text-sm font-medium">{item.projectName}</span>
+					)}
+					{item.kind === "action_add_project" && (
+						<span className="text-sm font-medium">New project request</span>
 					)}
 				</div>
 				<span
@@ -250,6 +255,56 @@ function InboxCard({
 								Task: {String((item.template as Record<string, unknown>).taskPrompt)}
 							</div>
 						) : null}
+					</div>
+					<div className="flex items-center gap-2 mt-3">
+						<button
+							type="button"
+							disabled={busy}
+							onClick={() => handleActionDecide("applied")}
+							className="text-xs px-3 py-1 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-50"
+						>
+							Approve
+						</button>
+						<button
+							type="button"
+							disabled={busy}
+							onClick={() => handleActionDecide("declined")}
+							className="text-xs px-3 py-1 rounded border border-border hover:bg-muted disabled:opacity-50"
+						>
+							Decline
+						</button>
+						<span className="text-[10px] text-muted-foreground ml-auto">
+							{relTime(item.createdAt)}
+						</span>
+					</div>
+				</>
+			)}
+
+			{item.kind === "action_add_project" && (
+				<>
+					<div className="text-xs text-muted-foreground mb-2 space-y-1">
+						<div>
+							Name: <span className="font-mono">{item.projectName}</span>
+						</div>
+						<div className="font-mono text-[10px] break-all">{item.projectCwd}</div>
+						{item.defaultAgentType && (
+							<div>
+								Agent: <span className="font-mono">{item.defaultAgentType}</span>
+							</div>
+						)}
+						{item.defaultLaunchMode && (
+							<div>
+								Mode: <span className="font-mono">{item.defaultLaunchMode}</span>
+							</div>
+						)}
+						{item.defaultModel && (
+							<div>
+								Model: <span className="font-mono">{item.defaultModel}</span>
+							</div>
+						)}
+						<div>
+							Origin: <span className="font-mono">{item.origin}</span>
+						</div>
 					</div>
 					<div className="flex items-center gap-2 mt-3">
 						<button
@@ -370,6 +425,7 @@ function KindBadge({ kind }: { kind: InboxWorkItem["kind"] }) {
 		risky: "bg-amber-500/10 text-amber-300 border-amber-500/30",
 		failed_proposal: "bg-muted text-muted-foreground border-border",
 		action_launch: "bg-blue-500/10 text-blue-300 border-blue-500/30",
+		action_add_project: "bg-teal-500/10 text-teal-300 border-teal-500/30",
 	};
 	const labels: Record<InboxWorkItem["kind"], string> = {
 		hitl: "HITL",
@@ -377,6 +433,7 @@ function KindBadge({ kind }: { kind: InboxWorkItem["kind"] }) {
 		risky: "risky",
 		failed_proposal: "failed",
 		action_launch: "launch",
+		action_add_project: "new project",
 	};
 	return (
 		<span className={`text-[10px] font-semibold rounded px-1.5 py-0.5 border ${styles[kind]}`}>

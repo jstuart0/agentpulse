@@ -1,11 +1,13 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { LaunchMode, LaunchSpec, SessionTemplateInput } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
-import { aiActionRequests } from "../../db/schema.js";
+import { aiActionRequests, aiPendingProjectDrafts } from "../../db/schema.js";
+import type { ProjectDraftFields } from "../../db/schema.js";
 import { getChannelCredential } from "../channels/channels-service.js";
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
 import { buildLaunchSpec, pickFirstCapableSupervisor } from "../launch-compatibility.js";
 import { createValidatedLaunchRequest } from "../launch-validator.js";
+import { createProject } from "../projects/projects-service.js";
 import { listSupervisors } from "../supervisor-registry.js";
 
 export type ActionRequestStatus =
@@ -43,10 +45,15 @@ export interface ActionRequest {
 	updatedAt: string;
 }
 
+export interface AddProjectActionPayload {
+	draftFields: ProjectDraftFields;
+	draftId: string;
+}
+
 export interface CreateActionRequestInput {
-	kind: "launch_request";
+	kind: "launch_request" | "add_project";
 	question: string;
-	payload: ActionRequestPayload;
+	payload: ActionRequestPayload | AddProjectActionPayload | Record<string, unknown>;
 	origin: "web" | "telegram";
 	channelId?: string | null;
 	askThreadId?: string | null;
@@ -268,6 +275,85 @@ async function executeLaunchAction(
 	}
 }
 
+async function executeAddProjectAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	const payload = request.payload as unknown as AddProjectActionPayload;
+	const { draftFields, draftId } = payload;
+	const { origin, channelId, askThreadId } = request;
+
+	try {
+		if (!draftFields?.name || !draftFields?.cwd) {
+			await conditionalUpdate(request.id, "applying", {
+				status: "failed",
+				failureReason: "Required fields missing at execute time",
+				resolvedBy,
+			});
+			return { ok: false, reason: "failed", failureReason: "Required fields missing" };
+		}
+
+		const result = await createProject({
+			name: draftFields.name,
+			cwd: draftFields.cwd,
+			defaultAgentType: draftFields.defaultAgentType,
+			defaultModel: draftFields.defaultModel,
+			defaultLaunchMode: draftFields.defaultLaunchMode,
+			githubRepoUrl: draftFields.githubRepoUrl,
+		});
+
+		if (result.conflict) {
+			const reason = `Name or directory already in use (conflict: ${result.conflict})`;
+			await conditionalUpdate(request.id, "applying", {
+				status: "failed",
+				failureReason: reason,
+				resolvedBy,
+			});
+			await notifyOriginUser(
+				origin,
+				channelId,
+				askThreadId,
+				"Couldn't create project: name or directory is already in use.",
+			);
+			return { ok: false, reason: "failed", failureReason: reason };
+		}
+
+		// Mark draft applied
+		const now = sqlNow();
+		await db
+			.update(aiPendingProjectDrafts)
+			.set({ status: "applied", updatedAt: now })
+			.where(eq(aiPendingProjectDrafts.id, draftId));
+
+		await conditionalUpdate(request.id, "applying", {
+			status: "applied",
+			resolvedBy,
+			resultEventId: result.project?.id,
+		});
+		await notifyOriginUser(
+			origin,
+			channelId,
+			askThreadId,
+			`Project "${draftFields.name}" created. It will appear in Projects.`,
+		);
+		return { ok: true, status: "applied" };
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			channelId,
+			askThreadId,
+			`Project creation failed: ${reason.slice(0, 400)}`,
+		);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+}
+
 export async function resolveActionRequest(args: {
 	id: string;
 	decision: "applied" | "declined";
@@ -285,6 +371,25 @@ export async function resolveActionRequest(args: {
 			const current = await getActionRequest(id);
 			return { ok: false, reason: "race_lost", currentStatus: current?.status ?? "missing" };
 		}
+
+		// Best-effort post-step: update the draft row to declined status.
+		// The action_request is already declined — this is informational only.
+		const declined = await getActionRequest(id);
+		if (declined?.kind === "add_project") {
+			try {
+				const payload = declined.payload as unknown as AddProjectActionPayload;
+				if (payload?.draftId) {
+					await db
+						.update(aiPendingProjectDrafts)
+						.set({ status: "declined", updatedAt: sqlNow() })
+						.where(eq(aiPendingProjectDrafts.id, payload.draftId));
+				}
+			} catch (err) {
+				console.error("[decline-path] Failed to update draft status to declined:", err);
+				// Non-fatal — action_request is already declined.
+			}
+		}
+
 		return { ok: true, status: "declined" };
 	}
 
@@ -302,7 +407,7 @@ export async function resolveActionRequest(args: {
 	}
 
 	const request = await getActionRequest(id);
-	if (!request || request.kind !== "launch_request") {
+	if (!request) {
 		await conditionalUpdate(id, "applying", {
 			status: "failed",
 			failureReason: "Unsupported action kind",
@@ -310,5 +415,17 @@ export async function resolveActionRequest(args: {
 		return { ok: false, reason: "failed", failureReason: "Unsupported action kind" };
 	}
 
-	return executeLaunchAction(request, resolvedBy);
+	if (request.kind === "add_project") {
+		return executeAddProjectAction(request, resolvedBy);
+	}
+
+	if (request.kind === "launch_request") {
+		return executeLaunchAction(request, resolvedBy);
+	}
+
+	await conditionalUpdate(id, "applying", {
+		status: "failed",
+		failureReason: `Unsupported action kind: ${request.kind}`,
+	});
+	return { ok: false, reason: "failed", failureReason: `Unsupported action kind: ${request.kind}` };
 }

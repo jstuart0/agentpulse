@@ -3,6 +3,7 @@ import type { LaunchMode, LaunchSpec, SessionTemplateInput } from "../../../shar
 import { db } from "../../db/client.js";
 import { sessions, watcherProposals } from "../../db/schema.js";
 import { listOpenActionRequests } from "./action-requests-service.js";
+import type { AddProjectActionPayload } from "./action-requests-service.js";
 import type { HealthState } from "./classifier.js";
 import { listAllOpenHitl } from "./hitl-service.js";
 import { activeSnoozeSet, listActiveSnoozes } from "./inbox-snooze-service.js";
@@ -73,6 +74,20 @@ export type InboxWorkItem =
 			template: SessionTemplateInput;
 			launchSpec: LaunchSpec;
 			requestedLaunchMode: LaunchMode;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_add_project";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectName: string;
+			projectCwd: string;
+			defaultAgentType: string | null;
+			defaultModel: string | null;
+			defaultLaunchMode: string | null;
 			origin: "web" | "telegram";
 	  };
 
@@ -223,25 +238,42 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		});
 	}
 
-	// ---- 4. Open action requests (launch approvals) -------------------
+	// ---- 4. Open action requests (launch approvals + add-project) ----
 	const openActions = await listOpenActionRequests();
 	for (const a of openActions) {
-		if (a.kind !== "launch_request") continue;
-		const payload = a.payload;
-		items.push({
-			kind: "action_launch",
-			id: a.id,
-			sessionId: null,
-			sessionName: null,
-			severity: "info",
-			createdAt: a.createdAt,
-			projectId: payload.projectId,
-			projectName: payload.projectName ?? payload.projectId,
-			template: payload.template,
-			launchSpec: payload.launchSpec,
-			requestedLaunchMode: payload.requestedLaunchMode,
-			origin: a.origin,
-		});
+		if (a.kind === "launch_request") {
+			const payload = a.payload;
+			items.push({
+				kind: "action_launch",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "info",
+				createdAt: a.createdAt,
+				projectId: payload.projectId,
+				projectName: payload.projectName ?? payload.projectId,
+				template: payload.template,
+				launchSpec: payload.launchSpec,
+				requestedLaunchMode: payload.requestedLaunchMode,
+				origin: a.origin,
+			});
+		} else if (a.kind === "add_project") {
+			const payload = a.payload as unknown as AddProjectActionPayload;
+			items.push({
+				kind: "action_add_project",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "info",
+				createdAt: a.createdAt,
+				projectName: payload.draftFields?.name ?? "(unnamed)",
+				projectCwd: payload.draftFields?.cwd ?? "(no directory)",
+				defaultAgentType: payload.draftFields?.defaultAgentType ?? null,
+				defaultModel: payload.draftFields?.defaultModel ?? null,
+				defaultLaunchMode: payload.draftFields?.defaultLaunchMode ?? null,
+				origin: a.origin,
+			});
+		}
 	}
 
 	// ---- Filter / sort ------------------------------------------------
@@ -283,6 +315,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		risky: 0,
 		failed_proposal: 0,
 		action_launch: 0,
+		action_add_project: 0,
 	};
 	for (const i of out) byKind[i.kind]++;
 
@@ -303,7 +336,7 @@ function timestampFor(item: InboxWorkItem): number {
 				? item.at
 				: item.kind === "stuck"
 					? item.since
-					: item.kind === "action_launch"
+					: item.kind === "action_launch" || item.kind === "action_add_project"
 						? item.createdAt
 						: new Date().toISOString();
 	return ts.includes("T") ? new Date(ts).getTime() : new Date(`${ts.replace(" ", "T")}Z`).getTime();

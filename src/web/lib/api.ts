@@ -867,6 +867,20 @@ export type InboxWorkItem =
 			launchSpec: Record<string, unknown>;
 			requestedLaunchMode: string;
 			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_add_project";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectName: string;
+			projectCwd: string;
+			defaultAgentType: string | null;
+			defaultModel: string | null;
+			defaultLaunchMode: string | null;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {

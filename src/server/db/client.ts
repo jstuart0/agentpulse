@@ -554,6 +554,22 @@ export function initializeDatabase() {
 		"ALTER TABLE session_templates ADD COLUMN project_id TEXT",
 		"ALTER TABLE session_templates ADD COLUMN template_project_overrides TEXT",
 		"CREATE INDEX IF NOT EXISTS idx_session_templates_project_id ON session_templates(project_id) WHERE project_id IS NOT NULL",
+		// Phase B: AI-driven project creation via Ask (multi-turn drafts)
+		`CREATE TABLE IF NOT EXISTS ai_pending_project_drafts (
+			id TEXT PRIMARY KEY,
+			ask_thread_id TEXT NOT NULL,
+			channel_id TEXT,
+			origin TEXT NOT NULL,
+			draft_fields TEXT NOT NULL,
+			next_question TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'drafting',
+			action_request_id TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pending_project_drafts_thread
+			ON ai_pending_project_drafts(ask_thread_id, status)
+			WHERE status IN ('drafting', 'pending_approval')`,
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when
