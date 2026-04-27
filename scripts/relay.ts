@@ -115,6 +115,68 @@ async function uploadClaudeMd(sessionId: string, cwd: string, agentType?: string
 
 const localChecksums = new Map<string, string>();
 
+/**
+ * Codex thread names sync. Codex CLI ≥0.122 lets users name a thread via
+ * `thread/name/set` and persists the result to ~/.codex/session_index.jsonl
+ * (one JSON object per line: {id, thread_name, updated_at}). The names
+ * never reach AgentPulse via hooks — they live entirely on the Codex
+ * side. This watcher reads that file every tick and PUTs any new names
+ * to the dashboard's /sessions/:id/rename endpoint so they show up
+ * everywhere AgentPulse renders displayName.
+ *
+ * Trade-off: only naming events that the user *explicitly* set in Codex
+ * (or that Codex auto-generated for them) are synced — we treat the
+ * latest entry per id as authoritative. If you renamed a session in the
+ * AgentPulse dashboard and then Codex's index gains a different entry
+ * for the same id, Codex wins on the next tick. That's intentional —
+ * the user's most recent action should land.
+ */
+const codexNameState = new Map<string, string>();
+const codexIndexPath = join(process.env.HOME || "", ".codex", "session_index.jsonl");
+
+async function syncCodexThreadNames() {
+	let raw: string;
+	try {
+		raw = await readFile(codexIndexPath, "utf-8");
+	} catch {
+		return; // Codex not installed / file missing — silent no-op.
+	}
+	// File is append-only with multiple entries possible per id when the
+	// name changes; latest entry per id wins. Read forward, keep
+	// overwriting, end up with the freshest map.
+	const latest = new Map<string, string>();
+	for (const line of raw.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const entry = JSON.parse(line) as { id?: string; thread_name?: string };
+			if (entry.id && entry.thread_name) latest.set(entry.id, entry.thread_name);
+		} catch {
+			// Malformed line — skip, don't crash the watcher.
+		}
+	}
+	for (const [id, name] of latest) {
+		if (codexNameState.get(id) === name) continue;
+		try {
+			const res = await fetch(`${remoteUrl}/api/v1/sessions/${id}/rename`, {
+				method: "PUT",
+				headers: { ...authHeaders(), "Content-Type": "application/json" },
+				body: JSON.stringify({ name }),
+				signal: AbortSignal.timeout(5_000),
+			});
+			if (res.ok) {
+				codexNameState.set(id, name);
+				console.log(`[codex-name-sync] ${id.slice(0, 8)} → ${name}`);
+			} else if (res.status === 404) {
+				// Session not yet ingested by AgentPulse (Codex created it
+				// but the hook hasn't landed yet). Don't update state — we'll
+				// retry next tick.
+			}
+		} catch {
+			// Network blip — retry next tick.
+		}
+	}
+}
+
 async function syncClaudeMdToDisk() {
 	try {
 		const res = await fetch(`${remoteUrl}/api/v1/sessions?limit=20`, {
@@ -418,6 +480,7 @@ Bun.serve({
 });
 
 setInterval(syncClaudeMdToDisk, 30_000);
+setInterval(syncCodexThreadNames, 30_000);
 setInterval(() => {
 	void processHookQueue();
 }, HOOK_RETRY_POLL_MS);
@@ -432,6 +495,6 @@ console.log("  ────────────────");
 console.log(`  Local:     http://localhost:${port} (hook forwarding)`);
 console.log(`  Remote:    ${remoteUrl} (dashboard)`);
 console.log("  Queue:     disk-backed hook queue with background retry");
-console.log("  Sync:      CLAUDE.md synced every 30s");
+console.log("  Sync:      CLAUDE.md every 30s · Codex thread names every 30s");
 console.log(`  Auth:      ${apiKey ? "API key" : "none"}`);
 console.log("");
