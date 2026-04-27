@@ -21,6 +21,7 @@ import { handleChannelSetupRequest } from "./ask-channel-handler.js";
 import { handleProjectTemplateCrud } from "./ask-crud-handler.js";
 import { handleDigestQuery } from "./ask-digest-handler.js";
 import { handleAskLaunchIntent } from "./ask-launch-handler.js";
+import { handleSessionQa } from "./ask-qa-handler.js";
 import { handleResumeIntent } from "./ask-resume-handler.js";
 import { handleNlSearch } from "./ask-search-handler.js";
 import { handleSessionAction } from "./ask-session-action-handler.js";
@@ -33,10 +34,12 @@ import {
 	detectAlertRuleIntent,
 	detectLaunchIntent,
 	detectProjectTemplateCrudIntent,
+	detectQaIntent,
 	detectResumeIntent,
 	detectSessionActionIntent,
 	digestGatePasses,
 	projectTemplateCrudGatePasses,
+	qaGatePasses,
 	resumeGatePasses,
 	searchGatePasses,
 	sessionActionGatePasses,
@@ -369,6 +372,23 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		}
 	}
 
+	// 1b. Per-session Q&A gate — before add-project so session names are not
+	//     misinterpreted as project names. Read-only; no action_request created.
+	if (qaGatePasses(text)) {
+		const qaIntent = await detectQaIntent(text);
+		if (qaIntent.kind === "qa") {
+			const qaResult = await handleSessionQa(qaIntent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: qaResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		// classifier_failed falls through to LLM fallback — don't surface errors
+	}
+
 	// 2. Add-project gate + classifier
 	let preamble = "";
 	if (addProjectGatePasses(text)) {
@@ -651,6 +671,25 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 			yield { kind: "done", assistantMessage };
 			return;
 		}
+	}
+
+	// 1b. Per-session Q&A gate — streaming path short-circuit.
+	if (qaGatePasses(text)) {
+		const qaIntent = await detectQaIntent(text);
+		if (qaIntent.kind === "qa") {
+			const qaResult = await handleSessionQa(qaIntent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: qaResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: qaResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		// classifier_failed falls through to LLM fallback
 	}
 
 	// 2. Add-project gate + classifier

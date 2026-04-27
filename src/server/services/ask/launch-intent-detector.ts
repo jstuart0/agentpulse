@@ -1035,6 +1035,137 @@ export async function detectAlertRuleIntent(
 	}
 }
 
+// ---- Per-session Q&A intent -------------------------------------------------
+
+const QA_TRIGGERS = [
+	"summarize session",
+	"summarize the session",
+	"why did session",
+	"what is session",
+	"what happened in session",
+	"explain session",
+	"what was session",
+	"tell me about session",
+	"describe session",
+];
+
+/**
+ * Pure synchronous gate: true if the message contains a Q&A trigger phrase.
+ * Conservative — false negatives fall through to the LLM fallback.
+ */
+export function qaGatePasses(message: string): boolean {
+	const lower = message.toLowerCase();
+	return QA_TRIGGERS.some((t) => lower.includes(t));
+}
+
+export interface QaIntent {
+	kind: "qa";
+	sessionHint: string | null;
+	question: string;
+}
+
+export type QaDetectResult =
+	| { kind: "none" }
+	| { kind: "classifier_failed"; error: string }
+	| QaIntent;
+
+const QA_CLASSIFIER_PROMPT = `You are a session-Q&A classifier for AgentPulse.
+Determine whether the user is asking a question about a specific AI coding session.
+
+Respond with JSON (no markdown, no backticks):
+
+Not a session Q&A request:
+{"intent":"none"}
+
+Is a session Q&A request:
+{"intent":"qa","sessionHint":"<session name or description fragment, or null>"}
+
+Rules:
+- sessionHint: the name fragment or description the user gave to identify ONE specific session. Null if no hint.
+- "summarize session times" or "summarize the team session schedule" or "summarize session metrics" are NOT session Q&A — return intent:none.
+- The request must be about inspecting a single specific session's history, not aggregate data across sessions.
+- Respond ONLY with the JSON object.`;
+
+export async function detectQaIntent(message: string): Promise<QaDetectResult> {
+	const provider = await getDefaultProvider();
+	if (!provider) {
+		return {
+			kind: "classifier_failed",
+			error: "No default LLM provider configured — cannot classify Q&A intent.",
+		};
+	}
+	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
+	if (!full) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider record disappeared — check Settings → AI.",
+		};
+	}
+	const apiKey = await getProviderApiKey(provider.id);
+	if (apiKey === null) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider credentials are unreadable.",
+		};
+	}
+
+	const ESTIMATED_COST_CENTS = 1;
+	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
+	if (!spendCheck.allowed) {
+		return { kind: "none" };
+	}
+
+	const adapter = getAdapter({
+		kind: full.kind,
+		apiKey,
+		baseUrl: full.baseUrl ?? undefined,
+	});
+
+	try {
+		const res = await adapter.complete({
+			systemPrompt: QA_CLASSIFIER_PROMPT,
+			transcriptPrompt: `User message: ${message}`,
+			model: full.model,
+			maxTokens: 150,
+			temperature: 0.0,
+			timeoutMs: 8_000,
+		});
+
+		const actualCents = res.usage.estimated
+			? ESTIMATED_COST_CENTS
+			: Math.max(
+					1,
+					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
+				);
+		void addGlobalSpendCents(actualCents).catch(() => {});
+
+		const raw = res.text.trim();
+		let parsed: Record<string, unknown>;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return {
+				kind: "classifier_failed",
+				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+			};
+		}
+
+		if (parsed.intent === "none") return { kind: "none" };
+		if (parsed.intent !== "qa") return { kind: "none" };
+
+		return {
+			kind: "qa",
+			sessionHint: typeof parsed.sessionHint === "string" ? parsed.sessionHint : null,
+			question: message,
+		};
+	} catch (err) {
+		return {
+			kind: "classifier_failed",
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
 export async function detectAddProjectIntent(message: string): Promise<LaunchIntent> {
 	const provider = await getDefaultProvider();
 	if (!provider) {

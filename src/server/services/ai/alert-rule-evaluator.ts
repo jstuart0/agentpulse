@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/client.js";
-import { projectAlertRuleFires, projectAlertRules, sessions } from "../../db/schema.js";
+import { aiQaCache, projectAlertRuleFires, projectAlertRules, sessions } from "../../db/schema.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 
 // ---- Shared notification dispatch ------------------------------------------
@@ -104,6 +104,18 @@ export async function evaluateAlertRules(
 
 		await dispatchAlertRuleNotification(rule, sessionId, session.displayName, newStatus);
 	}
+}
+
+// ---- Q&A cache purge -------------------------------------------------------
+
+/**
+ * Delete expired ai_qa_cache rows. Runs on the 60-second alert-rule sweep
+ * tick so no separate interval is needed. A 15-minute TTL means rows linger
+ * at most 60 seconds beyond expiry before this cleans them up.
+ */
+export async function purgeExpiredQaCache(now: Date): Promise<void> {
+	const cutoff = now.toISOString();
+	await db.delete(aiQaCache).where(sql`${aiQaCache.expiresAt} < ${cutoff}`);
 }
 
 // ---- Periodic sweep evaluators ---------------------------------------------

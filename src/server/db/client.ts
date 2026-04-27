@@ -595,6 +595,17 @@ export function initializeDatabase() {
 			fired_at TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_rule_fires_rule_session ON project_alert_rule_fires(rule_id, session_id)",
+		// Slice B: per-session Q&A response cache.
+		`CREATE TABLE IF NOT EXISTS ai_qa_cache (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			question_hash TEXT NOT NULL,
+			response TEXT NOT NULL,
+			last_event_id INTEGER NOT NULL,
+			cached_at TEXT NOT NULL DEFAULT (datetime('now')),
+			expires_at TEXT NOT NULL
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_cache_session_question ON ai_qa_cache(session_id, question_hash)",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

@@ -5,7 +5,11 @@ import { managedSessions, sessions, supervisors } from "../../db/schema.js";
 import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { sessionBus } from "../notifier.js";
 import { emitAiEvent, loadRecentEvents, stampUserPrompt, stampWatcherState } from "./ai-events.js";
-import { evaluateNoActivityRules, evaluateStuckRules } from "./alert-rule-evaluator.js";
+import {
+	evaluateNoActivityRules,
+	evaluateStuckRules,
+	purgeExpiredQaCache,
+} from "./alert-rule-evaluator.js";
 import { buildWatcherContext } from "./context.js";
 import { classifyContinuability } from "./continuability.js";
 import { checkDispatch } from "./dispatch-filter.js";
@@ -127,6 +131,7 @@ export class WatcherRunner {
 			const now = new Date();
 			await evaluateStuckRules(now);
 			await evaluateNoActivityRules(now);
+			await purgeExpiredQaCache(now);
 		} finally {
 			this.alertSweepBusy = false;
 		}

@@ -596,6 +596,32 @@ export const projectAlertRuleFires = sqliteTable(
 	}),
 );
 
+// ai_qa_cache — per-(session, question-hash) response cache for the
+// per-session Q&A Ask intent. Keyed by (session_id, question_hash) where
+// question_hash is SHA-256 hex of the normalized question. Invalidated when
+// a new event arrives for the session (lastEventId check) or when the 15-minute
+// absolute TTL expires. Purged by the periodic alert-rule sweep, not by a
+// separate interval.
+export const aiQaCache = sqliteTable(
+	"ai_qa_cache",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
+		sessionId: text("session_id").notNull(),
+		questionHash: text("question_hash").notNull(),
+		response: text("response").notNull(),
+		// max(events.id) at the time the cache was written — used to detect
+		// stale entries when new events arrive for the session.
+		lastEventId: integer("last_event_id").notNull(),
+		cachedAt: text("cached_at").notNull().default(sql`(datetime('now'))`),
+		expiresAt: text("expires_at").notNull(),
+	},
+	(t) => ({
+		uniq: uniqueIndex("idx_qa_cache_session_question").on(t.sessionId, t.questionHash),
+	}),
+);
+
 // ProjectDraftFields — partial record collected turn-by-turn during
 // AI-driven "add project" flows. Required fields: name, cwd.
 export interface ProjectDraftFields {
