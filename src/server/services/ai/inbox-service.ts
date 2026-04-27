@@ -192,6 +192,22 @@ export type InboxWorkItem =
 			ruleType: string;
 			thresholdMinutes: number | null;
 			origin: "web" | "telegram";
+	  }
+	| {
+			// Bulk session action. sessionId is null because this spans multiple sessions.
+			// severity: "high" for stop/delete (irreversible); "normal" for archive.
+			kind: "action_bulk_session";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "high" | "normal";
+			createdAt: string;
+			action: "stop" | "archive" | "delete";
+			sessionCount: number;
+			sessionNames: string[]; // up to 20, each truncated to 40 chars
+			hasMore: boolean; // true when sessionCount > 20
+			exclusionCount: number;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {
@@ -533,6 +549,36 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				thresholdMinutes: payload.thresholdMinutes ?? null,
 				origin: a.origin,
 			});
+		} else if (a.kind === "bulk_session_action") {
+			const payload = a.payload as unknown as {
+				action: string;
+				sessionIds: string[];
+				sessionNames: string[];
+				exclusions: Array<{ sessionId: string; name: string; reason: string }>;
+			};
+			const validActions = ["stop", "archive", "delete"] as const;
+			const action = validActions.includes(payload.action as (typeof validActions)[number])
+				? (payload.action as "stop" | "archive" | "delete")
+				: "archive";
+			const sessionCount = Array.isArray(payload.sessionIds) ? payload.sessionIds.length : 0;
+			const sessionNames = Array.isArray(payload.sessionNames)
+				? payload.sessionNames.slice(0, 20)
+				: [];
+			items.push({
+				kind: "action_bulk_session",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				// stop and delete are irreversible — surface as high priority.
+				severity: action === "archive" ? "normal" : "high",
+				createdAt: a.createdAt,
+				action,
+				sessionCount,
+				sessionNames,
+				hasMore: sessionCount > 20,
+				exclusionCount: Array.isArray(payload.exclusions) ? payload.exclusions.length : 0,
+				origin: a.origin,
+			});
 		}
 	}
 
@@ -585,6 +631,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		action_delete_template: 0,
 		action_add_channel: 0,
 		action_create_alert_rule: 0,
+		action_bulk_session: 0,
 	};
 	for (const i of out) byKind[i.kind]++;
 
@@ -615,7 +662,8 @@ function timestampFor(item: InboxWorkItem): number {
 							item.kind === "action_edit_template" ||
 							item.kind === "action_delete_template" ||
 							item.kind === "action_add_channel" ||
-							item.kind === "action_create_alert_rule"
+							item.kind === "action_create_alert_rule" ||
+							item.kind === "action_bulk_session"
 						? item.createdAt
 						: new Date().toISOString();
 	return ts.includes("T") ? new Date(ts).getTime() : new Date(`${ts.replace(" ", "T")}Z`).getTime();

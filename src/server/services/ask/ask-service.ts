@@ -17,6 +17,7 @@ import {
 	handleNewAddProjectIntent,
 } from "./ask-add-project-handler.js";
 import { handleAlertRuleRequest } from "./ask-alert-rule-handler.js";
+import { handleBulkAction } from "./ask-bulk-action-handler.js";
 import { handleChannelSetupRequest } from "./ask-channel-handler.js";
 import { handleProjectTemplateCrud } from "./ask-crud-handler.js";
 import { handleDigestQuery } from "./ask-digest-handler.js";
@@ -29,9 +30,11 @@ import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
 import {
 	addProjectGatePasses,
 	alertRuleGatePasses,
+	bulkActionGatePasses,
 	channelSetupGatePasses,
 	detectAddProjectIntent,
 	detectAlertRuleIntent,
+	detectBulkActionIntent,
 	detectLaunchIntent,
 	detectProjectTemplateCrudIntent,
 	detectQaIntent,
@@ -435,7 +438,31 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		}
 	}
 
-	// 2d. Session action gate — pin/unpin/add_note/rename execute immediately;
+	// 2d. Bulk session action gate — must run BEFORE single-session gate so that
+	//     "archive all completed sessions" doesn't fall through to the single-session
+	//     classifier (which would misfire or return intent:none).
+	if (bulkActionGatePasses(text)) {
+		const projects = getCachedProjects();
+		const bulkResult = await detectBulkActionIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (bulkResult.kind === "bulk_action") {
+			const bulkHandlerResult = await handleBulkAction(bulkResult, projects, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: bulkHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (bulkResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a bulk session-action request but the classifier failed: ${bulkResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2e. Session action gate — pin/unpin/add_note/rename execute immediately;
 	//     stop/archive/delete create action_request for approval.
 	if (sessionActionGatePasses(text)) {
 		const sessionActionResult = await detectSessionActionIntent(text);
@@ -454,7 +481,7 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		}
 	}
 
-	// 2e. Resume gate — checked before launch so "continue <name> with: …" resolves
+	// 2f. Resume gate — checked before launch so "continue <name> with: …" resolves
 	//     as a session resume, not a project launch. The classifier rejects project
 	//     names and generic "continue" phrases that aren't session references.
 	if (resumeGatePasses(text)) {
@@ -746,7 +773,33 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		}
 	}
 
-	// 2d. Session action gate — streaming path short-circuit.
+	// 2d. Bulk session action gate — streaming path short-circuit.
+	//     Must run before single-session gate (same reason as sync path above).
+	if (bulkActionGatePasses(text)) {
+		const projects = getCachedProjects();
+		const bulkResult = await detectBulkActionIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (bulkResult.kind === "bulk_action") {
+			const bulkHandlerResult = await handleBulkAction(bulkResult, projects, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: bulkHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: bulkHandlerResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (bulkResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a bulk session-action request but the classifier failed: ${bulkResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2e. Session action gate — streaming path short-circuit.
 	if (sessionActionGatePasses(text)) {
 		const sessionActionResult = await detectSessionActionIntent(text);
 		if (sessionActionResult.kind === "session_action" && sessionActionResult.intent) {
@@ -767,7 +820,7 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		}
 	}
 
-	// 2e. Resume gate — streaming path short-circuit.
+	// 2f. Resume gate — streaming path short-circuit.
 	if (resumeGatePasses(text)) {
 		const projects = getCachedProjects();
 		const resumeResult = await detectResumeIntent(

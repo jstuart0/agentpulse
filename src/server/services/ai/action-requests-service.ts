@@ -14,6 +14,7 @@ import {
 } from "../../db/schema.js";
 import type { ProjectDraftFields } from "../../db/schema.js";
 import type { CreateAlertRulePayload } from "../ask/ask-alert-rule-handler.js";
+import type { BulkSessionActionPayload } from "../ask/ask-bulk-action-handler.js";
 import type {
 	DeleteProjectPayload,
 	DeleteTemplatePayload,
@@ -88,7 +89,8 @@ export interface CreateActionRequestInput {
 		| "edit_template"
 		| "delete_template"
 		| "add_channel"
-		| "create_alert_rule";
+		| "create_alert_rule"
+		| "bulk_session_action";
 	question: string;
 	payload: ActionRequestPayload | AddProjectActionPayload | Record<string, unknown>;
 	origin: "web" | "telegram";
@@ -951,6 +953,150 @@ async function executeCreateAlertRuleAction(
 	}
 }
 
+// ---- Bulk session action executor ----------------------------------------
+
+async function stopOne(
+	sessionId: string,
+	name: string,
+): Promise<{ sessionId: string; name: string; ok: boolean; error?: string }> {
+	const [managed] = await db
+		.select({ sessionId: managedSessions.sessionId })
+		.from(managedSessions)
+		.where(eq(managedSessions.sessionId, sessionId))
+		.limit(1);
+	if (!managed) {
+		// Handler-time pre-flight should have excluded hook-only sessions, but
+		// guard here in case the executor receives a bypassed payload.
+		return { sessionId, name, ok: false, error: "hook-only session" };
+	}
+	await queueStopAction(sessionId);
+	return { sessionId, name, ok: true };
+}
+
+async function archiveOne(
+	sessionId: string,
+	name: string,
+	session: { isArchived: boolean },
+): Promise<{ sessionId: string; name: string; ok: boolean; error?: string }> {
+	if (session.isArchived) {
+		return { sessionId, name, ok: true, error: "already archived" };
+	}
+	await db.update(sessions).set({ isArchived: true }).where(eq(sessions.sessionId, sessionId));
+	return { sessionId, name, ok: true };
+}
+
+async function deleteOne(
+	sessionId: string,
+	name: string,
+	session: { endedAt: string | null; status: string },
+): Promise<{ sessionId: string; name: string; ok: boolean; error?: string }> {
+	const activeStatuses = ["active", "idle"];
+	if (!session.endedAt && activeStatuses.includes(session.status)) {
+		// Handler-time pre-flight should have excluded these, but guard in case of bypass.
+		return {
+			sessionId,
+			name,
+			ok: false,
+			error: "cannot delete active session — stop or archive first",
+		};
+	}
+	const backend = getSearchBackend();
+	await backend.removeSession(sessionId);
+	await db.delete(events).where(eq(events.sessionId, sessionId));
+	await db.delete(sessions).where(eq(sessions.sessionId, sessionId));
+	return { sessionId, name, ok: true };
+}
+
+function formatBulkOutcomes(
+	action: string,
+	outcomes: { sessionId: string; name: string; ok: boolean; error?: string }[],
+): string {
+	const succeeded = outcomes.filter((o) => o.ok && !o.error);
+	const noops = outcomes.filter((o) => o.ok && o.error);
+	const failed = outcomes.filter((o) => !o.ok);
+
+	const parts: string[] = [];
+	if (succeeded.length > 0) {
+		const verb = action === "stop" ? "Stopped" : action === "archive" ? "Archived" : "Deleted";
+		parts.push(`${verb} ${succeeded.length} session${succeeded.length !== 1 ? "s" : ""}.`);
+	}
+	if (noops.length > 0) {
+		const detail = noops.map((o) => `${o.name}: ${o.error}`).join("; ");
+		parts.push(`${noops.length} no-op (${detail}).`);
+	}
+	if (failed.length > 0) {
+		const detail = failed.map((o) => `${o.name}: ${o.error ?? "unknown error"}`).join("; ");
+		parts.push(`${failed.length} failed (${detail}).`);
+	}
+	return parts.join(" ") || "No sessions processed.";
+}
+
+async function executeBulkSessionAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	const payload = request.payload as unknown as BulkSessionActionPayload;
+	const { action, sessionIds, sessionNames } = payload;
+	const { origin, channelId, askThreadId } = request;
+
+	function nameFor(id: string): string {
+		const idx = sessionIds.indexOf(id);
+		return idx >= 0 && sessionNames[idx] ? sessionNames[idx] : id.slice(0, 8);
+	}
+
+	// Batch-fetch all targeted sessions in one query rather than N point-queries.
+	const existingRows = await db
+		.select({
+			sessionId: sessions.sessionId,
+			status: sessions.status,
+			endedAt: sessions.endedAt,
+			isArchived: sessions.isArchived,
+		})
+		.from(sessions)
+		.where(inArray(sessions.sessionId, sessionIds));
+	const sessionMap = new Map(existingRows.map((s) => [s.sessionId, s]));
+
+	const outcomes: { sessionId: string; name: string; ok: boolean; error?: string }[] = [];
+
+	for (const sessionId of sessionIds) {
+		const name = nameFor(sessionId);
+		const session = sessionMap.get(sessionId);
+
+		if (!session) {
+			outcomes.push({ sessionId, name, ok: false, error: "no longer exists" });
+			continue;
+		}
+
+		// Per-combination behavior — each runs in its own try/catch so one
+		// failing target does not abort the rest of the loop.
+		try {
+			if (action === "stop") {
+				if (session.endedAt) {
+					outcomes.push({ sessionId, name, ok: true, error: "already stopped" });
+				} else {
+					outcomes.push(await stopOne(sessionId, name));
+				}
+			} else if (action === "archive") {
+				outcomes.push(await archiveOne(sessionId, name, session));
+			} else if (action === "delete") {
+				outcomes.push(await deleteOne(sessionId, name, session));
+			}
+		} catch (err) {
+			outcomes.push({
+				sessionId,
+				name,
+				ok: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
+	const summary = formatBulkOutcomes(action, outcomes);
+	await notifyOriginUser(origin, channelId, askThreadId, summary);
+	return { ok: true, status: "applied" };
+}
+
 function ruleTypeLabel(ruleType: string, thresholdMinutes?: number | null): string {
 	switch (ruleType) {
 		case "status_failed":
@@ -980,6 +1126,7 @@ const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
 	delete_template: executeDeleteTemplateAction,
 	add_channel: executeAddChannelAction,
 	create_alert_rule: executeCreateAlertRuleAction,
+	bulk_session_action: executeBulkSessionAction,
 };
 
 export async function resolveActionRequest(args: {

@@ -981,6 +981,20 @@ export type InboxWorkItem =
 			ruleType: string;
 			thresholdMinutes: number | null;
 			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_bulk_session";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "high" | "normal";
+			createdAt: string;
+			action: "stop" | "archive" | "delete";
+			sessionCount: number;
+			sessionNames: string[];
+			hasMore: boolean;
+			exclusionCount: number;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {

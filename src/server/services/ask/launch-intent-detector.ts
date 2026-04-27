@@ -1035,6 +1035,224 @@ export async function detectAlertRuleIntent(
 	}
 }
 
+// ---- Bulk session action intent -------------------------------------------
+
+// These phrases unambiguously describe a multi-session operation. The gate
+// must fire before the single-session gate so "archive all" doesn't leak
+// through to sessionActionGatePasses.
+const BULK_ACTION_TRIGGERS = [
+	"stop all",
+	"stop everything",
+	"archive all",
+	"archive every",
+	"delete all",
+	"delete every",
+	"stop all sessions",
+	"archive all sessions",
+	"archive completed sessions", // "all" keyword not required — still multi-session
+	"archive old sessions",
+	"delete all sessions",
+	"stop sessions on",
+	"archive sessions on",
+];
+
+/**
+ * Pure synchronous gate: returns true only if the message contains a
+ * phrase that unambiguously describes a bulk (multi-session) operation.
+ * Must be checked BEFORE sessionActionGatePasses to prevent single-session
+ * classifier from seeing "archive all completed sessions".
+ */
+export function bulkActionGatePasses(message: string): boolean {
+	const lower = message.toLowerCase();
+	return BULK_ACTION_TRIGGERS.some((t) => lower.includes(t));
+}
+
+export type BulkFilter =
+	| {
+			strategy: "attribute";
+			status?: string;
+			olderThanDays?: number;
+			projectHint?: string;
+	  }
+	| { strategy: "hint"; searchHint: string; projectHint?: string };
+
+export interface BulkActionIntent {
+	kind: "bulk_action";
+	action: "stop" | "archive" | "delete";
+	filter: BulkFilter;
+}
+
+export type BulkActionDetectResult =
+	| { kind: "none" }
+	| { kind: "classifier_failed"; error: string }
+	| BulkActionIntent;
+
+const BULK_ACTION_CLASSIFIER_PROMPT = `You are a bulk-session-action classifier for AgentPulse, a tool that manages AI coding sessions.
+Determine whether the user wants to perform a stop/archive/delete action on MULTIPLE sessions at once.
+
+Respond with JSON (no markdown, no backticks):
+
+Not a bulk action:
+{"intent":"none"}
+
+Bulk action with attribute filter:
+{
+  "intent": "bulk_action",
+  "action": "stop|archive|delete",
+  "filter": {
+    "strategy": "attribute",
+    "status": "completed|active|idle|failed|null",
+    "olderThanDays": <integer or null>,
+    "projectHint": "<project name or null>"
+  }
+}
+
+Bulk action with search hint:
+{
+  "intent": "bulk_action",
+  "action": "stop|archive|delete",
+  "filter": {
+    "strategy": "hint",
+    "searchHint": "<description fragment to search for>",
+    "projectHint": "<project name or null>"
+  }
+}
+
+Rules:
+- If the action targets exactly ONE named session, return intent:none (the single-session gate handles it).
+- If the message uses "all", "every", "older than", "completed", "old sessions", etc., return bulk_action.
+- olderThanDays: extract from "older than N days", "more than N days old", etc.
+- projectHint: extract from "on project X" or "in project X".
+- action: "stop" for stop/kill/terminate; "archive" for archive/hide; "delete" for delete/remove.
+- Respond ONLY with the JSON object.`;
+
+export async function detectBulkActionIntent(
+	message: string,
+	projectNames: string[],
+): Promise<BulkActionDetectResult> {
+	const provider = await getDefaultProvider();
+	if (!provider) {
+		return {
+			kind: "classifier_failed",
+			error: "No default LLM provider configured — cannot classify bulk action intent.",
+		};
+	}
+	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
+	if (!full) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider record disappeared — check Settings → AI.",
+		};
+	}
+	const apiKey = await getProviderApiKey(provider.id);
+	if (apiKey === null) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider credentials are unreadable.",
+		};
+	}
+
+	const ESTIMATED_COST_CENTS = 1;
+	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
+	if (!spendCheck.allowed) {
+		return { kind: "none" };
+	}
+
+	const adapter = getAdapter({
+		kind: full.kind,
+		apiKey,
+		baseUrl: full.baseUrl ?? undefined,
+	});
+
+	// Provide project names so the classifier can fill projectHint accurately.
+	const projectContext =
+		projectNames.length > 0
+			? `Known project names: ${projectNames.map((n) => `"${n}"`).join(", ")}`
+			: "";
+	const systemPrompt = projectContext
+		? `${BULK_ACTION_CLASSIFIER_PROMPT}\n\n${projectContext}`
+		: BULK_ACTION_CLASSIFIER_PROMPT;
+
+	try {
+		const res = await adapter.complete({
+			systemPrompt,
+			transcriptPrompt: `User message: ${message}`,
+			model: full.model,
+			maxTokens: 200,
+			temperature: 0.0,
+			timeoutMs: 8_000,
+		});
+
+		const actualCents = res.usage.estimated
+			? ESTIMATED_COST_CENTS
+			: Math.max(
+					1,
+					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
+				);
+		void addGlobalSpendCents(actualCents).catch(() => {});
+
+		const raw = res.text.trim();
+		let parsed: Record<string, unknown>;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return {
+				kind: "classifier_failed",
+				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+			};
+		}
+
+		if (parsed.intent === "none") return { kind: "none" };
+		if (parsed.intent !== "bulk_action") return { kind: "none" };
+
+		const validActions = ["stop", "archive", "delete"] as const;
+		if (!validActions.includes(parsed.action as (typeof validActions)[number])) {
+			return { kind: "none" };
+		}
+		const action = parsed.action as "stop" | "archive" | "delete";
+
+		const rawFilter = parsed.filter as Record<string, unknown> | undefined;
+		if (!rawFilter || typeof rawFilter.strategy !== "string") return { kind: "none" };
+
+		let filter: BulkFilter;
+		if (rawFilter.strategy === "attribute") {
+			filter = {
+				strategy: "attribute",
+				status:
+					typeof rawFilter.status === "string" && rawFilter.status !== "null"
+						? rawFilter.status
+						: undefined,
+				olderThanDays:
+					typeof rawFilter.olderThanDays === "number" ? rawFilter.olderThanDays : undefined,
+				projectHint:
+					typeof rawFilter.projectHint === "string" && rawFilter.projectHint !== "null"
+						? rawFilter.projectHint
+						: undefined,
+			};
+		} else if (rawFilter.strategy === "hint") {
+			if (typeof rawFilter.searchHint !== "string" || !rawFilter.searchHint)
+				return { kind: "none" };
+			filter = {
+				strategy: "hint",
+				searchHint: rawFilter.searchHint,
+				projectHint:
+					typeof rawFilter.projectHint === "string" && rawFilter.projectHint !== "null"
+						? rawFilter.projectHint
+						: undefined,
+			};
+		} else {
+			return { kind: "none" };
+		}
+
+		return { kind: "bulk_action", action, filter };
+	} catch (err) {
+		return {
+			kind: "classifier_failed",
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
 // ---- Per-session Q&A intent -------------------------------------------------
 
 const QA_TRIGGERS = [

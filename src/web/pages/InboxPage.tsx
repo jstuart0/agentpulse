@@ -11,6 +11,7 @@ import { ActionLaunchCard } from "../components/inbox/ActionLaunchCard.js";
 import { ActionSessionArchiveCard } from "../components/inbox/ActionSessionArchiveCard.js";
 import { ActionSessionDeleteCard } from "../components/inbox/ActionSessionDeleteCard.js";
 import { ActionSessionStopCard } from "../components/inbox/ActionSessionStopCard.js";
+import { BulkSessionActionCard } from "../components/inbox/BulkSessionActionCard.js";
 import { FailedProposalCard } from "../components/inbox/FailedProposalCard.js";
 import { HitlCard } from "../components/inbox/HitlCard.js";
 import { RiskyCard } from "../components/inbox/RiskyCard.js";
@@ -161,6 +162,14 @@ export function InboxPage() {
 						onDecide={handleActionDecide}
 					/>
 				);
+			case "action_bulk_session":
+				return (
+					<BulkSessionActionCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
 		}
 	}
 
@@ -198,6 +207,7 @@ export function InboxPage() {
 						<option value="action_delete_template">Delete template</option>
 						<option value="action_add_channel">Add channel</option>
 						<option value="action_create_alert_rule">Alert rules</option>
+						<option value="action_bulk_session">Bulk actions</option>
 					</select>
 					<button
 						type="button"
@@ -242,6 +252,7 @@ export function InboxPage() {
 					<span>tmpl-edits: {inbox.byKind.action_edit_template}</span>
 					<span>tmpl-deletes: {inbox.byKind.action_delete_template}</span>
 					<span>alert-rules: {inbox.byKind.action_create_alert_rule}</span>
+					<span>bulk: {inbox.byKind.action_bulk_session}</span>
 				</footer>
 			)}
 		</div>
