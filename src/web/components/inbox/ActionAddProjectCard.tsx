@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { InboxWorkItem } from "../../lib/api.js";
-import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 import { KindBadge } from "./shared/KindBadge.js";
+import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 import { relTime } from "./shared/relTime.js";
 
 type ActionAddProjectItem = Extract<InboxWorkItem, { kind: "action_add_project" }>;

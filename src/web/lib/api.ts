@@ -910,6 +910,54 @@ export type InboxWorkItem =
 			severity: "high";
 			createdAt: string;
 			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_edit_project";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "normal";
+			projectId: string;
+			projectName: string;
+			fields: Record<string, unknown>;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_delete_project";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "high";
+			projectId: string;
+			projectName: string;
+			affectedTemplates: number;
+			affectedSessions: number;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_edit_template";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "normal";
+			templateId: string;
+			templateName: string;
+			fields: Record<string, unknown>;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_delete_template";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "high";
+			templateId: string;
+			templateName: string;
+			createdAt: string;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {

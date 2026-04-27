@@ -119,6 +119,54 @@ export type InboxWorkItem =
 			severity: "high";
 			createdAt: string;
 			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_edit_project";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "normal";
+			projectId: string;
+			projectName: string;
+			fields: Record<string, unknown>;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_delete_project";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "high";
+			projectId: string;
+			projectName: string;
+			affectedTemplates: number;
+			affectedSessions: number;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_edit_template";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "normal";
+			templateId: string;
+			templateName: string;
+			fields: Record<string, unknown>;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_delete_template";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "high";
+			templateId: string;
+			templateName: string;
+			createdAt: string;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {
@@ -350,6 +398,78 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				createdAt: a.createdAt,
 				origin: a.origin,
 			});
+		} else if (a.kind === "edit_project") {
+			const payload = a.payload as unknown as {
+				projectId: string;
+				projectName: string;
+				fields: Record<string, unknown>;
+			};
+			items.push({
+				kind: "action_edit_project",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "normal",
+				projectId: payload.projectId,
+				projectName: payload.projectName ?? payload.projectId,
+				fields: payload.fields ?? {},
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "delete_project") {
+			const payload = a.payload as unknown as {
+				projectId: string;
+				projectName: string;
+				affectedTemplates: number;
+				affectedSessions: number;
+			};
+			items.push({
+				kind: "action_delete_project",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "high",
+				projectId: payload.projectId,
+				projectName: payload.projectName ?? payload.projectId,
+				affectedTemplates: payload.affectedTemplates ?? 0,
+				affectedSessions: payload.affectedSessions ?? 0,
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "edit_template") {
+			const payload = a.payload as unknown as {
+				templateId: string;
+				templateName: string;
+				fields: Record<string, unknown>;
+			};
+			items.push({
+				kind: "action_edit_template",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "normal",
+				templateId: payload.templateId,
+				templateName: payload.templateName ?? payload.templateId,
+				fields: payload.fields ?? {},
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "delete_template") {
+			const payload = a.payload as unknown as {
+				templateId: string;
+				templateName: string;
+			};
+			items.push({
+				kind: "action_delete_template",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "high",
+				templateId: payload.templateId,
+				templateName: payload.templateName ?? payload.templateId,
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
 		}
 	}
 
@@ -396,6 +516,10 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		action_session_stop: 0,
 		action_session_archive: 0,
 		action_session_delete: 0,
+		action_edit_project: 0,
+		action_delete_project: 0,
+		action_edit_template: 0,
+		action_delete_template: 0,
 	};
 	for (const i of out) byKind[i.kind]++;
 
@@ -420,7 +544,11 @@ function timestampFor(item: InboxWorkItem): number {
 							item.kind === "action_add_project" ||
 							item.kind === "action_session_stop" ||
 							item.kind === "action_session_archive" ||
-							item.kind === "action_session_delete"
+							item.kind === "action_session_delete" ||
+							item.kind === "action_edit_project" ||
+							item.kind === "action_delete_project" ||
+							item.kind === "action_edit_template" ||
+							item.kind === "action_delete_template"
 						? item.createdAt
 						: new Date().toISOString();
 	return ts.includes("T") ? new Date(ts).getTime() : new Date(`${ts.replace(" ", "T")}Z`).getTime();

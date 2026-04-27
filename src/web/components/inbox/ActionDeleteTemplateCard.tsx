@@ -1,17 +1,16 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import type { InboxWorkItem } from "../../lib/api.js";
 import { KindBadge } from "./shared/KindBadge.js";
 import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 import { relTime } from "./shared/relTime.js";
 
-type ActionSessionStopItem = Extract<InboxWorkItem, { kind: "action_session_stop" }>;
+type ActionDeleteTemplateItem = Extract<InboxWorkItem, { kind: "action_delete_template" }>;
 
-export function ActionSessionStopCard({
+export function ActionDeleteTemplateCard({
 	item,
 	onDecide,
 }: {
-	item: ActionSessionStopItem;
+	item: ActionDeleteTemplateItem;
 	onDecide: (id: string, decision: "applied" | "declined") => Promise<void>;
 }) {
 	const [busy, setBusy] = useState(false);
@@ -34,12 +33,7 @@ export function ActionSessionStopCard({
 			<div className="flex items-center justify-between gap-2 mb-2">
 				<div className="flex items-center gap-2">
 					<KindBadge kind={item.kind} />
-					<Link
-						to={`/sessions/${item.sessionId}`}
-						className="text-primary hover:underline font-medium"
-					>
-						{item.sessionName ?? item.sessionId.slice(0, 8)}
-					</Link>
+					<span className="text-sm font-medium">{item.templateName}</span>
 				</div>
 				<span
 					className={`text-[10px] font-mono rounded px-1.5 py-0.5 border ${severityPillClass(item.severity)}`}
@@ -49,10 +43,14 @@ export function ActionSessionStopCard({
 			</div>
 
 			<div className="text-xs text-muted-foreground mb-2 space-y-1">
+				<div className="italic text-amber-300/80">
+					This action is permanent and cannot be undone.
+				</div>
 				<div>
 					Origin: <span className="font-mono">{item.origin}</span>
 				</div>
 			</div>
+
 			<div className="flex items-center gap-2 mt-3">
 				<button
 					type="button"
@@ -60,7 +58,7 @@ export function ActionSessionStopCard({
 					onClick={() => handleDecide("applied")}
 					className="text-xs px-3 py-1 rounded bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 disabled:opacity-50"
 				>
-					Approve
+					Approve (permanent)
 				</button>
 				<button
 					type="button"

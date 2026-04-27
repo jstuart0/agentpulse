@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
+import { LabsBadge } from "../components/LabsBadge.js";
 import { ActionAddProjectCard } from "../components/inbox/ActionAddProjectCard.js";
+import { ActionDeleteProjectCard } from "../components/inbox/ActionDeleteProjectCard.js";
+import { ActionDeleteTemplateCard } from "../components/inbox/ActionDeleteTemplateCard.js";
+import { ActionEditProjectCard } from "../components/inbox/ActionEditProjectCard.js";
+import { ActionEditTemplateCard } from "../components/inbox/ActionEditTemplateCard.js";
 import { ActionLaunchCard } from "../components/inbox/ActionLaunchCard.js";
 import { ActionSessionArchiveCard } from "../components/inbox/ActionSessionArchiveCard.js";
 import { ActionSessionDeleteCard } from "../components/inbox/ActionSessionDeleteCard.js";
@@ -8,7 +13,6 @@ import { FailedProposalCard } from "../components/inbox/FailedProposalCard.js";
 import { HitlCard } from "../components/inbox/HitlCard.js";
 import { RiskyCard } from "../components/inbox/RiskyCard.js";
 import { StuckCard } from "../components/inbox/StuckCard.js";
-import { LabsBadge } from "../components/LabsBadge.js";
 import { type Inbox, type InboxWorkItem, api } from "../lib/api.js";
 
 /**
@@ -50,11 +54,7 @@ export function InboxPage() {
 		reload();
 	}
 
-	async function handleSnooze(
-		id: string,
-		kind: InboxWorkItem["kind"],
-		durationMs: number,
-	) {
+	async function handleSnooze(id: string, kind: InboxWorkItem["kind"], durationMs: number) {
 		await api.snoozeInboxItem({ kind, targetId: id, durationMs });
 		reload();
 	}
@@ -62,24 +62,14 @@ export function InboxPage() {
 	function renderCard(item: InboxWorkItem) {
 		switch (item.kind) {
 			case "hitl":
-				return (
-					<HitlCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleHitlDecide}
-					/>
-				);
+				return <HitlCard key={`${item.kind}:${item.id}`} item={item} onDecide={handleHitlDecide} />;
 			case "stuck":
 				return <StuckCard key={`${item.kind}:${item.id}`} item={item} />;
 			case "risky":
 				return <RiskyCard key={`${item.kind}:${item.id}`} item={item} />;
 			case "failed_proposal":
 				return (
-					<FailedProposalCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onSnooze={handleSnooze}
-					/>
+					<FailedProposalCard key={`${item.kind}:${item.id}`} item={item} onSnooze={handleSnooze} />
 				);
 			case "action_launch":
 				return (
@@ -121,6 +111,38 @@ export function InboxPage() {
 						onDecide={handleActionDecide}
 					/>
 				);
+			case "action_edit_project":
+				return (
+					<ActionEditProjectCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
+			case "action_delete_project":
+				return (
+					<ActionDeleteProjectCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
+			case "action_edit_template":
+				return (
+					<ActionEditTemplateCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
+			case "action_delete_template":
+				return (
+					<ActionDeleteTemplateCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
 		}
 	}
 
@@ -152,6 +174,10 @@ export function InboxPage() {
 						<option value="action_session_stop">Session stop</option>
 						<option value="action_session_archive">Session archive</option>
 						<option value="action_session_delete">Session delete</option>
+						<option value="action_edit_project">Edit project</option>
+						<option value="action_delete_project">Delete project</option>
+						<option value="action_edit_template">Edit template</option>
+						<option value="action_delete_template">Delete template</option>
 					</select>
 					<button
 						type="button"
@@ -191,6 +217,10 @@ export function InboxPage() {
 					<span>stops: {inbox.byKind.action_session_stop}</span>
 					<span>archives: {inbox.byKind.action_session_archive}</span>
 					<span>deletes: {inbox.byKind.action_session_delete}</span>
+					<span>proj-edits: {inbox.byKind.action_edit_project}</span>
+					<span>proj-deletes: {inbox.byKind.action_delete_project}</span>
+					<span>tmpl-edits: {inbox.byKind.action_edit_template}</span>
+					<span>tmpl-deletes: {inbox.byKind.action_delete_template}</span>
 				</footer>
 			)}
 		</div>

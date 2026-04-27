@@ -610,6 +610,239 @@ export async function detectResumeIntent(
 	}
 }
 
+// ---- Project/template CRUD intent ----------------------------------------
+
+const CRUD_VERBS = [
+	"edit project",
+	"update project",
+	"change project",
+	"rename project",
+	"delete project",
+	"remove project",
+	"edit template",
+	"update template",
+	"change template",
+	"rename template",
+	"delete template",
+	"remove template",
+];
+
+/**
+ * Pure synchronous gate: true if the message contains a project/template
+ * CRUD verb. The downstream LLM classifier confirms the specific operation
+ * and resolves the target name.
+ */
+export function projectTemplateCrudGatePasses(message: string): boolean {
+	const lower = message.toLowerCase();
+	return CRUD_VERBS.some((v) => lower.includes(v));
+}
+
+export type ProjectTemplateCrudIntent =
+	| { kind: "none" }
+	| { kind: "classifier_failed"; error: string }
+	| {
+			kind: "edit_project";
+			targetName: string;
+			fields: Partial<{
+				name: string;
+				cwd: string;
+				defaultAgentType: string | null;
+				defaultModel: string | null;
+				defaultLaunchMode: string | null;
+				githubRepoUrl: string | null;
+				notes: string | null;
+			}>;
+	  }
+	| { kind: "delete_project"; targetName: string }
+	| {
+			kind: "edit_template";
+			targetName: string;
+			fields: Partial<{
+				name: string;
+				description: string;
+				taskPrompt: string;
+				model: string | null;
+			}>;
+	  }
+	| { kind: "delete_template"; targetName: string };
+
+const CRUD_SYSTEM_PROMPT = (projectNames: string[], templateNames: string[]): string =>
+	`You are a project/template CRUD classifier for AgentPulse.
+
+Known project names: ${projectNames.length > 0 ? projectNames.map((n) => `"${n}"`).join(", ") : "(none)"}
+Known template names: ${templateNames.length > 0 ? templateNames.map((n) => `"${n}"`).join(", ") : "(none)"}
+
+Determine whether the user wants to edit or delete a project or template, and extract the target and proposed changes.
+
+Respond with JSON (no markdown, no backticks):
+
+If NOT a project/template edit or delete:
+{"intent":"none"}
+
+If editing a project:
+{"intent":"edit_project","targetName":"<exact project name>","fields":{"name":"<new name or omit>","cwd":"<absolute path or omit>","defaultAgentType":"claude_code|codex_cli|null or omit","defaultModel":"<model or null or omit>","defaultLaunchMode":"interactive_terminal|headless|managed_codex|null or omit","githubRepoUrl":"<url or null or omit>","notes":"<notes or null or omit>"}}
+
+If deleting a project:
+{"intent":"delete_project","targetName":"<exact project name>"}
+
+If editing a template:
+{"intent":"edit_template","targetName":"<exact template name>","fields":{"name":"<new name or omit>","description":"<description or omit>","taskPrompt":"<task prompt or omit>","model":"<model or null or omit>"}}
+
+If deleting a template:
+{"intent":"delete_template","targetName":"<exact template name>"}
+
+Rules:
+- targetName: use an exact match from the known names lists (case-insensitive). If the user refers to a project or template not in the known lists, still extract the name they provided.
+- fields: include ONLY fields the user explicitly mentioned. Omit everything else.
+- cwd: only include if the user provides an absolute path (starts with /).
+- defaultAgentType: "claude_code" for Claude/claude, "codex_cli" for Codex/codex, null to clear.
+- For delete operations, no fields needed.
+- Respond ONLY with the JSON object.`;
+
+export async function detectProjectTemplateCrudIntent(
+	message: string,
+	projectNames: string[],
+	templateNames: string[],
+): Promise<ProjectTemplateCrudIntent> {
+	const provider = await getDefaultProvider();
+	if (!provider) {
+		return {
+			kind: "classifier_failed",
+			error: "No default LLM provider configured — cannot classify CRUD intent.",
+		};
+	}
+	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
+	if (!full) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider record disappeared — check Settings → AI.",
+		};
+	}
+	const apiKey = await getProviderApiKey(provider.id);
+	if (apiKey === null) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider credentials are unreadable.",
+		};
+	}
+
+	const ESTIMATED_COST_CENTS = 1;
+	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
+	if (!spendCheck.allowed) {
+		return { kind: "none" };
+	}
+
+	const adapter = getAdapter({
+		kind: full.kind,
+		apiKey,
+		baseUrl: full.baseUrl ?? undefined,
+	});
+
+	try {
+		const res = await adapter.complete({
+			systemPrompt: CRUD_SYSTEM_PROMPT(projectNames, templateNames),
+			transcriptPrompt: `User message: ${message}`,
+			model: full.model,
+			maxTokens: 300,
+			temperature: 0.0,
+			timeoutMs: 8_000,
+		});
+
+		const actualCents = res.usage.estimated
+			? ESTIMATED_COST_CENTS
+			: Math.max(
+					1,
+					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
+				);
+		void addGlobalSpendCents(actualCents).catch(() => {});
+
+		const raw = res.text.trim();
+		let parsed: Record<string, unknown>;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return {
+				kind: "classifier_failed",
+				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+			};
+		}
+
+		if (parsed.intent === "none") return { kind: "none" };
+
+		if (parsed.intent === "delete_project") {
+			if (typeof parsed.targetName !== "string") return { kind: "none" };
+			return { kind: "delete_project", targetName: parsed.targetName };
+		}
+
+		if (parsed.intent === "delete_template") {
+			if (typeof parsed.targetName !== "string") return { kind: "none" };
+			return { kind: "delete_template", targetName: parsed.targetName };
+		}
+
+		if (parsed.intent === "edit_project") {
+			if (typeof parsed.targetName !== "string") return { kind: "none" };
+			const rawFields = (parsed.fields as Record<string, unknown>) ?? {};
+			type EditProjectFields = Extract<
+				ProjectTemplateCrudIntent,
+				{ kind: "edit_project" }
+			>["fields"];
+			const fields: EditProjectFields = {};
+			if (typeof rawFields.name === "string" && rawFields.name.length > 0)
+				fields.name = rawFields.name;
+			if (typeof rawFields.cwd === "string" && rawFields.cwd.startsWith("/"))
+				fields.cwd = rawFields.cwd;
+			if ("defaultAgentType" in rawFields) {
+				fields.defaultAgentType =
+					rawFields.defaultAgentType === "claude_code" || rawFields.defaultAgentType === "codex_cli"
+						? rawFields.defaultAgentType
+						: null;
+			}
+			if ("defaultModel" in rawFields) {
+				fields.defaultModel =
+					typeof rawFields.defaultModel === "string" ? rawFields.defaultModel : null;
+			}
+			if ("defaultLaunchMode" in rawFields) {
+				const lm = rawFields.defaultLaunchMode;
+				fields.defaultLaunchMode =
+					lm === "interactive_terminal" || lm === "headless" || lm === "managed_codex" ? lm : null;
+			}
+			if ("githubRepoUrl" in rawFields) {
+				fields.githubRepoUrl =
+					typeof rawFields.githubRepoUrl === "string" ? rawFields.githubRepoUrl : null;
+			}
+			if ("notes" in rawFields) {
+				fields.notes = typeof rawFields.notes === "string" ? rawFields.notes : null;
+			}
+			return { kind: "edit_project", targetName: parsed.targetName, fields };
+		}
+
+		if (parsed.intent === "edit_template") {
+			if (typeof parsed.targetName !== "string") return { kind: "none" };
+			const rawFields = (parsed.fields as Record<string, unknown>) ?? {};
+			type EditTemplateFields = Extract<
+				ProjectTemplateCrudIntent,
+				{ kind: "edit_template" }
+			>["fields"];
+			const fields: EditTemplateFields = {};
+			if (typeof rawFields.name === "string" && rawFields.name.length > 0)
+				fields.name = rawFields.name;
+			if (typeof rawFields.description === "string") fields.description = rawFields.description;
+			if (typeof rawFields.taskPrompt === "string") fields.taskPrompt = rawFields.taskPrompt;
+			if ("model" in rawFields) {
+				fields.model = typeof rawFields.model === "string" ? rawFields.model : null;
+			}
+			return { kind: "edit_template", targetName: parsed.targetName, fields };
+		}
+
+		return { kind: "none" };
+	} catch (err) {
+		return {
+			kind: "classifier_failed",
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
 export async function detectAddProjectIntent(message: string): Promise<LaunchIntent> {
 	const provider = await getDefaultProvider();
 	if (!provider) {

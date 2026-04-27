@@ -10,6 +10,10 @@ const styles: Record<InboxWorkItem["kind"], string> = {
 	action_session_stop: "bg-red-500/10 text-red-300 border-red-500/30",
 	action_session_archive: "bg-slate-500/10 text-slate-300 border-slate-500/30",
 	action_session_delete: "bg-red-500/10 text-red-300 border-red-500/30",
+	action_edit_project: "bg-violet-500/10 text-violet-300 border-violet-500/30",
+	action_delete_project: "bg-red-500/10 text-red-300 border-red-500/30",
+	action_edit_template: "bg-violet-500/10 text-violet-300 border-violet-500/30",
+	action_delete_template: "bg-red-500/10 text-red-300 border-red-500/30",
 };
 
 const labels: Record<InboxWorkItem["kind"], string> = {
@@ -22,6 +26,10 @@ const labels: Record<InboxWorkItem["kind"], string> = {
 	action_session_stop: "stop session",
 	action_session_archive: "archive session",
 	action_session_delete: "delete session",
+	action_edit_project: "edit project",
+	action_delete_project: "delete project",
+	action_edit_template: "edit template",
+	action_delete_template: "delete template",
 };
 
 export function KindBadge({ kind }: { kind: InboxWorkItem["kind"] }) {

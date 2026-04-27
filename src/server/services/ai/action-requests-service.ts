@@ -6,17 +6,25 @@ import {
 	aiActionRequests,
 	aiPendingProjectDrafts,
 	managedSessions,
+	sessionTemplates,
 	sessions,
 } from "../../db/schema.js";
 import type { ProjectDraftFields } from "../../db/schema.js";
+import type {
+	DeleteProjectPayload,
+	DeleteTemplatePayload,
+	EditProjectPayload,
+	EditTemplatePayload,
+} from "../ask/ask-crud-handler.js";
 import { getChannelCredential } from "../channels/channels-service.js";
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
 import { queueStopAction } from "../control-actions.js";
 import { buildLaunchSpec, pickFirstCapableSupervisor } from "../launch-compatibility.js";
 import { createValidatedLaunchRequest } from "../launch-validator.js";
-import { createProject } from "../projects/projects-service.js";
+import { createProject, deleteProject, updateProject } from "../projects/projects-service.js";
 import { getSearchBackend } from "../search/index.js";
 import { listSupervisors } from "../supervisor-registry.js";
+import { deleteTemplate, updateTemplate } from "../templates/templates-service.js";
 
 export type ActionRequestStatus =
 	| "awaiting_reply"
@@ -481,6 +489,229 @@ async function executeSessionDeleteAction(
 	});
 }
 
+// ---- Project/template CRUD executors ------------------------------------
+
+async function executeEditProjectAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	const payload = request.payload as unknown as EditProjectPayload;
+	const { projectId, projectName, fields } = payload;
+	const { origin, channelId, askThreadId } = request;
+
+	try {
+		const result = await updateProject(projectId, fields as Parameters<typeof updateProject>[1]);
+		if (result.notFound) {
+			const reason = `Project "${projectName}" no longer exists`;
+			await conditionalUpdate(request.id, "applying", {
+				status: "failed",
+				failureReason: reason,
+				resolvedBy,
+			});
+			await notifyOriginUser(origin, channelId, askThreadId, `Could not apply — ${reason}.`);
+			return { ok: false, reason: "failed", failureReason: reason };
+		}
+		if (result.conflict) {
+			const reason = "Project name or directory conflicts with an existing project";
+			await conditionalUpdate(request.id, "applying", {
+				status: "failed",
+				failureReason: reason,
+				resolvedBy,
+			});
+			await notifyOriginUser(origin, channelId, askThreadId, `Could not apply — ${reason}.`);
+			return { ok: false, reason: "failed", failureReason: reason };
+		}
+		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
+		await notifyOriginUser(origin, channelId, askThreadId, `Project **${projectName}** updated.`);
+		return { ok: true, status: "applied" };
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			channelId,
+			askThreadId,
+			`Update failed: ${reason.slice(0, 400)}`,
+		);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+}
+
+async function executeDeleteProjectAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	const payload = request.payload as unknown as DeleteProjectPayload;
+	const { projectId, projectName } = payload;
+	const { origin, channelId, askThreadId } = request;
+
+	try {
+		const deleted = await deleteProject(projectId);
+		if (!deleted) {
+			const reason = `Project "${projectName}" no longer exists`;
+			await conditionalUpdate(request.id, "applying", {
+				status: "failed",
+				failureReason: reason,
+				resolvedBy,
+			});
+			await notifyOriginUser(origin, channelId, askThreadId, `Could not apply — ${reason}.`);
+			return { ok: false, reason: "failed", failureReason: reason };
+		}
+		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
+		await notifyOriginUser(
+			origin,
+			channelId,
+			askThreadId,
+			`Project **${projectName}** deleted. Linked templates and sessions have been disassociated.`,
+		);
+		return { ok: true, status: "applied" };
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			channelId,
+			askThreadId,
+			`Delete failed: ${reason.slice(0, 400)}`,
+		);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+}
+
+async function executeEditTemplateAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	const payload = request.payload as unknown as EditTemplatePayload;
+	const { templateId, templateName, fields } = payload;
+	const { origin, channelId, askThreadId } = request;
+
+	try {
+		const [existing] = await db
+			.select()
+			.from(sessionTemplates)
+			.where(eq(sessionTemplates.id, templateId))
+			.limit(1);
+		if (!existing) {
+			const reason = `Template "${templateName}" no longer exists`;
+			await conditionalUpdate(request.id, "applying", {
+				status: "failed",
+				failureReason: reason,
+				resolvedBy,
+			});
+			await notifyOriginUser(origin, channelId, askThreadId, `Could not apply — ${reason}.`);
+			return { ok: false, reason: "failed", failureReason: reason };
+		}
+
+		// Build a full UpdateTemplateInput from existing row + partial fields overlay.
+		// updateTemplate requires a complete SessionTemplateInput; we fill omitted fields
+		// from the existing row so only user-specified fields change.
+		type AgentType = import("../../../shared/types.js").AgentType;
+		type ApprovalPolicy = import("../../../shared/types.js").ApprovalPolicy;
+		const merged = {
+			name: (fields.name as string | undefined) ?? existing.name,
+			description: (fields.description as string | undefined) ?? existing.description ?? "",
+			agentType: existing.agentType as AgentType,
+			cwd: existing.cwd,
+			baseInstructions: existing.baseInstructions ?? "",
+			taskPrompt:
+				"taskPrompt" in fields
+					? ((fields.taskPrompt as string | undefined) ?? "")
+					: (existing.taskPrompt ?? ""),
+			model:
+				"model" in fields
+					? ((fields.model as string | null | undefined) ?? null)
+					: (existing.model ?? null),
+			approvalPolicy: existing.approvalPolicy as ApprovalPolicy | null | undefined,
+			sandboxMode: existing.sandboxMode as
+				| import("../../../shared/types.js").SandboxMode
+				| null
+				| undefined,
+			env: (existing.env as Record<string, string>) ?? {},
+			tags: (existing.tags as string[]) ?? [],
+			isFavorite: existing.isFavorite ?? false,
+		};
+
+		const result = await updateTemplate(templateId, merged);
+		if (!result.ok) {
+			const reason = result.error;
+			await conditionalUpdate(request.id, "applying", {
+				status: "failed",
+				failureReason: reason,
+				resolvedBy,
+			});
+			await notifyOriginUser(origin, channelId, askThreadId, `Update failed: ${reason}`);
+			return { ok: false, reason: "failed", failureReason: reason };
+		}
+
+		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
+		await notifyOriginUser(origin, channelId, askThreadId, `Template **${templateName}** updated.`);
+		return { ok: true, status: "applied" };
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			channelId,
+			askThreadId,
+			`Update failed: ${reason.slice(0, 400)}`,
+		);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+}
+
+async function executeDeleteTemplateAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	const payload = request.payload as unknown as DeleteTemplatePayload;
+	const { templateId, templateName } = payload;
+	const { origin, channelId, askThreadId } = request;
+
+	try {
+		const result = await deleteTemplate(templateId);
+		if (!result.ok) {
+			const reason = result.error;
+			await conditionalUpdate(request.id, "applying", {
+				status: "failed",
+				failureReason: reason,
+				resolvedBy,
+			});
+			await notifyOriginUser(origin, channelId, askThreadId, `Could not apply — ${reason}.`);
+			return { ok: false, reason: "failed", failureReason: reason };
+		}
+		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
+		await notifyOriginUser(origin, channelId, askThreadId, `Template **${templateName}** deleted.`);
+		return { ok: true, status: "applied" };
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			channelId,
+			askThreadId,
+			`Delete failed: ${reason.slice(0, 400)}`,
+		);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+}
+
 type KindExecutor = (request: ActionRequest, resolvedBy: string) => Promise<ResolveResult>;
 
 const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
@@ -489,6 +720,10 @@ const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
 	session_stop: executeSessionStopAction,
 	session_archive: executeSessionArchiveAction,
 	session_delete: executeSessionDeleteAction,
+	edit_project: executeEditProjectAction,
+	delete_project: executeDeleteProjectAction,
+	edit_template: executeEditTemplateAction,
+	delete_template: executeDeleteTemplateAction,
 };
 
 export async function resolveActionRequest(args: {

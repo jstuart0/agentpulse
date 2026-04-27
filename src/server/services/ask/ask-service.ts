@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/client.js";
-import { askMessages, askThreads } from "../../db/schema.js";
+import { askMessages, askThreads, sessionTemplates } from "../../db/schema.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import type { LlmAdapter } from "../ai/llm/types.js";
 import {
@@ -16,6 +16,7 @@ import {
 	handleAddProjectContinuation,
 	handleNewAddProjectIntent,
 } from "./ask-add-project-handler.js";
+import { handleProjectTemplateCrud } from "./ask-crud-handler.js";
 import { handleDigestQuery } from "./ask-digest-handler.js";
 import { handleAskLaunchIntent } from "./ask-launch-handler.js";
 import { handleResumeIntent } from "./ask-resume-handler.js";
@@ -26,9 +27,11 @@ import {
 	addProjectGatePasses,
 	detectAddProjectIntent,
 	detectLaunchIntent,
+	detectProjectTemplateCrudIntent,
 	detectResumeIntent,
 	detectSessionActionIntent,
 	digestGatePasses,
+	projectTemplateCrudGatePasses,
 	resumeGatePasses,
 	searchGatePasses,
 	sessionActionGatePasses,
@@ -455,6 +458,36 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		}
 	}
 
+	// 2f. Project/template CRUD gate — edit/delete project or template.
+	//     Runs after resume so "rename project" doesn't confuse the resume gate.
+	if (projectTemplateCrudGatePasses(text)) {
+		const projects = getCachedProjects();
+		const templateRows = await db.select({ name: sessionTemplates.name }).from(sessionTemplates);
+		const crudResult = await detectProjectTemplateCrudIntent(
+			text,
+			projects.map((p) => p.name),
+			templateRows.map((t) => t.name),
+		);
+		if (
+			crudResult.kind === "edit_project" ||
+			crudResult.kind === "delete_project" ||
+			crudResult.kind === "edit_template" ||
+			crudResult.kind === "delete_template"
+		) {
+			const crudHandlerResult = await handleProjectTemplateCrud(crudResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: crudHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (crudResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a project/template edit request but the classifier failed: ${crudResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
 	// 3. Launch-intent intercept: runs after the user message is persisted so the
 	//    thread exists. Short-circuits the normal Ask LLM call when a launch is queued.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
@@ -682,6 +715,38 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		}
 		if (resumeResult.kind === "classifier_failed" && !preamble) {
 			preamble = `_(Heads up: I tried to detect a resume request but the classifier failed: ${resumeResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2f. Project/template CRUD gate — streaming path short-circuit.
+	if (projectTemplateCrudGatePasses(text)) {
+		const projects = getCachedProjects();
+		const templateRows = await db.select({ name: sessionTemplates.name }).from(sessionTemplates);
+		const crudResult = await detectProjectTemplateCrudIntent(
+			text,
+			projects.map((p) => p.name),
+			templateRows.map((t) => t.name),
+		);
+		if (
+			crudResult.kind === "edit_project" ||
+			crudResult.kind === "delete_project" ||
+			crudResult.kind === "edit_template" ||
+			crudResult.kind === "delete_template"
+		) {
+			const crudHandlerResult = await handleProjectTemplateCrud(crudResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: crudHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: crudHandlerResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (crudResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a project/template edit request but the classifier failed: ${crudResult.error}. Answering as a general question.)_\n\n`;
 		}
 	}
 

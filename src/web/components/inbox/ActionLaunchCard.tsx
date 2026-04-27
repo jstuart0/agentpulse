@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { InboxWorkItem } from "../../lib/api.js";
-import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 import { KindBadge } from "./shared/KindBadge.js";
+import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 import { relTime } from "./shared/relTime.js";
 
 type ActionLaunchItem = Extract<InboxWorkItem, { kind: "action_launch" }>;
@@ -49,8 +49,7 @@ export function ActionLaunchCard({
 			<div className="text-xs text-muted-foreground mb-2 space-y-1">
 				{item.parentSessionId && (
 					<div className="font-medium text-blue-300">
-						Resume of{" "}
-						<strong>{item.parentSessionName ?? item.parentSessionId.slice(0, 8)}</strong>
+						Resume of <strong>{item.parentSessionName ?? item.parentSessionId.slice(0, 8)}</strong>
 					</div>
 				)}
 				<div>

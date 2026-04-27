@@ -1,17 +1,16 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import type { InboxWorkItem } from "../../lib/api.js";
 import { KindBadge } from "./shared/KindBadge.js";
 import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 import { relTime } from "./shared/relTime.js";
 
-type ActionSessionStopItem = Extract<InboxWorkItem, { kind: "action_session_stop" }>;
+type ActionEditTemplateItem = Extract<InboxWorkItem, { kind: "action_edit_template" }>;
 
-export function ActionSessionStopCard({
+export function ActionEditTemplateCard({
 	item,
 	onDecide,
 }: {
-	item: ActionSessionStopItem;
+	item: ActionEditTemplateItem;
 	onDecide: (id: string, decision: "applied" | "declined") => Promise<void>;
 }) {
 	const [busy, setBusy] = useState(false);
@@ -29,17 +28,14 @@ export function ActionSessionStopCard({
 		}
 	}
 
+	const fieldEntries = Object.entries(item.fields);
+
 	return (
 		<div className={`rounded-lg border p-4 ${severityBorderClass(item.severity)}`}>
 			<div className="flex items-center justify-between gap-2 mb-2">
 				<div className="flex items-center gap-2">
 					<KindBadge kind={item.kind} />
-					<Link
-						to={`/sessions/${item.sessionId}`}
-						className="text-primary hover:underline font-medium"
-					>
-						{item.sessionName ?? item.sessionId.slice(0, 8)}
-					</Link>
+					<span className="text-sm font-medium">{item.templateName}</span>
 				</div>
 				<span
 					className={`text-[10px] font-mono rounded px-1.5 py-0.5 border ${severityPillClass(item.severity)}`}
@@ -49,16 +45,27 @@ export function ActionSessionStopCard({
 			</div>
 
 			<div className="text-xs text-muted-foreground mb-2 space-y-1">
+				{fieldEntries.length > 0 ? (
+					fieldEntries.map(([key, value]) => (
+						<div key={key}>
+							<span className="font-mono">{key}:</span>{" "}
+							<span className="font-mono">{value === null ? "(clear)" : String(value)}</span>
+						</div>
+					))
+				) : (
+					<div className="italic">No fields specified</div>
+				)}
 				<div>
 					Origin: <span className="font-mono">{item.origin}</span>
 				</div>
 			</div>
+
 			<div className="flex items-center gap-2 mt-3">
 				<button
 					type="button"
 					disabled={busy}
 					onClick={() => handleDecide("applied")}
-					className="text-xs px-3 py-1 rounded bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 disabled:opacity-50"
+					className="text-xs px-3 py-1 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 disabled:opacity-50"
 				>
 					Approve
 				</button>

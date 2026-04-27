@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { InboxWorkItem } from "../../lib/api.js";
-import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 import { KindBadge } from "./shared/KindBadge.js";
+import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 import { relTime } from "./shared/relTime.js";
 
 type ActionSessionArchiveItem = Extract<InboxWorkItem, { kind: "action_session_archive" }>;
