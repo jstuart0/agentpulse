@@ -844,6 +844,10 @@ aiRouter.post("/ai/action-requests/:id/decide", async (c) => {
 				return "Channel setup";
 			case "create_alert_rule":
 				return "Alert rule";
+			case "create_freeform_alert_rule":
+				return "Freeform alert rule";
+			case "bulk_session_action":
+				return "Bulk session action";
 			default:
 				return "Launch";
 		}

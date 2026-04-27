@@ -549,9 +549,9 @@ export const aiHitlRequests = sqliteTable("ai_hitl_requests", {
 });
 
 // project_alert_rules — project-level alert rules created via NL ("alert me
-// when any session on <project> fails"). Constrained to status_failed |
-// status_stuck | status_completed | no_activity_minutes only; freeform rules
-// require per-event LLM classification and are explicitly out of scope.
+// when any session on <project> fails"). Supports constrained rule types
+// (status_failed | status_stuck | status_completed | no_activity_minutes) and
+// freeform_match (per-event LLM classification against a natural-language condition).
 //
 // FK cascade: REFERENCES projects(id) ON DELETE CASCADE is declared below but
 // only enforced at runtime when PRAGMA foreign_keys = ON is set per connection.
@@ -562,12 +562,21 @@ export const projectAlertRules = sqliteTable("project_alert_rules", {
 		.$defaultFn(() => crypto.randomUUID()),
 	projectId: text("project_id").notNull(),
 	ruleType: text("rule_type").notNull(),
-	// status_failed | status_stuck | status_completed | no_activity_minutes
+	// status_failed | status_stuck | status_completed | no_activity_minutes | freeform_match
 	params: text("params", { mode: "json" }).$type<Record<string, unknown>>(),
-	// JSON: { "thresholdMinutes": 30 } for no_activity_minutes; null for status types
+	// JSON: { "thresholdMinutes": 30 } for no_activity_minutes; freeform_match params shape
+	// is FreeformRuleParams (alert-rule-evaluator.ts)
 	channelId: text("channel_id"),
 	// notification_channels.id to notify via channel; null means inbox-only
 	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+	// Freeform-rule daily spend tracking. Reset atomically via SQL CASE expression
+	// (not read-modify-write) to prevent concurrent-reset races on server restart.
+	dailyTokenSpendCents: integer("daily_token_spend_cents").notNull().default(0),
+	dailyTokenSpendDate: text("daily_token_spend_date"),
+	// Per-rule event cursor for freeform_match rules. The evaluator processes
+	// events with id > lastEvaluatedEventId and advances the cursor BEFORE the
+	// sample-rate check so sampled-out events are never re-evaluated.
+	lastEvaluatedEventId: integer("last_evaluated_event_id").notNull().default(0),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });

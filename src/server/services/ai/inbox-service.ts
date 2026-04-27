@@ -194,6 +194,20 @@ export type InboxWorkItem =
 			origin: "web" | "telegram";
 	  }
 	| {
+			// Freeform alert rule creation request. sessionId is null because rules are
+			// project-scoped, not session-scoped.
+			kind: "action_create_freeform_alert_rule";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectName: string;
+			condition: string;
+			dailyTokenBudget: number;
+			origin: "web" | "telegram";
+	  }
+	| {
 			// Bulk session action. sessionId is null because this spans multiple sessions.
 			// severity: "high" for stop/delete (irreversible); "normal" for archive.
 			kind: "action_bulk_session";
@@ -549,6 +563,24 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				thresholdMinutes: payload.thresholdMinutes ?? null,
 				origin: a.origin,
 			});
+		} else if (a.kind === "create_freeform_alert_rule") {
+			const payload = a.payload as unknown as {
+				projectName: string;
+				condition: string;
+				dailyTokenBudget: number;
+			};
+			items.push({
+				kind: "action_create_freeform_alert_rule",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "info",
+				createdAt: a.createdAt,
+				projectName: payload.projectName ?? "(unknown project)",
+				condition: (payload.condition ?? "(unknown condition)").slice(0, 200),
+				dailyTokenBudget: payload.dailyTokenBudget ?? 0,
+				origin: a.origin,
+			});
 		} else if (a.kind === "bulk_session_action") {
 			const payload = a.payload as unknown as {
 				action: string;
@@ -631,6 +663,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		action_delete_template: 0,
 		action_add_channel: 0,
 		action_create_alert_rule: 0,
+		action_create_freeform_alert_rule: 0,
 		action_bulk_session: 0,
 	};
 	for (const i of out) byKind[i.kind]++;
@@ -663,6 +696,7 @@ function timestampFor(item: InboxWorkItem): number {
 							item.kind === "action_delete_template" ||
 							item.kind === "action_add_channel" ||
 							item.kind === "action_create_alert_rule" ||
+							item.kind === "action_create_freeform_alert_rule" ||
 							item.kind === "action_bulk_session"
 						? item.createdAt
 						: new Date().toISOString();

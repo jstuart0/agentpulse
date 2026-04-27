@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, max, sql } from "drizzle-orm";
 import type { LaunchMode, LaunchSpec, SessionTemplateInput } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import {
@@ -13,7 +13,10 @@ import {
 	sessions,
 } from "../../db/schema.js";
 import type { ProjectDraftFields } from "../../db/schema.js";
-import type { CreateAlertRulePayload } from "../ask/ask-alert-rule-handler.js";
+import type {
+	CreateAlertRulePayload,
+	CreateFreeformAlertRulePayload,
+} from "../ask/ask-alert-rule-handler.js";
 import type { BulkSessionActionPayload } from "../ask/ask-bulk-action-handler.js";
 import type {
 	DeleteProjectPayload,
@@ -90,6 +93,7 @@ export interface CreateActionRequestInput {
 		| "delete_template"
 		| "add_channel"
 		| "create_alert_rule"
+		| "create_freeform_alert_rule"
 		| "bulk_session_action";
 	question: string;
 	payload: ActionRequestPayload | AddProjectActionPayload | Record<string, unknown>;
@@ -953,6 +957,107 @@ async function executeCreateAlertRuleAction(
 	}
 }
 
+// ---- Freeform alert rule executor ----------------------------------------
+
+async function executeCreateFreeformAlertRuleAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	const payload = request.payload as unknown as CreateFreeformAlertRulePayload;
+	const { projectId, projectName, condition, dailyTokenBudget, sampleRate, eventTypesFilter } =
+		payload;
+	const { origin, channelId: reqChannelId, askThreadId } = request;
+
+	// Validate required fields.
+	if (!condition || condition.trim().length === 0) {
+		const reason = "Freeform alert rule requires a non-empty condition";
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+	if (!dailyTokenBudget || dailyTokenBudget < 1000) {
+		const reason = "Daily token budget must be at least 1000";
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+
+	// Pre-check: project must still exist.
+	const [existingProject] = await db
+		.select({ id: projects.id })
+		.from(projects)
+		.where(eq(projects.id, projectId))
+		.limit(1);
+
+	if (!existingProject) {
+		const reason = `Project "${projectName}" no longer exists`;
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(origin, reqChannelId, askThreadId, `Could not apply — ${reason}.`);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+
+	try {
+		const nowStr = sqlNow();
+
+		// Capture MAX(events.id) at creation time so first sweep only evaluates
+		// events arriving AFTER the rule was created (avoids backlog flood).
+		const [maxEventRow] = await db.select({ maxId: max(events.id) }).from(events);
+		const initialCursor = maxEventRow?.maxId ?? 0;
+
+		await db.insert(projectAlertRules).values({
+			projectId,
+			ruleType: "freeform_match",
+			params: {
+				condition: condition.slice(0, 500),
+				dailyTokenBudgetCents: dailyTokenBudget,
+				sampleRate: sampleRate ?? 1.0,
+				eventTypesFilter: eventTypesFilter ?? [],
+			} as Record<string, unknown>,
+			channelId: null,
+			isActive: true,
+			lastEvaluatedEventId: initialCursor,
+			createdAt: nowStr,
+			updatedAt: nowStr,
+		});
+
+		await conditionalUpdate(request.id, "applying", {
+			status: "applied",
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			reqChannelId,
+			askThreadId,
+			`Freeform alert rule created for **${projectName}**: will notify when "${condition.slice(0, 200)}". Budget: ${dailyTokenBudget} tokens/day.`,
+		);
+		return { ok: true, status: "applied" };
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			reqChannelId,
+			askThreadId,
+			`Freeform alert rule creation failed: ${reason.slice(0, 400)}`,
+		);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+}
+
 // ---- Bulk session action executor ----------------------------------------
 
 async function stopOne(
@@ -1126,6 +1231,7 @@ const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
 	delete_template: executeDeleteTemplateAction,
 	add_channel: executeAddChannelAction,
 	create_alert_rule: executeCreateAlertRuleAction,
+	create_freeform_alert_rule: executeCreateFreeformAlertRuleAction,
 	bulk_session_action: executeBulkSessionAction,
 };
 

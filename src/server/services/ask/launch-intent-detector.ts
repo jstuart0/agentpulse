@@ -902,6 +902,13 @@ export type AlertRuleIntent =
 			projectHint: string | null;
 			ruleType: "status_failed" | "status_stuck" | "status_completed" | "no_activity_minutes";
 			thresholdMinutes?: number | null;
+	  }
+	| {
+			kind: "create_freeform_alert_rule";
+			projectHint: string | null;
+			condition: string;
+			dailyTokenBudget: number | null; // null → handler asks follow-up
+			sampleRate: number;
 	  };
 
 const ALERT_RULE_CLASSIFIER_PROMPT = (projectNames: string[]): string =>
@@ -914,13 +921,14 @@ Rule types and their meanings:
 - status_stuck: fires when the AI classifier marks a session as stuck (no progress for extended time)
 - status_completed: fires when a session completes successfully
 - no_activity_minutes: fires when a session has been active but shows no new events for N minutes
+- create_freeform_alert_rule: fires when session events match a user-described natural-language condition
 
 Respond with JSON (no markdown, no backticks):
 
 If NOT a session-monitoring alert rule request (e.g. "alert me when my meeting starts"):
 {"intent":"none"}
 
-If YES and the rule type is one of the four above:
+If YES and the rule type is one of the four constrained types above:
 {
   "intent": "create_alert_rule",
   "projectHint": "<project name from known list, or null if not specified>",
@@ -928,10 +936,20 @@ If YES and the rule type is one of the four above:
   "thresholdMinutes": <integer for no_activity_minutes, or null>
 }
 
+If YES and the condition is freeform (e.g. "alert when the agent mentions X", "notify me when the agent encounters a security issue"):
+{
+  "intent": "create_freeform_alert_rule",
+  "projectHint": "<project name from known list, or null if not specified>",
+  "condition": "<natural language condition string, extracted from the user's message>",
+  "dailyTokenBudget": <integer tokens if the user stated a budget, or null>,
+  "sampleRate": 1.0
+}
+
 Rules:
-- Only use one of the four constrained rule types. Freeform rules ("alert when the agent mentions X") must return intent:none.
 - projectHint: extract from known project names (case-insensitive). Null if not specified.
 - thresholdMinutes: only required for no_activity_minutes; extract from "for N minutes" or similar.
+- condition: the natural-language condition the user described, verbatim or lightly cleaned.
+- dailyTokenBudget: extract from "with a budget of N tokens/day" or similar; null if not stated.
 - Respond ONLY with the JSON object.`;
 
 export async function detectAlertRuleIntent(
@@ -1002,6 +1020,20 @@ export async function detectAlertRuleIntent(
 		}
 
 		if (parsed.intent === "none") return { kind: "none" };
+
+		if (parsed.intent === "create_freeform_alert_rule") {
+			const condition = typeof parsed.condition === "string" ? parsed.condition.trim() : "";
+			if (!condition) return { kind: "none" };
+			return {
+				kind: "create_freeform_alert_rule",
+				projectHint: typeof parsed.projectHint === "string" ? parsed.projectHint : null,
+				condition,
+				dailyTokenBudget:
+					typeof parsed.dailyTokenBudget === "number" ? parsed.dailyTokenBudget : null,
+				sampleRate: typeof parsed.sampleRate === "number" ? parsed.sampleRate : 1.0,
+			};
+		}
+
 		if (parsed.intent !== "create_alert_rule") return { kind: "none" };
 
 		const validRuleTypes = [

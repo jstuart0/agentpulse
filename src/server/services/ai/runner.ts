@@ -6,6 +6,7 @@ import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { sessionBus } from "../notifier.js";
 import { emitAiEvent, loadRecentEvents, stampUserPrompt, stampWatcherState } from "./ai-events.js";
 import {
+	evaluateFreeformRules,
 	evaluateNoActivityRules,
 	evaluateStuckRules,
 	purgeExpiredQaCache,
@@ -131,6 +132,7 @@ export class WatcherRunner {
 			const now = new Date();
 			await evaluateStuckRules(now);
 			await evaluateNoActivityRules(now);
+			await evaluateFreeformRules(now);
 			await purgeExpiredQaCache(now);
 		} finally {
 			this.alertSweepBusy = false;

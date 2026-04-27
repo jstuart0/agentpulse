@@ -606,6 +606,10 @@ export function initializeDatabase() {
 			expires_at TEXT NOT NULL
 		)`,
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_cache_session_question ON ai_qa_cache(session_id, question_hash)",
+		// Slice D: freeform_match rule columns. Idempotent — SQLite ignores duplicate columns silently.
+		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_cents INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_date TEXT",
+		"ALTER TABLE project_alert_rules ADD COLUMN last_evaluated_event_id INTEGER NOT NULL DEFAULT 0",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

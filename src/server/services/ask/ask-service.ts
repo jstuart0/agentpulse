@@ -16,7 +16,10 @@ import {
 	handleAddProjectContinuation,
 	handleNewAddProjectIntent,
 } from "./ask-add-project-handler.js";
-import { handleAlertRuleRequest } from "./ask-alert-rule-handler.js";
+import {
+	handleAlertRuleRequest,
+	handleFreeformAlertRuleRequest,
+} from "./ask-alert-rule-handler.js";
 import { handleBulkAction } from "./ask-bulk-action-handler.js";
 import { handleChannelSetupRequest } from "./ask-channel-handler.js";
 import { handleProjectTemplateCrud } from "./ask-crud-handler.js";
@@ -570,6 +573,16 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 			});
 			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
 		}
+		if (alertRuleResult.kind === "create_freeform_alert_rule") {
+			const alertResult = await handleFreeformAlertRuleRequest(alertRuleResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: alertResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
 		if (alertRuleResult.kind === "classifier_failed" && !preamble) {
 			preamble = `_(Heads up: I tried to detect an alert-rule request but the classifier failed: ${alertRuleResult.error}. Answering as a general question.)_\n\n`;
 		}
@@ -906,6 +919,19 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		);
 		if (alertRuleResult.kind === "create_alert_rule") {
 			const alertResult = await handleAlertRuleRequest(alertRuleResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: alertResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: alertResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (alertRuleResult.kind === "create_freeform_alert_rule") {
+			const alertResult = await handleFreeformAlertRuleRequest(alertRuleResult, askArgs);
 			const assistantMessage = await appendMessage({
 				threadId: thread.id,
 				role: "assistant",
