@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0--pre.1-blue)](https://github.com/jstuart0/agentpulse/releases)
+[![Version](https://img.shields.io/badge/version-0.2.0--pre.3-blue)](https://github.com/jstuart0/agentpulse/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun-000?logo=bun)](https://bun.sh)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-✓-green)](https://github.com/awesome-selfhosted/awesome-selfhosted)
 [![Wiki](https://img.shields.io/badge/docs-wiki-informational)](https://github.com/jstuart0/agentpulse/wiki)
@@ -91,13 +91,16 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 
 - **Dashboard** -- grid of all sessions with status, project name, session name, duration, and tool use count
 - **Session detail** -- click a session to see a chat-style timeline with your prompts as blue bubbles and tool usage inline
-- **Session templates** -- save reusable Claude Code and Codex session setups, preview normalized launch specs, and route launches to the right host
+- **Projects** -- first-class projects with cwd-based session resolution; sessions stamp themselves with the right project on ingest, templates inherit project defaults (cwd, agentType, model) with per-field overrides, and a `/projects` page lets you create / edit / delete them. Saving a template under a new directory auto-creates the project for you
+- **Session templates** -- save reusable Claude Code and Codex session setups, link them to a project for live-inheritance defaults, preview normalized launch specs, and route launches to the right host
 - **Orchestration** -- launch headless or interactive sessions from AgentPulse, track launch status, retry, stop, and manage sessions through the local supervisor
+- **Search** -- full-text across session names, prompts, plans, notes, and event payloads (SQLite FTS5, BM25-ranked). Clicking an event hit jumps to the matching event in the timeline and applies a brief amber flash
+- **Inbox** -- single `/inbox` view that aggregates every open approval (HITL, Ask-driven actions, alert-rule firings), stuck / risky session warnings, and recent failures. Approve / decline inline; snooze noisy items
 - **Real-time updates** -- everything updates live via WebSocket, no refreshing needed
 - **Random session names** -- each session gets a name like `brave-falcon` so you can tell them apart
 - **CLAUDE.md editor** -- view and edit your agent instruction files from the dashboard
 - **Setup page** -- generates hook config you can copy-paste, or use the one-liner above
-- **AI Labs (experimental)** -- optional AI layer that watches sessions, classifies health, proposes next steps with human-in-the-loop approval, aggregates daily project digests, and more. Each feature is behind its own Labs toggle. See below.
+- **AI Labs (experimental)** -- optional AI layer that watches sessions, classifies health, proposes next steps with human-in-the-loop approval, plus an **Ask** command surface that lets you launch / edit / search / summarize / alert in natural language. Each feature is behind its own Labs toggle. See below.
 
 ## AI Labs (experimental)
 
@@ -112,13 +115,25 @@ When enabled, AgentPulse can use an LLM provider you choose (Anthropic, OpenAI, 
 - **Session watcher** -- on each handoff (a `Stop` event, idle pause, plan completion, or error), the watcher reads recent events, redacts secrets via a configurable rule list, and asks the configured provider to emit one JSON decision: `continue` (with a next prompt), `ask` (route to HITL), `report` (summarize), `stop`, or `wait`. Proposals land in a durable queue so they survive server restarts.
 - **Per-session config** -- provider, policy (`ask_always` / `ask_on_risk` / `auto`), daily spend cap, max continuations, optional custom system prompt, all from the session detail **AI** tab.
 - **Session intelligence classifier** -- deterministic heuristic flags sessions as `healthy` / `blocked` / `stuck` / `risky` / `complete_candidate` with a one-sentence reason. Shows as a chip on dashboard cards. Optionally feeds back into watcher decisions.
-- **Operator inbox** -- single `/inbox` view that aggregates open HITL requests, stuck / risky sessions, and recently failed proposals across every session. Approve / decline HITL inline, snooze noisy failed proposals for 1h / 4h / 24h / 7d, or batch decline.
+- **Ask command surface** -- conversational interface (web + Telegram) that turns natural language into approval cards. Every state-mutating intent goes through the same `ai_action_requests` atomic-claim approval pipeline, so concurrent web + Telegram approvals can't double-execute. Examples:
+  - *"open a Claude session for agentpulse"* — queues a launch request
+  - *"add a project myapp at /tmp/myapp"* — multi-turn drafting walks you through missing fields
+  - *"resume brave-falcon with: refactor the auth module"* — new launch in the same cwd with the new prompt; the inbox card shows "Resume of brave-falcon" so the approver sees the parent
+  - *"pin brave-falcon"* / *"add a note to slate-bear: needs review"* / *"rename auth-worker to auth-refactor"* — non-destructive direct execute, with the resolved session name embedded in the reply
+  - *"stop the auth session"* / *"archive completed sessions on agentpulse"* / *"delete template auth-setup"* — destructive actions go through approval; bulk targets are previewed (cap 50, "+N more" footer)
+  - *"alert me when any session on agentpulse fails"* / *"alert when the agent mentions a security concern"* — creates a project-level alert rule (constrained or freeform) with per-rule daily token budget
+  - *"set up a Telegram channel called personal"* — creates a pending notification channel and returns the enrollment code
+  - *"summarize session brave-falcon"* / *"why did session amber-wolf fail"* — bounded-transcript Q&A with provenance footer; cached for 15 minutes per `(session, normalized question)` and invalidated by new events
+  - *"show me failed sessions"* / *"what happened today"* — read-only NL search and digest; both heuristic-only (no LLM call), so they're fast and free
+- **Operator inbox** -- single `/inbox` view that aggregates open HITL requests, Ask-driven action requests, stuck / risky sessions, and recently failed proposals across every session and project. Approve / decline inline, snooze noisy failed proposals for 1h / 4h / 24h / 7d, or batch decline.
 - **Project digest** -- `/digest` rolls up the last 24 hours of activity grouped by working directory: active / blocked / stuck / completed counts per repo, top plan completions, notable failures. Cached daily, manual refresh available.
+- **Project alert rules** -- per-project rules that fire when sessions transition (`status_failed`, `status_completed`, `status_stuck`, `no_activity_minutes`) or when a freeform LLM-evaluated condition matches an event. Evaluation runs in `WatcherRunner`'s 60-second sweep with re-entry guard and first-run backfill (so a new `status_stuck` rule on a project with thirty already-stuck sessions doesn't notification-storm). Freeform rules carry their own daily token budget so cost stays bounded.
 - **Template distillation** (API only) -- `POST /api/v1/ai/templates/distill` generates a reviewable `SessionTemplateInput` draft from a successful session, with provenance metadata.
 - **Launch recommendation** (API only) -- `POST /api/v1/launches/recommendation` returns an advisory agent + model + host suggestion based on prior completions at the same cwd. The existing launch validator is still the resolver of record.
 - **Risk classes + ask_on_risk** (API only) -- configurable list of risk matchers (destructive command patterns, credential references, recent test failures) that escalate a proposed `continue` to HITL regardless of policy. See `GET /api/v1/ai/risk-classes`.
 - **Guarded `auto` policy** -- dispatch without HITL only when the session is managed, the supervisor is connected, no risk class matched, and the dispatch-filter accepts the prompt. Every other case still routes to HITL. Everything is auditable via `ai_continue_sent` events.
-- **Spend + kill switch** -- per-user daily spend cap, a global kill switch in Settings that immediately pauses all watchers, and HITL requests carry optional timeouts that auto-expire if ignored.
+- **Spend + kill switch** -- per-user daily spend cap, per-rule cap for freeform alert rules, a global kill switch in Settings that immediately pauses all watchers, and HITL / action requests carry optional timeouts that auto-expire if ignored.
+- **Local-model thinking suppression** -- when the configured provider is OpenAI-compatible (Ollama, vLLM, llama.cpp), classifier calls send `reasoning_effort: "none"` so qwen3 and similar reasoning models return clean JSON instead of burying the response in chain-of-thought. Anthropic / OpenAI / Google / OpenRouter providers receive prompts unchanged.
 - **Observability** -- every wake emits a structured JSON log line prefixed with `ai_metric` (watcher run queued / completed, HITL resolution latency, classifier distribution, etc.). Pipe them into Loki / Datadog / Splunk / Elastic. Optional OTLP forwarding via `AGENTPULSE_OTEL_ENDPOINT`. A `/api/v1/ai/diagnostics` endpoint returns a point-in-time queue and flag snapshot for in-dashboard viewing.
 
 ### Enable it
@@ -150,6 +165,7 @@ Each AI surface has its own Labs toggle under **Settings → Labs**:
 | `aiSessionTab` | on | Hides the **AI** tab in session detail |
 | `intelligenceBadges` | on | Hides the health chip on dashboard session cards |
 | `aiSettingsPanel` | on | Hides the entire **AI watcher** section in Settings |
+| `askAssistant` | on | Disables the Ask command surface (`/ai/ask` and Telegram inbound) — falls back to read-only dashboard |
 | `templateDistillation` | off | Experimental, API-only for now |
 | `launchRecommendation` | off | Experimental, API-only for now |
 | `riskClasses` | off | Experimental, API-only for now |
