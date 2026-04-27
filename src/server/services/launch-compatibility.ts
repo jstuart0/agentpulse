@@ -3,6 +3,7 @@ import type {
 	AgentType,
 	LaunchMode,
 	LaunchSpec,
+	PrelaunchAction,
 	SessionTemplateInput,
 	SupervisorRecord,
 	TemplateHostCompatibility,
@@ -93,17 +94,50 @@ export function validateAgainstSupervisor(
 }
 
 /**
+ * Determine whether `supervisor` advertises the capability flags required
+ * by the supplied prelaunch actions. Returns the list of missing flags so
+ * callers can surface a precise error per bob's §10.2.
+ */
+export function supervisorSupportsPrelaunch(
+	supervisor: SupervisorRecord,
+	actions: PrelaunchAction[] | undefined,
+): { ok: boolean; missing: string[] } {
+	if (!actions || actions.length === 0) return { ok: true, missing: [] };
+	const features = supervisor.capabilities.features ?? [];
+	const missing: string[] = [];
+	if (!features.includes("can_run_prelaunch_actions")) {
+		missing.push("can_run_prelaunch_actions");
+	}
+	for (const action of actions) {
+		if (action.kind === "scaffold_workarea" && !features.includes("can_scaffold_workarea")) {
+			if (!missing.includes("can_scaffold_workarea")) missing.push("can_scaffold_workarea");
+		}
+	}
+	return { ok: missing.length === 0, missing };
+}
+
+/**
  * Pure: return the first supervisor from `supervisors` that passes
  * validateAgainstSupervisor with zero errors, or null if none qualify.
  * Extracted so action-requests-service and ask-launch-handler can
  * perform supervisor selection without the async listSupervisors() call.
+ *
+ * When `prelaunchActions` is provided, supervisors lacking the required
+ * capability flags are filtered out *before* the validation pass — a
+ * supervisor that can run the agent but can't scaffold isn't capable for
+ * this launch (bob's §10.2).
  */
 export function pickFirstCapableSupervisor(
 	template: SessionTemplateInput,
 	mode: LaunchMode,
 	supervisors: SupervisorRecord[],
+	prelaunchActions?: PrelaunchAction[],
 ): SupervisorRecord | null {
-	for (const s of supervisors) {
+	const candidates =
+		prelaunchActions && prelaunchActions.length > 0
+			? supervisors.filter((s) => supervisorSupportsPrelaunch(s, prelaunchActions).ok)
+			: supervisors;
+	for (const s of candidates) {
 		const { errors } = validateAgainstSupervisor(template, s, mode);
 		if (errors.length === 0) return s;
 	}

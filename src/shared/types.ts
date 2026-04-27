@@ -319,6 +319,13 @@ export interface SessionTemplateInput {
 	isFavorite?: boolean;
 }
 
+export type PrelaunchAction = {
+	kind: "scaffold_workarea";
+	path: string;
+	gitInit?: boolean;
+	seedClaudeMd?: { content: string; path: string; sha256: string };
+};
+
 export interface LaunchSpec {
 	version: 1;
 	launchCorrelationId: string;
@@ -337,6 +344,7 @@ export interface LaunchSpec {
 		cliArgs: string[];
 		instructionsFile: "CLAUDE.md" | "AGENTS.md";
 	};
+	prelaunchActions?: PrelaunchAction[];
 }
 
 export interface ProviderLaunchGuidance {
