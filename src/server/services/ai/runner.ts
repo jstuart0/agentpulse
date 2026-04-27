@@ -5,6 +5,7 @@ import { managedSessions, sessions, supervisors } from "../../db/schema.js";
 import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { sessionBus } from "../notifier.js";
 import { emitAiEvent, loadRecentEvents, stampUserPrompt, stampWatcherState } from "./ai-events.js";
+import { evaluateNoActivityRules, evaluateStuckRules } from "./alert-rule-evaluator.js";
 import { buildWatcherContext } from "./context.js";
 import { classifyContinuability } from "./continuability.js";
 import { checkDispatch } from "./dispatch-filter.js";
@@ -41,6 +42,7 @@ const DEBOUNCE_MS = 1_500;
 const MAX_EVENTS_LOOKBACK = 80;
 const LEASE_DURATION_MS = 60_000;
 const LEASE_POLL_INTERVAL_MS = 500;
+const ALERT_RULE_SWEEP_INTERVAL_MS = 60_000;
 
 interface ScheduledRun {
 	timer: ReturnType<typeof setTimeout>;
@@ -62,6 +64,10 @@ export class WatcherRunner {
 	private readonly scheduled = new Map<string, ScheduledRun>();
 	private readonly inFlight = new Set<string>();
 	private started = false;
+	private alertRuleSweepInterval: ReturnType<typeof setInterval> | null = null;
+	// Re-entry guard: if a sweep takes >60s the next tick returns immediately
+	// rather than running a second concurrent sweep that could double-fire alerts.
+	private alertSweepBusy = false;
 	private readonly leaseOwner = `watcher-${process.pid}-${Date.now()}`;
 	private readonly leaser = new RunLeaser({
 		leaseOwner: this.leaseOwner,
@@ -93,14 +99,37 @@ export class WatcherRunner {
 		// plan_update, etc.).
 
 		await this.leaser.start();
+
+		this.alertRuleSweepInterval = setInterval(() => {
+			void this.runAlertRuleSweep().catch((err) => {
+				console.error("[alert-rule-sweep] sweep threw:", err);
+			});
+		}, ALERT_RULE_SWEEP_INTERVAL_MS);
+
 		console.log("[ai-watcher] runner started");
 	}
 
 	stop(): void {
 		this.leaser.stop();
+		if (this.alertRuleSweepInterval !== null) {
+			clearInterval(this.alertRuleSweepInterval);
+			this.alertRuleSweepInterval = null;
+		}
 		for (const entry of this.scheduled.values()) clearTimeout(entry.timer);
 		this.scheduled.clear();
 		this.started = false;
+	}
+
+	private async runAlertRuleSweep(): Promise<void> {
+		if (this.alertSweepBusy) return;
+		this.alertSweepBusy = true;
+		try {
+			const now = new Date();
+			await evaluateStuckRules(now);
+			await evaluateNoActivityRules(now);
+		} finally {
+			this.alertSweepBusy = false;
+		}
 	}
 
 	/** Schedule or reset the per-session debounce timer. */

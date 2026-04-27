@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { blob, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { blob, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const sessions = sqliteTable("sessions", {
 	id: text("id")
@@ -580,14 +580,21 @@ export const projectAlertRules = sqliteTable("project_alert_rules", {
 // transitions are instantaneous; a 5-minute window prevents double-fires
 // from race conditions (e.g. two concurrent event-processor calls) without
 // silencing legitimate re-fires on long-running sessions.
-export const projectAlertRuleFires = sqliteTable("project_alert_rule_fires", {
-	id: text("id")
-		.primaryKey()
-		.$defaultFn(() => crypto.randomUUID()),
-	ruleId: text("rule_id").notNull(),
-	sessionId: text("session_id").notNull(),
-	firedAt: text("fired_at").notNull().default(sql`(datetime('now'))`),
-});
+export const projectAlertRuleFires = sqliteTable(
+	"project_alert_rule_fires",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
+		ruleId: text("rule_id").notNull(),
+		sessionId: text("session_id").notNull(),
+		firedAt: text("fired_at").notNull().default(sql`(datetime('now'))`),
+	},
+	(t) => ({
+		// UNIQUE index already exists in DDL (client.ts:597); annotation added for Drizzle type fidelity.
+		uniq: uniqueIndex("idx_alert_rule_fires_rule_session").on(t.ruleId, t.sessionId),
+	}),
+);
 
 // ProjectDraftFields — partial record collected turn-by-turn during
 // AI-driven "add project" flows. Required fields: name, cwd.

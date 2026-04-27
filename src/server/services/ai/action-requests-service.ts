@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { LaunchMode, LaunchSpec, SessionTemplateInput } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import {
@@ -6,6 +6,7 @@ import {
 	aiActionRequests,
 	aiPendingProjectDrafts,
 	managedSessions,
+	projectAlertRuleFires,
 	projectAlertRules,
 	projects,
 	sessionTemplates,
@@ -28,6 +29,7 @@ import { createProject, deleteProject, updateProject } from "../projects/project
 import { getSearchBackend } from "../search/index.js";
 import { listSupervisors } from "../supervisor-registry.js";
 import { deleteTemplate, updateTemplate } from "../templates/templates-service.js";
+import { intelligenceForSession } from "./intelligence-service.js";
 
 export type ActionRequestStatus =
 	| "awaiting_reply"
@@ -796,8 +798,10 @@ async function executeCreateAlertRuleAction(
 	const { origin, channelId: reqChannelId, askThreadId } = request;
 
 	// Constrained rule types only — reject unsupported types rather than
-	// silently no-op. status_stuck and no_activity_minutes are not yet
-	// evaluated at runtime but the row is created; a follow-up plan wires them.
+	// silently no-op. All four rule types are evaluated by the periodic
+	// alert-rule sweep in WatcherRunner. On rule creation, existing matching
+	// sessions are pre-seeded into project_alert_rule_fires to prevent
+	// first-sweep notification storms.
 	const supportedRuleTypes = [
 		"status_failed",
 		"status_stuck",
@@ -833,21 +837,91 @@ async function executeCreateAlertRuleAction(
 	}
 
 	try {
-		const now = sqlNow();
+		const nowDate = new Date();
+		const nowStr = sqlNow();
 		const params =
 			ruleType === "no_activity_minutes" && thresholdMinutes != null
 				? ({ thresholdMinutes } as Record<string, unknown>)
 				: null;
 
-		await db.insert(projectAlertRules).values({
-			projectId,
-			ruleType,
-			params,
-			channelId: channelId ?? null,
-			isActive: true,
-			createdAt: now,
-			updatedAt: now,
-		});
+		const [newRule] = await db
+			.insert(projectAlertRules)
+			.values({
+				projectId,
+				ruleType,
+				params,
+				channelId: channelId ?? null,
+				isActive: true,
+				createdAt: nowStr,
+				updatedAt: nowStr,
+			})
+			.returning({ id: projectAlertRules.id });
+
+		// Backfill: pre-seed fire rows for sessions that already match the rule
+		// condition at creation time. This prevents the first sweep from sending
+		// a storm of notifications for the existing backlog. No notifications are
+		// sent for backfilled rows — they are silent de-bounce markers only.
+		if (newRule) {
+			try {
+				if (ruleType === "status_stuck") {
+					const candidates = await db
+						.select({ sessionId: sessions.sessionId })
+						.from(sessions)
+						.where(
+							and(
+								eq(sessions.projectId, projectId),
+								inArray(sessions.status, ["active", "idle"]),
+								isNull(sessions.endedAt),
+								eq(sessions.isArchived, false),
+							),
+						);
+					for (const { sessionId: sid } of candidates) {
+						const intel = await intelligenceForSession(sid, nowDate).catch(() => null);
+						if (!intel || intel.health !== "stuck") continue;
+						await db
+							.insert(projectAlertRuleFires)
+							.values({ ruleId: newRule.id, sessionId: sid, firedAt: nowDate.toISOString() })
+							.onConflictDoNothing();
+					}
+				} else if (ruleType === "no_activity_minutes" && thresholdMinutes != null) {
+					const cutoff = new Date(nowDate.getTime() - thresholdMinutes * 60_000).toISOString();
+					const candidates = await db
+						.select({ sessionId: sessions.sessionId })
+						.from(sessions)
+						.where(
+							and(
+								eq(sessions.projectId, projectId),
+								isNull(sessions.endedAt),
+								eq(sessions.isArchived, false),
+								sql`${sessions.lastActivityAt} < ${cutoff}`,
+							),
+						);
+					for (const { sessionId: sid } of candidates) {
+						await db
+							.insert(projectAlertRuleFires)
+							.values({ ruleId: newRule.id, sessionId: sid, firedAt: nowDate.toISOString() })
+							.onConflictDoNothing();
+					}
+				} else if (ruleType === "status_failed" || ruleType === "status_completed") {
+					const targetStatus = ruleType === "status_failed" ? "failed" : "completed";
+					const candidates = await db
+						.select({ sessionId: sessions.sessionId })
+						.from(sessions)
+						.where(and(eq(sessions.projectId, projectId), eq(sessions.status, targetStatus)));
+					for (const { sessionId: sid } of candidates) {
+						await db
+							.insert(projectAlertRuleFires)
+							.values({ ruleId: newRule.id, sessionId: sid, firedAt: nowDate.toISOString() })
+							.onConflictDoNothing();
+					}
+				}
+			} catch (backfillErr) {
+				// Backfill failure must not abort rule creation — the rule is live;
+				// the first sweep may fire for existing sessions but that is preferable
+				// to losing the rule entirely.
+				console.error("[alert-rule] backfill failed for rule", newRule.id, backfillErr);
+			}
+		}
 
 		await conditionalUpdate(request.id, "applying", {
 			status: "applied",
