@@ -1,9 +1,21 @@
 import type { AgentType, LaunchMode } from "../../../shared/types.js";
 import type { ProjectDraftFields } from "../../db/schema.js";
 import { getAdapter } from "../ai/llm/registry.js";
+import type { ProviderKind } from "../ai/llm/types.js";
 import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
 import type { CachedProject } from "../projects/cache.js";
+
+// Local OpenAI-compatible models (Ollama, vLLM, llama.cpp) often emit
+// chain-of-thought before answering, breaking JSON-only classifier prompts.
+// qwen3 honors `/no_think` to skip its thinking phase; smaller llama/mistral
+// models simply ignore unknown directives, so this is safe to append.
+function withNoThinkForLocalProviders(systemPrompt: string, providerKind: ProviderKind): string {
+	if (providerKind === "openai_compatible") {
+		return `${systemPrompt}\n\n/no_think`;
+	}
+	return systemPrompt;
+}
 
 export type LaunchIntent =
 	| { kind: "none" }
@@ -124,7 +136,7 @@ export async function detectLaunchIntent(
 	});
 
 	const projectNames = projects.map((p) => p.name);
-	const systemPrompt = INTENT_SYSTEM_PROMPT(projectNames);
+	const systemPrompt = withNoThinkForLocalProviders(INTENT_SYSTEM_PROMPT(projectNames), full.kind);
 
 	try {
 		const res = await adapter.complete({
@@ -375,7 +387,7 @@ export async function detectSessionActionIntent(
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: SESSION_ACTION_CLASSIFIER_PROMPT,
+			systemPrompt: withNoThinkForLocalProviders(SESSION_ACTION_CLASSIFIER_PROMPT, full.kind),
 			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 200,
@@ -555,7 +567,7 @@ export async function detectResumeIntent(
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: RESUME_SYSTEM_PROMPT(projectNames),
+			systemPrompt: withNoThinkForLocalProviders(RESUME_SYSTEM_PROMPT(projectNames), full.kind),
 			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 200,
@@ -768,7 +780,10 @@ export async function detectProjectTemplateCrudIntent(
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: CRUD_SYSTEM_PROMPT(projectNames, templateNames),
+			systemPrompt: withNoThinkForLocalProviders(
+				CRUD_SYSTEM_PROMPT(projectNames, templateNames),
+				full.kind,
+			),
 			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 300,
@@ -992,7 +1007,10 @@ export async function detectAlertRuleIntent(
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: ALERT_RULE_CLASSIFIER_PROMPT(projectNames),
+			systemPrompt: withNoThinkForLocalProviders(
+				ALERT_RULE_CLASSIFIER_PROMPT(projectNames),
+				full.kind,
+			),
 			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 200,
@@ -1201,9 +1219,12 @@ export async function detectBulkActionIntent(
 		projectNames.length > 0
 			? `Known project names: ${projectNames.map((n) => `"${n}"`).join(", ")}`
 			: "";
-	const systemPrompt = projectContext
-		? `${BULK_ACTION_CLASSIFIER_PROMPT}\n\n${projectContext}`
-		: BULK_ACTION_CLASSIFIER_PROMPT;
+	const systemPrompt = withNoThinkForLocalProviders(
+		projectContext
+			? `${BULK_ACTION_CLASSIFIER_PROMPT}\n\n${projectContext}`
+			: BULK_ACTION_CLASSIFIER_PROMPT,
+		full.kind,
+	);
 
 	try {
 		const res = await adapter.complete({
@@ -1373,7 +1394,7 @@ export async function detectQaIntent(message: string): Promise<QaDetectResult> {
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: QA_CLASSIFIER_PROMPT,
+			systemPrompt: withNoThinkForLocalProviders(QA_CLASSIFIER_PROMPT, full.kind),
 			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 150,
@@ -1453,7 +1474,7 @@ export async function detectAddProjectIntent(message: string): Promise<LaunchInt
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: ADD_PROJECT_SYSTEM_PROMPT,
+			systemPrompt: withNoThinkForLocalProviders(ADD_PROJECT_SYSTEM_PROMPT, full.kind),
 			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 200,
