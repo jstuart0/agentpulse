@@ -141,7 +141,7 @@ export async function detectLaunchIntent(
 	try {
 		const res = await adapter.complete({
 			systemPrompt,
-			transcriptPrompt: `User message: ${message}`,
+			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
@@ -388,7 +388,7 @@ export async function detectSessionActionIntent(
 	try {
 		const res = await adapter.complete({
 			systemPrompt: withNoThinkForLocalProviders(SESSION_ACTION_CLASSIFIER_PROMPT, full.kind),
-			transcriptPrompt: `User message: ${message}`,
+			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
@@ -568,7 +568,7 @@ export async function detectResumeIntent(
 	try {
 		const res = await adapter.complete({
 			systemPrompt: withNoThinkForLocalProviders(RESUME_SYSTEM_PROMPT(projectNames), full.kind),
-			transcriptPrompt: `User message: ${message}`,
+			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
@@ -784,7 +784,7 @@ export async function detectProjectTemplateCrudIntent(
 				CRUD_SYSTEM_PROMPT(projectNames, templateNames),
 				full.kind,
 			),
-			transcriptPrompt: `User message: ${message}`,
+			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
 			model: full.model,
 			maxTokens: 300,
 			temperature: 0.0,
@@ -1011,7 +1011,7 @@ export async function detectAlertRuleIntent(
 				ALERT_RULE_CLASSIFIER_PROMPT(projectNames),
 				full.kind,
 			),
-			transcriptPrompt: `User message: ${message}`,
+			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
@@ -1229,7 +1229,7 @@ export async function detectBulkActionIntent(
 	try {
 		const res = await adapter.complete({
 			systemPrompt,
-			transcriptPrompt: `User message: ${message}`,
+			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
@@ -1395,7 +1395,7 @@ export async function detectQaIntent(message: string): Promise<QaDetectResult> {
 	try {
 		const res = await adapter.complete({
 			systemPrompt: withNoThinkForLocalProviders(QA_CLASSIFIER_PROMPT, full.kind),
-			transcriptPrompt: `User message: ${message}`,
+			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
 			model: full.model,
 			maxTokens: 150,
 			temperature: 0.0,
@@ -1475,7 +1475,7 @@ export async function detectAddProjectIntent(message: string): Promise<LaunchInt
 	try {
 		const res = await adapter.complete({
 			systemPrompt: withNoThinkForLocalProviders(ADD_PROJECT_SYSTEM_PROMPT, full.kind),
-			transcriptPrompt: `User message: ${message}`,
+			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
