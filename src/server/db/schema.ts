@@ -668,6 +668,25 @@ export interface ProjectChoiceSnapshot {
 	name: string;
 	cwd: string;
 }
+// Workspace-scaffold pending state — populated when the user types `new`
+// and we've computed the proposed path + prelaunchActions but the user
+// hasn't yet confirmed. Slice 5d of the AI task-initiated launches plan
+// (§10.8 / §11.1).
+export interface PendingWorkspaceScaffold {
+	taskSlug: string;
+	resolvedPath: string;
+	// JSON-stringified PrelaunchAction[] would force consumers to re-parse;
+	// store the array directly. The values match shared/types.ts PrelaunchAction.
+	actions: Array<{
+		kind: "scaffold_workarea";
+		path: string;
+		gitInit?: boolean;
+		seedClaudeMd?: { content: string; path: string; sha256: string };
+	}>;
+	// Optional supervisor host name for "I'll create on macbook" attribution.
+	suggestedHost?: string;
+}
+
 export interface LaunchDisambiguationDraftFields {
 	originalMessage: string;
 	taskHint?: string;
@@ -676,6 +695,10 @@ export interface LaunchDisambiguationDraftFields {
 	agentType?: string;
 	mode?: string;
 	proposedProjectChoices: ProjectChoiceSnapshot[];
+	// Slice 5d: when the user has typed `new` and we've shown the
+	// confirmation card, the resolved path + actions are stored here while
+	// the draft awaits a confirm/cancel/custom-path reply.
+	pendingScaffold?: PendingWorkspaceScaffold;
 }
 
 // aiPendingProjectDrafts — in-flight multi-turn state for both add-project

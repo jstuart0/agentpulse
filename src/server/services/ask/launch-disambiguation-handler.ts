@@ -1,14 +1,20 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { AgentType, LaunchMode } from "../../../shared/types.js";
+import type { AgentType, LaunchMode, PrelaunchAction } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import {
 	type LaunchDisambiguationDraftFields,
 	type NextQuestion,
+	type PendingWorkspaceScaffold,
 	type ProjectChoiceSnapshot,
 	aiPendingProjectDrafts,
 } from "../../db/schema.js";
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
-import type { CachedProject } from "../projects/cache.js";
+import { slugifyTaskName } from "../name-generator.js";
+import { type CachedProject, bumpVersionAndReload } from "../projects/cache.js";
+import { createProject, listProjects } from "../projects/projects-service.js";
+import { listSupervisors } from "../supervisor-registry.js";
+import { getWorkspaceSettings } from "../workspace/feature.js";
+import { WorkspacePathValidationError, scaffoldWorkArea } from "../workspace/scaffold.js";
 import { handleAskLaunchIntent } from "./ask-launch-handler.js";
 import type { LaunchIntent, TaskBrief } from "./launch-intent-detector.js";
 
@@ -24,6 +30,32 @@ export interface ProjectPickerMeta {
 	taskHint?: string;
 	taskBriefSummary?: string;
 	telegramOrigin: boolean;
+	// Slice 5d: server-computed flag — true iff at least one connected
+	// supervisor advertises `can_scaffold_workarea`. Client uses this to
+	// hide the "Scaffold a fresh workspace" CTA when no host can honor it
+	// (ruby §11.5).
+	canScaffold: boolean;
+}
+
+// Slice 5d: workspace_scaffold sentinel — the assistant turn after the
+// user types `new`. Same fenced-block grammar as the picker, different
+// `kind` discriminator (ruby §11.6).
+export interface WorkspaceScaffoldMeta {
+	kind: "workspace_scaffold";
+	draftId: string;
+	resolvedPath: string;
+	taskSlug: string;
+	actions: Array<{
+		kind: string;
+		path: string;
+		gitInit?: boolean;
+		seedClaudeMdPath?: string;
+		seedClaudeMdBytes?: number;
+	}>;
+	canScaffold: boolean;
+	suggestedHost?: string;
+	telegramOrigin: boolean;
+	error?: { code: string; message: string; path?: string };
 }
 
 export function encodePickerMeta(meta: ProjectPickerMeta): string {
@@ -51,16 +83,65 @@ export function extractPickerMeta(
 	return null;
 }
 
-function renderPickerReplyText(choices: ProjectChoiceSnapshot[], telegramOrigin: boolean): string {
+// Workspace scaffold sentinel sharing the same fenced block as the picker —
+// `extractWorkspaceScaffoldMeta` discriminates on `kind` (ruby §11.6).
+export function encodeWorkspaceScaffoldMeta(meta: WorkspaceScaffoldMeta): string {
+	return `\n\n\`\`\`${PICKER_SENTINEL_FENCE}\n${JSON.stringify(meta)}\n\`\`\``;
+}
+
+export function extractWorkspaceScaffoldMeta(
+	content: string,
+): { meta: WorkspaceScaffoldMeta; visibleText: string } | null {
+	const match = content.match(PICKER_FENCE_RE);
+	if (!match) return null;
+	try {
+		const parsed = JSON.parse(match[1]);
+		if (parsed && parsed.kind === "workspace_scaffold" && Array.isArray(parsed.actions)) {
+			return {
+				meta: parsed as WorkspaceScaffoldMeta,
+				visibleText: content.replace(PICKER_FENCE_RE, "").trim(),
+			};
+		}
+	} catch {
+		return null;
+	}
+	return null;
+}
+
+/**
+ * Server-side capability decision for the picker / scaffolder UI: returns
+ * true iff at least one currently-connected supervisor advertises the
+ * `can_scaffold_workarea` feature. Used by the picker meta (`canScaffold`)
+ * so the client doesn't surface a CTA the server can't honor (ruby §11.5).
+ */
+async function computeCanScaffold(): Promise<{ canScaffold: boolean; suggestedHost?: string }> {
+	const all = await listSupervisors();
+	const connected = all.filter((s) => s.status === "connected");
+	for (const s of connected) {
+		const features = s.capabilities?.features ?? [];
+		if (features.includes("can_scaffold_workarea")) {
+			return { canScaffold: true, suggestedHost: s.hostName };
+		}
+	}
+	return { canScaffold: false };
+}
+
+function renderPickerReplyText(
+	choices: ProjectChoiceSnapshot[],
+	telegramOrigin: boolean,
+	canScaffold: boolean,
+): string {
 	if (choices.length === 0) {
-		return [
-			"You don't have any projects yet. Add your first project from **Settings → Projects**, or paste an absolute path here and I'll launch in that directory.",
-		].join("\n");
+		const newClause = canScaffold
+			? "Reply `new` to scaffold a fresh workspace, paste an absolute path to launch in an existing directory, or add a project from **Settings → Projects**."
+			: "Paste an absolute path here and I'll launch in that directory, or add a project from **Settings → Projects**.";
+		return `You don't have any projects yet. ${newClause}`;
 	}
 	const lines: string[] = [];
-	lines.push(
-		"Which project should I work in? Reply with a number, paste an absolute path, or say `new` to scaffold a fresh workspace.",
-	);
+	const lead = canScaffold
+		? "Which project should I work in? Reply with a number, paste an absolute path, or say `new` to scaffold a fresh workspace."
+		: "Which project should I work in? Reply with a number or paste an absolute path.";
+	lines.push(lead);
 	lines.push("");
 	choices.forEach((c, i) => {
 		lines.push(`${i + 1}. ${c.name}  (${c.cwd})`);
@@ -154,7 +235,8 @@ export async function createLaunchDisambiguationDraft(
 		.returning();
 
 	const telegramOrigin = origin === "telegram";
-	const baseText = renderPickerReplyText(choices, telegramOrigin);
+	const { canScaffold } = await computeCanScaffold();
+	const baseText = renderPickerReplyText(choices, telegramOrigin, canScaffold);
 
 	// On Telegram we don't render structured UI, so just send the plain
 	// numbered list. The bot's existing routing already passes user
@@ -171,6 +253,7 @@ export async function createLaunchDisambiguationDraft(
 		taskHint: intent.taskHint,
 		taskBriefSummary: intent.taskBrief?.summary,
 		telegramOrigin,
+		canScaffold,
 	};
 	return {
 		replyText: `${baseText}${encodePickerMeta(meta)}`,
@@ -278,6 +361,23 @@ export async function resolveLaunchDisambiguation(
 	const { draft, reply, origin, threadId, telegramChatId } = args;
 	const fields = draft.draftFields as LaunchDisambiguationDraftFields;
 	const choices = fields.proposedProjectChoices ?? [];
+
+	// Slice 5d: when a workspace scaffold is awaiting confirmation, route
+	// the reply to the scaffold-confirm parser instead of the general
+	// project-picker parser. The user is in a different state machine —
+	// confirm / cancel / typed-path — and the reply grammar is disjoint
+	// from the picker's numeric / fuzzy / absolute_path grammar.
+	if (fields.pendingScaffold) {
+		return resolveScaffoldConfirm({
+			draft,
+			reply,
+			origin,
+			threadId,
+			telegramChatId,
+			fields,
+		});
+	}
+
 	const parsed = parseDisambiguationReply(reply, choices);
 	const now = sqlNow();
 
@@ -332,14 +432,13 @@ export async function resolveLaunchDisambiguation(
 			};
 		}
 		case "new_keyword": {
-			// Keep the draft open — Slice 5 (work-area scaffolding) is gated
-			// on the supervisor-side prelaunchActions handler. Tell the user
-			// and let them pick a number on their next reply instead.
-			return {
-				replyText:
-					"Scratch workspace scaffolding isn't available yet. Paste an absolute path instead, or pick a project from the list above.",
-				actionRequestId: null,
-			};
+			return handleNewKeyword({
+				draft,
+				origin,
+				threadId,
+				fields,
+				explicitPath: undefined,
+			});
 		}
 		case "ambiguous": {
 			const names = parsed.matches.map((m) => m.name).join(", ");
@@ -358,7 +457,8 @@ export async function resolveLaunchDisambiguation(
 					actionRequestId: null,
 				};
 			}
-			const baseText = renderPickerReplyText(choices, origin === "telegram");
+			const { canScaffold } = await computeCanScaffold();
+			const baseText = renderPickerReplyText(choices, origin === "telegram", canScaffold);
 			if (origin === "telegram") {
 				return { replyText: `I didn't understand that. ${baseText}`, actionRequestId: null };
 			}
@@ -369,6 +469,7 @@ export async function resolveLaunchDisambiguation(
 				taskHint: fields.taskHint,
 				taskBriefSummary: fields.taskBrief?.summary,
 				telegramOrigin: false,
+				canScaffold,
 			};
 			return {
 				replyText: `I didn't understand that. ${baseText}${encodePickerMeta(meta)}`,
@@ -404,4 +505,441 @@ async function bumpRetryCount(
 		.set({ nextQuestion: updated, updatedAt: now })
 		.where(eq(aiPendingProjectDrafts.id, draft.id));
 	return { ...draft, nextQuestion: updated };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Slice 5d: workspace_scaffold flow
+// ─────────────────────────────────────────────────────────────────────
+
+const CONFIRM_KEYWORDS = new Set(["yes", "y", "ok", "okay", "confirm"]);
+const CANCEL_KEYWORDS = new Set(["no", "n", "cancel", "abort"]);
+
+export type ParsedScaffoldReply =
+	| { tag: "confirm" }
+	| { tag: "cancel" }
+	| { tag: "custom_path"; path: string }
+	| { tag: "unparsed" };
+
+export function parseScaffoldConfirmReply(reply: string): ParsedScaffoldReply {
+	const trimmed = reply.trim();
+	if (trimmed.length === 0) return { tag: "unparsed" };
+	const lower = trimmed.toLowerCase();
+	if (CONFIRM_KEYWORDS.has(lower)) return { tag: "confirm" };
+	if (CANCEL_KEYWORDS.has(lower)) return { tag: "cancel" };
+	if (trimmed.startsWith("/") || trimmed.startsWith("~/")) {
+		return { tag: "custom_path", path: trimmed };
+	}
+	return { tag: "unparsed" };
+}
+
+interface HandleNewKeywordArgs {
+	draft: typeof aiPendingProjectDrafts.$inferSelect;
+	origin: "web" | "telegram";
+	threadId: string;
+	fields: LaunchDisambiguationDraftFields;
+	explicitPath: string | undefined;
+}
+
+/**
+ * Compute (or recompute) the workspace scaffold for the open draft and
+ * persist the result onto draftFields.pendingScaffold so the next reply
+ * can route through the scaffold-confirm parser. Returns the assistant
+ * reply with the workspace_scaffold sentinel embedded.
+ */
+async function handleNewKeyword(args: HandleNewKeywordArgs): Promise<DisambiguationResult> {
+	const { draft, origin, fields, explicitPath } = args;
+	const telegramOrigin = origin === "telegram";
+
+	const { canScaffold, suggestedHost } = await computeCanScaffold();
+	if (!canScaffold) {
+		// No connected supervisor advertises can_scaffold_workarea — keep
+		// the draft open and steer the user back to the picker (ruby §11.5).
+		return {
+			replyText:
+				"None of your connected supervisors support scaffolding new workspaces yet. Pick a project from the list above, paste an absolute path, or update your supervisor binary on the host where you want this to land.",
+			actionRequestId: null,
+		};
+	}
+
+	const settings = await getWorkspaceSettings();
+
+	// Slug: prefer displayName (already kebab in classifier output), fall
+	// back to taskBrief/summary, then taskHint, then originalMessage. The
+	// slugifier runs on each candidate; the first non-empty wins.
+	const taskSummary = fields.taskBrief?.summary;
+	const slugCandidates = [
+		fields.displayName ?? "",
+		taskSummary ?? "",
+		fields.taskHint ?? "",
+		fields.originalMessage ?? "",
+	];
+	let taskSlug = "";
+	for (const candidate of slugCandidates) {
+		const s = slugifyTaskName(candidate);
+		if (s.length > 0) {
+			taskSlug = s;
+			break;
+		}
+	}
+	if (taskSlug.length === 0) {
+		taskSlug = `scratch-${Math.random().toString(36).slice(2, 10)}`;
+	}
+
+	// Collision snapshot from the projects table. The supervisor's own
+	// path_not_empty check is the safety net; this is the advisory pass
+	// (bob §10.4).
+	const allProjects = await listProjects();
+	const colliding = new Set<string>(allProjects.map((p) => p.cwd));
+
+	let resolvedPath: string;
+	let prelaunchActions: PrelaunchAction[];
+	try {
+		const result = await scaffoldWorkArea({
+			taskSlug,
+			taskSummary,
+			workspaceSettings: settings,
+			collidingPaths: colliding,
+			explicitPath,
+		});
+		resolvedPath = result.resolvedPath;
+		prelaunchActions = result.prelaunchActions;
+	} catch (err) {
+		if (err instanceof WorkspacePathValidationError) {
+			// User-supplied custom path failed validation. Render the
+			// error inline on a fresh scaffolder so the user can retry.
+			const errorMeta: WorkspaceScaffoldMeta = {
+				kind: "workspace_scaffold",
+				draftId: draft.id,
+				resolvedPath: explicitPath ?? "",
+				taskSlug,
+				actions: [],
+				canScaffold,
+				suggestedHost,
+				telegramOrigin,
+				error: {
+					code: err.code,
+					message: prelaunchErrorCopy(err.code, explicitPath ?? null),
+					path: explicitPath ?? undefined,
+				},
+			};
+			const visibleText = telegramOrigin
+				? `That path didn't validate: ${prelaunchErrorCopy(err.code, explicitPath ?? null)} Reply with a different path, or \`cancel\` to back out.`
+				: "That path didn't validate. Pick a different path or cancel.";
+			if (telegramOrigin) {
+				return { replyText: visibleText, actionRequestId: null };
+			}
+			return {
+				replyText: `${visibleText}${encodeWorkspaceScaffoldMeta(errorMeta)}`,
+				actionRequestId: null,
+			};
+		}
+		// Any other error (e.g. WorkspaceCollisionExhaustedError) — surface
+		// to the user as plain text and keep the picker draft alive.
+		const message = err instanceof Error ? err.message : "Could not pick a workspace path.";
+		return {
+			replyText: `Couldn't scaffold a workspace: ${message} Try picking a project from the list, or paste an absolute path.`,
+			actionRequestId: null,
+		};
+	}
+
+	// Persist the pending scaffold onto the draft so the next reply can
+	// confirm / cancel / customize without re-deriving the slug.
+	const pending: PendingWorkspaceScaffold = {
+		taskSlug,
+		resolvedPath,
+		actions: prelaunchActions.map((a) => ({
+			kind: "scaffold_workarea" as const,
+			path: a.path,
+			gitInit: a.gitInit,
+			seedClaudeMd: a.seedClaudeMd,
+		})),
+		suggestedHost,
+	};
+	const nextFields: LaunchDisambiguationDraftFields = {
+		...fields,
+		pendingScaffold: pending,
+	};
+	await db
+		.update(aiPendingProjectDrafts)
+		.set({
+			draftFields: nextFields,
+			// Reset retry counter when the user transitions into the
+			// scaffold step so a fresh 3-strike budget applies to confirm
+			// parsing.
+			nextQuestion: { ...(draft.nextQuestion as NextQuestion), retryCount: 0 },
+			updatedAt: sqlNow(),
+		})
+		.where(eq(aiPendingProjectDrafts.id, draft.id));
+
+	const visibleText = renderScaffoldVisibleText({
+		resolvedPath,
+		suggestedHost,
+		telegramOrigin,
+	});
+	if (telegramOrigin) {
+		return { replyText: visibleText, actionRequestId: null };
+	}
+
+	const meta: WorkspaceScaffoldMeta = {
+		kind: "workspace_scaffold",
+		draftId: draft.id,
+		resolvedPath,
+		taskSlug,
+		actions: prelaunchActions.map((a) => ({
+			kind: a.kind,
+			path: a.path,
+			gitInit: a.gitInit,
+			seedClaudeMdPath: a.seedClaudeMd?.path,
+			seedClaudeMdBytes: a.seedClaudeMd?.content
+				? new TextEncoder().encode(a.seedClaudeMd.content).length
+				: undefined,
+		})),
+		canScaffold,
+		suggestedHost,
+		telegramOrigin,
+	};
+	return {
+		replyText: `${visibleText}${encodeWorkspaceScaffoldMeta(meta)}`,
+		actionRequestId: null,
+	};
+}
+
+function renderScaffoldVisibleText(args: {
+	resolvedPath: string;
+	suggestedHost: string | undefined;
+	telegramOrigin: boolean;
+}): string {
+	const hostClause = args.suggestedHost ? ` on **${args.suggestedHost}**` : "";
+	const lines: string[] = [];
+	lines.push(`I'll create a fresh workspace${hostClause} at \`${args.resolvedPath}\`.`);
+	lines.push("");
+	lines.push("Reply `yes` to confirm, paste a different absolute path, or `cancel` to back out.");
+	if (args.telegramOrigin) {
+		lines.push("");
+		lines.push("(Reply here in Telegram — answers are delivered through the same channel.)");
+	}
+	return lines.join("\n");
+}
+
+interface ResolveScaffoldConfirmArgs {
+	draft: typeof aiPendingProjectDrafts.$inferSelect;
+	reply: string;
+	origin: "web" | "telegram";
+	threadId: string;
+	telegramChatId?: string | null;
+	fields: LaunchDisambiguationDraftFields;
+}
+
+async function resolveScaffoldConfirm(
+	args: ResolveScaffoldConfirmArgs,
+): Promise<DisambiguationResult> {
+	const { draft, reply, origin, threadId, telegramChatId, fields } = args;
+	const pending = fields.pendingScaffold;
+	if (!pending) {
+		// Defense-in-depth: caller guarantees this; treat as unparsed if
+		// the field is somehow missing.
+		await markDraftResolved(draft.id);
+		return {
+			replyText: "Workspace draft expired. Ask again to retry.",
+			actionRequestId: null,
+		};
+	}
+
+	const parsed = parseScaffoldConfirmReply(reply);
+	const now = sqlNow();
+
+	switch (parsed.tag) {
+		case "cancel": {
+			// Hard delete so the draft slot is freed for the next ask
+			// (ruby §11.1: "Cancelled — say `new` again or pick a project").
+			await db.delete(aiPendingProjectDrafts).where(eq(aiPendingProjectDrafts.id, draft.id));
+			return {
+				replyText:
+					"Cancelled. Say `new` again or pick a project from the list to launch elsewhere.",
+				actionRequestId: null,
+			};
+		}
+		case "custom_path": {
+			// Re-invoke the scaffold pipeline with the new explicit path.
+			// Validation errors render as a workspace_scaffold sentinel
+			// with `error` set so the recovery UI is identical to the
+			// initial UI (ruby §11.2).
+			return handleNewKeyword({
+				draft,
+				origin,
+				threadId,
+				fields,
+				explicitPath: parsed.path,
+			});
+		}
+		case "confirm": {
+			return executeScaffoldConfirm({
+				draft,
+				origin,
+				threadId,
+				telegramChatId,
+				fields,
+				pending,
+			});
+		}
+		default: {
+			// Garbage input — bump the retry counter (mirrors picker
+			// behavior). After 3 misses, the draft expires and the user
+			// has to start over.
+			const newDraftAfter = await bumpRetryCount(draft, now);
+			if (!newDraftAfter) {
+				return {
+					replyText:
+						"I wasn't able to figure out whether to confirm or cancel after 3 tries. Start over by asking again.",
+					actionRequestId: null,
+				};
+			}
+			const telegramOrigin = origin === "telegram";
+			const visibleText = renderScaffoldVisibleText({
+				resolvedPath: pending.resolvedPath,
+				suggestedHost: pending.suggestedHost,
+				telegramOrigin,
+			});
+			if (telegramOrigin) {
+				return {
+					replyText: `I didn't understand that. ${visibleText}`,
+					actionRequestId: null,
+				};
+			}
+			const meta: WorkspaceScaffoldMeta = {
+				kind: "workspace_scaffold",
+				draftId: draft.id,
+				resolvedPath: pending.resolvedPath,
+				taskSlug: pending.taskSlug,
+				actions: pending.actions.map((a) => ({
+					kind: a.kind,
+					path: a.path,
+					gitInit: a.gitInit,
+					seedClaudeMdPath: a.seedClaudeMd?.path,
+					seedClaudeMdBytes: a.seedClaudeMd?.content
+						? new TextEncoder().encode(a.seedClaudeMd.content).length
+						: undefined,
+				})),
+				canScaffold: true,
+				suggestedHost: pending.suggestedHost,
+				telegramOrigin: false,
+			};
+			return {
+				replyText: `I didn't understand that. ${visibleText}${encodeWorkspaceScaffoldMeta(meta)}`,
+				actionRequestId: null,
+			};
+		}
+	}
+}
+
+interface ExecuteScaffoldConfirmArgs {
+	draft: typeof aiPendingProjectDrafts.$inferSelect;
+	origin: "web" | "telegram";
+	threadId: string;
+	telegramChatId?: string | null;
+	fields: LaunchDisambiguationDraftFields;
+	pending: PendingWorkspaceScaffold;
+}
+
+async function executeScaffoldConfirm(
+	args: ExecuteScaffoldConfirmArgs,
+): Promise<DisambiguationResult> {
+	const { draft, origin, threadId, telegramChatId, fields, pending } = args;
+
+	// Ensure the project name is unique. createProject's findCwdConflict
+	// already gates by cwd, but a name clash (someone else registered
+	// "plan-caching" under a different cwd) would still 409 — append a
+	// 4-char suffix in that case.
+	let projectName = pending.taskSlug;
+	const existing = await listProjects();
+	const usedNames = new Set(existing.map((p) => p.name));
+	if (usedNames.has(projectName)) {
+		projectName = `${projectName}-${Math.random().toString(36).slice(2, 6)}`;
+	}
+
+	const created = await createProject({
+		name: projectName,
+		cwd: pending.resolvedPath,
+		tags: ["scratch", "ai-initiated"],
+	});
+	if (created.conflict) {
+		// Cwd already owned by another project — surface inline; keep the
+		// draft open so the user can pick a different path.
+		return {
+			replyText: `Couldn't register the scratch workspace: a project at \`${pending.resolvedPath}\` already exists. Reply with a different absolute path, or \`cancel\` to back out.`,
+			actionRequestId: null,
+		};
+	}
+	if (!created.project) {
+		return {
+			replyText:
+				"Couldn't register the scratch workspace. Reply with a different absolute path, or `cancel` to back out.",
+			actionRequestId: null,
+		};
+	}
+
+	// Refresh project cache so handleAskLaunchIntent's getProjectByName()
+	// can resolve the brand-new row.
+	await bumpVersionAndReload();
+
+	await markDraftResolved(draft.id);
+
+	const reconstructed: Extract<LaunchIntent, { kind: "launch" }> = {
+		kind: "launch",
+		projectName: created.project.name,
+		mode: fields.mode as LaunchMode | undefined,
+		agentType: fields.agentType as AgentType | undefined,
+		taskHint: fields.taskHint,
+		displayName: fields.displayName,
+		taskBrief: fields.taskBrief as TaskBrief | undefined,
+	};
+	const prelaunchActions: PrelaunchAction[] = pending.actions.map((a) => ({
+		kind: "scaffold_workarea" as const,
+		path: a.path,
+		gitInit: a.gitInit,
+		seedClaudeMd: a.seedClaudeMd,
+	}));
+	return handleAskLaunchIntent({
+		intent: reconstructed,
+		origin,
+		threadId,
+		telegramChatId,
+		prelaunchActions,
+	});
+}
+
+/**
+ * Map a PrelaunchErrorCode (or workspace path validation code) to the
+ * user-facing copy from ruby's §11.2 table. Path interpolation is
+ * permitted; `path` is the user-supplied value when available.
+ */
+export function prelaunchErrorCopy(code: string, path: string | null): string {
+	switch (code) {
+		case "path_not_absolute":
+			return "That path isn't absolute. Use a path starting with `/` or `~/`.";
+		case "path_traversal_rejected":
+			return "Path can't contain `..` — that's a security guardrail.";
+		case "path_outside_trusted_roots":
+			return "That path is outside the directories AgentPulse is allowed to write to. Pick a path under your home directory.";
+		case "symlink_rejected":
+			return "That path traverses a symlink that leaves your home directory. Pick a different path.";
+		case "path_not_empty":
+			return path
+				? `\`${path}\` already has files in it. Pick a different location, or cd to that directory and ask me to launch there instead.`
+				: "That path already has files in it. Pick a different location.";
+		case "permission_denied":
+			return path
+				? `I don't have permission to write to \`${path}\`. Pick a path under your home directory (\`~/...\`).`
+				: "I don't have permission to write there. Pick a path under your home directory (`~/...`).";
+		case "disk_full":
+			return "Can't create the workspace — your disk is full.";
+		case "git_init_failed":
+			return "Created the directory, but `git init` failed. The host may not have git installed.";
+		case "claude_md_write_failed":
+			return "Created the directory, but writing CLAUDE.md failed (file integrity check failed).";
+		case "unknown_action_kind":
+			return "AgentPulse and the supervisor are out of sync — the supervisor doesn't recognize this action. Update the supervisor binary.";
+		default:
+			return "Workspace scaffolding failed. Try a different path or pick a project from the list.";
+	}
 }

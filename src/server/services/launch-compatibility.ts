@@ -166,6 +166,7 @@ export function buildLaunchSpec(
 	template: SessionTemplateInput,
 	mode: LaunchMode,
 	_supervisor: SupervisorRecord,
+	prelaunchActions?: PrelaunchAction[],
 ): LaunchSpec {
 	const agentType = template.agentType;
 	const command = providerCommandForSpec(agentType);
@@ -194,6 +195,7 @@ export function buildLaunchSpec(
 			cliArgs,
 			instructionsFile,
 		},
+		...(prelaunchActions && prelaunchActions.length > 0 ? { prelaunchActions } : {}),
 	};
 }
 

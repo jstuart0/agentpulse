@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AskProjectPicker, parseProjectPickerMeta } from "../components/AskProjectPicker.js";
+import {
+	AskWorkspaceScaffolder,
+	parseScaffolderMeta,
+} from "../components/AskWorkspaceScaffolder.js";
 import { MarkdownContent } from "../components/MarkdownContent.js";
 import {
 	type AskMessage,
@@ -405,13 +409,17 @@ function MessageBubble({
 	const isUser = msg.role === "user";
 	// Pull the project-picker payload (if any) out of the assistant
 	// content so we can render the structured component AND keep the
-	// Telegram-readable plain text as the visible body.
+	// Telegram-readable plain text as the visible body. The same fenced
+	// block carries either kind:"project_picker" or kind:"workspace_scaffold"
+	// (Slice 5d) — discriminated by the parser.
 	const pickerData = !isUser && msg.content ? parseProjectPickerMeta(msg.content) : null;
-	const visibleText = pickerData ? pickerData.visibleText : msg.content;
+	const scaffolderData =
+		!isUser && msg.content && !pickerData ? parseScaffolderMeta(msg.content) : null;
+	const visibleText = pickerData?.visibleText ?? scaffolderData?.visibleText ?? msg.content;
 	// The picker is interactive only on the last message and only while
 	// no reply is in flight — older picker messages stay visible but
 	// disabled so the transcript still reads naturally.
-	const pickerDisabled = !isLast || sending;
+	const interactiveDisabled = !isLast || sending;
 	return (
 		<div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
 			<div
@@ -441,8 +449,17 @@ function MessageBubble({
 				{pickerData && (
 					<AskProjectPicker
 						meta={pickerData.meta}
-						disabled={pickerDisabled}
+						disabled={interactiveDisabled}
 						onSelect={onPickerSelect}
+					/>
+				)}
+				{scaffolderData && (
+					<AskWorkspaceScaffolder
+						meta={scaffolderData.meta}
+						disabled={interactiveDisabled}
+						onConfirm={() => onPickerSelect("yes")}
+						onCancel={() => onPickerSelect("cancel")}
+						onCustomPath={(p) => onPickerSelect(p)}
 					/>
 				)}
 				{msg.errorMessage && (

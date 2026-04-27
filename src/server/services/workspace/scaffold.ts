@@ -6,6 +6,26 @@ export interface ScaffoldWorkAreaInput {
 	taskSummary?: string;
 	workspaceSettings: WorkspaceSettings;
 	collidingPaths?: Set<string>;
+	// Slice 5d: when the user types a custom path in the workspace
+	// confirmation step, the disambiguation handler re-invokes scaffoldWorkArea
+	// with the explicit path. The default-root composition is bypassed but the
+	// CLAUDE.md template, sha256, and gitInit flag still come from settings —
+	// the user is overriding *where*, not *what*.
+	//
+	// Validation: must be absolute (starts with `/` or `~/`) and must not
+	// contain `..` segments. Callers should pre-validate; this helper performs
+	// the same checks defensively and throws on violation.
+	explicitPath?: string;
+}
+
+export class WorkspacePathValidationError extends Error {
+	constructor(
+		public readonly code: "path_not_absolute" | "path_traversal_rejected",
+		message: string,
+	) {
+		super(message);
+		this.name = "WorkspacePathValidationError";
+	}
 }
 
 export interface ScaffoldWorkAreaResult {
@@ -30,10 +50,7 @@ export class WorkspaceCollisionExhaustedError extends Error {
  * write literal `{{foo}}` in templates without escaping. Strict by design —
  * no defaults, no helpers, no nested expressions.
  */
-export function applyTemplateTokens(
-	template: string,
-	tokens: Record<string, string>,
-): string {
+export function applyTemplateTokens(template: string, tokens: Record<string, string>): string {
 	return template.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (match, key) => {
 		return Object.hasOwn(tokens, key) ? tokens[key] : match;
 	});
@@ -65,18 +82,39 @@ function joinRootAndSlug(root: string, slug: string): string {
 export async function scaffoldWorkArea(
 	input: ScaffoldWorkAreaInput,
 ): Promise<ScaffoldWorkAreaResult> {
-	const { taskSlug, taskSummary, workspaceSettings, collidingPaths } = input;
+	const { taskSlug, taskSummary, workspaceSettings, collidingPaths, explicitPath } = input;
 	const colliding = collidingPaths ?? new Set<string>();
 
-	const base = joinRootAndSlug(workspaceSettings.defaultRoot, taskSlug);
-	let resolvedPath = base;
-	let attempt = 1;
-	while (colliding.has(resolvedPath)) {
-		attempt += 1;
-		if (attempt > MAX_SUFFIX_ATTEMPTS) {
-			throw new WorkspaceCollisionExhaustedError(base);
+	let resolvedPath: string;
+	if (explicitPath !== undefined) {
+		const trimmed = explicitPath.trim();
+		if (!(trimmed.startsWith("/") || trimmed.startsWith("~/"))) {
+			throw new WorkspacePathValidationError(
+				"path_not_absolute",
+				"Path must be absolute (start with / or ~/).",
+			);
 		}
-		resolvedPath = `${base}-${attempt}`;
+		if (trimmed.split("/").some((seg) => seg === "..")) {
+			throw new WorkspacePathValidationError(
+				"path_traversal_rejected",
+				"Path can't contain `..` segments.",
+			);
+		}
+		// Trim trailing slashes for stable equality comparisons against
+		// project rows. (We don't normalize beyond that — the supervisor
+		// owns expansion and realpath resolution.)
+		resolvedPath = trimmed.replace(/\/+$/, "");
+	} else {
+		const base = joinRootAndSlug(workspaceSettings.defaultRoot, taskSlug);
+		resolvedPath = base;
+		let attempt = 1;
+		while (colliding.has(resolvedPath)) {
+			attempt += 1;
+			if (attempt > MAX_SUFFIX_ATTEMPTS) {
+				throw new WorkspaceCollisionExhaustedError(base);
+			}
+			resolvedPath = `${base}-${attempt}`;
+		}
 	}
 
 	const tokens: Record<string, string> = {

@@ -14,6 +14,10 @@ export interface ProjectPickerMeta {
 	taskHint?: string;
 	taskBriefSummary?: string;
 	telegramOrigin: boolean;
+	// Slice 5d: server-provided gate on the "Scaffold a fresh workspace"
+	// CTA. False when no connected supervisor advertises the
+	// can_scaffold_workarea capability flag (ruby §11.5).
+	canScaffold?: boolean;
 }
 
 interface Props {
@@ -72,12 +76,16 @@ export function AskProjectPicker({ meta, disabled, onSelect }: Props) {
 	if (meta.choices.length === 0) {
 		return (
 			<div className="mt-2 space-y-2">
-				<Link
-					to="/settings"
-					className="inline-flex items-center rounded-md border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-				>
-					Add your first project
-				</Link>
+				{meta.canScaffold && (
+					<button
+						type="button"
+						disabled={disabled}
+						onClick={() => onSelect("new")}
+						className="inline-flex items-center rounded-md border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+					>
+						Scaffold a fresh workspace
+					</button>
+				)}
 				<form
 					onSubmit={(e) => {
 						e.preventDefault();
@@ -104,6 +112,12 @@ export function AskProjectPicker({ meta, disabled, onSelect }: Props) {
 						Use path
 					</button>
 				</form>
+				<Link
+					to="/settings"
+					className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2"
+				>
+					…or add an existing project in Settings
+				</Link>
 			</div>
 		);
 	}
@@ -161,14 +175,16 @@ export function AskProjectPicker({ meta, disabled, onSelect }: Props) {
 					Use path
 				</button>
 			</form>
-			<button
-				type="button"
-				disabled={disabled}
-				onClick={() => onSelect("new")}
-				className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2 disabled:opacity-50"
-			>
-				Scaffold a new workspace
-			</button>
+			{meta.canScaffold && (
+				<button
+					type="button"
+					disabled={disabled}
+					onClick={() => onSelect("new")}
+					className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2 disabled:opacity-50"
+				>
+					Scaffold a new workspace
+				</button>
+			)}
 		</div>
 	);
 }

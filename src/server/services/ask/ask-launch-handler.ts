@@ -1,5 +1,10 @@
 import { and, eq, gt } from "drizzle-orm";
-import type { AgentType, LaunchMode, SessionTemplateInput } from "../../../shared/types.js";
+import type {
+	AgentType,
+	LaunchMode,
+	PrelaunchAction,
+	SessionTemplateInput,
+} from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { sessions } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
@@ -78,6 +83,14 @@ export interface HandleAskLaunchIntentArgs {
 	threadId: string;
 	/** Raw Telegram chat id (string), only present when origin="telegram". */
 	telegramChatId?: string | null;
+	/**
+	 * Slice 5d: prelaunch actions that the supervisor must run before the
+	 * agent invocation. When supplied, supervisor selection filters to hosts
+	 * advertising the matching capability flags (bob §10.2). The actions are
+	 * attached to the LaunchSpec so they survive the action_request →
+	 * launch_request handoff.
+	 */
+	prelaunchActions?: PrelaunchAction[];
 }
 
 export interface HandleAskLaunchIntentResult {
@@ -88,7 +101,7 @@ export interface HandleAskLaunchIntentResult {
 export async function handleAskLaunchIntent(
 	args: HandleAskLaunchIntentArgs,
 ): Promise<HandleAskLaunchIntentResult> {
-	const { intent, origin, threadId, telegramChatId } = args;
+	const { intent, origin, threadId, telegramChatId, prelaunchActions } = args;
 
 	// === Step 1: Resolve project ===
 	const project = await getProjectByName(intent.projectName);
@@ -184,7 +197,12 @@ export async function handleAskLaunchIntent(
 		}
 	}
 
-	const supervisor = pickFirstCapableSupervisor(template, launchMode, connectedSupervisors);
+	const supervisor = pickFirstCapableSupervisor(
+		template,
+		launchMode,
+		connectedSupervisors,
+		prelaunchActions,
+	);
 	if (!supervisor) {
 		const capabilityErrors: string[] = [];
 		for (const s of connectedSupervisors) {
@@ -199,7 +217,7 @@ export async function handleAskLaunchIntent(
 		};
 	}
 
-	const launchSpec = buildLaunchSpec(template, launchMode, supervisor);
+	const launchSpec = buildLaunchSpec(template, launchMode, supervisor, prelaunchActions);
 
 	// === Step 4: Resolve channel UUID for Telegram origin ===
 	let channelId: string | null = null;
