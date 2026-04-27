@@ -1,21 +1,9 @@
 import type { AgentType, LaunchMode } from "../../../shared/types.js";
 import type { ProjectDraftFields } from "../../db/schema.js";
 import { getAdapter } from "../ai/llm/registry.js";
-import type { ProviderKind } from "../ai/llm/types.js";
 import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
 import type { CachedProject } from "../projects/cache.js";
-
-// Local OpenAI-compatible models (Ollama, vLLM, llama.cpp) often emit
-// chain-of-thought before answering, breaking JSON-only classifier prompts.
-// qwen3 honors `/no_think` to skip its thinking phase; smaller llama/mistral
-// models simply ignore unknown directives, so this is safe to append.
-function withNoThinkForLocalProviders(systemPrompt: string, providerKind: ProviderKind): string {
-	if (providerKind === "openai_compatible") {
-		return `${systemPrompt}\n\n/no_think`;
-	}
-	return systemPrompt;
-}
 
 export type LaunchIntent =
 	| { kind: "none" }
@@ -136,16 +124,17 @@ export async function detectLaunchIntent(
 	});
 
 	const projectNames = projects.map((p) => p.name);
-	const systemPrompt = withNoThinkForLocalProviders(INTENT_SYSTEM_PROMPT(projectNames), full.kind);
+	const systemPrompt = INTENT_SYSTEM_PROMPT(projectNames);
 
 	try {
 		const res = await adapter.complete({
 			systemPrompt,
-			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
+			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
 			timeoutMs: 8_000,
+			disableReasoning: true,
 		});
 
 		// Postflight spend recording. Classifier cost isn't attributable to a
@@ -387,12 +376,13 @@ export async function detectSessionActionIntent(
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: withNoThinkForLocalProviders(SESSION_ACTION_CLASSIFIER_PROMPT, full.kind),
-			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
+			systemPrompt: SESSION_ACTION_CLASSIFIER_PROMPT,
+			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
 			timeoutMs: 8_000,
+			disableReasoning: true,
 		});
 
 		const actualCents = res.usage.estimated
@@ -567,12 +557,13 @@ export async function detectResumeIntent(
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: withNoThinkForLocalProviders(RESUME_SYSTEM_PROMPT(projectNames), full.kind),
-			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
+			systemPrompt: RESUME_SYSTEM_PROMPT(projectNames),
+			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
 			timeoutMs: 8_000,
+			disableReasoning: true,
 		});
 
 		const actualCents = res.usage.estimated
@@ -780,15 +771,13 @@ export async function detectProjectTemplateCrudIntent(
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: withNoThinkForLocalProviders(
-				CRUD_SYSTEM_PROMPT(projectNames, templateNames),
-				full.kind,
-			),
-			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
+			systemPrompt: CRUD_SYSTEM_PROMPT(projectNames, templateNames),
+			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 300,
 			temperature: 0.0,
 			timeoutMs: 8_000,
+			disableReasoning: true,
 		});
 
 		const actualCents = res.usage.estimated
@@ -1007,15 +996,13 @@ export async function detectAlertRuleIntent(
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: withNoThinkForLocalProviders(
-				ALERT_RULE_CLASSIFIER_PROMPT(projectNames),
-				full.kind,
-			),
-			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
+			systemPrompt: ALERT_RULE_CLASSIFIER_PROMPT(projectNames),
+			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
 			timeoutMs: 8_000,
+			disableReasoning: true,
 		});
 
 		const actualCents = res.usage.estimated
@@ -1219,21 +1206,19 @@ export async function detectBulkActionIntent(
 		projectNames.length > 0
 			? `Known project names: ${projectNames.map((n) => `"${n}"`).join(", ")}`
 			: "";
-	const systemPrompt = withNoThinkForLocalProviders(
-		projectContext
-			? `${BULK_ACTION_CLASSIFIER_PROMPT}\n\n${projectContext}`
-			: BULK_ACTION_CLASSIFIER_PROMPT,
-		full.kind,
-	);
+	const systemPrompt = projectContext
+		? `${BULK_ACTION_CLASSIFIER_PROMPT}\n\n${projectContext}`
+		: BULK_ACTION_CLASSIFIER_PROMPT;
 
 	try {
 		const res = await adapter.complete({
 			systemPrompt,
-			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
+			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
 			timeoutMs: 8_000,
+			disableReasoning: true,
 		});
 
 		const actualCents = res.usage.estimated
@@ -1394,12 +1379,13 @@ export async function detectQaIntent(message: string): Promise<QaDetectResult> {
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: withNoThinkForLocalProviders(QA_CLASSIFIER_PROMPT, full.kind),
-			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
+			systemPrompt: QA_CLASSIFIER_PROMPT,
+			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 150,
 			temperature: 0.0,
 			timeoutMs: 8_000,
+			disableReasoning: true,
 		});
 
 		const actualCents = res.usage.estimated
@@ -1474,12 +1460,13 @@ export async function detectAddProjectIntent(message: string): Promise<LaunchInt
 
 	try {
 		const res = await adapter.complete({
-			systemPrompt: withNoThinkForLocalProviders(ADD_PROJECT_SYSTEM_PROMPT, full.kind),
-			transcriptPrompt: withNoThinkForLocalProviders(`User message: ${message}`, full.kind),
+			systemPrompt: ADD_PROJECT_SYSTEM_PROMPT,
+			transcriptPrompt: `User message: ${message}`,
 			model: full.model,
 			maxTokens: 200,
 			temperature: 0.0,
 			timeoutMs: 8_000,
+			disableReasoning: true,
 		});
 
 		const actualCents = res.usage.estimated
