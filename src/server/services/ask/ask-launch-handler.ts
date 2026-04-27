@@ -198,6 +198,8 @@ export async function handleAskLaunchIntent(
 			validatedSupervisorId: supervisor.id,
 			projectId: project.id,
 			projectName: project.name,
+			aiInitiated: true,
+			askThreadId: threadId,
 		},
 	});
 

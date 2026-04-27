@@ -610,6 +610,10 @@ export function initializeDatabase() {
 		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_cents INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_date TEXT",
 		"ALTER TABLE project_alert_rules ADD COLUMN last_evaluated_event_id INTEGER NOT NULL DEFAULT 0",
+		// Slice 2 (AI task-initiated launches): provenance JSON copied into
+		// sessions.metadata at correlation time. Keeps the launch-spec contract
+		// clean while letting the executor stamp aiInitiated/askThreadId hints.
+		"ALTER TABLE launch_requests ADD COLUMN metadata TEXT",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

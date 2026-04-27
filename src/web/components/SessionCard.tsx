@@ -1,3 +1,4 @@
+import { Wand2 } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Session } from "../../shared/types.js";
@@ -109,7 +110,17 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 							className="text-xs font-mono font-bold bg-background border border-primary/30 rounded px-2 py-0.5 w-32 focus:outline-none focus:ring-1 focus:ring-primary"
 						/>
 					) : (
-						<span className="text-xs font-mono font-bold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5 truncate max-w-[10rem] md:max-w-none">
+						<span
+							className="text-xs font-mono font-bold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5 truncate max-w-[10rem] md:max-w-none inline-flex items-center gap-1"
+							title={
+								session.metadata?.aiInitiated === true
+									? "Launched from Ask — open conversation"
+									: undefined
+							}
+						>
+							{session.metadata?.aiInitiated === true && (
+								<Wand2 className="w-3 h-3 flex-shrink-0" aria-label="Launched from Ask" />
+							)}
 							{name}
 						</span>
 					)}

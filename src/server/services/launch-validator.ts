@@ -44,6 +44,7 @@ function mapLaunchRequest(row: typeof launchRequests.$inferSelect): LaunchReques
 		pid: row.pid ?? null,
 		providerLaunchMetadata: (row.providerLaunchMetadata as Record<string, unknown> | null) ?? null,
 		retryOfLaunchRequestId: row.retryOfLaunchRequestId ?? null,
+		metadata: (row.metadata as Record<string, unknown> | null) ?? null,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 	};
@@ -200,6 +201,7 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 			error: supervisorValidation.errors.join(" ") || null,
 			validationWarnings: warnings,
 			validationSummary: summary,
+			metadata: input.metadata ?? null,
 			createdAt: now,
 			updatedAt: now,
 		})

@@ -459,6 +459,7 @@ export interface LaunchRequest {
 	pid: number | null;
 	providerLaunchMetadata: Record<string, unknown> | null;
 	retryOfLaunchRequestId: string | null;
+	metadata: Record<string, unknown> | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -542,4 +543,5 @@ export interface LaunchRequestInput {
 	routingPolicy?: LaunchRoutingPolicy | null;
 	template: SessionTemplateInput;
 	launchSpec: LaunchSpec;
+	metadata?: Record<string, unknown> | null;
 }

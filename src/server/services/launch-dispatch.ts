@@ -1,11 +1,52 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { db } from "../db/client.js";
-import { launchRequests } from "../db/schema.js";
+import { launchRequests, sessions } from "../db/schema.js";
 import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import { markSessionFailed } from "./event-processor.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { attachManagedSessionToLaunch } from "./managed-session-state.js";
+
+const PROVENANCE_KEYS = ["aiInitiated", "askThreadId"] as const;
+
+/**
+ * Copy any provenance hints stamped on launch_requests.metadata onto the
+ * just-correlated session row. Idempotent: a re-correlation never clobbers
+ * existing keys with stale values, so manually edited session metadata stays
+ * intact. Returns silently when there is nothing to merge.
+ */
+async function applyLaunchProvenanceToSession(
+	sessionId: string,
+	launchMetadata: Record<string, unknown> | null,
+) {
+	if (!launchMetadata) return;
+	const provenance: Record<string, unknown> = {};
+	for (const key of PROVENANCE_KEYS) {
+		const value = launchMetadata[key];
+		if (value !== undefined && value !== null) provenance[key] = value;
+	}
+	if (Object.keys(provenance).length === 0) return;
+
+	const [row] = await db
+		.select({ metadata: sessions.metadata })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (!row) return;
+
+	const existing = (row.metadata as Record<string, unknown> | null) ?? {};
+	let changed = false;
+	const merged: Record<string, unknown> = { ...existing };
+	for (const [k, v] of Object.entries(provenance)) {
+		if (existing[k] === undefined) {
+			merged[k] = v;
+			changed = true;
+		}
+	}
+	if (!changed) return;
+
+	await db.update(sessions).set({ metadata: merged }).where(eq(sessions.sessionId, sessionId));
+}
 
 function nowIso() {
 	return new Date().toISOString();
@@ -169,6 +210,8 @@ export async function associateObservedSession(input: {
 		supervisorId: resolution.resolvedSupervisorId,
 		correlationSource: "session_id",
 	});
+
+	await applyLaunchProvenanceToSession(input.sessionId, resolution.launchRequest.metadata);
 
 	return markLaunchRunning(resolution.launchRequest.id);
 }

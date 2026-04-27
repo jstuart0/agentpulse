@@ -51,6 +51,11 @@ export interface ActionRequestPayload {
 	validatedSupervisorId: string;
 	projectId: string;
 	projectName?: string;
+	// Provenance hints stamped by handleAskLaunchIntent and propagated into
+	// launch_requests.metadata so the correlation step can copy them into
+	// sessions.metadata. Absent for non-Ask launch sources.
+	aiInitiated?: boolean;
+	askThreadId?: string;
 }
 
 export interface ActionRequest {
@@ -281,11 +286,20 @@ async function executeLaunchAction(
 		}
 
 		// === STEP 3: Dispatch via the existing managed-launch pipeline ===
+		const { aiInitiated, askThreadId: payloadAskThreadId } = request.payload;
+		const launchMetadata =
+			aiInitiated || payloadAskThreadId
+				? {
+						...(aiInitiated ? { aiInitiated: true } : {}),
+						...(payloadAskThreadId ? { askThreadId: payloadAskThreadId } : {}),
+					}
+				: null;
 		const { launchRequest } = await createValidatedLaunchRequest({
 			template,
 			launchSpec: finalLaunchSpec,
 			requestedSupervisorId: executingSupervisor.id,
 			requestedLaunchMode,
+			metadata: launchMetadata,
 		});
 
 		// === STEP 4: Mark applied ===

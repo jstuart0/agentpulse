@@ -235,6 +235,11 @@ export const launchRequests = sqliteTable("launch_requests", {
 	>(),
 	retryOfLaunchRequestId: text("retry_of_launch_request_id"),
 	parentSessionId: text("parent_session_id"),
+	// Free-form provenance the launch executor stamps onto the request and
+	// the correlation step copies into sessions.metadata. Used so the dashboard
+	// can identify AI-initiated sessions and link back to the originating
+	// Ask thread without adding more columns to sessions.
+	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
