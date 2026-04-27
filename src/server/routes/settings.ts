@@ -5,6 +5,11 @@ import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { apiKeys, settings } from "../db/schema.js";
 import { getTelemetryDiagnostics, sendTelemetryNow } from "../services/telemetry.js";
+import {
+	WorkspaceValidationError,
+	getWorkspaceSettings,
+	setWorkspaceSettings,
+} from "../services/workspace/feature.js";
 
 const settingsRouter = new Hono();
 settingsRouter.use("*", requireAuth());
@@ -36,6 +41,63 @@ settingsRouter.put("/settings", async (c) => {
 		});
 
 	return c.json({ ok: true });
+});
+
+// GET /api/v1/settings/workspace - Read workspace defaults (with fallbacks)
+settingsRouter.get("/settings/workspace", async (c) => {
+	const ws = await getWorkspaceSettings();
+	return c.json(ws);
+});
+
+// PUT /api/v1/settings/workspace - Upsert any subset of workspace defaults
+settingsRouter.put("/settings/workspace", async (c) => {
+	let body: {
+		defaultRoot?: unknown;
+		templateClaudeMd?: unknown;
+		gitInit?: unknown;
+	};
+	try {
+		body = await c.req.json();
+	} catch {
+		return c.json({ error: "Invalid JSON body" }, 400);
+	}
+
+	// Narrow each field type before handing to the service. The service does
+	// the semantic validation (path shape) — here we just gate type errors so
+	// the service layer doesn't have to second-guess `unknown`.
+	const update: {
+		defaultRoot?: string;
+		templateClaudeMd?: string;
+		gitInit?: boolean;
+	} = {};
+	if (body.defaultRoot !== undefined) {
+		if (typeof body.defaultRoot !== "string") {
+			return c.json({ error: "defaultRoot must be a string" }, 400);
+		}
+		update.defaultRoot = body.defaultRoot;
+	}
+	if (body.templateClaudeMd !== undefined) {
+		if (typeof body.templateClaudeMd !== "string") {
+			return c.json({ error: "templateClaudeMd must be a string" }, 400);
+		}
+		update.templateClaudeMd = body.templateClaudeMd;
+	}
+	if (body.gitInit !== undefined) {
+		if (typeof body.gitInit !== "boolean") {
+			return c.json({ error: "gitInit must be a boolean" }, 400);
+		}
+		update.gitInit = body.gitInit;
+	}
+
+	try {
+		const next = await setWorkspaceSettings(update);
+		return c.json(next);
+	} catch (err) {
+		if (err instanceof WorkspaceValidationError) {
+			return c.json({ error: err.message }, 400);
+		}
+		throw err;
+	}
 });
 
 // GET /api/v1/api-keys - List all API keys (without the actual key)

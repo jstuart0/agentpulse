@@ -350,6 +350,24 @@ export const api = {
 			body: JSON.stringify({ key, value }),
 		}),
 
+	getWorkspaceSettings: () =>
+		request<{ defaultRoot: string; templateClaudeMd: string; gitInit: boolean }>(
+			"/settings/workspace",
+		),
+
+	saveWorkspaceSettings: (update: {
+		defaultRoot?: string;
+		templateClaudeMd?: string;
+		gitInit?: boolean;
+	}) =>
+		request<{ defaultRoot: string; templateClaudeMd: string; gitInit: boolean }>(
+			"/settings/workspace",
+			{
+				method: "PUT",
+				body: JSON.stringify(update),
+			},
+		),
+
 	getApiKeys: () =>
 		request<{
 			keys: Array<{

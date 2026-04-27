@@ -5,6 +5,7 @@ import { LabsBadge } from "../components/LabsBadge.js";
 import { AiSettingsPanel } from "../components/settings/AiSettingsPanel.js";
 import { LabsPanel } from "../components/settings/LabsPanel.js";
 import { TelegramChannelPanel } from "../components/settings/TelegramChannelPanel.js";
+import { WorkspacesPanel } from "../components/settings/WorkspacesPanel.js";
 import { api } from "../lib/api.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { type AppTheme, persistTheme, resolveInitialTheme } from "../lib/theme.js";
@@ -316,6 +317,16 @@ export function SettingsPage() {
 					<AiSettingsPanel />
 				</section>
 			)}
+
+			{/* Workspaces */}
+			<section className="border border-border bg-card rounded-lg p-5 mb-6">
+				<h2 className="text-sm font-semibold mb-1">Workspaces</h2>
+				<p className="text-xs text-muted-foreground mb-4">
+					Where AgentPulse creates fresh directories when you say "new" in Ask. Settings here apply
+					to scratch workspaces only — your existing project paths are unaffected.
+				</p>
+				<WorkspacesPanel />
+			</section>
 
 			{/* Telegram HITL channels */}
 			{telegramEnabled && (
