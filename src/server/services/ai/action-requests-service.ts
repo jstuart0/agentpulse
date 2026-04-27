@@ -712,6 +712,76 @@ async function executeDeleteTemplateAction(
 	}
 }
 
+// ---- Channel setup executor ---------------------------------------------
+
+async function executeAddChannelAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	const payload = request.payload as unknown as { kind: string; label: string };
+	const { origin, channelId, askThreadId } = request;
+
+	const validKinds = ["telegram", "webhook", "email"] as const;
+	type ChannelKind = (typeof validKinds)[number];
+	const kind = validKinds.includes(payload.kind as ChannelKind)
+		? (payload.kind as ChannelKind)
+		: null;
+	const label =
+		typeof payload.label === "string" && payload.label ? payload.label : "Ask-created channel";
+
+	if (!kind) {
+		const reason = `Invalid channel kind: "${payload.kind}"`;
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+
+	try {
+		const { createPendingChannel } = await import("../channels/channels-service.js");
+		const { channel, enrollmentCode } = await createPendingChannel({ kind, label });
+		// isActive = true, verifiedAt = null — intentional: channel is visible but
+		// unverified. dispatch.ts checks verifiedAt before sending real messages.
+
+		let notifyText: string;
+		if (kind === "telegram") {
+			// The bot DMs the user the enrollment code; the user DMs it back as
+			// `/start <code>`. This self-DM pattern is required because Telegram's
+			// Bot API cannot initiate a conversation with a user who has not
+			// first messaged the bot — the enrollment code flow works around this.
+			notifyText = `Telegram channel **${label}** created. Your enrollment code is: ${enrollmentCode}\n\nDM this to your AgentPulse Telegram bot:\n  /start ${enrollmentCode}\n\nOnce sent, the bot will confirm and the channel will be active.`;
+		} else if (kind === "webhook") {
+			const { config } = await import("../../config.js");
+			const webhookUrl = `${config.publicUrl}/api/v1/channels/webhook/${channel.id}`;
+			notifyText = `Webhook channel **${label}** created. Your webhook URL is:\n  ${webhookUrl}\n\nConfigure your webhook sender to POST JSON events to this URL.`;
+		} else {
+			// email: channel row is created; email delivery requires further
+			// SMTP configuration in Settings → Channels before messages arrive.
+			notifyText = `Email channel **${label}** created (id: ${channel.id}). Email delivery requires SMTP configuration in Settings → Channels.`;
+		}
+
+		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
+		await notifyOriginUser(origin, channelId, askThreadId, notifyText);
+		return { ok: true, status: "applied" };
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			channelId,
+			askThreadId,
+			`Channel setup failed: ${reason.slice(0, 400)}`,
+		);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+}
+
 type KindExecutor = (request: ActionRequest, resolvedBy: string) => Promise<ResolveResult>;
 
 const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
@@ -724,6 +794,7 @@ const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
 	delete_project: executeDeleteProjectAction,
 	edit_template: executeEditTemplateAction,
 	delete_template: executeDeleteTemplateAction,
+	add_channel: executeAddChannelAction,
 };
 
 export async function resolveActionRequest(args: {

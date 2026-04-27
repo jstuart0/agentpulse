@@ -627,6 +627,34 @@ const CRUD_VERBS = [
 	"remove template",
 ];
 
+const CHANNEL_SETUP_TRIGGERS = [
+	"set up telegram",
+	"add telegram",
+	"configure telegram",
+	"set up a webhook",
+	"add a webhook",
+	"add webhook",
+	"set up notification",
+	"add notification channel",
+	"configure notification",
+	"set up channel",
+	"add channel",
+	"set up email notification",
+	"add email notification",
+	"set up a telegram",
+	"add a telegram",
+];
+
+/**
+ * Pure synchronous gate: returns true if the message looks like a request
+ * to create a notification channel (Telegram, webhook, or email). No LLM
+ * classifier needed — heuristic detection is sufficient here.
+ */
+export function channelSetupGatePasses(message: string): boolean {
+	const lower = message.toLowerCase();
+	return CHANNEL_SETUP_TRIGGERS.some((t) => lower.includes(t));
+}
+
 /**
  * Pure synchronous gate: true if the message contains a project/template
  * CRUD verb. The downstream LLM classifier confirms the specific operation

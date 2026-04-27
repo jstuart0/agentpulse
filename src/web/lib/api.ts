@@ -958,6 +958,17 @@ export type InboxWorkItem =
 			templateName: string;
 			createdAt: string;
 			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_add_channel";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			channelKind: "telegram" | "webhook" | "email";
+			channelLabel: string;
+			createdAt: string;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {

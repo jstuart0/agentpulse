@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { LabsBadge } from "../components/LabsBadge.js";
+import { ActionAddChannelCard } from "../components/inbox/ActionAddChannelCard.js";
 import { ActionAddProjectCard } from "../components/inbox/ActionAddProjectCard.js";
 import { ActionDeleteProjectCard } from "../components/inbox/ActionDeleteProjectCard.js";
 import { ActionDeleteTemplateCard } from "../components/inbox/ActionDeleteTemplateCard.js";
@@ -143,6 +144,14 @@ export function InboxPage() {
 						onDecide={handleActionDecide}
 					/>
 				);
+			case "action_add_channel":
+				return (
+					<ActionAddChannelCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
 		}
 	}
 
@@ -178,6 +187,7 @@ export function InboxPage() {
 						<option value="action_delete_project">Delete project</option>
 						<option value="action_edit_template">Edit template</option>
 						<option value="action_delete_template">Delete template</option>
+						<option value="action_add_channel">Add channel</option>
 					</select>
 					<button
 						type="button"

@@ -167,6 +167,17 @@ export type InboxWorkItem =
 			templateName: string;
 			createdAt: string;
 			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_add_channel";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			channelKind: "telegram" | "webhook" | "email";
+			channelLabel: string;
+			createdAt: string;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {
@@ -470,6 +481,26 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				createdAt: a.createdAt,
 				origin: a.origin,
 			});
+		} else if (a.kind === "add_channel") {
+			const payload = a.payload as unknown as {
+				kind: string;
+				label: string;
+			};
+			const validKinds = ["telegram", "webhook", "email"] as const;
+			const channelKind = validKinds.includes(payload.kind as (typeof validKinds)[number])
+				? (payload.kind as "telegram" | "webhook" | "email")
+				: "telegram";
+			items.push({
+				kind: "action_add_channel",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "info",
+				channelKind,
+				channelLabel: payload.label ?? "Ask-created channel",
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
 		}
 	}
 
@@ -520,6 +551,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		action_delete_project: 0,
 		action_edit_template: 0,
 		action_delete_template: 0,
+		action_add_channel: 0,
 	};
 	for (const i of out) byKind[i.kind]++;
 
@@ -548,7 +580,8 @@ function timestampFor(item: InboxWorkItem): number {
 							item.kind === "action_edit_project" ||
 							item.kind === "action_delete_project" ||
 							item.kind === "action_edit_template" ||
-							item.kind === "action_delete_template"
+							item.kind === "action_delete_template" ||
+							item.kind === "action_add_channel"
 						? item.createdAt
 						: new Date().toISOString();
 	return ts.includes("T") ? new Date(ts).getTime() : new Date(`${ts.replace(" ", "T")}Z`).getTime();
