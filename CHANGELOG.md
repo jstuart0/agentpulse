@@ -7,6 +7,323 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.2.0-pre.3] — 2026-04-27
+
+The "projects + Ask command surface" release. Sessions now belong to
+first-class projects, templates inherit project defaults with
+per-field overrides, and Ask becomes a full command line for the
+dashboard — searching, summarizing, launching, editing, and watching,
+all through one approval pipeline. No breaking changes.
+
+### Added
+
+#### Projects registry — first-class concept
+
+- New `projects` table with name, cwd, optional GitHub URL, and
+  default agentType / model / launchMode. Sessions get a nullable
+  `project_id` FK that auto-resolves on event ingest via
+  longest-prefix cwd match (path-segment-aware so `/foo/bar`
+  doesn't match `/foo/barbaz`). An in-process cache loaded eagerly
+  at boot keeps resolution off the DB hot path.
+- New `/projects` UI with create / edit / delete drawer, badges
+  on `SessionCard` and `SessionDetailPage` header, and a Project
+  filter on the dashboard. Endpoints: `GET/POST /api/v1/projects`,
+  `GET/PUT/DELETE /api/v1/projects/:id`,
+  `GET /api/v1/projects/:id/sessions`.
+- One-shot boot backfill stamps `project_id` on pre-existing
+  sessions whose cwd matches an existing project — no manual
+  re-resolution needed.
+
+#### Template ↔ project linkage with live inheritance
+
+- New `session_templates.project_id` FK + a
+  `template_project_overrides` JSON sentinel so individual fields
+  can be overridden without making `agentType` / `cwd` columns
+  nullable. Project values flow live: change the project's
+  `defaultAgentType` and every linked template renders the new
+  value on next read. Override semantics: stored value wins where
+  the user explicitly overrode, project value fills the rest.
+- Templates list endpoint resolves project values via a single
+  IN-batch query so resolution stays O(1) extra queries no matter
+  the list size.
+- Deleting a project nulls `session_templates.project_id` AND
+  `sessions.project_id` AND removes the project row in one
+  Drizzle transaction. A partial failure rolls all three back.
+- Auto-create-project on template save: if a template is saved
+  without an explicit `projectId`, the server finds a project at
+  the template's cwd or creates a new one (basename-derived name,
+  numeric suffix on collision). The dropdown's first option now
+  reads "Auto (match by directory)" to communicate the new
+  default behavior.
+
+#### AI Ask — read-only patterns (no approval, no mutation)
+
+- **NL session search.** "show me failed sessions",
+  "stuck sessions", "find sessions about auth on agentpulse" —
+  heuristic keyword gate (no LLM), pure-synchronous filter
+  derivation for status / time / project, FTS query with `mode:
+  "or"` and a direct-query fallback when the user message is
+  all filter words. Each hit is enriched with status + agentType
+  via a single batched session lookup.
+- **Cross-cutting digest.** "what happened today",
+  "give me a digest" — wraps the existing `buildDigest` service
+  with a 5s `Promise.race` timeout and a "still loading" footer
+  for instances with many live sessions whose intelligence
+  classifiers are slow.
+- **Per-session Q&A.** "summarize session X", "why did session Y
+  fail" — bounded transcript (10k-token tail-truncated, oldest
+  events dropped, provenance footer in every reply), spend-cap
+  preflight + postflight, response cache keyed on
+  `(sessionId, sha256(normalizedQuestion))` invalidated by new
+  events. New `ai_qa_cache` table; sweep purges expired rows.
+
+#### AI Ask — mutations through `ai_action_requests` approval
+
+- New `ai_action_requests` table with kinds: `launch_request`,
+  `add_project`, `session_stop`, `session_archive`,
+  `session_delete`, `edit_project`, `delete_project`,
+  `edit_template`, `delete_template`, `add_channel`,
+  `create_alert_rule`, `create_freeform_alert_rule`,
+  `bulk_session_action`. Atomic claim via conditional UPDATE
+  (`awaiting_reply → applying`) prevents double-execution on
+  concurrent web + Telegram approvals; `applying → applied /
+  failed / expired` lifecycle with `failure_reason`.
+- **AI-initiated session launches.** "open a Claude session for
+  agentpulse" — keyword gate + LLM classifier resolve project
+  and mode, validate against connected supervisors via pure
+  helpers (`pickFirstCapableSupervisor`, `buildLaunchSpec`
+  extracted from existing impure code), then create an
+  approval card. On approve the executor re-validates the
+  supervisor and dispatches through the existing `/launches`
+  pipeline. Reroute path rebuilds the launch spec when the
+  originally-validated host is gone.
+- **AI-driven add-project (multi-turn drafting).** "add a
+  project myapp at /tmp/myapp" — new
+  `ai_pending_project_drafts` table holds in-flight drafts
+  keyed on `ask_thread_id`. The AI walks the user through
+  numbered questions for missing fields one turn at a time;
+  parsing each reply is pure synchronous so continuation
+  turns make no LLM call. `cancel`/`abort`/`stop drafting`/
+  `never mind` aborts a draft from any question; retry cap
+  of 3 per field expires the draft cleanly.
+- **Quick session actions.** Pin / note / rename run direct
+  with the resolved session name embedded in the reply for
+  verification; stop / archive / delete go through approval.
+  Notes append now (existing notes preserved with `\n`
+  separator); rename replies include an explicit undo hint.
+  Stop pre-flight rejects hook-only sessions before creating
+  an action_request — `queueStopAction` only works on
+  managed sessions.
+- **Resume / continue with a new prompt.** "continue
+  brave-falcon with: refactor the auth module" — builds a new
+  managed launch inheriting the parent session's cwd /
+  agentType / model with the user's text as `taskPrompt`.
+  Reuses the existing `launch_request` kind; the inbox card
+  reads `payload.parentSessionId` and renders "Resume of
+  *parentName*" when present so approvers see the resume
+  context instead of a generic "New launch" title.
+- **Edit / delete project + template via Ask.** Four new
+  action_request kinds. Delete cards include affected-template
+  and affected-session counts so the approver sees the blast
+  radius. Project deletion still uses the transactional
+  cleanup so linked templates and sessions are nulled
+  atomically.
+- **Notification channel setup via Ask.** "set up a Telegram
+  channel called personal" — heuristic kind detection
+  (`telegram` / `webhook` / `email`); the executor calls
+  `createPendingChannel` and sends per-kind enrollment
+  instructions back through `notifyOriginUser`.
+- **Bulk session operations.** "archive all completed
+  sessions on agentpulse" — classifier picks one of two
+  resolution strategies (attribute-based SQL or hint-based
+  FTS). Pre-flight excludes incompatible targets per action
+  (stop excludes hook-only; delete excludes active sessions);
+  cap at 50 targets, 20-name preview with "+N more" footer.
+  Per-target try/catch keeps a single failure from poisoning
+  the rest of the batch; outcome summary message reports
+  per-target results.
+
+#### Project-level watcher alert rules
+
+- New `project_alert_rules` table with `REFERENCES projects(id)
+  ON DELETE CASCADE`, plus `project_alert_rule_fires` for
+  de-bounce. Rule types: `status_failed`, `status_completed`,
+  `status_stuck`, `no_activity_minutes`, `freeform_match`.
+  `WatcherRunner` gains a 60-second sweep with re-entry guard
+  (`alertSweepBusy` flag matching the `RunLeaser` precedent);
+  evaluation extracted to `alert-rule-evaluator.ts`.
+- **First-run backfill** at rule creation inserts fire rows for
+  every session that already matches the rule's predicate, with
+  no notification dispatched. Without this, a freshly-created
+  `status_stuck` rule on a project with thirty already-stuck
+  sessions would notification-storm the user.
+- **Freeform watcher rules.** Natural-language conditions like
+  "alert when the agent mentions a security concern" run a small
+  yes/no LLM classifier per qualifying event. Per-rule daily
+  token budget stored on the rule row, atomic daily reset via
+  SQL `CASE` so a process restart can't read a stale zero,
+  per-rule `last_evaluated_event_id` cursor + 100-event-per-sweep
+  cap so a backlog can't blow the budget in one tick. Sample rate
+  with cursor advance before sampling so 0.5 still bounds work.
+  Spend recorded only on successful classification.
+
+#### Search highlight + event-context
+
+- Search-result event hits now scroll the activity timeline to
+  the matching event and apply a 2.2s amber flash. A `useRef`
+  guard ensures the flash fires exactly once per
+  `(sessionId, eventId)` pair even as new events stream in via
+  WebSocket; the ref also marks 404 / network failures as
+  terminal so the effect can't loop on deleted events.
+- New `GET /api/v1/sessions/:sessionId/events/:eventId/context?around=N`
+  endpoint returns the target event ± a window (default 20, max
+  100). Used by the frontend to splice older events into the
+  timeline state when the search hit references an event outside
+  the loaded window.
+
+#### Telemetry classification + diagnostics
+
+- Telemetry pings now include an `install_class` field
+  (`production` / `self_hosted_real` / `dev` / `test` / `ci`)
+  inferred from build channel, with explicit overrides via
+  `AGENTPULSE_TELEMETRY_MODE` and `AGENTPULSE_TELEMETRY_TEST=1`.
+  Local and CI runs no longer pollute real-world install counts.
+- Added a `first_boot` vs `heartbeat` event_kind so the homepage
+  adoption number can show distinct installs vs activity.
+- New `GET /api/v1/settings/telemetry/status` returns last-attempt
+  diagnostics; `POST /api/v1/settings/telemetry/ping` triggers an
+  immediate send. Both gated by `requireAuth`.
+
+### Changed
+
+- `resolveActionRequest` dispatches via a `KIND_EXECUTORS`
+  registry object instead of an if-chain. Each new action kind is
+  a one-line registry entry; an unsupported kind fails cleanly
+  with `Unsupported action kind: <kind>`.
+- Inbox card rendering split into per-kind components under
+  `src/web/components/inbox/`. The dispatch is a single
+  exhaustive `switch` on `item.kind` so TypeScript flags any
+  missing case at compile time.
+- `decideActionRequest` route now labels failures by action kind
+  ("Project edit failed: …", "Bulk session action failed: …",
+  "Freeform alert rule failed: …") instead of always saying
+  "Launch failed: …". The 422 / 409 split distinguishes terminal
+  failure during this approval (expired / failed) from a real
+  race-lost (another approval claimed first).
+- `evaluateAlertRules` extracted from `event-processor.ts` into a
+  dedicated `alert-rule-evaluator.ts` so the four rule-type
+  evaluators share one home with the shared
+  `dispatchAlertRuleNotification` helper.
+- `resolveSession` extracted from `ask-session-action-handler.ts`
+  to a shared `ask-resolver.ts` so Slice B's Q&A handler and
+  Slice C's bulk handler can use the same FTS-backed
+  ambiguity-protocol session picker without depending on the
+  session-action handler.
+- `sendTelegramActionRequest` extracted from
+  `ask-launch-handler.ts` into `telegram-helpers.ts` since four
+  handlers now need it.
+- `updateTemplate` and `deleteTemplate` extracted from inline
+  route logic into a `templates-service.ts` module so the new
+  edit / delete executors can call service functions instead of
+  duplicating route logic.
+- Ask `runAskTurn` chain now processes intent gates in this
+  order: open-draft continuation → digest gate → search gate →
+  add-project gate → session-action gate → resume gate → CRUD
+  gate → channel gate → alert-rule gate → bulk gate → launch
+  gate → normal LLM completion. Multi-turn drafting always wins
+  over a fresh intent on the same thread.
+- `SearchFilters.sessionStatus` now accepts `"failed"`. Closes a
+  previously-undocumented gap where `failed` was a valid
+  `Session.status` value but couldn't be filtered against in
+  the search UI or NL search resolver.
+- `sessions` table gains a `is_archived` boolean column,
+  orthogonal to `status` so a failed or completed session can be
+  archived without losing its terminal status. The new
+  `PUT /api/v1/sessions/:id/archive` route flips this flag; the
+  CLAUDE.md route reference is now backed by an actual handler.
+- `launch_requests` table gains a nullable `parent_session_id`
+  column for traceability of resume launches. The launch
+  pipeline does not read it; future "session tree" UI will.
+- `CreateActionRequestInput.kind` widened to the full eleven
+  kinds the plan introduces, in one schema-less union edit, so
+  each new slice's executor branch fails compilation cleanly
+  until its handler lands.
+- `notes` semantics for the AI's add-note path are now append
+  (read existing, concat with `\n`, write back) so the AI can't
+  silently destroy prior notes. The direct
+  `PUT /sessions/:id/notes` route is unchanged (full replace);
+  this only differs in the `add_note` Ask path.
+- Local OpenAI-compatible providers (Ollama, vLLM, llama.cpp)
+  now receive `reasoning_effort: "none"` on classifier calls so
+  qwen3 and similar reasoning models return clean JSON instead
+  of burying the response in chain-of-thought. The existing
+  `think: false` and `chat_template_kwargs.enable_thinking:
+  false` flags were silently dropped by Ollama's
+  `/v1/chat/completions` endpoint — kept for back-compat but
+  `reasoning_effort` is what does the work. Anthropic / OpenAI /
+  Google / OpenRouter providers receive the prompt unchanged.
+
+### Fixed
+
+- **Default-projectId stamping race.** `bumpVersion()` originally
+  fired the cache reload as `void reloadCache()` — non-blocking.
+  `createProject` immediately fed `getCachedProjects()` into
+  `resolveAllSessionsForProject`, so a freshly-created project
+  could miss its own session-stamp pass and leave matching
+  sessions unstamped until the next event-ingest. Now
+  `bumpVersionAndReload` awaits the reload before returning.
+- **Search-highlight context fetch could loop on deleted events.**
+  When the target event id no longer existed (`404` from the
+  context endpoint), the effect's `loadingContext` flip retriggered
+  the same fetch on the next render — infinite 404s. The catch
+  branch now marks `(sessionId, eventId)` as terminal in
+  `flashedRef` so the early-return chain short-circuits the
+  effect on subsequent re-runs.
+- **Misleading "race_lost" message** when a `/decide` call's own
+  approval transitioned the action_request to `expired` or
+  `failed` during execution. The route conflated genuine race
+  losses with terminal-during-this-attempt outcomes. The resolver
+  now returns a discriminated `ResolveResult` and the route
+  branches on `reason` — race-lost is 409, terminal failure is
+  422 with the real reason.
+- **`sessions.status = "failed"` was never written.** The value
+  existed in the type union and schema comment but had no
+  producer in the codebase. Launch dispatch now invokes
+  `markSessionFailed` when a launch transitions to failed —
+  required before the `status_failed` alert rule could fire on
+  anything.
+- **Periodic alert-rule sweep had no re-entry guard.** A slow
+  sweep (50 sessions × Telegram round-trip) overlapping with
+  the next 60s tick could produce two concurrent Telegram
+  messages for the same rule/session before the UNIQUE
+  constraint stopped the second DB insert. Added an
+  `alertSweepBusy` flag matching the `RunLeaser` precedent.
+- **`no_activity_minutes` filter missed idle-but-not-stopped
+  sessions.** Original spec used `isWorking = true` which
+  doesn't catch sessions that emitted `Stop` but haven't
+  started a new task. Filter now uses `endedAt IS NULL`.
+- **Daily token-budget reset for freeform rules was a
+  read-modify-write race.** A process restart mid-day could
+  re-read a stale `0` from the previous reset and classify
+  events that should have been blocked. Reset is now an atomic
+  SQL `CASE` UPDATE per row so concurrent processes can't
+  diverge.
+- **Spend counter incremented on LLM errors.** Freeform-rule
+  classification now records spend only on successful
+  classification — `classifyFreeformCondition` returns a
+  discriminated `ClassifyResult` and the caller skips spend
+  recording on the error path.
+- **Telegram approve-callback identifier mismatch fixed in the
+  add-project flow.** Action_requests now persist
+  `notification_channels.id` (UUID) on the `channelId` column,
+  not the raw Telegram chat id; inbound callbacks look up the
+  channel by chat id and match on the persisted UUID — same
+  pattern HITL already uses.
+- **Lint formatter drift on telemetry classification commit**
+  fixed before the merge so the project's `bun run check`
+  stays at zero errors.
+
+
 ## [0.2.0-pre.2] — 2026-04-25
 
 The "find any past conversation" release. Three new layers stack on
@@ -459,6 +776,8 @@ All AI features ship gated behind per-feature Labs flags and a master
 - Local install: `docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true`.
 - Remote hook relay: `curl -sSL https://server/setup-relay.sh | bash -s -- --key ap_xxx`.
 
-[Unreleased]: https://github.com/jstuart0/agentpulse/compare/v0.2.0-pre.1...HEAD
+[Unreleased]: https://github.com/jstuart0/agentpulse/compare/v0.2.0-pre.3...HEAD
+[0.2.0-pre.3]: https://github.com/jstuart0/agentpulse/releases/tag/v0.2.0-pre.3
+[0.2.0-pre.2]: https://github.com/jstuart0/agentpulse/releases/tag/v0.2.0-pre.2
 [0.2.0-pre.1]: https://github.com/jstuart0/agentpulse/releases/tag/v0.2.0-pre.1
 [0.1.0]: https://github.com/jstuart0/agentpulse/releases/tag/v0.1.0
