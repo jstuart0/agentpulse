@@ -38,20 +38,20 @@ export interface PrelaunchExecutionContext {
 	logWarning?: (msg: string) => void;
 }
 
-interface ResolvedTrustedRoot {
+export interface ResolvedTrustedRoot {
 	original: string;
 	resolved: string;
 }
 
 /** Expand a leading `~` against the supervisor's own home directory. */
-function expandTilde(input: string): string {
+export function expandTilde(input: string): string {
 	if (input === "~") return homedir();
 	if (input.startsWith("~/")) return `${homedir()}${input.slice(1)}`;
 	return input;
 }
 
 /** Resolve trusted roots through their realpaths so symlink-based aliases match. */
-async function resolveTrustedRoots(roots: string[]): Promise<ResolvedTrustedRoot[]> {
+export async function resolveTrustedRoots(roots: string[]): Promise<ResolvedTrustedRoot[]> {
 	const resolved: ResolvedTrustedRoot[] = [];
 	for (const root of roots) {
 		const expanded = expandTilde(root);
@@ -69,13 +69,13 @@ async function resolveTrustedRoots(roots: string[]): Promise<ResolvedTrustedRoot
 }
 
 /** True iff `child` is `parent` or a descendant of it (path-segment aware). */
-function isPathInside(child: string, parent: string): boolean {
+export function isPathInside(child: string, parent: string): boolean {
 	if (child === parent) return true;
 	const withSep = parent.endsWith(sep) ? parent : `${parent}${sep}`;
 	return child.startsWith(withSep);
 }
 
-function isUnderAnyRoot(candidate: string, roots: ResolvedTrustedRoot[]): boolean {
+export function isUnderAnyRoot(candidate: string, roots: ResolvedTrustedRoot[]): boolean {
 	return roots.some((root) => isPathInside(candidate, root.resolved));
 }
 
@@ -87,7 +87,7 @@ function isUnderAnyRoot(candidate: string, roots: ResolvedTrustedRoot[]): boolea
  * walk on a trusted trajectory. A symlink to `/etc` would not be — it's
  * neither under a trusted root nor a parent of one.
  */
-function isOnTrustedTrajectory(candidate: string, roots: ResolvedTrustedRoot[]): boolean {
+export function isOnTrustedTrajectory(candidate: string, roots: ResolvedTrustedRoot[]): boolean {
 	for (const root of roots) {
 		if (isPathInside(candidate, root.resolved)) return true;
 		if (isPathInside(root.resolved, candidate)) return true;
@@ -101,7 +101,10 @@ function isOnTrustedTrajectory(candidate: string, roots: ResolvedTrustedRoot[]):
  * whose realpath is still under a trusted root is allowed (e.g. macOS
  * `/var → /private/var`).
  */
-async function rejectEscapingSymlinks(target: string, roots: ResolvedTrustedRoot[]): Promise<void> {
+export async function rejectEscapingSymlinks(
+	target: string,
+	roots: ResolvedTrustedRoot[],
+): Promise<void> {
 	const segments = target.split(sep).filter((s) => s.length > 0);
 	let cursor: string = sep;
 	for (let i = 0; i < segments.length; i++) {
@@ -151,7 +154,7 @@ async function rejectEscapingSymlinks(target: string, roots: ResolvedTrustedRoot
  * form even when the leaf (and possibly several intermediate dirs) hasn't been
  * created yet.
  */
-async function realpathOfDeepestExistingAncestor(target: string): Promise<string> {
+export async function realpathOfDeepestExistingAncestor(target: string): Promise<string> {
 	const segments = target.split(sep).filter((s) => s.length > 0);
 	for (let depth = segments.length; depth > 0; depth--) {
 		const candidate = sep + segments.slice(0, depth).join(sep);
@@ -166,7 +169,7 @@ async function realpathOfDeepestExistingAncestor(target: string): Promise<string
 	return target;
 }
 
-async function pathExists(target: string): Promise<boolean> {
+export async function pathExists(target: string): Promise<boolean> {
 	try {
 		await lstat(target);
 		return true;

@@ -738,6 +738,15 @@ export const api = {
 		}),
 	getProjectSessions: (id: string) =>
 		request<{ sessions: Session[]; total: number }>(`/projects/${id}/sessions`),
+	cleanupWorkarea: (id: string) =>
+		request<{
+			queued: true;
+			sessionCount: number;
+			targetSupervisorId: string;
+			action: { id: string; actionType: string; status: string };
+		}>(`/projects/${id}/cleanup-workarea`, {
+			method: "POST",
+		}),
 };
 
 export interface TelegramBotInfo {

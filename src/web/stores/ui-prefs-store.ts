@@ -16,10 +16,17 @@ interface UiPrefs {
 	 * dashboard, and is subtle enough not to fight the rest of the UI.
 	 */
 	projectColors: boolean;
+	/**
+	 * Show sessions whose project is tagged `scratch`. Default off so the
+	 * normal dashboard view doesn't accumulate ephemeral AI-initiated
+	 * workspaces. The toggle lives on the dashboard and is per-browser.
+	 */
+	showScratch: boolean;
 }
 
 const DEFAULTS: UiPrefs = {
 	projectColors: true,
+	showScratch: false,
 };
 
 function load(): UiPrefs {
@@ -44,6 +51,7 @@ function save(prefs: UiPrefs): void {
 
 interface UiPrefsStore extends UiPrefs {
 	setProjectColors: (enabled: boolean) => void;
+	setShowScratch: (enabled: boolean) => void;
 }
 
 export const useUiPrefsStore = create<UiPrefsStore>((set, get) => ({
@@ -51,5 +59,9 @@ export const useUiPrefsStore = create<UiPrefsStore>((set, get) => ({
 	setProjectColors(enabled) {
 		set({ projectColors: enabled });
 		save({ ...get(), projectColors: enabled });
+	},
+	setShowScratch(enabled) {
+		set({ showScratch: enabled });
+		save({ ...get(), showScratch: enabled });
 	},
 }));

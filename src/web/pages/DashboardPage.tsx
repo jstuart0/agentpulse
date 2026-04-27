@@ -4,6 +4,8 @@ import { FirstRunWelcome } from "../components/FirstRunWelcome.js";
 import { SessionGrid } from "../components/SessionGrid.js";
 import { useSessions } from "../hooks/useSessions.js";
 import { formatDuration } from "../lib/utils.js";
+import { useProjectsStore } from "../stores/projects-store.js";
+import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
 	return (
@@ -18,16 +20,42 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
 export function DashboardPage() {
 	const navigate = useNavigate();
 	const { sessions, stats, isLoading } = useSessions();
+	const showScratch = useUiPrefsStore((s) => s.showScratch);
+	const setShowScratch = useUiPrefsStore((s) => s.setShowScratch);
+	const projects = useProjectsStore((s) => s.projects);
+
+	// scratch projects are filtered out of the dashboard by default. The toggle
+	// reveals them; sessions still render with a dashed border + amber chip in
+	// SessionCard so the user can tell them apart.
+	const scratchProjectIds = useMemo(() => {
+		const ids = new Set<string>();
+		for (const p of projects) {
+			if ((p.tags ?? []).includes("scratch")) ids.add(p.id);
+		}
+		return ids;
+	}, [projects]);
+	const scratchSessionCount = useMemo(
+		() => sessions.filter((s) => s.projectId && scratchProjectIds.has(s.projectId)).length,
+		[sessions, scratchProjectIds],
+	);
 
 	const [filter, setFilter] = useState<string>("active");
 	const [search, setSearch] = useState("");
 	const [selectedActiveSessionId, setSelectedActiveSessionId] = useState<string | null>(null);
 
+	const visibleSessions = useMemo(
+		() =>
+			showScratch
+				? sessions
+				: sessions.filter((s) => !s.projectId || !scratchProjectIds.has(s.projectId)),
+		[sessions, showScratch, scratchProjectIds],
+	);
+
 	// Filter by status
 	let filtered =
 		filter === "all"
-			? sessions.filter((s) => s.status !== "archived")
-			: sessions.filter((s) => s.status === filter);
+			? visibleSessions.filter((s) => s.status !== "archived")
+			: visibleSessions.filter((s) => s.status === filter);
 
 	// Filter by search
 	if (search.trim()) {
@@ -43,14 +71,14 @@ export function DashboardPage() {
 
 	const activeSessions = useMemo(
 		() =>
-			sessions
+			visibleSessions
 				.filter((s) => s.status === "active")
 				.sort(
 					(a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
 				),
-		[sessions],
+		[visibleSessions],
 	);
-	const workingCount = sessions.filter((s) => s.isWorking).length;
+	const workingCount = visibleSessions.filter((s) => s.isWorking).length;
 	const selectedActiveSession =
 		activeSessions.find((session) => session.sessionId === selectedActiveSessionId) ??
 		activeSessions[0] ??
@@ -131,50 +159,67 @@ export function DashboardPage() {
 							<span className="ml-1 text-muted-foreground">
 								(
 								{f === "all"
-									? sessions.filter((s) => s.status !== "archived").length
-									: sessions.filter((s) => s.status === f).length}
+									? visibleSessions.filter((s) => s.status !== "archived").length
+									: visibleSessions.filter((s) => s.status === f).length}
 								)
 							</span>
 						</button>
 					))}
 				</div>
 
-				<div className="relative w-full md:max-w-xs">
-					<svg
-						className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground"
-						fill="none"
-						viewBox="0 0 24 24"
-						stroke="currentColor"
-					>
-						<path
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							strokeWidth={2}
-							d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-						/>
-					</svg>
-					<input
-						type="text"
-						value={search}
-						onChange={(e) => setSearch(e.target.value)}
-						placeholder="Search sessions..."
-						className="w-full rounded-md border border-input bg-background pl-8 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-					/>
-					{search && (
-						<button
-							onClick={() => setSearch("")}
-							className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+				<div className="flex flex-wrap items-center gap-3">
+					<div className="relative w-full md:max-w-xs">
+						<svg
+							className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground"
+							fill="none"
+							viewBox="0 0 24 24"
+							stroke="currentColor"
 						>
-							<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-								<path
-									strokeLinecap="round"
-									strokeLinejoin="round"
-									strokeWidth={2}
-									d="M6 18L18 6M6 6l12 12"
-								/>
-							</svg>
-						</button>
-					)}
+							<path
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								strokeWidth={2}
+								d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+							/>
+						</svg>
+						<input
+							type="text"
+							value={search}
+							onChange={(e) => setSearch(e.target.value)}
+							placeholder="Search sessions..."
+							className="w-full rounded-md border border-input bg-background pl-8 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+						/>
+						{search && (
+							<button
+								onClick={() => setSearch("")}
+								className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+							>
+								<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										strokeWidth={2}
+										d="M6 18L18 6M6 6l12 12"
+									/>
+								</svg>
+							</button>
+						)}
+					</div>
+					<label
+						className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none"
+						title="When on, sessions whose project is tagged scratch (AI-initiated workspaces) appear with a dashed border and amber chip. Hidden by default."
+					>
+						<input
+							type="checkbox"
+							checked={showScratch}
+							onChange={(e) => setShowScratch(e.target.checked)}
+							className="h-3.5 w-3.5 rounded border-input bg-background text-primary focus:ring-1 focus:ring-ring"
+						/>
+						Show scratch workspaces
+						{scratchSessionCount > 0 && (
+							<span className="text-[10px] text-muted-foreground">({scratchSessionCount})</span>
+						)}
+					</label>
 				</div>
 			</div>
 

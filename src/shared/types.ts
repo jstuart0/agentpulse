@@ -8,7 +8,14 @@ export type SandboxMode = "default" | "workspace-write" | "read-only" | "danger-
 export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
 export type ProviderSyncState = "pending" | "synced" | "failed";
 export type LaunchRoutingPolicy = "manual_target" | "first_capable_host";
-export type ControlActionType = "stop" | "retry" | "fork" | "resume" | "rename" | "prompt";
+export type ControlActionType =
+	| "stop"
+	| "retry"
+	| "fork"
+	| "resume"
+	| "rename"
+	| "prompt"
+	| "cleanup_workarea";
 export type ControlActionStatus = "queued" | "running" | "succeeded" | "failed";
 export type EventSource =
 	| "observed_hook"

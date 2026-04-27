@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Project, ProjectInput } from "../../shared/types.js";
+import { CleanupWorkareaModal } from "../components/CleanupWorkareaModal.js";
 import { ProjectCard } from "../components/projects/ProjectCard.js";
 import { ProjectForm } from "../components/projects/ProjectForm.js";
 import { api } from "../lib/api.js";
@@ -16,6 +17,7 @@ export function ProjectsPage() {
 	const [formError, setFormError] = useState("");
 	const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
 	const [deleting, setDeleting] = useState(false);
+	const [cleanupTarget, setCleanupTarget] = useState<Project | null>(null);
 
 	async function loadProjects() {
 		try {
@@ -162,6 +164,7 @@ export function ProjectsPage() {
 										sessionCount={sessionCounts[project.id]}
 										onEdit={openEdit}
 										onDelete={setDeleteTarget}
+										onCleanupWorkarea={setCleanupTarget}
 									/>
 								))}
 							</div>
@@ -202,6 +205,17 @@ export function ProjectsPage() {
 					)}
 				</div>
 			</div>
+
+			{cleanupTarget && (
+				<CleanupWorkareaModal
+					project={cleanupTarget}
+					onClose={() => setCleanupTarget(null)}
+					onCleanedUp={() => {
+						setCleanupTarget(null);
+						void loadProjects();
+					}}
+				/>
+			)}
 
 			{/* Delete confirmation dialog */}
 			{deleteTarget && (

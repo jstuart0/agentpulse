@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type {
 	ControlAction,
 	ControlActionStatus,
@@ -6,8 +6,16 @@ import type {
 	LaunchRequest,
 } from "../../shared/types.js";
 import { db } from "../db/client.js";
-import { controlActions, launchRequests, managedSessions, sessions } from "../db/schema.js";
+import {
+	events,
+	controlActions,
+	launchRequests,
+	managedSessions,
+	projects,
+	sessions,
+} from "../db/schema.js";
 import { mapLaunchRequest } from "./launch-validator.js";
+import { bumpVersionAndReload } from "./projects/cache.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -286,19 +294,107 @@ export async function retryLaunchForSession(sessionId: string) {
 	};
 }
 
+export interface QueueCleanupWorkAreaInput {
+	projectId: string;
+	cwd: string;
+	targetSupervisorId: string;
+	requestedBy?: string | null;
+}
+
+/**
+ * Enqueue a cleanup_workarea control_action for a scratch project. The action
+ * carries the absolute cwd, the project id (for the post-success cascade), and
+ * a targetSupervisorId so the session-less claim path can route it. The
+ * supervisor performs the rm -rf and the server completes the cascade in
+ * `updateControlAction` once the supervisor reports success.
+ */
+export async function queueCleanupWorkArea(
+	input: QueueCleanupWorkAreaInput,
+): Promise<ControlAction> {
+	const timestamp = nowIso();
+	const [action] = await db
+		.insert(controlActions)
+		.values({
+			sessionId: null,
+			launchRequestId: null,
+			actionType: "cleanup_workarea",
+			requestedBy: input.requestedBy ?? "local-user",
+			status: "queued",
+			metadata: {
+				projectId: input.projectId,
+				cwd: input.cwd,
+				targetSupervisorId: input.targetSupervisorId,
+			},
+			createdAt: timestamp,
+			updatedAt: timestamp,
+		})
+		.returning();
+	return mapControlAction(action);
+}
+
+/**
+ * After the supervisor reports a cleanup_workarea success, drop the project
+ * row and any sessions that were attached to it. The workspace itself is gone
+ * on disk; keeping a dangling row would surprise the user. Sessions reference
+ * events via FK, so events go first.
+ */
+async function finalizeCleanupWorkArea(projectId: string): Promise<void> {
+	await db.transaction(async (tx) => {
+		const projectSessions = await tx
+			.select({ id: sessions.id, sessionId: sessions.sessionId })
+			.from(sessions)
+			.where(eq(sessions.projectId, projectId));
+		for (const s of projectSessions) {
+			await tx.delete(events).where(eq(events.sessionId, s.sessionId));
+			await tx.delete(sessions).where(eq(sessions.id, s.id));
+		}
+		await tx.delete(projects).where(eq(projects.id, projectId));
+	});
+	await bumpVersionAndReload();
+}
+
 export async function claimNextControlAction(supervisorId: string) {
 	await expireStaleControlLocksForSupervisor(supervisorId);
-	const [row] = await db
-		.select({
-			action: controlActions,
-		})
+
+	// Two routing channels share controlActions:
+	// 1. Session-bearing actions (stop/prompt/retry/etc.) — routed via the
+	//    managed_sessions.supervisor_id join, which is what the existing code
+	//    relied on.
+	// 2. Session-less actions (cleanup_workarea) — pre-assigned to a host by
+	//    storing supervisorId in metadata.targetSupervisorId at queue time.
+	// Pick the oldest queued action across both channels.
+	const sessionRow = await db
+		.select({ action: controlActions })
 		.from(controlActions)
 		.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
 		.where(and(eq(controlActions.status, "queued"), eq(managedSessions.supervisorId, supervisorId)))
 		.orderBy(asc(controlActions.createdAt))
 		.limit(1);
 
-	if (!row) return null;
+	const sessionlessRow = await db
+		.select()
+		.from(controlActions)
+		.where(
+			and(
+				eq(controlActions.status, "queued"),
+				isNull(controlActions.sessionId),
+				sql`json_extract(${controlActions.metadata}, '$.targetSupervisorId') = ${supervisorId}`,
+			),
+		)
+		.orderBy(asc(controlActions.createdAt))
+		.limit(1);
+
+	const sessionAction = sessionRow[0]?.action ?? null;
+	const sessionlessAction = sessionlessRow[0] ?? null;
+
+	let candidate = null;
+	if (sessionAction && sessionlessAction) {
+		candidate =
+			sessionAction.createdAt <= sessionlessAction.createdAt ? sessionAction : sessionlessAction;
+	} else {
+		candidate = sessionAction ?? sessionlessAction;
+	}
+	if (!candidate) return null;
 
 	const timestamp = nowIso();
 	const [updated] = await db
@@ -308,7 +404,7 @@ export async function claimNextControlAction(supervisorId: string) {
 			claimedBySupervisorId: supervisorId,
 			updatedAt: timestamp,
 		})
-		.where(eq(controlActions.id, row.action.id))
+		.where(eq(controlActions.id, candidate.id))
 		.returning();
 	return updated ? mapControlAction(updated) : null;
 }
@@ -349,6 +445,18 @@ export async function updateControlAction(input: {
 				updatedAt: timestamp,
 			})
 			.where(eq(managedSessions.sessionId, current.sessionId));
+	}
+
+	if (current.actionType === "cleanup_workarea" && input.status === "succeeded") {
+		const meta = (current.metadata as Record<string, unknown> | null) ?? {};
+		const projectId = typeof meta.projectId === "string" ? meta.projectId : null;
+		if (projectId) {
+			try {
+				await finalizeCleanupWorkArea(projectId);
+			} catch (err) {
+				console.error("[control-actions] cleanup finalize failed", err);
+			}
+		}
 	}
 
 	return updated ? mapControlAction(updated) : null;

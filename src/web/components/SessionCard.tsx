@@ -30,6 +30,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	const projectName = extractProjectName(session.cwd);
 	const name = session.displayName || session.sessionId?.slice(0, 8) || "session";
 	const linkedProject = useProjectsStore((s) => s.getById(session.projectId));
+	const isScratch = (linkedProject?.tags ?? []).includes("scratch");
 	const isInactive =
 		session.status === "completed" || session.status === "archived" || session.status === "failed";
 	const modeStyle = getSessionMode(session);
@@ -84,7 +85,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 			}
 			className={`group relative cursor-pointer overflow-hidden rounded-lg border bg-card p-3 md:p-4 pl-4 md:pl-5 transition-all hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5 ${
 				session.isPinned ? "border-amber-500/30 bg-amber-500/[0.02]" : "border-border"
-			}`}
+			} ${isScratch ? "border-dashed" : ""}`}
 		>
 			{/* Mode accent bar */}
 			<div
@@ -267,6 +268,14 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 					{linkedProject && (
 						<span className="flex-shrink-0 text-[10px] font-medium text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-1.5 py-0">
 							{linkedProject.name}
+						</span>
+					)}
+					{isScratch && (
+						<span
+							title="Scratch workspace — created by AgentPulse for an Ask task"
+							className="flex-shrink-0 text-[10px] font-medium text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0"
+						>
+							scratch
 						</span>
 					)}
 				</div>
