@@ -56,6 +56,11 @@ export interface ActionRequestPayload {
 	// sessions.metadata. Absent for non-Ask launch sources.
 	aiInitiated?: boolean;
 	askThreadId?: string;
+	// Slice 3: task-flavored displayName candidate. Persisted onto
+	// launch_requests.desired_display_name and applied to sessions.displayName
+	// at correlation time when the auto-generated adjective-noun is still in
+	// place. Absent for non-Ask launches or when slugification yielded nothing.
+	desiredDisplayName?: string;
 }
 
 export interface ActionRequest {
@@ -286,7 +291,7 @@ async function executeLaunchAction(
 		}
 
 		// === STEP 3: Dispatch via the existing managed-launch pipeline ===
-		const { aiInitiated, askThreadId: payloadAskThreadId } = request.payload;
+		const { aiInitiated, askThreadId: payloadAskThreadId, desiredDisplayName } = request.payload;
 		const launchMetadata =
 			aiInitiated || payloadAskThreadId
 				? {
@@ -300,6 +305,7 @@ async function executeLaunchAction(
 			requestedSupervisorId: executingSupervisor.id,
 			requestedLaunchMode,
 			metadata: launchMetadata,
+			desiredDisplayName: desiredDisplayName ?? null,
 		});
 
 		// === STEP 4: Mark applied ===

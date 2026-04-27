@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import "./ai/__test_db.js";
 
 const { db, initializeDatabase } = await import("../db/client.js");
@@ -120,5 +121,71 @@ describe("associateObservedSession provenance copy", () => {
 		expect(result).toBeNull();
 		const row = await readSession("s-orphan");
 		expect(row?.metadata).toEqual({ existing: 1 });
+	});
+});
+
+describe("associateObservedSession desired-display-name rename", () => {
+	test("rewrites auto-generated displayName to the desired one", async () => {
+		await mkSession("s-rename");
+		await db
+			.update(sessions)
+			.set({ displayName: "eager-fox" })
+			.where(eq(sessions.sessionId, "s-rename"))
+			.execute();
+		await mkLaunchRequest("s-rename", { desiredDisplayName: "plan-caching" });
+
+		await associateObservedSession({ sessionId: "s-rename" });
+
+		const row = await readSession("s-rename");
+		expect(row?.displayName).toBe("plan-caching");
+	});
+
+	test("does NOT rewrite when displayName is no longer adjective-noun shape", async () => {
+		await mkSession("s-manual");
+		await db
+			.update(sessions)
+			.set({ displayName: "my-feature-work" })
+			.where(eq(sessions.sessionId, "s-manual"))
+			.execute();
+		await mkLaunchRequest("s-manual", { desiredDisplayName: "plan-caching" });
+
+		await associateObservedSession({ sessionId: "s-manual" });
+
+		const row = await readSession("s-manual");
+		expect(row?.displayName).toBe("my-feature-work");
+	});
+
+	test("does NOT rewrite when launch_request has no desiredDisplayName", async () => {
+		await mkSession("s-nopref");
+		await db
+			.update(sessions)
+			.set({ displayName: "eager-fox" })
+			.where(eq(sessions.sessionId, "s-nopref"))
+			.execute();
+		await mkLaunchRequest("s-nopref", { desiredDisplayName: null });
+
+		await associateObservedSession({ sessionId: "s-nopref" });
+
+		const row = await readSession("s-nopref");
+		expect(row?.displayName).toBe("eager-fox");
+	});
+
+	test("idempotent: a second associate call after rename is a no-op", async () => {
+		await mkSession("s-twice");
+		await db
+			.update(sessions)
+			.set({ displayName: "eager-fox" })
+			.where(eq(sessions.sessionId, "s-twice"))
+			.execute();
+		await mkLaunchRequest("s-twice", { desiredDisplayName: "plan-caching" });
+
+		await associateObservedSession({ sessionId: "s-twice" });
+		// Simulate a second correlation; the renamed value no longer matches
+		// the adjective-noun pattern so the helper must leave it alone (and
+		// must not append the desired name a second time).
+		await associateObservedSession({ sessionId: "s-twice" });
+
+		const row = await readSession("s-twice");
+		expect(row?.displayName).toBe("plan-caching");
 	});
 });

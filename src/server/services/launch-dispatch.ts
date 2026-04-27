@@ -9,6 +9,36 @@ import { attachManagedSessionToLaunch } from "./managed-session-state.js";
 
 const PROVENANCE_KEYS = ["aiInitiated", "askThreadId"] as const;
 
+// Auto-generated adjective-noun shape from name-generator.ts. We only
+// rewrite the displayName when it still matches this pattern — once a
+// user (or a custom rename) has changed it, we leave it alone.
+const AUTO_NAME_PATTERN = /^[a-z]+-[a-z]+$/;
+
+/**
+ * If the just-correlated launch_request carries a slice-3 desired display
+ * name, rewrite sessions.displayName — but only when the existing name is
+ * still in adjective-noun shape. Idempotent: a second call after the rename
+ * sees the new name (which no longer matches the pattern) and is a no-op.
+ */
+export async function applyDesiredDisplayName(
+	sessionId: string,
+	launchRequest: LaunchRequest,
+): Promise<void> {
+	const desired = launchRequest.desiredDisplayName;
+	if (!desired) return;
+
+	const [row] = await db
+		.select({ displayName: sessions.displayName })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (!row) return;
+	if (!row.displayName || !AUTO_NAME_PATTERN.test(row.displayName)) return;
+	if (row.displayName === desired) return;
+
+	await db.update(sessions).set({ displayName: desired }).where(eq(sessions.sessionId, sessionId));
+}
+
 /**
  * Copy any provenance hints stamped on launch_requests.metadata onto the
  * just-correlated session row. Idempotent: a re-correlation never clobbers
@@ -212,6 +242,7 @@ export async function associateObservedSession(input: {
 	});
 
 	await applyLaunchProvenanceToSession(input.sessionId, resolution.launchRequest.metadata);
+	await applyDesiredDisplayName(input.sessionId, resolution.launchRequest);
 
 	return markLaunchRunning(resolution.launchRequest.id);
 }

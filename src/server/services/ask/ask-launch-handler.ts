@@ -1,4 +1,7 @@
+import { and, eq, gt } from "drizzle-orm";
 import type { AgentType, LaunchMode, SessionTemplateInput } from "../../../shared/types.js";
+import { db } from "../../db/client.js";
+import { sessions } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import {
@@ -6,11 +9,34 @@ import {
 	pickFirstCapableSupervisor,
 	validateAgainstSupervisor,
 } from "../launch-compatibility.js";
+import { randomSlugSuffix, slugifyTaskName } from "../name-generator.js";
 import { getProjectByName, listProjects } from "../projects/projects-service.js";
 import { listSupervisors } from "../supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "../template-preview.js";
 import type { LaunchIntent, TaskBrief } from "./launch-intent-detector.js";
 import { sendTelegramActionRequest } from "./telegram-helpers.js";
+
+/**
+ * Resolve a unique-within-project display name from the slug. If another
+ * session in the same project picked the same slug in the last 7 days,
+ * append a 4-char random suffix so the dashboard isn't ambiguous.
+ */
+async function ensureUniqueDisplayName(slug: string, projectId: string): Promise<string> {
+	const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+	const [conflict] = await db
+		.select({ id: sessions.id })
+		.from(sessions)
+		.where(
+			and(
+				eq(sessions.projectId, projectId),
+				eq(sessions.displayName, slug),
+				gt(sessions.startedAt, cutoff),
+			),
+		)
+		.limit(1);
+	if (!conflict) return slug;
+	return `${slug}-${randomSlugSuffix()}`;
+}
 
 const READ_CLAUDE_MD_PREFIX = "Read CLAUDE.md if present in this directory before starting.";
 
@@ -182,6 +208,17 @@ export async function handleAskLaunchIntent(
 		channelId = channel?.id ?? null;
 	}
 
+	// Slice 3: derive a task-flavored display name from the classifier output
+	// (or taskBrief / taskHint as fallbacks) and disambiguate against recent
+	// sessions in the same project. Stays undefined when nothing usable
+	// survives slugification — callers fall back to generateSessionName().
+	const displayNameCandidate =
+		slugifyTaskName(intent.displayName ?? "") ||
+		slugifyTaskName(intent.taskBrief?.summary ?? intent.taskHint ?? "");
+	const desiredDisplayName = displayNameCandidate
+		? await ensureUniqueDisplayName(displayNameCandidate, project.id)
+		: undefined;
+
 	// === Step 5: Create action request ===
 	const question = `Launch ${agentType} (${launchMode}) for **${project.name}** at \`${project.cwd}\`?${intent.taskHint ? `\nTask: ${intent.taskHint}` : ""}`;
 
@@ -200,6 +237,7 @@ export async function handleAskLaunchIntent(
 			projectName: project.name,
 			aiInitiated: true,
 			askThreadId: threadId,
+			desiredDisplayName,
 		},
 	});
 

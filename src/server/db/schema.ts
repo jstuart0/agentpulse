@@ -240,6 +240,10 @@ export const launchRequests = sqliteTable("launch_requests", {
 	// can identify AI-initiated sessions and link back to the originating
 	// Ask thread without adding more columns to sessions.
 	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+	// Slice 3: when set, the correlation step rewrites sessions.displayName from
+	// the auto-generated adjective-noun to this value (if the session has not
+	// been manually renamed since first ingest). Stays null for non-Ask launches.
+	desiredDisplayName: text("desired_display_name"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });

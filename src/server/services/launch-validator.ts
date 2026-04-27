@@ -45,6 +45,7 @@ function mapLaunchRequest(row: typeof launchRequests.$inferSelect): LaunchReques
 		providerLaunchMetadata: (row.providerLaunchMetadata as Record<string, unknown> | null) ?? null,
 		retryOfLaunchRequestId: row.retryOfLaunchRequestId ?? null,
 		metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+		desiredDisplayName: row.desiredDisplayName ?? null,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 	};
@@ -202,6 +203,7 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 			validationWarnings: warnings,
 			validationSummary: summary,
 			metadata: input.metadata ?? null,
+			desiredDisplayName: input.desiredDisplayName ?? null,
 			createdAt: now,
 			updatedAt: now,
 		})

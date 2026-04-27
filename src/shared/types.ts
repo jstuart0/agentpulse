@@ -460,6 +460,7 @@ export interface LaunchRequest {
 	providerLaunchMetadata: Record<string, unknown> | null;
 	retryOfLaunchRequestId: string | null;
 	metadata: Record<string, unknown> | null;
+	desiredDisplayName: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -544,4 +545,5 @@ export interface LaunchRequestInput {
 	template: SessionTemplateInput;
 	launchSpec: LaunchSpec;
 	metadata?: Record<string, unknown> | null;
+	desiredDisplayName?: string | null;
 }

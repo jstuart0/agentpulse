@@ -614,6 +614,10 @@ export function initializeDatabase() {
 		// sessions.metadata at correlation time. Keeps the launch-spec contract
 		// clean while letting the executor stamp aiInitiated/askThreadId hints.
 		"ALTER TABLE launch_requests ADD COLUMN metadata TEXT",
+		// Slice 3 (AI task-initiated launches): operator-supplied display-name
+		// override applied at correlation time when the auto-generated
+		// adjective-noun is still in place.
+		"ALTER TABLE launch_requests ADD COLUMN desired_display_name TEXT",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when
