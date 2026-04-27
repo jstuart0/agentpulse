@@ -9,8 +9,42 @@ import {
 import { getProjectByName, listProjects } from "../projects/projects-service.js";
 import { listSupervisors } from "../supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "../template-preview.js";
-import type { LaunchIntent } from "./launch-intent-detector.js";
+import type { LaunchIntent, TaskBrief } from "./launch-intent-detector.js";
 import { sendTelegramActionRequest } from "./telegram-helpers.js";
+
+const READ_CLAUDE_MD_PREFIX = "Read CLAUDE.md if present in this directory before starting.";
+
+/**
+ * Render the launched session's initial prompt. Prefer the structured
+ * taskBrief when the classifier emitted one; otherwise fall back to the
+ * free-text taskHint. Returns "" when neither is present so the existing
+ * "no prompt" launch path stays unchanged.
+ */
+export function formatTaskPrompt(
+	taskBrief: TaskBrief | undefined,
+	taskHint: string | undefined,
+): string {
+	if (taskBrief) {
+		const lines: string[] = [];
+		lines.push(READ_CLAUDE_MD_PREFIX);
+		lines.push("");
+		lines.push(`Task: ${taskBrief.summary}`);
+		if (taskBrief.outputPath) {
+			lines.push(`- Place the deliverable under \`${taskBrief.outputPath}\` if relevant.`);
+		}
+		if (taskBrief.format) {
+			lines.push(`- Use ${taskBrief.format} format.`);
+		}
+		lines.push("- Follow project conventions (see CLAUDE.md / existing files for examples).");
+		lines.push("");
+		lines.push("Report when done.");
+		return lines.join("\n");
+	}
+	if (taskHint && taskHint.length > 0) {
+		return `${READ_CLAUDE_MD_PREFIX}\n\n${taskHint}`;
+	}
+	return "";
+}
 
 export interface HandleAskLaunchIntentArgs {
 	intent: Extract<LaunchIntent, { kind: "launch" }>;
@@ -54,7 +88,7 @@ export async function handleAskLaunchIntent(
 		agentType,
 		cwd: project.cwd,
 		model: project.defaultModel ?? undefined,
-		taskPrompt: intent.taskHint ?? "",
+		taskPrompt: formatTaskPrompt(intent.taskBrief, intent.taskHint),
 		baseInstructions: "",
 		env: {},
 		tags: ["ai-initiated", `project:${project.name}`],

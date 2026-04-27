@@ -5,6 +5,12 @@ import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.j
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
 import type { CachedProject } from "../projects/cache.js";
 
+export interface TaskBrief {
+	summary: string;
+	outputPath?: string;
+	format?: string;
+}
+
 export type LaunchIntent =
 	| { kind: "none" }
 	| { kind: "classifier_failed"; error: string }
@@ -14,27 +20,59 @@ export type LaunchIntent =
 			mode?: LaunchMode;
 			taskHint?: string;
 			agentType?: AgentType;
+			displayName?: string;
+			taskBrief?: TaskBrief;
 	  }
 	| {
 			kind: "add_project";
 			initialFields: Partial<ProjectDraftFields>;
 	  };
 
-const LAUNCH_VERBS = ["open", "launch", "start", "spin up", "fire up", "boot", "kick off"];
+// Broadened from the original LAUNCH_VERBS whitelist so the gate covers
+// task-flavored phrasings ("create a plan in agentpulse…", "fix the failing
+// tests…"). The classifier still decides whether the message is actually a
+// launch — this gate is just the cheap pre-filter that avoids running the
+// classifier on every project-mentioning Ask turn.
+const ACTION_VERBS = [
+	"open",
+	"launch",
+	"start",
+	"spin up",
+	"fire up",
+	"boot",
+	"kick off",
+	"create",
+	"make",
+	"write",
+	"draft",
+	"build",
+	"fix",
+	"add",
+	"remove",
+	"refactor",
+	"review",
+	"test",
+	"debug",
+	"plan",
+	"run",
+	"implement",
+	"investigate",
+	"check",
+];
 
 function escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
- * Pure synchronous gate: returns true only if the message contains a launch
+ * Pure synchronous gate: returns true only if the message contains an action
  * verb AND a whole-word match of a known project name. This runs on every
  * Ask turn at microsecond cost — the LLM classifier is only called when this
  * gate passes.
  */
 export function gatePasses(message: string, projects: CachedProject[]): boolean {
 	const lower = message.toLowerCase();
-	const hasVerb = LAUNCH_VERBS.some((v) => lower.includes(v));
+	const hasVerb = ACTION_VERBS.some((v) => lower.includes(v));
 	if (!hasVerb) return false;
 	const hasProject = projects.some((p) =>
 		new RegExp(`\\b${escapeRegex(p.name.toLowerCase())}\\b`).test(lower),
@@ -56,13 +94,15 @@ If this is NOT a launch request:
 {"intent":"none"}
 
 If this IS a launch request:
-{"intent":"launch","projectName":"<exact project name from the known list>","agentType":"claude_code|codex_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>"}
+{"intent":"launch","projectName":"<exact project name from the known list>","agentType":"claude_code|codex_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"}}
 
 Rules:
 - Only use project names from the known list (case-insensitive match).
 - agentType: "claude_code" if user says "claude", "codex_cli" if user says "codex", null otherwise.
 - mode: "headless" if user says "headless", "interactive_terminal" if user explicitly asks for interactive, null otherwise (default will be applied).
 - taskHint: any task description the user gave after "to ...", "for ...", e.g. "look at the failing tests".
+- displayName: a short kebab-case slug (2-4 words, lowercase, hyphen-separated) describing the task, e.g. "plan-caching" or "fix-failing-tests". Null if you can't derive one.
+- taskBrief: structured task description. summary is required when taskBrief is present; outputPath and format are optional. Omit taskBrief entirely if you can't extract a clean summary.
 - Respond ONLY with the JSON object. No explanation, no extra text.`;
 
 /**
@@ -191,12 +231,30 @@ export async function detectLaunchIntent(
 		const taskHint =
 			typeof parsed.taskHint === "string" && parsed.taskHint ? parsed.taskHint : undefined;
 
+		const displayName =
+			typeof parsed.displayName === "string" && parsed.displayName ? parsed.displayName : undefined;
+
+		let taskBrief: TaskBrief | undefined;
+		if (parsed.taskBrief && typeof parsed.taskBrief === "object") {
+			const tb = parsed.taskBrief as Record<string, unknown>;
+			if (typeof tb.summary === "string" && tb.summary.length > 0) {
+				taskBrief = {
+					summary: tb.summary,
+					outputPath:
+						typeof tb.outputPath === "string" && tb.outputPath ? tb.outputPath : undefined,
+					format: typeof tb.format === "string" && tb.format ? tb.format : undefined,
+				};
+			}
+		}
+
 		return {
 			kind: "launch",
 			projectName: matchedProject.name,
 			mode,
 			taskHint,
 			agentType,
+			displayName,
+			taskBrief,
 		};
 	} catch (err) {
 		return {
