@@ -31,6 +31,10 @@ import { handleNlSearch } from "./ask-search-handler.js";
 import { handleSessionAction } from "./ask-session-action-handler.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
 import {
+	createLaunchDisambiguationDraft,
+	resolveLaunchDisambiguation,
+} from "./launch-disambiguation-handler.js";
+import {
 	addProjectGatePasses,
 	alertRuleGatePasses,
 	bulkActionGatePasses,
@@ -268,6 +272,16 @@ export interface AskTurnResult {
 	includedSessionIds: string[];
 }
 
+async function resolveTelegramChannelId(
+	origin: "web" | "telegram",
+	chatId: string | null | undefined,
+): Promise<string | null> {
+	if (origin !== "telegram" || !chatId) return null;
+	const { findActiveChannelByChatId } = await import("../channels/channels-service.js");
+	const channel = await findActiveChannelByChatId(chatId);
+	return channel?.id ?? null;
+}
+
 async function getDefaultLlm(): Promise<
 	{ adapter: LlmAdapter; provider: ProviderRecord } | { error: string }
 > {
@@ -366,6 +380,22 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 	//    mid-draft replies (including "skip") are parsed by the draft handler.
 	const openDraft = await getOpenDraftForThread(thread.id);
 	if (openDraft?.status === "drafting") {
+		if (openDraft.kind === "launch_disambiguation") {
+			const result = await resolveLaunchDisambiguation({
+				draft: openDraft,
+				reply: text,
+				origin,
+				threadId: thread.id,
+				telegramChatId: input.telegramChatId,
+			});
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: result.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
 		const contResult = await handleAddProjectContinuation(text, askArgs);
 		if (contResult !== null) {
 			const assistantMessage = await appendMessage({
@@ -607,6 +637,26 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
 	}
 
+	if (intent.kind === "launch_needs_project") {
+		const channelId = await resolveTelegramChannelId(origin, input.telegramChatId);
+		const disambResult = await createLaunchDisambiguationDraft({
+			threadId: thread.id,
+			origin,
+			channelId,
+			telegramChatId: input.telegramChatId,
+			intent,
+			originalMessage: text,
+			projects: getCachedProjects(),
+		});
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: disambResult.replyText,
+			contextSessionIds: [],
+		});
+		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+	}
+
 	if (intent.kind === "classifier_failed" && !preamble) {
 		preamble =
 			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
@@ -698,6 +748,25 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 	// 1. Open-draft continuation check — runs BEFORE any intent gate.
 	const openDraft = await getOpenDraftForThread(thread.id);
 	if (openDraft?.status === "drafting") {
+		if (openDraft.kind === "launch_disambiguation") {
+			const result = await resolveLaunchDisambiguation({
+				draft: openDraft,
+				reply: text,
+				origin,
+				threadId: thread.id,
+				telegramChatId: input.telegramChatId,
+			});
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: result.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: result.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
 		const contResult = await handleAddProjectContinuation(text, askArgs);
 		if (contResult !== null) {
 			const assistantMessage = await appendMessage({
@@ -965,6 +1034,29 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		});
 		yield { kind: "start", thread, userMessage, includedSessionIds: [] };
 		yield { kind: "delta", delta: launchResult.replyText };
+		yield { kind: "done", assistantMessage };
+		return;
+	}
+
+	if (intent.kind === "launch_needs_project") {
+		const channelId = await resolveTelegramChannelId(origin, input.telegramChatId);
+		const disambResult = await createLaunchDisambiguationDraft({
+			threadId: thread.id,
+			origin,
+			channelId,
+			telegramChatId: input.telegramChatId,
+			intent,
+			originalMessage: text,
+			projects: getCachedProjects(),
+		});
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: disambResult.replyText,
+			contextSessionIds: [],
+		});
+		yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+		yield { kind: "delta", delta: disambResult.replyText };
 		yield { kind: "done", assistantMessage };
 		return;
 	}

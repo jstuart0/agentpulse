@@ -618,6 +618,11 @@ export function initializeDatabase() {
 		// override applied at correlation time when the auto-generated
 		// adjective-noun is still in place.
 		"ALTER TABLE launch_requests ADD COLUMN desired_display_name TEXT",
+		// Slice 4 (AI task-initiated launches): pending-draft kind discriminator.
+		// Default keeps existing rows on the add-project flow; new value
+		// "launch_disambiguation" is used when Ask is waiting for the user to
+		// pick a project for a launch-flavored message.
+		"ALTER TABLE ai_pending_project_drafts ADD COLUMN kind TEXT NOT NULL DEFAULT 'add_project'",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

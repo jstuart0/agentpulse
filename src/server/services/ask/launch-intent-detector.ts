@@ -24,6 +24,14 @@ export type LaunchIntent =
 			taskBrief?: TaskBrief;
 	  }
 	| {
+			kind: "launch_needs_project";
+			taskHint?: string;
+			taskBrief?: TaskBrief;
+			displayName?: string;
+			agentType?: AgentType;
+			mode?: LaunchMode;
+	  }
+	| {
 			kind: "add_project";
 			initialFields: Partial<ProjectDraftFields>;
 	  };
@@ -64,11 +72,41 @@ function escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Phrases that signal a task-flavored ask even without a project name.
+// Used by the second-pass gate so messages like "create a plan about
+// caching" can route to the launch-needs-project disambiguation flow.
+// Conservative — false negatives fall through to the regular Ask LLM.
+const TASK_FLAVOR_PHRASES = [
+	"a plan",
+	"the plan",
+	"a doc",
+	"the doc",
+	"a draft",
+	"the draft",
+	"a feature",
+	"the feature",
+	"a fix",
+	"the fix",
+	"a bug",
+	"the bug",
+	"a refactor",
+	"the refactor",
+	"the failing tests",
+	"failing tests",
+	"the tests",
+	"a script",
+	"the script",
+	"a workspace",
+	"the workspace",
+];
+
 /**
- * Pure synchronous gate: returns true only if the message contains an action
- * verb AND a whole-word match of a known project name. This runs on every
- * Ask turn at microsecond cost — the LLM classifier is only called when this
- * gate passes.
+ * Pure synchronous gate: returns true if the message contains an action
+ * verb AND either a whole-word match of a known project name, or a
+ * task-flavor phrase that suggests the user wants to launch a session
+ * but hasn't named the project. This runs on every Ask turn at
+ * microsecond cost — the LLM classifier is only called when this gate
+ * passes.
  */
 export function gatePasses(message: string, projects: CachedProject[]): boolean {
 	const lower = message.toLowerCase();
@@ -77,27 +115,36 @@ export function gatePasses(message: string, projects: CachedProject[]): boolean 
 	const hasProject = projects.some((p) =>
 		new RegExp(`\\b${escapeRegex(p.name.toLowerCase())}\\b`).test(lower),
 	);
-	return hasProject;
+	if (hasProject) return true;
+	// Second pass — verb plus a task-flavor phrase. Lets the classifier
+	// decide whether to emit launch_needs_project for the disambiguation
+	// flow when the user didn't name a project.
+	return TASK_FLAVOR_PHRASES.some((p) => lower.includes(p));
 }
 
 const INTENT_SYSTEM_PROMPT = (
 	projectNames: string[],
 ): string => `You are a launch-intent classifier for AgentPulse, a tool that manages AI coding sessions.
 
-Your job is to determine whether the user's message is requesting to launch a new coding session for a specific project.
+Your job is to determine whether the user's message is requesting to launch a new coding session, and (if so) whether they named one of the known projects.
 
 Known project names: ${projectNames.map((n) => `"${n}"`).join(", ")}
 
-Respond with a JSON object (no markdown, no backticks) in one of these two shapes:
+Respond with a JSON object (no markdown, no backticks) in one of these three shapes:
 
 If this is NOT a launch request:
 {"intent":"none"}
 
-If this IS a launch request:
+If this IS a launch request and the user named a project from the known list:
 {"intent":"launch","projectName":"<exact project name from the known list>","agentType":"claude_code|codex_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"}}
 
+If this IS a launch-flavored request but the user did NOT name a project (e.g. "create a plan about caching strategies"):
+{"intent":"launch_needs_project","agentType":"claude_code|codex_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"}}
+
 Rules:
-- Only use project names from the known list (case-insensitive match).
+- Only use project names from the known list (case-insensitive match) for the "launch" shape.
+- If the user mentioned no known project and the message is launch-flavored, return "launch_needs_project" so the caller can ask the user to pick a project.
+- If the message is a plain question or doesn't sound like a launch at all, return "none".
 - agentType: "claude_code" if user says "claude", "codex_cli" if user says "codex", null otherwise.
 - mode: "headless" if user says "headless", "interactive_terminal" if user explicitly asks for interactive, null otherwise (default will be applied).
 - taskHint: any task description the user gave after "to ...", "for ...", e.g. "look at the failing tests".
@@ -204,18 +251,6 @@ export async function detectLaunchIntent(
 			return { kind: "none" };
 		}
 
-		if (parsed.intent !== "launch" || typeof parsed.projectName !== "string") {
-			return { kind: "none" };
-		}
-
-		// Case-insensitive match back to known project name.
-		const matchedProject = projects.find(
-			(p) => p.name.toLowerCase() === (parsed.projectName as string).toLowerCase(),
-		);
-		if (!matchedProject) {
-			return { kind: "none" };
-		}
-
 		const mode =
 			parsed.mode === "headless" ||
 			parsed.mode === "interactive_terminal" ||
@@ -245,6 +280,39 @@ export async function detectLaunchIntent(
 					format: typeof tb.format === "string" && tb.format ? tb.format : undefined,
 				};
 			}
+		}
+
+		if (parsed.intent === "launch_needs_project") {
+			return {
+				kind: "launch_needs_project",
+				mode,
+				agentType,
+				taskHint,
+				displayName,
+				taskBrief,
+			};
+		}
+
+		if (parsed.intent !== "launch" || typeof parsed.projectName !== "string") {
+			return { kind: "none" };
+		}
+
+		// Case-insensitive match back to known project name.
+		const matchedProject = projects.find(
+			(p) => p.name.toLowerCase() === (parsed.projectName as string).toLowerCase(),
+		);
+		if (!matchedProject) {
+			// Classifier emitted "launch" but the project isn't in our known
+			// list — treat as a needs-project disambiguation rather than
+			// silently dropping the launch.
+			return {
+				kind: "launch_needs_project",
+				mode,
+				agentType,
+				taskHint,
+				displayName,
+				taskBrief,
+			};
 		}
 
 		return {

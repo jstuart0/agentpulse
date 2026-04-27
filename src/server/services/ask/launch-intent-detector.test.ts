@@ -27,12 +27,27 @@ describe("gatePasses", () => {
 		expect(gatePasses("just thinking", projects)).toBe(false);
 	});
 
-	test("rejects 'create a plan' when no projects are configured", () => {
-		expect(gatePasses("create a plan", [])).toBe(false);
+	test("passes 'create a plan' even when no projects are configured (task-flavor phrase)", () => {
+		// Gate must pass so the classifier can return launch_needs_project.
+		// Whether to launch or not is decided downstream.
+		expect(gatePasses("create a plan", [])).toBe(true);
 	});
 
-	test("rejects message with action verb but no project mention", () => {
-		expect(gatePasses("create a plan about life", projects)).toBe(false);
+	test("rejects messages with no action verb and no project name", () => {
+		expect(gatePasses("hello world", [])).toBe(false);
+		expect(gatePasses("a sentence with nothing actionable", [])).toBe(false);
+	});
+
+	test("rejects message with action verb but no project and no task-flavor phrase", () => {
+		expect(gatePasses("create something useful for life", projects)).toBe(false);
+	});
+
+	test("passes when an action verb is paired with a task-flavor phrase even without a project", () => {
+		// Gate must pass so the classifier can return launch_needs_project
+		// for the disambiguation flow.
+		expect(gatePasses("create a plan about caching strategies", projects)).toBe(true);
+		expect(gatePasses("fix the failing tests", projects)).toBe(true);
+		expect(gatePasses("write a draft about onboarding", projects)).toBe(true);
 	});
 
 	test("preserves the original launch-verb coverage", () => {

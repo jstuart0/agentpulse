@@ -659,9 +659,33 @@ export interface NextQuestion {
 	retryCount: number;
 }
 
-// aiPendingProjectDrafts — in-flight multi-turn project creation state.
-// One open draft per ask_thread_id; a new "add project" intent supersedes
-// any existing open draft for the same thread.
+// LaunchDisambiguationDraftFields — fields stashed when Ask receives a
+// launch-flavored message that didn't carry a project name. We keep the
+// classifier's full carry-forward state so reconstructing a LaunchIntent
+// after the user picks a project doesn't require re-running detection.
+export interface ProjectChoiceSnapshot {
+	id: string;
+	name: string;
+	cwd: string;
+}
+export interface LaunchDisambiguationDraftFields {
+	originalMessage: string;
+	taskHint?: string;
+	taskBrief?: { summary: string; outputPath?: string; format?: string };
+	displayName?: string;
+	agentType?: string;
+	mode?: string;
+	proposedProjectChoices: ProjectChoiceSnapshot[];
+}
+
+// aiPendingProjectDrafts — in-flight multi-turn state for both add-project
+// and launch-disambiguation flows. One open draft per ask_thread_id; a new
+// intent supersedes any existing open draft for the same thread regardless
+// of kind.
+//
+// kind discriminator:
+//   "add_project"            → draftFields is ProjectDraftFields
+//   "launch_disambiguation"  → draftFields is LaunchDisambiguationDraftFields
 //
 // Status lifecycle:
 //   drafting         → pending_approval (all required fields filled)
@@ -679,7 +703,11 @@ export const aiPendingProjectDrafts = sqliteTable("ai_pending_project_drafts", {
 	// ^ notification_channels.id UUID, only set for telegram origin
 	origin: text("origin").notNull(),
 	// ^ "web" | "telegram"
-	draftFields: text("draft_fields", { mode: "json" }).$type<ProjectDraftFields>().notNull(),
+	kind: text("kind").notNull().default("add_project"),
+	// ^ "add_project" | "launch_disambiguation"
+	draftFields: text("draft_fields", { mode: "json" })
+		.$type<ProjectDraftFields | LaunchDisambiguationDraftFields>()
+		.notNull(),
 	nextQuestion: text("next_question", { mode: "json" }).$type<NextQuestion>().notNull(),
 	status: text("status").notNull().default("drafting"),
 	actionRequestId: text("action_request_id"),
