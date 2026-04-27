@@ -37,7 +37,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 		kind,
 		async complete(request: LlmRequest): Promise<LlmResponse> {
 			const timeoutMs = request.timeoutMs ?? 60_000;
-			const body = {
+			const body: Record<string, unknown> = {
 				model: request.model,
 				temperature: request.temperature ?? 0.2,
 				max_tokens: request.maxTokens ?? 1024,
@@ -50,13 +50,18 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 				],
 				// Thinking-mode opt-outs. Qwen3 and similar reasoning models
 				// consume the whole output window on CoT by default, leaving
-				// `content` empty. These params disable that:
-				//   - `think: false` — Ollama (≥0.7.0)
+				// `content` empty. Servers that don't recognize these ignore them.
+				//   - `think: false` — Ollama-native /api/chat (NOT honored on /v1)
 				//   - `chat_template_kwargs.enable_thinking: false` — vLLM / SGLang
-				// Servers that don't recognize them ignore them harmlessly.
 				think: false,
 				chat_template_kwargs: { enable_thinking: false },
 			};
+			if (request.disableReasoning) {
+				// Empirically the only flag Ollama's /v1 endpoint actually honors
+				// to suppress qwen3's thinking phase. Real OpenAI-spec parameter,
+				// safe for non-Ollama servers (most ignore unknown reasoning_effort).
+				body.reasoning_effort = "none";
+			}
 
 			let response: Response;
 			try {

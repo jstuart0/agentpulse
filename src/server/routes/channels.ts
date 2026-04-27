@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { requireAuth } from "../auth/middleware.js";
 import { config } from "../config.js";
+import { getActionRequest, resolveActionRequest } from "../services/ai/action-requests-service.js";
 import { emitAiEvent } from "../services/ai/ai-events.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import { getHitlRequest, resolveHitlRequest } from "../services/ai/hitl-service.js";
@@ -44,7 +45,7 @@ import {
 	sendTelegramTest,
 	setTelegramWebhook,
 } from "../services/channels/telegram.js";
-import { parseHitlCallbackData } from "../services/channels/types.js";
+import { parseActionCallbackData, parseHitlCallbackData } from "../services/channels/types.js";
 import { isLabsFlagEnabled } from "../services/labs-service.js";
 
 /**
@@ -86,7 +87,12 @@ async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
 		return;
 	}
 	if (update.callback_query) {
-		await handleHitlCallback(update.callback_query);
+		const data = update.callback_query.data ?? "";
+		if (data.startsWith("act:")) {
+			await handleActionCallback(update.callback_query);
+		} else {
+			await handleHitlCallback(update.callback_query);
+		}
 		return;
 	}
 	if (update.message?.text) {
@@ -286,6 +292,50 @@ async function handleHitlCallback(cb: TelegramCallbackQuery): Promise<void> {
 			data.action === "approve" ? "✅ Approved. Prompt forwarded." : "❌ Declined.",
 		);
 	}
+}
+
+/**
+ * Handle approve/decline callbacks for ai_action_requests. Mirrors
+ * handleHitlCallback but routes to the separate action-requests table.
+ * Callback data prefix: `act:approve:<id>` / `act:decline:<id>`.
+ */
+async function handleActionCallback(cb: TelegramCallbackQuery): Promise<void> {
+	const data = parseActionCallbackData(cb.data ?? "");
+	if (!data) {
+		await answerCallbackQuery(cb.id, "Unknown action.");
+		return;
+	}
+	const request = await getActionRequest(data.actionRequestId);
+	if (!request) {
+		await answerCallbackQuery(cb.id, "Action request not found.");
+		return;
+	}
+	// Verify the callback's chat belongs to the channel tied to this action request —
+	// same auth pattern as handleHitlCallback (channels.ts:243-250).
+	if (request.channelId) {
+		const matchingChannel = await findActiveChannelByChatId(String(cb.message?.chat.id ?? ""));
+		if (!matchingChannel || matchingChannel.id !== request.channelId) {
+			await answerCallbackQuery(cb.id, "Not authorized.");
+			return;
+		}
+	}
+	if (request.status !== "awaiting_reply") {
+		await answerCallbackQuery(cb.id, "Already resolved.");
+		return;
+	}
+
+	const decision = data.action === "approve" ? "applied" : "declined";
+	const resolvedBy = String(cb.from.id);
+	const result = await resolveActionRequest({ id: request.id, decision, resolvedBy });
+
+	if (!result.ok) {
+		await answerCallbackQuery(cb.id, "Already claimed by another approval.");
+		return;
+	}
+	await answerCallbackQuery(
+		cb.id,
+		data.action === "approve" ? "Approved — launching." : "Declined.",
+	);
 }
 
 // --- Authenticated admin CRUD below ---

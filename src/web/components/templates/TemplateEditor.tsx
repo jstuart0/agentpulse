@@ -5,6 +5,8 @@ import type {
 	LaunchMode,
 	LaunchRequest,
 	LaunchRoutingPolicy,
+	Project,
+	ResolvedProjectData,
 	SandboxMode,
 	SessionTemplateInput,
 	SupervisorRecord,
@@ -33,6 +35,10 @@ export function TemplateEditorPanel(props: {
 	statusMessage: string;
 	canCreateLaunch: boolean;
 	lastCreatedLaunch: LaunchRequest | null;
+	projects: Project[];
+	linkedProjectId: string | null;
+	overriddenFields: Set<string>;
+	resolvedProject: ResolvedProjectData | null;
 	onUpdateDraft: <K extends keyof SessionTemplateInput>(
 		key: K,
 		value: SessionTemplateInput[K],
@@ -42,6 +48,9 @@ export function TemplateEditorPanel(props: {
 	onSetLaunchMode: (value: LaunchMode) => void;
 	onSetRoutingPolicy: (value: LaunchRoutingPolicy) => void;
 	onSetTargetSupervisorId: (value: string) => void;
+	onSetLinkedProject: (projectId: string | null) => void;
+	onOverrideField: (fieldName: string) => void;
+	onResetField: (fieldName: string) => void;
 	onSave: () => void;
 	onReset: () => void;
 	onDelete: () => void;
@@ -65,18 +74,60 @@ export function TemplateEditorPanel(props: {
 		statusMessage,
 		canCreateLaunch,
 		lastCreatedLaunch,
+		projects,
+		linkedProjectId,
+		overriddenFields,
+		resolvedProject,
 		onUpdateDraft,
 		onSetEnvText,
 		onSetTagsText,
 		onSetLaunchMode,
 		onSetRoutingPolicy,
 		onSetTargetSupervisorId,
+		onSetLinkedProject,
+		onOverrideField,
+		onResetField,
 		onSave,
 		onReset,
 		onDelete,
 		onDuplicate,
 		onCreateLaunch,
 	} = props;
+
+	// A field is "inherited" when a project is linked and the field is not in overriddenFields.
+	function isInherited(fieldName: string) {
+		return Boolean(linkedProjectId) && !overriddenFields.has(fieldName);
+	}
+
+	// Muted input styling for inherited fields
+	const inheritedInputClass =
+		"w-full rounded-md border border-primary/40 bg-background px-3 py-2 text-sm text-foreground opacity-75";
+	const normalInputClass =
+		"w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground";
+
+	function OverrideResetButton({ fieldName }: { fieldName: string }) {
+		if (!linkedProjectId) return null;
+		if (overriddenFields.has(fieldName)) {
+			return (
+				<button
+					type="button"
+					onClick={() => onResetField(fieldName)}
+					className="mt-1 text-xs text-primary hover:underline"
+				>
+					Reset to project default
+				</button>
+			);
+		}
+		return (
+			<button
+				type="button"
+				onClick={() => onOverrideField(fieldName)}
+				className="mt-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+			>
+				Override
+			</button>
+		);
+	}
 
 	return (
 		<section className="rounded-lg border border-border bg-card p-4 space-y-4">
@@ -109,26 +160,54 @@ export function TemplateEditorPanel(props: {
 				</div>
 			</div>
 
+			{/* Project dropdown — top of form */}
+			<label className="block space-y-1.5 text-sm">
+				<span className="text-foreground">Project (optional)</span>
+				<select
+					value={linkedProjectId ?? ""}
+					onChange={(e) => onSetLinkedProject(e.target.value || null)}
+					className={normalInputClass}
+				>
+					<option value="">Auto (match by directory)</option>
+					{projects.map((p) => (
+						<option key={p.id} value={p.id}>
+							{p.name} — {p.cwd}
+						</option>
+					))}
+				</select>
+				{linkedProjectId && resolvedProject && (
+					<p className="text-xs text-muted-foreground">
+						Linked to <span className="font-medium text-foreground">{resolvedProject.name}</span>.
+						Fields shown with muted styling are inherited from the project. Click Override to set
+						them manually.
+					</p>
+				)}
+			</label>
+
 			<div className="grid gap-4 md:grid-cols-2">
 				<label className="space-y-1.5 text-sm">
 					<span className="text-foreground">Name</span>
 					<input
 						value={draft.name}
 						onChange={(e) => onUpdateDraft("name", e.target.value)}
-						className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+						className={normalInputClass}
 					/>
 				</label>
-				<label className="space-y-1.5 text-sm">
-					<span className="text-foreground">Agent Type</span>
+				<div className="space-y-1.5 text-sm">
+					<span className="block text-foreground">Agent Type</span>
 					<select
 						value={draft.agentType}
-						onChange={(e) => onUpdateDraft("agentType", e.target.value as AgentType)}
-						className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+						onChange={(e) => {
+							if (isInherited("agentType")) onOverrideField("agentType");
+							onUpdateDraft("agentType", e.target.value as AgentType);
+						}}
+						className={isInherited("agentType") ? inheritedInputClass : normalInputClass}
 					>
 						<option value="codex_cli">Codex CLI</option>
 						<option value="claude_code">Claude Code</option>
 					</select>
-				</label>
+					<OverrideResetButton fieldName="agentType" />
+				</div>
 			</div>
 
 			<label className="block space-y-1.5 text-sm">
@@ -136,31 +215,45 @@ export function TemplateEditorPanel(props: {
 				<input
 					value={draft.description ?? ""}
 					onChange={(e) => onUpdateDraft("description", e.target.value)}
-					className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+					className={normalInputClass}
 					placeholder="What this template is for"
 				/>
 			</label>
 
-			<label className="block space-y-1.5 text-sm">
-				<span className="text-foreground">Working Directory</span>
+			<div className="space-y-1.5 text-sm">
+				<span className="block text-foreground">Working Directory</span>
 				<input
 					value={draft.cwd}
-					onChange={(e) => onUpdateDraft("cwd", e.target.value)}
-					className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+					onChange={(e) => {
+						if (isInherited("cwd")) onOverrideField("cwd");
+						onUpdateDraft("cwd", e.target.value);
+					}}
+					className={isInherited("cwd") ? inheritedInputClass : normalInputClass}
 					placeholder="/absolute/path/to/project"
 				/>
-			</label>
+				<OverrideResetButton fieldName="cwd" />
+			</div>
 
 			<div className="grid gap-4 md:grid-cols-3">
-				<label className="space-y-1.5 text-sm">
-					<span className="text-foreground">Model</span>
+				<div className="space-y-1.5 text-sm">
+					<span className="block text-foreground">Model</span>
 					<input
 						value={draft.model ?? ""}
-						onChange={(e) => onUpdateDraft("model", e.target.value)}
-						className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+						onChange={(e) => {
+							if (isInherited("model")) onOverrideField("model");
+							onUpdateDraft("model", e.target.value);
+						}}
+						className={
+							isInherited("model") && resolvedProject?.defaultModel
+								? inheritedInputClass
+								: normalInputClass
+						}
 						placeholder="Optional"
 					/>
-				</label>
+					{linkedProjectId && resolvedProject?.defaultModel && (
+						<OverrideResetButton fieldName="model" />
+					)}
+				</div>
 				<label className="space-y-1.5 text-sm">
 					<span className="text-foreground">Approval Policy</span>
 					<select
@@ -168,7 +261,7 @@ export function TemplateEditorPanel(props: {
 						onChange={(e) =>
 							onUpdateDraft("approvalPolicy", (e.target.value || null) as ApprovalPolicy | null)
 						}
-						className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+						className={normalInputClass}
 					>
 						{approvalPolicies.map((value) => (
 							<option key={value || "blank"} value={value}>
@@ -184,7 +277,7 @@ export function TemplateEditorPanel(props: {
 						onChange={(e) =>
 							onUpdateDraft("sandboxMode", (e.target.value || null) as SandboxMode | null)
 						}
-						className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+						className={normalInputClass}
 					>
 						{sandboxModes.map((value) => (
 							<option key={value || "blank"} value={value}>
@@ -198,7 +291,7 @@ export function TemplateEditorPanel(props: {
 					<select
 						value={launchMode}
 						onChange={(e) => onSetLaunchMode(e.target.value as LaunchMode)}
-						className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+						className={normalInputClass}
 					>
 						{launchModeOptions.map((option) => (
 							<option key={option.value} value={option.value}>
@@ -217,7 +310,7 @@ export function TemplateEditorPanel(props: {
 				<select
 					value={routingPolicy}
 					onChange={(e) => onSetRoutingPolicy(e.target.value as LaunchRoutingPolicy)}
-					className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+					className={normalInputClass}
 				>
 					<option value="manual_target">Manual target</option>
 					<option value="first_capable_host">First capable host</option>
@@ -230,7 +323,7 @@ export function TemplateEditorPanel(props: {
 					value={targetSupervisorId}
 					onChange={(e) => onSetTargetSupervisorId(e.target.value)}
 					disabled={routingPolicy !== "manual_target"}
-					className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+					className={normalInputClass}
 				>
 					<option value="">
 						{routingPolicy === "manual_target" ? "Select a host" : "Managed by routing policy"}
@@ -250,7 +343,7 @@ export function TemplateEditorPanel(props: {
 				<textarea
 					value={draft.baseInstructions}
 					onChange={(e) => onUpdateDraft("baseInstructions", e.target.value)}
-					className="min-h-32 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+					className={`min-h-32 ${normalInputClass}`}
 					placeholder="Persistent role, repo conventions, and execution rules"
 				/>
 			</label>
@@ -260,7 +353,7 @@ export function TemplateEditorPanel(props: {
 				<textarea
 					value={draft.taskPrompt}
 					onChange={(e) => onUpdateDraft("taskPrompt", e.target.value)}
-					className="min-h-28 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+					className={`min-h-28 ${normalInputClass}`}
 					placeholder="What the session should do when launched later"
 				/>
 			</label>
@@ -281,7 +374,7 @@ export function TemplateEditorPanel(props: {
 						<input
 							value={tagsText}
 							onChange={(e) => onSetTagsText(e.target.value)}
-							className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+							className={normalInputClass}
 							placeholder="frontend, triage, repo-a"
 						/>
 					</label>

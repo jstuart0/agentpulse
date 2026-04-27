@@ -14,6 +14,7 @@ const LIVE_MANAGED_STATES = ["interactive_terminal", "headless", "managed", "pen
 export async function getSessions(filters?: {
 	status?: SessionStatus;
 	agentType?: AgentType;
+	projectId?: string;
 	limit?: number;
 	offset?: number;
 }) {
@@ -28,6 +29,9 @@ export async function getSessions(filters?: {
 	}
 	if (filters?.agentType) {
 		conditions.push(eq(sessions.agentType, filters.agentType));
+	}
+	if (filters?.projectId) {
+		conditions.push(eq(sessions.projectId, filters.projectId));
 	}
 
 	if (conditions.length > 0) {

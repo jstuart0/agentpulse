@@ -14,6 +14,7 @@ import type {
 } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { events, sessions } from "../db/schema.js";
+import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
 import {
 	type NormalizedEvent,
 	normalizeHookEvent,
@@ -21,6 +22,8 @@ import {
 } from "./event-normalizer.js";
 import { associateObservedSession } from "./launch-dispatch.js";
 import { generateSessionName } from "./name-generator.js";
+import { getCachedProjects } from "./projects/cache.js";
+import { resolveProjectIdForCwd } from "./projects/resolver.js";
 
 function chooseHigherAuthorityEvent<
 	T extends { source: EventSource | string; createdAt?: string | null },
@@ -299,6 +302,23 @@ export async function processHookEvent(
 
 	await db.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
 
+	// Resolve project_id based on cwd. Compare against the persisted value
+	// so we only write when it actually changed.
+	const [upserted] = await db
+		.select({ id: sessions.id, cwd: sessions.cwd, projectId: sessions.projectId })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (upserted) {
+		const resolvedProjectId = resolveProjectIdForCwd(upserted.cwd, getCachedProjects());
+		if (resolvedProjectId !== upserted.projectId) {
+			await db
+				.update(sessions)
+				.set({ projectId: resolvedProjectId })
+				.where(eq(sessions.id, upserted.id));
+		}
+	}
+
 	if (isNew || eventType === "SessionStart") {
 		await associateObservedSession({ sessionId });
 	}
@@ -307,7 +327,35 @@ export async function processHookEvent(
 	const normalizedEvents = normalizeHookEvent(payload, agentType);
 	await insertNormalizedEvents(sessionId, normalizedEvents);
 
+	// Evaluate project alert rules for status_completed on SessionEnd.
+	// Best-effort: rule evaluation failure must not block event ingestion.
+	if (eventType === "SessionEnd") {
+		void evaluateAlertRules(sessionId, "completed").catch((err) => {
+			console.error("[alert-rule] evaluateAlertRules(completed) threw:", err);
+		});
+	}
+
 	return { sessionId, isNew };
+}
+
+/**
+ * P3 write path: mark a session as failed.
+ *
+ * Called from launch-dispatch when a launch_request transitions to "failed"
+ * and the session has never produced a SessionEnd event (i.e. the agent never
+ * started cleanly).
+ */
+export async function markSessionFailed(sessionId: string): Promise<void> {
+	const now = new Date().toISOString();
+	await db
+		.update(sessions)
+		.set({ status: "failed", endedAt: now, isWorking: false })
+		.where(eq(sessions.sessionId, sessionId));
+	// Evaluate project alert rules for status_failed transition.
+	// Best-effort: a rule evaluation failure must not block the caller.
+	void evaluateAlertRules(sessionId, "failed").catch((err) => {
+		console.error("[alert-rule] evaluateAlertRules(failed) threw:", err);
+	});
 }
 
 // Process a semantic status update from CLAUDE.md snippet

@@ -4,6 +4,11 @@ import type { Context } from "hono";
 import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { settings } from "../db/schema.js";
+import {
+	getActionRequest,
+	listOpenActionRequests,
+	resolveActionRequest,
+} from "../services/ai/action-requests-service.js";
 import { emitAiEvent } from "../services/ai/ai-events.js";
 import {
 	buildDigest,
@@ -768,6 +773,108 @@ aiRouter.get("/ai/spend", async (c) => {
 	if (gate) return gate;
 	const cents = await getTodaySpendCents();
 	return c.json({ date: new Date().toISOString().slice(0, 10), spendCents: cents });
+});
+
+// --------------------------------------------------------------------------
+// Action requests (Phase 3 — AI-initiated launch approvals)
+// --------------------------------------------------------------------------
+
+aiRouter.get("/ai/action-requests", async (c) => {
+	const gate = await requireAiBuild(c);
+	if (gate) return gate;
+	const items = await listOpenActionRequests();
+	return c.json({ actionRequests: items });
+});
+
+aiRouter.post("/ai/action-requests/:id/decide", async (c) => {
+	const gate = await requireAiActive(c);
+	if (gate) return gate;
+	const id = c.req.param("id") ?? "";
+	const body = await c.req.json<{ decision: "applied" | "declined" }>();
+	if (body.decision !== "applied" && body.decision !== "declined") {
+		return c.json({ error: "decision must be 'applied' or 'declined'" }, 400);
+	}
+	const existing = await getActionRequest(id);
+	if (!existing) return c.json({ error: "action request not found" }, 404);
+
+	const result = await resolveActionRequest({
+		id,
+		decision: body.decision,
+		resolvedBy: "local-user",
+	});
+
+	if (result.ok) {
+		const updated = await getActionRequest(id);
+		return c.json({ actionRequest: updated });
+	}
+
+	const updated = await getActionRequest(id);
+
+	if (result.reason === "race_lost") {
+		return c.json(
+			{
+				error: "race_lost",
+				currentStatus: result.currentStatus,
+				message: "Another approval already claimed this request.",
+				actionRequest: updated,
+			},
+			409,
+		);
+	}
+
+	const actionLabel = ((kind: string | undefined): string => {
+		switch (kind) {
+			case "add_project":
+				return "Project creation";
+			case "session_stop":
+				return "Stop";
+			case "session_archive":
+				return "Archive";
+			case "session_delete":
+				return "Delete";
+			case "edit_project":
+				return "Project edit";
+			case "delete_project":
+				return "Project delete";
+			case "edit_template":
+				return "Template edit";
+			case "delete_template":
+				return "Template delete";
+			case "add_channel":
+				return "Channel setup";
+			case "create_alert_rule":
+				return "Alert rule";
+			case "create_freeform_alert_rule":
+				return "Freeform alert rule";
+			case "bulk_session_action":
+				return "Bulk session action";
+			default:
+				return "Launch";
+		}
+	})(updated?.kind);
+
+	if (result.reason === "expired") {
+		return c.json(
+			{
+				error: "expired",
+				failureReason: result.failureReason,
+				message: `${actionLabel} couldn't proceed: ${result.failureReason}`,
+				actionRequest: updated,
+			},
+			422,
+		);
+	}
+
+	// reason === "failed"
+	return c.json(
+		{
+			error: "failed",
+			failureReason: result.failureReason,
+			message: `${actionLabel} failed: ${result.failureReason}`,
+			actionRequest: updated,
+		},
+		422,
+	);
 });
 
 export { aiRouter };

@@ -1,8 +1,12 @@
 import type {
 	ControlAction,
 	LaunchRequest,
+	Project,
+	ProjectInput,
+	ResolvedProjectData,
 	Session,
 	SessionEvent,
+	SessionTemplate,
 	SupervisorRecord,
 } from "../../shared/types.js";
 import { APP_API_BASE } from "./paths.js";
@@ -84,8 +88,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 		// get something actionable instead of a generic "502 Bad Gateway".
 		let detail: string | null = null;
 		try {
-			const body = (await res.clone().json()) as { error?: string };
-			if (body?.error) detail = body.error;
+			const body = (await res.clone().json()) as { error?: string; message?: string };
+			if (body?.message) detail = body.message;
+			else if (body?.error) detail = body.error;
 		} catch {
 			try {
 				const text = await res.clone().text();
@@ -232,7 +237,10 @@ export const api = {
 		return request<{ templates: unknown[]; total: number }>(`/templates${qs ? `?${qs}` : ""}`);
 	},
 
-	getTemplate: (id: string) => request<{ template: unknown }>(`/templates/${id}`),
+	getTemplate: (id: string) =>
+		request<{ template: SessionTemplate; resolvedProject: ResolvedProjectData | null }>(
+			`/templates/${id}`,
+		),
 
 	createTemplate: (body: unknown) =>
 		request<{ template: unknown }>("/templates", {
@@ -652,6 +660,14 @@ export const api = {
 			method: "DELETE",
 		}),
 
+	listOpenActionRequests: () => request<{ actionRequests: InboxWorkItem[] }>("/ai/action-requests"),
+
+	decideActionRequest: (id: string, body: { decision: "applied" | "declined" }) =>
+		request<{ actionRequest: Record<string, unknown> }>(`/ai/action-requests/${id}/decide`, {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
 	getDigest: (params?: { fresh?: boolean }) =>
 		request<Digest>(`/ai/digest${params?.fresh ? "?fresh=1" : ""}`),
 	refreshDigest: () => request<Digest>("/ai/digest/refresh", { method: "POST" }),
@@ -678,6 +694,32 @@ export const api = {
 			method: "POST",
 			body: JSON.stringify(body),
 		}),
+
+	// --- Event context (for deep-link scroll to older events) ---
+	getEventContext: (sessionId: string, eventId: number, around = 20) =>
+		request<{ events: SessionEvent[]; target: { id: number } }>(
+			`/sessions/${sessionId}/events/${eventId}/context?around=${around}`,
+		),
+
+	// --- Projects ---
+	listProjects: () => request<{ projects: Project[]; total: number }>("/projects"),
+	getProject: (id: string) => request<{ project: Project }>(`/projects/${id}`),
+	createProject: (body: ProjectInput) =>
+		request<{ project: Project }>("/projects", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+	updateProject: (id: string, body: Partial<ProjectInput>) =>
+		request<{ project: Project }>(`/projects/${id}`, {
+			method: "PUT",
+			body: JSON.stringify(body),
+		}),
+	deleteProject: (id: string) =>
+		request<{ ok: true }>(`/projects/${id}`, {
+			method: "DELETE",
+		}),
+	getProjectSessions: (id: string) =>
+		request<{ sessions: Session[]; total: number }>(`/projects/${id}/sessions`),
 };
 
 export interface TelegramBotInfo {
@@ -769,7 +811,7 @@ export interface TemplateDraftResponse {
 	notes: string[];
 }
 
-export type InboxSeverity = "normal" | "high";
+export type InboxSeverity = "normal" | "high" | "info";
 export type InboxWorkItem =
 	| {
 			kind: "hitl";
@@ -811,6 +853,148 @@ export type InboxWorkItem =
 			errorMessage: string | null;
 			at: string;
 			severity: InboxSeverity;
+	  }
+	| {
+			kind: "action_launch";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectId: string;
+			projectName: string;
+			template: Record<string, unknown>;
+			launchSpec: Record<string, unknown>;
+			requestedLaunchMode: string;
+			origin: "web" | "telegram";
+			parentSessionId: string | null;
+			parentSessionName: string | null;
+	  }
+	| {
+			kind: "action_add_project";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectName: string;
+			projectCwd: string;
+			defaultAgentType: string | null;
+			defaultModel: string | null;
+			defaultLaunchMode: string | null;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_stop";
+			id: string;
+			sessionId: string;
+			sessionName: string | null;
+			severity: "high";
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_archive";
+			id: string;
+			sessionId: string;
+			sessionName: string | null;
+			severity: "normal";
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_delete";
+			id: string;
+			sessionId: string;
+			sessionName: string | null;
+			severity: "high";
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_edit_project";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "normal";
+			projectId: string;
+			projectName: string;
+			fields: Record<string, unknown>;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_delete_project";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "high";
+			projectId: string;
+			projectName: string;
+			affectedTemplates: number;
+			affectedSessions: number;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_edit_template";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "normal";
+			templateId: string;
+			templateName: string;
+			fields: Record<string, unknown>;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_delete_template";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "high";
+			templateId: string;
+			templateName: string;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_add_channel";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			channelKind: "telegram" | "webhook" | "email";
+			channelLabel: string;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_create_alert_rule";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectName: string;
+			ruleType: string;
+			thresholdMinutes: number | null;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_bulk_session";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "high" | "normal";
+			createdAt: string;
+			action: "stop" | "archive" | "delete";
+			sessionCount: number;
+			sessionNames: string[];
+			hasMore: boolean;
+			exclusionCount: number;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {

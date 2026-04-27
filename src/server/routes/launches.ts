@@ -4,11 +4,13 @@ import { HTTPException } from "hono/http-exception";
 import type { LaunchRequestInput, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
-import { launchRequests } from "../db/schema.js";
+import { launchRequests, sessionTemplates } from "../db/schema.js";
 import { isAiBuildEnabled } from "../services/ai/feature.js";
 import { recommendLaunch } from "../services/ai/launch-recommender.js";
 import { createValidatedLaunchRequest, mapLaunchRequest } from "../services/launch-validator.js";
+import { getProject } from "../services/projects/projects-service.js";
 import { getSession } from "../services/session-tracker.js";
+import { resolveTemplateWithProject } from "../services/templates/template-project-resolver.js";
 
 const launchesRouter = new Hono();
 launchesRouter.use("*", requireAuth());
@@ -35,7 +37,31 @@ launchesRouter.get("/launches/:id", async (c) => {
 
 launchesRouter.post("/launches", async (c) => {
 	try {
-		const body = await c.req.json<LaunchRequestInput>();
+		const body = await c.req.json<LaunchRequestInput & { templateId?: string | null }>();
+
+		// When a templateId is provided, load the template and resolve project
+		// defaults before passing to the validator. The validator sees a plain
+		// SessionTemplateInput — no special-casing needed downstream.
+		if (body.templateId) {
+			const [templateRow] = await db
+				.select()
+				.from(sessionTemplates)
+				.where(eq(sessionTemplates.id, body.templateId))
+				.limit(1);
+			if (!templateRow) {
+				return c.json({ error: "Template not found" }, 404);
+			}
+			const project = templateRow.projectId ? await getProject(templateRow.projectId) : null;
+			const resolvedTemplate = resolveTemplateWithProject(templateRow, project);
+
+			const resolvedBody: LaunchRequestInput = {
+				...body,
+				template: resolvedTemplate,
+			};
+			const result = await createValidatedLaunchRequest(resolvedBody);
+			return c.json(result, result.launchRequest.status === "validated" ? 201 : 200);
+		}
+
 		const result = await createValidatedLaunchRequest(body);
 		return c.json(result, result.launchRequest.status === "validated" ? 201 : 200);
 	} catch (error) {

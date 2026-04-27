@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/client.js";
-import { askMessages, askThreads } from "../../db/schema.js";
+import { askMessages, askThreads, sessionTemplates } from "../../db/schema.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import type { LlmAdapter } from "../ai/llm/types.js";
 import {
@@ -10,7 +10,46 @@ import {
 	getProviderApiKey,
 } from "../ai/providers-service.js";
 import { getSemanticEnricher } from "../ai/semantic-enricher.js";
+import { getCachedProjects } from "../projects/cache.js";
+import {
+	getOpenDraftForThread,
+	handleAddProjectContinuation,
+	handleNewAddProjectIntent,
+} from "./ask-add-project-handler.js";
+import {
+	handleAlertRuleRequest,
+	handleFreeformAlertRuleRequest,
+} from "./ask-alert-rule-handler.js";
+import { handleBulkAction } from "./ask-bulk-action-handler.js";
+import { handleChannelSetupRequest } from "./ask-channel-handler.js";
+import { handleProjectTemplateCrud } from "./ask-crud-handler.js";
+import { handleDigestQuery } from "./ask-digest-handler.js";
+import { handleAskLaunchIntent } from "./ask-launch-handler.js";
+import { handleSessionQa } from "./ask-qa-handler.js";
+import { handleResumeIntent } from "./ask-resume-handler.js";
+import { handleNlSearch } from "./ask-search-handler.js";
+import { handleSessionAction } from "./ask-session-action-handler.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
+import {
+	addProjectGatePasses,
+	alertRuleGatePasses,
+	bulkActionGatePasses,
+	channelSetupGatePasses,
+	detectAddProjectIntent,
+	detectAlertRuleIntent,
+	detectBulkActionIntent,
+	detectLaunchIntent,
+	detectProjectTemplateCrudIntent,
+	detectQaIntent,
+	detectResumeIntent,
+	detectSessionActionIntent,
+	digestGatePasses,
+	projectTemplateCrudGatePasses,
+	qaGatePasses,
+	resumeGatePasses,
+	searchGatePasses,
+	sessionActionGatePasses,
+} from "./launch-intent-detector.js";
 import { fetchSessionsById, resolveCandidateSessions } from "./resolver.js";
 
 /**
@@ -318,14 +357,267 @@ async function prepareTurn(input: AskTurnInput): Promise<{
 }
 
 export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
-	const { thread, userMessage, context, transcript } = await prepareTurn(input);
+	const { thread, userMessage, context, transcript, text } = await prepareTurn(input);
+
+	const origin = input.origin ?? "web";
+	const askArgs = { origin, threadId: thread.id, telegramChatId: input.telegramChatId };
+
+	// 1. Open-draft continuation check — runs BEFORE any intent gate so that
+	//    mid-draft replies (including "skip") are parsed by the draft handler.
+	const openDraft = await getOpenDraftForThread(thread.id);
+	if (openDraft?.status === "drafting") {
+		const contResult = await handleAddProjectContinuation(text, askArgs);
+		if (contResult !== null) {
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: contResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+	}
+
+	// 1b. Per-session Q&A gate — before add-project so session names are not
+	//     misinterpreted as project names. Read-only; no action_request created.
+	if (qaGatePasses(text)) {
+		const qaIntent = await detectQaIntent(text);
+		if (qaIntent.kind === "qa") {
+			const qaResult = await handleSessionQa(qaIntent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: qaResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		// classifier_failed falls through to LLM fallback — don't surface errors
+	}
+
+	// 2. Add-project gate + classifier
+	let preamble = "";
+	if (addProjectGatePasses(text)) {
+		const addIntent = await detectAddProjectIntent(text);
+		if (addIntent.kind === "add_project") {
+			const addResult = await handleNewAddProjectIntent(addIntent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: addResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (addIntent.kind === "classifier_failed") {
+			preamble = `_(Heads up: I tried to detect a project-creation request but the classifier failed: ${addIntent.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2b. Digest gate — read-only, no action_request, no LLM call.
+	if (digestGatePasses(text)) {
+		const digestReply = await handleDigestQuery(text);
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: digestReply,
+			contextSessionIds: [],
+		});
+		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+	}
+
+	// 2c. NL search gate — read-only, no action_request, no LLM call.
+	//     Returns null on zero results so the LLM can answer conversationally.
+	if (searchGatePasses(text)) {
+		const searchReply = await handleNlSearch(text, getCachedProjects());
+		if (searchReply !== null) {
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: searchReply,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+	}
+
+	// 2d. Bulk session action gate — must run BEFORE single-session gate so that
+	//     "archive all completed sessions" doesn't fall through to the single-session
+	//     classifier (which would misfire or return intent:none).
+	if (bulkActionGatePasses(text)) {
+		const projects = getCachedProjects();
+		const bulkResult = await detectBulkActionIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (bulkResult.kind === "bulk_action") {
+			const bulkHandlerResult = await handleBulkAction(bulkResult, projects, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: bulkHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (bulkResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a bulk session-action request but the classifier failed: ${bulkResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2e. Session action gate — pin/unpin/add_note/rename execute immediately;
+	//     stop/archive/delete create action_request for approval.
+	if (sessionActionGatePasses(text)) {
+		const sessionActionResult = await detectSessionActionIntent(text);
+		if (sessionActionResult.kind === "session_action" && sessionActionResult.intent) {
+			const actionResult = await handleSessionAction(sessionActionResult.intent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: actionResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (sessionActionResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a session-action request but the classifier failed: ${sessionActionResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2f. Resume gate — checked before launch so "continue <name> with: …" resolves
+	//     as a session resume, not a project launch. The classifier rejects project
+	//     names and generic "continue" phrases that aren't session references.
+	if (resumeGatePasses(text)) {
+		const projects = getCachedProjects();
+		const resumeResult = await detectResumeIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (resumeResult.kind === "resume") {
+			const resumeHandlerResult = await handleResumeIntent({
+				intent: resumeResult,
+				origin,
+				threadId: thread.id,
+				telegramChatId: input.telegramChatId,
+			});
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: resumeHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (resumeResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a resume request but the classifier failed: ${resumeResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2f. Project/template CRUD gate — edit/delete project or template.
+	//     Runs after resume so "rename project" doesn't confuse the resume gate.
+	if (projectTemplateCrudGatePasses(text)) {
+		const projects = getCachedProjects();
+		const templateRows = await db.select({ name: sessionTemplates.name }).from(sessionTemplates);
+		const crudResult = await detectProjectTemplateCrudIntent(
+			text,
+			projects.map((p) => p.name),
+			templateRows.map((t) => t.name),
+		);
+		if (
+			crudResult.kind === "edit_project" ||
+			crudResult.kind === "delete_project" ||
+			crudResult.kind === "edit_template" ||
+			crudResult.kind === "delete_template"
+		) {
+			const crudHandlerResult = await handleProjectTemplateCrud(crudResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: crudHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (crudResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a project/template edit request but the classifier failed: ${crudResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2g. Channel-setup gate — heuristic kind detection, no LLM needed.
+	//     Runs after CRUD gate so "add channel" doesn't trip CRUD verbs.
+	if (channelSetupGatePasses(text)) {
+		const channelResult = await handleChannelSetupRequest(text, askArgs);
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: channelResult.replyText,
+			contextSessionIds: [],
+		});
+		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+	}
+
+	// 2h. Alert-rule gate — runs after channel-setup; constrained rule types only.
+	if (alertRuleGatePasses(text)) {
+		const projects = getCachedProjects();
+		const alertRuleResult = await detectAlertRuleIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (alertRuleResult.kind === "create_alert_rule") {
+			const alertResult = await handleAlertRuleRequest(alertRuleResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: alertResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (alertRuleResult.kind === "create_freeform_alert_rule") {
+			const alertResult = await handleFreeformAlertRuleRequest(alertRuleResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: alertResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (alertRuleResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect an alert-rule request but the classifier failed: ${alertRuleResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 3. Launch-intent intercept: runs after the user message is persisted so the
+	//    thread exists. Short-circuits the normal Ask LLM call when a launch is queued.
+	const intent = await detectLaunchIntent(text, getCachedProjects());
+	if (intent.kind === "launch") {
+		const launchResult = await handleAskLaunchIntent({
+			intent,
+			origin,
+			threadId: thread.id,
+			telegramChatId: input.telegramChatId,
+		});
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: launchResult.replyText,
+			contextSessionIds: [],
+		});
+		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+	}
+
+	if (intent.kind === "classifier_failed" && !preamble) {
+		preamble =
+			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
+	}
 
 	const llm = await getDefaultLlm();
 	if ("error" in llm) {
 		const errMsg = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
-			content: llm.error,
+			content: preamble + llm.error,
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: llm.error,
 		});
@@ -346,7 +638,7 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 			temperature: 0.3,
 			timeoutMs: 60_000,
 		});
-		const reply = res.text.trim() || "(no response)";
+		const reply = preamble + (res.text.trim() || "(no response)");
 		const assistantMessage = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
@@ -366,8 +658,7 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		const assistantMessage = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
-			content:
-				"I couldn't reach the LLM provider just now. See the inline error and check Settings → AI.",
+			content: `${preamble}I couldn't reach the LLM provider just now. See the inline error and check Settings → AI.`,
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: message,
 		});
@@ -399,13 +690,300 @@ export type AskStreamEvent =
  * about the deltas once it lands).
  */
 export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskStreamEvent> {
-	const { thread, userMessage, context, transcript } = await prepareTurn(input);
+	const { thread, userMessage, context, transcript, text } = await prepareTurn(input);
+
+	const origin = input.origin ?? "web";
+	const askArgs = { origin, threadId: thread.id, telegramChatId: input.telegramChatId };
+
+	// 1. Open-draft continuation check — runs BEFORE any intent gate.
+	const openDraft = await getOpenDraftForThread(thread.id);
+	if (openDraft?.status === "drafting") {
+		const contResult = await handleAddProjectContinuation(text, askArgs);
+		if (contResult !== null) {
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: contResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: contResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+	}
+
+	// 1b. Per-session Q&A gate — streaming path short-circuit.
+	if (qaGatePasses(text)) {
+		const qaIntent = await detectQaIntent(text);
+		if (qaIntent.kind === "qa") {
+			const qaResult = await handleSessionQa(qaIntent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: qaResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: qaResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		// classifier_failed falls through to LLM fallback
+	}
+
+	// 2. Add-project gate + classifier
+	let preamble = "";
+	if (addProjectGatePasses(text)) {
+		const addIntent = await detectAddProjectIntent(text);
+		if (addIntent.kind === "add_project") {
+			const addResult = await handleNewAddProjectIntent(addIntent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: addResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: addResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (addIntent.kind === "classifier_failed") {
+			preamble = `_(Heads up: I tried to detect a project-creation request but the classifier failed: ${addIntent.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2b. Digest gate — streaming path short-circuit.
+	if (digestGatePasses(text)) {
+		const digestReply = await handleDigestQuery(text);
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: digestReply,
+			contextSessionIds: [],
+		});
+		yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+		yield { kind: "delta", delta: digestReply };
+		yield { kind: "done", assistantMessage };
+		return;
+	}
+
+	// 2c. NL search gate — streaming path short-circuit.
+	if (searchGatePasses(text)) {
+		const searchReply = await handleNlSearch(text, getCachedProjects());
+		if (searchReply !== null) {
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: searchReply,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: searchReply };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+	}
+
+	// 2d. Bulk session action gate — streaming path short-circuit.
+	//     Must run before single-session gate (same reason as sync path above).
+	if (bulkActionGatePasses(text)) {
+		const projects = getCachedProjects();
+		const bulkResult = await detectBulkActionIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (bulkResult.kind === "bulk_action") {
+			const bulkHandlerResult = await handleBulkAction(bulkResult, projects, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: bulkHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: bulkHandlerResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (bulkResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a bulk session-action request but the classifier failed: ${bulkResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2e. Session action gate — streaming path short-circuit.
+	if (sessionActionGatePasses(text)) {
+		const sessionActionResult = await detectSessionActionIntent(text);
+		if (sessionActionResult.kind === "session_action" && sessionActionResult.intent) {
+			const actionResult = await handleSessionAction(sessionActionResult.intent, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: actionResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: actionResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (sessionActionResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a session-action request but the classifier failed: ${sessionActionResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2f. Resume gate — streaming path short-circuit.
+	if (resumeGatePasses(text)) {
+		const projects = getCachedProjects();
+		const resumeResult = await detectResumeIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (resumeResult.kind === "resume") {
+			const resumeHandlerResult = await handleResumeIntent({
+				intent: resumeResult,
+				origin,
+				threadId: thread.id,
+				telegramChatId: input.telegramChatId,
+			});
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: resumeHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: resumeHandlerResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (resumeResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a resume request but the classifier failed: ${resumeResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2f. Project/template CRUD gate — streaming path short-circuit.
+	if (projectTemplateCrudGatePasses(text)) {
+		const projects = getCachedProjects();
+		const templateRows = await db.select({ name: sessionTemplates.name }).from(sessionTemplates);
+		const crudResult = await detectProjectTemplateCrudIntent(
+			text,
+			projects.map((p) => p.name),
+			templateRows.map((t) => t.name),
+		);
+		if (
+			crudResult.kind === "edit_project" ||
+			crudResult.kind === "delete_project" ||
+			crudResult.kind === "edit_template" ||
+			crudResult.kind === "delete_template"
+		) {
+			const crudHandlerResult = await handleProjectTemplateCrud(crudResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: crudHandlerResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: crudHandlerResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (crudResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect a project/template edit request but the classifier failed: ${crudResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 2g. Channel-setup gate — streaming path short-circuit.
+	if (channelSetupGatePasses(text)) {
+		const channelResult = await handleChannelSetupRequest(text, askArgs);
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: channelResult.replyText,
+			contextSessionIds: [],
+		});
+		yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+		yield { kind: "delta", delta: channelResult.replyText };
+		yield { kind: "done", assistantMessage };
+		return;
+	}
+
+	// 2h. Alert-rule gate — streaming path short-circuit.
+	if (alertRuleGatePasses(text)) {
+		const projects = getCachedProjects();
+		const alertRuleResult = await detectAlertRuleIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (alertRuleResult.kind === "create_alert_rule") {
+			const alertResult = await handleAlertRuleRequest(alertRuleResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: alertResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: alertResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (alertRuleResult.kind === "create_freeform_alert_rule") {
+			const alertResult = await handleFreeformAlertRuleRequest(alertRuleResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: alertResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: alertResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (alertRuleResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect an alert-rule request but the classifier failed: ${alertRuleResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
+	// 3. Launch-intent intercept for streaming path.
+	const intent = await detectLaunchIntent(text, getCachedProjects());
+	if (intent.kind === "launch") {
+		const launchResult = await handleAskLaunchIntent({
+			intent,
+			origin,
+			threadId: thread.id,
+			telegramChatId: input.telegramChatId,
+		});
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: launchResult.replyText,
+			contextSessionIds: [],
+		});
+		yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+		yield { kind: "delta", delta: launchResult.replyText };
+		yield { kind: "done", assistantMessage };
+		return;
+	}
+
 	yield {
 		kind: "start",
 		thread,
 		userMessage,
 		includedSessionIds: context.includedSessionIds,
 	};
+
+	// For classifier_failed: emit preamble as first delta, then continue normally.
+	if (!preamble && intent.kind === "classifier_failed") {
+		preamble =
+			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
+	}
+	if (preamble) {
+		yield { kind: "delta", delta: preamble };
+	}
 
 	const llm = await getDefaultLlm();
 	if ("error" in llm) {
@@ -450,7 +1028,8 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 			threadId: thread.id,
 			role: "assistant",
 			content:
-				collected.trim() || "I couldn't reach the LLM provider just now. Check Settings → AI.",
+				preamble +
+				(collected.trim() || "I couldn't reach the LLM provider just now. Check Settings → AI."),
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: message,
 		});
@@ -458,7 +1037,7 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		return;
 	}
 
-	const reply = collected.trim() || "(no response)";
+	const reply = preamble + (collected.trim() || "(no response)");
 	const assistantMessage = await appendMessage({
 		threadId: thread.id,
 		role: "assistant",

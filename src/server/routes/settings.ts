@@ -4,6 +4,7 @@ import { createApiKey } from "../auth/api-key.js";
 import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { apiKeys, settings } from "../db/schema.js";
+import { getTelemetryDiagnostics, sendTelemetryNow } from "../services/telemetry.js";
 
 const settingsRouter = new Hono();
 settingsRouter.use("*", requireAuth());
@@ -84,6 +85,19 @@ settingsRouter.delete("/api-keys/:id", async (c) => {
 
 	await db.update(apiKeys).set({ isActive: false }).where(eq(apiKeys.id, id));
 
+	return c.json({ ok: true });
+});
+
+settingsRouter.get("/telemetry/status", async (c) => {
+	const telemetry = await getTelemetryDiagnostics();
+	return c.json({ telemetry });
+});
+
+settingsRouter.post("/telemetry/ping", async (c) => {
+	const result = await sendTelemetryNow();
+	if (!result.ok) {
+		return c.json({ ok: false, error: result.error }, 502);
+	}
 	return c.json({ ok: true });
 });
 

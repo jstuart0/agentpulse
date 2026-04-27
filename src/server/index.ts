@@ -15,6 +15,7 @@ import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
 import { labsRouter } from "./routes/labs.js";
 import { launchesRouter } from "./routes/launches.js";
+import { projectsRouter } from "./routes/projects.js";
 import { searchRouter } from "./routes/search.js";
 import { sessionsRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
@@ -33,6 +34,11 @@ import { startTelegramPolling } from "./services/channels/telegram-poller.js";
 import { ensureBootstrapAdmin } from "./services/local-auth-bootstrap.js";
 import { reapExpiredSessions } from "./services/local-auth-service.js";
 import { sessionBus } from "./services/notifier.js";
+import { loadEager as loadProjectsEager } from "./services/projects/cache.js";
+import {
+	listProjects,
+	resolveAllSessionsForProject,
+} from "./services/projects/projects-service.js";
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
@@ -43,6 +49,22 @@ validateAiStartupConfig();
 
 // Initialize database
 initializeDatabase();
+
+// Eagerly populate the projects cache before hook ingestion routes are mounted
+// so the first incoming event sees a warm cache with no DB round-trip.
+await loadProjectsEager();
+
+// One-shot backfill: stamp sessions that existed before projects were created.
+(async () => {
+	try {
+		const allProjects = await listProjects();
+		for (const project of allProjects) {
+			await resolveAllSessionsForProject(project.id, project.cwd);
+		}
+	} catch (err) {
+		console.warn("[projects] Boot backfill failed:", err);
+	}
+})();
 
 // Create Hono app
 const app = new Hono();
@@ -57,6 +79,7 @@ api.route("/v1", ingest);
 api.route("/v1", sessionsRouter);
 api.route("/v1", settingsRouter);
 api.route("/v1", templatesRouter);
+api.route("/v1", projectsRouter);
 api.route("/v1", supervisorsRouter);
 api.route("/v1", launchesRouter);
 api.route("/v1", aiRouter);

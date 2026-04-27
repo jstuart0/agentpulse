@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { blob, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { blob, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const sessions = sqliteTable("sessions", {
 	id: text("id")
@@ -28,6 +28,11 @@ export const sessions = sqliteTable("sessions", {
 	claudeMdUpdatedAt: text("claude_md_updated_at"),
 	notes: text("notes").default(""),
 	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>().default({}),
+	// Nullable FK to projects.id, resolved by longest-prefix cwd match.
+	projectId: text("project_id"),
+	// P2: archival flag — orthogonal to status so a failed/completed session
+	// can be archived without changing its terminal status value.
+	isArchived: integer("is_archived", { mode: "boolean" }).notNull().default(false),
 	// AI watcher fields (nullable; only meaningful when the feature is enabled)
 	watcherState: text("watcher_state"),
 	watcherLastRunAt: text("watcher_last_run_at"),
@@ -118,6 +123,15 @@ export const sessionTemplates = sqliteTable("session_templates", {
 	// Phase 5 provenance: nullable JSON for distilled templates. Manually
 	// authored templates leave this null.
 	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+	// Phase A: project linkage. Nullable FK to projects.id — no FK constraint
+	// (follows existing pattern; SQLite FK enforcement requires pragma).
+	projectId: text("project_id"),
+	// JSON array of field names the user explicitly overrode (e.g. ["agentType"]).
+	// Null/[] means all project-provided fields are inherited. Using a JSON
+	// sentinel column rather than per-field nullable booleans avoids 4+ new
+	// columns; SQLite ALTER TABLE cannot change NOT NULL on agentType/cwd so
+	// we cannot make those columns nullable cheaply — the sentinel sidesteps this.
+	templateProjectOverrides: text("template_project_overrides", { mode: "json" }).$type<string[]>(),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
@@ -220,6 +234,7 @@ export const launchRequests = sqliteTable("launch_requests", {
 		Record<string, unknown>
 	>(),
 	retryOfLaunchRequestId: text("retry_of_launch_request_id"),
+	parentSessionId: text("parent_session_id"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
@@ -418,6 +433,24 @@ export const aiInboxSnoozes = sqliteTable("ai_inbox_snoozes", {
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
+export const projects = sqliteTable("projects", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	name: text("name").notNull().unique(),
+	cwd: text("cwd").notNull(),
+	githubRepoUrl: text("github_repo_url"),
+	defaultAgentType: text("default_agent_type"),
+	defaultModel: text("default_model"),
+	defaultLaunchMode: text("default_launch_mode"),
+	notes: text("notes"),
+	tags: text("tags", { mode: "json" }).$type<string[]>(),
+	isFavorite: integer("is_favorite", { mode: "boolean" }).notNull().default(false),
+	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
 // askThreads / askMessages — conversation state for the global "Ask"
 // assistant. Threads are keyed by uuid; messages are ordered by
 // created_at. `contextSessionIds` records which sessions the resolver
@@ -455,6 +488,47 @@ export const askMessages = sqliteTable("ask_messages", {
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
+// aiActionRequests — operator-approval queue for AI-initiated actions that
+// are NOT session-scoped (contrast: ai_hitl_requests, which requires a
+// sessionId and calls supersedeOpenHitl on every new row for the same
+// session). Launch requests live here; future kinds (e.g. "project_clone")
+// can share the same table via the `kind` discriminator.
+//
+// Status lifecycle:
+//   awaiting_reply → applying   (atomic conditional UPDATE; racing approvals
+//                                are serialised here — see action-requests-service.ts)
+//   applying       → applied    (execute succeeded; result_event_id set)
+//   applying       → failed     (execute threw; failure_reason set)
+//   applying       → expired    (no capable supervisor at execute time)
+//   awaiting_reply → declined   (user declined)
+//   awaiting_reply → superseded (future per-project de-dup feature)
+export const aiActionRequests = sqliteTable("ai_action_requests", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	kind: text("kind").notNull(),
+	// ^ "launch_request" is the only kind in v1; leave untyped so future
+	// kinds can land without a schema migration.
+	status: text("status").notNull().default("awaiting_reply"),
+	failureReason: text("failure_reason"),
+	question: text("question").notNull(),
+	payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+	origin: text("origin").notNull(),
+	// ^ "web" | "telegram"
+	channelId: text("channel_id"),
+	// ^ notification_channels.id (UUID) when origin="telegram".
+	// NOT the raw Telegram chat id — same identifier HITL uses.
+	// Inbound callbacks are authed via findActiveChannelByChatId(chatId)
+	// then matched against this UUID. See channels.ts:243-250 for precedent.
+	askThreadId: text("ask_thread_id"),
+	resolvedAt: text("resolved_at"),
+	resolvedBy: text("resolved_by"),
+	resultEventId: text("result_event_id"),
+	// ^ launchRequestId on successful apply; used for traceability
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
 // aiHitlRequests — first-class table for open HITL requests. Separated
 // from watcherProposals so proposal persistence and HITL workflow don't
 // collapse together; future remote channels (Phase 7) register here.
@@ -470,6 +544,136 @@ export const aiHitlRequests = sqliteTable("ai_hitl_requests", {
 	replyKind: text("reply_kind"), // approve | decline | custom
 	replyText: text("reply_text"),
 	expiresAt: text("expires_at"),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// project_alert_rules — project-level alert rules created via NL ("alert me
+// when any session on <project> fails"). Supports constrained rule types
+// (status_failed | status_stuck | status_completed | no_activity_minutes) and
+// freeform_match (per-event LLM classification against a natural-language condition).
+//
+// FK cascade: REFERENCES projects(id) ON DELETE CASCADE is declared below but
+// only enforced at runtime when PRAGMA foreign_keys = ON is set per connection.
+// The client already does this (client.ts line ~23).
+export const projectAlertRules = sqliteTable("project_alert_rules", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	projectId: text("project_id").notNull(),
+	ruleType: text("rule_type").notNull(),
+	// status_failed | status_stuck | status_completed | no_activity_minutes | freeform_match
+	params: text("params", { mode: "json" }).$type<Record<string, unknown>>(),
+	// JSON: { "thresholdMinutes": 30 } for no_activity_minutes; freeform_match params shape
+	// is FreeformRuleParams (alert-rule-evaluator.ts)
+	channelId: text("channel_id"),
+	// notification_channels.id to notify via channel; null means inbox-only
+	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+	// Freeform-rule daily spend tracking. Reset atomically via SQL CASE expression
+	// (not read-modify-write) to prevent concurrent-reset races on server restart.
+	dailyTokenSpendCents: integer("daily_token_spend_cents").notNull().default(0),
+	dailyTokenSpendDate: text("daily_token_spend_date"),
+	// Per-rule event cursor for freeform_match rules. The evaluator processes
+	// events with id > lastEvaluatedEventId and advances the cursor BEFORE the
+	// sample-rate check so sampled-out events are never re-evaluated.
+	lastEvaluatedEventId: integer("last_evaluated_event_id").notNull().default(0),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// project_alert_rule_fires — de-bounce table. Records (rule_id, session_id,
+// rule_type) fires so the same rule cannot fire more than once per session
+// within ALERT_RULE_DEBOUNCE_MS (5 minutes). A UNIQUE constraint enforces
+// one record per (rule_id, session_id), and the evaluator checks fired_at
+// before inserting. De-bounce window: 5 minutes because most status
+// transitions are instantaneous; a 5-minute window prevents double-fires
+// from race conditions (e.g. two concurrent event-processor calls) without
+// silencing legitimate re-fires on long-running sessions.
+export const projectAlertRuleFires = sqliteTable(
+	"project_alert_rule_fires",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
+		ruleId: text("rule_id").notNull(),
+		sessionId: text("session_id").notNull(),
+		firedAt: text("fired_at").notNull().default(sql`(datetime('now'))`),
+	},
+	(t) => ({
+		// UNIQUE index already exists in DDL (client.ts:597); annotation added for Drizzle type fidelity.
+		uniq: uniqueIndex("idx_alert_rule_fires_rule_session").on(t.ruleId, t.sessionId),
+	}),
+);
+
+// ai_qa_cache — per-(session, question-hash) response cache for the
+// per-session Q&A Ask intent. Keyed by (session_id, question_hash) where
+// question_hash is SHA-256 hex of the normalized question. Invalidated when
+// a new event arrives for the session (lastEventId check) or when the 15-minute
+// absolute TTL expires. Purged by the periodic alert-rule sweep, not by a
+// separate interval.
+export const aiQaCache = sqliteTable(
+	"ai_qa_cache",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
+		sessionId: text("session_id").notNull(),
+		questionHash: text("question_hash").notNull(),
+		response: text("response").notNull(),
+		// max(events.id) at the time the cache was written — used to detect
+		// stale entries when new events arrive for the session.
+		lastEventId: integer("last_event_id").notNull(),
+		cachedAt: text("cached_at").notNull().default(sql`(datetime('now'))`),
+		expiresAt: text("expires_at").notNull(),
+	},
+	(t) => ({
+		uniq: uniqueIndex("idx_qa_cache_session_question").on(t.sessionId, t.questionHash),
+	}),
+);
+
+// ProjectDraftFields — partial record collected turn-by-turn during
+// AI-driven "add project" flows. Required fields: name, cwd.
+export interface ProjectDraftFields {
+	name?: string;
+	cwd?: string;
+	defaultAgentType?: string | null;
+	defaultModel?: string | null;
+	defaultLaunchMode?: string | null;
+	githubRepoUrl?: string | null;
+}
+
+// NextQuestion — which field we're currently collecting and how many
+// failed parse attempts have occurred (max 3 before draft expires).
+export interface NextQuestion {
+	field: keyof ProjectDraftFields;
+	prompt: string;
+	retryCount: number;
+}
+
+// aiPendingProjectDrafts — in-flight multi-turn project creation state.
+// One open draft per ask_thread_id; a new "add project" intent supersedes
+// any existing open draft for the same thread.
+//
+// Status lifecycle:
+//   drafting         → pending_approval (all required fields filled)
+//   drafting         → superseded       (new intent fires for same thread)
+//   drafting         → expired          (retry cap hit on a required field)
+//   pending_approval → applied          (action_request resolved to applied)
+//   pending_approval → declined         (action_request resolved to declined)
+//   pending_approval → superseded       (new intent while waiting)
+export const aiPendingProjectDrafts = sqliteTable("ai_pending_project_drafts", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	askThreadId: text("ask_thread_id").notNull(),
+	channelId: text("channel_id"),
+	// ^ notification_channels.id UUID, only set for telegram origin
+	origin: text("origin").notNull(),
+	// ^ "web" | "telegram"
+	draftFields: text("draft_fields", { mode: "json" }).$type<ProjectDraftFields>().notNull(),
+	nextQuestion: text("next_question", { mode: "json" }).$type<NextQuestion>().notNull(),
+	status: text("status").notNull().default("drafting"),
+	actionRequestId: text("action_request_id"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });

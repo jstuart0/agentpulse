@@ -22,6 +22,10 @@ export interface LlmRequest {
 	temperature?: number;
 	/** Optional request timeout override (ms). Default 60s. */
 	timeoutMs?: number;
+	/** When true, hint the provider to skip any reasoning/thinking phase
+	 *  (used for JSON-only classifier calls on local models like qwen3).
+	 *  Adapter-specific: openai-compatible sets `reasoning_effort: "none"`. */
+	disableReasoning?: boolean;
 }
 
 export interface LlmUsage {

@@ -5,6 +5,7 @@ import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js
 import { api } from "./lib/api.js";
 import { applyTheme, getStoredTheme } from "./lib/theme.js";
 import { useLabsStore } from "./stores/labs-store.js";
+import { useProjectsStore } from "./stores/projects-store.js";
 import { useUserStore } from "./stores/user-store.js";
 
 const DashboardPage = lazy(() =>
@@ -42,6 +43,9 @@ const SearchPage = lazy(() =>
 );
 const LoginPage = lazy(() =>
 	import("./pages/LoginPage.js").then((module) => ({ default: module.LoginPage })),
+);
+const ProjectsPage = lazy(() =>
+	import("./pages/ProjectsPage.js").then((module) => ({ default: module.ProjectsPage })),
 );
 
 /**
@@ -82,11 +86,13 @@ export function App() {
 	useWebSocket();
 	const loadLabs = useLabsStore((s) => s.load);
 	const loadUser = useUserStore((s) => s.load);
+	const loadProjects = useProjectsStore((s) => s.load);
 
 	useEffect(() => {
 		void loadLabs();
 		void loadUser();
-	}, [loadLabs, loadUser]);
+		void loadProjects();
+	}, [loadLabs, loadUser, loadProjects]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -131,6 +137,7 @@ export function App() {
 					<Route path="/sessions" element={<DashboardPage />} />
 					<Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
 					<Route path="/templates" element={<TemplatesPage />} />
+					<Route path="/projects" element={<ProjectsPage />} />
 					<Route path="/launches/:launchId" element={<LaunchDetailPage />} />
 					<Route path="/inbox" element={<InboxPage />} />
 					<Route path="/digest" element={<DigestPage />} />

@@ -27,6 +27,8 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 		claudeMdUpdatedAt: null,
 		notes: null,
 		metadata: {},
+		projectId: null,
+		isArchived: false,
 		...overrides,
 	};
 }

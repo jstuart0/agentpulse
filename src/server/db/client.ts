@@ -513,6 +513,103 @@ export function initializeDatabase() {
 		// DB was created fresh (column present) or legacy (column added
 		// by the ALTER above).
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_ask_threads_telegram_chat ON ask_threads(telegram_chat_id) WHERE telegram_chat_id IS NOT NULL AND archived_at IS NULL",
+		// Phase 1: projects registry
+		`CREATE TABLE IF NOT EXISTS projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			cwd TEXT NOT NULL,
+			github_repo_url TEXT,
+			default_agent_type TEXT,
+			default_model TEXT,
+			default_launch_mode TEXT,
+			notes TEXT,
+			tags TEXT,
+			is_favorite INTEGER NOT NULL DEFAULT 0,
+			metadata TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_projects_cwd ON projects(cwd)",
+		"ALTER TABLE sessions ADD COLUMN project_id TEXT",
+		"CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id)",
+		// Phase 3: AI-initiated action requests (launch approvals etc.)
+		`CREATE TABLE IF NOT EXISTS ai_action_requests (
+			id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'awaiting_reply',
+			failure_reason TEXT,
+			question TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			origin TEXT NOT NULL,
+			channel_id TEXT,
+			ask_thread_id TEXT,
+			resolved_at TEXT,
+			resolved_by TEXT,
+			result_event_id TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_ai_action_requests_status ON ai_action_requests(status)",
+		// Phase A: template ↔ project linkage
+		"ALTER TABLE session_templates ADD COLUMN project_id TEXT",
+		"ALTER TABLE session_templates ADD COLUMN template_project_overrides TEXT",
+		"CREATE INDEX IF NOT EXISTS idx_session_templates_project_id ON session_templates(project_id) WHERE project_id IS NOT NULL",
+		// Phase B: AI-driven project creation via Ask (multi-turn drafts)
+		`CREATE TABLE IF NOT EXISTS ai_pending_project_drafts (
+			id TEXT PRIMARY KEY,
+			ask_thread_id TEXT NOT NULL,
+			channel_id TEXT,
+			origin TEXT NOT NULL,
+			draft_fields TEXT NOT NULL,
+			next_question TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'drafting',
+			action_request_id TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pending_project_drafts_thread
+			ON ai_pending_project_drafts(ask_thread_id, status)
+			WHERE status IN ('drafting', 'pending_approval')`,
+		// P2: is_archived column — keeps archival orthogonal to session status.
+		"ALTER TABLE sessions ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
+		// Slice 3: resume traceability — nullable, pipeline does not read it.
+		"ALTER TABLE launch_requests ADD COLUMN parent_session_id TEXT",
+		// Slice 6: project-level alert rules (FK cascade enforced by PRAGMA foreign_keys = ON).
+		`CREATE TABLE IF NOT EXISTS project_alert_rules (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			rule_type TEXT NOT NULL,
+			params TEXT,
+			channel_id TEXT,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		// Partial index: only active rules need fast lookup by project.
+		"CREATE INDEX IF NOT EXISTS idx_project_alert_rules_project ON project_alert_rules(project_id) WHERE is_active = 1",
+		// De-bounce table: one row per (rule, session); prevents double-fires within 5 minutes.
+		`CREATE TABLE IF NOT EXISTS project_alert_rule_fires (
+			id TEXT PRIMARY KEY,
+			rule_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			fired_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_rule_fires_rule_session ON project_alert_rule_fires(rule_id, session_id)",
+		// Slice B: per-session Q&A response cache.
+		`CREATE TABLE IF NOT EXISTS ai_qa_cache (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			question_hash TEXT NOT NULL,
+			response TEXT NOT NULL,
+			last_event_id INTEGER NOT NULL,
+			cached_at TEXT NOT NULL DEFAULT (datetime('now')),
+			expires_at TEXT NOT NULL
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_cache_session_question ON ai_qa_cache(session_id, question_hash)",
+		// Slice D: freeform_match rule columns. Idempotent — SQLite ignores duplicate columns silently.
+		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_cents INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_date TEXT",
+		"ALTER TABLE project_alert_rules ADD COLUMN last_evaluated_event_id INTEGER NOT NULL DEFAULT 0",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

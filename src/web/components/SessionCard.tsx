@@ -4,6 +4,7 @@ import type { Session } from "../../shared/types.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
 import { extractProjectName, formatDuration, getSessionMode, projectColor } from "../lib/utils.js";
 import { useLabsStore } from "../stores/labs-store.js";
+import { useProjectsStore } from "../stores/projects-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
@@ -27,6 +28,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 
 	const projectName = extractProjectName(session.cwd);
 	const name = session.displayName || session.sessionId?.slice(0, 8) || "session";
+	const linkedProject = useProjectsStore((s) => s.getById(session.projectId));
 	const isInactive =
 		session.status === "completed" || session.status === "archived" || session.status === "failed";
 	const modeStyle = getSessionMode(session);
@@ -249,6 +251,11 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 					{session.gitBranch && (
 						<span className="flex-shrink-0 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0">
 							{session.gitBranch}
+						</span>
+					)}
+					{linkedProject && (
+						<span className="flex-shrink-0 text-[10px] font-medium text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-1.5 py-0">
+							{linkedProject.name}
 						</span>
 					)}
 				</div>

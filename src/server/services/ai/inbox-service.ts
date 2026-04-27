@@ -1,6 +1,9 @@
 import { desc, eq, inArray } from "drizzle-orm";
+import type { LaunchMode, LaunchSpec, SessionTemplateInput } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { sessions, watcherProposals } from "../../db/schema.js";
+import { listOpenActionRequests } from "./action-requests-service.js";
+import type { AddProjectActionPayload } from "./action-requests-service.js";
 import type { HealthState } from "./classifier.js";
 import { listAllOpenHitl } from "./hitl-service.js";
 import { activeSnoozeSet, listActiveSnoozes } from "./inbox-snooze-service.js";
@@ -12,7 +15,7 @@ import { getProposal } from "./proposals-service.js";
  * UI can render each kind distinctly without string-sniffing.
  */
 
-export type InboxSeverity = "normal" | "high";
+export type InboxSeverity = "normal" | "high" | "info";
 
 export type InboxWorkItem =
 	| {
@@ -55,6 +58,170 @@ export type InboxWorkItem =
 			errorMessage: string | null;
 			at: string;
 			severity: InboxSeverity;
+	  }
+	| {
+			// Action requests are NOT session-scoped. sessionId/sessionName are
+			// always null — the UI must branch on kind to avoid rendering a broken
+			// session link. See InboxPage.tsx for the conditional renderer.
+			kind: "action_launch";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectId: string;
+			projectName: string;
+			template: SessionTemplateInput;
+			launchSpec: LaunchSpec;
+			requestedLaunchMode: LaunchMode;
+			origin: "web" | "telegram";
+			/** Present when this launch was created by a resume intent. */
+			parentSessionId: string | null;
+			parentSessionName: string | null;
+	  }
+	| {
+			kind: "action_add_project";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectName: string;
+			projectCwd: string;
+			defaultAgentType: string | null;
+			defaultModel: string | null;
+			defaultLaunchMode: string | null;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_stop";
+			id: string; // action_request id
+			sessionId: string;
+			sessionName: string | null;
+			severity: "high";
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_archive";
+			id: string; // action_request id
+			sessionId: string;
+			sessionName: string | null;
+			severity: "normal";
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_session_delete";
+			id: string; // action_request id
+			sessionId: string;
+			sessionName: string | null;
+			severity: "high";
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_edit_project";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "normal";
+			projectId: string;
+			projectName: string;
+			fields: Record<string, unknown>;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_delete_project";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "high";
+			projectId: string;
+			projectName: string;
+			affectedTemplates: number;
+			affectedSessions: number;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_edit_template";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "normal";
+			templateId: string;
+			templateName: string;
+			fields: Record<string, unknown>;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_delete_template";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "high";
+			templateId: string;
+			templateName: string;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_add_channel";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			channelKind: "telegram" | "webhook" | "email";
+			channelLabel: string;
+			createdAt: string;
+			origin: "web" | "telegram";
+	  }
+	| {
+			// Alert rule creation request. sessionId is null because rules are
+			// project-scoped, not session-scoped.
+			kind: "action_create_alert_rule";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectName: string;
+			ruleType: string;
+			thresholdMinutes: number | null;
+			origin: "web" | "telegram";
+	  }
+	| {
+			// Freeform alert rule creation request. sessionId is null because rules are
+			// project-scoped, not session-scoped.
+			kind: "action_create_freeform_alert_rule";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectName: string;
+			condition: string;
+			dailyTokenBudget: number;
+			origin: "web" | "telegram";
+	  }
+	| {
+			// Bulk session action. sessionId is null because this spans multiple sessions.
+			// severity: "high" for stop/delete (irreversible); "normal" for archive.
+			kind: "action_bulk_session";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "high" | "normal";
+			createdAt: string;
+			action: "stop" | "archive" | "delete";
+			sessionCount: number;
+			sessionNames: string[]; // up to 20, each truncated to 40 chars
+			hasMore: boolean; // true when sessionCount > 20
+			exclusionCount: number;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {
@@ -204,12 +371,257 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		});
 	}
 
+	// ---- 4. Open action requests (launch approvals + add-project + session mutations) ----
+	const openActions = await listOpenActionRequests();
+	for (const a of openActions) {
+		if (a.kind === "launch_request") {
+			const payload = a.payload;
+			const rawPayload = payload as unknown as Record<string, unknown>;
+			items.push({
+				kind: "action_launch",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "info",
+				createdAt: a.createdAt,
+				projectId: payload.projectId,
+				projectName: payload.projectName ?? payload.projectId,
+				template: payload.template,
+				launchSpec: payload.launchSpec,
+				requestedLaunchMode: payload.requestedLaunchMode,
+				origin: a.origin,
+				parentSessionId:
+					typeof rawPayload.parentSessionId === "string" ? rawPayload.parentSessionId : null,
+				parentSessionName:
+					typeof rawPayload.parentSessionName === "string" ? rawPayload.parentSessionName : null,
+			});
+		} else if (a.kind === "add_project") {
+			const payload = a.payload as unknown as AddProjectActionPayload;
+			items.push({
+				kind: "action_add_project",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "info",
+				createdAt: a.createdAt,
+				projectName: payload.draftFields?.name ?? "(unnamed)",
+				projectCwd: payload.draftFields?.cwd ?? "(no directory)",
+				defaultAgentType: payload.draftFields?.defaultAgentType ?? null,
+				defaultModel: payload.draftFields?.defaultModel ?? null,
+				defaultLaunchMode: payload.draftFields?.defaultLaunchMode ?? null,
+				origin: a.origin,
+			});
+		} else if (a.kind === "session_stop") {
+			const payload = a.payload as unknown as {
+				sessionId: string;
+				sessionDisplayName: string | null;
+			};
+			items.push({
+				kind: "action_session_stop",
+				id: a.id,
+				sessionId: payload.sessionId,
+				sessionName: payload.sessionDisplayName ?? null,
+				severity: "high",
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "session_archive") {
+			const payload = a.payload as unknown as {
+				sessionId: string;
+				sessionDisplayName: string | null;
+			};
+			items.push({
+				kind: "action_session_archive",
+				id: a.id,
+				sessionId: payload.sessionId,
+				sessionName: payload.sessionDisplayName ?? null,
+				severity: "normal",
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "session_delete") {
+			const payload = a.payload as unknown as {
+				sessionId: string;
+				sessionDisplayName: string | null;
+			};
+			items.push({
+				kind: "action_session_delete",
+				id: a.id,
+				sessionId: payload.sessionId,
+				sessionName: payload.sessionDisplayName ?? null,
+				severity: "high",
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "edit_project") {
+			const payload = a.payload as unknown as {
+				projectId: string;
+				projectName: string;
+				fields: Record<string, unknown>;
+			};
+			items.push({
+				kind: "action_edit_project",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "normal",
+				projectId: payload.projectId,
+				projectName: payload.projectName ?? payload.projectId,
+				fields: payload.fields ?? {},
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "delete_project") {
+			const payload = a.payload as unknown as {
+				projectId: string;
+				projectName: string;
+				affectedTemplates: number;
+				affectedSessions: number;
+			};
+			items.push({
+				kind: "action_delete_project",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "high",
+				projectId: payload.projectId,
+				projectName: payload.projectName ?? payload.projectId,
+				affectedTemplates: payload.affectedTemplates ?? 0,
+				affectedSessions: payload.affectedSessions ?? 0,
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "edit_template") {
+			const payload = a.payload as unknown as {
+				templateId: string;
+				templateName: string;
+				fields: Record<string, unknown>;
+			};
+			items.push({
+				kind: "action_edit_template",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "normal",
+				templateId: payload.templateId,
+				templateName: payload.templateName ?? payload.templateId,
+				fields: payload.fields ?? {},
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "delete_template") {
+			const payload = a.payload as unknown as {
+				templateId: string;
+				templateName: string;
+			};
+			items.push({
+				kind: "action_delete_template",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "high",
+				templateId: payload.templateId,
+				templateName: payload.templateName ?? payload.templateId,
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "add_channel") {
+			const payload = a.payload as unknown as {
+				kind: string;
+				label: string;
+			};
+			const validKinds = ["telegram", "webhook", "email"] as const;
+			const channelKind = validKinds.includes(payload.kind as (typeof validKinds)[number])
+				? (payload.kind as "telegram" | "webhook" | "email")
+				: "telegram";
+			items.push({
+				kind: "action_add_channel",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "info",
+				channelKind,
+				channelLabel: payload.label ?? "Ask-created channel",
+				createdAt: a.createdAt,
+				origin: a.origin,
+			});
+		} else if (a.kind === "create_alert_rule") {
+			const payload = a.payload as unknown as {
+				projectName: string;
+				ruleType: string;
+				thresholdMinutes: number | null;
+			};
+			items.push({
+				kind: "action_create_alert_rule",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "info",
+				createdAt: a.createdAt,
+				projectName: payload.projectName ?? "(unknown project)",
+				ruleType: payload.ruleType ?? "(unknown)",
+				thresholdMinutes: payload.thresholdMinutes ?? null,
+				origin: a.origin,
+			});
+		} else if (a.kind === "create_freeform_alert_rule") {
+			const payload = a.payload as unknown as {
+				projectName: string;
+				condition: string;
+				dailyTokenBudget: number;
+			};
+			items.push({
+				kind: "action_create_freeform_alert_rule",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "info",
+				createdAt: a.createdAt,
+				projectName: payload.projectName ?? "(unknown project)",
+				condition: (payload.condition ?? "(unknown condition)").slice(0, 200),
+				dailyTokenBudget: payload.dailyTokenBudget ?? 0,
+				origin: a.origin,
+			});
+		} else if (a.kind === "bulk_session_action") {
+			const payload = a.payload as unknown as {
+				action: string;
+				sessionIds: string[];
+				sessionNames: string[];
+				exclusions: Array<{ sessionId: string; name: string; reason: string }>;
+			};
+			const validActions = ["stop", "archive", "delete"] as const;
+			const action = validActions.includes(payload.action as (typeof validActions)[number])
+				? (payload.action as "stop" | "archive" | "delete")
+				: "archive";
+			const sessionCount = Array.isArray(payload.sessionIds) ? payload.sessionIds.length : 0;
+			const sessionNames = Array.isArray(payload.sessionNames)
+				? payload.sessionNames.slice(0, 20)
+				: [];
+			items.push({
+				kind: "action_bulk_session",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				// stop and delete are irreversible — surface as high priority.
+				severity: action === "archive" ? "normal" : "high",
+				createdAt: a.createdAt,
+				action,
+				sessionCount,
+				sessionNames,
+				hasMore: sessionCount > 20,
+				exclusionCount: Array.isArray(payload.exclusions) ? payload.exclusions.length : 0,
+				origin: a.origin,
+			});
+		}
+	}
+
 	// ---- Filter / sort ------------------------------------------------
 	let out = items;
 	if (filter.kinds && filter.kinds.length > 0) {
 		out = out.filter((i) => filter.kinds?.includes(i.kind));
 	}
 	if (filter.sessionId) {
+		// action_launch items have null sessionId — they are always excluded
+		// when filtering by sessionId, which is correct.
 		out = out.filter((i) => i.sessionId === filter.sessionId);
 	}
 	if (filter.severity) {
@@ -224,11 +636,12 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		out = out.filter((i) => !snoozed.has(`${i.kind}:${i.id}`));
 	}
 
-	// Sort: high severity first, newest first within each bucket.
+	// Sort: high severity first, info last, newest first within each bucket.
 	out.sort((a, b) => {
-		const sevA = a.severity === "high" ? 0 : 1;
-		const sevB = b.severity === "high" ? 0 : 1;
-		if (sevA !== sevB) return sevA - sevB;
+		const sevRank = (s: InboxSeverity) => (s === "high" ? 0 : s === "normal" ? 1 : 2);
+		const rankA = sevRank(a.severity);
+		const rankB = sevRank(b.severity);
+		if (rankA !== rankB) return rankA - rankB;
 		return cmpNewestFirst(a, b);
 	});
 
@@ -239,6 +652,19 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		stuck: 0,
 		risky: 0,
 		failed_proposal: 0,
+		action_launch: 0,
+		action_add_project: 0,
+		action_session_stop: 0,
+		action_session_archive: 0,
+		action_session_delete: 0,
+		action_edit_project: 0,
+		action_delete_project: 0,
+		action_edit_template: 0,
+		action_delete_template: 0,
+		action_add_channel: 0,
+		action_create_alert_rule: 0,
+		action_create_freeform_alert_rule: 0,
+		action_bulk_session: 0,
 	};
 	for (const i of out) byKind[i.kind]++;
 
@@ -259,6 +685,20 @@ function timestampFor(item: InboxWorkItem): number {
 				? item.at
 				: item.kind === "stuck"
 					? item.since
-					: new Date().toISOString();
+					: item.kind === "action_launch" ||
+							item.kind === "action_add_project" ||
+							item.kind === "action_session_stop" ||
+							item.kind === "action_session_archive" ||
+							item.kind === "action_session_delete" ||
+							item.kind === "action_edit_project" ||
+							item.kind === "action_delete_project" ||
+							item.kind === "action_edit_template" ||
+							item.kind === "action_delete_template" ||
+							item.kind === "action_add_channel" ||
+							item.kind === "action_create_alert_rule" ||
+							item.kind === "action_create_freeform_alert_rule" ||
+							item.kind === "action_bulk_session"
+						? item.createdAt
+						: new Date().toISOString();
 	return ts.includes("T") ? new Date(ts).getTime() : new Date(`${ts.replace(" ", "T")}Z`).getTime();
 }
