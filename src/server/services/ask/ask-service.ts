@@ -16,6 +16,7 @@ import {
 	handleAddProjectContinuation,
 	handleNewAddProjectIntent,
 } from "./ask-add-project-handler.js";
+import { handleAlertRuleRequest } from "./ask-alert-rule-handler.js";
 import { handleChannelSetupRequest } from "./ask-channel-handler.js";
 import { handleProjectTemplateCrud } from "./ask-crud-handler.js";
 import { handleDigestQuery } from "./ask-digest-handler.js";
@@ -26,8 +27,10 @@ import { handleSessionAction } from "./ask-session-action-handler.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
 import {
 	addProjectGatePasses,
+	alertRuleGatePasses,
 	channelSetupGatePasses,
 	detectAddProjectIntent,
+	detectAlertRuleIntent,
 	detectLaunchIntent,
 	detectProjectTemplateCrudIntent,
 	detectResumeIntent,
@@ -503,6 +506,28 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
 	}
 
+	// 2h. Alert-rule gate — runs after channel-setup; constrained rule types only.
+	if (alertRuleGatePasses(text)) {
+		const projects = getCachedProjects();
+		const alertRuleResult = await detectAlertRuleIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (alertRuleResult.kind === "create_alert_rule") {
+			const alertResult = await handleAlertRuleRequest(alertRuleResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: alertResult.replyText,
+				contextSessionIds: [],
+			});
+			return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+		}
+		if (alertRuleResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect an alert-rule request but the classifier failed: ${alertRuleResult.error}. Answering as a general question.)_\n\n`;
+		}
+	}
+
 	// 3. Launch-intent intercept: runs after the user message is persisted so the
 	//    thread exists. Short-circuits the normal Ask LLM call when a launch is queued.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
@@ -778,6 +803,31 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		yield { kind: "delta", delta: channelResult.replyText };
 		yield { kind: "done", assistantMessage };
 		return;
+	}
+
+	// 2h. Alert-rule gate — streaming path short-circuit.
+	if (alertRuleGatePasses(text)) {
+		const projects = getCachedProjects();
+		const alertRuleResult = await detectAlertRuleIntent(
+			text,
+			projects.map((p) => p.name),
+		);
+		if (alertRuleResult.kind === "create_alert_rule") {
+			const alertResult = await handleAlertRuleRequest(alertRuleResult, askArgs);
+			const assistantMessage = await appendMessage({
+				threadId: thread.id,
+				role: "assistant",
+				content: alertResult.replyText,
+				contextSessionIds: [],
+			});
+			yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+			yield { kind: "delta", delta: alertResult.replyText };
+			yield { kind: "done", assistantMessage };
+			return;
+		}
+		if (alertRuleResult.kind === "classifier_failed" && !preamble) {
+			preamble = `_(Heads up: I tried to detect an alert-rule request but the classifier failed: ${alertRuleResult.error}. Answering as a general question.)_\n\n`;
+		}
 	}
 
 	// 3. Launch-intent intercept for streaming path.

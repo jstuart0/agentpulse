@@ -871,6 +871,170 @@ export async function detectProjectTemplateCrudIntent(
 	}
 }
 
+// ---- Alert rule intent ---------------------------------------------------
+
+const ALERT_RULE_TRIGGERS = [
+	"alert me when",
+	"notify me when",
+	"tell me when",
+	"warn me when",
+	"alert when",
+	"notify when",
+	"watch for",
+	"monitor for",
+];
+
+/**
+ * Pure synchronous gate: returns true only if the message contains an
+ * alert-rule trigger phrase. The downstream LLM classifier confirms the
+ * constrained rule type and rejects freeform alert requests.
+ */
+export function alertRuleGatePasses(message: string): boolean {
+	const lower = message.toLowerCase();
+	return ALERT_RULE_TRIGGERS.some((t) => lower.includes(t));
+}
+
+export type AlertRuleIntent =
+	| { kind: "none" }
+	| { kind: "classifier_failed"; error: string }
+	| {
+			kind: "create_alert_rule";
+			projectHint: string | null;
+			ruleType: "status_failed" | "status_stuck" | "status_completed" | "no_activity_minutes";
+			thresholdMinutes?: number | null;
+	  };
+
+const ALERT_RULE_CLASSIFIER_PROMPT = (projectNames: string[]): string =>
+	`You are an alert-rule classifier for AgentPulse, a tool that manages AI coding sessions.
+
+Known project names: ${projectNames.length > 0 ? projectNames.map((n) => `"${n}"`).join(", ") : "(none)"}
+
+Rule types and their meanings:
+- status_failed: fires when a session transitions to status=failed (agent crashed or launch failed)
+- status_stuck: fires when the AI classifier marks a session as stuck (no progress for extended time)
+- status_completed: fires when a session completes successfully
+- no_activity_minutes: fires when a session has been active but shows no new events for N minutes
+
+Respond with JSON (no markdown, no backticks):
+
+If NOT a session-monitoring alert rule request (e.g. "alert me when my meeting starts"):
+{"intent":"none"}
+
+If YES and the rule type is one of the four above:
+{
+  "intent": "create_alert_rule",
+  "projectHint": "<project name from known list, or null if not specified>",
+  "ruleType": "status_failed|status_stuck|status_completed|no_activity_minutes",
+  "thresholdMinutes": <integer for no_activity_minutes, or null>
+}
+
+Rules:
+- Only use one of the four constrained rule types. Freeform rules ("alert when the agent mentions X") must return intent:none.
+- projectHint: extract from known project names (case-insensitive). Null if not specified.
+- thresholdMinutes: only required for no_activity_minutes; extract from "for N minutes" or similar.
+- Respond ONLY with the JSON object.`;
+
+export async function detectAlertRuleIntent(
+	message: string,
+	projectNames: string[],
+): Promise<AlertRuleIntent> {
+	const provider = await getDefaultProvider();
+	if (!provider) {
+		return {
+			kind: "classifier_failed",
+			error: "No default LLM provider configured — cannot classify alert rule intent.",
+		};
+	}
+	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
+	if (!full) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider record disappeared — check Settings → AI.",
+		};
+	}
+	const apiKey = await getProviderApiKey(provider.id);
+	if (apiKey === null) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider credentials are unreadable.",
+		};
+	}
+
+	const ESTIMATED_COST_CENTS = 1;
+	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
+	if (!spendCheck.allowed) {
+		return { kind: "none" };
+	}
+
+	const adapter = getAdapter({
+		kind: full.kind,
+		apiKey,
+		baseUrl: full.baseUrl ?? undefined,
+	});
+
+	try {
+		const res = await adapter.complete({
+			systemPrompt: ALERT_RULE_CLASSIFIER_PROMPT(projectNames),
+			transcriptPrompt: `User message: ${message}`,
+			model: full.model,
+			maxTokens: 200,
+			temperature: 0.0,
+			timeoutMs: 8_000,
+		});
+
+		const actualCents = res.usage.estimated
+			? ESTIMATED_COST_CENTS
+			: Math.max(
+					1,
+					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
+				);
+		void addGlobalSpendCents(actualCents).catch(() => {});
+
+		const raw = res.text.trim();
+		let parsed: Record<string, unknown>;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return {
+				kind: "classifier_failed",
+				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+			};
+		}
+
+		if (parsed.intent === "none") return { kind: "none" };
+		if (parsed.intent !== "create_alert_rule") return { kind: "none" };
+
+		const validRuleTypes = [
+			"status_failed",
+			"status_stuck",
+			"status_completed",
+			"no_activity_minutes",
+		] as const;
+		if (!validRuleTypes.includes(parsed.ruleType as (typeof validRuleTypes)[number])) {
+			return { kind: "none" };
+		}
+
+		const ruleType = parsed.ruleType as AlertRuleIntent extends { kind: "create_alert_rule" }
+			? AlertRuleIntent["ruleType"]
+			: never;
+
+		const thresholdMinutes =
+			typeof parsed.thresholdMinutes === "number" ? parsed.thresholdMinutes : null;
+
+		return {
+			kind: "create_alert_rule",
+			projectHint: typeof parsed.projectHint === "string" ? parsed.projectHint : null,
+			ruleType,
+			thresholdMinutes,
+		};
+	} catch (err) {
+		return {
+			kind: "classifier_failed",
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
 export async function detectAddProjectIntent(message: string): Promise<LaunchIntent> {
 	const provider = await getDefaultProvider();
 	if (!provider) {

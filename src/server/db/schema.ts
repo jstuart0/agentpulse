@@ -548,6 +548,47 @@ export const aiHitlRequests = sqliteTable("ai_hitl_requests", {
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
+// project_alert_rules — project-level alert rules created via NL ("alert me
+// when any session on <project> fails"). Constrained to status_failed |
+// status_stuck | status_completed | no_activity_minutes only; freeform rules
+// require per-event LLM classification and are explicitly out of scope.
+//
+// FK cascade: REFERENCES projects(id) ON DELETE CASCADE is declared below but
+// only enforced at runtime when PRAGMA foreign_keys = ON is set per connection.
+// The client already does this (client.ts line ~23).
+export const projectAlertRules = sqliteTable("project_alert_rules", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	projectId: text("project_id").notNull(),
+	ruleType: text("rule_type").notNull(),
+	// status_failed | status_stuck | status_completed | no_activity_minutes
+	params: text("params", { mode: "json" }).$type<Record<string, unknown>>(),
+	// JSON: { "thresholdMinutes": 30 } for no_activity_minutes; null for status types
+	channelId: text("channel_id"),
+	// notification_channels.id to notify via channel; null means inbox-only
+	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// project_alert_rule_fires — de-bounce table. Records (rule_id, session_id,
+// rule_type) fires so the same rule cannot fire more than once per session
+// within ALERT_RULE_DEBOUNCE_MS (5 minutes). A UNIQUE constraint enforces
+// one record per (rule_id, session_id), and the evaluator checks fired_at
+// before inserting. De-bounce window: 5 minutes because most status
+// transitions are instantaneous; a 5-minute window prevents double-fires
+// from race conditions (e.g. two concurrent event-processor calls) without
+// silencing legitimate re-fires on long-running sessions.
+export const projectAlertRuleFires = sqliteTable("project_alert_rule_fires", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	ruleId: text("rule_id").notNull(),
+	sessionId: text("session_id").notNull(),
+	firedAt: text("fired_at").notNull().default(sql`(datetime('now'))`),
+});
+
 // ProjectDraftFields — partial record collected turn-by-turn during
 // AI-driven "add project" flows. Required fields: name, cwd.
 export interface ProjectDraftFields {

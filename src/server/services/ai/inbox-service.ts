@@ -178,6 +178,20 @@ export type InboxWorkItem =
 			channelLabel: string;
 			createdAt: string;
 			origin: "web" | "telegram";
+	  }
+	| {
+			// Alert rule creation request. sessionId is null because rules are
+			// project-scoped, not session-scoped.
+			kind: "action_create_alert_rule";
+			id: string; // action_request id
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectName: string;
+			ruleType: string;
+			thresholdMinutes: number | null;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {
@@ -501,6 +515,24 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				createdAt: a.createdAt,
 				origin: a.origin,
 			});
+		} else if (a.kind === "create_alert_rule") {
+			const payload = a.payload as unknown as {
+				projectName: string;
+				ruleType: string;
+				thresholdMinutes: number | null;
+			};
+			items.push({
+				kind: "action_create_alert_rule",
+				id: a.id,
+				sessionId: null,
+				sessionName: null,
+				severity: "info",
+				createdAt: a.createdAt,
+				projectName: payload.projectName ?? "(unknown project)",
+				ruleType: payload.ruleType ?? "(unknown)",
+				thresholdMinutes: payload.thresholdMinutes ?? null,
+				origin: a.origin,
+			});
 		}
 	}
 
@@ -552,6 +584,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		action_edit_template: 0,
 		action_delete_template: 0,
 		action_add_channel: 0,
+		action_create_alert_rule: 0,
 	};
 	for (const i of out) byKind[i.kind]++;
 
@@ -581,7 +614,8 @@ function timestampFor(item: InboxWorkItem): number {
 							item.kind === "action_delete_project" ||
 							item.kind === "action_edit_template" ||
 							item.kind === "action_delete_template" ||
-							item.kind === "action_add_channel"
+							item.kind === "action_add_channel" ||
+							item.kind === "action_create_alert_rule"
 						? item.createdAt
 						: new Date().toISOString();
 	return ts.includes("T") ? new Date(ts).getTime() : new Date(`${ts.replace(" ", "T")}Z`).getTime();

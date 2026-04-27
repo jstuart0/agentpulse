@@ -969,6 +969,18 @@ export type InboxWorkItem =
 			channelLabel: string;
 			createdAt: string;
 			origin: "web" | "telegram";
+	  }
+	| {
+			kind: "action_create_alert_rule";
+			id: string;
+			sessionId: null;
+			sessionName: null;
+			severity: "info";
+			createdAt: string;
+			projectName: string;
+			ruleType: string;
+			thresholdMinutes: number | null;
+			origin: "web" | "telegram";
 	  };
 
 export interface Inbox {

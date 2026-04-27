@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { LabsBadge } from "../components/LabsBadge.js";
 import { ActionAddChannelCard } from "../components/inbox/ActionAddChannelCard.js";
 import { ActionAddProjectCard } from "../components/inbox/ActionAddProjectCard.js";
+import { ActionCreateAlertRuleCard } from "../components/inbox/ActionCreateAlertRuleCard.js";
 import { ActionDeleteProjectCard } from "../components/inbox/ActionDeleteProjectCard.js";
 import { ActionDeleteTemplateCard } from "../components/inbox/ActionDeleteTemplateCard.js";
 import { ActionEditProjectCard } from "../components/inbox/ActionEditProjectCard.js";
@@ -152,6 +153,14 @@ export function InboxPage() {
 						onDecide={handleActionDecide}
 					/>
 				);
+			case "action_create_alert_rule":
+				return (
+					<ActionCreateAlertRuleCard
+						key={`${item.kind}:${item.id}`}
+						item={item}
+						onDecide={handleActionDecide}
+					/>
+				);
 		}
 	}
 
@@ -188,6 +197,7 @@ export function InboxPage() {
 						<option value="action_edit_template">Edit template</option>
 						<option value="action_delete_template">Delete template</option>
 						<option value="action_add_channel">Add channel</option>
+						<option value="action_create_alert_rule">Alert rules</option>
 					</select>
 					<button
 						type="button"
@@ -231,6 +241,7 @@ export function InboxPage() {
 					<span>proj-deletes: {inbox.byKind.action_delete_project}</span>
 					<span>tmpl-edits: {inbox.byKind.action_edit_template}</span>
 					<span>tmpl-deletes: {inbox.byKind.action_delete_template}</span>
+					<span>alert-rules: {inbox.byKind.action_create_alert_rule}</span>
 				</footer>
 			)}
 		</div>

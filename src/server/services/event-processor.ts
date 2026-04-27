@@ -1,4 +1,4 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
 	EVENT_DUPLICATE_WINDOW_MS,
 	areNearInTime,
@@ -13,7 +13,7 @@ import type {
 	SemanticStatusUpdate,
 } from "../../shared/types.js";
 import { db } from "../db/client.js";
-import { events, sessions } from "../db/schema.js";
+import { events, projectAlertRuleFires, projectAlertRules, sessions } from "../db/schema.js";
 import {
 	type NormalizedEvent,
 	normalizeHookEvent,
@@ -326,7 +326,100 @@ export async function processHookEvent(
 	const normalizedEvents = normalizeHookEvent(payload, agentType);
 	await insertNormalizedEvents(sessionId, normalizedEvents);
 
+	// Evaluate project alert rules for status_completed on SessionEnd.
+	// Best-effort: rule evaluation failure must not block event ingestion.
+	if (eventType === "SessionEnd") {
+		void evaluateAlertRules(sessionId, "completed").catch((err) => {
+			console.error("[alert-rule] evaluateAlertRules(completed) threw:", err);
+		});
+	}
+
+	// TODO(status_stuck): status_stuck rules are not yet evaluated here because
+	// detecting "stuck" requires the AI intelligence classifier (intelligenceForSession),
+	// which is too expensive to run inline on every event. Wire it into the watcher
+	// runner's periodic scan when that path is implemented in a follow-up plan.
+
 	return { sessionId, isNew };
+}
+
+/**
+ * Evaluate project-level alert rules after a session status transition.
+ *
+ * Matches active rules where rule.projectId === session.projectId and
+ * rule.ruleType === "status_<newStatus>". Sessions without a projectId
+ * never match (no cwd-prefix fallback needed; Phase 1 stamps projectId).
+ *
+ * De-bounce: a (rule_id, session_id) pair fires at most once. The UNIQUE
+ * constraint on project_alert_rule_fires serialises concurrent writes so
+ * a duplicate INSERT simply throws and is silently ignored. This means
+ * a rule fires exactly once per session lifetime for status transitions
+ * (status_failed/completed are terminal; status_stuck may repeat but the
+ * constraint prevents back-to-back fires for the same session).
+ */
+async function evaluateAlertRules(
+	sessionId: string,
+	newStatus: "failed" | "completed",
+): Promise<void> {
+	const [session] = await db
+		.select({ projectId: sessions.projectId, displayName: sessions.displayName })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+
+	if (!session?.projectId) return;
+
+	const matchingRules = await db
+		.select()
+		.from(projectAlertRules)
+		.where(
+			and(
+				eq(projectAlertRules.projectId, session.projectId),
+				eq(projectAlertRules.ruleType, `status_${newStatus}`),
+				eq(projectAlertRules.isActive, true),
+			),
+		);
+
+	for (const rule of matchingRules) {
+		try {
+			// De-bounce: attempt to record this fire. If the unique constraint
+			// rejects the insert the rule already fired for this session — skip.
+			await db.insert(projectAlertRuleFires).values({
+				ruleId: rule.id,
+				sessionId,
+				firedAt: new Date().toISOString(),
+			});
+		} catch {
+			// Unique constraint violation = already fired for this session; skip.
+			continue;
+		}
+
+		const sessionLabel = session.displayName ?? sessionId;
+		const msg = `[alert-rule] Project rule ${rule.id} fired: session "${sessionLabel}" transitioned to ${newStatus}`;
+		console.log(msg);
+
+		// If a channel is configured, send a Telegram/webhook notification via
+		// the same path action-requests-service uses for origin notifications.
+		if (rule.channelId) {
+			const { getTelegramBotToken } = await import("./channels/telegram-credentials.js");
+			const { getChannelCredential } = await import("./channels/channels-service.js");
+			const token = getTelegramBotToken();
+			if (token) {
+				const cred = await getChannelCredential(rule.channelId).catch(() => null);
+				if (cred?.chatId) {
+					await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							chat_id: cred.chatId,
+							text: `Alert: Session "${sessionLabel}" ${newStatus}. (Project alert rule fired.)`,
+						}),
+					}).catch(() => {
+						// best-effort; delivery failure must not block event processing
+					});
+				}
+			}
+		}
+	}
 }
 
 /**
@@ -334,7 +427,7 @@ export async function processHookEvent(
  *
  * Called from launch-dispatch when a launch_request transitions to "failed"
  * and the session has never produced a SessionEnd event (i.e. the agent never
- * started cleanly). Slice 6 alert-rule evaluation will be wired here.
+ * started cleanly).
  */
 export async function markSessionFailed(sessionId: string): Promise<void> {
 	const now = new Date().toISOString();
@@ -342,6 +435,11 @@ export async function markSessionFailed(sessionId: string): Promise<void> {
 		.update(sessions)
 		.set({ status: "failed", endedAt: now, isWorking: false })
 		.where(eq(sessions.sessionId, sessionId));
+	// Evaluate project alert rules for status_failed transition.
+	// Best-effort: a rule evaluation failure must not block the caller.
+	void evaluateAlertRules(sessionId, "failed").catch((err) => {
+		console.error("[alert-rule] evaluateAlertRules(failed) threw:", err);
+	});
 }
 
 // Process a semantic status update from CLAUDE.md snippet

@@ -6,10 +6,13 @@ import {
 	aiActionRequests,
 	aiPendingProjectDrafts,
 	managedSessions,
+	projectAlertRules,
+	projects,
 	sessionTemplates,
 	sessions,
 } from "../../db/schema.js";
 import type { ProjectDraftFields } from "../../db/schema.js";
+import type { CreateAlertRulePayload } from "../ask/ask-alert-rule-handler.js";
 import type {
 	DeleteProjectPayload,
 	DeleteTemplatePayload,
@@ -782,6 +785,113 @@ async function executeAddChannelAction(
 	}
 }
 
+// ---- Alert rule executor ------------------------------------------------
+
+async function executeCreateAlertRuleAction(
+	request: ActionRequest,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	const payload = request.payload as unknown as CreateAlertRulePayload;
+	const { projectId, projectName, ruleType, thresholdMinutes, channelId } = payload;
+	const { origin, channelId: reqChannelId, askThreadId } = request;
+
+	// Constrained rule types only — reject unsupported types rather than
+	// silently no-op. status_stuck and no_activity_minutes are not yet
+	// evaluated at runtime but the row is created; a follow-up plan wires them.
+	const supportedRuleTypes = [
+		"status_failed",
+		"status_stuck",
+		"status_completed",
+		"no_activity_minutes",
+	];
+	if (!supportedRuleTypes.includes(ruleType)) {
+		const reason = `Rule type "${ruleType}" is not supported`;
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+
+	// Pre-check: project must still exist.
+	const [existingProject] = await db
+		.select({ id: projects.id })
+		.from(projects)
+		.where(eq(projects.id, projectId))
+		.limit(1);
+
+	if (!existingProject) {
+		const reason = `Project "${projectName}" no longer exists`;
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(origin, reqChannelId, askThreadId, `Could not apply — ${reason}.`);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+
+	try {
+		const now = sqlNow();
+		const params =
+			ruleType === "no_activity_minutes" && thresholdMinutes != null
+				? ({ thresholdMinutes } as Record<string, unknown>)
+				: null;
+
+		await db.insert(projectAlertRules).values({
+			projectId,
+			ruleType,
+			params,
+			channelId: channelId ?? null,
+			isActive: true,
+			createdAt: now,
+			updatedAt: now,
+		});
+
+		await conditionalUpdate(request.id, "applying", {
+			status: "applied",
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			reqChannelId,
+			askThreadId,
+			`Alert rule created for **${projectName}**: will notify when a session ${ruleTypeLabel(ruleType, thresholdMinutes)}.`,
+		);
+		return { ok: true, status: "applied" };
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		await conditionalUpdate(request.id, "applying", {
+			status: "failed",
+			failureReason: reason,
+			resolvedBy,
+		});
+		await notifyOriginUser(
+			origin,
+			reqChannelId,
+			askThreadId,
+			`Alert rule creation failed: ${reason.slice(0, 400)}`,
+		);
+		return { ok: false, reason: "failed", failureReason: reason };
+	}
+}
+
+function ruleTypeLabel(ruleType: string, thresholdMinutes?: number | null): string {
+	switch (ruleType) {
+		case "status_failed":
+			return "fails";
+		case "status_stuck":
+			return "gets stuck";
+		case "status_completed":
+			return "completes";
+		case "no_activity_minutes":
+			return `has no activity for ${thresholdMinutes ?? "N"} minutes`;
+		default:
+			return ruleType;
+	}
+}
+
 type KindExecutor = (request: ActionRequest, resolvedBy: string) => Promise<ResolveResult>;
 
 const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
@@ -795,6 +905,7 @@ const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
 	edit_template: executeEditTemplateAction,
 	delete_template: executeDeleteTemplateAction,
 	add_channel: executeAddChannelAction,
+	create_alert_rule: executeCreateAlertRuleAction,
 };
 
 export async function resolveActionRequest(args: {
