@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, resolve, sep } from "node:path";
 import type { PrelaunchAction } from "../../shared/types.js";
@@ -13,7 +13,16 @@ export type PrelaunchErrorCode =
 	| "disk_full"
 	| "git_init_failed"
 	| "claude_md_write_failed"
-	| "claude_md_sha_mismatch";
+	| "claude_md_sha_mismatch"
+	| "clone_url_invalid"
+	| "clone_scheme_disallowed"
+	| "clone_credentials_in_url"
+	| "clone_target_exists"
+	| "clone_failed"
+	| "clone_timeout";
+
+const SCP_LIKE_URL = /^[\w.-]+@[\w.-]+:[\w./~-]+$/;
+const DEFAULT_CLONE_TIMEOUT_SECONDS = 300;
 
 export class PrelaunchError extends Error {
 	readonly code: PrelaunchErrorCode;
@@ -315,6 +324,292 @@ async function writeSeedClaudeMd(
 	}
 }
 
+/**
+ * Classify a `git clone` failure from its stderr stream into a recovery hint.
+ * Order matters — auth/not-found/network checks come before generic so the
+ * dashboard can render a more actionable message.
+ */
+export function classifyCloneStderr(stderr: string): {
+	code: "clone_failed" | "disk_full";
+	hint: string;
+} {
+	const text = stderr.toLowerCase();
+	if (text.includes("authentication failed") || text.includes("could not read username")) {
+		return {
+			code: "clone_failed",
+			hint: "git authentication failed — configure a credential helper or use a key-based remote",
+		};
+	}
+	if (text.includes("repository not found") || text.includes(" 404")) {
+		return {
+			code: "clone_failed",
+			hint: "git remote reports the repository was not found",
+		};
+	}
+	if (text.includes("could not resolve host") || text.includes("name or service not known")) {
+		return {
+			code: "clone_failed",
+			hint: "could not resolve git remote host — check network connectivity and DNS",
+		};
+	}
+	if (text.includes("disk full") || text.includes("no space left")) {
+		return { code: "disk_full", hint: "no space left on device while cloning" };
+	}
+	return { code: "clone_failed", hint: "git clone failed" };
+}
+
+interface CloneAttemptOutcome {
+	exitCode: number | null;
+	stderr: string;
+	timedOut: boolean;
+}
+
+async function runGitClone(
+	url: string,
+	intoPath: string,
+	branch: string | undefined,
+	depth: number | undefined,
+	timeoutSeconds: number,
+): Promise<CloneAttemptOutcome> {
+	const cmd: string[] = ["git", "clone"];
+	if (branch !== undefined) cmd.push("--branch", branch);
+	if (depth !== undefined && depth > 0) cmd.push("--depth", String(depth));
+	cmd.push(url, intoPath);
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+	let timedOut = false;
+	let stderr = "";
+	let exitCode: number | null = null;
+	try {
+		const proc = Bun.spawn({
+			cmd,
+			env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+			signal: controller.signal,
+		});
+		const stderrPromise = new Response(proc.stderr).text();
+		exitCode = await proc.exited;
+		stderr = await stderrPromise;
+	} catch (err) {
+		const name = (err as { name?: string }).name;
+		if (name === "AbortError" || controller.signal.aborted) {
+			timedOut = true;
+		} else {
+			throw err;
+		}
+	} finally {
+		clearTimeout(timer);
+	}
+	return { exitCode, stderr, timedOut };
+}
+
+async function readOriginRemote(dir: string): Promise<string | null> {
+	try {
+		const proc = Bun.spawn({
+			cmd: ["git", "remote", "get-url", "origin"],
+			cwd: dir,
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const stdout = await new Response(proc.stdout).text();
+		const exitCode = await proc.exited;
+		if (exitCode !== 0) return null;
+		return stdout.trim();
+	} catch {
+		return null;
+	}
+}
+
+async function executeCloneRepo(
+	action: Extract<PrelaunchAction, { kind: "clone_repo" }>,
+	context: PrelaunchExecutionContext,
+	roots: ResolvedTrustedRoot[],
+): Promise<void> {
+	const trimmedUrl = (action.url ?? "").trim();
+
+	// Step 1: URL well-formed (parses or matches SCP-style ssh form).
+	const isScpLike = SCP_LIKE_URL.test(trimmedUrl);
+	let parsed: URL | null = null;
+	if (!isScpLike) {
+		if (trimmedUrl.length === 0) {
+			throw new PrelaunchError("clone_url_invalid", "Clone URL is empty.");
+		}
+		try {
+			parsed = new URL(trimmedUrl);
+		} catch {
+			throw new PrelaunchError(
+				"clone_url_invalid",
+				"Clone URL is not a valid URL or git@host:path SSH form.",
+			);
+		}
+	}
+
+	// Step 2: scheme must be https (the server's URL policy is the primary
+	// gate — defense in depth). We additionally accept `file://` because the
+	// server can opt into it (`allow_local_urls`), and rejecting it here
+	// would silently break that opt-in. Everything else — SSH, SCP-form,
+	// http, git:// — is refused at the supervisor.
+	if (isScpLike) {
+		throw new PrelaunchError(
+			"clone_scheme_disallowed",
+			"SSH-form git URLs are not accepted by this supervisor build.",
+		);
+	}
+	const scheme = (parsed as URL).protocol.replace(/:$/, "").toLowerCase();
+	if (scheme !== "https" && scheme !== "file") {
+		throw new PrelaunchError(
+			"clone_scheme_disallowed",
+			`Clone scheme "${scheme}" is not allowed; only https:// (and file:// when permitted by server policy) are supported.`,
+		);
+	}
+
+	// Step 3: no userinfo with a password embedded. Don't echo the URL — it
+	// contains the secret we're rejecting.
+	if ((parsed as URL).username !== "" || (parsed as URL).password !== "") {
+		throw new PrelaunchError(
+			"clone_credentials_in_url",
+			"Clone URL contains embedded credentials; configure a git credential helper instead.",
+		);
+	}
+
+	const expandedPath = expandTilde(action.intoPath);
+
+	// Step 4: absolute path required (after ~ expansion).
+	if (!isAbsolute(expandedPath)) {
+		throw new PrelaunchError(
+			"path_not_absolute",
+			`Clone target path must be absolute: ${action.intoPath}`,
+			action.intoPath,
+		);
+	}
+
+	// Step 5: explicit `..` segment rejection.
+	const rawSegments = expandedPath.split(sep);
+	if (rawSegments.includes("..")) {
+		throw new PrelaunchError(
+			"path_traversal_rejected",
+			`Clone target may not contain '..' segments: ${action.intoPath}`,
+			action.intoPath,
+		);
+	}
+
+	const normalised = resolve(expandedPath);
+
+	// Step 7 (run before step 6 for the same reason scaffold does): symlink
+	// rejection along the ancestor chain. The trusted-roots check uses the
+	// realpath of the deepest existing ancestor.
+	await rejectEscapingSymlinks(normalised, roots);
+
+	// Step 6: trusted-roots prefix check via realpath-of-ancestor.
+	const probedPath = await realpathOfDeepestExistingAncestor(normalised);
+	if (!isUnderAnyRoot(probedPath, roots)) {
+		throw new PrelaunchError(
+			"path_outside_trusted_roots",
+			`Clone target ${normalised} is not under any trusted root.`,
+			normalised,
+		);
+	}
+
+	// Step 8: idempotency / collision detection. Three cases:
+	//  - target absent → proceed to clone
+	//  - target has .git and origin matches → no-op success
+	//  - anything else (different remote, or non-empty without .git) → throw
+	const existed = await pathExists(normalised);
+	let createdByThisRun = false;
+	if (existed) {
+		const gitDirExists = await pathExists(`${normalised}${sep}.git`);
+		if (gitDirExists) {
+			const existingRemote = await readOriginRemote(normalised);
+			if (existingRemote !== null && existingRemote === trimmedUrl) {
+				context.logProgress?.(`clone target ${normalised} already cloned from ${trimmedUrl}`);
+				if (action.seedClaudeMd) {
+					await writeSeedClaudeMd(normalised, action.seedClaudeMd, context.logWarning);
+				}
+				return;
+			}
+			throw new PrelaunchError(
+				"clone_target_exists",
+				`Clone target ${normalised} already contains a git repository with a different origin.`,
+				normalised,
+			);
+		}
+		const entries = await readdir(normalised);
+		if (entries.length > 0) {
+			throw new PrelaunchError(
+				"clone_target_exists",
+				`Clone target ${normalised} exists and is not empty.`,
+				normalised,
+			);
+		}
+		// existing empty dir is fine — git clone will populate it; we did NOT
+		// create it, so cleanup-on-failure must NOT remove it.
+	}
+
+	// Step 9: run `git clone` with timeout + GIT_TERMINAL_PROMPT=0.
+	const timeoutSeconds = action.timeoutSeconds ?? DEFAULT_CLONE_TIMEOUT_SECONDS;
+	const outcome = await runGitClone(
+		trimmedUrl,
+		normalised,
+		action.branch,
+		action.depth,
+		timeoutSeconds,
+	).catch((err) => {
+		// Spawn-side errors (rare — bad cmd, OS denied) get surfaced as
+		// generic clone_failed so we still go through cleanup.
+		throw new PrelaunchError(
+			"clone_failed",
+			`git clone failed to start: ${err instanceof Error ? err.message : String(err)}`,
+			normalised,
+			err,
+		);
+	});
+
+	if (outcome.timedOut || outcome.exitCode === null) {
+		if (!existed) await safeRemove(normalised);
+		throw new PrelaunchError(
+			"clone_timeout",
+			`git clone exceeded ${timeoutSeconds}s timeout.`,
+			normalised,
+		);
+	}
+
+	if (outcome.exitCode !== 0) {
+		const cleaned = !existed && (await pathExists(normalised));
+		if (cleaned) await safeRemove(normalised);
+		const classified = classifyCloneStderr(outcome.stderr);
+		const trailer = outcome.stderr.trim().split("\n").slice(-1)[0]?.trim();
+		throw new PrelaunchError(
+			classified.code,
+			`${classified.hint}${trailer ? ` (${trailer})` : ""}`,
+			normalised,
+		);
+	}
+
+	if (!existed) createdByThisRun = true;
+	void createdByThisRun; // tracked for symmetry; success path needs no cleanup
+	context.logProgress?.(`cloned ${trimmedUrl} into ${normalised}`);
+
+	// Step 10: optional CLAUDE.md seed (idempotent, non-clobbering — same as
+	// scaffold). Reuses the shared writer so the SHA-mismatch and warn-on-
+	// difference semantics stay identical.
+	if (action.seedClaudeMd) {
+		await writeSeedClaudeMd(normalised, action.seedClaudeMd, context.logWarning);
+		context.logProgress?.(`wrote ${action.seedClaudeMd.path} in ${normalised}`);
+	}
+}
+
+async function safeRemove(target: string): Promise<void> {
+	try {
+		await rm(target, { recursive: true, force: true });
+	} catch {
+		// best-effort cleanup; the original error is the one we're reporting
+	}
+}
+
 async function executeScaffoldWorkArea(
 	action: Extract<PrelaunchAction, { kind: "scaffold_workarea" }>,
 	context: PrelaunchExecutionContext,
@@ -405,14 +700,8 @@ export async function executePrelaunchActions(
 				await executeScaffoldWorkArea(action, context, roots);
 				break;
 			case "clone_repo":
-				// Slice 6c will implement executeCloneRepo. Until then the server
-				// gates clone_repo emission on can_clone_repo, which this build
-				// does not advertise — reaching here means a server emitted the
-				// action to a supervisor that doesn't support it (capability
-				// drift). Fail loudly rather than silently skipping the clone.
-				throw new Error(
-					"clone_repo prelaunch action is not implemented in this supervisor build (Slice 6c).",
-				);
+				await executeCloneRepo(action, context, roots);
+				break;
 			default: {
 				const exhaustive: never = action;
 				throw new Error(

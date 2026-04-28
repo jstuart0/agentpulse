@@ -57,7 +57,7 @@ async function main() {
 			version: config.version,
 			trustedRoots: config.trustedRoots,
 			capabilities: config.capabilities,
-			capabilitySchemaVersion: 2,
+			capabilitySchemaVersion: 3,
 			configSchemaVersion: 1,
 		}),
 	})) as {
