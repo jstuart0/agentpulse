@@ -7,6 +7,49 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.2.0-pre.7] — 2026-04-28
+
+User-reported fix: fuzzy project-name matching in Ask. "create an agent
+pulse session" (with a space) now correctly resolves to project
+`agentpulse`.
+
+### Fixed
+
+- **Ask was failing exact-match resolution on stylistic name variants.**
+  Two failures stacked: (1) the keyword gate in `launch-intent-detector.ts`
+  used a whole-word regex like `\bagentpulse\b`, which "agent pulse"
+  doesn't match, so the LLM classifier never ran and the message fell
+  through to the generic Ask path; (2) every project-name resolver used
+  exact equality (`toLowerCase()` equality or drizzle `eq()`), so even
+  if the gate had passed, "agent pulse" !== "agentpulse" under any of
+  them.
+
+  New `src/server/services/projects/project-name-match.ts` adds a
+  4-level cascade: exact case-sensitive → case-insensitive → normalized
+  (lowercase + strip whitespace / dashes / underscores / dots / parens)
+  → Levenshtein distance ≤ 2 typo, but **only when uniquely closest**.
+  "Agent Pulse" / "agent-pulse" / "agent_pulse" / "Agent.Pulse" /
+  "(agent pulse)" all normalize to `agentpulse` and match. Typos like
+  "agnetpulse" resolve via Levenshtein. Two projects within distance 2
+  of the candidate → no fuzzy match; the request falls through to
+  `launch_needs_project` disambiguation so the user picks rather than
+  AgentPulse guessing wrong. Names with fewer than 4 normalized chars
+  don't get typo matching (over-matches short names).
+
+  The gate, `parseLaunchIntentResponse`, and the `findProjectByName`
+  helper used by edit / delete CRUD actions all route through the
+  shared matcher. The classifier system prompt now also tells the LLM
+  to normalize whitespace, dashes, and minor typos before emitting
+  `projectName` — belt-and-braces; the gate + resolver fix is the real
+  safety net.
+
+  Resolved names always surface in the HITL approval card before any
+  write, so fuzzy is never silently destructive.
+
+### Test count
+
+565 → 587 tests across 57 files.
+
 ## [0.2.0-pre.6] — 2026-04-28
 
 Follow-up patch to the v0.2.0-pre.5 code-health remediation. The DB-1
