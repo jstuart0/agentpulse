@@ -330,12 +330,29 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 });
 
 // DELETE /api/v1/sessions/:sessionId - Delete a session and its events
+//
+// Slice DB-1: child tables (events, managed_sessions, control_actions,
+// watcher_proposals, ai_hitl_requests, ai_watcher_runs, watcher_configs)
+// now reference sessions(session_id) ON DELETE CASCADE, so the single
+// `delete(sessions)` is sufficient — SQLite drops the children atomically
+// in the same transaction.
+//
+// We wrap the deletes in `db.transaction(...)` so any failure (FK
+// violation, etc.) leaves the row in place rather than partially deleted.
+// IMPORTANT: drizzle's bun-sqlite transaction wraps a SYNC native
+// transaction; passing an async callback silently disables rollback
+// because the COMMIT runs before any awaited statement settles. We use
+// a sync callback with `.run()` instead. The explicit `events` delete
+// is kept inside the same transaction as belt-and-braces for older DBs
+// that haven't yet rebuilt FKs.
 sessionsRouter.delete("/sessions/:sessionId", async (c) => {
 	const sessionId = c.req.param("sessionId");
 
-	// Delete events first (foreign key)
-	await db.delete(events).where(eq(events.sessionId, sessionId));
-	await db.delete(sessions).where(eq(sessions.sessionId, sessionId));
+	db.transaction((tx) => {
+		// Cascade does this; explicit for older DBs that haven't yet rebuilt FKs.
+		tx.delete(events).where(eq(events.sessionId, sessionId)).run();
+		tx.delete(sessions).where(eq(sessions.sessionId, sessionId)).run();
+	});
 
 	return c.json({ ok: true });
 });

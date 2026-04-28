@@ -11,7 +11,7 @@ const {
 	resolveHitlRequest,
 	supersedeOpenHitl,
 } = await import("./hitl-service.js");
-const { aiHitlRequests } = await import("../../db/schema.js");
+const { aiHitlRequests, sessions } = await import("../../db/schema.js");
 
 beforeAll(() => {
 	initializeDatabase();
@@ -19,6 +19,15 @@ beforeAll(() => {
 
 beforeEach(async () => {
 	await db.delete(aiHitlRequests).execute();
+	await db.delete(sessions).execute();
+	// Slice DB-1 added cascade FKs that require parent sessions to exist
+	// before child rows. Seed the IDs these tests reference.
+	for (const id of ["s1", "s2", "s3"]) {
+		await db
+			.insert(sessions)
+			.values({ sessionId: id, agentType: "claude_code" })
+			.onConflictDoNothing();
+	}
 });
 
 describe("hitl-service", () => {
