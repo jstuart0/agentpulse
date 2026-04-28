@@ -14,7 +14,7 @@ const {
 	queueSnapshot,
 	listRecentRunsForSession,
 } = await import("./watcher-runs-service.js");
-const { aiWatcherRuns } = await import("../../db/schema.js");
+const { aiWatcherRuns, sessions } = await import("../../db/schema.js");
 
 beforeAll(() => {
 	initializeDatabase();
@@ -22,6 +22,14 @@ beforeAll(() => {
 
 beforeEach(async () => {
 	await db.delete(aiWatcherRuns).execute();
+	await db.delete(sessions).execute();
+	// Slice DB-1: cascade FKs require parent sessions for every child row.
+	for (const id of ["s", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]) {
+		await db
+			.insert(sessions)
+			.values({ sessionId: id, agentType: "claude_code" })
+			.onConflictDoNothing();
+	}
 });
 
 describe("watcher-runs-service", () => {

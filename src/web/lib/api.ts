@@ -1,5 +1,9 @@
 import type {
 	ControlAction,
+	Inbox,
+	InboxFilter,
+	InboxSeverity,
+	InboxWorkItem,
 	LaunchRequest,
 	Project,
 	ProjectInput,
@@ -9,6 +13,10 @@ import type {
 	SessionTemplate,
 	SupervisorRecord,
 } from "../../shared/types.js";
+
+// Re-export inbox types so existing client consumers keep their import path
+// (`import { Inbox, InboxWorkItem } from "../lib/api.js"`).
+export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
 import { APP_API_BASE } from "./paths.js";
 
 const BASE_URL = APP_API_BASE;
@@ -532,6 +540,7 @@ export const api = {
 		killSwitch?: boolean;
 		classifierEnabled?: boolean;
 		classifierAffectsRunner?: boolean;
+		autoEnableWatcherForAsk?: boolean;
 	}) =>
 		request<AiStatusResponse>("/ai/status", {
 			method: "PUT",
@@ -857,198 +866,6 @@ export interface TemplateDraftResponse {
 	notes: string[];
 }
 
-export type InboxSeverity = "normal" | "high" | "info";
-export type InboxWorkItem =
-	| {
-			kind: "hitl";
-			id: string;
-			sessionId: string;
-			sessionName: string | null;
-			proposalId: string;
-			decision: "continue" | "ask";
-			prompt: string;
-			why: string | null;
-			openedAt: string;
-			severity: InboxSeverity;
-	  }
-	| {
-			kind: "stuck";
-			id: string;
-			sessionId: string;
-			sessionName: string | null;
-			since: string;
-			reason: string;
-			evidence: string[];
-			severity: InboxSeverity;
-	  }
-	| {
-			kind: "risky";
-			id: string;
-			sessionId: string;
-			sessionName: string | null;
-			reason: string;
-			evidence: string[];
-			severity: InboxSeverity;
-	  }
-	| {
-			kind: "failed_proposal";
-			id: string;
-			sessionId: string;
-			sessionName: string | null;
-			errorSubType: string | null;
-			errorMessage: string | null;
-			at: string;
-			severity: InboxSeverity;
-	  }
-	| {
-			kind: "action_launch";
-			id: string;
-			sessionId: null;
-			sessionName: null;
-			severity: "info";
-			createdAt: string;
-			projectId: string;
-			projectName: string;
-			template: Record<string, unknown>;
-			launchSpec: Record<string, unknown>;
-			requestedLaunchMode: string;
-			origin: "web" | "telegram";
-			parentSessionId: string | null;
-			parentSessionName: string | null;
-	  }
-	| {
-			kind: "action_add_project";
-			id: string;
-			sessionId: null;
-			sessionName: null;
-			severity: "info";
-			createdAt: string;
-			projectName: string;
-			projectCwd: string;
-			defaultAgentType: string | null;
-			defaultModel: string | null;
-			defaultLaunchMode: string | null;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_session_stop";
-			id: string;
-			sessionId: string;
-			sessionName: string | null;
-			severity: "high";
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_session_archive";
-			id: string;
-			sessionId: string;
-			sessionName: string | null;
-			severity: "normal";
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_session_delete";
-			id: string;
-			sessionId: string;
-			sessionName: string | null;
-			severity: "high";
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_edit_project";
-			id: string;
-			sessionId: null;
-			sessionName: null;
-			severity: "normal";
-			projectId: string;
-			projectName: string;
-			fields: Record<string, unknown>;
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_delete_project";
-			id: string;
-			sessionId: null;
-			sessionName: null;
-			severity: "high";
-			projectId: string;
-			projectName: string;
-			affectedTemplates: number;
-			affectedSessions: number;
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_edit_template";
-			id: string;
-			sessionId: null;
-			sessionName: null;
-			severity: "normal";
-			templateId: string;
-			templateName: string;
-			fields: Record<string, unknown>;
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_delete_template";
-			id: string;
-			sessionId: null;
-			sessionName: null;
-			severity: "high";
-			templateId: string;
-			templateName: string;
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_add_channel";
-			id: string;
-			sessionId: null;
-			sessionName: null;
-			severity: "info";
-			channelKind: "telegram" | "webhook" | "email";
-			channelLabel: string;
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_create_alert_rule";
-			id: string;
-			sessionId: null;
-			sessionName: null;
-			severity: "info";
-			createdAt: string;
-			projectName: string;
-			ruleType: string;
-			thresholdMinutes: number | null;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_bulk_session";
-			id: string;
-			sessionId: null;
-			sessionName: null;
-			severity: "high" | "normal";
-			createdAt: string;
-			action: "stop" | "archive" | "delete";
-			sessionCount: number;
-			sessionNames: string[];
-			hasMore: boolean;
-			exclusionCount: number;
-			origin: "web" | "telegram";
-	  };
-
-export interface Inbox {
-	items: InboxWorkItem[];
-	total: number;
-	byKind: Record<InboxWorkItem["kind"], number>;
-}
-
 export interface InboxSnooze {
 	id: string;
 	kind: InboxWorkItem["kind"];
@@ -1175,6 +992,7 @@ export interface AiStatusResponse {
 	active: boolean;
 	classifierEnabled?: boolean;
 	classifierAffectsRunner?: boolean;
+	autoEnableWatcherForAsk?: boolean;
 }
 
 export type SessionHealthState = "healthy" | "blocked" | "stuck" | "risky" | "complete_candidate";

@@ -3,10 +3,20 @@ import { eq } from "drizzle-orm";
 import "./ai/__test_db.js";
 
 const { db, initializeDatabase } = await import("../db/client.js");
-const { events, launchRequests, managedSessions, sessions, supervisors } = await import(
-	"../db/schema.js"
-);
+const {
+	events,
+	launchRequests,
+	llmProviders,
+	managedSessions,
+	sessions,
+	settings,
+	supervisors,
+	watcherConfigs,
+} = await import("../db/schema.js");
 const { associateObservedSession } = await import("./launch-dispatch.js");
+const { AI_RUNTIME_ENABLED_KEY, invalidateAiFlagsCache } = await import("./ai/feature.js");
+const { encryptSecret, credentialHint } = await import("./ai/secrets.js");
+const { getWatcherConfig } = await import("./ai/watcher-config-service.js");
 
 beforeAll(() => {
 	initializeDatabase();
@@ -17,7 +27,13 @@ beforeEach(async () => {
 	await db.delete(managedSessions).execute();
 	await db.delete(launchRequests).execute();
 	await db.delete(supervisors).execute();
+	await db.delete(watcherConfigs).execute();
+	await db.delete(llmProviders).execute();
+	await db.delete(settings).execute();
 	await db.delete(sessions).execute();
+	// Raw inserts below bypass `upsertSetting`'s post-write hook, so the AI
+	// flag cache from a prior test would otherwise bleed into this one.
+	invalidateAiFlagsCache();
 });
 
 async function mkSession(sessionId: string, metadata: Record<string, unknown> = {}) {
@@ -121,6 +137,56 @@ describe("associateObservedSession provenance copy", () => {
 		expect(result).toBeNull();
 		const row = await readSession("s-orphan");
 		expect(row?.metadata).toEqual({ existing: 1 });
+	});
+});
+
+describe("associateObservedSession AI auto-watcher", () => {
+	async function enableAiAndAddProvider() {
+		const now = new Date().toISOString();
+		await db
+			.insert(settings)
+			.values({ key: AI_RUNTIME_ENABLED_KEY, value: true, updatedAt: now })
+			.execute();
+		await db
+			.insert(llmProviders)
+			.values({
+				id: crypto.randomUUID(),
+				userId: "local",
+				name: "test-provider",
+				kind: "anthropic",
+				model: "claude-sonnet-4-6",
+				baseUrl: null,
+				credentialCiphertext: encryptSecret("sk-test"),
+				credentialHint: credentialHint("sk-test"),
+				isDefault: true,
+				createdAt: now,
+				updatedAt: now,
+			})
+			.execute();
+	}
+
+	test("attaches a watcher (enabled, ask_on_risk) to Ask-initiated sessions", async () => {
+		await mkSession("s-ai-watch");
+		await mkLaunchRequest("s-ai-watch", {
+			metadata: { aiInitiated: true, askThreadId: "thread-x" },
+		});
+		await enableAiAndAddProvider();
+
+		await associateObservedSession({ sessionId: "s-ai-watch" });
+
+		const cfg = await getWatcherConfig("s-ai-watch");
+		expect(cfg?.enabled).toBe(true);
+		expect(cfg?.policy).toBe("ask_on_risk");
+	});
+
+	test("does not attach a watcher to non-Ask-initiated sessions", async () => {
+		await mkSession("s-manual-watch");
+		await mkLaunchRequest("s-manual-watch", { metadata: null });
+		await enableAiAndAddProvider();
+
+		await associateObservedSession({ sessionId: "s-manual-watch" });
+
+		expect(await getWatcherConfig("s-manual-watch")).toBeNull();
 	});
 });
 

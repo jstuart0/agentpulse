@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { config } from "../../config.js";
 import { db } from "../../db/client.js";
 import { settings } from "../../db/schema.js";
+import { TtlCache } from "../util/ttl-cache.js";
 
 // Runtime setting key for the AI watcher's runtime toggle. The build-time
 // flag (config.aiEnabled) must also be true for the feature to run.
@@ -11,6 +12,45 @@ export const AI_KILL_SWITCH_KEY = "ai.killSwitch"; // true = paused
 // enable independently from the classifier's influence over the runner.
 export const AI_CLASSIFIER_ENABLED_KEY = "ai.classifierEnabled";
 export const AI_CLASSIFIER_AFFECTS_RUNNER_KEY = "ai.classifierAffectsRunner";
+// When true, sessions launched by the Ask flow get a watcher row written
+// at correlation time (enabled, ask_on_risk policy, default provider).
+// Default true: if Ask launched the session, AI was already in the loop.
+export const AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY = "ai.autoEnableWatcherForAsk";
+
+// All AI feature-flag reads share one cache. Keying by settings-row key keeps
+// the helper generic and lets `invalidateAiFlagsCache(key)` target a single
+// flag when we know which one moved (e.g. via the settings-service write
+// hook). 5 seconds is short enough that operator flips propagate fast and
+// long enough to absorb the burst of `requireAiActive(c)` calls every AI
+// mutation endpoint and the alert-rule sweep loop trigger.
+//
+// The cache stores the raw `settings.value` JSON blob (or `undefined` for an
+// absent row) — each reader applies its own default-on/default-off rule.
+const AI_FLAGS_TTL_MS = 5_000;
+const aiFlagsCache = new TtlCache<string, unknown>(AI_FLAGS_TTL_MS);
+
+async function readSettingValue(key: string): Promise<unknown> {
+	const [row] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+	return row?.value;
+}
+
+async function getCachedFlag(key: string): Promise<unknown> {
+	return aiFlagsCache.getOrLoad(key, () => readSettingValue(key));
+}
+
+/**
+ * Drop the cached value(s). Called from settings-service after any write
+ * to a key whose prefix is `ai.` or `vectorSearch.` so subsequent reads
+ * see the new value within one round-trip rather than waiting for the
+ * TTL to expire.
+ */
+export function invalidateAiFlagsCache(key?: string): void {
+	if (key === undefined) {
+		aiFlagsCache.invalidate();
+	} else {
+		aiFlagsCache.invalidate(key);
+	}
+}
 
 /** Is the AI feature compiled into this build (and secrets configured)? */
 export function isAiBuildEnabled(): boolean {
@@ -20,23 +60,13 @@ export function isAiBuildEnabled(): boolean {
 /** Read the runtime toggle value from settings. */
 export async function isAiRuntimeEnabled(): Promise<boolean> {
 	if (!isAiBuildEnabled()) return false;
-	const [row] = await db
-		.select()
-		.from(settings)
-		.where(eq(settings.key, AI_RUNTIME_ENABLED_KEY))
-		.limit(1);
-	return row?.value === true;
+	return (await getCachedFlag(AI_RUNTIME_ENABLED_KEY)) === true;
 }
 
 /** Is the global kill switch active? When true, AI behavior is paused. */
 export async function isKillSwitchActive(): Promise<boolean> {
 	if (!isAiBuildEnabled()) return false;
-	const [row] = await db
-		.select()
-		.from(settings)
-		.where(eq(settings.key, AI_KILL_SWITCH_KEY))
-		.limit(1);
-	return row?.value === true;
+	return (await getCachedFlag(AI_KILL_SWITCH_KEY)) === true;
 }
 
 /** Is the AI feature both built-in AND runtime-enabled AND not paused? */
@@ -69,35 +99,27 @@ export function isVectorSearchBuildEnabled(): boolean {
 export async function isVectorSearchActive(): Promise<boolean> {
 	if (!isVectorSearchBuildEnabled()) return false;
 	if (!(await isAiActive())) return false;
-	const [row] = await db
-		.select()
-		.from(settings)
-		.where(eq(settings.key, VECTOR_SEARCH_ENABLED_KEY))
-		.limit(1);
-	return row?.value === true;
+	return (await getCachedFlag(VECTOR_SEARCH_ENABLED_KEY)) === true;
 }
 
 /** Read the classifier runtime toggle. Default: true (badges are cheap). */
 export async function isClassifierEnabled(): Promise<boolean> {
 	if (!isAiBuildEnabled()) return false;
-	const [row] = await db
-		.select()
-		.from(settings)
-		.where(eq(settings.key, AI_CLASSIFIER_ENABLED_KEY))
-		.limit(1);
 	// Absent setting defaults to true so new installs get UI badges.
-	return row?.value !== false;
+	return (await getCachedFlag(AI_CLASSIFIER_ENABLED_KEY)) !== false;
+}
+
+/** Should Ask-initiated sessions auto-enable a watcher? Default: true. */
+export async function shouldAutoEnableWatcherForAsk(): Promise<boolean> {
+	if (!isAiBuildEnabled()) return false;
+	// Absent setting defaults to true — if Ask launched it, we watch it.
+	return (await getCachedFlag(AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY)) !== false;
 }
 
 /** Does classifier output influence runner decisions? Default: false. */
 export async function classifierAffectsRunner(): Promise<boolean> {
 	if (!isAiBuildEnabled()) return false;
-	const [row] = await db
-		.select()
-		.from(settings)
-		.where(eq(settings.key, AI_CLASSIFIER_AFFECTS_RUNNER_KEY))
-		.limit(1);
-	return row?.value === true;
+	return (await getCachedFlag(AI_CLASSIFIER_AFFECTS_RUNNER_KEY)) === true;
 }
 
 /** Startup validation — fail-fast if AI is enabled without a secrets key. */

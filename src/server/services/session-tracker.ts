@@ -5,6 +5,47 @@ import { db } from "../db/client.js";
 import { managedSessions, sessions, supervisors } from "../db/schema.js";
 import { getManagedSession } from "./managed-session-state.js";
 
+/**
+ * Rename a session atomically across `sessions` and (when present)
+ * `managed_sessions`. Both writes happen in a single SQLite transaction
+ * so a failure on the second statement rolls back the first.
+ *
+ * IMPORTANT: drizzle's bun-sqlite `db.transaction()` is SYNCHRONOUS. Passing
+ * an async callback silently disables rollback because COMMIT fires before
+ * any awaited statement settles. We use a sync callback with `.run()` here.
+ *
+ * The caller is expected to have already validated `name` (non-empty,
+ * trimmed). This function performs the trim once more defensively.
+ */
+export function renameSession(sessionId: string, name: string): void {
+	const trimmed = name.trim();
+	db.transaction((tx) => {
+		tx.update(sessions)
+			.set({ displayName: trimmed })
+			.where(eq(sessions.sessionId, sessionId))
+			.run();
+
+		const managed = tx
+			.select()
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, sessionId))
+			.limit(1)
+			.all();
+
+		if (managed.length > 0) {
+			tx.update(managedSessions)
+				.set({
+					desiredThreadTitle: trimmed,
+					providerSyncState: "pending",
+					providerSyncError: null,
+					updatedAt: new Date().toISOString(),
+				})
+				.where(eq(managedSessions.sessionId, sessionId))
+				.run();
+		}
+	});
+}
+
 // Managed states that indicate an agent process is still running under a live
 // supervisor. Sessions in these states must not be auto-completed by staleness
 // checks — the supervisor will report terminal state when the process exits.

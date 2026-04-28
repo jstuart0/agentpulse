@@ -1,10 +1,8 @@
 import { desc, eq, inArray } from "drizzle-orm";
-import type { LaunchMode, LaunchSpec, SessionTemplateInput } from "../../../shared/types.js";
+import type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { sessions, watcherProposals } from "../../db/schema.js";
-import { listOpenActionRequests } from "./action-requests-service.js";
-import type { AddProjectActionPayload } from "./action-requests-service.js";
-import type { HealthState } from "./classifier.js";
+import { listOpenActionRequests, narrowPayload } from "./action-requests-service.js";
 import { listAllOpenHitl } from "./hitl-service.js";
 import { activeSnoozeSet, listActiveSnoozes } from "./inbox-snooze-service.js";
 import { intelligenceForSession } from "./intelligence-service.js";
@@ -12,233 +10,18 @@ import { getProposal } from "./proposals-service.js";
 
 /**
  * Inbox work items. Discriminated union matches the plan's shape so the
- * UI can render each kind distinctly without string-sniffing.
+ * UI can render each kind distinctly without string-sniffing. The union
+ * itself lives in `src/shared/types.ts` so client and server stay in
+ * lockstep — adding a new kind there forces both server build-up and
+ * client switch statements to update.
  */
 
-export type InboxSeverity = "normal" | "high" | "info";
-
-export type InboxWorkItem =
-	| {
-			kind: "hitl";
-			id: string; // hitl request id
-			sessionId: string;
-			sessionName: string | null;
-			proposalId: string;
-			decision: "continue" | "ask";
-			prompt: string;
-			why: string | null;
-			openedAt: string;
-			severity: InboxSeverity;
-	  }
-	| {
-			kind: "stuck";
-			id: string; // stable session-derived id
-			sessionId: string;
-			sessionName: string | null;
-			since: string;
-			reason: string;
-			evidence: string[];
-			severity: InboxSeverity;
-	  }
-	| {
-			kind: "risky";
-			id: string;
-			sessionId: string;
-			sessionName: string | null;
-			reason: string;
-			evidence: string[];
-			severity: InboxSeverity;
-	  }
-	| {
-			kind: "failed_proposal";
-			id: string; // proposal id
-			sessionId: string;
-			sessionName: string | null;
-			errorSubType: string | null;
-			errorMessage: string | null;
-			at: string;
-			severity: InboxSeverity;
-	  }
-	| {
-			// Action requests are NOT session-scoped. sessionId/sessionName are
-			// always null — the UI must branch on kind to avoid rendering a broken
-			// session link. See InboxPage.tsx for the conditional renderer.
-			kind: "action_launch";
-			id: string; // action_request id
-			sessionId: null;
-			sessionName: null;
-			severity: "info";
-			createdAt: string;
-			projectId: string;
-			projectName: string;
-			template: SessionTemplateInput;
-			launchSpec: LaunchSpec;
-			requestedLaunchMode: LaunchMode;
-			origin: "web" | "telegram";
-			/** Present when this launch was created by a resume intent. */
-			parentSessionId: string | null;
-			parentSessionName: string | null;
-	  }
-	| {
-			kind: "action_add_project";
-			id: string; // action_request id
-			sessionId: null;
-			sessionName: null;
-			severity: "info";
-			createdAt: string;
-			projectName: string;
-			projectCwd: string;
-			defaultAgentType: string | null;
-			defaultModel: string | null;
-			defaultLaunchMode: string | null;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_session_stop";
-			id: string; // action_request id
-			sessionId: string;
-			sessionName: string | null;
-			severity: "high";
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_session_archive";
-			id: string; // action_request id
-			sessionId: string;
-			sessionName: string | null;
-			severity: "normal";
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_session_delete";
-			id: string; // action_request id
-			sessionId: string;
-			sessionName: string | null;
-			severity: "high";
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_edit_project";
-			id: string; // action_request id
-			sessionId: null;
-			sessionName: null;
-			severity: "normal";
-			projectId: string;
-			projectName: string;
-			fields: Record<string, unknown>;
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_delete_project";
-			id: string; // action_request id
-			sessionId: null;
-			sessionName: null;
-			severity: "high";
-			projectId: string;
-			projectName: string;
-			affectedTemplates: number;
-			affectedSessions: number;
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_edit_template";
-			id: string; // action_request id
-			sessionId: null;
-			sessionName: null;
-			severity: "normal";
-			templateId: string;
-			templateName: string;
-			fields: Record<string, unknown>;
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_delete_template";
-			id: string; // action_request id
-			sessionId: null;
-			sessionName: null;
-			severity: "high";
-			templateId: string;
-			templateName: string;
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			kind: "action_add_channel";
-			id: string; // action_request id
-			sessionId: null;
-			sessionName: null;
-			severity: "info";
-			channelKind: "telegram" | "webhook" | "email";
-			channelLabel: string;
-			createdAt: string;
-			origin: "web" | "telegram";
-	  }
-	| {
-			// Alert rule creation request. sessionId is null because rules are
-			// project-scoped, not session-scoped.
-			kind: "action_create_alert_rule";
-			id: string; // action_request id
-			sessionId: null;
-			sessionName: null;
-			severity: "info";
-			createdAt: string;
-			projectName: string;
-			ruleType: string;
-			thresholdMinutes: number | null;
-			origin: "web" | "telegram";
-	  }
-	| {
-			// Freeform alert rule creation request. sessionId is null because rules are
-			// project-scoped, not session-scoped.
-			kind: "action_create_freeform_alert_rule";
-			id: string; // action_request id
-			sessionId: null;
-			sessionName: null;
-			severity: "info";
-			createdAt: string;
-			projectName: string;
-			condition: string;
-			dailyTokenBudget: number;
-			origin: "web" | "telegram";
-	  }
-	| {
-			// Bulk session action. sessionId is null because this spans multiple sessions.
-			// severity: "high" for stop/delete (irreversible); "normal" for archive.
-			kind: "action_bulk_session";
-			id: string; // action_request id
-			sessionId: null;
-			sessionName: null;
-			severity: "high" | "normal";
-			createdAt: string;
-			action: "stop" | "archive" | "delete";
-			sessionCount: number;
-			sessionNames: string[]; // up to 20, each truncated to 40 chars
-			hasMore: boolean; // true when sessionCount > 20
-			exclusionCount: number;
-			origin: "web" | "telegram";
-	  };
-
-export interface Inbox {
-	items: InboxWorkItem[];
-	total: number;
-	byKind: Record<InboxWorkItem["kind"], number>;
-}
-
-export interface InboxFilter {
-	kinds?: Array<InboxWorkItem["kind"]>;
-	sessionId?: string;
-	severity?: InboxSeverity;
-	limit?: number;
-}
+// Re-export the canonical types so existing server consumers
+// (`import { InboxWorkItem } from "./inbox-service.js"`) keep working
+// without per-call-site refactors.
+export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
 
 const DEFAULT_LIMIT = 100;
-const _HIGH_SEVERITY_HEALTH: HealthState[] = ["stuck", "risky", "blocked"];
 
 /**
  * Compose the operator inbox as a read model over the canonical sources:
@@ -375,8 +158,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 	const openActions = await listOpenActionRequests();
 	for (const a of openActions) {
 		if (a.kind === "launch_request") {
-			const payload = a.payload;
-			const rawPayload = payload as unknown as Record<string, unknown>;
+			const payload = narrowPayload(a, "launch_request");
 			items.push({
 				kind: "action_launch",
 				id: a.id,
@@ -384,19 +166,17 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				sessionName: null,
 				severity: "info",
 				createdAt: a.createdAt,
-				projectId: payload.projectId,
-				projectName: payload.projectName ?? payload.projectId,
+				projectId: payload.projectId ?? "",
+				projectName: payload.projectName ?? payload.projectId ?? "",
 				template: payload.template,
 				launchSpec: payload.launchSpec,
 				requestedLaunchMode: payload.requestedLaunchMode,
 				origin: a.origin,
-				parentSessionId:
-					typeof rawPayload.parentSessionId === "string" ? rawPayload.parentSessionId : null,
-				parentSessionName:
-					typeof rawPayload.parentSessionName === "string" ? rawPayload.parentSessionName : null,
+				parentSessionId: payload.parentSessionId ?? null,
+				parentSessionName: payload.parentSessionName ?? null,
 			});
 		} else if (a.kind === "add_project") {
-			const payload = a.payload as unknown as AddProjectActionPayload;
+			const payload = narrowPayload(a, "add_project");
 			items.push({
 				kind: "action_add_project",
 				id: a.id,
@@ -412,10 +192,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "session_stop") {
-			const payload = a.payload as unknown as {
-				sessionId: string;
-				sessionDisplayName: string | null;
-			};
+			const payload = narrowPayload(a, "session_stop");
 			items.push({
 				kind: "action_session_stop",
 				id: a.id,
@@ -426,10 +203,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "session_archive") {
-			const payload = a.payload as unknown as {
-				sessionId: string;
-				sessionDisplayName: string | null;
-			};
+			const payload = narrowPayload(a, "session_archive");
 			items.push({
 				kind: "action_session_archive",
 				id: a.id,
@@ -440,10 +214,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "session_delete") {
-			const payload = a.payload as unknown as {
-				sessionId: string;
-				sessionDisplayName: string | null;
-			};
+			const payload = narrowPayload(a, "session_delete");
 			items.push({
 				kind: "action_session_delete",
 				id: a.id,
@@ -454,11 +225,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "edit_project") {
-			const payload = a.payload as unknown as {
-				projectId: string;
-				projectName: string;
-				fields: Record<string, unknown>;
-			};
+			const payload = narrowPayload(a, "edit_project");
 			items.push({
 				kind: "action_edit_project",
 				id: a.id,
@@ -472,12 +239,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "delete_project") {
-			const payload = a.payload as unknown as {
-				projectId: string;
-				projectName: string;
-				affectedTemplates: number;
-				affectedSessions: number;
-			};
+			const payload = narrowPayload(a, "delete_project");
 			items.push({
 				kind: "action_delete_project",
 				id: a.id,
@@ -492,11 +254,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "edit_template") {
-			const payload = a.payload as unknown as {
-				templateId: string;
-				templateName: string;
-				fields: Record<string, unknown>;
-			};
+			const payload = narrowPayload(a, "edit_template");
 			items.push({
 				kind: "action_edit_template",
 				id: a.id,
@@ -510,10 +268,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "delete_template") {
-			const payload = a.payload as unknown as {
-				templateId: string;
-				templateName: string;
-			};
+			const payload = narrowPayload(a, "delete_template");
 			items.push({
 				kind: "action_delete_template",
 				id: a.id,
@@ -526,13 +281,10 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "add_channel") {
-			const payload = a.payload as unknown as {
-				kind: string;
-				label: string;
-			};
+			const payload = narrowPayload(a, "add_channel");
 			const validKinds = ["telegram", "webhook", "email"] as const;
-			const channelKind = validKinds.includes(payload.kind as (typeof validKinds)[number])
-				? (payload.kind as "telegram" | "webhook" | "email")
+			const channelKind = validKinds.includes(payload.channelKind as (typeof validKinds)[number])
+				? (payload.channelKind as "telegram" | "webhook" | "email")
 				: "telegram";
 			items.push({
 				kind: "action_add_channel",
@@ -546,11 +298,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "create_alert_rule") {
-			const payload = a.payload as unknown as {
-				projectName: string;
-				ruleType: string;
-				thresholdMinutes: number | null;
-			};
+			const payload = narrowPayload(a, "create_alert_rule");
 			items.push({
 				kind: "action_create_alert_rule",
 				id: a.id,
@@ -564,11 +312,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "create_freeform_alert_rule") {
-			const payload = a.payload as unknown as {
-				projectName: string;
-				condition: string;
-				dailyTokenBudget: number;
-			};
+			const payload = narrowPayload(a, "create_freeform_alert_rule");
 			items.push({
 				kind: "action_create_freeform_alert_rule",
 				id: a.id,
@@ -582,12 +326,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "bulk_session_action") {
-			const payload = a.payload as unknown as {
-				action: string;
-				sessionIds: string[];
-				sessionNames: string[];
-				exclusions: Array<{ sessionId: string; name: string; reason: string }>;
-			};
+			const payload = narrowPayload(a, "bulk_session_action");
 			const validActions = ["stop", "archive", "delete"] as const;
 			const action = validActions.includes(payload.action as (typeof validActions)[number])
 				? (payload.action as "stop" | "archive" | "delete")

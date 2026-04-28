@@ -18,6 +18,7 @@ import {
 import { checkDispatch } from "../services/ai/dispatch-filter.js";
 import { getBackfillProgress, runBackfill } from "../services/ai/embeddings/embedding-service.js";
 import {
+	AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY,
 	AI_CLASSIFIER_AFFECTS_RUNNER_KEY,
 	AI_CLASSIFIER_ENABLED_KEY,
 	AI_KILL_SWITCH_KEY,
@@ -34,6 +35,7 @@ import {
 	isKillSwitchActive,
 	isVectorSearchActive,
 	isVectorSearchBuildEnabled,
+	shouldAutoEnableWatcherForAsk,
 } from "../services/ai/feature.js";
 import { resolveHitlRequest, supersedeOpenHitl } from "../services/ai/hitl-service.js";
 import { type InboxWorkItem, buildInbox } from "../services/ai/inbox-service.js";
@@ -75,6 +77,7 @@ import {
 	upsertWatcherConfig,
 } from "../services/ai/watcher-config-service.js";
 import { queueSnapshot } from "../services/ai/watcher-runs-service.js";
+import { upsertSetting } from "../services/settings-service.js";
 
 const aiRouter = new Hono();
 aiRouter.use("*", requireAuth());
@@ -119,6 +122,7 @@ aiRouter.get("/ai/status", async (c) => {
 	const active = await isAiActive();
 	const classifierEnabled = await isClassifierEnabled();
 	const classifierRunnerInput = await classifierAffectsRunner();
+	const autoEnableWatcherForAsk = await shouldAutoEnableWatcherForAsk();
 	return c.json({
 		build,
 		runtime,
@@ -126,6 +130,7 @@ aiRouter.get("/ai/status", async (c) => {
 		active,
 		classifierEnabled,
 		classifierAffectsRunner: classifierRunnerInput,
+		autoEnableWatcherForAsk,
 	});
 });
 
@@ -137,18 +142,11 @@ aiRouter.put("/ai/status", async (c) => {
 		killSwitch?: boolean;
 		classifierEnabled?: boolean;
 		classifierAffectsRunner?: boolean;
+		autoEnableWatcherForAsk?: boolean;
 	}>();
-	const now = new Date().toISOString();
 
-	const upsert = async (key: string, value: unknown) => {
-		await db
-			.insert(settings)
-			.values({ key, value, updatedAt: now })
-			.onConflictDoUpdate({
-				target: settings.key,
-				set: { value, updatedAt: now },
-			});
-	};
+	const upsert = (key: string, value: unknown) =>
+		upsertSetting(key, value, { allowProtected: true });
 
 	if (body.enabled !== undefined) await upsert(AI_RUNTIME_ENABLED_KEY, body.enabled);
 	if (body.killSwitch !== undefined) await upsert(AI_KILL_SWITCH_KEY, body.killSwitch);
@@ -158,6 +156,9 @@ aiRouter.put("/ai/status", async (c) => {
 	if (body.classifierAffectsRunner !== undefined) {
 		await upsert(AI_CLASSIFIER_AFFECTS_RUNNER_KEY, body.classifierAffectsRunner);
 	}
+	if (body.autoEnableWatcherForAsk !== undefined) {
+		await upsert(AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY, body.autoEnableWatcherForAsk);
+	}
 
 	return c.json({
 		build: isAiBuildEnabled(),
@@ -166,6 +167,7 @@ aiRouter.put("/ai/status", async (c) => {
 		active: await isAiActive(),
 		classifierEnabled: await isClassifierEnabled(),
 		classifierAffectsRunner: await classifierAffectsRunner(),
+		autoEnableWatcherForAsk: await shouldAutoEnableWatcherForAsk(),
 	});
 });
 
@@ -213,13 +215,8 @@ aiRouter.put("/ai/vector-search/status", async (c) => {
 		model?: string | null;
 		providerId?: string | null;
 	}>();
-	const now = new Date().toISOString();
-	const upsert = async (key: string, value: unknown) => {
-		await db
-			.insert(settings)
-			.values({ key, value, updatedAt: now })
-			.onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: now } });
-	};
+	const upsert = (key: string, value: unknown) =>
+		upsertSetting(key, value, { allowProtected: true });
 	if (body.enabled !== undefined) await upsert(VECTOR_SEARCH_ENABLED_KEY, body.enabled);
 	if (body.model !== undefined) {
 		await upsert(VECTOR_SEARCH_MODEL_KEY, body.model || DEFAULT_EMBEDDING_MODEL);
@@ -671,6 +668,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 		if (!filter.allowed) {
 			await emitAiEvent({
 				sessionId: proposal.sessionId,
+				source: "observed_hook",
 				category: "ai_continue_blocked",
 				eventType: "AiContinueBlocked",
 				content: `Dispatch filter tripped on human-approved prompt: ${filter.reason}`,
@@ -684,6 +682,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 		await resolveProposalHitl({ proposalId: id, action: "decline" });
 		await emitAiEvent({
 			sessionId: proposal.sessionId,
+			source: "observed_hook",
 			category: "ai_hitl_response",
 			eventType: "AiHitlResponse",
 			content: "Declined by user.",
@@ -700,6 +699,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 	await resolveProposalHitl({ proposalId: id, action: body.action, replyText: nextPrompt });
 	await emitAiEvent({
 		sessionId: proposal.sessionId,
+		source: "observed_hook",
 		category: "ai_hitl_response",
 		eventType: "AiHitlResponse",
 		content: body.action === "custom" ? `Custom: ${nextPrompt}` : "Approved.",
@@ -707,6 +707,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 	});
 	await emitAiEvent({
 		sessionId: proposal.sessionId,
+		source: "observed_hook",
 		category: "ai_continue_sent",
 		eventType: "AiContinueSent",
 		content: nextPrompt ?? "",

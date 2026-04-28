@@ -5,17 +5,53 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import { config } from "../config.js";
 import * as schema from "./schema.js";
 
+/**
+ * Slice MIGR-HARDENING-1 (H-2): the only supported backend today is SQLite.
+ * We previously tolerated a `DATABASE_URL=postgres://…` value with a quiet
+ * warn-and-fallback, which combined with a startup banner that proudly
+ * printed "PostgreSQL" lied to operators. Throw on import instead so a
+ * mis-configured deploy fails fast with an actionable message.
+ *
+ * Exported so tests can exercise the check without forcing a fresh module
+ * import (which would also re-open the on-disk DB and pollute other tests).
+ */
+export function assertSqliteBackend(databaseUrl: string | undefined): void {
+	if (!databaseUrl) return;
+	if (databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://")) {
+		throw new Error(
+			"PostgreSQL backend not implemented; set DATABASE_URL to a sqlite path (or unset to use the default ./data/agentpulse.db)",
+		);
+	}
+}
+
+assertSqliteBackend(config.databaseUrl);
+
+/**
+ * Slice MIGR-HARDENING-1 (M-1): whitelist of error messages that are the
+ * expected idempotent-replay path for SQLite when re-running:
+ *   - `ALTER TABLE … ADD COLUMN existing` → "duplicate column name"
+ *   - `CREATE TABLE …` (without IF NOT EXISTS)  → "table … already exists"
+ *   - `CREATE INDEX …` (without IF NOT EXISTS)  → "index … already exists"
+ *   - `CREATE TRIGGER …` (same shape) → "trigger … already exists"
+ *
+ * Anything else — syntax errors, type mismatches, FK violations from a
+ * cascade rebuild, etc. — must surface so we don't silently boot with a
+ * partially-applied schema. The cascade-FK rebuild path from DB-1 builds
+ * a `__new` table fresh and never hits these messages on a clean run.
+ */
+export function isIdempotentMigrationError(message: string): boolean {
+	return (
+		/duplicate column name/i.test(message) ||
+		/already exists/i.test(message) ||
+		/index .+ already exists/i.test(message)
+	);
+}
+
 function createDatabase() {
 	const dbPath = config.sqlitePath;
 	const dir = dirname(dbPath);
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true });
-	}
-	if (!config.useSqlite) {
-		// Postgres backend isn't implemented yet — see issue #12. We fall back
-		// to SQLite so tests/dev don't break; the actual Postgres deploy path
-		// logs a warning at boot.
-		console.warn("PostgreSQL not yet configured, falling back to SQLite");
 	}
 	const sqlite = new Database(dbPath);
 	sqlite.exec("PRAGMA journal_mode = WAL;");
@@ -40,9 +76,17 @@ export const db = created.db;
 export const sqlite = created.sqlite;
 export type Db = typeof db;
 
-// Initialize database tables
-export function initializeDatabase() {
-	const sqlite = new Database(config.sqlitePath);
+/**
+ * Initialize database schema. Operates on the shared bun:sqlite handle by
+ * default; tests/utilities can pass an alternate handle.
+ *
+ * Idempotent: safe to call multiple times. CREATE TABLE / CREATE INDEX use
+ * IF NOT EXISTS, the migrations array is built from ALTER TABLE / CREATE
+ * statements that the catch-and-continue loop tolerates as no-ops, and the
+ * cascade-FK rebuild self-skips when the FK is already in place.
+ */
+export function initializeDatabase(handle: Database = sqlite) {
+	const sqlite = handle;
 
 	sqlite.exec(`
 		CREATE TABLE IF NOT EXISTS sessions (
@@ -663,9 +707,18 @@ export function initializeDatabase() {
 					Bun.sleepSync(backoffMs);
 					continue;
 				}
-				// Non-lock errors (column exists, duplicate index, etc.) are
-				// the expected idempotent path — ignore and move on.
-				break;
+				// Slice MIGR-HARDENING-1 (M-1): only swallow the *expected*
+				// idempotent-replay errors that fall out of "ALTER TABLE
+				// ADD COLUMN" / "CREATE TABLE" / "CREATE INDEX" running a
+				// second time on a DB that already has the schema. Anything
+				// else (typo, type mismatch, broken CREATE TABLE) used to
+				// pass silently; now it surfaces.
+				if (isIdempotentMigrationError(message)) {
+					break;
+				}
+				throw new Error(`[db] Migration failed: ${migration.slice(0, 80)} — ${message}`, {
+					cause: err instanceof Error ? err : undefined,
+				});
 			}
 		}
 		if (attempts >= 8) {
@@ -674,6 +727,14 @@ export function initializeDatabase() {
 			);
 		}
 	}
+
+	// Slice DB-1: rebuild child-table FKs so deletes on `sessions` cascade.
+	// SQLite cannot ALTER TABLE … ADD CONSTRAINT, so for each child we build
+	// a `__new` table with the cascading FK, copy rows over, drop the old
+	// table, and rename. Self-skips when `PRAGMA foreign_key_list` already
+	// shows ON DELETE CASCADE for `session_id`. Triggers and indexes are
+	// captured from sqlite_master BEFORE the swap and re-applied after.
+	rebuildSessionChildFks(sqlite);
 
 	// Phase 1 AI control-plane migration: backfill ai_hitl_requests for any
 	// open watcher_proposals that still carry legacy `hitl_waiting` state.
@@ -834,6 +895,172 @@ export function initializeDatabase() {
 		console.warn("[db] FTS backfill skipped:", err);
 	}
 
-	sqlite.close();
 	console.log("[db] Database initialized");
+}
+
+/**
+ * Slice DB-1 cascade-FK rebuild. For each table that should reference
+ * `sessions(session_id) ON DELETE CASCADE`:
+ *
+ *   1. Skip if the FK is already cascading (idempotent re-run).
+ *   2. Capture column list (PRAGMA table_info) and the sqlite_master rows
+ *      for indexes/triggers attached to the table.
+ *   3. Inside `BEGIN; … COMMIT;` (with foreign_keys=OFF for the duration),
+ *      create `<table>__new` with the same columns + cascade FK, copy rows,
+ *      drop the old table, rename, and re-apply captured indexes/triggers.
+ *
+ * The base CREATE TABLE statements above don't carry the FK on most child
+ * tables (only `events` had one, and even there without cascade), so for
+ * non-`events` tables we are *adding* the FK here. Existing rows that
+ * reference a now-missing session would violate the new FK; we run a
+ * defensive PRAGMA foreign_key_check after each rebuild and surface the
+ * row count without aborting boot — operators can clean up stragglers.
+ */
+function rebuildSessionChildFks(sqlite: Database): void {
+	const targets: ReadonlyArray<{ table: string; column: string }> = [
+		{ table: "events", column: "session_id" },
+		{ table: "managed_sessions", column: "session_id" },
+		{ table: "control_actions", column: "session_id" },
+		{ table: "watcher_proposals", column: "session_id" },
+		{ table: "ai_hitl_requests", column: "session_id" },
+		{ table: "ai_watcher_runs", column: "session_id" },
+		{ table: "watcher_configs", column: "session_id" },
+	];
+
+	for (const { table, column } of targets) {
+		try {
+			const exists = sqlite
+				.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+				.get(table);
+			if (!exists) continue;
+
+			// Idempotency: skip if the FK already cascades on session_id.
+			const fkRows = sqlite.prepare(`PRAGMA foreign_key_list('${table}')`).all() as Array<{
+				table: string;
+				from: string;
+				to: string;
+				on_delete: string;
+			}>;
+			const sessionFk = fkRows.find(
+				(r) => r.table === "sessions" && r.from === column && r.to === "session_id",
+			);
+			if (sessionFk && sessionFk.on_delete === "CASCADE") {
+				continue;
+			}
+
+			rebuildTableWithCascade(sqlite, table, column);
+		} catch (err) {
+			// Don't abort boot if a single rebuild fails — log loudly and
+			// continue. Operators see the warning; the next slice ships
+			// with explicit DELETE-cascade fallback in the route handler.
+			console.warn(`[db] cascade FK rebuild failed for ${table}:`, err);
+		}
+	}
+}
+
+/**
+ * PRAGMA table_info strips the outer parens from defaults like
+ * `(datetime('now'))`, returning `datetime('now')` — which SQLite then
+ * refuses as a column DEFAULT (function-call defaults must be parenthesized).
+ * Re-add parens for anything that isn't already a literal or already
+ * parenthesized.
+ */
+function formatDefault(raw: string): string {
+	const v = raw.trim();
+	if (v.length === 0) return "''";
+	if (v.startsWith("(") && v.endsWith(")")) return v;
+	// Quoted string literal.
+	if (v.startsWith("'") && v.endsWith("'")) return v;
+	// Numeric / NULL / boolean / hex.
+	if (/^-?\d+(\.\d+)?$/.test(v)) return v;
+	if (/^(NULL|TRUE|FALSE|CURRENT_TIME|CURRENT_DATE|CURRENT_TIMESTAMP)$/i.test(v)) return v;
+	// Anything else (function call, expression) needs parens.
+	return `(${v})`;
+}
+
+function rebuildTableWithCascade(sqlite: Database, table: string, column: string): void {
+	type ColRow = {
+		cid: number;
+		name: string;
+		type: string;
+		notnull: number;
+		dflt_value: string | null;
+		pk: number;
+	};
+	const cols = sqlite.prepare(`PRAGMA table_info('${table}')`).all() as ColRow[];
+	if (cols.length === 0) return;
+
+	// Capture indexes and triggers attached to the table. We exclude
+	// auto-generated indexes (the `sql` column is null for those — SQLite
+	// re-creates them automatically when the table is rebuilt with the
+	// same constraints).
+	type MasterRow = { name: string; type: string; sql: string | null };
+	const attached = sqlite
+		.prepare(
+			"SELECT name, type, sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index','trigger') AND sql IS NOT NULL",
+		)
+		.all(table) as MasterRow[];
+
+	// Build column DDL list. We mirror PRAGMA's view of the columns, which
+	// reflects accumulated ALTER TABLE additions.
+	const colDdl = cols.map((c) => {
+		const parts = [`"${c.name}" ${c.type || "TEXT"}`];
+		if (c.notnull) parts.push("NOT NULL");
+		if (c.dflt_value !== null) parts.push(`DEFAULT ${formatDefault(c.dflt_value)}`);
+		// Single-column PRIMARY KEY is captured here. Multi-column PKs
+		// would need PRAGMA index_list + index_info; none of our targets
+		// have composite PKs.
+		if (c.pk) parts.push("PRIMARY KEY");
+		return parts.join(" ");
+	});
+	colDdl.push(`FOREIGN KEY ("${column}") REFERENCES sessions(session_id) ON DELETE CASCADE`);
+
+	const colNames = cols.map((c) => `"${c.name}"`).join(", ");
+	const newTable = `${table}__new`;
+
+	console.log(`[db] Rebuilding ${table} with ON DELETE CASCADE on ${column}`);
+
+	sqlite.exec("PRAGMA foreign_keys = OFF;");
+	try {
+		sqlite.exec("BEGIN;");
+		try {
+			sqlite.exec(`CREATE TABLE ${newTable} (\n  ${colDdl.join(",\n  ")}\n);`);
+			sqlite.exec(`INSERT INTO ${newTable} (${colNames}) SELECT ${colNames} FROM ${table};`);
+			sqlite.exec(`DROP TABLE ${table};`);
+			sqlite.exec(`ALTER TABLE ${newTable} RENAME TO ${table};`);
+			// Re-apply captured indexes/triggers. CREATE … IF NOT EXISTS
+			// keeps this idempotent if any of them happened to be
+			// auto-restored by the rename.
+			for (const row of attached) {
+				if (!row.sql) continue;
+				try {
+					sqlite.exec(`${row.sql};`);
+				} catch (err) {
+					// A duplicate-name error here is fine — log and continue.
+					console.warn(`[db] re-create ${row.type} ${row.name} skipped:`, err);
+				}
+			}
+			sqlite.exec("COMMIT;");
+		} catch (err) {
+			sqlite.exec("ROLLBACK;");
+			throw err;
+		}
+	} finally {
+		sqlite.exec("PRAGMA foreign_keys = ON;");
+	}
+
+	// Surface (but don't abort on) any orphan rows the new FK would
+	// reject. Boot continues; operator cleanup can follow later.
+	try {
+		const violations = sqlite
+			.prepare(`PRAGMA foreign_key_check('${table}')`)
+			.all() as Array<unknown>;
+		if (violations.length > 0) {
+			console.warn(
+				`[db] ${table}: ${violations.length} row(s) reference a missing session; cascade is now active so future deletes are clean.`,
+			);
+		}
+	} catch (err) {
+		console.warn(`[db] foreign_key_check on ${table} failed:`, err);
+	}
 }

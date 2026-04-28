@@ -1,4 +1,5 @@
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
+import { sendTelegramRaw } from "../channels/telegram.js";
 
 /**
  * Send an inline Approve/Decline keyboard to a Telegram chat for a given
@@ -21,14 +22,10 @@ export async function sendTelegramActionRequest(
 			],
 		],
 	};
-	await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			chat_id: chatId,
-			text: `AgentPulse · ${contextLabel}\n\n${question}`,
-			reply_markup: keyboard,
-		}),
+	await sendTelegramRaw(token, "sendMessage", {
+		chat_id: chatId,
+		text: `AgentPulse · ${contextLabel}\n\n${question}`,
+		reply_markup: keyboard,
 	}).catch((err) => {
 		console.warn("[telegram-helpers] sendTelegramActionRequest failed:", err);
 	});

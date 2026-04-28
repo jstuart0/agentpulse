@@ -7,6 +7,155 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.2.0-pre.5] — 2026-04-28
+
+The "code-health remediation" cycle. A code-health audit (dexter) flagged
+23 findings across persistence layer, type duplication, dead routes,
+security/UX papercuts, and perf cache misses. This release works through
+all 22 actionable findings (the 23rd, "zero tests," was dismissed as
+factually wrong: 486 tests existed; now 561). Plus an auto-watcher
+default for Ask-initiated sessions.
+
+### Added
+
+- **AI watcher auto-enables on Ask-initiated sessions.** When Ask
+  launches a session, a watcher_configs row is attached at correlation
+  time (enabled, ask_on_risk policy, default provider). Five silent
+  skip branches keep this from ever failing a launch: not Ask-initiated,
+  AI inactive, user opt-out, watcher already configured, no default
+  provider. Settings toggle "Auto-enable on Ask-initiated sessions"
+  (default true) below the kill-switch row.
+- **`bun test` is now discoverable.** New `test` and `test:watch` npm
+  scripts, plus a `TESTING.md` at repo root explaining the colocated
+  `*.test.ts` convention. Adds the three signals an auditor scans for
+  so future code-health audits don't miss the test suite. (META-1.)
+
+### Fixed
+
+#### Persistence layer (DB-1, DELETE-RENAME-1)
+
+- **`ON DELETE CASCADE` on every child of `sessions`.** Seven tables
+  (`events`, `managed_sessions`, `control_actions`, `watcher_proposals`,
+  `ai_hitl_requests`, `ai_watcher_runs`, `watcher_configs`) had FKs
+  declared without cascade, so `DELETE /api/v1/sessions/:id` was
+  leaving orphan rows in every one of them. New migration rebuilds each
+  table with `ON DELETE CASCADE` via the documented SQLite
+  CREATE-INSERT-DROP-RENAME dance. Idempotent: tables already at
+  CASCADE skip the rebuild. C-2, H-5.
+- **`initializeDatabase()` no longer opens a second SQLite handle.**
+  The boot path was racing the module-level production handle.
+  Migrations now run on the shared handle by default. C-1.
+- **`DELETE /sessions/:id` is now transactional** with a sync callback.
+  Cascade does the heavy lifting; the explicit events delete is kept
+  as belt-and-braces for older DBs. M-10.
+- **`PUT /sessions/:id/rename` extracted to `renameSession()`** in
+  session-tracker. Both the `sessions` and `managed_sessions` updates
+  are wrapped in a sync `db.transaction(...)` — a partial failure
+  rolls back. Note: drizzle bun-sqlite transactions are sync; async
+  callbacks silently break rollback. M-2.
+
+#### AI control plane (AI-EVT-1, TYPE-1)
+
+- **`emitAiEvent` requires explicit `source` parameter.** Was hardcoded
+  `"observed_hook"` for every AI-emitted event, contaminating the
+  authority-based deduplication in `event-processor.ts`. Updated 20
+  call sites: `"managed_control"` for watcher emissions, `"observed_hook"`
+  for HITL response paths (kept correctly). C-3.
+- **`emitAiEvent` now routes through `insertNormalizedEvents`** instead
+  of inserting directly. AI events get the same dedup window, authority
+  resolution, and FTS5 trigger discipline as observed events. M-4.
+- **`ai-events.ts` is now single-responsibility.** `stampWatcherState` /
+  `stampUserPrompt` moved to `managed-session-state.ts` (they write to
+  `sessions` columns, that's its job). `loadRecentEvents` moved to
+  `ai/event-queries.ts`. M-7.
+- **`InboxWorkItem` (14-variant discriminated union) lives in
+  `src/shared/types.ts`** — no longer duplicated server↔client. **Real
+  bug surfaced by unification:** the server has been emitting
+  `action_create_freeform_alert_rule` since the freeform alert work,
+  but the client switch had no case for it (silently rendered
+  undefined). Added the missing case. Promoted `Record<string, unknown>`
+  template/launchSpec slots to `SessionTemplateInput` / `LaunchSpec`,
+  removed 4 unsafe casts that were papering over the weakened types.
+  Drift is now caught at build time via a bidirectional exhaustiveness
+  test. H-4.
+- **`ActionRequestPayload` is a typed discriminated union.** Replaced
+  every `as unknown as <T>` cast in `inbox-service.ts` (13 sites) and
+  `action-requests-service.ts` with `narrowPayload<K>(req, k)`. **Real
+  bug surfaced:** `add_channel`'s payload had a `kind` field that
+  collided with the row-level discriminant — renamed to `channelKind`.
+  M-5.
+
+#### Security / settings (SETTINGS-1, H-7)
+
+- **Generic `PUT /settings` rejects protected keys.** Was accepting any
+  `{key, value}` from any authenticated user, bypassing the AI
+  build-gate. New `upsertSetting()` service throws
+  `ProtectedSettingError` on `ai.*`, `vectorSearch.*`, and
+  `telegram:credentials`. Generic endpoint returns 403; dedicated
+  `/ai/status` and `/ai/vector-search/status` pass `allowProtected:
+  true`. H-8, M-6.
+- **Startup warning when `DISABLE_AUTH=true` + `HOST=0.0.0.0`.** Local
+  dev mode bound to all network interfaces is a fully open mutation
+  API; now `console.warn`s prominently at boot. H-7.
+
+#### Performance (CACHE-1, PERF-1)
+
+- **AI feature flags cached** with a 5s TTL.
+  `requireAiActive(c)` was issuing 3 settings reads per AI-mutation
+  request and once per alert-rule sweep iteration. Cache invalidates
+  on writes through `upsertSetting` so operator flips propagate
+  immediately. M-8.
+- **Telegram credentials cached** with a 60s TTL gate (was indefinite —
+  multi-process drift never reflected). H-3.
+- **Project cache mutation contract** locked down by a new test —
+  `createProject` / `updateProject` / `deleteProject` must call
+  `bumpVersionAndReload`. (Audit confirmed all three already do; the
+  test prevents future regressions.) H-3.
+- **`intelligenceForSessions` now does 4 queries instead of 600.** The
+  batch endpoint (cap 200 ids) was looping per-id, doing 3 sequential
+  reads each — up to 600 reads under a single SQLite writer lock. Now
+  bulk-loaded via `inArray` + a window function for top-N events per
+  session. Parity test seeds 50 sessions across mixed scenarios and
+  asserts identical results to the per-session path. H-6.
+
+#### Migration hardening (MIGR-HARDENING-1)
+
+- **Migration loop no longer swallows real errors.** Whitelisted three
+  idempotent patterns (`/duplicate column name/i`, `/already exists/i`,
+  `/index .+ already exists/i`) plus the unchanged lock-retry path.
+  Anything else re-throws with the original message and `cause`. A
+  truly broken migration no longer silently passes. M-1.
+- **`DATABASE_URL=postgres://...` now fails fast at boot** with a clear
+  message. The silent fallback to SQLite has been documented as
+  "supported" but unimplemented for too long. CLAUDE.md updated:
+  "SQLite only today; PostgreSQL support is not implemented." H-2.
+- **Startup banner reads version from `package.json`.** Was a hardcoded
+  `v0.2.0-pre.2` string literal that drifted with every release. L-1.
+- **Deduplicated import in `index.ts`.** L-2.
+
+#### Cleanups (CLEANUP-1, SEARCH-1)
+
+- **Telegram `sendMessage` deduplicated.** Three places constructed
+  `fetch("https://api.telegram.org/bot...")` inline. New
+  `sendTelegramMessage(botToken, chatId, text, opts?)` in
+  `channels/telegram.ts` includes the 4096-char chunk splitter. M-3.
+- **Removed `GET /api/v1/sessions/search`.** Hand-written LIKE-based
+  route was redundant with the FTS5 `/search` backend, included an N+1
+  hydration loop, and had a route-ordering hazard with
+  `/sessions/:sessionId`. The FTS endpoint has been the live path for
+  a while. H-1, L-3.
+- **`parseDate` exported from `web/lib/utils.ts`.** CLAUDE.md said to
+  use it; it wasn't exported. M-9.
+- **Removed dead `_HIGH_SEVERITY_HEALTH` constant.** L-4.
+- **Action-request `kind` validation.** Schema comment refreshed (was
+  "launch_request is the only kind in v1"; now lists all 13). Runtime
+  gate in `createActionRequest()` throws on unknown kind. L-5.
+
+### Test count
+
+486 → 561 tests across 55 files. Every slice ships with regression
+tests; no behavioral change went un-locked-down.
+
 ## [0.2.0-pre.4] — 2026-04-27
 
 The "AI-initiated launches with workspace scaffolding + git clone"

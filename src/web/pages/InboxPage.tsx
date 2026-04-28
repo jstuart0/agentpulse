@@ -162,6 +162,42 @@ export function InboxPage() {
 						onDecide={handleActionDecide}
 					/>
 				);
+			case "action_create_freeform_alert_rule":
+				// No dedicated card yet — render a minimal placeholder so the item
+				// is still actionable from the inbox. Tracked separately; the card
+				// will land alongside the alert-rules UI work.
+				return (
+					<div
+						key={`${item.kind}:${item.id}`}
+						className="rounded border border-orange-500/30 bg-orange-500/5 p-3 text-xs"
+					>
+						<div className="font-medium text-orange-300">
+							Freeform alert rule for {item.projectName}
+						</div>
+						<div className="mt-1 font-mono text-[11px] text-muted-foreground break-all">
+							{item.condition}
+						</div>
+						<div className="mt-1 text-[11px] text-muted-foreground">
+							Daily token budget: {item.dailyTokenBudget}
+						</div>
+						<div className="mt-2 flex gap-2">
+							<button
+								type="button"
+								onClick={() => handleActionDecide(item.id, "applied")}
+								className="text-xs px-3 py-1 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30"
+							>
+								Approve
+							</button>
+							<button
+								type="button"
+								onClick={() => handleActionDecide(item.id, "declined")}
+								className="text-xs px-3 py-1 rounded border border-border hover:bg-muted"
+							>
+								Decline
+							</button>
+						</div>
+					</div>
+				);
 			case "action_bulk_session":
 				return (
 					<BulkSessionActionCard
@@ -207,6 +243,7 @@ export function InboxPage() {
 						<option value="action_delete_template">Delete template</option>
 						<option value="action_add_channel">Add channel</option>
 						<option value="action_create_alert_rule">Alert rules</option>
+						<option value="action_create_freeform_alert_rule">Freeform alerts</option>
 						<option value="action_bulk_session">Bulk actions</option>
 					</select>
 					<button
@@ -252,6 +289,7 @@ export function InboxPage() {
 					<span>tmpl-edits: {inbox.byKind.action_edit_template}</span>
 					<span>tmpl-deletes: {inbox.byKind.action_delete_template}</span>
 					<span>alert-rules: {inbox.byKind.action_create_alert_rule}</span>
+					<span>freeform-alerts: {inbox.byKind.action_create_freeform_alert_rule}</span>
 					<span>bulk: {inbox.byKind.action_bulk_session}</span>
 				</footer>
 			)}

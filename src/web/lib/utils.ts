@@ -6,7 +6,7 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 // SQLite returns "2026-04-16 03:54:45", browsers need ISO format with T and Z
-function parseDate(dateStr: string): number {
+export function parseDate(dateStr: string): number {
 	// Already ISO format
 	if (dateStr.includes("T")) return new Date(dateStr).getTime();
 	// SQLite format: "YYYY-MM-DD HH:MM:SS" -- treat as UTC

@@ -39,7 +39,18 @@ interface TelegramCredentials {
 	source: "db" | "env" | "missing";
 }
 
+// 60-second freshness window. The cache is force-refreshed on save/clear so
+// the operator's own writes are visible immediately; the TTL only matters
+// when the row is mutated by something other than this process (rare in
+// single-Bun homelab deploys, but possible if multiple replicas share a DB).
+// Sync readers fall back to env on miss — see `getTelegramBotToken` etc.
+const CRED_CACHE_TTL_MS = 60_000;
 let cached: TelegramCredentials | null = null;
+let cachedAt = 0;
+
+function isCacheFresh(): boolean {
+	return cached !== null && Date.now() - cachedAt < CRED_CACHE_TTL_MS;
+}
 
 function readEnvCreds(): TelegramCredentials {
 	const botToken = config.telegramBotToken || null;
@@ -91,6 +102,7 @@ async function loadCreds(): Promise<TelegramCredentials> {
  */
 export async function initTelegramCredentials(): Promise<void> {
 	cached = await loadCreds();
+	cachedAt = Date.now();
 }
 
 /**
@@ -99,7 +111,31 @@ export async function initTelegramCredentials(): Promise<void> {
  */
 export async function refreshTelegramCredentials(): Promise<TelegramCredentials> {
 	cached = await loadCreds();
+	cachedAt = Date.now();
 	return cached;
+}
+
+/**
+ * Lazy refresh used by the sync accessors when the in-memory cache is
+ * past its TTL. Fire-and-forget so we don't block the synchronous
+ * caller — current readers continue to see the stale value for this
+ * one call (env fallback if cache empty), and the next call sees the
+ * refreshed value.
+ */
+function maybeScheduleRefresh(): void {
+	if (cached !== null && !isCacheFresh()) {
+		// Stamp `cachedAt` immediately so concurrent callers don't all
+		// schedule duplicate refreshes during the in-flight load.
+		cachedAt = Date.now();
+		void loadCreds()
+			.then((next) => {
+				cached = next;
+				cachedAt = Date.now();
+			})
+			.catch((err) => {
+				console.error("[telegram-credentials] background refresh failed:", err);
+			});
+	}
 }
 
 /**
@@ -109,22 +145,38 @@ export async function refreshTelegramCredentials(): Promise<TelegramCredentials>
  * sites working without modification.
  */
 export function getTelegramBotToken(): string {
-	if (!cached) cached = readEnvCreds();
+	if (!cached) {
+		cached = readEnvCreds();
+		cachedAt = Date.now();
+	}
+	maybeScheduleRefresh();
 	return cached.botToken ?? "";
 }
 
 export function getTelegramWebhookSecret(): string {
-	if (!cached) cached = readEnvCreds();
+	if (!cached) {
+		cached = readEnvCreds();
+		cachedAt = Date.now();
+	}
+	maybeScheduleRefresh();
 	return cached.webhookSecret ?? "";
 }
 
 export function getTelegramCredentialsSource(): "db" | "env" | "missing" {
-	if (!cached) cached = readEnvCreds();
+	if (!cached) {
+		cached = readEnvCreds();
+		cachedAt = Date.now();
+	}
+	maybeScheduleRefresh();
 	return cached.source;
 }
 
 export function getTelegramDeliveryMode(): TelegramDeliveryMode {
-	if (!cached) cached = readEnvCreds();
+	if (!cached) {
+		cached = readEnvCreds();
+		cachedAt = Date.now();
+	}
+	maybeScheduleRefresh();
 	return cached.deliveryMode;
 }
 
@@ -133,7 +185,11 @@ export function getTelegramDeliveryMode(): TelegramDeliveryMode {
  * back to the client — the raw value is write-once at save time.
  */
 export function getTelegramBotTokenHint(): string | null {
-	if (!cached) cached = readEnvCreds();
+	if (!cached) {
+		cached = readEnvCreds();
+		cachedAt = Date.now();
+	}
+	maybeScheduleRefresh();
 	const t = cached.botToken;
 	if (!t) return null;
 	return t.length <= 4 ? "*".repeat(t.length) : `…${t.slice(-4)}`;

@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import { type AiProvider, type AiProviderKind, api } from "../../lib/api.js";
 import { VectorSearchSection } from "./VectorSearchSection.js";
 
-type Status = { build: boolean; runtime: boolean; killSwitch: boolean; active: boolean };
+type Status = {
+	build: boolean;
+	runtime: boolean;
+	killSwitch: boolean;
+	active: boolean;
+	autoEnableWatcherForAsk?: boolean;
+};
 
 const PROVIDER_KINDS: Array<{ value: AiProviderKind; label: string; hint: string }> = [
 	{ value: "anthropic", label: "Anthropic (Claude)", hint: "claude-sonnet-4-6" },
@@ -54,6 +60,15 @@ export function AiSettingsPanel() {
 	async function toggleKillSwitch(killSwitch: boolean) {
 		try {
 			const next = await api.updateAiStatus({ killSwitch });
+			setStatus(next);
+		} catch (err) {
+			setBanner({ kind: "error", text: String(err) });
+		}
+	}
+
+	async function toggleAutoEnableWatcherForAsk(autoEnableWatcherForAsk: boolean) {
+		try {
+			const next = await api.updateAiStatus({ autoEnableWatcherForAsk });
 			setStatus(next);
 		} catch (err) {
 			setBanner({ kind: "error", text: String(err) });
@@ -150,6 +165,24 @@ export function AiSettingsPanel() {
 							className="w-4 h-4"
 						/>
 						<span className="text-xs text-red-400">Paused</span>
+					</label>
+				</div>
+				<div className="flex items-center justify-between border-t border-border pt-3">
+					<div>
+						<div className="text-sm font-semibold">Auto-enable on Ask-initiated sessions</div>
+						<div className="text-xs text-muted-foreground">
+							When Ask launches a session, attach a watcher (ask_on_risk policy, default provider).
+							You can still flip it off per session in the AI tab.
+						</div>
+					</div>
+					<label className="inline-flex items-center gap-2 cursor-pointer">
+						<input
+							type="checkbox"
+							checked={status.autoEnableWatcherForAsk !== false}
+							onChange={(e) => toggleAutoEnableWatcherForAsk(e.target.checked)}
+							className="w-4 h-4"
+						/>
+						<span className="text-xs">Enabled</span>
 					</label>
 				</div>
 				<div className="border-t border-border pt-3 text-xs text-muted-foreground">

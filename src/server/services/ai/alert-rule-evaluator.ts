@@ -31,6 +31,7 @@ export async function dispatchAlertRuleNotification(
 
 	const { getTelegramBotToken } = await import("../channels/telegram-credentials.js");
 	const { getChannelCredential } = await import("../channels/channels-service.js");
+	const { sendTelegramMessage } = await import("../channels/telegram.js");
 	const token = getTelegramBotToken();
 	if (!token) return;
 
@@ -45,16 +46,11 @@ export async function dispatchAlertRuleNotification(
 		freeform: "matched a freeform condition",
 	};
 
-	await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			chat_id: cred.chatId,
-			text: `Alert: Session "${label}" ${triggerText[trigger]}. (Project alert rule fired.)`,
-		}),
-	}).catch(() => {
-		// best-effort; delivery failure must not block the sweep
-	});
+	await sendTelegramMessage(
+		token,
+		cred.chatId,
+		`Alert: Session "${label}" ${triggerText[trigger]}. (Project alert rule fired.)`,
+	);
 }
 
 // ---- Event-transition evaluator (moved from event-processor.ts) -------------
