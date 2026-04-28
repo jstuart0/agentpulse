@@ -5,11 +5,26 @@ interface ProjectCardProps {
 	sessionCount?: number;
 	onEdit: (project: Project) => void;
 	onDelete: (project: Project) => void;
+	onCleanupWorkarea?: (project: Project) => void;
 }
 
-export function ProjectCard({ project, sessionCount, onEdit, onDelete }: ProjectCardProps) {
+export function ProjectCard({
+	project,
+	sessionCount,
+	onEdit,
+	onDelete,
+	onCleanupWorkarea,
+}: ProjectCardProps) {
+	const tags = project.tags ?? [];
+	const isScratch = tags.includes("scratch");
+	const isAiInitiated = tags.includes("ai-initiated");
+	const canCleanup = isScratch && isAiInitiated && Boolean(onCleanupWorkarea);
 	return (
-		<div className="rounded-lg border border-border bg-card p-4 flex flex-col gap-3">
+		<div
+			className={`rounded-lg border bg-card p-4 flex flex-col gap-3 ${
+				isScratch ? "border-dashed border-amber-500/30" : "border-border"
+			}`}
+		>
 			<div className="flex items-start justify-between gap-2">
 				<div className="min-w-0 flex-1">
 					<div className="flex items-center gap-2 flex-wrap">
@@ -19,12 +34,39 @@ export function ProjectCard({ project, sessionCount, onEdit, onDelete }: Project
 								Favorite
 							</span>
 						)}
+						{isScratch && (
+							<span className="text-[10px] px-1.5 py-0.5 rounded text-amber-300 bg-amber-500/10 border border-amber-500/20 font-medium">
+								scratch
+							</span>
+						)}
 					</div>
 					<p className="text-xs text-muted-foreground mt-0.5 truncate" title={project.cwd}>
 						{project.cwd}
 					</p>
 				</div>
 				<div className="flex items-center gap-1 flex-shrink-0">
+					{canCleanup && (
+						<button
+							type="button"
+							onClick={() => onCleanupWorkarea?.(project)}
+							className="text-muted-foreground hover:text-amber-300 p-1.5 rounded hover:bg-amber-500/10 transition-colors"
+							title="Clean up scratch workspace (rm -rf the directory)"
+						>
+							<svg
+								className="w-3.5 h-3.5"
+								fill="none"
+								viewBox="0 0 24 24"
+								stroke="currentColor"
+								strokeWidth={1.5}
+							>
+								<path
+									strokeLinecap="round"
+									strokeLinejoin="round"
+									d="M3 6h18M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2m2 0v14a2 2 0 01-2 2H8a2 2 0 01-2-2V6h12z"
+								/>
+							</svg>
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={() => onEdit(project)}

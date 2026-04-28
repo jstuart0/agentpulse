@@ -64,6 +64,19 @@ spec:
         - name: agentpulse
           port: 3000
 
+    # API-key-bearing requests bypass Authentik forwardauth so the
+    # relay (statusline, hook backfill, off-Authentik device reads)
+    # can call the dashboard API surface. Hono's per-router
+    # requireAuth() still validates the key — this just frees the
+    # request from the upstream SSO 302 that would otherwise convert
+    # JSON callers into login HTML. Scoped to /api/ to keep the
+    # browser dashboard catch-all unaffected.
+    - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/`) && HeaderRegexp(`Authorization`, `Bearer ap_.*`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
     # Dashboard frontend - Authentik protected
     - match: Host(`agentpulse.example.com`)
       kind: Rule

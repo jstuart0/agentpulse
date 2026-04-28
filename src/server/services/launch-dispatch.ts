@@ -1,11 +1,82 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { db } from "../db/client.js";
-import { launchRequests } from "../db/schema.js";
+import { launchRequests, sessions } from "../db/schema.js";
 import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import { markSessionFailed } from "./event-processor.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { attachManagedSessionToLaunch } from "./managed-session-state.js";
+
+const PROVENANCE_KEYS = ["aiInitiated", "askThreadId"] as const;
+
+// Auto-generated adjective-noun shape from name-generator.ts. We only
+// rewrite the displayName when it still matches this pattern — once a
+// user (or a custom rename) has changed it, we leave it alone.
+const AUTO_NAME_PATTERN = /^[a-z]+-[a-z]+$/;
+
+/**
+ * If the just-correlated launch_request carries a slice-3 desired display
+ * name, rewrite sessions.displayName — but only when the existing name is
+ * still in adjective-noun shape. Idempotent: a second call after the rename
+ * sees the new name (which no longer matches the pattern) and is a no-op.
+ */
+export async function applyDesiredDisplayName(
+	sessionId: string,
+	launchRequest: LaunchRequest,
+): Promise<void> {
+	const desired = launchRequest.desiredDisplayName;
+	if (!desired) return;
+
+	const [row] = await db
+		.select({ displayName: sessions.displayName })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (!row) return;
+	if (!row.displayName || !AUTO_NAME_PATTERN.test(row.displayName)) return;
+	if (row.displayName === desired) return;
+
+	await db.update(sessions).set({ displayName: desired }).where(eq(sessions.sessionId, sessionId));
+}
+
+/**
+ * Copy any provenance hints stamped on launch_requests.metadata onto the
+ * just-correlated session row. Idempotent: a re-correlation never clobbers
+ * existing keys with stale values, so manually edited session metadata stays
+ * intact. Returns silently when there is nothing to merge.
+ */
+async function applyLaunchProvenanceToSession(
+	sessionId: string,
+	launchMetadata: Record<string, unknown> | null,
+) {
+	if (!launchMetadata) return;
+	const provenance: Record<string, unknown> = {};
+	for (const key of PROVENANCE_KEYS) {
+		const value = launchMetadata[key];
+		if (value !== undefined && value !== null) provenance[key] = value;
+	}
+	if (Object.keys(provenance).length === 0) return;
+
+	const [row] = await db
+		.select({ metadata: sessions.metadata })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (!row) return;
+
+	const existing = (row.metadata as Record<string, unknown> | null) ?? {};
+	let changed = false;
+	const merged: Record<string, unknown> = { ...existing };
+	for (const [k, v] of Object.entries(provenance)) {
+		if (existing[k] === undefined) {
+			merged[k] = v;
+			changed = true;
+		}
+	}
+	if (!changed) return;
+
+	await db.update(sessions).set({ metadata: merged }).where(eq(sessions.sessionId, sessionId));
+}
 
 function nowIso() {
 	return new Date().toISOString();
@@ -169,6 +240,9 @@ export async function associateObservedSession(input: {
 		supervisorId: resolution.resolvedSupervisorId,
 		correlationSource: "session_id",
 	});
+
+	await applyLaunchProvenanceToSession(input.sessionId, resolution.launchRequest.metadata);
+	await applyDesiredDisplayName(input.sessionId, resolution.launchRequest);
 
 	return markLaunchRunning(resolution.launchRequest.id);
 }

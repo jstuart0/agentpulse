@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { type projects, sessions } from "../db/schema.js";
+import { queueCleanupWorkArea } from "../services/control-actions.js";
 import {
 	createProject,
 	deleteProject,
@@ -11,6 +12,7 @@ import {
 	updateProject,
 } from "../services/projects/projects-service.js";
 import { normalizeCwd } from "../services/projects/resolver.js";
+import { listSupervisors } from "../services/supervisor-registry.js";
 
 const projectsRouter = new Hono();
 projectsRouter.use("*", requireAuth());
@@ -189,6 +191,55 @@ projectsRouter.delete("/projects/:id", async (c) => {
 	const deleted = await deleteProject(id);
 	if (!deleted) return c.json({ error: "Project not found" }, 404);
 	return c.json({ ok: true });
+});
+
+// POST /projects/:id/cleanup-workarea
+//
+// Defense-in-depth gate for v1 (per §10.7 + §11.4): project must carry both
+// `scratch` and `ai-initiated` tags before we'll queue an `rm -rf`. The
+// supervisor performs another trusted-roots / symlink check on receipt — this
+// route is the policy gate, the supervisor is the safety gate. Cascade
+// deletion of the project row + its sessions runs in
+// updateControlAction once the supervisor reports success.
+projectsRouter.post("/projects/:id/cleanup-workarea", async (c) => {
+	const id = c.req.param("id");
+	const project = await getProject(id);
+	if (!project) return c.json({ error: "Project not found" }, 404);
+
+	const tags = project.tags ?? [];
+	if (!tags.includes("scratch")) {
+		return c.json({ error: "Cleanup is only supported for scratch projects" }, 400);
+	}
+	if (!tags.includes("ai-initiated")) {
+		return c.json({ error: "Cleanup is only supported for AI-initiated scratch projects" }, 400);
+	}
+
+	const supervisors = await listSupervisors();
+	const target = supervisors.find(
+		(s) =>
+			s.status === "connected" && (s.capabilities.features ?? []).includes("can_cleanup_workarea"),
+	);
+	if (!target) {
+		return c.json({ error: "No connected supervisor advertises can_cleanup_workarea" }, 409);
+	}
+
+	const sessionRows = await db
+		.select({ id: sessions.id })
+		.from(sessions)
+		.where(eq(sessions.projectId, id));
+
+	const action = await queueCleanupWorkArea({
+		projectId: id,
+		cwd: project.cwd,
+		targetSupervisorId: target.id,
+	});
+
+	return c.json({
+		action,
+		queued: true,
+		sessionCount: sessionRows.length,
+		targetSupervisorId: target.id,
+	});
 });
 
 export { projectsRouter };

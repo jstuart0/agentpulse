@@ -1,3 +1,4 @@
+import { Wand2 } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Session } from "../../shared/types.js";
@@ -29,6 +30,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	const projectName = extractProjectName(session.cwd);
 	const name = session.displayName || session.sessionId?.slice(0, 8) || "session";
 	const linkedProject = useProjectsStore((s) => s.getById(session.projectId));
+	const isScratch = (linkedProject?.tags ?? []).includes("scratch");
 	const isInactive =
 		session.status === "completed" || session.status === "archived" || session.status === "failed";
 	const modeStyle = getSessionMode(session);
@@ -83,7 +85,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 			}
 			className={`group relative cursor-pointer overflow-hidden rounded-lg border bg-card p-3 md:p-4 pl-4 md:pl-5 transition-all hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5 ${
 				session.isPinned ? "border-amber-500/30 bg-amber-500/[0.02]" : "border-border"
-			}`}
+			} ${isScratch ? "border-dashed" : ""}`}
 		>
 			{/* Mode accent bar */}
 			<div
@@ -109,7 +111,17 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 							className="text-xs font-mono font-bold bg-background border border-primary/30 rounded px-2 py-0.5 w-32 focus:outline-none focus:ring-1 focus:ring-primary"
 						/>
 					) : (
-						<span className="text-xs font-mono font-bold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5 truncate max-w-[10rem] md:max-w-none">
+						<span
+							className="text-xs font-mono font-bold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5 truncate max-w-[10rem] md:max-w-none inline-flex items-center gap-1"
+							title={
+								session.metadata?.aiInitiated === true
+									? "Launched from Ask — open conversation"
+									: undefined
+							}
+						>
+							{session.metadata?.aiInitiated === true && (
+								<Wand2 className="w-3 h-3 flex-shrink-0" aria-label="Launched from Ask" />
+							)}
 							{name}
 						</span>
 					)}
@@ -256,6 +268,14 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 					{linkedProject && (
 						<span className="flex-shrink-0 text-[10px] font-medium text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-1.5 py-0">
 							{linkedProject.name}
+						</span>
+					)}
+					{isScratch && (
+						<span
+							title="Scratch workspace — created by AgentPulse for an Ask task"
+							className="flex-shrink-0 text-[10px] font-medium text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0"
+						>
+							scratch
 						</span>
 					)}
 				</div>

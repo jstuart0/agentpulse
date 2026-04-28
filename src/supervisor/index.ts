@@ -18,7 +18,9 @@ import {
 	reconcileManagedCodexTitles,
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
+import { CleanupError, executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { startCodexObserver } from "./services/codex-observer.js";
+import { PrelaunchError, executePrelaunchActions } from "./services/prelaunch-actions.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -55,7 +57,7 @@ async function main() {
 			version: config.version,
 			trustedRoots: config.trustedRoots,
 			capabilities: config.capabilities,
-			capabilitySchemaVersion: 1,
+			capabilitySchemaVersion: 3,
 			configSchemaVersion: 1,
 		}),
 	})) as {
@@ -101,6 +103,30 @@ async function main() {
 		Math.max(10_000, Math.floor(registration.heartbeatIntervalMs / 2)),
 	).unref();
 
+	async function runPrelaunchActionsForLaunch(launch: LaunchRequest): Promise<boolean> {
+		const actions = launch.launchSpec.prelaunchActions;
+		if (!actions || actions.length === 0) return true;
+		try {
+			await executePrelaunchActions(actions, {
+				trustedRoots: config.trustedRoots,
+				logProgress: (msg) => console.log(`[prelaunch] ${msg}`),
+				logWarning: (msg) => console.warn(msg),
+			});
+			return true;
+		} catch (error) {
+			const detail = error instanceof PrelaunchError ? error.toJSON() : null;
+			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
+				method: "POST",
+				body: JSON.stringify({
+					status: "failed",
+					error: detail?.message ?? (error instanceof Error ? error.message : "Prelaunch failed"),
+					providerLaunchMetadata: detail ? { prelaunchError: detail } : null,
+				}),
+			});
+			return false;
+		}
+	}
+
 	async function dispatchLaunch(launch: LaunchRequest) {
 		if (launch.agentType === "codex_cli" && launch.requestedLaunchMode === "managed_codex") {
 			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
@@ -109,6 +135,8 @@ async function main() {
 					status: "launching",
 				}),
 			});
+
+			if (!(await runPrelaunchActionsForLaunch(launch))) return;
 
 			try {
 				const result = await launchManagedCodexRequest(launch, {
@@ -165,6 +193,8 @@ async function main() {
 				status: "launching",
 			}),
 		});
+
+		if (!(await runPrelaunchActionsForLaunch(launch))) return;
 
 		try {
 			const claudeCallbacks = {
@@ -450,6 +480,50 @@ async function main() {
 							body: JSON.stringify({
 								status: "failed",
 								error: error instanceof Error ? error.message : "Failed to execute prompt action",
+							}),
+						},
+					);
+				}
+				return;
+			}
+
+			if (result.action.actionType === "cleanup_workarea") {
+				const metadata = (result.action.metadata ?? {}) as Record<string, unknown>;
+				const cwd = typeof metadata.cwd === "string" ? metadata.cwd : "";
+				try {
+					if (!cwd) throw new Error("cleanup_workarea action is missing cwd metadata.");
+					const cleanupResult = await executeCleanupWorkArea({
+						cwd,
+						trustedRoots: config.trustedRoots,
+						logProgress: (msg) => console.log(`[cleanup] ${msg}`),
+					});
+					await request(
+						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
+						{
+							method: "POST",
+							body: JSON.stringify({
+								status: "succeeded",
+								metadata: {
+									...(metadata ?? {}),
+									cleanup: {
+										removed: cleanupResult.removed,
+										resolvedPath: cleanupResult.resolvedPath,
+									},
+								},
+							}),
+						},
+					);
+				} catch (error) {
+					const detail = error instanceof CleanupError ? error.toJSON() : null;
+					await request(
+						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
+						{
+							method: "POST",
+							body: JSON.stringify({
+								status: "failed",
+								error:
+									detail?.message ?? (error instanceof Error ? error.message : "Cleanup failed"),
+								metadata: detail ? { ...(metadata ?? {}), cleanupError: detail } : (metadata ?? {}),
 							}),
 						},
 					);

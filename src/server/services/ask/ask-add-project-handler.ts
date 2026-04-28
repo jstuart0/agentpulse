@@ -319,6 +319,10 @@ export async function handleAddProjectContinuation(
 
 	const draft = await getOpenDraftForThread(threadId);
 	if (!draft || draft.status !== "drafting") return null;
+	// A launch_disambiguation draft must not be parsed by the project-field
+	// parsers — return null so the caller can route to the disambiguation
+	// handler instead.
+	if (draft.kind !== "add_project") return null;
 
 	const now = sqlNow();
 

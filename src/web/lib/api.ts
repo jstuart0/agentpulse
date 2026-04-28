@@ -350,6 +350,43 @@ export const api = {
 			body: JSON.stringify({ key, value }),
 		}),
 
+	getWorkspaceSettings: () =>
+		request<{
+			workspace: { defaultRoot: string; templateClaudeMd: string; gitInit: boolean };
+			gitClone: {
+				allowSshUrls: boolean;
+				allowLocalUrls: boolean;
+				defaultDepth: number | null;
+				timeoutSeconds: number;
+			};
+		}>("/settings/workspace"),
+
+	saveWorkspaceSettings: (update: {
+		workspace?: {
+			defaultRoot?: string;
+			templateClaudeMd?: string;
+			gitInit?: boolean;
+		};
+		gitClone?: {
+			allowSshUrls?: boolean;
+			allowLocalUrls?: boolean;
+			defaultDepth?: number | null;
+			timeoutSeconds?: number;
+		};
+	}) =>
+		request<{
+			workspace: { defaultRoot: string; templateClaudeMd: string; gitInit: boolean };
+			gitClone: {
+				allowSshUrls: boolean;
+				allowLocalUrls: boolean;
+				defaultDepth: number | null;
+				timeoutSeconds: number;
+			};
+		}>("/settings/workspace", {
+			method: "PUT",
+			body: JSON.stringify(update),
+		}),
+
 	getApiKeys: () =>
 		request<{
 			keys: Array<{
@@ -720,6 +757,15 @@ export const api = {
 		}),
 	getProjectSessions: (id: string) =>
 		request<{ sessions: Session[]; total: number }>(`/projects/${id}/sessions`),
+	cleanupWorkarea: (id: string) =>
+		request<{
+			queued: true;
+			sessionCount: number;
+			targetSupervisorId: string;
+			action: { id: string; actionType: string; status: string };
+		}>(`/projects/${id}/cleanup-workarea`, {
+			method: "POST",
+		}),
 };
 
 export interface TelegramBotInfo {

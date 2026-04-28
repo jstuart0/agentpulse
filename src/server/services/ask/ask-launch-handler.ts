@@ -1,4 +1,12 @@
-import type { AgentType, LaunchMode, SessionTemplateInput } from "../../../shared/types.js";
+import { and, eq, gt } from "drizzle-orm";
+import type {
+	AgentType,
+	LaunchMode,
+	PrelaunchAction,
+	SessionTemplateInput,
+} from "../../../shared/types.js";
+import { db } from "../../db/client.js";
+import { sessions } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import {
@@ -6,11 +14,68 @@ import {
 	pickFirstCapableSupervisor,
 	validateAgainstSupervisor,
 } from "../launch-compatibility.js";
+import { randomSlugSuffix, slugifyTaskName } from "../name-generator.js";
 import { getProjectByName, listProjects } from "../projects/projects-service.js";
 import { listSupervisors } from "../supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "../template-preview.js";
-import type { LaunchIntent } from "./launch-intent-detector.js";
+import type { LaunchIntent, TaskBrief } from "./launch-intent-detector.js";
 import { sendTelegramActionRequest } from "./telegram-helpers.js";
+
+/**
+ * Resolve a unique-within-project display name from the slug. If another
+ * session in the same project picked the same slug in the last 7 days,
+ * append a 4-char random suffix so the dashboard isn't ambiguous.
+ */
+async function ensureUniqueDisplayName(slug: string, projectId: string): Promise<string> {
+	const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+	const [conflict] = await db
+		.select({ id: sessions.id })
+		.from(sessions)
+		.where(
+			and(
+				eq(sessions.projectId, projectId),
+				eq(sessions.displayName, slug),
+				gt(sessions.startedAt, cutoff),
+			),
+		)
+		.limit(1);
+	if (!conflict) return slug;
+	return `${slug}-${randomSlugSuffix()}`;
+}
+
+const READ_CLAUDE_MD_PREFIX = "Read CLAUDE.md if present in this directory before starting.";
+
+/**
+ * Render the launched session's initial prompt. Prefer the structured
+ * taskBrief when the classifier emitted one; otherwise fall back to the
+ * free-text taskHint. Returns "" when neither is present so the existing
+ * "no prompt" launch path stays unchanged.
+ */
+export function formatTaskPrompt(
+	taskBrief: TaskBrief | undefined,
+	taskHint: string | undefined,
+): string {
+	if (taskBrief) {
+		const lines: string[] = [];
+		lines.push(READ_CLAUDE_MD_PREFIX);
+		lines.push("");
+		lines.push(`Task: ${taskBrief.summary}`);
+		if (taskBrief.outputPath) {
+			lines.push(`- Place the deliverable under \`${taskBrief.outputPath}\` if relevant.`);
+		}
+		if (taskBrief.format) {
+			lines.push(`- Use ${taskBrief.format} format.`);
+		}
+		lines.push("- Follow project conventions (see CLAUDE.md / existing files for examples).");
+		lines.push("");
+		lines.push("Report when done.");
+		return lines.join("\n");
+	}
+	if (taskHint && taskHint.length > 0) {
+		return `${READ_CLAUDE_MD_PREFIX}\n\n${taskHint}`;
+	}
+	return "";
+}
 
 export interface HandleAskLaunchIntentArgs {
 	intent: Extract<LaunchIntent, { kind: "launch" }>;
@@ -18,6 +83,14 @@ export interface HandleAskLaunchIntentArgs {
 	threadId: string;
 	/** Raw Telegram chat id (string), only present when origin="telegram". */
 	telegramChatId?: string | null;
+	/**
+	 * Slice 5d: prelaunch actions that the supervisor must run before the
+	 * agent invocation. When supplied, supervisor selection filters to hosts
+	 * advertising the matching capability flags (bob §10.2). The actions are
+	 * attached to the LaunchSpec so they survive the action_request →
+	 * launch_request handoff.
+	 */
+	prelaunchActions?: PrelaunchAction[];
 }
 
 export interface HandleAskLaunchIntentResult {
@@ -28,7 +101,7 @@ export interface HandleAskLaunchIntentResult {
 export async function handleAskLaunchIntent(
 	args: HandleAskLaunchIntentArgs,
 ): Promise<HandleAskLaunchIntentResult> {
-	const { intent, origin, threadId, telegramChatId } = args;
+	const { intent, origin, threadId, telegramChatId, prelaunchActions } = args;
 
 	// === Step 1: Resolve project ===
 	const project = await getProjectByName(intent.projectName);
@@ -54,7 +127,7 @@ export async function handleAskLaunchIntent(
 		agentType,
 		cwd: project.cwd,
 		model: project.defaultModel ?? undefined,
-		taskPrompt: intent.taskHint ?? "",
+		taskPrompt: formatTaskPrompt(intent.taskBrief, intent.taskHint),
 		baseInstructions: "",
 		env: {},
 		tags: ["ai-initiated", `project:${project.name}`],
@@ -124,7 +197,12 @@ export async function handleAskLaunchIntent(
 		}
 	}
 
-	const supervisor = pickFirstCapableSupervisor(template, launchMode, connectedSupervisors);
+	const supervisor = pickFirstCapableSupervisor(
+		template,
+		launchMode,
+		connectedSupervisors,
+		prelaunchActions,
+	);
 	if (!supervisor) {
 		const capabilityErrors: string[] = [];
 		for (const s of connectedSupervisors) {
@@ -139,7 +217,7 @@ export async function handleAskLaunchIntent(
 		};
 	}
 
-	const launchSpec = buildLaunchSpec(template, launchMode, supervisor);
+	const launchSpec = buildLaunchSpec(template, launchMode, supervisor, prelaunchActions);
 
 	// === Step 4: Resolve channel UUID for Telegram origin ===
 	let channelId: string | null = null;
@@ -147,6 +225,17 @@ export async function handleAskLaunchIntent(
 		const channel = await findActiveChannelByChatId(telegramChatId);
 		channelId = channel?.id ?? null;
 	}
+
+	// Slice 3: derive a task-flavored display name from the classifier output
+	// (or taskBrief / taskHint as fallbacks) and disambiguate against recent
+	// sessions in the same project. Stays undefined when nothing usable
+	// survives slugification — callers fall back to generateSessionName().
+	const displayNameCandidate =
+		slugifyTaskName(intent.displayName ?? "") ||
+		slugifyTaskName(intent.taskBrief?.summary ?? intent.taskHint ?? "");
+	const desiredDisplayName = displayNameCandidate
+		? await ensureUniqueDisplayName(displayNameCandidate, project.id)
+		: undefined;
 
 	// === Step 5: Create action request ===
 	const question = `Launch ${agentType} (${launchMode}) for **${project.name}** at \`${project.cwd}\`?${intent.taskHint ? `\nTask: ${intent.taskHint}` : ""}`;
@@ -164,6 +253,9 @@ export async function handleAskLaunchIntent(
 			validatedSupervisorId: supervisor.id,
 			projectId: project.id,
 			projectName: project.name,
+			aiInitiated: true,
+			askThreadId: threadId,
+			desiredDisplayName,
 		},
 	});
 

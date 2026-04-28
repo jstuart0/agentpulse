@@ -610,6 +610,19 @@ export function initializeDatabase() {
 		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_cents INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_date TEXT",
 		"ALTER TABLE project_alert_rules ADD COLUMN last_evaluated_event_id INTEGER NOT NULL DEFAULT 0",
+		// Slice 2 (AI task-initiated launches): provenance JSON copied into
+		// sessions.metadata at correlation time. Keeps the launch-spec contract
+		// clean while letting the executor stamp aiInitiated/askThreadId hints.
+		"ALTER TABLE launch_requests ADD COLUMN metadata TEXT",
+		// Slice 3 (AI task-initiated launches): operator-supplied display-name
+		// override applied at correlation time when the auto-generated
+		// adjective-noun is still in place.
+		"ALTER TABLE launch_requests ADD COLUMN desired_display_name TEXT",
+		// Slice 4 (AI task-initiated launches): pending-draft kind discriminator.
+		// Default keeps existing rows on the add-project flow; new value
+		// "launch_disambiguation" is used when Ask is waiting for the user to
+		// pick a project for a launch-flavored message.
+		"ALTER TABLE ai_pending_project_drafts ADD COLUMN kind TEXT NOT NULL DEFAULT 'add_project'",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

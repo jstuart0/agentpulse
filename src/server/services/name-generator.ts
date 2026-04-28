@@ -132,3 +132,33 @@ export function generateSessionName(): string {
 	const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
 	return `${adj}-${noun}`;
 }
+
+const MAX_SLUG_WORDS = 4;
+const MAX_SLUG_LENGTH = 40;
+
+/**
+ * Convert a free-form task description into a kebab-case slug suitable for
+ * use as a session display name. Returns "" if no usable characters remain.
+ */
+export function slugifyTaskName(input: string): string {
+	if (typeof input !== "string") return "";
+	const lowered = input.toLowerCase();
+	const words = lowered
+		.split(/[^a-z0-9]+/)
+		.filter((w) => w.length > 0)
+		.slice(0, MAX_SLUG_WORDS);
+	if (words.length === 0) return "";
+	let slug = words.join("-");
+	if (slug.length > MAX_SLUG_LENGTH) slug = slug.slice(0, MAX_SLUG_LENGTH);
+	slug = slug.replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+	return slug;
+}
+
+/**
+ * Cheap collision suffix — 4 chars from base36. Visible to the user
+ * only when two AI-initiated launches in the same project pick the same
+ * slug within the collision window.
+ */
+export function randomSlugSuffix(): string {
+	return Math.random().toString(36).slice(2, 6).padEnd(4, "0");
+}

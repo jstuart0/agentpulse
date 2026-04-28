@@ -54,7 +54,16 @@ function buildDefaultConfig(): SupervisorConfig {
 			launchModes: ["headless", "managed_codex"],
 			os: currentOs(),
 			terminalSupport: [],
-			features: ["can_write_agents_md", "can_write_claude_md", "managed_codex", "headless_claude"],
+			features: [
+				"can_write_agents_md",
+				"can_write_claude_md",
+				"can_run_prelaunch_actions",
+				"can_scaffold_workarea",
+				"can_clone_repo",
+				"can_cleanup_workarea",
+				"managed_codex",
+				"headless_claude",
+			],
 		},
 	};
 }
@@ -146,6 +155,7 @@ function detectInteractiveTerminalControl(os: SupervisorRegistrationInput["capab
 function withExecutableCapabilities(config: SupervisorConfig): SupervisorConfig {
 	const claude = resolveExecutable(config.claudeCommand, "claude");
 	const codex = resolveExecutable(config.codexCommand, "codex");
+	const git = resolveExecutable(undefined, "git");
 	const terminalSupport = detectTerminalSupport(config);
 	const interactiveTerminalControl = detectInteractiveTerminalControl(currentOs());
 	const launchModes: SupervisorRegistrationInput["capabilities"]["launchModes"] = ["headless"];
@@ -160,7 +170,10 @@ function withExecutableCapabilities(config: SupervisorConfig): SupervisorConfig 
 			features: [
 				"can_write_agents_md",
 				"can_write_claude_md",
+				"can_run_prelaunch_actions",
+				"can_cleanup_workarea",
 				"headless_claude",
+				...(git.resolvedPath ? ["can_scaffold_workarea", "can_clone_repo"] : []),
 				...(terminalSupport.length > 0 ? ["interactive_terminal"] : []),
 				...(interactiveTerminalControl.available ? ["interactive_terminal_control"] : []),
 				...(codex.resolvedPath ? ["managed_codex"] : []),

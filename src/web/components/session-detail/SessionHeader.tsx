@@ -1,5 +1,6 @@
+import { Wand2 } from "lucide-react";
 import { useState } from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import { formatDuration } from "../../lib/utils.js";
 import { useLabsStore } from "../../stores/labs-store.js";
@@ -133,6 +134,16 @@ export function SessionHeader(props: SessionHeaderProps) {
 						>
 							{linkedProject.name}
 						</NavLink>
+					)}
+					{typeof session.metadata?.askThreadId === "string" && (
+						<Link
+							to={`/ask?thread=${encodeURIComponent(session.metadata.askThreadId)}`}
+							className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+							title="Open the Ask conversation that launched this session"
+						>
+							<Wand2 className="w-3 h-3" aria-hidden="true" />
+							<span>from Ask</span>
+						</Link>
 					)}
 				</div>
 

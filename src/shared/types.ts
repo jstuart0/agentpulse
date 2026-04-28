@@ -8,7 +8,14 @@ export type SandboxMode = "default" | "workspace-write" | "read-only" | "danger-
 export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
 export type ProviderSyncState = "pending" | "synced" | "failed";
 export type LaunchRoutingPolicy = "manual_target" | "first_capable_host";
-export type ControlActionType = "stop" | "retry" | "fork" | "resume" | "rename" | "prompt";
+export type ControlActionType =
+	| "stop"
+	| "retry"
+	| "fork"
+	| "resume"
+	| "rename"
+	| "prompt"
+	| "cleanup_workarea";
 export type ControlActionStatus = "queued" | "running" | "succeeded" | "failed";
 export type EventSource =
 	| "observed_hook"
@@ -319,6 +326,28 @@ export interface SessionTemplateInput {
 	isFavorite?: boolean;
 }
 
+// Discriminated union. `prelaunchActions` is invariably a single-element
+// array today (one scaffold OR one clone, never chained — see plan §12.9);
+// the array shape is kept for forward compatibility with future kinds
+// (`create_worktree`, `seed_secrets`).
+export type PrelaunchAction =
+	| {
+			kind: "scaffold_workarea";
+			path: string;
+			gitInit?: boolean;
+			seedClaudeMd?: { content: string; path: string; sha256: string };
+	  }
+	| {
+			// `gitInit` is intentionally absent — clone provides .git by definition.
+			kind: "clone_repo";
+			url: string;
+			intoPath: string;
+			branch?: string;
+			depth?: number;
+			timeoutSeconds?: number;
+			seedClaudeMd?: { content: string; path: string; sha256: string };
+	  };
+
 export interface LaunchSpec {
 	version: 1;
 	launchCorrelationId: string;
@@ -337,6 +366,7 @@ export interface LaunchSpec {
 		cliArgs: string[];
 		instructionsFile: "CLAUDE.md" | "AGENTS.md";
 	};
+	prelaunchActions?: PrelaunchAction[];
 }
 
 export interface ProviderLaunchGuidance {
@@ -459,6 +489,8 @@ export interface LaunchRequest {
 	pid: number | null;
 	providerLaunchMetadata: Record<string, unknown> | null;
 	retryOfLaunchRequestId: string | null;
+	metadata: Record<string, unknown> | null;
+	desiredDisplayName: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -542,4 +574,6 @@ export interface LaunchRequestInput {
 	routingPolicy?: LaunchRoutingPolicy | null;
 	template: SessionTemplateInput;
 	launchSpec: LaunchSpec;
+	metadata?: Record<string, unknown> | null;
+	desiredDisplayName?: string | null;
 }

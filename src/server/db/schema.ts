@@ -235,6 +235,15 @@ export const launchRequests = sqliteTable("launch_requests", {
 	>(),
 	retryOfLaunchRequestId: text("retry_of_launch_request_id"),
 	parentSessionId: text("parent_session_id"),
+	// Free-form provenance the launch executor stamps onto the request and
+	// the correlation step copies into sessions.metadata. Used so the dashboard
+	// can identify AI-initiated sessions and link back to the originating
+	// Ask thread without adding more columns to sessions.
+	metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+	// Slice 3: when set, the correlation step rewrites sessions.displayName from
+	// the auto-generated adjective-noun to this value (if the session has not
+	// been manually renamed since first ingest). Stays null for non-Ask launches.
+	desiredDisplayName: text("desired_display_name"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
@@ -650,9 +659,84 @@ export interface NextQuestion {
 	retryCount: number;
 }
 
-// aiPendingProjectDrafts — in-flight multi-turn project creation state.
-// One open draft per ask_thread_id; a new "add project" intent supersedes
-// any existing open draft for the same thread.
+// LaunchDisambiguationDraftFields — fields stashed when Ask receives a
+// launch-flavored message that didn't carry a project name. We keep the
+// classifier's full carry-forward state so reconstructing a LaunchIntent
+// after the user picks a project doesn't require re-running detection.
+export interface ProjectChoiceSnapshot {
+	id: string;
+	name: string;
+	cwd: string;
+}
+// Workspace-scaffold pending state — populated when the user types `new`
+// and we've computed the proposed path + prelaunchActions but the user
+// hasn't yet confirmed. Slice 5d of the AI task-initiated launches plan
+// (§10.8 / §11.1).
+export interface PendingWorkspaceScaffold {
+	taskSlug: string;
+	resolvedPath: string;
+	// JSON-stringified PrelaunchAction[] would force consumers to re-parse;
+	// store the array directly. The values match shared/types.ts PrelaunchAction.
+	actions: Array<{
+		kind: "scaffold_workarea";
+		path: string;
+		gitInit?: boolean;
+		seedClaudeMd?: { content: string; path: string; sha256: string };
+	}>;
+	// Optional supervisor host name for "I'll create on macbook" attribution.
+	suggestedHost?: string;
+}
+
+// Workspace-clone pending state — populated when the classifier emitted a
+// `cloneSpec` and we've computed the proposed path + prelaunchActions but
+// the user hasn't yet confirmed. Slice 6d of the AI task-initiated
+// launches plan (§12.10 / §13). Mutually exclusive with `pendingScaffold`
+// (a draft has at most one of either).
+export interface PendingWorkspaceClone {
+	taskSlug: string;
+	resolvedPath: string;
+	url: string;
+	branch?: string;
+	depth?: number;
+	timeoutSeconds: number;
+	actions: Array<{
+		kind: "clone_repo";
+		url: string;
+		intoPath: string;
+		branch?: string;
+		depth?: number;
+		timeoutSeconds?: number;
+		seedClaudeMd?: { content: string; path: string; sha256: string };
+	}>;
+	suggestedHost?: string;
+}
+
+export interface LaunchDisambiguationDraftFields {
+	originalMessage: string;
+	taskHint?: string;
+	taskBrief?: { summary: string; outputPath?: string; format?: string };
+	displayName?: string;
+	agentType?: string;
+	mode?: string;
+	proposedProjectChoices: ProjectChoiceSnapshot[];
+	// Slice 5d: when the user has typed `new` and we've shown the
+	// confirmation card, the resolved path + actions are stored here while
+	// the draft awaits a confirm/cancel/custom-path reply.
+	pendingScaffold?: PendingWorkspaceScaffold;
+	// Slice 6d: when the classifier emitted a cloneSpec and we've shown
+	// the cloner card, the resolved URL/path/actions are stored here while
+	// the draft awaits a confirm/cancel/custom-path/edit-options reply.
+	pendingClone?: PendingWorkspaceClone;
+}
+
+// aiPendingProjectDrafts — in-flight multi-turn state for both add-project
+// and launch-disambiguation flows. One open draft per ask_thread_id; a new
+// intent supersedes any existing open draft for the same thread regardless
+// of kind.
+//
+// kind discriminator:
+//   "add_project"            → draftFields is ProjectDraftFields
+//   "launch_disambiguation"  → draftFields is LaunchDisambiguationDraftFields
 //
 // Status lifecycle:
 //   drafting         → pending_approval (all required fields filled)
@@ -670,7 +754,11 @@ export const aiPendingProjectDrafts = sqliteTable("ai_pending_project_drafts", {
 	// ^ notification_channels.id UUID, only set for telegram origin
 	origin: text("origin").notNull(),
 	// ^ "web" | "telegram"
-	draftFields: text("draft_fields", { mode: "json" }).$type<ProjectDraftFields>().notNull(),
+	kind: text("kind").notNull().default("add_project"),
+	// ^ "add_project" | "launch_disambiguation"
+	draftFields: text("draft_fields", { mode: "json" })
+		.$type<ProjectDraftFields | LaunchDisambiguationDraftFields>()
+		.notNull(),
 	nextQuestion: text("next_question", { mode: "json" }).$type<NextQuestion>().notNull(),
 	status: text("status").notNull().default("drafting"),
 	actionRequestId: text("action_request_id"),

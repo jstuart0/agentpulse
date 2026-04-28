@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { AskProjectPicker, parseProjectPickerMeta } from "../components/AskProjectPicker.js";
+import { AskWorkspaceCloner, parseClonerMeta } from "../components/AskWorkspaceCloner.js";
+import {
+	AskWorkspaceScaffolder,
+	parseScaffolderMeta,
+} from "../components/AskWorkspaceScaffolder.js";
 import { MarkdownContent } from "../components/MarkdownContent.js";
 import {
 	type AskMessage,
@@ -103,9 +109,7 @@ export function AskPage() {
 		}
 	}
 
-	async function handleSend(e?: React.FormEvent) {
-		e?.preventDefault();
-		const text = draft.trim();
+	async function sendMessage(text: string) {
 		if (!text || sending) return;
 		setSending(true);
 		setError(null);
@@ -134,7 +138,6 @@ export function AskPage() {
 			createdAt: new Date().toISOString(),
 		};
 		setMessages((prev) => [...prev, optimisticUser, optimisticAssistant]);
-		setDraft("");
 
 		try {
 			let res: Response;
@@ -217,6 +220,14 @@ export function AskPage() {
 		}
 	}
 
+	async function handleSend(e?: React.FormEvent) {
+		e?.preventDefault();
+		const text = draft.trim();
+		if (!text) return;
+		setDraft("");
+		await sendMessage(text);
+	}
+
 	return (
 		<div className="flex h-full min-h-0">
 			{/* Thread sidebar */}
@@ -294,8 +305,16 @@ export function AskPage() {
 					{loadingMessages && (
 						<div className="text-xs text-muted-foreground">Loading messages…</div>
 					)}
-					{messages.map((m) => (
-						<MessageBubble key={m.id} msg={m} />
+					{messages.map((m, i) => (
+						<MessageBubble
+							key={m.id}
+							msg={m}
+							isLast={i === messages.length - 1}
+							sending={sending}
+							onPickerSelect={(reply) => {
+								void sendMessage(reply);
+							}}
+						/>
 					))}
 					{error && (
 						<div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-200">
@@ -377,8 +396,38 @@ function WelcomeHints({ onPick }: { onPick: (q: string) => void }) {
 	);
 }
 
-function MessageBubble({ msg }: { msg: AskMessage }) {
+function MessageBubble({
+	msg,
+	isLast,
+	sending,
+	onPickerSelect,
+}: {
+	msg: AskMessage;
+	isLast: boolean;
+	sending: boolean;
+	onPickerSelect: (reply: string) => void;
+}) {
 	const isUser = msg.role === "user";
+	// Pull the project-picker payload (if any) out of the assistant
+	// content so we can render the structured component AND keep the
+	// Telegram-readable plain text as the visible body. The same fenced
+	// block carries kind:"project_picker", kind:"workspace_scaffold"
+	// (Slice 5d), or kind:"workspace_clone" (Slice 6d) — discriminated by
+	// the parsers, which each filter on the kind field.
+	const pickerData = !isUser && msg.content ? parseProjectPickerMeta(msg.content) : null;
+	const scaffolderData =
+		!isUser && msg.content && !pickerData ? parseScaffolderMeta(msg.content) : null;
+	const clonerData =
+		!isUser && msg.content && !pickerData && !scaffolderData ? parseClonerMeta(msg.content) : null;
+	const visibleText =
+		pickerData?.visibleText ??
+		scaffolderData?.visibleText ??
+		clonerData?.visibleText ??
+		msg.content;
+	// The picker is interactive only on the last message and only while
+	// no reply is in flight — older picker messages stay visible but
+	// disabled so the transcript still reads naturally.
+	const interactiveDisabled = !isLast || sending;
 	return (
 		<div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
 			<div
@@ -394,16 +443,45 @@ function MessageBubble({ msg }: { msg: AskMessage }) {
 			>
 				{isUser ? (
 					<div>{msg.content}</div>
-				) : msg.content ? (
+				) : visibleText ? (
 					// Render assistant replies as markdown — Qwen/Claude/etc.
 					// emit headers, lists, inline code, fenced blocks, etc. that
 					// would otherwise show as raw syntax in a plain <div>.
-					<MarkdownContent content={msg.content} className="text-xs" compact />
+					<MarkdownContent content={visibleText} className="text-xs" compact />
 				) : (
 					<span className="inline-flex items-center gap-2 text-muted-foreground">
 						<span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
 						Thinking…
 					</span>
+				)}
+				{pickerData && (
+					<AskProjectPicker
+						meta={pickerData.meta}
+						disabled={interactiveDisabled}
+						onSelect={onPickerSelect}
+					/>
+				)}
+				{scaffolderData && (
+					<AskWorkspaceScaffolder
+						meta={scaffolderData.meta}
+						disabled={interactiveDisabled}
+						onConfirm={() => onPickerSelect("yes")}
+						onCancel={() => onPickerSelect("cancel")}
+						onCustomPath={(p) => onPickerSelect(p)}
+					/>
+				)}
+				{clonerData && (
+					<AskWorkspaceCloner
+						meta={clonerData.meta}
+						disabled={interactiveDisabled}
+						onConfirm={() => onPickerSelect("yes")}
+						onCancel={() => onPickerSelect("cancel")}
+						onCustomPath={(p) => onPickerSelect(p)}
+						onEditOptions={(opts) => {
+							if (opts.branch) onPickerSelect(`branch ${opts.branch}`);
+							else if (opts.depth !== undefined) onPickerSelect(`depth ${opts.depth}`);
+						}}
+					/>
 				)}
 				{msg.errorMessage && (
 					<div className="mt-1 text-[10px] text-red-300/80">Details: {msg.errorMessage}</div>

@@ -51,6 +51,16 @@ export interface ActionRequestPayload {
 	validatedSupervisorId: string;
 	projectId: string;
 	projectName?: string;
+	// Provenance hints stamped by handleAskLaunchIntent and propagated into
+	// launch_requests.metadata so the correlation step can copy them into
+	// sessions.metadata. Absent for non-Ask launch sources.
+	aiInitiated?: boolean;
+	askThreadId?: string;
+	// Slice 3: task-flavored displayName candidate. Persisted onto
+	// launch_requests.desired_display_name and applied to sessions.displayName
+	// at correlation time when the auto-generated adjective-noun is still in
+	// place. Absent for non-Ask launches or when slugification yielded nothing.
+	desiredDisplayName?: string;
 }
 
 export interface ActionRequest {
@@ -281,11 +291,21 @@ async function executeLaunchAction(
 		}
 
 		// === STEP 3: Dispatch via the existing managed-launch pipeline ===
+		const { aiInitiated, askThreadId: payloadAskThreadId, desiredDisplayName } = request.payload;
+		const launchMetadata =
+			aiInitiated || payloadAskThreadId
+				? {
+						...(aiInitiated ? { aiInitiated: true } : {}),
+						...(payloadAskThreadId ? { askThreadId: payloadAskThreadId } : {}),
+					}
+				: null;
 		const { launchRequest } = await createValidatedLaunchRequest({
 			template,
 			launchSpec: finalLaunchSpec,
 			requestedSupervisorId: executingSupervisor.id,
 			requestedLaunchMode,
+			metadata: launchMetadata,
+			desiredDisplayName: desiredDisplayName ?? null,
 		});
 
 		// === STEP 4: Mark applied ===

@@ -5,6 +5,22 @@ import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.j
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
 import type { CachedProject } from "../projects/cache.js";
 
+export interface TaskBrief {
+	summary: string;
+	outputPath?: string;
+	format?: string;
+}
+
+// Slice 6b: optional clone spec the classifier extracts when the user
+// names a repo URL ("clone github.com/foo/bar"). Advisory only; the
+// disambiguation flow (Slice 6d) revalidates against the URL policy
+// before emitting a clone_repo prelaunch action.
+export interface CloneSpec {
+	url: string;
+	branch?: string;
+	depth?: number;
+}
+
 export type LaunchIntent =
 	| { kind: "none" }
 	| { kind: "classifier_failed"; error: string }
@@ -14,56 +30,259 @@ export type LaunchIntent =
 			mode?: LaunchMode;
 			taskHint?: string;
 			agentType?: AgentType;
+			displayName?: string;
+			taskBrief?: TaskBrief;
+			cloneSpec?: CloneSpec;
+	  }
+	| {
+			kind: "launch_needs_project";
+			taskHint?: string;
+			taskBrief?: TaskBrief;
+			displayName?: string;
+			agentType?: AgentType;
+			mode?: LaunchMode;
+			cloneSpec?: CloneSpec;
 	  }
 	| {
 			kind: "add_project";
 			initialFields: Partial<ProjectDraftFields>;
 	  };
 
-const LAUNCH_VERBS = ["open", "launch", "start", "spin up", "fire up", "boot", "kick off"];
+// Broadened from the original LAUNCH_VERBS whitelist so the gate covers
+// task-flavored phrasings ("create a plan in agentpulse…", "fix the failing
+// tests…"). The classifier still decides whether the message is actually a
+// launch — this gate is just the cheap pre-filter that avoids running the
+// classifier on every project-mentioning Ask turn.
+const ACTION_VERBS = [
+	"open",
+	"launch",
+	"start",
+	"spin up",
+	"fire up",
+	"boot",
+	"kick off",
+	"create",
+	"make",
+	"write",
+	"draft",
+	"build",
+	"fix",
+	"add",
+	"remove",
+	"refactor",
+	"review",
+	"test",
+	"debug",
+	"plan",
+	"run",
+	"implement",
+	"investigate",
+	"check",
+	// Slice 6b — clone-flavored asks. "check out" overlaps with "check"
+	// already on the list; including the multi-word form is harmless and
+	// keeps the gate readable.
+	"clone",
+	"check out",
+];
 
 function escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Phrases that signal a task-flavored ask even without a project name.
+// Used by the second-pass gate so messages like "create a plan about
+// caching" can route to the launch-needs-project disambiguation flow.
+// Conservative — false negatives fall through to the regular Ask LLM.
+const TASK_FLAVOR_PHRASES = [
+	"a plan",
+	"the plan",
+	"a doc",
+	"the doc",
+	"a draft",
+	"the draft",
+	"a feature",
+	"the feature",
+	"a fix",
+	"the fix",
+	"a bug",
+	"the bug",
+	"a refactor",
+	"the refactor",
+	"the failing tests",
+	"failing tests",
+	"the tests",
+	"a script",
+	"the script",
+	"a workspace",
+	"the workspace",
+	// Slice 6b — clone-flavored phrases. The trailing slash on host names
+	// avoids false positives like "github" appearing in unrelated text.
+	"a clone of",
+	"the repo",
+	"github.com/",
+	"gitlab.com/",
+];
+
 /**
- * Pure synchronous gate: returns true only if the message contains a launch
- * verb AND a whole-word match of a known project name. This runs on every
- * Ask turn at microsecond cost — the LLM classifier is only called when this
- * gate passes.
+ * Pure synchronous gate: returns true if the message contains an action
+ * verb AND either a whole-word match of a known project name, or a
+ * task-flavor phrase that suggests the user wants to launch a session
+ * but hasn't named the project. This runs on every Ask turn at
+ * microsecond cost — the LLM classifier is only called when this gate
+ * passes.
  */
 export function gatePasses(message: string, projects: CachedProject[]): boolean {
 	const lower = message.toLowerCase();
-	const hasVerb = LAUNCH_VERBS.some((v) => lower.includes(v));
+	const hasVerb = ACTION_VERBS.some((v) => lower.includes(v));
 	if (!hasVerb) return false;
 	const hasProject = projects.some((p) =>
 		new RegExp(`\\b${escapeRegex(p.name.toLowerCase())}\\b`).test(lower),
 	);
-	return hasProject;
+	if (hasProject) return true;
+	// Second pass — verb plus a task-flavor phrase. Lets the classifier
+	// decide whether to emit launch_needs_project for the disambiguation
+	// flow when the user didn't name a project.
+	return TASK_FLAVOR_PHRASES.some((p) => lower.includes(p));
 }
 
 const INTENT_SYSTEM_PROMPT = (
 	projectNames: string[],
 ): string => `You are a launch-intent classifier for AgentPulse, a tool that manages AI coding sessions.
 
-Your job is to determine whether the user's message is requesting to launch a new coding session for a specific project.
+Your job is to determine whether the user's message is requesting to launch a new coding session, and (if so) whether they named one of the known projects.
 
 Known project names: ${projectNames.map((n) => `"${n}"`).join(", ")}
 
-Respond with a JSON object (no markdown, no backticks) in one of these two shapes:
+Respond with a JSON object (no markdown, no backticks) in one of these three shapes:
 
 If this is NOT a launch request:
 {"intent":"none"}
 
-If this IS a launch request:
-{"intent":"launch","projectName":"<exact project name from the known list>","agentType":"claude_code|codex_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>"}
+If this IS a launch request and the user named a project from the known list:
+{"intent":"launch","projectName":"<exact project name from the known list>","agentType":"claude_code|codex_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
+
+If this IS a launch-flavored request but the user did NOT name a project (e.g. "create a plan about caching strategies"):
+{"intent":"launch_needs_project","agentType":"claude_code|codex_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
 
 Rules:
-- Only use project names from the known list (case-insensitive match).
+- Only use project names from the known list (case-insensitive match) for the "launch" shape.
+- If the user mentioned no known project and the message is launch-flavored, return "launch_needs_project" so the caller can ask the user to pick a project.
+- If the message is a plain question or doesn't sound like a launch at all, return "none".
 - agentType: "claude_code" if user says "claude", "codex_cli" if user says "codex", null otherwise.
 - mode: "headless" if user says "headless", "interactive_terminal" if user explicitly asks for interactive, null otherwise (default will be applied).
 - taskHint: any task description the user gave after "to ...", "for ...", e.g. "look at the failing tests".
+- displayName: a short kebab-case slug (2-4 words, lowercase, hyphen-separated) describing the task, e.g. "plan-caching" or "fix-failing-tests". Null if you can't derive one.
+- taskBrief: structured task description. summary is required when taskBrief is present; outputPath and format are optional. Omit taskBrief entirely if you can't extract a clean summary.
+- cloneSpec: include ONLY when the user explicitly mentioned a repository URL (e.g. "clone github.com/foo/bar", "check out https://gitlab.com/x/y") or the form "<host>/<owner>/<repo>". url is required when cloneSpec is present; branch and depth are optional. Extract branch from "on branch X" / "the X branch" / "checkout X". Extract depth from "shallow clone" (depth=1), "just the latest commit" (depth=1), or "the last N commits" (depth=N). Omit cloneSpec entirely otherwise.
 - Respond ONLY with the JSON object. No explanation, no extra text.`;
+
+/**
+ * Pure: turn a parsed classifier JSON object into a LaunchIntent. Defensive
+ * — every optional field is gated on a type-narrowed shape check, mirroring
+ * the taskBrief posture from Slice 1. Extracted so the parsing rules can
+ * be tested without mocking the LLM adapter.
+ */
+export function parseLaunchIntentResponse(
+	parsed: Record<string, unknown>,
+	projects: CachedProject[],
+): LaunchIntent {
+	if (parsed.intent === "none") {
+		return { kind: "none" };
+	}
+
+	const mode =
+		parsed.mode === "headless" ||
+		parsed.mode === "interactive_terminal" ||
+		parsed.mode === "managed_codex"
+			? (parsed.mode as LaunchMode)
+			: undefined;
+
+	const agentType =
+		parsed.agentType === "claude_code" || parsed.agentType === "codex_cli"
+			? (parsed.agentType as AgentType)
+			: undefined;
+
+	const taskHint =
+		typeof parsed.taskHint === "string" && parsed.taskHint ? parsed.taskHint : undefined;
+
+	const displayName =
+		typeof parsed.displayName === "string" && parsed.displayName ? parsed.displayName : undefined;
+
+	let taskBrief: TaskBrief | undefined;
+	if (parsed.taskBrief && typeof parsed.taskBrief === "object") {
+		const tb = parsed.taskBrief as Record<string, unknown>;
+		if (typeof tb.summary === "string" && tb.summary.length > 0) {
+			taskBrief = {
+				summary: tb.summary,
+				outputPath: typeof tb.outputPath === "string" && tb.outputPath ? tb.outputPath : undefined,
+				format: typeof tb.format === "string" && tb.format ? tb.format : undefined,
+			};
+		}
+	}
+
+	let cloneSpec: CloneSpec | undefined;
+	if (parsed.cloneSpec && typeof parsed.cloneSpec === "object") {
+		const cs = parsed.cloneSpec as Record<string, unknown>;
+		// Drop the field entirely if url is missing or empty — same defensive
+		// posture as taskBrief. The disambiguation flow (Slice 6d) revalidates
+		// the URL via validateCloneUrlPolicy before any clone action emits.
+		if (typeof cs.url === "string" && cs.url.trim().length > 0) {
+			cloneSpec = {
+				url: cs.url.trim(),
+				branch:
+					typeof cs.branch === "string" && cs.branch.trim().length > 0
+						? cs.branch.trim()
+						: undefined,
+				depth:
+					typeof cs.depth === "number" && Number.isInteger(cs.depth) && cs.depth > 0
+						? cs.depth
+						: undefined,
+			};
+		}
+	}
+
+	if (parsed.intent === "launch_needs_project") {
+		return {
+			kind: "launch_needs_project",
+			mode,
+			agentType,
+			taskHint,
+			displayName,
+			taskBrief,
+			cloneSpec,
+		};
+	}
+
+	if (parsed.intent !== "launch" || typeof parsed.projectName !== "string") {
+		return { kind: "none" };
+	}
+
+	const matchedProject = projects.find(
+		(p) => p.name.toLowerCase() === (parsed.projectName as string).toLowerCase(),
+	);
+	if (!matchedProject) {
+		return {
+			kind: "launch_needs_project",
+			mode,
+			agentType,
+			taskHint,
+			displayName,
+			taskBrief,
+			cloneSpec,
+		};
+	}
+
+	return {
+		kind: "launch",
+		projectName: matchedProject.name,
+		mode,
+		taskHint,
+		agentType,
+		displayName,
+		taskBrief,
+		cloneSpec,
+	};
+}
 
 /**
  * Two-stage intent detection:
@@ -160,44 +379,7 @@ export async function detectLaunchIntent(
 			};
 		}
 
-		if (parsed.intent === "none") {
-			return { kind: "none" };
-		}
-
-		if (parsed.intent !== "launch" || typeof parsed.projectName !== "string") {
-			return { kind: "none" };
-		}
-
-		// Case-insensitive match back to known project name.
-		const matchedProject = projects.find(
-			(p) => p.name.toLowerCase() === (parsed.projectName as string).toLowerCase(),
-		);
-		if (!matchedProject) {
-			return { kind: "none" };
-		}
-
-		const mode =
-			parsed.mode === "headless" ||
-			parsed.mode === "interactive_terminal" ||
-			parsed.mode === "managed_codex"
-				? (parsed.mode as LaunchMode)
-				: undefined;
-
-		const agentType =
-			parsed.agentType === "claude_code" || parsed.agentType === "codex_cli"
-				? (parsed.agentType as AgentType)
-				: undefined;
-
-		const taskHint =
-			typeof parsed.taskHint === "string" && parsed.taskHint ? parsed.taskHint : undefined;
-
-		return {
-			kind: "launch",
-			projectName: matchedProject.name,
-			mode,
-			taskHint,
-			agentType,
-		};
+		return parseLaunchIntentResponse(parsed, projects);
 	} catch (err) {
 		return {
 			kind: "classifier_failed",
