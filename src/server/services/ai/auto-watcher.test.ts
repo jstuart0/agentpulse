@@ -4,7 +4,8 @@ import "./__test_db.js";
 const { db, initializeDatabase } = await import("../../db/client.js");
 const { llmProviders, sessions, settings, watcherConfigs } = await import("../../db/schema.js");
 const { applyAskInitiatedWatcher } = await import("./auto-watcher.js");
-const { AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY, AI_RUNTIME_ENABLED_KEY } = await import("./feature.js");
+const { AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY, AI_RUNTIME_ENABLED_KEY, invalidateAiFlagsCache } =
+	await import("./feature.js");
 const { getWatcherConfig, upsertWatcherConfig } = await import("./watcher-config-service.js");
 const { encryptSecret, credentialHint } = await import("./secrets.js");
 
@@ -17,6 +18,10 @@ beforeEach(async () => {
 	await db.delete(llmProviders).execute();
 	await db.delete(settings).execute();
 	await db.delete(sessions).execute();
+	// These tests bypass `upsertSetting` (raw inserts) so the post-write
+	// cache hook in settings-service never fires. Drop cached flags
+	// manually so each case starts from a clean read.
+	invalidateAiFlagsCache();
 });
 
 async function setRuntimeEnabled(enabled: boolean) {

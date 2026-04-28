@@ -14,7 +14,7 @@ const {
 	watcherConfigs,
 } = await import("../db/schema.js");
 const { associateObservedSession } = await import("./launch-dispatch.js");
-const { AI_RUNTIME_ENABLED_KEY } = await import("./ai/feature.js");
+const { AI_RUNTIME_ENABLED_KEY, invalidateAiFlagsCache } = await import("./ai/feature.js");
 const { encryptSecret, credentialHint } = await import("./ai/secrets.js");
 const { getWatcherConfig } = await import("./ai/watcher-config-service.js");
 
@@ -31,6 +31,9 @@ beforeEach(async () => {
 	await db.delete(llmProviders).execute();
 	await db.delete(settings).execute();
 	await db.delete(sessions).execute();
+	// Raw inserts below bypass `upsertSetting`'s post-write hook, so the AI
+	// flag cache from a prior test would otherwise bleed into this one.
+	invalidateAiFlagsCache();
 });
 
 async function mkSession(sessionId: string, metadata: Record<string, unknown> = {}) {

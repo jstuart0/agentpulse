@@ -1,5 +1,6 @@
 import { db } from "../db/client.js";
 import { settings } from "../db/schema.js";
+import { invalidateAiFlagsCache } from "./ai/feature.js";
 
 /**
  * Keys whose semantics belong to internal subsystems (AI control plane,
@@ -15,6 +16,16 @@ import { settings } from "../db/schema.js";
  */
 const PROTECTED_KEY_PREFIXES = ["ai.", "vectorSearch."] as const;
 const PROTECTED_EXACT_KEYS = new Set<string>(["telegram:credentials"]);
+
+// Cache invalidation is implemented as a post-write hook keyed on prefix.
+// Adding a new cache means adding one entry here — no churn through every
+// settings call site. The AI feature-flag cache is the only consumer today;
+// vectorSearch.* shares it because both flow through the same `isAiActive`
+// path.
+const CACHE_INVALIDATING_PREFIXES: Array<{ prefix: string; invalidate: (key: string) => void }> = [
+	{ prefix: "ai.", invalidate: (k) => invalidateAiFlagsCache(k) },
+	{ prefix: "vectorSearch.", invalidate: (k) => invalidateAiFlagsCache(k) },
+];
 
 export class ProtectedSettingError extends Error {
 	readonly key: string;
@@ -47,6 +58,10 @@ export interface UpsertSettingOptions {
  * Atomically upsert a key/value pair into the `settings` table. Used by
  * every settings-write code path so the denylist + timestamp behavior
  * lives in exactly one place.
+ *
+ * After a successful write, any cache whose key-prefix matches gets
+ * invalidated synchronously — keeps `ai.enabled`-style flips visible to
+ * the next request without waiting for the TTL.
  */
 export async function upsertSetting(
 	key: string,
@@ -64,4 +79,8 @@ export async function upsertSetting(
 			target: settings.key,
 			set: { value, updatedAt: now },
 		});
+
+	for (const { prefix, invalidate } of CACHE_INVALIDATING_PREFIXES) {
+		if (key.startsWith(prefix)) invalidate(key);
+	}
 }
