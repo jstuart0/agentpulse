@@ -4,6 +4,7 @@ import { getAdapter } from "../ai/llm/registry.js";
 import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
 import type { CachedProject } from "../projects/cache.js";
+import { matchProjectByName, normalizeProjectName } from "../projects/project-name-match.js";
 
 export interface TaskBrief {
 	summary: string;
@@ -85,7 +86,10 @@ const ACTION_VERBS = [
 	"check out",
 ];
 
-function escapeRegex(s: string): string {
+// Retained for future reuse (currently unused after the gate switched to
+// normalized substring matching). Inlining a non-exported helper is fine —
+// dead removal can come later if it stays unused.
+function _escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
@@ -135,9 +139,19 @@ export function gatePasses(message: string, projects: CachedProject[]): boolean 
 	const lower = message.toLowerCase();
 	const hasVerb = ACTION_VERBS.some((v) => lower.includes(v));
 	if (!hasVerb) return false;
-	const hasProject = projects.some((p) =>
-		new RegExp(`\\b${escapeRegex(p.name.toLowerCase())}\\b`).test(lower),
-	);
+	// Normalize the message and each project name (lowercase + strip
+	// whitespace/dashes/underscores/dots/parens) before substring matching.
+	// "create an agent pulse session" → "createanagentpulsesession", which
+	// includes the normalized "agentpulse". This intentionally trades some
+	// specificity (a project name appearing inside a longer word would also
+	// match) for the user's stated preference for intent-matching over
+	// exact spelling. The LLM classifier still decides final intent — this
+	// gate only controls whether the classifier runs at all.
+	const messageNormalized = normalizeProjectName(message);
+	const hasProject = projects.some((p) => {
+		const projNorm = normalizeProjectName(p.name);
+		return projNorm.length > 0 && messageNormalized.includes(projNorm);
+	});
 	if (hasProject) return true;
 	// Second pass — verb plus a task-flavor phrase. Lets the classifier
 	// decide whether to emit launch_needs_project for the disambiguation
@@ -165,7 +179,7 @@ If this IS a launch-flavored request but the user did NOT name a project (e.g. "
 {"intent":"launch_needs_project","agentType":"claude_code|codex_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
 
 Rules:
-- Only use project names from the known list (case-insensitive match) for the "launch" shape.
+- Only use project names from the known list (case-insensitive match) for the "launch" shape. If the user mentions a project name with extra whitespace, dashes, underscores, dots, or minor typos, normalize to the closest match from the known list (e.g. "agent pulse" → "agentpulse", "agnetpulse" → "agentpulse"). If you genuinely cannot resolve the user's reference to one known project, leave projectName empty and return "launch_needs_project" instead.
 - If the user mentioned no known project and the message is launch-flavored, return "launch_needs_project" so the caller can ask the user to pick a project.
 - If the message is a plain question or doesn't sound like a launch at all, return "none".
 - agentType: "claude_code" if user says "claude", "codex_cli" if user says "codex", null otherwise.
@@ -257,9 +271,11 @@ export function parseLaunchIntentResponse(
 		return { kind: "none" };
 	}
 
-	const matchedProject = projects.find(
-		(p) => p.name.toLowerCase() === (parsed.projectName as string).toLowerCase(),
-	);
+	// Use the shared fuzzy matcher so the resolver tolerates whitespace,
+	// punctuation, and minor typos in the LLM's projectName output. Falls
+	// back to launch_needs_project when no confident match is found.
+	const match = matchProjectByName(parsed.projectName as string, projects);
+	const matchedProject = match?.project;
 	if (!matchedProject) {
 		return {
 			kind: "launch_needs_project",

@@ -63,6 +63,57 @@ describe("gatePasses", () => {
 	test("passes 'check out the repo at github.com/x/y'", () => {
 		expect(gatePasses("check out the repo at github.com/x/y", projects)).toBe(true);
 	});
+
+	test("passes 'create an agent pulse session' (whitespace-split project name)", () => {
+		// The user-reported bug: "agent pulse" must resolve to "agentpulse"
+		// via the gate's normalized-substring check, otherwise the classifier
+		// never runs and the message falls through to the generic Ask path.
+		expect(gatePasses("create an agent pulse session", projects)).toBe(true);
+	});
+
+	test("passes 'open agentpulse' (regression: original exact form still works)", () => {
+		expect(gatePasses("open agentpulse", projects)).toBe(true);
+	});
+
+	test("passes 'open Agent-Pulse' (dashed + capitalized form)", () => {
+		expect(gatePasses("open Agent-Pulse", projects)).toBe(true);
+	});
+});
+
+describe("parseLaunchIntentResponse fuzzy resolution", () => {
+	test("resolves whitespace-split LLM output to the canonical project", () => {
+		const result = parseLaunchIntentResponse(
+			{ intent: "launch", projectName: "agent pulse" },
+			projects,
+		);
+		expect(result.kind).toBe("launch");
+		if (result.kind !== "launch") throw new Error("unreachable");
+		expect(result.projectName).toBe("agentpulse");
+	});
+
+	test("resolves a typo via Levenshtein distance ≤ 2", () => {
+		const result = parseLaunchIntentResponse(
+			{ intent: "launch", projectName: "agnetpulse" },
+			projects,
+		);
+		expect(result.kind).toBe("launch");
+		if (result.kind !== "launch") throw new Error("unreachable");
+		expect(result.projectName).toBe("agentpulse");
+	});
+
+	test("ambiguous typo with multiple equally-close projects falls back to launch_needs_project", () => {
+		const ambiguousProjects: CachedProject[] = [
+			{ id: "a", name: "foo", cwd: "/foo" },
+			{ id: "b", name: "fop", cwd: "/fop" },
+		];
+		// "fou" is distance 1 from both "foo" and "fop" — ambiguous tie.
+		// Plus "fou" is < 4 chars, which independently blocks the typo path.
+		const result = parseLaunchIntentResponse(
+			{ intent: "launch", projectName: "fou" },
+			ambiguousProjects,
+		);
+		expect(result.kind).toBe("launch_needs_project");
+	});
 });
 
 describe("parseLaunchIntentResponse", () => {
