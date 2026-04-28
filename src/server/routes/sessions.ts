@@ -3,14 +3,14 @@ import { Hono } from "hono";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
-import { events, managedSessions, sessions } from "../db/schema.js";
+import { events, sessions } from "../db/schema.js";
 import {
 	listControlActionsForSession,
 	queuePromptAction,
 	queueStopAction,
 	retryLaunchForSession,
 } from "../services/control-actions.js";
-import { getSession, getSessions, getStats } from "../services/session-tracker.js";
+import { getSession, getSessions, getStats, renameSession } from "../services/session-tracker.js";
 
 const sessionsRouter = new Hono();
 sessionsRouter.use("*", requireAuth());
@@ -86,35 +86,17 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 });
 
 // PUT /api/v1/sessions/:sessionId/rename - Rename a session
+//
+// Slice DELETE-RENAME-1: business logic lives in `renameSession`, which
+// wraps the `sessions` + (optional) `managed_sessions` updates in a SYNC
+// SQLite transaction. The route handler only validates input.
 sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { name } = await c.req.json<{ name: string }>();
 
 	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
 
-	await db
-		.update(sessions)
-		.set({ displayName: name.trim() })
-		.where(eq(sessions.sessionId, sessionId));
-
-	const [managed] = await db
-		.select()
-		.from(managedSessions)
-		.where(eq(managedSessions.sessionId, sessionId))
-		.limit(1);
-
-	if (managed) {
-		await db
-			.update(managedSessions)
-			.set({
-				desiredThreadTitle: name.trim(),
-				providerSyncState: "pending",
-				providerSyncError: null,
-				updatedAt: new Date().toISOString(),
-			})
-			.where(eq(managedSessions.sessionId, sessionId));
-	}
-
+	renameSession(sessionId, name);
 	return c.json({ ok: true });
 });
 
