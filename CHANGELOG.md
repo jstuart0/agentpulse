@@ -7,6 +7,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.2.0-pre.4] — 2026-04-27
+
 The "AI-initiated launches with workspace scaffolding + git clone"
 cycle. Ask now answers requests like "create a plan for X" or "clone
 github.com/foo/bar and start working on it" by walking the user
