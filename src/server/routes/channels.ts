@@ -272,6 +272,7 @@ async function handleHitlCallback(cb: TelegramCallbackQuery): Promise<void> {
 	// Emit audit events mirroring the in-app approve/decline flow.
 	await emitAiEvent({
 		sessionId: hitl.sessionId,
+		source: "observed_hook",
 		category: "ai_hitl_response",
 		eventType: "AiHitlResponse",
 		content: data.action === "approve" ? "Approved via Telegram." : "Declined via Telegram.",
@@ -280,6 +281,7 @@ async function handleHitlCallback(cb: TelegramCallbackQuery): Promise<void> {
 	if (data.action === "approve") {
 		await emitAiEvent({
 			sessionId: hitl.sessionId,
+			source: "observed_hook",
 			category: "ai_continue_sent",
 			eventType: "AiContinueSent",
 			content: "Approved via Telegram.",

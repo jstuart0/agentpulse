@@ -2,8 +2,8 @@ import { eq } from "drizzle-orm";
 import type { Session } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { managedSessions, sessions, supervisors } from "../../db/schema.js";
-import { loadRecentEvents } from "./ai-events.js";
 import { type SessionIntelligence, classifySession } from "./classifier.js";
+import { loadRecentEvents } from "./event-queries.js";
 import { getOpenHitlForSession } from "./hitl-service.js";
 
 const CLASSIFIER_EVENT_LOOKBACK = 50;

@@ -290,3 +290,26 @@ export async function listManagedSessionsNeedingSync(supervisorId: string) {
 }
 
 export { mapManagedSession };
+
+/**
+ * Stamp the session row with watcher state + last-run timestamp for UI
+ * badges. Broadcast happens via the caller (usually notifySessionUpdated
+ * after it refreshes the session snapshot).
+ *
+ * Moved from `ai/ai-events.ts` (Slice AI-EVT-1) — these write to `sessions`
+ * columns, which is this module's responsibility.
+ */
+export async function stampWatcherState(sessionId: string, state: string): Promise<void> {
+	await db
+		.update(sessions)
+		.set({ watcherState: state, watcherLastRunAt: nowIso() })
+		.where(eq(sessions.sessionId, sessionId));
+}
+
+/** Mark the last time a user prompt landed so race-control sees it. */
+export async function stampUserPrompt(sessionId: string): Promise<void> {
+	await db
+		.update(sessions)
+		.set({ watcherLastUserPromptAt: nowIso() })
+		.where(eq(sessions.sessionId, sessionId));
+}

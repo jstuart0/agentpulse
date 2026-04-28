@@ -680,6 +680,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 		if (!filter.allowed) {
 			await emitAiEvent({
 				sessionId: proposal.sessionId,
+				source: "observed_hook",
 				category: "ai_continue_blocked",
 				eventType: "AiContinueBlocked",
 				content: `Dispatch filter tripped on human-approved prompt: ${filter.reason}`,
@@ -693,6 +694,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 		await resolveProposalHitl({ proposalId: id, action: "decline" });
 		await emitAiEvent({
 			sessionId: proposal.sessionId,
+			source: "observed_hook",
 			category: "ai_hitl_response",
 			eventType: "AiHitlResponse",
 			content: "Declined by user.",
@@ -709,6 +711,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 	await resolveProposalHitl({ proposalId: id, action: body.action, replyText: nextPrompt });
 	await emitAiEvent({
 		sessionId: proposal.sessionId,
+		source: "observed_hook",
 		category: "ai_hitl_response",
 		eventType: "AiHitlResponse",
 		content: body.action === "custom" ? `Custom: ${nextPrompt}` : "Approved.",
@@ -716,6 +719,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 	});
 	await emitAiEvent({
 		sessionId: proposal.sessionId,
+		source: "observed_hook",
 		category: "ai_continue_sent",
 		eventType: "AiContinueSent",
 		content: nextPrompt ?? "",

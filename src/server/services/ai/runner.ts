@@ -3,8 +3,9 @@ import type { Session, SessionEvent } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { managedSessions, sessions, supervisors } from "../../db/schema.js";
 import { dispatchHitlToChannel } from "../channels/dispatch.js";
+import { stampUserPrompt, stampWatcherState } from "../managed-session-state.js";
 import { sessionBus } from "../notifier.js";
-import { emitAiEvent, loadRecentEvents, stampUserPrompt, stampWatcherState } from "./ai-events.js";
+import { emitAiEvent } from "./ai-events.js";
 import {
 	evaluateFreeformRules,
 	evaluateNoActivityRules,
@@ -14,6 +15,7 @@ import {
 import { buildWatcherContext } from "./context.js";
 import { classifyContinuability } from "./continuability.js";
 import { checkDispatch } from "./dispatch-filter.js";
+import { loadRecentEvents } from "./event-queries.js";
 import { classifierAffectsRunner, isAiBuildEnabled } from "./feature.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 import { priceCompletion } from "./llm/pricing.js";
@@ -268,6 +270,7 @@ export class WatcherRunner {
 			await stampWatcherState(sessionId, "cooling_down");
 			await emitAiEvent({
 				sessionId,
+				source: "managed_control",
 				category: "ai_error",
 				eventType: "SpendCapReached",
 				content: spend.reason ?? "Daily spend cap reached",
@@ -280,6 +283,7 @@ export class WatcherRunner {
 		if (!provider) {
 			await emitAiEvent({
 				sessionId,
+				source: "managed_control",
 				category: "ai_error",
 				eventType: "ProviderMissing",
 				content: `Configured provider ${config.providerId} no longer exists`,
@@ -300,6 +304,7 @@ export class WatcherRunner {
 		});
 		await emitAiEvent({
 			sessionId,
+			source: "managed_control",
 			category: "ai_proposal_pending",
 			eventType: "AiProposalPending",
 			content: "Watcher thinking…",
@@ -343,6 +348,7 @@ export class WatcherRunner {
 			});
 			await emitAiEvent({
 				sessionId,
+				source: "managed_control",
 				category: "ai_error",
 				eventType: "CredentialFailure",
 				content: "Provider credential could not be decrypted",
@@ -380,6 +386,7 @@ export class WatcherRunner {
 			await failProposal({ id: pending.id, errorSubType: subType, errorMessage: message });
 			await emitAiEvent({
 				sessionId,
+				source: "managed_control",
 				category: "ai_error",
 				eventType: "ProviderError",
 				content: message,
@@ -434,6 +441,7 @@ export class WatcherRunner {
 			});
 			await emitAiEvent({
 				sessionId,
+				source: "managed_control",
 				category: "ai_error",
 				eventType: "ParseFailure",
 				content: parsed.error,
@@ -473,6 +481,7 @@ export class WatcherRunner {
 			});
 			await emitAiEvent({
 				sessionId,
+				source: "managed_control",
 				category: "ai_proposal",
 				eventType: "AiStop",
 				content: decision.why ?? "Watcher decided to stop.",
@@ -499,6 +508,7 @@ export class WatcherRunner {
 			});
 			await emitAiEvent({
 				sessionId,
+				source: "managed_control",
 				category: "ai_report",
 				eventType: "AiReport",
 				content: decision.summary,
@@ -526,6 +536,7 @@ export class WatcherRunner {
 			} else if (!filter.allowed) {
 				await emitAiEvent({
 					sessionId,
+					source: "managed_control",
 					category: "ai_continue_blocked",
 					eventType: "AiContinueBlocked",
 					content: `Dispatch filter tripped: ${filter.reason}`,
@@ -554,6 +565,7 @@ export class WatcherRunner {
 					askWhy = `Risk class(es) matched: ${hits.map((h) => h.label).join(", ")}`;
 					await emitAiEvent({
 						sessionId,
+						source: "managed_control",
 						category: "ai_continue_blocked",
 						eventType: "AiRiskBlocked",
 						content: askWhy,
@@ -610,6 +622,7 @@ export class WatcherRunner {
 			});
 			await emitAiEvent({
 				sessionId,
+				source: "managed_control",
 				category: "ai_continue_sent",
 				eventType: "AiContinueSent",
 				content: nextPrompt ?? "",
@@ -661,6 +674,7 @@ export class WatcherRunner {
 			if (!delivery.ok) {
 				await emitAiEvent({
 					sessionId,
+					source: "managed_control",
 					category: "ai_error",
 					eventType: "ChannelDeliveryFailed",
 					content: `Channel delivery failed: ${delivery.error ?? "unknown"}`,
@@ -675,6 +689,7 @@ export class WatcherRunner {
 
 		await emitAiEvent({
 			sessionId,
+			source: "managed_control",
 			category: "ai_proposal",
 			eventType: "AiProposal",
 			content: decision.decision === "continue" ? decision.nextPrompt : (askProposal ?? ""),
@@ -687,6 +702,7 @@ export class WatcherRunner {
 
 		await emitAiEvent({
 			sessionId,
+			source: "managed_control",
 			category: "ai_hitl_request",
 			eventType: "AiHitlRequest",
 			content: nextPrompt ?? askProposal ?? "",
