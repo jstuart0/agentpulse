@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
@@ -172,54 +172,11 @@ sessionsRouter.put("/sessions/:sessionId/pin", async (c) => {
 	return c.json({ ok: true });
 });
 
-// GET /api/v1/sessions/search - Search sessions by prompt text or project
-sessionsRouter.get("/sessions/search", async (c) => {
-	const q = c.req.query("q") || "";
-	if (!q.trim()) return c.json({ sessions: [], total: 0 });
-
-	const searchTerm = `%${q.trim()}%`;
-
-	// Search in session cwd/displayName and in prompt events
-	const matchingSessions = await db
-		.select()
-		.from(sessions)
-		.where(
-			sql`${sessions.cwd} LIKE ${searchTerm} OR ${sessions.displayName} LIKE ${searchTerm} OR ${sessions.currentTask} LIKE ${searchTerm} OR ${sessions.notes} LIKE ${searchTerm}`,
-		)
-		.orderBy(desc(sessions.lastActivityAt))
-		.limit(50);
-
-	// Also search in prompts
-	const matchingEvents = await db
-		.select({ sessionId: events.sessionId })
-		.from(events)
-		.where(
-			sql`${events.eventType} = 'UserPromptSubmit' AND ${events.rawPayload} LIKE ${searchTerm}`,
-		)
-		.groupBy(events.sessionId)
-		.limit(50);
-
-	// Merge results
-	const _sessionIds = new Set([
-		...matchingSessions.map((s) => s.sessionId),
-		...matchingEvents.map((e) => e.sessionId),
-	]);
-
-	// Fetch full session objects for event matches
-	const additionalIds = matchingEvents
-		.map((e) => e.sessionId)
-		.filter((id) => !matchingSessions.some((s) => s.sessionId === id));
-
-	const allResults = [...matchingSessions];
-	if (additionalIds.length > 0) {
-		for (const id of additionalIds) {
-			const [s] = await db.select().from(sessions).where(eq(sessions.sessionId, id)).limit(1);
-			if (s) allResults.push(s);
-		}
-	}
-
-	return c.json({ sessions: allResults, total: allResults.length });
-});
+// Slice SEARCH-1: legacy GET /sessions/search was removed. The FTS5-backed
+// `/api/v1/search?kinds=session&q=...` endpoint (see routes/search.ts) is the
+// only supported session-search path now. Requests to the old URL fall
+// through to `/sessions/:sessionId` with sessionId="search" and 404 with
+// "Session not found", which is the expected behavior for the dead route.
 
 // GET /api/v1/sessions/:sessionId/events/:eventId/context - Event context window
 sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => {

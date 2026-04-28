@@ -114,7 +114,7 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 **Dashboard API:**
 - `GET /api/v1/sessions` - List sessions (filterable by status, agent_type)
 - `GET /api/v1/sessions/stats` - Dashboard KPI stats
-- `GET /api/v1/sessions/search?q=` - Search sessions
+- `GET /api/v1/search?kinds=session&q=` - Search sessions/events (FTS5-backed)
 - `GET /api/v1/sessions/:id` - Session detail with prompt timeline
 - `PUT /api/v1/sessions/:id/notes` - Save session notes
 - `PUT /api/v1/sessions/:id/rename` - Rename session
