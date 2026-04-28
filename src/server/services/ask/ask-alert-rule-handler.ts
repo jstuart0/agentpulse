@@ -1,3 +1,4 @@
+import type { AlertRuleType } from "../../../shared/types.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { getCachedProjects } from "../projects/cache.js";
 import type { AlertRuleIntent } from "./launch-intent-detector.js";
@@ -5,7 +6,7 @@ import type { AlertRuleIntent } from "./launch-intent-detector.js";
 export interface CreateAlertRulePayload {
 	projectId: string;
 	projectName: string;
-	ruleType: "status_failed" | "status_stuck" | "status_completed" | "no_activity_minutes";
+	ruleType: AlertRuleType;
 	thresholdMinutes: number | null;
 	channelId: string | null;
 }

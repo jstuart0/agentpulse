@@ -5,9 +5,12 @@
  * underlying transport.
  */
 
-import type { DecisionKind } from "../../../shared/types.js";
+import type { DecisionKind, NotificationChannelKind } from "../../../shared/types.js";
 
-export type NotificationChannelKind = "telegram" | "webhook" | "email";
+export {
+	KNOWN_NOTIFICATION_CHANNEL_KINDS,
+	type NotificationChannelKind,
+} from "../../../shared/types.js";
 
 export interface NotificationChannelRecord {
 	id: string;

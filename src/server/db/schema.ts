@@ -416,7 +416,7 @@ export const notificationChannels = sqliteTable("notification_channels", {
 		.primaryKey()
 		.$defaultFn(() => crypto.randomUUID()),
 	userId: text("user_id").notNull().default("local"),
-	kind: text("kind").notNull(), // telegram | webhook | email
+	kind: text("kind").notNull(), // KNOWN_NOTIFICATION_CHANNEL_KINDS (shared/types.ts)
 	label: text("label").notNull(),
 	credentialCiphertext: text("credential_ciphertext"),
 	config: text("config_json", { mode: "json" }).$type<Record<string, unknown>>(),

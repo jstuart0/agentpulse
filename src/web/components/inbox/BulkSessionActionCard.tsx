@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { SessionMutationKind } from "../../../shared/types.js";
 import type { InboxWorkItem } from "../../lib/api.js";
 import { KindBadge } from "./shared/KindBadge.js";
 import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
@@ -6,7 +7,7 @@ import { relTime } from "./shared/relTime.js";
 
 type ActionBulkSessionItem = Extract<InboxWorkItem, { kind: "action_bulk_session" }>;
 
-const actionColors: Record<"stop" | "archive" | "delete", string> = {
+const actionColors: Record<SessionMutationKind, string> = {
 	stop: "bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30",
 	archive: "bg-slate-500/20 text-slate-300 border border-slate-500/30 hover:bg-slate-500/30",
 	delete: "bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30",

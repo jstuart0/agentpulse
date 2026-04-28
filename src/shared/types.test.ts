@@ -3,18 +3,24 @@ import { AGENT_TYPES, SEMANTIC_STATUSES, SESSION_STATUSES } from "./constants.js
 import {
 	APPROVAL_POLICIES,
 	type AgentType,
+	type AlertRuleType,
 	type ApprovalPolicy,
 	DECISION_KINDS,
 	type DecisionKind,
 	HITL_REPLY_KINDS,
 	type HitlReplyKind,
+	KNOWN_ALERT_RULE_TYPES,
+	KNOWN_NOTIFICATION_CHANNEL_KINDS,
 	KNOWN_PROVIDER_KINDS,
 	MANAGED_STATES,
 	type ManagedState,
+	type NotificationChannelKind,
 	type ProviderKind,
 	SANDBOX_MODES,
+	SESSION_MUTATION_KINDS,
 	type SandboxMode,
 	type SemanticStatus,
+	type SessionMutationKind,
 	type SessionStatus,
 	WATCHER_POLICIES,
 	type WatcherPolicy,
@@ -95,6 +101,58 @@ describe("shared kind allowlists", () => {
 		expect(MANAGED_STATES.length).toBe(9);
 		expect(MANAGED_STATES.includes("running" as ManagedState)).toBe(false);
 		expect(MANAGED_STATES.includes("bogus" as ManagedState)).toBe(false);
+	});
+
+	test("KNOWN_ALERT_RULE_TYPES includes every AlertRuleType member and rejects impostors", () => {
+		// Slice TYPE-2c. Locks the four constrained alert-rule types.
+		// Adding a kind here without an executor branch in
+		// action-requests-service.ruleTypeLabel triggers the `never`
+		// exhaustiveness check at compile time.
+		const expected: readonly AlertRuleType[] = [
+			"status_failed",
+			"status_stuck",
+			"status_completed",
+			"no_activity_minutes",
+		];
+		for (const kind of expected) {
+			expect(KNOWN_ALERT_RULE_TYPES.includes(kind)).toBe(true);
+		}
+		expect(KNOWN_ALERT_RULE_TYPES.length).toBe(4);
+		expect(KNOWN_ALERT_RULE_TYPES.includes("freeform_match" as AlertRuleType)).toBe(false);
+		expect(KNOWN_ALERT_RULE_TYPES.includes("bogus" as AlertRuleType)).toBe(false);
+	});
+
+	test("KNOWN_NOTIFICATION_CHANNEL_KINDS includes every NotificationChannelKind member", () => {
+		// Slice TYPE-2c. Drives the inbox-service runtime allowlist and
+		// the action-requests-service add_channel executor narrow. A new
+		// channel transport must be added here AND wired into both
+		// runtime gates — otherwise it would silently fall through to
+		// the "telegram" default in the inbox composer.
+		const expected: readonly NotificationChannelKind[] = ["telegram", "webhook", "email"];
+		for (const kind of expected) {
+			expect(KNOWN_NOTIFICATION_CHANNEL_KINDS.includes(kind)).toBe(true);
+		}
+		expect(KNOWN_NOTIFICATION_CHANNEL_KINDS.length).toBe(3);
+		expect(KNOWN_NOTIFICATION_CHANNEL_KINDS.includes("slack" as NotificationChannelKind)).toBe(
+			false,
+		);
+		expect(KNOWN_NOTIFICATION_CHANNEL_KINDS.includes("bogus" as NotificationChannelKind)).toBe(
+			false,
+		);
+	});
+
+	test("SESSION_MUTATION_KINDS includes every SessionMutationKind member", () => {
+		// Slice TYPE-2c. The bare-form trio drives BulkActionIntent and
+		// the bulk_session_action inbox card. Distinct from the COMPOUND
+		// action-request kinds (`session_stop` etc.) — those follow
+		// ActionRequestKind.
+		const expected: readonly SessionMutationKind[] = ["stop", "archive", "delete"];
+		for (const kind of expected) {
+			expect(SESSION_MUTATION_KINDS.includes(kind)).toBe(true);
+		}
+		expect(SESSION_MUTATION_KINDS.length).toBe(3);
+		expect(SESSION_MUTATION_KINDS.includes("session_stop" as SessionMutationKind)).toBe(false);
+		expect(SESSION_MUTATION_KINDS.includes("bogus" as SessionMutationKind)).toBe(false);
 	});
 
 	test("AGENT_TYPES, SESSION_STATUSES, SEMANTIC_STATUSES round-trip via type", () => {

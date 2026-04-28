@@ -8,6 +8,7 @@ import type {
 	InboxSeverity,
 	InboxWorkItem,
 	LaunchRequest,
+	NotificationChannelKind,
 	Project,
 	ProjectInput,
 	ProviderKind,
@@ -18,6 +19,8 @@ import type {
 	SupervisorRecord,
 	WatcherPolicy,
 } from "../../shared/types.js";
+
+export type { NotificationChannelKind } from "../../shared/types.js";
 
 // Re-export inbox types so existing client consumers keep their import path
 // (`import { Inbox, InboxWorkItem } from "../lib/api.js"`).
@@ -808,8 +811,6 @@ export interface ChannelStats {
 	hitlResolved: number;
 	lastHitlAt: string | null;
 }
-
-export type NotificationChannelKind = "telegram" | "webhook" | "email";
 
 export interface NotificationChannelRecord {
 	id: string;

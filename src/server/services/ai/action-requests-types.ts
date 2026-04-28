@@ -17,7 +17,13 @@
 // self-contained — referencing the handler types creates an import cycle
 // (action-requests-service ← ask handlers ← action-requests-service).
 
-import type { LaunchMode, LaunchSpec, SessionTemplateInput } from "../../../shared/types.js";
+import type {
+	AlertRuleType,
+	LaunchMode,
+	LaunchSpec,
+	SessionMutationKind,
+	SessionTemplateInput,
+} from "../../../shared/types.js";
 import type { ProjectDraftFields } from "../../db/schema.js";
 
 export interface LaunchRequestPayload {
@@ -100,7 +106,7 @@ export interface CreateAlertRulePayload {
 	kind: "create_alert_rule";
 	projectId: string;
 	projectName: string;
-	ruleType: "status_failed" | "status_stuck" | "status_completed" | "no_activity_minutes";
+	ruleType: AlertRuleType;
 	thresholdMinutes: number | null;
 	channelId: string | null;
 }
@@ -117,7 +123,7 @@ export interface CreateFreeformAlertRulePayload {
 
 export interface BulkSessionActionPayload {
 	kind: "bulk_session_action";
-	action: "stop" | "archive" | "delete";
+	action: SessionMutationKind;
 	sessionIds: string[];
 	sessionNames: string[];
 	exclusions: Array<{ sessionId: string; name: string; reason: string }>;

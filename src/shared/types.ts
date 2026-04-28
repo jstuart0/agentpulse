@@ -71,6 +71,33 @@ export type ManagedState = (typeof MANAGED_STATES)[number];
 export const HITL_REPLY_KINDS = ["approve", "decline", "custom"] as const;
 export type HitlReplyKind = (typeof HITL_REPLY_KINDS)[number];
 
+// Project-scoped alert rule types. Drives the runtime allowlist in
+// action-requests-service (rejecting unsupported types from Ask intents),
+// the executor's exhaustive switch in ruleTypeLabel, and the alert-rule
+// evaluator's per-type sweeps. Adding a kind here forces every consumer
+// to handle it (or fail to compile via the `never` exhaustive guard).
+export const KNOWN_ALERT_RULE_TYPES = [
+	"status_failed",
+	"status_stuck",
+	"status_completed",
+	"no_activity_minutes",
+] as const;
+export type AlertRuleType = (typeof KNOWN_ALERT_RULE_TYPES)[number];
+
+// Notification channel transports. Drives both the runtime allowlist
+// for inbox composition and the action-request executor; web `api.ts`
+// re-exports for client-side type sharing.
+export const KNOWN_NOTIFICATION_CHANNEL_KINDS = ["telegram", "webhook", "email"] as const;
+export type NotificationChannelKind = (typeof KNOWN_NOTIFICATION_CHANNEL_KINDS)[number];
+
+// Bare session-mutation actions used by:
+//   - Bulk session action handler (`stop` | `archive` | `delete`)
+//   - Single-session destructive intents (mapped via mutationKindToInboxKind)
+// Distinct from the compound action_request kinds (`session_stop` etc.) —
+// those are tied to the discriminated-union shape of ActionRequestPayload.
+export const SESSION_MUTATION_KINDS = ["stop", "archive", "delete"] as const;
+export type SessionMutationKind = (typeof SESSION_MUTATION_KINDS)[number];
+
 // Ask thread message author roles.
 export type AskMessageRole = "user" | "assistant" | "system";
 
@@ -813,7 +840,7 @@ export type InboxWorkItem =
 			sessionId: null;
 			sessionName: null;
 			severity: "info";
-			channelKind: "telegram" | "webhook" | "email";
+			channelKind: NotificationChannelKind;
 			channelLabel: string;
 			createdAt: string;
 			origin: "web" | "telegram";
@@ -855,7 +882,7 @@ export type InboxWorkItem =
 			sessionName: null;
 			severity: "high" | "normal";
 			createdAt: string;
-			action: "stop" | "archive" | "delete";
+			action: SessionMutationKind;
 			sessionCount: number;
 			sessionNames: string[]; // up to 20, each truncated to 40 chars
 			hasMore: boolean; // true when sessionCount > 20

@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
+import type { SessionMutationKind } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { managedSessions, sessions } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
@@ -34,7 +35,7 @@ interface ExcludedSession {
 }
 
 export interface BulkSessionActionPayload {
-	action: "stop" | "archive" | "delete";
+	action: SessionMutationKind;
 	sessionIds: string[];
 	sessionNames: string[];
 	exclusions: Array<{ sessionId: string; name: string; reason: string }>;
@@ -127,7 +128,7 @@ async function resolveByHint(
 
 async function applyPreflightExclusions(
 	candidates: SessionCandidate[],
-	action: "stop" | "archive" | "delete",
+	action: SessionMutationKind,
 ): Promise<{ included: SessionCandidate[]; excluded: ExcludedSession[] }> {
 	const included: SessionCandidate[] = [];
 	const excluded: ExcludedSession[] = [];
@@ -183,7 +184,7 @@ async function applyPreflightExclusions(
 }
 
 function buildPreviewText(
-	action: "stop" | "archive" | "delete",
+	action: SessionMutationKind,
 	included: SessionCandidate[],
 	excluded: ExcludedSession[],
 ): string {
