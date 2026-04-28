@@ -1,6 +1,6 @@
 {
 	"name": "agentpulse",
-	"version": "0.2.0-pre.4",
+	"version": "0.2.0-pre.5",
 	"description": "Command center for AI coding agents across all your machines",
 	"type": "module",
 	"bin": {
