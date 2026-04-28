@@ -2,6 +2,7 @@ import { count, eq } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { sessionTemplates, sessions } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
+import { matchProjectByName } from "../projects/project-name-match.js";
 import { listProjects } from "../projects/projects-service.js";
 import { normalizeCwd } from "../projects/resolver.js";
 import type { ProjectTemplateCrudIntent } from "./launch-intent-detector.js";
@@ -327,9 +328,16 @@ async function handleDeleteTemplate(
 }
 
 async function findProjectByName(name: string): Promise<{ id: string; name: string } | null> {
+	// Use the shared fuzzy matcher so edit/delete CRUD asks tolerate the
+	// same whitespace, punctuation, and typo variants the launch-intent
+	// flow does. Both edit and delete operations route through the
+	// action_request approval flow, so the user reviews the resolved
+	// project name in the inbox card before any irreversible action.
 	const rows = await listProjects();
-	const lower = name.toLowerCase();
-	return rows.find((p) => p.name.toLowerCase() === lower) ?? null;
+	const projects = rows.map((p) => ({ id: p.id, name: p.name, cwd: p.cwd }));
+	const match = matchProjectByName(name, projects);
+	if (!match) return null;
+	return { id: match.project.id, name: match.project.name };
 }
 
 async function findTemplateByName(name: string): Promise<{ id: string; name: string } | null> {
