@@ -18,6 +18,7 @@ import {
 import { checkDispatch } from "../services/ai/dispatch-filter.js";
 import { getBackfillProgress, runBackfill } from "../services/ai/embeddings/embedding-service.js";
 import {
+	AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY,
 	AI_CLASSIFIER_AFFECTS_RUNNER_KEY,
 	AI_CLASSIFIER_ENABLED_KEY,
 	AI_KILL_SWITCH_KEY,
@@ -34,6 +35,7 @@ import {
 	isKillSwitchActive,
 	isVectorSearchActive,
 	isVectorSearchBuildEnabled,
+	shouldAutoEnableWatcherForAsk,
 } from "../services/ai/feature.js";
 import { resolveHitlRequest, supersedeOpenHitl } from "../services/ai/hitl-service.js";
 import { type InboxWorkItem, buildInbox } from "../services/ai/inbox-service.js";
@@ -119,6 +121,7 @@ aiRouter.get("/ai/status", async (c) => {
 	const active = await isAiActive();
 	const classifierEnabled = await isClassifierEnabled();
 	const classifierRunnerInput = await classifierAffectsRunner();
+	const autoEnableWatcherForAsk = await shouldAutoEnableWatcherForAsk();
 	return c.json({
 		build,
 		runtime,
@@ -126,6 +129,7 @@ aiRouter.get("/ai/status", async (c) => {
 		active,
 		classifierEnabled,
 		classifierAffectsRunner: classifierRunnerInput,
+		autoEnableWatcherForAsk,
 	});
 });
 
@@ -137,6 +141,7 @@ aiRouter.put("/ai/status", async (c) => {
 		killSwitch?: boolean;
 		classifierEnabled?: boolean;
 		classifierAffectsRunner?: boolean;
+		autoEnableWatcherForAsk?: boolean;
 	}>();
 	const now = new Date().toISOString();
 
@@ -158,6 +163,9 @@ aiRouter.put("/ai/status", async (c) => {
 	if (body.classifierAffectsRunner !== undefined) {
 		await upsert(AI_CLASSIFIER_AFFECTS_RUNNER_KEY, body.classifierAffectsRunner);
 	}
+	if (body.autoEnableWatcherForAsk !== undefined) {
+		await upsert(AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY, body.autoEnableWatcherForAsk);
+	}
 
 	return c.json({
 		build: isAiBuildEnabled(),
@@ -166,6 +174,7 @@ aiRouter.put("/ai/status", async (c) => {
 		active: await isAiActive(),
 		classifierEnabled: await isClassifierEnabled(),
 		classifierAffectsRunner: await classifierAffectsRunner(),
+		autoEnableWatcherForAsk: await shouldAutoEnableWatcherForAsk(),
 	});
 });
 

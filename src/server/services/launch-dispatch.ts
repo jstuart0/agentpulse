@@ -2,6 +2,7 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { launchRequests, sessions } from "../db/schema.js";
+import { applyAskInitiatedWatcher } from "./ai/auto-watcher.js";
 import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import { markSessionFailed } from "./event-processor.js";
 import { mapLaunchRequest } from "./launch-validator.js";
@@ -243,6 +244,7 @@ export async function associateObservedSession(input: {
 
 	await applyLaunchProvenanceToSession(input.sessionId, resolution.launchRequest.metadata);
 	await applyDesiredDisplayName(input.sessionId, resolution.launchRequest);
+	await applyAskInitiatedWatcher(input.sessionId, resolution.launchRequest.metadata);
 
 	return markLaunchRunning(resolution.launchRequest.id);
 }

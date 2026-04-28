@@ -532,6 +532,7 @@ export const api = {
 		killSwitch?: boolean;
 		classifierEnabled?: boolean;
 		classifierAffectsRunner?: boolean;
+		autoEnableWatcherForAsk?: boolean;
 	}) =>
 		request<AiStatusResponse>("/ai/status", {
 			method: "PUT",
@@ -1175,6 +1176,7 @@ export interface AiStatusResponse {
 	active: boolean;
 	classifierEnabled?: boolean;
 	classifierAffectsRunner?: boolean;
+	autoEnableWatcherForAsk?: boolean;
 }
 
 export type SessionHealthState = "healthy" | "blocked" | "stuck" | "risky" | "complete_candidate";

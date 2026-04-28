@@ -11,6 +11,10 @@ export const AI_KILL_SWITCH_KEY = "ai.killSwitch"; // true = paused
 // enable independently from the classifier's influence over the runner.
 export const AI_CLASSIFIER_ENABLED_KEY = "ai.classifierEnabled";
 export const AI_CLASSIFIER_AFFECTS_RUNNER_KEY = "ai.classifierAffectsRunner";
+// When true, sessions launched by the Ask flow get a watcher row written
+// at correlation time (enabled, ask_on_risk policy, default provider).
+// Default true: if Ask launched the session, AI was already in the loop.
+export const AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY = "ai.autoEnableWatcherForAsk";
 
 /** Is the AI feature compiled into this build (and secrets configured)? */
 export function isAiBuildEnabled(): boolean {
@@ -86,6 +90,18 @@ export async function isClassifierEnabled(): Promise<boolean> {
 		.where(eq(settings.key, AI_CLASSIFIER_ENABLED_KEY))
 		.limit(1);
 	// Absent setting defaults to true so new installs get UI badges.
+	return row?.value !== false;
+}
+
+/** Should Ask-initiated sessions auto-enable a watcher? Default: true. */
+export async function shouldAutoEnableWatcherForAsk(): Promise<boolean> {
+	if (!isAiBuildEnabled()) return false;
+	const [row] = await db
+		.select()
+		.from(settings)
+		.where(eq(settings.key, AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY))
+		.limit(1);
+	// Absent setting defaults to true — if Ask launched it, we watch it.
 	return row?.value !== false;
 }
 
