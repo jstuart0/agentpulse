@@ -16,6 +16,7 @@ const styles: Record<InboxWorkItem["kind"], string> = {
 	action_delete_template: "bg-red-500/10 text-red-300 border-red-500/30",
 	action_add_channel: "bg-cyan-500/10 text-cyan-300 border-cyan-500/30",
 	action_create_alert_rule: "bg-orange-500/10 text-orange-300 border-orange-500/30",
+	action_create_freeform_alert_rule: "bg-orange-500/10 text-orange-300 border-orange-500/30",
 	action_bulk_session: "bg-red-500/10 text-red-300 border-red-500/30",
 };
 
@@ -35,6 +36,7 @@ const labels: Record<InboxWorkItem["kind"], string> = {
 	action_delete_template: "delete template",
 	action_add_channel: "add channel",
 	action_create_alert_rule: "alert rule",
+	action_create_freeform_alert_rule: "freeform alert",
 	action_bulk_session: "bulk action",
 };
 

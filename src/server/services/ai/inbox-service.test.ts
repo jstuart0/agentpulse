@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import type { InboxWorkItem } from "../../../shared/types.js";
 import "./__test_db.js";
 
 const { db, initializeDatabase } = await import("../../db/client.js");
@@ -112,6 +113,51 @@ describe("inbox-service", () => {
 		await failProposal({ id: p2.id, errorSubType: "y", errorMessage: "b" });
 		const inbox = await buildInbox({ sessionId: "sA" });
 		expect(inbox.items.every((i) => i.sessionId === "sA")).toBe(true);
+	});
+
+	test("byKind enumerates every InboxWorkItem kind (zero counts when empty)", async () => {
+		// Guard rail: tuple is typed with `as const` so its element type is
+		// the literal union of the strings below. The two `Equals` assertions
+		// fail to compile if a new variant is added to `InboxWorkItem` without
+		// being added here (the union widens but the tuple does not, or vice
+		// versa). This forces every new kind to land with a corresponding
+		// `byKind` assertion in this test.
+		const expectedKinds = [
+			"hitl",
+			"stuck",
+			"risky",
+			"failed_proposal",
+			"action_launch",
+			"action_add_project",
+			"action_session_stop",
+			"action_session_archive",
+			"action_session_delete",
+			"action_edit_project",
+			"action_delete_project",
+			"action_edit_template",
+			"action_delete_template",
+			"action_add_channel",
+			"action_create_alert_rule",
+			"action_create_freeform_alert_rule",
+			"action_bulk_session",
+		] as const;
+
+		// Bidirectional subset checks → compile-time set equality.
+		type _Listed = (typeof expectedKinds)[number];
+		type _Actual = InboxWorkItem["kind"];
+		// If a new kind is added to InboxWorkItem, the next line errors.
+		const _missingFromTest = (k: _Actual): _Listed => k;
+		// If a kind is listed here that no longer exists in InboxWorkItem,
+		// this line errors.
+		const _staleInTest = (k: _Listed): _Actual => k;
+		void _missingFromTest;
+		void _staleInTest;
+
+		const inbox = await buildInbox();
+		for (const kind of expectedKinds) {
+			expect(inbox.byKind).toHaveProperty(kind);
+			expect(inbox.byKind[kind]).toBe(0);
+		}
 	});
 
 	test("snoozed failed proposals are hidden from the inbox", async () => {

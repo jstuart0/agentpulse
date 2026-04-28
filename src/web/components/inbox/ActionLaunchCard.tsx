@@ -53,22 +53,17 @@ export function ActionLaunchCard({
 					</div>
 				)}
 				<div>
-					Agent:{" "}
-					<span className="font-mono">
-						{String((item.template as Record<string, unknown>).agentType ?? "—")}
-					</span>
+					Agent: <span className="font-mono">{item.template.agentType ?? "—"}</span>
 					{" · "}
 					Mode: <span className="font-mono">{item.requestedLaunchMode}</span>
 					{" · "}
 					Origin: <span className="font-mono">{item.origin}</span>
 				</div>
 				<div className="font-mono text-[10px] break-all">
-					{String((item.template as Record<string, unknown>).cwd ?? item.launchSpec?.cwd ?? "")}
+					{item.template.cwd ?? item.launchSpec?.cwd ?? ""}
 				</div>
-				{(item.template as Record<string, unknown>).taskPrompt ? (
-					<div className="italic">
-						Task: {String((item.template as Record<string, unknown>).taskPrompt)}
-					</div>
+				{item.template.taskPrompt ? (
+					<div className="italic">Task: {item.template.taskPrompt}</div>
 				) : null}
 			</div>
 			<div className="flex items-center gap-2 mt-3">
