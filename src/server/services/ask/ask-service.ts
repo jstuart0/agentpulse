@@ -1,4 +1,5 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
+import type { AskMessageRole } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { askMessages, askThreads, sessionTemplates } from "../../db/schema.js";
 import { getAdapter } from "../ai/llm/registry.js";
@@ -88,7 +89,7 @@ export interface AskThreadRecord {
 export interface AskMessageRecord {
 	id: string;
 	threadId: string;
-	role: "user" | "assistant" | "system";
+	role: AskMessageRole;
 	content: string;
 	contextSessionIds: string[] | null;
 	tokensIn: number | null;

@@ -1,3 +1,10 @@
+// IMPORTANT: these `as const` tuples are the single source of truth for
+// the matching string-literal-union types in shared/types.ts. Do NOT
+// edit one without the other — adding a new value here automatically
+// widens the type, but tightening Record<KindName, V> maps below will
+// fail to compile until every consumer adds the new key.
+import type { AgentType, SemanticStatus, SessionStatus } from "./types.js";
+
 export const SEMANTIC_STATUSES = [
 	"researching",
 	"implementing",
@@ -14,7 +21,7 @@ export const SESSION_STATUSES = ["active", "idle", "completed", "failed", "archi
 export const AGENT_TYPES = ["claude_code", "codex_cli"] as const;
 
 // Status colors for the dashboard
-export const STATUS_COLORS: Record<string, string> = {
+export const STATUS_COLORS: Record<SessionStatus, string> = {
 	active: "bg-emerald-500",
 	idle: "bg-amber-500",
 	completed: "bg-slate-500",
@@ -22,7 +29,7 @@ export const STATUS_COLORS: Record<string, string> = {
 	archived: "bg-zinc-600",
 };
 
-export const SEMANTIC_STATUS_COLORS: Record<string, string> = {
+export const SEMANTIC_STATUS_COLORS: Record<SemanticStatus, string> = {
 	researching: "bg-blue-500",
 	implementing: "bg-emerald-500",
 	testing: "bg-purple-500",
@@ -33,7 +40,7 @@ export const SEMANTIC_STATUS_COLORS: Record<string, string> = {
 	waiting: "bg-amber-500",
 };
 
-export const AGENT_TYPE_LABELS: Record<string, string> = {
+export const AGENT_TYPE_LABELS: Record<AgentType, string> = {
 	claude_code: "Claude Code",
 	codex_cli: "Codex CLI",
 };

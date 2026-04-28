@@ -1,4 +1,6 @@
-export type DecisionKind = "continue" | "ask" | "report" | "stop" | "wait";
+// Canonical const + type live in src/shared/types.ts. Re-exported so
+// existing server consumers don't need to update their import path.
+export type { DecisionKind } from "../../../shared/types.js";
 
 export interface ContinueDecision {
 	decision: "continue";

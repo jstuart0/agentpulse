@@ -1,5 +1,8 @@
 import type {
+	AskMessageRole,
 	ControlAction,
+	DecisionKind,
+	HitlReplyKind,
 	Inbox,
 	InboxFilter,
 	InboxSeverity,
@@ -7,16 +10,25 @@ import type {
 	LaunchRequest,
 	Project,
 	ProjectInput,
+	ProviderKind,
 	ResolvedProjectData,
 	Session,
 	SessionEvent,
 	SessionTemplate,
 	SupervisorRecord,
+	WatcherPolicy,
 } from "../../shared/types.js";
 
 // Re-export inbox types so existing client consumers keep their import path
 // (`import { Inbox, InboxWorkItem } from "../lib/api.js"`).
 export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
+
+// Backward-compat aliases — call sites historically used `AiProviderKind`
+// and `AiWatcherPolicy`. Keep the alias so we don't churn imports while
+// still pointing at the canonical shared union.
+export type AiProviderKind = ProviderKind;
+export type AiWatcherPolicy = WatcherPolicy;
+export type { AskMessageRole, DecisionKind, HitlReplyKind } from "../../shared/types.js";
 import { APP_API_BASE } from "./paths.js";
 
 const BASE_URL = APP_API_BASE;
@@ -643,10 +655,7 @@ export const api = {
 	deleteAiWatcher: (sessionId: string) =>
 		request<{ ok: true }>(`/ai/sessions/${sessionId}/watcher`, { method: "DELETE" }),
 
-	decideAiProposal: (
-		id: string,
-		body: { action: "approve" | "decline" | "custom"; customPrompt?: string },
-	) =>
+	decideAiProposal: (id: string, body: { action: HitlReplyKind; customPrompt?: string }) =>
 		request<{ ok: true; dispatched: boolean; prompt?: string | null }>(
 			`/ai/proposals/${id}/decision`,
 			{ method: "POST", body: JSON.stringify(body) },
@@ -676,10 +685,7 @@ export const api = {
 		if (params?.limit) qs.set("limit", String(params.limit));
 		return request<Inbox>(`/ai/inbox${qs.toString() ? `?${qs}` : ""}`);
 	},
-	decideInboxHitl: (
-		id: string,
-		body: { action: "approve" | "decline" | "custom"; customPrompt?: string },
-	) =>
+	decideInboxHitl: (id: string, body: { action: HitlReplyKind; customPrompt?: string }) =>
 		request<{ hitl: { id: string; status: string } }>(`/ai/inbox/hitl/${id}/decide`, {
 			method: "POST",
 			body: JSON.stringify(body),
@@ -928,7 +934,7 @@ export interface AskThread {
 export interface AskMessage {
 	id: string;
 	threadId: string;
-	role: "user" | "assistant" | "system";
+	role: AskMessageRole;
 	content: string;
 	contextSessionIds: string[] | null;
 	tokensIn: number | null;
@@ -936,8 +942,6 @@ export interface AskMessage {
 	errorMessage: string | null;
 	createdAt: string;
 }
-
-export type AiProviderKind = "anthropic" | "openai" | "google" | "openrouter" | "openai_compatible";
 
 export interface AiProvider {
 	id: string;
@@ -968,8 +972,6 @@ export interface AiProviderUpdate {
 	apiKey?: string;
 	isDefault?: boolean;
 }
-
-export type AiWatcherPolicy = "ask_always" | "ask_on_risk" | "auto";
 
 export interface AiWatcherConfig {
 	sessionId: string;
@@ -1028,7 +1030,7 @@ export interface AiProposal {
 		| "hitl_declined"
 		| "cancelled"
 		| "failed";
-	decision: "continue" | "ask" | "report" | "stop" | "wait" | null;
+	decision: DecisionKind | null;
 	nextPrompt: string | null;
 	reportSummary: string | null;
 	rawResponse: Record<string, unknown> | null;

@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { AGENT_TYPES } from "../../shared/constants.js";
 import type {
 	AgentType,
 	ApprovalPolicy,
@@ -13,8 +14,6 @@ import type {
 } from "../../shared/types.js";
 import { buildTemplateHostCompatibility } from "./launch-compatibility.js";
 import { listSupervisors } from "./supervisor-registry.js";
-
-const VALID_AGENT_TYPES: AgentType[] = ["claude_code", "codex_cli"];
 const SUSPICIOUS_ENV_NAMES = new Set([
 	"OPENAI_API_KEY",
 	"ANTHROPIC_API_KEY",
@@ -58,7 +57,7 @@ function quoteShell(value: string): string {
 }
 
 export function normalizeTemplateInput(input: Partial<SessionTemplateInput>): SessionTemplateInput {
-	const agentType = VALID_AGENT_TYPES.includes(input.agentType as AgentType)
+	const agentType = AGENT_TYPES.includes(input.agentType as AgentType)
 		? (input.agentType as AgentType)
 		: "codex_cli";
 	const cwdInput = sanitizeString(input.cwd);
@@ -87,7 +86,7 @@ export function validateTemplateInput(input: SessionTemplateInput) {
 	const env = input.env ?? {};
 
 	if (!input.name) errors.push("Name is required.");
-	if (!VALID_AGENT_TYPES.includes(input.agentType))
+	if (!AGENT_TYPES.includes(input.agentType))
 		errors.push("Agent type must be claude_code or codex_cli.");
 	if (!input.cwd) errors.push("Working directory is required.");
 

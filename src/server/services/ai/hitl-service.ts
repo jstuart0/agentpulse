@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, isNotNull, lte } from "drizzle-orm";
+import type { HitlReplyKind } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { aiHitlRequests } from "../../db/schema.js";
 
@@ -10,7 +11,9 @@ export type HitlStatus =
 	| "timed_out"
 	| "superseded";
 
-export type HitlReplyKind = "approve" | "decline" | "custom";
+// Canonical const + type live in src/shared/types.ts. Re-exported here
+// so existing server consumers don't need to change their import path.
+export type { HitlReplyKind };
 
 export interface HitlRequestRecord {
 	id: string;

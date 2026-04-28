@@ -1,31 +1,22 @@
 import { format } from "date-fns";
-import type {
-	AgentType,
-	ApprovalPolicy,
-	LaunchMode,
-	SandboxMode,
-	SessionTemplateInput,
+import {
+	APPROVAL_POLICIES,
+	type AgentType,
+	type ApprovalPolicy,
+	type LaunchMode,
+	SANDBOX_MODES,
+	type SandboxMode,
+	type SessionTemplateInput,
 } from "../../../shared/types.js";
 
 export type AgentFilter = "all" | AgentType;
 
-export const approvalPolicies: Array<ApprovalPolicy | ""> = [
-	"",
-	"default",
-	"suggest",
-	"auto",
-	"manual",
-	"untrusted",
-	"on-failure",
-];
+// Dropdown values include the leading "" to render the "(inherit)"
+// sentinel option. Members are derived from the canonical const lists
+// in shared/types.ts so adding a new policy/mode flows through here.
+export const approvalPolicies: Array<ApprovalPolicy | ""> = ["", ...APPROVAL_POLICIES];
 
-export const sandboxModes: Array<SandboxMode | ""> = [
-	"",
-	"default",
-	"workspace-write",
-	"read-only",
-	"danger-full-access",
-];
+export const sandboxModes: Array<SandboxMode | ""> = ["", ...SANDBOX_MODES];
 
 export function createBlankTemplate(agentType: AgentType = "codex_cli"): SessionTemplateInput {
 	return {

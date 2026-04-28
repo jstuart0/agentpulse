@@ -1,9 +1,55 @@
-// Agent types supported
-export type AgentType = "claude_code" | "codex_cli";
+import type { AGENT_TYPES, SEMANTIC_STATUSES, SESSION_STATUSES } from "./constants.js";
 
-export type ApprovalPolicy = "default" | "suggest" | "auto" | "manual" | "untrusted" | "on-failure";
+// Agent types supported. Canonical const list lives in constants.ts;
+// derive the type here for easy import discoverability.
+export type AgentType = (typeof AGENT_TYPES)[number];
 
-export type SandboxMode = "default" | "workspace-write" | "read-only" | "danger-full-access";
+export const APPROVAL_POLICIES = [
+	"default",
+	"suggest",
+	"auto",
+	"manual",
+	"untrusted",
+	"on-failure",
+] as const;
+export type ApprovalPolicy = (typeof APPROVAL_POLICIES)[number];
+
+export const SANDBOX_MODES = [
+	"default",
+	"workspace-write",
+	"read-only",
+	"danger-full-access",
+] as const;
+export type SandboxMode = (typeof SANDBOX_MODES)[number];
+
+// LLM provider kinds. The canonical const drives runtime allowlists,
+// fee tables, and UI dropdowns — adding a new kind here forces every
+// consumer to handle it (or fail to compile).
+export const KNOWN_PROVIDER_KINDS = [
+	"anthropic",
+	"openai",
+	"google",
+	"openrouter",
+	"openai_compatible",
+] as const;
+export type ProviderKind = (typeof KNOWN_PROVIDER_KINDS)[number];
+
+// AI watcher decision policies. ask_always = HITL on every continue;
+// ask_on_risk = HITL only when risk-classifier flags the session;
+// auto = continue without HITL (still subject to caps).
+export const WATCHER_POLICIES = ["ask_always", "ask_on_risk", "auto"] as const;
+export type WatcherPolicy = (typeof WATCHER_POLICIES)[number];
+
+// Watcher decision kinds emitted by the LLM parser.
+export const DECISION_KINDS = ["continue", "ask", "report", "stop", "wait"] as const;
+export type DecisionKind = (typeof DECISION_KINDS)[number];
+
+// HITL reply actions accepted from the inbox / session detail.
+export const HITL_REPLY_KINDS = ["approve", "decline", "custom"] as const;
+export type HitlReplyKind = (typeof HITL_REPLY_KINDS)[number];
+
+// Ask thread message author roles.
+export type AskMessageRole = "user" | "assistant" | "system";
 
 export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
 export type ProviderSyncState = "pending" | "synced" | "failed";
@@ -24,19 +70,12 @@ export type EventSource =
 	| "managed_control"
 	| "launch_system";
 
-// Session lifecycle status
-export type SessionStatus = "active" | "idle" | "completed" | "failed" | "archived";
+// Session lifecycle status. Canonical const list lives in constants.ts.
+export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
-// Semantic status reported by agents via CLAUDE.md snippet
-export type SemanticStatus =
-	| "researching"
-	| "implementing"
-	| "testing"
-	| "debugging"
-	| "reviewing"
-	| "documenting"
-	| "planning"
-	| "waiting";
+// Semantic status reported by agents via CLAUDE.md snippet.
+// Canonical const list lives in constants.ts.
+export type SemanticStatus = (typeof SEMANTIC_STATUSES)[number];
 
 // Hook event types from Claude Code
 export type ClaudeCodeEvent =
@@ -599,7 +638,9 @@ export type InboxWorkItem =
 			sessionId: string;
 			sessionName: string | null;
 			proposalId: string;
-			decision: "continue" | "ask";
+			// Narrow of DecisionKind — breaks at compile time if "continue" or
+			// "ask" is removed from the watcher decision union.
+			decision: Extract<DecisionKind, "continue" | "ask">;
 			prompt: string;
 			why: string | null;
 			openedAt: string;

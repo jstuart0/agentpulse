@@ -138,16 +138,18 @@ export type ActionRequestPayload =
 	| CreateFreeformAlertRulePayload
 	| BulkSessionActionPayload;
 
-export type ActionRequestKind = ActionRequestPayload["kind"];
-
 /**
  * Runtime guard. The DB column is plain JSON, and the row's `kind` column
  * is the source of truth — payload writers stamp the `kind` field too,
  * but old rows may predate that, so we accept either: a payload with
  * matching `kind`, or a payload missing `kind` whose row-level kind matches
  * the requested narrowing.
+ *
+ * Single source: this `as const` tuple drives both the runtime allowlist
+ * and the `ActionRequestKind` type derivation. The exhaustiveness check
+ * below fails to compile if the tuple drifts from the discriminated union.
  */
-export const KNOWN_ACTION_REQUEST_KINDS: readonly ActionRequestKind[] = [
+export const KNOWN_ACTION_REQUEST_KINDS = [
 	"launch_request",
 	"add_project",
 	"session_stop",
@@ -162,3 +164,17 @@ export const KNOWN_ACTION_REQUEST_KINDS: readonly ActionRequestKind[] = [
 	"create_freeform_alert_rule",
 	"bulk_session_action",
 ] as const;
+
+export type ActionRequestKind = (typeof KNOWN_ACTION_REQUEST_KINDS)[number];
+
+// Compile-time exhaustiveness: if a new payload kind is added to
+// ActionRequestPayload without a matching entry in the tuple above (or
+// vice-versa), this type collapses to `never` and the `_check` const
+// errors out.
+type _MissingActionRequestKind =
+	| Exclude<ActionRequestPayload["kind"], ActionRequestKind>
+	| Exclude<ActionRequestKind, ActionRequestPayload["kind"]>;
+const _checkActionRequestKindCoverage: [_MissingActionRequestKind] extends [never] ? true : never =
+	true;
+// Reference once so biome/tsc don't flag the const as unused.
+void _checkActionRequestKindCoverage;

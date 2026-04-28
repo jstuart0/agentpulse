@@ -1,13 +1,17 @@
 import { AGENT_TYPE_LABELS } from "../../shared/constants.js";
+import type { AgentType } from "../../shared/types.js";
 import { cn } from "../lib/utils.js";
 
 interface AgentTypeBadgeProps {
+	// `string` (not `AgentType`) is intentional — historic data may carry
+	// agent types we no longer ship, and we still want to render them
+	// gracefully. The label lookup falls back to the raw value below.
 	agentType: string;
 	className?: string;
 }
 
 export function AgentTypeBadge({ agentType, className }: AgentTypeBadgeProps) {
-	const label = AGENT_TYPE_LABELS[agentType] || agentType;
+	const label = AGENT_TYPE_LABELS[agentType as AgentType] || agentType;
 	const isClaude = agentType === "claude_code";
 
 	return (

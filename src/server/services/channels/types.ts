@@ -5,6 +5,8 @@
  * underlying transport.
  */
 
+import type { DecisionKind } from "../../../shared/types.js";
+
 export type NotificationChannelKind = "telegram" | "webhook" | "email";
 
 export interface NotificationChannelRecord {
@@ -24,7 +26,10 @@ export interface SendChannelMessageInput {
 	proposalId: string;
 	sessionId: string;
 	sessionDisplayName: string | null;
-	decision: "continue" | "ask";
+	// Narrow of DecisionKind — keeps this constrained to the two
+	// decisions that map to outbound HITL prompts. Compile-time guard
+	// against a future decision-kind addition silently widening this.
+	decision: Extract<DecisionKind, "continue" | "ask">;
 	prompt: string;
 	why: string | null;
 }
