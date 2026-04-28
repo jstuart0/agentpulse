@@ -522,11 +522,8 @@ async function main() {
 							body: JSON.stringify({
 								status: "failed",
 								error:
-									detail?.message ??
-									(error instanceof Error ? error.message : "Cleanup failed"),
-								metadata: detail
-									? { ...(metadata ?? {}), cleanupError: detail }
-									: (metadata ?? {}),
+									detail?.message ?? (error instanceof Error ? error.message : "Cleanup failed"),
+								metadata: detail ? { ...(metadata ?? {}), cleanupError: detail } : (metadata ?? {}),
 							}),
 						},
 					);

@@ -119,9 +119,7 @@ describe("scaffoldWorkArea", () => {
 		});
 		const action = result.prelaunchActions[0];
 		expect(action.kind).toBe("scaffold_workarea");
-		expect(action.seedClaudeMd?.content).toBe(
-			"slug=plan-caching; summary=Plan caching strategies",
-		);
+		expect(action.seedClaudeMd?.content).toBe("slug=plan-caching; summary=Plan caching strategies");
 	});
 
 	test("defaults missing taskSummary to empty string", async () => {
@@ -143,9 +141,7 @@ describe("scaffoldWorkArea", () => {
 				templateClaudeMd: "{{taskSlug}} but {{foo}}",
 			},
 		});
-		expect(result.prelaunchActions[0].seedClaudeMd?.content).toBe(
-			"plan-caching but {{foo}}",
-		);
+		expect(result.prelaunchActions[0].seedClaudeMd?.content).toBe("plan-caching but {{foo}}");
 	});
 
 	test("computes SHA-256 of substituted CLAUDE.md content", async () => {

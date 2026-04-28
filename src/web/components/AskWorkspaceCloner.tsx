@@ -132,10 +132,8 @@ export function AskWorkspaceCloner({
 	const showSlowCloneHint = meta.depth !== 1;
 
 	return (
-		<div className="mt-2 space-y-2" role="group" aria-labelledby={`${componentId}-label`}>
-			<div id={`${componentId}-label`} className="sr-only">
-				Confirm git clone
-			</div>
+		<fieldset className="mt-2 space-y-2 border-0 p-0 m-0">
+			<legend className="sr-only">Confirm git clone</legend>
 			<div className="rounded-md border border-border bg-background/40 p-2.5 space-y-2">
 				{/* URL row — wrapped in <details> for graceful long-URL handling on small viewports (ruby §13.5). */}
 				<div className="flex items-start gap-2 text-[11px]" aria-live="polite">
@@ -335,7 +333,7 @@ export function AskWorkspaceCloner({
 					</ul>
 				</details>
 			</div>
-		</div>
+		</fieldset>
 	);
 }
 

@@ -93,10 +93,8 @@ export function AskWorkspaceScaffolder({
 	const errorIsFromServer = clientError === null && Boolean(meta.error);
 
 	return (
-		<div className="mt-2 space-y-2" role="group" aria-labelledby={`${componentId}-label`}>
-			<div id={`${componentId}-label`} className="sr-only">
-				Confirm new workspace path
-			</div>
+		<fieldset className="mt-2 space-y-2 border-0 p-0 m-0">
+			<legend className="sr-only">Confirm new workspace path</legend>
 			<div className="rounded-md border border-border bg-background/40 p-2.5 space-y-2">
 				<div className="flex items-center gap-2 text-[11px]" aria-live="polite">
 					<span className="text-muted-foreground shrink-0">Path:</span>
@@ -200,7 +198,7 @@ export function AskWorkspaceScaffolder({
 					</ul>
 				</details>
 			</div>
-		</div>
+		</fieldset>
 	);
 }
 

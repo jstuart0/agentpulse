@@ -124,15 +124,10 @@ export function AskProjectPicker({ meta, disabled, onSelect }: Props) {
 
 	return (
 		<div className="mt-2 space-y-2">
-			<div
-				ref={buttonsRef}
-				className="flex flex-col gap-1"
-				role="listbox"
-				aria-labelledby={`${pickerId}-label`}
-			>
-				<div id={`${pickerId}-label`} className="sr-only">
-					Pick a project for the launch
-				</div>
+			<div id={`${pickerId}-label`} className="sr-only">
+				Pick a project for the launch
+			</div>
+			<div ref={buttonsRef} className="flex flex-col gap-1" aria-labelledby={`${pickerId}-label`}>
 				{meta.choices.map((c, i) => (
 					<button
 						key={c.id}
