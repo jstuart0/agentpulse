@@ -326,12 +326,27 @@ export interface SessionTemplateInput {
 	isFavorite?: boolean;
 }
 
-export type PrelaunchAction = {
-	kind: "scaffold_workarea";
-	path: string;
-	gitInit?: boolean;
-	seedClaudeMd?: { content: string; path: string; sha256: string };
-};
+// Discriminated union. `prelaunchActions` is invariably a single-element
+// array today (one scaffold OR one clone, never chained — see plan §12.9);
+// the array shape is kept for forward compatibility with future kinds
+// (`create_worktree`, `seed_secrets`).
+export type PrelaunchAction =
+	| {
+			kind: "scaffold_workarea";
+			path: string;
+			gitInit?: boolean;
+			seedClaudeMd?: { content: string; path: string; sha256: string };
+	  }
+	| {
+			// `gitInit` is intentionally absent — clone provides .git by definition.
+			kind: "clone_repo";
+			url: string;
+			intoPath: string;
+			branch?: string;
+			depth?: number;
+			timeoutSeconds?: number;
+			seedClaudeMd?: { content: string; path: string; sha256: string };
+	  };
 
 export interface LaunchSpec {
 	version: 1;

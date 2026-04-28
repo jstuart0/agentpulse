@@ -112,6 +112,9 @@ export function supervisorSupportsPrelaunch(
 		if (action.kind === "scaffold_workarea" && !features.includes("can_scaffold_workarea")) {
 			if (!missing.includes("can_scaffold_workarea")) missing.push("can_scaffold_workarea");
 		}
+		if (action.kind === "clone_repo" && !features.includes("can_clone_repo")) {
+			if (!missing.includes("can_clone_repo")) missing.push("can_clone_repo");
+		}
 	}
 	return { ok: missing.length === 0, missing };
 }

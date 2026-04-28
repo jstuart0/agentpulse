@@ -4,16 +4,14 @@ import type {
 	SessionTemplateInput,
 	SupervisorRecord,
 } from "../../shared/types.js";
-import {
-	pickFirstCapableSupervisor,
-	supervisorSupportsPrelaunch,
-} from "./launch-compatibility.js";
+import { pickFirstCapableSupervisor, supervisorSupportsPrelaunch } from "./launch-compatibility.js";
 
 function makeSupervisor(overrides: Partial<SupervisorRecord> = {}): SupervisorRecord {
 	const features = overrides.capabilities?.features ?? [
 		"can_write_claude_md",
 		"can_run_prelaunch_actions",
 		"can_scaffold_workarea",
+		"can_clone_repo",
 		"headless_claude",
 	];
 	return {
@@ -67,6 +65,13 @@ const scaffoldAction: PrelaunchAction = {
 	path: "/tmp/work/proj",
 	gitInit: false,
 	seedClaudeMd: { content: "x", path: "CLAUDE.md", sha256: "deadbeef" },
+};
+
+const cloneAction: PrelaunchAction = {
+	kind: "clone_repo",
+	url: "https://github.com/foo/bar.git",
+	intoPath: "/tmp/work/bar",
+	timeoutSeconds: 300,
 };
 
 describe("supervisorSupportsPrelaunch", () => {
@@ -129,14 +134,74 @@ describe("supervisorSupportsPrelaunch", () => {
 		const r = supervisorSupportsPrelaunch(sup, [scaffoldAction, scaffoldAction]);
 		expect(r.missing.filter((m) => m === "can_scaffold_workarea")).toHaveLength(1);
 	});
+
+	test("clone_repo passes when supervisor advertises both flags", () => {
+		const sup = makeSupervisor();
+		const r = supervisorSupportsPrelaunch(sup, [cloneAction]);
+		expect(r.ok).toBe(true);
+		expect(r.missing).toEqual([]);
+	});
+
+	test("clone_repo flags missing can_clone_repo even when can_run_prelaunch_actions is present", () => {
+		const sup = makeSupervisor({
+			capabilities: {
+				version: 1,
+				agentTypes: ["claude_code"],
+				launchModes: ["headless"],
+				os: "macos",
+				terminalSupport: [],
+				features: ["can_run_prelaunch_actions"],
+			},
+		});
+		const r = supervisorSupportsPrelaunch(sup, [cloneAction]);
+		expect(r.ok).toBe(false);
+		expect(r.missing).toEqual(["can_clone_repo"]);
+	});
+
+	test("clone_repo flags missing can_run_prelaunch_actions when only action-specific flag is present", () => {
+		const sup = makeSupervisor({
+			capabilities: {
+				version: 1,
+				agentTypes: ["claude_code"],
+				launchModes: ["headless"],
+				os: "macos",
+				terminalSupport: [],
+				features: ["can_clone_repo"],
+			},
+		});
+		const r = supervisorSupportsPrelaunch(sup, [cloneAction]);
+		expect(r.ok).toBe(false);
+		expect(r.missing).toContain("can_run_prelaunch_actions");
+	});
+
+	test("mixed array (scaffold + clone) requires BOTH can_scaffold_workarea AND can_clone_repo", () => {
+		const sup = makeSupervisor({
+			capabilities: {
+				version: 1,
+				agentTypes: ["claude_code"],
+				launchModes: ["headless"],
+				os: "macos",
+				terminalSupport: [],
+				features: ["can_run_prelaunch_actions"],
+			},
+		});
+		const r = supervisorSupportsPrelaunch(sup, [scaffoldAction, cloneAction]);
+		expect(r.ok).toBe(false);
+		expect(r.missing).toContain("can_scaffold_workarea");
+		expect(r.missing).toContain("can_clone_repo");
+	});
+
+	test("mixed array passes when both action flags are present", () => {
+		const sup = makeSupervisor();
+		const r = supervisorSupportsPrelaunch(sup, [scaffoldAction, cloneAction]);
+		expect(r.ok).toBe(true);
+	});
 });
 
 describe("pickFirstCapableSupervisor with prelaunchActions", () => {
 	test("returns a supervisor that has both required flags", () => {
 		const sup = makeSupervisor();
-		const picked = pickFirstCapableSupervisor(makeTemplate(), "headless", [sup], [
-			scaffoldAction,
-		]);
+		const picked = pickFirstCapableSupervisor(makeTemplate(), "headless", [sup], [scaffoldAction]);
 		expect(picked?.id).toBe("sup-1");
 	});
 
@@ -160,9 +225,7 @@ describe("pickFirstCapableSupervisor with prelaunchActions", () => {
 				},
 			},
 		});
-		const picked = pickFirstCapableSupervisor(makeTemplate(), "headless", [sup], [
-			scaffoldAction,
-		]);
+		const picked = pickFirstCapableSupervisor(makeTemplate(), "headless", [sup], [scaffoldAction]);
 		expect(picked).toBeNull();
 	});
 

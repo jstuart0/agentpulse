@@ -14,7 +14,11 @@ import { type CachedProject, bumpVersionAndReload } from "../projects/cache.js";
 import { createProject, listProjects } from "../projects/projects-service.js";
 import { listSupervisors } from "../supervisor-registry.js";
 import { getWorkspaceSettings } from "../workspace/feature.js";
-import { WorkspacePathValidationError, scaffoldWorkArea } from "../workspace/scaffold.js";
+import {
+	type ScaffoldPrelaunchAction,
+	WorkspacePathValidationError,
+	scaffoldWorkArea,
+} from "../workspace/scaffold.js";
 import { handleAskLaunchIntent } from "./ask-launch-handler.js";
 import type { LaunchIntent, TaskBrief } from "./launch-intent-detector.js";
 
@@ -592,7 +596,7 @@ async function handleNewKeyword(args: HandleNewKeywordArgs): Promise<Disambiguat
 	const colliding = new Set<string>(allProjects.map((p) => p.cwd));
 
 	let resolvedPath: string;
-	let prelaunchActions: PrelaunchAction[];
+	let prelaunchActions: ScaffoldPrelaunchAction[];
 	try {
 		const result = await scaffoldWorkArea({
 			taskSlug,

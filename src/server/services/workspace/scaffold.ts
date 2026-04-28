@@ -18,9 +18,19 @@ export interface ScaffoldWorkAreaInput {
 	explicitPath?: string;
 }
 
+export type WorkspacePathValidationCode =
+	| "path_not_absolute"
+	| "path_traversal_rejected"
+	// Slice 6b: clone-URL policy codes. Reused on the supervisor side
+	// (PrelaunchErrorCode) once 6c lands; defining them here keeps the
+	// server-side helper's error surface in one place.
+	| "clone_url_invalid"
+	| "clone_scheme_disallowed"
+	| "clone_credentials_in_url";
+
 export class WorkspacePathValidationError extends Error {
 	constructor(
-		public readonly code: "path_not_absolute" | "path_traversal_rejected",
+		public readonly code: WorkspacePathValidationCode,
 		message: string,
 	) {
 		super(message);
@@ -28,9 +38,11 @@ export class WorkspacePathValidationError extends Error {
 	}
 }
 
+export type ScaffoldPrelaunchAction = Extract<PrelaunchAction, { kind: "scaffold_workarea" }>;
+
 export interface ScaffoldWorkAreaResult {
 	resolvedPath: string;
-	prelaunchActions: PrelaunchAction[];
+	prelaunchActions: ScaffoldPrelaunchAction[];
 }
 
 const MAX_SUFFIX_ATTEMPTS = 10;
@@ -125,7 +137,7 @@ export async function scaffoldWorkArea(
 	const renderedTemplate = applyTemplateTokens(workspaceSettings.templateClaudeMd, tokens);
 	const contentSha = await sha256(renderedTemplate);
 
-	const action: PrelaunchAction = {
+	const action: ScaffoldPrelaunchAction = {
 		kind: "scaffold_workarea",
 		path: resolvedPath,
 		gitInit: workspaceSettings.gitInit,

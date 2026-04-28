@@ -404,9 +404,20 @@ export async function executePrelaunchActions(
 			case "scaffold_workarea":
 				await executeScaffoldWorkArea(action, context, roots);
 				break;
+			case "clone_repo":
+				// Slice 6c will implement executeCloneRepo. Until then the server
+				// gates clone_repo emission on can_clone_repo, which this build
+				// does not advertise — reaching here means a server emitted the
+				// action to a supervisor that doesn't support it (capability
+				// drift). Fail loudly rather than silently skipping the clone.
+				throw new Error(
+					"clone_repo prelaunch action is not implemented in this supervisor build (Slice 6c).",
+				);
 			default: {
-				const exhaustive: never = action.kind;
-				throw new Error(`Unsupported prelaunch action kind: ${String(exhaustive)}`);
+				const exhaustive: never = action;
+				throw new Error(
+					`Unsupported prelaunch action kind: ${String((exhaustive as { kind?: unknown })?.kind)}`,
+				);
 			}
 		}
 	}
