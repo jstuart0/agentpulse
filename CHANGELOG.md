@@ -7,6 +7,40 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.2.0-pre.6] — 2026-04-28
+
+Follow-up patch to the v0.2.0-pre.5 code-health remediation. The DB-1
+slice surfaced a latent rollback bug; this release closes it everywhere.
+
+### Fixed
+
+- **Latent `db.transaction(async (tx) => …)` rollback bug at 4 call
+  sites** (`control-actions.ts:341` `finalizeCleanupWorkArea`,
+  `projects-service.ts:53` `resolveAllSessionsForProject`,
+  `projects-service.ts:165` `updateProject` cwd-change branch,
+  `projects-service.ts:260` `deleteProject`). drizzle's bun-sqlite
+  `db.transaction()` is synchronous — an `async (tx) => …` callback
+  returns a Promise immediately, so the BEGIN/COMMIT only brackets the
+  sync portion of the callback, the COMMIT fires before any awaited
+  statement settles, and a thrown error after an `await` boundary
+  cannot roll back. Each site converted to a sync callback using
+  `.run()` / `.all()`. Async work that legitimately belonged outside
+  the tx (e.g. `bumpVersionAndReload()`) was already correctly placed
+  and stayed put.
+
+  Each conversion ships with a rollback parity test that attaches a
+  temporary `BEFORE-INSERT/UPDATE/DELETE` trigger raising `ABORT` on
+  the second write in the chain, then asserts the first write was
+  rolled back. Verified by temporarily reverting each fix and
+  confirming each test catches the autocommit (single-write tests
+  don't expose the bug — all four use multi-write designs).
+
+  After: `rg 'db\.transaction\(async' src/` returns 0 hits.
+
+### Test count
+
+561 → 565 tests across 56 files.
+
 ## [0.2.0-pre.5] — 2026-04-28
 
 The "code-health remediation" cycle. A code-health audit (dexter) flagged
