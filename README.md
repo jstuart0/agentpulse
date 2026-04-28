@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0--pre.3-blue)](https://github.com/jstuart0/agentpulse/releases)
+[![Version](https://img.shields.io/badge/version-0.2.0--pre.6-blue)](https://github.com/jstuart0/agentpulse/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun-000?logo=bun)](https://bun.sh)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-✓-green)](https://github.com/awesome-selfhosted/awesome-selfhosted)
 [![Wiki](https://img.shields.io/badge/docs-wiki-informational)](https://github.com/jstuart0/agentpulse/wiki)
@@ -114,6 +114,7 @@ When enabled, AgentPulse can use an LLM provider you choose (Anthropic, OpenAI, 
 
 - **Session watcher** -- on each handoff (a `Stop` event, idle pause, plan completion, or error), the watcher reads recent events, redacts secrets via a configurable rule list, and asks the configured provider to emit one JSON decision: `continue` (with a next prompt), `ask` (route to HITL), `report` (summarize), `stop`, or `wait`. Proposals land in a durable queue so they survive server restarts.
 - **Per-session config** -- provider, policy (`ask_always` / `ask_on_risk` / `auto`), daily spend cap, max continuations, optional custom system prompt, all from the session detail **AI** tab.
+- **Auto-enable on Ask-initiated sessions** -- when Ask launches a session, a watcher row is attached at correlation time (enabled, `ask_on_risk` policy, default provider). Five silent-skip branches keep this from ever failing a launch: not Ask-initiated, AI inactive, user opt-out, watcher already configured, or no default provider. Settings → AI watcher has a toggle (default on) to disable.
 - **Session intelligence classifier** -- deterministic heuristic flags sessions as `healthy` / `blocked` / `stuck` / `risky` / `complete_candidate` with a one-sentence reason. Shows as a chip on dashboard cards. Optionally feeds back into watcher decisions.
 - **Ask command surface** -- conversational interface (web + Telegram) that turns natural language into approval cards. Every state-mutating intent goes through the same `ai_action_requests` atomic-claim approval pipeline, so concurrent web + Telegram approvals can't double-execute. Examples:
   - *"open a Claude session for agentpulse"* — queues a launch request
@@ -400,7 +401,7 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 
 SQLite (stored at `./data/agentpulse.db`). Zero-config, single-file, handles home-lab and small-team scale comfortably.
 
-> **PostgreSQL is on the roadmap but not implemented yet.** The `DATABASE_URL` env var is parsed but ignored — setting it today silently falls back to SQLite. If you need multi-replica scale-out, track progress in [the Postgres backend issue](https://github.com/jstuart0/agentpulse/issues) or hold off until it lands.
+> **PostgreSQL is on the roadmap but not implemented yet.** Setting `DATABASE_URL=postgres://…` now fails fast at boot with a clear error rather than silently falling back to SQLite (the previous behavior misled anyone who trusted the env var). If you need multi-replica scale-out, track progress in [the Postgres backend issue](https://github.com/jstuart0/agentpulse/issues) or hold off until it lands.
 
 ### All environment variables
 

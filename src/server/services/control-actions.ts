@@ -339,17 +339,25 @@ export async function queueCleanupWorkArea(
  * events via FK, so events go first.
  */
 async function finalizeCleanupWorkArea(projectId: string): Promise<void> {
-	await db.transaction(async (tx) => {
-		const projectSessions = await tx
+	// drizzle-bun-sqlite db.transaction is SYNC. An async callback returns a
+	// Promise immediately and the COMMIT runs before any awaited statement
+	// settles, silently disabling rollback. Use a sync callback with .all()
+	// for reads and .run() for writes so the BEGIN/COMMIT brackets the actual
+	// DB work and a thrown error rolls back atomically.
+	db.transaction((tx) => {
+		const projectSessions = tx
 			.select({ id: sessions.id, sessionId: sessions.sessionId })
 			.from(sessions)
-			.where(eq(sessions.projectId, projectId));
+			.where(eq(sessions.projectId, projectId))
+			.all();
 		for (const s of projectSessions) {
-			await tx.delete(events).where(eq(events.sessionId, s.sessionId));
-			await tx.delete(sessions).where(eq(sessions.id, s.id));
+			tx.delete(events).where(eq(events.sessionId, s.sessionId)).run();
+			tx.delete(sessions).where(eq(sessions.id, s.id)).run();
 		}
-		await tx.delete(projects).where(eq(projects.id, projectId));
+		tx.delete(projects).where(eq(projects.id, projectId)).run();
 	});
+	// Cache invalidation only matters once the rows are durably gone; running
+	// it after the sync tx commits keeps the cache consistent on rollback.
 	await bumpVersionAndReload();
 }
 
