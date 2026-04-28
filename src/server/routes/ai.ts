@@ -77,6 +77,7 @@ import {
 	upsertWatcherConfig,
 } from "../services/ai/watcher-config-service.js";
 import { queueSnapshot } from "../services/ai/watcher-runs-service.js";
+import { upsertSetting } from "../services/settings-service.js";
 
 const aiRouter = new Hono();
 aiRouter.use("*", requireAuth());
@@ -143,17 +144,9 @@ aiRouter.put("/ai/status", async (c) => {
 		classifierAffectsRunner?: boolean;
 		autoEnableWatcherForAsk?: boolean;
 	}>();
-	const now = new Date().toISOString();
 
-	const upsert = async (key: string, value: unknown) => {
-		await db
-			.insert(settings)
-			.values({ key, value, updatedAt: now })
-			.onConflictDoUpdate({
-				target: settings.key,
-				set: { value, updatedAt: now },
-			});
-	};
+	const upsert = (key: string, value: unknown) =>
+		upsertSetting(key, value, { allowProtected: true });
 
 	if (body.enabled !== undefined) await upsert(AI_RUNTIME_ENABLED_KEY, body.enabled);
 	if (body.killSwitch !== undefined) await upsert(AI_KILL_SWITCH_KEY, body.killSwitch);
@@ -222,13 +215,8 @@ aiRouter.put("/ai/vector-search/status", async (c) => {
 		model?: string | null;
 		providerId?: string | null;
 	}>();
-	const now = new Date().toISOString();
-	const upsert = async (key: string, value: unknown) => {
-		await db
-			.insert(settings)
-			.values({ key, value, updatedAt: now })
-			.onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: now } });
-	};
+	const upsert = (key: string, value: unknown) =>
+		upsertSetting(key, value, { allowProtected: true });
 	if (body.enabled !== undefined) await upsert(VECTOR_SEARCH_ENABLED_KEY, body.enabled);
 	if (body.model !== undefined) {
 		await upsert(VECTOR_SEARCH_MODEL_KEY, body.model || DEFAULT_EMBEDDING_MODEL);

@@ -4,6 +4,7 @@ import { createApiKey } from "../auth/api-key.js";
 import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { apiKeys, settings } from "../db/schema.js";
+import { ProtectedSettingError, upsertSetting } from "../services/settings-service.js";
 import { getTelemetryDiagnostics, sendTelemetryNow } from "../services/telemetry.js";
 import {
 	WorkspaceValidationError,
@@ -32,13 +33,20 @@ settingsRouter.put("/settings", async (c) => {
 		return c.json({ error: "Missing key" }, 400);
 	}
 
-	await db
-		.insert(settings)
-		.values({ key, value, updatedAt: new Date().toISOString() })
-		.onConflictDoUpdate({
-			target: settings.key,
-			set: { value, updatedAt: new Date().toISOString() },
-		});
+	try {
+		await upsertSetting(key, value);
+	} catch (err) {
+		if (err instanceof ProtectedSettingError) {
+			return c.json(
+				{
+					error: "protected_setting",
+					message: `Setting key '${err.key}' is reserved for internal use.`,
+				},
+				403,
+			);
+		}
+		throw err;
+	}
 
 	return c.json({ ok: true });
 });
