@@ -561,7 +561,7 @@ async function handleNewKeyword(args: HandleNewKeywordArgs): Promise<Disambiguat
 		};
 	}
 
-	const settings = await getWorkspaceSettings();
+	const settings = (await getWorkspaceSettings()).workspace;
 
 	// Slug: prefer displayName (already kebab in classifier output), fall
 	// back to taskBrief/summary, then taskHint, then originalMessage. The

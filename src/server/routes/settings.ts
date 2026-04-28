@@ -52,9 +52,17 @@ settingsRouter.get("/settings/workspace", async (c) => {
 // PUT /api/v1/settings/workspace - Upsert any subset of workspace defaults
 settingsRouter.put("/settings/workspace", async (c) => {
 	let body: {
-		defaultRoot?: unknown;
-		templateClaudeMd?: unknown;
-		gitInit?: unknown;
+		workspace?: {
+			defaultRoot?: unknown;
+			templateClaudeMd?: unknown;
+			gitInit?: unknown;
+		};
+		gitClone?: {
+			allowSshUrls?: unknown;
+			allowLocalUrls?: unknown;
+			defaultDepth?: unknown;
+			timeoutSeconds?: unknown;
+		};
 	};
 	try {
 		body = await c.req.json();
@@ -63,30 +71,82 @@ settingsRouter.put("/settings/workspace", async (c) => {
 	}
 
 	// Narrow each field type before handing to the service. The service does
-	// the semantic validation (path shape) — here we just gate type errors so
-	// the service layer doesn't have to second-guess `unknown`.
+	// the semantic validation (path shape, depth/timeout bounds) — here we
+	// just gate type errors so the service layer doesn't have to second-guess
+	// `unknown`.
 	const update: {
 		defaultRoot?: string;
 		templateClaudeMd?: string;
 		gitInit?: boolean;
+		gitClone?: {
+			allowSshUrls?: boolean;
+			allowLocalUrls?: boolean;
+			defaultDepth?: number | null;
+			timeoutSeconds?: number;
+		};
 	} = {};
-	if (body.defaultRoot !== undefined) {
-		if (typeof body.defaultRoot !== "string") {
-			return c.json({ error: "defaultRoot must be a string" }, 400);
+
+	const ws = body.workspace;
+	if (ws !== undefined) {
+		if (ws === null || typeof ws !== "object") {
+			return c.json({ error: "workspace must be an object" }, 400);
 		}
-		update.defaultRoot = body.defaultRoot;
+		if (ws.defaultRoot !== undefined) {
+			if (typeof ws.defaultRoot !== "string") {
+				return c.json({ error: "workspace.defaultRoot must be a string" }, 400);
+			}
+			update.defaultRoot = ws.defaultRoot;
+		}
+		if (ws.templateClaudeMd !== undefined) {
+			if (typeof ws.templateClaudeMd !== "string") {
+				return c.json({ error: "workspace.templateClaudeMd must be a string" }, 400);
+			}
+			update.templateClaudeMd = ws.templateClaudeMd;
+		}
+		if (ws.gitInit !== undefined) {
+			if (typeof ws.gitInit !== "boolean") {
+				return c.json({ error: "workspace.gitInit must be a boolean" }, 400);
+			}
+			update.gitInit = ws.gitInit;
+		}
 	}
-	if (body.templateClaudeMd !== undefined) {
-		if (typeof body.templateClaudeMd !== "string") {
-			return c.json({ error: "templateClaudeMd must be a string" }, 400);
+
+	const gc = body.gitClone;
+	if (gc !== undefined) {
+		if (gc === null || typeof gc !== "object") {
+			return c.json({ error: "gitClone must be an object" }, 400);
 		}
-		update.templateClaudeMd = body.templateClaudeMd;
-	}
-	if (body.gitInit !== undefined) {
-		if (typeof body.gitInit !== "boolean") {
-			return c.json({ error: "gitInit must be a boolean" }, 400);
+		const gitClone: {
+			allowSshUrls?: boolean;
+			allowLocalUrls?: boolean;
+			defaultDepth?: number | null;
+			timeoutSeconds?: number;
+		} = {};
+		if (gc.allowSshUrls !== undefined) {
+			if (typeof gc.allowSshUrls !== "boolean") {
+				return c.json({ error: "gitClone.allowSshUrls must be a boolean" }, 400);
+			}
+			gitClone.allowSshUrls = gc.allowSshUrls;
 		}
-		update.gitInit = body.gitInit;
+		if (gc.allowLocalUrls !== undefined) {
+			if (typeof gc.allowLocalUrls !== "boolean") {
+				return c.json({ error: "gitClone.allowLocalUrls must be a boolean" }, 400);
+			}
+			gitClone.allowLocalUrls = gc.allowLocalUrls;
+		}
+		if (gc.defaultDepth !== undefined) {
+			if (gc.defaultDepth !== null && typeof gc.defaultDepth !== "number") {
+				return c.json({ error: "gitClone.defaultDepth must be a number or null" }, 400);
+			}
+			gitClone.defaultDepth = gc.defaultDepth as number | null;
+		}
+		if (gc.timeoutSeconds !== undefined) {
+			if (typeof gc.timeoutSeconds !== "number") {
+				return c.json({ error: "gitClone.timeoutSeconds must be a number" }, 400);
+			}
+			gitClone.timeoutSeconds = gc.timeoutSeconds;
+		}
+		update.gitClone = gitClone;
 	}
 
 	try {

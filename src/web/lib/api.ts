@@ -351,22 +351,41 @@ export const api = {
 		}),
 
 	getWorkspaceSettings: () =>
-		request<{ defaultRoot: string; templateClaudeMd: string; gitInit: boolean }>(
-			"/settings/workspace",
-		),
+		request<{
+			workspace: { defaultRoot: string; templateClaudeMd: string; gitInit: boolean };
+			gitClone: {
+				allowSshUrls: boolean;
+				allowLocalUrls: boolean;
+				defaultDepth: number | null;
+				timeoutSeconds: number;
+			};
+		}>("/settings/workspace"),
 
 	saveWorkspaceSettings: (update: {
-		defaultRoot?: string;
-		templateClaudeMd?: string;
-		gitInit?: boolean;
+		workspace?: {
+			defaultRoot?: string;
+			templateClaudeMd?: string;
+			gitInit?: boolean;
+		};
+		gitClone?: {
+			allowSshUrls?: boolean;
+			allowLocalUrls?: boolean;
+			defaultDepth?: number | null;
+			timeoutSeconds?: number;
+		};
 	}) =>
-		request<{ defaultRoot: string; templateClaudeMd: string; gitInit: boolean }>(
-			"/settings/workspace",
-			{
-				method: "PUT",
-				body: JSON.stringify(update),
-			},
-		),
+		request<{
+			workspace: { defaultRoot: string; templateClaudeMd: string; gitInit: boolean };
+			gitClone: {
+				allowSshUrls: boolean;
+				allowLocalUrls: boolean;
+				defaultDepth: number | null;
+				timeoutSeconds: number;
+			};
+		}>("/settings/workspace", {
+			method: "PUT",
+			body: JSON.stringify(update),
+		}),
 
 	getApiKeys: () =>
 		request<{
