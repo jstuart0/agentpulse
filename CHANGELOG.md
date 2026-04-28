@@ -7,7 +7,166 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
-## [0.2.0-pre.3] — 2026-04-27
+The "AI-initiated launches with workspace scaffolding + git clone"
+cycle. Ask now answers requests like "create a plan for X" or "clone
+github.com/foo/bar and start working on it" by walking the user
+through project disambiguation, scaffolding a fresh workspace, or
+cloning a repo — all gated behind an approval card and capability
+checks against connected supervisors. Plus a Codex thread-name
+roundtrip and an Authentik fix.
+
+### Added
+
+#### AI task-initiated launches (Slices 1–4)
+
+- **Broader Ask launch-intent gate.** Classifier promoted from a
+  narrow "open a session" matcher to a structured intent emitter
+  (`{displayName, taskBrief, cloneSpec}`). The verb list now
+  includes `create`, `make`, `write`, `draft`, `build`, `fix`,
+  `add`, `refactor`, `plan`, `run`, `clone`, `check out`, …, and a
+  second-pass `TASK_FLAVOR_PHRASES` gate catches "a plan", "the
+  failing tests", `github.com/`, `gitlab.com/`. Defensive parsing
+  drops malformed sub-fields rather than failing the whole intent.
+- **AI provenance on launched sessions.** Launches initiated from an
+  Ask thread persist `aiInitiated: true` and the originating
+  `askThreadId` in `launch_requests.metadata`, copied into
+  `sessions.metadata` at correlation time
+  (`applyLaunchProvenanceToSession`). The session card renders a
+  Wand2 glyph in the name chip; `SessionHeader` shows a `← from
+  Ask` link back to the originating thread. New
+  `LaunchIntent` variants: `none | classifier_failed | launch |
+  launch_needs_project | add_project`.
+- **Task-derived session names.** When the classifier returns a
+  `displayName`, the launch path renames the correlated session at
+  ingest using `applyDesiredDisplayName`. Adjective-noun fallback
+  (`brave-falcon`) is preserved when no displayName is provided or
+  the candidate fails the slug pattern. Slugifier kebab-cases,
+  caps at 4 words / 40 chars, with collision suffixing
+  (`-2`, `-3`, …).
+- **Disambiguation flow when no project is named.** If the user
+  asks "create a plan" without naming a project, Ask responds with
+  a fenced `ask-message-meta` payload (kind `project_picker`)
+  listing the candidate projects plus a path-input fallback and a
+  "Scaffold a fresh workspace" CTA (gated on supervisor
+  capability). New `ai_pending_project_drafts.kind` discriminator
+  ("add_project" | "scaffold" | "clone") and `pendingScaffold` /
+  `pendingClone` fields on `LaunchDisambiguationDraftFields`. The
+  picker survives across turns until the user picks, types
+  `cancel`, or hits the retry cap.
+
+#### AI-driven workspace scaffolding (Slice 5)
+
+- **`scratch` project lifecycle.** New project tag pair —
+  `scratch` (this is a one-shot workspace) and `ai-initiated`
+  (created by an Ask flow, not a manual "Add project" click). The
+  `/projects` page gains a Show-scratch toggle (default off, persisted
+  via `ui-prefs-store.showScratch`) so the registry stays clean of
+  one-shot workspaces. Scratch cards render with a dashed amber
+  border + "scratch" chip. When `scratch` *and* `ai-initiated` are
+  both set, the trash icon becomes a `CleanupWorkareaModal` —
+  type-`delete` confirmation, runs `rm -rf` on the directory,
+  removes the project, and bulk-deletes attached sessions.
+  Confirm UI is disabled while submitting and re-enables on error.
+- **Workspace settings infrastructure** (`/settings`,
+  WorkspacesPanel). Trusted roots (default `~/dev`,
+  `~/Documents/dev`, `~/Projects`), trusted-path symlink
+  trajectory check (handles macOS `/var` → `/private/var` aliases
+  legitimately), default git-init flag, default seed `CLAUDE.md`
+  template with token substitution (`{{taskSummary}}`,
+  `{{taskSlug}}`; unknown tokens preserved verbatim). Settings now
+  nested under `{ workspace: {...}, gitClone: {...} }`.
+- **`prelaunchActions` discriminated union on `LaunchSpec`.** New
+  optional top-level field (not nested in `providerConfig`)
+  carrying actions of kind `scaffold_workarea` or `clone_repo`.
+  Capability negotiation: each supervisor advertises a
+  `capabilitySchemaVersion` plus boolean feature flags
+  (`can_run_prelaunch_actions`, `can_scaffold_workarea`,
+  `can_clone_repo`, `can_cleanup_workarea`, etc.). The server
+  filters supervisor candidates by required action kind in
+  `supervisorSupportsPrelaunch` *before* the
+  `validateAgainstSupervisor` loop — the Ask-time CTA gate uses
+  the same predicate, so users never see a CTA the host can't
+  fulfill.
+- **Pure `scaffoldWorkArea` helper.** Idempotent: existing-empty
+  directory is OK; existing-non-empty directory rejects with
+  `path_not_empty`; SHA-256 verification on seed `CLAUDE.md` (skip
+  with warn on SHA mismatch). Symlink-rejection traversal walks
+  every component up to the deepest existing ancestor and confirms
+  the realpath is on a trusted trajectory.
+- **Supervisor handler.** `runPrelaunchActionsForLaunch` invoked at
+  the dispatch-launch boundary (both Codex-managed and
+  Claude-Code paths). `PrelaunchError` carries a typed
+  `PrelaunchErrorCode` (`path_not_absolute`,
+  `path_traversal_rejected`, `path_outside_trusted_roots`,
+  `symlink_rejected`, `path_not_empty`, `permission_denied`,
+  `disk_full`, `git_init_failed`, `claude_md_write_failed`,
+  `claude_md_sha_mismatch`, …) so the UI can render actionable
+  error copy.
+- **Wired `new` keyword in disambiguation.** Picking "Scaffold a
+  fresh workspace" walks the user through path confirmation
+  (`AskWorkspaceScaffolder` panel: shows resolved path, host,
+  defaults; flips to error states for symlink rejection / path
+  not empty / permission denied with focus management).
+  Confirmation calls back through the Ask composer, the launch
+  dispatches with `prelaunchActions: [{ kind:
+  "scaffold_workarea", … }]`, and on success the new project is
+  registered as scratch + ai-initiated.
+
+#### AI-driven git clone (Slice 6)
+
+- **Clone settings.** Per-tenant defaults under `gitClone.*`:
+  `allowSshUrls` (default true), `allowLocalUrls` (default false),
+  `defaultDepth` (null = full history), `timeoutSeconds`
+  (30–3600). Surfaced in WorkspacesPanel.
+- **`clone_repo` PrelaunchAction.** Pure `cloneRepo` helper plus
+  URL canonicalization (trailing-slash strip, host lowercase,
+  SCP-form preserved) and policy validation
+  (`clone_url_invalid`, `clone_scheme_disallowed`,
+  `clone_credentials_in_url`). Idempotency rule: an existing
+  target directory whose `git config remote.origin.url` matches
+  the canonicalized clone URL counts as a hit and skips the
+  clone. Stderr classifier maps git failure output to typed
+  codes (`auth`, `not-found`, `dns`, `disk-full`, …).
+- **Supervisor handler.** `executeCloneRepo` runs `git clone` with
+  `GIT_TERMINAL_PROMPT=0` (so credential prompts can't hang the
+  supervisor), `AbortSignal.timeout` enforcing the configured
+  timeout, optional `--branch` and `--depth`, and cleanup-on-
+  partial-failure (only `rm -rf` if the handler created the
+  directory).
+- **Cloner UI** (`AskWorkspaceCloner`). Sibling component to the
+  scaffolder. Renders URL (collapsible `<details>` for long URLs),
+  destination, branch, depth, and a "More options" disclosure for
+  branch / depth overrides. Error code → human copy + focus
+  mapping: `clone_url_invalid` focuses the branch input and
+  auto-expands More options; `clone_target_exists` focuses the
+  custom-path field; `clone_scheme_disallowed` surfaces a Settings
+  link. Slow-clone hint is suppressed when `depth === 1`.
+  Telegram-origin renders the branch as read-only.
+- **`cloneSpec` routing in `ask-service.ts`.** When the classifier
+  returns a `cloneSpec`, the cloneSpec branch fires after the
+  pending-draft check but before the regular launch path (sync
+  and streaming paths both covered). `pendingClone` and
+  `pendingScaffold` are mutually exclusive — handling a clone
+  intent clears any prior scaffold draft.
+
+#### Codex thread name roundtrip
+
+- **AgentPulse → Codex.** When AgentPulse renames a session, the
+  display name is pushed into Codex's local
+  `session_index.jsonl` so `codex resume` and the Codex TUI status
+  line show the same name AgentPulse displays.
+- **Codex → AgentPulse.** When Codex renames a thread (e.g. via
+  `/rename`), the new title is synced back into AgentPulse as the
+  session displayName.
+
+### Fixed
+
+- **Authentik forwardauth + API keys.** Hook ingestion requests
+  carrying a valid AgentPulse API key now bypass the Authentik
+  forwardauth challenge so relays and CLI hooks don't get
+  redirected to a login page.
+
+
 
 The "projects + Ask command surface" release. Sessions now belong to
 first-class projects, templates inherit project defaults with
