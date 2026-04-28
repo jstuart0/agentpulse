@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createAnthropicAdapter } from "./anthropic.js";
+import { createCohereAdapter } from "./cohere.js";
 import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
 import { priceCompletion } from "./pricing.js";
 import { LlmError, estimateTokens } from "./types.js";
@@ -217,5 +218,109 @@ describe("pricing", () => {
 		});
 		// default 50c + 200c = 250c
 		expect(cents).toBe(250);
+	});
+
+	test("charges cohere command-r at flash-tier rates", () => {
+		const cents = priceCompletion("cohere", "command-r-08-2024", {
+			inputTokens: 1_000_000,
+			outputTokens: 100_000,
+			estimated: false,
+		});
+		// 1M * 15c + 100k * 60c/1M = 15 + 6 = 21c
+		expect(cents).toBe(21);
+	});
+
+	test("charges cohere command-r-plus at premium-tier rates", () => {
+		const cents = priceCompletion("cohere", "command-r-plus-08-2024", {
+			inputTokens: 1_000_000,
+			outputTokens: 100_000,
+			estimated: false,
+		});
+		// 1M * 250c + 100k * 1000c/1M = 250 + 100 = 350c
+		expect(cents).toBe(350);
+	});
+});
+
+describe("cohere adapter", () => {
+	test("sends preamble + message and Authorization header", async () => {
+		mockFetch(
+			new Response(
+				JSON.stringify({
+					text: "ack",
+					meta: { tokens: { input_tokens: 12, output_tokens: 3 } },
+				}),
+				{ status: 200 },
+			),
+		);
+		const adapter = createCohereAdapter({ apiKey: "co-key" });
+		const res = await adapter.complete({
+			systemPrompt: "Watcher",
+			transcriptPrompt: "events",
+			model: "command-r",
+		});
+		expect(res.text).toBe("ack");
+		expect(res.usage.inputTokens).toBe(12);
+		expect(res.usage.outputTokens).toBe(3);
+		expect(res.usage.estimated).toBe(false);
+
+		const [req] = capturedRequests;
+		expect(req.url).toBe("https://api.cohere.com/v1/chat");
+		expect((req.init.headers as Record<string, string>).Authorization).toBe("Bearer co-key");
+		const body = JSON.parse(String(req.init.body));
+		expect(body.model).toBe("command-r");
+		expect(body.message).toBe("events");
+		expect(body.preamble).toBe("Watcher");
+		// Default sampling matches the watcher's policy.
+		expect(body.temperature).toBe(0.2);
+	});
+
+	test("trims trailing slashes on baseUrl override", async () => {
+		mockFetch(new Response(JSON.stringify({ text: "" }), { status: 200 }));
+		const adapter = createCohereAdapter({
+			apiKey: "co-key",
+			baseUrl: "https://proxy.example.com//",
+		});
+		await adapter.complete({
+			systemPrompt: "x",
+			transcriptPrompt: "y",
+			model: "command-r",
+		});
+		expect(capturedRequests[0].url).toBe("https://proxy.example.com/v1/chat");
+	});
+
+	test("normalizes 401 to permanent_auth and surfaces message field", async () => {
+		mockFetch(new Response(JSON.stringify({ message: "invalid api token" }), { status: 401 }));
+		const adapter = createCohereAdapter({ apiKey: "bad" });
+		const err = await adapter
+			.complete({ systemPrompt: "x", transcriptPrompt: "y", model: "command-r" })
+			.catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(LlmError);
+		const llm = err as LlmError;
+		expect(llm.subType).toBe("permanent_auth");
+		expect(llm.status).toBe(401);
+		expect(llm.message).toContain("invalid api token");
+	});
+
+	test("normalizes 429 to transient_rate_limit", async () => {
+		mockFetch(new Response(JSON.stringify({ message: "rate limit" }), { status: 429 }));
+		const adapter = createCohereAdapter({ apiKey: "ok" });
+		const err = await adapter
+			.complete({ systemPrompt: "x", transcriptPrompt: "y", model: "command-r" })
+			.catch((e: unknown) => e);
+		expect((err as LlmError).subType).toBe("transient_rate_limit");
+	});
+
+	test("estimates tokens when meta.tokens is missing", async () => {
+		mockFetch(new Response(JSON.stringify({ text: "hello" }), { status: 200 }));
+		const adapter = createCohereAdapter({ apiKey: "ok" });
+		const res = await adapter.complete({
+			systemPrompt: "x",
+			transcriptPrompt: "transcript body",
+			model: "command-r",
+		});
+		expect(res.text).toBe("hello");
+		expect(res.usage.estimated).toBe(true);
+		expect(res.usage.inputTokens).toBeGreaterThan(0);
+		expect(res.usage.outputTokens).toBeGreaterThan(0);
 	});
 });
