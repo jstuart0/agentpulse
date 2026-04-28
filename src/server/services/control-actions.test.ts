@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
 
-const { db, initializeDatabase } = await import("../db/client.js");
+const { db, initializeDatabase, sqlite } = await import("../db/client.js");
 const { controlActions, events, projects, sessions, supervisors } = await import("../db/schema.js");
 const { claimNextControlAction, queueCleanupWorkArea, updateControlAction } = await import(
 	"./control-actions.js"
@@ -164,5 +164,76 @@ describe("cleanup_workarea control action", () => {
 
 		const remainingProjects = await db.select().from(projects).execute();
 		expect(remainingProjects.length).toBe(1);
+	});
+
+	// Rollback-semantics regression: drizzle-bun-sqlite db.transaction() runs
+	// SYNC. If finalizeCleanupWorkArea were ever flipped back to an `async`
+	// callback, the COMMIT would fire before the events/sessions deletes
+	// settled and a thrown error in the project DELETE would leave child
+	// rows orphaned. We force the project DELETE to fail mid-transaction
+	// with a BEFORE-DELETE trigger and assert that NEITHER the sessions
+	// NOR the events rows survived as zombies — i.e. the whole tx rolled back.
+	test("finalizeCleanupWorkArea rolls back atomically when the project delete fails", async () => {
+		const supervisorId = await seedSupervisor();
+		const projectId = await seedScratchProject();
+
+		const sessionRowId = crypto.randomUUID();
+		const sessionTextId = `sess-${sessionRowId.slice(0, 8)}`;
+		const now = new Date().toISOString();
+		await db.insert(sessions).values({
+			id: sessionRowId,
+			sessionId: sessionTextId,
+			agentType: "claude_code",
+			cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
+			projectId,
+			startedAt: now,
+			lastActivityAt: now,
+		});
+		await db.insert(events).values({
+			sessionId: sessionTextId,
+			eventType: "SessionStart",
+			rawPayload: { hook_event_name: "SessionStart", session_id: sessionTextId },
+			createdAt: now,
+		});
+
+		const queued = await queueCleanupWorkArea({
+			projectId,
+			cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
+			targetSupervisorId: supervisorId,
+		});
+		await claimNextControlAction(supervisorId);
+
+		// Trigger fires when the cascade tries to delete the project row,
+		// AFTER the events/sessions deletes have already executed inside
+		// the same transaction. A sync tx must roll those back.
+		sqlite.exec(`
+			CREATE TRIGGER tmp_block_project_delete
+			BEFORE DELETE ON projects
+			BEGIN
+				SELECT RAISE(ABORT, 'rollback-test');
+			END;
+		`);
+
+		try {
+			await updateControlAction({
+				actionId: queued.id,
+				supervisorId,
+				status: "succeeded",
+			});
+		} finally {
+			sqlite.exec("DROP TRIGGER IF EXISTS tmp_block_project_delete");
+		}
+
+		// Project row must still exist (the delete was aborted) AND the
+		// session/events rows must still exist (the earlier deletes in
+		// the same tx must have rolled back). If the tx were async-broken,
+		// events/sessions would be gone but the project would survive —
+		// the partial-cleanup state we are guarding against.
+		const remainingProjects = await db.select().from(projects).execute();
+		expect(remainingProjects.length).toBe(1);
+		const remainingSessions = await db.select().from(sessions).execute();
+		expect(remainingSessions.length).toBe(1);
+		const remainingEvents = await db.select().from(events).execute();
+		expect(remainingEvents.length).toBe(1);
 	});
 });
