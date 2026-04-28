@@ -147,6 +147,81 @@ export async function sendTelegramPlain(channelId: string, text: string): Promis
 }
 
 /**
+ * Escape hatch for Telegram callers that need shapes outside `sendTelegramMessage`'s
+ * "plain text only" contract — e.g. inline keyboards, MarkdownV2, sendChatAction
+ * (where `chatId` lives next to a non-text payload). Takes a raw bot token so
+ * callers don't have to plumb the credential lookup; resolves to the same
+ * `https://api.telegram.org/bot<token>/<method>` URL the rest of this module uses.
+ *
+ * Callers are responsible for catching/logging — this returns the raw fetch
+ * promise so the caller can keep its existing error semantics.
+ */
+export function sendTelegramRaw(
+	botToken: string,
+	method: string,
+	body: Record<string, unknown>,
+): Promise<Response> {
+	return fetch(`${API_BASE}/bot${botToken}/${method}`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+/**
+ * Low-level plain `sendMessage` helper that takes a raw `botToken` + `chatId`
+ * (vs `sendTelegramPlain` which resolves the chatId from a stored channel id).
+ *
+ * Use this when:
+ *  - the caller already has the chat id in hand (e.g. inbound webhook flow,
+ *    enrollment reply where we don't yet have a channel row),
+ *  - or the caller wants the optional 4096-char chunk-splitting behavior.
+ *
+ * Telegram caps `sendMessage.text` at 4096 chars. When `chunkSplit` is true
+ * we leave room for a continuation indicator (LIMIT = 3800) and prefer to
+ * split on a newline near the cap so we don't chop mid-sentence. Best-effort
+ * — failures are swallowed so a flaky Telegram doesn't block the caller's
+ * main work.
+ */
+export async function sendTelegramMessage(
+	botToken: string,
+	chatId: string | number,
+	text: string,
+	opts?: { chunkSplit?: boolean },
+): Promise<void> {
+	if (!botToken) return;
+	const url = `${API_BASE}/bot${botToken}/sendMessage`;
+
+	const parts: string[] = [];
+	if (opts?.chunkSplit) {
+		// Telegram caps at 4096; leave room for a continuation indicator.
+		const LIMIT = 3800;
+		let remaining = text;
+		while (remaining.length > LIMIT) {
+			// Prefer splitting on a newline near the limit so we don't chop
+			// mid-sentence.
+			const cutAt = remaining.lastIndexOf("\n", LIMIT);
+			const end = cutAt > LIMIT / 2 ? cutAt : LIMIT;
+			parts.push(remaining.slice(0, end));
+			remaining = remaining.slice(end).replace(/^\s+/, "");
+		}
+		if (remaining) parts.push(remaining);
+	} else {
+		parts.push(text);
+	}
+
+	for (const part of parts) {
+		await fetch(url, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ chat_id: chatId, text: part }),
+		}).catch(() => {
+			// best-effort; let the caller's error handler surface failures
+		});
+	}
+}
+
+/**
  * Idempotently point the bot's webhook at this instance's public URL.
  * Called from the channel routes; safe to call repeatedly.
  */

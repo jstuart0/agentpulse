@@ -1,5 +1,4 @@
 import { and, eq, inArray, isNull, max, sql } from "drizzle-orm";
-import type { LaunchMode, LaunchSpec, SessionTemplateInput } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import {
 	events,
@@ -12,20 +11,9 @@ import {
 	sessionTemplates,
 	sessions,
 } from "../../db/schema.js";
-import type { ProjectDraftFields } from "../../db/schema.js";
-import type {
-	CreateAlertRulePayload,
-	CreateFreeformAlertRulePayload,
-} from "../ask/ask-alert-rule-handler.js";
-import type { BulkSessionActionPayload } from "../ask/ask-bulk-action-handler.js";
-import type {
-	DeleteProjectPayload,
-	DeleteTemplatePayload,
-	EditProjectPayload,
-	EditTemplatePayload,
-} from "../ask/ask-crud-handler.js";
 import { getChannelCredential } from "../channels/channels-service.js";
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
+import { sendTelegramMessage } from "../channels/telegram.js";
 import { queueStopAction } from "../control-actions.js";
 import { buildLaunchSpec, pickFirstCapableSupervisor } from "../launch-compatibility.js";
 import { createValidatedLaunchRequest } from "../launch-validator.js";
@@ -33,7 +21,24 @@ import { createProject, deleteProject, updateProject } from "../projects/project
 import { getSearchBackend } from "../search/index.js";
 import { listSupervisors } from "../supervisor-registry.js";
 import { deleteTemplate, updateTemplate } from "../templates/templates-service.js";
+import {
+	type ActionRequestKind,
+	type ActionRequestPayload,
+	type AddProjectPayload,
+	KNOWN_ACTION_REQUEST_KINDS,
+	type SessionArchivePayload,
+	type SessionDeletePayload,
+	type SessionStopPayload,
+} from "./action-requests-types.js";
 import { intelligenceForSession } from "./intelligence-service.js";
+
+// Re-export so other server modules can import the union and helpers
+// from a single canonical service entry point.
+export type {
+	ActionRequestKind,
+	ActionRequestPayload,
+	AddProjectPayload,
+} from "./action-requests-types.js";
 
 export type ActionRequestStatus =
 	| "awaiting_reply"
@@ -44,28 +49,16 @@ export type ActionRequestStatus =
 	| "expired"
 	| "superseded";
 
-export interface ActionRequestPayload {
-	template: SessionTemplateInput;
-	launchSpec: LaunchSpec;
-	requestedLaunchMode: LaunchMode;
-	validatedSupervisorId: string;
-	projectId: string;
-	projectName?: string;
-	// Provenance hints stamped by handleAskLaunchIntent and propagated into
-	// launch_requests.metadata so the correlation step can copy them into
-	// sessions.metadata. Absent for non-Ask launch sources.
-	aiInitiated?: boolean;
-	askThreadId?: string;
-	// Slice 3: task-flavored displayName candidate. Persisted onto
-	// launch_requests.desired_display_name and applied to sessions.displayName
-	// at correlation time when the auto-generated adjective-noun is still in
-	// place. Absent for non-Ask launches or when slugification yielded nothing.
-	desiredDisplayName?: string;
-}
+/**
+ * Backwards-compat alias preserved for external consumers that imported
+ * `AddProjectActionPayload` directly. New code should reach for the
+ * canonical `AddProjectPayload` from `./action-requests-types.js`.
+ */
+export type AddProjectActionPayload = AddProjectPayload;
 
 export interface ActionRequest {
 	id: string;
-	kind: string;
+	kind: ActionRequestKind | string;
 	status: ActionRequestStatus;
 	failureReason: string | null;
 	question: string;
@@ -80,36 +73,40 @@ export interface ActionRequest {
 	updatedAt: string;
 }
 
-export interface AddProjectActionPayload {
-	draftFields: ProjectDraftFields;
-	draftId: string;
-}
-
-export interface SessionActionPayload {
-	sessionId: string;
-	sessionDisplayName: string | null;
-}
-
 export interface CreateActionRequestInput {
-	kind:
-		| "launch_request"
-		| "add_project"
-		| "session_stop"
-		| "session_archive"
-		| "session_delete"
-		| "edit_project"
-		| "delete_project"
-		| "edit_template"
-		| "delete_template"
-		| "add_channel"
-		| "create_alert_rule"
-		| "create_freeform_alert_rule"
-		| "bulk_session_action";
+	kind: ActionRequestKind;
 	question: string;
-	payload: ActionRequestPayload | AddProjectActionPayload | Record<string, unknown>;
+	payload: Omit<ActionRequestPayload, "kind"> | ActionRequestPayload | Record<string, unknown>;
 	origin: "web" | "telegram";
 	channelId?: string | null;
 	askThreadId?: string | null;
+}
+
+/**
+ * Type-safe accessor for a typed `ActionRequest.payload`. Returns the
+ * narrowed payload when `req.kind === expected`, otherwise throws.
+ *
+ * Callers previously used `as unknown as <T>` casts at every read site,
+ * which silently produced `undefined` for renamed fields. This guard
+ * fails loudly at the read site instead, and the narrowed return is
+ * exhaustively typed by the discriminant.
+ *
+ * The discriminant lives on the row, not the payload — `add_channel`'s
+ * payload already uses `kind` for the channel sub-kind, so we never
+ * stamp the request kind onto the payload object. The Extract pulls the
+ * matching union member based on the type-level discriminant; at runtime
+ * we trust the row-level `kind` column.
+ */
+export function narrowPayload<K extends ActionRequestKind>(
+	req: ActionRequest,
+	expected: K,
+): Extract<ActionRequestPayload, { kind: K }> {
+	if (req.kind !== expected) {
+		throw new Error(
+			`narrowPayload: expected kind "${expected}" but action request ${req.id} has kind "${req.kind}"`,
+		);
+	}
+	return req.payload as Extract<ActionRequestPayload, { kind: K }>;
 }
 
 function sqlNow(): string {
@@ -117,13 +114,20 @@ function sqlNow(): string {
 }
 
 function toRecord(row: typeof aiActionRequests.$inferSelect): ActionRequest {
+	// The DB column is `text(..., { mode: "json" })` typed as `Record<string, unknown>`.
+	// We do NOT stamp `kind` onto the payload — the row-level `kind` is the
+	// source of truth for narrowing, and some payload shapes use `kind` for
+	// an unrelated field (e.g. add_channel.kind = "telegram"|"webhook"|"email").
+	// `narrowPayload` reads `req.kind`, not `payload.kind`, so the union members
+	// are correctly discriminated without clobbering payload data.
+	const rawPayload = (row.payload ?? {}) as Record<string, unknown>;
 	return {
 		id: row.id,
 		kind: row.kind,
 		status: row.status as ActionRequestStatus,
 		failureReason: row.failureReason ?? null,
 		question: row.question,
-		payload: row.payload as unknown as ActionRequestPayload,
+		payload: rawPayload as unknown as ActionRequestPayload,
 		origin: row.origin as "web" | "telegram",
 		channelId: row.channelId ?? null,
 		askThreadId: row.askThreadId ?? null,
@@ -136,14 +140,29 @@ function toRecord(row: typeof aiActionRequests.$inferSelect): ActionRequest {
 }
 
 export async function createActionRequest(input: CreateActionRequestInput): Promise<ActionRequest> {
+	// Runtime kind gate: the table's `kind` column has no CHECK constraint
+	// (legacy v1 left it open), so we reject typoed kinds here. A test uses
+	// `as ActionRequestKind` to bypass this gate at compile time and asserts
+	// we still throw at runtime.
+	if (!KNOWN_ACTION_REQUEST_KINDS.includes(input.kind as ActionRequestKind)) {
+		throw new Error(
+			`createActionRequest: unknown action request kind "${input.kind}". ` +
+				`Allowed: ${KNOWN_ACTION_REQUEST_KINDS.join(", ")}`,
+		);
+	}
 	const now = sqlNow();
+	// The row-level `kind` column is the source of truth for narrowing —
+	// `narrowPayload` reads it, not a payload-level discriminant. We do
+	// NOT stamp `kind` onto the payload object because some payload shapes
+	// already use `kind` for an unrelated field (e.g. add_channel's
+	// `kind: "telegram" | "webhook" | "email"`); doing so would clobber it.
 	const [row] = await db
 		.insert(aiActionRequests)
 		.values({
 			kind: input.kind,
 			status: "awaiting_reply",
 			question: input.question,
-			payload: input.payload as unknown as Record<string, unknown>,
+			payload: input.payload as Record<string, unknown>,
 			origin: input.origin,
 			channelId: input.channelId ?? null,
 			askThreadId: input.askThreadId ?? null,
@@ -221,13 +240,7 @@ async function notifyOriginUser(
 	if (!token) return;
 	const cred = await getChannelCredential(channelId);
 	if (!cred?.chatId) return;
-	await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ chat_id: cred.chatId, text }),
-	}).catch(() => {
-		// best-effort; don't block the main executor path
-	});
+	await sendTelegramMessage(token, cred.chatId, text);
 	void askThreadId; // reserved for web reply path; future use
 }
 
@@ -235,7 +248,8 @@ async function executeLaunchAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const { template, launchSpec, requestedLaunchMode, validatedSupervisorId } = request.payload;
+	const payload = narrowPayload(request, "launch_request");
+	const { template, launchSpec, requestedLaunchMode, validatedSupervisorId } = payload;
 	const { origin, channelId, askThreadId } = request;
 
 	try {
@@ -291,7 +305,7 @@ async function executeLaunchAction(
 		}
 
 		// === STEP 3: Dispatch via the existing managed-launch pipeline ===
-		const { aiInitiated, askThreadId: payloadAskThreadId, desiredDisplayName } = request.payload;
+		const { aiInitiated, askThreadId: payloadAskThreadId, desiredDisplayName } = payload;
 		const launchMetadata =
 			aiInitiated || payloadAskThreadId
 				? {
@@ -342,7 +356,7 @@ async function executeAddProjectAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = request.payload as unknown as AddProjectActionPayload;
+	const payload = narrowPayload(request, "add_project");
 	const { draftFields, draftId } = payload;
 	const { origin, channelId, askThreadId } = request;
 
@@ -423,13 +437,23 @@ async function executeAddProjectAction(
  * Shared helper for session-mutation executors: verifies the session still
  * exists before running the mutation, marks applied/failed, and notifies.
  * Keeps the three executors free of duplicated pre-check / error-handling code.
+ *
+ * The three session-mutation kinds (stop / archive / delete) share the
+ * same `{ sessionId, sessionDisplayName }` payload shape; we narrow on
+ * the row-level kind so a future divergent payload would surface as a
+ * compile error here rather than at the mutation site.
  */
+type SessionMutationKind = "session_stop" | "session_archive" | "session_delete";
+
 async function executeSessionMutation(
 	request: ActionRequest,
 	resolvedBy: string,
 	mutationFn: (sessionId: string) => Promise<void>,
 ): Promise<ResolveResult> {
-	const payload = request.payload as unknown as SessionActionPayload;
+	const payload = narrowPayload(request, request.kind as SessionMutationKind) as
+		| SessionStopPayload
+		| SessionArchivePayload
+		| SessionDeletePayload;
 	const { origin, channelId, askThreadId } = request;
 	const sessionName = payload.sessionDisplayName ?? payload.sessionId;
 
@@ -526,7 +550,7 @@ async function executeEditProjectAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = request.payload as unknown as EditProjectPayload;
+	const payload = narrowPayload(request, "edit_project");
 	const { projectId, projectName, fields } = payload;
 	const { origin, channelId, askThreadId } = request;
 
@@ -576,7 +600,7 @@ async function executeDeleteProjectAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = request.payload as unknown as DeleteProjectPayload;
+	const payload = narrowPayload(request, "delete_project");
 	const { projectId, projectName } = payload;
 	const { origin, channelId, askThreadId } = request;
 
@@ -621,7 +645,7 @@ async function executeEditTemplateAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = request.payload as unknown as EditTemplatePayload;
+	const payload = narrowPayload(request, "edit_template");
 	const { templateId, templateName, fields } = payload;
 	const { origin, channelId, askThreadId } = request;
 
@@ -707,7 +731,7 @@ async function executeDeleteTemplateAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = request.payload as unknown as DeleteTemplatePayload;
+	const payload = narrowPayload(request, "delete_template");
 	const { templateId, templateName } = payload;
 	const { origin, channelId, askThreadId } = request;
 
@@ -749,13 +773,15 @@ async function executeAddChannelAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = request.payload as unknown as { kind: string; label: string };
+	const payload = narrowPayload(request, "add_channel");
 	const { origin, channelId, askThreadId } = request;
 
 	const validKinds = ["telegram", "webhook", "email"] as const;
 	type ChannelKind = (typeof validKinds)[number];
-	const kind = validKinds.includes(payload.kind as ChannelKind)
-		? (payload.kind as ChannelKind)
+	// payload.channelKind is named so it doesn't clash with the row-level
+	// discriminant `kind`; see action-requests-types.ts AddChannelPayload.
+	const kind = validKinds.includes(payload.channelKind as ChannelKind)
+		? (payload.channelKind as ChannelKind)
 		: null;
 	const label =
 		typeof payload.label === "string" && payload.label ? payload.label : "Ask-created channel";
@@ -819,7 +845,7 @@ async function executeCreateAlertRuleAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = request.payload as unknown as CreateAlertRulePayload;
+	const payload = narrowPayload(request, "create_alert_rule");
 	const { projectId, projectName, ruleType, thresholdMinutes, channelId } = payload;
 	const { origin, channelId: reqChannelId, askThreadId } = request;
 
@@ -983,7 +1009,7 @@ async function executeCreateFreeformAlertRuleAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = request.payload as unknown as CreateFreeformAlertRulePayload;
+	const payload = narrowPayload(request, "create_freeform_alert_rule");
 	const { projectId, projectName, condition, dailyTokenBudget, sampleRate, eventTypesFilter } =
 		payload;
 	const { origin, channelId: reqChannelId, askThreadId } = request;
@@ -1160,7 +1186,7 @@ async function executeBulkSessionAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = request.payload as unknown as BulkSessionActionPayload;
+	const payload = narrowPayload(request, "bulk_session_action");
 	const { action, sessionIds, sessionNames } = payload;
 	const { origin, channelId, askThreadId } = request;
 
@@ -1278,7 +1304,7 @@ export async function resolveActionRequest(args: {
 		const declined = await getActionRequest(id);
 		if (declined?.kind === "add_project") {
 			try {
-				const payload = declined.payload as unknown as AddProjectActionPayload;
+				const payload = narrowPayload(declined, "add_project");
 				if (payload?.draftId) {
 					await db
 						.update(aiPendingProjectDrafts)

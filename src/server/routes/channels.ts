@@ -41,7 +41,9 @@ import {
 	deleteTelegramWebhook,
 	getTelegramBotInfo,
 	getTelegramWebhookInfo,
+	sendTelegramMessage,
 	sendTelegramPlain,
+	sendTelegramRaw,
 	sendTelegramTest,
 	setTelegramWebhook,
 } from "../services/channels/telegram.js";
@@ -170,40 +172,13 @@ async function handleTelegramAskMessage(message: TelegramMessage): Promise<void>
  * Uses the global bot token; falls through silently if it isn't set.
  */
 async function telegramSendMessage(chatId: string, text: string): Promise<void> {
-	const token = getTelegramBotToken();
-	if (!token) return;
-	// Telegram caps at 4096; leave room for a continuation indicator.
-	const LIMIT = 3800;
-	const chunks: string[] = [];
-	let remaining = text;
-	while (remaining.length > LIMIT) {
-		// Prefer splitting on a newline near the limit so we don't chop
-		// mid-sentence.
-		const cutAt = remaining.lastIndexOf("\n", LIMIT);
-		const end = cutAt > LIMIT / 2 ? cutAt : LIMIT;
-		chunks.push(remaining.slice(0, end));
-		remaining = remaining.slice(end).replace(/^\s+/, "");
-	}
-	if (remaining) chunks.push(remaining);
-	for (const part of chunks) {
-		await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ chat_id: chatId, text: part }),
-		}).catch(() => {
-			// best-effort; let the caller's error handler surface failures
-		});
-	}
+	await sendTelegramMessage(getTelegramBotToken(), chatId, text, { chunkSplit: true });
 }
 
 async function telegramChatAction(chatId: string, action: "typing"): Promise<void> {
 	const token = getTelegramBotToken();
 	if (!token) return;
-	await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ chat_id: chatId, action }),
-	});
+	await sendTelegramRaw(token, "sendChatAction", { chat_id: chatId, action });
 }
 
 async function handleEnrollmentStart(message: TelegramMessage): Promise<void> {
@@ -225,14 +200,7 @@ async function handleEnrollmentStart(message: TelegramMessage): Promise<void> {
 }
 
 async function sendEnrollmentReply(chatId: string, text: string): Promise<void> {
-	if (!getTelegramBotToken()) return;
-	await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendMessage`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ chat_id: chatId, text }),
-	}).catch(() => {
-		// ignore
-	});
+	await sendTelegramMessage(getTelegramBotToken(), chatId, text);
 }
 
 async function handleHitlCallback(cb: TelegramCallbackQuery): Promise<void> {

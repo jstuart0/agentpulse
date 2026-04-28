@@ -516,8 +516,12 @@ export const aiActionRequests = sqliteTable("ai_action_requests", {
 		.primaryKey()
 		.$defaultFn(() => crypto.randomUUID()),
 	kind: text("kind").notNull(),
-	// ^ "launch_request" is the only kind in v1; leave untyped so future
-	// kinds can land without a schema migration.
+	// ^ Free string — no DB CHECK constraint. Runtime validation lives in
+	// `createActionRequest()` which gates against `KNOWN_ACTION_REQUEST_KINDS`
+	// (see services/ai/action-requests-types.ts). Current kinds: launch_request,
+	// add_project, session_stop, session_archive, session_delete, edit_project,
+	// delete_project, edit_template, delete_template, add_channel,
+	// create_alert_rule, create_freeform_alert_rule, bulk_session_action.
 	status: text("status").notNull().default("awaiting_reply"),
 	failureReason: text("failure_reason"),
 	question: text("question").notNull(),

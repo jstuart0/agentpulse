@@ -173,3 +173,74 @@ describe("KIND_EXECUTORS registry — unsupported kind", () => {
 		expect(updated?.failureReason).toContain("foo_bar");
 	});
 });
+
+// ---- L-5 — runtime kind validation in createActionRequest ------------------
+
+describe("createActionRequest — runtime kind gate", () => {
+	test("rejects unknown kind at write time before touching the DB", async () => {
+		const before = await db.select().from(aiActionRequests);
+		// Cast through unknown to bypass the literal union at compile time and
+		// hit the runtime gate. The runtime check is the safety net for callers
+		// who came in over a generic JSON path (e.g. ts-ignored RPC).
+		const promise = createActionRequest({
+			kind: "bogus" as unknown as Parameters<typeof createActionRequest>[0]["kind"],
+			question: "Do something bogus?",
+			payload: {},
+			origin: "web",
+		});
+		await expect(promise).rejects.toThrow(/unknown action request kind/i);
+		const after = await db.select().from(aiActionRequests);
+		// No row should have been inserted.
+		expect(after.length).toBe(before.length);
+	});
+
+	test("accepts every kind from the canonical KNOWN_ACTION_REQUEST_KINDS list", async () => {
+		const { KNOWN_ACTION_REQUEST_KINDS } = await import("./action-requests-types.js");
+		// All kinds in the canonical list must round-trip through createActionRequest
+		// without the runtime gate rejecting them. We don't bother stamping a real
+		// payload — the gate only checks the kind discriminant.
+		for (const kind of KNOWN_ACTION_REQUEST_KINDS) {
+			const req = await createActionRequest({
+				kind,
+				question: `Test: ${kind}`,
+				payload: {},
+				origin: "web",
+			});
+			expect(req.kind).toBe(kind);
+		}
+	});
+});
+
+// ---- M-5 — narrowPayload behaves correctly --------------------------------
+
+describe("narrowPayload", () => {
+	test("returns the typed payload when kind matches", async () => {
+		const { narrowPayload } = await import("./action-requests-service.js");
+		const req = await createActionRequest({
+			kind: "session_archive",
+			question: "Archive?",
+			payload: { sessionId: "s-narrow-1", sessionDisplayName: "Hello" },
+			origin: "web",
+		});
+		const reloaded = await getActionRequest(req.id);
+		if (!reloaded) throw new Error("expected reloaded request");
+		const payload = narrowPayload(reloaded, "session_archive");
+		expect(payload.sessionId).toBe("s-narrow-1");
+		expect(payload.sessionDisplayName).toBe("Hello");
+	});
+
+	test("throws when narrowing to the wrong kind", async () => {
+		const { narrowPayload } = await import("./action-requests-service.js");
+		const req = await createActionRequest({
+			kind: "session_archive",
+			question: "Archive?",
+			payload: { sessionId: "s-narrow-2", sessionDisplayName: null },
+			origin: "web",
+		});
+		const reloaded = await getActionRequest(req.id);
+		if (!reloaded) throw new Error("expected reloaded request");
+		expect(() => narrowPayload(reloaded, "launch_request")).toThrow(
+			/expected kind "launch_request"/,
+		);
+	});
+});

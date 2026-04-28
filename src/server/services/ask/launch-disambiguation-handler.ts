@@ -343,13 +343,8 @@ async function sendTelegramPlainMessage(chatId: string | null, text: string): Pr
 	if (!chatId) return;
 	const token = getTelegramBotToken();
 	if (!token) return;
-	await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ chat_id: chatId, text }),
-	}).catch((err) => {
-		console.warn("[launch-disambiguation] telegram send failed:", err);
-	});
+	const { sendTelegramMessage } = await import("../channels/telegram.js");
+	await sendTelegramMessage(token, chatId, text);
 }
 
 const NEW_KEYWORDS = new Set(["new", "scratch", "scaffold"]);

@@ -1,8 +1,17 @@
 import { createActionRequest } from "../ai/action-requests-service.js";
 import type { AskThreadOrigin } from "./ask-service.js";
 
+/**
+ * Persisted payload for an `add_channel` action request.
+ *
+ * Field name `channelKind` (not `kind`) — the row-level discriminant column
+ * is `kind`, and stamping the channel sub-kind into a payload field of the
+ * same name collided with the discriminated-union narrowing helpers when
+ * those were introduced. Keep the field renamed here and read it as
+ * `channelKind` in the executor / inbox.
+ */
 export interface AddChannelPayload {
-	kind: "telegram" | "webhook" | "email";
+	channelKind: "telegram" | "webhook" | "email";
 	label: string;
 }
 
@@ -35,12 +44,12 @@ export async function handleChannelSetupRequest(
 	}
 
 	const label = deriveLabel(message);
-	const payload: AddChannelPayload = { kind, label };
+	const payload: AddChannelPayload = { channelKind: kind, label };
 
 	const actionRequest = await createActionRequest({
 		kind: "add_channel",
 		question: `Set up a new **${kind}** notification channel named "${label}"?`,
-		payload: payload as unknown as Record<string, unknown>,
+		payload,
 		origin: args.origin,
 		askThreadId: args.threadId,
 	});

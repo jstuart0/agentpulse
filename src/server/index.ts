@@ -241,6 +241,20 @@ console.log(
 console.log(`  ║  WS:      ws://${config.host}:${config.port}/api/v1/ws   ║`);
 console.log("  ╚═══════════════════════════════════════════╝");
 console.log("");
+
+// One-shot footgun warning. DISABLE_AUTH=true binds every mutation route
+// (sessions, projects, templates, ai control plane) wide-open; combined
+// with HOST=0.0.0.0 that means anyone on the network can mutate state.
+// We don't refuse to boot — the homelab "trusted LAN" use-case is real —
+// but operators should see this every restart.
+if (config.disableAuth && config.host === "0.0.0.0") {
+	console.warn("  ============================================================");
+	console.warn("  WARNING: Server is running with DISABLE_AUTH=true on HOST=0.0.0.0.");
+	console.warn("  All mutation APIs are fully open. Ensure this is intentional.");
+	console.warn("  Bind to 127.0.0.1 or set DISABLE_AUTH=false to lock down.");
+	console.warn("  ============================================================");
+	console.warn("");
+}
 if (defaultKey) {
 	if (config.isProduction) {
 		console.log("  Default API key created.");

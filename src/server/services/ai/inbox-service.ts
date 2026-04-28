@@ -2,9 +2,7 @@ import { desc, eq, inArray } from "drizzle-orm";
 import type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { sessions, watcherProposals } from "../../db/schema.js";
-import { listOpenActionRequests } from "./action-requests-service.js";
-import type { AddProjectActionPayload } from "./action-requests-service.js";
-import type { HealthState } from "./classifier.js";
+import { listOpenActionRequests, narrowPayload } from "./action-requests-service.js";
 import { listAllOpenHitl } from "./hitl-service.js";
 import { activeSnoozeSet, listActiveSnoozes } from "./inbox-snooze-service.js";
 import { intelligenceForSession } from "./intelligence-service.js";
@@ -24,7 +22,6 @@ import { getProposal } from "./proposals-service.js";
 export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
 
 const DEFAULT_LIMIT = 100;
-const _HIGH_SEVERITY_HEALTH: HealthState[] = ["stuck", "risky", "blocked"];
 
 /**
  * Compose the operator inbox as a read model over the canonical sources:
@@ -161,8 +158,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 	const openActions = await listOpenActionRequests();
 	for (const a of openActions) {
 		if (a.kind === "launch_request") {
-			const payload = a.payload;
-			const rawPayload = payload as unknown as Record<string, unknown>;
+			const payload = narrowPayload(a, "launch_request");
 			items.push({
 				kind: "action_launch",
 				id: a.id,
@@ -170,19 +166,17 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				sessionName: null,
 				severity: "info",
 				createdAt: a.createdAt,
-				projectId: payload.projectId,
-				projectName: payload.projectName ?? payload.projectId,
+				projectId: payload.projectId ?? "",
+				projectName: payload.projectName ?? payload.projectId ?? "",
 				template: payload.template,
 				launchSpec: payload.launchSpec,
 				requestedLaunchMode: payload.requestedLaunchMode,
 				origin: a.origin,
-				parentSessionId:
-					typeof rawPayload.parentSessionId === "string" ? rawPayload.parentSessionId : null,
-				parentSessionName:
-					typeof rawPayload.parentSessionName === "string" ? rawPayload.parentSessionName : null,
+				parentSessionId: payload.parentSessionId ?? null,
+				parentSessionName: payload.parentSessionName ?? null,
 			});
 		} else if (a.kind === "add_project") {
-			const payload = a.payload as unknown as AddProjectActionPayload;
+			const payload = narrowPayload(a, "add_project");
 			items.push({
 				kind: "action_add_project",
 				id: a.id,
@@ -198,10 +192,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "session_stop") {
-			const payload = a.payload as unknown as {
-				sessionId: string;
-				sessionDisplayName: string | null;
-			};
+			const payload = narrowPayload(a, "session_stop");
 			items.push({
 				kind: "action_session_stop",
 				id: a.id,
@@ -212,10 +203,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "session_archive") {
-			const payload = a.payload as unknown as {
-				sessionId: string;
-				sessionDisplayName: string | null;
-			};
+			const payload = narrowPayload(a, "session_archive");
 			items.push({
 				kind: "action_session_archive",
 				id: a.id,
@@ -226,10 +214,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "session_delete") {
-			const payload = a.payload as unknown as {
-				sessionId: string;
-				sessionDisplayName: string | null;
-			};
+			const payload = narrowPayload(a, "session_delete");
 			items.push({
 				kind: "action_session_delete",
 				id: a.id,
@@ -240,11 +225,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "edit_project") {
-			const payload = a.payload as unknown as {
-				projectId: string;
-				projectName: string;
-				fields: Record<string, unknown>;
-			};
+			const payload = narrowPayload(a, "edit_project");
 			items.push({
 				kind: "action_edit_project",
 				id: a.id,
@@ -258,12 +239,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "delete_project") {
-			const payload = a.payload as unknown as {
-				projectId: string;
-				projectName: string;
-				affectedTemplates: number;
-				affectedSessions: number;
-			};
+			const payload = narrowPayload(a, "delete_project");
 			items.push({
 				kind: "action_delete_project",
 				id: a.id,
@@ -278,11 +254,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "edit_template") {
-			const payload = a.payload as unknown as {
-				templateId: string;
-				templateName: string;
-				fields: Record<string, unknown>;
-			};
+			const payload = narrowPayload(a, "edit_template");
 			items.push({
 				kind: "action_edit_template",
 				id: a.id,
@@ -296,10 +268,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "delete_template") {
-			const payload = a.payload as unknown as {
-				templateId: string;
-				templateName: string;
-			};
+			const payload = narrowPayload(a, "delete_template");
 			items.push({
 				kind: "action_delete_template",
 				id: a.id,
@@ -312,13 +281,10 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "add_channel") {
-			const payload = a.payload as unknown as {
-				kind: string;
-				label: string;
-			};
+			const payload = narrowPayload(a, "add_channel");
 			const validKinds = ["telegram", "webhook", "email"] as const;
-			const channelKind = validKinds.includes(payload.kind as (typeof validKinds)[number])
-				? (payload.kind as "telegram" | "webhook" | "email")
+			const channelKind = validKinds.includes(payload.channelKind as (typeof validKinds)[number])
+				? (payload.channelKind as "telegram" | "webhook" | "email")
 				: "telegram";
 			items.push({
 				kind: "action_add_channel",
@@ -332,11 +298,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "create_alert_rule") {
-			const payload = a.payload as unknown as {
-				projectName: string;
-				ruleType: string;
-				thresholdMinutes: number | null;
-			};
+			const payload = narrowPayload(a, "create_alert_rule");
 			items.push({
 				kind: "action_create_alert_rule",
 				id: a.id,
@@ -350,11 +312,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "create_freeform_alert_rule") {
-			const payload = a.payload as unknown as {
-				projectName: string;
-				condition: string;
-				dailyTokenBudget: number;
-			};
+			const payload = narrowPayload(a, "create_freeform_alert_rule");
 			items.push({
 				kind: "action_create_freeform_alert_rule",
 				id: a.id,
@@ -368,12 +326,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 				origin: a.origin,
 			});
 		} else if (a.kind === "bulk_session_action") {
-			const payload = a.payload as unknown as {
-				action: string;
-				sessionIds: string[];
-				sessionNames: string[];
-				exclusions: Array<{ sessionId: string; name: string; reason: string }>;
-			};
+			const payload = narrowPayload(a, "bulk_session_action");
 			const validActions = ["stop", "archive", "delete"] as const;
 			const action = validActions.includes(payload.action as (typeof validActions)[number])
 				? (payload.action as "stop" | "archive" | "delete")
