@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import type { ManagedState } from "../../shared/types.js";
 
 export function cn(...inputs: ClassValue[]) {
 	return twMerge(clsx(inputs));
@@ -119,41 +120,61 @@ export interface SessionModeStyle {
 	chipClass: string;
 }
 
+// Visual styling for every member of the ManagedState union, plus a
+// fallback used when no managedSession row exists (observed-only).
+// Typed as Record<ManagedState, …> so adding a new member to
+// MANAGED_STATES forces this map to be updated — that's the whole
+// point of slice TYPE-2b. The previous `default: "observed"` fallback
+// silently masked new lifecycle states.
+const OBSERVED_STYLE: SessionModeStyle = {
+	mode: "observed",
+	label: "observed",
+	barClass: "bg-muted-foreground/40",
+	chipClass: "text-muted-foreground bg-muted/50 border-border",
+};
+
+const MANAGED_STATE_STYLES: Record<ManagedState, SessionModeStyle> = {
+	interactive_terminal: {
+		mode: "interactive",
+		label: "interactive",
+		barClass: "bg-teal-400",
+		chipClass: "text-teal-300 bg-teal-500/10 border-teal-500/20",
+	},
+	headless: {
+		mode: "headless",
+		label: "headless",
+		barClass: "bg-indigo-400",
+		chipClass: "text-indigo-300 bg-indigo-500/10 border-indigo-500/20",
+	},
+	managed: {
+		mode: "managed",
+		label: "managed",
+		barClass: "bg-violet-400",
+		chipClass: "text-violet-300 bg-violet-500/10 border-violet-500/20",
+	},
+	degraded: {
+		mode: "managed",
+		label: "managed",
+		barClass: "bg-violet-400",
+		chipClass: "text-violet-300 bg-violet-500/10 border-violet-500/20",
+	},
+	// Lifecycle states without a dedicated visual treatment fall back
+	// to the observed style (matches the legacy `default:` branch for
+	// `pending` / `linked` / `stopped` / `completed` / `failed`).
+	pending: OBSERVED_STYLE,
+	linked: OBSERVED_STYLE,
+	stopped: OBSERVED_STYLE,
+	completed: OBSERVED_STYLE,
+	failed: OBSERVED_STYLE,
+};
+
 // Determines the operational mode of a session for UI differentiation.
 // Observed = session seen via hooks only (no supervisor launch).
 // Interactive/Headless/Managed = supervisor-launched with known managedState.
 export function getSessionMode(session: {
-	managedSession?: { managedState: string } | null;
+	managedSession?: { managedState: ManagedState } | null;
 }): SessionModeStyle {
 	const managedState = session.managedSession?.managedState;
-	if (managedState === "interactive_terminal") {
-		return {
-			mode: "interactive",
-			label: "interactive",
-			barClass: "bg-teal-400",
-			chipClass: "text-teal-300 bg-teal-500/10 border-teal-500/20",
-		};
-	}
-	if (managedState === "headless") {
-		return {
-			mode: "headless",
-			label: "headless",
-			barClass: "bg-indigo-400",
-			chipClass: "text-indigo-300 bg-indigo-500/10 border-indigo-500/20",
-		};
-	}
-	if (managedState === "managed" || managedState === "degraded") {
-		return {
-			mode: "managed",
-			label: "managed",
-			barClass: "bg-violet-400",
-			chipClass: "text-violet-300 bg-violet-500/10 border-violet-500/20",
-		};
-	}
-	return {
-		mode: "observed",
-		label: "observed",
-		barClass: "bg-muted-foreground/40",
-		chipClass: "text-muted-foreground bg-muted/50 border-border",
-	};
+	if (!managedState) return OBSERVED_STYLE;
+	return MANAGED_STATE_STYLES[managedState];
 }

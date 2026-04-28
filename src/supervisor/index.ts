@@ -4,8 +4,10 @@ import type {
 	ManagedSession,
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
+	ManagedState,
 	Session,
 } from "../shared/types.js";
+import { MANAGED_STATES } from "../shared/types.js";
 import { loadSupervisorConfig, saveSupervisorConfig } from "./config.js";
 import {
 	launchClaudeHeadlessRequest,
@@ -321,7 +323,7 @@ async function main() {
 						body: JSON.stringify({
 							sessionId: result.action.sessionId,
 							status: "completed",
-							managedState: "stopped",
+							managedState: "stopped" satisfies ManagedState,
 							providerSyncState: "synced",
 						}),
 					});
@@ -367,8 +369,14 @@ async function main() {
 				const prompt = typeof metadata.prompt === "string" ? metadata.prompt : "";
 				const cwd = typeof metadata.cwd === "string" ? metadata.cwd : "";
 				const model = typeof metadata.model === "string" ? metadata.model : null;
-				const managedState =
-					typeof metadata.managedState === "string" ? metadata.managedState : null;
+				// Coerce metadata.managedState (cross-process JSON, untyped) into the
+				// canonical ManagedState union; unknown values fall through as null
+				// so the prompt routing below treats them as the default headless path.
+				const managedState: ManagedState | null =
+					typeof metadata.managedState === "string" &&
+					(MANAGED_STATES as readonly string[]).includes(metadata.managedState)
+						? (metadata.managedState as ManagedState)
+						: null;
 				const env =
 					metadata.env && typeof metadata.env === "object" && !Array.isArray(metadata.env)
 						? (metadata.env as Record<string, string>)

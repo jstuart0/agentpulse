@@ -80,7 +80,7 @@ async function mkManaged(sessionId: string, supervisorId: string) {
 			sessionId,
 			launchRequestId: `lr-${sessionId}`,
 			supervisorId,
-			managedState: "running",
+			managedState: "managed",
 		})
 		.execute();
 }

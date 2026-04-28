@@ -9,6 +9,8 @@ import {
 	HITL_REPLY_KINDS,
 	type HitlReplyKind,
 	KNOWN_PROVIDER_KINDS,
+	MANAGED_STATES,
+	type ManagedState,
 	type ProviderKind,
 	SANDBOX_MODES,
 	type SandboxMode,
@@ -70,6 +72,29 @@ describe("shared kind allowlists", () => {
 			expect(SANDBOX_MODES.includes(mode)).toBe(true);
 		}
 		expect(SANDBOX_MODES.includes("bogus" as SandboxMode)).toBe(false);
+	});
+
+	test("MANAGED_STATES includes every ManagedState member and rejects impostors", () => {
+		// Slice TYPE-2b. The audit identified 9 distinct managedState values
+		// stamped across supervisor providers. Lock those down here so a
+		// future PR that drops one will fail this assertion.
+		const expected: readonly ManagedState[] = [
+			"pending",
+			"interactive_terminal",
+			"headless",
+			"managed",
+			"linked",
+			"degraded",
+			"stopped",
+			"completed",
+			"failed",
+		];
+		for (const state of expected) {
+			expect(MANAGED_STATES.includes(state)).toBe(true);
+		}
+		expect(MANAGED_STATES.length).toBe(9);
+		expect(MANAGED_STATES.includes("running" as ManagedState)).toBe(false);
+		expect(MANAGED_STATES.includes("bogus" as ManagedState)).toBe(false);
 	});
 
 	test("AGENT_TYPES, SESSION_STATUSES, SEMANTIC_STATUSES round-trip via type", () => {

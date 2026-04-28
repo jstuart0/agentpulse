@@ -44,6 +44,29 @@ export type WatcherPolicy = (typeof WATCHER_POLICIES)[number];
 export const DECISION_KINDS = ["continue", "ask", "report", "stop", "wait"] as const;
 export type DecisionKind = (typeof DECISION_KINDS)[number];
 
+// Managed-session lifecycle states. Producers are the supervisor providers
+// (claude-headless / claude-interactive / codex-managed) and the
+// state-recorder (managed-session-state). Consumers (session-tracker,
+// continuability classifier, web getSessionMode, status hints) must
+// handle every member exhaustively — the union below is the canonical
+// allowlist. Order is roughly lifecycle:
+//   pending → active(interactive_terminal | headless | managed | linked)
+//          → degraded → stopped/completed/failed (terminal).
+// LIVE_MANAGED_STATES (session-tracker.ts) preserves its own subset
+// order; do not reorder by re-deriving from this tuple.
+export const MANAGED_STATES = [
+	"pending",
+	"interactive_terminal",
+	"headless",
+	"managed",
+	"linked",
+	"degraded",
+	"stopped",
+	"completed",
+	"failed",
+] as const;
+export type ManagedState = (typeof MANAGED_STATES)[number];
+
 // HITL reply actions accepted from the inbox / session detail.
 export const HITL_REPLY_KINDS = ["approve", "decline", "custom"] as const;
 export type HitlReplyKind = (typeof HITL_REPLY_KINDS)[number];
@@ -226,7 +249,7 @@ export interface ManagedSession {
 	supervisorId: string;
 	providerSessionId: string | null;
 	providerThreadId: string | null;
-	managedState: string;
+	managedState: ManagedState;
 	correlationSource: string | null;
 	desiredThreadTitle: string | null;
 	providerThreadTitle: string | null;
@@ -556,7 +579,7 @@ export interface ManagedSessionStateInput {
 	cwd?: string | null;
 	model?: string | null;
 	status?: SessionStatus;
-	managedState?: string;
+	managedState?: ManagedState;
 	launchRequestId?: string | null;
 	providerSessionId?: string | null;
 	providerThreadId?: string | null;
