@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
+import packageJson from "../../package.json" with { type: "json" };
 import { ensureDefaultApiKey } from "./auth/api-key.js";
 import { getAuthUserFromHeaders } from "./auth/middleware.js";
 import { config } from "./config.js";
@@ -9,8 +10,7 @@ import { initializeDatabase } from "./db/client.js";
 import { aiRouter } from "./routes/ai.js";
 import { askRouter } from "./routes/ask.js";
 import { authRouter } from "./routes/auth.js";
-import { channelsRouter, telegramWebhookRouter } from "./routes/channels.js";
-import { handleTelegramUpdate } from "./routes/channels.js";
+import { channelsRouter, handleTelegramUpdate, telegramWebhookRouter } from "./routes/channels.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
 import { labsRouter } from "./routes/labs.js";
@@ -231,10 +231,10 @@ const defaultKey = await ensureDefaultApiKey();
 
 console.log("");
 console.log("  ╔═══════════════════════════════════════════╗");
-console.log("  ║        AgentPulse v0.2.0-pre.2            ║");
+console.log(`  ║        AgentPulse v${packageJson.version}            ║`);
 console.log("  ╠═══════════════════════════════════════════╣");
 console.log(`  ║  Server:  http://${config.host}:${config.port}          ║`);
-console.log(`  ║  DB:      ${config.useSqlite ? "SQLite" : "PostgreSQL"}                       ║`);
+console.log("  ║  DB:      SQLite                       ║");
 console.log(
 	`  ║  Auth:    ${config.disableAuth ? "DISABLED" : "API Key + Authentik"}              ║`,
 );

@@ -5,17 +5,53 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import { config } from "../config.js";
 import * as schema from "./schema.js";
 
+/**
+ * Slice MIGR-HARDENING-1 (H-2): the only supported backend today is SQLite.
+ * We previously tolerated a `DATABASE_URL=postgres://…` value with a quiet
+ * warn-and-fallback, which combined with a startup banner that proudly
+ * printed "PostgreSQL" lied to operators. Throw on import instead so a
+ * mis-configured deploy fails fast with an actionable message.
+ *
+ * Exported so tests can exercise the check without forcing a fresh module
+ * import (which would also re-open the on-disk DB and pollute other tests).
+ */
+export function assertSqliteBackend(databaseUrl: string | undefined): void {
+	if (!databaseUrl) return;
+	if (databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://")) {
+		throw new Error(
+			"PostgreSQL backend not implemented; set DATABASE_URL to a sqlite path (or unset to use the default ./data/agentpulse.db)",
+		);
+	}
+}
+
+assertSqliteBackend(config.databaseUrl);
+
+/**
+ * Slice MIGR-HARDENING-1 (M-1): whitelist of error messages that are the
+ * expected idempotent-replay path for SQLite when re-running:
+ *   - `ALTER TABLE … ADD COLUMN existing` → "duplicate column name"
+ *   - `CREATE TABLE …` (without IF NOT EXISTS)  → "table … already exists"
+ *   - `CREATE INDEX …` (without IF NOT EXISTS)  → "index … already exists"
+ *   - `CREATE TRIGGER …` (same shape) → "trigger … already exists"
+ *
+ * Anything else — syntax errors, type mismatches, FK violations from a
+ * cascade rebuild, etc. — must surface so we don't silently boot with a
+ * partially-applied schema. The cascade-FK rebuild path from DB-1 builds
+ * a `__new` table fresh and never hits these messages on a clean run.
+ */
+export function isIdempotentMigrationError(message: string): boolean {
+	return (
+		/duplicate column name/i.test(message) ||
+		/already exists/i.test(message) ||
+		/index .+ already exists/i.test(message)
+	);
+}
+
 function createDatabase() {
 	const dbPath = config.sqlitePath;
 	const dir = dirname(dbPath);
 	if (!existsSync(dir)) {
 		mkdirSync(dir, { recursive: true });
-	}
-	if (!config.useSqlite) {
-		// Postgres backend isn't implemented yet — see issue #12. We fall back
-		// to SQLite so tests/dev don't break; the actual Postgres deploy path
-		// logs a warning at boot.
-		console.warn("PostgreSQL not yet configured, falling back to SQLite");
 	}
 	const sqlite = new Database(dbPath);
 	sqlite.exec("PRAGMA journal_mode = WAL;");
@@ -671,9 +707,18 @@ export function initializeDatabase(handle: Database = sqlite) {
 					Bun.sleepSync(backoffMs);
 					continue;
 				}
-				// Non-lock errors (column exists, duplicate index, etc.) are
-				// the expected idempotent path — ignore and move on.
-				break;
+				// Slice MIGR-HARDENING-1 (M-1): only swallow the *expected*
+				// idempotent-replay errors that fall out of "ALTER TABLE
+				// ADD COLUMN" / "CREATE TABLE" / "CREATE INDEX" running a
+				// second time on a DB that already has the schema. Anything
+				// else (typo, type mismatch, broken CREATE TABLE) used to
+				// pass silently; now it surfaces.
+				if (isIdempotentMigrationError(message)) {
+					break;
+				}
+				throw new Error(`[db] Migration failed: ${migration.slice(0, 80)} — ${message}`, {
+					cause: err instanceof Error ? err : undefined,
+				});
 			}
 		}
 		if (attempts >= 8) {

@@ -10,7 +10,7 @@ AgentPulse is the command center for AI coding agents across all your machines. 
 - **Backend:** Hono (HTTP framework)
 - **Frontend:** React 19 + Vite + TailwindCSS
 - **State:** Zustand
-- **Database:** SQLite (default) or PostgreSQL (configurable via DATABASE_URL)
+- **Database:** SQLite only today; PostgreSQL support is not implemented.
 - **ORM:** Drizzle
 - **Real-time:** WebSocket (native Bun) + 3s polling fallback
 - **Telemetry:** Cloudflare Worker + D1 at telemetry-agentpulse.xmojo.net
