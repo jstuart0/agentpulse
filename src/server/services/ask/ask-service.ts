@@ -31,6 +31,7 @@ import { handleNlSearch } from "./ask-search-handler.js";
 import { handleSessionAction } from "./ask-session-action-handler.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
 import {
+	createLaunchCloneDraft,
 	createLaunchDisambiguationDraft,
 	resolveLaunchDisambiguation,
 } from "./launch-disambiguation-handler.js";
@@ -621,6 +622,30 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 	// 3. Launch-intent intercept: runs after the user message is persisted so the
 	//    thread exists. Short-circuits the normal Ask LLM call when a launch is queued.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
+
+	// Slice 6d: when the classifier emitted a cloneSpec, route to the
+	// cloner flow regardless of whether a project was named. The cloner
+	// doesn't need a project — the URL is the path target. Empty-state
+	// users (no projects) reach the cloner via this branch (ruby §13.8).
+	if ((intent.kind === "launch" || intent.kind === "launch_needs_project") && intent.cloneSpec) {
+		const channelId = await resolveTelegramChannelId(origin, input.telegramChatId);
+		const cloneResult = await createLaunchCloneDraft({
+			threadId: thread.id,
+			origin,
+			channelId,
+			telegramChatId: input.telegramChatId,
+			intent: { ...intent, cloneSpec: intent.cloneSpec },
+			originalMessage: text,
+		});
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: cloneResult.replyText,
+			contextSessionIds: [],
+		});
+		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+	}
+
 	if (intent.kind === "launch") {
 		const launchResult = await handleAskLaunchIntent({
 			intent,
@@ -1019,6 +1044,31 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 
 	// 3. Launch-intent intercept for streaming path.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
+
+	// Slice 6d: cloneSpec branch fires before the regular launch /
+	// launch_needs_project paths (ruby §13.8 / bob §12.10).
+	if ((intent.kind === "launch" || intent.kind === "launch_needs_project") && intent.cloneSpec) {
+		const channelId = await resolveTelegramChannelId(origin, input.telegramChatId);
+		const cloneResult = await createLaunchCloneDraft({
+			threadId: thread.id,
+			origin,
+			channelId,
+			telegramChatId: input.telegramChatId,
+			intent: { ...intent, cloneSpec: intent.cloneSpec },
+			originalMessage: text,
+		});
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: cloneResult.replyText,
+			contextSessionIds: [],
+		});
+		yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+		yield { kind: "delta", delta: cloneResult.replyText };
+		yield { kind: "done", assistantMessage };
+		return;
+	}
+
 	if (intent.kind === "launch") {
 		const launchResult = await handleAskLaunchIntent({
 			intent,

@@ -6,10 +6,13 @@ const { aiPendingProjectDrafts, askThreads, projects, sessions } = await import(
 	"../../db/schema.js"
 );
 const {
+	createLaunchCloneDraft,
 	createLaunchDisambiguationDraft,
 	encodePickerMeta,
 	extractPickerMeta,
+	extractWorkspaceCloneMeta,
 	extractWorkspaceScaffoldMeta,
+	parseCloneConfirmReply,
 	parseDisambiguationReply,
 	parseScaffoldConfirmReply,
 	resolveLaunchDisambiguation,
@@ -738,5 +741,331 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 		const meta = extractWorkspaceScaffoldMeta(result.replyText);
 		expect(meta).not.toBeNull();
 		expect(meta?.meta.error?.code).toBe("path_traversal_rejected");
+	});
+});
+
+describe("parseCloneConfirmReply", () => {
+	test("recognizes confirm and cancel keywords", () => {
+		expect(parseCloneConfirmReply("yes").tag).toBe("confirm");
+		expect(parseCloneConfirmReply("OK").tag).toBe("confirm");
+		expect(parseCloneConfirmReply("cancel").tag).toBe("cancel");
+		expect(parseCloneConfirmReply("Abort").tag).toBe("cancel");
+	});
+
+	test("recognizes branch override", () => {
+		const r = parseCloneConfirmReply("branch dev");
+		expect(r.tag).toBe("branch_override");
+		if (r.tag === "branch_override") expect(r.branch).toBe("dev");
+		const r2 = parseCloneConfirmReply("branch=feature/foo");
+		expect(r2.tag).toBe("branch_override");
+		if (r2.tag === "branch_override") expect(r2.branch).toBe("feature/foo");
+	});
+
+	test("recognizes depth override", () => {
+		const r = parseCloneConfirmReply("depth 1");
+		expect(r.tag).toBe("depth_override");
+		if (r.tag === "depth_override") expect(r.depth).toBe(1);
+		const r2 = parseCloneConfirmReply("depth=42");
+		expect(r2.tag).toBe("depth_override");
+		if (r2.tag === "depth_override") expect(r2.depth).toBe(42);
+	});
+
+	test("recognizes custom_path", () => {
+		const r = parseCloneConfirmReply("/Users/me/dev/x");
+		expect(r.tag).toBe("custom_path");
+		if (r.tag === "custom_path") expect(r.path).toBe("/Users/me/dev/x");
+		const r2 = parseCloneConfirmReply("~/dev/x");
+		expect(r2.tag).toBe("custom_path");
+	});
+
+	test("returns unparsed for garbage", () => {
+		expect(parseCloneConfirmReply("???").tag).toBe("unparsed");
+		expect(parseCloneConfirmReply("").tag).toBe("unparsed");
+		expect(parseCloneConfirmReply("depth -1").tag).toBe("unparsed");
+	});
+});
+
+describe("workspace clone flow (Slice 6d)", async () => {
+	const { aiActionRequests, supervisors } = await import("../../db/schema.js");
+
+	beforeEach(async () => {
+		await db.delete(aiActionRequests).execute();
+		await db.delete(supervisors).execute();
+		await db.delete(settings).execute();
+	});
+
+	async function seedConnectedCloneSupervisor(
+		opts: {
+			hostName?: string;
+			trustedRoots?: string[];
+			canClone?: boolean;
+		} = {},
+	) {
+		const now = new Date().toISOString();
+		const features = ["can_run_prelaunch_actions"];
+		if (opts.canClone !== false) features.push("can_clone_repo");
+		await db
+			.insert(supervisors)
+			.values({
+				id: crypto.randomUUID(),
+				hostName: opts.hostName ?? "test-host",
+				platform: "macos",
+				arch: "x64",
+				version: "1.0",
+				capabilities: {
+					version: 1,
+					agentTypes: ["claude_code"],
+					launchModes: ["interactive_terminal"],
+					os: "macos",
+					terminalSupport: ["iTerm.app"],
+					features,
+					executables: {
+						claude: { available: true, version: "1.0", path: "/usr/bin/claude" },
+					},
+					interactiveTerminalControl: { available: true },
+				},
+				trustedRoots: opts.trustedRoots ?? ["/tmp"],
+				status: "connected",
+				capabilitySchemaVersion: 3,
+				configSchemaVersion: 1,
+				lastHeartbeatAt: now,
+				heartbeatLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+				enrollmentState: "active",
+				createdAt: now,
+				updatedAt: now,
+			})
+			.execute();
+	}
+
+	async function seedThread(): Promise<string> {
+		const threadId = crypto.randomUUID();
+		const now = new Date().toISOString();
+		await db
+			.insert(askThreads)
+			.values({ id: threadId, title: "test", origin: "web", createdAt: now, updatedAt: now })
+			.execute();
+		return threadId;
+	}
+
+	test("classifier emitting cloneSpec routes to handleCloneIntent and persists pendingClone", async () => {
+		await seedConnectedCloneSupervisor();
+		const threadId = await seedThread();
+
+		const result = await createLaunchCloneDraft({
+			threadId,
+			origin: "web",
+			channelId: null,
+			intent: {
+				kind: "launch_needs_project",
+				taskHint: "work on auth refactor",
+				taskBrief: { summary: "auth refactor" },
+				displayName: "auth-refactor",
+				cloneSpec: { url: "https://github.com/foo/bar.git" },
+			},
+			originalMessage: "clone github.com/foo/bar and work on auth refactor",
+		});
+
+		expect(result.replyText).toContain("https://github.com/foo/bar.git");
+		const meta = extractWorkspaceCloneMeta(result.replyText);
+		expect(meta).not.toBeNull();
+		expect(meta?.meta.kind).toBe("workspace_clone");
+		expect(meta?.meta.url).toBe("https://github.com/foo/bar.git");
+		expect(meta?.meta.canClone).toBe(true);
+		expect(meta?.meta.suggestedHost).toBe("test-host");
+
+		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const fields = persisted.draftFields as {
+			pendingClone?: { url: string; resolvedPath: string };
+		};
+		expect(fields.pendingClone).toBeDefined();
+		expect(fields.pendingClone?.url).toBe("https://github.com/foo/bar.git");
+		expect(persisted.status).toBe("drafting");
+	});
+
+	test("no supervisor advertises can_clone_repo → reply suggests Settings, no pendingClone written", async () => {
+		// No supervisor at all — canClone is false.
+		const threadId = await seedThread();
+
+		const result = await createLaunchCloneDraft({
+			threadId,
+			origin: "web",
+			channelId: null,
+			intent: {
+				kind: "launch_needs_project",
+				cloneSpec: { url: "https://github.com/foo/bar.git" },
+			},
+			originalMessage: "clone github.com/foo/bar",
+		});
+
+		expect(result.replyText.toLowerCase()).toContain("supervisor");
+		expect(extractWorkspaceCloneMeta(result.replyText)).toBeNull();
+
+		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const fields = persisted.draftFields as { pendingClone?: unknown };
+		expect(fields.pendingClone).toBeUndefined();
+		expect(persisted.status).toBe("drafting");
+	});
+
+	test("confirm reply → handleAskLaunchIntent invoked, prelaunchActions carries clone_repo", async () => {
+		await seedConnectedCloneSupervisor({ trustedRoots: ["/tmp"] });
+		const { WORKSPACE_DEFAULT_ROOT_KEY: WORKSPACE_KEY } = await import("../workspace/feature.js");
+		await db
+			.insert(settings)
+			.values({ key: WORKSPACE_KEY, value: "/tmp/agentpulse-work" })
+			.execute();
+
+		const threadId = await seedThread();
+		await createLaunchCloneDraft({
+			threadId,
+			origin: "web",
+			channelId: null,
+			intent: {
+				kind: "launch_needs_project",
+				displayName: "auth-refactor",
+				cloneSpec: { url: "https://github.com/foo/bar.git" },
+			},
+			originalMessage: "clone github.com/foo/bar",
+		});
+		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+
+		const result = await resolveLaunchDisambiguation({
+			draft: afterNew,
+			reply: "yes",
+			origin: "web",
+			threadId,
+		});
+
+		expect(result.replyText.toLowerCase()).toContain("queued");
+		const actionRows = await db.select().from(aiActionRequests).execute();
+		expect(actionRows.length).toBe(1);
+		expect(actionRows[0].kind).toBe("launch_request");
+		const payload = actionRows[0].payload as {
+			launchSpec?: {
+				prelaunchActions?: Array<{ kind: string; url?: string; intoPath?: string }>;
+			};
+		};
+		expect(payload.launchSpec?.prelaunchActions?.length).toBe(1);
+		expect(payload.launchSpec?.prelaunchActions?.[0].kind).toBe("clone_repo");
+		expect(payload.launchSpec?.prelaunchActions?.[0].url).toBe("https://github.com/foo/bar.git");
+
+		// A scratch project should have been registered with cloned tag.
+		const projectRows = await db.select().from(projects).execute();
+		expect(projectRows.length).toBe(1);
+		expect(projectRows[0].tags).toContain("scratch");
+		expect(projectRows[0].tags).toContain("ai-initiated");
+		expect(projectRows[0].tags).toContain("cloned");
+
+		const [draftAfter] = await db.select().from(aiPendingProjectDrafts).execute();
+		expect(draftAfter.status).toBe("superseded");
+	});
+
+	test("cancel reply → pendingClone draft is deleted with acknowledgment", async () => {
+		await seedConnectedCloneSupervisor();
+		const threadId = await seedThread();
+		await createLaunchCloneDraft({
+			threadId,
+			origin: "web",
+			channelId: null,
+			intent: {
+				kind: "launch_needs_project",
+				cloneSpec: { url: "https://github.com/foo/bar.git" },
+			},
+			originalMessage: "clone github.com/foo/bar",
+		});
+		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+
+		const result = await resolveLaunchDisambiguation({
+			draft: afterNew,
+			reply: "cancel",
+			origin: "web",
+			threadId,
+		});
+		expect(result.replyText.toLowerCase()).toContain("cancelled");
+		const remaining = await db.select().from(aiPendingProjectDrafts).execute();
+		expect(remaining.length).toBe(0);
+	});
+
+	test("custom-path reply → pendingClone updated with the new resolvedPath", async () => {
+		await seedConnectedCloneSupervisor();
+		const threadId = await seedThread();
+		await createLaunchCloneDraft({
+			threadId,
+			origin: "web",
+			channelId: null,
+			intent: {
+				kind: "launch_needs_project",
+				cloneSpec: { url: "https://github.com/foo/bar.git" },
+			},
+			originalMessage: "clone github.com/foo/bar",
+		});
+		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+
+		const result = await resolveLaunchDisambiguation({
+			draft: afterNew,
+			reply: "/tmp/custom-clone",
+			origin: "web",
+			threadId,
+		});
+		const meta = extractWorkspaceCloneMeta(result.replyText);
+		expect(meta).not.toBeNull();
+		expect(meta?.meta.resolvedPath).toBe("/tmp/custom-clone");
+		expect(meta?.meta.error).toBeUndefined();
+
+		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const fields = persisted.draftFields as { pendingClone?: { resolvedPath: string } };
+		expect(fields.pendingClone?.resolvedPath).toBe("/tmp/custom-clone");
+	});
+
+	test("branch override reply → pendingClone updated with new branch", async () => {
+		await seedConnectedCloneSupervisor();
+		const threadId = await seedThread();
+		await createLaunchCloneDraft({
+			threadId,
+			origin: "web",
+			channelId: null,
+			intent: {
+				kind: "launch_needs_project",
+				cloneSpec: { url: "https://github.com/foo/bar.git" },
+			},
+			originalMessage: "clone github.com/foo/bar",
+		});
+		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+
+		const result = await resolveLaunchDisambiguation({
+			draft: afterNew,
+			reply: "branch dev",
+			origin: "web",
+			threadId,
+		});
+		const meta = extractWorkspaceCloneMeta(result.replyText);
+		expect(meta).not.toBeNull();
+		expect(meta?.meta.branch).toBe("dev");
+
+		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const fields = persisted.draftFields as { pendingClone?: { branch?: string } };
+		expect(fields.pendingClone?.branch).toBe("dev");
+	});
+
+	test("empty picker (no projects) + cloneSpec still routes to cloner", async () => {
+		await seedConnectedCloneSupervisor();
+		// No projects seeded — empty picker scenario (ruby §13.8).
+		const threadId = await seedThread();
+
+		const result = await createLaunchCloneDraft({
+			threadId,
+			origin: "web",
+			channelId: null,
+			intent: {
+				kind: "launch_needs_project",
+				cloneSpec: { url: "https://github.com/foo/bar.git" },
+			},
+			originalMessage: "clone github.com/foo/bar",
+		});
+
+		const meta = extractWorkspaceCloneMeta(result.replyText);
+		expect(meta).not.toBeNull();
+		expect(meta?.meta.kind).toBe("workspace_clone");
+		const projectRows = await db.select().from(projects).execute();
+		expect(projectRows.length).toBe(0);
 	});
 });

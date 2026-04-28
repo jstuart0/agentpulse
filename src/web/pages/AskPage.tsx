@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AskProjectPicker, parseProjectPickerMeta } from "../components/AskProjectPicker.js";
+import { AskWorkspaceCloner, parseClonerMeta } from "../components/AskWorkspaceCloner.js";
 import {
 	AskWorkspaceScaffolder,
 	parseScaffolderMeta,
@@ -410,12 +411,19 @@ function MessageBubble({
 	// Pull the project-picker payload (if any) out of the assistant
 	// content so we can render the structured component AND keep the
 	// Telegram-readable plain text as the visible body. The same fenced
-	// block carries either kind:"project_picker" or kind:"workspace_scaffold"
-	// (Slice 5d) — discriminated by the parser.
+	// block carries kind:"project_picker", kind:"workspace_scaffold"
+	// (Slice 5d), or kind:"workspace_clone" (Slice 6d) — discriminated by
+	// the parsers, which each filter on the kind field.
 	const pickerData = !isUser && msg.content ? parseProjectPickerMeta(msg.content) : null;
 	const scaffolderData =
 		!isUser && msg.content && !pickerData ? parseScaffolderMeta(msg.content) : null;
-	const visibleText = pickerData?.visibleText ?? scaffolderData?.visibleText ?? msg.content;
+	const clonerData =
+		!isUser && msg.content && !pickerData && !scaffolderData ? parseClonerMeta(msg.content) : null;
+	const visibleText =
+		pickerData?.visibleText ??
+		scaffolderData?.visibleText ??
+		clonerData?.visibleText ??
+		msg.content;
 	// The picker is interactive only on the last message and only while
 	// no reply is in flight — older picker messages stay visible but
 	// disabled so the transcript still reads naturally.
@@ -460,6 +468,19 @@ function MessageBubble({
 						onConfirm={() => onPickerSelect("yes")}
 						onCancel={() => onPickerSelect("cancel")}
 						onCustomPath={(p) => onPickerSelect(p)}
+					/>
+				)}
+				{clonerData && (
+					<AskWorkspaceCloner
+						meta={clonerData.meta}
+						disabled={interactiveDisabled}
+						onConfirm={() => onPickerSelect("yes")}
+						onCancel={() => onPickerSelect("cancel")}
+						onCustomPath={(p) => onPickerSelect(p)}
+						onEditOptions={(opts) => {
+							if (opts.branch) onPickerSelect(`branch ${opts.branch}`);
+							else if (opts.depth !== undefined) onPickerSelect(`depth ${opts.depth}`);
+						}}
 					/>
 				)}
 				{msg.errorMessage && (

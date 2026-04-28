@@ -687,6 +687,30 @@ export interface PendingWorkspaceScaffold {
 	suggestedHost?: string;
 }
 
+// Workspace-clone pending state — populated when the classifier emitted a
+// `cloneSpec` and we've computed the proposed path + prelaunchActions but
+// the user hasn't yet confirmed. Slice 6d of the AI task-initiated
+// launches plan (§12.10 / §13). Mutually exclusive with `pendingScaffold`
+// (a draft has at most one of either).
+export interface PendingWorkspaceClone {
+	taskSlug: string;
+	resolvedPath: string;
+	url: string;
+	branch?: string;
+	depth?: number;
+	timeoutSeconds: number;
+	actions: Array<{
+		kind: "clone_repo";
+		url: string;
+		intoPath: string;
+		branch?: string;
+		depth?: number;
+		timeoutSeconds?: number;
+		seedClaudeMd?: { content: string; path: string; sha256: string };
+	}>;
+	suggestedHost?: string;
+}
+
 export interface LaunchDisambiguationDraftFields {
 	originalMessage: string;
 	taskHint?: string;
@@ -699,6 +723,10 @@ export interface LaunchDisambiguationDraftFields {
 	// confirmation card, the resolved path + actions are stored here while
 	// the draft awaits a confirm/cancel/custom-path reply.
 	pendingScaffold?: PendingWorkspaceScaffold;
+	// Slice 6d: when the classifier emitted a cloneSpec and we've shown
+	// the cloner card, the resolved URL/path/actions are stored here while
+	// the draft awaits a confirm/cancel/custom-path/edit-options reply.
+	pendingClone?: PendingWorkspaceClone;
 }
 
 // aiPendingProjectDrafts — in-flight multi-turn state for both add-project
