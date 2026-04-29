@@ -871,7 +871,10 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 			model: llm.provider.model,
 			maxTokens: 800,
 			temperature: 0.3,
-			timeoutMs: 60_000,
+			// 180s accommodates cold-load on local 20B+ models served via
+			// Ollama/vLLM where the first request after model eviction can
+			// take 60-90s before any tokens flow.
+			timeoutMs: 180_000,
 		});
 		const reply = preamble + (res.text.trim() || "(no response)");
 		const assistantMessage = await appendMessage({
@@ -890,10 +893,15 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
+		const isTimeout = /timed out|timeout/i.test(message);
 		const assistantMessage = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
-			content: `${preamble}I couldn't reach the LLM provider just now. See the inline error and check Settings → AI.`,
+			content: `${preamble}${
+				isTimeout
+					? "The LLM provider didn't respond in time — usually a cold model load. Try the same question again in a few seconds."
+					: "I couldn't reach the LLM provider just now. See the inline error and check Settings → AI."
+			}`,
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: message,
 		});
@@ -1110,7 +1118,9 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 			model: llm.provider.model,
 			maxTokens: 800,
 			temperature: 0.3,
-			timeoutMs: 60_000,
+			// Mirrors runAskTurn's 180s — a cold 20B+ model can take 60-90s
+			// to emit its first streamed token.
+			timeoutMs: 180_000,
 		})) {
 			if (evt.kind === "delta") {
 				collected += evt.text;
@@ -1122,13 +1132,17 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		}
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
+		const isTimeout = /timed out|timeout/i.test(message);
 		const errMsg = await appendMessage({
 			threadId: thread.id,
 			role: "assistant",
 			content:
 				preamble +
-				// ASYMMETRY 2: streaming catch uses (collected.trim() || "Check Settings → AI") — DO NOT use sync's fixed string.
-				(collected.trim() || "I couldn't reach the LLM provider just now. Check Settings → AI."),
+				// ASYMMETRY 2: streaming catch uses (collected.trim() || fallback) — DO NOT use sync's fixed string.
+				(collected.trim() ||
+					(isTimeout
+						? "The LLM provider didn't respond in time — usually a cold model load. Try again in a few seconds."
+						: "I couldn't reach the LLM provider just now. Check Settings → AI.")),
 			contextSessionIds: context.includedSessionIds,
 			errorMessage: message,
 		});
