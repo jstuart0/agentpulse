@@ -1,11 +1,14 @@
 import { create } from "zustand";
-import type { AgentType } from "../../shared/types.js";
+import type { AgentType, ManagedState } from "../../shared/types.js";
 
 export interface OpenTab {
 	sessionId: string;
 	displayName: string;
 	agentType: AgentType;
-	managedState: string | null;
+	// Narrowed in TYPE-2b. Persisted to localStorage; on rehydrate we
+	// trust the value because the only producer (SessionDetailPage)
+	// reads it from the typed managedSession.managedState.
+	managedState: ManagedState | null;
 	/**
 	 * Session working directory — used for the per-project color tint
 	 * on the tab bar. Optional so tabs persisted before this field

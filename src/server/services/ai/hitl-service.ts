@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, isNotNull, lte } from "drizzle-orm";
+import type { ActionRequestDecision, HitlReplyKind } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { aiHitlRequests } from "../../db/schema.js";
 
@@ -10,7 +11,9 @@ export type HitlStatus =
 	| "timed_out"
 	| "superseded";
 
-export type HitlReplyKind = "approve" | "decline" | "custom";
+// Canonical const + type live in src/shared/types.ts. Re-exported here
+// so existing server consumers don't need to change their import path.
+export type { HitlReplyKind };
 
 export interface HitlRequestRecord {
 	id: string;
@@ -84,7 +87,7 @@ export async function supersedeOpenHitl(sessionId: string): Promise<number> {
 /** Resolve a specific HITL request with an operator reply. */
 export async function resolveHitlRequest(input: {
 	id: string;
-	status: "applied" | "declined";
+	status: ActionRequestDecision;
 	replyKind: HitlReplyKind;
 	replyText?: string | null;
 }): Promise<HitlRequestRecord | null> {

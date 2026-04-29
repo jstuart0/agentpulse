@@ -1,4 +1,5 @@
 import { count, eq } from "drizzle-orm";
+import type { AskThreadOrigin } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { sessionTemplates, sessions } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
@@ -34,7 +35,7 @@ export interface DeleteTemplatePayload extends Record<string, unknown> {
 
 export async function handleProjectTemplateCrud(
 	intent: Exclude<ProjectTemplateCrudIntent, { kind: "none" } | { kind: "classifier_failed" }>,
-	args: { origin: "web" | "telegram"; threadId: string; telegramChatId?: string | null },
+	args: { origin: AskThreadOrigin; threadId: string; telegramChatId?: string | null },
 ): Promise<{ replyText: string; actionRequestId: string | null }> {
 	const { origin, threadId, telegramChatId } = args;
 
@@ -52,7 +53,7 @@ export async function handleProjectTemplateCrud(
 
 async function handleEditProject(
 	intent: Extract<ProjectTemplateCrudIntent, { kind: "edit_project" }>,
-	origin: "web" | "telegram",
+	origin: AskThreadOrigin,
 	threadId: string,
 	telegramChatId: string | null,
 ): Promise<{ replyText: string; actionRequestId: string | null }> {
@@ -143,7 +144,7 @@ async function handleEditProject(
 
 async function handleDeleteProject(
 	intent: Extract<ProjectTemplateCrudIntent, { kind: "delete_project" }>,
-	origin: "web" | "telegram",
+	origin: AskThreadOrigin,
 	threadId: string,
 	telegramChatId: string | null,
 ): Promise<{ replyText: string; actionRequestId: string | null }> {
@@ -218,7 +219,7 @@ async function handleDeleteProject(
 
 async function handleEditTemplate(
 	intent: Extract<ProjectTemplateCrudIntent, { kind: "edit_template" }>,
-	origin: "web" | "telegram",
+	origin: AskThreadOrigin,
 	threadId: string,
 	telegramChatId: string | null,
 ): Promise<{ replyText: string; actionRequestId: string | null }> {
@@ -290,7 +291,7 @@ async function handleEditTemplate(
 
 async function handleDeleteTemplate(
 	intent: Extract<ProjectTemplateCrudIntent, { kind: "delete_template" }>,
-	origin: "web" | "telegram",
+	origin: AskThreadOrigin,
 	threadId: string,
 	telegramChatId: string | null,
 ): Promise<{ replyText: string; actionRequestId: string | null }> {

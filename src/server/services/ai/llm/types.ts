@@ -7,7 +7,13 @@
  * use) stays inside the adapter.
  */
 
-export type ProviderKind = "anthropic" | "openai" | "google" | "openrouter" | "openai_compatible";
+// Canonical const + derived type live in src/shared/types.ts so server
+// and client agree on the kind list. Imported + re-exported here so
+// adapter code can keep its existing `from "./types"` imports.
+import type { ProviderKind } from "../../../../shared/types.js";
+
+export { KNOWN_PROVIDER_KINDS } from "../../../../shared/types.js";
+export type { ProviderKind };
 
 export interface LlmRequest {
 	/** Stable across a session — candidate for provider prompt caching. */

@@ -1,11 +1,14 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import type { InboxWorkItem } from "../../../shared/types.js";
+import {
+	type InboxWorkItem,
+	KNOWN_NOTIFICATION_CHANNEL_KINDS,
+	type NotificationChannelKind,
+} from "../../../shared/types.js";
 import "./__test_db.js";
 
 const { db, initializeDatabase } = await import("../../db/client.js");
-const { aiHitlRequests, aiInboxSnoozes, events, sessions, watcherProposals } = await import(
-	"../../db/schema.js"
-);
+const { aiActionRequests, aiHitlRequests, aiInboxSnoozes, events, sessions, watcherProposals } =
+	await import("../../db/schema.js");
 const { buildInbox } = await import("./inbox-service.js");
 const { snoozeItem } = await import("./inbox-snooze-service.js");
 const { completeProposalAsHitl, createPendingProposal, failProposal } = await import(
@@ -18,6 +21,7 @@ beforeAll(() => {
 
 beforeEach(async () => {
 	await db.delete(aiInboxSnoozes).execute();
+	await db.delete(aiActionRequests).execute();
 	await db.delete(aiHitlRequests).execute();
 	await db.delete(watcherProposals).execute();
 	await db.delete(events).execute();
@@ -157,6 +161,55 @@ describe("inbox-service", () => {
 		for (const kind of expectedKinds) {
 			expect(inbox.byKind).toHaveProperty(kind);
 			expect(inbox.byKind[kind]).toBe(0);
+		}
+	});
+
+	test("add_channel inbox composer accepts every KNOWN_NOTIFICATION_CHANNEL_KINDS member", async () => {
+		// Slice TYPE-2c. Confirms the inbox `validKinds` allowlist tracks
+		// the canonical const. If a new transport is added to
+		// KNOWN_NOTIFICATION_CHANNEL_KINDS, the composer must surface it
+		// as `channelKind` (not silently fall back to "telegram").
+		for (const kind of KNOWN_NOTIFICATION_CHANNEL_KINDS) {
+			await db.delete(aiActionRequests).execute();
+			await db
+				.insert(aiActionRequests)
+				.values({
+					kind: "add_channel",
+					status: "awaiting_reply",
+					question: `Set up a ${kind} channel?`,
+					payload: { channelKind: kind, label: `t-${kind}` },
+					origin: "web",
+				})
+				.execute();
+			const inbox = await buildInbox();
+			const card = inbox.items.find((i) => i.kind === "action_add_channel");
+			expect(card).toBeDefined();
+			if (card && card.kind === "action_add_channel") {
+				expect(card.channelKind).toBe(kind);
+			}
+		}
+	});
+
+	test("add_channel inbox composer falls back to telegram for an impostor channelKind", async () => {
+		// The composer narrows via `KNOWN_NOTIFICATION_CHANNEL_KINDS.includes`
+		// — an unknown value (e.g. a future "slack" before the const is
+		// updated) must NOT pass the gate; the card stays renderable by
+		// falling through to telegram so the operator can still decline.
+		await db
+			.insert(aiActionRequests)
+			.values({
+				kind: "add_channel",
+				status: "awaiting_reply",
+				question: "Set up a slack channel?",
+				payload: { channelKind: "slack" as NotificationChannelKind, label: "imposter" },
+				origin: "web",
+			})
+			.execute();
+		const inbox = await buildInbox();
+		const card = inbox.items.find((i) => i.kind === "action_add_channel");
+		expect(card).toBeDefined();
+		if (card && card.kind === "action_add_channel") {
+			expect(card.channelKind).toBe("telegram");
 		}
 	});
 

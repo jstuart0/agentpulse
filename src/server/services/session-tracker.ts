@@ -1,6 +1,6 @@
 import { and, count, desc, eq, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { SESSION_END_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "../../shared/constants.js";
-import type { AgentType, SessionStatus } from "../../shared/types.js";
+import type { AgentType, ManagedState, SessionStatus } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { managedSessions, sessions, supervisors } from "../db/schema.js";
 import { getManagedSession } from "./managed-session-state.js";
@@ -49,7 +49,16 @@ export function renameSession(sessionId: string, name: string): void {
 // Managed states that indicate an agent process is still running under a live
 // supervisor. Sessions in these states must not be auto-completed by staleness
 // checks — the supervisor will report terminal state when the process exits.
-const LIVE_MANAGED_STATES = ["interactive_terminal", "headless", "managed", "pending"] as const;
+// Order is preserved from the original slice (interactive/headless/managed
+// first, pending last) — the slice TYPE-2b promotion narrows the element type
+// to ManagedState so adding a new live state requires picking it from the
+// canonical union.
+const LIVE_MANAGED_STATES = [
+	"interactive_terminal",
+	"headless",
+	"managed",
+	"pending",
+] as const satisfies readonly ManagedState[];
 
 // Get all sessions with optional filters
 export async function getSessions(filters?: {

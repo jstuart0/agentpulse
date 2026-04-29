@@ -3,6 +3,7 @@ import type {
 	ManagedSession,
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
+	ManagedState,
 	Session,
 } from "../../shared/types.js";
 import { db } from "../db/client.js";
@@ -21,7 +22,11 @@ function mapManagedSession(row: typeof managedSessions.$inferSelect): ManagedSes
 		supervisorId: row.supervisorId,
 		providerSessionId: row.providerSessionId ?? null,
 		providerThreadId: row.providerThreadId ?? null,
-		managedState: row.managedState,
+		// Drizzle infers `text` as `string`. The producers (supervisor
+		// providers + this file) only ever stamp ManagedState members,
+		// so the runtime values are always valid; this cast is the
+		// boundary between the DB row type and the typed application view.
+		managedState: row.managedState as ManagedState,
 		correlationSource: row.correlationSource ?? null,
 		desiredThreadTitle: row.desiredThreadTitle ?? null,
 		providerThreadTitle: row.providerThreadTitle ?? null,
@@ -122,6 +127,11 @@ export async function upsertManagedSessionState(
 		input.providerProtocolVersion ?? existingManaged?.providerProtocolVersion ?? null;
 	const providerCapabilitySnapshot =
 		input.providerCapabilitySnapshot ?? existingManaged?.providerCapabilitySnapshot ?? null;
+	// Narrow row.managedState (Drizzle string) into the typed union — every
+	// producer in the codebase only writes ManagedState members, so the
+	// runtime value is always valid.
+	const resolvedManagedState: ManagedState =
+		input.managedState ?? (existingManaged?.managedState as ManagedState | undefined) ?? "managed";
 
 	await db
 		.insert(managedSessions)
@@ -131,7 +141,7 @@ export async function upsertManagedSessionState(
 			supervisorId,
 			providerSessionId,
 			providerThreadId,
-			managedState: input.managedState ?? existingManaged?.managedState ?? "managed",
+			managedState: resolvedManagedState,
 			correlationSource:
 				input.correlationSource ?? existingManaged?.correlationSource ?? "session_id",
 			desiredThreadTitle: desiredTitle,
@@ -153,7 +163,7 @@ export async function upsertManagedSessionState(
 				supervisorId,
 				providerSessionId,
 				providerThreadId,
-				managedState: input.managedState ?? existingManaged?.managedState ?? "managed",
+				managedState: resolvedManagedState,
 				correlationSource:
 					input.correlationSource ?? existingManaged?.correlationSource ?? "session_id",
 				desiredThreadTitle: desiredTitle,
@@ -215,6 +225,10 @@ export async function attachManagedSessionToLaunch(input: {
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, input.sessionId))
 		.limit(1);
+	// Narrow Drizzle row's `string` to ManagedState. Every producer only
+	// writes union members, so this cast is safe at the boundary.
+	const resolvedManagedState: ManagedState =
+		(existingManaged?.managedState as ManagedState | undefined) ?? "linked";
 
 	await db
 		.insert(managedSessions)
@@ -224,7 +238,7 @@ export async function attachManagedSessionToLaunch(input: {
 			supervisorId: input.supervisorId,
 			providerSessionId: existingManaged?.providerSessionId ?? input.sessionId,
 			providerThreadId: existingManaged?.providerThreadId ?? null,
-			managedState: existingManaged?.managedState ?? "linked",
+			managedState: resolvedManagedState,
 			correlationSource:
 				input.correlationSource ?? existingManaged?.correlationSource ?? "session_id",
 			desiredThreadTitle: existingManaged?.desiredThreadTitle ?? null,
@@ -246,7 +260,7 @@ export async function attachManagedSessionToLaunch(input: {
 				supervisorId: input.supervisorId,
 				providerSessionId: existingManaged?.providerSessionId ?? input.sessionId,
 				providerThreadId: existingManaged?.providerThreadId ?? null,
-				managedState: existingManaged?.managedState ?? "linked",
+				managedState: resolvedManagedState,
 				correlationSource:
 					input.correlationSource ?? existingManaged?.correlationSource ?? "session_id",
 				desiredThreadTitle: existingManaged?.desiredThreadTitle ?? null,

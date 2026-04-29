@@ -172,7 +172,10 @@ export function TimelineCard({
 }
 
 export function eventLabel(category: EventCategory | null): string {
+	if (category === null) return "Event";
 	switch (category) {
+		case "prompt":
+			return "Prompt";
 		case "assistant_message":
 			return "Response";
 		case "progress_update":
@@ -185,8 +188,27 @@ export function eventLabel(category: EventCategory | null): string {
 			return "Tool";
 		case "system_event":
 			return "System";
-		default:
+		case "ai_proposal_pending":
+			return "AI Proposal Pending";
+		case "ai_proposal":
+			return "AI Proposal";
+		case "ai_report":
+			return "AI Report";
+		case "ai_hitl_request":
+			return "AI HITL";
+		case "ai_hitl_response":
+			return "AI HITL Reply";
+		case "ai_continue_sent":
+			return "AI Continue";
+		case "ai_continue_blocked":
+			return "AI Continue Blocked";
+		case "ai_error":
+			return "AI Error";
+		default: {
+			const _exhaustive: never = category;
+			void _exhaustive;
 			return "Event";
+		}
 	}
 }
 

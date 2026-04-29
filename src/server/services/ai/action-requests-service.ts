@@ -1,4 +1,12 @@
 import { and, eq, inArray, isNull, max, sql } from "drizzle-orm";
+import {
+	type ActionRequestDecision,
+	type AlertRuleType,
+	type AskThreadOrigin,
+	KNOWN_ALERT_RULE_TYPES,
+	KNOWN_NOTIFICATION_CHANNEL_KINDS,
+	type NotificationChannelKind,
+} from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import {
 	events,
@@ -63,7 +71,7 @@ export interface ActionRequest {
 	failureReason: string | null;
 	question: string;
 	payload: ActionRequestPayload;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	channelId: string | null;
 	askThreadId: string | null;
 	resolvedAt: string | null;
@@ -77,7 +85,7 @@ export interface CreateActionRequestInput {
 	kind: ActionRequestKind;
 	question: string;
 	payload: Omit<ActionRequestPayload, "kind"> | ActionRequestPayload | Record<string, unknown>;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	channelId?: string | null;
 	askThreadId?: string | null;
 }
@@ -128,7 +136,7 @@ function toRecord(row: typeof aiActionRequests.$inferSelect): ActionRequest {
 		failureReason: row.failureReason ?? null,
 		question: row.question,
 		payload: rawPayload as unknown as ActionRequestPayload,
-		origin: row.origin as "web" | "telegram",
+		origin: row.origin as AskThreadOrigin,
 		channelId: row.channelId ?? null,
 		askThreadId: row.askThreadId ?? null,
 		resolvedAt: row.resolvedAt ?? null,
@@ -191,7 +199,7 @@ export async function listOpenActionRequests(): Promise<ActionRequest[]> {
 }
 
 type ResolveResult =
-	| { ok: true; status: "applied" | "declined" }
+	| { ok: true; status: ActionRequestDecision }
 	| { ok: false; reason: "race_lost"; currentStatus: string }
 	| { ok: false; reason: "expired"; failureReason: string }
 	| { ok: false; reason: "failed"; failureReason: string };
@@ -230,7 +238,7 @@ async function conditionalUpdate(
 }
 
 async function notifyOriginUser(
-	origin: "web" | "telegram",
+	origin: AskThreadOrigin,
 	channelId: string | null,
 	askThreadId: string | null,
 	text: string,
@@ -442,15 +450,20 @@ async function executeAddProjectAction(
  * same `{ sessionId, sessionDisplayName }` payload shape; we narrow on
  * the row-level kind so a future divergent payload would surface as a
  * compile error here rather than at the mutation site.
+ *
+ * Note: this is the COMPOUND action-request form (`session_stop`...).
+ * The bare-form `SessionMutationKind` (`stop` | `archive` | `delete`)
+ * lives in shared/types.ts and drives the bulk-action surfaces.
+ * `mutationKindToInboxKind()` in shared/types.ts maps bare → compound.
  */
-type SessionMutationKind = "session_stop" | "session_archive" | "session_delete";
+type ActionRequestSessionMutationKind = "session_stop" | "session_archive" | "session_delete";
 
 async function executeSessionMutation(
 	request: ActionRequest,
 	resolvedBy: string,
 	mutationFn: (sessionId: string) => Promise<void>,
 ): Promise<ResolveResult> {
-	const payload = narrowPayload(request, request.kind as SessionMutationKind) as
+	const payload = narrowPayload(request, request.kind as ActionRequestSessionMutationKind) as
 		| SessionStopPayload
 		| SessionArchivePayload
 		| SessionDeletePayload;
@@ -776,12 +789,12 @@ async function executeAddChannelAction(
 	const payload = narrowPayload(request, "add_channel");
 	const { origin, channelId, askThreadId } = request;
 
-	const validKinds = ["telegram", "webhook", "email"] as const;
-	type ChannelKind = (typeof validKinds)[number];
 	// payload.channelKind is named so it doesn't clash with the row-level
 	// discriminant `kind`; see action-requests-types.ts AddChannelPayload.
-	const kind = validKinds.includes(payload.channelKind as ChannelKind)
-		? (payload.channelKind as ChannelKind)
+	const kind = KNOWN_NOTIFICATION_CHANNEL_KINDS.includes(
+		payload.channelKind as NotificationChannelKind,
+	)
+		? (payload.channelKind as NotificationChannelKind)
 		: null;
 	const label =
 		typeof payload.label === "string" && payload.label ? payload.label : "Ask-created channel";
@@ -854,13 +867,7 @@ async function executeCreateAlertRuleAction(
 	// alert-rule sweep in WatcherRunner. On rule creation, existing matching
 	// sessions are pre-seeded into project_alert_rule_fires to prevent
 	// first-sweep notification storms.
-	const supportedRuleTypes = [
-		"status_failed",
-		"status_stuck",
-		"status_completed",
-		"no_activity_minutes",
-	];
-	if (!supportedRuleTypes.includes(ruleType)) {
+	if (!KNOWN_ALERT_RULE_TYPES.includes(ruleType as AlertRuleType)) {
 		const reason = `Rule type "${ruleType}" is not supported`;
 		await conditionalUpdate(request.id, "applying", {
 			status: "failed",
@@ -1248,7 +1255,13 @@ async function executeBulkSessionAction(
 	return { ok: true, status: "applied" };
 }
 
-function ruleTypeLabel(ruleType: string, thresholdMinutes?: number | null): string {
+// Exhaustive over AlertRuleType — adding a new rule type to
+// KNOWN_ALERT_RULE_TYPES without a matching branch here fails to compile
+// via the `never` assignment in the default arm.
+//
+// Exported so tests can confirm every KNOWN_ALERT_RULE_TYPES member is
+// handled without introspecting private state.
+export function ruleTypeLabel(ruleType: AlertRuleType, thresholdMinutes?: number | null): string {
 	switch (ruleType) {
 		case "status_failed":
 			return "fails";
@@ -1258,8 +1271,10 @@ function ruleTypeLabel(ruleType: string, thresholdMinutes?: number | null): stri
 			return "completes";
 		case "no_activity_minutes":
 			return `has no activity for ${thresholdMinutes ?? "N"} minutes`;
-		default:
-			return ruleType;
+		default: {
+			const _exhaustive: never = ruleType;
+			return _exhaustive;
+		}
 	}
 }
 
@@ -1283,7 +1298,7 @@ const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
 
 export async function resolveActionRequest(args: {
 	id: string;
-	decision: "applied" | "declined";
+	decision: ActionRequestDecision;
 	resolvedBy: string;
 }): Promise<ResolveResult> {
 	const { id, decision, resolvedBy } = args;

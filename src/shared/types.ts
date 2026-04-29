@@ -1,9 +1,137 @@
-// Agent types supported
-export type AgentType = "claude_code" | "codex_cli";
+import type { AGENT_TYPES, SEMANTIC_STATUSES, SESSION_STATUSES } from "./constants.js";
 
-export type ApprovalPolicy = "default" | "suggest" | "auto" | "manual" | "untrusted" | "on-failure";
+// Agent types supported. Canonical const list lives in constants.ts;
+// derive the type here for easy import discoverability.
+export type AgentType = (typeof AGENT_TYPES)[number];
 
-export type SandboxMode = "default" | "workspace-write" | "read-only" | "danger-full-access";
+export const APPROVAL_POLICIES = [
+	"default",
+	"suggest",
+	"auto",
+	"manual",
+	"untrusted",
+	"on-failure",
+] as const;
+export type ApprovalPolicy = (typeof APPROVAL_POLICIES)[number];
+
+export const SANDBOX_MODES = [
+	"default",
+	"workspace-write",
+	"read-only",
+	"danger-full-access",
+] as const;
+export type SandboxMode = (typeof SANDBOX_MODES)[number];
+
+// LLM provider kinds. The canonical const drives runtime allowlists,
+// fee tables, and UI dropdowns — adding a new kind here forces every
+// consumer to handle it (or fail to compile).
+export const KNOWN_PROVIDER_KINDS = [
+	"anthropic",
+	"openai",
+	"google",
+	"openrouter",
+	"openai_compatible",
+] as const;
+export type ProviderKind = (typeof KNOWN_PROVIDER_KINDS)[number];
+
+// AI watcher decision policies. ask_always = HITL on every continue;
+// ask_on_risk = HITL only when risk-classifier flags the session;
+// auto = continue without HITL (still subject to caps).
+export const WATCHER_POLICIES = ["ask_always", "ask_on_risk", "auto"] as const;
+export type WatcherPolicy = (typeof WATCHER_POLICIES)[number];
+
+// Watcher decision kinds emitted by the LLM parser.
+export const DECISION_KINDS = ["continue", "ask", "report", "stop", "wait"] as const;
+export type DecisionKind = (typeof DECISION_KINDS)[number];
+
+// Managed-session lifecycle states. Producers are the supervisor providers
+// (claude-headless / claude-interactive / codex-managed) and the
+// state-recorder (managed-session-state). Consumers (session-tracker,
+// continuability classifier, web getSessionMode, status hints) must
+// handle every member exhaustively — the union below is the canonical
+// allowlist. Order is roughly lifecycle:
+//   pending → active(interactive_terminal | headless | managed | linked)
+//          → degraded → stopped/completed/failed (terminal).
+// LIVE_MANAGED_STATES (session-tracker.ts) preserves its own subset
+// order; do not reorder by re-deriving from this tuple.
+export const MANAGED_STATES = [
+	"pending",
+	"interactive_terminal",
+	"headless",
+	"managed",
+	"linked",
+	"degraded",
+	"stopped",
+	"completed",
+	"failed",
+] as const;
+export type ManagedState = (typeof MANAGED_STATES)[number];
+
+// HITL reply actions accepted from the inbox / session detail.
+export const HITL_REPLY_KINDS = ["approve", "decline", "custom"] as const;
+export type HitlReplyKind = (typeof HITL_REPLY_KINDS)[number];
+
+// Project-scoped alert rule types. Drives the runtime allowlist in
+// action-requests-service (rejecting unsupported types from Ask intents),
+// the executor's exhaustive switch in ruleTypeLabel, and the alert-rule
+// evaluator's per-type sweeps. Adding a kind here forces every consumer
+// to handle it (or fail to compile via the `never` exhaustive guard).
+export const KNOWN_ALERT_RULE_TYPES = [
+	"status_failed",
+	"status_stuck",
+	"status_completed",
+	"no_activity_minutes",
+] as const;
+export type AlertRuleType = (typeof KNOWN_ALERT_RULE_TYPES)[number];
+
+// Notification channel transports. Drives both the runtime allowlist
+// for inbox composition and the action-request executor; web `api.ts`
+// re-exports for client-side type sharing.
+export const KNOWN_NOTIFICATION_CHANNEL_KINDS = ["telegram", "webhook", "email"] as const;
+export type NotificationChannelKind = (typeof KNOWN_NOTIFICATION_CHANNEL_KINDS)[number];
+
+// Bare session-mutation actions used by:
+//   - Bulk session action handler (`stop` | `archive` | `delete`)
+//   - Single-session destructive intents (mapped via mutationKindToInboxKind)
+// Distinct from the compound action_request kinds (`session_stop` etc.) —
+// those are tied to the discriminated-union shape of ActionRequestPayload.
+export const SESSION_MUTATION_KINDS = ["stop", "archive", "delete"] as const;
+export type SessionMutationKind = (typeof SESSION_MUTATION_KINDS)[number];
+
+// Origin of an Ask thread / action request — identifies whether the
+// request was created via the dashboard chat UI or the Telegram bot.
+// Drives notification routing and cross-channel reply attribution.
+export const ASK_THREAD_ORIGINS = ["web", "telegram"] as const;
+export type AskThreadOrigin = (typeof ASK_THREAD_ORIGINS)[number];
+
+// Operator decision on an action request from the inbox cards. The
+// server-side ActionRequestStatus union is wider — see
+// `action-requests-service.ts` — but the operator-facing decision is
+// strictly "applied" or "declined".
+export const ACTION_REQUEST_DECISIONS = ["applied", "declined"] as const;
+export type ActionRequestDecision = (typeof ACTION_REQUEST_DECISIONS)[number];
+
+// Labs flag registry (experimental UI surfaces). Both the web client
+// and the server's `labs-service.ts` import from this canonical list,
+// so a new flag added here is visible to both sides at compile time.
+// Defaults / labels / descriptions still live in `labs-service.ts`.
+export const KNOWN_LABS_FLAGS = [
+	"inbox",
+	"digest",
+	"aiSessionTab",
+	"intelligenceBadges",
+	"aiSettingsPanel",
+	"templateDistillation",
+	"launchRecommendation",
+	"riskClasses",
+	"telegramChannel",
+	"askAssistant",
+] as const;
+export type LabsFlag = (typeof KNOWN_LABS_FLAGS)[number];
+export type LabsFlags = Record<LabsFlag, boolean>;
+
+// Ask thread message author roles.
+export type AskMessageRole = "user" | "assistant" | "system";
 
 export type LaunchMode = "interactive_terminal" | "headless" | "managed_codex";
 export type ProviderSyncState = "pending" | "synced" | "failed";
@@ -24,19 +152,12 @@ export type EventSource =
 	| "managed_control"
 	| "launch_system";
 
-// Session lifecycle status
-export type SessionStatus = "active" | "idle" | "completed" | "failed" | "archived";
+// Session lifecycle status. Canonical const list lives in constants.ts.
+export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
-// Semantic status reported by agents via CLAUDE.md snippet
-export type SemanticStatus =
-	| "researching"
-	| "implementing"
-	| "testing"
-	| "debugging"
-	| "reviewing"
-	| "documenting"
-	| "planning"
-	| "waiting";
+// Semantic status reported by agents via CLAUDE.md snippet.
+// Canonical const list lives in constants.ts.
+export type SemanticStatus = (typeof SEMANTIC_STATUSES)[number];
 
 // Hook event types from Claude Code
 export type ClaudeCodeEvent =
@@ -187,7 +308,7 @@ export interface ManagedSession {
 	supervisorId: string;
 	providerSessionId: string | null;
 	providerThreadId: string | null;
-	managedState: string;
+	managedState: ManagedState;
 	correlationSource: string | null;
 	desiredThreadTitle: string | null;
 	providerThreadTitle: string | null;
@@ -517,7 +638,7 @@ export interface ManagedSessionStateInput {
 	cwd?: string | null;
 	model?: string | null;
 	status?: SessionStatus;
-	managedState?: string;
+	managedState?: ManagedState;
 	launchRequestId?: string | null;
 	providerSessionId?: string | null;
 	providerThreadId?: string | null;
@@ -599,7 +720,9 @@ export type InboxWorkItem =
 			sessionId: string;
 			sessionName: string | null;
 			proposalId: string;
-			decision: "continue" | "ask";
+			// Narrow of DecisionKind — breaks at compile time if "continue" or
+			// "ask" is removed from the watcher decision union.
+			decision: Extract<DecisionKind, "continue" | "ask">;
 			prompt: string;
 			why: string | null;
 			openedAt: string;
@@ -649,7 +772,7 @@ export type InboxWorkItem =
 			template: SessionTemplateInput;
 			launchSpec: LaunchSpec;
 			requestedLaunchMode: LaunchMode;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 			/** Present when this launch was created by a resume intent. */
 			parentSessionId: string | null;
 			parentSessionName: string | null;
@@ -666,7 +789,7 @@ export type InboxWorkItem =
 			defaultAgentType: string | null;
 			defaultModel: string | null;
 			defaultLaunchMode: string | null;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_session_stop";
@@ -675,7 +798,7 @@ export type InboxWorkItem =
 			sessionName: string | null;
 			severity: "high";
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_session_archive";
@@ -684,7 +807,7 @@ export type InboxWorkItem =
 			sessionName: string | null;
 			severity: "normal";
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_session_delete";
@@ -693,7 +816,7 @@ export type InboxWorkItem =
 			sessionName: string | null;
 			severity: "high";
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_edit_project";
@@ -705,7 +828,7 @@ export type InboxWorkItem =
 			projectName: string;
 			fields: Record<string, unknown>;
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_delete_project";
@@ -718,7 +841,7 @@ export type InboxWorkItem =
 			affectedTemplates: number;
 			affectedSessions: number;
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_edit_template";
@@ -730,7 +853,7 @@ export type InboxWorkItem =
 			templateName: string;
 			fields: Record<string, unknown>;
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_delete_template";
@@ -741,7 +864,7 @@ export type InboxWorkItem =
 			templateId: string;
 			templateName: string;
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_add_channel";
@@ -749,10 +872,10 @@ export type InboxWorkItem =
 			sessionId: null;
 			sessionName: null;
 			severity: "info";
-			channelKind: "telegram" | "webhook" | "email";
+			channelKind: NotificationChannelKind;
 			channelLabel: string;
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			// Alert rule creation request. sessionId is null because rules are
@@ -766,7 +889,7 @@ export type InboxWorkItem =
 			projectName: string;
 			ruleType: string;
 			thresholdMinutes: number | null;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			// Freeform alert rule creation request. sessionId is null because rules are
@@ -780,7 +903,7 @@ export type InboxWorkItem =
 			projectName: string;
 			condition: string;
 			dailyTokenBudget: number;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			// Bulk session action. sessionId is null because this spans multiple sessions.
@@ -791,12 +914,12 @@ export type InboxWorkItem =
 			sessionName: null;
 			severity: "high" | "normal";
 			createdAt: string;
-			action: "stop" | "archive" | "delete";
+			action: SessionMutationKind;
 			sessionCount: number;
 			sessionNames: string[]; // up to 20, each truncated to 40 chars
 			hasMore: boolean; // true when sessionCount > 20
 			exclusionCount: number;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  };
 
 export interface Inbox {

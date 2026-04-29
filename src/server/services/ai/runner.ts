@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import type { Session, SessionEvent } from "../../../shared/types.js";
+import type { ManagedState, Session, SessionEvent } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { managedSessions, sessions, supervisors } from "../../db/schema.js";
 import { dispatchHitlToChannel } from "../channels/dispatch.js";
@@ -734,9 +734,10 @@ function triggerEventFromRun(
 	return recent.find((e) => e.id === run.triggerEventId);
 }
 
-async function loadManagedContext(
-	sessionId: string,
-): Promise<{ managedSession: { managedState: string }; supervisorConnected: boolean } | null> {
+async function loadManagedContext(sessionId: string): Promise<{
+	managedSession: { managedState: ManagedState };
+	supervisorConnected: boolean;
+} | null> {
 	const [managedRow] = await db
 		.select()
 		.from(managedSessions)
@@ -749,7 +750,9 @@ async function loadManagedContext(
 		.where(eq(supervisors.id, managedRow.supervisorId))
 		.limit(1);
 	return {
-		managedSession: { managedState: managedRow.managedState },
+		// Drizzle column is `text`, but every producer only writes
+		// ManagedState members — narrow at the boundary.
+		managedSession: { managedState: managedRow.managedState as ManagedState },
 		supervisorConnected: sup?.status === "connected",
 	};
 }

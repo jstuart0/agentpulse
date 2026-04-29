@@ -39,7 +39,7 @@ const MODEL_RATES: Array<{ match: RegExp; rate: ModelRate }> = [
 ];
 
 /** Local/self-hosted kinds assumed free. */
-const FREE_KINDS: ProviderKind[] = ["openai_compatible"];
+const FREE_KINDS: readonly ProviderKind[] = ["openai_compatible"] as const;
 
 /**
  * Compute cents charged for a completion. Returns 0 for local models.

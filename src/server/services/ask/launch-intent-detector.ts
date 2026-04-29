@@ -1,4 +1,10 @@
-import type { AgentType, LaunchMode } from "../../../shared/types.js";
+import {
+	type AgentType,
+	type AlertRuleType,
+	type LaunchMode,
+	SESSION_MUTATION_KINDS,
+	type SessionMutationKind,
+} from "../../../shared/types.js";
 import type { ProjectDraftFields } from "../../db/schema.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.js";
@@ -1102,7 +1108,7 @@ export type AlertRuleIntent =
 	| {
 			kind: "create_alert_rule";
 			projectHint: string | null;
-			ruleType: "status_failed" | "status_stuck" | "status_completed" | "no_activity_minutes";
+			ruleType: AlertRuleType;
 			thresholdMinutes?: number | null;
 	  }
 	| {
@@ -1313,7 +1319,7 @@ export type BulkFilter =
 
 export interface BulkActionIntent {
 	kind: "bulk_action";
-	action: "stop" | "archive" | "delete";
+	action: SessionMutationKind;
 	filter: BulkFilter;
 }
 
@@ -1441,11 +1447,10 @@ export async function detectBulkActionIntent(
 		if (parsed.intent === "none") return { kind: "none" };
 		if (parsed.intent !== "bulk_action") return { kind: "none" };
 
-		const validActions = ["stop", "archive", "delete"] as const;
-		if (!validActions.includes(parsed.action as (typeof validActions)[number])) {
+		if (!SESSION_MUTATION_KINDS.includes(parsed.action as SessionMutationKind)) {
 			return { kind: "none" };
 		}
-		const action = parsed.action as "stop" | "archive" | "delete";
+		const action = parsed.action as SessionMutationKind;
 
 		const rawFilter = parsed.filter as Record<string, unknown> | undefined;
 		if (!rawFilter || typeof rawFilter.strategy !== "string") return { kind: "none" };

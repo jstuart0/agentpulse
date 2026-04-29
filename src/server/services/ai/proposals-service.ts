@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
+import type { HitlReplyKind } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { aiHitlRequests, watcherProposals } from "../../db/schema.js";
 import {
@@ -291,7 +292,7 @@ export async function cancelOpenHitl(sessionId: string, reason = "cancelled"): P
  */
 export async function resolveProposalHitl(input: {
 	proposalId: string;
-	action: "approve" | "decline" | "custom";
+	action: HitlReplyKind;
 	replyText?: string | null;
 }): Promise<ProposalRecord | null> {
 	const proposal = await getProposal(input.proposalId);

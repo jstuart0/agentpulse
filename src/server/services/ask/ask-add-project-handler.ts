@@ -1,4 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
+import type { AskThreadOrigin } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import {
 	type NextQuestion,
@@ -11,7 +12,7 @@ import type { LaunchIntent } from "./launch-intent-detector.js";
 import { sendTelegramActionRequest } from "./telegram-helpers.js";
 
 export interface HandleAddProjectArgs {
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 }
@@ -198,7 +199,7 @@ async function transitionToPendingApproval(
 	const actionRequest = await createActionRequest({
 		kind: "add_project",
 		question,
-		origin: draft.origin as "web" | "telegram",
+		origin: draft.origin as AskThreadOrigin,
 		channelId,
 		askThreadId: draft.askThreadId,
 		payload: {

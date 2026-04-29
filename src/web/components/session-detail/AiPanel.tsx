@@ -4,6 +4,7 @@ import {
 	type AiProvider,
 	type AiWatcherConfig,
 	type AiWatcherPolicy,
+	type HitlReplyKind,
 	type NotificationChannelRecord,
 	api,
 } from "../../lib/api.js";
@@ -380,7 +381,7 @@ function HitlCard({
 	const [customOpen, setCustomOpen] = useState(false);
 	const [customPrompt, setCustomPrompt] = useState(proposal.nextPrompt ?? "");
 
-	async function act(action: "approve" | "decline" | "custom") {
+	async function act(action: HitlReplyKind) {
 		setSubmitting(true);
 		try {
 			await api.decideAiProposal(proposal.id, {

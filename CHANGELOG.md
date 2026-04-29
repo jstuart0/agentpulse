@@ -7,6 +7,86 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.2.0-pre.8] — 2026-04-28
+
+A focused type-duplication remediation cycle. An external PR (#13) tried
+to add a Cohere LLM adapter, which exposed that `ProviderKind` was
+duplicated across 4 places with no compile-time enforcement: the PR
+updated one and the other three would have silently rejected /
+not-displayed the new value. A follow-up audit found **22 instances** of
+this same anti-pattern. This release closes all 22 across four slices.
+
+### Fixed
+
+#### Comprehensive type-duplication audit (Slices TYPE-2a/b/c/d)
+
+Established a uniform recipe applied across the codebase:
+
+```ts
+export const KNOWN_X_KINDS = ["a", "b", "c"] as const;
+export type XKind = (typeof KNOWN_X_KINDS)[number];
+```
+
+Single source of truth in `src/shared/types.ts`. Server and client
+re-export. Runtime allowlists become `KNOWN_X_KINDS.includes(...)`.
+Label/color maps tightened from `Record<string, V>` to `Record<XKind,
+V>` so missing keys fail to compile. UI dropdowns add `as const
+satisfies` exhaustiveness checks.
+
+**TYPE-2a** (10 fixes, 19 files): `ProviderKind`, `AgentType`,
+`SessionStatus`, `SemanticStatus`, `ApprovalPolicy`, `SandboxMode`,
+`AskMessageRole`, `WatcherPolicy`, `DecisionKind`, `HitlReplyKind`,
+`ActionRequestKind` (converted from asserted-array to derived type).
+Real bug exposed: `AgentTypeBadge.tsx` was indexing `AGENT_TYPE_LABELS`
+with an arbitrary `string` prop — the tightened `Record<AgentType,
+string>` rejected the access.
+
+**TYPE-2b** (1 fix, 12 files): **`ManagedState`** — the highest-leverage
+finding. Was plain `string` in the schema with 9 distinct values
+stamped across 17+ supervisor producer sites; `getSessionMode`
+silently returned `"observed"` for any unknown value. Promoted to a
+typed union; `getSessionMode` rewritten as `Record<ManagedState,
+SessionModeStyle>` so adding a new state to `MANAGED_STATES` requires
+a Record entry — compile fails otherwise. Real bug exposed:
+`intelligence-service.test.ts:83` was inserting a stale
+`managedState: "running"` fixture with no producer; fixed to
+`"managed"`.
+
+**TYPE-2c** (3 fixes, 15 files): `AlertRuleType`,
+`NotificationChannelKind`, `SessionMutationKind`. The
+`action-requests-service.ts` `ruleTypeLabel` switch had a silent
+`default:` that echoed the raw kind string into user-facing
+notification text — replaced with an exhaustive `never` guard. Two
+runtime allowlists (`inbox-service.ts` `validKinds` and
+`action-requests-service.ts` channel kinds) collapsed onto the shared
+const.
+
+**TYPE-2d** (6 fixes, 33 files): `EventCategory` exhaustive switches
+in `TimelineView.tsx` and `ai/context.ts` — the 7 `ai_*` event
+categories were silently rendering as "Event" in the UI and being
+dropped entirely from classifier context. Now explicit labels ("AI
+Proposal", "AI HITL", "AI Continue", "AI Report", etc.) and one-line
+context entries. `AskThreadOrigin` (44 inline `"web" | "telegram"`
+literals across 14 files), `ActionRequestDecision` (12 inbox cards
++ 2 server compare sites), `WatcherRunTriggerKind`, `InboxKind`
+(now `Extract<InboxWorkItem["kind"], …>` so removing one of the
+session-scoped kinds cascades to snoozing), `LabsFlag`.
+
+#### Why it matters
+
+After these slices, adding a new value to any of these unions is a
+**one-line change** in `src/shared/types.ts`. TypeScript chases every
+consumer — runtime allowlist, UI dropdown, color map, switch
+statement, executor branch. The PR #13 class of bug ("contributor
+adds a kind in one place but the other 3 declarations silently
+reject / drop / mis-render it") is structurally impossible.
+
+### Test count
+
+594 → 612 tests across 59 files. Sanity-check pattern used throughout:
+temporarily remove a value from a `KNOWN_*` const, confirm tsc
+cascades errors at every consumer, restore.
+
 ## [0.2.0-pre.7] — 2026-04-28
 
 User-reported fix: fuzzy project-name matching in Ask. "create an agent

@@ -1,4 +1,5 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
+import type { AskMessageRole, AskThreadOrigin } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { askMessages, askThreads, sessionTemplates } from "../../db/schema.js";
 import { getAdapter } from "../ai/llm/registry.js";
@@ -73,7 +74,10 @@ import { fetchSessionsById, resolveCandidateSessions } from "./resolver.js";
  * `errorMessage` set, so the UI can render the failure in-thread.
  */
 
-export type AskThreadOrigin = "web" | "telegram";
+// Re-export so existing call sites that imported AskThreadOrigin from
+// this service entry point keep working. Canonical definition is in
+// `src/shared/types.ts` (Slice TYPE-2d).
+export type { AskThreadOrigin };
 
 export interface AskThreadRecord {
 	id: string;
@@ -88,7 +92,7 @@ export interface AskThreadRecord {
 export interface AskMessageRecord {
 	id: string;
 	threadId: string;
-	role: "user" | "assistant" | "system";
+	role: AskMessageRole;
 	content: string;
 	contextSessionIds: string[] | null;
 	tokensIn: number | null;
@@ -274,7 +278,7 @@ export interface AskTurnResult {
 }
 
 async function resolveTelegramChannelId(
-	origin: "web" | "telegram",
+	origin: AskThreadOrigin,
 	chatId: string | null | undefined,
 ): Promise<string | null> {
 	if (origin !== "telegram" || !chatId) return null;

@@ -1,5 +1,14 @@
 import { desc, eq, inArray } from "drizzle-orm";
-import type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem } from "../../../shared/types.js";
+import {
+	type Inbox,
+	type InboxFilter,
+	type InboxSeverity,
+	type InboxWorkItem,
+	KNOWN_NOTIFICATION_CHANNEL_KINDS,
+	type NotificationChannelKind,
+	SESSION_MUTATION_KINDS,
+	type SessionMutationKind,
+} from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { sessions, watcherProposals } from "../../db/schema.js";
 import { listOpenActionRequests, narrowPayload } from "./action-requests-service.js";
@@ -282,9 +291,10 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 			});
 		} else if (a.kind === "add_channel") {
 			const payload = narrowPayload(a, "add_channel");
-			const validKinds = ["telegram", "webhook", "email"] as const;
-			const channelKind = validKinds.includes(payload.channelKind as (typeof validKinds)[number])
-				? (payload.channelKind as "telegram" | "webhook" | "email")
+			const channelKind: NotificationChannelKind = KNOWN_NOTIFICATION_CHANNEL_KINDS.includes(
+				payload.channelKind as NotificationChannelKind,
+			)
+				? (payload.channelKind as NotificationChannelKind)
 				: "telegram";
 			items.push({
 				kind: "action_add_channel",
@@ -327,9 +337,10 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 			});
 		} else if (a.kind === "bulk_session_action") {
 			const payload = narrowPayload(a, "bulk_session_action");
-			const validActions = ["stop", "archive", "delete"] as const;
-			const action = validActions.includes(payload.action as (typeof validActions)[number])
-				? (payload.action as "stop" | "archive" | "delete")
+			const action: SessionMutationKind = SESSION_MUTATION_KINDS.includes(
+				payload.action as SessionMutationKind,
+			)
+				? (payload.action as SessionMutationKind)
 				: "archive";
 			const sessionCount = Array.isArray(payload.sessionIds) ? payload.sessionIds.length : 0;
 			const sessionNames = Array.isArray(payload.sessionNames)

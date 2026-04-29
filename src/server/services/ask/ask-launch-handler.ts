@@ -1,6 +1,7 @@
 import { and, eq, gt } from "drizzle-orm";
 import type {
 	AgentType,
+	AskThreadOrigin,
 	LaunchMode,
 	PrelaunchAction,
 	SessionTemplateInput,
@@ -79,7 +80,7 @@ export function formatTaskPrompt(
 
 export interface HandleAskLaunchIntentArgs {
 	intent: Extract<LaunchIntent, { kind: "launch" }>;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	/** Raw Telegram chat id (string), only present when origin="telegram". */
 	telegramChatId?: string | null;

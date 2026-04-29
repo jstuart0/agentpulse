@@ -3,6 +3,7 @@ import type {
 	ManagedSession,
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
+	ManagedState,
 	Session,
 } from "../../shared/types.js";
 
@@ -34,7 +35,7 @@ export type ClaudePromptAction = {
 	cwd: string;
 	model?: string | null;
 	env?: Record<string, string>;
-	managedState?: string | null;
+	managedState?: ManagedState | null;
 	terminalOwner?: Record<string, unknown> | null;
 	interactiveBridge?: Record<string, unknown> | null;
 };

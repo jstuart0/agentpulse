@@ -16,11 +16,12 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
  * These are pure-DB integration tests — no HTTP server needed.
  */
 import { eq } from "drizzle-orm";
+import { type AlertRuleType, KNOWN_ALERT_RULE_TYPES } from "../../../shared/types.js";
 import "./__test_db.js";
 
 const { db, initializeDatabase } = await import("../../db/client.js");
 const { aiActionRequests, sessions } = await import("../../db/schema.js");
-const { createActionRequest, resolveActionRequest, getActionRequest } = await import(
+const { createActionRequest, resolveActionRequest, getActionRequest, ruleTypeLabel } = await import(
 	"./action-requests-service.js"
 );
 
@@ -242,5 +243,35 @@ describe("narrowPayload", () => {
 		expect(() => narrowPayload(reloaded, "launch_request")).toThrow(
 			/expected kind "launch_request"/,
 		);
+	});
+});
+
+// Slice TYPE-2c. ruleTypeLabel switches over AlertRuleType with a `never`
+// default arm — adding a new kind to KNOWN_ALERT_RULE_TYPES without a
+// matching case fails to compile. This runtime test confirms every
+// existing kind already produces a non-empty label, so a regression that
+// loses a branch surfaces here too.
+describe("ruleTypeLabel — exhaustive over AlertRuleType", () => {
+	test("every KNOWN_ALERT_RULE_TYPES member produces a non-empty label", () => {
+		for (const kind of KNOWN_ALERT_RULE_TYPES) {
+			const label = kind === "no_activity_minutes" ? ruleTypeLabel(kind, 15) : ruleTypeLabel(kind);
+			expect(typeof label).toBe("string");
+			expect(label.length).toBeGreaterThan(0);
+		}
+	});
+
+	test("count of KNOWN_ALERT_RULE_TYPES matches the four known branches", () => {
+		// Locks the cardinality so a future "remove a kind" PR fails here
+		// even if the executor switch stops compiling at the same time.
+		expect(KNOWN_ALERT_RULE_TYPES.length).toBe(4);
+		const fixed: readonly AlertRuleType[] = [
+			"status_failed",
+			"status_stuck",
+			"status_completed",
+			"no_activity_minutes",
+		];
+		for (const k of fixed) {
+			expect(KNOWN_ALERT_RULE_TYPES.includes(k)).toBe(true);
+		}
 	});
 });

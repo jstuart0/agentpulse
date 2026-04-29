@@ -1,3 +1,4 @@
+import type { NotificationChannelKind } from "../../../shared/types.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import type { AskThreadOrigin } from "./ask-service.js";
 
@@ -11,11 +12,11 @@ import type { AskThreadOrigin } from "./ask-service.js";
  * `channelKind` in the executor / inbox.
  */
 export interface AddChannelPayload {
-	channelKind: "telegram" | "webhook" | "email";
+	channelKind: NotificationChannelKind;
 	label: string;
 }
 
-function detectChannelKind(message: string): "telegram" | "webhook" | "email" | null {
+function detectChannelKind(message: string): NotificationChannelKind | null {
 	const lower = message.toLowerCase();
 	if (lower.includes("telegram")) return "telegram";
 	if (lower.includes("webhook")) return "webhook";

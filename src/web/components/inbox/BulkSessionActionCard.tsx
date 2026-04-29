@@ -1,12 +1,13 @@
 import { useState } from "react";
-import type { InboxWorkItem } from "../../lib/api.js";
+import type { SessionMutationKind } from "../../../shared/types.js";
+import type { ActionRequestDecision, InboxWorkItem } from "../../lib/api.js";
 import { KindBadge } from "./shared/KindBadge.js";
 import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 import { relTime } from "./shared/relTime.js";
 
 type ActionBulkSessionItem = Extract<InboxWorkItem, { kind: "action_bulk_session" }>;
 
-const actionColors: Record<"stop" | "archive" | "delete", string> = {
+const actionColors: Record<SessionMutationKind, string> = {
 	stop: "bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30",
 	archive: "bg-slate-500/20 text-slate-300 border border-slate-500/30 hover:bg-slate-500/30",
 	delete: "bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30",
@@ -17,12 +18,12 @@ export function BulkSessionActionCard({
 	onDecide,
 }: {
 	item: ActionBulkSessionItem;
-	onDecide: (id: string, decision: "applied" | "declined") => Promise<void>;
+	onDecide: (id: string, decision: ActionRequestDecision) => Promise<void>;
 }) {
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 
-	async function handleDecide(decision: "applied" | "declined") {
+	async function handleDecide(decision: ActionRequestDecision) {
 		setBusy(true);
 		setErr(null);
 		try {

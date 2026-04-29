@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0--pre.7-blue)](https://github.com/jstuart0/agentpulse/releases)
+[![Version](https://img.shields.io/badge/version-0.2.0--pre.8-blue)](https://github.com/jstuart0/agentpulse/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun-000?logo=bun)](https://bun.sh)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-✓-green)](https://github.com/awesome-selfhosted/awesome-selfhosted)
 [![Wiki](https://img.shields.io/badge/docs-wiki-informational)](https://github.com/jstuart0/agentpulse/wiki)

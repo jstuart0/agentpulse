@@ -10,13 +10,23 @@ type Status = {
 	autoEnableWatcherForAsk?: boolean;
 };
 
-const PROVIDER_KINDS: Array<{ value: AiProviderKind; label: string; hint: string }> = [
+// `as const` preserves narrow `value` literals for the exhaustiveness
+// check below. The wider `AiProviderKind` constraint is enforced by the
+// satisfies clause — a typo in any `value` becomes a compile error.
+const PROVIDER_KINDS = [
 	{ value: "anthropic", label: "Anthropic (Claude)", hint: "claude-sonnet-4-6" },
 	{ value: "openai", label: "OpenAI (ChatGPT)", hint: "gpt-4o" },
 	{ value: "google", label: "Google (Gemini)", hint: "gemini-1.5-pro" },
 	{ value: "openrouter", label: "OpenRouter", hint: "meta-llama/llama-3.1-70b-instruct" },
 	{ value: "openai_compatible", label: "Local / OpenAI-compatible", hint: "qwen2.5:7b" },
-];
+] as const satisfies ReadonlyArray<{ value: AiProviderKind; label: string; hint: string }>;
+
+// Compile-time exhaustiveness: if a new ProviderKind is added to the
+// canonical const in shared/types.ts without a matching dropdown entry
+// above, this type evaluates to a non-empty union and `_check` errors.
+type _MissingProviderKind = Exclude<AiProviderKind, (typeof PROVIDER_KINDS)[number]["value"]>;
+const _checkProviderKindCoverage: [_MissingProviderKind] extends [never] ? true : never = true;
+void _checkProviderKindCoverage;
 
 export function AiSettingsPanel() {
 	const [status, setStatus] = useState<Status | null>(null);

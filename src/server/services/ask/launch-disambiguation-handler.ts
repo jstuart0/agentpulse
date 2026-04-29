@@ -1,5 +1,10 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { AgentType, LaunchMode, PrelaunchAction } from "../../../shared/types.js";
+import type {
+	AgentType,
+	AskThreadOrigin,
+	LaunchMode,
+	PrelaunchAction,
+} from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import {
 	type LaunchDisambiguationDraftFields,
@@ -233,7 +238,7 @@ function renderPickerReplyText(
 
 export interface CreateLaunchDisambiguationDraftArgs {
 	threadId: string;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	channelId?: string | null;
 	telegramChatId?: string | null;
 	intent: Extract<LaunchIntent, { kind: "launch_needs_project" }>;
@@ -407,7 +412,7 @@ export function parseDisambiguationReply(
 export interface ResolveLaunchDisambiguationArgs {
 	draft: typeof aiPendingProjectDrafts.$inferSelect;
 	reply: string;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 }
@@ -621,7 +626,7 @@ export function parseScaffoldConfirmReply(reply: string): ParsedScaffoldReply {
 
 interface HandleNewKeywordArgs {
 	draft: typeof aiPendingProjectDrafts.$inferSelect;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	fields: LaunchDisambiguationDraftFields;
 	explicitPath: string | undefined;
@@ -811,7 +816,7 @@ function renderScaffoldVisibleText(args: {
 interface ResolveScaffoldConfirmArgs {
 	draft: typeof aiPendingProjectDrafts.$inferSelect;
 	reply: string;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 	fields: LaunchDisambiguationDraftFields;
@@ -921,7 +926,7 @@ async function resolveScaffoldConfirm(
 
 interface ExecuteScaffoldConfirmArgs {
 	draft: typeof aiPendingProjectDrafts.$inferSelect;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 	fields: LaunchDisambiguationDraftFields;
@@ -1093,7 +1098,7 @@ export function parseCloneConfirmReply(reply: string): ParsedCloneReply {
 
 export interface CreateLaunchCloneDraftArgs {
 	threadId: string;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	channelId?: string | null;
 	telegramChatId?: string | null;
 	intent: Extract<LaunchIntent, { kind: "launch" } | { kind: "launch_needs_project" }> & {
@@ -1178,7 +1183,7 @@ export async function createLaunchCloneDraft(
 
 interface HandleCloneIntentArgs {
 	draft: typeof aiPendingProjectDrafts.$inferSelect;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 	fields: LaunchDisambiguationDraftFields;
@@ -1386,7 +1391,7 @@ function renderCloneVisibleText(args: {
 interface ResolveCloneConfirmArgs {
 	draft: typeof aiPendingProjectDrafts.$inferSelect;
 	reply: string;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 	fields: LaunchDisambiguationDraftFields;
@@ -1502,7 +1507,7 @@ async function resolveCloneConfirm(args: ResolveCloneConfirmArgs): Promise<Disam
 
 interface ExecuteCloneConfirmArgs {
 	draft: typeof aiPendingProjectDrafts.$inferSelect;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 	fields: LaunchDisambiguationDraftFields;

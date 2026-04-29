@@ -1,4 +1,4 @@
-import type { Session, SessionEvent } from "../../../shared/types.js";
+import type { ManagedState, Session, SessionEvent } from "../../../shared/types.js";
 
 export type WatcherEligibility =
 	| { eligibleToContinue: true; eligibleToReport: true; reason: "managed_quiet" }
@@ -13,7 +13,7 @@ export interface ContinuabilityInput {
 	session: Session;
 	recentEvents: SessionEvent[];
 	/** Present only for supervisor-managed sessions. */
-	managedSession?: { managedState: string } | null;
+	managedSession?: { managedState: ManagedState } | null;
 	/** Whether the session's supervisor is currently connected. */
 	supervisorConnected?: boolean;
 	/** ms window during which a user prompt blocks dispatch. */
@@ -25,7 +25,14 @@ export interface ContinuabilityInput {
 const DEFAULT_USER_PROMPT_LOCKOUT_MS = 30_000;
 const DEFAULT_AI_CONTINUE_LOCKOUT_MS = 30_000;
 
-const CONTINUABLE_MANAGED_STATES = new Set(["interactive_terminal", "headless", "managed"]);
+// Subset of ManagedState in which the watcher is allowed to dispatch a
+// `continue` action. Hand-maintained, but the element type forces every
+// member to be a ManagedState — adding a typo'd value will fail to compile.
+const CONTINUABLE_MANAGED_STATES = new Set<ManagedState>([
+	"interactive_terminal",
+	"headless",
+	"managed",
+]);
 
 /**
  * Classify whether the watcher is allowed to continue vs. report vs. do nothing.
