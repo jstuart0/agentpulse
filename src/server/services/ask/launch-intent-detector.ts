@@ -7,7 +7,7 @@ import {
 } from "../../../shared/types.js";
 import type { ProjectDraftFields } from "../../db/schema.js";
 import { getAdapter } from "../ai/llm/registry.js";
-import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.js";
+import { getDefaultProvider, getProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
 import type { CachedProject } from "../projects/cache.js";
 import { matchProjectByName, normalizeProjectName } from "../projects/project-name-match.js";
@@ -97,6 +97,113 @@ const ACTION_VERBS = [
 // dead removal can come later if it stays unused.
 function _escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Shared classifier choreography for the 8 detect*Intent functions below.
+ * Handles provider lookup, daily-spend pre-check, adapter call, JSON parse,
+ * post-call spend recording, and the three uniform failure shapes:
+ *   - "no provider configured" / "provider record gone" / "credentials unreadable"
+ *     → { kind: "classifier_failed"; error }
+ *   - daily spend cap reached → { kind: "none" } (silently degrade)
+ *   - LLM returned non-JSON or threw → { kind: "classifier_failed"; error }
+ *
+ * Per-classifier shape narrowing happens in the `parse` lambda, which is
+ * given the parsed JSON object and returns either the detector's matched-kind
+ * shape (T) or `{ kind: "none" }` if the JSON didn't represent a matched intent.
+ *
+ * temperature, timeoutMs, disableReasoning, transcriptPrompt, ESTIMATED_COST_CENTS,
+ * and the spend-recording arithmetic are intentionally NOT parameterized — every
+ * one of the 8 callers used identical values, and divergence here is much more
+ * likely to be a bug than a feature.
+ *
+ * Callers: detectLaunchIntent, detectSessionActionIntent, detectResumeIntent,
+ * detectProjectTemplateCrudIntent, detectAlertRuleIntent, detectBulkActionIntent,
+ * detectQaIntent, detectAddProjectIntent.
+ */
+async function classifyJson<T>(opts: {
+	systemPrompt: string;
+	message: string;
+	label: string; // appears in "cannot classify ${label}." error messages
+	parse: (parsed: Record<string, unknown>) => T | { kind: "none" };
+	maxTokens?: number; // default 200; QA passes 150, CRUD passes 300
+}): Promise<T | { kind: "none" } | { kind: "classifier_failed"; error: string }> {
+	const provider = await getDefaultProvider();
+	if (!provider) {
+		return {
+			kind: "classifier_failed",
+			error: `No default LLM provider configured — cannot classify ${opts.label}.`,
+		};
+	}
+	const full = await getProvider(provider.id);
+	if (!full) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider record disappeared — check Settings → AI.",
+		};
+	}
+	const apiKey = await getProviderApiKey(provider.id);
+	if (apiKey === null) {
+		return {
+			kind: "classifier_failed",
+			error: "Default LLM provider credentials are unreadable.",
+		};
+	}
+
+	const ESTIMATED_COST_CENTS = 1;
+	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
+	if (!spendCheck.allowed) {
+		// Over-cap: silently degrade (the daily-spend warning exists at /ai/diagnostics).
+		return { kind: "none" };
+	}
+
+	const adapter = getAdapter({
+		kind: full.kind,
+		apiKey,
+		baseUrl: full.baseUrl ?? undefined,
+	});
+
+	try {
+		const res = await adapter.complete({
+			systemPrompt: opts.systemPrompt,
+			transcriptPrompt: `User message: ${opts.message}`,
+			model: full.model,
+			maxTokens: opts.maxTokens ?? 200,
+			temperature: 0.0,
+			timeoutMs: 8_000,
+			disableReasoning: true,
+		});
+
+		// Postflight spend recording. Classifier cost isn't attributable to a
+		// specific session so we use the global (non-session) spend function.
+		const actualCents = res.usage.estimated
+			? ESTIMATED_COST_CENTS
+			: Math.max(
+					1,
+					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
+				);
+		void addGlobalSpendCents(actualCents).catch(() => {
+			// spend tracking is best-effort; don't block the intent result
+		});
+
+		const raw = res.text.trim();
+		let parsed: Record<string, unknown>;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return {
+				kind: "classifier_failed",
+				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+			};
+		}
+
+		return opts.parse(parsed);
+	} catch (err) {
+		return {
+			kind: "classifier_failed",
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
 }
 
 // Phrases that signal a task-flavored ask even without a project name.
@@ -325,89 +432,30 @@ export async function detectLaunchIntent(
 	}
 
 	// Stage 2: LLM classifier. Only reached when gate passes.
-
-	const provider = await getDefaultProvider();
-	if (!provider) {
-		return {
-			kind: "classifier_failed",
-			error: "No default LLM provider configured — cannot classify launch intent.",
-		};
-	}
-	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
-	if (!full) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider record disappeared — check Settings → AI.",
-		};
-	}
-	const apiKey = await getProviderApiKey(provider.id);
-	if (apiKey === null) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider credentials are unreadable.",
-		};
-	}
-
 	// Preflight spend check. Estimate cost conservatively.
 	// We use a fixed estimate (200 output tokens + ~1000 input chars ≈ ~250 tokens)
 	// at a rough $1/M token rate (well above most providers' actual cost).
-	const ESTIMATED_COST_CENTS = 1;
-	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
-	if (!spendCheck.allowed) {
-		// Over-cap: silently degrade (the daily-spend warning exists at /ai/diagnostics).
-		return { kind: "none" };
-	}
-
-	const adapter = getAdapter({
-		kind: full.kind,
-		apiKey,
-		baseUrl: full.baseUrl ?? undefined,
-	});
-
 	const projectNames = projects.map((p) => p.name);
-	const systemPrompt = INTENT_SYSTEM_PROMPT(projectNames);
-
-	try {
-		const res = await adapter.complete({
-			systemPrompt,
-			transcriptPrompt: `User message: ${message}`,
-			model: full.model,
-			maxTokens: 200,
-			temperature: 0.0,
-			timeoutMs: 8_000,
-			disableReasoning: true,
-		});
-
-		// Postflight spend recording. Classifier cost isn't attributable to a
-		// specific session so we use the global (non-session) spend function.
-		const actualCents = res.usage.estimated
-			? ESTIMATED_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
-		void addGlobalSpendCents(actualCents).catch(() => {
-			// spend tracking is best-effort; don't block the intent result
-		});
-
-		const raw = res.text.trim();
-		let parsed: Record<string, unknown>;
-		try {
-			parsed = JSON.parse(raw);
-		} catch {
-			return {
-				kind: "classifier_failed",
-				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
-			};
-		}
-
-		return parseLaunchIntentResponse(parsed, projects);
-	} catch (err) {
-		return {
-			kind: "classifier_failed",
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
+	// parseLaunchIntentResponse returns LaunchIntent (which includes { kind: "none" } but
+	// not { kind: "classifier_failed" } — that arm is reserved for LLM-call failures and
+	// is handled by classifyJson itself). We widen T to the matched arms only; the parse
+	// lambda returns { kind: "none" } for unmatched results, which classifyJson permits.
+	type MatchedLaunchIntent = Extract<
+		LaunchIntent,
+		{ kind: "launch" } | { kind: "launch_needs_project" } | { kind: "add_project" }
+	>;
+	return classifyJson<MatchedLaunchIntent>({
+		systemPrompt: INTENT_SYSTEM_PROMPT(projectNames),
+		message,
+		label: "launch intent",
+		parse: (parsed) => {
+			const result = parseLaunchIntentResponse(parsed, projects);
+			if (result.kind === "none" || result.kind === "classifier_failed") {
+				return { kind: "none" };
+			}
+			return result;
+		},
+	});
 }
 
 const SEARCH_TRIGGERS = [
@@ -544,91 +592,29 @@ Rules:
 export async function detectSessionActionIntent(
 	message: string,
 ): Promise<SessionActionKind & { intent?: SessionActionIntent }> {
-	const provider = await getDefaultProvider();
-	if (!provider) {
-		return {
-			kind: "classifier_failed",
-			error: "No default LLM provider configured — cannot classify session action intent.",
-		};
-	}
-	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
-	if (!full) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider record disappeared — check Settings → AI.",
-		};
-	}
-	const apiKey = await getProviderApiKey(provider.id);
-	if (apiKey === null) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider credentials are unreadable.",
-		};
-	}
+	type SessionActionResult = { kind: "session_action"; intent: SessionActionIntent };
+	return classifyJson<SessionActionResult>({
+		systemPrompt: SESSION_ACTION_CLASSIFIER_PROMPT,
+		message,
+		label: "session action intent",
+		parse: (parsed) => {
+			if (parsed.intent === "none") return { kind: "none" };
+			if (parsed.intent !== "session_action") return { kind: "none" };
 
-	const ESTIMATED_COST_CENTS = 1;
-	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
-	if (!spendCheck.allowed) {
-		return { kind: "none" };
-	}
+			const validActions = ["pin", "unpin", "rename", "add_note", "archive", "stop", "delete"];
+			if (!validActions.includes(parsed.action as string)) return { kind: "none" };
 
-	const adapter = getAdapter({
-		kind: full.kind,
-		apiKey,
-		baseUrl: full.baseUrl ?? undefined,
-	});
-
-	try {
-		const res = await adapter.complete({
-			systemPrompt: SESSION_ACTION_CLASSIFIER_PROMPT,
-			transcriptPrompt: `User message: ${message}`,
-			model: full.model,
-			maxTokens: 200,
-			temperature: 0.0,
-			timeoutMs: 8_000,
-			disableReasoning: true,
-		});
-
-		const actualCents = res.usage.estimated
-			? ESTIMATED_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
-		void addGlobalSpendCents(actualCents).catch(() => {});
-
-		const raw = res.text.trim();
-		let parsed: Record<string, unknown>;
-		try {
-			parsed = JSON.parse(raw);
-		} catch {
 			return {
-				kind: "classifier_failed",
-				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+				kind: "session_action",
+				intent: {
+					action: parsed.action as SessionActionIntent["action"],
+					sessionHint: typeof parsed.sessionHint === "string" ? parsed.sessionHint : null,
+					noteText: typeof parsed.noteText === "string" ? parsed.noteText : null,
+					newName: typeof parsed.newName === "string" ? parsed.newName : null,
+				},
 			};
-		}
-
-		if (parsed.intent === "none") return { kind: "none" };
-		if (parsed.intent !== "session_action") return { kind: "none" };
-
-		const validActions = ["pin", "unpin", "rename", "add_note", "archive", "stop", "delete"];
-		if (!validActions.includes(parsed.action as string)) return { kind: "none" };
-
-		return {
-			kind: "session_action",
-			intent: {
-				action: parsed.action as SessionActionIntent["action"],
-				sessionHint: typeof parsed.sessionHint === "string" ? parsed.sessionHint : null,
-				noteText: typeof parsed.noteText === "string" ? parsed.noteText : null,
-				newName: typeof parsed.newName === "string" ? parsed.newName : null,
-			},
-		};
-	} catch (err) {
-		return {
-			kind: "classifier_failed",
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
+		},
+	});
 }
 
 const ADD_PROJECT_SYSTEM_PROMPT = `You are an add-project-intent classifier for AgentPulse.
@@ -725,96 +711,34 @@ export async function detectResumeIntent(
 	message: string,
 	projectNames: string[],
 ): Promise<ResumeDetectResult> {
-	const provider = await getDefaultProvider();
-	if (!provider) {
-		return {
-			kind: "classifier_failed",
-			error: "No default LLM provider configured — cannot classify resume intent.",
-		};
-	}
-	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
-	if (!full) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider record disappeared — check Settings → AI.",
-		};
-	}
-	const apiKey = await getProviderApiKey(provider.id);
-	if (apiKey === null) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider credentials are unreadable.",
-		};
-	}
+	return classifyJson<ResumeIntent>({
+		systemPrompt: RESUME_SYSTEM_PROMPT(projectNames),
+		message,
+		label: "resume intent",
+		parse: (parsed) => {
+			if (parsed.intent === "none") return { kind: "none" };
+			if (parsed.intent !== "resume") return { kind: "none" };
 
-	const ESTIMATED_COST_CENTS = 1;
-	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
-	if (!spendCheck.allowed) {
-		return { kind: "none" };
-	}
+			const agentType =
+				parsed.agentType === "claude_code" || parsed.agentType === "codex_cli"
+					? (parsed.agentType as AgentType)
+					: undefined;
 
-	const adapter = getAdapter({
-		kind: full.kind,
-		apiKey,
-		baseUrl: full.baseUrl ?? undefined,
-	});
+			const mode =
+				parsed.mode === "interactive_terminal" || parsed.mode === "headless"
+					? (parsed.mode as LaunchMode)
+					: undefined;
 
-	try {
-		const res = await adapter.complete({
-			systemPrompt: RESUME_SYSTEM_PROMPT(projectNames),
-			transcriptPrompt: `User message: ${message}`,
-			model: full.model,
-			maxTokens: 200,
-			temperature: 0.0,
-			timeoutMs: 8_000,
-			disableReasoning: true,
-		});
-
-		const actualCents = res.usage.estimated
-			? ESTIMATED_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
-		void addGlobalSpendCents(actualCents).catch(() => {});
-
-		const raw = res.text.trim();
-		let parsed: Record<string, unknown>;
-		try {
-			parsed = JSON.parse(raw);
-		} catch {
 			return {
-				kind: "classifier_failed",
-				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+				kind: "resume",
+				sessionHint: typeof parsed.sessionHint === "string" ? parsed.sessionHint : null,
+				newPrompt:
+					typeof parsed.newPrompt === "string" && parsed.newPrompt ? parsed.newPrompt : null,
+				agentType,
+				mode,
 			};
-		}
-
-		if (parsed.intent === "none") return { kind: "none" };
-		if (parsed.intent !== "resume") return { kind: "none" };
-
-		const agentType =
-			parsed.agentType === "claude_code" || parsed.agentType === "codex_cli"
-				? (parsed.agentType as AgentType)
-				: undefined;
-
-		const mode =
-			parsed.mode === "interactive_terminal" || parsed.mode === "headless"
-				? (parsed.mode as LaunchMode)
-				: undefined;
-
-		return {
-			kind: "resume",
-			sessionHint: typeof parsed.sessionHint === "string" ? parsed.sessionHint : null,
-			newPrompt: typeof parsed.newPrompt === "string" && parsed.newPrompt ? parsed.newPrompt : null,
-			agentType,
-			mode,
-		};
-	} catch (err) {
-		return {
-			kind: "classifier_failed",
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
+		},
+	});
 }
 
 // ---- Project/template CRUD intent ----------------------------------------
@@ -939,144 +863,92 @@ export async function detectProjectTemplateCrudIntent(
 	projectNames: string[],
 	templateNames: string[],
 ): Promise<ProjectTemplateCrudIntent> {
-	const provider = await getDefaultProvider();
-	if (!provider) {
-		return {
-			kind: "classifier_failed",
-			error: "No default LLM provider configured — cannot classify CRUD intent.",
-		};
-	}
-	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
-	if (!full) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider record disappeared — check Settings → AI.",
-		};
-	}
-	const apiKey = await getProviderApiKey(provider.id);
-	if (apiKey === null) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider credentials are unreadable.",
-		};
-	}
+	type MatchedCrudIntent = Extract<
+		ProjectTemplateCrudIntent,
+		| { kind: "edit_project" }
+		| { kind: "delete_project" }
+		| { kind: "edit_template" }
+		| { kind: "delete_template" }
+	>;
+	return classifyJson<MatchedCrudIntent>({
+		systemPrompt: CRUD_SYSTEM_PROMPT(projectNames, templateNames),
+		message,
+		label: "CRUD intent",
+		maxTokens: 300,
+		parse: (parsed) => {
+			if (parsed.intent === "none") return { kind: "none" };
 
-	const ESTIMATED_COST_CENTS = 1;
-	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
-	if (!spendCheck.allowed) {
-		return { kind: "none" };
-	}
+			if (parsed.intent === "delete_project") {
+				if (typeof parsed.targetName !== "string") return { kind: "none" };
+				return { kind: "delete_project", targetName: parsed.targetName };
+			}
 
-	const adapter = getAdapter({
-		kind: full.kind,
-		apiKey,
-		baseUrl: full.baseUrl ?? undefined,
+			if (parsed.intent === "delete_template") {
+				if (typeof parsed.targetName !== "string") return { kind: "none" };
+				return { kind: "delete_template", targetName: parsed.targetName };
+			}
+
+			if (parsed.intent === "edit_project") {
+				if (typeof parsed.targetName !== "string") return { kind: "none" };
+				const rawFields = (parsed.fields as Record<string, unknown>) ?? {};
+				type EditProjectFields = Extract<
+					ProjectTemplateCrudIntent,
+					{ kind: "edit_project" }
+				>["fields"];
+				const fields: EditProjectFields = {};
+				if (typeof rawFields.name === "string" && rawFields.name.length > 0)
+					fields.name = rawFields.name;
+				if (typeof rawFields.cwd === "string" && rawFields.cwd.startsWith("/"))
+					fields.cwd = rawFields.cwd;
+				if ("defaultAgentType" in rawFields) {
+					fields.defaultAgentType =
+						rawFields.defaultAgentType === "claude_code" ||
+						rawFields.defaultAgentType === "codex_cli"
+							? rawFields.defaultAgentType
+							: null;
+				}
+				if ("defaultModel" in rawFields) {
+					fields.defaultModel =
+						typeof rawFields.defaultModel === "string" ? rawFields.defaultModel : null;
+				}
+				if ("defaultLaunchMode" in rawFields) {
+					const lm = rawFields.defaultLaunchMode;
+					fields.defaultLaunchMode =
+						lm === "interactive_terminal" || lm === "headless" || lm === "managed_codex"
+							? lm
+							: null;
+				}
+				if ("githubRepoUrl" in rawFields) {
+					fields.githubRepoUrl =
+						typeof rawFields.githubRepoUrl === "string" ? rawFields.githubRepoUrl : null;
+				}
+				if ("notes" in rawFields) {
+					fields.notes = typeof rawFields.notes === "string" ? rawFields.notes : null;
+				}
+				return { kind: "edit_project", targetName: parsed.targetName, fields };
+			}
+
+			if (parsed.intent === "edit_template") {
+				if (typeof parsed.targetName !== "string") return { kind: "none" };
+				const rawFields = (parsed.fields as Record<string, unknown>) ?? {};
+				type EditTemplateFields = Extract<
+					ProjectTemplateCrudIntent,
+					{ kind: "edit_template" }
+				>["fields"];
+				const fields: EditTemplateFields = {};
+				if (typeof rawFields.name === "string" && rawFields.name.length > 0)
+					fields.name = rawFields.name;
+				if (typeof rawFields.description === "string") fields.description = rawFields.description;
+				if (typeof rawFields.taskPrompt === "string") fields.taskPrompt = rawFields.taskPrompt;
+				if ("model" in rawFields) {
+					fields.model = typeof rawFields.model === "string" ? rawFields.model : null;
+				}
+				return { kind: "edit_template", targetName: parsed.targetName, fields };
+			}
+
+			return { kind: "none" };
+		},
 	});
-
-	try {
-		const res = await adapter.complete({
-			systemPrompt: CRUD_SYSTEM_PROMPT(projectNames, templateNames),
-			transcriptPrompt: `User message: ${message}`,
-			model: full.model,
-			maxTokens: 300,
-			temperature: 0.0,
-			timeoutMs: 8_000,
-			disableReasoning: true,
-		});
-
-		const actualCents = res.usage.estimated
-			? ESTIMATED_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
-		void addGlobalSpendCents(actualCents).catch(() => {});
-
-		const raw = res.text.trim();
-		let parsed: Record<string, unknown>;
-		try {
-			parsed = JSON.parse(raw);
-		} catch {
-			return {
-				kind: "classifier_failed",
-				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
-			};
-		}
-
-		if (parsed.intent === "none") return { kind: "none" };
-
-		if (parsed.intent === "delete_project") {
-			if (typeof parsed.targetName !== "string") return { kind: "none" };
-			return { kind: "delete_project", targetName: parsed.targetName };
-		}
-
-		if (parsed.intent === "delete_template") {
-			if (typeof parsed.targetName !== "string") return { kind: "none" };
-			return { kind: "delete_template", targetName: parsed.targetName };
-		}
-
-		if (parsed.intent === "edit_project") {
-			if (typeof parsed.targetName !== "string") return { kind: "none" };
-			const rawFields = (parsed.fields as Record<string, unknown>) ?? {};
-			type EditProjectFields = Extract<
-				ProjectTemplateCrudIntent,
-				{ kind: "edit_project" }
-			>["fields"];
-			const fields: EditProjectFields = {};
-			if (typeof rawFields.name === "string" && rawFields.name.length > 0)
-				fields.name = rawFields.name;
-			if (typeof rawFields.cwd === "string" && rawFields.cwd.startsWith("/"))
-				fields.cwd = rawFields.cwd;
-			if ("defaultAgentType" in rawFields) {
-				fields.defaultAgentType =
-					rawFields.defaultAgentType === "claude_code" || rawFields.defaultAgentType === "codex_cli"
-						? rawFields.defaultAgentType
-						: null;
-			}
-			if ("defaultModel" in rawFields) {
-				fields.defaultModel =
-					typeof rawFields.defaultModel === "string" ? rawFields.defaultModel : null;
-			}
-			if ("defaultLaunchMode" in rawFields) {
-				const lm = rawFields.defaultLaunchMode;
-				fields.defaultLaunchMode =
-					lm === "interactive_terminal" || lm === "headless" || lm === "managed_codex" ? lm : null;
-			}
-			if ("githubRepoUrl" in rawFields) {
-				fields.githubRepoUrl =
-					typeof rawFields.githubRepoUrl === "string" ? rawFields.githubRepoUrl : null;
-			}
-			if ("notes" in rawFields) {
-				fields.notes = typeof rawFields.notes === "string" ? rawFields.notes : null;
-			}
-			return { kind: "edit_project", targetName: parsed.targetName, fields };
-		}
-
-		if (parsed.intent === "edit_template") {
-			if (typeof parsed.targetName !== "string") return { kind: "none" };
-			const rawFields = (parsed.fields as Record<string, unknown>) ?? {};
-			type EditTemplateFields = Extract<
-				ProjectTemplateCrudIntent,
-				{ kind: "edit_template" }
-			>["fields"];
-			const fields: EditTemplateFields = {};
-			if (typeof rawFields.name === "string" && rawFields.name.length > 0)
-				fields.name = rawFields.name;
-			if (typeof rawFields.description === "string") fields.description = rawFields.description;
-			if (typeof rawFields.taskPrompt === "string") fields.taskPrompt = rawFields.taskPrompt;
-			if ("model" in rawFields) {
-				fields.model = typeof rawFields.model === "string" ? rawFields.model : null;
-			}
-			return { kind: "edit_template", targetName: parsed.targetName, fields };
-		}
-
-		return { kind: "none" };
-	} catch (err) {
-		return {
-			kind: "classifier_failed",
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
 }
 
 // ---- Alert rule intent ---------------------------------------------------
@@ -1164,116 +1036,57 @@ export async function detectAlertRuleIntent(
 	message: string,
 	projectNames: string[],
 ): Promise<AlertRuleIntent> {
-	const provider = await getDefaultProvider();
-	if (!provider) {
-		return {
-			kind: "classifier_failed",
-			error: "No default LLM provider configured — cannot classify alert rule intent.",
-		};
-	}
-	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
-	if (!full) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider record disappeared — check Settings → AI.",
-		};
-	}
-	const apiKey = await getProviderApiKey(provider.id);
-	if (apiKey === null) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider credentials are unreadable.",
-		};
-	}
+	type MatchedAlertRuleIntent = Extract<
+		AlertRuleIntent,
+		{ kind: "create_alert_rule" } | { kind: "create_freeform_alert_rule" }
+	>;
+	return classifyJson<MatchedAlertRuleIntent>({
+		systemPrompt: ALERT_RULE_CLASSIFIER_PROMPT(projectNames),
+		message,
+		label: "alert rule intent",
+		parse: (parsed) => {
+			if (parsed.intent === "none") return { kind: "none" };
 
-	const ESTIMATED_COST_CENTS = 1;
-	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
-	if (!spendCheck.allowed) {
-		return { kind: "none" };
-	}
+			if (parsed.intent === "create_freeform_alert_rule") {
+				const condition = typeof parsed.condition === "string" ? parsed.condition.trim() : "";
+				if (!condition) return { kind: "none" };
+				return {
+					kind: "create_freeform_alert_rule",
+					projectHint: typeof parsed.projectHint === "string" ? parsed.projectHint : null,
+					condition,
+					dailyTokenBudget:
+						typeof parsed.dailyTokenBudget === "number" ? parsed.dailyTokenBudget : null,
+					sampleRate: typeof parsed.sampleRate === "number" ? parsed.sampleRate : 1.0,
+				};
+			}
 
-	const adapter = getAdapter({
-		kind: full.kind,
-		apiKey,
-		baseUrl: full.baseUrl ?? undefined,
-	});
+			if (parsed.intent !== "create_alert_rule") return { kind: "none" };
 
-	try {
-		const res = await adapter.complete({
-			systemPrompt: ALERT_RULE_CLASSIFIER_PROMPT(projectNames),
-			transcriptPrompt: `User message: ${message}`,
-			model: full.model,
-			maxTokens: 200,
-			temperature: 0.0,
-			timeoutMs: 8_000,
-			disableReasoning: true,
-		});
+			const validRuleTypes = [
+				"status_failed",
+				"status_stuck",
+				"status_completed",
+				"no_activity_minutes",
+			] as const;
+			if (!validRuleTypes.includes(parsed.ruleType as (typeof validRuleTypes)[number])) {
+				return { kind: "none" };
+			}
 
-		const actualCents = res.usage.estimated
-			? ESTIMATED_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
-		void addGlobalSpendCents(actualCents).catch(() => {});
+			const ruleType = parsed.ruleType as AlertRuleIntent extends { kind: "create_alert_rule" }
+				? AlertRuleIntent["ruleType"]
+				: never;
 
-		const raw = res.text.trim();
-		let parsed: Record<string, unknown>;
-		try {
-			parsed = JSON.parse(raw);
-		} catch {
+			const thresholdMinutes =
+				typeof parsed.thresholdMinutes === "number" ? parsed.thresholdMinutes : null;
+
 			return {
-				kind: "classifier_failed",
-				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
-			};
-		}
-
-		if (parsed.intent === "none") return { kind: "none" };
-
-		if (parsed.intent === "create_freeform_alert_rule") {
-			const condition = typeof parsed.condition === "string" ? parsed.condition.trim() : "";
-			if (!condition) return { kind: "none" };
-			return {
-				kind: "create_freeform_alert_rule",
+				kind: "create_alert_rule",
 				projectHint: typeof parsed.projectHint === "string" ? parsed.projectHint : null,
-				condition,
-				dailyTokenBudget:
-					typeof parsed.dailyTokenBudget === "number" ? parsed.dailyTokenBudget : null,
-				sampleRate: typeof parsed.sampleRate === "number" ? parsed.sampleRate : 1.0,
+				ruleType,
+				thresholdMinutes,
 			};
-		}
-
-		if (parsed.intent !== "create_alert_rule") return { kind: "none" };
-
-		const validRuleTypes = [
-			"status_failed",
-			"status_stuck",
-			"status_completed",
-			"no_activity_minutes",
-		] as const;
-		if (!validRuleTypes.includes(parsed.ruleType as (typeof validRuleTypes)[number])) {
-			return { kind: "none" };
-		}
-
-		const ruleType = parsed.ruleType as AlertRuleIntent extends { kind: "create_alert_rule" }
-			? AlertRuleIntent["ruleType"]
-			: never;
-
-		const thresholdMinutes =
-			typeof parsed.thresholdMinutes === "number" ? parsed.thresholdMinutes : null;
-
-		return {
-			kind: "create_alert_rule",
-			projectHint: typeof parsed.projectHint === "string" ? parsed.projectHint : null,
-			ruleType,
-			thresholdMinutes,
-		};
-	} catch (err) {
-		return {
-			kind: "classifier_failed",
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
+		},
+	});
 }
 
 // ---- Bulk session action intent -------------------------------------------
@@ -1371,41 +1184,9 @@ export async function detectBulkActionIntent(
 	message: string,
 	projectNames: string[],
 ): Promise<BulkActionDetectResult> {
-	const provider = await getDefaultProvider();
-	if (!provider) {
-		return {
-			kind: "classifier_failed",
-			error: "No default LLM provider configured — cannot classify bulk action intent.",
-		};
-	}
-	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
-	if (!full) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider record disappeared — check Settings → AI.",
-		};
-	}
-	const apiKey = await getProviderApiKey(provider.id);
-	if (apiKey === null) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider credentials are unreadable.",
-		};
-	}
-
-	const ESTIMATED_COST_CENTS = 1;
-	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
-	if (!spendCheck.allowed) {
-		return { kind: "none" };
-	}
-
-	const adapter = getAdapter({
-		kind: full.kind,
-		apiKey,
-		baseUrl: full.baseUrl ?? undefined,
-	});
-
 	// Provide project names so the classifier can fill projectHint accurately.
+	// bulk-action is the one detector that appends project context to a constant
+	// prompt at the call site rather than through a builder function.
 	const projectContext =
 		projectNames.length > 0
 			? `Known project names: ${projectNames.map((n) => `"${n}"`).join(", ")}`
@@ -1414,84 +1195,55 @@ export async function detectBulkActionIntent(
 		? `${BULK_ACTION_CLASSIFIER_PROMPT}\n\n${projectContext}`
 		: BULK_ACTION_CLASSIFIER_PROMPT;
 
-	try {
-		const res = await adapter.complete({
-			systemPrompt,
-			transcriptPrompt: `User message: ${message}`,
-			model: full.model,
-			maxTokens: 200,
-			temperature: 0.0,
-			timeoutMs: 8_000,
-			disableReasoning: true,
-		});
+	return classifyJson<BulkActionIntent>({
+		systemPrompt,
+		message,
+		label: "bulk action intent",
+		parse: (parsed) => {
+			if (parsed.intent === "none") return { kind: "none" };
+			if (parsed.intent !== "bulk_action") return { kind: "none" };
 
-		const actualCents = res.usage.estimated
-			? ESTIMATED_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
-		void addGlobalSpendCents(actualCents).catch(() => {});
-
-		const raw = res.text.trim();
-		let parsed: Record<string, unknown>;
-		try {
-			parsed = JSON.parse(raw);
-		} catch {
-			return {
-				kind: "classifier_failed",
-				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
-			};
-		}
-
-		if (parsed.intent === "none") return { kind: "none" };
-		if (parsed.intent !== "bulk_action") return { kind: "none" };
-
-		if (!SESSION_MUTATION_KINDS.includes(parsed.action as SessionMutationKind)) {
-			return { kind: "none" };
-		}
-		const action = parsed.action as SessionMutationKind;
-
-		const rawFilter = parsed.filter as Record<string, unknown> | undefined;
-		if (!rawFilter || typeof rawFilter.strategy !== "string") return { kind: "none" };
-
-		let filter: BulkFilter;
-		if (rawFilter.strategy === "attribute") {
-			filter = {
-				strategy: "attribute",
-				status:
-					typeof rawFilter.status === "string" && rawFilter.status !== "null"
-						? rawFilter.status
-						: undefined,
-				olderThanDays:
-					typeof rawFilter.olderThanDays === "number" ? rawFilter.olderThanDays : undefined,
-				projectHint:
-					typeof rawFilter.projectHint === "string" && rawFilter.projectHint !== "null"
-						? rawFilter.projectHint
-						: undefined,
-			};
-		} else if (rawFilter.strategy === "hint") {
-			if (typeof rawFilter.searchHint !== "string" || !rawFilter.searchHint)
+			if (!SESSION_MUTATION_KINDS.includes(parsed.action as SessionMutationKind)) {
 				return { kind: "none" };
-			filter = {
-				strategy: "hint",
-				searchHint: rawFilter.searchHint,
-				projectHint:
-					typeof rawFilter.projectHint === "string" && rawFilter.projectHint !== "null"
-						? rawFilter.projectHint
-						: undefined,
-			};
-		} else {
-			return { kind: "none" };
-		}
+			}
+			const action = parsed.action as SessionMutationKind;
 
-		return { kind: "bulk_action", action, filter };
-	} catch (err) {
-		return {
-			kind: "classifier_failed",
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
+			const rawFilter = parsed.filter as Record<string, unknown> | undefined;
+			if (!rawFilter || typeof rawFilter.strategy !== "string") return { kind: "none" };
+
+			let filter: BulkFilter;
+			if (rawFilter.strategy === "attribute") {
+				filter = {
+					strategy: "attribute",
+					status:
+						typeof rawFilter.status === "string" && rawFilter.status !== "null"
+							? rawFilter.status
+							: undefined,
+					olderThanDays:
+						typeof rawFilter.olderThanDays === "number" ? rawFilter.olderThanDays : undefined,
+					projectHint:
+						typeof rawFilter.projectHint === "string" && rawFilter.projectHint !== "null"
+							? rawFilter.projectHint
+							: undefined,
+				};
+			} else if (rawFilter.strategy === "hint") {
+				if (typeof rawFilter.searchHint !== "string" || !rawFilter.searchHint)
+					return { kind: "none" };
+				filter = {
+					strategy: "hint",
+					searchHint: rawFilter.searchHint,
+					projectHint:
+						typeof rawFilter.projectHint === "string" && rawFilter.projectHint !== "null"
+							? rawFilter.projectHint
+							: undefined,
+				};
+			} else {
+				return { kind: "none" };
+			}
+
+			return { kind: "bulk_action", action, filter };
+		},
+	});
 }
 
 // ---- Per-session Q&A intent -------------------------------------------------
@@ -1546,183 +1298,57 @@ Rules:
 - Respond ONLY with the JSON object.`;
 
 export async function detectQaIntent(message: string): Promise<QaDetectResult> {
-	const provider = await getDefaultProvider();
-	if (!provider) {
-		return {
-			kind: "classifier_failed",
-			error: "No default LLM provider configured — cannot classify Q&A intent.",
-		};
-	}
-	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
-	if (!full) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider record disappeared — check Settings → AI.",
-		};
-	}
-	const apiKey = await getProviderApiKey(provider.id);
-	if (apiKey === null) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider credentials are unreadable.",
-		};
-	}
-
-	const ESTIMATED_COST_CENTS = 1;
-	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
-	if (!spendCheck.allowed) {
-		return { kind: "none" };
-	}
-
-	const adapter = getAdapter({
-		kind: full.kind,
-		apiKey,
-		baseUrl: full.baseUrl ?? undefined,
-	});
-
-	try {
-		const res = await adapter.complete({
-			systemPrompt: QA_CLASSIFIER_PROMPT,
-			transcriptPrompt: `User message: ${message}`,
-			model: full.model,
-			maxTokens: 150,
-			temperature: 0.0,
-			timeoutMs: 8_000,
-			disableReasoning: true,
-		});
-
-		const actualCents = res.usage.estimated
-			? ESTIMATED_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
-		void addGlobalSpendCents(actualCents).catch(() => {});
-
-		const raw = res.text.trim();
-		let parsed: Record<string, unknown>;
-		try {
-			parsed = JSON.parse(raw);
-		} catch {
+	return classifyJson<QaIntent>({
+		systemPrompt: QA_CLASSIFIER_PROMPT,
+		message,
+		label: "Q&A intent",
+		maxTokens: 150,
+		parse: (parsed) => {
+			if (parsed.intent === "none") return { kind: "none" };
+			if (parsed.intent !== "qa") return { kind: "none" };
 			return {
-				kind: "classifier_failed",
-				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
+				kind: "qa",
+				sessionHint: typeof parsed.sessionHint === "string" ? parsed.sessionHint : null,
+				question: message, // closure-captured from the outer detect param
 			};
-		}
-
-		if (parsed.intent === "none") return { kind: "none" };
-		if (parsed.intent !== "qa") return { kind: "none" };
-
-		return {
-			kind: "qa",
-			sessionHint: typeof parsed.sessionHint === "string" ? parsed.sessionHint : null,
-			question: message,
-		};
-	} catch (err) {
-		return {
-			kind: "classifier_failed",
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
+		},
+	});
 }
 
 export async function detectAddProjectIntent(message: string): Promise<LaunchIntent> {
-	const provider = await getDefaultProvider();
-	if (!provider) {
-		return {
-			kind: "classifier_failed",
-			error: "No default LLM provider configured — cannot classify add-project intent.",
-		};
-	}
-	const full = await (await import("../ai/providers-service.js")).getProvider(provider.id);
-	if (!full) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider record disappeared — check Settings → AI.",
-		};
-	}
-	const apiKey = await getProviderApiKey(provider.id);
-	if (apiKey === null) {
-		return {
-			kind: "classifier_failed",
-			error: "Default LLM provider credentials are unreadable.",
-		};
-	}
+	return classifyJson<Extract<LaunchIntent, { kind: "add_project" }>>({
+		systemPrompt: ADD_PROJECT_SYSTEM_PROMPT,
+		message,
+		label: "add-project intent",
+		parse: (parsed) => {
+			if (parsed.intent === "none") return { kind: "none" };
+			if (parsed.intent !== "add_project") return { kind: "none" };
 
-	const ESTIMATED_COST_CENTS = 1;
-	const spendCheck = await checkSpendBudget("local", null, ESTIMATED_COST_CENTS);
-	if (!spendCheck.allowed) {
-		return { kind: "none" };
-	}
+			const initialFields: Partial<ProjectDraftFields> = {};
+			if (typeof parsed.name === "string" && parsed.name.length > 0 && parsed.name.length <= 80) {
+				initialFields.name = parsed.name;
+			}
+			if (typeof parsed.cwd === "string" && parsed.cwd.startsWith("/")) {
+				initialFields.cwd = parsed.cwd;
+			}
+			if (parsed.defaultAgentType === "claude_code" || parsed.defaultAgentType === "codex_cli") {
+				initialFields.defaultAgentType = parsed.defaultAgentType;
+			}
+			if (typeof parsed.defaultModel === "string" && parsed.defaultModel) {
+				initialFields.defaultModel = parsed.defaultModel;
+			}
+			if (
+				parsed.defaultLaunchMode === "interactive_terminal" ||
+				parsed.defaultLaunchMode === "headless" ||
+				parsed.defaultLaunchMode === "managed_codex"
+			) {
+				initialFields.defaultLaunchMode = parsed.defaultLaunchMode;
+			}
+			if (typeof parsed.githubRepoUrl === "string" && parsed.githubRepoUrl.startsWith("https://")) {
+				initialFields.githubRepoUrl = parsed.githubRepoUrl;
+			}
 
-	const adapter = getAdapter({
-		kind: full.kind,
-		apiKey,
-		baseUrl: full.baseUrl ?? undefined,
+			return { kind: "add_project", initialFields };
+		},
 	});
-
-	try {
-		const res = await adapter.complete({
-			systemPrompt: ADD_PROJECT_SYSTEM_PROMPT,
-			transcriptPrompt: `User message: ${message}`,
-			model: full.model,
-			maxTokens: 200,
-			temperature: 0.0,
-			timeoutMs: 8_000,
-			disableReasoning: true,
-		});
-
-		const actualCents = res.usage.estimated
-			? ESTIMATED_COST_CENTS
-			: Math.max(
-					1,
-					Math.round(((res.usage.inputTokens + res.usage.outputTokens) / 1_000_000) * 100),
-				);
-		void addGlobalSpendCents(actualCents).catch(() => {});
-
-		const raw = res.text.trim();
-		let parsed: Record<string, unknown>;
-		try {
-			parsed = JSON.parse(raw);
-		} catch {
-			return {
-				kind: "classifier_failed",
-				error: `LLM returned non-JSON response: ${raw.slice(0, 200)}`,
-			};
-		}
-
-		if (parsed.intent === "none") return { kind: "none" };
-		if (parsed.intent !== "add_project") return { kind: "none" };
-
-		const initialFields: Partial<ProjectDraftFields> = {};
-		if (typeof parsed.name === "string" && parsed.name.length > 0 && parsed.name.length <= 80) {
-			initialFields.name = parsed.name;
-		}
-		if (typeof parsed.cwd === "string" && parsed.cwd.startsWith("/")) {
-			initialFields.cwd = parsed.cwd;
-		}
-		if (parsed.defaultAgentType === "claude_code" || parsed.defaultAgentType === "codex_cli") {
-			initialFields.defaultAgentType = parsed.defaultAgentType;
-		}
-		if (typeof parsed.defaultModel === "string" && parsed.defaultModel) {
-			initialFields.defaultModel = parsed.defaultModel;
-		}
-		if (
-			parsed.defaultLaunchMode === "interactive_terminal" ||
-			parsed.defaultLaunchMode === "headless" ||
-			parsed.defaultLaunchMode === "managed_codex"
-		) {
-			initialFields.defaultLaunchMode = parsed.defaultLaunchMode;
-		}
-		if (typeof parsed.githubRepoUrl === "string" && parsed.githubRepoUrl.startsWith("https://")) {
-			initialFields.githubRepoUrl = parsed.githubRepoUrl;
-		}
-
-		return { kind: "add_project", initialFields };
-	} catch (err) {
-		return {
-			kind: "classifier_failed",
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
 }

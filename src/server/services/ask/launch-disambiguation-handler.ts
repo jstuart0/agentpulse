@@ -1,4 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
+import { type AskMessageMeta, encodeAskMeta, parseAskMeta } from "../../../shared/ask-meta.js";
 import type {
 	AgentType,
 	AskThreadOrigin,
@@ -30,140 +31,57 @@ import {
 import { handleAskLaunchIntent } from "./ask-launch-handler.js";
 import type { CloneSpec, LaunchIntent, TaskBrief } from "./launch-intent-detector.js";
 
-// Sentinel marker embedded in the assistant's content so the web UI can
-// render the picker as a structured component while Telegram + the SQL
-// transcript both remain fully readable as plain text.
-const PICKER_SENTINEL_FENCE = "ask-message-meta";
-
-export interface ProjectPickerMeta {
-	kind: "project_picker";
-	draftId: string;
-	choices: ProjectChoiceSnapshot[];
-	taskHint?: string;
-	taskBriefSummary?: string;
-	telegramOrigin: boolean;
-	// Slice 5d: server-computed flag — true iff at least one connected
-	// supervisor advertises `can_scaffold_workarea`. Client uses this to
-	// hide the "Scaffold a fresh workspace" CTA when no host can honor it
-	// (ruby §11.5).
-	canScaffold: boolean;
-}
-
+// Sentinel marker for the fenced meta blocks embedded in assistant content.
+// The encode/parse logic lives in src/shared/ask-meta.ts so the frontend
+// can share the same implementation without duplicating the regex.
+//
+// Re-export the per-kind variant types so existing callers (tests, other
+// server modules) keep working without import changes.
+export type ProjectPickerMeta = Extract<AskMessageMeta, { kind: "project_picker" }>;
 // Slice 5d: workspace_scaffold sentinel — the assistant turn after the
 // user types `new`. Same fenced-block grammar as the picker, different
 // `kind` discriminator (ruby §11.6).
-export interface WorkspaceScaffoldMeta {
-	kind: "workspace_scaffold";
-	draftId: string;
-	resolvedPath: string;
-	taskSlug: string;
-	actions: Array<{
-		kind: string;
-		path: string;
-		gitInit?: boolean;
-		seedClaudeMdPath?: string;
-		seedClaudeMdBytes?: number;
-	}>;
-	canScaffold: boolean;
-	suggestedHost?: string;
-	telegramOrigin: boolean;
-	error?: { code: string; message: string; path?: string };
-}
-
-export function encodePickerMeta(meta: ProjectPickerMeta): string {
-	return `\n\n\`\`\`${PICKER_SENTINEL_FENCE}\n${JSON.stringify(meta)}\n\`\`\``;
-}
-
-const PICKER_FENCE_RE = new RegExp(`\\n*\`\`\`${PICKER_SENTINEL_FENCE}\\n([\\s\\S]*?)\\n\`\`\``);
-
-export function extractPickerMeta(
-	content: string,
-): { meta: ProjectPickerMeta; visibleText: string } | null {
-	const match = content.match(PICKER_FENCE_RE);
-	if (!match) return null;
-	try {
-		const parsed = JSON.parse(match[1]);
-		if (parsed && parsed.kind === "project_picker" && Array.isArray(parsed.choices)) {
-			return {
-				meta: parsed as ProjectPickerMeta,
-				visibleText: content.replace(PICKER_FENCE_RE, "").trim(),
-			};
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}
-
-// Workspace scaffold sentinel sharing the same fenced block as the picker —
-// `extractWorkspaceScaffoldMeta` discriminates on `kind` (ruby §11.6).
-export function encodeWorkspaceScaffoldMeta(meta: WorkspaceScaffoldMeta): string {
-	return `\n\n\`\`\`${PICKER_SENTINEL_FENCE}\n${JSON.stringify(meta)}\n\`\`\``;
-}
-
-export function extractWorkspaceScaffoldMeta(
-	content: string,
-): { meta: WorkspaceScaffoldMeta; visibleText: string } | null {
-	const match = content.match(PICKER_FENCE_RE);
-	if (!match) return null;
-	try {
-		const parsed = JSON.parse(match[1]);
-		if (parsed && parsed.kind === "workspace_scaffold" && Array.isArray(parsed.actions)) {
-			return {
-				meta: parsed as WorkspaceScaffoldMeta,
-				visibleText: content.replace(PICKER_FENCE_RE, "").trim(),
-			};
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}
-
+export type WorkspaceScaffoldMeta = Extract<AskMessageMeta, { kind: "workspace_scaffold" }>;
 // Slice 6d: workspace_clone sentinel — fired when the classifier emits a
 // `cloneSpec` and the cloner turn awaits user confirmation. Sibling to
 // the scaffold sentinel; same fenced-block grammar, different `kind`
 // discriminator (ruby §13.2 / bob §12.10).
-export interface WorkspaceCloneMeta {
-	kind: "workspace_clone";
-	draftId: string;
-	url: string;
-	resolvedPath: string;
-	branch?: string;
-	depth?: number;
-	timeoutSeconds: number;
-	canClone: boolean;
-	suggestedHost?: string;
-	telegramOrigin: boolean;
-	error?: { code: string; message: string; path?: string };
-}
+export type WorkspaceCloneMeta = Extract<AskMessageMeta, { kind: "workspace_clone" }>;
 
+// Thin wrappers preserved so call sites in this file and in tests compile
+// without mechanical renaming. They delegate entirely to the shared module.
+export function encodePickerMeta(meta: ProjectPickerMeta): string {
+	return encodeAskMeta(meta);
+}
+export function extractPickerMeta(
+	content: string,
+): { meta: ProjectPickerMeta; visibleText: string } | null {
+	const r = parseAskMeta(content);
+	return r?.meta.kind === "project_picker"
+		? (r as { meta: ProjectPickerMeta; visibleText: string })
+		: null;
+}
+export function encodeWorkspaceScaffoldMeta(meta: WorkspaceScaffoldMeta): string {
+	return encodeAskMeta(meta);
+}
+export function extractWorkspaceScaffoldMeta(
+	content: string,
+): { meta: WorkspaceScaffoldMeta; visibleText: string } | null {
+	const r = parseAskMeta(content);
+	return r?.meta.kind === "workspace_scaffold"
+		? (r as { meta: WorkspaceScaffoldMeta; visibleText: string })
+		: null;
+}
 export function encodeWorkspaceCloneMeta(meta: WorkspaceCloneMeta): string {
-	return `\n\n\`\`\`${PICKER_SENTINEL_FENCE}\n${JSON.stringify(meta)}\n\`\`\``;
+	return encodeAskMeta(meta);
 }
-
 export function extractWorkspaceCloneMeta(
 	content: string,
 ): { meta: WorkspaceCloneMeta; visibleText: string } | null {
-	const match = content.match(PICKER_FENCE_RE);
-	if (!match) return null;
-	try {
-		const parsed = JSON.parse(match[1]);
-		if (
-			parsed &&
-			parsed.kind === "workspace_clone" &&
-			typeof parsed.url === "string" &&
-			typeof parsed.resolvedPath === "string"
-		) {
-			return {
-				meta: parsed as WorkspaceCloneMeta,
-				visibleText: content.replace(PICKER_FENCE_RE, "").trim(),
-			};
-		}
-	} catch {
-		return null;
-	}
-	return null;
+	const r = parseAskMeta(content);
+	return r?.meta.kind === "workspace_clone"
+		? (r as { meta: WorkspaceCloneMeta; visibleText: string })
+		: null;
 }
 
 /**

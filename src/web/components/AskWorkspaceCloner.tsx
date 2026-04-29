@@ -1,19 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import type { AskMessageMeta } from "../../shared/ask-meta.js";
 
-export interface WorkspaceCloneMeta {
-	kind: "workspace_clone";
-	draftId: string;
-	url: string;
-	resolvedPath: string;
-	branch?: string;
-	depth?: number;
-	timeoutSeconds: number;
-	canClone: boolean;
-	suggestedHost?: string;
-	telegramOrigin: boolean;
-	error?: { code: string; message: string; path?: string };
-}
+// Re-exported so callers that import WorkspaceCloneMeta by name keep working.
+export type WorkspaceCloneMeta = Extract<AskMessageMeta, { kind: "workspace_clone" }>;
 
 interface Props {
 	meta: WorkspaceCloneMeta;
@@ -337,34 +327,3 @@ export function AskWorkspaceCloner({
 	);
 }
 
-const CLONER_FENCE_RE = /\n*```ask-message-meta\n([\s\S]*?)\n```/;
-
-/**
- * Pure parser — exported so AskPage can detect workspace_clone payloads
- * embedded in assistant message content. Returns null when the content
- * has no sentinel, when the embedded JSON is malformed, or when the
- * kind discriminator is anything other than "workspace_clone".
- */
-export function parseClonerMeta(
-	content: string,
-): { meta: WorkspaceCloneMeta; visibleText: string } | null {
-	const match = content.match(CLONER_FENCE_RE);
-	if (!match) return null;
-	try {
-		const parsed = JSON.parse(match[1]);
-		if (
-			parsed &&
-			parsed.kind === "workspace_clone" &&
-			typeof parsed.url === "string" &&
-			typeof parsed.resolvedPath === "string"
-		) {
-			return {
-				meta: parsed as WorkspaceCloneMeta,
-				visibleText: content.replace(CLONER_FENCE_RE, "").trim(),
-			};
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}

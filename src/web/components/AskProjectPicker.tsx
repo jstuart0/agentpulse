@@ -1,24 +1,12 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import type { AskMessageMeta } from "../../shared/ask-meta.js";
 
-interface ProjectChoice {
-	id: string;
-	name: string;
-	cwd: string;
-}
-
-export interface ProjectPickerMeta {
-	kind: "project_picker";
-	draftId: string;
-	choices: ProjectChoice[];
-	taskHint?: string;
-	taskBriefSummary?: string;
-	telegramOrigin: boolean;
-	// Slice 5d: server-provided gate on the "Scaffold a fresh workspace"
-	// CTA. False when no connected supervisor advertises the
-	// can_scaffold_workarea capability flag (ruby §11.5).
-	canScaffold?: boolean;
-}
+// Slice 5d: server-provided gate on the "Scaffold a fresh workspace" CTA.
+// False when no connected supervisor advertises the can_scaffold_workarea
+// capability flag (ruby §11.5). Re-exported so other modules that import
+// ProjectPickerMeta by name keep working without changes.
+export type ProjectPickerMeta = Extract<AskMessageMeta, { kind: "project_picker" }>;
 
 interface Props {
 	meta: ProjectPickerMeta;
@@ -184,28 +172,3 @@ export function AskProjectPicker({ meta, disabled, onSelect }: Props) {
 	);
 }
 
-const PICKER_FENCE_RE = /\n*```ask-message-meta\n([\s\S]*?)\n```/;
-
-/**
- * Pure parser — exported so the AskPage can detect picker payloads
- * embedded in assistant message content. Returns null when the content
- * has no picker sentinel or when the embedded JSON is malformed.
- */
-export function parseProjectPickerMeta(
-	content: string,
-): { meta: ProjectPickerMeta; visibleText: string } | null {
-	const match = content.match(PICKER_FENCE_RE);
-	if (!match) return null;
-	try {
-		const parsed = JSON.parse(match[1]);
-		if (parsed && parsed.kind === "project_picker" && Array.isArray(parsed.choices)) {
-			return {
-				meta: parsed as ProjectPickerMeta,
-				visibleText: content.replace(PICKER_FENCE_RE, "").trim(),
-			};
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}
