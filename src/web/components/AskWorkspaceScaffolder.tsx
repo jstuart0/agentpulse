@@ -1,24 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
+import type { AskMessageMeta, AskMetaScaffoldAction } from "../../shared/ask-meta.js";
 
-export interface WorkspaceScaffoldAction {
-	kind: string;
-	path: string;
-	gitInit?: boolean;
-	seedClaudeMdPath?: string;
-	seedClaudeMdBytes?: number;
-}
-
-export interface WorkspaceScaffoldMeta {
-	kind: "workspace_scaffold";
-	draftId: string;
-	resolvedPath: string;
-	taskSlug: string;
-	actions: WorkspaceScaffoldAction[];
-	canScaffold: boolean;
-	suggestedHost?: string;
-	telegramOrigin: boolean;
-	error?: { code: string; message: string; path?: string };
-}
+// Re-exported so callers that import WorkspaceScaffoldAction / WorkspaceScaffoldMeta
+// by name keep working without import changes.
+export type WorkspaceScaffoldAction = AskMetaScaffoldAction;
+export type WorkspaceScaffoldMeta = Extract<AskMessageMeta, { kind: "workspace_scaffold" }>;
 
 interface Props {
 	meta: WorkspaceScaffoldMeta;
@@ -202,34 +188,3 @@ export function AskWorkspaceScaffolder({
 	);
 }
 
-const SCAFFOLDER_FENCE_RE = /\n*```ask-message-meta\n([\s\S]*?)\n```/;
-
-/**
- * Pure parser — exported so AskPage can detect workspace_scaffold
- * payloads embedded in assistant message content. Returns null when the
- * content has no sentinel, when the embedded JSON is malformed, or when
- * the kind discriminator is anything other than "workspace_scaffold".
- */
-export function parseScaffolderMeta(
-	content: string,
-): { meta: WorkspaceScaffoldMeta; visibleText: string } | null {
-	const match = content.match(SCAFFOLDER_FENCE_RE);
-	if (!match) return null;
-	try {
-		const parsed = JSON.parse(match[1]);
-		if (
-			parsed &&
-			parsed.kind === "workspace_scaffold" &&
-			typeof parsed.resolvedPath === "string" &&
-			Array.isArray(parsed.actions)
-		) {
-			return {
-				meta: parsed as WorkspaceScaffoldMeta,
-				visibleText: content.replace(SCAFFOLDER_FENCE_RE, "").trim(),
-			};
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}

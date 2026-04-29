@@ -922,6 +922,14 @@ export type InboxWorkItem =
 			origin: AskThreadOrigin;
 	  };
 
+/**
+ * Action-only subset of InboxWorkItem — every variant whose kind starts with
+ * `action_`. Used by the unified ActionRequestCard component, which handles
+ * Approve/Decline cards. Non-action variants (hitl, stuck, risky,
+ * failed_proposal) have their own bespoke render paths.
+ */
+export type ActionInboxItem = Extract<InboxWorkItem, { kind: `action_${string}` }>;
+
 export interface Inbox {
 	items: InboxWorkItem[];
 	total: number;

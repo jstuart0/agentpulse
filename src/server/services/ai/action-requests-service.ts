@@ -252,13 +252,145 @@ async function notifyOriginUser(
 	void askThreadId; // reserved for web reply path; future use
 }
 
+// ---- Executor lifecycle helpers -----------------------------------------
+//
+// These three helpers bundle the (conditionalUpdate + optional notify +
+// return ResolveResult) triple that every executor repeats. The complex
+// executors call them directly; the four simple CRUD executors go through
+// the runExecutor frame below which calls them on their behalf.
+
+/**
+ * Mark the action request "failed", optionally notify the origin user,
+ * and return the failure ResolveResult. The persisted `failureReason` is
+ * the full un-truncated `reason`; callers are responsible for truncating
+ * the `notifyText` they pass in (matches current per-executor behavior).
+ *
+ * `notifyText` is optional — branches that deliberately skip notify
+ * (e.g. validation failures in executeAddChannelAction) omit it.
+ */
+async function fail(
+	request: ActionRequest,
+	resolvedBy: string,
+	reason: string,
+	notifyText?: string,
+): Promise<ResolveResult> {
+	await conditionalUpdate(request.id, "applying", {
+		status: "failed",
+		failureReason: reason,
+		resolvedBy,
+	});
+	if (notifyText) {
+		await notifyOriginUser(request.origin, request.channelId, request.askThreadId, notifyText);
+	}
+	return { ok: false, reason: "failed", failureReason: reason };
+}
+
+/**
+ * Mark the action request "applied", notify the origin user, and return
+ * the success ResolveResult. `resultEventId` is forwarded to the row only
+ * when provided — only executeLaunchAction and executeAddProjectAction set it.
+ */
+async function succeed(
+	request: ActionRequest,
+	resolvedBy: string,
+	notifyText: string,
+	resultEventId?: string,
+): Promise<ResolveResult> {
+	await conditionalUpdate(request.id, "applying", {
+		status: "applied",
+		resolvedBy,
+		...(resultEventId !== undefined && { resultEventId }),
+	});
+	await notifyOriginUser(request.origin, request.channelId, request.askThreadId, notifyText);
+	return { ok: true, status: "applied" };
+}
+
+/**
+ * Mark the action request "expired", optionally notify the origin user,
+ * and return the expired ResolveResult. Only executeLaunchAction produces
+ * this today (when no capable supervisor is available at execute time).
+ * Note: `race_lost` is the fourth ResolveResult discriminant, produced
+ * only by resolveActionRequest's claim logic (line ~1347-1348) — it is
+ * intentionally outside this helper surface.
+ */
+async function failExpired(
+	request: ActionRequest,
+	resolvedBy: string,
+	reason: string,
+	notifyText?: string,
+): Promise<ResolveResult> {
+	await conditionalUpdate(request.id, "applying", {
+		status: "expired",
+		failureReason: reason,
+		resolvedBy,
+	});
+	if (notifyText) {
+		await notifyOriginUser(request.origin, request.channelId, request.askThreadId, notifyText);
+	}
+	return { ok: false, reason: "expired", failureReason: reason };
+}
+
+/**
+ * Generic executor frame for the four simple CRUD executors that share the
+ * same shape: narrow payload → run domain step → on success call succeed()
+ * with the run's notify text → on throw call fail() with the spec's
+ * failureNotify(reason).
+ *
+ * Contract: `spec.run` returns `{ notify, resultEventId? }` on success and
+ * throws an Error on any failure (domain errors like notFound/conflict are
+ * translated to throws inside `run`). The frame's catch arm persists the
+ * full thrown message as failureReason and passes spec.failureNotify(reason)
+ * as the user-visible notify text.
+ *
+ * Executors with mid-execute side effects, no-notify validation gates, or
+ * non-standard lifecycle stay standalone and call succeed/fail/failExpired
+ * directly (executeLaunchAction, executeAddProjectAction, executeAddChannelAction,
+ * executeCreateAlertRuleAction, executeCreateFreeformAlertRuleAction,
+ * executeBulkSessionAction).
+ */
+type ExecutorSpec<K extends ActionRequestKind> = {
+	/**
+	 * Do the work. Return the success notify text (and optional resultEventId).
+	 * Throw an Error to enter the failure path — the thrown message is persisted
+	 * as failureReason and passed to failureNotify to format the user-facing text.
+	 */
+	run: (
+		payload: Extract<ActionRequestPayload, { kind: K }>,
+		request: ActionRequest,
+	) => Promise<{ notify: string; resultEventId?: string }>;
+
+	/**
+	 * Format the user-facing notify message for catch-arm failures. Apply any
+	 * truncation (e.g. reason.slice(0, 400)) inside this function — the frame
+	 * does not auto-truncate.
+	 */
+	failureNotify: (reason: string) => string;
+};
+
+async function runExecutor<K extends ActionRequestKind>(
+	request: ActionRequest,
+	kind: K,
+	spec: ExecutorSpec<K>,
+	resolvedBy: string,
+): Promise<ResolveResult> {
+	const payload = narrowPayload(request, kind);
+	try {
+		const out = await spec.run(payload, request);
+		return succeed(request, resolvedBy, out.notify, out.resultEventId);
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		return fail(request, resolvedBy, reason, spec.failureNotify(reason));
+	}
+}
+
+// -------------------------------------------------------------------------
+
 async function executeLaunchAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
 	const payload = narrowPayload(request, "launch_request");
 	const { template, launchSpec, requestedLaunchMode, validatedSupervisorId } = payload;
-	const { origin, channelId, askThreadId } = request;
 
 	try {
 		// === STEP 1: Re-validate at execute time ===
@@ -275,22 +407,12 @@ async function executeLaunchAction(
 				pickFirstCapableSupervisor(template, requestedLaunchMode, connectedSupervisors) ??
 				undefined;
 			if (!executingSupervisor) {
-				await conditionalUpdate(request.id, "applying", {
-					status: "expired",
-					failureReason: "No capable supervisor at execute time",
+				return failExpired(
+					request,
 					resolvedBy,
-				});
-				await notifyOriginUser(
-					origin,
-					channelId,
-					askThreadId,
+					"No capable supervisor at execute time",
 					"Couldn't launch: no host machine is currently available.",
 				);
-				return {
-					ok: false,
-					reason: "expired",
-					failureReason: "No capable supervisor at execute time",
-				};
 			}
 			routedAway = true;
 		}
@@ -303,11 +425,14 @@ async function executeLaunchAction(
 			? buildLaunchSpec(template, requestedLaunchMode, executingSupervisor)
 			: launchSpec;
 
+		// Mid-execute side-effect notify — NOT a lifecycle event, so it stays as a
+		// direct notifyOriginUser call. The lifecycle exits (success/expired/fail)
+		// are bracketed by succeed/failExpired/fail.
 		if (routedAway) {
 			await notifyOriginUser(
-				origin,
-				channelId,
-				askThreadId,
+				request.origin,
+				request.channelId,
+				request.askThreadId,
 				`Original host gone; rerouted to ${executingSupervisor.hostName}. Launching now.`,
 			);
 		}
@@ -330,33 +455,15 @@ async function executeLaunchAction(
 			desiredDisplayName: desiredDisplayName ?? null,
 		});
 
-		// === STEP 4: Mark applied ===
-		await conditionalUpdate(request.id, "applying", {
-			status: "applied",
+		return succeed(
+			request,
 			resolvedBy,
-			resultEventId: launchRequest.id,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
 			`Launch queued (${launchRequest.id}). The session will appear on the dashboard shortly.`,
+			launchRequest.id,
 		);
-		return { ok: true, status: "applied" };
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
-			`Launch failed: ${reason.slice(0, 400)}.`,
-		);
-		return { ok: false, reason: "failed", failureReason: reason };
+		return fail(request, resolvedBy, reason, `Launch failed: ${reason.slice(0, 400)}.`);
 	}
 }
 
@@ -366,16 +473,13 @@ async function executeAddProjectAction(
 ): Promise<ResolveResult> {
 	const payload = narrowPayload(request, "add_project");
 	const { draftFields, draftId } = payload;
-	const { origin, channelId, askThreadId } = request;
 
 	try {
+		// Validation inside try — fails silently (no notify). Pre-existing behavior delta:
+		// persisted "Required fields missing at execute time" vs. returned "Required fields
+		// missing" is collapsed to the single string below (both now carry the full text).
 		if (!draftFields?.name || !draftFields?.cwd) {
-			await conditionalUpdate(request.id, "applying", {
-				status: "failed",
-				failureReason: "Required fields missing at execute time",
-				resolvedBy,
-			});
-			return { ok: false, reason: "failed", failureReason: "Required fields missing" };
+			return fail(request, resolvedBy, "Required fields missing at execute time");
 		}
 
 		const result = await createProject({
@@ -389,53 +493,31 @@ async function executeAddProjectAction(
 
 		if (result.conflict) {
 			const reason = `Name or directory already in use (conflict: ${result.conflict})`;
-			await conditionalUpdate(request.id, "applying", {
-				status: "failed",
-				failureReason: reason,
+			return fail(
+				request,
 				resolvedBy,
-			});
-			await notifyOriginUser(
-				origin,
-				channelId,
-				askThreadId,
+				reason,
 				"Couldn't create project: name or directory is already in use.",
 			);
-			return { ok: false, reason: "failed", failureReason: reason };
 		}
 
-		// Mark draft applied
+		// Mid-success side effect: mark draft applied before the request row update.
+		// This must stay between the domain call and succeed() — see M4 note in plan.
 		const now = sqlNow();
 		await db
 			.update(aiPendingProjectDrafts)
 			.set({ status: "applied", updatedAt: now })
 			.where(eq(aiPendingProjectDrafts.id, draftId));
 
-		await conditionalUpdate(request.id, "applying", {
-			status: "applied",
+		return succeed(
+			request,
 			resolvedBy,
-			resultEventId: result.project?.id,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
 			`Project "${draftFields.name}" created. It will appear in Projects.`,
+			result.project?.id,
 		);
-		return { ok: true, status: "applied" };
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
-			`Project creation failed: ${reason.slice(0, 400)}`,
-		);
-		return { ok: false, reason: "failed", failureReason: reason };
+		return fail(request, resolvedBy, reason, `Project creation failed: ${reason.slice(0, 400)}`);
 	}
 }
 
@@ -467,7 +549,6 @@ async function executeSessionMutation(
 		| SessionStopPayload
 		| SessionArchivePayload
 		| SessionDeletePayload;
-	const { origin, channelId, askThreadId } = request;
 	const sessionName = payload.sessionDisplayName ?? payload.sessionId;
 
 	// Pre-check: the session may have been deleted between approval creation
@@ -479,39 +560,31 @@ async function executeSessionMutation(
 		.limit(1);
 
 	if (!existing) {
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: `Session ${payload.sessionId} no longer exists`,
+		// Behavior delta (H1): persisted reason and returned failureReason now
+		// carry the full session ID string, collapsing the pre-existing divergence
+		// where the DB row got "Session <id> no longer exists" but the returned
+		// ResolveResult said "Session no longer exists" (no ID). Third intentional
+		// behavior delta in this slice.
+		const reason = `Session ${payload.sessionId} no longer exists`;
+		return fail(
+			request,
 			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
+			reason,
 			`Could not apply — session **${sessionName}** no longer exists.`,
 		);
-		return { ok: false, reason: "failed", failureReason: "Session no longer exists" };
 	}
 
 	try {
 		await mutationFn(payload.sessionId);
-		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
-		await notifyOriginUser(origin, channelId, askThreadId, `Action applied to **${sessionName}**.`);
-		return { ok: true, status: "applied" };
+		return succeed(request, resolvedBy, `Action applied to **${sessionName}**.`);
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
+		return fail(
+			request,
 			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
+			reason,
 			`Action failed for **${sessionName}**: ${reason.slice(0, 400)}`,
 		);
-		return { ok: false, reason: "failed", failureReason: reason };
 	}
 }
 
@@ -563,221 +636,124 @@ async function executeEditProjectAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = narrowPayload(request, "edit_project");
-	const { projectId, projectName, fields } = payload;
-	const { origin, channelId, askThreadId } = request;
-
-	try {
-		const result = await updateProject(projectId, fields as Parameters<typeof updateProject>[1]);
-		if (result.notFound) {
-			const reason = `Project "${projectName}" no longer exists`;
-			await conditionalUpdate(request.id, "applying", {
-				status: "failed",
-				failureReason: reason,
-				resolvedBy,
-			});
-			await notifyOriginUser(origin, channelId, askThreadId, `Could not apply — ${reason}.`);
-			return { ok: false, reason: "failed", failureReason: reason };
-		}
-		if (result.conflict) {
-			const reason = "Project name or directory conflicts with an existing project";
-			await conditionalUpdate(request.id, "applying", {
-				status: "failed",
-				failureReason: reason,
-				resolvedBy,
-			});
-			await notifyOriginUser(origin, channelId, askThreadId, `Could not apply — ${reason}.`);
-			return { ok: false, reason: "failed", failureReason: reason };
-		}
-		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
-		await notifyOriginUser(origin, channelId, askThreadId, `Project **${projectName}** updated.`);
-		return { ok: true, status: "applied" };
-	} catch (err) {
-		const reason = err instanceof Error ? err.message : String(err);
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
-			`Update failed: ${reason.slice(0, 400)}`,
-		);
-		return { ok: false, reason: "failed", failureReason: reason };
-	}
+	return runExecutor(
+		request,
+		"edit_project",
+		{
+			run: async ({ projectId, projectName, fields }) => {
+				const result = await updateProject(
+					projectId,
+					fields as Parameters<typeof updateProject>[1],
+				);
+				// Domain failures throw; the frame's catch arm formats the notify text
+				// via failureNotify and persists the un-truncated reason.
+				if (result.notFound) throw new Error(`Project "${projectName}" no longer exists`);
+				if (result.conflict)
+					throw new Error("Project name or directory conflicts with an existing project");
+				return { notify: `Project **${projectName}** updated.` };
+			},
+			failureNotify: (reason) => `Update failed: ${reason.slice(0, 400)}`,
+		},
+		resolvedBy,
+	);
 }
 
 async function executeDeleteProjectAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = narrowPayload(request, "delete_project");
-	const { projectId, projectName } = payload;
-	const { origin, channelId, askThreadId } = request;
-
-	try {
-		const deleted = await deleteProject(projectId);
-		if (!deleted) {
-			const reason = `Project "${projectName}" no longer exists`;
-			await conditionalUpdate(request.id, "applying", {
-				status: "failed",
-				failureReason: reason,
-				resolvedBy,
-			});
-			await notifyOriginUser(origin, channelId, askThreadId, `Could not apply — ${reason}.`);
-			return { ok: false, reason: "failed", failureReason: reason };
-		}
-		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
-			`Project **${projectName}** deleted. Linked templates and sessions have been disassociated.`,
-		);
-		return { ok: true, status: "applied" };
-	} catch (err) {
-		const reason = err instanceof Error ? err.message : String(err);
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
-			`Delete failed: ${reason.slice(0, 400)}`,
-		);
-		return { ok: false, reason: "failed", failureReason: reason };
-	}
+	return runExecutor(
+		request,
+		"delete_project",
+		{
+			run: async ({ projectId, projectName }) => {
+				const deleted = await deleteProject(projectId);
+				if (!deleted) throw new Error(`Project "${projectName}" no longer exists`);
+				return {
+					notify: `Project **${projectName}** deleted. Linked templates and sessions have been disassociated.`,
+				};
+			},
+			failureNotify: (reason) => `Delete failed: ${reason.slice(0, 400)}`,
+		},
+		resolvedBy,
+	);
 }
 
 async function executeEditTemplateAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = narrowPayload(request, "edit_template");
-	const { templateId, templateName, fields } = payload;
-	const { origin, channelId, askThreadId } = request;
+	return runExecutor(
+		request,
+		"edit_template",
+		{
+			run: async ({ templateId, templateName, fields }) => {
+				const [existing] = await db
+					.select()
+					.from(sessionTemplates)
+					.where(eq(sessionTemplates.id, templateId))
+					.limit(1);
+				if (!existing) throw new Error(`Template "${templateName}" no longer exists`);
 
-	try {
-		const [existing] = await db
-			.select()
-			.from(sessionTemplates)
-			.where(eq(sessionTemplates.id, templateId))
-			.limit(1);
-		if (!existing) {
-			const reason = `Template "${templateName}" no longer exists`;
-			await conditionalUpdate(request.id, "applying", {
-				status: "failed",
-				failureReason: reason,
-				resolvedBy,
-			});
-			await notifyOriginUser(origin, channelId, askThreadId, `Could not apply — ${reason}.`);
-			return { ok: false, reason: "failed", failureReason: reason };
-		}
+				// Build a full UpdateTemplateInput from existing row + partial fields overlay.
+				// updateTemplate requires a complete SessionTemplateInput; we fill omitted fields
+				// from the existing row so only user-specified fields change.
+				type AgentType = import("../../../shared/types.js").AgentType;
+				type ApprovalPolicy = import("../../../shared/types.js").ApprovalPolicy;
+				const merged = {
+					name: (fields.name as string | undefined) ?? existing.name,
+					description: (fields.description as string | undefined) ?? existing.description ?? "",
+					agentType: existing.agentType as AgentType,
+					cwd: existing.cwd,
+					baseInstructions: existing.baseInstructions ?? "",
+					taskPrompt:
+						"taskPrompt" in fields
+							? ((fields.taskPrompt as string | undefined) ?? "")
+							: (existing.taskPrompt ?? ""),
+					model:
+						"model" in fields
+							? ((fields.model as string | null | undefined) ?? null)
+							: (existing.model ?? null),
+					approvalPolicy: existing.approvalPolicy as ApprovalPolicy | null | undefined,
+					sandboxMode: existing.sandboxMode as
+						| import("../../../shared/types.js").SandboxMode
+						| null
+						| undefined,
+					env: (existing.env as Record<string, string>) ?? {},
+					tags: (existing.tags as string[]) ?? [],
+					isFavorite: existing.isFavorite ?? false,
+				};
 
-		// Build a full UpdateTemplateInput from existing row + partial fields overlay.
-		// updateTemplate requires a complete SessionTemplateInput; we fill omitted fields
-		// from the existing row so only user-specified fields change.
-		type AgentType = import("../../../shared/types.js").AgentType;
-		type ApprovalPolicy = import("../../../shared/types.js").ApprovalPolicy;
-		const merged = {
-			name: (fields.name as string | undefined) ?? existing.name,
-			description: (fields.description as string | undefined) ?? existing.description ?? "",
-			agentType: existing.agentType as AgentType,
-			cwd: existing.cwd,
-			baseInstructions: existing.baseInstructions ?? "",
-			taskPrompt:
-				"taskPrompt" in fields
-					? ((fields.taskPrompt as string | undefined) ?? "")
-					: (existing.taskPrompt ?? ""),
-			model:
-				"model" in fields
-					? ((fields.model as string | null | undefined) ?? null)
-					: (existing.model ?? null),
-			approvalPolicy: existing.approvalPolicy as ApprovalPolicy | null | undefined,
-			sandboxMode: existing.sandboxMode as
-				| import("../../../shared/types.js").SandboxMode
-				| null
-				| undefined,
-			env: (existing.env as Record<string, string>) ?? {},
-			tags: (existing.tags as string[]) ?? [],
-			isFavorite: existing.isFavorite ?? false,
-		};
-
-		const result = await updateTemplate(templateId, merged);
-		if (!result.ok) {
-			const reason = result.error;
-			await conditionalUpdate(request.id, "applying", {
-				status: "failed",
-				failureReason: reason,
-				resolvedBy,
-			});
-			await notifyOriginUser(origin, channelId, askThreadId, `Update failed: ${reason}`);
-			return { ok: false, reason: "failed", failureReason: reason };
-		}
-
-		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
-		await notifyOriginUser(origin, channelId, askThreadId, `Template **${templateName}** updated.`);
-		return { ok: true, status: "applied" };
-	} catch (err) {
-		const reason = err instanceof Error ? err.message : String(err);
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
-			`Update failed: ${reason.slice(0, 400)}`,
-		);
-		return { ok: false, reason: "failed", failureReason: reason };
-	}
+				const result = await updateTemplate(templateId, merged);
+				// Pre-existing: !result.ok branch was not truncated; under the frame,
+				// failureNotify applies .slice(0, 400) consistently for both this path
+				// and the catch arm. Intentional behavior delta (M1).
+				if (!result.ok) throw new Error(result.error);
+				return { notify: `Template **${templateName}** updated.` };
+			},
+			failureNotify: (reason) => `Update failed: ${reason.slice(0, 400)}`,
+		},
+		resolvedBy,
+	);
 }
 
 async function executeDeleteTemplateAction(
 	request: ActionRequest,
 	resolvedBy: string,
 ): Promise<ResolveResult> {
-	const payload = narrowPayload(request, "delete_template");
-	const { templateId, templateName } = payload;
-	const { origin, channelId, askThreadId } = request;
-
-	try {
-		const result = await deleteTemplate(templateId);
-		if (!result.ok) {
-			const reason = result.error;
-			await conditionalUpdate(request.id, "applying", {
-				status: "failed",
-				failureReason: reason,
-				resolvedBy,
-			});
-			await notifyOriginUser(origin, channelId, askThreadId, `Could not apply — ${reason}.`);
-			return { ok: false, reason: "failed", failureReason: reason };
-		}
-		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
-		await notifyOriginUser(origin, channelId, askThreadId, `Template **${templateName}** deleted.`);
-		return { ok: true, status: "applied" };
-	} catch (err) {
-		const reason = err instanceof Error ? err.message : String(err);
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
-			`Delete failed: ${reason.slice(0, 400)}`,
-		);
-		return { ok: false, reason: "failed", failureReason: reason };
-	}
+	return runExecutor(
+		request,
+		"delete_template",
+		{
+			run: async ({ templateId, templateName }) => {
+				const result = await deleteTemplate(templateId);
+				if (!result.ok) throw new Error(result.error);
+				return { notify: `Template **${templateName}** deleted.` };
+			},
+			failureNotify: (reason) => `Delete failed: ${reason.slice(0, 400)}`,
+		},
+		resolvedBy,
+	);
 }
 
 // ---- Channel setup executor ---------------------------------------------
@@ -787,7 +763,6 @@ async function executeAddChannelAction(
 	resolvedBy: string,
 ): Promise<ResolveResult> {
 	const payload = narrowPayload(request, "add_channel");
-	const { origin, channelId, askThreadId } = request;
 
 	// payload.channelKind is named so it doesn't clash with the row-level
 	// discriminant `kind`; see action-requests-types.ts AddChannelPayload.
@@ -799,14 +774,12 @@ async function executeAddChannelAction(
 	const label =
 		typeof payload.label === "string" && payload.label ? payload.label : "Ask-created channel";
 
+	// Validation outside the try — invalid kind fails silently (no notify).
+	// Pre-existing bug (L3): payload.kind is the row-level "add_channel" discriminant,
+	// not the channel sub-kind; payload.channelKind is the correct field. Out of scope.
 	if (!kind) {
 		const reason = `Invalid channel kind: "${payload.kind}"`;
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		return { ok: false, reason: "failed", failureReason: reason };
+		return fail(request, resolvedBy, reason);
 	}
 
 	try {
@@ -832,23 +805,10 @@ async function executeAddChannelAction(
 			notifyText = `Email channel **${label}** created (id: ${channel.id}). Email delivery requires SMTP configuration in Settings → Channels.`;
 		}
 
-		await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
-		await notifyOriginUser(origin, channelId, askThreadId, notifyText);
-		return { ok: true, status: "applied" };
+		return succeed(request, resolvedBy, notifyText);
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			channelId,
-			askThreadId,
-			`Channel setup failed: ${reason.slice(0, 400)}`,
-		);
-		return { ok: false, reason: "failed", failureReason: reason };
+		return fail(request, resolvedBy, reason, `Channel setup failed: ${reason.slice(0, 400)}`);
 	}
 }
 
@@ -860,21 +820,15 @@ async function executeCreateAlertRuleAction(
 ): Promise<ResolveResult> {
 	const payload = narrowPayload(request, "create_alert_rule");
 	const { projectId, projectName, ruleType, thresholdMinutes, channelId } = payload;
-	const { origin, channelId: reqChannelId, askThreadId } = request;
 
 	// Constrained rule types only — reject unsupported types rather than
 	// silently no-op. All four rule types are evaluated by the periodic
 	// alert-rule sweep in WatcherRunner. On rule creation, existing matching
 	// sessions are pre-seeded into project_alert_rule_fires to prevent
-	// first-sweep notification storms.
+	// first-sweep notification storms. Validation failure is silent (no notify).
 	if (!KNOWN_ALERT_RULE_TYPES.includes(ruleType as AlertRuleType)) {
 		const reason = `Rule type "${ruleType}" is not supported`;
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		return { ok: false, reason: "failed", failureReason: reason };
+		return fail(request, resolvedBy, reason);
 	}
 
 	// Pre-check: project must still exist.
@@ -886,13 +840,7 @@ async function executeCreateAlertRuleAction(
 
 	if (!existingProject) {
 		const reason = `Project "${projectName}" no longer exists`;
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		await notifyOriginUser(origin, reqChannelId, askThreadId, `Could not apply — ${reason}.`);
-		return { ok: false, reason: "failed", failureReason: reason };
+		return fail(request, resolvedBy, reason, `Could not apply — ${reason}.`);
 	}
 
 	try {
@@ -982,31 +930,14 @@ async function executeCreateAlertRuleAction(
 			}
 		}
 
-		await conditionalUpdate(request.id, "applying", {
-			status: "applied",
+		return succeed(
+			request,
 			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			reqChannelId,
-			askThreadId,
 			`Alert rule created for **${projectName}**: will notify when a session ${ruleTypeLabel(ruleType, thresholdMinutes)}.`,
 		);
-		return { ok: true, status: "applied" };
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			reqChannelId,
-			askThreadId,
-			`Alert rule creation failed: ${reason.slice(0, 400)}`,
-		);
-		return { ok: false, reason: "failed", failureReason: reason };
+		return fail(request, resolvedBy, reason, `Alert rule creation failed: ${reason.slice(0, 400)}`);
 	}
 }
 
@@ -1019,26 +950,13 @@ async function executeCreateFreeformAlertRuleAction(
 	const payload = narrowPayload(request, "create_freeform_alert_rule");
 	const { projectId, projectName, condition, dailyTokenBudget, sampleRate, eventTypesFilter } =
 		payload;
-	const { origin, channelId: reqChannelId, askThreadId } = request;
 
-	// Validate required fields.
+	// Validate required fields — failures are silent (no notify).
 	if (!condition || condition.trim().length === 0) {
-		const reason = "Freeform alert rule requires a non-empty condition";
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		return { ok: false, reason: "failed", failureReason: reason };
+		return fail(request, resolvedBy, "Freeform alert rule requires a non-empty condition");
 	}
 	if (!dailyTokenBudget || dailyTokenBudget < 1000) {
-		const reason = "Daily token budget must be at least 1000";
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		return { ok: false, reason: "failed", failureReason: reason };
+		return fail(request, resolvedBy, "Daily token budget must be at least 1000");
 	}
 
 	// Pre-check: project must still exist.
@@ -1050,13 +968,7 @@ async function executeCreateFreeformAlertRuleAction(
 
 	if (!existingProject) {
 		const reason = `Project "${projectName}" no longer exists`;
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
-			resolvedBy,
-		});
-		await notifyOriginUser(origin, reqChannelId, askThreadId, `Could not apply — ${reason}.`);
-		return { ok: false, reason: "failed", failureReason: reason };
+		return fail(request, resolvedBy, reason, `Could not apply — ${reason}.`);
 	}
 
 	try {
@@ -1083,31 +995,19 @@ async function executeCreateFreeformAlertRuleAction(
 			updatedAt: nowStr,
 		});
 
-		await conditionalUpdate(request.id, "applying", {
-			status: "applied",
+		return succeed(
+			request,
 			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			reqChannelId,
-			askThreadId,
 			`Freeform alert rule created for **${projectName}**: will notify when "${condition.slice(0, 200)}". Budget: ${dailyTokenBudget} tokens/day.`,
 		);
-		return { ok: true, status: "applied" };
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
-		await conditionalUpdate(request.id, "applying", {
-			status: "failed",
-			failureReason: reason,
+		return fail(
+			request,
 			resolvedBy,
-		});
-		await notifyOriginUser(
-			origin,
-			reqChannelId,
-			askThreadId,
+			reason,
 			`Freeform alert rule creation failed: ${reason.slice(0, 400)}`,
 		);
-		return { ok: false, reason: "failed", failureReason: reason };
 	}
 }
 
@@ -1195,7 +1095,6 @@ async function executeBulkSessionAction(
 ): Promise<ResolveResult> {
 	const payload = narrowPayload(request, "bulk_session_action");
 	const { action, sessionIds, sessionNames } = payload;
-	const { origin, channelId, askThreadId } = request;
 
 	function nameFor(id: string): string {
 		const idx = sessionIds.indexOf(id);
@@ -1249,10 +1148,8 @@ async function executeBulkSessionAction(
 		}
 	}
 
-	await conditionalUpdate(request.id, "applying", { status: "applied", resolvedBy });
 	const summary = formatBulkOutcomes(action, outcomes);
-	await notifyOriginUser(origin, channelId, askThreadId, summary);
-	return { ok: true, status: "applied" };
+	return succeed(request, resolvedBy, summary);
 }
 
 // Exhaustive over AlertRuleType — adding a new rule type to

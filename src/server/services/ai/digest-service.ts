@@ -77,6 +77,9 @@ export async function buildDigest(options: DigestOptions = {}): Promise<Digest> 
 	const windowStart = new Date(now.getTime() - windowMs);
 
 	// Pull sessions active or recently-updated within the window.
+	// Slice G: exclude archived sessions explicitly (latent bug fix — the
+	// previous query had no archive filter at all, causing archived sessions
+	// to appear in repo groupings and counts).
 	const rows = await db
 		.select({
 			sessionId: sessions.sessionId,
@@ -87,7 +90,9 @@ export async function buildDigest(options: DigestOptions = {}): Promise<Digest> 
 			totalToolUses: sessions.totalToolUses,
 		})
 		.from(sessions)
-		.where(gte(sessions.lastActivityAt, windowStart.toISOString()))
+		.where(
+			and(gte(sessions.lastActivityAt, windowStart.toISOString()), eq(sessions.isArchived, false)),
+		)
 		.orderBy(desc(sessions.lastActivityAt));
 
 	const sessionIds = rows.map((r) => r.sessionId);

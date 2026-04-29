@@ -8,7 +8,7 @@ export const sessions = sqliteTable("sessions", {
 	sessionId: text("session_id").notNull().unique(),
 	displayName: text("display_name"), // Human-friendly name like "brave-falcon"
 	agentType: text("agent_type").notNull(), // claude_code | codex_cli
-	status: text("status").notNull().default("active"), // active | idle | completed | failed
+	status: text("status").notNull().default("active"), // active | idle | completed | failed | archived (legacy — see isArchived; new code never writes 'archived')
 	cwd: text("cwd"),
 	transcriptPath: text("transcript_path"),
 	model: text("model"),

@@ -16,6 +16,11 @@ export const SEMANTIC_STATUSES = [
 	"waiting",
 ] as const;
 
+// SLICE-G: 'archived' is retained for backwards-compat with rows that pre-date
+// the isArchived boolean. New code never writes this value as an archive signal;
+// see src/shared/session-state.ts (isVisibleSession / isArchivedSession) for the
+// canonical predicate. Plan to remove in the follow-up slice that reworks the
+// search backend's sessionStatus filter (clarity-slice-h-archive-status-removal).
 export const SESSION_STATUSES = ["active", "idle", "completed", "failed", "archived"] as const;
 
 export const AGENT_TYPES = ["claude_code", "codex_cli"] as const;

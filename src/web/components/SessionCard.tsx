@@ -31,8 +31,10 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	const name = session.displayName || session.sessionId?.slice(0, 8) || "session";
 	const linkedProject = useProjectsStore((s) => s.getById(session.projectId));
 	const isScratch = (linkedProject?.tags ?? []).includes("scratch");
+	// Slice G: isArchived is the canonical signal; drop the status='archived' arm
+	// since the optimistic update no longer writes status:'archived' to the store.
 	const isInactive =
-		session.status === "completed" || session.status === "archived" || session.status === "failed";
+		session.status === "completed" || session.status === "failed" || session.isArchived;
 	const modeStyle = getSessionMode(session);
 	const projectColorsEnabled = useUiPrefsStore((s) => s.projectColors);
 	// Deterministic tint per project so sessions in the same repo
@@ -61,7 +63,10 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	async function handleArchive(e: React.MouseEvent) {
 		e.stopPropagation();
 		await api.archiveSession(session.sessionId);
-		updateSession({ ...session, status: "archived" });
+		// Slice G: mirror the server's actual write (isArchived=true, status unchanged).
+		// The previous status:'archived' write was poisoning the Zustand store with a
+		// value that the server never persists; the next poll overwrote it anyway.
+		updateSession({ ...session, isArchived: true });
 	}
 
 	async function handleDelete(e: React.MouseEvent) {
@@ -211,7 +216,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 								/>
 							</svg>
 						</button>
-						{isInactive && session.status !== "archived" && (
+						{isInactive && !session.isArchived && (
 							<button
 								onClick={handleArchive}
 								title="Archive"
@@ -244,7 +249,9 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 							</button>
 						)}
 					</div>
-					<StatusBadge status={session.status} />
+					{/* Slice G: derive effective status from isArchived so the badge
+					    shows "ARCHIVED" immediately on archive, before the next poll. */}
+					<StatusBadge status={session.isArchived ? "archived" : session.status} />
 				</div>
 			</div>
 

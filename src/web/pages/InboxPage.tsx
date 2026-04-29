@@ -1,22 +1,42 @@
 import { useCallback, useEffect, useState } from "react";
 import { LabsBadge } from "../components/LabsBadge.js";
-import { ActionAddChannelCard } from "../components/inbox/ActionAddChannelCard.js";
-import { ActionAddProjectCard } from "../components/inbox/ActionAddProjectCard.js";
-import { ActionCreateAlertRuleCard } from "../components/inbox/ActionCreateAlertRuleCard.js";
-import { ActionDeleteProjectCard } from "../components/inbox/ActionDeleteProjectCard.js";
-import { ActionDeleteTemplateCard } from "../components/inbox/ActionDeleteTemplateCard.js";
-import { ActionEditProjectCard } from "../components/inbox/ActionEditProjectCard.js";
-import { ActionEditTemplateCard } from "../components/inbox/ActionEditTemplateCard.js";
-import { ActionLaunchCard } from "../components/inbox/ActionLaunchCard.js";
-import { ActionSessionArchiveCard } from "../components/inbox/ActionSessionArchiveCard.js";
-import { ActionSessionDeleteCard } from "../components/inbox/ActionSessionDeleteCard.js";
-import { ActionSessionStopCard } from "../components/inbox/ActionSessionStopCard.js";
-import { BulkSessionActionCard } from "../components/inbox/BulkSessionActionCard.js";
+import { ActionRequestCard } from "../components/inbox/ActionRequestCard.js";
 import { FailedProposalCard } from "../components/inbox/FailedProposalCard.js";
 import { HitlCard } from "../components/inbox/HitlCard.js";
 import { RiskyCard } from "../components/inbox/RiskyCard.js";
 import { StuckCard } from "../components/inbox/StuckCard.js";
 import { type ActionRequestDecision, type Inbox, type InboxWorkItem, api } from "../lib/api.js";
+
+/**
+ * Per-kind display labels for the filter select (longLabel) and the footer
+ * ribbon (shortLabel). Typed as Record<InboxWorkItem["kind"], …> so TypeScript
+ * fails compilation if any kind is added to the union without a matching entry.
+ * Object.keys(KIND_META) is narrowed back to InboxWorkItem["kind"][] at the
+ * two call sites below — safe because the exhaustive Record guarantees the keys
+ * are exactly the union members.
+ */
+const KIND_META: Record<InboxWorkItem["kind"], { shortLabel: string; longLabel: string }> = {
+	hitl: { shortLabel: "hitl", longLabel: "HITL" },
+	stuck: { shortLabel: "stuck", longLabel: "Stuck" },
+	risky: { shortLabel: "risky", longLabel: "Risky" },
+	failed_proposal: { shortLabel: "failed", longLabel: "Failed" },
+	action_launch: { shortLabel: "launches", longLabel: "Launch requests" },
+	action_add_project: { shortLabel: "projects", longLabel: "Project requests" },
+	action_session_stop: { shortLabel: "stops", longLabel: "Session stop" },
+	action_session_archive: { shortLabel: "archives", longLabel: "Session archive" },
+	action_session_delete: { shortLabel: "deletes", longLabel: "Session delete" },
+	action_edit_project: { shortLabel: "proj-edits", longLabel: "Edit project" },
+	action_delete_project: { shortLabel: "proj-deletes", longLabel: "Delete project" },
+	action_edit_template: { shortLabel: "tmpl-edits", longLabel: "Edit template" },
+	action_delete_template: { shortLabel: "tmpl-deletes", longLabel: "Delete template" },
+	action_add_channel: { shortLabel: "channels", longLabel: "Add channel" },
+	action_create_alert_rule: { shortLabel: "alert-rules", longLabel: "Alert rules" },
+	action_create_freeform_alert_rule: {
+		shortLabel: "freeform-alerts",
+		longLabel: "Freeform alerts",
+	},
+	action_bulk_session: { shortLabel: "bulk", longLabel: "Bulk actions" },
+};
 
 /**
  * Operator inbox. Pulls the discriminated-union work items from the
@@ -74,133 +94,21 @@ export function InboxPage() {
 				return (
 					<FailedProposalCard key={`${item.kind}:${item.id}`} item={item} onSnooze={handleSnooze} />
 				);
-			case "action_launch":
-				return (
-					<ActionLaunchCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
-			case "action_add_project":
-				return (
-					<ActionAddProjectCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
 			case "action_session_stop":
-				return (
-					<ActionSessionStopCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
 			case "action_session_archive":
-				return (
-					<ActionSessionArchiveCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
 			case "action_session_delete":
-				return (
-					<ActionSessionDeleteCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
-			case "action_edit_project":
-				return (
-					<ActionEditProjectCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
-			case "action_delete_project":
-				return (
-					<ActionDeleteProjectCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
-			case "action_edit_template":
-				return (
-					<ActionEditTemplateCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
-			case "action_delete_template":
-				return (
-					<ActionDeleteTemplateCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
+			case "action_launch":
+			case "action_add_project":
 			case "action_add_channel":
-				return (
-					<ActionAddChannelCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
 			case "action_create_alert_rule":
-				return (
-					<ActionCreateAlertRuleCard
-						key={`${item.kind}:${item.id}`}
-						item={item}
-						onDecide={handleActionDecide}
-					/>
-				);
 			case "action_create_freeform_alert_rule":
-				// No dedicated card yet — render a minimal placeholder so the item
-				// is still actionable from the inbox. Tracked separately; the card
-				// will land alongside the alert-rules UI work.
-				return (
-					<div
-						key={`${item.kind}:${item.id}`}
-						className="rounded border border-orange-500/30 bg-orange-500/5 p-3 text-xs"
-					>
-						<div className="font-medium text-orange-300">
-							Freeform alert rule for {item.projectName}
-						</div>
-						<div className="mt-1 font-mono text-[11px] text-muted-foreground break-all">
-							{item.condition}
-						</div>
-						<div className="mt-1 text-[11px] text-muted-foreground">
-							Daily token budget: {item.dailyTokenBudget}
-						</div>
-						<div className="mt-2 flex gap-2">
-							<button
-								type="button"
-								onClick={() => handleActionDecide(item.id, "applied")}
-								className="text-xs px-3 py-1 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30"
-							>
-								Approve
-							</button>
-							<button
-								type="button"
-								onClick={() => handleActionDecide(item.id, "declined")}
-								className="text-xs px-3 py-1 rounded border border-border hover:bg-muted"
-							>
-								Decline
-							</button>
-						</div>
-					</div>
-				);
+			case "action_edit_project":
+			case "action_edit_template":
+			case "action_delete_project":
+			case "action_delete_template":
 			case "action_bulk_session":
 				return (
-					<BulkSessionActionCard
+					<ActionRequestCard
 						key={`${item.kind}:${item.id}`}
 						item={item}
 						onDecide={handleActionDecide}
@@ -228,23 +136,11 @@ export function InboxPage() {
 						className="text-xs bg-background border border-border rounded px-2 py-1"
 					>
 						<option value="all">All kinds</option>
-						<option value="hitl">HITL</option>
-						<option value="stuck">Stuck</option>
-						<option value="risky">Risky</option>
-						<option value="failed_proposal">Failed</option>
-						<option value="action_launch">Launch requests</option>
-						<option value="action_add_project">Project requests</option>
-						<option value="action_session_stop">Session stop</option>
-						<option value="action_session_archive">Session archive</option>
-						<option value="action_session_delete">Session delete</option>
-						<option value="action_edit_project">Edit project</option>
-						<option value="action_delete_project">Delete project</option>
-						<option value="action_edit_template">Edit template</option>
-						<option value="action_delete_template">Delete template</option>
-						<option value="action_add_channel">Add channel</option>
-						<option value="action_create_alert_rule">Alert rules</option>
-						<option value="action_create_freeform_alert_rule">Freeform alerts</option>
-						<option value="action_bulk_session">Bulk actions</option>
+						{(Object.keys(KIND_META) as InboxWorkItem["kind"][]).map((k) => (
+							<option key={k} value={k}>
+								{KIND_META[k].longLabel}
+							</option>
+						))}
 					</select>
 					<button
 						type="button"
@@ -275,22 +171,11 @@ export function InboxPage() {
 			{inbox && (
 				<footer className="pt-2 text-xs text-muted-foreground flex items-center gap-3">
 					<span>total: {inbox.total}</span>
-					<span>hitl: {inbox.byKind.hitl}</span>
-					<span>stuck: {inbox.byKind.stuck}</span>
-					<span>risky: {inbox.byKind.risky}</span>
-					<span>failed: {inbox.byKind.failed_proposal}</span>
-					<span>launches: {inbox.byKind.action_launch}</span>
-					<span>projects: {inbox.byKind.action_add_project}</span>
-					<span>stops: {inbox.byKind.action_session_stop}</span>
-					<span>archives: {inbox.byKind.action_session_archive}</span>
-					<span>deletes: {inbox.byKind.action_session_delete}</span>
-					<span>proj-edits: {inbox.byKind.action_edit_project}</span>
-					<span>proj-deletes: {inbox.byKind.action_delete_project}</span>
-					<span>tmpl-edits: {inbox.byKind.action_edit_template}</span>
-					<span>tmpl-deletes: {inbox.byKind.action_delete_template}</span>
-					<span>alert-rules: {inbox.byKind.action_create_alert_rule}</span>
-					<span>freeform-alerts: {inbox.byKind.action_create_freeform_alert_rule}</span>
-					<span>bulk: {inbox.byKind.action_bulk_session}</span>
+					{(Object.keys(KIND_META) as InboxWorkItem["kind"][]).map((k) => (
+						<span key={k}>
+							{KIND_META[k].shortLabel}: {inbox.byKind[k]}
+						</span>
+					))}
 				</footer>
 			)}
 		</div>

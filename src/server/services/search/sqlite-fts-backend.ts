@@ -349,6 +349,11 @@ export class SqliteFtsBackend implements SearchBackend {
 				ORDER BY rank
 				LIMIT ? OFFSET ?
 			`;
+			// TODO(slice-h): add is_archived to the FTS virtual table schema and
+			// the INSERT trigger, then replace the sessionStatus='archived' path
+			// above with an AND s.is_archived = 1 predicate. Until then,
+			// sessionStatus='archived' filters against status (a dead value post-Slice G)
+			// and returns zero rows — see clarity-slice-h-archive-status-removal.md.
 			const bindings: unknown[] = [ftsQuery];
 			if (filters.sessionId) bindings.push(filters.sessionId);
 			if (filters.agentType) bindings.push(filters.agentType);
