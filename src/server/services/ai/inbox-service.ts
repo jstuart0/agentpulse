@@ -1,4 +1,4 @@
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import {
 	type Inbox,
 	type InboxFilter,
@@ -95,7 +95,14 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 			lastActivityAt: sessions.lastActivityAt,
 		})
 		.from(sessions)
-		.where(inArray(sessions.status, ["active", "idle"]))
+		.where(
+			// Slice G: explicit isArchived exclusion. The status whitelist
+			// ['active','idle'] used to implicitly exclude archived sessions
+			// because no code wrote status='archived' to the DB. Once the
+			// canonical signal is isArchived, we must be explicit so that
+			// archived sessions with status='active' don't get classified.
+			and(inArray(sessions.status, ["active", "idle"]), eq(sessions.isArchived, false)),
+		)
 		.orderBy(desc(sessions.lastActivityAt))
 		.limit(Math.max(limit, 50));
 

@@ -57,6 +57,10 @@ export function buildSearchFilters(
 	} else if (ACTIVE_RE.test(message)) {
 		filters.sessionStatus = "active";
 	} else if (ARCHIVED_RE.test(message)) {
+		// TODO(slice-h): once the FTS index is extended to include isArchived,
+		// route this to a real isArchived=true predicate instead of the dead
+		// status='archived' filter. Until then, this sets a filter that returns
+		// zero rows (no sessions have status='archived' post-Slice G).
 		filters.sessionStatus = "archived";
 	}
 

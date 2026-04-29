@@ -161,7 +161,10 @@ async function loadActiveSessionIds(): Promise<string[]> {
 			and(
 				isNotNull(sessions.transcriptPath),
 				ne(sessions.status, "completed"),
-				ne(sessions.status, "archived"),
+				// Slice G: isArchived is the canonical archive truth; status='archived'
+				// is a legacy value. An archived session should not be polled for
+				// transcript updates even if its status is still 'active'.
+				eq(sessions.isArchived, false),
 			),
 		);
 	return rows.map((r) => r.sessionId);
@@ -181,7 +184,8 @@ async function loadSessionsByIds(ids: string[]): Promise<SessionWithMetadata[]> 
 			and(
 				isNotNull(sessions.transcriptPath),
 				ne(sessions.status, "completed"),
-				ne(sessions.status, "archived"),
+				// Slice G: same as loadActiveSessionIds — canonical archive signal.
+				eq(sessions.isArchived, false),
 			),
 		);
 	const byId = new Map(rows.map((r) => [r.sessionId, r as SessionWithMetadata]));

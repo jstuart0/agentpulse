@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, or } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { sessions } from "../../db/schema.js";
 import type { SemanticEnricher } from "../ai/semantic-enricher.js";
@@ -205,11 +205,20 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 
 	// Pull active + idle sessions (exclude archived/completed unless matched
 	// by keyword). Cap the candidate pool so we don't score the whole DB.
+	// Slice G: explicit isArchived exclusion wraps the OR so archived sessions
+	// with status='active' (a valid orthogonal state) don't leak into the pool.
 	const pool = await db
 		.select()
 		.from(sessions)
 		.where(
-			or(eq(sessions.status, "active"), eq(sessions.status, "idle"), eq(sessions.isWorking, true)),
+			and(
+				or(
+					eq(sessions.status, "active"),
+					eq(sessions.status, "idle"),
+					eq(sessions.isWorking, true),
+				),
+				eq(sessions.isArchived, false),
+			),
 		)
 		.orderBy(desc(sessions.lastActivityAt))
 		.limit(80);
@@ -241,13 +250,14 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 		if (missingIds.length > 0) {
 			// FTS just told us these sessions semantically match the user's
 			// question — trust that signal and include completed ones too.
-			// We still hide `archived` sessions (user intent: "don't show
+			// We still hide archived sessions (user intent: "don't show
 			// these") but anything else is fair game; "find the session
 			// where I did X" is often a question about past, finished work.
+			// Slice G: filter on isArchived (canonical truth), not status='archived'.
 			const extra = await db
 				.select()
 				.from(sessions)
-				.where(and(inArray(sessions.sessionId, missingIds), ne(sessions.status, "archived")));
+				.where(and(inArray(sessions.sessionId, missingIds), eq(sessions.isArchived, false)));
 			extendedPool = pool.concat(extra);
 		}
 	}

@@ -167,18 +167,18 @@ describe("Ask resolver", () => {
 	});
 
 	test("archived sessions are excluded from the resolver pool", async () => {
-		// Status not in { active, idle } and not isWorking=true must NOT
-		// leak into matches. We insert with a status ("archived") the schema
-		// accepts (text column, no CHECK constraint) but the resolver's
-		// WHERE clause filters out.
+		// Slice G: isArchived is the canonical archive signal. The resolver now
+		// filters on eq(sessions.isArchived, false) rather than ne(status,'archived').
+		// Insert a session with isArchived=true (and a realistic terminal status)
+		// so the test exercises the actual predicate that production code uses.
 		await db
 			.insert(sessions)
 			.values({
 				sessionId: "archived-one",
 				agentType: "claude_code",
 				displayName: "archived-target",
-				// biome-ignore lint/suspicious/noExplicitAny: schema is permissive text
-				status: "archived" as any,
+				isArchived: true,
+				status: "completed",
 				cwd: "/tmp",
 				isWorking: false,
 				lastActivityAt: new Date().toISOString(),

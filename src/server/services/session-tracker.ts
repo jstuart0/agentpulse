@@ -75,6 +75,9 @@ export async function getSessions(filters?: {
 
 	const conditions = [];
 	if (filters?.status) {
+		// TODO(slice-h): translate status=archived param to isArchived=true filter;
+		// status field no longer carries 'archived' for new rows after Slice G.
+		// GET /sessions?status=archived returns empty until this is wired up.
 		conditions.push(eq(sessions.status, filters.status));
 	}
 	if (filters?.agentType) {

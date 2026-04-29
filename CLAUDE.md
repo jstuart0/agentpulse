@@ -63,7 +63,7 @@ Agent (Claude Code / Codex)
 ```
 
 ### Database Schema
-- `sessions` - id, session_id, display_name, agent_type, status, cwd, model, is_working, is_pinned, git_branch, notes, semantic_status, current_task, plan_summary, total_tool_uses, metadata, timestamps
+- `sessions` - id, session_id, display_name, agent_type, status, cwd, model, is_working, is_pinned, git_branch, notes, semantic_status, current_task, plan_summary, total_tool_uses, metadata, timestamps, is_archived. Note: `is_archived` is the canonical archive predicate; `status='archived'` is a legacy value retained for backwards-compat (see `src/shared/session-state.ts`).
 - `events` - id, session_id, event_type, tool_name, tool_input, tool_response, raw_payload, created_at
 - `api_keys` - id, name, key_hash, key_prefix, is_active, timestamps
 - `settings` - key, value, updated_at

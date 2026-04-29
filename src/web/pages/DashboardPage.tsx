@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { isArchivedSession, isVisibleSession } from "../../shared/session-state.js";
 import { FirstRunWelcome } from "../components/FirstRunWelcome.js";
 import { SessionGrid } from "../components/SessionGrid.js";
 import { useSessions } from "../hooks/useSessions.js";
@@ -51,11 +52,15 @@ export function DashboardPage() {
 		[sessions, showScratch, scratchProjectIds],
 	);
 
-	// Filter by status
+	// Filter by status.
+	// 'archived' tab is a UI tab id mapped to isArchived=true — not a SessionStatus value.
+	// Slice G: isArchived is the canonical archive truth; status='archived' is legacy.
 	let filtered =
 		filter === "all"
-			? visibleSessions.filter((s) => s.status !== "archived")
-			: visibleSessions.filter((s) => s.status === filter);
+			? visibleSessions.filter(isVisibleSession)
+			: filter === "archived"
+				? visibleSessions.filter(isArchivedSession)
+				: visibleSessions.filter((s) => s.status === filter);
 
 	// Filter by search
 	if (search.trim()) {
@@ -145,6 +150,8 @@ export function DashboardPage() {
 			{/* Search + Filter */}
 			<div className="flex flex-col gap-3 mb-4">
 				<div className="flex gap-1 bg-muted rounded-lg p-1 overflow-x-auto scrollbar-none">
+					{/* 'archived' here is a UI tab id, mapped to isArchived=true in the
+					    filter logic above — not a SessionStatus value (Slice G). */}
 					{["active", "idle", "completed", "archived", "all"].map((f) => (
 						<button
 							key={f}
@@ -159,8 +166,10 @@ export function DashboardPage() {
 							<span className="ml-1 text-muted-foreground">
 								(
 								{f === "all"
-									? visibleSessions.filter((s) => s.status !== "archived").length
-									: visibleSessions.filter((s) => s.status === f).length}
+									? visibleSessions.filter(isVisibleSession).length
+									: f === "archived"
+										? visibleSessions.filter(isArchivedSession).length
+										: visibleSessions.filter((s) => s.status === f).length}
 								)
 							</span>
 						</button>

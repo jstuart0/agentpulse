@@ -667,6 +667,12 @@ export function initializeDatabase(handle: Database = sqlite) {
 		// "launch_disambiguation" is used when Ask is waiting for the user to
 		// pick a project for a launch-flavored message.
 		"ALTER TABLE ai_pending_project_drafts ADD COLUMN kind TEXT NOT NULL DEFAULT 'add_project'",
+		// Slice G: defensive backfill — any row whose status is 'archived' (written by
+		// old frontend code or manual operator actions before Slice G) gets is_archived=1
+		// so that isArchived becomes consistent with the historical intent. The status
+		// value is left as-is ('archived') because it is still a valid union member for
+		// one release. Idempotent: re-running is a no-op once is_archived=1.
+		"UPDATE sessions SET is_archived = 1 WHERE status = 'archived' AND is_archived = 0",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when
