@@ -66,9 +66,7 @@ const ASK_META_FENCE_TAG = "ask-message-meta";
 // Canonical regex — matches all three existing per-kind implementations
 // byte-for-byte. The \n* prefix handles a fence at start-of-string or
 // preceded by visible text; [\s\S]*? is non-greedy any-char-including-newline.
-const ASK_META_FENCE_RE = new RegExp(
-	`\\n*\`\`\`${ASK_META_FENCE_TAG}\\n([\\s\\S]*?)\\n\`\`\``,
-);
+const ASK_META_FENCE_RE = new RegExp(`\\n*\`\`\`${ASK_META_FENCE_TAG}\\n([\\s\\S]*?)\\n\`\`\``);
 
 /**
  * Parse the `ask-message-meta` fenced sentinel embedded in an assistant

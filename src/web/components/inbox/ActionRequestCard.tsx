@@ -193,8 +193,7 @@ function cardSpecFor(item: ActionInboxItem): CardSpec {
 		case "action_edit_project":
 		case "action_edit_template": {
 			const fieldEntries = Object.entries(item.fields);
-			const titleName =
-				item.kind === "action_edit_project" ? item.projectName : item.templateName;
+			const titleName = item.kind === "action_edit_project" ? item.projectName : item.templateName;
 			return {
 				header: <span className="text-sm font-medium">{titleName}</span>,
 				body: (
@@ -231,9 +230,8 @@ function cardSpecFor(item: ActionInboxItem): CardSpec {
 						)}
 						{item.affectedSessions > 0 && (
 							<div>
-								Sessions:{" "}
-								<span className="font-mono text-amber-300">{item.affectedSessions}</span> will be
-								disassociated
+								Sessions: <span className="font-mono text-amber-300">{item.affectedSessions}</span>{" "}
+								will be disassociated
 							</div>
 						)}
 						{item.affectedTemplates === 0 && item.affectedSessions === 0 && (
