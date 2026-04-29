@@ -7,6 +7,70 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.2.0-pre.9] — 2026-04-29
+
+Efficiency redesign. Building on the type-discipline work in pre.8, this
+release consolidates the largest remaining duplication patterns across
+the orchestration core so that adding a new kind, gate, executor, or
+classifier is a one-place change instead of a five-place change.
+
+### Changed
+
+- **Inbox card surface unified.** 12 nearly-identical action-request
+  card components collapsed into one `ActionRequestCard` driven by a
+  per-kind spec table. Adding a new action kind is now one entry in
+  one switch, with an exhaustiveness guard. The freeform-alert-rule
+  card now has the same KindBadge / severity / busy-state polish as
+  every other card.
+- **Ask orchestrator unified across transports.** The 9-gate ladder
+  previously hand-stamped in both the sync and streaming Ask
+  pipelines is now a single `ASK_GATES` table consumed by a shared
+  `runAskGates` runner. New gates are one row, automatically wired
+  into both transports; previously a new gate had to be inserted in
+  two places in matching order.
+- **Action-request executors consolidated.** The thirteen executor
+  functions (launch / archive / edit / delete / alert-rule / etc.)
+  now share `succeed`, `fail`, and `failExpired` helpers that bundle
+  the conditional-update + notify + return triple they all do, plus
+  a `runExecutor<K>` frame for the simple cases. Each executor's
+  unique logic now reads at a glance.
+- **Intent classifiers consolidated.** All eight intent detectors
+  (launch / resume / session-action / template-CRUD / alert-rule /
+  bulk-action / Q&A / add-project) now share a `classifyJson<T>`
+  helper for the provider-fetch / spend-check / adapter-call / JSON-
+  parse boilerplate. Each detector is now its system prompt plus a
+  small parse lambda — the actual differences are immediately
+  visible.
+- **Ask message-meta unified.** One shared tagged-union parser
+  (`parseAskMeta`) replaces three separate server encode/extract
+  pairs and three separate frontend parsers; the AskPage chained-`&&`
+  detection logic is gone.
+- **Inbox kind metadata centralized.** One `KIND_META` table drives
+  both the filter dropdown and the footer counters; missing kinds
+  fail to compile. Closes a pre-existing bug where the footer was
+  missing the `add_channel` counter.
+
+### Fixed
+
+- **Single canonical archive predicate.** `sessions.is_archived` is
+  now the only source of truth for whether a session is archived;
+  `status='archived'` is retained only for backward compat. A
+  shared `isVisibleSession(s)` / `isArchivedSession(s)` helper pair
+  replaces a mix of `isArchived = false` and `status !== 'archived'`
+  filters scattered across the codebase. Idempotent DB backfill at
+  startup converts any historical row with `status='archived'` to
+  `is_archived = 1`. The Archive badge still flips immediately on
+  archive click. Net effect: digest counts, the operator inbox,
+  and Ask candidate resolution no longer leak archived-but-active
+  sessions; the transcript-sync worker no longer wastes IO polling
+  archived agents.
+
+### Behind the scenes
+
+- 24 files modified, 12 deleted, 3 added; **−1,821 LOC net**
+  while tightening rather than loosening invariants.
+- 612/612 tests pass; typecheck clean; 0 Biome errors.
+
 ## [0.2.0-pre.8] — 2026-04-28
 
 A focused type-duplication remediation cycle. An external PR (#13) tried
