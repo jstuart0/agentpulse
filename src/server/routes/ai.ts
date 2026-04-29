@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { HitlReplyKind } from "../../shared/types.js";
+import type { ActionRequestDecision, HitlReplyKind } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { db } from "../db/client.js";
 import { settings } from "../db/schema.js";
@@ -784,7 +784,7 @@ aiRouter.post("/ai/action-requests/:id/decide", async (c) => {
 	const gate = await requireAiActive(c);
 	if (gate) return gate;
 	const id = c.req.param("id") ?? "";
-	const body = await c.req.json<{ decision: "applied" | "declined" }>();
+	const body = await c.req.json<{ decision: ActionRequestDecision }>();
 	if (body.decision !== "applied" && body.decision !== "declined") {
 		return c.json({ error: "decision must be 'applied' or 'declined'" }, 400);
 	}

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { InboxWorkItem } from "../../lib/api.js";
+import type { ActionRequestDecision, InboxWorkItem } from "../../lib/api.js";
 import { KindBadge } from "./shared/KindBadge.js";
 import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 import { relTime } from "./shared/relTime.js";
@@ -11,12 +11,12 @@ export function ActionDeleteProjectCard({
 	onDecide,
 }: {
 	item: ActionDeleteProjectItem;
-	onDecide: (id: string, decision: "applied" | "declined") => Promise<void>;
+	onDecide: (id: string, decision: ActionRequestDecision) => Promise<void>;
 }) {
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 
-	async function handleDecide(decision: "applied" | "declined") {
+	async function handleDecide(decision: ActionRequestDecision) {
 		setBusy(true);
 		setErr(null);
 		try {

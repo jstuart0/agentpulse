@@ -1,6 +1,13 @@
 import { eq } from "drizzle-orm";
+import { KNOWN_LABS_FLAGS, type LabsFlag, type LabsFlags } from "../../shared/types.js";
 import { db } from "../db/client.js";
 import { settings } from "../db/schema.js";
+
+// Re-export so existing call sites that imported LabsFlag/LabsFlags from
+// this service entry point keep working. Canonical definition lives in
+// `src/shared/types.ts` (Slice TYPE-2d) so the web client and server
+// share a single source of truth.
+export type { LabsFlag, LabsFlags };
 
 /**
  * Labs flag registry. Every AI / experimental surface gets its own
@@ -21,18 +28,6 @@ export interface LabsFlagDefinition {
 	description: string;
 	defaultEnabled: boolean;
 }
-
-export type LabsFlag =
-	| "inbox"
-	| "digest"
-	| "aiSessionTab"
-	| "intelligenceBadges"
-	| "aiSettingsPanel"
-	| "templateDistillation"
-	| "launchRecommendation"
-	| "riskClasses"
-	| "telegramChannel"
-	| "askAssistant";
 
 export const LABS_REGISTRY: readonly LabsFlagDefinition[] = [
 	{
@@ -99,7 +94,14 @@ export const LABS_REGISTRY: readonly LabsFlagDefinition[] = [
 	},
 ] as const;
 
-export type LabsFlags = Record<LabsFlag, boolean>;
+// Compile-time assertion: every shared LabsFlag must have a registry
+// entry here. If a new flag is added to KNOWN_LABS_FLAGS without a
+// LABS_REGISTRY row, this assignment fails to type-check.
+const _registryCoversAllFlags: Record<LabsFlag, true> = Object.fromEntries(
+	LABS_REGISTRY.map((d) => [d.key, true]),
+) as Record<LabsFlag, true>;
+void _registryCoversAllFlags;
+void KNOWN_LABS_FLAGS;
 
 export function defaultLabsFlags(): LabsFlags {
 	const out = {} as LabsFlags;

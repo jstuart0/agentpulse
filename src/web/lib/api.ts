@@ -1,5 +1,7 @@
 import type {
+	ActionRequestDecision,
 	AskMessageRole,
+	AskThreadOrigin,
 	ControlAction,
 	DecisionKind,
 	HitlReplyKind,
@@ -16,11 +18,17 @@ import type {
 	Session,
 	SessionEvent,
 	SessionTemplate,
+	LabsFlag as SharedLabsFlag,
+	LabsFlags as SharedLabsFlags,
 	SupervisorRecord,
 	WatcherPolicy,
 } from "../../shared/types.js";
 
-export type { NotificationChannelKind } from "../../shared/types.js";
+export type {
+	ActionRequestDecision,
+	AskThreadOrigin,
+	NotificationChannelKind,
+} from "../../shared/types.js";
 
 // Re-export inbox types so existing client consumers keep their import path
 // (`import { Inbox, InboxWorkItem } from "../lib/api.js"`).
@@ -717,7 +725,7 @@ export const api = {
 
 	listOpenActionRequests: () => request<{ actionRequests: InboxWorkItem[] }>("/ai/action-requests"),
 
-	decideActionRequest: (id: string, body: { decision: "applied" | "declined" }) =>
+	decideActionRequest: (id: string, body: { decision: ActionRequestDecision }) =>
 		request<{ actionRequest: Record<string, unknown> }>(`/ai/action-requests/${id}/decide`, {
 			method: "POST",
 			body: JSON.stringify(body),
@@ -824,19 +832,11 @@ export interface NotificationChannelRecord {
 	updatedAt: string;
 }
 
-export type LabsFlag =
-	| "inbox"
-	| "digest"
-	| "aiSessionTab"
-	| "intelligenceBadges"
-	| "aiSettingsPanel"
-	| "templateDistillation"
-	| "launchRecommendation"
-	| "riskClasses"
-	| "telegramChannel"
-	| "askAssistant";
-
-export type LabsFlags = Record<LabsFlag, boolean>;
+// LabsFlag / LabsFlags are canonically defined in `src/shared/types.ts`
+// (Slice TYPE-2d). Re-export here so existing call sites that import
+// from `lib/api.js` keep working without churn.
+export type LabsFlag = SharedLabsFlag;
+export type LabsFlags = SharedLabsFlags;
 
 export interface LabsFlagDefinition {
 	key: LabsFlag;
@@ -925,7 +925,7 @@ export interface Digest {
 export interface AskThread {
 	id: string;
 	title: string | null;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	telegramChatId: string | null;
 	createdAt: string;
 	updatedAt: string;

@@ -1,5 +1,10 @@
 import { eq, sql } from "drizzle-orm";
-import type { AgentType, LaunchMode, SessionTemplateInput } from "../../../shared/types.js";
+import type {
+	AgentType,
+	AskThreadOrigin,
+	LaunchMode,
+	SessionTemplateInput,
+} from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { sessions } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
@@ -20,7 +25,7 @@ export type { ResumeIntent };
 
 export interface HandleResumeIntentArgs {
 	intent: ResumeIntent;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 }

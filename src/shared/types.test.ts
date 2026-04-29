@@ -1,17 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { AGENT_TYPES, SEMANTIC_STATUSES, SESSION_STATUSES } from "./constants.js";
 import {
+	ACTION_REQUEST_DECISIONS,
 	APPROVAL_POLICIES,
+	ASK_THREAD_ORIGINS,
+	type ActionRequestDecision,
 	type AgentType,
 	type AlertRuleType,
 	type ApprovalPolicy,
+	type AskThreadOrigin,
 	DECISION_KINDS,
 	type DecisionKind,
 	HITL_REPLY_KINDS,
 	type HitlReplyKind,
 	KNOWN_ALERT_RULE_TYPES,
+	KNOWN_LABS_FLAGS,
 	KNOWN_NOTIFICATION_CHANNEL_KINDS,
 	KNOWN_PROVIDER_KINDS,
+	type LabsFlag,
 	MANAGED_STATES,
 	type ManagedState,
 	type NotificationChannelKind,
@@ -139,6 +145,59 @@ describe("shared kind allowlists", () => {
 		expect(KNOWN_NOTIFICATION_CHANNEL_KINDS.includes("bogus" as NotificationChannelKind)).toBe(
 			false,
 		);
+	});
+
+	test("ASK_THREAD_ORIGINS includes every AskThreadOrigin member", () => {
+		// Slice TYPE-2d. Replaces 40+ inline `"web" | "telegram"` literals
+		// across handlers, services, and InboxWorkItem arms. Adding a third
+		// origin here forces every consumer to handle it.
+		const expected: readonly AskThreadOrigin[] = ["web", "telegram"];
+		for (const origin of expected) {
+			expect(ASK_THREAD_ORIGINS.includes(origin)).toBe(true);
+		}
+		expect(ASK_THREAD_ORIGINS.length).toBe(2);
+		expect(ASK_THREAD_ORIGINS.includes("slack" as AskThreadOrigin)).toBe(false);
+	});
+
+	test("ACTION_REQUEST_DECISIONS covers operator-facing decisions only", () => {
+		// Slice TYPE-2d. The wider ActionRequestStatus union (awaiting_reply
+		// | applying | applied | failed | declined | expired | superseded)
+		// lives in action-requests-service.ts; the operator-facing decision
+		// from inbox cards is the strict applied/declined pair.
+		const expected: readonly ActionRequestDecision[] = ["applied", "declined"];
+		for (const d of expected) {
+			expect(ACTION_REQUEST_DECISIONS.includes(d)).toBe(true);
+		}
+		expect(ACTION_REQUEST_DECISIONS.length).toBe(2);
+		expect(ACTION_REQUEST_DECISIONS.includes("awaiting_reply" as ActionRequestDecision)).toBe(
+			false,
+		);
+		expect(ACTION_REQUEST_DECISIONS.includes("expired" as ActionRequestDecision)).toBe(false);
+	});
+
+	test("KNOWN_LABS_FLAGS includes every LabsFlag member", () => {
+		// Slice TYPE-2d. The web client (`web/lib/api.ts`) and the server
+		// (`labs-service.ts`) used to maintain parallel hand-rolled unions.
+		// Both now derive LabsFlag from this canonical const tuple, and
+		// the LABS_REGISTRY in labs-service.ts has a compile-time
+		// assertion that it covers every flag.
+		const expected: readonly LabsFlag[] = [
+			"inbox",
+			"digest",
+			"aiSessionTab",
+			"intelligenceBadges",
+			"aiSettingsPanel",
+			"templateDistillation",
+			"launchRecommendation",
+			"riskClasses",
+			"telegramChannel",
+			"askAssistant",
+		];
+		for (const flag of expected) {
+			expect(KNOWN_LABS_FLAGS.includes(flag)).toBe(true);
+		}
+		expect(KNOWN_LABS_FLAGS.length).toBe(10);
+		expect(KNOWN_LABS_FLAGS.includes("bogusFlag" as LabsFlag)).toBe(false);
 	});
 
 	test("SESSION_MUTATION_KINDS includes every SessionMutationKind member", () => {

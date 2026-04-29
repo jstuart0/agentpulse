@@ -1,6 +1,7 @@
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import { estimateTokens } from "./llm/types.js";
 import { type RedactionRule, redact } from "./redactor.js";
+import type { WatcherRunTriggerKind } from "./watcher-runs-service.js";
 
 // Per plan: the system prompt is stable across a session so it can be
 // prompt-cached (Anthropic), and the transcript block is explicitly marked
@@ -52,7 +53,7 @@ Emit exactly one JSON object, no prose before or after, matching one of:
 interface BuildParams {
 	session: Session;
 	events: SessionEvent[];
-	triggerType: "idle" | "stop" | "error" | "plan_completed" | "manual";
+	triggerType: WatcherRunTriggerKind;
 	/** Caller can inject extra user-configured redaction rules. */
 	extraRedactionRules?: RedactionRule[];
 	/** Caller can override the system prompt via watcher_configs.system_prompt. */
@@ -198,7 +199,9 @@ function collapseEvents(
 
 function renderEventLine(event: SessionEvent): string {
 	const t = new Date(parseEventTime(event.createdAt)).toISOString().slice(11, 19);
-	switch (event.category) {
+	const category = event.category;
+	if (category === null) return "";
+	switch (category) {
 		case "prompt":
 			return `[${t}] USER> ${truncate(event.content ?? "", 500)}`;
 		case "assistant_message":
@@ -212,12 +215,46 @@ function renderEventLine(event: SessionEvent): string {
 		case "progress_update":
 		case "plan_update":
 			return event.content
-				? `[${t}] ${event.category?.toUpperCase()}: ${truncate(event.content, 200)}`
+				? `[${t}] ${category.toUpperCase()}: ${truncate(event.content, 200)}`
 				: "";
 		case "system_event":
 			return event.content ? `[${t}] SYSTEM: ${truncate(event.content, 120)}` : "";
-		default:
+		// AI watcher categories — render a one-line trace so the classifier
+		// has visibility into prior watcher activity. Listed explicitly so
+		// the `never` guard below catches new EventCategory members at
+		// compile time. Missing payload data is fine; the line just notes
+		// the event happened.
+		case "ai_proposal_pending":
+			return `[${t}] AI proposal pending`;
+		case "ai_proposal":
+			return event.content
+				? `[${t}] AI proposal: ${truncate(event.content, 200)}`
+				: `[${t}] AI proposal`;
+		case "ai_report":
+			return event.content
+				? `[${t}] AI report: ${truncate(event.content, 200)}`
+				: `[${t}] AI report`;
+		case "ai_hitl_request":
+			return `[${t}] AI HITL requested`;
+		case "ai_hitl_response":
+			return event.content
+				? `[${t}] AI HITL response: ${truncate(event.content, 160)}`
+				: `[${t}] AI HITL response`;
+		case "ai_continue_sent":
+			return event.content
+				? `[${t}] AI continue: ${truncate(event.content, 200)}`
+				: `[${t}] AI continue sent`;
+		case "ai_continue_blocked":
+			return event.content
+				? `[${t}] AI continue blocked: ${truncate(event.content, 160)}`
+				: `[${t}] AI continue blocked`;
+		case "ai_error":
+			return event.content ? `[${t}] AI error: ${truncate(event.content, 200)}` : `[${t}] AI error`;
+		default: {
+			const _exhaustive: never = category;
+			void _exhaustive;
 			return "";
+		}
 	}
 }
 

@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { SessionMutationKind } from "../../../shared/types.js";
+import type { AskThreadOrigin, SessionMutationKind } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { managedSessions, sessions } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
@@ -10,7 +10,7 @@ import type { BulkActionIntent } from "./launch-intent-detector.js";
 import { sendTelegramActionRequest } from "./telegram-helpers.js";
 
 export interface HandleBulkActionArgs {
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 }

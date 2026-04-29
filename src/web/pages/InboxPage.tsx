@@ -16,7 +16,7 @@ import { FailedProposalCard } from "../components/inbox/FailedProposalCard.js";
 import { HitlCard } from "../components/inbox/HitlCard.js";
 import { RiskyCard } from "../components/inbox/RiskyCard.js";
 import { StuckCard } from "../components/inbox/StuckCard.js";
-import { type Inbox, type InboxWorkItem, api } from "../lib/api.js";
+import { type ActionRequestDecision, type Inbox, type InboxWorkItem, api } from "../lib/api.js";
 
 /**
  * Operator inbox. Pulls the discriminated-union work items from the
@@ -52,7 +52,7 @@ export function InboxPage() {
 		reload();
 	}
 
-	async function handleActionDecide(id: string, decision: "applied" | "declined") {
+	async function handleActionDecide(id: string, decision: ActionRequestDecision) {
 		await api.decideActionRequest(id, { decision });
 		reload();
 	}

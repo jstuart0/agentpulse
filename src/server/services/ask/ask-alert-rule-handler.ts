@@ -1,4 +1,4 @@
-import type { AlertRuleType } from "../../../shared/types.js";
+import type { AlertRuleType, AskThreadOrigin } from "../../../shared/types.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { getCachedProjects } from "../projects/cache.js";
 import type { AlertRuleIntent } from "./launch-intent-detector.js";
@@ -31,7 +31,7 @@ const MIN_DAILY_TOKEN_BUDGET = 1000;
 export async function handleAlertRuleRequest(
 	intent: AlertRuleIntent & { kind: "create_alert_rule" },
 	args: {
-		origin: "web" | "telegram";
+		origin: AskThreadOrigin;
 		threadId: string;
 		telegramChatId?: string | null;
 	},
@@ -93,7 +93,7 @@ export async function handleAlertRuleRequest(
 export async function handleFreeformAlertRuleRequest(
 	intent: AlertRuleIntent & { kind: "create_freeform_alert_rule" },
 	args: {
-		origin: "web" | "telegram";
+		origin: AskThreadOrigin;
 		threadId: string;
 		telegramChatId?: string | null;
 	},

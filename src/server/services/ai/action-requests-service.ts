@@ -1,6 +1,8 @@
 import { and, eq, inArray, isNull, max, sql } from "drizzle-orm";
 import {
+	type ActionRequestDecision,
 	type AlertRuleType,
+	type AskThreadOrigin,
 	KNOWN_ALERT_RULE_TYPES,
 	KNOWN_NOTIFICATION_CHANNEL_KINDS,
 	type NotificationChannelKind,
@@ -69,7 +71,7 @@ export interface ActionRequest {
 	failureReason: string | null;
 	question: string;
 	payload: ActionRequestPayload;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	channelId: string | null;
 	askThreadId: string | null;
 	resolvedAt: string | null;
@@ -83,7 +85,7 @@ export interface CreateActionRequestInput {
 	kind: ActionRequestKind;
 	question: string;
 	payload: Omit<ActionRequestPayload, "kind"> | ActionRequestPayload | Record<string, unknown>;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	channelId?: string | null;
 	askThreadId?: string | null;
 }
@@ -134,7 +136,7 @@ function toRecord(row: typeof aiActionRequests.$inferSelect): ActionRequest {
 		failureReason: row.failureReason ?? null,
 		question: row.question,
 		payload: rawPayload as unknown as ActionRequestPayload,
-		origin: row.origin as "web" | "telegram",
+		origin: row.origin as AskThreadOrigin,
 		channelId: row.channelId ?? null,
 		askThreadId: row.askThreadId ?? null,
 		resolvedAt: row.resolvedAt ?? null,
@@ -197,7 +199,7 @@ export async function listOpenActionRequests(): Promise<ActionRequest[]> {
 }
 
 type ResolveResult =
-	| { ok: true; status: "applied" | "declined" }
+	| { ok: true; status: ActionRequestDecision }
 	| { ok: false; reason: "race_lost"; currentStatus: string }
 	| { ok: false; reason: "expired"; failureReason: string }
 	| { ok: false; reason: "failed"; failureReason: string };
@@ -236,7 +238,7 @@ async function conditionalUpdate(
 }
 
 async function notifyOriginUser(
-	origin: "web" | "telegram",
+	origin: AskThreadOrigin,
 	channelId: string | null,
 	askThreadId: string | null,
 	text: string,
@@ -1296,7 +1298,7 @@ const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
 
 export async function resolveActionRequest(args: {
 	id: string;
-	decision: "applied" | "declined";
+	decision: ActionRequestDecision;
 	resolvedBy: string;
 }): Promise<ResolveResult> {
 	const { id, decision, resolvedBy } = args;

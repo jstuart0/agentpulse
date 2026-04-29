@@ -1,4 +1,5 @@
 import { and, desc, eq, gt } from "drizzle-orm";
+import type { InboxWorkItem } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { aiInboxSnoozes } from "../../db/schema.js";
 
@@ -11,7 +12,14 @@ import { aiInboxSnoozes } from "../../db/schema.js";
  * is reversible, idempotent, and non-destructive.
  */
 
-export type InboxKind = "hitl" | "stuck" | "risky" | "failed_proposal";
+// Snooze applies only to session-scoped inbox items — the four listed
+// here. The Extract narrows InboxWorkItem["kind"] so removing or
+// renaming any of these four kinds in shared/types.ts immediately
+// breaks the snooze service at compile time.
+export type InboxKind = Extract<
+	InboxWorkItem["kind"],
+	"hitl" | "stuck" | "risky" | "failed_proposal"
+>;
 
 export interface SnoozeRecord {
 	id: string;

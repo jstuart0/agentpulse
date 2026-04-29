@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNotNull, lte } from "drizzle-orm";
-import type { HitlReplyKind } from "../../../shared/types.js";
+import type { ActionRequestDecision, HitlReplyKind } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { aiHitlRequests } from "../../db/schema.js";
 
@@ -87,7 +87,7 @@ export async function supersedeOpenHitl(sessionId: string): Promise<number> {
 /** Resolve a specific HITL request with an operator reply. */
 export async function resolveHitlRequest(input: {
 	id: string;
-	status: "applied" | "declined";
+	status: ActionRequestDecision;
 	replyKind: HitlReplyKind;
 	replyText?: string | null;
 }): Promise<HitlRequestRecord | null> {

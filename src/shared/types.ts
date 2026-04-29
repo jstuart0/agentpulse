@@ -98,6 +98,38 @@ export type NotificationChannelKind = (typeof KNOWN_NOTIFICATION_CHANNEL_KINDS)[
 export const SESSION_MUTATION_KINDS = ["stop", "archive", "delete"] as const;
 export type SessionMutationKind = (typeof SESSION_MUTATION_KINDS)[number];
 
+// Origin of an Ask thread / action request — identifies whether the
+// request was created via the dashboard chat UI or the Telegram bot.
+// Drives notification routing and cross-channel reply attribution.
+export const ASK_THREAD_ORIGINS = ["web", "telegram"] as const;
+export type AskThreadOrigin = (typeof ASK_THREAD_ORIGINS)[number];
+
+// Operator decision on an action request from the inbox cards. The
+// server-side ActionRequestStatus union is wider — see
+// `action-requests-service.ts` — but the operator-facing decision is
+// strictly "applied" or "declined".
+export const ACTION_REQUEST_DECISIONS = ["applied", "declined"] as const;
+export type ActionRequestDecision = (typeof ACTION_REQUEST_DECISIONS)[number];
+
+// Labs flag registry (experimental UI surfaces). Both the web client
+// and the server's `labs-service.ts` import from this canonical list,
+// so a new flag added here is visible to both sides at compile time.
+// Defaults / labels / descriptions still live in `labs-service.ts`.
+export const KNOWN_LABS_FLAGS = [
+	"inbox",
+	"digest",
+	"aiSessionTab",
+	"intelligenceBadges",
+	"aiSettingsPanel",
+	"templateDistillation",
+	"launchRecommendation",
+	"riskClasses",
+	"telegramChannel",
+	"askAssistant",
+] as const;
+export type LabsFlag = (typeof KNOWN_LABS_FLAGS)[number];
+export type LabsFlags = Record<LabsFlag, boolean>;
+
 // Ask thread message author roles.
 export type AskMessageRole = "user" | "assistant" | "system";
 
@@ -740,7 +772,7 @@ export type InboxWorkItem =
 			template: SessionTemplateInput;
 			launchSpec: LaunchSpec;
 			requestedLaunchMode: LaunchMode;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 			/** Present when this launch was created by a resume intent. */
 			parentSessionId: string | null;
 			parentSessionName: string | null;
@@ -757,7 +789,7 @@ export type InboxWorkItem =
 			defaultAgentType: string | null;
 			defaultModel: string | null;
 			defaultLaunchMode: string | null;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_session_stop";
@@ -766,7 +798,7 @@ export type InboxWorkItem =
 			sessionName: string | null;
 			severity: "high";
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_session_archive";
@@ -775,7 +807,7 @@ export type InboxWorkItem =
 			sessionName: string | null;
 			severity: "normal";
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_session_delete";
@@ -784,7 +816,7 @@ export type InboxWorkItem =
 			sessionName: string | null;
 			severity: "high";
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_edit_project";
@@ -796,7 +828,7 @@ export type InboxWorkItem =
 			projectName: string;
 			fields: Record<string, unknown>;
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_delete_project";
@@ -809,7 +841,7 @@ export type InboxWorkItem =
 			affectedTemplates: number;
 			affectedSessions: number;
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_edit_template";
@@ -821,7 +853,7 @@ export type InboxWorkItem =
 			templateName: string;
 			fields: Record<string, unknown>;
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_delete_template";
@@ -832,7 +864,7 @@ export type InboxWorkItem =
 			templateId: string;
 			templateName: string;
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			kind: "action_add_channel";
@@ -843,7 +875,7 @@ export type InboxWorkItem =
 			channelKind: NotificationChannelKind;
 			channelLabel: string;
 			createdAt: string;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			// Alert rule creation request. sessionId is null because rules are
@@ -857,7 +889,7 @@ export type InboxWorkItem =
 			projectName: string;
 			ruleType: string;
 			thresholdMinutes: number | null;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			// Freeform alert rule creation request. sessionId is null because rules are
@@ -871,7 +903,7 @@ export type InboxWorkItem =
 			projectName: string;
 			condition: string;
 			dailyTokenBudget: number;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  }
 	| {
 			// Bulk session action. sessionId is null because this spans multiple sessions.
@@ -887,7 +919,7 @@ export type InboxWorkItem =
 			sessionNames: string[]; // up to 20, each truncated to 40 chars
 			hasMore: boolean; // true when sessionCount > 20
 			exclusionCount: number;
-			origin: "web" | "telegram";
+			origin: AskThreadOrigin;
 	  };
 
 export interface Inbox {

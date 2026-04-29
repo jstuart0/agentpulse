@@ -10,6 +10,7 @@ import { MarkdownContent } from "../components/MarkdownContent.js";
 import {
 	type AskMessage,
 	type AskThread,
+	type AskThreadOrigin,
 	api,
 	looksLikeAuthBounce,
 	triggerAuthReload,
@@ -37,7 +38,7 @@ export function AskPage() {
 	// Telegram-origin threads are view-only on the web — answers delivered
 	// back through Telegram, not the HTTP response. Track the active
 	// thread's origin so we can gate the composer.
-	const [activeThreadOrigin, setActiveThreadOrigin] = useState<"web" | "telegram" | null>(null);
+	const [activeThreadOrigin, setActiveThreadOrigin] = useState<AskThreadOrigin | null>(null);
 
 	const reloadThreads = useCallback(async () => {
 		try {

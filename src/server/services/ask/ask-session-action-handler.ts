@@ -1,4 +1,5 @@
 import { eq, sql } from "drizzle-orm";
+import type { AskThreadOrigin } from "../../../shared/types.js";
 import { db } from "../../db/client.js";
 import { managedSessions, sessions } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
@@ -12,7 +13,7 @@ export type { SessionActionIntent };
 // Slice B and Slice C handlers should import resolveSession from ask-resolver.ts directly.
 
 export interface HandleSessionActionArgs {
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 }
@@ -178,7 +179,7 @@ async function createSessionActionRequest(opts: {
 	session: ResolvedSession;
 	question: string;
 	contextLabel: string;
-	origin: "web" | "telegram";
+	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
 	successReply: string;
