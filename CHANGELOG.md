@@ -7,6 +7,30 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.2.0-pre.10] — 2026-05-01
+
+Reliability hotfix for two stacked production issues that were
+surfacing as user-visible "could not connect to the LLM" / "network
+error" messages from Ask and Telegram.
+
+### Fixed
+
+- **Cold-load LLM timeouts.** The Ask sync and streaming paths used a
+  60s timeout on the LLM call, which is too tight for cold-load on
+  local 20B+ models — first-token latency runs 60–90s when a model
+  has been evicted from GPU memory. Bumped both timeouts to 180s.
+  Classifier timeouts (8s) stay tight on purpose so a slow gate
+  fails fast and lets the main turn proceed. When a timeout does
+  fire, the user-facing message is now timeout-specific ("LLM
+  didn't respond in time — usually a cold model load. Try again in
+  a few seconds.") instead of the generic "couldn't reach" copy.
+- **Pod restart loop from over-tight liveness probes.** Default
+  Kubernetes `timeoutSeconds: 1` was triggering on `/api/v1/health`
+  whenever the event loop was briefly busy (LLM streaming, FTS
+  backfill). Bumped both probes to `timeoutSeconds: 5` and the
+  liveness probe to `failureThreshold: 5`. Validated in production:
+  4 restarts in 41h vs. the prior ~18 restarts in 18h.
+
 ## [0.2.0-pre.9] — 2026-04-29
 
 Efficiency redesign. Building on the type-discipline work in pre.8, this
