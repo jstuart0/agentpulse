@@ -54,12 +54,20 @@ spec:
             port: 3000
           initialDelaySeconds: 5
           periodSeconds: 10
+          # Default timeoutSeconds is 1, which is too tight when the
+          # event loop is briefly saturated during LLM streaming.
+          timeoutSeconds: 5
+          failureThreshold: 3
         livenessProbe:
           httpGet:
             path: /api/v1/health
             port: 3000
           initialDelaySeconds: 10
           periodSeconds: 30
+          # Same reasoning as readinessProbe; failureThreshold=5 lets
+          # several consecutive slow probes pass before SIGKILL.
+          timeoutSeconds: 5
+          failureThreshold: 5
       volumes:
       - name: data
         persistentVolumeClaim:
