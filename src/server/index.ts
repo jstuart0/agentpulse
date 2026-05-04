@@ -242,19 +242,48 @@ console.log(`  ║  WS:      ws://${config.host}:${config.port}/api/v1/ws   ║`
 console.log("  ╚═══════════════════════════════════════════╝");
 console.log("");
 
+// Boot log: show effective bind so operators can self-diagnose connectivity issues
+// ("I can't reach my server") without reading docs. The default is 127.0.0.1;
+// set HOST=0.0.0.0 (or use Docker, which sets it via ENV) to expose to LAN/network.
+console.log(
+	`[config] Binding to ${config.host}:${config.port}; set HOST=0.0.0.0 to expose to LAN/network.`,
+);
+
 // One-shot footgun warning. DISABLE_AUTH=true binds every mutation route
 // (sessions, projects, templates, ai control plane) wide-open; combined
 // with HOST=0.0.0.0 that means anyone on the network can mutate state.
-// We don't refuse to boot — the homelab "trusted LAN" use-case is real —
-// but operators should see this every restart.
+// The HOST default is now 127.0.0.1 (safe for bare `bun run start`);
+// the Dockerfile sets HOST=0.0.0.0 so containers still bind all interfaces.
+// Warning fires when the operator has EXPLICITLY chosen the dangerous combo.
 if (config.disableAuth && config.host === "0.0.0.0") {
 	console.warn("  ============================================================");
-	console.warn("  WARNING: Server is running with DISABLE_AUTH=true on HOST=0.0.0.0.");
-	console.warn("  All mutation APIs are fully open. Ensure this is intentional.");
-	console.warn("  Bind to 127.0.0.1 or set DISABLE_AUTH=false to lock down.");
+	console.warn("  WARNING: AgentPulse is running with DISABLE_AUTH=true and HOST=0.0.0.0.");
+	console.warn("  All mutation APIs are fully open on all interfaces.");
+	console.warn("  If running via Docker, ensure you used:");
+	console.warn("    -p 127.0.0.1:3000:3000  (NOT -p 3000:3000)");
+	console.warn("  so the host port is not published on all network interfaces.");
+	console.warn("  See README → Local deployment.");
 	console.warn("  ============================================================");
 	console.warn("");
 }
+
+// Non-blocking advisory: AGENTPULSE_ALLOW_SIGNUP=true is only meaningful on
+// a fresh instance with zero users. Once users exist, the signup transaction
+// guard prevents abuse, but leaving the flag set is a config smell.
+// Fire-and-forget: this advisory is informational and must never delay startup.
+(async () => {
+	try {
+		const { countActiveUsers } = await import("./services/local-auth-service.js");
+		if (config.allowSignup && (await countActiveUsers()) > 0) {
+			console.log(
+				"[config] AGENTPULSE_ALLOW_SIGNUP=true is set but the instance already has users. Set AGENTPULSE_ALLOW_SIGNUP=false (or unset) to prevent first-run signup attempts on future restarts.",
+			);
+		}
+	} catch {
+		// DB might not be fully settled yet on first boot; skip silently.
+	}
+})();
+
 if (defaultKey) {
 	if (config.isProduction) {
 		console.log("  Default API key created.");

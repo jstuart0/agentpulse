@@ -71,8 +71,10 @@ When it finishes, open [http://localhost:3000](http://localhost:3000) and start 
 If you prefer Docker, this starts the container, waits for health, and configures hooks:
 
 ```bash
-docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -sSL http://localhost:3000/setup.sh | bash
+docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -sSL http://localhost:3000/setup.sh | bash
 ```
+
+> **Security note:** `-p 127.0.0.1:3000:3000` binds the host port to localhost only. The older `-p 3000:3000` form would publish on all host interfaces, exposing the auth-disabled server to your LAN. Use the `127.0.0.1:` prefix whenever `DISABLE_AUTH=true`.
 
 **Done.** Open [http://localhost:3000](http://localhost:3000) and you have:
 - live session observability
@@ -81,7 +83,7 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 
 > **Why localhost?** Claude Code and Codex block HTTP hooks to remote/private IPs as a security measure. Only `localhost` / `127.0.0.1` is allowed. This keeps things simple -- one Docker container on your machine, no networking to configure. If port 3000 is taken, use any free port:
 > ```bash
-> docker run -d -p 4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+> docker run -d -p 127.0.0.1:4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
 > curl -sSL http://localhost:4000/setup.sh | bash
 > ```
 
@@ -301,9 +303,11 @@ That observability-only mode still gives you:
 Best if you already use Docker locally.
 
 ```bash
-docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
 curl -sSL http://localhost:3000/setup.sh | bash
 ```
+
+> **Security note:** `-p 127.0.0.1:3000:3000` binds the host port to localhost only when `DISABLE_AUTH=true`. Use this form for local-only Docker; the older `-p 3000:3000` shorthand publishes on all host interfaces.
 
 ### 3. Remote dashboard + local hooks
 
@@ -334,15 +338,23 @@ Your Mac                                    Your server / k8s cluster
                                            └──────────────────────────┘
 ```
 
-**Option A: Local-only with port access from other devices**
+**Option A: Local with LAN access (auth enabled)**
 
-Run AgentPulse on your machine, bind to `0.0.0.0` so other devices on your LAN can view the dashboard:
+> **Never combine `-p 0.0.0.0:3000:3000` with `-e DISABLE_AUTH=true`.** That combination exposes all mutation APIs to anyone on the network with zero credentials. If you need LAN access, use the auth-enabled config below. If you need `DISABLE_AUTH` for local convenience, use `-p 127.0.0.1:3000:3000` so the port is not published on network interfaces.
+
+Run AgentPulse on your machine, bind to `0.0.0.0` so other devices on your LAN can view the dashboard. Auth is required — create a local admin via the bootstrap env vars:
 
 ```bash
-docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e HOST=0.0.0.0 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-curl -sSL http://localhost:3000/setup.sh | bash
+docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
+  -e HOST=0.0.0.0 \
+  -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
+  -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
+  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+curl -sSL http://localhost:3000/setup.sh | bash -s -- --key ap_YOUR_API_KEY
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
+
+The default config requires login via the dashboard. DO NOT add `-e DISABLE_AUTH=true` on any network you do not fully control.
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 

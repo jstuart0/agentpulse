@@ -7,6 +7,38 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Changed
+
+- ⚠ breaking — **`HOST` default changed from `0.0.0.0` to `127.0.0.1`.**
+  Running `bun run start` (bare, without Docker) now binds to localhost only.
+  To restore the previous behaviour, set `HOST=0.0.0.0` in your environment.
+  The `Dockerfile` already sets `ENV HOST=0.0.0.0` so container deployments
+  are unaffected.
+
+- ⚠ breaking — **`AGENTPULSE_ALLOW_SIGNUP` default changed from `true` to `false`.**
+  The first-run signup flow is now opt-in. Set `AGENTPULSE_ALLOW_SIGNUP=true`
+  to allow open signup on an empty instance. Existing installs with users already
+  created are unaffected — signup was already blocked once any user existed.
+
+- **Settings allowlist (replaces prefix denylist).** `PUT /api/v1/settings`
+  now rejects any key not explicitly listed as user-settable, returning
+  `{ "error": "key_not_user_settable", "key": "..." }` with HTTP 403. Previously
+  the endpoint blocked only `ai.*` / `vectorSearch.*` / `telegram:credentials`
+  prefixes; all other keys were accepted. Service-internal callers already
+  pass `{ allowProtected: true }` and are unaffected.
+
+- **Atomic first-run signup.** Two concurrent `POST /auth/signup` requests
+  against an empty user table now guarantee exactly one succeeds; the second
+  returns 403. The flag `auth.firstRunCompleted` is written in the same
+  synchronous SQLite transaction as the user row.
+
+- **Docker host-publishing.** All documented `docker run` examples with
+  `DISABLE_AUTH=true` now use `-p 127.0.0.1:3000:3000` instead of
+  `-p 3000:3000`. The old form published the auth-disabled server on all host
+  network interfaces. A startup warning fires when `DISABLE_AUTH=true` and
+  `HOST=0.0.0.0` are both active, reminding operators to use the
+  `127.0.0.1:` host-binding prefix.
+
 ## [0.2.0-pre.10] — 2026-05-01
 
 Reliability hotfix for two stacked production issues that were
@@ -1328,7 +1360,7 @@ All AI features ship gated behind per-feature Labs flags and a master
 - Docker image: `ghcr.io/jstuart0/agentpulse:latest` (linux/amd64).
 - Kubernetes manifests under `deploy/k8s/` target the `thor` cluster
   with Authentik SSO + Traefik IngressRoute.
-- Local install: `docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true`.
+- Local install: `docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true`.
 - Remote hook relay: `curl -sSL https://server/setup-relay.sh | bash -s -- --key ap_xxx`.
 
 [Unreleased]: https://github.com/jstuart0/agentpulse/compare/v0.2.0-pre.3...HEAD

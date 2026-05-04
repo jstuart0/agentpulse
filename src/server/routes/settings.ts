@@ -37,13 +37,7 @@ settingsRouter.put("/settings", async (c) => {
 		await upsertSetting(key, value);
 	} catch (err) {
 		if (err instanceof ProtectedSettingError) {
-			return c.json(
-				{
-					error: "protected_setting",
-					message: `Setting key '${err.key}' is reserved for internal use.`,
-				},
-				403,
-			);
+			return c.json({ error: "key_not_user_settable", key: err.key }, 403);
 		}
 		throw err;
 	}

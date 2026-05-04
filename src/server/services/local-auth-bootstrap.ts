@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../db/client.js";
-import { users } from "../db/schema.js";
+import { settings, users } from "../db/schema.js";
 import { createUser, getUserByUsername } from "./local-auth-service.js";
 
 /**
@@ -23,6 +23,22 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 	if (!existing) {
 		try {
 			await createUser({ username, password, role: "admin" });
+			// Mark first-run as complete so a later soft-delete of this admin
+			// cannot re-open the signup window. The signup transaction checks
+			// both the total user count AND this flag; writing it here ensures
+			// the flag is set even if countActiveUsers() drops to 0 after a
+			// disabledAt update.
+			db.insert(settings)
+				.values({
+					key: "auth.firstRunCompleted",
+					value: "true",
+					updatedAt: new Date().toISOString(),
+				})
+				.onConflictDoUpdate({
+					target: settings.key,
+					set: { value: "true", updatedAt: new Date().toISOString() },
+				})
+				.run();
 			console.log(`[auth] Bootstrap admin user "${username}" created.`);
 		} catch (err) {
 			console.error("[auth] Failed to create bootstrap admin:", err);
@@ -43,6 +59,20 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 				updatedAt: new Date().toISOString(),
 			})
 			.where(eq(users.id, existing.id));
+		// Re-sync also writes the flag: if the admin was soft-deleted between
+		// restarts, this restart re-enables them AND re-asserts the flag so the
+		// signup window stays closed for the duration of the soft-delete window.
+		db.insert(settings)
+			.values({
+				key: "auth.firstRunCompleted",
+				value: "true",
+				updatedAt: new Date().toISOString(),
+			})
+			.onConflictDoUpdate({
+				target: settings.key,
+				set: { value: "true", updatedAt: new Date().toISOString() },
+			})
+			.run();
 		console.log(`[auth] Bootstrap admin "${username}" re-synced.`);
 	} catch (err) {
 		console.error("[auth] Failed to re-sync bootstrap admin:", err);

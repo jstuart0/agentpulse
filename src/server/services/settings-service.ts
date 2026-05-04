@@ -2,20 +2,17 @@ import { db } from "../db/client.js";
 import { settings } from "../db/schema.js";
 import { invalidateAiFlagsCache } from "./ai/feature.js";
 
-/**
- * Keys whose semantics belong to internal subsystems (AI control plane,
- * vector search, secret credentials). The generic `PUT /settings` endpoint
- * is exposed to any authenticated dashboard user and previously had no
- * key namespacing — a caller who knew the internal key names could flip
- * `ai.enabled`, `ai.killSwitch`, vector-search flags, or overwrite
- * `telegram:credentials`, bypassing the AI build-gate that the dedicated
- * `PUT /ai/status` and credential-management endpoints enforce.
- *
- * Trusted call sites (the AI router, telegram credential service) pass
- * `{ allowProtected: true }` so they can still mutate these keys.
- */
-const PROTECTED_KEY_PREFIXES = ["ai.", "vectorSearch."] as const;
-const PROTECTED_EXACT_KEYS = new Set<string>(["telegram:credentials"]);
+// ADD new user-facing settings keys here — requires review.
+// These are the keys the dashboard UI writes via PUT /api/v1/settings.
+// Service-internal keys (ai.*, vectorSearch.*, telegram:credentials,
+// workspace.*, git_clone.*, auth.*, telemetry:*, installation_id) are NOT
+// listed here; their callers pass { allowProtected: true } explicitly.
+const USER_SETTABLE_KEYS: ReadonlySet<string> = new Set([
+	"theme",
+	"sessionIdleTimeoutMinutes",
+	"sessionEndTimeoutMinutes",
+	"eventsRetentionDays",
+]);
 
 // Cache invalidation is implemented as a post-write hook keyed on prefix.
 // Adding a new cache means adding one entry here — no churn through every
@@ -30,24 +27,17 @@ const CACHE_INVALIDATING_PREFIXES: Array<{ prefix: string; invalidate: (key: str
 export class ProtectedSettingError extends Error {
 	readonly key: string;
 	constructor(key: string) {
-		super(`Setting key '${key}' is reserved for internal use.`);
+		super(`Setting key '${key}' is not user-settable.`);
 		this.name = "ProtectedSettingError";
 		this.key = key;
 	}
 }
 
-export function isProtectedSettingKey(key: string): boolean {
-	if (PROTECTED_EXACT_KEYS.has(key)) return true;
-	for (const prefix of PROTECTED_KEY_PREFIXES) {
-		if (key.startsWith(prefix)) return true;
-	}
-	return false;
-}
-
 export interface UpsertSettingOptions {
 	/**
-	 * Trusted callers (e.g. handlers behind `requireAiBuild`) set this to
-	 * write keys covered by the protected denylist. External callers must
+	 * Trusted callers (e.g. handlers behind `requireAiBuild`, the
+	 * auth bootstrap, telemetry) set this to write keys not in
+	 * USER_SETTABLE_KEYS. External callers (PUT /api/v1/settings) must
 	 * leave it unset so attempts to mutate internal keys throw a typed
 	 * {@link ProtectedSettingError}.
 	 */
@@ -56,7 +46,7 @@ export interface UpsertSettingOptions {
 
 /**
  * Atomically upsert a key/value pair into the `settings` table. Used by
- * every settings-write code path so the denylist + timestamp behavior
+ * every settings-write code path so the allowlist + timestamp behavior
  * lives in exactly one place.
  *
  * After a successful write, any cache whose key-prefix matches gets
@@ -68,7 +58,7 @@ export async function upsertSetting(
 	value: unknown,
 	opts: UpsertSettingOptions = {},
 ): Promise<void> {
-	if (!opts.allowProtected && isProtectedSettingKey(key)) {
+	if (!opts.allowProtected && !USER_SETTABLE_KEYS.has(key)) {
 		throw new ProtectedSettingError(key);
 	}
 	const now = new Date().toISOString();

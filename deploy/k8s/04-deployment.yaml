@@ -23,6 +23,8 @@ spec:
         - containerPort: 3000
           name: http
         env:
+        - name: HOST
+          value: "0.0.0.0"
         - name: TZ
           value: "America/New_York"
         - name: DATABASE_URL

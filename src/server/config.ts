@@ -1,6 +1,6 @@
 export const config = {
 	port: Number(process.env.PORT || 3000),
-	host: process.env.HOST || "0.0.0.0",
+	host: process.env.HOST || "127.0.0.1",
 	databaseUrl: process.env.DATABASE_URL || "",
 	publicUrl: process.env.PUBLIC_URL || "http://localhost:3000",
 	logLevel: (process.env.LOG_LEVEL || "info") as "debug" | "info" | "warn" | "error",
@@ -35,7 +35,7 @@ export const config = {
 	// setting AGENTPULSE_LOCAL_ADMIN_USERNAME / _PASSWORD; first-run
 	// signup is otherwise gated by AGENTPULSE_ALLOW_SIGNUP and only fires
 	// when the users table is empty.
-	allowSignup: process.env.AGENTPULSE_ALLOW_SIGNUP !== "false",
+	allowSignup: process.env.AGENTPULSE_ALLOW_SIGNUP === "true",
 	localAdminUsername: process.env.AGENTPULSE_LOCAL_ADMIN_USERNAME || "",
 	localAdminPassword: process.env.AGENTPULSE_LOCAL_ADMIN_PASSWORD || "",
 
