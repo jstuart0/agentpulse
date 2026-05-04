@@ -143,7 +143,7 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - **Local:** `docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true`
 - **K8s (thor):** `kubectl apply -f deploy/k8s/` (uses Authentik SSO + Traefik IngressRoute)
 - **Relay:** `curl -sSL https://server/setup-relay.sh | bash -s -- --key ap_xxx`
-- **Docker image:** `192.168.10.222:30500/agentpulse:latest` (linux/amd64)
+- **Docker image:** `ghcr.io/jstuart0/agentpulse:latest` (linux/amd64)
 - **Telemetry:** `telemetry-agentpulse.xmojo.net` (Cloudflare Worker + D1)
 
 ## OSS Hygiene
@@ -157,3 +157,9 @@ When preparing changes for commit or push to the public repository:
 - treat deployment manifests, setup scripts, config files, screenshots, and docs as high-risk for accidental private leakage
 
 Public git history is the source of truth. Local convenience must not leak into commits.
+
+## Plane Project
+- Workspace: agile-solutions-group
+- Project ID: 7ec41b9d-5efa-4f56-bc82-930f76b01345
+- Project Name: AgentPulse
+- Identifier: AGEN

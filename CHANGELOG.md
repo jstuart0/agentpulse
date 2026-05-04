@@ -1325,7 +1325,7 @@ All AI features ship gated behind per-feature Labs flags and a master
 
 ### Deployment
 
-- Docker image: `192.168.10.222:30500/agentpulse:latest` (linux/amd64).
+- Docker image: `ghcr.io/jstuart0/agentpulse:latest` (linux/amd64).
 - Kubernetes manifests under `deploy/k8s/` target the `thor` cluster
   with Authentik SSO + Traefik IngressRoute.
 - Local install: `docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true`.

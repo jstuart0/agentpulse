@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
  *
  * Usage:
  *   AGENTPULSE_LIVE_TEST_PROVIDERS='[
- *     {"name":"ollama-qwen","kind":"openai_compatible","model":"qwen2.5:7b","baseUrl":"http://192.168.10.50:11434/v1","apiKey":"ollama"},
+ *     {"name":"ollama-qwen","kind":"openai_compatible","model":"qwen2.5:7b","baseUrl":"http://localhost:11434/v1","apiKey":"ollama"},
  *     {"name":"openrouter-sonnet","kind":"openrouter","model":"anthropic/claude-3.5-sonnet","baseUrl":"https://openrouter.ai/api/v1","apiKey":"sk-or-..."}
  *   ]' bun scripts/ai-live-test.ts
  */
