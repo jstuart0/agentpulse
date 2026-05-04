@@ -22,6 +22,15 @@ export default defineConfig({
 				target: "http://localhost:3000",
 				changeOrigin: true,
 			},
+			// /app-api is the browser-facing path used by the React frontend
+			// (BROWSER_WS_PATH = /app-api/v1/ws). The proxy must forward WS
+			// upgrades so Origin: http://localhost:5173 reaches the API server,
+			// which validates it against ALLOWED_ORIGINS.
+			"/app-api": {
+				target: "http://localhost:3000",
+				changeOrigin: true,
+				ws: true,
+			},
 			"/ws": {
 				target: "ws://localhost:3000",
 				ws: true,

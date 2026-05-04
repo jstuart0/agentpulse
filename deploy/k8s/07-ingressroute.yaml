@@ -73,15 +73,24 @@ spec:
     # browser dashboard catch-all unaffected.
     - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/`) && HeaderRegexp(`Authorization`, `Bearer ap_.*`)
       kind: Rule
+      middlewares:
+        - name: agentpulse-strip-client-authentik
+          namespace: agentpulse
       services:
         - name: agentpulse
           port: 3000
 
-    # Dashboard frontend - Authentik protected
+    # Dashboard frontend - Authentik protected.
+    # Strip order: agentpulse-strip-client-authentik runs first so any
+    # client-forged X-Authentik-* headers are removed before forwardAuth
+    # evaluates the request. Only the forwardAuth response can re-inject them.
     - match: Host(`agentpulse.example.com`)
       kind: Rule
       middlewares:
+        - name: agentpulse-strip-client-authentik
+          namespace: agentpulse
         - name: agentpulse-forwardauth
+          namespace: agentpulse
       services:
         - name: agentpulse
           port: 3000

@@ -47,6 +47,18 @@ import { handleWsClose, handleWsMessage, handleWsOpen, startHeartbeat } from "./
 // Fail fast if AI is enabled but the instance secrets key is missing or weak.
 validateAiStartupConfig();
 
+// Advisory: operators should configure the Authentik trust secret in production.
+// Without it, any request that carries X-Authentik-Username (e.g. from a compromised
+// sibling pod) bypasses the trust gate. NetworkPolicy from P10 narrows but does not
+// eliminate this attack surface.
+if (!config.authentikTrustSecret && !config.disableAuth) {
+	console.warn(
+		"[security] AGENTPULSE_AUTHENTIK_TRUST_SECRET is not set. The Authentik header trust gate is disabled. " +
+			"Any request carrying X-Authentik-Username headers will be accepted without verification. " +
+			"Set AGENTPULSE_AUTHENTIK_TRUST_SECRET to a shared secret (see deploy/k8s/AUTHENTIK-FORWARDAUTH.md).",
+	);
+}
+
 // Initialize database
 initializeDatabase();
 
@@ -152,6 +164,14 @@ const _server = Bun.serve({
 
 		// Handle WebSocket upgrade
 		if (url.pathname === "/api/v1/ws" || url.pathname === "/app-api/v1/ws") {
+			// Strict Origin check — no NODE_ENV branching.
+			// Allowed origins are derived from PUBLIC_URL (comma-separated).
+			// Dev setups: set PUBLIC_URL=https://prod.example.com,http://localhost:5173
+			const origin = req.headers.get("Origin");
+			if (!origin || !config.allowedOrigins.includes(origin)) {
+				return new Response("Forbidden", { status: 403 });
+			}
+
 			const authUser = config.disableAuth
 				? { source: "api_key", name: "anonymous", id: "anonymous" }
 				: await getAuthUserFromHeaders(req.headers);

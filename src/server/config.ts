@@ -39,6 +39,25 @@ export const config = {
 	localAdminUsername: process.env.AGENTPULSE_LOCAL_ADMIN_USERNAME || "",
 	localAdminPassword: process.env.AGENTPULSE_LOCAL_ADMIN_PASSWORD || "",
 
+	// Authentik shared-secret trust gate. When non-empty, every request that
+	// carries X-Authentik-* headers MUST also carry X-Authentik-Verify with this
+	// value (HMAC-constant in Authentik property mapping). The middleware strips
+	// all X-Authentik-* headers on mismatch so forged headers can't pass through.
+	// Empty = trust gate disabled (startup warning emitted; not recommended in prod).
+	authentikTrustSecret: process.env.AGENTPULSE_AUTHENTIK_TRUST_SECRET || "",
+
+	// Comma-separated list of allowed WebSocket origins, derived from PUBLIC_URL.
+	// Example: "https://agentpulse.example.com,http://localhost:5173"
+	// The first entry is treated as the canonical public URL; extras are dev origins.
+	get allowedOrigins(): string[] {
+		const raw = process.env.PUBLIC_URL || "http://localhost:3000";
+		return raw
+			.split(",")
+			.map((u) => u.trim())
+			.filter(Boolean)
+			.map((u) => new URL(u).origin);
+	},
+
 	get useSqlite(): boolean {
 		return !this.databaseUrl || !this.databaseUrl.startsWith("postgres");
 	},

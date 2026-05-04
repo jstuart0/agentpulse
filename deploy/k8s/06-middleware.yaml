@@ -13,6 +13,29 @@ spec:
       - X-authentik-email
       - X-authentik-name
       - X-authentik-uid
+      # Trust gate header — emitted by Authentik property mapping "agentpulse-verify-header".
+      # The agentpulse pod verifies this against AGENTPULSE_AUTHENTIK_TRUST_SECRET.
+      # See deploy/k8s/AUTHENTIK-FORWARDAUTH.md for setup instructions.
+      - X-Authentik-Verify
+---
+# Strip client-supplied X-Authentik-* headers BEFORE the forwardAuth middleware
+# runs so an attacker cannot forge Authentik identity or the trust-gate header.
+# After this strip, only the forwardAuth response can re-introduce these headers.
+# Apply this middleware FIRST in every protected IngressRoute (before agentpulse-forwardauth).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: agentpulse-strip-client-authentik
+  namespace: agentpulse
+spec:
+  headers:
+    customRequestHeaders:
+      X-Authentik-Verify: ""
+      X-authentik-username: ""
+      X-authentik-groups: ""
+      X-authentik-email: ""
+      X-authentik-name: ""
+      X-authentik-uid: ""
 ---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
