@@ -39,6 +39,10 @@ function buildCspDirectives(publicUrl: string): string {
 		wsHost = u.host; // e.g. "agentpulse.example.com" or "localhost:3000"
 	} catch {
 		wsHost = "localhost:3000";
+		// Warn once at module-init time so operators see a clear signal that
+		// their PUBLIC_URL is malformed and the CSP connect-src will fall back
+		// to localhost:3000 (likely wrong in production). (L4)
+		console.warn(JSON.stringify({ kind: "csp_publicurl_invalid", publicUrl }));
 	}
 
 	const directives = [

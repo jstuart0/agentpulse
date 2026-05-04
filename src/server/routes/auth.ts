@@ -31,6 +31,13 @@ const WINDOW_MS = 60_000; // 1 minute observation window for the initial failure
 const BASE_BACKOFF_MS = 1_000; // 1 s initial backoff after lockout
 const MAX_BACKOFF_MS = 15 * 60 * 1_000; // cap backoff at 15 minutes
 const DECAY_MS = 15 * 60 * 1_000; // 15 minutes inactivity → bucket eviction
+// Hard cap prevents unbounded Map growth under a distributed enumeration attack
+// that generates millions of unique IP+username pairs. When the cap is hit the
+// oldest-by-lastFailure entry is evicted first, then the new entry is inserted.
+// Evicting oldest means the entry that is most likely already dormant is dropped
+// before a fresh attacker; the alternative (refuse insert → allow on a separate
+// code path) would be a worse failure mode.
+const MAX_BUCKETS = 50_000;
 
 interface RateBucket {
 	failures: number;
@@ -82,14 +89,33 @@ function checkRateLimit(key: string): number | null {
 }
 
 /**
+ * Evict the single oldest bucket (by lastFailure) to make room for a new entry.
+ * Called only when `rateBuckets.size >= MAX_BUCKETS`.
+ */
+function evictOldestBucket(): void {
+	let oldestKey: string | undefined;
+	let oldestTime = Number.MAX_SAFE_INTEGER;
+	for (const [k, b] of rateBuckets) {
+		if (b.lastFailure < oldestTime) {
+			oldestTime = b.lastFailure;
+			oldestKey = k;
+		}
+	}
+	if (oldestKey !== undefined) rateBuckets.delete(oldestKey);
+}
+
+/**
  * Record a failed attempt for `key`. Increments the failure counter and,
  * after MAX_FAILURES, applies exponential backoff.
+ * Exported for testing only.
  */
-function recordFailure(key: string): void {
+export function recordFailure(key: string): void {
 	const now = Date.now();
 	const existing = rateBuckets.get(key);
 
 	if (!existing) {
+		// Enforce the hard size cap before inserting a new entry.
+		if (rateBuckets.size >= MAX_BUCKETS) evictOldestBucket();
 		rateBuckets.set(key, {
 			failures: 1,
 			windowStart: now,
@@ -113,6 +139,14 @@ function recordFailure(key: string): void {
 /** Clear the rate-limit bucket for `key` on successful authentication. */
 function clearBucket(key: string): void {
 	rateBuckets.delete(key);
+}
+
+/**
+ * Returns the current number of active rate-limit buckets.
+ * Exported for testing only — do not call from production code.
+ */
+export function getRateBucketCount(): number {
+	return rateBuckets.size;
 }
 
 // ── Password complexity (S-H1 / decision #4) ────────────────────────────────
@@ -203,10 +237,17 @@ authRouter.post("/auth/login", async (c) => {
 	if (!body.username || !body.password) {
 		return c.json({ error: "username and password required" }, 400);
 	}
+	// Reject oversized usernames before they touch the rate-limit Map.
+	// A multi-megabyte key would be stored verbatim for up to DECAY_MS;
+	// MAX_BUCKETS caps the count but not per-entry size.
+	if (body.username.length > 256) {
+		return c.json({ error: "username too long" }, 400);
+	}
 
 	// Rate-limit check (S-H1). Key: <client-ip>:<username> so that an attacker
 	// spoofing usernames cannot exhaust a single bucket for legitimate users,
 	// and different attackers from different IPs get independent buckets.
+	// Username is already bounded to 256 chars above; key size is therefore safe.
 	const clientIp = getTrustedClientIp(c);
 	const rlKey = `${clientIp}:${body.username}`;
 	const retryAfterSecs = checkRateLimit(rlKey);
@@ -382,6 +423,11 @@ authRouter.post("/auth/change-password", requireAuth(), async (c) => {
 	}>();
 	if (!body.currentPassword || !body.newPassword) {
 		return c.json({ error: "currentPassword and newPassword required" }, 400);
+	}
+	// Enforce the same complexity policy as signup (S-H1 / decision #4).
+	const complexityError = checkPasswordComplexity(body.newPassword);
+	if (complexityError) {
+		return c.json({ error: "password_complexity_failed", reason: complexityError }, 400);
 	}
 	try {
 		const ok = await changeUserPassword({

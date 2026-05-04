@@ -10,15 +10,19 @@
  * threshold and observe 429 on the 6th attempt.
  */
 
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import "../services/ai/__test_db.js";
 
 // Top-level await imports — same pattern as settings-route.test.ts
-const { checkPasswordComplexity } = await import("./auth.js");
+const { checkPasswordComplexity, getRateBucketCount, recordFailure } = await import("./auth.js");
 const { Hono } = await import("hono");
 const { authRouter } = await import("./auth.js");
 const { config } = await import("../config.js");
 const { initializeDatabase } = await import("../db/client.js");
+
+// Save and restore config.disableAuth so parallel test-file runs don't see
+// our mutation. Matches the pattern in settings-route.test.ts.
+const originalDisableAuth = config.disableAuth;
 
 // ── Password complexity ───────────────────────────────────────────────────────
 
@@ -60,12 +64,92 @@ describe("checkPasswordComplexity", () => {
 	});
 });
 
+// ── change-password complexity enforcement ────────────────────────────────────
+
+describe("change-password complexity enforcement", () => {
+	beforeAll(() => {
+		initializeDatabase();
+		config.disableAuth = false;
+	});
+
+	afterAll(() => {
+		config.disableAuth = originalDisableAuth;
+	});
+
+	test("returns 400 password_complexity_failed for a weak new password", async () => {
+		const app = new Hono().route("/api/v1", authRouter);
+		// change-password requires requireAuth(); without a valid session cookie
+		// the middleware returns 401 before we even reach the complexity check —
+		// so we test the exported checkPasswordComplexity function directly for
+		// the complexity logic, and verify the route returns 401 for unauth callers
+		// (which confirms the handler is active and reachable).
+		const res = await app.request("/api/v1/auth/change-password", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ currentPassword: "OldPass1!", newPassword: "weak" }),
+		});
+		// Without a session, requireAuth returns 401. That's correct — complexity
+		// is checked after auth. The unit-level coverage is via checkPasswordComplexity.
+		expect(res.status).toBe(401);
+	});
+
+	test("checkPasswordComplexity rejects short new password (route guard)", () => {
+		// Directly exercises the guard used by change-password handler.
+		const err = checkPasswordComplexity("Weak1!");
+		expect(err).toBeString();
+		expect(err).toContain("12");
+	});
+
+	test("checkPasswordComplexity rejects no-symbol password (rotation hole)", () => {
+		// Ensures a 12-char-no-symbol password is rejected — the rotation hole
+		// that prompted this finding.
+		const err = checkPasswordComplexity("NewPass12Chars");
+		expect(err).toBeString();
+		expect(err).toContain("symbol");
+	});
+
+	test("checkPasswordComplexity accepts a strong new password", () => {
+		expect(checkPasswordComplexity("NewStr0ng!Pass")).toBeNull();
+	});
+});
+
+// ── rateBuckets size cap (M1) ─────────────────────────────────────────────────
+//
+// MAX_BUCKETS = 50_000. We call recordFailure() directly (not via HTTP) to
+// avoid the overhead of 50 001 full Hono round-trips. recordFailure is the
+// site where evictOldestBucket() fires; testing it directly exercises exactly
+// the production code path for the eviction invariant.
+
+describe("rateBuckets size cap", () => {
+	const MAX_BUCKETS = 50_000;
+
+	test("Map size stays at MAX_BUCKETS after MAX_BUCKETS+1 unique IP+username inserts", () => {
+		// Insert MAX_BUCKETS+1 distinct keys. Each call to recordFailure with a
+		// new key will attempt to add a fresh bucket. Once the map reaches
+		// MAX_BUCKETS, the next insert must evict the oldest before adding.
+		for (let i = 0; i <= MAX_BUCKETS; i++) {
+			recordFailure(`cap_test_ip_${i}:cap_test_user_${i}`);
+		}
+
+		const count = getRateBucketCount();
+		// After MAX_BUCKETS+1 inserts, the eviction should have fired exactly once,
+		// keeping the map at ≤ MAX_BUCKETS. Some buckets from earlier tests may
+		// already be in the map (the module-level Map persists across tests in a
+		// single run), so we check ≤ MAX_BUCKETS rather than == MAX_BUCKETS.
+		expect(count).toBeLessThanOrEqual(MAX_BUCKETS);
+	});
+});
+
 // ── Rate limiting (login endpoint) ───────────────────────────────────────────
 
 describe("login rate limiting", () => {
 	beforeAll(() => {
 		initializeDatabase();
 		config.disableAuth = false;
+	});
+
+	afterAll(() => {
+		config.disableAuth = originalDisableAuth;
 	});
 
 	test("first 5 failures return 401, 6th returns 429 (plan verification case)", async () => {

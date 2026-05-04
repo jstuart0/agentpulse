@@ -67,6 +67,7 @@ echo "  ✓ Bun: $BUN_PATH"
 
 RELAY_DIR="$HOME/.agentpulse"
 mkdir -p "$RELAY_DIR"
+chmod 700 "$RELAY_DIR"
 
 cat > "$RELAY_DIR/relay.ts" << 'RELAY_EOF'
 #!/usr/bin/env bun
@@ -74,6 +75,7 @@ import { mkdir, readFile, readdir, rename, unlink, writeFile } from "fs/promises
 import { join } from "path";
 const args = process.argv.slice(2);
 let remoteUrl = "", port = 4000, apiKey = "";
+let configPath = join(import.meta.dir, "config.json");
 const RELAY_FETCH_TIMEOUT_MS = 8000;
 const RELAY_IDLE_TIMEOUT_S = 30;
 const HOOK_RETRY_BASE_MS = 2000;
@@ -81,10 +83,20 @@ const HOOK_RETRY_MAX_MS = 60000;
 const HOOK_RETRY_POLL_MS = 5000;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--port" && args[i+1]) port = Number(args[++i]);
-  else if (args[i] === "--key" && args[i+1]) apiKey = args[++i];
+  else if (args[i] === "--config" && args[i+1]) configPath = args[++i];
   else if (!args[i].startsWith("--")) remoteUrl = args[i].replace(/\/$/, "");
 }
-if (!remoteUrl) { console.error("Usage: relay.ts <url> [--port N] [--key K]"); process.exit(1); }
+// Load config from file (API key never appears in argv).
+// The config file is chmod 600 so only the owner can read it.
+try {
+  const cfg = JSON.parse(await readFile(configPath, "utf-8")) as { remote_url?: string; api_key?: string; port?: number };
+  if (!remoteUrl && cfg.remote_url) remoteUrl = cfg.remote_url.replace(/\/$/, "");
+  if (!apiKey && cfg.api_key) apiKey = cfg.api_key;
+  if (port === 4000 && cfg.port) port = cfg.port;
+} catch {
+  // Config file missing or unreadable; rely on argv (remoteUrl is validated below).
+}
+if (!remoteUrl) { console.error("Usage: relay.ts [--config <path>] [<url>] [--port N]"); process.exit(1); }
 const relayDir = import.meta.dir;
 const hookQueueDir = join(relayDir, "hook-queue");
 const hookPendingDir = join(hookQueueDir, "pending");
@@ -240,17 +252,12 @@ void ensureQueueDirs().then(() => scheduleQueue(250));
 console.log(`AgentPulse Relay: localhost:${port} -> ${remoteUrl} (queued hook forwarding)`);
 RELAY_EOF
 
-# Save config — chmod 600 immediately after write so the API key is
-# never world-readable, even transiently. (S-H4)
+# Save config — use umask 077 subshell so the file is created mode 600
+# from the first write; there is no transient world-readable window. (S-H4 / L1)
+# The API key lives only here — never in argv or the plist. (H1)
 # Future: pass --use-keychain to store the key in macOS Keychain instead.
-cat > "$RELAY_DIR/config.json" << EOF
-{
-  "remote_url": "$REMOTE_URL",
-  "api_key": "${API_KEY}",
-  "port": $PORT
-}
-EOF
-chmod 600 "$RELAY_DIR/config.json"
+(umask 077; printf '{\n  "remote_url": "%s",\n  "api_key": "%s",\n  "port": %s\n}\n' \
+  "$REMOTE_URL" "$API_KEY" "$PORT" > "$RELAY_DIR/config.json")
 
 echo "  ✓ Relay installed to $RELAY_DIR/relay.ts"
 
@@ -272,10 +279,8 @@ cat > "$PLIST_FILE" << EOF
   <array>
     <string>${BUN_PATH}</string>
     <string>${RELAY_DIR}/relay.ts</string>
-    <string>${REMOTE_URL}</string>
-    <string>--port</string>
-    <string>${PORT}</string>
-$(if [[ -n "$API_KEY" ]]; then echo "    <string>--key</string>"; echo "    <string>${API_KEY}</string>"; fi)
+    <string>--config</string>
+    <string>${RELAY_DIR}/config.json</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

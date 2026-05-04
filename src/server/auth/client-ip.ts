@@ -42,13 +42,24 @@ function ipv4ToUint32(addr: string): number | null {
 	return result;
 }
 
+// Allowlist of characters that can appear in an IP address string.
+// Accepts IPv4 dotted-decimal and IPv6 (including bracket notation for
+// hosts in URLs). Anything else — especially shell metacharacters — is
+// rejected so that XFF values with injected commands cannot reach callers.
+const SAFE_IP_CHARS = /^[0-9a-fA-F:.[\]]+$/;
+
 /**
- * Returns true if `addr` is a syntactically valid IPv4 address.
+ * Returns true if `addr` is a syntactically valid IPv4 or IPv6 address.
+ *
+ * For IPv6: only character-class validation is performed (no full RFC 4291
+ * parse) since the CIDR-match path below rejects IPv6 anyway. The check
+ * prevents XFF values that contain shell metacharacters or other injection
+ * payloads from reaching callers.
  */
 export function isValidIp(addr: string): boolean {
-	// Only IPv4 is supported by the CIDR parser below; accept IPv6 as valid
-	// passthrough (no XFF trust evaluation for IPv6 peers).
-	if (addr.includes(":")) return true; // IPv6 — pass through
+	if (!addr || !SAFE_IP_CHARS.test(addr)) return false;
+	// IPv6 — pass through after character validation.
+	if (addr.includes(":")) return true;
 	return ipv4ToUint32(addr) !== null;
 }
 
@@ -90,13 +101,20 @@ export function parseCidrList(raw: string): ParsedCidr[] {
 // ── Exported API ─────────────────────────────────────────────────────────────
 
 /**
- * Returns true if `addr` (IPv4 dotted-decimal) falls within any of the
- * provided parsed CIDRs. IPv6 peers never match an IPv4 CIDR.
+ * Returns true if `addr` (IPv4 dotted-decimal or IPv4-mapped IPv6) falls
+ * within any of the provided parsed CIDRs.
+ *
+ * IPv4-mapped IPv6 addresses (`::ffff:10.x.y.z`) are stripped of their
+ * prefix before CIDR matching so that a Traefik or Nginx peer presenting
+ * the mapped form is still recognised as a trusted proxy. Plain IPv6
+ * addresses (without the `::ffff:` prefix) never match an IPv4 CIDR.
  */
 export function isTrustedProxy(addr: string, cidrs: ParsedCidr[]): boolean {
-	// IPv6 peers cannot match IPv4 CIDRs.
-	if (addr.includes(":")) return false;
-	const n = ipv4ToUint32(addr);
+	// Strip IPv4-mapped IPv6 prefix (case-insensitive) before CIDR matching.
+	const candidate = addr.replace(/^::ffff:/i, "");
+	// Pure IPv6 (still contains `:`) cannot match IPv4 CIDRs.
+	if (candidate.includes(":")) return false;
+	const n = ipv4ToUint32(candidate);
 	if (n === null) return false;
 	return cidrs.some((cidr) => (n & cidr.mask) >>> 0 === cidr.network);
 }
