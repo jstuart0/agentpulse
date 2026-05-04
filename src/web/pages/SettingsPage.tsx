@@ -121,6 +121,10 @@ export function SettingsPage() {
 						<p className="text-xs text-muted-foreground">Toggle between dark and light mode</p>
 					</div>
 					<button
+						type="button"
+						role="switch"
+						aria-checked={theme === "dark"}
+						aria-label="Dark mode"
 						onClick={handleThemeToggle}
 						className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
 						style={{

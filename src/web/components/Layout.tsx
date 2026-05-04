@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
@@ -91,6 +91,37 @@ export function Layout() {
 		location.pathname === "/inbox",
 	);
 
+	const menuButtonRef = useRef<HTMLButtonElement>(null);
+	const firstNavItemRef = useRef<HTMLAnchorElement>(null);
+	const primaryNavRef = useRef<HTMLElement>(null);
+
+	// Focus management for mobile menu (C7 / S-9).
+	// On open: move focus to the first nav item so keyboard users can tab
+	// through without extra steps. Focus-restore on close is handled
+	// synchronously in each close-trigger handler (Escape key, outside-click)
+	// before the portal unmounts, so we only need the open-path here.
+	useEffect(() => {
+		if (!mobileMenuOpen) return;
+		// Yield one tick so the portal renders before we try to focus.
+		const id = requestAnimationFrame(() => {
+			firstNavItemRef.current?.focus();
+		});
+		return () => cancelAnimationFrame(id);
+	}, [mobileMenuOpen]);
+
+	// Escape closes the mobile menu (C7 / S-9).
+	useEffect(() => {
+		if (!mobileMenuOpen) return;
+		function onKeyDown(e: KeyboardEvent) {
+			if (e.key === "Escape") {
+				setMobileMenuOpen(false);
+				menuButtonRef.current?.focus();
+			}
+		}
+		document.addEventListener("keydown", onKeyDown);
+		return () => document.removeEventListener("keydown", onKeyDown);
+	}, [mobileMenuOpen]);
+
 	async function handleSignOut() {
 		setMobileMenuOpen(false);
 		if (signOutUrl?.startsWith("/api/")) {
@@ -137,8 +168,13 @@ export function Layout() {
 					</div>
 				</div>
 				<button
+					ref={menuButtonRef}
+					type="button"
 					onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-					className="text-muted-foreground p-1.5 hover:text-foreground transition-colors"
+					aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+					aria-expanded={mobileMenuOpen}
+					aria-controls="primary-navigation"
+					className="text-muted-foreground p-1.5 hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
 				>
 					<svg
 						className="w-5 h-5"
@@ -170,9 +206,14 @@ export function Layout() {
 				createPortal(
 					<div
 						className="md:hidden fixed inset-0 z-30 bg-black/60 backdrop-blur-sm animate-fade"
-						onClick={() => setMobileMenuOpen(false)}
+						onClick={() => {
+							setMobileMenuOpen(false);
+							menuButtonRef.current?.focus();
+						}}
 					>
 						<nav
+							ref={primaryNavRef}
+							id="primary-navigation"
 							className="absolute top-14 left-0 right-0 surface-glass border-b border-border p-2 space-y-0.5 animate-in max-h-[calc(100vh-3.5rem)] overflow-y-auto"
 							onClick={(e) => e.stopPropagation()}
 						>
@@ -194,11 +235,12 @@ export function Layout() {
 								</div>
 							)}
 
-							{visibleNavItems.map((item) => (
+							{visibleNavItems.map((item, index) => (
 								<NavLink
 									key={item.to}
 									to={item.to}
 									end={item.to === "/"}
+									ref={index === 0 ? firstNavItemRef : undefined}
 									onClick={() => setMobileMenuOpen(false)}
 									className={({ isActive }) =>
 										cn(

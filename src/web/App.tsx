@@ -1,5 +1,6 @@
 import { Suspense, lazy, useEffect } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Toaster } from "sonner";
 import { Layout } from "./components/Layout.js";
 import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js";
 import { api } from "./lib/api.js";
@@ -123,31 +124,34 @@ export function App() {
 	}, []);
 
 	return (
-		<Suspense fallback={<RouteFallback />}>
-			<Routes>
-				<Route path="/login" element={<LoginPage />} />
-				<Route
-					element={
-						<AuthGate>
-							<Layout />
-						</AuthGate>
-					}
-				>
-					<Route path="/" element={<DashboardPage />} />
-					<Route path="/sessions" element={<DashboardPage />} />
-					<Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
-					<Route path="/templates" element={<TemplatesPage />} />
-					<Route path="/projects" element={<ProjectsPage />} />
-					<Route path="/launches/:launchId" element={<LaunchDetailPage />} />
-					<Route path="/inbox" element={<InboxPage />} />
-					<Route path="/digest" element={<DigestPage />} />
-					<Route path="/ask" element={<AskPage />} />
-					<Route path="/search" element={<SearchPage />} />
-					<Route path="/hosts" element={<HostsPage />} />
-					<Route path="/setup" element={<SetupPage />} />
-					<Route path="/settings" element={<SettingsPage />} />
-				</Route>
-			</Routes>
-		</Suspense>
+		<>
+			<Toaster position="bottom-right" />
+			<Suspense fallback={<RouteFallback />}>
+				<Routes>
+					<Route path="/login" element={<LoginPage />} />
+					<Route
+						element={
+							<AuthGate>
+								<Layout />
+							</AuthGate>
+						}
+					>
+						<Route path="/" element={<DashboardPage />} />
+						<Route path="/sessions" element={<DashboardPage />} />
+						<Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
+						<Route path="/templates" element={<TemplatesPage />} />
+						<Route path="/projects" element={<ProjectsPage />} />
+						<Route path="/launches/:launchId" element={<LaunchDetailPage />} />
+						<Route path="/inbox" element={<InboxPage />} />
+						<Route path="/digest" element={<DigestPage />} />
+						<Route path="/ask" element={<AskPage />} />
+						<Route path="/search" element={<SearchPage />} />
+						<Route path="/hosts" element={<HostsPage />} />
+						<Route path="/setup" element={<SetupPage />} />
+						<Route path="/settings" element={<SettingsPage />} />
+					</Route>
+				</Routes>
+			</Suspense>
+		</>
 	);
 }

@@ -1,6 +1,7 @@
 import { Wand2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import type { Session } from "../../shared/types.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
 import { extractProjectName, formatDuration, getSessionMode, projectColor } from "../lib/utils.js";
@@ -26,6 +27,32 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	const closeTab = useTabsStore((s) => s.close);
 	const [renaming, setRenaming] = useState(false);
 	const [newName, setNewName] = useState(session.displayName || "");
+	const [confirming, setConfirming] = useState(false);
+	const cancelRef = useRef<HTMLButtonElement>(null);
+	const cardRef = useRef<HTMLDivElement>(null);
+
+	// Click-outside and Escape cancel the inline delete confirm (C8 / S-28).
+	useEffect(() => {
+		if (!confirming) return;
+
+		// Auto-focus Cancel button when confirm UI reveals.
+		cancelRef.current?.focus();
+
+		function onKeyDown(e: KeyboardEvent) {
+			if (e.key === "Escape") setConfirming(false);
+		}
+		function onPointerDown(e: PointerEvent) {
+			if (cardRef.current && !cardRef.current.contains(e.target as Node)) {
+				setConfirming(false);
+			}
+		}
+		document.addEventListener("keydown", onKeyDown);
+		document.addEventListener("pointerdown", onPointerDown);
+		return () => {
+			document.removeEventListener("keydown", onKeyDown);
+			document.removeEventListener("pointerdown", onPointerDown);
+		};
+	}, [confirming]);
 
 	const projectName = extractProjectName(session.cwd);
 	const name = session.displayName || session.sessionId?.slice(0, 8) || "session";
@@ -69,16 +96,28 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 		updateSession({ ...session, isArchived: true });
 	}
 
-	async function handleDelete(e: React.MouseEvent) {
+	function handleDeleteRequest(e: React.MouseEvent) {
 		e.stopPropagation();
-		if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+		setConfirming(true);
+	}
+
+	async function handleDeleteConfirm(e: React.MouseEvent) {
+		e.stopPropagation();
+		setConfirming(false);
 		await api.deleteSession(session.sessionId);
 		removeSession(session.sessionId);
 		closeTab(session.sessionId);
+		toast.success("Session deleted");
+	}
+
+	function handleDeleteCancel(e: React.MouseEvent) {
+		e.stopPropagation();
+		setConfirming(false);
 	}
 
 	return (
 		<div
+			ref={cardRef}
 			onClick={() => navigate(`/sessions/${session.sessionId}`)}
 			// Inline style carries the per-project hue. Replaces bg-card
 			// with a dark-pastel tint tuned to read as "same repo" at a
@@ -234,7 +273,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 						)}
 						{isInactive && (
 							<button
-								onClick={handleDelete}
+								onClick={handleDeleteRequest}
 								title="Delete"
 								className="rounded p-1 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors"
 							>
@@ -254,6 +293,40 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 					<StatusBadge status={session.isArchived ? "archived" : session.status} />
 				</div>
 			</div>
+
+			{/* Inline delete confirm (C8 / S-28) — two-button reveal,
+			    no modal: Cancel (autofocused) + Confirm delete (red).
+			    Escape and outside-click cancel via the useEffect above.
+			    <fieldset> gives us role="group" natively + aria-label support. */}
+			{confirming && (
+				<fieldset
+					aria-label="Confirm session deletion"
+					className="mb-2 flex items-center gap-2 border-0 p-0 m-0"
+					onClick={(e) => e.stopPropagation()}
+				>
+					<button
+						ref={cancelRef}
+						type="button"
+						onClick={handleDeleteCancel}
+						onKeyDown={(e) => {
+							if (e.key === "Escape") setConfirming(false);
+						}}
+						className="rounded px-2 py-1 text-xs text-muted-foreground border border-border hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						onClick={handleDeleteConfirm}
+						onKeyDown={(e) => {
+							if (e.key === "Escape") setConfirming(false);
+						}}
+						className="rounded px-2 py-1 text-xs text-red-400 border border-red-500/30 hover:bg-red-500/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50"
+					>
+						Confirm delete
+					</button>
+				</fieldset>
+			)}
 
 			{/* Project + branch */}
 			<div className="mb-2">
