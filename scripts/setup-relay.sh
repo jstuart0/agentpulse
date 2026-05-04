@@ -240,7 +240,9 @@ void ensureQueueDirs().then(() => scheduleQueue(250));
 console.log(`AgentPulse Relay: localhost:${port} -> ${remoteUrl} (queued hook forwarding)`);
 RELAY_EOF
 
-# Save config
+# Save config — chmod 600 immediately after write so the API key is
+# never world-readable, even transiently. (S-H4)
+# Future: pass --use-keychain to store the key in macOS Keychain instead.
 cat > "$RELAY_DIR/config.json" << EOF
 {
   "remote_url": "$REMOTE_URL",
@@ -248,6 +250,7 @@ cat > "$RELAY_DIR/config.json" << EOF
   "port": $PORT
 }
 EOF
+chmod 600 "$RELAY_DIR/config.json"
 
 echo "  ✓ Relay installed to $RELAY_DIR/relay.ts"
 

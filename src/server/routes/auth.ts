@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { getTrustedClientIp } from "../auth/client-ip.js";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
 import { config } from "../config.js";
 import { db } from "../db/client.js";
@@ -15,6 +16,128 @@ import {
 	revokeSessionByToken,
 	verifyCredentials,
 } from "../services/local-auth-service.js";
+
+// ── Rate limiting (S-H1) ─────────────────────────────────────────────────────
+//
+// Per-IP+username token bucket. After MAX_FAILURES within WINDOW_MS the bucket
+// locks out with exponential backoff starting at BASE_BACKOFF_MS. The bucket
+// expires DECAY_MS after the last failure (15 minutes of inactivity clears it).
+//
+// Storage: in-memory Map. Process-restart clears all buckets; that is
+// intentional — this defends against online brute-force, not offline attacks.
+
+const MAX_FAILURES = 5;
+const WINDOW_MS = 60_000; // 1 minute observation window for the initial failures
+const BASE_BACKOFF_MS = 1_000; // 1 s initial backoff after lockout
+const MAX_BACKOFF_MS = 15 * 60 * 1_000; // cap backoff at 15 minutes
+const DECAY_MS = 15 * 60 * 1_000; // 15 minutes inactivity → bucket eviction
+
+interface RateBucket {
+	failures: number;
+	/** Timestamp of the first failure in the current window. */
+	windowStart: number;
+	/** Timestamp after which the next attempt is permitted (0 = not locked). */
+	lockedUntil: number;
+	/** Timestamp of the last failure (used for decay eviction). */
+	lastFailure: number;
+}
+
+const rateBuckets = new Map<string, RateBucket>();
+
+/** Evict buckets that have been inactive for DECAY_MS. Called on every check. */
+function evictExpiredBuckets(): void {
+	const now = Date.now();
+	for (const [key, bucket] of rateBuckets) {
+		if (now - bucket.lastFailure > DECAY_MS) {
+			rateBuckets.delete(key);
+		}
+	}
+}
+
+/**
+ * Check whether `key` is currently rate-limited.
+ * Returns `null` if the request may proceed, or the number of milliseconds
+ * until the next attempt is permitted (for `Retry-After`).
+ */
+function checkRateLimit(key: string): number | null {
+	evictExpiredBuckets();
+	const bucket = rateBuckets.get(key);
+	if (!bucket) return null;
+
+	const now = Date.now();
+
+	// If locked out, report remaining wait time.
+	if (bucket.lockedUntil > now) {
+		return Math.ceil((bucket.lockedUntil - now) / 1000);
+	}
+
+	// If the observation window has expired, reset. This allows a fresh
+	// attempt after WINDOW_MS without a lockout (bucket was below threshold).
+	if (now - bucket.windowStart > WINDOW_MS && bucket.failures < MAX_FAILURES) {
+		rateBuckets.delete(key);
+		return null;
+	}
+
+	return null;
+}
+
+/**
+ * Record a failed attempt for `key`. Increments the failure counter and,
+ * after MAX_FAILURES, applies exponential backoff.
+ */
+function recordFailure(key: string): void {
+	const now = Date.now();
+	const existing = rateBuckets.get(key);
+
+	if (!existing) {
+		rateBuckets.set(key, {
+			failures: 1,
+			windowStart: now,
+			lockedUntil: 0,
+			lastFailure: now,
+		});
+		return;
+	}
+
+	existing.failures += 1;
+	existing.lastFailure = now;
+
+	if (existing.failures >= MAX_FAILURES) {
+		// Exponential backoff: 2^(failures-MAX_FAILURES) × BASE_BACKOFF_MS, capped.
+		const exp = existing.failures - MAX_FAILURES;
+		const backoff = Math.min(BASE_BACKOFF_MS * 2 ** exp, MAX_BACKOFF_MS);
+		existing.lockedUntil = now + backoff;
+	}
+}
+
+/** Clear the rate-limit bucket for `key` on successful authentication. */
+function clearBucket(key: string): void {
+	rateBuckets.delete(key);
+}
+
+// ── Password complexity (S-H1 / decision #4) ────────────────────────────────
+
+const PASSWORD_MIN_LEN = 12;
+
+/**
+ * Enforce password complexity: ≥12 chars, ≥1 uppercase, ≥1 digit, ≥1 symbol.
+ * Returns an error string on failure, or null on success.
+ */
+export function checkPasswordComplexity(password: string): string | null {
+	if (password.length < PASSWORD_MIN_LEN) {
+		return `Password must be at least ${PASSWORD_MIN_LEN} characters.`;
+	}
+	if (!/[A-Z]/.test(password)) {
+		return "Password must contain at least one uppercase letter.";
+	}
+	if (!/[0-9]/.test(password)) {
+		return "Password must contain at least one digit.";
+	}
+	if (!/[^A-Za-z0-9]/.test(password)) {
+		return "Password must contain at least one symbol.";
+	}
+	return null;
+}
 
 /**
  * Introspection + local-account auth routes. Local accounts coexist
@@ -80,8 +203,27 @@ authRouter.post("/auth/login", async (c) => {
 	if (!body.username || !body.password) {
 		return c.json({ error: "username and password required" }, 400);
 	}
+
+	// Rate-limit check (S-H1). Key: <client-ip>:<username> so that an attacker
+	// spoofing usernames cannot exhaust a single bucket for legitimate users,
+	// and different attackers from different IPs get independent buckets.
+	const clientIp = getTrustedClientIp(c);
+	const rlKey = `${clientIp}:${body.username}`;
+	const retryAfterSecs = checkRateLimit(rlKey);
+	if (retryAfterSecs !== null) {
+		c.header("Retry-After", String(retryAfterSecs));
+		return c.json({ error: "Too many failed attempts. Try again later." }, 429);
+	}
+
 	const user = await verifyCredentials(body.username, body.password);
-	if (!user) return c.json({ error: "Invalid credentials" }, 401);
+	if (!user) {
+		recordFailure(rlKey);
+		return c.json({ error: "Invalid credentials" }, 401);
+	}
+
+	// Successful auth: clear the bucket so a legitimate user is never locked out.
+	clearBucket(rlKey);
+
 	const session = await issueSession({
 		userId: user.id,
 		userAgent: c.req.header("User-Agent") ?? null,
@@ -113,6 +255,13 @@ authRouter.post("/auth/signup", async (c) => {
 	const body = await c.req.json<{ username?: string; password?: string }>();
 	if (!body.username || !body.password) {
 		return c.json({ error: "username and password required" }, 400);
+	}
+
+	// Password complexity (S-H1 / decision #4). Check before the DB round-trip
+	// so the error is fast and the hash is never computed for weak passwords.
+	const complexityError = checkPasswordComplexity(body.password);
+	if (complexityError) {
+		return c.json({ error: complexityError }, 400);
 	}
 
 	// Advisory pre-check outside the transaction (saves a hash on the obvious-deny path).

@@ -7,10 +7,12 @@ import { ensureDefaultApiKey } from "./auth/api-key.js";
 import { getAuthUserFromHeaders } from "./auth/middleware.js";
 import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
+import { securityHeaders } from "./middleware/security-headers.js";
 import { aiRouter } from "./routes/ai.js";
 import { askRouter } from "./routes/ask.js";
 import { authRouter } from "./routes/auth.js";
 import { channelsRouter, handleTelegramUpdate, telegramWebhookRouter } from "./routes/channels.js";
+import { cspReportRouter } from "./routes/csp-report.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
 import { labsRouter } from "./routes/labs.js";
@@ -83,6 +85,10 @@ const app = new Hono();
 
 // Global middleware
 app.use("*", logger());
+// Security headers on every response (S-H3). Applied globally so both API
+// and static-file responses carry the headers. HSTS is harmless on HTTP
+// (ignored by browsers) and covers the production TLS deployment.
+app.use("*", securityHeaders());
 
 // API routes
 const api = new Hono();
@@ -108,6 +114,11 @@ api.route("/v1", authRouter);
 // Mounting the webhook on the root app sidesteps that entirely.
 app.route("/api/v1", telegramWebhookRouter);
 app.route("/app-api/v1", telegramWebhookRouter);
+
+// CSP report endpoint — unauthenticated by design (browsers send these
+// without credentials). Mount on root app to bypass the api bundle's
+// auth middleware. (S-H3)
+app.route("/api/v1", cspReportRouter);
 
 app.route("/api", api);
 app.route("/app-api", api);
@@ -184,8 +195,10 @@ const _server = Bun.serve({
 			return new Response("WebSocket upgrade failed", { status: 400 });
 		}
 
-		// Handle HTTP via Hono
-		return app.fetch(req);
+		// Handle HTTP via Hono. Pass the Bun server handle as Hono's `env` so
+		// that `getConnInfo(c)` (backed by `server.requestIP`) can resolve the
+		// TCP peer address for rate limiting and IP logging.
+		return app.fetch(req, { server });
 	},
 	websocket: {
 		open: handleWsOpen,
