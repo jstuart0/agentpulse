@@ -2,7 +2,9 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { llmProviders, sessions, settings, watcherConfigs } = await import("../../db/schema.js");
+const { llmProviders, sessions, settings, watcherConfigs } = await import(
+	"../../db/schema/index.js"
+);
 const { applyAskInitiatedWatcher } = await import("./auto-watcher.js");
 const { AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY, AI_RUNTIME_ENABLED_KEY, invalidateAiFlagsCache } =
 	await import("./feature.js");

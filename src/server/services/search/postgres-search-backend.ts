@@ -7,7 +7,7 @@
 import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { getDb } from "../../db/client.js";
-import type * as schema from "../../db/schema.js";
+import type * as schema from "../../db/schema/index.js";
 import { executeRows } from "../../db/sql-helpers.js";
 import { extractSnippet } from "./snippet.js";
 import type { SearchBackend, SearchFilters, SearchHit, SearchResult } from "./types.js";

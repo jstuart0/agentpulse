@@ -20,7 +20,7 @@ import { type AlertRuleType, KNOWN_ALERT_RULE_TYPES } from "../../../shared/type
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { aiActionRequests, sessions } = await import("../../db/schema.js");
+const { aiActionRequests, sessions } = await import("../../db/schema/index.js");
 const { createActionRequest, resolveActionRequest, getActionRequest, ruleTypeLabel } = await import(
 	"./action-requests-service.js"
 );

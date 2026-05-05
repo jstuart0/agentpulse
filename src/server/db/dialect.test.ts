@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { describeSqliteOnly } from "../test-utils/backend.js";
 
 // Using module-level dynamic import with process.env mutation is not safe
 // across test files (they share a process). Instead we test config.dialect
@@ -55,7 +56,10 @@ describe("dialect resolver semantics (config.ts resolution rule)", () => {
 	});
 });
 
-describe("current process dialect (SQLite in test environment)", () => {
+// These tests assert SQLite-specific dialect state. On the Postgres test axis
+// (AGENTPULSE_TEST_BACKEND=postgres), config is initialized with a postgres URL
+// and dialect is "postgres", so these assertions don't apply.
+describeSqliteOnly("current process dialect (SQLite in test environment)", () => {
 	test('config.dialect is "sqlite" when DATABASE_URL is unset', async () => {
 		const { config } = await import("../config.js");
 		// Tests run without DATABASE_URL, so dialect must be "sqlite".

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { events, sessions } from "../../db/schema.js";
+import { events, sessions } from "../../db/schema/index.js";
 import { getSearchBackend } from "../search/index.js";
 import type { ResolvedSession } from "./resolver.js";
 

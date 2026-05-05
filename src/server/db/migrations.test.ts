@@ -23,10 +23,11 @@
  */
 
 import { Database } from "bun:sqlite";
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { describeSqliteOnly } from "../test-utils/backend.js";
 
 // Import with default __test_db bootstrapping for the main test process.
 import "../services/ai/__test_db.js";
@@ -55,7 +56,7 @@ function getTableNames(db: Database): string[] {
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-describe("initializeDatabase boot routing — SQLite", () => {
+describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 	test("existing install: sessions table present → legacy init path (no __drizzle_migrations)", async () => {
 		// Create an in-memory DB with only the sessions table to simulate an existing install.
 		const db = new Database(":memory:");
@@ -257,7 +258,7 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 	test("fresh Postgres install creates all 29 tables + 7 cascade FKs", async () => {
 		// Requires DATABASE_URL to point at an empty test database.
 		// Run with: AGENTPULSE_TEST_BACKEND=postgres DATABASE_URL=postgres://... bun test
-		const postgres = require("postgres") as typeof import("postgres");
+		const { default: postgres } = await import("postgres");
 		const sql = postgres(process.env.DATABASE_URL!, { max: 1, idle_timeout: 5 });
 
 		try {
@@ -347,7 +348,7 @@ describePostgresOnly(
 			// The advisory lock (id 2850603287 = 0xA9E1A917) acquired inside
 			// initializeDatabase serializes the two callers so only one runs DDL
 			// while the other waits, then finds all tables already present.
-			const postgres = require("postgres") as typeof import("postgres");
+			const { default: postgres } = await import("postgres");
 
 			// Two completely independent clients — each gets its own TCP connection.
 			const dbUrl = process.env.DATABASE_URL ?? "";

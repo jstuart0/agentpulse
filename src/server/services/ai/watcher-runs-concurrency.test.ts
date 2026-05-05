@@ -30,7 +30,7 @@ import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { claimNextRun, enqueueRun, queueSnapshot } = await import("./watcher-runs-service.js");
-const { aiWatcherRuns, sessions } = await import("../../db/schema.js");
+const { aiWatcherRuns, sessions } = await import("../../db/schema/index.js");
 const { isUniqueViolationError } = await import("../../db/sql-helpers.js");
 
 import { describePostgresOnly } from "../../test-utils/backend.js";
@@ -133,7 +133,7 @@ describePostgresOnly("watcher-runs-concurrency — Postgres real-race (separate 
 		expect(queued.status).toBe("queued");
 
 		// Two separate postgres-js clients → two separate TCP connections.
-		const postgres = require("postgres") as typeof import("postgres");
+		const { default: postgres } = await import("postgres");
 		const dbUrl = process.env.DATABASE_URL ?? "";
 		const clientA = postgres(dbUrl, { max: 1, idle_timeout: 10 });
 		const clientB = postgres(dbUrl, { max: 1, idle_timeout: 10 });

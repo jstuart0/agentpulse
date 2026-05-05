@@ -1,7 +1,7 @@
 import { count, eq } from "drizzle-orm";
 import type { AskThreadOrigin } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { sessionTemplates, sessions } from "../../db/schema.js";
+import { sessionTemplates, sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { matchProjectByName } from "../projects/project-name-match.js";
 import { listProjects } from "../projects/projects-service.js";

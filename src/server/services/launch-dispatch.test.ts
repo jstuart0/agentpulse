@@ -12,7 +12,7 @@ const {
 	settings,
 	supervisors,
 	watcherConfigs,
-} = await import("../db/schema.js");
+} = await import("../db/schema/index.js");
 const { associateObservedSession } = await import("./launch-dispatch.js");
 const { AI_RUNTIME_ENABLED_KEY, invalidateAiFlagsCache } = await import("./ai/feature.js");
 const { encryptSecret, credentialHint } = await import("./ai/secrets.js");

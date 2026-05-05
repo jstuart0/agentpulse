@@ -1,6 +1,6 @@
 import { and, desc, eq, max } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { events, aiQaCache } from "../../db/schema.js";
+import { events, aiQaCache } from "../../db/schema/index.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";

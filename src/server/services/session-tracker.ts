@@ -2,7 +2,7 @@ import { and, count, desc, eq, inArray, lt, notInArray, sql } from "drizzle-orm"
 import { SESSION_END_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "../../shared/constants.js";
 import type { AgentType, ManagedState, SessionStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { managedSessions, sessions, supervisors } from "../db/schema.js";
+import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { getManagedSession } from "./managed-session-state.js";
 
@@ -16,29 +16,28 @@ import { getManagedSession } from "./managed-session-state.js";
  */
 export async function renameSession(sessionId: string, name: string): Promise<void> {
 	const trimmed = name.trim();
-	await withTransaction((tx) => {
-		tx.update(sessions)
+	await withTransaction(async (tx) => {
+		await tx
+			.update(sessions)
 			.set({ displayName: trimmed })
-			.where(eq(sessions.sessionId, sessionId))
-			.run();
+			.where(eq(sessions.sessionId, sessionId));
 
-		const managed = tx
+		const managed = await tx
 			.select()
 			.from(managedSessions)
 			.where(eq(managedSessions.sessionId, sessionId))
-			.limit(1)
-			.all();
+			.limit(1);
 
 		if (managed.length > 0) {
-			tx.update(managedSessions)
+			await tx
+				.update(managedSessions)
 				.set({
 					desiredThreadTitle: trimmed,
 					providerSyncState: "pending",
 					providerSyncError: null,
 					updatedAt: new Date().toISOString(),
 				})
-				.where(eq(managedSessions.sessionId, sessionId))
-				.run();
+				.where(eq(managedSessions.sessionId, sessionId));
 		}
 	});
 }

@@ -6,7 +6,7 @@ import {
 	projectAlertRuleFires,
 	projectAlertRules,
 	sessions,
-} from "../../db/schema.js";
+} from "../../db/schema/index.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 
 // ---- Shared notification dispatch ------------------------------------------

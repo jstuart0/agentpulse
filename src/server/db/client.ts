@@ -9,7 +9,7 @@ import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
 // Top-level ES default import resolves correctly on both Node and Bun.
 import postgres from "postgres";
 import { config } from "../config.js";
-import * as schema from "./schema.js";
+import * as schema from "./schema/index.js";
 
 // ── getSqlite() boot-failure registry (Decision 28) ──────────────────────────
 //

@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { HitlReplyKind } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { aiHitlRequests, watcherProposals } from "../../db/schema.js";
+import { aiHitlRequests, watcherProposals } from "../../db/schema/index.js";
 import {
 	type HitlStatus,
 	openHitlRequest,

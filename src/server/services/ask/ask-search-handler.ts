@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, like, lte } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { sessions } from "../../db/schema.js";
+import { sessions } from "../../db/schema/index.js";
 import type { CachedProject } from "../projects/cache.js";
 import { getSearchBackend } from "../search/index.js";
 import type { SearchFilters, SearchHit } from "../search/types.js";

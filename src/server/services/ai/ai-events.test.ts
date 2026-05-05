@@ -3,7 +3,7 @@ import "./__test_db.js";
 import { itSqliteOnly } from "../../test-utils/backend.js";
 
 const { getDb, getSqlite, initializeDatabase } = await import("../../db/client.js");
-const { events, sessions } = await import("../../db/schema.js");
+const { events, sessions } = await import("../../db/schema/index.js");
 const { sessionBus } = await import("../notifier.js");
 const { emitAiEvent } = await import("./ai-events.js");
 

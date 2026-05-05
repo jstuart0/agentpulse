@@ -4,7 +4,7 @@
 import { eq, sql } from "drizzle-orm";
 import { config } from "../../../config.js";
 import { getDb, getSqlite } from "../../../db/client.js";
-import { events, settings } from "../../../db/schema.js";
+import { events, settings } from "../../../db/schema/index.js";
 import {
 	DEFAULT_EMBEDDING_MODEL,
 	VECTOR_SEARCH_MODEL_KEY,

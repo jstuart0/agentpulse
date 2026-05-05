@@ -3,7 +3,7 @@ import "../ai/__test_db.js";
 import { describeSqliteOnly } from "../../test-utils/backend.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { events, sessions } = await import("../../db/schema.js");
+const { events, sessions } = await import("../../db/schema/index.js");
 const { SqliteFtsBackend } = await import("./sqlite-fts-backend.js");
 const { Database } = await import("bun:sqlite");
 const { config } = await import("../../config.js");

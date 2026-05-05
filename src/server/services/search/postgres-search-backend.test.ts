@@ -169,7 +169,7 @@ describe("PostgresSearchBackend — execute shape (mock-based, unconditional)", 
 
 		const backend = new PostgresSearchBackend(
 			mockDb as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
-				typeof import("../../db/schema.js")
+				typeof import("../../db/schema/index.js")
 			>,
 		);
 
@@ -204,7 +204,7 @@ describe("PostgresSearchBackend — execute shape (mock-based, unconditional)", 
 
 		const backend = new PostgresSearchBackend(
 			mockDb as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
-				typeof import("../../db/schema.js")
+				typeof import("../../db/schema/index.js")
 			>,
 		);
 

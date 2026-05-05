@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { AskThreadOrigin, SessionMutationKind } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { managedSessions, sessions } from "../../db/schema.js";
+import { managedSessions, sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import type { CachedProject } from "../projects/cache.js";

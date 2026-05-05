@@ -4,7 +4,7 @@ import "../services/ai/__test_db.js";
 const { eq } = await import("drizzle-orm");
 const { config } = await import("../config.js");
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { settings } = await import("../db/schema.js");
+const { settings } = await import("../db/schema/index.js");
 const { settingsRouter } = await import("./settings.js");
 const { requireAuth } = await import("../auth/middleware.js");
 const aiStatusRouter = (await import("./ai-status.js")).default;

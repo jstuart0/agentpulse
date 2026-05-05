@@ -10,7 +10,7 @@ import {
 	type SessionMutationKind,
 } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { sessions, watcherProposals } from "../../db/schema.js";
+import { sessions, watcherProposals } from "../../db/schema/index.js";
 import { listOpenActionRequests, narrowPayload } from "./action-requests-service.js";
 import { listAllOpenHitl } from "./hitl-service.js";
 import { activeSnoozeSet, listActiveSnoozes } from "./inbox-snooze-service.js";

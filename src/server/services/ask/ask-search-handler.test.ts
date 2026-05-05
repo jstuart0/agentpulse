@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { events, sessions } = await import("../../db/schema.js");
+const { events, sessions } = await import("../../db/schema/index.js");
 const { formatSearchResults, handleNlSearch } = await import("./ask-search-handler.js");
 import type { SearchHit } from "../search/types.js";
 

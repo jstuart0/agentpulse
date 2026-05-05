@@ -5,7 +5,7 @@ import {
 	SESSION_MUTATION_KINDS,
 	type SessionMutationKind,
 } from "../../../shared/types.js";
-import type { ProjectDraftFields } from "../../db/schema.js";
+import type { ProjectDraftFields } from "../../db/schema/index.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import { getDefaultProvider, getProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";

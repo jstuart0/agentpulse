@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
-import { settings } from "../../db/schema.js";
+import { settings } from "../../db/schema/index.js";
 import { decryptSecret, encryptSecret } from "../ai/secrets.js";
 
 /**

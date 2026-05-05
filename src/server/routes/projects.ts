@@ -4,7 +4,7 @@ import { AGENT_TYPES } from "../../shared/constants.js";
 import type { AgentType } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
-import { type projects, sessions } from "../db/schema.js";
+import { type projects, sessions } from "../db/schema/index.js";
 import { queueCleanupWorkArea } from "../services/control-actions.js";
 import {
 	createProject,

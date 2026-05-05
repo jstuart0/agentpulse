@@ -9,7 +9,7 @@ import type {
 	SupervisorStatus,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { supervisors } from "../db/schema.js";
+import { supervisors } from "../db/schema/index.js";
 
 const HEARTBEAT_LEASE_MS = 90_000;
 

@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { aiInboxSnoozes } = await import("../../db/schema.js");
+const { aiInboxSnoozes } = await import("../../db/schema/index.js");
 const { listActiveSnoozes, snoozeItem, unsnooze, unsnoozeTarget } = await import(
 	"./inbox-snooze-service.js"
 );

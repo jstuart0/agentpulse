@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { ManagedState, Session, SessionEvent } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { managedSessions, sessions, supervisors } from "../../db/schema.js";
+import { managedSessions, sessions, supervisors } from "../../db/schema/index.js";
 import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { stampUserPrompt, stampWatcherState } from "../managed-session-state.js";
 import { sessionBus } from "../notifier.js";

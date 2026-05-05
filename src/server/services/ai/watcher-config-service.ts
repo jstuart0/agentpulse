@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { WatcherPolicy } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { watcherConfigs } from "../../db/schema.js";
+import { watcherConfigs } from "../../db/schema/index.js";
 
 // Canonical const + type live in src/shared/types.ts so the dashboard
 // and server agree on the policy list. Re-exported for legacy imports.

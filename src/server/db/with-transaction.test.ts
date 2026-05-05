@@ -13,7 +13,7 @@ import { describePostgresOnly } from "../test-utils/backend.js";
 
 const { getDb, initializeDatabase } = await import("./client.js");
 const { withTransaction } = await import("./with-transaction.js");
-const { sessions } = await import("./schema.js");
+const { sessions } = await import("./schema/index.js");
 const { eq } = await import("drizzle-orm");
 
 beforeAll(() => initializeDatabase());

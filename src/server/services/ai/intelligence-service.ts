@@ -1,7 +1,7 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { EventCategory, Session, SessionEvent } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { managedSessions, sessions, supervisors } from "../../db/schema.js";
+import { managedSessions, sessions, supervisors } from "../../db/schema/index.js";
 import { executeRows } from "../../db/sql-helpers.js";
 import { type SessionIntelligence, classifySession } from "./classifier.js";
 import { loadRecentEvents } from "./event-queries.js";
@@ -136,10 +136,16 @@ export async function intelligenceForSessions(
 			isNoise: !!r.is_noise,
 			providerEventType: r.provider_event_type,
 			toolName: r.tool_name,
-			toolInput: r.tool_input ? (JSON.parse(r.tool_input) as Record<string, unknown>) : null,
+			toolInput: r.tool_input
+				? typeof r.tool_input === "string"
+					? (JSON.parse(r.tool_input) as Record<string, unknown>)
+					: (r.tool_input as unknown as Record<string, unknown>)
+				: null,
 			toolResponse: r.tool_response,
 			rawPayload: r.raw_payload
-				? (JSON.parse(r.raw_payload) as Record<string, unknown>)
+				? typeof r.raw_payload === "string"
+					? (JSON.parse(r.raw_payload) as Record<string, unknown>)
+					: (r.raw_payload as unknown as Record<string, unknown>)
 				: ({} as Record<string, unknown>),
 			createdAt: r.created_at,
 		});

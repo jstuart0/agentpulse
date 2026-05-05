@@ -1,10 +1,11 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
+import { itSqliteOnly } from "../../test-utils/backend.js";
 
 const { getDb } = await import("../../db/client.js");
 const { initializeDatabase } = await import("../../db/client.js");
 const { aiHitlRequests, events, managedSessions, sessions, supervisors, watcherProposals } =
-	await import("../../db/schema.js");
+	await import("../../db/schema/index.js");
 const { intelligenceForSession, intelligenceForSessions } = await import(
 	"./intelligence-service.js"
 );
@@ -161,7 +162,9 @@ describe("intelligence-service.intelligenceForSessions", () => {
 		expect(bulk.size).toBe(50);
 	});
 
-	test("issues at most 4 queries regardless of input size (200 ids)", async () => {
+	// SQLite-only: spy on getDb().all which is a SQLite-specific synchronous API.
+	// The query-count bound is still validated on Postgres via the bulk test above.
+	itSqliteOnly("issues at most 4 queries regardless of input size (200 ids)", async () => {
 		// Create 200 sessions; each bulk call must remain bounded.
 		const ids: string[] = [];
 		for (let i = 0; i < 200; i++) {

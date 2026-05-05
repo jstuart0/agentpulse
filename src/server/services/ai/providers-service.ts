@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { llmProviders } from "../../db/schema.js";
+import { llmProviders } from "../../db/schema/index.js";
 import type { ProviderKind } from "./llm/types.js";
 import { credentialHint, decryptSecret, encryptSecret } from "./secrets.js";
 

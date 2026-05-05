@@ -4,7 +4,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { getTrustedClientIp } from "../auth/client-ip.js";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
 import { config } from "../config.js";
-import { settings, users } from "../db/schema.js";
+import { settings, users } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import {
 	SESSION_COOKIE_NAME,
@@ -358,7 +358,7 @@ authRouter.post("/auth/signup", async (c) => {
 				.where(eq(settings.key, "auth.firstRunCompleted"));
 			const flagRow = flagRows[0];
 
-			if (totalCount !== 0 || flagRow?.value === "true") {
+			if (totalCount !== 0 || Boolean(flagRow?.value)) {
 				// Race lost — another concurrent signup completed first, or the
 				// instance already has users (even disabled ones). Return without
 				// writing; the outer code returns 403.
@@ -377,10 +377,10 @@ authRouter.post("/auth/signup", async (c) => {
 
 			await tx
 				.insert(settings)
-				.values({ key: "auth.firstRunCompleted", value: "true", updatedAt: now })
+				.values({ key: "auth.firstRunCompleted", value: true, updatedAt: now })
 				.onConflictDoUpdate({
 					target: settings.key,
-					set: { value: "true", updatedAt: now },
+					set: { value: true, updatedAt: now },
 				});
 
 			raceWon = true;

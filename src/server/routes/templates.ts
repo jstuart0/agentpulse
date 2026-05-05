@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import type { AgentType, LaunchMode, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
-import { projects, sessionTemplates } from "../db/schema.js";
+import { projects, sessionTemplates } from "../db/schema/index.js";
 import { ensureProjectForCwd, getProject } from "../services/projects/projects-service.js";
 import {
 	buildTemplatePreview,

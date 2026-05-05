@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { notificationChannels } = await import("../../db/schema.js");
+const { notificationChannels } = await import("../../db/schema/index.js");
 const {
 	completeEnrollment,
 	createPendingChannel,

@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { SupervisorEnrollmentTokenInfo } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { supervisorCredentials, supervisorEnrollmentTokens } from "../db/schema.js";
+import { supervisorCredentials, supervisorEnrollmentTokens } from "../db/schema/index.js";
 
 function generateToken(prefix: string): string {
 	const bytes = new Uint8Array(16);

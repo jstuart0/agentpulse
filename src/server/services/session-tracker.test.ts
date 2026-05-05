@@ -3,7 +3,7 @@ import "./ai/__test_db.js";
 import { describeSqliteOnly } from "../test-utils/backend.js";
 
 const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
-const { events, managedSessions, sessions, supervisors } = await import("../db/schema.js");
+const { events, managedSessions, sessions, supervisors } = await import("../db/schema/index.js");
 const { renameSession, updateStaleSessions } = await import("./session-tracker.js");
 
 beforeAll(() => {
@@ -151,7 +151,7 @@ describe("renameSession", () => {
 
 	test("happy path: no managed row → only sessions.displayName updated", async () => {
 		await mkSession("solo", { displayName: "old-name" });
-		renameSession("solo", "  new-name  ");
+		await renameSession("solo", "  new-name  ");
 		const row = await getSession("solo");
 		expect(row?.displayName).toBe("new-name");
 		const managedRows = await getDb().select().from(managedSessions).execute();
@@ -170,7 +170,7 @@ describe("renameSession", () => {
 		// Ensure timestamp comparison is meaningful even on fast clocks.
 		await new Promise((r) => setTimeout(r, 5));
 
-		renameSession("paired", "renamed");
+		await renameSession("paired", "renamed");
 
 		const session = await getSession("paired");
 		expect(session?.displayName).toBe("renamed");

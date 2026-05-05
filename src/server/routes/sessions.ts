@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
-import { events, sessions } from "../db/schema.js";
+import { events, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import {
 	listControlActionsForSession,

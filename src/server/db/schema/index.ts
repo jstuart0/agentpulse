@@ -6,61 +6,114 @@
  * this runtime barrel selects between them. The config.ts resolver is the
  * single source of truth.
  *
- * Phase 2a: all 30 tables are now dual-dialect. The per-dialect entry files
- * (index.sqlite.ts, index.postgres.ts) export dialect-specific types for
- * drizzle-kit. This runtime barrel re-exports SQLite-typed symbols so the
- * ~60 existing importers see no type change. Phase 2b wires the actual
- * runtime dialect selection into client.ts and migrates the importers to
- * dialect-aware types.
+ * Migration complete as of 2026-05-05 (schema-importer-migration campaign).
+ * All 64 production importers previously using db/schema.js now import from
+ * this barrel directly. The db/schema.ts shim has been removed.
+ *
+ * TYPE STRATEGY:
+ * Each export is cast to the SQLite-typed variant. This preserves the existing
+ * TypeScript contracts for all 64 importers (which were written against SQLite
+ * types) while the runtime value is correctly dialect-resolved. A follow-up
+ * campaign will narrow the type contracts to accept both dialects via generics.
  *
  * CONSUMERS:
- *   - Production code: import from this barrel or "../db/schema" (shim).
- *     SQLite-typed until Phase 2b migrates them.
+ *   - Production code: import from this barrel (db/schema/index.js) or
+ *     specific subpaths (db/schema/core/..., db/schema/ai/..., etc.).
  *   - drizzle-kit (SQLite): import from index.sqlite.ts directly.
  *   - drizzle-kit (Postgres): import from index.postgres.ts directly.
- *   - Tests: import from index.sqlite.ts (or index.postgres.ts for Postgres axis).
- *
- * TODO(schema-importer-migration — deferred from postgres-backend campaign):
- * As of the 2026-05-05 campaign, ~64 production files (non-test) import from
- * the `db/schema.js` shim rather than `db/schema/index.js` or a subpath.
- * Actual count verified with:
- *   grep -rln "from.*schema\.js" src/ | grep -v test | grep -v "db/schema/" \
- *     | grep -v "db/schema.ts" | grep -v "db/client.ts" | wc -l
- *
- * Until this migration is complete, files importing from `db/schema.js` will
- * receive SQLite-typed table objects (from the shim, which re-exports
- * index.sqlite.ts symbols) even when the runtime dialect is Postgres.
- * Drizzle's column references resolve via string column names at runtime, so
- * most queries will NOT break — but TypeScript type-level safety is absent on
- * the Postgres query path for these callers (column types will reflect the
- * SQLite schema, not the Postgres one).
- *
- * This migration is a dedicated follow-up campaign, NOT in scope for the
- * postgres-backend campaign. See thoughts/postgres-followup-plans/ for the
- * exit criterion (Decision 13 / dexter L-2).
- *
- * Callers that previously imported `settings` from `../schema.js`:
- *   - src/server/routes/auth.ts
- *   - src/server/routes/settings.ts
- *   - src/server/routes/ai-watcher.ts
- *   - src/server/services/local-auth-bootstrap.ts
- *   - src/server/services/labs-service.ts
- *   - src/server/services/settings-service.ts
- *   - src/server/services/telemetry.ts
- *   - src/server/services/channels/telegram-credentials.ts
- *   - src/server/services/workspace/feature.ts
- *   - src/server/services/ai/risk-classes.ts
- *   - src/server/services/ai/feature.ts
- *   - src/server/services/ai/embeddings/embedding-service.ts
- *   (+ ~52 additional files across routes, services, and ask handlers)
+ *   - Tests: import from this barrel (dialect-dispatched) or specific sub-files.
+ *   - SQLite-only code (FTS, embeddings): import from index.sqlite.ts directly.
  */
 
-// Re-export all SQLite-typed symbols from the SQLite entry file. This maintains
-// the exact type contract existing importers depend on through Phase 2b.
-// The `settings` export from index.sqlite.ts uses the Phase 1 settingsSqlite
-// definition and is the dialect-resolved export for the SQLite path.
-export * from "./index.sqlite.js";
+import { config } from "../../config.js";
+import * as postgresSchema from "./index.postgres.js";
+import * as sqliteSchema from "./index.sqlite.js";
 
-// Also export the Postgres-typed variant for drizzle-kit / tests.
-// Does NOT override the `settings` export above — index.sqlite.ts wins.
-export { settingsPg } from "./core/settings.js";
+const active = config.dialect === "postgres" ? postgresSchema : sqliteSchema;
+
+// ── core/ ─────────────────────────────────────────────────────────────────────
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const sessions = active.sessions as typeof sqliteSchema.sessions;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const events = active.events as typeof sqliteSchema.events;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const users = active.users as typeof sqliteSchema.users;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const authSessions = active.authSessions as typeof sqliteSchema.authSessions;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const apiKeys = active.apiKeys as typeof sqliteSchema.apiKeys;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const settings = active.settings as typeof sqliteSchema.settings;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const sessionTemplates = active.sessionTemplates as typeof sqliteSchema.sessionTemplates;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const supervisors = active.supervisors as typeof sqliteSchema.supervisors;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const supervisorEnrollmentTokens =
+	active.supervisorEnrollmentTokens as typeof sqliteSchema.supervisorEnrollmentTokens;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const supervisorCredentials =
+	active.supervisorCredentials as typeof sqliteSchema.supervisorCredentials;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const launchRequests = active.launchRequests as typeof sqliteSchema.launchRequests;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const managedSessions = active.managedSessions as typeof sqliteSchema.managedSessions;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const controlActions = active.controlActions as typeof sqliteSchema.controlActions;
+
+// ── ai/ ───────────────────────────────────────────────────────────────────────
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const llmProviders = active.llmProviders as typeof sqliteSchema.llmProviders;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const watcherConfigs = active.watcherConfigs as typeof sqliteSchema.watcherConfigs;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const aiDailySpend = active.aiDailySpend as typeof sqliteSchema.aiDailySpend;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const watcherProposals = active.watcherProposals as typeof sqliteSchema.watcherProposals;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const aiWatcherRuns = active.aiWatcherRuns as typeof sqliteSchema.aiWatcherRuns;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const aiInboxSnoozes = active.aiInboxSnoozes as typeof sqliteSchema.aiInboxSnoozes;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const notificationChannels =
+	active.notificationChannels as typeof sqliteSchema.notificationChannels;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const aiHitlRequests = active.aiHitlRequests as typeof sqliteSchema.aiHitlRequests;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const aiActionRequests = active.aiActionRequests as typeof sqliteSchema.aiActionRequests;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const aiPendingProjectDrafts =
+	active.aiPendingProjectDrafts as typeof sqliteSchema.aiPendingProjectDrafts;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const aiQaCache = active.aiQaCache as typeof sqliteSchema.aiQaCache;
+
+// SQLite-only — undefined on the Postgres path (no pgvector this campaign).
+// Callers must gate on config.dialect === "sqlite" before accessing this.
+export const eventEmbeddings =
+	config.dialect === "sqlite" ? sqliteSchema.eventEmbeddings : undefined;
+
+// ── ask-projects/ ─────────────────────────────────────────────────────────────
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const askThreads = active.askThreads as typeof sqliteSchema.askThreads;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const askMessages = active.askMessages as typeof sqliteSchema.askMessages;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const projects = active.projects as typeof sqliteSchema.projects;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const projectAlertRules = active.projectAlertRules as typeof sqliteSchema.projectAlertRules;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const projectAlertRuleFires =
+	active.projectAlertRuleFires as typeof sqliteSchema.projectAlertRuleFires;
+
+// ── types (dialect-agnostic) ──────────────────────────────────────────────────
+export type {
+	ProjectDraftFields,
+	NextQuestion,
+	ProjectChoiceSnapshot,
+	PendingWorkspaceScaffold,
+	PendingWorkspaceClone,
+	LaunchDisambiguationDraftFields,
+} from "./types.js";
+
+// Per-dialect typed variants (for drizzle-kit / explicit type imports).
+export { settingsSqlite, settingsPg } from "./core/settings.js";

@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
-import { settings } from "../../db/schema.js";
+import { settings } from "../../db/schema/index.js";
 import { TtlCache } from "../util/ttl-cache.js";
 
 // Runtime setting key for the AI watcher's runtime toggle. The build-time

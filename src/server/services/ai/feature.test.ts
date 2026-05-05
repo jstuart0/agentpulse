@@ -3,7 +3,7 @@ import "./__test_db.js";
 
 // Defer DB-touching imports so __test_db can configure SQLITE_PATH first.
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { settings } = await import("../../db/schema.js");
+const { settings } = await import("../../db/schema/index.js");
 const {
 	AI_KILL_SWITCH_KEY,
 	AI_RUNTIME_ENABLED_KEY,

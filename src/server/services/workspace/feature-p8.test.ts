@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import "../../services/ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { settings } = await import("../../db/schema.js");
+const { settings } = await import("../../db/schema/index.js");
 const { ProtectedSettingError } = await import("../settings-service.js");
 const {
 	setWorkspaceSettings,

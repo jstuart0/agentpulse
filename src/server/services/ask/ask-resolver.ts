@@ -4,7 +4,7 @@
 // column references (bound parameters) and are portable to Postgres.
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { sessions } from "../../db/schema.js";
+import { sessions } from "../../db/schema/index.js";
 import { getSearchBackend } from "../search/index.js";
 
 /**

@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { eq, or, sql } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { projects, sessionTemplates, sessions } from "../../db/schema.js";
+import { projects, sessionTemplates, sessions } from "../../db/schema/index.js";
 import { likeStartsWith } from "../../db/sql-helpers.js";
 import { withTransaction } from "../../db/with-transaction.js";
 import { bumpVersionAndReload, getCachedProjects } from "./cache.js";
@@ -260,7 +260,10 @@ export async function deleteProject(id: string): Promise<boolean> {
 	// All three cleanup operations in one transaction — if any fails, none apply.
 	// No orphaned template or session rows with dangling project_id values.
 	await withTransaction(async (tx) => {
-		await tx.update(sessionTemplates).set({ projectId: null }).where(eq(sessionTemplates.projectId, id));
+		await tx
+			.update(sessionTemplates)
+			.set({ projectId: null })
+			.where(eq(sessionTemplates.projectId, id));
 		await tx.update(sessions).set({ projectId: null }).where(eq(sessions.projectId, id));
 		await tx.delete(projects).where(eq(projects.id, id));
 	});

@@ -14,7 +14,7 @@ const {
 	queueSnapshot,
 	listRecentRunsForSession,
 } = await import("./watcher-runs-service.js");
-const { aiWatcherRuns, sessions } = await import("../../db/schema.js");
+const { aiWatcherRuns, sessions } = await import("../../db/schema/index.js");
 
 beforeAll(() => {
 	return initializeDatabase();

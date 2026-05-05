@@ -7,7 +7,7 @@ import type {
 	Session,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { managedSessions, sessions, supervisors } from "../db/schema.js";
+import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { generateSessionName } from "./name-generator.js";
 

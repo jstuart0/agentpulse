@@ -1,5 +1,5 @@
 import { getDb } from "../../db/client.js";
-import { projects } from "../../db/schema.js";
+import { projects } from "../../db/schema/index.js";
 
 // In-process cache. Single-Bun-process assumption is fine for the
 // homelab deployment. If AgentPulse ever moves to multi-instance,

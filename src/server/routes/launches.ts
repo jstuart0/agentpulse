@@ -4,7 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import type { LaunchRequestInput, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
-import { launchRequests, sessionTemplates } from "../db/schema.js";
+import { launchRequests, sessionTemplates } from "../db/schema/index.js";
 import { isAiBuildEnabled } from "../services/ai/feature.js";
 import { recommendLaunch } from "../services/ai/launch-recommender.js";
 import { createValidatedLaunchRequest, mapLaunchRequest } from "../services/launch-validator.js";

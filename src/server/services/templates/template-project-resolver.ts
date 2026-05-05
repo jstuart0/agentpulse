@@ -4,7 +4,7 @@ import type {
 	SandboxMode,
 	SessionTemplateInput,
 } from "../../../shared/types.js";
-import type { projects, sessionTemplates } from "../../db/schema.js";
+import type { projects, sessionTemplates } from "../../db/schema/index.js";
 
 type TemplateRow = typeof sessionTemplates.$inferSelect;
 type ProjectRow = typeof projects.$inferSelect;

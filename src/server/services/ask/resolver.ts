@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { sessions } from "../../db/schema.js";
+import { sessions } from "../../db/schema/index.js";
 import type { SemanticEnricher } from "../ai/semantic-enricher.js";
 import { getSearchBackend } from "../search/index.js";
 

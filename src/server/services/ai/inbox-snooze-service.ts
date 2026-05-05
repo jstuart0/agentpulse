@@ -1,7 +1,7 @@
 import { and, desc, eq, gt } from "drizzle-orm";
 import type { InboxWorkItem } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { aiInboxSnoozes } from "../../db/schema.js";
+import { aiInboxSnoozes } from "../../db/schema/index.js";
 
 /**
  * Operator-inbox snooze. A snooze is an (kind, targetId, until) tuple

@@ -33,88 +33,18 @@ import { join, relative } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
-// Files allowed to import from the legacy shim (the shim itself, and client.ts
-// which uses `import * as schema from "./schema.js"` for the Drizzle schema
-// parameter — that import is definitionally the shim owner, not a consumer).
-const FILE_ALLOWLISTED_SUFFIXES = [
-	"src/server/db/schema.ts", // the shim itself
-	"src/server/db/client.ts", // owns the shim; imports schema for Drizzle init
-];
+// Files allowed to import from the legacy shim pattern (none remain after the
+// 2026-05-05 migration campaign). The shim has been deleted and client.ts
+// now imports from schema/index.js directly.
+const FILE_ALLOWLISTED_SUFFIXES: string[] = [];
 
 /**
- * Existing legacy callers (as of 2026-05-05 postgres-backend campaign).
- * These emit WARNINGS (non-fatal) while the migration campaign is in progress.
- * Any file NOT in this list that introduces a new shim import is a hard ERROR.
- *
- * When you migrate a file, remove it from this list.
- * When the list is empty, remove EXISTING_SHIM_USERS and turn all violations into hard errors.
+ * Migration complete as of 2026-05-05 (schema-importer-migration campaign).
+ * All 64 previously-listed callers have been migrated to db/schema/index.js.
+ * The shim (db/schema.ts) has been deleted. This set is intentionally empty;
+ * any file importing from db/schema.js is now a hard error (no grace period).
  */
-const EXISTING_SHIM_USERS = new Set([
-	"src/server/auth/api-key.ts",
-	"src/server/auth/supervisor-auth.ts",
-	"src/server/routes/ai-watcher.ts",
-	"src/server/routes/auth.ts",
-	"src/server/routes/launches.ts",
-	"src/server/routes/projects.ts",
-	"src/server/routes/sessions.ts",
-	"src/server/routes/settings.ts",
-	"src/server/routes/templates.ts",
-	"src/server/services/ai/action-requests-service.ts",
-	"src/server/services/ai/action-requests-types.ts",
-	"src/server/services/ai/alert-rule-evaluator.ts",
-	"src/server/services/ai/digest-service.ts",
-	"src/server/services/ai/embeddings/embedding-service.ts",
-	"src/server/services/ai/event-queries.ts",
-	"src/server/services/ai/feature.ts",
-	"src/server/services/ai/hitl-service.ts",
-	"src/server/services/ai/inbox-service.ts",
-	"src/server/services/ai/inbox-snooze-service.ts",
-	"src/server/services/ai/intelligence-service.ts",
-	"src/server/services/ai/launch-recommender.ts",
-	"src/server/services/ai/proposals-service.ts",
-	"src/server/services/ai/providers-service.ts",
-	"src/server/services/ai/risk-classes.ts",
-	"src/server/services/ai/runner.ts",
-	"src/server/services/ai/spend-service.ts",
-	"src/server/services/ai/template-distillation.ts",
-	"src/server/services/ai/watcher-config-service.ts",
-	"src/server/services/ai/watcher-runs-service.ts",
-	"src/server/services/ask/ask-add-project-handler.ts",
-	"src/server/services/ask/ask-bulk-action-handler.ts",
-	"src/server/services/ask/ask-crud-handler.ts",
-	"src/server/services/ask/ask-launch-handler.ts",
-	"src/server/services/ask/ask-qa-handler.ts",
-	"src/server/services/ask/ask-resolver.ts",
-	"src/server/services/ask/ask-resume-handler.ts",
-	"src/server/services/ask/ask-search-handler.ts",
-	"src/server/services/ask/ask-service.ts",
-	"src/server/services/ask/ask-session-action-handler.ts",
-	"src/server/services/ask/context-builder.ts",
-	"src/server/services/ask/launch-disambiguation-handler.ts",
-	"src/server/services/ask/launch-intent-detector.ts",
-	"src/server/services/ask/resolver.ts",
-	"src/server/services/channels/channels-service.ts",
-	"src/server/services/channels/telegram-credentials.ts",
-	"src/server/services/control-actions.ts",
-	"src/server/services/event-processor.ts",
-	"src/server/services/labs-service.ts",
-	"src/server/services/launch-dispatch.ts",
-	"src/server/services/launch-validator.ts",
-	"src/server/services/local-auth-bootstrap.ts",
-	"src/server/services/local-auth-service.ts",
-	"src/server/services/managed-session-state.ts",
-	"src/server/services/projects/cache.ts",
-	"src/server/services/projects/projects-service.ts",
-	"src/server/services/search/postgres-search-backend.ts",
-	"src/server/services/session-tracker.ts",
-	"src/server/services/settings-service.ts",
-	"src/server/services/supervisor-registry.ts",
-	"src/server/services/telemetry.ts",
-	"src/server/services/templates/template-project-resolver.ts",
-	"src/server/services/templates/templates-service.ts",
-	"src/server/services/transcript-sync.ts",
-	"src/server/services/workspace/feature.ts",
-]);
+const EXISTING_SHIM_USERS = new Set<string>();
 
 // Match: from ".../<anything>/db/schema.js" (with or without .js extension),
 // but NOT subpaths like db/schema/index.js, db/schema/core/..., db/schema/ai/...

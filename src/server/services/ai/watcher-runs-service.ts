@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { aiWatcherRuns } from "../../db/schema.js";
+import { aiWatcherRuns } from "../../db/schema/index.js";
 import { isUniqueViolationError } from "../../db/sql-helpers.js";
 
 export type WatcherRunStatus =

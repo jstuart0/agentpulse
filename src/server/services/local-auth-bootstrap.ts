@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
-import { settings, users } from "../db/schema.js";
+import { settings, users } from "../db/schema/index.js";
 import { createUser, getUserByUsername } from "./local-auth-service.js";
 
 /**
@@ -32,12 +32,12 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 				.insert(settings)
 				.values({
 					key: "auth.firstRunCompleted",
-					value: "true",
+					value: true,
 					updatedAt: new Date().toISOString(),
 				})
 				.onConflictDoUpdate({
 					target: settings.key,
-					set: { value: "true", updatedAt: new Date().toISOString() },
+					set: { value: true, updatedAt: new Date().toISOString() },
 				});
 			console.log(`[auth] Bootstrap admin user "${username}" created.`);
 		} catch (err) {
@@ -70,12 +70,12 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 			.insert(settings)
 			.values({
 				key: "auth.firstRunCompleted",
-				value: "true",
+				value: true,
 				updatedAt: new Date().toISOString(),
 			})
 			.onConflictDoUpdate({
 				target: settings.key,
-				set: { value: "true", updatedAt: new Date().toISOString() },
+				set: { value: true, updatedAt: new Date().toISOString() },
 			});
 		console.log(`[auth] Bootstrap admin "${username}" re-synced.`);
 	} catch (err) {

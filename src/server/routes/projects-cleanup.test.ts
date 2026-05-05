@@ -3,7 +3,7 @@ import "../services/ai/__test_db.js";
 
 const { config } = await import("../config.js");
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { controlActions, projects, sessions, supervisors } = await import("../db/schema.js");
+const { controlActions, projects, sessions, supervisors } = await import("../db/schema/index.js");
 const { projectsRouter } = await import("./projects.js");
 const { Hono } = await import("hono");
 

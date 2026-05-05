@@ -154,8 +154,16 @@ export function likeStartsWith(col: AnyColumn | SQLWrapper, prefix: string): SQL
 export function isUniqueViolationError(err: unknown): boolean {
 	if (!err) return false;
 	// postgres-js exposes SQLSTATE as .code on the error object.
-	if (typeof err === "object" && "code" in err && (err as { code: string }).code === "23505") {
-		return true;
+	// Drizzle wraps postgres-js errors in DrizzleQueryError with .cause pointing
+	// to the original error — check both the error itself and one level of cause.
+	if (typeof err === "object") {
+		const obj = err as Record<string, unknown>;
+		if (obj.code === "23505") return true;
+		// Check DrizzleQueryError.cause (set when Drizzle wraps a postgres-js error).
+		const cause = obj.cause;
+		if (cause && typeof cause === "object" && (cause as Record<string, unknown>).code === "23505") {
+			return true;
+		}
 	}
 	// bun:sqlite surfaces the SQLite extended error name in the message.
 	const message = err instanceof Error ? err.message : String(err);

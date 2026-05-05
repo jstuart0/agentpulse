@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { KNOWN_LABS_FLAGS, type LabsFlag, type LabsFlags } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { settings } from "../db/schema.js";
+import { settings } from "../db/schema/index.js";
 
 // Re-export so existing call sites that imported LabsFlag/LabsFlags from
 // this service entry point keep working. Canonical definition lives in

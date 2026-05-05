@@ -5,7 +5,7 @@ import { describeSqliteOnly } from "../../test-utils/backend.js";
 // Defer DB-touching imports so the __test_db side-effect can configure
 // SQLITE_PATH before the client module binds to it.
 const { getDb, getSqlite, initializeDatabase } = await import("../../db/client.js");
-const { projects, sessionTemplates, sessions } = await import("../../db/schema.js");
+const { projects, sessionTemplates, sessions } = await import("../../db/schema/index.js");
 const { loadEager } = await import("./cache.js");
 const { createProject, deleteProject, resolveAllSessionsForProject, updateProject } = await import(
 	"./projects-service.js"

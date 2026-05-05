@@ -3,7 +3,9 @@ import "./ai/__test_db.js";
 import { itSqliteOnly } from "../test-utils/backend.js";
 
 const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
-const { controlActions, events, projects, sessions, supervisors } = await import("../db/schema.js");
+const { controlActions, events, projects, sessions, supervisors } = await import(
+	"../db/schema/index.js"
+);
 const { claimNextControlAction, queueCleanupWorkArea, updateControlAction } = await import(
 	"./control-actions.js"
 );

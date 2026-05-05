@@ -18,7 +18,7 @@ import {
 	projects,
 	sessionTemplates,
 	sessions,
-} from "../../db/schema.js";
+} from "../../db/schema/index.js";
 import { getChannelCredential } from "../channels/channels-service.js";
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
 import { sendTelegramMessage } from "../channels/telegram.js";

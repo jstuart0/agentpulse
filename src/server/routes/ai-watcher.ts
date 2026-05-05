@@ -2,7 +2,7 @@ import { inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import type { HitlReplyKind } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { settings } from "../db/schema.js";
+import { settings } from "../db/schema/index.js";
 import { emitAiEvent } from "../services/ai/ai-events.js";
 import { checkDispatch } from "../services/ai/dispatch-filter.js";
 import { getBackfillProgress, runBackfill } from "../services/ai/embeddings/embedding-service.js";

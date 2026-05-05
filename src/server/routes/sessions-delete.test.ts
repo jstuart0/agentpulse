@@ -17,7 +17,7 @@ const {
 	sessions,
 	watcherConfigs,
 	watcherProposals,
-} = await import("../db/schema.js");
+} = await import("../db/schema/index.js");
 const { sessionsRouter } = await import("./sessions.js");
 
 const app = new Hono().route("/api/v1", sessionsRouter);
@@ -182,7 +182,10 @@ describe("DELETE /sessions/:id", () => {
 		}
 	});
 
-	test("transaction rollback on mid-delete throw leaves the session intact", async () => {
+	// SQLite-only: uses the synchronous bun-sqlite transaction API with .run()
+	// to test mid-delete rollback. Postgres transaction rollback is validated
+	// by the withTransaction helper's own tests and by the route integration path.
+	itSqliteOnly("transaction rollback on mid-delete throw leaves the session intact", async () => {
 		const sessionId = `rollback-${crypto.randomUUID()}`;
 		await seedSessionWithChildren(sessionId);
 

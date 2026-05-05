@@ -13,7 +13,7 @@ import {
 	managedSessions,
 	projects,
 	sessions,
-} from "../db/schema.js";
+} from "../db/schema/index.js";
 import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { mapLaunchRequest } from "./launch-validator.js";
