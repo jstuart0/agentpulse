@@ -22,8 +22,9 @@ export function useNotificationPermission() {
 export function useWebSocket() {
 	const wsRef = useRef<WebSocket | null>(null);
 	const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-	const updateSession = useSessionStore((s) => s.updateSession);
-	const addSession = useSessionStore((s) => s.addSession);
+	// A-M6: use the shared applySessionUpdate reducer so WS and polling
+	// paths share identical add-or-update semantics.
+	const applySessionUpdate = useSessionStore((s) => s.applySessionUpdate);
 	const addLiveEvent = useEventStore((s) => s.addLiveEvent);
 
 	// Track previous isWorking state to detect transitions
@@ -53,13 +54,15 @@ export function useWebSocket() {
 				const msg = JSON.parse(event.data);
 
 				switch (msg.type) {
-					case "session_created":
-						addSession(msg.data.session);
+					case "session_created": {
+						const newSession = msg.data.session;
+						applySessionUpdate(newSession);
 						sendNotification(
 							"New session",
-							`${msg.data.session.displayName || "Session"} started in ${msg.data.session.cwd?.split("/").pop() || "unknown"}`,
+							`${newSession.displayName || "Session"} started in ${newSession.cwd?.split("/").pop() || "unknown"}`,
 						);
 						break;
+					}
 					case "session_updated": {
 						const session = msg.data.session;
 						const wasWorking = workingRef.current.get(session.sessionId);
@@ -74,11 +77,11 @@ export function useWebSocket() {
 						}
 
 						workingRef.current.set(session.sessionId, session.isWorking);
-						updateSession(session);
+						applySessionUpdate(session);
 						break;
 					}
 					case "session_ended":
-						updateSession(msg.data.session);
+						applySessionUpdate(msg.data.session);
 						break;
 					case "new_event":
 						addLiveEvent(msg.data);
@@ -108,7 +111,7 @@ export function useWebSocket() {
 		ws.onerror = () => {
 			ws.close();
 		};
-	}, [updateSession, addSession, addLiveEvent]);
+	}, [applySessionUpdate, addLiveEvent]);
 
 	useEffect(() => {
 		connect();

@@ -43,6 +43,10 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 		} catch (err) {
 			console.error("[auth] Failed to create bootstrap admin:", err);
 		}
+		// S-M4: clear the in-process copy of the password after first use.
+		// The env var is the source of truth on next restart; this prevents
+		// any diagnostic dump or future serialization from capturing it.
+		config.localAdminPassword = "";
 		return;
 	}
 
@@ -77,4 +81,6 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 	} catch (err) {
 		console.error("[auth] Failed to re-sync bootstrap admin:", err);
 	}
+	// S-M4: clear the in-process copy after use on the re-sync path too.
+	config.localAdminPassword = "";
 }

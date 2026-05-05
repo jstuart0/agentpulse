@@ -1,6 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { settings } from "../../db/schema.js";
+import { upsertSetting } from "../settings-service.js";
 
 // Settings keys for the scratch-workspace feature (Slice 5 of the AI
 // task-initiated launches plan — see thoughts/plans/2026-04-27-ai-task-
@@ -150,17 +151,13 @@ export async function setWorkspaceSettings(update: WorkspaceSettingsUpdate): Pro
 	workspace: WorkspaceSettings;
 	gitClone: GitCloneSettings;
 }> {
-	const now = new Date().toISOString();
-
-	const upsert = async (key: string, value: unknown) => {
-		await db
-			.insert(settings)
-			.values({ key, value, updatedAt: now })
-			.onConflictDoUpdate({
-				target: settings.key,
-				set: { value, updatedAt: now },
-			});
-	};
+	// CH-M1: use upsertSetting(..., { allowProtected: true }) for all writes.
+	// workspace.* and git_clone.* keys are NOT in the user-settable allowlist
+	// (they are service-internal), so { allowProtected: true } is required.
+	// Without the flag upsertSetting() throws ProtectedSettingError, which
+	// would 500 every call to this service.
+	const upsert = (key: string, value: unknown) =>
+		upsertSetting(key, value, { allowProtected: true });
 
 	if (update.defaultRoot !== undefined) {
 		const v = validateWorkspaceRoot(update.defaultRoot);

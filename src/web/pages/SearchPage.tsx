@@ -277,13 +277,20 @@ function ResultRow({ hit }: { hit: Hit }) {
  *   1. Escape all < and > except our own <mark>/</mark> markers.
  *   2. Remove anything that looks like an HTML tag after that step.
  */
-function sanitizeSnippet(input: string): string {
+// Exported for testing (M3).
+export function sanitizeSnippet(input: string): string {
+	// M3: strip U+0001 from user-supplied content before using that byte as a
+	// sentinel. An attacker who stores literal U+0001 bytes in session content
+	// would otherwise be able to inject <mark> tags into the rendered snippet.
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching U+0001 for M3 sentinel-strip
+	const stripped = input.replace(/\u0001/g, "");
+
 	// Temporarily swap our marker tags for sentinels, escape everything,
 	// then swap the sentinels back. This way user text like `<script>`
 	// becomes `&lt;script&gt;` but our `<mark>` tags survive.
 	const OPEN = "\u0001MARK_OPEN\u0001";
 	const CLOSE = "\u0001MARK_CLOSE\u0001";
-	const escaped = input
+	const escaped = stripped
 		.replace(/<mark>/g, OPEN)
 		.replace(/<\/mark>/g, CLOSE)
 		.replace(/&/g, "&amp;")

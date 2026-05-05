@@ -47,7 +47,13 @@ import {
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
-import { handleWsClose, handleWsMessage, handleWsOpen, startHeartbeat } from "./ws/handler.js";
+import {
+	handleWsClose,
+	handleWsMessage,
+	handleWsOpen,
+	initWsBroadcaster,
+	startHeartbeat,
+} from "./ws/handler.js";
 
 // ── Graceful drain state ──────────────────────────────────────────────────────
 //
@@ -90,6 +96,20 @@ process.on("SIGINT", () => void gracefulExit("sigint"));
 // Fail fast if AI is enabled but the instance secrets key is missing or weak.
 validateAiStartupConfig();
 
+// S-M5: if TELEGRAM_BOT_TOKEN is set but TELEGRAM_WEBHOOK_SECRET is absent,
+// the webhook update endpoint is exposed without request verification.
+// Warn at startup and refuse the webhook-setup endpoint at runtime (the
+// endpoint itself already returns 400 when the secret is missing — this
+// warning makes the condition visible in logs before any request arrives).
+if (config.telegramBotToken && !config.telegramWebhookSecret) {
+	console.warn(
+		"[security] TELEGRAM_BOT_TOKEN is set but TELEGRAM_WEBHOOK_SECRET is empty. " +
+			"The Telegram webhook update endpoint cannot verify incoming requests. " +
+			"Set TELEGRAM_WEBHOOK_SECRET to a shared secret or configure credentials " +
+			"via Settings → Channels → Telegram to harden the webhook.",
+	);
+}
+
 // Advisory: operators should configure the Authentik trust secret in production.
 // Without it, any request that carries X-Authentik-Username (e.g. from a compromised
 // sibling pod) bypasses the trust gate. NetworkPolicy from P10 narrows but does not
@@ -111,13 +131,16 @@ await loadProjectsEager();
 
 // One-shot backfill: stamp sessions that existed before projects were created.
 (async () => {
+	let stamped_count = 0;
 	try {
 		const allProjects = await listProjects();
 		for (const project of allProjects) {
 			await resolveAllSessionsForProject(project.id, project.cwd);
+			stamped_count++;
 		}
 	} catch (err) {
-		console.warn("[projects] Boot backfill failed:", err);
+		// A-M4: structured error payload so log aggregators can alert on backfill failures.
+		console.error("[projects] Boot backfill failed", { stamped_count, error: err });
 	}
 })();
 
@@ -261,6 +284,10 @@ bunServer = Bun.serve({
 
 // Start heartbeat for WebSocket connections
 startHeartbeat();
+
+// A-M3: Wire the WS broadcaster as a subscriber on the session bus.
+// Must run after Bun.serve() so the WS broadcast function is ready.
+initWsBroadcaster(sessionBus);
 
 // Start anonymous telemetry (opt-out with AGENTPULSE_TELEMETRY=off)
 startTelemetry();

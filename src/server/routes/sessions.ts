@@ -287,7 +287,10 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 sessionsRouter.delete("/sessions/:sessionId", async (c) => {
 	const sessionId = c.req.param("sessionId");
 
-	db.transaction((tx) => {
+	// A-M1: await the transaction call so a future Drizzle adapter upgrade
+	// (which may return a Promise) cannot silently disable rollback. Today
+	// bun-sqlite's transaction() is synchronous and the await is a no-op.
+	await db.transaction((tx) => {
 		// Cascade does this; explicit for older DBs that haven't yet rebuilt FKs.
 		tx.delete(events).where(eq(events.sessionId, sessionId)).run();
 		tx.delete(sessions).where(eq(sessions.sessionId, sessionId)).run();
