@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { sql } from "drizzle-orm";
 import { drizzle as drizzleBunSqlite } from "drizzle-orm/bun-sqlite";
 import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
 import { config } from "../config.js";
@@ -110,12 +111,14 @@ function createDatabase() {
 				`[db] AGENTPULSE_PG_POOL_MAX=${process.env.AGENTPULSE_PG_POOL_MAX} is invalid (must be integer in [1, 100]); falling back to ${max}`,
 			);
 		}
-		// xander mid-build M1: surface a security warning when TLS is disabled
-		// in the DSN. Operators sometimes copy dev DSNs with sslmode=disable into
-		// production secrets; the credentials would then transit in plaintext.
-		if (/[?&]sslmode=disable\b/.test(config.databaseUrl)) {
+		// xander M-1: surface a security warning when TLS is disabled or
+		// degraded in the DSN. `sslmode=disable` transmits in plaintext.
+		// `sslmode=allow` and `sslmode=prefer` also permit plaintext fallback
+		// when the server does not advertise TLS — treat all three as unsafe.
+		const sslModeMatch = config.databaseUrl.match(/[?&]sslmode=(disable|allow|prefer)\b/);
+		if (sslModeMatch) {
 			console.warn(
-				"[security] DATABASE_URL contains sslmode=disable — Postgres credentials and traffic will be transmitted in plaintext. This is unsafe outside of a fully-trusted local network.",
+				`[security] DATABASE_URL contains sslmode=${sslModeMatch[1]} — Postgres credentials and traffic may be transmitted in plaintext. Use sslmode=require or stronger outside of a fully-trusted local network.`,
 			);
 		}
 		const sql = postgres(config.databaseUrl, {
@@ -284,19 +287,39 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 		// Decision 24: no BigInt needed.
 		const lockId = 2850603287; // 0xA9E1A917
 
-		// We need the raw postgres-js client for the advisory lock. The Drizzle
-		// adapter wraps it and exposes `.$client` (postgres-js Sql instance).
-		// biome-ignore lint/suspicious/noExplicitAny: drizzle postgres adapter .$client typing varies by version
-		const pgClient = (_client.db as unknown as { $client: any }).$client;
-
-		await pgClient.begin(async (tx: { unsafe: (sql: string) => Promise<unknown> }) => {
-			// Acquire xact-scoped advisory lock. Released automatically on COMMIT/ROLLBACK.
-			await tx.unsafe(`SELECT pg_advisory_xact_lock(${lockId})`);
-			// Run migrations inside the same transaction so the lock covers them.
-			// _client is guaranteed non-null: we set it immediately above.
-			// biome-ignore lint/style/noNonNullAssertion: _client is set just above; the callback is sync-immediate
-			await migrate(_client!.db as unknown as Parameters<typeof migrate>[0], { migrationsFolder });
-		});
+		// ian C1 fix: acquire a SESSION-level advisory lock on the same Drizzle
+		// pool connection that migrate() will use, not inside a postgres-js
+		// `begin()` transaction block.
+		//
+		// Why session-level, not xact-level (`pg_advisory_xact_lock`)?
+		//   Drizzle's migrate() opens its own internal transaction via
+		//   db.session.transaction(). If we used `pgClient.begin()` + xact-lock
+		//   the migrate() DDL would run on a *different* connection (one from the
+		//   pool allocated by Drizzle), not the one holding the xact lock. Two
+		//   racing pods would each acquire a separate xact-lock on their own
+		//   connections and both run migrations simultaneously — defeating the
+		//   mutual-exclusion guarantee entirely.
+		//
+		//   Session-level locks are held for the lifetime of the database
+		//   connection, not tied to a transaction boundary. By acquiring
+		//   pg_advisory_lock on `_client.db` (the Drizzle pool reference) before
+		//   calling migrate(), we ensure the lock is held on the connection that
+		//   Drizzle's internal transaction will also use. The second pod blocks on
+		//   pg_advisory_lock until the first finishes and we explicitly unlock,
+		//   then sees the migrations already applied via __drizzle_migrations and
+		//   skips them cleanly.
+		// biome-ignore lint/style/noNonNullAssertion: _client is set on line 270; TS can't narrow past the lazy import boundary
+		const conn = _client!.db as unknown as Parameters<typeof migrate>[0];
+		await (conn as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
+			sql`SELECT pg_advisory_lock(${lockId})`,
+		);
+		try {
+			await migrate(conn, { migrationsFolder });
+		} finally {
+			await (conn as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
+				sql`SELECT pg_advisory_unlock(${lockId})`,
+			);
+		}
 
 		console.log("[db] Database initialized (postgres)");
 
