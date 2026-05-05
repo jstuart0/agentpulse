@@ -112,6 +112,18 @@ export async function enqueueRun(input: {
 		if (isUniqueViolationError(err)) {
 			// Race: another writer enqueued the same session between our SELECT and
 			// INSERT. Re-read the existing open run and return it.
+			//
+			// M2: log the constraint name so operators can distinguish the expected
+			// idx_ai_watcher_runs_open_per_session violation from any other unique
+			// constraint that might be added in the future. postgres-js exposes
+			// err.constraint (SQLSTATE 23505 detail); SQLite doesn't, so we guard.
+			const constraintName =
+				err && typeof err === "object" && "constraint" in err
+					? String((err as { constraint: unknown }).constraint)
+					: "unknown";
+			console.debug(
+				`[enqueueRun] unique-violation caught (constraint=${constraintName}), re-reading winning row`,
+			);
 			const raceWinner = await getOpenRunForSession(input.sessionId);
 			if (raceWinner) return raceWinner;
 		}

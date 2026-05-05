@@ -136,6 +136,88 @@ describe("extractSnippet helper", () => {
 	});
 });
 
+// ── Mock-based execute shape regression (runs unconditionally) ────────────────
+//
+// Verifies that PostgresSearchBackend.searchSessions / searchEvents call
+// executeRows() with a Drizzle SQL template object — NOT the broken
+// `{ sql, params }` shape that would throw TypeError at runtime on postgres-js.
+//
+// The mock captures the query from whichever adapter path executeRows() takes:
+//   - Postgres CI: db.execute(sqlTemplate) is called
+//   - SQLite CI:   db.all(sqlTemplate) is called
+// Both adapters receive a Drizzle SQL template. The assertion verifies the
+// template has a `getSQL()` method (Drizzle's runtime contract), ruling out
+// the broken `{ sql: string, params: [] }` object shape.
+
+describe("PostgresSearchBackend — execute shape (mock-based, unconditional)", () => {
+	test("searchSessions calls executeRows with a Drizzle SQL template, not { sql, params }", async () => {
+		let capturedQuery: unknown = undefined;
+
+		// Capture from whichever path executeRows() takes on this dialect.
+		// executeRows branches on config.dialect: Postgres → db.execute(q), SQLite → db.all(q).
+		// Both paths receive the same Drizzle SQL template object.
+		const mockDb = {
+			execute: (q: unknown) => {
+				capturedQuery = q;
+				return Promise.resolve([] as unknown[]);
+			},
+			all: (q: unknown) => {
+				capturedQuery = q;
+				return [] as unknown[];
+			},
+		};
+
+		const backend = new PostgresSearchBackend(
+			mockDb as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
+				typeof import("../../db/schema.js")
+			>,
+		);
+
+		// Call search() so searchSessions() is invoked.
+		await backend.search({ q: "hello", kinds: ["session"] });
+
+		// capturedQuery must be a Drizzle SQL template object, not a plain object
+		// with a `sql` string and a `params` array (the broken shape that would
+		// throw `TypeError: query.getSQL is not a function` on the real adapter).
+		expect(capturedQuery).toBeDefined();
+		expect(typeof capturedQuery).toBe("object");
+		// Drizzle SQL templates have a `getSQL()` method; plain `{ sql, params }` objects do not.
+		// biome-ignore lint/suspicious/noExplicitAny: testing internal drizzle shape
+		expect(typeof (capturedQuery as any).getSQL).toBe("function");
+		// Must NOT be a plain { sql: string, params: [] } object.
+		expect(typeof (capturedQuery as Record<string, unknown>)?.sql).not.toBe("string");
+	});
+
+	test("searchEvents calls executeRows with a Drizzle SQL template, not { sql, params }", async () => {
+		let capturedQuery: unknown = undefined;
+
+		const mockDb = {
+			execute: (q: unknown) => {
+				capturedQuery = q;
+				return Promise.resolve([] as unknown[]);
+			},
+			all: (q: unknown) => {
+				capturedQuery = q;
+				return [] as unknown[];
+			},
+		};
+
+		const backend = new PostgresSearchBackend(
+			mockDb as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
+				typeof import("../../db/schema.js")
+			>,
+		);
+
+		await backend.search({ q: "world", kinds: ["event"] });
+
+		expect(capturedQuery).toBeDefined();
+		expect(typeof capturedQuery).toBe("object");
+		// biome-ignore lint/suspicious/noExplicitAny: testing internal drizzle shape
+		expect(typeof (capturedQuery as any).getSQL).toBe("function");
+		expect(typeof (capturedQuery as Record<string, unknown>)?.sql).not.toBe("string");
+	});
+});
+
 // ── Postgres-only: live DB search tests ───────────────────────────────────────
 
 describePostgresOnly(

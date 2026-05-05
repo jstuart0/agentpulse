@@ -32,6 +32,21 @@ patches:
       kind: Deployment
       name: agentpulse
 
+  # Remove the agentpulse-backups PVC from the rendered output.
+  # The backup sidecar is removed above; its PVC would otherwise stay
+  # Pending forever on clusters without an NFS storage class.
+  # Operator: if the PVC already exists on the cluster, delete it manually
+  # after confirming no backup data needs to be retained.
+  - patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: agentpulse-backups
+    target:
+      kind: PersistentVolumeClaim
+      name: agentpulse-backups
+
   # Patch the secret template to set DATABASE_URL to a Postgres connection string.
   # NOTE: 01-secret-template.yaml is NOT in the base kustomization.yaml resources
   # list (it holds placeholder values). Apply this patch separately or manage the

@@ -277,13 +277,12 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 // Slice DB-1: child tables (events, managed_sessions, control_actions,
 // watcher_proposals, ai_hitl_requests, ai_watcher_runs, watcher_configs)
 // now reference sessions(session_id) ON DELETE CASCADE, so the single
-// `delete(sessions)` is sufficient — SQLite drops the children atomically
-// in the same transaction.
+// `delete(sessions)` is sufficient — both dialects drop children atomically
+// via the cascade FK. The explicit `events` delete is belt-and-braces for
+// older SQLite installs that haven't yet rebuilt FKs.
 //
-// We wrap the deletes in `getDb().transaction(...)` so any failure (FK
-// violation, etc.) leaves the row in place rather than partially deleted.
-// The explicit `events` delete is kept inside the same transaction as
-// belt-and-braces for older DBs that haven't yet rebuilt FKs.
+// We wrap the deletes in withTransaction() so any failure leaves the row
+// in place rather than partially deleted.
 sessionsRouter.delete("/sessions/:sessionId", async (c) => {
 	const sessionId = c.req.param("sessionId");
 

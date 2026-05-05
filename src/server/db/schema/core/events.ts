@@ -12,7 +12,7 @@
 import { sql } from "drizzle-orm";
 import { boolean, integer as pgInteger, pgTable, text as pgText } from "drizzle-orm/pg-core";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { jsonColumn } from "../factory.js";
+import { jsonColumn, tsColumn } from "../factory.js";
 import { sessionsPg, sessionsSqlite } from "./sessions.js";
 
 export const eventsSqlite = sqliteTable("events", {
@@ -50,5 +50,5 @@ export const eventsPg = pgTable("events", {
 	toolInput: jsonColumn<Record<string, unknown>>("postgres", "tool_input"),
 	toolResponse: pgText("tool_response"),
 	rawPayload: jsonColumn<Record<string, unknown>>("postgres", "raw_payload").notNull(),
-	createdAt: pgText("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+	createdAt: tsColumn("postgres", "created_at"),
 });

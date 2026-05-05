@@ -182,7 +182,7 @@ describe("initializeDatabase boot routing — SQLite", () => {
 			freshDb.close();
 		} finally {
 			if (originalSqlitePath === undefined) {
-				delete process.env.SQLITE_PATH;
+				process.env.SQLITE_PATH = undefined;
 			} else {
 				process.env.SQLITE_PATH = originalSqlitePath;
 			}
@@ -229,7 +229,7 @@ describe("initializeDatabase boot routing — SQLite", () => {
 			await initializeDatabase(db);
 		} finally {
 			if (originalEnv === undefined) {
-				delete process.env.AGENTPULSE_LEGACY_INIT;
+				process.env.AGENTPULSE_LEGACY_INIT = undefined;
 			} else {
 				process.env.AGENTPULSE_LEGACY_INIT = originalEnv;
 			}
@@ -253,10 +253,7 @@ describe("initializeDatabase boot routing — SQLite", () => {
 
 import { describePostgresOnly } from "../test-utils/backend.js";
 
-const describePostgres =
-	process.env.AGENTPULSE_TEST_BACKEND === "postgres" ? describe : describe.skip;
-
-describePostgres("initializeDatabase boot routing — Postgres", () => {
+describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 	test("fresh Postgres install creates all 29 tables + 7 cascade FKs", async () => {
 		// Requires DATABASE_URL to point at an empty test database.
 		// Run with: AGENTPULSE_TEST_BACKEND=postgres DATABASE_URL=postgres://... bun test

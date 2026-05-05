@@ -5,8 +5,9 @@ metadata:
   namespace: agentpulse
 spec:
   # Postgres supports multiple readers/writers — switch from Recreate to
-  # RollingUpdate. The pg_advisory_xact_lock in initializeDatabase() serializes
-  # concurrent migration attempts, so rolling deploys are safe.
+  # RollingUpdate. The pg_advisory_lock (session-level) in initializeDatabase()
+  # serializes concurrent migration attempts via a dedicated single-connection
+  # migration client, so rolling deploys are safe.
   # Remove this if your Postgres setup cannot tolerate two connections during
   # the migration window (e.g., very tight connection limits).
   strategy:

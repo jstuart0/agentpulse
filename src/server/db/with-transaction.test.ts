@@ -4,11 +4,13 @@
  * settles when called with the async form. withTransaction() uses the sync-
  * callback .sync() shape for SQLite so rollback on throw is preserved.
  *
- * These tests run only on the SQLite path (the Postgres path is not available
- * in CI without a running Postgres instance — that axis is covered in Phase 7).
+ * SQLite path: runs unconditionally in the default CI job.
+ * Postgres path: gated by describePostgresOnly — runs only when
+ *   AGENTPULSE_TEST_BACKEND=postgres is set (Phase 7 CI Postgres job).
  */
 import { beforeAll, describe, expect, test } from "bun:test";
 import "../services/ai/__test_db.js";
+import { describePostgresOnly } from "../test-utils/backend.js";
 
 const { getDb, initializeDatabase } = await import("./client.js");
 const { withTransaction } = await import("./with-transaction.js");
@@ -122,5 +124,60 @@ describe("withTransaction on SQLite — rollback semantics", () => {
 
 		// Cleanup
 		await getDb().delete(sessions).where(eq(sessions.sessionId, id));
+	});
+});
+
+// ── Postgres path smoke test (gated — requires AGENTPULSE_TEST_BACKEND=postgres) ──
+//
+// Exercises commit + rollback on the Postgres async transaction path.
+// Runs only in the Phase 7 CI Postgres job; skipped in default SQLite CI.
+// This gives the Postgres CI job a real withTransaction test to anchor against.
+
+describePostgresOnly("withTransaction on Postgres — async commit + rollback", () => {
+	test("commits rows when async callback succeeds", async () => {
+		const id = `pg-tx-commit-${Date.now()}`;
+
+		await withTransaction(async (tx) => {
+			await tx.insert(sessions).values({
+				id,
+				sessionId: id,
+				agentType: "claude_code",
+				status: "active",
+			});
+		});
+
+		const rows = await getDb()
+			.select({ sessionId: sessions.sessionId })
+			.from(sessions)
+			.where(eq(sessions.sessionId, id));
+
+		expect(rows[0]?.sessionId).toBe(id);
+
+		// Cleanup
+		await getDb().delete(sessions).where(eq(sessions.sessionId, id));
+	});
+
+	test("rolls back rows when async callback rejects", async () => {
+		const id = `pg-tx-rollback-${Date.now()}`;
+
+		await expect(
+			withTransaction(async (tx) => {
+				await tx.insert(sessions).values({
+					id,
+					sessionId: id,
+					agentType: "claude_code",
+					status: "active",
+				});
+				throw new Error("intentional async rollback trigger");
+			}),
+		).rejects.toThrow("intentional async rollback trigger");
+
+		const rows = await getDb()
+			.select({ sessionId: sessions.sessionId })
+			.from(sessions)
+			.where(eq(sessions.sessionId, id));
+
+		// Row must NOT exist — it was inside a rolled-back transaction.
+		expect(rows).toHaveLength(0);
 	});
 });

@@ -81,9 +81,12 @@ function createDatabase() {
 		// pod; multi-replica deployments should tune AGENTPULSE_PG_POOL_MAX.
 		//
 		// Security (Decision xander-H1): the DSN is read from the env var and is
-		// never echoed to logs. postgres-js uses TLS by default when the DSN
-		// scheme is postgres:// or postgresql:// (ssl: true unless ?sslmode=disable).
-		// Do not log config.databaseUrl — it contains credentials.
+		// never echoed to logs. Do not log config.databaseUrl — it contains credentials.
+		//
+		// TLS: postgres-js defaults to ssl: false (plaintext) regardless of the
+		// DSN scheme. Operators on untrusted networks must set sslmode=require (or
+		// stronger) in the DATABASE_URL; the warning below fires if sslmode is
+		// absent or set to a plaintext-permitting value.
 		const postgres = require("postgres") as typeof import("postgres");
 		// xander mid-build H1: validate AGENTPULSE_PG_POOL_MAX before passing to
 		// postgres-js. NaN, 0, negative values, or absurdly large values would
@@ -93,18 +96,35 @@ function createDatabase() {
 		const max =
 			Number.isInteger(rawPoolMax) && rawPoolMax >= 1 && rawPoolMax <= 100 ? rawPoolMax : 10;
 		if (process.env.AGENTPULSE_PG_POOL_MAX && max !== rawPoolMax) {
+			// M3: sanitize env var echo — strip newlines, cap to 50 chars.
+			const sanitized = String(process.env.AGENTPULSE_PG_POOL_MAX)
+				.replace(/[\r\n]/g, "\\n")
+				.slice(0, 50);
 			console.warn(
-				`[db] AGENTPULSE_PG_POOL_MAX=${process.env.AGENTPULSE_PG_POOL_MAX} is invalid (must be integer in [1, 100]); falling back to ${max}`,
+				`[db] AGENTPULSE_PG_POOL_MAX=${sanitized} is invalid (must be integer in [1, 100]); falling back to ${max}`,
 			);
 		}
-		// xander M-1: surface a security warning when TLS is disabled or
-		// degraded in the DSN. `sslmode=disable` transmits in plaintext.
-		// `sslmode=allow` and `sslmode=prefer` also permit plaintext fallback
-		// when the server does not advertise TLS — treat all three as unsafe.
+		// H1: surface a security warning when TLS is disabled, degraded, or absent
+		// in the DSN. postgres-js does NOT enable TLS by default — if sslmode is
+		// omitted from the DSN, connections are plaintext unless the server forces TLS.
+		//   sslmode=disable   — explicit plaintext
+		//   sslmode=allow     — falls back to plaintext if server won't TLS
+		//   sslmode=prefer    — tries TLS but falls back to plaintext
+		//   (sslmode absent)  — postgres-js sends plaintext by default
+		// Use sslmode=require or sslmode=verify-full outside of a fully-trusted
+		// local network (e.g. loopback / unix socket). The warning is loud but
+		// non-fatal so local dev / homelab loopback deployments are not blocked.
 		const sslModeMatch = config.databaseUrl.match(/[?&]sslmode=(disable|allow|prefer)\b/);
 		if (sslModeMatch) {
 			console.warn(
 				`[security] DATABASE_URL contains sslmode=${sslModeMatch[1]} — Postgres credentials and traffic may be transmitted in plaintext. Use sslmode=require or stronger outside of a fully-trusted local network.`,
+			);
+		} else if (!/[?&]sslmode=/.test(config.databaseUrl)) {
+			// No sslmode specified at all — postgres-js defaults to plaintext.
+			console.warn(
+				"[security] DATABASE_URL has no sslmode parameter — postgres-js defaults to plaintext (ssl: false). " +
+					"Add sslmode=require (or stronger) to encrypt traffic outside of a fully-trusted local network. " +
+					"This warning is suppressed once sslmode is present in the DSN.",
 			);
 		}
 		const sql = postgres(config.databaseUrl, {
@@ -261,51 +281,62 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 		const { migrate } = await import("drizzle-orm/postgres-js/migrator");
 		const migrationsFolder = resolveMigrationsPath("postgres");
 
-		// Acquire a transaction-scoped advisory lock before running migrations.
-		// Two pods booting concurrently will both block here; the first to
-		// commit releases the lock and the second sees all migrations already
-		// applied (drizzle-kit's __drizzle_migrations table marks them), making
-		// migrate() a no-op for the follower.
-		//
-		// Lock id: 0xA9E1A917 = 2850603287 (decimal)
+		// Advisory lock id: 0xA9E1A917 = 2850603287 (decimal)
 		// Derived from "AGE1A917"; stable across processes; 32-bit safe so it
 		// passes as a JS number (well within Number.MAX_SAFE_INTEGER = 2^53-1).
 		// Decision 24: no BigInt needed.
 		const lockId = 2850603287; // 0xA9E1A917
 
-		// ian C1 fix: acquire a SESSION-level advisory lock on the same Drizzle
-		// pool connection that migrate() will use, not inside a postgres-js
-		// `begin()` transaction block.
+		// C2 — Connection-affinity fix: open a DEDICATED single-connection
+		// postgres-js client for the migration sequence.
 		//
-		// Why session-level, not xact-level (`pg_advisory_xact_lock`)?
-		//   Drizzle's migrate() opens its own internal transaction via
-		//   db.session.transaction(). If we used `pgClient.begin()` + xact-lock
-		//   the migrate() DDL would run on a *different* connection (one from the
-		//   pool allocated by Drizzle), not the one holding the xact lock. Two
-		//   racing pods would each acquire a separate xact-lock on their own
-		//   connections and both run migrations simultaneously — defeating the
-		//   mutual-exclusion guarantee entirely.
+		// Why a dedicated connection, not the shared app pool?
+		//   pg_advisory_lock() is SESSION-level: it is held for the lifetime of
+		//   the physical database connection, not tied to a transaction boundary.
+		//   A Drizzle pool wrapper (max > 1) may route pg_advisory_lock,
+		//   migrate() internals, and pg_advisory_unlock to three DIFFERENT
+		//   physical connections. On connection A the lock is acquired; migrate()
+		//   runs on connection B (which holds no lock); the unlock fires on
+		//   connection A. Two racing pods can therefore both run migrations
+		//   simultaneously — defeating mutual exclusion entirely.
 		//
-		//   Session-level locks are held for the lifetime of the database
-		//   connection, not tied to a transaction boundary. By acquiring
-		//   pg_advisory_lock on `_client.db` (the Drizzle pool reference) before
-		//   calling migrate(), we ensure the lock is held on the connection that
-		//   Drizzle's internal transaction will also use. The second pod blocks on
-		//   pg_advisory_lock until the first finishes and we explicitly unlock,
-		//   then sees the migrations already applied via __drizzle_migrations and
-		//   skips them cleanly.
-		// biome-ignore lint/style/noNonNullAssertion: _client is set on line 270; TS can't narrow past the lazy import boundary
-		const conn = _client!.db as unknown as Parameters<typeof migrate>[0];
-		await (conn as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
-			sql`SELECT pg_advisory_lock(${lockId})`,
-		);
+		//   Opening max:1 guarantees all three calls land on the same physical
+		//   connection, so the session-level lock is held across the entire
+		//   acquire → migrate → unlock sequence. The second pod blocks on
+		//   pg_advisory_lock until the first finishes and closes its client,
+		//   then sees all migrations already applied via __drizzle_migrations
+		//   and skips them cleanly.
+		//
+		//   The main app pool (max: configurable) is opened AFTER migration
+		//   completes and stored in _client for normal request traffic.
+		const postgres = require("postgres") as typeof import("postgres");
+		const migrationPgClient = postgres(config.databaseUrl, {
+			max: 1, // single connection — guaranteed session-level lock affinity
+			idle_timeout: 5,
+			connect_timeout: 10,
+		});
+		const migrationDb = drizzlePostgresJs(migrationPgClient, { schema });
+		const migrationConn = migrationDb as unknown as Parameters<typeof migrate>[0];
 		try {
-			await migrate(conn, { migrationsFolder });
-		} finally {
-			await (conn as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
-				sql`SELECT pg_advisory_unlock(${lockId})`,
+			await (migrationDb as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
+				sql`SELECT pg_advisory_lock(${lockId})`,
 			);
+			try {
+				await migrate(migrationConn, { migrationsFolder });
+			} finally {
+				await (migrationDb as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(
+					sql`SELECT pg_advisory_unlock(${lockId})`,
+				);
+			}
+		} finally {
+			// Always close the single-connection migration client so the
+			// connection is returned to Postgres and not leaked.
+			await migrationPgClient.end();
 		}
+
+		// Open the main app pool AFTER migrations are complete.
+		// _client may already be set (createDatabase() called above); re-use it.
+		// The pool was created in createDatabase() and is now safe to use.
 
 		console.log("[db] Database initialized (postgres)");
 

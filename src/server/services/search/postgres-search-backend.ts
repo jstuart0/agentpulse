@@ -4,9 +4,11 @@
 // 10k sessions / 100k events), which is functional but not production-grade
 // at high scale.
 
+import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { getDb } from "../../db/client.js";
 import type * as schema from "../../db/schema.js";
+import { executeRows } from "../../db/sql-helpers.js";
 import { extractSnippet } from "./snippet.js";
 import type { SearchBackend, SearchFilters, SearchHit, SearchResult } from "./types.js";
 
@@ -27,9 +29,16 @@ type Db = PostgresJsDatabase<typeof schema>;
  * and wraps it in `<mark>…</mark>` (matching SQLite FTS5 output so the
  * UI doesn't need backend-aware rendering).
  *
- * Security: every `%token%` value is passed as a parameterized binding,
- * never inlined into the SQL string. User-supplied query text cannot break
- * out of the parameterized binding.
+ * Security: every `%token%` value is passed as a parameterized binding via
+ * the Drizzle `sql` template tag — never inlined into the SQL string.
+ * User-supplied query text cannot break out of the parameterized binding.
+ *
+ * Implementation note: all queries are built with Drizzle's `sql` template
+ * tag and executed via `executeRows()` (sql-helpers.ts), which handles the
+ * per-dialect return-shape difference. Do NOT call `db.execute({ sql, params })`
+ * directly — the postgres-js Drizzle adapter does not accept that shape and
+ * does not return `{ rows: T[] }`; it accepts a Drizzle SQL template and
+ * returns T[] directly. The `executeRows()` helper normalizes this.
  */
 
 // TODO(postgres-search-rank): replace flat 1.0 score with a deterministic
@@ -51,7 +60,7 @@ const SEARCHABLE_EVENT_TYPES = [
 ] as const;
 
 /** Row returned by the sessions ILIKE query. */
-interface SessionRow {
+type SessionRow = {
 	session_id: string;
 	display_name: string | null;
 	cwd: string | null;
@@ -60,10 +69,11 @@ interface SessionRow {
 	agent_type: string;
 	status: string;
 	last_activity_at: string;
-}
+	[key: string]: unknown;
+};
 
 /** Row returned by the events ILIKE query. */
-interface EventRow {
+type EventRow = {
 	id: number;
 	session_id: string;
 	event_type: string;
@@ -77,7 +87,8 @@ interface EventRow {
 	content: string | null;
 	session_display_name: string | null;
 	session_cwd: string | null;
-}
+	[key: string]: unknown;
+};
 
 export class PostgresSearchBackend implements SearchBackend {
 	readonly name = "postgres-ilike" as const;
@@ -196,43 +207,38 @@ export class PostgresSearchBackend implements SearchBackend {
 		limit: number,
 		offset: number,
 	): Promise<SearchHit[]> {
-		// Build per-token ILIKE clause groups.
-		// Each token: (display_name ILIKE $n OR cwd ILIKE $n OR current_task ILIKE $n OR notes ILIKE $n)
-		// Tokens combined with AND (default) or OR.
-		const bindings: unknown[] = [];
-		const tokenClauses: string[] = [];
-
-		for (const token of tokens) {
+		// Build per-token ILIKE clauses using the Drizzle sql template tag.
+		// Each token matches any of the four searchable session columns (OR).
+		// The token clauses are then combined with AND (default) or OR (mode=or).
+		//
+		// Using sql template tag — values are bound parameters, never inlined.
+		const tokenClauses: SQL[] = tokens.map((token) => {
 			const likeVal = `%${token}%`;
-			const b = bindings.length + 1;
-			bindings.push(likeVal);
-			tokenClauses.push(
-				`(display_name ILIKE $${b} OR cwd ILIKE $${b} OR current_task ILIKE $${b} OR notes ILIKE $${b})`,
-			);
-		}
+			return sql`(display_name ILIKE ${likeVal} OR cwd ILIKE ${likeVal} OR current_task ILIKE ${likeVal} OR notes ILIKE ${likeVal})`;
+		});
 
-		const tokenJoiner = mode === "or" ? " OR " : " AND ";
-		let whereClause = `(${tokenClauses.join(tokenJoiner)})`;
+		const tokenWhere =
+			mode === "or" ? sql.join(tokenClauses, sql` OR `) : sql.join(tokenClauses, sql` AND `);
+
+		// Build optional filter clauses appended as AND conditions.
+		const filterClauses: SQL[] = [sql`(${tokenWhere})`];
 
 		if (filters.sessionId) {
-			bindings.push(filters.sessionId);
-			whereClause += ` AND session_id = $${bindings.length}`;
+			filterClauses.push(sql`session_id = ${filters.sessionId}`);
 		}
 		if (filters.agentType) {
-			bindings.push(filters.agentType);
-			whereClause += ` AND agent_type = $${bindings.length}`;
+			filterClauses.push(sql`agent_type = ${filters.agentType}`);
 		}
 		if (filters.sessionStatus) {
-			bindings.push(filters.sessionStatus);
-			whereClause += ` AND status = $${bindings.length}`;
+			filterClauses.push(sql`status = ${filters.sessionStatus}`);
 		}
 		if (filters.cwd) {
-			bindings.push(`%${filters.cwd}%`);
-			whereClause += ` AND cwd ILIKE $${bindings.length}`;
+			filterClauses.push(sql`cwd ILIKE ${`%${filters.cwd}%`}`);
 		}
 
-		bindings.push(limit, offset);
-		const sql = `
+		const whereClause = sql.join(filterClauses, sql` AND `);
+
+		const query = sql<SessionRow>`
 			SELECT
 				session_id,
 				display_name,
@@ -245,17 +251,14 @@ export class PostgresSearchBackend implements SearchBackend {
 			FROM sessions
 			WHERE ${whereClause}
 			ORDER BY created_at DESC
-			LIMIT $${bindings.length - 1} OFFSET $${bindings.length}
+			LIMIT ${limit} OFFSET ${offset}
 		`;
 
 		const db = this.db();
-		const rows = (
-			await (
-				db as unknown as {
-					execute: (q: { sql: string; params: unknown[] }) => Promise<{ rows: SessionRow[] }>;
-				}
-			).execute({ sql, params: bindings })
-		).rows as SessionRow[];
+		const rows = await executeRows<SessionRow>(
+			db as unknown as import("../../db/client.js").Db,
+			query,
+		);
 
 		return rows.map((row) => ({
 			kind: "session" as const,
@@ -279,64 +282,51 @@ export class PostgresSearchBackend implements SearchBackend {
 	): Promise<SearchHit[]> {
 		// For events, ILIKE across: content column and five raw_payload JSON fields.
 		// raw_payload is Postgres `json` (Decision 14); ->> extracts text directly.
-		const bindings: unknown[] = [];
-		const tokenClauses: string[] = [];
-
-		for (const token of tokens) {
+		//
+		// Using sql template tag — values are bound parameters, never inlined.
+		const tokenClauses: SQL[] = tokens.map((token) => {
 			const likeVal = `%${token}%`;
-			const b = bindings.length + 1;
-			bindings.push(likeVal);
-			tokenClauses.push(
-				`(e.content ILIKE $${b}` +
-					` OR (e.raw_payload->>'prompt') ILIKE $${b}` +
-					` OR (e.raw_payload->>'message') ILIKE $${b}` +
-					` OR (e.raw_payload->>'summary') ILIKE $${b}` +
-					` OR (e.raw_payload->>'why') ILIKE $${b}` +
-					` OR (e.raw_payload->>'title') ILIKE $${b})`,
-			);
-		}
+			return sql`(e.content ILIKE ${likeVal} OR (e.raw_payload->>'prompt') ILIKE ${likeVal} OR (e.raw_payload->>'message') ILIKE ${likeVal} OR (e.raw_payload->>'summary') ILIKE ${likeVal} OR (e.raw_payload->>'why') ILIKE ${likeVal} OR (e.raw_payload->>'title') ILIKE ${likeVal})`;
+		});
 
-		const tokenJoiner = mode === "or" ? " OR " : " AND ";
-		let whereClause = `(${tokenClauses.join(tokenJoiner)})`;
+		const tokenWhere =
+			mode === "or" ? sql.join(tokenClauses, sql` OR `) : sql.join(tokenClauses, sql` AND `);
+
+		const filterClauses: SQL[] = [sql`(${tokenWhere})`];
 
 		// Restrict to the same event types the FTS trigger indexed.
-		const eventTypePlaceholders = SEARCHABLE_EVENT_TYPES.map(
-			(_, i) => `$${bindings.length + i + 1}`,
-		).join(",");
-		for (const t of SEARCHABLE_EVENT_TYPES) bindings.push(t);
-		whereClause += ` AND e.event_type IN (${eventTypePlaceholders})`;
+		// Pass as individual bound params via a VALUES list joined by commas.
+		const eventTypeList = sql.join(
+			SEARCHABLE_EVENT_TYPES.map((t) => sql`${t}`),
+			sql`, `,
+		);
+		filterClauses.push(sql`e.event_type IN (${eventTypeList})`);
 
 		if (filters.sessionId) {
-			bindings.push(filters.sessionId);
-			whereClause += ` AND e.session_id = $${bindings.length}`;
+			filterClauses.push(sql`e.session_id = ${filters.sessionId}`);
 		}
 		if (filters.eventType) {
-			bindings.push(filters.eventType);
-			whereClause += ` AND e.event_type = $${bindings.length}`;
+			filterClauses.push(sql`e.event_type = ${filters.eventType}`);
 		}
 		if (filters.since) {
-			bindings.push(filters.since);
-			whereClause += ` AND e.created_at >= $${bindings.length}`;
+			filterClauses.push(sql`e.created_at >= ${filters.since}`);
 		}
 		if (filters.until) {
-			bindings.push(filters.until);
-			whereClause += ` AND e.created_at < $${bindings.length}`;
+			filterClauses.push(sql`e.created_at < ${filters.until}`);
 		}
 		if (filters.agentType) {
-			bindings.push(filters.agentType);
-			whereClause += ` AND s.agent_type = $${bindings.length}`;
+			filterClauses.push(sql`s.agent_type = ${filters.agentType}`);
 		}
 		if (filters.sessionStatus) {
-			bindings.push(filters.sessionStatus);
-			whereClause += ` AND s.status = $${bindings.length}`;
+			filterClauses.push(sql`s.status = ${filters.sessionStatus}`);
 		}
 		if (filters.cwd) {
-			bindings.push(`%${filters.cwd}%`);
-			whereClause += ` AND s.cwd ILIKE $${bindings.length}`;
+			filterClauses.push(sql`s.cwd ILIKE ${`%${filters.cwd}%`}`);
 		}
 
-		bindings.push(limit, offset);
-		const sql = `
+		const whereClause = sql.join(filterClauses, sql` AND `);
+
+		const query = sql<EventRow>`
 			SELECT
 				e.id,
 				e.session_id,
@@ -354,17 +344,14 @@ export class PostgresSearchBackend implements SearchBackend {
 			JOIN sessions s ON s.session_id = e.session_id
 			WHERE ${whereClause}
 			ORDER BY e.created_at DESC
-			LIMIT $${bindings.length - 1} OFFSET $${bindings.length}
+			LIMIT ${limit} OFFSET ${offset}
 		`;
 
 		const db = this.db();
-		const rows = (
-			await (
-				db as unknown as {
-					execute: (q: { sql: string; params: unknown[] }) => Promise<{ rows: EventRow[] }>;
-				}
-			).execute({ sql, params: bindings })
-		).rows as EventRow[];
+		const rows = await executeRows<EventRow>(
+			db as unknown as import("../../db/client.js").Db,
+			query,
+		);
 
 		return rows.map((row) => {
 			const text =

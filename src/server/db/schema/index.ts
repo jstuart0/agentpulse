@@ -20,9 +20,26 @@
  *   - drizzle-kit (Postgres): import from index.postgres.ts directly.
  *   - Tests: import from index.sqlite.ts (or index.postgres.ts for Postgres axis).
  *
- * TODO(Phase 2b — ian mid-build H1 tracking): 12 production files still import
- * `settings` from `../schema.js`. Phase 2b migrates each to `from
- * "../db/schema/index.js"` once client.ts is updated to support Postgres:
+ * TODO(schema-importer-migration — deferred from postgres-backend campaign):
+ * As of the 2026-05-05 campaign, ~64 production files (non-test) import from
+ * the `db/schema.js` shim rather than `db/schema/index.js` or a subpath.
+ * Actual count verified with:
+ *   grep -rln "from.*schema\.js" src/ | grep -v test | grep -v "db/schema/" \
+ *     | grep -v "db/schema.ts" | grep -v "db/client.ts" | wc -l
+ *
+ * Until this migration is complete, files importing from `db/schema.js` will
+ * receive SQLite-typed table objects (from the shim, which re-exports
+ * index.sqlite.ts symbols) even when the runtime dialect is Postgres.
+ * Drizzle's column references resolve via string column names at runtime, so
+ * most queries will NOT break — but TypeScript type-level safety is absent on
+ * the Postgres query path for these callers (column types will reflect the
+ * SQLite schema, not the Postgres one).
+ *
+ * This migration is a dedicated follow-up campaign, NOT in scope for the
+ * postgres-backend campaign. See thoughts/postgres-followup-plans/ for the
+ * exit criterion (Decision 13 / dexter L-2).
+ *
+ * Callers that previously imported `settings` from `../schema.js`:
  *   - src/server/routes/auth.ts
  *   - src/server/routes/settings.ts
  *   - src/server/routes/ai-watcher.ts
@@ -35,6 +52,7 @@
  *   - src/server/services/ai/risk-classes.ts
  *   - src/server/services/ai/feature.ts
  *   - src/server/services/ai/embeddings/embedding-service.ts
+ *   (+ ~52 additional files across routes, services, and ask handlers)
  */
 
 // Re-export all SQLite-typed symbols from the SQLite entry file. This maintains

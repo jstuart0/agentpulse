@@ -6,6 +6,15 @@
  * Phase 8 removes this shim once all importers have migrated.
  *
  * Maintained for one-release backwards compat (Decision 22 / dexter L-2 exit criterion).
+ *
+ * ⚠️  Postgres-path type-safety caveat:
+ * This shim re-exports the SQLite-typed schema symbols (from index.sqlite.ts).
+ * Code that imports tables from this shim will have SQLite column types at the
+ * TypeScript level even when the runtime dialect is Postgres. Drizzle resolves
+ * column references via string column names at runtime, so most queries still
+ * execute correctly — but TypeScript will not catch type mismatches specific to
+ * the Postgres schema (e.g. boolean vs integer(mode:'boolean'), json vs text(mode:'json')).
+ * Migrate your import to "./schema/index.js" or a subpath to restore full type safety.
  */
 
 // Runtime-resolved tables (dialect selected by config.dialect at module load).
