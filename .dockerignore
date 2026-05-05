@@ -9,8 +9,13 @@ node_modules/
 # Research / planning — not needed at runtime
 thoughts/
 
-# Kubernetes deployment manifests — not part of the app bundle
+# Kubernetes deployment manifests — not part of the app bundle.
+# Exception: the backup-sidecar Dockerfile (deploy/k8s/Dockerfile.backup) needs
+# the run-backup.sh and retention.sh scripts that live alongside it. Without
+# this exception, `scripts/build-and-push.sh` fails on the backup image with
+# "COPY: file not found".
 deploy/
+!deploy/k8s/scripts/
 
 # Secret templates — never copy secret material into the image layer
 secrets/

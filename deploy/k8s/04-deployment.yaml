@@ -74,8 +74,10 @@ spec:
             secretKeyRef:
               name: agentpulse-secrets
               key: AGENTPULSE_PG_POOL_MAX
-              # optional: true is not available in all cluster versions; set a
-              # default of "10" in the secret template so this key is always present.
+              # Tolerate operators upgrading from a pre-postgres version where
+              # this key didn't exist in the secret. The app already defaults
+              # to 10 (client.ts:92-98) when the env var is absent.
+              optional: true
         envFrom:
         - configMapRef:
             name: agentpulse-config
@@ -218,7 +220,10 @@ spec:
         resources:
           requests:
             memory: "64Mi"
-            cpu: "10m"
+            # Bumped from 10m to meet LimitRange.min.cpu (08-limitrange.yaml:23).
+            # The sidecar is idle most of the time (sleeps on a daily schedule);
+            # the request is a floor for kube-scheduler accounting, not actual use.
+            cpu: "50m"
           limits:
             memory: "256Mi"
             cpu: "200m"
