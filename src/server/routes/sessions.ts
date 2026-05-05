@@ -88,8 +88,8 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 // PUT /api/v1/sessions/:sessionId/rename - Rename a session
 //
 // Slice DELETE-RENAME-1: business logic lives in `renameSession`, which
-// wraps the `sessions` + (optional) `managed_sessions` updates in a SYNC
-// SQLite transaction. The route handler only validates input.
+// wraps the `sessions` + (optional) `managed_sessions` updates in a
+// transaction. The route handler only validates input.
 sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { name } = await c.req.json<{ name: string }>();
@@ -281,19 +281,16 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 //
 // We wrap the deletes in `getDb().transaction(...)` so any failure (FK
 // violation, etc.) leaves the row in place rather than partially deleted.
-// IMPORTANT: drizzle's bun-sqlite transaction wraps a SYNC native
-// transaction; passing an async callback silently disables rollback
-// because the COMMIT runs before any awaited statement settles. We use
-// a sync callback with `.run()` instead. The explicit `events` delete
-// is kept inside the same transaction as belt-and-braces for older DBs
-// that haven't yet rebuilt FKs.
+// The explicit `events` delete is kept inside the same transaction as
+// belt-and-braces for older DBs that haven't yet rebuilt FKs.
+//
+// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
+// callback for correct rollback semantics. The async form is used from
+// Phase 1 onward once the dialect resolver is in place.
 sessionsRouter.delete("/sessions/:sessionId", async (c) => {
 	const sessionId = c.req.param("sessionId");
 
-	// A-M1: await the transaction call so a future Drizzle adapter upgrade
-	// (which may return a Promise) cannot silently disable rollback. Today
-	// bun-sqlite's transaction() is synchronous and the await is a no-op.
-	await getDb().transaction((tx) => {
+	getDb().transaction((tx) => {
 		// Cascade does this; explicit for older DBs that haven't yet rebuilt FKs.
 		tx.delete(events).where(eq(events.sessionId, sessionId)).run();
 		tx.delete(sessions).where(eq(sessions.sessionId, sessionId)).run();

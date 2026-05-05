@@ -50,10 +50,9 @@ export async function resolveAllSessionsForProject(
 	const projectList = allProjects ?? getCachedProjects();
 	const normalizedCwd = normalizeCwd(projectCwd);
 
-	// drizzle-bun-sqlite getDb().transaction is SYNC; an async callback would let
-	// COMMIT fire before any awaited update settles, silently disabling
-	// rollback. Use a sync callback with .all() for the read and .run() for
-	// each update so the whole resolve-and-restamp is atomic.
+	// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
+	// callback for correct rollback semantics. The async form is used from
+	// Phase 1 onward once the dialect resolver is in place.
 	getDb().transaction((tx) => {
 		const candidates = tx
 			.select({
@@ -167,9 +166,9 @@ export async function updateProject(
 		// project list — some end up reassigned, some become NULL, some newly
 		// attach. Do not blanket-NULL the old set; the resolver decides.
 		const allProjects = getCachedProjects();
-		// drizzle-bun-sqlite getDb().transaction is SYNC; an async callback would
-		// commit before any awaited update settled. Sync callback + .run()
-		// keeps the restamp atomic.
+		// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
+		// callback for correct rollback semantics. The async form is used from
+		// Phase 1 onward once the dialect resolver is in place.
 		getDb().transaction((tx) => {
 			const candidates = tx
 				.select({ id: sessions.id, cwd: sessions.cwd, projectId: sessions.projectId })
@@ -266,8 +265,9 @@ export async function deleteProject(id: string): Promise<boolean> {
 
 	// All three cleanup operations in one transaction — if any fails, none apply.
 	// No orphaned template or session rows with dangling project_id values.
-	// drizzle-bun-sqlite getDb().transaction is SYNC; an async callback would let
-	// COMMIT fire before any awaited write settled. Sync callback + .run().
+	// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
+	// callback for correct rollback semantics. The async form is used from
+	// Phase 1 onward once the dialect resolver is in place.
 	getDb().transaction((tx) => {
 		tx.update(sessionTemplates)
 			.set({ projectId: null })
@@ -276,7 +276,7 @@ export async function deleteProject(id: string): Promise<boolean> {
 		tx.update(sessions).set({ projectId: null }).where(eq(sessions.projectId, id)).run();
 		tx.delete(projects).where(eq(projects.id, id)).run();
 	});
-	// Cache reload runs after the sync tx commits — on rollback the cache
+	// Cache reload runs after the tx commits — on rollback the cache
 	// would still reflect pre-delete state, which is correct.
 	await bumpVersionAndReload();
 	return true;

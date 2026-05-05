@@ -339,11 +339,9 @@ export async function queueCleanupWorkArea(
  * events via FK, so events go first.
  */
 async function finalizeCleanupWorkArea(projectId: string): Promise<void> {
-	// drizzle-bun-sqlite getDb().transaction is SYNC. An async callback returns a
-	// Promise immediately and the COMMIT runs before any awaited statement
-	// settles, silently disabling rollback. Use a sync callback with .all()
-	// for reads and .run() for writes so the BEGIN/COMMIT brackets the actual
-	// DB work and a thrown error rolls back atomically.
+	// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
+	// callback for correct rollback semantics. The async form is used from
+	// Phase 1 onward once the dialect resolver is in place.
 	getDb().transaction((tx) => {
 		const projectSessions = tx
 			.select({ id: sessions.id, sessionId: sessions.sessionId })
@@ -357,7 +355,7 @@ async function finalizeCleanupWorkArea(projectId: string): Promise<void> {
 		tx.delete(projects).where(eq(projects.id, projectId)).run();
 	});
 	// Cache invalidation only matters once the rows are durably gone; running
-	// it after the sync tx commits keeps the cache consistent on rollback.
+	// it after the tx commits keeps the cache consistent on rollback.
 	await bumpVersionAndReload();
 }
 

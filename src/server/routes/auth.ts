@@ -331,20 +331,17 @@ authRouter.post("/auth/signup", async (c) => {
 		}
 	}
 
-	// First-run path: hash OUTSIDE the transaction (Bun.password.hash is async;
-	// bun-sqlite Drizzle sync transactions must not await inside the callback).
-	// Do NOT make the getDb().transaction callback async — bun-sqlite Drizzle async-tx
-	// callbacks commit before awaited work settles. Hash outside the tx; only
-	// sync ops inside.
-	// See: src/server/routes/sessions.ts:281-284 for the canonical warning.
+	// Hash outside the transaction — Bun.password.hash is CPU-intensive and
+	// should not hold a DB transaction open while it runs.
 	const passwordHash = await Bun.password.hash(body.password, { algorithm: "argon2id" });
 	const userId = crypto.randomUUID();
 	const now = new Date().toISOString();
 
 	let raceWon = false;
 	try {
-		// SYNCHRONOUS callback only — bun-sqlite Drizzle commits before awaited
-		// work in async callbacks; see src/server/routes/sessions.ts:281-284.
+		// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
+		// callback for correct rollback semantics. The async form is used from
+		// Phase 1 onward once the dialect resolver is in place.
 		getDb().transaction((tx) => {
 			// Re-check: count ALL users (including soft-deleted) and the
 			// firstRunCompleted flag inside the transaction so two concurrent

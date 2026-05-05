@@ -28,7 +28,7 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 			// both the total user count AND this flag; writing it here ensures
 			// the flag is set even if countActiveUsers() drops to 0 after a
 			// disabledAt update.
-			getDb()
+			await getDb()
 				.insert(settings)
 				.values({
 					key: "auth.firstRunCompleted",
@@ -38,8 +38,7 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 				.onConflictDoUpdate({
 					target: settings.key,
 					set: { value: "true", updatedAt: new Date().toISOString() },
-				})
-				.run();
+				});
 			console.log(`[auth] Bootstrap admin user "${username}" created.`);
 		} catch (err) {
 			console.error("[auth] Failed to create bootstrap admin:", err);
@@ -67,7 +66,7 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 		// Re-sync also writes the flag: if the admin was soft-deleted between
 		// restarts, this restart re-enables them AND re-asserts the flag so the
 		// signup window stays closed for the duration of the soft-delete window.
-		getDb()
+		await getDb()
 			.insert(settings)
 			.values({
 				key: "auth.firstRunCompleted",
@@ -77,8 +76,7 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 			.onConflictDoUpdate({
 				target: settings.key,
 				set: { value: "true", updatedAt: new Date().toISOString() },
-			})
-			.run();
+			});
 		console.log(`[auth] Bootstrap admin "${username}" re-synced.`);
 	} catch (err) {
 		console.error("[auth] Failed to re-sync bootstrap admin:", err);
