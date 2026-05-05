@@ -78,6 +78,18 @@ spec:
               # this key didn't exist in the secret. The app already defaults
               # to 10 (client.ts:92-98) when the env var is absent.
               optional: true
+        - name: AGENTPULSE_AUTHENTIK_TRUST_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: agentpulse-secrets
+              key: AGENTPULSE_AUTHENTIK_TRUST_SECRET
+              # Required for SSO production deployments to verify the
+              # X-Authentik-Verify header that the proxy provider's scope
+              # mapping emits (deploy/k8s/AUTHENTIK-FORWARDAUTH.md).
+              # Optional so SQLite/local-auth-only deployments can boot
+              # without it (the trust gate just falls through and other
+              # auth methods are tried).
+              optional: true
         envFrom:
         - configMapRef:
             name: agentpulse-config
