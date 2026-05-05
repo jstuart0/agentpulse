@@ -339,9 +339,11 @@ authRouter.post("/auth/signup", async (c) => {
 
 	let raceWon = false;
 	try {
-		// withTransaction uses bun-sqlite's sync .transaction().sync() on the
-		// SQLite path — tx.* calls must use the sync API forms (.run(), .all(),
-		// .get()) inside the callback. Rollback fires when fn throws.
+		// withTransaction uses bun-sqlite's sync db.transaction(fn) on the SQLite
+		// path — tx.* calls must use the sync API forms (.run(), .all(), .get())
+		// inside the callback. Rollback fires when fn throws synchronously. The
+		// helper has a runtime guard that throws if the callback returns a
+		// Promise on the SQLite path (which would silently disable rollback).
 		await withTransaction((tx) => {
 			// Re-check: count ALL users (including soft-deleted) and the
 			// firstRunCompleted flag inside the transaction so two concurrent

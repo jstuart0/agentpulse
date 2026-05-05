@@ -16,6 +16,25 @@
  * CONSUMERS: import from this barrel only when you need the runtime-resolved
  * schema (e.g. application code that should work on both dialects). For tests
  * and drizzle-kit, import from index.sqlite.ts or index.postgres.ts directly.
+ *
+ * TODO(Phase 2b — ian mid-build H1 tracking): 12 production files still import
+ * the `settings` symbol from `../schema.js` instead of from this barrel.
+ * On the SQLite path they work fine (the legacy schema.ts is SQLite-typed).
+ * On the Postgres path they would pass SQLite-typed table objects to a
+ * postgres-js Drizzle instance, producing type-OID mismatches at query time.
+ * Phase 2b migrates each importer to `from "../db/schema/index.js"`. Files:
+ *   - src/server/routes/auth.ts
+ *   - src/server/routes/settings.ts
+ *   - src/server/routes/ai-watcher.ts
+ *   - src/server/services/local-auth-bootstrap.ts
+ *   - src/server/services/labs-service.ts
+ *   - src/server/services/settings-service.ts
+ *   - src/server/services/telemetry.ts
+ *   - src/server/services/channels/telegram-credentials.ts
+ *   - src/server/services/workspace/feature.ts
+ *   - src/server/services/ai/risk-classes.ts
+ *   - src/server/services/ai/feature.ts
+ *   - src/server/services/ai/embeddings/embedding-service.ts
  */
 import { config } from "../../config.js";
 import { settingsPg, settingsSqlite } from "./core/settings.js";

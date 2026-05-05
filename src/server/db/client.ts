@@ -98,8 +98,30 @@ function createDatabase() {
 		// scheme is postgres:// or postgresql:// (ssl: true unless ?sslmode=disable).
 		// Do not log config.databaseUrl — it contains credentials.
 		const postgres = require("postgres") as typeof import("postgres");
+		// xander mid-build H1: validate AGENTPULSE_PG_POOL_MAX before passing to
+		// postgres-js. NaN, 0, negative values, or absurdly large values would
+		// either crash the driver or DoS the upstream Postgres. Clamp to [1, 100]
+		// with a default of 10; log a warning if the operator provided a bad value.
+		const rawPoolMax = Number(process.env.AGENTPULSE_PG_POOL_MAX ?? 10);
+		const max =
+			Number.isInteger(rawPoolMax) && rawPoolMax >= 1 && rawPoolMax <= 100
+				? rawPoolMax
+				: 10;
+		if (process.env.AGENTPULSE_PG_POOL_MAX && max !== rawPoolMax) {
+			console.warn(
+				`[db] AGENTPULSE_PG_POOL_MAX=${process.env.AGENTPULSE_PG_POOL_MAX} is invalid (must be integer in [1, 100]); falling back to ${max}`,
+			);
+		}
+		// xander mid-build M1: surface a security warning when TLS is disabled
+		// in the DSN. Operators sometimes copy dev DSNs with sslmode=disable into
+		// production secrets; the credentials would then transit in plaintext.
+		if (/[?&]sslmode=disable\b/.test(config.databaseUrl)) {
+			console.warn(
+				"[security] DATABASE_URL contains sslmode=disable — Postgres credentials and traffic will be transmitted in plaintext. This is unsafe outside of a fully-trusted local network.",
+			);
+		}
 		const sql = postgres(config.databaseUrl, {
-			max: Number(process.env.AGENTPULSE_PG_POOL_MAX ?? 10),
+			max,
 			idle_timeout: 30,
 			connect_timeout: 10,
 		});

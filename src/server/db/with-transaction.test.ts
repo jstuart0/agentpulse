@@ -72,6 +72,30 @@ describe("withTransaction on SQLite — rollback semantics", () => {
 		expect(row).toBeUndefined();
 	});
 
+	test("throws hard if callback returns a Promise on SQLite path (xander mid-build H2)", async () => {
+		const txSessionId = `tx-async-guard-${Date.now()}`;
+
+		// Pass an explicit async fn — it returns a Promise. The guard must throw
+		// to prevent silent rollback-disable on the SQLite path.
+		await expect(
+			// biome-ignore lint/suspicious/noExplicitAny: deliberate misuse for the guard test
+			withTransaction(async (tx: any) => {
+				tx.insert(sessions)
+					.values({
+						id: txSessionId,
+						sessionId: txSessionId,
+						agentType: "claude_code",
+						status: "active",
+					})
+					.run();
+			}),
+		).rejects.toThrow(/Async callback detected on SQLite path/);
+
+		// The row was inserted before the throw — but bun-sqlite already committed
+		// (this is the very hazard the guard exists to surface). Cleanup defensively.
+		await getDb().delete(sessions).where(eq(sessions.sessionId, txSessionId));
+	});
+
 	test("nested operations inside withTransaction see the same tx context", async () => {
 		const id = `tx-nested-${Date.now()}`;
 

@@ -64,6 +64,19 @@ export async function withTransaction<T>(fn: (tx: any) => T | Promise<T>): Promi
 		// resolution — silently disabling rollback.
 		// biome-ignore lint/suspicious/noExplicitAny: bun-sqlite adapter shape
 		const result = (db as any).transaction(fn) as T;
+		// Runtime guard (xander mid-build H2): if a future caller passes an
+		// async fn, `result` is the Promise produced by the async fn, NOT the
+		// resolved value. The transaction has already COMMITted by the time we
+		// see the Promise — rollback is disabled. Throw hard so this fails fast
+		// instead of silently corrupting state on the SQLite path.
+		if (result instanceof Promise) {
+			throw new Error(
+				"[withTransaction] Async callback detected on SQLite path. " +
+					"bun-sqlite's Drizzle adapter commits before async work settles, " +
+					"silently disabling rollback. Use synchronous tx.* forms inside the " +
+					"callback (tx.insert(...).run(), tx.select(...).all(), tx.select(...).get()).",
+			);
+		}
 		return Promise.resolve(result);
 	}
 
