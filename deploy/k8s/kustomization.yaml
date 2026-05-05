@@ -31,3 +31,4 @@ resources:
   - 09-resourcequota.yaml
   - 10-networkpolicy.yaml
   - 11-serviceaccount.yaml
+  - 12-backup-pvc.yaml

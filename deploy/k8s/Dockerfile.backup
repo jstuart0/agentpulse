@@ -1,0 +1,22 @@
+FROM alpine:3.21
+
+# Bake in sqlite, ca-certificates, and rsync so the sidecar never needs
+# to apk add at runtime (which would require root and live network access).
+# ca-certificates is included for any future HTTPS-based notification hooks.
+RUN apk add --no-cache sqlite ca-certificates rsync \
+    && addgroup -g 1000 backup \
+    && adduser -D -u 1000 -G backup backup
+
+# Copy scripts that drive the backup and retention logic.
+# These are baked into the image — no ConfigMap mount required.
+COPY deploy/k8s/scripts/run-backup.sh /usr/local/bin/run-backup.sh
+COPY deploy/k8s/scripts/retention.sh /usr/local/bin/retention.sh
+RUN chmod +x /usr/local/bin/run-backup.sh /usr/local/bin/retention.sh
+
+# Drop to non-root. UID 1000 matches the app container's bun user and the
+# NFS export's anonuid (configured on the operator's NFS server).
+USER backup
+
+# Default entrypoint for one-shot invocations. The sidecar's deployment
+# YAML overrides this with a long-lived schedule loop (see 04-deployment.yaml).
+ENTRYPOINT ["/usr/local/bin/run-backup.sh"]

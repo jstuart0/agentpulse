@@ -16,6 +16,32 @@
 | `09-resourcequota.yaml` | Namespace ResourceQuota (cluster guardrails) |
 | `10-networkpolicy.yaml` | NetworkPolicy (ingress restricted to Traefik namespace) |
 | `11-serviceaccount.yaml` | ServiceAccount with no auto-mounted token |
+| `12-backup-pvc.yaml` | Backup output PVC (NFS-backed, RWX, 100Gi) |
+
+## Storage stance and backup architecture (C3)
+
+**SQLite stays on local block storage.** WAL mode (enabled via `PRAGMA journal_mode = WAL`) requires
+shared-memory semantics that break on network filesystems (NFS, network-mounted Ceph, etc.). Relocating
+the live `agentpulse.db` to an NFS-backed PVC causes silent corruption. See:
+https://www.sqlite.org/wal.html#noshm
+
+**Do NOT change `agentpulse-data` to an NFS-backed storage class.** The live DB must remain on a
+local block storage class (e.g. `local-path`).
+
+**Durability via backup sidecar.** The `agentpulse` pod includes a `backup-sidecar` container that:
+- Wakes at 04:15 UTC daily and calls `sqlite3 /data/agentpulse.db ".backup /backups/agentpulse-<TS>.db"`.
+- The `.backup` command is concurrent-safe — the app keeps writing during the backup.
+- Output lands on the `agentpulse-backups` PVC, which IS NFS-backed (only backup files, never the live DB).
+- Applies retention (30 daily + 12 monthly survivors) after each successful backup.
+- Failures surface in `kubectl logs deploy/agentpulse -c backup-sidecar`.
+
+**Postgres is the long-term answer.** The backup sidecar is a Medium-severity operational mitigation.
+The next durability epic replaces SQLite with a PostgreSQL backend, eliminating the node-loss-equals-
+downtime tradeoff. See `thoughts/2026-04-24-postgres-backend-plan.md`.
+
+**Restore runbook**: see `deploy/k8s/BACKUP-RESTORE.md`.
+
+---
 
 ## Homelab overlay
 

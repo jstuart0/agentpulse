@@ -53,6 +53,15 @@ function createDatabase() {
 		mkdirSync(dir, { recursive: true });
 	}
 	const sqlite = new Database(dbPath);
+	// SQLite WAL requires local block storage. Do NOT relocate the database
+	// to a network filesystem (NFS, network-mounted Ceph, etc.) — WAL
+	// shared-memory semantics break and corruption is silent. See:
+	// https://www.sqlite.org/wal.html#noshm
+	// Durability strategy in this deployment: scheduled .backup to operator's
+	// NFS via in-pod backup-sidecar in deploy/k8s/04-deployment.yaml;
+	// runbook in deploy/k8s/BACKUP-RESTORE.md.
+	// Postgres backend is the long-term answer; see
+	// thoughts/2026-04-24-postgres-backend-plan.md.
 	sqlite.exec("PRAGMA journal_mode = WAL;");
 	sqlite.exec("PRAGMA foreign_keys = ON;");
 	// Block + retry for up to 5s on transient SQLITE_BUSY (e.g. a concurrent

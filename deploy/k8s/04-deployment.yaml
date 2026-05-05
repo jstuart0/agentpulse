@@ -125,7 +125,7 @@ spec:
                     await Bun.sleep(1000);
                   }
                   // Best-effort drain timeout — Option B accepts residual loss;
-                  // Synology backup pipeline (P11) covers it.
+                  // backup-sidecar pipeline (P11) covers it.
                   process.exit(0);
         # startupProbe: gives the pod 150s (30 attempts × 5s) to complete
         # migrations and mark DB ready before liveness kicks in (S-24, I-M1).
@@ -152,10 +152,72 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 6
+      - name: backup-sidecar
+        # SHA-tagged backup image — built and pushed alongside the app image
+        # by scripts/build-and-push.sh. Update this tag in lockstep with the
+        # app image tag above (or override in the homelab overlay).
+        image: ghcr.io/jstuart0/agentpulse-backup:b9b796c
+        imagePullPolicy: IfNotPresent
+        # Override ENTRYPOINT with a long-lived schedule loop that wakes at
+        # 04:15 UTC each day and runs run-backup.sh. The sleep calculation
+        # uses only shell arithmetic (busybox date does not support -d "tomorrow HH:MM").
+        command:
+          - /bin/sh
+          - -c
+          - |
+            trap 'echo "[backup-loop] SIGTERM received; exiting"; exit 0' TERM INT
+            while true; do
+              H=$(date -u +%H | sed 's/^0//'); H=${H:-0}
+              M=$(date -u +%M | sed 's/^0//'); M=${M:-0}
+              CUR_MIN=$(( H * 60 + M ))
+              # 04:15 UTC = 255 minutes past midnight
+              TARGET_MIN=255
+              if [ "$CUR_MIN" -lt "$TARGET_MIN" ]; then
+                SLEEP_SECS=$(( (TARGET_MIN - CUR_MIN) * 60 ))
+              else
+                SLEEP_SECS=$(( (1440 - CUR_MIN + TARGET_MIN) * 60 ))
+              fi
+              echo "[backup-loop] next run in ${SLEEP_SECS}s ($(date -u))"
+              sleep "$SLEEP_SECS" &
+              wait $!
+              /usr/local/bin/run-backup.sh || echo "[backup-loop] run-backup.sh failed; will retry next schedule"
+            done
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          # NOT readOnly — SQLite WAL shared-memory semantics may touch
+          # /data/agentpulse.db-shm. The sidecar does NOT write to
+          # agentpulse.db itself; sqlite3 .backup is a concurrent-safe
+          # read path. See deploy/k8s/BACKUP-RESTORE.md for details.
+        - name: backups
+          mountPath: /backups
+        - name: tmp-sidecar
+          mountPath: /tmp
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "10m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
       volumes:
       - name: data
         persistentVolumeClaim:
           claimName: agentpulse-data
+      - name: backups
+        persistentVolumeClaim:
+          claimName: agentpulse-backups
       # /tmp writable scratch for the bun runtime under readOnlyRootFilesystem (I-H4).
       - name: tmp
+        emptyDir: {}
+      # Writable /tmp for the backup-sidecar under readOnlyRootFilesystem.
+      - name: tmp-sidecar
         emptyDir: {}
