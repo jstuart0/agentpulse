@@ -45,17 +45,18 @@ import { APP_API_BASE } from "./paths.js";
 const BASE_URL = APP_API_BASE;
 
 /**
- * When Traefik's Authentik forwardauth sees an expired session it
- * 302s our API fetches to `auth.xmojo.net`, which the browser then
- * blocks as a cross-origin redirect (CORS). With the default `fetch`
- * redirect policy the user just sees `TypeError: Failed to fetch`
- * every time they touch the app.
+ * When Traefik's forwardauth provider sees an expired session it
+ * 302s our API fetches to the upstream IdP's login page, which the
+ * browser then blocks as a cross-origin redirect (CORS). With the
+ * default `fetch` redirect policy the user just sees
+ * `TypeError: Failed to fetch` every time they touch the app.
  *
  * We set `redirect: "manual"` so cross-origin redirects surface as
  * an `opaqueredirect` response (type = "opaqueredirect", status = 0)
  * instead of being followed. When that happens we can tell the
  * browser to do a top-level navigation reload — which DOES follow
- * Authentik's redirect, lets the user reauth, and returns them to
+ * the forwardauth redirect, lets the user reauth via the configured
+ * IdP (e.g. Authentik, Authelia, oauth2-proxy), and returns them to
  * the app with a fresh cookie. Net effect: expired sessions heal
  * themselves silently instead of surfacing as cryptic errors.
  *

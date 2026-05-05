@@ -144,7 +144,7 @@ export function LoginPage() {
 				<p className="text-[11px] text-muted-foreground text-center">
 					{mode === "signup"
 						? "You are creating the first user on this instance; they'll be given the admin role. Further signups are disabled by default."
-						: "Local accounts use username + password. If your team uses Authentik SSO, sign in via the configured IdP instead."}
+						: "Local accounts use username + password. If your team uses SSO, sign in via the configured identity provider instead."}
 				</p>
 			</div>
 		</div>

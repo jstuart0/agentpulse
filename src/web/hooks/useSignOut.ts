@@ -4,8 +4,14 @@ import { useUserStore } from "../stores/user-store.js";
 /**
  * Encapsulates the sign-out flow shared by Layout (mobile drawer) and
  * TopBar (desktop UserMenu). Handles both local-session logout (POST to
- * /api/…, then bounce to /login) and Authentik / external logout
- * (hard-navigate to the outpost URL).
+ * /api/…, then bounce to /login) and forwardauth IdP / external logout
+ * (hard-navigate to the IdP's logout URL). The sign-out URL is provided
+ * by the server at /auth/me and varies per provider — callers treat it
+ * as opaque.
+ *
+ * When signOutUrl is null (non-Authentik forwardauth providers that do
+ * not expose a logout endpoint) the Sign out button is hidden by the
+ * caller; this hook is never invoked.
  */
 export function useSignOut() {
 	const signOutUrl = useUserStore((s) => s.signOutUrl);
@@ -19,7 +25,7 @@ export function useSignOut() {
 			await reloadUser();
 			navigate("/login", { replace: true });
 		} else if (signOutUrl) {
-			// Authentik (or external): hard-navigate so the outpost handles it.
+			// External IdP logout: hard-navigate so the upstream provider handles it.
 			window.location.assign(signOutUrl);
 		}
 	}

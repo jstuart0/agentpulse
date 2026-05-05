@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { useDropdownClose } from "../hooks/useDropdownClose.js";
 import { useSignOut } from "../hooks/useSignOut.js";
+import { formatProviderLabel } from "../lib/formatProviderLabel.js";
 import { useUserStore } from "../stores/user-store.js";
 import { WsStatusChip } from "./WsStatusChip.js";
 
@@ -82,8 +83,13 @@ function UserMenu({
 	signOutUrl: _signOutUrl,
 	disableAuth,
 }: {
-	// "authentik" retained for one release; new responses emit "forwardauth".
-	user: { name: string; source: "forwardauth" | "authentik" | "api_key" | "local" } | null;
+	// "authentik" retained for one release to tolerate cached responses from a
+	// pre-Phase-1 backend. New responses emit "forwardauth".
+	user: {
+		name: string;
+		source: "forwardauth" | "authentik" | "api_key" | "local";
+		provider?: string | null;
+	} | null;
 	signOutUrl: string | null;
 	disableAuth: boolean;
 }) {
@@ -92,14 +98,14 @@ function UserMenu({
 	const { handleSignOut: signOut, signOutUrl } = useSignOut();
 	const label = user?.name ?? (disableAuth ? "anonymous" : "signed out");
 	const initial = label.charAt(0).toUpperCase();
-	// Phase 2 will derive the label from user.provider; for now keep "Authentik"
-	// for both the legacy "authentik" source and the new "forwardauth" source.
-	const sourceLabel =
-		user?.source === "authentik" || user?.source === "forwardauth"
-			? "Authentik"
-			: user?.source === "local"
-				? "Local account"
-				: "API key";
+	// Prefer provider (Phase 1+) for the display label; fall back to "Authentik"
+	// for cached responses that still carry source === "authentik" (no provider field).
+	const isForwardauth = user?.source === "forwardauth" || user?.source === "authentik";
+	const sourceLabel = isForwardauth
+		? (user?.provider ? formatProviderLabel(user.provider) : "Authentik")
+		: user?.source === "local"
+			? "Local account"
+			: "API key";
 	const isLocal = user?.source === "local";
 
 	async function handleSignOut() {
