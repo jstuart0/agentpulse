@@ -274,35 +274,40 @@ notes on the SQLite PVC lifecycle.
 
 ---
 
-## Authentik SSO setup
+## Forwardauth SSO setup
 
-The base manifests include three Traefik middlewares for Authentik SSO in `06-middleware.yaml`:
+AgentPulse SSO works with any forwardauth-capable identity provider — Authentik
+(default), Authelia, oauth2-proxy, Pomerium, or Cloudflare Access.
+
+The base manifests include four Traefik middlewares for SSO in `06-middleware.yaml`:
 
 | Middleware | Role |
 |---|---|
-| `agentpulse-strip-client-authentik` | Strips any client-supplied `X-Authentik-*` headers before forwardauth runs |
-| `agentpulse-forwardauth` | Authentik validates the session and injects identity headers (`X-authentik-username`, etc.) |
-| `agentpulse-inject-verify` | Traefik adds the `X-Authentik-Verify` shared secret after forwardauth passes |
+| `agentpulse-strip-client-forwardauth` | Strips any client-supplied IdP headers before forwardauth runs |
+| `agentpulse-strip-client-authentik` | **Deprecated alias** — same spec; kept for one release so existing overlays referencing the old name continue to work. Removed next release. |
+| `agentpulse-forwardauth` | IdP validates the session and injects identity headers |
+| `agentpulse-inject-verify` | Traefik adds the `FORWARDAUTH_TRUST_SECRET` as a verify header after forwardauth passes |
 
-The protected catch-all route in `07-ingressroute.yaml` applies all three in order. AgentPulse's trust
-gate (`auth/middleware.ts`) verifies `X-Authentik-Verify` against `AGENTPULSE_AUTHENTIK_TRUST_SECRET`
-before admitting the Authentik-asserted identity.
+The protected catch-all route in `07-ingressroute.yaml` applies the new-named middleware
+(and `agentpulse-forwardauth` and `agentpulse-inject-verify`) in order. AgentPulse's trust
+gate (`src/server/auth/middleware.ts`) verifies the trust header against
+`FORWARDAUTH_TRUST_SECRET` before admitting the forwardauth-asserted identity.
 
 **Quick setup**:
 
 1. Generate a shared secret: `openssl rand -hex 32`
-2. Add it to `agentpulse-secrets` as `AGENTPULSE_AUTHENTIK_TRUST_SECRET`.
+2. Add it to `agentpulse-secrets` as `FORWARDAUTH_TRUST_SECRET`.
 3. Inject the same value into the `agentpulse-inject-verify` Middleware via a private overlay
    (do not commit it to the base manifests — the base uses an empty placeholder).
 4. Apply your overlay and restart agentpulse.
 
-See `deploy/k8s/AUTHENTIK-FORWARDAUTH.md` for the full setup steps, middleware ordering rationale,
-and secret rotation procedure.
+See `deploy/k8s/FORWARDAUTH.md` for the full setup steps, provider-specific header
+configuration, middleware ordering rationale, and secret rotation procedure.
 
 **Public routes that bypass forwardauth**: the IngressRoute defines unprotected rules for paths that
-must be reachable without an Authentik session: `/api/v1/health`, `/api/v1/ready`, `/api/v1/hooks`,
+must be reachable without an SSO session: `/api/v1/health`, `/api/v1/ready`, `/api/v1/hooks`,
 `/api/v1/hooks/status`, `/assets/*`, `/api/v1/auth/{me,login,logout,signup}`, Telegram webhook,
-setup scripts, and `/api/v1/supervisors/*`. The supervisor surface bypasses Authentik because
+setup scripts, and `/api/v1/supervisors/*`. The supervisor surface bypasses SSO because
 supervisor agents run on remote machines and cannot hold an SSO session — per-endpoint
 `requireSupervisorAuth()` is the auth boundary there.
 

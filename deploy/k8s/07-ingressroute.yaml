@@ -16,7 +16,7 @@ spec:
         - name: agentpulse
           port: 3000
 
-    # Readiness probe — public so kubelet (no Authentik session) can poll
+    # Readiness probe — public so kubelet (no SSO session) can poll
     # and external load-balancers can health-check.
     - match: Host(`agentpulse.example.com`) && Path(`/api/v1/ready`)
       kind: Rule
@@ -38,9 +38,9 @@ spec:
 
     # Static assets — Vite-built JS chunks, CSS, fonts, images. Public so
     # the browser can lazy-load route chunks without each fetch bouncing
-    # to Authentik (which returns a 302 with HTML body, breaking Vite's
-    # dynamic import with a MIME mismatch). The build output contains no
-    # secrets; same content every visitor sees.
+    # to the upstream IdP (which returns a 302 with HTML body, breaking
+    # Vite's dynamic import with a MIME mismatch). The build output
+    # contains no secrets; same content every visitor sees.
     - match: Host(`agentpulse.example.com`) && PathPrefix(`/assets/`)
       kind: Rule
       services:
@@ -48,9 +48,9 @@ spec:
           port: 3000
 
     # Auth introspection + local-account login/logout/signup — must be
-    # reachable WITHOUT Authentik forwardauth so the login page itself can
-    # render (it calls /auth/me to detect "you're already signed in") and
-    # so local-auth fallback users can complete login.
+    # reachable WITHOUT forwardauth so the login page itself can render
+    # (it calls /auth/me to detect "you're already signed in") and so
+    # local-auth fallback users can complete login.
     # /auth/change-password attaches requireAuth() in-handler so it remains
     # auth-protected at the route layer.
     - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/me`)
@@ -78,16 +78,16 @@ spec:
           port: 3000
 
     # Supervisors surface — public at the edge; per-handler auth enforced server-side.
-    # Supervisor agents run on remote machines and cannot hold an Authentik SSO session.
+    # Supervisor agents run on remote machines and cannot hold an SSO session.
     # Each endpoint carries explicit in-process auth:
     #   GET  /supervisors, /supervisors/:id, POST /enroll, /rotate, /revoke
-    #        → requireAuth() (dashboard API-key or Authentik session)
+    #        → requireAuth() (dashboard API-key or SSO session)
     #   POST /register → enrollment token or supervisor credential (checked in-handler)
     #   POST /heartbeat, /launches/claim, /launches/:id/status, /managed-session-state,
     #        /managed-sessions/:id/events, /provider-sync, /control-actions/*
     #        → requireSupervisorAuth() (supervisor credential token)
     # The API-key Bearer bypass rule above covers requireAuth() callers that use ap_ keys.
-    # requireSupervisorAuth() uses a separate supervisor token scheme; no Authentik session needed.
+    # requireSupervisorAuth() uses a separate supervisor token scheme; no SSO session needed.
     - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/v1/supervisors`)
       kind: Rule
       services:
@@ -178,40 +178,38 @@ spec:
 
     # ── Authenticated surface ─────────────────────────────────────────────────
 
-    # API-key-bearing requests bypass Authentik forwardauth so the
-    # relay (statusline, hook backfill, off-Authentik device reads)
-    # can call the dashboard API surface. Hono's per-router
-    # requireAuth() still validates the key — this just frees the
-    # request from the upstream SSO 302 that would otherwise convert
-    # JSON callers into login HTML. Scoped to /api/ to keep the
-    # browser dashboard catch-all unaffected.
+    # API-key-bearing requests bypass forwardauth so the relay
+    # (statusline, hook backfill, off-SSO device reads) can call the
+    # dashboard API surface. Hono's per-router requireAuth() still
+    # validates the key — this just frees the request from the upstream
+    # SSO 302 that would otherwise convert JSON callers into login HTML.
+    # Scoped to /api/ to keep the browser dashboard catch-all unaffected.
     - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/`) && HeaderRegexp(`Authorization`, `Bearer ap_.*`)
       kind: Rule
       middlewares:
-        - name: agentpulse-strip-client-authentik
+        - name: agentpulse-strip-client-forwardauth
           namespace: agentpulse
       services:
         - name: agentpulse
           port: 3000
 
-    # Dashboard frontend - Authentik protected.
-    # Strip order: agentpulse-strip-client-authentik runs first so any
-    # client-forged X-Authentik-* headers are removed before forwardAuth
-    # evaluates the request. Only the forwardAuth response can re-inject them.
+    # Dashboard frontend — forwardauth IdP protected.
+    # Strip order: agentpulse-strip-client-forwardauth runs first so any
+    # client-forged IdP headers are removed before forwardAuth evaluates
+    # the request. Only the forwardAuth response can re-inject them.
     - match: Host(`agentpulse.example.com`)
       kind: Rule
       middlewares:
         # Order matters:
-        #   strip-client-authentik FIRST — drops any X-Authentik-* the
+        #   strip-client-forwardauth FIRST — drops any IdP headers the
         #     client might have forged.
-        #   forwardauth SECOND — Authentik validates session, injects
-        #     trusted X-authentik-* identity headers in its response;
-        #     Traefik copies them upstream.
-        #   inject-verify LAST — adds the shared-secret X-Authentik-Verify
-        #     header so AgentPulse's trust gate admits the identity.
-        #     Only fires after forwardauth allows the request through
-        #     (forwardauth blocks unauthenticated requests with a 302).
-        - name: agentpulse-strip-client-authentik
+        #   forwardauth SECOND — IdP validates session, injects trusted
+        #     identity headers in its response; Traefik copies them upstream.
+        #   inject-verify LAST — adds the shared-secret verify header so
+        #     AgentPulse's trust gate admits the identity. Only fires after
+        #     forwardauth allows the request through (forwardauth blocks
+        #     unauthenticated requests with a 302).
+        - name: agentpulse-strip-client-forwardauth
           namespace: agentpulse
         - name: agentpulse-forwardauth
           namespace: agentpulse
