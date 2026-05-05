@@ -82,7 +82,6 @@ api.route("/v1", askRouter);
 api.route("/v1", searchRouter);
 api.route("/v1", labsRouter);
 api.route("/v1", channelsRouter);
-api.route("/v1", authRouter);
 
 // Public Telegram webhook lives OUTSIDE the `api` bundle. Other routers
 // in that bundle register `.use("*", requireAuth())`, and Hono merges
@@ -91,6 +90,17 @@ api.route("/v1", authRouter);
 // Mounting the webhook on the root app sidesteps that entirely.
 app.route("/api/v1", telegramWebhookRouter);
 app.route("/app-api/v1", telegramWebhookRouter);
+
+// Auth router — lives OUTSIDE the `api` bundle for the same Hono
+// wildcard-merge reason as telegramWebhookRouter and cspReportRouter.
+// /auth/me, /auth/login, /auth/logout, /auth/signup must be reachable
+// WITHOUT a session (the login page consumes them). The route handlers
+// themselves apply requireAuth() per-route where needed (e.g.
+// /auth/change-password); mounting the whole router on the root app
+// prevents sibling routers' .use("*", requireAuth()) wildcards from
+// 401'ing the public auth introspection endpoints.
+app.route("/api/v1", authRouter);
+app.route("/app-api/v1", authRouter);
 
 // CSP report endpoint — unauthenticated by design (browsers send these
 // without credentials). Mount on root app to bypass the api bundle's
