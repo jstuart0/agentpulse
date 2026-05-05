@@ -41,7 +41,7 @@ function parseSessionStatus(
 searchRouter.get("/search", auth, async (c) => {
 	const q = c.req.query("q")?.trim() ?? "";
 	if (!q) {
-		return c.json({ hits: [], total: 0, backend: "sqlite-fts5" });
+		return c.json({ hits: [], total: 0, backend: getSearchBackend().name });
 	}
 
 	const filters: SearchFilters = {

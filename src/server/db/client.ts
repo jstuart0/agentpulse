@@ -1101,8 +1101,13 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
  *
  * Idempotent: CREATE VIRTUAL TABLE IF NOT EXISTS and CREATE TRIGGER IF NOT
  * EXISTS make it safe to call on an already-bootstrapped database.
+ *
+ * Only runs on the SQLite dialect. On Postgres, the search backend is
+ * `PostgresSearchBackend` which queries source tables directly — no shadow
+ * FTS tables or triggers are installed.
  */
 async function runFtsBootstrap(sqlite: Database): Promise<void> {
+	if (config.dialect !== "sqlite") return;
 	// Search backend bootstrap. The SQLite FTS5 virtual tables + triggers
 	// live here so they're created in the same transaction window as the
 	// rest of the schema. Kept inline rather than imported so we avoid a
