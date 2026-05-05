@@ -2,7 +2,13 @@
  * project_alert_rules table — dual-dialect (Decision 21 / Decision 22).
  */
 import { sql } from "drizzle-orm";
-import { boolean, integer as pgInteger, pgTable, text as pgText } from "drizzle-orm/pg-core";
+import {
+	boolean,
+	index as pgIndex,
+	integer as pgInteger,
+	pgTable,
+	text as pgText,
+} from "drizzle-orm/pg-core";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { jsonColumn, tsColumn } from "../factory.js";
 
@@ -22,18 +28,28 @@ export const projectAlertRulesSqlite = sqliteTable("project_alert_rules", {
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
 });
 
-export const projectAlertRulesPg = pgTable("project_alert_rules", {
-	id: pgText("id")
-		.primaryKey()
-		.$defaultFn(() => crypto.randomUUID()),
-	projectId: pgText("project_id").notNull(),
-	ruleType: pgText("rule_type").notNull(),
-	params: jsonColumn<Record<string, unknown>>("postgres", "params"),
-	channelId: pgText("channel_id"),
-	isActive: boolean("is_active").notNull().default(true),
-	dailyTokenSpendCents: pgInteger("daily_token_spend_cents").notNull().default(0),
-	dailyTokenSpendDate: pgText("daily_token_spend_date"),
-	lastEvaluatedEventId: pgInteger("last_evaluated_event_id").notNull().default(0),
-	createdAt: tsColumn("postgres", "created_at"),
-	updatedAt: tsColumn("postgres", "updated_at"),
-});
+export const projectAlertRulesPg = pgTable(
+	"project_alert_rules",
+	{
+		id: pgText("id")
+			.primaryKey()
+			.$defaultFn(() => crypto.randomUUID()),
+		projectId: pgText("project_id").notNull(),
+		ruleType: pgText("rule_type").notNull(),
+		params: jsonColumn<Record<string, unknown>>("postgres", "params"),
+		channelId: pgText("channel_id"),
+		isActive: boolean("is_active").notNull().default(true),
+		dailyTokenSpendCents: pgInteger("daily_token_spend_cents").notNull().default(0),
+		dailyTokenSpendDate: pgText("daily_token_spend_date"),
+		lastEvaluatedEventId: pgInteger("last_evaluated_event_id").notNull().default(0),
+		createdAt: tsColumn("postgres", "created_at"),
+		updatedAt: tsColumn("postgres", "updated_at"),
+	},
+	(t) => ({
+		// Partial index: only active rules need fast project-scoped lookup.
+		// NB: SQLite DDL uses `is_active = 1`; Postgres boolean uses `= true`.
+		projectActive: pgIndex("idx_project_alert_rules_project")
+			.on(t.projectId)
+			.where(sql`${t.isActive} = true`),
+	}),
+);
