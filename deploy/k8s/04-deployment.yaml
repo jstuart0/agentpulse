@@ -15,6 +15,12 @@ spec:
       labels:
         app: agentpulse
     spec:
+      # 30s preStop budget + 60s post-TERM grace = 90s total to drain.
+      # preStop runs first (sets shuttingDown=true, polls inFlight=0),
+      # then SIGTERM is sent; if drain completes before 90s, k8s sends
+      # SIGTERM and the process exits cleanly. After 90s: SIGKILL.
+      # Residual loss under SIGKILL is the documented Option B tradeoff.
+      terminationGracePeriodSeconds: 90
       containers:
       - name: agentpulse
         image: ghcr.io/YOUR_ORG/agentpulse:latest  # Replace with your registry
@@ -50,26 +56,46 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "500m"
+        lifecycle:
+          preStop:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  # Trigger drain via loopback-only endpoint.
+                  # Sets shuttingDown=true so readiness probe goes 503
+                  # and k8s stops routing new hooks to this pod.
+                  # oven/bun:1-slim is Debian-based and ships wget.
+                  wget -qO- --post-data="" http://127.0.0.1:3000/api/v1/internal/drain || true
+                  # Poll until in-flight reaches 0 or the 30s budget runs out.
+                  # sed extracts the numeric value of "inFlight" from the JSON body.
+                  for i in $(seq 1 30); do
+                    INFLIGHT=$(wget -qO- http://127.0.0.1:3000/api/v1/health 2>/dev/null | sed -n 's/.*"inFlight":\([0-9]*\).*/\1/p')
+                    if [ "$INFLIGHT" = "0" ]; then
+                      exit 0
+                    fi
+                    sleep 1
+                  done
+                  # Best-effort drain timeout — Option B accepts residual loss;
+                  # Synology backup pipeline (P11) covers it.
+                  exit 0
         readinessProbe:
           httpGet:
-            path: /api/v1/health
+            path: /api/v1/ready
             port: 3000
           initialDelaySeconds: 5
-          periodSeconds: 10
-          # Default timeoutSeconds is 1, which is too tight when the
-          # event loop is briefly saturated during LLM streaming.
+          periodSeconds: 5
           timeoutSeconds: 5
-          failureThreshold: 3
+          failureThreshold: 2
         livenessProbe:
           httpGet:
             path: /api/v1/health
             port: 3000
           initialDelaySeconds: 10
-          periodSeconds: 30
-          # Same reasoning as readinessProbe; failureThreshold=5 lets
-          # several consecutive slow probes pass before SIGKILL.
+          periodSeconds: 10
           timeoutSeconds: 5
-          failureThreshold: 5
+          failureThreshold: 6
       volumes:
       - name: data
         persistentVolumeClaim:

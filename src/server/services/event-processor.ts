@@ -201,11 +201,21 @@ export function detectAgentType(
 	return "claude_code";
 }
 
-// Process an incoming hook event
+// The session row shape returned by processHookEvent.
+// Using typeof-based inference keeps this in sync with the drizzle schema
+// without duplicating field lists.
+type SessionRow = typeof import("../db/schema.js").sessions.$inferSelect;
+
+/**
+ * Process an incoming hook event.
+ *
+ * Returns { sessionId, isNew, session } so callers (ingest route) can
+ * broadcast the upserted row without a second DB round-trip.
+ */
 export async function processHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
-): Promise<{ sessionId: string; isNew: boolean }> {
+): Promise<{ sessionId: string; isNew: boolean; session: SessionRow }> {
 	const sessionId = payload.session_id;
 	const eventType = payload.hook_event_name;
 	const now = new Date().toISOString();
@@ -335,7 +345,17 @@ export async function processHookEvent(
 		});
 	}
 
-	return { sessionId, isNew };
+	// Fetch the fully updated session row so the broadcast path in the
+	// ingest route does not need a second DB round-trip (eliminates N+1).
+	const [finalSession] = await db
+		.select()
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+
+	// finalSession is guaranteed to exist here — we just inserted or updated it.
+	// The non-null assertion is safe; a missing row would indicate DB corruption.
+	return { sessionId, isNew, session: finalSession! };
 }
 
 /**

@@ -7,6 +7,7 @@ import { ensureDefaultApiKey } from "./auth/api-key.js";
 import { getAuthUserFromHeaders } from "./auth/middleware.js";
 import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
+import { setShuttingDown } from "./drain-state.js";
 import { securityHeaders } from "./middleware/security-headers.js";
 import { aiRouter } from "./routes/ai.js";
 import { askRouter } from "./routes/ask.js";
@@ -15,6 +16,7 @@ import { channelsRouter, handleTelegramUpdate, telegramWebhookRouter } from "./r
 import { cspReportRouter } from "./routes/csp-report.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
+import { internalRouter } from "./routes/internal.js";
 import { labsRouter } from "./routes/labs.js";
 import { launchesRouter } from "./routes/launches.js";
 import { projectsRouter } from "./routes/projects.js";
@@ -45,6 +47,24 @@ import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
 import { handleWsClose, handleWsMessage, handleWsOpen, startHeartbeat } from "./ws/handler.js";
+
+// ── Graceful drain state ──────────────────────────────────────────────────────
+//
+// State lives in drain-state.ts (separate module to avoid circular imports).
+// The flag is set by:
+//  1. POST /api/v1/internal/drain (k8s preStop hook — runs before SIGTERM).
+//  2. SIGTERM/SIGINT handlers below (fallback for non-k8s shutdowns).
+//
+// Once true:
+//  - GET /api/v1/ready returns 503 → Traefik stops routing new traffic.
+//  - GET /api/v1/health still returns 200 → k8s liveness stays passing.
+//  - In-flight hook events continue to drain (tracked in ingest-counters.ts).
+
+// Fallback for non-k8s shutdowns; k8s flow uses the preStop endpoint first.
+process.on("SIGTERM", () => setShuttingDown("sigterm"));
+process.on("SIGINT", () => setShuttingDown("sigint"));
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Fail fast if AI is enabled but the instance secrets key is missing or weak.
 validateAiStartupConfig();
@@ -119,6 +139,11 @@ app.route("/app-api/v1", telegramWebhookRouter);
 // without credentials). Mount on root app to bypass the api bundle's
 // auth middleware. (S-H3)
 app.route("/api/v1", cspReportRouter);
+
+// Internal lifecycle endpoint — loopback-only, no auth key required.
+// Must NOT be exposed via Traefik IngressRoute (enforced in P10).
+// Mounted on root app to bypass the api bundle's auth middleware entirely.
+app.route("/api/v1/internal", internalRouter);
 
 app.route("/api", api);
 app.route("/app-api", api);
