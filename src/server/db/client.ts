@@ -24,8 +24,6 @@ export function assertSqliteBackend(databaseUrl: string | undefined): void {
 	}
 }
 
-assertSqliteBackend(config.databaseUrl);
-
 /**
  * Slice MIGR-HARDENING-1 (M-1): whitelist of error messages that are the
  * expected idempotent-replay path for SQLite when re-running:
@@ -48,6 +46,7 @@ export function isIdempotentMigrationError(message: string): boolean {
 }
 
 function createDatabase() {
+	assertSqliteBackend(config.databaseUrl);
 	const dbPath = config.sqlitePath;
 	const dir = dirname(dbPath);
 	if (!existsSync(dir)) {
