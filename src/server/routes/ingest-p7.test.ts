@@ -437,3 +437,183 @@ describe("processHookEvent returns session row (no N+1 getSession)", () => {
 		expect(result.session.agentType).toBe("claude_code");
 	});
 });
+
+// ── P7 patch-3: per-session hook ordering (P1) ───────────────────────────────
+//
+// Fire 10 hooks for the SAME session_id in rapid succession and assert:
+//  1. All return 200 (always-200 contract unbroken).
+//  2. No bgErrorCount increments (no constraint violations or processing errors).
+//  3. The final DB row has status consistent with the last hook's effect
+//     (SessionEnd → status "completed"; no race overwrote it with "active").
+
+describe("Per-session hook ordering — no race on concurrent hooks", () => {
+	test("10 rapid hooks for the same session: all 200, no bg errors, final status correct", async () => {
+		const { getBgErrorCount: getBgErr } = await import("./ingest-counters.js");
+		const { db } = await import("../db/client.js");
+
+		const app = buildApp();
+		const sessionId = `order-test-${Date.now()}`;
+
+		// Mix of hook types in a realistic sequence.
+		const hooks = [
+			"UserPromptSubmit",
+			"PreToolUse",
+			"PostToolUse",
+			"PreToolUse",
+			"PostToolUse",
+			"UserPromptSubmit",
+			"PreToolUse",
+			"PostToolUse",
+			"Stop",
+			"SessionEnd",
+		];
+
+		const beforeErrors = getBgErr();
+
+		// Fire all hooks WITHOUT awaiting between them — that's the race scenario.
+		const requests = hooks.map((evt) =>
+			app.request("/api/v1/hooks", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					session_id: sessionId,
+					hook_event_name: evt,
+					cwd: "/tmp",
+				}),
+			}),
+		);
+		const responses = await Promise.all(requests);
+
+		// All must be 200.
+		for (const res of responses) {
+			expect(res.status).toBe(200);
+		}
+
+		// Allow the per-session queue to drain.
+		await new Promise((r) => setTimeout(r, 500));
+
+		// No background errors — no constraint violations, no processing failures.
+		const afterErrors = getBgErr();
+		expect(afterErrors - beforeErrors).toBe(0);
+
+		// Final DB state: SessionEnd must have been processed last (the session
+		// queue serializes in arrival order, and SessionEnd was last in our list).
+		const row = db.$client
+			.prepare("SELECT status FROM sessions WHERE session_id = ?")
+			.get(sessionId) as { status: string } | undefined;
+		expect(row).toBeDefined();
+		// SessionEnd sets status to "completed".
+		expect(row?.status).toBe("completed");
+	});
+});
+
+// ── P7 patch-3: drain endpoint XFF-spoof resistance (P1) ─────────────────────
+//
+// Even when AGENTPULSE_TRUSTED_PROXIES includes the cluster pod CIDR, a
+// request from a non-loopback TCP peer carrying X-Forwarded-For: 127.0.0.1
+// must be rejected with 403. The drain endpoint reads the raw TCP peer address,
+// never the XFF header.
+
+describe("POST /api/v1/internal/drain — XFF spoof cannot bypass loopback check", () => {
+	const originalTrustedProxies = process.env.AGENTPULSE_TRUSTED_PROXIES;
+
+	afterEach(() => {
+		if (originalTrustedProxies !== undefined) {
+			process.env.AGENTPULSE_TRUSTED_PROXIES = originalTrustedProxies;
+		} else {
+			process.env.AGENTPULSE_TRUSTED_PROXIES = undefined;
+		}
+		_resetDrainStateForTest();
+	});
+
+	test("trusted-proxy peer (10.0.0.5) with XFF: 127.0.0.1 is rejected (403)", async () => {
+		// Configure trusted proxies to include the pod CIDR — the recommended
+		// hook rate-limit config. This is the spoofing scenario.
+		process.env.AGENTPULSE_TRUSTED_PROXIES = "10.0.0.0/8";
+
+		// TCP peer is 10.0.0.5 (a "trusted" proxy), XFF claims loopback.
+		// With the OLD code (getTrustedClientIp), this would be accepted.
+		// With the NEW code (raw TCP peer), it must be rejected.
+		const app = new Hono<{ Variables: { peerIp: string } }>();
+		app.use("*", async (c, next) => {
+			c.set("peerIp", "10.0.0.5");
+			await next();
+		});
+		app.route("/api/v1/internal", internalRouter);
+
+		const res = await app.request("/api/v1/internal/drain", {
+			method: "POST",
+			headers: { "X-Forwarded-For": "127.0.0.1" },
+		});
+
+		expect(res.status).toBe(403);
+		expect(isShuttingDown()).toBe(false);
+	});
+
+	test("actual loopback TCP peer (127.0.0.1) still accepted regardless of XFF", async () => {
+		process.env.AGENTPULSE_TRUSTED_PROXIES = "10.0.0.0/8";
+
+		const app = buildLoopbackDrainApp("127.0.0.1");
+		const res = await app.request("/api/v1/internal/drain", {
+			method: "POST",
+			headers: { "X-Forwarded-For": "1.2.3.4" }, // XFF present but irrelevant
+		});
+
+		expect(res.status).toBe(200);
+		expect(isShuttingDown()).toBe(true);
+	});
+});
+
+// ── P7 patch-3: null / non-object body shapes (P2) ───────────────────────────
+//
+// JSON.parse("null") === null. Accessing parsed.session_id on null throws
+// OUTSIDE the parse try/catch, causing Hono to return 500 — breaking the
+// always-200 post-auth contract. Each degenerate body shape must return 200.
+
+describe("POST /api/v1/hooks — null/non-object body shapes return 200", () => {
+	const shapes = [
+		{ label: "null literal", body: "null" },
+		{ label: "JSON array", body: "[]" },
+		{ label: "JSON number", body: "42" },
+		{ label: "JSON string", body: '"hello"' },
+		{ label: "JSON boolean true", body: "true" },
+		{ label: "JSON boolean false", body: "false" },
+	];
+
+	for (const { label, body } of shapes) {
+		test(`returns 200 for ${label}`, async () => {
+			const app = buildApp();
+			const res = await app.request("/api/v1/hooks", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body,
+			});
+			expect(res.status).toBe(200);
+			const json = await res.json();
+			expect(json.ok).toBe(true);
+		});
+	}
+});
+
+describe("POST /api/v1/hooks/status — null/non-object body shapes return 200", () => {
+	const shapes = [
+		{ label: "null literal", body: "null" },
+		{ label: "JSON array", body: "[]" },
+		{ label: "JSON number", body: "42" },
+		{ label: "JSON boolean", body: "true" },
+	];
+
+	for (const { label, body } of shapes) {
+		test(`returns 200 for ${label}`, async () => {
+			const app = buildApp();
+			const res = await app.request("/api/v1/hooks/status", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body,
+			});
+			expect(res.status).toBe(200);
+			const json = await res.json();
+			expect(json.ok).toBe(true);
+		});
+	}
+});

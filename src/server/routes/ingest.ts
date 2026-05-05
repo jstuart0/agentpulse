@@ -19,6 +19,64 @@ import {
 	incrementInFlightCount,
 } from "./ingest-counters.js";
 
+// ── Per-session hook ordering queue ──────────────────────────────────────────
+//
+// Without serialization, two hooks for the same session arriving in rapid
+// succession can both pass the "session doesn't exist" check before either
+// INSERT lands, causing a unique-constraint race. Worse, a late-arriving
+// non-SessionEnd hook can overwrite `endedAt`/`status` set by an earlier
+// SessionEnd, making a closed session appear alive.
+//
+// Fix: chain all async work for a given session_id on a dedicated promise so
+// hooks for the same session are processed strictly in arrival order. Hooks
+// for distinct sessions remain fully parallel (different Map entries).
+//
+// Unbounded growth protection: cap the Map at MAX_SESSION_QUEUES entries.
+// If the cap is hit, the oldest entry is evicted and its promise chain is
+// effectively abandoned (the chain has already resolved or is detached).
+const MAX_SESSION_QUEUES = 50_000;
+const sessionTaskQueues = new Map<string, Promise<void>>();
+
+/**
+ * Enqueue `task` to run after any previously enqueued task for `sessionId`.
+ * Returns immediately; the task is fire-and-forget from the caller's view.
+ */
+function enqueueSessionTask(sessionId: string, task: () => Promise<void>): void {
+	const prior = sessionTaskQueues.get(sessionId) ?? Promise.resolve();
+	const next = prior.then(task, task); // run task regardless of prior outcome
+	sessionTaskQueues.set(sessionId, next);
+
+	// Evict oldest entry if cap is exceeded.
+	if (sessionTaskQueues.size > MAX_SESSION_QUEUES) {
+		const oldest = sessionTaskQueues.keys().next().value;
+		if (oldest !== undefined) {
+			sessionTaskQueues.delete(oldest);
+			console.warn(
+				JSON.stringify({
+					kind: "session_queue_eviction",
+					level: "warn",
+					evicted: oldest,
+					size: sessionTaskQueues.size,
+				}),
+			);
+		}
+	}
+
+	// Clean up the Map entry once this chain link resolves so we don't leak
+	// entries for sessions that are done. The check prevents a later enqueue
+	// from racing against this cleanup.
+	next.then(() => {
+		if (sessionTaskQueues.get(sessionId) === next) {
+			sessionTaskQueues.delete(sessionId);
+		}
+	});
+}
+
+/** Reset for tests only — do not call in production code. */
+export function _resetSessionQueuesForTest(): void {
+	sessionTaskQueues.clear();
+}
+
 // Re-export counter getters for health.ts and tests.
 export { getBgErrorCount, getInFlightCount, getRateLimitedDropped };
 
@@ -68,6 +126,19 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 		return c.json({ ok: true });
 	}
 
+	// Guard against valid-JSON non-object bodies (null, array, number, string).
+	// JSON.parse("null") yields null; accessing .session_id on it throws outside
+	// the try/catch above and breaks the always-200 contract (Hono returns 500).
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		console.warn(
+			JSON.stringify({
+				kind: "ingest_invalid_body_shape",
+				level: "warn",
+			}),
+		);
+		return c.json({ ok: true });
+	}
+
 	if (!parsed.session_id || !parsed.hook_event_name) {
 		console.warn(
 			JSON.stringify({
@@ -84,15 +155,21 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 	const agentType = detectAgentType(agentTypeHeader, parsed);
 
 	// Return 200 IMMEDIATELY before any DB work (A-H1: <50ms budget).
-	// Processing continues asynchronously in the IIFE below.
+	// Processing continues asynchronously via the per-session queue below.
 	const response = c.json({ ok: true });
 
-	// Fire-and-forget: process the event after the response is queued.
-	// Errors are counted + logged but never surface to the agent.
+	// Enqueue processing for this session. All hooks for the same session_id
+	// are serialized (arrival order) to prevent concurrent-insert races and
+	// status-overwrite bugs. Hooks for distinct sessions remain fully parallel.
 	incrementInFlightCount();
-	void (async () => {
+	const capturedParsed = parsed;
+	const capturedAgentType = agentType;
+	enqueueSessionTask(capturedParsed.session_id, async () => {
 		try {
-			const { sessionId, isNew, session } = await processHookEvent(parsed, agentType);
+			const { sessionId, isNew, session } = await processHookEvent(
+				capturedParsed,
+				capturedAgentType,
+			);
 
 			// Broadcast to WebSocket subscribers using the returned session row —
 			// no second DB read needed (eliminates the N+1 getSession() call).
@@ -102,7 +179,7 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 				notifySessionUpdated(session);
 			}
 
-			for (const event of normalizeHookEvent(parsed, agentType)) {
+			for (const event of normalizeHookEvent(capturedParsed, capturedAgentType)) {
 				notifyChannel("new_event", {
 					id: 0,
 					sessionId,
@@ -126,8 +203,8 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 					kind: "ingest_bg_error",
 					level: "error",
 					// Sanitize user-controlled fields to prevent log injection.
-					session_id: sanitizeLogField(parsed.session_id),
-					event_type: sanitizeLogField(parsed.hook_event_name),
+					session_id: sanitizeLogField(capturedParsed.session_id),
+					event_type: sanitizeLogField(capturedParsed.hook_event_name),
 					error: err instanceof Error ? err.message : String(err),
 					stack: err instanceof Error ? err.stack : undefined,
 				}),
@@ -135,7 +212,7 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 		} finally {
 			decrementInFlightCount();
 		}
-	})();
+	});
 
 	return response;
 });
@@ -153,6 +230,17 @@ ingest.post("/hooks/status", requireApiKey(), hookRateLimit(), async (c) => {
 				kind: "ingest_status_parse_error",
 				level: "error",
 				error: parseErr instanceof Error ? parseErr.message : String(parseErr),
+			}),
+		);
+		return c.json({ ok: true });
+	}
+
+	// Guard against valid-JSON non-object bodies (null, array, number, string).
+	if (update === null || typeof update !== "object" || Array.isArray(update)) {
+		console.warn(
+			JSON.stringify({
+				kind: "ingest_invalid_body_shape",
+				level: "warn",
 			}),
 		);
 		return c.json({ ok: true });

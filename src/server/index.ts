@@ -15,6 +15,7 @@ import { authRouter } from "./routes/auth.js";
 import { channelsRouter, handleTelegramUpdate, telegramWebhookRouter } from "./routes/channels.js";
 import { cspReportRouter } from "./routes/csp-report.js";
 import { health } from "./routes/health.js";
+import { getInFlightCount } from "./routes/ingest-counters.js";
 import { ingest } from "./routes/ingest.js";
 import { internalRouter } from "./routes/internal.js";
 import { labsRouter } from "./routes/labs.js";
@@ -59,10 +60,30 @@ import { handleWsClose, handleWsMessage, handleWsOpen, startHeartbeat } from "./
 //  - GET /api/v1/ready returns 503 → Traefik stops routing new traffic.
 //  - GET /api/v1/health still returns 200 → k8s liveness stays passing.
 //  - In-flight hook events continue to drain (tracked in ingest-counters.ts).
+//
+// IMPORTANT: registering a SIGTERM/SIGINT handler suppresses Bun's default
+// exit behaviour. The handlers must call process.exit() explicitly after the
+// drain window expires, otherwise the process hangs until the OS sends SIGKILL
+// (exhausting terminationGracePeriodSeconds in k8s, or leaving a zombie in
+// local dev after Ctrl-C).
+
+const MAX_DRAIN_MS = 30_000; // matches preStop curl budget
+
+async function gracefulExit(reason: string, code = 0): Promise<never> {
+	setShuttingDown(reason);
+	const start = Date.now();
+	while (getInFlightCount() > 0 && Date.now() - start < MAX_DRAIN_MS) {
+		await new Promise((r) => setTimeout(r, 100));
+	}
+	// bunServer is assigned after Bun.serve() below; the reference is captured
+	// by closure so the handlers can stop the server port before exiting.
+	bunServer?.stop?.();
+	process.exit(code);
+}
 
 // Fallback for non-k8s shutdowns; k8s flow uses the preStop endpoint first.
-process.on("SIGTERM", () => setShuttingDown("sigterm"));
-process.on("SIGINT", () => setShuttingDown("sigint"));
+process.on("SIGTERM", () => void gracefulExit("sigterm"));
+process.on("SIGINT", () => void gracefulExit("sigint"));
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -191,8 +212,14 @@ if (config.isProduction) {
 }
 
 // Start server with WebSocket support
-// Bun.serve handles both HTTP and WS on the same port
-const _server = Bun.serve({
+// Bun.serve handles both HTTP and WS on the same port.
+// Assigned to `bunServer` so the SIGTERM/SIGINT handlers above can call
+// server.stop() before process.exit(). The variable is declared with `let`
+// and referenced by closure; hoisting ensures the handlers don't fire before
+// this assignment completes (signals only arrive after the event loop is running).
+// biome-ignore lint/style/useConst: assigned once, referenced by closure in signal handlers above
+let bunServer: ReturnType<typeof Bun.serve> | undefined;
+bunServer = Bun.serve({
 	port: config.port,
 	hostname: config.host,
 	async fetch(req: Request, server: unknown) {

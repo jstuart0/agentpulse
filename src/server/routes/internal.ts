@@ -1,9 +1,17 @@
 /**
  * Internal-only routes for operational lifecycle management.
  *
- * Security model: these endpoints are loopback-restricted. The TCP peer
- * address is checked against 127.0.0.1 / ::1 / localhost; any other peer
- * gets 403. No API key is required — loopback restriction IS the auth.
+ * Security model: these endpoints are loopback-restricted. The **TCP peer**
+ * address (from getConnInfo) is checked against 127.0.0.1 / ::1 / localhost;
+ * any other peer gets 403. No API key is required — loopback restriction IS
+ * the auth.
+ *
+ * IMPORTANT: X-Forwarded-For is intentionally NOT consulted here. Using the
+ * XFF-aware getTrustedClientIp would defeat the restriction: an operator that
+ * sets AGENTPULSE_TRUSTED_PROXIES to include the pod CIDR (the recommended
+ * config for hook rate-limiting) would allow a request forwarded by Traefik
+ * with `X-Forwarded-For: 127.0.0.1` to pass the loopback check — making the
+ * drain endpoint externally callable. The TCP peer is the only ground truth.
  *
  * These routes are NOT exposed via Traefik IngressRoute. An explicit deny
  * rule for PathPrefix("/api/v1/internal") appears before the catch-all in
@@ -16,7 +24,7 @@
  */
 
 import { Hono } from "hono";
-import { getTrustedClientIp } from "../auth/client-ip.js";
+import { getConnInfo } from "hono/bun";
 import { setShuttingDown } from "../drain-state.js";
 import { getInFlightCount } from "./ingest-counters.js";
 
@@ -34,10 +42,19 @@ const internalRouter = new Hono();
 //
 // Idempotent: calling again after the flag is already set is safe.
 internalRouter.post("/drain", (c) => {
-	// Resolve the TCP peer address. getTrustedClientIp falls back to "0.0.0.0"
-	// in test contexts where getConnInfo is unavailable — that will be rejected
-	// below, which is the correct behaviour for tests that don't set peerIp.
-	const peer = getTrustedClientIp(c);
+	// Read the raw TCP peer address directly — never via getTrustedClientIp.
+	// XFF is irrelevant: loopback auth must be grounded on the transport layer.
+	// Falls back to the test-injected peerIp context variable when getConnInfo
+	// is unavailable (no Bun server handle in unit tests).
+	let peer: string;
+	try {
+		peer = getConnInfo(c).remote.address ?? "0.0.0.0";
+	} catch {
+		// getConnInfo requires c.env.server (the Bun server handle).
+		// In test contexts it is not available; read the injected peerIp.
+		const ctx = c as unknown as { get(k: string): unknown };
+		peer = (ctx.get("peerIp") as string | undefined) ?? "0.0.0.0";
+	}
 
 	// Strip IPv4-mapped IPv6 prefix before any other processing so that
 	// dual-stack Linux kernels presenting "::ffff:127.0.0.1" are correctly
