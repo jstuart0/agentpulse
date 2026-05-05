@@ -5,6 +5,61 @@ All notable changes to AgentPulse are documented here. The format is based on
 project is still pre-1.0 — breaking changes land under the regular `Changed`
 section with a `⚠ breaking` prefix so they're easy to spot.
 
+## [0.4.0-pre.1] — 2026-05-05
+
+Post-release fixes surfaced during the live rollout of `v0.4.0` to the thor homelab cluster.
+The core postgres-backend campaign shipped clean against the test suite; these four issues only
+appeared during actual Kubernetes deployment against a real Authentik/Traefik stack. Operators
+upgrading from any pre-postgres version should apply this patch before deploying v0.4.0 in production.
+
+### Fixed
+
+- **`.dockerignore` exception for `deploy/k8s/scripts/`** — the `deploy/` exclusion in `.dockerignore`
+  prevented `scripts/build-and-push.sh` from building the `agentpulse-backup` image because
+  `Dockerfile.backup` needs `run-backup.sh` and `retention.sh` from that directory. Added
+  `!deploy/k8s/scripts/` exception so both Dockerfiles build correctly from the same context.
+  (`a88d289`)
+
+- **backup-sidecar `cpu` request raised from `10m` to `50m`** — the request fell below the
+  `08-limitrange.yaml` floor of `50m` (added in the same campaign as the sidecar). Pods were
+  rejected at admission. The 50m value is a scheduler-accounting floor; the sidecar is idle
+  except during the daily 04:15 UTC backup window. (`a88d289`)
+
+- **`AGENTPULSE_PG_POOL_MAX` secretKeyRef marked `optional: true`** — operators upgrading from
+  a pre-postgres install (where the secret key was never created) got `CreateContainerConfigError`
+  on every pod start. The app already defaults to 10 when the env var is absent; the optional flag
+  lets the kubelet tolerate a missing key without blocking the pod. (`a88d289`)
+
+- **`AGENTPULSE_AUTHENTIK_TRUST_SECRET` wired into base deployment** — the audit-remediation
+  campaign (v0.3.0) added the in-process trust gate but never wired the corresponding env var
+  binding into `04-deployment.yaml`. Every Authentik-authenticated request fell through to
+  local-auth because `verifyAuthentikSecret()` read an empty config value. Wired with
+  `optional: true` so SQLite/local-auth-only deployments boot without configuring the secret.
+  (`b0f16ea`)
+
+- **`authRouter` mount moved to root app to fix 401 on `/api/v1/auth/me`** — Hono cascades
+  `.use("*", requireAuth())` from sibling routers across the entire parent router when merged
+  with `api.route()`. With `authRouter` under the api bundle, every `/api/v1/auth/*` request
+  hit `requireAuth()` before reaching the handlers — turning the intentionally-unauthenticated
+  `/auth/me` into a 401, which broke the login page. Moved to `app.route("/api/v1", authRouter)`
+  mirroring the existing `cspReportRouter` and `telegramWebhookRouter` pattern. (`403a4d5`)
+
+- **OIDC trust gate completed end-to-end** — the v0.3.0 trust-gate design left header injection
+  unimplemented. The base manifest stripped the `X-Authentik-Verify` header on input and listed
+  it in `authResponseHeaders`, but nothing actually emitted it, so the gate rejected 100% of
+  Authentik-authenticated requests. The working path is a Traefik `headers` middleware
+  (`agentpulse-inject-verify`) that injects the shared secret after forwardauth passes — not an
+  Authentik property mapping (which populates JWT id_token claims, not forwardauth response
+  headers). Added the middleware to `06-middleware.yaml` and wired it as the third step in the
+  protected-route chain (strip → forwardauth → inject-verify) in `07-ingressroute.yaml`. (`dc94356`)
+
+- **Public-route bypasses added to IngressRoute** — three path groups were missing from the
+  public (no-forwardauth) route entries, causing browsers to receive Authentik 302 redirects for
+  content that must be reachable unauthenticated: `/api/v1/ready` (kubelet readiness probe),
+  `/assets/*` (Vite JS/CSS chunks — Authentik's 302 response broke Vite's dynamic import with a
+  MIME mismatch), and `/api/v1/auth/{me,login,logout,signup}` (login-page bootstrap calls).
+  `/api/v1/auth/change-password` remains protected (enforces `requireAuth()` in-handler). (`dc94356`)
+
 ## [0.4.0] — 2026-05-05
 
 This release adds a complete PostgreSQL backend at parity with the existing SQLite path.

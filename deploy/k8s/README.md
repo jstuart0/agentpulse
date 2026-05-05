@@ -10,7 +10,7 @@
 | `03-pvc.yaml` | Persistent volume claim for SQLite data |
 | `04-deployment.yaml` | Main deployment (non-root, read-only FS, probes) |
 | `05-service.yaml` | ClusterIP service |
-| `06-middleware.yaml` | Traefik middlewares (forwardAuth, strip, HTTPS redirect, rate limit) |
+| `06-middleware.yaml` | Traefik middlewares (strip, forwardAuth, inject-verify, HTTPS redirect, rate limit) |
 | `07-ingressroute.yaml` | Traefik IngressRoute (HTTPS + HTTP→HTTPS redirect) |
 | `08-limitrange.yaml` | Namespace LimitRange (default container resource envelope) |
 | `09-resourcequota.yaml` | Namespace ResourceQuota (cluster guardrails) |
@@ -271,6 +271,40 @@ replicas sharing the same Postgres instance.
 
 See `deploy/overlays/postgres/README.md` for the full checklist, post-switch cleanup steps, and
 notes on the SQLite PVC lifecycle.
+
+---
+
+## Authentik SSO setup
+
+The base manifests include three Traefik middlewares for Authentik SSO in `06-middleware.yaml`:
+
+| Middleware | Role |
+|---|---|
+| `agentpulse-strip-client-authentik` | Strips any client-supplied `X-Authentik-*` headers before forwardauth runs |
+| `agentpulse-forwardauth` | Authentik validates the session and injects identity headers (`X-authentik-username`, etc.) |
+| `agentpulse-inject-verify` | Traefik adds the `X-Authentik-Verify` shared secret after forwardauth passes |
+
+The protected catch-all route in `07-ingressroute.yaml` applies all three in order. AgentPulse's trust
+gate (`auth/middleware.ts`) verifies `X-Authentik-Verify` against `AGENTPULSE_AUTHENTIK_TRUST_SECRET`
+before admitting the Authentik-asserted identity.
+
+**Quick setup**:
+
+1. Generate a shared secret: `openssl rand -hex 32`
+2. Add it to `agentpulse-secrets` as `AGENTPULSE_AUTHENTIK_TRUST_SECRET`.
+3. Inject the same value into the `agentpulse-inject-verify` Middleware via a private overlay
+   (do not commit it to the base manifests — the base uses an empty placeholder).
+4. Apply your overlay and restart agentpulse.
+
+See `deploy/k8s/AUTHENTIK-FORWARDAUTH.md` for the full setup steps, middleware ordering rationale,
+and secret rotation procedure.
+
+**Public routes that bypass forwardauth**: the IngressRoute defines unprotected rules for paths that
+must be reachable without an Authentik session: `/api/v1/health`, `/api/v1/ready`, `/api/v1/hooks`,
+`/api/v1/hooks/status`, `/assets/*`, `/api/v1/auth/{me,login,logout,signup}`, Telegram webhook,
+setup scripts, and `/api/v1/supervisors/*`. The supervisor surface bypasses Authentik because
+supervisor agents run on remote machines and cannot hold an SSO session — per-endpoint
+`requireSupervisorAuth()` is the auth boundary there.
 
 ---
 
