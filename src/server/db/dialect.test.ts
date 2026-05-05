@@ -1,9 +1,7 @@
 /**
  * Dialect resolver tests (Phase 1 — replaces postgres-reject.test.ts).
  *
- * Asserts config.dialect semantics across all URL families. The deprecated
- * assertSqliteBackend shim is also imported and verified to be a no-op
- * (since it is retained for one phase to keep transitional imports compiling).
+ * Asserts config.dialect semantics across all URL families.
  *
  * Previously: postgres-reject.test.ts asserted that postgres:// URLs threw.
  * Now: the dialect resolver accepts postgres:// and returns "postgres".
@@ -54,18 +52,6 @@ describe("dialect resolver semantics (config.ts resolution rule)", () => {
 		// includes the word from being misidentified as a Postgres DSN.
 		expect(resolveDialect("./data/postgres-clone.db")).toBe("sqlite");
 		expect(resolveDialect("mypostgresnotaurl")).toBe("sqlite");
-	});
-});
-
-describe("assertSqliteBackend shim (deprecated — retained for one phase)", () => {
-	test("is a no-op for any input (shim replaces the old throw-on-postgres behavior)", async () => {
-		const { assertSqliteBackend } = await import("./client.js");
-		// Previously threw on postgres:// — now a no-op.
-		expect(() => assertSqliteBackend("postgres://user:pw@host/db")).not.toThrow();
-		expect(() => assertSqliteBackend("postgresql://user:pw@host/db")).not.toThrow();
-		expect(() => assertSqliteBackend("")).not.toThrow();
-		expect(() => assertSqliteBackend(undefined)).not.toThrow();
-		expect(() => assertSqliteBackend("./data/agentpulse.db")).not.toThrow();
 	});
 });
 

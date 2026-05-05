@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # db-generate.sh — generate Drizzle migration baselines for both dialects.
 #
-# Runs drizzle-kit for SQLite and Postgres sequentially. Uses the Node.js
-# CJS hook (scripts/drizzle-hook.cjs) to remap .js extension imports to
-# .ts so drizzle-kit's bundler can resolve the project's ESM-style schema
-# files without modification.
+# Run this script after any schema change. It generates per-dialect migration
+# files for SQLite and Postgres and then verifies that the generated output
+# has been committed. CI will fail if there is an uncommitted diff in drizzle/.
 #
-# Phase 8 will harden this script with a diff-check to detect schema drift.
+# Usage:
+#   bun run db:generate          # via package.json wrapper
+#   bash scripts/db-generate.sh  # directly
+#
+# Prerequisites: drizzle.config.sqlite.ts and drizzle.config.postgres.ts must
+# both be present and correct. The drizzle-hook.cjs shim remaps .js extension
+# imports to .ts so drizzle-kit's bundler can resolve schema files without
+# modification.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -18,4 +24,17 @@ echo "[db-generate] Generating Postgres baseline..."
 node --require ./scripts/drizzle-hook.cjs ./node_modules/drizzle-kit/bin.cjs generate \
   --config drizzle.config.postgres.ts
 
-echo "[db-generate] Done."
+echo "[db-generate] Checking for uncommitted migration drift..."
+# Exit non-zero if either generate produced files that have not been staged.
+# This catches the "forgot to commit generated migrations" footgun in CI and
+# in pre-commit hooks. Run `git add drizzle/ && git commit` to resolve.
+if ! git diff --exit-code drizzle/; then
+  echo ""
+  echo "[db-generate] ERROR: drizzle/ contains uncommitted changes after generate."
+  echo "  Stage and commit the generated migration files before pushing:"
+  echo "    git add drizzle/"
+  echo "    git commit -m 'chore: update drizzle migrations'"
+  exit 1
+fi
+
+echo "[db-generate] Done. Both dialects are up to date."

@@ -1,0 +1,17 @@
+## PVC note for Postgres overlay (comment-only — this file is NOT applied by the overlay)
+##
+## The SQLite data PVC (agentpulse-data, defined in 03-pvc.yaml) becomes
+## unused when running with a Postgres DATABASE_URL. This overlay does NOT
+## delete it — Kubernetes PVC deletion is irreversible and would destroy SQLite
+## data that may not yet be migrated.
+##
+## Operator steps after verifying Postgres is working:
+##   1. Confirm no data in SQLite is still needed (check BACKUP-RESTORE.md).
+##   2. Delete the unused PVC manually:
+##        kubectl -n agentpulse delete pvc agentpulse-data
+##   3. Optionally delete the backup PVC as well:
+##        kubectl -n agentpulse delete pvc agentpulse-backups
+##
+## Note: spec.accessModes and spec.storageClassName are immutable after the
+## PVC is bound. Do not attempt to patch these fields — delete and recreate
+## instead (see 03-pvc.yaml annotations for details).

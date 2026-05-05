@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Postgres overlay for AgentPulse.
+#
+# Applies on top of the base manifests (deploy/k8s/) to configure a
+# Postgres-backed deployment. Key changes from the base:
+#
+#   1. Sets DATABASE_URL to a real Postgres connection string (operator fills in).
+#   2. Removes the backup-sidecar container (SQLite-only; Postgres uses native backup).
+#   3. Leaves the SQLite data PVC in place — operator removes it manually after
+#      verifying that data has been migrated or is no longer needed.
+#
+# Usage:
+#   kubectl apply -k deploy/overlays/postgres/
+#
+# Pre-flight:
+#   1. Edit overlays/postgres/secret-patch.yaml — set DATABASE_URL to your Postgres URL.
+#   2. Ensure the agentpulse-secrets Secret exists in the cluster (apply secret-patch.yaml
+#      directly or via a secrets manager that writes Kubernetes secrets).
+#   3. Verify kubectl kustomize deploy/overlays/postgres/ produces valid YAML before applying.
+
+namespace: agentpulse
+
+resources:
+  - ../../k8s/
+
+patches:
+  # Patch the deployment to remove the backup sidecar and its volumes.
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: agentpulse
+
+  # Patch the secret template to set DATABASE_URL to a Postgres connection string.
+  # NOTE: 01-secret-template.yaml is NOT in the base kustomization.yaml resources
+  # list (it holds placeholder values). Apply this patch separately or manage the
+  # secret out-of-band (recommended for production).
+  # Uncomment the lines below if you include the secret in your overlay resources:
+  # - path: secret-patch.yaml
+  #   target:
+  #     kind: Secret
+  #     name: agentpulse-secrets

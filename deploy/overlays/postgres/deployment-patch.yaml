@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentpulse
+  namespace: agentpulse
+spec:
+  # Postgres supports multiple readers/writers — switch from Recreate to
+  # RollingUpdate. The pg_advisory_xact_lock in initializeDatabase() serializes
+  # concurrent migration attempts, so rolling deploys are safe.
+  # Remove this if your Postgres setup cannot tolerate two connections during
+  # the migration window (e.g., very tight connection limits).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    spec:
+      containers:
+        # Keep the main agentpulse container unchanged — the base manifest
+        # defines all its env vars, probes, and resource limits.
+        - name: agentpulse
+          # No changes needed here; DATABASE_URL is read from the secret.
+          # The secret-patch.yaml in this overlay sets it to the Postgres URL.
+        # Remove the backup-sidecar: Postgres deployments use Postgres-native
+        # backup (pg_dump / wal-g / managed provider snapshots), not the
+        # SQLite sidecar. The $patch: delete directive removes the container
+        # from the merged output.
+        - name: backup-sidecar
+          $patch: delete
+      volumes:
+        # Remove the backup PVC volume (no sidecar to mount it).
+        # The backups PVC itself is NOT deleted by this overlay — operator
+        # removes it manually after confirming data is no longer needed.
+        - name: backups
+          $patch: delete
+        # Remove the sidecar's /tmp scratch volume.
+        - name: tmp-sidecar
+          $patch: delete

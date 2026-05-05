@@ -13,11 +13,26 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Two-job split (Decision 19 — no matrix):
+#
+#   test-sqlite  — runs on every PR and push. Lint, typecheck, build, and the
+#                  full test suite against SQLite (the default backend and the
+#                  one most developers use locally).
+#
+#   test-postgres — runs only on push to main or dev (not on PRs). Starts a
+#                   Postgres 16 service container and reruns the test suite with
+#                   AGENTPULSE_TEST_BACKEND=postgres so per-backend gates in the
+#                   test harness (describeSqliteOnly / describePostgresOnly) flip
+#                   correctly. PR runs skip this job entirely to avoid wasting CI
+#                   minutes on ephemeral branches — correctness is verified at
+#                   merge time. Jobs run in parallel on push; wall time is
+#                   max(sqlite, postgres) ≈ 7 min.
+
 jobs:
-  check:
-    name: Lint, Typecheck, Test, Build
+  test-sqlite:
+    name: Lint, Typecheck, Build, Test (SQLite)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -45,7 +60,9 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Tests
+      - name: Tests (SQLite backend)
+        env:
+          AGENTPULSE_TEST_BACKEND: sqlite
         run: bun test
 
       - name: Build frontend
@@ -53,6 +70,56 @@ jobs:
 
       - name: Build server
         run: bun run build:server
+
+  # Postgres job: push to main/dev only (Decision 19).
+  # Reason: PRs are validated against SQLite; Postgres correctness is gated
+  # at merge. This avoids starting a Postgres service container for every
+  # feature-branch push where the schema hasn't changed.
+  test-postgres:
+    name: Test (Postgres backend)
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: agentpulse_test
+          POSTGRES_USER: agentpulse_test
+          POSTGRES_PASSWORD: agentpulse_test
+        ports:
+          - 5432:5432
+        # Health check retries up to 10 × 5s = 50s — enough for postgres:16-alpine
+        # cold-start. Tests do not run until the health check passes.
+        options: >-
+          --health-cmd "pg_isready -U agentpulse_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Tests (Postgres backend)
+        env:
+          AGENTPULSE_TEST_BACKEND: postgres
+          AGENTPULSE_TEST_PG_URL: postgres://agentpulse_test:agentpulse_test@localhost:5432/agentpulse_test
+          DATABASE_URL: postgres://agentpulse_test:agentpulse_test@localhost:5432/agentpulse_test
+        run: bun test
 
   windows-installers:
     name: Windows Installer Validation
@@ -82,7 +149,7 @@ jobs:
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
-    needs: [check, windows-installers]
+    needs: [test-sqlite, windows-installers]
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4

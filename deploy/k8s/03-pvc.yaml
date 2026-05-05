@@ -11,6 +11,18 @@ metadata:
     # After first deployment, patch the backing PV directly to set Retain:
     #   see deploy/k8s/README.md → "PV reclaim policy" runbook.
     agentpulse.io/pv-reclaim-note: "Patch the PV to Retain; see README.md"
+    # IMMUTABILITY FOOTGUN: spec.accessModes and spec.storageClassName are
+    # immutable after the PVC is bound. kubectl apply with a changed value
+    # will be rejected by the API server. To change storage class or access
+    # mode you must delete the PVC (losing all SQLite data unless backed up)
+    # and recreate it.
+    #
+    # Postgres migration note: when switching from SQLite to Postgres via the
+    # deploy/k8s/overlays/postgres/ overlay, this PVC becomes unused by the
+    # deployment but is NOT deleted by the overlay. The operator MUST verify
+    # that the SQLite database has been migrated or backed up before manually
+    # deleting the PVC. See deploy/k8s/BACKUP-RESTORE.md for the runbook.
+    agentpulse.io/immutability-note: "accessModes and storageClassName are immutable after bind; see above"
 spec:
   accessModes:
     - ReadWriteOnce

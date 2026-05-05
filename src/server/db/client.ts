@@ -7,20 +7,6 @@ import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
 import { config } from "../config.js";
 import * as schema from "./schema.js";
 
-/**
- * @deprecated Use config.dialect instead. assertSqliteBackend was replaced by
- * the dialect resolver in Phase 1 of the postgres-backend campaign. Retained
- * for one phase to keep transitional test imports working; Phase 8 deletes it.
- *
- * Previously: throw on postgres:// URLs to fail fast. Now: a no-op — the
- * Postgres path is valid. Kept as a shim so existing test imports compile
- * without modification during the transition.
- */
-export function assertSqliteBackend(_databaseUrl: string | undefined): void {
-	// No-op shim. The postgres-backend campaign replaced this check with
-	// config.dialect. dialect.test.ts covers the resolver semantics directly.
-}
-
 // ── getSqlite() boot-failure registry (Decision 28) ──────────────────────────
 //
 // When config.dialect === "postgres" and getSqlite() is called, every caller
