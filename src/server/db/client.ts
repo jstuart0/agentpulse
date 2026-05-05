@@ -104,9 +104,7 @@ function createDatabase() {
 		// with a default of 10; log a warning if the operator provided a bad value.
 		const rawPoolMax = Number(process.env.AGENTPULSE_PG_POOL_MAX ?? 10);
 		const max =
-			Number.isInteger(rawPoolMax) && rawPoolMax >= 1 && rawPoolMax <= 100
-				? rawPoolMax
-				: 10;
+			Number.isInteger(rawPoolMax) && rawPoolMax >= 1 && rawPoolMax <= 100 ? rawPoolMax : 10;
 		if (process.env.AGENTPULSE_PG_POOL_MAX && max !== rawPoolMax) {
 			console.warn(
 				`[db] AGENTPULSE_PG_POOL_MAX=${process.env.AGENTPULSE_PG_POOL_MAX} is invalid (must be integer in [1, 100]); falling back to ${max}`,

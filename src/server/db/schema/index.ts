@@ -6,23 +6,23 @@
  * this runtime barrel selects between them. The config.ts resolver is the
  * single source of truth.
  *
- * Phase 1: only settings is dual-dialect. All other tables come through from
- * the legacy schema.ts (SQLite-typed). Phase 2a migrates the remaining tables.
+ * Phase 2a: all 30 tables are now dual-dialect. The per-dialect entry files
+ * (index.sqlite.ts, index.postgres.ts) export dialect-specific types for
+ * drizzle-kit. This runtime barrel re-exports SQLite-typed symbols so the
+ * ~60 existing importers see no type change. Phase 2b wires the actual
+ * runtime dialect selection into client.ts and migrates the importers to
+ * dialect-aware types.
  *
- * Phase 2b wires this barrel into client.ts so it becomes the single import
- * point for all schema tables. Until then, production code continues to
- * import from schema.ts directly.
- *
- * CONSUMERS: import from this barrel only when you need the runtime-resolved
- * schema (e.g. application code that should work on both dialects). For tests
- * and drizzle-kit, import from index.sqlite.ts or index.postgres.ts directly.
+ * CONSUMERS:
+ *   - Production code: import from this barrel or "../db/schema" (shim).
+ *     SQLite-typed until Phase 2b migrates them.
+ *   - drizzle-kit (SQLite): import from index.sqlite.ts directly.
+ *   - drizzle-kit (Postgres): import from index.postgres.ts directly.
+ *   - Tests: import from index.sqlite.ts (or index.postgres.ts for Postgres axis).
  *
  * TODO(Phase 2b — ian mid-build H1 tracking): 12 production files still import
- * the `settings` symbol from `../schema.js` instead of from this barrel.
- * On the SQLite path they work fine (the legacy schema.ts is SQLite-typed).
- * On the Postgres path they would pass SQLite-typed table objects to a
- * postgres-js Drizzle instance, producing type-OID mismatches at query time.
- * Phase 2b migrates each importer to `from "../db/schema/index.js"`. Files:
+ * `settings` from `../schema.js`. Phase 2b migrates each to `from
+ * "../db/schema/index.js"` once client.ts is updated to support Postgres:
  *   - src/server/routes/auth.ts
  *   - src/server/routes/settings.ts
  *   - src/server/routes/ai-watcher.ts
@@ -36,54 +36,13 @@
  *   - src/server/services/ai/feature.ts
  *   - src/server/services/ai/embeddings/embedding-service.ts
  */
-import { config } from "../../config.js";
-import { settingsPg, settingsSqlite } from "./core/settings.js";
 
-// All tables except settings come from the legacy schema.ts (unchanged in Phase 1).
-export {
-	sessions,
-	events,
-	users,
-	authSessions,
-	apiKeys,
-	sessionTemplates,
-	supervisors,
-	supervisorEnrollmentTokens,
-	supervisorCredentials,
-	launchRequests,
-	managedSessions,
-	controlActions,
-	llmProviders,
-	watcherConfigs,
-	eventEmbeddings,
-	aiDailySpend,
-	watcherProposals,
-	aiWatcherRuns,
-	notificationChannels,
-	aiInboxSnoozes,
-	projects,
-	askThreads,
-	askMessages,
-	aiActionRequests,
-	aiHitlRequests,
-	projectAlertRules,
-	projectAlertRuleFires,
-	aiQaCache,
-	aiPendingProjectDrafts,
-} from "../schema.js";
+// Re-export all SQLite-typed symbols from the SQLite entry file. This maintains
+// the exact type contract existing importers depend on through Phase 2b.
+// The `settings` export from index.sqlite.ts uses the Phase 1 settingsSqlite
+// definition and is the dialect-resolved export for the SQLite path.
+export * from "./index.sqlite.js";
 
-export type {
-	ProjectDraftFields,
-	NextQuestion,
-	ProjectChoiceSnapshot,
-	PendingWorkspaceScaffold,
-	PendingWorkspaceClone,
-	LaunchDisambiguationDraftFields,
-} from "../schema.js";
-
-// Also re-export the typed variants for drizzle-kit and tests.
-export { settingsPg, settingsSqlite };
-
-// Dialect-resolved settings table. This is the export callers should use when
-// they want the correct type for the current dialect.
-export const settings = config.dialect === "postgres" ? settingsPg : settingsSqlite;
+// Also export the Postgres-typed variant for drizzle-kit / tests.
+// Does NOT override the `settings` export above — index.sqlite.ts wins.
+export { settingsPg } from "./core/settings.js";
