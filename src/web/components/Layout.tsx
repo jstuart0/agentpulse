@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
+import { useSignOut } from "../hooks/useSignOut.js";
 import { type InboxWorkItem, type LabsFlag, api } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
-import { useSignOut } from "../hooks/useSignOut.js";
 import { useConnectionStore } from "../stores/connection-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useUserStore } from "../stores/user-store.js";
@@ -198,6 +198,7 @@ export function Layout() {
 					className="text-muted-foreground p-1.5 hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
 				>
 					<svg
+						aria-hidden="true"
 						className="w-5 h-5"
 						fill="none"
 						viewBox="0 0 24 24"
@@ -359,7 +360,7 @@ export function Layout() {
 								</span>
 								<div className="flex items-center gap-1 mt-0.5">
 									<span className="text-[9px] font-mono text-primary/70 bg-primary/8 px-1 py-0.5 rounded leading-none">
-										CMD CENTER
+										v{import.meta.env.VITE_APP_VERSION ?? "dev"}
 									</span>
 								</div>
 							</div>

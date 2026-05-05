@@ -6,6 +6,7 @@ import {
 	type TelegramWebhookInfo,
 	api,
 } from "../../lib/api.js";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { ChannelList } from "./TelegramChannelList.js";
 import { BotCredentialsStatus, BotHeader } from "./TelegramBotStatus.js";
 import { AddChannelCard, BotCredentialsWizard, EnrollmentCard } from "./TelegramEnrollment.js";
@@ -54,6 +55,7 @@ export function TelegramChannelPanel() {
 	} | null>(null);
 
 	const publicUrl = typeof window !== "undefined" ? window.location.origin : "";
+	const { copy } = useCopyFeedback();
 
 	const showToast = useCallback((kind: "ok" | "err", text: string) => {
 		setToast({ kind, text });
@@ -247,15 +249,6 @@ export function TelegramChannelPanel() {
 			showToast("ok", "Test message sent to Telegram.");
 		} catch (err) {
 			showToast("err", err instanceof Error ? err.message : String(err));
-		}
-	}
-
-	async function copy(text: string, okText = "Copied") {
-		try {
-			await navigator.clipboard.writeText(text);
-			showToast("ok", okText);
-		} catch {
-			showToast("err", "Clipboard blocked by browser.");
 		}
 	}
 

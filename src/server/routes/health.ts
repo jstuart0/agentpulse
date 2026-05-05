@@ -1,6 +1,11 @@
 import { Hono } from "hono";
+import pkg from "../../../package.json" with { type: "json" };
 import { isShuttingDown } from "../drain-state.js";
 import { getBgErrorCount, getInFlightCount, getRateLimitedDropped } from "./ingest-counters.js";
+
+// Read version from package.json at module init — independent of how the
+// process was launched (file-path invocation doesn't inject npm_package_version).
+const APP_VERSION: string = pkg.version;
 
 const health = new Hono();
 
@@ -52,6 +57,7 @@ health.get("/health", (c) => {
 	return c.json({
 		status: "ok",
 		service: "agentpulse",
+		version: APP_VERSION,
 		timestamp: new Date().toISOString(),
 		inFlight: getInFlightCount(),
 		processingErrors: getBgErrorCount(),

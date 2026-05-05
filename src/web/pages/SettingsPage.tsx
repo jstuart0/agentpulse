@@ -6,6 +6,7 @@ import { AiSettingsPanel } from "../components/settings/AiSettingsPanel.js";
 import { LabsPanel } from "../components/settings/LabsPanel.js";
 import { TelegramChannelPanel } from "../components/settings/TelegramChannelPanel.js";
 import { WorkspacesPanel } from "../components/settings/WorkspacesPanel.js";
+import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { type AppTheme, persistTheme, resolveInitialTheme } from "../lib/theme.js";
@@ -29,21 +30,28 @@ export function SettingsPage() {
 	const [settings, setSettings] = useState<Record<string, unknown>>({});
 	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
 	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
+	// Version: prefer live health endpoint; fall back to build-time constant.
+	const [serverVersion, setServerVersion] = useState<string>(
+		import.meta.env.VITE_APP_VERSION ?? "—",
+	);
+	const { copy } = useCopyFeedback();
 
 	// Fetch API keys and settings
 	useEffect(() => {
 		async function load() {
 			try {
-				const [keysRes, settingsRes, supervisorsRes, launchesRes] = await Promise.all([
+				const [keysRes, settingsRes, supervisorsRes, launchesRes, healthRes] = await Promise.all([
 					api.getApiKeys(),
 					api.getSettings(),
 					api.getSupervisors(),
 					api.getLaunches(),
+					api.getHealth(),
 				]);
 				setApiKeys(keysRes.keys || []);
 				setSettings(settingsRes || {});
 				setSupervisors(supervisorsRes.supervisors || []);
 				setRecentLaunches((launchesRes.launches || []).slice(0, 5));
+				if (healthRes.version) setServerVersion(healthRes.version);
 				if (settingsRes.theme === "dark" || settingsRes.theme === "light") {
 					setTheme(settingsRes.theme);
 					persistTheme(settingsRes.theme);
@@ -375,15 +383,15 @@ export function SettingsPage() {
 								{newKeyValue}
 							</code>
 							<button
-								onClick={() => {
-									navigator.clipboard.writeText(newKeyValue);
-								}}
+								type="button"
+								onClick={() => copy(newKeyValue, "API key copied")}
 								className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
 							>
 								Copy
 							</button>
 						</div>
 						<button
+							type="button"
 							onClick={() => setNewKeyValue(null)}
 							className="mt-2 text-xs text-muted-foreground hover:text-foreground"
 						>
@@ -402,6 +410,7 @@ export function SettingsPage() {
 						className="flex-1 min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 					/>
 					<button
+						type="button"
 						onClick={handleCreateKey}
 						disabled={!newKeyName.trim()}
 						className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -457,6 +466,7 @@ export function SettingsPage() {
 								</div>
 								{key.isActive && (
 									<button
+										type="button"
 										onClick={() => handleRevokeKey(key.id)}
 										className="rounded-md px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
 									>
@@ -475,7 +485,7 @@ export function SettingsPage() {
 				<div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
 					<div>
 						<p className="text-muted-foreground text-xs">Version</p>
-						<p className="font-medium">0.1.0</p>
+						<p className="font-medium">{serverVersion}</p>
 					</div>
 					<div>
 						<p className="text-muted-foreground text-xs">Public URL</p>

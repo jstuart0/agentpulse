@@ -1,9 +1,17 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "package.json"), "utf-8")) as {
+	version: string;
+};
+
 export default defineConfig({
 	plugins: [react()],
+	define: {
+		"import.meta.env.VITE_APP_VERSION": JSON.stringify(pkg.version),
+	},
 	root: "src/web",
 	resolve: {
 		alias: {

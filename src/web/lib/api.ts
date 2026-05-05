@@ -441,7 +441,7 @@ export const api = {
 			method: "DELETE",
 		}),
 
-	getHealth: () => request<{ status: string }>("/health"),
+	getHealth: () => request<{ status: string; version?: string }>("/health"),
 
 	getAuthMe: () =>
 		request<{

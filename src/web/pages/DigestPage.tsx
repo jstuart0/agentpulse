@@ -47,8 +47,16 @@ export function DigestPage() {
 				<button
 					type="button"
 					onClick={() => void load(true)}
-					className="text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted"
+					disabled={loading}
+					aria-busy={loading}
+					className="flex items-center gap-1.5 text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
 				>
+					{loading && (
+						<span
+							className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin"
+							aria-hidden="true"
+						/>
+					)}
 					Refresh now
 				</button>
 			</header>
@@ -101,8 +109,8 @@ export function DigestPage() {
 					)}
 
 					<footer className="text-[10px] text-muted-foreground pt-2">
-						generated {formatTimeAgo(digest.generatedAt)} · window {formatTimeAgo(digest.windowStart)} →{" "}
-						{formatTimeAgo(digest.windowEnd)}
+						generated {formatTimeAgo(digest.generatedAt)} · window{" "}
+						{formatTimeAgo(digest.windowStart)} → {formatTimeAgo(digest.windowEnd)}
 					</footer>
 				</>
 			) : null}
@@ -179,11 +187,22 @@ function RepoCard({ repo }: { repo: RepoDigest }) {
 				</div>
 			)}
 
-			<details>
-				<summary className="text-[10px] uppercase tracking-wide text-muted-foreground cursor-pointer">
+			<details className="group">
+				<summary className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground cursor-pointer select-none list-none rounded px-1 -mx-1 py-0.5 hover:bg-muted/60 transition-colors">
+					{/* Custom chevron replaces the browser disclosure triangle */}
+					<svg
+						className="w-2.5 h-2.5 shrink-0 transition-transform group-open:rotate-90"
+						aria-hidden="true"
+						fill="none"
+						viewBox="0 0 24 24"
+						stroke="currentColor"
+						strokeWidth={3}
+					>
+						<path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+					</svg>
 					Sessions ({repo.sessions.length})
 				</summary>
-				<ul className="mt-2 space-y-1">
+				<ul className="mt-2 space-y-1 border-t border-border/40 pt-2">
 					{repo.sessions.map((s) => (
 						<li key={s.sessionId} className="flex items-center gap-2 text-xs">
 							<Link
@@ -194,7 +213,9 @@ function RepoCard({ repo }: { repo: RepoDigest }) {
 							</Link>
 							<Chip label={s.status} />
 							{s.health && <Chip label={s.health} />}
-							<span className="text-muted-foreground ml-auto">{formatTimeAgo(s.lastActivityAt)}</span>
+							<span className="text-muted-foreground ml-auto">
+								{formatTimeAgo(s.lastActivityAt)}
+							</span>
 						</li>
 					))}
 				</ul>

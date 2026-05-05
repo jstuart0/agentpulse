@@ -7,6 +7,8 @@ import { SessionCard } from "./SessionCard.js";
 interface SessionGridProps {
 	sessions: Session[];
 	isLoading: boolean;
+	/** The active filter tab so the empty state can offer context-aware copy. */
+	filter?: string;
 }
 
 function useSessionIntelligence(
@@ -39,7 +41,7 @@ function useSessionIntelligence(
 	return map;
 }
 
-export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
+export function SessionGrid({ sessions, isLoading, filter }: SessionGridProps) {
 	const intelligence = useSessionIntelligence(sessions);
 	if (isLoading) {
 		return (
@@ -56,10 +58,27 @@ export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
 	}
 
 	if (sessions.length === 0) {
+		const emptyHeading =
+			filter === "archived"
+				? "No archived sessions"
+				: filter === "completed"
+					? "No completed sessions"
+					: filter === "active"
+						? "No active sessions"
+						: filter === "idle"
+							? "No idle sessions"
+							: "No sessions yet";
+		const emptySub =
+			filter === "archived"
+				? "Archived sessions will appear here once you archive them."
+				: filter && filter !== "all"
+					? "Try switching to a different filter tab."
+					: "Start an agent session to see it here. Follow the setup guide to wire up your first hook.";
 		return (
 			<div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
 				<svg
 					className="w-16 h-16 mb-4 opacity-30"
+					aria-hidden="true"
 					fill="none"
 					viewBox="0 0 24 24"
 					stroke="currentColor"
@@ -71,8 +90,8 @@ export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
 						d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
 					/>
 				</svg>
-				<p className="text-lg font-medium mb-1">No sessions</p>
-				<p className="text-sm">Try a different filter or start a new agent session.</p>
+				<p className="text-lg font-medium mb-1">{emptyHeading}</p>
+				<p className="text-sm">{emptySub}</p>
 			</div>
 		);
 	}

@@ -5,7 +5,7 @@ import { FirstRunWelcome } from "../components/FirstRunWelcome.js";
 import { SessionGrid } from "../components/SessionGrid.js";
 import { StatCard } from "../components/StatCard.js";
 import { useSessions } from "../hooks/useSessions.js";
-import { formatDuration, parseDate } from "../lib/utils.js";
+import { cn, formatDuration, parseDate } from "../lib/utils.js";
 import { useProjectsStore } from "../stores/projects-store.js";
 import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 
@@ -141,33 +141,46 @@ export function DashboardPage() {
 				<div className="flex gap-1 bg-muted rounded-lg p-1 overflow-x-auto scrollbar-none">
 					{/* 'archived' here is a UI tab id, mapped to isArchived=true in the
 					    filter logic above — not a SessionStatus value (Slice G). */}
-					{["active", "idle", "completed", "archived", "all"].map((f) => (
-						<button
-							key={f}
-							onClick={() => setFilter(f)}
-							className={`shrink-0 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-								filter === f
-									? "bg-background text-foreground shadow-sm"
-									: "text-muted-foreground hover:text-foreground"
-							}`}
-						>
-							{f.charAt(0).toUpperCase() + f.slice(1)}
-							<span className="ml-1 text-muted-foreground">
-								(
-								{f === "all"
-									? visibleSessions.filter(isVisibleSession).length
-									: f === "archived"
-										? visibleSessions.filter(isArchivedSession).length
-										: visibleSessions.filter((s) => s.status === f).length}
-								)
-							</span>
-						</button>
-					))}
+					{["active", "idle", "completed", "archived", "all"].map((f) => {
+						const count =
+							f === "all"
+								? visibleSessions.filter(isVisibleSession).length
+								: f === "archived"
+									? visibleSessions.filter(isArchivedSession).length
+									: visibleSessions.filter((s) => s.status === f).length;
+						return (
+							<button
+								key={f}
+								type="button"
+								onClick={() => setFilter(f)}
+								className={`shrink-0 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+									filter === f
+										? "bg-background text-foreground shadow-sm"
+										: "text-muted-foreground hover:text-foreground"
+								}`}
+							>
+								{f.charAt(0).toUpperCase() + f.slice(1)}
+								{count > 0 && (
+									<span
+										className={cn(
+											"ml-1.5 inline-flex items-center justify-center min-w-[1.25rem] h-[1.125rem] rounded-full text-[10px] font-medium px-1 tabular-nums",
+											filter === f
+												? "bg-primary/10 text-primary"
+												: "bg-muted text-muted-foreground",
+										)}
+									>
+										{count}
+									</span>
+								)}
+							</button>
+						);
+					})}
 				</div>
 
 				<div className="flex flex-wrap items-center gap-3">
 					<div className="relative w-full md:max-w-xs">
 						<svg
+							aria-hidden="true"
 							className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground"
 							fill="none"
 							viewBox="0 0 24 24"
@@ -189,10 +202,17 @@ export function DashboardPage() {
 						/>
 						{search && (
 							<button
+								type="button"
 								onClick={() => setSearch("")}
 								className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
 							>
-								<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<svg
+									className="w-3 h-3"
+									aria-hidden="true"
+									fill="none"
+									viewBox="0 0 24 24"
+									stroke="currentColor"
+								>
 									<path
 										strokeLinecap="round"
 										strokeLinejoin="round"
@@ -200,6 +220,7 @@ export function DashboardPage() {
 										d="M6 18L18 6M6 6l12 12"
 									/>
 								</svg>
+								<span className="sr-only">Clear search</span>
 							</button>
 						)}
 					</div>
@@ -245,6 +266,7 @@ export function DashboardPage() {
 								return (
 									<button
 										key={session.sessionId}
+										type="button"
 										onClick={() => setSelectedActiveSessionId(session.sessionId)}
 										className={`min-w-0 shrink-0 rounded-lg border px-3 py-2 text-left transition-colors ${
 											isSelected
@@ -281,8 +303,7 @@ export function DashboardPage() {
 								</div>
 								<div className="mt-2 grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
 									<div>
-										<span className="text-foreground">Status:</span>{" "}
-										{selectedActiveSession.status}
+										<span className="text-foreground">Status:</span> {selectedActiveSession.status}
 									</div>
 									<div>
 										<span className="text-foreground">Last activity:</span>{" "}
@@ -292,12 +313,14 @@ export function DashboardPage() {
 							</div>
 							<div className="flex items-start gap-2">
 								<button
+									type="button"
 									onClick={() => navigate(`/sessions/${selectedActiveSession.sessionId}`)}
 									className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
 								>
 									Open Workspace
 								</button>
 								<button
+									type="button"
 									onClick={() =>
 										navigate(`/sessions/${selectedActiveSession.sessionId}?tab=activity`)
 									}
@@ -312,7 +335,7 @@ export function DashboardPage() {
 			)}
 
 			{/* Session Grid */}
-			<SessionGrid sessions={filtered} isLoading={isLoading} />
+			<SessionGrid sessions={filtered} isLoading={isLoading} filter={filter} />
 		</div>
 	);
 }

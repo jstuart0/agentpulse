@@ -30,6 +30,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	const [confirming, setConfirming] = useState(false);
 	const cancelRef = useRef<HTMLButtonElement>(null);
 	const cardRef = useRef<HTMLDivElement>(null);
+	const nameSpanRef = useRef<HTMLSpanElement>(null);
 
 	// Click-outside and Escape cancel the inline delete confirm (C8 / S-28).
 	useEffect(() => {
@@ -73,11 +74,16 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	async function handleRename() {
 		if (!newName.trim()) {
 			setRenaming(false);
+			// Return focus to name span so keyboard users aren't stranded.
+			requestAnimationFrame(() => nameSpanRef.current?.focus());
 			return;
 		}
 		await api.renameSession(session.sessionId, newName.trim());
 		updateSession({ ...session, displayName: newName.trim() });
 		setRenaming(false);
+		// Shift focus to the resulting name span so blur doesn't leave the
+		// user without a focus target (U-L4).
+		requestAnimationFrame(() => nameSpanRef.current?.focus());
 	}
 
 	async function handlePin(e: React.MouseEvent) {
@@ -156,7 +162,9 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 						/>
 					) : (
 						<span
-							className="text-xs font-mono font-bold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5 truncate max-w-[10rem] md:max-w-none inline-flex items-center gap-1"
+							ref={nameSpanRef}
+							tabIndex={-1}
+							className="text-xs font-mono font-bold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5 truncate max-w-[10rem] md:max-w-none inline-flex items-center gap-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
 							title={
 								session.metadata?.aiInitiated === true
 									? "Launched from Ask — open conversation"
@@ -376,8 +384,10 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 					{projectName}
 				</h3>
 				<div className="flex flex-wrap items-center gap-2 mt-0.5">
+					{/* On mobile the project heading above already shows the folder name;
+					    the full path is too long for small screens. Show it on md+. */}
 					<p
-						className="text-xs text-muted-foreground break-all md:truncate"
+						className="hidden md:block text-xs text-muted-foreground truncate"
 						title={session.cwd || ""}
 					>
 						{session.cwd}

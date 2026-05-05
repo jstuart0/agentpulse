@@ -1,13 +1,9 @@
 import type { Session } from "../../../shared/types.js";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 
 export function CodexStatusHint({ displayName }: { displayName: string }) {
 	const renameCommand = `/rename ${displayName}`;
-
-	async function copyRenameCommand() {
-		try {
-			await navigator.clipboard.writeText(renameCommand);
-		} catch {}
-	}
+	const { copy } = useCopyFeedback();
 
 	return (
 		<div className="mx-3 md:mx-6 mt-2 md:mt-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5">
@@ -22,7 +18,8 @@ export function CodexStatusHint({ displayName }: { displayName: string }) {
 					</p>
 				</div>
 				<button
-					onClick={copyRenameCommand}
+					type="button"
+					onClick={() => void copy(renameCommand, "Rename command copied")}
 					className="flex-shrink-0 rounded border border-primary/30 px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/10 transition-colors"
 				>
 					Copy

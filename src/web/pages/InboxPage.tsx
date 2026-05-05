@@ -146,8 +146,16 @@ export function InboxPage() {
 					<button
 						type="button"
 						onClick={() => void reload()}
-						className="text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted"
+						disabled={loading}
+						aria-busy={loading}
+						className="flex items-center gap-1.5 text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
 					>
+						{loading && (
+							<span
+								className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin"
+								aria-hidden="true"
+							/>
+						)}
 						Refresh
 					</button>
 				</div>
@@ -172,13 +180,15 @@ export function InboxPage() {
 			)}
 
 			{inbox && (
-				<footer className="pt-2 text-xs text-muted-foreground flex items-center gap-3">
+				<footer className="pt-2 text-xs text-muted-foreground flex flex-wrap items-center gap-3">
 					<span>total: {inbox.total}</span>
-					{(Object.keys(KIND_META) as InboxWorkItem["kind"][]).map((k) => (
-						<span key={k}>
-							{KIND_META[k].shortLabel}: {inbox.byKind[k]}
-						</span>
-					))}
+					{(Object.keys(KIND_META) as InboxWorkItem["kind"][])
+						.filter((k) => (inbox.byKind[k] ?? 0) > 0)
+						.map((k) => (
+							<span key={k}>
+								{KIND_META[k].shortLabel}: {inbox.byKind[k]}
+							</span>
+						))}
 				</footer>
 			)}
 		</div>
