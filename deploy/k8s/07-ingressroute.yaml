@@ -16,6 +16,14 @@ spec:
         - name: agentpulse
           port: 3000
 
+    # Readiness probe — public so kubelet (no Authentik session) can poll
+    # and external load-balancers can health-check.
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/ready`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
     - match: Host(`agentpulse.example.com`) && Path(`/api/v1/hooks`)
       kind: Rule
       services:
@@ -23,6 +31,47 @@ spec:
           port: 3000
 
     - match: Host(`agentpulse.example.com`) && Path(`/api/v1/hooks/status`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # Static assets — Vite-built JS chunks, CSS, fonts, images. Public so
+    # the browser can lazy-load route chunks without each fetch bouncing
+    # to Authentik (which returns a 302 with HTML body, breaking Vite's
+    # dynamic import with a MIME mismatch). The build output contains no
+    # secrets; same content every visitor sees.
+    - match: Host(`agentpulse.example.com`) && PathPrefix(`/assets/`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # Auth introspection + local-account login/logout/signup — must be
+    # reachable WITHOUT Authentik forwardauth so the login page itself can
+    # render (it calls /auth/me to detect "you're already signed in") and
+    # so local-auth fallback users can complete login.
+    # /auth/change-password attaches requireAuth() in-handler so it remains
+    # auth-protected at the route layer.
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/me`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/login`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/logout`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/signup`)
       kind: Rule
       services:
         - name: agentpulse
@@ -152,9 +201,21 @@ spec:
     - match: Host(`agentpulse.example.com`)
       kind: Rule
       middlewares:
+        # Order matters:
+        #   strip-client-authentik FIRST — drops any X-Authentik-* the
+        #     client might have forged.
+        #   forwardauth SECOND — Authentik validates session, injects
+        #     trusted X-authentik-* identity headers in its response;
+        #     Traefik copies them upstream.
+        #   inject-verify LAST — adds the shared-secret X-Authentik-Verify
+        #     header so AgentPulse's trust gate admits the identity.
+        #     Only fires after forwardauth allows the request through
+        #     (forwardauth blocks unauthenticated requests with a 302).
         - name: agentpulse-strip-client-authentik
           namespace: agentpulse
         - name: agentpulse-forwardauth
+          namespace: agentpulse
+        - name: agentpulse-inject-verify
           namespace: agentpulse
       services:
         - name: agentpulse
