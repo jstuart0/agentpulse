@@ -11,3 +11,38 @@ data:
   PUBLIC_URL: "https://agentpulse.example.com"
   LOG_LEVEL: "info"
   NODE_ENV: "production"
+  # ── Forwardauth header customisation ──────────────────────────────────────
+  # Defaults shown — uncomment and override for non-Authentik providers.
+  # These env vars couple to the header names in 06-middleware.yaml: when you
+  # override a header name here, also update the corresponding middleware
+  # resource in your private overlay so the YAML and the app stay in sync.
+  # See deploy/k8s/FORWARDAUTH.md for provider-specific values.
+  #
+  # Provider label (used in /auth/me and dashboard UI).
+  # Only "authentik" triggers the Authentik sign-out URL; all other values
+  # are treated as generic forwardauth providers (signOutUrl returns null).
+  # FORWARDAUTH_PROVIDER: "authentik"
+  #
+  # Header carrying the authenticated username.
+  # FORWARDAUTH_HEADER_USERNAME: "X-Authentik-Username"
+  #
+  # Header carrying the authenticated email address.
+  # FORWARDAUTH_HEADER_EMAIL: "X-Authentik-Email"
+  #
+  # Header carrying group memberships (comma-separated).
+  # FORWARDAUTH_HEADER_GROUPS: "X-Authentik-Groups"
+  #
+  # Header carrying the user's display name.
+  # FORWARDAUTH_HEADER_NAME: "X-Authentik-Name"
+  #
+  # Header carrying the unique user identifier.
+  # FORWARDAUTH_HEADER_UID: "X-Authentik-Uid"
+  #
+  # Header used to carry the trust secret from Traefik to AgentPulse.
+  # Must match the header injected by agentpulse-inject-verify in 06-middleware.yaml.
+  # FORWARDAUTH_HEADER_VERIFY: "X-Authentik-Verify"
+  #
+  # Prefix of all IdP identity headers to strip before forwardauth runs.
+  # agentpulse-strip-client-forwardauth removes these by exact name; this
+  # env var tells AgentPulse which prefix to expect from the IdP.
+  # FORWARDAUTH_HEADER_STRIP_PREFIX: "X-Authentik-"

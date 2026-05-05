@@ -175,7 +175,7 @@ export function checkPasswordComplexity(password: string): string | null {
 
 /**
  * Introspection + local-account auth routes. Local accounts coexist
- * with Authentik forwardauth and API-key bearer flows; the priority
+ * with forwardauth (any IdP) and API-key bearer flows; the priority
  * order lives in `auth/middleware.ts`. When DISABLE_AUTH=true all
  * endpoints here are effectively no-ops because the middleware stamps
  * every request as anonymous upstream.
@@ -208,8 +208,13 @@ authRouter.get("/auth/me", async (c) => {
 			disableAuth: config.disableAuth,
 		});
 	}
+	// Provider-specific logout URLs. Authentik gets its standard sign-out
+	// path; other forwardauth providers return null (the operator wires
+	// their own logout endpoint or the UI renders a generic advisory).
+	// Local accounts use the API logout endpoint; API-key callers don't
+	// need a sign-out URL.
 	const signOutUrl =
-		user.source === "authentik"
+		user.source === "forwardauth" && user.provider === "authentik"
 			? "/outpost.goauthentik.io/sign_out"
 			: user.source === "local"
 				? "/api/v1/auth/logout"
@@ -219,6 +224,7 @@ authRouter.get("/auth/me", async (c) => {
 		user: {
 			name: user.name,
 			source: user.source,
+			provider: user.provider ?? null,
 			id: user.id ?? null,
 			role: user.role ?? null,
 		},

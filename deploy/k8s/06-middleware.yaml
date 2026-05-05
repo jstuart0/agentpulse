@@ -1,3 +1,11 @@
+# Traefik middlewares for AgentPulse forwardauth SSO.
+#
+# Header names are env-var-coupled. The defaults below match Authentik
+# (X-Authentik-*). To use Authelia, oauth2-proxy, Pomerium, or another
+# provider, override these resources via your private overlay AND set the
+# matching FORWARDAUTH_HEADER_* env vars in agentpulse-config (see
+# 02-configmap.yaml). See deploy/k8s/FORWARDAUTH.md for provider-specific
+# setup instructions.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -8,20 +16,45 @@ spec:
     address: http://authentik-server.authentik.svc.cluster.local/outpost.goauthentik.io/auth/traefik
     trustForwardHeader: true
     authResponseHeaders:
+      # These are defaults for Authentik. Operators using a different IdP
+      # override this resource via overlay AND set the matching
+      # FORWARDAUTH_HEADER_* env vars in 02-configmap.yaml.
       - X-authentik-username
       - X-authentik-groups
       - X-authentik-email
       - X-authentik-name
       - X-authentik-uid
-      # Trust gate header — emitted by Authentik property mapping "agentpulse-verify-header".
-      # The agentpulse pod verifies this against AGENTPULSE_AUTHENTIK_TRUST_SECRET.
-      # See deploy/k8s/AUTHENTIK-FORWARDAUTH.md for setup instructions.
+      # Trust gate header — injected by agentpulse-inject-verify (below).
+      # AgentPulse verifies this against FORWARDAUTH_TRUST_SECRET.
+      # See deploy/k8s/FORWARDAUTH.md for setup instructions.
       - X-Authentik-Verify
 ---
-# Strip client-supplied X-Authentik-* headers BEFORE the forwardAuth middleware
-# runs so an attacker cannot forge Authentik identity or the trust-gate header.
+# Strip client-supplied IdP headers BEFORE the forwardAuth middleware runs
+# so an attacker cannot forge identity or the trust-gate header.
 # After this strip, only the forwardAuth response can re-introduce these headers.
 # Apply this middleware FIRST in every protected IngressRoute (before agentpulse-forwardauth).
+#
+# These are defaults for Authentik. Operators using a different IdP override
+# this resource via overlay AND set FORWARDAUTH_HEADER_STRIP_PREFIX (and the
+# individual FORWARDAUTH_HEADER_* vars) in 02-configmap.yaml.
+# See deploy/k8s/FORWARDAUTH.md for provider-specific setup instructions.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: agentpulse-strip-client-forwardauth
+  namespace: agentpulse
+spec:
+  headers:
+    customRequestHeaders:
+      X-Authentik-Verify: ""
+      X-authentik-username: ""
+      X-authentik-groups: ""
+      X-authentik-email: ""
+      X-authentik-name: ""
+      X-authentik-uid: ""
+---
+# DEPRECATED: renamed to agentpulse-strip-client-forwardauth in v0.5.0; this alias removed in next release.
+# Kept as a duplicate resource so existing overlays referencing the old name continue to work.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -37,32 +70,36 @@ spec:
       X-authentik-name: ""
       X-authentik-uid: ""
 ---
-# Inject the X-Authentik-Verify shared secret on requests that have already
-# passed forwardauth. AgentPulse compares this against
-# AGENTPULSE_AUTHENTIK_TRUST_SECRET (auth/middleware.ts:38) to admit the
-# X-authentik-* identity claims.
+# Inject the trust-gate shared secret on requests that have already passed
+# forwardauth. AgentPulse compares this against FORWARDAUTH_TRUST_SECRET
+# (src/server/auth/middleware.ts) to admit the identity claims.
 #
 # IMPORTANT: this middleware MUST appear AFTER agentpulse-forwardauth in the
 # IngressRoute middleware chain. Order:
-#   1. agentpulse-strip-client-authentik (removes any forged X-Authentik-*)
-#   2. agentpulse-forwardauth (Authentik validates + injects X-authentik-*)
-#   3. agentpulse-inject-verify (adds shared-secret X-Authentik-Verify)
+#   1. agentpulse-strip-client-forwardauth (removes any forged IdP headers)
+#   2. agentpulse-forwardauth (IdP validates + injects identity headers)
+#   3. agentpulse-inject-verify (adds shared-secret verify header)
 #
 # OPERATOR SETUP (replace the empty placeholder below before applying):
 #   1. openssl rand -hex 32  → use as both the value here and as
-#      AGENTPULSE_AUTHENTIK_TRUST_SECRET in agentpulse-secrets.
+#      FORWARDAUTH_TRUST_SECRET in agentpulse-secrets.
 #   2. The value here is part of cluster manifests — do not commit a real
 #      secret. Use a kustomize patch in your private overlay
 #      (e.g. deploy/k8s-homelab/) to inject the actual value at apply time.
 #
-# Why not Authentik property mapping? Authentik's Proxy Property Mappings
-# populate the OAuth2 JWT (id_token claims), not the forwardauth response
-# headers Traefik reads. Header injection at the Traefik layer is the
-# straightforward path. Security model still holds: the strip middleware
-# (above) prevents clients forging this header, and forwardauth above blocks
-# all unauthenticated requests. The shared secret is defense-in-depth: even
-# if a sibling pod could spoof X-authentik-* upstream of Traefik, it would
-# also need this secret to fool AgentPulse's trust gate.
+# These are defaults for Authentik. Operators using a different IdP override
+# this resource via overlay AND set FORWARDAUTH_HEADER_VERIFY in
+# 02-configmap.yaml to match the header name injected here.
+# See deploy/k8s/FORWARDAUTH.md for provider-specific setup instructions.
+#
+# Why not an IdP property mapping? Identity providers populate JWT id_token
+# claims, not forwardauth response headers. Header injection at the Traefik
+# layer is the straightforward path. Security model still holds: the strip
+# middleware (above) prevents clients forging this header, and forwardauth
+# above blocks all unauthenticated requests. The shared secret is
+# defense-in-depth: even if a sibling pod could spoof identity headers
+# upstream of Traefik, it would also need this secret to fool AgentPulse's
+# trust gate.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -71,7 +108,7 @@ metadata:
 spec:
   headers:
     customRequestHeaders:
-      # Replace with the value of AGENTPULSE_AUTHENTIK_TRUST_SECRET via your
+      # Replace with the value of FORWARDAUTH_TRUST_SECRET via your
       # private overlay — do NOT commit a real secret to this base manifest.
       X-Authentik-Verify: ""
 ---

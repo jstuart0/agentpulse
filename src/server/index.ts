@@ -91,15 +91,23 @@ if (config.telegramBotToken && !config.telegramWebhookSecret) {
 	);
 }
 
-// Advisory: operators should configure the Authentik trust secret in production.
-// Without it, any request that carries X-Authentik-Username (e.g. from a compromised
-// sibling pod) bypasses the trust gate. NetworkPolicy from P10 narrows but does not
-// eliminate this attack surface.
-if (!config.authentikTrustSecret && !config.disableAuth) {
+// Deprecation advisory: the legacy env var name still works for one release.
+if (process.env.AGENTPULSE_AUTHENTIK_TRUST_SECRET && !process.env.FORWARDAUTH_TRUST_SECRET) {
 	console.warn(
-		"[security] AGENTPULSE_AUTHENTIK_TRUST_SECRET is not set. The Authentik header trust gate is disabled. " +
-			"Any request carrying X-Authentik-Username headers will be accepted without verification. " +
-			"Set AGENTPULSE_AUTHENTIK_TRUST_SECRET to a shared secret (see deploy/k8s/AUTHENTIK-FORWARDAUTH.md).",
+		"[config] AGENTPULSE_AUTHENTIK_TRUST_SECRET is deprecated; rename to FORWARDAUTH_TRUST_SECRET. " +
+			"Continues to work for one release.",
+	);
+}
+
+// Advisory: operators should configure the forwardauth trust secret in production.
+// Without it, any request that carries forwardauth identity headers (e.g. from a
+// compromised sibling pod) bypasses the trust gate. NetworkPolicy from P10 narrows
+// but does not eliminate this attack surface.
+if (!config.forwardauthTrustSecret && !config.disableAuth) {
+	console.warn(
+		"[security] FORWARDAUTH_TRUST_SECRET is not set. The forwardauth header trust gate is disabled. " +
+			"Any request carrying forwardauth identity headers will be accepted without verification. " +
+			"Set FORWARDAUTH_TRUST_SECRET to a shared secret (see deploy/k8s/FORWARDAUTH.md).",
 	);
 }
 
@@ -246,7 +254,7 @@ console.log("  ╠════════════════════�
 console.log(`  ║  Server:  http://${config.host}:${config.port}          ║`);
 console.log("  ║  DB:      SQLite                       ║");
 console.log(
-	`  ║  Auth:    ${config.disableAuth ? "DISABLED" : "API Key + Authentik"}              ║`,
+	`  ║  Auth:    ${config.disableAuth ? "DISABLED" : "API Key + Forwardauth"}            ║`,
 );
 console.log(`  ║  WS:      ws://${config.host}:${config.port}/api/v1/ws   ║`);
 console.log("  ╚═══════════════════════════════════════════╝");
