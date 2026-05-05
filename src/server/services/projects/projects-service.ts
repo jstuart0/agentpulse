@@ -1,7 +1,9 @@
 import { basename } from "node:path";
 import { eq, or, sql } from "drizzle-orm";
-import { db } from "../../db/client.js";
-import { projects, sessionTemplates, sessions } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { projects, sessionTemplates, sessions } from "../../db/schema/index.js";
+import { likeStartsWith } from "../../db/sql-helpers.js";
+import { withTransaction } from "../../db/with-transaction.js";
 import { bumpVersionAndReload, getCachedProjects } from "./cache.js";
 import { normalizeCwd, resolveProjectIdForCwd } from "./resolver.js";
 
@@ -26,7 +28,7 @@ export type UpdateProjectInput = Partial<CreateProjectInput>;
 // another project already owns the same normalized cwd, otherwise null.
 // No DB UNIQUE constraint — intentional, see route validation comment.
 async function findCwdConflict(normalizedCwd: string, excludeId?: string): Promise<string | null> {
-	const rows = await db.select({ id: projects.id, cwd: projects.cwd }).from(projects);
+	const rows = await getDb().select({ id: projects.id, cwd: projects.cwd }).from(projects);
 	for (const row of rows) {
 		if (excludeId && row.id === excludeId) continue;
 		if (normalizeCwd(row.cwd) === normalizedCwd) return row.id;
@@ -50,12 +52,8 @@ export async function resolveAllSessionsForProject(
 	const projectList = allProjects ?? getCachedProjects();
 	const normalizedCwd = normalizeCwd(projectCwd);
 
-	// drizzle-bun-sqlite db.transaction is SYNC; an async callback would let
-	// COMMIT fire before any awaited update settles, silently disabling
-	// rollback. Use a sync callback with .all() for the read and .run() for
-	// each update so the whole resolve-and-restamp is atomic.
-	db.transaction((tx) => {
-		const candidates = tx
+	await withTransaction(async (tx) => {
+		const candidates = await tx
 			.select({
 				id: sessions.id,
 				cwd: sessions.cwd,
@@ -66,31 +64,30 @@ export async function resolveAllSessionsForProject(
 				or(
 					sql`${sessions.projectId} IS NULL`,
 					eq(sessions.projectId, projectId),
-					sql`${sessions.cwd} LIKE ${`${normalizedCwd}%`}`,
+					likeStartsWith(sessions.cwd, normalizedCwd),
 				),
-			)
-			.all();
+			);
 
 		for (const session of candidates) {
 			const resolved = resolveProjectIdForCwd(session.cwd, projectList);
 			if (resolved !== session.projectId) {
-				tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id)).run();
+				await tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id));
 			}
 		}
 	});
 }
 
 export async function listProjects(): Promise<ProjectRow[]> {
-	return db.select().from(projects).orderBy(projects.name);
+	return getDb().select().from(projects).orderBy(projects.name);
 }
 
 export async function getProject(id: string): Promise<ProjectRow | null> {
-	const [row] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+	const [row] = await getDb().select().from(projects).where(eq(projects.id, id)).limit(1);
 	return row ?? null;
 }
 
 export async function getProjectByName(name: string): Promise<ProjectRow | null> {
-	const [row] = await db.select().from(projects).where(eq(projects.name, name)).limit(1);
+	const [row] = await getDb().select().from(projects).where(eq(projects.name, name)).limit(1);
 	return row ?? null;
 }
 
@@ -102,7 +99,7 @@ export async function createProject(
 	if (conflictId) return { conflict: conflictId };
 
 	const now = new Date().toISOString();
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(projects)
 		.values({
 			name: input.name,
@@ -129,7 +126,7 @@ export async function updateProject(
 	id: string,
 	input: UpdateProjectInput,
 ): Promise<{ notFound?: boolean; conflict?: string; project?: ProjectRow }> {
-	const [existing] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+	const [existing] = await getDb().select().from(projects).where(eq(projects.id, id)).limit(1);
 	if (!existing) return { notFound: true };
 
 	const normalizedCwd = input.cwd ? normalizeCwd(input.cwd) : normalizeCwd(existing.cwd);
@@ -140,7 +137,7 @@ export async function updateProject(
 
 	const cwdChanged = normalizedCwd !== normalizeCwd(existing.cwd);
 
-	const [row] = await db
+	const [row] = await getDb()
 		.update(projects)
 		.set({
 			...(input.name !== undefined && { name: input.name }),
@@ -167,26 +164,22 @@ export async function updateProject(
 		// project list — some end up reassigned, some become NULL, some newly
 		// attach. Do not blanket-NULL the old set; the resolver decides.
 		const allProjects = getCachedProjects();
-		// drizzle-bun-sqlite db.transaction is SYNC; an async callback would
-		// commit before any awaited update settled. Sync callback + .run()
-		// keeps the restamp atomic.
-		db.transaction((tx) => {
-			const candidates = tx
+		await withTransaction(async (tx) => {
+			const candidates = await tx
 				.select({ id: sessions.id, cwd: sessions.cwd, projectId: sessions.projectId })
 				.from(sessions)
 				.where(
 					or(
 						eq(sessions.projectId, id),
-						sql`${sessions.cwd} LIKE ${`${normalizedCwd}%`}`,
-						sql`${sessions.cwd} LIKE ${`${normalizeCwd(existing.cwd)}%`}`,
+						likeStartsWith(sessions.cwd, normalizedCwd),
+						likeStartsWith(sessions.cwd, normalizeCwd(existing.cwd)),
 					),
-				)
-				.all();
+				);
 
 			for (const session of candidates) {
 				const resolved = resolveProjectIdForCwd(session.cwd, allProjects);
 				if (resolved !== session.projectId) {
-					tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id)).run();
+					await tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id));
 				}
 			}
 		});
@@ -196,10 +189,10 @@ export async function updateProject(
 }
 
 export async function getProjectByCwd(normalizedCwd: string): Promise<ProjectRow | null> {
-	const rows = await db.select({ id: projects.id, cwd: projects.cwd }).from(projects);
+	const rows = await getDb().select({ id: projects.id, cwd: projects.cwd }).from(projects);
 	for (const row of rows) {
 		if (normalizeCwd(row.cwd) === normalizedCwd) {
-			const [full] = await db.select().from(projects).where(eq(projects.id, row.id)).limit(1);
+			const [full] = await getDb().select().from(projects).where(eq(projects.id, row.id)).limit(1);
 			return full ?? null;
 		}
 	}
@@ -261,22 +254,20 @@ export async function ensureProjectForCwd(
 }
 
 export async function deleteProject(id: string): Promise<boolean> {
-	const [existing] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
+	const [existing] = await getDb().select().from(projects).where(eq(projects.id, id)).limit(1);
 	if (!existing) return false;
 
 	// All three cleanup operations in one transaction — if any fails, none apply.
 	// No orphaned template or session rows with dangling project_id values.
-	// drizzle-bun-sqlite db.transaction is SYNC; an async callback would let
-	// COMMIT fire before any awaited write settled. Sync callback + .run().
-	db.transaction((tx) => {
-		tx.update(sessionTemplates)
+	await withTransaction(async (tx) => {
+		await tx
+			.update(sessionTemplates)
 			.set({ projectId: null })
-			.where(eq(sessionTemplates.projectId, id))
-			.run();
-		tx.update(sessions).set({ projectId: null }).where(eq(sessions.projectId, id)).run();
-		tx.delete(projects).where(eq(projects.id, id)).run();
+			.where(eq(sessionTemplates.projectId, id));
+		await tx.update(sessions).set({ projectId: null }).where(eq(sessions.projectId, id));
+		await tx.delete(projects).where(eq(projects.id, id));
 	});
-	// Cache reload runs after the sync tx commits — on rollback the cache
+	// Cache reload runs after the tx commits — on rollback the cache
 	// would still reflect pre-delete state, which is correct.
 	await bumpVersionAndReload();
 	return true;

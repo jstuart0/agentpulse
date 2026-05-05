@@ -1,7 +1,7 @@
 import { count, eq } from "drizzle-orm";
 import type { AskThreadOrigin } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
-import { sessionTemplates, sessions } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { sessionTemplates, sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { matchProjectByName } from "../projects/project-name-match.js";
 import { listProjects } from "../projects/projects-service.js";
@@ -157,7 +157,7 @@ async function handleDeleteProject(
 	}
 
 	// Block deletion while there are live sessions — prompt the user to clean up first.
-	const activeSessions = await db
+	const activeSessions = await getDb()
 		.select({ status: sessions.status })
 		.from(sessions)
 		.where(eq(sessions.projectId, project.id));
@@ -174,7 +174,7 @@ async function handleDeleteProject(
 
 	// Count impact at handler-time so the user sees it in the question and inbox card
 	// before approving — the count is a snapshot; execute-time impact may differ.
-	const [templateCountRow] = await db
+	const [templateCountRow] = await getDb()
 		.select({ n: count() })
 		.from(sessionTemplates)
 		.where(eq(sessionTemplates.projectId, project.id));
@@ -342,7 +342,7 @@ async function findProjectByName(name: string): Promise<{ id: string; name: stri
 }
 
 async function findTemplateByName(name: string): Promise<{ id: string; name: string } | null> {
-	const rows = await db
+	const rows = await getDb()
 		.select({ id: sessionTemplates.id, name: sessionTemplates.name })
 		.from(sessionTemplates);
 	const lower = name.toLowerCase();

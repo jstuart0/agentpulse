@@ -1,11 +1,14 @@
 import { readFile, stat } from "node:fs/promises";
 import { and, eq, isNotNull, ne } from "drizzle-orm";
 import type { AgentType, Session } from "../../shared/types.js";
-import { db } from "../db/client.js";
-import { sessions } from "../db/schema.js";
+import { getDb } from "../db/client.js";
+import { sessions } from "../db/schema/index.js";
 import { type NormalizedEvent, createAssistantTranscriptEvent } from "./event-normalizer.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { notifySessionEvents } from "./notifier.js";
+
+// Polling-based by design. LISTEN/NOTIFY would replace setInterval on Postgres
+// in a follow-up campaign — see thoughts/postgres-followup-plans/listen-notify-transcript-sync.md.
 
 /**
  * Transcript sync worker (WS3). Scans active-session transcript files
@@ -142,7 +145,7 @@ async function syncTranscriptForSession(session: SessionWithMetadata): Promise<v
 }
 
 async function persistCursor(session: SessionWithMetadata, offset: number): Promise<void> {
-	await db
+	await getDb()
 		.update(sessions)
 		.set({
 			metadata: {
@@ -154,7 +157,7 @@ async function persistCursor(session: SessionWithMetadata, offset: number): Prom
 }
 
 async function loadActiveSessionIds(): Promise<string[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select({ sessionId: sessions.sessionId })
 		.from(sessions)
 		.where(
@@ -172,7 +175,7 @@ async function loadActiveSessionIds(): Promise<string[]> {
 
 async function loadSessionsByIds(ids: string[]): Promise<SessionWithMetadata[]> {
 	if (ids.length === 0) return [];
-	const rows = await db
+	const rows = await getDb()
 		.select({
 			sessionId: sessions.sessionId,
 			agentType: sessions.agentType,

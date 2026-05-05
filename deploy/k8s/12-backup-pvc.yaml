@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agentpulse-backups
+  namespace: <agentpulse-namespace>  # Overridden by kustomization.yaml namespace: directive; do not apply this file directly.
+  annotations:
+    # After first apply, patch the backing PV to Retain so that deleting this
+    # PVC does not immediately destroy backup data. See deploy/k8s/README.md.
+    backup-pvc/reclaim-policy-note: "patch PV reclaim policy to Retain after first apply"
+spec:
+  # ReadWriteMany: the backup-sidecar (in the app pod) writes here; a
+  # restore pod (separate, run manually during recovery) reads here.
+  # RWX requires a storage class that supports it — use an NFS-backed class.
+  accessModes:
+    - ReadWriteMany
+  # nfs storage class: backed by operator's NFS server.
+  # The live SQLite database is NEVER stored here. Only backup output
+  # (consistent snapshots produced by sqlite3 .backup) lands on this volume.
+  storageClassName: nfs
+  resources:
+    requests:
+      # 100Gi accommodates ~30 daily + 12 monthly backups with room to grow.
+      # Each SQLite backup is typically 10-200MB depending on DB size.
+      storage: 100Gi

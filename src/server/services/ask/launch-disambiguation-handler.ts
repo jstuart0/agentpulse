@@ -6,7 +6,7 @@ import type {
 	LaunchMode,
 	PrelaunchAction,
 } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import {
 	type LaunchDisambiguationDraftFields,
 	type NextQuestion,
@@ -14,7 +14,7 @@ import {
 	type PendingWorkspaceScaffold,
 	type ProjectChoiceSnapshot,
 	aiPendingProjectDrafts,
-} from "../../db/schema.js";
+} from "../../db/schema/index.js";
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
 import { supervisorSupportsPrelaunch } from "../launch-compatibility.js";
 import { slugifyTaskName } from "../name-generator.js";
@@ -184,7 +184,7 @@ export async function createLaunchDisambiguationDraft(
 	const { threadId, origin, channelId, intent, originalMessage, projects } = args;
 	const now = sqlNow();
 
-	await db
+	await getDb()
 		.update(aiPendingProjectDrafts)
 		.set({ status: "superseded", updatedAt: now })
 		.where(
@@ -220,7 +220,7 @@ export async function createLaunchDisambiguationDraft(
 		retryCount: 0,
 	};
 
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(aiPendingProjectDrafts)
 		.values({
 			askThreadId: threadId,
@@ -490,7 +490,7 @@ export async function resolveLaunchDisambiguation(
 }
 
 async function markDraftResolved(draftId: string): Promise<void> {
-	await db
+	await getDb()
 		.update(aiPendingProjectDrafts)
 		.set({ status: "superseded", updatedAt: sqlNow() })
 		.where(eq(aiPendingProjectDrafts.id, draftId));
@@ -503,14 +503,14 @@ async function bumpRetryCount(
 	const nq = draft.nextQuestion as NextQuestion;
 	const newRetry = nq.retryCount + 1;
 	if (newRetry >= MAX_DISAMBIGUATION_RETRIES) {
-		await db
+		await getDb()
 			.update(aiPendingProjectDrafts)
 			.set({ status: "expired", updatedAt: now })
 			.where(eq(aiPendingProjectDrafts.id, draft.id));
 		return null;
 	}
 	const updated: NextQuestion = { ...nq, retryCount: newRetry };
-	await db
+	await getDb()
 		.update(aiPendingProjectDrafts)
 		.set({ nextQuestion: updated, updatedAt: now })
 		.where(eq(aiPendingProjectDrafts.id, draft.id));
@@ -669,7 +669,7 @@ async function handleNewKeyword(args: HandleNewKeywordArgs): Promise<Disambiguat
 		...fields,
 		pendingScaffold: pending,
 	};
-	await db
+	await getDb()
 		.update(aiPendingProjectDrafts)
 		.set({
 			draftFields: nextFields,
@@ -762,7 +762,7 @@ async function resolveScaffoldConfirm(
 		case "cancel": {
 			// Hard delete so the draft slot is freed for the next ask
 			// (ruby §11.1: "Cancelled — say `new` again or pick a project").
-			await db.delete(aiPendingProjectDrafts).where(eq(aiPendingProjectDrafts.id, draft.id));
+			await getDb().delete(aiPendingProjectDrafts).where(eq(aiPendingProjectDrafts.id, draft.id));
 			return {
 				replyText:
 					"Cancelled. Say `new` again or pick a project from the list to launch elsewhere.",
@@ -1042,7 +1042,7 @@ export async function createLaunchCloneDraft(
 	const { threadId, origin, channelId, intent, originalMessage } = args;
 	const now = sqlNow();
 
-	await db
+	await getDb()
 		.update(aiPendingProjectDrafts)
 		.set({ status: "superseded", updatedAt: now })
 		.where(
@@ -1073,7 +1073,7 @@ export async function createLaunchCloneDraft(
 		retryCount: 0,
 	};
 
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(aiPendingProjectDrafts)
 		.values({
 			askThreadId: threadId,
@@ -1246,7 +1246,7 @@ async function handleCloneIntent(args: HandleCloneIntentArgs): Promise<Disambigu
 		// somehow had both, the cloner branch wins (bob §12.10).
 		pendingScaffold: undefined,
 	};
-	await db
+	await getDb()
 		.update(aiPendingProjectDrafts)
 		.set({
 			draftFields: nextFields,
@@ -1331,7 +1331,7 @@ async function resolveCloneConfirm(args: ResolveCloneConfirmArgs): Promise<Disam
 
 	switch (parsed.tag) {
 		case "cancel": {
-			await db.delete(aiPendingProjectDrafts).where(eq(aiPendingProjectDrafts.id, draft.id));
+			await getDb().delete(aiPendingProjectDrafts).where(eq(aiPendingProjectDrafts.id, draft.id));
 			return {
 				replyText:
 					"Cancelled. Ask again with a different repo URL, or pick a project from your list.",

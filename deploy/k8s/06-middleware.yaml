@@ -13,6 +13,67 @@ spec:
       - X-authentik-email
       - X-authentik-name
       - X-authentik-uid
+      # Trust gate header — emitted by Authentik property mapping "agentpulse-verify-header".
+      # The agentpulse pod verifies this against AGENTPULSE_AUTHENTIK_TRUST_SECRET.
+      # See deploy/k8s/AUTHENTIK-FORWARDAUTH.md for setup instructions.
+      - X-Authentik-Verify
+---
+# Strip client-supplied X-Authentik-* headers BEFORE the forwardAuth middleware
+# runs so an attacker cannot forge Authentik identity or the trust-gate header.
+# After this strip, only the forwardAuth response can re-introduce these headers.
+# Apply this middleware FIRST in every protected IngressRoute (before agentpulse-forwardauth).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: agentpulse-strip-client-authentik
+  namespace: agentpulse
+spec:
+  headers:
+    customRequestHeaders:
+      X-Authentik-Verify: ""
+      X-authentik-username: ""
+      X-authentik-groups: ""
+      X-authentik-email: ""
+      X-authentik-name: ""
+      X-authentik-uid: ""
+---
+# Inject the X-Authentik-Verify shared secret on requests that have already
+# passed forwardauth. AgentPulse compares this against
+# AGENTPULSE_AUTHENTIK_TRUST_SECRET (auth/middleware.ts:38) to admit the
+# X-authentik-* identity claims.
+#
+# IMPORTANT: this middleware MUST appear AFTER agentpulse-forwardauth in the
+# IngressRoute middleware chain. Order:
+#   1. agentpulse-strip-client-authentik (removes any forged X-Authentik-*)
+#   2. agentpulse-forwardauth (Authentik validates + injects X-authentik-*)
+#   3. agentpulse-inject-verify (adds shared-secret X-Authentik-Verify)
+#
+# OPERATOR SETUP (replace the empty placeholder below before applying):
+#   1. openssl rand -hex 32  → use as both the value here and as
+#      AGENTPULSE_AUTHENTIK_TRUST_SECRET in agentpulse-secrets.
+#   2. The value here is part of cluster manifests — do not commit a real
+#      secret. Use a kustomize patch in your private overlay
+#      (e.g. deploy/k8s-homelab/) to inject the actual value at apply time.
+#
+# Why not Authentik property mapping? Authentik's Proxy Property Mappings
+# populate the OAuth2 JWT (id_token claims), not the forwardauth response
+# headers Traefik reads. Header injection at the Traefik layer is the
+# straightforward path. Security model still holds: the strip middleware
+# (above) prevents clients forging this header, and forwardauth above blocks
+# all unauthenticated requests. The shared secret is defense-in-depth: even
+# if a sibling pod could spoof X-authentik-* upstream of Traefik, it would
+# also need this secret to fool AgentPulse's trust gate.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: agentpulse-inject-verify
+  namespace: agentpulse
+spec:
+  headers:
+    customRequestHeaders:
+      # Replace with the value of AGENTPULSE_AUTHENTIK_TRUST_SECRET via your
+      # private overlay — do NOT commit a real secret to this base manifest.
+      X-Authentik-Verify: ""
 ---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -24,3 +85,25 @@ spec:
     permanent: true
     port: "443"
     scheme: https
+---
+# Rate-limit middleware for public (unauthenticated) endpoints (S-22, I-M5).
+#
+# Applied to: /api/v1/channels/telegram/webhook, /setup.sh, /setup-relay.sh,
+#             /install-local.sh, /install-local.ps1, /api/v1/csp-report.
+#
+# NOT applied to /api/v1/hooks or /api/v1/hooks/status — those routes carry
+# an in-process per-key rate limiter (P7) and must never return 429 (always-
+# 200 contract). Adding edge-level rate limiting there would break agents.
+#
+# HMAC verification remains the primary guard for the Telegram webhook;
+# this middleware is defense-in-depth.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: agentpulse-ratelimit-public
+  namespace: agentpulse
+spec:
+  rateLimit:
+    average: 100
+    burst: 200
+    period: 1m

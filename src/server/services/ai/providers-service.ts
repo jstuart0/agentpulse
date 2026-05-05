@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
-import { db } from "../../db/client.js";
-import { llmProviders } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { llmProviders } from "../../db/schema/index.js";
 import type { ProviderKind } from "./llm/types.js";
 import { credentialHint, decryptSecret, encryptSecret } from "./secrets.js";
 
@@ -50,13 +50,13 @@ export async function createProvider(input: CreateProviderInput): Promise<Provid
 
 	// If this is being marked default, clear any existing default for this user.
 	if (input.isDefault) {
-		await db
+		await getDb()
 			.update(llmProviders)
 			.set({ isDefault: false, updatedAt: now })
 			.where(and(eq(llmProviders.userId, userId), eq(llmProviders.isDefault, true)));
 	}
 
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(llmProviders)
 		.values({
 			userId,
@@ -75,7 +75,7 @@ export async function createProvider(input: CreateProviderInput): Promise<Provid
 }
 
 export async function listProviders(userId = "local"): Promise<ProviderRecord[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(llmProviders)
 		.where(eq(llmProviders.userId, userId))
@@ -84,18 +84,18 @@ export async function listProviders(userId = "local"): Promise<ProviderRecord[]>
 }
 
 export async function getProvider(id: string): Promise<ProviderRecord | null> {
-	const [row] = await db.select().from(llmProviders).where(eq(llmProviders.id, id)).limit(1);
+	const [row] = await getDb().select().from(llmProviders).where(eq(llmProviders.id, id)).limit(1);
 	return row ? toRecord(row) : null;
 }
 
 export async function getProviderApiKey(id: string): Promise<string | null> {
-	const [row] = await db.select().from(llmProviders).where(eq(llmProviders.id, id)).limit(1);
+	const [row] = await getDb().select().from(llmProviders).where(eq(llmProviders.id, id)).limit(1);
 	if (!row) return null;
 	return decryptSecret(row.credentialCiphertext);
 }
 
 export async function getDefaultProvider(userId = "local"): Promise<ProviderRecord | null> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(llmProviders)
 		.where(and(eq(llmProviders.userId, userId), eq(llmProviders.isDefault, true)))
@@ -120,7 +120,7 @@ export async function updateProvider(
 	const now = new Date().toISOString();
 
 	if (input.isDefault) {
-		await db
+		await getDb()
 			.update(llmProviders)
 			.set({ isDefault: false, updatedAt: now })
 			.where(and(eq(llmProviders.userId, existing.userId), eq(llmProviders.isDefault, true)));
@@ -136,11 +136,11 @@ export async function updateProvider(
 		updates.credentialHint = credentialHint(input.apiKey);
 	}
 
-	await db.update(llmProviders).set(updates).where(eq(llmProviders.id, id));
+	await getDb().update(llmProviders).set(updates).where(eq(llmProviders.id, id));
 	return getProvider(id);
 }
 
 export async function deleteProvider(id: string): Promise<boolean> {
-	const result = await db.delete(llmProviders).where(eq(llmProviders.id, id)).returning();
+	const result = await getDb().delete(llmProviders).where(eq(llmProviders.id, id)).returning();
 	return result.length > 0;
 }

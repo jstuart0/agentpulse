@@ -28,8 +28,11 @@ export function PlanTracker({ plan, className }: PlanTrackerProps) {
 										: "text-muted-foreground"
 							}`}
 						>
-							<span className="flex-shrink-0 w-4 text-center">
+							<span className="flex-shrink-0 w-4 text-center" aria-hidden="true">
 								{isDone ? "\u2713" : isCurrent ? "\u25B6" : "\u25CB"}
+							</span>
+							<span className="sr-only">
+								{isDone ? "Done" : isCurrent ? "In progress" : "Pending"}
 							</span>
 							<span className="truncate">{display}</span>
 						</div>

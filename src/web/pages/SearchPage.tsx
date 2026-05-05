@@ -100,15 +100,20 @@ export function SearchPage() {
 			</p>
 
 			<form onSubmit={submit} className="flex gap-2 mb-3">
-				<input
-					type="search"
-					value={draft}
-					onChange={(e) => setDraft(e.target.value)}
-					placeholder="Search sessions and events… (e.g. 'auth refactor', 'passed tests')"
-					className="flex-1 min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-					// biome-ignore lint/a11y/noAutofocus: search page is the primary action — auto-focusing the input matches user expectation
-					autoFocus
-				/>
+				<div className="relative flex-1 min-w-0">
+					<input
+						type="search"
+						value={draft}
+						onChange={(e) => setDraft(e.target.value)}
+						placeholder="Search sessions and events… (e.g. 'auth refactor', 'passed tests')"
+						className="w-full rounded-md border border-input bg-background px-3 py-2 pr-10 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+						// biome-ignore lint/a11y/noAutofocus: search page is the primary action — auto-focusing the input matches user expectation
+						autoFocus
+					/>
+					<kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 hidden md:inline-block rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+						/
+					</kbd>
+				</div>
 				<button
 					type="submit"
 					disabled={!draft.trim()}
@@ -277,13 +282,20 @@ function ResultRow({ hit }: { hit: Hit }) {
  *   1. Escape all < and > except our own <mark>/</mark> markers.
  *   2. Remove anything that looks like an HTML tag after that step.
  */
-function sanitizeSnippet(input: string): string {
+// Exported for testing (M3).
+export function sanitizeSnippet(input: string): string {
+	// M3: strip U+0001 from user-supplied content before using that byte as a
+	// sentinel. An attacker who stores literal U+0001 bytes in session content
+	// would otherwise be able to inject <mark> tags into the rendered snippet.
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching U+0001 for M3 sentinel-strip
+	const stripped = input.replace(/\u0001/g, "");
+
 	// Temporarily swap our marker tags for sentinels, escape everything,
 	// then swap the sentinels back. This way user text like `<script>`
 	// becomes `&lt;script&gt;` but our `<mark>` tags survive.
 	const OPEN = "\u0001MARK_OPEN\u0001";
 	const CLOSE = "\u0001MARK_CLOSE\u0001";
-	const escaped = input
+	const escaped = stripped
 		.replace(/<mark>/g, OPEN)
 		.replace(/<\/mark>/g, CLOSE)
 		.replace(/&/g, "&amp;")

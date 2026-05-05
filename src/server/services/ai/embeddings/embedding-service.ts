@@ -1,6 +1,10 @@
+// SQLite-only feature this campaign. Postgres + pgvector follow-up:
+// see thoughts/postgres-followup-plans/pgvector-event-embeddings.md.
+
 import { eq, sql } from "drizzle-orm";
-import { db, sqlite } from "../../../db/client.js";
-import { events, settings } from "../../../db/schema.js";
+import { config } from "../../../config.js";
+import { getDb, getSqlite } from "../../../db/client.js";
+import { events, settings } from "../../../db/schema/index.js";
 import {
 	DEFAULT_EMBEDDING_MODEL,
 	VECTOR_SEARCH_MODEL_KEY,
@@ -67,7 +71,7 @@ let backfillState: BackfillProgress = {
 };
 
 async function readSetting(key: string): Promise<unknown> {
-	const [row] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+	const [row] = await getDb().select().from(settings).where(eq(settings.key, key)).limit(1);
 	return row?.value ?? null;
 }
 
@@ -81,7 +85,7 @@ async function readSetting(key: string): Promise<unknown> {
  * tolerate null — vector search just becomes a no-op.
  */
 export async function resolveEmbeddingAdapter(): Promise<EmbeddingAdapter | null> {
-	if (!isVectorSearchBuildEnabled()) return null;
+	if (config.dialect !== "sqlite" || !isVectorSearchBuildEnabled()) return null;
 
 	const providerId = (await readSetting(VECTOR_SEARCH_PROVIDER_ID_KEY)) as string | null;
 	const model =
@@ -147,11 +151,11 @@ function eventTextFromRow(row: {
  *   - text is empty
  */
 export async function embedEvent(eventId: number): Promise<void> {
-	if (!isVectorSearchBuildEnabled()) return;
+	if (config.dialect !== "sqlite" || !isVectorSearchBuildEnabled()) return;
 	const adapter = await resolveEmbeddingAdapter();
 	if (!adapter) return;
 
-	const [row] = await db
+	const [row] = await getDb()
 		.select({
 			id: events.id,
 			eventType: events.eventType,
@@ -170,7 +174,7 @@ export async function embedEvent(eventId: number): Promise<void> {
 
 	try {
 		const vector = await adapter.embed(text);
-		const stmt = sqlite.prepare(
+		const stmt = getSqlite().prepare(
 			"INSERT INTO event_embeddings (event_id, model, dim, vector, created_at) " +
 				"VALUES (?, ?, ?, ?, datetime('now')) " +
 				"ON CONFLICT(event_id) DO UPDATE SET model = excluded.model, dim = excluded.dim, " +
@@ -188,7 +192,8 @@ export async function embedEvent(eventId: number): Promise<void> {
  * compute (sqlite COUNT scans index pages, not data).
  */
 export async function getBackfillProgress(): Promise<BackfillProgress> {
-	const totalRow = sqlite
+	if (config.dialect !== "sqlite" || !config.vectorSearchEnabled) return backfillState;
+	const totalRow = getSqlite()
 		.prepare(
 			`SELECT COUNT(*) AS n FROM events WHERE event_type IN (${EMBEDDED_EVENT_TYPES.map(() => "?").join(",")})`,
 		)
@@ -197,7 +202,7 @@ export async function getBackfillProgress(): Promise<BackfillProgress> {
 	const model = adapter?.model ?? null;
 	let embedded = 0;
 	if (model) {
-		const r = sqlite
+		const r = getSqlite()
 			.prepare("SELECT COUNT(*) AS n FROM event_embeddings WHERE model = ?")
 			.get(model) as { n: number };
 		embedded = r.n;
@@ -221,7 +226,7 @@ export async function getBackfillProgress(): Promise<BackfillProgress> {
  * Returns immediately if a backfill is already running.
  */
 export async function runBackfill(): Promise<BackfillProgress> {
-	if (!isVectorSearchBuildEnabled()) return backfillState;
+	if (config.dialect !== "sqlite" || !isVectorSearchBuildEnabled()) return backfillState;
 	if (backfillState.running) return backfillState;
 
 	const adapter = await resolveEmbeddingAdapter();
@@ -247,7 +252,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 
 	try {
 		const placeholders = EMBEDDED_EVENT_TYPES.map(() => "?").join(",");
-		const totalRow = sqlite
+		const totalRow = getSqlite()
 			.prepare(`SELECT COUNT(*) AS n FROM events WHERE event_type IN (${placeholders})`)
 			.get(...EMBEDDED_EVENT_TYPES) as { n: number };
 		backfillState.total = totalRow.n;
@@ -258,7 +263,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 		const batchSize = 32;
 		let processed = 0;
 		while (true) {
-			const batch = sqlite
+			const batch = getSqlite()
 				.prepare(
 					`SELECT e.id, e.event_type AS eventType, e.content, e.raw_payload AS rawPayload
 					 FROM events e
@@ -283,7 +288,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 			// burned 22 events × N pods diagnosing exactly this). dim=0 +
 			// empty buffer is silently filtered by the cosine query
 			// (which requires dim = adapter.dim).
-			const skipMarker = sqlite.prepare(
+			const skipMarker = getSqlite().prepare(
 				"INSERT OR IGNORE INTO event_embeddings (event_id, model, dim, vector, created_at) " +
 					"VALUES (?, ?, 0, X'', datetime('now'))",
 			);
@@ -318,13 +323,13 @@ export async function runBackfill(): Promise<BackfillProgress> {
 					continue;
 				}
 
-				const insert = sqlite.prepare(
+				const insert = getSqlite().prepare(
 					"INSERT INTO event_embeddings (event_id, model, dim, vector, created_at) " +
 						"VALUES (?, ?, ?, ?, datetime('now')) " +
 						"ON CONFLICT(event_id) DO UPDATE SET model = excluded.model, dim = excluded.dim, " +
 						"vector = excluded.vector, created_at = excluded.created_at",
 				);
-				const txn = sqlite.transaction((rows: Array<{ id: number; vec: Float32Array }>) => {
+				const txn = getSqlite().transaction((rows: Array<{ id: number; vec: Float32Array }>) => {
 					for (const r of rows) {
 						insert.run(r.id, adapter.model, adapter.dim, vectorToBuffer(r.vec));
 					}
@@ -361,7 +366,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
  * from server startup — bails out fast when the build flag is off.
  */
 export async function startBackfillIfNeeded(): Promise<void> {
-	if (!isVectorSearchBuildEnabled()) return;
+	if (config.dialect !== "sqlite" || !isVectorSearchBuildEnabled()) return;
 	const adapter = await resolveEmbeddingAdapter();
 	if (!adapter) {
 		console.warn(
@@ -380,11 +385,13 @@ export async function startBackfillIfNeeded(): Promise<void> {
 }
 
 /**
- * Read an event's vector back from sqlite. Returns null if missing or
- * the dim doesn't match the active model (stale row from a model swap).
+ * Read an event's vector back from the event_embeddings table. Returns null if
+ * missing, or the dim doesn't match the active model (stale row from a model
+ * swap), or not on SQLite (embeddings are SQLite-only this campaign).
  */
 export function loadEventVector(eventId: number, expectedModel: string): Float32Array | null {
-	const row = sqlite
+	if (config.dialect !== "sqlite" || !config.vectorSearchEnabled) return null;
+	const row = getSqlite()
 		.prepare("SELECT vector, model, dim FROM event_embeddings WHERE event_id = ? AND model = ?")
 		.get(eventId, expectedModel) as { vector: Buffer; model: string; dim: number } | undefined;
 	if (!row) return null;

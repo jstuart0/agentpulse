@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0--pre.8-blue)](https://github.com/jstuart0/agentpulse/releases)
+[![Version](https://img.shields.io/github/package-json/v/jstuart0/agentpulse?label=version&color=blue)](https://github.com/jstuart0/agentpulse/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun-000?logo=bun)](https://bun.sh)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-✓-green)](https://github.com/awesome-selfhosted/awesome-selfhosted)
 [![Wiki](https://img.shields.io/badge/docs-wiki-informational)](https://github.com/jstuart0/agentpulse/wiki)
@@ -61,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/in
 Windows:
 
 ```powershell
-irm https://agentpulse.xmojo.net/install-local.ps1 | iex
+irm https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 | iex
 ```
 
 When it finishes, open [http://localhost:3000](http://localhost:3000) and start a new Claude Code or Codex session.
@@ -71,8 +71,10 @@ When it finishes, open [http://localhost:3000](http://localhost:3000) and start 
 If you prefer Docker, this starts the container, waits for health, and configures hooks:
 
 ```bash
-docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -sSL http://localhost:3000/setup.sh | bash
+docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse && until curl -fsSL http://localhost:3000/api/v1/health >/dev/null 2>&1; do sleep 1; done && curl -sSL http://localhost:3000/setup.sh | bash
 ```
+
+> **Security note:** `-p 127.0.0.1:3000:3000` binds the host port to localhost only. The older `-p 3000:3000` form would publish on all host interfaces, exposing the auth-disabled server to your LAN. Use the `127.0.0.1:` prefix whenever `DISABLE_AUTH=true`.
 
 **Done.** Open [http://localhost:3000](http://localhost:3000) and you have:
 - live session observability
@@ -81,7 +83,7 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 
 > **Why localhost?** Claude Code and Codex block HTTP hooks to remote/private IPs as a security measure. Only `localhost` / `127.0.0.1` is allowed. This keeps things simple -- one Docker container on your machine, no networking to configure. If port 3000 is taken, use any free port:
 > ```bash
-> docker run -d -p 4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+> docker run -d -p 127.0.0.1:4000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e PUBLIC_URL=http://localhost:4000 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
 > curl -sSL http://localhost:4000/setup.sh | bash
 > ```
 
@@ -94,7 +96,7 @@ docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --r
 - **Projects** -- first-class projects with cwd-based session resolution; sessions stamp themselves with the right project on ingest, templates inherit project defaults (cwd, agentType, model) with per-field overrides, and a `/projects` page lets you create / edit / delete them. Saving a template under a new directory auto-creates the project for you
 - **Session templates** -- save reusable Claude Code and Codex session setups, link them to a project for live-inheritance defaults, preview normalized launch specs, and route launches to the right host
 - **Orchestration** -- launch headless or interactive sessions from AgentPulse, track launch status, retry, stop, and manage sessions through the local supervisor
-- **Search** -- full-text across session names, prompts, plans, notes, and event payloads (SQLite FTS5, BM25-ranked). Clicking an event hit jumps to the matching event in the timeline and applies a brief amber flash
+- **Search** -- full-text across session names, prompts, plans, notes, and event payloads. SQLite uses FTS5 (BM25-ranked); Postgres uses ILIKE. Clicking an event hit jumps to the matching event in the timeline and applies a brief amber flash
 - **Inbox** -- single `/inbox` view that aggregates every open approval (HITL, Ask-driven actions, alert-rule firings), stuck / risky session warnings, and recent failures. Approve / decline inline; snooze noisy items
 - **Real-time updates** -- everything updates live via WebSocket, no refreshing needed
 - **Random session names** -- each session gets a name like `brave-falcon` so you can tell them apart
@@ -222,7 +224,7 @@ curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/in
 Windows:
 
 ```powershell
-irm https://agentpulse.xmojo.net/install-local.ps1 | iex
+irm https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 | iex
 ```
 
 What it does:
@@ -253,7 +255,7 @@ curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/in
 Windows:
 
 ```powershell
-iwr https://agentpulse.xmojo.net/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
+iwr https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-local.ps1" -Port 4000 -PublicUrl http://localhost:4000 -DataDir "$HOME\.agentpulse\data"
 ```
 
@@ -270,7 +272,7 @@ curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/in
 Windows:
 
 ```powershell
-iwr https://agentpulse.xmojo.net/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
+iwr https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-local.ps1" -DisableAuth:$false -ApiKey ap_your_key_here
 ```
 
@@ -279,13 +281,13 @@ If you only want observability and do not want the local supervisor/control plan
 macOS / Linux:
 
 ```bash
-curl -fsSL https://agentpulse.xmojo.net/install-local.sh | bash -s -- --skip-supervisor
+curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | bash -s -- --skip-supervisor
 ```
 
 Windows:
 
 ```powershell
-iwr https://agentpulse.xmojo.net/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
+iwr https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-local.ps1" -SkipSupervisor
 ```
 
@@ -301,9 +303,11 @@ That observability-only mode still gives you:
 Best if you already use Docker locally.
 
 ```bash
-docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
 curl -sSL http://localhost:3000/setup.sh | bash
 ```
+
+> **Security note:** `-p 127.0.0.1:3000:3000` binds the host port to localhost only when `DISABLE_AUTH=true`. Use this form for local-only Docker; the older `-p 3000:3000` shorthand publishes on all host interfaces.
 
 ### 3. Remote dashboard + local hooks
 
@@ -328,21 +332,29 @@ Your Mac                                    Your server / k8s cluster
 │ Claude Code / Codex  │                   │  AgentPulse (remote)     │
 │   hooks → localhost  │                   │  https://pulse.mynet.com │
 │                      │                   │  Authentik SSO           │
-│ local relay          │─── hooks ────────>│  SQLite (single file)    │
+│ local relay          │─── hooks ────────>│  SQLite or Postgres      │
 │   forwards events    │                   │                          │
 └──────────────────────┘                   │  Browse from any device  │
                                            └──────────────────────────┘
 ```
 
-**Option A: Local-only with port access from other devices**
+**Option A: Local with LAN access (auth enabled)**
 
-Run AgentPulse on your machine, bind to `0.0.0.0` so other devices on your LAN can view the dashboard:
+> **Never combine `-p 0.0.0.0:3000:3000` with `-e DISABLE_AUTH=true`.** That combination exposes all mutation APIs to anyone on the network with zero credentials. If you need LAN access, use the auth-enabled config below. If you need `DISABLE_AUTH` for local convenience, use `-p 127.0.0.1:3000:3000` so the port is not published on network interfaces.
+
+Run AgentPulse on your machine, bind to `0.0.0.0` so other devices on your LAN can view the dashboard. Auth is required — create a local admin via the bootstrap env vars:
 
 ```bash
-docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true -e HOST=0.0.0.0 --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-curl -sSL http://localhost:3000/setup.sh | bash
+docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
+  -e HOST=0.0.0.0 \
+  -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
+  -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
+  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
+curl -sSL http://localhost:3000/setup.sh | bash -s -- --key ap_YOUR_API_KEY
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
+
+The default config requires login via the dashboard. DO NOT add `-e DISABLE_AUTH=true` on any network you do not fully control.
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 
@@ -399,20 +411,28 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 
 ### Database
 
-SQLite (stored at `./data/agentpulse.db`). Zero-config, single-file, handles home-lab and small-team scale comfortably.
+**SQLite** (stored at `./data/agentpulse.db`) is the default. Zero-config, single-file, handles home-lab and small-team scale comfortably.
 
-> **PostgreSQL is on the roadmap but not implemented yet.** Setting `DATABASE_URL=postgres://…` now fails fast at boot with a clear error rather than silently falling back to SQLite (the previous behavior misled anyone who trusted the env var). If you need multi-replica scale-out, track progress in [the Postgres backend issue](https://github.com/jstuart0/agentpulse/issues) or hold off until it lands.
+**PostgreSQL** is supported as of v0.4.0 for production and multi-replica deployments. Set `DATABASE_URL=postgres://user:password@host:5432/dbname` and AgentPulse uses Postgres instead of SQLite. See [Production / multi-replica with Postgres](#production--multi-replica-with-postgres) below.
+
+Limitations in this release: vector search (`event_embeddings`) remains SQLite-only (pgvector port is a follow-up); search on Postgres uses ILIKE rather than tsvector (adequate for moderate event volumes; tsvector migration is a follow-up for high-volume deployments). There is no SQLite→Postgres data migrator — Postgres installs start fresh.
+
+### Security headers
+
+AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). This surfaces CSP violations in `POST /api/v1/csp-report` (structured JSON log) without blocking anything. Enforcement mode (`Content-Security-Policy`) will follow in a future release once reports are clean in production.
 
 ### All environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port |
-| `HOST` | `0.0.0.0` | Bind address |
+| `HOST` | `127.0.0.1` | Bind address. The published Docker image overrides this to `0.0.0.0` via `ENV HOST=0.0.0.0`; bare `bun run start` binds localhost only. |
 | `PUBLIC_URL` | `http://localhost:3000` | Public URL (used in setup script) |
 | `DATA_DIR` | `./data` | Base directory for local SQLite storage |
 | `SQLITE_PATH` | `${DATA_DIR}/agentpulse.db` | Override the SQLite database file path |
 | `DISABLE_AUTH` | `false` | Skip all authentication |
+| `AGENTPULSE_ALLOW_SIGNUP` | `false` | Allow open signup on an empty instance. Set `true` to enable the first-run signup flow. Once any user exists, signup is blocked regardless. |
+| `AGENTPULSE_AUTHENTIK_TRUST_SECRET` | | Shared secret for the Authentik header trust gate (k8s SSO deployments). See `deploy/k8s/AUTHENTIK-FORWARDAUTH.md`. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `AGENTPULSE_TELEMETRY` | `on` | Set `off` to disable anonymous telemetry |
 | `DO_NOT_TRACK` | | Set `1` to disable telemetry (standard) |
@@ -421,6 +441,9 @@ SQLite (stored at `./data/agentpulse.db`). Zero-config, single-file, handles hom
 | `AGENTPULSE_AI_ENABLED` | `false` | Compile the AI Labs layer in at boot. Off = zero AI services, routes, or UI (non-AI install footprint is identical to pre-AI). |
 | `AGENTPULSE_SECRETS_KEY` | | Required when `AGENTPULSE_AI_ENABLED=true`. 32+ random chars; encrypts provider credentials at rest (AES-256-GCM). |
 | `AGENTPULSE_OTEL_ENDPOINT` | | Optional OTLP metrics endpoint. When set, `ai_metric` log events are also forwarded as OTLP. |
+| `DATABASE_URL` | `""` (SQLite) | Postgres connection string. When set to a `postgres://...` URL, AgentPulse uses PostgreSQL instead of SQLite. Example: `postgres://agentpulse:password@host:5432/agentpulse?sslmode=require`. Leave unset or empty for SQLite. |
+| `AGENTPULSE_PG_POOL_MAX` | `10` | Maximum Postgres connection pool size. Integer in [1, 100]. Tune based on your Postgres server's `max_connections` and replica count. |
+| `AGENTPULSE_LEGACY_INIT` | (unset) | SQLite existing-install migration behaviour. Set to `"false"` to force a fresh Drizzle migrate on an existing SQLite install (opt-in, non-destructive if schema is already current). Unset keeps the legacy `initializeDatabase()` path for existing SQLite installs. |
 | `TELEGRAM_BOT_TOKEN` | | Instance-wide Telegram bot token (get one from @BotFather). Required to enable the Telegram HITL channel. |
 | `TELEGRAM_WEBHOOK_SECRET` | | Shared secret Telegram echoes back on every webhook callback. ≥24 random chars. Required when `TELEGRAM_BOT_TOKEN` is set. |
 
@@ -482,12 +505,46 @@ bun run start
 Manifests are in `deploy/k8s/`. Includes namespace, deployment, service, PVC, configmap, and Traefik IngressRoute with optional Authentik SSO.
 
 ```bash
-# Edit the secret template with your DB credentials
-vim deploy/k8s/01-secret-template.yaml
-
-# Apply everything
-kubectl apply -f deploy/k8s/
+# Create a real Secret out of band (see deploy/k8s/01-secret-template.yaml for the shape)
+# then apply the Kustomize base:
+kubectl apply -k deploy/k8s/
 ```
+
+## Production / multi-replica with Postgres
+
+For deployments that need multi-replica scale-out or prefer a managed Postgres instance over a local SQLite file:
+
+```bash
+# 1. Verify kubectl context
+kubectl config current-context
+# Expected: your production cluster context
+
+# 2. Create database and user (on your Postgres host)
+psql -h your-postgres-host -U psadmin \
+  -c "CREATE USER agentpulse WITH PASSWORD '<password>';"
+psql -h your-postgres-host -U psadmin \
+  -c "CREATE DATABASE agentpulse OWNER agentpulse ENCODING 'UTF8' \
+      LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0;"
+
+# 3. Fill in the credentials file (gitignored — do NOT commit)
+cp deploy/overlays/postgres/secret-patch.yaml.example \
+   deploy/overlays/postgres/secret-patch.yaml
+# Edit secret-patch.yaml: set DATABASE_URL to the full connection string
+# e.g. postgres://agentpulse:<pw>@host:5432/agentpulse?sslmode=require
+kubectl apply -f deploy/overlays/postgres/secret-patch.yaml -n agentpulse
+
+# 4. Render and apply
+kubectl kustomize deploy/overlays/postgres/  # verify output first
+kubectl apply -k deploy/overlays/postgres/
+```
+
+AgentPulse runs Drizzle migrations on boot using a dedicated single-connection client. A session-level `pg_advisory_lock` serializes migration across replicas booting simultaneously, making rolling deploys safe without coordination overhead.
+
+Connection pool size defaults to 10. Tune it via `AGENTPULSE_PG_POOL_MAX` based on your Postgres `max_connections` setting and replica count.
+
+The Postgres overlay removes the SQLite backup sidecar (no longer needed). The SQLite PVC is left in place until you confirm data has been migrated or is no longer needed, then delete it manually.
+
+See `deploy/overlays/postgres/README.md` for the full pre-flight checklist and rollback notes.
 
 ## Develop
 
@@ -508,7 +565,7 @@ bun run dev        # starts API server + Vite dev server
 
 ## Tech stack
 
-[Bun](https://bun.sh) + [Hono](https://hono.dev) + [React 19](https://react.dev) + [TailwindCSS](https://tailwindcss.com) + [Drizzle ORM](https://orm.drizzle.team) + [Zustand](https://zustand.docs.pmnd.rs) + SQLite
+[Bun](https://bun.sh) + [Hono](https://hono.dev) + [React 19](https://react.dev) + [TailwindCSS](https://tailwindcss.com) + [Drizzle ORM](https://orm.drizzle.team) + [Zustand](https://zustand.docs.pmnd.rs) + SQLite (default) / PostgreSQL
 
 ## Community & Contributing
 

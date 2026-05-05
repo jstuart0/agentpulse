@@ -1,6 +1,6 @@
 import { and, desc, eq, max } from "drizzle-orm";
-import { db } from "../../db/client.js";
-import { events, aiQaCache } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { events, aiQaCache } from "../../db/schema/index.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import { getDefaultProvider, getProviderApiKey } from "../ai/providers-service.js";
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
@@ -71,7 +71,7 @@ export async function handleSessionQa(
 	const nowIso = now.toISOString();
 
 	// 3. Find max event id for this session (needed for both cache check and cache write).
-	const [maxRow] = await db
+	const [maxRow] = await getDb()
 		.select({ maxId: max(events.id) })
 		.from(events)
 		.where(eq(events.sessionId, sessionId));
@@ -81,7 +81,7 @@ export async function handleSessionQa(
 	// Small race window: max(events.id) is read before the cache row — a concurrent
 	// event insert between these two reads could cause one spurious cache miss.
 	// Acceptable: the result is a fresh LLM call rather than a stale cached answer.
-	const [cacheRow] = await db
+	const [cacheRow] = await getDb()
 		.select()
 		.from(aiQaCache)
 		.where(and(eq(aiQaCache.sessionId, sessionId), eq(aiQaCache.questionHash, questionHash)))
@@ -100,7 +100,7 @@ export async function handleSessionQa(
 	// 6. Load events newest-first for tail truncation, then take from the front
 	//    until the character budget is reached. This keeps the most recent (most
 	//    relevant) events and drops the oldest when truncation is needed.
-	const allEvents = await db
+	const allEvents = await getDb()
 		.select({
 			id: events.id,
 			eventType: events.eventType,
@@ -198,7 +198,7 @@ export async function handleSessionQa(
 	// 11. Write to cache. Upsert so a concurrent request overwrites with the same data.
 	const expiresAt = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
 	const nowFormatted = now.toISOString().replace("T", " ").slice(0, 19);
-	await db
+	await getDb()
 		.insert(aiQaCache)
 		.values({
 			sessionId,

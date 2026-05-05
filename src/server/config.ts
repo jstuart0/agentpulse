@@ -1,6 +1,6 @@
 export const config = {
 	port: Number(process.env.PORT || 3000),
-	host: process.env.HOST || "0.0.0.0",
+	host: process.env.HOST || "127.0.0.1",
 	databaseUrl: process.env.DATABASE_URL || "",
 	publicUrl: process.env.PUBLIC_URL || "http://localhost:3000",
 	logLevel: (process.env.LOG_LEVEL || "info") as "debug" | "info" | "warn" | "error",
@@ -35,12 +35,54 @@ export const config = {
 	// setting AGENTPULSE_LOCAL_ADMIN_USERNAME / _PASSWORD; first-run
 	// signup is otherwise gated by AGENTPULSE_ALLOW_SIGNUP and only fires
 	// when the users table is empty.
-	allowSignup: process.env.AGENTPULSE_ALLOW_SIGNUP !== "false",
+	allowSignup: process.env.AGENTPULSE_ALLOW_SIGNUP === "true",
 	localAdminUsername: process.env.AGENTPULSE_LOCAL_ADMIN_USERNAME || "",
 	localAdminPassword: process.env.AGENTPULSE_LOCAL_ADMIN_PASSWORD || "",
 
+	// Authentik shared-secret trust gate. When non-empty, every request that
+	// carries X-Authentik-* headers MUST also carry X-Authentik-Verify with this
+	// value (HMAC-constant in Authentik property mapping). The middleware strips
+	// all X-Authentik-* headers on mismatch so forged headers can't pass through.
+	// Empty = trust gate disabled (startup warning emitted; not recommended in prod).
+	authentikTrustSecret: process.env.AGENTPULSE_AUTHENTIK_TRUST_SECRET || "",
+
+	// Comma-separated list of allowed WebSocket origins, derived from PUBLIC_URL.
+	// Example: "https://agentpulse.example.com,http://localhost:5173"
+	// The first entry is treated as the canonical public URL; extras are dev origins.
+	get allowedOrigins(): string[] {
+		const raw = process.env.PUBLIC_URL || "http://localhost:3000";
+		return raw
+			.split(",")
+			.map((u) => u.trim())
+			.filter(Boolean)
+			.map((u) => new URL(u).origin);
+	},
+
+	/** @deprecated use config.dialect directly; this alias removed in next campaign. */
 	get useSqlite(): boolean {
-		return !this.databaseUrl || !this.databaseUrl.startsWith("postgres");
+		return this.dialect === "sqlite";
+	},
+
+	/**
+	 * Resolved dialect for this process lifetime. Resolution rule:
+	 *   - empty / undefined DATABASE_URL → "sqlite"
+	 *   - starts with "postgres:" or "postgresql:" → "postgres"
+	 *   - anything else (e.g. a file path)  → "sqlite"
+	 *
+	 * Memoized on first access: databaseUrl is read from process.env at
+	 * module load and cannot change at runtime, so the memo is safe.
+	 */
+	get dialect(): "sqlite" | "postgres" {
+		// Lazily resolve and cache on the object itself to avoid re-running the
+		// check on every hot-path call (dexter L-1 concern).
+		if (Object.prototype.hasOwnProperty.call(this, "_dialect")) {
+			return (this as unknown as { _dialect: "sqlite" | "postgres" })._dialect;
+		}
+		const url = this.databaseUrl;
+		const resolved: "sqlite" | "postgres" =
+			url && (url.startsWith("postgres:") || url.startsWith("postgresql:")) ? "postgres" : "sqlite";
+		Object.defineProperty(this, "_dialect", { value: resolved, writable: false });
+		return resolved;
 	},
 
 	get sqlitePath(): string {

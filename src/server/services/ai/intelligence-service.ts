@@ -1,7 +1,8 @@
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { EventCategory, Session, SessionEvent } from "../../../shared/types.js";
-import { db, sqlite } from "../../db/client.js";
-import { managedSessions, sessions, supervisors } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { managedSessions, sessions, supervisors } from "../../db/schema/index.js";
+import { executeRows } from "../../db/sql-helpers.js";
 import { type SessionIntelligence, classifySession } from "./classifier.js";
 import { loadRecentEvents } from "./event-queries.js";
 import {
@@ -20,20 +21,24 @@ export async function intelligenceForSession(
 	sessionId: string,
 	now = new Date(),
 ): Promise<SessionIntelligence | null> {
-	const [row] = await db.select().from(sessions).where(eq(sessions.sessionId, sessionId)).limit(1);
+	const [row] = await getDb()
+		.select()
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
 	if (!row) return null;
 
 	const events = await loadRecentEvents(sessionId, CLASSIFIER_EVENT_LOOKBACK);
 	const openHitl = await getOpenHitlForSession(sessionId);
 
 	let supervisorConnected: boolean | undefined;
-	const [managed] = await db
+	const [managed] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (managed) {
-		const [sup] = await db
+		const [sup] = await getDb()
 			.select({ status: supervisors.status })
 			.from(supervisors)
 			.where(eq(supervisors.id, managed.supervisorId))
@@ -65,7 +70,7 @@ export async function intelligenceForSessions(
 	if (sessionIds.length === 0) return out;
 
 	// 1) Session rows
-	const sessionRows = await db
+	const sessionRows = await getDb()
 		.select()
 		.from(sessions)
 		.where(inArray(sessions.sessionId, sessionIds));
@@ -76,26 +81,16 @@ export async function intelligenceForSessions(
 	const presentIds = sessionRows.map((r) => r.sessionId);
 
 	// 2) Recent events per session via window function. Drizzle's query
-	// builder doesn't model window fns cleanly, so drop to raw SQL on the
-	// shared bun:sqlite handle. SQLite >= 3.25 supports ROW_NUMBER().
-	const placeholders = presentIds.map(() => "?").join(",");
-	const eventStmt = sqlite.prepare(
-		`SELECT id, session_id, event_type, category, source, content,
-		        is_noise, provider_event_type, tool_name, tool_input,
-		        tool_response, raw_payload, created_at
-		   FROM (
-		     SELECT *,
-		            ROW_NUMBER() OVER (
-		              PARTITION BY session_id
-		              ORDER BY created_at DESC, id DESC
-		            ) AS rn
-		       FROM events
-		      WHERE session_id IN (${placeholders})
-		   )
-		  WHERE rn <= ${CLASSIFIER_EVENT_LOOKBACK}
-		  ORDER BY session_id, created_at ASC, id ASC`,
+	// builder doesn't model window fns cleanly, so use raw SQL via the
+	// portable executeRows() helper. ROW_NUMBER() OVER (...) is supported
+	// by SQLite >= 3.25 (Bun ships modern SQLite) and all Postgres versions.
+	// The IN list is built from bound parameters via sql.join so values are
+	// never string-interpolated into the SQL text.
+	const idList = sql.join(
+		presentIds.map((id) => sql`${id}`),
+		sql.raw(", "),
 	);
-	const eventRows = eventStmt.all(...presentIds) as Array<{
+	const eventRows = await executeRows<{
 		id: number;
 		session_id: string;
 		event_type: string;
@@ -109,7 +104,23 @@ export async function intelligenceForSessions(
 		tool_response: string | null;
 		raw_payload: string | null;
 		created_at: string;
-	}>;
+	}>(
+		getDb(),
+		sql`SELECT id, session_id, event_type, category, source, content,
+		           is_noise, provider_event_type, tool_name, tool_input,
+		           tool_response, raw_payload, created_at
+		      FROM (
+		        SELECT *,
+		               ROW_NUMBER() OVER (
+		                 PARTITION BY session_id
+		                 ORDER BY created_at DESC, id DESC
+		               ) AS rn
+		          FROM events
+		         WHERE session_id IN (${idList})
+		      )
+		     WHERE rn <= ${CLASSIFIER_EVENT_LOOKBACK}
+		     ORDER BY session_id, created_at ASC, id ASC`,
+	);
 	const eventsBySession = new Map<string, SessionEvent[]>();
 	for (const id of presentIds) eventsBySession.set(id, []);
 	for (const r of eventRows) {
@@ -125,17 +136,23 @@ export async function intelligenceForSessions(
 			isNoise: !!r.is_noise,
 			providerEventType: r.provider_event_type,
 			toolName: r.tool_name,
-			toolInput: r.tool_input ? (JSON.parse(r.tool_input) as Record<string, unknown>) : null,
+			toolInput: r.tool_input
+				? typeof r.tool_input === "string"
+					? (JSON.parse(r.tool_input) as Record<string, unknown>)
+					: (r.tool_input as unknown as Record<string, unknown>)
+				: null,
 			toolResponse: r.tool_response,
 			rawPayload: r.raw_payload
-				? (JSON.parse(r.raw_payload) as Record<string, unknown>)
+				? typeof r.raw_payload === "string"
+					? (JSON.parse(r.raw_payload) as Record<string, unknown>)
+					: (r.raw_payload as unknown as Record<string, unknown>)
 				: ({} as Record<string, unknown>),
 			createdAt: r.created_at,
 		});
 	}
 
 	// 3) Managed-session + supervisor connected-state in a single left join.
-	const managedRows = await db
+	const managedRows = await getDb()
 		.select({
 			sessionId: managedSessions.sessionId,
 			supervisorStatus: supervisors.status,

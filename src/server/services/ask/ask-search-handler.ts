@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, like, lte } from "drizzle-orm";
-import { db } from "../../db/client.js";
-import { sessions } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { sessions } from "../../db/schema/index.js";
 import type { CachedProject } from "../projects/cache.js";
 import { getSearchBackend } from "../search/index.js";
 import type { SearchFilters, SearchHit } from "../search/types.js";
@@ -172,7 +172,7 @@ async function querySessionsDirect(
 	if (filters.since) clauses.push(gte(sessions.lastActivityAt, filters.since));
 	if (filters.until) clauses.push(lte(sessions.lastActivityAt, filters.until));
 
-	const rows = await db
+	const rows = await getDb()
 		.select({
 			sessionId: sessions.sessionId,
 			displayName: sessions.displayName,
@@ -247,7 +247,7 @@ export async function handleNlSearch(
 		if (ids.length === 0) {
 			sessionMeta = new Map();
 		} else {
-			const rows = await db
+			const rows = await getDb()
 				.select({
 					sessionId: sessions.sessionId,
 					status: sessions.status,

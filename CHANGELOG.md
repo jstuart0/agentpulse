@@ -5,7 +5,220 @@ All notable changes to AgentPulse are documented here. The format is based on
 project is still pre-1.0 — breaking changes land under the regular `Changed`
 section with a `⚠ breaking` prefix so they're easy to spot.
 
-## [Unreleased]
+## [0.4.0] — 2026-05-05
+
+This release adds a complete PostgreSQL backend at parity with the existing SQLite path.
+Operators can now run AgentPulse against a managed Postgres instance for multi-replica
+deployments. SQLite remains the default for OSS quickstart and single-machine use.
+
+Plane ticket: [AGEN-3](https://plane.xmojo.net/agile-solutions-group/projects/7ec41b9d-5efa-4f56-bc82-930f76b01345/).
+Branch: `feat/postgres-backend` — 13 commits, 147 files changed.
+
+### Added
+
+- **PostgreSQL backend** — set `DATABASE_URL=postgres://...` at boot; AgentPulse resolves
+  the dialect once at startup (`config.dialect`, memoized) and opens a postgres-js
+  connection pool. All API endpoints behave identically on both backends.
+- **Drizzle-kit migration runner** — fresh SQLite installs and all Postgres installs now
+  use Drizzle migrate instead of the legacy `initializeDatabase()` DDL block. Generated
+  baselines committed at `drizzle/sqlite/0000_*.sql` and `drizzle/postgres/0000_*.sql`
+  (29 tables, 7 cascade FKs, composite PK on `ai_daily_spend`, 6 partial-WHERE unique
+  indexes on Postgres).
+- **Dual-dialect schema split** — `src/server/db/schema/{core,ai,ask-projects}/` with
+  per-table files and a column-factory pattern. Per-dialect entry files (`schema/sqlite.ts`,
+  `schema/postgres.ts`). Runtime barrel (`schema/index.ts`) re-exports the SQLite set for
+  existing callers (12 importers still on legacy path — follow-up).
+- **`withTransaction()` helper** — dialect-aware transaction wrapper. Includes a runtime
+  guard that throws on async-callback misuse (bun-sqlite Drizzle silently disables rollback
+  on async callbacks — the guard prevents this class of bug going forward).
+- **`PostgresSearchBackend`** — implements the `SearchBackend` interface with ILIKE-based
+  full-text search. `SearchResult.backend` is now `"fts5"` (SQLite) or `"postgres-ilike"`
+  (Postgres). The `"postgres-tsvector"` value is reserved for a follow-up campaign.
+- **SQL helpers** (`src/server/db/sql-helpers.ts`) — `nowSql`, `intervalSecondsSql`,
+  `jsonExtractText`, `likeStartsWith`, `likeContains`, `executeRows`; dialect-aware,
+  with rendered-SQL assertions in tests.
+- **GHA two-job CI** — `test-sqlite` runs on every push; `test-postgres` runs on push to
+  `main`/`dev` with a `postgres:16-alpine` service container and healthcheck.
+- **`deploy/overlays/postgres/`** — Kustomize overlay that removes the SQLite backup
+  sidecar, switches to `RollingUpdate`, and wires `DATABASE_URL` from a Postgres connection
+  string. Pre-flight checklist and README at `deploy/overlays/postgres/README.md`.
+- **`AGENTPULSE_PG_POOL_MAX`** env var — integer [1, 100], defaults to 10. Invalid values
+  log a warning and fall back to 10.
+- **`AGENTPULSE_LEGACY_INIT`** env var — set to `"false"` to force Drizzle migrate on an
+  existing SQLite install (opt-in; unset preserves legacy path for existing installs).
+- **`isUniqueViolationError` helper** — narrow-catches Postgres SQLSTATE `23505` and
+  SQLite `SQLITE_CONSTRAINT_UNIQUE` for portable duplicate-detection in service code.
+- **Advisory lock boot serialization** — Postgres installs acquire a session-level
+  `pg_advisory_lock(2850603287)` on the migration client connection before running
+  migrations. Safe for rolling deploys with multiple replicas booting simultaneously.
+- **Architecture guards** — `scripts/check-no-bun-sqlite-only-apis.ts` (prevents
+  bun-SQLite-only APIs in dialect-shared paths) and `scripts/check-no-legacy-schema-import.ts`
+  (flags direct imports of the deprecated `schema.ts` shim).
+- **Test harness** — `test-utils/backend.ts` exports `describeSqliteOnly`, `describePostgresOnly`,
+  `itSqliteOnly`, `itPostgresOnly` for gating dialect-specific tests. 9 existing test files
+  reclassified as SQLite-only.
+- **7 follow-up plan stubs** in `thoughts/postgres-followup-plans/`: pgvector embeddings,
+  jsonb raw_payload, LISTEN/NOTIFY transcript sync, tsvector search, FOR UPDATE SKIP LOCKED
+  leaser, deterministic Postgres search rank, and legacy-init removal.
+
+### Changed
+
+- **`DATABASE_URL` base manifest default changed from a non-functional Postgres placeholder
+  to `""`** — existing installations applying the base manifests now get SQLite by default
+  rather than failing on the old placeholder URL. Operators who want Postgres apply the
+  `deploy/overlays/postgres/` overlay.
+- **`config.dialect`** replaces the deprecated `useSqlite` export in `src/server/db/dialect.ts`.
+  The old export is retained as a deprecated alias for one release.
+- **`src/server/db/__test_db.ts`** moved to `src/server/db/` (canonical location). A
+  re-export shim at the old path remains for one release.
+- **`initializeDatabase()` is now async** — any caller that was not `await`ing it would
+  have a bug; verified clean across all callers.
+- **`bun run db:migrate`**, **`db:push`**, **`db:studio`** (bare) removed — use the
+  per-dialect variants (`db:migrate:sqlite`, `db:migrate:postgres`, etc.).
+
+### Limitations (documented deferrals)
+
+- **Vector search is SQLite-only.** `event_embeddings` and the embedding + vector-enricher
+  services are gated on `config.dialect === "sqlite"`. The pgvector port is a follow-up
+  campaign (`thoughts/postgres-followup-plans/pgvector-event-embeddings.md`).
+- **Postgres search uses ILIKE, not tsvector.** Adequate for moderate event volumes.
+  A tsvector migration for high-volume deployments is a follow-up
+  (`thoughts/postgres-followup-plans/tsvector-search-perf.md`).
+- **No SQLite→Postgres data migrator.** Postgres installs start fresh. Migrating existing
+  data requires a manual `pg_dump` / COPY or a custom migration script.
+- **12 settings importers still on legacy schema barrel** — tracked via `TODO(Phase 2b)` in
+  `schema/index.ts`; will be addressed alongside `sqlite-legacy-init-removal.md`.
+- **`Postgres json` (not `jsonb`)** — JSON columns match the SQLite `text({mode:'json'})`
+  runtime contract. GIN indexes on payload fields are a follow-up (`jsonb-raw-payload.md`).
+
+## [0.3.0] — 2026-05-05
+
+This release is the audit-remediation campaign (P1–P15). The primary goal was
+hardening the public-facing security posture before broader OSS distribution.
+All breaking changes are listed first; other changes follow.
+
+### Breaking changes
+
+- ⚠ breaking — **`HOST` default changed from `0.0.0.0` to `127.0.0.1`.**
+  Running `bun run start` (bare, without Docker) now binds to localhost only.
+  To restore the previous behaviour, set `HOST=0.0.0.0` in your environment.
+  The `Dockerfile` already sets `ENV HOST=0.0.0.0` so container deployments
+  are unaffected.
+
+- ⚠ breaking — **`AGENTPULSE_ALLOW_SIGNUP` default changed from `true` to `false`.**
+  The first-run signup flow is now opt-in. Set `AGENTPULSE_ALLOW_SIGNUP=true`
+  to allow open signup on an empty instance. Existing installs with users already
+  created are unaffected — signup was already blocked once any user existed.
+  The flag `auth.firstRunCompleted` is written atomically in the same SQLite
+  transaction as the user row; two concurrent signup requests on an empty instance
+  now guarantee exactly one succeeds.
+
+- ⚠ breaking — **Settings allowlist (replaces prefix denylist).** `PUT /api/v1/settings`
+  now rejects any key not explicitly listed as user-settable, returning
+  `{ "error": "key_not_user_settable", "key": "..." }` with HTTP 403. Previously
+  the endpoint blocked only `ai.*` / `vectorSearch.*` / `telegram:credentials`
+  prefixes; all other keys were accepted. Service-internal callers already
+  pass `{ allowProtected: true }` and are unaffected.
+
+- ⚠ breaking — **Authentik trust secret required for SSO deployments.**
+  Set `AGENTPULSE_AUTHENTIK_TRUST_SECRET` to the shared secret configured in
+  Authentik's property mapping for the agentpulse proxy provider. AgentPulse
+  verifies the `X-Authentik-Verify` header on every SSO request using
+  `crypto.timingSafeEqual` with a length guard. Missing or mismatched secret
+  strips all Authentik identity headers and treats the request as unauthenticated.
+  Rotation procedure: regenerate the secret → update Authentik property mapping
+  value + AgentPulse k8s Secret → restart agentpulse pod. Traefik holds no secret
+  and is unchanged across rotations. See `deploy/k8s/AUTHENTIK-FORWARDAUTH.md`
+  and `deploy/k8s/RUNBOOK-secrets-rotation.md`.
+
+- ⚠ breaking — **`source` string changed for 4 proposal-decision events.**
+  The events `proposal_accepted`, `proposal_declined`, `proposal_auto_applied`,
+  and `proposal_expired` now carry `source: "managed_control"` instead of
+  `source: "observed_hook"`. Downstream log queries or metrics that key on the
+  literal string `"observed_hook"` for these events will silently stop matching.
+  Update filters to `"managed_control"`.
+
+- ⚠ breaking — **Hook ingest always-200 contract reaffirmed.**
+  Rate-limited hook drops are silent (the agent never sees an error). The drop
+  counter is exposed in `GET /api/v1/health` under `ingestCounters`. Any
+  monitoring or alerting that expected non-200 responses from `/api/v1/hooks`
+  under load needs to switch to polling the health endpoint counter.
+
+- ⚠ breaking — **Graceful drain on SIGTERM (k8s deployments).**
+  The pod's `preStop` hook calls `POST /api/v1/internal/drain` (loopback-only)
+  which sets `shuttingDown = true` and polls until in-flight event processing
+  completes. Readiness goes 503 immediately. `terminationGracePeriodSeconds: 90`
+  in the deployment gives 30 s preStop budget + 60 s post-TERM grace. The
+  `/api/v1/internal/*` path is excluded from all public IngressRoutes.
+
+- ⚠ breaking — **Image-tag-by-SHA convention; `imagePullPolicy: IfNotPresent`.**
+  The k8s deployment manifest pins the image to a specific commit SHA tag
+  (e.g. `ghcr.io/jstuart0/agentpulse:<sha>`). Run `./scripts/build-and-push.sh`
+  to build and get the printed SHA, then update `deploy/k8s/04-deployment.yaml`
+  (or your homelab overlay) before applying. `imagePullPolicy: IfNotPresent`
+  is now set explicitly. The prior `:latest` reference is removed.
+
+- ⚠ breaking — **Storage stance: SQLite stays on local-path PVC.**
+  Do NOT relocate `agentpulse.db` to an NFS-backed storage class. SQLite WAL
+  mode requires shared-memory semantics that break on network filesystems; this
+  causes silent corruption. Durability is provided by a nightly in-pod
+  `backup-sidecar` container that writes `.backup` snapshots to a separate
+  NFS-backed PVC (`agentpulse-backups`). Restore runbook: `deploy/k8s/BACKUP-RESTORE.md`.
+  PostgreSQL backend (the long-term answer) is the explicit next epic.
+
+### Changed
+
+- **Docker host-publishing.** All documented `docker run` examples with
+  `DISABLE_AUTH=true` now use `-p 127.0.0.1:3000:3000` instead of
+  `-p 3000:3000`. The old form published the auth-disabled server on all host
+  network interfaces. A startup warning fires when `DISABLE_AUTH=true` and
+  `HOST=0.0.0.0` are both active, reminding operators to use the
+  `127.0.0.1:` host-binding prefix.
+
+- **CSP-Report-Only header shipped.** Every response now includes a
+  `Content-Security-Policy-Report-Only` header. Violations are collected at
+  `POST /api/v1/csp-report` as structured JSON. No content is blocked in this
+  release. Enforcement mode (`Content-Security-Policy`) will follow once reports
+  are clean in production.
+
+- **WebSocket Origin validation strict everywhere.** The WS upgrade handler
+  now validates `Origin` against `PUBLIC_URL` in all environments (no
+  `NODE_ENV=development` bypass). Vite's dev server proxies WebSocket same-origin
+  so development workflows are unaffected.
+
+- **Lazy DB initialization + AI module split.** `src/server/db/client.ts` is
+  now lazy-initialized on first use rather than at import time, eliminating the
+  startup race between the module-level DB handle and `initializeDatabase()`.
+  The AI route module is split into `ai-providers.ts`, `ai-watcher.ts`,
+  `ai-inbox.ts`, `ai-intelligence.ts`, `ai-status.ts`, and `ai-gates.ts`
+  to reduce cold-start time for non-AI installs.
+
+- **Accessibility — critical fixes.** Every interactive element now has a
+  visible focus ring and a descriptive `aria-label`. Keyboard navigation through
+  session cards, inbox items, and templates is complete. Color-contrast failures
+  resolved across dashboard, inbox, and session detail.
+
+- **Prompt injection nonce.** User-supplied content rendered in the dashboard
+  is wrapped in a nonce-validated sanitizer to prevent injected HTML from
+  executing in the browser context.
+
+- **`evaluation-report.md` moved** from project root to `thoughts/audits/`
+  (`thoughts/` is gitignored in OSS commits). All 22 audit findings from the
+  April 2026 code-health audit are closed by this release.
+
+### Added
+
+- `deploy/k8s/BACKUP-RESTORE.md` — restore runbook for the in-pod backup sidecar.
+- `deploy/k8s/AUTHENTIK-FORWARDAUTH.md` — Authentik property-mapping setup guide.
+- `deploy/k8s/RUNBOOK-secrets-rotation.md` — Authentik trust secret rotation steps.
+- `deploy/k8s/` manifests: LimitRange, ResourceQuota, NetworkPolicy, ServiceAccount,
+  backup PVC, backup-sidecar container in deployment.
+- `GET /api/v1/sessions/:id/claude-md` and `PUT /api/v1/sessions/:id/claude-md`
+  endpoints for per-session CLAUDE.md management (replaces the earlier
+  `/api/v1/agents-md` proxy, which was a fetch-through to the filesystem).
+- `src/supervisor/` — local supervisor process for same-machine launch/control.
+- Dev commands: `bun run dev:supervisor`, `bun run test`, `bun run test:watch`,
+  `bun run check:fix`, `bun run check:architecture`.
 
 ## [0.2.0-pre.10] — 2026-05-01
 
@@ -1325,10 +1538,10 @@ All AI features ship gated behind per-feature Labs flags and a master
 
 ### Deployment
 
-- Docker image: `192.168.10.222:30500/agentpulse:latest` (linux/amd64).
+- Docker image: `ghcr.io/jstuart0/agentpulse:latest` (linux/amd64).
 - Kubernetes manifests under `deploy/k8s/` target the `thor` cluster
   with Authentik SSO + Traefik IngressRoute.
-- Local install: `docker run -d -p 3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true`.
+- Local install: `docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true`.
 - Remote hook relay: `curl -sSL https://server/setup-relay.sh | bash -s -- --key ap_xxx`.
 
 [Unreleased]: https://github.com/jstuart0/agentpulse/compare/v0.2.0-pre.3...HEAD

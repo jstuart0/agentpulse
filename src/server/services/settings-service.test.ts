@@ -3,37 +3,35 @@ import "./ai/__test_db.js";
 import type { ProtectedSettingError as ProtectedSettingErrorType } from "./settings-service.js";
 
 const { eq } = await import("drizzle-orm");
-const { db, initializeDatabase } = await import("../db/client.js");
-const { settings } = await import("../db/schema.js");
-const { ProtectedSettingError, isProtectedSettingKey, upsertSetting } = await import(
-	"./settings-service.js"
-);
+const { getDb, initializeDatabase } = await import("../db/client.js");
+const { settings } = await import("../db/schema/index.js");
+const { ProtectedSettingError, upsertSetting } = await import("./settings-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 afterEach(async () => {
-	await db.delete(settings).execute();
+	await getDb().delete(settings).execute();
 });
 
 async function readSetting(key: string) {
-	const [row] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+	const [row] = await getDb().select().from(settings).where(eq(settings.key, key)).limit(1);
 	return row;
 }
 
 describe("upsertSetting", () => {
-	test("writes a non-protected key and is idempotent", async () => {
-		await upsertSetting("ui.theme", "dark");
-		let row = await readSetting("ui.theme");
+	test("writes a user-settable key and is idempotent", async () => {
+		await upsertSetting("theme", "dark");
+		let row = await readSetting("theme");
 		expect(row?.value).toBe("dark");
 
 		// Calling again with a new value should update, not insert a duplicate.
-		await upsertSetting("ui.theme", "light");
-		row = await readSetting("ui.theme");
+		await upsertSetting("theme", "light");
+		row = await readSetting("theme");
 		expect(row?.value).toBe("light");
 
-		const allThemeRows = await db.select().from(settings).where(eq(settings.key, "ui.theme"));
+		const allThemeRows = await getDb().select().from(settings).where(eq(settings.key, "theme"));
 		expect(allThemeRows.length).toBe(1);
 	});
 
@@ -72,7 +70,29 @@ describe("upsertSetting", () => {
 		expect((caught as ProtectedSettingErrorType).key).toBe("telegram:credentials");
 	});
 
-	test("allowProtected: true bypasses the denylist", async () => {
+	test("throws ProtectedSettingError for workspace.* keys without allowProtected", async () => {
+		let caught: unknown;
+		try {
+			await upsertSetting("workspace.defaultRoot", "~/foo");
+		} catch (err) {
+			caught = err;
+		}
+		expect(caught).toBeInstanceOf(ProtectedSettingError);
+		expect((caught as ProtectedSettingErrorType).key).toBe("workspace.defaultRoot");
+	});
+
+	test("throws ProtectedSettingError for auth.firstRunCompleted without allowProtected", async () => {
+		let caught: unknown;
+		try {
+			await upsertSetting("auth.firstRunCompleted", "true");
+		} catch (err) {
+			caught = err;
+		}
+		expect(caught).toBeInstanceOf(ProtectedSettingError);
+		expect((caught as ProtectedSettingErrorType).key).toBe("auth.firstRunCompleted");
+	});
+
+	test("allowProtected: true bypasses the allowlist", async () => {
 		await upsertSetting("ai.enabled", true, { allowProtected: true });
 		const row = await readSetting("ai.enabled");
 		expect(row?.value).toBe(true);
@@ -88,19 +108,49 @@ describe("upsertSetting", () => {
 		);
 		const tgRow = await readSetting("telegram:credentials");
 		expect(tgRow?.value).toEqual({ token: "secret", chatId: "1" });
+
+		// Store the boolean true (not string "true") — json() columns normalize
+		// JSON-boolean-looking strings to their JS equivalents on Postgres.
+		await upsertSetting("auth.firstRunCompleted", true, { allowProtected: true });
+		const authRow = await readSetting("auth.firstRunCompleted");
+		expect(authRow?.value).toBe(true);
+
+		await upsertSetting("workspace.defaultRoot", "~/foo", { allowProtected: true });
+		const wsRow = await readSetting("workspace.defaultRoot");
+		expect(wsRow?.value).toBe("~/foo"); // string, not JSON-boolean-looking
 	});
 
-	test("isProtectedSettingKey classifies correctly", () => {
-		expect(isProtectedSettingKey("ai.enabled")).toBe(true);
-		expect(isProtectedSettingKey("ai.killSwitch")).toBe(true);
-		expect(isProtectedSettingKey("ai.classifierEnabled")).toBe(true);
-		expect(isProtectedSettingKey("vectorSearch.model")).toBe(true);
-		expect(isProtectedSettingKey("telegram:credentials")).toBe(true);
-		expect(isProtectedSettingKey("ui.theme")).toBe(false);
-		expect(isProtectedSettingKey("sessionIdleTimeoutMinutes")).toBe(false);
-		expect(isProtectedSettingKey("eventsRetentionDays")).toBe(false);
-		// Lookalike keys must not get accidentally protected.
-		expect(isProtectedSettingKey("aiAssistant")).toBe(false);
-		expect(isProtectedSettingKey("vectorSearchUI")).toBe(false);
+	test("allowlist classifies correctly — user-settable keys accepted without allowProtected", async () => {
+		// These are the keys the SettingsPage UI writes. They must pass without allowProtected.
+		for (const key of [
+			"theme",
+			"sessionIdleTimeoutMinutes",
+			"sessionEndTimeoutMinutes",
+			"eventsRetentionDays",
+		]) {
+			await expect(upsertSetting(key, "test")).resolves.toBeUndefined();
+		}
+	});
+
+	test("allowlist classifies correctly — internal-only keys rejected without allowProtected", async () => {
+		const internalKeys = [
+			"ai.enabled",
+			"ai.killSwitch",
+			"ai.classifierEnabled",
+			"vectorSearch.model",
+			"telegram:credentials",
+			"workspace.defaultRoot",
+			"auth.firstRunCompleted",
+			"installation_id",
+		];
+		for (const key of internalKeys) {
+			let caught: unknown;
+			try {
+				await upsertSetting(key, "x");
+			} catch (err) {
+				caught = err;
+			}
+			expect(caught, `expected ${key} to be rejected`).toBeInstanceOf(ProtectedSettingError);
+		}
 	});
 });

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { eq, isNull, lte } from "drizzle-orm";
-import { db } from "../db/client.js";
-import { authSessions, users } from "../db/schema.js";
+import { getDb } from "../db/client.js";
+import { authSessions, users } from "../db/schema/index.js";
 
 /**
  * Local-account auth: username + argon2id password + cookie-backed
@@ -38,17 +38,17 @@ function toUser(row: typeof users.$inferSelect): LocalUser {
 
 /** Count active (non-disabled) local users. */
 export async function countActiveUsers(): Promise<number> {
-	const rows = await db.select({ id: users.id }).from(users).where(isNull(users.disabledAt));
+	const rows = await getDb().select({ id: users.id }).from(users).where(isNull(users.disabledAt));
 	return rows.length;
 }
 
 export async function getUserByUsername(username: string): Promise<LocalUser | null> {
-	const [row] = await db.select().from(users).where(eq(users.username, username)).limit(1);
+	const [row] = await getDb().select().from(users).where(eq(users.username, username)).limit(1);
 	return row ? toUser(row) : null;
 }
 
 export async function getUserById(id: string): Promise<LocalUser | null> {
-	const [row] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+	const [row] = await getDb().select().from(users).where(eq(users.id, id)).limit(1);
 	return row ? toUser(row) : null;
 }
 
@@ -65,7 +65,7 @@ export async function createUser(input: CreateUserInput): Promise<LocalUser> {
 		algorithm: "argon2id",
 	});
 	const now = new Date().toISOString();
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(users)
 		.values({
 			username: input.username,
@@ -87,7 +87,7 @@ export async function verifyCredentials(
 	username: string,
 	password: string,
 ): Promise<LocalUser | null> {
-	const [row] = await db.select().from(users).where(eq(users.username, username)).limit(1);
+	const [row] = await getDb().select().from(users).where(eq(users.username, username)).limit(1);
 	if (!row) {
 		// Run a real verify against a known-good dummy hash so the
 		// "user not found" path takes similar time to "wrong password".
@@ -99,7 +99,7 @@ export async function verifyCredentials(
 	const ok = await Bun.password.verify(password, row.passwordHash).catch(() => false);
 	if (!ok) return null;
 	const now = new Date().toISOString();
-	await db.update(users).set({ lastLoginAt: now, updatedAt: now }).where(eq(users.id, row.id));
+	await getDb().update(users).set({ lastLoginAt: now, updatedAt: now }).where(eq(users.id, row.id));
 	return toUser(row);
 }
 
@@ -109,20 +109,20 @@ export async function changeUserPassword(input: {
 	currentPassword: string;
 	newPassword: string;
 }): Promise<boolean> {
-	const [row] = await db.select().from(users).where(eq(users.id, input.userId)).limit(1);
+	const [row] = await getDb().select().from(users).where(eq(users.id, input.userId)).limit(1);
 	if (!row) return false;
 	const ok = await Bun.password.verify(input.currentPassword, row.passwordHash).catch(() => false);
 	if (!ok) return false;
 	validatePassword(input.newPassword);
 	const newHash = await Bun.password.hash(input.newPassword, { algorithm: "argon2id" });
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.update(users)
 		.set({ passwordHash: newHash, updatedAt: now })
 		.where(eq(users.id, input.userId));
 	// Invalidate all existing sessions except the caller's (we don't know the caller's token here,
 	// so simpler path: invalidate everything; the caller gets a fresh cookie via issueSession).
-	await db.delete(authSessions).where(eq(authSessions.userId, input.userId));
+	await getDb().delete(authSessions).where(eq(authSessions.userId, input.userId));
 	return true;
 }
 
@@ -147,14 +147,16 @@ export async function issueSession(input: {
 	const tokenHash = hashToken(token);
 	const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
 	const now = new Date().toISOString();
-	await db.insert(authSessions).values({
-		tokenHash,
-		userId: input.userId,
-		expiresAt,
-		userAgent: input.userAgent ?? null,
-		createdAt: now,
-		lastSeenAt: now,
-	});
+	await getDb()
+		.insert(authSessions)
+		.values({
+			tokenHash,
+			userId: input.userId,
+			expiresAt,
+			userAgent: input.userAgent ?? null,
+			createdAt: now,
+			lastSeenAt: now,
+		});
 	return { token, tokenHash, expiresAt };
 }
 
@@ -162,7 +164,7 @@ export async function issueSession(input: {
 export async function getUserBySessionToken(token: string): Promise<LocalUser | null> {
 	if (!token) return null;
 	const tokenHash = hashToken(token);
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(authSessions)
 		.where(eq(authSessions.tokenHash, tokenHash))
@@ -170,11 +172,11 @@ export async function getUserBySessionToken(token: string): Promise<LocalUser | 
 	if (!row) return null;
 	const now = new Date();
 	if (new Date(row.expiresAt) <= now) {
-		await db.delete(authSessions).where(eq(authSessions.tokenHash, tokenHash));
+		await getDb().delete(authSessions).where(eq(authSessions.tokenHash, tokenHash));
 		return null;
 	}
 	// Touch last-seen timestamp; cheap write that doubles as usage telemetry.
-	await db
+	await getDb()
 		.update(authSessions)
 		.set({ lastSeenAt: now.toISOString() })
 		.where(eq(authSessions.tokenHash, tokenHash));
@@ -183,17 +185,19 @@ export async function getUserBySessionToken(token: string): Promise<LocalUser | 
 
 export async function revokeSessionByToken(token: string): Promise<void> {
 	if (!token) return;
-	await db.delete(authSessions).where(eq(authSessions.tokenHash, hashToken(token)));
+	await getDb()
+		.delete(authSessions)
+		.where(eq(authSessions.tokenHash, hashToken(token)));
 }
 
 /** Admin action: revoke every session for a given user. */
 export async function revokeAllSessionsForUser(userId: string): Promise<void> {
-	await db.delete(authSessions).where(eq(authSessions.userId, userId));
+	await getDb().delete(authSessions).where(eq(authSessions.userId, userId));
 }
 
 /** Sweep expired rows. Called on a timer; also runs lazily on each read. */
 export async function reapExpiredSessions(): Promise<number> {
-	const rows = await db
+	const rows = await getDb()
 		.delete(authSessions)
 		.where(lte(authSessions.expiresAt, new Date().toISOString()))
 		.returning();

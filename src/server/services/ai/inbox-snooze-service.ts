@@ -1,7 +1,7 @@
 import { and, desc, eq, gt } from "drizzle-orm";
 import type { InboxWorkItem } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
-import { aiInboxSnoozes } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { aiInboxSnoozes } from "../../db/schema/index.js";
 
 /**
  * Operator-inbox snooze. A snooze is an (kind, targetId, until) tuple
@@ -59,7 +59,7 @@ export async function snoozeItem(input: {
 }): Promise<SnoozeRecord> {
 	const now = new Date().toISOString();
 	const untilIso = input.until.toISOString();
-	const [existing] = await db
+	const [existing] = await getDb()
 		.select()
 		.from(aiInboxSnoozes)
 		.where(and(eq(aiInboxSnoozes.kind, input.kind), eq(aiInboxSnoozes.targetId, input.targetId)))
@@ -67,7 +67,7 @@ export async function snoozeItem(input: {
 
 	if (existing) {
 		const newUntil = existing.snoozedUntil > untilIso ? existing.snoozedUntil : untilIso;
-		const [row] = await db
+		const [row] = await getDb()
 			.update(aiInboxSnoozes)
 			.set({
 				snoozedUntil: newUntil,
@@ -79,7 +79,7 @@ export async function snoozeItem(input: {
 		return toRecord(row);
 	}
 
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(aiInboxSnoozes)
 		.values({
 			kind: input.kind,
@@ -95,12 +95,12 @@ export async function snoozeItem(input: {
 }
 
 export async function unsnooze(id: string): Promise<boolean> {
-	const rows = await db.delete(aiInboxSnoozes).where(eq(aiInboxSnoozes.id, id)).returning();
+	const rows = await getDb().delete(aiInboxSnoozes).where(eq(aiInboxSnoozes.id, id)).returning();
 	return rows.length > 0;
 }
 
 export async function unsnoozeTarget(kind: InboxKind, targetId: string): Promise<boolean> {
-	const rows = await db
+	const rows = await getDb()
 		.delete(aiInboxSnoozes)
 		.where(and(eq(aiInboxSnoozes.kind, kind), eq(aiInboxSnoozes.targetId, targetId)))
 		.returning();
@@ -112,7 +112,7 @@ export async function unsnoozeTarget(kind: InboxKind, targetId: string): Promise
  * Expired rows are silently skipped (and a future sweep can prune them).
  */
 export async function listActiveSnoozes(now: Date = new Date()): Promise<SnoozeRecord[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(aiInboxSnoozes)
 		.where(gt(aiInboxSnoozes.snoozedUntil, now.toISOString()))

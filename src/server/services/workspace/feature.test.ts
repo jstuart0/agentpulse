@@ -1,8 +1,8 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
-const { settings } = await import("../../db/schema.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
+const { settings } = await import("../../db/schema/index.js");
 const {
 	DEFAULT_GIT_CLONE_ALLOW_LOCAL_URLS,
 	DEFAULT_GIT_CLONE_ALLOW_SSH_URLS,
@@ -25,11 +25,11 @@ const {
 } = await import("./feature.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {
-	await db.delete(settings).execute();
+	await getDb().delete(settings).execute();
 });
 
 describe("validateWorkspaceRoot", () => {

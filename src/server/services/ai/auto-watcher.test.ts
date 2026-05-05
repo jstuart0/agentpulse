@@ -1,8 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
-const { llmProviders, sessions, settings, watcherConfigs } = await import("../../db/schema.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
+const { llmProviders, sessions, settings, watcherConfigs } = await import(
+	"../../db/schema/index.js"
+);
 const { applyAskInitiatedWatcher } = await import("./auto-watcher.js");
 const { AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY, AI_RUNTIME_ENABLED_KEY, invalidateAiFlagsCache } =
 	await import("./feature.js");
@@ -10,14 +12,14 @@ const { getWatcherConfig, upsertWatcherConfig } = await import("./watcher-config
 const { encryptSecret, credentialHint } = await import("./secrets.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {
-	await db.delete(watcherConfigs).execute();
-	await db.delete(llmProviders).execute();
-	await db.delete(settings).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(watcherConfigs).execute();
+	await getDb().delete(llmProviders).execute();
+	await getDb().delete(settings).execute();
+	await getDb().delete(sessions).execute();
 	// These tests bypass `upsertSetting` (raw inserts) so the post-write
 	// cache hook in settings-service never fires. Drop cached flags
 	// manually so each case starts from a clean read.
@@ -26,7 +28,7 @@ beforeEach(async () => {
 
 async function setRuntimeEnabled(enabled: boolean) {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(settings)
 		.values({ key: AI_RUNTIME_ENABLED_KEY, value: enabled, updatedAt: now })
 		.onConflictDoUpdate({
@@ -37,7 +39,7 @@ async function setRuntimeEnabled(enabled: boolean) {
 
 async function setAutoEnable(enabled: boolean) {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(settings)
 		.values({ key: AI_AUTO_ENABLE_WATCHER_FOR_ASK_KEY, value: enabled, updatedAt: now })
 		.onConflictDoUpdate({
@@ -47,7 +49,7 @@ async function setAutoEnable(enabled: boolean) {
 }
 
 async function mkSession(sessionId: string) {
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId,
@@ -62,7 +64,7 @@ async function mkSession(sessionId: string) {
 async function mkDefaultProvider(): Promise<string> {
 	const id = crypto.randomUUID();
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(llmProviders)
 		.values({
 			id,

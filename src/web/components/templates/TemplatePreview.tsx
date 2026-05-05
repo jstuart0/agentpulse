@@ -1,4 +1,5 @@
 import type { LaunchRequest, SupervisorRecord, TemplatePreview } from "../../../shared/types.js";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { RecentLaunchesPanel } from "./RecentLaunchesPanel.js";
 
 export function TemplatePreviewPanel({
@@ -16,6 +17,7 @@ export function TemplatePreviewPanel({
 	effectiveLaunchSpec: Record<string, unknown> | null;
 	recentLaunches: LaunchRequest[];
 }) {
+	const { copy } = useCopyFeedback();
 	return (
 		<section className="rounded-lg border border-border bg-card p-4 space-y-4">
 			<div>
@@ -96,8 +98,9 @@ export function TemplatePreviewPanel({
 								Normalized launch spec JSON
 							</div>
 							<button
+								type="button"
 								onClick={() =>
-									navigator.clipboard.writeText(JSON.stringify(effectiveLaunchSpec, null, 2))
+									void copy(JSON.stringify(effectiveLaunchSpec, null, 2), "Launch spec copied")
 								}
 								className="rounded-md bg-muted px-2.5 py-1 text-[11px] text-foreground hover:bg-accent transition-colors"
 							>

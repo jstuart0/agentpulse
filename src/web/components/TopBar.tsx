@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { NavLink } from "react-router-dom";
+import { useDropdownClose } from "../hooks/useDropdownClose.js";
+import { useSignOut } from "../hooks/useSignOut.js";
 import { useUserStore } from "../stores/user-store.js";
+import { WsStatusChip } from "./WsStatusChip.js";
 
 /**
  * Persistent top bar. Desktop: right-aligned Admin + User dropdowns
@@ -18,6 +21,10 @@ export function TopBar() {
 	// DOM order) so the dropdown menus aren't painted under the tab strip.
 	return (
 		<div className="hidden md:flex relative z-30 items-center justify-end gap-2 px-6 py-2 border-b border-border bg-background/90 backdrop-blur-sm flex-shrink-0">
+			{/* WS connection state — left-aligned so it doesn't crowd the menus */}
+			<span className="mr-auto">
+				<WsStatusChip />
+			</span>
 			<AdminMenu />
 			<UserMenu user={user} signOutUrl={signOutUrl} disableAuth={disableAuth} />
 		</div>
@@ -72,7 +79,7 @@ function AdminMenu() {
 
 function UserMenu({
 	user,
-	signOutUrl,
+	signOutUrl: _signOutUrl,
 	disableAuth,
 }: {
 	user: { name: string; source: "authentik" | "api_key" | "local" } | null;
@@ -81,8 +88,7 @@ function UserMenu({
 }) {
 	const [open, setOpen] = useState(false);
 	const ref = useDropdownClose(() => setOpen(false));
-	const navigate = useNavigate();
-	const reloadUser = useUserStore((s) => s.load);
+	const { handleSignOut: signOut, signOutUrl } = useSignOut();
 	const label = user?.name ?? (disableAuth ? "anonymous" : "signed out");
 	const initial = label.charAt(0).toUpperCase();
 	const sourceLabel =
@@ -95,15 +101,7 @@ function UserMenu({
 
 	async function handleSignOut() {
 		setOpen(false);
-		if (signOutUrl?.startsWith("/api/")) {
-			// Local session: hit our logout endpoint and bounce to /login.
-			await fetch(signOutUrl, { method: "POST", credentials: "same-origin" }).catch(() => {});
-			await reloadUser();
-			navigate("/login", { replace: true });
-		} else if (signOutUrl) {
-			// Authentik (or any external): hard-navigate so the outpost handles it.
-			window.location.assign(signOutUrl);
-		}
+		await signOut();
 	}
 
 	return (
@@ -215,16 +213,4 @@ function MenuLink({
 			{label}
 		</NavLink>
 	);
-}
-
-function useDropdownClose(onClose: () => void) {
-	const ref = useRef<HTMLDivElement>(null);
-	useEffect(() => {
-		function onClick(e: MouseEvent) {
-			if (!ref.current?.contains(e.target as Node)) onClose();
-		}
-		document.addEventListener("mousedown", onClick);
-		return () => document.removeEventListener("mousedown", onClick);
-	}, [onClose]);
-	return ref;
 }

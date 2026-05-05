@@ -76,14 +76,15 @@ describe("buildWatcherContext", () => {
 		}
 	});
 
-	test("embeds events inside a marked untrusted block", () => {
+	test("embeds events inside a nonce-delimited untrusted block", () => {
 		const ctx = buildWatcherContext({
 			session: makeSession(),
 			events: [makeEvent({ content: "hello" })],
 			triggerType: "idle",
 		});
-		expect(ctx.transcriptPrompt).toContain("<transcript>");
-		expect(ctx.transcriptPrompt).toContain("</transcript>");
+		// S-M1: nonce-tagged delimiters replace static <transcript>…</transcript>.
+		expect(ctx.transcriptPrompt).toMatch(/<transcript-[0-9a-f-]{36}>/);
+		expect(ctx.transcriptPrompt).toMatch(/<\/transcript-[0-9a-f-]{36}>/);
 		expect(ctx.transcriptPrompt).toContain("UNTRUSTED data");
 	});
 

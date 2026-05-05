@@ -3,20 +3,32 @@ import "../services/ai/__test_db.js";
 
 const { eq } = await import("drizzle-orm");
 const { config } = await import("../config.js");
-const { db, initializeDatabase } = await import("../db/client.js");
-const { settings } = await import("../db/schema.js");
+const { getDb, initializeDatabase } = await import("../db/client.js");
+const { settings } = await import("../db/schema/index.js");
 const { settingsRouter } = await import("./settings.js");
-const { aiRouter } = await import("./ai.js");
+const { requireAuth } = await import("../auth/middleware.js");
+const aiStatusRouter = (await import("./ai-status.js")).default;
+const aiProvidersRouter = (await import("./ai-providers.js")).default;
+const aiWatcherRouter = (await import("./ai-watcher.js")).default;
+const aiInboxRouter = (await import("./ai-inbox.js")).default;
+const aiIntelligenceRouter = (await import("./ai-intelligence.js")).default;
 const { Hono } = await import("hono");
 
 // Mount the routers behind /api/v1 the same way the real server does so the
-// path matchers behave identically.
+// path matchers behave identically (single auth gate wrapping all AI sub-routers).
+const aiRouter = new Hono();
+aiRouter.use("*", requireAuth());
+aiRouter.route("/", aiStatusRouter);
+aiRouter.route("/", aiProvidersRouter);
+aiRouter.route("/", aiWatcherRouter);
+aiRouter.route("/", aiInboxRouter);
+aiRouter.route("/", aiIntelligenceRouter);
 const app = new Hono().route("/api/v1", settingsRouter).route("/api/v1", aiRouter);
 
 const originalDisableAuth = config.disableAuth;
 
-beforeAll(() => {
-	initializeDatabase();
+beforeAll(async () => {
+	await initializeDatabase();
 	// Tests bypass auth the same way local dev does.
 	config.disableAuth = true;
 });
@@ -26,7 +38,7 @@ afterAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(settings).execute();
+	await getDb().delete(settings).execute();
 });
 
 async function putSetting(body: unknown) {
@@ -38,17 +50,19 @@ async function putSetting(body: unknown) {
 }
 
 async function readSetting(key: string) {
-	const [row] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+	const [row] = await getDb().select().from(settings).where(eq(settings.key, key)).limit(1);
 	return row;
 }
 
 describe("PUT /api/v1/settings", () => {
 	test("writes a non-protected key", async () => {
-		const res = await putSetting({ key: "ui.theme", value: "dark" });
+		// `theme` is in USER_SETTABLE_KEYS (settings-service.ts:11); previously
+		// this test used `ui.theme` which is not allowlisted and so 403'd.
+		const res = await putSetting({ key: "theme", value: "dark" });
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(body).toEqual({ ok: true });
-		const row = await readSetting("ui.theme");
+		const row = await readSetting("theme");
 		expect(row?.value).toBe("dark");
 	});
 
@@ -57,12 +71,16 @@ describe("PUT /api/v1/settings", () => {
 		expect(res.status).toBe(400);
 	});
 
-	test("rejects ai.enabled with 403 protected_setting", async () => {
+	test("rejects ai.enabled with 403 key_not_user_settable", async () => {
+		// Contract per audit-remediation P2 (CLAUDE.md / routes/settings.ts:40):
+		// 403 body shape is `{ error: "key_not_user_settable", key }` — the
+		// previous "protected_setting" / "Setting key '…' is reserved" wording
+		// was renamed during the allowlist work but this test was not updated.
 		const res = await putSetting({ key: "ai.enabled", value: true });
 		expect(res.status).toBe(403);
 		const body = await res.json();
-		expect(body.error).toBe("protected_setting");
-		expect(body.message).toBe("Setting key 'ai.enabled' is reserved for internal use.");
+		expect(body.error).toBe("key_not_user_settable");
+		expect(body.key).toBe("ai.enabled");
 		const row = await readSetting("ai.enabled");
 		expect(row).toBeUndefined();
 	});
@@ -106,5 +124,53 @@ describe("PUT /api/v1/ai/status (trusted internal upsert)", () => {
 		// And the AI-internal value remains unchanged.
 		const after = await readSetting("ai.enabled");
 		expect(after?.value).toBe(true);
+	});
+});
+
+// CH-L2 regression: GET /ai/vector-search/status must return the exact shape
+// (build/active/enabled/model/providerId/progress) regardless of whether the
+// three settings rows exist in the DB (previously 3 separate queries, now a
+// single batched inArray query).
+describe("GET /api/v1/ai/vector-search/status shape", () => {
+	test("returns expected keys with DB-default fallbacks when rows are absent", async () => {
+		const res = await app.request("/api/v1/ai/vector-search/status");
+		expect(res.status).toBe(200);
+		const body = await res.json();
+
+		// These five keys must always be present — operators have dashboards keyed on them.
+		expect(Object.keys(body)).toContain("build");
+		expect(Object.keys(body)).toContain("active");
+		expect(Object.keys(body)).toContain("enabled");
+		expect(Object.keys(body)).toContain("model");
+		expect(Object.keys(body)).toContain("providerId");
+		expect(Object.keys(body)).toContain("progress");
+
+		// Defaults: enabled=false, model=DEFAULT_EMBEDDING_MODEL fallback, providerId=null.
+		expect(body.enabled).toBe(false);
+		expect(typeof body.model).toBe("string");
+		expect(body.model.length).toBeGreaterThan(0);
+		expect(body.providerId).toBeNull();
+	});
+
+	test("reads persisted values from DB (bypasses build-flag gate on PUT)", async () => {
+		// Write the three settings directly to DB so we don't depend on the
+		// AGENTPULSE_VECTOR_SEARCH build flag being set in the test environment.
+		const { upsertSetting } = await import("../services/settings-service.js");
+		const { VECTOR_SEARCH_ENABLED_KEY, VECTOR_SEARCH_MODEL_KEY, VECTOR_SEARCH_PROVIDER_ID_KEY } =
+			await import("../services/ai/feature.js");
+		await upsertSetting(VECTOR_SEARCH_ENABLED_KEY, true, { allowProtected: true });
+		await upsertSetting(VECTOR_SEARCH_MODEL_KEY, "text-embedding-3-small", {
+			allowProtected: true,
+		});
+		await upsertSetting(VECTOR_SEARCH_PROVIDER_ID_KEY, "openai", { allowProtected: true });
+
+		const res = await app.request("/api/v1/ai/vector-search/status");
+		expect(res.status).toBe(200);
+		const body = await res.json();
+
+		// All three stored values must be reflected in the response.
+		expect(body.enabled).toBe(true);
+		expect(body.model).toBe("text-embedding-3-small");
+		expect(body.providerId).toBe("openai");
 	});
 });

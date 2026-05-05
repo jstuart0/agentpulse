@@ -1,0 +1,31 @@
+# Exclude development/ops artifacts that have no place in the runner image.
+# The image needs: compiled server, web build, drizzle SQL+JSON migration files.
+# It does NOT need: source schema TS files, local configs, secrets, git history,
+# or the thoughts/ research directory.
+
+.git/
+node_modules/
+
+# Research / planning — not needed at runtime
+thoughts/
+
+# Kubernetes deployment manifests — not part of the app bundle.
+# Exception: the backup-sidecar Dockerfile (deploy/k8s/Dockerfile.backup) needs
+# the run-backup.sh and retention.sh scripts that live alongside it. Without
+# this exception, `scripts/build-and-push.sh` fails on the backup image with
+# "COPY: file not found".
+deploy/
+!deploy/k8s/scripts/
+
+# Secret templates — never copy secret material into the image layer
+secrets/
+
+# Env files — runtime values are injected via Kubernetes secrets / env vars
+*.env
+.env.*
+.env
+
+# Drizzle TypeScript source schema files — only the compiled SQL+JSON migration
+# outputs (drizzle/sqlite/*.sql, drizzle/sqlite/meta/*.json,
+# drizzle/postgres/*.sql, drizzle/postgres/meta/*.json) are needed at runtime.
+drizzle/schema.*.ts

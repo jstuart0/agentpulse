@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
 import { useUserStore } from "../stores/user-store.js";
 
@@ -16,6 +17,7 @@ import { useUserStore } from "../stores/user-store.js";
 export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 	const user = useUserStore((s) => s.user);
 	const disableAuth = useUserStore((s) => s.disableAuth);
+	const { copy } = useCopyFeedback();
 	const [keys, setKeys] = useState<Array<{
 		id: string;
 		name: string;
@@ -70,15 +72,6 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 		: `curl -sSL ${serverUrl}/setup.sh | bash -s -- --key ${keyForCommand}`;
 	const relayCommand = `curl -sSL ${serverUrl}/setup-relay.sh | bash -s -- --key ${keyForCommand}`;
 
-	async function copy(text: string) {
-		try {
-			await navigator.clipboard.writeText(text);
-		} catch {
-			// Clipboard API unavailable in some contexts (http + sandbox);
-			// fall back to no-op rather than surfacing a noisy error.
-		}
-	}
-
 	return (
 		<div className="rounded-lg border border-border bg-card p-5 md:p-6">
 			<div className="flex items-start gap-3 mb-4">
@@ -132,7 +125,7 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 								</code>
 								<button
 									type="button"
-									onClick={() => void copy(revealedKey)}
+									onClick={() => void copy(revealedKey, "API key copied")}
 									className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
 								>
 									Copy

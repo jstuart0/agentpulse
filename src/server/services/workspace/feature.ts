@@ -1,6 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
-import { db } from "../../db/client.js";
-import { settings } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { settings } from "../../db/schema/index.js";
+import { upsertSetting } from "../settings-service.js";
 
 // Settings keys for the scratch-workspace feature (Slice 5 of the AI
 // task-initiated launches plan — see thoughts/plans/2026-04-27-ai-task-
@@ -90,7 +91,7 @@ export async function getWorkspaceSettings(): Promise<{
 	workspace: WorkspaceSettings;
 	gitClone: GitCloneSettings;
 }> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(settings)
 		.where(
@@ -150,17 +151,13 @@ export async function setWorkspaceSettings(update: WorkspaceSettingsUpdate): Pro
 	workspace: WorkspaceSettings;
 	gitClone: GitCloneSettings;
 }> {
-	const now = new Date().toISOString();
-
-	const upsert = async (key: string, value: unknown) => {
-		await db
-			.insert(settings)
-			.values({ key, value, updatedAt: now })
-			.onConflictDoUpdate({
-				target: settings.key,
-				set: { value, updatedAt: now },
-			});
-	};
+	// CH-M1: use upsertSetting(..., { allowProtected: true }) for all writes.
+	// workspace.* and git_clone.* keys are NOT in the user-settable allowlist
+	// (they are service-internal), so { allowProtected: true } is required.
+	// Without the flag upsertSetting() throws ProtectedSettingError, which
+	// would 500 every call to this service.
+	const upsert = (key: string, value: unknown) =>
+		upsertSetting(key, value, { allowProtected: true });
 
 	if (update.defaultRoot !== undefined) {
 		const v = validateWorkspaceRoot(update.defaultRoot);
@@ -213,7 +210,10 @@ export async function setWorkspaceSettings(update: WorkspaceSettingsUpdate): Pro
 				// constraint. The "no row" state is the canonical "full clone"
 				// representation — getWorkspaceSettings() falls back to the
 				// DEFAULT_GIT_CLONE_DEFAULT_DEPTH (null) when the key is absent.
-				await db.delete(settings).where(eq(settings.key, GIT_CLONE_DEFAULT_DEPTH_KEY)).execute();
+				await getDb()
+					.delete(settings)
+					.where(eq(settings.key, GIT_CLONE_DEFAULT_DEPTH_KEY))
+					.execute();
 			}
 		}
 		if (gc.timeoutSeconds !== undefined) {

@@ -6,8 +6,8 @@ import type {
 	ManagedState,
 	Session,
 } from "../../shared/types.js";
-import { db } from "../db/client.js";
-import { managedSessions, sessions, supervisors } from "../db/schema.js";
+import { getDb } from "../db/client.js";
+import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { generateSessionName } from "./name-generator.js";
 
@@ -46,7 +46,7 @@ function mapManagedSession(row: typeof managedSessions.$inferSelect): ManagedSes
 }
 
 export async function getManagedSession(sessionId: string) {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
@@ -59,12 +59,12 @@ export async function upsertManagedSessionState(
 	input: ManagedSessionStateInput,
 ): Promise<{ session: Session; managedSession: ManagedSession }> {
 	const timestamp = nowIso();
-	const [existingManaged] = await db
+	const [existingManaged] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, input.sessionId))
 		.limit(1);
-	const [existingSession] = await db
+	const [existingSession] = await getDb()
 		.select()
 		.from(sessions)
 		.where(eq(sessions.sessionId, input.sessionId))
@@ -85,29 +85,34 @@ export async function upsertManagedSessionState(
 	}
 
 	if (!existingSession) {
-		await db.insert(sessions).values({
-			sessionId: input.sessionId,
-			displayName: input.desiredThreadTitle || generateSessionName(),
-			agentType: input.agentType ?? "codex_cli",
-			status: (input.status ?? "active") as string,
-			cwd: input.cwd ?? null,
-			model: input.model ?? null,
-			startedAt: timestamp,
-			lastActivityAt: timestamp,
-			metadata: input.metadata ?? {},
-		});
+		await getDb()
+			.insert(sessions)
+			.values({
+				sessionId: input.sessionId,
+				displayName: input.desiredThreadTitle || generateSessionName(),
+				agentType: input.agentType ?? "codex_cli",
+				status: (input.status ?? "active") as string,
+				cwd: input.cwd ?? null,
+				model: input.model ?? null,
+				startedAt: timestamp,
+				lastActivityAt: timestamp,
+				metadata: input.metadata ?? {},
+			});
 	} else {
-		await db.update(sessions).set(sessionUpdates).where(eq(sessions.sessionId, input.sessionId));
+		await getDb()
+			.update(sessions)
+			.set(sessionUpdates)
+			.where(eq(sessions.sessionId, input.sessionId));
 	}
 
-	const [currentSession] = await db
+	const [currentSession] = await getDb()
 		.select()
 		.from(sessions)
 		.where(eq(sessions.sessionId, input.sessionId))
 		.limit(1);
 
 	const desiredTitle = input.desiredThreadTitle ?? currentSession?.displayName ?? null;
-	const [supervisor] = await db
+	const [supervisor] = await getDb()
 		.select()
 		.from(supervisors)
 		.where(eq(supervisors.id, supervisorId))
@@ -133,7 +138,7 @@ export async function upsertManagedSessionState(
 	const resolvedManagedState: ManagedState =
 		input.managedState ?? (existingManaged?.managedState as ManagedState | undefined) ?? "managed";
 
-	await db
+	await getDb()
 		.insert(managedSessions)
 		.values({
 			sessionId: input.sessionId,
@@ -179,7 +184,7 @@ export async function upsertManagedSessionState(
 			},
 		});
 
-	const [managedRow] = await db
+	const [managedRow] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, input.sessionId))
@@ -220,7 +225,7 @@ export async function attachManagedSessionToLaunch(input: {
 	correlationSource?: string | null;
 }) {
 	const timestamp = nowIso();
-	const [existingManaged] = await db
+	const [existingManaged] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, input.sessionId))
@@ -230,7 +235,7 @@ export async function attachManagedSessionToLaunch(input: {
 	const resolvedManagedState: ManagedState =
 		(existingManaged?.managedState as ManagedState | undefined) ?? "linked";
 
-	await db
+	await getDb()
 		.insert(managedSessions)
 		.values({
 			sessionId: input.sessionId,
@@ -276,7 +281,7 @@ export async function attachManagedSessionToLaunch(input: {
 			},
 		});
 
-	const [managedRow] = await db
+	const [managedRow] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, input.sessionId))
@@ -286,7 +291,7 @@ export async function attachManagedSessionToLaunch(input: {
 }
 
 export async function listManagedSessionsNeedingSync(supervisorId: string) {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(
@@ -314,7 +319,7 @@ export { mapManagedSession };
  * columns, which is this module's responsibility.
  */
 export async function stampWatcherState(sessionId: string, state: string): Promise<void> {
-	await db
+	await getDb()
 		.update(sessions)
 		.set({ watcherState: state, watcherLastRunAt: nowIso() })
 		.where(eq(sessions.sessionId, sessionId));
@@ -322,7 +327,7 @@ export async function stampWatcherState(sessionId: string, state: string): Promi
 
 /** Mark the last time a user prompt landed so race-control sees it. */
 export async function stampUserPrompt(sessionId: string): Promise<void> {
-	await db
+	await getDb()
 		.update(sessions)
 		.set({ watcherLastUserPromptAt: nowIso() })
 		.where(eq(sessions.sessionId, sessionId));

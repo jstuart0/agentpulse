@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { LabsBadge } from "../components/LabsBadge.js";
+import { SkeletonCardList } from "../components/SkeletonCard.js";
 import { ActionRequestCard } from "../components/inbox/ActionRequestCard.js";
 import { FailedProposalCard } from "../components/inbox/FailedProposalCard.js";
 import { HitlCard } from "../components/inbox/HitlCard.js";
@@ -133,7 +134,7 @@ export function InboxPage() {
 					<select
 						value={kindFilter}
 						onChange={(e) => setKindFilter(e.target.value as typeof kindFilter)}
-						className="text-xs bg-background border border-border rounded px-2 py-1"
+						className="rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
 					>
 						<option value="all">All kinds</option>
 						{(Object.keys(KIND_META) as InboxWorkItem["kind"][]).map((k) => (
@@ -145,8 +146,16 @@ export function InboxPage() {
 					<button
 						type="button"
 						onClick={() => void reload()}
-						className="text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted"
+						disabled={loading}
+						aria-busy={loading}
+						className="flex items-center gap-1.5 text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
 					>
+						{loading && (
+							<span
+								className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin"
+								aria-hidden="true"
+							/>
+						)}
 						Refresh
 					</button>
 				</div>
@@ -159,7 +168,9 @@ export function InboxPage() {
 			)}
 
 			{loading ? (
-				<div className="text-sm text-muted-foreground">Loading…</div>
+				<output aria-label="Loading inbox items">
+					<SkeletonCardList count={4} lines={3} />
+				</output>
 			) : inbox && inbox.items.length === 0 ? (
 				<div className="rounded border border-border bg-card p-6 text-center text-sm text-muted-foreground">
 					Inbox empty. Nothing needs your attention.
@@ -169,13 +180,15 @@ export function InboxPage() {
 			)}
 
 			{inbox && (
-				<footer className="pt-2 text-xs text-muted-foreground flex items-center gap-3">
+				<footer className="pt-2 text-xs text-muted-foreground flex flex-wrap items-center gap-3">
 					<span>total: {inbox.total}</span>
-					{(Object.keys(KIND_META) as InboxWorkItem["kind"][]).map((k) => (
-						<span key={k}>
-							{KIND_META[k].shortLabel}: {inbox.byKind[k]}
-						</span>
-					))}
+					{(Object.keys(KIND_META) as InboxWorkItem["kind"][])
+						.filter((k) => (inbox.byKind[k] ?? 0) > 0)
+						.map((k) => (
+							<span key={k}>
+								{KIND_META[k].shortLabel}: {inbox.byKind[k]}
+							</span>
+						))}
 				</footer>
 			)}
 		</div>

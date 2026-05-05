@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { ManagedState, Session, SessionEvent } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
-import { managedSessions, sessions, supervisors } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { managedSessions, sessions, supervisors } from "../../db/schema/index.js";
 import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { stampUserPrompt, stampWatcherState } from "../managed-session-state.js";
 import { sessionBus } from "../notifier.js";
@@ -69,6 +69,8 @@ interface ScheduledRun {
  */
 export class WatcherRunner {
 	private readonly scheduled = new Map<string, ScheduledRun>();
+	// NOTE: inFlight is per-process. Multi-instance deployment is unsupported
+	// until SQLite → Postgres migration; see thoughts/2026-04-24-postgres-backend-plan.md (A-M2).
 	private readonly inFlight = new Set<string>();
 	private started = false;
 	private alertRuleSweepInterval: ReturnType<typeof setInterval> | null = null;
@@ -242,7 +244,7 @@ export class WatcherRunner {
 			return { kind: "ok" };
 		}
 
-		const [session] = await db
+		const [session] = await getDb()
 			.select()
 			.from(sessions)
 			.where(eq(sessions.sessionId, sessionId))
@@ -653,7 +655,7 @@ export class WatcherRunner {
 		// best-effort dispatch the HITL there (Telegram, etc). Delivery
 		// failures never block the in-app approval path.
 		if (config.channelId && hitlOpen.hitlId) {
-			const [freshSession] = await db
+			const [freshSession] = await getDb()
 				.select({ displayName: sessions.displayName })
 				.from(sessions)
 				.where(eq(sessions.sessionId, sessionId))
@@ -738,13 +740,13 @@ async function loadManagedContext(sessionId: string): Promise<{
 	managedSession: { managedState: ManagedState };
 	supervisorConnected: boolean;
 } | null> {
-	const [managedRow] = await db
+	const [managedRow] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (!managedRow) return null;
-	const [sup] = await db
+	const [sup] = await getDb()
 		.select({ status: supervisors.status })
 		.from(supervisors)
 		.where(eq(supervisors.id, managedRow.supervisorId))

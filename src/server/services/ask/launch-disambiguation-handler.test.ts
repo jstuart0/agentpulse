@@ -1,9 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
+import { describeSqliteOnly } from "../../test-utils/backend.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { aiPendingProjectDrafts, askThreads, projects, sessions } = await import(
-	"../../db/schema.js"
+	"../../db/schema/index.js"
 );
 const {
 	createLaunchCloneDraft,
@@ -17,20 +18,18 @@ const {
 	parseScaffoldConfirmReply,
 	resolveLaunchDisambiguation,
 } = await import("./launch-disambiguation-handler.js");
-const { settings } = await import("../../db/schema.js");
+const { settings } = await import("../../db/schema/index.js");
 const { WORKSPACE_DEFAULT_ROOT_KEY } = await import("../workspace/feature.js");
 
-import type { ProjectChoiceSnapshot } from "../../db/schema.js";
+import type { ProjectChoiceSnapshot } from "../../db/schema/index.js";
 
-beforeAll(() => {
-	initializeDatabase();
-});
+beforeAll(() => initializeDatabase());
 
 beforeEach(async () => {
-	await db.delete(aiPendingProjectDrafts).execute();
-	await db.delete(askThreads).execute();
-	await db.delete(projects).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(aiPendingProjectDrafts).execute();
+	await getDb().delete(askThreads).execute();
+	await getDb().delete(projects).execute();
+	await getDb().delete(sessions).execute();
 });
 
 const choices: ProjectChoiceSnapshot[] = [
@@ -128,17 +127,21 @@ describe("encodePickerMeta / extractPickerMeta", () => {
 	});
 });
 
-describe("schema back-compat", () => {
+// SQLite-only: inserts a row via raw SQL without the `kind` column to simulate
+// a pre-migration row. On Postgres the column has a DEFAULT and cannot be
+// omitted; the back-compat is guaranteed by the schema default, not the Drizzle
+// fallback.
+describeSqliteOnly("schema back-compat", () => {
 	test("existing rows without an explicit kind column are treated as add_project", async () => {
 		const threadId = crypto.randomUUID();
 		const now = new Date().toISOString();
-		await db
+		await getDb()
 			.insert(askThreads)
 			.values({ id: threadId, title: "test", origin: "web", createdAt: now, updatedAt: now })
 			.execute();
 		// Insert via raw SQL to mirror a row created before the kind migration.
-		const { sqlite } = await import("../../db/client.js");
-		sqlite
+		const { getSqlite } = await import("../../db/client.js");
+		getSqlite()
 			.prepare(
 				`INSERT INTO ai_pending_project_drafts (
 					id, ask_thread_id, channel_id, origin,
@@ -149,7 +152,7 @@ describe("schema back-compat", () => {
 					'drafting', ?, ?)`,
 			)
 			.run(crypto.randomUUID(), threadId, now, now);
-		const [row] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [row] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(row.kind).toBe("add_project");
 	});
 });
@@ -158,7 +161,7 @@ describe("createLaunchDisambiguationDraft", () => {
 	test("persists a draft with kind=launch_disambiguation and renders the picker", async () => {
 		const threadId = crypto.randomUUID();
 		const now = new Date().toISOString();
-		await db
+		await getDb()
 			.insert(askThreads)
 			.values({ id: threadId, title: "test", origin: "web", createdAt: now, updatedAt: now })
 			.execute();
@@ -184,7 +187,7 @@ describe("createLaunchDisambiguationDraft", () => {
 		expect(meta).not.toBeNull();
 		expect(meta?.meta.choices.length).toBe(3);
 
-		const rows = await db.select().from(aiPendingProjectDrafts).execute();
+		const rows = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(rows.length).toBe(1);
 		expect(rows[0].kind).toBe("launch_disambiguation");
 		expect(rows[0].status).toBe("drafting");
@@ -193,7 +196,7 @@ describe("createLaunchDisambiguationDraft", () => {
 	test("renders an empty-state reply when no projects are configured", async () => {
 		const threadId = crypto.randomUUID();
 		const now = new Date().toISOString();
-		await db
+		await getDb()
 			.insert(askThreads)
 			.values({ id: threadId, title: "test", origin: "web", createdAt: now, updatedAt: now })
 			.execute();
@@ -214,7 +217,7 @@ describe("createLaunchDisambiguationDraft", () => {
 	test("supersedes any existing open draft on the same thread", async () => {
 		const threadId = crypto.randomUUID();
 		const now = new Date().toISOString();
-		await db
+		await getDb()
 			.insert(askThreads)
 			.values({ id: threadId, title: "test", origin: "web", createdAt: now, updatedAt: now })
 			.execute();
@@ -238,7 +241,7 @@ describe("createLaunchDisambiguationDraft", () => {
 			projects: choices,
 		});
 
-		const rows = await db.select().from(aiPendingProjectDrafts).execute();
+		const rows = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(rows.length).toBe(2);
 		const drafting = rows.filter((r) => r.status === "drafting");
 		const superseded = rows.filter((r) => r.status === "superseded");
@@ -251,7 +254,7 @@ describe("resolveLaunchDisambiguation", () => {
 	async function seedThreadAndDraft(opts?: { fields?: Partial<typeof choicesSeed> }) {
 		const threadId = crypto.randomUUID();
 		const now = new Date().toISOString();
-		await db
+		await getDb()
 			.insert(askThreads)
 			.values({ id: threadId, title: "test", origin: "web", createdAt: now, updatedAt: now })
 			.execute();
@@ -263,7 +266,7 @@ describe("resolveLaunchDisambiguation", () => {
 			proposedProjectChoices: choices,
 			...(opts?.fields ?? {}),
 		};
-		const [row] = await db
+		const [row] = await getDb()
 			.insert(aiPendingProjectDrafts)
 			.values({
 				askThreadId: threadId,
@@ -294,7 +297,7 @@ describe("resolveLaunchDisambiguation", () => {
 		});
 		expect(result.replyText.toLowerCase()).toContain("scaffold");
 		expect(result.replyText.toLowerCase()).toContain("supervisor");
-		const [row] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [row] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(row.status).toBe("drafting");
 	});
 
@@ -307,7 +310,7 @@ describe("resolveLaunchDisambiguation", () => {
 			threadId,
 		});
 		expect(result.replyText).toContain("I didn't understand that");
-		const [row] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [row] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(row.status).toBe("drafting");
 		const nq = row.nextQuestion as { retryCount: number };
 		expect(nq.retryCount).toBe(1);
@@ -316,14 +319,14 @@ describe("resolveLaunchDisambiguation", () => {
 	test("garbage input three times expires the draft", async () => {
 		const { threadId, draft } = await seedThreadAndDraft();
 		await resolveLaunchDisambiguation({ draft, reply: "?", origin: "web", threadId });
-		const [reloaded1] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [reloaded1] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		await resolveLaunchDisambiguation({
 			draft: reloaded1,
 			reply: "?",
 			origin: "web",
 			threadId,
 		});
-		const [reloaded2] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [reloaded2] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		const result = await resolveLaunchDisambiguation({
 			draft: reloaded2,
 			reply: "?",
@@ -331,7 +334,7 @@ describe("resolveLaunchDisambiguation", () => {
 			threadId,
 		});
 		expect(result.replyText).toContain("after 3 tries");
-		const [row] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [row] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(row.status).toBe("expired");
 	});
 
@@ -345,17 +348,17 @@ describe("resolveLaunchDisambiguation", () => {
 		});
 		expect(result.replyText).toContain("/some/random/path");
 		expect(result.replyText).toContain("Settings → Projects");
-		const [row] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [row] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(row.status).toBe("superseded");
 	});
 });
 
 describe("end-to-end: numeric reply produces an action_request", async () => {
-	const { aiActionRequests, supervisors } = await import("../../db/schema.js");
+	const { aiActionRequests, supervisors } = await import("../../db/schema/index.js");
 
 	beforeEach(async () => {
-		await db.delete(aiActionRequests).execute();
-		await db.delete(supervisors).execute();
+		await getDb().delete(aiActionRequests).execute();
+		await getDb().delete(supervisors).execute();
 	});
 
 	test("number pick handed off to handleAskLaunchIntent creates a launch action_request", async () => {
@@ -364,7 +367,7 @@ describe("end-to-end: numeric reply produces an action_request", async () => {
 		const projectId = crypto.randomUUID();
 		const cwd = "/tmp/test-disambiguation-project";
 		const now = new Date().toISOString();
-		await db
+		await getDb()
 			.insert(projects)
 			.values({
 				id: projectId,
@@ -376,7 +379,7 @@ describe("end-to-end: numeric reply produces an action_request", async () => {
 				updatedAt: now,
 			})
 			.execute();
-		await db
+		await getDb()
 			.insert(supervisors)
 			.values({
 				id: crypto.randomUUID(),
@@ -414,13 +417,13 @@ describe("end-to-end: numeric reply produces an action_request", async () => {
 		await bumpVersionAndReload();
 
 		const threadId = crypto.randomUUID();
-		await db
+		await getDb()
 			.insert(askThreads)
 			.values({ id: threadId, title: "test", origin: "web", createdAt: now, updatedAt: now })
 			.execute();
 
 		const choicesSnapshot: ProjectChoiceSnapshot[] = [{ id: projectId, name: "agentpulse", cwd }];
-		const [draft] = await db
+		const [draft] = await getDb()
 			.insert(aiPendingProjectDrafts)
 			.values({
 				askThreadId: threadId,
@@ -450,7 +453,7 @@ describe("end-to-end: numeric reply produces an action_request", async () => {
 
 		// The launch handler returns a queued-launch reply when an action_request was created.
 		expect(result.replyText.toLowerCase()).toContain("queued");
-		const actionRows = await db.select().from(aiActionRequests).execute();
+		const actionRows = await getDb().select().from(aiActionRequests).execute();
 		expect(actionRows.length).toBe(1);
 		expect(actionRows[0].kind).toBe("launch_request");
 		expect(actionRows[0].askThreadId).toBe(threadId);
@@ -458,7 +461,7 @@ describe("end-to-end: numeric reply produces an action_request", async () => {
 		expect(payload.projectId).toBe(projectId);
 		expect(payload.aiInitiated).toBe(true);
 
-		const [draftAfter] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [draftAfter] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(draftAfter.status).toBe("superseded");
 	});
 });
@@ -492,12 +495,12 @@ describe("parseScaffoldConfirmReply", () => {
 });
 
 describe("workspace scaffold flow (Slice 5d)", async () => {
-	const { aiActionRequests, supervisors } = await import("../../db/schema.js");
+	const { aiActionRequests, supervisors } = await import("../../db/schema/index.js");
 
 	beforeEach(async () => {
-		await db.delete(aiActionRequests).execute();
-		await db.delete(supervisors).execute();
-		await db.delete(settings).execute();
+		await getDb().delete(aiActionRequests).execute();
+		await getDb().delete(supervisors).execute();
+		await getDb().delete(settings).execute();
 	});
 
 	async function seedConnectedScaffoldSupervisor(
@@ -510,7 +513,7 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 		const now = new Date().toISOString();
 		const features = ["can_run_prelaunch_actions"];
 		if (opts.canScaffold !== false) features.push("can_scaffold_workarea");
-		await db
+		await getDb()
 			.insert(supervisors)
 			.values({
 				id: crypto.randomUUID(),
@@ -549,11 +552,11 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 	}> {
 		const threadId = crypto.randomUUID();
 		const now = new Date().toISOString();
-		await db
+		await getDb()
 			.insert(askThreads)
 			.values({ id: threadId, title: "test", origin: "web", createdAt: now, updatedAt: now })
 			.execute();
-		const [draft] = await db
+		const [draft] = await getDb()
 			.insert(aiPendingProjectDrafts)
 			.values({
 				askThreadId: threadId,
@@ -579,7 +582,7 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 	test("typing `new` with capable supervisor produces workspace_scaffold meta + persists pendingScaffold", async () => {
 		await seedConnectedScaffoldSupervisor();
 		// Set workspace_default_root to /tmp so collisions don't surprise us.
-		await db
+		await getDb()
 			.insert(settings)
 			.values({ key: WORKSPACE_DEFAULT_ROOT_KEY, value: "/tmp/agentpulse-work" })
 			.execute();
@@ -603,7 +606,7 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 		expect(meta?.meta.canScaffold).toBe(true);
 		expect(meta?.meta.suggestedHost).toBe("test-host");
 
-		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [persisted] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		const fields = persisted.draftFields as { pendingScaffold?: { resolvedPath: string } };
 		expect(fields.pendingScaffold).toBeDefined();
 		expect(fields.pendingScaffold?.resolvedPath).toBe("/tmp/agentpulse-work/plan-caching");
@@ -622,7 +625,7 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 		expect(result.replyText.toLowerCase()).toContain("supervisor");
 		expect(extractWorkspaceScaffoldMeta(result.replyText)).toBeNull();
 
-		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [persisted] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		const fields = persisted.draftFields as { pendingScaffold?: unknown };
 		expect(fields.pendingScaffold).toBeUndefined();
 		expect(persisted.status).toBe("drafting");
@@ -630,14 +633,14 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 
 	test("user replies `yes` after `new` → invokes handleAskLaunchIntent and launchSpec carries prelaunchActions", async () => {
 		await seedConnectedScaffoldSupervisor({ trustedRoots: ["/tmp"] });
-		await db
+		await getDb()
 			.insert(settings)
 			.values({ key: WORKSPACE_DEFAULT_ROOT_KEY, value: "/tmp/agentpulse-work" })
 			.execute();
 
 		const { threadId, draft } = await seedDraftWithChoices();
 		await resolveLaunchDisambiguation({ draft, reply: "new", origin: "web", threadId });
-		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [afterNew] = await getDb().select().from(aiPendingProjectDrafts).execute();
 
 		const result = await resolveLaunchDisambiguation({
 			draft: afterNew,
@@ -647,7 +650,7 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 		});
 
 		expect(result.replyText.toLowerCase()).toContain("queued");
-		const actionRows = await db.select().from(aiActionRequests).execute();
+		const actionRows = await getDb().select().from(aiActionRequests).execute();
 		expect(actionRows.length).toBe(1);
 		expect(actionRows[0].kind).toBe("launch_request");
 		const payload = actionRows[0].payload as {
@@ -662,26 +665,26 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 		);
 
 		// A scratch project should have been registered.
-		const projectRows = await db.select().from(projects).execute();
+		const projectRows = await getDb().select().from(projects).execute();
 		expect(projectRows.length).toBe(1);
 		expect(projectRows[0].cwd).toBe("/tmp/agentpulse-work/plan-caching");
 		expect(projectRows[0].tags).toContain("scratch");
 		expect(projectRows[0].tags).toContain("ai-initiated");
 
-		const [draftAfter] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [draftAfter] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(draftAfter.status).toBe("superseded");
 	});
 
 	test("user replies `cancel` after `new` → draft is deleted with acknowledgment", async () => {
 		await seedConnectedScaffoldSupervisor();
-		await db
+		await getDb()
 			.insert(settings)
 			.values({ key: WORKSPACE_DEFAULT_ROOT_KEY, value: "/tmp/agentpulse-work" })
 			.execute();
 
 		const { threadId, draft } = await seedDraftWithChoices();
 		await resolveLaunchDisambiguation({ draft, reply: "new", origin: "web", threadId });
-		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [afterNew] = await getDb().select().from(aiPendingProjectDrafts).execute();
 
 		const result = await resolveLaunchDisambiguation({
 			draft: afterNew,
@@ -690,20 +693,20 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 			threadId,
 		});
 		expect(result.replyText.toLowerCase()).toContain("cancelled");
-		const remaining = await db.select().from(aiPendingProjectDrafts).execute();
+		const remaining = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(remaining.length).toBe(0);
 	});
 
 	test("user replies with a custom path → workspace_scaffold meta updates with the new path", async () => {
 		await seedConnectedScaffoldSupervisor();
-		await db
+		await getDb()
 			.insert(settings)
 			.values({ key: WORKSPACE_DEFAULT_ROOT_KEY, value: "/tmp/agentpulse-work" })
 			.execute();
 
 		const { threadId, draft } = await seedDraftWithChoices();
 		await resolveLaunchDisambiguation({ draft, reply: "new", origin: "web", threadId });
-		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [afterNew] = await getDb().select().from(aiPendingProjectDrafts).execute();
 
 		const result = await resolveLaunchDisambiguation({
 			draft: afterNew,
@@ -716,21 +719,21 @@ describe("workspace scaffold flow (Slice 5d)", async () => {
 		expect(meta?.meta.resolvedPath).toBe("/tmp/custom-workspace");
 		expect(meta?.meta.error).toBeUndefined();
 
-		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [persisted] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		const fields = persisted.draftFields as { pendingScaffold?: { resolvedPath: string } };
 		expect(fields.pendingScaffold?.resolvedPath).toBe("/tmp/custom-workspace");
 	});
 
 	test("user replies with a path containing `..` → meta carries an error", async () => {
 		await seedConnectedScaffoldSupervisor();
-		await db
+		await getDb()
 			.insert(settings)
 			.values({ key: WORKSPACE_DEFAULT_ROOT_KEY, value: "/tmp/agentpulse-work" })
 			.execute();
 
 		const { threadId, draft } = await seedDraftWithChoices();
 		await resolveLaunchDisambiguation({ draft, reply: "new", origin: "web", threadId });
-		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [afterNew] = await getDb().select().from(aiPendingProjectDrafts).execute();
 
 		const result = await resolveLaunchDisambiguation({
 			draft: afterNew,
@@ -786,12 +789,12 @@ describe("parseCloneConfirmReply", () => {
 });
 
 describe("workspace clone flow (Slice 6d)", async () => {
-	const { aiActionRequests, supervisors } = await import("../../db/schema.js");
+	const { aiActionRequests, supervisors } = await import("../../db/schema/index.js");
 
 	beforeEach(async () => {
-		await db.delete(aiActionRequests).execute();
-		await db.delete(supervisors).execute();
-		await db.delete(settings).execute();
+		await getDb().delete(aiActionRequests).execute();
+		await getDb().delete(supervisors).execute();
+		await getDb().delete(settings).execute();
 	});
 
 	async function seedConnectedCloneSupervisor(
@@ -804,7 +807,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 		const now = new Date().toISOString();
 		const features = ["can_run_prelaunch_actions"];
 		if (opts.canClone !== false) features.push("can_clone_repo");
-		await db
+		await getDb()
 			.insert(supervisors)
 			.values({
 				id: crypto.randomUUID(),
@@ -840,7 +843,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 	async function seedThread(): Promise<string> {
 		const threadId = crypto.randomUUID();
 		const now = new Date().toISOString();
-		await db
+		await getDb()
 			.insert(askThreads)
 			.values({ id: threadId, title: "test", origin: "web", createdAt: now, updatedAt: now })
 			.execute();
@@ -873,7 +876,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 		expect(meta?.meta.canClone).toBe(true);
 		expect(meta?.meta.suggestedHost).toBe("test-host");
 
-		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [persisted] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		const fields = persisted.draftFields as {
 			pendingClone?: { url: string; resolvedPath: string };
 		};
@@ -900,7 +903,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 		expect(result.replyText.toLowerCase()).toContain("supervisor");
 		expect(extractWorkspaceCloneMeta(result.replyText)).toBeNull();
 
-		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [persisted] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		const fields = persisted.draftFields as { pendingClone?: unknown };
 		expect(fields.pendingClone).toBeUndefined();
 		expect(persisted.status).toBe("drafting");
@@ -909,7 +912,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 	test("confirm reply → handleAskLaunchIntent invoked, prelaunchActions carries clone_repo", async () => {
 		await seedConnectedCloneSupervisor({ trustedRoots: ["/tmp"] });
 		const { WORKSPACE_DEFAULT_ROOT_KEY: WORKSPACE_KEY } = await import("../workspace/feature.js");
-		await db
+		await getDb()
 			.insert(settings)
 			.values({ key: WORKSPACE_KEY, value: "/tmp/agentpulse-work" })
 			.execute();
@@ -926,7 +929,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 			},
 			originalMessage: "clone github.com/foo/bar",
 		});
-		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [afterNew] = await getDb().select().from(aiPendingProjectDrafts).execute();
 
 		const result = await resolveLaunchDisambiguation({
 			draft: afterNew,
@@ -936,7 +939,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 		});
 
 		expect(result.replyText.toLowerCase()).toContain("queued");
-		const actionRows = await db.select().from(aiActionRequests).execute();
+		const actionRows = await getDb().select().from(aiActionRequests).execute();
 		expect(actionRows.length).toBe(1);
 		expect(actionRows[0].kind).toBe("launch_request");
 		const payload = actionRows[0].payload as {
@@ -949,13 +952,13 @@ describe("workspace clone flow (Slice 6d)", async () => {
 		expect(payload.launchSpec?.prelaunchActions?.[0].url).toBe("https://github.com/foo/bar.git");
 
 		// A scratch project should have been registered with cloned tag.
-		const projectRows = await db.select().from(projects).execute();
+		const projectRows = await getDb().select().from(projects).execute();
 		expect(projectRows.length).toBe(1);
 		expect(projectRows[0].tags).toContain("scratch");
 		expect(projectRows[0].tags).toContain("ai-initiated");
 		expect(projectRows[0].tags).toContain("cloned");
 
-		const [draftAfter] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [draftAfter] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(draftAfter.status).toBe("superseded");
 	});
 
@@ -972,7 +975,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 			},
 			originalMessage: "clone github.com/foo/bar",
 		});
-		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [afterNew] = await getDb().select().from(aiPendingProjectDrafts).execute();
 
 		const result = await resolveLaunchDisambiguation({
 			draft: afterNew,
@@ -981,7 +984,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 			threadId,
 		});
 		expect(result.replyText.toLowerCase()).toContain("cancelled");
-		const remaining = await db.select().from(aiPendingProjectDrafts).execute();
+		const remaining = await getDb().select().from(aiPendingProjectDrafts).execute();
 		expect(remaining.length).toBe(0);
 	});
 
@@ -998,7 +1001,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 			},
 			originalMessage: "clone github.com/foo/bar",
 		});
-		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [afterNew] = await getDb().select().from(aiPendingProjectDrafts).execute();
 
 		const result = await resolveLaunchDisambiguation({
 			draft: afterNew,
@@ -1011,7 +1014,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 		expect(meta?.meta.resolvedPath).toBe("/tmp/custom-clone");
 		expect(meta?.meta.error).toBeUndefined();
 
-		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [persisted] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		const fields = persisted.draftFields as { pendingClone?: { resolvedPath: string } };
 		expect(fields.pendingClone?.resolvedPath).toBe("/tmp/custom-clone");
 	});
@@ -1029,7 +1032,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 			},
 			originalMessage: "clone github.com/foo/bar",
 		});
-		const [afterNew] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [afterNew] = await getDb().select().from(aiPendingProjectDrafts).execute();
 
 		const result = await resolveLaunchDisambiguation({
 			draft: afterNew,
@@ -1041,7 +1044,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 		expect(meta).not.toBeNull();
 		expect(meta?.meta.branch).toBe("dev");
 
-		const [persisted] = await db.select().from(aiPendingProjectDrafts).execute();
+		const [persisted] = await getDb().select().from(aiPendingProjectDrafts).execute();
 		const fields = persisted.draftFields as { pendingClone?: { branch?: string } };
 		expect(fields.pendingClone?.branch).toBe("dev");
 	});
@@ -1065,7 +1068,7 @@ describe("workspace clone flow (Slice 6d)", async () => {
 		const meta = extractWorkspaceCloneMeta(result.replyText);
 		expect(meta).not.toBeNull();
 		expect(meta?.meta.kind).toBe("workspace_clone");
-		const projectRows = await db.select().from(projects).execute();
+		const projectRows = await getDb().select().from(projects).execute();
 		expect(projectRows.length).toBe(0);
 	});
 });

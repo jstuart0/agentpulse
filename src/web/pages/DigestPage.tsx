@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { LabsBadge } from "../components/LabsBadge.js";
+import { SkeletonCard, SkeletonCardList } from "../components/SkeletonCard.js";
+import { StatCard } from "../components/StatCard.js";
 import { type Digest, type RepoDigest, api } from "../lib/api.js";
+import { formatTimeAgo } from "../lib/utils.js";
 
 /**
  * Daily project digest. Deterministic aggregation of recent sessions
@@ -44,8 +47,16 @@ export function DigestPage() {
 				<button
 					type="button"
 					onClick={() => void load(true)}
-					className="text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted"
+					disabled={loading}
+					aria-busy={loading}
+					className="flex items-center gap-1.5 text-xs px-3 py-1 rounded border border-border bg-background hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
 				>
+					{loading && (
+						<span
+							className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin"
+							aria-hidden="true"
+						/>
+					)}
 					Refresh now
 				</button>
 			</header>
@@ -57,7 +68,16 @@ export function DigestPage() {
 			)}
 
 			{loading ? (
-				<div className="text-sm text-muted-foreground">Loading…</div>
+				<output aria-label="Loading digest">
+					{/* Stats row skeleton */}
+					<section className="grid grid-cols-2 md:grid-cols-5 gap-3">
+						{Array.from({ length: 5 }, (_, i) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: static skeleton rows
+							<SkeletonCard key={i} lines={1} />
+						))}
+					</section>
+					<SkeletonCardList count={3} lines={4} />
+				</output>
 			) : digest ? (
 				<>
 					<section className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -89,30 +109,11 @@ export function DigestPage() {
 					)}
 
 					<footer className="text-[10px] text-muted-foreground pt-2">
-						generated {relTime(digest.generatedAt)} · window {relTime(digest.windowStart)} →{" "}
-						{relTime(digest.windowEnd)}
+						generated {formatTimeAgo(digest.generatedAt)} · window{" "}
+						{formatTimeAgo(digest.windowStart)} → {formatTimeAgo(digest.windowEnd)}
 					</footer>
 				</>
 			) : null}
-		</div>
-	);
-}
-
-function StatCard({
-	label,
-	value,
-	tone = "default",
-}: {
-	label: string;
-	value: number;
-	tone?: "default" | "warn" | "danger";
-}) {
-	const toneClass =
-		tone === "warn" ? "text-amber-300" : tone === "danger" ? "text-red-300" : "text-foreground";
-	return (
-		<div className="rounded-lg border border-border bg-card p-3">
-			<div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-			<div className={`text-2xl font-semibold mt-1 ${toneClass}`}>{value}</div>
 		</div>
 	);
 }
@@ -186,11 +187,22 @@ function RepoCard({ repo }: { repo: RepoDigest }) {
 				</div>
 			)}
 
-			<details>
-				<summary className="text-[10px] uppercase tracking-wide text-muted-foreground cursor-pointer">
+			<details className="group">
+				<summary className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground cursor-pointer select-none list-none rounded px-1 -mx-1 py-0.5 hover:bg-muted/60 transition-colors">
+					{/* Custom chevron replaces the browser disclosure triangle */}
+					<svg
+						className="w-2.5 h-2.5 shrink-0 transition-transform group-open:rotate-90"
+						aria-hidden="true"
+						fill="none"
+						viewBox="0 0 24 24"
+						stroke="currentColor"
+						strokeWidth={3}
+					>
+						<path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+					</svg>
 					Sessions ({repo.sessions.length})
 				</summary>
-				<ul className="mt-2 space-y-1">
+				<ul className="mt-2 space-y-1 border-t border-border/40 pt-2">
 					{repo.sessions.map((s) => (
 						<li key={s.sessionId} className="flex items-center gap-2 text-xs">
 							<Link
@@ -201,7 +213,9 @@ function RepoCard({ repo }: { repo: RepoDigest }) {
 							</Link>
 							<Chip label={s.status} />
 							{s.health && <Chip label={s.health} />}
-							<span className="text-muted-foreground ml-auto">{relTime(s.lastActivityAt)}</span>
+							<span className="text-muted-foreground ml-auto">
+								{formatTimeAgo(s.lastActivityAt)}
+							</span>
 						</li>
 					))}
 				</ul>
@@ -218,17 +232,4 @@ function Chip({ label, className = "" }: { label: string; className?: string }) 
 			{label}
 		</span>
 	);
-}
-
-function relTime(iso: string): string {
-	const ts = iso.includes("T") ? iso : `${iso.replace(" ", "T")}Z`;
-	const diff = Date.now() - new Date(ts).getTime();
-	const s = Math.floor(diff / 1000);
-	if (s < 60) return `${s}s ago`;
-	const m = Math.floor(s / 60);
-	if (m < 60) return `${m}m ago`;
-	const h = Math.floor(m / 60);
-	if (h < 24) return `${h}h ago`;
-	const d = Math.floor(h / 24);
-	return `${d}d ago`;
 }

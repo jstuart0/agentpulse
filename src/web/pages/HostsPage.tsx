@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import type { SupervisorRecord } from "../../shared/types.js";
+import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
 
 export function HostsPage() {
+	const { copy } = useCopyFeedback();
 	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [refreshing, setRefreshing] = useState(false);
@@ -70,12 +72,7 @@ export function HostsPage() {
 
 	async function handleCopyToken() {
 		if (!createdToken?.token) return;
-		try {
-			await navigator.clipboard.writeText(createdToken.token);
-		} catch (err) {
-			console.error("Failed to copy token:", err);
-			setError("Failed to copy token to clipboard.");
-		}
+		await copy(createdToken.token, "Enrollment token copied");
 	}
 
 	async function handleRevokeSupervisor(id: string) {
@@ -145,6 +142,7 @@ export function HostsPage() {
 						</p>
 					</div>
 					<button
+						type="button"
 						onClick={() => loadSupervisors()}
 						disabled={refreshing || loading}
 						className="inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-sm text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
@@ -186,6 +184,7 @@ export function HostsPage() {
 							</label>
 							<div className="flex items-end">
 								<button
+									type="button"
 									onClick={handleCreateEnrollmentToken}
 									disabled={creatingToken}
 									className="inline-flex h-10 w-full items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
@@ -209,6 +208,7 @@ export function HostsPage() {
 										</div>
 									</div>
 									<button
+										type="button"
 										onClick={handleCopyToken}
 										className="inline-flex h-8 items-center justify-center rounded-md border border-border px-3 text-xs text-foreground transition-colors hover:bg-accent"
 									>
@@ -410,6 +410,7 @@ export function HostsPage() {
 									</div>
 									<div className="flex items-center gap-2">
 										<button
+											type="button"
 											onClick={() => handleRotateSupervisor(supervisor)}
 											disabled={
 												supervisor.enrollmentState === "revoked" || rotatingId === supervisor.id
@@ -419,6 +420,7 @@ export function HostsPage() {
 											{rotatingId === supervisor.id ? "Rotating..." : "Rotate"}
 										</button>
 										<button
+											type="button"
 											onClick={() => handleRevokeSupervisor(supervisor.id)}
 											disabled={
 												supervisor.enrollmentState === "revoked" || revokingId === supervisor.id

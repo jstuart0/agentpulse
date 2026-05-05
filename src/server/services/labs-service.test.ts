@@ -1,17 +1,17 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
 
-const { db, initializeDatabase } = await import("../db/client.js");
-const { settings } = await import("../db/schema.js");
+const { getDb, initializeDatabase } = await import("../db/client.js");
+const { settings } = await import("../db/schema/index.js");
 const { LABS_REGISTRY, LABS_SETTINGS_KEY, defaultLabsFlags, getLabsFlags, setLabsFlag } =
 	await import("./labs-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {
-	await db.delete(settings).execute();
+	await getDb().delete(settings).execute();
 });
 
 describe("labs-service", () => {
@@ -39,7 +39,7 @@ describe("labs-service", () => {
 	test("stored partial flags merge with defaults for newly-added features", async () => {
 		const now = new Date().toISOString();
 		// Legacy stored config that only knows about "inbox".
-		await db
+		await getDb()
 			.insert(settings)
 			.values({ key: LABS_SETTINGS_KEY, value: { inbox: false }, updatedAt: now })
 			.execute();

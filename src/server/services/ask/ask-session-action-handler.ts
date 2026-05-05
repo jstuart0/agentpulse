@@ -1,7 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import type { AskThreadOrigin } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
-import { managedSessions, sessions } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { managedSessions, sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import type { ResolvedSession } from "./ask-resolver.js";
@@ -42,7 +42,7 @@ export async function handleSessionAction(
 	// ---- Non-destructive: direct execute --------------------------------
 
 	if (intent.action === "pin") {
-		await db
+		await getDb()
 			.update(sessions)
 			.set({ isPinned: true })
 			.where(eq(sessions.sessionId, session.sessionId));
@@ -50,7 +50,7 @@ export async function handleSessionAction(
 	}
 
 	if (intent.action === "unpin") {
-		await db
+		await getDb()
 			.update(sessions)
 			.set({ isPinned: false })
 			.where(eq(sessions.sessionId, session.sessionId));
@@ -61,7 +61,7 @@ export async function handleSessionAction(
 		const noteContent = intent.noteText?.trim() || "(no content)";
 		// Append semantics: existing notes are preserved. New note gets a
 		// datetime prefix so the user can tell entries apart in the UI.
-		await db
+		await getDb()
 			.update(sessions)
 			.set({
 				notes: sql`CASE
@@ -82,19 +82,19 @@ export async function handleSessionAction(
 			};
 		}
 		const oldName = name;
-		await db
+		await getDb()
 			.update(sessions)
 			.set({ displayName: newName })
 			.where(eq(sessions.sessionId, session.sessionId));
 
 		// Mirror the existing rename route: also update managed session title if present.
-		const [managed] = await db
+		const [managed] = await getDb()
 			.select()
 			.from(managedSessions)
 			.where(eq(managedSessions.sessionId, session.sessionId))
 			.limit(1);
 		if (managed) {
-			await db
+			await getDb()
 				.update(managedSessions)
 				.set({
 					desiredThreadTitle: newName,
@@ -117,7 +117,7 @@ export async function handleSessionAction(
 		// Pre-flight: verify the session has a managed_sessions row.
 		// queueStopAction would throw for hook-only sessions — we surface a
 		// clear message here so no action_request is ever created for them.
-		const [managed] = await db
+		const [managed] = await getDb()
 			.select({ sessionId: managedSessions.sessionId })
 			.from(managedSessions)
 			.where(eq(managedSessions.sessionId, session.sessionId))

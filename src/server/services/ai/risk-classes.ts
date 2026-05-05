@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { db } from "../../db/client.js";
-import { settings } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { settings } from "../../db/schema/index.js";
 
 /**
  * Phase 7 risk class configuration. The watcher consults this list at
@@ -59,7 +59,7 @@ const DEFAULT_CONFIG: RiskClassesConfig = {
 };
 
 export async function getRiskClasses(): Promise<RiskClassesConfig> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(settings)
 		.where(eq(settings.key, AI_RISK_CLASSES_KEY))
@@ -72,7 +72,7 @@ export async function getRiskClasses(): Promise<RiskClassesConfig> {
 
 export async function setRiskClasses(config: RiskClassesConfig): Promise<void> {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(settings)
 		.values({ key: AI_RISK_CLASSES_KEY, value: config, updatedAt: now })
 		.onConflictDoUpdate({

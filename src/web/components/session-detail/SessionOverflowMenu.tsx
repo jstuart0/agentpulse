@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { Session, SessionEvent } from "../../../shared/types.js";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { buildExportMarkdown } from "./export-markdown.js";
 
 interface SessionOverflowMenuProps {
@@ -29,6 +30,7 @@ export function SessionOverflowMenu({
 	const [open, setOpen] = useState(false);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const navigate = useNavigate();
+	const { copy } = useCopyFeedback();
 
 	useEffect(() => {
 		if (!open) return;
@@ -48,8 +50,8 @@ export function SessionOverflowMenu({
 		};
 	}, [open]);
 
-	function handleExport() {
-		navigator.clipboard.writeText(buildExportMarkdown(displayName, session, allEvents));
+	async function handleExport() {
+		await copy(buildExportMarkdown(displayName, session, allEvents), "Session copied as Markdown");
 		setOpen(false);
 	}
 
@@ -63,7 +65,13 @@ export function SessionOverflowMenu({
 				aria-expanded={open}
 				className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
 			>
-				<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<svg
+					className="w-4 h-4"
+					aria-hidden="true"
+					fill="none"
+					viewBox="0 0 24 24"
+					stroke="currentColor"
+				>
 					<path
 						strokeLinecap="round"
 						strokeLinejoin="round"

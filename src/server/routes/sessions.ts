@@ -2,8 +2,9 @@ import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
-import { db } from "../db/client.js";
-import { events, sessions } from "../db/schema.js";
+import { getDb } from "../db/client.js";
+import { events, sessions } from "../db/schema/index.js";
+import { withTransaction } from "../db/with-transaction.js";
 import {
 	listControlActionsForSession,
 	queuePromptAction,
@@ -43,7 +44,7 @@ sessionsRouter.get("/sessions/:sessionId", async (c) => {
 	}
 
 	// Get timeline events for the detail page; the UI handles mode filtering.
-	const sessionEvents = await db
+	const sessionEvents = await getDb()
 		.select()
 		.from(events)
 		.where(eq(events.sessionId, sessionId))
@@ -61,7 +62,7 @@ sessionsRouter.get("/sessions/:sessionId/timeline", async (c) => {
 	const limit = Number(c.req.query("limit") || 50);
 	const offset = Number(c.req.query("offset") || 0);
 
-	const sessionEvents = await db
+	const sessionEvents = await getDb()
 		.select()
 		.from(events)
 		.where(eq(events.sessionId, sessionId))
@@ -77,7 +78,7 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { notes } = await c.req.json<{ notes: string }>();
 
-	await db
+	await getDb()
 		.update(sessions)
 		.set({ notes: notes ?? "" })
 		.where(eq(sessions.sessionId, sessionId));
@@ -88,15 +89,15 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 // PUT /api/v1/sessions/:sessionId/rename - Rename a session
 //
 // Slice DELETE-RENAME-1: business logic lives in `renameSession`, which
-// wraps the `sessions` + (optional) `managed_sessions` updates in a SYNC
-// SQLite transaction. The route handler only validates input.
+// wraps the `sessions` + (optional) `managed_sessions` updates in a
+// transaction. The route handler only validates input.
 sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { name } = await c.req.json<{ name: string }>();
 
 	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
 
-	renameSession(sessionId, name);
+	await renameSession(sessionId, name);
 	return c.json({ ok: true });
 });
 
@@ -149,7 +150,7 @@ sessionsRouter.put("/sessions/:sessionId/pin", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { pinned } = await c.req.json<{ pinned: boolean }>();
 
-	await db.update(sessions).set({ isPinned: pinned }).where(eq(sessions.sessionId, sessionId));
+	await getDb().update(sessions).set({ isPinned: pinned }).where(eq(sessions.sessionId, sessionId));
 
 	return c.json({ ok: true });
 });
@@ -172,7 +173,7 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 	}
 
 	// Verify the target event exists and belongs to this session.
-	const [target] = await db
+	const [target] = await getDb()
 		.select()
 		.from(events)
 		.where(and(eq(events.id, eventId), eq(events.sessionId, sessionId)))
@@ -183,7 +184,7 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 	}
 
 	// Events at or before the target (includes target itself), newest first.
-	const before = await db
+	const before = await getDb()
 		.select()
 		.from(events)
 		.where(and(eq(events.sessionId, sessionId), lte(events.id, eventId)))
@@ -191,7 +192,7 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 		.limit(around + 1);
 
 	// Events strictly after the target, oldest first.
-	const after = await db
+	const after = await getDb()
 		.select()
 		.from(events)
 		.where(and(eq(events.sessionId, sessionId), gt(events.id, eventId)))
@@ -216,7 +217,7 @@ async function computeChecksum(content: string): Promise<string> {
 // GET /api/v1/sessions/:sessionId/claude-md - Get CLAUDE.md content from DB
 sessionsRouter.get("/sessions/:sessionId/claude-md", async (c) => {
 	const sessionId = c.req.param("sessionId");
-	const [session] = await db
+	const [session] = await getDb()
 		.select({
 			claudeMdContent: sessions.claudeMdContent,
 			claudeMdPath: sessions.claudeMdPath,
@@ -251,7 +252,7 @@ sessionsRouter.put("/sessions/:sessionId/claude-md", async (c) => {
 	};
 	if (path) updates.claudeMdPath = path;
 
-	await db.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+	await getDb().update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
 
 	return c.json({ ok: true, checksum });
 });
@@ -263,7 +264,10 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 	// Default to archiving (true) when the caller omits the field.
 	const archived = (body as { archived?: boolean }).archived !== false;
 
-	await db.update(sessions).set({ isArchived: archived }).where(eq(sessions.sessionId, sessionId));
+	await getDb()
+		.update(sessions)
+		.set({ isArchived: archived })
+		.where(eq(sessions.sessionId, sessionId));
 
 	return c.json({ ok: true });
 });
@@ -273,24 +277,19 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 // Slice DB-1: child tables (events, managed_sessions, control_actions,
 // watcher_proposals, ai_hitl_requests, ai_watcher_runs, watcher_configs)
 // now reference sessions(session_id) ON DELETE CASCADE, so the single
-// `delete(sessions)` is sufficient — SQLite drops the children atomically
-// in the same transaction.
+// `delete(sessions)` is sufficient — both dialects drop children atomically
+// via the cascade FK. The explicit `events` delete is belt-and-braces for
+// older SQLite installs that haven't yet rebuilt FKs.
 //
-// We wrap the deletes in `db.transaction(...)` so any failure (FK
-// violation, etc.) leaves the row in place rather than partially deleted.
-// IMPORTANT: drizzle's bun-sqlite transaction wraps a SYNC native
-// transaction; passing an async callback silently disables rollback
-// because the COMMIT runs before any awaited statement settles. We use
-// a sync callback with `.run()` instead. The explicit `events` delete
-// is kept inside the same transaction as belt-and-braces for older DBs
-// that haven't yet rebuilt FKs.
+// We wrap the deletes in withTransaction() so any failure leaves the row
+// in place rather than partially deleted.
 sessionsRouter.delete("/sessions/:sessionId", async (c) => {
 	const sessionId = c.req.param("sessionId");
 
-	db.transaction((tx) => {
+	await withTransaction(async (tx) => {
 		// Cascade does this; explicit for older DBs that haven't yet rebuilt FKs.
-		tx.delete(events).where(eq(events.sessionId, sessionId)).run();
-		tx.delete(sessions).where(eq(sessions.sessionId, sessionId)).run();
+		await tx.delete(events).where(eq(events.sessionId, sessionId));
+		await tx.delete(sessions).where(eq(sessions.sessionId, sessionId));
 	});
 
 	return c.json({ ok: true });

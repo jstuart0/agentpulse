@@ -2,8 +2,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:te
 import "./__test_db.js";
 
 // Defer DB-touching imports so __test_db can configure SQLITE_PATH first.
-const { db, initializeDatabase } = await import("../../db/client.js");
-const { settings } = await import("../../db/schema.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
+const { settings } = await import("../../db/schema/index.js");
 const {
 	AI_KILL_SWITCH_KEY,
 	AI_RUNTIME_ENABLED_KEY,
@@ -17,11 +17,11 @@ const {
 const { upsertSetting } = await import("../settings-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {
-	await db.delete(settings).execute();
+	await getDb().delete(settings).execute();
 	invalidateAiFlagsCache();
 });
 
@@ -29,21 +29,24 @@ afterEach(() => {
 	invalidateAiFlagsCache();
 });
 
-// Wrap `db.select` so we can count the number of underlying SELECT statements
+// Wrap `getDb().select` so we can count the number of underlying SELECT statements
 // the feature-flag readers issue. The wrapper returns the original chained
 // builder unchanged; we just bump a counter when select() is called.
 function spySelectCalls(): { count: () => number; restore: () => void } {
-	const original = db.select.bind(db);
+	const dbInstance = getDb();
+	const original = dbInstance.select.bind(dbInstance);
 	let calls = 0;
-	(db as unknown as { select: typeof db.select }).select = ((...args: unknown[]) => {
+	(dbInstance as unknown as { select: typeof dbInstance.select }).select = ((
+		...args: unknown[]
+	) => {
 		calls += 1;
 		// biome-ignore lint/suspicious/noExplicitAny: passing through to original
 		return (original as any)(...args);
-	}) as typeof db.select;
+	}) as typeof dbInstance.select;
 	return {
 		count: () => calls,
 		restore: () => {
-			(db as unknown as { select: typeof db.select }).select = original;
+			(dbInstance as unknown as { select: typeof dbInstance.select }).select = original;
 		},
 	};
 }

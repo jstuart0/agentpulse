@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
-import { db } from "../db/client.js";
-import { launchRequests, sessions } from "../db/schema.js";
+import { getDb } from "../db/client.js";
+import { launchRequests, sessions } from "../db/schema/index.js";
 import { applyAskInitiatedWatcher } from "./ai/auto-watcher.js";
 import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import { markSessionFailed } from "./event-processor.js";
@@ -28,7 +28,7 @@ export async function applyDesiredDisplayName(
 	const desired = launchRequest.desiredDisplayName;
 	if (!desired) return;
 
-	const [row] = await db
+	const [row] = await getDb()
 		.select({ displayName: sessions.displayName })
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
@@ -37,7 +37,10 @@ export async function applyDesiredDisplayName(
 	if (!row.displayName || !AUTO_NAME_PATTERN.test(row.displayName)) return;
 	if (row.displayName === desired) return;
 
-	await db.update(sessions).set({ displayName: desired }).where(eq(sessions.sessionId, sessionId));
+	await getDb()
+		.update(sessions)
+		.set({ displayName: desired })
+		.where(eq(sessions.sessionId, sessionId));
 }
 
 /**
@@ -58,7 +61,7 @@ async function applyLaunchProvenanceToSession(
 	}
 	if (Object.keys(provenance).length === 0) return;
 
-	const [row] = await db
+	const [row] = await getDb()
 		.select({ metadata: sessions.metadata })
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
@@ -76,7 +79,7 @@ async function applyLaunchProvenanceToSession(
 	}
 	if (!changed) return;
 
-	await db.update(sessions).set({ metadata: merged }).where(eq(sessions.sessionId, sessionId));
+	await getDb().update(sessions).set({ metadata: merged }).where(eq(sessions.sessionId, sessionId));
 }
 
 function nowIso() {
@@ -88,7 +91,7 @@ function awaitingDeadlineIso() {
 }
 
 export async function claimNextLaunchRequest(supervisorId: string) {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(launchRequests)
 		.where(
@@ -104,7 +107,7 @@ export async function claimNextLaunchRequest(supervisorId: string) {
 
 	const claimToken = crypto.randomUUID();
 	const now = nowIso();
-	const [claimed] = await db
+	const [claimed] = await getDb()
 		.update(launchRequests)
 		.set({
 			status: "queued",
@@ -127,7 +130,7 @@ export async function updateLaunchDispatchStatus(input: {
 	providerLaunchMetadata?: Record<string, unknown> | null;
 }) {
 	const now = nowIso();
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(launchRequests)
 		.where(eq(launchRequests.id, input.launchId))
@@ -169,7 +172,7 @@ export async function updateLaunchDispatchStatus(input: {
 		}
 	}
 
-	const [updated] = await db
+	const [updated] = await getDb()
 		.update(launchRequests)
 		.set(updates)
 		.where(eq(launchRequests.id, input.launchId))
@@ -188,7 +191,7 @@ export async function updateLaunchDispatchStatus(input: {
 }
 
 export async function findPendingLaunchForObservedSession(sessionId: string) {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(launchRequests)
 		.where(
@@ -204,7 +207,7 @@ export async function findPendingLaunchForObservedSession(sessionId: string) {
 
 export async function markLaunchRunning(launchId: string) {
 	const timestamp = nowIso();
-	const [updated] = await db
+	const [updated] = await getDb()
 		.update(launchRequests)
 		.set({
 			status: "running",

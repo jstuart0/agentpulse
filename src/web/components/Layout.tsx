@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
+import { useSignOut } from "../hooks/useSignOut.js";
 import { type InboxWorkItem, type LabsFlag, api } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
+import { useConnectionStore } from "../stores/connection-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { LabsBadge } from "./LabsBadge.js";
@@ -82,27 +84,75 @@ export function Layout() {
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
 	const labsFlags = useLabsStore((s) => s.flags);
 	const user = useUserStore((s) => s.user);
-	const signOutUrl = useUserStore((s) => s.signOutUrl);
-	const reloadUser = useUserStore((s) => s.load);
 	const navigate = useNavigate();
+	const { handleSignOut: signOut, signOutUrl } = useSignOut();
 	const location = useLocation();
 	const inboxIndicator = useInboxIndicator(
 		labsFlags === null || labsFlags.inbox !== false,
 		location.pathname === "/inbox",
 	);
 
+	const menuButtonRef = useRef<HTMLButtonElement>(null);
+	const firstNavItemRef = useRef<HTMLAnchorElement>(null);
+	const primaryNavRef = useRef<HTMLElement>(null);
+
+	// Global search shortcut: `/` or `⌘K` navigates to /search (U-M3).
+	// Guard: skip when focus is inside any text-entry element so typing
+	// normal characters isn't hijacked.
+	useEffect(() => {
+		function onKeyDown(e: KeyboardEvent) {
+			const tag = (e.target as HTMLElement).tagName;
+			const isTyping =
+				tag === "INPUT" ||
+				tag === "TEXTAREA" ||
+				tag === "SELECT" ||
+				(e.target as HTMLElement).isContentEditable;
+			if (isTyping) return;
+
+			const isSlash = e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey;
+			const isCmdK = e.key === "k" && (e.metaKey || e.ctrlKey) && !e.altKey;
+
+			if (isSlash || isCmdK) {
+				e.preventDefault();
+				navigate("/search");
+			}
+		}
+		document.addEventListener("keydown", onKeyDown);
+		return () => document.removeEventListener("keydown", onKeyDown);
+	}, [navigate]);
+
+	// Focus management for mobile menu (C7 / S-9).
+	// On open: move focus to the first nav item so keyboard users can tab
+	// through without extra steps. Focus-restore on close is handled
+	// synchronously in each close-trigger handler (Escape key, outside-click)
+	// before the portal unmounts, so we only need the open-path here.
+	useEffect(() => {
+		if (!mobileMenuOpen) return;
+		// Yield one tick so the portal renders before we try to focus.
+		const id = requestAnimationFrame(() => {
+			firstNavItemRef.current?.focus();
+		});
+		return () => cancelAnimationFrame(id);
+	}, [mobileMenuOpen]);
+
+	// Escape closes the mobile menu (C7 / S-9).
+	useEffect(() => {
+		if (!mobileMenuOpen) return;
+		function onKeyDown(e: KeyboardEvent) {
+			if (e.key === "Escape") {
+				setMobileMenuOpen(false);
+				menuButtonRef.current?.focus();
+			}
+		}
+		document.addEventListener("keydown", onKeyDown);
+		return () => document.removeEventListener("keydown", onKeyDown);
+	}, [mobileMenuOpen]);
+
 	async function handleSignOut() {
 		setMobileMenuOpen(false);
-		if (signOutUrl?.startsWith("/api/")) {
-			// Local session: POST to our logout endpoint and bounce to /login.
-			await fetch(signOutUrl, { method: "POST", credentials: "same-origin" }).catch(() => {});
-			await reloadUser();
-			navigate("/login", { replace: true });
-		} else if (signOutUrl) {
-			// Authentik (or external): hard-navigate so the outpost handles it.
-			window.location.assign(signOutUrl);
-		}
+		await signOut();
 	}
+
 	// Hide nav items whose labs flag is explicitly disabled. When flags
 	// haven't loaded yet, show everything (flags === null).
 	const visibleNavItems = navItems.filter(
@@ -136,11 +186,19 @@ export function Layout() {
 						</span>
 					</div>
 				</div>
+				{/* Mobile WS state dot — mirrors the desktop WsStatusChip color semantics */}
+				<MobileWsDot />
 				<button
+					ref={menuButtonRef}
+					type="button"
 					onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-					className="text-muted-foreground p-1.5 hover:text-foreground transition-colors"
+					aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+					aria-expanded={mobileMenuOpen}
+					aria-controls="primary-navigation"
+					className="text-muted-foreground p-1.5 hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
 				>
 					<svg
+						aria-hidden="true"
 						className="w-5 h-5"
 						fill="none"
 						viewBox="0 0 24 24"
@@ -170,9 +228,14 @@ export function Layout() {
 				createPortal(
 					<div
 						className="md:hidden fixed inset-0 z-30 bg-black/60 backdrop-blur-sm animate-fade"
-						onClick={() => setMobileMenuOpen(false)}
+						onClick={() => {
+							setMobileMenuOpen(false);
+							menuButtonRef.current?.focus();
+						}}
 					>
 						<nav
+							ref={primaryNavRef}
+							id="primary-navigation"
 							className="absolute top-14 left-0 right-0 surface-glass border-b border-border p-2 space-y-0.5 animate-in max-h-[calc(100vh-3.5rem)] overflow-y-auto"
 							onClick={(e) => e.stopPropagation()}
 						>
@@ -194,11 +257,12 @@ export function Layout() {
 								</div>
 							)}
 
-							{visibleNavItems.map((item) => (
+							{visibleNavItems.map((item, index) => (
 								<NavLink
 									key={item.to}
 									to={item.to}
 									end={item.to === "/"}
+									ref={index === 0 ? firstNavItemRef : undefined}
 									onClick={() => setMobileMenuOpen(false)}
 									className={({ isActive }) =>
 										cn(
@@ -296,7 +360,7 @@ export function Layout() {
 								</span>
 								<div className="flex items-center gap-1 mt-0.5">
 									<span className="text-[9px] font-mono text-primary/70 bg-primary/8 px-1 py-0.5 rounded leading-none">
-										CMD CENTER
+										v{import.meta.env.VITE_APP_VERSION ?? "dev"}
 									</span>
 								</div>
 							</div>
@@ -402,6 +466,26 @@ export function Layout() {
 				</main>
 			</div>
 		</div>
+	);
+}
+
+/**
+ * 6px colored dot surfacing WS connection state on mobile (M5 / U-H1-mobile).
+ * No tooltip — touch targets can't hover; the color alone signals degradation.
+ */
+function MobileWsDot() {
+	const wsState = useConnectionStore((s) => s.wsState);
+	const colorClass =
+		wsState === "connected"
+			? "bg-emerald-400"
+			: wsState === "reconnecting"
+				? "bg-amber-400 ws-reconnect-pulse"
+				: "bg-red-400/70";
+	return (
+		<span
+			className={`ml-auto w-1.5 h-1.5 rounded-full flex-shrink-0 ${colorClass}`}
+			aria-hidden="true"
+		/>
 	);
 }
 

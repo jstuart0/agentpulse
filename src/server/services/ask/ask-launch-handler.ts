@@ -6,8 +6,8 @@ import type {
 	PrelaunchAction,
 	SessionTemplateInput,
 } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
-import { sessions } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import {
@@ -29,7 +29,7 @@ import { sendTelegramActionRequest } from "./telegram-helpers.js";
  */
 async function ensureUniqueDisplayName(slug: string, projectId: string): Promise<string> {
 	const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-	const [conflict] = await db
+	const [conflict] = await getDb()
 		.select({ id: sessions.id })
 		.from(sessions)
 		.where(

@@ -1,8 +1,8 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
-const { notificationChannels } = await import("../../db/schema.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
+const { notificationChannels } = await import("../../db/schema/index.js");
 const {
 	completeEnrollment,
 	createPendingChannel,
@@ -15,11 +15,11 @@ const {
 } = await import("./channels-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {
-	await db.delete(notificationChannels).execute();
+	await getDb().delete(notificationChannels).execute();
 });
 
 describe("channels-service", () => {

@@ -7,6 +7,10 @@ metadata:
     app: agentpulse
 spec:
   replicas: 1
+  # Recreate: SQLite WAL cannot tolerate two concurrent writers.
+  # Old pod terminates fully before the new one starts.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: agentpulse
@@ -15,14 +19,44 @@ spec:
       labels:
         app: agentpulse
     spec:
+      # 30s preStop budget + 60s post-TERM grace = 90s total to drain.
+      # preStop runs first (sets shuttingDown=true, polls inFlight=0),
+      # then SIGTERM is sent; if drain completes before 90s, k8s sends
+      # SIGTERM and the process exits cleanly. After 90s: SIGKILL.
+      # Residual loss under SIGKILL is the documented Option B tradeoff.
+      terminationGracePeriodSeconds: 90
+      # Non-root pod security context (I-H1, I-H2).
+      # runAsUser 1000 = bun user in oven/bun:1-slim.
+      # fsGroup 1000 makes the PVC mount group-writable by GID 1000 so
+      # the bun process (which is in group 1000) can write agentpulse.db.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      # Dedicated service account with no token auto-mount (I-H3).
+      # automountServiceAccountToken repeated here for clarity in kubectl describe;
+      # the ServiceAccount-level flag is authoritative, but the pod-spec field
+      # makes the intent unambiguous in any per-resource audit.
+      serviceAccountName: agentpulse-sa
+      automountServiceAccountToken: false
       containers:
       - name: agentpulse
-        image: ghcr.io/YOUR_ORG/agentpulse:latest  # Replace with your registry
-        imagePullPolicy: Always
+        # Pin to a specific SHA-tagged image (C4).
+        # IMPORTANT: this SHA is a placeholder from the last release tag.
+        # Before running kubectl apply, build and push the current HEAD:
+        #   ./scripts/build-and-push.sh
+        # then update the tag below to the printed SHA (or apply via the
+        # homelab overlay which overrides this field — see deploy/k8s/README.md).
+        image: ghcr.io/jstuart0/agentpulse:b9b796c
+        # IfNotPresent: SHA-tagged images are immutable; re-pulling is wasteful.
+        # Always-pull would also race with the Recreate strategy (C5).
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3000
           name: http
         env:
+        - name: HOST
+          value: "0.0.0.0"
         - name: TZ
           value: "America/New_York"
         - name: DATABASE_URL
@@ -35,12 +69,38 @@ spec:
             secretKeyRef:
               name: agentpulse-secrets
               key: AGENTPULSE_INITIAL_API_KEY
+        - name: AGENTPULSE_PG_POOL_MAX
+          valueFrom:
+            secretKeyRef:
+              name: agentpulse-secrets
+              key: AGENTPULSE_PG_POOL_MAX
+              # Tolerate operators upgrading from a pre-postgres version where
+              # this key didn't exist in the secret. The app already defaults
+              # to 10 (client.ts:92-98) when the env var is absent.
+              optional: true
+        - name: AGENTPULSE_AUTHENTIK_TRUST_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: agentpulse-secrets
+              key: AGENTPULSE_AUTHENTIK_TRUST_SECRET
+              # Required for SSO production deployments to verify the
+              # X-Authentik-Verify header that the proxy provider's scope
+              # mapping emits (deploy/k8s/AUTHENTIK-FORWARDAUTH.md).
+              # Optional so SQLite/local-auth-only deployments can boot
+              # without it (the trust gate just falls through and other
+              # auth methods are tried).
+              optional: true
         envFrom:
         - configMapRef:
             name: agentpulse-config
         volumeMounts:
         - name: data
           mountPath: /app/data
+        # /tmp is required by the bun runtime when readOnlyRootFilesystem
+        # is true; without this mount the pod will crash on any temp-file
+        # operation (I-H4, I-H5).
+        - name: tmp
+          mountPath: /tmp
         resources:
           requests:
             memory: "384Mi"
@@ -48,27 +108,147 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "500m"
-        readinessProbe:
+        # Container-level hardening (I-H4, I-H5).
+        # readOnlyRootFilesystem: true prevents any write to the image
+        # filesystem; only the emptyDir/PVC mounts above are writable.
+        # drop ALL capabilities: bun serving HTTP on port 3000 (>1024)
+        # does not need any Linux capabilities.
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          readOnlyRootFilesystem: true
+        lifecycle:
+          preStop:
+            exec:
+              command:
+                - /usr/local/bin/bun
+                - --eval
+                - |
+                  // Trigger drain via loopback-only endpoint.
+                  // Sets shuttingDown=true so readiness probe goes 503
+                  // and k8s stops routing new hooks to this pod.
+                  //
+                  // NOTE: oven/bun:1-slim does NOT ship wget or curl.
+                  // bun is always present in the container and supports
+                  // fetch(), making it the correct tool for this script.
+                  try {
+                    await fetch("http://127.0.0.1:3000/api/v1/internal/drain", { method: "POST" });
+                  } catch {}
+                  // Poll until in-flight reaches 0 or the 30s budget runs out.
+                  for (let i = 0; i < 30; i++) {
+                    try {
+                      const res = await fetch("http://127.0.0.1:3000/api/v1/health");
+                      const body = await res.json();
+                      if (body.inFlight <= 0) process.exit(0);
+                    } catch {}
+                    await Bun.sleep(1000);
+                  }
+                  // Best-effort drain timeout — Option B accepts residual loss;
+                  // backup-sidecar pipeline (P11) covers it.
+                  process.exit(0);
+        # startupProbe: gives the pod 150s (30 attempts × 5s) to complete
+        # migrations and mark DB ready before liveness kicks in (S-24, I-M1).
+        # The health route returns 503 until markDbReady() fires.
+        startupProbe:
           httpGet:
             path: /api/v1/health
             port: 3000
+          failureThreshold: 30
+          periodSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /api/v1/ready
+            port: 3000
           initialDelaySeconds: 5
-          periodSeconds: 10
-          # Default timeoutSeconds is 1, which is too tight when the
-          # event loop is briefly saturated during LLM streaming.
+          periodSeconds: 5
           timeoutSeconds: 5
-          failureThreshold: 3
+          failureThreshold: 2
         livenessProbe:
           httpGet:
             path: /api/v1/health
             port: 3000
           initialDelaySeconds: 10
-          periodSeconds: 30
-          # Same reasoning as readinessProbe; failureThreshold=5 lets
-          # several consecutive slow probes pass before SIGKILL.
+          periodSeconds: 10
           timeoutSeconds: 5
-          failureThreshold: 5
+          failureThreshold: 6
+      # SQLITE-ONLY: the backup-sidecar runs sqlite3 .backup to copy the live
+      # SQLite WAL file to the agentpulse-backups PVC on a daily schedule.
+      # It is NOT applicable when DATABASE_URL points at Postgres — Postgres
+      # deployments use Postgres-native backup (pg_dump / wal-g / managed
+      # snapshots). The deploy/k8s/overlays/postgres/ Kustomize overlay removes
+      # this sidecar and its associated volume mounts for Postgres deployments.
+      # Decision 32 / bob M5: keep sidecar in base; overlay strips it.
+      - name: backup-sidecar
+        # SHA-tagged backup image — built and pushed alongside the app image
+        # by scripts/build-and-push.sh. Update this tag in lockstep with the
+        # app image tag above (or override in the homelab overlay).
+        image: ghcr.io/jstuart0/agentpulse-backup:b9b796c
+        imagePullPolicy: IfNotPresent
+        # Override ENTRYPOINT with a long-lived schedule loop that wakes at
+        # 04:15 UTC each day and runs run-backup.sh. The sleep calculation
+        # uses only shell arithmetic (busybox date does not support -d "tomorrow HH:MM").
+        command:
+          - /bin/sh
+          - -c
+          - |
+            trap 'echo "[backup-loop] SIGTERM received; exiting"; exit 0' TERM INT
+            while true; do
+              H=$(date -u +%H | sed 's/^0//'); H=${H:-0}
+              M=$(date -u +%M | sed 's/^0//'); M=${M:-0}
+              CUR_MIN=$(( H * 60 + M ))
+              # 04:15 UTC = 255 minutes past midnight
+              TARGET_MIN=255
+              if [ "$CUR_MIN" -lt "$TARGET_MIN" ]; then
+                SLEEP_SECS=$(( (TARGET_MIN - CUR_MIN) * 60 ))
+              else
+                SLEEP_SECS=$(( (1440 - CUR_MIN + TARGET_MIN) * 60 ))
+              fi
+              echo "[backup-loop] next run in ${SLEEP_SECS}s ($(date -u))"
+              sleep "$SLEEP_SECS" &
+              wait $!
+              /usr/local/bin/run-backup.sh || echo "[backup-loop] run-backup.sh failed; will retry next schedule"
+            done
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          # NOT readOnly — SQLite WAL shared-memory semantics may touch
+          # /data/agentpulse.db-shm. The sidecar does NOT write to
+          # agentpulse.db itself; sqlite3 .backup is a concurrent-safe
+          # read path. See deploy/k8s/BACKUP-RESTORE.md for details.
+        - name: backups
+          mountPath: /backups
+        - name: tmp-sidecar
+          mountPath: /tmp
+        resources:
+          requests:
+            memory: "64Mi"
+            # Bumped from 10m to meet LimitRange.min.cpu (08-limitrange.yaml:23).
+            # The sidecar is idle most of the time (sleeps on a daily schedule);
+            # the request is a floor for kube-scheduler accounting, not actual use.
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
       volumes:
       - name: data
         persistentVolumeClaim:
           claimName: agentpulse-data
+      - name: backups
+        persistentVolumeClaim:
+          claimName: agentpulse-backups
+      # /tmp writable scratch for the bun runtime under readOnlyRootFilesystem (I-H4).
+      - name: tmp
+        emptyDir: {}
+      # Writable /tmp for the backup-sidecar under readOnlyRootFilesystem.
+      - name: tmp-sidecar
+        emptyDir: {}

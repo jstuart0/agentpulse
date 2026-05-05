@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
-import { triggerAuthReload } from "../lib/api.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
+import { useConnectionStore } from "../stores/connection-store.js";
 import { useEventStore } from "../stores/event-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 
@@ -22,9 +22,12 @@ export function useNotificationPermission() {
 export function useWebSocket() {
 	const wsRef = useRef<WebSocket | null>(null);
 	const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-	const updateSession = useSessionStore((s) => s.updateSession);
-	const addSession = useSessionStore((s) => s.addSession);
+	// A-M6: use the shared applySessionUpdate reducer so WS and polling
+	// paths share identical add-or-update semantics.
+	const applySessionUpdate = useSessionStore((s) => s.applySessionUpdate);
 	const addLiveEvent = useEventStore((s) => s.addLiveEvent);
+	const markConnected = useConnectionStore((s) => s.markConnected);
+	const setWsState = useConnectionStore((s) => s.setWsState);
 
 	// Track previous isWorking state to detect transitions
 	const workingRef = useRef<Map<string, boolean>>(new Map());
@@ -45,6 +48,7 @@ export function useWebSocket() {
 		ws.onopen = () => {
 			console.log("[ws] Connected");
 			consecutiveFailuresRef.current = 0;
+			markConnected();
 			ws.send(JSON.stringify({ type: "subscribe", channels: ["sessions"] }));
 		};
 
@@ -53,13 +57,15 @@ export function useWebSocket() {
 				const msg = JSON.parse(event.data);
 
 				switch (msg.type) {
-					case "session_created":
-						addSession(msg.data.session);
+					case "session_created": {
+						const newSession = msg.data.session;
+						applySessionUpdate(newSession);
 						sendNotification(
 							"New session",
-							`${msg.data.session.displayName || "Session"} started in ${msg.data.session.cwd?.split("/").pop() || "unknown"}`,
+							`${newSession.displayName || "Session"} started in ${newSession.cwd?.split("/").pop() || "unknown"}`,
 						);
 						break;
+					}
 					case "session_updated": {
 						const session = msg.data.session;
 						const wasWorking = workingRef.current.get(session.sessionId);
@@ -74,11 +80,11 @@ export function useWebSocket() {
 						}
 
 						workingRef.current.set(session.sessionId, session.isWorking);
-						updateSession(session);
+						applySessionUpdate(session);
 						break;
 					}
 					case "session_ended":
-						updateSession(msg.data.session);
+						applySessionUpdate(msg.data.session);
 						break;
 					case "new_event":
 						addLiveEvent(msg.data);
@@ -94,11 +100,14 @@ export function useWebSocket() {
 		ws.onclose = () => {
 			consecutiveFailuresRef.current += 1;
 			if (consecutiveFailuresRef.current >= FAILURE_RELOAD_THRESHOLD) {
-				triggerAuthReload(
-					`ws failed ${consecutiveFailuresRef.current}× in a row (likely Authentik expired)`,
-				);
+				// Give up on WS; polling is the fallback update path.
+				// Do NOT reload here — the paused state is the user's signal that
+				// live updates have degraded. If auth is genuinely expired, the
+				// polling path will surface that via its own error handling.
+				setWsState("paused");
 				return;
 			}
+			setWsState("reconnecting");
 			console.log(
 				`[ws] Disconnected (attempt ${consecutiveFailuresRef.current}), reconnecting in 3s…`,
 			);
@@ -108,7 +117,7 @@ export function useWebSocket() {
 		ws.onerror = () => {
 			ws.close();
 		};
-	}, [updateSession, addSession, addLiveEvent]);
+	}, [applySessionUpdate, addLiveEvent, markConnected, setWsState]);
 
 	useEffect(() => {
 		connect();

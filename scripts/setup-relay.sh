@@ -58,7 +58,51 @@ elif [[ -f "$HOME/.bun/bin/bun" ]]; then
   BUN_PATH="$HOME/.bun/bin/bun"
 else
   echo "  Installing Bun..."
-  curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1
+  # Pin Bun to a specific release for reproducibility and supply-chain safety (S-L2/S-L3).
+  #
+  # HOW THIS WORKS:
+  #   1. We download the bun.sh installer script and verify its SHA256 (pins the installer).
+  #   2. We invoke it with "bun-v${BUN_VERSION}" which causes it to download that exact
+  #      release zip from github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/.
+  #
+  # TO UPGRADE: bump BUN_VERSION and BUN_INSTALLER_SHA256 together.
+  #   Fetch new SHA: curl -fsSL "https://bun.sh/install" | sha256sum
+  #   Verify at:     https://github.com/oven-sh/bun/releases/tag/bun-v${BUN_VERSION}
+  BUN_VERSION="1.1.30"
+  BUN_INSTALLER_URL="https://bun.sh/install"
+  # SHA256 of the bun.sh/install script as of 2026-05-05.
+  # Re-verify with: curl -fsSL "https://bun.sh/install" | sha256sum
+  BUN_INSTALLER_SHA256="bab8acfb046aac8c72407bdcce903957665d655d7acaa3e11c7c4616beae68dd"
+
+  BUN_INSTALLER_TMP="$(mktemp)"
+  curl -fsSL "$BUN_INSTALLER_URL" -o "$BUN_INSTALLER_TMP"
+
+  # Verify checksum before executing (S-L2).
+  # If neither sha256sum nor shasum is available, abort — do not silently skip
+  # supply-chain verification on minimal environments (e.g. Alpine, CI runners).
+  if command -v sha256sum &>/dev/null; then
+    echo "$BUN_INSTALLER_SHA256  $BUN_INSTALLER_TMP" | sha256sum -c --quiet || {
+      echo "  ERROR: Bun installer checksum mismatch. Aborting."
+      rm -f "$BUN_INSTALLER_TMP"
+      exit 1
+    }
+  elif command -v shasum &>/dev/null; then
+    echo "$BUN_INSTALLER_SHA256  $BUN_INSTALLER_TMP" | shasum -a 256 -c --quiet 2>/dev/null || {
+      echo "  ERROR: Bun installer checksum mismatch. Aborting."
+      rm -f "$BUN_INSTALLER_TMP"
+      exit 1
+    }
+  else
+    echo "  ERROR: No sha256sum or shasum found. Install coreutils and retry."
+    rm -f "$BUN_INSTALLER_TMP"
+    exit 1
+  fi
+
+  # Pass "bun-v${BUN_VERSION}" so the installer downloads that exact release
+  # from github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/ rather
+  # than the latest release.
+  bash "$BUN_INSTALLER_TMP" "bun-v${BUN_VERSION}" >/dev/null 2>&1
+  rm -f "$BUN_INSTALLER_TMP"
   BUN_PATH="$HOME/.bun/bin/bun"
 fi
 echo "  ✓ Bun: $BUN_PATH"
@@ -67,6 +111,7 @@ echo "  ✓ Bun: $BUN_PATH"
 
 RELAY_DIR="$HOME/.agentpulse"
 mkdir -p "$RELAY_DIR"
+chmod 700 "$RELAY_DIR"
 
 cat > "$RELAY_DIR/relay.ts" << 'RELAY_EOF'
 #!/usr/bin/env bun
@@ -74,6 +119,7 @@ import { mkdir, readFile, readdir, rename, unlink, writeFile } from "fs/promises
 import { join } from "path";
 const args = process.argv.slice(2);
 let remoteUrl = "", port = 4000, apiKey = "";
+let configPath = join(import.meta.dir, "config.json");
 const RELAY_FETCH_TIMEOUT_MS = 8000;
 const RELAY_IDLE_TIMEOUT_S = 30;
 const HOOK_RETRY_BASE_MS = 2000;
@@ -81,10 +127,20 @@ const HOOK_RETRY_MAX_MS = 60000;
 const HOOK_RETRY_POLL_MS = 5000;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--port" && args[i+1]) port = Number(args[++i]);
-  else if (args[i] === "--key" && args[i+1]) apiKey = args[++i];
+  else if (args[i] === "--config" && args[i+1]) configPath = args[++i];
   else if (!args[i].startsWith("--")) remoteUrl = args[i].replace(/\/$/, "");
 }
-if (!remoteUrl) { console.error("Usage: relay.ts <url> [--port N] [--key K]"); process.exit(1); }
+// Load config from file (API key never appears in argv).
+// The config file is chmod 600 so only the owner can read it.
+try {
+  const cfg = JSON.parse(await readFile(configPath, "utf-8")) as { remote_url?: string; api_key?: string; port?: number };
+  if (!remoteUrl && cfg.remote_url) remoteUrl = cfg.remote_url.replace(/\/$/, "");
+  if (!apiKey && cfg.api_key) apiKey = cfg.api_key;
+  if (port === 4000 && cfg.port) port = cfg.port;
+} catch {
+  // Config file missing or unreadable; rely on argv (remoteUrl is validated below).
+}
+if (!remoteUrl) { console.error("Usage: relay.ts [--config <path>] [<url>] [--port N]"); process.exit(1); }
 const relayDir = import.meta.dir;
 const hookQueueDir = join(relayDir, "hook-queue");
 const hookPendingDir = join(hookQueueDir, "pending");
@@ -240,14 +296,12 @@ void ensureQueueDirs().then(() => scheduleQueue(250));
 console.log(`AgentPulse Relay: localhost:${port} -> ${remoteUrl} (queued hook forwarding)`);
 RELAY_EOF
 
-# Save config
-cat > "$RELAY_DIR/config.json" << EOF
-{
-  "remote_url": "$REMOTE_URL",
-  "api_key": "${API_KEY}",
-  "port": $PORT
-}
-EOF
+# Save config — use umask 077 subshell so the file is created mode 600
+# from the first write; there is no transient world-readable window. (S-H4 / L1)
+# The API key lives only here — never in argv or the plist. (H1)
+# Future: pass --use-keychain to store the key in macOS Keychain instead.
+(umask 077; printf '{\n  "remote_url": "%s",\n  "api_key": "%s",\n  "port": %s\n}\n' \
+  "$REMOTE_URL" "$API_KEY" "$PORT" > "$RELAY_DIR/config.json")
 
 echo "  ✓ Relay installed to $RELAY_DIR/relay.ts"
 
@@ -269,10 +323,8 @@ cat > "$PLIST_FILE" << EOF
   <array>
     <string>${BUN_PATH}</string>
     <string>${RELAY_DIR}/relay.ts</string>
-    <string>${REMOTE_URL}</string>
-    <string>--port</string>
-    <string>${PORT}</string>
-$(if [[ -n "$API_KEY" ]]; then echo "    <string>--key</string>"; echo "    <string>${API_KEY}</string>"; fi)
+    <string>--config</string>
+    <string>${RELAY_DIR}/config.json</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

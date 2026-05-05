@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, or } from "drizzle-orm";
-import { db } from "../../db/client.js";
-import { sessions } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { sessions } from "../../db/schema/index.js";
 import type { SemanticEnricher } from "../ai/semantic-enricher.js";
 import { getSearchBackend } from "../search/index.js";
 
@@ -207,7 +207,7 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 	// by keyword). Cap the candidate pool so we don't score the whole DB.
 	// Slice G: explicit isArchived exclusion wraps the OR so archived sessions
 	// with status='active' (a valid orthogonal state) don't leak into the pool.
-	const pool = await db
+	const pool = await getDb()
 		.select()
 		.from(sessions)
 		.where(
@@ -254,7 +254,7 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 			// these") but anything else is fair game; "find the session
 			// where I did X" is often a question about past, finished work.
 			// Slice G: filter on isArchived (canonical truth), not status='archived'.
-			const extra = await db
+			const extra = await getDb()
 				.select()
 				.from(sessions)
 				.where(and(inArray(sessions.sessionId, missingIds), eq(sessions.isArchived, false)));
@@ -302,7 +302,7 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
  */
 export async function fetchSessionsById(ids: string[]): Promise<ResolvedSession[]> {
 	if (ids.length === 0) return [];
-	const rows = await db.select().from(sessions).where(inArray(sessions.sessionId, ids));
+	const rows = await getDb().select().from(sessions).where(inArray(sessions.sessionId, ids));
 	// SQLite's IN clause doesn't preserve input order; re-order rows to match
 	// the caller's id list so "@mention"-style references in the UI stay stable.
 	const byId = new Map(rows.map((row) => [row.sessionId, row]));

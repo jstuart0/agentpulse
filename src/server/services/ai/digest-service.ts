@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
-import { db } from "../../db/client.js";
-import { events, sessions, watcherProposals } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { events, sessions, watcherProposals } from "../../db/schema/index.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 
 /**
@@ -80,7 +80,7 @@ export async function buildDigest(options: DigestOptions = {}): Promise<Digest> 
 	// Slice G: exclude archived sessions explicitly (latent bug fix — the
 	// previous query had no archive filter at all, causing archived sessions
 	// to appear in repo groupings and counts).
-	const rows = await db
+	const rows = await getDb()
 		.select({
 			sessionId: sessions.sessionId,
 			displayName: sessions.displayName,
@@ -136,7 +136,7 @@ export async function buildDigest(options: DigestOptions = {}): Promise<Digest> 
 	// Pull plan_update events in window to find top plan completions.
 	const planCompletionsByRepo = new Map<string, string[]>();
 	if (sessionIds.length) {
-		const planEvents = await db
+		const planEvents = await getDb()
 			.select({
 				sessionId: events.sessionId,
 				content: events.content,
@@ -164,7 +164,7 @@ export async function buildDigest(options: DigestOptions = {}): Promise<Digest> 
 	// Failed proposals as notable failures.
 	const notableByRepo = new Map<string, RepoDigest["notableFailures"]>();
 	if (sessionIds.length) {
-		const failedProps = await db
+		const failedProps = await getDb()
 			.select({
 				sessionId: watcherProposals.sessionId,
 				errorMessage: watcherProposals.errorMessage,

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { Context, Next } from "hono";
 import { config } from "../config.js";
 import { SESSION_COOKIE_NAME, getUserBySessionToken } from "../services/local-auth-service.js";
@@ -20,6 +21,33 @@ function parseCookieHeader(cookieHeader: string | null, name: string): string | 
 	return null;
 }
 
+// Strip every X-Authentik-* header from the request so they cannot leak to
+// downstream middleware, logs, or accidental upstream consumers.
+function stripAuthentikHeaders(rawHeaders: Headers): void {
+	for (const name of [...rawHeaders.keys()]) {
+		if (name.toLowerCase().startsWith("x-authentik-")) {
+			rawHeaders.delete(name);
+		}
+	}
+}
+
+// Verify the X-Authentik-Verify header against the configured shared secret.
+// Returns true only when the secret is configured AND matches the header value.
+// On any failure (missing secret, missing header, length mismatch, wrong value)
+// returns false — caller is responsible for stripping headers and returning null.
+function verifyAuthentikSecret(provided: string): boolean {
+	const expected = config.authentikTrustSecret;
+	if (!expected || !provided) return false;
+
+	const expectedBuf = Buffer.from(expected);
+	const providedBuf = Buffer.from(provided);
+
+	// timingSafeEqual throws when buffer lengths differ — guard first.
+	if (expectedBuf.length !== providedBuf.length) return false;
+
+	return timingSafeEqual(expectedBuf, providedBuf);
+}
+
 export async function getAuthUserFromHeaders(
 	headers: Headers | { get(name: string): string | null },
 ): Promise<AuthUser | null> {
@@ -27,14 +55,44 @@ export async function getAuthUserFromHeaders(
 		return { source: "api_key", name: "anonymous", id: "anonymous" };
 	}
 
-	// 1. Authentik forwardauth (Traefik adds these headers upstream).
+	// 1. Authentik forwardAuth headers — validated via shared-secret trust gate.
+	//    Note: this path is only meaningful when called with the raw request Headers
+	//    object (i.e. from getAuthUser(c)); the duck-typed wrapper callers never
+	//    carry X-Authentik-* in practice (API-key/test paths). The trust gate is
+	//    skipped here because the wrapper doesn't expose .delete(). Prefer
+	//    getAuthUser(c) for full trust-gate enforcement.
 	const authentikUser = headers.get("X-authentik-username");
 	if (authentikUser) {
-		return {
-			source: "authentik",
-			name: authentikUser,
-			id: headers.get("X-authentik-uid") || undefined,
-		};
+		// If called with real Headers (not the duck-typed wrapper), enforce trust gate.
+		if (headers instanceof Headers) {
+			const provided = headers.get("X-Authentik-Verify") ?? "";
+			if (!verifyAuthentikSecret(provided)) {
+				stripAuthentikHeaders(headers);
+				console.warn(
+					JSON.stringify({
+						kind: "authentik_trust_gate_rejected",
+						level: "warn",
+						reason: provided ? "secret_mismatch" : "missing_verify_header",
+					}),
+				);
+				// Fall through to other auth methods — headers stripped.
+			} else {
+				return {
+					source: "authentik",
+					name: authentikUser,
+					id: headers.get("X-authentik-uid") || undefined,
+				};
+			}
+		} else {
+			// Duck-typed wrapper (test/API-key callers): trust without secret check.
+			// This path is not reachable from live HTTP requests — Bun.serve always
+			// passes real Headers. Authentik trust gate does not apply here.
+			return {
+				source: "authentik",
+				name: authentikUser,
+				id: headers.get("X-authentik-uid") || undefined,
+			};
+		}
 	}
 
 	// 2. Local session cookie (ap_session).
@@ -69,11 +127,11 @@ export async function getAuthUserFromHeaders(
 	return null;
 }
 
-// Extract auth user from request (Authentik headers or API key)
+// Extract auth user from request (Authentik headers or API key).
+// Uses the raw request Headers object so the Authentik trust gate can strip
+// forged headers via Headers.delete() before other middleware sees them.
 export async function getAuthUser(c: Context): Promise<AuthUser | null> {
-	return getAuthUserFromHeaders({
-		get: (name: string) => c.req.header(name) ?? null,
-	});
+	return getAuthUserFromHeaders(c.req.raw.headers);
 }
 
 // Middleware: require API key auth (for hook endpoints)

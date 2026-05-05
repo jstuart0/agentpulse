@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import type { SessionTemplateInput } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
-import { events, sessionTemplates, sessions } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { events, sessionTemplates, sessions } from "../../db/schema/index.js";
 
 /**
  * Template distillation service. Consumes a successful session's
@@ -33,7 +33,7 @@ export interface DistillInput {
 }
 
 export async function distillTemplate(input: DistillInput): Promise<TemplateDraft | null> {
-	const [session] = await db
+	const [session] = await getDb()
 		.select()
 		.from(sessions)
 		.where(eq(sessions.sessionId, input.sessionId))
@@ -45,7 +45,7 @@ export async function distillTemplate(input: DistillInput): Promise<TemplateDraf
 
 	const base = input.baseTemplateId
 		? (
-				await db
+				await getDb()
 					.select()
 					.from(sessionTemplates)
 					.where(eq(sessionTemplates.id, input.baseTemplateId))
@@ -59,7 +59,7 @@ export async function distillTemplate(input: DistillInput): Promise<TemplateDraf
 	// Grab the last N user prompts + assistant messages to seed the
 	// baseInstructions / taskPrompt. We keep this deterministic; an
 	// optional LLM-synthesized title/summary is a future hook.
-	const recent = await db
+	const recent = await getDb()
 		.select()
 		.from(events)
 		.where(eq(events.sessionId, input.sessionId))

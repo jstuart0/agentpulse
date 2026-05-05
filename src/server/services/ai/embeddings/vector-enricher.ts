@@ -1,4 +1,8 @@
-import { sqlite } from "../../../db/client.js";
+// SQLite-only feature this campaign. Postgres + pgvector follow-up:
+// see thoughts/postgres-followup-plans/pgvector-event-embeddings.md.
+
+import { config } from "../../../config.js";
+import { getSqlite } from "../../../db/client.js";
 import { isVectorSearchActive } from "../feature.js";
 import type { EnrichmentResult, SemanticEnricher } from "../semantic-enricher.js";
 import { resolveEmbeddingAdapter } from "./embedding-service.js";
@@ -30,6 +34,7 @@ export class VectorEmbeddingEnricher implements SemanticEnricher {
 	) {}
 
 	async enrich(query: string): Promise<EnrichmentResult> {
+		if (config.dialect !== "sqlite") return EMPTY;
 		const trimmed = query.trim();
 		if (!trimmed) return EMPTY;
 		let queryVec: Float32Array;
@@ -42,7 +47,7 @@ export class VectorEmbeddingEnricher implements SemanticEnricher {
 		// Pull only rows that match the active model — different models
 		// have different dims and different vector spaces; mixing them
 		// in one cosine query is meaningless.
-		const rows = sqlite
+		const rows = getSqlite()
 			.prepare(
 				`SELECT v.event_id AS eventId, v.vector AS vector, e.session_id AS sessionId
 				 FROM event_embeddings v
@@ -94,7 +99,7 @@ const EMPTY: EnrichmentResult = { extraTerms: [], directHits: new Map() };
  * SemanticEnricher composition layer can skip it without checks.
  */
 export async function getVectorEnricher(): Promise<SemanticEnricher | null> {
-	if (!(await isVectorSearchActive())) return null;
+	if (config.dialect !== "sqlite" || !(await isVectorSearchActive())) return null;
 	const adapter = await resolveEmbeddingAdapter();
 	if (!adapter) return null;
 	return new VectorEmbeddingEnricher(adapter);

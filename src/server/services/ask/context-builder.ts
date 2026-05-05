@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { db } from "../../db/client.js";
-import { events, sessions } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { events, sessions } from "../../db/schema/index.js";
 import { getSearchBackend } from "../search/index.js";
 import type { ResolvedSession } from "./resolver.js";
 
@@ -42,7 +42,11 @@ const MEANINGFUL_EVENT_TYPES = new Set([
 ]);
 
 async function loadSnapshot(sessionId: string, ftsQuery?: string): Promise<SessionSnapshot | null> {
-	const [row] = await db.select().from(sessions).where(eq(sessions.sessionId, sessionId)).limit(1);
+	const [row] = await getDb()
+		.select()
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
 	if (!row) return null;
 
 	// If we have an FTS query, pull the top matching events for THIS
@@ -69,7 +73,7 @@ async function loadSnapshot(sessionId: string, ftsQuery?: string): Promise<Sessi
 	}
 
 	const matched = matchedEventIds.length
-		? await db
+		? await getDb()
 				.select({
 					eventType: events.eventType,
 					content: events.content,
@@ -83,7 +87,7 @@ async function loadSnapshot(sessionId: string, ftsQuery?: string): Promise<Sessi
 	// Pull a compact tail of the timeline. Filter aggressive noise (raw
 	// PreToolUse / PostToolUse get summarized via totalToolUses instead).
 	const tailLimit = Math.max(6, 12 - matched.length);
-	const raw = await db
+	const raw = await getDb()
 		.select({
 			eventType: events.eventType,
 			content: events.content,

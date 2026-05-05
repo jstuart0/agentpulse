@@ -12,8 +12,8 @@ import type {
 	HookEventPayload,
 	SemanticStatusUpdate,
 } from "../../shared/types.js";
-import { db } from "../db/client.js";
-import { events, sessions } from "../db/schema.js";
+import { getDb } from "../db/client.js";
+import { events, sessions } from "../db/schema/index.js";
 import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
 import {
 	type NormalizedEvent,
@@ -91,7 +91,7 @@ export async function insertNormalizedEvents(
 	if (normalizedEvents.length === 0) return [];
 	const nowIso = new Date().toISOString();
 
-	const recentEvents = await db
+	const recentEvents = await getDb()
 		.select({
 			id: events.id,
 			eventType: events.eventType,
@@ -147,12 +147,14 @@ export async function insertNormalizedEvents(
 	}
 
 	if (deleteIds.size > 0) {
-		await db.delete(events).where(inArray(events.id, Array.from(deleteIds)));
+		await getDb()
+			.delete(events)
+			.where(inArray(events.id, Array.from(deleteIds)));
 	}
 
 	if (retained.length === 0) return [];
 
-	const inserted = await db
+	const inserted = await getDb()
 		.insert(events)
 		.values(
 			retained.map((event) => ({
@@ -201,17 +203,27 @@ export function detectAgentType(
 	return "claude_code";
 }
 
-// Process an incoming hook event
+// The session row shape returned by processHookEvent.
+// Using typeof-based inference keeps this in sync with the drizzle schema
+// without duplicating field lists.
+type SessionRow = typeof import("../db/schema/index.js").sessions.$inferSelect;
+
+/**
+ * Process an incoming hook event.
+ *
+ * Returns { sessionId, isNew, session } so callers (ingest route) can
+ * broadcast the upserted row without a second DB round-trip.
+ */
 export async function processHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
-): Promise<{ sessionId: string; isNew: boolean }> {
+): Promise<{ sessionId: string; isNew: boolean; session: SessionRow }> {
 	const sessionId = payload.session_id;
 	const eventType = payload.hook_event_name;
 	const now = new Date().toISOString();
 
 	// Check if session exists
-	const existing = await db
+	const existing = await getDb()
 		.select()
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
@@ -221,18 +233,20 @@ export async function processHookEvent(
 
 	if (isNew) {
 		// Create new session with a friendly display name
-		await db.insert(sessions).values({
-			sessionId,
-			displayName: generateSessionName(),
-			agentType,
-			status: "active",
-			cwd: payload.cwd || null,
-			transcriptPath: payload.transcript_path || null,
-			model: payload.model || null,
-			startedAt: now,
-			lastActivityAt: now,
-			metadata: {},
-		});
+		await getDb()
+			.insert(sessions)
+			.values({
+				sessionId,
+				displayName: generateSessionName(),
+				agentType,
+				status: "active",
+				cwd: payload.cwd || null,
+				transcriptPath: payload.transcript_path || null,
+				model: payload.model || null,
+				startedAt: now,
+				lastActivityAt: now,
+				metadata: {},
+			});
 	}
 
 	// Update session based on event type. Any event other than SessionEnd
@@ -267,7 +281,7 @@ export async function processHookEvent(
 	// Increment tool use count for tool events
 	if (eventType === "PostToolUse" || eventType === "PreToolUse") {
 		if (eventType === "PostToolUse") {
-			await db
+			await getDb()
 				.update(sessions)
 				.set({ totalToolUses: sql`${sessions.totalToolUses} + 1` })
 				.where(eq(sessions.sessionId, sessionId));
@@ -300,11 +314,11 @@ export async function processHookEvent(
 		}
 	}
 
-	await db.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+	await getDb().update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
 
 	// Resolve project_id based on cwd. Compare against the persisted value
 	// so we only write when it actually changed.
-	const [upserted] = await db
+	const [upserted] = await getDb()
 		.select({ id: sessions.id, cwd: sessions.cwd, projectId: sessions.projectId })
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
@@ -312,7 +326,7 @@ export async function processHookEvent(
 	if (upserted) {
 		const resolvedProjectId = resolveProjectIdForCwd(upserted.cwd, getCachedProjects());
 		if (resolvedProjectId !== upserted.projectId) {
-			await db
+			await getDb()
 				.update(sessions)
 				.set({ projectId: resolvedProjectId })
 				.where(eq(sessions.id, upserted.id));
@@ -335,7 +349,17 @@ export async function processHookEvent(
 		});
 	}
 
-	return { sessionId, isNew };
+	// Fetch the fully updated session row so the broadcast path in the
+	// ingest route does not need a second DB round-trip (eliminates N+1).
+	const [finalSession] = await getDb()
+		.select()
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+
+	// finalSession is guaranteed to exist here — we just inserted or updated it.
+	// The non-null assertion is safe; a missing row would indicate DB corruption.
+	return { sessionId, isNew, session: finalSession! };
 }
 
 /**
@@ -347,7 +371,7 @@ export async function processHookEvent(
  */
 export async function markSessionFailed(sessionId: string): Promise<void> {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.update(sessions)
 		.set({ status: "failed", endedAt: now, isWorking: false })
 		.where(eq(sessions.sessionId, sessionId));
@@ -360,7 +384,7 @@ export async function markSessionFailed(sessionId: string): Promise<void> {
 
 // Process a semantic status update from CLAUDE.md snippet
 export async function processStatusUpdate(update: SemanticStatusUpdate): Promise<boolean> {
-	const existing = await db
+	const existing = await getDb()
 		.select()
 		.from(sessions)
 		.where(eq(sessions.sessionId, update.session_id))
@@ -379,7 +403,7 @@ export async function processStatusUpdate(update: SemanticStatusUpdate): Promise
 	if (update.task) updates.currentTask = update.task;
 	if (update.plan) updates.planSummary = update.plan;
 
-	await db.update(sessions).set(updates).where(eq(sessions.sessionId, update.session_id));
+	await getDb().update(sessions).set(updates).where(eq(sessions.sessionId, update.session_id));
 
 	const normalizedEvents = normalizeStatusEvents(update);
 	await insertNormalizedEvents(update.session_id, normalizedEvents);

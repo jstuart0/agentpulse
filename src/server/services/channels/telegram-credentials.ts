@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { config } from "../../config.js";
-import { db } from "../../db/client.js";
-import { settings } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { settings } from "../../db/schema/index.js";
 import { decryptSecret, encryptSecret } from "../ai/secrets.js";
 
 /**
@@ -65,7 +65,11 @@ function readEnvCreds(): TelegramCredentials {
 }
 
 async function readDbCreds(): Promise<TelegramCredentials | null> {
-	const [row] = await db.select().from(settings).where(eq(settings.key, SETTINGS_KEY)).limit(1);
+	const [row] = await getDb()
+		.select()
+		.from(settings)
+		.where(eq(settings.key, SETTINGS_KEY))
+		.limit(1);
 	if (!row) return null;
 	const stored = row.value as StoredCreds | null;
 	if (!stored) return null;
@@ -209,7 +213,7 @@ export interface SaveTelegramCredentialsInput {
 export async function saveTelegramCredentials(
 	input: SaveTelegramCredentialsInput,
 ): Promise<TelegramCredentials> {
-	const [existingRow] = await db
+	const [existingRow] = await getDb()
 		.select()
 		.from(settings)
 		.where(eq(settings.key, SETTINGS_KEY))
@@ -233,12 +237,12 @@ export async function saveTelegramCredentials(
 
 	const now = new Date().toISOString();
 	if (existingRow) {
-		await db
+		await getDb()
 			.update(settings)
 			.set({ value: next, updatedAt: now })
 			.where(eq(settings.key, SETTINGS_KEY));
 	} else {
-		await db.insert(settings).values({ key: SETTINGS_KEY, value: next, updatedAt: now });
+		await getDb().insert(settings).values({ key: SETTINGS_KEY, value: next, updatedAt: now });
 	}
 	return refreshTelegramCredentials();
 }
@@ -248,7 +252,7 @@ export async function saveTelegramCredentials(
  * reads fall back to env vars (if set) or report "missing".
  */
 export async function clearTelegramCredentials(): Promise<TelegramCredentials> {
-	await db.delete(settings).where(eq(settings.key, SETTINGS_KEY));
+	await getDb().delete(settings).where(eq(settings.key, SETTINGS_KEY));
 	return refreshTelegramCredentials();
 }
 

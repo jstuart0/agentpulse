@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { HitlReplyKind } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
-import { aiHitlRequests, watcherProposals } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { aiHitlRequests, watcherProposals } from "../../db/schema/index.js";
 import {
 	type HitlStatus,
 	openHitlRequest,
@@ -81,7 +81,7 @@ function applyHitlOverlay(
 
 async function hitlStatusMapFor(proposalIds: string[]): Promise<Map<string, HitlStatus>> {
 	if (proposalIds.length === 0) return new Map();
-	const rows = await db
+	const rows = await getDb()
 		.select({
 			proposalId: aiHitlRequests.proposalId,
 			status: aiHitlRequests.status,
@@ -111,7 +111,7 @@ export async function createPendingProposal(input: {
 	triggerEventId?: string | null;
 }): Promise<ProposalRecord> {
 	const now = new Date().toISOString();
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(watcherProposals)
 		.values({
 			sessionId: input.sessionId,
@@ -142,7 +142,7 @@ export async function completeProposal(
 	input: CompleteProposalInput,
 ): Promise<ProposalRecord | null> {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.update(watcherProposals)
 		.set({
 			decision: input.decision,
@@ -190,7 +190,7 @@ export async function failProposal(input: {
 	errorMessage: string;
 }): Promise<ProposalRecord | null> {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.update(watcherProposals)
 		.set({
 			state: "failed",
@@ -203,14 +203,14 @@ export async function failProposal(input: {
 }
 
 export async function setProposalState(id: string, state: ProposalState): Promise<void> {
-	await db
+	await getDb()
 		.update(watcherProposals)
 		.set({ state, updatedAt: new Date().toISOString() })
 		.where(eq(watcherProposals.id, id));
 }
 
 export async function getProposal(id: string): Promise<ProposalRecord | null> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(watcherProposals)
 		.where(eq(watcherProposals.id, id))
@@ -225,7 +225,7 @@ export async function listProposalsForSession(
 	sessionId: string,
 	limit = 30,
 ): Promise<ProposalRecord[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(watcherProposals)
 		.where(eq(watcherProposals.sessionId, sessionId))
@@ -238,7 +238,7 @@ export async function listProposalsForSession(
 
 export async function getOpenHitlProposal(sessionId: string): Promise<ProposalRecord | null> {
 	// Look through ai_hitl_requests for an open one, then fetch its proposal.
-	const [open] = await db
+	const [open] = await getDb()
 		.select({ proposalId: aiHitlRequests.proposalId })
 		.from(aiHitlRequests)
 		.where(
@@ -249,7 +249,7 @@ export async function getOpenHitlProposal(sessionId: string): Promise<ProposalRe
 	if (open) return getProposal(open.proposalId);
 
 	// Legacy fallback: any proposal still physically marked hitl_waiting.
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(watcherProposals)
 		.where(
@@ -275,7 +275,7 @@ export async function cancelOpenHitl(sessionId: string, reason = "cancelled"): P
 	const supersededCount = await supersedeOpenHitl(sessionId);
 
 	// Legacy path: any proposal still carrying state=hitl_waiting.
-	const legacy = await db
+	const legacy = await getDb()
 		.update(watcherProposals)
 		.set({ state: "cancelled", errorMessage: reason, updatedAt: now })
 		.where(
@@ -298,7 +298,7 @@ export async function resolveProposalHitl(input: {
 	const proposal = await getProposal(input.proposalId);
 	if (!proposal) return null;
 
-	const [open] = await db
+	const [open] = await getDb()
 		.select()
 		.from(aiHitlRequests)
 		.where(
@@ -319,7 +319,7 @@ export async function resolveProposalHitl(input: {
 		});
 	} else if (proposal.state === "hitl_waiting") {
 		// Legacy row — move proposal state directly so derived state flips.
-		await db
+		await getDb()
 			.update(watcherProposals)
 			.set({
 				state: input.action === "decline" ? "hitl_declined" : "hitl_applied",

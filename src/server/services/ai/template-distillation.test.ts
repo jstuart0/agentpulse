@@ -1,22 +1,22 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
-const { events, sessions, sessionTemplates } = await import("../../db/schema.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
+const { events, sessions, sessionTemplates } = await import("../../db/schema/index.js");
 const { distillTemplate, provenanceMetadata } = await import("./template-distillation.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {
-	await db.delete(events).execute();
-	await db.delete(sessions).execute();
-	await db.delete(sessionTemplates).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(sessions).execute();
+	await getDb().delete(sessionTemplates).execute();
 });
 
 async function mkSession(sessionId: string, overrides: Record<string, unknown> = {}) {
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId,
@@ -31,7 +31,7 @@ async function mkSession(sessionId: string, overrides: Record<string, unknown> =
 }
 
 async function mkEvent(sessionId: string, category: string, content: string) {
-	await db
+	await getDb()
 		.insert(events)
 		.values({
 			sessionId,
@@ -88,7 +88,7 @@ describe("template-distillation", () => {
 	});
 
 	test("inherits values from baseTemplateId when provided", async () => {
-		await db
+		await getDb()
 			.insert(sessionTemplates)
 			.values({
 				id: "tpl1",

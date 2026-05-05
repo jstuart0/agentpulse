@@ -78,7 +78,7 @@ export function NotesPanel({
 						scheduleAutosave(e.target.value);
 					}}
 					placeholder="Write notes about this session..."
-					className="flex-1 w-full resize-none bg-transparent p-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
+					className="flex-1 w-full resize-none bg-transparent p-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
 				/>
 			) : (
 				<div ref={previewRef} className="flex-1 overflow-y-auto p-3">
@@ -217,7 +217,7 @@ export function ClaudeMdPanel({
 					ref={editRef}
 					value={content}
 					onChange={(e) => setContent(e.target.value)}
-					className="flex-1 w-full resize-none bg-transparent p-3 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none leading-relaxed"
+					className="flex-1 w-full resize-none bg-transparent p-3 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm leading-relaxed"
 					placeholder="No CLAUDE.md found"
 				/>
 			) : (

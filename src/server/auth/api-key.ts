@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { db } from "../db/client.js";
-import { apiKeys } from "../db/schema.js";
+import { getDb } from "../db/client.js";
+import { apiKeys } from "../db/schema/index.js";
 
 // Generate a new API key: ap_<32 random hex chars>
 export function generateApiKey(): string {
@@ -28,7 +28,7 @@ export async function createApiKey(name: string): Promise<{ key: string; id: str
 	const keyHash = await hashKey(key);
 	const keyPrefix = key.slice(0, 11); // "ap_" + first 8 hex chars
 
-	const [record] = await db
+	const [record] = await getDb()
 		.insert(apiKeys)
 		.values({
 			name,
@@ -47,14 +47,19 @@ export async function verifyApiKey(key: string): Promise<{ id: string; name: str
 	}
 
 	const keyHash = await hashKey(key);
-	const [record] = await db.select().from(apiKeys).where(eq(apiKeys.keyHash, keyHash)).limit(1);
+	const [record] = await getDb()
+		.select()
+		.from(apiKeys)
+		.where(eq(apiKeys.keyHash, keyHash))
+		.limit(1);
 
 	if (!record || !record.isActive) {
 		return null;
 	}
 
 	// Update last used timestamp (fire and forget)
-	db.update(apiKeys)
+	getDb()
+		.update(apiKeys)
 		.set({ lastUsedAt: new Date().toISOString() })
 		.where(eq(apiKeys.id, record.id))
 		.execute()
@@ -65,7 +70,7 @@ export async function verifyApiKey(key: string): Promise<{ id: string; name: str
 
 // Ensure at least one API key exists (for initial setup)
 export async function ensureDefaultApiKey(): Promise<string | null> {
-	const existing = await db.select().from(apiKeys).limit(1);
+	const existing = await getDb().select().from(apiKeys).limit(1);
 	if (existing.length > 0) {
 		return null; // Already has keys
 	}

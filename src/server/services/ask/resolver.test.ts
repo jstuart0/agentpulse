@@ -1,17 +1,17 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
-const { events, sessions } = await import("../../db/schema.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
+const { events, sessions } = await import("../../db/schema/index.js");
 const { resolveCandidateSessions, fetchSessionsById } = await import("./resolver.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {
-	await db.delete(events).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(sessions).execute();
 });
 
 async function insertSession(input: {
@@ -24,7 +24,7 @@ async function insertSession(input: {
 	status?: "active" | "idle" | "completed";
 }) {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId: input.id,
@@ -122,7 +122,7 @@ describe("Ask resolver", () => {
 		// on the default datetime('now') clock tick.
 		const older = "2020-01-01T00:00:00.000Z";
 		const newer = "2030-01-01T00:00:00.000Z";
-		await db
+		await getDb()
 			.insert(sessions)
 			.values({
 				sessionId: "old-tie",
@@ -135,7 +135,7 @@ describe("Ask resolver", () => {
 				startedAt: older,
 			})
 			.execute();
-		await db
+		await getDb()
 			.insert(sessions)
 			.values({
 				sessionId: "new-tie",
@@ -171,7 +171,7 @@ describe("Ask resolver", () => {
 		// filters on eq(sessions.isArchived, false) rather than ne(status,'archived').
 		// Insert a session with isArchived=true (and a realistic terminal status)
 		// so the test exercises the actual predicate that production code uses.
-		await db
+		await getDb()
 			.insert(sessions)
 			.values({
 				sessionId: "archived-one",

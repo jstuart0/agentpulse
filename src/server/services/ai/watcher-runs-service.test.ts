@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const {
 	claimNextRun,
 	dedupeKeyFor,
@@ -14,18 +14,18 @@ const {
 	queueSnapshot,
 	listRecentRunsForSession,
 } = await import("./watcher-runs-service.js");
-const { aiWatcherRuns, sessions } = await import("../../db/schema.js");
+const { aiWatcherRuns, sessions } = await import("../../db/schema/index.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {
-	await db.delete(aiWatcherRuns).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(aiWatcherRuns).execute();
+	await getDb().delete(sessions).execute();
 	// Slice DB-1: cascade FKs require parent sessions for every child row.
 	for (const id of ["s", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]) {
-		await db
+		await getDb()
 			.insert(sessions)
 			.values({ sessionId: id, agentType: "claude_code" })
 			.onConflictDoNothing();
@@ -112,7 +112,7 @@ describe("watcher-runs-service", () => {
 
 		// Force lease expiry.
 		const past = new Date(Date.now() - 60_000).toISOString();
-		await db.update(aiWatcherRuns).set({ leaseExpiresAt: past }).execute();
+		await getDb().update(aiWatcherRuns).set({ leaseExpiresAt: past }).execute();
 
 		const reclaimed = await reclaimExpiredLeases({ maxAttempts: 3 });
 		expect(reclaimed).toBe(1);
@@ -125,10 +125,10 @@ describe("watcher-runs-service", () => {
 		const _run = await enqueueRun({ sessionId: "s6", triggerKind: "idle" });
 		await claimNextRun({ leaseOwner: "owner-1", leaseDurationMs: 10_000 });
 		// Bump attempt count above ceiling.
-		await db.update(aiWatcherRuns).set({ attemptCount: 3 }).execute();
+		await getDb().update(aiWatcherRuns).set({ attemptCount: 3 }).execute();
 		// Force lease expiry.
 		const past = new Date(Date.now() - 60_000).toISOString();
-		await db.update(aiWatcherRuns).set({ leaseExpiresAt: past }).execute();
+		await getDb().update(aiWatcherRuns).set({ leaseExpiresAt: past }).execute();
 
 		const reclaimed = await reclaimExpiredLeases({ maxAttempts: 3 });
 		expect(reclaimed).toBe(1);

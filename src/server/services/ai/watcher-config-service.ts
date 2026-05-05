@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { WatcherPolicy } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
-import { watcherConfigs } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { watcherConfigs } from "../../db/schema/index.js";
 
 // Canonical const + type live in src/shared/types.ts so the dashboard
 // and server agree on the policy list. Re-exported for legacy imports.
@@ -38,7 +38,7 @@ function toRecord(row: typeof watcherConfigs.$inferSelect): WatcherConfigRecord 
 }
 
 export async function getWatcherConfig(sessionId: string): Promise<WatcherConfigRecord | null> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(watcherConfigs)
 		.where(eq(watcherConfigs.sessionId, sessionId))
@@ -47,7 +47,7 @@ export async function getWatcherConfig(sessionId: string): Promise<WatcherConfig
 }
 
 export async function listEnabledWatcherSessionIds(): Promise<string[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select({ sessionId: watcherConfigs.sessionId })
 		.from(watcherConfigs)
 		.where(eq(watcherConfigs.enabled, true));
@@ -79,7 +79,7 @@ export async function upsertWatcherConfig(
 		if (!input.providerId) {
 			throw new Error("providerId is required when creating a watcher config");
 		}
-		const [row] = await db
+		const [row] = await getDb()
 			.insert(watcherConfigs)
 			.values({
 				sessionId: input.sessionId,
@@ -110,7 +110,10 @@ export async function upsertWatcherConfig(
 	if (input.maxDailyCents !== undefined) updates.maxDailyCents = input.maxDailyCents;
 	if (input.systemPrompt !== undefined) updates.systemPrompt = input.systemPrompt;
 
-	await db.update(watcherConfigs).set(updates).where(eq(watcherConfigs.sessionId, input.sessionId));
+	await getDb()
+		.update(watcherConfigs)
+		.set(updates)
+		.where(eq(watcherConfigs.sessionId, input.sessionId));
 	const result = await getWatcherConfig(input.sessionId);
 	if (!result) throw new Error("Watcher config disappeared during update");
 	return result;
@@ -120,7 +123,7 @@ export async function incrementContinuations(sessionId: string): Promise<number>
 	const existing = await getWatcherConfig(sessionId);
 	if (!existing) return 0;
 	const next = existing.continuationsUsed + 1;
-	await db
+	await getDb()
 		.update(watcherConfigs)
 		.set({ continuationsUsed: next, updatedAt: new Date().toISOString() })
 		.where(eq(watcherConfigs.sessionId, sessionId));
@@ -128,7 +131,7 @@ export async function incrementContinuations(sessionId: string): Promise<number>
 }
 
 export async function deleteWatcherConfig(sessionId: string): Promise<boolean> {
-	const res = await db
+	const res = await getDb()
 		.delete(watcherConfigs)
 		.where(eq(watcherConfigs.sessionId, sessionId))
 		.returning();

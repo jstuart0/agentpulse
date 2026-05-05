@@ -14,7 +14,20 @@ interface SessionStore {
 
 	addSession: (session: Session) => void;
 	updateSession: (session: Session) => void;
+	// A-M6: shared reducer called by both WS handler and polling paths so
+	// add-or-update semantics live in exactly one place.
+	applySessionUpdate: (session: Session) => void;
 	removeSession: (sessionId: string) => void;
+}
+
+/**
+ * A-M6: pure reducer — add if new, replace if exists.
+ * Extracted so WS and polling paths share identical upsert logic.
+ */
+export function applySessionUpdateToList(sessions: Session[], session: Session): Session[] {
+	const idx = sessions.findIndex((s) => s.sessionId === session.sessionId);
+	if (idx === -1) return [session, ...sessions];
+	return sessions.map((s) => (s.sessionId === session.sessionId ? session : s));
 }
 
 export const useSessionStore = create<SessionStore>((set) => ({
@@ -29,19 +42,20 @@ export const useSessionStore = create<SessionStore>((set) => ({
 	setSelectedSession: (selectedSessionId) => set({ selectedSessionId }),
 
 	addSession: (session) =>
-		set((state) => {
-			// Don't add duplicates
-			if (state.sessions.some((s) => s.sessionId === session.sessionId)) {
-				return {
-					sessions: state.sessions.map((s) => (s.sessionId === session.sessionId ? session : s)),
-				};
-			}
-			return { sessions: [session, ...state.sessions] };
-		}),
+		set((state) => ({
+			sessions: applySessionUpdateToList(state.sessions, session),
+		})),
 
 	updateSession: (session) =>
 		set((state) => ({
 			sessions: state.sessions.map((s) => (s.sessionId === session.sessionId ? session : s)),
+		})),
+
+	// A-M6: unified upsert used by WS handler (session_created / session_updated)
+	// and by the polling path when it needs to merge a single updated session.
+	applySessionUpdate: (session) =>
+		set((state) => ({
+			sessions: applySessionUpdateToList(state.sessions, session),
 		})),
 
 	removeSession: (sessionId) =>

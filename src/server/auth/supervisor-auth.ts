@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { SupervisorEnrollmentTokenInfo } from "../../shared/types.js";
-import { db } from "../db/client.js";
-import { supervisorCredentials, supervisorEnrollmentTokens } from "../db/schema.js";
+import { getDb } from "../db/client.js";
+import { supervisorCredentials, supervisorEnrollmentTokens } from "../db/schema/index.js";
 
 function generateToken(prefix: string): string {
 	const bytes = new Uint8Array(16);
@@ -54,7 +54,7 @@ export async function createSupervisorEnrollmentToken(
 	const tokenHash = await hashToken(token);
 	const tokenPrefix = token.slice(0, 11);
 
-	const [record] = await db
+	const [record] = await getDb()
 		.insert(supervisorEnrollmentTokens)
 		.values({
 			name,
@@ -74,7 +74,7 @@ export async function createSupervisorEnrollmentToken(
 export async function verifyEnrollmentToken(token: string) {
 	if (!token?.startsWith("ape_")) return null;
 	const tokenHash = await hashToken(token);
-	const [record] = await db
+	const [record] = await getDb()
 		.select()
 		.from(supervisorEnrollmentTokens)
 		.where(eq(supervisorEnrollmentTokens.tokenHash, tokenHash))
@@ -89,7 +89,7 @@ export async function consumeEnrollmentToken(token: string) {
 	if (!verified) return null;
 	const tokenHash = await hashToken(token);
 	const timestamp = new Date().toISOString();
-	await db
+	await getDb()
 		.update(supervisorEnrollmentTokens)
 		.set({
 			isActive: false,
@@ -100,7 +100,7 @@ export async function consumeEnrollmentToken(token: string) {
 }
 
 export async function revokeEnrollmentToken(id: string) {
-	await db
+	await getDb()
 		.update(supervisorEnrollmentTokens)
 		.set({
 			isActive: false,
@@ -114,7 +114,7 @@ export async function createSupervisorCredential(supervisorId: string, name: str
 	const tokenHash = await hashToken(token);
 	const tokenPrefix = token.slice(0, 11);
 
-	const [record] = await db
+	const [record] = await getDb()
 		.insert(supervisorCredentials)
 		.values({
 			supervisorId,
@@ -145,13 +145,14 @@ export async function createSupervisorCredential(supervisorId: string, name: str
 export async function verifySupervisorCredential(token: string) {
 	if (!token?.startsWith("aps_")) return null;
 	const tokenHash = await hashToken(token);
-	const [record] = await db
+	const [record] = await getDb()
 		.select()
 		.from(supervisorCredentials)
 		.where(eq(supervisorCredentials.tokenHash, tokenHash))
 		.limit(1);
 	if (!record || !record.isActive || record.revokedAt) return null;
-	db.update(supervisorCredentials)
+	getDb()
+		.update(supervisorCredentials)
 		.set({ lastUsedAt: new Date().toISOString() })
 		.where(eq(supervisorCredentials.id, record.id))
 		.execute()
@@ -164,7 +165,7 @@ export async function verifySupervisorCredential(token: string) {
 }
 
 export async function revokeSupervisorCredential(supervisorId: string) {
-	await db
+	await getDb()
 		.update(supervisorCredentials)
 		.set({
 			isActive: false,

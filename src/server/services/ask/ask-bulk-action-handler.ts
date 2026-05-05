@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { AskThreadOrigin, SessionMutationKind } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
-import { managedSessions, sessions } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { managedSessions, sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import type { CachedProject } from "../projects/cache.js";
@@ -78,7 +78,7 @@ async function resolveByAttribute(
 		}
 	}
 
-	return db
+	return getDb()
 		.select({
 			sessionId: sessions.sessionId,
 			displayName: sessions.displayName,
@@ -114,7 +114,7 @@ async function resolveByHint(
 		}
 	}
 
-	return db
+	return getDb()
 		.select({
 			sessionId: sessions.sessionId,
 			displayName: sessions.displayName,
@@ -138,7 +138,7 @@ async function applyPreflightExclusions(
 		// so the inbox card preview accurately reflects what will be acted on.
 		if (candidates.length === 0) return { included, excluded };
 
-		const managedRows = await db
+		const managedRows = await getDb()
 			.select({ sessionId: managedSessions.sessionId })
 			.from(managedSessions)
 			.where(

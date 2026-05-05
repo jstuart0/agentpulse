@@ -11,21 +11,21 @@ import "../services/ai/__test_db.js";
 
 const { Hono } = await import("hono");
 const { config } = await import("../config.js");
-const { db, initializeDatabase } = await import("../db/client.js");
-const { events, sessions } = await import("../db/schema.js");
+const { getDb, initializeDatabase } = await import("../db/client.js");
+const { events, sessions } = await import("../db/schema/index.js");
 const { sessionsRouter } = await import("./sessions.js");
 
 const app = new Hono().route("/api/v1", sessionsRouter);
 const originalDisableAuth = config.disableAuth;
 
-beforeAll(() => {
-	initializeDatabase();
+beforeAll(async () => {
+	await initializeDatabase();
 	config.disableAuth = true;
 });
 
 beforeEach(async () => {
-	await db.delete(events).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(sessions).execute();
 });
 
 describe("GET /sessions/search (legacy, removed)", () => {
@@ -39,7 +39,7 @@ describe("GET /sessions/search (legacy, removed)", () => {
 	test("returns 404 even when sessions exist whose content matches the query", async () => {
 		// The legacy route would have LIKE-matched these; the FTS-backed
 		// `/api/v1/search` endpoint is the only path that does so now.
-		await db.insert(sessions).values({
+		await getDb().insert(sessions).values({
 			sessionId: "real-session-id",
 			agentType: "claude_code",
 			displayName: "matches search keyword",

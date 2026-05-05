@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
 import { useUserStore } from "../stores/user-store.js";
 
 export function SetupPage() {
+	const { copy } = useCopyFeedback();
 	const [apiKey, setApiKey] = useState("");
 	const serverUrl = window.location.origin;
 	const [agentType, setAgentType] = useState<"claude_code" | "codex_cli">("claude_code");
@@ -207,6 +209,7 @@ export function SetupPage() {
 				</h2>
 				<div className="flex flex-col sm:flex-row gap-2">
 					<button
+						type="button"
 						onClick={() => setAgentType("claude_code")}
 						className={`flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
 							agentType === "claude_code"
@@ -217,6 +220,7 @@ export function SetupPage() {
 						Claude Code
 					</button>
 					<button
+						type="button"
 						onClick={() => setAgentType("codex_cli")}
 						className={`flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
 							agentType === "codex_cli"
@@ -247,7 +251,8 @@ export function SetupPage() {
 						<code>{config}</code>
 					</pre>
 					<button
-						onClick={() => navigator.clipboard.writeText(config)}
+						type="button"
+						onClick={() => void copy(config, "Hook config copied")}
 						className="absolute top-2 right-2 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
 					>
 						Copy
@@ -255,13 +260,17 @@ export function SetupPage() {
 				</div>
 			</div>
 
+			{/* Step 4: Codex-only — Status Line integration */}
 			{agentType === "codex_cli" && (
 				<div className="border border-border bg-card rounded-lg p-5 mb-4">
 					<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
 						<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
 							4
 						</span>
-						Codex Status Line
+						Status Line{" "}
+						<span className="text-[10px] font-mono text-primary/60 bg-primary/8 px-1.5 py-0.5 rounded">
+							Codex only
+						</span>
 					</h2>
 					<p className="text-xs text-muted-foreground mb-3">
 						Codex 0.120.0+ can show the thread title in its built-in status line. In Codex, run{" "}
@@ -290,7 +299,7 @@ export function SetupPage() {
 				</p>
 			</div>
 
-			{/* Step 4: Environment variable */}
+			{/* Step 5 (Codex) / 4 (Claude): Environment variable */}
 			<div className="border border-border bg-card rounded-lg p-5 mb-4">
 				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
 					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
@@ -306,7 +315,7 @@ export function SetupPage() {
 				</pre>
 			</div>
 
-			{/* Step 5: CLAUDE.md snippet */}
+			{/* Step 6 (Codex) / 5 (Claude): status snippet for CLAUDE.md / AGENTS.md */}
 			<div className="border border-border bg-card rounded-lg p-5">
 				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
 					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">

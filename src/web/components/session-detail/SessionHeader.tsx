@@ -2,6 +2,7 @@ import { Wand2 } from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import type { Session, SessionEvent } from "../../../shared/types.js";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { formatDuration } from "../../lib/utils.js";
 import { useLabsStore } from "../../stores/labs-store.js";
 import { useProjectsStore } from "../../stores/projects-store.js";
@@ -79,6 +80,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 	const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 	const aiTabEnabled = useLabsStore((s) => s.isEnabled("aiSessionTab"));
 	const linkedProject = useProjectsStore((s) => s.getById(session.projectId));
+	const { copy } = useCopyFeedback();
 
 	const canStop =
 		session.agentType === "codex_cli" && session.managedSession?.managedState === "managed";
@@ -93,7 +95,13 @@ export function SessionHeader(props: SessionHeaderProps) {
 					className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
 					aria-label="Back to dashboard"
 				>
-					<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<svg
+						className="w-4 h-4"
+						aria-hidden="true"
+						fill="none"
+						viewBox="0 0 24 24"
+						stroke="currentColor"
+					>
 						<path
 							strokeLinecap="round"
 							strokeLinejoin="round"
@@ -173,12 +181,21 @@ export function SessionHeader(props: SessionHeaderProps) {
 							type="button"
 							onClick={(e) => {
 								e.stopPropagation();
-								navigator.clipboard.writeText(buildExportMarkdown(displayName, session, allEvents));
+								void copy(
+									buildExportMarkdown(displayName, session, allEvents),
+									"Session copied as Markdown",
+								);
 							}}
 							title="Export as Markdown"
 							className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
 						>
-							<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<svg
+								className="w-4 h-4"
+								aria-hidden="true"
+								fill="none"
+								viewBox="0 0 24 24"
+								stroke="currentColor"
+							>
 								<path
 									strokeLinecap="round"
 									strokeLinejoin="round"

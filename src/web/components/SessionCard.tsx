@@ -1,6 +1,7 @@
 import { Wand2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import type { Session } from "../../shared/types.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
 import { extractProjectName, formatDuration, getSessionMode, projectColor } from "../lib/utils.js";
@@ -26,6 +27,33 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	const closeTab = useTabsStore((s) => s.close);
 	const [renaming, setRenaming] = useState(false);
 	const [newName, setNewName] = useState(session.displayName || "");
+	const [confirming, setConfirming] = useState(false);
+	const cancelRef = useRef<HTMLButtonElement>(null);
+	const cardRef = useRef<HTMLDivElement>(null);
+	const nameSpanRef = useRef<HTMLSpanElement>(null);
+
+	// Click-outside and Escape cancel the inline delete confirm (C8 / S-28).
+	useEffect(() => {
+		if (!confirming) return;
+
+		// Auto-focus Cancel button when confirm UI reveals.
+		cancelRef.current?.focus();
+
+		function onKeyDown(e: KeyboardEvent) {
+			if (e.key === "Escape") setConfirming(false);
+		}
+		function onPointerDown(e: PointerEvent) {
+			if (cardRef.current && !cardRef.current.contains(e.target as Node)) {
+				setConfirming(false);
+			}
+		}
+		document.addEventListener("keydown", onKeyDown);
+		document.addEventListener("pointerdown", onPointerDown);
+		return () => {
+			document.removeEventListener("keydown", onKeyDown);
+			document.removeEventListener("pointerdown", onPointerDown);
+		};
+	}, [confirming]);
 
 	const projectName = extractProjectName(session.cwd);
 	const name = session.displayName || session.sessionId?.slice(0, 8) || "session";
@@ -46,11 +74,16 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 	async function handleRename() {
 		if (!newName.trim()) {
 			setRenaming(false);
+			// Return focus to name span so keyboard users aren't stranded.
+			requestAnimationFrame(() => nameSpanRef.current?.focus());
 			return;
 		}
 		await api.renameSession(session.sessionId, newName.trim());
 		updateSession({ ...session, displayName: newName.trim() });
 		setRenaming(false);
+		// Shift focus to the resulting name span so blur doesn't leave the
+		// user without a focus target (U-L4).
+		requestAnimationFrame(() => nameSpanRef.current?.focus());
 	}
 
 	async function handlePin(e: React.MouseEvent) {
@@ -69,16 +102,28 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 		updateSession({ ...session, isArchived: true });
 	}
 
-	async function handleDelete(e: React.MouseEvent) {
+	function handleDeleteRequest(e: React.MouseEvent) {
 		e.stopPropagation();
-		if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+		setConfirming(true);
+	}
+
+	async function handleDeleteConfirm(e: React.MouseEvent) {
+		e.stopPropagation();
+		setConfirming(false);
 		await api.deleteSession(session.sessionId);
 		removeSession(session.sessionId);
 		closeTab(session.sessionId);
+		toast.success("Session deleted");
+	}
+
+	function handleDeleteCancel(e: React.MouseEvent) {
+		e.stopPropagation();
+		setConfirming(false);
 	}
 
 	return (
 		<div
+			ref={cardRef}
 			onClick={() => navigate(`/sessions/${session.sessionId}`)}
 			// Inline style carries the per-project hue. Replaces bg-card
 			// with a dark-pastel tint tuned to read as "same repo" at a
@@ -117,7 +162,9 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 						/>
 					) : (
 						<span
-							className="text-xs font-mono font-bold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5 truncate max-w-[10rem] md:max-w-none inline-flex items-center gap-1"
+							ref={nameSpanRef}
+							tabIndex={-1}
+							className="text-xs font-mono font-bold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5 truncate max-w-[10rem] md:max-w-none inline-flex items-center gap-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
 							title={
 								session.metadata?.aiInitiated === true
 									? "Launched from Ask — open conversation"
@@ -138,16 +185,19 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 					)}
 				</div>
 				<div className="flex items-center gap-1 flex-shrink-0">
-					{/* Hover actions */}
+					{/* Mobile action row (U-H5): rename, pin, archive (if inactive),
+					    delete (if inactive). All targets are ≥44×44 px per WCAG 2.5.5.
+					    Delete is red at rest (mobile has no hover to reveal danger). */}
 					<div className="flex md:hidden items-center gap-0.5">
 						<button
+							type="button"
 							onClick={(e) => {
 								e.stopPropagation();
 								setRenaming(true);
 								setNewName(name);
 							}}
 							title="Rename"
-							className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+							className="rounded min-w-[44px] min-h-[44px] flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
 						>
 							<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 								<path
@@ -159,9 +209,10 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 							</svg>
 						</button>
 						<button
+							type="button"
 							onClick={handlePin}
 							title={session.isPinned ? "Unpin" : "Pin"}
-							className="rounded p-1 text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
+							className="rounded min-w-[44px] min-h-[44px] flex items-center justify-center text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
 						>
 							<svg
 								className="w-3 h-3"
@@ -177,9 +228,44 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 								/>
 							</svg>
 						</button>
+						{isInactive && !session.isArchived && (
+							<button
+								type="button"
+								onClick={handleArchive}
+								title="Archive"
+								className="rounded min-w-[44px] min-h-[44px] flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+							>
+								<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										strokeWidth={2}
+										d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"
+									/>
+								</svg>
+							</button>
+						)}
+						{isInactive && (
+							<button
+								type="button"
+								onClick={handleDeleteRequest}
+								title="Delete"
+								className="rounded min-w-[44px] min-h-[44px] flex items-center justify-center text-red-500 hover:bg-red-500/10 transition-colors"
+							>
+								<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										strokeWidth={2}
+										d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+									/>
+								</svg>
+							</button>
+						)}
 					</div>
 					<div className="hidden md:group-hover:flex items-center gap-0.5">
 						<button
+							type="button"
 							onClick={(e) => {
 								e.stopPropagation();
 								setRenaming(true);
@@ -198,6 +284,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 							</svg>
 						</button>
 						<button
+							type="button"
 							onClick={handlePin}
 							title={session.isPinned ? "Unpin" : "Pin"}
 							className="rounded p-1 text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
@@ -218,6 +305,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 						</button>
 						{isInactive && !session.isArchived && (
 							<button
+								type="button"
 								onClick={handleArchive}
 								title="Archive"
 								className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
@@ -234,7 +322,8 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 						)}
 						{isInactive && (
 							<button
-								onClick={handleDelete}
+								type="button"
+								onClick={handleDeleteRequest}
 								title="Delete"
 								className="rounded p-1 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors"
 							>
@@ -255,14 +344,50 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 				</div>
 			</div>
 
+			{/* Inline delete confirm (C8 / S-28) — two-button reveal,
+			    no modal: Cancel (autofocused) + Confirm delete (red).
+			    Escape and outside-click cancel via the useEffect above.
+			    <fieldset> gives us role="group" natively + aria-label support. */}
+			{confirming && (
+				<fieldset
+					aria-label="Confirm session deletion"
+					className="mb-2 flex items-center gap-2 border-0 p-0 m-0"
+					onClick={(e) => e.stopPropagation()}
+				>
+					<button
+						ref={cancelRef}
+						type="button"
+						onClick={handleDeleteCancel}
+						onKeyDown={(e) => {
+							if (e.key === "Escape") setConfirming(false);
+						}}
+						className="rounded px-2 py-1 text-xs text-muted-foreground border border-border hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						onClick={handleDeleteConfirm}
+						onKeyDown={(e) => {
+							if (e.key === "Escape") setConfirming(false);
+						}}
+						className="rounded px-2 py-1 text-xs text-red-400 border border-red-500/30 hover:bg-red-500/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50"
+					>
+						Confirm delete
+					</button>
+				</fieldset>
+			)}
+
 			{/* Project + branch */}
 			<div className="mb-2">
 				<h3 className="text-sm font-semibold truncate text-foreground group-hover:text-primary transition-colors">
 					{projectName}
 				</h3>
 				<div className="flex flex-wrap items-center gap-2 mt-0.5">
+					{/* On mobile the project heading above already shows the folder name;
+					    the full path is too long for small screens. Show it on md+. */}
 					<p
-						className="text-xs text-muted-foreground break-all md:truncate"
+						className="hidden md:block text-xs text-muted-foreground truncate"
 						title={session.cwd || ""}
 					>
 						{session.cwd}

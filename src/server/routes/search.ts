@@ -6,10 +6,9 @@ import type { SearchFilters, SearchRowKind } from "../services/search/types.js";
 /**
  * Global search across session metadata + event content.
  *
- * Backend: SQLite FTS5 today. When the Postgres backend ships
- * (see thoughts/2026-04-24-postgres-backend-plan.md), the interface
- * stays the same and the backend registry swaps in
- * PostgresTsvectorBackend.
+ * Backend: dialect-aware dispatch via getSearchBackend() in services/search/index.ts.
+ *   SQLite: FTS5 (SqliteFtsBackend)
+ *   Postgres: ILIKE direct-search (PostgresSearchBackend)
  *
  * Filters are validated and clamped before being passed to the
  * backend — untrusted input never reaches raw SQL.
@@ -41,7 +40,7 @@ function parseSessionStatus(
 searchRouter.get("/search", auth, async (c) => {
 	const q = c.req.query("q")?.trim() ?? "";
 	if (!q) {
-		return c.json({ hits: [], total: 0, backend: "sqlite-fts5" });
+		return c.json({ hits: [], total: 0, backend: getSearchBackend().name });
 	}
 
 	const filters: SearchFilters = {

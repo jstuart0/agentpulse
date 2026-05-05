@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { sqlite as sharedSqlite } from "../../db/client.js";
+import { getSqlite } from "../../db/client.js";
 import type { SearchBackend, SearchFilters, SearchHit, SearchResult } from "./types.js";
 
 /**
@@ -135,7 +135,7 @@ export class SqliteFtsBackend implements SearchBackend {
 		// SQLITE_BUSY / snapshot-misses under concurrent writes; reusing
 		// the primary connection eliminates the race entirely. Tests
 		// pass their own in-memory/file-backed Database explicitly.
-		this.db = db ?? sharedSqlite;
+		this.db = db ?? getSqlite();
 	}
 
 	async initialize(): Promise<void> {

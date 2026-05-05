@@ -1,8 +1,9 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, expect, test } from "bun:test";
 import "../ai/__test_db.js";
+import { describeSqliteOnly } from "../../test-utils/backend.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
-const { events, sessions } = await import("../../db/schema.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
+const { events, sessions } = await import("../../db/schema/index.js");
 const { SqliteFtsBackend } = await import("./sqlite-fts-backend.js");
 const { Database } = await import("bun:sqlite");
 const { config } = await import("../../config.js");
@@ -16,12 +17,12 @@ const { config } = await import("../../config.js");
  */
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {
-	await db.delete(events).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(sessions).execute();
 });
 
 async function insertSession(
@@ -36,7 +37,7 @@ async function insertSession(
 	},
 ) {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId: id,
@@ -59,7 +60,7 @@ async function insertEvent(
 	rawPayload: Record<string, unknown>,
 	content: string | null = null,
 ) {
-	await db
+	await getDb()
 		.insert(events)
 		.values({
 			sessionId,
@@ -76,7 +77,10 @@ function freshBackend() {
 	return new SqliteFtsBackend(new Database(config.sqlitePath));
 }
 
-describe("SqliteFtsBackend", () => {
+// The entire file exercises the SQLite FTS5 backend: virtual tables, BM25
+// ranking, and snippet highlighting are SQLite-specific. Phase 5 adds
+// a PostgresSearchBackend with its own test file.
+describeSqliteOnly("SqliteFtsBackend", () => {
 	test("finds sessions by display name", async () => {
 		await insertSession("s1", { displayName: "brave-falcon" });
 		await insertSession("s2", { displayName: "calm-river" });
@@ -210,8 +214,8 @@ describe("SqliteFtsBackend", () => {
 
 		// Schema has no ON DELETE CASCADE — delete events first, then the
 		// session. Both triggers fire and the FTS rows are removed.
-		await db.delete(events).execute();
-		await db.delete(sessions).execute();
+		await getDb().delete(events).execute();
+		await getDb().delete(sessions).execute();
 
 		const backend = freshBackend();
 		const eventRes = await backend.search({ q: "disappear" });

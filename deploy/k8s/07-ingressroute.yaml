@@ -7,7 +7,18 @@ spec:
   entryPoints:
     - websecure
   routes:
+    # Health + hook ingestion — public, no auth, no rate limit.
+    # Hooks carry per-key in-process rate limiting (P7); always-200 contract
+    # forbids edge-level 429s on these paths.
     - match: Host(`agentpulse.example.com`) && Path(`/api/v1/health`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # Readiness probe — public so kubelet (no Authentik session) can poll
+    # and external load-balancers can health-check.
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/ready`)
       kind: Rule
       services:
         - name: agentpulse
@@ -25,44 +36,147 @@ spec:
         - name: agentpulse
           port: 3000
 
+    # Static assets — Vite-built JS chunks, CSS, fonts, images. Public so
+    # the browser can lazy-load route chunks without each fetch bouncing
+    # to Authentik (which returns a 302 with HTML body, breaking Vite's
+    # dynamic import with a MIME mismatch). The build output contains no
+    # secrets; same content every visitor sees.
+    - match: Host(`agentpulse.example.com`) && PathPrefix(`/assets/`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # Auth introspection + local-account login/logout/signup — must be
+    # reachable WITHOUT Authentik forwardauth so the login page itself can
+    # render (it calls /auth/me to detect "you're already signed in") and
+    # so local-auth fallback users can complete login.
+    # /auth/change-password attaches requireAuth() in-handler so it remains
+    # auth-protected at the route layer.
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/me`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/login`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/logout`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/signup`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # Supervisors surface — public at the edge; per-handler auth enforced server-side.
+    # Supervisor agents run on remote machines and cannot hold an Authentik SSO session.
+    # Each endpoint carries explicit in-process auth:
+    #   GET  /supervisors, /supervisors/:id, POST /enroll, /rotate, /revoke
+    #        → requireAuth() (dashboard API-key or Authentik session)
+    #   POST /register → enrollment token or supervisor credential (checked in-handler)
+    #   POST /heartbeat, /launches/claim, /launches/:id/status, /managed-session-state,
+    #        /managed-sessions/:id/events, /provider-sync, /control-actions/*
+    #        → requireSupervisorAuth() (supervisor credential token)
+    # The API-key Bearer bypass rule above covers requireAuth() callers that use ap_ keys.
+    # requireSupervisorAuth() uses a separate supervisor token scheme; no Authentik session needed.
     - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/v1/supervisors`)
       kind: Rule
       services:
         - name: agentpulse
           port: 3000
 
-    # Telegram webhook - public (HMAC-authenticated via
-    # X-Telegram-Bot-Api-Secret-Token header). Must bypass Authentik.
+    # Block internal operational endpoints from public access — defense-in-depth.
+    # internal.ts enforces loopback-only at the TCP layer; this rule ensures the
+    # path is never reachable through the ingress at all, even if that check were
+    # somehow bypassed. Routing to a non-existent service causes Traefik to return
+    # 503, which is intentional: the endpoint must not be publicly addressable.
+    # Priority: this rule must appear before the catch-all Host(...) rule.
+    # NOT rate-limited: 503 is already the response; no need for an additional guard.
+    - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/v1/internal`)
+      kind: Rule
+      services:
+        - name: agentpulse-deny-internal
+          port: 9999
+
+    # ── Public endpoints — rate-limited (S-22, I-M5) ─────────────────────────
+    # These paths are unauthenticated and script-reachable; rate limiting is
+    # defense-in-depth against abuse / enumeration.
+
+    # Telegram webhook: HMAC-authenticated via X-Telegram-Bot-Api-Secret-Token.
+    # Rate limit is secondary guard; HMAC is the primary.
+    # priority: 100 — ensures this exact-path rule wins over the /api/ Bearer
+    # bypass rule, which would otherwise shadow the ratelimit middleware because
+    # Traefik's default priority is match-string length, not path specificity.
     - match: Host(`agentpulse.example.com`) && Path(`/api/v1/channels/telegram/webhook`)
       kind: Rule
+      priority: 100
+      middlewares:
+        - name: agentpulse-ratelimit-public
+          namespace: agentpulse
       services:
         - name: agentpulse
           port: 3000
 
-    # Setup scripts - public
+    # Setup / installer scripts — public download paths.
     - match: Host(`agentpulse.example.com`) && Path(`/setup.sh`)
       kind: Rule
+      middlewares:
+        - name: agentpulse-ratelimit-public
+          namespace: agentpulse
       services:
         - name: agentpulse
           port: 3000
 
     - match: Host(`agentpulse.example.com`) && Path(`/setup-relay.sh`)
       kind: Rule
+      middlewares:
+        - name: agentpulse-ratelimit-public
+          namespace: agentpulse
       services:
         - name: agentpulse
           port: 3000
 
     - match: Host(`agentpulse.example.com`) && Path(`/install-local.sh`)
       kind: Rule
+      middlewares:
+        - name: agentpulse-ratelimit-public
+          namespace: agentpulse
       services:
         - name: agentpulse
           port: 3000
 
     - match: Host(`agentpulse.example.com`) && Path(`/install-local.ps1`)
       kind: Rule
+      middlewares:
+        - name: agentpulse-ratelimit-public
+          namespace: agentpulse
       services:
         - name: agentpulse
           port: 3000
+
+    # CSP violation reports — unauthenticated browser push (P4).
+    # priority: 100 — same reason as telegram/webhook above: prevents the /api/
+    # Bearer bypass rule from shadowing the ratelimit middleware on this path.
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/csp-report`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: agentpulse-ratelimit-public
+          namespace: agentpulse
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # ── Authenticated surface ─────────────────────────────────────────────────
 
     # API-key-bearing requests bypass Authentik forwardauth so the
     # relay (statusline, hook backfill, off-Authentik device reads)
@@ -73,15 +187,36 @@ spec:
     # browser dashboard catch-all unaffected.
     - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/`) && HeaderRegexp(`Authorization`, `Bearer ap_.*`)
       kind: Rule
+      middlewares:
+        - name: agentpulse-strip-client-authentik
+          namespace: agentpulse
       services:
         - name: agentpulse
           port: 3000
 
-    # Dashboard frontend - Authentik protected
+    # Dashboard frontend - Authentik protected.
+    # Strip order: agentpulse-strip-client-authentik runs first so any
+    # client-forged X-Authentik-* headers are removed before forwardAuth
+    # evaluates the request. Only the forwardAuth response can re-inject them.
     - match: Host(`agentpulse.example.com`)
       kind: Rule
       middlewares:
+        # Order matters:
+        #   strip-client-authentik FIRST — drops any X-Authentik-* the
+        #     client might have forged.
+        #   forwardauth SECOND — Authentik validates session, injects
+        #     trusted X-authentik-* identity headers in its response;
+        #     Traefik copies them upstream.
+        #   inject-verify LAST — adds the shared-secret X-Authentik-Verify
+        #     header so AgentPulse's trust gate admits the identity.
+        #     Only fires after forwardauth allows the request through
+        #     (forwardauth blocks unauthenticated requests with a 302).
+        - name: agentpulse-strip-client-authentik
+          namespace: agentpulse
         - name: agentpulse-forwardauth
+          namespace: agentpulse
+        - name: agentpulse-inject-verify
+          namespace: agentpulse
       services:
         - name: agentpulse
           port: 3000

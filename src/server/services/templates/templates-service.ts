@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { AgentType, SessionTemplateInput } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
-import { sessionTemplates } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { sessionTemplates } from "../../db/schema/index.js";
 import { ensureProjectForCwd, getProject } from "../projects/projects-service.js";
 import { normalizeCwd } from "../projects/resolver.js";
 import { normalizeTemplateInput, validateTemplateInput } from "../template-preview.js";
@@ -60,7 +60,7 @@ export async function updateTemplate(
 	const { errors } = validateTemplateInput(normalized);
 	if (errors.length > 0) return { ok: false, error: errors.join(" "), status: 400 };
 
-	const [existing] = await db
+	const [existing] = await getDb()
 		.select()
 		.from(sessionTemplates)
 		.where(eq(sessionTemplates.id, templateId))
@@ -92,7 +92,7 @@ export async function updateTemplate(
 		resolvedProjectId = existing.projectId ?? null;
 	}
 
-	const [row] = await db
+	const [row] = await getDb()
 		.update(sessionTemplates)
 		.set({
 			name: normalized.name,
@@ -136,12 +136,12 @@ export type DeleteTemplateResult = { ok: true } | { ok: false; error: string; st
  * consistently without re-querying.
  */
 export async function deleteTemplate(templateId: string): Promise<DeleteTemplateResult> {
-	const [existing] = await db
+	const [existing] = await getDb()
 		.select()
 		.from(sessionTemplates)
 		.where(eq(sessionTemplates.id, templateId))
 		.limit(1);
 	if (!existing) return { ok: false, error: "Template not found", status: 404 };
-	await db.delete(sessionTemplates).where(eq(sessionTemplates.id, templateId));
+	await getDb().delete(sessionTemplates).where(eq(sessionTemplates.id, templateId));
 	return { ok: true };
 }
