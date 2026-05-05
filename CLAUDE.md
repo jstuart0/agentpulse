@@ -10,7 +10,7 @@ AgentPulse is the command center for AI coding agents across all your machines. 
 - **Backend:** Hono (HTTP framework)
 - **Frontend:** React 19 + Vite + TailwindCSS
 - **State:** Zustand
-- **Database:** SQLite only today; PostgreSQL support is not implemented.
+- **Database:** SQLite (default, OSS quickstart) and PostgreSQL (production / multi-replica) — set `DATABASE_URL=postgres://...` to opt into Postgres. SQLite remains default when `DATABASE_URL` is unset or empty.
 - **ORM:** Drizzle
 - **Real-time:** WebSocket (native Bun) + 3s polling fallback
 - **Telemetry:** Cloudflare Worker + D1 at `telemetry-agentpulse.xmojo.net` (default homelab endpoint; configurable via `TELEMETRY_ENDPOINT` env var in `src/server/services/telemetry.ts`)
@@ -66,7 +66,7 @@ bun run test:watch       # Run tests in watch mode
     - `ask/` — Ask NL resolver, per-intent handlers (launch, resume, search, crud, bulk, session-action, digest, qa, channel, alert-rule, add-project), Telegram helpers, disambiguation
     - `channels/` — Notification dispatch, Telegram client + poller, channel registry, credentials
     - `projects/` — Project service, name-match, cache, resolver
-    - `search/` — FTS5 backend, SQLite search types
+    - `search/` — `SearchBackend` interface; `FTS5SearchBackend` (SQLite BM25) and `PostgresSearchBackend` (ILIKE); registry dispatches on `config.dialect`
     - `templates/` — Template service, project resolver
     - `util/` — TTL cache
     - `workspace/` — Clone, scaffold, feature guard
@@ -76,7 +76,7 @@ bun run test:watch       # Run tests in watch mode
     - `managed-session-state.ts`, `name-generator.ts`, `notifier.ts`
     - `session-tracker.ts`, `settings-service.ts`, `supervisor-registry.ts`
     - `telemetry.ts`, `template-preview.ts`, `transcript-sync.ts`
-  - `db/` - Drizzle schema, client, migrations (append-only ALTER TABLE array in `initializeDatabase()`)
+  - `db/` - Drizzle client (`client.ts`), dialect-aware boot path, per-dialect migration runner; schema split across `db/schema/{core,ai,ask-projects}/` with per-dialect entry files (`schema/sqlite.ts`, `schema/postgres.ts`) and a runtime barrel (`schema/index.ts`); generated SQL baselines in `drizzle/sqlite/` and `drizzle/postgres/`
   - `auth/` - API key generation/verification, Authentik middleware (header trust gate)
   - `ws/` - WebSocket handler with pub/sub
 - `src/web/` - React frontend
@@ -92,6 +92,7 @@ bun run test:watch       # Run tests in watch mode
 - `src/shared/` - Shared types and constants (including `session-state.ts`)
 - `src/supervisor/` - Local supervisor process (launch/control plane for same-machine sessions)
 - `deploy/k8s/` - Kubernetes manifests (namespace, secret template, configmap, PVC, deployment, service, middleware, ingressroute, limitrange, resourcequota, networkpolicy, serviceaccount, backup PVC)
+- `deploy/overlays/postgres/` - Kustomize overlay for Postgres-backed deployments (removes backup sidecar, sets `DATABASE_URL`, switches to `RollingUpdate`)
 - `scripts/` - setup-hooks.sh, setup-relay.sh, relay.ts, statusline.sh, install-local.sh, install-local.ps1, build-and-push.sh, check-installers.ts, smoke-parsers.ts, ai-live-test.ts, and architecture guard scripts
 - `snippets/` - CLAUDE.md/AGENTS.md snippets for semantic status reporting
 - `telemetry-worker/` - Cloudflare Worker for anonymous telemetry collection
@@ -111,6 +112,9 @@ Agent (Claude Code / Codex)
 ```
 
 ### Database Schema
+
+Schema is split across `src/server/db/schema/{core,ai,ask-projects}/` with per-table files and a column-factory pattern for dual-dialect differences. Per-dialect entry files (`schema/sqlite.ts`, `schema/postgres.ts`) export the canonical table set for each backend. The runtime barrel (`schema/index.ts`) re-exports the SQLite tables for callers that have not yet migrated to the dialect-resolved barrel; a `TODO(Phase 2b)` comment tracks the 12 remaining importers.
+
 - `sessions` - id, session_id, display_name, agent_type, status, cwd, model, is_working, is_pinned, git_branch, notes, semantic_status, current_task, plan_summary, total_tool_uses, metadata, timestamps, is_archived. Note: `is_archived` is the canonical archive predicate; `status='archived'` is a legacy value retained for backwards-compat (see `src/shared/session-state.ts`).
 - `events` - id, session_id, event_type, tool_name, tool_input, tool_response, raw_payload, created_at
 - `api_keys` - id, name, key_hash, key_prefix, is_active, timestamps
@@ -121,6 +125,8 @@ Agent (Claude Code / Codex)
   - `ai_hitl_requests` — first-class HITL workflow separate from proposals
   - `notification_channels` — remote delivery targets (Telegram/webhook/email)
   - `session_templates.metadata` — distilled-template provenance JSON
+
+Note: `event_embeddings` (vector search) is SQLite-only in this release. The Postgres pgvector port is deferred to a follow-up campaign.
 
 ### AI control plane features
 - Session intelligence classifier exposes `health` + reasonCode via
@@ -198,14 +204,15 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - Hook ingestion must be fast (< 50ms response, always return 200)
 - SQLite datetime format: "YYYY-MM-DD HH:MM:SS" (no T/Z) -- use `parseDate()` (import from `src/web/lib/parseDate.ts`) in frontend
 - Session names generated from adjective-noun pairs (name-generator.ts)
-- DB migrations via ALTER TABLE in initializeDatabase() (append-only array)
+- DB migrations: SQLite fresh installs and all Postgres installs use Drizzle migrate (baselines in `drizzle/sqlite/` and `drizzle/postgres/`). Existing SQLite installs use the legacy `initializeDatabase()` path unless `AGENTPULSE_LEGACY_INIT=false`. Schema changes must generate two migrations in lockstep: `bun run db:generate:sqlite` and `bun run db:generate:postgres`.
 - isWorking toggles on UserPromptSubmit/PreToolUse (true) and Stop (false)
 - Timeline shows only UserPromptSubmit events — this filter is applied **client-side** in the session detail UI, not server-side. The API returns all events for a session; the timeline component selects the subset to display.
 
 ## Deployment
 
-- **Local:** `docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true` (use `127.0.0.1:` prefix to avoid publishing auth-disabled server on all host interfaces)
-- **K8s:** `kubectl apply -k deploy/k8s/` (uses Authentik SSO + Traefik IngressRoute; image pinned by SHA; see `deploy/k8s/README.md`)
+- **Local (SQLite default):** `docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true` (use `127.0.0.1:` prefix to avoid publishing auth-disabled server on all host interfaces)
+- **K8s base (SQLite):** `kubectl apply -k deploy/k8s/` (uses Authentik SSO + Traefik IngressRoute; image pinned by SHA; see `deploy/k8s/README.md`)
+- **K8s Postgres overlay:** `kubectl apply -k deploy/overlays/postgres/` — see `deploy/overlays/postgres/README.md` for pre-flight steps (context check, DB + user creation, `secret-patch.yaml` fill-in). Rolling deploys are safe: boot serialization uses a session-level `pg_advisory_lock` on the migration client connection.
 - **Relay:** `curl -sSL https://your-server.example.com/setup-relay.sh | bash -s -- --key ap_xxx`
 - **Docker image:** `ghcr.io/jstuart0/agentpulse:<sha>` (linux/amd64; tagged by commit SHA — see `scripts/build-and-push.sh`)
 - **Telemetry:** Cloudflare Worker + D1 (default homelab endpoint; configurable via `TELEMETRY_ENDPOINT`)

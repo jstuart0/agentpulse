@@ -35,9 +35,10 @@ local block storage class (e.g. `local-path`).
 - Applies retention (30 daily + 12 monthly survivors) after each successful backup.
 - Failures surface in `kubectl logs deploy/agentpulse -c backup-sidecar`.
 
-**Postgres is the long-term answer.** The backup sidecar is a Medium-severity operational mitigation.
-The next durability epic replaces SQLite with a PostgreSQL backend, eliminating the node-loss-equals-
-downtime tradeoff. See `thoughts/2026-04-24-postgres-backend-plan.md`.
+**Postgres is available now.** As of v0.4.0, AgentPulse supports a full PostgreSQL backend.
+See the Postgres overlay section below and `deploy/overlays/postgres/README.md` for the
+deployment runbook. The backup sidecar is a Medium-severity mitigation for single-instance
+SQLite deployments; it is removed automatically by the Postgres overlay.
 
 **Restore runbook**: see `deploy/k8s/BACKUP-RESTORE.md`.
 
@@ -216,6 +217,60 @@ the version string and running `bun run typecheck` + the full test suite.
 removed `rehype-raw` and changed how raw HTML is handled. A silent upgrade to a
 hypothetical v11 that reintroduces raw-HTML processing would reopen the XSS
 surface that the `~10.x` pin closes.
+
+---
+
+## Postgres overlay
+
+A Kustomize overlay that switches AgentPulse from SQLite to PostgreSQL is in
+`deploy/overlays/postgres/` (one directory above `deploy/k8s/`; placed there to
+avoid a kustomize cycle-detection error when the overlay references the base).
+
+What the overlay does:
+
+- Sets `DATABASE_URL` from a filled-in `secret-patch.yaml` (gitignored; never commit real values).
+- Adds `AGENTPULSE_PG_POOL_MAX` to the deployment (default 10; tune for your Postgres `max_connections` and replica count).
+- Removes the `backup-sidecar` container and the `agentpulse-backups` PVC (SQLite-only).
+- Switches the deployment strategy to `RollingUpdate` (safe with Postgres because migration
+  serialization uses a session-level `pg_advisory_lock` on the migration client's own connection).
+
+**Pre-flight**:
+
+```bash
+# 1. Verify context
+kubectl config current-context   # should be your target cluster (e.g. thor)
+
+# 2. Create database and user (on your Postgres host)
+psql -h postgres-01.xmojo.net -U psadmin \
+  -c "CREATE USER agentpulse WITH PASSWORD '<password>';"
+psql -h postgres-01.xmojo.net -U psadmin \
+  -c "CREATE DATABASE agentpulse OWNER agentpulse ENCODING 'UTF8' \
+      LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0;"
+
+# 3. Fill in credentials (DO NOT COMMIT)
+cp deploy/overlays/postgres/secret-patch.yaml.example \
+   deploy/overlays/postgres/secret-patch.yaml
+# Edit: set DATABASE_URL to postgres://agentpulse:<pw>@host:5432/agentpulse?sslmode=require
+kubectl apply -f deploy/overlays/postgres/secret-patch.yaml -n agentpulse
+
+# 4. Render and verify
+kubectl kustomize deploy/overlays/postgres/
+
+# 5. Apply
+kubectl apply -k deploy/overlays/postgres/
+```
+
+**Rolling deploy semantics**: AgentPulse acquires `pg_advisory_lock(2850603287)` (session-level, on
+the dedicated migration connection) before running Drizzle migrations. Two replicas booting
+simultaneously serialize on this lock; the second waits until the first finishes migrating and
+releases the lock. No external coordination is needed.
+
+**Connection pool tuning**: `AGENTPULSE_PG_POOL_MAX` (integer [1, 100], default 10). For a single
+replica: `max_connections / 2` is a safe starting point. Scale down proportionally for multiple
+replicas sharing the same Postgres instance.
+
+See `deploy/overlays/postgres/README.md` for the full checklist, post-switch cleanup steps, and
+notes on the SQLite PVC lifecycle.
 
 ---
 

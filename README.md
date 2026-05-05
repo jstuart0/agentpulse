@@ -96,7 +96,7 @@ docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUT
 - **Projects** -- first-class projects with cwd-based session resolution; sessions stamp themselves with the right project on ingest, templates inherit project defaults (cwd, agentType, model) with per-field overrides, and a `/projects` page lets you create / edit / delete them. Saving a template under a new directory auto-creates the project for you
 - **Session templates** -- save reusable Claude Code and Codex session setups, link them to a project for live-inheritance defaults, preview normalized launch specs, and route launches to the right host
 - **Orchestration** -- launch headless or interactive sessions from AgentPulse, track launch status, retry, stop, and manage sessions through the local supervisor
-- **Search** -- full-text across session names, prompts, plans, notes, and event payloads (SQLite FTS5, BM25-ranked). Clicking an event hit jumps to the matching event in the timeline and applies a brief amber flash
+- **Search** -- full-text across session names, prompts, plans, notes, and event payloads. SQLite uses FTS5 (BM25-ranked); Postgres uses ILIKE. Clicking an event hit jumps to the matching event in the timeline and applies a brief amber flash
 - **Inbox** -- single `/inbox` view that aggregates every open approval (HITL, Ask-driven actions, alert-rule firings), stuck / risky session warnings, and recent failures. Approve / decline inline; snooze noisy items
 - **Real-time updates** -- everything updates live via WebSocket, no refreshing needed
 - **Random session names** -- each session gets a name like `brave-falcon` so you can tell them apart
@@ -332,7 +332,7 @@ Your Mac                                    Your server / k8s cluster
 │ Claude Code / Codex  │                   │  AgentPulse (remote)     │
 │   hooks → localhost  │                   │  https://pulse.mynet.com │
 │                      │                   │  Authentik SSO           │
-│ local relay          │─── hooks ────────>│  SQLite (single file)    │
+│ local relay          │─── hooks ────────>│  SQLite or Postgres      │
 │   forwards events    │                   │                          │
 └──────────────────────┘                   │  Browse from any device  │
                                            └──────────────────────────┘
@@ -411,9 +411,11 @@ curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-serve
 
 ### Database
 
-SQLite (stored at `./data/agentpulse.db`). Zero-config, single-file, handles home-lab and small-team scale comfortably.
+**SQLite** (stored at `./data/agentpulse.db`) is the default. Zero-config, single-file, handles home-lab and small-team scale comfortably.
 
-> **PostgreSQL is on the roadmap but not implemented yet.** Setting `DATABASE_URL=postgres://…` now fails fast at boot with a clear error rather than silently falling back to SQLite (the previous behavior misled anyone who trusted the env var). If you need multi-replica scale-out, track progress in [the Postgres backend issue](https://github.com/jstuart0/agentpulse/issues) or hold off until it lands.
+**PostgreSQL** is supported as of v0.4.0 for production and multi-replica deployments. Set `DATABASE_URL=postgres://user:password@host:5432/dbname` and AgentPulse uses Postgres instead of SQLite. See [Production / multi-replica with Postgres](#production--multi-replica-with-postgres) below.
+
+Limitations in this release: vector search (`event_embeddings`) remains SQLite-only (pgvector port is a follow-up); search on Postgres uses ILIKE rather than tsvector (adequate for moderate event volumes; tsvector migration is a follow-up for high-volume deployments). There is no SQLite→Postgres data migrator — Postgres installs start fresh.
 
 ### Security headers
 
@@ -439,6 +441,9 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `AGENTPULSE_AI_ENABLED` | `false` | Compile the AI Labs layer in at boot. Off = zero AI services, routes, or UI (non-AI install footprint is identical to pre-AI). |
 | `AGENTPULSE_SECRETS_KEY` | | Required when `AGENTPULSE_AI_ENABLED=true`. 32+ random chars; encrypts provider credentials at rest (AES-256-GCM). |
 | `AGENTPULSE_OTEL_ENDPOINT` | | Optional OTLP metrics endpoint. When set, `ai_metric` log events are also forwarded as OTLP. |
+| `DATABASE_URL` | `""` (SQLite) | Postgres connection string. When set to a `postgres://...` URL, AgentPulse uses PostgreSQL instead of SQLite. Example: `postgres://agentpulse:password@host:5432/agentpulse?sslmode=require`. Leave unset or empty for SQLite. |
+| `AGENTPULSE_PG_POOL_MAX` | `10` | Maximum Postgres connection pool size. Integer in [1, 100]. Tune based on your Postgres server's `max_connections` and replica count. |
+| `AGENTPULSE_LEGACY_INIT` | (unset) | SQLite existing-install migration behaviour. Set to `"false"` to force a fresh Drizzle migrate on an existing SQLite install (opt-in, non-destructive if schema is already current). Unset keeps the legacy `initializeDatabase()` path for existing SQLite installs. |
 | `TELEGRAM_BOT_TOKEN` | | Instance-wide Telegram bot token (get one from @BotFather). Required to enable the Telegram HITL channel. |
 | `TELEGRAM_WEBHOOK_SECRET` | | Shared secret Telegram echoes back on every webhook callback. ≥24 random chars. Required when `TELEGRAM_BOT_TOKEN` is set. |
 
@@ -505,6 +510,42 @@ Manifests are in `deploy/k8s/`. Includes namespace, deployment, service, PVC, co
 kubectl apply -k deploy/k8s/
 ```
 
+## Production / multi-replica with Postgres
+
+For deployments that need multi-replica scale-out or prefer a managed Postgres instance over a local SQLite file:
+
+```bash
+# 1. Verify kubectl context
+kubectl config current-context
+# Expected: your production cluster context
+
+# 2. Create database and user (on your Postgres host)
+psql -h your-postgres-host -U psadmin \
+  -c "CREATE USER agentpulse WITH PASSWORD '<password>';"
+psql -h your-postgres-host -U psadmin \
+  -c "CREATE DATABASE agentpulse OWNER agentpulse ENCODING 'UTF8' \
+      LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0;"
+
+# 3. Fill in the credentials file (gitignored — do NOT commit)
+cp deploy/overlays/postgres/secret-patch.yaml.example \
+   deploy/overlays/postgres/secret-patch.yaml
+# Edit secret-patch.yaml: set DATABASE_URL to the full connection string
+# e.g. postgres://agentpulse:<pw>@host:5432/agentpulse?sslmode=require
+kubectl apply -f deploy/overlays/postgres/secret-patch.yaml -n agentpulse
+
+# 4. Render and apply
+kubectl kustomize deploy/overlays/postgres/  # verify output first
+kubectl apply -k deploy/overlays/postgres/
+```
+
+AgentPulse runs Drizzle migrations on boot using a dedicated single-connection client. A session-level `pg_advisory_lock` serializes migration across replicas booting simultaneously, making rolling deploys safe without coordination overhead.
+
+Connection pool size defaults to 10. Tune it via `AGENTPULSE_PG_POOL_MAX` based on your Postgres `max_connections` setting and replica count.
+
+The Postgres overlay removes the SQLite backup sidecar (no longer needed). The SQLite PVC is left in place until you confirm data has been migrated or is no longer needed, then delete it manually.
+
+See `deploy/overlays/postgres/README.md` for the full pre-flight checklist and rollback notes.
+
 ## Develop
 
 ```bash
@@ -524,7 +565,7 @@ bun run dev        # starts API server + Vite dev server
 
 ## Tech stack
 
-[Bun](https://bun.sh) + [Hono](https://hono.dev) + [React 19](https://react.dev) + [TailwindCSS](https://tailwindcss.com) + [Drizzle ORM](https://orm.drizzle.team) + [Zustand](https://zustand.docs.pmnd.rs) + SQLite
+[Bun](https://bun.sh) + [Hono](https://hono.dev) + [React 19](https://react.dev) + [TailwindCSS](https://tailwindcss.com) + [Drizzle ORM](https://orm.drizzle.team) + [Zustand](https://zustand.docs.pmnd.rs) + SQLite (default) / PostgreSQL
 
 ## Community & Contributing
 
