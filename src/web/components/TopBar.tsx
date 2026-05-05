@@ -102,7 +102,9 @@ function UserMenu({
 	// for cached responses that still carry source === "authentik" (no provider field).
 	const isForwardauth = user?.source === "forwardauth" || user?.source === "authentik";
 	const sourceLabel = isForwardauth
-		? (user?.provider ? formatProviderLabel(user.provider) : "Authentik")
+		? user?.provider
+			? formatProviderLabel(user.provider)
+			: "Authentik"
 		: user?.source === "local"
 			? "Local account"
 			: "API key";

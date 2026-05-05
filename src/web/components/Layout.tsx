@@ -249,9 +249,9 @@ export function Layout() {
 										<div className="text-sm text-foreground truncate">{user.name}</div>
 										<div className="text-[10px] uppercase tracking-wider text-muted-foreground">
 											{user.source === "forwardauth" || user.source === "authentik"
-												? (user.provider
-														? formatProviderLabel(user.provider)
-														: "Authentik")
+												? user.provider
+													? formatProviderLabel(user.provider)
+													: "Authentik"
 												: user.source === "local"
 													? "Local account"
 													: "API key"}
