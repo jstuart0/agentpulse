@@ -8,8 +8,8 @@
 import { sql } from "drizzle-orm";
 import { boolean, integer as pgInteger, pgTable, text as pgText } from "drizzle-orm/pg-core";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { tsColumn } from "../factory.js";
 import { sessionsPg } from "../core/sessions.js";
+import { tsColumn } from "../factory.js";
 
 export const watcherConfigsSqlite = sqliteTable("watcher_configs", {
 	sessionId: text("session_id").primaryKey(),

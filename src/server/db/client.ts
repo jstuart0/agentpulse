@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { drizzle as drizzleBunSqlite } from "drizzle-orm/bun-sqlite";
 import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
 import { config } from "../config.js";
@@ -127,7 +127,6 @@ function createDatabase() {
 		// Phase 1 bridging: DbClient.db is typed as the SQLite adapter (the only
 		// backend that runs today). The Postgres adapter is cast here; Phase 2a
 		// unifies the types once the schema directory split is complete.
-		// biome-ignore lint/suspicious/noExplicitAny: Phase 1 bridging cast — unified in Phase 2a
 		const db = pgDb as unknown as ReturnType<typeof drizzleBunSqlite<typeof schema>>;
 		// The Postgres path has no raw sqlite handle — getSqlite() will
 		// register callers into the boot-failure registry and throw.
@@ -240,16 +239,75 @@ export type Db = ReturnType<typeof getDb>;
  * This is the explicit eager-open caller used by index.ts boot. Calling it
  * also ensures _client is populated before any handler fires.
  */
+/**
+ * Resolve the Drizzle migrations folder path for the given dialect.
+ *
+ * Resolution order:
+ *   1. `<cwd>/drizzle/<dialect>` — works in dev (bun run dev:server) and
+ *      in the Docker runner where WORKDIR=/app and drizzle/ is COPY'd in.
+ *   2. `<import.meta.dir>/../../../drizzle/<dialect>` — fallback for compiled
+ *      dist bundles where import.meta.dir resolves into dist/server/.
+ *
+ * Throws a clear error if neither path exists so operators know what to fix
+ * (usually a missing `COPY drizzle/ ./drizzle/` in the Dockerfile).
+ */
+function resolveMigrationsPath(dialect: "sqlite" | "postgres"): string {
+	const cwdPath = join(process.cwd(), "drizzle", dialect);
+	if (existsSync(cwdPath)) return cwdPath;
+	const distPath = join(import.meta.dir, "../../../drizzle", dialect);
+	if (existsSync(distPath)) return distPath;
+	throw new Error(
+		`[db] Drizzle migrations folder not found for dialect "${dialect}". Checked:\n  ${cwdPath}\n  ${distPath}\nRun "bun run db:generate" to generate baselines, or ensure the Dockerfile includes "COPY drizzle/ ./drizzle/".`,
+	);
+}
+
 export async function initializeDatabase(handle?: Database): Promise<void> {
-	// Postgres path: schema is managed by drizzle-kit. Skip the SQLite init
-	// body and just flush the boot-failure registry after any getSqlite()
-	// calls that fired during module-load time.
+	// ── Postgres path ──────────────────────────────────────────────────────────
 	if (config.dialect === "postgres") {
-		// Ensure the singleton is created so getDb() works.
+		// Ensure the Postgres singleton is created.
 		if (!_client) _client = createDatabase();
+
+		// Import Postgres migrator lazily to avoid pulling postgres-js into the
+		// SQLite build path (it may not be installed in minimal installs).
+		const { migrate } = await import("drizzle-orm/postgres-js/migrator");
+		const migrationsFolder = resolveMigrationsPath("postgres");
+
+		// Acquire a transaction-scoped advisory lock before running migrations.
+		// Two pods booting concurrently will both block here; the first to
+		// commit releases the lock and the second sees all migrations already
+		// applied (drizzle-kit's __drizzle_migrations table marks them), making
+		// migrate() a no-op for the follower.
+		//
+		// Lock id: 0xA9E1A917 = 2850603287 (decimal)
+		// Derived from "AGE1A917"; stable across processes; 32-bit safe so it
+		// passes as a JS number (well within Number.MAX_SAFE_INTEGER = 2^53-1).
+		// Decision 24: no BigInt needed.
+		const lockId = 2850603287; // 0xA9E1A917
+
+		// We need the raw postgres-js client for the advisory lock. The Drizzle
+		// adapter wraps it and exposes `.$client` (postgres-js Sql instance).
+		// biome-ignore lint/suspicious/noExplicitAny: drizzle postgres adapter .$client typing varies by version
+		const pgClient = (_client.db as unknown as { $client: any }).$client;
+
+		await pgClient.begin(async (tx: { unsafe: (sql: string) => Promise<unknown> }) => {
+			// Acquire xact-scoped advisory lock. Released automatically on COMMIT/ROLLBACK.
+			await tx.unsafe(`SELECT pg_advisory_xact_lock(${lockId})`);
+			// Run migrations inside the same transaction so the lock covers them.
+			// _client is guaranteed non-null: we set it immediately above.
+			// biome-ignore lint/style/noNonNullAssertion: _client is set just above; the callback is sync-immediate
+			await migrate(_client!.db as unknown as Parameters<typeof migrate>[0], { migrationsFolder });
+		});
+
+		console.log("[db] Database initialized (postgres)");
+
+		// Flush the boot-failure inventory. Any getSqlite() calls that fired
+		// during module-load time are logged and thrown here so operators see
+		// the full list of unported callers at once (Decision 28 / Phase 3–4).
 		flushUnportedSqliteInventory();
 		return;
 	}
+
+	// ── SQLite path ───────────────────────────────────────────────────────────
 	// Ensure the singleton exists so all subsequent getDb()/getSqlite() calls
 	// return the same connection that was just opened and configured.
 	if (!_client) _client = createDatabase();
@@ -257,9 +315,77 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 	// can't narrow the union here (it doesn't know we returned early for postgres
 	// above), so we use a non-null assertion. The early-return guard above makes
 	// this safe.
-	// biome-ignore lint/style/noNonNullAssertion: postgres path exits early; sqlite is non-null here
 	const sqlite = handle ?? (_client.sqlite as Database);
 
+	// ── Detect existing install (Decision 13) ─────────────────────────────────
+	//
+	// The `sessions` table is the canonical marker. It exists in every legacy
+	// install (created by the original initializeDatabase) and will exist after
+	// a fresh Drizzle-migrate install as well. The detection runs as the first
+	// SQL statement after opening the DB.
+	const existingRow = sqlite
+		.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+		.get();
+	const isExistingInstall = existingRow !== undefined && existingRow !== null;
+	const forceDrizzle = process.env.AGENTPULSE_LEGACY_INIT === "false";
+
+	if (isExistingInstall && !forceDrizzle) {
+		// ── Legacy init path (Decision 13) ──────────────────────────────────
+		//
+		// Existing installs continue to use the original CREATE TABLE IF NOT
+		// EXISTS + ALTER TABLE migration array + cascade rebuild + FTS bootstrap.
+		// This keeps rolling upgrades non-breaking: no __drizzle_migrations table
+		// appears, no schema shape changes, no risk of migration replay.
+		//
+		// Fresh installs (or AGENTPULSE_LEGACY_INIT=false) use the Drizzle path
+		// below. The legacy init code stays alive for one release; Phase 8
+		// (dexter L-2) tracks the removal.
+		console.log("[db] Existing SQLite install detected — using legacy init path");
+		await runLegacySqliteInit(sqlite);
+		return;
+	}
+
+	// ── Fresh install (or AGENTPULSE_LEGACY_INIT=false): Drizzle migrate ──────
+	if (forceDrizzle && isExistingInstall) {
+		console.log("[db] AGENTPULSE_LEGACY_INIT=false — forcing Drizzle migrate on existing install");
+	} else {
+		console.log("[db] Fresh SQLite install — using Drizzle migrate");
+	}
+
+	const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+	const migrationsFolder = resolveMigrationsPath("sqlite");
+	migrate(_client.db as unknown as Parameters<typeof migrate>[0], { migrationsFolder });
+
+	// For the Drizzle path, cascade rebuild and FTS bootstrap run against
+	// the singleton's raw SQLite handle (_client.sqlite), NOT the test handle.
+	// The test `handle` parameter is a legacy-init isolation tool only.
+	// biome-ignore lint/style/noNonNullAssertion: postgres path returned early; sqlite is non-null here
+	const drizzleSqlite = _client.sqlite!;
+
+	// Cascade-FK rebuild is still needed on fresh Drizzle installs:
+	// the SQLite schema files don't declare FKs on child tables (Decision 7),
+	// so the rebuild adds them post-migration exactly as in the legacy path.
+	rebuildSessionChildFks(drizzleSqlite);
+
+	// FTS5 virtual tables + triggers stay in raw DDL here — drizzle-kit does
+	// not generate CREATE VIRTUAL TABLE for FTS5. Bootstrapped after Drizzle
+	// migrate so the underlying tables are guaranteed to exist.
+	await runFtsBootstrap(drizzleSqlite);
+
+	console.log("[db] Database initialized (fresh SQLite via Drizzle)");
+}
+
+/**
+ * Legacy SQLite init path. Run when an existing install is detected
+ * (sessions table already present) and AGENTPULSE_LEGACY_INIT is not "false".
+ *
+ * Contains the original CREATE TABLE IF NOT EXISTS blocks, the ALTER TABLE
+ * migration array, the cascade-FK rebuild, HITL backfill, FTS bootstrap,
+ * and FTS backfill. Idempotent — safe to call multiple times.
+ *
+ * Decision 13: kept alive for one release. Phase 8 (dexter L-2) removes it.
+ */
+async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 	sqlite.exec(`
 		CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,
@@ -937,6 +1063,23 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 		console.warn("[db] HITL backfill skipped:", err);
 	}
 
+	// FTS bootstrap + backfill shared with the Drizzle fresh-install path.
+	await runFtsBootstrap(sqlite);
+
+	console.log("[db] Database initialized");
+}
+
+/**
+ * Bootstrap the SQLite FTS5 virtual tables, triggers, and backfill.
+ *
+ * Kept in raw DDL (not in the Drizzle schema) because drizzle-kit does not
+ * generate CREATE VIRTUAL TABLE for FTS5. Called by both the legacy init
+ * path and the fresh Drizzle install path.
+ *
+ * Idempotent: CREATE VIRTUAL TABLE IF NOT EXISTS and CREATE TRIGGER IF NOT
+ * EXISTS make it safe to call on an already-bootstrapped database.
+ */
+async function runFtsBootstrap(sqlite: Database): Promise<void> {
 	// Search backend bootstrap. The SQLite FTS5 virtual tables + triggers
 	// live here so they're created in the same transaction window as the
 	// rest of the schema. Kept inline rather than imported so we avoid a
@@ -1072,8 +1215,6 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 	} catch (err) {
 		console.warn("[db] FTS backfill skipped:", err);
 	}
-
-	console.log("[db] Database initialized");
 }
 
 /**
