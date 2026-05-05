@@ -23,7 +23,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -122,9 +122,10 @@ describe("initializeDatabase boot routing — SQLite", () => {
 			const distPath = resolve(import.meta.dir, "../../../drizzle/sqlite");
 			const migrationsFolder = fileExists(cwdPath) ? cwdPath : distPath;
 
-			expect(fileExists(migrationsFolder), `migrations folder should exist at ${migrationsFolder}`).toBe(
-				true,
-			);
+			expect(
+				fileExists(migrationsFolder),
+				`migrations folder should exist at ${migrationsFolder}`,
+			).toBe(true);
 
 			// Open a fresh DB.
 			const freshDb = new Database(dbPath);

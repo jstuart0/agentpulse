@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
-const { getDb, getSqlite } = await import("../../db/client.js");
+const { getDb } = await import("../../db/client.js");
 const { initializeDatabase } = await import("../../db/client.js");
 const { aiHitlRequests, events, managedSessions, sessions, supervisors, watcherProposals } =
 	await import("../../db/schema.js");
@@ -171,19 +171,17 @@ describe("intelligence-service.intelligenceForSessions", () => {
 			await mkEvent(id, { category: "assistant_message", content: "hello" });
 		}
 
-		// Spy on getDb().select and getSqlite().prepare to count read paths.
-		// getDb().select is invoked for: sessions inArray + managedSessions left-join.
-		// getSqlite().prepare is invoked for: window-function recent events.
-		// listOpenHitlForSessions also goes through getDb().select.
+		// Spy on getDb().select and getDb().all to count read paths.
+		// getDb().select is invoked for: sessions inArray + managedSessions left-join +
+		// listOpenHitlForSessions.
+		// getDb().all is invoked for: window-function recent events (via executeRows helper).
 		const dbInstance = getDb();
-		const sqliteInstance = getSqlite();
 		const origDbSelect = dbInstance.select.bind(dbInstance) as typeof dbInstance.select;
-		const origPrepare = sqliteInstance.prepare.bind(
-			sqliteInstance,
-		) as typeof sqliteInstance.prepare;
+		// biome-ignore lint/suspicious/noExplicitAny: bun-sqlite db type
+		const origDbAll = (dbInstance as any).all.bind(dbInstance);
 
 		let dbSelectCalls = 0;
-		let preparedReads = 0;
+		let dbAllCalls = 0;
 
 		(dbInstance as unknown as { select: typeof dbInstance.select }).select = ((
 			...args: unknown[]
@@ -193,32 +191,27 @@ describe("intelligence-service.intelligenceForSessions", () => {
 			return (origDbSelect as any)(...args);
 		}) as typeof dbInstance.select;
 
-		(sqliteInstance as unknown as { prepare: typeof sqliteInstance.prepare }).prepare = ((
-			sql: string,
-		) => {
-			// Drizzle's getDb().select also goes through getSqlite().prepare, so naive
-			// counting double-counts. Count only the raw window-function
-			// SELECT we issue directly here (events bulk fetch).
-			if (/ROW_NUMBER\s*\(/i.test(sql)) preparedReads++;
-			return origPrepare(sql);
-		}) as typeof sqliteInstance.prepare;
+		// biome-ignore lint/suspicious/noExplicitAny: spy on all() for window-function path
+		(dbInstance as any).all = (...args: unknown[]) => {
+			dbAllCalls++;
+			return origDbAll(...args);
+		};
 
 		try {
 			const bulk = await intelligenceForSessions(ids, new Date("2026-04-20T00:30:00Z"));
 			expect(bulk.size).toBe(200);
-			// Expected: 3 getDb().select (sessions, managed+sup join, hitl) + 1 prepare (events).
-			const totalReads = dbSelectCalls + preparedReads;
 			// Expected breakdown:
 			//   dbSelectCalls = 3 (sessions inArray, managed+supervisor left
 			//     join, listOpenHitlForSessions)
-			//   preparedReads = 1 (events ROW_NUMBER window-function fetch)
+			//   dbAllCalls = 1 (events ROW_NUMBER window-function fetch via executeRows)
+			const totalReads = dbSelectCalls + dbAllCalls;
 			expect(dbSelectCalls).toBeLessThanOrEqual(3);
-			expect(preparedReads).toBe(1);
+			expect(dbAllCalls).toBe(1);
 			expect(totalReads).toBeLessThanOrEqual(4);
 		} finally {
 			(dbInstance as unknown as { select: typeof dbInstance.select }).select = origDbSelect;
-			(sqliteInstance as unknown as { prepare: typeof sqliteInstance.prepare }).prepare =
-				origPrepare;
+			// biome-ignore lint/suspicious/noExplicitAny: restore spy
+			(dbInstance as any).all = origDbAll;
 		}
 	});
 
