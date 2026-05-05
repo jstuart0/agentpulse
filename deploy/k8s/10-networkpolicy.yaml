@@ -1,0 +1,60 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentpulse-netpol
+  namespace: agentpulse
+spec:
+  podSelector:
+    matchLabels:
+      app: agentpulse
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow inbound traffic only from pods in the Traefik namespace.
+    # Traefik is the sole ingress point for agentpulse; no pod-to-pod
+    # traffic from other namespaces should reach the application port.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Allow kubelet probes (liveness, readiness, startup) to reach port 3000.
+    # Kubelet originates probe traffic from the node IP, not from any namespace.
+    # On strict CNIs (Cilium with host-firewall, Calico with doNotTrack) the
+    # NetworkPolicy is enforced against node-sourced traffic, so without this
+    # rule probes are silently dropped → CrashLoopBackOff.
+    # CIDR 192.168.10.0/24 covers all homelab compute nodes (CLAUDE.md §Compute Cluster).
+    # Adjust cidr to match your node subnet if deploying outside the homelab.
+    - from:
+        - ipBlock:
+            cidr: 192.168.10.0/24
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Allow inbound traffic from within the agentpulse namespace itself.
+    # Defense-in-depth: some CNI plugins enforce policies on loopback-bound
+    # traffic via the namespace selector, so this rule preserves the preStop
+    # drain call (localhost:3000) on those CNIs.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agentpulse
+      ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    # Egress is intentionally unrestricted (S-21, option a).
+    #
+    # Enumerating egress destinations is brittle for agentpulse because it
+    # needs to reach: Kubernetes DNS (kube-dns), Authentik OIDC endpoints,
+    # Anthropic API (api.anthropic.com), Telegram API (api.telegram.org),
+    # Synology NFS (P11), and any user-configured notification webhooks.
+    # These endpoints rotate IPs and differ per deployment; a static egress
+    # allowlist would be fragile and high-maintenance.
+    #
+    # Revisit with an explicit egress allowlist if a stricter posture is
+    # required (e.g. egress proxy or FQDN-based policy via a CNI that supports it).
+    - {}

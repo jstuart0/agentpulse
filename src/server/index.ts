@@ -6,6 +6,7 @@ import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
 import { setShuttingDown } from "./drain-state.js";
 import { handleTelegramUpdate } from "./routes/channels.js";
+import { markDbReady } from "./routes/health.js";
 import { getInFlightCount } from "./routes/ingest-counters.js";
 import { embedEvent, startBackfillIfNeeded } from "./services/ai/embeddings/embedding-service.js";
 import { validateAiStartupConfig } from "./services/ai/feature.js";
@@ -104,7 +105,10 @@ if (!config.authentikTrustSecret && !config.disableAuth) {
 
 // Initialize database (explicit eager-open; all getDb() calls from handlers
 // will now return this already-open connection without re-opening).
+// markDbReady() must be called immediately after so /api/v1/health stops
+// returning 503 and the k8s startupProbe can pass (S-24).
 initializeDatabase();
+markDbReady();
 
 // Eagerly populate the projects cache before hook ingestion routes are mounted
 // so the first incoming event sees a warm cache with no DB round-trip.

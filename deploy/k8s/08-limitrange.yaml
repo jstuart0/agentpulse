@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: agentpulse-limits
+  namespace: agentpulse
+spec:
+  limits:
+  - type: Container
+    # Default resource envelope applied when a container does not declare its own.
+    # The agentpulse container declares explicit requests/limits in 04-deployment.yaml;
+    # this catches any sidecar, init-container, or debug pod that omits them.
+    default:
+      memory: "512Mi"
+      cpu: "500m"
+    defaultRequest:
+      memory: "128Mi"
+      cpu: "100m"
+    max:
+      memory: "2Gi"
+      cpu: "2"
+    min:
+      memory: "64Mi"
+      cpu: "50m"

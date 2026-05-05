@@ -27,3 +27,7 @@ resources:
   - 05-service.yaml
   - 06-middleware.yaml
   - 07-ingressroute.yaml
+  - 08-limitrange.yaml
+  - 09-resourcequota.yaml
+  - 10-networkpolicy.yaml
+  - 11-serviceaccount.yaml

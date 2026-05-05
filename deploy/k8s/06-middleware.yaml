@@ -47,3 +47,25 @@ spec:
     permanent: true
     port: "443"
     scheme: https
+---
+# Rate-limit middleware for public (unauthenticated) endpoints (S-22, I-M5).
+#
+# Applied to: /api/v1/channels/telegram/webhook, /setup.sh, /setup-relay.sh,
+#             /install-local.sh, /install-local.ps1, /api/v1/csp-report.
+#
+# NOT applied to /api/v1/hooks or /api/v1/hooks/status — those routes carry
+# an in-process per-key rate limiter (P7) and must never return 429 (always-
+# 200 contract). Adding edge-level rate limiting there would break agents.
+#
+# HMAC verification remains the primary guard for the Telegram webhook;
+# this middleware is defense-in-depth.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: agentpulse-ratelimit-public
+  namespace: agentpulse
+spec:
+  rateLimit:
+    average: 100
+    burst: 200
+    period: 1m

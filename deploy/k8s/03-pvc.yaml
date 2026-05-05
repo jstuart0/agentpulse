@@ -5,6 +5,12 @@ metadata:
   namespace: agentpulse
   labels:
     app: agentpulse
+  annotations:
+    # IMPORTANT: persistentVolumeReclaimPolicy is a PV-level field — it is
+    # silently ignored on PVC manifests for dynamically-provisioned volumes.
+    # After first deployment, patch the backing PV directly to set Retain:
+    #   see deploy/k8s/README.md → "PV reclaim policy" runbook.
+    agentpulse.io/pv-reclaim-note: "Patch the PV to Retain; see README.md"
 spec:
   accessModes:
     - ReadWriteOnce

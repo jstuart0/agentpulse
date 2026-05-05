@@ -13,18 +13,27 @@ RUN bun run build
 FROM oven/bun:1-slim AS runner
 WORKDIR /app
 
-RUN mkdir -p /app/data
+# Pre-create runtime-writable directories and hand them to the non-root
+# bun user (UID 1000) before we drop privileges. Docker named-volume
+# mounts inherit the image-directory ownership on first use, so this
+# chown is what keeps /app/data writable after `USER bun`.
+# On k8s the PVC mount ownership is governed by fsGroup: 1000 in the
+# pod securityContext, which makes the mount group-writable by GID 1000.
+RUN mkdir -p /app/data && chown -R bun:bun /app/data
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/src/server ./src/server
-COPY --from=builder /app/src/shared ./src/shared
-COPY --from=builder /app/scripts ./scripts
-COPY --from=builder /app/package.json ./
+COPY --chown=bun:bun --from=deps /app/node_modules ./node_modules
+COPY --chown=bun:bun --from=builder /app/dist ./dist
+COPY --chown=bun:bun --from=builder /app/src/server ./src/server
+COPY --chown=bun:bun --from=builder /app/src/shared ./src/shared
+COPY --chown=bun:bun --from=builder /app/scripts ./scripts
+COPY --chown=bun:bun --from=builder /app/package.json ./
 
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOST=0.0.0.0
+
+# Drop to non-root. oven/bun:1-slim ships a `bun` user at UID 1000.
+USER bun
 
 EXPOSE 3000
 
