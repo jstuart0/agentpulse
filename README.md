@@ -331,7 +331,7 @@ Your Mac                                    Your server / k8s cluster
 ┌──────────────────────┐                   ┌──────────────────────────┐
 │ Claude Code / Codex  │                   │  AgentPulse (remote)     │
 │   hooks → localhost  │                   │  https://pulse.mynet.com │
-│                      │                   │  Authentik SSO           │
+│                      │                   │  Forwardauth IdP (SSO)   │
 │ local relay          │─── hooks ────────>│  SQLite or Postgres      │
 │   forwards events    │                   │                          │
 └──────────────────────┘                   │  Browse from any device  │
@@ -385,9 +385,15 @@ Manage the relay:
   Config:  cat ~/.agentpulse/config.json
 ```
 
-**Option C: Kubernetes with Authentik SSO**
+**Option C: Kubernetes with forwardauth SSO (Authentik / Authelia / oauth2-proxy / Pomerium / Cloudflare Access)**
 
-See `deploy/k8s/` for full manifests including Traefik IngressRoute with split auth (hooks bypass Authentik, dashboard is SSO-protected). The IngressRoute has separate rules so `/api/v1/hooks` uses API key auth while everything else goes through Authentik forwardAuth.
+See `deploy/k8s/` for full manifests including Traefik IngressRoute with split auth (hooks bypass
+SSO, dashboard is forwardauth-protected). The IngressRoute has separate rules so `/api/v1/hooks`
+uses API key auth while everything else goes through your forwardauth IdP.
+
+The homelab example uses Authentik; other providers work via env config — set
+`FORWARDAUTH_PROVIDER` and the `FORWARDAUTH_HEADER_*` vars to match your IdP's headers.
+See `deploy/k8s/FORWARDAUTH.md` for provider-specific setup instructions.
 
 ## Configuration
 
@@ -432,7 +438,15 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `SQLITE_PATH` | `${DATA_DIR}/agentpulse.db` | Override the SQLite database file path |
 | `DISABLE_AUTH` | `false` | Skip all authentication |
 | `AGENTPULSE_ALLOW_SIGNUP` | `false` | Allow open signup on an empty instance. Set `true` to enable the first-run signup flow. Once any user exists, signup is blocked regardless. |
-| `AGENTPULSE_AUTHENTIK_TRUST_SECRET` | | Shared secret for the Authentik header trust gate (k8s SSO deployments). See `deploy/k8s/AUTHENTIK-FORWARDAUTH.md`. |
+| `FORWARDAUTH_TRUST_SECRET` | | Shared secret for the forwardauth header trust gate (k8s SSO deployments). Generate with `openssl rand -hex 32`. See `deploy/k8s/FORWARDAUTH.md`. Legacy alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` accepted for one release. |
+| `FORWARDAUTH_PROVIDER` | `authentik` | Forwardauth provider label. Appears in the dashboard UI and `/auth/me` response. Only `"authentik"` triggers the Authentik sign-out URL; other values render the provider name and return `signOutUrl: null`. |
+| `FORWARDAUTH_HEADER_USERNAME` | `X-Authentik-Username` | Header carrying the authenticated username from the upstream IdP. |
+| `FORWARDAUTH_HEADER_EMAIL` | `X-Authentik-Email` | Header carrying the authenticated email address. |
+| `FORWARDAUTH_HEADER_GROUPS` | `X-Authentik-Groups` | Header carrying group memberships. |
+| `FORWARDAUTH_HEADER_NAME` | `X-Authentik-Name` | Header carrying the user's display name. |
+| `FORWARDAUTH_HEADER_UID` | `X-Authentik-Uid` | Header carrying the unique user identifier. |
+| `FORWARDAUTH_HEADER_VERIFY` | `X-Authentik-Verify` | Header used to carry the trust secret from Traefik to AgentPulse. |
+| `FORWARDAUTH_HEADER_STRIP_PREFIX` | `X-Authentik-` | Prefix of IdP identity headers stripped before forwardauth runs. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `AGENTPULSE_TELEMETRY` | `on` | Set `off` to disable anonymous telemetry |
 | `DO_NOT_TRACK` | | Set `1` to disable telemetry (standard) |
@@ -502,7 +516,7 @@ bun run start
 
 ## Deploy on Kubernetes
 
-Manifests are in `deploy/k8s/`. Includes namespace, deployment, service, PVC, configmap, and Traefik IngressRoute with optional Authentik SSO.
+Manifests are in `deploy/k8s/`. Includes namespace, deployment, service, PVC, configmap, and Traefik IngressRoute with optional forwardauth SSO (Authentik by default; configurable for Authelia, oauth2-proxy, Pomerium, Cloudflare Access via env vars).
 
 ```bash
 # Create a real Secret out of band (see deploy/k8s/01-secret-template.yaml for the shape)

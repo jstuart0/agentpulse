@@ -1,6 +1,6 @@
 {
 	"name": "agentpulse",
-	"version": "0.4.0-pre.1",
+	"version": "0.4.0-pre.2",
 	"description": "Command center for AI coding agents across all your machines",
 	"type": "module",
 	"bin": {
@@ -35,7 +35,8 @@
 		"check:installers": "bash -n scripts/install-local.sh && bun scripts/check-installers.ts",
 		"check:no-bun-sqlite-only-apis": "bun scripts/check-no-bun-sqlite-only-apis.ts",
 		"check:no-legacy-schema-import": "bun scripts/check-no-legacy-schema-import.ts",
-		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import"
+		"check:no-authentik-literals": "bun scripts/check-no-authentik-literals.ts",
+		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals"
 	},
 	"dependencies": {
 		"@codemirror/lang-markdown": "^6.3.1",

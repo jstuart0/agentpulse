@@ -78,17 +78,28 @@ spec:
               # this key didn't exist in the secret. The app already defaults
               # to 10 (client.ts:92-98) when the env var is absent.
               optional: true
+        # New name: both FORWARDAUTH_TRUST_SECRET and the deprecated
+        # AGENTPULSE_AUTHENTIK_TRUST_SECRET are bound to the same secret
+        # data key (FORWARDAUTH_TRUST_SECRET) so operators rotate in one
+        # place. See deploy/k8s/FORWARDAUTH.md for setup instructions.
+        - name: FORWARDAUTH_TRUST_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: agentpulse-secrets
+              key: FORWARDAUTH_TRUST_SECRET
+              # Required for forwardauth SSO production deployments to verify
+              # the trust-gate header injected by agentpulse-inject-verify.
+              # Optional so local-auth-only deployments can boot without it
+              # (the trust gate just falls through and other auth methods are tried).
+              optional: true
+        # DEPRECATED: removed in next release; use FORWARDAUTH_TRUST_SECRET going forward.
+        # Bound to the same secret key as FORWARDAUTH_TRUST_SECRET for one-release back-compat.
+        # Operators using the legacy env var name continue to work without any secret changes.
         - name: AGENTPULSE_AUTHENTIK_TRUST_SECRET
           valueFrom:
             secretKeyRef:
               name: agentpulse-secrets
-              key: AGENTPULSE_AUTHENTIK_TRUST_SECRET
-              # Required for SSO production deployments to verify the
-              # X-Authentik-Verify header that the proxy provider's scope
-              # mapping emits (deploy/k8s/AUTHENTIK-FORWARDAUTH.md).
-              # Optional so SQLite/local-auth-only deployments can boot
-              # without it (the trust gate just falls through and other
-              # auth methods are tried).
+              key: FORWARDAUTH_TRUST_SECRET
               optional: true
         envFrom:
         - configMapRef:

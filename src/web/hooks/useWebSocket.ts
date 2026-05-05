@@ -32,8 +32,8 @@ export function useWebSocket() {
 	// Track previous isWorking state to detect transitions
 	const workingRef = useRef<Map<string, boolean>>(new Map());
 	// Count of consecutive WS failures with no successful open between
-	// them. After a few in a row we assume Authentik expired and ask
-	// the app to reload (top-level nav completes the reauth dance).
+	// them. After a few in a row we assume the SSO session expired and
+	// ask the app to reload (top-level nav completes the reauth dance).
 	const consecutiveFailuresRef = useRef(0);
 	const FAILURE_RELOAD_THRESHOLD = 3;
 

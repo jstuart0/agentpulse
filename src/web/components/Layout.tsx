@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
 import { useSignOut } from "../hooks/useSignOut.js";
 import { type InboxWorkItem, type LabsFlag, api } from "../lib/api.js";
+import { formatProviderLabel } from "../lib/formatProviderLabel.js";
 import { cn } from "../lib/utils.js";
 import { useConnectionStore } from "../stores/connection-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
@@ -247,8 +248,10 @@ export function Layout() {
 									<div className="min-w-0 flex-1">
 										<div className="text-sm text-foreground truncate">{user.name}</div>
 										<div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-											{user.source === "authentik"
-												? "Authentik"
+											{user.source === "forwardauth" || user.source === "authentik"
+												? user.provider
+													? formatProviderLabel(user.provider)
+													: "Authentik"
 												: user.source === "local"
 													? "Local account"
 													: "API key"}

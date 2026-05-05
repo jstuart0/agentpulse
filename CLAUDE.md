@@ -158,8 +158,8 @@ Do NOT use or document `503 / ai_kill_switch_active` — that code and message w
 
 ### Auth (two modes)
 - `DISABLE_AUTH=true` - No auth, all endpoints open (default for local use)
-- Auth enabled - API key for hooks, Authentik SSO for dashboard (k8s deployment)
-  - **Authentik trust secret**: `AGENTPULSE_AUTHENTIK_TRUST_SECRET` env var (required for SSO production deployments). Authentik emits `X-Authentik-Verify` via a property mapping on the proxy provider; Traefik's `authResponseHeaders` copies it upstream; AgentPulse verifies with `timingSafeEqual` + length guard. See `deploy/k8s/AUTHENTIK-FORWARDAUTH.md` and `deploy/k8s/RUNBOOK-secrets-rotation.md`.
+- Auth enabled - API key for hooks, forwardauth SSO for dashboard (k8s deployment)
+  - **Forwardauth trust secret**: `FORWARDAUTH_TRUST_SECRET` env var (required for SSO production deployments). AgentPulse works with any forwardauth-capable IdP — Authentik (default), Authelia, oauth2-proxy, Pomerium, Cloudflare Access. Traefik's `agentpulse-inject-verify` middleware injects the shared secret; AgentPulse verifies with `timingSafeEqual` + length guard. Configure header names via `FORWARDAUTH_HEADER_*` env vars (defaults are Authentik values). Legacy alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` accepted for one release. See `deploy/k8s/FORWARDAUTH.md` and `deploy/k8s/RUNBOOK-secrets-rotation.md`.
 
 ### Relay (for remote server users)
 Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) runs on localhost and forwards events to the remote server. LaunchAgent auto-starts it on macOS login.

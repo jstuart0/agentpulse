@@ -5,6 +5,59 @@ All notable changes to AgentPulse are documented here. The format is based on
 project is still pre-1.0 — breaking changes land under the regular `Changed`
 section with a `⚠ breaking` prefix so they're easy to spot.
 
+## [0.4.0-pre.2] — 2026-05-05
+
+### Added
+
+- **Generic forwardauth abstraction** — AgentPulse SSO now works with any
+  forwardauth-capable identity provider, not just Authentik. Configure the provider
+  via `FORWARDAUTH_PROVIDER` (label, defaults to `"authentik"`) and
+  `FORWARDAUTH_HEADER_*` env vars (header names, default to Authentik values).
+  Existing Authentik operators upgrade with zero migration burden — defaults preserve
+  current behaviour.
+
+- **`FORWARDAUTH_TRUST_SECRET` env var** — new canonical name for the shared-secret
+  trust gate. The deprecated alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` continues to
+  work for one release (boot-time deprecation warning emitted when only the legacy
+  name is set). Both env vars are bound to the same Kubernetes Secret field
+  (`FORWARDAUTH_TRUST_SECRET` in `01-secret-template.yaml`) so operators rotate in
+  one place.
+
+- **`provider` field in `/auth/me`** — the response now includes `provider: string | null`
+  alongside the existing `source` field. For forwardauth sessions, `provider` reflects
+  the configured `FORWARDAUTH_PROVIDER` value (e.g. `"authentik"`, `"authelia"`).
+  The dashboard UI reads `provider` to label the user menu (falls back to `"SSO"`).
+
+- **`agentpulse-strip-client-forwardauth` Traefik middleware** — generic name for the
+  header-strip middleware (previously `agentpulse-strip-client-authentik`). The IngressRoute
+  now references the new name. The legacy `agentpulse-strip-client-authentik` resource
+  is kept as a duplicate for one release so existing overlays referencing the old name
+  continue to work.
+
+- **`deploy/k8s/FORWARDAUTH.md`** — restructured setup guide covering Authentik,
+  Authelia, oauth2-proxy, Pomerium, and Cloudflare Access with provider-specific
+  `FORWARDAUTH_HEADER_*` values for each. Old `AUTHENTIK-FORWARDAUTH.md` is now a
+  one-line redirect stub (retained for one release to avoid breaking external links).
+
+- **`scripts/check-no-authentik-literals.ts` architecture guard** — fails CI when a
+  new `X-Authentik-` header literal appears in `src/` outside the explicitly allowlisted
+  files (`src/server/config.ts` and `src/server/auth/middleware.ts`). Wired into
+  `bun run check:architecture`.
+
+### Deprecated
+
+- `AGENTPULSE_AUTHENTIK_TRUST_SECRET` env var — use `FORWARDAUTH_TRUST_SECRET`.
+  Accepted for one release with a boot-time warning. Removed next release.
+
+- `agentpulse-strip-client-authentik` Traefik Middleware resource — renamed to
+  `agentpulse-strip-client-authentik`; the legacy resource is kept as a duplicate for
+  one release. Removed next release.
+
+- `deploy/k8s/AUTHENTIK-FORWARDAUTH.md` — renamed to `deploy/k8s/FORWARDAUTH.md`.
+  The stub redirect at the old path is retained for one release. Removed next release.
+
+---
+
 ## [0.4.0-pre.1] — 2026-05-05
 
 Post-release fixes surfaced during the live rollout of `v0.4.0` to the thor homelab cluster.
