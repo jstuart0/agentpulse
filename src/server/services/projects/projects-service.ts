@@ -1,8 +1,8 @@
 import { basename } from "node:path";
 import { eq, or, sql } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { likeStartsWith } from "../../db/sql-helpers.js";
 import { projects, sessionTemplates, sessions } from "../../db/schema.js";
+import { likeStartsWith } from "../../db/sql-helpers.js";
 import { withTransaction } from "../../db/with-transaction.js";
 import { bumpVersionAndReload, getCachedProjects } from "./cache.js";
 import { normalizeCwd, resolveProjectIdForCwd } from "./resolver.js";

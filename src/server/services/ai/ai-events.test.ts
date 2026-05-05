@@ -78,49 +78,52 @@ describe("emitAiEvent (Slice AI-EVT-1)", () => {
 
 	// SQLite-only: queries FTS5 virtual table directly. Phase 5 adds a parity
 	// assertion via the search() API that works on both backends.
-	itSqliteOnly("FTS row count matches events count for AI-emitted kinds (no double-insert)", async () => {
-		// The FTS5 trigger on `events` only fires for a whitelist of event_types,
-		// which includes AiProposal/AiReport/AiHitlRequest. If emitAiEvent
-		// were to bypass insertNormalizedEvents and double-insert, FTS would
-		// see one row per insert (potentially duplicated) for those kinds.
-		await emitAiEvent({
-			sessionId: "s-ai-evt",
-			source: "managed_control",
-			category: "ai_proposal",
-			eventType: "AiProposal",
-			content: "p1",
-			rawPayload: { proposal_id: "p1" },
-		});
-		await emitAiEvent({
-			sessionId: "s-ai-evt",
-			source: "managed_control",
-			category: "ai_report",
-			eventType: "AiReport",
-			content: "r1",
-			rawPayload: { proposal_id: "p1", summary: "done" },
-		});
-		await emitAiEvent({
-			sessionId: "s-ai-evt",
-			source: "managed_control",
-			category: "ai_hitl_request",
-			eventType: "AiHitlRequest",
-			content: "h1",
-			rawPayload: { proposal_id: "p1" },
-		});
+	itSqliteOnly(
+		"FTS row count matches events count for AI-emitted kinds (no double-insert)",
+		async () => {
+			// The FTS5 trigger on `events` only fires for a whitelist of event_types,
+			// which includes AiProposal/AiReport/AiHitlRequest. If emitAiEvent
+			// were to bypass insertNormalizedEvents and double-insert, FTS would
+			// see one row per insert (potentially duplicated) for those kinds.
+			await emitAiEvent({
+				sessionId: "s-ai-evt",
+				source: "managed_control",
+				category: "ai_proposal",
+				eventType: "AiProposal",
+				content: "p1",
+				rawPayload: { proposal_id: "p1" },
+			});
+			await emitAiEvent({
+				sessionId: "s-ai-evt",
+				source: "managed_control",
+				category: "ai_report",
+				eventType: "AiReport",
+				content: "r1",
+				rawPayload: { proposal_id: "p1", summary: "done" },
+			});
+			await emitAiEvent({
+				sessionId: "s-ai-evt",
+				source: "managed_control",
+				category: "ai_hitl_request",
+				eventType: "AiHitlRequest",
+				content: "h1",
+				rawPayload: { proposal_id: "p1" },
+			});
 
-		const eventsRows = await getDb().select().from(events);
-		expect(eventsRows).toHaveLength(3);
+			const eventsRows = await getDb().select().from(events);
+			expect(eventsRows).toHaveLength(3);
 
-		// Hit FTS through raw SQL since drizzle doesn't model the virtual table.
-		const ftsCount = (
-			getSqlite()
-				.prepare(
-					`SELECT COUNT(*) AS n FROM search_events_fts WHERE event_type IN ('AiProposal','AiReport','AiHitlRequest')`,
-				)
-				.get() as { n: number }
-		).n;
-		expect(ftsCount).toBe(3);
-	});
+			// Hit FTS through raw SQL since drizzle doesn't model the virtual table.
+			const ftsCount = (
+				getSqlite()
+					.prepare(
+						`SELECT COUNT(*) AS n FROM search_events_fts WHERE event_type IN ('AiProposal','AiReport','AiHitlRequest')`,
+					)
+					.get() as { n: number }
+			).n;
+			expect(ftsCount).toBe(3);
+		},
+	);
 
 	test("broadcasts to sessionBus so the WS channel fires", async () => {
 		const received: Array<{ sessionId: string; eventType: string }> = [];

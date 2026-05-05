@@ -184,44 +184,46 @@ describe("cleanup_workarea control action", () => {
 	// NOR the events rows survived as zombies — i.e. the whole tx rolled back.
 	// SQLite-only: uses a BEFORE DELETE trigger to simulate the failure; on
 	// Postgres the cascade FK on the schema enforces this without a trigger.
-	itSqliteOnly("finalizeCleanupWorkArea rolls back atomically when the project delete fails", async () => {
-		const supervisorId = await seedSupervisor();
-		const projectId = await seedScratchProject();
+	itSqliteOnly(
+		"finalizeCleanupWorkArea rolls back atomically when the project delete fails",
+		async () => {
+			const supervisorId = await seedSupervisor();
+			const projectId = await seedScratchProject();
 
-		const sessionRowId = crypto.randomUUID();
-		const sessionTextId = `sess-${sessionRowId.slice(0, 8)}`;
-		const now = new Date().toISOString();
-		await getDb()
-			.insert(sessions)
-			.values({
-				id: sessionRowId,
-				sessionId: sessionTextId,
-				agentType: "claude_code",
-				cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
+			const sessionRowId = crypto.randomUUID();
+			const sessionTextId = `sess-${sessionRowId.slice(0, 8)}`;
+			const now = new Date().toISOString();
+			await getDb()
+				.insert(sessions)
+				.values({
+					id: sessionRowId,
+					sessionId: sessionTextId,
+					agentType: "claude_code",
+					cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
+					projectId,
+					startedAt: now,
+					lastActivityAt: now,
+				});
+			await getDb()
+				.insert(events)
+				.values({
+					sessionId: sessionTextId,
+					eventType: "SessionStart",
+					rawPayload: { hook_event_name: "SessionStart", session_id: sessionTextId },
+					createdAt: now,
+				});
+
+			const queued = await queueCleanupWorkArea({
 				projectId,
-				startedAt: now,
-				lastActivityAt: now,
+				cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
+				targetSupervisorId: supervisorId,
 			});
-		await getDb()
-			.insert(events)
-			.values({
-				sessionId: sessionTextId,
-				eventType: "SessionStart",
-				rawPayload: { hook_event_name: "SessionStart", session_id: sessionTextId },
-				createdAt: now,
-			});
+			await claimNextControlAction(supervisorId);
 
-		const queued = await queueCleanupWorkArea({
-			projectId,
-			cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
-			targetSupervisorId: supervisorId,
-		});
-		await claimNextControlAction(supervisorId);
-
-		// Trigger fires when the cascade tries to delete the project row,
-		// AFTER the events/sessions deletes have already executed inside
-		// the same transaction. A sync tx must roll those back.
-		getSqlite().exec(`
+			// Trigger fires when the cascade tries to delete the project row,
+			// AFTER the events/sessions deletes have already executed inside
+			// the same transaction. A sync tx must roll those back.
+			getSqlite().exec(`
 			CREATE TRIGGER tmp_block_project_delete
 			BEFORE DELETE ON projects
 			BEGIN
@@ -229,26 +231,27 @@ describe("cleanup_workarea control action", () => {
 			END;
 		`);
 
-		try {
-			await updateControlAction({
-				actionId: queued.id,
-				supervisorId,
-				status: "succeeded",
-			});
-		} finally {
-			getSqlite().exec("DROP TRIGGER IF EXISTS tmp_block_project_delete");
-		}
+			try {
+				await updateControlAction({
+					actionId: queued.id,
+					supervisorId,
+					status: "succeeded",
+				});
+			} finally {
+				getSqlite().exec("DROP TRIGGER IF EXISTS tmp_block_project_delete");
+			}
 
-		// Project row must still exist (the delete was aborted) AND the
-		// session/events rows must still exist (the earlier deletes in
-		// the same tx must have rolled back). If the tx were async-broken,
-		// events/sessions would be gone but the project would survive —
-		// the partial-cleanup state we are guarding against.
-		const remainingProjects = await getDb().select().from(projects).execute();
-		expect(remainingProjects.length).toBe(1);
-		const remainingSessions = await getDb().select().from(sessions).execute();
-		expect(remainingSessions.length).toBe(1);
-		const remainingEvents = await getDb().select().from(events).execute();
-		expect(remainingEvents.length).toBe(1);
-	});
+			// Project row must still exist (the delete was aborted) AND the
+			// session/events rows must still exist (the earlier deletes in
+			// the same tx must have rolled back). If the tx were async-broken,
+			// events/sessions would be gone but the project would survive —
+			// the partial-cleanup state we are guarding against.
+			const remainingProjects = await getDb().select().from(projects).execute();
+			expect(remainingProjects.length).toBe(1);
+			const remainingSessions = await getDb().select().from(sessions).execute();
+			expect(remainingSessions.length).toBe(1);
+			const remainingEvents = await getDb().select().from(events).execute();
+			expect(remainingEvents.length).toBe(1);
+		},
+	);
 });
