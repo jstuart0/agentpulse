@@ -1,5 +1,5 @@
 import { eq, sql } from "drizzle-orm";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { sessions } from "../../db/schema.js";
 import { getSearchBackend } from "../search/index.js";
 
@@ -42,7 +42,7 @@ const AMBIGUITY_SCORE_GAP = 0.05;
 export async function resolveSession(hint: string | null): Promise<ResolveSessionResult> {
 	if (hint === null) {
 		// Recency fallback: no name hint → most recently active non-archived session.
-		const [row] = await db
+		const [row] = await getDb()
 			.select({
 				sessionId: sessions.sessionId,
 				displayName: sessions.displayName,
@@ -101,7 +101,7 @@ export async function resolveSession(hint: string | null): Promise<ResolveSessio
 
 	const best = unique[0];
 	// Load full session row to get status + agentType.
-	const [row] = await db
+	const [row] = await getDb()
 		.select({
 			sessionId: sessions.sessionId,
 			displayName: sessions.displayName,

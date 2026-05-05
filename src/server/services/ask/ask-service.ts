@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import type { AskMessageRole, AskThreadOrigin } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { askMessages, askThreads, sessionTemplates } from "../../db/schema.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import type { LlmAdapter } from "../ai/llm/types.js";
@@ -135,7 +135,7 @@ function toMessage(row: typeof askMessages.$inferSelect): AskMessageRecord {
 }
 
 export async function listThreads(limit = 50): Promise<AskThreadRecord[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(askThreads)
 		.where(isNull(askThreads.archivedAt))
@@ -145,12 +145,12 @@ export async function listThreads(limit = 50): Promise<AskThreadRecord[]> {
 }
 
 export async function getThread(id: string): Promise<AskThreadRecord | null> {
-	const [row] = await db.select().from(askThreads).where(eq(askThreads.id, id)).limit(1);
+	const [row] = await getDb().select().from(askThreads).where(eq(askThreads.id, id)).limit(1);
 	return row ? toThread(row) : null;
 }
 
 export async function listMessages(threadId: string): Promise<AskMessageRecord[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(askMessages)
 		.where(eq(askMessages.threadId, threadId))
@@ -160,7 +160,7 @@ export async function listMessages(threadId: string): Promise<AskMessageRecord[]
 
 export async function archiveThread(id: string): Promise<boolean> {
 	const now = new Date().toISOString();
-	const res = await db
+	const res = await getDb()
 		.update(askThreads)
 		.set({ archivedAt: now, updatedAt: now })
 		.where(and(eq(askThreads.id, id), isNull(askThreads.archivedAt)))
@@ -179,7 +179,7 @@ async function ensureThread(input: {
 		if (existing) return existing;
 	}
 	const title = input.firstMessage.trim().replace(/\s+/g, " ").slice(0, 80);
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(askThreads)
 		.values({
 			title,
@@ -200,7 +200,7 @@ export async function findOrCreateTelegramThread(input: {
 	telegramChatId: string;
 	seedTitle: string;
 }): Promise<AskThreadRecord> {
-	const [existing] = await db
+	const [existing] = await getDb()
 		.select()
 		.from(askThreads)
 		.where(and(eq(askThreads.telegramChatId, input.telegramChatId), isNull(askThreads.archivedAt)))
@@ -223,7 +223,7 @@ async function appendMessage(input: {
 	tokensOut?: number | null;
 	errorMessage?: string | null;
 }): Promise<AskMessageRecord> {
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(askMessages)
 		.values({
 			threadId: input.threadId,
@@ -236,7 +236,7 @@ async function appendMessage(input: {
 		})
 		.returning();
 	// Touch the thread so it bubbles up in the sidebar.
-	await db
+	await getDb()
 		.update(askThreads)
 		.set({ updatedAt: new Date().toISOString() })
 		.where(eq(askThreads.id, input.threadId));
@@ -496,7 +496,7 @@ async function runAskGates(text: string, ctx: AskGateCtx): Promise<GateRunResult
  * ASK_GATES — ordered table of intent gates.
  *
  * Each gate's `classify` and `handle` are async functions called per-turn.
- * Only the array structure is static. `getCachedProjects()` and `db.select()`
+ * Only the array structure is static. `getCachedProjects()` and `getDb().select()`
  * inside lambdas run on each gate invocation.
  *
  * Gate order matches the original ladder exactly. Do not reorder without
@@ -648,7 +648,9 @@ const ASK_GATES: Gate[] = [
 		classify: async (t) => {
 			const projects = getCachedProjects();
 			// DB select for template names runs only when the predicate passes.
-			const templateRows = await db.select({ name: sessionTemplates.name }).from(sessionTemplates);
+			const templateRows = await getDb()
+				.select({ name: sessionTemplates.name })
+				.from(sessionTemplates);
 			const r = await detectProjectTemplateCrudIntent(
 				t,
 				projects.map((p) => p.name),

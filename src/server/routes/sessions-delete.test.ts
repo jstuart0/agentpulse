@@ -6,7 +6,7 @@ const { Database } = await import("bun:sqlite");
 const { Hono } = await import("hono");
 const { eq } = await import("drizzle-orm");
 const { config } = await import("../config.js");
-const { db, initializeDatabase } = await import("../db/client.js");
+const { getDb, initializeDatabase } = await import("../db/client.js");
 const {
 	aiHitlRequests,
 	aiWatcherRuns,
@@ -31,53 +31,57 @@ beforeEach(async () => {
 	// Order matters when FKs are not all cascading yet — start from the
 	// child rows. With cascade in place, deleting sessions alone is enough,
 	// but explicit cleanup is fine and keeps the suite hermetic.
-	await db.delete(events).execute();
-	await db.delete(managedSessions).execute();
-	await db.delete(controlActions).execute();
-	await db.delete(watcherProposals).execute();
-	await db.delete(aiHitlRequests).execute();
-	await db.delete(aiWatcherRuns).execute();
-	await db.delete(watcherConfigs).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(managedSessions).execute();
+	await getDb().delete(controlActions).execute();
+	await getDb().delete(watcherProposals).execute();
+	await getDb().delete(aiHitlRequests).execute();
+	await getDb().delete(aiWatcherRuns).execute();
+	await getDb().delete(watcherConfigs).execute();
+	await getDb().delete(sessions).execute();
 });
 
 async function seedSessionWithChildren(sessionId: string): Promise<void> {
-	await db.insert(sessions).values({ sessionId, agentType: "claude_code" });
-	await db.insert(events).values({
-		sessionId,
-		eventType: "UserPromptSubmit",
-		rawPayload: { prompt: "hello" },
-	});
-	await db.insert(managedSessions).values({
+	await getDb().insert(sessions).values({ sessionId, agentType: "claude_code" });
+	await getDb()
+		.insert(events)
+		.values({
+			sessionId,
+			eventType: "UserPromptSubmit",
+			rawPayload: { prompt: "hello" },
+		});
+	await getDb().insert(managedSessions).values({
 		sessionId,
 		launchRequestId: "lr-1",
 		supervisorId: "sup-1",
 	});
-	await db.insert(controlActions).values({
+	await getDb().insert(controlActions).values({
 		id: crypto.randomUUID(),
 		sessionId,
 		actionType: "stop",
 	});
-	await db.insert(watcherConfigs).values({
+	await getDb().insert(watcherConfigs).values({
 		sessionId,
 		providerId: "prov-1",
 	});
-	await db.insert(watcherProposals).values({
+	await getDb().insert(watcherProposals).values({
 		id: crypto.randomUUID(),
 		sessionId,
 		providerId: "prov-1",
 	});
-	await db.insert(aiHitlRequests).values({
+	await getDb().insert(aiHitlRequests).values({
 		id: crypto.randomUUID(),
 		proposalId: "prop-1",
 		sessionId,
 	});
-	await db.insert(aiWatcherRuns).values({
-		id: crypto.randomUUID(),
-		sessionId,
-		triggerKind: "idle",
-		dedupeKey: `${sessionId}:idle:0`,
-	});
+	await getDb()
+		.insert(aiWatcherRuns)
+		.values({
+			id: crypto.randomUUID(),
+			sessionId,
+			triggerKind: "idle",
+			dedupeKey: `${sessionId}:idle:0`,
+		});
 }
 
 describe("DELETE /sessions/:id", () => {
@@ -90,43 +94,46 @@ describe("DELETE /sessions/:id", () => {
 		});
 		expect(res.status).toBe(200);
 
-		const sessionRow = await db.select().from(sessions).where(eq(sessions.sessionId, sessionId));
+		const sessionRow = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId));
 		expect(sessionRow.length).toBe(0);
 
-		const eventsRow = await db.select().from(events).where(eq(events.sessionId, sessionId));
+		const eventsRow = await getDb().select().from(events).where(eq(events.sessionId, sessionId));
 		expect(eventsRow.length).toBe(0);
 
-		const managedRow = await db
+		const managedRow = await getDb()
 			.select()
 			.from(managedSessions)
 			.where(eq(managedSessions.sessionId, sessionId));
 		expect(managedRow.length).toBe(0);
 
-		const ctrlRow = await db
+		const ctrlRow = await getDb()
 			.select()
 			.from(controlActions)
 			.where(eq(controlActions.sessionId, sessionId));
 		expect(ctrlRow.length).toBe(0);
 
-		const watcherCfgRow = await db
+		const watcherCfgRow = await getDb()
 			.select()
 			.from(watcherConfigs)
 			.where(eq(watcherConfigs.sessionId, sessionId));
 		expect(watcherCfgRow.length).toBe(0);
 
-		const propRow = await db
+		const propRow = await getDb()
 			.select()
 			.from(watcherProposals)
 			.where(eq(watcherProposals.sessionId, sessionId));
 		expect(propRow.length).toBe(0);
 
-		const hitlRow = await db
+		const hitlRow = await getDb()
 			.select()
 			.from(aiHitlRequests)
 			.where(eq(aiHitlRequests.sessionId, sessionId));
 		expect(hitlRow.length).toBe(0);
 
-		const runRow = await db
+		const runRow = await getDb()
 			.select()
 			.from(aiWatcherRuns)
 			.where(eq(aiWatcherRuns.sessionId, sessionId));
@@ -181,7 +188,7 @@ describe("DELETE /sessions/:id", () => {
 		// mirrors what the route does internally, with a forced failure
 		// after the first delete to verify the events row survives.
 		expect(() =>
-			db.transaction((tx) => {
+			getDb().transaction((tx) => {
 				tx.delete(events).where(eq(events.sessionId, sessionId)).run();
 				throw new Error("simulated mid-transaction failure");
 			}),
@@ -189,10 +196,13 @@ describe("DELETE /sessions/:id", () => {
 
 		// Both the parent session and the event rows that we nominally
 		// deleted should still be present — the rollback restored them.
-		const sessionRow = await db.select().from(sessions).where(eq(sessions.sessionId, sessionId));
+		const sessionRow = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId));
 		expect(sessionRow.length).toBe(1);
 
-		const eventsRow = await db.select().from(events).where(eq(events.sessionId, sessionId));
+		const eventsRow = await getDb().select().from(events).where(eq(events.sessionId, sessionId));
 		expect(eventsRow.length).toBeGreaterThan(0);
 	});
 

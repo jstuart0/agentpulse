@@ -9,7 +9,7 @@ import {
 	SESSION_MUTATION_KINDS,
 	type SessionMutationKind,
 } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { sessions, watcherProposals } from "../../db/schema.js";
 import { listOpenActionRequests, narrowPayload } from "./action-requests-service.js";
 import { listAllOpenHitl } from "./hitl-service.js";
@@ -51,7 +51,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 	const openHitl = await listAllOpenHitl(limit);
 	const sessionIds = Array.from(new Set(openHitl.map((h) => h.sessionId)));
 	const sessionRows = sessionIds.length
-		? await db
+		? await getDb()
 				.select({
 					sessionId: sessions.sessionId,
 					displayName: sessions.displayName,
@@ -88,7 +88,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 
 	// ---- 2. Stuck / risky sessions from classifier --------------------
 	// Look at recently-active sessions so we don't classify 10k archived rows.
-	const activeSessions = await db
+	const activeSessions = await getDb()
 		.select({
 			sessionId: sessions.sessionId,
 			displayName: sessions.displayName,
@@ -138,7 +138,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 	}
 
 	// ---- 3. Recently failed proposals ---------------------------------
-	const failedProposals = await db
+	const failedProposals = await getDb()
 		.select()
 		.from(watcherProposals)
 		.where(eq(watcherProposals.state, "failed"))
@@ -147,7 +147,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 
 	const failedIds = Array.from(new Set(failedProposals.map((p) => p.sessionId)));
 	const failedSessionRows = failedIds.length
-		? await db
+		? await getDb()
 				.select({
 					sessionId: sessions.sessionId,
 					displayName: sessions.displayName,

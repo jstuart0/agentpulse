@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import "../services/ai/__test_db.js";
 
 const { config } = await import("../config.js");
-const { db, initializeDatabase } = await import("../db/client.js");
+const { getDb, initializeDatabase } = await import("../db/client.js");
 const { settings } = await import("../db/schema.js");
 const { settingsRouter } = await import("./settings.js");
 const {
@@ -32,7 +32,7 @@ afterAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(settings).execute();
+	await getDb().delete(settings).execute();
 });
 
 async function get() {

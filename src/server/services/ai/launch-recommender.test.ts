@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { events, sessions, supervisors } = await import("../../db/schema.js");
 const { recommendLaunch } = await import("./launch-recommender.js");
 
@@ -10,9 +10,9 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(events).execute();
-	await db.delete(sessions).execute();
-	await db.delete(supervisors).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(sessions).execute();
+	await getDb().delete(supervisors).execute();
 });
 
 async function mkSession(
@@ -22,7 +22,7 @@ async function mkSession(
 	agentType = "claude_code",
 	model: string | null = null,
 ) {
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId,
@@ -36,7 +36,7 @@ async function mkSession(
 }
 
 async function mkSupervisor(id: string, agentTypes: string[], status = "connected") {
-	await db
+	await getDb()
 		.insert(supervisors)
 		.values({
 			id,

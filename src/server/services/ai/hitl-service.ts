@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, lte } from "drizzle-orm";
 import type { ActionRequestDecision, HitlReplyKind } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { aiHitlRequests } from "../../db/schema.js";
 
 export type HitlStatus =
@@ -56,7 +56,7 @@ export async function openHitlRequest(input: {
 }): Promise<HitlRequestRecord> {
 	await supersedeOpenHitl(input.sessionId);
 	const now = new Date().toISOString();
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(aiHitlRequests)
 		.values({
 			proposalId: input.proposalId,
@@ -74,7 +74,7 @@ export async function openHitlRequest(input: {
 /** Mark any open HITL for this session as superseded. Returns count updated. */
 export async function supersedeOpenHitl(sessionId: string): Promise<number> {
 	const now = new Date().toISOString();
-	const rows = await db
+	const rows = await getDb()
 		.update(aiHitlRequests)
 		.set({ status: "superseded", updatedAt: now })
 		.where(
@@ -92,7 +92,7 @@ export async function resolveHitlRequest(input: {
 	replyText?: string | null;
 }): Promise<HitlRequestRecord | null> {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.update(aiHitlRequests)
 		.set({
 			status: input.status,
@@ -105,14 +105,18 @@ export async function resolveHitlRequest(input: {
 }
 
 export async function getHitlRequest(id: string): Promise<HitlRequestRecord | null> {
-	const [row] = await db.select().from(aiHitlRequests).where(eq(aiHitlRequests.id, id)).limit(1);
+	const [row] = await getDb()
+		.select()
+		.from(aiHitlRequests)
+		.where(eq(aiHitlRequests.id, id))
+		.limit(1);
 	return row ? toRecord(row) : null;
 }
 
 export async function getOpenHitlForProposal(
 	proposalId: string,
 ): Promise<HitlRequestRecord | null> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(aiHitlRequests)
 		.where(
@@ -123,7 +127,7 @@ export async function getOpenHitlForProposal(
 }
 
 export async function getOpenHitlForSession(sessionId: string): Promise<HitlRequestRecord | null> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(aiHitlRequests)
 		.where(
@@ -136,7 +140,7 @@ export async function getOpenHitlForSession(sessionId: string): Promise<HitlRequ
 
 export async function listOpenHitlForSessions(sessionIds: string[]): Promise<HitlRequestRecord[]> {
 	if (sessionIds.length === 0) return [];
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(aiHitlRequests)
 		.where(
@@ -150,7 +154,7 @@ export async function listOpenHitlForSessions(sessionIds: string[]): Promise<Hit
 
 /** List open HITL across all sessions — used by the Phase 3 inbox. */
 export async function listAllOpenHitl(limit = 100): Promise<HitlRequestRecord[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(aiHitlRequests)
 		.where(eq(aiHitlRequests.status, "awaiting_reply"))
@@ -162,7 +166,7 @@ export async function listAllOpenHitl(limit = 100): Promise<HitlRequestRecord[]>
 /** Time-out any awaiting_reply rows whose expires_at has passed. */
 export async function expireOverdueHitl(): Promise<number> {
 	const now = new Date().toISOString();
-	const rows = await db
+	const rows = await getDb()
 		.update(aiHitlRequests)
 		.set({ status: "timed_out", updatedAt: now })
 		.where(

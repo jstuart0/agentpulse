@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { aiHitlRequests, events, sessions, watcherProposals } = await import("../../db/schema.js");
 const { buildDigest, getDailyDigest, invalidateDigestCache } = await import("./digest-service.js");
 
@@ -10,10 +10,10 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(aiHitlRequests).execute();
-	await db.delete(watcherProposals).execute();
-	await db.delete(events).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(aiHitlRequests).execute();
+	await getDb().delete(watcherProposals).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(sessions).execute();
 	invalidateDigestCache();
 });
 
@@ -23,7 +23,7 @@ async function mkSession(
 	status: string,
 	lastActivity: string,
 ) {
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId,
@@ -66,7 +66,7 @@ describe("digest-service", () => {
 		const now = new Date();
 		const recent = new Date(now.getTime() - 60_000).toISOString();
 		await mkSession("s1", "/proj", "active", recent);
-		await db
+		await getDb()
 			.insert(events)
 			.values({
 				sessionId: "s1",

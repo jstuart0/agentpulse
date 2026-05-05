@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import type { AgentType, LaunchMode, SessionTemplateInput } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { sessions, supervisors } from "../../db/schema.js";
 
 /**
@@ -48,7 +48,7 @@ export async function recommendLaunch(input: RecommenderInput): Promise<Recommen
 	// completed recently? That is the strongest signal we have.
 	const cwd = input.template.cwd;
 	const priorAtCwd = cwd
-		? await db
+		? await getDb()
 				.select()
 				.from(sessions)
 				.where(eq(sessions.cwd, cwd))
@@ -102,7 +102,7 @@ export async function recommendLaunch(input: RecommenderInput): Promise<Recommen
 	// 2. Supervisor capability check. Prefer a connected supervisor that
 	// claims the requested agent. The launch validator will re-resolve
 	// authoritatively — we just surface a suggestion.
-	const live = await db.select().from(supervisors).where(eq(supervisors.status, "connected"));
+	const live = await getDb().select().from(supervisors).where(eq(supervisors.status, "connected"));
 	let suggested: (typeof live)[number] | null = null;
 	if (input.preferredSupervisorId) {
 		suggested = live.find((s) => s.id === input.preferredSupervisorId) ?? null;

@@ -1,4 +1,4 @@
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { projects } from "../../db/schema.js";
 
 // In-process cache. Single-Bun-process assumption is fine for the
@@ -27,7 +27,7 @@ export async function bumpVersionAndReload(): Promise<void> {
 }
 
 async function reloadCache(): Promise<void> {
-	const rows = await db
+	const rows = await getDb()
 		.select({ id: projects.id, name: projects.name, cwd: projects.cwd })
 		.from(projects);
 	cached = rows;

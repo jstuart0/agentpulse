@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import "./ai/__test_db.js";
 
-const { db, initializeDatabase } = await import("../db/client.js");
+const { getDb, initializeDatabase } = await import("../db/client.js");
 const {
 	events,
 	launchRequests,
@@ -23,21 +23,21 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(events).execute();
-	await db.delete(managedSessions).execute();
-	await db.delete(launchRequests).execute();
-	await db.delete(supervisors).execute();
-	await db.delete(watcherConfigs).execute();
-	await db.delete(llmProviders).execute();
-	await db.delete(settings).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(managedSessions).execute();
+	await getDb().delete(launchRequests).execute();
+	await getDb().delete(supervisors).execute();
+	await getDb().delete(watcherConfigs).execute();
+	await getDb().delete(llmProviders).execute();
+	await getDb().delete(settings).execute();
+	await getDb().delete(sessions).execute();
 	// Raw inserts below bypass `upsertSetting`'s post-write hook, so the AI
 	// flag cache from a prior test would otherwise bleed into this one.
 	invalidateAiFlagsCache();
 });
 
 async function mkSession(sessionId: string, metadata: Record<string, unknown> = {}) {
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId,
@@ -55,7 +55,7 @@ async function mkLaunchRequest(
 	overrides: Record<string, unknown> = {},
 ): Promise<string> {
 	const id = crypto.randomUUID();
-	await db
+	await getDb()
 		.insert(launchRequests)
 		.values({
 			id,
@@ -71,7 +71,7 @@ async function mkLaunchRequest(
 }
 
 async function readSession(sessionId: string) {
-	const rows = await db.select().from(sessions).execute();
+	const rows = await getDb().select().from(sessions).execute();
 	return rows.find((r) => r.sessionId === sessionId);
 }
 
@@ -143,11 +143,11 @@ describe("associateObservedSession provenance copy", () => {
 describe("associateObservedSession AI auto-watcher", () => {
 	async function enableAiAndAddProvider() {
 		const now = new Date().toISOString();
-		await db
+		await getDb()
 			.insert(settings)
 			.values({ key: AI_RUNTIME_ENABLED_KEY, value: true, updatedAt: now })
 			.execute();
-		await db
+		await getDb()
 			.insert(llmProviders)
 			.values({
 				id: crypto.randomUUID(),
@@ -193,7 +193,7 @@ describe("associateObservedSession AI auto-watcher", () => {
 describe("associateObservedSession desired-display-name rename", () => {
 	test("rewrites auto-generated displayName to the desired one", async () => {
 		await mkSession("s-rename");
-		await db
+		await getDb()
 			.update(sessions)
 			.set({ displayName: "eager-fox" })
 			.where(eq(sessions.sessionId, "s-rename"))
@@ -208,7 +208,7 @@ describe("associateObservedSession desired-display-name rename", () => {
 
 	test("does NOT rewrite when displayName is no longer adjective-noun shape", async () => {
 		await mkSession("s-manual");
-		await db
+		await getDb()
 			.update(sessions)
 			.set({ displayName: "my-feature-work" })
 			.where(eq(sessions.sessionId, "s-manual"))
@@ -223,7 +223,7 @@ describe("associateObservedSession desired-display-name rename", () => {
 
 	test("does NOT rewrite when launch_request has no desiredDisplayName", async () => {
 		await mkSession("s-nopref");
-		await db
+		await getDb()
 			.update(sessions)
 			.set({ displayName: "eager-fox" })
 			.where(eq(sessions.sessionId, "s-nopref"))
@@ -238,7 +238,7 @@ describe("associateObservedSession desired-display-name rename", () => {
 
 	test("idempotent: a second associate call after rename is a no-op", async () => {
 		await mkSession("s-twice");
-		await db
+		await getDb()
 			.update(sessions)
 			.set({ displayName: "eager-fox" })
 			.where(eq(sessions.sessionId, "s-twice"))

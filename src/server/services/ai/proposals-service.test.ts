@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { aiHitlRequests, sessions, watcherProposals } = await import("../../db/schema.js");
 const {
 	cancelOpenHitl,
@@ -18,12 +18,12 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(aiHitlRequests).execute();
-	await db.delete(watcherProposals).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(aiHitlRequests).execute();
+	await getDb().delete(watcherProposals).execute();
+	await getDb().delete(sessions).execute();
 	// Slice DB-1: cascade FKs require parent sessions for every child row.
 	for (const id of ["s1", "s2"]) {
-		await db
+		await getDb()
 			.insert(sessions)
 			.values({ sessionId: id, agentType: "claude_code" })
 			.onConflictDoNothing();

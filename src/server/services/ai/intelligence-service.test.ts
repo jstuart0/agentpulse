@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
-const { db, sqlite } = await import("../../db/client.js");
+const { getDb, getSqlite } = await import("../../db/client.js");
 const { initializeDatabase } = await import("../../db/client.js");
 const { aiHitlRequests, events, managedSessions, sessions, supervisors, watcherProposals } =
 	await import("../../db/schema.js");
@@ -15,16 +15,16 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(aiHitlRequests).execute();
-	await db.delete(watcherProposals).execute();
-	await db.delete(managedSessions).execute();
-	await db.delete(supervisors).execute();
-	await db.delete(events).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(aiHitlRequests).execute();
+	await getDb().delete(watcherProposals).execute();
+	await getDb().delete(managedSessions).execute();
+	await getDb().delete(supervisors).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(sessions).execute();
 });
 
 async function mkSession(sessionId: string, overrides: Record<string, unknown> = {}) {
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId,
@@ -43,7 +43,7 @@ async function mkEvent(
 	overrides: Record<string, unknown> = {},
 	createdAt = "2026-04-20 00:00:00",
 ) {
-	await db
+	await getDb()
 		.insert(events)
 		.values({
 			sessionId,
@@ -60,7 +60,7 @@ async function mkEvent(
 }
 
 async function mkSupervisor(id: string, status: "connected" | "disconnected") {
-	await db
+	await getDb()
 		.insert(supervisors)
 		.values({
 			id,
@@ -74,7 +74,7 @@ async function mkSupervisor(id: string, status: "connected" | "disconnected") {
 }
 
 async function mkManaged(sessionId: string, supervisorId: string) {
-	await db
+	await getDb()
 		.insert(managedSessions)
 		.values({
 			sessionId,
@@ -171,34 +171,42 @@ describe("intelligence-service.intelligenceForSessions", () => {
 			await mkEvent(id, { category: "assistant_message", content: "hello" });
 		}
 
-		// Spy on db.select and sqlite.prepare to count read paths.
-		// db.select is invoked for: sessions inArray + managedSessions left-join.
-		// sqlite.prepare is invoked for: window-function recent events.
-		// listOpenHitlForSessions also goes through db.select.
-		const origDbSelect = db.select.bind(db) as typeof db.select;
-		const origPrepare = sqlite.prepare.bind(sqlite) as typeof sqlite.prepare;
+		// Spy on getDb().select and getSqlite().prepare to count read paths.
+		// getDb().select is invoked for: sessions inArray + managedSessions left-join.
+		// getSqlite().prepare is invoked for: window-function recent events.
+		// listOpenHitlForSessions also goes through getDb().select.
+		const dbInstance = getDb();
+		const sqliteInstance = getSqlite();
+		const origDbSelect = dbInstance.select.bind(dbInstance) as typeof dbInstance.select;
+		const origPrepare = sqliteInstance.prepare.bind(
+			sqliteInstance,
+		) as typeof sqliteInstance.prepare;
 
 		let dbSelectCalls = 0;
 		let preparedReads = 0;
 
-		(db as unknown as { select: typeof db.select }).select = ((...args: unknown[]) => {
+		(dbInstance as unknown as { select: typeof dbInstance.select }).select = ((
+			...args: unknown[]
+		) => {
 			dbSelectCalls++;
 			// biome-ignore lint/suspicious/noExplicitAny: spy passthrough
 			return (origDbSelect as any)(...args);
-		}) as typeof db.select;
+		}) as typeof dbInstance.select;
 
-		(sqlite as unknown as { prepare: typeof sqlite.prepare }).prepare = ((sql: string) => {
-			// Drizzle's db.select also goes through sqlite.prepare, so naive
+		(sqliteInstance as unknown as { prepare: typeof sqliteInstance.prepare }).prepare = ((
+			sql: string,
+		) => {
+			// Drizzle's getDb().select also goes through getSqlite().prepare, so naive
 			// counting double-counts. Count only the raw window-function
 			// SELECT we issue directly here (events bulk fetch).
 			if (/ROW_NUMBER\s*\(/i.test(sql)) preparedReads++;
 			return origPrepare(sql);
-		}) as typeof sqlite.prepare;
+		}) as typeof sqliteInstance.prepare;
 
 		try {
 			const bulk = await intelligenceForSessions(ids, new Date("2026-04-20T00:30:00Z"));
 			expect(bulk.size).toBe(200);
-			// Expected: 3 db.select (sessions, managed+sup join, hitl) + 1 prepare (events).
+			// Expected: 3 getDb().select (sessions, managed+sup join, hitl) + 1 prepare (events).
 			const totalReads = dbSelectCalls + preparedReads;
 			// Expected breakdown:
 			//   dbSelectCalls = 3 (sessions inArray, managed+supervisor left
@@ -208,8 +216,9 @@ describe("intelligence-service.intelligenceForSessions", () => {
 			expect(preparedReads).toBe(1);
 			expect(totalReads).toBeLessThanOrEqual(4);
 		} finally {
-			(db as unknown as { select: typeof db.select }).select = origDbSelect;
-			(sqlite as unknown as { prepare: typeof sqlite.prepare }).prepare = origPrepare;
+			(dbInstance as unknown as { select: typeof dbInstance.select }).select = origDbSelect;
+			(sqliteInstance as unknown as { prepare: typeof sqliteInstance.prepare }).prepare =
+				origPrepare;
 		}
 	});
 

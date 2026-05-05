@@ -1,5 +1,5 @@
 import { eq, sql } from "drizzle-orm";
-import { db, sqlite } from "../../../db/client.js";
+import { getDb, getSqlite } from "../../../db/client.js";
 import { events, settings } from "../../../db/schema.js";
 import {
 	DEFAULT_EMBEDDING_MODEL,
@@ -67,7 +67,7 @@ let backfillState: BackfillProgress = {
 };
 
 async function readSetting(key: string): Promise<unknown> {
-	const [row] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+	const [row] = await getDb().select().from(settings).where(eq(settings.key, key)).limit(1);
 	return row?.value ?? null;
 }
 
@@ -151,7 +151,7 @@ export async function embedEvent(eventId: number): Promise<void> {
 	const adapter = await resolveEmbeddingAdapter();
 	if (!adapter) return;
 
-	const [row] = await db
+	const [row] = await getDb()
 		.select({
 			id: events.id,
 			eventType: events.eventType,
@@ -170,7 +170,7 @@ export async function embedEvent(eventId: number): Promise<void> {
 
 	try {
 		const vector = await adapter.embed(text);
-		const stmt = sqlite.prepare(
+		const stmt = getSqlite().prepare(
 			"INSERT INTO event_embeddings (event_id, model, dim, vector, created_at) " +
 				"VALUES (?, ?, ?, ?, datetime('now')) " +
 				"ON CONFLICT(event_id) DO UPDATE SET model = excluded.model, dim = excluded.dim, " +
@@ -188,7 +188,7 @@ export async function embedEvent(eventId: number): Promise<void> {
  * compute (sqlite COUNT scans index pages, not data).
  */
 export async function getBackfillProgress(): Promise<BackfillProgress> {
-	const totalRow = sqlite
+	const totalRow = getSqlite()
 		.prepare(
 			`SELECT COUNT(*) AS n FROM events WHERE event_type IN (${EMBEDDED_EVENT_TYPES.map(() => "?").join(",")})`,
 		)
@@ -197,7 +197,7 @@ export async function getBackfillProgress(): Promise<BackfillProgress> {
 	const model = adapter?.model ?? null;
 	let embedded = 0;
 	if (model) {
-		const r = sqlite
+		const r = getSqlite()
 			.prepare("SELECT COUNT(*) AS n FROM event_embeddings WHERE model = ?")
 			.get(model) as { n: number };
 		embedded = r.n;
@@ -247,7 +247,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 
 	try {
 		const placeholders = EMBEDDED_EVENT_TYPES.map(() => "?").join(",");
-		const totalRow = sqlite
+		const totalRow = getSqlite()
 			.prepare(`SELECT COUNT(*) AS n FROM events WHERE event_type IN (${placeholders})`)
 			.get(...EMBEDDED_EVENT_TYPES) as { n: number };
 		backfillState.total = totalRow.n;
@@ -258,7 +258,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 		const batchSize = 32;
 		let processed = 0;
 		while (true) {
-			const batch = sqlite
+			const batch = getSqlite()
 				.prepare(
 					`SELECT e.id, e.event_type AS eventType, e.content, e.raw_payload AS rawPayload
 					 FROM events e
@@ -283,7 +283,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 			// burned 22 events × N pods diagnosing exactly this). dim=0 +
 			// empty buffer is silently filtered by the cosine query
 			// (which requires dim = adapter.dim).
-			const skipMarker = sqlite.prepare(
+			const skipMarker = getSqlite().prepare(
 				"INSERT OR IGNORE INTO event_embeddings (event_id, model, dim, vector, created_at) " +
 					"VALUES (?, ?, 0, X'', datetime('now'))",
 			);
@@ -318,13 +318,13 @@ export async function runBackfill(): Promise<BackfillProgress> {
 					continue;
 				}
 
-				const insert = sqlite.prepare(
+				const insert = getSqlite().prepare(
 					"INSERT INTO event_embeddings (event_id, model, dim, vector, created_at) " +
 						"VALUES (?, ?, ?, ?, datetime('now')) " +
 						"ON CONFLICT(event_id) DO UPDATE SET model = excluded.model, dim = excluded.dim, " +
 						"vector = excluded.vector, created_at = excluded.created_at",
 				);
-				const txn = sqlite.transaction((rows: Array<{ id: number; vec: Float32Array }>) => {
+				const txn = getSqlite().transaction((rows: Array<{ id: number; vec: Float32Array }>) => {
 					for (const r of rows) {
 						insert.run(r.id, adapter.model, adapter.dim, vectorToBuffer(r.vec));
 					}
@@ -380,11 +380,11 @@ export async function startBackfillIfNeeded(): Promise<void> {
 }
 
 /**
- * Read an event's vector back from sqlite. Returns null if missing or
+ * Read an event's vector back from getSqlite(). Returns null if missing or
  * the dim doesn't match the active model (stale row from a model swap).
  */
 export function loadEventVector(eventId: number, expectedModel: string): Float32Array | null {
-	const row = sqlite
+	const row = getSqlite()
 		.prepare("SELECT vector, model, dim FROM event_embeddings WHERE event_id = ? AND model = ?")
 		.get(eventId, expectedModel) as { vector: Buffer; model: string; dim: number } | undefined;
 	if (!row) return null;

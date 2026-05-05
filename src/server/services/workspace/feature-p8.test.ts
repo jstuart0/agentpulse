@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { eq } from "drizzle-orm";
 import "../../services/ai/__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { settings } = await import("../../db/schema.js");
 const { ProtectedSettingError } = await import("../settings-service.js");
 const {
@@ -20,17 +20,17 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(settings).execute();
+	await getDb().delete(settings).execute();
 });
 
 afterAll(async () => {
-	await db.delete(settings).execute();
+	await getDb().delete(settings).execute();
 });
 
 describe("CH-M1 — workspace settings use upsertSetting with allowProtected:true", () => {
 	test("setWorkspaceSettings persists workspace.default_root", async () => {
 		await setWorkspaceSettings({ defaultRoot: "/tmp/workspace" });
-		const [found] = await db
+		const [found] = await getDb()
 			.select()
 			.from(settings)
 			.where(eq(settings.key, WORKSPACE_DEFAULT_ROOT_KEY));
@@ -61,7 +61,7 @@ describe("CH-M1 — workspace settings use upsertSetting with allowProtected:tru
 		});
 		expect(result).not.toBeNull();
 
-		const all = await db.select().from(settings);
+		const all = await getDb().select().from(settings);
 		const keyMap = new Map(all.map((r) => [r.key, r.value]));
 		expect(keyMap.get(WORKSPACE_DEFAULT_ROOT_KEY)).toBe("~/work");
 		expect(keyMap.get(WORKSPACE_TEMPLATE_CLAUDE_MD_KEY)).toBe("hello");

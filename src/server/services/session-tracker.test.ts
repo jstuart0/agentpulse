@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
 
-const { db, initializeDatabase, sqlite } = await import("../db/client.js");
+const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
 const { events, managedSessions, sessions, supervisors } = await import("../db/schema.js");
 const { renameSession, updateStaleSessions } = await import("./session-tracker.js");
 
@@ -10,10 +10,10 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(events).execute();
-	await db.delete(managedSessions).execute();
-	await db.delete(supervisors).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(managedSessions).execute();
+	await getDb().delete(supervisors).execute();
+	await getDb().delete(sessions).execute();
 });
 
 function isoAgo(ms: number): string {
@@ -21,7 +21,7 @@ function isoAgo(ms: number): string {
 }
 
 async function mkSession(sessionId: string, overrides: Record<string, unknown> = {}) {
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId,
@@ -36,7 +36,7 @@ async function mkSession(sessionId: string, overrides: Record<string, unknown> =
 }
 
 async function getSession(sessionId: string) {
-	const rows = await db.select().from(sessions).execute();
+	const rows = await getDb().select().from(sessions).execute();
 	return rows.find((r) => r.sessionId === sessionId);
 }
 
@@ -133,7 +133,7 @@ describe("updateStaleSessions lifecycle rules", () => {
 
 describe("renameSession", () => {
 	async function mkManaged(sessionId: string, overrides: Record<string, unknown> = {}) {
-		await db
+		await getDb()
 			.insert(managedSessions)
 			.values({
 				sessionId,
@@ -153,7 +153,7 @@ describe("renameSession", () => {
 		renameSession("solo", "  new-name  ");
 		const row = await getSession("solo");
 		expect(row?.displayName).toBe("new-name");
-		const managedRows = await db.select().from(managedSessions).execute();
+		const managedRows = await getDb().select().from(managedSessions).execute();
 		const forSolo = managedRows.find((m) => m.sessionId === "solo");
 		expect(forSolo).toBeUndefined();
 	});
@@ -162,7 +162,7 @@ describe("renameSession", () => {
 		await mkSession("paired", { displayName: "old-name" });
 		await mkManaged("paired", { providerSyncState: "synced", providerSyncError: "x" });
 
-		const before = await db.select().from(managedSessions).execute();
+		const before = await getDb().select().from(managedSessions).execute();
 		const beforeRow = before.find((m) => m.sessionId === "paired");
 		const beforeUpdatedAt = beforeRow?.updatedAt;
 
@@ -174,7 +174,7 @@ describe("renameSession", () => {
 		const session = await getSession("paired");
 		expect(session?.displayName).toBe("renamed");
 
-		const after = await db.select().from(managedSessions).execute();
+		const after = await getDb().select().from(managedSessions).execute();
 		const afterRow = after.find((m) => m.sessionId === "paired");
 		expect(afterRow?.desiredThreadTitle).toBe("renamed");
 		expect(afterRow?.providerSyncState).toBe("pending");
@@ -186,7 +186,7 @@ describe("renameSession", () => {
 		afterEach(() => {
 			// Drop the trigger between/after rollback tests so we don't
 			// leak state into other suites that share this DB.
-			sqlite.exec("DROP TRIGGER IF EXISTS test_block_rename_managed;");
+			getSqlite().exec("DROP TRIGGER IF EXISTS test_block_rename_managed;");
 		});
 
 		test("force second update to throw → sessions.displayName NOT updated (transaction rolled back)", async () => {
@@ -196,7 +196,7 @@ describe("renameSession", () => {
 			// Trigger that aborts UPDATE on the managed row for our marker
 			// session. This makes the sync transaction's second statement
 			// throw, which exercises the rollback path.
-			sqlite.exec(`
+			getSqlite().exec(`
 				CREATE TRIGGER test_block_rename_managed
 				BEFORE UPDATE ON managed_sessions
 				WHEN NEW.session_id = 'rb-1'
@@ -210,7 +210,7 @@ describe("renameSession", () => {
 			const row = await getSession("rb-1");
 			expect(row?.displayName).toBe("original");
 
-			const managed = await db.select().from(managedSessions).execute();
+			const managed = await getDb().select().from(managedSessions).execute();
 			const rb1 = managed.find((m) => m.sessionId === "rb-1");
 			expect(rb1?.desiredThreadTitle).toBe("old-title");
 			expect(rb1?.providerSyncState).toBe("synced");

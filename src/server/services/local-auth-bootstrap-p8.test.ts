@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import "../services/ai/__test_db.js";
 
 const { config } = await import("../config.js");
-const { db, initializeDatabase } = await import("../db/client.js");
+const { getDb, initializeDatabase } = await import("../db/client.js");
 const { users } = await import("../db/schema.js");
 const { ensureBootstrapAdmin } = await import("../services/local-auth-bootstrap.js");
 
@@ -12,7 +12,7 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(users).execute();
+	await getDb().delete(users).execute();
 	// Reset password so each test starts fresh.
 	config.localAdminPassword = process.env.AGENTPULSE_LOCAL_ADMIN_PASSWORD || "testpass";
 	config.localAdminUsername = process.env.AGENTPULSE_LOCAL_ADMIN_USERNAME || "testadmin";

@@ -64,17 +64,44 @@ function createDatabase() {
 	return { db: drizzle(sqlite, { schema }), sqlite };
 }
 
-const created = createDatabase();
-export const db = created.db;
+// ── Lazy DB initialization ────────────────────────────────────────────────────
+//
+// The singleton is initialised on first call to getDb() / getSqlite() rather
+// than at module load time. This makes the module side-effect-free, which:
+//
+//   1. Lets app.ts be imported in isolation for route-introspection / testing
+//      without opening the on-disk SQLite file.
+//   2. Lays cleaner ground for the Postgres backend epic — async constructors
+//      need an explicit init call, not import-time side effects.
+//
+// index.ts calls initializeDatabase() explicitly during boot before any
+// request can arrive, so the first-call cost is not in the hot path.
+//
+let _client: { db: ReturnType<typeof drizzle>; sqlite: Database } | null = null;
+
 /**
- * Raw bun:sqlite handle for callers that need lower-level access than
- * drizzle exposes (FTS5 MATCH queries, pragma reads, ad-hoc maintenance).
- * Share this rather than opening a second `new Database(...)` — a second
+ * Returns the shared Drizzle database instance, initialising it on first
+ * call. Callers must invoke this inside handler/service bodies, NOT at
+ * module scope (that would defeat lazy init).
+ */
+export function getDb() {
+	if (!_client) _client = createDatabase();
+	return _client.db;
+}
+
+/**
+ * Returns the raw bun:sqlite handle for callers that need lower-level access
+ * than Drizzle exposes (FTS5 MATCH queries, pragma reads, ad-hoc maintenance).
+ * Share this rather than opening a second `new Database(…)` — a second
  * connection fights the first one for the WAL snapshot and surfaces as
  * intermittent "no such table" / SQLITE_BUSY errors under load.
  */
-export const sqlite = created.sqlite;
-export type Db = typeof db;
+export function getSqlite() {
+	if (!_client) _client = createDatabase();
+	return _client.sqlite;
+}
+
+export type Db = ReturnType<typeof getDb>;
 
 /**
  * Initialize database schema. Operates on the shared bun:sqlite handle by
@@ -84,9 +111,15 @@ export type Db = typeof db;
  * IF NOT EXISTS, the migrations array is built from ALTER TABLE / CREATE
  * statements that the catch-and-continue loop tolerates as no-ops, and the
  * cascade-FK rebuild self-skips when the FK is already in place.
+ *
+ * This is the explicit eager-open caller used by index.ts boot. Calling it
+ * also ensures _client is populated before any handler fires.
  */
-export function initializeDatabase(handle: Database = sqlite) {
-	const sqlite = handle;
+export function initializeDatabase(handle?: Database) {
+	// Ensure the singleton exists so all subsequent getDb()/getSqlite() calls
+	// return the same connection that was just opened and configured.
+	if (!_client) _client = createDatabase();
+	const sqlite = handle ?? _client.sqlite;
 
 	sqlite.exec(`
 		CREATE TABLE IF NOT EXISTS sessions (

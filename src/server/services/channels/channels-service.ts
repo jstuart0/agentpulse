@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { aiHitlRequests, notificationChannels, watcherConfigs } from "../../db/schema.js";
 import { decryptSecret, encryptSecret } from "../ai/secrets.js";
 import type { NotificationChannelKind, NotificationChannelRecord } from "./types.js";
@@ -41,7 +41,7 @@ export async function createPendingChannel(input: {
 }): Promise<{ channel: NotificationChannelRecord; enrollmentCode: string }> {
 	const enrollmentCode = generateEnrollmentCode();
 	const now = new Date().toISOString();
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(notificationChannels)
 		.values({
 			userId: input.userId ?? "local",
@@ -65,7 +65,7 @@ function generateEnrollmentCode(): string {
 }
 
 export async function listChannels(userId = "local"): Promise<NotificationChannelRecord[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(notificationChannels)
 		.where(eq(notificationChannels.userId, userId))
@@ -74,7 +74,7 @@ export async function listChannels(userId = "local"): Promise<NotificationChanne
 }
 
 export async function getChannel(id: string): Promise<NotificationChannelRecord | null> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(notificationChannels)
 		.where(eq(notificationChannels.id, id))
@@ -87,7 +87,7 @@ export async function getChannel(id: string): Promise<NotificationChannelRecord 
  * Returns null for un-verified or un-credentialed channels.
  */
 export async function getChannelCredential(id: string): Promise<StoredTelegramCredential | null> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(notificationChannels)
 		.where(eq(notificationChannels.id, id))
@@ -107,7 +107,7 @@ export async function getChannelCredential(id: string): Promise<StoredTelegramCr
 export async function findPendingByEnrollmentCode(
 	code: string,
 ): Promise<NotificationChannelRecord | null> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(notificationChannels)
 		.where(isNull(notificationChannels.verifiedAt));
@@ -130,7 +130,7 @@ export async function completeEnrollment(input: {
 }): Promise<NotificationChannelRecord | null> {
 	const now = new Date().toISOString();
 	const credentialCiphertext = encryptSecret(JSON.stringify({ chatId: input.chatId }));
-	const [existing] = await db
+	const [existing] = await getDb()
 		.select()
 		.from(notificationChannels)
 		.where(eq(notificationChannels.id, input.channelId))
@@ -142,7 +142,7 @@ export async function completeEnrollment(input: {
 	} as Record<string, unknown>;
 	// Strip the enrollment code — single-use.
 	config.enrollmentCode = undefined;
-	await db
+	await getDb()
 		.update(notificationChannels)
 		.set({
 			credentialCiphertext,
@@ -163,14 +163,14 @@ export async function updateChannelConfig(
 	id: string,
 	patch: Record<string, unknown>,
 ): Promise<NotificationChannelRecord | null> {
-	const [existing] = await db
+	const [existing] = await getDb()
 		.select()
 		.from(notificationChannels)
 		.where(eq(notificationChannels.id, id))
 		.limit(1);
 	if (!existing) return null;
 	const merged = { ...(existing.config ?? {}), ...patch };
-	await db
+	await getDb()
 		.update(notificationChannels)
 		.set({ config: merged, updatedAt: new Date().toISOString() })
 		.where(eq(notificationChannels.id, id));
@@ -179,7 +179,7 @@ export async function updateChannelConfig(
 
 export async function deactivateChannel(id: string): Promise<boolean> {
 	const now = new Date().toISOString();
-	const rows = await db
+	const rows = await getDb()
 		.update(notificationChannels)
 		.set({ isActive: false, updatedAt: now })
 		.where(eq(notificationChannels.id, id))
@@ -188,7 +188,7 @@ export async function deactivateChannel(id: string): Promise<boolean> {
 }
 
 export async function deleteChannel(id: string): Promise<boolean> {
-	const rows = await db
+	const rows = await getDb()
 		.delete(notificationChannels)
 		.where(eq(notificationChannels.id, id))
 		.returning();
@@ -214,12 +214,12 @@ export interface ChannelStats {
  * how many HITL requests have flowed, and when the last one landed.
  */
 export async function getChannelStats(channelId: string): Promise<ChannelStats> {
-	const [assigned] = await db
+	const [assigned] = await getDb()
 		.select({ count: sql<number>`count(*)` })
 		.from(watcherConfigs)
 		.where(eq(watcherConfigs.channelId, channelId));
 
-	const hitlRows = await db
+	const hitlRows = await getDb()
 		.select({
 			status: aiHitlRequests.status,
 			createdAt: aiHitlRequests.createdAt,
@@ -247,7 +247,7 @@ export async function getChannelStats(channelId: string): Promise<ChannelStats> 
 export async function findActiveChannelByChatId(
 	chatId: string,
 ): Promise<NotificationChannelRecord | null> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(notificationChannels)
 		.where(and(eq(notificationChannels.kind, "telegram"), eq(notificationChannels.isActive, true)));

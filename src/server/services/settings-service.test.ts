@@ -3,7 +3,7 @@ import "./ai/__test_db.js";
 import type { ProtectedSettingError as ProtectedSettingErrorType } from "./settings-service.js";
 
 const { eq } = await import("drizzle-orm");
-const { db, initializeDatabase } = await import("../db/client.js");
+const { getDb, initializeDatabase } = await import("../db/client.js");
 const { settings } = await import("../db/schema.js");
 const { ProtectedSettingError, upsertSetting } = await import("./settings-service.js");
 
@@ -12,11 +12,11 @@ beforeAll(() => {
 });
 
 afterEach(async () => {
-	await db.delete(settings).execute();
+	await getDb().delete(settings).execute();
 });
 
 async function readSetting(key: string) {
-	const [row] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+	const [row] = await getDb().select().from(settings).where(eq(settings.key, key)).limit(1);
 	return row;
 }
 
@@ -31,7 +31,7 @@ describe("upsertSetting", () => {
 		row = await readSetting("theme");
 		expect(row?.value).toBe("light");
 
-		const allThemeRows = await db.select().from(settings).where(eq(settings.key, "theme"));
+		const allThemeRows = await getDb().select().from(settings).where(eq(settings.key, "theme"));
 		expect(allThemeRows.length).toBe(1);
 	});
 

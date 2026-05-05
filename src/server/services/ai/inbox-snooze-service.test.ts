@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { aiInboxSnoozes } = await import("../../db/schema.js");
 const { listActiveSnoozes, snoozeItem, unsnooze, unsnoozeTarget } = await import(
 	"./inbox-snooze-service.js"
@@ -12,7 +12,7 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(aiInboxSnoozes).execute();
+	await getDb().delete(aiInboxSnoozes).execute();
 });
 
 describe("inbox-snooze-service", () => {

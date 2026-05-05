@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { aiDailySpend, sessions } from "../../db/schema.js";
 
 function today(): string {
@@ -11,7 +11,7 @@ function today(): string {
 /** Get today's total spend for a user (cents). */
 export async function getTodaySpendCents(userId = "local"): Promise<number> {
 	const date = today();
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(aiDailySpend)
 		.where(and(eq(aiDailySpend.userId, userId), eq(aiDailySpend.date, date)))
@@ -31,7 +31,7 @@ export async function addSpendCents(
 	const date = today();
 	const now = new Date().toISOString();
 
-	await db
+	await getDb()
 		.insert(aiDailySpend)
 		.values({ userId, date, spendCents: cents, updatedAt: now })
 		.onConflictDoUpdate({
@@ -43,7 +43,7 @@ export async function addSpendCents(
 		});
 
 	// Track per-session running spend for UI.
-	await db
+	await getDb()
 		.update(sessions)
 		.set({ aiSpendCents: sql`${sessions.aiSpendCents} + ${cents}` })
 		.where(eq(sessions.sessionId, sessionId));
@@ -58,7 +58,7 @@ export async function addGlobalSpendCents(cents: number, userId = "local"): Prom
 	if (cents <= 0) return;
 	const date = today();
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(aiDailySpend)
 		.values({ userId, date, spendCents: cents, updatedAt: now })
 		.onConflictDoUpdate({

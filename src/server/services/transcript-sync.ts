@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { and, eq, isNotNull, ne } from "drizzle-orm";
 import type { AgentType, Session } from "../../shared/types.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { sessions } from "../db/schema.js";
 import { type NormalizedEvent, createAssistantTranscriptEvent } from "./event-normalizer.js";
 import { insertNormalizedEvents } from "./event-processor.js";
@@ -142,7 +142,7 @@ async function syncTranscriptForSession(session: SessionWithMetadata): Promise<v
 }
 
 async function persistCursor(session: SessionWithMetadata, offset: number): Promise<void> {
-	await db
+	await getDb()
 		.update(sessions)
 		.set({
 			metadata: {
@@ -154,7 +154,7 @@ async function persistCursor(session: SessionWithMetadata, offset: number): Prom
 }
 
 async function loadActiveSessionIds(): Promise<string[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select({ sessionId: sessions.sessionId })
 		.from(sessions)
 		.where(
@@ -172,7 +172,7 @@ async function loadActiveSessionIds(): Promise<string[]> {
 
 async function loadSessionsByIds(ids: string[]): Promise<SessionWithMetadata[]> {
 	if (ids.length === 0) return [];
-	const rows = await db
+	const rows = await getDb()
 		.select({
 			sessionId: sessions.sessionId,
 			agentType: sessions.agentType,

@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { events, sessions } = await import("../../db/schema.js");
 const { formatSearchResults, handleNlSearch } = await import("./ask-search-handler.js");
 import type { SearchHit } from "../search/types.js";
@@ -11,8 +11,8 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(events).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(sessions).execute();
 });
 
 async function insertSession(input: {
@@ -23,7 +23,7 @@ async function insertSession(input: {
 	cwd?: string;
 }) {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId: input.id,

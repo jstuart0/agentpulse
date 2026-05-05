@@ -1,4 +1,4 @@
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { settings } from "../db/schema.js";
 import { invalidateAiFlagsCache } from "./ai/feature.js";
 
@@ -62,7 +62,7 @@ export async function upsertSetting(
 		throw new ProtectedSettingError(key);
 	}
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(settings)
 		.values({ key, value, updatedAt: now })
 		.onConflictDoUpdate({

@@ -2,7 +2,7 @@ import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { events, sessions } from "../db/schema.js";
 import {
 	listControlActionsForSession,
@@ -43,7 +43,7 @@ sessionsRouter.get("/sessions/:sessionId", async (c) => {
 	}
 
 	// Get timeline events for the detail page; the UI handles mode filtering.
-	const sessionEvents = await db
+	const sessionEvents = await getDb()
 		.select()
 		.from(events)
 		.where(eq(events.sessionId, sessionId))
@@ -61,7 +61,7 @@ sessionsRouter.get("/sessions/:sessionId/timeline", async (c) => {
 	const limit = Number(c.req.query("limit") || 50);
 	const offset = Number(c.req.query("offset") || 0);
 
-	const sessionEvents = await db
+	const sessionEvents = await getDb()
 		.select()
 		.from(events)
 		.where(eq(events.sessionId, sessionId))
@@ -77,7 +77,7 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { notes } = await c.req.json<{ notes: string }>();
 
-	await db
+	await getDb()
 		.update(sessions)
 		.set({ notes: notes ?? "" })
 		.where(eq(sessions.sessionId, sessionId));
@@ -149,7 +149,7 @@ sessionsRouter.put("/sessions/:sessionId/pin", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { pinned } = await c.req.json<{ pinned: boolean }>();
 
-	await db.update(sessions).set({ isPinned: pinned }).where(eq(sessions.sessionId, sessionId));
+	await getDb().update(sessions).set({ isPinned: pinned }).where(eq(sessions.sessionId, sessionId));
 
 	return c.json({ ok: true });
 });
@@ -172,7 +172,7 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 	}
 
 	// Verify the target event exists and belongs to this session.
-	const [target] = await db
+	const [target] = await getDb()
 		.select()
 		.from(events)
 		.where(and(eq(events.id, eventId), eq(events.sessionId, sessionId)))
@@ -183,7 +183,7 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 	}
 
 	// Events at or before the target (includes target itself), newest first.
-	const before = await db
+	const before = await getDb()
 		.select()
 		.from(events)
 		.where(and(eq(events.sessionId, sessionId), lte(events.id, eventId)))
@@ -191,7 +191,7 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 		.limit(around + 1);
 
 	// Events strictly after the target, oldest first.
-	const after = await db
+	const after = await getDb()
 		.select()
 		.from(events)
 		.where(and(eq(events.sessionId, sessionId), gt(events.id, eventId)))
@@ -216,7 +216,7 @@ async function computeChecksum(content: string): Promise<string> {
 // GET /api/v1/sessions/:sessionId/claude-md - Get CLAUDE.md content from DB
 sessionsRouter.get("/sessions/:sessionId/claude-md", async (c) => {
 	const sessionId = c.req.param("sessionId");
-	const [session] = await db
+	const [session] = await getDb()
 		.select({
 			claudeMdContent: sessions.claudeMdContent,
 			claudeMdPath: sessions.claudeMdPath,
@@ -251,7 +251,7 @@ sessionsRouter.put("/sessions/:sessionId/claude-md", async (c) => {
 	};
 	if (path) updates.claudeMdPath = path;
 
-	await db.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+	await getDb().update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
 
 	return c.json({ ok: true, checksum });
 });
@@ -263,7 +263,10 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 	// Default to archiving (true) when the caller omits the field.
 	const archived = (body as { archived?: boolean }).archived !== false;
 
-	await db.update(sessions).set({ isArchived: archived }).where(eq(sessions.sessionId, sessionId));
+	await getDb()
+		.update(sessions)
+		.set({ isArchived: archived })
+		.where(eq(sessions.sessionId, sessionId));
 
 	return c.json({ ok: true });
 });
@@ -276,7 +279,7 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 // `delete(sessions)` is sufficient — SQLite drops the children atomically
 // in the same transaction.
 //
-// We wrap the deletes in `db.transaction(...)` so any failure (FK
+// We wrap the deletes in `getDb().transaction(...)` so any failure (FK
 // violation, etc.) leaves the row in place rather than partially deleted.
 // IMPORTANT: drizzle's bun-sqlite transaction wraps a SYNC native
 // transaction; passing an async callback silently disables rollback
@@ -290,7 +293,7 @@ sessionsRouter.delete("/sessions/:sessionId", async (c) => {
 	// A-M1: await the transaction call so a future Drizzle adapter upgrade
 	// (which may return a Promise) cannot silently disable rollback. Today
 	// bun-sqlite's transaction() is synchronous and the await is a no-op.
-	await db.transaction((tx) => {
+	await getDb().transaction((tx) => {
 		// Cascade does this; explicit for older DBs that haven't yet rebuilt FKs.
 		tx.delete(events).where(eq(events.sessionId, sessionId)).run();
 		tx.delete(sessions).where(eq(sessions.sessionId, sessionId)).run();

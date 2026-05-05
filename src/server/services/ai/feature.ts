@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { config } from "../../config.js";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { settings } from "../../db/schema.js";
 import { TtlCache } from "../util/ttl-cache.js";
 
@@ -30,7 +30,7 @@ const AI_FLAGS_TTL_MS = 5_000;
 const aiFlagsCache = new TtlCache<string, unknown>(AI_FLAGS_TTL_MS);
 
 async function readSettingValue(key: string): Promise<unknown> {
-	const [row] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+	const [row] = await getDb().select().from(settings).where(eq(settings.key, key)).limit(1);
 	return row?.value;
 }
 

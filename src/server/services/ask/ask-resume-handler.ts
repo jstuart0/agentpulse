@@ -5,7 +5,7 @@ import type {
 	LaunchMode,
 	SessionTemplateInput,
 } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { sessions } from "../../db/schema.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
@@ -56,7 +56,7 @@ async function resolveSessionForResume(
 	| { ok: false; reason: "ambiguous"; replyText: string }
 > {
 	if (hint === null) {
-		const [row] = await db
+		const [row] = await getDb()
 			.select({
 				sessionId: sessions.sessionId,
 				displayName: sessions.displayName,
@@ -113,7 +113,7 @@ async function resolveSessionForResume(
 	}
 
 	const best = unique[0];
-	const [row] = await db
+	const [row] = await getDb()
 		.select({
 			sessionId: sessions.sessionId,
 			displayName: sessions.displayName,
@@ -163,7 +163,7 @@ export async function handleResumeIntent(
 
 	// Pre-check existence: re-fetch to confirm the row is still present
 	// (guards against deletion between resolution and payload creation).
-	const [stillExists] = await db
+	const [stillExists] = await getDb()
 		.select({ sessionId: sessions.sessionId })
 		.from(sessions)
 		.where(eq(sessions.sessionId, parentSession.sessionId))

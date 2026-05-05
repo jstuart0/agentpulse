@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { aiWatcherRuns } from "../../db/schema.js";
 
 export type WatcherRunStatus =
@@ -85,7 +85,7 @@ export async function enqueueRun(input: {
 	const existing = await getOpenRunForSession(input.sessionId);
 	if (existing) return existing;
 	const now = new Date().toISOString();
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(aiWatcherRuns)
 		.values({
 			sessionId: input.sessionId,
@@ -105,7 +105,7 @@ export async function enqueueRun(input: {
 
 /** Find the single open (non-terminal) run for a session, if any. */
 export async function getOpenRunForSession(sessionId: string): Promise<WatcherRunRecord | null> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(aiWatcherRuns)
 		.where(
@@ -134,7 +134,7 @@ export async function claimNextRun(input: {
 	const nowIso = now.toISOString();
 	const leaseExpires = new Date(now.getTime() + input.leaseDurationMs).toISOString();
 
-	const [candidate] = await db
+	const [candidate] = await getDb()
 		.select()
 		.from(aiWatcherRuns)
 		.where(eq(aiWatcherRuns.status, "queued"))
@@ -142,7 +142,7 @@ export async function claimNextRun(input: {
 		.limit(1);
 	if (!candidate) return null;
 
-	const updated = await db
+	const updated = await getDb()
 		.update(aiWatcherRuns)
 		.set({
 			status: "claimed",
@@ -159,7 +159,7 @@ export async function claimNextRun(input: {
 
 export async function markRunning(id: string): Promise<void> {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.update(aiWatcherRuns)
 		.set({ status: "running", updatedAt: now })
 		.where(eq(aiWatcherRuns.id, id));
@@ -170,7 +170,7 @@ export async function markSucceeded(input: {
 	proposalId?: string | null;
 }): Promise<void> {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.update(aiWatcherRuns)
 		.set({
 			status: "succeeded",
@@ -188,7 +188,7 @@ export async function markFailed(input: {
 	errorSubType: string;
 }): Promise<void> {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.update(aiWatcherRuns)
 		.set({
 			status: "failed",
@@ -203,7 +203,7 @@ export async function markFailed(input: {
 
 export async function markCancelled(id: string, reason?: string): Promise<void> {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.update(aiWatcherRuns)
 		.set({
 			status: "cancelled",
@@ -231,7 +231,7 @@ export async function reclaimExpiredLeases(options?: {
 	const maxAttempts = options?.maxAttempts ?? 3;
 
 	// First, give up on anything over the attempt ceiling.
-	const failedRows = await db
+	const failedRows = await getDb()
 		.update(aiWatcherRuns)
 		.set({
 			status: "expired",
@@ -252,7 +252,7 @@ export async function reclaimExpiredLeases(options?: {
 		.returning();
 
 	// Then, re-queue anything still within attempt budget.
-	const requeuedRows = await db
+	const requeuedRows = await getDb()
 		.update(aiWatcherRuns)
 		.set({
 			status: "queued",
@@ -281,7 +281,7 @@ export async function heartbeatRun(input: {
 }): Promise<boolean> {
 	const now = input.now ?? new Date();
 	const leaseExpires = new Date(now.getTime() + input.leaseDurationMs).toISOString();
-	const updated = await db
+	const updated = await getDb()
 		.update(aiWatcherRuns)
 		.set({ leaseExpiresAt: leaseExpires, updatedAt: now.toISOString() })
 		.where(and(eq(aiWatcherRuns.id, input.id), eq(aiWatcherRuns.leaseOwner, input.leaseOwner)))
@@ -293,7 +293,7 @@ export async function listRecentRunsForSession(
 	sessionId: string,
 	limit = 20,
 ): Promise<WatcherRunRecord[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(aiWatcherRuns)
 		.where(eq(aiWatcherRuns.sessionId, sessionId))
@@ -304,7 +304,7 @@ export async function listRecentRunsForSession(
 
 /** Snapshot of queue depth per status — used by the Phase 8 diagnostics endpoint. */
 export async function queueSnapshot(): Promise<Record<WatcherRunStatus, number>> {
-	const rows = await db
+	const rows = await getDb()
 		.select({ status: aiWatcherRuns.status, count: sql<number>`count(*)` })
 		.from(aiWatcherRuns)
 		.groupBy(aiWatcherRuns.status);

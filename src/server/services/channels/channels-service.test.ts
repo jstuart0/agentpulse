@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { notificationChannels } = await import("../../db/schema.js");
 const {
 	completeEnrollment,
@@ -19,7 +19,7 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(notificationChannels).execute();
+	await getDb().delete(notificationChannels).execute();
 });
 
 describe("channels-service", () => {

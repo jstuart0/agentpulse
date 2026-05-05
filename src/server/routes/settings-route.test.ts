@@ -3,14 +3,26 @@ import "../services/ai/__test_db.js";
 
 const { eq } = await import("drizzle-orm");
 const { config } = await import("../config.js");
-const { db, initializeDatabase } = await import("../db/client.js");
+const { getDb, initializeDatabase } = await import("../db/client.js");
 const { settings } = await import("../db/schema.js");
 const { settingsRouter } = await import("./settings.js");
-const { aiRouter } = await import("./ai.js");
+const { requireAuth } = await import("../auth/middleware.js");
+const aiStatusRouter = (await import("./ai-status.js")).default;
+const aiProvidersRouter = (await import("./ai-providers.js")).default;
+const aiWatcherRouter = (await import("./ai-watcher.js")).default;
+const aiInboxRouter = (await import("./ai-inbox.js")).default;
+const aiIntelligenceRouter = (await import("./ai-intelligence.js")).default;
 const { Hono } = await import("hono");
 
 // Mount the routers behind /api/v1 the same way the real server does so the
-// path matchers behave identically.
+// path matchers behave identically (single auth gate wrapping all AI sub-routers).
+const aiRouter = new Hono();
+aiRouter.use("*", requireAuth());
+aiRouter.route("/", aiStatusRouter);
+aiRouter.route("/", aiProvidersRouter);
+aiRouter.route("/", aiWatcherRouter);
+aiRouter.route("/", aiInboxRouter);
+aiRouter.route("/", aiIntelligenceRouter);
 const app = new Hono().route("/api/v1", settingsRouter).route("/api/v1", aiRouter);
 
 const originalDisableAuth = config.disableAuth;
@@ -26,7 +38,7 @@ afterAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(settings).execute();
+	await getDb().delete(settings).execute();
 });
 
 async function putSetting(body: unknown) {
@@ -38,7 +50,7 @@ async function putSetting(body: unknown) {
 }
 
 async function readSetting(key: string) {
-	const [row] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+	const [row] = await getDb().select().from(settings).where(eq(settings.key, key)).limit(1);
 	return row;
 }
 

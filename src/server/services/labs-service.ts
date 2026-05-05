@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { KNOWN_LABS_FLAGS, type LabsFlag, type LabsFlags } from "../../shared/types.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { settings } from "../db/schema.js";
 
 // Re-export so existing call sites that imported LabsFlag/LabsFlags from
@@ -112,7 +112,7 @@ export function defaultLabsFlags(): LabsFlags {
 }
 
 export async function getLabsFlags(): Promise<LabsFlags> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(settings)
 		.where(eq(settings.key, LABS_SETTINGS_KEY))
@@ -134,7 +134,7 @@ export async function setLabsFlag(flag: LabsFlag, enabled: boolean): Promise<Lab
 	const current = await getLabsFlags();
 	const next = { ...current, [flag]: enabled };
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(settings)
 		.values({ key: LABS_SETTINGS_KEY, value: next, updatedAt: now })
 		.onConflictDoUpdate({

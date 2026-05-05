@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { createApiKey } from "../auth/api-key.js";
 import { requireAuth } from "../auth/middleware.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { apiKeys, settings } from "../db/schema.js";
 import { ProtectedSettingError, upsertSetting } from "../services/settings-service.js";
 import { getTelemetryDiagnostics, sendTelemetryNow } from "../services/telemetry.js";
@@ -17,7 +17,7 @@ settingsRouter.use("*", requireAuth());
 
 // GET /api/v1/settings - Get all settings
 settingsRouter.get("/settings", async (c) => {
-	const rows = await db.select().from(settings);
+	const rows = await getDb().select().from(settings);
 	const result: Record<string, unknown> = {};
 	for (const row of rows) {
 		result[row.key] = row.value;
@@ -164,7 +164,7 @@ settingsRouter.put("/settings/workspace", async (c) => {
 
 // GET /api/v1/api-keys - List all API keys (without the actual key)
 settingsRouter.get("/api-keys", async (c) => {
-	const keys = await db
+	const keys = await getDb()
 		.select({
 			id: apiKeys.id,
 			name: apiKeys.name,
@@ -201,13 +201,13 @@ settingsRouter.post("/api-keys", async (c) => {
 settingsRouter.delete("/api-keys/:id", async (c) => {
 	const id = c.req.param("id");
 
-	const [existing] = await db.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+	const [existing] = await getDb().select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
 
 	if (!existing) {
 		return c.json({ error: "API key not found" }, 404);
 	}
 
-	await db.update(apiKeys).set({ isActive: false }).where(eq(apiKeys.id, id));
+	await getDb().update(apiKeys).set({ isActive: false }).where(eq(apiKeys.id, id));
 
 	return c.json({ ok: true });
 });

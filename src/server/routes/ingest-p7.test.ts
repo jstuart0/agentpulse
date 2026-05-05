@@ -449,7 +449,7 @@ describe("processHookEvent returns session row (no N+1 getSession)", () => {
 describe("Per-session hook ordering — no race on concurrent hooks", () => {
 	test("10 rapid hooks for the same session: all 200, no bg errors, final status correct", async () => {
 		const { getBgErrorCount: getBgErr } = await import("./ingest-counters.js");
-		const { db } = await import("../db/client.js");
+		const { getDb } = await import("../db/client.js");
 
 		const app = buildApp();
 		const sessionId = `order-test-${Date.now()}`;
@@ -498,8 +498,8 @@ describe("Per-session hook ordering — no race on concurrent hooks", () => {
 
 		// Final DB state: SessionEnd must have been processed last (the session
 		// queue serializes in arrival order, and SessionEnd was last in our list).
-		const row = db.$client
-			.prepare("SELECT status FROM sessions WHERE session_id = ?")
+		const row = getDb()
+			.$client.prepare("SELECT status FROM sessions WHERE session_id = ?")
 			.get(sessionId) as { status: string } | undefined;
 		expect(row).toBeDefined();
 		// SessionEnd sets status to "completed".

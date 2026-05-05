@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import type { EventCategory, SessionEvent } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { events } from "../../db/schema.js";
 
 /**
@@ -11,7 +11,7 @@ import { events } from "../../db/schema.js";
  * the write path (Slice AI-EVT-1).
  */
 export async function loadRecentEvents(sessionId: string, limit = 60): Promise<SessionEvent[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(events)
 		.where(eq(events.sessionId, sessionId))

@@ -5,7 +5,7 @@ import type {
 	SupervisorRegistrationInput,
 	SupervisorStatus,
 } from "../../shared/types.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { supervisors } from "../db/schema.js";
 
 const HEARTBEAT_LEASE_MS = 90_000;
@@ -60,7 +60,7 @@ export async function registerSupervisor(input: SupervisorRegistrationInput) {
 	const timestamp = nowIso();
 	const leaseExpiry = leaseExpiryIso();
 
-	await db
+	await getDb()
 		.insert(supervisors)
 		.values({
 			id,
@@ -98,7 +98,7 @@ export async function registerSupervisor(input: SupervisorRegistrationInput) {
 			},
 		});
 
-	const [row] = await db.select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
+	const [row] = await getDb().select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
 	if (!row) throw new Error("Supervisor registration failed");
 
 	return {
@@ -110,10 +110,14 @@ export async function registerSupervisor(input: SupervisorRegistrationInput) {
 export async function heartbeatSupervisor(id: string) {
 	const timestamp = nowIso();
 	const leaseExpiry = leaseExpiryIso();
-	const [existing] = await db.select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
+	const [existing] = await getDb()
+		.select()
+		.from(supervisors)
+		.where(eq(supervisors.id, id))
+		.limit(1);
 	if (!existing) return null;
 
-	await db
+	await getDb()
 		.update(supervisors)
 		.set({
 			status: "connected",
@@ -123,23 +127,23 @@ export async function heartbeatSupervisor(id: string) {
 		})
 		.where(eq(supervisors.id, id));
 
-	const [row] = await db.select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
+	const [row] = await getDb().select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
 	return row ? mapSupervisor(row) : null;
 }
 
 export async function listSupervisors() {
-	const rows = await db.select().from(supervisors).orderBy(desc(supervisors.updatedAt));
+	const rows = await getDb().select().from(supervisors).orderBy(desc(supervisors.updatedAt));
 	return rows.map(mapSupervisor);
 }
 
 export async function getSupervisor(id: string) {
-	const [row] = await db.select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
+	const [row] = await getDb().select().from(supervisors).where(eq(supervisors.id, id)).limit(1);
 	return row ? mapSupervisor(row) : null;
 }
 
 export async function getConnectedSupervisor(id?: string | null) {
 	if (id) {
-		const [row] = await db
+		const [row] = await getDb()
 			.select()
 			.from(supervisors)
 			.where(and(eq(supervisors.id, id), gt(supervisors.heartbeatLeaseExpiresAt, nowIso())))
@@ -147,7 +151,7 @@ export async function getConnectedSupervisor(id?: string | null) {
 		return row ? mapSupervisor(row) : null;
 	}
 
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(supervisors)
 		.where(gt(supervisors.heartbeatLeaseExpiresAt, nowIso()))
@@ -158,7 +162,7 @@ export async function getConnectedSupervisor(id?: string | null) {
 }
 
 export async function revokeSupervisor(id: string) {
-	await db
+	await getDb()
 		.update(supervisors)
 		.set({
 			status: "offline",

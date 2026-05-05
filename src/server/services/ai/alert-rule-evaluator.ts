@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import {
 	events,
 	aiQaCache,
@@ -73,7 +73,7 @@ export async function evaluateAlertRules(
 	sessionId: string,
 	newStatus: "failed" | "completed",
 ): Promise<void> {
-	const [session] = await db
+	const [session] = await getDb()
 		.select({ projectId: sessions.projectId, displayName: sessions.displayName })
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
@@ -81,7 +81,7 @@ export async function evaluateAlertRules(
 
 	if (!session?.projectId) return;
 
-	const matchingRules = await db
+	const matchingRules = await getDb()
 		.select()
 		.from(projectAlertRules)
 		.where(
@@ -94,7 +94,7 @@ export async function evaluateAlertRules(
 
 	for (const rule of matchingRules) {
 		try {
-			await db.insert(projectAlertRuleFires).values({
+			await getDb().insert(projectAlertRuleFires).values({
 				ruleId: rule.id,
 				sessionId,
 				firedAt: new Date().toISOString(),
@@ -117,7 +117,7 @@ export async function evaluateAlertRules(
  */
 export async function purgeExpiredQaCache(now: Date): Promise<void> {
 	const cutoff = now.toISOString();
-	await db.delete(aiQaCache).where(sql`${aiQaCache.expiresAt} < ${cutoff}`);
+	await getDb().delete(aiQaCache).where(sql`${aiQaCache.expiresAt} < ${cutoff}`);
 }
 
 // ---- Periodic sweep evaluators ---------------------------------------------
@@ -132,7 +132,7 @@ export async function purgeExpiredQaCache(now: Date): Promise<void> {
  * abort the rest of the sweep.
  */
 export async function evaluateStuckRules(now: Date): Promise<void> {
-	const stuckRules = await db
+	const stuckRules = await getDb()
 		.select()
 		.from(projectAlertRules)
 		.where(
@@ -142,7 +142,7 @@ export async function evaluateStuckRules(now: Date): Promise<void> {
 	if (stuckRules.length === 0) return;
 
 	for (const rule of stuckRules) {
-		const candidates = await db
+		const candidates = await getDb()
 			.select({
 				sessionId: sessions.sessionId,
 				displayName: sessions.displayName,
@@ -169,7 +169,7 @@ export async function evaluateStuckRules(now: Date): Promise<void> {
 			if (!intel || intel.health !== "stuck") continue;
 
 			try {
-				await db.insert(projectAlertRuleFires).values({
+				await getDb().insert(projectAlertRuleFires).values({
 					ruleId: rule.id,
 					sessionId: candidate.sessionId,
 					firedAt: now.toISOString(),
@@ -198,7 +198,7 @@ export async function evaluateStuckRules(now: Date): Promise<void> {
  * still be caught by this rule.
  */
 export async function evaluateNoActivityRules(now: Date): Promise<void> {
-	const rules = await db
+	const rules = await getDb()
 		.select()
 		.from(projectAlertRules)
 		.where(
@@ -216,7 +216,7 @@ export async function evaluateNoActivityRules(now: Date): Promise<void> {
 
 		const cutoff = new Date(now.getTime() - threshold * 60_000).toISOString();
 
-		const candidates = await db
+		const candidates = await getDb()
 			.select({
 				sessionId: sessions.sessionId,
 				displayName: sessions.displayName,
@@ -233,7 +233,7 @@ export async function evaluateNoActivityRules(now: Date): Promise<void> {
 
 		for (const candidate of candidates) {
 			try {
-				await db.insert(projectAlertRuleFires).values({
+				await getDb().insert(projectAlertRuleFires).values({
 					ruleId: rule.id,
 					sessionId: candidate.sessionId,
 					firedAt: now.toISOString(),
@@ -346,7 +346,7 @@ function toDateString(d: Date): string {
  * Cap: at most 100 events per rule per sweep to prevent backlog budget blowout.
  */
 export async function evaluateFreeformRules(now: Date): Promise<void> {
-	const freeformRules = await db
+	const freeformRules = await getDb()
 		.select()
 		.from(projectAlertRules)
 		.where(
@@ -357,7 +357,7 @@ export async function evaluateFreeformRules(now: Date): Promise<void> {
 
 	// Snapshot the sweep-time max event id as the cursor upper bound.
 	// This prevents mid-sweep events from being both evaluated AND left in the window.
-	const [maxRow] = await db.select({ maxId: sql<number>`MAX(id)` }).from(events);
+	const [maxRow] = await getDb().select({ maxId: sql<number>`MAX(id)` }).from(events);
 	const sweepMaxEventId = maxRow?.maxId;
 	if (!sweepMaxEventId) return;
 
@@ -369,7 +369,7 @@ export async function evaluateFreeformRules(now: Date): Promise<void> {
 
 		// Atomic daily reset: SQL CASE expression prevents a read-modify-write race
 		// if two processes or a restart coincide with midnight.
-		await db.run(sql`
+		await getDb().run(sql`
 			UPDATE project_alert_rules
 			SET
 				daily_token_spend_cents = CASE WHEN daily_token_spend_date != ${today} THEN 0 ELSE daily_token_spend_cents END,
@@ -378,7 +378,7 @@ export async function evaluateFreeformRules(now: Date): Promise<void> {
 		`);
 
 		// Re-read from DB after the atomic reset — do not use the in-memory snapshot.
-		const [freshRule] = await db
+		const [freshRule] = await getDb()
 			.select({
 				dailyTokenSpendCents: projectAlertRules.dailyTokenSpendCents,
 				lastEvaluatedEventId: projectAlertRules.lastEvaluatedEventId,
@@ -396,7 +396,7 @@ export async function evaluateFreeformRules(now: Date): Promise<void> {
 
 		// Single JOIN query — not per-session nested loops (prevents N+1).
 		// Only active (non-ended, non-archived) sessions; cap at 100 events per sweep.
-		const recentEvents = await db
+		const recentEvents = await getDb()
 			.select({
 				id: events.id,
 				sessionId: events.sessionId,
@@ -426,7 +426,7 @@ export async function evaluateFreeformRules(now: Date): Promise<void> {
 				: freshRule.lastEvaluatedEventId;
 
 		if (newCursor !== freshRule.lastEvaluatedEventId) {
-			await db
+			await getDb()
 				.update(projectAlertRules)
 				.set({ lastEvaluatedEventId: newCursor })
 				.where(eq(projectAlertRules.id, rule.id));
@@ -446,7 +446,7 @@ export async function evaluateFreeformRules(now: Date): Promise<void> {
 			if (content.trim().length === 0) continue;
 
 			// Debounce: check time since last fire for this (rule, session) pair.
-			const [lastFire] = await db
+			const [lastFire] = await getDb()
 				.select({ firedAt: projectAlertRuleFires.firedAt })
 				.from(projectAlertRuleFires)
 				.where(
@@ -473,7 +473,7 @@ export async function evaluateFreeformRules(now: Date): Promise<void> {
 			const spentCents = 1;
 
 			// Atomic increment so concurrent sweep ticks don't double-count.
-			await db
+			await getDb()
 				.update(projectAlertRules)
 				.set({ dailyTokenSpendCents: sql`daily_token_spend_cents + ${spentCents}` })
 				.where(eq(projectAlertRules.id, rule.id));
@@ -481,13 +481,13 @@ export async function evaluateFreeformRules(now: Date): Promise<void> {
 
 			// Fire row. No UNIQUE constraint on (rule_id, session_id) for freeform
 			// rules — debounceMinutes is the re-fire gate here, not a DB constraint.
-			await db.insert(projectAlertRuleFires).values({
+			await getDb().insert(projectAlertRuleFires).values({
 				ruleId: rule.id,
 				sessionId: evt.sessionId,
 				firedAt: now.toISOString(),
 			});
 
-			const [sessionRow] = await db
+			const [sessionRow] = await getDb()
 				.select({ displayName: sessions.displayName })
 				.from(sessions)
 				.where(eq(sessions.sessionId, evt.sessionId))

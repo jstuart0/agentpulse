@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { config } from "../config.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { settings, users } from "../db/schema.js";
 import { createUser, getUserByUsername } from "./local-auth-service.js";
 
@@ -28,7 +28,8 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 			// both the total user count AND this flag; writing it here ensures
 			// the flag is set even if countActiveUsers() drops to 0 after a
 			// disabledAt update.
-			db.insert(settings)
+			getDb()
+				.insert(settings)
 				.values({
 					key: "auth.firstRunCompleted",
 					value: "true",
@@ -54,7 +55,7 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 	// value rotating always takes effect on restart.
 	try {
 		const passwordHash = await Bun.password.hash(password, { algorithm: "argon2id" });
-		await db
+		await getDb()
 			.update(users)
 			.set({
 				passwordHash,
@@ -66,7 +67,8 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 		// Re-sync also writes the flag: if the admin was soft-deleted between
 		// restarts, this restart re-enables them AND re-asserts the flag so the
 		// signup window stays closed for the duration of the soft-delete window.
-		db.insert(settings)
+		getDb()
+			.insert(settings)
 			.values({
 				key: "auth.firstRunCompleted",
 				value: "true",

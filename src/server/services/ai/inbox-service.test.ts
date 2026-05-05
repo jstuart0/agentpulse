@@ -6,7 +6,7 @@ import {
 } from "../../../shared/types.js";
 import "./__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { aiActionRequests, aiHitlRequests, aiInboxSnoozes, events, sessions, watcherProposals } =
 	await import("../../db/schema.js");
 const { buildInbox } = await import("./inbox-service.js");
@@ -20,16 +20,16 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(aiInboxSnoozes).execute();
-	await db.delete(aiActionRequests).execute();
-	await db.delete(aiHitlRequests).execute();
-	await db.delete(watcherProposals).execute();
-	await db.delete(events).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(aiInboxSnoozes).execute();
+	await getDb().delete(aiActionRequests).execute();
+	await getDb().delete(aiHitlRequests).execute();
+	await getDb().delete(watcherProposals).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(sessions).execute();
 });
 
 async function mkSession(sessionId: string, overrides: Record<string, unknown> = {}) {
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId,
@@ -170,8 +170,8 @@ describe("inbox-service", () => {
 		// KNOWN_NOTIFICATION_CHANNEL_KINDS, the composer must surface it
 		// as `channelKind` (not silently fall back to "telegram").
 		for (const kind of KNOWN_NOTIFICATION_CHANNEL_KINDS) {
-			await db.delete(aiActionRequests).execute();
-			await db
+			await getDb().delete(aiActionRequests).execute();
+			await getDb()
 				.insert(aiActionRequests)
 				.values({
 					kind: "add_channel",
@@ -195,7 +195,7 @@ describe("inbox-service", () => {
 		// — an unknown value (e.g. a future "slack" before the const is
 		// updated) must NOT pass the gate; the card stays renderable by
 		// falling through to telegram so the operator can still decline.
-		await db
+		await getDb()
 			.insert(aiActionRequests)
 			.values({
 				kind: "add_channel",

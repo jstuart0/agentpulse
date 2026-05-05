@@ -1,7 +1,7 @@
 import { and, count, desc, eq, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { SESSION_END_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "../../shared/constants.js";
 import type { AgentType, ManagedState, SessionStatus } from "../../shared/types.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { managedSessions, sessions, supervisors } from "../db/schema.js";
 import { getManagedSession } from "./managed-session-state.js";
 
@@ -10,7 +10,7 @@ import { getManagedSession } from "./managed-session-state.js";
  * `managed_sessions`. Both writes happen in a single SQLite transaction
  * so a failure on the second statement rolls back the first.
  *
- * IMPORTANT: drizzle's bun-sqlite `db.transaction()` is SYNCHRONOUS. Passing
+ * IMPORTANT: drizzle's bun-sqlite `getDb().transaction()` is SYNCHRONOUS. Passing
  * an async callback silently disables rollback because COMMIT fires before
  * any awaited statement settles. We use a sync callback with `.run()` here.
  *
@@ -19,7 +19,7 @@ import { getManagedSession } from "./managed-session-state.js";
  */
 export function renameSession(sessionId: string, name: string): void {
 	const trimmed = name.trim();
-	db.transaction((tx) => {
+	getDb().transaction((tx) => {
 		tx.update(sessions)
 			.set({ displayName: trimmed })
 			.where(eq(sessions.sessionId, sessionId))
@@ -71,7 +71,7 @@ export async function getSessions(filters?: {
 	const limit = filters?.limit ?? 50;
 	const offset = filters?.offset ?? 0;
 
-	let query = db.select().from(sessions).orderBy(desc(sessions.lastActivityAt));
+	let query = getDb().select().from(sessions).orderBy(desc(sessions.lastActivityAt));
 
 	const conditions = [];
 	if (filters?.status) {
@@ -94,7 +94,7 @@ export async function getSessions(filters?: {
 	const rows = await query.limit(limit).offset(offset);
 
 	// Get total count
-	const countQuery = db.select({ count: count() }).from(sessions);
+	const countQuery = getDb().select({ count: count() }).from(sessions);
 	const [{ count: total }] =
 		conditions.length > 0 ? await countQuery.where(and(...conditions)) : await countQuery;
 
@@ -103,7 +103,7 @@ export async function getSessions(filters?: {
 
 // Get a single session by session_id
 export async function getSession(sessionId: string) {
-	const [session] = await db
+	const [session] = await getDb()
 		.select()
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
@@ -118,22 +118,22 @@ export async function getStats() {
 	const now = new Date();
 	const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 
-	const activeSessions = await db
+	const activeSessions = await getDb()
 		.select({ count: count() })
 		.from(sessions)
 		.where(eq(sessions.status, "active"));
 
-	const todaySessions = await db
+	const todaySessions = await getDb()
 		.select({ count: count() })
 		.from(sessions)
 		.where(sql`${sessions.startedAt} >= ${todayStart}`);
 
-	const todayToolUses = await db
+	const todayToolUses = await getDb()
 		.select({ total: sql<number>`COALESCE(SUM(${sessions.totalToolUses}), 0)` })
 		.from(sessions)
 		.where(sql`${sessions.startedAt} >= ${todayStart}`);
 
-	const byType = await db
+	const byType = await getDb()
 		.select({
 			agentType: sessions.agentType,
 			count: count(),
@@ -182,7 +182,7 @@ export async function updateStaleSessions(): Promise<number> {
 	const endCutoff = new Date(now - SESSION_END_TIMEOUT_MS).toISOString();
 	const stuckWorkingCutoff = new Date(now - STUCK_WORKING_RECOVERY_MS).toISOString();
 
-	const liveManagedRows = await db
+	const liveManagedRows = await getDb()
 		.select({ sessionId: managedSessions.sessionId })
 		.from(managedSessions)
 		.innerJoin(supervisors, eq(managedSessions.supervisorId, supervisors.id))
@@ -200,7 +200,7 @@ export async function updateStaleSessions(): Promise<number> {
 	// Stuck-working recovery: clear isWorking on sessions that have been
 	// silent for far too long. Runs first so the idle transition below
 	// can pick them up on the same tick.
-	await db
+	await getDb()
 		.update(sessions)
 		.set({ isWorking: false })
 		.where(
@@ -212,7 +212,7 @@ export async function updateStaleSessions(): Promise<number> {
 		);
 
 	// active → idle: only when the session is NOT currently working.
-	await db
+	await getDb()
 		.update(sessions)
 		.set({ status: "idle" })
 		.where(
@@ -229,7 +229,7 @@ export async function updateStaleSessions(): Promise<number> {
 	// went idle. This enforces the user-visible progression
 	//   working → not-working → idle → completed
 	// rather than letting an active session skip straight to completed.
-	const result = await db
+	const result = await getDb()
 		.update(sessions)
 		.set({
 			status: "completed",

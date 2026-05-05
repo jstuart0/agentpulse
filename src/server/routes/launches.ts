@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { LaunchRequestInput, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { launchRequests, sessionTemplates } from "../db/schema.js";
 import { isAiBuildEnabled } from "../services/ai/feature.js";
 import { recommendLaunch } from "../services/ai/launch-recommender.js";
@@ -16,7 +16,7 @@ const launchesRouter = new Hono();
 launchesRouter.use("*", requireAuth());
 
 launchesRouter.get("/launches", async (c) => {
-	const rows = await db.select().from(launchRequests).orderBy(desc(launchRequests.createdAt));
+	const rows = await getDb().select().from(launchRequests).orderBy(desc(launchRequests.createdAt));
 	return c.json({
 		launches: rows.map(mapLaunchRequest),
 		total: rows.length,
@@ -24,7 +24,7 @@ launchesRouter.get("/launches", async (c) => {
 });
 
 launchesRouter.get("/launches/:id", async (c) => {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(launchRequests)
 		.where(eq(launchRequests.id, c.req.param("id")))
@@ -43,7 +43,7 @@ launchesRouter.post("/launches", async (c) => {
 		// defaults before passing to the validator. The validator sees a plain
 		// SessionTemplateInput — no special-casing needed downstream.
 		if (body.templateId) {
-			const [templateRow] = await db
+			const [templateRow] = await getDb()
 				.select()
 				.from(sessionTemplates)
 				.where(eq(sessionTemplates.id, body.templateId))

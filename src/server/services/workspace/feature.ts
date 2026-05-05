@@ -1,5 +1,5 @@
 import { eq, inArray } from "drizzle-orm";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import { settings } from "../../db/schema.js";
 import { upsertSetting } from "../settings-service.js";
 
@@ -91,7 +91,7 @@ export async function getWorkspaceSettings(): Promise<{
 	workspace: WorkspaceSettings;
 	gitClone: GitCloneSettings;
 }> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(settings)
 		.where(
@@ -210,7 +210,10 @@ export async function setWorkspaceSettings(update: WorkspaceSettingsUpdate): Pro
 				// constraint. The "no row" state is the canonical "full clone"
 				// representation — getWorkspaceSettings() falls back to the
 				// DEFAULT_GIT_CLONE_DEFAULT_DEPTH (null) when the key is absent.
-				await db.delete(settings).where(eq(settings.key, GIT_CLONE_DEFAULT_DEPTH_KEY)).execute();
+				await getDb()
+					.delete(settings)
+					.where(eq(settings.key, GIT_CLONE_DEFAULT_DEPTH_KEY))
+					.execute();
 			}
 		}
 		if (gc.timeoutSeconds !== undefined) {

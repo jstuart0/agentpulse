@@ -19,7 +19,7 @@ import { eq } from "drizzle-orm";
 import { type AlertRuleType, KNOWN_ALERT_RULE_TYPES } from "../../../shared/types.js";
 import "./__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { aiActionRequests, sessions } = await import("../../db/schema.js");
 const { createActionRequest, resolveActionRequest, getActionRequest, ruleTypeLabel } = await import(
 	"./action-requests-service.js"
@@ -28,16 +28,18 @@ const { createActionRequest, resolveActionRequest, getActionRequest, ruleTypeLab
 // ---- helpers ----------------------------------------------------------------
 
 function makeSession(sessionId: string) {
-	return db.insert(sessions).values({
-		sessionId,
-		displayName: `Session ${sessionId}`,
-		agentType: "claude_code",
-		status: "active",
-		isWorking: false,
-		isPinned: false,
-		isArchived: false,
-		totalToolUses: 0,
-	});
+	return getDb()
+		.insert(sessions)
+		.values({
+			sessionId,
+			displayName: `Session ${sessionId}`,
+			agentType: "claude_code",
+			status: "active",
+			isWorking: false,
+			isPinned: false,
+			isArchived: false,
+			totalToolUses: 0,
+		});
 }
 
 function sessionActionPayload(sessionId: string) {
@@ -52,8 +54,8 @@ beforeAll(() => {
 
 beforeEach(async () => {
 	// Wipe between tests.
-	await db.delete(aiActionRequests).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(aiActionRequests).execute();
+	await getDb().delete(sessions).execute();
 });
 
 // ---- tests ------------------------------------------------------------------
@@ -81,7 +83,10 @@ describe("KIND_EXECUTORS registry — session_archive", () => {
 		const updated = await getActionRequest(req.id);
 		expect(updated?.status).toBe("applied");
 
-		const [row] = await db.select().from(sessions).where(eq(sessions.sessionId, "s-archive-1"));
+		const [row] = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, "s-archive-1"));
 		expect(row?.isArchived).toBe(true);
 	});
 });
@@ -109,7 +114,10 @@ describe("KIND_EXECUTORS registry — session_delete", () => {
 		const updated = await getActionRequest(req.id);
 		expect(updated?.status).toBe("applied");
 
-		const remaining = await db.select().from(sessions).where(eq(sessions.sessionId, "s-delete-1"));
+		const remaining = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, "s-delete-1"));
 		expect(remaining.length).toBe(0);
 	});
 });
@@ -144,7 +152,7 @@ describe("KIND_EXECUTORS registry — unsupported kind", () => {
 	test("action_request with unknown kind fails with Unsupported action kind message", async () => {
 		// Insert directly so we can bypass the CreateActionRequestInput literal union.
 		const now = new Date().toISOString();
-		await db.insert(aiActionRequests).values({
+		await getDb().insert(aiActionRequests).values({
 			kind: "foo_bar",
 			status: "awaiting_reply",
 			question: "Do the foo bar?",
@@ -154,7 +162,7 @@ describe("KIND_EXECUTORS registry — unsupported kind", () => {
 			updatedAt: now,
 		});
 
-		const [row] = await db.select().from(aiActionRequests);
+		const [row] = await getDb().select().from(aiActionRequests);
 		const id = row.id;
 
 		const result = await resolveActionRequest({
@@ -179,7 +187,7 @@ describe("KIND_EXECUTORS registry — unsupported kind", () => {
 
 describe("createActionRequest — runtime kind gate", () => {
 	test("rejects unknown kind at write time before touching the DB", async () => {
-		const before = await db.select().from(aiActionRequests);
+		const before = await getDb().select().from(aiActionRequests);
 		// Cast through unknown to bypass the literal union at compile time and
 		// hit the runtime gate. The runtime check is the safety net for callers
 		// who came in over a generic JSON path (e.g. ts-ignored RPC).
@@ -190,7 +198,7 @@ describe("createActionRequest — runtime kind gate", () => {
 			origin: "web",
 		});
 		await expect(promise).rejects.toThrow(/unknown action request kind/i);
-		const after = await db.select().from(aiActionRequests);
+		const after = await getDb().select().from(aiActionRequests);
 		// No row should have been inserted.
 		expect(after.length).toBe(before.length);
 	});

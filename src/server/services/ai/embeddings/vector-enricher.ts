@@ -1,4 +1,4 @@
-import { sqlite } from "../../../db/client.js";
+import { getSqlite } from "../../../db/client.js";
 import { isVectorSearchActive } from "../feature.js";
 import type { EnrichmentResult, SemanticEnricher } from "../semantic-enricher.js";
 import { resolveEmbeddingAdapter } from "./embedding-service.js";
@@ -42,7 +42,7 @@ export class VectorEmbeddingEnricher implements SemanticEnricher {
 		// Pull only rows that match the active model — different models
 		// have different dims and different vector spaces; mixing them
 		// in one cosine query is meaningless.
-		const rows = sqlite
+		const rows = getSqlite()
 			.prepare(
 				`SELECT v.event_id AS eventId, v.vector AS vector, e.session_id AS sessionId
 				 FROM event_embeddings v

@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { AskThreadOrigin } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import {
 	type NextQuestion,
 	type ProjectDraftFields,
@@ -142,7 +142,7 @@ export function isCancelKeyword(reply: string): boolean {
 export async function getOpenDraftForThread(
 	threadId: string,
 ): Promise<typeof aiPendingProjectDrafts.$inferSelect | null> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(aiPendingProjectDrafts)
 		.where(
@@ -209,7 +209,7 @@ async function transitionToPendingApproval(
 	});
 
 	const now = sqlNow();
-	await db
+	await getDb()
 		.update(aiPendingProjectDrafts)
 		.set({
 			status: "pending_approval",
@@ -249,7 +249,7 @@ export async function handleNewAddProjectIntent(
 	const now = sqlNow();
 
 	// Supersede any open draft for this thread
-	await db
+	await getDb()
 		.update(aiPendingProjectDrafts)
 		.set({ status: "superseded", updatedAt: now })
 		.where(
@@ -272,7 +272,7 @@ export async function handleNewAddProjectIntent(
 
 	// If the initial fields already satisfy all required fields, go straight to approval
 	if (!firstQuestion) {
-		const [newDraft] = await db
+		const [newDraft] = await getDb()
 			.insert(aiPendingProjectDrafts)
 			.values({
 				askThreadId: threadId,
@@ -294,7 +294,7 @@ export async function handleNewAddProjectIntent(
 		retryCount: 0,
 	};
 
-	await db.insert(aiPendingProjectDrafts).values({
+	await getDb().insert(aiPendingProjectDrafts).values({
 		askThreadId: threadId,
 		channelId,
 		origin,
@@ -329,7 +329,7 @@ export async function handleAddProjectContinuation(
 
 	// Cancel escape hatch — checked BEFORE parsing the reply
 	if (isCancelKeyword(userReply)) {
-		await db
+		await getDb()
 			.update(aiPendingProjectDrafts)
 			.set({ status: "superseded", updatedAt: now })
 			.where(eq(aiPendingProjectDrafts.id, draft.id));
@@ -344,7 +344,7 @@ export async function handleAddProjectContinuation(
 	if (!parsed.ok) {
 		const newRetryCount = nextQ.retryCount + 1;
 		if (newRetryCount >= MAX_RETRIES) {
-			await db
+			await getDb()
 				.update(aiPendingProjectDrafts)
 				.set({ status: "expired", updatedAt: now })
 				.where(eq(aiPendingProjectDrafts.id, draft.id));
@@ -355,7 +355,7 @@ export async function handleAddProjectContinuation(
 			};
 		}
 		const updatedQ: NextQuestion = { ...nextQ, retryCount: newRetryCount };
-		await db
+		await getDb()
 			.update(aiPendingProjectDrafts)
 			.set({
 				nextQuestion: updatedQ,
@@ -381,7 +381,7 @@ export async function handleAddProjectContinuation(
 	const nextQuestion = nextUnansweredQuestion(fields);
 	if (!nextQuestion) {
 		// All questions answered — update fields then transition to approval
-		await db
+		await getDb()
 			.update(aiPendingProjectDrafts)
 			.set({
 				draftFields: fields,
@@ -398,7 +398,7 @@ export async function handleAddProjectContinuation(
 		retryCount: 0,
 	};
 
-	await db
+	await getDb()
 		.update(aiPendingProjectDrafts)
 		.set({
 			draftFields: fields,

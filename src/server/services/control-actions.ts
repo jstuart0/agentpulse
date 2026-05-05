@@ -5,7 +5,7 @@ import type {
 	ControlActionType,
 	LaunchRequest,
 } from "../../shared/types.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import {
 	events,
 	controlActions,
@@ -26,7 +26,7 @@ function lockExpiryIso() {
 }
 
 async function expireStaleControlLock(sessionId: string) {
-	const [managed] = await db
+	const [managed] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
@@ -35,7 +35,7 @@ async function expireStaleControlLock(sessionId: string) {
 	if (new Date(managed.controlLockExpiresAt).getTime() > Date.now()) return;
 
 	const timestamp = nowIso();
-	await db
+	await getDb()
 		.update(controlActions)
 		.set({
 			status: "failed",
@@ -45,7 +45,7 @@ async function expireStaleControlLock(sessionId: string) {
 		})
 		.where(eq(controlActions.id, managed.activeControlActionId));
 
-	await db
+	await getDb()
 		.update(managedSessions)
 		.set({
 			activeControlActionId: null,
@@ -56,7 +56,7 @@ async function expireStaleControlLock(sessionId: string) {
 }
 
 async function expireStaleControlLocksForSupervisor(supervisorId: string) {
-	const stale = await db
+	const stale = await getDb()
 		.select({
 			sessionId: managedSessions.sessionId,
 		})
@@ -93,7 +93,7 @@ function mapControlAction(row: typeof controlActions.$inferSelect): ControlActio
 }
 
 export async function listControlActionsForSession(sessionId: string) {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(controlActions)
 		.where(eq(controlActions.sessionId, sessionId))
@@ -103,7 +103,7 @@ export async function listControlActionsForSession(sessionId: string) {
 
 export async function queueStopAction(sessionId: string) {
 	await expireStaleControlLock(sessionId);
-	const [managed] = await db
+	const [managed] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
@@ -114,7 +114,7 @@ export async function queueStopAction(sessionId: string) {
 	}
 
 	const timestamp = nowIso();
-	const [action] = await db
+	const [action] = await getDb()
 		.insert(controlActions)
 		.values({
 			sessionId,
@@ -128,7 +128,7 @@ export async function queueStopAction(sessionId: string) {
 		})
 		.returning();
 
-	await db
+	await getDb()
 		.update(managedSessions)
 		.set({
 			activeControlActionId: action.id,
@@ -145,7 +145,7 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 	if (!cleanPrompt) throw new Error("Prompt is required.");
 	await expireStaleControlLock(sessionId);
 
-	const [managed] = await db
+	const [managed] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
@@ -155,7 +155,7 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 		throw new Error("Another control action is already in progress for this session.");
 	}
 
-	const [session] = await db
+	const [session] = await getDb()
 		.select()
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
@@ -166,7 +166,7 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 			? (session.metadata as Record<string, unknown>)
 			: {};
 
-	const [launch] = await db
+	const [launch] = await getDb()
 		.select()
 		.from(launchRequests)
 		.where(eq(launchRequests.id, managed.launchRequestId))
@@ -174,7 +174,7 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 	if (!launch) throw new Error("Launch request not found.");
 
 	const timestamp = nowIso();
-	const [action] = await db
+	const [action] = await getDb()
 		.insert(controlActions)
 		.values({
 			sessionId,
@@ -208,7 +208,7 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 		})
 		.returning();
 
-	await db
+	await getDb()
 		.update(managedSessions)
 		.set({
 			activeControlActionId: action.id,
@@ -221,14 +221,14 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 }
 
 export async function retryLaunchForSession(sessionId: string) {
-	const [managed] = await db
+	const [managed] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (!managed) throw new Error("Session is not managed.");
 
-	const [original] = await db
+	const [original] = await getDb()
 		.select()
 		.from(launchRequests)
 		.where(eq(launchRequests.id, managed.launchRequestId))
@@ -237,7 +237,7 @@ export async function retryLaunchForSession(sessionId: string) {
 
 	const timestamp = nowIso();
 	const newCorrelationId = crypto.randomUUID();
-	const [cloned] = await db
+	const [cloned] = await getDb()
 		.insert(launchRequests)
 		.values({
 			templateId: original.templateId,
@@ -270,7 +270,7 @@ export async function retryLaunchForSession(sessionId: string) {
 		})
 		.returning();
 
-	const [action] = await db
+	const [action] = await getDb()
 		.insert(controlActions)
 		.values({
 			sessionId,
@@ -312,7 +312,7 @@ export async function queueCleanupWorkArea(
 	input: QueueCleanupWorkAreaInput,
 ): Promise<ControlAction> {
 	const timestamp = nowIso();
-	const [action] = await db
+	const [action] = await getDb()
 		.insert(controlActions)
 		.values({
 			sessionId: null,
@@ -339,12 +339,12 @@ export async function queueCleanupWorkArea(
  * events via FK, so events go first.
  */
 async function finalizeCleanupWorkArea(projectId: string): Promise<void> {
-	// drizzle-bun-sqlite db.transaction is SYNC. An async callback returns a
+	// drizzle-bun-sqlite getDb().transaction is SYNC. An async callback returns a
 	// Promise immediately and the COMMIT runs before any awaited statement
 	// settles, silently disabling rollback. Use a sync callback with .all()
 	// for reads and .run() for writes so the BEGIN/COMMIT brackets the actual
 	// DB work and a thrown error rolls back atomically.
-	db.transaction((tx) => {
+	getDb().transaction((tx) => {
 		const projectSessions = tx
 			.select({ id: sessions.id, sessionId: sessions.sessionId })
 			.from(sessions)
@@ -371,7 +371,7 @@ export async function claimNextControlAction(supervisorId: string) {
 	// 2. Session-less actions (cleanup_workarea) — pre-assigned to a host by
 	//    storing supervisorId in metadata.targetSupervisorId at queue time.
 	// Pick the oldest queued action across both channels.
-	const sessionRow = await db
+	const sessionRow = await getDb()
 		.select({ action: controlActions })
 		.from(controlActions)
 		.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
@@ -379,7 +379,7 @@ export async function claimNextControlAction(supervisorId: string) {
 		.orderBy(asc(controlActions.createdAt))
 		.limit(1);
 
-	const sessionlessRow = await db
+	const sessionlessRow = await getDb()
 		.select()
 		.from(controlActions)
 		.where(
@@ -405,7 +405,7 @@ export async function claimNextControlAction(supervisorId: string) {
 	if (!candidate) return null;
 
 	const timestamp = nowIso();
-	const [updated] = await db
+	const [updated] = await getDb()
 		.update(controlActions)
 		.set({
 			status: "running",
@@ -424,7 +424,7 @@ export async function updateControlAction(input: {
 	error?: string | null;
 	metadata?: Record<string, unknown> | null;
 }) {
-	const [current] = await db
+	const [current] = await getDb()
 		.select()
 		.from(controlActions)
 		.where(eq(controlActions.id, input.actionId))
@@ -432,7 +432,7 @@ export async function updateControlAction(input: {
 	if (!current || current.claimedBySupervisorId !== input.supervisorId) return null;
 
 	const timestamp = nowIso();
-	const [updated] = await db
+	const [updated] = await getDb()
 		.update(controlActions)
 		.set({
 			status: input.status,
@@ -445,7 +445,7 @@ export async function updateControlAction(input: {
 		.returning();
 
 	if (current.sessionId && input.status !== "running") {
-		await db
+		await getDb()
 			.update(managedSessions)
 			.set({
 				activeControlActionId: null,

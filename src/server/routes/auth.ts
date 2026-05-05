@@ -4,7 +4,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { getTrustedClientIp } from "../auth/client-ip.js";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
 import { config } from "../config.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { settings, users } from "../db/schema.js";
 import {
 	SESSION_COOKIE_NAME,
@@ -333,7 +333,7 @@ authRouter.post("/auth/signup", async (c) => {
 
 	// First-run path: hash OUTSIDE the transaction (Bun.password.hash is async;
 	// bun-sqlite Drizzle sync transactions must not await inside the callback).
-	// Do NOT make the db.transaction callback async — bun-sqlite Drizzle async-tx
+	// Do NOT make the getDb().transaction callback async — bun-sqlite Drizzle async-tx
 	// callbacks commit before awaited work settles. Hash outside the tx; only
 	// sync ops inside.
 	// See: src/server/routes/sessions.ts:281-284 for the canonical warning.
@@ -345,7 +345,7 @@ authRouter.post("/auth/signup", async (c) => {
 	try {
 		// SYNCHRONOUS callback only — bun-sqlite Drizzle commits before awaited
 		// work in async callbacks; see src/server/routes/sessions.ts:281-284.
-		db.transaction((tx) => {
+		getDb().transaction((tx) => {
 			// Re-check: count ALL users (including soft-deleted) and the
 			// firstRunCompleted flag inside the transaction so two concurrent
 			// signups can't both pass. We intentionally count disabled users:

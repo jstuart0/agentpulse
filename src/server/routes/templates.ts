@@ -2,7 +2,7 @@ import { desc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AgentType, LaunchMode, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { projects, sessionTemplates } from "../db/schema.js";
 import { ensureProjectForCwd, getProject } from "../services/projects/projects-service.js";
 import {
@@ -22,7 +22,7 @@ templatesRouter.use("*", requireAuth());
 
 templatesRouter.get("/templates", async (c) => {
 	const agentType = c.req.query("agent_type") as AgentType | undefined;
-	const query = db.select().from(sessionTemplates);
+	const query = getDb().select().from(sessionTemplates);
 	const rows = agentType
 		? await query
 				.where(eq(sessionTemplates.agentType, agentType))
@@ -34,7 +34,7 @@ templatesRouter.get("/templates", async (c) => {
 	const linkedIds = [...new Set(rows.map((r) => r.projectId).filter(Boolean))] as string[];
 	const projectMap = new Map<string, typeof projects.$inferSelect>();
 	if (linkedIds.length > 0) {
-		const linked = await db.select().from(projects).where(inArray(projects.id, linkedIds));
+		const linked = await getDb().select().from(projects).where(inArray(projects.id, linkedIds));
 		for (const p of linked) projectMap.set(p.id, p);
 	}
 
@@ -54,7 +54,7 @@ templatesRouter.get("/templates", async (c) => {
 
 templatesRouter.get("/templates/:id", async (c) => {
 	const id = c.req.param("id");
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(sessionTemplates)
 		.where(eq(sessionTemplates.id, id))
@@ -104,7 +104,7 @@ templatesRouter.post("/templates", async (c) => {
 	}
 
 	const now = new Date().toISOString();
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(sessionTemplates)
 		.values({
 			name: normalized.name,
@@ -155,7 +155,7 @@ templatesRouter.delete("/templates/:id", async (c) => {
 
 templatesRouter.post("/templates/:id/duplicate", async (c) => {
 	const id = c.req.param("id");
-	const [existing] = await db
+	const [existing] = await getDb()
 		.select()
 		.from(sessionTemplates)
 		.where(eq(sessionTemplates.id, id))
@@ -163,7 +163,7 @@ templatesRouter.post("/templates/:id/duplicate", async (c) => {
 	if (!existing) return c.json({ error: "Template not found" }, 404);
 
 	const now = new Date().toISOString();
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(sessionTemplates)
 		.values({
 			name: `Copy of ${existing.name}`,

@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
 
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { events, sessions } = await import("../../db/schema.js");
 const { SqliteFtsBackend } = await import("./sqlite-fts-backend.js");
 const { Database } = await import("bun:sqlite");
@@ -20,8 +20,8 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(events).execute();
-	await db.delete(sessions).execute();
+	await getDb().delete(events).execute();
+	await getDb().delete(sessions).execute();
 });
 
 async function insertSession(
@@ -36,7 +36,7 @@ async function insertSession(
 	},
 ) {
 	const now = new Date().toISOString();
-	await db
+	await getDb()
 		.insert(sessions)
 		.values({
 			sessionId: id,
@@ -59,7 +59,7 @@ async function insertEvent(
 	rawPayload: Record<string, unknown>,
 	content: string | null = null,
 ) {
-	await db
+	await getDb()
 		.insert(events)
 		.values({
 			sessionId,
@@ -210,8 +210,8 @@ describe("SqliteFtsBackend", () => {
 
 		// Schema has no ON DELETE CASCADE — delete events first, then the
 		// session. Both triggers fire and the FTS rows are removed.
-		await db.delete(events).execute();
-		await db.delete(sessions).execute();
+		await getDb().delete(events).execute();
+		await getDb().delete(sessions).execute();
 
 		const backend = freshBackend();
 		const eventRes = await backend.search({ q: "disappear" });

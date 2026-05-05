@@ -7,7 +7,7 @@ import {
 	KNOWN_NOTIFICATION_CHANNEL_KINDS,
 	type NotificationChannelKind,
 } from "../../../shared/types.js";
-import { db } from "../../db/client.js";
+import { getDb } from "../../db/client.js";
 import {
 	events,
 	aiActionRequests,
@@ -164,7 +164,7 @@ export async function createActionRequest(input: CreateActionRequestInput): Prom
 	// NOT stamp `kind` onto the payload object because some payload shapes
 	// already use `kind` for an unrelated field (e.g. add_channel's
 	// `kind: "telegram" | "webhook" | "email"`); doing so would clobber it.
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(aiActionRequests)
 		.values({
 			kind: input.kind,
@@ -182,7 +182,7 @@ export async function createActionRequest(input: CreateActionRequestInput): Prom
 }
 
 export async function getActionRequest(id: string): Promise<ActionRequest | null> {
-	const [row] = await db
+	const [row] = await getDb()
 		.select()
 		.from(aiActionRequests)
 		.where(eq(aiActionRequests.id, id))
@@ -191,7 +191,7 @@ export async function getActionRequest(id: string): Promise<ActionRequest | null
 }
 
 export async function listOpenActionRequests(): Promise<ActionRequest[]> {
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(aiActionRequests)
 		.where(inArray(aiActionRequests.status, ["awaiting_reply"]));
@@ -220,7 +220,7 @@ async function conditionalUpdate(
 	},
 ): Promise<{ rowsAffected: number }> {
 	const now = sqlNow();
-	const rows = await db
+	const rows = await getDb()
 		.update(aiActionRequests)
 		.set({
 			status: patch.status,
@@ -504,7 +504,7 @@ async function executeAddProjectAction(
 		// Mid-success side effect: mark draft applied before the request row update.
 		// This must stay between the domain call and succeed() — see M4 note in plan.
 		const now = sqlNow();
-		await db
+		await getDb()
 			.update(aiPendingProjectDrafts)
 			.set({ status: "applied", updatedAt: now })
 			.where(eq(aiPendingProjectDrafts.id, draftId));
@@ -553,7 +553,7 @@ async function executeSessionMutation(
 
 	// Pre-check: the session may have been deleted between approval creation
 	// and execution. If so, mark failed immediately rather than throwing.
-	const [existing] = await db
+	const [existing] = await getDb()
 		.select({ sessionId: sessions.sessionId })
 		.from(sessions)
 		.where(eq(sessions.sessionId, payload.sessionId))
@@ -596,7 +596,7 @@ async function executeSessionStopAction(
 		// Verify managed_sessions at execute time — the session may have
 		// transitioned from managed to hook-only (rare but possible on renames
 		// that discard the managed row).
-		const [managed] = await db
+		const [managed] = await getDb()
 			.select({ sessionId: managedSessions.sessionId })
 			.from(managedSessions)
 			.where(eq(managedSessions.sessionId, sessionId))
@@ -613,7 +613,10 @@ async function executeSessionArchiveAction(
 	resolvedBy: string,
 ): Promise<ResolveResult> {
 	return executeSessionMutation(request, resolvedBy, async (sessionId) => {
-		await db.update(sessions).set({ isArchived: true }).where(eq(sessions.sessionId, sessionId));
+		await getDb()
+			.update(sessions)
+			.set({ isArchived: true })
+			.where(eq(sessions.sessionId, sessionId));
 	});
 }
 
@@ -625,8 +628,8 @@ async function executeSessionDeleteAction(
 		// Remove FTS index entries first, then the events, then the session row.
 		const backend = getSearchBackend();
 		await backend.removeSession(sessionId);
-		await db.delete(events).where(eq(events.sessionId, sessionId));
-		await db.delete(sessions).where(eq(sessions.sessionId, sessionId));
+		await getDb().delete(events).where(eq(events.sessionId, sessionId));
+		await getDb().delete(sessions).where(eq(sessions.sessionId, sessionId));
 	});
 }
 
@@ -688,7 +691,7 @@ async function executeEditTemplateAction(
 		"edit_template",
 		{
 			run: async ({ templateId, templateName, fields }) => {
-				const [existing] = await db
+				const [existing] = await getDb()
 					.select()
 					.from(sessionTemplates)
 					.where(eq(sessionTemplates.id, templateId))
@@ -832,7 +835,7 @@ async function executeCreateAlertRuleAction(
 	}
 
 	// Pre-check: project must still exist.
-	const [existingProject] = await db
+	const [existingProject] = await getDb()
 		.select({ id: projects.id })
 		.from(projects)
 		.where(eq(projects.id, projectId))
@@ -851,7 +854,7 @@ async function executeCreateAlertRuleAction(
 				? ({ thresholdMinutes } as Record<string, unknown>)
 				: null;
 
-		const [newRule] = await db
+		const [newRule] = await getDb()
 			.insert(projectAlertRules)
 			.values({
 				projectId,
@@ -871,7 +874,7 @@ async function executeCreateAlertRuleAction(
 		if (newRule) {
 			try {
 				if (ruleType === "status_stuck") {
-					const candidates = await db
+					const candidates = await getDb()
 						.select({ sessionId: sessions.sessionId })
 						.from(sessions)
 						.where(
@@ -885,14 +888,14 @@ async function executeCreateAlertRuleAction(
 					for (const { sessionId: sid } of candidates) {
 						const intel = await intelligenceForSession(sid, nowDate).catch(() => null);
 						if (!intel || intel.health !== "stuck") continue;
-						await db
+						await getDb()
 							.insert(projectAlertRuleFires)
 							.values({ ruleId: newRule.id, sessionId: sid, firedAt: nowDate.toISOString() })
 							.onConflictDoNothing();
 					}
 				} else if (ruleType === "no_activity_minutes" && thresholdMinutes != null) {
 					const cutoff = new Date(nowDate.getTime() - thresholdMinutes * 60_000).toISOString();
-					const candidates = await db
+					const candidates = await getDb()
 						.select({ sessionId: sessions.sessionId })
 						.from(sessions)
 						.where(
@@ -904,19 +907,19 @@ async function executeCreateAlertRuleAction(
 							),
 						);
 					for (const { sessionId: sid } of candidates) {
-						await db
+						await getDb()
 							.insert(projectAlertRuleFires)
 							.values({ ruleId: newRule.id, sessionId: sid, firedAt: nowDate.toISOString() })
 							.onConflictDoNothing();
 					}
 				} else if (ruleType === "status_failed" || ruleType === "status_completed") {
 					const targetStatus = ruleType === "status_failed" ? "failed" : "completed";
-					const candidates = await db
+					const candidates = await getDb()
 						.select({ sessionId: sessions.sessionId })
 						.from(sessions)
 						.where(and(eq(sessions.projectId, projectId), eq(sessions.status, targetStatus)));
 					for (const { sessionId: sid } of candidates) {
-						await db
+						await getDb()
 							.insert(projectAlertRuleFires)
 							.values({ ruleId: newRule.id, sessionId: sid, firedAt: nowDate.toISOString() })
 							.onConflictDoNothing();
@@ -960,7 +963,7 @@ async function executeCreateFreeformAlertRuleAction(
 	}
 
 	// Pre-check: project must still exist.
-	const [existingProject] = await db
+	const [existingProject] = await getDb()
 		.select({ id: projects.id })
 		.from(projects)
 		.where(eq(projects.id, projectId))
@@ -976,24 +979,28 @@ async function executeCreateFreeformAlertRuleAction(
 
 		// Capture MAX(events.id) at creation time so first sweep only evaluates
 		// events arriving AFTER the rule was created (avoids backlog flood).
-		const [maxEventRow] = await db.select({ maxId: max(events.id) }).from(events);
+		const [maxEventRow] = await getDb()
+			.select({ maxId: max(events.id) })
+			.from(events);
 		const initialCursor = maxEventRow?.maxId ?? 0;
 
-		await db.insert(projectAlertRules).values({
-			projectId,
-			ruleType: "freeform_match",
-			params: {
-				condition: condition.slice(0, 500),
-				dailyTokenBudgetCents: dailyTokenBudget,
-				sampleRate: sampleRate ?? 1.0,
-				eventTypesFilter: eventTypesFilter ?? [],
-			} as Record<string, unknown>,
-			channelId: null,
-			isActive: true,
-			lastEvaluatedEventId: initialCursor,
-			createdAt: nowStr,
-			updatedAt: nowStr,
-		});
+		await getDb()
+			.insert(projectAlertRules)
+			.values({
+				projectId,
+				ruleType: "freeform_match",
+				params: {
+					condition: condition.slice(0, 500),
+					dailyTokenBudgetCents: dailyTokenBudget,
+					sampleRate: sampleRate ?? 1.0,
+					eventTypesFilter: eventTypesFilter ?? [],
+				} as Record<string, unknown>,
+				channelId: null,
+				isActive: true,
+				lastEvaluatedEventId: initialCursor,
+				createdAt: nowStr,
+				updatedAt: nowStr,
+			});
 
 		return succeed(
 			request,
@@ -1017,7 +1024,7 @@ async function stopOne(
 	sessionId: string,
 	name: string,
 ): Promise<{ sessionId: string; name: string; ok: boolean; error?: string }> {
-	const [managed] = await db
+	const [managed] = await getDb()
 		.select({ sessionId: managedSessions.sessionId })
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
@@ -1039,7 +1046,7 @@ async function archiveOne(
 	if (session.isArchived) {
 		return { sessionId, name, ok: true, error: "already archived" };
 	}
-	await db.update(sessions).set({ isArchived: true }).where(eq(sessions.sessionId, sessionId));
+	await getDb().update(sessions).set({ isArchived: true }).where(eq(sessions.sessionId, sessionId));
 	return { sessionId, name, ok: true };
 }
 
@@ -1060,8 +1067,8 @@ async function deleteOne(
 	}
 	const backend = getSearchBackend();
 	await backend.removeSession(sessionId);
-	await db.delete(events).where(eq(events.sessionId, sessionId));
-	await db.delete(sessions).where(eq(sessions.sessionId, sessionId));
+	await getDb().delete(events).where(eq(events.sessionId, sessionId));
+	await getDb().delete(sessions).where(eq(sessions.sessionId, sessionId));
 	return { sessionId, name, ok: true };
 }
 
@@ -1102,7 +1109,7 @@ async function executeBulkSessionAction(
 	}
 
 	// Batch-fetch all targeted sessions in one query rather than N point-queries.
-	const existingRows = await db
+	const existingRows = await getDb()
 		.select({
 			sessionId: sessions.sessionId,
 			status: sessions.status,
@@ -1218,7 +1225,7 @@ export async function resolveActionRequest(args: {
 			try {
 				const payload = narrowPayload(declined, "add_project");
 				if (payload?.draftId) {
-					await db
+					await getDb()
 						.update(aiPendingProjectDrafts)
 						.set({ status: "declined", updatedAt: sqlNow() })
 						.where(eq(aiPendingProjectDrafts.id, payload.draftId));

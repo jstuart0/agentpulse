@@ -1,6 +1,6 @@
 import { eq, inArray } from "drizzle-orm";
 import type { EventCategory, Session, SessionEvent } from "../../../shared/types.js";
-import { db, sqlite } from "../../db/client.js";
+import { getDb, getSqlite } from "../../db/client.js";
 import { managedSessions, sessions, supervisors } from "../../db/schema.js";
 import { type SessionIntelligence, classifySession } from "./classifier.js";
 import { loadRecentEvents } from "./event-queries.js";
@@ -20,20 +20,24 @@ export async function intelligenceForSession(
 	sessionId: string,
 	now = new Date(),
 ): Promise<SessionIntelligence | null> {
-	const [row] = await db.select().from(sessions).where(eq(sessions.sessionId, sessionId)).limit(1);
+	const [row] = await getDb()
+		.select()
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
 	if (!row) return null;
 
 	const events = await loadRecentEvents(sessionId, CLASSIFIER_EVENT_LOOKBACK);
 	const openHitl = await getOpenHitlForSession(sessionId);
 
 	let supervisorConnected: boolean | undefined;
-	const [managed] = await db
+	const [managed] = await getDb()
 		.select()
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (managed) {
-		const [sup] = await db
+		const [sup] = await getDb()
 			.select({ status: supervisors.status })
 			.from(supervisors)
 			.where(eq(supervisors.id, managed.supervisorId))
@@ -65,7 +69,7 @@ export async function intelligenceForSessions(
 	if (sessionIds.length === 0) return out;
 
 	// 1) Session rows
-	const sessionRows = await db
+	const sessionRows = await getDb()
 		.select()
 		.from(sessions)
 		.where(inArray(sessions.sessionId, sessionIds));
@@ -79,7 +83,7 @@ export async function intelligenceForSessions(
 	// builder doesn't model window fns cleanly, so drop to raw SQL on the
 	// shared bun:sqlite handle. SQLite >= 3.25 supports ROW_NUMBER().
 	const placeholders = presentIds.map(() => "?").join(",");
-	const eventStmt = sqlite.prepare(
+	const eventStmt = getSqlite().prepare(
 		`SELECT id, session_id, event_type, category, source, content,
 		        is_noise, provider_event_type, tool_name, tool_input,
 		        tool_response, raw_payload, created_at
@@ -135,7 +139,7 @@ export async function intelligenceForSessions(
 	}
 
 	// 3) Managed-session + supervisor connected-state in a single left join.
-	const managedRows = await db
+	const managedRows = await getDb()
 		.select({
 			sessionId: managedSessions.sessionId,
 			supervisorStatus: supervisors.status,

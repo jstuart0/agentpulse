@@ -3,7 +3,7 @@ import "../ai/__test_db.js";
 
 // Defer DB-touching imports so the __test_db side-effect can configure
 // SQLITE_PATH before the client module binds to it.
-const { db, initializeDatabase, sqlite } = await import("../../db/client.js");
+const { getDb, getSqlite, initializeDatabase } = await import("../../db/client.js");
 const { projects, sessionTemplates, sessions } = await import("../../db/schema.js");
 const { loadEager } = await import("./cache.js");
 const { createProject, deleteProject, resolveAllSessionsForProject, updateProject } = await import(
@@ -15,13 +15,13 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(sessionTemplates).execute();
-	await db.delete(sessions).execute();
-	await db.delete(projects).execute();
+	await getDb().delete(sessionTemplates).execute();
+	await getDb().delete(sessions).execute();
+	await getDb().delete(projects).execute();
 	await loadEager();
 });
 
-// drizzle-bun-sqlite db.transaction() runs SYNC. If any of the project
+// drizzle-bun-sqlite getDb().transaction() runs SYNC. If any of the project
 // service flows ever flip back to an `async (tx) => ...` callback, the
 // BEGIN/COMMIT brackets only the sync portion of the body and the COMMIT
 // fires before any awaited statement settles — meaning a thrown error
@@ -44,14 +44,14 @@ describe("projects-service rollback semantics", () => {
 		// stamped — i.e. partial state.
 		const sessionIdA = `sessA-${crypto.randomUUID().slice(0, 8)}`;
 		const sessionIdB = `sessB-${crypto.randomUUID().slice(0, 8)}`;
-		await db.insert(sessions).values({
+		await getDb().insert(sessions).values({
 			sessionId: sessionIdA,
 			agentType: "claude_code",
 			cwd: "/tmp/ap-rollback-create",
 			startedAt: now,
 			lastActivityAt: now,
 		});
-		await db.insert(sessions).values({
+		await getDb().insert(sessions).values({
 			sessionId: sessionIdB,
 			agentType: "claude_code",
 			cwd: "/tmp/ap-rollback-create/sub",
@@ -61,7 +61,7 @@ describe("projects-service rollback semantics", () => {
 
 		// Block the update for sessionIdB only; sessionIdA's update is
 		// allowed to "commit" (autocommit, if buggy).
-		sqlite.exec(`
+		getSqlite().exec(`
 			CREATE TRIGGER tmp_block_session_project_update
 			BEFORE UPDATE OF project_id ON sessions
 			WHEN NEW.project_id IS NOT NULL AND OLD.session_id = '${sessionIdB}'
@@ -75,14 +75,14 @@ describe("projects-service rollback semantics", () => {
 				createProject({ name: "rollback-create", cwd: "/tmp/ap-rollback-create" }),
 			).rejects.toThrow();
 		} finally {
-			sqlite.exec("DROP TRIGGER IF EXISTS tmp_block_session_project_update");
+			getSqlite().exec("DROP TRIGGER IF EXISTS tmp_block_session_project_update");
 		}
 
 		// Both sessions must still have NULL project_id — the first
 		// update must have rolled back when the second aborted. If the
 		// flow regressed to async, sessionIdA would have its project_id
 		// set (autocommit) and this assertion would fail.
-		const rows = await db.select().from(sessions).execute();
+		const rows = await getDb().select().from(sessions).execute();
 		const a = rows.find((r) => r.sessionId === sessionIdA);
 		const b = rows.find((r) => r.sessionId === sessionIdB);
 		expect(a?.projectId).toBeNull();
@@ -103,7 +103,7 @@ describe("projects-service rollback semantics", () => {
 		// both roll back.
 		const stampedSessionId = `sess-${crypto.randomUUID().slice(0, 8)}`;
 		const newCwdSessionId = `sess-${crypto.randomUUID().slice(0, 8)}`;
-		await db.insert(sessions).values({
+		await getDb().insert(sessions).values({
 			sessionId: stampedSessionId,
 			agentType: "claude_code",
 			cwd: "/tmp/ap-rb-update-old",
@@ -111,7 +111,7 @@ describe("projects-service rollback semantics", () => {
 			startedAt: now,
 			lastActivityAt: now,
 		});
-		await db.insert(sessions).values({
+		await getDb().insert(sessions).values({
 			sessionId: newCwdSessionId,
 			agentType: "claude_code",
 			cwd: "/tmp/ap-rb-update-new",
@@ -123,7 +123,7 @@ describe("projects-service rollback semantics", () => {
 		// The null-out update on `stampedSessionId` is allowed through.
 		// On a buggy async path that update would autocommit, leaving
 		// stampedSessionId.project_id = NULL after the abort.
-		sqlite.exec(`
+		getSqlite().exec(`
 			CREATE TRIGGER tmp_block_session_restamp
 			BEFORE UPDATE OF project_id ON sessions
 			WHEN NEW.project_id IS NOT NULL
@@ -135,7 +135,7 @@ describe("projects-service rollback semantics", () => {
 		try {
 			await expect(updateProject(projectId, { cwd: "/tmp/ap-rb-update-new" })).rejects.toThrow();
 		} finally {
-			sqlite.exec("DROP TRIGGER IF EXISTS tmp_block_session_restamp");
+			getSqlite().exec("DROP TRIGGER IF EXISTS tmp_block_session_restamp");
 		}
 
 		// After rollback: BOTH sessions must retain their original
@@ -143,14 +143,14 @@ describe("projects-service rollback semantics", () => {
 		// project (its project_id=NULL update would have been the first
 		// statement in the tx — must have rolled back). The new-cwd one
 		// must still be NULL (its UPDATE never committed).
-		const stamped = await db
+		const stamped = await getDb()
 			.select()
 			.from(sessions)
 			.where(eq(sessions.sessionId, stampedSessionId))
 			.execute();
 		expect(stamped[0]?.projectId).toBe(projectId);
 
-		const newCwd = await db
+		const newCwd = await getDb()
 			.select()
 			.from(sessions)
 			.where(eq(sessions.sessionId, newCwdSessionId))
@@ -170,7 +170,7 @@ describe("projects-service rollback semantics", () => {
 		// in one tx. Block the project DELETE so the earlier null-outs
 		// must roll back.
 		const stampedSessionId = `sess-${crypto.randomUUID().slice(0, 8)}`;
-		await db.insert(sessions).values({
+		await getDb().insert(sessions).values({
 			sessionId: stampedSessionId,
 			agentType: "claude_code",
 			cwd: "/tmp/ap-rb-delete",
@@ -178,14 +178,14 @@ describe("projects-service rollback semantics", () => {
 			startedAt: now,
 			lastActivityAt: now,
 		});
-		await db.insert(sessionTemplates).values({
+		await getDb().insert(sessionTemplates).values({
 			name: "rb-tmpl",
 			agentType: "claude_code",
 			cwd: "/tmp/ap-rb-delete",
 			projectId,
 		});
 
-		sqlite.exec(`
+		getSqlite().exec(`
 			CREATE TRIGGER tmp_block_project_delete_2
 			BEFORE DELETE ON projects
 			BEGIN
@@ -196,23 +196,23 @@ describe("projects-service rollback semantics", () => {
 		try {
 			await expect(deleteProject(projectId)).rejects.toThrow();
 		} finally {
-			sqlite.exec("DROP TRIGGER IF EXISTS tmp_block_project_delete_2");
+			getSqlite().exec("DROP TRIGGER IF EXISTS tmp_block_project_delete_2");
 		}
 
 		// Project must still exist; session/template project_id must
 		// NOT have been nulled — the whole tx rolled back atomically.
-		const remainingProjects = await db.select().from(projects).execute();
+		const remainingProjects = await getDb().select().from(projects).execute();
 		expect(remainingProjects.length).toBe(1);
 		expect(remainingProjects[0]?.id).toBe(projectId);
 
-		const session = await db
+		const session = await getDb()
 			.select()
 			.from(sessions)
 			.where(eq(sessions.sessionId, stampedSessionId))
 			.execute();
 		expect(session[0]?.projectId).toBe(projectId);
 
-		const tmpl = await db.select().from(sessionTemplates).execute();
+		const tmpl = await getDb().select().from(sessionTemplates).execute();
 		expect(tmpl[0]?.projectId).toBe(projectId);
 
 		// Sanity: avoid an unused-import warning on resolveAllSessionsForProject.

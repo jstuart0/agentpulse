@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { AGENT_TYPES } from "../../shared/constants.js";
 import type { AgentType } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { type projects, sessions } from "../db/schema.js";
 import { queueCleanupWorkArea } from "../services/control-actions.js";
 import {
@@ -103,7 +103,7 @@ projectsRouter.get("/projects/:id/sessions", async (c) => {
 	const row = await getProject(id);
 	if (!row) return c.json({ error: "Project not found" }, 404);
 
-	const rows = await db
+	const rows = await getDb()
 		.select()
 		.from(sessions)
 		.where(eq(sessions.projectId, id))
@@ -224,7 +224,7 @@ projectsRouter.post("/projects/:id/cleanup-workarea", async (c) => {
 		return c.json({ error: "No connected supervisor advertises can_cleanup_workarea" }, 409);
 	}
 
-	const sessionRows = await db
+	const sessionRows = await getDb()
 		.select({ id: sessions.id })
 		.from(sessions)
 		.where(eq(sessions.projectId, id));

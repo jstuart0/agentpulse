@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
-const { db, initializeDatabase, sqlite } = await import("../../db/client.js");
+const { getDb, getSqlite, initializeDatabase } = await import("../../db/client.js");
 const { events, sessions } = await import("../../db/schema.js");
 const { sessionBus } = await import("../notifier.js");
 const { emitAiEvent } = await import("./ai-events.js");
@@ -12,8 +12,8 @@ beforeAll(() => {
 
 beforeEach(async () => {
 	// Cascade FK from DB-1 wipes events when session is deleted.
-	await db.delete(sessions).execute();
-	await db
+	await getDb().delete(sessions).execute();
+	await getDb()
 		.insert(sessions)
 		.values({ sessionId: "s-ai-evt", agentType: "claude_code" })
 		.onConflictDoNothing();
@@ -35,7 +35,7 @@ describe("emitAiEvent (Slice AI-EVT-1)", () => {
 		expect(ev).not.toBeNull();
 		expect(ev?.source).toBe("managed_control");
 
-		const rows = await db.select().from(events);
+		const rows = await getDb().select().from(events);
 		expect(rows).toHaveLength(1);
 		expect(rows[0].source).toBe("managed_control");
 		expect(rows[0].eventType).toBe("AiProposal");
@@ -71,7 +71,7 @@ describe("emitAiEvent (Slice AI-EVT-1)", () => {
 		// when insertNormalizedEvents drops the row.
 		expect(second).toBeNull();
 
-		const rows = await db.select().from(events);
+		const rows = await getDb().select().from(events);
 		expect(rows).toHaveLength(1);
 	});
 
@@ -105,12 +105,12 @@ describe("emitAiEvent (Slice AI-EVT-1)", () => {
 			rawPayload: { proposal_id: "p1" },
 		});
 
-		const eventsRows = await db.select().from(events);
+		const eventsRows = await getDb().select().from(events);
 		expect(eventsRows).toHaveLength(3);
 
 		// Hit FTS through raw SQL since drizzle doesn't model the virtual table.
 		const ftsCount = (
-			sqlite
+			getSqlite()
 				.prepare(
 					`SELECT COUNT(*) AS n FROM search_events_fts WHERE event_type IN ('AiProposal','AiReport','AiHitlRequest')`,
 				)

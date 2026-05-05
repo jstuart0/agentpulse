@@ -3,7 +3,7 @@ import "../ai/__test_db.js";
 
 // Defer DB-touching imports so the __test_db side-effect can configure
 // SQLITE_PATH before the client module binds to it.
-const { db, initializeDatabase } = await import("../../db/client.js");
+const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { projects, sessions } = await import("../../db/schema.js");
 const { getCachedProjects, loadEager } = await import("./cache.js");
 const { createProject, deleteProject, updateProject } = await import("./projects-service.js");
@@ -13,8 +13,8 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	await db.delete(sessions).execute();
-	await db.delete(projects).execute();
+	await getDb().delete(sessions).execute();
+	await getDb().delete(projects).execute();
 	// Force the cache to reflect the empty table — earlier tests in the
 	// same `bun test` run may have left this module's `cached` array
 	// populated, since cache state is module-scoped not test-scoped.

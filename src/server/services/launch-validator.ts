@@ -6,7 +6,7 @@ import type {
 	LaunchSpec,
 	SessionTemplateInput,
 } from "../../shared/types.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { launchRequests } from "../db/schema.js";
 import { pickFirstCapableSupervisor, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { getConnectedSupervisor, listSupervisors } from "./supervisor-registry.js";
@@ -178,7 +178,7 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 	};
 
 	const now = new Date().toISOString();
-	const [row] = await db
+	const [row] = await getDb()
 		.insert(launchRequests)
 		.values({
 			templateId: input.templateId ?? null,

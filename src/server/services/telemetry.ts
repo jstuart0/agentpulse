@@ -29,7 +29,7 @@
 import { count, eq } from "drizzle-orm";
 import packageJson from "../../../package.json";
 import { config } from "../config.js";
-import { db } from "../db/client.js";
+import { getDb } from "../db/client.js";
 import { sessions, settings } from "../db/schema.js";
 
 // Telemetry reports anonymous usage data to the AgentPulse project maintainers.
@@ -124,12 +124,12 @@ function detectInstallClass(releaseChannel: TelemetryReleaseChannel): TelemetryI
 }
 
 async function getSettingValue<T>(key: string): Promise<T | null> {
-	const [existing] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+	const [existing] = await getDb().select().from(settings).where(eq(settings.key, key)).limit(1);
 	return (existing?.value as T | undefined) ?? null;
 }
 
 async function setSettingValue(key: string, value: unknown): Promise<void> {
-	await db
+	await getDb()
 		.insert(settings)
 		.values({ key, value, updatedAt: new Date().toISOString() })
 		.onConflictDoUpdate({
@@ -165,13 +165,13 @@ async function collectPing(): Promise<TelemetryPing> {
 	const releaseChannel = detectReleaseChannel(VERSION);
 	const installClass = detectInstallClass(releaseChannel);
 
-	const totalSessions = await db.select({ count: count() }).from(sessions);
-	const activeSessions = await db
+	const totalSessions = await getDb().select({ count: count() }).from(sessions);
+	const activeSessions = await getDb()
 		.select({ count: count() })
 		.from(sessions)
 		.where(eq(sessions.status, "active"));
 
-	const byType = await db
+	const byType = await getDb()
 		.select({ agentType: sessions.agentType, count: count() })
 		.from(sessions)
 		.groupBy(sessions.agentType);
