@@ -48,7 +48,14 @@ const ALLOWLISTED_SUFFIXES = [
 ];
 
 function isAllowlisted(relPath: string): boolean {
-	if (relPath.endsWith(".test.ts")) return true;
+	// Tightened (xander mid-build M1): only `.test.ts` files inside src/ are
+	// allowlisted, AND only when they sit alongside production code (not in
+	// production route/service paths that happen to use a `.test.ts` suffix
+	// for evasion). The walker already scopes to src/, so the prefix check
+	// is belt-and-suspenders. Future tightening could require __tests__/ or
+	// a dedicated tests/ directory, but the codebase convention is co-located
+	// `*.test.ts` next to the file under test.
+	if (relPath.startsWith("src/") && relPath.endsWith(".test.ts")) return true;
 	return ALLOWLISTED_SUFFIXES.some(
 		(suffix) => relPath === suffix || relPath.endsWith(`/${suffix}`),
 	);
