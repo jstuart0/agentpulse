@@ -30,13 +30,18 @@ export function formatDuration(startedAt: string): string {
 	return `${seconds}s`;
 }
 
-export function formatTimeAgo(dateStr: string): string {
+export function formatTimeAgo(dateStr: string, opts?: { justNow?: boolean }): string {
 	const date = parseDate(dateStr);
 	const now = Date.now();
 	const diff = now - date;
 
-	if (Number.isNaN(diff) || diff < 0) return "just now";
-	if (diff < 60000) return "just now";
+	if (Number.isNaN(diff) || diff < 0) return opts?.justNow ? "just now" : "0s ago";
+	if (diff < 60000) {
+		// AskPage (and similar) want sub-60s resolution with "Xs ago".
+		// Callers that prefer "just now" pass { justNow: true }.
+		if (opts?.justNow) return "just now";
+		return `${Math.floor(diff / 1000)}s ago`;
+	}
 	if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
 	if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
 	return `${Math.floor(diff / 86400000)}d ago`;

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink } from "react-router-dom";
 import { useDropdownClose } from "../hooks/useDropdownClose.js";
+import { useSignOut } from "../hooks/useSignOut.js";
 import { useUserStore } from "../stores/user-store.js";
 import { WsStatusChip } from "./WsStatusChip.js";
 
@@ -78,7 +79,7 @@ function AdminMenu() {
 
 function UserMenu({
 	user,
-	signOutUrl,
+	signOutUrl: _signOutUrl,
 	disableAuth,
 }: {
 	user: { name: string; source: "authentik" | "api_key" | "local" } | null;
@@ -87,8 +88,7 @@ function UserMenu({
 }) {
 	const [open, setOpen] = useState(false);
 	const ref = useDropdownClose(() => setOpen(false));
-	const navigate = useNavigate();
-	const reloadUser = useUserStore((s) => s.load);
+	const { handleSignOut: signOut, signOutUrl } = useSignOut();
 	const label = user?.name ?? (disableAuth ? "anonymous" : "signed out");
 	const initial = label.charAt(0).toUpperCase();
 	const sourceLabel =
@@ -101,15 +101,7 @@ function UserMenu({
 
 	async function handleSignOut() {
 		setOpen(false);
-		if (signOutUrl?.startsWith("/api/")) {
-			// Local session: hit our logout endpoint and bounce to /login.
-			await fetch(signOutUrl, { method: "POST", credentials: "same-origin" }).catch(() => {});
-			await reloadUser();
-			navigate("/login", { replace: true });
-		} else if (signOutUrl) {
-			// Authentik (or any external): hard-navigate so the outpost handles it.
-			window.location.assign(signOutUrl);
-		}
+		await signOut();
 	}
 
 	return (

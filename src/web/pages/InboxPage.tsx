@@ -134,7 +134,7 @@ export function InboxPage() {
 					<select
 						value={kindFilter}
 						onChange={(e) => setKindFilter(e.target.value as typeof kindFilter)}
-						className="text-xs bg-background border border-border rounded px-2 py-1"
+						className="rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
 					>
 						<option value="all">All kinds</option>
 						{(Object.keys(KIND_META) as InboxWorkItem["kind"][]).map((k) => (

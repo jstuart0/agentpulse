@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
 import { type InboxWorkItem, type LabsFlag, api } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
+import { useSignOut } from "../hooks/useSignOut.js";
 import { useConnectionStore } from "../stores/connection-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useUserStore } from "../stores/user-store.js";
@@ -83,9 +84,8 @@ export function Layout() {
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
 	const labsFlags = useLabsStore((s) => s.flags);
 	const user = useUserStore((s) => s.user);
-	const signOutUrl = useUserStore((s) => s.signOutUrl);
-	const reloadUser = useUserStore((s) => s.load);
 	const navigate = useNavigate();
+	const { handleSignOut: signOut, signOutUrl } = useSignOut();
 	const location = useLocation();
 	const inboxIndicator = useInboxIndicator(
 		labsFlags === null || labsFlags.inbox !== false,
@@ -95,6 +95,31 @@ export function Layout() {
 	const menuButtonRef = useRef<HTMLButtonElement>(null);
 	const firstNavItemRef = useRef<HTMLAnchorElement>(null);
 	const primaryNavRef = useRef<HTMLElement>(null);
+
+	// Global search shortcut: `/` or `⌘K` navigates to /search (U-M3).
+	// Guard: skip when focus is inside any text-entry element so typing
+	// normal characters isn't hijacked.
+	useEffect(() => {
+		function onKeyDown(e: KeyboardEvent) {
+			const tag = (e.target as HTMLElement).tagName;
+			const isTyping =
+				tag === "INPUT" ||
+				tag === "TEXTAREA" ||
+				tag === "SELECT" ||
+				(e.target as HTMLElement).isContentEditable;
+			if (isTyping) return;
+
+			const isSlash = e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey;
+			const isCmdK = e.key === "k" && (e.metaKey || e.ctrlKey) && !e.altKey;
+
+			if (isSlash || isCmdK) {
+				e.preventDefault();
+				navigate("/search");
+			}
+		}
+		document.addEventListener("keydown", onKeyDown);
+		return () => document.removeEventListener("keydown", onKeyDown);
+	}, [navigate]);
 
 	// Focus management for mobile menu (C7 / S-9).
 	// On open: move focus to the first nav item so keyboard users can tab
@@ -125,16 +150,9 @@ export function Layout() {
 
 	async function handleSignOut() {
 		setMobileMenuOpen(false);
-		if (signOutUrl?.startsWith("/api/")) {
-			// Local session: POST to our logout endpoint and bounce to /login.
-			await fetch(signOutUrl, { method: "POST", credentials: "same-origin" }).catch(() => {});
-			await reloadUser();
-			navigate("/login", { replace: true });
-		} else if (signOutUrl) {
-			// Authentik (or external): hard-navigate so the outpost handles it.
-			window.location.assign(signOutUrl);
-		}
+		await signOut();
 	}
+
 	// Hide nav items whose labs flag is explicitly disabled. When flags
 	// haven't loaded yet, show everything (flags === null).
 	const visibleNavItems = navItems.filter(

@@ -281,6 +281,24 @@
 	color: hsl(var(--foreground));
 }
 
+/* ── Reduced-motion blanket (S-13) ──
+   Opt-in per-animation is fragile — any new animation added without the guard
+   silently fails the preference. The robust pattern is a single global rule
+   that covers Tailwind transitions, CSS keyframes, framer-motion, and
+   anything else, without per-component auditing.
+   The .ws-reconnect-pulse guard below becomes a no-op when this fires,
+   which is the correct behaviour (reduced-motion users see no pulse). */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}
+
 /* ── WS reconnecting pulse (U-H1) ──
    Only active when the user has not opted-in to reduced motion.
    The .ws-reconnect-pulse class is safe to apply unconditionally in JSX;
@@ -303,18 +321,24 @@
 	}
 }
 
-/* ── Search result highlight flash ── */
-.event-flash {
-	animation: event-flash 2.2s ease-out;
-}
-@keyframes event-flash {
-	0% {
-		background-color: rgba(245, 158, 11, 0.35);
+/* ── Search result highlight flash ──
+   Guarded identically to ws-reconnect-pulse above. The blanket
+   prefers-reduced-motion:reduce rule would silence it anyway, but keeping
+   the keyframe inside the guard makes the pattern uniform. */
+@media (prefers-reduced-motion: no-preference) {
+	@keyframes event-flash {
+		0% {
+			background-color: rgba(245, 158, 11, 0.35);
+		}
+		60% {
+			background-color: rgba(245, 158, 11, 0.18);
+		}
+		100% {
+			background-color: transparent;
+		}
 	}
-	60% {
-		background-color: rgba(245, 158, 11, 0.18);
-	}
-	100% {
-		background-color: transparent;
+
+	.event-flash {
+		animation: event-flash 2.2s ease-out;
 	}
 }

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { LabsBadge } from "../components/LabsBadge.js";
 import { SkeletonCard, SkeletonCardList } from "../components/SkeletonCard.js";
+import { StatCard } from "../components/StatCard.js";
 import { type Digest, type RepoDigest, api } from "../lib/api.js";
+import { formatTimeAgo } from "../lib/utils.js";
 
 /**
  * Daily project digest. Deterministic aggregation of recent sessions
@@ -99,30 +101,11 @@ export function DigestPage() {
 					)}
 
 					<footer className="text-[10px] text-muted-foreground pt-2">
-						generated {relTime(digest.generatedAt)} · window {relTime(digest.windowStart)} →{" "}
-						{relTime(digest.windowEnd)}
+						generated {formatTimeAgo(digest.generatedAt)} · window {formatTimeAgo(digest.windowStart)} →{" "}
+						{formatTimeAgo(digest.windowEnd)}
 					</footer>
 				</>
 			) : null}
-		</div>
-	);
-}
-
-function StatCard({
-	label,
-	value,
-	tone = "default",
-}: {
-	label: string;
-	value: number;
-	tone?: "default" | "warn" | "danger";
-}) {
-	const toneClass =
-		tone === "warn" ? "text-amber-300" : tone === "danger" ? "text-red-300" : "text-foreground";
-	return (
-		<div className="rounded-lg border border-border bg-card p-3">
-			<div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-			<div className={`text-2xl font-semibold mt-1 ${toneClass}`}>{value}</div>
 		</div>
 	);
 }
@@ -211,7 +194,7 @@ function RepoCard({ repo }: { repo: RepoDigest }) {
 							</Link>
 							<Chip label={s.status} />
 							{s.health && <Chip label={s.health} />}
-							<span className="text-muted-foreground ml-auto">{relTime(s.lastActivityAt)}</span>
+							<span className="text-muted-foreground ml-auto">{formatTimeAgo(s.lastActivityAt)}</span>
 						</li>
 					))}
 				</ul>
@@ -228,17 +211,4 @@ function Chip({ label, className = "" }: { label: string; className?: string }) 
 			{label}
 		</span>
 	);
-}
-
-function relTime(iso: string): string {
-	const ts = iso.includes("T") ? iso : `${iso.replace(" ", "T")}Z`;
-	const diff = Date.now() - new Date(ts).getTime();
-	const s = Math.floor(diff / 1000);
-	if (s < 60) return `${s}s ago`;
-	const m = Math.floor(s / 60);
-	if (m < 60) return `${m}m ago`;
-	const h = Math.floor(m / 60);
-	if (h < 24) return `${h}h ago`;
-	const d = Math.floor(h / 24);
-	return `${d}d ago`;
 }

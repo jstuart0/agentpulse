@@ -3,20 +3,11 @@ import { useNavigate } from "react-router-dom";
 import { isArchivedSession, isVisibleSession } from "../../shared/session-state.js";
 import { FirstRunWelcome } from "../components/FirstRunWelcome.js";
 import { SessionGrid } from "../components/SessionGrid.js";
+import { StatCard } from "../components/StatCard.js";
 import { useSessions } from "../hooks/useSessions.js";
-import { formatDuration } from "../lib/utils.js";
+import { formatDuration, parseDate } from "../lib/utils.js";
 import { useProjectsStore } from "../stores/projects-store.js";
 import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
-
-function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
-	return (
-		<div className="rounded-lg border border-border bg-card p-4">
-			<p className="text-xs text-muted-foreground mb-1">{label}</p>
-			<p className="text-2xl font-bold text-foreground">{value}</p>
-			{sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
-		</div>
-	);
-}
 
 export function DashboardPage() {
 	const navigate = useNavigate();
@@ -78,9 +69,7 @@ export function DashboardPage() {
 		() =>
 			visibleSessions
 				.filter((s) => s.status === "active")
-				.sort(
-					(a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
-				),
+				.sort((a, b) => parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt)),
 		[visibleSessions],
 	);
 	const workingCount = visibleSessions.filter((s) => s.isWorking).length;
@@ -289,31 +278,15 @@ export function DashboardPage() {
 										{selectedActiveSession.displayName ||
 											selectedActiveSession.sessionId.slice(0, 8)}
 									</div>
-									<span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-										{selectedActiveSession.agentType === "claude_code"
-											? "Claude Code"
-											: "Codex CLI"}
-									</span>
-									<span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-										{selectedActiveSession.status}
-									</span>
 								</div>
-								<div className="mt-2 grid gap-2 text-xs text-muted-foreground md:grid-cols-2 xl:grid-cols-4">
+								<div className="mt-2 grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
 									<div>
-										<span className="text-foreground">Project:</span>{" "}
-										{selectedActiveSession.cwd || "Unknown"}
-									</div>
-									<div>
-										<span className="text-foreground">Current task:</span>{" "}
-										{selectedActiveSession.currentTask || "No task reported"}
+										<span className="text-foreground">Status:</span>{" "}
+										{selectedActiveSession.status}
 									</div>
 									<div>
 										<span className="text-foreground">Last activity:</span>{" "}
 										{formatDuration(selectedActiveSession.lastActivityAt)}
-									</div>
-									<div>
-										<span className="text-foreground">Tools:</span>{" "}
-										{selectedActiveSession.totalToolUses}
 									</div>
 								</div>
 							</div>

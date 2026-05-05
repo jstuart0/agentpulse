@@ -4,7 +4,7 @@ import type { InboxWorkItem } from "../../lib/api.js";
 import { KindBadge } from "./shared/KindBadge.js";
 import { SnoozeDropdown } from "./shared/SnoozeDropdown.js";
 import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
-import { relTime } from "./shared/relTime.js";
+import { formatTimeAgo } from "../../lib/utils.js";
 
 type FailedProposalItem = Extract<InboxWorkItem, { kind: "failed_proposal" }>;
 
@@ -62,7 +62,7 @@ export function FailedProposalCard({
 						}
 					}}
 				/>
-				<span className="text-[10px] text-muted-foreground ml-auto">{relTime(item.at)}</span>
+				<span className="text-[10px] text-muted-foreground ml-auto">{formatTimeAgo(item.at)}</span>
 			</div>
 
 			{err && <div className="mt-2 text-[11px] text-red-300">{err}</div>}

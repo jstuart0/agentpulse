@@ -100,15 +100,20 @@ export function SearchPage() {
 			</p>
 
 			<form onSubmit={submit} className="flex gap-2 mb-3">
-				<input
-					type="search"
-					value={draft}
-					onChange={(e) => setDraft(e.target.value)}
-					placeholder="Search sessions and events… (e.g. 'auth refactor', 'passed tests')"
-					className="flex-1 min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-					// biome-ignore lint/a11y/noAutofocus: search page is the primary action — auto-focusing the input matches user expectation
-					autoFocus
-				/>
+				<div className="relative flex-1 min-w-0">
+					<input
+						type="search"
+						value={draft}
+						onChange={(e) => setDraft(e.target.value)}
+						placeholder="Search sessions and events… (e.g. 'auth refactor', 'passed tests')"
+						className="w-full rounded-md border border-input bg-background px-3 py-2 pr-10 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+						// biome-ignore lint/a11y/noAutofocus: search page is the primary action — auto-focusing the input matches user expectation
+						autoFocus
+					/>
+					<kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 hidden md:inline-block rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+						/
+					</kbd>
+				</div>
 				<button
 					type="submit"
 					disabled={!draft.trim()}

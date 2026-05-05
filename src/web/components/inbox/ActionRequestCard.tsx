@@ -4,7 +4,7 @@ import type { ActionInboxItem } from "../../../shared/types.js";
 import type { ActionRequestDecision } from "../../lib/api.js";
 import { KindBadge } from "./shared/KindBadge.js";
 import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
-import { relTime } from "./shared/relTime.js";
+import { formatTimeAgo } from "../../lib/utils.js";
 
 type ApproveTone = "destructive" | "constructive" | "neutral";
 
@@ -365,7 +365,7 @@ export function ActionRequestCard({
 				>
 					Decline
 				</button>
-				<span className="text-[10px] text-muted-foreground ml-auto">{relTime(item.createdAt)}</span>
+				<span className="text-[10px] text-muted-foreground ml-auto">{formatTimeAgo(item.createdAt)}</span>
 			</div>
 			{err && <div className="mt-2 text-[11px] text-red-300">{err}</div>}
 		</div>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Session } from "../../shared/types.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
-import { extractProjectName } from "../lib/utils.js";
+import { extractProjectName, parseDate } from "../lib/utils.js";
 import { SessionCard } from "./SessionCard.js";
 
 interface SessionGridProps {
@@ -90,7 +90,7 @@ export function SessionGrid({ sessions, isLoading }: SessionGridProps) {
 		};
 		const statusDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
 		if (statusDiff !== 0) return statusDiff;
-		return new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime();
+		return parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt);
 	});
 
 	// Group by project
