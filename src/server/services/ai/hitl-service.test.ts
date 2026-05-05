@@ -11,10 +11,10 @@ const {
 	resolveHitlRequest,
 	supersedeOpenHitl,
 } = await import("./hitl-service.js");
-const { aiHitlRequests, sessions } = await import("../../db/schema.js");
+const { aiHitlRequests, sessions } = await import("../../db/schema/index.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

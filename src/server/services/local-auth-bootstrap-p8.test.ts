@@ -4,11 +4,11 @@ import "../services/ai/__test_db.js";
 
 const { config } = await import("../config.js");
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { users } = await import("../db/schema.js");
+const { users } = await import("../db/schema/index.js");
 const { ensureBootstrapAdmin } = await import("../services/local-auth-bootstrap.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

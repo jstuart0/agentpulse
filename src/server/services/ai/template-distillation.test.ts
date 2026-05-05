@@ -2,11 +2,11 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { events, sessions, sessionTemplates } = await import("../../db/schema.js");
+const { events, sessions, sessionTemplates } = await import("../../db/schema/index.js");
 const { distillTemplate, provenanceMetadata } = await import("./template-distillation.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

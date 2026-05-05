@@ -4,11 +4,11 @@ import type { ProtectedSettingError as ProtectedSettingErrorType } from "./setti
 
 const { eq } = await import("drizzle-orm");
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { settings } = await import("../db/schema.js");
+const { settings } = await import("../db/schema/index.js");
 const { ProtectedSettingError, upsertSetting } = await import("./settings-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 afterEach(async () => {
@@ -109,13 +109,15 @@ describe("upsertSetting", () => {
 		const tgRow = await readSetting("telegram:credentials");
 		expect(tgRow?.value).toEqual({ token: "secret", chatId: "1" });
 
-		await upsertSetting("auth.firstRunCompleted", "true", { allowProtected: true });
+		// Store the boolean true (not string "true") — json() columns normalize
+		// JSON-boolean-looking strings to their JS equivalents on Postgres.
+		await upsertSetting("auth.firstRunCompleted", true, { allowProtected: true });
 		const authRow = await readSetting("auth.firstRunCompleted");
-		expect(authRow?.value).toBe("true");
+		expect(authRow?.value).toBe(true);
 
 		await upsertSetting("workspace.defaultRoot", "~/foo", { allowProtected: true });
 		const wsRow = await readSetting("workspace.defaultRoot");
-		expect(wsRow?.value).toBe("~/foo");
+		expect(wsRow?.value).toBe("~/foo"); // string, not JSON-boolean-looking
 	});
 
 	test("allowlist classifies correctly — user-settable keys accepted without allowProtected", async () => {

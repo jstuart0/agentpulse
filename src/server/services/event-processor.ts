@@ -13,7 +13,7 @@ import type {
 	SemanticStatusUpdate,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { events, sessions } from "../db/schema.js";
+import { events, sessions } from "../db/schema/index.js";
 import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
 import {
 	type NormalizedEvent,
@@ -206,7 +206,7 @@ export function detectAgentType(
 // The session row shape returned by processHookEvent.
 // Using typeof-based inference keeps this in sync with the drizzle schema
 // without duplicating field lists.
-type SessionRow = typeof import("../db/schema.js").sessions.$inferSelect;
+type SessionRow = typeof import("../db/schema/index.js").sessions.$inferSelect;
 
 /**
  * Process an incoming hook event.

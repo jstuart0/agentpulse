@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { createApiKey } from "../auth/api-key.js";
 import { requireAuth } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
-import { apiKeys, settings } from "../db/schema.js";
+import { apiKeys, settings } from "../db/schema/index.js";
 import { ProtectedSettingError, upsertSetting } from "../services/settings-service.js";
 import { getTelemetryDiagnostics, sendTelemetryNow } from "../services/telemetry.js";
 import {

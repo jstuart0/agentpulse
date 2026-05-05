@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { settings } from "../../db/schema.js";
+import { settings } from "../../db/schema/index.js";
 
 /**
  * Phase 7 risk class configuration. The watcher consults this list at

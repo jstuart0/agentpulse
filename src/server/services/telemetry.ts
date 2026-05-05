@@ -30,7 +30,7 @@ import { count, eq } from "drizzle-orm";
 import packageJson from "../../../package.json";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
-import { sessions, settings } from "../db/schema.js";
+import { sessions, settings } from "../db/schema/index.js";
 
 // Telemetry reports anonymous usage data to the AgentPulse project maintainers.
 // This helps us understand adoption and prioritize improvements.

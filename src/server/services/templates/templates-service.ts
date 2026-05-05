@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { AgentType, SessionTemplateInput } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { sessionTemplates } from "../../db/schema.js";
+import { sessionTemplates } from "../../db/schema/index.js";
 import { ensureProjectForCwd, getProject } from "../projects/projects-service.js";
 import { normalizeCwd } from "../projects/resolver.js";
 import { normalizeTemplateInput, validateTemplateInput } from "../template-preview.js";

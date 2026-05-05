@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import type { EventCategory, SessionEvent } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { events } from "../../db/schema.js";
+import { events } from "../../db/schema/index.js";
 
 /**
  * Load the last N events for a session, newest-last. Used by the context

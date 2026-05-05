@@ -15,9 +15,11 @@ const health = new Hono();
 // initializeDatabase() has completed all migrations so the probe does not
 // pass early and allow livenessProbe to SIGKILL the pod mid-migration.
 //
-// index.ts calls markDbReady() immediately after initializeDatabase() returns.
-// Because initializeDatabase() is synchronous, markDbReady() fires before any
-// request can land (the event loop has not yielded), so the 503 window is
+// index.ts calls markDbReady() immediately after `await initializeDatabase()`.
+// initializeDatabase() is async since Phase 1 of the postgres-backend campaign
+// (Decision 15). The event loop yields during the await, but because index.ts
+// runs at module load time before Bun.serve() is called, no requests can land
+// before the await resolves and markDbReady() fires. The 503 window is
 // confined to the true migration period.
 let _dbReady = false;
 

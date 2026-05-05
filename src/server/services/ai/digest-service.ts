@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { events, sessions, watcherProposals } from "../../db/schema.js";
+import { events, sessions, watcherProposals } from "../../db/schema/index.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 
 /**

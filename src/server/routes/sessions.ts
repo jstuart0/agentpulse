@@ -3,7 +3,8 @@ import { Hono } from "hono";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
-import { events, sessions } from "../db/schema.js";
+import { events, sessions } from "../db/schema/index.js";
+import { withTransaction } from "../db/with-transaction.js";
 import {
 	listControlActionsForSession,
 	queuePromptAction,
@@ -88,15 +89,15 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 // PUT /api/v1/sessions/:sessionId/rename - Rename a session
 //
 // Slice DELETE-RENAME-1: business logic lives in `renameSession`, which
-// wraps the `sessions` + (optional) `managed_sessions` updates in a SYNC
-// SQLite transaction. The route handler only validates input.
+// wraps the `sessions` + (optional) `managed_sessions` updates in a
+// transaction. The route handler only validates input.
 sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { name } = await c.req.json<{ name: string }>();
 
 	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
 
-	renameSession(sessionId, name);
+	await renameSession(sessionId, name);
 	return c.json({ ok: true });
 });
 
@@ -276,27 +277,19 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 // Slice DB-1: child tables (events, managed_sessions, control_actions,
 // watcher_proposals, ai_hitl_requests, ai_watcher_runs, watcher_configs)
 // now reference sessions(session_id) ON DELETE CASCADE, so the single
-// `delete(sessions)` is sufficient — SQLite drops the children atomically
-// in the same transaction.
+// `delete(sessions)` is sufficient — both dialects drop children atomically
+// via the cascade FK. The explicit `events` delete is belt-and-braces for
+// older SQLite installs that haven't yet rebuilt FKs.
 //
-// We wrap the deletes in `getDb().transaction(...)` so any failure (FK
-// violation, etc.) leaves the row in place rather than partially deleted.
-// IMPORTANT: drizzle's bun-sqlite transaction wraps a SYNC native
-// transaction; passing an async callback silently disables rollback
-// because the COMMIT runs before any awaited statement settles. We use
-// a sync callback with `.run()` instead. The explicit `events` delete
-// is kept inside the same transaction as belt-and-braces for older DBs
-// that haven't yet rebuilt FKs.
+// We wrap the deletes in withTransaction() so any failure leaves the row
+// in place rather than partially deleted.
 sessionsRouter.delete("/sessions/:sessionId", async (c) => {
 	const sessionId = c.req.param("sessionId");
 
-	// A-M1: await the transaction call so a future Drizzle adapter upgrade
-	// (which may return a Promise) cannot silently disable rollback. Today
-	// bun-sqlite's transaction() is synchronous and the await is a no-op.
-	await getDb().transaction((tx) => {
+	await withTransaction(async (tx) => {
 		// Cascade does this; explicit for older DBs that haven't yet rebuilt FKs.
-		tx.delete(events).where(eq(events.sessionId, sessionId)).run();
-		tx.delete(sessions).where(eq(sessions.sessionId, sessionId)).run();
+		await tx.delete(events).where(eq(events.sessionId, sessionId));
+		await tx.delete(sessions).where(eq(sessions.sessionId, sessionId));
 	});
 
 	return c.json({ ok: true });

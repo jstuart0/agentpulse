@@ -5,7 +5,7 @@ import {
 	type NextQuestion,
 	type ProjectDraftFields,
 	aiPendingProjectDrafts,
-} from "../../db/schema.js";
+} from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import type { LaunchIntent } from "./launch-intent-detector.js";

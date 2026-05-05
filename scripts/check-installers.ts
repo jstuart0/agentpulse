@@ -16,7 +16,7 @@ async function main() {
 	await mustInclude("src/server/routes/setup.ts", 'setup.get("/install-local.ps1"');
 	await mustInclude("deploy/k8s/07-ingressroute.yaml", "Path(`/install-local.sh`)");
 	await mustInclude("deploy/k8s/07-ingressroute.yaml", "Path(`/install-local.ps1`)");
-	await mustInclude("Dockerfile", "COPY --from=builder /app/scripts ./scripts");
+	await mustInclude("Dockerfile", "COPY --chown=bun:bun --from=builder /app/scripts ./scripts");
 	console.log("installer checks passed");
 }
 

@@ -2,12 +2,12 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { settings } = await import("../db/schema.js");
+const { settings } = await import("../db/schema/index.js");
 const { LABS_REGISTRY, LABS_SETTINGS_KEY, defaultLabsFlags, getLabsFlags, setLabsFlag } =
 	await import("./labs-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

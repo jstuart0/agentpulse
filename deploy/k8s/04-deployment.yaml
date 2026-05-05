@@ -69,6 +69,13 @@ spec:
             secretKeyRef:
               name: agentpulse-secrets
               key: AGENTPULSE_INITIAL_API_KEY
+        - name: AGENTPULSE_PG_POOL_MAX
+          valueFrom:
+            secretKeyRef:
+              name: agentpulse-secrets
+              key: AGENTPULSE_PG_POOL_MAX
+              # optional: true is not available in all cluster versions; set a
+              # default of "10" in the secret template so this key is always present.
         envFrom:
         - configMapRef:
             name: agentpulse-config
@@ -152,6 +159,13 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 6
+      # SQLITE-ONLY: the backup-sidecar runs sqlite3 .backup to copy the live
+      # SQLite WAL file to the agentpulse-backups PVC on a daily schedule.
+      # It is NOT applicable when DATABASE_URL points at Postgres — Postgres
+      # deployments use Postgres-native backup (pg_dump / wal-g / managed
+      # snapshots). The deploy/k8s/overlays/postgres/ Kustomize overlay removes
+      # this sidecar and its associated volume mounts for Postgres deployments.
+      # Decision 32 / bob M5: keep sidecar in base; overlay strips it.
       - name: backup-sidecar
         # SHA-tagged backup image — built and pushed alongside the app image
         # by scripts/build-and-push.sh. Update this tag in lockstep with the

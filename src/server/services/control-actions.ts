@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import type {
 	ControlAction,
 	ControlActionStatus,
@@ -13,7 +13,9 @@ import {
 	managedSessions,
 	projects,
 	sessions,
-} from "../db/schema.js";
+} from "../db/schema/index.js";
+import { jsonExtractText } from "../db/sql-helpers.js";
+import { withTransaction } from "../db/with-transaction.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
 
@@ -339,25 +341,19 @@ export async function queueCleanupWorkArea(
  * events via FK, so events go first.
  */
 async function finalizeCleanupWorkArea(projectId: string): Promise<void> {
-	// drizzle-bun-sqlite getDb().transaction is SYNC. An async callback returns a
-	// Promise immediately and the COMMIT runs before any awaited statement
-	// settles, silently disabling rollback. Use a sync callback with .all()
-	// for reads and .run() for writes so the BEGIN/COMMIT brackets the actual
-	// DB work and a thrown error rolls back atomically.
-	getDb().transaction((tx) => {
-		const projectSessions = tx
+	await withTransaction(async (tx) => {
+		const projectSessions = await tx
 			.select({ id: sessions.id, sessionId: sessions.sessionId })
 			.from(sessions)
-			.where(eq(sessions.projectId, projectId))
-			.all();
+			.where(eq(sessions.projectId, projectId));
 		for (const s of projectSessions) {
-			tx.delete(events).where(eq(events.sessionId, s.sessionId)).run();
-			tx.delete(sessions).where(eq(sessions.id, s.id)).run();
+			await tx.delete(events).where(eq(events.sessionId, s.sessionId));
+			await tx.delete(sessions).where(eq(sessions.id, s.id));
 		}
-		tx.delete(projects).where(eq(projects.id, projectId)).run();
+		await tx.delete(projects).where(eq(projects.id, projectId));
 	});
 	// Cache invalidation only matters once the rows are durably gone; running
-	// it after the sync tx commits keeps the cache consistent on rollback.
+	// it after the tx commits keeps the cache consistent on rollback.
 	await bumpVersionAndReload();
 }
 
@@ -386,7 +382,7 @@ export async function claimNextControlAction(supervisorId: string) {
 			and(
 				eq(controlActions.status, "queued"),
 				isNull(controlActions.sessionId),
-				sql`json_extract(${controlActions.metadata}, '$.targetSupervisorId') = ${supervisorId}`,
+				eq(jsonExtractText(controlActions.metadata, "$.targetSupervisorId"), supervisorId),
 			),
 		)
 		.orderBy(asc(controlActions.createdAt))

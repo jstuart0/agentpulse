@@ -8,7 +8,7 @@ import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { aiActionRequests, aiHitlRequests, aiInboxSnoozes, events, sessions, watcherProposals } =
-	await import("../../db/schema.js");
+	await import("../../db/schema/index.js");
 const { buildInbox } = await import("./inbox-service.js");
 const { snoozeItem } = await import("./inbox-snooze-service.js");
 const { completeProposalAsHitl, createPendingProposal, failProposal } = await import(
@@ -16,7 +16,7 @@ const { completeProposalAsHitl, createPendingProposal, failProposal } = await im
 );
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

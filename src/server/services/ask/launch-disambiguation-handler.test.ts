@@ -1,9 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
+import { describeSqliteOnly } from "../../test-utils/backend.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { aiPendingProjectDrafts, askThreads, projects, sessions } = await import(
-	"../../db/schema.js"
+	"../../db/schema/index.js"
 );
 const {
 	createLaunchCloneDraft,
@@ -17,14 +18,12 @@ const {
 	parseScaffoldConfirmReply,
 	resolveLaunchDisambiguation,
 } = await import("./launch-disambiguation-handler.js");
-const { settings } = await import("../../db/schema.js");
+const { settings } = await import("../../db/schema/index.js");
 const { WORKSPACE_DEFAULT_ROOT_KEY } = await import("../workspace/feature.js");
 
-import type { ProjectChoiceSnapshot } from "../../db/schema.js";
+import type { ProjectChoiceSnapshot } from "../../db/schema/index.js";
 
-beforeAll(() => {
-	initializeDatabase();
-});
+beforeAll(() => initializeDatabase());
 
 beforeEach(async () => {
 	await getDb().delete(aiPendingProjectDrafts).execute();
@@ -128,7 +127,11 @@ describe("encodePickerMeta / extractPickerMeta", () => {
 	});
 });
 
-describe("schema back-compat", () => {
+// SQLite-only: inserts a row via raw SQL without the `kind` column to simulate
+// a pre-migration row. On Postgres the column has a DEFAULT and cannot be
+// omitted; the back-compat is guaranteed by the schema default, not the Drizzle
+// fallback.
+describeSqliteOnly("schema back-compat", () => {
 	test("existing rows without an explicit kind column are treated as add_project", async () => {
 		const threadId = crypto.randomUUID();
 		const now = new Date().toISOString();
@@ -351,7 +354,7 @@ describe("resolveLaunchDisambiguation", () => {
 });
 
 describe("end-to-end: numeric reply produces an action_request", async () => {
-	const { aiActionRequests, supervisors } = await import("../../db/schema.js");
+	const { aiActionRequests, supervisors } = await import("../../db/schema/index.js");
 
 	beforeEach(async () => {
 		await getDb().delete(aiActionRequests).execute();
@@ -492,7 +495,7 @@ describe("parseScaffoldConfirmReply", () => {
 });
 
 describe("workspace scaffold flow (Slice 5d)", async () => {
-	const { aiActionRequests, supervisors } = await import("../../db/schema.js");
+	const { aiActionRequests, supervisors } = await import("../../db/schema/index.js");
 
 	beforeEach(async () => {
 		await getDb().delete(aiActionRequests).execute();
@@ -786,7 +789,7 @@ describe("parseCloneConfirmReply", () => {
 });
 
 describe("workspace clone flow (Slice 6d)", async () => {
-	const { aiActionRequests, supervisors } = await import("../../db/schema.js");
+	const { aiActionRequests, supervisors } = await import("../../db/schema/index.js");
 
 	beforeEach(async () => {
 		await getDb().delete(aiActionRequests).execute();

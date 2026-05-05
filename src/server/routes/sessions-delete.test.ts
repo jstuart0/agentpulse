@@ -1,6 +1,7 @@
 // Slice DB-1 — DELETE /sessions/:id atomicity + cascade coverage.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../services/ai/__test_db.js";
+import { itSqliteOnly } from "../test-utils/backend.js";
 
 const { Database } = await import("bun:sqlite");
 const { Hono } = await import("hono");
@@ -16,14 +17,14 @@ const {
 	sessions,
 	watcherConfigs,
 	watcherProposals,
-} = await import("../db/schema.js");
+} = await import("../db/schema/index.js");
 const { sessionsRouter } = await import("./sessions.js");
 
 const app = new Hono().route("/api/v1", sessionsRouter);
 const originalDisableAuth = config.disableAuth;
 
-beforeAll(() => {
-	initializeDatabase();
+beforeAll(async () => {
+	await initializeDatabase();
 	config.disableAuth = true;
 });
 
@@ -140,7 +141,9 @@ describe("DELETE /sessions/:id", () => {
 		expect(runRow.length).toBe(0);
 	});
 
-	test("FTS rows for the deleted session are also removed", async () => {
+	// SQLite-only: asserts FTS5 row removal via raw bun:sqlite handle.
+	// Phase 5 adds a Postgres-compatible search assertion.
+	itSqliteOnly("FTS rows for the deleted session are also removed", async () => {
 		const sessionId = `fts-${crypto.randomUUID()}`;
 		await seedSessionWithChildren(sessionId);
 
@@ -179,7 +182,10 @@ describe("DELETE /sessions/:id", () => {
 		}
 	});
 
-	test("transaction rollback on mid-delete throw leaves the session intact", async () => {
+	// SQLite-only: uses the synchronous bun-sqlite transaction API with .run()
+	// to test mid-delete rollback. Postgres transaction rollback is validated
+	// by the withTransaction helper's own tests and by the route integration path.
+	itSqliteOnly("transaction rollback on mid-delete throw leaves the session intact", async () => {
 		const sessionId = `rollback-${crypto.randomUUID()}`;
 		await seedSessionWithChildren(sessionId);
 

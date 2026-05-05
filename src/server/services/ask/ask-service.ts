@@ -1,7 +1,7 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import type { AskMessageRole, AskThreadOrigin } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { askMessages, askThreads, sessionTemplates } from "../../db/schema.js";
+import { askMessages, askThreads, sessionTemplates } from "../../db/schema/index.js";
 import { getAdapter } from "../ai/llm/registry.js";
 import type { LlmAdapter } from "../ai/llm/types.js";
 import {

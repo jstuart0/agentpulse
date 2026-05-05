@@ -16,5 +16,11 @@ docs/
 # TLS secret names) go under deploy/k8s-*/ and must never be committed.
 deploy/k8s-*/
 
+# Postgres overlay credentials — the .example template is committed; the real
+# file (with actual DATABASE_URL and secrets) must NEVER be committed.
+# Operators: copy secret-patch.yaml.example → secret-patch.yaml, fill in values,
+# apply out-of-band (kubectl apply -f), then discard or keep locally untracked.
+deploy/overlays/postgres/secret-patch.yaml
+
 # Claude Code per-project state (scheduled task locks, etc.)
 .claude/

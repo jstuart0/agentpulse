@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import type { SessionTemplateInput } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { events, sessionTemplates, sessions } from "../../db/schema.js";
+import { events, sessionTemplates, sessions } from "../../db/schema/index.js";
 
 /**
  * Template distillation service. Consumes a successful session's

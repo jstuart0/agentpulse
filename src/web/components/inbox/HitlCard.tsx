@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { InboxWorkItem } from "../../lib/api.js";
+import { formatTimeAgo } from "../../lib/utils.js";
 import { KindBadge } from "./shared/KindBadge.js";
 import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
-import { formatTimeAgo } from "../../lib/utils.js";
 
 type HitlItem = Extract<InboxWorkItem, { kind: "hitl" }>;
 
@@ -74,7 +74,9 @@ export function HitlCard({
 				>
 					Decline
 				</button>
-				<span className="text-[10px] text-muted-foreground ml-auto">{formatTimeAgo(item.openedAt)}</span>
+				<span className="text-[10px] text-muted-foreground ml-auto">
+					{formatTimeAgo(item.openedAt)}
+				</span>
 			</div>
 
 			{err && <div className="mt-2 text-[11px] text-red-300">{err}</div>}

@@ -1,6 +1,6 @@
 import { eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { settings } from "../../db/schema.js";
+import { settings } from "../../db/schema/index.js";
 import { upsertSetting } from "../settings-service.js";
 
 // Settings keys for the scratch-workspace feature (Slice 5 of the AI

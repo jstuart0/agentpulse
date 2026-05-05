@@ -2,10 +2,13 @@ import { readFile, stat } from "node:fs/promises";
 import { and, eq, isNotNull, ne } from "drizzle-orm";
 import type { AgentType, Session } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { sessions } from "../db/schema.js";
+import { sessions } from "../db/schema/index.js";
 import { type NormalizedEvent, createAssistantTranscriptEvent } from "./event-normalizer.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { notifySessionEvents } from "./notifier.js";
+
+// Polling-based by design. LISTEN/NOTIFY would replace setInterval on Postgres
+// in a follow-up campaign — see thoughts/postgres-followup-plans/listen-notify-transcript-sync.md.
 
 /**
  * Transcript sync worker (WS3). Scans active-session transcript files

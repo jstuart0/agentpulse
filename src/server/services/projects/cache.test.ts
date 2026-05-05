@@ -4,12 +4,12 @@ import "../ai/__test_db.js";
 // Defer DB-touching imports so the __test_db side-effect can configure
 // SQLITE_PATH before the client module binds to it.
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { projects, sessions } = await import("../../db/schema.js");
+const { projects, sessions } = await import("../../db/schema/index.js");
 const { getCachedProjects, loadEager } = await import("./cache.js");
 const { createProject, deleteProject, updateProject } = await import("./projects-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

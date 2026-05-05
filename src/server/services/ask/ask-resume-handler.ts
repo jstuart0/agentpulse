@@ -6,7 +6,7 @@ import type {
 	SessionTemplateInput,
 } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { sessions } from "../../db/schema.js";
+import { sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import {

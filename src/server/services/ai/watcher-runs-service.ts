@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import type { WatcherRunStatus, WatcherRunTriggerKind } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { aiWatcherRuns } from "../../db/schema.js";
+import { aiWatcherRuns } from "../../db/schema/index.js";
+import { isUniqueViolationError } from "../../db/sql-helpers.js";
 
 // Re-exported so existing imports from this module continue to resolve.
 export type { WatcherRunStatus, WatcherRunTriggerKind };
@@ -69,6 +70,11 @@ export function dedupeKeyFor(input: {
  * running) already exists for the session, this is a no-op and returns the
  * existing row — the unique partial index enforces "one open run per
  * session" as an invariant, so we don't need to coordinate across callers.
+ *
+ * Race window: two concurrent callers may both observe no open run and then
+ * race to INSERT. Only one INSERT wins; the loser catches the unique-violation
+ * error (Postgres SQLSTATE 23505 / SQLite SQLITE_CONSTRAINT_UNIQUE), re-reads
+ * the row the winner inserted, and returns it. Any other error is re-thrown.
  */
 export async function enqueueRun(input: {
 	sessionId: string;
@@ -78,22 +84,44 @@ export async function enqueueRun(input: {
 	const existing = await getOpenRunForSession(input.sessionId);
 	if (existing) return existing;
 	const now = new Date().toISOString();
-	const [row] = await getDb()
-		.insert(aiWatcherRuns)
-		.values({
-			sessionId: input.sessionId,
-			triggerEventId: input.triggerEventId ?? null,
-			triggerKind: input.triggerKind,
-			status: "queued",
-			dedupeKey: dedupeKeyFor({
+	try {
+		const [row] = await getDb()
+			.insert(aiWatcherRuns)
+			.values({
 				sessionId: input.sessionId,
+				triggerEventId: input.triggerEventId ?? null,
 				triggerKind: input.triggerKind,
-			}),
-			createdAt: now,
-			updatedAt: now,
-		})
-		.returning();
-	return toRecord(row);
+				status: "queued",
+				dedupeKey: dedupeKeyFor({
+					sessionId: input.sessionId,
+					triggerKind: input.triggerKind,
+				}),
+				createdAt: now,
+				updatedAt: now,
+			})
+			.returning();
+		return toRecord(row);
+	} catch (err) {
+		if (isUniqueViolationError(err)) {
+			// Race: another writer enqueued the same session between our SELECT and
+			// INSERT. Re-read the existing open run and return it.
+			//
+			// M2: log the constraint name so operators can distinguish the expected
+			// idx_ai_watcher_runs_open_per_session violation from any other unique
+			// constraint that might be added in the future. postgres-js exposes
+			// err.constraint (SQLSTATE 23505 detail); SQLite doesn't, so we guard.
+			const constraintName =
+				err && typeof err === "object" && "constraint" in err
+					? String((err as { constraint: unknown }).constraint)
+					: "unknown";
+			console.debug(
+				`[enqueueRun] unique-violation caught (constraint=${constraintName}), re-reading winning row`,
+			);
+			const raceWinner = await getOpenRunForSession(input.sessionId);
+			if (raceWinner) return raceWinner;
+		}
+		throw err;
+	}
 }
 
 /** Find the single open (non-terminal) run for a session, if any. */
@@ -113,10 +141,23 @@ export async function getOpenRunForSession(sessionId: string): Promise<WatcherRu
 }
 
 /**
- * Attempt to claim the next queued run for processing. Uses a conditional
- * UPDATE so that in a multi-instance world only one lease holder wins even
- * if two leasers race. Returns the claimed row or null if the queue is
- * empty.
+ * Attempt to claim the next queued run for processing. Implements at-most-once
+ * semantics on both backends:
+ *
+ *   - SELECT picks the oldest queued row.
+ *   - UPDATE re-checks `status = 'queued'` in the WHERE clause. On Postgres,
+ *     two concurrent callers may both SELECT the same row, but only one UPDATE
+ *     matches — the other gets 0 rows back and returns null.
+ *   - SQLite serializes all writes, so contention is impossible; the same
+ *     SELECT+UPDATE pattern works without any extra locking.
+ *
+ * The loser (returning null) does NOT re-loop. `RunLeaser.drain()` breaks on
+ * null (see run-leaser.ts:67-73), leaving later rows for the next interval.
+ * This is intentional: at-most-once beats at-least-once for AgentPulse's
+ * low-contention workload.
+ *
+ * TODO(postgres-leaser-perf): replace SELECT+UPDATE with SELECT … FOR UPDATE
+ * SKIP LOCKED in a follow-up for at-least-once contention reduction.
  */
 export async function claimNextRun(input: {
 	leaseOwner: string;

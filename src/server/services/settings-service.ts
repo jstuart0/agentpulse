@@ -1,5 +1,5 @@
 import { getDb } from "../db/client.js";
-import { settings } from "../db/schema.js";
+import { settings } from "../db/schema/index.js";
 import { invalidateAiFlagsCache } from "./ai/feature.js";
 
 // ADD new user-facing settings keys here — requires review.

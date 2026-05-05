@@ -6,7 +6,7 @@ import {
 	projectAlertRuleFires,
 	projectAlertRules,
 	sessions,
-} from "../../db/schema.js";
+} from "../../db/schema/index.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 
 // ---- Shared notification dispatch ------------------------------------------
@@ -369,13 +369,13 @@ export async function evaluateFreeformRules(now: Date): Promise<void> {
 
 		// Atomic daily reset: SQL CASE expression prevents a read-modify-write race
 		// if two processes or a restart coincide with midnight.
-		await getDb().run(sql`
-			UPDATE project_alert_rules
-			SET
-				daily_token_spend_cents = CASE WHEN daily_token_spend_date != ${today} THEN 0 ELSE daily_token_spend_cents END,
-				daily_token_spend_date = ${today}
-			WHERE id = ${rule.id}
-		`);
+		await getDb()
+			.update(projectAlertRules)
+			.set({
+				dailyTokenSpendCents: sql`CASE WHEN ${projectAlertRules.dailyTokenSpendDate} != ${today} THEN 0 ELSE ${projectAlertRules.dailyTokenSpendCents} END`,
+				dailyTokenSpendDate: today,
+			})
+			.where(eq(projectAlertRules.id, rule.id));
 
 		// Re-read from DB after the atomic reset — do not use the in-memory snapshot.
 		const [freshRule] = await getDb()

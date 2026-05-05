@@ -1,10 +1,19 @@
 /**
  * Pluggable search backend contract.
  *
- * AgentPulse currently runs on SQLite only (see the Postgres backend
- * plan at thoughts/2026-04-24-postgres-backend-plan.md). Once Postgres
- * lands, a `PostgresTsvectorBackend` will implement this same interface
- * so the search UI and routes stay unchanged.
+ * AgentPulse supports two backend families:
+ *
+ *   **shadow-index** (e.g. SQLite FTS5): `initialize`, `indexSession`,
+ *   `removeSession`, `indexEvent`, `removeEvent`, and `rebuild` all mutate
+ *   a shadow virtual table kept in sync with the source tables. Callers
+ *   must call `initialize()` at boot and drive the index methods on
+ *   ingest/delete. `search()` queries the shadow table.
+ *
+ *   **direct-search** (e.g. Postgres ILIKE): `initialize`, `indexSession`,
+ *   `removeSession`, `indexEvent`, `removeEvent`, and `rebuild` are all
+ *   no-ops — there is no shadow index. `search()` queries the source tables
+ *   directly via `ILIKE`. Callers MUST NOT assume the index methods have any
+ *   effect; the `search()` method is the only contract that matters.
  *
  * Each backend indexes two "kinds" of rows:
  *
@@ -79,11 +88,11 @@ export interface SearchResult {
 	hits: SearchHit[];
 	total: number;
 	/** Backend identifier for telemetry / debugging. */
-	backend: "sqlite-fts5" | "postgres-tsvector";
+	backend: "sqlite-fts5" | "postgres-ilike" | "postgres-tsvector";
 }
 
 export interface SearchBackend {
-	readonly name: "sqlite-fts5" | "postgres-tsvector";
+	readonly name: "sqlite-fts5" | "postgres-ilike" | "postgres-tsvector";
 
 	/** Called at boot — create virtual tables / triggers / tsvector columns. Idempotent. */
 	initialize(): Promise<void>;

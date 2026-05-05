@@ -4,8 +4,8 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { getTrustedClientIp } from "../auth/client-ip.js";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
 import { config } from "../config.js";
-import { getDb } from "../db/client.js";
-import { settings, users } from "../db/schema.js";
+import { settings, users } from "../db/schema/index.js";
+import { withTransaction } from "../db/with-transaction.js";
 import {
 	SESSION_COOKIE_NAME,
 	SESSION_DURATION_MS,
@@ -331,36 +331,34 @@ authRouter.post("/auth/signup", async (c) => {
 		}
 	}
 
-	// First-run path: hash OUTSIDE the transaction (Bun.password.hash is async;
-	// bun-sqlite Drizzle sync transactions must not await inside the callback).
-	// Do NOT make the getDb().transaction callback async — bun-sqlite Drizzle async-tx
-	// callbacks commit before awaited work settles. Hash outside the tx; only
-	// sync ops inside.
-	// See: src/server/routes/sessions.ts:281-284 for the canonical warning.
+	// Hash outside the transaction — Bun.password.hash is CPU-intensive and
+	// should not hold a DB transaction open while it runs.
 	const passwordHash = await Bun.password.hash(body.password, { algorithm: "argon2id" });
 	const userId = crypto.randomUUID();
 	const now = new Date().toISOString();
 
 	let raceWon = false;
 	try {
-		// SYNCHRONOUS callback only — bun-sqlite Drizzle commits before awaited
-		// work in async callbacks; see src/server/routes/sessions.ts:281-284.
-		getDb().transaction((tx) => {
+		// withTransaction uses manual BEGIN/COMMIT/ROLLBACK on the SQLite path
+		// so async callbacks are safe — COMMIT only fires after the Promise resolves.
+		// On the Postgres path, db.transaction(fn) natively supports async callbacks.
+		await withTransaction(async (tx) => {
 			// Re-check: count ALL users (including soft-deleted) and the
 			// firstRunCompleted flag inside the transaction so two concurrent
 			// signups can't both pass. We intentionally count disabled users:
 			// a soft-deleted bootstrap admin should NOT re-open the signup
 			// window — the flag provides belt-and-suspenders, but the total
 			// user count is the primary guard.
-			const totalCount = tx.select({ id: users.id }).from(users).all().length;
+			const userRows = await tx.select({ id: users.id }).from(users);
+			const totalCount = userRows.length;
 
-			const flagRow = tx
+			const flagRows = await tx
 				.select({ value: settings.value })
 				.from(settings)
-				.where(eq(settings.key, "auth.firstRunCompleted"))
-				.get();
+				.where(eq(settings.key, "auth.firstRunCompleted"));
+			const flagRow = flagRows[0];
 
-			if (totalCount !== 0 || flagRow?.value === "true") {
+			if (totalCount !== 0 || Boolean(flagRow?.value)) {
 				// Race lost — another concurrent signup completed first, or the
 				// instance already has users (even disabled ones). Return without
 				// writing; the outer code returns 403.
@@ -368,24 +366,22 @@ authRouter.post("/auth/signup", async (c) => {
 			}
 
 			// Both checks pass: create the admin user and set the flag atomically.
-			tx.insert(users)
-				.values({
-					id: userId,
-					username: body.username as string,
-					passwordHash,
-					role: "admin",
-					createdAt: now,
-					updatedAt: now,
-				})
-				.run();
+			await tx.insert(users).values({
+				id: userId,
+				username: body.username as string,
+				passwordHash,
+				role: "admin",
+				createdAt: now,
+				updatedAt: now,
+			});
 
-			tx.insert(settings)
-				.values({ key: "auth.firstRunCompleted", value: "true", updatedAt: now })
+			await tx
+				.insert(settings)
+				.values({ key: "auth.firstRunCompleted", value: true, updatedAt: now })
 				.onConflictDoUpdate({
 					target: settings.key,
-					set: { value: "true", updatedAt: now },
-				})
-				.run();
+					set: { value: true, updatedAt: now },
+				});
 
 			raceWon = true;
 		});

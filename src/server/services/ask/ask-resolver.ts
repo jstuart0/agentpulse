@@ -1,6 +1,10 @@
+// Phase 4 audit: src/server/services/ask/ is clean — no raw getSqlite() calls,
+// no json_extract, no datetime('now') literals outside Drizzle's sql`` tag.
+// The sql`` usages below are ORDER BY / COALESCE expressions using Drizzle
+// column references (bound parameters) and are portable to Postgres.
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { sessions } from "../../db/schema.js";
+import { sessions } from "../../db/schema/index.js";
 import { getSearchBackend } from "../search/index.js";
 
 /**

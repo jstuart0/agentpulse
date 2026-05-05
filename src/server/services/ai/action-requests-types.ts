@@ -24,7 +24,7 @@ import type {
 	SessionMutationKind,
 	SessionTemplateInput,
 } from "../../../shared/types.js";
-import type { ProjectDraftFields } from "../../db/schema.js";
+import type { ProjectDraftFields } from "../../db/schema/index.js";
 
 export interface LaunchRequestPayload {
 	kind: "launch_request";

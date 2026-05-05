@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, isNotNull, lte } from "drizzle-orm";
 import type { ActionRequestDecision, HitlReplyKind } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { aiHitlRequests } from "../../db/schema.js";
+import { aiHitlRequests } from "../../db/schema/index.js";
 
 export type HitlStatus =
 	| "draft"

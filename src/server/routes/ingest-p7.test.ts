@@ -16,6 +16,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import "../services/ai/__test_db.js";
+import { itSqliteOnly } from "../test-utils/backend.js";
 
 // Dynamic imports so the test DB env vars are set before module init.
 const { config } = await import("../config.js");
@@ -53,8 +54,8 @@ function buildLoopbackDrainApp(peerIp = "127.0.0.1") {
 	return app;
 }
 
-beforeAll(() => {
-	initializeDatabase();
+beforeAll(async () => {
+	await initializeDatabase();
 	config.disableAuth = true;
 	// Mark DB ready so health assertions see 200 (markDbReady() is called by
 	// index.ts boot path, which test harnesses don't run).
@@ -454,64 +455,68 @@ describe("processHookEvent returns session row (no N+1 getSession)", () => {
 //     (SessionEnd → status "completed"; no race overwrote it with "active").
 
 describe("Per-session hook ordering — no race on concurrent hooks", () => {
-	test("10 rapid hooks for the same session: all 200, no bg errors, final status correct", async () => {
-		const { getBgErrorCount: getBgErr } = await import("./ingest-counters.js");
-		const { getDb } = await import("../db/client.js");
+	// SQLite-only: uses getDb().$client.prepare() which is a bun-sqlite-specific API.
+	itSqliteOnly(
+		"10 rapid hooks for the same session: all 200, no bg errors, final status correct",
+		async () => {
+			const { getBgErrorCount: getBgErr } = await import("./ingest-counters.js");
+			const { getDb } = await import("../db/client.js");
 
-		const app = buildApp();
-		const sessionId = `order-test-${Date.now()}`;
+			const app = buildApp();
+			const sessionId = `order-test-${Date.now()}`;
 
-		// Mix of hook types in a realistic sequence.
-		const hooks = [
-			"UserPromptSubmit",
-			"PreToolUse",
-			"PostToolUse",
-			"PreToolUse",
-			"PostToolUse",
-			"UserPromptSubmit",
-			"PreToolUse",
-			"PostToolUse",
-			"Stop",
-			"SessionEnd",
-		];
+			// Mix of hook types in a realistic sequence.
+			const hooks = [
+				"UserPromptSubmit",
+				"PreToolUse",
+				"PostToolUse",
+				"PreToolUse",
+				"PostToolUse",
+				"UserPromptSubmit",
+				"PreToolUse",
+				"PostToolUse",
+				"Stop",
+				"SessionEnd",
+			];
 
-		const beforeErrors = getBgErr();
+			const beforeErrors = getBgErr();
 
-		// Fire all hooks WITHOUT awaiting between them — that's the race scenario.
-		const requests = hooks.map((evt) =>
-			app.request("/api/v1/hooks", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					session_id: sessionId,
-					hook_event_name: evt,
-					cwd: "/tmp",
+			// Fire all hooks WITHOUT awaiting between them — that's the race scenario.
+			const requests = hooks.map((evt) =>
+				app.request("/api/v1/hooks", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						session_id: sessionId,
+						hook_event_name: evt,
+						cwd: "/tmp",
+					}),
 				}),
-			}),
-		);
-		const responses = await Promise.all(requests);
+			);
+			const responses = await Promise.all(requests);
 
-		// All must be 200.
-		for (const res of responses) {
-			expect(res.status).toBe(200);
-		}
+			// All must be 200.
+			for (const res of responses) {
+				expect(res.status).toBe(200);
+			}
 
-		// Allow the per-session queue to drain.
-		await new Promise((r) => setTimeout(r, 500));
+			// Allow the per-session queue to drain.
+			await new Promise((r) => setTimeout(r, 500));
 
-		// No background errors — no constraint violations, no processing failures.
-		const afterErrors = getBgErr();
-		expect(afterErrors - beforeErrors).toBe(0);
+			// No background errors — no constraint violations, no processing failures.
+			const afterErrors = getBgErr();
+			expect(afterErrors - beforeErrors).toBe(0);
 
-		// Final DB state: SessionEnd must have been processed last (the session
-		// queue serializes in arrival order, and SessionEnd was last in our list).
-		const row = getDb()
-			.$client.prepare("SELECT status FROM sessions WHERE session_id = ?")
-			.get(sessionId) as { status: string } | undefined;
-		expect(row).toBeDefined();
-		// SessionEnd sets status to "completed".
-		expect(row?.status).toBe("completed");
-	});
+			// Final DB state: SessionEnd must have been processed last (the session
+			// queue serializes in arrival order, and SessionEnd was last in our list).
+			const row = getDb()
+				.$client.prepare("SELECT status FROM sessions WHERE session_id = ?")
+				.get(sessionId) as { status: string } | undefined;
+			expect(row).toBeDefined();
+			// SessionEnd sets status to "completed".
+			expect(row?.status).toBe("completed");
+		},
+	);
 });
 
 // ── P7 patch-3: drain endpoint XFF-spoof resistance (P1) ─────────────────────

@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
-import { settings, users } from "../db/schema.js";
+import { settings, users } from "../db/schema/index.js";
 import { createUser, getUserByUsername } from "./local-auth-service.js";
 
 /**
@@ -28,18 +28,17 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 			// both the total user count AND this flag; writing it here ensures
 			// the flag is set even if countActiveUsers() drops to 0 after a
 			// disabledAt update.
-			getDb()
+			await getDb()
 				.insert(settings)
 				.values({
 					key: "auth.firstRunCompleted",
-					value: "true",
+					value: true,
 					updatedAt: new Date().toISOString(),
 				})
 				.onConflictDoUpdate({
 					target: settings.key,
-					set: { value: "true", updatedAt: new Date().toISOString() },
-				})
-				.run();
+					set: { value: true, updatedAt: new Date().toISOString() },
+				});
 			console.log(`[auth] Bootstrap admin user "${username}" created.`);
 		} catch (err) {
 			console.error("[auth] Failed to create bootstrap admin:", err);
@@ -67,18 +66,17 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 		// Re-sync also writes the flag: if the admin was soft-deleted between
 		// restarts, this restart re-enables them AND re-asserts the flag so the
 		// signup window stays closed for the duration of the soft-delete window.
-		getDb()
+		await getDb()
 			.insert(settings)
 			.values({
 				key: "auth.firstRunCompleted",
-				value: "true",
+				value: true,
 				updatedAt: new Date().toISOString(),
 			})
 			.onConflictDoUpdate({
 				target: settings.key,
-				set: { value: "true", updatedAt: new Date().toISOString() },
-			})
-			.run();
+				set: { value: true, updatedAt: new Date().toISOString() },
+			});
 		console.log(`[auth] Bootstrap admin "${username}" re-synced.`);
 	} catch (err) {
 		console.error("[auth] Failed to re-sync bootstrap admin:", err);

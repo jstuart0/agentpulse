@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import type { AgentType, LaunchMode, SessionTemplateInput } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { sessions, supervisors } from "../../db/schema.js";
+import { sessions, supervisors } from "../../db/schema/index.js";
 
 /**
  * Launch recommendation service. Advisory only: produces a

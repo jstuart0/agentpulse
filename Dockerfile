@@ -26,6 +26,7 @@ COPY --chown=bun:bun --from=builder /app/dist ./dist
 COPY --chown=bun:bun --from=builder /app/src/server ./src/server
 COPY --chown=bun:bun --from=builder /app/src/shared ./src/shared
 COPY --chown=bun:bun --from=builder /app/scripts ./scripts
+COPY --chown=bun:bun --from=builder /app/drizzle ./drizzle
 COPY --chown=bun:bun --from=builder /app/package.json ./
 
 ENV NODE_ENV=production

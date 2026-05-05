@@ -5,6 +5,92 @@ All notable changes to AgentPulse are documented here. The format is based on
 project is still pre-1.0 — breaking changes land under the regular `Changed`
 section with a `⚠ breaking` prefix so they're easy to spot.
 
+## [0.4.0] — 2026-05-05
+
+This release adds a complete PostgreSQL backend at parity with the existing SQLite path.
+Operators can now run AgentPulse against a managed Postgres instance for multi-replica
+deployments. SQLite remains the default for OSS quickstart and single-machine use.
+
+Plane ticket: [AGEN-3](https://plane.xmojo.net/agile-solutions-group/projects/7ec41b9d-5efa-4f56-bc82-930f76b01345/).
+Branch: `feat/postgres-backend` — 13 commits, 147 files changed.
+
+### Added
+
+- **PostgreSQL backend** — set `DATABASE_URL=postgres://...` at boot; AgentPulse resolves
+  the dialect once at startup (`config.dialect`, memoized) and opens a postgres-js
+  connection pool. All API endpoints behave identically on both backends.
+- **Drizzle-kit migration runner** — fresh SQLite installs and all Postgres installs now
+  use Drizzle migrate instead of the legacy `initializeDatabase()` DDL block. Generated
+  baselines committed at `drizzle/sqlite/0000_*.sql` and `drizzle/postgres/0000_*.sql`
+  (29 tables, 7 cascade FKs, composite PK on `ai_daily_spend`, 6 partial-WHERE unique
+  indexes on Postgres).
+- **Dual-dialect schema split** — `src/server/db/schema/{core,ai,ask-projects}/` with
+  per-table files and a column-factory pattern. Per-dialect entry files (`schema/sqlite.ts`,
+  `schema/postgres.ts`). Runtime barrel (`schema/index.ts`) re-exports the SQLite set for
+  existing callers (12 importers still on legacy path — follow-up).
+- **`withTransaction()` helper** — dialect-aware transaction wrapper. Includes a runtime
+  guard that throws on async-callback misuse (bun-sqlite Drizzle silently disables rollback
+  on async callbacks — the guard prevents this class of bug going forward).
+- **`PostgresSearchBackend`** — implements the `SearchBackend` interface with ILIKE-based
+  full-text search. `SearchResult.backend` is now `"fts5"` (SQLite) or `"postgres-ilike"`
+  (Postgres). The `"postgres-tsvector"` value is reserved for a follow-up campaign.
+- **SQL helpers** (`src/server/db/sql-helpers.ts`) — `nowSql`, `intervalSecondsSql`,
+  `jsonExtractText`, `likeStartsWith`, `likeContains`, `executeRows`; dialect-aware,
+  with rendered-SQL assertions in tests.
+- **GHA two-job CI** — `test-sqlite` runs on every push; `test-postgres` runs on push to
+  `main`/`dev` with a `postgres:16-alpine` service container and healthcheck.
+- **`deploy/overlays/postgres/`** — Kustomize overlay that removes the SQLite backup
+  sidecar, switches to `RollingUpdate`, and wires `DATABASE_URL` from a Postgres connection
+  string. Pre-flight checklist and README at `deploy/overlays/postgres/README.md`.
+- **`AGENTPULSE_PG_POOL_MAX`** env var — integer [1, 100], defaults to 10. Invalid values
+  log a warning and fall back to 10.
+- **`AGENTPULSE_LEGACY_INIT`** env var — set to `"false"` to force Drizzle migrate on an
+  existing SQLite install (opt-in; unset preserves legacy path for existing installs).
+- **`isUniqueViolationError` helper** — narrow-catches Postgres SQLSTATE `23505` and
+  SQLite `SQLITE_CONSTRAINT_UNIQUE` for portable duplicate-detection in service code.
+- **Advisory lock boot serialization** — Postgres installs acquire a session-level
+  `pg_advisory_lock(2850603287)` on the migration client connection before running
+  migrations. Safe for rolling deploys with multiple replicas booting simultaneously.
+- **Architecture guards** — `scripts/check-no-bun-sqlite-only-apis.ts` (prevents
+  bun-SQLite-only APIs in dialect-shared paths) and `scripts/check-no-legacy-schema-import.ts`
+  (flags direct imports of the deprecated `schema.ts` shim).
+- **Test harness** — `test-utils/backend.ts` exports `describeSqliteOnly`, `describePostgresOnly`,
+  `itSqliteOnly`, `itPostgresOnly` for gating dialect-specific tests. 9 existing test files
+  reclassified as SQLite-only.
+- **7 follow-up plan stubs** in `thoughts/postgres-followup-plans/`: pgvector embeddings,
+  jsonb raw_payload, LISTEN/NOTIFY transcript sync, tsvector search, FOR UPDATE SKIP LOCKED
+  leaser, deterministic Postgres search rank, and legacy-init removal.
+
+### Changed
+
+- **`DATABASE_URL` base manifest default changed from a non-functional Postgres placeholder
+  to `""`** — existing installations applying the base manifests now get SQLite by default
+  rather than failing on the old placeholder URL. Operators who want Postgres apply the
+  `deploy/overlays/postgres/` overlay.
+- **`config.dialect`** replaces the deprecated `useSqlite` export in `src/server/db/dialect.ts`.
+  The old export is retained as a deprecated alias for one release.
+- **`src/server/db/__test_db.ts`** moved to `src/server/db/` (canonical location). A
+  re-export shim at the old path remains for one release.
+- **`initializeDatabase()` is now async** — any caller that was not `await`ing it would
+  have a bug; verified clean across all callers.
+- **`bun run db:migrate`**, **`db:push`**, **`db:studio`** (bare) removed — use the
+  per-dialect variants (`db:migrate:sqlite`, `db:migrate:postgres`, etc.).
+
+### Limitations (documented deferrals)
+
+- **Vector search is SQLite-only.** `event_embeddings` and the embedding + vector-enricher
+  services are gated on `config.dialect === "sqlite"`. The pgvector port is a follow-up
+  campaign (`thoughts/postgres-followup-plans/pgvector-event-embeddings.md`).
+- **Postgres search uses ILIKE, not tsvector.** Adequate for moderate event volumes.
+  A tsvector migration for high-volume deployments is a follow-up
+  (`thoughts/postgres-followup-plans/tsvector-search-perf.md`).
+- **No SQLite→Postgres data migrator.** Postgres installs start fresh. Migrating existing
+  data requires a manual `pg_dump` / COPY or a custom migration script.
+- **12 settings importers still on legacy schema barrel** — tracked via `TODO(Phase 2b)` in
+  `schema/index.ts`; will be addressed alongside `sqlite-legacy-init-removal.md`.
+- **`Postgres json` (not `jsonb`)** — JSON columns match the SQLite `text({mode:'json'})`
+  runtime contract. GIN indexes on payload fields are a follow-up (`jsonb-raw-payload.md`).
+
 ## [0.3.0] — 2026-05-05
 
 This release is the audit-remediation campaign (P1–P15). The primary goal was

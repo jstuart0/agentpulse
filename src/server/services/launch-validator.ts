@@ -7,7 +7,7 @@ import type {
 	SessionTemplateInput,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { launchRequests } from "../db/schema.js";
+import { launchRequests } from "../db/schema/index.js";
 import { pickFirstCapableSupervisor, validateAgainstSupervisor } from "./launch-compatibility.js";
 import { getConnectedSupervisor, listSupervisors } from "./supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "./template-preview.js";

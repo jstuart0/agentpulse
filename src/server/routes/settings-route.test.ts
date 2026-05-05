@@ -4,7 +4,7 @@ import "../services/ai/__test_db.js";
 const { eq } = await import("drizzle-orm");
 const { config } = await import("../config.js");
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { settings } = await import("../db/schema.js");
+const { settings } = await import("../db/schema/index.js");
 const { settingsRouter } = await import("./settings.js");
 const { requireAuth } = await import("../auth/middleware.js");
 const aiStatusRouter = (await import("./ai-status.js")).default;
@@ -27,8 +27,8 @@ const app = new Hono().route("/api/v1", settingsRouter).route("/api/v1", aiRoute
 
 const originalDisableAuth = config.disableAuth;
 
-beforeAll(() => {
-	initializeDatabase();
+beforeAll(async () => {
+	await initializeDatabase();
 	// Tests bypass auth the same way local dev does.
 	config.disableAuth = true;
 });
@@ -56,11 +56,13 @@ async function readSetting(key: string) {
 
 describe("PUT /api/v1/settings", () => {
 	test("writes a non-protected key", async () => {
-		const res = await putSetting({ key: "ui.theme", value: "dark" });
+		// `theme` is in USER_SETTABLE_KEYS (settings-service.ts:11); previously
+		// this test used `ui.theme` which is not allowlisted and so 403'd.
+		const res = await putSetting({ key: "theme", value: "dark" });
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(body).toEqual({ ok: true });
-		const row = await readSetting("ui.theme");
+		const row = await readSetting("theme");
 		expect(row?.value).toBe("dark");
 	});
 
@@ -69,12 +71,16 @@ describe("PUT /api/v1/settings", () => {
 		expect(res.status).toBe(400);
 	});
 
-	test("rejects ai.enabled with 403 protected_setting", async () => {
+	test("rejects ai.enabled with 403 key_not_user_settable", async () => {
+		// Contract per audit-remediation P2 (CLAUDE.md / routes/settings.ts:40):
+		// 403 body shape is `{ error: "key_not_user_settable", key }` — the
+		// previous "protected_setting" / "Setting key '…' is reserved" wording
+		// was renamed during the allowlist work but this test was not updated.
 		const res = await putSetting({ key: "ai.enabled", value: true });
 		expect(res.status).toBe(403);
 		const body = await res.json();
-		expect(body.error).toBe("protected_setting");
-		expect(body.message).toBe("Setting key 'ai.enabled' is reserved for internal use.");
+		expect(body.error).toBe("key_not_user_settable");
+		expect(body.key).toBe("ai.enabled");
 		const row = await readSetting("ai.enabled");
 		expect(row).toBeUndefined();
 	});

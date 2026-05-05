@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { aiDailySpend, sessions } from "../../db/schema.js";
+import { aiDailySpend, sessions } from "../../db/schema/index.js";
 
 function today(): string {
 	// YYYY-MM-DD in local server timezone (matches what UI shows).

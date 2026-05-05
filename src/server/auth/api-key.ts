@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/client.js";
-import { apiKeys } from "../db/schema.js";
+import { apiKeys } from "../db/schema/index.js";
 
 // Generate a new API key: ap_<32 random hex chars>
 export function generateApiKey(): string {

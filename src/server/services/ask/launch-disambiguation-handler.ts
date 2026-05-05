@@ -14,7 +14,7 @@ import {
 	type PendingWorkspaceScaffold,
 	type ProjectChoiceSnapshot,
 	aiPendingProjectDrafts,
-} from "../../db/schema.js";
+} from "../../db/schema/index.js";
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
 import { supervisorSupportsPrelaunch } from "../launch-compatibility.js";
 import { slugifyTaskName } from "../name-generator.js";

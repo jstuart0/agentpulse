@@ -12,14 +12,14 @@ import "../services/ai/__test_db.js";
 const { Hono } = await import("hono");
 const { config } = await import("../config.js");
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { events, sessions } = await import("../db/schema.js");
+const { events, sessions } = await import("../db/schema/index.js");
 const { sessionsRouter } = await import("./sessions.js");
 
 const app = new Hono().route("/api/v1", sessionsRouter);
 const originalDisableAuth = config.disableAuth;
 
-beforeAll(() => {
-	initializeDatabase();
+beforeAll(async () => {
+	await initializeDatabase();
 	config.disableAuth = true;
 });
 

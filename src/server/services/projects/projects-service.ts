@@ -1,7 +1,9 @@
 import { basename } from "node:path";
 import { eq, or, sql } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { projects, sessionTemplates, sessions } from "../../db/schema.js";
+import { projects, sessionTemplates, sessions } from "../../db/schema/index.js";
+import { likeStartsWith } from "../../db/sql-helpers.js";
+import { withTransaction } from "../../db/with-transaction.js";
 import { bumpVersionAndReload, getCachedProjects } from "./cache.js";
 import { normalizeCwd, resolveProjectIdForCwd } from "./resolver.js";
 
@@ -50,12 +52,8 @@ export async function resolveAllSessionsForProject(
 	const projectList = allProjects ?? getCachedProjects();
 	const normalizedCwd = normalizeCwd(projectCwd);
 
-	// drizzle-bun-sqlite getDb().transaction is SYNC; an async callback would let
-	// COMMIT fire before any awaited update settles, silently disabling
-	// rollback. Use a sync callback with .all() for the read and .run() for
-	// each update so the whole resolve-and-restamp is atomic.
-	getDb().transaction((tx) => {
-		const candidates = tx
+	await withTransaction(async (tx) => {
+		const candidates = await tx
 			.select({
 				id: sessions.id,
 				cwd: sessions.cwd,
@@ -66,15 +64,14 @@ export async function resolveAllSessionsForProject(
 				or(
 					sql`${sessions.projectId} IS NULL`,
 					eq(sessions.projectId, projectId),
-					sql`${sessions.cwd} LIKE ${`${normalizedCwd}%`}`,
+					likeStartsWith(sessions.cwd, normalizedCwd),
 				),
-			)
-			.all();
+			);
 
 		for (const session of candidates) {
 			const resolved = resolveProjectIdForCwd(session.cwd, projectList);
 			if (resolved !== session.projectId) {
-				tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id)).run();
+				await tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id));
 			}
 		}
 	});
@@ -167,26 +164,22 @@ export async function updateProject(
 		// project list — some end up reassigned, some become NULL, some newly
 		// attach. Do not blanket-NULL the old set; the resolver decides.
 		const allProjects = getCachedProjects();
-		// drizzle-bun-sqlite getDb().transaction is SYNC; an async callback would
-		// commit before any awaited update settled. Sync callback + .run()
-		// keeps the restamp atomic.
-		getDb().transaction((tx) => {
-			const candidates = tx
+		await withTransaction(async (tx) => {
+			const candidates = await tx
 				.select({ id: sessions.id, cwd: sessions.cwd, projectId: sessions.projectId })
 				.from(sessions)
 				.where(
 					or(
 						eq(sessions.projectId, id),
-						sql`${sessions.cwd} LIKE ${`${normalizedCwd}%`}`,
-						sql`${sessions.cwd} LIKE ${`${normalizeCwd(existing.cwd)}%`}`,
+						likeStartsWith(sessions.cwd, normalizedCwd),
+						likeStartsWith(sessions.cwd, normalizeCwd(existing.cwd)),
 					),
-				)
-				.all();
+				);
 
 			for (const session of candidates) {
 				const resolved = resolveProjectIdForCwd(session.cwd, allProjects);
 				if (resolved !== session.projectId) {
-					tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id)).run();
+					await tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id));
 				}
 			}
 		});
@@ -266,17 +259,15 @@ export async function deleteProject(id: string): Promise<boolean> {
 
 	// All three cleanup operations in one transaction — if any fails, none apply.
 	// No orphaned template or session rows with dangling project_id values.
-	// drizzle-bun-sqlite getDb().transaction is SYNC; an async callback would let
-	// COMMIT fire before any awaited write settled. Sync callback + .run().
-	getDb().transaction((tx) => {
-		tx.update(sessionTemplates)
+	await withTransaction(async (tx) => {
+		await tx
+			.update(sessionTemplates)
 			.set({ projectId: null })
-			.where(eq(sessionTemplates.projectId, id))
-			.run();
-		tx.update(sessions).set({ projectId: null }).where(eq(sessions.projectId, id)).run();
-		tx.delete(projects).where(eq(projects.id, id)).run();
+			.where(eq(sessionTemplates.projectId, id));
+		await tx.update(sessions).set({ projectId: null }).where(eq(sessions.projectId, id));
+		await tx.delete(projects).where(eq(projects.id, id));
 	});
-	// Cache reload runs after the sync tx commits — on rollback the cache
+	// Cache reload runs after the tx commits — on rollback the cache
 	// would still reflect pre-delete state, which is correct.
 	await bumpVersionAndReload();
 	return true;

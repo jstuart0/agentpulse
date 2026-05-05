@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { aiHitlRequests, sessions, watcherProposals } = await import("../../db/schema.js");
+const { aiHitlRequests, sessions, watcherProposals } = await import("../../db/schema/index.js");
 const {
 	cancelOpenHitl,
 	completeProposalAsHitl,
@@ -14,7 +14,7 @@ const {
 } = await import("./proposals-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import {
 	type ChannelStats,
 	type NotificationChannelRecord,
@@ -6,9 +7,8 @@ import {
 	type TelegramWebhookInfo,
 	api,
 } from "../../lib/api.js";
-import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
-import { ChannelList } from "./TelegramChannelList.js";
 import { BotCredentialsStatus, BotHeader } from "./TelegramBotStatus.js";
+import { ChannelList } from "./TelegramChannelList.js";
 import { AddChannelCard, BotCredentialsWizard, EnrollmentCard } from "./TelegramEnrollment.js";
 
 interface CredentialsState {

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { eq, isNull, lte } from "drizzle-orm";
 import { getDb } from "../db/client.js";
-import { authSessions, users } from "../db/schema.js";
+import { authSessions, users } from "../db/schema/index.js";
 
 /**
  * Local-account auth: username + argon2id password + cookie-backed

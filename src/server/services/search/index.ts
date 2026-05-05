@@ -1,27 +1,29 @@
 import { config } from "../../config.js";
+import { PostgresSearchBackend } from "./postgres-search-backend.js";
 import { SqliteFtsBackend } from "./sqlite-fts-backend.js";
 import type { SearchBackend } from "./types.js";
 
 /**
- * Backend registry. Returns the appropriate SearchBackend for the
- * current deployment. Today only SQLite FTS5 is implemented; the
- * Postgres tsvector backend will slot in here when the Postgres
- * backend plan (see thoughts/2026-04-24-postgres-backend-plan.md)
- * reaches Phase 3 or later.
+ * Backend registry. Dispatches on `config.dialect` so the correct
+ * SearchBackend is returned for the active deployment:
+ *
+ *   - `"sqlite"` → `SqliteFtsBackend` (shadow-index, FTS5 + BM25).
+ *   - `"postgres"` → `PostgresSearchBackend` (direct-search, ILIKE).
+ *
+ * The `postgres-tsvector` backend is reserved for a follow-up campaign
+ * that replaces ILIKE with GIN-indexed tsvector for sub-10ms search at
+ * scale.
  */
 
 let instance: SearchBackend | null = null;
 
 export function getSearchBackend(): SearchBackend {
 	if (instance) return instance;
-	if (!config.useSqlite) {
-		// Postgres backend not yet implemented — see tracking issue #12.
-		// Fall through to SQLite so tests/dev don't break; the actual
-		// Postgres deployment path logs a warning at boot anyway.
+	if (config.dialect === "postgres") {
+		instance = new PostgresSearchBackend();
+	} else {
 		instance = new SqliteFtsBackend();
-		return instance;
 	}
-	instance = new SqliteFtsBackend();
 	return instance;
 }
 
