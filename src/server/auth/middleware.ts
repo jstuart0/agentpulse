@@ -6,7 +6,9 @@ import { verifyApiKey } from "./api-key.js";
 import { extractSupervisorToken, verifySupervisorCredential } from "./supervisor-auth.js";
 
 export interface AuthUser {
-	source: "authentik" | "api_key" | "local";
+	source: "forwardauth" | "api_key" | "local";
+	/** The configured forwardauth provider label (e.g. "authentik", "authelia"). Only set when source === "forwardauth". */
+	provider?: string;
 	name: string;
 	id?: string;
 	role?: "user" | "admin";
@@ -21,22 +23,25 @@ function parseCookieHeader(cookieHeader: string | null, name: string): string | 
 	return null;
 }
 
-// Strip every X-Authentik-* header from the request so they cannot leak to
-// downstream middleware, logs, or accidental upstream consumers.
-function stripAuthentikHeaders(rawHeaders: Headers): void {
+// Strip every forwardauth identity header from the request so they cannot leak
+// to downstream middleware, logs, or accidental upstream consumers. The prefix
+// is configurable (default: "X-Authentik-") so any upstream IdP works without
+// code changes. See config.forwardauthHeader("strip_prefix").
+function stripForwardauthHeaders(rawHeaders: Headers): void {
+	const prefix = config.forwardauthHeader("strip_prefix").toLowerCase();
 	for (const name of [...rawHeaders.keys()]) {
-		if (name.toLowerCase().startsWith("x-authentik-")) {
+		if (name.toLowerCase().startsWith(prefix)) {
 			rawHeaders.delete(name);
 		}
 	}
 }
 
-// Verify the X-Authentik-Verify header against the configured shared secret.
+// Verify the forwardauth verify header against the configured shared secret.
 // Returns true only when the secret is configured AND matches the header value.
 // On any failure (missing secret, missing header, length mismatch, wrong value)
 // returns false — caller is responsible for stripping headers and returning null.
-function verifyAuthentikSecret(provided: string): boolean {
-	const expected = config.authentikTrustSecret;
+function verifyForwardauthSecret(provided: string): boolean {
+	const expected = config.forwardauthTrustSecret;
 	if (!expected || !provided) return false;
 
 	const expectedBuf = Buffer.from(expected);
@@ -55,22 +60,22 @@ export async function getAuthUserFromHeaders(
 		return { source: "api_key", name: "anonymous", id: "anonymous" };
 	}
 
-	// 1. Authentik forwardAuth headers — validated via shared-secret trust gate.
-	//    Note: this path is only meaningful when called with the raw request Headers
-	//    object (i.e. from getAuthUser(c)); the duck-typed wrapper callers never
-	//    carry X-Authentik-* in practice (API-key/test paths). The trust gate is
-	//    skipped here because the wrapper doesn't expose .delete(). Prefer
-	//    getAuthUser(c) for full trust-gate enforcement.
-	const authentikUser = headers.get("X-authentik-username");
-	if (authentikUser) {
+	// 1. Forwardauth identity headers — validated via shared-secret trust gate.
+	//    Header names are configurable; defaults are Authentik-compatible (e.g.
+	//    X-Authentik-Username) so any forwardauth IdP works via env config.
+	//    Note: the trust gate is only enforced when called with real Headers
+	//    (i.e. from getAuthUser(c)); duck-typed wrapper callers never carry
+	//    forwardauth headers in practice. Prefer getAuthUser(c) for full enforcement.
+	const forwardauthUser = headers.get(config.forwardauthHeader("username"));
+	if (forwardauthUser) {
 		// If called with real Headers (not the duck-typed wrapper), enforce trust gate.
 		if (headers instanceof Headers) {
-			const provided = headers.get("X-Authentik-Verify") ?? "";
-			if (!verifyAuthentikSecret(provided)) {
-				stripAuthentikHeaders(headers);
+			const provided = headers.get(config.forwardauthHeader("verify")) ?? "";
+			if (!verifyForwardauthSecret(provided)) {
+				stripForwardauthHeaders(headers);
 				console.warn(
 					JSON.stringify({
-						kind: "authentik_trust_gate_rejected",
+						kind: "forwardauth_trust_gate_rejected",
 						level: "warn",
 						reason: provided ? "secret_mismatch" : "missing_verify_header",
 					}),
@@ -78,19 +83,21 @@ export async function getAuthUserFromHeaders(
 				// Fall through to other auth methods — headers stripped.
 			} else {
 				return {
-					source: "authentik",
-					name: authentikUser,
-					id: headers.get("X-authentik-uid") || undefined,
+					source: "forwardauth",
+					provider: config.forwardauthProvider,
+					name: forwardauthUser,
+					id: headers.get(config.forwardauthHeader("uid")) || undefined,
 				};
 			}
 		} else {
 			// Duck-typed wrapper (test/API-key callers): trust without secret check.
 			// This path is not reachable from live HTTP requests — Bun.serve always
-			// passes real Headers. Authentik trust gate does not apply here.
+			// passes real Headers. Forwardauth trust gate does not apply here.
 			return {
-				source: "authentik",
-				name: authentikUser,
-				id: headers.get("X-authentik-uid") || undefined,
+				source: "forwardauth",
+				provider: config.forwardauthProvider,
+				name: forwardauthUser,
+				id: headers.get(config.forwardauthHeader("uid")) || undefined,
 			};
 		}
 	}
@@ -127,8 +134,8 @@ export async function getAuthUserFromHeaders(
 	return null;
 }
 
-// Extract auth user from request (Authentik headers or API key).
-// Uses the raw request Headers object so the Authentik trust gate can strip
+// Extract auth user from request (forwardauth headers or API key).
+// Uses the raw request Headers object so the forwardauth trust gate can strip
 // forged headers via Headers.delete() before other middleware sees them.
 export async function getAuthUser(c: Context): Promise<AuthUser | null> {
 	return getAuthUserFromHeaders(c.req.raw.headers);
@@ -159,7 +166,7 @@ export function requireApiKey() {
 	};
 }
 
-// Middleware: require any auth (Authentik or API key)
+// Middleware: require any auth (forwardauth, local, or API key)
 // Skipped entirely when DISABLE_AUTH=true
 export function requireAuth() {
 	return async (c: Context, next: Next) => {

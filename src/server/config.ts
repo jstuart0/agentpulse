@@ -39,12 +39,76 @@ export const config = {
 	localAdminUsername: process.env.AGENTPULSE_LOCAL_ADMIN_USERNAME || "",
 	localAdminPassword: process.env.AGENTPULSE_LOCAL_ADMIN_PASSWORD || "",
 
-	// Authentik shared-secret trust gate. When non-empty, every request that
-	// carries X-Authentik-* headers MUST also carry X-Authentik-Verify with this
-	// value (HMAC-constant in Authentik property mapping). The middleware strips
-	// all X-Authentik-* headers on mismatch so forged headers can't pass through.
+	// Generic forwardauth configuration. When non-empty, every request that carries
+	// forwardauth identity headers MUST also carry the verify header with this value
+	// (set via a property mapping in the upstream IdP). The middleware strips all
+	// forwardauth headers on mismatch so forged headers can't pass through.
 	// Empty = trust gate disabled (startup warning emitted; not recommended in prod).
-	authentikTrustSecret: process.env.AGENTPULSE_AUTHENTIK_TRUST_SECRET || "",
+	//
+	// Header names are configurable via FORWARDAUTH_HEADER_* env vars so any
+	// forwardauth-capable IdP (Authentik (default), Authelia, oauth2-proxy, Pomerium,
+	// Cloudflare Access, etc.) works without code changes.
+
+	// Lookup table of Authentik default header names. Reads FORWARDAUTH_HEADER_<SLOT>
+	// at call time so env overrides take effect in tests without re-importing config.
+	forwardauthHeader(
+		slot: "username" | "email" | "groups" | "name" | "uid" | "verify" | "strip_prefix",
+	): string {
+		const HEADER_ENV_KEYS: Record<typeof slot, string> = {
+			username: "FORWARDAUTH_HEADER_USERNAME",
+			email: "FORWARDAUTH_HEADER_EMAIL",
+			groups: "FORWARDAUTH_HEADER_GROUPS",
+			name: "FORWARDAUTH_HEADER_NAME",
+			uid: "FORWARDAUTH_HEADER_UID",
+			verify: "FORWARDAUTH_HEADER_VERIFY",
+			strip_prefix: "FORWARDAUTH_HEADER_STRIP_PREFIX",
+		};
+		const HEADER_DEFAULTS: Record<typeof slot, string> = {
+			username: "X-Authentik-Username",
+			email: "X-Authentik-Email",
+			groups: "X-Authentik-Groups",
+			name: "X-Authentik-Name",
+			uid: "X-Authentik-Uid",
+			verify: "X-Authentik-Verify",
+			strip_prefix: "X-Authentik-",
+		};
+		return process.env[HEADER_ENV_KEYS[slot]] || HEADER_DEFAULTS[slot];
+	},
+
+	// The configured forwardauth provider label (e.g. "authentik", "authelia").
+	// Free-form string — only "authentik" triggers provider-specific behaviour
+	// (signOutUrl). All other values are UI labels only.
+	get forwardauthProvider(): string {
+		return process.env.FORWARDAUTH_PROVIDER || "authentik";
+	},
+
+	// The forwardauth trust secret. Reads FORWARDAUTH_TRUST_SECRET first, then
+	// the deprecated AGENTPULSE_AUTHENTIK_TRUST_SECRET as a fallback.
+	// Memoized on first access — env is read at module load and cannot change
+	// at runtime (consistent with the dialect getter pattern).
+	// writable: true so tests can delete the cached value to pick up env changes.
+	get forwardauthTrustSecret(): string {
+		if (Object.prototype.hasOwnProperty.call(this, "_forwardauthTrustSecret")) {
+			return (this as unknown as { _forwardauthTrustSecret: string })._forwardauthTrustSecret;
+		}
+		const resolved =
+			process.env.FORWARDAUTH_TRUST_SECRET || process.env.AGENTPULSE_AUTHENTIK_TRUST_SECRET || "";
+		Object.defineProperty(this, "_forwardauthTrustSecret", {
+			value: resolved,
+			writable: true,
+			configurable: true,
+		});
+		return resolved;
+	},
+
+	/**
+	 * @deprecated Use config.forwardauthTrustSecret instead.
+	 * Retained for one release as a back-compat alias.
+	 * Callers in private overlays or extensions continue to work.
+	 */
+	get authentikTrustSecret(): string {
+		return this.forwardauthTrustSecret;
+	},
 
 	// Comma-separated list of allowed WebSocket origins, derived from PUBLIC_URL.
 	// Example: "https://agentpulse.example.com,http://localhost:5173"

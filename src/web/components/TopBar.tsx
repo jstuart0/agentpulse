@@ -82,7 +82,8 @@ function UserMenu({
 	signOutUrl: _signOutUrl,
 	disableAuth,
 }: {
-	user: { name: string; source: "authentik" | "api_key" | "local" } | null;
+	// "authentik" retained for one release; new responses emit "forwardauth".
+	user: { name: string; source: "forwardauth" | "authentik" | "api_key" | "local" } | null;
 	signOutUrl: string | null;
 	disableAuth: boolean;
 }) {
@@ -91,8 +92,10 @@ function UserMenu({
 	const { handleSignOut: signOut, signOutUrl } = useSignOut();
 	const label = user?.name ?? (disableAuth ? "anonymous" : "signed out");
 	const initial = label.charAt(0).toUpperCase();
+	// Phase 2 will derive the label from user.provider; for now keep "Authentik"
+	// for both the legacy "authentik" source and the new "forwardauth" source.
 	const sourceLabel =
-		user?.source === "authentik"
+		user?.source === "authentik" || user?.source === "forwardauth"
 			? "Authentik"
 			: user?.source === "local"
 				? "Local account"

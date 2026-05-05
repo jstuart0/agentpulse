@@ -3,7 +3,11 @@ import { api } from "../lib/api.js";
 
 export interface AuthUser {
 	name: string;
-	source: "authentik" | "api_key" | "local";
+	// "authentik" retained for one release to tolerate cached responses from a previous
+	// server version. New responses emit "forwardauth". Phase 2 will remove "authentik".
+	source: "forwardauth" | "authentik" | "api_key" | "local";
+	/** The configured forwardauth provider label (e.g. "authentik", "authelia"). Only present when source === "forwardauth". */
+	provider?: string | null;
 	id: string | null;
 	role: "user" | "admin" | null;
 }

@@ -448,7 +448,9 @@ export const api = {
 			authenticated: boolean;
 			user: {
 				name: string;
-				source: "authentik" | "api_key" | "local";
+				// "authentik" retained for one release; new responses emit "forwardauth".
+				source: "forwardauth" | "authentik" | "api_key" | "local";
+				provider?: string | null;
 				id: string | null;
 				role: "user" | "admin" | null;
 			} | null;
