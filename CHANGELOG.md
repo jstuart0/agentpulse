@@ -5,7 +5,7 @@ All notable changes to AgentPulse are documented here. The format is based on
 project is still pre-1.0 — breaking changes land under the regular `Changed`
 section with a `⚠ breaking` prefix so they're easy to spot.
 
-## [Unreleased]
+## [0.4.0-pre.2] — 2026-05-05
 
 ### Added
 
