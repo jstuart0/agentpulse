@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { ActionRequestDecision, HitlReplyKind } from "../../shared/types.js";
@@ -83,6 +83,10 @@ import { upsertSetting } from "../services/settings-service.js";
 const aiRouter = new Hono();
 aiRouter.use("*", requireAuth());
 
+// Shared helper: write a protected setting (AI control-plane keys) without
+// requiring callers to repeat the options bag at every call site.
+const upsert = (key: string, value: unknown) => upsertSetting(key, value, { allowProtected: true });
+
 // A lightweight gate used on every mutation endpoint. Feature-state checks
 // run on each request rather than at mount time so the runtime toggle flips
 // without needing a restart.
@@ -146,9 +150,6 @@ aiRouter.put("/ai/status", async (c) => {
 		autoEnableWatcherForAsk?: boolean;
 	}>();
 
-	const upsert = (key: string, value: unknown) =>
-		upsertSetting(key, value, { allowProtected: true });
-
 	if (body.enabled !== undefined) await upsert(AI_RUNTIME_ENABLED_KEY, body.enabled);
 	if (body.killSwitch !== undefined) await upsert(AI_KILL_SWITCH_KEY, body.killSwitch);
 	if (body.classifierEnabled !== undefined) {
@@ -179,28 +180,25 @@ aiRouter.put("/ai/status", async (c) => {
 aiRouter.get("/ai/vector-search/status", async (c) => {
 	const build = isVectorSearchBuildEnabled();
 	const active = await isVectorSearchActive();
-	const [enabledRow] = await db
+	const rows = await db
 		.select()
 		.from(settings)
-		.where(eq(settings.key, VECTOR_SEARCH_ENABLED_KEY))
-		.limit(1);
-	const [modelRow] = await db
-		.select()
-		.from(settings)
-		.where(eq(settings.key, VECTOR_SEARCH_MODEL_KEY))
-		.limit(1);
-	const [providerRow] = await db
-		.select()
-		.from(settings)
-		.where(eq(settings.key, VECTOR_SEARCH_PROVIDER_ID_KEY))
-		.limit(1);
+		.where(
+			inArray(settings.key, [
+				VECTOR_SEARCH_ENABLED_KEY,
+				VECTOR_SEARCH_MODEL_KEY,
+				VECTOR_SEARCH_PROVIDER_ID_KEY,
+			]),
+		);
+	const vsMap = new Map<string, unknown>();
+	for (const row of rows) vsMap.set(row.key, row.value);
 	const progress = build ? await getBackfillProgress() : null;
 	return c.json({
 		build,
 		active,
-		enabled: enabledRow?.value === true,
-		model: (modelRow?.value as string | undefined) ?? DEFAULT_EMBEDDING_MODEL,
-		providerId: (providerRow?.value as string | undefined) ?? null,
+		enabled: vsMap.get(VECTOR_SEARCH_ENABLED_KEY) === true,
+		model: (vsMap.get(VECTOR_SEARCH_MODEL_KEY) as string | undefined) ?? DEFAULT_EMBEDDING_MODEL,
+		providerId: (vsMap.get(VECTOR_SEARCH_PROVIDER_ID_KEY) as string | undefined) ?? null,
 		progress,
 	});
 });
@@ -216,8 +214,6 @@ aiRouter.put("/ai/vector-search/status", async (c) => {
 		model?: string | null;
 		providerId?: string | null;
 	}>();
-	const upsert = (key: string, value: unknown) =>
-		upsertSetting(key, value, { allowProtected: true });
 	if (body.enabled !== undefined) await upsert(VECTOR_SEARCH_ENABLED_KEY, body.enabled);
 	if (body.model !== undefined) {
 		await upsert(VECTOR_SEARCH_MODEL_KEY, body.model || DEFAULT_EMBEDDING_MODEL);
@@ -661,7 +657,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 		if (!filter.allowed) {
 			await emitAiEvent({
 				sessionId: proposal.sessionId,
-				source: "observed_hook",
+				source: "managed_control",
 				category: "ai_continue_blocked",
 				eventType: "AiContinueBlocked",
 				content: `Dispatch filter tripped on human-approved prompt: ${filter.reason}`,
@@ -675,7 +671,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 		await resolveProposalHitl({ proposalId: id, action: "decline" });
 		await emitAiEvent({
 			sessionId: proposal.sessionId,
-			source: "observed_hook",
+			source: "managed_control",
 			category: "ai_hitl_response",
 			eventType: "AiHitlResponse",
 			content: "Declined by user.",
@@ -692,7 +688,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 	await resolveProposalHitl({ proposalId: id, action: body.action, replyText: nextPrompt });
 	await emitAiEvent({
 		sessionId: proposal.sessionId,
-		source: "observed_hook",
+		source: "managed_control",
 		category: "ai_hitl_response",
 		eventType: "AiHitlResponse",
 		content: body.action === "custom" ? `Custom: ${nextPrompt}` : "Approved.",
@@ -700,7 +696,7 @@ aiRouter.post("/ai/proposals/:id/decision", async (c) => {
 	});
 	await emitAiEvent({
 		sessionId: proposal.sessionId,
-		source: "observed_hook",
+		source: "managed_control",
 		category: "ai_continue_sent",
 		eventType: "AiContinueSent",
 		content: nextPrompt ?? "",

@@ -108,3 +108,51 @@ describe("PUT /api/v1/ai/status (trusted internal upsert)", () => {
 		expect(after?.value).toBe(true);
 	});
 });
+
+// CH-L2 regression: GET /ai/vector-search/status must return the exact shape
+// (build/active/enabled/model/providerId/progress) regardless of whether the
+// three settings rows exist in the DB (previously 3 separate queries, now a
+// single batched inArray query).
+describe("GET /api/v1/ai/vector-search/status shape", () => {
+	test("returns expected keys with DB-default fallbacks when rows are absent", async () => {
+		const res = await app.request("/api/v1/ai/vector-search/status");
+		expect(res.status).toBe(200);
+		const body = await res.json();
+
+		// These five keys must always be present — operators have dashboards keyed on them.
+		expect(Object.keys(body)).toContain("build");
+		expect(Object.keys(body)).toContain("active");
+		expect(Object.keys(body)).toContain("enabled");
+		expect(Object.keys(body)).toContain("model");
+		expect(Object.keys(body)).toContain("providerId");
+		expect(Object.keys(body)).toContain("progress");
+
+		// Defaults: enabled=false, model=DEFAULT_EMBEDDING_MODEL fallback, providerId=null.
+		expect(body.enabled).toBe(false);
+		expect(typeof body.model).toBe("string");
+		expect(body.model.length).toBeGreaterThan(0);
+		expect(body.providerId).toBeNull();
+	});
+
+	test("reads persisted values from DB (bypasses build-flag gate on PUT)", async () => {
+		// Write the three settings directly to DB so we don't depend on the
+		// AGENTPULSE_VECTOR_SEARCH build flag being set in the test environment.
+		const { upsertSetting } = await import("../services/settings-service.js");
+		const { VECTOR_SEARCH_ENABLED_KEY, VECTOR_SEARCH_MODEL_KEY, VECTOR_SEARCH_PROVIDER_ID_KEY } =
+			await import("../services/ai/feature.js");
+		await upsertSetting(VECTOR_SEARCH_ENABLED_KEY, true, { allowProtected: true });
+		await upsertSetting(VECTOR_SEARCH_MODEL_KEY, "text-embedding-3-small", {
+			allowProtected: true,
+		});
+		await upsertSetting(VECTOR_SEARCH_PROVIDER_ID_KEY, "openai", { allowProtected: true });
+
+		const res = await app.request("/api/v1/ai/vector-search/status");
+		expect(res.status).toBe(200);
+		const body = await res.json();
+
+		// All three stored values must be reflected in the response.
+		expect(body.enabled).toBe(true);
+		expect(body.model).toBe("text-embedding-3-small");
+		expect(body.providerId).toBe("openai");
+	});
+});
