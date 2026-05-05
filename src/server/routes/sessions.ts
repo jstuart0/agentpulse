@@ -286,10 +286,10 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 sessionsRouter.delete("/sessions/:sessionId", async (c) => {
 	const sessionId = c.req.param("sessionId");
 
-	await withTransaction((tx) => {
+	await withTransaction(async (tx) => {
 		// Cascade does this; explicit for older DBs that haven't yet rebuilt FKs.
-		tx.delete(events).where(eq(events.sessionId, sessionId)).run();
-		tx.delete(sessions).where(eq(sessions.sessionId, sessionId)).run();
+		await tx.delete(events).where(eq(events.sessionId, sessionId));
+		await tx.delete(sessions).where(eq(sessions.sessionId, sessionId));
 	});
 
 	return c.json({ ok: true });

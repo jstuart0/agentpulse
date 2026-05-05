@@ -4,6 +4,10 @@ import { dirname, join } from "node:path";
 import { sql } from "drizzle-orm";
 import { drizzle as drizzleBunSqlite } from "drizzle-orm/bun-sqlite";
 import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
+// Bug fix: Bun's require() returns the module namespace object for ESM-first
+// packages; `require("postgres").default` is the function, not `require("postgres")`.
+// Top-level ES default import resolves correctly on both Node and Bun.
+import postgres from "postgres";
 import { config } from "../config.js";
 import * as schema from "./schema.js";
 
@@ -87,7 +91,6 @@ function createDatabase() {
 		// DSN scheme. Operators on untrusted networks must set sslmode=require (or
 		// stronger) in the DATABASE_URL; the warning below fires if sslmode is
 		// absent or set to a plaintext-permitting value.
-		const postgres = require("postgres") as typeof import("postgres");
 		// xander mid-build H1: validate AGENTPULSE_PG_POOL_MAX before passing to
 		// postgres-js. NaN, 0, negative values, or absurdly large values would
 		// either crash the driver or DoS the upstream Postgres. Clamp to [1, 100]
@@ -309,7 +312,6 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 		//
 		//   The main app pool (max: configurable) is opened AFTER migration
 		//   completes and stored in _client for normal request traffic.
-		const postgres = require("postgres") as typeof import("postgres");
 		const migrationPgClient = postgres(config.databaseUrl, {
 			max: 1, // single connection — guaranteed session-level lock affinity
 			idle_timeout: 5,

@@ -341,17 +341,16 @@ export async function queueCleanupWorkArea(
  * events via FK, so events go first.
  */
 async function finalizeCleanupWorkArea(projectId: string): Promise<void> {
-	await withTransaction((tx) => {
-		const projectSessions = tx
+	await withTransaction(async (tx) => {
+		const projectSessions = await tx
 			.select({ id: sessions.id, sessionId: sessions.sessionId })
 			.from(sessions)
-			.where(eq(sessions.projectId, projectId))
-			.all();
+			.where(eq(sessions.projectId, projectId));
 		for (const s of projectSessions) {
-			tx.delete(events).where(eq(events.sessionId, s.sessionId)).run();
-			tx.delete(sessions).where(eq(sessions.id, s.id)).run();
+			await tx.delete(events).where(eq(events.sessionId, s.sessionId));
+			await tx.delete(sessions).where(eq(sessions.id, s.id));
 		}
-		tx.delete(projects).where(eq(projects.id, projectId)).run();
+		await tx.delete(projects).where(eq(projects.id, projectId));
 	});
 	// Cache invalidation only matters once the rows are durably gone; running
 	// it after the tx commits keeps the cache consistent on rollback.

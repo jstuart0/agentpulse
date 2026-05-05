@@ -52,8 +52,8 @@ export async function resolveAllSessionsForProject(
 	const projectList = allProjects ?? getCachedProjects();
 	const normalizedCwd = normalizeCwd(projectCwd);
 
-	await withTransaction((tx) => {
-		const candidates = tx
+	await withTransaction(async (tx) => {
+		const candidates = await tx
 			.select({
 				id: sessions.id,
 				cwd: sessions.cwd,
@@ -66,13 +66,12 @@ export async function resolveAllSessionsForProject(
 					eq(sessions.projectId, projectId),
 					likeStartsWith(sessions.cwd, normalizedCwd),
 				),
-			)
-			.all();
+			);
 
 		for (const session of candidates) {
 			const resolved = resolveProjectIdForCwd(session.cwd, projectList);
 			if (resolved !== session.projectId) {
-				tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id)).run();
+				await tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id));
 			}
 		}
 	});
@@ -165,8 +164,8 @@ export async function updateProject(
 		// project list — some end up reassigned, some become NULL, some newly
 		// attach. Do not blanket-NULL the old set; the resolver decides.
 		const allProjects = getCachedProjects();
-		await withTransaction((tx) => {
-			const candidates = tx
+		await withTransaction(async (tx) => {
+			const candidates = await tx
 				.select({ id: sessions.id, cwd: sessions.cwd, projectId: sessions.projectId })
 				.from(sessions)
 				.where(
@@ -175,13 +174,12 @@ export async function updateProject(
 						likeStartsWith(sessions.cwd, normalizedCwd),
 						likeStartsWith(sessions.cwd, normalizeCwd(existing.cwd)),
 					),
-				)
-				.all();
+				);
 
 			for (const session of candidates) {
 				const resolved = resolveProjectIdForCwd(session.cwd, allProjects);
 				if (resolved !== session.projectId) {
-					tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id)).run();
+					await tx.update(sessions).set({ projectId: resolved }).where(eq(sessions.id, session.id));
 				}
 			}
 		});
@@ -261,13 +259,10 @@ export async function deleteProject(id: string): Promise<boolean> {
 
 	// All three cleanup operations in one transaction — if any fails, none apply.
 	// No orphaned template or session rows with dangling project_id values.
-	await withTransaction((tx) => {
-		tx.update(sessionTemplates)
-			.set({ projectId: null })
-			.where(eq(sessionTemplates.projectId, id))
-			.run();
-		tx.update(sessions).set({ projectId: null }).where(eq(sessions.projectId, id)).run();
-		tx.delete(projects).where(eq(projects.id, id)).run();
+	await withTransaction(async (tx) => {
+		await tx.update(sessionTemplates).set({ projectId: null }).where(eq(sessionTemplates.projectId, id));
+		await tx.update(sessions).set({ projectId: null }).where(eq(sessions.projectId, id));
+		await tx.delete(projects).where(eq(projects.id, id));
 	});
 	// Cache reload runs after the tx commits — on rollback the cache
 	// would still reflect pre-delete state, which is correct.

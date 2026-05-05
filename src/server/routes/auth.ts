@@ -339,25 +339,24 @@ authRouter.post("/auth/signup", async (c) => {
 
 	let raceWon = false;
 	try {
-		// withTransaction uses bun-sqlite's sync db.transaction(fn) on the SQLite
-		// path — tx.* calls must use the sync API forms (.run(), .all(), .get())
-		// inside the callback. Rollback fires when fn throws synchronously. The
-		// helper has a runtime guard that throws if the callback returns a
-		// Promise on the SQLite path (which would silently disable rollback).
-		await withTransaction((tx) => {
+		// withTransaction uses manual BEGIN/COMMIT/ROLLBACK on the SQLite path
+		// so async callbacks are safe — COMMIT only fires after the Promise resolves.
+		// On the Postgres path, db.transaction(fn) natively supports async callbacks.
+		await withTransaction(async (tx) => {
 			// Re-check: count ALL users (including soft-deleted) and the
 			// firstRunCompleted flag inside the transaction so two concurrent
 			// signups can't both pass. We intentionally count disabled users:
 			// a soft-deleted bootstrap admin should NOT re-open the signup
 			// window — the flag provides belt-and-suspenders, but the total
 			// user count is the primary guard.
-			const totalCount = tx.select({ id: users.id }).from(users).all().length;
+			const userRows = await tx.select({ id: users.id }).from(users);
+			const totalCount = userRows.length;
 
-			const flagRow = tx
+			const flagRows = await tx
 				.select({ value: settings.value })
 				.from(settings)
-				.where(eq(settings.key, "auth.firstRunCompleted"))
-				.get();
+				.where(eq(settings.key, "auth.firstRunCompleted"));
+			const flagRow = flagRows[0];
 
 			if (totalCount !== 0 || flagRow?.value === "true") {
 				// Race lost — another concurrent signup completed first, or the
@@ -367,24 +366,22 @@ authRouter.post("/auth/signup", async (c) => {
 			}
 
 			// Both checks pass: create the admin user and set the flag atomically.
-			tx.insert(users)
-				.values({
-					id: userId,
-					username: body.username as string,
-					passwordHash,
-					role: "admin",
-					createdAt: now,
-					updatedAt: now,
-				})
-				.run();
+			await tx.insert(users).values({
+				id: userId,
+				username: body.username as string,
+				passwordHash,
+				role: "admin",
+				createdAt: now,
+				updatedAt: now,
+			});
 
-			tx.insert(settings)
+			await tx
+				.insert(settings)
 				.values({ key: "auth.firstRunCompleted", value: "true", updatedAt: now })
 				.onConflictDoUpdate({
 					target: settings.key,
 					set: { value: "true", updatedAt: now },
-				})
-				.run();
+				});
 
 			raceWon = true;
 		});
