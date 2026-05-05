@@ -105,9 +105,12 @@ if (!config.authentikTrustSecret && !config.disableAuth) {
 
 // Initialize database (explicit eager-open; all getDb() calls from handlers
 // will now return this already-open connection without re-opening).
-// markDbReady() must be called immediately after so /api/v1/health stops
+// markDbReady() must be called immediately after await so /api/v1/health stops
 // returning 503 and the k8s startupProbe can pass (S-24).
-initializeDatabase();
+// initializeDatabase() is async since Phase 1 (Decision 15). The await here
+// ensures markDbReady() only fires after all migrations complete, preserving
+// the synchronous-assumption guarantee that previously held (codex C3).
+await initializeDatabase();
 markDbReady();
 
 // Eagerly populate the projects cache before hook ingestion routes are mounted

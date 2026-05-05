@@ -20,8 +20,8 @@ const app = new Hono().route("/api/v1", settingsRouter);
 
 const originalDisableAuth = config.disableAuth;
 
-beforeAll(() => {
-	initializeDatabase();
+beforeAll(async () => {
+	await initializeDatabase();
 	// The workspace routes are mounted behind requireAuth(); under tests we
 	// bypass it the same way local dev does.
 	config.disableAuth = true;

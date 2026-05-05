@@ -3,6 +3,7 @@ import { SESSION_END_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "../../shared/co
 import type { AgentType, ManagedState, SessionStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { managedSessions, sessions, supervisors } from "../db/schema.js";
+import { withTransaction } from "../db/with-transaction.js";
 import { getManagedSession } from "./managed-session-state.js";
 
 /**
@@ -12,14 +13,10 @@ import { getManagedSession } from "./managed-session-state.js";
  *
  * The caller is expected to have already validated `name` (non-empty,
  * trimmed). This function performs the trim once more defensively.
- *
- * NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
- * callback for correct rollback semantics. The async form is used from
- * Phase 1 onward once the dialect resolver is in place.
  */
-export function renameSession(sessionId: string, name: string): void {
+export async function renameSession(sessionId: string, name: string): Promise<void> {
 	const trimmed = name.trim();
-	getDb().transaction((tx) => {
+	await withTransaction((tx) => {
 		tx.update(sessions)
 			.set({ displayName: trimmed })
 			.where(eq(sessions.sessionId, sessionId))

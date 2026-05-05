@@ -17,7 +17,7 @@ const {
 const { aiWatcherRuns, sessions } = await import("../../db/schema.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

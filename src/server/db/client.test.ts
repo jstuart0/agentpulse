@@ -9,15 +9,13 @@ const { Database } = await import("bun:sqlite");
 const { config } = await import("../config.js");
 const { initializeDatabase } = await import("./client.js");
 
-beforeAll(() => {
-	initializeDatabase();
-});
+beforeAll(() => initializeDatabase());
 
 describe("initializeDatabase", () => {
-	test("is idempotent (calling twice does not throw)", () => {
+	test("is idempotent (calling twice does not throw)", async () => {
 		// Already called once in beforeAll; calling again must be a no-op.
-		expect(() => initializeDatabase()).not.toThrow();
-		expect(() => initializeDatabase()).not.toThrow();
+		await expect(initializeDatabase()).resolves.toBeUndefined();
+		await expect(initializeDatabase()).resolves.toBeUndefined();
 	});
 
 	test("session children reference sessions ON DELETE CASCADE", () => {

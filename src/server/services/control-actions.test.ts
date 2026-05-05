@@ -8,7 +8,7 @@ const { claimNextControlAction, queueCleanupWorkArea, updateControlAction } = aw
 );
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 afterAll(() => {});

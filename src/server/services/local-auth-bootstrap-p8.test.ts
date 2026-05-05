@@ -8,7 +8,7 @@ const { users } = await import("../db/schema.js");
 const { ensureBootstrapAdmin } = await import("../services/local-auth-bootstrap.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

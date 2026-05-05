@@ -6,7 +6,7 @@ const { events, sessions, sessionTemplates } = await import("../../db/schema.js"
 const { distillTemplate, provenanceMetadata } = await import("./template-distillation.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

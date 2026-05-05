@@ -5,7 +5,7 @@ const { initializeDatabase } = await import("../../db/client.js");
 const { evaluateRisk, getRiskClasses } = await import("./risk-classes.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 describe("risk-classes", () => {

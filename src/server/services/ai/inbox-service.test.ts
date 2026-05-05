@@ -16,7 +16,7 @@ const { completeProposalAsHitl, createPendingProposal, failProposal } = await im
 );
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

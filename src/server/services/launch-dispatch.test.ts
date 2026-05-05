@@ -19,7 +19,7 @@ const { encryptSecret, credentialHint } = await import("./ai/secrets.js");
 const { getWatcherConfig } = await import("./ai/watcher-config-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

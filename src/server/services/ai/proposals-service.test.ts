@@ -14,7 +14,7 @@ const {
 } = await import("./proposals-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

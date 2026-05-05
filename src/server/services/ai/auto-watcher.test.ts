@@ -10,7 +10,7 @@ const { getWatcherConfig, upsertWatcherConfig } = await import("./watcher-config
 const { encryptSecret, credentialHint } = await import("./secrets.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

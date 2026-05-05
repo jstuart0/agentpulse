@@ -16,7 +16,7 @@ const {
 } = await import("./feature.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

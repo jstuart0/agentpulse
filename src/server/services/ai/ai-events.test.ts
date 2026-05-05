@@ -7,7 +7,7 @@ const { sessionBus } = await import("../notifier.js");
 const { emitAiEvent } = await import("./ai-events.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

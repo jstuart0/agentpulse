@@ -11,7 +11,7 @@ const { createProject, deleteProject, resolveAllSessionsForProject, updateProjec
 );
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

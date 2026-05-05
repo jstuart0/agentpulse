@@ -58,8 +58,31 @@ export const config = {
 			.map((u) => new URL(u).origin);
 	},
 
+	/** @deprecated use config.dialect directly; this alias removed in next campaign. */
 	get useSqlite(): boolean {
-		return !this.databaseUrl || !this.databaseUrl.startsWith("postgres");
+		return this.dialect === "sqlite";
+	},
+
+	/**
+	 * Resolved dialect for this process lifetime. Resolution rule:
+	 *   - empty / undefined DATABASE_URL → "sqlite"
+	 *   - starts with "postgres:" or "postgresql:" → "postgres"
+	 *   - anything else (e.g. a file path)  → "sqlite"
+	 *
+	 * Memoized on first access: databaseUrl is read from process.env at
+	 * module load and cannot change at runtime, so the memo is safe.
+	 */
+	get dialect(): "sqlite" | "postgres" {
+		// Lazily resolve and cache on the object itself to avoid re-running the
+		// check on every hot-path call (dexter L-1 concern).
+		if (Object.prototype.hasOwnProperty.call(this, "_dialect")) {
+			return (this as unknown as { _dialect: "sqlite" | "postgres" })._dialect;
+		}
+		const url = this.databaseUrl;
+		const resolved: "sqlite" | "postgres" =
+			url && (url.startsWith("postgres:") || url.startsWith("postgresql:")) ? "postgres" : "sqlite";
+		Object.defineProperty(this, "_dialect", { value: resolved, writable: false });
+		return resolved;
 	},
 
 	get sqlitePath(): string {

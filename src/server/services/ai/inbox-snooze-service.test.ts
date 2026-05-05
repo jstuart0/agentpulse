@@ -8,7 +8,7 @@ const { listActiveSnoozes, snoozeItem, unsnooze, unsnoozeTarget } = await import
 );
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

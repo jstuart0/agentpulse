@@ -53,8 +53,8 @@ function buildLoopbackDrainApp(peerIp = "127.0.0.1") {
 	return app;
 }
 
-beforeAll(() => {
-	initializeDatabase();
+beforeAll(async () => {
+	await initializeDatabase();
 	config.disableAuth = true;
 	// Mark DB ready so health assertions see 200 (markDbReady() is called by
 	// index.ts boot path, which test harnesses don't run).

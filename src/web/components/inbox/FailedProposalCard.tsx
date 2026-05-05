@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { InboxWorkItem } from "../../lib/api.js";
+import { formatTimeAgo } from "../../lib/utils.js";
 import { KindBadge } from "./shared/KindBadge.js";
 import { SnoozeDropdown } from "./shared/SnoozeDropdown.js";
 import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
-import { formatTimeAgo } from "../../lib/utils.js";
 
 type FailedProposalItem = Extract<InboxWorkItem, { kind: "failed_proposal" }>;
 

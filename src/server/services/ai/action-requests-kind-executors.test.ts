@@ -49,7 +49,7 @@ function sessionActionPayload(sessionId: string) {
 // ---- setup ------------------------------------------------------------------
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

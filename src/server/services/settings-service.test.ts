@@ -8,7 +8,7 @@ const { settings } = await import("../db/schema.js");
 const { ProtectedSettingError, upsertSetting } = await import("./settings-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 afterEach(async () => {

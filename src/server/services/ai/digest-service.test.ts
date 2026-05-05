@@ -6,7 +6,7 @@ const { aiHitlRequests, events, sessions, watcherProposals } = await import("../
 const { buildDigest, getDailyDigest, invalidateDigestCache } = await import("./digest-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

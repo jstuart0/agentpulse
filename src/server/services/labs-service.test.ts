@@ -7,7 +7,7 @@ const { LABS_REGISTRY, LABS_SETTINGS_KEY, defaultLabsFlags, getLabsFlags, setLab
 	await import("./labs-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

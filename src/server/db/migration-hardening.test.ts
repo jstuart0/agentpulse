@@ -112,6 +112,6 @@ describe("migration loop integration (idempotent replay)", () => {
 		// — i.e. exactly the duplicate-column path the predicate must
 		// tolerate. If the predicate were too narrow, this would throw.
 		const { initializeDatabase } = await import("./client.js");
-		expect(() => initializeDatabase()).not.toThrow();
+		await expect(initializeDatabase()).resolves.toBeUndefined();
 	});
 });

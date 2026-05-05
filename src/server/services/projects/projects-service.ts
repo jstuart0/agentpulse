@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import { eq, or, sql } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
 import { projects, sessionTemplates, sessions } from "../../db/schema.js";
+import { withTransaction } from "../../db/with-transaction.js";
 import { bumpVersionAndReload, getCachedProjects } from "./cache.js";
 import { normalizeCwd, resolveProjectIdForCwd } from "./resolver.js";
 
@@ -50,10 +51,7 @@ export async function resolveAllSessionsForProject(
 	const projectList = allProjects ?? getCachedProjects();
 	const normalizedCwd = normalizeCwd(projectCwd);
 
-	// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
-	// callback for correct rollback semantics. The async form is used from
-	// Phase 1 onward once the dialect resolver is in place.
-	getDb().transaction((tx) => {
+	await withTransaction((tx) => {
 		const candidates = tx
 			.select({
 				id: sessions.id,
@@ -166,10 +164,7 @@ export async function updateProject(
 		// project list — some end up reassigned, some become NULL, some newly
 		// attach. Do not blanket-NULL the old set; the resolver decides.
 		const allProjects = getCachedProjects();
-		// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
-		// callback for correct rollback semantics. The async form is used from
-		// Phase 1 onward once the dialect resolver is in place.
-		getDb().transaction((tx) => {
+		await withTransaction((tx) => {
 			const candidates = tx
 				.select({ id: sessions.id, cwd: sessions.cwd, projectId: sessions.projectId })
 				.from(sessions)
@@ -265,10 +260,7 @@ export async function deleteProject(id: string): Promise<boolean> {
 
 	// All three cleanup operations in one transaction — if any fails, none apply.
 	// No orphaned template or session rows with dangling project_id values.
-	// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
-	// callback for correct rollback semantics. The async form is used from
-	// Phase 1 onward once the dialect resolver is in place.
-	getDb().transaction((tx) => {
+	await withTransaction((tx) => {
 		tx.update(sessionTemplates)
 			.set({ projectId: null })
 			.where(eq(sessionTemplates.projectId, id))

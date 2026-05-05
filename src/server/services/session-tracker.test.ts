@@ -6,7 +6,7 @@ const { events, managedSessions, sessions, supervisors } = await import("../db/s
 const { renameSession, updateStaleSessions } = await import("./session-tracker.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

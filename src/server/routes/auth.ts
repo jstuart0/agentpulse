@@ -4,8 +4,8 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { getTrustedClientIp } from "../auth/client-ip.js";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
 import { config } from "../config.js";
-import { getDb } from "../db/client.js";
 import { settings, users } from "../db/schema.js";
+import { withTransaction } from "../db/with-transaction.js";
 import {
 	SESSION_COOKIE_NAME,
 	SESSION_DURATION_MS,
@@ -339,10 +339,10 @@ authRouter.post("/auth/signup", async (c) => {
 
 	let raceWon = false;
 	try {
-		// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
-		// callback for correct rollback semantics. The async form is used from
-		// Phase 1 onward once the dialect resolver is in place.
-		getDb().transaction((tx) => {
+		// withTransaction uses bun-sqlite's sync .transaction().sync() on the
+		// SQLite path — tx.* calls must use the sync API forms (.run(), .all(),
+		// .get()) inside the callback. Rollback fires when fn throws.
+		await withTransaction((tx) => {
 			// Re-check: count ALL users (including soft-deleted) and the
 			// firstRunCompleted flag inside the transaction so two concurrent
 			// signups can't both pass. We intentionally count disabled users:

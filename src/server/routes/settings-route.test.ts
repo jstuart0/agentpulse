@@ -27,8 +27,8 @@ const app = new Hono().route("/api/v1", settingsRouter).route("/api/v1", aiRoute
 
 const originalDisableAuth = config.disableAuth;
 
-beforeAll(() => {
-	initializeDatabase();
+beforeAll(async () => {
+	await initializeDatabase();
 	// Tests bypass auth the same way local dev does.
 	config.disableAuth = true;
 });

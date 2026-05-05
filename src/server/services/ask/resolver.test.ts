@@ -6,7 +6,7 @@ const { events, sessions } = await import("../../db/schema.js");
 const { resolveCandidateSessions, fetchSessionsById } = await import("./resolver.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

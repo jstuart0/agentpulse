@@ -16,7 +16,7 @@ const { config } = await import("../../config.js");
  */
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

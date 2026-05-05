@@ -9,7 +9,7 @@ const { getCachedProjects, loadEager } = await import("./cache.js");
 const { createProject, deleteProject, updateProject } = await import("./projects-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

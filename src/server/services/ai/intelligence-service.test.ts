@@ -11,7 +11,7 @@ const { intelligenceForSession, intelligenceForSessions } = await import(
 const { completeProposalAsHitl, createPendingProposal } = await import("./proposals-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

@@ -14,6 +14,7 @@ import {
 	projects,
 	sessions,
 } from "../db/schema.js";
+import { withTransaction } from "../db/with-transaction.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
 
@@ -339,10 +340,7 @@ export async function queueCleanupWorkArea(
  * events via FK, so events go first.
  */
 async function finalizeCleanupWorkArea(projectId: string): Promise<void> {
-	// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
-	// callback for correct rollback semantics. The async form is used from
-	// Phase 1 onward once the dialect resolver is in place.
-	getDb().transaction((tx) => {
+	await withTransaction((tx) => {
 		const projectSessions = tx
 			.select({ id: sessions.id, sessionId: sessions.sessionId })
 			.from(sessions)

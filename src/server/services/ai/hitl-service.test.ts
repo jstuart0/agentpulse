@@ -14,7 +14,7 @@ const {
 const { aiHitlRequests, sessions } = await import("../../db/schema.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

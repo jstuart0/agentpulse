@@ -15,7 +15,7 @@ const {
 } = await import("./channels-service.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

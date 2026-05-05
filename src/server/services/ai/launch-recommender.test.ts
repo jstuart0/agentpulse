@@ -6,7 +6,7 @@ const { events, sessions, supervisors } = await import("../../db/schema.js");
 const { recommendLaunch } = await import("./launch-recommender.js");
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {

@@ -67,8 +67,8 @@ describe("checkPasswordComplexity", () => {
 // ── change-password complexity enforcement ────────────────────────────────────
 
 describe("change-password complexity enforcement", () => {
-	beforeAll(() => {
-		initializeDatabase();
+	beforeAll(async () => {
+		await initializeDatabase();
 		config.disableAuth = false;
 	});
 
@@ -143,8 +143,8 @@ describe("rateBuckets size cap", () => {
 // ── Rate limiting (login endpoint) ───────────────────────────────────────────
 
 describe("login rate limiting", () => {
-	beforeAll(() => {
-		initializeDatabase();
+	beforeAll(async () => {
+		await initializeDatabase();
 		config.disableAuth = false;
 	});
 

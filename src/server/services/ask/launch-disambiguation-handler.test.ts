@@ -22,9 +22,7 @@ const { WORKSPACE_DEFAULT_ROOT_KEY } = await import("../workspace/feature.js");
 
 import type { ProjectChoiceSnapshot } from "../../db/schema.js";
 
-beforeAll(() => {
-	initializeDatabase();
-});
+beforeAll(() => initializeDatabase());
 
 beforeEach(async () => {
 	await getDb().delete(aiPendingProjectDrafts).execute();

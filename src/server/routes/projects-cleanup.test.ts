@@ -11,8 +11,8 @@ const app = new Hono().route("/api/v1", projectsRouter);
 
 const originalDisableAuth = config.disableAuth;
 
-beforeAll(() => {
-	initializeDatabase();
+beforeAll(async () => {
+	await initializeDatabase();
 	config.disableAuth = true;
 });
 

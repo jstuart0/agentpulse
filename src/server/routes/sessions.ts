@@ -4,6 +4,7 @@ import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
 import { events, sessions } from "../db/schema.js";
+import { withTransaction } from "../db/with-transaction.js";
 import {
 	listControlActionsForSession,
 	queuePromptAction,
@@ -96,7 +97,7 @@ sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 
 	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
 
-	renameSession(sessionId, name);
+	await renameSession(sessionId, name);
 	return c.json({ ok: true });
 });
 
@@ -283,14 +284,10 @@ sessionsRouter.put("/sessions/:sessionId/archive", async (c) => {
 // violation, etc.) leaves the row in place rather than partially deleted.
 // The explicit `events` delete is kept inside the same transaction as
 // belt-and-braces for older DBs that haven't yet rebuilt FKs.
-//
-// NOTE: bun-sqlite's Drizzle adapter requires a synchronous transaction
-// callback for correct rollback semantics. The async form is used from
-// Phase 1 onward once the dialect resolver is in place.
 sessionsRouter.delete("/sessions/:sessionId", async (c) => {
 	const sessionId = c.req.param("sessionId");
 
-	getDb().transaction((tx) => {
+	await withTransaction((tx) => {
 		// Cascade does this; explicit for older DBs that haven't yet rebuilt FKs.
 		tx.delete(events).where(eq(events.sessionId, sessionId)).run();
 		tx.delete(sessions).where(eq(sessions.sessionId, sessionId)).run();

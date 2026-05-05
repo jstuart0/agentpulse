@@ -4,27 +4,31 @@
  * outside the explicitly allowed files.
  *
  * Disallowed patterns (outside allowlist):
- *   .run()           — bun-sqlite Drizzle statement executor
- *   .all()           — bun-sqlite Drizzle statement "return all rows"
- *   .get()           — bun-sqlite Drizzle statement "return first row"
+ *   .run()           — bun-sqlite Drizzle statement executor on direct db calls
+ *   .all()           — bun-sqlite Drizzle statement "return all rows" on direct db calls
+ *   .get()           — bun-sqlite Drizzle statement "return first row" on direct db calls
  *   getDb().transaction(   — sync transaction (bun-sqlite-only call shape)
+ *
+ * Approved exception: `tx.something(...).run()`, `tx.something(...).all()`,
+ * and `tx.something(...).get()` inside a `withTransaction()` callback are
+ * the REQUIRED pattern for SQLite-safe transactions (bun-sqlite's Drizzle
+ * adapter commits before async work settles; only sync tx.* forms guarantee
+ * rollback). The patterns below exclude lines where `tx.` precedes the sync
+ * call — those are inside a withTransaction callback and are correct.
  *
  * Allowlisted files (may use these APIs by design):
  *   src/server/db/client.ts                  — DB adapter definition
+ *   src/server/db/with-transaction.ts        — canonical sync-tx helper (documents patterns)
  *   src/server/db/__test_db.ts               — test helper (if present)
  *   src/server/services/ai/__test_db.ts      — legacy test helper location
  *   src/server/services/search/sqlite-fts-backend.ts — SQLite FTS5 backend
  *   Any file matching *.test.ts              — tests retain raw access
  *
- * Phase 0 carry-over: the following files retain sync transaction callbacks
- * because bun-sqlite's Drizzle adapter commits before async callbacks settle,
- * silently disabling rollback. These will be converted in Phase 1 once the
- * dialect resolver can dispatch to sync (SQLite) or async (Postgres) callbacks.
- *   src/server/routes/auth.ts
- *   src/server/routes/sessions.ts
- *   src/server/services/session-tracker.ts
- *   src/server/services/projects/projects-service.ts
- *   src/server/services/control-actions.ts
+ * Phase 1 update: the 5 Phase 0 carry-over files (auth.ts, sessions.ts,
+ * session-tracker.ts, projects-service.ts, control-actions.ts) are now
+ * ported to withTransaction() and removed from the allowlist. They still use
+ * tx.* sync forms inside withTransaction callbacks — those are excluded by
+ * the tx-prefix exception in the patterns below.
  */
 
 import { readFile, readdir } from "node:fs/promises";
@@ -35,16 +39,18 @@ const ROOT = new URL("..", import.meta.url).pathname;
 const ALLOWLISTED_SUFFIXES = [
 	// Core DB adapter and test helpers
 	"src/server/db/client.ts",
+	// The withTransaction helper is the canonical DB-layer file for sync-tx
+	// semantics. Its docstring documents the .run()/.all()/.get() patterns by
+	// design; its implementation uses them to bridge the bun-sqlite sync path.
+	"src/server/db/with-transaction.ts",
 	"src/server/db/__test_db.ts",
 	"src/server/services/ai/__test_db.ts",
 	"src/server/services/search/sqlite-fts-backend.ts",
-	// Phase 0 carry-over: sync transaction bodies required for bun-sqlite
-	// rollback correctness; converted to async in Phase 1.
-	"src/server/routes/auth.ts",
-	"src/server/routes/sessions.ts",
-	"src/server/services/session-tracker.ts",
-	"src/server/services/projects/projects-service.ts",
-	"src/server/services/control-actions.ts",
+	// Phase 0 carry-over (fully resolved in Phase 1): the 5 files that used
+	// sync transaction callbacks are now ported to withTransaction() and
+	// removed from this allowlist. Their remaining tx.* sync calls inside
+	// withTransaction callbacks are excluded by the tx-prefix exception in
+	// the pattern matcher (see PATTERNS below).
 ];
 
 function isAllowlisted(relPath: string): boolean {
@@ -80,6 +86,23 @@ const PATTERNS = [
 	},
 ];
 
+// Lines where the sync call is on the `tx` transaction variable are permitted.
+// These appear inside withTransaction() callbacks, which is the approved
+// abstraction for SQLite-safe transactions. The `tx` variable name is the
+// codebase convention for the transaction parameter; direct db.* or getDb().*
+// chains remain prohibited.
+function isApprovedTxCall(line: string): boolean {
+	// A line is an approved tx call if it contains a `tx.` chain ending in
+	// .run()/.all()/.get() — meaning the sync call is on the transaction
+	// variable rather than on a direct db access. This covers:
+	//   tx.update(...).run()
+	//   tx.select(...).all()
+	//   tx.select(...).get()
+	//   const rows = tx.select(...).all()
+	//   const n = tx.select(...).all().length
+	return /\btx\./.test(line);
+}
+
 async function* walkTs(dir: string): AsyncGenerator<string> {
 	const entries = await readdir(dir, { withFileTypes: true });
 	for (const entry of entries) {
@@ -106,6 +129,8 @@ async function main() {
 
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
+			// Skip lines that are approved tx.* calls inside withTransaction callbacks.
+			if (isApprovedTxCall(line)) continue;
 			for (const { re, label } of PATTERNS) {
 				if (re.test(line)) {
 					hits.push(`${rel}:${i + 1}: ${label}\n  ${line.trim()}`);

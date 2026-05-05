@@ -7,7 +7,7 @@ const { formatSearchResults, handleNlSearch } = await import("./ask-search-handl
 import type { SearchHit } from "../search/types.js";
 
 beforeAll(() => {
-	initializeDatabase();
+	return initializeDatabase();
 });
 
 beforeEach(async () => {
