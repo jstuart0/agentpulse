@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jstuart0/agentpulse/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0--pre.8-blue)](https://github.com/jstuart0/agentpulse/releases)
+[![Version](https://img.shields.io/github/package-json/v/jstuart0/agentpulse?label=version&color=blue)](https://github.com/jstuart0/agentpulse/releases)
 [![Bun](https://img.shields.io/badge/runtime-Bun-000?logo=bun)](https://bun.sh)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-✓-green)](https://github.com/awesome-selfhosted/awesome-selfhosted)
 [![Wiki](https://img.shields.io/badge/docs-wiki-informational)](https://github.com/jstuart0/agentpulse/wiki)
@@ -61,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/in
 Windows:
 
 ```powershell
-irm https://agentpulse.xmojo.net/install-local.ps1 | iex
+irm https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 | iex
 ```
 
 When it finishes, open [http://localhost:3000](http://localhost:3000) and start a new Claude Code or Codex session.
@@ -224,7 +224,7 @@ curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/in
 Windows:
 
 ```powershell
-irm https://agentpulse.xmojo.net/install-local.ps1 | iex
+irm https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 | iex
 ```
 
 What it does:
@@ -255,7 +255,7 @@ curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/in
 Windows:
 
 ```powershell
-iwr https://agentpulse.xmojo.net/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
+iwr https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-local.ps1" -Port 4000 -PublicUrl http://localhost:4000 -DataDir "$HOME\.agentpulse\data"
 ```
 
@@ -272,7 +272,7 @@ curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/in
 Windows:
 
 ```powershell
-iwr https://agentpulse.xmojo.net/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
+iwr https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-local.ps1" -DisableAuth:$false -ApiKey ap_your_key_here
 ```
 
@@ -281,13 +281,13 @@ If you only want observability and do not want the local supervisor/control plan
 macOS / Linux:
 
 ```bash
-curl -fsSL https://agentpulse.xmojo.net/install-local.sh | bash -s -- --skip-supervisor
+curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | bash -s -- --skip-supervisor
 ```
 
 Windows:
 
 ```powershell
-iwr https://agentpulse.xmojo.net/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
+iwr https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 -OutFile "$env:TEMP\install-local.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-local.ps1" -SkipSupervisor
 ```
 
@@ -415,16 +415,22 @@ SQLite (stored at `./data/agentpulse.db`). Zero-config, single-file, handles hom
 
 > **PostgreSQL is on the roadmap but not implemented yet.** Setting `DATABASE_URL=postgres://…` now fails fast at boot with a clear error rather than silently falling back to SQLite (the previous behavior misled anyone who trusted the env var). If you need multi-replica scale-out, track progress in [the Postgres backend issue](https://github.com/jstuart0/agentpulse/issues) or hold off until it lands.
 
+### Security headers
+
+AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). This surfaces CSP violations in `POST /api/v1/csp-report` (structured JSON log) without blocking anything. Enforcement mode (`Content-Security-Policy`) will follow in a future release once reports are clean in production.
+
 ### All environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port |
-| `HOST` | `0.0.0.0` | Bind address |
+| `HOST` | `127.0.0.1` | Bind address. The published Docker image overrides this to `0.0.0.0` via `ENV HOST=0.0.0.0`; bare `bun run start` binds localhost only. |
 | `PUBLIC_URL` | `http://localhost:3000` | Public URL (used in setup script) |
 | `DATA_DIR` | `./data` | Base directory for local SQLite storage |
 | `SQLITE_PATH` | `${DATA_DIR}/agentpulse.db` | Override the SQLite database file path |
 | `DISABLE_AUTH` | `false` | Skip all authentication |
+| `AGENTPULSE_ALLOW_SIGNUP` | `false` | Allow open signup on an empty instance. Set `true` to enable the first-run signup flow. Once any user exists, signup is blocked regardless. |
+| `AGENTPULSE_AUTHENTIK_TRUST_SECRET` | | Shared secret for the Authentik header trust gate (k8s SSO deployments). See `deploy/k8s/AUTHENTIK-FORWARDAUTH.md`. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `AGENTPULSE_TELEMETRY` | `on` | Set `off` to disable anonymous telemetry |
 | `DO_NOT_TRACK` | | Set `1` to disable telemetry (standard) |

@@ -1,6 +1,6 @@
 {
 	"name": "agentpulse",
-	"version": "0.2.0-pre.10",
+	"version": "0.3.0",
 	"description": "Command center for AI coding agents across all your machines",
 	"type": "module",
 	"bin": {
@@ -41,13 +41,13 @@
 		"codemirror": "^6.0.1",
 		"date-fns": "^4.1.0",
 		"drizzle-orm": "^0.44.0",
-		"hono": "^4.7.0",
+		"hono": "~4.7.0",
 		"lucide-react": "^0.473.0",
 		"postgres": "^3.4.5",
 		"qrcode": "^1.5.4",
 		"react": "^19.1.0",
 		"react-dom": "^19.1.0",
-		"react-markdown": "^10.1.0",
+		"react-markdown": "~10.1.0",
 		"react-router-dom": "^7.5.0",
 		"remark-gfm": "^4.0.1",
 		"sonner": "^2.0.7",

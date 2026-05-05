@@ -58,7 +58,51 @@ elif [[ -f "$HOME/.bun/bin/bun" ]]; then
   BUN_PATH="$HOME/.bun/bin/bun"
 else
   echo "  Installing Bun..."
-  curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1
+  # Pin Bun to a specific release for reproducibility and supply-chain safety (S-L2/S-L3).
+  #
+  # HOW THIS WORKS:
+  #   1. We download the bun.sh installer script and verify its SHA256 (pins the installer).
+  #   2. We invoke it with "bun-v${BUN_VERSION}" which causes it to download that exact
+  #      release zip from github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/.
+  #
+  # TO UPGRADE: bump BUN_VERSION and BUN_INSTALLER_SHA256 together.
+  #   Fetch new SHA: curl -fsSL "https://bun.sh/install" | sha256sum
+  #   Verify at:     https://github.com/oven-sh/bun/releases/tag/bun-v${BUN_VERSION}
+  BUN_VERSION="1.1.30"
+  BUN_INSTALLER_URL="https://bun.sh/install"
+  # SHA256 of the bun.sh/install script as of 2026-05-05.
+  # Re-verify with: curl -fsSL "https://bun.sh/install" | sha256sum
+  BUN_INSTALLER_SHA256="bab8acfb046aac8c72407bdcce903957665d655d7acaa3e11c7c4616beae68dd"
+
+  BUN_INSTALLER_TMP="$(mktemp)"
+  curl -fsSL "$BUN_INSTALLER_URL" -o "$BUN_INSTALLER_TMP"
+
+  # Verify checksum before executing (S-L2).
+  # If neither sha256sum nor shasum is available, abort — do not silently skip
+  # supply-chain verification on minimal environments (e.g. Alpine, CI runners).
+  if command -v sha256sum &>/dev/null; then
+    echo "$BUN_INSTALLER_SHA256  $BUN_INSTALLER_TMP" | sha256sum -c --quiet || {
+      echo "  ERROR: Bun installer checksum mismatch. Aborting."
+      rm -f "$BUN_INSTALLER_TMP"
+      exit 1
+    }
+  elif command -v shasum &>/dev/null; then
+    echo "$BUN_INSTALLER_SHA256  $BUN_INSTALLER_TMP" | shasum -a 256 -c --quiet 2>/dev/null || {
+      echo "  ERROR: Bun installer checksum mismatch. Aborting."
+      rm -f "$BUN_INSTALLER_TMP"
+      exit 1
+    }
+  else
+    echo "  ERROR: No sha256sum or shasum found. Install coreutils and retry."
+    rm -f "$BUN_INSTALLER_TMP"
+    exit 1
+  fi
+
+  # Pass "bun-v${BUN_VERSION}" so the installer downloads that exact release
+  # from github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/ rather
+  # than the latest release.
+  bash "$BUN_INSTALLER_TMP" "bun-v${BUN_VERSION}" >/dev/null 2>&1
+  rm -f "$BUN_INSTALLER_TMP"
   BUN_PATH="$HOME/.bun/bin/bun"
 fi
 echo "  ✓ Bun: $BUN_PATH"

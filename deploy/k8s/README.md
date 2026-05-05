@@ -75,8 +75,8 @@ agentpulse uses `imagePullPolicy: IfNotPresent` with SHA-pinned tags. The
 # Default: ghcr.io/jstuart0
 ./scripts/build-and-push.sh
 
-# Private homelab registry
-REGISTRY=192.168.10.222:30500 ./scripts/build-and-push.sh
+# Private homelab registry (replace with your registry host and port)
+REGISTRY=<your-registry-host>:<port> ./scripts/build-and-push.sh
 ```
 
 After pushing, update the `image:` field in `deploy/k8s/04-deployment.yaml`
@@ -134,7 +134,8 @@ carries an annotation as a reminder; the annotation has no runtime effect.
    (Cilium with `host-firewall` enabled, Calico with `doNotTrack`) the
    NetworkPolicy is evaluated against node-sourced traffic. Without this
    `ipBlock` rule, probes are silently dropped, causing `CrashLoopBackOff`.
-   Adjust the CIDR to match your node subnet when deploying outside the homelab.
+   **REPLACE `192.168.10.0/24` with your cluster's node CIDR** when deploying
+   outside this homelab (edit `10-networkpolicy.yaml` before applying).
 
 3. **Same-namespace `app: agentpulse` pods** — defense-in-depth for CNI plugins
    that enforce policy on loopback-bound traffic; preserves the preStop drain
@@ -197,6 +198,24 @@ until `initializeDatabase()` completes all migrations. The k8s `startupProbe`
 polls this endpoint with a 150-second budget (30 attempts × 5s). Only after
 `markDbReady()` fires does the endpoint return `200`. This prevents the
 `livenessProbe` from passing early and SIGKILLing the pod mid-migration.
+
+---
+
+## Why we pin Hono to a minor version
+
+`package.json` pins Hono with a tilde (`~4.7.0`) rather than a caret (`^4.7.0`).
+This pins to the `4.7.x` patch series and blocks silent minor-version upgrades.
+
+Hono's root-route mount behavior has shifted across minor versions in the past —
+a `^` bump can change how nested router prefixes are resolved, breaking the API
+mount point at `/api/v1/`. The `~` pin ensures that `bun install` only pulls in
+patch-level security/bug fixes. Upgrade to a new minor intentionally by bumping
+the version string and running `bun run typecheck` + the full test suite.
+
+`react-markdown` is pinned (`~10.1.0`) for the same reason: the v10 series
+removed `rehype-raw` and changed how raw HTML is handled. A silent upgrade to a
+hypothetical v11 that reintroduces raw-HTML processing would reopen the XSS
+surface that the `~10.x` pin closes.
 
 ---
 

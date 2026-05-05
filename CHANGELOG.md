@@ -5,9 +5,13 @@ All notable changes to AgentPulse are documented here. The format is based on
 project is still pre-1.0 — breaking changes land under the regular `Changed`
 section with a `⚠ breaking` prefix so they're easy to spot.
 
-## [Unreleased]
+## [0.3.0] — 2026-05-05
 
-### Changed
+This release is the audit-remediation campaign (P1–P15). The primary goal was
+hardening the public-facing security posture before broader OSS distribution.
+All breaking changes are listed first; other changes follow.
+
+### Breaking changes
 
 - ⚠ breaking — **`HOST` default changed from `0.0.0.0` to `127.0.0.1`.**
   Running `bun run start` (bare, without Docker) now binds to localhost only.
@@ -19,18 +23,64 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   The first-run signup flow is now opt-in. Set `AGENTPULSE_ALLOW_SIGNUP=true`
   to allow open signup on an empty instance. Existing installs with users already
   created are unaffected — signup was already blocked once any user existed.
+  The flag `auth.firstRunCompleted` is written atomically in the same SQLite
+  transaction as the user row; two concurrent signup requests on an empty instance
+  now guarantee exactly one succeeds.
 
-- **Settings allowlist (replaces prefix denylist).** `PUT /api/v1/settings`
+- ⚠ breaking — **Settings allowlist (replaces prefix denylist).** `PUT /api/v1/settings`
   now rejects any key not explicitly listed as user-settable, returning
   `{ "error": "key_not_user_settable", "key": "..." }` with HTTP 403. Previously
   the endpoint blocked only `ai.*` / `vectorSearch.*` / `telegram:credentials`
   prefixes; all other keys were accepted. Service-internal callers already
   pass `{ allowProtected: true }` and are unaffected.
 
-- **Atomic first-run signup.** Two concurrent `POST /auth/signup` requests
-  against an empty user table now guarantee exactly one succeeds; the second
-  returns 403. The flag `auth.firstRunCompleted` is written in the same
-  synchronous SQLite transaction as the user row.
+- ⚠ breaking — **Authentik trust secret required for SSO deployments.**
+  Set `AGENTPULSE_AUTHENTIK_TRUST_SECRET` to the shared secret configured in
+  Authentik's property mapping for the agentpulse proxy provider. AgentPulse
+  verifies the `X-Authentik-Verify` header on every SSO request using
+  `crypto.timingSafeEqual` with a length guard. Missing or mismatched secret
+  strips all Authentik identity headers and treats the request as unauthenticated.
+  Rotation procedure: regenerate the secret → update Authentik property mapping
+  value + AgentPulse k8s Secret → restart agentpulse pod. Traefik holds no secret
+  and is unchanged across rotations. See `deploy/k8s/AUTHENTIK-FORWARDAUTH.md`
+  and `deploy/k8s/RUNBOOK-secrets-rotation.md`.
+
+- ⚠ breaking — **`source` string changed for 4 proposal-decision events.**
+  The events `proposal_accepted`, `proposal_declined`, `proposal_auto_applied`,
+  and `proposal_expired` now carry `source: "managed_control"` instead of
+  `source: "observed_hook"`. Downstream log queries or metrics that key on the
+  literal string `"observed_hook"` for these events will silently stop matching.
+  Update filters to `"managed_control"`.
+
+- ⚠ breaking — **Hook ingest always-200 contract reaffirmed.**
+  Rate-limited hook drops are silent (the agent never sees an error). The drop
+  counter is exposed in `GET /api/v1/health` under `ingestCounters`. Any
+  monitoring or alerting that expected non-200 responses from `/api/v1/hooks`
+  under load needs to switch to polling the health endpoint counter.
+
+- ⚠ breaking — **Graceful drain on SIGTERM (k8s deployments).**
+  The pod's `preStop` hook calls `POST /api/v1/internal/drain` (loopback-only)
+  which sets `shuttingDown = true` and polls until in-flight event processing
+  completes. Readiness goes 503 immediately. `terminationGracePeriodSeconds: 90`
+  in the deployment gives 30 s preStop budget + 60 s post-TERM grace. The
+  `/api/v1/internal/*` path is excluded from all public IngressRoutes.
+
+- ⚠ breaking — **Image-tag-by-SHA convention; `imagePullPolicy: IfNotPresent`.**
+  The k8s deployment manifest pins the image to a specific commit SHA tag
+  (e.g. `ghcr.io/jstuart0/agentpulse:<sha>`). Run `./scripts/build-and-push.sh`
+  to build and get the printed SHA, then update `deploy/k8s/04-deployment.yaml`
+  (or your homelab overlay) before applying. `imagePullPolicy: IfNotPresent`
+  is now set explicitly. The prior `:latest` reference is removed.
+
+- ⚠ breaking — **Storage stance: SQLite stays on local-path PVC.**
+  Do NOT relocate `agentpulse.db` to an NFS-backed storage class. SQLite WAL
+  mode requires shared-memory semantics that break on network filesystems; this
+  causes silent corruption. Durability is provided by a nightly in-pod
+  `backup-sidecar` container that writes `.backup` snapshots to a separate
+  NFS-backed PVC (`agentpulse-backups`). Restore runbook: `deploy/k8s/BACKUP-RESTORE.md`.
+  PostgreSQL backend (the long-term answer) is the explicit next epic.
+
+### Changed
 
 - **Docker host-publishing.** All documented `docker run` examples with
   `DISABLE_AUTH=true` now use `-p 127.0.0.1:3000:3000` instead of
@@ -38,6 +88,50 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   network interfaces. A startup warning fires when `DISABLE_AUTH=true` and
   `HOST=0.0.0.0` are both active, reminding operators to use the
   `127.0.0.1:` host-binding prefix.
+
+- **CSP-Report-Only header shipped.** Every response now includes a
+  `Content-Security-Policy-Report-Only` header. Violations are collected at
+  `POST /api/v1/csp-report` as structured JSON. No content is blocked in this
+  release. Enforcement mode (`Content-Security-Policy`) will follow once reports
+  are clean in production.
+
+- **WebSocket Origin validation strict everywhere.** The WS upgrade handler
+  now validates `Origin` against `PUBLIC_URL` in all environments (no
+  `NODE_ENV=development` bypass). Vite's dev server proxies WebSocket same-origin
+  so development workflows are unaffected.
+
+- **Lazy DB initialization + AI module split.** `src/server/db/client.ts` is
+  now lazy-initialized on first use rather than at import time, eliminating the
+  startup race between the module-level DB handle and `initializeDatabase()`.
+  The AI route module is split into `ai.ts` (core) + `ai-ask.ts` + `ai-watcher.ts`
+  to reduce cold-start time for non-AI installs.
+
+- **Accessibility — critical fixes.** Every interactive element now has a
+  visible focus ring and a descriptive `aria-label`. Keyboard navigation through
+  session cards, inbox items, and templates is complete. Color-contrast failures
+  resolved across dashboard, inbox, and session detail.
+
+- **Prompt injection nonce.** User-supplied content rendered in the dashboard
+  is wrapped in a nonce-validated sanitizer to prevent injected HTML from
+  executing in the browser context.
+
+- **`evaluation-report.md` moved** from project root to `thoughts/audits/`
+  (`thoughts/` is gitignored in OSS commits). All 22 audit findings from the
+  April 2026 code-health audit are closed by this release.
+
+### Added
+
+- `deploy/k8s/BACKUP-RESTORE.md` — restore runbook for the in-pod backup sidecar.
+- `deploy/k8s/AUTHENTIK-FORWARDAUTH.md` — Authentik property-mapping setup guide.
+- `deploy/k8s/RUNBOOK-secrets-rotation.md` — Authentik trust secret rotation steps.
+- `deploy/k8s/` manifests: LimitRange, ResourceQuota, NetworkPolicy, ServiceAccount,
+  backup PVC, backup-sidecar container in deployment.
+- `GET /api/v1/sessions/:id/claude-md` and `PUT /api/v1/sessions/:id/claude-md`
+  endpoints for per-session CLAUDE.md management (replaces the earlier
+  `/api/v1/agents-md` proxy, which was a fetch-through to the filesystem).
+- `src/supervisor/` — local supervisor process for same-machine launch/control.
+- Dev commands: `bun run dev:supervisor`, `bun run test`, `bun run test:watch`,
+  `bun run check:fix`, `bun run check:architecture`.
 
 ## [0.2.0-pre.10] — 2026-05-01
 
