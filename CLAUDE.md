@@ -141,7 +141,7 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 ## Deployment
 
 - **Local:** `docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true` (use `127.0.0.1:` prefix to avoid publishing auth-disabled server on all host interfaces)
-- **K8s (thor):** `kubectl apply -f deploy/k8s/` (uses Authentik SSO + Traefik IngressRoute)
+- **K8s (thor):** `kubectl apply -k deploy/k8s/` (uses Authentik SSO + Traefik IngressRoute)
 - **Relay:** `curl -sSL https://server/setup-relay.sh | bash -s -- --key ap_xxx`
 - **Docker image:** `ghcr.io/jstuart0/agentpulse:latest` (linux/amd64)
 - **Telemetry:** `telemetry-agentpulse.xmojo.net` (Cloudflare Worker + D1)

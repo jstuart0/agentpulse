@@ -28,6 +28,7 @@ const { _resetCountersForTest, getRateLimitedDropped } = await import("./ingest-
 const { _resetDrainStateForTest, isShuttingDown, setShuttingDown } = await import(
 	"../drain-state.js"
 );
+const { _resetDbReadyForTest } = await import("./health.js");
 
 const originalDisableAuth = config.disableAuth;
 
@@ -55,17 +56,23 @@ function buildLoopbackDrainApp(peerIp = "127.0.0.1") {
 beforeAll(() => {
 	initializeDatabase();
 	config.disableAuth = true;
+	// Mark DB ready so health assertions see 200 (markDbReady() is called by
+	// index.ts boot path, which test harnesses don't run).
+	_resetDbReadyForTest(true);
 });
 
 afterEach(() => {
 	_resetBucketsForTest();
 	_resetCountersForTest();
 	_resetDrainStateForTest();
+	// Restore db-ready between tests in case a test resets it.
+	_resetDbReadyForTest(true);
 });
 
 afterAll(() => {
 	config.disableAuth = originalDisableAuth;
 	_resetDrainStateForTest();
+	_resetDbReadyForTest(false);
 });
 
 // ── Health response — P7 fields ───────────────────────────────────────────────

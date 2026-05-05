@@ -20,6 +20,11 @@ export function markDbReady(): void {
 	_dbReady = true;
 }
 
+/** Reset db-ready gate to a known state for tests only — do not call in production code. */
+export function _resetDbReadyForTest(ready = false): void {
+	_dbReady = ready;
+}
+
 // GET /api/v1/health - Liveness probe + operator observability.
 //
 // Returns 503 until the database has finished initialising (startupProbe

@@ -494,11 +494,9 @@ bun run start
 Manifests are in `deploy/k8s/`. Includes namespace, deployment, service, PVC, configmap, and Traefik IngressRoute with optional Authentik SSO.
 
 ```bash
-# Edit the secret template with your DB credentials
-vim deploy/k8s/01-secret-template.yaml
-
-# Apply everything
-kubectl apply -f deploy/k8s/
+# Create a real Secret out of band (see deploy/k8s/01-secret-template.yaml for the shape)
+# then apply the Kustomize base:
+kubectl apply -k deploy/k8s/
 ```
 
 ## Develop

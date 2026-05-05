@@ -30,7 +30,7 @@ deploy/k8s-homelab/
 
 Apply base (OSS/example values):
 ```bash
-kubectl apply -f deploy/k8s/
+kubectl apply -k deploy/k8s/
 ```
 
 Apply homelab overlay (real values):

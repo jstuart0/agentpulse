@@ -64,8 +64,12 @@ spec:
 
     # Telegram webhook: HMAC-authenticated via X-Telegram-Bot-Api-Secret-Token.
     # Rate limit is secondary guard; HMAC is the primary.
+    # priority: 100 — ensures this exact-path rule wins over the /api/ Bearer
+    # bypass rule, which would otherwise shadow the ratelimit middleware because
+    # Traefik's default priority is match-string length, not path specificity.
     - match: Host(`agentpulse.example.com`) && Path(`/api/v1/channels/telegram/webhook`)
       kind: Rule
+      priority: 100
       middlewares:
         - name: agentpulse-ratelimit-public
           namespace: agentpulse
@@ -111,8 +115,11 @@ spec:
           port: 3000
 
     # CSP violation reports — unauthenticated browser push (P4).
+    # priority: 100 — same reason as telegram/webhook above: prevents the /api/
+    # Bearer bypass rule from shadowing the ratelimit middleware on this path.
     - match: Host(`agentpulse.example.com`) && Path(`/api/v1/csp-report`)
       kind: Rule
+      priority: 100
       middlewares:
         - name: agentpulse-ratelimit-public
           namespace: agentpulse
