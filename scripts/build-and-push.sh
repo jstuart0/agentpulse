@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./scripts/build-and-push.sh
-#   REGISTRY=192.168.10.222:30500 ./scripts/build-and-push.sh
+#   REGISTRY=registry.example.com:5000 ./scripts/build-and-push.sh
 #
 # After pushing, update the image: field in deploy/k8s/04-deployment.yaml
 # (or the homelab deployment-patch.yaml) to the printed tag, then apply.

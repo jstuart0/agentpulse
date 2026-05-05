@@ -44,6 +44,20 @@ export type WatcherPolicy = (typeof WATCHER_POLICIES)[number];
 export const DECISION_KINDS = ["continue", "ask", "report", "stop", "wait"] as const;
 export type DecisionKind = (typeof DECISION_KINDS)[number];
 
+// Watcher run lifecycle states. Drives the `ai_watcher_runs` table and
+// queue snapshot endpoint. Canonical here; re-exported from watcher-runs-service.
+export type WatcherRunStatus =
+	| "queued"
+	| "claimed"
+	| "running"
+	| "succeeded"
+	| "failed"
+	| "expired"
+	| "cancelled";
+
+// What caused a watcher run to be enqueued. Stored in `ai_watcher_runs.trigger_kind`.
+export type WatcherRunTriggerKind = "idle" | "stop" | "error" | "plan_completed" | "manual";
+
 // Managed-session lifecycle states. Producers are the supervisor providers
 // (claude-headless / claude-interactive / codex-managed) and the
 // state-recorder (managed-session-state). Consumers (session-tracker,

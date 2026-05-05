@@ -103,7 +103,8 @@ All breaking changes are listed first; other changes follow.
 - **Lazy DB initialization + AI module split.** `src/server/db/client.ts` is
   now lazy-initialized on first use rather than at import time, eliminating the
   startup race between the module-level DB handle and `initializeDatabase()`.
-  The AI route module is split into `ai.ts` (core) + `ai-ask.ts` + `ai-watcher.ts`
+  The AI route module is split into `ai-providers.ts`, `ai-watcher.ts`,
+  `ai-inbox.ts`, `ai-intelligence.ts`, `ai-status.ts`, and `ai-gates.ts`
   to reduce cold-start time for non-AI installs.
 
 - **Accessibility — critical fixes.** Every interactive element now has a

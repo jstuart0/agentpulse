@@ -210,6 +210,8 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - **Docker image:** `ghcr.io/jstuart0/agentpulse:<sha>` (linux/amd64; tagged by commit SHA — see `scripts/build-and-push.sh`)
 - **Telemetry:** Cloudflare Worker + D1 (default homelab endpoint; configurable via `TELEMETRY_ENDPOINT`)
 
+**Single-replica constraint**: The deployment is single-replica (`strategy: Recreate`). Watcher in-flight state and other process-local state make multi-instance deployment unsafe until the SQLite to Postgres migration. See `thoughts/2026-04-24-postgres-backend-plan.md`.
+
 ## OSS Hygiene
 
 When preparing changes for commit or push to the public repository:

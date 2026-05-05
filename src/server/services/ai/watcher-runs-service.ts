@@ -1,18 +1,11 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
+import type { WatcherRunStatus, WatcherRunTriggerKind } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { aiWatcherRuns } from "../../db/schema.js";
 
-export type WatcherRunStatus =
-	| "queued"
-	| "claimed"
-	| "running"
-	| "succeeded"
-	| "failed"
-	| "expired"
-	| "cancelled";
-
-export type WatcherRunTriggerKind = "idle" | "stop" | "error" | "plan_completed" | "manual";
+// Re-exported so existing imports from this module continue to resolve.
+export type { WatcherRunStatus, WatcherRunTriggerKind };
 
 export interface WatcherRunRecord {
 	id: string;

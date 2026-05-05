@@ -69,6 +69,8 @@ interface ScheduledRun {
  */
 export class WatcherRunner {
 	private readonly scheduled = new Map<string, ScheduledRun>();
+	// NOTE: inFlight is per-process. Multi-instance deployment is unsupported
+	// until SQLite → Postgres migration; see thoughts/2026-04-24-postgres-backend-plan.md (A-M2).
 	private readonly inFlight = new Set<string>();
 	private started = false;
 	private alertRuleSweepInterval: ReturnType<typeof setInterval> | null = null;

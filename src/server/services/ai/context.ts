@@ -1,7 +1,6 @@
-import type { Session, SessionEvent } from "../../../shared/types.js";
+import type { Session, SessionEvent, WatcherRunTriggerKind } from "../../../shared/types.js";
 import { estimateTokens } from "./llm/types.js";
 import { type RedactionRule, redact } from "./redactor.js";
-import type { WatcherRunTriggerKind } from "./watcher-runs-service.js";
 
 // Per plan: the system prompt is stable across a session so it can be
 // prompt-cached (Anthropic), and the transcript block is explicitly marked
