@@ -60,26 +60,31 @@ spec:
           preStop:
             exec:
               command:
-                - /bin/sh
-                - -c
+                - /usr/local/bin/bun
+                - --eval
                 - |
-                  # Trigger drain via loopback-only endpoint.
-                  # Sets shuttingDown=true so readiness probe goes 503
-                  # and k8s stops routing new hooks to this pod.
-                  # oven/bun:1-slim is Debian-based and ships wget.
-                  wget -qO- --post-data="" http://127.0.0.1:3000/api/v1/internal/drain || true
-                  # Poll until in-flight reaches 0 or the 30s budget runs out.
-                  # sed extracts the numeric value of "inFlight" from the JSON body.
-                  for i in $(seq 1 30); do
-                    INFLIGHT=$(wget -qO- http://127.0.0.1:3000/api/v1/health 2>/dev/null | sed -n 's/.*"inFlight":\([0-9]*\).*/\1/p')
-                    if [ "$INFLIGHT" = "0" ]; then
-                      exit 0
-                    fi
-                    sleep 1
-                  done
-                  # Best-effort drain timeout — Option B accepts residual loss;
-                  # Synology backup pipeline (P11) covers it.
-                  exit 0
+                  // Trigger drain via loopback-only endpoint.
+                  // Sets shuttingDown=true so readiness probe goes 503
+                  // and k8s stops routing new hooks to this pod.
+                  //
+                  // NOTE: oven/bun:1-slim does NOT ship wget or curl.
+                  // bun is always present in the container and supports
+                  // fetch(), making it the correct tool for this script.
+                  try {
+                    await fetch("http://127.0.0.1:3000/api/v1/internal/drain", { method: "POST" });
+                  } catch {}
+                  // Poll until in-flight reaches 0 or the 30s budget runs out.
+                  for (let i = 0; i < 30; i++) {
+                    try {
+                      const res = await fetch("http://127.0.0.1:3000/api/v1/health");
+                      const body = await res.json();
+                      if (body.inFlight === 0) process.exit(0);
+                    } catch {}
+                    await Bun.sleep(1000);
+                  }
+                  // Best-effort drain timeout — Option B accepts residual loss;
+                  // Synology backup pipeline (P11) covers it.
+                  process.exit(0);
         readinessProbe:
           httpGet:
             path: /api/v1/ready
