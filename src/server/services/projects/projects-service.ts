@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { eq, or, sql } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
+import { likeStartsWith } from "../../db/sql-helpers.js";
 import { projects, sessionTemplates, sessions } from "../../db/schema.js";
 import { withTransaction } from "../../db/with-transaction.js";
 import { bumpVersionAndReload, getCachedProjects } from "./cache.js";
@@ -63,7 +64,7 @@ export async function resolveAllSessionsForProject(
 				or(
 					sql`${sessions.projectId} IS NULL`,
 					eq(sessions.projectId, projectId),
-					sql`${sessions.cwd} LIKE ${`${normalizedCwd}%`}`,
+					likeStartsWith(sessions.cwd, normalizedCwd),
 				),
 			)
 			.all();
@@ -171,8 +172,8 @@ export async function updateProject(
 				.where(
 					or(
 						eq(sessions.projectId, id),
-						sql`${sessions.cwd} LIKE ${`${normalizedCwd}%`}`,
-						sql`${sessions.cwd} LIKE ${`${normalizeCwd(existing.cwd)}%`}`,
+						likeStartsWith(sessions.cwd, normalizedCwd),
+						likeStartsWith(sessions.cwd, normalizeCwd(existing.cwd)),
 					),
 				)
 				.all();

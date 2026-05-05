@@ -1,5 +1,6 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, expect, test } from "bun:test";
 import "../ai/__test_db.js";
+import { describeSqliteOnly } from "../../test-utils/backend.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { events, sessions } = await import("../../db/schema.js");
@@ -76,7 +77,10 @@ function freshBackend() {
 	return new SqliteFtsBackend(new Database(config.sqlitePath));
 }
 
-describe("SqliteFtsBackend", () => {
+// The entire file exercises the SQLite FTS5 backend: virtual tables, BM25
+// ranking, and snippet highlighting are SQLite-specific. Phase 5 adds
+// a PostgresSearchBackend with its own test file.
+describeSqliteOnly("SqliteFtsBackend", () => {
 	test("finds sessions by display name", async () => {
 		await insertSession("s1", { displayName: "brave-falcon" });
 		await insertSession("s2", { displayName: "calm-river" });

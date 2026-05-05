@@ -2,8 +2,9 @@
 //   - initializeDatabase is idempotent
 //   - cascade FKs are in place on every child of sessions(session_id)
 //   - rebuilds preserved indexes on rebuilt tables
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import "../services/ai/__test_db.js";
+import { describeSqliteOnly } from "../test-utils/backend.js";
 
 const { Database } = await import("bun:sqlite");
 const { config } = await import("../config.js");
@@ -11,7 +12,10 @@ const { initializeDatabase } = await import("./client.js");
 
 beforeAll(() => initializeDatabase());
 
-describe("initializeDatabase", () => {
+// SQLite-only: uses bun:sqlite raw handles, PRAGMAs, and sqlite_master queries.
+// On Postgres the FK and index structure is verified through information_schema
+// queries — that's a Phase 7 addition.
+describeSqliteOnly("initializeDatabase", () => {
 	test("is idempotent (calling twice does not throw)", async () => {
 		// Already called once in beforeAll; calling again must be a no-op.
 		await expect(initializeDatabase()).resolves.toBeUndefined();

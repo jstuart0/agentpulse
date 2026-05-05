@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import type {
 	ControlAction,
 	ControlActionStatus,
@@ -6,6 +6,7 @@ import type {
 	LaunchRequest,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
+import { jsonExtractText } from "../db/sql-helpers.js";
 import {
 	events,
 	controlActions,
@@ -382,7 +383,7 @@ export async function claimNextControlAction(supervisorId: string) {
 			and(
 				eq(controlActions.status, "queued"),
 				isNull(controlActions.sessionId),
-				sql`json_extract(${controlActions.metadata}, '$.targetSupervisorId') = ${supervisorId}`,
+				eq(jsonExtractText(controlActions.metadata, "$.targetSupervisorId"), supervisorId),
 			),
 		)
 		.orderBy(asc(controlActions.createdAt))

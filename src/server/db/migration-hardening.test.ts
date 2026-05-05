@@ -19,6 +19,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import "../services/ai/__test_db.js";
+import { describeSqliteOnly } from "../test-utils/backend.js";
 
 const { isIdempotentMigrationError } = await import("./client.js");
 
@@ -31,7 +32,10 @@ function captureExecError(db: Database, sql: string): string {
 	}
 }
 
-describe("isIdempotentMigrationError", () => {
+// SQLite-only: tests the SQLite-specific migration retry predicate and uses
+// bun:sqlite raw Database handles to generate real error messages. The Postgres
+// migration path uses a different idempotency mechanism (Phase 6).
+describeSqliteOnly("isIdempotentMigrationError", () => {
 	test("treats duplicate-column ALTER TABLE as idempotent", () => {
 		const db = new Database(":memory:");
 		try {

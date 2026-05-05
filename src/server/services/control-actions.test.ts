@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
+import { itSqliteOnly } from "../test-utils/backend.js";
 
 const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
 const { controlActions, events, projects, sessions, supervisors } = await import("../db/schema.js");
@@ -181,7 +182,9 @@ describe("cleanup_workarea control action", () => {
 	// rows orphaned. We force the project DELETE to fail mid-transaction
 	// with a BEFORE-DELETE trigger and assert that NEITHER the sessions
 	// NOR the events rows survived as zombies — i.e. the whole tx rolled back.
-	test("finalizeCleanupWorkArea rolls back atomically when the project delete fails", async () => {
+	// SQLite-only: uses a BEFORE DELETE trigger to simulate the failure; on
+	// Postgres the cascade FK on the schema enforces this without a trigger.
+	itSqliteOnly("finalizeCleanupWorkArea rolls back atomically when the project delete fails", async () => {
 		const supervisorId = await seedSupervisor();
 		const projectId = await seedScratchProject();
 

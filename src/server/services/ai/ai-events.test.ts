@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
+import { itSqliteOnly } from "../../test-utils/backend.js";
 
 const { getDb, getSqlite, initializeDatabase } = await import("../../db/client.js");
 const { events, sessions } = await import("../../db/schema.js");
@@ -75,7 +76,9 @@ describe("emitAiEvent (Slice AI-EVT-1)", () => {
 		expect(rows).toHaveLength(1);
 	});
 
-	test("FTS row count matches events count for AI-emitted kinds (no double-insert)", async () => {
+	// SQLite-only: queries FTS5 virtual table directly. Phase 5 adds a parity
+	// assertion via the search() API that works on both backends.
+	itSqliteOnly("FTS row count matches events count for AI-emitted kinds (no double-insert)", async () => {
 		// The FTS5 trigger on `events` only fires for a whitelist of event_types,
 		// which includes AiProposal/AiReport/AiHitlRequest. If emitAiEvent
 		// were to bypass insertNormalizedEvents and double-insert, FTS would

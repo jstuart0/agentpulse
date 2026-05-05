@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
+import { describeSqliteOnly } from "../../test-utils/backend.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { aiPendingProjectDrafts, askThreads, projects, sessions } = await import(
@@ -126,7 +127,11 @@ describe("encodePickerMeta / extractPickerMeta", () => {
 	});
 });
 
-describe("schema back-compat", () => {
+// SQLite-only: inserts a row via raw SQL without the `kind` column to simulate
+// a pre-migration row. On Postgres the column has a DEFAULT and cannot be
+// omitted; the back-compat is guaranteed by the schema default, not the Drizzle
+// fallback.
+describeSqliteOnly("schema back-compat", () => {
 	test("existing rows without an explicit kind column are treated as add_project", async () => {
 		const threadId = crypto.randomUUID();
 		const now = new Date().toISOString();

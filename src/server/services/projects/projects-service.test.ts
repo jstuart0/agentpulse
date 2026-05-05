@@ -1,5 +1,6 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, expect, test } from "bun:test";
 import "../ai/__test_db.js";
+import { describeSqliteOnly } from "../../test-utils/backend.js";
 
 // Defer DB-touching imports so the __test_db side-effect can configure
 // SQLITE_PATH before the client module binds to it.
@@ -32,7 +33,11 @@ beforeEach(async () => {
 // Each test installs its trigger after seeding and drops it in `finally`,
 // so failures don't pollute other tests sharing this DB file.
 
-describe("projects-service rollback semantics", () => {
+// SQLite-only: all tests in this block install BEFORE-trigger hooks to simulate
+// transaction rollback failures. On Postgres the cascade FK is declared in the
+// schema directly; the rollback guarantee is validated via DELETE assertions
+// (Phase 7 Postgres CI). Camp A simulator tests.
+describeSqliteOnly("projects-service rollback semantics", () => {
 	test("createProject: resolveAllSessionsForProject rolls back when a session update fails", async () => {
 		const now = new Date().toISOString();
 		// Seed TWO sessions both matching the new project's cwd. The

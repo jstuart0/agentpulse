@@ -1,3 +1,6 @@
+// Phase 4 audit: supervisor-registry.ts is clean — no raw getSqlite() calls,
+// no json_extract, no datetime('now') literals. The heartbeat-lease timestamp
+// (Date.now() + ms).toISOString() is pure JS — fully portable to Postgres.
 import { and, desc, eq, gt } from "drizzle-orm";
 import type {
 	SupervisorCapabilities,

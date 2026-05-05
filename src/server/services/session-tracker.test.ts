@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
+import { describeSqliteOnly } from "../test-utils/backend.js";
 
 const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
 const { events, managedSessions, sessions, supervisors } = await import("../db/schema.js");
@@ -182,7 +183,10 @@ describe("renameSession", () => {
 		expect(afterRow?.updatedAt).not.toBe(beforeUpdatedAt);
 	});
 
-	describe("rollback when managed update fails", () => {
+	// SQLite-only: installs a BEFORE UPDATE trigger to simulate a
+	// mid-transaction failure. Camp A simulator — on Postgres the
+	// tx rollback guarantee is validated differently (Phase 7 CI).
+	describeSqliteOnly("rollback when managed update fails", () => {
 		afterEach(() => {
 			// Drop the trigger between/after rollback tests so we don't
 			// leak state into other suites that share this DB.

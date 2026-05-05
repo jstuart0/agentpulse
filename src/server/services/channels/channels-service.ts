@@ -1,3 +1,6 @@
+// Phase 4 audit: src/server/services/channels/ is clean — no raw getSqlite()
+// calls, no json_extract, no datetime('now') literals outside Drizzle's sql``
+// tag. All queries use Drizzle ORM expressions with bound parameters.
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
