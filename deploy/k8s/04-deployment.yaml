@@ -78,7 +78,7 @@ spec:
                     try {
                       const res = await fetch("http://127.0.0.1:3000/api/v1/health");
                       const body = await res.json();
-                      if (body.inFlight === 0) process.exit(0);
+                      if (body.inFlight <= 0) process.exit(0);
                     } catch {}
                     await Bun.sleep(1000);
                   }

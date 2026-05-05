@@ -27,7 +27,13 @@ export function incrementInFlightCount(): void {
 	inFlightCount++;
 }
 export function decrementInFlightCount(): void {
-	inFlightCount--;
+	if (inFlightCount > 0) {
+		inFlightCount--;
+	} else {
+		// Guard against double-decrement: counter stays at 0 rather than going
+		// negative, which would permanently stall the preStop drain poll.
+		console.warn(JSON.stringify({ kind: "inflight_underflow_guard", level: "warn" }));
+	}
 }
 
 export function getRateLimitedDropped(): number {

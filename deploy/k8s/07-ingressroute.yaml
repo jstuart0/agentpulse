@@ -64,6 +64,18 @@ spec:
         - name: agentpulse
           port: 3000
 
+    # Block internal operational endpoints from public access — defense-in-depth.
+    # internal.ts enforces loopback-only at the TCP layer; this rule ensures the
+    # path is never reachable through the ingress at all, even if that check were
+    # somehow bypassed. Routing to a non-existent service causes Traefik to return
+    # 503, which is intentional: the endpoint must not be publicly addressable.
+    # Priority: this rule must appear before the catch-all Host(...) rule.
+    - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/v1/internal`)
+      kind: Rule
+      services:
+        - name: agentpulse-deny-internal
+          port: 9999
+
     # API-key-bearing requests bypass Authentik forwardauth so the
     # relay (statusline, hook backfill, off-Authentik device reads)
     # can call the dashboard API surface. Hono's per-router

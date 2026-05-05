@@ -22,6 +22,26 @@ import {
 // Re-export counter getters for health.ts and tests.
 export { getBgErrorCount, getInFlightCount, getRateLimitedDropped };
 
+/**
+ * Strip control characters (C0 block + DEL) and truncate to `maxLen` so that
+ * user-controlled strings cannot inject newlines or ANSI escape sequences into
+ * structured log streams.
+ *
+ * Uses charCodeAt filtering rather than a regex literal to avoid Biome's
+ * noControlCharactersInRegex rule, which rejects /[\x00-\x1f\x7f]/.
+ */
+function sanitizeLogField(value: unknown, maxLen = 64): string {
+	return String(value ?? "")
+		.slice(0, maxLen)
+		.split("")
+		.filter((ch) => {
+			const code = ch.charCodeAt(0);
+			// Keep printable ASCII and above; drop C0 controls (0-31) and DEL (127).
+			return code >= 32 && code !== 127;
+		})
+		.join("");
+}
+
 const ingest = new Hono();
 
 // POST /api/v1/hooks - Receive hook events from Claude Code and Codex CLI
@@ -105,8 +125,9 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 				JSON.stringify({
 					kind: "ingest_bg_error",
 					level: "error",
-					session_id: parsed.session_id,
-					event_type: parsed.hook_event_name,
+					// Sanitize user-controlled fields to prevent log injection.
+					session_id: sanitizeLogField(parsed.session_id),
+					event_type: sanitizeLogField(parsed.hook_event_name),
 					error: err instanceof Error ? err.message : String(err),
 					stack: err instanceof Error ? err.stack : undefined,
 				}),
@@ -167,7 +188,8 @@ ingest.post("/hooks/status", requireApiKey(), hookRateLimit(), async (c) => {
 				JSON.stringify({
 					kind: "ingest_status_bg_error",
 					level: "error",
-					session_id: update.session_id,
+					// Sanitize user-controlled session_id to prevent log injection.
+					session_id: sanitizeLogField(update.session_id),
 					error: err instanceof Error ? err.message : String(err),
 					stack: err instanceof Error ? err.stack : undefined,
 				}),

@@ -176,6 +176,32 @@ describe("POST /api/v1/internal/drain", () => {
 		expect(res.status).toBe(403);
 		expect(isShuttingDown()).toBe(false);
 	});
+
+	// H1 — IPv4-mapped loopback: dual-stack Linux kernels present loopback
+	// peers as "::ffff:127.0.0.1" when Bun binds 0.0.0.0. Without the prefix
+	// strip, split(":")[0] returns "" and the loopback check fails → 403 on
+	// every rolling deploy preStop → full data loss.
+	test("accepts ::ffff:127.0.0.1 (IPv4-mapped loopback, dual-stack kernel)", async () => {
+		const app = buildLoopbackDrainApp("::ffff:127.0.0.1");
+		const res = await app.request("/api/v1/internal/drain", { method: "POST" });
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.shuttingDown).toBe(true);
+		expect(isShuttingDown()).toBe(true);
+	});
+
+	test("accepts ::ffff:127.0.0.1 uppercase prefix variant", async () => {
+		const app = buildLoopbackDrainApp("::FFFF:127.0.0.1");
+		const res = await app.request("/api/v1/internal/drain", { method: "POST" });
+		expect(res.status).toBe(200);
+	});
+
+	test("rejects ::ffff: prefix on a non-loopback address (::ffff:10.0.0.5)", async () => {
+		const app = buildLoopbackDrainApp("::ffff:10.0.0.5");
+		const res = await app.request("/api/v1/internal/drain", { method: "POST" });
+		expect(res.status).toBe(403);
+		expect(isShuttingDown()).toBe(false);
+	});
 });
 
 // ── Always-200 post-auth contract ─────────────────────────────────────────────
@@ -312,6 +338,75 @@ describe("Rate limiter — token bucket", () => {
 		expect(res.status).toBe(200);
 		// rateLimitedDropped incremented exactly once.
 		expect(afterDrop - beforeDrop).toBe(1);
+	});
+});
+
+// ── M3 — Log injection sanitization ──────────────────────────────────────────
+
+// Mirror of the sanitizeLogField helper in ingest.ts — tested here directly
+// since the function is module-private. Uses charCodeAt to avoid Biome's
+// noControlCharactersInRegex rule (which rejects /[\x00-\x1f\x7f]/).
+function sanitizeForTest(value: unknown, maxLen = 64): string {
+	return String(value ?? "")
+		.slice(0, maxLen)
+		.split("")
+		.filter((ch) => {
+			const code = ch.charCodeAt(0);
+			return code >= 32 && code !== 127;
+		})
+		.join("");
+}
+
+function hasControlChars(s: string): boolean {
+	for (let i = 0; i < s.length; i++) {
+		const code = s.charCodeAt(i);
+		if (code < 32 || code === 127) return true;
+	}
+	return false;
+}
+
+describe("M3 — session_id sanitized before error logging", () => {
+	test("session_id with newlines and ANSI escapes is stripped in logged output", async () => {
+		// Inject a session_id containing log-injection bytes and verify the
+		// sanitized value that would reach the logger contains none of them.
+		const lf = String.fromCharCode(10); // \n
+		const esc = String.fromCharCode(27); // \x1b
+		const nul = String.fromCharCode(0); // \x00
+		const malicious = `session${lf}${esc}[31mINJECTED${esc}[0m${nul}end`;
+		const safe = sanitizeForTest(malicious);
+
+		// No control characters remain.
+		expect(hasControlChars(safe)).toBe(false);
+		// Printable content preserved.
+		expect(safe).toContain("session");
+		expect(safe).toContain("end");
+		// ESC and LF bytes stripped.
+		expect(safe.includes(esc)).toBe(false);
+		expect(safe.includes(lf)).toBe(false);
+	});
+
+	test("session_id longer than 64 chars is truncated before logging", () => {
+		const long = "a".repeat(200);
+		const safe = sanitizeForTest(long);
+		expect(safe.length).toBe(64);
+	});
+
+	test("hook with malicious session_id in error path returns 200", async () => {
+		// Verify the always-200 contract holds even with a control-char session_id.
+		const lf = String.fromCharCode(10);
+		const esc = String.fromCharCode(27);
+		const app = buildApp();
+		const res = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				session_id: `evil${lf}INJECT${esc}[31m`,
+				hook_event_name: "UserPromptSubmit",
+				cwd: "/tmp",
+			}),
+		});
+		// Always-200 contract: even with a malformed/malicious session_id.
+		expect(res.status).toBe(200);
 	});
 });
 

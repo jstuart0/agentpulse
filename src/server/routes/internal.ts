@@ -5,9 +5,10 @@
  * address is checked against 127.0.0.1 / ::1 / localhost; any other peer
  * gets 403. No API key is required — loopback restriction IS the auth.
  *
- * These routes must NOT be exposed via Traefik IngressRoute. The path
- * prefix /api/v1/internal/* must be excluded from public IngressRoute
- * rules (enforced in P10's manifest sweep).
+ * These routes are NOT exposed via Traefik IngressRoute. An explicit deny
+ * rule for PathPrefix("/api/v1/internal") appears before the catch-all in
+ * 07-ingressroute.yaml, providing defense-in-depth even if the loopback
+ * check were somehow bypassed.
  *
  * NetworkPolicy implication: even a compromised sibling pod cannot trigger
  * drain because its peer address is not loopback. The restriction is
@@ -38,8 +39,18 @@ internalRouter.post("/drain", (c) => {
 	// below, which is the correct behaviour for tests that don't set peerIp.
 	const peer = getTrustedClientIp(c);
 
+	// Strip IPv4-mapped IPv6 prefix before any other processing so that
+	// dual-stack Linux kernels presenting "::ffff:127.0.0.1" are correctly
+	// recognised as loopback. Must happen before the port-strip below because
+	// split(":")[0] returns "" for "::ffff:127.0.0.1".
+	const stripped = peer.replace(/^::ffff:/i, "");
+
 	// Strip port suffix if present (e.g. "127.0.0.1:52341" → "127.0.0.1").
-	const peerHost = peer.includes(":") && !peer.includes(".") ? peer : (peer.split(":")[0] ?? peer);
+	// For pure IPv6 (still contains ":" but no ".") keep the address as-is.
+	const peerHost =
+		stripped.includes(":") && !stripped.includes(".")
+			? stripped
+			: (stripped.split(":")[0] ?? stripped);
 
 	const isLoopback =
 		peerHost === "127.0.0.1" || peerHost === "::1" || peerHost.toLowerCase() === "localhost";
