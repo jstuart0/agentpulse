@@ -137,6 +137,31 @@ export function likeStartsWith(col: AnyColumn | SQLWrapper, prefix: string): SQL
 	return sql`${col as SQL} LIKE ${pattern}`;
 }
 
+// ── isUniqueViolationError ────────────────────────────────────────────────────
+
+/**
+ * Returns true when `err` represents a unique-constraint violation on either
+ * supported backend:
+ *
+ *   Postgres (postgres-js): error.code === '23505' (SQLSTATE unique_violation)
+ *   SQLite   (bun:sqlite via Drizzle): error.message contains
+ *            'SQLITE_CONSTRAINT_UNIQUE'
+ *
+ * Used by callers that need to distinguish a unique-violation from other DB
+ * errors (e.g. enqueueRun's race-recovery catch). Do NOT use this to swallow
+ * arbitrary errors — always re-throw if the error does not match.
+ */
+export function isUniqueViolationError(err: unknown): boolean {
+	if (!err) return false;
+	// postgres-js exposes SQLSTATE as .code on the error object.
+	if (typeof err === "object" && "code" in err && (err as { code: string }).code === "23505") {
+		return true;
+	}
+	// bun:sqlite surfaces the SQLite extended error name in the message.
+	const message = err instanceof Error ? err.message : String(err);
+	return message.includes("SQLITE_CONSTRAINT_UNIQUE");
+}
+
 // ── likeContains ─────────────────────────────────────────────────────────────
 
 /**

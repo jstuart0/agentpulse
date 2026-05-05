@@ -7,6 +7,9 @@ import { type NormalizedEvent, createAssistantTranscriptEvent } from "./event-no
 import { insertNormalizedEvents } from "./event-processor.js";
 import { notifySessionEvents } from "./notifier.js";
 
+// Polling-based by design. LISTEN/NOTIFY would replace setInterval on Postgres
+// in a follow-up campaign — see thoughts/postgres-followup-plans/listen-notify-transcript-sync.md.
+
 /**
  * Transcript sync worker (WS3). Scans active-session transcript files
  * out-of-band from the request path, inserts assistant-visible deltas

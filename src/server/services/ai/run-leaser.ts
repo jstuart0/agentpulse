@@ -17,6 +17,15 @@ import {
  * Execution of a claimed run still lives in the runner — the leaser
  * only drives claim/drain so the runner's responsibilities stay
  * focused on building context and calling the LLM.
+ *
+ * At-most-once semantics (both backends):
+ *   `claimNextRun` uses a conditional UPDATE that guards on `status = 'queued'`.
+ *   On Postgres, two concurrent `drain()` calls may both SELECT the same row,
+ *   but only one UPDATE succeeds — the loser receives null and this loop breaks
+ *   (line 72: `if (!run) return`). The loser does NOT re-loop; it exits and
+ *   waits for the next interval tick. Later rows in the queue are left for the
+ *   next interval rather than being greedily claimed under contention.
+ *   On SQLite, writes are serialized, so at-most-once is trivially guaranteed.
  */
 
 export interface RunLeaserOptions {
