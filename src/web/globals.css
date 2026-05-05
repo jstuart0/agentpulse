@@ -281,6 +281,28 @@
 	color: hsl(var(--foreground));
 }
 
+/* ── WS reconnecting pulse (U-H1) ──
+   Only active when the user has not opted-in to reduced motion.
+   The .ws-reconnect-pulse class is safe to apply unconditionally in JSX;
+   the animation silently drops out for reduced-motion preferences. */
+@media (prefers-reduced-motion: no-preference) {
+	@keyframes ws-reconnect-pulse {
+		0%,
+		100% {
+			opacity: 1;
+			transform: scale(1);
+		}
+		50% {
+			opacity: 0.35;
+			transform: scale(0.75);
+		}
+	}
+
+	.ws-reconnect-pulse {
+		animation: ws-reconnect-pulse 1.2s ease-in-out infinite;
+	}
+}
+
 /* ── Search result highlight flash ── */
 .event-flash {
 	animation: event-flash 2.2s ease-out;

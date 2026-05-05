@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { LabsBadge } from "../components/LabsBadge.js";
+import { SkeletonCard, SkeletonCardList } from "../components/SkeletonCard.js";
 import { type Digest, type RepoDigest, api } from "../lib/api.js";
 
 /**
@@ -57,7 +58,16 @@ export function DigestPage() {
 			)}
 
 			{loading ? (
-				<div className="text-sm text-muted-foreground">Loading…</div>
+				<output aria-label="Loading digest">
+					{/* Stats row skeleton */}
+					<section className="grid grid-cols-2 md:grid-cols-5 gap-3">
+						{Array.from({ length: 5 }, (_, i) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: static skeleton rows
+							<SkeletonCard key={i} lines={1} />
+						))}
+					</section>
+					<SkeletonCardList count={3} lines={4} />
+				</output>
 			) : digest ? (
 				<>
 					<section className="grid grid-cols-2 md:grid-cols-5 gap-3">

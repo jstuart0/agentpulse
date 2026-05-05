@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
 import { type InboxWorkItem, type LabsFlag, api } from "../lib/api.js";
 import { cn } from "../lib/utils.js";
+import { useConnectionStore } from "../stores/connection-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { LabsBadge } from "./LabsBadge.js";
@@ -167,6 +168,8 @@ export function Layout() {
 						</span>
 					</div>
 				</div>
+				{/* Mobile WS state dot — mirrors the desktop WsStatusChip color semantics */}
+				<MobileWsDot />
 				<button
 					ref={menuButtonRef}
 					type="button"
@@ -444,6 +447,26 @@ export function Layout() {
 				</main>
 			</div>
 		</div>
+	);
+}
+
+/**
+ * 6px colored dot surfacing WS connection state on mobile (M5 / U-H1-mobile).
+ * No tooltip — touch targets can't hover; the color alone signals degradation.
+ */
+function MobileWsDot() {
+	const wsState = useConnectionStore((s) => s.wsState);
+	const colorClass =
+		wsState === "connected"
+			? "bg-emerald-400"
+			: wsState === "reconnecting"
+				? "bg-amber-400 ws-reconnect-pulse"
+				: "bg-red-400/70";
+	return (
+		<span
+			className={`ml-auto w-1.5 h-1.5 rounded-full flex-shrink-0 ${colorClass}`}
+			aria-hidden="true"
+		/>
 	);
 }
 

@@ -177,16 +177,19 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 					)}
 				</div>
 				<div className="flex items-center gap-1 flex-shrink-0">
-					{/* Hover actions */}
+					{/* Mobile action row (U-H5): rename, pin, archive (if inactive),
+					    delete (if inactive). All targets are ≥44×44 px per WCAG 2.5.5.
+					    Delete is red at rest (mobile has no hover to reveal danger). */}
 					<div className="flex md:hidden items-center gap-0.5">
 						<button
+							type="button"
 							onClick={(e) => {
 								e.stopPropagation();
 								setRenaming(true);
 								setNewName(name);
 							}}
 							title="Rename"
-							className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+							className="rounded min-w-[44px] min-h-[44px] flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
 						>
 							<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 								<path
@@ -198,9 +201,10 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 							</svg>
 						</button>
 						<button
+							type="button"
 							onClick={handlePin}
 							title={session.isPinned ? "Unpin" : "Pin"}
-							className="rounded p-1 text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
+							className="rounded min-w-[44px] min-h-[44px] flex items-center justify-center text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
 						>
 							<svg
 								className="w-3 h-3"
@@ -216,9 +220,44 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 								/>
 							</svg>
 						</button>
+						{isInactive && !session.isArchived && (
+							<button
+								type="button"
+								onClick={handleArchive}
+								title="Archive"
+								className="rounded min-w-[44px] min-h-[44px] flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+							>
+								<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										strokeWidth={2}
+										d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"
+									/>
+								</svg>
+							</button>
+						)}
+						{isInactive && (
+							<button
+								type="button"
+								onClick={handleDeleteRequest}
+								title="Delete"
+								className="rounded min-w-[44px] min-h-[44px] flex items-center justify-center text-red-500 hover:bg-red-500/10 transition-colors"
+							>
+								<svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path
+										strokeLinecap="round"
+										strokeLinejoin="round"
+										strokeWidth={2}
+										d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+									/>
+								</svg>
+							</button>
+						)}
 					</div>
 					<div className="hidden md:group-hover:flex items-center gap-0.5">
 						<button
+							type="button"
 							onClick={(e) => {
 								e.stopPropagation();
 								setRenaming(true);
@@ -237,6 +276,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 							</svg>
 						</button>
 						<button
+							type="button"
 							onClick={handlePin}
 							title={session.isPinned ? "Unpin" : "Pin"}
 							className="rounded p-1 text-muted-foreground hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
@@ -257,6 +297,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 						</button>
 						{isInactive && !session.isArchived && (
 							<button
+								type="button"
 								onClick={handleArchive}
 								title="Archive"
 								className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
@@ -273,6 +314,7 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 						)}
 						{isInactive && (
 							<button
+								type="button"
 								onClick={handleDeleteRequest}
 								title="Delete"
 								className="rounded p-1 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors"

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
-import { triggerAuthReload } from "../lib/api.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
+import { useConnectionStore } from "../stores/connection-store.js";
 import { useEventStore } from "../stores/event-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 
@@ -26,6 +26,8 @@ export function useWebSocket() {
 	// paths share identical add-or-update semantics.
 	const applySessionUpdate = useSessionStore((s) => s.applySessionUpdate);
 	const addLiveEvent = useEventStore((s) => s.addLiveEvent);
+	const markConnected = useConnectionStore((s) => s.markConnected);
+	const setWsState = useConnectionStore((s) => s.setWsState);
 
 	// Track previous isWorking state to detect transitions
 	const workingRef = useRef<Map<string, boolean>>(new Map());
@@ -46,6 +48,7 @@ export function useWebSocket() {
 		ws.onopen = () => {
 			console.log("[ws] Connected");
 			consecutiveFailuresRef.current = 0;
+			markConnected();
 			ws.send(JSON.stringify({ type: "subscribe", channels: ["sessions"] }));
 		};
 
@@ -97,11 +100,14 @@ export function useWebSocket() {
 		ws.onclose = () => {
 			consecutiveFailuresRef.current += 1;
 			if (consecutiveFailuresRef.current >= FAILURE_RELOAD_THRESHOLD) {
-				triggerAuthReload(
-					`ws failed ${consecutiveFailuresRef.current}× in a row (likely Authentik expired)`,
-				);
+				// Give up on WS; polling is the fallback update path.
+				// Do NOT reload here — the paused state is the user's signal that
+				// live updates have degraded. If auth is genuinely expired, the
+				// polling path will surface that via its own error handling.
+				setWsState("paused");
 				return;
 			}
+			setWsState("reconnecting");
 			console.log(
 				`[ws] Disconnected (attempt ${consecutiveFailuresRef.current}), reconnecting in 3s…`,
 			);
@@ -111,7 +117,7 @@ export function useWebSocket() {
 		ws.onerror = () => {
 			ws.close();
 		};
-	}, [applySessionUpdate, addLiveEvent]);
+	}, [applySessionUpdate, addLiveEvent, markConnected, setWsState]);
 
 	useEffect(() => {
 		connect();

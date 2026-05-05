@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { LabsBadge } from "../components/LabsBadge.js";
+import { SkeletonCardList } from "../components/SkeletonCard.js";
 import { ActionRequestCard } from "../components/inbox/ActionRequestCard.js";
 import { FailedProposalCard } from "../components/inbox/FailedProposalCard.js";
 import { HitlCard } from "../components/inbox/HitlCard.js";
@@ -159,7 +160,9 @@ export function InboxPage() {
 			)}
 
 			{loading ? (
-				<div className="text-sm text-muted-foreground">Loading…</div>
+				<output aria-label="Loading inbox items">
+					<SkeletonCardList count={4} lines={3} />
+				</output>
 			) : inbox && inbox.items.length === 0 ? (
 				<div className="rounded border border-border bg-card p-6 text-center text-sm text-muted-foreground">
 					Inbox empty. Nothing needs your attention.

@@ -239,11 +239,14 @@ export function SettingsPage() {
 
 				<div className="space-y-4">
 					<div>
-						<label className="text-sm text-foreground block mb-1">Idle Timeout (minutes)</label>
+						<label htmlFor="setting-idle-timeout" className="text-sm text-foreground block mb-1">
+							Idle Timeout (minutes)
+						</label>
 						<p className="text-xs text-muted-foreground mb-2">
 							Sessions with no activity for this long are marked idle.
 						</p>
 						<input
+							id="setting-idle-timeout"
 							type="number"
 							defaultValue={
 								typeof settings.sessionIdleTimeoutMinutes === "number"
@@ -258,11 +261,14 @@ export function SettingsPage() {
 					</div>
 
 					<div>
-						<label className="text-sm text-foreground block mb-1">End Timeout (minutes)</label>
+						<label htmlFor="setting-end-timeout" className="text-sm text-foreground block mb-1">
+							End Timeout (minutes)
+						</label>
 						<p className="text-xs text-muted-foreground mb-2">
 							Sessions with no activity for this long are marked completed.
 						</p>
 						<input
+							id="setting-end-timeout"
 							type="number"
 							defaultValue={
 								typeof settings.sessionEndTimeoutMinutes === "number"
@@ -277,11 +283,14 @@ export function SettingsPage() {
 					</div>
 
 					<div>
-						<label className="text-sm text-foreground block mb-1">Event Retention (days)</label>
+						<label htmlFor="setting-event-retention" className="text-sm text-foreground block mb-1">
+							Event Retention (days)
+						</label>
 						<p className="text-xs text-muted-foreground mb-2">
 							Events older than this are automatically cleaned up.
 						</p>
 						<input
+							id="setting-event-retention"
 							type="number"
 							defaultValue={
 								typeof settings.eventsRetentionDays === "number" ? settings.eventsRetentionDays : 30
