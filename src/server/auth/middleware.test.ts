@@ -17,7 +17,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 // Set SQLITE_PATH before any other import opens the DB.
-import "/Users/jaystuart/dev/agentpulse/src/server/db/__test_db.ts";
+import "../db/__test_db.ts";
 
 // ── env snapshot / restore ────────────────────────────────────────────────────
 
