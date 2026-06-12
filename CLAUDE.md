@@ -113,7 +113,7 @@ Agent (Claude Code / Codex)
 
 ### Database Schema
 
-Schema is split across `src/server/db/schema/{core,ai,ask-projects}/` with per-table files and a column-factory pattern for dual-dialect differences. Per-dialect entry files (`schema/sqlite.ts`, `schema/postgres.ts`) export the canonical table set for each backend. The runtime barrel (`schema/index.ts`) re-exports the SQLite tables for callers that have not yet migrated to the dialect-resolved barrel; a `TODO(Phase 2b)` comment tracks the 12 remaining importers.
+Schema is split across `src/server/db/schema/{core,ai,ask-projects}/` with per-table files and a column-factory pattern for dual-dialect differences. Per-dialect entry files (`schema/sqlite.ts`, `schema/postgres.ts`) export the canonical table set for each backend. The runtime barrel (`schema/index.ts`) reads `config.dialect` at module load and selects the appropriate per-dialect barrel; all production importers use it (the legacy `db/schema.ts` shim is deleted, guarded by `scripts/check-no-legacy-schema-import.ts`). Exports are currently cast to SQLite-typed variants for backwards type-compat; narrowing to dual-dialect generics is a follow-up.
 
 - `sessions` - id, session_id, display_name, agent_type, status, cwd, model, is_working, is_pinned, git_branch, notes, semantic_status, current_task, plan_summary, total_tool_uses, metadata, timestamps, is_archived. Note: `is_archived` is the canonical archive predicate; `status='archived'` is a legacy value retained for backwards-compat (see `src/shared/session-state.ts`).
 - `events` - id, session_id, event_type, tool_name, tool_input, tool_response, raw_payload, created_at
