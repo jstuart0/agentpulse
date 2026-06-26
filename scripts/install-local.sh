@@ -124,7 +124,7 @@ echo "  Installing dependencies..."
 bun install
 
 echo "  Building application..."
-bun run build
+NODE_ENV=production bun run build
 
 ENV_FILE="${INSTALL_DIR}/.env.local"
 cat > "${ENV_FILE}" <<EOF
@@ -217,6 +217,8 @@ After=network.target
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${ENV_FILE}
+Environment=HOME=${HOME}
+Environment=PATH=${HOME}/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 ExecStart=${HOME}/.bun/bin/bun run start
 Restart=always
 RestartSec=3
@@ -277,6 +279,8 @@ create_launchd() {
   <string>${INSTALL_DIR}</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key><string>${HOME}</string>
+    <key>PATH</key><string>${HOME}/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>PORT</key><string>${PORT}</string>
     <key>HOST</key><string>${HOST}</string>
     <key>PUBLIC_URL</key><string>${PUBLIC_URL}</string>
