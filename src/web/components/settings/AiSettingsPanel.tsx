@@ -19,6 +19,7 @@ const PROVIDER_KINDS = [
 	{ value: "google", label: "Google (Gemini)", hint: "gemini-1.5-pro" },
 	{ value: "openrouter", label: "OpenRouter", hint: "meta-llama/llama-3.1-70b-instruct" },
 	{ value: "openai_compatible", label: "Local / OpenAI-compatible", hint: "qwen2.5:7b" },
+	{ value: "cohere", label: "Cohere", hint: "command-r-plus" },
 ] as const satisfies ReadonlyArray<{ value: AiProviderKind; label: string; hint: string }>;
 
 // Compile-time exhaustiveness: if a new ProviderKind is added to the

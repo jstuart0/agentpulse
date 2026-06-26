@@ -31,6 +31,7 @@ export const KNOWN_PROVIDER_KINDS = [
 	"google",
 	"openrouter",
 	"openai_compatible",
+	"cohere",
 ] as const;
 export type ProviderKind = (typeof KNOWN_PROVIDER_KINDS)[number];
 

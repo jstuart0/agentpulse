@@ -54,6 +54,8 @@ function defaultBaseUrl(kind: ProviderKind): string {
 			return "https://generativelanguage.googleapis.com/v1beta/openai";
 		case "openai_compatible":
 			return "http://localhost:11434/v1";
+		case "cohere":
+			return "https://api.cohere.com";
 	}
 }
 
@@ -77,6 +79,13 @@ export async function listAvailableModels(
 			if (!input.apiKey) return { ok: false, error: "Anthropic API key is required." };
 			headers["x-api-key"] = input.apiKey;
 			headers["anthropic-version"] = "2023-06-01";
+		} else if (kind === "cohere") {
+			// Cohere exposes /v1/models on the api.cohere.com host. The
+			// response shape is { models: [{ name }] } which the existing
+			// `.data ?? .models` fallback below already handles.
+			url = `${baseUrl}/v1/models`;
+			if (!input.apiKey) return { ok: false, error: "Cohere API key is required." };
+			headers.Authorization = `Bearer ${input.apiKey}`;
 		} else {
 			// OpenAI-compatible surface: baseUrl already ends with /v1 for
 			// the normal provider configs.

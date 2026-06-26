@@ -1,4 +1,5 @@
 import { createAnthropicAdapter } from "./anthropic.js";
+import { createCohereAdapter } from "./cohere.js";
 import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
 import type { LlmAdapter, ProviderKind } from "./types.js";
 
@@ -22,6 +23,8 @@ function defaultBaseUrl(kind: ProviderKind): string {
 			return "https://generativelanguage.googleapis.com/v1beta/openai";
 		case "openai_compatible":
 			return "http://localhost:11434/v1"; // Ollama default
+		case "cohere":
+			return "https://api.cohere.com";
 	}
 }
 
@@ -30,6 +33,10 @@ export function getAdapter(provider: ProviderConfig): LlmAdapter {
 
 	if (provider.kind === "anthropic") {
 		return createAnthropicAdapter({ apiKey: provider.apiKey, baseUrl });
+	}
+
+	if (provider.kind === "cohere") {
+		return createCohereAdapter({ apiKey: provider.apiKey, baseUrl });
 	}
 
 	// Everything else uses the OpenAI-compatible chat completions surface.

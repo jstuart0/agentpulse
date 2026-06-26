@@ -36,6 +36,9 @@ const MODEL_RATES: Array<{ match: RegExp; rate: ModelRate }> = [
 	{ match: /^gemini-1\.5-flash/, rate: { inputPer1M: 8, outputPer1M: 30 } },
 	{ match: /^gemini-1\.5-pro/, rate: { inputPer1M: 125, outputPer1M: 500 } },
 	{ match: /^gemini-2/, rate: { inputPer1M: 100, outputPer1M: 400 } },
+	// Cohere
+	{ match: /^command-r-plus/, rate: { inputPer1M: 250, outputPer1M: 1000 } },
+	{ match: /^command-r/, rate: { inputPer1M: 15, outputPer1M: 60 } },
 ];
 
 /** Local/self-hosted kinds assumed free. */
