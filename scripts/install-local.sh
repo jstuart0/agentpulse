@@ -4,7 +4,7 @@ set -euo pipefail
 # AgentPulse local installer
 # One-command Bun + SQLite deployment for macOS/Linux.
 
-REPO_URL="https://github.com/jaystuart/agentpulse.git"
+REPO_URL="https://github.com/jstuart0/agentpulse.git"
 REPO_REF="main"
 INSTALL_DIR="${HOME}/.agentpulse/app"
 DATA_DIR="${HOME}/.agentpulse/data"

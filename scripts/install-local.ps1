@@ -1,6 +1,6 @@
 param(
   [string]$Ref = "main",
-  [string]$Repo = "https://github.com/jaystuart/agentpulse.git",
+  [string]$Repo = "https://github.com/jstuart0/agentpulse.git",
   [string]$Dir = "$HOME\.agentpulse\app",
   [string]$DataDir = "$HOME\.agentpulse\data",
   [int]$Port = 3000,
