@@ -15,6 +15,11 @@ import {
 } from "../lib/api.js";
 import { APP_API_BASE } from "../lib/paths.js";
 import { formatTimeAgo } from "../lib/utils.js";
+import {
+	ASK_SIDEBAR_MAX_WIDTH,
+	ASK_SIDEBAR_MIN_WIDTH,
+	useUiPrefsStore,
+} from "../stores/ui-prefs-store.js";
 
 /**
  * Global Ask chat. Left column: thread list. Right column: messages for
@@ -38,6 +43,61 @@ export function AskPage() {
 	// back through Telegram, not the HTTP response. Track the active
 	// thread's origin so we can gate the composer.
 	const [activeThreadOrigin, setActiveThreadOrigin] = useState<AskThreadOrigin | null>(null);
+
+	// Persisted, resizable thread sidebar. The drag handler attaches its
+	// listeners to `document` for the duration of the drag so a fast
+	// mouse movement that leaves the handle's hitbox keeps tracking.
+	const sidebarWidth = useUiPrefsStore((s) => s.askSidebarWidth);
+	const setSidebarWidth = useUiPrefsStore((s) => s.setAskSidebarWidth);
+	const onSidebarResizeStart = useCallback(
+		(event: React.MouseEvent) => {
+			event.preventDefault();
+			const startX = event.clientX;
+			const startWidth = sidebarWidth;
+			const onMove = (e: MouseEvent) => {
+				setSidebarWidth(startWidth + (e.clientX - startX));
+			};
+			const onUp = () => {
+				document.removeEventListener("mousemove", onMove);
+				document.removeEventListener("mouseup", onUp);
+				document.body.style.cursor = "";
+				document.body.style.userSelect = "";
+			};
+			document.addEventListener("mousemove", onMove);
+			document.addEventListener("mouseup", onUp);
+			// Keep the resize cursor visible across the whole window while
+			// dragging, and stop the browser from selecting text under the
+			// pointer.
+			document.body.style.cursor = "col-resize";
+			document.body.style.userSelect = "none";
+		},
+		[sidebarWidth, setSidebarWidth],
+	);
+	const onSidebarResizeKey = useCallback(
+		(event: React.KeyboardEvent) => {
+			const STEP = 16;
+			let next = sidebarWidth;
+			switch (event.key) {
+				case "ArrowLeft":
+					next = sidebarWidth - STEP;
+					break;
+				case "ArrowRight":
+					next = sidebarWidth + STEP;
+					break;
+				case "Home":
+					next = ASK_SIDEBAR_MIN_WIDTH;
+					break;
+				case "End":
+					next = ASK_SIDEBAR_MAX_WIDTH;
+					break;
+				default:
+					return;
+			}
+			event.preventDefault();
+			setSidebarWidth(next);
+		},
+		[sidebarWidth, setSidebarWidth],
+	);
 
 	const reloadThreads = useCallback(async () => {
 		try {
@@ -231,7 +291,10 @@ export function AskPage() {
 	return (
 		<div className="flex h-full min-h-0">
 			{/* Thread sidebar */}
-			<aside className="hidden md:flex w-60 flex-shrink-0 flex-col border-r border-border bg-card/30">
+			<aside
+				className="hidden md:flex flex-shrink-0 flex-col border-r border-border bg-card/30"
+				style={{ width: `${sidebarWidth}px` }}
+			>
 				<div className="p-3 border-b border-border">
 					<button
 						type="button"
@@ -287,6 +350,23 @@ export function AskPage() {
 					)}
 				</div>
 			</aside>
+
+			{/* Drag handle to resize the thread sidebar. Only rendered when
+				 the sidebar itself is visible (md+). The handle is keyboard-
+				 accessible too — Left/Right arrows step the width by 16px,
+				 Home/End jump to the clamp endpoints. */}
+			<div
+				role="separator"
+				aria-label="Resize thread sidebar"
+				aria-orientation="vertical"
+				aria-valuemin={ASK_SIDEBAR_MIN_WIDTH}
+				aria-valuemax={ASK_SIDEBAR_MAX_WIDTH}
+				aria-valuenow={sidebarWidth}
+				tabIndex={0}
+				onMouseDown={onSidebarResizeStart}
+				onKeyDown={onSidebarResizeKey}
+				className="hidden md:block w-1 cursor-col-resize bg-transparent hover:bg-border focus:bg-border focus:outline-none transition-colors"
+			/>
 
 			{/* Conversation column */}
 			<div className="flex-1 flex flex-col min-w-0">
