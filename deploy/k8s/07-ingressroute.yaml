@@ -77,17 +77,18 @@ spec:
         - name: agentpulse
           port: 3000
 
-    # Supervisors surface — public at the edge; per-handler auth enforced server-side.
+    # Supervisors AGENT surface — public at the edge; covers machine-agent endpoints only.
     # Supervisor agents run on remote machines and cannot hold an SSO session.
     # Each endpoint carries explicit in-process auth:
-    #   GET  /supervisors, /supervisors/:id, POST /enroll, /rotate, /revoke
-    #        → requireAuth() (dashboard API-key or SSO session)
     #   POST /register → enrollment token or supervisor credential (checked in-handler)
     #   POST /heartbeat, /launches/claim, /launches/:id/status, /managed-session-state,
     #        /managed-sessions/:id/events, /provider-sync, /control-actions/*
     #        → requireSupervisorAuth() (supervisor credential token)
-    # The API-key Bearer bypass rule above covers requireAuth() callers that use ap_ keys.
     # requireSupervisorAuth() uses a separate supervisor token scheme; no SSO session needed.
+    #
+    # DASHBOARD MANAGEMENT endpoints (GET /supervisors, /supervisors/:id, POST /enroll,
+    # /rotate, /revoke) have moved to /api/v1/admin/supervisors/* which is intentionally
+    # NOT listed here and falls through to the catch-all forwardauth rule below.
     - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/v1/supervisors`)
       kind: Rule
       services:

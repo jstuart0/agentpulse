@@ -44,7 +44,7 @@ import { searchRouter } from "./routes/search.js";
 import { sessionsRouter } from "./routes/sessions.js";
 import { settingsRouter } from "./routes/settings.js";
 import { setup as setupRoute } from "./routes/setup.js";
-import { supervisorsRouter } from "./routes/supervisors.js";
+import { supervisorsAdminRouter, supervisorsAgentRouter } from "./routes/supervisors.js";
 import { templatesRouter } from "./routes/templates.js";
 
 export const app = new Hono();
@@ -64,7 +64,13 @@ api.route("/v1", sessionsRouter);
 api.route("/v1", settingsRouter);
 api.route("/v1", templatesRouter);
 api.route("/v1", projectsRouter);
-api.route("/v1", supervisorsRouter);
+// Agent endpoints — edge-public (PathPrefix /api/v1/supervisors is exempt from
+// forwardauth in IngressRoute). Each handler carries its own supervisor-token
+// or enrollment-token auth; remote machines cannot hold an SSO session.
+api.route("/v1", supervisorsAgentRouter);
+// Management endpoints — forwardauth-gated via /api/v1/admin/* which is NOT
+// in the IngressRoute exemption list and falls through to the catch-all rule.
+api.route("/v1/admin", supervisorsAdminRouter);
 api.route("/v1", launchesRouter);
 // AI control-plane: split from the monolithic ai.ts into 5 domain routers.
 // A single requireAuth() gate wraps all AI sub-routers so the route snapshot
