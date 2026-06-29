@@ -482,7 +482,11 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			expires_at TEXT NOT NULL,
 			user_agent TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
-			last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+			last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+			auth_source TEXT NOT NULL DEFAULT 'local',
+			sso_subject TEXT,
+			sso_username TEXT,
+			provider TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 		CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
@@ -1013,6 +1017,13 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		// value is left as-is ('archived') because it is still a valid union member for
 		// one release. Idempotent: re-running is a no-op once is_archived=1.
 		"UPDATE sessions SET is_archived = 1 WHERE status = 'archived' AND is_archived = 0",
+		// Phase 1 (SSO bridge): SSO identity columns on auth_sessions.
+		// Idempotent — the migration runner swallows "duplicate column name" errors
+		// (isIdempotentMigrationError) so re-running on an already-migrated DB is safe.
+		"ALTER TABLE auth_sessions ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local'",
+		"ALTER TABLE auth_sessions ADD COLUMN sso_subject TEXT",
+		"ALTER TABLE auth_sessions ADD COLUMN sso_username TEXT",
+		"ALTER TABLE auth_sessions ADD COLUMN provider TEXT",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

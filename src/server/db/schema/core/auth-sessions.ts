@@ -14,6 +14,15 @@ export const authSessionsSqlite = sqliteTable("auth_sessions", {
 	userAgent: text("user_agent"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	lastSeenAt: text("last_seen_at").notNull().default(sql`(datetime('now'))`),
+	// SSO identity columns (Phase 1 — Decision 1 / H-3).
+	// auth_source distinguishes local sessions from SSO-bridged sessions.
+	// sso_subject, sso_username, provider are null for local sessions; set by
+	// the forwardauth bridge (Phase 4). user_id stays notNull (stores
+	// "sso:"+subject for SSO rows; nothing parses it — callers read sso_subject).
+	authSource: text("auth_source").notNull().default("local"),
+	ssoSubject: text("sso_subject"),
+	ssoUsername: text("sso_username"),
+	provider: text("provider"),
 });
 
 export const authSessionsPg = pgTable("auth_sessions", {
@@ -23,4 +32,9 @@ export const authSessionsPg = pgTable("auth_sessions", {
 	userAgent: pgText("user_agent"),
 	createdAt: tsColumn("postgres", "created_at"),
 	lastSeenAt: tsColumn("postgres", "last_seen_at"),
+	// SSO identity columns (Phase 1 — Decision 1 / H-3).
+	authSource: pgText("auth_source").notNull().default("local"),
+	ssoSubject: pgText("sso_subject"),
+	ssoUsername: pgText("sso_username"),
+	provider: pgText("provider"),
 });

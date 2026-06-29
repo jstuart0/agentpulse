@@ -54,6 +54,15 @@ function getTableNames(db: Database): string[] {
 	return rows.map((r) => r.name);
 }
 
+/** Returns the column names for a given table in a SQLite DB. */
+function getColumnNames(db: Database, tableName: string): string[] {
+	const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+	return rows.map((r) => r.name);
+}
+
+/** The 4 SSO identity columns added in Phase 1. */
+const SSO_COLUMNS = ["auth_source", "sso_subject", "sso_username", "provider"] as const;
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
@@ -180,6 +189,16 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 			// event_embeddings is in the SQLite schema (Decision 3).
 			expect(tables).toContain("event_embeddings");
 
+			// Phase 1: all 4 SSO identity columns must be present on auth_sessions
+			// after a fresh Drizzle-SQLite migrate (AC 11).
+			const authSessionCols = getColumnNames(freshDb, "auth_sessions");
+			for (const col of SSO_COLUMNS) {
+				expect(
+					authSessionCols,
+					`expected column "${col}" on auth_sessions after fresh Drizzle migrate`,
+				).toContain(col);
+			}
+
 			freshDb.close();
 		} finally {
 			if (originalSqlitePath === undefined) {
@@ -248,6 +267,71 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 
 		db.close();
 	});
+
+	test("existing install (legacy path): auth_sessions has all 4 SSO identity columns (AC 11, H-2)", async () => {
+		// Simulate a pre-existing install: seed a minimal sessions table + a
+		// pre-Phase-1 auth_sessions (6 columns only) so the legacy path runs
+		// and must apply the 4 idempotent ALTER TABLE migrations.
+		const db = new Database(":memory:");
+		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		db.exec(`
+			CREATE TABLE sessions (
+				id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL UNIQUE,
+				agent_type TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'active',
+				started_at TEXT NOT NULL DEFAULT (datetime('now')),
+				last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+				total_tool_uses INTEGER NOT NULL DEFAULT 0,
+				metadata TEXT DEFAULT '{}'
+			);
+			CREATE TABLE auth_sessions (
+				token_hash TEXT PRIMARY KEY,
+				user_id TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				user_agent TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+			);
+		`);
+
+		// Confirm the SSO columns are absent before the legacy init runs.
+		const colsBefore = getColumnNames(db, "auth_sessions");
+		for (const col of SSO_COLUMNS) {
+			expect(
+				colsBefore,
+				`column "${col}" should not exist on the pre-Phase-1 auth_sessions seed`,
+			).not.toContain(col);
+		}
+
+		// Run the legacy init — it should apply the ALTER TABLE migrations.
+		await initializeDatabase(db);
+
+		// All 4 SSO columns must now be present.
+		const colsAfter = getColumnNames(db, "auth_sessions");
+		for (const col of SSO_COLUMNS) {
+			expect(
+				colsAfter,
+				`expected column "${col}" on auth_sessions after legacy init (Phase 1 ALTER migrations)`,
+			).toContain(col);
+		}
+
+		// The base columns must still be present.
+		for (const col of [
+			"token_hash",
+			"user_id",
+			"expires_at",
+			"user_agent",
+			"created_at",
+			"last_seen_at",
+		]) {
+			expect(colsAfter, `base column "${col}" must survive the legacy ALTER migrations`).toContain(
+				col,
+			);
+		}
+
+		db.close();
+	});
 });
 
 // ── Postgres case (optional — requires running Postgres) ───────────────────────
@@ -304,6 +388,21 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				expect(tableNames).toContain(t);
 			}
 			expect(tableNames).not.toContain("event_embeddings");
+
+			// Phase 1: all 4 SSO identity columns must be present on auth_sessions (AC 11).
+			const pgAuthCols = (await sql`
+				SELECT column_name
+				FROM information_schema.columns
+				WHERE table_schema = 'public'
+				  AND table_name = 'auth_sessions'
+			`) as Array<{ column_name: string }>;
+			const pgAuthColNames = pgAuthCols.map((r) => r.column_name);
+			for (const col of SSO_COLUMNS) {
+				expect(
+					pgAuthColNames,
+					`expected column "${col}" on auth_sessions in Postgres after Drizzle migrate`,
+				).toContain(col);
+			}
 
 			const cascadeFks = (await sql`
 				SELECT tc.table_name, rc.delete_rule
