@@ -13,6 +13,10 @@ import { authSessions, users } from "../db/schema/index.js";
 
 export const SESSION_COOKIE_NAME = "ap_session";
 export const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+/** SSO sessions are short-lived (default 8h). Env-tunable: AGENTPULSE_SSO_SESSION_DURATION_MS. */
+export const SSO_SESSION_DURATION_MS = process.env.AGENTPULSE_SSO_SESSION_DURATION_MS
+	? Number(process.env.AGENTPULSE_SSO_SESSION_DURATION_MS)
+	: 8 * 60 * 60 * 1000; // 8 hours
 
 export interface LocalUser {
 	id: string;
@@ -134,18 +138,47 @@ export interface IssuedSession {
 	expiresAt: string;
 }
 
+/**
+ * Discriminated-union result from resolveSessionByToken.
+ * Callers (e.g. getAuthUserFromHeaders step-2) branch on `kind` and map to
+ * AuthUser without needing to import AuthUser here (no circular dep).
+ */
+export type SessionResolution =
+	| { kind: "local"; user: LocalUser }
+	| { kind: "sso"; subject: string; username: string; provider: string };
+
 function hashToken(token: string): string {
 	return createHash("sha256").update(token).digest("hex");
 }
 
-/** Issue a new session for a user. Returns the raw token (set in cookie). */
+/**
+ * Issue a new session. Returns the raw token (caller sets it in a cookie).
+ *
+ * Local sessions:   issueSession({ userId, userAgent })
+ * SSO sessions:     issueSession({ userId:"sso:"+subject, durationMs:SSO_SESSION_DURATION_MS,
+ *                                  authSource:"forwardauth", ssoSubject, ssoUsername, provider })
+ *
+ * `durationMs` defaults to SESSION_DURATION_MS (30d) so existing callers are
+ * unaffected. The SSO bridge (Phase 4) passes SSO_SESSION_DURATION_MS (8h).
+ */
 export async function issueSession(input: {
 	userId: string;
 	userAgent?: string | null;
+	/** Defaults to SESSION_DURATION_MS (30d). Pass SSO_SESSION_DURATION_MS for SSO sessions. */
+	durationMs?: number;
+	/** Defaults to "local". Pass "forwardauth" for SSO sessions. */
+	authSource?: string;
+	/** SSO subject identifier (stable across renames). Null for local sessions. */
+	ssoSubject?: string | null;
+	/** SSO display username. Null for local sessions. */
+	ssoUsername?: string | null;
+	/** Forwardauth provider label (e.g. "authentik"). Null for local sessions. */
+	provider?: string | null;
 }): Promise<IssuedSession> {
 	const token = randomBytes(32).toString("hex");
 	const tokenHash = hashToken(token);
-	const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
+	const durationMs = input.durationMs ?? SESSION_DURATION_MS;
+	const expiresAt = new Date(Date.now() + durationMs).toISOString();
 	const now = new Date().toISOString();
 	await getDb()
 		.insert(authSessions)
@@ -156,12 +189,28 @@ export async function issueSession(input: {
 			userAgent: input.userAgent ?? null,
 			createdAt: now,
 			lastSeenAt: now,
+			authSource: input.authSource ?? "local",
+			ssoSubject: input.ssoSubject ?? null,
+			ssoUsername: input.ssoUsername ?? null,
+			provider: input.provider ?? null,
 		});
 	return { token, tokenHash, expiresAt };
 }
 
-/** Look up a session by raw cookie token. Returns null if missing or expired. */
-export async function getUserBySessionToken(token: string): Promise<LocalUser | null> {
+/**
+ * Resolve a raw cookie token to a typed session record.
+ *
+ * Returns:
+ *   - `{ kind:"local", user }` — token belongs to a local-account session.
+ *   - `{ kind:"sso", subject, username, provider }` — token belongs to an SSO-bridged session.
+ *   - `null` — token missing, unknown, or expired (expired rows are deleted on read).
+ *
+ * This is the single step-2 chokepoint: getAuthUserFromHeaders, the WS path,
+ * and requireAuth all inherit SSO-cookie resolution through this function.
+ * Never import AuthUser here — map at the call site to avoid a circular dep
+ * with auth/middleware.ts.
+ */
+export async function resolveSessionByToken(token: string): Promise<SessionResolution | null> {
 	if (!token) return null;
 	const tokenHash = hashToken(token);
 	const [row] = await getDb()
@@ -180,7 +229,24 @@ export async function getUserBySessionToken(token: string): Promise<LocalUser | 
 		.update(authSessions)
 		.set({ lastSeenAt: now.toISOString() })
 		.where(eq(authSessions.tokenHash, tokenHash));
-	return getUserById(row.userId);
+
+	if (row.authSource === "forwardauth") {
+		// A subject-less SSO row is malformed — it would produce AuthUser.id === ""
+		// downstream, which is an invalid identity (xander L-2). Treat the row as
+		// unresolvable rather than emit a subject-less SSO identity.
+		if (!row.ssoSubject) return null;
+		return {
+			kind: "sso",
+			subject: row.ssoSubject,
+			username: row.ssoUsername ?? "",
+			provider: row.provider ?? "",
+		};
+	}
+
+	// Local session — fetch the user row (may be null if the user was deleted).
+	const user = await getUserById(row.userId);
+	if (!user) return null;
+	return { kind: "local", user };
 }
 
 export async function revokeSessionByToken(token: string): Promise<void> {

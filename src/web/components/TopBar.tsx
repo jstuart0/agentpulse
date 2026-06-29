@@ -154,7 +154,7 @@ function UserMenu({
 							onClick={() => setOpen(false)}
 						/>
 					)}
-					{signOutUrl && (
+					{user && (
 						<button
 							type="button"
 							onClick={handleSignOut}

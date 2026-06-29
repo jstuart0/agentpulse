@@ -33,21 +33,26 @@ import {
 	revokeSupervisor,
 } from "../services/supervisor-registry.js";
 
-const supervisorsRouter = new Hono();
+// ── Dashboard-management router (requireAuth) ─────────────────────────────────
+// Mounted at /api/v1/admin/supervisors — falls through to the forwardauth
+// catch-all IngressRoute rule so SSO sessions carry live IdP revocation.
+// /api/v1/admin/* is intentionally NOT in the IngressRoute exemption list.
 
-supervisorsRouter.get("/supervisors", requireAuth(), async (c) => {
+const supervisorsAdminRouter = new Hono();
+
+supervisorsAdminRouter.get("/supervisors", requireAuth(), async (c) => {
 	const supervisors = await listSupervisors();
 	return c.json({ supervisors, total: supervisors.length });
 });
 
-supervisorsRouter.get("/supervisors/:id", requireAuth(), async (c) => {
+supervisorsAdminRouter.get("/supervisors/:id", requireAuth(), async (c) => {
 	const supervisorId = c.req.param("id") ?? "";
 	const supervisor = await getSupervisor(supervisorId);
 	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
 	return c.json({ supervisor });
 });
 
-supervisorsRouter.post("/supervisors/enroll", requireAuth(), async (c) => {
+supervisorsAdminRouter.post("/supervisors/enroll", requireAuth(), async (c) => {
 	const body = await c.req.json<{
 		name?: string;
 		expiresAt?: string | null;
@@ -61,7 +66,7 @@ supervisorsRouter.post("/supervisors/enroll", requireAuth(), async (c) => {
 	return c.json(result, 201);
 });
 
-supervisorsRouter.post("/supervisors/:id/rotate", requireAuth(), async (c) => {
+supervisorsAdminRouter.post("/supervisors/:id/rotate", requireAuth(), async (c) => {
 	const supervisorId = c.req.param("id") ?? "";
 	const supervisor = await getSupervisor(supervisorId);
 	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
@@ -74,7 +79,21 @@ supervisorsRouter.post("/supervisors/:id/rotate", requireAuth(), async (c) => {
 	return c.json(result, 201);
 });
 
-supervisorsRouter.post("/supervisors/register", async (c) => {
+supervisorsAdminRouter.post("/supervisors/:id/revoke", requireAuth(), async (c) => {
+	const supervisorId = c.req.param("id") ?? "";
+	await revokeSupervisor(supervisorId);
+	await revokeSupervisorCredential(supervisorId);
+	return c.json({ ok: true });
+});
+
+// ── Machine-agent router (requireSupervisorAuth / enrollment-token) ───────────
+// Mounted at /api/v1/supervisors — edge-public (exempt from forwardauth).
+// Each endpoint carries explicit in-process auth; supervisor agents running on
+// remote machines cannot hold an SSO session.
+
+const supervisorsAgentRouter = new Hono();
+
+supervisorsAgentRouter.post("/supervisors/register", async (c) => {
 	const body = await c.req.json<SupervisorRegistrationInput>();
 	const registrationInput: SupervisorRegistrationInput = { ...body };
 	if (
@@ -134,27 +153,24 @@ supervisorsRouter.post("/supervisors/register", async (c) => {
 	return c.json(result);
 });
 
-supervisorsRouter.post("/supervisors/:id/revoke", requireAuth(), async (c) => {
-	const supervisorId = c.req.param("id") ?? "";
-	await revokeSupervisor(supervisorId);
-	await revokeSupervisorCredential(supervisorId);
-	return c.json({ ok: true });
-});
-
-supervisorsRouter.post("/supervisors/:id/heartbeat", requireSupervisorAuth(), async (c) => {
+supervisorsAgentRouter.post("/supervisors/:id/heartbeat", requireSupervisorAuth(), async (c) => {
 	const supervisorId = c.req.param("id") ?? "";
 	const supervisor = await heartbeatSupervisor(supervisorId);
 	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
 	return c.json({ supervisor });
 });
 
-supervisorsRouter.post("/supervisors/:id/launches/claim", requireSupervisorAuth(), async (c) => {
-	const supervisorId = c.req.param("id") ?? "";
-	const launchRequest = await claimNextLaunchRequest(supervisorId);
-	return c.json({ launchRequest: launchRequest ?? null });
-});
+supervisorsAgentRouter.post(
+	"/supervisors/:id/launches/claim",
+	requireSupervisorAuth(),
+	async (c) => {
+		const supervisorId = c.req.param("id") ?? "";
+		const launchRequest = await claimNextLaunchRequest(supervisorId);
+		return c.json({ launchRequest: launchRequest ?? null });
+	},
+);
 
-supervisorsRouter.post(
+supervisorsAgentRouter.post(
 	"/supervisors/:id/launches/:launchId/status",
 	requireSupervisorAuth(),
 	async (c) => {
@@ -179,7 +195,7 @@ supervisorsRouter.post(
 	},
 );
 
-supervisorsRouter.post(
+supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-session-state",
 	requireSupervisorAuth(),
 	async (c) => {
@@ -193,7 +209,7 @@ supervisorsRouter.post(
 	},
 );
 
-supervisorsRouter.post(
+supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/events",
 	requireSupervisorAuth(),
 	async (c) => {
@@ -209,13 +225,13 @@ supervisorsRouter.post(
 	},
 );
 
-supervisorsRouter.get("/supervisors/:id/provider-sync", requireSupervisorAuth(), async (c) => {
+supervisorsAgentRouter.get("/supervisors/:id/provider-sync", requireSupervisorAuth(), async (c) => {
 	const supervisorId = c.req.param("id") ?? "";
 	const managedSessions = await listManagedSessionsNeedingSync(supervisorId);
 	return c.json({ managedSessions });
 });
 
-supervisorsRouter.post(
+supervisorsAgentRouter.post(
 	"/supervisors/:id/control-actions/claim",
 	requireSupervisorAuth(),
 	async (c) => {
@@ -225,7 +241,7 @@ supervisorsRouter.post(
 	},
 );
 
-supervisorsRouter.post(
+supervisorsAgentRouter.post(
 	"/supervisors/:id/control-actions/:actionId/status",
 	requireSupervisorAuth(),
 	async (c) => {
@@ -248,4 +264,4 @@ supervisorsRouter.post(
 	},
 );
 
-export { supervisorsRouter };
+export { supervisorsAgentRouter, supervisorsAdminRouter };

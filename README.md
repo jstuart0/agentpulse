@@ -447,6 +447,7 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `FORWARDAUTH_HEADER_UID` | `X-Authentik-Uid` | Header carrying the unique user identifier. |
 | `FORWARDAUTH_HEADER_VERIFY` | `X-Authentik-Verify` | Header used to carry the trust secret from Traefik to AgentPulse. |
 | `FORWARDAUTH_HEADER_STRIP_PREFIX` | `X-Authentik-` | Prefix of IdP identity headers stripped before forwardauth runs. |
+| `AGENTPULSE_SSO_SESSION_DURATION_MS` | `28800000` (8 h) | Lifetime in milliseconds of the `ap_session` cookie minted by the forwardauth session bridge. Local-auth sessions use a separate 30-day TTL and are unaffected. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `AGENTPULSE_TELEMETRY` | `on` | Set `off` to disable anonymous telemetry |
 | `DO_NOT_TRACK` | | Set `1` to disable telemetry (standard) |

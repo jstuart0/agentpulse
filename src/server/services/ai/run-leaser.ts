@@ -80,6 +80,14 @@ export class RunLeaser {
 				});
 				if (!run) return;
 				await this.opts.processRun(run);
+				// Yield to the macrotask queue between runs so timers and I/O can
+				// make progress. bun:sqlite Promises resolve synchronously in C++ and
+				// are surfaced as microtasks; without this yield the while(true) loop
+				// never relinquishes the event loop — under load it pins a vCPU and
+				// can trigger a kernel soft-lockup. Mirrors the pattern in
+				// embeddings/embedding-service.ts. The empty-queue `return` above
+				// executes before this yield so idle polls have zero overhead.
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			}
 		} catch (err) {
 			console.error("[run-leaser] drain failed:", err);

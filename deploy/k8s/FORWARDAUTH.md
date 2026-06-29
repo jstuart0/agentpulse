@@ -41,6 +41,92 @@ only present on requests that have already cleared the IdP gate.
 
 ---
 
+## Session bridge
+
+After a request passes the forwardauth trust gate, `bridgeForwardauthSession`
+(`src/server/auth/forwardauth-bridge.ts`) mints an `ap_session` cookie so
+`/api/v1/auth/me` and WebSocket upgrades — which deliberately bypass forwardauth in
+the IngressRoute — can resolve the SSO identity through the existing cookie step.
+
+Ticket: AGEN-5
+Commits: c5b68e0 (schema), 801f5cc (resolver+Bearer), 7f650de (route-split), 813921c (bridge), 6e02f85 (frontend+warning)
+
+### Why /auth/me stays off forwardauth
+
+`/api/v1/auth/me`, `/auth/login`, `/auth/logout`, and `/auth/signup` have their own
+IngressRoute rules without the forwardauth middleware chain, by design:
+- The login page needs to reach `/auth/me` unauthenticated to render correctly.
+- Local-auth (username/password) fallback must remain reachable for non-SSO users.
+
+These endpoints MUST stay off forwardauth. If moved behind it, the bridge and the
+auth handler would both set `ap_session` on the same request, silently breaking SSO.
+
+### Cookie attributes
+
+The `ap_session` cookie minted by the bridge:
+- `HttpOnly`, `Secure` (production only), `SameSite=Lax`, `Path=/`
+- `MaxAge` = `AGENTPULSE_SSO_SESSION_DURATION_MS / 1000` (default 28800 s = 8 h)
+
+No sliding renewal. The expiry is fixed at mint time. After expiry, the next navigation
+through the forwardauth catch-all re-mints a fresh session. Tune the TTL with
+`AGENTPULSE_SSO_SESSION_DURATION_MS` (milliseconds). Shorter TTL bounds the
+post-IdP-revocation window; longer TTL reduces re-mint frequency.
+
+Mint is skipped when the existing cookie already matches the current subject and
+provider (resolve-then-mint). All other cases — no cookie, expired, different subject,
+different provider, local session — result in a fresh mint.
+
+### SSO session properties
+
+SSO sessions are non-admin. `/auth/me` returns:
+
+```json
+{ "source": "forwardauth", "provider": "<FORWARDAUTH_PROVIDER value>", "role": null }
+```
+
+No shadow `users` row is created. Identity is stored on the `auth_sessions` row via
+four additive columns (`auth_source`, `sso_subject`, `sso_username`, `provider`). Local
+sessions see `auth_source = "local"` and null SSO columns.
+
+### Supervisor endpoint split
+
+Management endpoints (list, get, enroll, rotate, revoke) are at
+`/api/v1/admin/supervisors/*`. This prefix is not in the IngressRoute exemption list,
+so it falls through to the forwardauth catch-all: SSO browser requests carry live IdP
+headers, giving immediate revocation effect.
+
+Machine-agent endpoints (register, heartbeat, launch/claim, control-actions) remain at
+edge-public `/api/v1/supervisors/*` with supervisor-credential auth. Remote machines
+cannot hold an SSO session cookie; they must never be behind forwardauth.
+
+### Bearer API key precedence
+
+When a request presents `Authorization: Bearer ap_*`, that credential is the only one
+consulted:
+- Valid key → `{ source: "api_key" }`
+- Invalid or unknown key → **401; the cookie is not consulted**
+
+This prevents a stale or bridged `ap_session` cookie from authorizing a request that
+passed Traefik's edge Bearer-bypass rule with an invalid key.
+
+### WebSocket limitation
+
+WS upgrades use the `ap_session` cookie minted during the prior SPA document load. The
+bridge does not run on WS upgrades (no HTML response to set the cookie on). If the SSO
+cookie expires while a WS session is open, the WS session continues until disconnect;
+it is not re-validated mid-stream.
+
+### Trust secret requirement
+
+The bridge only mints when the trust gate passes. If `agentpulse-inject-verify` is
+deployed with the base placeholder (`X-Authentik-Verify: ""`), Traefik interprets the
+empty string as "delete this header" — AgentPulse never receives the verify header, the
+trust gate rejects every request, and no cookie is minted. SSO is non-functional
+regardless of any code changes. See Step 3 in the Authentik section below for the
+private overlay injection pattern.
+
+---
+
 ## Env vars
 
 Configure these in `agentpulse-secrets` (for the trust secret) and `agentpulse-config`

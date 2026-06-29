@@ -77,17 +77,60 @@ spec:
         - name: agentpulse
           port: 3000
 
-    # Supervisors surface — public at the edge; per-handler auth enforced server-side.
+    # Browser-client auth paths — mirror of the /api/v1/auth/* exemptions above.
+    # The SPA uses APP_API_BASE = "/app-api/v1" (src/web/lib/paths.ts) so its
+    # auth introspection and login/logout endpoints arrive at /app-api/v1/auth/*.
+    # Without these rules they fall through to the catch-all forwardauth chain,
+    # which breaks local-auth login (Authentik returns 302 on the login page
+    # fetch) and defeats the bridge cookie design (the un-forwardauth'd /auth/me
+    # must resolve the cookie, not receive inline forwardauth headers).
+    - match: Host(`agentpulse.example.com`) && Path(`/app-api/v1/auth/me`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/app-api/v1/auth/login`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/app-api/v1/auth/logout`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/app-api/v1/auth/signup`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # Browser WebSocket — exempt from forwardauth so the app-layer cookie gate
+    # (getAuthUserFromHeaders step-3, ap_session) can survive IdP session lapse
+    # within the 8h cookie TTL. Browser WS upgrades cannot follow 302 redirects;
+    # Traefik-level forwardauth rejection is a hard disconnect. Auth is enforced
+    # in-process (src/server/index.ts), where an invalid/absent cookie returns 401.
+    - match: Host(`agentpulse.example.com`) && Path(`/app-api/v1/ws`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    # Supervisors AGENT surface — public at the edge; covers machine-agent endpoints only.
     # Supervisor agents run on remote machines and cannot hold an SSO session.
     # Each endpoint carries explicit in-process auth:
-    #   GET  /supervisors, /supervisors/:id, POST /enroll, /rotate, /revoke
-    #        → requireAuth() (dashboard API-key or SSO session)
     #   POST /register → enrollment token or supervisor credential (checked in-handler)
     #   POST /heartbeat, /launches/claim, /launches/:id/status, /managed-session-state,
     #        /managed-sessions/:id/events, /provider-sync, /control-actions/*
     #        → requireSupervisorAuth() (supervisor credential token)
-    # The API-key Bearer bypass rule above covers requireAuth() callers that use ap_ keys.
     # requireSupervisorAuth() uses a separate supervisor token scheme; no SSO session needed.
+    #
+    # DASHBOARD MANAGEMENT endpoints (GET /supervisors, /supervisors/:id, POST /enroll,
+    # /rotate, /revoke) have moved to /api/v1/admin/supervisors/* which is intentionally
+    # NOT listed here and falls through to the catch-all forwardauth rule below.
     - match: Host(`agentpulse.example.com`) && PathPrefix(`/api/v1/supervisors`)
       kind: Rule
       services:

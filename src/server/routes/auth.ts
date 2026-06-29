@@ -182,13 +182,18 @@ export function checkPasswordComplexity(password: string): string | null {
  */
 const authRouter = new Hono();
 
-function cookieOptions() {
+/**
+ * Cookie attributes for `ap_session`. The `durationMs` param lets the Phase 4
+ * SSO bridge pass `SSO_SESSION_DURATION_MS` (8h) while all three existing local
+ * callers keep passing nothing (defaulting to SESSION_DURATION_MS = 30d).
+ */
+export function cookieOptions(durationMs = SESSION_DURATION_MS) {
 	return {
 		path: "/",
 		httpOnly: true,
 		secure: config.isProduction,
 		sameSite: "Lax" as const,
-		maxAge: Math.floor(SESSION_DURATION_MS / 1000),
+		maxAge: Math.floor(durationMs / 1000),
 	};
 }
 

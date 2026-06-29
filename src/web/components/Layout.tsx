@@ -314,7 +314,7 @@ export function Layout() {
 										{item.label}
 									</NavLink>
 								))}
-								{signOutUrl && (
+								{user && (
 									<button
 										type="button"
 										onClick={handleSignOut}

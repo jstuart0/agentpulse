@@ -302,9 +302,11 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
-	getSupervisors: () => request<{ supervisors: SupervisorRecord[]; total: number }>("/supervisors"),
+	getSupervisors: () =>
+		request<{ supervisors: SupervisorRecord[]; total: number }>("/admin/supervisors"),
 
-	getSupervisor: (id: string) => request<{ supervisor: SupervisorRecord }>(`/supervisors/${id}`),
+	getSupervisor: (id: string) =>
+		request<{ supervisor: SupervisorRecord }>(`/admin/supervisors/${id}`),
 
 	enrollSupervisor: (body: {
 		name?: string;
@@ -324,7 +326,7 @@ export const api = {
 				usedAt: string | null;
 				revokedAt: string | null;
 			};
-		}>("/supervisors/enroll", {
+		}>("/admin/supervisors/enroll", {
 			method: "POST",
 			body: JSON.stringify(body),
 		}),
@@ -343,7 +345,7 @@ export const api = {
 				usedAt: string | null;
 				revokedAt: string | null;
 			};
-		}>(`/supervisors/${id}/rotate`, {
+		}>(`/admin/supervisors/${id}/rotate`, {
 			method: "POST",
 			body: JSON.stringify(body ?? {}),
 		}),
@@ -355,7 +357,7 @@ export const api = {
 		}),
 
 	revokeSupervisor: (id: string) =>
-		request<{ ok: true }>(`/supervisors/${id}/revoke`, {
+		request<{ ok: true }>(`/admin/supervisors/${id}/revoke`, {
 			method: "POST",
 		}),
 

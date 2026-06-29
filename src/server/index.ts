@@ -99,15 +99,16 @@ if (process.env.AGENTPULSE_AUTHENTIK_TRUST_SECRET && !process.env.FORWARDAUTH_TR
 	);
 }
 
-// Advisory: operators should configure the forwardauth trust secret in production.
-// Without it, any request that carries forwardauth identity headers (e.g. from a
-// compromised sibling pod) bypasses the trust gate. NetworkPolicy from P10 narrows
-// but does not eliminate this attack surface.
+// Without a forwardauth trust secret the trust gate is fail-closed:
+// verifyForwardauthSecret returns false, so all forwardauth identity headers
+// are rejected and SSO sign-in will not work. This is a misconfiguration
+// warning, not a security bypass — the behavior is stricter than expected,
+// not looser.
 if (!config.forwardauthTrustSecret && !config.disableAuth) {
 	console.warn(
-		"[security] FORWARDAUTH_TRUST_SECRET is not set. The forwardauth header trust gate is disabled. " +
-			"Any request carrying forwardauth identity headers will be accepted without verification. " +
-			"Set FORWARDAUTH_TRUST_SECRET to a shared secret (see deploy/k8s/FORWARDAUTH.md).",
+		"[config] FORWARDAUTH_TRUST_SECRET is not set. The forwardauth trust gate is fail-closed: " +
+			"all forwardauth identity headers are rejected and SSO sign-in will not work. " +
+			"Set FORWARDAUTH_TRUST_SECRET to the shared secret configured in your ingress (see deploy/k8s/FORWARDAUTH.md).",
 	);
 }
 

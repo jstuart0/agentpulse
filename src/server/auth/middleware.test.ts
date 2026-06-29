@@ -14,7 +14,7 @@
  * module that opens the DB doesn't collide with the main test suite.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
 // Set SQLITE_PATH before any other import opens the DB.
 import "../db/__test_db.ts";
@@ -366,6 +366,57 @@ describe("config deprecation warning", () => {
 		const shouldWarn =
 			!!process.env.AGENTPULSE_AUTHENTIK_TRUST_SECRET && !process.env.FORWARDAUTH_TRUST_SECRET;
 		expect(shouldWarn).toBe(false);
+	});
+});
+
+// ── Bearer ap_* precedence — real Headers (ian Low, Decision 8 / C-1 residual) ─
+//
+// The duck-typed {get} wrapper in local-auth-service.test.ts skips the
+// `headers instanceof Headers` trust-gate branch. These tests drive
+// getAuthUserFromHeaders with a real `Headers` instance (the production path)
+// to confirm the Bearer-precedence fix works end-to-end in the same code path
+// that live HTTP requests exercise. DB is required (verifyApiKey is NOT mocked).
+
+describe("Bearer ap_* precedence — real Headers (Decision 8)", () => {
+	// One-time DB init for this describe block. initializeDatabase is idempotent.
+	beforeAll(async () => {
+		const { initializeDatabase } = await import("../db/client.js");
+		await initializeDatabase();
+	});
+
+	test("real Headers: valid ap_session cookie + Authorization: Bearer ap_<invalid> → null (cookie NOT consulted)", async () => {
+		// Create a real local session so the cookie *would* resolve if consulted.
+		// This proves the test is meaningful: if the Bearer check were absent or
+		// fell through, the cookie would yield {source:"local",...}, not null.
+		const { createUser, issueSession } = await import("../services/local-auth-service.js");
+		const user = await createUser({ username: "mwbearer1", password: "S3cur3P@ssword!" });
+		const { token: cookieToken } = await issueSession({ userId: user.id });
+
+		const h = new Headers();
+		h.set("Cookie", `ap_session=${cookieToken}`);
+		h.set("Authorization", "Bearer ap_invalidkeyvalue0000000000000"); // syntactic but unknown
+
+		const result = await getAuthUserFromHeaders(h);
+		// The invalid Bearer must short-circuit BEFORE the cookie is consulted.
+		// Expected: null (not {source:"local",...}).
+		expect(result).toBeNull();
+	});
+
+	test("real Headers: valid ap_session cookie + valid Bearer ap_<realkey> → source:'api_key' (Q4 KEEP)", async () => {
+		// Confirm that a genuine API key authorizes correctly via the new step.
+		const { createApiKey } = await import("./api-key.js");
+		const { createUser, issueSession } = await import("../services/local-auth-service.js");
+
+		const user = await createUser({ username: "mwbearer2", password: "S3cur3P@ssword!" });
+		const { token: cookieToken } = await issueSession({ userId: user.id });
+		const { key: realKey } = await createApiKey("mw-bearer-test-key");
+
+		const h = new Headers();
+		h.set("Cookie", `ap_session=${cookieToken}`);
+		h.set("Authorization", `Bearer ${realKey}`);
+
+		const result = await getAuthUserFromHeaders(h);
+		expect(result?.source).toBe("api_key");
 	});
 });
 

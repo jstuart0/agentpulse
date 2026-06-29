@@ -59,7 +59,7 @@ bun run test:watch       # Run tests in watch mode
     - `sessions.ts` — Session list, detail, notes, rename, archive, delete, claude-md
     - `settings.ts` — Settings allowlist-gated CRUD
     - `setup.ts` — Self-contained hook setup script endpoint
-    - `supervisors.ts` — Supervisor registry and host routing
+    - `supervisors.ts` — Supervisor registry and host routing; exports `supervisorsAgentRouter` (edge-public agent endpoints at `/api/v1/supervisors/*`) and `supervisorsAdminRouter` (management endpoints at `/api/v1/admin/supervisors/*`, forwardauth-gated)
     - `templates.ts` — Session template CRUD + distillation
   - `services/` - ~30 service files + subdirectories:
     - `ai/` — AI control plane (~50 files): classifier, watcher runner, HITL, proposals, context, dispatch-filter, redactor, secrets, risk-classes, spend, auto-watcher, inbox, digest, alert-rule evaluator, template distillation, launch recommender, and more
@@ -77,7 +77,7 @@ bun run test:watch       # Run tests in watch mode
     - `session-tracker.ts`, `settings-service.ts`, `supervisor-registry.ts`
     - `telemetry.ts`, `template-preview.ts`, `transcript-sync.ts`
   - `db/` - Drizzle client (`client.ts`), dialect-aware boot path, per-dialect migration runner; schema split across `db/schema/{core,ai,ask-projects}/` with per-dialect entry files (`schema/sqlite.ts`, `schema/postgres.ts`) and a runtime barrel (`schema/index.ts`); generated SQL baselines in `drizzle/sqlite/` and `drizzle/postgres/`
-  - `auth/` - API key generation/verification, Authentik middleware (header trust gate)
+  - `auth/` - API key generation/verification, forwardauth bridge (`forwardauth-bridge.ts`), header trust gate + session resolver (`middleware.ts`)
   - `ws/` - WebSocket handler with pub/sub
 - `src/web/` - React frontend
   - `pages/` - AskPage, DashboardPage, DigestPage, HostsPage, InboxPage, LaunchDetailPage, LoginPage, ProjectsPage, SearchPage, SessionDetailPage, SettingsPage, SetupPage, TemplatesPage
@@ -160,6 +160,9 @@ Do NOT use or document `503 / ai_kill_switch_active` — that code and message w
 - `DISABLE_AUTH=true` - No auth, all endpoints open (default for local use)
 - Auth enabled - API key for hooks, forwardauth SSO for dashboard (k8s deployment)
   - **Forwardauth trust secret**: `FORWARDAUTH_TRUST_SECRET` env var (required for SSO production deployments). AgentPulse works with any forwardauth-capable IdP — Authentik (default), Authelia, oauth2-proxy, Pomerium, Cloudflare Access. Traefik's `agentpulse-inject-verify` middleware injects the shared secret; AgentPulse verifies with `timingSafeEqual` + length guard. Configure header names via `FORWARDAUTH_HEADER_*` env vars (defaults are Authentik values). Legacy alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` accepted for one release. See `deploy/k8s/FORWARDAUTH.md` and `deploy/k8s/RUNBOOK-secrets-rotation.md`.
+  - **Session bridge** (`src/server/auth/forwardauth-bridge.ts`, AGEN-5): on the first forwardauth-gated request, mints an `ap_session` cookie (8h default; `AGENTPULSE_SSO_SESSION_DURATION_MS`) so `/auth/me` and WS upgrades resolve the SSO identity through the existing cookie step. `auth_sessions` has four additive columns: `auth_source` (text, not-null, default `"local"`), `sso_subject` (nullable), `sso_username` (nullable), `provider` (nullable). SSO sessions are non-admin (`source:"forwardauth"`, `role:null`); no shadow `users` row is created.
+  - **`/auth/me` is un-forwardauth'd by design**: listed in the IngressRoute without the middleware chain. Moving it behind forwardauth would break local-auth fallback and double-set the cookie via the bridge. `Bearer ap_*` is authoritative when present — valid key → `api_key` identity; invalid/unknown key → 401 (the cookie is never consulted as fallback).
+  - **Supervisor split**: dashboard-management routes at `/api/v1/admin/supervisors/*` (not in the IngressRoute exemption list; falls through to the forwardauth catch-all for live IdP revocation). Machine-agent routes remain at edge-public `/api/v1/supervisors/*` with supervisor-credential auth.
 
 ### Relay (for remote server users)
 Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) runs on localhost and forwards events to the remote server. LaunchAgent auto-starts it on macOS login.
