@@ -8,9 +8,12 @@ The deprecated alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` is accepted for one
 release and is bound to the same Kubernetes Secret field. Operators using the
 legacy name do not need to rename their secret — but doing so now avoids confusion.
 
-**Traefik holds no part of this secret.** Rotation only touches the IdP configuration
-and AgentPulse. Brief downtime (one pod restart) is expected and acceptable. Zero-
-downtime rotation is out of scope for homelab deployments.
+**Traefik holds this secret** via the `agentpulse-inject-verify` middleware, patched
+into your private overlay (`deploy/k8s-homelab/middleware-patch.yaml`). Rotation must
+update BOTH the `agentpulse-secrets` Kubernetes Secret AND the `agentpulse-inject-verify`
+overlay patch with identical values — if they diverge, the trust gate rejects every
+forwardauth request and SSO breaks. Brief downtime (one pod restart) is expected and
+acceptable. Zero-downtime rotation is out of scope for homelab deployments.
 
 See `deploy/k8s/FORWARDAUTH.md` for the initial setup and the full explanation
 of how the header trust gate works.

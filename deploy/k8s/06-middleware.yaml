@@ -108,8 +108,15 @@ metadata:
 spec:
   headers:
     customRequestHeaders:
-      # Replace with the value of FORWARDAUTH_TRUST_SECRET via your
-      # private overlay — do NOT commit a real secret to this base manifest.
+      # CRITICAL: In Traefik, an empty string in customRequestHeaders means DELETE
+      # the header — it is NOT forwarded as an empty value. This placeholder ("") means
+      # AgentPulse never receives X-Authentik-Verify, the trust gate rejects every
+      # forwardauth request (reason: missing_verify_header), and SSO is completely
+      # non-functional. A real value MUST be injected via your private overlay patch
+      # (never committed to this base manifest).
+      #
+      # See deploy/k8s/FORWARDAUTH.md → Step 3 for the overlay pattern.
+      # See deploy/k8s/RUNBOOK-secrets-rotation.md for rotation procedure.
       X-Authentik-Verify: ""
 ---
 apiVersion: traefik.io/v1alpha1
