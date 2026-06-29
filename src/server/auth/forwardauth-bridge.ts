@@ -5,7 +5,10 @@
  * identity through the existing cookie step of `getAuthUserFromHeaders`.
  *
  * Security properties:
- *  - Verifies the trust secret BEFORE reading any identity header (H-1).
+ *  - Verifies the trust secret before trusting or acting on any identity
+ *    header value (H-1). The username header is read first as an early-exit
+ *    signal (non-forwardauth request → skip), but no identity value is trusted
+ *    or written until after secret verification passes.
  *  - Resolve-then-mint: skips the mint when the existing cookie already matches
  *    the current subject+provider (Decision 3, fixation-safe). Otherwise always
  *    mints fresh, preventing session fixation via a planted cookie.
