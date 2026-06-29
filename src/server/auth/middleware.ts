@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Context, Next } from "hono";
 import { config } from "../config.js";
-import { SESSION_COOKIE_NAME, getUserBySessionToken } from "../services/local-auth-service.js";
+import { SESSION_COOKIE_NAME, resolveSessionByToken } from "../services/local-auth-service.js";
 import { verifyApiKey } from "./api-key.js";
 import { extractSupervisorToken, verifySupervisorCredential } from "./supervisor-auth.js";
 
@@ -102,31 +102,46 @@ export async function getAuthUserFromHeaders(
 		}
 	}
 
-	// 2. Local session cookie (ap_session).
+	// 2. Bearer ap_* is authoritative — must be checked BEFORE the cookie
+	//    (Decision 8, C-1 residual). The edge IngressRoute routes any request
+	//    with a syntactic `Authorization: Bearer ap_*` header around the
+	//    forwardauth catch-all. Without this guard, a stale/foreign `ap_session`
+	//    cookie would authorize via step-3 below even when the API key is invalid.
+	//    Fix: if the header is present it is the ONLY allowed credential for this
+	//    request. Valid key → api_key identity; invalid/unknown key → reject (null).
+	//    Browsers never send this header, so no legitimate flow is broken.
+	//
+	//    The old general `Bearer ` step (which ran after the cookie) is folded
+	//    here: all valid keys are `ap_`-prefixed (api-key.ts:12,45), so there
+	//    was no reachable case for non-`ap_` Bearers in the old code either.
+	const authHeader = headers.get("Authorization");
+	if (authHeader?.startsWith("Bearer ap_")) {
+		const keyRecord = await verifyApiKey(authHeader.slice(7));
+		return keyRecord ? { source: "api_key", name: keyRecord.name, id: keyRecord.id } : null;
+	}
+
+	// 3. Session cookie (ap_session) — local or SSO-bridged (Phase 2).
+	//    resolveSessionByToken returns a discriminated union so we can map
+	//    local→source:"local" and SSO→source:"forwardauth" here at the boundary,
+	//    keeping the session service free of the AuthUser type (no circular dep).
 	const cookieHeader = headers.get("cookie") ?? headers.get("Cookie");
 	const sessionToken = parseCookieHeader(cookieHeader, SESSION_COOKIE_NAME);
 	if (sessionToken) {
-		const user = await getUserBySessionToken(sessionToken);
-		if (user) {
+		const resolved = await resolveSessionByToken(sessionToken);
+		if (resolved?.kind === "local") {
 			return {
 				source: "local",
-				name: user.username,
-				id: user.id,
-				role: user.role,
+				name: resolved.user.username,
+				id: resolved.user.id,
+				role: resolved.user.role,
 			};
 		}
-	}
-
-	// 3. API key bearer (hook ingest + programmatic clients).
-	const authHeader = headers.get("Authorization");
-	if (authHeader?.startsWith("Bearer ")) {
-		const token = authHeader.slice(7);
-		const keyRecord = await verifyApiKey(token);
-		if (keyRecord) {
+		if (resolved?.kind === "sso") {
 			return {
-				source: "api_key",
-				name: keyRecord.name,
-				id: keyRecord.id,
+				source: "forwardauth",
+				provider: resolved.provider,
+				name: resolved.username,
+				id: resolved.subject,
 			};
 		}
 	}
