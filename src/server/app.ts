@@ -22,6 +22,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
+import { bridgeForwardauthSession } from "./auth/forwardauth-bridge.js";
 import { requireAuth } from "./auth/middleware.js";
 import { config } from "./config.js";
 import { securityHeaders } from "./middleware/security-headers.js";
@@ -55,6 +56,11 @@ app.use("*", logger());
 // and static-file responses carry the headers. HSTS is harmless on HTTP
 // (ignored by browsers) and covers the production TLS deployment.
 app.use("*", securityHeaders());
+// SSO session bridge — fires on every request, mints an ap_session cookie for
+// forwardauth-identified requests so /auth/me and WS resolve SSO identity via
+// the cookie step (Phase 4 / Decision 2). Must be BEFORE api.route() and the
+// SPA catch-all so the Set-Cookie rides the document response (M-1).
+app.use("*", bridgeForwardauthSession());
 
 // API routes
 const api = new Hono();

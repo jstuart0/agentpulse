@@ -35,28 +35,19 @@ beforeAll(async () => {
 	await initializeDatabase();
 });
 
-// Helper: build a minimal Headers mock carrying only a cookie.
-function cookieHeaders(cookieValue: string): { get(name: string): string | null } {
-	return {
-		get(name: string) {
-			if (name === "cookie" || name === "Cookie") return cookieValue;
-			return null;
-		},
-	};
+// Helper: build a real Headers object carrying only a cookie.
+function cookieHeaders(cookieValue: string): Headers {
+	const h = new Headers();
+	h.set("Cookie", cookieValue);
+	return h;
 }
 
-// Helper: build a Headers mock with a cookie AND an Authorization header.
-function authHeaders(
-	cookieValue: string,
-	authorization: string,
-): { get(name: string): string | null } {
-	return {
-		get(name: string) {
-			if (name === "cookie" || name === "Cookie") return cookieValue;
-			if (name === "Authorization") return authorization;
-			return null;
-		},
-	};
+// Helper: build a real Headers object with a cookie AND an Authorization header.
+function authHeaders(cookieValue: string, authorization: string): Headers {
+	const h = new Headers();
+	h.set("Cookie", cookieValue);
+	h.set("Authorization", authorization);
+	return h;
 }
 
 // ── Local session round-trip ──────────────────────────────────────────────────
@@ -300,12 +291,9 @@ describe("Bearer precedence — `Bearer ap_*` is authoritative (AC 12)", () => {
 	});
 
 	test("Bearer ap_<invalid> with NO cookie → null", async () => {
-		const result = await getAuthUserFromHeaders({
-			get(name: string) {
-				if (name === "Authorization") return "Bearer ap_totallyfakekey000000000000";
-				return null;
-			},
-		});
+		const h = new Headers();
+		h.set("Authorization", "Bearer ap_totallyfakekey000000000000");
+		const result = await getAuthUserFromHeaders(h);
 		expect(result).toBeNull();
 	});
 

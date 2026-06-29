@@ -40,7 +40,7 @@ function stripForwardauthHeaders(rawHeaders: Headers): void {
 // Returns true only when the secret is configured AND matches the header value.
 // On any failure (missing secret, missing header, length mismatch, wrong value)
 // returns false — caller is responsible for stripping headers and returning null.
-function verifyForwardauthSecret(provided: string): boolean {
+export function verifyForwardauthSecret(provided: string): boolean {
 	const expected = config.forwardauthTrustSecret;
 	if (!expected || !provided) return false;
 
@@ -53,9 +53,7 @@ function verifyForwardauthSecret(provided: string): boolean {
 	return timingSafeEqual(expectedBuf, providedBuf);
 }
 
-export async function getAuthUserFromHeaders(
-	headers: Headers | { get(name: string): string | null },
-): Promise<AuthUser | null> {
+export async function getAuthUserFromHeaders(headers: Headers): Promise<AuthUser | null> {
 	if (config.disableAuth) {
 		return { source: "api_key", name: "anonymous", id: "anonymous" };
 	}
@@ -63,36 +61,20 @@ export async function getAuthUserFromHeaders(
 	// 1. Forwardauth identity headers — validated via shared-secret trust gate.
 	//    Header names are configurable; defaults are Authentik-compatible (e.g.
 	//    X-Authentik-Username) so any forwardauth IdP works via env config.
-	//    Note: the trust gate is only enforced when called with real Headers
-	//    (i.e. from getAuthUser(c)); duck-typed wrapper callers never carry
-	//    forwardauth headers in practice. Prefer getAuthUser(c) for full enforcement.
 	const forwardauthUser = headers.get(config.forwardauthHeader("username"));
 	if (forwardauthUser) {
-		// If called with real Headers (not the duck-typed wrapper), enforce trust gate.
-		if (headers instanceof Headers) {
-			const provided = headers.get(config.forwardauthHeader("verify")) ?? "";
-			if (!verifyForwardauthSecret(provided)) {
-				stripForwardauthHeaders(headers);
-				console.warn(
-					JSON.stringify({
-						kind: "forwardauth_trust_gate_rejected",
-						level: "warn",
-						reason: provided ? "secret_mismatch" : "missing_verify_header",
-					}),
-				);
-				// Fall through to other auth methods — headers stripped.
-			} else {
-				return {
-					source: "forwardauth",
-					provider: config.forwardauthProvider,
-					name: forwardauthUser,
-					id: headers.get(config.forwardauthHeader("uid")) || undefined,
-				};
-			}
+		const provided = headers.get(config.forwardauthHeader("verify")) ?? "";
+		if (!verifyForwardauthSecret(provided)) {
+			stripForwardauthHeaders(headers);
+			console.warn(
+				JSON.stringify({
+					kind: "forwardauth_trust_gate_rejected",
+					level: "warn",
+					reason: provided ? "secret_mismatch" : "missing_verify_header",
+				}),
+			);
+			// Fall through to other auth methods — headers stripped.
 		} else {
-			// Duck-typed wrapper (test/API-key callers): trust without secret check.
-			// This path is not reachable from live HTTP requests — Bun.serve always
-			// passes real Headers. Forwardauth trust gate does not apply here.
 			return {
 				source: "forwardauth",
 				provider: config.forwardauthProvider,
