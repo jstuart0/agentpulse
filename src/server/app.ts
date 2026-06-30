@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { bridgeForwardauthSession } from "./auth/forwardauth-bridge.js";
-import { requireAuth } from "./auth/middleware.js";
+import { requireAuth, requireScope } from "./auth/middleware.js";
 import { config } from "./config.js";
 import { securityHeaders } from "./middleware/security-headers.js";
 import aiInboxRouter from "./routes/ai-inbox.js";
@@ -84,6 +84,9 @@ api.route("/v1", launchesRouter);
 // pre-split shape where aiRouter had a single use("*", requireAuth()).
 const aiRouter = new Hono();
 aiRouter.use("*", requireAuth());
+// All AI control-plane routes are operator-only; ingest-scoped api_keys must
+// not reach proposals, watcher config, or any other AI surface (C-1, C-2).
+aiRouter.use("*", requireScope("manage"));
 aiRouter.route("/", aiStatusRouter);
 aiRouter.route("/", aiProvidersRouter);
 aiRouter.route("/", aiWatcherRouter);

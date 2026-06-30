@@ -25,6 +25,9 @@ export function SettingsPage() {
 	const [apiKeys, setApiKeys] = useState<ApiKeyInfo[]>([]);
 	const [newKeyName, setNewKeyName] = useState("");
 	const [newKeyValue, setNewKeyValue] = useState<string | null>(null);
+	// Scope picker: ingest is on by default; manage is opt-in.
+	const [newKeyScopeIngest, setNewKeyScopeIngest] = useState(true);
+	const [newKeyScopeManage, setNewKeyScopeManage] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [theme, setTheme] = useState<AppTheme>(resolveInitialTheme());
 	const [settings, setSettings] = useState<Record<string, unknown>>({});
@@ -69,12 +72,19 @@ export function SettingsPage() {
 	async function handleCreateKey() {
 		if (!newKeyName.trim()) return;
 
+		const scopes: string[] = [];
+		if (newKeyScopeIngest) scopes.push("ingest");
+		if (newKeyScopeManage) scopes.push("manage");
+		if (scopes.length === 0) scopes.push("ingest"); // safety: at least ingest
+
 		try {
-			const data = await api.createApiKey(newKeyName.trim());
+			const data = await api.createApiKey(newKeyName.trim(), scopes);
 
 			if (data.key) {
 				setNewKeyValue(data.key);
 				setNewKeyName("");
+				setNewKeyScopeIngest(true);
+				setNewKeyScopeManage(false);
 				// Refresh key list
 				const keysRes = await api.getApiKeys();
 				setApiKeys(keysRes.keys || []);
@@ -400,23 +410,48 @@ export function SettingsPage() {
 					</div>
 				)}
 
-				<div className="flex flex-col sm:flex-row gap-2 mb-4">
-					<input
-						type="text"
-						value={newKeyName}
-						onChange={(e) => setNewKeyName(e.target.value)}
-						placeholder="Key name (e.g. macbook-hooks)"
-						onKeyDown={(e) => e.key === "Enter" && handleCreateKey()}
-						className="flex-1 min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-					/>
-					<button
-						type="button"
-						onClick={handleCreateKey}
-						disabled={!newKeyName.trim()}
-						className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-					>
-						Create Key
-					</button>
+				<div className="flex flex-col gap-2 mb-4">
+					<div className="flex flex-col sm:flex-row gap-2">
+						<input
+							type="text"
+							value={newKeyName}
+							onChange={(e) => setNewKeyName(e.target.value)}
+							placeholder="Key name (e.g. macbook-hooks)"
+							onKeyDown={(e) => e.key === "Enter" && handleCreateKey()}
+							className="flex-1 min-w-0 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+						/>
+						<button
+							type="button"
+							onClick={handleCreateKey}
+							disabled={!newKeyName.trim()}
+							className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+						>
+							Create Key
+						</button>
+					</div>
+					<div className="flex items-center gap-4 text-xs text-muted-foreground">
+						<span className="font-medium text-foreground">Scopes:</span>
+						<label className="flex items-center gap-1.5 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={newKeyScopeIngest}
+								onChange={(e) => setNewKeyScopeIngest(e.target.checked)}
+								className="rounded border-input"
+							/>
+							<span>ingest</span>
+							<span className="text-muted-foreground/60">(hook events)</span>
+						</label>
+						<label className="flex items-center gap-1.5 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={newKeyScopeManage}
+								onChange={(e) => setNewKeyScopeManage(e.target.checked)}
+								className="rounded border-input"
+							/>
+							<span>manage</span>
+							<span className="text-muted-foreground/60">(supervisors, API keys)</span>
+						</label>
+					</div>
 				</div>
 
 				{/* Key list */}
@@ -460,6 +495,11 @@ export function SettingsPage() {
 										{key.lastUsedAt && (
 											<span className="text-xs text-muted-foreground">
 												Last used {new Date(key.lastUsedAt).toLocaleDateString()}
+											</span>
+										)}
+										{key.scopes && key.scopes.length > 0 && (
+											<span className="text-xs font-mono text-muted-foreground border border-border rounded px-1.5 py-0.5">
+												{key.scopes.join(", ")}
 											</span>
 										)}
 									</div>

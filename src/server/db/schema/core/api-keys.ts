@@ -16,6 +16,7 @@ export const apiKeysSqlite = sqliteTable("api_keys", {
 	isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	lastUsedAt: text("last_used_at"),
+	scopes: text("scopes").notNull().default('["ingest"]'),
 });
 
 export const apiKeysPg = pgTable("api_keys", {
@@ -28,4 +29,5 @@ export const apiKeysPg = pgTable("api_keys", {
 	isActive: boolean("is_active").notNull().default(true),
 	createdAt: tsColumn("postgres", "created_at"),
 	lastUsedAt: pgText("last_used_at"),
+	scopes: pgText("scopes").notNull().default('["ingest"]'),
 });

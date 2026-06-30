@@ -2,6 +2,56 @@ import { eq } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import { apiKeys } from "../db/schema/index.js";
 
+// ── Scope constants ───────────────────────────────────────────────────────────
+
+/** Authorizes posting hook events from Claude Code / Codex. */
+export const SCOPE_INGEST = "ingest";
+/** Authorizes management operations: supervisor enroll/rotate/revoke, API-key CRUD. */
+export const SCOPE_MANAGE = "manage";
+/** Wildcard — all scopes. Only valid when stored in the DB (never accepted from a client request). */
+export const SCOPE_ALL = "*";
+
+const RECOGNIZED_SCOPES = new Set([SCOPE_INGEST, SCOPE_MANAGE]);
+
+// ── Scope utilities ───────────────────────────────────────────────────────────
+
+/**
+ * Parse a JSON-encoded scopes string from the database.
+ * Fails closed to ["ingest"] on any error (malformed JSON, non-array, non-string elements).
+ */
+export function parseScopes(raw?: string | null): string[] {
+	try {
+		const parsed = JSON.parse(raw ?? "");
+		if (Array.isArray(parsed) && parsed.every((s) => typeof s === "string" && s.length > 0)) {
+			return parsed;
+		}
+	} catch {
+		// fall through
+	}
+	return [SCOPE_INGEST];
+}
+
+/** Typed error thrown when an unknown scope value is supplied at key-mint time. */
+export class InvalidScopeError extends Error {
+	readonly value: string;
+	constructor(value: string) {
+		super(`Unknown scope: "${value}". Recognized values: ${[...RECOGNIZED_SCOPES].join(", ")}`);
+		this.name = "InvalidScopeError";
+		this.value = value;
+	}
+}
+
+/** Validate scope values at mint time. Throws InvalidScopeError on any unknown value. */
+function validateScopes(scopes: string[]): void {
+	for (const s of scopes) {
+		if (!RECOGNIZED_SCOPES.has(s)) {
+			throw new InvalidScopeError(s);
+		}
+	}
+}
+
+// ── Key generation ────────────────────────────────────────────────────────────
+
 // Generate a new API key: ap_<32 random hex chars>
 export function generateApiKey(): string {
 	const bytes = new Uint8Array(16);
@@ -22,8 +72,19 @@ async function hashKey(key: string): Promise<string> {
 		.join("");
 }
 
-// Create a new API key and store its hash
-export async function createApiKey(name: string): Promise<{ key: string; id: string }> {
+// ── CRUD ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Create a new API key and store its hash.
+ * @param name   Human-readable label for the key.
+ * @param scopes Capability set. Defaults to ["ingest"]. Rejects unknown values.
+ */
+export async function createApiKey(
+	name: string,
+	scopes: string[] = [SCOPE_INGEST],
+): Promise<{ key: string; id: string }> {
+	validateScopes(scopes);
+
 	const key = generateApiKey();
 	const keyHash = await hashKey(key);
 	const keyPrefix = key.slice(0, 11); // "ap_" + first 8 hex chars
@@ -34,14 +95,20 @@ export async function createApiKey(name: string): Promise<{ key: string; id: str
 			name,
 			keyHash,
 			keyPrefix,
+			scopes: JSON.stringify(scopes),
 		})
 		.returning();
 
 	return { key, id: record.id };
 }
 
-// Verify an API key and return the key record if valid
-export async function verifyApiKey(key: string): Promise<{ id: string; name: string } | null> {
+/**
+ * Verify an API key and return the key record if valid.
+ * Returns scopes parsed from the DB record (not from the request).
+ */
+export async function verifyApiKey(
+	key: string,
+): Promise<{ id: string; name: string; scopes: string[] } | null> {
 	if (!key || !key.startsWith("ap_")) {
 		return null;
 	}
@@ -65,17 +132,20 @@ export async function verifyApiKey(key: string): Promise<{ id: string; name: str
 		.execute()
 		.catch(() => {});
 
-	return { id: record.id, name: record.name };
+	return { id: record.id, name: record.name, scopes: parseScopes(record.scopes) };
 }
 
-// Ensure at least one API key exists (for initial setup)
+/**
+ * Ensure at least one API key exists (for initial setup).
+ * The bootstrap key gets ["ingest","manage"] so a fresh operator can manage supervisors.
+ */
 export async function ensureDefaultApiKey(): Promise<string | null> {
 	const existing = await getDb().select().from(apiKeys).limit(1);
 	if (existing.length > 0) {
 		return null; // Already has keys
 	}
 
-	const { key } = await createApiKey("default");
+	const { key } = await createApiKey("default", [SCOPE_INGEST, SCOPE_MANAGE]);
 	console.log(`[auth] Created default API key: ${key}`);
 	console.log("[auth] Save this key -- it won't be shown again.");
 	return key;

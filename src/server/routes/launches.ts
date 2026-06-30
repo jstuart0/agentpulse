@@ -2,7 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { LaunchRequestInput, SessionTemplateInput } from "../../shared/types.js";
-import { requireAuth } from "../auth/middleware.js";
+import { requireAuth, requireScope } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, sessionTemplates } from "../db/schema/index.js";
 import { isAiBuildEnabled } from "../services/ai/feature.js";
@@ -14,6 +14,7 @@ import { resolveTemplateWithProject } from "../services/templates/template-proje
 
 const launchesRouter = new Hono();
 launchesRouter.use("*", requireAuth());
+launchesRouter.use("*", requireScope("manage"));
 
 launchesRouter.get("/launches", async (c) => {
 	const rows = await getDb().select().from(launchRequests).orderBy(desc(launchRequests.createdAt));

@@ -59,6 +59,10 @@ export interface BackfillProgress {
 let cachedAdapter: EmbeddingAdapter | null = null;
 let cachedAdapterKey: string | null = null;
 
+const BACKFILL_MAX_CONSECUTIVE_FAILURES = 5;
+// Overridable for tests — __setBackfillBackoffForTests.
+let _backoffDelayMs = (attempt: number) => Math.min(1_000 * 2 ** (attempt - 1), 30_000);
+
 let backfillState: BackfillProgress = {
 	total: 0,
 	embedded: 0,
@@ -85,6 +89,8 @@ async function readSetting(key: string): Promise<unknown> {
  * tolerate null — vector search just becomes a no-op.
  */
 export async function resolveEmbeddingAdapter(): Promise<EmbeddingAdapter | null> {
+	// Test bypass — __setEmbeddingAdapterForTests injects this sentinel key.
+	if (cachedAdapterKey === "__test_forced__") return cachedAdapter;
 	if (config.dialect !== "sqlite" || !isVectorSearchBuildEnabled()) return null;
 
 	const providerId = (await readSetting(VECTOR_SEARCH_PROVIDER_ID_KEY)) as string | null;
@@ -262,6 +268,8 @@ export async function runBackfill(): Promise<BackfillProgress> {
 		// inline and queries for "missing" reflect that immediately.
 		const batchSize = 32;
 		let processed = 0;
+		let consecutiveFailures = 0;
+		let circuitOpen = false;
 		while (true) {
 			const batch = getSqlite()
 				.prepare(
@@ -317,9 +325,25 @@ export async function runBackfill(): Promise<BackfillProgress> {
 						? await adapter.embedBatch(texts)
 						: await Promise.all(texts.map((t) => adapter.embed(t)));
 				} catch (err) {
+					consecutiveFailures++;
 					backfillState.error = err instanceof Error ? err.message : String(err);
 					console.warn("[embeddings] batch embed failed:", err);
-					await new Promise((r) => setTimeout(r, 1000));
+					if (consecutiveFailures >= BACKFILL_MAX_CONSECUTIVE_FAILURES) {
+						console.warn(
+							JSON.stringify({
+								kind: "embedding_circuit_open",
+								level: "warn",
+								consecutiveFailures,
+								model: adapter.model,
+								lastError: backfillState.error,
+							}),
+						);
+						backfillState.error = `circuit open after ${consecutiveFailures} consecutive adapter failures`;
+						circuitOpen = true;
+						break;
+					}
+					const delay = _backoffDelayMs(consecutiveFailures);
+					await new Promise((r) => setTimeout(r, delay));
 					continue;
 				}
 
@@ -335,6 +359,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 					}
 				});
 				txn(ids.map((id, i) => ({ id, vec: vectors[i] })));
+				consecutiveFailures = 0; // reset on successful batch
 				processed += texts.length;
 			} else {
 				processed += batch.length;
@@ -348,9 +373,15 @@ export async function runBackfill(): Promise<BackfillProgress> {
 
 		backfillState.running = false;
 		backfillState.finishedAt = new Date().toISOString();
-		console.log(
-			`[embeddings] backfill complete: ${processed} events indexed with ${adapter.model}`,
-		);
+		if (circuitOpen) {
+			console.warn(
+				`[embeddings] backfill paused: circuit open after ${BACKFILL_MAX_CONSECUTIVE_FAILURES} consecutive adapter failures — will retry on next scheduled trigger`,
+			);
+		} else {
+			console.log(
+				`[embeddings] backfill complete: ${processed} events indexed with ${adapter.model}`,
+			);
+		}
 	} catch (err) {
 		backfillState.running = false;
 		backfillState.error = err instanceof Error ? err.message : String(err);
@@ -404,6 +435,17 @@ export function loadEventVector(eventId: number, expectedModel: string): Float32
 export function __resetEmbeddingAdapterForTests(): void {
 	cachedAdapter = null;
 	cachedAdapterKey = null;
+}
+
+/** Test-only — inject a specific adapter, bypassing provider resolution. */
+export function __setEmbeddingAdapterForTests(adapter: EmbeddingAdapter | null): void {
+	cachedAdapter = adapter;
+	cachedAdapterKey = "__test_forced__";
+}
+
+/** Test-only — override per-attempt backoff delay (use () => 0 for instant tests). */
+export function __setBackfillBackoffForTests(fn: (attempt: number) => number): void {
+	_backoffDelayMs = fn;
 }
 
 /** Suppress unused-import lint when the file is imported but no exports used. */

@@ -1,7 +1,7 @@
 import { desc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AgentType, LaunchMode, SessionTemplateInput } from "../../shared/types.js";
-import { requireAuth } from "../auth/middleware.js";
+import { requireAuth, requireScope } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
 import { projects, sessionTemplates } from "../db/schema/index.js";
 import { ensureProjectForCwd, getProject } from "../services/projects/projects-service.js";
@@ -19,6 +19,7 @@ import {
 
 const templatesRouter = new Hono();
 templatesRouter.use("*", requireAuth());
+templatesRouter.use("*", requireScope("manage"));
 
 templatesRouter.get("/templates", async (c) => {
 	const agentType = c.req.query("agent_type") as AgentType | undefined;

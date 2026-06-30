@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requireAuth } from "../auth/middleware.js";
+import { requireAuth, requireScope } from "../auth/middleware.js";
 import { config } from "../config.js";
 import { getActionRequest, resolveActionRequest } from "../services/ai/action-requests-service.js";
 import { emitAiEvent } from "../services/ai/ai-events.js";
@@ -310,19 +310,15 @@ async function handleActionCallback(cb: TelegramCallbackQuery): Promise<void> {
 
 // --- Authenticated admin CRUD below ---
 //
-// Per-route `requireAuth()` instead of `.use("/channels/*", ...)`: Hono's
-// path-prefixed `use()` fires on any matching request regardless of
-// registration order, and merging routers via `api.route()` doesn't
-// isolate that middleware from unrelated routes bundled alongside. The
-// one public route we absolutely must keep unauthenticated is the
-// Telegram webhook (public by design, HMAC-authenticated via header),
-// and the simplest way to guarantee it never gets shadowed by auth is
-// to attach auth per-handler rather than path-globally.
-
+// The public Telegram webhook lives on `telegramWebhookRouter`, which is
+// mounted directly on the root app *outside* the `api` bundle. That means
+// any `.use("*", ...)` here on channelsRouter cannot reach it — so we can
+// safely use router-level middleware without shadowing the webhook. (M-1)
 const channelsRouter = new Hono();
-const auth = requireAuth();
+channelsRouter.use("*", requireAuth());
+channelsRouter.use("*", requireScope("manage"));
 
-channelsRouter.get("/channels", auth, async (c) => {
+channelsRouter.get("/channels", async (c) => {
 	const channels = await listChannels();
 	return c.json({
 		channels,
@@ -333,7 +329,7 @@ channelsRouter.get("/channels", auth, async (c) => {
 	});
 });
 
-channelsRouter.post("/channels", auth, async (c) => {
+channelsRouter.post("/channels", async (c) => {
 	if (!getTelegramBotToken()) {
 		return c.json({ error: "Telegram bot token not configured" }, 400);
 	}
@@ -356,7 +352,7 @@ channelsRouter.post("/channels", auth, async (c) => {
 	);
 });
 
-channelsRouter.delete("/channels/:id", auth, async (c) => {
+channelsRouter.delete("/channels/:id", async (c) => {
 	const id = c.req.param("id") ?? "";
 	const ok = await deleteChannel(id);
 	if (!ok) return c.json({ error: "Channel not found" }, 404);
@@ -368,7 +364,7 @@ channelsRouter.delete("/channels/:id", auth, async (c) => {
  * key not on the allow-list so callers can't poke at enrollment codes
  * or status strings through this endpoint.
  */
-channelsRouter.patch("/channels/:id/config", auth, async (c) => {
+channelsRouter.patch("/channels/:id/config", async (c) => {
 	const id = c.req.param("id") ?? "";
 	const body = await c.req.json<{ askEnabled?: boolean }>();
 	const patch: Record<string, unknown> = {};
@@ -381,7 +377,7 @@ channelsRouter.patch("/channels/:id/config", auth, async (c) => {
 	return c.json({ channel: updated });
 });
 
-channelsRouter.get("/channels/:id", auth, async (c) => {
+channelsRouter.get("/channels/:id", async (c) => {
 	const id = c.req.param("id") ?? "";
 	const ch = await getChannel(id);
 	if (!ch) return c.json({ error: "Channel not found" }, 404);
@@ -410,7 +406,7 @@ function resolvePublicUrl(candidate: unknown): string | null {
  * `window.location.origin` — saves admins from having to set the
  * PUBLIC_URL env var just for this.
  */
-channelsRouter.post("/channels/telegram/setup-webhook", auth, async (c) => {
+channelsRouter.post("/channels/telegram/setup-webhook", async (c) => {
 	if (!getTelegramBotToken()) return c.json({ error: "Telegram bot token not configured" }, 400);
 	if (!getTelegramWebhookSecret()) {
 		return c.json({ error: "Telegram webhook secret not configured" }, 400);
@@ -437,7 +433,7 @@ channelsRouter.post("/channels/telegram/setup-webhook", auth, async (c) => {
  * getMe, and auto-register the webhook when a public URL is known so
  * the enrollment flow works end-to-end without a second click.
  */
-channelsRouter.get("/channels/telegram/credentials", auth, async (c) => {
+channelsRouter.get("/channels/telegram/credentials", async (c) => {
 	return c.json({
 		configured: Boolean(getTelegramBotToken()),
 		webhookSecretConfigured: Boolean(getTelegramWebhookSecret()),
@@ -448,7 +444,7 @@ channelsRouter.get("/channels/telegram/credentials", auth, async (c) => {
 	});
 });
 
-channelsRouter.post("/channels/telegram/credentials", auth, async (c) => {
+channelsRouter.post("/channels/telegram/credentials", async (c) => {
 	const body = await c.req.json<{
 		botToken?: string;
 		webhookSecret?: string;
@@ -567,7 +563,7 @@ channelsRouter.post("/channels/telegram/credentials", auth, async (c) => {
 	});
 });
 
-channelsRouter.delete("/channels/telegram/credentials", auth, async (c) => {
+channelsRouter.delete("/channels/telegram/credentials", async (c) => {
 	if (getTelegramBotToken()) {
 		await deleteTelegramWebhook().catch(() => {
 			// ignore — we're wiping credentials regardless of Telegram's
@@ -583,20 +579,20 @@ channelsRouter.delete("/channels/telegram/credentials", auth, async (c) => {
 	});
 });
 
-channelsRouter.post("/channels/telegram/teardown-webhook", auth, async (c) => {
+channelsRouter.post("/channels/telegram/teardown-webhook", async (c) => {
 	if (!getTelegramBotToken()) return c.json({ error: "Telegram bot token not configured" }, 400);
 	await deleteTelegramWebhook();
 	return c.json({ ok: true });
 });
 
-channelsRouter.get("/channels/telegram/bot-info", auth, async (c) => {
+channelsRouter.get("/channels/telegram/bot-info", async (c) => {
 	if (!getTelegramBotToken()) return c.json({ error: "Telegram bot token not configured" }, 400);
 	const res = await getTelegramBotInfo();
 	if (!res.ok) return c.json({ error: res.error }, 502);
 	return c.json({ bot: res.info });
 });
 
-channelsRouter.get("/channels/telegram/webhook-info", auth, async (c) => {
+channelsRouter.get("/channels/telegram/webhook-info", async (c) => {
 	if (!getTelegramBotToken()) return c.json({ error: "Telegram bot token not configured" }, 400);
 	const res = await getTelegramWebhookInfo();
 	if (!res.ok) return c.json({ error: res.error }, 502);
@@ -613,7 +609,7 @@ channelsRouter.get("/channels/telegram/webhook-info", auth, async (c) => {
 	});
 });
 
-channelsRouter.post("/channels/:id/test", auth, async (c) => {
+channelsRouter.post("/channels/:id/test", async (c) => {
 	const id = c.req.param("id") ?? "";
 	const ch = await getChannel(id);
 	if (!ch) return c.json({ error: "Channel not found" }, 404);
@@ -624,7 +620,7 @@ channelsRouter.post("/channels/:id/test", auth, async (c) => {
 	return c.json({ ok: true, externalMessageId: res.externalMessageId });
 });
 
-channelsRouter.get("/channels/:id/stats", auth, async (c) => {
+channelsRouter.get("/channels/:id/stats", async (c) => {
 	const id = c.req.param("id") ?? "";
 	const ch = await getChannel(id);
 	if (!ch) return c.json({ error: "Channel not found" }, 404);

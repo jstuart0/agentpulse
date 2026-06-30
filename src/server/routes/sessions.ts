@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
-import { requireAuth } from "../auth/middleware.js";
+import { requireAuth, requireScope } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
 import { events, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
@@ -15,6 +15,10 @@ import { getSession, getSessions, getStats, renameSession } from "../services/se
 
 const sessionsRouter = new Hono();
 sessionsRouter.use("*", requireAuth());
+// Session data is operator-only. Ingest keys must not list session history,
+// read event timelines, or mutate session state (rename, notes, archive).
+// Relay users must use a manage-scoped key (see scripts/setup-relay.sh).
+sessionsRouter.use("*", requireScope("manage"));
 
 // GET /api/v1/sessions - List sessions
 sessionsRouter.get("/sessions", async (c) => {

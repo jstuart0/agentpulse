@@ -20,6 +20,8 @@ const { supervisorsAgentRouter, supervisorsAdminRouter } = await import("./super
 const { createUser, issueSession, SESSION_DURATION_MS } = await import(
 	"../services/local-auth-service.js"
 );
+const { createSupervisorEnrollmentToken } = await import("../auth/supervisor-auth.js");
+const { registerSupervisor } = await import("../services/supervisor-registry.js");
 
 // Mirror the real app.ts mount:
 //   agent router at /api/v1        → /api/v1/supervisors/*
@@ -121,6 +123,112 @@ describe("agent endpoints still reachable on /api/v1/supervisors (AC 9.3)", () =
 		});
 		// requireSupervisorAuth() fires → 401, not 404
 		expect(res.status).toBe(401);
+	});
+});
+
+// ── AGEN-8: unscoped-token slot-takeover guard ────────────────────────────────
+describe("unscoped-token slot-takeover guard (AGEN-8)", () => {
+	test("unscoped token + existing supervisor id → 409 supervisor_exists_use_rotate", async () => {
+		// Directly register a supervisor so it already exists in the DB (the "victim").
+		const { supervisor } = await registerSupervisor({
+			hostName: "slot-takeover-victim",
+			platform: "linux",
+			arch: "x64",
+			version: "1.0.0",
+			capabilities: {
+				version: 1,
+				agentTypes: ["claude_code"],
+				launchModes: ["headless"],
+				os: "linux",
+				terminalSupport: [],
+				features: [],
+			},
+			trustedRoots: [],
+		});
+
+		// Create an UNSCOPED enrollment token (supervisorId = null).
+		const { token } = await createSupervisorEnrollmentToken("attacker-unscoped", null, null);
+
+		// Attempt to register the victim's id using the unscoped token.
+		const res = await app.request("/api/v1/supervisors/register", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				hostName: "attacker-host",
+				platform: "linux",
+				arch: "x64",
+				version: "1.0.0",
+				enrollmentToken: token,
+				id: supervisor.id, // ← the takeover vector
+			}),
+		});
+		expect(res.status).toBe(409);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("supervisor_exists_use_rotate");
+	});
+
+	test("unscoped token + non-existent id → succeeds and returns credential", async () => {
+		const { token } = await createSupervisorEnrollmentToken("fresh-unscoped", null, null);
+		const freshId = crypto.randomUUID(); // guaranteed not in DB
+
+		const res = await app.request("/api/v1/supervisors/register", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				hostName: "brand-new-host",
+				platform: "darwin",
+				arch: "arm64",
+				version: "1.0.0",
+				enrollmentToken: token,
+				id: freshId,
+			}),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { supervisorCredential: string };
+		expect(typeof body.supervisorCredential).toBe("string");
+	});
+
+	test("scoped token (rotate path) is unaffected even when supervisor already exists", async () => {
+		// Register a supervisor directly.
+		const { supervisor } = await registerSupervisor({
+			hostName: "scoped-rotate-host",
+			platform: "linux",
+			arch: "x64",
+			version: "1.0.0",
+			capabilities: {
+				version: 1,
+				agentTypes: ["claude_code"],
+				launchModes: ["headless"],
+				os: "linux",
+				terminalSupport: [],
+				features: [],
+			},
+			trustedRoots: [],
+		});
+
+		// The admin rotate endpoint issues a SCOPED token bound to supervisor.id.
+		const { token } = await createSupervisorEnrollmentToken(
+			`rotate:${supervisor.hostName}`,
+			null,
+			supervisor.id, // ← scoped
+		);
+
+		// Registration via scoped token: the guard must NOT fire.
+		const res = await app.request("/api/v1/supervisors/register", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				hostName: "scoped-rotate-host",
+				platform: "linux",
+				arch: "x64",
+				version: "1.0.0",
+				enrollmentToken: token,
+				// id intentionally omitted — token provides it
+			}),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { supervisorCredential: string };
+		expect(typeof body.supervisorCredential).toBe("string");
 	});
 });
 

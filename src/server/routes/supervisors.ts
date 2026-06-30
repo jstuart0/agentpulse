@@ -4,7 +4,7 @@ import type {
 	ManagedSessionStateInput,
 	SupervisorRegistrationInput,
 } from "../../shared/types.js";
-import { requireAuth, requireSupervisorAuth } from "../auth/middleware.js";
+import { requireAuth, requireScope, requireSupervisorAuth } from "../auth/middleware.js";
 import {
 	consumeEnrollmentToken,
 	createSupervisorCredential,
@@ -40,19 +40,25 @@ import {
 
 const supervisorsAdminRouter = new Hono();
 
-supervisorsAdminRouter.get("/supervisors", requireAuth(), async (c) => {
+// Gate the entire admin router: must be authenticated AND carry the "manage" scope.
+// forwardauth/local sessions pass requireScope unconditionally; only api_key callers
+// are checked for the "manage" capability.
+supervisorsAdminRouter.use("*", requireAuth());
+supervisorsAdminRouter.use("*", requireScope("manage"));
+
+supervisorsAdminRouter.get("/supervisors", async (c) => {
 	const supervisors = await listSupervisors();
 	return c.json({ supervisors, total: supervisors.length });
 });
 
-supervisorsAdminRouter.get("/supervisors/:id", requireAuth(), async (c) => {
+supervisorsAdminRouter.get("/supervisors/:id", async (c) => {
 	const supervisorId = c.req.param("id") ?? "";
 	const supervisor = await getSupervisor(supervisorId);
 	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
 	return c.json({ supervisor });
 });
 
-supervisorsAdminRouter.post("/supervisors/enroll", requireAuth(), async (c) => {
+supervisorsAdminRouter.post("/supervisors/enroll", async (c) => {
 	const body = await c.req.json<{
 		name?: string;
 		expiresAt?: string | null;
@@ -66,7 +72,7 @@ supervisorsAdminRouter.post("/supervisors/enroll", requireAuth(), async (c) => {
 	return c.json(result, 201);
 });
 
-supervisorsAdminRouter.post("/supervisors/:id/rotate", requireAuth(), async (c) => {
+supervisorsAdminRouter.post("/supervisors/:id/rotate", async (c) => {
 	const supervisorId = c.req.param("id") ?? "";
 	const supervisor = await getSupervisor(supervisorId);
 	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
@@ -79,7 +85,7 @@ supervisorsAdminRouter.post("/supervisors/:id/rotate", requireAuth(), async (c) 
 	return c.json(result, 201);
 });
 
-supervisorsAdminRouter.post("/supervisors/:id/revoke", requireAuth(), async (c) => {
+supervisorsAdminRouter.post("/supervisors/:id/revoke", async (c) => {
 	const supervisorId = c.req.param("id") ?? "";
 	await revokeSupervisor(supervisorId);
 	await revokeSupervisorCredential(supervisorId);
@@ -128,6 +134,16 @@ supervisorsAgentRouter.post("/supervisors/register", async (c) => {
 					return c.json({ error: "Enrollment token is scoped to a different supervisor" }, 403);
 				}
 				registrationInput.id = verifiedEnrollment.supervisorId;
+			} else if (registrationInput.id) {
+				// Unscoped enrollment token + explicit supervisor id = slot-takeover vector.
+				// registerSupervisor upserts on id and revokeSupervisorCredential would revoke
+				// the victim's live credential, handing a fresh one to the caller.
+				// Block it here; the legitimate re-keying path is the scoped /admin/supervisors/:id/rotate
+				// endpoint, which issues an enrollment token scoped to the specific supervisor.
+				const existing = await getSupervisor(registrationInput.id);
+				if (existing) {
+					return c.json({ error: "supervisor_exists_use_rotate" }, 409);
+				}
 			}
 			const consumed = await consumeEnrollmentToken(registrationInput.enrollmentToken);
 			if (!consumed) return c.json({ error: "Enrollment token is no longer valid" }, 409);

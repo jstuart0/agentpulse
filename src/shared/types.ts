@@ -381,6 +381,8 @@ export interface ApiKeyInfo {
 	isActive: boolean;
 	createdAt: string;
 	lastUsedAt: string | null;
+	/** Capability set. Parsed from the DB's JSON-text column; never raw TEXT. */
+	scopes: string[];
 }
 
 // Dashboard stats

@@ -117,7 +117,7 @@ Schema is split across `src/server/db/schema/{core,ai,ask-projects}/` with per-t
 
 - `sessions` - id, session_id, display_name, agent_type, status, cwd, model, is_working, is_pinned, git_branch, notes, semantic_status, current_task, plan_summary, total_tool_uses, metadata, timestamps, is_archived. Note: `is_archived` is the canonical archive predicate; `status='archived'` is a legacy value retained for backwards-compat (see `src/shared/session-state.ts`).
 - `events` - id, session_id, event_type, tool_name, tool_input, tool_response, raw_payload, created_at
-- `api_keys` - id, name, key_hash, key_prefix, is_active, timestamps
+- `api_keys` - id, name, key_hash, key_prefix, is_active, scopes (JSON text, default `'["ingest"]'`), timestamps
 - `settings` - key, value, updated_at
 - AI control plane (always created; runtime gated by `AGENTPULSE_AI_ENABLED`):
   - `llm_providers`, `watcher_configs`, `watcher_proposals`, `ai_daily_spend`
@@ -163,6 +163,7 @@ Do NOT use or document `503 / ai_kill_switch_active` — that code and message w
   - **Session bridge** (`src/server/auth/forwardauth-bridge.ts`, AGEN-5): on the first forwardauth-gated request, mints an `ap_session` cookie (8h default; `AGENTPULSE_SSO_SESSION_DURATION_MS`) so `/auth/me` and WS upgrades resolve the SSO identity through the existing cookie step. `auth_sessions` has four additive columns: `auth_source` (text, not-null, default `"local"`), `sso_subject` (nullable), `sso_username` (nullable), `provider` (nullable). SSO sessions are non-admin (`source:"forwardauth"`, `role:null`); no shadow `users` row is created.
   - **`/auth/me` is un-forwardauth'd by design**: listed in the IngressRoute without the middleware chain. Moving it behind forwardauth would break local-auth fallback and double-set the cookie via the bridge. `Bearer ap_*` is authoritative when present — valid key → `api_key` identity; invalid/unknown key → 401 (the cookie is never consulted as fallback).
   - **Supervisor split**: dashboard-management routes at `/api/v1/admin/supervisors/*` (not in the IngressRoute exemption list; falls through to the forwardauth catch-all for live IdP revocation). Machine-agent routes remain at edge-public `/api/v1/supervisors/*` with supervisor-credential auth.
+  - **API key scopes (AGEN-9)**: every key carries an explicit capability set stored as a JSON array in `api_keys.scopes` (TEXT NOT NULL DEFAULT `'["ingest"]'`). Two recognized scopes: `ingest` (post hook events) and `manage` (supervisor enroll/rotate/revoke, API-key CRUD). The `*` wildcard is valid in DB records only (never accepted from a client request). `requireScope("manage")` is chained after `requireAuth` on the full `supervisorsAdminRouter` and the three `/api-keys` CRUD handlers. `requireApiKey` (hook path) enforces `ingest`. forwardauth / local sessions are never scope-checked — scoping applies only to `api_key` callers. Rejection: `403 { error: "insufficient_scope", required: "<scope>" }`. Default bootstrap key (`ensureDefaultApiKey`) gets `["ingest","manage"]` so fresh installs aren't locked out. Hook-setup flows (SetupPage, FirstRunWelcome) mint ingest-only keys. **Re-grant procedure**: mint a new key with the desired scopes via Settings (`POST /api/v1/api-keys` with `scopes` param), then revoke the old one — there is no scope-edit endpoint (mint-new + revoke-old is intentional). Fast-follow: `channelsRouter` gating with `manage` is deferred (noted in settings.ts).
 
 ### Relay (for remote server users)
 Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) runs on localhost and forwards events to the remote server. LaunchAgent auto-starts it on macOS login.
@@ -197,7 +198,9 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - `PUT /api/v1/sessions/:id/claude-md` - Save CLAUDE.md content for session
 - `GET /api/v1/settings` - Get app settings
 - `PUT /api/v1/settings` - Update a setting (returns 403 `{ error: "key_not_user_settable", key }` for protected keys)
-- `GET/POST/DELETE /api/v1/api-keys` - Manage API keys
+- `GET /api/v1/api-keys` - List API keys (requires `manage` scope for api_key callers; returns `scopes: string[]` per key)
+- `POST /api/v1/api-keys` - Create API key (requires `manage` scope; accepts `{ name, scopes?: string[] }`, defaults to `["ingest"]`; rejects unknown scopes with `400 { error: "invalid_scope", value }`)
+- `DELETE /api/v1/api-keys/:id` - Revoke API key (requires `manage` scope)
 - `WS /api/v1/ws` - Real-time event stream
 
 ## Key Conventions

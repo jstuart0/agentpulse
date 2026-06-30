@@ -498,7 +498,8 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			key_prefix TEXT NOT NULL,
 			is_active INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
-			last_used_at TEXT
+			last_used_at TEXT,
+			scopes TEXT NOT NULL DEFAULT '["ingest"]'
 		);
 
 		CREATE TABLE IF NOT EXISTS settings (
@@ -1024,6 +1025,9 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		"ALTER TABLE auth_sessions ADD COLUMN sso_subject TEXT",
 		"ALTER TABLE auth_sessions ADD COLUMN sso_username TEXT",
 		"ALTER TABLE auth_sessions ADD COLUMN provider TEXT",
+		// AGEN-9: API key scopes. DEFAULT '["ingest"]' backfills all existing rows
+		// to ingest-only, closing the supervisor-management escalation hole.
+		"ALTER TABLE api_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '[\"ingest\"]'",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

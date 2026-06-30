@@ -1,7 +1,6 @@
 import packageJson from "../../package.json" with { type: "json" };
 import { app } from "./app.js";
 import { ensureDefaultApiKey } from "./auth/api-key.js";
-import { getAuthUserFromHeaders } from "./auth/middleware.js";
 import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
 import { setShuttingDown } from "./drain-state.js";
@@ -35,6 +34,7 @@ import {
 	initWsBroadcaster,
 	startHeartbeat,
 } from "./ws/handler.js";
+import { guardWsUpgrade } from "./ws/ws-auth.js";
 
 // ── Graceful drain state ──────────────────────────────────────────────────────
 //
@@ -165,12 +165,8 @@ bunServer = Bun.serve({
 				return new Response("Forbidden", { status: 403 });
 			}
 
-			const authUser = config.disableAuth
-				? { source: "api_key", name: "anonymous", id: "anonymous" }
-				: await getAuthUserFromHeaders(req.headers);
-			if (!authUser) {
-				return new Response("Unauthorized", { status: 401 });
-			}
+			const wsReject = await guardWsUpgrade(req.headers);
+			if (wsReject) return wsReject;
 			const s = server as { upgrade(req: Request): boolean };
 			const upgraded = s.upgrade(req);
 			if (upgraded) return undefined as unknown as Response;
@@ -267,6 +263,14 @@ console.log("");
 console.log(
 	`[config] Binding to ${config.host}:${config.port}; set HOST=0.0.0.0 to expose to LAN/network.`,
 );
+
+// Scope-bypass advisory: DISABLE_AUTH=true makes requireScope() a no-op
+// (all callers get scopes:["*"]). Fine for local dev; never use in production.
+if (config.disableAuth) {
+	console.warn(
+		"[auth] DISABLE_AUTH=true — scope enforcement is bypassed. All API routes are open.",
+	);
+}
 
 // One-shot footgun warning. DISABLE_AUTH=true binds every mutation route
 // (sessions, projects, templates, ai control plane) wide-open; combined

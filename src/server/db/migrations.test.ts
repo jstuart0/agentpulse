@@ -63,6 +63,9 @@ function getColumnNames(db: Database, tableName: string): string[] {
 /** The 4 SSO identity columns added in Phase 1. */
 const SSO_COLUMNS = ["auth_source", "sso_subject", "sso_username", "provider"] as const;
 
+/** The api_keys.scopes column added in AGEN-9. */
+const SCOPES_COLUMN = "scopes";
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
@@ -199,6 +202,13 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 				).toContain(col);
 			}
 
+			// AGEN-9: api_keys.scopes column must be present after fresh Drizzle migrate.
+			const apiKeyCols = getColumnNames(freshDb, "api_keys");
+			expect(
+				apiKeyCols,
+				`expected column "${SCOPES_COLUMN}" on api_keys after fresh Drizzle migrate`,
+			).toContain(SCOPES_COLUMN);
+
 			freshDb.close();
 		} finally {
 			if (originalSqlitePath === undefined) {
@@ -329,6 +339,64 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 				col,
 			);
 		}
+
+		db.close();
+	});
+
+	test("existing install (legacy path): api_keys.scopes column added and existing rows get '[\"ingest\"]' default (AGEN-9)", async () => {
+		// Simulate a pre-existing install: sessions table present (triggers legacy path),
+		// and a pre-AGEN-9 api_keys table with an existing row (no scopes column).
+		const db = new Database(":memory:");
+		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		db.exec(`
+			CREATE TABLE sessions (
+				id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL UNIQUE,
+				agent_type TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'active',
+				started_at TEXT NOT NULL DEFAULT (datetime('now')),
+				last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+				total_tool_uses INTEGER NOT NULL DEFAULT 0,
+				metadata TEXT DEFAULT '{}'
+			);
+			CREATE TABLE api_keys (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				key_hash TEXT NOT NULL UNIQUE,
+				key_prefix TEXT NOT NULL,
+				is_active INTEGER NOT NULL DEFAULT 1,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				last_used_at TEXT
+			);
+		`);
+
+		// Insert a pre-existing key row (no scopes column yet).
+		db.exec(
+			`INSERT INTO api_keys (id, name, key_hash, key_prefix) VALUES ('old-key-id', 'legacy-key', 'deadbeef', 'ap_deadbeef')`,
+		);
+
+		// Confirm the scopes column is absent before running init.
+		const colsBefore = getColumnNames(db, "api_keys");
+		expect(colsBefore, "scopes column should not exist on the pre-AGEN-9 schema").not.toContain(
+			SCOPES_COLUMN,
+		);
+
+		// Run the legacy init — it must apply the idempotent ALTER and add scopes.
+		await initializeDatabase(db);
+
+		// scopes column must now exist.
+		const colsAfter = getColumnNames(db, "api_keys");
+		expect(
+			colsAfter,
+			"expected scopes column on api_keys after legacy init (AGEN-9 ALTER migration)",
+		).toContain(SCOPES_COLUMN);
+
+		// The existing row must read '["ingest"]' (column DEFAULT backfill).
+		const rows = db.prepare("SELECT scopes FROM api_keys WHERE id = 'old-key-id'").all() as Array<{
+			scopes: string;
+		}>;
+		expect(rows).toHaveLength(1);
+		expect(rows[0].scopes).toBe('["ingest"]');
 
 		db.close();
 	});

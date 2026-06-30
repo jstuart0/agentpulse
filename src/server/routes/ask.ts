@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { requireAuth } from "../auth/middleware.js";
+import { requireAuth, requireScope } from "../auth/middleware.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import {
 	archiveThread,
@@ -19,8 +19,11 @@ import { isLabsFlagEnabled } from "../services/labs-service.js";
  * who haven't opted in don't accidentally spin up LLM calls.
  */
 const askRouter = new Hono();
-askRouter.use("/ai/ask/*", requireAuth());
-askRouter.use("/ai/ask", requireAuth());
+// Router-level guards so any future route on this router is covered regardless
+// of its path (path-prefixed use() only fires on matching paths, which would
+// silently miss a hypothetical non-/ai/ask route added later).
+askRouter.use("*", requireAuth());
+askRouter.use("*", requireScope("manage"));
 
 async function ensureEnabled(c: Context) {
 	if (!isAiBuildEnabled()) {
