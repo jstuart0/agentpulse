@@ -16,6 +16,17 @@ set -euo pipefail
 #  Usage:
 #    bash setup-relay.sh --url https://agentpulse.example.com --key ap_xxx
 #    bash setup-relay.sh --url https://agentpulse.example.com --key ap_xxx --port 4000
+#
+#  API key scope requirement:
+#    The relay reads and writes session data (session list, CLAUDE.md sync,
+#    Codex thread-name sync) in addition to posting hooks. The key you pass
+#    via --key must have BOTH "ingest" and "manage" scopes. In the
+#    AgentPulse Settings → API Keys UI, check both "Hook ingest" and
+#    "Dashboard management" when creating the relay key.
+#
+#    Ingest-only keys will be accepted for hook posting but will receive
+#    403 Forbidden on session reads/writes, causing sync features to silently
+#    degrade. The relay will continue forwarding hooks successfully.
 # ───────────────────────────────────────────────────────
 
 REMOTE_URL=""

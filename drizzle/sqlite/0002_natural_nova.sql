@@ -1,0 +1,1 @@
+ALTER TABLE `api_keys` ADD `scopes` text DEFAULT '["ingest"]' NOT NULL;

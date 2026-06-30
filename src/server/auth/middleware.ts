@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { Context, Next } from "hono";
 import { config } from "../config.js";
 import { SESSION_COOKIE_NAME, resolveSessionByToken } from "../services/local-auth-service.js";
-import { verifyApiKey } from "./api-key.js";
+import { SCOPE_ALL, SCOPE_INGEST, verifyApiKey } from "./api-key.js";
 import { extractSupervisorToken, verifySupervisorCredential } from "./supervisor-auth.js";
 
 export interface AuthUser {
@@ -12,6 +12,12 @@ export interface AuthUser {
 	name: string;
 	id?: string;
 	role?: "user" | "admin";
+	/**
+	 * Capability set for api_key callers. Parsed from the DB record (trusted; never client-supplied).
+	 * forwardauth and local callers omit this field — they pass requireScope() unconditionally.
+	 * DISABLE_AUTH callers receive ["*"] so all gates open.
+	 */
+	scopes?: string[];
 }
 
 function parseCookieHeader(cookieHeader: string | null, name: string): string | null {
@@ -55,7 +61,7 @@ export function verifyForwardauthSecret(provided: string): boolean {
 
 export async function getAuthUserFromHeaders(headers: Headers): Promise<AuthUser | null> {
 	if (config.disableAuth) {
-		return { source: "api_key", name: "anonymous", id: "anonymous" };
+		return { source: "api_key", name: "anonymous", id: "anonymous", scopes: [SCOPE_ALL] };
 	}
 
 	// 1. Forwardauth identity headers — validated via shared-secret trust gate.
@@ -99,7 +105,9 @@ export async function getAuthUserFromHeaders(headers: Headers): Promise<AuthUser
 	const authHeader = headers.get("Authorization");
 	if (authHeader?.startsWith("Bearer ap_")) {
 		const keyRecord = await verifyApiKey(authHeader.slice(7));
-		return keyRecord ? { source: "api_key", name: keyRecord.name, id: keyRecord.id } : null;
+		return keyRecord
+			? { source: "api_key", name: keyRecord.name, id: keyRecord.id, scopes: keyRecord.scopes }
+			: null;
 	}
 
 	// 3. Session cookie (ap_session) — local or SSO-bridged (Phase 2).
@@ -138,12 +146,18 @@ export async function getAuthUser(c: Context): Promise<AuthUser | null> {
 	return getAuthUserFromHeaders(c.req.raw.headers);
 }
 
-// Middleware: require API key auth (for hook endpoints)
-// Skipped entirely when DISABLE_AUTH=true
+// Middleware: require API key auth (for hook endpoints).
+// Enforces the `ingest` scope — a manage-only key cannot post hooks.
+// Skipped entirely when DISABLE_AUTH=true.
 export function requireApiKey() {
 	return async (c: Context, next: Next) => {
 		if (config.disableAuth) {
-			c.set("authUser", { source: "api_key", name: "anonymous", id: "anonymous" });
+			c.set("authUser", {
+				source: "api_key",
+				name: "anonymous",
+				id: "anonymous",
+				scopes: [SCOPE_ALL],
+			});
 			return next();
 		}
 
@@ -158,7 +172,18 @@ export function requireApiKey() {
 			return c.json({ error: "Invalid API key" }, 401);
 		}
 
-		c.set("authUser", { source: "api_key", name: keyRecord.name, id: keyRecord.id });
+		// Enforce ingest scope at the hook boundary.
+		// Sits before hookRateLimit's always-200 zone — see ingest.ts:112.
+		if (!keyRecord.scopes.includes(SCOPE_ALL) && !keyRecord.scopes.includes(SCOPE_INGEST)) {
+			return c.json({ error: "insufficient_scope", required: SCOPE_INGEST }, 403);
+		}
+
+		c.set("authUser", {
+			source: "api_key",
+			name: keyRecord.name,
+			id: keyRecord.id,
+			scopes: keyRecord.scopes,
+		});
 		await next();
 	};
 }
@@ -168,7 +193,12 @@ export function requireApiKey() {
 export function requireAuth() {
 	return async (c: Context, next: Next) => {
 		if (config.disableAuth) {
-			c.set("authUser", { source: "api_key", name: "anonymous", id: "anonymous" });
+			c.set("authUser", {
+				source: "api_key",
+				name: "anonymous",
+				id: "anonymous",
+				scopes: [SCOPE_ALL],
+			});
 			return next();
 		}
 
@@ -181,10 +211,49 @@ export function requireAuth() {
 	};
 }
 
+/**
+ * Middleware: require a specific scope on API key callers.
+ * - DISABLE_AUTH=true → always passes.
+ * - forwardauth / local session callers → always pass (scoping only applies to api_key tokens).
+ * - api_key callers → pass when scopes includes the required scope or SCOPE_ALL ("*").
+ *   Otherwise: 403 { error: "insufficient_scope", required: scope }.
+ *
+ * Must be chained AFTER requireAuth() so authUser is already set in context.
+ */
+export function requireScope(scope: string) {
+	return async (c: Context, next: Next) => {
+		if (config.disableAuth) {
+			return next();
+		}
+
+		const authUser = c.get("authUser") as AuthUser | undefined;
+		if (!authUser) {
+			return c.json({ error: "Unauthorized" }, 401);
+		}
+
+		// Non-api_key callers (forwardauth / local) are never scope-limited.
+		if (authUser.source !== "api_key") {
+			return next();
+		}
+
+		const scopes = authUser.scopes ?? [];
+		if (scopes.includes(SCOPE_ALL) || scopes.includes(scope)) {
+			return next();
+		}
+
+		return c.json({ error: "insufficient_scope", required: scope }, 403);
+	};
+}
+
 export function requireSupervisorAuth() {
 	return async (c: Context, next: Next) => {
 		if (config.disableAuth) {
-			c.set("authUser", { source: "api_key", name: "anonymous", id: "anonymous" });
+			c.set("authUser", {
+				source: "api_key",
+				name: "anonymous",
+				id: "anonymous",
+				scopes: [SCOPE_ALL],
+			});
 			return next();
 		}
 

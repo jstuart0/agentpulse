@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requireAuth } from "../auth/middleware.js";
+import { requireAuth, requireScope } from "../auth/middleware.js";
 import { getSearchBackend } from "../services/search/index.js";
 import type { SearchFilters, SearchRowKind } from "../services/search/types.js";
 
@@ -14,7 +14,8 @@ import type { SearchFilters, SearchRowKind } from "../services/search/types.js";
  * backend — untrusted input never reaches raw SQL.
  */
 const searchRouter = new Hono();
-const auth = requireAuth();
+searchRouter.use("*", requireAuth());
+searchRouter.use("*", requireScope("manage"));
 
 function parseKinds(input: string | undefined): SearchRowKind[] | undefined {
 	if (!input) return undefined;
@@ -37,7 +38,7 @@ function parseSessionStatus(
 		: undefined;
 }
 
-searchRouter.get("/search", auth, async (c) => {
+searchRouter.get("/search", async (c) => {
 	const q = c.req.query("q")?.trim() ?? "";
 	if (!q) {
 		return c.json({ hits: [], total: 0, backend: getSearchBackend().name });
@@ -66,13 +67,8 @@ searchRouter.get("/search", auth, async (c) => {
 	}
 });
 
-/**
- * Admin-only — rebuilds the FTS index from scratch. Useful after
- * bulk imports or schema changes. Currently auth'd as any logged-in
- * user; Phase 4 of the security plan will narrow this to admin-only
- * once requireAdmin() exists.
- */
-searchRouter.post("/search/rebuild", auth, async (c) => {
+/** Rebuild the FTS index from scratch. Requires manage scope (router-level gate). */
+searchRouter.post("/search/rebuild", async (c) => {
 	try {
 		const res = await getSearchBackend().rebuild();
 		return c.json({ ok: true, ...res });

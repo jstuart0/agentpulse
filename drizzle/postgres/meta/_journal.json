@@ -15,6 +15,13 @@
 			"when": 1782762924855,
 			"tag": "0001_large_agent_brand",
 			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "7",
+			"when": 1782783354860,
+			"tag": "0002_dark_tombstone",
+			"breakpoints": true
 		}
 	]
 }

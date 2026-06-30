@@ -430,14 +430,18 @@ export const api = {
 				isActive: boolean;
 				createdAt: string;
 				lastUsedAt: string | null;
+				scopes: string[];
 			}>;
 		}>("/api-keys"),
 
-	createApiKey: (name: string) =>
-		request<{ id: string; key: string; name: string; message: string }>("/api-keys", {
-			method: "POST",
-			body: JSON.stringify({ name }),
-		}),
+	createApiKey: (name: string, scopes?: string[]) =>
+		request<{ id: string; key: string; name: string; scopes: string[]; message: string }>(
+			"/api-keys",
+			{
+				method: "POST",
+				body: JSON.stringify({ name, ...(scopes !== undefined ? { scopes } : {}) }),
+			},
+		),
 
 	revokeApiKey: (id: string) =>
 		request<{ ok: true }>(`/api-keys/${id}`, {

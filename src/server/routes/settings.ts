@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
-import { createApiKey } from "../auth/api-key.js";
-import { requireAuth } from "../auth/middleware.js";
+import { InvalidScopeError, createApiKey, parseScopes } from "../auth/api-key.js";
+import { requireAuth, requireScope } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, settings } from "../db/schema/index.js";
 import { ProtectedSettingError, upsertSetting } from "../services/settings-service.js";
@@ -14,6 +14,9 @@ import {
 
 const settingsRouter = new Hono();
 settingsRouter.use("*", requireAuth());
+// All settings routes are operator-only (H-1, H-2): ingest keys must not
+// read or write settings, workspace defaults, or API-key management.
+settingsRouter.use("*", requireScope("manage"));
 
 // GET /api/v1/settings - Get all settings
 settingsRouter.get("/settings", async (c) => {
@@ -162,9 +165,9 @@ settingsRouter.put("/settings/workspace", async (c) => {
 	}
 });
 
-// GET /api/v1/api-keys - List all API keys (without the actual key)
+// GET /api/v1/api-keys - List all API keys (without the actual key).
 settingsRouter.get("/api-keys", async (c) => {
-	const keys = await getDb()
+	const rows = await getDb()
 		.select({
 			id: apiKeys.id,
 			name: apiKeys.name,
@@ -172,32 +175,42 @@ settingsRouter.get("/api-keys", async (c) => {
 			isActive: apiKeys.isActive,
 			createdAt: apiKeys.createdAt,
 			lastUsedAt: apiKeys.lastUsedAt,
+			scopes: apiKeys.scopes,
 		})
 		.from(apiKeys)
 		.orderBy(apiKeys.createdAt);
 
+	const keys = rows.map((k) => ({ ...k, scopes: parseScopes(k.scopes) }));
 	return c.json({ keys });
 });
 
-// POST /api/v1/api-keys - Create a new API key
+// POST /api/v1/api-keys - Create a new API key.
 settingsRouter.post("/api-keys", async (c) => {
-	const { name } = await c.req.json<{ name: string }>();
+	const { name, scopes } = await c.req.json<{ name: string; scopes?: string[] }>();
 
 	if (!name || name.trim().length === 0) {
 		return c.json({ error: "Name is required" }, 400);
 	}
 
-	const { key, id } = await createApiKey(name.trim());
+	try {
+		const { key, id } = await createApiKey(name.trim(), scopes);
 
-	return c.json({
-		id,
-		key, // Only returned once on creation
-		name: name.trim(),
-		message: "Save this key -- it will not be shown again.",
-	});
+		return c.json({
+			id,
+			key, // Only returned once on creation
+			name: name.trim(),
+			scopes: scopes ?? ["ingest"],
+			message: "Save this key -- it will not be shown again.",
+		});
+	} catch (err) {
+		if (err instanceof InvalidScopeError) {
+			return c.json({ error: "invalid_scope", value: err.value }, 400);
+		}
+		throw err;
+	}
 });
 
-// DELETE /api/v1/api-keys/:id - Revoke an API key
+// DELETE /api/v1/api-keys/:id - Revoke an API key.
 settingsRouter.delete("/api-keys/:id", async (c) => {
 	const id = c.req.param("id");
 

@@ -15,6 +15,13 @@
 			"when": 1782762916771,
 			"tag": "0001_true_misty_knight",
 			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "6",
+			"when": 1782783352154,
+			"tag": "0002_natural_nova",
+			"breakpoints": true
 		}
 	]
 }

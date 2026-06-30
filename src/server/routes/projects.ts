@@ -2,7 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { AGENT_TYPES } from "../../shared/constants.js";
 import type { AgentType } from "../../shared/types.js";
-import { requireAuth } from "../auth/middleware.js";
+import { requireAuth, requireScope } from "../auth/middleware.js";
 import { getDb } from "../db/client.js";
 import { type projects, sessions } from "../db/schema/index.js";
 import { queueCleanupWorkArea } from "../services/control-actions.js";
@@ -18,6 +18,7 @@ import { listSupervisors } from "../services/supervisor-registry.js";
 
 const projectsRouter = new Hono();
 projectsRouter.use("*", requireAuth());
+projectsRouter.use("*", requireScope("manage"));
 
 function mapProject(row: typeof projects.$inferSelect) {
 	return {

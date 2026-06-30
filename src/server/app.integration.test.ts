@@ -139,16 +139,16 @@ describe("M-2c — admin enroll: live forwardauth headers → 201", () => {
 	});
 });
 
-// ─── M-2d: Valid ap_ API key → 201 ──────────────────────────────────────────
+// ─── M-2d: manage-scoped ap_ API key → 201; ingest-only → 403 ──────────────
 
-describe("M-2d — admin enroll: valid ap_ API key → 201", () => {
-	test("valid ap_ Bearer key resolves as api_key source → requireAuth passes → 201", async () => {
-		const { key: apiKey } = await createApiKey("app-int-test-key");
+describe("M-2d — admin enroll: manage-scoped ap_ API key → 201", () => {
+	test("manage-scoped Bearer key → requireScope(manage) passes → 201 enrollment token", async () => {
+		const { key: manageKey } = await createApiKey("app-int-manage-key", ["ingest", "manage"]);
 
 		const res = await app.request("/api/v1/admin/supervisors/enroll", {
 			method: "POST",
 			headers: new Headers({
-				Authorization: `Bearer ${apiKey}`,
+				Authorization: `Bearer ${manageKey}`,
 				"Content-Type": "application/json",
 			}),
 			body: JSON.stringify({ name: "api-key-supervisor-m2d" }),
@@ -157,6 +157,265 @@ describe("M-2d — admin enroll: valid ap_ API key → 201", () => {
 		expect(res.status).toBe(201);
 		const body = (await res.json()) as { token: string };
 		expect(typeof body.token).toBe("string");
+	});
+});
+
+// ─── AGEN-9: Scope enforcement tests ─────────────────────────────────────────
+
+describe("AGEN-9 — scope enforcement: ingest-only key → 403 on management routes", () => {
+	test("ingest-only key → POST /api/v1/admin/supervisors/enroll → 403 insufficient_scope", async () => {
+		const { key: ingestKey } = await createApiKey("app-int-ingest-key", ["ingest"]);
+
+		const res = await app.request("/api/v1/admin/supervisors/enroll", {
+			method: "POST",
+			headers: new Headers({
+				Authorization: `Bearer ${ingestKey}`,
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ name: "should-fail" }),
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: string; required: string };
+		expect(body.error).toBe("insufficient_scope");
+		expect(body.required).toBe("manage");
+	});
+
+	test("ingest-only key → POST /api/v1/api-keys → 403 insufficient_scope", async () => {
+		const { key: ingestKey } = await createApiKey("app-int-ingest-for-crud", ["ingest"]);
+
+		const res = await app.request("/api/v1/api-keys", {
+			method: "POST",
+			headers: new Headers({
+				Authorization: `Bearer ${ingestKey}`,
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ name: "should-also-fail" }),
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("insufficient_scope");
+	});
+});
+
+describe("AGEN-9 — scope enforcement: forwardauth session passes manage gate", () => {
+	test("forwardauth headers → POST /api/v1/admin/supervisors/enroll → 201 (not blocked by scope gate)", async () => {
+		const h = forwardauthHeaders({ "Content-Type": "application/json" });
+		const res = await app.request("/api/v1/admin/supervisors/enroll", {
+			method: "POST",
+			headers: h,
+			body: JSON.stringify({ name: "fa-supervisor-scope-test" }),
+		});
+
+		expect(res.status).toBe(201);
+	});
+});
+
+describe("AGEN-9 — scope enforcement: ingest key can POST hooks; manage-only key cannot", () => {
+	test("ingest-scoped key → POST /api/v1/hooks → hook accepted (200 or rate-limited)", async () => {
+		const { key: ingestKey } = await createApiKey("app-int-hooks-ingest", ["ingest"]);
+
+		const res = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: new Headers({
+				Authorization: `Bearer ${ingestKey}`,
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ type: "SessionStart", session_id: "test-session-scope" }),
+		});
+
+		// Hook endpoint always returns 200 (always-200 contract); any 4xx is a bug.
+		expect(res.status).toBe(200);
+	});
+
+	test("manage-only key (no ingest) → POST /api/v1/hooks → 403 insufficient_scope", async () => {
+		const { key: manageOnlyKey } = await createApiKey("app-int-hooks-manage-only", ["manage"]);
+
+		const res = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: new Headers({
+				Authorization: `Bearer ${manageOnlyKey}`,
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ type: "SessionStart", session_id: "test-session-scope-2" }),
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: string; required: string };
+		expect(body.error).toBe("insufficient_scope");
+		expect(body.required).toBe("ingest");
+	});
+});
+
+describe("AGEN-9 — scope enforcement: fake-Bearer + cookie regression", () => {
+	test("Bearer ap_invalid + valid SSO cookie → 401 (bearer is authoritative; scoping did not regress this)", async () => {
+		const { token: ssoToken } = await issueSession({
+			userId: "sso:scope-regression-subject",
+			durationMs: SSO_SESSION_DURATION_MS,
+			authSource: "forwardauth",
+			ssoSubject: "scope-regression-subject",
+			ssoUsername: TEST_USERNAME,
+			provider: TEST_PROVIDER,
+		});
+
+		const res = await app.request("/api/v1/admin/supervisors/enroll", {
+			method: "POST",
+			headers: new Headers({
+				Cookie: `${SESSION_COOKIE_NAME}=${ssoToken}`,
+				Authorization: "Bearer ap_completelyboguskey0000000000",
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ name: "scope-regression-test" }),
+		});
+
+		expect(res.status).toBe(401);
+	});
+});
+
+// ─── AGEN-9 extension: coherent scope enforcement across all dashboard routers ─
+
+describe("AGEN-9 extension — C-1/C-2: ingest key → 403 on AI control-plane routes", () => {
+	test("ingest-only key → POST /api/v1/ai/proposals/:id/decision → 403 insufficient_scope", async () => {
+		const { key: ingestKey } = await createApiKey("app-int-c1-ingest", ["ingest"]);
+
+		const res = await app.request("/api/v1/ai/proposals/fake-id/decision", {
+			method: "POST",
+			headers: new Headers({
+				Authorization: `Bearer ${ingestKey}`,
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ decision: "approve" }),
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("insufficient_scope");
+	});
+
+	test("ingest-only key → PUT /api/v1/ai/sessions/:id/watcher → 403 insufficient_scope", async () => {
+		const { key: ingestKey } = await createApiKey("app-int-c2-ingest", ["ingest"]);
+
+		const res = await app.request("/api/v1/ai/sessions/fake-session/watcher", {
+			method: "PUT",
+			headers: new Headers({
+				Authorization: `Bearer ${ingestKey}`,
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ enabled: true }),
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("insufficient_scope");
+	});
+
+	test("manage+ingest key → AI route → passes scope gate (may 404 on fake id)", async () => {
+		const { key: manageKey } = await createApiKey("app-int-c1-manage", ["ingest", "manage"]);
+
+		const res = await app.request("/api/v1/ai/proposals/fake-id/decision", {
+			method: "POST",
+			headers: new Headers({
+				Authorization: `Bearer ${manageKey}`,
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ decision: "approve" }),
+		});
+
+		// Not 403 (scope gate passed); may be 404/409/501 if AI is disabled in test env.
+		expect(res.status).not.toBe(403);
+	});
+});
+
+describe("AGEN-9 extension — H-1/H-2: ingest key → 403 on settings routes", () => {
+	test("ingest-only key → GET /api/v1/settings → 403 insufficient_scope", async () => {
+		const { key: ingestKey } = await createApiKey("app-int-h2-settings-get", ["ingest"]);
+
+		const res = await app.request("/api/v1/settings", {
+			headers: new Headers({ Authorization: `Bearer ${ingestKey}` }),
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("insufficient_scope");
+	});
+
+	test("ingest-only key → PUT /api/v1/settings/workspace → 403 insufficient_scope", async () => {
+		const { key: ingestKey } = await createApiKey("app-int-h1-workspace", ["ingest"]);
+
+		const res = await app.request("/api/v1/settings/workspace", {
+			method: "PUT",
+			headers: new Headers({
+				Authorization: `Bearer ${ingestKey}`,
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ workspace: { templateClaudeMd: "injected" } }),
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("insufficient_scope");
+	});
+});
+
+describe("AGEN-9 extension — M-1: ingest key → 403 on channels routes", () => {
+	test("ingest-only key → POST /api/v1/channels/telegram/credentials → 403 insufficient_scope", async () => {
+		const { key: ingestKey } = await createApiKey("app-int-m1-channels", ["ingest"]);
+
+		const res = await app.request("/api/v1/channels/telegram/credentials", {
+			method: "POST",
+			headers: new Headers({
+				Authorization: `Bearer ${ingestKey}`,
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ botToken: "injected-token" }),
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("insufficient_scope");
+	});
+});
+
+describe("AGEN-9 extension — sessions/search: ingest key → 403 on dashboard routes", () => {
+	test("ingest-only key → GET /api/v1/sessions → 403 insufficient_scope", async () => {
+		const { key: ingestKey } = await createApiKey("app-int-sessions-ingest", ["ingest"]);
+
+		const res = await app.request("/api/v1/sessions", {
+			headers: new Headers({ Authorization: `Bearer ${ingestKey}` }),
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("insufficient_scope");
+	});
+
+	test("ingest-only key → GET /api/v1/search → 403 insufficient_scope", async () => {
+		const { key: ingestKey } = await createApiKey("app-int-search-ingest", ["ingest"]);
+
+		const res = await app.request("/api/v1/search?q=test", {
+			headers: new Headers({ Authorization: `Bearer ${ingestKey}` }),
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("insufficient_scope");
+	});
+
+	test("manage+ingest key → GET /api/v1/sessions → 200 (scope gate passes)", async () => {
+		const { key: manageKey } = await createApiKey("app-int-sessions-manage", ["ingest", "manage"]);
+
+		const res = await app.request("/api/v1/sessions", {
+			headers: new Headers({ Authorization: `Bearer ${manageKey}` }),
+		});
+
+		expect(res.status).toBe(200);
+	});
+
+	test("forwardauth → GET /api/v1/sessions → 200 (scope gate transparent to human users)", async () => {
+		const h = forwardauthHeaders();
+		const res = await app.request("/api/v1/sessions", { headers: h });
+		expect(res.status).toBe(200);
 	});
 });
 

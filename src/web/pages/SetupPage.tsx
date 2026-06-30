@@ -47,7 +47,9 @@ export function SetupPage() {
 		if (!newKeyName.trim()) return;
 		setCreatingKey(true);
 		try {
-			const res = await api.createApiKey(newKeyName.trim());
+			// Hook-setup keys are ingest-only: they go into agent hook config and
+			// must not carry management privileges. Use Settings to mint manage keys.
+			const res = await api.createApiKey(newKeyName.trim(), ["ingest"]);
 			setApiKey(res.key); // flow the raw key into the config blobs below
 			const list = await api.getApiKeys().catch(() => ({ keys }));
 			setKeys(list.keys ?? []);
