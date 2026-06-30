@@ -18,6 +18,10 @@ const { SESSION_COOKIE_NAME, issueSession } = await import("../services/local-au
 const { guardWsUpgrade } = await import("./ws-auth.js");
 const { config } = await import("../config.js");
 
+// Save the original so we restore it (not hardcode) — otherwise disableAuth
+// leaks across test files and breaks order-dependent auth tests in CI.
+const originalDisableAuth = config.disableAuth;
+
 beforeAll(async () => {
 	await initializeDatabase();
 	// Ensure scope checks fire (don't skip due to disableAuth)
@@ -25,7 +29,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-	(config as Record<string, unknown>).disableAuth = true;
+	(config as Record<string, unknown>).disableAuth = originalDisableAuth;
 });
 
 function bearerHeaders(key: string): Headers {
