@@ -128,6 +128,16 @@ supervisorsAgentRouter.post("/supervisors/register", async (c) => {
 					return c.json({ error: "Enrollment token is scoped to a different supervisor" }, 403);
 				}
 				registrationInput.id = verifiedEnrollment.supervisorId;
+			} else if (registrationInput.id) {
+				// Unscoped enrollment token + explicit supervisor id = slot-takeover vector.
+				// registerSupervisor upserts on id and revokeSupervisorCredential would revoke
+				// the victim's live credential, handing a fresh one to the caller.
+				// Block it here; the legitimate re-keying path is the scoped /admin/supervisors/:id/rotate
+				// endpoint, which issues an enrollment token scoped to the specific supervisor.
+				const existing = await getSupervisor(registrationInput.id);
+				if (existing) {
+					return c.json({ error: "supervisor_exists_use_rotate" }, 409);
+				}
 			}
 			const consumed = await consumeEnrollmentToken(registrationInput.enrollmentToken);
 			if (!consumed) return c.json({ error: "Enrollment token is no longer valid" }, 409);
