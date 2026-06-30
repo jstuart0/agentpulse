@@ -76,6 +76,10 @@ beforeAll(async () => {
 	process.env.FORWARDAUTH_TRUST_SECRET = TEST_SECRET;
 	process.env.FORWARDAUTH_PROVIDER = TEST_PROVIDER;
 	(config as Record<string, unknown>).disableAuth = false;
+	// config memoizes forwardauthTrustSecret; clear the memo so this file
+	// reads TEST_SECRET and so a stale memo from a prior file doesn't leak in.
+	// biome-ignore lint/performance/noDelete: clear Object.defineProperty-installed own property
+	delete (config as Record<string, unknown>)._forwardauthTrustSecret;
 });
 
 afterAll(() => {
@@ -90,6 +94,9 @@ afterAll(() => {
 	} else {
 		process.env.FORWARDAUTH_PROVIDER = originalProvider;
 	}
+	// Clear the memo so the restored env is what the next test file re-reads.
+	// biome-ignore lint/performance/noDelete: clear Object.defineProperty-installed own property
+	delete (config as Record<string, unknown>)._forwardauthTrustSecret;
 });
 
 // ─── Parse Set-Cookie helper ─────────────────────────────────────────────────
