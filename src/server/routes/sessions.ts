@@ -102,11 +102,17 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 // wraps the `sessions` + (optional) `managed_sessions` updates in a
 // transaction. The route handler only validates input.
 //
-// `source` (F5 / Decision 6, optional, defaults to "user") records who
-// initiated the rename. Existing callers (dashboard rename UI, relay's
-// Codex push) omit it and get "user". The relay's Codex name-sync *pull*
-// passes `source: "sync"` so its writes aren't mistaken for a manual
-// rename by `applyNativeName` below.
+// `source` (F5 / Decision 6, optional; contract revised per codex r2
+// Medium #1) records who initiated the rename. Only an explicit
+// `source: "user"` stamps `metadata.renameSource = "user"`, which
+// `applyNativeName` below checks to refuse a later native-name pull. An
+// omitted `source` — or any other explicit value, e.g. the relay's Codex
+// name-sync `source: "sync"` — is legacy-neutral: the rename happens but
+// the flag is left untouched. This protects a mixed-version old relay
+// (which sends `{ name }` with no `source` field) from being
+// misclassified as a manual rename. The dashboard (src/web/lib/api.ts)
+// and the Ask "rename X to Y" command both send `source: "user"`
+// explicitly.
 sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { name, source } = await c.req.json<{ name: string; source?: string }>();
