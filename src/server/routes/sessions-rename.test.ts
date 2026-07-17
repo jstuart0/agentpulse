@@ -59,7 +59,11 @@ describe("PUT /sessions/:id/rename", () => {
 		expect(res.status).toBe(400);
 	});
 
-	test("no source in body → metadata.renameSource defaults to 'user'", async () => {
+	// codex r2 Medium #1 — contract revised: omitted source is legacy-neutral
+	// (renames without stamping), so a mixed-version old relay sending
+	// {name} with no source field can't be misclassified as a manual
+	// rename. Only an explicit source: "user" stamps.
+	test("no source in body (legacy-neutral) → metadata.renameSource is NOT stamped", async () => {
 		await mkSession("route-default-source");
 		const res = await app.request("/api/v1/sessions/route-default-source/rename", {
 			method: "PUT",
@@ -69,10 +73,22 @@ describe("PUT /sessions/:id/rename", () => {
 		expect(res.status).toBe(200);
 		const row = await getSession("route-default-source");
 		expect(row?.displayName).toBe("renamed-by-dashboard");
+		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).toBeUndefined();
+	});
+
+	test("explicit source: 'user' in body (dashboard's actual request shape) → stamped 'user'", async () => {
+		await mkSession("route-user-source");
+		const res = await app.request("/api/v1/sessions/route-user-source/rename", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name: "renamed-by-dashboard", source: "user" }),
+		});
+		expect(res.status).toBe(200);
+		const row = await getSession("route-user-source");
 		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).toBe("user");
 	});
 
-	test("source: 'sync' in body is forwarded to renameSession", async () => {
+	test("source: 'sync' in body (relay's Codex pull) → legacy-neutral, NOT stamped", async () => {
 		await mkSession("route-sync-source");
 		const res = await app.request("/api/v1/sessions/route-sync-source/rename", {
 			method: "PUT",
@@ -81,7 +97,7 @@ describe("PUT /sessions/:id/rename", () => {
 		});
 		expect(res.status).toBe(200);
 		const row = await getSession("route-sync-source");
-		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).toBe("sync");
+		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).toBeUndefined();
 	});
 });
 
@@ -138,13 +154,13 @@ describe("PUT /sessions/:id/native-name", () => {
 		expect(row?.displayName).toBe("human-chosen-name");
 	});
 
-	test("end-to-end precedence: manual rename via /rename blocks a subsequent /native-name pull", async () => {
+	test("end-to-end precedence: manual rename via /rename (source: 'user', the dashboard's actual request shape) blocks a subsequent /native-name pull", async () => {
 		await mkSession("e2e-precedence", { displayName: "brave-falcon" });
 
 		const renameRes = await app.request("/api/v1/sessions/e2e-precedence/rename", {
 			method: "PUT",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ name: "human-picked-name" }),
+			body: JSON.stringify({ name: "human-picked-name", source: "user" }),
 		});
 		expect(renameRes.status).toBe(200);
 

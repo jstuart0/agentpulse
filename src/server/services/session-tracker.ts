@@ -14,14 +14,21 @@ import { getManagedSession } from "./managed-session-state.js";
  * The caller is expected to have already validated `name` (non-empty,
  * trimmed). This function performs the trim once more defensively.
  *
- * `options.source` (F5 / Decision 6) records who initiated the rename via
- * `sessions.metadata.renameSource`: defaults to `"user"` for the existing
- * dashboard call sites (SessionCard, InlineRename) — this is the flag that
- * `applyNativeName` below checks to decide whether a native-name pull is
- * allowed to overwrite the display name. The relay's Codex name-sync pull
- * passes `source: "sync"` so its writes are never mistaken for a manual
- * rename. Metadata is read-modify-written so unrelated keys (e.g.
- * `permissionWait`, `nativeName`) survive.
+ * `options.source` (F5 / Decision 6, contract revised per codex r2 Medium #1)
+ * records who initiated the rename via `sessions.metadata.renameSource` —
+ * the flag `applyNativeName` below checks to decide whether a native-name
+ * pull is allowed to overwrite the display name. Only an **explicit**
+ * `source: "user"` stamps the flag. Every other case — an omitted
+ * `source`, or an explicit non-"user" value like `"sync"` — is
+ * LEGACY-NEUTRAL: the rename happens, but `renameSource` is left
+ * untouched. This is deliberate: an old (pre-campaign) relay sends
+ * `{ name }` with no `source` field at all, and if omission defaulted to
+ * `"user"` that mixed-version relay would misclassify every Codex
+ * name-sync pull as a manual rename, permanently blocking future
+ * native-name pulls for that session. Callers that need the manual-rename
+ * guarantee (dashboard rename UI, the Ask "rename X to Y" command) must
+ * pass `{ source: "user" }` explicitly. Metadata is read-modify-written so
+ * unrelated keys (e.g. `permissionWait`, `nativeName`) survive.
  */
 export async function renameSession(
 	sessionId: string,
@@ -29,7 +36,6 @@ export async function renameSession(
 	options: { source?: string } = {},
 ): Promise<void> {
 	const trimmed = name.trim();
-	const source = options.source ?? "user";
 	await withTransaction(async (tx) => {
 		const [row] = await tx
 			.select({ metadata: sessions.metadata })
@@ -38,7 +44,9 @@ export async function renameSession(
 			.limit(1);
 
 		const metadata = { ...(row?.metadata ?? {}) } as Record<string, unknown>;
-		metadata.renameSource = source;
+		if (options.source === "user") {
+			metadata.renameSource = "user";
+		}
 
 		await tx
 			.update(sessions)

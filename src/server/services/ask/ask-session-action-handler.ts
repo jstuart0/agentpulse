@@ -4,6 +4,7 @@ import { getDb } from "../../db/client.js";
 import { managedSessions, sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
+import { renameSession } from "../session-tracker.js";
 import type { ResolvedSession } from "./ask-resolver.js";
 import { resolveSession } from "./ask-resolver.js";
 import type { SessionActionIntent } from "./launch-intent-detector.js";
@@ -82,28 +83,14 @@ export async function handleSessionAction(
 			};
 		}
 		const oldName = name;
-		await getDb()
-			.update(sessions)
-			.set({ displayName: newName })
-			.where(eq(sessions.sessionId, session.sessionId));
-
-		// Mirror the existing rename route: also update managed session title if present.
-		const [managed] = await getDb()
-			.select()
-			.from(managedSessions)
-			.where(eq(managedSessions.sessionId, session.sessionId))
-			.limit(1);
-		if (managed) {
-			await getDb()
-				.update(managedSessions)
-				.set({
-					desiredThreadTitle: newName,
-					providerSyncState: "pending",
-					providerSyncError: null,
-					updatedAt: new Date().toISOString(),
-				})
-				.where(eq(managedSessions.sessionId, session.sessionId));
-		}
+		// Route through the shared renameSession service (codex r2 High #1)
+		// instead of writing sessions.displayName directly — this is an
+		// in-repo public manual-rename surface (README advertises "rename
+		// auth-worker to auth-refactor"), so it must stamp
+		// metadata.renameSource: "user" the same way the dashboard does, or a
+		// later Claude native-name pull would silently clobber it. This also
+		// picks up the managed-session title mirroring for free.
+		await renameSession(session.sessionId, newName, { source: "user" });
 
 		return {
 			replyText: `Renamed **${oldName}** → **${newName}**. To undo, ask me to rename it back to **${oldName}**.`,

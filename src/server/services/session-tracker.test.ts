@@ -185,30 +185,42 @@ describe("renameSession", () => {
 		expect(afterRow?.updatedAt).not.toBe(beforeUpdatedAt);
 	});
 
-	// F5 / Decision 6 — `source` sets metadata.renameSource, which
-	// applyNativeName later checks to decide whether a native-name pull may
-	// overwrite displayName.
-	test("no source argument (existing dashboard call sites) → metadata.renameSource defaults to 'user'", async () => {
+	// F5 / Decision 6, contract revised per codex r2 Medium #1 — only an
+	// EXPLICIT source: "user" stamps metadata.renameSource. Omitted source
+	// (and any other explicit value, e.g. "sync") is legacy-neutral: the
+	// rename happens but the flag is left untouched. This protects against
+	// a mixed-version old relay (which sends {name} with no source field)
+	// being misclassified as a manual rename that would permanently block
+	// future native-name pulls for that session.
+	test("no source argument (legacy-neutral) → metadata.renameSource is NOT stamped", async () => {
 		await mkSession("default-source", { displayName: "old-name" });
 		await renameSession("default-source", "new-name");
 		const row = await getSession("default-source");
+		expect(row?.displayName).toBe("new-name");
+		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).toBeUndefined();
+	});
+
+	test("explicit source: 'user' (dashboard, Ask rename) → metadata.renameSource stamped 'user'", async () => {
+		await mkSession("user-source", { displayName: "old-name" });
+		await renameSession("user-source", "new-name", { source: "user" });
+		const row = await getSession("user-source");
 		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).toBe("user");
 	});
 
-	test("source: 'sync' (relay's Codex pull) → metadata.renameSource is NOT 'user'", async () => {
+	test("source: 'sync' (relay's Codex pull) → legacy-neutral, metadata.renameSource is NOT stamped", async () => {
 		await mkSession("sync-source", { displayName: "old-name" });
 		await renameSession("sync-source", "codex-thread-name", { source: "sync" });
 		const row = await getSession("sync-source");
-		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).not.toBe("user");
-		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).toBe("sync");
+		expect(row?.displayName).toBe("codex-thread-name");
+		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).toBeUndefined();
 	});
 
-	test("renameSession preserves unrelated metadata keys (merge-preserve)", async () => {
+	test("renameSession(source: 'user') preserves unrelated metadata keys (merge-preserve)", async () => {
 		await mkSession("meta-preserve", {
 			displayName: "old-name",
 			metadata: { permissionWait: { ids: ["tool-1"], anon: 0, prevStatus: "active" } },
 		});
-		await renameSession("meta-preserve", "renamed");
+		await renameSession("meta-preserve", "renamed", { source: "user" });
 		const row = await getSession("meta-preserve");
 		const metadata = row?.metadata as Record<string, unknown> | null;
 		expect(metadata?.renameSource).toBe("user");

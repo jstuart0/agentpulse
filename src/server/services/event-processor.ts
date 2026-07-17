@@ -1,4 +1,4 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
 	EVENT_DUPLICATE_WINDOW_MS,
 	areNearInTime,
@@ -368,20 +368,30 @@ export async function applyPermissionWaitTransition(
 			const pendingAfter = next.ids.length + next.anon;
 			if (pendingAfter === 0) {
 				const { permissionWait: _clearedWait, ...restMetadata } = metadata;
-				// Owned-status guard: restore prevStatus only if this session is
-				// still sitting on the permission-owned "waiting" value at mutation
-				// time. A fresher agent-reported status (processStatusUpdate) wins.
-				if (currentStatus === "waiting") {
-					await tx
-						.update(sessions)
-						.set({ metadata: restMetadata, semanticStatus: next.prevStatus })
-						.where(eq(sessions.sessionId, sessionId));
-				} else {
-					await tx
-						.update(sessions)
-						.set({ metadata: restMetadata })
-						.where(eq(sessions.sessionId, sessionId));
-				}
+
+				// Metadata clear is unconditional — the resolved wait is always
+				// removed, regardless of whether the status restore below fires.
+				await tx
+					.update(sessions)
+					.set({ metadata: restMetadata })
+					.where(eq(sessions.sessionId, sessionId));
+
+				// Owned-status guard, made atomic (codex r2 finding): gating on
+				// `currentStatus` (read once, early in this transaction) is not
+				// safe — processStatusUpdate writes semanticStatus in its own
+				// background task, outside this helper's transaction/queue, and
+				// can land between our read and this write. Predicating the WHERE
+				// clause on semanticStatus itself re-checks the live value at the
+				// moment this UPDATE actually executes (SQLite: fully serialized
+				// by withTransaction anyway; Postgres: the row lock this UPDATE
+				// takes forces it to see any write that already committed, and
+				// blocks-then-re-evaluates against one that's mid-flight), so a
+				// fresher agent-reported status can never be clobbered by the
+				// stale prevStatus.
+				await tx
+					.update(sessions)
+					.set({ semanticStatus: next.prevStatus })
+					.where(and(eq(sessions.sessionId, sessionId), eq(sessions.semanticStatus, "waiting")));
 			} else {
 				metadata.permissionWait = next;
 				await tx.update(sessions).set({ metadata }).where(eq(sessions.sessionId, sessionId));

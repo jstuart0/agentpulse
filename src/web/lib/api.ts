@@ -210,9 +210,13 @@ export const api = {
 		request<{ controlActions: ControlAction[] }>(`/sessions/${sessionId}/control-actions`),
 
 	renameSession: (sessionId: string, name: string) =>
+		// source: "user" (F5 / Decision 6) — the dashboard is always a manual
+		// rename; explicit "user" stamps sessions.metadata.renameSource so a
+		// later Claude native-name pull can't clobber it. Safe to hardcode:
+		// the web client is always same-version as the server it talks to.
 		request<{ ok: true }>(`/sessions/${sessionId}/rename`, {
 			method: "PUT",
-			body: JSON.stringify({ name }),
+			body: JSON.stringify({ name, source: "user" }),
 		}),
 
 	updateSessionPin: (sessionId: string, pinned: boolean) =>

@@ -480,6 +480,8 @@ Running `curl -sSL .../setup.sh | bash` configures:
 
 All hooks use `async: true` so they never slow down your agents.
 
+The expanded hook lists above require Claude Code ≥2.1.x / Codex ≥0.124. If you set up AgentPulse before this version, re-run the setup script to pick up the new event names.
+
 ## Statusline (optional)
 
 `scripts/statusline.sh` renders your AgentPulse session name (e.g. `brave-falcon`) and context-window usage directly in Claude Code's statusline, so you can match a terminal tab to a dashboard card at a glance:

@@ -188,6 +188,20 @@ describe("applyPermissionWaitTransition — concurrent/nested prompts", () => {
 });
 
 describe("applyPermissionWaitTransition — owned-status guard (order-independent by construction)", () => {
+	// codex r2 finding: the restore must be an atomic conditional write (WHERE
+	// semantic_status = 'waiting' at UPDATE time), not a decision made from an
+	// early read inside the same transaction — processStatusUpdate writes
+	// semanticStatus in its own background task, outside this helper's
+	// transaction/queue, and can land between the read and the write. There's
+	// no honest seam to inject a write literally between this helper's
+	// internal SELECT and UPDATE from a test, so this pins the conditional
+	// write's observable contract instead: seed a status change that landed
+	// after the wait was recorded, then run the clear, and assert the newer
+	// status survives AND permissionWait is still removed. A regression to
+	// deciding the restore from a stale early read rather than the live
+	// row state would only be caught by an interleaving this test can't
+	// literally construct — the WHERE-predicate implementation is what
+	// closes that gap (see the implementation comment at the restore site).
 	test("a fresher agent-reported status is never clobbered by a stale prevStatus restore", async () => {
 		await mkSession("perm-1", { semanticStatus: "implementing" });
 
