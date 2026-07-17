@@ -163,7 +163,11 @@ async function syncCodexThreadNames() {
 			const res = await fetch(`${remoteUrl}/api/v1/sessions/${id}/rename`, {
 				method: "PUT",
 				headers: { ...authHeaders(), "Content-Type": "application/json" },
-				body: JSON.stringify({ name }),
+				// source: "sync" (F5 / Decision 6) so this pull isn't mistaken for
+				// a manual dashboard rename — it must never set renameSource to
+				// "user", or every future Claude native-name pull for this session
+				// would start refusing itself.
+				body: JSON.stringify({ name, source: "sync" }),
 				signal: AbortSignal.timeout(5_000),
 			});
 			if (res.ok) {

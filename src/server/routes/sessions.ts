@@ -11,7 +11,13 @@ import {
 	queueStopAction,
 	retryLaunchForSession,
 } from "../services/control-actions.js";
-import { getSession, getSessions, getStats, renameSession } from "../services/session-tracker.js";
+import {
+	applyNativeName,
+	getSession,
+	getSessions,
+	getStats,
+	renameSession,
+} from "../services/session-tracker.js";
 
 const sessionsRouter = new Hono();
 sessionsRouter.use("*", requireAuth());
@@ -95,14 +101,40 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 // Slice DELETE-RENAME-1: business logic lives in `renameSession`, which
 // wraps the `sessions` + (optional) `managed_sessions` updates in a
 // transaction. The route handler only validates input.
+//
+// `source` (F5 / Decision 6, optional, defaults to "user") records who
+// initiated the rename. Existing callers (dashboard rename UI, relay's
+// Codex push) omit it and get "user". The relay's Codex name-sync *pull*
+// passes `source: "sync"` so its writes aren't mistaken for a manual
+// rename by `applyNativeName` below.
 sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
+	const sessionId = c.req.param("sessionId");
+	const { name, source } = await c.req.json<{ name: string; source?: string }>();
+
+	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
+
+	await renameSession(sessionId, name, { source });
+	return c.json({ ok: true });
+});
+
+// PUT /api/v1/sessions/:sessionId/native-name - Pull-only sync (F5) of
+// Claude Code's native session_name into displayName. Called by
+// scripts/statusline.sh through the local relay on every render where the
+// native name changed. Deliberately 404s on an unknown session — a
+// departure from /rename's silent no-op-on-missing-row behavior — so the
+// statusline caller can distinguish "not yet ingested, retry next render"
+// from a successful call. See Decision 6 and applyNativeName for the
+// manual-rename precedence rule.
+sessionsRouter.put("/sessions/:sessionId/native-name", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { name } = await c.req.json<{ name: string }>();
 
 	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
 
-	await renameSession(sessionId, name);
-	return c.json({ ok: true });
+	const result = await applyNativeName(sessionId, name);
+	if (!result.found) return c.json({ error: "Session not found" }, 404);
+
+	return c.json({ ok: true, applied: result.applied });
 });
 
 sessionsRouter.get("/sessions/:sessionId/control-actions", async (c) => {

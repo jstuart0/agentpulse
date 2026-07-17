@@ -13,13 +13,36 @@ import { getManagedSession } from "./managed-session-state.js";
  *
  * The caller is expected to have already validated `name` (non-empty,
  * trimmed). This function performs the trim once more defensively.
+ *
+ * `options.source` (F5 / Decision 6) records who initiated the rename via
+ * `sessions.metadata.renameSource`: defaults to `"user"` for the existing
+ * dashboard call sites (SessionCard, InlineRename) — this is the flag that
+ * `applyNativeName` below checks to decide whether a native-name pull is
+ * allowed to overwrite the display name. The relay's Codex name-sync pull
+ * passes `source: "sync"` so its writes are never mistaken for a manual
+ * rename. Metadata is read-modify-written so unrelated keys (e.g.
+ * `permissionWait`, `nativeName`) survive.
  */
-export async function renameSession(sessionId: string, name: string): Promise<void> {
+export async function renameSession(
+	sessionId: string,
+	name: string,
+	options: { source?: string } = {},
+): Promise<void> {
 	const trimmed = name.trim();
+	const source = options.source ?? "user";
 	await withTransaction(async (tx) => {
+		const [row] = await tx
+			.select({ metadata: sessions.metadata })
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+
+		const metadata = { ...(row?.metadata ?? {}) } as Record<string, unknown>;
+		metadata.renameSource = source;
+
 		await tx
 			.update(sessions)
-			.set({ displayName: trimmed })
+			.set({ displayName: trimmed, metadata })
 			.where(eq(sessions.sessionId, sessionId));
 
 		const managed = await tx
@@ -39,6 +62,67 @@ export async function renameSession(sessionId: string, name: string): Promise<vo
 				})
 				.where(eq(managedSessions.sessionId, sessionId));
 		}
+	});
+}
+
+/**
+ * Pull-only sync (F5, Decision 5/6) of Claude Code's native `session_name`
+ * into `displayName`. Net-new precedence logic (not mirrored from the
+ * Codex relay's push/pull sync, which has no manual-rename guard on its
+ * pull direction — see Decision 6): a native name overwrites the
+ * AgentPulse auto-generated name, but a manual dashboard rename
+ * (`metadata.renameSource === "user"`) always wins.
+ *
+ * `metadata.nativeName` records the most recently *seen* native name from
+ * Claude, updated on every call regardless of outcome — this is what makes
+ * repeat calls with the same name idempotent (a second call recognizes the
+ * name was already seen and no-ops). `metadata.lastAppliedNativeName`
+ * records the value actually *applied* to `displayName`; it is left
+ * untouched when the write is refused, since nothing was applied.
+ *
+ * Returns `{ found: false }` for an unknown session so the route can 404 —
+ * deliberately different from `renameSession`'s silent no-op-on-missing-row
+ * behavior, because the statusline caller needs to distinguish "session not
+ * yet ingested — retry next render" from a successful call.
+ */
+export async function applyNativeName(
+	sessionId: string,
+	nativeName: string,
+): Promise<{ found: boolean; applied: boolean }> {
+	const trimmed = nativeName.trim();
+	return withTransaction(async (tx) => {
+		const [row] = await tx
+			.select({ displayName: sessions.displayName, metadata: sessions.metadata })
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		if (!row) return { found: false, applied: false };
+
+		const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
+		const alreadySeen = metadata.nativeName === trimmed;
+
+		if (metadata.renameSource === "user") {
+			// Manual rename wins. Record that we saw this native name (for
+			// idempotency and so later state-diff logic isn't confused about
+			// whether it was observed), but refuse to apply it.
+			if (alreadySeen) return { found: true, applied: false };
+			metadata.nativeName = trimmed;
+			await tx.update(sessions).set({ metadata }).where(eq(sessions.sessionId, sessionId));
+			return { found: true, applied: false };
+		}
+
+		if (alreadySeen && row.displayName === trimmed) {
+			// No-op: already applied on a prior call, nothing changed.
+			return { found: true, applied: true };
+		}
+
+		metadata.nativeName = trimmed;
+		metadata.lastAppliedNativeName = trimmed;
+		await tx
+			.update(sessions)
+			.set({ displayName: trimmed, metadata })
+			.where(eq(sessions.sessionId, sessionId));
+		return { found: true, applied: true };
 	});
 }
 
