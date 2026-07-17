@@ -142,7 +142,13 @@ function renderBubbleEvent(event: SessionEvent, mode: TimelineMode) {
 			label={eventLabel(event.category)}
 			text={event.content}
 			time={event.createdAt}
-			tone={event.category === "status_update" ? "emerald" : "default"}
+			tone={
+				event.category === "status_update"
+					? "emerald"
+					: event.category === "permission_event"
+						? "amber"
+						: "default"
+			}
 			source={mode === "debug" ? event.source : undefined}
 		/>
 	);

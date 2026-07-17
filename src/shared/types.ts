@@ -588,12 +588,23 @@ export interface SupervisorCapabilities {
 			command: string;
 			resolvedPath: string | null;
 			source: "auto" | "config";
+			/**
+			 * Parsed `claude --version` output, captured at supervisor
+			 * start/registration. `null` when the executable is missing,
+			 * `--version` fails, or output has no recognizable version
+			 * token. Optional so older supervisors registering without
+			 * this field remain valid. Stale until the supervisor
+			 * restarts (not re-captured on every heartbeat).
+			 */
+			binaryVersion?: string | null;
 		};
 		codex?: {
 			available: boolean;
 			command: string;
 			resolvedPath: string | null;
 			source: "auto" | "config";
+			/** Parsed `codex --version` output; see claude.binaryVersion. */
+			binaryVersion?: string | null;
 		};
 	};
 }

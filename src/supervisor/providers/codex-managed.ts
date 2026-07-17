@@ -9,6 +9,35 @@ import {
 
 const runtimes = new Map<string, ManagedCodexRuntime>();
 
+// Log-once per distinct unexpected protocolVersion value so a persistently
+// misbehaving app-server doesn't spam logs across every managed launch.
+// Module-level and independent of other log-once sets in the codebase (see
+// pricing.ts's warnedFallbackModels / event-normalizer.ts's unknown-event set).
+const warnedProtocolVersions = new Set<string>();
+
+/**
+ * Coerce the app-server's `initialize` response into a stored protocol
+ * version string. `initResult.protocolVersion` is untyped wire data — when
+ * it's missing or not a string, warns once per distinct bad value and falls
+ * back to "app-server" (existing behavior). Never throws; the managed
+ * launch must proceed regardless of what the app-server reports.
+ */
+export function resolveProviderProtocolVersion(
+	initResult: Record<string, unknown> | null | undefined,
+): string {
+	const raw = initResult?.protocolVersion;
+	if (typeof raw === "string") return raw;
+
+	const key = raw === undefined ? "undefined" : JSON.stringify(raw);
+	if (!warnedProtocolVersions.has(key)) {
+		warnedProtocolVersions.add(key);
+		console.warn(
+			`[codex-managed] initialize returned unexpected providerProtocolVersion (${key}); falling back to "app-server".`,
+		);
+	}
+	return "app-server";
+}
+
 export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks: LaunchCallbacks) {
 	if (process.env.AGENTPULSE_SUPERVISOR_DRY_RUN === "true") {
 		const threadId = crypto.randomUUID();
@@ -89,8 +118,7 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		providerSessionId: threadId,
 		providerThreadId: threadId,
 		correlationSource: "session_id",
-		providerProtocolVersion:
-			typeof initResult?.protocolVersion === "string" ? initResult.protocolVersion : "app-server",
+		providerProtocolVersion: resolveProviderProtocolVersion(initResult),
 		providerCapabilitySnapshot: initResult,
 		providerSyncState: "pending",
 		metadata: {
@@ -143,8 +171,7 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		client,
 		serverProcess,
 		currentThreadTitle: bootstrap.session.displayName || launch.launchCorrelationId.slice(0, 8),
-		protocolVersion:
-			typeof initResult?.protocolVersion === "string" ? initResult.protocolVersion : "app-server",
+		protocolVersion: resolveProviderProtocolVersion(initResult),
 		activeTurnId: null,
 		intentionalClose: false,
 		syncTitle: async (title: string) => {

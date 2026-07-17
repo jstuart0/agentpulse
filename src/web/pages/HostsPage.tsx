@@ -365,13 +365,37 @@ export function HostsPage() {
 									<div>
 										<div className="text-muted-foreground">Executables</div>
 										<div className="mt-1 text-foreground">
-											<div>
+											<div className="break-all">
 												Claude:{" "}
-												{supervisor.capabilities.executables?.claude?.resolvedPath || "Unavailable"}
+												{supervisor.capabilities.executables?.claude?.resolvedPath ? (
+													<>
+														{supervisor.capabilities.executables.claude.resolvedPath}{" "}
+														<span className="text-muted-foreground">
+															(
+															{supervisor.capabilities.executables.claude.binaryVersion ||
+																"version unknown"}
+															)
+														</span>
+													</>
+												) : (
+													"Unavailable"
+												)}
 											</div>
-											<div>
+											<div className="break-all">
 												Codex:{" "}
-												{supervisor.capabilities.executables?.codex?.resolvedPath || "Unavailable"}
+												{supervisor.capabilities.executables?.codex?.resolvedPath ? (
+													<>
+														{supervisor.capabilities.executables.codex.resolvedPath}{" "}
+														<span className="text-muted-foreground">
+															(
+															{supervisor.capabilities.executables.codex.binaryVersion ||
+																"version unknown"}
+															)
+														</span>
+													</>
+												) : (
+													"Unavailable"
+												)}
 											</div>
 										</div>
 									</div>

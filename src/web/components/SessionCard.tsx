@@ -177,11 +177,18 @@ export function SessionCard({ session, intelligence }: SessionCardProps) {
 							{name}
 						</span>
 					)}
-					{session.isWorking && (
+					{session.semanticStatus === "waiting" ? (
 						<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
 							<span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" />
-							working
+							waiting
 						</span>
+					) : (
+						session.isWorking && (
+							<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
+								<span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" />
+								working
+							</span>
+						)
 					)}
 				</div>
 				<div className="flex items-center gap-1 flex-shrink-0">

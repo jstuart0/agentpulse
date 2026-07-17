@@ -105,6 +105,51 @@ function resolveExecutable(command: string | undefined, fallback: string) {
 	} as const;
 }
 
+const EXECUTABLE_VERSION_TIMEOUT_MS = 2_000;
+const VERSION_TOKEN_PATTERN = /\d+\.\d+\.\d+/;
+
+/**
+ * Spawn `<resolvedPath> --version` and parse a semver-shaped token out of
+ * the first line of stdout. Returns `null` on any failure path (missing
+ * executable, non-zero exit, empty/garbage output, spawn error, or a
+ * timeout past EXECUTABLE_VERSION_TIMEOUT_MS) — never throws, so a broken
+ * host binary can't crash supervisor startup (see withExecutableCapabilities).
+ *
+ * stdout is only read after `proc.exited` resolves successfully (not on
+ * abort/non-zero exit): a version script that shells out to another binary
+ * (e.g. `sleep`) as a genuine child process can leave that child holding the
+ * write end of the stdout pipe open after the parent is killed, so reading
+ * the stream unconditionally would block past the abort until the orphaned
+ * child exits on its own — defeating the timeout.
+ */
+export async function captureExecutableVersion(
+	resolvedPath: string | null,
+): Promise<string | null> {
+	if (!resolvedPath) return null;
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), EXECUTABLE_VERSION_TIMEOUT_MS);
+	try {
+		const proc = Bun.spawn({
+			cmd: [resolvedPath, "--version"],
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "ignore",
+			signal: controller.signal,
+		});
+		const exitCode = await proc.exited;
+		if (controller.signal.aborted || exitCode !== 0) return null;
+		const stdout = await new Response(proc.stdout).text();
+		const firstLine = stdout.split("\n")[0]?.trim() ?? "";
+		const match = firstLine.match(VERSION_TOKEN_PATTERN);
+		return match ? match[0] : null;
+	} catch {
+		return null;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 function detectTerminalSupport(config: SupervisorConfig) {
 	const detected: string[] = [];
 	const preference = config.terminalPreference?.trim();
@@ -152,10 +197,16 @@ function detectInteractiveTerminalControl(os: SupervisorRegistrationInput["capab
 	};
 }
 
-function withExecutableCapabilities(config: SupervisorConfig): SupervisorConfig {
+export async function withExecutableCapabilities(
+	config: SupervisorConfig,
+): Promise<SupervisorConfig> {
 	const claude = resolveExecutable(config.claudeCommand, "claude");
 	const codex = resolveExecutable(config.codexCommand, "codex");
 	const git = resolveExecutable(undefined, "git");
+	const [claudeVersion, codexVersion] = await Promise.all([
+		captureExecutableVersion(claude.resolvedPath),
+		captureExecutableVersion(codex.resolvedPath),
+	]);
 	const terminalSupport = detectTerminalSupport(config);
 	const interactiveTerminalControl = detectInteractiveTerminalControl(currentOs());
 	const launchModes: SupervisorRegistrationInput["capabilities"]["launchModes"] = ["headless"];
@@ -185,12 +236,14 @@ function withExecutableCapabilities(config: SupervisorConfig): SupervisorConfig 
 					command: claude.command,
 					resolvedPath: claude.resolvedPath,
 					source: claude.source,
+					binaryVersion: claudeVersion,
 				},
 				codex: {
 					available: Boolean(codex.resolvedPath),
 					command: codex.command,
 					resolvedPath: codex.resolvedPath,
 					source: codex.source,
+					binaryVersion: codexVersion,
 				},
 			},
 		},
