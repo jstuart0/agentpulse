@@ -9,7 +9,8 @@
  * Uses the real in-memory SQLite DB so the batch query path is exercised end-to-end.
  * Backoff delay is overridden to 0 ms for instant test cycles.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { describeSqliteOnly } from "../../../test-utils/backend.js";
 import "../../../db/__test_db.js";
 
 const { config } = await import("../../../config.js");
@@ -28,44 +29,50 @@ const originalVectorSearch = config.vectorSearchEnabled;
 // other test suites that may run concurrently in the same temp DB.
 const SESSION_ID = "circuit-test-session-embed";
 
-beforeAll(async () => {
-	await initializeDatabase();
-	// Enable vector search for the duration of this suite.
-	// dialect resolves naturally to "sqlite" since DATABASE_URL is unset in tests.
-	(config as Record<string, unknown>).vectorSearchEnabled = true;
-	// Seed parent session once — events FK requires it.
-	await getDb()
-		.insert(sessions)
-		.values({ sessionId: SESSION_ID, agentType: "claude_code" })
-		.onConflictDoNothing();
-	// Use zero-delay backoff for all tests in this file.
-	__setBackfillBackoffForTests(() => 0);
-});
+// event_embeddings is SQLite-only this release (pgvector port deferred, see
+// CLAUDE.md). This suite drives getSqlite() directly (below) and the service
+// under test does too, so it has nothing to exercise on the Postgres backend.
+// The setup/teardown hooks live inside the gate too — a top-level beforeEach
+// would still fire (and crash on getSqlite()) even when the tests themselves
+// are skipped.
+describeSqliteOnly("embedding-service circuit breaker (AGEN-7)", () => {
+	beforeAll(async () => {
+		await initializeDatabase();
+		// Enable vector search for the duration of this suite.
+		// dialect resolves naturally to "sqlite" since DATABASE_URL is unset in tests.
+		(config as Record<string, unknown>).vectorSearchEnabled = true;
+		// Seed parent session once — events FK requires it.
+		await getDb()
+			.insert(sessions)
+			.values({ sessionId: SESSION_ID, agentType: "claude_code" })
+			.onConflictDoNothing();
+		// Use zero-delay backoff for all tests in this file.
+		__setBackfillBackoffForTests(() => 0);
+	});
 
-afterAll(() => {
-	// Restore original config value so other test suites are unaffected.
-	(config as Record<string, unknown>).vectorSearchEnabled = originalVectorSearch;
-	// Restore default backoff so other test suites are unaffected.
-	__setBackfillBackoffForTests((attempt) => Math.min(1_000 * 2 ** (attempt - 1), 30_000));
-	__resetEmbeddingAdapterForTests();
-});
+	afterAll(() => {
+		// Restore original config value so other test suites are unaffected.
+		(config as Record<string, unknown>).vectorSearchEnabled = originalVectorSearch;
+		// Restore default backoff so other test suites are unaffected.
+		__setBackfillBackoffForTests((attempt) => Math.min(1_000 * 2 ** (attempt - 1), 30_000));
+		__resetEmbeddingAdapterForTests();
+	});
 
-beforeEach(async () => {
-	// Clear state between tests.
-	__resetEmbeddingAdapterForTests();
-	getSqlite().exec("DELETE FROM event_embeddings");
-	await getDb().delete(events).execute();
-	// Insert one event so the batch query returns rows and we reach the embed call.
-	await getDb()
-		.insert(events)
-		.values({
-			sessionId: SESSION_ID,
-			eventType: "UserPromptSubmit",
-			rawPayload: { prompt: "hello circuit breaker" },
-		});
-});
+	beforeEach(async () => {
+		// Clear state between tests.
+		__resetEmbeddingAdapterForTests();
+		getSqlite().exec("DELETE FROM event_embeddings");
+		await getDb().delete(events).execute();
+		// Insert one event so the batch query returns rows and we reach the embed call.
+		await getDb()
+			.insert(events)
+			.values({
+				sessionId: SESSION_ID,
+				eventType: "UserPromptSubmit",
+				rawPayload: { prompt: "hello circuit breaker" },
+			});
+	});
 
-describe("embedding-service circuit breaker (AGEN-7)", () => {
 	test("adapter that always throws opens circuit after MAX_CONSECUTIVE_FAILURES attempts", async () => {
 		let callCount = 0;
 		__setEmbeddingAdapterForTests({

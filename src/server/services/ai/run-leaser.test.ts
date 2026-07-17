@@ -13,6 +13,7 @@
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { itSqliteOnly } from "../../test-utils/backend.js";
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
@@ -115,55 +116,66 @@ describe("RunLeaser.drain", () => {
 		expect(processed).toHaveLength(0);
 	});
 
-	test("yield surrenders the event loop between runs (macrotask-starvation fix)", async () => {
-		// Root cause: without the yield, bun:sqlite Promises resolve as microtasks
-		// so the while(true) loop drains the entire queue in one unbroken microtask
-		// burst — a macrotask scheduled before drain starts could only fire AFTER
-		// drain completes, starving timers and I/O.
-		//
-		// Fix: `await new Promise(r => setTimeout(r, 0))` after each processRun
-		// surrenders to the macrotask queue. Because the pre-scheduled macrotask
-		// was enqueued first, it fires before the yield's own resolve — meaning it
-		// fires BETWEEN run-1 and run-2, not after the drain finishes.
-		//
-		// Assertion: macrotaskIdx > runIndices[0]  (fired after first run)
-		//             macrotaskIdx < runIndices[last] (fired before last run)
-		// Without the yield both conditions would fail (macrotask fires last).
+	// SQLite-only: the assertion's premise is that bun:sqlite Promises resolve
+	// as microtasks, so a while(true) loop with no yield would starve a
+	// pre-scheduled macrotask. On Postgres, claimNextRun/processRun already
+	// await real socket I/O, which yields to the event loop on its own —
+	// confirmed by a local repro (Phase 0, F9) where macrotaskIdx came back 0
+	// (fired at/before the first run, not "never fires"). The ordering this
+	// test pins is provably impossible to reproduce on the PG driver, so it's
+	// gated rather than rewritten.
+	itSqliteOnly(
+		"yield surrenders the event loop between runs (macrotask-starvation fix)",
+		async () => {
+			// Root cause: without the yield, bun:sqlite Promises resolve as microtasks
+			// so the while(true) loop drains the entire queue in one unbroken microtask
+			// burst — a macrotask scheduled before drain starts could only fire AFTER
+			// drain completes, starving timers and I/O.
+			//
+			// Fix: `await new Promise(r => setTimeout(r, 0))` after each processRun
+			// surrenders to the macrotask queue. Because the pre-scheduled macrotask
+			// was enqueued first, it fires before the yield's own resolve — meaning it
+			// fires BETWEEN run-1 and run-2, not after the drain finishes.
+			//
+			// Assertion: macrotaskIdx > runIndices[0]  (fired after first run)
+			//             macrotaskIdx < runIndices[last] (fired before last run)
+			// Without the yield both conditions would fail (macrotask fires last).
 
-		await enqueueRun({ sessionId: "rl-s1", triggerKind: "idle" });
-		await enqueueRun({ sessionId: "rl-s2", triggerKind: "idle" });
+			await enqueueRun({ sessionId: "rl-s1", triggerKind: "idle" });
+			await enqueueRun({ sessionId: "rl-s2", triggerKind: "idle" });
 
-		const order: string[] = [];
+			const order: string[] = [];
 
-		// Schedule before drain. With the yield this fires between run-1 and run-2
-		// because: (a) it's already in the macrotask queue when the first yield
-		// schedules its own resolve, and (b) Bun drains the macrotask queue FIFO,
-		// so the pre-scheduled callback wins the next macrotask slot.
-		setTimeout(() => order.push("macrotask"), 0);
+			// Schedule before drain. With the yield this fires between run-1 and run-2
+			// because: (a) it's already in the macrotask queue when the first yield
+			// schedules its own resolve, and (b) Bun drains the macrotask queue FIFO,
+			// so the pre-scheduled callback wins the next macrotask slot.
+			setTimeout(() => order.push("macrotask"), 0);
 
-		const leaser = new RunLeaser({
-			leaseOwner: "test-owner",
-			leaseDurationMs: 10_000,
-			intervalMs: 60_000,
-			shouldRun: async () => true,
-			processRun: async (run) => {
-				order.push(`run-${run.sessionId}`);
-			},
-		});
+			const leaser = new RunLeaser({
+				leaseOwner: "test-owner",
+				leaseDurationMs: 10_000,
+				intervalMs: 60_000,
+				shouldRun: async () => true,
+				processRun: async (run) => {
+					order.push(`run-${run.sessionId}`);
+				},
+			});
 
-		await leaser.drain();
+			await leaser.drain();
 
-		// Both runs must have been processed.
-		const runIndices = order
-			.map((s, i) => ({ s, i }))
-			.filter(({ s }) => s.startsWith("run-"))
-			.map(({ i }) => i);
+			// Both runs must have been processed.
+			const runIndices = order
+				.map((s, i) => ({ s, i }))
+				.filter(({ s }) => s.startsWith("run-"))
+				.map(({ i }) => i);
 
-		expect(runIndices).toHaveLength(2);
+			expect(runIndices).toHaveLength(2);
 
-		// Macrotask must have fired: between first and last run.
-		const macrotaskIdx = order.indexOf("macrotask");
-		expect(macrotaskIdx).toBeGreaterThan(runIndices[0]); // after first run
-		expect(macrotaskIdx).toBeLessThan(runIndices[runIndices.length - 1]); // before last run
-	});
+			// Macrotask must have fired: between first and last run.
+			const macrotaskIdx = order.indexOf("macrotask");
+			expect(macrotaskIdx).toBeGreaterThan(runIndices[0]); // after first run
+			expect(macrotaskIdx).toBeLessThan(runIndices[runIndices.length - 1]); // before last run
+		},
+	);
 });
