@@ -119,6 +119,24 @@ describe("associateObservedSession provenance copy", () => {
 		});
 	});
 
+	test("preserves a concurrent writer's metadata keys (e.g. permissionWait) via the late read-modify-write", async () => {
+		await mkSession("s-permwait", {
+			permissionWait: { ids: ["a"], anon: 0, prevStatus: "implementing" },
+		});
+		await mkLaunchRequest("s-permwait", {
+			metadata: { aiInitiated: true, askThreadId: "thread-permwait" },
+		});
+
+		await associateObservedSession({ sessionId: "s-permwait" });
+
+		const row = await readSession("s-permwait");
+		expect(row?.metadata).toEqual({
+			permissionWait: { ids: ["a"], anon: 0, prevStatus: "implementing" },
+			aiInitiated: true,
+			askThreadId: "thread-permwait",
+		});
+	});
+
 	test("ignores unrelated metadata keys on the launch_request", async () => {
 		await mkSession("s-extra");
 		await mkLaunchRequest("s-extra", {
