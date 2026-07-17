@@ -5,6 +5,20 @@ All notable changes to AgentPulse are documented here. The format is based on
 project is still pre-1.0 — breaking changes land under the regular `Changed`
 section with a `⚠ breaking` prefix so they're easy to spot.
 
+## [Unreleased]
+
+### Changed
+
+- **Codex CLI upgraded 0.142.5 → 0.144.5.** Installed via the global npm
+  package `@openai/codex`, not Homebrew — the CLI is not brew-managed on
+  this install path, correcting an earlier assumption. Post-upgrade smoke
+  checks: `codex --version` reports `0.144.5`; the rollout-file observer's
+  session directory layout (`~/.codex/sessions/YYYY/MM/DD/`) is unchanged
+  and today's rollout files still start with a valid `session_meta` JSON
+  record; `codex app-server --help` still exposes the app-server subcommand
+  and `--listen` flag (exit 0); `~/.codex/config.toml`'s
+  `[features] codex_hooks = true` block is untouched by the upgrade.
+
 ## [0.4.0-pre.2] — 2026-05-05
 
 ### Added
