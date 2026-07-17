@@ -73,6 +73,14 @@ function parseClaudeTranscriptDelta(lines: string[]): NormalizedEvent[] {
 	return events;
 }
 
+// This function and src/supervisor/services/codex-observer.ts's
+// processRolloutFile() both parse Codex rollout files, but with different
+// shapes and for different purposes (assistant-message-only deltas here vs.
+// full hook-event replay there). Consolidating the two parsers is an
+// explicit non-goal this campaign — see "Out of scope" in
+// thoughts/shared/plans/active/2026-07-17-deliver-client-currency-remediation.md.
+// Unknown rollout entry types (including 0.143.0+'s "WorldState" variant)
+// are silently skipped here too, via the `entry.type !== "event_msg"` guard.
 function parseCodexTranscriptDelta(lines: string[]): NormalizedEvent[] {
 	const events: NormalizedEvent[] = [];
 	for (const line of lines) {

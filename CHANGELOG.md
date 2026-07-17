@@ -43,6 +43,41 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   Codex's own HTTP hooks don't fire") is corrected: hooks are the primary
   source since 0.124.0, the observer stays as belt-and-suspenders + backfill.
 
+- **Snippet status-enum parity (F6)** — `snippets/agents-md-snippet.md`'s
+  reported-status enum now matches `snippets/claude-md-snippet.md` and the
+  server's canonical `SEMANTIC_STATUSES`: `researching|implementing|testing|
+  debugging|reviewing|documenting|planning|waiting`. The Codex snippet was
+  missing `reviewing`, `documenting`, and `waiting`. Docs-only — no code
+  reads the enum outside `src/shared/constants.ts` and `StatusBadge.tsx`.
+
+- **Claude native session-name pull sync (F5)** — `scripts/statusline.sh`
+  now reads Claude Code's native `session_name` from the statusline JSON and
+  pushes it into AgentPulse's `displayName` via a new
+  `PUT /api/v1/sessions/:id/native-name` route, fire-and-forget with a 1s
+  timeout and full output redirection so it can never corrupt or slow the
+  rendered statusline. Pull-only in this release — there's no supported way
+  to write a name back into Claude Code's own session store. A manual
+  dashboard rename always wins: renaming a session sets
+  `metadata.renameSource = "user"`, and the native-name route refuses to
+  overwrite a session carrying that flag. The route 404s on an unknown
+  session (a deliberate departure from `/rename`'s silent no-op) so the
+  statusline caller can distinguish "not yet ingested — retry next render."
+  Already-installed statuslines are a manually-copied file and need
+  re-copying to pick up the sync — see the new Statusline section in
+  README.md.
+
+- **Client binary version awareness (F7)** — the supervisor now captures
+  each configured Claude/Codex executable's reported version
+  (`<exe> --version`, ~2s timeout) at registration and exposes it as
+  `capabilities.executables.{claude,codex}.binaryVersion` alongside the
+  existing `resolvedPath`. HostsPage renders it next to the resolved path
+  ("claude 2.1.212 — /path", falling back to "version unknown"). Field is
+  additive and optional — older supervisors registering without it remain
+  valid. Also: `providerProtocolVersion` capture for managed Codex launches
+  now warns once per distinct value when the app-server's `initialize`
+  response omits or malforms `protocolVersion`, instead of silently
+  coercing to `"app-server"`.
+
 ### Changed
 
 - **Codex CLI upgraded 0.142.5 → 0.144.5.** Installed via the global npm
@@ -54,6 +89,24 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   record; `codex app-server --help` still exposes the app-server subcommand
   and `--listen` flag (exit 0); `~/.codex/config.toml`'s
   `[features] codex_hooks = true` block is untouched by the upgrade.
+
+### Removed
+
+- **Dead `turn_id` payload-shape agent-detection fallback (F8)** —
+  `detectAgentType` no longer falls back to inspecting `payload.turn_id`;
+  every Codex producer (observer, setup-generated hooks, relay) has always
+  sent the `X-Agent-Type: codex_cli` header, so the fallback never fired.
+  Detection is now header-only, defaulting to `claude_code` when the header
+  is absent or unrecognized. The now-unused `turn_id?` field is removed
+  from `HookEventPayload` and the observer's local `HookPayload` type.
+
+This closes out the client-currency remediation campaign (F1–F9): Codex CLI
+upgraded to 0.144.5, pricing table covers Claude 5 / gpt-5 / o-series models
+with a safer fallback rate, Claude and Codex hook-event lists are current
+(16 and 10 events respectively) with a permission-wait dashboard signal and
+a drift guard protecting parity going forward, snippet status enums match,
+Claude's native session name pulls into the dashboard, client binary
+versions surface on HostsPage, and the Postgres CI job is green.
 
 ## [0.4.0-pre.2] — 2026-05-05
 

@@ -192,16 +192,18 @@ export async function insertNormalizedEvents(
 	}));
 }
 
-// Detect agent type from headers or payload
+// Detect agent type from the X-Agent-Type header. The payload argument is
+// kept for call-site stability; no field on it is currently consulted.
 export function detectAgentType(
 	headerAgentType: string | undefined,
-	payload: HookEventPayload,
+	_payload: HookEventPayload,
 ): AgentType {
 	if (headerAgentType === "claude_code") return "claude_code";
 	if (headerAgentType === "codex_cli") return "codex_cli";
 
-	// Auto-detect: Codex payloads include turn_id, Claude Code doesn't
-	if (payload.turn_id) return "codex_cli";
+	// No recognized X-Agent-Type header: default to claude_code. Every
+	// producer (Claude settings.json, Codex hooks.json, relay, observer)
+	// sends the header, so this default is not reached in practice.
 	return "claude_code";
 }
 

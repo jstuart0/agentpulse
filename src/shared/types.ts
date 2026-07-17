@@ -225,7 +225,6 @@ export interface HookEventPayload {
 	tool_use_id?: string;
 
 	// Codex-specific
-	turn_id?: string;
 	model?: string;
 	last_assistant_message?: string;
 

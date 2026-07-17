@@ -3,7 +3,9 @@ import "./ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
 const { events, sessions } = await import("../db/schema/index.js");
-const { processHookEvent, applyPermissionWaitTransition } = await import("./event-processor.js");
+const { processHookEvent, applyPermissionWaitTransition, detectAgentType } = await import(
+	"./event-processor.js"
+);
 const { eq } = await import("drizzle-orm");
 
 import type { HookEventPayload, SemanticStatus } from "../../shared/types.js";
@@ -439,6 +441,24 @@ describe("applyPermissionWaitTransition — no-op cheapness, unconditional invoc
 			expect(row?.metadata).toEqual({ untouched: true });
 		});
 	}
+});
+
+describe("detectAgentType — header-only detection (F8, Decision 7)", () => {
+	test("X-Agent-Type: claude_code header wins regardless of payload shape", () => {
+		expect(detectAgentType("claude_code", hookPayload({}))).toBe("claude_code");
+	});
+
+	test("X-Agent-Type: codex_cli header wins regardless of payload shape", () => {
+		expect(detectAgentType("codex_cli", hookPayload({}))).toBe("codex_cli");
+	});
+
+	test("missing header defaults to claude_code, with no payload-shape fallback", () => {
+		expect(detectAgentType(undefined, hookPayload({}))).toBe("claude_code");
+	});
+
+	test("missing header defaults to claude_code even with an unrecognized header value", () => {
+		expect(detectAgentType("something_else", hookPayload({}))).toBe("claude_code");
+	});
 });
 
 describe("applyPermissionWaitTransition — prior status null/unset at the 0→1 transition", () => {

@@ -69,7 +69,6 @@ type HookPayload = {
 	tool_response?: unknown;
 	last_assistant_message?: string;
 	prompt?: string;
-	turn_id?: string;
 };
 
 async function postHook(serverUrl: string, apiKey: string | null, payload: HookPayload) {
@@ -149,6 +148,21 @@ async function processRolloutFile(
 
 	let sessionId = stateEntry?.sessionId ?? "";
 
+	// Rollout lines whose `type` isn't one of the cases handled below fall
+	// through silently and are skipped. This is intentional forward-compat:
+	// Codex 0.143.0+ introduced a "WorldState" rollout record variant (a
+	// point-in-time filesystem/context snapshot, not an event stream item),
+	// and future unknown RolloutItem variants are expected on the same
+	// additive-but-unversioned upstream format. Skipping unknown variants
+	// keeps this observer forward-compatible without an upstream schema
+	// version to key off of; there is nothing here for us to normalize.
+	//
+	// This function and src/server/services/transcript-sync.ts's
+	// parseCodexTranscriptDelta() both parse Codex rollout files, but with
+	// different shapes and for different purposes (full hook-event replay
+	// here vs. assistant-message-only deltas there). Consolidating the two
+	// parsers is an explicit non-goal this campaign — see "Out of scope" in
+	// thoughts/shared/plans/active/2026-07-17-deliver-client-currency-remediation.md.
 	for (const line of completeLines) {
 		if (!line.trim()) continue;
 		let entry: { type?: string; payload?: Record<string, unknown> };

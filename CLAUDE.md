@@ -93,7 +93,7 @@ bun run test:watch       # Run tests in watch mode
 - `src/supervisor/` - Local supervisor process (launch/control plane for same-machine sessions)
 - `deploy/k8s/` - Kubernetes manifests (namespace, secret template, configmap, PVC, deployment, service, middleware, ingressroute, limitrange, resourcequota, networkpolicy, serviceaccount, backup PVC)
 - `deploy/overlays/postgres/` - Kustomize overlay for Postgres-backed deployments (removes backup sidecar, sets `DATABASE_URL`, switches to `RollingUpdate`)
-- `scripts/` - setup-hooks.sh, setup-relay.sh, relay.ts, statusline.sh, install-local.sh, install-local.ps1, build-and-push.sh, check-installers.ts, smoke-parsers.ts, ai-live-test.ts, and architecture guard scripts
+- `scripts/` - setup-hooks.sh, setup-relay.sh, relay.ts, statusline.sh, install-local.sh, install-local.ps1, build-and-push.sh, check-installers.ts, check-hook-event-parity.ts, smoke-parsers.ts, ai-live-test.ts, and architecture guard scripts
 - `snippets/` - CLAUDE.md/AGENTS.md snippets for semantic status reporting
 - `telemetry-worker/` - Cloudflare Worker for anonymous telemetry collection
 - `thoughts/` - Research, plans, and architecture decisions (gitignored in OSS commits; present in local working tree)
@@ -190,7 +190,8 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - `GET /api/v1/search?kinds=session&q=` - Search sessions/events (FTS5-backed)
 - `GET /api/v1/sessions/:id` - Session detail with prompt timeline
 - `PUT /api/v1/sessions/:id/notes` - Save session notes
-- `PUT /api/v1/sessions/:id/rename` - Rename session
+- `PUT /api/v1/sessions/:id/rename` - Rename session (accepts optional `source` body field, default `"user"`; a manual rename records `metadata.renameSource = "user"`, which blocks a later native-name pull from overwriting it)
+- `PUT /api/v1/sessions/:id/native-name` - Pull-only sync (F5) of Claude Code's native session name into `displayName`; called by `scripts/statusline.sh`. 404s on an unknown session (retry-next-render signal for the statusline caller); refuses to overwrite a manually-renamed session
 - `PUT /api/v1/sessions/:id/pin` - Toggle pin
 - `PUT /api/v1/sessions/:id/archive` - Archive session
 - `DELETE /api/v1/sessions/:id` - Delete session + events
@@ -213,6 +214,9 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - DB migrations: SQLite fresh installs and all Postgres installs use Drizzle migrate (baselines in `drizzle/sqlite/` and `drizzle/postgres/`). Existing SQLite installs use the legacy `initializeDatabase()` path unless `AGENTPULSE_LEGACY_INIT=false`. Schema changes must generate two migrations in lockstep: `bun run db:generate:sqlite` and `bun run db:generate:postgres`.
 - isWorking toggles on UserPromptSubmit/PreToolUse (true) and Stop (false)
 - Timeline shows only UserPromptSubmit events — this filter is applied **client-side** in the session detail UI, not server-side. The API returns all events for a session; the timeline component selects the subset to display.
+- `EventCategory` (`src/shared/types.ts`) includes `permission_event` for `PermissionRequest`/`PermissionDenied` — a first-class category, not the generic `system_event` else-branch, so the inbox/alert-rules can query them without content-string matching.
+- Permission-wait visibility: a session blocked on a permission prompt shows `semanticStatus = "waiting"` on the dashboard. State lives in `sessions.metadata.permissionWait` as `{ ids, anon, prevStatus }` (tool_use_id-keyed outstanding waits, anonymous fallback count, and the status to restore once all waits clear). Mutated by `applyPermissionWaitTransition` (`event-processor.ts`) via a late read-modify-write inside `withTransaction`, invoked unconditionally on `PermissionRequest` and every clear-capable event (`PermissionDenied`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SessionStart`). Ordering is best-effort and self-healing within one subsequent same-session boundary event, never restoring a stale `prevStatus` over a newer agent-reported status. See the plan's Decision 10 for the full state model.
+- Hook-event lists must stay in parity across **7 code sites + README** per agent (Claude: `scripts/setup-hooks.sh`, `scripts/setup-relay.sh`, both embedded templates in `src/server/routes/setup.ts`, `scripts/install-local.ps1`, `bin/cli.ts`, `src/web/pages/SetupPage.tsx`'s in-app "Copy Config" ternary, `src/shared/types.ts`'s `ClaudeCodeEvent`/`CodexEvent` unions, and `README.md`'s prose counts) — change all or run `bun run check:hook-event-parity` (chained into `check:architecture`, `scripts/check-hook-event-parity.ts`) as the drift guard.
 
 ## Deployment
 
