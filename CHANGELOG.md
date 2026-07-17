@@ -5,7 +5,12 @@ All notable changes to AgentPulse are documented here. The format is based on
 project is still pre-1.0 — breaking changes land under the regular `Changed`
 section with a `⚠ breaking` prefix so they're easy to spot.
 
-## [Unreleased]
+## [0.5.0] — 2026-07-17
+
+Client-currency release: brings AgentPulse fully current with Claude Code
+2.1.212 and Codex CLI 0.144.5 (audit F1–F9), adds permission-wait visibility,
+Claude native session-name sync, per-host client versions, and a permanent
+hook-event parity guard.
 
 ### Added
 
