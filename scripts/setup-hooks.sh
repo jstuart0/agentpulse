@@ -64,7 +64,7 @@ if [[ "$AGENT_TYPE" == "claude_code" ]]; then
   echo "Configuring Claude Code hooks..."
 
   # Events to hook
-  EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit")
+  EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit" "PermissionRequest" "PermissionDenied" "Notification" "PreCompact" "PostCompact" "PostToolUseFailure")
 
   # Build the hooks JSON object
   HOOKS_JSON="{"

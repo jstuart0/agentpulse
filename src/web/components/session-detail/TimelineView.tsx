@@ -188,6 +188,8 @@ export function eventLabel(category: EventCategory | null): string {
 			return "Tool";
 		case "system_event":
 			return "System";
+		case "permission_event":
+			return "Permission";
 		case "ai_proposal_pending":
 			return "AI Proposal Pending";
 		case "ai_proposal":
@@ -226,6 +228,7 @@ function getBaseCategories(mode: TimelineMode): Set<EventCategory> {
 				"plan_update",
 				"status_update",
 				"system_event",
+				"permission_event",
 			]);
 		case "terminal":
 			return new Set([
@@ -236,6 +239,7 @@ function getBaseCategories(mode: TimelineMode): Set<EventCategory> {
 				"status_update",
 				"tool_event",
 				"system_event",
+				"permission_event",
 			]);
 		case "debug":
 			return new Set([
@@ -246,6 +250,7 @@ function getBaseCategories(mode: TimelineMode): Set<EventCategory> {
 				"status_update",
 				"tool_event",
 				"system_event",
+				"permission_event",
 			]);
 	}
 }

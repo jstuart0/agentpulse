@@ -49,7 +49,7 @@ CLAUDE_DIR="\$HOME/.claude"
 CLAUDE_SETTINGS="\$CLAUDE_DIR/settings.json"
 mkdir -p "\$CLAUDE_DIR"
 
-EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit")
+EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit" "PermissionRequest" "PermissionDenied" "Notification" "PreCompact" "PostCompact" "PostToolUseFailure")
 
 HOOKS_JSON="{"
 for i in "\${!EVENTS[@]}"; do
@@ -561,7 +561,7 @@ CLAUDE_DIR="\$HOME/.claude"
 CLAUDE_SETTINGS="\$CLAUDE_DIR/settings.json"
 mkdir -p "\$CLAUDE_DIR"
 
-EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit")
+EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit" "PermissionRequest" "PermissionDenied" "Notification" "PreCompact" "PostCompact" "PostToolUseFailure")
 HOOKS_JSON="{"
 for i in "\${!EVENTS[@]}"; do
   [[ \$i -gt 0 ]] && HOOKS_JSON+=","

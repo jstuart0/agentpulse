@@ -128,7 +128,7 @@ function Configure-Hooks {
   if (-not $claudeData.ContainsKey("hooks")) {
     $claudeData["hooks"] = @{}
   }
-  foreach ($eventName in @("SessionStart","SessionEnd","PreToolUse","PostToolUse","Stop","SubagentStart","SubagentStop","TaskCreated","TaskCompleted","UserPromptSubmit")) {
+  foreach ($eventName in @("SessionStart","SessionEnd","PreToolUse","PostToolUse","Stop","SubagentStart","SubagentStop","TaskCreated","TaskCompleted","UserPromptSubmit","PermissionRequest","PermissionDenied","Notification","PreCompact","PostCompact","PostToolUseFailure")) {
     $hook = @{
       matcher = ""
       hooks = @(@{

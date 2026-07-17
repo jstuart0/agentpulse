@@ -2,6 +2,7 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, sessions } from "../db/schema/index.js";
+import { withTransaction } from "../db/with-transaction.js";
 import { applyAskInitiatedWatcher } from "./ai/auto-watcher.js";
 import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import { markSessionFailed } from "./event-processor.js";
@@ -61,25 +62,31 @@ async function applyLaunchProvenanceToSession(
 	}
 	if (Object.keys(provenance).length === 0) return;
 
-	const [row] = await getDb()
-		.select({ metadata: sessions.metadata })
-		.from(sessions)
-		.where(eq(sessions.sessionId, sessionId))
-		.limit(1);
-	if (!row) return;
+	// Late read-modify-write inside a transaction: re-read metadata
+	// immediately before writing so a concurrent writer's keys (e.g.
+	// applyPermissionWaitTransition's permissionWait) aren't clobbered by a
+	// stale early snapshot. Same pattern and honesty level as Decision 10.
+	await withTransaction(async (tx) => {
+		const [row] = await tx
+			.select({ metadata: sessions.metadata })
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		if (!row) return;
 
-	const existing = (row.metadata as Record<string, unknown> | null) ?? {};
-	let changed = false;
-	const merged: Record<string, unknown> = { ...existing };
-	for (const [k, v] of Object.entries(provenance)) {
-		if (existing[k] === undefined) {
-			merged[k] = v;
-			changed = true;
+		const existing = (row.metadata as Record<string, unknown> | null) ?? {};
+		let changed = false;
+		const merged: Record<string, unknown> = { ...existing };
+		for (const [k, v] of Object.entries(provenance)) {
+			if (existing[k] === undefined) {
+				merged[k] = v;
+				changed = true;
+			}
 		}
-	}
-	if (!changed) return;
+		if (!changed) return;
 
-	await getDb().update(sessions).set({ metadata: merged }).where(eq(sessions.sessionId, sessionId));
+		await tx.update(sessions).set({ metadata: merged }).where(eq(sessions.sessionId, sessionId));
+	});
 }
 
 function nowIso() {

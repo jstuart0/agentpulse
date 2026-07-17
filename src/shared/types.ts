@@ -185,7 +185,13 @@ export type ClaudeCodeEvent =
 	| "SubagentStop"
 	| "TaskCreated"
 	| "TaskCompleted"
-	| "UserPromptSubmit";
+	| "UserPromptSubmit"
+	| "PermissionRequest"
+	| "PermissionDenied"
+	| "Notification"
+	| "PreCompact"
+	| "PostCompact"
+	| "PostToolUseFailure";
 
 // Hook event types from Codex CLI
 export type CodexEvent =
@@ -229,6 +235,12 @@ export interface HookEventPayload {
 	// Session events
 	source?: string;
 	prompt?: string;
+
+	// Notification events
+	message?: string;
+
+	// Compaction events (PreCompact/PostCompact)
+	trigger?: string;
 }
 
 // Semantic status update from CLAUDE.md snippet
@@ -247,6 +259,7 @@ export type EventCategory =
 	| "tool_event"
 	| "status_update"
 	| "system_event"
+	| "permission_event"
 	// AI watcher categories (only present when the AI feature is enabled)
 	| "ai_proposal_pending"
 	| "ai_proposal"

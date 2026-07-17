@@ -8,6 +8,7 @@ import type {
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
+import { withTransaction } from "../db/with-transaction.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { generateSessionName } from "./name-generator.js";
 
@@ -77,12 +78,6 @@ export async function upsertManagedSessionState(
 
 	if (input.cwd !== undefined) sessionUpdates.cwd = input.cwd;
 	if (input.model !== undefined) sessionUpdates.model = input.model;
-	if (input.metadata) {
-		sessionUpdates.metadata = {
-			...(existingSession?.metadata ?? {}),
-			...input.metadata,
-		};
-	}
 
 	if (!existingSession) {
 		await getDb()
@@ -99,10 +94,26 @@ export async function upsertManagedSessionState(
 				metadata: input.metadata ?? {},
 			});
 	} else {
-		await getDb()
-			.update(sessions)
-			.set(sessionUpdates)
-			.where(eq(sessions.sessionId, input.sessionId));
+		await withTransaction(async (tx) => {
+			const updates: Record<string, unknown> = { ...sessionUpdates };
+			if (input.metadata) {
+				// Late read-modify-write inside the transaction: re-read metadata
+				// immediately before writing so a concurrent writer's keys (e.g.
+				// applyPermissionWaitTransition's permissionWait) aren't clobbered
+				// by the early `existingSession` snapshot read at the top of this
+				// function. Same pattern and honesty level as Decision 10.
+				const [fresh] = await tx
+					.select({ metadata: sessions.metadata })
+					.from(sessions)
+					.where(eq(sessions.sessionId, input.sessionId))
+					.limit(1);
+				updates.metadata = {
+					...(fresh?.metadata ?? {}),
+					...input.metadata,
+				};
+			}
+			await tx.update(sessions).set(updates).where(eq(sessions.sessionId, input.sessionId));
+		});
 	}
 
 	const [currentSession] = await getDb()

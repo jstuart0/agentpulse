@@ -36,7 +36,8 @@
 		"check:no-bun-sqlite-only-apis": "bun scripts/check-no-bun-sqlite-only-apis.ts",
 		"check:no-legacy-schema-import": "bun scripts/check-no-legacy-schema-import.ts",
 		"check:no-authentik-literals": "bun scripts/check-no-authentik-literals.ts",
-		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals"
+		"check:hook-event-parity": "bun scripts/check-hook-event-parity.ts",
+		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity"
 	},
 	"dependencies": {
 		"@codemirror/lang-markdown": "^6.3.1",

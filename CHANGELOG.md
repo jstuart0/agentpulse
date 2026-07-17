@@ -7,6 +7,23 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Added
+
+- **Claude Code hook refresh (F4)** — six new hook events registered across
+  every wiring site: `PermissionRequest`, `PermissionDenied`, `Notification`,
+  `PreCompact`, `PostCompact`, `PostToolUseFailure` (10 → 16 total events).
+  Permission events land under a new `permission_event` category, distinct
+  from the silent `system_event` else-branch; compaction and notification
+  events stay `system_event`. A session blocked on a permission prompt now
+  visibly flips to the existing `"waiting"` semantic status and reverts once
+  resolved (state tracked in `sessions.metadata.permissionWait`, correlated
+  by `tool_use_id` with an anonymous-count fallback — see Decision 10 in the
+  client-currency remediation plan for the full concurrency model). Unknown
+  hook event names now log once per distinct name instead of silently
+  dropping content. New architecture guard `check:hook-event-parity`
+  (wired into `check:architecture`) fails CI if any of the seven Claude/Codex
+  wiring-site event lists drift from the `src/shared/types.ts` unions.
+
 ### Changed
 
 - **Codex CLI upgraded 0.142.5 → 0.144.5.** Installed via the global npm

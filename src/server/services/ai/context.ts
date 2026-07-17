@@ -240,6 +240,8 @@ function renderEventLine(event: SessionEvent): string {
 				: "";
 		case "system_event":
 			return event.content ? `[${t}] SYSTEM: ${truncate(event.content, 120)}` : "";
+		case "permission_event":
+			return event.content ? `[${t}] PERMISSION: ${truncate(event.content, 160)}` : "";
 		// AI watcher categories — render a one-line trace so the classifier
 		// has visibility into prior watcher activity. Listed explicitly so
 		// the `never` guard below catches new EventCategory members at

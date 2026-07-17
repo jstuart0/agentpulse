@@ -62,8 +62,25 @@ function formatToolContent(eventType: string, toolName: string | undefined): str
 	if (!toolName) return null;
 	if (eventType === "PreToolUse") return `Running ${toolName}`;
 	if (eventType === "PostToolUse") return `Completed ${toolName}`;
+	if (eventType === "PostToolUseFailure") return `Failed: ${toolName}`;
 	return null;
 }
+
+function formatPermissionContent(
+	eventType: "PermissionRequest" | "PermissionDenied",
+	toolName: string | undefined,
+): string {
+	const name = toolName || "a tool";
+	return eventType === "PermissionRequest"
+		? `Permission requested: ${name}`
+		: `Permission denied: ${name}`;
+}
+
+// Log-once per unknown hook event name so the tolerant else-branch (F4)
+// is visible without spamming logs. Module-level and independent of any
+// other log-once set in the codebase (e.g. the pricing fallback set) —
+// deliberately not shared via a helper.
+const warnedUnknownEvents = new Set<string>();
 
 function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): string | null {
 	switch (payload.hook_event_name) {
@@ -81,7 +98,23 @@ function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): 
 			return payload.agent_id ? `Subagent stopped: ${payload.agent_id}` : "Subagent stopped";
 		case "Stop":
 			return "Turn completed";
+		case "Notification":
+			return payload.message ? payload.message : "Notification";
+		case "PreCompact":
+			return payload.trigger
+				? `Context compaction started (${payload.trigger})`
+				: "Context compaction started";
+		case "PostCompact":
+			return payload.trigger
+				? `Context compaction completed (${payload.trigger})`
+				: "Context compaction completed";
 		default:
+			if (!warnedUnknownEvents.has(payload.hook_event_name)) {
+				warnedUnknownEvents.add(payload.hook_event_name);
+				console.warn(
+					JSON.stringify({ kind: "unknown_hook_event", eventName: payload.hook_event_name }),
+				);
+			}
 			return null;
 	}
 }
@@ -107,13 +140,30 @@ export function normalizeHookEvent(
 			toolResponse,
 			rawPayload: payload as unknown as Record<string, unknown>,
 		});
-	} else if (eventType === "PreToolUse" || eventType === "PostToolUse") {
+	} else if (
+		eventType === "PreToolUse" ||
+		eventType === "PostToolUse" ||
+		eventType === "PostToolUseFailure"
+	) {
 		normalized.push({
 			eventType,
 			category: "tool_event",
 			source: "observed_hook",
 			content: formatToolContent(eventType, payload.tool_name),
 			isNoise: isNoisyTool(payload.tool_name, payload),
+			providerEventType: eventType,
+			toolName: payload.tool_name || null,
+			toolInput: payload.tool_input || null,
+			toolResponse,
+			rawPayload: payload as unknown as Record<string, unknown>,
+		});
+	} else if (eventType === "PermissionRequest" || eventType === "PermissionDenied") {
+		normalized.push({
+			eventType,
+			category: "permission_event",
+			source: "observed_hook",
+			content: formatPermissionContent(eventType, payload.tool_name),
+			isNoise: false,
 			providerEventType: eventType,
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,

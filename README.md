@@ -473,7 +473,7 @@ Telemetry classification defaults:
 
 Running `curl -sSL .../setup.sh | bash` configures:
 
-1. **Claude Code** -- adds HTTP hooks to `~/.claude/settings.json` for 10 events (SessionStart, Stop, PreToolUse, PostToolUse, etc.)
+1. **Claude Code** -- adds HTTP hooks to `~/.claude/settings.json` for 16 events (SessionStart, Stop, PreToolUse, PostToolUse, PermissionRequest, PreCompact, etc.)
 2. **Codex CLI** -- creates `~/.codex/hooks.json` with 5 events and enables the hooks feature flag in `config.toml`
 3. **Shell** -- adds `AGENTPULSE_API_KEY` and `AGENTPULSE_URL` to your `.zshrc` or `.bashrc` (if API key provided)
 4. **Verify** -- sends a test event to confirm connectivity

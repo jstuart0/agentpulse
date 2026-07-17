@@ -75,6 +75,12 @@ export function SetupPage() {
 					"TaskCreated",
 					"TaskCompleted",
 					"UserPromptSubmit",
+					"PermissionRequest",
+					"PermissionDenied",
+					"Notification",
+					"PreCompact",
+					"PostCompact",
+					"PostToolUseFailure",
 				]
 			: ["SessionStart", "PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"];
 

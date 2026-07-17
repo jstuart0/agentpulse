@@ -89,6 +89,12 @@ async function setup() {
 		"TaskCreated",
 		"TaskCompleted",
 		"UserPromptSubmit",
+		"PermissionRequest",
+		"PermissionDenied",
+		"Notification",
+		"PreCompact",
+		"PostCompact",
+		"PostToolUseFailure",
 	];
 
 	const hooks: Record<string, unknown[]> = {};
