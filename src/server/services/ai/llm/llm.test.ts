@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createAnthropicAdapter } from "./anthropic.js";
 import { createCohereAdapter } from "./cohere.js";
 import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
@@ -216,8 +216,213 @@ describe("pricing", () => {
 			outputTokens: 1_000_000,
 			estimated: false,
 		});
-		// default 50c + 200c = 250c
-		expect(cents).toBe(250);
+		// Decision 1: fallback raised to sonnet-class 300c/1500c.
+		// 1M * 300c/1M + 1M * 1500c/1M = 300 + 1500 = 1800c
+		expect(cents).toBe(1800);
+	});
+
+	test("fallback rate applies Decision 1's raised input rate", () => {
+		const cents = priceCompletion("openai", "some-brand-new-unlisted-model", {
+			inputTokens: 1_000_000,
+			outputTokens: 0,
+			estimated: false,
+		});
+		expect(cents).toBe(300);
+	});
+
+	test("fallback rate includes cache-read pricing for unmatched models", () => {
+		const cents = priceCompletion("openai", "yet-another-unlisted-model", {
+			inputTokens: 1_000_000,
+			outputTokens: 0,
+			cacheReadTokens: 500_000,
+			estimated: false,
+		});
+		// billed input 500k * 300c/1M + cached 500k * 30c/1M = 150 + 15 = 165c
+		expect(cents).toBe(165);
+	});
+
+	test("logs fallback pricing exactly once per unmatched model name", () => {
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			priceCompletion("openai", "log-once-model-a", {
+				inputTokens: 1000,
+				outputTokens: 0,
+				estimated: false,
+			});
+			priceCompletion("openai", "log-once-model-a", {
+				inputTokens: 1000,
+				outputTokens: 0,
+				estimated: false,
+			});
+			expect(warnSpy).toHaveBeenCalledTimes(1);
+
+			priceCompletion("openai", "log-once-model-b", {
+				inputTokens: 1000,
+				outputTokens: 0,
+				estimated: false,
+			});
+			expect(warnSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
+	test("returns zero cost for zero tokens on a matched rate", () => {
+		const cents = priceCompletion("anthropic", "claude-sonnet-4-6", {
+			inputTokens: 0,
+			outputTokens: 0,
+			estimated: false,
+		});
+		expect(cents).toBe(0);
+	});
+
+	test("returns zero cost for zero tokens on the fallback rate", () => {
+		const cents = priceCompletion("openai", "zero-token-unlisted-model", {
+			inputTokens: 0,
+			outputTokens: 0,
+			estimated: false,
+		});
+		expect(cents).toBe(0);
+	});
+
+	test("clamps billed input at zero when cacheReadTokens exceeds inputTokens", () => {
+		const cents = priceCompletion("anthropic", "claude-sonnet-4-6", {
+			inputTokens: 100,
+			outputTokens: 0,
+			cacheReadTokens: 1_000_000,
+			estimated: false,
+		});
+		// cache-only cost: 1_000_000 * 30c/1M = 30c. Malformed usage (more cache
+		// reads reported than input tokens) must not discount below that floor.
+		expect(cents).toBe(30);
+	});
+
+	test("charges claude-sonnet-5 at its own coded rate, not by falling through to fallback", () => {
+		// FALLBACK_RATE is numerically identical to sonnet-5's coded rate
+		// (both {300,1500,30}), so the literal-cents assertion alone can't
+		// distinguish a matched /^claude-sonnet-5/ from a typo'd regex that
+		// silently falls through — the warn spy is the only black-box signal
+		// that separates the two.
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const cents = priceCompletion("anthropic", "claude-sonnet-5", {
+				inputTokens: 1_000_000,
+				outputTokens: 200_000,
+				estimated: false,
+			});
+			// sonnet-4.5 list price carried forward: 1M*300c + 200k*1500c/1M = 300+300 = 600c
+			expect(cents).toBe(600);
+			expect(warnSpy).not.toHaveBeenCalled();
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
+	test("charges claude-fable-5 at its own coded rate, not the fallback", () => {
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const cents = priceCompletion("anthropic", "claude-fable-5", {
+				inputTokens: 1_000_000,
+				outputTokens: 200_000,
+				estimated: false,
+			});
+			// conservative opus-class rate (Decision 2, unverified 2026-07-17):
+			// 1M*1500c + 200k*7500c/1M = 1500+1500 = 3000c
+			expect(cents).toBe(3000);
+			expect(cents).not.toBe(600); // must not silently fall through to the fallback/sonnet rate
+			expect(warnSpy).not.toHaveBeenCalled();
+		} finally {
+			warnSpy.mockRestore();
+		}
+	});
+
+	test("orders claude-haiku-4-5 before the haiku-4 prefix pattern", () => {
+		const cents = priceCompletion("anthropic", "claude-haiku-4-5", {
+			inputTokens: 1_000_000,
+			outputTokens: 0,
+			estimated: false,
+		});
+		// haiku-4-5 rate (100c), not haiku-4's prefix-matched 80c
+		expect(cents).toBe(100);
+	});
+
+	test("orders a dated claude-haiku-4-5 successor before the haiku-4 prefix pattern", () => {
+		const cents = priceCompletion("anthropic", "claude-haiku-4-5-20260115", {
+			inputTokens: 1_000_000,
+			outputTokens: 0,
+			estimated: false,
+		});
+		expect(cents).toBe(100);
+	});
+
+	test("still charges plain claude-haiku-4 at the unchanged haiku-4 rate", () => {
+		const cents = priceCompletion("anthropic", "claude-haiku-4-1-20250101", {
+			inputTokens: 1_000_000,
+			outputTokens: 0,
+			estimated: false,
+		});
+		expect(cents).toBe(80);
+	});
+
+	test("charges gpt-5-nano at its own coded rate", () => {
+		const cents = priceCompletion("openai", "gpt-5-nano", {
+			inputTokens: 1_000_000,
+			outputTokens: 1_000_000,
+			estimated: false,
+		});
+		// 1M*5c/1M + 1M*40c/1M = 5+40 = 45c
+		expect(cents).toBe(45);
+	});
+
+	test("charges gpt-5-mini at its own coded rate, not the generic gpt-5 rate", () => {
+		const cents = priceCompletion("openai", "gpt-5-mini", {
+			inputTokens: 1_000_000,
+			outputTokens: 1_000_000,
+			estimated: false,
+		});
+		// 1M*25c/1M + 1M*200c/1M = 25+200 = 225c
+		expect(cents).toBe(225);
+		expect(cents).not.toBe(1125); // the generic gpt-5 rate, if mini fell through
+	});
+
+	test("charges the generic gpt-5 rate for bare gpt-5", () => {
+		const cents = priceCompletion("openai", "gpt-5", {
+			inputTokens: 1_000_000,
+			outputTokens: 1_000_000,
+			estimated: false,
+		});
+		// 1M*125c/1M + 1M*1000c/1M = 125+1000 = 1125c
+		expect(cents).toBe(1125);
+	});
+
+	test("charges o4-mini at its own coded rate", () => {
+		const cents = priceCompletion("openai", "o4-mini", {
+			inputTokens: 1_000_000,
+			outputTokens: 1_000_000,
+			estimated: false,
+		});
+		// 1M*110c/1M + 1M*440c/1M = 110+440 = 550c
+		expect(cents).toBe(550);
+	});
+
+	test("charges o3-mini at its own coded rate, not the generic o3 rate", () => {
+		const cents = priceCompletion("openai", "o3-mini", {
+			inputTokens: 1_000_000,
+			outputTokens: 1_000_000,
+			estimated: false,
+		});
+		expect(cents).toBe(550);
+		expect(cents).not.toBe(1000); // the generic o3 rate, if o3-mini fell through
+	});
+
+	test("charges the generic o3 rate for bare o3", () => {
+		const cents = priceCompletion("openai", "o3", {
+			inputTokens: 1_000_000,
+			outputTokens: 1_000_000,
+			estimated: false,
+		});
+		// 1M*200c/1M + 1M*800c/1M = 200+800 = 1000c
+		expect(cents).toBe(1000);
 	});
 
 	test("charges cohere command-r at flash-tier rates", () => {
