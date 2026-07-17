@@ -103,7 +103,7 @@ if [[ "$AGENT_TYPE" == "claude_code" ]]; then
 
 elif [[ "$AGENT_TYPE" == "codex_cli" ]]; then
   HOOKS_FILE="$HOME/.codex/hooks.json"
-  EVENTS=("SessionStart" "PreToolUse" "PostToolUse" "UserPromptSubmit" "Stop")
+  EVENTS=("SessionStart" "PreToolUse" "PostToolUse" "UserPromptSubmit" "Stop" "SubagentStart" "SubagentStop" "PermissionRequest" "PreCompact" "PostCompact")
 
   echo "Configuring Codex CLI hooks..."
 
@@ -120,7 +120,10 @@ elif [[ "$AGENT_TYPE" == "codex_cli" ]]; then
   mkdir -p "$HOME/.codex"
   echo "{\"hooks\":$HOOKS_ARRAY}" | python3 -m json.tool > "$HOOKS_FILE" 2>/dev/null || echo "{\"hooks\":$HOOKS_ARRAY}" > "$HOOKS_FILE"
 
-  # Enable hooks feature flag in config.toml
+  # Hooks are stable and enabled by default since codex-cli 0.124.0;
+  # `codex_hooks` is a recognized legacy alias for the `hooks` feature
+  # (confirmed harmless via `codex doctor` on 0.144.5). Written anyway for
+  # compatibility with older codex-cli installs that still gate on it.
   CONFIG_TOML="$HOME/.codex/config.toml"
   if [[ -f "$CONFIG_TOML" ]]; then
     if ! grep -q "codex_hooks" "$CONFIG_TOML"; then

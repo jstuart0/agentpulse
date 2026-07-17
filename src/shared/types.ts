@@ -193,13 +193,20 @@ export type ClaudeCodeEvent =
 	| "PostCompact"
 	| "PostToolUseFailure";
 
-// Hook event types from Codex CLI
+// Hook event types from Codex CLI (stable since codex-cli 0.124.0; the
+// full 10-event list confirmed empirically against 0.144.5 — see F3 in
+// thoughts/shared/plans/active/2026-07-17-deliver-client-currency-remediation.md)
 export type CodexEvent =
 	| "SessionStart"
 	| "PreToolUse"
 	| "PostToolUse"
 	| "UserPromptSubmit"
-	| "Stop";
+	| "Stop"
+	| "SubagentStart"
+	| "SubagentStop"
+	| "PermissionRequest"
+	| "PreCompact"
+	| "PostCompact";
 
 export type HookEventType = ClaudeCodeEvent | CodexEvent;
 

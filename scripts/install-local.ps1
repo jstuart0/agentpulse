@@ -154,11 +154,19 @@ function Configure-Hooks {
       @{ event = "PreToolUse"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
       @{ event = "PostToolUse"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
       @{ event = "UserPromptSubmit"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "Stop"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex }
+      @{ event = "Stop"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
+      @{ event = "SubagentStart"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
+      @{ event = "SubagentStop"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
+      @{ event = "PermissionRequest"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
+      @{ event = "PreCompact"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
+      @{ event = "PostCompact"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex }
     )
   }
   Set-JsonFile -Path (Join-Path $codexDir "hooks.json") -Data $codexHooks
 
+  # Hooks are stable and enabled by default since codex-cli 0.124.0; codex_hooks
+  # is a recognized legacy alias for the `hooks` feature, written for
+  # compatibility with older codex-cli installs that still gate on it.
   $codexConfig = Join-Path $codexDir "config.toml"
   $featureBlock = "[features]`ncodex_hooks = true`n"
   if (Test-Path $codexConfig) {

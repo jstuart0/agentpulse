@@ -24,6 +24,25 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   (wired into `check:architecture`) fails CI if any of the seven Claude/Codex
   wiring-site event lists drift from the `src/shared/types.ts` unions.
 
+- **Codex CLI hook refresh (F3)** — five new hook events registered across
+  every Codex wiring site: `SubagentStart`, `SubagentStop`, `PermissionRequest`,
+  `PreCompact`, `PostCompact` (5 → 10 total events, confirmed against the
+  official hooks docs and empirically against codex-cli 0.144.5's
+  `codex features list`/`codex doctor` output — the audit's earlier "9 total"
+  claim was off by one). All five reuse normalizer branches already built in
+  the Claude Code hook refresh (F4) — `SubagentStart`/`SubagentStop` land as
+  `progress_update`, `PermissionRequest` as `permission_event`,
+  `PreCompact`/`PostCompact` as `system_event` — no normalizer changes were
+  needed. Live-verified on 0.144.5: `codex doctor` reports
+  `[features] codex_hooks = true` as a recognized **legacy alias for
+  `hooks`**, which is `stable`/enabled by default with zero config — the flag
+  is no longer required but remains harmless, so setup scripts keep writing
+  it for compatibility with older codex-cli installs. All Pattern-C
+  edit-point comments/prose updated to say so. The stale
+  `src/supervisor/index.ts` observer comment ("sessions appear even when
+  Codex's own HTTP hooks don't fire") is corrected: hooks are the primary
+  source since 0.124.0, the observer stays as belt-and-suspenders + backfill.
+
 ### Changed
 
 - **Codex CLI upgraded 0.142.5 → 0.144.5.** Installed via the global npm

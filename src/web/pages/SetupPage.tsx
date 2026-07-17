@@ -82,7 +82,18 @@ export function SetupPage() {
 					"PostCompact",
 					"PostToolUseFailure",
 				]
-			: ["SessionStart", "PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"];
+			: [
+					"SessionStart",
+					"PreToolUse",
+					"PostToolUse",
+					"UserPromptSubmit",
+					"Stop",
+					"SubagentStart",
+					"SubagentStop",
+					"PermissionRequest",
+					"PreCompact",
+					"PostCompact",
+				];
 
 	const generateClaudeConfig = () => {
 		const hooks: Record<string, unknown[]> = {};
@@ -252,7 +263,7 @@ export function SetupPage() {
 				<p className="text-xs text-muted-foreground mb-3">
 					{agentType === "claude_code"
 						? "Merge this into your Claude Code settings.json. If you already have hooks, add these entries to each event array."
-						: "Save this as ~/.codex/hooks.json. Enable hooks in config.toml: [features] codex_hooks = true"}
+						: "Save this as ~/.codex/hooks.json. Hooks are enabled by default since codex-cli 0.124.0; [features] codex_hooks = true is a legacy-compat flag for older installs."}
 				</p>
 				<div className="relative">
 					<pre className="bg-background border border-border rounded-md p-4 text-xs overflow-auto max-h-80">

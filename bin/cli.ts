@@ -115,7 +115,18 @@ async function setup() {
 	const codexDir = join(process.env.HOME || "~", ".codex");
 	mkdirSync(codexDir, { recursive: true });
 
-	const codexEvents = ["SessionStart", "PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"];
+	const codexEvents = [
+		"SessionStart",
+		"PreToolUse",
+		"PostToolUse",
+		"UserPromptSubmit",
+		"Stop",
+		"SubagentStart",
+		"SubagentStop",
+		"PermissionRequest",
+		"PreCompact",
+		"PostCompact",
+	];
 	const codexHooks = codexEvents.map((event) => ({
 		event,
 		type: "http",
@@ -131,7 +142,10 @@ async function setup() {
 	writeFileSync(codexHooksPath, `${JSON.stringify({ hooks: codexHooks }, null, 2)}\n`);
 	console.log(`  ✓ Codex CLI hooks  → ${codexHooksPath}`);
 
-	// Enable hooks feature in codex config.toml
+	// Hooks are stable and enabled by default since codex-cli 0.124.0;
+	// codex_hooks is a recognized legacy alias for the `hooks` feature,
+	// written for compatibility with older codex-cli installs that still
+	// gate on it.
 	const codexConfigPath = join(codexDir, "config.toml");
 	if (existsSync(codexConfigPath)) {
 		const content = readFileSync(codexConfigPath, "utf-8");

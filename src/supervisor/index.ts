@@ -81,8 +81,12 @@ async function main() {
 		`[supervisor] Registered ${registration.supervisor.hostName} (${registration.supervisor.id})`,
 	);
 
-	// Observe local Codex rollout files and forward events as hooks, so
-	// sessions appear even when Codex's own HTTP hooks don't fire.
+	// Observe local Codex rollout files and forward events as hooks. Codex's
+	// own HTTP hooks have been stable since codex-cli 0.124.0 and are the
+	// primary event source; the observer stays as belt-and-suspenders (dual
+	// coverage) and backfill for sessions started before the supervisor was
+	// running. Demotion to a pure fallback is a follow-up once more
+	// reliability data is collected.
 	void startCodexObserver({
 		serverUrl: config.serverUrl,
 		apiKey: config.apiKey ?? null,
