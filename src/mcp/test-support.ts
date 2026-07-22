@@ -73,6 +73,7 @@ export function fakeClient(overrides: Partial<AgentPulseClient> = {}): AgentPuls
 		decideHitl: notStubbed("decideHitl"),
 		decideActionRequest: notStubbed("decideActionRequest"),
 		listHosts: notStubbed("listHosts"),
+		createApiKey: notStubbed("createApiKey"),
 	};
 	// Spreading a Partial<AgentPulseClient> over a fully-populated base
 	// widens every overlapping property's inferred type to include

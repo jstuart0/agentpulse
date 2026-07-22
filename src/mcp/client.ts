@@ -223,6 +223,16 @@ export interface CreateTemplateResult {
 	template: SessionTemplate;
 }
 
+/** POST /api/v1/api-keys response (settings.ts:190-206) — AGEN-12 Phase 5, `agentpulse mcp install`'s mintKey. */
+export interface CreateApiKeyResult {
+	id: string;
+	/** The raw key — shown once, never persisted server-side beyond its hash. */
+	key: string;
+	name: string;
+	scopes: string[];
+	message: string;
+}
+
 /**
  * Typed methods per AgentPulse REST endpoint the MCP server needs. Phase 2
  * shipped the minimum spine (getStats, getAuthMe); Phase 3 adds one method
@@ -292,6 +302,9 @@ export interface AgentPulseClient {
 	): Promise<{ actionRequest: ActionRequest | null }>;
 	/** GET /api/v1/admin/supervisors — strict-manage admin router (supervisors.ts:47), not requireOperatorScope. */
 	listHosts(): Promise<{ supervisors: SupervisorRecord[]; total: number }>;
+
+	/** POST /api/v1/api-keys — manage-scoped (settings.ts:19,190). AGEN-12 Phase 5's mintKey. */
+	createApiKey(name: string, scopes: string[]): Promise<CreateApiKeyResult>;
 }
 
 export interface CreateHttpClientOptions {
@@ -546,5 +559,10 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 			),
 		listHosts: () =>
 			request<{ supervisors: SupervisorRecord[]; total: number }>("/admin/supervisors"),
+		createApiKey: (name, scopes) =>
+			request<CreateApiKeyResult>("/api-keys", {
+				method: "POST",
+				body: JSON.stringify({ name, scopes }),
+			}),
 	};
 }
