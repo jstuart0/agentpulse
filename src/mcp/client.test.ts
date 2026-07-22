@@ -529,6 +529,24 @@ describe("createHttpClient — Phase 4 request construction", () => {
 		expect(getMethod()).toBeUndefined();
 	});
 
+	// AGEN-12 Phase 5: createApiKey backs install.ts's mintKey.
+	test("createApiKey() POSTs the exact {name, scopes} body to /api-keys", async () => {
+		const { getUrl, getMethod, getBody, fetchImpl } = recordingFetch({
+			id: "k1",
+			key: "ap_test",
+			name: "mcp",
+			scopes: ["observe"],
+			message: "Save this key -- it will not be shown again.",
+		});
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.createApiKey("mcp", ["observe"]);
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/api-keys");
+		expect(getMethod()).toBe("POST");
+		expect(getBody()).toEqual({ name: "mcp", scopes: ["observe"] });
+	});
+
 	test("deleteTemplate() DELETEs the template path with no body", async () => {
 		const { getUrl, getMethod, fetchImpl } = recordingFetch({ ok: true });
 		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
