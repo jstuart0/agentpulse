@@ -13,6 +13,17 @@
  * `observe` key must be provably secret-free at the REST boundary, not just
  * at the MCP tool layer. See the plan's D1 "Removed from observe under C1"
  * list for the audited leak inventory.
+ *
+ * F23 correction (codex r2, post-Phase-5 diff review): `/projects` was
+ * originally observe-eligible, but `mapProject()` (routes/projects.ts)
+ * returns operator-controlled arbitrary `notes`, arbitrary `metadata` (a
+ * JSON blob), and `githubRepoUrl` (which accepts userinfo, e.g.
+ * `https://token@github.com/org/repo`) — the same class of leak as the C1
+ * launches/templates exclusion. Moved to INTENTIONALLY_MANAGE_ONLY;
+ * `list_projects` is manage-scoped in src/mcp/tools/catalog.ts to match. An
+ * observe-safe project DTO (id/name/cwd/defaults only, dropping
+ * notes/metadata and redacting githubRepoUrl userinfo) could restore
+ * observe visibility later — manage-only is the fail-safe choice for now.
  */
 import type { Context, Next } from "hono";
 import { config } from "../config.js";
@@ -34,7 +45,6 @@ export const OBSERVE_READ_PATHS: ReadonlySet<string> = new Set([
 	"/sessions/:sessionId/events/:eventId/context",
 	"/sessions/:sessionId/claude-md",
 	"/search",
-	"/projects",
 	"/ai/digest",
 	"/ai/sessions/:sessionId/intelligence",
 	"/ai/spend",
@@ -61,6 +71,8 @@ export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
 	"/launches/:id",
 	"/ai/inbox",
 	"/ai/action-requests",
+	// F23 — leaking DTO (arbitrary notes/metadata, githubRepoUrl userinfo)
+	"/projects",
 	// Deliberately manage-only surfaces (settings, keys, channels, labs, etc.)
 	"/settings",
 	"/settings/workspace",

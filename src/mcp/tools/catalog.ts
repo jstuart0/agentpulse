@@ -1,8 +1,10 @@
 /**
- * Catalog/browse read tools (AGEN-12 Phase 3, D2): get_stats (moved here
- * from server.ts for consistency — dexter's file-split rec), search,
- * list_projects (observe); list_templates/get_template, list_launches/
- * get_launch (manage-only, C1: DTOs carry env/launchSpec/claimToken).
+ * Catalog/browse read tools (AGEN-12 Phase 3, D2): get_stats, search
+ * (observe); list_projects, list_templates/get_template, list_launches/
+ * get_launch (manage-only). list_projects moved here from the observe set
+ * in the F23 reconcile (codex r2): mapProject() returns arbitrary
+ * notes/metadata and a githubRepoUrl that can carry userinfo credentials —
+ * the same DTO-leak class as the C1 launches/templates exclusion.
  */
 import { z } from "zod";
 import { AGENT_TYPE_ENUM } from "../enums.js";
@@ -54,12 +56,15 @@ export function registerCatalogTools(ctx: ToolContext, flags: ScopeFlags): void 
 				};
 			},
 		);
+	}
 
+	if (flags.hasManage) {
 		registerReadTool(
 			ctx,
 			{
 				name: "list_projects",
-				description: "All configured AgentPulse projects.",
+				description:
+					"All configured AgentPulse projects. Manage-scoped (F23): project DTOs carry arbitrary operator-set `notes`/`metadata` and a `githubRepoUrl` that may embed userinfo credentials.",
 				inputSchema: {},
 			},
 			async (_args, client) => {
@@ -72,9 +77,7 @@ export function registerCatalogTools(ctx: ToolContext, flags: ScopeFlags): void 
 				};
 			},
 		);
-	}
 
-	if (flags.hasManage) {
 		registerReadTool(
 			ctx,
 			{

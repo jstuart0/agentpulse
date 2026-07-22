@@ -88,7 +88,7 @@ describe("search — cap behavior (test-contract 13)", () => {
 	});
 });
 
-describe("list_projects", () => {
+describe("list_projects (F23: manage-scoped — mapProject() carries arbitrary notes/metadata + githubRepoUrl userinfo)", () => {
 	test("returns projects + total from the client", async () => {
 		const ctx = newContext(
 			fakeClient({
@@ -114,20 +114,27 @@ describe("list_projects", () => {
 				}),
 			}),
 		);
-		registerCatalogTools(ctx, { hasObserve: true, hasManage: false });
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: true });
 		const mcpClient = await connect(ctx);
 		const result = await mcpClient.callTool({ name: "list_projects", arguments: {} });
 		const parsed = JSON.parse(textOf(result));
 		expect(parsed.total).toBe(1);
 		expect(parsed.projects[0].id).toBe("p1");
 	});
+
+	test("is NOT registered under observe-only (F23)", () => {
+		const ctx = newContext(fakeClient());
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: false });
+		expect(ctx.registry.map((r) => r.name)).not.toContain("list_projects");
+	});
 });
 
 describe("manage-only tools require manage scope to register", () => {
-	test("list_templates/get_template/list_launches/get_launch are not registered under observe-only", () => {
+	test("list_projects/list_templates/get_template/list_launches/get_launch are not registered under observe-only", () => {
 		const ctx = newContext(fakeClient());
 		registerCatalogTools(ctx, { hasObserve: true, hasManage: false });
 		const names = ctx.registry.map((r) => r.name);
+		expect(names).not.toContain("list_projects");
 		expect(names).not.toContain("list_templates");
 		expect(names).not.toContain("get_template");
 		expect(names).not.toContain("list_launches");
@@ -138,6 +145,7 @@ describe("manage-only tools require manage scope to register", () => {
 		const ctx = newContext(fakeClient());
 		registerCatalogTools(ctx, { hasObserve: true, hasManage: true });
 		const names = ctx.registry.map((r) => r.name);
+		expect(names).toContain("list_projects");
 		expect(names).toContain("list_templates");
 		expect(names).toContain("get_template");
 		expect(names).toContain("list_launches");

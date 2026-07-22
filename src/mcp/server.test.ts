@@ -230,13 +230,17 @@ const OBSERVE_TOOL_NAMES = [
 	"get_event_context",
 	"get_session_claude_md",
 	"search",
-	"list_projects",
 	"get_session_intelligence",
 	"get_digest",
 	"get_ai_status",
 ];
 
+// F23 (codex r2, post-Phase-5 reconcile): list_projects moved here from
+// OBSERVE_TOOL_NAMES — mapProject() returns arbitrary operator-set
+// notes/metadata and a githubRepoUrl that can carry userinfo credentials,
+// the same DTO-leak class as the C1 launches/templates/inbox exclusion.
 const MANAGE_ONLY_TOOL_NAMES = [
+	"list_projects",
 	"list_templates",
 	"get_template",
 	"list_launches",
@@ -244,8 +248,8 @@ const MANAGE_ONLY_TOOL_NAMES = [
 	"get_inbox",
 ];
 
-describe("tools/list — observe vs manage scope split (test-contract 14, C1)", () => {
-	test("observe-scoped server registers exactly the 11 observe read tools, none of the 5 manage-only ones", async () => {
+describe("tools/list — observe vs manage scope split (test-contract 14, C1 + F23)", () => {
+	test("observe-scoped server registers exactly the 10 observe read tools, none of the 6 manage-only ones", async () => {
 		const { server } = buildMcpServer({ client: fakeClient(), scopes: ["observe"] });
 		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 		const mcpClient = new Client({ name: "test-client", version: "0.0.0" });
@@ -266,7 +270,7 @@ describe("tools/list — observe vs manage scope split (test-contract 14, C1)", 
 	// Phase-3 read tools are still present under manage" — a superset check,
 	// not an exhaustiveness claim — so they stay meaningful without
 	// duplicating (and having to keep in lockstep with) the Phase-4 count.
-	test("manage-scoped server still registers all 16 Phase-3 read tools (11 observe + 5 manage-only)", async () => {
+	test("manage-scoped server still registers all 16 Phase-3 read tools (10 observe + 6 manage-only, post-F23)", async () => {
 		const { server } = buildMcpServer({ client: fakeClient(), scopes: ["manage"] });
 		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 		const mcpClient = new Client({ name: "test-client", version: "0.0.0" });

@@ -153,19 +153,46 @@ export async function mintKey(
  * `scopes` field on /auth/me, and a key holding neither observe nor
  * manage all throw the exact same ScopeDiscoveryError, with the exact same
  * message text, that `mcp serve` already produces (M12: "the same
- * min-version failure as serve"). This adds exactly one delta check on top:
- * a key that discoverScopes accepts (it holds at least observe) but that
- * lacks "manage" when --orchestrate was requested.
+ * min-version failure as serve"). This adds a BIDIRECTIONAL delta check on
+ * top (F23 was one-directional; F22 — codex r2, post-Phase-5 diff review —
+ * closes the gap it left open):
+ *
+ *   - --orchestrate requested but the key doesn't hold "manage" → refuse
+ *     (unchanged from the original one-directional check).
+ *   - the key DOES hold "manage" (or "*", which discoverScopes normalizes
+ *     to hold manage) but --orchestrate was NOT passed → refuse. Without
+ *     this, `--key <manage-capable key>` (no --orchestrate) would preflight
+ *     successfully, `mcp serve` would later register every mutating tool
+ *     for that same key (scope discovery is independent of how the key was
+ *     installed), and the install output would have carried neither
+ *     ORCHESTRATE_WARNING nor the Codex approval-mode line — a
+ *     manage-capable server configured with zero safety framing. Requiring
+ *     the explicit flag makes orchestration an acknowledged opt-in for
+ *     EVERY path that can produce a manage-capable install, not just mint.
+ *
+ * Callers (runInstall) must derive canOrchestrate/warning from the scopes
+ * this function RETURNS (i.e. `scopes.includes(SCOPE_MANAGE)`), not from
+ * the caller's own --orchestrate flag — after a successful preflight the
+ * two always agree (the mismatched cases are refused above), but deriving
+ * from the actual discovered scopes is the property that's actually being
+ * guaranteed, and is what tests should pin.
  */
 export async function preflightReusedKey(
 	client: AgentPulseClient,
 	opts: { wantManage: boolean },
 ): Promise<string[]> {
 	const scopes = await discoverScopes(client);
+	const hasManage = scopes.includes(SCOPE_MANAGE);
 
-	if (opts.wantManage && !scopes.includes(SCOPE_MANAGE)) {
+	if (opts.wantManage && !hasManage) {
 		throw new ScopeDiscoveryError(
 			`This API key lacks "${SCOPE_MANAGE}" scope required for --orchestrate (it holds: ${scopes.join(", ")}). Mint an orchestration-capable key instead: agentpulse mcp install --mint <name> --orchestrate`,
+		);
+	}
+
+	if (!opts.wantManage && hasManage) {
+		throw new ScopeDiscoveryError(
+			`This API key holds "${SCOPE_MANAGE}" scope (it can orchestrate). Re-run with --orchestrate to acknowledge the unattended-control implications, or use an observe-only key for a read-only install.`,
 		);
 	}
 
@@ -298,6 +325,17 @@ export interface RunInstallResult {
  * given: `args.key` is then used purely to authenticate the mint request,
  * and the freshly-minted key becomes the emitted keyRef (matching Settings'
  * own mint UI: shown once, on creation).
+ *
+ * canOrchestrate (which drives ORCHESTRATE_WARNING + the Codex
+ * default_tools_approval_mode line) is derived differently per path (F22,
+ * codex r2): on the MINT path it's `args.orchestrate` directly — mint
+ * scope IS chosen by that flag (mintScopesFor), so they're the same value
+ * by construction. On the REUSE path it's the key's ACTUAL discovered
+ * scopes (`scopes.includes(SCOPE_MANAGE)`), not `args.orchestrate` — a
+ * reused key's real capability can't be inferred from the flag alone, and
+ * preflightReusedKey's bidirectional check (above) already guarantees the
+ * two agree by the time we get here, so this is both the safe derivation
+ * AND the one that matches what actually gets guaranteed.
  */
 export async function runInstall(
 	client: AgentPulseClient,
@@ -309,14 +347,17 @@ export async function runInstall(
 
 	let keyRef: string;
 	let scopes: string[];
+	let canOrchestrate: boolean;
 
 	if (args.mint) {
 		scopes = mintScopesFor(args.orchestrate);
 		const minted = await mintKey(client, args.mint, scopes);
 		keyRef = minted.key;
+		canOrchestrate = args.orchestrate;
 	} else {
 		scopes = await preflightReusedKey(client, { wantManage: args.orchestrate });
 		keyRef = args.key as string;
+		canOrchestrate = scopes.includes(SCOPE_MANAGE);
 	}
 
 	return {
@@ -324,7 +365,7 @@ export async function runInstall(
 		keyRef,
 		claudeCommand: emitClaudeCommand({ url: args.url, keyRef }),
 		mcpJson: emitMcpJson({ url: args.url, keyRef }),
-		codexToml: emitCodexToml({ url: args.url, keyRef, canOrchestrate: args.orchestrate }),
-		warning: args.orchestrate ? ORCHESTRATE_WARNING : undefined,
+		codexToml: emitCodexToml({ url: args.url, keyRef, canOrchestrate }),
+		warning: canOrchestrate ? ORCHESTRATE_WARNING : undefined,
 	};
 }

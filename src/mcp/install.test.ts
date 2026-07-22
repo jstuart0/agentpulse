@@ -230,6 +230,61 @@ describe("preflightReusedKey (M12)", () => {
 		const scopes = await preflightReusedKey(client, { wantManage: true });
 		expect(scopes).toEqual(["observe", "manage"]);
 	});
+
+	// F22 (codex r2, post-Phase-5 diff review): a reused key that holds
+	// "manage" must be refused UNLESS --orchestrate acknowledges it — the
+	// bidirectional half of the check the observe+orchestrate case above
+	// doesn't exercise.
+	test("F22: manage key WITHOUT --orchestrate (wantManage:false) → refuses", async () => {
+		const client = fakeClient({
+			getAuthMe: async () => ({
+				authenticated: true,
+				user: { name: "t", source: "api_key", id: "1", role: null, scopes: ["manage"] },
+				signOutUrl: null,
+				disableAuth: false,
+				allowSignup: false,
+			}),
+		});
+
+		await expect(preflightReusedKey(client, { wantManage: false })).rejects.toThrow(/orchestrate/i);
+		await expect(preflightReusedKey(client, { wantManage: false })).rejects.toBeInstanceOf(
+			ScopeDiscoveryError,
+		);
+	});
+
+	test("F22: dual-scope (observe+manage) key WITHOUT --orchestrate → refuses", async () => {
+		const client = fakeClient({
+			getAuthMe: async () => ({
+				authenticated: true,
+				user: {
+					name: "t",
+					source: "api_key",
+					id: "1",
+					role: null,
+					scopes: ["observe", "manage"],
+				},
+				signOutUrl: null,
+				disableAuth: false,
+				allowSignup: false,
+			}),
+		});
+
+		await expect(preflightReusedKey(client, { wantManage: false })).rejects.toThrow(/orchestrate/i);
+	});
+
+	test('F22: a "*" key (DISABLE_AUTH synthetic — discoverScopes normalizes it to hold manage) WITHOUT --orchestrate → refuses', async () => {
+		const client = fakeClient({
+			getAuthMe: async () => ({
+				authenticated: true,
+				user: { name: "t", source: "api_key", id: "1", role: null, scopes: ["*"] },
+				signOutUrl: null,
+				disableAuth: false,
+				allowSignup: false,
+			}),
+		});
+
+		await expect(preflightReusedKey(client, { wantManage: false })).rejects.toThrow(/orchestrate/i);
+	});
 });
 
 describe("runInstall", () => {
@@ -313,6 +368,51 @@ describe("runInstall", () => {
 		await expect(
 			runInstall(client, { url: "http://localhost:3000", key: "ap_existing", orchestrate: true }),
 		).rejects.toBeInstanceOf(ScopeDiscoveryError);
+	});
+
+	// F22 (codex r2, post-Phase-5 diff review): the install-time safety
+	// contract — warning + Codex approval line — must apply to EVERY path
+	// that can produce a manage-capable install, not just --mint.
+	test("F22: reuse path with a manage key and NO --orchestrate → refuses (would otherwise emit zero safety framing for a manage-capable install)", async () => {
+		const client = fakeClient({
+			getAuthMe: async () => ({
+				authenticated: true,
+				user: { name: "t", source: "api_key", id: "1", role: null, scopes: ["manage"] },
+				signOutUrl: null,
+				disableAuth: false,
+				allowSignup: false,
+			}),
+		});
+
+		await expect(
+			runInstall(client, {
+				url: "http://localhost:3000",
+				key: "ap_manage_key",
+				orchestrate: false,
+			}),
+		).rejects.toThrow(/orchestrate/i);
+	});
+
+	test("F22: reuse path with a manage key AND --orchestrate → succeeds, warning present, Codex block carries the writes line (canOrchestrate derived from ACTUAL scopes, not just the flag)", async () => {
+		const client = fakeClient({
+			getAuthMe: async () => ({
+				authenticated: true,
+				user: { name: "t", source: "api_key", id: "1", role: null, scopes: ["manage"] },
+				signOutUrl: null,
+				disableAuth: false,
+				allowSignup: false,
+			}),
+		});
+
+		const result = await runInstall(client, {
+			url: "http://localhost:3000",
+			key: "ap_manage_key",
+			orchestrate: true,
+		});
+
+		expect(result.keyRef).toBe("ap_manage_key");
+		expect(result.warning).toBe(ORCHESTRATE_WARNING);
+		expect(result.codexToml).toContain('default_tools_approval_mode = "writes"');
 	});
 
 	test("mint-vs-reuse precedence: when both --key and --mint are given, mint wins — keyRef is the freshly minted key, not the reused one (tessa M-7: the actual credential-resolution precedence is resolveAuthKey, tested separately below; this test only proves runInstall's own mint-wins branch selection)", async () => {

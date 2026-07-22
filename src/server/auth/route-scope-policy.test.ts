@@ -29,7 +29,7 @@ import "../db/__test_db.js";
 const { config } = await import("../config.js");
 const { initializeDatabase, getDb } = await import("../db/client.js");
 const { app } = await import("../app.js");
-const { controlActions, launchRequests, sessionTemplates, sessions } = await import(
+const { controlActions, launchRequests, projects, sessionTemplates, sessions } = await import(
 	"../db/schema/index.js"
 );
 const { createApiKey, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE } = await import("./api-key.js");
@@ -182,6 +182,10 @@ describe("classifyRoute — pure matcher (test contract section A)", () => {
 		expect(classifyRoute("GET", "/ai/inbox")).toBe(SCOPE_MANAGE);
 		expect(classifyRoute("GET", "/ai/action-requests")).toBe(SCOPE_MANAGE);
 		expect(classifyRoute("GET", "/sessions/abc/control-actions")).toBe(SCOPE_MANAGE);
+	});
+
+	test("A.5c F23 exclusion — /projects stays manage despite being a GET (mapProject() carries arbitrary notes/metadata + githubRepoUrl userinfo)", () => {
+		expect(classifyRoute("GET", "/projects")).toBe(SCOPE_MANAGE);
 	});
 
 	test("A.6 read-like POSTs stay manage (regression-proofs a future 'simplify to include POSTs' refactor)", () => {
@@ -369,15 +373,9 @@ describe("/v1/admin no-bleed proof (rows 14-16)", () => {
 	});
 });
 
-describe("Observe-eligible reads (rows 17, 22, 24, 26-28)", () => {
+describe("Observe-eligible reads (rows 17, 24, 26-28)", () => {
 	test("row 17: GET /search?q=x with observeKey → 200", async () => {
 		const [a, b] = await requestAllMounts("GET", "/search?q=x", authBearer(observeKey));
-		expect(a.status).toBe(200);
-		expect(b.status).toBe(200);
-	});
-
-	test("row 22: GET /projects with observeKey → 200", async () => {
-		const [a, b] = await requestAllMounts("GET", "/projects", authBearer(observeKey));
 		expect(a.status).toBe(200);
 		expect(b.status).toBe(200);
 	});
@@ -407,7 +405,7 @@ describe("Observe-eligible reads (rows 17, 22, 24, 26-28)", () => {
 	});
 });
 
-describe("C1 deviation — manage-only reads (rows 18, 19, 23; contract said 200, D1 says 403)", () => {
+describe("C1/F23 deviation — manage-only reads (rows 18, 19, 22, 23; contract said 200, D1/F23 say 403)", () => {
 	test("row 18 (deviated): GET /templates with observeKey → 403 — env in DTO (templates-service.ts:26)", async () => {
 		const [a, b] = await requestAllMounts("GET", "/templates", authBearer(observeKey));
 		expect(a.status).toBe(403);
@@ -442,6 +440,59 @@ describe("C1 deviation — manage-only reads (rows 18, 19, 23; contract said 200
 		const [a, b] = await requestAllMounts("GET", "/ai/inbox", authBearer(manageKey));
 		expect(a.status).toBe(200);
 		expect(b.status).toBe(200);
+	});
+
+	test("row 22 (deviated, F23 — codex r2): GET /projects with observeKey → 403 — mapProject() carries arbitrary notes/metadata + githubRepoUrl userinfo", async () => {
+		const [a, b] = await requestAllMounts("GET", "/projects", authBearer(observeKey));
+		expect(a.status).toBe(403);
+		expect(b.status).toBe(403);
+	});
+
+	test("row 22 regression: GET /projects with manageKey → 200 (unchanged)", async () => {
+		const [a, b] = await requestAllMounts("GET", "/projects", authBearer(manageKey));
+		expect(a.status).toBe(200);
+		expect(b.status).toBe(200);
+	});
+});
+
+// ─── F23 regression: observe never sees a project's sensitive fields, even ──
+// when a real row in the DB actually carries them — proves the data never
+// reaches an observe caller, not just that the route is classified
+// manage-only in the abstract (codex r2's explicit ask).
+describe("F23 — observe key + a project row with sensitive-looking notes/metadata/githubRepoUrl-userinfo → 403, data never reaches the caller", () => {
+	test("GET /projects with observeKey → 403 even when a real row carries a token in notes/metadata/githubRepoUrl", async () => {
+		await getDb()
+			.insert(projects)
+			.values({
+				id: "rsp-f23-project",
+				name: "rsp-f23-sensitive-project",
+				cwd: "/tmp/rsp-f23",
+				githubRepoUrl: "https://ghp_secrettoken1234567890@github.com/acme/private-repo",
+				notes: "prod DB password: hunter2",
+				metadata: { deployKey: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB...secret" },
+			});
+
+		const [a, b] = await requestAllMounts("GET", "/projects", authBearer(observeKey));
+		expect(a.status).toBe(403);
+		expect(b.status).toBe(403);
+		const bodyA = await a.json();
+		const bodyB = await b.json();
+		expect(JSON.stringify(bodyA)).not.toContain("ghp_secrettoken");
+		expect(JSON.stringify(bodyA)).not.toContain("hunter2");
+		expect(JSON.stringify(bodyB)).not.toContain("ghp_secrettoken");
+		expect(JSON.stringify(bodyB)).not.toContain("hunter2");
+
+		// Regression proof the row (and its sensitive fields) really is
+		// reachable — just not to an observe caller — so a 403 here can't be
+		// masking a route that's silently 404ing regardless of caller.
+		const [mgA] = await requestAllMounts("GET", "/projects", authBearer(manageKey));
+		expect(mgA.status).toBe(200);
+		const mgBody = (await mgA.json()) as { projects: Array<{ id: string; notes: string | null }> };
+		expect(
+			mgBody.projects.some(
+				(p) => p.id === "rsp-f23-project" && p.notes === "prod DB password: hunter2",
+			),
+		).toBe(true);
 	});
 });
 

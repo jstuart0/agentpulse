@@ -28,9 +28,16 @@
  * Phase 3's MANAGE total) and the "12 mutating" figure in the test-contract
  * doesn't include list_hosts, which the plan's own Phase 4 section lists as
  * a SEPARATE bullet (step 2) from the "12 mutating/advisory tools" (step
- * 1). The corrected, verified counts used below: observe=11 (unchanged),
+ * 1). The corrected, verified counts used below (as of Phase 4): observe=11,
  * manage=29 (11 observe + 5 Phase-3 manage-only reads + 13 Phase-4
  * additions: 12 from D2's mutating-tool table + list_hosts).
+ *
+ * F23 correction (codex r2, post-Phase-5 reconcile): list_projects moved
+ * from observe to manage-only — mapProject() returns arbitrary
+ * notes/metadata and a githubRepoUrl that can carry userinfo credentials,
+ * the same DTO-leak class as the C1 exclusions. observe is now 10 (not
+ * 11); manage's total of 29 is unchanged (list_projects still counts once,
+ * just via PHASE3_MANAGE_ONLY_READ_NAMES instead of OBSERVE_TOOL_NAMES).
  */
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -55,13 +62,14 @@ const OBSERVE_TOOL_NAMES = [
 	"get_event_context",
 	"get_session_claude_md",
 	"search",
-	"list_projects",
 	"get_session_intelligence",
 	"get_digest",
 	"get_ai_status",
 ];
 
+// F23: list_projects lives here, not OBSERVE_TOOL_NAMES — see file docstring.
 const PHASE3_MANAGE_ONLY_READ_NAMES = [
+	"list_projects",
 	"list_templates",
 	"get_template",
 	"list_launches",
@@ -185,7 +193,7 @@ describe("drift guard: no root anyOf/oneOf/allOf on any tool's input schema (ass
 });
 
 describe("drift guard: tool count sanity (assertion 20, corrected counts — see file docstring)", () => {
-	test("manage-scoped server registers exactly 29 tools (11 observe + 5 Phase-3 manage-only reads + 13 Phase-4 additions)", async () => {
+	test("manage-scoped server registers exactly 29 tools (10 observe + 6 Phase-3 manage-only reads + 13 Phase-4 additions, post-F23)", async () => {
 		const { mcpClient, registry } = await connectServer(["manage"]);
 		const { tools } = await mcpClient.listTools();
 		expect(tools.length).toBe(29);
@@ -193,16 +201,16 @@ describe("drift guard: tool count sanity (assertion 20, corrected counts — see
 		expect(new Set(tools.map((t) => t.name))).toEqual(new Set(MANAGE_TOTAL));
 	});
 
-	test("observe-scoped server registers exactly 11 tools (unchanged by Phase 4 — every Phase 4 addition requires manage)", async () => {
+	test("observe-scoped server registers exactly 10 tools (F23: list_projects moved to manage-only)", async () => {
 		const { mcpClient } = await connectServer(["observe"]);
 		const { tools } = await mcpClient.listTools();
-		expect(tools.length).toBe(11);
+		expect(tools.length).toBe(10);
 		expect(new Set(tools.map((t) => t.name))).toEqual(new Set(OBSERVE_TOOL_NAMES));
 	});
 });
 
 describe("tools/list diff observe vs manage (assertion 21, corrected — see file docstring)", () => {
-	test("manage set is a strict superset of observe; the delta is exactly the 18 manage-only names (5 Phase-3 + 13 Phase-4)", async () => {
+	test("manage set is a strict superset of observe; the delta is exactly the 19 manage-only names (6 Phase-3 + 13 Phase-4, post-F23)", async () => {
 		const { mcpClient: observeClient } = await connectServer(["observe"]);
 		const { mcpClient: manageClient } = await connectServer(["manage"]);
 		const observeNames = new Set((await observeClient.listTools()).tools.map((t) => t.name));
@@ -219,7 +227,7 @@ describe("tools/list diff observe vs manage (assertion 21, corrected — see fil
 			...PHASE4_MUTATING_NAMES,
 		]);
 		expect(new Set(delta)).toEqual(expectedDelta);
-		expect(delta.length).toBe(18);
+		expect(delta.length).toBe(19);
 		// No Phase-4 mutating tool leaked into observe scope — the specific
 		// regression this test guards against.
 		for (const mutating of PHASE4_MUTATING_NAMES) {
