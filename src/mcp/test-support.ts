@@ -57,6 +57,22 @@ export function fakeClient(overrides: Partial<AgentPulseClient> = {}): AgentPuls
 		listLaunches: notStubbed("listLaunches"),
 		getLaunch: notStubbed("getLaunch"),
 		getInbox: notStubbed("getInbox"),
+		recommendLaunch: notStubbed("recommendLaunch"),
+		previewTemplate: notStubbed("previewTemplate"),
+		createLaunch: notStubbed("createLaunch"),
+		promptSession: notStubbed("promptSession"),
+		stopSession: notStubbed("stopSession"),
+		retryLaunch: notStubbed("retryLaunch"),
+		updateSessionNotes: notStubbed("updateSessionNotes"),
+		renameSession: notStubbed("renameSession"),
+		pinSession: notStubbed("pinSession"),
+		archiveSession: notStubbed("archiveSession"),
+		createTemplate: notStubbed("createTemplate"),
+		updateTemplate: notStubbed("updateTemplate"),
+		deleteTemplate: notStubbed("deleteTemplate"),
+		decideHitl: notStubbed("decideHitl"),
+		decideActionRequest: notStubbed("decideActionRequest"),
+		listHosts: notStubbed("listHosts"),
 	};
 	// Spreading a Partial<AgentPulseClient> over a fully-populated base
 	// widens every overlapping property's inferred type to include

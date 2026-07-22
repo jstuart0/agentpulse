@@ -416,3 +416,126 @@ describe("createHttpClient — Phase 3 request construction (tessa H-3)", () => 
 		expect(result.session).toBeNull();
 	});
 });
+
+/**
+ * Phase 4 request-construction coverage (H-3's remediation pattern applied
+ * fresh to the highest field-name-fidelity-risk new methods — not all 13,
+ * since most are near-identity JSON.stringify passthroughs; these are the
+ * ones with a literal-field-value contract (renameSession's `source`) or a
+ * server-field-name that could plausibly be renamed to something else by a
+ * future refactor without a test catching it).
+ */
+describe("createHttpClient — Phase 4 request construction", () => {
+	function recordingFetch(body: unknown) {
+		let recordedUrl: string | undefined;
+		let recordedInit: RequestInit | undefined;
+		const fetchImpl = (async (url: string, init?: RequestInit) => {
+			recordedUrl = url;
+			recordedInit = init;
+			return fakeResponse(200, body);
+		}) as unknown as typeof fetch;
+		return {
+			fetchImpl,
+			getUrl: () => recordedUrl,
+			getMethod: () => recordedInit?.method,
+			getBody: () => (recordedInit?.body ? JSON.parse(String(recordedInit.body)) : undefined),
+		};
+	}
+
+	test("createLaunch() POSTs /launches with templateId+template+launchSpec intact (the H1 body launch_agent depends on)", async () => {
+		const { fetchImpl, getUrl, getMethod, getBody } = recordingFetch({
+			launchRequest: { id: "lr1" },
+			supervisor: { id: "sup1" },
+		});
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.createLaunch({
+			templateId: "t1",
+			template: { name: "n", agentType: "codex_cli", cwd: "/repo" },
+			launchSpec: { launchCorrelationId: "corr-1" } as never,
+			desiredDisplayName: "my session",
+		});
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/launches");
+		expect(getMethod()).toBe("POST");
+		const body = getBody();
+		expect(body.templateId).toBe("t1");
+		expect(body.template).toEqual({ name: "n", agentType: "codex_cli", cwd: "/repo" });
+		expect(body.launchSpec).toEqual({ launchCorrelationId: "corr-1" });
+		expect(body.desiredDisplayName).toBe("my session");
+	});
+
+	test("renameSession() PUTs the literal {name, source} body (repo's documented rename-precedence contract)", async () => {
+		const { getUrl, getMethod, getBody, fetchImpl } = recordingFetch({ ok: true });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.renameSession("s1", "New Name", "user");
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/sessions/s1/rename");
+		expect(getMethod()).toBe("PUT");
+		expect(getBody()).toEqual({ name: "New Name", source: "user" });
+	});
+
+	test("promptSession() POSTs {prompt} matching sessions.ts:162's shape", async () => {
+		const { getUrl, getMethod, getBody, fetchImpl } = recordingFetch({ action: {} });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.promptSession("s1", "keep going");
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/sessions/s1/prompt");
+		expect(getMethod()).toBe("POST");
+		expect(getBody()).toEqual({ prompt: "keep going" });
+	});
+
+	test("decideHitl() POSTs {action, customPrompt} to the hitl decide path", async () => {
+		const { getUrl, getMethod, getBody, fetchImpl } = recordingFetch({ hitl: null });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.decideHitl("h1", "custom", "do X instead");
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/ai/inbox/hitl/h1/decide");
+		expect(getMethod()).toBe("POST");
+		expect(getBody()).toEqual({ action: "custom", customPrompt: "do X instead" });
+	});
+
+	test("decideHitl() with no customPrompt omits the key entirely rather than sending null", async () => {
+		const { getBody, fetchImpl } = recordingFetch({ hitl: null });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.decideHitl("h1", "approve");
+
+		expect(getBody()).toEqual({ action: "approve" });
+		expect(Object.keys(getBody())).not.toContain("customPrompt");
+	});
+
+	test("decideActionRequest() POSTs {decision} to the action-requests decide path", async () => {
+		const { getUrl, getMethod, getBody, fetchImpl } = recordingFetch({ actionRequest: null });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.decideActionRequest("ar1", "declined");
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/ai/action-requests/ar1/decide");
+		expect(getMethod()).toBe("POST");
+		expect(getBody()).toEqual({ decision: "declined" });
+	});
+
+	test("listHosts() hits the admin supervisors path with GET", async () => {
+		const { getUrl, getMethod, fetchImpl } = recordingFetch({ supervisors: [], total: 0 });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.listHosts();
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/admin/supervisors");
+		expect(getMethod()).toBeUndefined();
+	});
+
+	test("deleteTemplate() DELETEs the template path with no body", async () => {
+		const { getUrl, getMethod, fetchImpl } = recordingFetch({ ok: true });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.deleteTemplate("t1");
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/templates/t1");
+		expect(getMethod()).toBe("DELETE");
+	});
+});

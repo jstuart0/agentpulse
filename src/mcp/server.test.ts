@@ -63,6 +63,53 @@ describe("registerMutatingTool", () => {
 	});
 });
 
+/**
+ * VD3 (Phase 4, catching up a Phase-2 deferred item): registerMutatingTool's
+ * rUI stamping proven on the WIRE via a live InMemoryTransport tools/list —
+ * Phase 2's coverage above only asserted against ctx.registry, which is the
+ * wrapper's own bookkeeping (the same H-1 gap the drift guard's binding
+ * correction closes for the full tool population; this closes it for the
+ * registerMutatingTool unit itself, in isolation from any real tool file).
+ */
+describe("registerMutatingTool — rUI round-trips onto the wire (VD3, Phase 4 catch-up)", () => {
+	test("a freshly-registered mutating tool carries rUI meta and no readOnlyHint in a live tools/list", async () => {
+		const ctx = newContext(fakeClient());
+		registerMutatingTool(ctx, { name: "vd3_mutating_tool", description: "d" }, async () => ({
+			ok: true,
+		}));
+
+		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+		const mcpClient = new Client({ name: "vd3-test-client", version: "0.0.0" });
+		await Promise.all([mcpClient.connect(clientTransport), ctx.server.connect(serverTransport)]);
+
+		const { tools } = await mcpClient.listTools();
+		const tool = tools.find((t) => t.name === "vd3_mutating_tool");
+		expect(tool).toBeDefined();
+		expect(tool?.annotations?.readOnlyHint).toBeUndefined();
+		expect(
+			(tool?._meta as Record<string, unknown> | undefined)?.[REQUIRES_USER_INTERACTION_META],
+		).toBe(true);
+	});
+
+	test("tools/call on a live mutating tool returns the handler's result, not isError", async () => {
+		const ctx = newContext(fakeClient());
+		registerMutatingTool(
+			ctx,
+			{ name: "vd3_callable_mutating_tool", description: "d" },
+			async () => ({ applied: true }),
+		);
+
+		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+		const mcpClient = new Client({ name: "vd3-test-client-2", version: "0.0.0" });
+		await Promise.all([mcpClient.connect(clientTransport), ctx.server.connect(serverTransport)]);
+
+		const result = await mcpClient.callTool({ name: "vd3_callable_mutating_tool", arguments: {} });
+		expect(result.isError).toBeFalsy();
+		const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+		expect(JSON.parse(text)).toEqual({ applied: true });
+	});
+});
+
 describe("wrapper structural error mapping (fake client + direct handler invocation via in-memory protocol)", () => {
 	test("a thrown ApiError from the handler is mapped to {isError:true}, not a protocol error", async () => {
 		const ctx = newContext(fakeClient());
@@ -212,7 +259,14 @@ describe("tools/list — observe vs manage scope split (test-contract 14, C1)", 
 		}
 	});
 
-	test("manage-scoped server registers all 16 read tools (11 observe + 5 manage-only) — strict superset", async () => {
+	// Phase 4 note: manage now registers 29 tools (16 Phase-3 read tools + 13
+	// Phase-4 additions) — the exhaustive "manage registers exactly this set"
+	// assertion now lives in tool-invariants.test.ts (assertion 20/21), which
+	// owns the full current population. These two tests narrow to "the
+	// Phase-3 read tools are still present under manage" — a superset check,
+	// not an exhaustiveness claim — so they stay meaningful without
+	// duplicating (and having to keep in lockstep with) the Phase-4 count.
+	test("manage-scoped server still registers all 16 Phase-3 read tools (11 observe + 5 manage-only)", async () => {
 		const { server } = buildMcpServer({ client: fakeClient(), scopes: ["manage"] });
 		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 		const mcpClient = new Client({ name: "test-client", version: "0.0.0" });
@@ -220,33 +274,42 @@ describe("tools/list — observe vs manage scope split (test-contract 14, C1)", 
 
 		const { tools } = await mcpClient.listTools();
 		const names = new Set(tools.map((t) => t.name));
-		expect(names).toEqual(new Set([...OBSERVE_TOOL_NAMES, ...MANAGE_ONLY_TOOL_NAMES]));
-		expect(names.size).toBe(16);
+		for (const name of [...OBSERVE_TOOL_NAMES, ...MANAGE_ONLY_TOOL_NAMES]) {
+			expect(names.has(name), `${name} missing from manage scope`).toBe(true);
+		}
 	});
 
-	test("dual scope (observe+manage) matches manage-only exactly", async () => {
+	test("dual scope (observe+manage) still includes every Phase-3 read tool", async () => {
 		const { server } = buildMcpServer({ client: fakeClient(), scopes: ["observe", "manage"] });
 		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 		const mcpClient = new Client({ name: "test-client", version: "0.0.0" });
 		await Promise.all([mcpClient.connect(clientTransport), server.connect(serverTransport)]);
 
 		const { tools } = await mcpClient.listTools();
-		expect(new Set(tools.map((t) => t.name))).toEqual(
-			new Set([...OBSERVE_TOOL_NAMES, ...MANAGE_ONLY_TOOL_NAMES]),
-		);
+		const names = new Set(tools.map((t) => t.name));
+		for (const name of [...OBSERVE_TOOL_NAMES, ...MANAGE_ONLY_TOOL_NAMES]) {
+			expect(names.has(name), `${name} missing from dual scope`).toBe(true);
+		}
 	});
 });
 
 describe("every registered read tool: readOnlyHint + no rUI (test-contract 15) + flat schema (M7)", () => {
-	test("every tool in tools/list carries readOnlyHint:true and no anthropic/requiresUserInteraction meta", async () => {
+	// Phase 4 note: this test now scopes to the 16 Phase-3 read-tool NAMES
+	// specifically (not "every tool in tools/list", which post-Phase-4
+	// legitimately includes 10 non-RO mutating tools). The full-population
+	// mixed RO/mutating invariant (assertion 16) lives in
+	// tool-invariants.test.ts.
+	test("every Phase-3 read tool still carries readOnlyHint:true and no anthropic/requiresUserInteraction meta", async () => {
 		const { server } = buildMcpServer({ client: fakeClient(), scopes: ["manage"] });
 		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 		const mcpClient = new Client({ name: "test-client", version: "0.0.0" });
 		await Promise.all([mcpClient.connect(clientTransport), server.connect(serverTransport)]);
 
 		const { tools } = await mcpClient.listTools();
-		expect(tools.length).toBe(16);
-		for (const tool of tools) {
+		const phase3Names = new Set([...OBSERVE_TOOL_NAMES, ...MANAGE_ONLY_TOOL_NAMES]);
+		const phase3Tools = tools.filter((t) => phase3Names.has(t.name));
+		expect(phase3Tools.length).toBe(16);
+		for (const tool of phase3Tools) {
 			expect(tool.annotations?.readOnlyHint, `${tool.name} should be readOnlyHint:true`).toBe(true);
 			expect(
 				(tool._meta as Record<string, unknown> | undefined)?.[REQUIRES_USER_INTERACTION_META],
@@ -271,6 +334,13 @@ describe("every registered read tool: readOnlyHint + no rUI (test-contract 15) +
 	});
 });
 
+// Phase 4 note: this Phase-3 check only ever exercised the 16 Phase-3 read
+// tools (buildMcpServer's registry now also carries 13 Phase-4 additions,
+// 10 of which are legitimately non-read). It's superseded — with REAL
+// HTTP-verb instrumentation, per M-3's binding correction — by
+// tool-invariants.test.ts's assertion 17. Kept here, scoped to just the
+// Phase-3 tool names, as a lower-cost regression guard specific to this
+// file's original tools; not read as satisfying M-3's stronger claim.
 describe("converse read-only check (M6): every read tool only calls GET-shaped client methods", () => {
 	// Minimal valid arguments per tool — required fields only, chosen to
 	// route through the handler without throwing on missing input.
@@ -357,7 +427,13 @@ describe("converse read-only check (M6): every read tool only calls GET-shaped c
 		const mcpClient = new Client({ name: "test-client", version: "0.0.0" });
 		await Promise.all([mcpClient.connect(clientTransport), server.connect(serverTransport)]);
 
-		for (const entry of registry) {
+		// Scoped to this file's 16 Phase-3 tool names (ARGS_FOR's keys) — the
+		// full mixed RO/mutating population (Phase 4 adds 13 more entries to
+		// `registry`, 10 of them legitimately non-read) is covered with real
+		// HTTP-verb instrumentation by tool-invariants.test.ts's assertion 17.
+		const phase3Entries = registry.filter((entry) => entry.name in ARGS_FOR);
+		expect(phase3Entries.length).toBe(16);
+		for (const entry of phase3Entries) {
 			expect(entry.readOnly, `${entry.name} must be a read tool in Phase 3`).toBe(true);
 			const args = ARGS_FOR[entry.name];
 			expect(args, `no ARGS_FOR entry for ${entry.name} — add one`).toBeDefined();
