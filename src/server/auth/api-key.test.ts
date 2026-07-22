@@ -13,8 +13,15 @@ import { describe, expect, test } from "bun:test";
 // Bootstrap the test DB before any db-touching import.
 import "../db/__test_db.js";
 
-const { parseScopes, InvalidScopeError, createApiKey, verifyApiKey, SCOPE_INGEST, SCOPE_MANAGE } =
-	await import("./api-key.js");
+const {
+	parseScopes,
+	InvalidScopeError,
+	createApiKey,
+	verifyApiKey,
+	SCOPE_INGEST,
+	SCOPE_MANAGE,
+	SCOPE_OBSERVE,
+} = await import("./api-key.js");
 
 // ── parseScopes ───────────────────────────────────────────────────────────────
 
@@ -94,6 +101,31 @@ describe("createApiKey — scope validation at mint time", () => {
 		const record = await verifyApiKey(key);
 		expect(record).not.toBeNull();
 		expect(record?.scopes).toEqual([SCOPE_INGEST]);
+	});
+});
+
+// ── AGEN-12 Phase 1: observe scope ────────────────────────────────────────────
+
+describe("AGEN-12 Phase 1 — observe scope recognized at mint time", () => {
+	test("SCOPE_OBSERVE is the literal string 'observe'", () => {
+		expect(SCOPE_OBSERVE).toBe("observe");
+	});
+
+	test("createApiKey([SCOPE_OBSERVE]) does not throw and mints a valid key", async () => {
+		const { key } = await createApiKey("observe-only-test", [SCOPE_OBSERVE]);
+		expect(key).toMatch(/^ap_/);
+	});
+
+	test("createApiKey([SCOPE_OBSERVE, SCOPE_MANAGE]) does not throw (dual-scope key)", async () => {
+		const { key } = await createApiKey("observe-manage-test", [SCOPE_OBSERVE, SCOPE_MANAGE]);
+		expect(key).toMatch(/^ap_/);
+	});
+
+	test("verifyApiKey on an observe-only key returns scopes: ['observe']", async () => {
+		const { key } = await createApiKey("verify-observe-test", [SCOPE_OBSERVE]);
+		const record = await verifyApiKey(key);
+		expect(record).not.toBeNull();
+		expect(record?.scopes).toEqual([SCOPE_OBSERVE]);
 	});
 });
 
