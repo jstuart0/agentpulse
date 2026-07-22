@@ -78,10 +78,17 @@ export function emitMcpJson(params: EmitConfigParams): string {
 const ORCHESTRATE_APPROVAL_COMMENT = `# --orchestrate: this key is scoped "observe"+"manage" — it can spawn/kill
 # agents, inject prompts into live sessions, and decide human-in-the-loop
 # review items. Codex CLI does NOT honor MCP's _meta.requiresUserInteraction
-# hint (a Claude-Code-only extension) — this per-server approval key is the
-# only confirmation gate Codex offers for mutating tool calls. Verify the
-# accepted values for your installed Codex CLI version before relying on
-# it; "untrusted" is AgentPulse's suggested safe default.`;
+# hint (a Claude-Code-only extension), and Codex's GLOBAL approval_policy
+# does NOT gate raw MCP tool calls either (codex#15437 — even
+# approval_policy="never" still prompted on MCP writes). This per-server
+# default_tools_approval_mode key is the ONLY real gate for this server's
+# tool calls (codex PR #17843). "writes" auto-runs AgentPulse's read tools
+# (registered with readOnlyHint:true, enforced by our drift guard) and
+# prompts before any mutating tool — frictionless reads, confirmed
+# mutations. Requires a Codex CLI version with per-server MCP approval
+# (~April 2026+). For finer-grained control than trusting readOnlyHint,
+# override per tool: [mcp_servers.agentpulse.tools.<tool_name>]
+# approval_mode = "prompt".`;
 
 /**
  * `~/.codex/config.toml`'s `[mcp_servers.agentpulse]` stdio block. Same
@@ -99,7 +106,7 @@ export function emitCodexToml(params: EmitCodexTomlParams): string {
 		'env_vars = ["AGENTPULSE_API_KEY"]',
 	];
 	if (params.canOrchestrate) {
-		lines.push("", ORCHESTRATE_APPROVAL_COMMENT, 'default_tools_approval_mode = "untrusted"');
+		lines.push("", ORCHESTRATE_APPROVAL_COMMENT, 'default_tools_approval_mode = "writes"');
 	}
 	return lines.join("\n");
 }
@@ -119,9 +126,9 @@ scripted/headless MCP client execute these tools WITHOUT any confirmation
 prompt.
 
 Only use --orchestrate for a client you trust to gate its own mutating tool
-calls (e.g. Codex's default_tools_approval_mode, emitted below), and store
-the resulting key like any other credential capable of controlling
-production infrastructure.`;
+calls (e.g. Codex's default_tools_approval_mode = "writes", emitted below),
+and store the resulting key like any other credential capable of
+controlling production infrastructure.`;
 
 // ─── Mint / scope selection ─────────────────────────────────────────
 
@@ -183,6 +190,40 @@ const DEFAULT_INSTALL_URL = "http://localhost:3000";
 const USAGE =
 	"Usage: agentpulse mcp install (--key <existing key> | --mint <name>) [--url <url>] [--orchestrate]";
 
+/**
+ * --url is interpolated, unescaped, into both a shell command
+ * (emitClaudeCommand) and a TOML string literal (emitCodexToml's
+ * `env = { AGENTPULSE_URL = "<url>" }`). Validating here — at the single
+ * ingestion point — closes both injection vectors at the source rather
+ * than defending each emitter separately (xander Medium+Low, mid-build
+ * review): a crafted --url containing `"` breaks out of the TOML string
+ * and can splice in an arbitrary `[mcp_servers.evil]` block; one containing
+ * shell metacharacters executes on paste from emitClaudeCommand's output.
+ */
+const DISALLOWED_URL_CHARS_RE = /["'`$;|\p{Cc}]/u;
+
+function validateUrl(value: string): string {
+	if (DISALLOWED_URL_CHARS_RE.test(value)) {
+		throw new InstallArgsError(
+			`--url contains a disallowed character (quote/backtick/shell metacharacter/control character): ${JSON.stringify(value)}. ${USAGE}`,
+		);
+	}
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		throw new InstallArgsError(
+			`--url is not a well-formed URL: ${JSON.stringify(value)}. ${USAGE}`,
+		);
+	}
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		throw new InstallArgsError(
+			`--url must use http:// or https:// (got "${parsed.protocol}"). ${USAGE}`,
+		);
+	}
+	return value;
+}
+
 export function parseInstallArgs(args: string[]): InstallArgs {
 	let url: string | undefined;
 	let key: string | undefined;
@@ -192,10 +233,12 @@ export function parseInstallArgs(args: string[]): InstallArgs {
 	for (let i = 0; i < args.length; i++) {
 		const flag = args[i];
 		switch (flag) {
-			case "--url":
-				url = args[++i];
-				if (!url) throw new InstallArgsError(`--url requires a value. ${USAGE}`);
+			case "--url": {
+				const value = args[++i];
+				if (!value) throw new InstallArgsError(`--url requires a value. ${USAGE}`);
+				url = validateUrl(value);
 				break;
+			}
 			case "--key":
 				key = args[++i];
 				if (!key) throw new InstallArgsError(`--key requires a value. ${USAGE}`);
@@ -220,6 +263,20 @@ export function parseInstallArgs(args: string[]): InstallArgs {
 	}
 
 	return { url: url ?? DEFAULT_INSTALL_URL, key, mint, orchestrate };
+}
+
+// ─── Auth-key resolution ────────────────────────────────────────────
+
+/**
+ * Three-way credential resolution for the client that backs the
+ * mint-or-preflight call: an explicit `--key` wins, else
+ * `AGENTPULSE_API_KEY` from the environment (the same fallback `mcp serve`
+ * uses), else empty (viable only under DISABLE_AUTH=true). Extracted as a
+ * pure function so the actual precedence rule bin/cli.ts applies is
+ * unit-tested here rather than only reachable end-to-end (tessa M-7).
+ */
+export function resolveAuthKey(parsedKey: string | undefined, envKey: string | undefined): string {
+	return parsedKey ?? envKey ?? "";
 }
 
 // ─── Orchestration ──────────────────────────────────────────────────

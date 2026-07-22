@@ -268,7 +268,9 @@ async function mcpInstall() {
 	const { createHttpClient } = await import("../src/mcp/client.js");
 	const { mapError } = await import("../src/mcp/errors.js");
 	const { ScopeDiscoveryError } = await import("../src/mcp/scopes.js");
-	const { InstallArgsError, parseInstallArgs, runInstall } = await import("../src/mcp/install.js");
+	const { InstallArgsError, parseInstallArgs, resolveAuthKey, runInstall } = await import(
+		"../src/mcp/install.js"
+	);
 
 	let parsed: ReturnType<typeof parseInstallArgs>;
 	try {
@@ -281,7 +283,7 @@ async function mcpInstall() {
 	// Auth for the mint-or-preflight call itself: an explicit --key, else
 	// AGENTPULSE_API_KEY (same fallback `mcp serve` uses), else empty (only
 	// viable under DISABLE_AUTH=true).
-	const authKey = parsed.key ?? process.env.AGENTPULSE_API_KEY ?? "";
+	const authKey = resolveAuthKey(parsed.key, process.env.AGENTPULSE_API_KEY);
 	const client = createHttpClient({ baseUrl: parsed.url, apiKey: authKey });
 
 	try {
