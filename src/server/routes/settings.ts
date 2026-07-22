@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { InvalidScopeError, createApiKey, parseScopes } from "../auth/api-key.js";
-import { requireAuth, requireScope } from "../auth/middleware.js";
+import { requireAuth } from "../auth/middleware.js";
+import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, settings } from "../db/schema/index.js";
 import { ProtectedSettingError, upsertSetting } from "../services/settings-service.js";
@@ -16,7 +17,8 @@ const settingsRouter = new Hono();
 settingsRouter.use("*", requireAuth());
 // All settings routes are operator-only (H-1, H-2): ingest keys must not
 // read or write settings, workspace defaults, or API-key management.
-settingsRouter.use("*", requireScope("manage"));
+// Deliberately manage-only (no route here is in OBSERVE_READ_PATHS).
+settingsRouter.use("*", requireOperatorScope());
 
 // GET /api/v1/settings - Get all settings
 settingsRouter.get("/settings", async (c) => {

@@ -483,15 +483,26 @@ const BASELINE_STATUS: Record<string, number> = {
 	"GET /admin/supervisors": 200,
 };
 
+// Mounts are requested SEQUENTIALLY (not Promise.all) in this sweep: several
+// baseline routes (DELETE/PUT on a shared fake session id) open a
+// withTransaction() block, and firing both mounts concurrently against the
+// same row races bun:sqlite into "cannot start a transaction within a
+// transaction" — a test-harness artifact of hitting the identical resource
+// twice at once, not a Phase 1 policy regression. The captured baseline
+// itself was measured sequentially (see the probe script referenced above).
 describe("Row 34 — manageKey/forwardauth/DISABLE_AUTH regression sweep vs captured 9d4d030 baseline", () => {
 	test("manageKey status is unchanged from the pre-Phase-1 baseline on every route, both mounts", async () => {
 		for (const [key, expectedStatus] of Object.entries(BASELINE_STATUS)) {
 			const spaceIdx = key.indexOf(" ");
 			const method = key.slice(0, spaceIdx);
 			const path = key.slice(spaceIdx + 1);
-			const [a, b] = await requestAllMounts(method, path, authBearer(manageKey));
-			expect(a.status).toBe(expectedStatus);
-			expect(b.status).toBe(expectedStatus);
+			for (const mount of MOUNTS) {
+				const res = await app.request(`${mount}${path}`, {
+					method,
+					headers: authBearer(manageKey),
+				});
+				expect(res.status).toBe(expectedStatus);
+			}
 		}
 	});
 
@@ -500,13 +511,10 @@ describe("Row 34 — manageKey/forwardauth/DISABLE_AUTH regression sweep vs capt
 			const spaceIdx = key.indexOf(" ");
 			const method = key.slice(0, spaceIdx);
 			const path = key.slice(spaceIdx + 1);
-			const [a, b] = await Promise.all(
-				MOUNTS.map((mount) =>
-					app.request(`${mount}${path}`, { method, headers: forwardauthHeaders() }),
-				),
-			);
-			expect(a.status).toBe(expectedStatus);
-			expect(b.status).toBe(expectedStatus);
+			for (const mount of MOUNTS) {
+				const res = await app.request(`${mount}${path}`, { method, headers: forwardauthHeaders() });
+				expect(res.status).toBe(expectedStatus);
+			}
 		}
 	});
 
@@ -517,11 +525,10 @@ describe("Row 34 — manageKey/forwardauth/DISABLE_AUTH regression sweep vs capt
 				const spaceIdx = key.indexOf(" ");
 				const method = key.slice(0, spaceIdx);
 				const path = key.slice(spaceIdx + 1);
-				const [a, b] = await Promise.all(
-					MOUNTS.map((mount) => app.request(`${mount}${path}`, { method })),
-				);
-				expect(a.status).toBe(expectedStatus);
-				expect(b.status).toBe(expectedStatus);
+				for (const mount of MOUNTS) {
+					const res = await app.request(`${mount}${path}`, { method });
+					expect(res.status).toBe(expectedStatus);
+				}
 			}
 		} finally {
 			(config as Record<string, unknown>).disableAuth = false;
@@ -533,9 +540,13 @@ describe("Row 34 — manageKey/forwardauth/DISABLE_AUTH regression sweep vs capt
 			const spaceIdx = key.indexOf(" ");
 			const method = key.slice(0, spaceIdx);
 			const path = key.slice(spaceIdx + 1);
-			const [a, b] = await requestAllMounts(method, path, authBearer(ingestKey));
-			expect(a.status).toBe(403);
-			expect(b.status).toBe(403);
+			for (const mount of MOUNTS) {
+				const res = await app.request(`${mount}${path}`, {
+					method,
+					headers: authBearer(ingestKey),
+				});
+				expect(res.status).toBe(403);
+			}
 		}
 	});
 });
@@ -674,7 +685,8 @@ describe("Route-drift guard — every GET/HEAD route in the swapped bundle is cl
 			if (seen.has(normalized)) continue;
 			seen.add(normalized);
 			checked++;
-			const classified = OBSERVE_READ_PATHS.has(normalized) || INTENTIONALLY_MANAGE_ONLY.has(normalized);
+			const classified =
+				OBSERVE_READ_PATHS.has(normalized) || INTENTIONALLY_MANAGE_ONLY.has(normalized);
 			expect(classified).toBe(true);
 		}
 		// Sanity: this test must actually walk a non-trivial route population,

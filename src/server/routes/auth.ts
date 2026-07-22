@@ -232,6 +232,10 @@ authRouter.get("/auth/me", async (c) => {
 			provider: user.provider ?? null,
 			id: user.id ?? null,
 			role: user.role ?? null,
+			// AGEN-12 Phase 1: additive. api_key callers only — forwardauth/local
+			// callers never carry scopes (AuthUser docstring); JSON.stringify
+			// drops the key entirely when undefined, so it's simply absent there.
+			scopes: user.scopes,
 		},
 		signOutUrl,
 		localAuthEnabled: true,

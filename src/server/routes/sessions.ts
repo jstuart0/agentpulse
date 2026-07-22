@@ -1,7 +1,9 @@
 import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
+import type { Context } from "hono";
 import { Hono } from "hono";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
-import { requireAuth, requireScope } from "../auth/middleware.js";
+import { type AuthUser, requireAuth } from "../auth/middleware.js";
+import { callerHasManageScope, requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
 import { events, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
@@ -24,7 +26,10 @@ sessionsRouter.use("*", requireAuth());
 // Session data is operator-only. Ingest keys must not list session history,
 // read event timelines, or mutate session state (rename, notes, archive).
 // Relay users must use a manage-scoped key (see scripts/setup-relay.sh).
-sessionsRouter.use("*", requireScope("manage"));
+// requireOperatorScope() additionally recognizes observe-scoped keys on the
+// read-only routes in OBSERVE_READ_PATHS (list, detail, timeline, event
+// context, claude-md); mutating routes and control-actions stay manage-only.
+sessionsRouter.use("*", requireOperatorScope());
 
 // GET /api/v1/sessions - List sessions
 sessionsRouter.get("/sessions", async (c) => {
@@ -45,7 +50,7 @@ sessionsRouter.get("/sessions/stats", async (c) => {
 });
 
 // GET /api/v1/sessions/:sessionId - Session detail
-sessionsRouter.get("/sessions/:sessionId", async (c) => {
+sessionsRouter.get("/sessions/:sessionId", async (c: Context) => {
 	const sessionId = c.req.param("sessionId");
 	const session = await getSession(sessionId);
 
@@ -61,7 +66,13 @@ sessionsRouter.get("/sessions/:sessionId", async (c) => {
 		.orderBy(desc(events.createdAt))
 		.limit(500);
 
-	const controlActions = await listControlActionsForSession(sessionId);
+	// C1: controlActions metadata carries the injected prompt and launch.env
+	// (control-actions.ts:187-194). An observe-scoped caller may read session
+	// detail (it's in OBSERVE_READ_PATHS) but must not see this embed.
+	const authUser = c.get("authUser") as AuthUser | undefined;
+	const controlActions = callerHasManageScope(authUser)
+		? await listControlActionsForSession(sessionId)
+		: undefined;
 
 	return c.json({ session, events: sessionEvents, controlActions });
 });

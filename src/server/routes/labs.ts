@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { requireAuth, requireScope } from "../auth/middleware.js";
+import { requireAuth } from "../auth/middleware.js";
+import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import {
 	LABS_REGISTRY,
 	type LabsFlag,
@@ -9,7 +10,7 @@ import {
 
 const labsRouter = new Hono();
 labsRouter.use("*", requireAuth());
-labsRouter.use("*", requireScope("manage"));
+labsRouter.use("*", requireOperatorScope());
 
 labsRouter.get("/labs/flags", async (c) => {
 	const flags = await getLabsFlags();

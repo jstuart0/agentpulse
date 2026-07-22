@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { requireAuth, requireScope } from "../auth/middleware.js";
+import { requireAuth } from "../auth/middleware.js";
+import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import {
 	archiveThread,
@@ -23,7 +24,8 @@ const askRouter = new Hono();
 // of its path (path-prefixed use() only fires on matching paths, which would
 // silently miss a hypothetical non-/ai/ask route added later).
 askRouter.use("*", requireAuth());
-askRouter.use("*", requireScope("manage"));
+// Manage-only: /ai/ask is an NL side-channel excluded from observe (D2).
+askRouter.use("*", requireOperatorScope());
 
 async function ensureEnabled(c: Context) {
 	if (!isAiBuildEnabled()) {

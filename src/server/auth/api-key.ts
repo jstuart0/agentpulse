@@ -8,10 +8,16 @@ import { apiKeys } from "../db/schema/index.js";
 export const SCOPE_INGEST = "ingest";
 /** Authorizes management operations: supervisor enroll/rotate/revoke, API-key CRUD. */
 export const SCOPE_MANAGE = "manage";
+/**
+ * Authorizes read-only access to observability routes. Secret-free at the
+ * REST boundary: the route allowlist (route-scope-policy.ts, OBSERVE_READ_PATHS)
+ * excludes every DTO that carries env vars, launch payloads, or claim tokens.
+ */
+export const SCOPE_OBSERVE = "observe";
 /** Wildcard — all scopes. Only valid when stored in the DB (never accepted from a client request). */
 export const SCOPE_ALL = "*";
 
-const RECOGNIZED_SCOPES = new Set([SCOPE_INGEST, SCOPE_MANAGE]);
+const RECOGNIZED_SCOPES = new Set([SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE]);
 
 // ── Scope utilities ───────────────────────────────────────────────────────────
 
