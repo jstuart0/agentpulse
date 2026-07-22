@@ -14,6 +14,7 @@ AgentPulse is the command center for AI coding agents across all your machines. 
 - **ORM:** Drizzle
 - **Real-time:** WebSocket (native Bun) + 3s polling fallback
 - **Telemetry:** Cloudflare Worker + D1 at `telemetry-agentpulse.xmojo.net` (default homelab endpoint; configurable via `TELEMETRY_ENDPOINT` env var in `src/server/services/telemetry.ts`)
+- **MCP:** `@modelcontextprotocol/sdk` (stdio transport) + `zod` (tool input schemas) — `src/mcp/`, see `docs/MCP.md`
 - **Linting:** Biome
 
 ## Commands
@@ -32,6 +33,8 @@ bun run check:architecture  # Run all architecture guard scripts
 bun run typecheck        # TypeScript type checking
 bun run test             # Run test suite (bun test)
 bun run test:watch       # Run tests in watch mode
+agentpulse mcp serve     # Run the MCP server over stdio (for Claude Code / Codex CLI)
+agentpulse mcp install   # Mint/reuse a scoped API key, print client config (see docs/MCP.md)
 ```
 
 ## Project Structure
@@ -91,6 +94,7 @@ bun run test:watch       # Run tests in watch mode
   - `lib/` - `api.ts` (single API client), `parseDate.ts` (import from `src/web/lib/parseDate.ts`)
 - `src/shared/` - Shared types and constants (including `session-state.ts`)
 - `src/supervisor/` - Local supervisor process (launch/control plane for same-machine sessions)
+- `src/mcp/` - MCP server (AGEN-12): `client.ts` (typed HTTP client over `/api/v1`), `server.ts` (`registerReadTool`/`registerMutatingTool` wrappers — the only sanctioned way to register a tool), `scopes.ts` (`discoverScopes` via `/auth/me`), `errors.ts`/`output.ts` (error mapping + output caps), `install.ts` (key mint + Claude/Codex config emitters), `resources.ts`, `tools/` (per-domain tool files: `sessions.ts`, `ai.ts`, `templates.ts`, `orchestrate.ts`, `decide.ts`, `session-actions.ts`, `catalog.ts`), `index.ts` (`serveStdio()`)
 - `deploy/k8s/` - Kubernetes manifests (namespace, secret template, configmap, PVC, deployment, service, middleware, ingressroute, limitrange, resourcequota, networkpolicy, serviceaccount, backup PVC)
 - `deploy/overlays/postgres/` - Kustomize overlay for Postgres-backed deployments (removes backup sidecar, sets `DATABASE_URL`, switches to `RollingUpdate`)
 - `scripts/` - setup-hooks.sh, setup-relay.sh, relay.ts, statusline.sh, install-local.sh, install-local.ps1, build-and-push.sh, check-installers.ts, check-hook-event-parity.ts, smoke-parsers.ts, ai-live-test.ts, and architecture guard scripts
@@ -185,10 +189,12 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - `POST /api/v1/internal/drain` - Initiate graceful drain (sets readiness to 503; only reachable from localhost)
 
 **Dashboard API:**
-- `GET /api/v1/sessions` - List sessions (filterable by status, agent_type)
+- `GET /api/v1/auth/me` - Current identity; for `api_key` callers now includes `scopes: string[]` (AGEN-12) alongside the existing fields. Un-forwardauth'd by design (see Auth section).
+- `GET /api/v1/sessions` - List sessions (filterable by status, agent_type). Each row now includes a `managed: boolean` (AGEN-12) indicating whether a supervisor is holding a live process for it (i.e. whether prompt/stop/retry control actions can target it).
 - `GET /api/v1/sessions/stats` - Dashboard KPI stats
+- `GET /api/v1/projects` - List projects. `manage`-scoped only (AGEN-12, F23): the DTO carries arbitrary operator-set `notes`/`metadata` and a `githubRepoUrl` that may embed userinfo credentials, so it's excluded from the `observe` read tier.
 - `GET /api/v1/search?kinds=session&q=` - Search sessions/events (FTS5-backed)
-- `GET /api/v1/sessions/:id` - Session detail with prompt timeline
+- `GET /api/v1/sessions/:id` - Session detail with prompt timeline. The embedded `controlActions` field (AGEN-12) is present only for `manage`-scoped callers — it carries injected-prompt text and `launch.env`, so it's omitted for `observe`-scoped API key callers (forwardauth/local/disable-auth callers always see it, since they're never scope-checked).
 - `PUT /api/v1/sessions/:id/notes` - Save session notes
 - `PUT /api/v1/sessions/:id/rename` - Rename session (accepts optional `source` body field; only an explicit `source: "user"` records `metadata.renameSource = "user"`, which blocks a later native-name pull from overwriting it — an omitted `source`, or any other value like `"sync"`, is legacy-neutral and renames without stamping, so a mixed-version old relay sending no `source` field can't be misclassified as a manual rename. The dashboard and the Ask "rename X to Y" command both send `source: "user"` explicitly)
 - `PUT /api/v1/sessions/:id/native-name` - Pull-only sync (F5) of Claude Code's native session name into `displayName`; called by `scripts/statusline.sh`. 404s on an unknown session (retry-next-render signal for the statusline caller); refuses to overwrite a manually-renamed session
@@ -217,6 +223,8 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - `EventCategory` (`src/shared/types.ts`) includes `permission_event` for `PermissionRequest`/`PermissionDenied` — a first-class category, not the generic `system_event` else-branch, so the inbox/alert-rules can query them without content-string matching.
 - Permission-wait visibility: a session blocked on a permission prompt shows `semanticStatus = "waiting"` on the dashboard. State lives in `sessions.metadata.permissionWait` as `{ ids, anon, prevStatus }` (tool_use_id-keyed outstanding waits, anonymous fallback count, and the status to restore once all waits clear). Mutated by `applyPermissionWaitTransition` (`event-processor.ts`) via a late read-modify-write inside `withTransaction`, invoked unconditionally on `PermissionRequest` and every clear-capable event (`PermissionDenied`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SessionStart`). Ordering is best-effort and self-healing within one subsequent same-session boundary event, never restoring a stale `prevStatus` over a newer agent-reported status. See the plan's Decision 10 for the full state model.
 - Hook-event lists must stay in parity across **7 code sites** per agent, checked against `src/shared/types.ts`'s `ClaudeCodeEvent`/`CodexEvent` unions (the canonical source): `scripts/setup-hooks.sh`, `scripts/setup-relay.sh`, both embedded templates in `src/server/routes/setup.ts`, `scripts/install-local.ps1`, `bin/cli.ts`, `src/web/pages/SetupPage.tsx`'s in-app "Copy Config" ternary. Run `bun run check:hook-event-parity` (chained into `check:architecture`, `scripts/check-hook-event-parity.ts`) to verify the 7 sites. `README.md`'s prose counts must also stay in sync but are **not** checked by the guard — update them by hand when the event lists change.
+- **API key scope model (AGEN-12)**: two REST-boundary scopes beyond `ingest` — `observe` (read-only, provably secret-free at the REST boundary) and `manage` (unchanged from AGEN-9: full operator control). Every `/v1`-bundle operator route is classified via `src/server/auth/route-scope-policy.ts`'s `requireOperatorScope()` against two exact-route-pattern sets: `OBSERVE_READ_PATHS` (GET/HEAD readable by `observe`) and `INTENTIONALLY_MANAGE_ONLY` (reads whose DTOs carry env vars, launch specs, claim tokens, or arbitrary operator-authored content — e.g. `/templates`, `/launches`, `/ai/inbox`, `/projects`). Unclassified/unmatched routes default to `manage` (fail-closed). All 10 in-bundle wildcard scope gates swap together as a unit (`supervisors.ts`'s admin router is the one deliberate exception, staying strict `manage`) — a route-drift test walks `app.routes` and fails if a new GET route isn't classified into one of the two sets. `requireOperatorScope()` preserves the `DISABLE_AUTH` early-return exactly like `requireScope` did. This scope model is what the MCP server's `observe`/`manage` tool tiers are built on — see `docs/MCP.md`. `_meta["anthropic/requiresUserInteraction"]` (rUI), stamped on every mutating MCP tool, is a Claude-Code-only UI convention — Codex CLI and any scripted/headless MCP client execute mutating tool calls with no confirmation prompt regardless of rUI; the scope model (not rUI) is the real security boundary.
+- Two `src/mcp/`-scoped architecture guards, chained into `check:architecture`: `check:no-console-log-mcp` (`scripts/check-no-console-log-mcp.ts`) fails on any `console.log`/`console.debug`/raw `process.stdout.write` under `src/mcp/` — the stdio transport owns stdout for the JSON-RPC stream, so diagnostics must go through `src/mcp/log.ts`'s stderr-only logger instead; `check:mcp-no-raw-register-tool` (`scripts/check-mcp-no-raw-register-tool.ts`) fails on any `.registerTool(` call outside `src/mcp/server.ts` — every tool must register via `registerReadTool()`/`registerMutatingTool()` so output caps, error mapping, and rUI stamping stay structural.
 
 ## Deployment
 

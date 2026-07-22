@@ -102,7 +102,19 @@ docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUT
 - **Random session names** -- each session gets a name like `brave-falcon` so you can tell them apart
 - **CLAUDE.md editor** -- view and edit your agent instruction files from the dashboard
 - **Setup page** -- generates hook config you can copy-paste, or use the one-liner above
+- **MCP server** -- let Claude Code, Codex CLI, or any MCP-compliant agent observe and orchestrate your fleet directly (list/inspect sessions, search, launch agents, steer live sessions, decide inbox items) via `agentpulse mcp serve`. See below.
 - **AI Labs (experimental)** -- optional AI layer that watches sessions, classifies health, proposes next steps with human-in-the-loop approval, plus an **Ask** command surface that lets you launch / edit / search / summarize / alert in natural language. Each feature is behind its own Labs toggle. See below.
+
+## MCP server
+
+AgentPulse can be driven by an external AI coding agent over the [Model Context Protocol](https://modelcontextprotocol.io): 11 read tools (sessions, search, digest, AI intelligence) plus orchestration tools (launch agents, prompt/stop live sessions, decide HITL/inbox items), gated behind a scoped API key.
+
+```bash
+agentpulse mcp install --mint my-agent          # observe-only (read-only), the safe default
+agentpulse mcp install --mint my-agent --orchestrate  # adds launch/steer/decide -- read the security notes first
+```
+
+`mcp install` prints ready-to-paste Claude Code and Codex CLI config. See **[docs/MCP.md](docs/MCP.md)** for the full tool catalog, client setup, and a security section covering what a `manage`-scoped key can do and why Codex CLI does not honor Claude Code's confirmation prompt.
 
 ## AI Labs (experimental)
 

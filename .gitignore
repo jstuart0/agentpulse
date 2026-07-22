@@ -9,7 +9,12 @@ data/
 .DS_Store
 .vite/
 thoughts/
-docs/
+# docs/ is otherwise private working notes (see "Stop tracking docs/ in the
+# public repo"); docs/MCP.md is the one exception — a committed, public
+# OSS reference doc (AGEN-12). Add further `!docs/<file>.md` exceptions here
+# for any other doc intended to ship publicly.
+docs/*
+!docs/MCP.md
 
 # Private Kustomize overlays. The OSS-clean base lives at deploy/k8s/.
 # Environment-specific overlays (real image registry, cluster hostnames,
