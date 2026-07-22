@@ -132,6 +132,33 @@ describe("drift guard: every non-RO tool carries rUI (assertion 16)", () => {
 	});
 });
 
+/**
+ * tessa L (Phase 4 mid-build review): walks the destructiveHint population
+ * explicitly (not just a per-tool test scoped to delete_template in
+ * templates.test.ts) so the NEXT destructive tool a future phase adds is
+ * forced through a conscious update here too — matching the same
+ * intentionally-brittle philosophy as the tool-count assertion (20) below.
+ */
+describe("drift guard: destructiveHint population (tessa L)", () => {
+	test("delete_template is the only currently-registered destructiveHint tool; every destructiveHint tool also carries rUI", async () => {
+		const { mcpClient } = await connectServer(["observe", "manage"]);
+		const { tools } = await mcpClient.listTools();
+		const destructive = tools
+			.filter((t) => t.annotations?.destructiveHint === true)
+			.map((t) => t.name);
+		// Update this list — deliberately, not silently — the day a second
+		// destructive tool is registered.
+		expect(destructive).toEqual(["delete_template"]);
+		for (const name of destructive) {
+			const tool = tools.find((t) => t.name === name);
+			expect(
+				(tool?._meta as Record<string, unknown> | undefined)?.[REQUIRES_USER_INTERACTION_META],
+				`${name} carries destructiveHint but not rUI`,
+			).toBe(true);
+		}
+	});
+});
+
 describe("drift guard: exclusion denylist (assertion 18)", () => {
 	test("no registered tool name matches an excluded name", async () => {
 		const { mcpClient } = await connectServer(["observe", "manage"]);

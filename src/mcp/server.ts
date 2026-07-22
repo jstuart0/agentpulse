@@ -31,6 +31,7 @@ import { registerAiTools } from "./tools/ai.js";
 import { registerCatalogTools } from "./tools/catalog.js";
 import { registerDecideTools } from "./tools/decide.js";
 import { registerOrchestrateTools } from "./tools/orchestrate.js";
+import { registerSessionActionTools } from "./tools/session-actions.js";
 import { registerSessionsTools } from "./tools/sessions.js";
 import { registerTemplateMutationTools } from "./tools/templates.js";
 
@@ -43,6 +44,21 @@ export interface ToolRegistryEntry {
 	meta?: Record<string, unknown>;
 }
 
+/**
+ * Tool-surface field-naming convention (dexter L, Phase 4 mid-build —
+ * promoted here from two scattered file-header comments in tools/*.ts,
+ * canonical location going forward): a tool's own TOP-LEVEL input fields
+ * use snake_case (session_id, template_id, agent_type, ...), matching every
+ * Phase 1-3 read tool. The one deliberate exception is a NESTED
+ * pass-through object that mirrors a shared/types.ts shape verbatim in
+ * camelCase — currently orchestrate.ts's launch_agent/recommend_launch/
+ * preview_template `template`/`launch_spec` fields, which exist so a caller
+ * can round-trip preview_template's own camelCase output straight into
+ * launch_agent with zero translation. Every other tool (including
+ * templates.ts's create_template/update_template, whose fields ARE a
+ * tool's own top-level params, not a pass-through blob) snake_cases and
+ * translates server-side.
+ */
 export interface ToolContext {
 	readonly server: McpServer;
 	readonly client: AgentPulseClient;
@@ -192,6 +208,7 @@ export function buildMcpServer({ client, scopes }: BuildMcpServerOptions): Build
 	registerCatalogTools(ctx, flags);
 	registerAiTools(ctx, flags);
 	registerOrchestrateTools(ctx, flags);
+	registerSessionActionTools(ctx, flags);
 	registerTemplateMutationTools(ctx, flags);
 	registerDecideTools(ctx, flags);
 	if (flags.hasObserve) registerResources(server, client);

@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ApiError } from "../client.js";
 import type { ToolContext } from "../server.js";
 import { fakeClient } from "../test-support.js";
 import { registerDecideTools } from "./decide.js";
@@ -114,6 +115,111 @@ describe("decide_action_request (assertion 14)", () => {
 			expect(schema.type, `${key} must not be an array (batch field)`).not.toBe("array");
 		}
 	});
+
+	/**
+	 * tessa H-5: ai-inbox.ts's decide-endpoint 409/422 failure branches
+	 * (:206-270) carry a human `message` alongside the machine `error` code
+	 * ("race_lost"/"expired"/"failed") — errors.ts's generic-4xx fallback
+	 * must surface the message, not the opaque code.
+	 */
+	test("409 race_lost surfaces the human message, not the bare 'race_lost' code", async () => {
+		const client = fakeClient({
+			decideActionRequest: async () => {
+				throw new ApiError(409, {
+					error: "race_lost",
+					currentStatus: "applied",
+					message: "Another approval already claimed this request.",
+					actionRequest: null,
+				});
+			},
+		});
+		const ctx = newContext(client);
+		registerDecideTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+
+		const result = await mcpClient.callTool({
+			name: "decide_action_request",
+			arguments: { action_request_id: "ar1", decision: "applied" },
+		});
+
+		expect(result.isError).toBe(true);
+		const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+		expect(text).toContain("Another approval already claimed this request.");
+		expect(text).not.toBe("race_lost");
+	});
+
+	test("422 expired surfaces the human message naming the failure reason", async () => {
+		const client = fakeClient({
+			decideActionRequest: async () => {
+				throw new ApiError(422, {
+					error: "expired",
+					failureReason: "the action request expired before it could be applied",
+					message: "Launch couldn't proceed: the action request expired before it could be applied",
+					actionRequest: null,
+				});
+			},
+		});
+		const ctx = newContext(client);
+		registerDecideTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+
+		const result = await mcpClient.callTool({
+			name: "decide_action_request",
+			arguments: { action_request_id: "ar1", decision: "applied" },
+		});
+
+		expect(result.isError).toBe(true);
+		const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+		expect(text).toContain("Launch couldn't proceed");
+		expect(text).toContain("expired before it could be applied");
+	});
+
+	test("422 failed surfaces the human message", async () => {
+		const client = fakeClient({
+			decideActionRequest: async () => {
+				throw new ApiError(422, {
+					error: "failed",
+					failureReason: "supervisor unreachable",
+					message: "Launch failed: supervisor unreachable",
+					actionRequest: null,
+				});
+			},
+		});
+		const ctx = newContext(client);
+		registerDecideTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+
+		const result = await mcpClient.callTool({
+			name: "decide_action_request",
+			arguments: { action_request_id: "ar1", decision: "applied" },
+		});
+
+		expect(result.isError).toBe(true);
+		const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+		expect(text).toContain("Launch failed: supervisor unreachable");
+	});
+});
+
+describe("decide_hitl — no regression from the H-5 fallback change (its route is 404-only, no message field)", () => {
+	test("404 hitl-not-found still surfaces the bare error code (no message field on that body)", async () => {
+		const client = fakeClient({
+			decideHitl: async () => {
+				throw new ApiError(404, { error: "hitl not found" });
+			},
+		});
+		const ctx = newContext(client);
+		registerDecideTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+
+		const result = await mcpClient.callTool({
+			name: "decide_hitl",
+			arguments: { hitl_id: "h1", action: "approve" },
+		});
+
+		expect(result.isError).toBe(true);
+		const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+		expect(text).toContain("hitl not found");
+	});
 });
 
 describe("not registered under observe-only scope", () => {
@@ -121,5 +227,21 @@ describe("not registered under observe-only scope", () => {
 		const ctx = newContext(fakeClient());
 		registerDecideTools(ctx, { hasObserve: true, hasManage: false });
 		expect(ctx.registry.length).toBe(0);
+	});
+});
+
+describe("HITL-bypass + confirmation-portability caveats (xander H1/e)", () => {
+	test("both tools' descriptions warn that deciding here is NOT a human approval, and state the confirmation-portability caveat", async () => {
+		const ctx = newContext(fakeClient());
+		registerDecideTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const { tools } = await mcpClient.listTools();
+		for (const name of ["decide_hitl", "decide_action_request"]) {
+			const tool = tools.find((t) => t.name === name);
+			expect(tool?.description, `${name} HITL-bypass caveat`).toContain("NOT a human approval");
+			expect(tool?.description, `${name} confirmation-portability caveat`).toContain(
+				"state-changing action",
+			);
+		}
 	});
 });

@@ -47,6 +47,23 @@ function bodyErrorCode(body: unknown): string | undefined {
 }
 
 /**
+ * Several routes (decide_action_request's 409 race_lost / 422
+ * expired|failed — ai-inbox.ts:206-270) carry a human-readable `message`
+ * alongside the machine `error` code. The generic 4xx fallback below prefers
+ * this over the bare code so "Another approval already claimed this
+ * request." reaches the caller instead of the opaque "race_lost" (tessa
+ * H-5) — explicit ERROR_TABLE rows are unaffected; they already carry their
+ * own message.
+ */
+function bodyMessage(body: unknown): string | undefined {
+	if (body && typeof body === "object" && "message" in body) {
+		const value = (body as { message?: unknown }).message;
+		return typeof value === "string" ? value : undefined;
+	}
+	return undefined;
+}
+
+/**
  * Declarative (status, error-code) → message table (dexter Med — was 8
  * nested `if` branches; a table iterated once scales better as Phase 3/4
  * wrap more ai-* routes, each adding another row rather than another
@@ -126,7 +143,7 @@ export function mapError(err: unknown, baseUrl: string): McpErrorResult {
 			);
 		}
 		if (status >= 400 && status < 500) {
-			return errorResult(code ?? truncate(bodyText(body)));
+			return errorResult(bodyMessage(body) ?? code ?? truncate(bodyText(body)));
 		}
 		return errorResult(`AgentPulse returned ${status}: ${truncate(bodyText(body))}`);
 	}

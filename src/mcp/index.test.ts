@@ -14,6 +14,12 @@
  * process.stderr.write (to capture the diagnostic text without polluting
  * test output), and globalThis.fetch (so discoverScopes' /auth/me call
  * resolves to a controlled response) — no auth server needed.
+ *
+ * tessa L (Phase 4 mid-build review): every fail-fast path also asserts
+ * process.stdout.write is never called — the stdio transport owns stdout
+ * for the JSON-RPC protocol stream (log.ts's whole reason for existing);
+ * a diagnostic message accidentally routed to stdout here would corrupt
+ * that stream for a real client.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { serveStdio } from "./index.js";
@@ -28,6 +34,7 @@ describe("serveStdio — fail-fast paths (tessa-H2)", () => {
 	const originalEnv = { ...process.env };
 	let exitSpy: ReturnType<typeof spyOn>;
 	let stderrSpy: ReturnType<typeof spyOn>;
+	let stdoutSpy: ReturnType<typeof spyOn>;
 	let fetchSpy: ReturnType<typeof spyOn> | undefined;
 
 	beforeEach(() => {
@@ -35,11 +42,13 @@ describe("serveStdio — fail-fast paths (tessa-H2)", () => {
 			throw new ProcessExitCalled(code);
 		}) as never);
 		stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+		stdoutSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
 	});
 
 	afterEach(() => {
 		exitSpy.mockRestore();
 		stderrSpy.mockRestore();
+		stdoutSpy.mockRestore();
 		fetchSpy?.mockRestore();
 		fetchSpy = undefined;
 		process.env = { ...originalEnv };
@@ -58,6 +67,7 @@ describe("serveStdio — fail-fast paths (tessa-H2)", () => {
 		await expect(serveStdio()).rejects.toBeInstanceOf(ProcessExitCalled);
 
 		expect(exitSpy).toHaveBeenCalledWith(1);
+		expect(stdoutSpy).not.toHaveBeenCalled();
 		expect(stderrText()).toContain("AGENTPULSE_API_KEY");
 		expect(stderrText().toLowerCase()).toContain("mcp install");
 	});
@@ -82,6 +92,7 @@ describe("serveStdio — fail-fast paths (tessa-H2)", () => {
 		await expect(serveStdio()).rejects.toBeInstanceOf(ProcessExitCalled);
 
 		expect(exitSpy).toHaveBeenCalledWith(1);
+		expect(stdoutSpy).not.toHaveBeenCalled();
 		expect(stderrText().toLowerCase()).toContain("neither");
 		expect(stderrText().toLowerCase()).toContain("mint");
 	});
@@ -100,6 +111,7 @@ describe("serveStdio — fail-fast paths (tessa-H2)", () => {
 		await expect(serveStdio()).rejects.toBeInstanceOf(ProcessExitCalled);
 
 		expect(exitSpy).toHaveBeenCalledWith(1);
+		expect(stdoutSpy).not.toHaveBeenCalled();
 		expect(stderrText()).toContain("AgentPulse rejected");
 	});
 });

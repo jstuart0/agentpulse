@@ -4,18 +4,24 @@
  * list_templates/get_template — live in catalog.ts; this file is the
  * write-side counterpart, split per the plan's file layout.)
  *
- * Unlike orchestrate.ts's launch_agent/recommend_launch/preview_template
- * (which accept a nested, camelCase SessionTemplateInput-shaped `template`
- * object for round-trip fidelity with preview_template's own output), this
- * file's tools ARE the template's own top-level fields — so they follow
- * the established Phase 1-3 tool-surface convention of snake_case params
- * (matching e.g. list_templates' `agent_type`), translated to the
- * camelCase REST body by templateBodyFromArgs below.
+ * Field-naming convention: see the canonical note near ToolContext in
+ * server.ts. This file's fields ARE the template's own top-level params
+ * (not a pass-through blob), so they snake_case per the established
+ * Phase 1-3 tool-surface convention, translated to the camelCase REST body
+ * by templateBodyFromArgs below.
  */
 import { z } from "zod";
 import { AGENT_TYPE_ENUM, APPROVAL_POLICY_ENUM, SANDBOX_MODE_ENUM } from "../enums.js";
 import { registerMutatingTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
+
+/**
+ * xander H1/e (mid-build security review): every mutating tool ships this
+ * caveat in its own description — see orchestrate.ts/session-actions.ts
+ * for the identical constant (each file owns its own copy).
+ */
+const CONFIRMATION_PORTABILITY_NOTE =
+	"This is a state-changing action. The requires-confirmation hint is honored only by MCP hosts that implement it (e.g. Claude Code's UI); other clients (scripted, or hosts without the gate) will execute it without prompting.";
 
 const TEMPLATE_FIELDS_SHAPE = {
 	name: z.string(),
@@ -74,7 +80,7 @@ export function registerTemplateMutationTools(ctx: ToolContext, flags: ScopeFlag
 		ctx,
 		{
 			name: "create_template",
-			description: "Create a new session launch template.",
+			description: `Create a new session launch template. ${CONFIRMATION_PORTABILITY_NOTE}`,
 			inputSchema: TEMPLATE_FIELDS_SHAPE,
 		},
 		async (args, client) => client.createTemplate(templateBodyFromArgs(args)),
@@ -84,7 +90,7 @@ export function registerTemplateMutationTools(ctx: ToolContext, flags: ScopeFlag
 		ctx,
 		{
 			name: "update_template",
-			description: "Replace an existing session launch template's fields.",
+			description: `Replace an existing session launch template's fields. ${CONFIRMATION_PORTABILITY_NOTE}`,
 			inputSchema: { template_id: z.string(), ...TEMPLATE_FIELDS_SHAPE },
 		},
 		async (args, client) => client.updateTemplate(args.template_id, templateBodyFromArgs(args)),
@@ -94,7 +100,7 @@ export function registerTemplateMutationTools(ctx: ToolContext, flags: ScopeFlag
 		ctx,
 		{
 			name: "delete_template",
-			description: "Permanently delete a session launch template. This cannot be undone.",
+			description: `Permanently delete a session launch template. This cannot be undone. ${CONFIRMATION_PORTABILITY_NOTE}`,
 			annotations: { destructiveHint: true },
 			inputSchema: { template_id: z.string() },
 		},

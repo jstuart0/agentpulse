@@ -145,3 +145,18 @@ describe("not registered under observe-only scope", () => {
 		expect(ctx.registry.length).toBe(0);
 	});
 });
+
+describe("confirmation-portability caveat (xander H1/e)", () => {
+	test("every template mutation description states this is a state-changing action other clients may not gate", async () => {
+		const ctx = newContext(fakeClient());
+		registerTemplateMutationTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const { tools } = await mcpClient.listTools();
+		for (const name of ["create_template", "update_template", "delete_template"]) {
+			const tool = tools.find((t) => t.name === name);
+			expect(tool?.description, `${name} confirmation-portability caveat`).toContain(
+				"state-changing action",
+			);
+		}
+	});
+});

@@ -1,5 +1,9 @@
 /**
- * Tests for src/mcp/tools/orchestrate.ts (AGEN-12 Phase 4).
+ * Tests for src/mcp/tools/orchestrate.ts (AGEN-12 Phase 4): recommend_launch,
+ * preview_template, launch_agent, list_hosts. Session-control tools
+ * (prompt_session/stop_session/retry_launch/update_session) moved to
+ * session-actions.test.ts alongside their Phase 4 mid-build split
+ * (dexter M).
  *
  * Test-contract note: assertion 1 as originally written ("launch_agent
  * called with {template_id:"t1"} only → posts POST /launches with body
@@ -15,7 +19,7 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ControlAction, LaunchRequest, SupervisorRecord } from "../../shared/types.js";
+import type { LaunchRequest, SupervisorRecord } from "../../shared/types.js";
 import { ApiError } from "../client.js";
 import type { ToolContext } from "../server.js";
 import { fakeClient } from "../test-support.js";
@@ -124,10 +128,9 @@ const FAKE_SUPERVISOR: SupervisorRecord = {
 };
 
 const FAKE_LAUNCH_REQUEST = { id: "lr-1", status: "validated" } as unknown as LaunchRequest;
-const FAKE_ACTION = { id: "ca-1", actionType: "stop" } as unknown as ControlAction;
 
 describe("launch_agent — template_id mode: three-call sequence (H1, corrects test-contract assertion 1)", () => {
-	test("GET template -> POST preview -> POST launches with {templateId, template, launchSpec}, never {templateId}-only", async () => {
+	test("GET template -> POST preview -> POST launches with the full body, never {templateId}-only (tessa M-4: toEqual, not toMatchObject)", async () => {
 		const calls: string[] = [];
 		let createLaunchBody: unknown;
 		const client = fakeClient({
@@ -153,26 +156,34 @@ describe("launch_agent — template_id mode: three-call sequence (H1, corrects t
 
 		const result = await mcpClient.callTool({
 			name: "launch_agent",
-			arguments: { template_id: "t1" },
+			arguments: {
+				template_id: "t1",
+				requested_supervisor_id: "sup-1",
+				requested_launch_mode: "headless",
+				routing_policy: "manual_target",
+				desired_display_name: "my session",
+			},
 		});
 
 		expect(result.isError).toBeFalsy();
 		expect(calls).toEqual(["getTemplate:t1", "previewTemplate", "createLaunch"]);
-		expect(createLaunchBody).toMatchObject({
+		// toEqual (not toMatchObject, tessa M-4): a silent field swap — e.g.
+		// requestedLaunchMode accidentally carrying routing_policy's value —
+		// would pass toMatchObject's subset check but must fail here.
+		expect(createLaunchBody).toEqual({
 			templateId: "t1",
 			template: FAKE_PREVIEW.normalizedTemplate,
 			launchSpec: FAKE_PREVIEW.launchSpec,
+			requestedSupervisorId: "sup-1",
+			requestedLaunchMode: "headless",
+			routingPolicy: "manual_target",
+			desiredDisplayName: "my session",
 		});
-		// The exact regression this test guards: a bare {templateId} body
-		// cannot launch (launch-validator.ts:150 dereferences launchSpec
-		// unconditionally) — assert the full shape landed, not a subset.
-		expect((createLaunchBody as { template?: unknown }).template).toBeDefined();
-		expect((createLaunchBody as { launchSpec?: unknown }).launchSpec).toBeDefined();
 	});
 });
 
 describe("launch_agent — direct mode (template+launch_spec)", () => {
-	test("posts the caller-supplied template+launch_spec directly, no getTemplate/previewTemplate calls", async () => {
+	test("posts the caller-supplied template+launch_spec directly, no getTemplate/previewTemplate calls (toEqual, tessa M-4)", async () => {
 		const calls: string[] = [];
 		let createLaunchBody: unknown;
 		const client = fakeClient({
@@ -200,22 +211,28 @@ describe("launch_agent — direct mode (template+launch_spec)", () => {
 			arguments: {
 				template: FAKE_PREVIEW.normalizedTemplate,
 				launch_spec: FAKE_LAUNCH_SPEC,
+				requested_supervisor_id: "sup-1",
+				requested_launch_mode: "interactive_terminal",
+				routing_policy: "manual_target",
 				desired_display_name: "my session",
 			},
 		});
 
 		expect(result.isError).toBeFalsy();
 		expect(calls).toEqual(["createLaunch"]);
-		expect(createLaunchBody).toMatchObject({
+		expect(createLaunchBody).toEqual({
 			template: FAKE_PREVIEW.normalizedTemplate,
 			launchSpec: FAKE_LAUNCH_SPEC,
+			requestedSupervisorId: "sup-1",
+			requestedLaunchMode: "interactive_terminal",
+			routingPolicy: "manual_target",
 			desiredDisplayName: "my session",
 		});
 		expect((createLaunchBody as { templateId?: unknown }).templateId).toBeUndefined();
 	});
 });
 
-describe("launch_agent — exactly-one-mode validation (assertions 3-4)", () => {
+describe("launch_agent — exactly-one-mode validation (assertions 3-4, dexter High: partial combos)", () => {
 	test("neither template_id nor template+launch_spec -> isError, no client calls", async () => {
 		let called = false;
 		const client = fakeClient({
@@ -268,6 +285,74 @@ describe("launch_agent — exactly-one-mode validation (assertions 3-4)", () => 
 		expect(textOf(result)).toContain("provide exactly one of");
 		expect(called).toBe(false);
 	});
+
+	/**
+	 * dexter High (real bug, mid-build fix): the original
+	 * `hasTemplateId === hasDirect` check let template_id ride ALONG WITH a
+	 * partial direct-mode field, silently discarding the caller's override
+	 * and taking the template_id path anyway. Both partial combinations
+	 * below must now be rejected client-side, with ZERO client calls (not a
+	 * silent fall-through into template_id mode).
+	 */
+	test("template_id + template (no launch_spec) -> isError, no client calls (partial-combo regression guard)", async () => {
+		let called = false;
+		const client = fakeClient({
+			getTemplate: async () => {
+				called = true;
+				throw new Error("must not be called — this combo must be rejected before any HTTP call");
+			},
+			previewTemplate: async () => {
+				called = true;
+				throw new Error("must not be called");
+			},
+			createLaunch: async () => {
+				called = true;
+				throw new Error("must not be called");
+			},
+		});
+		const ctx = newContext(client);
+		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+
+		const result = await mcpClient.callTool({
+			name: "launch_agent",
+			arguments: { template_id: "t1", template: FAKE_PREVIEW.normalizedTemplate },
+		});
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("provide exactly one of");
+		expect(called).toBe(false);
+	});
+
+	test("template_id + launch_spec (no template) -> isError, no client calls (partial-combo regression guard)", async () => {
+		let called = false;
+		const client = fakeClient({
+			getTemplate: async () => {
+				called = true;
+				throw new Error("must not be called — this combo must be rejected before any HTTP call");
+			},
+			previewTemplate: async () => {
+				called = true;
+				throw new Error("must not be called");
+			},
+			createLaunch: async () => {
+				called = true;
+				throw new Error("must not be called");
+			},
+		});
+		const ctx = newContext(client);
+		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+
+		const result = await mcpClient.callTool({
+			name: "launch_agent",
+			arguments: { template_id: "t1", launch_spec: FAKE_LAUNCH_SPEC },
+		});
+
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain("provide exactly one of");
+		expect(called).toBe(false);
+	});
 });
 
 describe("launch_agent — server-side validator rejection surfaces through the client", () => {
@@ -288,6 +373,18 @@ describe("launch_agent — server-side validator rejection surfaces through the 
 
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toContain("Selected host is not connected.");
+	});
+});
+
+describe("launch_agent — confirmation-portability caveat (xander H1/e)", () => {
+	test("description states this is a state-changing action whose confirmation hint some hosts won't honor", async () => {
+		const ctx = newContext(fakeClient());
+		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const { tools } = await mcpClient.listTools();
+		const tool = tools.find((t) => t.name === "launch_agent");
+		expect(tool?.description).toContain("state-changing action");
+		expect(tool?.description).toContain("other clients");
 	});
 });
 
@@ -336,260 +433,6 @@ describe("recommend_launch / preview_template — advisory, RO, no rUI (assertio
 	});
 });
 
-describe("stop_session / retry_launch / prompt_session (assertions 9-10, L2 managed-only)", () => {
-	test("stop_session -> client.stopSession(sessionId)", async () => {
-		let seen: string | undefined;
-		const client = fakeClient({
-			stopSession: async (sessionId) => {
-				seen = sessionId;
-				return { action: FAKE_ACTION };
-			},
-		});
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-		const result = await mcpClient.callTool({
-			name: "stop_session",
-			arguments: { session_id: "s1" },
-		});
-		expect(result.isError).toBeFalsy();
-		expect(seen).toBe("s1");
-	});
-
-	test("retry_launch -> client.retryLaunch(sessionId)", async () => {
-		let seen: string | undefined;
-		const client = fakeClient({
-			retryLaunch: async (sessionId) => {
-				seen = sessionId;
-				return { action: FAKE_ACTION, launchRequest: FAKE_LAUNCH_REQUEST };
-			},
-		});
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-		const result = await mcpClient.callTool({
-			name: "retry_launch",
-			arguments: { session_id: "s1" },
-		});
-		expect(result.isError).toBeFalsy();
-		expect(seen).toBe("s1");
-	});
-
-	test("prompt_session posts {prompt} matching sessions.ts:162's shape", async () => {
-		let seenPrompt: string | undefined;
-		const client = fakeClient({
-			promptSession: async (_sessionId, prompt) => {
-				seenPrompt = prompt;
-				return { action: FAKE_ACTION };
-			},
-		});
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-		const result = await mcpClient.callTool({
-			name: "prompt_session",
-			arguments: { session_id: "s1", prompt: "keep going" },
-		});
-		expect(result.isError).toBeFalsy();
-		expect(seenPrompt).toBe("keep going");
-	});
-
-	test("prompt_session with an empty-string prompt passes through unchanged (server itself treats it as a legal no-op, sessions.ts:174)", async () => {
-		let seenPrompt: string | undefined;
-		const client = fakeClient({
-			promptSession: async (_sessionId, prompt) => {
-				seenPrompt = prompt;
-				return { action: FAKE_ACTION };
-			},
-		});
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-		const result = await mcpClient.callTool({
-			name: "prompt_session",
-			arguments: { session_id: "s1", prompt: "" },
-		});
-		expect(result.isError).toBeFalsy();
-		expect(seenPrompt).toBe("");
-	});
-
-	test("stop_session on a non-managed session surfaces the server's exact rejection text", async () => {
-		const client = fakeClient({
-			stopSession: async () => {
-				throw new ApiError(400, { error: "Session is not managed." });
-			},
-		});
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-		const result = await mcpClient.callTool({
-			name: "stop_session",
-			arguments: { session_id: "s1" },
-		});
-		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("Session is not managed.");
-	});
-
-	test("prompt_session/stop_session/retry_launch descriptions state managed-sessions-only (L2)", async () => {
-		const ctx = newContext(fakeClient());
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-		const { tools } = await mcpClient.listTools();
-		for (const name of ["prompt_session", "stop_session", "retry_launch"]) {
-			const tool = tools.find((t) => t.name === name);
-			expect(tool?.description?.toLowerCase(), `${name} description`).toContain(
-				"managed sessions only",
-			);
-		}
-	});
-});
-
-describe("update_session — per-field fan-out + partial-failure semantics (assertions 5-8, L4)", () => {
-	test("only notes provided -> exactly one PUT-equivalent call (notes), none of rename/pin/archive", async () => {
-		const calls: string[] = [];
-		const client = fakeClient({
-			updateSessionNotes: async (sessionId, notes) => {
-				calls.push(`notes:${sessionId}:${notes}`);
-				return { ok: true };
-			},
-			renameSession: async () => {
-				calls.push("rename");
-				return { ok: true };
-			},
-			pinSession: async () => {
-				calls.push("pin");
-				return { ok: true };
-			},
-			archiveSession: async () => {
-				calls.push("archive");
-				return { ok: true };
-			},
-		});
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-
-		const result = await mcpClient.callTool({
-			name: "update_session",
-			arguments: { session_id: "s1", notes: "x" },
-		});
-
-		expect(result.isError).toBeFalsy();
-		expect(calls).toEqual(["notes:s1:x"]);
-		const parsed = JSON.parse(textOf(result));
-		expect(parsed.applied).toEqual(["notes"]);
-		expect(parsed.failed).toEqual([]);
-	});
-
-	test("notes + pinned -> exactly two calls, correct args each", async () => {
-		const calls: string[] = [];
-		const client = fakeClient({
-			updateSessionNotes: async (sessionId, notes) => {
-				calls.push(`notes:${sessionId}:${notes}`);
-				return { ok: true };
-			},
-			pinSession: async (sessionId, pinned) => {
-				calls.push(`pin:${sessionId}:${pinned}`);
-				return { ok: true };
-			},
-		});
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-
-		const result = await mcpClient.callTool({
-			name: "update_session",
-			arguments: { session_id: "s1", notes: "x", pinned: true },
-		});
-
-		expect(result.isError).toBeFalsy();
-		expect(calls.sort()).toEqual(["notes:s1:x", "pin:s1:true"]);
-		const parsed = JSON.parse(textOf(result));
-		expect(parsed.applied.sort()).toEqual(["notes", "pinned"]);
-	});
-
-	test("display_name provided -> renameSession called with source:'user' (matches repo's documented rename-precedence contract)", async () => {
-		let seenArgs: [string, string, string | undefined] | undefined;
-		const client = fakeClient({
-			renameSession: async (sessionId, name, source) => {
-				seenArgs = [sessionId, name, source];
-				return { ok: true };
-			},
-		});
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-
-		await mcpClient.callTool({
-			name: "update_session",
-			arguments: { session_id: "s1", display_name: "New Name" },
-		});
-
-		expect(seenArgs).toEqual(["s1", "New Name", "user"]);
-	});
-
-	test("no optional fields provided -> zero calls, not an error, empty applied/failed", async () => {
-		const called = false;
-		const client = fakeClient();
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-
-		const result = await mcpClient.callTool({
-			name: "update_session",
-			arguments: { session_id: "s1" },
-		});
-
-		expect(result.isError).toBeFalsy();
-		expect(called).toBe(false);
-		const parsed = JSON.parse(textOf(result));
-		expect(parsed).toEqual({ applied: [], failed: [] });
-	});
-
-	test("partial failure: one field fails, one succeeds -> not isError, failed[] names the failing field", async () => {
-		const client = fakeClient({
-			updateSessionNotes: async () => ({ ok: true }),
-			pinSession: async () => {
-				throw new ApiError(500, { error: "db unavailable" });
-			},
-		});
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-
-		const result = await mcpClient.callTool({
-			name: "update_session",
-			arguments: { session_id: "s1", notes: "x", pinned: true },
-		});
-
-		expect(result.isError).toBeFalsy();
-		const parsed = JSON.parse(textOf(result));
-		expect(parsed.applied).toEqual(["notes"]);
-		expect(parsed.failed).toHaveLength(1);
-		expect(parsed.failed[0].field).toBe("pinned");
-		expect(parsed.failed[0].error).toContain("db unavailable");
-	});
-
-	test("all requested fields fail -> isError:true", async () => {
-		const client = fakeClient({
-			updateSessionNotes: async () => {
-				throw new ApiError(500, { error: "db unavailable" });
-			},
-		});
-		const ctx = newContext(client);
-		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
-		const mcpClient = await connect(ctx);
-
-		const result = await mcpClient.callTool({
-			name: "update_session",
-			arguments: { session_id: "s1", notes: "x" },
-		});
-
-		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("all 1 requested field(s) failed");
-	});
-});
-
 describe("list_hosts — manage-only RO tool (D2, L3)", () => {
 	test("not registered under observe-only scope", () => {
 		const ctx = newContext(fakeClient());
@@ -611,5 +454,74 @@ describe("list_hosts — manage-only RO tool (D2, L3)", () => {
 		const parsed = JSON.parse(textOf(result));
 		expect(parsed.total).toBe(1);
 		expect(parsed.supervisors[0].id).toBe("sup-1");
+	});
+});
+
+/**
+ * dexter L (mid-build review): fixture round-trip guarding the
+ * toSessionTemplateInput/toPartialSessionTemplateInput/toLaunchSpec
+ * cast-throughs — these are `as unknown as X` casts with no runtime
+ * transform, so the only thing that can catch a future field-name drift
+ * between the zod shapes and SessionTemplateInput/LaunchSpec is a test that
+ * actually pushes a fully-populated fixture through the whole tool (schema
+ * validate -> handler -> the exact object the client receives), not a
+ * type-level check (the cast bypasses type-level checking by construction).
+ */
+describe("template/launch_spec cast-through fidelity (dexter L, round-trip fixture)", () => {
+	test("launch_agent's direct-mode body has every SESSION_TEMPLATE_INPUT_SHAPE/LAUNCH_SPEC_OBJECT field intact, none dropped or renamed", async () => {
+		const fullTemplate = {
+			name: "n",
+			description: "d",
+			agentType: "claude_code" as const,
+			cwd: "/repo",
+			baseInstructions: "base",
+			taskPrompt: "task",
+			model: "sonnet",
+			approvalPolicy: "auto" as const,
+			sandboxMode: "workspace-write" as const,
+			env: { FOO: "bar" },
+			tags: ["a", "b"],
+			isFavorite: true,
+		};
+		const fullLaunchSpec = {
+			version: 1 as const,
+			launchCorrelationId: "corr-full",
+			managedMode: "unmanaged_preview" as const,
+			agentType: "claude_code" as const,
+			launchMode: "headless" as const,
+			cwd: "/repo",
+			model: "sonnet",
+			approvalPolicy: "auto" as const,
+			sandboxMode: "workspace-write" as const,
+			baseInstructions: "base",
+			taskPrompt: "task",
+			env: { FOO: "bar" },
+			providerConfig: {
+				command: "claude",
+				cliArgs: ["--model", "sonnet"],
+				instructionsFile: "CLAUDE.md" as const,
+			},
+		};
+
+		let seenTemplate: unknown;
+		let seenLaunchSpec: unknown;
+		const client = fakeClient({
+			createLaunch: async (body) => {
+				seenTemplate = body.template;
+				seenLaunchSpec = body.launchSpec;
+				return { launchRequest: FAKE_LAUNCH_REQUEST, supervisor: FAKE_SUPERVISOR };
+			},
+		});
+		const ctx = newContext(client);
+		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+
+		await mcpClient.callTool({
+			name: "launch_agent",
+			arguments: { template: fullTemplate, launch_spec: fullLaunchSpec },
+		});
+
+		expect(seenTemplate).toEqual(fullTemplate);
+		expect(seenLaunchSpec).toEqual(fullLaunchSpec);
 	});
 });

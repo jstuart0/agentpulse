@@ -1,18 +1,28 @@
 /**
- * Orchestration tools (AGEN-12 Phase 4, D2's mutating-tool table): the two
- * side-effect-free advisory tools (recommend_launch, preview_template),
- * launch_agent (H1 contract), the three session-control tools
- * (prompt_session/stop_session/retry_launch, managed-sessions-only [L2]),
- * update_session (per-field fan-out with partial-failure reporting [L4]),
- * and list_hosts (manage-only read, explicit RO [L3]).
+ * Launch-orchestration tools (AGEN-12 Phase 4, D2's mutating-tool table):
+ * the two side-effect-free advisory tools (recommend_launch,
+ * preview_template), launch_agent (H1 contract), and list_hosts
+ * (manage-only read, explicit RO [L3]).
+ *
+ * Session-control writes (prompt_session/stop_session/retry_launch/
+ * update_session) live in session-actions.ts — split out (dexter M,
+ * mid-build review) to keep one domain per file as the tool population
+ * grows through Phase 5.
  *
  * All manage-scoped (D2): every tool here either mutates state or exposes
  * env/launchSpec-bearing data, so none is registered under observe-only.
+ *
+ * Field-naming convention: see the canonical note near ToolContext in
+ * server.ts. The short version — this file's `template`/`launch_spec`
+ * nested fields are a deliberate exception (camelCase, mirroring
+ * SessionTemplateInput/LaunchSpec verbatim) for round-trip fidelity with
+ * preview_template's own output; every top-level scalar param here still
+ * snake_cases like the rest of the tool surface.
  */
 import { z } from "zod";
-import type { AgentType, ApprovalPolicy, LaunchSpec, SandboxMode } from "../../shared/types.js";
-import { ApiError } from "../client.js";
+import type { LaunchSpec, SessionTemplateInput } from "../../shared/types.js";
 import {
+	AGENT_TYPE_ENUM,
 	APPROVAL_POLICY_ENUM,
 	LAUNCH_MODE_ENUM,
 	ROUTING_POLICY_ENUM,
@@ -21,23 +31,10 @@ import {
 import { registerMutatingTool, registerReadTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
 
-/**
- * Mirrors SessionTemplateInput (src/shared/types.ts) verbatim, camelCase —
- * deliberately NOT translated to the tool-surface's usual snake_case
- * top-level convention (contrast create_template/update_template in
- * templates.ts, which DO snake_case). This is a nested pass-through field,
- * not a tool's own top-level params: recommend_launch/preview_template
- * return shapes (RecommendedLaunch, TemplatePreview.normalizedTemplate)
- * that are already camelCase-shaped SessionTemplateInput objects, and
- * launch_agent's whole point is to accept preview_template's own output
- * back with zero translation. Snake-casing this nested object would force
- * every caller through a manual field-rename round-trip for exactly the
- * two-call workflow the tool descriptions recommend.
- */
 const SESSION_TEMPLATE_INPUT_SHAPE = {
 	name: z.string(),
 	description: z.string().nullable().optional(),
-	agentType: z.enum(["claude_code", "codex_cli"]),
+	agentType: AGENT_TYPE_ENUM,
 	cwd: z.string(),
 	baseInstructions: z.string().optional(),
 	taskPrompt: z.string().optional(),
@@ -50,12 +47,11 @@ const SESSION_TEMPLATE_INPUT_SHAPE = {
 };
 const SESSION_TEMPLATE_INPUT_OBJECT = z.object(SESSION_TEMPLATE_INPUT_SHAPE);
 
-/** Mirrors LaunchSpec (src/shared/types.ts) verbatim — see the template-shape comment above; same round-trip rationale. */
 const LAUNCH_SPEC_OBJECT = z.object({
 	version: z.literal(1),
 	launchCorrelationId: z.string(),
 	managedMode: z.literal("unmanaged_preview"),
-	agentType: z.enum(["claude_code", "codex_cli"]),
+	agentType: AGENT_TYPE_ENUM,
 	launchMode: LAUNCH_MODE_ENUM.optional(),
 	cwd: z.string(),
 	model: z.string().nullable(),
@@ -64,6 +60,14 @@ const LAUNCH_SPEC_OBJECT = z.object({
 	baseInstructions: z.string(),
 	taskPrompt: z.string(),
 	env: z.record(z.string(), z.string()),
+	// xander L1 (mid-build security review): the supervisor derives its own
+	// executable/args server-side today and IGNORES these client-supplied
+	// command/cliArgs — this field is passthrough-only, never executed
+	// directly from a client-supplied value. If a future "managed" launch
+	// mode ever trusts providerConfig.command/cliArgs as-supplied instead of
+	// deriving them supervisor-side, that becomes a command-injection
+	// primitive gated only by `manage` scope. Keep deriving them
+	// server/supervisor-side — never execute a client-supplied command.
 	providerConfig: z.object({
 		command: z.string(),
 		cliArgs: z.array(z.string()),
@@ -77,53 +81,35 @@ const LAUNCH_SPEC_OBJECT = z.object({
 	prelaunchActions: z.array(z.record(z.string(), z.unknown())).optional(),
 });
 
-type SessionTemplateInputLike = {
-	name: string;
-	description?: string | null;
-	agentType: AgentType;
-	cwd: string;
-	baseInstructions?: string;
-	taskPrompt?: string;
-	model?: string | null;
-	approvalPolicy?: ApprovalPolicy | null;
-	sandboxMode?: SandboxMode | null;
-	env?: Record<string, string>;
-	tags?: string[];
-	isFavorite?: boolean;
-};
-
 // Cast-throughs, not transforms — the zod shapes' keys already match
-// SessionTemplateInput/its Partial verbatim (see the shape comment above).
-// Two variants (rather than one generic) so each call site's required-vs-
-// partial contract stays visible in the type, instead of every caller
-// re-widening/re-narrowing at the call site.
+// SessionTemplateInput/LaunchSpec verbatim (see the file header). Two
+// SessionTemplateInput variants (rather than one generic) so each call
+// site's required-vs-partial contract stays visible in the type, instead of
+// every caller re-widening/re-narrowing at the call site.
 function toSessionTemplateInput(
 	t: z.infer<typeof SESSION_TEMPLATE_INPUT_OBJECT>,
-): SessionTemplateInputLike {
-	return t as unknown as SessionTemplateInputLike;
+): SessionTemplateInput {
+	return t as unknown as SessionTemplateInput;
 }
 
 function toPartialSessionTemplateInput(
 	t: Partial<z.infer<typeof SESSION_TEMPLATE_INPUT_OBJECT>>,
-): Partial<SessionTemplateInputLike> {
-	return t as unknown as Partial<SessionTemplateInputLike>;
+): Partial<SessionTemplateInput> {
+	return t as unknown as Partial<SessionTemplateInput>;
 }
 
 function toLaunchSpec(spec: z.infer<typeof LAUNCH_SPEC_OBJECT>): LaunchSpec {
 	return spec as unknown as LaunchSpec;
 }
 
-/** Per-field error text for update_session's partial-failure report — richer than a bare Error.message for an ApiError (which stringifies to just "AgentPulse API error: <status>"). */
-function describeFieldError(err: unknown): string {
-	if (err instanceof ApiError) {
-		const bodyText = typeof err.body === "string" ? err.body : JSON.stringify(err.body);
-		return `AgentPulse returned ${err.status}: ${bodyText}`;
-	}
-	return err instanceof Error ? err.message : String(err);
-}
-
-const MANAGED_ONLY_NOTE =
-	'Managed sessions only — AgentPulse rejects this for sessions it isn\'t managing the process for ("Session is not managed.").';
+/**
+ * xander H1/e (mid-build security review): every mutating tool ships this
+ * caveat — see session-actions.ts for the identical constant (each file
+ * owns its own copy rather than a shared cross-file import, since the two
+ * files' tool populations are otherwise independent).
+ */
+const CONFIRMATION_PORTABILITY_NOTE =
+	"This is a state-changing action. The requires-confirmation hint is honored only by MCP hosts that implement it (e.g. Claude Code's UI); other clients (scripted, or hosts without the gate) will execute it without prompting.";
 
 export function registerOrchestrateTools(ctx: ToolContext, flags: ScopeFlags): void {
 	if (!flags.hasManage) return;
@@ -173,8 +159,7 @@ export function registerOrchestrateTools(ctx: ToolContext, flags: ScopeFlags): v
 		{
 			name: "launch_agent",
 			title: "Launch agent",
-			description:
-				"Launch a real AI coding agent (Claude Code or Codex CLI) on a connected host. Spawns an actual process — requires human confirmation. Call recommend_launch and/or preview_template first to see what will happen before committing. Exactly one launch mode: EITHER template_id alone (launches a saved template — the server re-resolves it fresh) OR template+launch_spec together (a fully-specified direct launch, typically preview_template's own output passed straight through). Supplying both, or neither, is rejected.",
+			description: `Launch a real AI coding agent (Claude Code or Codex CLI) on a connected host. Spawns an actual process — requires human confirmation. Call recommend_launch and/or preview_template first to see what will happen before committing. Exactly one launch mode: EITHER template_id alone (launches a saved template — the server re-resolves it fresh) OR template+launch_spec together (a fully-specified direct launch, typically preview_template's own output passed straight through). Supplying both, or neither, is rejected — including partial combinations like template_id together with only one of template/launch_spec. ${CONFIRMATION_PORTABILITY_NOTE}`,
 			annotations: { openWorldHint: true },
 			inputSchema: {
 				template_id: z.string().optional(),
@@ -188,20 +173,34 @@ export function registerOrchestrateTools(ctx: ToolContext, flags: ScopeFlags): v
 		},
 		async (args, client) => {
 			const hasTemplateId = args.template_id !== undefined;
-			const hasDirect = args.template !== undefined && args.launch_spec !== undefined;
+			const hasTemplate = args.template !== undefined;
+			const hasLaunchSpec = args.launch_spec !== undefined;
+			// Exactly one mode (H1): template_id ALONE, or template+launch_spec
+			// TOGETHER with no template_id. dexter High: a naive
+			// `hasTemplateId === (hasTemplate && hasLaunchSpec)` check passes the
+			// two partial-combo cases below (template_id+template alone,
+			// template_id+launch_spec alone) straight into the template_id path,
+			// silently discarding the caller's override — this must be an
+			// explicit membership check against the two valid states, not an XOR
+			// over a derived "both" flag. Deliberately handler-level (not
+			// schema-level) since the root schema must stay flat (no
+			// anyOf/oneOf, M7).
+			const isTemplateIdMode = hasTemplateId && !hasTemplate && !hasLaunchSpec;
+			const isDirectMode = !hasTemplateId && hasTemplate && hasLaunchSpec;
 
-			// Exactly one mode (H1). Both supplied or neither supplied are both
-			// rejected client-side, before any HTTP call — this is deliberately
-			// handler-level (not schema-level) since the root schema must stay
-			// flat (no anyOf/oneOf, M7).
-			if (hasTemplateId === hasDirect) {
+			if (!isTemplateIdMode && !isDirectMode) {
 				throw new Error(
-					"launch_agent: provide exactly one of template_id | template+launch_spec (both or neither were supplied).",
+					"launch_agent: provide exactly one of template_id | template+launch_spec — no partial combinations (e.g. template_id together with template or launch_spec) are accepted.",
 				);
 			}
 
-			if (hasTemplateId) {
-				const templateId = args.template_id as string;
+			if (isTemplateIdMode) {
+				const templateId = args.template_id;
+				if (!templateId) {
+					throw new Error(
+						"launch_agent: internal error — template_id mode reached without template_id.",
+					);
+				}
 				const { template } = await client.getTemplate(templateId);
 				// Step 2 of the H1 three-call sequence: resolve the template into
 				// a launchSpec via the same endpoint the dashboard's own preview
@@ -239,109 +238,24 @@ export function registerOrchestrateTools(ctx: ToolContext, flags: ScopeFlags): v
 				});
 			}
 
+			// isDirectMode (above) already proved both are defined — re-check via
+			// real narrowing (destructure + guard) rather than an `as` cast, so
+			// a future edit to the mode logic can't silently reintroduce an
+			// unchecked assertion here.
+			const { template: directTemplate, launch_spec: directLaunchSpec } = args;
+			if (!directTemplate || !directLaunchSpec) {
+				throw new Error(
+					"launch_agent: internal error — direct mode reached without template+launch_spec.",
+				);
+			}
 			return client.createLaunch({
-				// hasDirect (above) already proved both are defined here — TS
-				// can't narrow through the boolean, so a direct non-null
-				// assertion documents that check rather than re-deriving it.
-				template: toSessionTemplateInput(
-					args.template as z.infer<typeof SESSION_TEMPLATE_INPUT_OBJECT>,
-				),
-				launchSpec: toLaunchSpec(args.launch_spec as z.infer<typeof LAUNCH_SPEC_OBJECT>),
+				template: toSessionTemplateInput(directTemplate),
+				launchSpec: toLaunchSpec(directLaunchSpec),
 				requestedSupervisorId: args.requested_supervisor_id ?? null,
 				requestedLaunchMode: args.requested_launch_mode,
 				routingPolicy: args.routing_policy ?? null,
 				desiredDisplayName: args.desired_display_name ?? null,
 			});
-		},
-	);
-
-	registerMutatingTool(
-		ctx,
-		{
-			name: "prompt_session",
-			description: `Inject a prompt into a LIVE agent session, as if typed into its terminal. ${MANAGED_ONLY_NOTE}`,
-			inputSchema: { session_id: z.string(), prompt: z.string() },
-		},
-		async (args, client) => client.promptSession(args.session_id, args.prompt),
-	);
-
-	registerMutatingTool(
-		ctx,
-		{
-			name: "stop_session",
-			description: `Stop a live agent session's process. ${MANAGED_ONLY_NOTE}`,
-			inputSchema: { session_id: z.string() },
-		},
-		async (args, client) => client.stopSession(args.session_id),
-	);
-
-	registerMutatingTool(
-		ctx,
-		{
-			name: "retry_launch",
-			description: `Re-launch a session's original launch request as a new one (same template/spec, fresh correlation id). ${MANAGED_ONLY_NOTE}`,
-			inputSchema: { session_id: z.string() },
-		},
-		async (args, client) => client.retryLaunch(args.session_id),
-	);
-
-	registerMutatingTool(
-		ctx,
-		{
-			name: "update_session",
-			description:
-				"Update one or more session fields (notes, display name, pinned, archived) in a single call. Each provided field is applied independently — a failure on one field doesn't block the others. The result reports which fields applied and which failed; call fails (isError) only if every requested field failed.",
-			inputSchema: {
-				session_id: z.string(),
-				notes: z.string().optional(),
-				display_name: z.string().optional(),
-				pinned: z.boolean().optional(),
-				archived: z.boolean().optional(),
-			},
-		},
-		async (args, client) => {
-			const applied: string[] = [];
-			const failed: Array<{ field: string; error: string }> = [];
-
-			async function attempt(field: string, fn: () => Promise<unknown>) {
-				try {
-					await fn();
-					applied.push(field);
-				} catch (err) {
-					failed.push({ field, error: describeFieldError(err) });
-				}
-			}
-
-			if (args.notes !== undefined) {
-				await attempt("notes", () =>
-					client.updateSessionNotes(args.session_id, args.notes as string),
-				);
-			}
-			if (args.display_name !== undefined) {
-				await attempt("display_name", () =>
-					client.renameSession(args.session_id, args.display_name as string, "user"),
-				);
-			}
-			if (args.pinned !== undefined) {
-				await attempt("pinned", () => client.pinSession(args.session_id, args.pinned as boolean));
-			}
-			if (args.archived !== undefined) {
-				await attempt("archived", () =>
-					client.archiveSession(args.session_id, args.archived as boolean),
-				);
-			}
-
-			// L4: isError only when every requested field failed. Zero fields
-			// requested is a legal no-op (empty applied/failed), not an error.
-			if (failed.length > 0 && applied.length === 0) {
-				throw new Error(
-					`update_session: all ${failed.length} requested field(s) failed: ${failed
-						.map((f) => `${f.field} (${f.error})`)
-						.join("; ")}`,
-				);
-			}
-
-			return { applied, failed };
 		},
 	);
 

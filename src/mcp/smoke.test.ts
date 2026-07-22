@@ -55,6 +55,64 @@ describeSmoke("MCP live smoke (AGENTPULSE_MCP_SMOKE=1)", () => {
 		}
 	}, 20_000);
 
+	/**
+	 * tessa M-5 (Phase 4 mid-build review): recommend_launch/preview_template
+	 * are provably safe to call for real — advisory/simulate only, per D2 —
+	 * so they belong in the automatable smoke tier rather than staying
+	 * purely manual. Both require `manage` scope (D2's C1 classification);
+	 * under DISABLE_AUTH=true the synthetic identity carries scopes:["*"],
+	 * satisfying that. recommend_launch additionally requires the AI build
+	 * flag (AGENTPULSE_AI_ENABLED) — this dev server may or may not have it
+	 * set, so the test accepts either a successful recommendation OR the
+	 * documented ai_disabled isError, and only asserts the side-effect-free
+	 * property (list_launches unchanged) either way — it does not assert
+	 * unconditional success, which would make this smoke test fail on any
+	 * AI-disabled dev instance for a reason unrelated to what it's testing.
+	 */
+	test("recommend_launch / preview_template are callable and side-effect-free (list_launches unchanged before/after)", async () => {
+		const transport = new StdioClientTransport({
+			command: "bun",
+			args: ["bin/cli.ts", "mcp", "serve"],
+			cwd: REPO_ROOT,
+			env: {
+				...(process.env as Record<string, string>),
+				AGENTPULSE_URL: url,
+				AGENTPULSE_API_KEY: apiKey,
+			},
+		});
+		const client = new Client({ name: "smoke-test-client-advisory", version: "0.0.0" });
+
+		try {
+			await client.connect(transport);
+
+			const before = await client.callTool({ name: "list_launches", arguments: {} });
+			const beforeText = (before.content as Array<{ type: string; text: string }>)[0]?.text ?? "{}";
+			const launchesBefore = JSON.parse(beforeText).total;
+
+			const preview = await client.callTool({
+				name: "preview_template",
+				arguments: { template: { name: "smoke", agent_type: "codex_cli", cwd: "/tmp" } },
+			});
+			expect(preview.isError).toBeFalsy();
+
+			const recommend = await client.callTool({
+				name: "recommend_launch",
+				arguments: { template: { name: "smoke", agentType: "codex_cli", cwd: "/tmp" } },
+			});
+			const recommendText =
+				(recommend.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+			if (recommend.isError) {
+				expect(recommendText.toLowerCase()).toContain("ai features are not enabled");
+			}
+
+			const after = await client.callTool({ name: "list_launches", arguments: {} });
+			const afterText = (after.content as Array<{ type: string; text: string }>)[0]?.text ?? "{}";
+			expect(JSON.parse(afterText).total).toBe(launchesBefore);
+		} finally {
+			await client.close();
+		}
+	}, 20_000);
+
 	test("an ingest-only key fails fast: nonzero exit, stderr has the mint hint, stdout is empty", async () => {
 		// This scenario is only meaningful against an auth-ENABLED server: under
 		// DISABLE_AUTH=true, getAuthUserFromHeaders() returns the synthetic
