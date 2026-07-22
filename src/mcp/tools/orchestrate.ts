@@ -10,7 +10,7 @@
  * env/launchSpec-bearing data, so none is registered under observe-only.
  */
 import { z } from "zod";
-import type { AgentType, ApprovalPolicy, SandboxMode } from "../../shared/types.js";
+import type { AgentType, ApprovalPolicy, LaunchSpec, SandboxMode } from "../../shared/types.js";
 import { ApiError } from "../client.js";
 import {
 	APPROVAL_POLICY_ENUM,
@@ -77,21 +77,40 @@ const LAUNCH_SPEC_OBJECT = z.object({
 	prelaunchActions: z.array(z.record(z.string(), z.unknown())).optional(),
 });
 
-function toSessionTemplateInput(t: z.infer<typeof SESSION_TEMPLATE_INPUT_OBJECT>) {
-	return t as unknown as {
-		name: string;
-		description?: string | null;
-		agentType: AgentType;
-		cwd: string;
-		baseInstructions?: string;
-		taskPrompt?: string;
-		model?: string | null;
-		approvalPolicy?: ApprovalPolicy | null;
-		sandboxMode?: SandboxMode | null;
-		env?: Record<string, string>;
-		tags?: string[];
-		isFavorite?: boolean;
-	};
+type SessionTemplateInputLike = {
+	name: string;
+	description?: string | null;
+	agentType: AgentType;
+	cwd: string;
+	baseInstructions?: string;
+	taskPrompt?: string;
+	model?: string | null;
+	approvalPolicy?: ApprovalPolicy | null;
+	sandboxMode?: SandboxMode | null;
+	env?: Record<string, string>;
+	tags?: string[];
+	isFavorite?: boolean;
+};
+
+// Cast-throughs, not transforms — the zod shapes' keys already match
+// SessionTemplateInput/its Partial verbatim (see the shape comment above).
+// Two variants (rather than one generic) so each call site's required-vs-
+// partial contract stays visible in the type, instead of every caller
+// re-widening/re-narrowing at the call site.
+function toSessionTemplateInput(
+	t: z.infer<typeof SESSION_TEMPLATE_INPUT_OBJECT>,
+): SessionTemplateInputLike {
+	return t as unknown as SessionTemplateInputLike;
+}
+
+function toPartialSessionTemplateInput(
+	t: Partial<z.infer<typeof SESSION_TEMPLATE_INPUT_OBJECT>>,
+): Partial<SessionTemplateInputLike> {
+	return t as unknown as Partial<SessionTemplateInputLike>;
+}
+
+function toLaunchSpec(spec: z.infer<typeof LAUNCH_SPEC_OBJECT>): LaunchSpec {
+	return spec as unknown as LaunchSpec;
 }
 
 /** Per-field error text for update_session's partial-failure report — richer than a bare Error.message for an ApiError (which stringifies to just "AgentPulse API error: <status>"). */
@@ -142,7 +161,7 @@ export function registerOrchestrateTools(ctx: ToolContext, flags: ScopeFlags): v
 		},
 		async (args, client) =>
 			client.previewTemplate({
-				...(args.template ? toSessionTemplateInput(args.template as never) : {}),
+				...(args.template ? toPartialSessionTemplateInput(args.template) : {}),
 				launchMode: args.launch_mode,
 				requestedSupervisorId: args.requested_supervisor_id ?? null,
 				routingPolicy: args.routing_policy ?? null,
@@ -221,10 +240,13 @@ export function registerOrchestrateTools(ctx: ToolContext, flags: ScopeFlags): v
 			}
 
 			return client.createLaunch({
+				// hasDirect (above) already proved both are defined here — TS
+				// can't narrow through the boolean, so a direct non-null
+				// assertion documents that check rather than re-deriving it.
 				template: toSessionTemplateInput(
 					args.template as z.infer<typeof SESSION_TEMPLATE_INPUT_OBJECT>,
 				),
-				launchSpec: args.launch_spec as never,
+				launchSpec: toLaunchSpec(args.launch_spec as z.infer<typeof LAUNCH_SPEC_OBJECT>),
 				requestedSupervisorId: args.requested_supervisor_id ?? null,
 				requestedLaunchMode: args.requested_launch_mode,
 				routingPolicy: args.routing_policy ?? null,
