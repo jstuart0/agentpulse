@@ -29,7 +29,9 @@ import "../db/__test_db.js";
 const { config } = await import("../config.js");
 const { initializeDatabase, getDb } = await import("../db/client.js");
 const { app } = await import("../app.js");
-const { controlActions, sessions } = await import("../db/schema/index.js");
+const { controlActions, launchRequests, sessionTemplates, sessions } = await import(
+	"../db/schema/index.js"
+);
 const { createApiKey, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE } = await import("./api-key.js");
 const { classifyRoute, OBSERVE_READ_PATHS, INTENTIONALLY_MANAGE_ONLY } = await import(
 	"./route-scope-policy.js"
@@ -129,6 +131,38 @@ describe("classifyRoute — pure matcher (test contract section A)", () => {
 	test("A.4c path-traversal-shaped raw strings do not bypass the policy", () => {
 		expect(classifyRoute("GET", "/sessions/../settings")).toBe(SCOPE_MANAGE);
 		expect(classifyRoute("GET", "/../settings")).toBe(SCOPE_MANAGE);
+	});
+
+	// tessa M-2 / xander MB5: A.4c's literal "../" only proves Bun's own URL
+	// parsing collapses unencoded traversal before Hono ever dispatches to our
+	// middleware — it does not prove classifyRoute's OWN matching logic is
+	// safe if some future decode-timing change fed it a still-encoded or
+	// malformed string. These tests pin classifyRoute's behavior directly,
+	// independent of runtime decode/normalize behavior, against every shape
+	// named in the mid-build gate: percent-encoded traversal, an embedded
+	// %2f standing in for a path separator, double-slash, and trailing-slash
+	// — all targeting /settings (INTENTIONALLY_MANAGE_ONLY), all pinned to
+	// MANAGE. Guards against a future Bun/Hono upgrade silently reopening
+	// this surface by changing how/when encoded segments get decoded.
+	test("A.4d percent-encoded traversal targeting /settings stays manage", () => {
+		expect(classifyRoute("GET", "/%2e%2e%2fsettings")).toBe(SCOPE_MANAGE);
+		expect(classifyRoute("GET", "/sessions/%2e%2e/settings")).toBe(SCOPE_MANAGE);
+	});
+
+	test("A.4e embedded-%2f path-separator smuggling targeting /settings stays manage", () => {
+		expect(classifyRoute("GET", "/sessions%2F..%2Fsettings")).toBe(SCOPE_MANAGE);
+		expect(classifyRoute("GET", "/settings%2f")).toBe(SCOPE_MANAGE);
+		expect(classifyRoute("GET", "/%2fsettings")).toBe(SCOPE_MANAGE);
+	});
+
+	test("A.4f double-slash //settings stays manage", () => {
+		expect(classifyRoute("GET", "//settings")).toBe(SCOPE_MANAGE);
+		expect(classifyRoute("GET", "/api/v1//settings")).toBe(SCOPE_MANAGE);
+	});
+
+	test("A.4g trailing-slash /settings/ stays manage", () => {
+		expect(classifyRoute("GET", "/settings/")).toBe(SCOPE_MANAGE);
+		expect(classifyRoute("GET", "/api/v1/settings/")).toBe(SCOPE_MANAGE);
 	});
 
 	test("A.5 explicit D1 exclusion list — one assertion per route (no loop)", () => {
@@ -249,6 +283,39 @@ describe("Security-critical negatives (rows 7, 9, 10) — exact body shape", () 
 		expect(await a.json()).toEqual({ error: "insufficient_scope", required: "manage" });
 		expect(b.status).toBe(403);
 		expect(await b.json()).toEqual({ error: "insufficient_scope", required: "manage" });
+	});
+});
+
+// tessa M-2 / xander MB5 bonus: real app.request() pin (not just classifyRoute
+// unit tests) for the encoded/malformed shapes targeting /settings, through
+// Bun's actual URL parsing and Hono's actual dispatch — values below were
+// verified empirically against the real mounted app before being asserted,
+// not assumed. Whatever a given shape decodes/normalizes to at the runtime
+// layer, the end-to-end result for an observe-scoped caller must never be
+// anything but a rejection.
+describe("tessa M-2 / xander MB5 — encoded/malformed path shapes never bypass observe→manage-only gating (real app.request())", () => {
+	test("percent-encoded traversal /sessions/%2e%2e/settings with observeKey → 403 (Bun normalizes this to /settings before dispatch)", async () => {
+		const res = await app.request("/api/v1/sessions/%2e%2e/settings", {
+			headers: authBearer(observeKey),
+		});
+		expect(res.status).toBe(403);
+	});
+
+	test("embedded-%2f smuggling /sessions%2F..%2Fsettings with observeKey → 403", async () => {
+		const res = await app.request("/api/v1/sessions%2F..%2Fsettings", {
+			headers: authBearer(observeKey),
+		});
+		expect(res.status).toBe(403);
+	});
+
+	test("double-slash //settings with observeKey → 403", async () => {
+		const res = await app.request("/api/v1//settings", { headers: authBearer(observeKey) });
+		expect(res.status).toBe(403);
+	});
+
+	test("trailing-slash /settings/ with observeKey → 403", async () => {
+		const res = await app.request("/api/v1/settings/", { headers: authBearer(observeKey) });
+		expect(res.status).toBe(403);
 	});
 });
 
@@ -375,6 +442,103 @@ describe("C1 deviation — manage-only reads (rows 18, 19, 23; contract said 200
 		const [a, b] = await requestAllMounts("GET", "/ai/inbox", authBearer(manageKey));
 		expect(a.status).toBe(200);
 		expect(b.status).toBe(200);
+	});
+});
+
+// ─── tessa M-1: integration proof for the 4 under-covered C1 manage-only routes ─
+//
+// /templates, /launches, and /ai/inbox (the collection routes) already have
+// app.request() observe->403/manage->200 pairs above. classifyRoute() unit
+// tests (A.5b) and the route-drift guard prove these FOUR routes are
+// classified manage-only, but classification alone can't catch a router that
+// forgot to wire requireOperatorScope() at all — only a real app.request()
+// through the actual middleware chain proves that. Seeds real rows for the
+// two :id routes so manageKey gets a genuine 200, not a fake-id 404 that
+// would only prove "not 403" rather than the requested 200.
+describe("tessa M-1 — integration wiring proof for GET /templates/:id, /launches/:id, /ai/action-requests, /sessions/:id/control-actions", () => {
+	const templateId = "rsp-m1-template";
+	const launchId = "rsp-m1-launch";
+
+	beforeAll(async () => {
+		await getDb()
+			.insert(sessionTemplates)
+			.values({ id: templateId, name: "rsp-m1-template", agentType: "claude_code", cwd: "/tmp" });
+		await getDb()
+			.insert(launchRequests)
+			.values({
+				id: launchId,
+				launchCorrelationId: `rsp-m1-launch-correlation-${launchId}`,
+				agentType: "claude_code",
+				cwd: "/tmp",
+			});
+	});
+
+	test("GET /templates/:id → observeKey 403, manageKey 200 (wiring proof, not just classification)", async () => {
+		const [obsA, obsB] = await requestAllMounts(
+			"GET",
+			`/templates/${templateId}`,
+			authBearer(observeKey),
+		);
+		expect(obsA.status).toBe(403);
+		expect(obsB.status).toBe(403);
+
+		const [mgA, mgB] = await requestAllMounts(
+			"GET",
+			`/templates/${templateId}`,
+			authBearer(manageKey),
+		);
+		expect(mgA.status).toBe(200);
+		expect(mgB.status).toBe(200);
+	});
+
+	test("GET /launches/:id → observeKey 403, manageKey 200 (wiring proof, not just classification)", async () => {
+		const [obsA, obsB] = await requestAllMounts(
+			"GET",
+			`/launches/${launchId}`,
+			authBearer(observeKey),
+		);
+		expect(obsA.status).toBe(403);
+		expect(obsB.status).toBe(403);
+
+		const [mgA, mgB] = await requestAllMounts(
+			"GET",
+			`/launches/${launchId}`,
+			authBearer(manageKey),
+		);
+		expect(mgA.status).toBe(200);
+		expect(mgB.status).toBe(200);
+	});
+
+	test("GET /ai/action-requests → observeKey 403, manageKey 200 (wiring proof, not just classification)", async () => {
+		const [obsA, obsB] = await requestAllMounts(
+			"GET",
+			"/ai/action-requests",
+			authBearer(observeKey),
+		);
+		expect(obsA.status).toBe(403);
+		expect(obsB.status).toBe(403);
+
+		const [mgA, mgB] = await requestAllMounts("GET", "/ai/action-requests", authBearer(manageKey));
+		expect(mgA.status).toBe(200);
+		expect(mgB.status).toBe(200);
+	});
+
+	test("GET /sessions/:sessionId/control-actions → observeKey 403, manageKey 200 (wiring proof, not just classification)", async () => {
+		const [obsA, obsB] = await requestAllMounts(
+			"GET",
+			"/sessions/rsp-m1-fake-session/control-actions",
+			authBearer(observeKey),
+		);
+		expect(obsA.status).toBe(403);
+		expect(obsB.status).toBe(403);
+
+		const [mgA, mgB] = await requestAllMounts(
+			"GET",
+			"/sessions/rsp-m1-fake-session/control-actions",
+			authBearer(manageKey),
+		);
+		expect(mgA.status).toBe(200);
+		expect(mgB.status).toBe(200);
 	});
 });
 

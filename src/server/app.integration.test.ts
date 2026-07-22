@@ -142,7 +142,7 @@ describe("M-2c — admin enroll: live forwardauth headers → 201", () => {
 // ─── M-2d: manage-scoped ap_ API key → 201; ingest-only → 403 ──────────────
 
 describe("M-2d — admin enroll: manage-scoped ap_ API key → 201", () => {
-	test("manage-scoped Bearer key → requireScope(manage) passes → 201 enrollment token", async () => {
+	test("manage-scoped Bearer key → admin-router requireScope(manage) passes (untouched by the Phase 1 requireOperatorScope swap) → 201 enrollment token", async () => {
 		const { key: manageKey } = await createApiKey("app-int-manage-key", ["ingest", "manage"]);
 
 		const res = await app.request("/api/v1/admin/supervisors/enroll", {
