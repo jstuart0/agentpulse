@@ -14,13 +14,15 @@ function printHelp() {
     npx agentpulse              Start the server
     npx agentpulse setup        Configure Claude Code + Codex hooks
     npx agentpulse setup --url <url> --key <key>
+    npx agentpulse mcp serve    Start the AgentPulse MCP server (stdio)
     npx agentpulse --help       Show this help
 
   Environment variables:
-    PORT              Server port (default: 3000)
-    DATABASE_URL      PostgreSQL URL (default: SQLite)
-    DISABLE_AUTH      Set "true" to skip auth
-    AGENTPULSE_API_KEY  API key for hooks
+    PORT                Server port (default: 3000)
+    DATABASE_URL        PostgreSQL URL (default: SQLite)
+    DISABLE_AUTH        Set "true" to skip auth
+    AGENTPULSE_API_KEY  API key for hooks and for \`mcp serve\`
+    AGENTPULSE_URL      AgentPulse server URL for \`mcp serve\` (default: http://localhost:3000)
 `);
 }
 
@@ -230,6 +232,23 @@ async function start() {
 	await import("../src/server/index.js");
 }
 
+// ─── MCP Command ────────────────────────────────────────────────────
+
+async function mcp() {
+	const subcommand = args[1];
+	switch (subcommand) {
+		case "serve": {
+			const { serveStdio } = await import("../src/mcp/index.js");
+			await serveStdio();
+			break;
+		}
+		default:
+			console.error(`Unknown mcp subcommand: ${subcommand ?? "(none)"}`);
+			console.error("Usage: agentpulse mcp serve");
+			process.exit(1);
+	}
+}
+
 // ─── Router ─────────────────────────────────────────────────────────
 
 switch (command) {
@@ -238,6 +257,9 @@ switch (command) {
 		break;
 	case "start":
 		await start();
+		break;
+	case "mcp":
+		await mcp();
 		break;
 	case "--help":
 	case "-h":
