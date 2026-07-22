@@ -37,11 +37,13 @@
 		"check:no-legacy-schema-import": "bun scripts/check-no-legacy-schema-import.ts",
 		"check:no-authentik-literals": "bun scripts/check-no-authentik-literals.ts",
 		"check:hook-event-parity": "bun scripts/check-hook-event-parity.ts",
-		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity"
+		"check:no-console-log-mcp": "bun scripts/check-no-console-log-mcp.ts",
+		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity && bun run check:no-console-log-mcp"
 	},
 	"dependencies": {
 		"@codemirror/lang-markdown": "^6.3.1",
 		"@codemirror/theme-one-dark": "^6.1.2",
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/qrcode": "^1.5.6",
 		"@uiw/react-codemirror": "^4.23.0",
 		"better-sqlite3": "^11.8.0",
@@ -61,6 +63,7 @@
 		"remark-gfm": "^4.0.1",
 		"sonner": "^2.0.7",
 		"tailwind-merge": "^3.0.0",
+		"zod": "^3.25.76",
 		"zustand": "^5.0.0"
 	},
 	"devDependencies": {
