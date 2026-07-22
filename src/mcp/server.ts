@@ -29,7 +29,10 @@ import { capToolResult } from "./output.js";
 import { registerResources } from "./resources.js";
 import { registerAiTools } from "./tools/ai.js";
 import { registerCatalogTools } from "./tools/catalog.js";
+import { registerDecideTools } from "./tools/decide.js";
+import { registerOrchestrateTools } from "./tools/orchestrate.js";
 import { registerSessionsTools } from "./tools/sessions.js";
+import { registerTemplateMutationTools } from "./tools/templates.js";
 
 export const REQUIRES_USER_INTERACTION_META = "anthropic/requiresUserInteraction";
 
@@ -188,11 +191,10 @@ export function buildMcpServer({ client, scopes }: BuildMcpServerOptions): Build
 	registerSessionsTools(ctx, flags);
 	registerCatalogTools(ctx, flags);
 	registerAiTools(ctx, flags);
+	registerOrchestrateTools(ctx, flags);
+	registerTemplateMutationTools(ctx, flags);
+	registerDecideTools(ctx, flags);
 	if (flags.hasObserve) registerResources(server, client);
-
-	// Phase 4 adds the 12 mutating/advisory tools via registerMutatingTool
-	// (and registerReadTool for the two RO advisory tools), gated on the
-	// same `flags`.
 
 	return { server, registry };
 }

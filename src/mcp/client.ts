@@ -1,3 +1,4 @@
+import type { ActionRequest } from "../server/services/ai/action-requests-service.js";
 // Type-only imports from server-internal modules (erased at compile time,
 // no runtime coupling): these are each endpoint's one canonical response
 // shape. Importing them directly avoids inventing a second, parallel copy
@@ -6,6 +7,8 @@
 // duplicate shapes already exported by their owning service modules.
 import type { SessionIntelligence } from "../server/services/ai/classifier.js";
 import type { Digest } from "../server/services/ai/digest-service.js";
+import type { HitlRequestRecord } from "../server/services/ai/hitl-service.js";
+import type { RecommendedLaunch } from "../server/services/ai/launch-recommender.js";
 import type { SearchResult } from "../server/services/search/types.js";
 /**
  * AgentPulse REST HTTP client for the MCP server (AGEN-12 Phase 2, D3 seam 1).
@@ -34,16 +37,24 @@ import type { SearchResult } from "../server/services/search/types.js";
  * (errors.ts's mapper) is told to verify state before retrying.
  */
 import type {
+	ActionRequestDecision,
 	AgentType,
 	ControlAction,
+	HitlReplyKind,
 	Inbox,
+	LaunchMode,
 	LaunchRequest,
+	LaunchRequestInput,
+	LaunchRoutingPolicy,
 	Project,
 	ResolvedProjectData,
 	Session,
 	SessionEvent,
 	SessionStatus,
 	SessionTemplate,
+	SessionTemplateInput,
+	SupervisorRecord,
+	TemplatePreview,
 } from "../shared/types.js";
 import type { AuthMeResponse, DashboardStats } from "../shared/types.js";
 
@@ -170,6 +181,49 @@ export interface GetInboxParams {
 }
 
 /**
+ * Phase 4 (D2 mutating-tool table) request/response shapes. `template`/
+ * `launchSpec`-bearing bodies reuse the exact wire types (SessionTemplateInput/
+ * LaunchSpec) rather than a translated copy — recommend_launch/
+ * preview_template/launch_agent's nested `template`/`launch_spec` tool
+ * fields deliberately mirror these camelCase shapes verbatim (orchestrate.ts)
+ * so a caller can round-trip preview_template's own output straight into
+ * launch_agent with zero translation.
+ */
+export interface RecommendLaunchParams {
+	template: SessionTemplateInput;
+	preferredSupervisorId?: string | null;
+}
+
+export interface PreviewTemplateParams extends Partial<SessionTemplateInput> {
+	launchMode?: LaunchMode;
+	requestedSupervisorId?: string | null;
+	routingPolicy?: LaunchRoutingPolicy | null;
+}
+
+export interface CreateLaunchResult {
+	launchRequest: LaunchRequest;
+	supervisor: SupervisorRecord;
+}
+
+export interface ControlActionResult {
+	action: ControlAction;
+}
+
+export interface RetryLaunchResult {
+	action: ControlAction;
+	launchRequest: LaunchRequest;
+}
+
+export interface TemplateMutationInput extends SessionTemplateInput {
+	projectId?: string | null;
+	overriddenFields?: string[];
+}
+
+export interface CreateTemplateResult {
+	template: SessionTemplate;
+}
+
+/**
  * Typed methods per AgentPulse REST endpoint the MCP server needs. Phase 2
  * shipped the minimum spine (getStats, getAuthMe); Phase 3 adds one method
  * per read tool (D2's observe + manage-scoped read-tool tables).
@@ -208,6 +262,36 @@ export interface AgentPulseClient {
 	listLaunches(): Promise<{ launches: LaunchRequest[]; total: number }>;
 	getLaunch(launchId: string): Promise<GetLaunchResult>;
 	getInbox(params?: GetInboxParams): Promise<Inbox>;
+
+	// --- Manage-scoped mutations (AGEN-12 Phase 4, D2's mutating-tool table) ---
+	recommendLaunch(params: RecommendLaunchParams): Promise<{ recommendation: RecommendedLaunch }>;
+	previewTemplate(params: PreviewTemplateParams): Promise<TemplatePreview>;
+	/** H1 contract: the caller (orchestrate.ts's launch_agent) is responsible for never posting a `{templateId}`-only body — the validator dereferences launchSpec unconditionally (launch-validator.ts:150). */
+	createLaunch(
+		body: LaunchRequestInput & { templateId?: string | null },
+	): Promise<CreateLaunchResult>;
+	promptSession(sessionId: string, prompt: string): Promise<ControlActionResult>;
+	stopSession(sessionId: string): Promise<ControlActionResult>;
+	retryLaunch(sessionId: string): Promise<RetryLaunchResult>;
+	updateSessionNotes(sessionId: string, notes: string): Promise<{ ok: true }>;
+	/** `source` mirrors the dashboard/Ask convention (repo CLAUDE.md's rename-precedence contract) — orchestrate.ts's update_session always sends "user". */
+	renameSession(sessionId: string, name: string, source?: string): Promise<{ ok: true }>;
+	pinSession(sessionId: string, pinned: boolean): Promise<{ ok: true }>;
+	archiveSession(sessionId: string, archived: boolean): Promise<{ ok: true }>;
+	createTemplate(body: TemplateMutationInput): Promise<CreateTemplateResult>;
+	updateTemplate(templateId: string, body: TemplateMutationInput): Promise<CreateTemplateResult>;
+	deleteTemplate(templateId: string): Promise<{ ok: true }>;
+	decideHitl(
+		hitlId: string,
+		action: HitlReplyKind,
+		customPrompt?: string | null,
+	): Promise<{ hitl: HitlRequestRecord | null }>;
+	decideActionRequest(
+		actionRequestId: string,
+		decision: ActionRequestDecision,
+	): Promise<{ actionRequest: ActionRequest | null }>;
+	/** GET /api/v1/admin/supervisors — strict-manage admin router (supervisors.ts:47), not requireOperatorScope. */
+	listHosts(): Promise<{ supervisors: SupervisorRecord[]; total: number }>;
 }
 
 export interface CreateHttpClientOptions {
@@ -389,5 +473,78 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 					limit: params?.limit,
 				})}`,
 			),
+
+		recommendLaunch: (params) =>
+			request<{ recommendation: RecommendedLaunch }>("/launches/recommendation", {
+				method: "POST",
+				body: JSON.stringify({
+					template: params.template,
+					preferredSupervisorId: params.preferredSupervisorId,
+				}),
+			}),
+		previewTemplate: (params) =>
+			request<TemplatePreview>("/templates/preview", {
+				method: "POST",
+				body: JSON.stringify(params),
+			}),
+		createLaunch: (body) =>
+			request<CreateLaunchResult>("/launches", { method: "POST", body: JSON.stringify(body) }),
+		promptSession: (sessionId, prompt) =>
+			request<ControlActionResult>(`/sessions/${encodeURIComponent(sessionId)}/prompt`, {
+				method: "POST",
+				body: JSON.stringify({ prompt }),
+			}),
+		stopSession: (sessionId) =>
+			request<ControlActionResult>(`/sessions/${encodeURIComponent(sessionId)}/stop`, {
+				method: "POST",
+			}),
+		retryLaunch: (sessionId) =>
+			request<RetryLaunchResult>(`/sessions/${encodeURIComponent(sessionId)}/retry`, {
+				method: "POST",
+			}),
+		updateSessionNotes: (sessionId, notes) =>
+			request<{ ok: true }>(`/sessions/${encodeURIComponent(sessionId)}/notes`, {
+				method: "PUT",
+				body: JSON.stringify({ notes }),
+			}),
+		renameSession: (sessionId, name, source) =>
+			request<{ ok: true }>(`/sessions/${encodeURIComponent(sessionId)}/rename`, {
+				method: "PUT",
+				body: JSON.stringify({ name, source }),
+			}),
+		pinSession: (sessionId, pinned) =>
+			request<{ ok: true }>(`/sessions/${encodeURIComponent(sessionId)}/pin`, {
+				method: "PUT",
+				body: JSON.stringify({ pinned }),
+			}),
+		archiveSession: (sessionId, archived) =>
+			request<{ ok: true }>(`/sessions/${encodeURIComponent(sessionId)}/archive`, {
+				method: "PUT",
+				body: JSON.stringify({ archived }),
+			}),
+		createTemplate: (body) =>
+			request<CreateTemplateResult>("/templates", { method: "POST", body: JSON.stringify(body) }),
+		updateTemplate: (templateId, body) =>
+			request<CreateTemplateResult>(`/templates/${encodeURIComponent(templateId)}`, {
+				method: "PUT",
+				body: JSON.stringify(body),
+			}),
+		deleteTemplate: (templateId) =>
+			request<{ ok: true }>(`/templates/${encodeURIComponent(templateId)}`, { method: "DELETE" }),
+		decideHitl: (hitlId, action, customPrompt) =>
+			request<{ hitl: HitlRequestRecord | null }>(
+				`/ai/inbox/hitl/${encodeURIComponent(hitlId)}/decide`,
+				{
+					method: "POST",
+					body: JSON.stringify({ action, customPrompt: customPrompt ?? undefined }),
+				},
+			),
+		decideActionRequest: (actionRequestId, decision) =>
+			request<{ actionRequest: ActionRequest | null }>(
+				`/ai/action-requests/${encodeURIComponent(actionRequestId)}/decide`,
+				{ method: "POST", body: JSON.stringify({ decision }) },
+			),
+		listHosts: () =>
+			request<{ supervisors: SupervisorRecord[]; total: number }>("/admin/supervisors"),
 	};
 }
