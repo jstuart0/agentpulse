@@ -16,7 +16,7 @@
 import { type McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AgentPulseClient } from "./client.js";
 import { capList, capToolResult } from "./output.js";
-import { buildSessionDetailPayload } from "./tools/sessions.js";
+import { buildSessionDetailPayload, compactSessionRow } from "./tools/sessions.js";
 
 function jsonContents(uri: URL, data: unknown) {
 	return {
@@ -34,18 +34,10 @@ export function registerResources(server: McpServer, client: AgentPulseClient): 
 			mimeType: "application/json",
 		},
 		async (uri) => {
+			// Reuses list_sessions' exact row shape (compactSessionRow) rather
+			// than hand-building a third, diverged copy (dexter Low-Med).
 			const { sessions, total } = await client.getSessions({ limit: 20 });
-			const capped = capList(
-				sessions.map((s) => ({
-					sessionId: s.sessionId,
-					displayName: s.displayName,
-					agentType: s.agentType,
-					status: s.status,
-					cwd: s.cwd,
-					isWorking: s.isWorking,
-					managed: Boolean(s.managedSession),
-				})),
-			);
+			const capped = capList(sessions.map(compactSessionRow));
 			return jsonContents(uri, { sessions: capped.items, total });
 		},
 	);

@@ -7,20 +7,24 @@
  */
 import { z } from "zod";
 import type { AgentPulseClient } from "../client.js";
+import { AGENT_TYPE_ENUM, SESSION_STATUS_ENUM } from "../enums.js";
 import { capList, capText } from "../output.js";
 import { registerReadTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
 
-// Mirrors src/shared/constants.ts's AGENT_TYPES/SESSION_STATUSES tuples.
-// Spelled as literal zod enums (rather than z.enum(AGENT_TYPES)) because
-// zod's enum() wants a mutable string tuple and the shared consts are
-// `as const` readonly — duplicating the literal values here is simpler
-// than fighting the tuple variance. Keep in sync if either list changes.
-const AGENT_TYPE_ENUM = z.enum(["claude_code", "codex_cli"]);
-const SESSION_STATUS_ENUM = z.enum(["active", "idle", "completed", "failed", "archived"]);
-
-/** Fields the dashboard grid needs, trimmed for token budget — no notes/metadata/claude-md blobs. */
-function compactSessionRow(
+/**
+ * Fields the dashboard grid needs, trimmed for token budget — no
+ * notes/metadata/claude-md blobs. Exported so resources.ts's
+ * agentpulse://sessions resource reuses the exact same row shape rather
+ * than hand-building a third, diverged copy.
+ *
+ * `managed` reads `session.managed` — the batched boolean
+ * `getSessions()` (session-tracker.ts) now populates via one membership
+ * query per page, NOT `session.managedSession` (the full joined object,
+ * which only the single-session detail route populates and which is
+ * always undefined on list rows).
+ */
+export function compactSessionRow(
 	session: Awaited<ReturnType<AgentPulseClient["getSessions"]>>["sessions"][number],
 ) {
 	return {
@@ -37,12 +41,7 @@ function compactSessionRow(
 		gitBranch: session.gitBranch,
 		lastActivityAt: session.lastActivityAt,
 		totalToolUses: session.totalToolUses,
-		// GET /sessions never embeds managedSession (only the detail route
-		// joins it, session-tracker.ts getSessions vs getSession) — this is
-		// always false today. Left in place (rather than omitted) so the
-		// field becomes accurate for free the day the REST list route joins
-		// it, and so the shape matches get_session's `managed` field now.
-		managed: Boolean(session.managedSession),
+		managed: Boolean(session.managed),
 	};
 }
 
@@ -191,6 +190,16 @@ export function registerSessionsTools(ctx: ToolContext, flags: ScopeFlags): void
 				"The CLAUDE.md content stored for a session (as synced from the agent's workspace).",
 			inputSchema: { session_id: z.string() },
 		},
-		async (args, client) => client.getSessionClaudeMd(args.session_id),
+		async (args, client) => {
+			const result = await client.getSessionClaudeMd(args.session_id);
+			// capText the content explicitly (dexter Med, mid-build): the
+			// structural safety net (output.ts capToolResult) only handled
+			// oversized ARRAY fields until this same commit's output.ts fix;
+			// an oversized single scalar string was silently DROPPED, not
+			// truncated. Cap here too (matches the get_session_timeline/
+			// search convention of capping known free-text fields at the
+			// handler level) rather than relying solely on the safety net.
+			return { ...result, content: capText(result.content) };
+		},
 	);
 }

@@ -17,6 +17,18 @@ import type { SearchResult } from "../server/services/search/types.js";
  * mid-build hardening pass — it was previously duplicated inline here and
  * in src/web/lib/api.ts).
  *
+ * Promote-to-shared bar (dexter Low, Phase 3 mid-build): a type is
+ * promoted to src/shared/types.ts once >=2 non-MCP consumers need it (the
+ * AuthMeResponse/DashboardStats precedent — both are also consumed by
+ * src/web/lib/api.ts). A type with exactly one canonical owner outside
+ * src/mcp/ (SessionIntelligence in classifier.ts, Digest in
+ * digest-service.ts, SearchResult in search/types.ts — see the type-only
+ * imports below) is type-imported directly from that owner instead;
+ * promoting it would just relocate a single-consumer type, not de-duplicate
+ * one. A type with NO exported owner anywhere (AiStatusResponse,
+ * AiDiagnostics, ClaudeMdResponse — the routes that produce them inline
+ * their response object literal) is hand-declared once, here.
+ *
  * No-retry contract (D3/M8): this client never auto-retries. A mutating
  * call that times out server-side must not be silently re-sent — the caller
  * (errors.ts's mapper) is told to verify state before retrying.

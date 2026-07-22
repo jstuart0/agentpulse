@@ -264,3 +264,155 @@ describe("createHttpClient", () => {
 		expect(client.baseUrl).toBe("http://localhost:3000/api/v1");
 	});
 });
+
+/**
+ * Phase 3 mid-build (tessa H-3): request-construction coverage for the
+ * Phase 3 methods client.test.ts never exercised past Phase 2's
+ * getStats/getAuthMe. Pins the EXACT query string each REST route
+ * requires — including snake/camel-case param-name mismatches (getSessions
+ * sends `agent_type` snake but `projectId` camel; listTemplates sends
+ * `agent_type` snake; getInbox sends `sessionId` camel) — so a future
+ * rename of a toQuery() call site can't silently break a query.
+ */
+describe("createHttpClient — Phase 3 request construction (tessa H-3)", () => {
+	function recordingFetch(body: unknown) {
+		let recordedUrl: string | undefined;
+		const fetchImpl = (async (url: string) => {
+			recordedUrl = url;
+			return fakeResponse(200, body);
+		}) as unknown as typeof fetch;
+		return { fetchImpl, getUrl: () => recordedUrl };
+	}
+
+	test("getSessions() sends agent_type (snake) + projectId (camel) + status/limit/offset", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ sessions: [], total: 0 });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.getSessions({
+			status: "active",
+			agentType: "claude_code",
+			projectId: "proj-1",
+			limit: 10,
+			offset: 5,
+		});
+
+		const url = new URL(getUrl() ?? "");
+		expect(url.pathname).toBe("/api/v1/sessions");
+		expect(url.searchParams.get("status")).toBe("active");
+		expect(url.searchParams.get("agent_type")).toBe("claude_code");
+		expect(url.searchParams.get("projectId")).toBe("proj-1");
+		expect(url.searchParams.has("agentType")).toBe(false);
+		expect(url.searchParams.has("project_id")).toBe(false);
+		expect(url.searchParams.get("limit")).toBe("10");
+		expect(url.searchParams.get("offset")).toBe("5");
+	});
+
+	test("getSessions() with no params omits every query key entirely", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ sessions: [], total: 0 });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.getSessions();
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/sessions");
+	});
+
+	test("search() sends q/kinds(comma-joined)/limit/offset", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ hits: [], total: 0, backend: "sqlite-fts5" });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.search({ q: "hello world", kinds: ["session", "event"], limit: 20, offset: 0 });
+
+		const url = new URL(getUrl() ?? "");
+		expect(url.pathname).toBe("/api/v1/search");
+		expect(url.searchParams.get("q")).toBe("hello world");
+		expect(url.searchParams.get("kinds")).toBe("session,event");
+		expect(url.searchParams.get("limit")).toBe("20");
+		expect(url.searchParams.get("offset")).toBe("0");
+	});
+
+	test("listTemplates() sends agent_type (snake)", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ templates: [], total: 0 });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.listTemplates({ agentType: "codex_cli" });
+
+		const url = new URL(getUrl() ?? "");
+		expect(url.pathname).toBe("/api/v1/templates");
+		expect(url.searchParams.get("agent_type")).toBe("codex_cli");
+		expect(url.searchParams.has("agentType")).toBe(false);
+	});
+
+	test("listTemplates() with no filter omits the query entirely", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ templates: [], total: 0 });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.listTemplates();
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/templates");
+	});
+
+	test("getInbox() sends sessionId (camel) + kinds(comma-joined) + severity + limit", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ items: [], total: 0, byKind: {} });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.getInbox({
+			kinds: ["hitl", "stuck"],
+			sessionId: "s1",
+			severity: "high",
+			limit: 50,
+		});
+
+		const url = new URL(getUrl() ?? "");
+		expect(url.pathname).toBe("/api/v1/ai/inbox");
+		expect(url.searchParams.get("sessionId")).toBe("s1");
+		expect(url.searchParams.has("session_id")).toBe(false);
+		expect(url.searchParams.get("kinds")).toBe("hitl,stuck");
+		expect(url.searchParams.get("severity")).toBe("high");
+		expect(url.searchParams.get("limit")).toBe("50");
+	});
+
+	test("getSession()/getTemplate()/getLaunch() URL-encode the path segment", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({
+			session: {},
+			events: [],
+			controlActions: undefined,
+		});
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.getSession("s 1/weird");
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/sessions/s%201%2Fweird");
+	});
+
+	test("getSessionTimeline()/getEventContext() route params correctly", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ events: [], target: { id: 1 } });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.getEventContext("s1", 42, 15);
+
+		const url = new URL(getUrl() ?? "");
+		expect(url.pathname).toBe("/api/v1/sessions/s1/events/42/context");
+		expect(url.searchParams.get("around")).toBe("15");
+	});
+
+	test("listLaunches() happy path resolves the launches/total shape", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ launches: [], total: 0 });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		const result = await client.listLaunches();
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/launches");
+		expect(result).toEqual({ launches: [], total: 0 });
+	});
+
+	test("getLaunch() resolves and hits the correct path", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ launchRequest: { id: "l1" }, session: null });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		const result = await client.getLaunch("l1");
+
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/launches/l1");
+		expect(result.launchRequest.id).toBe("l1");
+		expect(result.session).toBeNull();
+	});
+});

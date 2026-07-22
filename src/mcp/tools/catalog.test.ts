@@ -7,9 +7,16 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { LaunchRequest, SessionTemplate } from "../../shared/types.js";
 import type { ToolContext } from "../server.js";
 import { fakeClient } from "../test-support.js";
 import { registerCatalogTools } from "./catalog.js";
+
+/** Minimal fixtures — LaunchRequest/SessionTemplate carry ~15-30 fields irrelevant to these pass-through happy-path tests; cast rather than enumerate every one. */
+const fakeLaunchRequest = (overrides: Partial<LaunchRequest>): LaunchRequest =>
+	overrides as LaunchRequest;
+const fakeTemplate = (overrides: Partial<SessionTemplate>): SessionTemplate =>
+	overrides as SessionTemplate;
 
 function newContext(client: ReturnType<typeof fakeClient>): ToolContext {
 	const server = new McpServer({ name: "agentpulse-test", version: "0.0.0-test" });
@@ -135,6 +142,71 @@ describe("manage-only tools require manage scope to register", () => {
 		expect(names).toContain("get_template");
 		expect(names).toContain("list_launches");
 		expect(names).toContain("get_launch");
+	});
+});
+
+describe("list_templates / list_launches / get_launch — happy path (tessa H-3)", () => {
+	test("list_templates returns real template rows", async () => {
+		const ctx = newContext(
+			fakeClient({
+				listTemplates: async () => ({
+					templates: [
+						fakeTemplate({
+							id: "t1",
+							name: "default",
+							agentType: "claude_code",
+							cwd: "/repo",
+							env: { SOME_KEY: "value" },
+						}),
+					],
+					total: 1,
+				}),
+			}),
+		);
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_templates", arguments: {} });
+		expect(result.isError).toBeFalsy();
+		const parsed = JSON.parse(textOf(result));
+		expect(parsed.total).toBe(1);
+		expect(parsed.templates[0].id).toBe("t1");
+		expect(parsed.templates[0].env).toEqual({ SOME_KEY: "value" });
+	});
+
+	test("list_launches returns real launch rows", async () => {
+		const ctx = newContext(
+			fakeClient({
+				listLaunches: async () => ({
+					launches: [fakeLaunchRequest({ id: "l1", status: "queued" })],
+					total: 1,
+				}),
+			}),
+		);
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_launches", arguments: {} });
+		expect(result.isError).toBeFalsy();
+		const parsed = JSON.parse(textOf(result));
+		expect(parsed.total).toBe(1);
+		expect(parsed.launches[0].id).toBe("l1");
+	});
+
+	test("get_launch returns launchRequest + session from the client", async () => {
+		const ctx = newContext(
+			fakeClient({
+				getLaunch: async () => ({
+					launchRequest: fakeLaunchRequest({ id: "l1", status: "running" }),
+					session: null,
+				}),
+			}),
+		);
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "get_launch", arguments: { launch_id: "l1" } });
+		expect(result.isError).toBeFalsy();
+		const parsed = JSON.parse(textOf(result));
+		expect(parsed.launchRequest.id).toBe("l1");
+		expect(parsed.session).toBeNull();
 	});
 });
 

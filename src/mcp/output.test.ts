@@ -172,8 +172,31 @@ describe("capToolResult", () => {
 		expect(capped.failed.length).toBeLessThan(payload.failed.length);
 	});
 
-	test("oversized scalar/object with no array field falls back to a truncated summary, never silently drops without explanation", () => {
-		const payload = { blob: "x".repeat(5000) };
+	test("a single oversized SCALAR STRING field is truncated with a marker, NOT dropped (dexter Med — real bug fixed mid-build)", () => {
+		// Before this fix: capToolResult's fallback only handled ARRAY
+		// fields — an object shaped like get_session_claude_md's result
+		// ({content, path, checksum, updatedAt}) with an oversized `content`
+		// string had no array to cap, so it fell straight to the generic
+		// {truncated,note,originalSizeChars} summary — the actual content was
+		// silently DROPPED, not truncated. This must now truncate instead.
+		const payload = { content: "x".repeat(5000), path: "CLAUDE.md", checksum: "abc" };
+		const capped = capToolResult(payload, 1000) as {
+			content: string;
+			path: string;
+			checksum: string;
+			truncated?: boolean;
+			_truncated?: string;
+		};
+		expect(capped.truncated).toBeUndefined();
+		expect(capped.content).toBeDefined();
+		expect(capped.content.length).toBeGreaterThan(0);
+		expect(capped.content.length).toBeLessThan(payload.content.length);
+		expect(capped.path).toBe("CLAUDE.md");
+		expect(capped._truncated).toContain("content");
+	});
+
+	test("oversized envelope with a genuinely non-cappable field (nested object, not array/string) falls back to a truncated summary, never silently drops without explanation", () => {
+		const payload = { blob: { nested: "x".repeat(5000) } };
 		const capped = capToolResult(payload, 100) as { truncated: boolean; originalSizeChars: number };
 		expect(capped.truncated).toBe(true);
 		expect(capped.originalSizeChars).toBeGreaterThan(100);

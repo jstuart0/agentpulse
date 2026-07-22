@@ -334,6 +334,15 @@ export interface Session {
 	projectId: string | null;
 	isArchived: boolean;
 	managedSession?: ManagedSession | null;
+	/**
+	 * Cheap presence flag: true when a managed_sessions row exists for this
+	 * session. Populated by `getSessions()` (list) via one batched
+	 * membership query — unlike `managedSession`, which only `getSession()`
+	 * (detail) populates with the full joined row. Prefer this field over
+	 * `Boolean(managedSession)` in list contexts; `managedSession` is never
+	 * present on list rows.
+	 */
+	managed?: boolean;
 }
 
 export interface ManagedSession {

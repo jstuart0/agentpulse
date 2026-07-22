@@ -68,14 +68,24 @@ describe("resources/list", () => {
 });
 
 describe("resources/read", () => {
-	test("agentpulse://sessions returns application/json contents", async () => {
+	test("agentpulse://sessions returns application/json contents, reusing list_sessions' compactSessionRow shape", async () => {
 		const mcpClient = await connectedServer(
-			fakeClient({ getSessions: async () => ({ sessions: [baseSession()], total: 1 }) }),
+			fakeClient({
+				getSessions: async () => ({
+					sessions: [
+						baseSession({ sessionId: "s1", managed: false }),
+						baseSession({ sessionId: "s2", managed: true }),
+					],
+					total: 2,
+				}),
+			}),
 		);
 		const result = await mcpClient.readResource({ uri: "agentpulse://sessions" });
 		expect((result.contents[0] as { mimeType?: string }).mimeType).toBe("application/json");
 		const parsed = JSON.parse((result.contents[0] as { text: string }).text);
 		expect(parsed.sessions[0].sessionId).toBe("s1");
+		expect(parsed.sessions[0].managed).toBe(false);
+		expect(parsed.sessions[1].managed).toBe(true);
 	});
 
 	test("agentpulse://digest returns application/json contents", async () => {

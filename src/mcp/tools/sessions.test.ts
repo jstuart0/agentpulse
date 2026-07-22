@@ -101,6 +101,35 @@ describe("registerSessionsTools — input validation", () => {
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toContain("Session not found");
 	});
+
+	test("get_session called with no session_id → SDK-level schema rejection before the handler runs (test-contract assertion 1, corrected against the installed SDK)", async () => {
+		// CORRECTION (mid-build, verified empirically against the installed
+		// @modelcontextprotocol/sdk@1.29.0): the test-contract's assertion 1
+		// claims a required-field validation failure surfaces as a rejected
+		// promise (a JSON-RPC protocol error), not an {isError:true}
+		// CallToolResult. That is NOT what this SDK version does —
+		// mcp.js's CallToolRequestSchema handler wraps validateToolInput()'s
+		// thrown McpError in a try/catch and converts it to
+		// createToolError(...) (an isError:true result), same as any other
+		// thrown error, UNLESS the McpError's code is
+		// ErrorCode.UrlElicitationRequired (irrelevant here). So the
+		// SDK-boundary guarantee this test can actually make is narrower:
+		// the fake client's getSession is never invoked (proving the
+		// handler never ran) and the error text names the missing field —
+		// not "promise rejects".
+		const ctx = newContext(
+			fakeClient({
+				getSession: async () => {
+					throw new Error("handler should never run — schema validation must reject first");
+				},
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "get_session", arguments: {} });
+		expect(result.isError).toBe(true);
+		expect(textOf(result).toLowerCase()).toContain("session_id");
+	});
 });
 
 describe("get_session — 500-event trim (test-contract 6-8)", () => {
@@ -193,6 +222,48 @@ describe("get_session — 500-event trim (test-contract 6-8)", () => {
 		expect(parsed.controlActions.length).toBe(1);
 	});
 
+	test("managed:true is exercised (tessa H-4) — a session WITH a managedSession object", async () => {
+		const managedSession = {
+			sessionId: "s1",
+			launchRequestId: "lr1",
+			supervisorId: "sup1",
+			providerSessionId: null,
+			providerThreadId: null,
+			managedState: "managed" as const,
+			correlationSource: null,
+			desiredThreadTitle: null,
+			providerThreadTitle: null,
+			providerSyncState: "synced" as const,
+			providerSyncError: null,
+			lastProviderSyncAt: null,
+			providerProtocolVersion: null,
+			providerCapabilitySnapshot: null,
+			activeControlActionId: null,
+			controlLockExpiresAt: null,
+			hostName: null,
+			hostAffinityReason: null,
+			createdAt: "2026-01-01 00:00:00",
+			updatedAt: "2026-01-01 00:00:00",
+		};
+		const ctx = newContext(
+			fakeClient({
+				getSession: async () => ({
+					session: baseSession({ managedSession }),
+					events: [],
+					controlActions: undefined,
+				}),
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "get_session",
+			arguments: { session_id: "s1" },
+		});
+		const parsed = JSON.parse(textOf(result));
+		expect(parsed.managed).toBe(true);
+	});
+
 	test("tool_input/tool_response previews are capped to ~500 chars", async () => {
 		const bigInput = { command: "x".repeat(2000) };
 		const events = [fakeEvent(1, { toolInput: bigInput, toolResponse: "y".repeat(2000) })];
@@ -260,7 +331,7 @@ describe("list_sessions — pagination (test-contract 9-10, 12)", () => {
 		expect(parsed.hint).toBeUndefined();
 	});
 
-	test("each row includes a `managed` boolean", async () => {
+	test("each row includes a `managed` boolean — false when the REST row's managed field is absent/false", async () => {
 		const ctx = newContext(
 			fakeClient({
 				getSessions: async () => ({ sessions: [baseSession()], total: 1 }),
@@ -271,6 +342,22 @@ describe("list_sessions — pagination (test-contract 9-10, 12)", () => {
 		const result = await mcpClient.callTool({ name: "list_sessions", arguments: {} });
 		const parsed = JSON.parse(textOf(result));
 		expect(parsed.sessions[0].managed).toBe(false);
+	});
+
+	test("managed:true is exercised (tessa H-4) — reads session.managed, the batched-query field getSessions() (session-tracker.ts) now populates, NOT session.managedSession (list rows never carry the full joined object)", async () => {
+		const ctx = newContext(
+			fakeClient({
+				getSessions: async () => ({
+					sessions: [baseSession({ sessionId: "managed-1", managed: true })],
+					total: 1,
+				}),
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_sessions", arguments: {} });
+		const parsed = JSON.parse(textOf(result));
+		expect(parsed.sessions[0].managed).toBe(true);
 	});
 });
 
@@ -349,6 +436,36 @@ describe("get_event_context / get_session_claude_md — pass-through", () => {
 		});
 		const parsed = JSON.parse(textOf(result));
 		expect(parsed.content).toBe("# hi");
+	});
+
+	test("an oversized CLAUDE.md content is truncated, not silently dropped (dexter Med, mid-build)", async () => {
+		const bigContent = "x".repeat(10_000);
+		const ctx = newContext(
+			fakeClient({
+				getSessionClaudeMd: async () => ({
+					content: bigContent,
+					path: "CLAUDE.md",
+					checksum: "abc",
+					updatedAt: null,
+				}),
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "get_session_claude_md",
+			arguments: { session_id: "s1" },
+		});
+		expect(result.isError).toBeFalsy();
+		const parsed = JSON.parse(textOf(result));
+		// Truncated, not dropped: content is present, non-empty, shorter than
+		// the original, and the response is not the generic
+		// {truncated,note,originalSizeChars} fallback envelope.
+		expect(parsed.content).toBeDefined();
+		expect(parsed.content.length).toBeGreaterThan(0);
+		expect(parsed.content.length).toBeLessThan(bigContent.length);
+		expect(parsed.truncated).toBeUndefined();
+		expect(parsed.path).toBe("CLAUDE.md");
 	});
 });
 

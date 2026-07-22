@@ -186,7 +186,25 @@ export async function getSessions(filters?: {
 	const [{ count: total }] =
 		conditions.length > 0 ? await countQuery.where(and(...conditions)) : await countQuery;
 
-	return { sessions: rows, total };
+	// One batched membership query for the returned page — NOT a join (a
+	// join would nest the row shape to {sessions:{...}, managed_sessions:
+	// {...}} and break every flat-row consumer: useSessions.ts, relay.ts's
+	// name-sync + CLAUDE.md-sync, and the MCP compactSessionRow mapper), and
+	// NOT one getManagedSession() call per row (N+1 over up to 100 rows
+	// polled every 30s). A single indexed IN-query regardless of page size,
+	// merged onto the existing flat rows as a boolean.
+	const pageSessionIds = rows.map((row) => row.sessionId);
+	const managedRows =
+		pageSessionIds.length > 0
+			? await getDb()
+					.select({ sessionId: managedSessions.sessionId })
+					.from(managedSessions)
+					.where(inArray(managedSessions.sessionId, pageSessionIds))
+			: [];
+	const managedIds = new Set(managedRows.map((row) => row.sessionId));
+	const rowsWithManaged = rows.map((row) => ({ ...row, managed: managedIds.has(row.sessionId) }));
+
+	return { sessions: rowsWithManaged, total };
 }
 
 // Get a single session by session_id

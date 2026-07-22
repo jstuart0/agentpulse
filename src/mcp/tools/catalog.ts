@@ -5,11 +5,10 @@
  * get_launch (manage-only, C1: DTOs carry env/launchSpec/claimToken).
  */
 import { z } from "zod";
+import { AGENT_TYPE_ENUM } from "../enums.js";
 import { capList, capText } from "../output.js";
 import { registerReadTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
-
-const AGENT_TYPE_ENUM = z.enum(["claude_code", "codex_cli"]);
 
 export function registerCatalogTools(ctx: ToolContext, flags: ScopeFlags): void {
 	if (flags.hasObserve) {
