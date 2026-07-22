@@ -109,6 +109,9 @@ function serializedLength(value: unknown): number {
 	}
 }
 
+/** Never cap a field down to a budget smaller than this — avoids a field being reduced to nothing with no explanation. */
+const MIN_FIELD_BUDGET = 200;
+
 /**
  * Structural safety net applied by the tool-registration wrappers
  * (registerReadTool/registerMutatingTool in server.ts) to EVERY handler
@@ -118,10 +121,22 @@ function serializedLength(value: unknown): number {
  * client's ~25K-token hard cap even when a handler didn't.
  *
  * Strategy: pass through under budget. Over budget: if the result is an
- * array, delegate to capList. If it's an object, cap its largest
- * array-valued field (the common "list wrapped in an envelope" shape) and
- * attach the drop hint under `_truncated`. Otherwise (a single oversized
- * scalar/object with no array to trim) fall back to a truncated summary —
+ * array, delegate to capList. If it's an object, cap EVERY array-valued
+ * field proportionally to its own share of the total array content —
+ * not just the single largest one. This is what makes a multi-array
+ * discriminated-union envelope (e.g. an inbox shaped {hitl: [...],
+ * stuck: [...], risky: [...], failed: [...]}) safe: a "cap only the
+ * largest field" strategy would leave the other three arrays unmodified
+ * and could still blow the budget. The proportional split is computed
+ * once (each field's target is `availableForArrays * ownShare`, so the
+ * targets sum to `availableForArrays` by construction) rather than via
+ * repeated overage-based re-estimation, which converges far more slowly
+ * (verified empirically: an overage/remaining-fields iterative split
+ * needed >10 passes to converge on a 4-array/4000-char-budget case that
+ * this one-shot proportional split satisfies immediately). Otherwise (a
+ * single oversized scalar/object with no array to trim, or the envelope
+ * is still over budget after every array field has been capped — e.g.
+ * pathological non-array overhead) falls back to a truncated summary —
  * never emit a result that blows the budget with no explanation.
  */
 export function capToolResult(result: unknown, budget: number = DEFAULT_CHAR_BUDGET): unknown {
@@ -134,23 +149,45 @@ export function capToolResult(result: unknown, budget: number = DEFAULT_CHAR_BUD
 	}
 
 	if (result && typeof result === "object") {
-		const entries = Object.entries(result as Record<string, unknown>);
-		const arrayEntries = entries.filter((entry): entry is [string, unknown[]] =>
-			Array.isArray(entry[1]),
-		);
-		const [largestKey, largestArray] =
-			arrayEntries.sort((a, b) => serializedLength(b[1]) - serializedLength(a[1]))[0] ?? [];
+		const source = result as Record<string, unknown>;
+		const arrayKeys = Object.keys(source).filter((key) => Array.isArray(source[key]));
 
-		if (largestKey !== undefined) {
-			const envelopeOverhead = totalSize - serializedLength(largestArray);
-			const arrayBudget = Math.max(budget - envelopeOverhead, 500);
-			const capped = capList(largestArray, { budget: arrayBudget });
-			const out: Record<string, unknown> = {
-				...(result as Record<string, unknown>),
-				[largestKey]: capped.items,
-			};
-			if (capped.hint) out._truncated = capped.hint;
-			return out;
+		if (arrayKeys.length > 0) {
+			const out: Record<string, unknown> = { ...source };
+			const hints = new Set<string>();
+			// Headroom reserved for the `_truncated` hint text itself — without
+			// this, a split that lands exactly at `budget` can tip back over
+			// once the hint field is added.
+			const HINT_RESERVE = 300;
+
+			const envelopeOverhead = serializedLength(
+				Object.fromEntries(Object.entries(out).filter(([key]) => !arrayKeys.includes(key))),
+			);
+			const totalArraySize = arrayKeys.reduce((sum, key) => sum + serializedLength(out[key]), 0);
+			const availableForArrays = Math.max(
+				budget - HINT_RESERVE - envelopeOverhead,
+				arrayKeys.length * MIN_FIELD_BUDGET,
+			);
+
+			for (const key of arrayKeys) {
+				const arr = out[key] as unknown[];
+				const arrSize = serializedLength(arr);
+				const ownShare = totalArraySize > 0 ? arrSize / totalArraySize : 0;
+				const fieldBudget = Math.max(Math.floor(availableForArrays * ownShare), MIN_FIELD_BUDGET);
+				if (fieldBudget >= arrSize) continue; // already within its proportional share
+
+				const capped = capList(arr, { budget: fieldBudget });
+				out[key] = capped.items;
+				if (capped.hint) hints.add(`${key}: ${capped.hint}`);
+			}
+
+			if (hints.size > 0) out._truncated = [...hints].join("; ");
+
+			if (serializedLength(out) <= budget) return out;
+			// Every array field has been capped to its proportional share and
+			// the envelope is still over budget (pathological: huge non-array
+			// overhead) — fall through to the generic summary below instead
+			// of silently returning an oversized result.
 		}
 	}
 

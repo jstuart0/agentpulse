@@ -46,6 +46,67 @@ function bodyErrorCode(body: unknown): string | undefined {
 	return undefined;
 }
 
+/**
+ * Declarative (status, error-code) → message table (dexter Med — was 8
+ * nested `if` branches; a table iterated once scales better as Phase 3/4
+ * wrap more ai-* routes, each adding another row rather than another
+ * branch). `error: undefined` matches any/no error code at that status
+ * (used for 401, which AgentPulse emits with varying bodies). Order
+ * matters only in that the first match wins — there is currently no
+ * (status, error) pair with more than one row, so this is a non-issue in
+ * practice, but rows are still listed status-ascending for readability.
+ * Preserves the exact message text the tests pin.
+ */
+const ERROR_TABLE: ReadonlyArray<{
+	status: number;
+	error?: string;
+	message: string | ((body: unknown) => string);
+}> = [
+	{ status: 401, message: "API key rejected by AgentPulse — check AGENTPULSE_API_KEY." },
+	{
+		status: 403,
+		error: "insufficient_scope",
+		message: (body) => {
+			const required =
+				body && typeof body === "object" && "required" in body
+					? String((body as { required?: unknown }).required)
+					: "manage";
+			return `AgentPulse rejected the request: this key lacks the "${required}" scope.`;
+		},
+	},
+	// requireAiBuild → 404 (AI not compiled in). requireAiActive → 409
+	// (compiled in but runtime-disabled) — a DIFFERENT message from both the
+	// 404 case and the 409 ai_paused (kill switch) case below (ai-gates.ts:
+	// 12-41; the two 409 ai_disabled/ai_paused bodies must stay distinct —
+	// keying this table on the (status, error) pair, not status alone, is
+	// exactly what keeps them from collapsing into one message).
+	{
+		status: 404,
+		error: "ai_disabled",
+		message: "AI features are not enabled on this AgentPulse instance (not compiled in).",
+	},
+	{
+		status: 409,
+		error: "ai_disabled",
+		message: "AI features are disabled in Settings on this AgentPulse instance.",
+	},
+	{
+		status: 409,
+		error: "ai_paused",
+		message: "AI is paused (kill switch active) on this AgentPulse instance.",
+	},
+	// Deliberately NO row for (503, "ai_kill_switch_active") — that code was
+	// never shipped (ai-gates.ts:12-41). It falls through to the generic
+	// 5xx handler below, which is the correct behavior for any unrecognized
+	// (status, error) pair.
+];
+
+function findMapping(status: number, code: string | undefined) {
+	return ERROR_TABLE.find(
+		(row) => row.status === status && (row.error === undefined || row.error === code),
+	);
+}
+
 /** Maps a thrown client-layer error (or anything else) to an MCP tool error result. */
 export function mapError(err: unknown, baseUrl: string): McpErrorResult {
 	if (err instanceof TimeoutError || err instanceof NetworkError) {
@@ -58,28 +119,11 @@ export function mapError(err: unknown, baseUrl: string): McpErrorResult {
 		const { status, body } = err;
 		const code = bodyErrorCode(body);
 
-		if (status === 401) {
-			return errorResult("API key rejected by AgentPulse — check AGENTPULSE_API_KEY.");
-		}
-		if (status === 403 && code === "insufficient_scope") {
-			const required =
-				body && typeof body === "object" && "required" in body
-					? String((body as { required?: unknown }).required)
-					: "manage";
+		const mapping = findMapping(status, code);
+		if (mapping) {
 			return errorResult(
-				`AgentPulse rejected the request: this key lacks the "${required}" scope.`,
+				typeof mapping.message === "function" ? mapping.message(body) : mapping.message,
 			);
-		}
-		if (status === 404 && code === "ai_disabled") {
-			return errorResult(
-				"AI features are not enabled on this AgentPulse instance (not compiled in).",
-			);
-		}
-		if (status === 409 && code === "ai_disabled") {
-			return errorResult("AI features are disabled in Settings on this AgentPulse instance.");
-		}
-		if (status === 409 && code === "ai_paused") {
-			return errorResult("AI is paused (kill switch active) on this AgentPulse instance.");
 		}
 		if (status >= 400 && status < 500) {
 			return errorResult(code ?? truncate(bodyText(body)));

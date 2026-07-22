@@ -1,23 +1,36 @@
 #!/usr/bin/env bun
 /**
- * Architecture guard (AGEN-12 Phase 2, test contract assertion 32): the
- * stdio MCP transport owns stdout for the JSON-RPC protocol stream. A
- * stray console.log call anywhere under src/mcp/ would write non-protocol
- * bytes to stdout and corrupt the stream. Diagnostics must route through
- * src/mcp/log.ts's stderrLog() instead.
+ * Architecture guard (AGEN-12 Phase 2, test contract assertion 32; widened
+ * per xander Low mid-build finding): the stdio MCP transport owns stdout
+ * for the JSON-RPC protocol stream. A stray console.log/console.debug call,
+ * or a bare process.stdout.write, anywhere under src/mcp/ would write
+ * non-protocol bytes to stdout and corrupt the stream. Diagnostics must
+ * route through src/mcp/log.ts's stderrLog() instead — log.ts itself is
+ * the one legitimate process.stdout-adjacent file (it writes to
+ * process.stderr, not stdout, but is allowlisted from the raw-write check
+ * as the single sanctioned home for stream-level I/O in this module).
  *
- * Statically scans src/mcp/**\/*.ts (excluding *.test.ts) for `console.log(`.
- * Recommended (over a runtime spy test) because the failure mode this
- * guards against — stdout corruption — is structural, not behavioral; a
- * static scan catches it the same way check-no-raw-fetch.sh and
- * check-no-legacy-schema-import.ts catch their respective structural
- * invariants.
+ * console.debug is included because it writes to stdout in Node/Bun just
+ * like console.log — console.error/warn are fine (they write to stderr).
+ *
+ * Statically scans src/mcp/**\/*.ts (excluding *.test.ts). Recommended
+ * (over a runtime spy test) because the failure mode this guards against —
+ * stdout corruption — is structural, not behavioral; a static scan catches
+ * it the same way check-no-raw-fetch.sh and check-no-legacy-schema-import.ts
+ * catch their respective structural invariants.
  */
 import { readFile, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
-const CONSOLE_LOG_RE = /console\.log\s*\(/;
+const CONSOLE_LOG_RE = /console\.(log|debug)\s*\(/;
+const STDOUT_WRITE_RE = /process\.stdout\.write\s*\(/;
+
+// log.ts is the sanctioned home for stream-level diagnostics I/O (it writes
+// to process.stderr, not stdout — allowlisted here purely so the raw
+// process.stdout.write scan doesn't need to special-case "unless it's
+// actually .stderr.write", which would make the regex fragile).
+const ALLOWLISTED_FILES = new Set(["src/mcp/log.ts"]);
 
 async function* walkTs(dir: string): AsyncGenerator<string> {
 	let entries: import("node:fs").Dirent[];
@@ -42,13 +55,20 @@ async function main() {
 
 	for await (const filePath of walkTs(mcpDir)) {
 		const rel = relative(ROOT, filePath);
+		if (ALLOWLISTED_FILES.has(rel)) continue;
+
 		const content = await readFile(filePath, "utf8");
 		const lines = content.split("\n");
 
 		for (let i = 0; i < lines.length; i++) {
 			if (CONSOLE_LOG_RE.test(lines[i])) {
 				violations.push(
-					`${rel}:${i + 1}: console.log() would corrupt the stdio protocol stream\n  ${lines[i].trim()}`,
+					`${rel}:${i + 1}: console.log()/console.debug() would corrupt the stdio protocol stream\n  ${lines[i].trim()}`,
+				);
+			}
+			if (STDOUT_WRITE_RE.test(lines[i])) {
+				violations.push(
+					`${rel}:${i + 1}: raw process.stdout.write() would corrupt the stdio protocol stream\n  ${lines[i].trim()}`,
 				);
 			}
 		}
@@ -57,7 +77,7 @@ async function main() {
 	if (violations.length > 0) {
 		console.error(
 			[
-				`ERROR: console.log() found under src/mcp/ (${violations.length} hit${violations.length === 1 ? "" : "s"}):`,
+				`ERROR: stdout-writing call(s) found under src/mcp/ (${violations.length} hit${violations.length === 1 ? "" : "s"}):`,
 				"",
 				...violations,
 				"",
@@ -68,7 +88,9 @@ async function main() {
 		process.exit(1);
 	}
 
-	console.log("OK: no console.log() calls found under src/mcp/");
+	console.log(
+		"OK: no console.log()/console.debug()/raw process.stdout.write() calls found under src/mcp/",
+	);
 }
 
 main().catch((err) => {

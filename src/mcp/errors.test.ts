@@ -127,4 +127,15 @@ describe("mapError — unexpected error shapes", () => {
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain("unexpected");
 	});
+
+	test("client.ts's malformed-2xx-JSON Error (tessa Med) maps through the generic fallback, not a crash", () => {
+		const result = mapError(
+			new Error(
+				"AgentPulse returned malformed JSON on a 200 response from /sessions/stats: {trunc",
+			),
+			BASE_URL,
+		);
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("malformed JSON");
+	});
 });

@@ -136,6 +136,42 @@ describe("capToolResult", () => {
 		expect(capped._truncated).toBeDefined();
 	});
 
+	test("oversized envelope with MULTIPLE co-large array fields caps EVERY oversized array, total stays within budget (dexter High — inbox-shaped multi-array under-capping regression)", () => {
+		// Mirrors the Phase 3 get_inbox shape: a discriminated-union envelope
+		// with several independently-large array fields. A one-shot
+		// "cap only the single largest array" strategy would leave the
+		// other three untouched and could still blow the budget.
+		const makeArray = (n: number) =>
+			Array.from({ length: n }, (_, i) => ({ id: i, pad: "x".repeat(60) }));
+		const payload = {
+			hitl: makeArray(200),
+			stuck: makeArray(180),
+			risky: makeArray(150),
+			failed: makeArray(120),
+		};
+		const fullSize = JSON.stringify(payload).length;
+		const budget = 4000;
+		expect(fullSize).toBeGreaterThan(budget * 4); // sanity: genuinely oversized on every field
+
+		const capped = capToolResult(payload, budget) as {
+			hitl: unknown[];
+			stuck: unknown[];
+			risky: unknown[];
+			failed: unknown[];
+			_truncated?: string;
+		};
+
+		// The core regression assertion: total serialized output fits the budget.
+		expect(JSON.stringify(capped).length).toBeLessThanOrEqual(budget);
+
+		// Every array that started oversized relative to its own fair share
+		// must actually have been reduced — not just the largest one.
+		expect(capped.hitl.length).toBeLessThan(payload.hitl.length);
+		expect(capped.stuck.length).toBeLessThan(payload.stuck.length);
+		expect(capped.risky.length).toBeLessThan(payload.risky.length);
+		expect(capped.failed.length).toBeLessThan(payload.failed.length);
+	});
+
 	test("oversized scalar/object with no array field falls back to a truncated summary, never silently drops without explanation", () => {
 		const payload = { blob: "x".repeat(5000) };
 		const capped = capToolResult(payload, 100) as { truncated: boolean; originalSizeChars: number };

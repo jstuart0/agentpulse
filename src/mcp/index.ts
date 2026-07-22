@@ -11,6 +11,24 @@ import { discoverScopes } from "./scopes.js";
 import { buildMcpServer } from "./server.js";
 
 const DEFAULT_URL = "http://localhost:3000";
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * Cheap tripwire (xander Low, mid-build hardening) against a malicious
+ * repo-shipped `.mcp.json`/config.toml pointing AGENTPULSE_URL at a remote
+ * host: the Bearer API key is sent to whatever this resolves to on every
+ * request. Warns, does not block — "point only at a server you control" is
+ * documented guidance (Phase 6), not a technical enforcement; a legitimate
+ * remote AgentPulse deployment is a supported, intended use case.
+ */
+function warnIfNonLocalHost(canonicalUrl: string): void {
+	const host = new URL(canonicalUrl).hostname;
+	if (!LOCAL_HOSTS.has(host)) {
+		stderrLog(
+			`warning: AGENTPULSE_URL points at a remote host "${host}" — the API key will be sent there; ensure you trust it.`,
+		);
+	}
+}
 
 export async function serveStdio(): Promise<void> {
 	const baseUrl = process.env.AGENTPULSE_URL || DEFAULT_URL;
@@ -24,6 +42,7 @@ export async function serveStdio(): Promise<void> {
 	}
 
 	const client = createHttpClient({ baseUrl, apiKey });
+	warnIfNonLocalHost(client.baseUrl);
 
 	let scopes: string[];
 	try {

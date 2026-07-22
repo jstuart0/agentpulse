@@ -412,6 +412,30 @@ export interface DashboardStats {
 	byAgentType: Record<AgentType, number>;
 }
 
+/**
+ * GET /auth/me response shape (auth.ts:203-241). Canonical definition —
+ * previously duplicated inline in src/web/lib/api.ts and src/mcp/client.ts
+ * (AGEN-12 Phase 2 mid-build hardening, dexter Low: consolidated to prevent
+ * a third copy). `source: "authentik"` is a legacy alias retained for one
+ * release (see AuthUser docstring, src/server/auth/middleware.ts) — new
+ * responses emit "forwardauth". `scopes` is api_key-caller-only (AGEN-9/
+ * AGEN-12 Phase 1, additive); forwardauth/local callers omit the field.
+ */
+export interface AuthMeResponse {
+	authenticated: boolean;
+	user: {
+		name: string;
+		source: "forwardauth" | "authentik" | "api_key" | "local";
+		provider?: string | null;
+		id: string | null;
+		role: "user" | "admin" | null;
+		scopes?: string[];
+	} | null;
+	signOutUrl: string | null;
+	disableAuth: boolean;
+	allowSignup: boolean;
+}
+
 // WebSocket message types
 export type WsMessageType =
 	| "subscribe"

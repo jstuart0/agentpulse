@@ -18,6 +18,7 @@
  * (Phase 4) can walk the full population.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { z } from "zod";
 import packageJson from "../../package.json" with { type: "json" };
@@ -113,8 +114,7 @@ export function registerReadTool<Shape extends z.ZodRawShape = EmptyShape>(
 		// parameter. The runtime contract is verified by the in-memory
 		// protocol tests (server.test.ts — tools/call round-trips through
 		// the real SDK Client/Server pair), not by static typing here.
-		// biome-ignore lint/suspicious/noExplicitAny: SDK generic boundary, see comment above
-		wrapHandler(ctx, handler) as any,
+		wrapHandler(ctx, handler) as unknown as ToolCallback<Shape>,
 	);
 }
 
@@ -136,8 +136,7 @@ export function registerMutatingTool<Shape extends z.ZodRawShape = EmptyShape>(
 			annotations,
 			_meta: meta,
 		},
-		// biome-ignore lint/suspicious/noExplicitAny: SDK generic boundary, see registerReadTool's comment
-		wrapHandler(ctx, handler) as any,
+		wrapHandler(ctx, handler) as unknown as ToolCallback<Shape>,
 	);
 }
 

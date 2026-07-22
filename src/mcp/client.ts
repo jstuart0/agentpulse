@@ -3,16 +3,22 @@
  *
  * Modeled on scripts/relay.ts's Bearer-header + AbortSignal.timeout pattern
  * (relay.ts:89-93, 103-108, 19). Response shapes are imported from
- * src/shared/types.ts wherever an existing type covers them (D3/M3) — only
- * genuinely MCP-only shapes (like AuthMeResponse, which has no shared-type
- * counterpart — even src/web/lib/api.ts hand-declares it inline) are
- * declared here.
+ * src/shared/types.ts wherever an existing type covers them (D3/M3),
+ * including AuthMeResponse (promoted to the shared barrel in the Phase 2
+ * mid-build hardening pass — it was previously duplicated inline here and
+ * in src/web/lib/api.ts).
  *
  * No-retry contract (D3/M8): this client never auto-retries. A mutating
  * call that times out server-side must not be silently re-sent — the caller
  * (errors.ts's mapper) is told to verify state before retrying.
  */
-import type { DashboardStats } from "../shared/types.js";
+import type { AuthMeResponse, DashboardStats } from "../shared/types.js";
+
+// Re-exported so existing consumers (client.test.ts, scopes.test.ts) keep
+// importing it from "./client.js" — the canonical definition now lives in
+// src/shared/types.ts (dexter Low, mid-build hardening: it was previously
+// duplicated here and in src/web/lib/api.ts).
+export type { AuthMeResponse } from "../shared/types.js";
 
 export class ApiError extends Error {
 	readonly status: number;
@@ -38,29 +44,6 @@ export class TimeoutError extends Error {
 		super(message);
 		this.name = "TimeoutError";
 	}
-}
-
-/**
- * /auth/me response shape. No shared-type counterpart exists — even the
- * frontend client (src/web/lib/api.ts:457-471) hand-declares this inline —
- * so this is a genuinely MCP-only declaration, not a parallel hierarchy of
- * an existing type (D3/M3). Adds `scopes` (AGEN-12 Phase 1, additive) which
- * the frontend's inline copy doesn't yet reference.
- */
-export interface AuthMeResponse {
-	authenticated: boolean;
-	user: {
-		name: string;
-		source: "forwardauth" | "api_key" | "local";
-		provider?: string | null;
-		id?: string | null;
-		role?: "user" | "admin" | null;
-		/** api_key callers only. forwardauth/local callers omit this field entirely. */
-		scopes?: string[];
-	} | null;
-	signOutUrl?: string | null;
-	disableAuth?: boolean;
-	allowSignup?: boolean;
 }
 
 /**
@@ -155,7 +138,22 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 		}
 
 		const text = await response.text();
-		return (text ? JSON.parse(text) : undefined) as T;
+		if (!text) return undefined as T;
+		try {
+			return JSON.parse(text) as T;
+		} catch (err) {
+			// tessa Med, mid-build hardening: a malformed/truncated 2xx body
+			// must surface as a handled error (through errors.ts's generic
+			// fallback branch), not an unwrapped raw SyntaxError propagating
+			// out of a Promise the wrapper's try/catch (server.ts) is the
+			// only thing standing between this and a crashed handler — wrap
+			// it in a plain Error with useful context instead.
+			const preview = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+			throw new Error(
+				`AgentPulse returned malformed JSON on a ${response.status} response from ${baseUrl}${path}: ${preview}`,
+				{ cause: err },
+			);
+		}
 	}
 
 	return {

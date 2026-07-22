@@ -140,6 +140,27 @@ describe("createHttpClient", () => {
 		expect(err.body).toEqual({ error: "not_found" });
 	});
 
+	test("a malformed/truncated 2xx JSON body surfaces as a handled Error, not an unwrapped raw SyntaxError (tessa Med, mid-build hardening)", async () => {
+		const fetchImpl = (async () =>
+			new Response('{"activeSessions": 1, "totalSessionsTod', {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			})) as unknown as typeof fetch;
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		let caught: unknown;
+		try {
+			await client.getStats();
+		} catch (err) {
+			caught = err;
+		}
+		// Handled: a plain Error the errors.ts generic fallback can map to
+		// {isError:true} — never a bare SyntaxError propagating unmapped.
+		expect(caught).toBeInstanceOf(Error);
+		expect(caught).not.toBeInstanceOf(SyntaxError);
+		expect((caught as Error).message).toContain("malformed JSON");
+	});
+
 	test("non-2xx non-JSON response degrades to raw text without throwing a second error", async () => {
 		const fetchImpl = (async () =>
 			new Response("<html>502 Bad Gateway</html>", {
@@ -221,7 +242,10 @@ describe("createHttpClient", () => {
 	test("getAuthMe() round-trips the /auth/me shape used for scope discovery", async () => {
 		const meResponse: AuthMeResponse = {
 			authenticated: true,
-			user: { source: "api_key", name: "t", scopes: ["observe"] },
+			user: { source: "api_key", name: "t", id: "1", role: null, scopes: ["observe"] },
+			signOutUrl: null,
+			disableAuth: false,
+			allowSignup: false,
 		};
 		let recordedUrl: string | undefined;
 		const fetchImpl = (async (url: string) => {

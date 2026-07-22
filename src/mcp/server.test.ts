@@ -35,7 +35,10 @@ function fakeClient(overrides: Partial<AgentPulseClient> = {}): AgentPulseClient
 		getStats: async () => FAKE_STATS,
 		getAuthMe: async () => ({
 			authenticated: true,
-			user: { name: "t", source: "api_key", scopes: ["*"] },
+			user: { name: "t", source: "api_key", id: "1", role: null, scopes: ["*"] },
+			signOutUrl: null,
+			disableAuth: false,
+			allowSignup: false,
 		}),
 		...overrides,
 	};

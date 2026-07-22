@@ -9,82 +9,117 @@
  * this exact shape — do NOT write it as {authenticated:false, ...}.
  */
 import { describe, expect, test } from "bun:test";
-import type { AgentPulseClient, AuthMeResponse } from "./client.js";
+import type { AuthMeResponse } from "../shared/types.js";
+import type { AgentPulseClient } from "./client.js";
 import { ScopeDiscoveryError, discoverScopes } from "./scopes.js";
 
-function fakeClient(authMe: AuthMeResponse): AgentPulseClient {
+/** Fills the AuthMeResponse fields these tests don't care about with defaults, so each test only spells out what it's asserting on. */
+function authMe(overrides: {
+	authenticated: boolean;
+	user: AuthMeResponse["user"];
+}): AuthMeResponse {
+	return {
+		signOutUrl: null,
+		disableAuth: false,
+		allowSignup: false,
+		...overrides,
+	};
+}
+
+function fakeClient(response: AuthMeResponse): AgentPulseClient {
 	return {
 		baseUrl: "http://localhost:3000/api/v1",
 		getStats: async () => {
 			throw new Error("not used in these tests");
 		},
-		getAuthMe: async () => authMe,
+		getAuthMe: async () => response,
 	};
 }
 
 describe("discoverScopes", () => {
 	test("observe + manage scopes → both discovered", async () => {
 		const scopes = await discoverScopes(
-			fakeClient({
-				authenticated: true,
-				user: { name: "t", source: "api_key", scopes: ["observe", "manage"] },
-			}),
+			fakeClient(
+				authMe({
+					authenticated: true,
+					user: {
+						name: "t",
+						source: "api_key",
+						id: "1",
+						role: null,
+						scopes: ["observe", "manage"],
+					},
+				}),
+			),
 		);
 		expect(scopes.sort()).toEqual(["manage", "observe"]);
 	});
 
 	test("observe-only scope → observe-only set", async () => {
 		const scopes = await discoverScopes(
-			fakeClient({
-				authenticated: true,
-				user: { name: "t", source: "api_key", scopes: ["observe"] },
-			}),
+			fakeClient(
+				authMe({
+					authenticated: true,
+					user: { name: "t", source: "api_key", id: "1", role: null, scopes: ["observe"] },
+				}),
+			),
 		);
 		expect(scopes).toEqual(["observe"]);
 	});
 
-	test("ingest-only key (neither observe nor manage) → fail-fast naming the mint command", async () => {
-		await expect(
-			discoverScopes(
-				fakeClient({
-					authenticated: true,
-					user: { name: "t", source: "api_key", scopes: ["ingest"] },
-				}),
-			),
-		).rejects.toThrow(ScopeDiscoveryError);
+	test("ingest-only key (neither observe nor manage) → fail-fast, message names the mint command", async () => {
+		const client = fakeClient(
+			authMe({
+				authenticated: true,
+				user: { name: "t", source: "api_key", id: "1", role: null, scopes: ["ingest"] },
+			}),
+		);
+
+		await expect(discoverScopes(client)).rejects.toThrow(ScopeDiscoveryError);
+
+		// dexter/tessa Med: the test name promises a mint-command assertion —
+		// pin the actual message content, not just the error class. A
+		// regression that throws ScopeDiscoveryError with a useless message
+		// (e.g. just "denied") would previously pass this test silently.
+		try {
+			await discoverScopes(client);
+			throw new Error("expected discoverScopes to reject");
+		} catch (err) {
+			expect(err).toBeInstanceOf(ScopeDiscoveryError);
+			const message = (err as Error).message;
+			expect(message).toContain("neither");
+			expect(message.toLowerCase()).toContain("mint");
+			expect(message).toContain("/api/v1/api-keys");
+		}
 	});
 
 	test('wildcard ["*"] scope (the actual DISABLE_AUTH=true shape) → registers everything', async () => {
 		const scopes = await discoverScopes(
-			fakeClient({
-				authenticated: true,
-				user: { name: "anonymous", source: "api_key", scopes: ["*"] },
-			}),
+			fakeClient(
+				authMe({
+					authenticated: true,
+					user: {
+						name: "anonymous",
+						source: "api_key",
+						id: "anonymous",
+						role: null,
+						scopes: ["*"],
+					},
+				}),
+			),
 		);
 		expect(scopes.sort()).toEqual(["manage", "observe"]);
 	});
 
-	test("does NOT write the DISABLE_AUTH case as authenticated:false — that shape is unreachable", async () => {
-		// Regression guard: assert the *reachable* shape works, proving the
-		// implementation branches on scopes, not on `authenticated`.
-		const scopes = await discoverScopes(
-			fakeClient({
-				authenticated: true,
-				user: { name: "anonymous", source: "api_key", scopes: ["*"] },
-			}),
-		);
-		expect(scopes.length).toBeGreaterThan(0);
-	});
-
 	test("missing scopes field on an authenticated api_key user (older server) → fail-fast with a min-version message", async () => {
-		await expect(
-			discoverScopes(fakeClient({ authenticated: true, user: { name: "t", source: "api_key" } })),
-		).rejects.toThrow(ScopeDiscoveryError);
+		const client = fakeClient(
+			authMe({ authenticated: true, user: { name: "t", source: "api_key", id: "1", role: null } }),
+		);
+
+		await expect(discoverScopes(client)).rejects.toThrow(ScopeDiscoveryError);
 
 		try {
-			await discoverScopes(
-				fakeClient({ authenticated: true, user: { name: "t", source: "api_key" } }),
-			);
+			await discoverScopes(client);
 			throw new Error("expected discoverScopes to reject");
 		} catch (err) {
 			expect(err).toBeInstanceOf(ScopeDiscoveryError);
@@ -95,14 +130,19 @@ describe("discoverScopes", () => {
 	test("non-api_key identity (forwardauth) passed to discoverScopes fails fast rather than defaulting", async () => {
 		await expect(
 			discoverScopes(
-				fakeClient({ authenticated: true, user: { name: "t", source: "forwardauth" } }),
+				fakeClient(
+					authMe({
+						authenticated: true,
+						user: { name: "t", source: "forwardauth", id: "1", role: null },
+					}),
+				),
 			),
 		).rejects.toThrow(ScopeDiscoveryError);
 	});
 
 	test("authenticated:false (bad/missing key) fails fast", async () => {
-		await expect(discoverScopes(fakeClient({ authenticated: false, user: null }))).rejects.toThrow(
-			ScopeDiscoveryError,
-		);
+		await expect(
+			discoverScopes(fakeClient(authMe({ authenticated: false, user: null }))),
+		).rejects.toThrow(ScopeDiscoveryError);
 	});
 });

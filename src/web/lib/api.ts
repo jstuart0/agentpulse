@@ -2,6 +2,7 @@ import type {
 	ActionRequestDecision,
 	AskMessageRole,
 	AskThreadOrigin,
+	AuthMeResponse,
 	ControlAction,
 	DecisionKind,
 	HitlReplyKind,
@@ -454,21 +455,7 @@ export const api = {
 
 	getHealth: () => request<{ status: string; version?: string }>("/health"),
 
-	getAuthMe: () =>
-		request<{
-			authenticated: boolean;
-			user: {
-				name: string;
-				// "authentik" retained for one release; new responses emit "forwardauth".
-				source: "forwardauth" | "authentik" | "api_key" | "local";
-				provider?: string | null;
-				id: string | null;
-				role: "user" | "admin" | null;
-			} | null;
-			signOutUrl: string | null;
-			disableAuth: boolean;
-			allowSignup: boolean;
-		}>("/auth/me"),
+	getAuthMe: () => request<AuthMeResponse>("/auth/me"),
 
 	// --- Notification channels (Telegram, etc.) ---
 	getChannels: () =>
