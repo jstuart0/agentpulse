@@ -113,8 +113,9 @@ describe("resources/read", () => {
 			},
 		});
 		const mcpClient = await connectedServer(client);
-		await expect(mcpClient.readResource({ uri: "agentpulse://sessions/does-not-exist" })).rejects
-			.toBeDefined();
+		await expect(
+			mcpClient.readResource({ uri: "agentpulse://sessions/does-not-exist" }),
+		).rejects.toBeDefined();
 	});
 
 	test("an unmatched resource URI is a clean protocol-level error", async () => {

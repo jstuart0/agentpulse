@@ -26,6 +26,10 @@ import { SCOPE_MANAGE, SCOPE_OBSERVE } from "../server/auth/api-key.js";
 import type { AgentPulseClient } from "./client.js";
 import { mapError } from "./errors.js";
 import { capToolResult } from "./output.js";
+import { registerResources } from "./resources.js";
+import { registerAiTools } from "./tools/ai.js";
+import { registerCatalogTools } from "./tools/catalog.js";
+import { registerSessionsTools } from "./tools/sessions.js";
 
 export const REQUIRES_USER_INTERACTION_META = "anthropic/requiresUserInteraction";
 
@@ -151,40 +155,44 @@ export interface BuildMcpServerResult {
 }
 
 /**
+ * Precomputed scope gates, passed down to each per-domain tool-registration
+ * function so `buildMcpServer` stays the single source of truth for "what
+ * does this scope set unlock" (D5: manage implies observe-satisfied) rather
+ * than every tool file re-deriving it from the raw `scopes` array.
+ */
+export interface ScopeFlags {
+	hasObserve: boolean;
+	hasManage: boolean;
+}
+
+/**
  * Assembles a fully-registered McpServer for the given client and scope
  * set. Pure (no transport, no I/O beyond what the client does when a tool
  * is invoked) — the same instance is reusable across stdio (Phase 2) and a
  * future streamable-HTTP transport (explicitly out of scope, D5/plan).
  *
- * Scope gating: per D5, holding "manage" satisfies every observe-gated
- * read tool too (manage ⇒ observe-satisfied) — checked here via
- * `scopes.includes(MANAGE)`, not baked into discoverScopes()'s return
- * value, so buildMcpServer stays the single source of truth for "what does
- * this scope set unlock."
+ * Registration is delegated to per-domain files under src/mcp/tools/ (each
+ * exporting a `registerXTools(ctx, flags)` function) plus resources.ts —
+ * kept as a flat list of calls here (Pattern B) rather than growing this
+ * file into a god-module as the tool population expands through Phase 4.
  */
 export function buildMcpServer({ client, scopes }: BuildMcpServerOptions): BuildMcpServerResult {
 	const server = new McpServer({ name: "agentpulse", version: packageJson.version });
 	const registry: ToolRegistryEntry[] = [];
 	const ctx: ToolContext = { server, client, registry };
 
-	const hasObserve = scopes.includes(SCOPE_OBSERVE) || scopes.includes(SCOPE_MANAGE);
+	const hasManage = scopes.includes(SCOPE_MANAGE);
+	const hasObserve = scopes.includes(SCOPE_OBSERVE) || hasManage;
+	const flags: ScopeFlags = { hasObserve, hasManage };
 
-	if (hasObserve) {
-		registerReadTool(
-			ctx,
-			{
-				name: "get_stats",
-				description:
-					"Dashboard KPI stats: active session count, sessions started today, tool uses today, and a breakdown by agent type.",
-				inputSchema: {},
-			},
-			async (_args, c) => c.getStats(),
-		);
-	}
+	registerSessionsTools(ctx, flags);
+	registerCatalogTools(ctx, flags);
+	registerAiTools(ctx, flags);
+	if (flags.hasObserve) registerResources(server, client);
 
-	// Phase 3 adds the remaining observe read tools + the 4 manage-only read
-	// tools; Phase 4 adds the 12 mutating/advisory tools — both gated on
-	// hasObserve / scopes.includes(SCOPE_MANAGE) the same way.
+	// Phase 4 adds the 12 mutating/advisory tools via registerMutatingTool
+	// (and registerReadTool for the two RO advisory tools), gated on the
+	// same `flags`.
 
 	return { server, registry };
 }

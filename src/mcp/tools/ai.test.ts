@@ -106,9 +106,7 @@ describe("get_session_intelligence — AI-gate pair mapping (test-contract 3-5)"
 			evidence: [],
 			updatedAt: "2026-01-01T00:00:00.000Z",
 		};
-		const ctx = newContext(
-			fakeClient({ getSessionIntelligence: async () => ({ intelligence }) }),
-		);
+		const ctx = newContext(fakeClient({ getSessionIntelligence: async () => ({ intelligence }) }));
 		registerAiTools(ctx, { hasObserve: true, hasManage: false });
 		const mcpClient = await connect(ctx);
 		const result = await mcpClient.callTool({

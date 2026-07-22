@@ -1,3 +1,12 @@
+// Type-only imports from server-internal modules (erased at compile time,
+// no runtime coupling): these are each endpoint's one canonical response
+// shape. Importing them directly avoids inventing a second, parallel copy
+// of a type that already exists (D3/M3) — the alternative (hand-declaring
+// SessionIntelligence/Digest/SearchResult fresh in this file) would
+// duplicate shapes already exported by their owning service modules.
+import type { SessionIntelligence } from "../server/services/ai/classifier.js";
+import type { Digest } from "../server/services/ai/digest-service.js";
+import type { SearchResult } from "../server/services/search/types.js";
 /**
  * AgentPulse REST HTTP client for the MCP server (AGEN-12 Phase 2, D3 seam 1).
  *
@@ -12,6 +21,18 @@
  * call that times out server-side must not be silently re-sent — the caller
  * (errors.ts's mapper) is told to verify state before retrying.
  */
+import type {
+	AgentType,
+	ControlAction,
+	Inbox,
+	LaunchRequest,
+	Project,
+	ResolvedProjectData,
+	Session,
+	SessionEvent,
+	SessionStatus,
+	SessionTemplate,
+} from "../shared/types.js";
 import type { AuthMeResponse, DashboardStats } from "../shared/types.js";
 
 // Re-exported so existing consumers (client.test.ts, scopes.test.ts) keep
@@ -19,6 +40,44 @@ import type { AuthMeResponse, DashboardStats } from "../shared/types.js";
 // src/shared/types.ts (dexter Low, mid-build hardening: it was previously
 // duplicated here and in src/web/lib/api.ts).
 export type { AuthMeResponse } from "../shared/types.js";
+
+/**
+ * Hand-declared MCP-only shapes (Phase 3): no canonical exported type exists
+ * anywhere in the codebase for these three endpoint responses (the AI
+ * status/diagnostics and claude-md routes inline their response object
+ * literals directly in the route handler) — declaring them here is not a
+ * "parallel copy" of anything, it's the first and only typed copy.
+ */
+export interface AiStatusResponse {
+	build: boolean;
+	runtime: boolean;
+	killSwitch: boolean;
+	active: boolean;
+	classifierEnabled: boolean;
+	classifierAffectsRunner: boolean;
+	autoEnableWatcherForAsk: boolean;
+}
+
+export interface AiDiagnostics {
+	generatedAt: string;
+	queue: Record<string, number>;
+	today: string;
+	flags: {
+		build: boolean;
+		runtime: boolean;
+		killSwitch: boolean;
+		classifierEnabled: boolean;
+		classifierAffectsRunner: boolean;
+	};
+	otel: { endpoint: "configured" | "none" };
+}
+
+export interface ClaudeMdResponse {
+	content: string;
+	path: string;
+	checksum: string;
+	updatedAt: string | null;
+}
 
 export class ApiError extends Error {
 	readonly status: number;
@@ -51,11 +110,92 @@ export class TimeoutError extends Error {
  * ships the minimum spine (getStats, getAuthMe for scope discovery); later
  * phases add one method per tool as they're built.
  */
+export interface ListSessionsParams {
+	status?: SessionStatus;
+	agentType?: AgentType;
+	projectId?: string;
+	limit?: number;
+	offset?: number;
+}
+
+export interface GetSessionResult {
+	session: Session;
+	events: SessionEvent[];
+	controlActions?: ControlAction[];
+}
+
+export interface GetEventContextResult {
+	events: SessionEvent[];
+	target: { id: number };
+}
+
+export interface SearchParams {
+	q: string;
+	kinds?: Array<"session" | "event">;
+	limit?: number;
+	offset?: number;
+}
+
+export interface ListTemplatesParams {
+	agentType?: AgentType;
+}
+
+export interface GetTemplateResult {
+	template: SessionTemplate;
+	resolvedProject: ResolvedProjectData | null;
+}
+
+export interface GetLaunchResult {
+	launchRequest: LaunchRequest;
+	session: Session | null;
+}
+
+export interface GetInboxParams {
+	kinds?: Array<"hitl" | "stuck" | "risky" | "failed_proposal">;
+	sessionId?: string;
+	severity?: "high" | "normal";
+	limit?: number;
+}
+
+/**
+ * Typed methods per AgentPulse REST endpoint the MCP server needs. Phase 2
+ * shipped the minimum spine (getStats, getAuthMe); Phase 3 adds one method
+ * per read tool (D2's observe + manage-scoped read-tool tables).
+ */
 export interface AgentPulseClient {
 	/** The canonicalized base URL (`<origin>/api/v1`) — surfaced for error messages. */
 	readonly baseUrl: string;
 	getStats(): Promise<DashboardStats>;
 	getAuthMe(): Promise<AuthMeResponse>;
+
+	// --- Observe-scoped reads (D2) ---
+	getSessions(params?: ListSessionsParams): Promise<{ sessions: Session[]; total: number }>;
+	getSession(sessionId: string): Promise<GetSessionResult>;
+	getSessionTimeline(
+		sessionId: string,
+		params?: { limit?: number; offset?: number },
+	): Promise<{ events: SessionEvent[] }>;
+	getEventContext(
+		sessionId: string,
+		eventId: number,
+		around?: number,
+	): Promise<GetEventContextResult>;
+	getSessionClaudeMd(sessionId: string): Promise<ClaudeMdResponse>;
+	search(params: SearchParams): Promise<SearchResult>;
+	listProjects(): Promise<{ projects: Project[]; total: number }>;
+	getSessionIntelligence(sessionId: string): Promise<{ intelligence: SessionIntelligence }>;
+	getDigest(): Promise<Digest>;
+	getAiStatus(): Promise<AiStatusResponse>;
+	getAiDiagnostics(): Promise<AiDiagnostics>;
+
+	// --- Manage-scoped reads (C1: DTOs carry env/claimToken/launch payloads) ---
+	listTemplates(
+		params?: ListTemplatesParams,
+	): Promise<{ templates: SessionTemplate[]; total: number }>;
+	getTemplate(templateId: string): Promise<GetTemplateResult>;
+	listLaunches(): Promise<{ launches: LaunchRequest[]; total: number }>;
+	getLaunch(launchId: string): Promise<GetLaunchResult>;
+	getInbox(params?: GetInboxParams): Promise<Inbox>;
 }
 
 export interface CreateHttpClientOptions {
@@ -96,6 +236,22 @@ export function canonicalizeBaseUrl(rawUrl: string): string {
 
 function isTimeoutError(err: unknown): boolean {
 	return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
+/** Builds a `?a=1&b=2` query string, skipping undefined/empty values. Array values are comma-joined (matches the REST layer's `kinds` convention, e.g. search.ts:57). */
+function toQuery(params: Record<string, string | number | boolean | string[] | undefined>): string {
+	const qs = new URLSearchParams();
+	for (const [key, value] of Object.entries(params)) {
+		if (value === undefined) continue;
+		if (Array.isArray(value)) {
+			if (value.length === 0) continue;
+			qs.set(key, value.join(","));
+			continue;
+		}
+		qs.set(key, String(value));
+	}
+	const s = qs.toString();
+	return s ? `?${s}` : "";
 }
 
 export function createHttpClient(options: CreateHttpClientOptions): AgentPulseClient {
@@ -160,5 +316,66 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 		baseUrl,
 		getStats: () => request<DashboardStats>("/sessions/stats"),
 		getAuthMe: () => request<AuthMeResponse>("/auth/me"),
+
+		getSessions: (params) =>
+			request<{ sessions: Session[]; total: number }>(
+				`/sessions${toQuery({
+					status: params?.status,
+					agent_type: params?.agentType,
+					projectId: params?.projectId,
+					limit: params?.limit,
+					offset: params?.offset,
+				})}`,
+			),
+		getSession: (sessionId) =>
+			request<GetSessionResult>(`/sessions/${encodeURIComponent(sessionId)}`),
+		getSessionTimeline: (sessionId, params) =>
+			request<{ events: SessionEvent[] }>(
+				`/sessions/${encodeURIComponent(sessionId)}/timeline${toQuery({
+					limit: params?.limit,
+					offset: params?.offset,
+				})}`,
+			),
+		getEventContext: (sessionId, eventId, around) =>
+			request<GetEventContextResult>(
+				`/sessions/${encodeURIComponent(sessionId)}/events/${eventId}/context${toQuery({ around })}`,
+			),
+		getSessionClaudeMd: (sessionId) =>
+			request<ClaudeMdResponse>(`/sessions/${encodeURIComponent(sessionId)}/claude-md`),
+		search: (params) =>
+			request<SearchResult>(
+				`/search${toQuery({
+					q: params.q,
+					kinds: params.kinds,
+					limit: params.limit,
+					offset: params.offset,
+				})}`,
+			),
+		listProjects: () => request<{ projects: Project[]; total: number }>("/projects"),
+		getSessionIntelligence: (sessionId) =>
+			request<{ intelligence: SessionIntelligence }>(
+				`/ai/sessions/${encodeURIComponent(sessionId)}/intelligence`,
+			),
+		getDigest: () => request<Digest>("/ai/digest"),
+		getAiStatus: () => request<AiStatusResponse>("/ai/status"),
+		getAiDiagnostics: () => request<AiDiagnostics>("/ai/diagnostics"),
+
+		listTemplates: (params) =>
+			request<{ templates: SessionTemplate[]; total: number }>(
+				`/templates${toQuery({ agent_type: params?.agentType })}`,
+			),
+		getTemplate: (templateId) =>
+			request<GetTemplateResult>(`/templates/${encodeURIComponent(templateId)}`),
+		listLaunches: () => request<{ launches: LaunchRequest[]; total: number }>("/launches"),
+		getLaunch: (launchId) => request<GetLaunchResult>(`/launches/${encodeURIComponent(launchId)}`),
+		getInbox: (params) =>
+			request<Inbox>(
+				`/ai/inbox${toQuery({
+					kinds: params?.kinds,
+					sessionId: params?.sessionId,
+					severity: params?.severity,
+					limit: params?.limit,
+				})}`,
+			),
 	};
 }
