@@ -10,8 +10,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { AuthMeResponse } from "../shared/types.js";
-import type { AgentPulseClient } from "./client.js";
 import { ScopeDiscoveryError, discoverScopes } from "./scopes.js";
+import { fakeClient as baseFakeClient } from "./test-support.js";
 
 /** Fills the AuthMeResponse fields these tests don't care about with defaults, so each test only spells out what it's asserting on. */
 function authMe(overrides: {
@@ -26,14 +26,8 @@ function authMe(overrides: {
 	};
 }
 
-function fakeClient(response: AuthMeResponse): AgentPulseClient {
-	return {
-		baseUrl: "http://localhost:3000/api/v1",
-		getStats: async () => {
-			throw new Error("not used in these tests");
-		},
-		getAuthMe: async () => response,
-	};
+function fakeClient(response: AuthMeResponse) {
+	return baseFakeClient({ getAuthMe: async () => response });
 }
 
 describe("discoverScopes", () => {
