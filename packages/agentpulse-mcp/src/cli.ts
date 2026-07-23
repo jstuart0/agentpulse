@@ -29,6 +29,11 @@
  * server — there's no sibling `setup`/`start` command to disambiguate
  * against). Env vars unchanged: AGENTPULSE_URL (default
  * http://localhost:3000), AGENTPULSE_API_KEY.
+ *
+ * `serve-http` (2026-07-23-deliver-agentpulse-mcp-integration, Phase 1)
+ * dynamic-imports `./http.js` the same way `serve` imports `./index.js` --
+ * exactly one branch, nothing statically pulled in for any other subcommand.
+ * stdio (`serve`) is byte-for-byte unaffected by this addition.
  */
 
 const args = process.argv.slice(2);
@@ -38,6 +43,11 @@ switch (command) {
 	case "serve": {
 		const { serveStdio } = await import("./index.js");
 		await serveStdio();
+		break;
+	}
+	case "serve-http": {
+		const { serveHttp } = await import("./http.js");
+		await serveHttp();
 		break;
 	}
 	case "install": {

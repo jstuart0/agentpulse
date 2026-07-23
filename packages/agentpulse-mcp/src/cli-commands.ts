@@ -32,9 +32,10 @@ export function printHelp(): void {
   agentpulse-mcp - Standalone MCP server for AgentPulse
 
   Usage:
-    npx agentpulse-mcp serve      Start the MCP server (stdio)
-    npx agentpulse-mcp install    Print MCP client config for Claude Code / Codex
-    npx agentpulse-mcp --help     Show this help
+    npx agentpulse-mcp serve        Start the MCP server (stdio)
+    npx agentpulse-mcp serve-http   Start the MCP server (streamable HTTP)
+    npx agentpulse-mcp install      Print MCP client config for Claude Code / Codex
+    npx agentpulse-mcp --help       Show this help
 
   install flags:
     --key <existing key>   Reuse an existing API key (preflighted against
@@ -47,9 +48,13 @@ export function printHelp(): void {
     --url <url>             AgentPulse server URL (default: http://localhost:3000)
 
   Environment variables:
-    AGENTPULSE_API_KEY  API key for \`serve\`, and (as a fallback auth
-                        credential) \`install --mint\`
-    AGENTPULSE_URL      AgentPulse server URL (default: http://localhost:3000)
+    AGENTPULSE_API_KEY       API key for \`serve\`/\`serve-http\`, and (as a
+                             fallback auth credential) \`install --mint\`
+    AGENTPULSE_URL           AgentPulse server URL (default: http://localhost:3000)
+    MCP_HTTP_BEARER_TOKEN    Required for \`serve-http\` -- the only access
+                             control it enforces. Set to a long random secret
+                             shared with the MCP consumer.
+    MCP_HTTP_PORT            Port for \`serve-http\` (default: 8000)
 `);
 }
 
