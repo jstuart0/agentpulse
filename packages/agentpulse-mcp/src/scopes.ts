@@ -11,7 +11,6 @@
  * Fail-fast beats an empty tool list — MCP clients surface spawn errors
  * clearly; a silently-empty tool set would look like a broken server.
  */
-import packageJson from "../../package.json" with { type: "json" };
 import type { AgentPulseClient } from "./client.js";
 import { SCOPE_ALL, SCOPE_MANAGE, SCOPE_OBSERVE } from "./scope-constants.js";
 
@@ -24,6 +23,19 @@ export class ScopeDiscoveryError extends Error {
 
 const MINT_HINT =
 	'Mint a scoped key in AgentPulse Settings > API Keys (or POST /api/v1/api-keys with {"name":"mcp","scopes":["observe"]}).';
+
+/**
+ * Human-readable minimum-server-version claim, NOT the enforcement — the
+ * enforcement is the `scopes` field's actual presence on /auth/me, checked
+ * below. The `/auth/me` response only started reporting API-key scopes
+ * AFTER the v0.5.0 AgentPulse release (in the MCP-server campaign commits
+ * that shipped this package's predecessor), so this package requires
+ * AgentPulse's `main` branch / the future 0.6.0 release. Bump this string
+ * whenever a later AgentPulse release becomes the actual functional floor
+ * for a *different* reason — it is documentation for the upgrade-hint
+ * message, not a version gate this module checks against.
+ */
+const MIN_SERVER_VERSION = "0.6.0";
 
 /**
  * Calls /auth/me with the configured API key and returns the scopes the
@@ -53,7 +65,7 @@ export async function discoverScopes(client: AgentPulseClient): Promise<string[]
 	const scopes = me.user.scopes;
 	if (!scopes) {
 		throw new ScopeDiscoveryError(
-			`This AgentPulse instance does not report API key scopes on /auth/me. AgentPulse >= ${packageJson.version} is required for MCP. Upgrade the server.`,
+			`This AgentPulse instance does not report API key scopes on /auth/me. AgentPulse >= ${MIN_SERVER_VERSION} is required for MCP. Upgrade the server.`,
 		);
 	}
 

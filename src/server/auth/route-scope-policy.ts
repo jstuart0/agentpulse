@@ -20,7 +20,8 @@
  * JSON blob), and `githubRepoUrl` (which accepts userinfo, e.g.
  * `https://token@github.com/org/repo`) — the same class of leak as the C1
  * launches/templates exclusion. Moved to INTENTIONALLY_MANAGE_ONLY;
- * `list_projects` is manage-scoped in src/mcp/tools/catalog.ts to match. An
+ * `list_projects` is manage-scoped in
+ * packages/agentpulse-mcp/src/tools/catalog.ts to match. An
  * observe-safe project DTO (id/name/cwd/defaults only, dropping
  * notes/metadata and redacting githubRepoUrl userinfo) could restore
  * observe visibility later — manage-only is the fail-safe choice for now.

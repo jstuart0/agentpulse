@@ -1,25 +1,25 @@
 #!/usr/bin/env bun
 /**
  * Self-containment tripwire (2026-07-23-deliver-agentpulse-mcp-package
- * Phase 2 step 4): src/mcp/ must never import from the app's src/server/ or
- * src/shared/ trees. Phase 2 severs that coupling by vendoring types.ts +
- * scope-constants.ts; this guard keeps the severance honest until Phase 3
- * moves the directory into packages/agentpulse-mcp/src (at which point it's
- * repointed to scan the new root — the guard then also protects the
- * published package's boundary against a future edit accidentally
- * reintroducing a same-repo-only import path).
+ * Phase 2 step 4, repointed by Phase 3 step 7): the extracted MCP package
+ * must never import from the app's src/server/ or src/shared/ trees.
+ * Phase 2 severed that coupling by vendoring types.ts + scope-constants.ts;
+ * this guard keeps the severance honest permanently — it now also protects
+ * the published package's boundary against a future edit accidentally
+ * reintroducing a same-repo-only import path (the package would fail to
+ * resolve those imports entirely once run outside this repo checkout).
  *
  * Matches `from "../server/...")` / `from "../shared/...")` (any import
  * depth) but NOT a same-directory-tree sibling like `../server.js` (the
- * co-located src/mcp/server.ts, referenced from src/mcp/tools/*.ts) —
- * the distinguishing signal is a `/` immediately after `server`/`shared`,
- * i.e. a path INTO a directory, not a bare `.js` file one level up.
+ * co-located server.ts, referenced from tools/*.ts) — the distinguishing
+ * signal is a `/` immediately after `server`/`shared`, i.e. a path INTO a
+ * directory, not a bare `.js` file one level up.
  */
 import { readFile, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
-const MCP_DIR = "src/mcp";
+const MCP_DIR = "packages/agentpulse-mcp/src";
 const VIOLATION_RE = /from\s+["'](\.\.\/)+(server|shared)\//;
 
 async function* walkTs(dir: string): AsyncGenerator<string> {

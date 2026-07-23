@@ -3,21 +3,31 @@
  * Architecture guard (AGEN-12 Phase 2, test contract assertion 32; widened
  * per xander Low mid-build finding): the stdio MCP transport owns stdout
  * for the JSON-RPC protocol stream. A stray console.log/console.debug call,
- * or a bare process.stdout.write, anywhere under src/mcp/ would write
- * non-protocol bytes to stdout and corrupt the stream. Diagnostics must
- * route through src/mcp/log.ts's stderrLog() instead — log.ts itself is
- * the one legitimate process.stdout-adjacent file (it writes to
- * process.stderr, not stdout, but is allowlisted from the raw-write check
- * as the single sanctioned home for stream-level I/O in this module).
+ * or a bare process.stdout.write, anywhere under packages/agentpulse-mcp/src/
+ * (retargeted from src/mcp/ by the 2026-07-23-deliver-agentpulse-mcp-package
+ * extraction) would write non-protocol bytes to stdout and corrupt the
+ * stream. Diagnostics must route through log.ts's stderrLog() instead.
+ *
+ * Two allowlisted files:
+ *   - log.ts — the sanctioned home for stream-level diagnostics I/O (it
+ *     writes to process.stderr, not stdout — allowlisted here purely so the
+ *     raw process.stdout.write scan doesn't need to special-case "unless
+ *     it's actually .stderr.write", which would make the regex fragile).
+ *   - cli.ts — the package's bin entry point. Its `install` subcommand
+ *     legitimately prints human-facing config output via console.log; this
+ *     is safe because `install` and `serve` (the only stdout-owning path)
+ *     are mutually exclusive branches of the same dispatch — console.log
+ *     never executes while the stdio transport holds stdout.
  *
  * console.debug is included because it writes to stdout in Node/Bun just
  * like console.log — console.error/warn are fine (they write to stderr).
  *
- * Statically scans src/mcp/**\/*.ts (excluding *.test.ts). Recommended
- * (over a runtime spy test) because the failure mode this guards against —
- * stdout corruption — is structural, not behavioral; a static scan catches
- * it the same way check-no-raw-fetch.sh and check-no-legacy-schema-import.ts
- * catch their respective structural invariants.
+ * Statically scans packages/agentpulse-mcp/src/**\/*.ts (excluding
+ * *.test.ts). Recommended (over a runtime spy test) because the failure
+ * mode this guards against — stdout corruption — is structural, not
+ * behavioral; a static scan catches it the same way check-no-raw-fetch.sh
+ * and check-no-legacy-schema-import.ts catch their respective structural
+ * invariants.
  */
 import { readFile, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
@@ -26,11 +36,10 @@ const ROOT = new URL("..", import.meta.url).pathname;
 const CONSOLE_LOG_RE = /console\.(log|debug)\s*\(/;
 const STDOUT_WRITE_RE = /process\.stdout\.write\s*\(/;
 
-// log.ts is the sanctioned home for stream-level diagnostics I/O (it writes
-// to process.stderr, not stdout — allowlisted here purely so the raw
-// process.stdout.write scan doesn't need to special-case "unless it's
-// actually .stderr.write", which would make the regex fragile).
-const ALLOWLISTED_FILES = new Set(["src/mcp/log.ts"]);
+const ALLOWLISTED_FILES = new Set([
+	"packages/agentpulse-mcp/src/log.ts",
+	"packages/agentpulse-mcp/src/cli.ts",
+]);
 
 async function* walkTs(dir: string): AsyncGenerator<string> {
 	let entries: import("node:fs").Dirent[];
@@ -50,7 +59,7 @@ async function* walkTs(dir: string): AsyncGenerator<string> {
 }
 
 async function main() {
-	const mcpDir = join(ROOT, "src", "mcp");
+	const mcpDir = join(ROOT, "packages", "agentpulse-mcp", "src");
 	const violations: string[] = [];
 
 	for await (const filePath of walkTs(mcpDir)) {
@@ -77,19 +86,19 @@ async function main() {
 	if (violations.length > 0) {
 		console.error(
 			[
-				`ERROR: stdout-writing call(s) found under src/mcp/ (${violations.length} hit${violations.length === 1 ? "" : "s"}):`,
+				`ERROR: stdout-writing call(s) found under packages/agentpulse-mcp/src/ (${violations.length} hit${violations.length === 1 ? "" : "s"}):`,
 				"",
 				...violations,
 				"",
 				"The stdio transport owns stdout for the JSON-RPC protocol stream.",
-				"Use stderrLog() from src/mcp/log.ts for diagnostics instead.",
+				"Use stderrLog() from log.ts for diagnostics instead.",
 			].join("\n"),
 		);
 		process.exit(1);
 	}
 
 	console.log(
-		"OK: no console.log()/console.debug()/raw process.stdout.write() calls found under src/mcp/",
+		"OK: no console.log()/console.debug()/raw process.stdout.write() calls found under packages/agentpulse-mcp/src/ (outside the allowlist)",
 	);
 }
 

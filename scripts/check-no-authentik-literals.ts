@@ -8,14 +8,17 @@
  * defaults. This guard prevents regressions where a new file hardcodes a
  * provider-specific header name directly.
  *
- * Scope: src/server/, src/web/, src/shared/ only.
+ * Scope: src/server/, src/web/, src/shared/, and packages/ (added by the
+ * 2026-07-23-deliver-agentpulse-mcp-package extraction, Phase 3 — OSS-hygiene
+ * coverage must not shrink just because code moved into a workspace member).
  * NOT enforced on: deploy/, docs/, README.md, CLAUDE.md — manifests and docs
  * legitimately reference X-Authentik-* headers as default values.
  *
  * Allowlisted files (may contain X-Authentik-* header literals by design):
  *   src/server/config.ts           — default header values are documented here
  *   src/server/auth/middleware.ts  — legacy fallback comments
- *   Any *.test.ts file in src/     — tests use literal header names for clarity
+ *   Any *.test.ts file in src/ or packages/ — tests use literal header names
+ *                                     for clarity
  *
  * Pattern: /X-Authentik-/i (case-insensitive; matches the header form)
  * Note: the bare word "authentik" (e.g. provider === "authentik") does NOT
@@ -26,6 +29,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
+const SCAN_DIRS = ["src", "packages"];
 
 // Files that legitimately contain X-Authentik-* header literals.
 // Paths are relative to the repository root.
@@ -37,9 +41,14 @@ const ALLOWLISTED_SUFFIXES = [
 ];
 
 function isAllowlisted(relPath: string): boolean {
-	// Test files in src/ are allowlisted — they use literal header names for
-	// test clarity rather than config indirection.
-	if (relPath.startsWith("src/") && relPath.endsWith(".test.ts")) return true;
+	// Test files in src/ or packages/ are allowlisted — they use literal
+	// header names for test clarity rather than config indirection.
+	if (
+		(relPath.startsWith("src/") || relPath.startsWith("packages/")) &&
+		relPath.endsWith(".test.ts")
+	) {
+		return true;
+	}
 	return ALLOWLISTED_SUFFIXES.some(
 		(suffix) => relPath === suffix || relPath.endsWith(`/${suffix}`),
 	);
@@ -63,26 +72,29 @@ async function* walkTs(dir: string): AsyncGenerator<string> {
 }
 
 async function main() {
-	const srcDir = join(ROOT, "src");
 	const hits: string[] = [];
 
-	for await (const filePath of walkTs(srcDir)) {
-		const rel = relative(ROOT, filePath);
-		if (isAllowlisted(rel)) continue;
+	for (const dir of SCAN_DIRS) {
+		for await (const filePath of walkTs(join(ROOT, dir))) {
+			const rel = relative(ROOT, filePath);
+			if (isAllowlisted(rel)) continue;
 
-		const content = await readFile(filePath, "utf8");
-		const lines = content.split("\n");
+			const content = await readFile(filePath, "utf8");
+			const lines = content.split("\n");
 
-		for (let i = 0; i < lines.length; i++) {
-			const line = lines[i];
-			if (PATTERN.test(line)) {
-				hits.push(`${rel}:${i + 1}:\n  ${line.trim()}`);
+			for (let i = 0; i < lines.length; i++) {
+				const line = lines[i];
+				if (PATTERN.test(line)) {
+					hits.push(`${rel}:${i + 1}:\n  ${line.trim()}`);
+				}
 			}
 		}
 	}
 
 	if (hits.length > 0) {
-		console.error("X-Authentik-* header literals detected in src/ outside allowlisted files:\n");
+		console.error(
+			"X-Authentik-* header literals detected in src/ or packages/ outside allowlisted files:\n",
+		);
 		console.error(hits.join("\n\n"));
 		console.error(
 			"\nUse config.forwardauthHeader('<slot>') instead of hardcoding X-Authentik-* header names.",
@@ -91,7 +103,9 @@ async function main() {
 		process.exit(1);
 	}
 
-	console.log("OK: no X-Authentik-* header literals found in src/ outside allowlisted files");
+	console.log(
+		"OK: no X-Authentik-* header literals found in src/ or packages/ outside allowlisted files",
+	);
 }
 
 main().catch((err) => {

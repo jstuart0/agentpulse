@@ -1,16 +1,23 @@
 import { describe, expect, test } from "bun:test";
 /**
- * Live smoke test (AGEN-12 Phase 2, D3 seam 4). NOT run by default —
- * gated on AGENTPULSE_MCP_SMOKE=1. Spawns `bun bin/cli.ts mcp serve`
- * against a real running AgentPulse dev server via a real StdioClientTransport
- * subprocess. This is the one real (non-faked) path in this phase, and the
+ * Live smoke test (AGEN-12 Phase 2, D3 seam 4; retargeted by the
+ * 2026-07-23-deliver-agentpulse-mcp-package extraction, Phase 3 step 5/7).
+ * NOT run by default — gated on AGENTPULSE_MCP_SMOKE=1. Spawns a real
+ * StdioClientTransport subprocess against a real running AgentPulse dev
+ * server. This is the one real (non-faked) path in this phase, and the
  * only way to confirm the SDK's stdio transport actually works under Bun.
+ *
+ * Two of the three cases spawn the package's own cli.ts directly
+ * (`packages/agentpulse-mcp/src/cli.ts serve`) — this is what a published
+ * `agentpulse-mcp` consumer actually runs. The first case spawns
+ * `bin/cli.ts mcp serve` instead so the in-repo shim path (dexter G1's
+ * targeted-import discipline) stays exercised too.
  *
  * Usage:
  *   bun run dev:server   # in one terminal, with DISABLE_AUTH=true or a manage key
  *   AGENTPULSE_MCP_SMOKE=1 AGENTPULSE_URL=http://localhost:3000 \
  *     AGENTPULSE_API_KEY=<manage-scoped key, or omit under DISABLE_AUTH> \
- *     bun test src/mcp/smoke.test.ts
+ *     bun test packages/agentpulse-mcp/src/smoke.test.ts
  */
 import { spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -18,7 +25,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const SMOKE_ENABLED = process.env.AGENTPULSE_MCP_SMOKE === "1";
 const describeSmoke = SMOKE_ENABLED ? describe : describe.skip;
-const REPO_ROOT = new URL("../..", import.meta.url).pathname;
+// This file now lives 3 levels deep (packages/agentpulse-mcp/src/), not 2
+// (src/mcp/) — dexter G2, hand-verified against the actual post-move depth.
+const REPO_ROOT = new URL("../../..", import.meta.url).pathname;
+const PACKAGE_CLI_ARGS = ["packages/agentpulse-mcp/src/cli.ts", "serve"];
 
 describeSmoke("MCP live smoke (AGENTPULSE_MCP_SMOKE=1)", () => {
 	const url = process.env.AGENTPULSE_URL ?? "http://localhost:3000";
@@ -72,7 +82,7 @@ describeSmoke("MCP live smoke (AGENTPULSE_MCP_SMOKE=1)", () => {
 	test("recommend_launch / preview_template are callable and side-effect-free (list_launches unchanged before/after)", async () => {
 		const transport = new StdioClientTransport({
 			command: "bun",
-			args: ["bin/cli.ts", "mcp", "serve"],
+			args: PACKAGE_CLI_ARGS,
 			cwd: REPO_ROOT,
 			env: {
 				...(process.env as Record<string, string>),
@@ -153,7 +163,7 @@ describeSmoke("MCP live smoke (AGENTPULSE_MCP_SMOKE=1)", () => {
 		}
 		const { key: ingestOnlyKey } = (await mintRes.json()) as { key: string };
 
-		const child = spawn("bun", ["bin/cli.ts", "mcp", "serve"], {
+		const child = spawn("bun", PACKAGE_CLI_ARGS, {
 			cwd: REPO_ROOT,
 			env: { ...process.env, AGENTPULSE_URL: url, AGENTPULSE_API_KEY: ingestOnlyKey },
 		});

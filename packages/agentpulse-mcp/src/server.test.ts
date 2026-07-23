@@ -187,6 +187,19 @@ describe("in-memory protocol round-trip (D3 seam 3)", () => {
 		expect(registry.length).toBe(0);
 	});
 
+	test("a server built with only unrecognized scope strings still registers no tools (xander X6 fail-closed regression, never an all-tools fallback)", async () => {
+		// In production, discoverScopes() throws before buildMcpServer ever
+		// sees an unrecognized-only scopes array (scopes.test.ts pins that).
+		// This case decouples the two: even called directly with garbage
+		// content (not just an empty array — every registerXTools() gate is
+		// `if (!flags.hasObserve && !flags.hasManage)`-shaped, so a future
+		// edit that special-cased "non-empty array" instead of "recognized
+		// scope present" would slip past the empty-array test above but not
+		// this one), the registry must stay empty.
+		const { registry } = buildMcpServer({ client: fakeClient(), scopes: ["admin"] });
+		expect(registry.length).toBe(0);
+	});
+
 	test("a manage-only key still gets observe-gated read tools (manage implies observe-satisfied, D5)", async () => {
 		const { registry } = buildMcpServer({ client: fakeClient(), scopes: ["manage"] });
 		expect(registry.map((r) => r.name)).toContain("get_stats");

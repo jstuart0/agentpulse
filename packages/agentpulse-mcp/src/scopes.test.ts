@@ -87,6 +87,22 @@ describe("discoverScopes", () => {
 		}
 	});
 
+	test('unrecognized-only scopes (e.g. ["admin"], not just a recognized-but-insufficient scope like "ingest") → fail-fast, same as neither observe nor manage', async () => {
+		// xander X6 (2026-07-23-deliver-agentpulse-mcp-package, Phase 3 step
+		// 7b): distinct from the "ingest-only" case above, which uses a
+		// RECOGNIZED scope that just isn't observe/manage. This case proves
+		// the held.length===0 branch (scopes.ts) also fails closed on a
+		// scope string the server has never heard of — never an
+		// all-tools-fallback.
+		const client = fakeClient(
+			authMe({
+				authenticated: true,
+				user: { name: "t", source: "api_key", id: "1", role: null, scopes: ["admin"] },
+			}),
+		);
+		await expect(discoverScopes(client)).rejects.toThrow(ScopeDiscoveryError);
+	});
+
 	test('wildcard ["*"] scope (the actual DISABLE_AUTH=true shape) → registers everything', async () => {
 		const scopes = await discoverScopes(
 			fakeClient(

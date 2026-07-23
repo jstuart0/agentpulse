@@ -21,7 +21,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { z } from "zod";
-import packageJson from "../../package.json" with { type: "json" };
 import type { AgentPulseClient } from "./client.js";
 import { mapError } from "./errors.js";
 import { capToolResult } from "./output.js";
@@ -34,6 +33,7 @@ import { registerOrchestrateTools } from "./tools/orchestrate.js";
 import { registerSessionActionTools } from "./tools/session-actions.js";
 import { registerSessionsTools } from "./tools/sessions.js";
 import { registerTemplateMutationTools } from "./tools/templates.js";
+import { VERSION } from "./version.js";
 
 export const REQUIRES_USER_INTERACTION_META = "anthropic/requiresUserInteraction";
 
@@ -196,7 +196,7 @@ export interface ScopeFlags {
  * file into a god-module as the tool population expands through Phase 4.
  */
 export function buildMcpServer({ client, scopes }: BuildMcpServerOptions): BuildMcpServerResult {
-	const server = new McpServer({ name: "agentpulse", version: packageJson.version });
+	const server = new McpServer({ name: "agentpulse", version: VERSION });
 	const registry: ToolRegistryEntry[] = [];
 	const ctx: ToolContext = { server, client, registry };
 

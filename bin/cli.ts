@@ -244,13 +244,14 @@ async function start() {
 	await import("../src/server/index.js");
 }
 
-// ─── MCP Command ────────────────────────────────────────────────────
+// ─── MCP Command (thin shim over the agentpulse-mcp package — D2 of
+// thoughts/shared/plans/2026-07-23-deliver-agentpulse-mcp-package.md) ──
 
 async function mcp() {
 	const subcommand = args[1];
 	switch (subcommand) {
 		case "serve": {
-			const { serveStdio } = await import("../src/mcp/index.js");
+			const { serveStdio } = await import("../packages/agentpulse-mcp/src/index.js");
 			await serveStdio();
 			break;
 		}
@@ -265,11 +266,17 @@ async function mcp() {
 }
 
 async function mcpInstall() {
-	const { createHttpClient } = await import("../src/mcp/client.js");
-	const { mapError } = await import("../src/mcp/errors.js");
-	const { ScopeDiscoveryError } = await import("../src/mcp/scopes.js");
+	// Four TARGETED dynamic imports, pointed at the package's individual
+	// source files rather than its index.js barrel (dexter G1 — binding).
+	// Going through index.js would make `agentpulse mcp install` eagerly
+	// load the full MCP SDK + all 7 tool files it never touches (a startup
+	// regression), and a bad top-level schema in any tool file would then
+	// break `install`, which is isolated from that failure domain today.
+	const { createHttpClient } = await import("../packages/agentpulse-mcp/src/client.js");
+	const { mapError } = await import("../packages/agentpulse-mcp/src/errors.js");
+	const { ScopeDiscoveryError } = await import("../packages/agentpulse-mcp/src/scopes.js");
 	const { InstallArgsError, parseInstallArgs, resolveAuthKey, runInstall } = await import(
-		"../src/mcp/install.js"
+		"../packages/agentpulse-mcp/src/install.js"
 	);
 
 	let parsed: ReturnType<typeof parseInstallArgs>;

@@ -423,9 +423,14 @@ export interface DashboardStats {
 
 /**
  * GET /auth/me response shape (auth.ts:203-241). Canonical definition —
- * previously duplicated inline in src/web/lib/api.ts and src/mcp/client.ts
- * (AGEN-12 Phase 2 mid-build hardening, dexter Low: consolidated to prevent
- * a third copy). `source: "authentik"` is a legacy alias retained for one
+ * previously duplicated inline in src/web/lib/api.ts and (pre-extraction)
+ * src/mcp/client.ts (AGEN-12 Phase 2 mid-build hardening, dexter Low:
+ * consolidated to prevent a third copy). The standalone agentpulse-mcp
+ * package (packages/agentpulse-mcp/) now vendors its own client-side copy
+ * of this shape in its types.ts, by design (D3 of
+ * thoughts/shared/plans/2026-07-23-deliver-agentpulse-mcp-package.md) — a
+ * published npm package can't import this file directly. `source:
+ * "authentik"` is a legacy alias retained for one
  * release (see AuthUser docstring, src/server/auth/middleware.ts) — new
  * responses emit "forwardauth". `scopes` is api_key-caller-only (AGEN-9/
  * AGEN-12 Phase 1, additive); forwardauth/local callers omit the field.

@@ -46,7 +46,6 @@
 	"dependencies": {
 		"@codemirror/lang-markdown": "^6.3.1",
 		"@codemirror/theme-one-dark": "^6.1.2",
-		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/qrcode": "^1.5.6",
 		"@uiw/react-codemirror": "^4.23.0",
 		"better-sqlite3": "^11.8.0",
