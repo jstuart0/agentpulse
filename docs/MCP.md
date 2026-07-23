@@ -2,7 +2,9 @@
 
 AgentPulse ships a [Model Context Protocol](https://modelcontextprotocol.io) server so an external AI coding agent (Claude Code, Codex CLI, or any MCP-compliant client) can observe and orchestrate your fleet directly, without going through the dashboard. It talks stdio, wraps the same `/api/v1` REST surface the dashboard uses, and authenticates with a scoped AgentPulse API key.
 
-Implementation: `src/mcp/` (client, server, scopes, errors, output caps, tool registration, resources, install). CLI entry points: `bin/cli.ts`'s `mcp serve` / `mcp install` subcommands. Shipped under ticket AGEN-12.
+The MCP server also ships as a standalone, publishable npm package — **[`agentpulse-mcp`](../packages/agentpulse-mcp/README.md)** — so it can be installed and run (`npx agentpulse-mcp serve`) against any AgentPulse instance without cloning this repo. This doc remains the canonical in-repo reference (tool catalog, security posture); the package README covers publish-specific concerns (supply-chain pinning, typosquat guidance).
+
+Implementation: `packages/agentpulse-mcp/src/` (client, server, scopes, errors, output caps, tool registration, resources, install, cli). CLI entry points: this package's own `agentpulse-mcp serve|install`, and — from a checkout — `bin/cli.ts`'s `mcp serve` / `mcp install` subcommands (a thin shim over the package). Shipped under ticket AGEN-12.
 
 ## Quickstart
 
@@ -37,8 +39,10 @@ It reads `AGENTPULSE_URL` (defaults to `http://localhost:3000`) and `AGENTPULSE_
 One-shot registration:
 
 ```bash
-claude mcp add --transport stdio agentpulse --env AGENTPULSE_URL=https://agentpulse.example.com --env AGENTPULSE_API_KEY=ap_your_key -- bunx agentpulse mcp serve
+claude mcp add --transport stdio agentpulse --env AGENTPULSE_URL=https://agentpulse.example.com --env AGENTPULSE_API_KEY=ap_your_key -- npx -y agentpulse-mcp@<version> serve
 ```
+
+(`mcp install` prints this with `<version>` resolved to the exact pinned release — see **Security** for why the pin matters. `bunx` works identically in place of `npx` if you prefer Bun.)
 
 Or a project-scoped `.mcp.json` (safe to commit — it expands `${AGENTPULSE_API_KEY}` from your shell, never inlines the key):
 
@@ -47,8 +51,8 @@ Or a project-scoped `.mcp.json` (safe to commit — it expands `${AGENTPULSE_API
   "mcpServers": {
     "agentpulse": {
       "type": "stdio",
-      "command": "bunx",
-      "args": ["agentpulse", "mcp", "serve"],
+      "command": "npx",
+      "args": ["-y", "agentpulse-mcp@<version>", "serve"],
       "env": {
         "AGENTPULSE_URL": "https://agentpulse.example.com",
         "AGENTPULSE_API_KEY": "${AGENTPULSE_API_KEY}"
@@ -66,8 +70,8 @@ Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.agentpulse]
-command = "bunx"
-args = ["agentpulse", "mcp", "serve"]
+command = "npx"
+args = ["-y", "agentpulse-mcp@<version>", "serve"]
 env = { AGENTPULSE_URL = "https://agentpulse.example.com" }
 env_vars = ["AGENTPULSE_API_KEY"]
 
@@ -135,7 +139,7 @@ These are never registered as tools, enforced by a drift-guard test that walks t
 
 ## Security
 
-This is the load-bearing section. Read it before minting a `manage`-scoped key.
+This is the load-bearing section. Read it before minting a `manage`-scoped key. (If you're running the standalone `agentpulse-mcp` npm package, its README carries this section verbatim plus two publish-specific additions: exact-version-pin guidance for `--orchestrate`/`manage` installs, and a typosquat/canonical-source warning.)
 
 **`requiresUserInteraction` (rUI) is a host-side convention, not a protocol-enforced gate.** AgentPulse stamps `_meta["anthropic/requiresUserInteraction"]: true` on every mutating tool. Claude Code's UI honors that flag and prompts you before running the tool. Codex CLI does not — and Codex's own global `approval_policy` setting does **not** gate MCP tool calls either (confirmed against [codex#15437](https://github.com/openai/codex/issues/15437); even `approval_policy = "never"` still let MCP writes through). The only real gate for Codex is the per-server `default_tools_approval_mode` key under `[mcp_servers.agentpulse]`, which `mcp install --orchestrate` emits as `"writes"` (auto-runs read-only tools, prompts before mutating ones). Any other scripted or headless MCP client honors neither mechanism unless you've built confirmation into it yourself — a mutating tool call executes immediately.
 
@@ -163,7 +167,8 @@ No Kubernetes manifest changes are needed to use the MCP server against a remote
 
 ## Related
 
+- Standalone npm package: [`packages/agentpulse-mcp/`](../packages/agentpulse-mcp/README.md) — publish-ready `agentpulse-mcp`, installable outside this repo
 - Ticket: AGEN-12
-- Plan: `thoughts/shared/plans/2026-07-22-deliver-mcp-server.md`
-- State/findings ledger: `thoughts/shared/plans/active/2026-07-22-deliver-mcp-server.state.md`
-- Code: `src/mcp/`, `bin/cli.ts`, `src/server/auth/route-scope-policy.ts`
+- Plan (original MCP server): `thoughts/shared/plans/2026-07-22-deliver-mcp-server.md`
+- Plan (package extraction): `thoughts/shared/plans/2026-07-23-deliver-agentpulse-mcp-package.md`
+- Code: `packages/agentpulse-mcp/src/`, `bin/cli.ts` (in-repo shim), `src/server/auth/route-scope-policy.ts`

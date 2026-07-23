@@ -1,17 +1,26 @@
 /**
- * Tests for src/mcp/install.ts — `agentpulse mcp install` (AGEN-12 Phase 5,
- * D4 + xander's security-strengthened defaults).
+ * Tests for install.ts — `agentpulse-mcp install` (AGEN-12 Phase 5 origin,
+ * D4 + xander's security-strengthened defaults; emitters version-pinned by
+ * D7 of the 2026-07-23-deliver-agentpulse-mcp-package extraction).
  *
  * Emitters are pure string-builders (snapshot + negative-assertion tests,
  * no mocking). mintKey/preflightReusedKey/runInstall use the shared
  * fakeClient fixture (D3 seams 1/3). CLI arg parsing is extracted into
  * parseInstallArgs so it's testable without shelling out (test-contract
  * Phase 5 mocking strategy).
+ *
+ * Version pinning (D7/xander X2): every emitted config interpolates this
+ * package's own VERSION — so a version BUMP never breaks these snapshots
+ * (they import the same constant the emitters do), but a PIN-DROP (an
+ * emitter reverting to a bare/unpinned `agentpulse-mcp` spec) DOES fail
+ * them, because the assertions require the `@${VERSION}` suffix to be
+ * present verbatim.
  */
 import { describe, expect, test } from "bun:test";
 import { ApiError } from "./client.js";
 import { ScopeDiscoveryError } from "./scopes.js";
 import { fakeClient } from "./test-support.js";
+import { VERSION } from "./version.js";
 
 import {
 	InstallArgsError,
@@ -30,10 +39,10 @@ import {
 const REAL_LOOKING_KEY = "ap_live_1234567890abcdef1234567890abcdef";
 
 describe("emitClaudeCommand (assertion 1)", () => {
-	test("matches the exact `claude mcp add` shape", () => {
+	test("matches the exact `claude mcp add` shape, pinned to this package's own version", () => {
 		const out = emitClaudeCommand({ url: "http://localhost:3000", keyRef: "ap_xxx" });
 		expect(out).toBe(
-			"claude mcp add --transport stdio agentpulse --env AGENTPULSE_URL=http://localhost:3000 --env AGENTPULSE_API_KEY=ap_xxx -- bunx agentpulse mcp serve",
+			`claude mcp add --transport stdio agentpulse --env AGENTPULSE_URL=http://localhost:3000 --env AGENTPULSE_API_KEY=ap_xxx -- npx -y agentpulse-mcp@${VERSION} serve`,
 		);
 	});
 
@@ -44,13 +53,13 @@ describe("emitClaudeCommand (assertion 1)", () => {
 });
 
 describe("emitMcpJson (assertion 2)", () => {
-	test("uses ${AGENTPULSE_API_KEY} env expansion, never a literal key", () => {
+	test("uses ${AGENTPULSE_API_KEY} env expansion, never a literal key; runner is npx -y, version-pinned", () => {
 		const out = emitMcpJson({ url: "http://localhost:3000", keyRef: "ap_placeholder" });
 		const doc = JSON.parse(out);
 		expect(doc.mcpServers.agentpulse.env.AGENTPULSE_API_KEY).toBe("${AGENTPULSE_API_KEY}");
 		expect(doc.mcpServers.agentpulse.env.AGENTPULSE_URL).toBe("http://localhost:3000");
-		expect(doc.mcpServers.agentpulse.command).toBe("bunx");
-		expect(doc.mcpServers.agentpulse.args).toEqual(["agentpulse", "mcp", "serve"]);
+		expect(doc.mcpServers.agentpulse.command).toBe("npx");
+		expect(doc.mcpServers.agentpulse.args).toEqual(["-y", `agentpulse-mcp@${VERSION}`, "serve"]);
 	});
 
 	test("NEGATIVE: never inlines a real-looking key, even when passed as keyRef", () => {
@@ -61,13 +70,15 @@ describe("emitMcpJson (assertion 2)", () => {
 });
 
 describe("emitCodexToml (assertion 3)", () => {
-	test("uses env_vars passthrough for the key, env for the URL", () => {
+	test("uses env_vars passthrough for the key, env for the URL, npx -y version-pinned runner/args", () => {
 		const out = emitCodexToml({
 			url: "http://localhost:3000",
 			keyRef: "ap_placeholder",
 			canOrchestrate: false,
 		});
 		expect(out).toContain("[mcp_servers.agentpulse]");
+		expect(out).toContain('command = "npx"');
+		expect(out).toContain(`args = ["-y", "agentpulse-mcp@${VERSION}", "serve"]`);
 		expect(out).toContain('env_vars = ["AGENTPULSE_API_KEY"]');
 		expect(out).toContain('env = { AGENTPULSE_URL = "http://localhost:3000" }');
 	});

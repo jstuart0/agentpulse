@@ -1,6 +1,8 @@
 import type { AgentPulseClient, CreateApiKeyResult } from "./client.js";
 /**
- * `agentpulse mcp install` (AGEN-12 Phase 5, plan D4).
+ * `agentpulse-mcp install` (AGEN-12 Phase 5 origin, plan D4; emitters
+ * version-pinned by D7 of the 2026-07-23-deliver-agentpulse-mcp-package
+ * extraction).
  *
  * Pure, unit-testable functions only — no console output here. rUI
  * (`_meta["anthropic/requiresUserInteraction"]`) is a Claude-Code-only
@@ -17,13 +19,15 @@ import type { AgentPulseClient, CreateApiKeyResult } from "./client.js";
  *     line whenever the key can orchestrate, since Codex's own approval
  *     mode is the only gate rUI can't provide there (H2).
  *
- * `console.log` is banned under src/mcp/** (check:no-console-log-mcp — the
- * stdio transport owns stdout for `mcp serve`'s JSON-RPC stream). This
- * module therefore never prints; bin/cli.ts's `mcp install` handler calls
- * `runInstall()` and prints the returned blocks itself.
+ * `console.log` is banned under this package's src/ (check:no-console-log-mcp
+ * — the stdio transport owns stdout for `serve`'s JSON-RPC stream). This
+ * module therefore never prints; cli.ts's `install` command (and the
+ * bin/cli.ts shim's `mcp install`) calls `runInstall()` and prints the
+ * returned blocks itself.
  */
 import { SCOPE_MANAGE, SCOPE_OBSERVE } from "./scope-constants.js";
 import { ScopeDiscoveryError, discoverScopes } from "./scopes.js";
+import { VERSION } from "./version.js";
 
 // ─── Emitters ───────────────────────────────────────────────────────
 
@@ -44,9 +48,18 @@ export interface EmitCodexTomlParams extends EmitConfigParams {
  * from their own terminal — it is never written to a git-destined file, so
  * inlining the literal key here (via --env, matching Claude Code's own
  * registration mechanism) is the correct and only sane behavior.
+ *
+ * `npx -y agentpulse-mcp@${VERSION}` — exact-pinned, not a bare/ranged
+ * package spec (D7/xander X2, binding): an unpinned `npx -y agentpulse-mcp`
+ * means a compromised npm publish silently reaches every fleet-control
+ * client on its next MCP-host restart, with no review step. The pin is the
+ * package's OWN version (this emitter lives inside the package, so the pin
+ * is always the version that emitted it — deterministic and
+ * snapshot-testable). `bunx agentpulse-mcp@${VERSION} serve` works
+ * identically and is documented as the alternative in the package README.
  */
 export function emitClaudeCommand({ url, keyRef }: EmitConfigParams): string {
-	return `claude mcp add --transport stdio agentpulse --env AGENTPULSE_URL=${url} --env AGENTPULSE_API_KEY=${keyRef} -- bunx agentpulse mcp serve`;
+	return `claude mcp add --transport stdio agentpulse --env AGENTPULSE_URL=${url} --env AGENTPULSE_API_KEY=${keyRef} -- npx -y agentpulse-mcp@${VERSION} serve`;
 }
 
 /**
@@ -63,8 +76,8 @@ export function emitMcpJson(params: EmitConfigParams): string {
 		mcpServers: {
 			agentpulse: {
 				type: "stdio",
-				command: "bunx",
-				args: ["agentpulse", "mcp", "serve"],
+				command: "npx",
+				args: ["-y", `agentpulse-mcp@${VERSION}`, "serve"],
 				env: {
 					AGENTPULSE_URL: params.url,
 					AGENTPULSE_API_KEY: "${AGENTPULSE_API_KEY}",
@@ -100,8 +113,8 @@ const ORCHESTRATE_APPROVAL_COMMENT = `# --orchestrate: this key is scoped "obser
 export function emitCodexToml(params: EmitCodexTomlParams): string {
 	const lines = [
 		"[mcp_servers.agentpulse]",
-		'command = "bunx"',
-		'args = ["agentpulse", "mcp", "serve"]',
+		'command = "npx"',
+		`args = ["-y", "agentpulse-mcp@${VERSION}", "serve"]`,
 		`env = { AGENTPULSE_URL = "${params.url}" }`,
 		'env_vars = ["AGENTPULSE_API_KEY"]',
 	];

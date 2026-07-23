@@ -57,7 +57,7 @@ export async function serveStdio(): Promise<void> {
 
 	if (!apiKey) {
 		stderrLog(
-			"AGENTPULSE_API_KEY is required. Mint a key in Settings > API Keys, or run `agentpulse mcp install`.",
+			"AGENTPULSE_API_KEY is required. Mint a key in Settings > API Keys, or run `agentpulse-mcp install`.",
 		);
 		process.exit(1);
 	}

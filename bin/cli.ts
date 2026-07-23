@@ -14,9 +14,13 @@ function printHelp() {
     npx agentpulse              Start the server
     npx agentpulse setup        Configure Claude Code + Codex hooks
     npx agentpulse setup --url <url> --key <key>
-    npx agentpulse mcp serve    Start the AgentPulse MCP server (stdio)
+    npx agentpulse mcp serve    Start the AgentPulse MCP server from this checkout (stdio)
     npx agentpulse mcp install  Print MCP client config for Claude Code / Codex
     npx agentpulse --help       Show this help
+
+  Not running from a checkout? The MCP server also ships as a standalone
+  package — \`npx agentpulse-mcp serve\` / \`npx agentpulse-mcp install\` work
+  without cloning this repo. See packages/agentpulse-mcp/README.md.
 
   mcp install flags:
     --key <existing key>   Reuse an existing API key (preflighted against
