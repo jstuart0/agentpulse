@@ -51,6 +51,6 @@
 		}
 	},
 	"files": {
-		"ignore": ["node_modules", "dist", "data", ".next"]
+		"ignore": ["node_modules", "dist", "data", ".next", "packages/*/dist"]
 	}
 }
