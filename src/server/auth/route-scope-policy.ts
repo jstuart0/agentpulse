@@ -25,6 +25,11 @@
  * observe-safe project DTO (id/name/cwd/defaults only, dropping
  * notes/metadata and redacting githubRepoUrl userinfo) could restore
  * observe visibility later — manage-only is the fail-safe choice for now.
+ *
+ * AIMR-214 Phase A: that observe-safe DTO now exists as GET /projects/summary
+ * (routes/projects.ts's mapProjectSummary — id/name/defaults + a
+ * redacted githubRepoUrl, dropping cwd too per the state file's scope
+ * wording). /projects and /projects/:id remain manage-only unchanged.
  */
 import type { Context, Next } from "hono";
 import { config } from "../config.js";
@@ -51,6 +56,11 @@ export const OBSERVE_READ_PATHS: ReadonlySet<string> = new Set([
 	"/ai/spend",
 	"/ai/diagnostics",
 	"/ai/status",
+	// AIMR-214 Phase A — the observe-safe project summary (routes/projects.ts's
+	// mapProjectSummary): id/name/defaults + a redacted githubRepoUrl only.
+	// /projects and /projects/:id stay INTENTIONALLY_MANAGE_ONLY below — this
+	// is a deliberately narrower sibling DTO, not a reclassification of them.
+	"/projects/summary",
 ]);
 
 /**

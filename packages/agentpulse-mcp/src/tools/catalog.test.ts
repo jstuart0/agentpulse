@@ -129,6 +129,53 @@ describe("list_projects (F23: manage-scoped — mapProject() carries arbitrary n
 	});
 });
 
+describe("list_projects_summary (AIMR-214 Phase A: observe-scoped, redacted DTO)", () => {
+	test("returns the reduced projects list from the client", async () => {
+		const ctx = newContext(
+			fakeClient({
+				listProjectsSummary: async () => ({
+					projects: [
+						{
+							id: "p1",
+							name: "proj",
+							defaultAgentType: "claude_code",
+							defaultModel: null,
+							defaultLaunchMode: null,
+							githubRepoUrl: "https://github.com/acme/repo",
+						},
+					],
+				}),
+			}),
+		);
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_projects_summary", arguments: {} });
+		expect(result.isError).toBeFalsy();
+		const parsed = JSON.parse(textOf(result));
+		expect(parsed.total).toBe(1);
+		expect(parsed.projects[0]).toEqual({
+			id: "p1",
+			name: "proj",
+			defaultAgentType: "claude_code",
+			defaultModel: null,
+			defaultLaunchMode: null,
+			githubRepoUrl: "https://github.com/acme/repo",
+		});
+	});
+
+	test("IS registered under observe-only (unlike list_projects, F23)", () => {
+		const ctx = newContext(fakeClient());
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: false });
+		expect(ctx.registry.map((r) => r.name)).toContain("list_projects_summary");
+	});
+
+	test("is also registered when hasManage is true (observe tools stay visible under manage)", () => {
+		const ctx = newContext(fakeClient());
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: true });
+		expect(ctx.registry.map((r) => r.name)).toContain("list_projects_summary");
+	});
+});
+
 describe("manage-only tools require manage scope to register", () => {
 	test("list_projects/list_templates/get_template/list_launches/get_launch are not registered under observe-only", () => {
 		const ctx = newContext(fakeClient());
