@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/errors.ts — domain-failure → MCP {isError} mapping
+ * Tests for errors.ts — domain-failure → MCP {isError} mapping
  * (AGEN-12 Phase 2, D5). Table-driven per test contract assertions 8-16.
  *
  * Two corrections pinned here per tessa's test contract (not the plan's

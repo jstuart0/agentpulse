@@ -663,7 +663,7 @@ export interface Inbox {
 }
 
 // ─── AI service response shapes (each has exactly one canonical owner
-//     outside src/mcp/ — direct type-import bar per client.ts's promote-to-
+//     outside this package — direct type-import bar per client.ts's promote-to-
 //     shared comment; vendored here for the same reason as the 43 above) ──
 
 export type HealthState = "healthy" | "blocked" | "stuck" | "risky" | "complete_candidate";

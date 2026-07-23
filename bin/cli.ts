@@ -283,9 +283,14 @@ async function mcpInstall() {
 		"../packages/agentpulse-mcp/src/install.js"
 	);
 
+	// This shim's own invocation surface (codex r2 CR3) — distinct from the
+	// package's own default "agentpulse-mcp install" label, so error/usage
+	// messages accurately describe how THIS process was actually run.
+	const PROGRAM_LABEL = "agentpulse mcp install";
+
 	let parsed: ReturnType<typeof parseInstallArgs>;
 	try {
-		parsed = parseInstallArgs(args.slice(2));
+		parsed = parseInstallArgs(args.slice(2), PROGRAM_LABEL);
 	} catch (err) {
 		console.error(err instanceof Error ? err.message : String(err));
 		process.exit(1);
@@ -298,7 +303,7 @@ async function mcpInstall() {
 	const client = createHttpClient({ baseUrl: parsed.url, apiKey: authKey });
 
 	try {
-		const result = await runInstall(client, parsed);
+		const result = await runInstall(client, parsed, PROGRAM_LABEL);
 
 		console.log("");
 		console.log("  AgentPulse MCP Install");

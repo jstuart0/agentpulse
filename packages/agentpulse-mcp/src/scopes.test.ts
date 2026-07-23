@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/scopes.ts — discoverScopes() (AGEN-12 Phase 2, D5
+ * Tests for scopes.ts — discoverScopes() (AGEN-12 Phase 2, D5
  * corrected per test-contract Correction #2).
  *
  * DISABLE_AUTH does NOT make /auth/me return authenticated:false —

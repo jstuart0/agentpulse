@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 /**
- * Tests for src/mcp/server.ts — buildMcpServer, registerReadTool,
+ * Tests for server.ts — buildMcpServer, registerReadTool,
  * registerMutatingTool (AGEN-12 Phase 2, D3 seams 2-3, H5).
  *
  * Wrapper tests use a fake AgentPulseClient and, where the SDK's own

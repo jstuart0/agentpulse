@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/tools/templates.ts (AGEN-12 Phase 4): create_template,
+ * Tests for templates.ts (AGEN-12 Phase 4): create_template,
  * update_template, delete_template. Body-shape assertions per
  * SessionTemplateInput (test-contract assertion 11); delete_template's
  * destructiveHint (assertion 12).

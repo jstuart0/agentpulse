@@ -17,9 +17,19 @@
  *   3. Extracts it (via the `tar` CLI — present on every macOS/Linux CI
  *      runner) and asserts, over the real packed content:
  *
- *      (a) Path allowlist — every top-level entry is dist/, package.json,
- *          README.md, or LICENSE; zero `.ts` sources except `.d.ts`; no
- *          `*.test.*` / test-support / thoughts / `.env` files.
+ *      (a) STRICT path allowlist (reconcile pass v2, user requirement: no
+ *          unnecessary files in the published OSS package) — every packed
+ *          path must match one of a small set of positive shape patterns
+ *          (dist/**\/*.js, dist/**\/*.d.ts, package.json, README.md,
+ *          LICENSE[.*], CHANGELOG.md). Anything else fails, by construction
+ *          — CLAUDE.md, AGENTS.md, .cursorrules, .env*, thoughts/, src/,
+ *          non-.d.ts *.ts, tsconfig*, and any other dotfile all fall
+ *          outside every allowed pattern, so a stray file can never ship
+ *          even if `files` in package.json is edited to include it or npm's
+ *          always-included set expands. A second, narrower pass then
+ *          rejects a handful of shapes that WOULD match the positive
+ *          patterns but must still never appear (a *.test.js or
+ *          test-support artifact compiled into dist/).
  *      (b) Sourcemap content (xander X1) — FAILS if ANY `*.map` file is
  *          packed at all (the build config emits none; presence means
  *          config drift), and additionally decodes any found and fails on
@@ -49,8 +59,41 @@ import { join, relative } from "node:path";
 const ROOT = new URL("..", import.meta.url).pathname;
 const PKG_DIR = join(ROOT, "packages", "agentpulse-mcp");
 
-const ALLOWED_TOP_LEVEL = new Set(["dist", "package.json", "README.md", "LICENSE"]);
-const LIFECYCLE_SCRIPT_KEYS = ["preinstall", "install", "postinstall", "prepare", "prepublish"];
+// Strict positive allowlist — see the (a) doc comment above for rationale.
+// Every packed path must match one of these shapes; nothing else is
+// permitted, regardless of how it got into the tarball.
+const ALLOWED_PATH_PATTERNS: ReadonlyArray<RegExp> = [
+	/^dist\/.*\.js$/,
+	/^dist\/.*\.d\.ts$/,
+	/^package\.json$/,
+	/^README\.md$/,
+	/^LICENSE$/,
+	/^LICENSE\.[^/]+$/,
+	/^CHANGELOG\.md$/,
+];
+
+function isAllowedPath(rel: string): boolean {
+	return ALLOWED_PATH_PATTERNS.some((re) => re.test(rel));
+}
+
+// Full npm lifecycle-script family (codex r2 CR4 — reconcile pass on
+// thoughts/shared/plans/2026-07-23-deliver-agentpulse-mcp-package.md): a
+// fleet-control package's tarball should carry NONE of these, not just the
+// install-time subset. prepack/postpack/prepublishOnly/publish/postpublish
+// all execute arbitrary code at points a consumer or the publisher's own
+// tooling doesn't expect a supply-chain payload to run.
+const LIFECYCLE_SCRIPT_KEYS = [
+	"preinstall",
+	"install",
+	"postinstall",
+	"prepare",
+	"prepublish",
+	"prepublishOnly",
+	"prepack",
+	"postpack",
+	"publish",
+	"postpublish",
+];
 
 const SECRET_PATTERNS: ReadonlyArray<{ name: string; re: RegExp }> = [
 	{ name: "AgentPulse API key (ap_...)", re: /ap_[A-Za-z0-9]{16,}/ },
@@ -85,11 +128,22 @@ async function main() {
 	// 1. Clean rebuild.
 	run("bun", ["run", "build"], PKG_DIR);
 
-	// 2. Real npm pack into a temp dir.
+	// 2. Real npm pack into a temp dir. --ignore-scripts is load-bearing,
+	// not an optimization (hand-verified during the reconcile pass, codex
+	// r2 CR4 follow-on): `npm pack` EXECUTES prepack/postpack by default —
+	// without this flag, a malicious lifecycle script the (c) check below
+	// exists to CATCH would already have run, with this guard's own
+	// privileges, before we ever got to inspect the packed package.json.
+	// The scripts field itself still ships in the tarball unexecuted, so
+	// the (c) presence check below is unaffected.
 	const tmpRoot = mkdtempSync(join(tmpdir(), "agentpulse-mcp-pack-"));
 	let packMeta: { filename: string };
 	try {
-		const packOut = run("npm", ["pack", "--pack-destination", tmpRoot, "--json"], PKG_DIR);
+		const packOut = run(
+			"npm",
+			["pack", "--ignore-scripts", "--pack-destination", tmpRoot, "--json"],
+			PKG_DIR,
+		);
 		const parsed = JSON.parse(packOut);
 		packMeta = parsed[0];
 	} catch (err) {
@@ -108,23 +162,24 @@ async function main() {
 
 	const allFiles = collectFiles(pkgRoot).sort();
 
-	// (a) Path allowlist.
+	// (a) Strict path allowlist.
 	for (const rel of allFiles) {
-		const top = rel.split("/")[0];
-		if (!ALLOWED_TOP_LEVEL.has(top)) {
-			violations.push(`path-allowlist: unexpected top-level entry "${rel}"`);
+		if (!isAllowedPath(rel)) {
+			violations.push(
+				`path-allowlist: "${rel}" is not on the strict allowlist (dist/**/*.js, dist/**/*.d.ts, package.json, README.md, LICENSE[.*], CHANGELOG.md) — a stray file (CLAUDE.md, AGENTS.md, .cursorrules, .env*, thoughts/, src/, tsconfig*, any other dotfile, etc.) must never ship`,
+			);
 			continue;
 		}
-		if (rel.endsWith(".ts") && !rel.endsWith(".d.ts")) {
-			violations.push(`path-allowlist: raw TypeScript source shipped: ${rel}`);
-		}
-		if (
-			/\.test\./.test(rel) ||
-			rel.includes("test-support") ||
-			rel.includes("thoughts") ||
-			rel.endsWith(".env")
-		) {
-			violations.push(`path-allowlist: forbidden file shipped: ${rel}`);
+		// Second, narrower pass: a handful of shapes WOULD match the
+		// positive patterns above (they're .js/.d.ts under dist/) but must
+		// still never ship — a compiled test/test-support artifact, or a
+		// basename-matched dotenv variant (.env.local, .env.production,
+		// nested under dist/) that somehow landed under dist/.
+		const basename = rel.split("/").pop() ?? "";
+		if (/\.test\./.test(rel) || rel.includes("test-support") || /^\.env(\.|$)/.test(basename)) {
+			violations.push(
+				`path-allowlist: forbidden file shipped despite matching the shape allowlist: ${rel}`,
+			);
 		}
 	}
 

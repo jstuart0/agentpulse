@@ -192,14 +192,15 @@ export async function mintKey(
  */
 export async function preflightReusedKey(
 	client: AgentPulseClient,
-	opts: { wantManage: boolean },
+	opts: { wantManage: boolean; programLabel?: string },
 ): Promise<string[]> {
+	const programLabel = opts.programLabel ?? DEFAULT_PROGRAM_LABEL;
 	const scopes = await discoverScopes(client);
 	const hasManage = scopes.includes(SCOPE_MANAGE);
 
 	if (opts.wantManage && !hasManage) {
 		throw new ScopeDiscoveryError(
-			`This API key lacks "${SCOPE_MANAGE}" scope required for --orchestrate (it holds: ${scopes.join(", ")}). Mint an orchestration-capable key instead: agentpulse mcp install --mint <name> --orchestrate`,
+			`This API key lacks "${SCOPE_MANAGE}" scope required for --orchestrate (it holds: ${scopes.join(", ")}). Mint an orchestration-capable key instead: ${programLabel} --mint <name> --orchestrate`,
 		);
 	}
 
@@ -227,8 +228,22 @@ export interface InstallArgs {
 export class InstallArgsError extends Error {}
 
 const DEFAULT_INSTALL_URL = "http://localhost:3000";
-const USAGE =
-	"Usage: agentpulse mcp install (--key <existing key> | --mint <name>) [--url <url>] [--orchestrate]";
+
+/**
+ * How this module's usage/error strings refer to "the command you just
+ * ran" (codex r2 CR3): this file is shared by two callers with different
+ * invocation surfaces — the published package's own `agentpulse-mcp
+ * install` (the default, since that's this module's native identity) and
+ * the in-repo checkout shim's `agentpulse mcp install` (bin/cli.ts, which
+ * passes its own label explicitly). Threading the label through rather
+ * than hardcoding either string keeps both callers' error messages
+ * accurate instead of one of them being subtly wrong.
+ */
+const DEFAULT_PROGRAM_LABEL = "agentpulse-mcp install";
+
+function buildUsage(programLabel: string): string {
+	return `Usage: ${programLabel} (--key <existing key> | --mint <name>) [--url <url>] [--orchestrate]`;
+}
 
 /**
  * --url is interpolated, unescaped, into both a shell command
@@ -242,10 +257,10 @@ const USAGE =
  */
 const DISALLOWED_URL_CHARS_RE = /["'`$;|\p{Cc}]/u;
 
-function validateUrl(value: string): string {
+function validateUrl(value: string, usage: string): string {
 	if (DISALLOWED_URL_CHARS_RE.test(value)) {
 		throw new InstallArgsError(
-			`--url contains a disallowed character (quote/backtick/shell metacharacter/control character): ${JSON.stringify(value)}. ${USAGE}`,
+			`--url contains a disallowed character (quote/backtick/shell metacharacter/control character): ${JSON.stringify(value)}. ${usage}`,
 		);
 	}
 	let parsed: URL;
@@ -253,18 +268,22 @@ function validateUrl(value: string): string {
 		parsed = new URL(value);
 	} catch {
 		throw new InstallArgsError(
-			`--url is not a well-formed URL: ${JSON.stringify(value)}. ${USAGE}`,
+			`--url is not a well-formed URL: ${JSON.stringify(value)}. ${usage}`,
 		);
 	}
 	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
 		throw new InstallArgsError(
-			`--url must use http:// or https:// (got "${parsed.protocol}"). ${USAGE}`,
+			`--url must use http:// or https:// (got "${parsed.protocol}"). ${usage}`,
 		);
 	}
 	return value;
 }
 
-export function parseInstallArgs(args: string[]): InstallArgs {
+export function parseInstallArgs(
+	args: string[],
+	programLabel: string = DEFAULT_PROGRAM_LABEL,
+): InstallArgs {
+	const usage = buildUsage(programLabel);
 	let url: string | undefined;
 	let key: string | undefined;
 	let mint: string | undefined;
@@ -275,30 +294,30 @@ export function parseInstallArgs(args: string[]): InstallArgs {
 		switch (flag) {
 			case "--url": {
 				const value = args[++i];
-				if (!value) throw new InstallArgsError(`--url requires a value. ${USAGE}`);
-				url = validateUrl(value);
+				if (!value) throw new InstallArgsError(`--url requires a value. ${usage}`);
+				url = validateUrl(value, usage);
 				break;
 			}
 			case "--key":
 				key = args[++i];
-				if (!key) throw new InstallArgsError(`--key requires a value. ${USAGE}`);
+				if (!key) throw new InstallArgsError(`--key requires a value. ${usage}`);
 				break;
 			case "--mint":
 				mint = args[++i];
 				if (!mint)
-					throw new InstallArgsError(`--mint requires a value (the new key's name). ${USAGE}`);
+					throw new InstallArgsError(`--mint requires a value (the new key's name). ${usage}`);
 				break;
 			case "--orchestrate":
 				orchestrate = true;
 				break;
 			default:
-				throw new InstallArgsError(`Unknown flag: ${flag}. ${USAGE}`);
+				throw new InstallArgsError(`Unknown flag: ${flag}. ${usage}`);
 		}
 	}
 
 	if (!key && !mint) {
 		throw new InstallArgsError(
-			`agentpulse mcp install requires --key <existing key> (reuse) or --mint <name> (mint a new key). ${USAGE}`,
+			`${programLabel} requires --key <existing key> (reuse) or --mint <name> (mint a new key). ${usage}`,
 		);
 	}
 
@@ -353,9 +372,12 @@ export interface RunInstallResult {
 export async function runInstall(
 	client: AgentPulseClient,
 	args: InstallArgs,
+	programLabel: string = DEFAULT_PROGRAM_LABEL,
 ): Promise<RunInstallResult> {
 	if (!args.mint && !args.key) {
-		throw new InstallArgsError(`runInstall requires args.key or args.mint. ${USAGE}`);
+		throw new InstallArgsError(
+			`runInstall requires args.key or args.mint. ${buildUsage(programLabel)}`,
+		);
 	}
 
 	let keyRef: string;
@@ -368,7 +390,7 @@ export async function runInstall(
 		keyRef = minted.key;
 		canOrchestrate = args.orchestrate;
 	} else {
-		scopes = await preflightReusedKey(client, { wantManage: args.orchestrate });
+		scopes = await preflightReusedKey(client, { wantManage: args.orchestrate, programLabel });
 		keyRef = args.key as string;
 		canOrchestrate = scopes.includes(SCOPE_MANAGE);
 	}

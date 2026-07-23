@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/tools/ai.ts (AGEN-12 Phase 3): get_session_intelligence
+ * Tests for ai.ts (AGEN-12 Phase 3): get_session_intelligence
  * (AI-gate pair mapping, test-contract assertions 3-5), get_digest,
  * get_ai_status (include_diagnostics default-off, M10), get_inbox.
  */

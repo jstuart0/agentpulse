@@ -13,11 +13,15 @@
  *     writes to process.stderr, not stdout — allowlisted here purely so the
  *     raw process.stdout.write scan doesn't need to special-case "unless
  *     it's actually .stderr.write", which would make the regex fragile).
- *   - cli.ts — the package's bin entry point. Its `install` subcommand
- *     legitimately prints human-facing config output via console.log; this
- *     is safe because `install` and `serve` (the only stdout-owning path)
- *     are mutually exclusive branches of the same dispatch — console.log
- *     never executes while the stdio transport holds stdout.
+ *   - cli-commands.ts — the `install`/`--help` command implementations.
+ *     Legitimately prints human-facing config output via console.log; this
+ *     is safe STRUCTURALLY, not just by convention (codex r2 CR2, reconcile
+ *     pass): cli.ts (the bin entry point, always loaded regardless of
+ *     subcommand) dynamic-imports this file ONLY from its `install`/`help`/
+ *     default branches — never from `serve`, which imports `./index.js`
+ *     directly and nothing else (cli.test.ts asserts this statically). The
+ *     bin entry point itself (cli.ts) is deliberately NOT allowlisted — it
+ *     must stay at zero console.log occurrences, verified by this guard.
  *
  * console.debug is included because it writes to stdout in Node/Bun just
  * like console.log — console.error/warn are fine (they write to stderr).
@@ -38,7 +42,7 @@ const STDOUT_WRITE_RE = /process\.stdout\.write\s*\(/;
 
 const ALLOWLISTED_FILES = new Set([
 	"packages/agentpulse-mcp/src/log.ts",
-	"packages/agentpulse-mcp/src/cli.ts",
+	"packages/agentpulse-mcp/src/cli-commands.ts",
 ]);
 
 async function* walkTs(dir: string): AsyncGenerator<string> {

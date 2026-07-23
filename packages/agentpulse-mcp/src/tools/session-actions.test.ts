@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/tools/session-actions.ts (AGEN-12 Phase 4):
+ * Tests for session-actions.ts (AGEN-12 Phase 4):
  * prompt_session, stop_session, retry_launch, update_session. Moved here
  * from orchestrate.test.ts alongside the Phase 4 mid-build file split
  * (dexter M) — no behavior change, same assertions.

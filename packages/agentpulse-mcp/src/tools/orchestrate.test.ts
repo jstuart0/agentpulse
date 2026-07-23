@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/tools/orchestrate.ts (AGEN-12 Phase 4): recommend_launch,
+ * Tests for orchestrate.ts (AGEN-12 Phase 4): recommend_launch,
  * preview_template, launch_agent, list_hosts. Session-control tools
  * (prompt_session/stop_session/retry_launch/update_session) moved to
  * session-actions.test.ts alongside their Phase 4 mid-build split

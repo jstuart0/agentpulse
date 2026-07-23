@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/index.ts — serveStdio() (AGEN-12 Phase 4 catch-up,
+ * Tests for index.ts — serveStdio() (AGEN-12 Phase 4 catch-up,
  * tessa-H2 / Phase 2 mid-build reconciliation Finding H-2: "serveStdio()'s
  * CLI-entrypoint wiring ... has no automated coverage reachable under the
  * project's default DISABLE_AUTH=true local-dev mode — required closed

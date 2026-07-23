@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/tools/catalog.ts (AGEN-12 Phase 3): search, list_projects,
+ * Tests for catalog.ts (AGEN-12 Phase 3): search, list_projects,
  * list_templates/get_template, list_launches/get_launch. get_stats already
  * covered by server.test.ts.
  */

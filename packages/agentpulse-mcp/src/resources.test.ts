@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/resources.ts (AGEN-12 Phase 3, test-contract assertions
+ * Tests for resources.ts (AGEN-12 Phase 3, test-contract assertions
  * 16-18): resources/list shape, resources/read for the static and templated
  * resources, and the missing/invalid session-id boundary case.
  */

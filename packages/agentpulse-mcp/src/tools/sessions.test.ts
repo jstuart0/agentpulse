@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/tools/sessions.ts (AGEN-12 Phase 3).
+ * Tests for sessions.ts (AGEN-12 Phase 3).
  *
  * Test-contract Phase 3 assertions 1-2 (validation), 6-8 (get_session
  * 500-event trim), 9-12 (pagination), plus buildSessionDetailPayload reuse.

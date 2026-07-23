@@ -53,8 +53,8 @@
         "agentpulse-mcp": "./dist/cli.js",
       },
       "dependencies": {
-        "@modelcontextprotocol/sdk": "^1.29.0",
-        "zod": "^3.25.76",
+        "@modelcontextprotocol/sdk": "1.29.0",
+        "zod": "3.25.76",
       },
       "devDependencies": {
         "@types/bun": "^1.2.0",

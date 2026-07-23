@@ -190,7 +190,7 @@ export interface ScopeFlags {
  * is invoked) — the same instance is reusable across stdio (Phase 2) and a
  * future streamable-HTTP transport (explicitly out of scope, D5/plan).
  *
- * Registration is delegated to per-domain files under src/mcp/tools/ (each
+ * Registration is delegated to per-domain files under tools/ (each
  * exporting a `registerXTools(ctx, flags)` function) plus resources.ts —
  * kept as a flat list of calls here (Pattern B) rather than growing this
  * file into a god-module as the tool population expands through Phase 4.

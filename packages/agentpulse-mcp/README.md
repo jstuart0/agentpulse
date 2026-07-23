@@ -58,6 +58,8 @@ Every config `install` emits (`claude mcp add`, `.mcp.json`, `config.toml`) pins
 
 Publishing itself uses [npm trusted publishing](https://docs.npmjs.com/trusted-publishers) (GitHub Actions OIDC) where available — no long-lived npm token exists that could be exfiltrated to push a malicious release; each publish carries [provenance attestation](https://docs.npmjs.com/generating-provenance-statements) you can verify (`npm audit signatures`, or the "Provenance" tab on the npm package page).
 
+This package's own two runtime dependencies (`@modelcontextprotocol/sdk`, `zod`) are **exact-pinned** in `package.json` (no `^`/`~` range) for the same reason as the emitted-config pin above: a fleet-control package shouldn't auto-pull whatever a compromised transitive dependency's `postinstall` does on the next `npm install` just because a caret range happened to match a new publish. Bumping either dependency here is a reviewed, deliberate change, not an automatic one.
+
 ### Hardening roadmap / known limitations
 
 Tracked follow-ups in the main repo, not silently accepted gaps — these apply equally whether you run the server via this package or from a checkout:

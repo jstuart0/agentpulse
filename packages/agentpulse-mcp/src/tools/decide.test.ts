@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/tools/decide.ts (AGEN-12 Phase 4): decide_hitl,
+ * Tests for decide.ts (AGEN-12 Phase 4): decide_hitl,
  * decide_action_request. Body assertions (test-contract 13-14); single-item
  * schema (no array/batch field).
  */

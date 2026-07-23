@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/client.ts — createHttpClient (AGEN-12 Phase 2, D3 seam 1).
+ * Tests for client.ts — createHttpClient (AGEN-12 Phase 2, D3 seam 1).
  *
  * All tests use a stub fetchImpl — no real network. Test contract
  * assertions 1-7 plus the URL-canonicalization and no-retry contracts

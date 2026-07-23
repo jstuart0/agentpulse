@@ -1,5 +1,5 @@
 /**
- * Tests for src/mcp/output.ts — output-cap helpers (AGEN-12 Phase 2, D5).
+ * Tests for output.ts — output-cap helpers (AGEN-12 Phase 2, D5).
  *
  * Pure functions, no mocking. Test contract assertions 17-23.
  */
