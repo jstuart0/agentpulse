@@ -4,7 +4,7 @@ import { describeSqliteOnly } from "../test-utils/backend.js";
 
 const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
 const { events, managedSessions, sessions, supervisors } = await import("../db/schema/index.js");
-const { applyNativeName, renameSession, updateStaleSessions } = await import(
+const { applyNativeName, getSessions, renameSession, updateStaleSessions } = await import(
 	"./session-tracker.js"
 );
 
@@ -131,6 +131,62 @@ describe("updateStaleSessions lifecycle rules", () => {
 		const row = await getSession("stuck-mild");
 		expect(row?.isWorking).toBe(false);
 		expect(row?.status).toBe("completed");
+	});
+});
+
+describe("getSessions — managed field (Phase 3 mid-build, dexter M2/ian Part B/tessa H-4)", () => {
+	async function mkManagedRow(sessionId: string, overrides: Record<string, unknown> = {}) {
+		await getDb()
+			.insert(managedSessions)
+			.values({
+				sessionId,
+				launchRequestId: `lr-${sessionId}`,
+				supervisorId: `sup-${sessionId}`,
+				managedState: "managed",
+				providerSyncState: "synced",
+				providerSyncError: null,
+				desiredThreadTitle: null,
+				...overrides,
+			})
+			.execute();
+	}
+
+	test("a session with no managed_sessions row → managed:false, flat row shape (no nested join)", async () => {
+		await mkSession("solo-list");
+		const { sessions: rows } = await getSessions();
+		const row = rows.find((r) => r.sessionId === "solo-list");
+		expect(row?.managed).toBe(false);
+		// Flat shape proof: sessionId/displayName/etc. sit directly on the
+		// row, not nested under a `sessions` key the way a naive Drizzle
+		// leftJoin would produce (ian Part B's named footgun).
+		expect(row?.displayName).toBe("solo-list");
+		expect((row as Record<string, unknown>).sessions).toBeUndefined();
+	});
+
+	test("a session WITH a managed_sessions row → managed:true (the true branch, previously unexercised)", async () => {
+		await mkSession("paired-list");
+		await mkManagedRow("paired-list");
+		const { sessions: rows } = await getSessions();
+		const row = rows.find((r) => r.sessionId === "paired-list");
+		expect(row?.managed).toBe(true);
+	});
+
+	test("a mixed page returns both true and false correctly, one batched query regardless of page size", async () => {
+		await mkSession("mix-a");
+		await mkSession("mix-b");
+		await mkSession("mix-c");
+		await mkManagedRow("mix-b");
+		const { sessions: rows } = await getSessions();
+		const byId = new Map(rows.map((r) => [r.sessionId, r.managed]));
+		expect(byId.get("mix-a")).toBe(false);
+		expect(byId.get("mix-b")).toBe(true);
+		expect(byId.get("mix-c")).toBe(false);
+	});
+
+	test("zero sessions on the page → no crash, empty array (in-array on an empty id list is skipped, not a malformed query)", async () => {
+		const { sessions: rows, total } = await getSessions({ status: "failed" });
+		expect(rows).toEqual([]);
+		expect(total).toBe(0);
 	});
 });
 

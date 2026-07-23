@@ -2,7 +2,8 @@ import { desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { LaunchRequestInput, SessionTemplateInput } from "../../shared/types.js";
-import { requireAuth, requireScope } from "../auth/middleware.js";
+import { requireAuth } from "../auth/middleware.js";
+import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, sessionTemplates } from "../db/schema/index.js";
 import { isAiBuildEnabled } from "../services/ai/feature.js";
@@ -14,7 +15,8 @@ import { resolveTemplateWithProject } from "../services/templates/template-proje
 
 const launchesRouter = new Hono();
 launchesRouter.use("*", requireAuth());
-launchesRouter.use("*", requireScope("manage"));
+// Manage-only (C1): launch DTOs carry env/launchSpec/claimToken (launch-validator.ts:28-36).
+launchesRouter.use("*", requireOperatorScope());
 
 launchesRouter.get("/launches", async (c) => {
 	const rows = await getDb().select().from(launchRequests).orderBy(desc(launchRequests.createdAt));

@@ -1,11 +1,22 @@
+# bun.lock covers the whole workspace (root package.json declares
+# `workspaces: ["packages/*"]`), so `--frozen-lockfile` needs every
+# workspace member's own package.json present to validate the lockfile
+# against -- without it, bun reports "lockfile had changes, but lockfile
+# is frozen" even though the lockfile itself is correct; it's just missing
+# context, not a stale lockfile. Add each workspace member's manifest
+# alongside the root ones. There is exactly one member today
+# (packages/agentpulse-mcp); add a new COPY line here if a second one is
+# ever introduced.
 FROM oven/bun:1.3.12 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
+COPY packages/agentpulse-mcp/package.json ./packages/agentpulse-mcp/
 RUN bun install --frozen-lockfile --production
 
 FROM oven/bun:1.3.12 AS builder
 WORKDIR /app
 COPY package.json bun.lock ./
+COPY packages/agentpulse-mcp/package.json ./packages/agentpulse-mcp/
 RUN bun install --frozen-lockfile
 COPY . .
 RUN bun run build

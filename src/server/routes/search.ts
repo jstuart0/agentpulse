@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { requireAuth, requireScope } from "../auth/middleware.js";
+import { requireAuth } from "../auth/middleware.js";
+import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getSearchBackend } from "../services/search/index.js";
 import type { SearchFilters, SearchRowKind } from "../services/search/types.js";
 
@@ -15,7 +16,7 @@ import type { SearchFilters, SearchRowKind } from "../services/search/types.js";
  */
 const searchRouter = new Hono();
 searchRouter.use("*", requireAuth());
-searchRouter.use("*", requireScope("manage"));
+searchRouter.use("*", requireOperatorScope());
 
 function parseKinds(input: string | undefined): SearchRowKind[] | undefined {
 	if (!input) return undefined;

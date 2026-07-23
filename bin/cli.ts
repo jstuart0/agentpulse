@@ -14,13 +14,31 @@ function printHelp() {
     npx agentpulse              Start the server
     npx agentpulse setup        Configure Claude Code + Codex hooks
     npx agentpulse setup --url <url> --key <key>
+    npx agentpulse mcp serve    Start the AgentPulse MCP server from this checkout (stdio)
+    npx agentpulse mcp install  Print MCP client config for Claude Code / Codex
     npx agentpulse --help       Show this help
 
+  Not running from a checkout? The MCP server also ships as a standalone
+  package — \`npx agentpulse-mcp serve\` / \`npx agentpulse-mcp install\` work
+  without cloning this repo. See packages/agentpulse-mcp/README.md.
+
+  mcp install flags:
+    --key <existing key>   Reuse an existing API key (preflighted against
+                            /auth/me for the required scope)
+    --mint <name>           Mint a new key (default scope: observe;
+                            read-only). Recommended.
+    --orchestrate           Mint/require "manage" scope instead of the
+                            observe-only default -- grants unattended full
+                            operator control. Prints a mandatory warning.
+    --url <url>             AgentPulse server URL (default: http://localhost:3000)
+
   Environment variables:
-    PORT              Server port (default: 3000)
-    DATABASE_URL      PostgreSQL URL (default: SQLite)
-    DISABLE_AUTH      Set "true" to skip auth
-    AGENTPULSE_API_KEY  API key for hooks
+    PORT                Server port (default: 3000)
+    DATABASE_URL        PostgreSQL URL (default: SQLite)
+    DISABLE_AUTH        Set "true" to skip auth
+    AGENTPULSE_API_KEY  API key for hooks, \`mcp serve\`, and (as a fallback
+                        auth credential) \`mcp install --mint\`
+    AGENTPULSE_URL      AgentPulse server URL for \`mcp serve\` (default: http://localhost:3000)
 `);
 }
 
@@ -230,6 +248,101 @@ async function start() {
 	await import("../src/server/index.js");
 }
 
+// ─── MCP Command (thin shim over the agentpulse-mcp package — D2 of
+// thoughts/shared/plans/2026-07-23-deliver-agentpulse-mcp-package.md) ──
+
+async function mcp() {
+	const subcommand = args[1];
+	switch (subcommand) {
+		case "serve": {
+			const { serveStdio } = await import("../packages/agentpulse-mcp/src/index.js");
+			await serveStdio();
+			break;
+		}
+		case "install":
+			await mcpInstall();
+			break;
+		default:
+			console.error(`Unknown mcp subcommand: ${subcommand ?? "(none)"}`);
+			console.error("Usage: agentpulse mcp serve | agentpulse mcp install");
+			process.exit(1);
+	}
+}
+
+async function mcpInstall() {
+	// Four TARGETED dynamic imports, pointed at the package's individual
+	// source files rather than its index.js barrel (dexter G1 — binding).
+	// Going through index.js would make `agentpulse mcp install` eagerly
+	// load the full MCP SDK + all 7 tool files it never touches (a startup
+	// regression), and a bad top-level schema in any tool file would then
+	// break `install`, which is isolated from that failure domain today.
+	const { createHttpClient } = await import("../packages/agentpulse-mcp/src/client.js");
+	const { mapError } = await import("../packages/agentpulse-mcp/src/errors.js");
+	const { ScopeDiscoveryError } = await import("../packages/agentpulse-mcp/src/scopes.js");
+	const { InstallArgsError, parseInstallArgs, resolveAuthKey, runInstall } = await import(
+		"../packages/agentpulse-mcp/src/install.js"
+	);
+
+	// This shim's own invocation surface (codex r2 CR3) — distinct from the
+	// package's own default "agentpulse-mcp install" label, so error/usage
+	// messages accurately describe how THIS process was actually run.
+	const PROGRAM_LABEL = "agentpulse mcp install";
+
+	let parsed: ReturnType<typeof parseInstallArgs>;
+	try {
+		parsed = parseInstallArgs(args.slice(2), PROGRAM_LABEL);
+	} catch (err) {
+		console.error(err instanceof Error ? err.message : String(err));
+		process.exit(1);
+	}
+
+	// Auth for the mint-or-preflight call itself: an explicit --key, else
+	// AGENTPULSE_API_KEY (same fallback `mcp serve` uses), else empty (only
+	// viable under DISABLE_AUTH=true).
+	const authKey = resolveAuthKey(parsed.key, process.env.AGENTPULSE_API_KEY);
+	const client = createHttpClient({ baseUrl: parsed.url, apiKey: authKey });
+
+	try {
+		const result = await runInstall(client, parsed, PROGRAM_LABEL);
+
+		console.log("");
+		console.log("  AgentPulse MCP Install");
+		console.log("  ───────────────────────");
+		console.log("");
+		console.log(`  Key scopes: ${result.scopes.join(", ")}`);
+		console.log("");
+		if (result.warning) {
+			console.log(result.warning);
+			console.log("");
+		}
+		console.log("  Claude Code -- one-shot registration (run this in your shell):");
+		console.log("");
+		console.log(`    ${result.claudeCommand}`);
+		console.log("");
+		console.log(
+			"  Claude Code -- .mcp.json (project scope, commit-safe: uses ${AGENTPULSE_API_KEY} env expansion):",
+		);
+		console.log("");
+		console.log(result.mcpJson);
+		console.log("");
+		console.log("  Codex CLI -- ~/.codex/config.toml:");
+		console.log("");
+		console.log(result.codexToml);
+		console.log("");
+		console.log(
+			`  For the .mcp.json / config.toml blocks above, export AGENTPULSE_API_KEY="${result.keyRef}" in your shell before launching the client.`,
+		);
+		console.log("");
+	} catch (err) {
+		if (err instanceof ScopeDiscoveryError || err instanceof InstallArgsError) {
+			console.error(err.message);
+		} else {
+			console.error(mapError(err, client.baseUrl).content[0].text);
+		}
+		process.exit(1);
+	}
+}
+
 // ─── Router ─────────────────────────────────────────────────────────
 
 switch (command) {
@@ -238,6 +351,9 @@ switch (command) {
 		break;
 	case "start":
 		await start();
+		break;
+	case "mcp":
+		await mcp();
 		break;
 	case "--help":
 	case "-h":

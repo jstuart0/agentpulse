@@ -23,7 +23,8 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { bridgeForwardauthSession } from "./auth/forwardauth-bridge.js";
-import { requireAuth, requireScope } from "./auth/middleware.js";
+import { requireAuth } from "./auth/middleware.js";
+import { requireOperatorScope } from "./auth/route-scope-policy.js";
 import { config } from "./config.js";
 import { securityHeaders } from "./middleware/security-headers.js";
 import aiInboxRouter from "./routes/ai-inbox.js";
@@ -86,7 +87,10 @@ const aiRouter = new Hono();
 aiRouter.use("*", requireAuth());
 // All AI control-plane routes are operator-only; ingest-scoped api_keys must
 // not reach proposals, watcher config, or any other AI surface (C-1, C-2).
-aiRouter.use("*", requireScope("manage"));
+// requireOperatorScope() additionally recognizes observe-scoped keys on the
+// read-only AI routes in OBSERVE_READ_PATHS (get_digest, intelligence,
+// spend, status, diagnostics); everything else here stays manage-only.
+aiRouter.use("*", requireOperatorScope());
 aiRouter.route("/", aiStatusRouter);
 aiRouter.route("/", aiProvidersRouter);
 aiRouter.route("/", aiWatcherRouter);

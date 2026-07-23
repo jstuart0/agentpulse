@@ -25,9 +25,10 @@ export function SettingsPage() {
 	const [apiKeys, setApiKeys] = useState<ApiKeyInfo[]>([]);
 	const [newKeyName, setNewKeyName] = useState("");
 	const [newKeyValue, setNewKeyValue] = useState<string | null>(null);
-	// Scope picker: ingest is on by default; manage is opt-in.
+	// Scope picker: ingest is on by default; manage and observe are opt-in.
 	const [newKeyScopeIngest, setNewKeyScopeIngest] = useState(true);
 	const [newKeyScopeManage, setNewKeyScopeManage] = useState(false);
+	const [newKeyScopeObserve, setNewKeyScopeObserve] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [theme, setTheme] = useState<AppTheme>(resolveInitialTheme());
 	const [settings, setSettings] = useState<Record<string, unknown>>({});
@@ -75,6 +76,7 @@ export function SettingsPage() {
 		const scopes: string[] = [];
 		if (newKeyScopeIngest) scopes.push("ingest");
 		if (newKeyScopeManage) scopes.push("manage");
+		if (newKeyScopeObserve) scopes.push("observe");
 		if (scopes.length === 0) scopes.push("ingest"); // safety: at least ingest
 
 		try {
@@ -85,6 +87,7 @@ export function SettingsPage() {
 				setNewKeyName("");
 				setNewKeyScopeIngest(true);
 				setNewKeyScopeManage(false);
+				setNewKeyScopeObserve(false);
 				// Refresh key list
 				const keysRes = await api.getApiKeys();
 				setApiKeys(keysRes.keys || []);
@@ -450,6 +453,16 @@ export function SettingsPage() {
 							/>
 							<span>manage</span>
 							<span className="text-muted-foreground/60">(supervisors, API keys)</span>
+						</label>
+						<label className="flex items-center gap-1.5 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={newKeyScopeObserve}
+								onChange={(e) => setNewKeyScopeObserve(e.target.checked)}
+								className="rounded border-input"
+							/>
+							<span>observe (read-only)</span>
+							<span className="text-muted-foreground/60">(sessions, search, AI reads)</span>
 						</label>
 					</div>
 				</div>

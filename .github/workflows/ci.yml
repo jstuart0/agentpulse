@@ -71,6 +71,20 @@ jobs:
       - name: Build server
         run: bun run build:server
 
+      - name: Build agentpulse-mcp package
+        run: bun run build:mcp
+
+      # check:mcp-tarball shells out to the system `npm pack` — pin the
+      # Node/npm version so that behavior is deterministic across runs
+      # rather than whatever npm happens to ship with the runner image
+      # (xander XM2, reconcile pass).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: agentpulse-mcp tarball audit
+        run: bun run check:mcp-tarball
+
   # Postgres job: push to main/dev only (Decision 19).
   # Reason: PRs are validated against SQLite; Postgres correctness is gated
   # at merge. This avoids starting a Postgres service container for every

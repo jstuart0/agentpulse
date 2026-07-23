@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { requireAuth, requireScope } from "../auth/middleware.js";
+import { requireAuth } from "../auth/middleware.js";
+import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
 import { getActionRequest, resolveActionRequest } from "../services/ai/action-requests-service.js";
 import { emitAiEvent } from "../services/ai/ai-events.js";
@@ -316,7 +317,7 @@ async function handleActionCallback(cb: TelegramCallbackQuery): Promise<void> {
 // safely use router-level middleware without shadowing the webhook. (M-1)
 const channelsRouter = new Hono();
 channelsRouter.use("*", requireAuth());
-channelsRouter.use("*", requireScope("manage"));
+channelsRouter.use("*", requireOperatorScope());
 
 channelsRouter.get("/channels", async (c) => {
 	const channels = await listChannels();

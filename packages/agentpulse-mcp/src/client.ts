@@ -1,0 +1,549 @@
+/**
+ * AgentPulse REST HTTP client for the MCP server (AGEN-12 Phase 2, D3 seam 1).
+ *
+ * Modeled on scripts/relay.ts's Bearer-header + AbortSignal.timeout pattern
+ * (relay.ts:89-93, 103-108, 19). Response shapes are imported from this
+ * package's own vendored ./types.js (D3 of the 2026-07-23 package
+ * extraction plan — a client-side view of AgentPulse's wire contract,
+ * documented in that file's header), including AuthMeResponse.
+ *
+ * No-retry contract (D3/M8): this client never auto-retries. A mutating
+ * call that times out server-side must not be silently re-sent — the caller
+ * (errors.ts's mapper) is told to verify state before retrying.
+ */
+import type {
+	ActionRequest,
+	ActionRequestDecision,
+	AgentType,
+	AuthMeResponse,
+	ControlAction,
+	DashboardStats,
+	Digest,
+	HitlReplyKind,
+	HitlRequestRecord,
+	Inbox,
+	LaunchMode,
+	LaunchRequest,
+	LaunchRequestInput,
+	LaunchRoutingPolicy,
+	Project,
+	RecommendedLaunch,
+	ResolvedProjectData,
+	SearchResult,
+	Session,
+	SessionEvent,
+	SessionIntelligence,
+	SessionStatus,
+	SessionTemplate,
+	SessionTemplateInput,
+	SupervisorRecord,
+	TemplatePreview,
+} from "./types.js";
+
+// Re-exported so existing consumers (client.test.ts, scopes.test.ts) keep
+// importing it from "./client.js" — the canonical definition now lives in
+// ./types.js (this package's vendored wire-type closure).
+export type { AuthMeResponse } from "./types.js";
+
+/**
+ * Hand-declared MCP-only shapes (Phase 3): no canonical exported type exists
+ * anywhere in the codebase for these three endpoint responses (the AI
+ * status/diagnostics and claude-md routes inline their response object
+ * literals directly in the route handler) — declaring them here is not a
+ * "parallel copy" of anything, it's the first and only typed copy.
+ */
+export interface AiStatusResponse {
+	build: boolean;
+	runtime: boolean;
+	killSwitch: boolean;
+	active: boolean;
+	classifierEnabled: boolean;
+	classifierAffectsRunner: boolean;
+	autoEnableWatcherForAsk: boolean;
+}
+
+export interface AiDiagnostics {
+	generatedAt: string;
+	queue: Record<string, number>;
+	today: string;
+	flags: {
+		build: boolean;
+		runtime: boolean;
+		killSwitch: boolean;
+		classifierEnabled: boolean;
+		classifierAffectsRunner: boolean;
+	};
+	otel: { endpoint: "configured" | "none" };
+}
+
+export interface ClaudeMdResponse {
+	content: string;
+	path: string;
+	checksum: string;
+	updatedAt: string | null;
+}
+
+export class ApiError extends Error {
+	readonly status: number;
+	readonly body: unknown;
+
+	constructor(status: number, body: unknown) {
+		super(`AgentPulse API error: ${status}`);
+		this.name = "ApiError";
+		this.status = status;
+		this.body = body;
+	}
+}
+
+export class NetworkError extends Error {
+	constructor(message: string, options?: { cause?: unknown }) {
+		super(message, options);
+		this.name = "NetworkError";
+	}
+}
+
+export class TimeoutError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "TimeoutError";
+	}
+}
+
+/**
+ * Typed methods per AgentPulse REST endpoint the MCP server needs. Phase 2
+ * ships the minimum spine (getStats, getAuthMe for scope discovery); later
+ * phases add one method per tool as they're built.
+ */
+export interface ListSessionsParams {
+	status?: SessionStatus;
+	agentType?: AgentType;
+	projectId?: string;
+	limit?: number;
+	offset?: number;
+}
+
+export interface GetSessionResult {
+	session: Session;
+	events: SessionEvent[];
+	controlActions?: ControlAction[];
+}
+
+export interface GetEventContextResult {
+	events: SessionEvent[];
+	target: { id: number };
+}
+
+export interface SearchParams {
+	q: string;
+	kinds?: Array<"session" | "event">;
+	limit?: number;
+	offset?: number;
+}
+
+export interface ListTemplatesParams {
+	agentType?: AgentType;
+}
+
+export interface GetTemplateResult {
+	template: SessionTemplate;
+	resolvedProject: ResolvedProjectData | null;
+}
+
+export interface GetLaunchResult {
+	launchRequest: LaunchRequest;
+	session: Session | null;
+}
+
+export interface GetInboxParams {
+	kinds?: Array<"hitl" | "stuck" | "risky" | "failed_proposal">;
+	sessionId?: string;
+	severity?: "high" | "normal";
+	limit?: number;
+}
+
+/**
+ * Phase 4 (D2 mutating-tool table) request/response shapes. `template`/
+ * `launchSpec`-bearing bodies reuse the exact wire types (SessionTemplateInput/
+ * LaunchSpec) rather than a translated copy — recommend_launch/
+ * preview_template/launch_agent's nested `template`/`launch_spec` tool
+ * fields deliberately mirror these camelCase shapes verbatim (orchestrate.ts)
+ * so a caller can round-trip preview_template's own output straight into
+ * launch_agent with zero translation.
+ */
+export interface RecommendLaunchParams {
+	template: SessionTemplateInput;
+	preferredSupervisorId?: string | null;
+}
+
+export interface PreviewTemplateParams extends Partial<SessionTemplateInput> {
+	launchMode?: LaunchMode;
+	requestedSupervisorId?: string | null;
+	routingPolicy?: LaunchRoutingPolicy | null;
+}
+
+export interface CreateLaunchResult {
+	launchRequest: LaunchRequest;
+	supervisor: SupervisorRecord;
+}
+
+export interface ControlActionResult {
+	action: ControlAction;
+}
+
+export interface RetryLaunchResult {
+	action: ControlAction;
+	launchRequest: LaunchRequest;
+}
+
+export interface TemplateMutationInput extends SessionTemplateInput {
+	projectId?: string | null;
+	overriddenFields?: string[];
+}
+
+export interface CreateTemplateResult {
+	template: SessionTemplate;
+}
+
+/** POST /api/v1/api-keys response (settings.ts:190-206) — AGEN-12 Phase 5, `agentpulse mcp install`'s mintKey. */
+export interface CreateApiKeyResult {
+	id: string;
+	/** The raw key — shown once, never persisted server-side beyond its hash. */
+	key: string;
+	name: string;
+	scopes: string[];
+	message: string;
+}
+
+/**
+ * Typed methods per AgentPulse REST endpoint the MCP server needs. Phase 2
+ * shipped the minimum spine (getStats, getAuthMe); Phase 3 adds one method
+ * per read tool (D2's observe + manage-scoped read-tool tables).
+ */
+export interface AgentPulseClient {
+	/** The canonicalized base URL (`<origin>/api/v1`) — surfaced for error messages. */
+	readonly baseUrl: string;
+	getStats(): Promise<DashboardStats>;
+	getAuthMe(): Promise<AuthMeResponse>;
+
+	// --- Observe-scoped reads (D2) ---
+	getSessions(params?: ListSessionsParams): Promise<{ sessions: Session[]; total: number }>;
+	getSession(sessionId: string): Promise<GetSessionResult>;
+	getSessionTimeline(
+		sessionId: string,
+		params?: { limit?: number; offset?: number },
+	): Promise<{ events: SessionEvent[] }>;
+	getEventContext(
+		sessionId: string,
+		eventId: number,
+		around?: number,
+	): Promise<GetEventContextResult>;
+	getSessionClaudeMd(sessionId: string): Promise<ClaudeMdResponse>;
+	search(params: SearchParams): Promise<SearchResult>;
+	listProjects(): Promise<{ projects: Project[]; total: number }>;
+	getSessionIntelligence(sessionId: string): Promise<{ intelligence: SessionIntelligence }>;
+	getDigest(): Promise<Digest>;
+	getAiStatus(): Promise<AiStatusResponse>;
+	getAiDiagnostics(): Promise<AiDiagnostics>;
+
+	// --- Manage-scoped reads (C1: DTOs carry env/claimToken/launch payloads) ---
+	listTemplates(
+		params?: ListTemplatesParams,
+	): Promise<{ templates: SessionTemplate[]; total: number }>;
+	getTemplate(templateId: string): Promise<GetTemplateResult>;
+	listLaunches(): Promise<{ launches: LaunchRequest[]; total: number }>;
+	getLaunch(launchId: string): Promise<GetLaunchResult>;
+	getInbox(params?: GetInboxParams): Promise<Inbox>;
+
+	// --- Manage-scoped mutations (AGEN-12 Phase 4, D2's mutating-tool table) ---
+	recommendLaunch(params: RecommendLaunchParams): Promise<{ recommendation: RecommendedLaunch }>;
+	previewTemplate(params: PreviewTemplateParams): Promise<TemplatePreview>;
+	/** H1 contract: the caller (orchestrate.ts's launch_agent) is responsible for never posting a `{templateId}`-only body — the validator dereferences launchSpec unconditionally (launch-validator.ts:150). */
+	createLaunch(
+		body: LaunchRequestInput & { templateId?: string | null },
+	): Promise<CreateLaunchResult>;
+	promptSession(sessionId: string, prompt: string): Promise<ControlActionResult>;
+	stopSession(sessionId: string): Promise<ControlActionResult>;
+	retryLaunch(sessionId: string): Promise<RetryLaunchResult>;
+	updateSessionNotes(sessionId: string, notes: string): Promise<{ ok: true }>;
+	/** `source` mirrors the dashboard/Ask convention (repo CLAUDE.md's rename-precedence contract) — orchestrate.ts's update_session always sends "user". */
+	renameSession(sessionId: string, name: string, source?: string): Promise<{ ok: true }>;
+	pinSession(sessionId: string, pinned: boolean): Promise<{ ok: true }>;
+	archiveSession(sessionId: string, archived: boolean): Promise<{ ok: true }>;
+	createTemplate(body: TemplateMutationInput): Promise<CreateTemplateResult>;
+	updateTemplate(templateId: string, body: TemplateMutationInput): Promise<CreateTemplateResult>;
+	deleteTemplate(templateId: string): Promise<{ ok: true }>;
+	decideHitl(
+		hitlId: string,
+		action: HitlReplyKind,
+		customPrompt?: string | null,
+	): Promise<{ hitl: HitlRequestRecord | null }>;
+	decideActionRequest(
+		actionRequestId: string,
+		decision: ActionRequestDecision,
+	): Promise<{ actionRequest: ActionRequest | null }>;
+	/** GET /api/v1/admin/supervisors — strict-manage admin router (supervisors.ts:47), not requireOperatorScope. */
+	listHosts(): Promise<{ supervisors: SupervisorRecord[]; total: number }>;
+
+	/** POST /api/v1/api-keys — manage-scoped (settings.ts:19,190). AGEN-12 Phase 5's mintKey. */
+	createApiKey(name: string, scopes: string[]): Promise<CreateApiKeyResult>;
+}
+
+export interface CreateHttpClientOptions {
+	baseUrl: string;
+	apiKey: string;
+	/** Default 8000ms, matching relay.ts's RELAY_FETCH_TIMEOUT_MS. */
+	timeoutMs?: number;
+	/** Injectable for tests. Defaults to global fetch. */
+	fetchImpl?: typeof fetch;
+}
+
+const DEFAULT_TIMEOUT_MS = 8_000;
+
+// Matches a trailing /api, /api/v1, or /api/v1/ (post app-api→api rewrite)
+// so re-appending "/api/v1" below never doubles up on either form.
+const API_SUFFIX_RE = /\/api(\/v1)?\/?$/;
+const TRAILING_SLASH_RE = /\/+$/;
+
+/**
+ * Normalize a caller-supplied base URL to `<origin>/api/v1`. Rewrites the
+ * browser-only `/app-api` alias to `/api` — the remote SSO Bearer
+ * edge-bypass (deploy/k8s/07-ingressroute.yaml: PathPrefix(`/api/`) &&
+ * HeaderRegexp(Authorization, Bearer ap_.*)) only matches `/api/`, not
+ * `/app-api/`; a browser-copied `/app-api` base would hit forwardauth
+ * instead of the Bearer bypass on a remote SSO deployment (D5/M11).
+ * Idempotent: re-canonicalizing an already-canonical URL is a no-op.
+ */
+export function canonicalizeBaseUrl(rawUrl: string): string {
+	const url = new URL(rawUrl);
+	let pathname = url.pathname;
+	if (pathname.startsWith("/app-api")) {
+		pathname = `/api${pathname.slice("/app-api".length)}`;
+	}
+	pathname = pathname.replace(API_SUFFIX_RE, "");
+	pathname = pathname.replace(TRAILING_SLASH_RE, "");
+	return `${url.origin}${pathname}/api/v1`;
+}
+
+function isTimeoutError(err: unknown): boolean {
+	return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
+/** Builds a `?a=1&b=2` query string, skipping undefined/empty values. Array values are comma-joined (matches the REST layer's `kinds` convention, e.g. search.ts:57). */
+function toQuery(params: Record<string, string | number | boolean | string[] | undefined>): string {
+	const qs = new URLSearchParams();
+	for (const [key, value] of Object.entries(params)) {
+		if (value === undefined) continue;
+		if (Array.isArray(value)) {
+			if (value.length === 0) continue;
+			qs.set(key, value.join(","));
+			continue;
+		}
+		qs.set(key, String(value));
+	}
+	const s = qs.toString();
+	return s ? `?${s}` : "";
+}
+
+export function createHttpClient(options: CreateHttpClientOptions): AgentPulseClient {
+	const baseUrl = canonicalizeBaseUrl(options.baseUrl);
+	const apiKey = options.apiKey;
+	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+
+	async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+		const headers = new Headers(init.headers);
+		headers.set("Authorization", `Bearer ${apiKey}`);
+		if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+
+		let response: Response;
+		try {
+			response = await fetchImpl(`${baseUrl}${path}`, {
+				...init,
+				headers,
+				signal: AbortSignal.timeout(timeoutMs),
+			});
+		} catch (err) {
+			if (isTimeoutError(err)) {
+				throw new TimeoutError(`Request to ${baseUrl}${path} timed out after ${timeoutMs}ms`);
+			}
+			throw new NetworkError(
+				`Request to ${baseUrl}${path} failed: ${err instanceof Error ? err.message : String(err)}`,
+				{ cause: err },
+			);
+		}
+
+		if (!response.ok) {
+			const raw = await response.text();
+			let body: unknown;
+			try {
+				body = raw ? JSON.parse(raw) : {};
+			} catch {
+				body = { parseError: true, raw };
+			}
+			throw new ApiError(response.status, body);
+		}
+
+		const text = await response.text();
+		if (!text) return undefined as T;
+		try {
+			return JSON.parse(text) as T;
+		} catch (err) {
+			// tessa Med, mid-build hardening: a malformed/truncated 2xx body
+			// must surface as a handled error (through errors.ts's generic
+			// fallback branch), not an unwrapped raw SyntaxError propagating
+			// out of a Promise the wrapper's try/catch (server.ts) is the
+			// only thing standing between this and a crashed handler — wrap
+			// it in a plain Error with useful context instead.
+			const preview = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+			throw new Error(
+				`AgentPulse returned malformed JSON on a ${response.status} response from ${baseUrl}${path}: ${preview}`,
+				{ cause: err },
+			);
+		}
+	}
+
+	return {
+		baseUrl,
+		getStats: () => request<DashboardStats>("/sessions/stats"),
+		getAuthMe: () => request<AuthMeResponse>("/auth/me"),
+
+		getSessions: (params) =>
+			request<{ sessions: Session[]; total: number }>(
+				`/sessions${toQuery({
+					status: params?.status,
+					agent_type: params?.agentType,
+					projectId: params?.projectId,
+					limit: params?.limit,
+					offset: params?.offset,
+				})}`,
+			),
+		getSession: (sessionId) =>
+			request<GetSessionResult>(`/sessions/${encodeURIComponent(sessionId)}`),
+		getSessionTimeline: (sessionId, params) =>
+			request<{ events: SessionEvent[] }>(
+				`/sessions/${encodeURIComponent(sessionId)}/timeline${toQuery({
+					limit: params?.limit,
+					offset: params?.offset,
+				})}`,
+			),
+		getEventContext: (sessionId, eventId, around) =>
+			request<GetEventContextResult>(
+				`/sessions/${encodeURIComponent(sessionId)}/events/${eventId}/context${toQuery({ around })}`,
+			),
+		getSessionClaudeMd: (sessionId) =>
+			request<ClaudeMdResponse>(`/sessions/${encodeURIComponent(sessionId)}/claude-md`),
+		search: (params) =>
+			request<SearchResult>(
+				`/search${toQuery({
+					q: params.q,
+					kinds: params.kinds,
+					limit: params.limit,
+					offset: params.offset,
+				})}`,
+			),
+		listProjects: () => request<{ projects: Project[]; total: number }>("/projects"),
+		getSessionIntelligence: (sessionId) =>
+			request<{ intelligence: SessionIntelligence }>(
+				`/ai/sessions/${encodeURIComponent(sessionId)}/intelligence`,
+			),
+		getDigest: () => request<Digest>("/ai/digest"),
+		getAiStatus: () => request<AiStatusResponse>("/ai/status"),
+		getAiDiagnostics: () => request<AiDiagnostics>("/ai/diagnostics"),
+
+		listTemplates: (params) =>
+			request<{ templates: SessionTemplate[]; total: number }>(
+				`/templates${toQuery({ agent_type: params?.agentType })}`,
+			),
+		getTemplate: (templateId) =>
+			request<GetTemplateResult>(`/templates/${encodeURIComponent(templateId)}`),
+		listLaunches: () => request<{ launches: LaunchRequest[]; total: number }>("/launches"),
+		getLaunch: (launchId) => request<GetLaunchResult>(`/launches/${encodeURIComponent(launchId)}`),
+		getInbox: (params) =>
+			request<Inbox>(
+				`/ai/inbox${toQuery({
+					kinds: params?.kinds,
+					sessionId: params?.sessionId,
+					severity: params?.severity,
+					limit: params?.limit,
+				})}`,
+			),
+
+		recommendLaunch: (params) =>
+			request<{ recommendation: RecommendedLaunch }>("/launches/recommendation", {
+				method: "POST",
+				body: JSON.stringify({
+					template: params.template,
+					preferredSupervisorId: params.preferredSupervisorId,
+				}),
+			}),
+		previewTemplate: (params) =>
+			request<TemplatePreview>("/templates/preview", {
+				method: "POST",
+				body: JSON.stringify(params),
+			}),
+		createLaunch: (body) =>
+			request<CreateLaunchResult>("/launches", { method: "POST", body: JSON.stringify(body) }),
+		promptSession: (sessionId, prompt) =>
+			request<ControlActionResult>(`/sessions/${encodeURIComponent(sessionId)}/prompt`, {
+				method: "POST",
+				body: JSON.stringify({ prompt }),
+			}),
+		stopSession: (sessionId) =>
+			request<ControlActionResult>(`/sessions/${encodeURIComponent(sessionId)}/stop`, {
+				method: "POST",
+			}),
+		retryLaunch: (sessionId) =>
+			request<RetryLaunchResult>(`/sessions/${encodeURIComponent(sessionId)}/retry`, {
+				method: "POST",
+			}),
+		updateSessionNotes: (sessionId, notes) =>
+			request<{ ok: true }>(`/sessions/${encodeURIComponent(sessionId)}/notes`, {
+				method: "PUT",
+				body: JSON.stringify({ notes }),
+			}),
+		renameSession: (sessionId, name, source) =>
+			request<{ ok: true }>(`/sessions/${encodeURIComponent(sessionId)}/rename`, {
+				method: "PUT",
+				body: JSON.stringify({ name, source }),
+			}),
+		pinSession: (sessionId, pinned) =>
+			request<{ ok: true }>(`/sessions/${encodeURIComponent(sessionId)}/pin`, {
+				method: "PUT",
+				body: JSON.stringify({ pinned }),
+			}),
+		archiveSession: (sessionId, archived) =>
+			request<{ ok: true }>(`/sessions/${encodeURIComponent(sessionId)}/archive`, {
+				method: "PUT",
+				body: JSON.stringify({ archived }),
+			}),
+		createTemplate: (body) =>
+			request<CreateTemplateResult>("/templates", { method: "POST", body: JSON.stringify(body) }),
+		updateTemplate: (templateId, body) =>
+			request<CreateTemplateResult>(`/templates/${encodeURIComponent(templateId)}`, {
+				method: "PUT",
+				body: JSON.stringify(body),
+			}),
+		deleteTemplate: (templateId) =>
+			request<{ ok: true }>(`/templates/${encodeURIComponent(templateId)}`, { method: "DELETE" }),
+		decideHitl: (hitlId, action, customPrompt) =>
+			request<{ hitl: HitlRequestRecord | null }>(
+				`/ai/inbox/hitl/${encodeURIComponent(hitlId)}/decide`,
+				{
+					method: "POST",
+					body: JSON.stringify({ action, customPrompt: customPrompt ?? undefined }),
+				},
+			),
+		decideActionRequest: (actionRequestId, decision) =>
+			request<{ actionRequest: ActionRequest | null }>(
+				`/ai/action-requests/${encodeURIComponent(actionRequestId)}/decide`,
+				{ method: "POST", body: JSON.stringify({ decision }) },
+			),
+		listHosts: () =>
+			request<{ supervisors: SupervisorRecord[]; total: number }>("/admin/supervisors"),
+		createApiKey: (name, scopes) =>
+			request<CreateApiKeyResult>("/api-keys", {
+				method: "POST",
+				body: JSON.stringify({ name, scopes }),
+			}),
+	};
+}

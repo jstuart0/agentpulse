@@ -334,6 +334,15 @@ export interface Session {
 	projectId: string | null;
 	isArchived: boolean;
 	managedSession?: ManagedSession | null;
+	/**
+	 * Cheap presence flag: true when a managed_sessions row exists for this
+	 * session. Populated by `getSessions()` (list) via one batched
+	 * membership query — unlike `managedSession`, which only `getSession()`
+	 * (detail) populates with the full joined row. Prefer this field over
+	 * `Boolean(managedSession)` in list contexts; `managedSession` is never
+	 * present on list rows.
+	 */
+	managed?: boolean;
 }
 
 export interface ManagedSession {
@@ -410,6 +419,35 @@ export interface DashboardStats {
 	totalSessionsToday: number;
 	totalToolUsesToday: number;
 	byAgentType: Record<AgentType, number>;
+}
+
+/**
+ * GET /auth/me response shape (auth.ts:203-241). Canonical definition —
+ * previously duplicated inline in src/web/lib/api.ts and (pre-extraction)
+ * src/mcp/client.ts (AGEN-12 Phase 2 mid-build hardening, dexter Low:
+ * consolidated to prevent a third copy). The standalone agentpulse-mcp
+ * package (packages/agentpulse-mcp/) now vendors its own client-side copy
+ * of this shape in its types.ts, by design (D3 of
+ * thoughts/shared/plans/2026-07-23-deliver-agentpulse-mcp-package.md) — a
+ * published npm package can't import this file directly. `source:
+ * "authentik"` is a legacy alias retained for one
+ * release (see AuthUser docstring, src/server/auth/middleware.ts) — new
+ * responses emit "forwardauth". `scopes` is api_key-caller-only (AGEN-9/
+ * AGEN-12 Phase 1, additive); forwardauth/local callers omit the field.
+ */
+export interface AuthMeResponse {
+	authenticated: boolean;
+	user: {
+		name: string;
+		source: "forwardauth" | "authentik" | "api_key" | "local";
+		provider?: string | null;
+		id: string | null;
+		role: "user" | "admin" | null;
+		scopes?: string[];
+	} | null;
+	signOutUrl: string | null;
+	disableAuth: boolean;
+	allowSignup: boolean;
 }
 
 // WebSocket message types

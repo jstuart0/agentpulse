@@ -142,7 +142,7 @@ describe("M-2c — admin enroll: live forwardauth headers → 201", () => {
 // ─── M-2d: manage-scoped ap_ API key → 201; ingest-only → 403 ──────────────
 
 describe("M-2d — admin enroll: manage-scoped ap_ API key → 201", () => {
-	test("manage-scoped Bearer key → requireScope(manage) passes → 201 enrollment token", async () => {
+	test("manage-scoped Bearer key → admin-router requireScope(manage) passes (untouched by the Phase 1 requireOperatorScope swap) → 201 enrollment token", async () => {
 		const { key: manageKey } = await createApiKey("app-int-manage-key", ["ingest", "manage"]);
 
 		const res = await app.request("/api/v1/admin/supervisors/enroll", {
@@ -452,5 +452,65 @@ describe("AC7 — SSO ap_session logout: POST /auth/logout → row revoked → /
 		});
 		const body2 = (await me2.json()) as { authenticated: boolean };
 		expect(body2.authenticated).toBe(false);
+	});
+});
+
+// ─── AGEN-12 Phase 1: GET /auth/me exposes scopes for api_key callers ───────
+
+describe("AGEN-12 Phase 1 — GET /auth/me: scopes field (rows 35-39)", () => {
+	test("row 35: observeKey → user.scopes equals ['observe']", async () => {
+		const { key } = await createApiKey("app-int-me-observe", ["observe"]);
+		const res = await app.request("/api/v1/auth/me", {
+			headers: new Headers({ Authorization: `Bearer ${key}` }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { user: { source: string; scopes?: string[] } };
+		expect(body.user.source).toBe("api_key");
+		expect(body.user.scopes).toEqual(["observe"]);
+	});
+
+	test("row 36: manageKey → user.scopes equals ['manage']", async () => {
+		const { key } = await createApiKey("app-int-me-manage", ["manage"]);
+		const res = await app.request("/api/v1/auth/me", {
+			headers: new Headers({ Authorization: `Bearer ${key}` }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { user: { scopes?: string[] } };
+		expect(body.user.scopes).toEqual(["manage"]);
+	});
+
+	test("row 37: forwardauthSession → user.scopes is undefined (never leaked from any DB row)", async () => {
+		const res = await app.request("/api/v1/auth/me", { headers: forwardauthHeaders() });
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { user: { source: string; scopes?: string[] } };
+		expect(body.user.source).toBe("forwardauth");
+		expect(body.user.scopes).toBeUndefined();
+	});
+
+	test("row 38: DISABLE_AUTH=true, no auth header at all → authenticated:true, user.source:'api_key', user.scopes equals ['*'] (NOT authenticated:false)", async () => {
+		(config as Record<string, unknown>).disableAuth = true;
+		try {
+			const res = await app.request("/api/v1/auth/me");
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as {
+				authenticated: boolean;
+				user: { source: string; scopes?: string[] };
+			};
+			expect(body.authenticated).toBe(true);
+			expect(body.user.source).toBe("api_key");
+			expect(body.user.scopes).toEqual(["*"]);
+		} finally {
+			(config as Record<string, unknown>).disableAuth = false;
+		}
+	});
+
+	test("row 39: ingestKey → user.scopes equals ['ingest'] (verbatim passthrough, not observe/manage-only)", async () => {
+		const { key } = await createApiKey("app-int-me-ingest", ["ingest"]);
+		const res = await app.request("/api/v1/auth/me", {
+			headers: new Headers({ Authorization: `Bearer ${key}` }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { user: { scopes?: string[] } };
+		expect(body.user.scopes).toEqual(["ingest"]);
 	});
 });

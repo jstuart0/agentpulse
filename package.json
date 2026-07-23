@@ -3,6 +3,7 @@
 	"version": "0.5.0",
 	"description": "Command center for AI coding agents across all your machines",
 	"type": "module",
+	"workspaces": ["packages/*"],
 	"bin": {
 		"agentpulse": "./bin/cli.ts"
 	},
@@ -14,6 +15,7 @@
 		"prototype:codex-managed": "bun scripts/codex-managed-prototype.ts",
 		"build": "vite build && bun run build:server",
 		"build:server": "bun build src/server/index.ts --outdir dist/server --target bun",
+		"build:mcp": "bun run --cwd packages/agentpulse-mcp build",
 		"supervisor": "bun src/supervisor/index.ts",
 		"start": "NODE_ENV=production bun dist/server/index.js",
 		"db:generate": "scripts/db-generate.sh",
@@ -27,7 +29,7 @@
 		"db:studio:postgres": "drizzle-kit studio --config drizzle.config.postgres.ts",
 		"check": "biome check .",
 		"check:fix": "biome check --write .",
-		"typecheck": "tsc --noEmit",
+		"typecheck": "tsc --noEmit && tsc -p packages/agentpulse-mcp/tsconfig.json --noEmit",
 		"test": "bun test",
 		"test:watch": "bun test --watch",
 		"check:no-raw-fetch": "bash scripts/check-no-raw-fetch.sh",
@@ -37,7 +39,11 @@
 		"check:no-legacy-schema-import": "bun scripts/check-no-legacy-schema-import.ts",
 		"check:no-authentik-literals": "bun scripts/check-no-authentik-literals.ts",
 		"check:hook-event-parity": "bun scripts/check-hook-event-parity.ts",
-		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity"
+		"check:no-console-log-mcp": "bun scripts/check-no-console-log-mcp.ts",
+		"check:mcp-no-raw-register-tool": "bun scripts/check-mcp-no-raw-register-tool.ts",
+		"check:mcp-no-cross-boundary-import": "bun scripts/check-mcp-no-cross-boundary-import.ts",
+		"check:mcp-tarball": "bun scripts/check-mcp-tarball.ts",
+		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity && bun run check:no-console-log-mcp && bun run check:mcp-no-raw-register-tool && bun run check:mcp-no-cross-boundary-import"
 	},
 	"dependencies": {
 		"@codemirror/lang-markdown": "^6.3.1",
@@ -61,12 +67,14 @@
 		"remark-gfm": "^4.0.1",
 		"sonner": "^2.0.7",
 		"tailwind-merge": "^3.0.0",
+		"zod": "^3.25.76",
 		"zustand": "^5.0.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.0",
 		"@types/better-sqlite3": "^7.6.12",
 		"@types/bun": "^1.2.0",
+		"@types/node": "^22.0.0",
 		"@types/react": "^19.1.0",
 		"@types/react-dom": "^19.1.0",
 		"@vitejs/plugin-react": "^4.4.0",

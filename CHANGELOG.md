@@ -5,6 +5,27 @@ All notable changes to AgentPulse are documented here. The format is based on
 project is still pre-1.0 — breaking changes land under the regular `Changed`
 section with a `⚠ breaking` prefix so they're easy to spot.
 
+## [Unreleased]
+
+### Added
+
+- **MCP server (AGEN-12)** — `agentpulse mcp serve` exposes AgentPulse over the
+  [Model Context Protocol](https://modelcontextprotocol.io) for external AI
+  coding agents (Claude Code, Codex CLI, or any MCP-compliant client): 11
+  observability read tools (sessions, search, timelines, AI digest/status/
+  intelligence) plus orchestration tools (launch agents, prompt/stop/retry
+  live sessions, template CRUD, HITL/inbox decisions), gated by a new
+  `observe`/`manage` API key scope model. `observe` is provably secret-free
+  at the REST boundary — reads that carry env vars, launch specs, claim
+  tokens, or operator-authored project metadata are excluded from that tier
+  and require `manage`. `agentpulse mcp install` mints a scoped key (or
+  reuses one, with a scope preflight) and prints ready-to-paste Claude Code
+  and Codex CLI configuration; the default is observe-only, with
+  `--orchestrate` required for a manage-capable key plus a printed warning
+  about what that grants. See [docs/MCP.md](docs/MCP.md) for the full tool
+  catalog and a security section covering host-side confirmation limits
+  (Codex CLI does not honor Claude Code's `_meta` confirmation hint).
+
 ## [0.5.0] — 2026-07-17
 
 Client-currency release: brings AgentPulse fully current with Claude Code

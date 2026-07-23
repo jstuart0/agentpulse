@@ -1,0 +1,46 @@
+{
+	"name": "agentpulse-mcp",
+	"version": "0.1.0",
+	"description": "Standalone MCP server for AgentPulse — monitor and orchestrate AI coding agent sessions from any MCP-compatible client.",
+	"type": "module",
+	"license": "MIT",
+	"author": "jstuart0",
+	"homepage": "https://github.com/jstuart0/agentpulse/tree/main/packages/agentpulse-mcp#readme",
+	"bugs": {
+		"url": "https://github.com/jstuart0/agentpulse/issues"
+	},
+	"bin": {
+		"agentpulse-mcp": "./dist/cli.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": ["dist"],
+	"engines": {
+		"node": ">=20"
+	},
+	"scripts": {
+		"build": "rm -rf dist && tsc -p tsconfig.build.json"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "1.29.0",
+		"zod": "3.25.76"
+	},
+	"devDependencies": {
+		"@types/bun": "^1.2.0",
+		"@types/node": "^22.0.0",
+		"typescript": "^5.8.0"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/jstuart0/agentpulse.git",
+		"directory": "packages/agentpulse-mcp"
+	},
+	"keywords": ["mcp", "model-context-protocol", "agentpulse", "claude-code", "codex", "ai", "agent"]
+}
