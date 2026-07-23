@@ -176,21 +176,22 @@ function handleRequest(
 	// Liveness: the listener is bound and dispatching requests. Deliberately
 	// dependency-free (no outbound call to AgentPulse, no reference to
 	// `state`) -- a liveness probe that depends on an external service turns
-	// a transient AgentPulse blip into a pod restart loop.
+	// a transient AgentPulse blip into a pod restart loop. Contentless in
+	// every state (codex r2 Low) -- the status code alone is the signal;
+	// no diagnostic text is ever worth exposing on an unauthenticated probe.
 	if (url.pathname === "/livez") {
-		res.writeHead(200, { "Content-Type": "text/plain" }).end("ok");
+		res.writeHead(200).end();
 		return;
 	}
 
 	// Readiness: 200 only once the startup discoverScopes() attempt (or a
 	// later retry) has succeeded; 503 for as long as it keeps failing. See
 	// the module header comment for why this, and not fail-fast, was chosen.
+	// Contentless in every state (codex r2 Low) -- no "not ready"/"ready"
+	// body, no discoverScopes() detail, no internal state; the status code
+	// is the entire signal.
 	if (url.pathname === "/readyz") {
-		if (state.ready) {
-			res.writeHead(200, { "Content-Type": "text/plain" }).end("ready");
-		} else {
-			res.writeHead(503, { "Content-Type": "text/plain" }).end("not ready");
-		}
+		res.writeHead(state.ready ? 200 : 503).end();
 		return;
 	}
 
