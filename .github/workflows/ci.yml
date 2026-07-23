@@ -71,6 +71,12 @@ jobs:
       - name: Build server
         run: bun run build:server
 
+      - name: Build agentpulse-mcp package
+        run: bun run build:mcp
+
+      - name: agentpulse-mcp tarball audit
+        run: bun run check:mcp-tarball
+
   # Postgres job: push to main/dev only (Decision 19).
   # Reason: PRs are validated against SQLite; Postgres correctness is gated
   # at merge. This avoids starting a Postgres service container for every

@@ -15,6 +15,7 @@
 		"prototype:codex-managed": "bun scripts/codex-managed-prototype.ts",
 		"build": "vite build && bun run build:server",
 		"build:server": "bun build src/server/index.ts --outdir dist/server --target bun",
+		"build:mcp": "bun run --cwd packages/agentpulse-mcp build",
 		"supervisor": "bun src/supervisor/index.ts",
 		"start": "NODE_ENV=production bun dist/server/index.js",
 		"db:generate": "scripts/db-generate.sh",
@@ -41,6 +42,7 @@
 		"check:no-console-log-mcp": "bun scripts/check-no-console-log-mcp.ts",
 		"check:mcp-no-raw-register-tool": "bun scripts/check-mcp-no-raw-register-tool.ts",
 		"check:mcp-no-cross-boundary-import": "bun scripts/check-mcp-no-cross-boundary-import.ts",
+		"check:mcp-tarball": "bun scripts/check-mcp-tarball.ts",
 		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity && bun run check:no-console-log-mcp && bun run check:mcp-no-raw-register-tool && bun run check:mcp-no-cross-boundary-import"
 	},
 	"dependencies": {
@@ -72,6 +74,7 @@
 		"@biomejs/biome": "^1.9.0",
 		"@types/better-sqlite3": "^7.6.12",
 		"@types/bun": "^1.2.0",
+		"@types/node": "^22.0.0",
 		"@types/react": "^19.1.0",
 		"@types/react-dom": "^19.1.0",
 		"@vitejs/plugin-react": "^4.4.0",
