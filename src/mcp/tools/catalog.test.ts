@@ -7,9 +7,9 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { LaunchRequest, SessionTemplate } from "../../shared/types.js";
 import type { ToolContext } from "../server.js";
 import { fakeClient } from "../test-support.js";
+import type { LaunchRequest, SessionTemplate } from "../types.js";
 import { registerCatalogTools } from "./catalog.js";
 
 /** Minimal fixtures — LaunchRequest/SessionTemplate carry ~15-30 fields irrelevant to these pass-through happy-path tests; cast rather than enumerate every one. */

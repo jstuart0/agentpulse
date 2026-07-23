@@ -40,7 +40,8 @@
 		"check:hook-event-parity": "bun scripts/check-hook-event-parity.ts",
 		"check:no-console-log-mcp": "bun scripts/check-no-console-log-mcp.ts",
 		"check:mcp-no-raw-register-tool": "bun scripts/check-mcp-no-raw-register-tool.ts",
-		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity && bun run check:no-console-log-mcp && bun run check:mcp-no-raw-register-tool"
+		"check:mcp-no-cross-boundary-import": "bun scripts/check-mcp-no-cross-boundary-import.ts",
+		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity && bun run check:no-console-log-mcp && bun run check:mcp-no-raw-register-tool && bun run check:mcp-no-cross-boundary-import"
 	},
 	"dependencies": {
 		"@codemirror/lang-markdown": "^6.3.1",

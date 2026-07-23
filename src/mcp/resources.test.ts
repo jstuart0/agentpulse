@@ -7,10 +7,10 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Session } from "../shared/types.js";
 import { ApiError } from "./client.js";
 import { registerResources } from "./resources.js";
 import { fakeClient } from "./test-support.js";
+import type { Session } from "./types.js";
 
 function baseSession(overrides: Partial<Session> = {}): Session {
 	return {

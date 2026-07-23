@@ -8,10 +8,10 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ControlAction, LaunchRequest } from "../../shared/types.js";
 import { ApiError } from "../client.js";
 import type { ToolContext } from "../server.js";
 import { fakeClient } from "../test-support.js";
+import type { ControlAction, LaunchRequest } from "../types.js";
 import { registerSessionActionTools } from "./session-actions.js";
 
 function newContext(client: ReturnType<typeof fakeClient>): ToolContext {

@@ -1,3 +1,4 @@
+import type { AgentPulseClient, CreateApiKeyResult } from "./client.js";
 /**
  * `agentpulse mcp install` (AGEN-12 Phase 5, plan D4).
  *
@@ -21,8 +22,7 @@
  * module therefore never prints; bin/cli.ts's `mcp install` handler calls
  * `runInstall()` and prints the returned blocks itself.
  */
-import { SCOPE_MANAGE, SCOPE_OBSERVE } from "../server/auth/api-key.js";
-import type { AgentPulseClient, CreateApiKeyResult } from "./client.js";
+import { SCOPE_MANAGE, SCOPE_OBSERVE } from "./scope-constants.js";
 import { ScopeDiscoveryError, discoverScopes } from "./scopes.js";
 
 // ─── Emitters ───────────────────────────────────────────────────────

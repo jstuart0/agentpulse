@@ -6,7 +6,6 @@
  * called out in D5/M11/M8.
  */
 import { describe, expect, test } from "bun:test";
-import type { DashboardStats } from "../shared/types.js";
 import type { AuthMeResponse } from "./client.js";
 import {
 	ApiError,
@@ -15,6 +14,7 @@ import {
 	canonicalizeBaseUrl,
 	createHttpClient,
 } from "./client.js";
+import type { DashboardStats } from "./types.js";
 
 function fakeResponse(status: number, body: unknown, headers: Record<string, string> = {}) {
 	const text = typeof body === "string" ? body : JSON.stringify(body);

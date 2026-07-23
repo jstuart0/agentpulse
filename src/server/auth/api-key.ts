@@ -3,6 +3,13 @@ import { getDb } from "../db/client.js";
 import { apiKeys } from "../db/schema/index.js";
 
 // ── Scope constants ───────────────────────────────────────────────────────────
+//
+// SCOPE_MANAGE/SCOPE_OBSERVE/SCOPE_ALL are duplicated by design in
+// packages/agentpulse-mcp/src/scope-constants.ts (Pattern B, D3 of
+// thoughts/shared/plans/2026-07-23-deliver-agentpulse-mcp-package.md) — the
+// published MCP package can't import server-internal modules. Renaming any
+// of these three literals here is a cross-package breaking change; keep the
+// two sites in sync.
 
 /** Authorizes posting hook events from Claude Code / Codex. */
 export const SCOPE_INGEST = "ingest";

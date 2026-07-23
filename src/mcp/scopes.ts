@@ -12,8 +12,8 @@
  * clearly; a silently-empty tool set would look like a broken server.
  */
 import packageJson from "../../package.json" with { type: "json" };
-import { SCOPE_ALL, SCOPE_MANAGE, SCOPE_OBSERVE } from "../server/auth/api-key.js";
 import type { AgentPulseClient } from "./client.js";
+import { SCOPE_ALL, SCOPE_MANAGE, SCOPE_OBSERVE } from "./scope-constants.js";
 
 export class ScopeDiscoveryError extends Error {
 	constructor(message: string) {

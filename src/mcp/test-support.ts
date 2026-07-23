@@ -1,3 +1,4 @@
+import type { AgentPulseClient, AuthMeResponse } from "./client.js";
 /**
  * Shared fake-client test fixture (AGEN-12, D3 seams 1/3).
  *
@@ -12,8 +13,7 @@
  * grew AgentPulseClient from 2 methods to 17 — every test file that builds
  * a fake client needs the full interface satisfied.
  */
-import type { DashboardStats } from "../shared/types.js";
-import type { AgentPulseClient, AuthMeResponse } from "./client.js";
+import type { DashboardStats } from "./types.js";
 
 export const FAKE_STATS: DashboardStats = {
 	activeSessions: 3,

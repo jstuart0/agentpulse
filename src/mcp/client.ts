@@ -1,68 +1,49 @@
-import type { ActionRequest } from "../server/services/ai/action-requests-service.js";
-// Type-only imports from server-internal modules (erased at compile time,
-// no runtime coupling): these are each endpoint's one canonical response
-// shape. Importing them directly avoids inventing a second, parallel copy
-// of a type that already exists (D3/M3) — the alternative (hand-declaring
-// SessionIntelligence/Digest/SearchResult fresh in this file) would
-// duplicate shapes already exported by their owning service modules.
-import type { SessionIntelligence } from "../server/services/ai/classifier.js";
-import type { Digest } from "../server/services/ai/digest-service.js";
-import type { HitlRequestRecord } from "../server/services/ai/hitl-service.js";
-import type { RecommendedLaunch } from "../server/services/ai/launch-recommender.js";
-import type { SearchResult } from "../server/services/search/types.js";
 /**
  * AgentPulse REST HTTP client for the MCP server (AGEN-12 Phase 2, D3 seam 1).
  *
  * Modeled on scripts/relay.ts's Bearer-header + AbortSignal.timeout pattern
- * (relay.ts:89-93, 103-108, 19). Response shapes are imported from
- * src/shared/types.ts wherever an existing type covers them (D3/M3),
- * including AuthMeResponse (promoted to the shared barrel in the Phase 2
- * mid-build hardening pass — it was previously duplicated inline here and
- * in src/web/lib/api.ts).
- *
- * Promote-to-shared bar (dexter Low, Phase 3 mid-build): a type is
- * promoted to src/shared/types.ts once >=2 non-MCP consumers need it (the
- * AuthMeResponse/DashboardStats precedent — both are also consumed by
- * src/web/lib/api.ts). A type with exactly one canonical owner outside
- * src/mcp/ (SessionIntelligence in classifier.ts, Digest in
- * digest-service.ts, SearchResult in search/types.ts — see the type-only
- * imports below) is type-imported directly from that owner instead;
- * promoting it would just relocate a single-consumer type, not de-duplicate
- * one. A type with NO exported owner anywhere (AiStatusResponse,
- * AiDiagnostics, ClaudeMdResponse — the routes that produce them inline
- * their response object literal) is hand-declared once, here.
+ * (relay.ts:89-93, 103-108, 19). Response shapes are imported from this
+ * package's own vendored ./types.js (D3 of the 2026-07-23 package
+ * extraction plan — a client-side view of AgentPulse's wire contract,
+ * documented in that file's header), including AuthMeResponse.
  *
  * No-retry contract (D3/M8): this client never auto-retries. A mutating
  * call that times out server-side must not be silently re-sent — the caller
  * (errors.ts's mapper) is told to verify state before retrying.
  */
 import type {
+	ActionRequest,
 	ActionRequestDecision,
 	AgentType,
+	AuthMeResponse,
 	ControlAction,
+	DashboardStats,
+	Digest,
 	HitlReplyKind,
+	HitlRequestRecord,
 	Inbox,
 	LaunchMode,
 	LaunchRequest,
 	LaunchRequestInput,
 	LaunchRoutingPolicy,
 	Project,
+	RecommendedLaunch,
 	ResolvedProjectData,
+	SearchResult,
 	Session,
 	SessionEvent,
+	SessionIntelligence,
 	SessionStatus,
 	SessionTemplate,
 	SessionTemplateInput,
 	SupervisorRecord,
 	TemplatePreview,
-} from "../shared/types.js";
-import type { AuthMeResponse, DashboardStats } from "../shared/types.js";
+} from "./types.js";
 
 // Re-exported so existing consumers (client.test.ts, scopes.test.ts) keep
 // importing it from "./client.js" — the canonical definition now lives in
-// src/shared/types.ts (dexter Low, mid-build hardening: it was previously
-// duplicated here and in src/web/lib/api.ts).
-export type { AuthMeResponse } from "../shared/types.js";
+// ./types.js (this package's vendored wire-type closure).
+export type { AuthMeResponse } from "./types.js";
 
 /**
  * Hand-declared MCP-only shapes (Phase 3): no canonical exported type exists

@@ -7,10 +7,10 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Inbox } from "../../shared/types.js";
 import { ApiError } from "../client.js";
 import type { ToolContext } from "../server.js";
 import { fakeClient } from "../test-support.js";
+import type { Inbox } from "../types.js";
 import { registerAiTools } from "./ai.js";
 
 /** Partial byKind maps are common in these fixtures — cast rather than enumerate all 17 InboxWorkItem kinds per test. */

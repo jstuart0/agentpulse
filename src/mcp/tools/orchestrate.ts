@@ -20,7 +20,6 @@
  * snake_cases like the rest of the tool surface.
  */
 import { z } from "zod";
-import type { LaunchSpec, SessionTemplateInput } from "../../shared/types.js";
 import {
 	AGENT_TYPE_ENUM,
 	APPROVAL_POLICY_ENUM,
@@ -30,6 +29,7 @@ import {
 } from "../enums.js";
 import { registerMutatingTool, registerReadTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
+import type { LaunchSpec, SessionTemplateInput } from "../types.js";
 
 const SESSION_TEMPLATE_INPUT_SHAPE = {
 	name: z.string(),

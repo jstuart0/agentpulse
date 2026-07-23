@@ -9,9 +9,9 @@
  * this exact shape — do NOT write it as {authenticated:false, ...}.
  */
 import { describe, expect, test } from "bun:test";
-import type { AuthMeResponse } from "../shared/types.js";
 import { ScopeDiscoveryError, discoverScopes } from "./scopes.js";
 import { fakeClient as baseFakeClient } from "./test-support.js";
+import type { AuthMeResponse } from "./types.js";
 
 /** Fills the AuthMeResponse fields these tests don't care about with defaults, so each test only spells out what it's asserting on. */
 function authMe(overrides: {
