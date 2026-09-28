@@ -473,6 +473,10 @@ describe("detectAgentType — header-only detection (F8, Decision 7)", () => {
 	test("missing header defaults to claude_code even with an unrecognized header value", () => {
 		expect(detectAgentType("something_else", hookPayload({}))).toBe("claude_code");
 	});
+
+	test("empty string header defaults to claude_code (D5 Pattern A' set-membership rewrite)", () => {
+		expect(detectAgentType("", hookPayload({}))).toBe("claude_code");
+	});
 });
 
 describe("applyPermissionWaitTransition — prior status null/unset at the 0→1 transition", () => {

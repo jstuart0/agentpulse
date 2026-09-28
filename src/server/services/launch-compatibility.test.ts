@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type {
+	LaunchableAgentType,
 	PrelaunchAction,
 	SessionTemplateInput,
 	SupervisorRecord,
 } from "../../shared/types.js";
-import { pickFirstCapableSupervisor, supervisorSupportsPrelaunch } from "./launch-compatibility.js";
+import {
+	buildLaunchSpec,
+	pickFirstCapableSupervisor,
+	supervisorSupportsPrelaunch,
+} from "./launch-compatibility.js";
 
 function makeSupervisor(overrides: Partial<SupervisorRecord> = {}): SupervisorRecord {
 	const features = overrides.capabilities?.features ?? [
@@ -73,6 +78,30 @@ const cloneAction: PrelaunchAction = {
 	intoPath: "/tmp/work/bar",
 	timeoutSeconds: 300,
 };
+
+describe("providerCommandForSpec (via buildLaunchSpec) — D5 lookup table", () => {
+	const cases: Array<{
+		agentType: LaunchableAgentType;
+		command: string;
+		instructionsFile: string;
+	}> = [
+		{ agentType: "claude_code", command: "claude", instructionsFile: "CLAUDE.md" },
+		{ agentType: "codex_cli", command: "codex", instructionsFile: "AGENTS.md" },
+	];
+
+	for (const c of cases) {
+		test(`${c.agentType} -> ${c.command}, ${c.instructionsFile}`, () => {
+			const spec = buildLaunchSpec(
+				makeTemplate({ agentType: c.agentType }),
+				"interactive_terminal",
+				makeSupervisor(),
+			);
+			expect(spec.providerConfig.command).toBe(c.command);
+			expect(spec.providerConfig.instructionsFile).toBe(c.instructionsFile);
+			expect(spec.agentType).toBe(c.agentType);
+		});
+	}
+});
 
 describe("supervisorSupportsPrelaunch", () => {
 	test("returns ok when actions list is empty/undefined", () => {

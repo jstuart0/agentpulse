@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { AGENT_TYPES, SEMANTIC_STATUSES, SESSION_STATUSES } from "./constants.js";
+import {
+	AGENT_METADATA,
+	AGENT_TYPES,
+	LAUNCHABLE_AGENT_TYPES,
+	SEMANTIC_STATUSES,
+	SESSION_STATUSES,
+	isLaunchable,
+} from "./constants.js";
 import {
 	ACTION_REQUEST_DECISIONS,
 	APPROVAL_POLICIES,
@@ -227,5 +234,24 @@ describe("shared kind allowlists", () => {
 		expect(AGENT_TYPES.includes("bogus" as AgentType)).toBe(false);
 		expect(SESSION_STATUSES.includes("bogus" as SessionStatus)).toBe(false);
 		expect(SEMANTIC_STATUSES.includes("bogus" as SemanticStatus)).toBe(false);
+	});
+
+	test("LAUNCHABLE_AGENT_TYPES is a subset of AGENT_TYPES (D5)", () => {
+		for (const t of LAUNCHABLE_AGENT_TYPES) {
+			expect((AGENT_TYPES as readonly string[]).includes(t)).toBe(true);
+			expect(isLaunchable(t)).toBe(true);
+		}
+		expect(isLaunchable("bogus")).toBe(false);
+	});
+
+	test("every AGENT_TYPES member has a well-formed AGENT_METADATA entry (D5)", () => {
+		for (const t of AGENT_TYPES) {
+			const meta = AGENT_METADATA[t];
+			expect(meta).toBeDefined();
+			expect(meta.label.length).toBeGreaterThan(0);
+			expect(meta.shortLabel.length).toBeGreaterThan(0);
+			expect(["CLAUDE.md", "AGENTS.md"]).toContain(meta.instructionsFile);
+			expect(typeof meta.hasNameSource).toBe("boolean");
+		}
 	});
 });

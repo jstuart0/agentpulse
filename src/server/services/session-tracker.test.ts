@@ -4,9 +4,10 @@ import { describeSqliteOnly } from "../test-utils/backend.js";
 
 const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
 const { events, managedSessions, sessions, supervisors } = await import("../db/schema/index.js");
-const { applyNativeName, getSessions, renameSession, updateStaleSessions } = await import(
+const { applyNativeName, getSessions, getStats, renameSession, updateStaleSessions } = await import(
 	"./session-tracker.js"
 );
+const { AGENT_TYPES } = await import("../../shared/constants.js");
 
 beforeAll(() => {
 	return initializeDatabase();
@@ -477,5 +478,23 @@ describe("applyNativeName", () => {
 		expect(result).toEqual({ found: true, applied: true });
 		const row = await getSession("sync-then-pull");
 		expect(row?.displayName).toBe("claude-native-name");
+	});
+});
+
+describe("getStats — byAgentType zero-fill (D18)", () => {
+	test("every AGENT_TYPES member has an explicit 0 on an empty DB, not merely absent", async () => {
+		const stats = await getStats();
+		for (const t of AGENT_TYPES) {
+			expect(t in stats.byAgentType).toBe(true);
+			expect(stats.byAgentType[t]).toBe(0);
+		}
+	});
+
+	test("a real count overwrites the zero-fill for that agent type only", async () => {
+		await mkSession("s1", { agentType: "claude_code", status: "active" });
+		await mkSession("s2", { agentType: "claude_code", status: "active" });
+		const stats = await getStats();
+		expect(stats.byAgentType.claude_code).toBe(2);
+		expect(stats.byAgentType.codex_cli).toBe(0);
 	});
 });

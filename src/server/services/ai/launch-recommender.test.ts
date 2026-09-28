@@ -102,6 +102,24 @@ describe("launch-recommender", () => {
 		expect(rec.alternatives.some((a) => a.model === "sonnet")).toBe(true);
 	});
 
+	test("never recommends an observe-only agentType (D5 Pattern A')", async () => {
+		await mkSession("a", "/p", "completed", "copilot_cli");
+		await mkSession("b", "/p", "completed", "copilot_cli");
+		await mkSupervisor("sup", ["claude_code"]);
+
+		const rec = await recommendLaunch({
+			template: {
+				name: "t",
+				agentType: "claude_code",
+				cwd: "/p",
+				baseInstructions: "",
+				taskPrompt: "",
+			},
+		});
+		expect(rec.alternatives.every((a) => a.agentType !== "copilot_cli")).toBe(true);
+		expect(rec.rationale.every((r) => !r.includes("copilot_cli"))).toBe(true);
+	});
+
 	test("prefers explicit preferredSupervisorId when connected", async () => {
 		await mkSupervisor("a", ["claude_code"]);
 		await mkSupervisor("b", ["claude_code"]);
