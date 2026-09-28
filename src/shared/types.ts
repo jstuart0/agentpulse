@@ -1,8 +1,19 @@
-import type { AGENT_TYPES, SEMANTIC_STATUSES, SESSION_STATUSES } from "./constants.js";
+import type {
+	AGENT_TYPES,
+	LAUNCHABLE_AGENT_TYPES,
+	SEMANTIC_STATUSES,
+	SESSION_STATUSES,
+} from "./constants.js";
 
 // Agent types supported. Canonical const list lives in constants.ts;
 // derive the type here for easy import discoverability.
 export type AgentType = (typeof AGENT_TYPES)[number];
+
+// Agent types AgentPulse can launch a process for — a subset of AgentType
+// (D5). Use isLaunchable() to narrow a session/request-derived AgentType
+// (or raw string) down to this type; never an unchecked type assertion on
+// such a value (enforced by the plan's drift-guard grep in Verification).
+export type LaunchableAgentType = (typeof LAUNCHABLE_AGENT_TYPES)[number];
 
 export const APPROVAL_POLICIES = [
 	"default",
@@ -282,7 +293,7 @@ export interface Project {
 	name: string;
 	cwd: string;
 	githubRepoUrl: string | null;
-	defaultAgentType: AgentType | null;
+	defaultAgentType: LaunchableAgentType | null;
 	defaultModel: string | null;
 	defaultLaunchMode: LaunchMode | null;
 	notes: string | null;
@@ -297,7 +308,7 @@ export interface ProjectInput {
 	name: string;
 	cwd: string;
 	githubRepoUrl?: string | null;
-	defaultAgentType?: AgentType | null;
+	defaultAgentType?: LaunchableAgentType | null;
 	defaultModel?: string | null;
 	defaultLaunchMode?: LaunchMode | null;
 	notes?: string | null;
@@ -481,7 +492,7 @@ export interface ResolvedProjectData {
 	id: string;
 	name: string;
 	cwd: string;
-	defaultAgentType: AgentType | null;
+	defaultAgentType: LaunchableAgentType | null;
 	defaultModel: string | null;
 	defaultLaunchMode: LaunchMode | null;
 }
@@ -492,7 +503,7 @@ export interface SessionTemplate {
 	overriddenFields: string[];
 	name: string;
 	description: string | null;
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	cwd: string;
 	baseInstructions: string;
 	taskPrompt: string;
@@ -509,7 +520,7 @@ export interface SessionTemplate {
 export interface SessionTemplateInput {
 	name: string;
 	description?: string | null;
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	cwd: string;
 	baseInstructions?: string;
 	taskPrompt?: string;
@@ -547,7 +558,7 @@ export interface LaunchSpec {
 	version: 1;
 	launchCorrelationId: string;
 	managedMode: "unmanaged_preview";
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	launchMode?: LaunchMode;
 	cwd: string;
 	model: string | null;
@@ -610,7 +621,7 @@ export type LaunchRequestStatus =
 
 export interface SupervisorCapabilities {
 	version: 1;
-	agentTypes: AgentType[];
+	agentTypes: LaunchableAgentType[];
 	launchModes: LaunchMode[];
 	os: "macos" | "linux" | "windows" | "unknown";
 	terminalSupport: string[];
@@ -668,7 +679,7 @@ export interface LaunchRequest {
 	id: string;
 	templateId: string | null;
 	launchCorrelationId: string;
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	cwd: string;
 	baseInstructions: string;
 	taskPrompt: string;
@@ -719,7 +730,7 @@ export interface ControlAction {
 
 export interface ManagedSessionStateInput {
 	sessionId: string;
-	agentType?: AgentType;
+	agentType?: LaunchableAgentType;
 	cwd?: string | null;
 	model?: string | null;
 	status?: SessionStatus;

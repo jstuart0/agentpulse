@@ -1,10 +1,6 @@
 import { eq, sql } from "drizzle-orm";
-import type {
-	AgentType,
-	AskThreadOrigin,
-	LaunchMode,
-	SessionTemplateInput,
-} from "../../../shared/types.js";
+import { isLaunchable } from "../../../shared/constants.js";
+import type { AskThreadOrigin, LaunchMode, SessionTemplateInput } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
@@ -18,6 +14,7 @@ import { getCachedProjects } from "../projects/cache.js";
 import { getSearchBackend } from "../search/index.js";
 import { listSupervisors } from "../supervisor-registry.js";
 import { normalizeTemplateInput, validateTemplateInput } from "../template-preview.js";
+import { resumeRefusalCopy } from "./agent-refusal-copy.js";
 import type { ResumeIntent } from "./launch-intent-detector.js";
 import { sendTelegramActionRequest } from "./telegram-helpers.js";
 
@@ -175,9 +172,22 @@ export async function handleResumeIntent(
 		};
 	}
 
-	// Build template from parent session's cwd/agentType/model.
-	const agentType: AgentType =
-		intent.agentType ?? (parentSession.agentType as AgentType | null) ?? "claude_code";
+	// Build template from parent session's cwd/agentType/model. An explicit
+	// intent.agentType (the user asked to resume with a specific agent) always
+	// wins. Otherwise fall back to the parent's own agent type — but only if
+	// it's launchable; an observe-only parent (e.g. copilot_cli) can't be
+	// resumed into a new launch at all (D5 Pattern A').
+	let agentType: SessionTemplateInput["agentType"];
+	if (intent.agentType) {
+		agentType = intent.agentType;
+	} else if (isLaunchable(parentSession.agentType)) {
+		agentType = parentSession.agentType;
+	} else {
+		return {
+			replyText: resumeRefusalCopy(parentSession.agentType),
+			actionRequestId: null,
+		};
+	}
 	const launchMode: LaunchMode = intent.mode ?? "interactive_terminal";
 
 	const rawTemplate: Partial<SessionTemplateInput> = {

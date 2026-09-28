@@ -1,3 +1,4 @@
+import { AGENT_METADATA } from "../../shared/constants.js";
 import type {
 	AgentType,
 	EventCategory,
@@ -85,7 +86,7 @@ const warnedUnknownEvents = new Set<string>();
 function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): string | null {
 	switch (payload.hook_event_name) {
 		case "SessionStart":
-			return `${agentType === "codex_cli" ? "Codex" : "Claude"} session started`;
+			return `${AGENT_METADATA[agentType].shortLabel} session started`;
 		case "SessionEnd":
 			return "Session ended";
 		case "TaskCreated":

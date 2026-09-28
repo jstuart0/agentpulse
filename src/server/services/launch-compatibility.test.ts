@@ -83,7 +83,7 @@ describe("providerCommandForSpec (via buildLaunchSpec) — D5 lookup table", () 
 	const cases: Array<{
 		agentType: LaunchableAgentType;
 		command: string;
-		instructionsFile: string;
+		instructionsFile: "CLAUDE.md" | "AGENTS.md";
 	}> = [
 		{ agentType: "claude_code", command: "claude", instructionsFile: "CLAUDE.md" },
 		{ agentType: "codex_cli", command: "codex", instructionsFile: "AGENTS.md" },

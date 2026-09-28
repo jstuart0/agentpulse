@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { LaunchRequest, Session } from "../../../shared/types.js";
+import { AGENT_METADATA } from "../../../shared/constants.js";
+import type { AgentType, LaunchRequest, Session } from "../../../shared/types.js";
 import { api } from "../../lib/api.js";
 import { MarkdownContent } from "../MarkdownContent.js";
 import { ModeButton, ScrollJumpControls } from "./SharedControls.js";
@@ -106,8 +107,9 @@ export function ClaudeMdPanel({
 	const editRef = useRef<HTMLTextAreaElement>(null);
 	const previewRef = useRef<HTMLDivElement>(null);
 
-	const preferredFile = session.agentType === "codex_cli" ? "AGENTS.md" : "CLAUDE.md";
-	const alternateFile = session.agentType === "codex_cli" ? "CLAUDE.md" : "AGENTS.md";
+	const preferredFile =
+		AGENT_METADATA[session.agentType as AgentType]?.instructionsFile ?? "CLAUDE.md";
+	const alternateFile = preferredFile === "CLAUDE.md" ? "AGENTS.md" : "CLAUDE.md";
 	const currentFile = filePath ? filePath.split("/").pop() || "" : "";
 	const isFallback = currentFile !== "" && currentFile !== preferredFile;
 

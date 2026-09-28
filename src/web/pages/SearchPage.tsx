@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { AGENT_METADATA, AGENT_TYPES } from "../../shared/constants.js";
+import type { AgentType } from "../../shared/types.js";
 import { api } from "../lib/api.js";
 
 /**
@@ -43,7 +45,9 @@ export function SearchPage() {
 		api
 			.search({
 				q,
-				agentType: agentType === "claude_code" || agentType === "codex_cli" ? agentType : undefined,
+				agentType: (AGENT_TYPES as readonly string[]).includes(agentType)
+					? (agentType as AgentType)
+					: undefined,
 				sessionStatus:
 					sessionStatus === "active" ||
 					sessionStatus === "idle" ||
@@ -130,8 +134,7 @@ export function SearchPage() {
 					onChange={(v) => updateFilter("agentType", v)}
 					options={[
 						{ value: "", label: "Any" },
-						{ value: "claude_code", label: "Claude Code" },
-						{ value: "codex_cli", label: "Codex CLI" },
+						...AGENT_TYPES.map((t) => ({ value: t, label: AGENT_METADATA[t].label })),
 					]}
 				/>
 				<FilterSelect

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { ControlAction, Session, SessionEvent } from "../../shared/types.js";
+import { AGENT_METADATA } from "../../shared/constants.js";
+import type { AgentType, ControlAction, Session, SessionEvent } from "../../shared/types.js";
 import { ActivityTimeline } from "../components/session-detail/ActivityTimeline.js";
 import { AiPanel } from "../components/session-detail/AiPanel.js";
 import { ControlHistory } from "../components/session-detail/ControlHistory.js";
@@ -342,7 +343,10 @@ export function SessionDetailPage() {
 				{workspaceTab === "overview" ? (
 					<div className="grid gap-4 p-3 md:p-6 md:grid-cols-2 xl:grid-cols-4">
 						<SummaryField label="Project" value={session.cwd} mono />
-						<SummaryField label="Agent" value={session.agentType} />
+						<SummaryField
+							label="Agent"
+							value={AGENT_METADATA[session.agentType as AgentType]?.label ?? session.agentType}
+						/>
 						<SummaryField label="Started" value={session.startedAt} />
 						<SummaryField label="Status" value={session.status} />
 						<SummaryField label="Model" value={session.model} />

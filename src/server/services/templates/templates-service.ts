@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import type { AgentType, SessionTemplateInput } from "../../../shared/types.js";
+import type { LaunchableAgentType, SessionTemplateInput } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { sessionTemplates } from "../../db/schema/index.js";
 import { ensureProjectForCwd, getProject } from "../projects/projects-service.js";
@@ -40,7 +40,7 @@ export type UpdateTemplateResult =
 	| {
 			ok: true;
 			template: ReturnType<typeof mapTemplate>;
-			agentType: AgentType;
+			agentType: LaunchableAgentType;
 			cwd: string;
 			model: string | null;
 	  }
@@ -122,7 +122,7 @@ export async function updateTemplate(
 	return {
 		ok: true,
 		template: mapTemplate(row),
-		agentType: resolved.agentType as AgentType,
+		agentType: resolved.agentType,
 		cwd: resolved.cwd,
 		model: resolved.model ?? null,
 	};

@@ -1,7 +1,8 @@
+import { isLaunchable } from "../../../shared/constants.js";
 import {
-	type AgentType,
 	type AlertRuleType,
 	type LaunchMode,
+	type LaunchableAgentType,
 	SESSION_MUTATION_KINDS,
 	type SessionMutationKind,
 } from "../../../shared/types.js";
@@ -11,6 +12,7 @@ import { getDefaultProvider, getProvider, getProviderApiKey } from "../ai/provid
 import { addGlobalSpendCents, checkSpendBudget } from "../ai/spend-service.js";
 import type { CachedProject } from "../projects/cache.js";
 import { matchProjectByName, normalizeProjectName } from "../projects/project-name-match.js";
+import { launchRefusalCopy, resumeRefusalCopy } from "./agent-refusal-copy.js";
 
 export interface TaskBrief {
 	summary: string;
@@ -31,12 +33,16 @@ export interface CloneSpec {
 export type LaunchIntent =
 	| { kind: "none" }
 	| { kind: "classifier_failed"; error: string }
+	// A recognized agentType that isn't launchable (D5 Pattern A'). Carries
+	// its own reply so the caller can short-circuit without building a
+	// template or touching the launch pipeline at all.
+	| { kind: "agent_refused"; replyText: string }
 	| {
 			kind: "launch";
 			projectName: string;
 			mode?: LaunchMode;
 			taskHint?: string;
-			agentType?: AgentType;
+			agentType?: LaunchableAgentType;
 			displayName?: string;
 			taskBrief?: TaskBrief;
 			cloneSpec?: CloneSpec;
@@ -46,7 +52,7 @@ export type LaunchIntent =
 			taskHint?: string;
 			taskBrief?: TaskBrief;
 			displayName?: string;
-			agentType?: AgentType;
+			agentType?: LaunchableAgentType;
 			mode?: LaunchMode;
 			cloneSpec?: CloneSpec;
 	  }
@@ -286,16 +292,16 @@ If this is NOT a launch request:
 {"intent":"none"}
 
 If this IS a launch request and the user named a project from the known list:
-{"intent":"launch","projectName":"<exact project name from the known list>","agentType":"claude_code|codex_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
+{"intent":"launch","projectName":"<exact project name from the known list>","agentType":"claude_code|codex_cli|copilot_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
 
 If this IS a launch-flavored request but the user did NOT name a project (e.g. "create a plan about caching strategies"):
-{"intent":"launch_needs_project","agentType":"claude_code|codex_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
+{"intent":"launch_needs_project","agentType":"claude_code|codex_cli|copilot_cli|null","mode":"interactive_terminal|headless|managed_codex|null","taskHint":"<short description of the task, or null>","displayName":"<kebab-case-2-to-4-word slug describing the task, or null>","taskBrief":{"summary":"<one-sentence task description>","outputPath":"<relative path or null>","format":"<format like markdown|json|null>"},"cloneSpec":{"url":"<https URL of the repo to clone, or omit>","branch":"<branch name, or omit>","depth":<positive integer or omit>}}
 
 Rules:
 - Only use project names from the known list (case-insensitive match) for the "launch" shape. If the user mentions a project name with extra whitespace, dashes, underscores, dots, or minor typos, normalize to the closest match from the known list (e.g. "agent pulse" → "agentpulse", "agnetpulse" → "agentpulse"). If you genuinely cannot resolve the user's reference to one known project, leave projectName empty and return "launch_needs_project" instead.
 - If the user mentioned no known project and the message is launch-flavored, return "launch_needs_project" so the caller can ask the user to pick a project.
 - If the message is a plain question or doesn't sound like a launch at all, return "none".
-- agentType: "claude_code" if user says "claude", "codex_cli" if user says "codex", null otherwise.
+- agentType: "claude_code" if user says "claude", "codex_cli" if user says "codex", "copilot_cli" if user says "copilot", null otherwise.
 - mode: "headless" if user says "headless", "interactive_terminal" if user explicitly asks for interactive, null otherwise (default will be applied).
 - taskHint: any task description the user gave after "to ...", "for ...", e.g. "look at the failing tests".
 - displayName: a short kebab-case slug (2-4 words, lowercase, hyphen-separated) describing the task, e.g. "plan-caching" or "fix-failing-tests". Null if you can't derive one.
@@ -317,6 +323,14 @@ export function parseLaunchIntentResponse(
 		return { kind: "none" };
 	}
 
+	// A recognized-but-non-launchable agent type (copilot_cli) is refused
+	// immediately, before any of the rest of this shape is built (D5 Pattern
+	// A'). This is the only value the classifier can emit here that isn't
+	// yet in LAUNCHABLE_AGENT_TYPES — see D5's honest note.
+	if (parsed.agentType === "copilot_cli") {
+		return { kind: "agent_refused", replyText: launchRefusalCopy(parsed.agentType) };
+	}
+
 	const mode =
 		parsed.mode === "headless" ||
 		parsed.mode === "interactive_terminal" ||
@@ -325,8 +339,8 @@ export function parseLaunchIntentResponse(
 			: undefined;
 
 	const agentType =
-		parsed.agentType === "claude_code" || parsed.agentType === "codex_cli"
-			? (parsed.agentType as AgentType)
+		typeof parsed.agentType === "string" && isLaunchable(parsed.agentType)
+			? parsed.agentType
 			: undefined;
 
 	const taskHint =
@@ -442,7 +456,10 @@ export async function detectLaunchIntent(
 	// lambda returns { kind: "none" } for unmatched results, which classifyJson permits.
 	type MatchedLaunchIntent = Extract<
 		LaunchIntent,
-		{ kind: "launch" } | { kind: "launch_needs_project" } | { kind: "add_project" }
+		| { kind: "launch" }
+		| { kind: "launch_needs_project" }
+		| { kind: "add_project" }
+		| { kind: "agent_refused" }
 	>;
 	return classifyJson<MatchedLaunchIntent>({
 		systemPrompt: INTENT_SYSTEM_PROMPT(projectNames),
@@ -653,13 +670,16 @@ export interface ResumeIntent {
 	kind: "resume";
 	sessionHint: string | null;
 	newPrompt: string | null;
-	agentType?: AgentType;
+	agentType?: LaunchableAgentType;
 	mode?: LaunchMode;
 }
 
 export type ResumeDetectResult =
 	| { kind: "none" }
 	| { kind: "classifier_failed"; error: string }
+	// A recognized-but-non-launchable agentType (D5 Pattern A'), refused
+	// before a ResumeIntent is built at all. See agent-refusal-copy.ts.
+	| { kind: "agent_refused"; replyText: string }
 	| ResumeIntent;
 
 const RESUME_VERBS = [
@@ -696,7 +716,7 @@ If YES:
   "intent": "resume",
   "sessionHint": "<session name or description fragment>",
   "newPrompt": "<the task or prompt to start the new session with, or null>",
-  "agentType": "claude_code|codex_cli|null",
+  "agentType": "claude_code|codex_cli|copilot_cli|null",
   "mode": "interactive_terminal|headless|null"
 }
 
@@ -711,7 +731,7 @@ export async function detectResumeIntent(
 	message: string,
 	projectNames: string[],
 ): Promise<ResumeDetectResult> {
-	return classifyJson<ResumeIntent>({
+	return classifyJson<ResumeIntent | { kind: "agent_refused"; replyText: string }>({
 		systemPrompt: RESUME_SYSTEM_PROMPT(projectNames),
 		message,
 		label: "resume intent",
@@ -719,9 +739,15 @@ export async function detectResumeIntent(
 			if (parsed.intent === "none") return { kind: "none" };
 			if (parsed.intent !== "resume") return { kind: "none" };
 
+			// See parseLaunchIntentResponse's identical guard: a recognized but
+			// non-launchable agentType is refused before building the intent.
+			if (parsed.agentType === "copilot_cli") {
+				return { kind: "agent_refused", replyText: resumeRefusalCopy(parsed.agentType) };
+			}
+
 			const agentType =
-				parsed.agentType === "claude_code" || parsed.agentType === "codex_cli"
-					? (parsed.agentType as AgentType)
+				typeof parsed.agentType === "string" && isLaunchable(parsed.agentType)
+					? parsed.agentType
 					: undefined;
 
 			const mode =

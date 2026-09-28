@@ -5,8 +5,8 @@ describe("normalizeTemplateInput — D5 Pattern A'", () => {
 	test("an explicitly supplied non-launchable agentType passes through unchanged, not coerced to codex_cli", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: simulating raw untrusted wire input
 		const result = normalizeTemplateInput({ agentType: "copilot_cli" } as any);
-		expect(result.agentType).toBe("copilot_cli");
-		expect(result.agentType).not.toBe("codex_cli");
+		expect(result.agentType as string).toBe("copilot_cli");
+		expect(result.agentType as string).not.toBe("codex_cli");
 	});
 
 	test("an absent agentType still defaults to codex_cli", () => {

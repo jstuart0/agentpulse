@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { AGENT_TYPES } from "../../shared/constants.js";
+import type { AgentType } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getSearchBackend } from "../services/search/index.js";
@@ -27,8 +29,10 @@ function parseKinds(input: string | undefined): SearchRowKind[] | undefined {
 	return parts.length > 0 ? parts : undefined;
 }
 
-function parseAgentType(input: string | undefined): "claude_code" | "codex_cli" | undefined {
-	return input === "claude_code" || input === "codex_cli" ? input : undefined;
+function parseAgentType(input: string | undefined): AgentType | undefined {
+	return input !== undefined && (AGENT_TYPES as readonly string[]).includes(input)
+		? (input as AgentType)
+		: undefined;
 }
 
 function parseSessionStatus(

@@ -1,5 +1,9 @@
 import { and, count, desc, eq, inArray, lt, notInArray, sql } from "drizzle-orm";
-import { SESSION_END_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "../../shared/constants.js";
+import {
+	AGENT_TYPES,
+	SESSION_END_TIMEOUT_MS,
+	SESSION_IDLE_TIMEOUT_MS,
+} from "../../shared/constants.js";
 import type { AgentType, ManagedState, SessionStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
@@ -248,7 +252,10 @@ export async function getStats() {
 		.where(eq(sessions.status, "active"))
 		.groupBy(sessions.agentType);
 
-	const byAgentType: Record<string, number> = {};
+	// D18: zero-fill every known agent type so a consumer never has to
+	// special-case "absent means 0" — an unrecognized historic value still
+	// gets an extra key rather than being dropped.
+	const byAgentType: Record<string, number> = Object.fromEntries(AGENT_TYPES.map((t) => [t, 0]));
 	for (const row of byType) {
 		byAgentType[row.agentType] = row.count;
 	}

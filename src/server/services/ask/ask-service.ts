@@ -607,7 +607,7 @@ const ASK_GATES: Gate[] = [
 
 	// Gate 7: Resume — checked before launch so "continue <name> with: …" resolves as
 	// a session resume, not a project launch.
-	defineGate<ResumeIntent>({
+	defineGate<ResumeIntent | { kind: "agent_refused"; replyText: string }>({
 		label: "resume",
 		passes: (t) => resumeGatePasses(t),
 		classify: async (t) => {
@@ -616,12 +616,13 @@ const ASK_GATES: Gate[] = [
 				t,
 				projects.map((p) => p.name),
 			);
-			if (r.kind === "resume") return { kind: "matched", intent: r };
+			if (r.kind === "resume" || r.kind === "agent_refused") return { kind: "matched", intent: r };
 			if (r.kind === "classifier_failed") return r;
 			return { kind: "none" };
 		},
 		handle: async (intent, _t, ctx) => {
 			if (!intent) return null;
+			if (intent.kind === "agent_refused") return { replyText: intent.replyText };
 			const r = await handleResumeIntent({
 				intent,
 				origin: ctx.origin,
@@ -784,6 +785,16 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 	//    branch fires on either matched arm, and the three-arm dispatch is structural.
 	//    Runs after the user message is persisted so the thread exists.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
+
+	if (intent.kind === "agent_refused") {
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: intent.replyText,
+			contextSessionIds: [],
+		});
+		return { thread, userMessage, assistantMessage, includedSessionIds: [] };
+	}
 
 	// Slice 6d: when the classifier emitted a cloneSpec, route to the
 	// cloner flow regardless of whether a project was named. The cloner
@@ -1009,6 +1020,19 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 	//    branch fires on either matched arm, and the three-arm dispatch is structural.
 	//    Runs after the user message is persisted so the thread exists.
 	const intent = await detectLaunchIntent(text, getCachedProjects());
+
+	if (intent.kind === "agent_refused") {
+		const assistantMessage = await appendMessage({
+			threadId: thread.id,
+			role: "assistant",
+			content: intent.replyText,
+			contextSessionIds: [],
+		});
+		yield { kind: "start", thread, userMessage, includedSessionIds: [] };
+		yield { kind: "delta", delta: intent.replyText };
+		yield { kind: "done", assistantMessage };
+		return;
+	}
 
 	// Slice 6d: cloneSpec branch fires before the regular launch /
 	// launch_needs_project paths (ruby §13.8 / bob §12.10).

@@ -116,7 +116,7 @@ describe("launch-recommender", () => {
 				taskPrompt: "",
 			},
 		});
-		expect(rec.alternatives.every((a) => a.agentType !== "copilot_cli")).toBe(true);
+		expect(rec.alternatives.every((a) => (a.agentType as string) !== "copilot_cli")).toBe(true);
 		expect(rec.rationale.every((r) => !r.includes("copilot_cli"))).toBe(true);
 	});
 

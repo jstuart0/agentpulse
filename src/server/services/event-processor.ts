@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { AGENT_TYPES } from "../../shared/constants.js";
 import {
 	EVENT_DUPLICATE_WINDOW_MS,
 	areNearInTime,
@@ -198,8 +199,9 @@ export function detectAgentType(
 	headerAgentType: string | undefined,
 	_payload: HookEventPayload,
 ): AgentType {
-	if (headerAgentType === "claude_code") return "claude_code";
-	if (headerAgentType === "codex_cli") return "codex_cli";
+	if (headerAgentType && (AGENT_TYPES as readonly string[]).includes(headerAgentType)) {
+		return headerAgentType as AgentType;
+	}
 
 	// No recognized X-Agent-Type header: default to claude_code. Every
 	// producer (Claude settings.json, Codex hooks.json, relay, observer)

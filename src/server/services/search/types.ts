@@ -27,6 +27,8 @@
  * the route layer calls (Postgres).
  */
 
+import type { AgentType } from "../../../shared/types.js";
+
 export type SearchRowKind = "session" | "event";
 
 export interface SearchFilters {
@@ -37,7 +39,7 @@ export interface SearchFilters {
 	/** cwd substring — case-insensitive. Matches `LIKE '%…%'`. */
 	cwd?: string;
 	/** Filter by agent type. */
-	agentType?: "claude_code" | "codex_cli";
+	agentType?: AgentType;
 	/** Filter by session status. */
 	sessionStatus?: "active" | "idle" | "completed" | "archived" | "failed";
 	/** Restrict to one event type (PreToolUse, UserPromptSubmit, etc.). */

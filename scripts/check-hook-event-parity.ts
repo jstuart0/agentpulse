@@ -19,67 +19,18 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+	describe,
+	extractKeyValueListBlock,
+	extractQuotedListBlocks,
+	extractUnion,
+	sameSet,
+} from "./lib/parity-utils.js";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
 function readFile(relPath: string): string {
 	return readFileSync(join(ROOT, relPath), "utf8");
-}
-
-/**
- * Find every non-overlapping occurrence of `marker` in `content`, and for
- * each, extract quoted PascalCase tokens between the marker and the next
- * `terminator` character. Returns one array of event names per occurrence.
- */
-function extractQuotedListBlocks(content: string, marker: RegExp, terminator: string): string[][] {
-	const blocks: string[][] = [];
-	const globalMarker = new RegExp(
-		marker.source,
-		marker.flags.includes("g") ? marker.flags : `${marker.flags}g`,
-	);
-	let match: RegExpExecArray | null;
-	// biome-ignore lint/suspicious/noAssignInExpressions: standard regex-exec loop idiom
-	while ((match = globalMarker.exec(content)) !== null) {
-		const start = match.index + match[0].length;
-		const end = content.indexOf(terminator, start);
-		if (end === -1) continue;
-		const slice = content.slice(start, end);
-		const tokens = [...slice.matchAll(/"([A-Z][A-Za-z]+)"/g)].map((m) => m[1]);
-		blocks.push(tokens);
-		globalMarker.lastIndex = end;
-	}
-	return blocks;
-}
-
-/** Extract `event = "X"` key/value tokens between marker and terminator (install-local.ps1's Codex hash-array shape). */
-function extractKeyValueListBlock(content: string, marker: RegExp, terminator: string): string[] {
-	const idx = content.search(marker);
-	if (idx === -1) throw new Error(`marker not found: ${marker}`);
-	const end = content.indexOf(terminator, idx);
-	if (end === -1) throw new Error(`terminator not found after marker: ${marker}`);
-	const slice = content.slice(idx, end);
-	return [...slice.matchAll(/event\s*=\s*"([A-Z][A-Za-z]+)"/g)].map((m) => m[1]);
-}
-
-function extractUnion(content: string, typeName: string): string[] {
-	const marker = new RegExp(`export type ${typeName} =`);
-	const idx = content.search(marker);
-	if (idx === -1) throw new Error(`type not found in types.ts: ${typeName}`);
-	const end = content.indexOf(";", idx);
-	if (end === -1) throw new Error(`unterminated type: ${typeName}`);
-	const slice = content.slice(idx, end);
-	return [...slice.matchAll(/"([A-Za-z]+)"/g)].map((m) => m[1]);
-}
-
-function sameSet(a: string[], b: string[]): boolean {
-	if (a.length !== b.length) return false;
-	const sortedA = [...a].sort();
-	const sortedB = [...b].sort();
-	return sortedA.every((v, i) => v === sortedB[i]);
-}
-
-function describe(events: string[]): string {
-	return `[${[...events].sort().join(", ")}]`;
 }
 
 interface CheckResult {

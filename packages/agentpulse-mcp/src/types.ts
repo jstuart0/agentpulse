@@ -36,6 +36,11 @@
 //     `as const` tuples and src/shared/types.ts's inline unions) ─────────
 
 export type AgentType = "claude_code" | "codex_cli";
+// Agent types AgentPulse can launch a process for — a subset of AgentType
+// (D5, mirrors src/shared/types.ts's LaunchableAgentType). Phase 1 keeps
+// this identical to AgentType; Phase 6 widens AgentType with "copilot_cli"
+// without widening this.
+export type LaunchableAgentType = "claude_code" | "codex_cli";
 export type ApprovalPolicy = "default" | "suggest" | "auto" | "manual" | "untrusted" | "on-failure";
 export type SandboxMode = "default" | "workspace-write" | "read-only" | "danger-full-access";
 export type SemanticStatus =
@@ -121,7 +126,7 @@ export interface Project {
 	name: string;
 	cwd: string;
 	githubRepoUrl: string | null;
-	defaultAgentType: AgentType | null;
+	defaultAgentType: LaunchableAgentType | null;
 	defaultModel: string | null;
 	defaultLaunchMode: LaunchMode | null;
 	notes: string | null;
@@ -136,7 +141,7 @@ export interface ResolvedProjectData {
 	id: string;
 	name: string;
 	cwd: string;
-	defaultAgentType: AgentType | null;
+	defaultAgentType: LaunchableAgentType | null;
 	defaultModel: string | null;
 	defaultLaunchMode: LaunchMode | null;
 }
@@ -245,7 +250,7 @@ export interface SessionTemplate {
 	overriddenFields: string[];
 	name: string;
 	description: string | null;
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	cwd: string;
 	baseInstructions: string;
 	taskPrompt: string;
@@ -262,7 +267,7 @@ export interface SessionTemplate {
 export interface SessionTemplateInput {
 	name: string;
 	description?: string | null;
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	cwd: string;
 	baseInstructions?: string;
 	taskPrompt?: string;
@@ -298,7 +303,7 @@ export interface LaunchSpec {
 	version: 1;
 	launchCorrelationId: string;
 	managedMode: "unmanaged_preview";
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	launchMode?: LaunchMode;
 	cwd: string;
 	model: string | null;
@@ -348,7 +353,7 @@ export interface TemplatePreview {
 
 export interface SupervisorCapabilities {
 	version: 1;
-	agentTypes: AgentType[];
+	agentTypes: LaunchableAgentType[];
 	launchModes: LaunchMode[];
 	os: "macos" | "linux" | "windows" | "unknown";
 	terminalSupport: string[];
@@ -397,7 +402,7 @@ export interface LaunchRequest {
 	id: string;
 	templateId: string | null;
 	launchCorrelationId: string;
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	cwd: string;
 	baseInstructions: string;
 	taskPrompt: string;
@@ -751,7 +756,7 @@ export interface HitlRequestRecord {
 }
 
 export interface RecommendedLaunch {
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	model: string | null;
 	launchMode: LaunchMode;
 	suggestedSupervisorId: string | null;
@@ -759,7 +764,7 @@ export interface RecommendedLaunch {
 	rationale: string[];
 	warnings: string[];
 	alternatives: Array<{
-		agentType?: AgentType;
+		agentType?: LaunchableAgentType;
 		model?: string | null;
 		launchMode?: LaunchMode;
 		reason: string;

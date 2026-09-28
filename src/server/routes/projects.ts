@@ -1,7 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
-import { AGENT_TYPES } from "../../shared/constants.js";
-import type { AgentType } from "../../shared/types.js";
+import { isLaunchable } from "../../shared/constants.js";
 import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
@@ -72,7 +71,7 @@ function validateProjectInput(body: Record<string, unknown>): string[] {
 	if (
 		body.defaultAgentType !== undefined &&
 		body.defaultAgentType !== null &&
-		!AGENT_TYPES.includes(body.defaultAgentType as AgentType)
+		!isLaunchable(body.defaultAgentType as string)
 	) {
 		errors.push("defaultAgentType must be claude_code or codex_cli");
 	}

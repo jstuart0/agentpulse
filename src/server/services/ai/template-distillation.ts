@@ -1,7 +1,12 @@
 import { desc, eq } from "drizzle-orm";
+import { isLaunchable } from "../../../shared/constants.js";
 import type { SessionTemplateInput } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { events, sessionTemplates, sessions } from "../../db/schema/index.js";
+import { getProjectByCwd } from "../projects/projects-service.js";
+import { normalizeCwd } from "../projects/resolver.js";
+
+const AGENT_TYPE_SUBSTITUTED_NOTE = "agent_type_substituted: copilot_cli is observe-only";
 
 /**
  * Template distillation service. Consumes a successful session's
@@ -94,10 +99,30 @@ export async function distillTemplate(input: DistillInput): Promise<TemplateDraf
 
 	const tags = dedupeTags([...(base?.tags ?? []), "distilled"]);
 
+	// D5 Pattern A': a template row's own agentType is already launchable by
+	// construction (validateTemplateInput enforced it at save time). The
+	// session's agentType is observed-only data and may not be — an
+	// observe-only session (e.g. copilot_cli) falls back to the project's
+	// default agent, or codex_cli when there's no project, with a
+	// provenance note so the substitution is never silent.
+	let agentType: SessionTemplateInput["agentType"];
+	if (base) {
+		agentType = isLaunchable(base.agentType) ? base.agentType : "codex_cli";
+	} else if (isLaunchable(session.agentType)) {
+		agentType = session.agentType;
+	} else {
+		const project = session.cwd ? await getProjectByCwd(normalizeCwd(session.cwd)) : null;
+		agentType =
+			project?.defaultAgentType && isLaunchable(project.defaultAgentType)
+				? project.defaultAgentType
+				: "codex_cli";
+		notes.push(AGENT_TYPE_SUBSTITUTED_NOTE);
+	}
+
 	const draft: SessionTemplateInput = {
 		name,
 		description,
-		agentType: (base?.agentType ?? session.agentType) as SessionTemplateInput["agentType"],
+		agentType,
 		cwd: base?.cwd ?? session.cwd ?? "",
 		baseInstructions,
 		taskPrompt,
@@ -131,6 +156,7 @@ export function provenanceMetadata(draft: TemplateDraft, fromTemplateId?: string
 			generatedAt: draft.source.generatedAt,
 			providerId: draft.source.providerId ?? null,
 			model: draft.source.model ?? null,
+			notes: draft.notes,
 		},
 	};
 }

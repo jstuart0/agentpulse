@@ -1,6 +1,7 @@
 import { desc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AgentType, LaunchMode, SessionTemplateInput } from "../../shared/types.js";
+import { isLaunchable } from "../../shared/constants.js";
+import type { LaunchMode, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
@@ -24,7 +25,11 @@ templatesRouter.use("*", requireAuth());
 templatesRouter.use("*", requireOperatorScope());
 
 templatesRouter.get("/templates", async (c) => {
-	const agentType = c.req.query("agent_type") as AgentType | undefined;
+	const agentTypeParam = c.req.query("agent_type");
+	if (agentTypeParam !== undefined && !isLaunchable(agentTypeParam)) {
+		return c.json({ error: "agentType must be claude_code or codex_cli" }, 400);
+	}
+	const agentType = agentTypeParam;
 	const query = getDb().select().from(sessionTemplates);
 	const rows = agentType
 		? await query

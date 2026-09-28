@@ -1,13 +1,21 @@
 import { relative, resolve } from "node:path";
+import { AGENT_METADATA } from "../../shared/constants.js";
 import type {
-	AgentType,
 	LaunchMode,
 	LaunchSpec,
+	LaunchableAgentType,
 	PrelaunchAction,
 	SessionTemplateInput,
 	SupervisorRecord,
 	TemplateHostCompatibility,
 } from "../../shared/types.js";
+
+// Shared with template-preview.ts (which imports this) so both provider
+// command lookups can't drift.
+export const PROVIDER_COMMAND: Record<LaunchableAgentType, string> = {
+	claude_code: "claude",
+	codex_cli: "codex",
+};
 
 function isWithinTrustedRoot(cwd: string, roots: string[]) {
 	const resolvedCwd = resolve(cwd);
@@ -151,8 +159,8 @@ function quoteShellForSpec(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function providerCommandForSpec(agentType: AgentType): string {
-	return agentType === "claude_code" ? "claude" : "codex";
+function providerCommandForSpec(agentType: LaunchableAgentType): string {
+	return PROVIDER_COMMAND[agentType];
 }
 
 /**
@@ -173,8 +181,7 @@ export function buildLaunchSpec(
 ): LaunchSpec {
 	const agentType = template.agentType;
 	const command = providerCommandForSpec(agentType);
-	const instructionsFile: "CLAUDE.md" | "AGENTS.md" =
-		agentType === "claude_code" ? "CLAUDE.md" : "AGENTS.md";
+	const instructionsFile = AGENT_METADATA[agentType].instructionsFile;
 	const cliArgs: string[] = [];
 	if (template.model) cliArgs.push("--model", quoteShellForSpec(template.model));
 	if (agentType === "claude_code" && mode === "headless") {

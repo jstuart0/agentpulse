@@ -1,6 +1,6 @@
 import type {
-	AgentType,
 	ApprovalPolicy,
+	LaunchableAgentType,
 	SandboxMode,
 	SessionTemplateInput,
 } from "../../../shared/types.js";
@@ -35,8 +35,8 @@ export function resolveTemplateWithProject(
 
 	const agentType =
 		overrides.has("agentType") || !project.defaultAgentType
-			? (template.agentType as AgentType)
-			: (project.defaultAgentType as AgentType);
+			? (template.agentType as LaunchableAgentType)
+			: (project.defaultAgentType as LaunchableAgentType);
 
 	const model = overrides.has("model") ? template.model : (project.defaultModel ?? template.model);
 
@@ -72,7 +72,7 @@ function toSessionTemplateInput(template: TemplateRow): SessionTemplateInput {
 	return {
 		name: template.name,
 		description: template.description,
-		agentType: template.agentType as AgentType,
+		agentType: template.agentType as LaunchableAgentType,
 		cwd: template.cwd,
 		baseInstructions: template.baseInstructions,
 		taskPrompt: template.taskPrompt,

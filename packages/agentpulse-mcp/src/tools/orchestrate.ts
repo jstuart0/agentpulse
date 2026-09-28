@@ -21,8 +21,8 @@
  */
 import { z } from "zod";
 import {
-	AGENT_TYPE_ENUM,
 	APPROVAL_POLICY_ENUM,
+	LAUNCHABLE_AGENT_TYPE_ENUM,
 	LAUNCH_MODE_ENUM,
 	ROUTING_POLICY_ENUM,
 	SANDBOX_MODE_ENUM,
@@ -34,7 +34,7 @@ import type { LaunchSpec, SessionTemplateInput } from "../types.js";
 const SESSION_TEMPLATE_INPUT_SHAPE = {
 	name: z.string(),
 	description: z.string().nullable().optional(),
-	agentType: AGENT_TYPE_ENUM,
+	agentType: LAUNCHABLE_AGENT_TYPE_ENUM,
 	cwd: z.string(),
 	baseInstructions: z.string().optional(),
 	taskPrompt: z.string().optional(),
@@ -51,7 +51,7 @@ const LAUNCH_SPEC_OBJECT = z.object({
 	version: z.literal(1),
 	launchCorrelationId: z.string(),
 	managedMode: z.literal("unmanaged_preview"),
-	agentType: AGENT_TYPE_ENUM,
+	agentType: LAUNCHABLE_AGENT_TYPE_ENUM,
 	launchMode: LAUNCH_MODE_ENUM.optional(),
 	cwd: z.string(),
 	model: z.string().nullable(),

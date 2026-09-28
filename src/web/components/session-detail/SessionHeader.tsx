@@ -1,7 +1,8 @@
 import { Wand2 } from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
-import type { Session, SessionEvent } from "../../../shared/types.js";
+import { AGENT_METADATA } from "../../../shared/constants.js";
+import type { AgentType, Session, SessionEvent } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { formatDuration } from "../../lib/utils.js";
 import { useLabsStore } from "../../stores/labs-store.js";
@@ -243,7 +244,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 					/>
 					<WorkspaceTabButton
 						active={workspaceTab === "instructions"}
-						label={session.agentType === "codex_cli" ? "AGENTS.md" : "CLAUDE.md"}
+						label={AGENT_METADATA[session.agentType as AgentType]?.instructionsFile ?? "CLAUDE.md"}
 						onClick={() => onSelectTab("instructions")}
 					/>
 					{session.managedSession?.launchRequestId && (

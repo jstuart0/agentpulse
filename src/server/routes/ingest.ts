@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
 import { requireApiKey } from "../auth/middleware.js";
 import { hookRateLimit } from "../middleware/hook-rate-limit.js";
+import { canonicalizeHookPayload } from "../services/agents/canonicalize.js";
 import { normalizeHookEvent } from "../services/event-normalizer.js";
 import {
 	detectAgentType,
@@ -139,6 +140,10 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 		return c.json({ ok: true });
 	}
 
+	const agentTypeHeader = c.req.header("X-Agent-Type");
+	const agentType = detectAgentType(agentTypeHeader, parsed);
+	parsed = canonicalizeHookPayload(agentType, parsed, c.req.query("event"));
+
 	if (!parsed.session_id || !parsed.hook_event_name) {
 		console.warn(
 			JSON.stringify({
@@ -150,9 +155,6 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 		);
 		return c.json({ ok: true });
 	}
-
-	const agentTypeHeader = c.req.header("X-Agent-Type");
-	const agentType = detectAgentType(agentTypeHeader, parsed);
 
 	// Return 200 IMMEDIATELY before any DB work (A-H1: <50ms budget).
 	// Processing continues asynchronously via the per-session queue below.

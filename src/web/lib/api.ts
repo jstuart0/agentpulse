@@ -1,5 +1,6 @@
 import type {
 	ActionRequestDecision,
+	AgentType,
 	AskMessageRole,
 	AskThreadOrigin,
 	AuthMeResponse,
@@ -143,7 +144,7 @@ export const api = {
 		q: string;
 		sessionId?: string;
 		cwd?: string;
-		agentType?: "claude_code" | "codex_cli";
+		agentType?: AgentType;
 		sessionStatus?: "active" | "idle" | "completed" | "archived";
 		eventType?: string;
 		since?: string;
