@@ -29,3 +29,15 @@ secrets/
 # outputs (drizzle/sqlite/*.sql, drizzle/sqlite/meta/*.json,
 # drizzle/postgres/*.sql, drizzle/postgres/meta/*.json) are needed at runtime.
 drizzle/schema.*.ts
+
+# Hook-payload test fixtures (agent-CLI spike captures) — dev/test-only JSON,
+# never read at runtime. .dockerignore governs the build CONTEXT, i.e. the
+# builder stage's own `COPY . .` from the host; it does not special-case a
+# later `COPY --from=builder`, but since the builder is the only source for
+# the runner's `COPY --from=builder /app/src/server ./src/server`
+# (Dockerfile:37), excluding this here means it's never present in *any*
+# stage's filesystem, so the runner image can't inherit it either. Neither
+# `bun run build` (the builder stage's only RUN step) nor CI's `bun test`
+# (which runs natively on the runner, not inside a Docker stage) touch this
+# directory, so excluding it from the build context has no effect on either.
+src/**/__fixtures__/
