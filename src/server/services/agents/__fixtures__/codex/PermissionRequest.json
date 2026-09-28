@@ -1,0 +1,14 @@
+{
+	"session_id": "01a0e994-8966-7df2-9441-cb89cc6ae1aa",
+	"cwd": "/home/user/project",
+	"hook_event_name": "PermissionRequest",
+	"transcript_path": "/home/user/.codex/sessions/2026/09/28/rollout-2026-09-28T15-53-41-01a0e994-8966-7df2-9441-cb89cc6ae1aa.jsonl",
+	"model": "gpt-5.6-sol",
+	"turn_id": "01a0e994-8a45-7541-883a-684b4a5c8a15",
+	"tool_name": "Bash",
+	"tool_input": {
+		"command": "rm -rf /tmp/example"
+	},
+	"tool_use_id": "exec-docs-derived-0001",
+	"_source": "docs"
+}
