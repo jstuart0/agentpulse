@@ -28,8 +28,9 @@ import {
 	mergeSessionEvents,
 } from "../components/session-detail/TimelineView.js";
 import { api } from "../lib/api.js";
+import { applyManualRename } from "../lib/name-source.js";
 import { useEventStore } from "../stores/event-store.js";
-import { useSessionStore } from "../stores/session-store.js";
+import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 
 /** Merge new events into the existing persisted events array, de-duped by id, sorted asc. */
@@ -106,6 +107,13 @@ export function SessionDetailPage() {
 		setControlActions([]);
 		setLoading(!cached);
 	}, [sessionId]);
+
+	// F95: apply live WebSocket session updates (renames, resets, status) as
+	// they land in the store, instead of waiting for the 10 s poll.
+	const storeSession = useSessionStore((s) => s.sessions.find((x) => x.sessionId === sessionId));
+	useEffect(() => {
+		setSession((current) => mergeSessionIntoDetail(current, storeSession));
+	}, [storeSession]);
 
 	useEffect(() => {
 		if (!sessionId) return;
@@ -325,7 +333,8 @@ export function SessionDetailPage() {
 				onToggleSystem={() => setShowSystem((v) => !v)}
 				onJumpTop={jumpTimelineTop}
 				onJumpBottom={jumpTimelineBottom}
-				onRename={(name) => setSession({ ...session, displayName: name })}
+				onRename={(name) => setSession(applyManualRename(session, name))}
+				onRefresh={loadSessionWorkspace}
 				onStop={handleStop}
 			/>
 

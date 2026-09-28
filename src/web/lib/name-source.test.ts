@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { nameSourceCaption, resetButtonState, shouldShowPin } from "./name-source.js";
+import type { AgentType, Session } from "../../shared/types.js";
+import {
+	applyManualRename,
+	nameSourceCaption,
+	resetButtonState,
+	shouldShowPin,
+} from "./name-source.js";
 
 describe("shouldShowPin — truth table over nameSource x nativeName x hasNameSource (D14)", () => {
 	test("false when nameSource is not 'user'", () => {
@@ -68,5 +74,40 @@ describe("resetButtonState — idle -> pending -> error -> idle (D14)", () => {
 
 	test("success moves pending back to idle", () => {
 		expect(resetButtonState("pending", "success")).toBe("idle");
+	});
+});
+
+// ruby F101: an agent type the web bundle doesn't know yet (a newer server,
+// or a legacy row) must not crash the header.
+describe("unknown agent types fall back safely (F101)", () => {
+	const unknown = "future_cli" as AgentType;
+
+	test("shouldShowPin treats an unknown agent as unable to report a name", () => {
+		expect(shouldShowPin("user", null, unknown)).toBe(false);
+		expect(shouldShowPin("user", "reported", unknown)).toBe(true);
+	});
+
+	test("nameSourceCaption uses a generic label", () => {
+		expect(nameSourceCaption("native", "n", "n", unknown)).toBe("from agent");
+		expect(nameSourceCaption("user", null, "x", unknown)).toBe("Pinned by you");
+	});
+});
+
+// ruby F95: a local manual rename must flip the caption to the pin at once,
+// not keep "from <agent>" until the next poll.
+describe("applyManualRename (F95)", () => {
+	const base = {
+		sessionId: "s1",
+		displayName: "codex-title",
+		nameSource: "native",
+		nativeName: "codex-title",
+	} as Session;
+
+	test("sets displayName and nameSource together, keeps nativeName", () => {
+		const next = applyManualRename(base, "my-manual-name");
+		expect(next.displayName).toBe("my-manual-name");
+		expect(next.nameSource).toBe("user");
+		expect(next.nativeName).toBe("codex-title");
+		expect(base.displayName).toBe("codex-title");
 	});
 });

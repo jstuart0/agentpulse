@@ -1,5 +1,5 @@
 import { AGENT_METADATA } from "../../shared/constants.js";
-import type { AgentType } from "../../shared/types.js";
+import type { AgentType, Session } from "../../shared/types.js";
 
 export type NameSource = "user" | "native" | "generated";
 
@@ -17,7 +17,9 @@ export function shouldShowPin(
 	agentType: AgentType,
 ): boolean {
 	if (nameSource !== "user") return false;
-	return nativeName !== null || AGENT_METADATA[agentType].hasNameSource;
+	// F101: an agent type this bundle doesn't know (newer server, legacy row)
+	// is treated as unable to report a name.
+	return nativeName !== null || (AGENT_METADATA[agentType]?.hasNameSource ?? false);
 }
 
 /**
@@ -34,7 +36,7 @@ export function nameSourceCaption(
 	displayName: string,
 	agentType: AgentType,
 ): string | null {
-	const shortLabel = AGENT_METADATA[agentType].shortLabel;
+	const shortLabel = AGENT_METADATA[agentType]?.shortLabel ?? "agent";
 	if (nameSource === "user") {
 		if (nativeName !== null && nativeName !== displayName) {
 			return `Pinned by you · agent name: "${nativeName}"`;
@@ -69,4 +71,13 @@ export function resetButtonState(
 		case "reset":
 			return "idle";
 	}
+}
+
+/**
+ * F95: the local patch after a dashboard rename. A manual rename always pins
+ * (the server stamps renameSource="user"), so nameSource changes with the
+ * name; nativeName is untouched.
+ */
+export function applyManualRename(session: Session, name: string): Session {
+	return { ...session, displayName: name, nameSource: "user" };
 }

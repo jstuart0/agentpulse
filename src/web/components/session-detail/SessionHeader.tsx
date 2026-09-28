@@ -48,6 +48,8 @@ interface SessionHeaderProps {
 	onJumpTop: () => void;
 	onJumpBottom: () => void;
 	onRename: (name: string) => void;
+	/** F95: re-fetch the session (used after a name reset). */
+	onRefresh?: () => Promise<void> | void;
 	onStop: () => void;
 }
 
@@ -75,6 +77,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 		onJumpTop,
 		onJumpBottom,
 		onRename,
+		onRefresh,
 		onStop,
 	} = props;
 	const navigate = useNavigate();
@@ -119,6 +122,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 						nativeName={session.nativeName}
 						agentType={session.agentType}
 						onRenamed={onRename}
+						onRefresh={onRefresh}
 					/>
 					{session.isWorking && (
 						<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 flex-shrink-0">

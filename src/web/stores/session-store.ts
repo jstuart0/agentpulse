@@ -30,6 +30,21 @@ export function applySessionUpdateToList(sessions: Session[], session: Session):
 	return sessions.map((s) => (s.sessionId === session.sessionId ? session : s));
 }
 
+/**
+ * F95: merge the store's copy of a session (kept live by the WebSocket
+ * session_updated broadcast) into the detail page's own state, which also
+ * holds detail-only fields. The store copy wins on the fields it carries.
+ */
+export function mergeSessionIntoDetail(
+	current: Session | null,
+	incoming: Session | undefined,
+): Session | null {
+	if (!incoming) return current;
+	if (!current) return incoming;
+	if (current.sessionId !== incoming.sessionId) return current;
+	return { ...current, ...incoming };
+}
+
 export const useSessionStore = create<SessionStore>((set) => ({
 	sessions: [],
 	stats: null,
