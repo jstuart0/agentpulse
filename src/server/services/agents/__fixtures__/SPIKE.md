@@ -44,10 +44,10 @@ shell prompts (`ls`, `echo hi`, `echo fact6probe`, one interrupted `sleep 8`). A
 
 ## Scrub rules applied (D16, F42)
 
-- Codex `cwd` / `transcript_path` captured under this session's scratchpad
-  (`/private/tmp/claude-501/-Users-jaystuart-.../scratchpad/codex-spike`) were rewritten:
-  the embedded macOS username (`jaystuart`, i.e. `$USER`) → `user`, and the whole
-  project-relative prefix → `/home/user/project` (cwd) / `/home/user/.codex/sessions/...` (transcript_path).
+- Codex `cwd` / `transcript_path` captured under this session's scratchpad (a
+  `mktemp`-rooted temp path that embeds `$USER` as part of macOS's per-user `/private/tmp`
+  layout) were rewritten: the embedded `$USER` → `user`, and the whole project-relative
+  prefix → `/home/user/project` (cwd) / `/home/user/.codex/sessions/...` (transcript_path).
   Session ids and turn ids are real captured UUIDs, kept per D16 ("keep session ids unless
   they embed the above").
 - No hostname, IPv4/IPv6, or email literal appeared in any raw capture (verified below).
@@ -59,6 +59,14 @@ shell prompts (`ls`, `echo hi`, `echo fact6probe`, one interrupted `sleep 8`). A
   zero matches. The broader campaign OSS-hygiene grep was also run against this directory
   directly — zero matches — and will be re-run against the staged `git diff origin/main` at
   commit time.
+- **Post-review fold-in (xander, mid-build)**: the scrub check as originally written matches
+  `$USER` only when adjacent to `@` (email context) or inside the macOS home-directory path
+  prefix — it does not catch the bare local username elsewhere, e.g. quoted in this document's
+  own prose while *describing* the scrub rule. Caught and fixed: this file previously quoted
+  the real macOS username literally at what are now lines 47-50 above. The scrub grep run
+  against this directory is now additionally checked with a word-boundary match on `$USER`
+  alone (catching prose occurrences a path/email-scoped pattern misses) — zero matches,
+  directory-wide, fixtures and prose both.
 
 ## Facts
 
