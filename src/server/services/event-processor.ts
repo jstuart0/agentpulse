@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { AGENT_TYPES } from "../../shared/constants.js";
+import { AGENT_TYPES, SEMANTIC_STATUSES } from "../../shared/constants.js";
 import {
 	EVENT_DUPLICATE_WINDOW_MS,
 	areNearInTime,
@@ -587,7 +587,20 @@ export async function markSessionFailed(sessionId: string): Promise<void> {
 }
 
 // Process a semantic status update from CLAUDE.md snippet
-export async function processStatusUpdate(update: SemanticStatusUpdate): Promise<boolean> {
+/** True only for the declared SEMANTIC_STATUSES values. */
+export function isSemanticStatus(value: unknown): value is SemanticStatus {
+	return typeof value === "string" && (SEMANTIC_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * xander F90: `status` arrives from an ingest-keyed POST /hooks/status body
+ * and is later rendered into LLM prompts, so anything outside the declared
+ * set is dropped (the rest of the update still applies; ingest never errors).
+ */
+export async function processStatusUpdate(input: SemanticStatusUpdate): Promise<boolean> {
+	const { status, ...rest } = input;
+	const update: SemanticStatusUpdate = isSemanticStatus(status) ? { ...rest, status } : rest;
+
 	const existing = await getDb()
 		.select()
 		.from(sessions)

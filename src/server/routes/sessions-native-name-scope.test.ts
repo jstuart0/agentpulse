@@ -190,3 +190,46 @@ describe("PUT /sessions/:id/native-name — rate limit (D20, F26)", () => {
 		expect(lastRes?.status).toBe(200);
 	});
 });
+
+// xander F92: PUT /native-name is ingest-reachable; an oversize body is
+// refused by a 16 KiB body limit before the handler parses it.
+describe("PUT /sessions/:id/native-name — 16 KiB body limit", () => {
+	const LIMIT = 16 * 1024;
+
+	test("an oversize body -> 413, even when it isn't valid JSON (never parsed)", async () => {
+		await mkSession("big-1", { displayName: "brave-falcon" });
+		const { key } = await createApiKey("ingest-big", [SCOPE_INGEST]);
+		const oversizeJson = JSON.stringify({ name: "x".repeat(LIMIT + 1) });
+		const res = await app.request("/api/v1/sessions/big-1/native-name", {
+			method: "PUT",
+			headers: authBearer(key),
+			body: oversizeJson,
+		});
+		expect(res.status).toBe(413);
+
+		const notJson = `{${"y".repeat(LIMIT + 1)}`;
+		const res2 = await app.request("/api/v1/sessions/big-1/native-name", {
+			method: "PUT",
+			headers: authBearer(key),
+			body: notJson,
+		});
+		expect(res2.status).toBe(413);
+
+		const [row] = await getDb().select().from(sessions).execute();
+		expect(row.displayName).toBe("brave-falcon");
+	});
+
+	test("positive control: a body just under the limit is processed", async () => {
+		await mkSession("big-2", { displayName: "brave-falcon" });
+		const { key } = await createApiKey("ingest-big-2", [SCOPE_INGEST]);
+		const body = JSON.stringify({ name: `ok-${"z".repeat(LIMIT - 64)}` });
+		expect(body.length).toBeLessThan(LIMIT);
+		const res = await app.request("/api/v1/sessions/big-2/native-name", {
+			method: "PUT",
+			headers: authBearer(key),
+			body,
+		});
+		expect(res.status).toBe(200);
+		expect(((await res.json()) as { applied: boolean }).applied).toBe(true);
+	});
+});

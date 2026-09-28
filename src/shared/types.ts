@@ -263,7 +263,8 @@ export interface HookEventPayload {
 // Semantic status update from CLAUDE.md snippet
 export interface SemanticStatusUpdate {
 	session_id: string;
-	status: SemanticStatus;
+	/** Optional on the wire; values outside SEMANTIC_STATUSES are dropped server-side. */
+	status?: SemanticStatus;
 	task?: string;
 	plan?: string[];
 }

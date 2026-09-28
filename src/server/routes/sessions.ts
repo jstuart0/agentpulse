@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { AgentType, SessionStatus } from "../../shared/types.js";
 import { type AuthUser, requireAuth } from "../auth/middleware.js";
 import { callerHasManageScope, requireOperatorScope } from "../auth/route-scope-policy.js";
@@ -178,8 +179,17 @@ sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 // relay/statusline key may call it directly. hookRateLimit here opts into a
 // real 429 (unlike /hooks' always-200 contract) since this is a dashboard-
 // adjacent write path, not the ingest firehose.
+// xander F92: a native name is at most 200 code points after sanitizing; 16
+// KiB is generous and keeps an ingest key from making the server buffer and
+// parse arbitrarily large bodies.
+const NATIVE_NAME_BODY_LIMIT_BYTES = 16 * 1024;
+
 sessionsRouter.put(
 	"/sessions/:sessionId/native-name",
+	bodyLimit({
+		maxSize: NATIVE_NAME_BODY_LIMIT_BYTES,
+		onError: (c) => c.json({ error: "payload_too_large" }, 413),
+	}),
 	hookRateLimit({ bucketPrefix: "native-name:", onLimit: "429" }),
 	async (c) => {
 		const sessionId = c.req.param("sessionId");
