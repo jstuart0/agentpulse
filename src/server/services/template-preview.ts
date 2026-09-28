@@ -171,8 +171,19 @@ export async function buildTemplatePreview(
 	const normalizedTemplate = normalizeTemplateInput(input);
 	const requestedLaunchMode = options?.requestedLaunchMode ?? "interactive_terminal";
 	const launchCorrelationId = crypto.randomUUID();
-	const providerCommand = PROVIDER_COMMAND[normalizedTemplate.agentType];
-	const instructionsFile = AGENT_METADATA[normalizedTemplate.agentType].instructionsFile;
+	// normalizedTemplate.agentType is typed LaunchableAgentType, but
+	// normalizeTemplateInput deliberately passes an explicit non-launchable
+	// value through unchanged (D5 Pattern A') so validateTemplateInput below
+	// can reject it with a real 400 — that means it can be a lie at runtime
+	// here. Guard the keyed lookups so an invalid agentType can't crash this
+	// function before validation ever runs (ian, Phase 1 mid-build): the
+	// fallback is display-only, since an invalid agentType is always
+	// rejected below and by the route's own post-preview validation.
+	const previewAgentType = isLaunchable(normalizedTemplate.agentType)
+		? normalizedTemplate.agentType
+		: "codex_cli";
+	const providerCommand = PROVIDER_COMMAND[previewAgentType];
+	const instructionsFile = AGENT_METADATA[previewAgentType].instructionsFile;
 
 	const launchSpec: LaunchSpec = {
 		version: 1,

@@ -22,9 +22,12 @@ describe("check-agent-type-parity extraction helpers — synthetic content", () 
 		]);
 	});
 
-	test("extractUnion pulls a literal-union type's members", () => {
+	test("extractUnion pulls a literal-union type's members (allowUnderscore for snake_case)", () => {
 		const content = 'export type AgentType = "claude_code" | "codex_cli";\n';
-		expect(extractUnion(content, "AgentType")).toEqual(["claude_code", "codex_cli"]);
+		expect(extractUnion(content, "AgentType", { allowUnderscore: true })).toEqual([
+			"claude_code",
+			"codex_cli",
+		]);
 	});
 
 	test("a deliberately introduced divergence is detected by sameSet", () => {

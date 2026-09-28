@@ -3,61 +3,147 @@ import { describe, expect, test } from "bun:test";
  * enums.test.ts — D5 observed/launchable enum split (2026-09-28-deliver-agent-cli-parity).
  *
  * Phase 1 keeps OBSERVED_AGENT_TYPE_ENUM and LAUNCHABLE_AGENT_TYPE_ENUM
- * value-identical (D5's honest note); this test's four call-site
- * assertions are therefore a scaffold that Phase 6 fills in with a value
- * ("copilot_cli") that actually discriminates between them. They're still
- * written now so the scaffold and Phase 6's discriminating run are
- * provably the same test, not a parallel one that could drift.
+ * value-identical (D5's honest note); the four call-site assertions below
+ * are therefore a non-discriminating scaffold — today both "claude_code"
+ * accepts on every site. Phase 6 flips this in place: OBSERVED_AGENT_TYPE_ENUM
+ * additionally accepts "copilot_cli"; LAUNCHABLE_AGENT_TYPE_ENUM still
+ * rejects it. Each test below names which enum it exercises so Phase 6 can
+ * extend the same test, not write a parallel one.
+ *
+ * tessa's mid-build correction (Medium-High): the original version of this
+ * file grepped source text for the enum constant name, which proves an
+ * import exists but never proves the schema actually parses/rejects a
+ * value. Rewritten on the InMemoryTransport + McpServer + mcpClient.callTool
+ * harness (tools/sessions.test.ts's pattern) so each site is exercised with
+ * a live zod schema through the real MCP protocol.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { LAUNCHABLE_AGENT_TYPE_ENUM, OBSERVED_AGENT_TYPE_ENUM } from "./enums.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolContext } from "./server.js";
+import { fakeClient } from "./test-support.js";
+import { registerCatalogTools } from "./tools/catalog.js";
+import { registerOrchestrateTools } from "./tools/orchestrate.js";
+import { registerSessionsTools } from "./tools/sessions.js";
+import { registerTemplateMutationTools } from "./tools/templates.js";
 
-describe("OBSERVED_AGENT_TYPE_ENUM / LAUNCHABLE_AGENT_TYPE_ENUM", () => {
-	test("both parse claude_code and codex_cli", () => {
-		for (const value of ["claude_code", "codex_cli"] as const) {
-			expect(OBSERVED_AGENT_TYPE_ENUM.parse(value)).toBe(value);
-			expect(LAUNCHABLE_AGENT_TYPE_ENUM.parse(value)).toBe(value);
-		}
-	});
+function newContext(client: ReturnType<typeof fakeClient>): ToolContext {
+	const server = new McpServer({ name: "agentpulse-test", version: "0.0.0-test" });
+	return { server, client, registry: [] };
+}
 
-	test("both reject a bogus value", () => {
-		expect(() => OBSERVED_AGENT_TYPE_ENUM.parse("bogus")).toThrow();
-		expect(() => LAUNCHABLE_AGENT_TYPE_ENUM.parse("bogus")).toThrow();
+async function connect(ctx: ToolContext) {
+	const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+	const mcpClient = new Client({ name: "test-client", version: "0.0.0" });
+	await Promise.all([mcpClient.connect(clientTransport), ctx.server.connect(serverTransport)]);
+	return mcpClient;
+}
+
+// create_template's own fields are snake_case (its file-header convention);
+// recommend_launch's nested `template` object mirrors SessionTemplateInput
+// and is camelCase — see each test's arguments below.
+const baseTemplateSnakeCase = {
+	name: "t",
+	agent_type: "claude_code",
+	cwd: "/tmp",
+};
+
+const baseTemplateCamelCase = {
+	name: "t",
+	agentType: "claude_code",
+	cwd: "/tmp",
+};
+
+describe("tools/sessions.ts list_sessions — observed enum (OBSERVED_AGENT_TYPE_ENUM)", () => {
+	test("agent_type:claude_code is legal today; Phase 6 adds a copilot_cli-accepts case here", async () => {
+		const ctx = newContext(fakeClient({ getSessions: async () => ({ sessions: [], total: 0 }) }));
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "list_sessions",
+			arguments: { agent_type: "claude_code" },
+		});
+		expect(result.isError).toBeFalsy();
 	});
 });
 
-// Source-level check that each of the four call sites imports the enum it's
-// *supposed* to use (D5: sessions.ts is observed; templates/orchestrate/
-// catalog are launchable). Package-relative reads, not a live tool-schema
-// introspection — see file header.
-const SRC_ROOT = new URL(".", import.meta.url).pathname;
-function readSource(relPath: string): string {
-	return readFileSync(join(SRC_ROOT, relPath), "utf8");
-}
-
-describe("four call-site assertions (F12 scaffold)", () => {
-	test("tools/sessions.ts's list_sessions schema uses the observed enum", () => {
-		const src = readSource("tools/sessions.ts");
-		expect(src).toContain("OBSERVED_AGENT_TYPE_ENUM");
-		expect(src).not.toMatch(/agent_type:\s*LAUNCHABLE_AGENT_TYPE_ENUM/);
+describe("tools/templates.ts create_template — launchable enum (LAUNCHABLE_AGENT_TYPE_ENUM)", () => {
+	test("agent_type:claude_code is legal today; Phase 6 keeps rejecting copilot_cli here", async () => {
+		const ctx = newContext(
+			fakeClient({
+				createTemplate: async () => ({
+					template: {
+						id: "tpl1",
+						projectId: null,
+						overriddenFields: [],
+						name: "t",
+						description: null,
+						agentType: "claude_code",
+						cwd: "/tmp",
+						baseInstructions: "",
+						taskPrompt: "",
+						model: null,
+						approvalPolicy: null,
+						sandboxMode: null,
+						env: {},
+						tags: [],
+						isFavorite: false,
+						createdAt: "2026-01-01 00:00:00",
+						updatedAt: "2026-01-01 00:00:00",
+					},
+				}),
+			}),
+		);
+		registerTemplateMutationTools(ctx, { hasObserve: false, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "create_template",
+			arguments: baseTemplateSnakeCase,
+		});
+		expect(result.isError).toBeFalsy();
 	});
+});
 
-	test("tools/templates.ts's create/update schema uses the launchable enum", () => {
-		const src = readSource("tools/templates.ts");
-		expect(src).toContain("LAUNCHABLE_AGENT_TYPE_ENUM");
-		expect(src).not.toMatch(/agent_type:\s*OBSERVED_AGENT_TYPE_ENUM/);
+describe("tools/orchestrate.ts recommend_launch — launchable enum (LAUNCHABLE_AGENT_TYPE_ENUM)", () => {
+	test("template.agentType:claude_code is legal today; Phase 6 keeps rejecting copilot_cli here", async () => {
+		const ctx = newContext(
+			fakeClient({
+				recommendLaunch: async () => ({
+					recommendation: {
+						agentType: "claude_code",
+						model: null,
+						launchMode: "interactive_terminal",
+						suggestedSupervisorId: null,
+						suggestedSupervisorHost: null,
+						rationale: [],
+						warnings: [],
+						alternatives: [],
+						confidence: 0.3,
+					},
+				}),
+			}),
+		);
+		registerOrchestrateTools(ctx, { hasObserve: false, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "recommend_launch",
+			arguments: { template: baseTemplateCamelCase },
+		});
+		expect(result.isError).toBeFalsy();
 	});
+});
 
-	test("tools/orchestrate.ts's launch tool schema(s) use the launchable enum", () => {
-		const src = readSource("tools/orchestrate.ts");
-		expect(src).toContain("LAUNCHABLE_AGENT_TYPE_ENUM");
-		expect(src).not.toMatch(/agentType:\s*OBSERVED_AGENT_TYPE_ENUM/);
-	});
-
-	test("tools/catalog.ts's list_templates schema uses the launchable enum", () => {
-		const src = readSource("tools/catalog.ts");
-		expect(src).toContain("LAUNCHABLE_AGENT_TYPE_ENUM");
-		expect(src).not.toMatch(/agent_type:\s*OBSERVED_AGENT_TYPE_ENUM/);
+describe("tools/catalog.ts list_templates — launchable enum (LAUNCHABLE_AGENT_TYPE_ENUM)", () => {
+	test("agent_type:claude_code is legal today; Phase 6 keeps rejecting copilot_cli here", async () => {
+		const ctx = newContext(
+			fakeClient({ listTemplates: async () => ({ templates: [], total: 0 }) }),
+		);
+		registerCatalogTools(ctx, { hasObserve: false, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "list_templates",
+			arguments: { agent_type: "claude_code" },
+		});
+		expect(result.isError).toBeFalsy();
 	});
 });

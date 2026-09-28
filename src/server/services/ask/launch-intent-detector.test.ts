@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { CachedProject } from "../projects/cache.js";
 import { gatePasses, parseLaunchIntentResponse } from "./launch-intent-detector.js";
 
@@ -297,5 +298,15 @@ describe("parseLaunchIntentResponse — D5 Pattern A' non-launchable agentType r
 			);
 			expect(result.kind).toBe("launch");
 		}
+	});
+
+	test("the classifier system prompt itself mentions copilot (static source check — INTENT_SYSTEM_PROMPT isn't exported)", () => {
+		const source = readFileSync(new URL("./launch-intent-detector.ts", import.meta.url), "utf8");
+		const promptStart = source.indexOf("const INTENT_SYSTEM_PROMPT");
+		const promptEnd = source.indexOf("\n) =>", promptStart);
+		expect(promptStart).toBeGreaterThan(-1);
+		expect(source.slice(promptStart, promptEnd > -1 ? promptEnd + 2000 : undefined)).toContain(
+			"copilot",
+		);
 	});
 });

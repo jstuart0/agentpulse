@@ -1,6 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { isLaunchable } from "../../shared/constants.js";
 import type { LaunchRequestInput, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
@@ -96,6 +97,9 @@ launchesRouter.post("/launches/recommendation", async (c) => {
 		preferredSupervisorId?: string | null;
 	}>();
 	if (!body.template) return c.json({ error: "template required" }, 400);
+	if (!isLaunchable(body.template.agentType as string)) {
+		return c.json({ error: "agentType must be claude_code or codex_cli" }, 400);
+	}
 	const recommendation = await recommendLaunch({
 		template: body.template,
 		preferredSupervisorId: body.preferredSupervisorId ?? null,

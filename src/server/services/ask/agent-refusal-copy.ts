@@ -15,7 +15,12 @@ import type { AgentType } from "../../../shared/types.js";
 function agentLabel(agentType: string): string {
 	if (agentType in AGENT_METADATA) return AGENT_METADATA[agentType as AgentType].label;
 	if (agentType === "copilot_cli") return "Copilot CLI";
-	return agentType;
+	// Never echo arbitrary classifier-supplied text back into a user-facing
+	// reply (F71, xander mid-build) — this string came from LLM JSON output,
+	// not a validated allowlist, so it could be long, control-character-laden,
+	// or an attempted prompt-injection payload. A generic, length-capped
+	// label instead of the raw value.
+	return "that agent";
 }
 
 /** Used by ask-resume-handler and launch-intent-detector's resume-intent parsing. */

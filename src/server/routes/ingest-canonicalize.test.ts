@@ -78,6 +78,8 @@ describe("POST /api/v1/hooks — canonicalizer seam is a no-op for claude_code a
 			expect(row.toolInput).toEqual({ command: "echo hi" });
 			expect(row.toolResponse).toBe("hi\n");
 			expect(row.providerEventType).toBe("PostToolUse");
+			expect(row.eventType).toBe("PostToolUse");
+			expect(row.content).toBe("Completed Bash");
 		});
 	}
 });

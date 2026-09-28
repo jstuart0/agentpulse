@@ -63,12 +63,12 @@ function main() {
 		{
 			site: "packages/agentpulse-mcp/src/types.ts AgentType",
 			list: "observed",
-			values: extractUnion(mcpTypesContent, "AgentType"),
+			values: extractUnion(mcpTypesContent, "AgentType", { allowUnderscore: true }),
 		},
 		{
 			site: "packages/agentpulse-mcp/src/types.ts LaunchableAgentType",
 			list: "launchable",
-			values: extractUnion(mcpTypesContent, "LaunchableAgentType"),
+			values: extractUnion(mcpTypesContent, "LaunchableAgentType", { allowUnderscore: true }),
 		},
 	];
 

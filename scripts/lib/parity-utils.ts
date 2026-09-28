@@ -6,6 +6,16 @@
  */
 
 /**
+ * Strict PascalCase quoted-token extraction — the hook-event shape (e.g.
+ * "SessionStart", never snake_case). Shared by every site that parses a
+ * hook-event list slice, so there's exactly one strictness definition, not
+ * one per call site.
+ */
+export function extractQuotedTokens(slice: string): string[] {
+	return [...slice.matchAll(/"([A-Z][A-Za-z]+)"/g)].map((m) => m[1]);
+}
+
+/**
  * Find every non-overlapping occurrence of `marker` in `content`, and for
  * each, extract quoted PascalCase tokens between the marker and the next
  * `terminator` character. Returns one array of event names per occurrence.
@@ -27,8 +37,7 @@ export function extractQuotedListBlocks(
 		const end = content.indexOf(terminator, start);
 		if (end === -1) continue;
 		const slice = content.slice(start, end);
-		const tokens = [...slice.matchAll(/"([A-Za-z][A-Za-z_]+)"/g)].map((m) => m[1]);
-		blocks.push(tokens);
+		blocks.push(extractQuotedTokens(slice));
 		globalMarker.lastIndex = end;
 	}
 	return blocks;
@@ -45,17 +54,33 @@ export function extractKeyValueListBlock(
 	const end = content.indexOf(terminator, idx);
 	if (end === -1) throw new Error(`terminator not found after marker: ${marker}`);
 	const slice = content.slice(idx, end);
-	return [...slice.matchAll(/event\s*=\s*"([A-Za-z][A-Za-z_]+)"/g)].map((m) => m[1]);
+	return [...slice.matchAll(/event\s*=\s*"([A-Z][A-Za-z]+)"/g)].map((m) => m[1]);
 }
 
-export function extractUnion(content: string, typeName: string): string[] {
+/**
+ * Extract a literal-union type's quoted members, e.g.
+ * `export type ClaudeCodeEvent = "SessionStart" | "Stop";`.
+ *
+ * Strict PascalCase by default (the hook-event union shape). The
+ * agent-type guard's unions carry snake_case identifiers
+ * ("claude_code") — pass `{ allowUnderscore: true }` for those callers
+ * explicitly, rather than silently widening the shared default and
+ * risking a lowercase/underscored quoted string inside a PascalCase-only
+ * union false-matching.
+ */
+export function extractUnion(
+	content: string,
+	typeName: string,
+	opts?: { allowUnderscore?: boolean },
+): string[] {
 	const marker = new RegExp(`export type ${typeName} =`);
 	const idx = content.search(marker);
 	if (idx === -1) throw new Error(`type not found in types.ts: ${typeName}`);
 	const end = content.indexOf(";", idx);
 	if (end === -1) throw new Error(`unterminated type: ${typeName}`);
 	const slice = content.slice(idx, end);
-	return [...slice.matchAll(/"([A-Za-z_]+)"/g)].map((m) => m[1]);
+	const pattern = opts?.allowUnderscore ? /"([A-Za-z_]+)"/g : /"([A-Za-z]+)"/g;
+	return [...slice.matchAll(pattern)].map((m) => m[1]);
 }
 
 /**

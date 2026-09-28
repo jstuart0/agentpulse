@@ -23,6 +23,7 @@ import {
 	describe,
 	extractKeyValueListBlock,
 	extractQuotedListBlocks,
+	extractQuotedTokens,
 	extractUnion,
 	sameSet,
 } from "./lib/parity-utils.js";
@@ -124,14 +125,10 @@ function main() {
 		if (idx === -1) throw new Error("hookEvents marker not found in SetupPage.tsx");
 		const claudeStart = content.indexOf("[", idx);
 		const claudeEnd = content.indexOf("]", claudeStart);
-		const claude = [...content.slice(claudeStart, claudeEnd).matchAll(/"([A-Z][A-Za-z]+)"/g)].map(
-			(m) => m[1],
-		);
+		const claude = extractQuotedTokens(content.slice(claudeStart, claudeEnd));
 		const codexStart = content.indexOf("[", claudeEnd);
 		const codexEnd = content.indexOf("]", codexStart);
-		const codex = [...content.slice(codexStart, codexEnd).matchAll(/"([A-Z][A-Za-z]+)"/g)].map(
-			(m) => m[1],
-		);
+		const codex = extractQuotedTokens(content.slice(codexStart, codexEnd));
 		results.push({ site: "src/web/pages/SetupPage.tsx", agent: "claude", events: claude });
 		results.push({ site: "src/web/pages/SetupPage.tsx", agent: "codex", events: codex });
 	}

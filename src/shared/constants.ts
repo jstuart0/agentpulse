@@ -90,10 +90,6 @@ export const AGENT_METADATA: Record<AgentType, AgentMetadata> = {
 	},
 };
 
-export const AGENT_TYPE_LABELS: Record<AgentType, string> = Object.fromEntries(
-	(AGENT_TYPES as readonly AgentType[]).map((t) => [t, AGENT_METADATA[t].label]),
-) as Record<AgentType, string>;
-
 // Session is considered idle after this many minutes without events
 export const SESSION_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
