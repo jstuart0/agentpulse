@@ -823,8 +823,8 @@ describe("Codex pull via /native-name (D2) and the ledger (D23)", () => {
 		const sessions = [{ sessionId: "s1", displayName: "brave-falcon", nameSource: "generated" }];
 		const stub = sessionsStub(sessions);
 		stops.push(stub.stop);
-		await writeFile(indexPath(), jsonl([row("s1", "codex-title")]));
 		const ap = await makeCtx({ remote: stub.url, policy: "agentpulse" });
+		await writeFile(indexPath(), jsonl([row("s1", "codex-title")]));
 		await R.syncCodexNamesTick(ap);
 		expect((await readJsonl(indexPath())).at(-1)?.thread_name).toBe("brave-falcon");
 		expect(nativeNamePuts(stub.requests)).toEqual([]);
@@ -888,6 +888,29 @@ describe("404 backoff (F18)", () => {
 		await writeFile(indexPath(), jsonl([row("old", "named-long-ago", "2026-09-20T11:00:00.000Z")]));
 		await R.pullCodexNames(ctx);
 		expect(sessions[0].displayName).toBe("named-long-ago");
+	});
+
+	test("a 400 (name sanitizes to empty) is final; a 500 is retried every tick", async () => {
+		const R = await mod();
+		let status = 400;
+		const stub = startStub((method, url) =>
+			method === "PUT" && url.pathname.endsWith("/native-name")
+				? Response.json({ error: "x" }, { status })
+				: undefined,
+		);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, now: () => T0 });
+		await writeFile(indexPath(), jsonl([row("e", "‮​", "2026-09-28T11:59:00.000Z")]));
+		for (let i = 0; i < 3; i++) await R.pullCodexNames(ctx);
+		expect(nativeNamePuts(stub.requests)).toHaveLength(1);
+
+		status = 500;
+		const fresh = await makeCtx({ remote: stub.url, now: () => T0 });
+		for (let i = 0; i < 3; i++) {
+			const res = await R.pullCodexNames(fresh);
+			expect(res.ok).toBe(false);
+		}
+		expect(nativeNamePuts(stub.requests)).toHaveLength(4);
 	});
 
 	test("applied:false counts as seen — the same entry is not re-PUT", async () => {
