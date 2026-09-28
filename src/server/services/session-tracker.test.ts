@@ -350,7 +350,7 @@ describe("applyNativeName", () => {
 			metadata: { renameSource: "user" },
 		});
 		const result = await applyNativeName("manual-1", "native-name-from-claude");
-		expect(result).toEqual({ found: true, applied: false });
+		expect(result).toEqual({ found: true, applied: false, reason: "manual_rename" });
 
 		const row = await getSession("manual-1");
 		// displayName untouched — the core precedence contract.
@@ -446,7 +446,7 @@ describe("applyNativeName", () => {
 		// write path, not a no-op) — this asserts that write doesn't clobber
 		// permissionWait alongside it.
 		const result = await applyNativeName("meta-preserve-refused", "native-name-from-claude");
-		expect(result).toEqual({ found: true, applied: false });
+		expect(result).toEqual({ found: true, applied: false, reason: "manual_rename" });
 
 		const row = await getSession("meta-preserve-refused");
 		const metadata = row?.metadata as Record<string, unknown> | null;
@@ -478,6 +478,74 @@ describe("applyNativeName", () => {
 		expect(result).toEqual({ found: true, applied: true });
 		const row = await getSession("sync-then-pull");
 		expect(row?.displayName).toBe("claude-native-name");
+	});
+
+	// ─── Phase 2: sanitization + reason discriminant (F11, D14) ──────────────
+
+	test("a control-only (C0) name sanitizes to empty -> reason:empty_after_sanitize, distinct from applied:false", async () => {
+		await mkSession("sanitize-empty", { displayName: "brave-falcon" });
+		const result = await applyNativeName("sanitize-empty", "\x00\x01\x02");
+		expect(result).toEqual({ found: false, applied: false, reason: "empty_after_sanitize" });
+		const row = await getSession("sanitize-empty");
+		expect(row?.displayName).toBe("brave-falcon");
+	});
+
+	test("C0 control characters are stripped, not just trimmed", async () => {
+		await mkSession("sanitize-c0", { displayName: "brave-falcon" });
+		const result = await applyNativeName("sanitize-c0", "a\x01b\x1fc");
+		expect(result).toEqual({ found: true, applied: true });
+		const row = await getSession("sanitize-c0");
+		expect(row?.displayName).toBe("abc");
+	});
+
+	test("DEL (U+007F) is stripped", async () => {
+		await mkSession("sanitize-del", { displayName: "brave-falcon" });
+		await applyNativeName("sanitize-del", "a\u007Fb");
+		const row = await getSession("sanitize-del");
+		expect(row?.displayName).toBe("ab");
+	});
+
+	test("zero-width characters U+200B-200F are stripped", async () => {
+		await mkSession("sanitize-zw", { displayName: "brave-falcon" });
+		await applyNativeName("sanitize-zw", "a​b‌c‍d‎e‏f");
+		const row = await getSession("sanitize-zw");
+		expect(row?.displayName).toBe("abcdef");
+	});
+
+	test("bidi override characters U+202A-202E are stripped", async () => {
+		await mkSession("sanitize-bidi1", { displayName: "brave-falcon" });
+		await applyNativeName("sanitize-bidi1", "a‪b‫c‬d‭e‮f");
+		const row = await getSession("sanitize-bidi1");
+		expect(row?.displayName).toBe("abcdef");
+	});
+
+	test("bidi isolate characters U+2066-2069 are stripped", async () => {
+		await mkSession("sanitize-bidi2", { displayName: "brave-falcon" });
+		await applyNativeName("sanitize-bidi2", "a⁦b⁧c⁨d⁩e");
+		const row = await getSession("sanitize-bidi2");
+		expect(row?.displayName).toBe("abcde");
+	});
+
+	test("a 500-code-point name is truncated to 200 code points", async () => {
+		await mkSession("sanitize-long", { displayName: "brave-falcon" });
+		const longName = "x".repeat(500);
+		await applyNativeName("sanitize-long", longName);
+		const row = await getSession("sanitize-long");
+		expect([...(row?.displayName ?? "")].length).toBe(200);
+	});
+
+	test("truncation is surrogate-safe: a name straddling the 200-code-point boundary with a surrogate pair leaves no lone surrogate", async () => {
+		await mkSession("sanitize-surrogate", { displayName: "brave-falcon" });
+		// 199 ASCII chars + a 2-code-unit astral character (U+1F600) straddling
+		// the naive-slice(200) boundary, plus padding so the source is long
+		// enough to actually need truncation.
+		const longName = `${"x".repeat(199)}\u{1F600}${"y".repeat(100)}`;
+		await applyNativeName("sanitize-surrogate", longName);
+		const row = await getSession("sanitize-surrogate");
+		const result = row?.displayName ?? "";
+		expect([...result].length).toBe(200);
+		expect(/[\uD800-\uDFFF]/.test(result)).toBe(false);
+		expect(result).not.toContain("�");
 	});
 });
 
