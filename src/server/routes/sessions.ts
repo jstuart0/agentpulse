@@ -135,9 +135,19 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 // (F47: the carve-out must not leak into the plain-rename 400-on-missing-name
 // check). Stays manage-only; it is deliberately NOT in
 // INGEST_WRITABLE_ROUTES.
+// xander (Low, optional): the only three values anything ever sends are
+// "user" (dashboard/Ask), "sync" (relay Codex name-sync) and "reset" (D14) —
+// reject anything else outright instead of silently legacy-neutral no-op'ing
+// on a typo'd or unexpected value.
+const ALLOWED_RENAME_SOURCES = new Set(["user", "sync", "reset"]);
+
 sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 	const sessionId = c.req.param("sessionId");
 	const { name, source } = await c.req.json<{ name?: string; source?: string }>();
+
+	if (source !== undefined && !ALLOWED_RENAME_SOURCES.has(source)) {
+		return c.json({ error: "invalid_source", value: source }, 400);
+	}
 
 	if (source === "reset") {
 		const result = await resetNameSource(sessionId);

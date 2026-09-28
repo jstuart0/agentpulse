@@ -99,6 +99,20 @@ describe("PUT /sessions/:id/rename", () => {
 		const row = await getSession("route-sync-source");
 		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).toBeUndefined();
 	});
+
+	// xander (Low, optional): reject a source outside the three real values
+	// instead of silently legacy-neutral no-op'ing on a typo.
+	test("an unrecognized source value → 400 invalid_source", async () => {
+		await mkSession("route-bogus-source");
+		const res = await app.request("/api/v1/sessions/route-bogus-source/rename", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name: "x", source: "bogus" }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json();
+		expect(body).toEqual({ error: "invalid_source", value: "bogus" });
+	});
 });
 
 describe("PUT /sessions/:id/native-name", () => {

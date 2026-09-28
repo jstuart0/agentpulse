@@ -35,14 +35,25 @@ export function _resetDbReadyForTest(ready = false): void {
 	_dbReady = ready;
 }
 
+type FileReader = (path: string) => Promise<string>;
+const defaultReadFile: FileReader = (path) => readFile(path, "utf-8");
+
 // D3/F20: checksums of the relay/statusline client scripts this server ships,
 // so a running relay or statusline install can detect drift against the
 // server it's talking to. `trimEnd` ignores trailing-newline-only diffs
 // (the kind git/editors introduce without changing behavior). Lenient by
 // design — a container image that doesn't ship scripts/ (or any read
 // failure) simply omits the affected key rather than failing the health
-// check the startup/liveness probes depend on.
-async function computeClientChecksums(): Promise<Record<string, string>> {
+// check the startup/liveness probes depend on: each file read is caught
+// individually, so this function itself never rejects.
+//
+// F83 (tessa mid-build): `readFileImpl` is injectable so a test can point at
+// a nonexistent path to exercise the "missing file" branch without mocking
+// node:fs globally (which risked destabilizing unrelated tests sharing the
+// process) — exported for exactly that test.
+export async function computeClientChecksums(
+	readFileImpl: FileReader = defaultReadFile,
+): Promise<Record<string, string>> {
 	const clients: Record<string, string> = {};
 	const files: Array<[key: string, relPath: string]> = [
 		["relay", "../../../scripts/relay.ts"],
@@ -50,7 +61,7 @@ async function computeClientChecksums(): Promise<Record<string, string>> {
 	];
 	for (const [key, relPath] of files) {
 		try {
-			const content = await readFile(join(import.meta.dir, relPath), "utf-8");
+			const content = await readFileImpl(join(import.meta.dir, relPath));
 			clients[key] = await computeChecksum(content, { trimEnd: true });
 		} catch {
 			// Missing file — omit this key, don't fail the health check.

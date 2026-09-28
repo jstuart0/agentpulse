@@ -115,6 +115,9 @@ export function SessionHeader(props: SessionHeaderProps) {
 					<InlineRename
 						sessionId={session.sessionId}
 						currentName={displayName}
+						nameSource={session.nameSource}
+						nativeName={session.nativeName}
+						agentType={session.agentType}
 						onRenamed={onRename}
 					/>
 					{session.isWorking && (

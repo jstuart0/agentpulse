@@ -35,20 +35,26 @@ const buckets = new Map<string, Bucket>();
 /**
  * Consume one token for `keyId`.
  * Returns true if the request is allowed, false if it should be dropped.
+ *
+ * F84 (tessa mid-build): `now` is injectable so a unit test can pin an exact
+ * instant (no wall-clock refill between calls) and prove the capacity
+ * boundary precisely — capacity is default-exported at RATE_LIMIT, not
+ * fuzzed by real elapsed time the way the integration-tier tests are.
+ * Defaults to `Date.now` for every production call site.
  */
-function tryConsume(keyId: string): boolean {
-	const now = Date.now();
+export function tryConsume(keyId: string, now: () => number = Date.now): boolean {
+	const nowMs = now();
 	let bucket = buckets.get(keyId);
 
 	if (!bucket) {
-		bucket = { tokens: RATE_LIMIT, lastRefillMs: now };
+		bucket = { tokens: RATE_LIMIT, lastRefillMs: nowMs };
 		buckets.set(keyId, bucket);
 	}
 
 	// Refill tokens proportional to elapsed time (continuous refill).
-	const elapsedSec = (now - bucket.lastRefillMs) / 1000;
+	const elapsedSec = (nowMs - bucket.lastRefillMs) / 1000;
 	bucket.tokens = Math.min(RATE_LIMIT, bucket.tokens + elapsedSec * RATE_LIMIT);
-	bucket.lastRefillMs = now;
+	bucket.lastRefillMs = nowMs;
 
 	if (bucket.tokens >= 1) {
 		bucket.tokens -= 1;
@@ -56,6 +62,9 @@ function tryConsume(keyId: string): boolean {
 	}
 	return false;
 }
+
+/** The configured capacity (tokens per second / per key). Exported for tests. */
+export const RATE_LIMIT_CAPACITY = RATE_LIMIT;
 
 export interface HookRateLimitOptions {
 	/**

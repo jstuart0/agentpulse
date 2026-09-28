@@ -9,6 +9,7 @@ import { getDb } from "../db/client.js";
 import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { getManagedSession } from "./managed-session-state.js";
+import { sanitizeNativeName } from "./name-sanitizer.js";
 import { mapSessionDto } from "./session-dto.js";
 
 /**
@@ -98,25 +99,10 @@ export async function renameSession(
  * behavior, because the statusline caller needs to distinguish "session not
  * yet ingested — retry next render" from a successful call.
  */
-// F11/xander L2: strip C0 controls + DEL, and the bidi/zero-width ranges
-// that can spoof a name's visual reading order or hide characters
-// (U+200B-200F zero-width, U+202A-202E bidi override, U+2066-2069 bidi
-// isolate). Applied before trimming/capping so a name that's ONLY these
-// characters correctly sanitizes to empty, not to whitespace.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0/DEL control characters from untrusted input
-const UNSAFE_NAME_CHARS_RE = /[\x00-\x1F\x7F​-‏‪-‮⁦-⁩]/g;
-const MAX_NATIVE_NAME_CODE_POINTS = 200;
-
-function sanitizeNativeName(raw: string): string {
-	const stripped = raw.replace(UNSAFE_NAME_CHARS_RE, "").trim();
-	const codePoints = [...stripped];
-	// Code-point-safe truncation — a naive string.slice(0, N) can split a
-	// surrogate pair, leaving a lone surrogate (renders as U+FFFD / mojibake).
-	return codePoints.length > MAX_NATIVE_NAME_CODE_POINTS
-		? codePoints.slice(0, MAX_NATIVE_NAME_CODE_POINTS).join("")
-		: stripped;
-}
-
+// F79 (librarian mid-build): sanitizeNativeName moved to name-sanitizer.ts
+// so it's independently importable for the shared fixture-based test, and
+// (F82, percy) so the pre-cap perf guard lives next to the function it
+// protects.
 export async function applyNativeName(
 	sessionId: string,
 	nativeName: string,

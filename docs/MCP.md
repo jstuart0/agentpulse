@@ -88,7 +88,7 @@ default_tools_approval_mode = "writes"
 | Tool | Wraps | Notes |
 |---|---|---|
 | `list_sessions` | `GET /sessions` | Filterable by status/agent type/project; each row includes a `managed` boolean. |
-| `get_session` | `GET /sessions/:id` | Session detail + last 20 events (previews capped) + `managed` status. |
+| `get_session` | `GET /sessions/:id` | Session detail + last 20 events (previews capped) + `managed` status. `session.nameSource` (`"user"`\|`"native"`\|`"generated"`) and `session.nativeName` report the D14 name-pin state; `list_sessions`' compact rows omit both. |
 | `get_session_timeline` | `GET /sessions/:id/timeline` | Paginated event timeline, independent of `get_session`'s 20-event trim. |
 | `get_event_context` | `GET /sessions/:id/events/:eventId/context` | Events immediately around a given event id. |
 | `get_session_claude_md` | `GET /sessions/:id/claude-md` | The CLAUDE.md content stored for a session. |

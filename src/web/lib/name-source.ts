@@ -37,7 +37,7 @@ export function nameSourceCaption(
 	const shortLabel = AGENT_METADATA[agentType].shortLabel;
 	if (nameSource === "user") {
 		if (nativeName !== null && nativeName !== displayName) {
-			return `Pinned by you (${shortLabel} suggests: "${nativeName}")`;
+			return `Pinned by you · agent name: "${nativeName}"`;
 		}
 		return "Pinned by you";
 	}

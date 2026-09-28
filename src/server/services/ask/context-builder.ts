@@ -146,14 +146,20 @@ function renderSnapshot(s: SessionSnapshot): string {
 	lines.push(
 		`- status: ${s.status}${s.isWorking ? " (working now)" : ""} · tool uses: ${s.totalToolUses}`,
 	);
-	if (s.cwd) lines.push(`- cwd: ${s.cwd}`);
-	if (s.gitBranch) lines.push(`- branch: ${s.gitBranch}`);
+	// xander F87: cwd/gitBranch/currentTask/planSummary are hook-payload
+	// fields, agent-writable exactly like displayName — escaped the same
+	// way. The whole <sessions> block is already labeled untrusted
+	// (ASK_SYSTEM_PROMPT below), so no per-field label is repeated here.
+	if (s.cwd) lines.push(`- cwd: "${formatUntrustedInline(s.cwd)}"`);
+	if (s.gitBranch) lines.push(`- branch: "${formatUntrustedInline(s.gitBranch)}"`);
 	if (s.semanticStatus) lines.push(`- semantic: ${s.semanticStatus}`);
-	if (s.currentTask) lines.push(`- current task: ${s.currentTask}`);
+	if (s.currentTask) lines.push(`- current task: "${formatUntrustedInline(s.currentTask)}"`);
 	lines.push(`- last activity: ${s.lastActivityAt}`);
 	if (s.planSummary && s.planSummary.length > 0) {
 		lines.push("- plan:");
-		for (const step of s.planSummary.slice(0, 8)) lines.push(`   - ${step}`);
+		for (const step of s.planSummary.slice(0, 8)) {
+			lines.push(`   - "${formatUntrustedInline(step)}"`);
+		}
 	}
 	if (s.recentEvents.length > 0) {
 		lines.push("- recent events (oldest → newest):");

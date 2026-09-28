@@ -77,6 +77,11 @@ async function ensureQueueDirs() {
 	await mkdir(hookProcessingDir, { recursive: true });
 }
 
+// F80: intentionally duplicates src/server/util/checksum.ts's computeChecksum
+// rather than importing it — the relay is a self-contained single file with
+// no dependency on the server's source tree (it has to run standalone on a
+// machine that only has the relay script, not the whole repo checkout).
+// Phase 3 brings this up to parity with the server's `{trimEnd}` option.
 async function computeChecksum(content: string): Promise<string> {
 	const data = new TextEncoder().encode(content);
 	const hash = await crypto.subtle.digest("SHA-256", data);

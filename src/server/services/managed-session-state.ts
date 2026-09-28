@@ -11,6 +11,7 @@ import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { generateSessionName } from "./name-generator.js";
+import { mapSessionDto } from "./session-dto.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -201,15 +202,24 @@ export async function upsertManagedSessionState(
 		.where(eq(managedSessions.sessionId, input.sessionId))
 		.limit(1);
 
+	// F85 (ian mid-build): map here, once, so the REST response (this
+	// function's `session`, returned as-is by supervisors.ts's
+	// `c.json(result)`) and the WS broadcast (notifySessionUpdated, called
+	// with this same object) can never drift apart on nameSource/nativeName.
+	// mapSessionDto is pure/idempotent over (displayName, metadata), so the
+	// notifier's own internal re-map is a harmless no-op recomputation, not
+	// a second source of truth.
+	const mappedSession = mapSessionDto(currentSession, {
+		managedSession: managedRow ? mapManagedSession(managedRow) : null,
+	});
+
 	return {
-		session: {
-			// currentSession is a raw DB row and genuinely lacks the derived
-			// nameSource/nativeName fields — notifySessionUpdated (Phase 2,
-			// D14/F48) computes them via mapSessionDto() before broadcasting,
-			// so this cast is safe: the gap is filled downstream, not here.
-			...(currentSession as unknown as Session),
-			managedSession: managedRow ? mapManagedSession(managedRow) : null,
-		},
+		// Drizzle infers `agentType`/`status` etc. as plain `string`; `Session`
+		// narrows them to literal unions. The producers only ever stamp valid
+		// members, so this cast is the same DB-row-to-typed-view boundary
+		// used elsewhere in this file (mapManagedSession above) — unrelated
+		// to nameSource/nativeName, which mapSessionDto already filled in.
+		session: mappedSession as unknown as Session,
 		managedSession: mapManagedSession(managedRow!),
 	};
 }

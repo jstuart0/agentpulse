@@ -197,6 +197,12 @@ export interface Session {
 	isArchived: boolean;
 	managedSession?: ManagedSession | null;
 	managed?: boolean;
+	// F86 (ian mid-build, D14/Phase 2): optional for backward-compat with a
+	// server predating mapSessionDto — a get_session response from a
+	// current server always includes both. compactSessionRow (list_sessions)
+	// intentionally omits them.
+	nameSource?: "user" | "native" | "generated";
+	nativeName?: string | null;
 }
 
 export interface SessionEvent {
