@@ -221,6 +221,15 @@ export const api = {
 			body: JSON.stringify({ name, source: "user" }),
 		}),
 
+	resetSessionName: (sessionId: string) =>
+		// D14: clears the manual-rename pin (metadata.renameSource) and, if an
+		// agent-reported native name has ever been observed, applies it
+		// immediately server-side.
+		request<{ ok: true }>(`/sessions/${sessionId}/rename`, {
+			method: "PUT",
+			body: JSON.stringify({ source: "reset" }),
+		}),
+
 	updateSessionPin: (sessionId: string, pinned: boolean) =>
 		request<{ ok: true }>(`/sessions/${sessionId}/pin`, {
 			method: "PUT",

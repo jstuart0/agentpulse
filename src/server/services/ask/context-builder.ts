@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
 import { events, sessions } from "../../db/schema/index.js";
+import { formatUntrustedInline } from "../ai/untrusted-text.js";
 import { getSearchBackend } from "../search/index.js";
 import type { ResolvedSession } from "./resolver.js";
 
@@ -138,7 +139,7 @@ async function loadSnapshot(sessionId: string, ftsQuery?: string): Promise<Sessi
 
 function renderSnapshot(s: SessionSnapshot): string {
 	const lines: string[] = [];
-	const title = s.displayName ?? s.sessionId.slice(0, 8);
+	const title = formatUntrustedInline(s.displayName ?? s.sessionId.slice(0, 8));
 	lines.push(`## Session: ${title}`);
 	lines.push(`- id: ${s.sessionId}`);
 	lines.push(`- agent: ${s.agentType}`);

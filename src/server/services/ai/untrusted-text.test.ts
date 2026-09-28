@@ -88,12 +88,17 @@ describe("ai/context.ts:119 — real system-prompt assembly", () => {
 			// biome-ignore lint/suspicious/noExplicitAny: minimal Session fixture for a pure-function test
 		} as any;
 		const ctx = buildWatcherContext({ session, events: [], triggerType: "manual" });
-		const identityLine = ctx.systemPrompt
-			.split("\n")
-			.find((l: string) => l.startsWith("- Session:"));
+		const lines = ctx.systemPrompt.split("\n");
+		const identityLine = lines.find((l: string) => l.startsWith("- Session:"));
 		expect(identityLine).toBeDefined();
+		// The fake instruction text is still present (formatUntrustedInline
+		// doesn't blocklist phrases — that's an arms race it can't win), but
+		// it's no longer its OWN prompt line: the newline that would have
+		// isolated "# SYSTEM: ..." as a line-leading instruction is
+		// collapsed, folding it into the quoted, labeled identity line
+		// instead. That's the actual defense: no separate injected line.
 		expect(identityLine).not.toContain("\n");
-		expect(identityLine).not.toContain("# SYSTEM:");
+		expect(lines.some((l: string) => l.trim().startsWith("# SYSTEM:"))).toBe(false);
 		expect(ctx.systemPrompt.toLowerCase()).toContain("untrusted");
 	});
 });

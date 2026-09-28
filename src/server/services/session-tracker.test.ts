@@ -24,6 +24,16 @@ function isoAgo(ms: number): string {
 	return new Date(Date.now() - ms).toISOString();
 }
 
+// True when `s` contains a high surrogate not followed by its matching low
+// surrogate, or a low surrogate not preceded by its matching high surrogate.
+// Deliberately NOT `/[\uD800-\uDFFF]/.test(s)` — that flags every surrogate
+// code unit including a validly-paired astral character (any emoji), so it
+// can't distinguish "truncation preserved a code point" from "truncation
+// split a surrogate pair".
+function hasLoneSurrogate(s: string): boolean {
+	return /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/.test(s);
+}
+
 async function mkSession(sessionId: string, overrides: Record<string, unknown> = {}) {
 	await getDb()
 		.insert(sessions)
@@ -544,7 +554,13 @@ describe("applyNativeName", () => {
 		const row = await getSession("sanitize-surrogate");
 		const result = row?.displayName ?? "";
 		expect([...result].length).toBe(200);
-		expect(/[\uD800-\uDFFF]/.test(result)).toBe(false);
+		// A plain /[\uD800-\uDFFF]/ test (no `u` flag) flags every surrogate
+		// code unit, including a validly-paired astral character — which is
+		// exactly what a truncation-preserved emoji looks like. It can't
+		// distinguish "paired" from "lone", so it can't tell truncation
+		// succeeded from truncation corrupting the string. hasLoneSurrogate
+		// requires an unmatched high or low surrogate specifically.
+		expect(hasLoneSurrogate(result)).toBe(false);
 		expect(result).not.toContain("�");
 	});
 });

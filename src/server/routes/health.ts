@@ -1,6 +1,9 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Hono } from "hono";
 import pkg from "../../../package.json" with { type: "json" };
 import { isShuttingDown } from "../drain-state.js";
+import { computeChecksum } from "../util/checksum.js";
 import { getBgErrorCount, getInFlightCount, getRateLimitedDropped } from "./ingest-counters.js";
 
 // Read version from package.json at module init — independent of how the
@@ -32,6 +35,30 @@ export function _resetDbReadyForTest(ready = false): void {
 	_dbReady = ready;
 }
 
+// D3/F20: checksums of the relay/statusline client scripts this server ships,
+// so a running relay or statusline install can detect drift against the
+// server it's talking to. `trimEnd` ignores trailing-newline-only diffs
+// (the kind git/editors introduce without changing behavior). Lenient by
+// design — a container image that doesn't ship scripts/ (or any read
+// failure) simply omits the affected key rather than failing the health
+// check the startup/liveness probes depend on.
+async function computeClientChecksums(): Promise<Record<string, string>> {
+	const clients: Record<string, string> = {};
+	const files: Array<[key: string, relPath: string]> = [
+		["relay", "../../../scripts/relay.ts"],
+		["statusline", "../../../scripts/statusline.sh"],
+	];
+	for (const [key, relPath] of files) {
+		try {
+			const content = await readFile(join(import.meta.dir, relPath), "utf-8");
+			clients[key] = await computeChecksum(content, { trimEnd: true });
+		} catch {
+			// Missing file — omit this key, don't fail the health check.
+		}
+	}
+	return clients;
+}
+
 // GET /api/v1/health - Liveness probe + operator observability.
 //
 // Returns 503 until the database has finished initialising (startupProbe
@@ -44,7 +71,9 @@ export function _resetDbReadyForTest(ready = false): void {
 //  - rateLimitedDropped: cumulative count of silently-dropped rate-limited hooks.
 //  - shuttingDown: true when drain has been triggered (readiness returns 503).
 //  - dbReady: true only after initializeDatabase() completes (S-24).
-health.get("/health", (c) => {
+//  - clients (D3/F20): relay/statusline script checksums, omitted entirely on
+//    read failure (see computeClientChecksums).
+health.get("/health", async (c) => {
 	if (!_dbReady) {
 		return c.json(
 			{
@@ -56,6 +85,7 @@ health.get("/health", (c) => {
 			503,
 		);
 	}
+	const clients = await computeClientChecksums();
 	return c.json({
 		status: "ok",
 		service: "agentpulse",
@@ -66,6 +96,7 @@ health.get("/health", (c) => {
 		rateLimitedDropped: getRateLimitedDropped(),
 		shuttingDown: isShuttingDown(),
 		dbReady: true,
+		...(Object.keys(clients).length > 0 ? { clients } : {}),
 	});
 });
 

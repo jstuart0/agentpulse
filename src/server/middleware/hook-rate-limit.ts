@@ -57,23 +57,53 @@ function tryConsume(keyId: string): boolean {
 	return false;
 }
 
-/**
- * Hono middleware factory for hook ingest rate limiting.
- *
- * Expects `c.get("apiKeyId")` to be set by requireApiKey() upstream.
- * On rate-limit hit: increments rateLimitedDropped, returns 200 immediately
- * — no downstream handler is invoked.
- */
-export function hookRateLimit() {
-	return async (c: Context, next: Next): Promise<Response | undefined> => {
-		// authUser is set by requireApiKey() before this middleware runs.
-		// authUser.id is the API key's database id (unique per key).
-		// In DISABLE_AUTH mode id is "anonymous" — one shared bucket, which
-		// is fine since there's no per-key isolation to enforce.
-		const authUser = c.get("authUser") as { id?: string } | undefined;
-		const apiKeyId = authUser?.id ?? "anonymous";
+export interface HookRateLimitOptions {
+	/**
+	 * Prefixes the bucket key so this call site gets its own token bucket,
+	 * independent of `/hooks`'s default (unprefixed) buckets. D20:
+	 * `/native-name` uses `"native-name:"`.
+	 */
+	bucketPrefix?: string;
+	/**
+	 * `/hooks` must never return 429 post-auth (CLAUDE.md mandate) — the
+	 * default "200-silent" drops the request silently. D20's `/native-name`
+	 * limiter opts into a real 429 via "429" instead.
+	 */
+	onLimit?: "200-silent" | "429";
+}
 
-		if (!tryConsume(apiKeyId)) {
+/**
+ * Hono middleware factory for hook-shaped rate limiting.
+ *
+ * Bucket key: api_key callers use their key id (`<bucketPrefix><id>`, one
+ * bucket per key — D20). Non-api_key callers (forwardauth/local/
+ * DISABLE_AUTH) use `<bucketPrefix><source>:<sessionId>`, keyed per session
+ * rather than one shared bucket, since a dashboard operator resetting many
+ * different sessions' names shouldn't be throttled as a single caller.
+ *
+ * On rate-limit hit: `onLimit:"200-silent"` (default) increments
+ * rateLimitedDropped and returns 200 immediately, no downstream handler —
+ * the /hooks always-200 contract. `onLimit:"429"` returns
+ * 429 { error: "rate_limited" } instead.
+ */
+export function hookRateLimit(options: HookRateLimitOptions = {}) {
+	const bucketPrefix = options.bucketPrefix ?? "";
+	const onLimit = options.onLimit ?? "200-silent";
+	return async (c: Context, next: Next): Promise<Response | undefined> => {
+		// authUser is set by requireApiKey()/requireAuth() before this
+		// middleware runs. authUser.id is the API key's database id (unique
+		// per key). In DISABLE_AUTH mode id is "anonymous" — one shared
+		// bucket, which is fine since there's no per-key isolation to enforce.
+		const authUser = c.get("authUser") as { id?: string; source?: string } | undefined;
+		const bucketKey =
+			authUser?.source === "api_key" || authUser === undefined
+				? `${bucketPrefix}${authUser?.id ?? "anonymous"}`
+				: `${bucketPrefix}${authUser.source}:${c.req.param("sessionId") ?? "none"}`;
+
+		if (!tryConsume(bucketKey)) {
+			if (onLimit === "429") {
+				return c.json({ error: "rate_limited" }, 429);
+			}
 			incrementRateLimitedDropped();
 			// Return 200 — never 429 post-auth (CLAUDE.md mandate).
 			return c.json({ ok: true });

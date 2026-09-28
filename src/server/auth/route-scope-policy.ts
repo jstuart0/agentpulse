@@ -28,7 +28,7 @@
  */
 import type { Context, Next } from "hono";
 import { config } from "../config.js";
-import { SCOPE_ALL, SCOPE_MANAGE, SCOPE_OBSERVE } from "./api-key.js";
+import { SCOPE_ALL, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE } from "./api-key.js";
 import type { AuthUser } from "./middleware.js";
 
 const READ_METHODS = new Set(["GET", "HEAD"]);
@@ -96,6 +96,43 @@ export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
 	"/ai/inbox/snoozes",
 	"/ai/risk-classes",
 ]);
+
+/**
+ * Method-qualified route templates an `ingest`-scoped API key may write to
+ * (D1). Exactly one entry today: the relay/statusline's native-name pull.
+ * Deliberately explicit and hand-maintained — an ingest key proxies agent-
+ * reported metadata, not operator intent, so widening this list is a
+ * conscious security decision, never an accident of a route-registration
+ * refactor. The route-drift guard (route-scope-policy.test.ts) walks the
+ * real app.routes bidirectionally against this set.
+ */
+export const INGEST_WRITABLE_ROUTES: ReadonlySet<string> = new Set([
+	"PUT /sessions/:sessionId/native-name",
+]);
+
+function parseRouteEntry(entry: string): { method: string; segments: string[] } {
+	const spaceIndex = entry.indexOf(" ");
+	const method = entry.slice(0, spaceIndex);
+	const path = entry.slice(spaceIndex + 1);
+	return { method, segments: splitSegments(path) };
+}
+
+/**
+ * True when (method, path) is a literal member of INGEST_WRITABLE_ROUTES,
+ * using the same structural segment-by-segment matcher as classifyRoute
+ * (never a prefix/substring test).
+ */
+export function isIngestWritable(method: string, path: string): boolean {
+	const normalized = normalizeRoutePath(path);
+	const pathSegments = splitSegments(normalized);
+	const upperMethod = method.toUpperCase();
+	for (const entry of INGEST_WRITABLE_ROUTES) {
+		const parsed = parseRouteEntry(entry);
+		if (parsed.method !== upperMethod) continue;
+		if (matchesTemplate(pathSegments, parsed.segments)) return true;
+	}
+	return false;
+}
 
 const MOUNT_PREFIXES = ["/api/v1", "/app-api/v1"];
 
@@ -188,6 +225,8 @@ export function callerHasManageScope(authUser: AuthUser | undefined): boolean {
  *    OBSERVE_READ_PATHS (classifyRoute keyed on the resolved request path;
  *    see the implementation note on classifyRoute for why c.req.path is
  *    used here rather than c.req.routePath).
+ *  - api_key callers holding `ingest` → pass only on (method, path) pairs
+ *    in INGEST_WRITABLE_ROUTES (D1) — today just PUT .../native-name.
  *  - Otherwise → 403 { error: "insufficient_scope", required: "manage" }.
  *    `required` is always "manage": the message names the scope that
  *    unconditionally unlocks every operator route, not the (possibly lower)
@@ -221,6 +260,10 @@ export function requireOperatorScope() {
 			scopes.includes(SCOPE_OBSERVE) &&
 			classifyRoute(c.req.method, c.req.path) === SCOPE_OBSERVE
 		) {
+			return next();
+		}
+
+		if (scopes.includes(SCOPE_INGEST) && isIngestWritable(c.req.method, c.req.path)) {
 			return next();
 		}
 

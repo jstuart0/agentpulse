@@ -203,7 +203,11 @@ export async function upsertManagedSessionState(
 
 	return {
 		session: {
-			...(currentSession as Session),
+			// currentSession is a raw DB row and genuinely lacks the derived
+			// nameSource/nativeName fields — notifySessionUpdated (Phase 2,
+			// D14/F48) computes them via mapSessionDto() before broadcasting,
+			// so this cast is safe: the gap is filled downstream, not here.
+			...(currentSession as unknown as Session),
 			managedSession: managedRow ? mapManagedSession(managedRow) : null,
 		},
 		managedSession: mapManagedSession(managedRow!),

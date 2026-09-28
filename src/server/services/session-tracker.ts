@@ -9,6 +9,7 @@ import { getDb } from "../db/client.js";
 import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { getManagedSession } from "./managed-session-state.js";
+import { mapSessionDto } from "./session-dto.js";
 
 /**
  * Rename a session atomically across `sessions` and (when present)
@@ -97,11 +98,37 @@ export async function renameSession(
  * behavior, because the statusline caller needs to distinguish "session not
  * yet ingested — retry next render" from a successful call.
  */
+// F11/xander L2: strip C0 controls + DEL, and the bidi/zero-width ranges
+// that can spoof a name's visual reading order or hide characters
+// (U+200B-200F zero-width, U+202A-202E bidi override, U+2066-2069 bidi
+// isolate). Applied before trimming/capping so a name that's ONLY these
+// characters correctly sanitizes to empty, not to whitespace.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0/DEL control characters from untrusted input
+const UNSAFE_NAME_CHARS_RE = /[\x00-\x1F\x7F​-‏‪-‮⁦-⁩]/g;
+const MAX_NATIVE_NAME_CODE_POINTS = 200;
+
+function sanitizeNativeName(raw: string): string {
+	const stripped = raw.replace(UNSAFE_NAME_CHARS_RE, "").trim();
+	const codePoints = [...stripped];
+	// Code-point-safe truncation — a naive string.slice(0, N) can split a
+	// surrogate pair, leaving a lone surrogate (renders as U+FFFD / mojibake).
+	return codePoints.length > MAX_NATIVE_NAME_CODE_POINTS
+		? codePoints.slice(0, MAX_NATIVE_NAME_CODE_POINTS).join("")
+		: stripped;
+}
+
 export async function applyNativeName(
 	sessionId: string,
 	nativeName: string,
-): Promise<{ found: boolean; applied: boolean }> {
-	const trimmed = nativeName.trim();
+): Promise<{
+	found: boolean;
+	applied: boolean;
+	reason?: "manual_rename" | "empty_after_sanitize";
+}> {
+	const sanitized = sanitizeNativeName(nativeName);
+	if (sanitized.length === 0) {
+		return { found: false, applied: false, reason: "empty_after_sanitize" };
+	}
 	return withTransaction(async (tx) => {
 		const [row] = await tx
 			.select({ displayName: sessions.displayName, metadata: sessions.metadata })
@@ -111,30 +138,66 @@ export async function applyNativeName(
 		if (!row) return { found: false, applied: false };
 
 		const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
-		const alreadySeen = metadata.nativeName === trimmed;
+		const alreadySeen = metadata.nativeName === sanitized;
 
 		if (metadata.renameSource === "user") {
 			// Manual rename wins. Record that we saw this native name (for
 			// idempotency and so later state-diff logic isn't confused about
 			// whether it was observed), but refuse to apply it.
-			if (alreadySeen) return { found: true, applied: false };
-			metadata.nativeName = trimmed;
+			if (alreadySeen) return { found: true, applied: false, reason: "manual_rename" };
+			metadata.nativeName = sanitized;
 			await tx.update(sessions).set({ metadata }).where(eq(sessions.sessionId, sessionId));
-			return { found: true, applied: false };
+			return { found: true, applied: false, reason: "manual_rename" };
 		}
 
-		if (alreadySeen && row.displayName === trimmed) {
+		if (alreadySeen && row.displayName === sanitized) {
 			// No-op: already applied on a prior call, nothing changed.
 			return { found: true, applied: true };
 		}
 
-		metadata.nativeName = trimmed;
-		metadata.lastAppliedNativeName = trimmed;
+		metadata.nativeName = sanitized;
+		metadata.lastAppliedNativeName = sanitized;
 		await tx
 			.update(sessions)
-			.set({ displayName: trimmed, metadata })
+			.set({ displayName: sanitized, metadata })
 			.where(eq(sessions.sessionId, sessionId));
 		return { found: true, applied: true };
+	});
+}
+
+/**
+ * D14: clear the manual-rename pin and, if an agent-reported native name
+ * has ever been observed, apply it immediately (so the DTO's nameSource
+ * reads "native" right away, without waiting for the next /native-name
+ * pull). No-op on displayName when nativeName was never recorded — the
+ * session just becomes eligible for the next native-name pull again.
+ */
+export async function resetNameSource(
+	sessionId: string,
+): Promise<{ found: boolean; nativeNameApplied: boolean }> {
+	return withTransaction(async (tx) => {
+		const [row] = await tx
+			.select({ displayName: sessions.displayName, metadata: sessions.metadata })
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		if (!row) return { found: false, nativeNameApplied: false };
+
+		const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
+		// biome-ignore lint/performance/noDelete: clearing a JSON metadata key must remove it, not set it to undefined (which would still serialize)
+		delete metadata.renameSource;
+
+		const nativeName = metadata.nativeName;
+		const updates: Record<string, unknown> = { metadata };
+		let nativeNameApplied = false;
+		if (typeof nativeName === "string" && nativeName.length > 0) {
+			updates.displayName = nativeName;
+			metadata.lastAppliedNativeName = nativeName;
+			nativeNameApplied = true;
+		}
+
+		await tx.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+		return { found: true, nativeNameApplied };
 	});
 }
 
@@ -206,7 +269,9 @@ export async function getSessions(filters?: {
 					.where(inArray(managedSessions.sessionId, pageSessionIds))
 			: [];
 	const managedIds = new Set(managedRows.map((row) => row.sessionId));
-	const rowsWithManaged = rows.map((row) => ({ ...row, managed: managedIds.has(row.sessionId) }));
+	const rowsWithManaged = rows.map((row) =>
+		mapSessionDto(row, { managed: managedIds.has(row.sessionId) }),
+	);
 
 	return { sessions: rowsWithManaged, total };
 }
@@ -220,7 +285,7 @@ export async function getSession(sessionId: string) {
 		.limit(1);
 	if (!session) return null;
 	const managedSession = await getManagedSession(sessionId);
-	return { ...session, managedSession };
+	return mapSessionDto(session, { managedSession });
 }
 
 // Get dashboard stats

@@ -990,9 +990,12 @@ describe("requireOperatorScope — an ingest-only key on PUT /sessions/:id/nativ
 	test("ingest-only key passes native-name but is still 403 on /rename", async () => {
 		const { key } = await createApiKey("ingest-writable-test", [SCOPE_INGEST]);
 		for (const mount of MOUNTS) {
+			const jsonHeaders = new Headers(authBearer(key));
+			jsonHeaders.set("Content-Type", "application/json");
+
 			const nativeRes = await app.request(`${mount}/sessions/does-not-exist/native-name`, {
 				method: "PUT",
-				headers: { ...authBearer(key), "Content-Type": "application/json" },
+				headers: jsonHeaders,
 				body: JSON.stringify({ name: "x" }),
 			});
 			// 404 (unknown session) proves the scope check passed and the
@@ -1001,7 +1004,7 @@ describe("requireOperatorScope — an ingest-only key on PUT /sessions/:id/nativ
 
 			const renameRes = await app.request(`${mount}/sessions/does-not-exist/rename`, {
 				method: "PUT",
-				headers: { ...authBearer(key), "Content-Type": "application/json" },
+				headers: jsonHeaders,
 				body: JSON.stringify({ name: "x", source: "user" }),
 			});
 			expect(renameRes.status).toBe(403);

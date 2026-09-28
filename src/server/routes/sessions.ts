@@ -7,19 +7,23 @@ import { callerHasManageScope, requireOperatorScope } from "../auth/route-scope-
 import { getDb } from "../db/client.js";
 import { events, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { hookRateLimit } from "../middleware/hook-rate-limit.js";
 import {
 	listControlActionsForSession,
 	queuePromptAction,
 	queueStopAction,
 	retryLaunchForSession,
 } from "../services/control-actions.js";
+import { notifySessionUpdated } from "../services/notifier.js";
 import {
 	applyNativeName,
 	getSession,
 	getSessions,
 	getStats,
 	renameSession,
+	resetNameSource,
 } from "../services/session-tracker.js";
+import { computeChecksum } from "../util/checksum.js";
 
 const sessionsRouter = new Hono();
 sessionsRouter.use("*", requireAuth());
@@ -124,13 +128,30 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 // misclassified as a manual rename. The dashboard (src/web/lib/api.ts)
 // and the Ask "rename X to Y" command both send `source: "user"`
 // explicitly.
+//
+// D14: `source: "reset"` is a distinct branch — it clears the manual-rename
+// pin (and applies any already-observed native name immediately) instead of
+// setting a new display name, so `name` is optional ONLY in this branch
+// (F47: the carve-out must not leak into the plain-rename 400-on-missing-name
+// check). Stays manage-only; it is deliberately NOT in
+// INGEST_WRITABLE_ROUTES.
 sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 	const sessionId = c.req.param("sessionId");
-	const { name, source } = await c.req.json<{ name: string; source?: string }>();
+	const { name, source } = await c.req.json<{ name?: string; source?: string }>();
+
+	if (source === "reset") {
+		const result = await resetNameSource(sessionId);
+		if (!result.found) return c.json({ error: "Session not found" }, 404);
+		const session = await getSession(sessionId);
+		if (session) notifySessionUpdated(session);
+		return c.json({ ok: true });
+	}
 
 	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
 
 	await renameSession(sessionId, name, { source });
+	const session = await getSession(sessionId);
+	if (session) notifySessionUpdated(session);
 	return c.json({ ok: true });
 });
 
@@ -142,17 +163,34 @@ sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 // statusline caller can distinguish "not yet ingested, retry next render"
 // from a successful call. See Decision 6 and applyNativeName for the
 // manual-rename precedence rule.
-sessionsRouter.put("/sessions/:sessionId/native-name", async (c) => {
-	const sessionId = c.req.param("sessionId");
-	const { name } = await c.req.json<{ name: string }>();
+//
+// D1/D20: this is the one INGEST_WRITABLE_ROUTES entry — an ingest-scoped
+// relay/statusline key may call it directly. hookRateLimit here opts into a
+// real 429 (unlike /hooks' always-200 contract) since this is a dashboard-
+// adjacent write path, not the ingest firehose.
+sessionsRouter.put(
+	"/sessions/:sessionId/native-name",
+	hookRateLimit({ bucketPrefix: "native-name:", onLimit: "429" }),
+	async (c) => {
+		const sessionId = c.req.param("sessionId");
+		const { name } = await c.req.json<{ name: string }>();
 
-	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
+		if (!name?.trim()) return c.json({ error: "Name required" }, 400);
 
-	const result = await applyNativeName(sessionId, name);
-	if (!result.found) return c.json({ error: "Session not found" }, 404);
+		const result = await applyNativeName(sessionId, name);
+		if (result.reason === "empty_after_sanitize") {
+			return c.json({ error: "Name required" }, 400);
+		}
+		if (!result.found) return c.json({ error: "Session not found" }, 404);
 
-	return c.json({ ok: true, applied: result.applied });
-});
+		if (result.applied) {
+			const session = await getSession(sessionId);
+			if (session) notifySessionUpdated(session);
+		}
+
+		return c.json({ ok: true, applied: result.applied });
+	},
+);
 
 sessionsRouter.get("/sessions/:sessionId/control-actions", async (c) => {
 	const actions = await listControlActionsForSession(c.req.param("sessionId"));
@@ -256,16 +294,6 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 
 	return c.json({ events: combined, target: { id: eventId } });
 });
-
-// Compute a simple hash for sync detection
-async function computeChecksum(content: string): Promise<string> {
-	const data = new TextEncoder().encode(content);
-	const hash = await crypto.subtle.digest("SHA-256", data);
-	return Array.from(new Uint8Array(hash))
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("")
-		.slice(0, 16);
-}
 
 // GET /api/v1/sessions/:sessionId/claude-md - Get CLAUDE.md content from DB
 sessionsRouter.get("/sessions/:sessionId/claude-md", async (c) => {

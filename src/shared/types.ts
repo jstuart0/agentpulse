@@ -337,6 +337,17 @@ export interface Session {
 	isWorking: boolean;
 	isPinned: boolean;
 	gitBranch: string | null;
+	/**
+	 * Derived, not a schema column — computed by mapSessionDto (D14/F48)
+	 * from metadata.renameSource / metadata.lastAppliedNativeName.
+	 * "user": a manual dashboard rename (renameSource==="user") pins the
+	 * name against future native-name pulls. "native": displayName was
+	 * last set by an agent's own native-name pull. "generated": neither —
+	 * the adjective-noun default.
+	 */
+	nameSource: "user" | "native" | "generated";
+	/** Mirrors metadata.nativeName — the last agent-reported name seen, even if a pin refused to apply it. Null if none has ever been observed. */
+	nativeName: string | null;
 	claudeMdContent: string | null;
 	claudeMdPath: string | null;
 	claudeMdUpdatedAt: string | null;

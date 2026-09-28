@@ -139,30 +139,34 @@ describe("PUT /sessions/:id/native-name — ingest-only key", () => {
 });
 
 describe("PUT /sessions/:id/native-name — rate limit (D20, F26)", () => {
-	test("the 101st call from one API key inside the window -> 429 {error:rate_limited}; a second key is unaffected", async () => {
+	// The shared token bucket is continuous-refill (100 tokens/s), by design —
+	// a steady low-rate caller is never throttled. That means a fixed count of
+	// exactly 100 real (DB-backed) requests does not deterministically exhaust
+	// it: wall-clock time spent per request refills a few tokens back before
+	// the loop finishes. 300 sequential real calls builds in enough margin
+	// that the limiter is guaranteed to trip well before the loop ends,
+	// without asserting a specific call index — the property under test is
+	// "this key does get 429'd, with the documented body shape", not "exactly
+	// call N is the first to fail".
+	test("sustained calls from one API key exceed the rate limit -> 429 {error:rate_limited} at least once; a second key is unaffected", async () => {
 		await mkSession("rl-1");
 		const { key: keyA } = await createApiKey("rl-key-a", [SCOPE_INGEST]);
 		const { key: keyB } = await createApiKey("rl-key-b", [SCOPE_INGEST]);
 
-		let lastStatus = 0;
-		for (let i = 0; i < 100; i++) {
+		let rateLimitedBody: unknown;
+		for (let i = 0; i < 300; i++) {
 			const res = await app.request("/api/v1/sessions/rl-1/native-name", {
 				method: "PUT",
 				headers: authBearer(keyA),
 				body: JSON.stringify({ name: `name-${i}` }),
 			});
-			lastStatus = res.status;
+			if (res.status === 429) {
+				rateLimitedBody = await res.json();
+				break;
+			}
+			expect(res.status).toBe(200);
 		}
-		expect(lastStatus).toBe(200);
-
-		const res101 = await app.request("/api/v1/sessions/rl-1/native-name", {
-			method: "PUT",
-			headers: authBearer(keyA),
-			body: JSON.stringify({ name: "name-101" }),
-		});
-		expect(res101.status).toBe(429);
-		const body = await res101.json();
-		expect(body.error).toBe("rate_limited");
+		expect(rateLimitedBody).toEqual({ error: "rate_limited" });
 
 		// A different key's bucket is untouched.
 		const resB = await app.request("/api/v1/sessions/rl-1/native-name", {

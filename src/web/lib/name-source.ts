@@ -1,0 +1,72 @@
+import { AGENT_METADATA } from "../../shared/constants.js";
+import type { AgentType } from "../../shared/types.js";
+
+export type NameSource = "user" | "native" | "generated";
+
+/**
+ * D14: show the "pinned" indicator only when a manual rename is actually
+ * overriding something — either an already-observed native name, or an
+ * agent whose CLI is capable of reporting one (hasNameSource), even if it
+ * hasn't reported yet. A "user" pin on an agent that can never report a
+ * native name (hasNameSource: false) has nothing to protect against, so the
+ * pin affordance stays hidden.
+ */
+export function shouldShowPin(
+	nameSource: NameSource,
+	nativeName: string | null,
+	agentType: AgentType,
+): boolean {
+	if (nameSource !== "user") return false;
+	return nativeName !== null || AGENT_METADATA[agentType].hasNameSource;
+}
+
+/**
+ * D14: caption shown next to the session name in the UI.
+ *  - "user": "Pinned by you", plus the agent's suggested name when it
+ *    differs from the current displayName (nothing to show when they match
+ *    or no native name has been observed yet).
+ *  - "native": "from <shortLabel>" (muted, informational).
+ *  - "generated": no caption.
+ */
+export function nameSourceCaption(
+	nameSource: NameSource,
+	nativeName: string | null,
+	displayName: string,
+	agentType: AgentType,
+): string | null {
+	const shortLabel = AGENT_METADATA[agentType].shortLabel;
+	if (nameSource === "user") {
+		if (nativeName !== null && nativeName !== displayName) {
+			return `Pinned by you (${shortLabel} suggests: "${nativeName}")`;
+		}
+		return "Pinned by you";
+	}
+	if (nameSource === "native") {
+		return `from ${shortLabel}`;
+	}
+	return null;
+}
+
+export type ResetButtonState = "idle" | "pending" | "error";
+export type ResetButtonAction = "start" | "success" | "error" | "reset";
+
+/**
+ * D14: small state machine for the "reset to native name" button —
+ * idle -> pending (request in flight) -> error (request failed) -> idle
+ * (retry), or pending -> idle on success.
+ */
+export function resetButtonState(
+	_current: ResetButtonState,
+	action: ResetButtonAction,
+): ResetButtonState {
+	switch (action) {
+		case "start":
+			return "pending";
+		case "success":
+			return "idle";
+		case "error":
+			return "error";
+		case "reset":
+			return "idle";
+	}
+}
