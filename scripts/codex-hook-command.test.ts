@@ -23,6 +23,52 @@ const COPILOT_FIXTURES_DIR = join(
 	"../src/server/services/agents/__fixtures__/copilot",
 );
 
+// D32 (F205): a flat 150ms wall-clock bound measures the host, not the
+// shim — under real contention (AV scanning every spawn, background VMs,
+// browsers) a correctly-detached shim can legitimately take several hundred
+// ms of scheduler latency before the OS even runs it. The default assertion
+// instead tests the actual contract: comfortably under Codex's own 1s hook
+// timeout, and at least 5x faster than a synchronous curl against the same
+// endpoint would take. This shim's own curl invocation carries `--max-time
+// 2`, so a synchronous mutant of this exact command is bounded at ~2s
+// regardless of whether the stub delays or never responds; SYNC_BASELINE_MS
+// is a conservative reference (>= that bound) so the 5x margin stays
+// meaningful even against slower stub setups. This is the property that
+// discriminates a detached shim from a synchronous curl — see the "mutant"
+// test below, which proves it.
+const DEFAULT_EXIT_BOUND_MS = 750; // comfortably under Codex's own 1s hook timeout (D12/D13)
+const SYNC_BASELINE_MS = 5000;
+const SYNC_MARGIN_BOUND_MS = SYNC_BASELINE_MS / 5; // 1000ms
+// Strict mode (AGENTPULSE_PERF_TESTS=1): the tighter 150ms p95 budget from
+// D13's original spec still runs, opt-in — p95 itself is always recorded.
+const STRICT_P95_BOUND_MS = 150;
+const PERF_TESTS = process.env.AGENTPULSE_PERF_TESTS === "1";
+
+/** D32's default bounded-exit contract — see the block comment above. */
+function assertBoundedExit(ms: number) {
+	expect(ms).toBeLessThan(DEFAULT_EXIT_BOUND_MS);
+	expect(ms).toBeLessThan(SYNC_MARGIN_BOUND_MS);
+}
+
+/**
+ * D32: strips the backgrounding (`& exit 0` -> `; exit 0`, dropping the `&`
+ * that forks the subshell) from a generated command, so the network call
+ * runs synchronously in the foreground instead. Used only to prove the
+ * default assertion discriminates — see "mutant: a synchronous curl...".
+ */
+function toSynchronousMutant(cmd: string): string {
+	const mutated = cmd.replace(
+		/\) <\/dev\/null >\/dev\/null 2>&1 & exit 0$/,
+		") </dev/null >/dev/null 2>&1; exit 0",
+	);
+	if (mutated === cmd) {
+		throw new Error(
+			"toSynchronousMutant: the detached-tail pattern didn't match — command shape changed?",
+		);
+	}
+	return mutated;
+}
+
 type Recorded = {
 	method: string;
 	path: string;
@@ -288,7 +334,7 @@ describe("codex-hook-command.test.ts — fixture replay (item 3)", () => {
 });
 
 describe("codex-hook-command.test.ts — r6 detached-shape timing + cleanup (item 12)", () => {
-	test("process exit is well under 150ms against a stub that delays 5s; p95 recorded", async () => {
+	test("process exit is bounded (D32: <750ms and 5x margin vs. a synchronous curl) against a never-responding stub; p95 recorded", async () => {
 		const never = startNeverRespondingStub();
 		stops.push(never.stop);
 		const home = join(tmp, "home-timing");
@@ -307,16 +353,50 @@ describe("codex-hook-command.test.ts — r6 detached-shape timing + cleanup (ite
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toBe("");
 			expect(result.stderr).toBe("");
-			// this assertion is the empirical proof that the shim doesn't block on
-			// the detached child — see D13's "≤50ms p95 locally" budget.
-			expect(result.ms).toBeLessThan(150);
+			// D32 (F205): this is the empirical proof that the shim doesn't block
+			// on the detached child — a flat host-independent bound, not a
+			// wall-clock number that just measures the CI runner's scheduler.
+			assertBoundedExit(result.ms);
 			samples.push(result.ms);
 		}
 		samples.sort((a, b) => a - b);
 		const p95 = samples[Math.floor(samples.length * 0.95) - 1] ?? samples[samples.length - 1] ?? 0;
 		console.log(
-			`[codex-hook-command] p95 exit time over 20 runs: ${p95.toFixed(2)}ms (budget: 50ms)`,
+			`[codex-hook-command] p95 exit time over 20 runs: ${p95.toFixed(2)}ms (strict budget: ${STRICT_P95_BOUND_MS}ms, checked only when AGENTPULSE_PERF_TESTS=1)`,
 		);
+		// D32: strict mode only — the tighter D13 budget stays meaningful on a
+		// quiet machine but never gates the default CI/dev run.
+		if (PERF_TESTS) {
+			expect(p95).toBeLessThanOrEqual(STRICT_P95_BOUND_MS);
+		}
+	}, 15000);
+
+	test("D32 mutant: a synchronous-curl command (backgrounding removed) fails the default bounded-exit contract", async () => {
+		const never = startNeverRespondingStub();
+		stops.push(never.stop);
+		const home = join(tmp, "home-timing-mutant");
+		await mkdir(join(home, "tmp"), { recursive: true });
+		const realCmd = buildBashHookCommand({
+			baseUrl: never.url,
+			direct: false,
+			agent: "codex_cli",
+			event: "Stop",
+		});
+		const mutantCmd = toSynchronousMutant(realCmd);
+		expect(mutantCmd).not.toBe(realCmd);
+		const fixture = await loadFixture(CODEX_FIXTURES_DIR, "Stop");
+
+		const result = await runSh(mutantCmd, fixture, baseEnv(home));
+
+		// The mutant still exits 0 with no stdout (removing `&` doesn't change
+		// the redirects) — only its *timing* should differ. This is the proof
+		// that assertBoundedExit's thresholds are load-bearing: a shim that
+		// forgot to detach reliably fails them, instead of the test vacuously
+		// passing regardless of implementation.
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toBe("");
+		expect(result.ms).toBeGreaterThanOrEqual(DEFAULT_EXIT_BOUND_MS);
+		expect(result.ms).toBeGreaterThanOrEqual(SYNC_MARGIN_BOUND_MS);
 	}, 15000);
 
 	test("temp file is gone after delivery; server-down leaves no leftover after 3s", async () => {
@@ -493,7 +573,7 @@ describe("codex-hook-command.test.ts — item 13: no stdout / never fail closed 
 				expect(result.stderr).toBe("");
 			}, 15_000);
 
-			test("bounded: process exits well under 150ms against a never-responding stub", async () => {
+			test("bounded (D32): process exit is <750ms and 5x margin vs. a synchronous curl, against a never-responding stub", async () => {
 				const never = startNeverRespondingStub();
 				stops.push(never.stop);
 				const home = join(tmp, `h-${agent}-${event}-bounded`);
@@ -502,7 +582,7 @@ describe("codex-hook-command.test.ts — item 13: no stdout / never fail closed 
 				const fixture = await loadFixture(dir, event);
 				const result = await runSh(cmd, fixture, baseEnv(home));
 				expect(result.exitCode).toBe(0);
-				expect(result.ms).toBeLessThan(150);
+				assertBoundedExit(result.ms);
 			}, 15_000);
 		});
 	}
