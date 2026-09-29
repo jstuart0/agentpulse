@@ -23,50 +23,66 @@ const COPILOT_FIXTURES_DIR = join(
 	"../src/server/services/agents/__fixtures__/copilot",
 );
 
-// D32 (F205): a flat 150ms wall-clock bound measures the host, not the
-// shim — under real contention (AV scanning every spawn, background VMs,
-// browsers) a correctly-detached shim can legitimately take several hundred
-// ms of scheduler latency before the OS even runs it. The default assertion
-// instead tests the actual contract: comfortably under Codex's own 1s hook
-// timeout, and at least 5x faster than a synchronous curl against the same
-// endpoint would take. This shim's own curl invocation carries `--max-time
-// 2`, so a synchronous mutant of this exact command is bounded at ~2s
-// regardless of whether the stub delays or never responds; SYNC_BASELINE_MS
-// is a conservative reference (>= that bound) so the 5x margin stays
-// meaningful even against slower stub setups. This is the property that
-// discriminates a detached shim from a synchronous curl — see the "mutant"
-// test below, which proves it.
-const DEFAULT_EXIT_BOUND_MS = 750; // comfortably under Codex's own 1s hook timeout (D12/D13)
-const SYNC_BASELINE_MS = 5000;
-const SYNC_MARGIN_BOUND_MS = SYNC_BASELINE_MS / 5; // 1000ms
+// D33 (F205): D32's flat 750ms/5x-margin bounds still occasionally measured
+// host contention, not the shim — a single loaded-host gate run flaked on
+// the bounded-exit test, the synchronous-curl mutant, and the temp-file
+// cleanup check all at once. D33 widens the ratio further and switches from
+// racing a fixed wall-clock number to ordering/deadline-based checks:
+//   - Default bounded-exit: <5s against a stub that never answers — far
+//     above any contention this shim has ever measured (observed max
+//     ~1s under heavy load) and far below a stub that would legitimately
+//     take 20s or longer to respond.
+//   - The mutant proof no longer races a wall-clock number at all: a fully
+//     synchronous, unbounded curl (backgrounding *and* --max-time both
+//     removed) against a never-answering stub is *killed* by a 6s guard —
+//     it would otherwise block indefinitely — while the real, detached
+//     shim never approaches that guard. "Got killed" is itself the "the
+//     mutant fails the default contract" result; there's no timing race.
+//   - The temp-file cleanup check polls for the file's absence up to a
+//     10s deadline instead of sleeping a fixed 3s, so it can't undercount
+//     (finish checking before cleanup lands) or overpay wall-clock time on
+//     a healthy run.
+const DEFAULT_EXIT_BOUND_MS = 5000;
+const MUTANT_KILL_GUARD_MS = 6000;
+const TEMP_FILE_CLEANUP_DEADLINE_MS = 10_000;
 // Strict mode (AGENTPULSE_PERF_TESTS=1): the tighter 150ms p95 budget from
 // D13's original spec still runs, opt-in — p95 itself is always recorded.
 const STRICT_P95_BOUND_MS = 150;
 const PERF_TESTS = process.env.AGENTPULSE_PERF_TESTS === "1";
 
-/** D32's default bounded-exit contract — see the block comment above. */
+/** D33's default bounded-exit contract — see the block comment above. */
 function assertBoundedExit(ms: number) {
 	expect(ms).toBeLessThan(DEFAULT_EXIT_BOUND_MS);
-	expect(ms).toBeLessThan(SYNC_MARGIN_BOUND_MS);
 }
 
 /**
- * D32: strips the backgrounding (`& exit 0` -> `; exit 0`, dropping the `&`
- * that forks the subshell) from a generated command, so the network call
- * runs synchronously in the foreground instead. Used only to prove the
- * default assertion discriminates — see "mutant: a synchronous curl...".
+ * D33: strips both the backgrounding (`& exit 0` -> `; exit 0`) and the
+ * client-side `--max-time 2` bound from a generated command, so running it
+ * against a never-answering stub blocks genuinely indefinitely rather than
+ * being saved by curl's own timeout (D12's Risks section calls --max-time a
+ * *second*, independent backstop — stripping only the backgrounding, as
+ * D32 did, still left that backstop in place and made the mutant's actual
+ * runtime an unpredictable function of host/network timing instead of a
+ * reliable "it hangs" signal). Used only to prove the default assertion
+ * discriminates — see the "mutant" test below.
  */
 function toSynchronousMutant(cmd: string): string {
-	const mutated = cmd.replace(
+	const detached = cmd.replace(
 		/\) <\/dev\/null >\/dev\/null 2>&1 & exit 0$/,
 		") </dev/null >/dev/null 2>&1; exit 0",
 	);
-	if (mutated === cmd) {
+	if (detached === cmd) {
 		throw new Error(
 			"toSynchronousMutant: the detached-tail pattern didn't match — command shape changed?",
 		);
 	}
-	return mutated;
+	const unbounded = detached.replace(/--max-time 2 /g, "");
+	if (unbounded === detached) {
+		throw new Error(
+			"toSynchronousMutant: the --max-time pattern didn't match — command shape changed?",
+		);
+	}
+	return unbounded;
 }
 
 type Recorded = {
@@ -138,13 +154,66 @@ async function runSh(
 	return { exitCode, stdout, stderr, ms };
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 3000, stepMs = 25): Promise<boolean> {
+/**
+ * D33: runs `cmd`, but forcibly kills it (SIGKILL) if it hasn't exited
+ * within `guardMs`. `killed` — not the elapsed time — is the signal the
+ * mutant test asserts on: proving a fully-synchronous, unbounded curl
+ * actually hangs (and has to be killed) is a hard, ordering-based fact,
+ * unlike racing its exit time against a fixed wall-clock number.
+ */
+async function runShWithGuard(
+	cmd: string,
+	stdin: Uint8Array | string,
+	env: Record<string, string>,
+	guardMs: number,
+): Promise<{
+	exitCode: number | null;
+	stdout: string;
+	stderr: string;
+	ms: number;
+	killed: boolean;
+}> {
+	const start = performance.now();
+	const proc = Bun.spawn(["sh", "-c", cmd], {
+		stdin: typeof stdin === "string" ? new TextEncoder().encode(stdin) : stdin,
+		stdout: "pipe",
+		stderr: "pipe",
+		env,
+	});
+	let killed = false;
+	const timer = setTimeout(() => {
+		killed = true;
+		proc.kill(9); // SIGKILL — deterministic, doesn't depend on the child trapping SIGTERM
+	}, guardMs);
+	const [stdout, stderr, exitCode] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	clearTimeout(timer);
+	const ms = performance.now() - start;
+	return { exitCode, stdout, stderr, ms, killed };
+}
+
+/**
+ * D33: polls `check` up to `timeoutMs`, never a fixed sleep. Fixed: `check`
+ * previously only worked correctly for synchronous predicates — an async
+ * predicate's Promise is a truthy object, so `if (check())` returned `true`
+ * on the very first call regardless of what it resolved to, silently never
+ * actually waiting. Every call site that passed an async check (the
+ * temp-file-cleanup polls below) was vacuously passing.
+ */
+async function waitFor(
+	check: () => boolean | Promise<boolean>,
+	timeoutMs = 3000,
+	stepMs = 25,
+): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		if (check()) return true;
+		if (await check()) return true;
 		await Bun.sleep(stepMs);
 	}
-	return check();
+	return await check();
 }
 
 let tmp: string;
@@ -158,14 +227,43 @@ beforeAll(async () => {
 	warm.stop(true);
 });
 
+// D33: the mutant test's kill-guard runs push a single test body's wall
+// time up to ~2x MUTANT_KILL_GUARD_MS; under contention the surrounding
+// beforeEach/afterEach hooks need matching headroom, not bun:test's 5s
+// default, or cleanup itself becomes the flake source D33 exists to remove.
+const HOOK_TIMEOUT_MS = 30_000;
+// Each cleanup step (stopping one stub, removing the temp dir) is itself
+// bounded and best-effort: under extreme contention `rm -rf` on a dir that
+// dozens of now-orphaned, fire-and-forget curl children may still be
+// touching can occasionally be slow. Racing each step against a shorter
+// deadline and moving on (rather than letting the *hook's own* timeout
+// fire) keeps a single slow cleanup from blocking the whole suite's
+// sequential progress — a leftover OS temp dir is harmless and self-cleans.
+const CLEANUP_STEP_TIMEOUT_MS = 8_000;
+
+async function withTimeout(promise: Promise<unknown>, ms: number): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<void>((resolve) => {
+		timer = setTimeout(resolve, ms);
+	});
+	try {
+		await Promise.race([promise.then(() => undefined).catch(() => undefined), timeout]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 beforeEach(async () => {
 	tmp = await mkdtemp(join(tmpdir(), "ap-codex-hook-cmd-"));
-});
+}, HOOK_TIMEOUT_MS);
 
 afterEach(async () => {
-	while (stops.length) await stops.pop()?.();
-	await rm(tmp, { recursive: true, force: true });
-}, 15_000);
+	while (stops.length) {
+		const stop = stops.pop();
+		if (stop) await withTimeout(Promise.resolve(stop()), CLEANUP_STEP_TIMEOUT_MS);
+	}
+	await withTimeout(rm(tmp, { recursive: true, force: true }), CLEANUP_STEP_TIMEOUT_MS);
+}, HOOK_TIMEOUT_MS);
 
 function baseEnv(home: string, extra: Record<string, string> = {}): Record<string, string> {
 	return {
@@ -334,7 +432,7 @@ describe("codex-hook-command.test.ts — fixture replay (item 3)", () => {
 });
 
 describe("codex-hook-command.test.ts — r6 detached-shape timing + cleanup (item 12)", () => {
-	test("process exit is bounded (D32: <750ms and 5x margin vs. a synchronous curl) against a never-responding stub; p95 recorded", async () => {
+	test("process exit is bounded (D33: <5s) against a stub that never answers; p95 recorded", async () => {
 		const never = startNeverRespondingStub();
 		stops.push(never.stop);
 		const home = join(tmp, "home-timing");
@@ -353,9 +451,10 @@ describe("codex-hook-command.test.ts — r6 detached-shape timing + cleanup (ite
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout).toBe("");
 			expect(result.stderr).toBe("");
-			// D32 (F205): this is the empirical proof that the shim doesn't block
-			// on the detached child — a flat host-independent bound, not a
-			// wall-clock number that just measures the CI runner's scheduler.
+			// D33 (F205): this is the empirical proof that the shim doesn't block
+			// on the detached child — a wide, host-independent bound, not a
+			// tight wall-clock number that just measures the CI runner's
+			// scheduler under contention.
 			assertBoundedExit(result.ms);
 			samples.push(result.ms);
 		}
@@ -364,42 +463,62 @@ describe("codex-hook-command.test.ts — r6 detached-shape timing + cleanup (ite
 		console.log(
 			`[codex-hook-command] p95 exit time over 20 runs: ${p95.toFixed(2)}ms (strict budget: ${STRICT_P95_BOUND_MS}ms, checked only when AGENTPULSE_PERF_TESTS=1)`,
 		);
-		// D32: strict mode only — the tighter D13 budget stays meaningful on a
+		// Strict mode only — the tighter D13 budget stays meaningful on a
 		// quiet machine but never gates the default CI/dev run.
 		if (PERF_TESTS) {
 			expect(p95).toBeLessThanOrEqual(STRICT_P95_BOUND_MS);
 		}
 	}, 15000);
 
-	test("D32 mutant: a synchronous-curl command (backgrounding removed) fails the default bounded-exit contract", async () => {
-		const never = startNeverRespondingStub();
-		stops.push(never.stop);
-		const home = join(tmp, "home-timing-mutant");
-		await mkdir(join(home, "tmp"), { recursive: true });
-		const realCmd = buildBashHookCommand({
-			baseUrl: never.url,
-			direct: false,
-			agent: "codex_cli",
-			event: "Stop",
-		});
-		const mutantCmd = toSynchronousMutant(realCmd);
-		expect(mutantCmd).not.toBe(realCmd);
-		const fixture = await loadFixture(CODEX_FIXTURES_DIR, "Stop");
+	test(
+		"D33 mutant: a fully-synchronous, unbounded curl hits a 6s kill guard; the real (detached) shim never does",
+		async () => {
+			const never = startNeverRespondingStub();
+			stops.push(never.stop);
+			const realCmd = buildBashHookCommand({
+				baseUrl: never.url,
+				direct: false,
+				agent: "codex_cli",
+				event: "Stop",
+			});
+			const mutantCmd = toSynchronousMutant(realCmd);
+			expect(mutantCmd).not.toBe(realCmd);
+			expect(mutantCmd).not.toContain("--max-time");
+			const fixture = await loadFixture(CODEX_FIXTURES_DIR, "Stop");
 
-		const result = await runSh(mutantCmd, fixture, baseEnv(home));
+			// The real shim must never approach the guard — it's detached, so its
+			// own exit is independent of how long the backgrounded curl call
+			// actually takes.
+			const homeReal = join(tmp, "home-timing-mutant-real");
+			await mkdir(join(homeReal, "tmp"), { recursive: true });
+			const realResult = await runShWithGuard(
+				realCmd,
+				fixture,
+				baseEnv(homeReal),
+				MUTANT_KILL_GUARD_MS,
+			);
+			expect(realResult.killed).toBe(false);
+			expect(realResult.exitCode).toBe(0);
+			expect(realResult.stdout).toBe("");
 
-		// The mutant still exits 0 with no stdout (removing `&` doesn't change
-		// the redirects) — only its *timing* should differ. This is the proof
-		// that assertBoundedExit's thresholds are load-bearing: a shim that
-		// forgot to detach reliably fails them, instead of the test vacuously
-		// passing regardless of implementation.
-		expect(result.exitCode).toBe(0);
-		expect(result.stdout).toBe("");
-		expect(result.ms).toBeGreaterThanOrEqual(DEFAULT_EXIT_BOUND_MS);
-		expect(result.ms).toBeGreaterThanOrEqual(SYNC_MARGIN_BOUND_MS);
-	}, 15000);
+			// The mutant — now genuinely synchronous and unbounded against a stub
+			// that never answers — must still be blocked on curl when the guard
+			// fires. Getting killed *is* "the mutant fails the default bounded-exit
+			// contract": it never even reaches its own `exit 0`.
+			const homeMutant = join(tmp, "home-timing-mutant-fail");
+			await mkdir(join(homeMutant, "tmp"), { recursive: true });
+			const mutantResult = await runShWithGuard(
+				mutantCmd,
+				fixture,
+				baseEnv(homeMutant),
+				MUTANT_KILL_GUARD_MS,
+			);
+			expect(mutantResult.killed).toBe(true);
+		},
+		MUTANT_KILL_GUARD_MS * 2 + 8000,
+	);
 
-	test("temp file is gone after delivery; server-down leaves no leftover after 3s", async () => {
+	test("temp file is gone after delivery; server-down leaves no leftover", async () => {
 		const stub = startStub();
 		stops.push(stub.stop);
 		const home = join(tmp, "home-cleanup");
@@ -414,7 +533,13 @@ describe("codex-hook-command.test.ts — r6 detached-shape timing + cleanup (ite
 		const fixture = await loadFixture(CODEX_FIXTURES_DIR, "Stop");
 		await runSh(cmd, fixture, baseEnv(home));
 		expect(await waitFor(() => stub.requests.length > 0)).toBe(true);
-		expect(await waitFor(async () => (await readdir(tmpDir)).length === 0)).toBe(true);
+		// D33: poll to a deadline, never a fixed sleep.
+		expect(
+			await waitFor(
+				async () => (await readdir(tmpDir)).length === 0,
+				TEMP_FILE_CLEANUP_DEADLINE_MS,
+			),
+		).toBe(true);
 
 		// server down
 		const home2 = join(tmp, "home-cleanup-down");
@@ -427,9 +552,13 @@ describe("codex-hook-command.test.ts — r6 detached-shape timing + cleanup (ite
 			event: "Stop",
 		});
 		await runSh(cmdDown, fixture, baseEnv(home2));
-		await Bun.sleep(3000);
-		expect((await readdir(tmpDir2)).length).toBe(0);
-	}, 15000);
+		expect(
+			await waitFor(
+				async () => (await readdir(tmpDir2)).length === 0,
+				TEMP_FILE_CLEANUP_DEADLINE_MS,
+			),
+		).toBe(true);
+	}, 25000);
 });
 
 const ALL_AGENT_FIXTURES: Array<{ agent: string; event: string; dir: string }> = [
@@ -573,7 +702,7 @@ describe("codex-hook-command.test.ts — item 13: no stdout / never fail closed 
 				expect(result.stderr).toBe("");
 			}, 15_000);
 
-			test("bounded (D32): process exit is <750ms and 5x margin vs. a synchronous curl, against a never-responding stub", async () => {
+			test("bounded (D33): process exit is <5s against a never-responding stub", async () => {
 				const never = startNeverRespondingStub();
 				stops.push(never.stop);
 				const home = join(tmp, `h-${agent}-${event}-bounded`);
