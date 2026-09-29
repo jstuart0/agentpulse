@@ -1,8 +1,9 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { EventCategory, Session, SessionEvent } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { managedSessions, sessions, supervisors } from "../../db/schema/index.js";
+import { sessions } from "../../db/schema/index.js";
 import { executeRows } from "../../db/sql-helpers.js";
+import { getSessionOwnerConnections } from "../session-ownership.js";
 import { type SessionIntelligence, classifySession } from "./classifier.js";
 import { loadRecentEvents } from "./event-queries.js";
 import {
@@ -31,20 +32,9 @@ export async function intelligenceForSession(
 	const events = await loadRecentEvents(sessionId, CLASSIFIER_EVENT_LOOKBACK);
 	const openHitl = await getOpenHitlForSession(sessionId);
 
-	let supervisorConnected: boolean | undefined;
-	const [managed] = await getDb()
-		.select()
-		.from(managedSessions)
-		.where(eq(managedSessions.sessionId, sessionId))
-		.limit(1);
-	if (managed) {
-		const [sup] = await getDb()
-			.select({ status: supervisors.status })
-			.from(supervisors)
-			.where(eq(supervisors.id, managed.supervisorId))
-			.limit(1);
-		supervisorConnected = sup?.status === "connected";
-	}
+	const supervisorConnected: boolean | undefined = (
+		await getSessionOwnerConnections([sessionId])
+	).get(sessionId);
 
 	return classifySession({
 		session: row as unknown as Session,
@@ -151,20 +141,11 @@ export async function intelligenceForSessions(
 		});
 	}
 
-	// 3) Managed-session + supervisor connected-state in a single left join.
-	const managedRows = await getDb()
-		.select({
-			sessionId: managedSessions.sessionId,
-			supervisorStatus: supervisors.status,
-		})
-		.from(managedSessions)
-		.leftJoin(supervisors, eq(supervisors.id, managedSessions.supervisorId))
-		.where(inArray(managedSessions.sessionId, presentIds));
+	// 3) Owner-of-record supervisor connected-state, batched.
+	const ownerConnected = await getSessionOwnerConnections(presentIds);
 	const managedBySession = new Map<string, { supervisorConnected: boolean }>();
-	for (const r of managedRows) {
-		managedBySession.set(r.sessionId, {
-			supervisorConnected: r.supervisorStatus === "connected",
-		});
+	for (const [id, connected] of ownerConnected) {
+		managedBySession.set(id, { supervisorConnected: connected });
 	}
 
 	// 4) Open HITL across all sessions in one query.

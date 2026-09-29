@@ -18,6 +18,7 @@ import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
+import { ownerLaunchJoin, sessionOwnedBy } from "./session-ownership.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -63,9 +64,10 @@ async function expireStaleControlLocksForSupervisor(supervisorId: string) {
 			sessionId: managedSessions.sessionId,
 		})
 		.from(managedSessions)
+		.leftJoin(launchRequests, ownerLaunchJoin)
 		.where(
 			and(
-				eq(managedSessions.supervisorId, supervisorId),
+				sessionOwnedBy(supervisorId),
 				isNotNull(managedSessions.activeControlActionId),
 				isNotNull(managedSessions.controlLockExpiresAt),
 			),
@@ -174,6 +176,14 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 		.where(eq(launchRequests.id, managed.launchRequestId))
 		.limit(1);
 	if (!launch) throw new Error("Launch request not found.");
+	// D12: refuse to embed another host's launch.env in a prompt when the
+	// managed row's launchRequestId points at a launch for a *different*
+	// session — the last open vector once the write and read sides are
+	// owner-gated. The legacy launch_request_id = session_id fallback always
+	// satisfies this (a launch's own launchCorrelationId equals sessionId).
+	if (launch.launchCorrelationId !== sessionId) {
+		throw new Error("Launch request does not match session.");
+	}
 
 	const timestamp = nowIso();
 	const [action] = await getDb()
@@ -361,9 +371,8 @@ export async function claimNextControlAction(supervisorId: string) {
 	await expireStaleControlLocksForSupervisor(supervisorId);
 
 	// Two routing channels share controlActions:
-	// 1. Session-bearing actions (stop/prompt/retry/etc.) — routed via the
-	//    managed_sessions.supervisor_id join, which is what the existing code
-	//    relied on.
+	// 1. Session-bearing actions (stop/prompt/retry/etc.) — routed by owner
+	//    of record (sessionOwnedBy, session-ownership.ts).
 	// 2. Session-less actions (cleanup_workarea) — pre-assigned to a host by
 	//    storing supervisorId in metadata.targetSupervisorId at queue time.
 	// Pick the oldest queued action across both channels.
@@ -371,7 +380,8 @@ export async function claimNextControlAction(supervisorId: string) {
 		.select({ action: controlActions })
 		.from(controlActions)
 		.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
-		.where(and(eq(controlActions.status, "queued"), eq(managedSessions.supervisorId, supervisorId)))
+		.leftJoin(launchRequests, ownerLaunchJoin)
+		.where(and(eq(controlActions.status, "queued"), sessionOwnedBy(supervisorId)))
 		.orderBy(asc(controlActions.createdAt))
 		.limit(1);
 

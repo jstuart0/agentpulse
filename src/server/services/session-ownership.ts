@@ -17,9 +17,10 @@
  * It never reads authUser or config.disableAuth (D9) — ownership is
  * evaluated identically whether or not auth is enabled.
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { getDb } from "../db/client.js";
-import { launchRequests, managedSessions } from "../db/schema/index.js";
+import { launchRequests, managedSessions, supervisors } from "../db/schema/index.js";
 
 export type SessionOwnershipReason = "foreign_owner" | "no_owner" | "launch_mismatch";
 
@@ -60,6 +61,76 @@ export const sessionOwnerSql = sql<string>`coalesce(${launchRequests.claimedBySu
 
 /** Join condition linking a managed row to the launch that shares its session id. */
 export const ownerLaunchJoin = eq(launchRequests.launchCorrelationId, managedSessions.sessionId);
+
+/**
+ * The where-side predicate of the same owner-of-record rule `sessionOwnerSql`
+ * expresses (D8): index-friendly `OR`/`IS NULL` form, logically identical to
+ * `sessionOwnerSql = supervisorId` but written so the planner can use a plain
+ * column comparison instead of evaluating `coalesce(...)` per row. Two
+ * independently-written expressions of the same rule can still drift from
+ * each other even though neither can drift from `resolveSessionOwner` (which
+ * executes `sessionOwnerSql` directly) — the parity test in
+ * session-ownership.test.ts pins them together.
+ */
+export function sessionOwnedBy(supervisorId: string): SQL {
+	return or(
+		eq(launchRequests.claimedBySupervisorId, supervisorId),
+		and(
+			isNull(launchRequests.claimedBySupervisorId),
+			eq(managedSessions.supervisorId, supervisorId),
+		),
+	) as SQL;
+}
+
+/** Join condition linking a managed row to its owner-of-record supervisor. */
+const ownerSupervisorJoin = eq(supervisors.id, sessionOwnerSql);
+
+/**
+ * Batch "is this managed session's owner of record connected?" (D18, F20).
+ * A key is present iff `sessionId` has a managed_sessions row; its value is
+ * true iff the owner of record's supervisors.status is "connected" (an
+ * owner id with no supervisors row is false). Unmanaged sessions are simply
+ * absent, matching every existing caller's `.get(id)` -> undefined
+ * semantics for "not managed".
+ */
+export async function getSessionOwnerConnections(
+	sessionIds: readonly string[],
+): Promise<Map<string, boolean>> {
+	if (sessionIds.length === 0) return new Map();
+
+	const rows = await getDb()
+		.select({ sessionId: managedSessions.sessionId, ownerStatus: supervisors.status })
+		.from(managedSessions)
+		.leftJoin(launchRequests, ownerLaunchJoin)
+		.leftJoin(supervisors, ownerSupervisorJoin)
+		.where(inArray(managedSessions.sessionId, [...sessionIds]));
+
+	const result = new Map<string, boolean>();
+	for (const row of rows) {
+		result.set(row.sessionId, row.ownerStatus === "connected");
+	}
+	return result;
+}
+
+/**
+ * The session ids whose managed_state is in `states` AND whose owner of
+ * record is currently connected (D18, F19). Used by the lifecycle sweep to
+ * decide which sessions a live supervisor is still actively running.
+ */
+export async function listLiveOwnedManagedSessionIds(states: readonly string[]): Promise<string[]> {
+	if (states.length === 0) return [];
+
+	const rows = await getDb()
+		.select({ sessionId: managedSessions.sessionId })
+		.from(managedSessions)
+		.leftJoin(launchRequests, ownerLaunchJoin)
+		.innerJoin(supervisors, ownerSupervisorJoin)
+		.where(
+			and(inArray(managedSessions.managedState, [...states]), eq(supervisors.status, "connected")),
+		);
+
+	return rows.map((row) => row.sessionId);
+}
 
 /**
  * Resolve the owner of record for a session (D5). Returns null when nobody

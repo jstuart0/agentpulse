@@ -7,11 +7,15 @@ import type {
 	Session,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
+import { launchRequests, managedSessions, sessions, supervisors } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { generateSessionName } from "./name-generator.js";
-import { assertSupervisorCanWriteSession } from "./session-ownership.js";
+import {
+	assertSupervisorCanWriteSession,
+	ownerLaunchJoin,
+	sessionOwnedBy,
+} from "./session-ownership.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -308,12 +312,38 @@ export async function attachManagedSessionToLaunch(input: {
 }
 
 export async function listManagedSessionsNeedingSync(supervisorId: string) {
+	// Explicit column selection (rather than a bare .select()) keeps the row
+	// shape equal to managedSessions.$inferSelect once launchRequests is
+	// joined in for owner-of-record routing, so mapManagedSession still
+	// receives a managed row.
 	const rows = await getDb()
-		.select()
+		.select({
+			sessionId: managedSessions.sessionId,
+			launchRequestId: managedSessions.launchRequestId,
+			supervisorId: managedSessions.supervisorId,
+			providerSessionId: managedSessions.providerSessionId,
+			providerThreadId: managedSessions.providerThreadId,
+			managedState: managedSessions.managedState,
+			correlationSource: managedSessions.correlationSource,
+			desiredThreadTitle: managedSessions.desiredThreadTitle,
+			providerThreadTitle: managedSessions.providerThreadTitle,
+			providerSyncState: managedSessions.providerSyncState,
+			providerSyncError: managedSessions.providerSyncError,
+			lastProviderSyncAt: managedSessions.lastProviderSyncAt,
+			providerProtocolVersion: managedSessions.providerProtocolVersion,
+			providerCapabilitySnapshot: managedSessions.providerCapabilitySnapshot,
+			activeControlActionId: managedSessions.activeControlActionId,
+			controlLockExpiresAt: managedSessions.controlLockExpiresAt,
+			hostName: managedSessions.hostName,
+			hostAffinityReason: managedSessions.hostAffinityReason,
+			createdAt: managedSessions.createdAt,
+			updatedAt: managedSessions.updatedAt,
+		})
 		.from(managedSessions)
+		.leftJoin(launchRequests, ownerLaunchJoin)
 		.where(
 			and(
-				eq(managedSessions.supervisorId, supervisorId),
+				sessionOwnedBy(supervisorId),
 				isNotNull(managedSessions.desiredThreadTitle),
 				or(
 					isNull(managedSessions.providerThreadTitle),
