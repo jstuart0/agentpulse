@@ -35,6 +35,9 @@ async function mod(): Promise<RelayModule> {
 const RELAY_PATH = join(import.meta.dir, "relay.ts");
 const HOUR = 60 * 60 * 1000;
 const T0 = Date.parse("2026-09-28T12:00:00.000Z");
+// F159: the relay redacts its key out of every log line and diagnostic, so a
+// short key like "k" also mangles any temp path that happens to contain it.
+const TEST_KEY = "ap_TESTKEY_redaction_0123456789";
 
 type Recorded = {
 	method: string;
@@ -1814,7 +1817,7 @@ describe("file modes, log hygiene, insecure-remote warning (F111)", () => {
 		const relay = await R.startRelay(
 			{
 				remoteUrl: stub.url,
-				apiKey: "k",
+				apiKey: TEST_KEY,
 				port: 0,
 				codexNamePolicy: "codex",
 				stateDir,
@@ -1880,7 +1883,14 @@ describe("file modes, log hygiene, insecure-remote warning (F111)", () => {
 			const lines: string[] = [];
 			await mkdir(stateDir, { recursive: true });
 			const relay = await R.startRelay(
-				{ remoteUrl, apiKey: "k", port: 0, codexNamePolicy: "codex", stateDir, configPath: null },
+				{
+					remoteUrl,
+					apiKey: TEST_KEY,
+					port: 0,
+					codexNamePolicy: "codex",
+					stateDir,
+					configPath: null,
+				},
 				{ timers: false, env: { HOME: home }, scriptPath: RELAY_PATH, log: (l) => lines.push(l) },
 			);
 			relay.stop();
@@ -1906,7 +1916,7 @@ describe("hook queue caps (F122)", () => {
 		const relay = await R.startRelay(
 			{
 				remoteUrl: stub.url,
-				apiKey: "k",
+				apiKey: TEST_KEY,
 				port: 0,
 				codexNamePolicy: "codex",
 				stateDir,
@@ -2335,7 +2345,7 @@ describe("relay residuals (F127, F134-F138, F140)", () => {
 		const relay = await R.startRelay(
 			{
 				remoteUrl: "https://ap.example.com",
-				apiKey: "k",
+				apiKey: TEST_KEY,
 				port: 0,
 				codexNamePolicy: "codex",
 				stateDir,
@@ -2360,7 +2370,7 @@ describe("relay residuals (F127, F134-F138, F140)", () => {
 		const relay = await R.startRelay(
 			{
 				remoteUrl: "https://ap.example.com",
-				apiKey: "k",
+				apiKey: TEST_KEY,
 				port: 0,
 				codexNamePolicy: "codex",
 				stateDir: scriptDir,
@@ -2386,7 +2396,7 @@ describe("relay residuals (F127, F134-F138, F140)", () => {
 		const relay = await R.startRelay(
 			{
 				remoteUrl: stub.url,
-				apiKey: "k",
+				apiKey: TEST_KEY,
 				port: 0,
 				codexNamePolicy: "codex",
 				stateDir,
@@ -2453,7 +2463,7 @@ describe("delivery-id header for the server's dedup (AGEN-16 handoff)", () => {
 		const relay = await R.startRelay(
 			{
 				remoteUrl: stub.url,
-				apiKey: "k",
+				apiKey: TEST_KEY,
 				port: 0,
 				codexNamePolicy: "codex",
 				stateDir,
@@ -2525,7 +2535,7 @@ describe("final residuals (F152, F153)", () => {
 		const relay = await R.startRelay(
 			{
 				remoteUrl: "https://ap.example.com",
-				apiKey: "k",
+				apiKey: TEST_KEY,
 				port: 0,
 				codexNamePolicy: "codex",
 				stateDir: stateLink,
