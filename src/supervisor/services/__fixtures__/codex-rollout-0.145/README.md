@@ -8,13 +8,12 @@ observer intentionally ignores: `developer`, `reasoning`, `world_state`,
 
 ## Provenance
 
-Constructed for AGEN-16 (`2026-09-28-deliver-event-dedup-tool-calls`, Phase
-4) from the field shapes `src/supervisor/services/codex-observer.ts`
-already parses, plus the additional record/kind names the plan's Context
-section identified from local rollout sampling (`session_meta`,
-`turn_context`, `event_msg/task_started`, `event_msg/task_complete`,
-`developer`, `reasoning`, `world_state`, `token_count`,
-`response_item/custom_tool_call`).
+Constructed for AGEN-16 from the field shapes
+`src/supervisor/services/codex-observer.ts` already parses, plus the
+additional record/kind names identified from local rollout sampling of
+`codex-cli 0.145.0` (`session_meta`, `turn_context`,
+`event_msg/task_started`, `event_msg/task_complete`, `developer`,
+`reasoning`, `world_state`, `token_count`, `response_item/custom_tool_call`).
 
 **All text, commands, outputs, session ids, working directories, and
 tool-call ids in this file are synthetic.** There are no real paths,
@@ -24,14 +23,14 @@ usernames, or session data — `cwd` is a placeholder
 to a fresh UUID per the harness's per-test isolation rule), and every
 `call_id` is a synthetic `call_000Nexample` string.
 
-## What it contains (contract harness rule 7)
+## What it contains
 
 - one `session_meta` line
 - one `turn_context` and one `event_msg/task_started`, both carrying
   `turn_id: "turn-0001"`
 - two user-role `response_item` lines: the first begins with
-  `<environment_context` (the injected-context item Decision 21 skips),
-  the second is the typed prompt
+  `<environment_context` (the injected-context item the observer skips
+  rather than posting as a real prompt), the second is the typed prompt
 - one line each of `developer`, `reasoning`, `world_state`, `token_count`
   — record types the observer must silently skip (no shared `type` with
   anything it handles)
@@ -45,6 +44,6 @@ to a fresh UUID per the harness's per-test isolation rule), and every
 ## Native hook fixtures
 
 The native Codex hook fixtures (`PreToolUse`/`PostToolUse`/`Stop`/
-`UserPromptSubmit`/`SessionEnd`, used by later phases) are vendored
-separately per the test contract's harness rule 6 — they are not part of
-this rollout fixture.
+`UserPromptSubmit`/`SessionEnd`) are vendored separately, at
+`src/server/services/__fixtures__/event-dedup/codex-0.145/` — they are not
+part of this rollout fixture.

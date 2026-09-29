@@ -51,7 +51,7 @@ silently dropping most of them under the old content-window dedup — growth
 is real and higher than a pre-AGEN-16 install would suggest. After the
 growth mitigations in this release (raw `tool_response` capped at 4,096
 chars in `rawPayload`, `tool_input` no longer duplicated into `rawPayload`),
-percy's real 30-day replay measured:
+a 30-day replay of a real workload measured:
 
 - ~926 MB / 30 days on SQLite
 - 31 MB/day average, up to 135 MB/day at peak
