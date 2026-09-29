@@ -153,3 +153,91 @@ describe("Phase 6 contract item 5: null/array/number toolArgs pass through uncha
 		});
 	}
 });
+
+describe("F221 (xander, Medium): isCopilotEvent doesn't walk the prototype chain", () => {
+	// `value in COPILOT_EVENT_TO_HOOK_EVENT` resolves inherited Object.prototype
+	// members (constructor, __proto__, toString, hasOwnProperty) as if they
+	// were legitimate keys. `?event=constructor` must not resolve to
+	// anything — hookEventName falls back to "", exactly like an unknown
+	// hint, not to Object's own constructor function.
+	const prototypePollutionHints = ["constructor", "__proto__", "toString", "hasOwnProperty"];
+
+	for (const hint of prototypePollutionHints) {
+		test(`?event=${hint} produces no mapping (hook_event_name is empty, not a function/object)`, () => {
+			const raw = asRaw({ sessionId: "s1", cwd: "/tmp" });
+			const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, hint);
+			expect(out.hook_event_name).toBe("");
+			expect(typeof out.hook_event_name).toBe("string");
+		});
+	}
+
+	test("no background error is counted for a prototype-chain hint (canonicalizeHookPayload's try/catch never fires)", () => {
+		const raw = asRaw({ sessionId: "s1", cwd: "/tmp" });
+		// canonicalizeHookPayload is the outer, never-throws dispatcher — if
+		// isCopilotEvent's prototype-chain lookup produced something
+		// canonicalizeHookPayload's downstream construction couldn't handle
+		// (e.g. tried to call a function), it would either throw (silently
+		// swallowed, falling back to the raw body — itself a symptom) or
+		// produce a garbage hook_event_name. Assert the well-formed,
+		// canonicalized shape, not the raw passthrough.
+		const out = canonicalizeHookPayload("copilot_cli", raw, "constructor");
+		expect(out.session_id).toBe("s1");
+		expect(out.hook_event_name).toBe("");
+	});
+});
+
+describe("F220 (Low): non-string toolArgs/tool_input/toolResponse objects are capped too", () => {
+	function bigObject(): Record<string, unknown> {
+		return { command: "x".repeat(CAP_BYTES + 500) };
+	}
+
+	test("an oversized already-parsed toolArgs object is capped, not passed through unbounded", () => {
+		const value = bigObject();
+		const raw = asRaw({ sessionId: "s1", cwd: "/tmp", toolName: "shell", toolArgs: value });
+		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, "postToolUse");
+		const serialized = JSON.stringify(value);
+		expect(out.tool_input).toEqual({ raw: serialized.slice(0, CAP_BYTES), truncated: true });
+	});
+
+	test("an oversized already-parsed tool_input (snake_case variant) object is capped", () => {
+		const value = bigObject();
+		const raw = asRaw({ session_id: "s1", cwd: "/tmp", tool_name: "shell", tool_input: value });
+		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, "postToolUse");
+		const serialized = JSON.stringify(value);
+		expect(out.tool_input).toEqual({ raw: serialized.slice(0, CAP_BYTES), truncated: true });
+	});
+
+	test("a small object toolArgs is unaffected (still passes through, no wrapping)", () => {
+		const value = { command: "echo hi" };
+		const raw = asRaw({ sessionId: "s1", cwd: "/tmp", toolName: "shell", toolArgs: value });
+		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, "postToolUse");
+		expect(out.tool_input).toEqual(value);
+	});
+
+	test("an oversized toolResponse object with no textResultForLlm is capped, not passed through unbounded", () => {
+		const value = { unexpectedShape: "x".repeat(CAP_BYTES + 500) };
+		const raw = asRaw({
+			sessionId: "s1",
+			cwd: "/tmp",
+			toolName: "shell",
+			toolArgs: { command: "echo hi" },
+			toolResponse: value,
+		});
+		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, "postToolUse");
+		const serialized = JSON.stringify(value);
+		expect(out.tool_response).toEqual({ raw: serialized.slice(0, CAP_BYTES), truncated: true });
+	});
+});
+
+describe("F224 (Medium): the malformed-JSON toolArgs string branch", () => {
+	test('toolArgs: "not json {" normalizes to {raw: "not json {"}, not silently dropped to {}', () => {
+		const raw = asRaw({
+			sessionId: "s1",
+			cwd: "/tmp",
+			toolName: "shell",
+			toolArgs: "not json {",
+		});
+		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, "postToolUse");
+		expect(out.tool_input).toEqual({ raw: "not json {" });
+	});
+});

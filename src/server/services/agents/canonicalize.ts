@@ -30,6 +30,28 @@ function pickString(raw: LooseRecord, ...keys: string[]): string | undefined {
 	return undefined;
 }
 
+// F220 (Low): an already-parsed object (toolArgs/tool_input arriving as an
+// object rather than a JSON string, or a toolResponse without
+// textResultForLlm) can still be oversized — cap it the same way, with the
+// same {raw, truncated} marker the string branch already uses. Scoped to
+// plain objects only: null/array/number are tolerated as-is elsewhere
+// (Copilot's shape is unverified — see normalizeToolInput's docstring), and
+// arrays large enough to matter are not the case this finding named.
+function capObjectIfOversized(value: Record<string, unknown>): Record<string, unknown> {
+	let serialized: string;
+	try {
+		serialized = JSON.stringify(value);
+	} catch {
+		return value;
+	}
+	if (serialized.length <= COPILOT_CAP_BYTES) return value;
+	return { raw: serialized.slice(0, COPILOT_CAP_BYTES), truncated: true };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 /**
  * F28/F30: normalizes a `toolArgs`/`tool_input` value into HookEventPayload's
  * tool_input shape.
@@ -41,13 +63,18 @@ function pickString(raw: LooseRecord, ...keys: string[]): string | undefined {
  *   truncating would defeat the point of the cap)
  * - a string at or under the cap -> JSON.parse()'d, or {raw: string} if it
  *   isn't valid JSON
- * - null / an array / a number / an already-parsed object -> returned
+ * - an already-parsed object over the cap (F220) -> {raw: first
+ *   COPILOT_CAP_BYTES of its JSON serialization, truncated: true}
+ * - null / an array / a number / an object at or under the cap -> returned
  *   unchanged (Copilot's toolArgs shape is unverified against the real CLI,
  *   SPIKE.md fact 2 — tolerate whatever shape arrives rather than coercing)
  */
 function normalizeToolInput(value: unknown): Record<string, unknown> | undefined {
 	if (value === undefined) return undefined;
-	if (typeof value !== "string") return value as Record<string, unknown>;
+	if (typeof value !== "string") {
+		if (isPlainObject(value)) return capObjectIfOversized(value);
+		return value as Record<string, unknown>;
+	}
 	if (value === "") return { raw: "" };
 	if (value.length > COPILOT_CAP_BYTES) {
 		return { raw: value.slice(0, COPILOT_CAP_BYTES), truncated: true };
@@ -68,17 +95,24 @@ function normalizeToolInput(value: unknown): Record<string, unknown> | undefined
 function normalizeToolResponse(raw: LooseRecord): unknown {
 	const response = raw.toolResponse ?? raw.tool_response ?? raw.toolResult;
 	if (typeof response === "string") return response.slice(0, COPILOT_CAP_BYTES);
-	if (response && typeof response === "object") {
-		const textResultForLlm = (response as LooseRecord).textResultForLlm;
+	if (isPlainObject(response)) {
+		const textResultForLlm = response.textResultForLlm;
 		if (typeof textResultForLlm === "string") {
 			return textResultForLlm.slice(0, COPILOT_CAP_BYTES);
 		}
+		// F220: a shape without textResultForLlm previously passed through
+		// unbounded — cap it the same way toolArgs/tool_input does.
+		return capObjectIfOversized(response);
 	}
 	return response;
 }
 
+// F221 (xander, Medium): `value in COPILOT_EVENT_TO_HOOK_EVENT` walks the
+// prototype chain, so `?event=constructor` (or __proto__/toString/
+// hasOwnProperty) resolves to an inherited Object.prototype member instead
+// of "no mapping". Object.hasOwn checks only the object's own properties.
 function isCopilotEvent(value: string | undefined): value is CopilotEvent {
-	return value !== undefined && value in COPILOT_EVENT_TO_HOOK_EVENT;
+	return value !== undefined && Object.hasOwn(COPILOT_EVENT_TO_HOOK_EVENT, value);
 }
 
 /**
