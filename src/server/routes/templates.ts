@@ -1,6 +1,7 @@
 import { desc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AgentType, LaunchMode, SessionTemplateInput } from "../../shared/types.js";
+import { AGENT_TYPES } from "../../shared/constants.js";
+import type { LaunchMode, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
@@ -17,6 +18,7 @@ import {
 	mapTemplate,
 	updateTemplate,
 } from "../services/templates/templates-service.js";
+import { InvalidAgentTypeQueryError, parseAgentTypeQuery } from "./agent-type-query.js";
 
 const templatesRouter = new Hono();
 templatesRouter.use("*", requireAuth());
@@ -24,7 +26,15 @@ templatesRouter.use("*", requireAuth());
 templatesRouter.use("*", requireOperatorScope());
 
 templatesRouter.get("/templates", async (c) => {
-	const agentType = c.req.query("agent_type") as AgentType | undefined;
+	let agentType: ReturnType<typeof parseAgentTypeQuery>;
+	try {
+		agentType = parseAgentTypeQuery(c.req.query("agent_type"));
+	} catch (err) {
+		if (err instanceof InvalidAgentTypeQueryError) {
+			return c.json({ error: "invalid_agent_type", value: err.value, allowed: AGENT_TYPES }, 400);
+		}
+		throw err;
+	}
 	const query = getDb().select().from(sessionTemplates);
 	const rows = agentType
 		? await query
