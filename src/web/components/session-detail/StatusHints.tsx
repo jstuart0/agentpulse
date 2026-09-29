@@ -22,6 +22,42 @@ export function AgentObserveOnlyHint({ agentType }: { agentType: AgentType }) {
 	);
 }
 
+/**
+ * F239 (tessa, Phase 7 panel): which status-hint component SessionDetailPage
+ * renders above the timeline, and its props — extracted as a pure function
+ * (same rationale as resolveObserveOnlyHint above: no DOM-testing harness in
+ * this codebase, so the branch selection has to be exercised without
+ * rendering) so all 3 agent types x managed/unmanaged are covered by a
+ * table, not by eyeballing a JSX ternary chain.
+ */
+export type StatusHintSelection =
+	| { component: "ManagedCodexStatus"; managedSession: NonNullable<Session["managedSession"]> }
+	| { component: "ManagedClaudeStatus"; managedSession: NonNullable<Session["managedSession"]> }
+	| { component: "CodexStatusHint"; displayName: string }
+	| { component: "AgentObserveOnlyHint"; agentType: AgentType };
+
+export function selectStatusHint(
+	session: Pick<Session, "agentType" | "managedSession">,
+	displayName: string,
+): StatusHintSelection {
+	if (session.agentType === "codex_cli" && session.managedSession) {
+		return { component: "ManagedCodexStatus", managedSession: session.managedSession };
+	}
+	if (session.agentType === "claude_code" && session.managedSession) {
+		return { component: "ManagedClaudeStatus", managedSession: session.managedSession };
+	}
+	if (session.agentType === "codex_cli") {
+		return { component: "CodexStatusHint", displayName };
+	}
+	// claude_code (unmanaged) and copilot_cli (managed or not — copilot is
+	// never launchable, so managedSession is never actually set for it, but
+	// the type doesn't forbid it) fall through here. AgentObserveOnlyHint
+	// itself renders null for claude_code (resolveObserveOnlyHint has
+	// nothing to say), so this is a real "nothing to show" outcome for that
+	// case, not a bug — see StatusHints.test.ts.
+	return { component: "AgentObserveOnlyHint", agentType: session.agentType };
+}
+
 export function CodexStatusHint({ displayName }: { displayName: string }) {
 	const renameCommand = `/rename ${displayName}`;
 	const { copy } = useCopyFeedback();

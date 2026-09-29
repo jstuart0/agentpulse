@@ -9,7 +9,7 @@ import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import "../src/server/db/__test_db.js";
-import { buildBashHookCommand } from "../src/shared/hook-command.js";
+import { buildBashHookCommand, buildCopilotHooksFile } from "../src/shared/hook-command.js";
 
 const CODEX_FIXTURES_DIR = join(
 	import.meta.dir,
@@ -626,17 +626,16 @@ describe("relay e2e", () => {
 	);
 
 	test(
-		"10. Copilot command hooks through the real relay (D7/D8/D13, Phase 7): sessionStart/userPromptSubmitted/postToolUse via the generated detached sh command",
+		"10. Copilot command hooks through the real relay (D7/D8/D13, Phase 7): sessionStart/userPromptSubmitted/postToolUse via the ACTUAL installed hooks.json bash field (F238: not buildBashHookCommand directly — that would pass even if buildCopilotHooksFile diverged from it, e.g. a wrong event key or a mangled JSON escape)",
 		async () => {
 			const COPILOT10_ID = "c9b44139-4a9b-5e68-b92d-2b26a56a3b46";
 			const relay10 = await spawnRelay("relay10", relayKey);
+			const hooksFile = JSON.parse(
+				buildCopilotHooksFile({ baseUrl: relay10.base, direct: false }),
+			) as { hooks: Record<string, Array<{ bash: string }>> };
 			for (const event of ["sessionStart", "userPromptSubmitted", "postToolUse"]) {
-				const cmd = buildBashHookCommand({
-					baseUrl: relay10.base,
-					direct: false,
-					agent: "copilot_cli",
-					event,
-				});
+				const cmd = hooksFile.hooks[event]?.[0]?.bash;
+				if (!cmd) throw new Error(`buildCopilotHooksFile() has no "${event}" entry`);
 				const fixture = await readFile(join(COPILOT_FIXTURES_DIR, `${event}.json`), "utf-8");
 				const proc = Bun.spawn(["sh", "-c", cmd], {
 					stdin: new TextEncoder().encode(fixture),

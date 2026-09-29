@@ -22,6 +22,7 @@ import {
 	CodexStatusHint,
 	ManagedClaudeStatus,
 	ManagedCodexStatus,
+	selectStatusHint,
 } from "../components/session-detail/StatusHints.js";
 import {
 	type TimelineMode,
@@ -339,15 +340,19 @@ export function SessionDetailPage() {
 				onStop={handleStop}
 			/>
 
-			{session.agentType === "codex_cli" && session.managedSession ? (
-				<ManagedCodexStatus managedSession={session.managedSession} />
-			) : session.agentType === "claude_code" && session.managedSession ? (
-				<ManagedClaudeStatus managedSession={session.managedSession} />
-			) : session.agentType === "codex_cli" ? (
-				<CodexStatusHint displayName={displayName} />
-			) : (
-				<AgentObserveOnlyHint agentType={session.agentType} />
-			)}
+			{(() => {
+				const sel = selectStatusHint(session, displayName);
+				switch (sel.component) {
+					case "ManagedCodexStatus":
+						return <ManagedCodexStatus managedSession={sel.managedSession} />;
+					case "ManagedClaudeStatus":
+						return <ManagedClaudeStatus managedSession={sel.managedSession} />;
+					case "CodexStatusHint":
+						return <CodexStatusHint displayName={sel.displayName} />;
+					case "AgentObserveOnlyHint":
+						return <AgentObserveOnlyHint agentType={sel.agentType} />;
+				}
+			})()}
 
 			<ControlHistory actions={controlActions} />
 

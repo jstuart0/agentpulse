@@ -386,49 +386,61 @@ describe("codex-hook-command.test.ts — fixture replay (item 3)", () => {
 		expect(cmd).toMatch(/-H "@\$f"/);
 	});
 
-	test("F49: hook-auth-header present → Authorization arrives; missing/empty → no Authorization header", async () => {
-		const stub = startStub();
-		stops.push(stub.stop);
-		const cmd = buildBashHookCommand({
-			baseUrl: stub.url,
-			direct: true,
-			agent: "codex_cli",
-			event: "Stop",
-		});
-		const fixture = await loadFixture(CODEX_FIXTURES_DIR, "Stop");
+	// F240 (tessa, Phase 7 panel): parametrized over both agents that use the
+	// direct-mode hook-auth-header file — codex_cli originally, copilot_cli
+	// added here. buildBashHookCommand's direct-mode body (the
+	// `f="$HOME/.agentpulse/hook-auth-header"; if [ -s "$f" ]; then ...`
+	// branch) is agent-agnostic, but F49 only ever exercised it via
+	// codex_cli — this closes that gap for copilot_cli's own fixture/event.
+	for (const { agent, event, dir } of [
+		{ agent: "codex_cli" as const, event: "Stop", dir: CODEX_FIXTURES_DIR },
+		{ agent: "copilot_cli" as const, event: "postToolUse", dir: COPILOT_FIXTURES_DIR },
+	]) {
+		test(`F49/F240 (${agent}): hook-auth-header present → Authorization arrives; missing/empty → no Authorization header`, async () => {
+			const stub = startStub();
+			stops.push(stub.stop);
+			const cmd = buildBashHookCommand({
+				baseUrl: stub.url,
+				direct: true,
+				agent,
+				event,
+			});
+			const fixture = await loadFixture(dir, event);
 
-		// present
-		{
-			const home = join(tmp, "home-auth-present");
-			await mkdir(join(home, ".agentpulse"), { recursive: true });
-			await mkdir(join(home, "tmp"), { recursive: true });
-			await writeFile(
-				join(home, ".agentpulse/hook-auth-header"),
-				"Authorization: Bearer ap_test\n",
-			);
-			await runSh(cmd, fixture, baseEnv(home));
-			expect(await waitFor(() => stub.requests.length >= 1)).toBe(true);
-			expect(stub.requests.at(-1)?.headers.authorization).toBe("Bearer ap_test");
-		}
-		// missing
-		{
-			const home = join(tmp, "home-auth-missing");
-			await mkdir(join(home, "tmp"), { recursive: true });
-			await runSh(cmd, fixture, baseEnv(home));
-			expect(await waitFor(() => stub.requests.length >= 2)).toBe(true);
-			expect(stub.requests.at(-1)?.headers.authorization).toBeUndefined();
-		}
-		// empty file
-		{
-			const home = join(tmp, "home-auth-empty");
-			await mkdir(join(home, ".agentpulse"), { recursive: true });
-			await mkdir(join(home, "tmp"), { recursive: true });
-			await writeFile(join(home, ".agentpulse/hook-auth-header"), "");
-			await runSh(cmd, fixture, baseEnv(home));
-			expect(await waitFor(() => stub.requests.length >= 3)).toBe(true);
-			expect(stub.requests.at(-1)?.headers.authorization).toBeUndefined();
-		}
-	});
+			// present
+			{
+				const home = join(tmp, `home-auth-present-${agent}`);
+				await mkdir(join(home, ".agentpulse"), { recursive: true });
+				await mkdir(join(home, "tmp"), { recursive: true });
+				await writeFile(
+					join(home, ".agentpulse/hook-auth-header"),
+					"Authorization: Bearer ap_test\n",
+				);
+				await runSh(cmd, fixture, baseEnv(home));
+				expect(await waitFor(() => stub.requests.length >= 1)).toBe(true);
+				expect(stub.requests.at(-1)?.headers.authorization).toBe("Bearer ap_test");
+				expect(stub.requests.at(-1)?.headers["x-agent-type"]).toBe(agent);
+			}
+			// missing
+			{
+				const home = join(tmp, `home-auth-missing-${agent}`);
+				await mkdir(join(home, "tmp"), { recursive: true });
+				await runSh(cmd, fixture, baseEnv(home));
+				expect(await waitFor(() => stub.requests.length >= 2)).toBe(true);
+				expect(stub.requests.at(-1)?.headers.authorization).toBeUndefined();
+			}
+			// empty file
+			{
+				const home = join(tmp, `home-auth-empty-${agent}`);
+				await mkdir(join(home, ".agentpulse"), { recursive: true });
+				await mkdir(join(home, "tmp"), { recursive: true });
+				await writeFile(join(home, ".agentpulse/hook-auth-header"), "");
+				await runSh(cmd, fixture, baseEnv(home));
+				expect(await waitFor(() => stub.requests.length >= 3)).toBe(true);
+				expect(stub.requests.at(-1)?.headers.authorization).toBeUndefined();
+			}
+		});
+	}
 });
 
 describe("F217: the D19 native-coverage marker sid gate, executed for real", () => {
