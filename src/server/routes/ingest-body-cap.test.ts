@@ -107,13 +107,17 @@ describe("D16: MAX_HOOK_BODY_BYTES is 16 MiB", () => {
 });
 
 describe("D16: POST /api/v1/hooks — oversize body", () => {
-	test("a 17 MiB body: 200, not stored, oversizeDropped +1, JSON.parse never called", async () => {
+	test("a 17 MiB body with no identity in the first 64 KiB: 200, not stored, oversizeDropped +1, JSON.parse never called", async () => {
 		const sid = newSessionId("d16-over");
 		const padding = "x".repeat(17 * 1024 * 1024);
+		// F128: cwd (the padding) is written FIRST, pushing session_id/
+		// hook_event_name past the 64 KiB identity-extraction prefix — this
+		// stays the "nothing recoverable" case. See the F128 describe block
+		// below for the case where identity IS recoverable.
 		const body = JSON.stringify({
+			cwd: padding,
 			session_id: sid,
 			hook_event_name: "Stop",
-			cwd: padding,
 		});
 		expect(body.length).toBeGreaterThan(MAX_HOOK_BODY_BYTES);
 
@@ -182,18 +186,22 @@ describe("D16: POST /api/v1/hooks — oversize body", () => {
 		expect(getOversizeDropped() - before).toBe(1);
 	});
 
-	test("a Content-Length header above the cap short-circuits before reading the body stream in a loop", async () => {
+	// F128: readCappedBody now reads a bounded 64 KiB prefix even when
+	// Content-Length alone already proves the body is oversize, so
+	// extractOversizeIdentity has something to scan. That's a deliberate,
+	// small, fixed amount of work — the assertion below bounds pull count to
+	// "enough to fill the 64 KiB prefix", never to "the whole declared body".
+	test("a Content-Length header above the cap still only reads a bounded 64 KiB prefix, never the declared body", async () => {
 		const before = getOversizeDropped();
 		let pullCount = 0;
+		const chunkSize = 1024;
 		const neverEndingStream = new ReadableStream<Uint8Array>({
 			pull(controller) {
 				pullCount++;
-				controller.enqueue(new Uint8Array(1024).fill(120));
-				// Deliberately never closes — if readCappedBody's streaming loop
-				// ran against this stream, pullCount would climb far past the
-				// single eager pre-pull the platform itself performs on any
-				// ReadableStream-bodied Request (observed once, independent of
-				// whether any consumer ever calls getReader()).
+				controller.enqueue(new Uint8Array(chunkSize).fill(120));
+				// Deliberately never closes — if readCappedBody read to
+				// completion (or read anywhere close to the declared 20 MiB),
+				// pullCount would climb into the thousands within this tick.
 			},
 		});
 		const req = new Request("http://x/api/v1/hooks", {
@@ -209,10 +217,121 @@ describe("D16: POST /api/v1/hooks — oversize body", () => {
 		const res = await app.fetch(req);
 		expect(res.status).toBe(200);
 		expect(getOversizeDropped() - before).toBe(1);
-		// <=1, not ===0: the platform's own one-time eager pre-pull is not our
-		// code reading the stream — a real streaming read loop would drive
-		// this into the dozens/hundreds within the same tick.
-		expect(pullCount).toBeLessThanOrEqual(1);
+		// Bounded by the 64 KiB prefix cap (plus a small platform pre-pull
+		// margin), never proportional to the declared 20 MiB body.
+		expect(pullCount).toBeLessThanOrEqual(Math.ceil((64 * 1024) / chunkSize) + 2);
+	});
+
+	test("F128: a stream with no Content-Length never accumulates more than MAX_HOOK_BODY_BYTES before aborting (memory bound)", async () => {
+		const { readCappedBody } = await import("./ingest.js");
+		const chunkSize = 8 * 1024;
+		let pullCount = 0;
+		const hugeStream = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pullCount++;
+				controller.enqueue(new Uint8Array(chunkSize).fill(120));
+				// Never closes — a body-buffering implementation given this
+				// stream would hang forever; readCappedBody must abort once
+				// the running total crosses MAX_HOOK_BODY_BYTES.
+			},
+		});
+		const req = new Request("http://x/api/v1/hooks", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: hugeStream,
+			duplex: "half",
+		} as RequestInit & { duplex: "half" });
+
+		const result = await readCappedBody(req, MAX_HOOK_BODY_BYTES);
+		expect(result.oversize).toBe(true);
+		if (result.oversize) {
+			expect(result.prefix.length).toBeLessThanOrEqual(64 * 1024);
+		}
+		// Bounded by MAX_HOOK_BODY_BYTES / chunkSize (~2048 pulls here), not
+		// unbounded — the reader never keeps pulling past the cap.
+		expect(pullCount).toBeLessThanOrEqual(Math.ceil(MAX_HOOK_BODY_BYTES / chunkSize) + 2);
+	});
+});
+
+describe("F128 (codex r2): oversize deliveries with a recoverable session_id store a stub row", () => {
+	test("an oversize PreToolUse with identity in the first 64 KiB stores one row, keyed by tool_use_id (replay twice → one row)", async () => {
+		const sid = newSessionId("f128-tool");
+		const toolUseId = `f128-tu-${crypto.randomUUID()}`;
+		const padding = "p".repeat(17 * 1024 * 1024);
+		const body = JSON.stringify({
+			session_id: sid,
+			hook_event_name: "PreToolUse",
+			tool_name: "Bash",
+			tool_use_id: toolUseId,
+			cwd: "/workspace",
+			tool_input: { command: "echo hi" },
+			tool_response: padding,
+		});
+		expect(body.length).toBeGreaterThan(MAX_HOOK_BODY_BYTES);
+
+		const before = getOversizeDropped();
+		for (let i = 0; i < 2; i++) {
+			const res = await app.request("/api/v1/hooks", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body,
+			});
+			expect(res.status).toBe(200);
+		}
+		expect(getOversizeDropped() - before).toBe(2);
+
+		await until(() => getInFlightCount() === 0, 10_000);
+		const rows = await rowsFor(sid);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.eventType).toBe("PreToolUse");
+		expect(rows[0]?.content).toBe("Payload exceeded 16 MiB and was dropped");
+	});
+
+	test("an oversize delivery with no session_id in the prefix: no row, counter still increments", async () => {
+		const padding = "p".repeat(17 * 1024 * 1024);
+		const body = JSON.stringify({
+			hook_event_name: "Stop",
+			cwd: "/workspace",
+			last_assistant_message: padding,
+		});
+		expect(body.length).toBeGreaterThan(MAX_HOOK_BODY_BYTES);
+
+		const before = getOversizeDropped();
+		const res = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body,
+		});
+		expect(res.status).toBe(200);
+		expect(getOversizeDropped() - before).toBe(1);
+
+		await until(() => getInFlightCount() === 0, 5_000);
+	});
+
+	test("identity fields placed after a huge tool_response fall outside the 64 KiB prefix: no row stored", async () => {
+		const sid = newSessionId("f128-late-identity");
+		// tool_response is written FIRST and is large enough on its own to
+		// both trip the 16 MiB cap and push session_id/hook_event_name well
+		// past the captured 64 KiB prefix.
+		const oversizeBody = JSON.stringify({
+			tool_response: "p".repeat(17 * 1024 * 1024),
+			session_id: sid,
+			hook_event_name: "PreToolUse",
+			tool_use_id: "should-not-be-seen",
+		});
+		expect(oversizeBody.length).toBeGreaterThan(MAX_HOOK_BODY_BYTES);
+
+		const before = getOversizeDropped();
+		const res = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: oversizeBody,
+		});
+		expect(res.status).toBe(200);
+		expect(getOversizeDropped() - before).toBe(1);
+
+		await until(() => getInFlightCount() === 0, 5_000);
+		expect(await rowsFor(sid)).toHaveLength(0);
 	});
 });
 

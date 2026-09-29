@@ -7,7 +7,7 @@
 // green at base).
 
 import { Database } from "bun:sqlite";
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -325,6 +325,196 @@ describeSqliteOnly("R15: SqliteFtsBackend indexes and removes by rowid", () => {
 			.all(sid) as Array<{ rowid: number; event_id: number }>;
 		expect(rows.length).toBeGreaterThan(0);
 		for (const row of rows) expect(row.rowid).toBe(row.event_id);
+
+		db.close();
+	}, 30_000);
+});
+
+// ── codex r2 F129/F130 ───────────────────────────────────────────────────────
+
+// The exact trg_events_ad_fts shape shipped at 2f8bdd9 (rowid-keyed per F74,
+// but predating the F130 WHEN guard) — frozen here so the drift-detection
+// test doesn't depend on the current source, same rationale as OLD_FTS_TRIGGERS.
+const INTERMEDIATE_AD_TRIGGER_NO_GUARD = `
+	DROP TRIGGER IF EXISTS trg_events_ai_fts;
+	DROP TRIGGER IF EXISTS trg_events_ad_fts;
+	CREATE TRIGGER trg_events_ai_fts AFTER INSERT ON events
+	WHEN NEW.event_type IN (
+		'UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted',
+		'SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest'
+	)
+	BEGIN
+		INSERT INTO search_events_fts(rowid, event_id, session_id, event_type, text, created_at)
+		VALUES (
+			NEW.id,
+			NEW.id,
+			NEW.session_id,
+			NEW.event_type,
+			COALESCE(
+				json_extract(NEW.raw_payload, '$.prompt'),
+				json_extract(NEW.raw_payload, '$.message'),
+				json_extract(NEW.raw_payload, '$.summary'),
+				json_extract(NEW.raw_payload, '$.why'),
+				json_extract(NEW.raw_payload, '$.title'),
+				NEW.content, ''
+			),
+			NEW.created_at
+		);
+	END;
+	CREATE TRIGGER trg_events_ad_fts AFTER DELETE ON events
+	BEGIN
+		DELETE FROM search_events_fts WHERE rowid = OLD.id;
+	END;
+`;
+
+describeSqliteOnly("R-F129: the rowid re-key upgrade is one atomic transaction", () => {
+	test("a failure mid-rebuild rolls back — old trigger text and the FTS index survive untouched", async () => {
+		const db = await legacyHandleWithOldTriggers();
+		const sid = `f129-${crypto.randomUUID()}`;
+		insertSession(db, sid);
+		insertInterleavedEvents(db, sid, 200); // 100 indexed
+
+		const oldTrigger = triggerSql(db, "trg_events_ad_fts");
+		expect(oldTrigger).not.toContain("rowid = OLD.id");
+		// The old (event_id-keyed) insert trigger already populated this via
+		// insertInterleavedEvents above — 100 rows, one per indexed event,
+		// event_id-keyed rather than rowid-keyed at this point.
+		const countBefore = (
+			db.prepare("SELECT COUNT(*) AS n FROM search_events_fts").get() as { n: number }
+		).n;
+		expect(countBefore).toBe(100);
+
+		// Inject a failure inside the rebuild's INSERT ... SELECT — distinct
+		// from the trigger-definition DDL (which also mentions
+		// "search_events_fts(rowid" as part of its own body text) so only the
+		// rebuild statement itself throws.
+		const originalExec = db.exec.bind(db);
+		const execSpy = spyOn(db, "exec").mockImplementation((sqlText: unknown, ...rest: unknown[]) => {
+			if (
+				typeof sqlText === "string" &&
+				sqlText.includes("SELECT id, id, session_id, event_type,")
+			) {
+				throw new Error("simulated F129 rebuild failure");
+			}
+			// biome-ignore lint/suspicious/noExplicitAny: passthrough to the real bun:sqlite exec overload set
+			return (originalExec as any)(sqlText, ...rest);
+		});
+
+		try {
+			await initializeDatabase(db); // must not throw — warn-and-continue
+		} finally {
+			execSpy.mockRestore();
+		}
+
+		// Rolled back: the pre-upgrade trigger text is exactly as it was, and
+		// the FTS index is exactly what it was before the failed rebuild —
+		// not empty (a botched DELETE-without-restore) and not partially
+		// re-keyed.
+		expect(triggerSql(db, "trg_events_ad_fts")).toBe(oldTrigger);
+		expect(
+			(db.prepare("SELECT COUNT(*) AS n FROM search_events_fts").get() as { n: number }).n,
+		).toBe(countBefore);
+
+		// Search still works post-rollback: a fresh event still indexes via
+		// the (old-style, but still functional) trigger.
+		db.prepare(
+			"INSERT INTO events (session_id, event_type, raw_payload, content, created_at) VALUES (?, 'UserPromptSubmit', '{}', 'hello world', '2026-01-01 00:00:00')",
+		).run(sid);
+		expect(
+			(db.prepare("SELECT COUNT(*) AS n FROM search_events_fts").get() as { n: number }).n,
+		).toBe(countBefore + 1);
+
+		// The next boot (no injected failure) retries and succeeds, because
+		// detection is by trigger text, not a one-shot flag.
+		await initializeDatabase(db);
+		expect(triggerSql(db, "trg_events_ad_fts")).toContain("rowid = OLD.id");
+
+		db.close();
+	}, 30_000);
+});
+
+describeSqliteOnly("R-F130: the delete trigger only fires for indexed event types", () => {
+	test("deleting a non-indexed event never touches search_events_fts", async () => {
+		const db = await legacyHandleWithOldTriggers();
+		const sid = `f130a-${crypto.randomUUID()}`;
+		insertSession(db, sid);
+		await initializeDatabase(db);
+		expect(triggerSql(db, "trg_events_ad_fts")).toMatch(/WHEN\s+OLD\.event_type\s+IN/i);
+
+		const { lastInsertRowid } = db
+			.prepare(
+				"INSERT INTO events (session_id, event_type, raw_payload, content, created_at) VALUES (?, 'PreToolUse', '{}', 'tool', '2026-01-01 00:00:00')",
+			)
+			.run(sid);
+		const nonIndexedId = Number(lastInsertRowid);
+
+		// Plant a decoy row at that same rowid. Without the WHEN guard, the
+		// AFTER DELETE trigger fires unconditionally and would remove it;
+		// with the guard, the trigger body never runs for this event_type.
+		db.prepare(
+			"INSERT INTO search_events_fts(rowid, event_id, session_id, event_type, text, created_at) VALUES (?, ?, ?, 'decoy', 'decoy', '2026-01-01')",
+		).run(nonIndexedId, nonIndexedId, sid);
+
+		db.prepare("DELETE FROM events WHERE id = ?").run(nonIndexedId);
+
+		expect(
+			db.prepare("SELECT rowid FROM search_events_fts WHERE rowid = ?").get(nonIndexedId),
+		).not.toBeNull();
+
+		db.close();
+	});
+
+	test("deleting an indexed event still removes its own FTS row (GUARD)", async () => {
+		const db = await legacyHandleWithOldTriggers();
+		const sid = `f130b-${crypto.randomUUID()}`;
+		insertSession(db, sid);
+		insertInterleavedEvents(db, sid, 10); // 5 indexed
+		await initializeDatabase(db);
+
+		const [row] = db
+			.prepare(
+				"SELECT id FROM events WHERE session_id = ? AND event_type = 'UserPromptSubmit' LIMIT 1",
+			)
+			.all(sid) as Array<{ id: number }>;
+		const id = row?.id as number;
+		expect(db.prepare("SELECT 1 FROM search_events_fts WHERE rowid = ?").get(id)).not.toBeNull();
+
+		db.prepare("DELETE FROM events WHERE id = ?").run(id);
+		expect(db.prepare("SELECT 1 FROM search_events_fts WHERE rowid = ?").get(id)).toBeNull();
+
+		db.close();
+	});
+
+	test("a rowid-keyed trigger missing the WHEN guard (the 2f8bdd9 shape) gets upgraded", async () => {
+		const db = tmpDb();
+		db.exec(`
+			CREATE TABLE sessions (
+				id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL UNIQUE,
+				display_name TEXT,
+				agent_type TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'active',
+				cwd TEXT,
+				current_task TEXT,
+				notes TEXT DEFAULT '',
+				started_at TEXT NOT NULL DEFAULT (datetime('now')),
+				last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+				total_tool_uses INTEGER NOT NULL DEFAULT 0,
+				metadata TEXT DEFAULT '{}'
+			);
+		`);
+		await initializeDatabase(db); // creates the events table + guarded triggers
+		db.exec(INTERMEDIATE_AD_TRIGGER_NO_GUARD); // downgrade to the pre-F130 shape
+
+		const before = triggerSql(db, "trg_events_ad_fts");
+		expect(before).toContain("rowid = OLD.id");
+		expect(before).not.toMatch(/WHEN\s+OLD\.event_type\s+IN/i);
+
+		await initializeDatabase(db);
+
+		const after = triggerSql(db, "trg_events_ad_fts");
+		expect(after).toContain("rowid = OLD.id");
+		expect(after).toMatch(/WHEN\s+OLD\.event_type\s+IN/i);
 
 		db.close();
 	}, 30_000);
