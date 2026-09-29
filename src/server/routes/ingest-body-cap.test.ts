@@ -11,7 +11,7 @@ const { config } = await import("../config.js");
 const { initializeDatabase, getDb } = await import("../db/client.js");
 const { events, sessions } = await import("../db/schema/index.js");
 const { eq } = await import("drizzle-orm");
-const { ingest, MAX_HOOK_BODY_BYTES } = await import("./ingest.js");
+const { ingest, MAX_HOOK_BODY_BYTES, extractOversizeIdentity } = await import("./ingest.js");
 const { health, _resetDbReadyForTest } = await import("./health.js");
 const { _resetBucketsForTest } = await import("../middleware/hook-rate-limit.js");
 const { _resetCountersForTest, getInFlightCount, getOversizeDropped } = await import(
@@ -335,6 +335,171 @@ describe("F128 (codex r2): oversize deliveries with a recoverable session_id sto
 
 		await until(() => getInFlightCount() === 0, 5_000);
 		expect(await rowsFor(sid)).toHaveLength(0);
+	});
+});
+
+describe("F131b (D19): oversize stubs never claim a real t:/d: dedup key", () => {
+	test("an oversize PostToolUse stub with tool_use_id X, followed by a normal PostToolUse with the same X, stores both rows", async () => {
+		const sid = newSessionId("f131b-both");
+		const toolUseId = `f131b-tu-${crypto.randomUUID()}`;
+
+		const oversizeBody = JSON.stringify({
+			session_id: sid,
+			hook_event_name: "PostToolUse",
+			tool_name: "Bash",
+			tool_use_id: toolUseId,
+			tool_input: { command: "echo hi" },
+			tool_response: "p".repeat(MAX_HOOK_BODY_BYTES + 4096),
+		});
+		expect(oversizeBody.length).toBeGreaterThan(MAX_HOOK_BODY_BYTES);
+
+		const res1 = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: oversizeBody,
+		});
+		expect(res1.status).toBe(200);
+		await until(() => getInFlightCount() === 0, 10_000);
+
+		// The real event: same tool_use_id, a normal-sized body.
+		const res2 = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				session_id: sid,
+				hook_event_name: "PostToolUse",
+				tool_name: "Bash",
+				tool_use_id: toolUseId,
+				tool_response: "real output",
+			}),
+		});
+		expect(res2.status).toBe(200);
+		await until(() => getInFlightCount() === 0, 10_000);
+
+		const rows = await rowsFor(sid);
+		expect(rows).toHaveLength(2);
+
+		const stub = rows.find((r) => r.content === "Payload exceeded 16 MiB and was dropped");
+		const real = rows.find((r) => r.content !== "Payload exceeded 16 MiB and was dropped");
+		expect(stub, JSON.stringify(rows)).toBeDefined();
+		expect(real, JSON.stringify(rows)).toBeDefined();
+		expect(stub?.dedupKey).toMatch(/^o:[0-9a-f]{32}$/);
+		expect(real?.dedupKey).toMatch(/^t:[0-9a-f]{32}$/);
+	});
+
+	test("replaying the same oversize delivery still gives one stub", async () => {
+		const sid = newSessionId("f131b-replay");
+		const toolUseId = `f131b-replay-tu-${crypto.randomUUID()}`;
+		const oversizeBody = JSON.stringify({
+			session_id: sid,
+			hook_event_name: "PostToolUse",
+			tool_name: "Bash",
+			tool_use_id: toolUseId,
+			tool_response: "p".repeat(MAX_HOOK_BODY_BYTES + 4096),
+		});
+		expect(oversizeBody.length).toBeGreaterThan(MAX_HOOK_BODY_BYTES);
+
+		for (let i = 0; i < 2; i++) {
+			const res = await app.request("/api/v1/hooks", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: oversizeBody,
+			});
+			expect(res.status).toBe(200);
+		}
+		await until(() => getInFlightCount() === 0, 10_000);
+
+		const rows = await rowsFor(sid);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.dedupKey).toMatch(/^o:[0-9a-f]{32}$/);
+	});
+});
+
+describe("F132 (D19): identity extraction is top-level-only and JSON-aware", () => {
+	test("a top-level session_id is extracted even when tool_input nests a fake one", () => {
+		const prefix = JSON.stringify({
+			tool_input: { session_id: "victim", nested: { more: "stuff" } },
+			session_id: "real",
+			hook_event_name: "PreToolUse",
+			tool_use_id: "tu-1",
+		});
+		const identity = extractOversizeIdentity(prefix);
+		expect(identity).not.toBeNull();
+		expect(identity?.sessionId).toBe("real");
+	});
+
+	test("a non-JSON prefix extracts nothing", () => {
+		const prefix = '"pad" "session_id":"x"';
+		expect(extractOversizeIdentity(prefix)).toBeNull();
+	});
+
+	test("leading whitespace before the opening brace is tolerated", () => {
+		const prefix = `   ${JSON.stringify({ session_id: "f132-ws-ok", hook_event_name: "Stop" })}`;
+		const identity = extractOversizeIdentity(prefix);
+		expect(identity?.sessionId).toBe("f132-ws-ok");
+	});
+
+	test("an array-nested fake session_id at depth > 1 is ignored", () => {
+		const prefix = JSON.stringify({
+			some_list: [{ session_id: "victim-in-array" }],
+			session_id: "f132-real-array",
+			hook_event_name: "Stop",
+		});
+		const identity = extractOversizeIdentity(prefix);
+		expect(identity?.sessionId).toBe("f132-real-array");
+	});
+});
+
+describe("F133 (D19): stub fields are sanitized and hook_event_name must be known", () => {
+	test("an unknown hook_event_name yields no stub", () => {
+		const prefix = JSON.stringify({
+			session_id: "f133-unknown",
+			hook_event_name: "TotallyMadeUpEvent",
+		});
+		expect(extractOversizeIdentity(prefix)).toBeNull();
+	});
+
+	test("control characters are stripped from a recovered field", () => {
+		const prefix = JSON.stringify({
+			session_id: "f133-ctl",
+			hook_event_name: "PreToolUse",
+			tool_name: "Ba\u0007sh\u0000!",
+		});
+		const identity = extractOversizeIdentity(prefix);
+		expect(identity).not.toBeNull();
+		expect(identity?.toolName).toBe("Bash!");
+	});
+
+	test("a recovered field is length-capped", () => {
+		const longToolName = "x".repeat(5000);
+		const prefix = JSON.stringify({
+			session_id: "f133-long",
+			hook_event_name: "PreToolUse",
+			tool_name: longToolName,
+		});
+		const identity = extractOversizeIdentity(prefix);
+		expect(identity).not.toBeNull();
+		expect(identity?.toolName?.length).toBeLessThanOrEqual(512);
+	});
+});
+
+describe("ReDoS guard (D19): adversarial-prefix extraction stays fast", () => {
+	test('a 64 KiB run of unterminated "session_id":" fragments finishes well under a generous bound', () => {
+		const fragment = '"session_id":"';
+		const body = `{${fragment.repeat(Math.ceil((64 * 1024) / fragment.length))}`.slice(
+			0,
+			64 * 1024,
+		);
+
+		const start = Date.now();
+		const identity = extractOversizeIdentity(body);
+		const elapsed = Date.now() - start;
+
+		// Loosely bounded — the host can be heavily loaded — this only guards
+		// against a real blowup (would be seconds/minutes with backtracking),
+		// not a tight performance budget.
+		expect(elapsed).toBeLessThan(500);
+		expect(identity).toBeNull();
 	});
 });
 
