@@ -12,6 +12,7 @@ import "../db/__test_db.js";
 const { config } = await import("../config.js");
 const { initializeDatabase, getDb } = await import("../db/client.js");
 const { sessions } = await import("../db/schema/index.js");
+const { eq } = await import("drizzle-orm");
 const { app } = await import("../app.js");
 const { createApiKey, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE } = await import(
 	"../auth/api-key.js"
@@ -117,7 +118,12 @@ describe("PUT /sessions/:id/rename {source:'reset'} — caller-class matrix (F46
 			body: JSON.stringify({ source: "reset" }),
 		});
 		expect(res.status).toBe(200);
-		const [row] = await getDb().select().from(sessions).execute();
+		// F132: filter by id; on a shared Postgres DB other files' rows are present.
+		const [row] = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, "reset-manage"))
+			.execute();
 		expect(row.displayName).toBe("codex-thread-name");
 		const metadata = row.metadata as Record<string, unknown>;
 		expect(metadata.renameSource).toBeUndefined();

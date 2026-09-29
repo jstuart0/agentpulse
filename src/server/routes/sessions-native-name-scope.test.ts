@@ -11,7 +11,9 @@ const { initializeDatabase, getDb } = await import("../db/client.js");
 const { sessions } = await import("../db/schema/index.js");
 const { app } = await import("../app.js");
 const { createApiKey, SCOPE_INGEST, SCOPE_OBSERVE } = await import("../auth/api-key.js");
-const { _resetBucketsForTest } = await import("../middleware/hook-rate-limit.js");
+const { _resetBucketsForTest, _setRateLimitClockForTest, RATE_LIMIT_CAPACITY, tryConsume } =
+	await import("../middleware/hook-rate-limit.js");
+const { eq } = await import("drizzle-orm");
 
 const originalDisableAuth = config.disableAuth;
 
@@ -49,8 +51,20 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	_setRateLimitClockForTest(null);
 	_resetBucketsForTest();
 });
+
+// F132: always select the row under test. Async ingestion from a /hooks test
+// can land a session after beforeEach cleared the table.
+async function rowFor(sessionId: string) {
+	const [row] = await getDb()
+		.select()
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.execute();
+	return row;
+}
 
 describe("PUT /sessions/:id/native-name — ingest-only key", () => {
 	test("known session -> 200, name updated", async () => {
@@ -101,7 +115,7 @@ describe("PUT /sessions/:id/native-name — ingest-only key", () => {
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(body.applied).toBe(false);
-		const [row] = await getDb().select().from(sessions).execute();
+		const row = await rowFor("pinned-1");
 		expect(row.displayName).toBe("human-chosen-name");
 	});
 
@@ -150,23 +164,27 @@ describe("PUT /sessions/:id/native-name — rate limit (D20, F26)", () => {
 	// call N is the first to fail".
 	test("sustained calls from one API key exceed the rate limit -> 429 {error:rate_limited} at least once; a second key is unaffected", async () => {
 		await mkSession("rl-1");
-		const { key: keyA } = await createApiKey("rl-key-a", [SCOPE_INGEST]);
+		const { key: keyA, id: idA } = await createApiKey("rl-key-a", [SCOPE_INGEST]);
 		const { key: keyB } = await createApiKey("rl-key-b", [SCOPE_INGEST]);
 
-		let rateLimitedBody: unknown;
-		for (let i = 0; i < 300; i++) {
-			const res = await app.request("/api/v1/sessions/rl-1/native-name", {
-				method: "PUT",
-				headers: authBearer(keyA),
-				body: JSON.stringify({ name: `name-${i}` }),
-			});
-			if (res.status === 429) {
-				rateLimitedBody = await res.json();
-				break;
-			}
-			expect(res.status).toBe(200);
+		// F132: a frozen clock means no refill, whatever the backend's speed.
+		// Drain all but one token of key A's bucket directly, then the last
+		// token is a 200 and the next call is the 429.
+		const frozen = Date.now();
+		_setRateLimitClockForTest(() => frozen);
+		for (let i = 0; i < RATE_LIMIT_CAPACITY - 1; i++) {
+			expect(tryConsume(`native-name:${idA}`)).toBe(true);
 		}
-		expect(rateLimitedBody).toEqual({ error: "rate_limited" });
+		const put = (key: string, name: string) =>
+			app.request("/api/v1/sessions/rl-1/native-name", {
+				method: "PUT",
+				headers: authBearer(key),
+				body: JSON.stringify({ name }),
+			});
+		expect((await put(keyA, "last-token")).status).toBe(200);
+		const limited = await put(keyA, "over-limit");
+		expect(limited.status).toBe(429);
+		expect(await limited.json()).toEqual({ error: "rate_limited" });
 
 		// A different key's bucket is untouched.
 		const resB = await app.request("/api/v1/sessions/rl-1/native-name", {
@@ -215,7 +233,7 @@ describe("PUT /sessions/:id/native-name — 16 KiB body limit", () => {
 		});
 		expect(res2.status).toBe(413);
 
-		const [row] = await getDb().select().from(sessions).execute();
+		const row = await rowFor("big-1");
 		expect(row.displayName).toBe("brave-falcon");
 	});
 

@@ -32,6 +32,16 @@ interface Bucket {
 // restart (intentional — state is ephemeral, not persisted).
 const buckets = new Map<string, Bucket>();
 
+// F132: the middleware reads time through this seam so an integration test
+// can freeze it; otherwise a backend slower than the refill rate (Postgres,
+// ~15 ms per request vs one token per 10 ms) never drains a bucket.
+let rateLimitClock: () => number = Date.now;
+
+/** Test-only: freeze (or with null, restore) the clock the middleware uses. */
+export function _setRateLimitClockForTest(clock: (() => number) | null): void {
+	rateLimitClock = clock ?? Date.now;
+}
+
 /**
  * Consume one token for `keyId`.
  * Returns true if the request is allowed, false if it should be dropped.
@@ -42,7 +52,7 @@ const buckets = new Map<string, Bucket>();
  * fuzzed by real elapsed time the way the integration-tier tests are.
  * Defaults to `Date.now` for every production call site.
  */
-export function tryConsume(keyId: string, now: () => number = Date.now): boolean {
+export function tryConsume(keyId: string, now: () => number = rateLimitClock): boolean {
 	const nowMs = now();
 	let bucket = buckets.get(keyId);
 
