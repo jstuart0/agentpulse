@@ -262,7 +262,14 @@ const MANAGE_ONLY_TOOL_NAMES = [
 ];
 
 describe("tools/list — observe vs manage scope split (test-contract 14, C1 + F23)", () => {
-	test("observe-scoped server registers exactly the 10 observe read tools, none of the 6 manage-only ones", async () => {
+	// AIMR-214 Phase A note: this test was an exact-set `toEqual` until Phase A
+	// added list_projects_summary — a NEW, legitimately observe-scoped tool
+	// (a narrower sibling DTO) registered outside this file's fixed "16
+	// Phase-3 tools" snapshot. Narrowed to a subset check (matching this
+	// describe block's other two tests below), since the file's own Phase 4
+	// note already establishes that exhaustive population counts live in
+	// tool-invariants.test.ts (assertions 20/21), not here.
+	test("observe-scoped server registers every Phase-3 observe read tool, none of the 6 manage-only ones", async () => {
 		const { server } = buildMcpServer({ client: fakeClient(), scopes: ["observe"] });
 		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 		const mcpClient = new Client({ name: "test-client", version: "0.0.0" });
@@ -270,7 +277,9 @@ describe("tools/list — observe vs manage scope split (test-contract 14, C1 + F
 
 		const { tools } = await mcpClient.listTools();
 		const names = new Set(tools.map((t) => t.name));
-		expect(names).toEqual(new Set(OBSERVE_TOOL_NAMES));
+		for (const observeOnly of OBSERVE_TOOL_NAMES) {
+			expect(names.has(observeOnly), `${observeOnly} missing from observe scope`).toBe(true);
+		}
 		for (const manageOnly of MANAGE_ONLY_TOOL_NAMES) {
 			expect(names.has(manageOnly)).toBe(false);
 		}

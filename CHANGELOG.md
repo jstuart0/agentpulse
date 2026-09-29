@@ -7,189 +7,6 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
-### Fixed
-
-
-- **Supervisor agent routes reachable with a supervisor credential only
-  (AGEN-17)** — a mount-order bug put the machine-agent router
-  (`/api/v1/supervisors/*`) inside the operator route bundle, after four
-  routers whose wildcard `requireAuth()`/`requireOperatorScope()` middleware
-  Hono merges across the whole parent router. Every agent-route call
-  (`register`, `heartbeat`, `launches/claim`, `managed-session-state`,
-  `provider-sync`, `control-actions/*`) was answered by the operator gate
-  instead of the handler, needing a `manage`-scoped API key a remote
-  supervisor process never carries — so any supervisor whose
-  `supervisor.json` predates the AGEN-9 API-key-scope backfill crash-loops
-  on every restart. The agent router is now root-mounted, ahead of the
-  operator bundle, at both `/api/v1` and `/app-api/v1`; every agent handler
-  still carries its own supervisor-credential (or, for `register`,
-  enrollment-token) auth, and operator routes are unaffected. No client
-  update is required — see the upgrade notes below.
-
-- **Repeated tool calls with the same tool name were silently collapsed
-  (AGEN-16)** — hook deliveries were deduplicated by comparing recent event
-  *content* against a short rolling window, so e.g. 20 identical `Bash`
-  calls in a session could be stored as 2 rows. Every hook delivery is now
-  deduplicated by durable identity instead (see "Changed" above), so
-  distinct tool calls, turns, and permission events are all stored.
-- **Event-authority comparisons used the server process's local time zone
-  instead of UTC (AGEN-16)** — under a non-UTC `TZ`, a cross-source
-  comparison deciding which of two copies of the same event to keep (e.g. a
-  transcript-sourced assistant message superseding a hook-sourced one)
-  could misfire. These comparisons are now always UTC, regardless of the
-  server's local `TZ`.
-- **The live WebSocket feed could show a placeholder id for a newly-stored
-  event, then a different id once the client polled (AGEN-16)** — causing
-  the same event to render twice in the session timeline. The WebSocket
-  broadcast now sends the row actually stored, with its real database id.
-- **The AI digest's first day of a session's activity was silently excluded
-  from the digest window (AGEN-16)**, due to a bare-timestamp parsing bug;
-  it's now included.
-- **SQLite full-text-search deletes were a full scan of the search index per
-  deleted event (AGEN-16)** — deleting a session with tens of thousands of
-  events could take minutes and risked a liveness-probe restart mid-delete.
-  Search-index deletes are now keyed by row id, making session deletion
-  proportional to the number of rows actually removed.
-- **The SQLite search index was rebuilt on every server boot (AGEN-16)**,
-  rather than only when it was actually behind; a database that's already
-  caught up no longer pays that cost at startup.
-- **Postgres search results had no stable tiebreaker (AGEN-16)** — two
-  events with an identical timestamp could appear in a different order
-  across otherwise-identical requests, including across pages. Postgres
-  search now breaks ties by event id.
-- **The AI watcher's transcript reader failed to parse Postgres-formatted
-  timestamps (AGEN-16)**, silently dropping every event from the watcher's
-  context on a Postgres-backed install. Fixed by routing through the shared
-  timestamp parser used elsewhere.
-
-### Security
-
-
-- **Supervisors can only act on sessions they own (AGEN-15)** — before this
-  fix, any enrolled supervisor could post `managed-session-state` or events
-  for *any* session id (including fabricating a brand-new one, or promoting
-  a hook-observed session it never launched), silently rebinding it and then
-  receiving that session's future prompts — including injected environment
-  variables (`launch.env`). Every supervisor write now resolves an owner of
-  record (the launch claimant, else the session's managed row, launch
-  status ignored) and rejects a non-owner with a uniform
-  `403 { "error": "session_not_owned" }`. Claim routing, provider-sync
-  listing, stale control-lock expiry, and the lifecycle/AI-classifier
-  "is this session's supervisor connected" reads all resolve the same
-  owner of record, so a legacy hijacked row self-heals with no migration
-  the moment its rightful owner's launch is claimed. Correlation can no
-  longer be overridden by a supervisor-supplied id that doesn't match the
-  launch it's claiming.
-- A `401` from a revoked or rotated supervisor credential during an
-  in-session report (`codex-managed.ts`, `claude-headless.ts`) is now fatal:
-  the supervisor logs the rejection, terminates every child process it's
-  holding for that provider, and exits — instead of silently continuing to
-  run with a dead credential. See `deploy/k8s/FORWARDAUTH.md`'s "Supervisor
-  client behavior on a rejected in-session report" for the full behavior
-  matrix (which calls are fatal-on-401 versus log-and-retry, and why).
-- **Prompt and retry now resolve the same launch (AGEN-15)** — a managed
-  session whose recorded `launchRequestId` is the legacy fallback shape
-  (equal to its own session id, written when a report omitted a real launch
-  id) previously left `retryLaunchForSession` unable to find that session's
-  actual launch, while `queuePromptAction` already had this fixed. Both
-  paths now resolve the real launch by correlation, and both apply the same
-  cross-host guard: a managed row whose `launchRequestId` points at a launch
-  correlated to a *different* session is rejected rather than acted on.
-- The supervisor now bounds and sanitizes the server's response body and
-  status text before logging either on a failed request — an oversized
-  body, a forged log line, or a terminal escape sequence in a malicious or
-  compromised server's response can no longer be written verbatim into the
-  supervisor's local log.
-
-- **Symlink-safe Codex/Copilot hooks.json writes (F232)** — every installer
-  that writes `~/.codex/hooks.json` or `~/.copilot/hooks/agentpulse.json`
-  (and their timestamped backups) — `scripts/setup-hooks.sh`,
-  `scripts/setup-relay.sh`, the `/setup.sh` endpoint, `bin/cli.ts`, and
-  `scripts/install-local.ps1` — now refuses a symlink (or, on Windows, any
-  reparse point) at the destination or its parent directory instead of
-  writing through it, matching F207's existing hook-auth-header guarantee.
-- **`install-local.ps1` reparse-point guard on the API key file (F233)** —
-  `New-ApHookAuthHeaderFile` and the `.agentpulse` directory it writes into
-  are now checked for a reparse point before every write, closing the one
-  write path on Windows that had no symlink/junction guard at all.
-- **`AGENTPULSE_KEY` env var for the direct-install curl\|bash scripts
-  (F234)** — `--key` is briefly visible in `ps` during a one-time install;
-  `scripts/setup-hooks.sh` and the `/setup.sh` endpoint now also accept
-  `AGENTPULSE_KEY=ap_xxx curl ... \| bash`, keeping the key out of the
-  process list. (`scripts/setup-relay.sh` already supported this.)
-- **`provider_event_name` is capped and control-character-stripped (F235)**
-  — the Copilot canonicalizer's `provider_event_name` (sourced from the
-  request body, the `?event=` hint, or `hook_event_name` — all
-  attacker-influenced) is now bounded to 128 characters with control
-  characters stripped, regardless of source. Audited whether it reaches an
-  LLM prompt anywhere in `src/server/services/ai`/`ask`: it doesn't —
-  both build their event summaries from the canonical `eventType`, not
-  `providerEventType` — so this is defense-in-depth, not a fix for an
-  existing prompt-injection path.
-
-### Upgrade notes (AGEN-17 / AGEN-15 / AGEN-16)
-
-
-If any of your supervisors have been crash-looping since the AGEN-9
-API-key-scope backfill, do this before and right after deploying:
-
-**Registration now retries forever with backoff instead of exiting** (also fixed in
-this release): once you upgrade the server, a supervisor that's still
-running (even mid-retry) reconnects on its own — you don't need to manually restart
-it. The per-OS restart notes below (3, 4) are for a supervisor whose *process* actually
-stopped (e.g. Windows' scheduled task, or a systemd unit that hit its restart-limit
-before this fix shipped), not for one that's simply still retrying.
-
-1. **Inventory and cancel stale `validated` launches** before deploying —
-   one could dispatch to the first supervisor that claims it after
-   recovery. The population is normally small (a launch left unclaimed when
-   the outage began, or a dashboard retry). See the stale-launch query in
-   `deploy/k8s/FORWARDAUTH.md`.
-2. **Revoke any stopgap `manage`-scoped API key** you put in a supervisor's
-   `supervisor.json` as a workaround. That file is world-readable (`0644`)
-   by default, so treat a `manage` key placed there as compromised the
-   moment it's written — revoke it promptly rather than "eventually" once
-   the supervisor is back to using its own credential.
-3. **Windows**: the scheduled task only triggers `-AtLogOn` and doesn't
-   auto-restart on failure — run `Start-ScheduledTask AgentPulseSupervisor`
-   or log back in.
-4. **Linux**: if `systemctl --user status agentpulse-supervisor` shows
-   `start-limit-hit`, run `systemctl --user reset-failed` before restarting.
-5. **A revoked or rotated credential needs `/admin/supervisors/:id/rotate`**,
-   never a fresh enrollment — rotate keeps the supervisor's id, and
-   therefore every session it already owns. A brand-new enrollment mints a
-   new id that owns none of the host's prior sessions.
-6. **Optional**: run the ownership audit
-   (`deploy/k8s/FORWARDAUTH.md`) to find any session rows left with a stale
-   recorded owner from before this fix.
-7. **Archive** `~/.agentpulse/logs/supervisor.err.log` if it grew large
-   during the outage — the upgrade doesn't truncate it.
-
-- **Database migration (AGEN-16)**: this release adds a `dedup_key` column
-  and two indexes to the `events` table. **Back up your SQLite database
-  before upgrading** (see `deploy/k8s/BACKUP-RESTORE.md`). On Postgres,
-  building the indexes takes a `SHARE` lock on `events` — see
-  `deploy/k8s/README.md` → "Upgrading to migration 0003" for the
-  out-of-band index-build procedure and the required `pg_index.indisvalid`
-  verification step; run it in a maintenance window on a large table.
-- **Storage growth (AGEN-16)**: on a 30-day replay of a real workload, event
-  storage after the growth mitigations above grew roughly 840 MB / 30 days
-  on SQLite (about 28 MB/day on average, up to ~137 MB/day at peak). A 1Gi
-  volume on a storage class that enforces the PVC's size request fills in
-  roughly 37 days at that rate; `local-path` volumes are bound by node disk
-  instead and aren't affected the same way. Size the volume accordingly —
-  see `deploy/k8s/README.md` → "Data volume sizing". Retention enforcement
-  isn't implemented yet and is tracked as a follow-up.
-- **Old (unstamped) relays (AGEN-16)**: a relay that hasn't been upgraded to
-  send `X-AgentPulse-Delivery-Id` can store a retried non-tool hook (a
-  `Stop` or a prompt) twice if the relay retries a delivery. Tool calls are
-  unaffected — they dedupe on their own `tool_use_id` regardless of the
-  header. Upgrade the relay to close this window.
-- **API keys (AGEN-16)**: use one ingest API key per producer host. Dedup
-  identity is scoped per API key, so rotating a key defeats deduplication
-  for any retry that straddles the rotation — a rare, fail-open case that
-  produces an extra stored copy, never a lost event.
-
 ### Added
 
 - **Copilot CLI support (AGEN-13, D7/D8/D13) — labeled "contract not yet
@@ -255,6 +72,14 @@ before this fix shipped), not for one that's simply still retrying.
   hooks already cover a given session and stand down for it instead of
   posting a second copy of every event. A missing marker means the observer
   posts (fail-open: a possible duplicate, never a lost event).
+- **`GET /api/v1/projects/summary` + `list_projects_summary` MCP tool** — an
+  observe-safe project list: `id`, `name`, `defaultAgentType`, `defaultModel`,
+  `defaultLaunchMode`, and `githubRepoUrl` reduced to `origin`+`pathname`
+  (userinfo, query string, and fragment all stripped). Registered ahead of
+  `/projects/:id` so `summary` is never captured as an `:id`. The full-detail
+  `GET /api/v1/projects` (and its `list_projects` MCP tool) remain
+  `manage`-scoped — that DTO still carries arbitrary operator-set
+  `notes`/`metadata` and an unredacted `githubRepoUrl`.
 
 ### Changed
 
@@ -324,6 +149,203 @@ before this fix shipped), not for one that's simply still retrying.
   figures and volume-sizing guidance.
 - **ask-qa reads only the newest 2,000 events per session (AGEN-16)**,
   previously unbounded, to bound its context size.
+
+### Fixed
+
+- **Supervisor agent routes reachable with a supervisor credential only
+  (AGEN-17)** — a mount-order bug put the machine-agent router
+  (`/api/v1/supervisors/*`) inside the operator route bundle, after four
+  routers whose wildcard `requireAuth()`/`requireOperatorScope()` middleware
+  Hono merges across the whole parent router. Every agent-route call
+  (`register`, `heartbeat`, `launches/claim`, `managed-session-state`,
+  `provider-sync`, `control-actions/*`) was answered by the operator gate
+  instead of the handler, needing a `manage`-scoped API key a remote
+  supervisor process never carries — so any supervisor whose
+  `supervisor.json` predates the AGEN-9 API-key-scope backfill crash-loops
+  on every restart. The agent router is now root-mounted, ahead of the
+  operator bundle, at both `/api/v1` and `/app-api/v1`; every agent handler
+  still carries its own supervisor-credential (or, for `register`,
+  enrollment-token) auth, and operator routes are unaffected. No client
+  update is required — see the upgrade notes below.
+
+- **Repeated tool calls with the same tool name were silently collapsed
+  (AGEN-16)** — hook deliveries were deduplicated by comparing recent event
+  *content* against a short rolling window, so e.g. 20 identical `Bash`
+  calls in a session could be stored as 2 rows. Every hook delivery is now
+  deduplicated by durable identity instead (see "Changed" above), so
+  distinct tool calls, turns, and permission events are all stored.
+- **Event-authority comparisons used the server process's local time zone
+  instead of UTC (AGEN-16)** — under a non-UTC `TZ`, a cross-source
+  comparison deciding which of two copies of the same event to keep (e.g. a
+  transcript-sourced assistant message superseding a hook-sourced one)
+  could misfire. These comparisons are now always UTC, regardless of the
+  server's local `TZ`.
+- **The live WebSocket feed could show a placeholder id for a newly-stored
+  event, then a different id once the client polled (AGEN-16)** — causing
+  the same event to render twice in the session timeline. The WebSocket
+  broadcast now sends the row actually stored, with its real database id.
+- **The AI digest's first day of a session's activity was silently excluded
+  from the digest window (AGEN-16)**, due to a bare-timestamp parsing bug;
+  it's now included.
+- **SQLite full-text-search deletes were a full scan of the search index per
+  deleted event (AGEN-16)** — deleting a session with tens of thousands of
+  events could take minutes and risked a liveness-probe restart mid-delete.
+  Search-index deletes are now keyed by row id, making session deletion
+  proportional to the number of rows actually removed.
+- **The SQLite search index was rebuilt on every server boot (AGEN-16)**,
+  rather than only when it was actually behind; a database that's already
+  caught up no longer pays that cost at startup.
+- **Postgres search results had no stable tiebreaker (AGEN-16)** — two
+  events with an identical timestamp could appear in a different order
+  across otherwise-identical requests, including across pages. Postgres
+  search now breaks ties by event id.
+- **The AI watcher's transcript reader failed to parse Postgres-formatted
+  timestamps (AGEN-16)**, silently dropping every event from the watcher's
+  context on a Postgres-backed install. Fixed by routing through the shared
+  timestamp parser used elsewhere.
+
+- **`GET /sessions`, `/templates`, and `/search` returned zero results for
+  an unrecognized `agent_type`/`agentType` filter instead of rejecting it
+  (AGEN-44)** — an unknown value (e.g. a newer client's agent type this
+  server doesn't know about) now 400s with
+  `{ error: "invalid_agent_type", value, allowed }` naming the rejected
+  value and the recognized list, instead of silently matching zero rows.
+  Absent/empty `agent_type` is unchanged (no filter). The MCP server's
+  error mapping surfaces this 400 with the same detail in the tool error
+  text. `/sessions` and `/search` validate against the full observed
+  `AGENT_TYPES` (including `copilot_cli`); `/templates` validates against
+  the narrower launchable-only set, since a template can never target
+  `copilot_cli` (see "Added" above).
+
+### Security
+
+- **Supervisors can only act on sessions they own (AGEN-15)** — before this
+  fix, any enrolled supervisor could post `managed-session-state` or events
+  for *any* session id (including fabricating a brand-new one, or promoting
+  a hook-observed session it never launched), silently rebinding it and then
+  receiving that session's future prompts — including injected environment
+  variables (`launch.env`). Every supervisor write now resolves an owner of
+  record (the launch claimant, else the session's managed row, launch
+  status ignored) and rejects a non-owner with a uniform
+  `403 { "error": "session_not_owned" }`. Claim routing, provider-sync
+  listing, stale control-lock expiry, and the lifecycle/AI-classifier
+  "is this session's supervisor connected" reads all resolve the same
+  owner of record, so a legacy hijacked row self-heals with no migration
+  the moment its rightful owner's launch is claimed. Correlation can no
+  longer be overridden by a supervisor-supplied id that doesn't match the
+  launch it's claiming.
+- A `401` from a revoked or rotated supervisor credential during an
+  in-session report (`codex-managed.ts`, `claude-headless.ts`) is now fatal:
+  the supervisor logs the rejection, terminates every child process it's
+  holding for that provider, and exits — instead of silently continuing to
+  run with a dead credential. See `deploy/k8s/FORWARDAUTH.md`'s "Supervisor
+  client behavior on a rejected in-session report" for the full behavior
+  matrix (which calls are fatal-on-401 versus log-and-retry, and why).
+- **Prompt and retry now resolve the same launch (AGEN-15)** — a managed
+  session whose recorded `launchRequestId` is the legacy fallback shape
+  (equal to its own session id, written when a report omitted a real launch
+  id) previously left `retryLaunchForSession` unable to find that session's
+  actual launch, while `queuePromptAction` already had this fixed. Both
+  paths now resolve the real launch by correlation, and both apply the same
+  cross-host guard: a managed row whose `launchRequestId` points at a launch
+  correlated to a *different* session is rejected rather than acted on.
+- The supervisor now bounds and sanitizes the server's response body and
+  status text before logging either on a failed request — an oversized
+  body, a forged log line, or a terminal escape sequence in a malicious or
+  compromised server's response can no longer be written verbatim into the
+  supervisor's local log.
+
+- **Symlink-safe Codex/Copilot hooks.json writes (F232)** — every installer
+  that writes `~/.codex/hooks.json` or `~/.copilot/hooks/agentpulse.json`
+  (and their timestamped backups) — `scripts/setup-hooks.sh`,
+  `scripts/setup-relay.sh`, the `/setup.sh` endpoint, `bin/cli.ts`, and
+  `scripts/install-local.ps1` — now refuses a symlink (or, on Windows, any
+  reparse point) at the destination or its parent directory instead of
+  writing through it, matching F207's existing hook-auth-header guarantee.
+- **`install-local.ps1` reparse-point guard on the API key file (F233)** —
+  `New-ApHookAuthHeaderFile` and the `.agentpulse` directory it writes into
+  are now checked for a reparse point before every write, closing the one
+  write path on Windows that had no symlink/junction guard at all.
+- **`AGENTPULSE_KEY` env var for the direct-install curl\|bash scripts
+  (F234)** — `--key` is briefly visible in `ps` during a one-time install;
+  `scripts/setup-hooks.sh` and the `/setup.sh` endpoint now also accept
+  `AGENTPULSE_KEY=ap_xxx curl ... \| bash`, keeping the key out of the
+  process list. (`scripts/setup-relay.sh` already supported this.)
+- **`provider_event_name` is capped and control-character-stripped (F235)**
+  — the Copilot canonicalizer's `provider_event_name` (sourced from the
+  request body, the `?event=` hint, or `hook_event_name` — all
+  attacker-influenced) is now bounded to 128 characters with control
+  characters stripped, regardless of source. Audited whether it reaches an
+  LLM prompt anywhere in `src/server/services/ai`/`ask`: it doesn't —
+  both build their event summaries from the canonical `eventType`, not
+  `providerEventType` — so this is defense-in-depth, not a fix for an
+  existing prompt-injection path.
+
+### Upgrade notes
+
+#### AGEN-17 / AGEN-15
+
+If any of your supervisors have been crash-looping since the AGEN-9
+API-key-scope backfill, do this before and right after deploying:
+
+**Registration now retries forever with backoff instead of exiting** (also fixed in
+this release): once you upgrade the server, a supervisor that's still
+running (even mid-retry) reconnects on its own — you don't need to manually restart
+it. The per-OS restart notes below (3, 4) are for a supervisor whose *process* actually
+stopped (e.g. Windows' scheduled task, or a systemd unit that hit its restart-limit
+before this fix shipped), not for one that's simply still retrying.
+
+1. **Inventory and cancel stale `validated` launches** before deploying —
+   one could dispatch to the first supervisor that claims it after
+   recovery. The population is normally small (a launch left unclaimed when
+   the outage began, or a dashboard retry). See the stale-launch query in
+   `deploy/k8s/FORWARDAUTH.md`.
+2. **Revoke any stopgap `manage`-scoped API key** you put in a supervisor's
+   `supervisor.json` as a workaround. That file is world-readable (`0644`)
+   by default, so treat a `manage` key placed there as compromised the
+   moment it's written — revoke it promptly rather than "eventually" once
+   the supervisor is back to using its own credential.
+3. **Windows**: the scheduled task only triggers `-AtLogOn` and doesn't
+   auto-restart on failure — run `Start-ScheduledTask AgentPulseSupervisor`
+   or log back in.
+4. **Linux**: if `systemctl --user status agentpulse-supervisor` shows
+   `start-limit-hit`, run `systemctl --user reset-failed` before restarting.
+5. **A revoked or rotated credential needs `/admin/supervisors/:id/rotate`**,
+   never a fresh enrollment — rotate keeps the supervisor's id, and
+   therefore every session it already owns. A brand-new enrollment mints a
+   new id that owns none of the host's prior sessions.
+6. **Optional**: run the ownership audit
+   (`deploy/k8s/FORWARDAUTH.md`) to find any session rows left with a stale
+   recorded owner from before this fix.
+7. **Archive** `~/.agentpulse/logs/supervisor.err.log` if it grew large
+   during the outage — the upgrade doesn't truncate it.
+
+#### AGEN-16
+
+- **Database migration (AGEN-16)**: this release adds a `dedup_key` column
+  and two indexes to the `events` table. **Back up your SQLite database
+  before upgrading** (see `deploy/k8s/BACKUP-RESTORE.md`). On Postgres,
+  building the indexes takes a `SHARE` lock on `events` — see
+  `deploy/k8s/README.md` → "Upgrading to migration 0003" for the
+  out-of-band index-build procedure and the required `pg_index.indisvalid`
+  verification step; run it in a maintenance window on a large table.
+- **Storage growth (AGEN-16)**: on a 30-day replay of a real workload, event
+  storage after the growth mitigations above grew roughly 840 MB / 30 days
+  on SQLite (about 28 MB/day on average, up to ~137 MB/day at peak). A 1Gi
+  volume on a storage class that enforces the PVC's size request fills in
+  roughly 37 days at that rate; `local-path` volumes are bound by node disk
+  instead and aren't affected the same way. Size the volume accordingly —
+  see `deploy/k8s/README.md` → "Data volume sizing". Retention enforcement
+  isn't implemented yet and is tracked as a follow-up.
+- **Old (unstamped) relays (AGEN-16)**: a relay that hasn't been upgraded to
+  send `X-AgentPulse-Delivery-Id` can store a retried non-tool hook (a
+  `Stop` or a prompt) twice if the relay retries a delivery. Tool calls are
+  unaffected — they dedupe on their own `tool_use_id` regardless of the
+  header. Upgrade the relay to close this window.
+- **API keys (AGEN-16)**: use one ingest API key per producer host. Dedup
+  identity is scoped per API key, so rotating a key defeats deduplication
+  for any retry that straddles the rotation — a rare, fail-open case that
+  produces an extra stored copy, never a lost event.
 
 ## [0.5.0] — 2026-07-17
 

@@ -130,7 +130,7 @@ can claim it. This stops both the app and the backup-sidecar.
 ```bash
 # Confirm you are targeting the correct cluster before scaling anything down.
 kubectl config current-context
-# Expected: thor (or kubernetes-admin@kubernetes)
+# Expected: your target cluster context
 
 kubectl scale deploy agentpulse -n <agentpulse-namespace> --replicas=0
 kubectl rollout status deploy/agentpulse -n <agentpulse-namespace>

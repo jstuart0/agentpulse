@@ -1,7 +1,7 @@
 import { desc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
-import { isLaunchable } from "../../shared/constants.js";
-import type { LaunchMode, SessionTemplateInput } from "../../shared/types.js";
+import { LAUNCHABLE_AGENT_TYPES, isLaunchable } from "../../shared/constants.js";
+import type { LaunchMode, LaunchableAgentType, SessionTemplateInput } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
@@ -25,11 +25,24 @@ templatesRouter.use("*", requireAuth());
 templatesRouter.use("*", requireOperatorScope());
 
 templatesRouter.get("/templates", async (c) => {
+	// Templates are always scoped to a launchable agent type (D5 —
+	// sessionTemplates.agentType is typed LaunchableAgentType and
+	// validateTemplateInput() enforces the same on write), narrower than the
+	// AGENT_TYPES set AGEN-44's shared parseAgentTypeQuery validates against
+	// (which also allows copilot_cli — never a valid template agentType). Use
+	// the same { error: "invalid_agent_type", value, allowed } shape as
+	// sessions/search for consistency, but with the launchable-only allow-list.
 	const agentTypeParam = c.req.query("agent_type");
-	if (agentTypeParam !== undefined && !isLaunchable(agentTypeParam)) {
-		return c.json({ error: "agentType must be claude_code or codex_cli" }, 400);
+	let agentType: LaunchableAgentType | undefined;
+	if (agentTypeParam) {
+		if (!isLaunchable(agentTypeParam)) {
+			return c.json(
+				{ error: "invalid_agent_type", value: agentTypeParam, allowed: LAUNCHABLE_AGENT_TYPES },
+				400,
+			);
+		}
+		agentType = agentTypeParam;
 	}
-	const agentType = agentTypeParam;
 	const query = getDb().select().from(sessionTemplates);
 	const rows = agentType
 		? await query

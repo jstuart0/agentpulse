@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import { AGENT_TYPES } from "../../shared/constants.js";
-import type { AgentType } from "../../shared/types.js";
 import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getSearchBackend } from "../services/search/index.js";
 import type { SearchFilters, SearchRowKind } from "../services/search/types.js";
+import { InvalidAgentTypeQueryError, parseAgentTypeQuery } from "./agent-type-query.js";
 
 /**
  * Global search across session metadata + event content.
@@ -29,12 +29,6 @@ function parseKinds(input: string | undefined): SearchRowKind[] | undefined {
 	return parts.length > 0 ? parts : undefined;
 }
 
-function parseAgentType(input: string | undefined): AgentType | undefined {
-	return input !== undefined && (AGENT_TYPES as readonly string[]).includes(input)
-		? (input as AgentType)
-		: undefined;
-}
-
 function parseSessionStatus(
 	input: string | undefined,
 ): "active" | "idle" | "completed" | "archived" | undefined {
@@ -44,6 +38,16 @@ function parseSessionStatus(
 }
 
 searchRouter.get("/search", async (c) => {
+	let agentType: ReturnType<typeof parseAgentTypeQuery>;
+	try {
+		agentType = parseAgentTypeQuery(c.req.query("agentType"));
+	} catch (err) {
+		if (err instanceof InvalidAgentTypeQueryError) {
+			return c.json({ error: "invalid_agent_type", value: err.value, allowed: AGENT_TYPES }, 400);
+		}
+		throw err;
+	}
+
 	const q = c.req.query("q")?.trim() ?? "";
 	if (!q) {
 		return c.json({ hits: [], total: 0, backend: getSearchBackend().name });
@@ -53,7 +57,7 @@ searchRouter.get("/search", async (c) => {
 		q,
 		sessionId: c.req.query("sessionId") || undefined,
 		cwd: c.req.query("cwd") || undefined,
-		agentType: parseAgentType(c.req.query("agentType")),
+		agentType,
 		sessionStatus: parseSessionStatus(c.req.query("sessionStatus")),
 		eventType: c.req.query("eventType") || undefined,
 		since: c.req.query("since") || undefined,

@@ -14,7 +14,7 @@ AgentPulse is the command center for AI coding agents across all your machines. 
 - **ORM:** Drizzle
 - **Real-time:** WebSocket (native Bun) + 3s polling fallback
 - **Telemetry:** Cloudflare Worker + D1 at `telemetry-agentpulse.xmojo.net` (default homelab endpoint; configurable via `TELEMETRY_ENDPOINT` env var in `src/server/services/telemetry.ts`)
-- **MCP:** `@modelcontextprotocol/sdk` (stdio transport) + `zod` (tool input schemas) — lives in the `packages/agentpulse-mcp/` workspace member (published to npm as `@agentpulse/mcp`), see `docs/MCP.md` and `packages/agentpulse-mcp/README.md`
+- **MCP:** `@modelcontextprotocol/sdk` (stdio transport) + `zod` (tool input schemas) — lives in the `packages/agentpulse-mcp/` workspace member, publishes to npm as `@agentpulse/mcp` via the `mcp-v*` tag-triggered `.github/workflows/mcp-release.yml` (not yet published — run from a checkout via `agentpulse mcp serve`/`install` until the first release tag ships), see `docs/MCP.md` and `packages/agentpulse-mcp/README.md`
 - **Linting:** Biome
 
 ## Commands
@@ -42,7 +42,7 @@ agentpulse mcp install   # Mint/reuse a scoped API key, print client config (see
 ## Project Structure
 
 - `src/server/` - Hono API server
-  - `routes/` - API endpoints (~26 files):
+  - `routes/` - API endpoints (~24 files):
     - `ai-gates.ts` — AI feature-gate helpers (requireAiBuild, requireAiActive)
     - `ai-inbox.ts` — Operator inbox (HITL, stuck, risky, failed proposals)
     - `ai-intelligence.ts` — Session intelligence classifier endpoints
@@ -66,7 +66,7 @@ agentpulse mcp install   # Mint/reuse a scoped API key, print client config (see
     - `setup.ts` — Self-contained hook setup script endpoint
     - `supervisors.ts` — Supervisor registry and host routing; exports `supervisorsAgentRouter` (edge-public agent endpoints at `/api/v1/supervisors/*`) and `supervisorsAdminRouter` (management endpoints at `/api/v1/admin/supervisors/*`, forwardauth-gated)
     - `templates.ts` — Session template CRUD + distillation
-  - `services/` - ~30 service files + subdirectories:
+  - `services/` - ~22 service files + subdirectories:
     - `ai/` — AI control plane (~50 files): classifier, watcher runner, HITL, proposals, context, dispatch-filter, redactor, secrets, risk-classes, spend, auto-watcher, inbox, digest, alert-rule evaluator, template distillation, launch recommender, and more
     - `ask/` — Ask NL resolver, per-intent handlers (launch, resume, search, crud, bulk, session-action, digest, qa, channel, alert-rule, add-project), Telegram helpers, disambiguation
     - `channels/` — Notification dispatch, Telegram client + poller, channel registry, credentials
@@ -99,7 +99,7 @@ agentpulse mcp install   # Mint/reuse a scoped API key, print client config (see
   - `lib/` - `api.ts` (single API client), `utils.ts` (`parseDate()`, import from `src/web/lib/utils.ts`)
 - `src/shared/` - Shared types and constants (including `session-state.ts`, `constants.ts` for `AGENT_METADATA`/`LAUNCHABLE_AGENT_TYPES`/`isLaunchable`, `hook-command.ts` for the cross-agent hook-command generators (`buildCodexHooksFile`/`buildCopilotHooksFile`), and `hook-headers.ts` — the `X-AgentPulse-Delivery-Id`/`X-AgentPulse-Origin` header names and the Codex native-hook marker directory name, shared between the server and the supervisor)
 - `src/supervisor/` - Local supervisor process (launch/control plane for same-machine sessions)
-- `packages/agentpulse-mcp/` - Standalone, publishable MCP server package (`@agentpulse/mcp` on npm; AGEN-12 + the 2026-07-23 package-extraction campaign). Bun workspace member with its own `package.json`/`tsconfig.build.json`/`README.md`; `src/` holds `client.ts` (typed HTTP client over `/api/v1`), `server.ts` (`registerReadTool`/`registerMutatingTool` wrappers — the only sanctioned way to register a tool), `scopes.ts` (`discoverScopes` via `/auth/me`, `MIN_SERVER_VERSION`), `errors.ts`/`output.ts` (error mapping + output caps), `install.ts` (key mint + Claude/Codex config emitters, version-pinned), `resources.ts`, `types.ts`/`scope-constants.ts` (vendored wire-type closure, severed from `src/server/`/`src/shared/`), `version.ts` (`createRequire`-based own-version read), `cli.ts` (bin entry, `serve`/`install`), `tools/` (per-domain tool files), `index.ts` (`serveStdio()` + public re-exports). `bin/cli.ts`'s `mcp serve`/`mcp install` are a thin in-repo shim over this package.
+- `packages/agentpulse-mcp/` - Standalone, publishable MCP server package (publishes to npm as `@agentpulse/mcp`; not yet published — AGEN-12 + the 2026-07-23 package-extraction campaign). Bun workspace member with its own `package.json`/`tsconfig.build.json`/`README.md`; `src/` holds `client.ts` (typed HTTP client over `/api/v1`), `server.ts` (`registerReadTool`/`registerMutatingTool` wrappers — the only sanctioned way to register a tool), `scopes.ts` (`discoverScopes` via `/auth/me`, `MIN_SERVER_VERSION`), `errors.ts`/`output.ts` (error mapping + output caps), `install.ts` (key mint + Claude/Codex config emitters, version-pinned), `resources.ts`, `types.ts`/`scope-constants.ts` (vendored wire-type closure, severed from `src/server/`/`src/shared/`), `version.ts` (`createRequire`-based own-version read), `cli.ts` (bin entry, `serve`/`install`), `tools/` (per-domain tool files), `index.ts` (`serveStdio()` + public re-exports). `bin/cli.ts`'s `mcp serve`/`mcp install` are a thin in-repo shim over this package.
 - `deploy/k8s/` - Kubernetes manifests (namespace, secret template, configmap, PVC, deployment, service, middleware, ingressroute, limitrange, resourcequota, networkpolicy, serviceaccount, backup PVC)
 - `deploy/overlays/postgres/` - Kustomize overlay for Postgres-backed deployments (removes backup sidecar, sets `DATABASE_URL`, switches to `RollingUpdate`)
 - `scripts/` - setup-hooks.sh, setup-relay.sh, relay.ts, statusline.sh, install-local.sh, install-local.ps1, build-and-push.sh, check-installers.ts, check-hook-event-parity.ts, smoke-parsers.ts, ai-live-test.ts, and architecture guard scripts
@@ -195,9 +195,10 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 
 **Dashboard API:**
 - `GET /api/v1/auth/me` - Current identity; for `api_key` callers now includes `scopes: string[]` (AGEN-12) alongside the existing fields. Un-forwardauth'd by design (see Auth section).
-- `GET /api/v1/sessions` - List sessions (filterable by status, agent_type). Each row now includes a `managed: boolean` (AGEN-12) indicating whether a supervisor is holding a live process for it (i.e. whether prompt/stop/retry control actions can target it).
+- `GET /api/v1/sessions` - List sessions (filterable by status, agent_type — an `agent_type` value outside `AGENT_TYPES` (`src/shared/constants.ts`) now 400s `{ error: "invalid_agent_type", value, allowed }` (AGEN-44) instead of silently matching zero rows; a pre-AGEN-44 server still returns zero results for an unrecognized value, so a client talking to an older/newer server pair should handle both). Each row now includes a `managed: boolean` (AGEN-12) indicating whether a supervisor is holding a live process for it (i.e. whether prompt/stop/retry control actions can target it). `GET /api/v1/templates` applies the same `agent_type` validation.
 - `GET /api/v1/sessions/stats` - Dashboard KPI stats
 - `GET /api/v1/projects` - List projects. `manage`-scoped only (AGEN-12, F23): the DTO carries arbitrary operator-set `notes`/`metadata` and a `githubRepoUrl` that may embed userinfo credentials, so it's excluded from the `observe` read tier.
+- `GET /api/v1/projects/summary` - Observe-scoped project list (AIMR-214 Phase A): `id`, `name`, `defaultAgentType`, `defaultModel`, `defaultLaunchMode`, and `githubRepoUrl` reduced to `origin`+`pathname` (userinfo/query/fragment stripped). Registered before `/projects/:id` so `summary` isn't captured as an `:id`. Backs the `list_projects_summary` MCP tool.
 - `GET /api/v1/search?kinds=session&q=` - Search sessions/events (FTS5-backed)
 - `GET /api/v1/sessions/:id` - Session detail with prompt timeline. The embedded `controlActions` field (AGEN-12) is present only for `manage`-scoped callers — it carries injected-prompt text and `launch.env`, so it's omitted for `observe`-scoped API key callers (forwardauth/local/disable-auth callers always see it, since they're never scope-checked).
 - `PUT /api/v1/sessions/:id/notes` - Save session notes
