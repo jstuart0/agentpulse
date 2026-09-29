@@ -49,17 +49,17 @@ export interface EmitCodexTomlParams extends EmitConfigParams {
  * inlining the literal key here (via --env, matching Claude Code's own
  * registration mechanism) is the correct and only sane behavior.
  *
- * `npx -y agentpulse-mcp@${VERSION}` — exact-pinned, not a bare/ranged
- * package spec (D7/xander X2, binding): an unpinned `npx -y agentpulse-mcp`
+ * `npx -y @agentpulse/mcp@${VERSION}` — exact-pinned, not a bare/ranged
+ * package spec (D7/xander X2, binding): an unpinned `npx -y @agentpulse/mcp`
  * means a compromised npm publish silently reaches every fleet-control
  * client on its next MCP-host restart, with no review step. The pin is the
  * package's OWN version (this emitter lives inside the package, so the pin
  * is always the version that emitted it — deterministic and
- * snapshot-testable). `bunx agentpulse-mcp@${VERSION} serve` works
+ * snapshot-testable). `bunx @agentpulse/mcp@${VERSION} serve` works
  * identically and is documented as the alternative in the package README.
  */
 export function emitClaudeCommand({ url, keyRef }: EmitConfigParams): string {
-	return `claude mcp add --transport stdio agentpulse --env AGENTPULSE_URL=${url} --env AGENTPULSE_API_KEY=${keyRef} -- npx -y agentpulse-mcp@${VERSION} serve`;
+	return `claude mcp add --transport stdio agentpulse --env AGENTPULSE_URL=${url} --env AGENTPULSE_API_KEY=${keyRef} -- npx -y @agentpulse/mcp@${VERSION} serve`;
 }
 
 /**
@@ -77,7 +77,7 @@ export function emitMcpJson(params: EmitConfigParams): string {
 			agentpulse: {
 				type: "stdio",
 				command: "npx",
-				args: ["-y", `agentpulse-mcp@${VERSION}`, "serve"],
+				args: ["-y", `@agentpulse/mcp@${VERSION}`, "serve"],
 				env: {
 					AGENTPULSE_URL: params.url,
 					AGENTPULSE_API_KEY: "${AGENTPULSE_API_KEY}",
@@ -114,7 +114,7 @@ export function emitCodexToml(params: EmitCodexTomlParams): string {
 	const lines = [
 		"[mcp_servers.agentpulse]",
 		'command = "npx"',
-		`args = ["-y", "agentpulse-mcp@${VERSION}", "serve"]`,
+		`args = ["-y", "@agentpulse/mcp@${VERSION}", "serve"]`,
 		`env = { AGENTPULSE_URL = "${params.url}" }`,
 		'env_vars = ["AGENTPULSE_API_KEY"]',
 	];

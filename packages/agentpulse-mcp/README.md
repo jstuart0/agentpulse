@@ -2,7 +2,7 @@
 
 Standalone MCP (Model Context Protocol) server for [AgentPulse](https://github.com/jstuart0/agentpulse) — talk to any running AgentPulse instance from Claude Code, Codex CLI, or any other MCP-compatible client, without cloning the AgentPulse repo.
 
-> **Canonical source**: this package is published from [`github.com/jstuart0/agentpulse`](https://github.com/jstuart0/agentpulse), directory `packages/agentpulse-mcp/`. Verify you're installing `agentpulse-mcp` from npm's canonical listing before trusting it — near-miss names (`agent-pulse-mcp`, `agentpulse-mcp-cli`, …) are typosquat vectors once a package name is public. If this package isn't yet on npm when you read this, run the MCP server from a checkout of the main repo instead (`agentpulse mcp serve` / `agentpulse mcp install`) — see [`docs/MCP.md`](https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md) there.
+> **Canonical source**: this package is published from [`github.com/jstuart0/agentpulse`](https://github.com/jstuart0/agentpulse), directory `packages/agentpulse-mcp/`. Verify you're installing `@agentpulse/mcp` from npm's canonical listing before trusting it — near-miss names (`agent-pulse-mcp`, `agentpulse-mcp-cli`, …) are typosquat vectors once a package name is public. If this package isn't yet on npm when you read this, run the MCP server from a checkout of the main repo instead (`agentpulse mcp serve` / `agentpulse mcp install`) — see [`docs/MCP.md`](https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md) there.
 
 **Compatibility**: requires AgentPulse `main` (the future `0.6.0` release) or later — specifically, the release whose `GET /auth/me` reports API-key `scopes`. Older servers fail fast at startup with an upgrade message rather than silently registering a broken tool set.
 
@@ -10,16 +10,16 @@ Standalone MCP (Model Context Protocol) server for [AgentPulse](https://github.c
 
 ```bash
 # Mint an observe-only (read-only) key and print client config — the default, safe choice
-npx agentpulse-mcp install --mint my-agent
+npx @agentpulse/mcp install --mint my-agent
 
 # Mint a manage-scoped key that can also launch/steer/decide (read Security first)
-npx agentpulse-mcp install --mint my-agent --orchestrate
+npx @agentpulse/mcp install --mint my-agent --orchestrate
 
 # Reuse an existing key instead of minting a new one
-npx agentpulse-mcp install --key ap_your_existing_key
+npx @agentpulse/mcp install --key ap_your_existing_key
 
 # Point at a remote AgentPulse instance
-npx agentpulse-mcp install --mint my-agent --url https://agentpulse.example.com
+npx @agentpulse/mcp install --mint my-agent --url https://agentpulse.example.com
 ```
 
 `install` never writes files for you — it prints three ready-to-paste blocks (Claude Code one-shot command, `.mcp.json`, Codex `config.toml`, each pinned to this package's own installed version) plus an `export AGENTPULSE_API_KEY=...` line. Reusing `--key` runs a preflight against `/auth/me` first and refuses to print a config for a key that doesn't actually hold the scope you asked for.
@@ -27,10 +27,10 @@ npx agentpulse-mcp install --mint my-agent --url https://agentpulse.example.com
 To run the server directly (e.g. you already have a key and want to write the client config by hand):
 
 ```bash
-npx agentpulse-mcp serve
+npx @agentpulse/mcp serve
 ```
 
-`bunx agentpulse-mcp serve` works identically if you have Bun installed. It reads `AGENTPULSE_URL` (defaults to `http://localhost:3000`) and `AGENTPULSE_API_KEY` from the environment and speaks MCP over stdio.
+`bunx @agentpulse/mcp serve` works identically if you have Bun installed. It reads `AGENTPULSE_URL` (defaults to `http://localhost:3000`) and `AGENTPULSE_API_KEY` from the environment and speaks MCP over stdio.
 
 ## Tool catalog
 
@@ -52,9 +52,9 @@ This is the load-bearing section. Read it before minting a `manage`-scoped key.
 
 ### Supply-chain: exact-pin every emitted config, review before bumping
 
-Every config `install` emits (`claude mcp add`, `.mcp.json`, `config.toml`) pins this package to an **exact version** — `agentpulse-mcp@<version>`, never a bare or ranged spec. This is a deliberate choice, not an oversight: an unpinned `npx -y agentpulse-mcp serve` means a compromised npm publish silently reaches every fleet-control client on its next MCP-host restart, with zero review step. For a credential that can spawn/kill agents and approve human-in-the-loop review items, that's the wrong tradeoff.
+Every config `install` emits (`claude mcp add`, `.mcp.json`, `config.toml`) pins this package to an **exact version** — `@agentpulse/mcp@<version>`, never a bare or ranged spec. This is a deliberate choice, not an oversight: an unpinned `npx -y @agentpulse/mcp serve` means a compromised npm publish silently reaches every fleet-control client on its next MCP-host restart, with zero review step. For a credential that can spawn/kill agents and approve human-in-the-loop review items, that's the wrong tradeoff.
 
-**If you're running a `--orchestrate` (manage-scoped) install**: treat a version bump as a security-relevant change. Read the release before bumping the pin — re-run `agentpulse-mcp install` (or hand-edit the `@<version>` in your existing config) only after reviewing what changed. Don't script an automatic bump for a `manage`-scoped client. `observe`-only installs carry lower stakes but the same discipline is still good hygiene.
+**If you're running a `--orchestrate` (manage-scoped) install**: treat a version bump as a security-relevant change. Read the release before bumping the pin — re-run `npx @agentpulse/mcp install` (or hand-edit the `@<version>` in your existing config) only after reviewing what changed. Don't script an automatic bump for a `manage`-scoped client. `observe`-only installs carry lower stakes but the same discipline is still good hygiene.
 
 Publishing itself uses [npm trusted publishing](https://docs.npmjs.com/trusted-publishers) (GitHub Actions OIDC) where available — no long-lived npm token exists that could be exfiltrated to push a malicious release; each publish carries [provenance attestation](https://docs.npmjs.com/generating-provenance-statements) you can verify (`npm audit signatures`, or the "Provenance" tab on the npm package page).
 
@@ -74,8 +74,8 @@ Tracked follow-ups in the main repo, not silently accepted gaps — these apply 
 
 Bump the pinned `@<version>` in whatever config you're using:
 
-- Claude Code one-shot: re-run `npx agentpulse-mcp install ...` and re-paste the `claude mcp add` command it prints.
-- `.mcp.json` / `~/.codex/config.toml`: hand-edit the `agentpulse-mcp@<old-version>` string to the new version (or re-run `install` and copy the block again).
+- Claude Code one-shot: re-run `npx @agentpulse/mcp install ...` and re-paste the `claude mcp add` command it prints.
+- `.mcp.json` / `~/.codex/config.toml`: hand-edit the `@agentpulse/mcp@<old-version>` string to the new version (or re-run `install` and copy the block again).
 
 For a `manage`-scoped install, read the release notes for the version you're bumping to before doing this (see **Supply-chain** above).
 

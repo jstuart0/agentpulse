@@ -18,7 +18,7 @@
 # defensible, since both of this package's direct runtime deps -- the MCP
 # SDK and zod -- are exact-pinned in its own package.json with no
 # caret/tilde), we copy the root package.json + bun.lock in and run a
-# `--filter=agentpulse-mcp --frozen-lockfile` install so the build fails
+# `--filter=@agentpulse/mcp --frozen-lockfile` install so the build fails
 # loudly on any lockfile/package.json drift instead of silently resolving
 # fresh versions.
 #
@@ -56,13 +56,13 @@ FROM oven/bun:1.3.12 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/agentpulse-mcp/package.json ./packages/agentpulse-mcp/package.json
-RUN bun install --filter=agentpulse-mcp --frozen-lockfile --production
+RUN bun install --filter=@agentpulse/mcp --frozen-lockfile --production
 
 FROM oven/bun:1.3.12 AS builder
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/agentpulse-mcp/package.json ./packages/agentpulse-mcp/package.json
-RUN bun install --filter=agentpulse-mcp --frozen-lockfile
+RUN bun install --filter=@agentpulse/mcp --frozen-lockfile
 COPY packages/agentpulse-mcp/tsconfig.json packages/agentpulse-mcp/tsconfig.build.json ./packages/agentpulse-mcp/
 COPY packages/agentpulse-mcp/src ./packages/agentpulse-mcp/src
 WORKDIR /app/packages/agentpulse-mcp

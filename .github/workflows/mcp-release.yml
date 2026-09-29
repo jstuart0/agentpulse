@@ -1,0 +1,108 @@
+name: MCP Release
+
+# Publishes the packages/agentpulse-mcp workspace member to npm as
+# @agentpulse/mcp. Triggers on a `mcp-v*` tag push, or manually via
+# workflow_dispatch for a re-run of the same tag (e.g. after a transient
+# npm registry failure). Ported from the standalone jstuart0/agentpulse-mcp
+# repo's release.yml as part of the 2026-09-29-deliver-mcp-consolidate
+# campaign (MC2) — that repo is retired; this workflow is now the only
+# publish path for the package.
+on:
+  push:
+    tags:
+      - "mcp-v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Build, Verify, Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # id-token: write is required for npm OIDC "trusted publishing" — npm
+      # exchanges this workflow's OIDC token for a short-lived publish
+      # credential, no long-lived NODE_AUTH_TOKEN secret required once
+      # trusted publishing is configured (see the one-time setup note
+      # below). contents: read is the minimum needed to check out the repo.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies (repo root — this package has no lockfile of its own)
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run check
+
+      - name: Architecture and MCP guards (no-console-log, no-raw-register-tool, no-cross-boundary-import)
+        run: bun run check:architecture
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test
+
+      - name: Build agentpulse-mcp package
+        run: bun run build:mcp
+
+      # check:mcp-tarball shells out to the system `npm pack` — pin the
+      # Node/npm version so that behavior is deterministic across runs
+      # rather than whatever npm happens to ship with the runner image
+      # (matches ci.yml's own tarball-audit step).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org
+
+      - name: Tarball audit
+        run: bun run check:mcp-tarball
+
+      # Refuses to publish a tag that doesn't match the package's own
+      # version — the tag is the only thing a maintainer directly controls
+      # when cutting a release, so this is the one place drift between
+      # "what we meant to publish" and "what package.json says" gets caught
+      # before it reaches the registry.
+      - name: Verify tag matches package.json version
+        run: |
+          PKG_VERSION=$(node -p "require('./packages/agentpulse-mcp/package.json').version")
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          EXPECTED_TAG="mcp-v${PKG_VERSION}"
+          if [ "$TAG_NAME" != "$EXPECTED_TAG" ]; then
+            echo "::error::Tag '$TAG_NAME' does not match package.json version '$PKG_VERSION' (expected tag '$EXPECTED_TAG')"
+            exit 1
+          fi
+          echo "Tag '$TAG_NAME' matches packages/agentpulse-mcp/package.json version '$PKG_VERSION'."
+        if: startsWith(github.ref, 'refs/tags/')
+
+      # --- One-time maintainer setup for npm OIDC trusted publishing ---
+      # On npmjs.com: open the @agentpulse/mcp package → Settings → "Trusted
+      # Publisher" → add a GitHub Actions publisher with:
+      #   Organization or user: jstuart0
+      #   Repository:           agentpulse
+      #   Workflow filename:    mcp-release.yml
+      #   Environment:          (leave blank unless this job is scoped to one)
+      # Once configured, `npm publish` below authenticates via the OIDC
+      # token from this job's `id-token: write` permission — no
+      # NODE_AUTH_TOKEN needed. Until that's set up (e.g. for the very
+      # first publish under the new scoped name), fall back to a classic
+      # automation token stored as the NPM_TOKEN repo secret; npm CLI reads
+      # NODE_AUTH_TOKEN from the environment when set.
+      - name: Publish to npm
+        working-directory: packages/agentpulse-mcp
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public

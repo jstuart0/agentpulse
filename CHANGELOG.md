@@ -119,6 +119,17 @@ before this fix shipped), not for one that's simply still retrying.
   catalog and a security section covering host-side confirmation limits
   (Codex CLI does not honor Claude Code's `_meta` confirmation hint).
 
+### Changed
+
+- **MCP package consolidated into this repo, published as `@agentpulse/mcp`**
+  — `packages/agentpulse-mcp/` (directory and `agentpulse-mcp` binary name
+  unchanged) is now the single source of truth for the MCP server package.
+  It publishes to npm as `@agentpulse/mcp` (the unscoped `agentpulse-mcp`
+  name is blocked by npm's similarity policy against the existing
+  `agent-pulse-mcp`). The previously-split standalone repo
+  `jstuart0/agentpulse-mcp` is retired; all future changes, releases, and
+  issues go through this repo.
+
 ## [0.5.0] — 2026-07-17
 
 Client-currency release: brings AgentPulse fully current with Claude Code
