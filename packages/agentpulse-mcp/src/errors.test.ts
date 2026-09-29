@@ -97,6 +97,26 @@ describe("mapError — ApiError status/body pairs", () => {
 		expect(result.content[0].text).toContain("validation_failed");
 	});
 
+	// AGEN-44: a newer client (or a hand-rolled REST call) can send an
+	// agent_type this server's AGENT_TYPES doesn't recognize. The 400 body
+	// carries {error, value, allowed} but no `message`, so the generic 4xx
+	// fallback (bodyMessage → code) would otherwise surface just the bare
+	// code "invalid_agent_type" with no indication of the bad value or what's
+	// allowed — this dedicated row keeps the tool error actionable.
+	test("400 invalid_agent_type names the rejected value and the allowed list", () => {
+		const result = mapError(
+			new ApiError(400, {
+				error: "invalid_agent_type",
+				value: "copilot_cli",
+				allowed: ["claude_code", "codex_cli"],
+			}),
+			BASE_URL,
+		);
+		expect(result.content[0].text).toContain("copilot_cli");
+		expect(result.content[0].text).toContain("claude_code");
+		expect(result.content[0].text).toContain("codex_cli");
+	});
+
 	test("5xx includes the status code and truncates an oversized body", () => {
 		const bigBody = { error: "internal", detail: "x".repeat(5000) };
 		const result = mapError(new ApiError(500, bigBody), BASE_URL);
