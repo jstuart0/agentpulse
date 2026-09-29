@@ -373,11 +373,13 @@ docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
   -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
   -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
   --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-curl -sSL http://localhost:3000/setup.sh | bash -s -- --key ap_YOUR_API_KEY
+AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
 
 The default config requires login via the dashboard. DO NOT add `-e DISABLE_AUTH=true` on any network you do not fully control.
+
+The `AGENTPULSE_KEY=... curl ... | bash` form keeps the key out of `ps` during install; `curl ... | bash -s -- --key ap_YOUR_API_KEY` also works but the key is briefly visible in the process list.
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 
@@ -470,10 +472,10 @@ See `deploy/k8s/FORWARDAUTH.md` for provider-specific setup instructions.
 
 ### Authentication
 
-By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script:
+By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script — prefer the env-var form, which keeps the key out of `ps` during install:
 
 ```bash
-curl -sSL http://localhost:3000/setup.sh | bash -s -- --key ap_YOUR_KEY
+AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash
 ```
 
 For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in quick start).

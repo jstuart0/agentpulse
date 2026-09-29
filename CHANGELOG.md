@@ -50,6 +50,34 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   catalog and a security section covering host-side confirmation limits
   (Codex CLI does not honor Claude Code's `_meta` confirmation hint).
 
+### Security
+
+- **Symlink-safe Codex/Copilot hooks.json writes (F232)** — every installer
+  that writes `~/.codex/hooks.json` or `~/.copilot/hooks/agentpulse.json`
+  (and their timestamped backups) — `scripts/setup-hooks.sh`,
+  `scripts/setup-relay.sh`, the `/setup.sh` endpoint, `bin/cli.ts`, and
+  `scripts/install-local.ps1` — now refuses a symlink (or, on Windows, any
+  reparse point) at the destination or its parent directory instead of
+  writing through it, matching F207's existing hook-auth-header guarantee.
+- **`install-local.ps1` reparse-point guard on the API key file (F233)** —
+  `New-ApHookAuthHeaderFile` and the `.agentpulse` directory it writes into
+  are now checked for a reparse point before every write, closing the one
+  write path on Windows that had no symlink/junction guard at all.
+- **`AGENTPULSE_KEY` env var for the direct-install curl\|bash scripts
+  (F234)** — `--key` is briefly visible in `ps` during a one-time install;
+  `scripts/setup-hooks.sh` and the `/setup.sh` endpoint now also accept
+  `AGENTPULSE_KEY=ap_xxx curl ... \| bash`, keeping the key out of the
+  process list. (`scripts/setup-relay.sh` already supported this.)
+- **`provider_event_name` is capped and control-character-stripped (F235)**
+  — the Copilot canonicalizer's `provider_event_name` (sourced from the
+  request body, the `?event=` hint, or `hook_event_name` — all
+  attacker-influenced) is now bounded to 128 characters with control
+  characters stripped, regardless of source. Audited whether it reaches an
+  LLM prompt anywhere in `src/server/services/ai`/`ask`: it doesn't —
+  both build their event summaries from the canonical `eventType`, not
+  `providerEventType` — so this is defense-in-depth, not a fix for an
+  existing prompt-injection path.
+
 ## [0.5.0] — 2026-07-17
 
 Client-currency release: brings AgentPulse fully current with Claude Code

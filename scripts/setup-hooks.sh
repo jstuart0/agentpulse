@@ -4,9 +4,16 @@ set -euo pipefail
 # AgentPulse Hook Setup Script
 # Usage: bash setup-hooks.sh --url https://your-server.com --key ap_xxxxx
 # Or:    curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-server.com --key ap_xxxxx
+#
+# F234: --key is briefly visible in `ps` during that one-time install.
+# Prefer the env-var form instead:
+#   AGENTPULSE_KEY=ap_xxxxx curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-server.com
 
 AGENTPULSE_URL=""
-AGENTPULSE_KEY=""
+# F234 (Low): --key is briefly visible in `ps` during a curl|bash install —
+# seed from $AGENTPULSE_KEY (if exported) so `AGENTPULSE_KEY=ap_xxx bash` is
+# a viable alternative; an explicit --key below still overrides it.
+AGENTPULSE_KEY="${AGENTPULSE_KEY:-}"
 AGENT_TYPE="claude_code"
 SCOPE="global"
 
@@ -24,7 +31,8 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options:"
       echo "  --url    AgentPulse server URL (e.g. https://your-server.com)"
-      echo "  --key    API key (starts with ap_)"
+      echo "  --key    API key (starts with ap_). Prefer \$AGENTPULSE_KEY instead:"
+      echo "           --key is briefly visible in \`ps\` during a curl|bash install."
       echo "  --agent  Agent type: claude_code (default), codex_cli, or copilot_cli"
       echo "  --scope  Scope: global (default) or project"
       echo "  -h       Show this help"
@@ -105,6 +113,32 @@ for event, cmd in pairs:
     hooks[event] = [{"type": "command", "bash": cmd, "timeoutSec": 5}]
 sys.stdout.write(json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\n")
 '
+}
+
+# F232 (xander, Medium): writes stdin to $1 via a same-directory temp file +
+# atomic rename, refusing a symlink at $1 or at $1's parent directory —
+# never a plain `>` redirect or `cp`, both of which follow a symlink at the
+# destination. Used for both a Codex/Copilot hooks.json write and its
+# timestamped backup (same primitive, different path).
+ap_write_no_follow() {
+	local path="$1" dir tmp
+	if [ -L "$path" ]; then
+		echo "refusing to write through a symlink: $path" >&2
+		return 1
+	fi
+	dir="$(dirname -- "$path")"
+	if [ -L "$dir" ]; then
+		echo "refusing to write into a symlinked directory: $dir" >&2
+		return 1
+	fi
+	tmp="${path}.$$.tmp"
+	if [ -e "$tmp" ] || [ -L "$tmp" ]; then
+		echo "refusing: stale temp file present: $tmp" >&2
+		return 1
+	fi
+	( umask 022 && cat > "$tmp" )
+	chmod 0644 "$tmp"
+	mv -f "$tmp" "$path"
 }
 
 # D13/F57: -H "@$f" needs curl >= 7.55 (silently sends no auth below that).
@@ -219,10 +253,10 @@ elif [[ "$AGENT_TYPE" == "codex_cli" ]]; then
   else
     if [[ -f "$HOOKS_FILE" ]]; then
       CODEX_BACKUP_FILE="${HOOKS_FILE}.agentpulse-bak.$(date -u +%Y%m%dT%H%M%SZ)"
-      cp "$HOOKS_FILE" "$CODEX_BACKUP_FILE"
+      cat "$HOOKS_FILE" | ap_write_no_follow "$CODEX_BACKUP_FILE" || exit 1
       echo "Backed up existing $HOOKS_FILE to $CODEX_BACKUP_FILE"
     fi
-    printf '%s\n' "$NEW_CODEX_HOOKS_JSON" > "$HOOKS_FILE"
+    printf '%s\n' "$NEW_CODEX_HOOKS_JSON" | ap_write_no_follow "$HOOKS_FILE" || exit 1
     echo "Codex CLI hooks configured in $HOOKS_FILE"
     echo "Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks. Re-trust after changing the AgentPulse URL or port."
   fi
@@ -271,10 +305,10 @@ elif [[ "$AGENT_TYPE" == "copilot_cli" ]]; then
   else
     if [[ -f "$COPILOT_HOOKS_FILE" ]]; then
       COPILOT_BACKUP_FILE="${COPILOT_HOOKS_FILE}.agentpulse-bak.$(date -u +%Y%m%dT%H%M%SZ)"
-      cp "$COPILOT_HOOKS_FILE" "$COPILOT_BACKUP_FILE"
+      cat "$COPILOT_HOOKS_FILE" | ap_write_no_follow "$COPILOT_BACKUP_FILE" || exit 1
       echo "Backed up existing $COPILOT_HOOKS_FILE to $COPILOT_BACKUP_FILE"
     fi
-    printf '%s\n' "$NEW_COPILOT_HOOKS_JSON" > "$COPILOT_HOOKS_FILE"
+    printf '%s\n' "$NEW_COPILOT_HOOKS_JSON" | ap_write_no_follow "$COPILOT_HOOKS_FILE" || exit 1
     echo "Copilot CLI hooks configured in $COPILOT_HOOKS_FILE"
   fi
 

@@ -3,7 +3,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildCodexHooksFile, buildCopilotHooksFile } from "../src/shared/hook-command.js";
-import { writePrivateFileSyncNoFollow } from "../src/shared/private-file.js";
+import {
+	writeConfigFileSyncNoFollow,
+	writePrivateFileSyncNoFollow,
+} from "../src/shared/private-file.js";
 
 const args = process.argv.slice(2);
 const command = args[0] || "start";
@@ -220,10 +223,12 @@ async function setup() {
 				.replace(/[-:]/g, "")
 				.replace(/\.\d{3}Z$/, "Z");
 			const backupPath = `${codexHooksPath}.agentpulse-bak.${stamp}`;
-			writeFileSync(backupPath, readFileSync(codexHooksPath));
+			// F232: never write through a symlink at the destination or the
+			// backup path — see src/shared/private-file.ts.
+			writeConfigFileSyncNoFollow(backupPath, readFileSync(codexHooksPath, "utf-8"));
 			console.log(`  ✓ Backed up existing Codex hooks to ${backupPath}`);
 		}
-		writeFileSync(codexHooksPath, newCodexHooksJson);
+		writeConfigFileSyncNoFollow(codexHooksPath, newCodexHooksJson);
 		console.log(`  ✓ Codex CLI hooks  → ${codexHooksPath}`);
 		console.log(
 			"    Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks.",
@@ -280,10 +285,12 @@ async function setup() {
 					.replace(/[-:]/g, "")
 					.replace(/\.\d{3}Z$/, "Z");
 				const backupPath = `${copilotHooksPath}.agentpulse-bak.${stamp}`;
-				writeFileSync(backupPath, readFileSync(copilotHooksPath));
+				// F232: never write through a symlink at the destination or the
+				// backup path — see src/shared/private-file.ts.
+				writeConfigFileSyncNoFollow(backupPath, readFileSync(copilotHooksPath, "utf-8"));
 				console.log(`  ✓ Backed up existing Copilot hooks to ${backupPath}`);
 			}
-			writeFileSync(copilotHooksPath, newCopilotHooksJson);
+			writeConfigFileSyncNoFollow(copilotHooksPath, newCopilotHooksJson);
 			console.log(`  ✓ Copilot CLI hooks → ${copilotHooksPath}`);
 		}
 	}

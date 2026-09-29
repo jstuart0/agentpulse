@@ -241,3 +241,45 @@ describe("F224 (Medium): the malformed-JSON toolArgs string branch", () => {
 		expect(out.tool_input).toEqual({ raw: "not json {" });
 	});
 });
+
+describe("F235 (Low): provider_event_name is always capped and control-char-stripped", () => {
+	test("a body-supplied provider_event_name over 128 chars is truncated to 128", () => {
+		const raw = asRaw({
+			sessionId: "s1",
+			cwd: "/tmp",
+			provider_event_name: "x".repeat(500),
+		});
+		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, "sessionStart");
+		expect(out.provider_event_name).toBe("x".repeat(128));
+	});
+
+	test("the ?event= hint fallback is capped the same way when the body carries no provider_event_name", () => {
+		const raw = asRaw({ sessionId: "s1", cwd: "/tmp" });
+		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, "y".repeat(500));
+		expect(out.provider_event_name).toBe("y".repeat(128));
+	});
+
+	test("the hook_event_name body fallback is capped the same way when neither provider_event_name nor a hint is present", () => {
+		const raw = asRaw({ sessionId: "s1", cwd: "/tmp", hook_event_name: "z".repeat(500) });
+		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw);
+		expect(out.provider_event_name).toBe("z".repeat(128));
+	});
+
+	test("control characters (including embedded NUL) are stripped before the length cap applies", () => {
+		const raw = asRaw({
+			sessionId: "s1",
+			cwd: "/tmp",
+			provider_event_name: "sess\x00ion\x1bStart\x7f\ndone",
+		});
+		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, "sessionStart");
+		expect(out.provider_event_name).toBe("sessionStartdone");
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — asserting control characters are absent.
+		expect(out.provider_event_name).not.toMatch(/[\x00-\x1f\x7f]/);
+	});
+
+	test("a short, clean provider_event_name passes through unchanged", () => {
+		const raw = asRaw({ sessionId: "s1", cwd: "/tmp", provider_event_name: "sessionStart" });
+		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, "sessionStart");
+		expect(out.provider_event_name).toBe("sessionStart");
+	});
+});

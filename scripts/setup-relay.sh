@@ -117,6 +117,32 @@ sys.stdout.write(json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\n")
 '
 }
 
+# F232 (xander, Medium): writes stdin to $1 via a same-directory temp file +
+# atomic rename, refusing a symlink at $1 or at $1's parent directory —
+# never a plain `>` redirect or `cp`, both of which follow a symlink at the
+# destination. Used for both a Codex/Copilot hooks.json write and its
+# timestamped backup (same primitive, different path).
+ap_write_no_follow() {
+	local path="$1" dir tmp
+	if [ -L "$path" ]; then
+		echo "refusing to write through a symlink: $path" >&2
+		return 1
+	fi
+	dir="$(dirname -- "$path")"
+	if [ -L "$dir" ]; then
+		echo "refusing to write into a symlinked directory: $dir" >&2
+		return 1
+	fi
+	tmp="${path}.$$.tmp"
+	if [ -e "$tmp" ] || [ -L "$tmp" ]; then
+		echo "refusing: stale temp file present: $tmp" >&2
+		return 1
+	fi
+	( umask 022 && cat > "$tmp" )
+	chmod 0644 "$tmp"
+	mv -f "$tmp" "$path"
+}
+
 # D13/F57: -H "@$f" needs curl >= 7.55 (silently sends no auth below that).
 # Only direct-mode sh installers call this — relay mode sends no auth header.
 ap_require_curl_755() {
@@ -779,10 +805,10 @@ if [[ -f "$CODEX_DIR/hooks.json" ]] && [[ "$(cat "$CODEX_DIR/hooks.json")" == "$
 else
   if [[ -f "$CODEX_DIR/hooks.json" ]]; then
     CODEX_BACKUP_FILE="$CODEX_DIR/hooks.json.agentpulse-bak.$(date -u +%Y%m%dT%H%M%SZ)"
-    cp "$CODEX_DIR/hooks.json" "$CODEX_BACKUP_FILE"
+    cat "$CODEX_DIR/hooks.json" | ap_write_no_follow "$CODEX_BACKUP_FILE" || exit 1
     echo "  ✓ Backed up existing Codex hooks to $CODEX_BACKUP_FILE"
   fi
-  printf '%s\n' "$NEW_CODEX_HOOKS_JSON" > "$CODEX_DIR/hooks.json"
+  printf '%s\n' "$NEW_CODEX_HOOKS_JSON" | ap_write_no_follow "$CODEX_DIR/hooks.json" || exit 1
   echo "  ✓ Codex CLI hooks → localhost:$PORT"
   echo "    Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks."
   echo "    Re-trust after changing the AgentPulse URL or port."
@@ -804,10 +830,10 @@ if command -v copilot >/dev/null 2>&1 || [[ -d "$HOME/.copilot" ]]; then
   else
     if [[ -f "$COPILOT_HOOKS_FILE" ]]; then
       COPILOT_BACKUP_FILE="$COPILOT_HOOKS_FILE.agentpulse-bak.$(date -u +%Y%m%dT%H%M%SZ)"
-      cp "$COPILOT_HOOKS_FILE" "$COPILOT_BACKUP_FILE"
+      cat "$COPILOT_HOOKS_FILE" | ap_write_no_follow "$COPILOT_BACKUP_FILE" || exit 1
       echo "  ✓ Backed up existing Copilot hooks to $COPILOT_BACKUP_FILE"
     fi
-    printf '%s\n' "$NEW_COPILOT_HOOKS_JSON" > "$COPILOT_HOOKS_FILE"
+    printf '%s\n' "$NEW_COPILOT_HOOKS_JSON" | ap_write_no_follow "$COPILOT_HOOKS_FILE" || exit 1
     echo "  ✓ Copilot CLI hooks → localhost:$PORT"
   fi
   COPILOT_WRITTEN="1"

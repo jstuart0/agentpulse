@@ -220,6 +220,43 @@ function New-ApCopilotHooksFile {
   return ($obj | ConvertTo-Json -Depth 20) + "`n"
 }
 
+# F233 (xander, Medium): true for a symlink OR a junction/mount-point
+# reparse point at $Path — `.LinkType` alone misses some reparse-point
+# kinds (e.g. a mount point has no LinkType but does carry the
+# ReparsePoint attribute), so both are checked. A missing path (the common
+# case — nothing to refuse) returns $false, not an error.
+function Test-ApReparsePoint {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+  if (-not $item) { return $false }
+  if ($item.LinkType) { return $true }
+  return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
+# F232 (xander, Medium): writes $Content to $Path via a same-directory temp
+# file + atomic Move-Item, refusing a reparse point (symlink/junction) at
+# $Path or at its parent directory — never a plain Set-Content/Copy-Item,
+# both of which write through a reparse point at the destination. Used for
+# both a Codex/Copilot hooks.json write and its timestamped backup (same
+# primitive, different path) — mirrors ap_write_no_follow in the bash
+# installers (scripts/setup-hooks.sh et al).
+function Write-ApFileNoFollow {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Content
+  )
+  if (Test-ApReparsePoint -Path $Path) {
+    throw "refusing to write through a reparse point: $Path"
+  }
+  $dir = Split-Path -Parent $Path
+  if (Test-ApReparsePoint -Path $dir) {
+    throw "refusing to write into a reparse-point directory: $dir"
+  }
+  $tmp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+  Set-Content -NoNewline -Path $tmp -Value $Content -Encoding UTF8
+  Move-Item -Force -Path $tmp -Destination $Path
+}
+
 # D13: writes ~/.agentpulse/hook-auth-header with a single-ACE ACL for the
 # current user (Windows equivalent of `umask 077`).
 #
@@ -231,12 +268,24 @@ function New-ApCopilotHooksFile {
 # narrowed it. The file-level icacls call stays too, so re-running this
 # against a pre-existing file (from before this fix, or one an operator
 # copied in some other way) still ends up narrowed, not just new ones.
+#
+# F233 (xander, Medium): neither the directory nor the file had a
+# reparse-point guard — a junction at .agentpulse, or a symlink at
+# hook-auth-header itself, could redirect the API key to an
+# attacker-chosen location. Checked before either write, same as the bash
+# installers' `[ -L "$AP_AUTH_HEADER_FILE" ]` guard.
 function New-ApHookAuthHeaderFile {
   param([Parameter(Mandatory = $true)][string]$ApiKey)
   $d = Join-Path $HOME ".agentpulse"
+  if (Test-ApReparsePoint -Path $d) {
+    throw "refusing to write through a reparse point: $d"
+  }
   New-Item -ItemType Directory -Force -Path $d | Out-Null
   icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
   $f = Join-Path $d "hook-auth-header"
+  if (Test-ApReparsePoint -Path $f) {
+    throw "refusing to write through a reparse point: $f"
+  }
   Set-Content -NoNewline -Path $f -Value "Authorization: Bearer $ApiKey`n" -Encoding UTF8
   icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
 }
@@ -302,10 +351,10 @@ function Configure-Hooks {
   } else {
     if (Test-Path $codexHooksFile) {
       $codexBackupFile = "$codexHooksFile.agentpulse-bak.$(Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ')"
-      Copy-Item -Path $codexHooksFile -Destination $codexBackupFile
+      Write-ApFileNoFollow -Path $codexBackupFile -Content $existingCodexHooksJson
       Write-Step "Backed up existing Codex hooks to $codexBackupFile"
     }
-    Set-Content -NoNewline -Path $codexHooksFile -Value $newCodexHooksJson -Encoding UTF8
+    Write-ApFileNoFollow -Path $codexHooksFile -Content $newCodexHooksJson
     Write-Step "Codex CLI hooks configured"
     Write-Step "Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks."
     Write-Step "Re-trust after changing the AgentPulse URL or port."
@@ -334,10 +383,10 @@ function Configure-Hooks {
     } else {
       if (Test-Path $copilotHooksFile) {
         $copilotBackupFile = "$copilotHooksFile.agentpulse-bak.$(Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ')"
-        Copy-Item -Path $copilotHooksFile -Destination $copilotBackupFile
+        Write-ApFileNoFollow -Path $copilotBackupFile -Content $existingCopilotHooksJson
         Write-Step "Backed up existing Copilot hooks to $copilotBackupFile"
       }
-      Set-Content -NoNewline -Path $copilotHooksFile -Value $newCopilotHooksJson -Encoding UTF8
+      Write-ApFileNoFollow -Path $copilotHooksFile -Content $newCopilotHooksJson
       Write-Step "Copilot CLI hooks configured"
     }
   }

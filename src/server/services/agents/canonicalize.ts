@@ -20,6 +20,25 @@ const identity: Canonicalizer = (raw) => raw;
 // JSON.parse an oversized string) and what lands in the DB.
 const COPILOT_CAP_BYTES = 64 * 1024;
 
+// F235 (Low, xander): provider_event_name can come from three untrusted
+// sources — the body's own provider_event_name field, the `?event=` query
+// hint, or the body's hook_event_name field — none of which had any size or
+// content bound (unlike tool_input/tool_response, both capped above). Grepped
+// providerEventType/provider_event_name under src/server/services/ai and
+// src/server/services/ask (F235's second ask): nothing splices it into an
+// LLM prompt today — ai/context.ts and ask/context-builder.ts both build
+// their timeline from event.eventType (the canonical, small-enum type), not
+// providerEventType — so this is a defense-in-depth cap on what lands in the
+// DB and any future consumer, not a fix for an existing prompt-injection path.
+const PROVIDER_EVENT_NAME_MAX = 128;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — this strips control characters.
+const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/g;
+
+function capProviderEventName(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	return value.replace(CONTROL_CHARS_RE, "").slice(0, PROVIDER_EVENT_NAME_MAX);
+}
+
 type LooseRecord = Record<string, unknown>;
 
 function pickString(raw: LooseRecord, ...keys: string[]): string | undefined {
@@ -149,7 +168,7 @@ const copilotCanonicalizer: Canonicalizer = (raw, hint) => {
 		// surfaced via `message` (already used for Notification's freeform
 		// text) rather than inventing a new one outside this phase's scope.
 		message: pickString(source, "message", "reason"),
-		provider_event_name: providerEventName,
+		provider_event_name: capProviderEventName(providerEventName),
 		error_message: pickString(source, "error_message", "error"),
 	};
 	return out;

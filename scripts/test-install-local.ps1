@@ -206,6 +206,89 @@ if ($null -ne $copilotCaptured) {
 	Assert-True ($copilotCaptured.Body -eq $copilotFixture) "Copilot: body arrives byte-exact"
 }
 
+# ── F232/F233 (xander, Medium): Test-ApReparsePoint / Write-ApFileNoFollow — real execution ──
+# Requires permission to create a symlink (Developer Mode, or an elevated/
+# admin context — both true on GitHub's windows-latest hosted runners). If
+# neither is available here, skip these assertions with a warning rather
+# than failing the whole suite over an environment gap unrelated to the
+# code under test.
+$canSymlink = $true
+$reparseProbeDir = Join-Path $tempProfile "reparse-probe"
+New-Item -ItemType Directory -Force -Path $reparseProbeDir | Out-Null
+$reparseProbeReal = Join-Path $reparseProbeDir "real.txt"
+Set-Content -Path $reparseProbeReal -Value "probe" -Encoding UTF8
+$reparseProbeLink = Join-Path $reparseProbeDir "link.txt"
+try {
+	New-Item -ItemType SymbolicLink -Path $reparseProbeLink -Target $reparseProbeReal -ErrorAction Stop | Out-Null
+} catch {
+	$canSymlink = $false
+	Write-Host "warning: cannot create a symlink in this environment ($($_.Exception.Message)) — skipping F232/F233 reparse-point assertions"
+}
+
+if ($canSymlink) {
+	Assert-True (Test-ApReparsePoint -Path $reparseProbeLink) "Test-ApReparsePoint: a real symlink is detected"
+	Assert-True (-not (Test-ApReparsePoint -Path $reparseProbeReal)) "Test-ApReparsePoint: a plain file is not a reparse point"
+	Assert-True (-not (Test-ApReparsePoint -Path (Join-Path $reparseProbeDir "does-not-exist.txt"))) "Test-ApReparsePoint: a missing path is not a reparse point (returns false, not an error)"
+
+	# Write-ApFileNoFollow refuses a symlink at the destination — decoy untouched.
+	$decoyPath = Join-Path $reparseProbeDir "decoy-hooks.json"
+	Set-Content -Path $decoyPath -Value "should never change" -Encoding UTF8
+	$hooksLinkPath = Join-Path $reparseProbeDir "hooks.json"
+	New-Item -ItemType SymbolicLink -Path $hooksLinkPath -Target $decoyPath | Out-Null
+	$threw = $false
+	try {
+		Write-ApFileNoFollow -Path $hooksLinkPath -Content "attacker-controlled"
+	} catch {
+		$threw = $true
+	}
+	Assert-True $threw "Write-ApFileNoFollow: a symlink at the destination throws instead of writing through it"
+	Assert-True ((Get-Content $decoyPath -Raw) -eq "should never change") "Write-ApFileNoFollow: the symlink's target is untouched after the refused write"
+
+	# Write-ApFileNoFollow refuses a symlink at a *backup* path too — same
+	# primitive, a different path, matching the plan's "hooks path AND
+	# backup path" requirement.
+	$decoyBackupPath = Join-Path $reparseProbeDir "decoy-backup.json"
+	Set-Content -Path $decoyBackupPath -Value "backup should never change" -Encoding UTF8
+	$backupLinkPath = Join-Path $reparseProbeDir "hooks.json.agentpulse-bak.20260929T000000Z"
+	New-Item -ItemType SymbolicLink -Path $backupLinkPath -Target $decoyBackupPath | Out-Null
+	$backupThrew = $false
+	try {
+		Write-ApFileNoFollow -Path $backupLinkPath -Content "attacker-controlled backup"
+	} catch {
+		$backupThrew = $true
+	}
+	Assert-True $backupThrew "Write-ApFileNoFollow: a symlink at the backup path throws instead of writing through it"
+	Assert-True ((Get-Content $decoyBackupPath -Raw) -eq "backup should never change") "Write-ApFileNoFollow: the backup symlink's target is untouched after the refused write"
+
+	# A normal (non-reparse-point) write still succeeds.
+	$normalPath = Join-Path $reparseProbeDir "normal-hooks.json"
+	Write-ApFileNoFollow -Path $normalPath -Content '{"hooks":{}}'
+	Assert-True ((Get-Content $normalPath -Raw) -eq '{"hooks":{}}') "Write-ApFileNoFollow: a normal write to a non-reparse-point path succeeds"
+
+	# F233: New-ApHookAuthHeaderFile itself refuses a symlinked hook-auth-header.
+	$authProbeHome = Join-Path $tempProfile "auth-reparse-probe"
+	New-Item -ItemType Directory -Force -Path $authProbeHome | Out-Null
+	$savedHome = $env:USERPROFILE
+	$env:USERPROFILE = $authProbeHome
+	$env:HOME = $authProbeHome
+	$agentpulseDir = Join-Path $authProbeHome ".agentpulse"
+	New-Item -ItemType Directory -Force -Path $agentpulseDir | Out-Null
+	$authDecoyPath = Join-Path $authProbeHome "decoy-auth-header"
+	Set-Content -Path $authDecoyPath -Value "should never change" -Encoding UTF8
+	$authHeaderLinkPath = Join-Path $agentpulseDir "hook-auth-header"
+	New-Item -ItemType SymbolicLink -Path $authHeaderLinkPath -Target $authDecoyPath | Out-Null
+	$authThrew = $false
+	try {
+		New-ApHookAuthHeaderFile -ApiKey "ap_attacker_controlled"
+	} catch {
+		$authThrew = $true
+	}
+	Assert-True $authThrew "New-ApHookAuthHeaderFile (F233): a symlinked hook-auth-header throws instead of writing through it"
+	Assert-True ((Get-Content $authDecoyPath -Raw) -eq "should never change") "New-ApHookAuthHeaderFile (F233): the symlink's target is untouched after the refused write"
+	$env:USERPROFILE = $savedHome
+	$env:HOME = $savedHome
+}
+
 Remove-Item -Recurse -Force $tempProfile -ErrorAction SilentlyContinue
 
 if ($failures -gt 0) {

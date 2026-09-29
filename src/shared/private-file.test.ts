@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writePrivateFileSyncNoFollow } from "./private-file.js";
+import { writeConfigFileSyncNoFollow, writePrivateFileSyncNoFollow } from "./private-file.js";
 
 let dir: string;
 
@@ -74,5 +74,62 @@ describe("writePrivateFileSyncNoFollow", () => {
 		expect(() => writePrivateFileSyncNoFollow(target, "x\n")).toThrow(
 			/refusing to write through other/,
 		);
+	});
+});
+
+/**
+ * F232 (xander, Medium): the same symlink-refusal guarantee as
+ * writePrivateFileSyncNoFollow above, but at 0644 — for config files a CLI
+ * tool needs to read back (Codex/Copilot hooks.json and their backups),
+ * where a 0600 lockdown would just break the tool being configured.
+ */
+describe("writeConfigFileSyncNoFollow (F232)", () => {
+	test("creates a new file at 0644, not 0600", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-config-file-"));
+		const target = join(dir, "hooks.json");
+		writeConfigFileSyncNoFollow(target, '{"hooks":{}}\n');
+		expect(readFileSync(target, "utf-8")).toBe('{"hooks":{}}\n');
+		expect(fileMode(target)).toBe(0o644);
+	});
+
+	test("a pre-existing 0600 file ends up 0644", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-config-file-"));
+		const target = join(dir, "hooks.json");
+		writeFileSync(target, "old\n", { mode: 0o600 });
+		writeConfigFileSyncNoFollow(target, "new\n");
+		expect(readFileSync(target, "utf-8")).toBe("new\n");
+		expect(fileMode(target)).toBe(0o644);
+	});
+
+	test("a symlink at the hooks-file path is refused, not followed", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-config-file-"));
+		const real = join(dir, "outside-target");
+		writeFileSync(real, "should never change\n", { mode: 0o644 });
+		const target = join(dir, "hooks.json");
+		symlinkSync(real, target);
+		expect(() => writeConfigFileSyncNoFollow(target, "attacker-controlled\n")).toThrow(
+			/refusing to write through symlink/,
+		);
+		expect(readFileSync(real, "utf-8")).toBe("should never change\n");
+	});
+
+	test("a symlink at the backup-file path is refused, not followed (same primitive, a different path)", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-config-file-"));
+		const real = join(dir, "outside-target");
+		writeFileSync(real, "should never change\n", { mode: 0o644 });
+		const backupPath = join(dir, "hooks.json.agentpulse-bak.20260929T000000Z");
+		symlinkSync(real, backupPath);
+		expect(() => writeConfigFileSyncNoFollow(backupPath, "old hooks content\n")).toThrow(
+			/refusing to write through symlink/,
+		);
+		expect(readFileSync(real, "utf-8")).toBe("should never change\n");
+	});
+
+	test("truncates and replaces existing content rather than appending", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-config-file-"));
+		const target = join(dir, "hooks.json");
+		writeConfigFileSyncNoFollow(target, "a very long first line that is longer\n");
+		writeConfigFileSyncNoFollow(target, "short\n");
+		expect(readFileSync(target, "utf-8")).toBe("short\n");
 	});
 });

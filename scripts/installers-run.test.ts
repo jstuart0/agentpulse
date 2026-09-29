@@ -886,3 +886,55 @@ describe("D12/D13 — Codex command hooks (F50, F52, r6 CODEX_HOME)", () => {
 		RUN_TIMEOUT,
 	);
 });
+
+describe("F232 (xander, Medium) — Codex/Copilot hooks.json writes refuse a symlinked destination (real setup-relay.sh subprocess)", () => {
+	test(
+		"~/.codex/hooks.json as a symlink: installer exits non-zero, the symlink's target is untouched",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			await mkdir(join(home, ".codex"), { recursive: true });
+			const decoy = join(home, "decoy-codex-hooks.json");
+			await writeFile(decoy, "should never change\n");
+			await symlink(decoy, join(home, ".codex", "hooks.json"));
+
+			const res = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Darwin" },
+			);
+			expect(res.code).not.toBe(0);
+			expect(res.out).toMatch(/refusing to write through a symlink/);
+			expect(await readFile(decoy, "utf-8")).toBe("should never change\n");
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"~/.copilot/hooks/agentpulse.json as a symlink (copilot detected): installer exits non-zero, the symlink's target is untouched",
+		async () => {
+			const home = await newHome();
+			const root2 = dirname(home);
+			const copilotStubDir = join(root2, `copilot-stub-write-no-follow-${relative(root, home)}`);
+			await mkdir(copilotStubDir, { recursive: true });
+			await writeFile(join(copilotStubDir, "copilot"), "#!/bin/sh\nexit 0\n");
+			await chmod(join(copilotStubDir, "copilot"), 0o755);
+
+			const port = await freePort();
+			await mkdir(join(home, ".copilot", "hooks"), { recursive: true });
+			const decoy = join(home, "decoy-copilot-hooks.json");
+			await writeFile(decoy, "should never change\n");
+			await symlink(decoy, join(home, ".copilot", "hooks", "agentpulse.json"));
+
+			const res = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Darwin", pathPrefix: copilotStubDir },
+			);
+			expect(res.code).not.toBe(0);
+			expect(res.out).toMatch(/refusing to write through a symlink/);
+			expect(await readFile(decoy, "utf-8")).toBe("should never change\n");
+		},
+		RUN_TIMEOUT,
+	);
+});

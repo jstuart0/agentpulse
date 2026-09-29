@@ -273,4 +273,81 @@ describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static 
 			expect(body).toContain(`"${event}"`);
 		}
 	});
+
+	test("F232/F233 (xander, Medium, static structural check): Test-ApReparsePoint and Write-ApFileNoFollow exist and are wired into every write site — real execution is scripts/test-install-local.ps1, run by Windows CI", () => {
+		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
+
+		expect(ps1).toContain("function Test-ApReparsePoint");
+		expect(ps1).toContain("function Write-ApFileNoFollow");
+		// F232: LinkType alone misses junctions/mount points without one —
+		// the ReparsePoint attribute check is the part that actually covers
+		// those.
+		expect(ps1).toContain(".LinkType");
+		expect(ps1).toContain("ReparsePoint");
+		// F232: Write-ApFileNoFollow refuses at $Path and at the parent dir,
+		// then writes via a temp file + atomic Move-Item — never a bare
+		// Set-Content/Copy-Item at the final path.
+		const writeFn = ps1.slice(
+			ps1.indexOf("function Write-ApFileNoFollow"),
+			ps1.indexOf("function New-ApHookAuthHeaderFile"),
+		);
+		expect(writeFn).toContain("Test-ApReparsePoint -Path $Path");
+		expect(writeFn).toContain("Test-ApReparsePoint -Path $dir");
+		expect(writeFn).toContain("Move-Item -Force");
+		expect(writeFn).not.toMatch(/Set-Content[^\n]*-Path \$Path\b/);
+
+		// F232: the 4 hooks.json write sites (Codex write+backup, Copilot
+		// write+backup) all go through Write-ApFileNoFollow, not
+		// Set-Content/Copy-Item directly.
+		const configureHooks = ps1.slice(
+			ps1.indexOf("function Configure-Hooks"),
+			ps1.indexOf("function New-TaskActionForPowerShell"),
+		);
+		const noFollowCalls = configureHooks.match(/Write-ApFileNoFollow/g) ?? [];
+		expect(noFollowCalls.length).toBe(4);
+		expect(configureHooks).not.toContain("Copy-Item");
+		expect(configureHooks).not.toMatch(/Set-Content[^\n]*hooksFile/);
+
+		// F233: New-ApHookAuthHeaderFile checks both the parent .agentpulse
+		// directory and the file itself before writing.
+		const authFn = ps1.slice(
+			ps1.indexOf("function New-ApHookAuthHeaderFile"),
+			ps1.indexOf("# <<< agentpulse-hook-cmd"),
+		);
+		const reparseChecks = authFn.match(/Test-ApReparsePoint -Path/g) ?? [];
+		expect(reparseChecks.length).toBe(2);
+	});
+});
+
+describe("F234 (Low): the rendered GET /setup.sh honors AGENTPULSE_KEY without a --key flag", () => {
+	test("AGENTPULSE_KEY in the environment, no --key: hook-auth-header is written with that key", async () => {
+		const { mkdtemp, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+
+		const { setup } = await import("../src/server/routes/setup.ts");
+		const app = new Hono().route("/", setup);
+		const res = await app.request("http://localhost/setup.sh", {
+			headers: { Host: "localhost:3000" },
+		});
+		const rendered = await res.text();
+
+		const home = await mkdtemp(join(tmpdir(), "ap-setup-sh-envkey-"));
+		try {
+			const proc = Bun.spawn(["bash", "-c", rendered, "installer"], {
+				stdout: "pipe",
+				stderr: "pipe",
+				env: {
+					PATH: process.env.PATH ?? "/usr/bin:/bin",
+					HOME: home,
+					AGENTPULSE_KEY: "ap_from_env_not_argv",
+				},
+			});
+			await proc.exited;
+			const headerFile = Bun.file(join(home, ".agentpulse", "hook-auth-header"));
+			expect(await headerFile.exists()).toBe(true);
+			expect(await headerFile.text()).toBe("Authorization: Bearer ap_from_env_not_argv\n");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
 });
