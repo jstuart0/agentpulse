@@ -15,7 +15,7 @@ export async function loadRecentEvents(sessionId: string, limit = 60): Promise<S
 		.select()
 		.from(events)
 		.where(eq(events.sessionId, sessionId))
-		.orderBy(desc(events.createdAt))
+		.orderBy(desc(events.id))
 		.limit(limit);
 	// Drizzle returned newest-first; flip for chronological iteration.
 	return rows

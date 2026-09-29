@@ -9,6 +9,11 @@ import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
 // Top-level ES default import resolves correctly on both Node and Bun.
 import postgres from "postgres";
 import { config } from "../config.js";
+import {
+	EVENT_TEXT_COALESCE_SELECT,
+	FTS_BOOTSTRAP_SQL,
+	FTS_INDEXED_EVENT_TYPES_SQL_LIST,
+} from "./fts-ddl.js";
 import * as schema from "./schema/index.js";
 
 // ── getSqlite() boot-failure registry (Decision 28) ──────────────────────────
@@ -461,6 +466,7 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			tool_input TEXT,
 			tool_response TEXT,
 			raw_payload TEXT NOT NULL,
+			dedup_key TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);
 
@@ -842,6 +848,14 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		"ALTER TABLE events ADD COLUMN content TEXT",
 		"ALTER TABLE events ADD COLUMN is_noise INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE events ADD COLUMN provider_event_type TEXT",
+		// AGEN-16: durable dedup identity (Decision 2). Nullable; content-window
+		// rows never carry one. The indexes below reference this column, so
+		// they must run after it exists on every install (fresh table DDL
+		// already declares it; this ALTER is the idempotent upgrade path for
+		// pre-existing installs).
+		"ALTER TABLE events ADD COLUMN dedup_key TEXT",
+		"CREATE INDEX IF NOT EXISTS idx_events_session_id_id ON events(session_id, id)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uq_events_session_dedup_key ON events(session_id, dedup_key)",
 		"ALTER TABLE session_templates ADD COLUMN description TEXT",
 		"ALTER TABLE session_templates ADD COLUMN base_instructions TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE session_templates ADD COLUMN task_prompt TEXT NOT NULL DEFAULT ''",
@@ -1142,73 +1156,58 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
  */
 async function runFtsBootstrap(sqlite: Database): Promise<void> {
 	if (config.dialect !== "sqlite") return;
-	// Search backend bootstrap. The SQLite FTS5 virtual tables + triggers
-	// live here so they're created in the same transaction window as the
-	// rest of the schema. Kept inline rather than imported so we avoid a
-	// circular dependency with services that read from `db` itself.
+
+	// Decision 20 (F74): the events FTS delete trigger used to key on a plain
+	// UNINDEXED `event_id` column, which is a full FTS5 table scan per
+	// deleted event (9.2 ms/event measured; a 41k-row session delete took
+	// 306.5 s, past the ~60 s liveness kill). Detect a pre-upgrade trigger by
+	// its stored SQL text and re-key to `rowid = events.id` once, inside one
+	// transaction, before the idempotent CREATE ... IF NOT EXISTS bootstrap
+	// below (which would otherwise leave the stale trigger in place forever).
+	let needsRowidRekey = false;
 	try {
-		sqlite.exec(`
-			CREATE VIRTUAL TABLE IF NOT EXISTS search_sessions_fts USING fts5(
-				session_id UNINDEXED,
-				display_name, cwd, current_task, notes,
-				agent_type UNINDEXED,
-				status UNINDEXED,
-				last_activity_at UNINDEXED,
-				tokenize = 'porter unicode61 remove_diacritics 1'
-			);
-			CREATE VIRTUAL TABLE IF NOT EXISTS search_events_fts USING fts5(
-				event_id UNINDEXED,
-				session_id UNINDEXED,
-				event_type UNINDEXED,
-				text,
-				created_at UNINDEXED,
-				tokenize = 'porter unicode61 remove_diacritics 1'
-			);
-			CREATE TRIGGER IF NOT EXISTS trg_sessions_ai_fts AFTER INSERT ON sessions
-			BEGIN
-				INSERT INTO search_sessions_fts(session_id, display_name, cwd, current_task, notes, agent_type, status, last_activity_at)
-				VALUES (NEW.session_id, NEW.display_name, NEW.cwd, NEW.current_task, NEW.notes, NEW.agent_type, NEW.status, NEW.last_activity_at);
-			END;
-			CREATE TRIGGER IF NOT EXISTS trg_sessions_au_fts AFTER UPDATE ON sessions
-			BEGIN
-				DELETE FROM search_sessions_fts WHERE session_id = OLD.session_id;
-				INSERT INTO search_sessions_fts(session_id, display_name, cwd, current_task, notes, agent_type, status, last_activity_at)
-				VALUES (NEW.session_id, NEW.display_name, NEW.cwd, NEW.current_task, NEW.notes, NEW.agent_type, NEW.status, NEW.last_activity_at);
-			END;
-			CREATE TRIGGER IF NOT EXISTS trg_sessions_ad_fts AFTER DELETE ON sessions
-			BEGIN
-				DELETE FROM search_sessions_fts WHERE session_id = OLD.session_id;
-				DELETE FROM search_events_fts WHERE session_id = OLD.session_id;
-			END;
-			CREATE TRIGGER IF NOT EXISTS trg_events_ai_fts AFTER INSERT ON events
-			WHEN NEW.event_type IN (
-				'UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted',
-				'SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest'
-			)
-			BEGIN
-				INSERT INTO search_events_fts(event_id, session_id, event_type, text, created_at)
-				VALUES (
-					NEW.id,
-					NEW.session_id,
-					NEW.event_type,
-					COALESCE(
-						json_extract(NEW.raw_payload, '$.prompt'),
-						json_extract(NEW.raw_payload, '$.message'),
-						json_extract(NEW.raw_payload, '$.summary'),
-						json_extract(NEW.raw_payload, '$.why'),
-						json_extract(NEW.raw_payload, '$.title'),
-						NEW.content, ''
-					),
-					NEW.created_at
-				);
-			END;
-			CREATE TRIGGER IF NOT EXISTS trg_events_ad_fts AFTER DELETE ON events
-			BEGIN
-				DELETE FROM search_events_fts WHERE event_id = OLD.id;
-			END;
-		`);
+		const existingTrigger = sqlite
+			.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='trg_events_ad_fts'")
+			.get() as { sql: string | null } | undefined;
+		if (existingTrigger?.sql && !existingTrigger.sql.includes("rowid = OLD.id")) {
+			needsRowidRekey = true;
+			sqlite.exec("DROP TRIGGER IF EXISTS trg_events_ai_fts;");
+			sqlite.exec("DROP TRIGGER IF EXISTS trg_events_ad_fts;");
+		}
+	} catch (err) {
+		console.warn("[db] FTS rowid-upgrade check failed:", err);
+	}
+
+	// Search backend bootstrap. The SQLite FTS5 virtual tables + triggers
+	// are shared DDL (db/fts-ddl.ts) with search/sqlite-fts-backend.ts's
+	// SqliteFtsBackend.initialize() — one module, Pattern parity P-6.
+	try {
+		sqlite.exec(FTS_BOOTSTRAP_SQL);
 	} catch (err) {
 		console.warn("[db] FTS5 search index bootstrap failed:", err);
+	}
+
+	if (needsRowidRekey) {
+		try {
+			console.log("[db] Re-keying SQLite FTS event index to rowid = events.id");
+			sqlite.exec("BEGIN;");
+			try {
+				sqlite.exec("DELETE FROM search_events_fts;");
+				sqlite.exec(`
+					INSERT INTO search_events_fts(rowid, event_id, session_id, event_type, text, created_at)
+					SELECT id, id, session_id, event_type, ${EVENT_TEXT_COALESCE_SELECT}, created_at
+					FROM events
+					WHERE event_type IN (${FTS_INDEXED_EVENT_TYPES_SQL_LIST});
+				`);
+				sqlite.exec("COMMIT;");
+			} catch (err) {
+				sqlite.exec("ROLLBACK;");
+				throw err;
+			}
+			console.log("[db] FTS rowid re-key complete");
+		} catch (err) {
+			console.warn("[db] FTS rowid re-key failed:", err);
+		}
 	}
 
 	// Backfill FTS from pre-existing rows the triggers never saw. The
@@ -1217,21 +1216,32 @@ async function runFtsBootstrap(sqlite: Database): Promise<void> {
 	// search until we re-index it. We detect the gap by comparing row
 	// counts and only pay the cost when it's real (idempotent on fresh
 	// installs where both counts are 0).
+	//
+	// F74: the events comparison is scoped to FTS_INDEXED_EVENT_TYPES, not
+	// every event. Comparing against the full events table meant this ran on
+	// every boot of any DB holding a single tool event (which is never FTS
+	// indexed), rebuilding the whole events FTS index each time.
 	try {
 		const sessionsCount =
 			(sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n ?? 0;
 		const ftsSessionsCount =
 			(sqlite.prepare("SELECT COUNT(*) AS n FROM search_sessions_fts").get() as { n: number }).n ??
 			0;
-		const eventsCount =
-			(sqlite.prepare("SELECT COUNT(*) AS n FROM events").get() as { n: number }).n ?? 0;
+		const indexedEventsCount =
+			(
+				sqlite
+					.prepare(
+						`SELECT COUNT(*) AS n FROM events WHERE event_type IN (${FTS_INDEXED_EVENT_TYPES_SQL_LIST})`,
+					)
+					.get() as { n: number }
+			).n ?? 0;
 		const ftsEventsCount =
 			(sqlite.prepare("SELECT COUNT(*) AS n FROM search_events_fts").get() as { n: number }).n ?? 0;
 		const needsSessionBackfill = sessionsCount > ftsSessionsCount;
-		const needsEventBackfill = eventsCount > ftsEventsCount;
+		const needsEventBackfill = indexedEventsCount > ftsEventsCount;
 		if (needsSessionBackfill || needsEventBackfill) {
 			console.log(
-				`[db] Backfilling FTS index: sessions ${ftsSessionsCount}/${sessionsCount}, events ${ftsEventsCount}/${eventsCount}`,
+				`[db] Backfilling FTS index: sessions ${ftsSessionsCount}/${sessionsCount}, events ${ftsEventsCount}/${indexedEventsCount}`,
 			);
 			sqlite.exec("BEGIN;");
 			try {
@@ -1246,25 +1256,16 @@ async function runFtsBootstrap(sqlite: Database): Promise<void> {
 				if (needsEventBackfill) {
 					sqlite.exec(`
 						DELETE FROM search_events_fts;
-						INSERT INTO search_events_fts(event_id, session_id, event_type, text, created_at)
+						INSERT INTO search_events_fts(rowid, event_id, session_id, event_type, text, created_at)
 						SELECT
+							id,
 							id,
 							session_id,
 							event_type,
-							COALESCE(
-								json_extract(raw_payload, '$.prompt'),
-								json_extract(raw_payload, '$.message'),
-								json_extract(raw_payload, '$.summary'),
-								json_extract(raw_payload, '$.why'),
-								json_extract(raw_payload, '$.title'),
-								content, ''
-							),
+							${EVENT_TEXT_COALESCE_SELECT},
 							created_at
 						FROM events
-						WHERE event_type IN (
-							'UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted',
-							'SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest'
-						);
+						WHERE event_type IN (${FTS_INDEXED_EVENT_TYPES_SQL_LIST});
 					`);
 				}
 				sqlite.exec("COMMIT;");

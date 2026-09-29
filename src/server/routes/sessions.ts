@@ -13,6 +13,7 @@ import {
 	queueStopAction,
 	retryLaunchForSession,
 } from "../services/control-actions.js";
+import { toSessionEventDtos } from "../services/event-dto.js";
 import {
 	applyNativeName,
 	getSession,
@@ -59,12 +60,14 @@ sessionsRouter.get("/sessions/:sessionId", async (c: Context) => {
 	}
 
 	// Get timeline events for the detail page; the UI handles mode filtering.
-	const sessionEvents = await getDb()
-		.select()
-		.from(events)
-		.where(eq(events.sessionId, sessionId))
-		.orderBy(desc(events.createdAt))
-		.limit(500);
+	const sessionEvents = toSessionEventDtos(
+		await getDb()
+			.select()
+			.from(events)
+			.where(eq(events.sessionId, sessionId))
+			.orderBy(desc(events.id))
+			.limit(500),
+	);
 
 	// C1: controlActions metadata carries the injected prompt and launch.env
 	// (control-actions.ts:187-194). An observe-scoped caller may read session
@@ -83,13 +86,15 @@ sessionsRouter.get("/sessions/:sessionId/timeline", async (c) => {
 	const limit = Number(c.req.query("limit") || 50);
 	const offset = Number(c.req.query("offset") || 0);
 
-	const sessionEvents = await getDb()
-		.select()
-		.from(events)
-		.where(eq(events.sessionId, sessionId))
-		.orderBy(desc(events.createdAt))
-		.limit(limit)
-		.offset(offset);
+	const sessionEvents = toSessionEventDtos(
+		await getDb()
+			.select()
+			.from(events)
+			.where(eq(events.sessionId, sessionId))
+			.orderBy(desc(events.id))
+			.limit(limit)
+			.offset(offset),
+	);
 
 	return c.json({ events: sessionEvents });
 });
@@ -252,7 +257,7 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 		.orderBy(asc(events.id))
 		.limit(around);
 
-	const combined = [...before.reverse(), ...after];
+	const combined = toSessionEventDtos([...before.reverse(), ...after]);
 
 	return c.json({ events: combined, target: { id: eventId } });
 });

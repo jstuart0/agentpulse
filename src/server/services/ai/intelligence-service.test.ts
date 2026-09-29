@@ -162,61 +162,44 @@ describe("intelligence-service.intelligenceForSessions", () => {
 		expect(bulk.size).toBe(50);
 	});
 
-	// SQLite-only: spy on getDb().all which is a SQLite-specific synchronous API.
-	// The query-count bound is still validated on Postgres via the bulk test above.
-	itSqliteOnly("issues at most 4 queries regardless of input size (200 ids)", async () => {
-		// Create 200 sessions; each bulk call must remain bounded.
-		const ids: string[] = [];
-		for (let i = 0; i < 200; i++) {
-			const id = `bulk-${i}`;
-			ids.push(id);
-			await mkSession(id, { lastActivityAt: "2026-04-20 00:25:00" });
-			await mkEvent(id, { category: "assistant_message", content: "hello" });
-		}
+	// Decision 15 (F53/F75): Postgres runs the events fetch as one LATERAL
+	// query (still O(1) queries regardless of input size); SQLite runs a
+	// projected per-session loop instead (synchronous, no pool to starve —
+	// O(1) queries would otherwise need the ROW_NUMBER window-function query
+	// this replaced, which is what the old assertion here pinned).
+	itSqliteOnly(
+		"SQLite bulk path issues one projected select per session for events (D15)",
+		async () => {
+			const ids: string[] = [];
+			for (let i = 0; i < 200; i++) {
+				const id = `bulk-${i}`;
+				ids.push(id);
+				await mkSession(id, { lastActivityAt: "2026-04-20 00:25:00" });
+				await mkEvent(id, { category: "assistant_message", content: "hello" });
+			}
 
-		// Spy on getDb().select and getDb().all to count read paths.
-		// getDb().select is invoked for: sessions inArray + managedSessions left-join +
-		// listOpenHitlForSessions.
-		// getDb().all is invoked for: window-function recent events (via executeRows helper).
-		const dbInstance = getDb();
-		const origDbSelect = dbInstance.select.bind(dbInstance) as typeof dbInstance.select;
-		// biome-ignore lint/suspicious/noExplicitAny: bun-sqlite db type
-		const origDbAll = (dbInstance as any).all.bind(dbInstance);
+			const dbInstance = getDb();
+			const origDbSelect = dbInstance.select.bind(dbInstance) as typeof dbInstance.select;
+			let dbSelectCalls = 0;
+			(dbInstance as unknown as { select: typeof dbInstance.select }).select = ((
+				...args: unknown[]
+			) => {
+				dbSelectCalls++;
+				// biome-ignore lint/suspicious/noExplicitAny: spy passthrough
+				return (origDbSelect as any)(...args);
+			}) as typeof dbInstance.select;
 
-		let dbSelectCalls = 0;
-		let dbAllCalls = 0;
-
-		(dbInstance as unknown as { select: typeof dbInstance.select }).select = ((
-			...args: unknown[]
-		) => {
-			dbSelectCalls++;
-			// biome-ignore lint/suspicious/noExplicitAny: spy passthrough
-			return (origDbSelect as any)(...args);
-		}) as typeof dbInstance.select;
-
-		// biome-ignore lint/suspicious/noExplicitAny: spy on all() for window-function path
-		(dbInstance as any).all = (...args: unknown[]) => {
-			dbAllCalls++;
-			return origDbAll(...args);
-		};
-
-		try {
-			const bulk = await intelligenceForSessions(ids, new Date("2026-04-20T00:30:00Z"));
-			expect(bulk.size).toBe(200);
-			// Expected breakdown:
-			//   dbSelectCalls = 3 (sessions inArray, managed+supervisor left
-			//     join, listOpenHitlForSessions)
-			//   dbAllCalls = 1 (events ROW_NUMBER window-function fetch via executeRows)
-			const totalReads = dbSelectCalls + dbAllCalls;
-			expect(dbSelectCalls).toBeLessThanOrEqual(3);
-			expect(dbAllCalls).toBe(1);
-			expect(totalReads).toBeLessThanOrEqual(4);
-		} finally {
-			(dbInstance as unknown as { select: typeof dbInstance.select }).select = origDbSelect;
-			// biome-ignore lint/suspicious/noExplicitAny: restore spy
-			(dbInstance as any).all = origDbAll;
-		}
-	});
+			try {
+				const bulk = await intelligenceForSessions(ids, new Date("2026-04-20T00:30:00Z"));
+				expect(bulk.size).toBe(200);
+				// sessions inArray + managedSessions left-join + listOpenHitlForSessions
+				// (3), plus one projected select per session for events (200).
+				expect(dbSelectCalls).toBeGreaterThanOrEqual(200);
+			} finally {
+				(dbInstance as unknown as { select: typeof dbInstance.select }).select = origDbSelect;
+			}
+		},
+	);
 
 	test("returns empty map for empty input without touching the db", async () => {
 		const out = await intelligenceForSessions([], new Date());
