@@ -289,6 +289,66 @@ if ($canSymlink) {
 	$env:HOME = $savedHome
 }
 
+# ── F242 (xander, re-verify): Test-ApMultipleHardLinks — real execution ──
+# Hard links (unlike symlinks) need no Developer Mode/elevation on NTFS —
+# `New-Item -ItemType HardLink` is a plain user operation — so this runs
+# unconditionally rather than behind $canSymlink.
+$hardlinkProbeDir = Join-Path $tempProfile "hardlink-probe"
+New-Item -ItemType Directory -Force -Path $hardlinkProbeDir | Out-Null
+$hardlinkOriginal = Join-Path $hardlinkProbeDir "hooks.json"
+Set-Content -Path $hardlinkOriginal -Value "should never change" -Encoding UTF8
+$canHardlink = $true
+try {
+	$hardlinkAlias = Join-Path $hardlinkProbeDir "hooks-alias.json"
+	New-Item -ItemType HardLink -Path $hardlinkAlias -Target $hardlinkOriginal -ErrorAction Stop | Out-Null
+} catch {
+	$canHardlink = $false
+	Write-Host "warning: cannot create a hard link in this environment ($($_.Exception.Message)) — skipping F242 hardlink assertions"
+}
+
+if ($canHardlink) {
+	Assert-True (Test-ApMultipleHardLinks -Path $hardlinkOriginal) "Test-ApMultipleHardLinks: detects a file with more than one hard link"
+	Assert-True (-not (Test-ApMultipleHardLinks -Path (Join-Path $hardlinkProbeDir "single-link.json"))) "Test-ApMultipleHardLinks: a nonexistent path is not multiply-linked (fails open, returns false)"
+
+	$singleLinkPath = Join-Path $hardlinkProbeDir "single-link.json"
+	Set-Content -Path $singleLinkPath -Value "only one link" -Encoding UTF8
+	Assert-True (-not (Test-ApMultipleHardLinks -Path $singleLinkPath)) "Test-ApMultipleHardLinks: a plain single-link file is not flagged"
+
+	# Write-ApFileNoFollow refuses a multiply-linked destination — the
+	# original data (reachable via either directory entry) is untouched.
+	$hardlinkThrew = $false
+	try {
+		Write-ApFileNoFollow -Path $hardlinkAlias -Content "attacker-controlled via hardlink"
+	} catch {
+		$hardlinkThrew = $true
+	}
+	Assert-True $hardlinkThrew "Write-ApFileNoFollow (F242): a multiply-linked destination throws instead of writing through it"
+	Assert-True ((Get-Content $hardlinkOriginal -Raw) -eq "should never change") "Write-ApFileNoFollow (F242): the hard-linked data is untouched after the refused write"
+
+	# New-ApHookAuthHeaderFile itself refuses a multiply-linked hook-auth-header.
+	$hardlinkAuthHome = Join-Path $tempProfile "auth-hardlink-probe"
+	New-Item -ItemType Directory -Force -Path $hardlinkAuthHome | Out-Null
+	$savedHomeHardlink = $env:USERPROFILE
+	$env:USERPROFILE = $hardlinkAuthHome
+	$env:HOME = $hardlinkAuthHome
+	$agentpulseDirHardlink = Join-Path $hardlinkAuthHome ".agentpulse"
+	New-Item -ItemType Directory -Force -Path $agentpulseDirHardlink | Out-Null
+	$authHeaderTarget = Join-Path $hardlinkAuthHome "decoy-auth-header"
+	Set-Content -Path $authHeaderTarget -Value "should never change" -Encoding UTF8
+	$authHeaderHardlinkPath = Join-Path $agentpulseDirHardlink "hook-auth-header"
+	New-Item -ItemType HardLink -Path $authHeaderHardlinkPath -Target $authHeaderTarget | Out-Null
+	$authHardlinkThrew = $false
+	try {
+		New-ApHookAuthHeaderFile -ApiKey "ap_attacker_controlled_via_hardlink"
+	} catch {
+		$authHardlinkThrew = $true
+	}
+	Assert-True $authHardlinkThrew "New-ApHookAuthHeaderFile (F242): a multiply-linked hook-auth-header throws instead of writing through it"
+	Assert-True ((Get-Content $authHeaderTarget -Raw) -eq "should never change") "New-ApHookAuthHeaderFile (F242): the hard-linked target is untouched after the refused write"
+	$env:USERPROFILE = $savedHomeHardlink
+	$env:HOME = $savedHomeHardlink
+}
+
 Remove-Item -Recurse -Force $tempProfile -ErrorAction SilentlyContinue
 
 if ($failures -gt 0) {
