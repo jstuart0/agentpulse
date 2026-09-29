@@ -10,11 +10,15 @@ import "./ai/__test_db.js";
 const { getDb, initializeDatabase } = await import("../db/client.js");
 const { events, sessions } = await import("../db/schema/index.js");
 const { eq } = await import("drizzle-orm");
-const { processHookEvent, insertHookEvents } = await import("./event-processor.js");
+const { processHookEvent, insertHookEvents, insertNormalizedEvents } = await import(
+	"./event-processor.js"
+);
 const { computeDedupKey, getEventsDeduplicatedCounts, _resetEventDedupForTest } = await import(
 	"./event-dedup.js"
 );
-const { normalizeHookEvent } = await import("./event-normalizer.js");
+const { normalizeHookEvent, createAssistantTranscriptEvent } = await import(
+	"./event-normalizer.js"
+);
 const { appendManagedSessionEvents } = await import("./managed-session-state.js");
 
 import type {
@@ -122,6 +126,64 @@ async function post(
 		body.transcript_path = "/fake/transcript.jsonl";
 	}
 	return processHookEvent(body, agentType, ctx);
+}
+
+async function withTZ<T>(tz: string, fn: () => Promise<T>): Promise<T> {
+	const saved = process.env.TZ;
+	process.env.TZ = tz;
+	try {
+		return await fn();
+	} finally {
+		process.env.TZ = saved ?? "UTC";
+	}
+}
+
+// P2.17: hook/transcript authority via the *hook path* (processHookEvent's
+// hook_delivery arm), distinct from event-authority-dedup.test.ts's P1.1/P1.2
+// (which post as claude_code and only assert the assistant-message echo).
+// This pins two things those don't: the Stop event's own row survives
+// authority supersession (only its assistant-message echo is superseded),
+// and the `authority` counter itself moves.
+async function stopThenTranscript(prefix: string) {
+	const sid = newSessionId(prefix);
+	await post(sid, { hook_event_name: "Stop", last_assistant_message: "hi" }, "codex_cli");
+	await insertNormalizedEvents(sid, [
+		createAssistantTranscriptEvent(
+			"hi",
+			{ transcript_uuid: `tu-${prefix}` },
+			"claude_transcript_text",
+		),
+	]);
+	const rows = await rowsFor(sid);
+	const assistantRows = rows.filter((r) => r.category === "assistant_message");
+	expect(
+		assistantRows.map((r) => r.source),
+		await histogram(sid),
+	).toEqual(["observed_transcript"]);
+	expect(
+		rows.filter((r) => r.eventType === "Stop"),
+		await histogram(sid),
+	).toHaveLength(1);
+}
+
+async function transcriptThenStop(prefix: string) {
+	const sid = newSessionId(prefix);
+	await mkSession(sid);
+	await insertNormalizedEvents(sid, [
+		createAssistantTranscriptEvent(
+			"hi",
+			{ transcript_uuid: `tu-${prefix}` },
+			"claude_transcript_text",
+		),
+	]);
+	const before = getEventsDeduplicatedCounts().authority;
+	await post(sid, { hook_event_name: "Stop", last_assistant_message: "hi" }, "codex_cli");
+	expect(getEventsDeduplicatedCounts().authority - before).toBe(1);
+	const rows = await rowsFor(sid);
+	expect(
+		rows.filter((r) => r.category === "assistant_message" && r.source === "observed_hook"),
+		await histogram(sid),
+	).toHaveLength(0);
 }
 
 // ── P2.1-P2.10: population scenarios (F131) ─────────────────────────────────
@@ -361,6 +423,47 @@ describe("P2.11-P2.21", () => {
 		expect(
 			(finalSession.metadata as Record<string, unknown> | null)?.permissionWait,
 		).toBeUndefined();
+	});
+
+	test("P2.17(a) hook Stop then transcript, under NY: 1 transcript assistant row, Stop kept", () =>
+		withTZ("America/New_York", () => stopThenTranscript("p217-a-ny")));
+
+	test("P2.17(a) hook Stop then transcript, under UTC: 1 transcript assistant row, Stop kept", () =>
+		withTZ("UTC", () => stopThenTranscript("p217-a-utc")));
+
+	test("P2.17(b) transcript then hook Stop, under NY: no hook assistant row, authority +1", () =>
+		withTZ("America/New_York", () => transcriptThenStop("p217-b-ny")));
+
+	test("P2.17(b) transcript then hook Stop, under UTC: no hook assistant row, authority +1", () =>
+		withTZ("UTC", () => transcriptThenStop("p217-b-utc")));
+
+	test("P2.18 a managed 'hi', then a Codex Stop 'hi' — the managed row is deleted, the hook assistant row is stored", async () => {
+		const sid = newSessionId("p2-18");
+		await mkSession(sid);
+		const managed = await appendManagedSessionEvents(sid, [
+			{
+				eventType: "AssistantMessage",
+				category: "assistant_message",
+				source: "managed_control",
+				content: "hi",
+			},
+		]);
+		expect(managed).toHaveLength(1);
+
+		await post(sid, { hook_event_name: "Stop", last_assistant_message: "hi" }, "codex_cli");
+
+		const rows = await rowsFor(sid);
+		expect(
+			rows.filter((r) => r.source === "managed_control" && r.content === "hi"),
+			await histogram(sid),
+		).toHaveLength(0);
+		expect(
+			rows.filter(
+				(r) =>
+					r.category === "assistant_message" && r.source === "observed_hook" && r.content === "hi",
+			),
+			await histogram(sid),
+		).toHaveLength(1);
 	});
 
 	test("P2.19 eventsDeduplicated has exactly 4 keys, legacyObserverDeliveries is separate", () => {

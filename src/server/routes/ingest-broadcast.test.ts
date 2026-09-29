@@ -197,6 +197,61 @@ describe("P3.1-P3.3, F103: Scenario B′ — distinct tool names, all 41 rows st
 	});
 });
 
+describe("P3.1b: broadcast population under real scenario B (all Bash, tu0..tu19)", () => {
+	// Real scenario B (F131/repro.ts's B): every tool call shares the same
+	// tool_name, so the *content window* alone would have collapsed most of
+	// it (that's the AGEN-16 bug) — only t:-keyed identity on tool_use_id
+	// keeps all 41 rows distinct. P3.1 uses B′ (distinct tool names per
+	// call), which never exercises that collision at all.
+	test("broadcast ids have no duplicates, equal the DB id set, size 41, include tu7, all > 0", async () => {
+		const sid = newSessionId("scenario-b-real");
+		const ws = attachFakeWs();
+		try {
+			await postHook({
+				session_id: sid,
+				hook_event_name: "UserPromptSubmit",
+				prompt: "run the build",
+			});
+			for (let i = 0; i < 20; i++) {
+				await postHook({
+					session_id: sid,
+					hook_event_name: "PreToolUse",
+					tool_name: "Bash",
+					tool_input: { command: `npm run step${i}` },
+					tool_use_id: `tu${i}`,
+				});
+				await postHook({
+					session_id: sid,
+					hook_event_name: "PostToolUse",
+					tool_name: "Bash",
+					tool_input: { command: `npm run step${i}` },
+					tool_response: { stdout: `out ${i}` },
+					tool_use_id: `tu${i}`,
+				});
+			}
+
+			const dbRows = await rowsFor(sid);
+			expect(dbRows).toHaveLength(41);
+
+			const broadcast = newEventEvents(ws, sid);
+			expect(broadcast).toHaveLength(41);
+			const ids = broadcast.map((m) => m.data.id as number);
+			expect(new Set(ids).size).toBe(41);
+			expect(ids.every((id) => id > 0)).toBe(true);
+			expect(new Set(ids)).toEqual(new Set(dbRows.map((r) => r.id)));
+
+			const tu7Row = dbRows.find(
+				(r) => (r.rawPayload as Record<string, unknown>).tool_use_id === "tu7",
+			);
+			expect(tu7Row, JSON.stringify(dbRows.map((r) => r.rawPayload))).toBeDefined();
+			if (!tu7Row) throw new Error("unreachable");
+			expect(ids).toContain(tu7Row.id);
+		} finally {
+			ws.close();
+		}
+	});
+});
+
 describe("P3.4: transcript authority supersedes the hook assistant row before it's ever broadcast", () => {
 	test("a seeded transcript 'hi', then a Codex Stop with last_assistant_message 'hi', broadcasts exactly the Stop", async () => {
 		const sid = newSessionId("p34-authority");

@@ -8,9 +8,11 @@ import type { ServerWebSocket } from "bun";
 import { Hono } from "hono";
 import "../services/ai/__test_db.js";
 
+import type { HookEventPayload } from "../../shared/types.js";
+
 const { config } = await import("../config.js");
 const { initializeDatabase, getDb } = await import("../db/client.js");
-const { events } = await import("../db/schema/index.js");
+const { events, sessions } = await import("../db/schema/index.js");
 const { eq } = await import("drizzle-orm");
 const { ingest } = await import("./ingest.js");
 const { _resetBucketsForTest } = await import("../middleware/hook-rate-limit.js");
@@ -21,6 +23,8 @@ const { _resetEventDedupForTest, getEventsDeduplicatedCounts } = await import(
 );
 const { DELIVERY_ID_HEADER } = await import("../../shared/hook-headers.js");
 const { createApiKey, SCOPE_INGEST } = await import("../auth/api-key.js");
+const { insertHookEvents } = await import("../services/event-processor.js");
+const { normalizeHookEvent } = await import("../services/event-normalizer.js");
 
 const originalDisableAuth = config.disableAuth;
 
@@ -70,6 +74,21 @@ function newSessionId(prefix: string) {
 
 async function rowsFor(sessionId: string) {
 	return getDb().select().from(events).where(eq(events.sessionId, sessionId));
+}
+
+async function mkSession(sessionId: string) {
+	await getDb()
+		.insert(sessions)
+		.values({
+			sessionId,
+			displayName: sessionId,
+			agentType: "claude_code",
+			status: "active",
+			isWorking: false,
+			lastActivityAt: new Date().toISOString(),
+			metadata: {},
+		})
+		.execute();
 }
 
 type PostOpts = { headers?: Record<string, string>; auth?: string };
@@ -306,25 +325,38 @@ describe("P4.1-P4.9", () => {
 	});
 
 	test("P4.9: a failed insert doesn't burn D1", async () => {
-		// A malformed body that fails the always-200 pre-processing gate never
-		// reaches the planner at all, so D1 is untouched for a real retry.
+		// Drives the actual failed-insert path (mirrors P2.15 in
+		// event-processor-dedup.test.ts): insertHookEvents against a session
+		// that doesn't exist yet must reject before ever touching the
+		// delivery-id key space, so a retry once the session exists is a
+		// genuinely fresh insert, not a deliveryRetry.
+		//
+		// The previous version of this test posted a body missing
+		// hook_event_name, which is rejected by the route before any insert
+		// is attempted — it never drove a *failed insert*, only the
+		// always-200 malformed-body guard (already covered elsewhere).
 		const sid = newSessionId("p49");
-		await postHook(
-			{ session_id: sid, hook_event_name: "Stop" },
-			{ headers: { [DELIVERY_ID_HEADER]: "d1-aaaaaaaa" } },
-		);
-		const before = (await rowsFor(sid)).length;
-		// Missing hook_event_name -> ingest returns 200 with no downstream work.
-		await postHook({ session_id: sid, no_event: true } as unknown as Record<string, unknown>, {
-			headers: { [DELIVERY_ID_HEADER]: "d9-bbbbbbbb" },
+		const stop = { session_id: sid, hook_event_name: "Stop" } as HookEventPayload;
+		const ctx = { keyId: "anonymous", deliveryId: "d1-aaaaaaaa", origin: "native" as const };
+
+		await expect(
+			insertHookEvents(sid, normalizeHookEvent(stop, "codex_cli"), {
+				kind: "hook_delivery",
+				ctx,
+				rawPayload: stop,
+			}),
+		).rejects.toThrow();
+
+		await mkSession(sid);
+		const before = getEventsDeduplicatedCounts().deliveryRetry;
+		const stored = await insertHookEvents(sid, normalizeHookEvent(stop, "codex_cli"), {
+			kind: "hook_delivery",
+			ctx,
+			rawPayload: stop,
 		});
-		expect((await rowsFor(sid)).length).toBe(before);
-		// D1 itself is still live for a genuine retry.
-		await postHook(
-			{ session_id: sid, hook_event_name: "Stop" },
-			{ headers: { [DELIVERY_ID_HEADER]: "d1-aaaaaaaa" } },
-		);
-		expect((await rowsFor(sid)).length).toBe(before);
+		expect(stored).toHaveLength(1);
+		expect((await rowsFor(sid)).length).toBe(1);
+		expect(getEventsDeduplicatedCounts().deliveryRetry - before).toBe(0);
 	});
 });
 

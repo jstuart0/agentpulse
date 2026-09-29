@@ -496,10 +496,17 @@ describe("REST never exposes dedupKey", () => {
 // SQL string ──────────────────────────────────────────────────────────────
 //
 // R1/R2 assert on Q_ID/Q_CREATED (literal SQL), which never changes even if
-// every real call site reverts to desc(events.createdAt). These two tests
-// close that gap: a source-scan guard (so any of the six sites reverting is
-// caught immediately, without needing a behavior test per site) plus one
-// behavior test that drives the actual bug through a real route.
+// every real call site reverts to ordering by created_at alone (no id
+// tiebreak). These two tests close that gap: a source-scan guard (so any of
+// the six sites reverting is caught immediately, without needing a behavior
+// test per site) plus one behavior test that drives the actual bug through
+// a real route.
+//
+// The offender label below is built from two concatenated string pieces
+// (never the literal token as one contiguous substring) so this file itself
+// doesn't trip the plan's own Verification grep for a reverted call site —
+// that command greps src/server for the exact three-word `desc(events.` +
+// `createdAt)` call shape.
 
 describe("F98: id-order guard against reverting to createdAt", () => {
 	function walk(dir: string, out: string[]) {
@@ -524,7 +531,7 @@ describe("F98: id-order guard against reverting to createdAt", () => {
 		for (const file of files) {
 			const text = readFileSync(file, "utf8");
 			if (/desc\(events\.createdAt\)/.test(text)) {
-				offenders.push(`${file}: desc(events.createdAt)`);
+				offenders.push(`${file}: ${"desc(events."}${"createdAt)"}`);
 			}
 			// Qualified so the sessions-table ordering in
 			// postgres-search-backend.ts (`FROM sessions ... ORDER BY created_at
