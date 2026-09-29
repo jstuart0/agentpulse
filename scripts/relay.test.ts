@@ -36,7 +36,13 @@ const RELAY_PATH = join(import.meta.dir, "relay.ts");
 const HOUR = 60 * 60 * 1000;
 const T0 = Date.parse("2026-09-28T12:00:00.000Z");
 
-type Recorded = { method: string; path: string; search: string; body: string };
+type Recorded = {
+	method: string;
+	path: string;
+	search: string;
+	body: string;
+	headers: Record<string, string>;
+};
 type StubHandler = (
 	method: string,
 	url: URL,
@@ -51,7 +57,13 @@ function startStub(handler: StubHandler) {
 		async fetch(req) {
 			const url = new URL(req.url);
 			const body = req.method === "GET" ? "" : await req.text();
-			requests.push({ method: req.method, path: url.pathname, search: url.search, body });
+			requests.push({
+				method: req.method,
+				path: url.pathname,
+				search: url.search,
+				body,
+				headers: Object.fromEntries(req.headers),
+			});
 			return (await handler(req.method, url, body)) ?? new Response("not found", { status: 404 });
 		},
 	});
@@ -2414,5 +2426,70 @@ describe("relay residuals (F127, F134-F138, F140)", () => {
 			false,
 			false,
 		]);
+	});
+});
+
+describe("delivery-id header for the server's dedup (AGEN-16 handoff)", () => {
+	test("a retried hook carries the same X-AgentPulse-Delivery-Id; a proxied session read carries none", async () => {
+		const R = await mod();
+		let status = 503;
+		const stub = startStub((method, url) => {
+			if (url.pathname === "/api/v1/hooks")
+				return Response.json({ ok: status === 200 }, { status });
+			if (method === "GET" && url.pathname === "/api/v1/sessions/abc")
+				return Response.json({ session: {} });
+			return undefined;
+		});
+		stops.push(stub.stop);
+		const stateDir = join(tmp, "state");
+		await mkdir(stateDir, { recursive: true });
+		const relay = await R.startRelay(
+			{
+				remoteUrl: stub.url,
+				apiKey: "k",
+				port: 0,
+				codexNamePolicy: "codex",
+				stateDir,
+				configPath: null,
+			},
+			{ timers: false, env: { HOME: join(tmp, "home") }, scriptPath: RELAY_PATH, log: () => {} },
+		);
+		stops.push(() => relay.stop());
+		const base = `http://127.0.0.1:${relay.port}`;
+		const queued = (await (
+			await fetch(`${base}/api/v1/hooks`, {
+				method: "POST",
+				body: JSON.stringify({ session_id: "d1", hook_event_name: "Stop" }),
+			})
+		).json()) as { queueId: string };
+
+		await R.processHookQueue(relay.ctx);
+		const pendingDir = join(stateDir, "hook-queue", "pending");
+		const { readdir } = await import("node:fs/promises");
+		const [file] = await readdir(pendingDir);
+		const item = JSON.parse(await readFile(join(pendingDir, file), "utf-8"));
+		item.nextAttemptAt = new Date(0).toISOString();
+		await writeFile(join(pendingDir, file), JSON.stringify(item));
+		status = 200;
+		await R.processHookQueue(relay.ctx);
+
+		const hookCalls = stub.requests.filter((r) => r.path === "/api/v1/hooks");
+		expect(hookCalls).toHaveLength(2);
+		const ids = hookCalls.map((r) => r.headers["x-agentpulse-delivery-id"]);
+		expect(ids).toEqual([queued.queueId, queued.queueId]);
+
+		await fetch(`${base}/api/v1/sessions/abc`);
+		const read = stub.requests.find((r) => r.path === "/api/v1/sessions/abc");
+		expect(read?.headers["x-agentpulse-delivery-id"]).toBeUndefined();
+
+		// Exactly /api/v1/hooks: a queued /hooks/status forward carries no id.
+		await fetch(`${base}/api/v1/hooks/status`, {
+			method: "POST",
+			body: JSON.stringify({ session_id: "d1", status: "testing" }),
+		});
+		await R.processHookQueue(relay.ctx);
+		const statusCall = stub.requests.find((r) => r.path === "/api/v1/hooks/status");
+		expect(statusCall).toBeDefined();
+		expect(statusCall?.headers["x-agentpulse-delivery-id"]).toBeUndefined();
 	});
 });

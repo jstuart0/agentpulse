@@ -1653,12 +1653,17 @@ async function forwardApiRequest(
 		contentType: string;
 		agentType?: string | null;
 		body?: string;
+		/** AGEN-16: stamped only on queued POSTs to exactly /api/v1/hooks; stable across retries. */
+		deliveryId?: string;
 	},
 ) {
 	const headers = new Headers();
 	headers.set("Content-Type", input.contentType || "application/json");
 	if (ctx.config.apiKey) headers.set("Authorization", `Bearer ${ctx.config.apiKey}`);
 	if (input.agentType) headers.set("X-Agent-Type", input.agentType);
+	if (input.deliveryId && input.pathname === "/api/v1/hooks") {
+		headers.set("X-AgentPulse-Delivery-Id", input.deliveryId);
+	}
 
 	const response = await ctx.fetch(`${ctx.config.remoteUrl}${input.pathname}${input.search}`, {
 		method: input.method,
@@ -1826,7 +1831,7 @@ export async function processHookQueue(ctx: RelayContext) {
 			const leased = await leaseNextHook(ctx);
 			if (!leased) break;
 			try {
-				const res = await forwardApiRequest(ctx, leased.item);
+				const res = await forwardApiRequest(ctx, { ...leased.item, deliveryId: leased.item.id });
 				const verdict = classifyForwardStatus(res.status);
 				if (verdict === "delivered") await completeHookSuccess(ctx, leased.fileName);
 				else if (verdict === "retry") {
@@ -1922,8 +1927,13 @@ const NATIVE_NAME_PATH_RE = /^\/api\/v1\/sessions\/[^/]+\/native-name$/;
  * forwards only what local producers need: hooks, the statusline's session
  * lookup, and its native-name push.
  */
+/** F138: `/api/v1/hooks` and its subpaths only, never `/api/v1/hooksX`. */
+function isHooksPath(pathname: string): boolean {
+	return pathname === "/api/v1/hooks" || pathname.startsWith("/api/v1/hooks/");
+}
+
 export function isForwardAllowed(method: string, pathname: string): boolean {
-	if (pathname === "/api/v1/hooks" || pathname.startsWith("/api/v1/hooks/")) return true;
+	if (isHooksPath(pathname)) return true;
 	const m = method.toUpperCase();
 	if (m === "GET" && SESSION_DETAIL_PATH_RE.test(pathname)) return true;
 	if (m === "PUT" && NATIVE_NAME_PATH_RE.test(pathname)) return true;
@@ -2023,7 +2033,7 @@ export function createFetchHandler(ctx: RelayContext) {
 			return Response.json(await buildDiagnostics(ctx));
 		}
 
-		if (url.pathname === "/api/v1/hooks" || url.pathname.startsWith("/api/v1/hooks/")) {
+		if (isHooksPath(url.pathname)) {
 			const queued = await enqueueHook(ctx, req, url);
 			return Response.json({ ok: true, relayed: false, ...queued });
 		}
