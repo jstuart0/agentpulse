@@ -29,6 +29,7 @@ const { insertNormalizedEvents } = await import("../services/event-processor.js"
 const { createAssistantTranscriptEvent } = await import("../services/event-normalizer.js");
 const { emitAiEvent } = await import("../services/ai/ai-events.js");
 const { appendManagedSessionEvents } = await import("../services/managed-session-state.js");
+const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 
 const originalDisableAuth = config.disableAuth;
 
@@ -325,7 +326,9 @@ describe("P6-dto: no dedupKey on any live path", () => {
 	test("appendManagedSessionEvents (the supervisor route's data source) response rows have no dedupKey key", async () => {
 		const sid = newSessionId("p6dto-managed");
 		await mkSession(sid);
-		const inserted = await appendManagedSessionEvents(sid, [
+		const supervisorId = crypto.randomUUID();
+		await seedOwnedLaunch(sid, supervisorId);
+		const inserted = await appendManagedSessionEvents(supervisorId, sid, [
 			{ eventType: "ManagedMessage", category: "assistant_message", content: "hi from supervisor" },
 		]);
 		expect(inserted.length).toBeGreaterThan(0);
@@ -368,6 +371,9 @@ describe("P6-dto: no dedupKey on any live path", () => {
 
 			const sid = newSessionId("p6dto-managed-http");
 			await mkSession(sid);
+			// AGEN-15: the route now enforces ownership — this supervisor must
+			// be the owner of record before it can post events for the session.
+			await seedOwnedLaunch(sid, supervisorId);
 			const eventsRes = await supervisorApp.request(
 				`/api/v1/supervisors/${supervisorId}/managed-sessions/${sid}/events`,
 				{

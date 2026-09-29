@@ -15,6 +15,7 @@ const { createAssistantTranscriptEvent, normalizeHookEvent } = await import(
 	"./event-normalizer.js"
 );
 const { appendManagedSessionEvents } = await import("./managed-session-state.js");
+const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 const { emitAiEvent } = await import("./ai/ai-events.js");
 const { eq } = await import("drizzle-orm");
 
@@ -238,6 +239,8 @@ describe("content-window dedup that must survive the fix", () => {
 	test("P1.7 identical managed events collapse to one row", async () => {
 		const sid = newSessionId("p1-7");
 		await mkSession(sid);
+		const supervisorId = crypto.randomUUID();
+		await seedOwnedLaunch(sid, supervisorId);
 		const input = [
 			{
 				eventType: "LaunchStarted",
@@ -245,8 +248,8 @@ describe("content-window dedup that must survive the fix", () => {
 				content: "Launch started",
 			},
 		];
-		expect(await appendManagedSessionEvents(sid, input)).toHaveLength(1);
-		expect(await appendManagedSessionEvents(sid, input)).toEqual([]);
+		expect(await appendManagedSessionEvents(supervisorId, sid, input)).toHaveLength(1);
+		expect(await appendManagedSessionEvents(supervisorId, sid, input)).toEqual([]);
 		expect(await rowsFor(sid), await histogram(sid)).toHaveLength(1);
 	});
 

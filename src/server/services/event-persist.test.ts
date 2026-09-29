@@ -15,6 +15,7 @@ const { getDb, initializeDatabase } = await import("../db/client.js");
 const { events, sessions } = await import("../db/schema/index.js");
 const { insertNormalizedEvents } = await import("./event-processor.js");
 const { appendManagedSessionEvents } = await import("./managed-session-state.js");
+const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 const { emitAiEvent } = await import("./ai/ai-events.js");
 const { createAssistantTranscriptEvent } = await import("./event-normalizer.js");
 const { eq } = await import("drizzle-orm");
@@ -146,7 +147,9 @@ describe("P6-inject: callers can never write dedup_key (F65)", () => {
 
 			const sidManaged = newSessionId(`p6inject-managed-${suffix}`);
 			await mkSession(sidManaged);
-			await appendManagedSessionEvents(sidManaged, [
+			const supervisorId = crypto.randomUUID();
+			await seedOwnedLaunch(sidManaged, supervisorId);
+			await appendManagedSessionEvents(supervisorId, sidManaged, [
 				{
 					eventType: "InjectTest",
 					category: "assistant_message",

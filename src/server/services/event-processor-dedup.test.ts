@@ -26,6 +26,7 @@ const { normalizeHookEvent, createAssistantTranscriptEvent } = await import(
 	"./event-normalizer.js"
 );
 const { appendManagedSessionEvents } = await import("./managed-session-state.js");
+const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 
 import type {
 	AgentType,
@@ -446,7 +447,9 @@ describe("P2.11-P2.21", () => {
 	test("P2.18 a managed 'hi', then a Codex Stop 'hi' — the managed row is deleted, the hook assistant row is stored", async () => {
 		const sid = newSessionId("p2-18");
 		await mkSession(sid);
-		const managed = await appendManagedSessionEvents(sid, [
+		const supervisorId = crypto.randomUUID();
+		await seedOwnedLaunch(sid, supervisorId);
+		const managed = await appendManagedSessionEvents(supervisorId, sid, [
 			{
 				eventType: "AssistantMessage",
 				category: "assistant_message",
@@ -746,7 +749,9 @@ describe("RP1-RP3c: whole-delivery drop protects an authority-superseded seconda
 test("P6-l1: an unstored row triggers no authority delete — a managed row survives a lost-race secondary", async () => {
 	const sid = newSessionId("p6-l1");
 	await mkSession(sid);
-	const stored = await appendManagedSessionEvents(sid, [
+	const supervisorId = crypto.randomUUID();
+	await seedOwnedLaunch(sid, supervisorId);
+	const stored = await appendManagedSessionEvents(supervisorId, sid, [
 		{
 			eventType: "AssistantMessage",
 			category: "assistant_message",

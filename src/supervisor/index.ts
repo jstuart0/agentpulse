@@ -22,7 +22,10 @@ import {
 } from "./providers/codex-managed.js";
 import { CleanupError, executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { isCodexObserverEnabled, startCodexObserver } from "./services/codex-observer.js";
+import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js";
 import { PrelaunchError, executePrelaunchActions } from "./services/prelaunch-actions.js";
+import { retryWithBackoff } from "./services/registration-retry.js";
+import { SupervisorRequestError } from "./services/report-resilience.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -41,28 +44,49 @@ async function request(path: string, options?: RequestInit) {
 		signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 	});
 	if (!res.ok) {
-		throw new Error(`Supervisor request failed: ${res.status} ${res.statusText}`);
+		// Best-effort: carry the server's own error string (F43) alongside the
+		// raw status for logging. F49: both the body and statusText are
+		// attacker-controlled (a malicious/compromised server, or a
+		// network-position attacker on an unencrypted http:// path) — bound
+		// the body read and strip control/ANSI characters before either ever
+		// reaches a log line.
+		const bodyError = await parseErrorBodyField(res);
+		throw new SupervisorRequestError(res.status, sanitizeForLog(res.statusText), bodyError);
 	}
 	return res.json();
 }
 
 async function main() {
 	const config = await loadSupervisorConfig();
-	const registration = (await request("/supervisors/register", {
-		method: "POST",
-		body: JSON.stringify({
-			id: config.id,
-			enrollmentToken: config.enrollmentToken,
-			hostName: config.hostName,
-			platform: config.platform,
-			arch: config.arch,
-			version: config.version,
-			trustedRoots: config.trustedRoots,
-			capabilities: config.capabilities,
-			capabilitySchemaVersion: 3,
-			configSchemaVersion: 1,
-		}),
-	})) as {
+	// F43/D10: registration retries forever on any HTTP failure (including
+	// an old-shadow 401/403 from a not-yet-upgraded server during a
+	// mixed-version rollout) instead of exiting and crash-looping. Only a
+	// config load failure or a malformed success body is fatal here.
+	const registration = (await retryWithBackoff(
+		() =>
+			request("/supervisors/register", {
+				method: "POST",
+				body: JSON.stringify({
+					id: config.id,
+					enrollmentToken: config.enrollmentToken,
+					hostName: config.hostName,
+					platform: config.platform,
+					arch: config.arch,
+					version: config.version,
+					trustedRoots: config.trustedRoots,
+					capabilities: config.capabilities,
+					capabilitySchemaVersion: 3,
+					configSchemaVersion: 1,
+				}),
+			}),
+		(error, attempt, delayMs) => {
+			console.error(
+				`[supervisor] registration failed (attempt ${attempt + 1}): status=${error.status} statusText=${error.statusText}${
+					error.error ? ` body.error=${error.error}` : ""
+				}; retrying in ${delayMs}ms`,
+			);
+		},
+	)) as {
 		supervisor: { id: string; hostName: string };
 		heartbeatIntervalMs: number;
 		supervisorCredential?: string;

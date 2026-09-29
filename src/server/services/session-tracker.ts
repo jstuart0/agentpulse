@@ -2,9 +2,10 @@ import { and, count, desc, eq, inArray, lt, notInArray, sql } from "drizzle-orm"
 import { SESSION_END_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "../../shared/constants.js";
 import type { AgentType, ManagedState, SessionStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
+import { managedSessions, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { getManagedSession } from "./managed-session-state.js";
+import { listLiveOwnedManagedSessionIds } from "./session-ownership.js";
 
 /**
  * Rename a session atomically across `sessions` and (when present)
@@ -275,8 +276,8 @@ const STUCK_WORKING_RECOVERY_MS = 2 * SESSION_END_TIMEOUT_MS;
  * Working sessions never transition automatically — the user rule is
  * that isWorking=true must block idle/completed until Stop arrives.
  * Sessions whose managed process is still running under a connected
- * supervisor are skipped entirely; those flip to terminal state when
- * the supervisor reports the process exited.
+ * owner-of-record supervisor are skipped entirely; those flip to
+ * terminal state when the supervisor reports the process exited.
  *
  * Stuck-working recovery: if isWorking=true but there has been no
  * activity for 2× the end timeout, we assume the agent crashed and
@@ -288,17 +289,7 @@ export async function updateStaleSessions(): Promise<number> {
 	const endCutoff = new Date(now - SESSION_END_TIMEOUT_MS).toISOString();
 	const stuckWorkingCutoff = new Date(now - STUCK_WORKING_RECOVERY_MS).toISOString();
 
-	const liveManagedRows = await getDb()
-		.select({ sessionId: managedSessions.sessionId })
-		.from(managedSessions)
-		.innerJoin(supervisors, eq(managedSessions.supervisorId, supervisors.id))
-		.where(
-			and(
-				inArray(managedSessions.managedState, LIVE_MANAGED_STATES as unknown as string[]),
-				eq(supervisors.status, "connected"),
-			),
-		);
-	const liveSessionIds = liveManagedRows.map((r) => r.sessionId);
+	const liveSessionIds = await listLiveOwnedManagedSessionIds(LIVE_MANAGED_STATES);
 
 	const excludeLive =
 		liveSessionIds.length > 0 ? notInArray(sessions.sessionId, liveSessionIds) : undefined;

@@ -1,5 +1,6 @@
 import type { LaunchRequest, ManagedSession } from "../../shared/types.js";
-import { findFreePort, spawnServer, waitForServer } from "./codex-rpc.js";
+import { reportInSessionSafely } from "../services/report-resilience.js";
+import { type JsonRpcNotification, findFreePort, spawnServer, waitForServer } from "./codex-rpc.js";
 import {
 	type LaunchCallbacks,
 	type ManagedCodexRuntime,
@@ -8,6 +9,22 @@ import {
 } from "./codex-shared.js";
 
 const runtimes = new Map<string, ManagedCodexRuntime>();
+
+/**
+ * F31/D7: best-effort cleanup before a fatal (401 credential-rejected) exit
+ * — dispose every managed Codex runtime this process still holds (closes
+ * the app-server control channel, kills its process) before the process
+ * itself exits.
+ */
+function disposeAllManagedCodexRuntimes(): void {
+	for (const runtime of runtimes.values()) {
+		try {
+			runtime.dispose();
+		} catch (err) {
+			console.error("[codex-managed] runtime dispose failed during fatal shutdown:", err);
+		}
+	}
+}
 
 // Log-once per distinct unexpected protocolVersion value so a persistently
 // misbehaving app-server doesn't spam logs across every managed launch.
@@ -191,67 +208,22 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 	};
 
 	client.onNotification(async (notification) => {
-		if (notification.method === "thread/name/updated") {
-			const params = notification.params as { threadId?: string; threadName?: string };
-			if (params.threadId === threadId && params.threadName) {
-				runtime.currentThreadTitle = params.threadName;
-				await callbacks.reportState({
-					sessionId: launch.launchCorrelationId,
-					launchRequestId: launch.id,
-					providerSessionId: threadId,
-					providerThreadId: threadId,
-					managedState: "managed",
-					desiredThreadTitle: params.threadName,
-					providerThreadTitle: params.threadName,
-					providerSyncState: "synced",
-					lastProviderSyncAt: new Date().toISOString(),
-				});
-			}
-			return;
-		}
-
-		if (notification.method === "item/completed") {
-			const params = notification.params as Record<string, unknown>;
-			const item = (params.item ?? null) as Record<string, unknown> | null;
-			const itemType = typeof item?.type === "string" ? item.type : "";
-			const text = extractText(item);
-			if ((itemType === "agentMessage" || itemType === "exitedReviewMode") && text.trim()) {
-				await callbacks.reportEvents([
-					{
-						eventType: "ManagedAgentMessage",
-						category: "assistant_message",
-						content: text.trim(),
-						rawPayload: { notification },
-					},
-				]);
-			}
-			return;
-		}
-
-		if (notification.method === "warning") {
-			const params = notification.params as { message?: string };
-			if (params.message) {
-				await callbacks.reportEvents([
-					{
-						eventType: "ManagedWarning",
-						category: "system_event",
-						content: params.message,
-						rawPayload: { notification },
-					},
-				]);
-			}
-			return;
-		}
-
-		if (notification.method === "turn/completed") {
-			runtime.activeTurnId = null;
-			await callbacks.reportState({
-				sessionId: launch.launchCorrelationId,
-				launchRequestId: launch.id,
-				managedState: "managed",
-				status: "idle",
-			});
-		}
+		// F25/D6: in-session reporting (reportState/reportEvents) can now
+		// reject with a 403 session_not_owned, a 401 (credential revoked or
+		// rotated, F31/D7), or any other non-2xx, mid-session. Logged and
+		// isolated so a rejection here can never become an unhandled
+		// rejection or skip later notification branches — except a 401,
+		// which is fatal (see reportInSessionSafely).
+		await reportInSessionSafely(
+			"codex-managed",
+			launch.launchCorrelationId,
+			"notification",
+			() => handleManagedCodexNotification(notification, launch, runtime, threadId, callbacks),
+			() => {
+				disposeAllManagedCodexRuntimes();
+				process.exit(1);
+			},
+		);
 	});
 
 	client.onClose(async (error) => {
@@ -259,13 +231,27 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 			runtimes.delete(launch.launchCorrelationId);
 			return;
 		}
-		await callbacks.reportState({
-			sessionId: launch.launchCorrelationId,
-			launchRequestId: launch.id,
-			managedState: "degraded",
-			providerSyncState: "failed",
-			providerSyncError: error?.message ?? "Codex control channel closed",
-		});
+		// F25/D6: same in-session-reporting hazard as the notification
+		// handler above — the control channel is already gone, so there's
+		// nothing more useful to do than log (or, for a 401, exit) and
+		// finish tearing the runtime down.
+		await reportInSessionSafely(
+			"codex-managed",
+			launch.launchCorrelationId,
+			"degraded-state",
+			() =>
+				callbacks.reportState({
+					sessionId: launch.launchCorrelationId,
+					launchRequestId: launch.id,
+					managedState: "degraded",
+					providerSyncState: "failed",
+					providerSyncError: error?.message ?? "Codex control channel closed",
+				}),
+			() => {
+				disposeAllManagedCodexRuntimes();
+				process.exit(1);
+			},
+		);
 		runtimes.delete(launch.launchCorrelationId);
 	});
 
@@ -298,6 +284,82 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 		},
 		runtime,
 	};
+}
+
+/**
+ * F25: extracted from the inline `client.onNotification` callback so the
+ * caller can wrap the whole dispatch in one try/catch. Each branch may call
+ * `callbacks.reportState`/`reportEvents`, which now carry an ownership guard
+ * (session_not_owned) and can reject mid-session.
+ */
+async function handleManagedCodexNotification(
+	notification: JsonRpcNotification,
+	launch: LaunchRequest,
+	runtime: ManagedCodexRuntime,
+	threadId: string,
+	callbacks: LaunchCallbacks,
+) {
+	if (notification.method === "thread/name/updated") {
+		const params = notification.params as { threadId?: string; threadName?: string };
+		if (params.threadId === threadId && params.threadName) {
+			runtime.currentThreadTitle = params.threadName;
+			await callbacks.reportState({
+				sessionId: launch.launchCorrelationId,
+				launchRequestId: launch.id,
+				providerSessionId: threadId,
+				providerThreadId: threadId,
+				managedState: "managed",
+				desiredThreadTitle: params.threadName,
+				providerThreadTitle: params.threadName,
+				providerSyncState: "synced",
+				lastProviderSyncAt: new Date().toISOString(),
+			});
+		}
+		return;
+	}
+
+	if (notification.method === "item/completed") {
+		const params = notification.params as Record<string, unknown>;
+		const item = (params.item ?? null) as Record<string, unknown> | null;
+		const itemType = typeof item?.type === "string" ? item.type : "";
+		const text = extractText(item);
+		if ((itemType === "agentMessage" || itemType === "exitedReviewMode") && text.trim()) {
+			await callbacks.reportEvents([
+				{
+					eventType: "ManagedAgentMessage",
+					category: "assistant_message",
+					content: text.trim(),
+					rawPayload: { notification },
+				},
+			]);
+		}
+		return;
+	}
+
+	if (notification.method === "warning") {
+		const params = notification.params as { message?: string };
+		if (params.message) {
+			await callbacks.reportEvents([
+				{
+					eventType: "ManagedWarning",
+					category: "system_event",
+					content: params.message,
+					rawPayload: { notification },
+				},
+			]);
+		}
+		return;
+	}
+
+	if (notification.method === "turn/completed") {
+		runtime.activeTurnId = null;
+		await callbacks.reportState({
+			sessionId: launch.launchCorrelationId,
+			launchRequestId: launch.id,
+			managedState: "managed",
+			status: "idle",
+		});
+	}
 }
 
 export async function stopManagedCodexSession(sessionId: string) {

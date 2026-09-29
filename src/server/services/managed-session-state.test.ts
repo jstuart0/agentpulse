@@ -5,6 +5,7 @@ import "./ai/__test_db.js";
 const { getDb, initializeDatabase } = await import("../db/client.js");
 const { managedSessions, sessions } = await import("../db/schema/index.js");
 const { upsertManagedSessionState } = await import("./managed-session-state.js");
+const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 
 beforeAll(() => initializeDatabase());
 
@@ -35,6 +36,7 @@ async function readSession(sessionId: string) {
 describe("upsertManagedSessionState — metadata merge (late read-modify-write)", () => {
 	test("merges input.metadata onto existing metadata for an existing session", async () => {
 		await mkSession("managed-1", { existing: "value" });
+		await seedOwnedLaunch("managed-1", "sup-1");
 
 		await upsertManagedSessionState("sup-1", {
 			sessionId: "managed-1",
@@ -49,6 +51,7 @@ describe("upsertManagedSessionState — metadata merge (late read-modify-write)"
 		await mkSession("managed-2", {
 			permissionWait: { ids: ["a"], anon: 0, prevStatus: "implementing" },
 		});
+		await seedOwnedLaunch("managed-2", "sup-1");
 
 		await upsertManagedSessionState("sup-1", {
 			sessionId: "managed-2",
@@ -63,6 +66,7 @@ describe("upsertManagedSessionState — metadata merge (late read-modify-write)"
 	});
 
 	test("new-session insert path is unaffected — metadata is just input.metadata", async () => {
+		await seedOwnedLaunch("managed-new", "sup-1");
 		await upsertManagedSessionState("sup-1", {
 			sessionId: "managed-new",
 			metadata: { providerRunId: "run-new" },
