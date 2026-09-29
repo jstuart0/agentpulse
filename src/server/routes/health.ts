@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import pkg from "../../../package.json" with { type: "json" };
 import { isShuttingDown } from "../drain-state.js";
+import {
+	getEventsDeduplicatedCounts,
+	getLegacyObserverDeliveries,
+} from "../services/event-dedup.js";
 import { getBgErrorCount, getInFlightCount, getRateLimitedDropped } from "./ingest-counters.js";
 
 // Read version from package.json at module init — independent of how the
@@ -66,6 +70,8 @@ health.get("/health", (c) => {
 		rateLimitedDropped: getRateLimitedDropped(),
 		shuttingDown: isShuttingDown(),
 		dbReady: true,
+		eventsDeduplicated: getEventsDeduplicatedCounts(),
+		legacyObserverDeliveries: getLegacyObserverDeliveries(),
 	});
 });
 

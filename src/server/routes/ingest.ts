@@ -1,7 +1,11 @@
+import type { Context } from "hono";
 import { Hono } from "hono";
+import { DELIVERY_ID_HEADER, ORIGIN_HEADER } from "../../shared/hook-headers.js";
 import type { HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
+import type { AuthUser } from "../auth/middleware.js";
 import { requireApiKey } from "../auth/middleware.js";
 import { hookRateLimit } from "../middleware/hook-rate-limit.js";
+import { parseDeliveryId, parseOrigin } from "../services/event-dedup.js";
 import {
 	detectAgentType,
 	processHookEvent,
@@ -108,7 +112,7 @@ const ingest = new Hono();
 //  - Rate-limit hit (handled by hookRateLimit middleware) → 200 silent drop.
 //  - Processing exception (async) → 200 already sent; bgErrorCount++.
 // Pre-auth failures (no/invalid API key) → 401/403 from requireApiKey().
-ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
+ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
 	// Parse body; if malformed, return 200 with structured error log.
 	// This complies with the always-200 post-auth contract.
 	let parsed: HookEventPayload;
@@ -153,6 +157,15 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 	const agentTypeHeader = c.req.header("X-Agent-Type");
 	const agentType = detectAgentType(agentTypeHeader, parsed);
 
+	// Phase 7 identity inputs (D2). Header reads and the authUser lookup are
+	// synchronous, no I/O — this is the only new work allowed before the 200.
+	const authUser = c.get("authUser") as AuthUser | undefined;
+	const hookCtx = {
+		keyId: authUser?.id ?? "anonymous",
+		deliveryId: parseDeliveryId(c.req.header(DELIVERY_ID_HEADER)),
+		origin: parseOrigin(c.req.header(ORIGIN_HEADER)),
+	};
+
 	// Return 200 IMMEDIATELY before any DB work (A-H1: <50ms budget).
 	// Processing continues asynchronously via the per-session queue below.
 	const response = c.json({ ok: true });
@@ -169,7 +182,7 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 				isNew,
 				session,
 				events: storedEvents,
-			} = await processHookEvent(capturedParsed, capturedAgentType);
+			} = await processHookEvent(capturedParsed, capturedAgentType, hookCtx);
 
 			// Broadcast to WebSocket subscribers using the returned session row —
 			// no second DB read needed (eliminates the N+1 getSession() call).

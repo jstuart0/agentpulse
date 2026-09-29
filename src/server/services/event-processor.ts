@@ -11,11 +11,16 @@ import { events, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
 import {
+	type DedupPolicy,
+	type DropReason,
+	type HookDeliveryContext,
 	type InsertPlan,
 	type PlannedRow,
 	type RecentEventRow,
 	contentWindowKey,
 	planEventInsert,
+	recordDrops,
+	recordLegacyObserverDelivery,
 } from "./event-dedup.js";
 import { toSessionEventDtos } from "./event-dto.js";
 import {
@@ -80,7 +85,10 @@ function matchKey(row: {
  * rows (Decision 16; dedup_key never leaves this function) sorted by id.
  */
 async function persistEvents(sessionId: string, plan: InsertPlan): Promise<SessionEvent[]> {
-	if (plan.retained.length === 0) return [];
+	if (plan.retained.length === 0) {
+		recordDrops(plan.drops);
+		return [];
+	}
 
 	const insertedRows: StoredEventRow[] = await getDb()
 		.insert(events)
@@ -104,11 +112,60 @@ async function persistEvents(sessionId: string, plan: InsertPlan): Promise<Sessi
 		.returning();
 
 	const byMatchKey = new Map<string, PlannedRow>(plan.retained.map((row) => [matchKey(row), row]));
-	const stored = insertedRows
+	let stored = insertedRows
 		.map((dbRow) => ({ dbRow, planned: byMatchKey.get(matchKey(dbRow)) }))
 		.filter(
 			(pair): pair is { dbRow: StoredEventRow; planned: PlannedRow } => pair.planned !== undefined,
 		);
+
+	// Phase 7 (D2/F48): classify the identity outcome for hook_delivery rows.
+	// content_window rows never carry a dedupKey, so this never fires for them.
+	const postInsertDrops: Partial<Record<DropReason, number>> = {};
+	const bump = (reason: DropReason) => {
+		postInsertDrops[reason] = (postInsertDrops[reason] ?? 0) + 1;
+	};
+	const storedKeys = new Set(
+		stored.map(({ dbRow }) => dbRow.dedupKey).filter((key): key is string => key !== null),
+	);
+
+	// Whole-delivery drop: the delivery's primary row (rowIndex 0) is what
+	// actually distinguishes "the same delivery arrived again" from
+	// "genuinely new". If it lost the ON CONFLICT race, any sibling row this
+	// call just stored — even one whose own key happened to be free, e.g. an
+	// authority-superseded secondary that was since deleted — must not
+	// survive: keeping it would resurrect exactly the row an earlier
+	// authority delete removed. Compensate it away and count both the
+	// primary and every compensated sibling as the same kind of retry.
+	if (plan.primaryDedupKey != null && !storedKeys.has(plan.primaryDedupKey)) {
+		const kind: DropReason = plan.primaryDedupKey.startsWith("t:")
+			? "toolUseRetry"
+			: "deliveryRetry";
+		// Every planned row of this delivery counts as a retry: the primary's
+		// own natural conflict, any sibling that independently conflicted too
+		// (a genuine full re-delivery), and any sibling that must now be
+		// compensated away (its own key happened to be free, e.g. an
+		// authority-superseded row that was since deleted).
+		for (let i = 0; i < plan.retained.length; i++) bump(kind);
+		if (stored.length > 0) {
+			await getDb()
+				.delete(events)
+				.where(
+					and(
+						eq(events.sessionId, sessionId),
+						inArray(
+							events.id,
+							stored.map(({ dbRow }) => dbRow.id),
+						),
+					),
+				);
+		}
+		stored = [];
+	} else {
+		for (const row of plan.retained) {
+			if (!row.dedupKey || storedKeys.has(row.dedupKey)) continue;
+			bump(row.dedupKey.startsWith("t:") ? "toolUseRetry" : "deliveryRetry");
+		}
+	}
 
 	const deleteIds = new Set(stored.flatMap(({ planned }) => planned.deletesIfStored));
 	if (deleteIds.size > 0) {
@@ -116,6 +173,9 @@ async function persistEvents(sessionId: string, plan: InsertPlan): Promise<Sessi
 			.delete(events)
 			.where(and(eq(events.sessionId, sessionId), inArray(events.id, Array.from(deleteIds))));
 	}
+
+	recordDrops(plan.drops);
+	recordDrops(postInsertDrops);
 
 	return toSessionEventDtos(stored.map(({ dbRow }) => dbRow)).sort((a, b) => a.id - b.id);
 }
@@ -144,19 +204,18 @@ export async function insertNormalizedEvents(
 
 /**
  * Hook-ingestion entry point (D9's second entry point). Kept separate from
- * insertNormalizedEvents so Phase 7 can grow this one signature (a
- * HookDeliveryContext selecting the `hook_delivery` policy) without
- * touching the many non-hook callers of insertNormalizedEvents. Policy
- * selection is still content_window here — Phase 7 wires the alternative.
+ * insertNormalizedEvents so its policy can differ: hook deliveries use exact
+ * identity (`hook_delivery`), never the content window.
  */
 export async function insertHookEvents(
 	sessionId: string,
 	normalizedEvents: NormalizedEvent[],
+	policy: DedupPolicy,
 ): Promise<SessionEvent[]> {
 	if (normalizedEvents.length === 0) return [];
 
 	const plan = planEventInsert({
-		policy: { kind: "content_window" },
+		policy,
 		recent: await loadRecentRows(sessionId),
 		incoming: normalizedEvents,
 		nowIso: new Date().toISOString(),
@@ -378,6 +437,17 @@ export async function applyPermissionWaitTransition(
 // without duplicating field lists.
 type SessionRow = typeof import("../db/schema/index.js").sessions.$inferSelect;
 
+// Default ctx when a caller omits it (existing tests, and any producer that
+// predates Phase 7): anonymous key, no delivery id, native origin. Hook
+// deliveries still use exact identity under this default — only rows that
+// carry a tool_use_id or arrive with a real delivery id get a durable key;
+// everything else is unkeyed and always stored (fail-open, D3).
+const DEFAULT_HOOK_DELIVERY_CTX: HookDeliveryContext = {
+	keyId: "anonymous",
+	deliveryId: null,
+	origin: "native",
+};
+
 /**
  * Process an incoming hook event.
  *
@@ -385,10 +455,19 @@ type SessionRow = typeof import("../db/schema/index.js").sessions.$inferSelect;
  * can broadcast the upserted session row and the actually-stored event
  * rows — with real ids, exactly the rows this call persisted — without a
  * second DB round-trip (Phase 6).
+ *
+ * `ctx` carries the Phase 7 identity inputs (keyId, delivery id, origin).
+ * A legacy-observer-shaped delivery — codex_cli, origin "native" (no
+ * X-AgentPulse-Origin header), no transcript_path — is the one hook shape
+ * that still goes through the content window (mozart D14): it's the only
+ * producer that predates the delivery-id/origin headers, so it has no
+ * exact identity to key on, and it's counted via recordLegacyObserverDelivery
+ * so operators can see hosts that need a supervisor upgrade.
  */
 export async function processHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
+	ctx: HookDeliveryContext = DEFAULT_HOOK_DELIVERY_CTX,
 ): Promise<{ sessionId: string; isNew: boolean; session: SessionRow; events: SessionEvent[] }> {
 	const sessionId = payload.session_id;
 	const eventType = payload.hook_event_name;
@@ -516,7 +595,19 @@ export async function processHookEvent(
 
 	// Store normalized timeline events
 	const normalizedEvents = normalizeHookEvent(payload, agentType);
-	const storedEvents = await insertHookEvents(sessionId, normalizedEvents);
+	const isLegacyObserver =
+		agentType === "codex_cli" && ctx.origin === "native" && !payload.transcript_path;
+	let storedEvents: SessionEvent[];
+	if (isLegacyObserver) {
+		recordLegacyObserverDelivery();
+		storedEvents = await insertNormalizedEvents(sessionId, normalizedEvents);
+	} else {
+		storedEvents = await insertHookEvents(sessionId, normalizedEvents, {
+			kind: "hook_delivery",
+			ctx,
+			rawPayload: payload,
+		});
+	}
 
 	// Evaluate project alert rules for status_completed on SessionEnd.
 	// Best-effort: rule evaluation failure must not block event ingestion.
