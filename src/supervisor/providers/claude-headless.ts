@@ -61,7 +61,12 @@ function createHeadlessMetadata(
 	};
 }
 
-async function streamHeadlessClaude(opts: {
+// Exported for the F25 in-session-reporting-resilience test
+// (claude-headless.test.ts) — it's the shared streaming primitive both
+// launchClaudeHeadlessRequest and promptClaudeHeadlessSession build on, and
+// the natural seam for driving a fake proc through it without spawning a
+// real `claude` CLI process.
+export async function streamHeadlessClaude(opts: {
 	sessionId: string;
 	launchRequestId?: string;
 	cwd: string;
@@ -97,6 +102,29 @@ async function streamHeadlessClaude(opts: {
 	let lastReportAt = 0;
 	let emittedActivityCount = 0;
 
+	// F25: in-session reporting (reportState/reportEvents) now carries an
+	// ownership guard and can reject mid-stream (403 session_not_owned, or
+	// any other non-2xx). flushProgress fires from the stdout/stderr line
+	// handlers below, which feed `monitor` (returned fire-and-forget as
+	// `void result.monitor` for the initial launch — see
+	// src/supervisor/index.ts). An uncaught rejection here would propagate
+	// through stdoutTask/stderrTask into monitor and surface as an
+	// unhandled promise rejection, crashing the supervisor process — the
+	// same crash-loop class this campaign fixes, reintroduced through the
+	// new 403. reportProgress (the launch-status endpoint) is untouched by
+	// the ownership guard, so it keeps its existing behavior.
+	async function reportInSession(op: string, fn: () => Promise<unknown>): Promise<void> {
+		try {
+			await fn();
+		} catch (error) {
+			console.error(
+				`[claude-headless] in-session report failed (session=${sessionId}, op=${op}): ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
+	}
+
 	const flushProgress = async (force = false) => {
 		const now = Date.now();
 		if (!force && now - lastReportAt < 750) return;
@@ -104,26 +132,30 @@ async function streamHeadlessClaude(opts: {
 		if (callbacks && metadata.output.activity.length > emittedActivityCount) {
 			const newActivity = metadata.output.activity.slice(emittedActivityCount);
 			emittedActivityCount = metadata.output.activity.length;
-			await callbacks.reportEvents(newActivity.map(activityToManagedEvent));
+			await reportInSession("reportEvents", () =>
+				callbacks.reportEvents(newActivity.map(activityToManagedEvent)),
+			);
 		}
 		if (callbacks) {
-			await callbacks.reportState({
-				sessionId,
-				launchRequestId,
-				agentType: "claude_code",
-				cwd,
-				model: model ?? null,
-				status: "active",
-				managedState: "headless",
-				providerSessionId: sessionId,
-				correlationSource: "launch_correlation_id",
-				providerCapabilitySnapshot: configCapabilities,
-				metadata: {
-					launchMode: "headless",
-					pid: proc.pid ?? null,
-					executionState: metadata.executionState,
-				},
-			});
+			await reportInSession("reportState", () =>
+				callbacks.reportState({
+					sessionId,
+					launchRequestId,
+					agentType: "claude_code",
+					cwd,
+					model: model ?? null,
+					status: "active",
+					managedState: "headless",
+					providerSessionId: sessionId,
+					correlationSource: "launch_correlation_id",
+					providerCapabilitySnapshot: configCapabilities,
+					metadata: {
+						launchMode: "headless",
+						pid: proc.pid ?? null,
+						executionState: metadata.executionState,
+					},
+				}),
+			);
 		}
 		await reportProgress({
 			status: "running",
@@ -193,43 +225,51 @@ async function streamHeadlessClaude(opts: {
 			if (metadata.output.activity.length > emittedActivityCount) {
 				const newActivity = metadata.output.activity.slice(emittedActivityCount);
 				emittedActivityCount = metadata.output.activity.length;
-				await callbacks.reportEvents(newActivity.map(activityToManagedEvent));
+				await reportInSession("reportEvents", () =>
+					callbacks.reportEvents(newActivity.map(activityToManagedEvent)),
+				);
 			}
-			await callbacks.reportState({
-				sessionId,
-				launchRequestId,
-				agentType: "claude_code",
-				cwd,
-				model: model ?? null,
-				status: exitCode === 0 ? "completed" : "failed",
-				managedState: exitCode === 0 ? "completed" : "failed",
-				providerSessionId: sessionId,
-				correlationSource: "launch_correlation_id",
-				providerCapabilitySnapshot: configCapabilities,
-				metadata: {
-					launchMode: "headless",
-					pid: proc.pid ?? null,
-					executionState: metadata.executionState,
-					exitCode,
-				},
-			});
-			await callbacks.reportEvents([
-				{
-					eventType:
-						exitCode === 0 ? `${opts.completionEvent.success}` : opts.completionEvent.failurePrefix,
-					category: "system_event",
-					content:
-						exitCode === 0
-							? opts.completionEvent.success === "HeadlessTaskCompleted"
-								? "Headless Claude task completed."
-								: "Headless follow-up task completed."
-							: metadata.output.stderrPreview || `Claude exited with code ${exitCode}`,
-					rawPayload:
-						exitCode === 0
-							? opts.startEvent.rawPayload
-							: { ...(opts.completionEvent.failurePayload ?? {}), exitCode },
-				},
-			]);
+			await reportInSession("reportState", () =>
+				callbacks.reportState({
+					sessionId,
+					launchRequestId,
+					agentType: "claude_code",
+					cwd,
+					model: model ?? null,
+					status: exitCode === 0 ? "completed" : "failed",
+					managedState: exitCode === 0 ? "completed" : "failed",
+					providerSessionId: sessionId,
+					correlationSource: "launch_correlation_id",
+					providerCapabilitySnapshot: configCapabilities,
+					metadata: {
+						launchMode: "headless",
+						pid: proc.pid ?? null,
+						executionState: metadata.executionState,
+						exitCode,
+					},
+				}),
+			);
+			await reportInSession("reportEvents", () =>
+				callbacks.reportEvents([
+					{
+						eventType:
+							exitCode === 0
+								? `${opts.completionEvent.success}`
+								: opts.completionEvent.failurePrefix,
+						category: "system_event",
+						content:
+							exitCode === 0
+								? opts.completionEvent.success === "HeadlessTaskCompleted"
+									? "Headless Claude task completed."
+									: "Headless follow-up task completed."
+								: metadata.output.stderrPreview || `Claude exited with code ${exitCode}`,
+						rawPayload:
+							exitCode === 0
+								? opts.startEvent.rawPayload
+								: { ...(opts.completionEvent.failurePayload ?? {}), exitCode },
+					},
+				]),
+			);
 		}
 
 		await reportProgress({
