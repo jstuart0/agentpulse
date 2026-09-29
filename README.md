@@ -523,6 +523,46 @@ The statusline script is a manually copied file (not managed by the setup script
 
 ## Manage a local install
 
+### Supervisor exits with 403 insufficient_scope
+
+**Symptom**: `~/.agentpulse/logs/supervisor.err.log` fills with
+`403 { "error": "insufficient_scope" }` (or `401 Unauthorized`) on every
+`register`/`heartbeat` attempt, and the supervisor never reaches "Registered"
+in its log. This was a server-side mount-order bug (AGEN-17), not a client
+misconfiguration.
+
+**Fix**: upgrade the server. No supervisor update, config change, or manual
+restart is required — the client already sends the correct credential; the
+server just needs to answer it. The service manager's normal restart policy
+picks the fix up on the next respawn (macOS: within ~10s; Linux:
+`RestartSec=3`). If the loop has been running long enough that the local
+log grew large, archive it before it recovers:
+
+```bash
+gzip -c ~/.agentpulse/logs/supervisor.err.log > ~/.agentpulse/logs/supervisor.err.log.$(date +%Y%m%d).gz
+: > ~/.agentpulse/logs/supervisor.err.log
+```
+
+Per-OS restart notes if the supervisor doesn't recover on its own:
+
+- **macOS**: `launchctl kickstart -k gui/$(id -u)/dev.agentpulse.supervisor`,
+  or a full reload:
+  ```bash
+  launchctl bootout gui/$(id -u)/dev.agentpulse.supervisor
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.agentpulse.supervisor.plist
+  ```
+- **Linux**: `systemctl --user restart agentpulse-supervisor`. If
+  `systemctl --user status agentpulse-supervisor` shows `start-limit-hit`,
+  run `systemctl --user reset-failed` first.
+- **Windows**: the scheduled task only triggers `-AtLogOn` and has no
+  restart-on-failure policy — it isn't crash-looping, it's simply stopped.
+  Run `Start-ScheduledTask AgentPulseSupervisor` or log back in.
+
+If the supervisor's credential was revoked or rotated (not this bug), it
+needs `/admin/supervisors/:id/rotate` — see
+[`deploy/k8s/FORWARDAUTH.md`](deploy/k8s/FORWARDAUTH.md#upgrading-from-a-crash-looping-supervisor-agen-17)
+for the full upgrade and ownership-audit runbook.
+
 ### macOS
 
 ```bash
