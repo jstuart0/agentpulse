@@ -193,6 +193,26 @@ sys.stdout.write(json.dumps({"hooks": hooks}, indent=2) + "\\n")
 '
 }
 
+ap_copilot_hooks_json() {
+	# \$1=base \$2=direct(0/1)
+	local base="\$1" direct="\$2"
+	local COPILOT_EVENTS=("sessionStart" "sessionEnd" "userPromptSubmitted" "postToolUse" "postToolUseFailure" "agentStop" "subagentStart" "subagentStop" "preCompact" "errorOccurred")
+	local event
+	{
+		for event in "\${COPILOT_EVENTS[@]}"; do
+			printf '%s\\0%s\\0' "\$event" "\$(ap_hook_cmd "\$base" "\$direct" "copilot_cli" "\$event")"
+		done
+	} | python3 -c '
+import json, sys
+data = sys.stdin.buffer.read().split(b"\\x00")
+pairs = [(data[i].decode(), data[i + 1].decode()) for i in range(0, len(data) - 1, 2)]
+hooks = {}
+for event, cmd in pairs:
+    hooks[event] = [{"type": "command", "bash": cmd, "timeoutSec": 5}]
+sys.stdout.write(json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\\n")
+'
+}
+
 # D13/F57: -H "@\$f" needs curl >= 7.55 (silently sends no auth below that).
 # Only direct-mode sh installers call this — relay mode sends no auth header.
 ap_require_curl_755() {

@@ -143,6 +143,69 @@ foreach ($event in $goldenEvents) {
 	Assert-True ($g.command -eq $n.command) "$event`: command matches the golden byte-for-byte"
 }
 
+# ── Phase 7 (D7/D8/D13): Copilot hooks — real execution + structural check ──
+$copilotExpectedEvents = @(
+	"sessionStart","sessionEnd","userPromptSubmitted","postToolUse","postToolUseFailure",
+	"agentStop","subagentStart","subagentStop","preCompact","errorOccurred"
+) | Sort-Object
+
+$copilotGenerated = New-ApCopilotHooksFile -BaseUrl "http://localhost:3000" -Direct $true | ConvertFrom-Json
+Assert-True ($copilotGenerated.version -eq 1) "New-ApCopilotHooksFile: version is 1"
+$copilotGeneratedEvents = $copilotGenerated.hooks.PSObject.Properties.Name | Sort-Object
+Assert-True (($copilotExpectedEvents -join ",") -eq ($copilotGeneratedEvents -join ",")) "New-ApCopilotHooksFile: event set matches D7's registered 10 (found $($copilotGeneratedEvents -join ','))"
+Assert-True (-not ($copilotGeneratedEvents -contains "preToolUse")) "New-ApCopilotHooksFile: preToolUse is excluded"
+Assert-True (-not ($copilotGeneratedEvents -contains "permissionRequest")) "New-ApCopilotHooksFile: permissionRequest is excluded"
+
+foreach ($event in $copilotGeneratedEvents) {
+	$handler = $copilotGenerated.hooks.$event[0]
+	Assert-True ($handler.type -eq "command") "$event (Copilot): type is command"
+	Assert-True ($handler.timeoutSec -eq 5) "$event (Copilot): timeoutSec is 5"
+	Assert-True ($handler.bash -is [string] -and $handler.bash.Length -gt 0) "$event (Copilot): bash handler is a non-empty string"
+	Assert-True ($handler.powershell -is [string] -and $handler.powershell.Length -gt 0) "$event (Copilot): powershell handler is a non-empty string"
+	Assert-True ($handler.bash.Contains("?event=$event")) "$event (Copilot): bash command targets its own event"
+	Assert-True ($handler.bash.Contains("X-Agent-Type: copilot_cli")) "$event (Copilot): bash command carries X-Agent-Type: copilot_cli"
+}
+
+# Real execution of the PowerShell handler for one event (mirrors the
+# New-ApHookCommand/Codex HttpListener test above) — proves
+# New-ApCopilotBashHookCommand's sibling powershell field, generated via the
+# same New-ApHookCommand this file already exercises, actually delivers.
+$portCopilot = Get-Random -Minimum 20000 -Maximum 40000
+$baseUrlCopilot = "http://127.0.0.1:$portCopilot"
+$listenerCopilot = New-Object System.Net.HttpListener
+$listenerCopilot.Prefixes.Add("$baseUrlCopilot/")
+$listenerCopilot.Start()
+$asyncResultCopilot = $listenerCopilot.BeginGetContext($null, $null)
+
+$copilotCmd = New-ApHookCommand -BaseUrl $baseUrlCopilot -Direct $true -AgentType "copilot_cli" -EventName "sessionStart"
+$copilotScriptFile = Join-Path $tempProfile "hook-cmd-copilot.ps1"
+Set-Content -Path $copilotScriptFile -Value $copilotCmd -Encoding UTF8
+$copilotFixture = '{"sessionId":"pwsh-copilot-session","cwd":"C:\\Users\\test\\project"}'
+$copilotFixture | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $copilotScriptFile
+
+$copilotCaptured = $null
+if ($asyncResultCopilot.AsyncWaitHandle.WaitOne(10000)) {
+	$ctx = $listenerCopilot.EndGetContext($asyncResultCopilot)
+	$reader = New-Object System.IO.StreamReader($ctx.Request.InputStream)
+	$copilotCaptured = [pscustomobject]@{
+		Path      = $ctx.Request.Url.AbsolutePath
+		Query     = $ctx.Request.Url.Query
+		AgentType = $ctx.Request.Headers["X-Agent-Type"]
+		Body      = $reader.ReadToEnd()
+	}
+	$ctx.Response.StatusCode = 200
+	$ctx.Response.Close()
+}
+$listenerCopilot.Stop()
+
+Assert-True ($null -ne $copilotCaptured) "Copilot: the generated command delivered a request to the listener"
+if ($null -ne $copilotCaptured) {
+	Assert-True ($copilotCaptured.Path -eq "/api/v1/hooks") "Copilot: request path is /api/v1/hooks"
+	Assert-True ($copilotCaptured.Query -eq "?event=sessionStart") "Copilot: request query is ?event=sessionStart"
+	Assert-True ($copilotCaptured.AgentType -eq "copilot_cli") "Copilot: X-Agent-Type header is copilot_cli"
+	Assert-True ($copilotCaptured.Body -eq $copilotFixture) "Copilot: body arrives byte-exact"
+}
+
 Remove-Item -Recurse -Force $tempProfile -ErrorAction SilentlyContinue
 
 if ($failures -gt 0) {

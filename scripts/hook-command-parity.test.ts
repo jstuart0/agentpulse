@@ -16,7 +16,11 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { buildBashHookCommand, buildCodexHooksFile } from "../src/shared/hook-command.js";
+import {
+	buildBashHookCommand,
+	buildCodexHooksFile,
+	buildCopilotHooksFile,
+} from "../src/shared/hook-command.js";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -147,6 +151,50 @@ describe("hook-command-parity — ap_codex_hooks_json equals buildCodexHooksFile
 	}
 });
 
+describe("hook-command-parity — ap_copilot_hooks_json equals buildCopilotHooksFile byte-for-byte", () => {
+	for (const site of ["scripts/setup-relay.sh", "scripts/setup-hooks.sh"]) {
+		for (const direct of [false, true]) {
+			test(`${site} direct=${direct}`, async () => {
+				const source = readFileSync(join(ROOT, site), "utf-8");
+				const start = source.indexOf("# >>> agentpulse-hook-cmd");
+				const end = source.indexOf("# <<< agentpulse-hook-cmd");
+				const block = source.slice(start, end + "# <<< agentpulse-hook-cmd".length);
+				const script = `${block}\nap_copilot_hooks_json '${BASE}' '${direct ? "1" : "0"}'`;
+				const proc = Bun.spawn(["bash", "-c", script], { stdout: "pipe", stderr: "pipe" });
+				const [stdout, stderr, exitCode] = await Promise.all([
+					new Response(proc.stdout).text(),
+					new Response(proc.stderr).text(),
+					proc.exited,
+				]);
+				expect(exitCode, `stderr: ${stderr}`).toBe(0);
+				expect(stdout).toBe(buildCopilotHooksFile({ baseUrl: BASE, direct }));
+			});
+		}
+	}
+
+	test("the rendered GET /setup.sh body's ap_copilot_hooks_json equals buildCopilotHooksFile", async () => {
+		const { setup } = await import("../src/server/routes/setup.ts");
+		const app = new Hono().route("/", setup);
+		const res = await app.request("http://localhost/setup.sh", {
+			headers: { Host: "localhost:3000" },
+		});
+		expect(res.status).toBe(200);
+		const rendered = await res.text();
+		const start = rendered.indexOf("# >>> agentpulse-hook-cmd");
+		const end = rendered.indexOf("# <<< agentpulse-hook-cmd");
+		const block = rendered.slice(start, end + "# <<< agentpulse-hook-cmd".length);
+		const script = `${block}\nap_copilot_hooks_json '${BASE}' '1'`;
+		const proc = Bun.spawn(["bash", "-c", script], { stdout: "pipe", stderr: "pipe" });
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, `stderr: ${stderr}`).toBe(0);
+		expect(stdout).toBe(buildCopilotHooksFile({ baseUrl: BASE, direct: true }));
+	});
+});
+
 describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static structural check)", () => {
 	test("the function body contains the same distinctive D13 markers as buildPowerShellHookCommand's output, in the same order", () => {
 		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
@@ -192,13 +240,34 @@ describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static 
 	test("New-ApCodexHooksFile emits all 12 events with async=$false, timeout=1, no matcher key", () => {
 		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
 		const start = ps1.indexOf("function New-ApCodexHooksFile");
-		const end = ps1.indexOf("function New-ApHookAuthHeaderFile");
+		const end = ps1.indexOf("function New-ApCopilotBashHookCommand");
 		expect(start).toBeGreaterThan(-1);
+		expect(end).toBeGreaterThan(-1);
 		const body = ps1.slice(start, end);
 		expect(body).not.toContain("matcher");
 		expect(body).toContain("async = $false");
 		expect(body).toContain("timeout = 1");
 		const expected = buildCodexHooksFile({ baseUrl: BASE, direct: true });
+		const parsed = JSON.parse(expected);
+		for (const event of Object.keys(parsed.hooks)) {
+			expect(body).toContain(`"${event}"`);
+		}
+	});
+
+	test("New-ApCopilotHooksFile emits all 10 CopilotEvent keys with type=command, timeoutSec=5, both bash and powershell handlers, no preToolUse/permissionRequest", () => {
+		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
+		const start = ps1.indexOf("function New-ApCopilotBashHookCommand");
+		const end = ps1.indexOf("function New-ApHookAuthHeaderFile");
+		expect(start).toBeGreaterThan(-1);
+		expect(end).toBeGreaterThan(-1);
+		const body = ps1.slice(start, end);
+		expect(body).toContain('type = "command"');
+		expect(body).toContain("timeoutSec = 5");
+		expect(body).toContain("$bash");
+		expect(body).toContain("$ps");
+		expect(body).not.toContain("preToolUse");
+		expect(body).not.toContain("permissionRequest");
+		const expected = buildCopilotHooksFile({ baseUrl: BASE, direct: true });
 		const parsed = JSON.parse(expected);
 		for (const event of Object.keys(parsed.hooks)) {
 			expect(body).toContain(`"${event}"`);

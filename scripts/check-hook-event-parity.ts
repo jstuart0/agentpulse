@@ -19,8 +19,18 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildBashHookCommand, buildCodexHooksFile } from "../src/shared/hook-command.js";
-import { describe, extractQuotedListBlocks, extractUnion, sameSet } from "./lib/parity-utils.js";
+import {
+	buildBashHookCommand,
+	buildCodexHooksFile,
+	buildCopilotHooksFile,
+} from "../src/shared/hook-command.js";
+import {
+	describe,
+	extractQuotedListBlocks,
+	extractQuotedListBlocksCamelCase,
+	extractUnion,
+	sameSet,
+} from "./lib/parity-utils.js";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
@@ -28,11 +38,12 @@ function readFile(relPath: string): string {
 	return readFileSync(join(ROOT, relPath), "utf8");
 }
 
-const EXPECTED_RESULTS = 12;
+// 6 sites x 3 agents (Claude, Codex, Copilot).
+const EXPECTED_RESULTS = 18;
 
 interface CheckResult {
 	site: string;
-	agent: "claude" | "codex";
+	agent: "claude" | "codex" | "copilot";
 	events: string[];
 }
 
@@ -86,6 +97,23 @@ function checkCodexHooksShape(mismatches: string[]) {
 		);
 	}
 
+	// Phase 7: buildCopilotHooksFile's own shape — command handlers, no
+	// preToolUse/permissionRequest keys, and the D7-registered event count.
+	const copilotJson = buildCopilotHooksFile({ baseUrl: "http://localhost:4000", direct: false });
+	if (!copilotJson.includes('"type": "command"')) {
+		mismatches.push('buildCopilotHooksFile(): output is missing a "type":"command" handler');
+	}
+	if (copilotJson.includes('"preToolUse"')) {
+		mismatches.push('buildCopilotHooksFile(): output contains "preToolUse" (D7: excluded)');
+	}
+	if (copilotJson.includes('"permissionRequest"')) {
+		mismatches.push('buildCopilotHooksFile(): output contains "permissionRequest" (D7: excluded)');
+	}
+	const copilotEventCount = Object.keys(JSON.parse(copilotJson).hooks).length;
+	if (copilotEventCount !== 10) {
+		mismatches.push(`buildCopilotHooksFile(): expected 10 events, got ${copilotEventCount}`);
+	}
+
 	for (const agent of ["codex_cli", "copilot_cli"] as const) {
 		for (const direct of [false, true]) {
 			const cmd = buildBashHookCommand({
@@ -105,11 +133,14 @@ function main() {
 	const typesContent = readFile("src/shared/types.ts");
 	const claudeCanonical = extractUnion(typesContent, "ClaudeCodeEvent");
 	const codexCanonical = extractUnion(typesContent, "CodexEvent");
+	const copilotCanonical = extractUnion(typesContent, "CopilotEvent");
 
 	if (claudeCanonical.length === 0)
 		throw new Error("ClaudeCodeEvent union extracted empty — check the marker");
 	if (codexCanonical.length === 0)
 		throw new Error("CodexEvent union extracted empty — check the marker");
+	if (copilotCanonical.length === 0)
+		throw new Error("CopilotEvent union extracted empty — check the marker");
 
 	const results: CheckResult[] = [];
 
@@ -127,24 +158,28 @@ function main() {
 		const content = readFile(site);
 		const claudeBlocks = extractQuotedListBlocks(content, /(?<![A-Z_])EVENTS=\(/, ")");
 		const codexBlocks = extractQuotedListBlocks(content, /CODEX_EVENTS=\(/, ")");
-		if (claudeBlocks.length !== 1 || codexBlocks.length !== 1) {
+		const copilotBlocks = extractQuotedListBlocksCamelCase(content, /COPILOT_EVENTS=\(/, ")");
+		if (claudeBlocks.length !== 1 || codexBlocks.length !== 1 || copilotBlocks.length !== 1) {
 			throw new Error(
-				`${site}: expected exactly one EVENTS=( and one CODEX_EVENTS=( list, found ${claudeBlocks.length} and ${codexBlocks.length}`,
+				`${site}: expected exactly one EVENTS=(, one CODEX_EVENTS=( and one COPILOT_EVENTS=( list, found ${claudeBlocks.length}, ${codexBlocks.length} and ${copilotBlocks.length}`,
 			);
 		}
 		results.push({ site, agent: "claude", events: claudeBlocks[0] });
 		results.push({ site, agent: "codex", events: codexBlocks[0] });
+		results.push({ site, agent: "copilot", events: copilotBlocks[0] });
 	}
 
-	// scripts/install-local.ps1 — Claude is a flat @(...) array; Codex is now
-	// (Phase 5, D12/D13) also a flat @(...) array, consumed by
-	// New-ApCodexHooksFile via the shared hook-command generators.
+	// scripts/install-local.ps1 — Claude is a flat @(...) array; Codex and
+	// Copilot are also flat @(...) arrays, consumed by New-ApCodexHooksFile/
+	// New-ApCopilotHooksFile via the shared hook-command generators.
 	{
 		const content = readFile("scripts/install-local.ps1");
 		const [claude] = extractQuotedListBlocks(content, /foreach \(\$eventName in @\(/, ")");
 		const [codex] = extractQuotedListBlocks(content, /\$codexEvents = @\(/, ")");
+		const [copilot] = extractQuotedListBlocksCamelCase(content, /\$copilotEvents = @\(/, ")");
 		results.push({ site: "scripts/install-local.ps1", agent: "claude", events: claude ?? [] });
 		results.push({ site: "scripts/install-local.ps1", agent: "codex", events: codex ?? [] });
+		results.push({ site: "scripts/install-local.ps1", agent: "copilot", events: copilot ?? [] });
 	}
 
 	// bin/cli.ts — TS array literals.
@@ -152,34 +187,57 @@ function main() {
 		const content = readFile("bin/cli.ts");
 		const [claude] = extractQuotedListBlocks(content, /const claudeEvents = \[/, "]");
 		const [codex] = extractQuotedListBlocks(content, /const codexEvents = \[/, "]");
+		const [copilot] = extractQuotedListBlocksCamelCase(content, /const copilotEvents = \[/, "]");
 		results.push({ site: "bin/cli.ts", agent: "claude", events: claude ?? [] });
 		results.push({ site: "bin/cli.ts", agent: "codex", events: codex ?? [] });
+		results.push({ site: "bin/cli.ts", agent: "copilot", events: copilot ?? [] });
 	}
 
 	// src/web/pages/SetupPage.tsx — Phase 5 (D12/D13) split the one
 	// `hookEvents` ternary into per-agent lists: `claudeHookEvents` still
-	// feeds the manual-copy generator directly, and `codexHookEvents` is a
-	// guard-visible floor on buildCodexHooksFile()'s output (the JSON body
-	// itself comes from the shared src/shared/hook-command.ts generator, not
-	// a literal array, since Phase 5 needs it byte-identical to the
-	// installers).
+	// feeds the manual-copy generator directly, and `codexHookEvents`/
+	// `copilotHookEvents` are guard-visible floors on buildCodexHooksFile()/
+	// buildCopilotHooksFile()'s output (the JSON body itself comes from the
+	// shared src/shared/hook-command.ts generator, not a literal array,
+	// since Phase 5/7 need it byte-identical to the installers).
 	{
 		const content = readFile("src/web/pages/SetupPage.tsx");
 		const [claude] = extractQuotedListBlocks(content, /const claudeHookEvents = \[/, "]");
 		const [codex] = extractQuotedListBlocks(content, /const codexHookEvents = \[/, "]");
+		const [copilot] = extractQuotedListBlocksCamelCase(
+			content,
+			/const copilotHookEvents = \[/,
+			"]",
+		);
 		results.push({ site: "src/web/pages/SetupPage.tsx", agent: "claude", events: claude ?? [] });
 		results.push({ site: "src/web/pages/SetupPage.tsx", agent: "codex", events: codex ?? [] });
+		results.push({
+			site: "src/web/pages/SetupPage.tsx",
+			agent: "copilot",
+			events: copilot ?? [],
+		});
 	}
 
-	// 6 sites × 2 agents. A site whose extraction silently vanished would
+	// 6 sites × 3 agents. A site whose extraction silently vanished would
 	// otherwise shrink the population without failing.
 	if (results.length !== EXPECTED_RESULTS) {
 		throw new Error(`expected ${EXPECTED_RESULTS} site/agent lists, extracted ${results.length}`);
 	}
 
+	const CANONICAL_BY_AGENT = {
+		claude: claudeCanonical,
+		codex: codexCanonical,
+		copilot: copilotCanonical,
+	} as const;
+	const UNION_NAME_BY_AGENT = {
+		claude: "ClaudeCodeEvent",
+		codex: "CodexEvent",
+		copilot: "CopilotEvent",
+	} as const;
+
 	const mismatches: string[] = [];
 	for (const result of results) {
-		const canonical = result.agent === "claude" ? claudeCanonical : codexCanonical;
+		const canonical = CANONICAL_BY_AGENT[result.agent];
 		if (result.events.length === 0) {
 			mismatches.push(
 				`${result.site} [${result.agent}]: extracted zero events — extraction likely broken`,
@@ -188,8 +246,22 @@ function main() {
 		}
 		if (!sameSet(result.events, canonical)) {
 			mismatches.push(
-				`${result.site} [${result.agent}]: ${describe(result.events)} does not match types.ts ${result.agent === "claude" ? "ClaudeCodeEvent" : "CodexEvent"} ${describe(canonical)}`,
+				`${result.site} [${result.agent}]: ${describe(result.events)} does not match types.ts ${UNION_NAME_BY_AGENT[result.agent]} ${describe(canonical)}`,
 			);
+		}
+		// Phase 7 Verification: every Copilot list must contain postToolUse
+		// and must not contain preToolUse or permissionRequest (D7's
+		// deliberate exclusions — Copilot's fail-closed paths).
+		if (result.agent === "copilot") {
+			if (!result.events.includes("postToolUse")) {
+				mismatches.push(`${result.site} [copilot]: missing postToolUse`);
+			}
+			if (result.events.includes("preToolUse")) {
+				mismatches.push(`${result.site} [copilot]: must not contain preToolUse`);
+			}
+			if (result.events.includes("permissionRequest")) {
+				mismatches.push(`${result.site} [copilot]: must not contain permissionRequest`);
+			}
 		}
 	}
 
@@ -202,13 +274,13 @@ function main() {
 			"\nAll six wiring sites (scripts/setup-hooks.sh, scripts/setup-relay.sh, " +
 				"src/server/routes/setup.ts, scripts/install-local.ps1, bin/cli.ts, " +
 				"src/web/pages/SetupPage.tsx) must register the exact same event set as the " +
-				"src/shared/types.ts ClaudeCodeEvent / CodexEvent unions.",
+				"src/shared/types.ts ClaudeCodeEvent / CodexEvent / CopilotEvent unions.",
 		);
 		process.exit(1);
 	}
 
 	console.log(
-		`OK: hook-event lists match across all ${results.length / 2} wiring sites (Claude: ${describe(claudeCanonical)}, Codex: ${describe(codexCanonical)})`,
+		`OK: hook-event lists match across all ${results.length / 3} wiring sites (Claude: ${describe(claudeCanonical)}, Codex: ${describe(codexCanonical)}, Copilot: ${describe(copilotCanonical)})`,
 	);
 }
 

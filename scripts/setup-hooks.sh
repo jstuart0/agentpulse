@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
       echo "Options:"
       echo "  --url    AgentPulse server URL (e.g. https://your-server.com)"
       echo "  --key    API key (starts with ap_)"
-      echo "  --agent  Agent type: claude_code (default) or codex_cli"
+      echo "  --agent  Agent type: claude_code (default), codex_cli, or copilot_cli"
       echo "  --scope  Scope: global (default) or project"
       echo "  -h       Show this help"
       exit 0
@@ -84,6 +84,26 @@ hooks = {}
 for event, cmd in pairs:
     hooks[event] = [{"hooks": [{"type": "command", "command": cmd, "async": False, "timeout": 1}]}]
 sys.stdout.write(json.dumps({"hooks": hooks}, indent=2) + "\n")
+'
+}
+
+ap_copilot_hooks_json() {
+	# $1=base $2=direct(0/1)
+	local base="$1" direct="$2"
+	local COPILOT_EVENTS=("sessionStart" "sessionEnd" "userPromptSubmitted" "postToolUse" "postToolUseFailure" "agentStop" "subagentStart" "subagentStop" "preCompact" "errorOccurred")
+	local event
+	{
+		for event in "${COPILOT_EVENTS[@]}"; do
+			printf '%s\0%s\0' "$event" "$(ap_hook_cmd "$base" "$direct" "copilot_cli" "$event")"
+		done
+	} | python3 -c '
+import json, sys
+data = sys.stdin.buffer.read().split(b"\x00")
+pairs = [(data[i].decode(), data[i + 1].decode()) for i in range(0, len(data) - 1, 2)]
+hooks = {}
+for event, cmd in pairs:
+    hooks[event] = [{"type": "command", "bash": cmd, "timeoutSec": 5}]
+sys.stdout.write(json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\n")
 '
 }
 
@@ -210,8 +230,56 @@ elif [[ "$AGENT_TYPE" == "codex_cli" ]]; then
   # D12: codex_hooks is a deprecated (but still-working) legacy alias for
   # [features].hooks — left alone if present, never newly written.
 
+# ─── Copilot CLI Setup ───────────────────────────────────────────────
+
+elif [[ "$AGENT_TYPE" == "copilot_cli" ]]; then
+  # D8: Copilot's project-scoped hooks live in .github/hooks/, a path this
+  # installer doesn't write — --scope project has nothing to do here.
+  if [[ "$SCOPE" == "project" ]]; then
+    echo "Error: --agent copilot_cli --scope project is not supported. Copilot CLI loads project-scoped hooks from .github/hooks/, which AgentPulse doesn't manage. Use the default global scope (~/.copilot/hooks/agentpulse.json)." >&2
+    exit 1
+  fi
+
+  # D8: only write into a real Copilot install — never create config for a
+  # tool that isn't there.
+  if ! command -v copilot >/dev/null 2>&1 && [[ ! -d "$HOME/.copilot" ]]; then
+    echo "Error: Copilot CLI not detected (no 'copilot' on PATH and no ~/.copilot directory). Install Copilot CLI first, then re-run this installer." >&2
+    exit 1
+  fi
+
+  ap_require_curl_755
+
+  COPILOT_DIR="$HOME/.copilot/hooks"
+  COPILOT_HOOKS_FILE="$COPILOT_DIR/agentpulse.json"
+  mkdir -p "$COPILOT_DIR"
+
+  echo "Configuring Copilot CLI hooks..."
+
+  mkdir -p "$HOME/.agentpulse"
+  AP_AUTH_HEADER_FILE="$HOME/.agentpulse/hook-auth-header"
+  if [[ -L "$AP_AUTH_HEADER_FILE" ]]; then
+    echo "refusing to write through a symlink: $AP_AUTH_HEADER_FILE" >&2
+    exit 1
+  fi
+  AP_AUTH_HEADER_TMP="${AP_AUTH_HEADER_FILE}.$$.tmp"
+  ( umask 077 && printf 'Authorization: Bearer %s\n' "${AGENTPULSE_KEY}" > "$AP_AUTH_HEADER_TMP" )
+  mv -f "$AP_AUTH_HEADER_TMP" "$AP_AUTH_HEADER_FILE"
+
+  NEW_COPILOT_HOOKS_JSON="$(ap_copilot_hooks_json "$AGENTPULSE_URL" "1")"
+  if [[ -f "$COPILOT_HOOKS_FILE" ]] && [[ "$(cat "$COPILOT_HOOKS_FILE")" == "$NEW_COPILOT_HOOKS_JSON" ]]; then
+    echo "Copilot hooks unchanged"
+  else
+    if [[ -f "$COPILOT_HOOKS_FILE" ]]; then
+      COPILOT_BACKUP_FILE="${COPILOT_HOOKS_FILE}.agentpulse-bak.$(date -u +%Y%m%dT%H%M%SZ)"
+      cp "$COPILOT_HOOKS_FILE" "$COPILOT_BACKUP_FILE"
+      echo "Backed up existing $COPILOT_HOOKS_FILE to $COPILOT_BACKUP_FILE"
+    fi
+    printf '%s\n' "$NEW_COPILOT_HOOKS_JSON" > "$COPILOT_HOOKS_FILE"
+    echo "Copilot CLI hooks configured in $COPILOT_HOOKS_FILE"
+  fi
+
 else
-  echo "Error: Unknown agent type '$AGENT_TYPE'. Use 'claude_code' or 'codex_cli'."
+  echo "Error: Unknown agent type '$AGENT_TYPE'. Use 'claude_code', 'codex_cli', or 'copilot_cli'."
   exit 1
 fi
 

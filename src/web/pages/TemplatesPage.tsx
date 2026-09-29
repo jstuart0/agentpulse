@@ -409,7 +409,8 @@ export function TemplatesPage() {
 						<h1 className="text-xl md:text-2xl font-bold text-foreground">Session Templates</h1>
 						<p className="text-sm text-muted-foreground mt-1 max-w-2xl">
 							Define reusable Claude Code and Codex session setups. Launch requests are executed
-							automatically when a connected supervisor can claim them.
+							automatically when a connected supervisor can claim them. Copilot CLI is observed only
+							— it can't be launched from a template.
 						</p>
 					</div>
 					<div className="flex flex-col items-start gap-2 md:items-end">

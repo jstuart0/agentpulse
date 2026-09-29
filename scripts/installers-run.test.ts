@@ -10,7 +10,17 @@
  * and any Bun download (F190), so no test fetches Bun from the network.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	mkdir,
+	mkdtemp,
+	readFile,
+	readdir,
+	rm,
+	stat,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 // Before config.js: the test process shares one module registry, and config
@@ -19,7 +29,9 @@ import "../src/server/db/__test_db.js";
 
 const { config } = await import("../src/server/config.js");
 const { setup } = await import("../src/server/routes/setup.js");
-const { buildCodexHooksFile } = await import("../src/shared/hook-command.js");
+const { buildCodexHooksFile, buildCopilotHooksFile } = await import(
+	"../src/shared/hook-command.js"
+);
 
 const INSTALLER = join(import.meta.dir, "setup-relay.sh");
 const RELAY_SRC = join(import.meta.dir, "relay.ts");
@@ -37,6 +49,7 @@ const POLICY_LINE = (policy: string) =>
 
 let root: string;
 let stubDir: string;
+let sanitizedPath: string;
 let authServer: ReturnType<typeof Bun.serve>;
 let authUrl: string;
 let openServer: ReturnType<typeof Bun.serve>;
@@ -114,7 +127,7 @@ async function runInstaller(
 		stdout: "pipe",
 		stderr: "pipe",
 		env: {
-			PATH: `${opts.pathPrefix ? `${opts.pathPrefix}:` : ""}${stubDir}:${BUN_DIR}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+			PATH: `${opts.pathPrefix ? `${opts.pathPrefix}:` : ""}${stubDir}:${BUN_DIR}:${sanitizedPath}`,
 			HOME: home,
 			TMPDIR: tmp,
 			AP_STUB_LOG: stubLog,
@@ -191,6 +204,39 @@ beforeAll(async () => {
 		fetch: () => Response.json({ authenticated: false, user: null, disableAuth: true }),
 	});
 	openUrl = `http://127.0.0.1:${openServer.port}`;
+
+	// D8: the Copilot detection-gated tests need "copilot not on PATH" to be
+	// deterministic regardless of what's actually installed on the machine
+	// running this suite (this repo's own Phase 0 spike installed a real
+	// `copilot` CLI via Homebrew on at least one dev machine, in the same
+	// directory as that machine's own python3/curl/etc — dropping the whole
+	// directory broke unrelated tests that need those). Mirror each PATH
+	// directory that contains a `copilot` binary into a symlink-only copy
+	// with just that one entry omitted, so every other binary in it still
+	// resolves from its original real path/behavior.
+	const inherited = (process.env.PATH ?? "/usr/bin:/bin").split(":").filter(Boolean);
+	const mirrorRoot = await mkdtemp(join(tmpdir(), "ap-installers-path-mirror-"));
+	const sanitizedDirs: string[] = [];
+	for (const [i, dir] of inherited.entries()) {
+		const hasCopilot = await Bun.file(join(dir, "copilot")).exists();
+		if (!hasCopilot) {
+			sanitizedDirs.push(dir);
+			continue;
+		}
+		const mirror = join(mirrorRoot, String(i));
+		await mkdir(mirror, { recursive: true });
+		for (const entry of await readdir(dir)) {
+			if (entry === "copilot") continue;
+			try {
+				await symlink(join(dir, entry), join(mirror, entry));
+			} catch {
+				// A dangling/unreadable entry (permissions, a broken symlink in
+				// the source dir) — skip it rather than fail the whole mirror.
+			}
+		}
+		sanitizedDirs.push(mirror);
+	}
+	sanitizedPath = sanitizedDirs.join(":");
 });
 
 /**
@@ -361,6 +407,44 @@ describe("an ingest+observe key installs the relay, statusline and service", () 
 
 			expect(res.out).toContain(POLICY_LINE("codex"));
 			expect(res.out).not.toContain(RELAY_KEY);
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"a stub copilot on PATH → agentpulse.json has exactly the 10 CopilotEvent keys, each with its own ?event= and X-Agent-Type; no ap_ literal",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const copilotStubDir = join(root, `copilot-stub-${relative(root, home)}`);
+			await mkdir(copilotStubDir, { recursive: true });
+			await writeFile(join(copilotStubDir, "copilot"), "#!/bin/sh\nexit 0\n");
+			await chmod(join(copilotStubDir, "copilot"), 0o755);
+
+			const res = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Darwin", pathPrefix: copilotStubDir },
+			);
+			expect(res.code).toBe(0);
+
+			const copilotFile = join(home, ".copilot", "hooks", "agentpulse.json");
+			const written = JSON.parse(await readFile(copilotFile, "utf-8"));
+			const keys = Object.keys(written.hooks);
+			expect(keys.length).toBe(10);
+			for (const event of keys) {
+				const bash = written.hooks[event][0].bash as string;
+				expect(bash).toContain(`?event=${event}`);
+				expect(bash).toContain("X-Agent-Type: copilot_cli");
+				expect(bash).not.toContain("ap_");
+			}
+			expect(written).toEqual(
+				JSON.parse(buildCopilotHooksFile({ baseUrl: `http://localhost:${port}`, direct: false })),
+			);
+
+			const installed = await readJson(join(home, ".agentpulse", "installed.json"));
+			expect(typeof installed.copilotHooksWrittenAt).toBe("string");
+			expect(Number.isNaN(Date.parse(installed.copilotHooksWrittenAt))).toBe(false);
 		},
 		RUN_TIMEOUT,
 	);

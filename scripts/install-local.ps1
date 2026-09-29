@@ -178,6 +178,48 @@ function New-ApCodexHooksFile {
   return ($obj | ConvertTo-Json -Depth 20) + "`n"
 }
 
+# D13: the POSIX `sh` equivalent of New-ApHookCommand, transcribed natively
+# in PowerShell (never shells out to bash) — Copilot's agentpulse.json
+# carries both a `bash` and a `powershell` handler per event (D13), and this
+# builds the former. Scoped to Copilot only: it never needs the Codex
+# native-coverage marker snippet, so there's no marker branch here (compare
+# buildBashHookCommand/ap_hook_cmd's `agent -eq codex_cli` check).
+function New-ApCopilotBashHookCommand {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][bool]$Direct,
+    [Parameter(Mandatory = $true)][string]$EventName
+  )
+  $curl = "curl -sS --max-time 2 -o /dev/null -X POST '$BaseUrl/api/v1/hooks?event=$EventName' -H 'Content-Type: application/json' -H 'X-Agent-Type: copilot_cli'"
+  $withHeader = "$curl" + " -H `"@`$f`" --data-binary `"@`$t`""
+  $withoutHeader = "$curl --data-binary `"@`$t`""
+  $body = if ($Direct) {
+    "f=`"`$HOME/.agentpulse/hook-auth-header`"; if [ -s `"`$f`" ]; then $withHeader; else $withoutHeader; fi; rm -f `"`$t`""
+  } else {
+    "$withoutHeader; rm -f `"`$t`""
+  }
+  $mktempPrefix = "t=`$(mktemp `"`${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX`" 2>/dev/null) || exit 0; cat > `"`$t`"; "
+  return "$mktempPrefix( $body ) </dev/null >/dev/null 2>&1 & exit 0"
+}
+
+function New-ApCopilotHooksFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][bool]$Direct
+  )
+  $copilotEvents = @("sessionStart","sessionEnd","userPromptSubmitted","postToolUse","postToolUseFailure","agentStop","subagentStart","subagentStop","preCompact","errorOccurred")
+  $hooks = [ordered]@{}
+  foreach ($event in $copilotEvents) {
+    $bash = New-ApCopilotBashHookCommand -BaseUrl $BaseUrl -Direct $Direct -EventName $event
+    $ps = New-ApHookCommand -BaseUrl $BaseUrl -Direct $Direct -AgentType "copilot_cli" -EventName $event
+    $hooks[$event] = @(
+      [ordered]@{ type = "command"; bash = $bash; powershell = $ps; timeoutSec = 5 }
+    )
+  }
+  $obj = [ordered]@{ version = 1; hooks = $hooks }
+  return ($obj | ConvertTo-Json -Depth 20) + "`n"
+}
+
 # D13: writes ~/.agentpulse/hook-auth-header with a single-ACE ACL for the
 # current user (Windows equivalent of `umask 077`).
 #
@@ -270,6 +312,35 @@ function Configure-Hooks {
   }
   # D12: codex_hooks is a deprecated (but still-working) legacy alias for
   # [features].hooks — left alone if present, never newly written.
+
+  # D8: only written when copilot is detected — never create config for a
+  # tool that isn't installed.
+  $copilotDetected = (Get-Command copilot -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $HOME ".copilot"))
+  if ($copilotDetected) {
+    $copilotDir = Join-Path $HOME ".copilot\hooks"
+    Ensure-Dir $copilotDir
+    $copilotHooksFile = Join-Path $copilotDir "agentpulse.json"
+
+    $newCopilotHooksJson = New-ApCopilotHooksFile -BaseUrl $PublicUrl -Direct $true
+    $copilotUnchanged = $false
+    if (Test-Path $copilotHooksFile) {
+      $existingCopilotHooksJson = Get-Content $copilotHooksFile -Raw
+      if ($existingCopilotHooksJson -eq $newCopilotHooksJson) {
+        $copilotUnchanged = $true
+      }
+    }
+    if ($copilotUnchanged) {
+      Write-Step "Copilot hooks unchanged"
+    } else {
+      if (Test-Path $copilotHooksFile) {
+        $copilotBackupFile = "$copilotHooksFile.agentpulse-bak.$(Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ')"
+        Copy-Item -Path $copilotHooksFile -Destination $copilotBackupFile
+        Write-Step "Backed up existing Copilot hooks to $copilotBackupFile"
+      }
+      Set-Content -NoNewline -Path $copilotHooksFile -Value $newCopilotHooksJson -Encoding UTF8
+      Write-Step "Copilot CLI hooks configured"
+    }
+  }
 
   if ($ApiKey) {
     [Environment]::SetEnvironmentVariable("AGENTPULSE_API_KEY", $ApiKey, "User")

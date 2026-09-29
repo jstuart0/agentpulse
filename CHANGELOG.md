@@ -9,6 +9,30 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Added
 
+- **Copilot CLI support (AGEN-13, D7/D8/D13) — labeled "contract not yet
+  verified against a live Copilot CLI" until a live-payload diff passes.**
+  AgentPulse now observes GitHub Copilot CLI sessions: 10 registered hook
+  events (`sessionStart`, `sessionEnd`, `userPromptSubmitted`, `postToolUse`,
+  `postToolUseFailure`, `agentStop`, `subagentStart`, `subagentStop`,
+  `preCompact`, `errorOccurred` — `preToolUse`/`permissionRequest` are
+  deliberately excluded, Copilot's fail-closed paths) posted as detached
+  `command` hooks to `~/.copilot/hooks/agentpulse.json`, written only when
+  `copilot` is detected on `PATH` or `~/.copilot` exists. Copilot is
+  observed only (AgentPulse can't launch or steer it), shown with a
+  dedicated badge and an "Observed only" hint on the session detail page
+  and the Setup page. The canonicalizer accepts both Copilot's native
+  camelCase payload shape and a Pascal/snake_case mirror, and caps
+  `toolArgs`/`toolResponse` at 64 KiB. Codex CLI's own hook-event set also
+  gains `SessionEnd` and `Interrupt` (10 → 12 total events); the
+  Claude/Codex/Copilot event counts are now 16/12/10.
+  **Known version-skew gap**: an `agentpulse-mcp` 0.2.0+ client's
+  `list_sessions` can filter by `agent_type: "copilot_cli"`, but a server
+  older than this release has no rows with that agent type and applies no
+  server-side validation on the filter value — it silently returns zero
+  sessions rather than an error, which can look identical to "the filter
+  didn't apply." A server-side capability check (or a 400 for an
+  unrecognized `agent_type`) is a follow-up; see
+  `packages/agentpulse-mcp/README.md`'s Hardening roadmap.
 - **MCP server (AGEN-12)** — `agentpulse mcp serve` exposes AgentPulse over the
   [Model Context Protocol](https://modelcontextprotocol.io) for external AI
   coding agents (Claude Code, Codex CLI, or any MCP-compliant client): 11

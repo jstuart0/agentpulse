@@ -1,5 +1,7 @@
 import { useEffect, useId, useState } from "react";
-import { buildCodexHooksFile } from "../../shared/hook-command.js";
+import { AGENT_METADATA } from "../../shared/constants.js";
+import { buildCodexHooksFile, buildCopilotHooksFile } from "../../shared/hook-command.js";
+import type { AgentType } from "../../shared/types.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
 import {
@@ -14,11 +16,23 @@ import {
 import { AUTH_STEP, codexSetupSteps, lastEventLine } from "../lib/setup-steps.js";
 import { useUserStore } from "../stores/user-store.js";
 
+const AGENT_TOGGLE: Array<{ value: AgentType; label: string }> = [
+	{ value: "claude_code", label: "Claude Code" },
+	{ value: "codex_cli", label: "Codex CLI" },
+	{ value: "copilot_cli", label: "Copilot CLI" },
+];
+
+const CONFIG_FILE: Record<AgentType, string> = {
+	claude_code: "~/.claude/settings.json",
+	codex_cli: "~/.codex/hooks.json",
+	copilot_cli: "~/.copilot/hooks/agentpulse.json",
+};
+
 export function SetupPage() {
 	const { copy } = useCopyFeedback();
 	const [apiKey, setApiKey] = useState("");
 	const serverUrl = window.location.origin;
-	const [agentType, setAgentType] = useState<"claude_code" | "codex_cli">("claude_code");
+	const [agentType, setAgentType] = useState<AgentType>("claude_code");
 	const disableAuth = useUserStore((s) => s.disableAuth);
 	const [keys, setKeys] = useState<
 		Array<{ id: string; name: string; keyPrefix: string; isActive: boolean }>
@@ -198,9 +212,56 @@ export function SetupPage() {
 		return text;
 	};
 
-	const config = agentType === "claude_code" ? generateClaudeConfig() : generateCodexConfig();
-	const configFile =
-		agentType === "claude_code" ? "~/.claude/settings.json" : "~/.codex/hooks.json";
+	// check-hook-event-parity.ts's drift guard extracts this list (must stay
+	// in lockstep with src/shared/types.ts's CopilotEvent union); also used
+	// below as a defensive floor on buildCopilotHooksFile's output.
+	const copilotHookEvents = [
+		"sessionStart",
+		"sessionEnd",
+		"userPromptSubmitted",
+		"postToolUse",
+		"postToolUseFailure",
+		"agentStop",
+		"subagentStart",
+		"subagentStop",
+		"preCompact",
+		"errorOccurred",
+	];
+
+	// D12/D13: direct-mode, same as Codex's manual-copy config above.
+	const generateCopilotConfig = () => {
+		const text = buildCopilotHooksFile({ baseUrl: serverUrl, direct: true });
+		const events = Object.keys(JSON.parse(text).hooks);
+		if (
+			events.length !== copilotHookEvents.length ||
+			!copilotHookEvents.every((e) => events.includes(e))
+		) {
+			throw new Error(
+				`buildCopilotHooksFile() event set drifted from the expected ${copilotHookEvents.length} CopilotEvent members`,
+			);
+		}
+		return text;
+	};
+
+	const config =
+		agentType === "claude_code"
+			? generateClaudeConfig()
+			: agentType === "codex_cli"
+				? generateCodexConfig()
+				: generateCopilotConfig();
+	const configFile = CONFIG_FILE[agentType];
+	const showStatusLine = agentType === "codex_cli";
+	const showStatusSnippet = agentType !== "copilot_cli";
+	const authStep = AUTH_STEP[agentType](apiKey, disableAuth);
+
+	let stepCounter = 1;
+	const stepApiKey = stepCounter++;
+	const stepAgentType = stepCounter++;
+	const stepConfig = stepCounter++;
+	const stepStatusLine = showStatusLine ? stepCounter++ : null;
+	const stepSupervisor = stepCounter++;
+	const stepAuth = authStep ? stepCounter++ : null;
+	const stepStatusSnippet = showStatusSnippet ? stepCounter++ : null;
 
 	return (
 		<div className="p-3 md:p-6 max-w-3xl">
@@ -213,7 +274,7 @@ export function SetupPage() {
 			<div className="border border-border bg-card rounded-lg p-5 mb-4">
 				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
 					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
-						1
+						{stepApiKey}
 					</span>
 					API Key
 				</h2>
@@ -372,33 +433,31 @@ export function SetupPage() {
 			<div className="border border-border bg-card rounded-lg p-5 mb-4">
 				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
 					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
-						2
+						{stepAgentType}
 					</span>
 					Agent Type
 				</h2>
-				<div className="flex flex-col sm:flex-row gap-2">
-					<button
-						type="button"
-						onClick={() => setAgentType("claude_code")}
-						className={`flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
-							agentType === "claude_code"
-								? "border-primary bg-primary/10 text-primary"
-								: "border-border text-muted-foreground hover:text-foreground"
-						}`}
-					>
-						Claude Code
-					</button>
-					<button
-						type="button"
-						onClick={() => setAgentType("codex_cli")}
-						className={`flex-1 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
-							agentType === "codex_cli"
-								? "border-primary bg-primary/10 text-primary"
-								: "border-border text-muted-foreground hover:text-foreground"
-						}`}
-					>
-						Codex CLI
-					</button>
+				<div role="radiogroup" aria-label="Agent Type" className="flex flex-col sm:flex-row gap-2">
+					{AGENT_TOGGLE.map((agent) => (
+						<label
+							key={agent.value}
+							className={`flex-1 flex items-center justify-center cursor-pointer rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
+								agentType === agent.value
+									? "border-primary bg-primary/10 text-primary"
+									: "border-border text-muted-foreground hover:text-foreground"
+							}`}
+						>
+							<input
+								type="radio"
+								name="agentType"
+								value={agent.value}
+								checked={agentType === agent.value}
+								onChange={() => setAgentType(agent.value)}
+								className="sr-only"
+							/>
+							{agent.label}
+						</label>
+					))}
 				</div>
 			</div>
 
@@ -406,7 +465,7 @@ export function SetupPage() {
 			<div className="border border-border bg-card rounded-lg p-5 mb-4">
 				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
 					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
-						3
+						{stepConfig}
 					</span>
 					Add to {configFile}
 				</h2>
@@ -415,7 +474,7 @@ export function SetupPage() {
 						Merge this into your Claude Code settings.json. If you already have hooks, add these
 						entries to each event array.
 					</p>
-				) : (
+				) : agentType === "codex_cli" ? (
 					<ol className="text-xs text-muted-foreground mb-3 list-decimal list-inside space-y-1">
 						{codexSetupSteps(
 							lastEventLine({
@@ -428,6 +487,12 @@ export function SetupPage() {
 							<li key={i}>{lastCodexEventLoaded || i < 3 ? text : "Checking…"}</li>
 						))}
 					</ol>
+				) : (
+					<p className="text-xs text-muted-foreground mb-3">
+						Save this as {configFile} (created automatically if{" "}
+						<span className="font-mono text-foreground">copilot</span> is detected — see the
+						installer commands below for an automated alternative).
+					</p>
 				)}
 				<div className="relative">
 					<pre className="bg-background border border-border rounded-md p-4 text-xs overflow-auto max-h-80">
@@ -444,11 +509,11 @@ export function SetupPage() {
 			</div>
 
 			{/* Step 4: Codex-only — Status Line integration */}
-			{agentType === "codex_cli" && (
+			{showStatusLine && (
 				<div className="border border-border bg-card rounded-lg p-5 mb-4">
 					<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
 						<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
-							4
+							{stepStatusLine}
 						</span>
 						Status Line{" "}
 						<span className="text-[10px] font-mono text-primary/60 bg-primary/8 px-1.5 py-0.5 rounded">
@@ -465,10 +530,23 @@ export function SetupPage() {
 				</div>
 			)}
 
+			{/* Copilot: observed-only notice — no equivalent to Codex's status
+			    line integration, and no native-name source (D14/Pattern D), so
+			    Copilot sessions always keep AgentPulse's generated name. */}
+			{agentType === "copilot_cli" && (
+				<div className="border border-fuchsia-500/20 bg-fuchsia-500/5 rounded-lg p-5 mb-4">
+					<p className="text-xs text-muted-foreground">
+						<span className="font-medium text-foreground">Observed only.</span>{" "}
+						{AGENT_METADATA.copilot_cli.observeOnlyHint} Copilot sessions keep AgentPulse's
+						generated name — Copilot has no way to report its own session name back.
+					</p>
+				</div>
+			)}
+
 			<div className="border border-border bg-card rounded-lg p-5 mb-4">
 				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
 					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
-						{agentType === "codex_cli" ? "5" : "4"}
+						{stepSupervisor}
 					</span>
 					Supervisor Enrollment
 				</h2>
@@ -482,52 +560,50 @@ export function SetupPage() {
 				</p>
 			</div>
 
-			{/* Step 5 (Codex) / 4 (Claude): auth step (D13) — env var for Claude,
-			    the hook-auth-header file for command-hook agents */}
-			{(() => {
-				const authStep = AUTH_STEP[agentType](apiKey, disableAuth);
-				if (!authStep) return null;
-				return (
-					<div className="border border-border bg-card rounded-lg p-5 mb-4">
-						<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
-							<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
-								{agentType === "codex_cli" ? "6" : "5"}
-							</span>
-							{authStep.title}
-						</h2>
-						<p className="text-xs text-muted-foreground mb-3">{authStep.description}</p>
-						<pre className="bg-background border border-border rounded-md p-3 text-xs overflow-x-auto">
-							<code>{authStep.command}</code>
-						</pre>
-						{authStep.windowsCommand && (
-							<>
-								<p className="text-xs text-muted-foreground mt-3 mb-1">Windows (PowerShell):</p>
-								<pre className="bg-background border border-border rounded-md p-3 text-xs overflow-x-auto">
-									<code>{authStep.windowsCommand}</code>
-								</pre>
-							</>
-						)}
-						{authStep.note && (
-							<p className="text-[11px] text-muted-foreground mt-2">{authStep.note}</p>
-						)}
-					</div>
-				);
-			})()}
+			{/* Auth step (D13) — env var for Claude, the hook-auth-header file
+			    for command-hook agents (Codex, Copilot) */}
+			{authStep && (
+				<div className="border border-border bg-card rounded-lg p-5 mb-4">
+					<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
+						<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
+							{stepAuth}
+						</span>
+						{authStep.title}
+					</h2>
+					<p className="text-xs text-muted-foreground mb-3">{authStep.description}</p>
+					<pre className="bg-background border border-border rounded-md p-3 text-xs overflow-x-auto">
+						<code>{authStep.command}</code>
+					</pre>
+					{authStep.windowsCommand && (
+						<>
+							<p className="text-xs text-muted-foreground mt-3 mb-1">Windows (PowerShell):</p>
+							<pre className="bg-background border border-border rounded-md p-3 text-xs overflow-x-auto">
+								<code>{authStep.windowsCommand}</code>
+							</pre>
+						</>
+					)}
+					{authStep.note && (
+						<p className="text-[11px] text-muted-foreground mt-2">{authStep.note}</p>
+					)}
+				</div>
+			)}
 
-			{/* Step 6 (Codex) / 5 (Claude): status snippet for CLAUDE.md / AGENTS.md */}
-			<div className="border border-border bg-card rounded-lg p-5">
-				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
-					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
-						{agentType === "codex_cli" ? "7" : "6"}
-					</span>
-					Optional: Add Status Snippet to {agentType === "claude_code" ? "CLAUDE.md" : "AGENTS.md"}
-				</h2>
-				<p className="text-xs text-muted-foreground mb-3">
-					Add this to your project's {agentType === "claude_code" ? "CLAUDE.md" : "AGENTS.md"} for
-					semantic status reporting. This lets the agent tell the dashboard what it's working on.
-				</p>
-				<pre className="bg-background border border-border rounded-md p-3 text-xs overflow-auto max-h-40">
-					<code>{`## AgentPulse Status Reporting
+			{/* Optional status snippet for CLAUDE.md / AGENTS.md — hidden for
+			    Copilot (observed-only, no semantic-status hook to report through). */}
+			{showStatusSnippet && (
+				<div className="border border-border bg-card rounded-lg p-5">
+					<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
+						<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
+							{stepStatusSnippet}
+						</span>
+						Optional: Add Status Snippet to {AGENT_METADATA[agentType].instructionsFile}
+					</h2>
+					<p className="text-xs text-muted-foreground mb-3">
+						Add this to your project's {AGENT_METADATA[agentType].instructionsFile} for semantic
+						status reporting. This lets the agent tell the dashboard what it's working on.
+					</p>
+					<pre className="bg-background border border-border rounded-md p-3 text-xs overflow-auto max-h-40">
+						<code>{`## AgentPulse Status Reporting
 When working on tasks, report your status every 3-5 tool uses:
 \`\`\`bash
 curl -s -X POST "${serverUrl}/api/v1/hooks/status" \\
@@ -535,8 +611,9 @@ curl -s -X POST "${serverUrl}/api/v1/hooks/status" \\
   -H "Content-Type: application/json" \\
   -d '{"session_id":"'"\$${agentType === "claude_code" ? "CLAUDE_SESSION_ID" : "CODEX_SESSION_ID"}"'","status":"<status>","task":"<task>"}'
 \`\`\``}</code>
-				</pre>
-			</div>
+					</pre>
+				</div>
+			)}
 		</div>
 	);
 }

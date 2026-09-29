@@ -174,3 +174,61 @@ export function buildCodexHooksFile(opts: { baseUrl: string; direct: boolean }):
 	}
 	return `${JSON.stringify({ hooks }, null, 2)}\n`;
 }
+
+/** Canonical CopilotEvent order (must match src/shared/types.ts's CopilotEvent union declaration order — see check-hook-event-parity.ts for the drift guard). Deliberately excludes preToolUse/permissionRequest (D7: Copilot's fail-closed paths). */
+export const COPILOT_EVENT_ORDER: readonly string[] = [
+	"sessionStart",
+	"sessionEnd",
+	"userPromptSubmitted",
+	"postToolUse",
+	"postToolUseFailure",
+	"agentStop",
+	"subagentStart",
+	"subagentStop",
+	"preCompact",
+	"errorOccurred",
+];
+
+const COPILOT_HOOK_TIMEOUT_SECONDS = 5;
+
+/**
+ * D8/D13: Copilot's `~/.copilot/hooks/agentpulse.json` shape — a
+ * `{"version":1,"hooks":{<key>:[{"type":"command", ...}]}}` map, all 10
+ * CopilotEvent members, each carrying the D13 bash command under `bash`.
+ * `includePowerShell` additionally carries the PowerShell equivalent under
+ * `powershell` — Copilot's own docs describe both keys as valid per
+ * platform; the bash-only installer sites (setup-hooks.sh, setup-relay.sh,
+ * the /setup.sh template) never run on Windows, so they omit it, while
+ * install-local.ps1 (the only Windows site) includes both so either shell
+ * Copilot picks can run the hook.
+ */
+export function buildCopilotHooksFile(opts: {
+	baseUrl: string;
+	direct: boolean;
+	includePowerShell?: boolean;
+}): string {
+	assertValidHookBaseUrl(opts.baseUrl);
+	const hooks: Record<string, unknown> = {};
+	for (const event of COPILOT_EVENT_ORDER) {
+		const handler: Record<string, unknown> = {
+			type: "command",
+			bash: buildBashHookCommand({
+				baseUrl: opts.baseUrl,
+				direct: opts.direct,
+				agent: "copilot_cli",
+				event,
+			}),
+		};
+		if (opts.includePowerShell) {
+			handler.powershell = buildPowerShellHookCommand({
+				baseUrl: opts.baseUrl,
+				direct: opts.direct,
+				agent: "copilot_cli",
+				event,
+			});
+		}
+		handler.timeoutSec = COPILOT_HOOK_TIMEOUT_SECONDS;
+		hooks[event] = [handler];
+	}
+	return `${JSON.stringify({ version: 1, hooks }, null, 2)}\n`;
+}

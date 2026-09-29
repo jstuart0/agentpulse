@@ -124,8 +124,8 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 						Welcome{user?.name ? `, ${user.name}` : ""} — let&apos;s wire up your first agent
 					</h2>
 					<p className="text-xs text-muted-foreground mt-0.5">
-						Sessions appear here live as Claude Code or Codex CLI emit hooks. A few quick steps and
-						you&apos;re done.
+						Sessions appear here live as Claude Code, Codex CLI, or Copilot CLI emit hooks. A few
+						quick steps and you&apos;re done.
 					</p>
 				</div>
 			</div>
@@ -303,9 +303,9 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 					</h3>
 				</div>
 				<p className="text-xs text-muted-foreground">
-					Open Claude Code or Codex CLI in any project. Within a second or two this dashboard will
-					light up with the session. You can pin it, rename it, or open the workspace to chat
-					alongside the transcript.
+					Open Claude Code, Codex CLI, or Copilot CLI in any project. Within a second or two this
+					dashboard will light up with the session. Claude Code and Codex sessions can be pinned,
+					renamed, or opened to chat alongside the transcript — Copilot sessions are observed only.
 				</p>
 			</div>
 		</div>

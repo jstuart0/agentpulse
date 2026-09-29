@@ -15,6 +15,10 @@ const CODEX_FIXTURES_DIR = join(
 	import.meta.dir,
 	"../src/server/services/agents/__fixtures__/codex",
 );
+const COPILOT_FIXTURES_DIR = join(
+	import.meta.dir,
+	"../src/server/services/agents/__fixtures__/copilot",
+);
 
 const { config } = await import("../src/server/config.js");
 const { initializeDatabase } = await import("../src/server/db/client.js");
@@ -617,6 +621,41 @@ describe("relay e2e", () => {
 			expect(status).toContain("codex hooks not firing — run /hooks in Codex to trust them");
 
 			await stopRelay(relay9);
+		},
+		SCENARIO_TIMEOUT,
+	);
+
+	test(
+		"10. Copilot command hooks through the real relay (D7/D8/D13, Phase 7): sessionStart/userPromptSubmitted/postToolUse via the generated detached sh command",
+		async () => {
+			const COPILOT10_ID = "c9b44139-4a9b-5e68-b92d-2b26a56a3b46";
+			const relay10 = await spawnRelay("relay10", relayKey);
+			for (const event of ["sessionStart", "userPromptSubmitted", "postToolUse"]) {
+				const cmd = buildBashHookCommand({
+					baseUrl: relay10.base,
+					direct: false,
+					agent: "copilot_cli",
+					event,
+				});
+				const fixture = await readFile(join(COPILOT_FIXTURES_DIR, `${event}.json`), "utf-8");
+				const proc = Bun.spawn(["sh", "-c", cmd], {
+					stdin: new TextEncoder().encode(fixture),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const [stdout, stderr, exitCode] = await Promise.all([
+					new Response(proc.stdout).text(),
+					new Response(proc.stderr).text(),
+					proc.exited,
+				]);
+				expect(exitCode).toBe(0);
+				expect(stdout).toBe("");
+				expect(stderr).toBe("");
+			}
+			const s = await waitFor("copilot10 session", () => getSession(COPILOT10_ID));
+			expect(s.agentType).toBe("copilot_cli");
+			expect(s.cwd).toBe("/home/user/project");
+			await stopRelay(relay10);
 		},
 		SCENARIO_TIMEOUT,
 	);

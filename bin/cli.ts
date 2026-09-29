@@ -2,7 +2,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildCodexHooksFile } from "../src/shared/hook-command.js";
+import { buildCodexHooksFile, buildCopilotHooksFile } from "../src/shared/hook-command.js";
 import { writePrivateFileSyncNoFollow } from "../src/shared/private-file.js";
 
 const args = process.argv.slice(2);
@@ -232,6 +232,61 @@ async function setup() {
 	}
 	// D12: codex_hooks is a deprecated (but still-working) legacy alias for
 	// [features].hooks — left alone if present, never newly written.
+
+	// ── Copilot CLI ──
+	// D8: only written when copilot is detected — never create config for a
+	// tool that isn't installed.
+	const homeDir = process.env.HOME || "~";
+	if (Bun.which("copilot") || existsSync(join(homeDir, ".copilot"))) {
+		// check-hook-event-parity.ts's drift guard extracts this list (must
+		// stay in lockstep with src/shared/types.ts's CopilotEvent union);
+		// also used below as a defensive floor on buildCopilotHooksFile's
+		// output.
+		const copilotEvents = [
+			"sessionStart",
+			"sessionEnd",
+			"userPromptSubmitted",
+			"postToolUse",
+			"postToolUseFailure",
+			"agentStop",
+			"subagentStart",
+			"subagentStop",
+			"preCompact",
+			"errorOccurred",
+		];
+
+		const copilotDir = join(homeDir, ".copilot", "hooks");
+		mkdirSync(copilotDir, { recursive: true });
+		const copilotHooksPath = join(copilotDir, "agentpulse.json");
+		const newCopilotHooksJson = buildCopilotHooksFile({ baseUrl: url, direct: true });
+		const newCopilotHooksEvents = Object.keys(JSON.parse(newCopilotHooksJson).hooks);
+		if (
+			newCopilotHooksEvents.length !== copilotEvents.length ||
+			!copilotEvents.every((e) => newCopilotHooksEvents.includes(e))
+		) {
+			throw new Error(
+				`buildCopilotHooksFile() event set drifted from the expected ${copilotEvents.length} CopilotEvent members`,
+			);
+		}
+		const copilotUnchanged =
+			existsSync(copilotHooksPath) &&
+			readFileSync(copilotHooksPath, "utf-8") === newCopilotHooksJson;
+		if (copilotUnchanged) {
+			console.log("  ✓ Copilot hooks unchanged");
+		} else {
+			if (existsSync(copilotHooksPath)) {
+				const stamp = new Date()
+					.toISOString()
+					.replace(/[-:]/g, "")
+					.replace(/\.\d{3}Z$/, "Z");
+				const backupPath = `${copilotHooksPath}.agentpulse-bak.${stamp}`;
+				writeFileSync(backupPath, readFileSync(copilotHooksPath));
+				console.log(`  ✓ Backed up existing Copilot hooks to ${backupPath}`);
+			}
+			writeFileSync(copilotHooksPath, newCopilotHooksJson);
+			console.log(`  ✓ Copilot CLI hooks → ${copilotHooksPath}`);
+		}
+	}
 
 	// ── Shell env ──
 

@@ -9,15 +9,15 @@
 
 **Command center for AI coding agents across all your machines.**
 
-If you run multiple Claude Code or Codex CLI sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.
+If you run multiple Claude Code, Codex CLI, or Copilot CLI sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.
 
-![AgentPulse dashboard — live view of every active Claude Code / Codex session](src/web/assets/screenshots/agentpulse-dashboard.png)
+![AgentPulse dashboard — live view of every active Claude Code / Codex / Copilot session](src/web/assets/screenshots/agentpulse-dashboard.png)
 
 ## What AgentPulse is
 
 AgentPulse has two major modes:
 
-- **Observability** -- watch Claude Code and Codex sessions in real time, with prompts, responses, progress, notes, and session history in one dashboard
+- **Observability** -- watch Claude Code, Codex, and Copilot CLI sessions in real time, with prompts, responses, progress, notes, and session history in one dashboard (Copilot CLI is observed only -- AgentPulse can't launch or steer it)
 - **Orchestration** -- launch and manage sessions from AgentPulse itself with templates, supervisors, headless tasks, interactive sessions, retries, and host routing
 
 Plus an **AI Labs** layer that's very new and explicitly experimental -- see [the Labs section below](#ai-labs-experimental).
@@ -41,6 +41,9 @@ Your terminal tabs                          AgentPulse dashboard
 ├─────────────────┤                        ├──────────────────────┤
 │ Codex CLI       │──── hook events ──────>│  warm-crane: idle    │
 │ (idle)          │                        │  last: 5m ago        │
+├─────────────────┤                        ├──────────────────────┤
+│ Copilot CLI     │──── hook events ──────>│  quiet-otter: active │
+│ (observed only) │                        │  "review the diff"   │
 └─────────────────┘                        └──────────────────────┘
 ```
 
@@ -543,14 +546,19 @@ Telemetry classification defaults:
 
 Running `curl -sSL .../setup.sh | bash` configures:
 
-1. **Claude Code** -- adds HTTP hooks to `~/.claude/settings.json` for 16 events (SessionStart, Stop, PreToolUse, PostToolUse, PermissionRequest, PreCompact, etc.)
-2. **Codex CLI** -- creates `~/.codex/hooks.json` with 10 events (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop, SubagentStart, SubagentStop, PermissionRequest, PreCompact, PostCompact) and writes the legacy-compat `codex_hooks` flag in `config.toml` (hooks are enabled by default since codex-cli 0.124.0)
-3. **Shell** -- adds `AGENTPULSE_API_KEY` and `AGENTPULSE_URL` to your `.zshrc` or `.bashrc` (if API key provided)
-4. **Verify** -- sends a test event to confirm connectivity
+1. **Claude Code** -- adds HTTP hooks to `~/.claude/settings.json` for 16 events (SessionStart, Stop, PreToolUse, PostToolUse, PermissionRequest, PreCompact, etc.), `async: true`, so they never slow down the agent.
+2. **Codex CLI** -- replaces `~/.codex/hooks.json` with 12 `command`-type events (SessionStart, SessionEnd, PreToolUse, PostToolUse, UserPromptSubmit, Stop, Interrupt, SubagentStart, SubagentStop, PermissionRequest, PreCompact, PostCompact). An existing file is backed up first as `hooks.json.agentpulse-bak.<timestamp>`, never overwritten. Codex 0.145+ requires you to run `/hooks` inside Codex once afterward and trust the AgentPulse entries -- untrusted hooks are silently skipped. Minimum tested version: Codex CLI 0.145. The legacy `codex_hooks` line in `config.toml`, if present from an older AgentPulse setup, is no longer needed and can be deleted.
+3. **Copilot CLI** (detection-gated -- only when `copilot` is on `PATH` or `~/.copilot` exists) -- writes `~/.copilot/hooks/agentpulse.json` with 10 `command`-type events (sessionStart, sessionEnd, userPromptSubmitted, postToolUse, postToolUseFailure, agentStop, subagentStart, subagentStop, preCompact, errorOccurred). `preToolUse` and `permissionRequest` are deliberately not hooked -- Copilot fails closed on those events, and a synchronous AgentPulse outage would otherwise be able to block every tool call. Copilot CLI is observed only: AgentPulse can't launch or steer it.
+4. **Shell** -- adds `AGENTPULSE_API_KEY` and `AGENTPULSE_URL` to your `.zshrc` or `.bashrc` (if API key provided)
+5. **Verify** -- sends a test event to confirm connectivity
 
-All hooks use `async: true` so they never slow down your agents.
+Codex and Copilot hooks are detached `command` handlers, not `async: true` HTTP hooks -- see [Codex/Copilot command hooks](#codexcopilot-command-hooks) below for why. Direct (non-relay) installs store the API key at `~/.agentpulse/hook-auth-header` (mode `0600`), never in the hooks file itself or in argv.
 
-The expanded hook lists above require Claude Code ≥2.1.x / Codex ≥0.124. If you set up AgentPulse before this version, re-run the setup script to pick up the new event names.
+Claude/Codex/Copilot event counts: 16/12/10. If you set up AgentPulse before this version, re-run the setup script to pick up the current event names and hook shape.
+
+### Codex/Copilot command hooks
+
+Codex CLI and Copilot CLI hooks run a small detached shell command instead of AgentPulse's own HTTP hook type (which only Claude Code supports): the command drains the hook payload to a temp file, backgrounds a `curl` POST to AgentPulse, and returns in milliseconds regardless of network conditions -- `curl`'s own `--max-time 2` is a second, independent backstop. It never writes to stdout/stderr (so it can't be mistaken for tool output) and always exits `0` (so a hook can never fail an agent's turn closed). This is why Codex hooks are `"type": "command"` (not `"http"`) and `async: false` with a `timeout` -- the detaching happens inside the command itself, not via Codex's own async hook flag, which Codex 0.145 silently drops for every event except `SessionEnd`.
 
 ## Statusline (optional)
 

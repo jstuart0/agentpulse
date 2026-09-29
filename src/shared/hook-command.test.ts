@@ -8,9 +8,11 @@
 import { describe, expect, test } from "bun:test";
 import {
 	CODEX_EVENT_ORDER,
+	COPILOT_EVENT_ORDER,
 	assertValidHookBaseUrl,
 	buildBashHookCommand,
 	buildCodexHooksFile,
+	buildCopilotHooksFile,
 	buildPowerShellHookCommand,
 } from "./hook-command.js";
 
@@ -240,5 +242,57 @@ describe("buildCodexHooksFile (D12)", () => {
 	test("keys are emitted in CODEX_EVENT_ORDER", () => {
 		const parsed = JSON.parse(buildCodexHooksFile({ baseUrl: BASE, direct: false }));
 		expect(Object.keys(parsed.hooks)).toEqual([...CODEX_EVENT_ORDER]);
+	});
+});
+
+describe("buildCopilotHooksFile (D8/D13, Phase 7)", () => {
+	test("all 10 CopilotEvent members are present, deliberately excludes preToolUse/permissionRequest", () => {
+		const text = buildCopilotHooksFile({ baseUrl: BASE, direct: false });
+		const parsed = JSON.parse(text);
+		expect(Object.keys(parsed.hooks).sort()).toEqual([...COPILOT_EVENT_ORDER].sort());
+		expect(Object.keys(parsed.hooks)).not.toContain("preToolUse");
+		expect(Object.keys(parsed.hooks)).not.toContain("permissionRequest");
+	});
+
+	test("version:1, every handler is type:command with a bash string and timeoutSec:5", () => {
+		const parsed = JSON.parse(buildCopilotHooksFile({ baseUrl: BASE, direct: true }));
+		expect(parsed.version).toBe(1);
+		for (const event of COPILOT_EVENT_ORDER) {
+			const handler = parsed.hooks[event][0];
+			expect(handler.type).toBe("command");
+			expect(typeof handler.bash).toBe("string");
+			expect(handler.timeoutSec).toBe(5);
+			expect(handler.powershell).toBeUndefined();
+		}
+	});
+
+	test("each entry's bash command contains ?event=<its own key> and X-Agent-Type: copilot_cli", () => {
+		const parsed = JSON.parse(buildCopilotHooksFile({ baseUrl: BASE, direct: false }));
+		for (const event of COPILOT_EVENT_ORDER) {
+			const bash = parsed.hooks[event][0].bash as string;
+			expect(bash).toContain(`?event=${event}`);
+			expect(bash).toContain("X-Agent-Type: copilot_cli");
+		}
+	});
+
+	test("includePowerShell adds a powershell string alongside bash", () => {
+		const parsed = JSON.parse(
+			buildCopilotHooksFile({ baseUrl: BASE, direct: true, includePowerShell: true }),
+		);
+		for (const event of COPILOT_EVENT_ORDER) {
+			const handler = parsed.hooks[event][0];
+			expect(typeof handler.bash).toBe("string");
+			expect(typeof handler.powershell).toBe("string");
+		}
+	});
+
+	test("byte-stable across repeated calls", () => {
+		const opts = { baseUrl: BASE, direct: true };
+		expect(buildCopilotHooksFile(opts)).toBe(buildCopilotHooksFile(opts));
+	});
+
+	test("keys are emitted in COPILOT_EVENT_ORDER", () => {
+		const parsed = JSON.parse(buildCopilotHooksFile({ baseUrl: BASE, direct: false }));
+		expect(Object.keys(parsed.hooks)).toEqual([...COPILOT_EVENT_ORDER]);
 	});
 });

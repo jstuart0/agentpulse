@@ -382,8 +382,8 @@ export function SettingsPage() {
 			<section className="border border-border bg-card rounded-lg p-5 mb-6">
 				<h2 className="text-sm font-semibold mb-1">API Keys</h2>
 				<p className="text-xs text-muted-foreground mb-4">
-					API keys authenticate hook events from Claude Code and Codex CLI, and the relay that
-					forwards them from other machines.
+					API keys authenticate hook events from Claude Code, Codex CLI, and Copilot CLI, and the
+					relay that forwards them from other machines.
 				</p>
 
 				{/* New key creation */}

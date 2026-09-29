@@ -97,6 +97,26 @@ sys.stdout.write(json.dumps({"hooks": hooks}, indent=2) + "\n")
 '
 }
 
+ap_copilot_hooks_json() {
+	# $1=base $2=direct(0/1)
+	local base="$1" direct="$2"
+	local COPILOT_EVENTS=("sessionStart" "sessionEnd" "userPromptSubmitted" "postToolUse" "postToolUseFailure" "agentStop" "subagentStart" "subagentStop" "preCompact" "errorOccurred")
+	local event
+	{
+		for event in "${COPILOT_EVENTS[@]}"; do
+			printf '%s\0%s\0' "$event" "$(ap_hook_cmd "$base" "$direct" "copilot_cli" "$event")"
+		done
+	} | python3 -c '
+import json, sys
+data = sys.stdin.buffer.read().split(b"\x00")
+pairs = [(data[i].decode(), data[i + 1].decode()) for i in range(0, len(data) - 1, 2)]
+hooks = {}
+for event, cmd in pairs:
+    hooks[event] = [{"type": "command", "bash": cmd, "timeoutSec": 5}]
+sys.stdout.write(json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\n")
+'
+}
+
 # D13/F57: -H "@$f" needs curl >= 7.55 (silently sends no auth below that).
 # Only direct-mode sh installers call this — relay mode sends no auth header.
 ap_require_curl_755() {
@@ -770,9 +790,32 @@ fi
 # D12: codex_hooks is a deprecated (but still-working) legacy alias for
 # [features].hooks — left alone if present, never newly written.
 
-# D22: when the Codex hooks were last written, so the relay can tell
-# "installed but never fired" apart from "not used".
-AP_INSTALLED="$RELAY_DIR/installed.json" python3 -c '
+# Copilot CLI (D8): only written when copilot is detected — never create
+# config for a tool that isn't installed.
+COPILOT_WRITTEN="0"
+if command -v copilot >/dev/null 2>&1 || [[ -d "$HOME/.copilot" ]]; then
+  COPILOT_DIR="$HOME/.copilot/hooks"
+  COPILOT_HOOKS_FILE="$COPILOT_DIR/agentpulse.json"
+  mkdir -p "$COPILOT_DIR"
+
+  NEW_COPILOT_HOOKS_JSON="$(ap_copilot_hooks_json "http://localhost:${PORT}" "0")"
+  if [[ -f "$COPILOT_HOOKS_FILE" ]] && [[ "$(cat "$COPILOT_HOOKS_FILE")" == "$NEW_COPILOT_HOOKS_JSON" ]]; then
+    echo "  ✓ Copilot hooks unchanged"
+  else
+    if [[ -f "$COPILOT_HOOKS_FILE" ]]; then
+      COPILOT_BACKUP_FILE="$COPILOT_HOOKS_FILE.agentpulse-bak.$(date -u +%Y%m%dT%H%M%SZ)"
+      cp "$COPILOT_HOOKS_FILE" "$COPILOT_BACKUP_FILE"
+      echo "  ✓ Backed up existing Copilot hooks to $COPILOT_BACKUP_FILE"
+    fi
+    printf '%s\n' "$NEW_COPILOT_HOOKS_JSON" > "$COPILOT_HOOKS_FILE"
+    echo "  ✓ Copilot CLI hooks → localhost:$PORT"
+  fi
+  COPILOT_WRITTEN="1"
+fi
+
+# D22: when the Codex/Copilot hooks were last written, so the relay can
+# tell "installed but never fired" apart from "not used".
+AP_INSTALLED="$RELAY_DIR/installed.json" AP_COPILOT_WRITTEN="$COPILOT_WRITTEN" python3 -c '
 import json, os
 from datetime import datetime, timezone
 path = os.environ["AP_INSTALLED"]
@@ -785,7 +828,10 @@ except Exception:
     state = {}
 now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 state["codexHooksWrittenAt"] = now
-state.setdefault("copilotHooksWrittenAt", None)
+if os.environ.get("AP_COPILOT_WRITTEN") == "1":
+    state["copilotHooksWrittenAt"] = now
+else:
+    state.setdefault("copilotHooksWrittenAt", None)
 tmp = path + ".tmp"
 fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w") as f:

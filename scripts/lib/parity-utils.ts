@@ -16,6 +16,40 @@ export function extractQuotedTokens(slice: string): string[] {
 }
 
 /**
+ * Copilot's registered-event names are camelCase (e.g. "sessionStart"),
+ * not the PascalCase shape extractQuotedTokens enforces — a separate
+ * extractor rather than loosening the shared PascalCase one, which stays
+ * strict for Claude/Codex's actual shape.
+ */
+export function extractQuotedTokensCamelCase(slice: string): string[] {
+	return [...slice.matchAll(/"([a-z][A-Za-z]+)"/g)].map((m) => m[1]);
+}
+
+/** extractQuotedListBlocks, but for Copilot's camelCase marker shape. */
+export function extractQuotedListBlocksCamelCase(
+	content: string,
+	marker: RegExp,
+	terminator: string,
+): string[][] {
+	const blocks: string[][] = [];
+	const globalMarker = new RegExp(
+		marker.source,
+		marker.flags.includes("g") ? marker.flags : `${marker.flags}g`,
+	);
+	let match: RegExpExecArray | null;
+	// biome-ignore lint/suspicious/noAssignInExpressions: standard regex-exec loop idiom
+	while ((match = globalMarker.exec(content)) !== null) {
+		const start = match.index + match[0].length;
+		const end = content.indexOf(terminator, start);
+		if (end === -1) continue;
+		const slice = content.slice(start, end);
+		blocks.push(extractQuotedTokensCamelCase(slice));
+		globalMarker.lastIndex = end;
+	}
+	return blocks;
+}
+
+/**
  * Find every non-overlapping occurrence of `marker` in `content`, and for
  * each, extract quoted PascalCase tokens between the marker and the next
  * `terminator` character. Returns one array of event names per occurrence.
