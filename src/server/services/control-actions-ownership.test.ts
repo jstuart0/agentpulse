@@ -203,6 +203,40 @@ describe("queuePromptAction rejects a forged launch pointer (D12)", () => {
 	});
 });
 
+// F47 (Medium, xander spot check on F44): retryLaunchForSession must apply
+// the same D12 cross-host guard queuePromptAction does — mirrors the
+// forged-pointer test above.
+describe("retryLaunchForSession rejects a forged launch pointer (D12/F47)", () => {
+	test("managed.launchRequestId naming a launch for a different session throws, clones nothing", async () => {
+		const sessionId = "d12-retry-forged-sess";
+		const otherLaunch = await seedOwnedLaunch("d12-retry-other-sess", "sup-A");
+		await seedManagedRowRaw(sessionId, "sup-A", otherLaunch.launchId);
+
+		await expect(retryLaunchForSession(sessionId)).rejects.toThrow(
+			"Launch request does not match session.",
+		);
+
+		const rows = await getDb()
+			.select()
+			.from(controlActions)
+			.where(eq(controlActions.sessionId, sessionId));
+		expect(rows.length).toBe(0);
+		// No clone was inserted for the forged pointer's own launch either —
+		// only the two legitimate launches from setup exist.
+		const launches = await getDb().select().from(launchRequests);
+		expect(launches.length).toBe(1);
+	});
+
+	test("happy path (matching launch) is unchanged", async () => {
+		const sessionId = "d12-retry-happy-sess";
+		const launch = await seedOwnedLaunch(sessionId, "sup-A");
+		await seedManagedRowRaw(sessionId, "sup-A", launch.launchId);
+
+		const result = await retryLaunchForSession(sessionId);
+		expect(result.launchRequest.retryOfLaunchRequestId).toBe(launch.launchId);
+	});
+});
+
 describe("F44: queuePromptAction/retryLaunchForSession resolve the legacy launchRequestId=sessionId fallback", () => {
 	test("a state report with no launchRequestId (fallback shape) — prompt, then retry, both succeed", async () => {
 		const sessionId = "f44-happy-sess";
