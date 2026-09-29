@@ -26,6 +26,9 @@ const RUN_TIMEOUT = 60_000;
 
 const INGEST_ONLY_KEY = "ap_testIngestOnlyKey";
 const RELAY_KEY = "ap_testRelayKey";
+/** Authenticated per HTTP status, but the body says neither authenticated nor scopes. */
+const ODD_KEY = "ap_testNoAuthFlagKey";
+const KEY_PROMPT = "API key (Hook ingest + Observe)";
 const POLICY_LINE = (policy: string) =>
 	`Codex names: ${policy} — pass --codex-names agentpulse|codex to change`;
 
@@ -33,6 +36,9 @@ let root: string;
 let stubDir: string;
 let authServer: ReturnType<typeof Bun.serve>;
 let authUrl: string;
+let openServer: ReturnType<typeof Bun.serve>;
+let openUrl: string;
+let servedBody: string | null = null;
 let seenAuthHeaders: string[] = [];
 let homeCounter = 0;
 
@@ -41,6 +47,7 @@ function scopesFor(auth: string | null): Response {
 		return Response.json({ authenticated: false, user: null, disableAuth: false });
 	}
 	const key = auth.replace(/^Bearer /, "");
+	if (key === ODD_KEY) return Response.json({ user: { name: "test" } });
 	const scopes =
 		key === INGEST_ONLY_KEY ? ["ingest"] : key === RELAY_KEY ? ["ingest", "observe"] : null;
 	if (!scopes) return Response.json({ error: "Invalid API key" }, { status: 401 });
@@ -83,13 +90,22 @@ type RunResult = { code: number | null; out: string; stubLog: string };
 async function runInstaller(
 	home: string,
 	args: string[],
-	opts: { uname?: "Darwin" | "Linux"; script?: string } = {},
+	opts: {
+		uname?: "Darwin" | "Linux";
+		script?: string;
+		env?: Record<string, string>;
+		/** Run as `curl -sS <url> | bash -s -- <args>`, the way users do. */
+		pipeFrom?: string;
+	} = {},
 ): Promise<RunResult> {
 	const stubLog = join(home, "..", `stub-${relative(root, home)}.log`);
 	await writeFile(stubLog, "");
 	const tmp = join(root, `tmp-${relative(root, home)}`);
 	await mkdir(tmp, { recursive: true });
-	const proc = Bun.spawn(["bash", opts.script ?? INSTALLER, ...args], {
+	const cmd = opts.pipeFrom
+		? ["bash", "-c", 'curl -sS "$AP_PIPE_URL" | bash -s -- "$@"', "installer", ...args]
+		: ["bash", opts.script ?? INSTALLER, ...args];
+	const proc = Bun.spawn(cmd, {
 		stdout: "pipe",
 		stderr: "pipe",
 		env: {
@@ -98,6 +114,10 @@ async function runInstaller(
 			TMPDIR: tmp,
 			AP_STUB_LOG: stubLog,
 			AP_TEST_UNAME: opts.uname ?? "Darwin",
+			// Never the developer's terminal: a prompt would hang the test.
+			AGENTPULSE_TTY: join(root, "no-tty"),
+			...(opts.pipeFrom ? { AP_PIPE_URL: opts.pipeFrom } : {}),
+			...opts.env,
 		},
 	});
 	const [stdout, stderr] = await Promise.all([
@@ -141,14 +161,39 @@ beforeAll(async () => {
 				if (auth) seenAuthHeaders.push(auth);
 				return scopesFor(auth);
 			}
+			if (url.pathname === "/setup-relay.sh" && servedBody !== null) {
+				return new Response(servedBody);
+			}
 			return new Response("not found", { status: 404 });
 		},
 	});
 	authUrl = `http://127.0.0.1:${authServer.port}`;
+	openServer = Bun.serve({
+		port: 0,
+		fetch: () => Response.json({ authenticated: false, user: null, disableAuth: true }),
+	});
+	openUrl = `http://127.0.0.1:${openServer.port}`;
 });
+
+/** The body /setup-relay.sh serves, with PUBLIC_URL pointed at the stub server. */
+async function serveInstallerBody() {
+	const saved = { publicUrl: config.publicUrl, explicit: config.publicUrlExplicit };
+	config.publicUrl = authUrl;
+	config.publicUrlExplicit = true;
+	try {
+		const res = await setup.request("/setup-relay.sh", { headers: { Host: "attacker.example" } });
+		expect(res.status).toBe(200);
+		servedBody = await res.text();
+		return servedBody;
+	} finally {
+		config.publicUrl = saved.publicUrl;
+		config.publicUrlExplicit = saved.explicit;
+	}
+}
 
 afterAll(async () => {
 	authServer?.stop(true);
+	openServer?.stop(true);
 	await rm(root, { recursive: true, force: true });
 });
 
@@ -380,20 +425,7 @@ describe("an ingest+observe key installs the relay, statusline and service", () 
 	test(
 		"the body served by /setup-relay.sh installs the same bytes with no checkout beside it",
 		async () => {
-			const saved = { publicUrl: config.publicUrl, explicit: config.publicUrlExplicit };
-			config.publicUrl = authUrl;
-			config.publicUrlExplicit = true;
-			let body: string;
-			try {
-				const res = await setup.request("/setup-relay.sh", {
-					headers: { Host: "attacker.example" },
-				});
-				expect(res.status).toBe(200);
-				body = await res.text();
-			} finally {
-				config.publicUrl = saved.publicUrl;
-				config.publicUrlExplicit = saved.explicit;
-			}
+			const body = await serveInstallerBody();
 			const lonely = join(root, `served-${homeCounter}`);
 			await mkdir(lonely, { recursive: true });
 			const script = join(lonely, "setup-relay.sh");
@@ -451,5 +483,122 @@ describe("--codex-names round-trip (contract Phase 4 item 6, parsed config.json)
 			expect(fresh.out).toContain(POLICY_LINE("codex"));
 		},
 		RUN_TIMEOUT * 2,
+	);
+});
+
+describe("key handling (F167, F168, F169)", () => {
+	test(
+		"AGENTPULSE_KEY supplies the key without --key, and it never reaches the output",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const res = await runInstaller(home, ["--url", authUrl, "--port", String(port)], {
+				env: { AGENTPULSE_KEY: RELAY_KEY },
+			});
+			expect(res.code).toBe(0);
+			expect((await readJson(join(home, ".agentpulse", "config.json"))).api_key).toBe(RELAY_KEY);
+			expect(res.out).not.toContain(RELAY_KEY);
+			expect(res.out).not.toContain(KEY_PROMPT);
+			// A loopback http:// server gets no plain-http warning.
+			expect(res.out).not.toContain("plain http://");
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"with no key and no terminal, it says how to pass one and writes nothing",
+		async () => {
+			const home = await newHome();
+			const res = await runInstaller(home, ["--url", authUrl]);
+			expect(res.code).not.toBe(0);
+			expect(res.out).toContain("--key");
+			expect(res.out).toContain("AGENTPULSE_KEY");
+			expect(await listTree(home)).toEqual([]);
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"with no key, it asks on the terminal and uses what's typed",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const tty = join(root, `tty-${homeCounter}`);
+			await writeFile(tty, `${RELAY_KEY}\n`);
+			const res = await runInstaller(home, ["--url", authUrl, "--port", String(port)], {
+				env: { AGENTPULSE_TTY: tty },
+			});
+			expect(res.code).toBe(0);
+			expect(res.out).toContain(KEY_PROMPT);
+			expect(res.out).not.toContain(RELAY_KEY);
+			expect((await readJson(join(home, ".agentpulse", "config.json"))).api_key).toBe(RELAY_KEY);
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"a server with auth disabled needs no key, so nothing is asked",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const tty = join(root, `tty-open-${homeCounter}`);
+			await writeFile(tty, "ap_shouldNeverBeRead\n");
+			const res = await runInstaller(home, ["--url", openUrl, "--port", String(port)], {
+				env: { AGENTPULSE_TTY: tty },
+			});
+			expect(res.code).toBe(0);
+			expect(res.out).not.toContain(KEY_PROMPT);
+			expect((await readJson(join(home, ".agentpulse", "config.json"))).api_key).toBe("");
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"F168: an answer that isn't an authenticated identity is refused, not taken for an older server",
+		async () => {
+			const home = await newHome();
+			const res = await runInstaller(home, ["--url", authUrl, "--key", ODD_KEY]);
+			expect(res.code).not.toBe(0);
+			expect(res.out).toContain("unexpected answer");
+			expect(res.out).not.toContain("older server");
+			expect(await listTree(home)).toEqual([]);
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"F169: a key bound for a non-loopback http:// server gets a warning first",
+		async () => {
+			const home = await newHome();
+			const res = await runInstaller(home, [
+				"--url",
+				"http://agentpulse.invalid",
+				"--key",
+				RELAY_KEY,
+			]);
+			expect(res.out).toContain("plain http://");
+			expect(res.code).not.toBe(0);
+			expect(await listTree(home)).toEqual([]);
+		},
+		RUN_TIMEOUT,
+	);
+});
+
+describe("F184: curl | bash", () => {
+	test(
+		"a refusal ends cleanly: bash has read the whole script, so curl never hits a closed pipe",
+		async () => {
+			await serveInstallerBody();
+			const home = await newHome();
+			const res = await runInstaller(home, ["--key", INGEST_ONLY_KEY], {
+				pipeFrom: `${authUrl}/setup-relay.sh`,
+			});
+			expect(res.code).not.toBe(0);
+			expect(res.out).toContain("Observe (read-only)");
+			expect(res.out).not.toContain("(23)");
+			expect(res.out).not.toContain("Failure writing output");
+			expect(await listTree(home)).toEqual([]);
+		},
+		RUN_TIMEOUT,
 	);
 });

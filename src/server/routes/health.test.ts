@@ -70,24 +70,15 @@ describe("GET /health — clients checksums", () => {
 		expect(body.status).toBe("ok");
 	});
 
-	// F83 (tessa mid-build): the "missing file -> clients absent" branch,
-	// disclosed as untested in the Phase 2 red commit. computeClientChecksums
-	// takes an injectable reader, so this exercises the real omission logic
-	// without mocking node:fs globally (which risked destabilizing unrelated
-	// tests sharing this process).
-	test("a missing file's key is omitted, and the function never rejects (so the route can never fail because of it)", async () => {
-		const relayPath = join(import.meta.dir, "../../../scripts/relay.ts");
-		const statuslinePath = join(import.meta.dir, "../../../scripts/statusline.sh");
-		const fakeReader = async (path: string) => {
-			if (path === relayPath) throw new Error("ENOENT: no such file");
-			if (path === statuslinePath) return "#!/bin/sh\necho ok\n";
-			throw new Error(`unexpected path: ${path}`);
-		};
-
-		const clients = await computeClientChecksums(fakeReader);
-
-		expect("relay" in clients).toBe(false);
-		expect(typeof clients.statusline).toBe("string");
-		expect(clients.statusline).toMatch(/^[0-9a-f]{16}$/);
+	// F165: the checksums come from the installer sources embedded at build
+	// time, the same strings /setup-relay.sh splices in, so there's no file to
+	// be missing and the served relay can't drift from what /health reports.
+	test("clients hash the embedded installer sources", async () => {
+		const { INSTALLER_SOURCES } = await import("../installers.js");
+		const clients = await computeClientChecksums();
+		expect(clients).toEqual({
+			relay: await computeChecksum(INSTALLER_SOURCES.relay, { trimEnd: true }),
+			statusline: await computeChecksum(INSTALLER_SOURCES.statusline, { trimEnd: true }),
+		});
 	});
 });
