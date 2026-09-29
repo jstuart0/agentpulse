@@ -2086,6 +2086,8 @@ describe("mid-tick index race (F145)", () => {
 		stops.push(stub.stop);
 		const ctx = await makeCtx({ remote: stub.url, now: () => T0 });
 		await writeFile(indexPath(), "");
+		// F155: an earlier slot for s1 must survive the hand-back untouched.
+		ctx.state.pushGuard = { s1: [T0 - 1000] };
 		await R.syncCodexNamesTick(ctx);
 
 		const rows = await readJsonl(indexPath());
@@ -2094,7 +2096,7 @@ describe("mid-tick index race (F145)", () => {
 		expect(rows.filter((r) => r.id === "s2").map((r) => r.thread_name)).toEqual(["calm-otter"]);
 		const ledger = await readJsonl(join(tmp, "state", "codex-pushed.jsonl"));
 		expect(ledger.map((r) => r.id)).toEqual(["s2"]);
-		expect(ctx.state.pushGuard.s1).toBeUndefined();
+		expect(ctx.state.pushGuard.s1).toEqual([T0 - 1000]);
 		expect(ctx.state.pushGuard.s2).toEqual([T0]);
 
 		// Next tick: Codex's title stands under the codex policy.
@@ -2184,7 +2186,12 @@ describe("relay state bounds (F148, F149)", () => {
 		await R.pushCodexNames(ctx);
 		expect(await readJsonl(ledgerFile)).toHaveLength(21);
 
-		now = T0 + 25 * HOUR;
+		// F157: the window is exactly 24 h, half-open.
+		now = T0 + 24 * HOUR - 1;
+		await R.pushCodexNames(ctx);
+		expect(await readJsonl(ledgerFile)).toHaveLength(21);
+
+		now = T0 + 24 * HOUR;
 		await R.pushCodexNames(ctx);
 		expect(await readJsonl(ledgerFile)).toEqual([kept]);
 	});
@@ -2475,12 +2482,15 @@ describe("delivery-id header for the server's dedup (AGEN-16 handoff)", () => {
 
 		const hookCalls = stub.requests.filter((r) => r.path === "/api/v1/hooks");
 		expect(hookCalls).toHaveLength(2);
-		const ids = hookCalls.map((r) => r.headers["x-agentpulse-delivery-id"]);
+		// F158: the literal the event-dedup server asserts too.
+		expect(R.DELIVERY_ID_HEADER).toBe("X-AgentPulse-Delivery-Id");
+		const header = R.DELIVERY_ID_HEADER.toLowerCase();
+		const ids = hookCalls.map((r) => r.headers[header]);
 		expect(ids).toEqual([queued.queueId, queued.queueId]);
 
 		await fetch(`${base}/api/v1/sessions/abc`);
 		const read = stub.requests.find((r) => r.path === "/api/v1/sessions/abc");
-		expect(read?.headers["x-agentpulse-delivery-id"]).toBeUndefined();
+		expect(read?.headers[header]).toBeUndefined();
 
 		// Exactly /api/v1/hooks: a queued /hooks/status forward carries no id.
 		await fetch(`${base}/api/v1/hooks/status`, {
@@ -2490,6 +2500,65 @@ describe("delivery-id header for the server's dedup (AGEN-16 handoff)", () => {
 		await R.processHookQueue(relay.ctx);
 		const statusCall = stub.requests.find((r) => r.path === "/api/v1/hooks/status");
 		expect(statusCall).toBeDefined();
-		expect(statusCall?.headers["x-agentpulse-delivery-id"]).toBeUndefined();
+		expect(statusCall?.headers[header]).toBeUndefined();
+	});
+});
+
+describe("final residuals (F152, F153)", () => {
+	test("F152: startup chmod never follows a symlink (files, state dir, config)", async () => {
+		const R = await mod();
+		const { chmod } = await import("node:fs/promises");
+		const realState = join(tmp, "real-state");
+		await mkdir(realState, { recursive: true });
+		await chmod(realState, 0o755);
+		const stateLink = join(tmp, "state-link");
+		await symlink(realState, stateLink);
+		const outside = join(tmp, "outside.txt");
+		await writeFile(outside, "x");
+		await chmod(outside, 0o644);
+		await symlink(outside, join(realState, "status"));
+		const configTarget = join(tmp, "config-target.json");
+		await writeFile(configTarget, "{}");
+		await chmod(configTarget, 0o644);
+		const configLink = join(tmp, "config-link.json");
+		await symlink(configTarget, configLink);
+		const relay = await R.startRelay(
+			{
+				remoteUrl: "https://ap.example.com",
+				apiKey: "k",
+				port: 0,
+				codexNamePolicy: "codex",
+				stateDir: stateLink,
+				configPath: configLink,
+			},
+			{ timers: false, env: { HOME: join(tmp, "home") }, scriptPath: RELAY_PATH, log: () => {} },
+		);
+		stops.push(() => relay.stop());
+		const mode = async (p: string) => ((await stat(p)).mode & 0o777).toString(8);
+		expect(await mode(outside)).toBe("644");
+		expect(await mode(configTarget)).toBe("644");
+		expect(await mode(realState)).toBe("755");
+	});
+
+	test("F153: a malformed config.json is reported without echoing its content", async () => {
+		const dir = join(tmp, "badcfg");
+		await mkdir(dir, { recursive: true });
+		const secret = "ap_leakcheck0123456789abcdef";
+		const cfg = join(dir, "config.json");
+		await writeFile(cfg, `{"api_key": "${secret}", "remote_url": `);
+		const proc = Bun.spawn([process.execPath, RELAY_PATH, "--config", cfg, "--port", "0"], {
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: join(tmp, "home") },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [out, err] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
+		await proc.exited;
+		expect(proc.exitCode).toBe(1);
+		expect(err).toContain(`invalid JSON in ${cfg}`);
+		expect(`${out}${err}`).not.toContain(secret);
+		expect(`${out}${err}`).not.toContain("ap_leak");
 	});
 });

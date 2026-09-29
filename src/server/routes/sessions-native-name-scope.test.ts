@@ -14,6 +14,7 @@ const { createApiKey, SCOPE_INGEST, SCOPE_OBSERVE } = await import("../auth/api-
 const { _resetBucketsForTest, _setRateLimitClockForTest, RATE_LIMIT_CAPACITY, tryConsume } =
 	await import("../middleware/hook-rate-limit.js");
 const { eq } = await import("drizzle-orm");
+const { getRateLimitedDropped } = await import("./ingest-counters.js");
 
 const originalDisableAuth = config.disableAuth;
 
@@ -198,16 +199,21 @@ describe("PUT /sessions/:id/native-name — rate limit (D20, F26)", () => {
 	});
 
 	test("/hooks stays silent-200 on its own rate limit even after /native-name's limiter changes (default onLimit unaffected)", async () => {
-		const { key } = await createApiKey("rl-hooks-key", [SCOPE_INGEST]);
-		let lastRes: Response | undefined;
-		for (let i = 0; i < 101; i++) {
-			lastRes = await app.request("/api/v1/hooks", {
-				method: "POST",
-				headers: authBearer(key),
-				body: JSON.stringify({ session_id: "rl-hooks-s1", hook_event_name: "UserPromptSubmit" }),
-			});
-		}
-		expect(lastRes?.status).toBe(200);
+		const { key, id } = await createApiKey("rl-hooks-key", [SCOPE_INGEST]);
+		// F156: freeze the clock and drain /hooks' own (unprefixed) bucket, so
+		// the next call really is rate-limited on any backend.
+		const frozen = Date.now();
+		_setRateLimitClockForTest(() => frozen);
+		for (let i = 0; i < RATE_LIMIT_CAPACITY; i++) expect(tryConsume(id)).toBe(true);
+		const droppedBefore = getRateLimitedDropped();
+		const res = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: authBearer(key),
+			body: JSON.stringify({ session_id: "rl-hooks-s1", hook_event_name: "UserPromptSubmit" }),
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ ok: true });
+		expect(getRateLimitedDropped()).toBe(droppedBefore + 1);
 	});
 });
 

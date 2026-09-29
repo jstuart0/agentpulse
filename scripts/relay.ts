@@ -103,6 +103,13 @@ export type RelayConfig = {
 
 export type ParseResult = { ok: true; config: RelayConfig } | { ok: false; error: string };
 
+/**
+ * AGEN-16: stamped on queued forwards to exactly /api/v1/hooks with the queue
+ * item's id (stable across retries). The event-dedup server asserts the same
+ * literal (F158).
+ */
+export const DELIVERY_ID_HEADER = "X-AgentPulse-Delivery-Id";
+
 /** RFC 6750 b64token: what a Bearer credential may contain. */
 const API_KEY_TOKEN_RE = /^[A-Za-z0-9._~+/-]+=*$/;
 
@@ -520,7 +527,10 @@ async function writeFileNoFollow(path: string, content: string) {
 	if (kind !== "file" && kind !== "missing")
 		throw new Error(`refusing to write through ${kind}: ${path}`);
 	const seen = kind === "file" ? await lstat(path) : null;
-	const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | O_NOFOLLOW, 0o644);
+	// F154: a file that appears after lstat said "missing" makes open fail
+	// (EEXIST) instead of being written through.
+	const createFlags = kind === "missing" ? constants.O_CREAT | constants.O_EXCL : 0;
+	const handle = await open(path, constants.O_WRONLY | createFlags | O_NOFOLLOW, 0o644);
 	try {
 		const opened = await handle.stat();
 		assertSameFile(path, seen ?? (await lstat(path)), opened);
@@ -1662,7 +1672,7 @@ async function forwardApiRequest(
 	if (ctx.config.apiKey) headers.set("Authorization", `Bearer ${ctx.config.apiKey}`);
 	if (input.agentType) headers.set("X-Agent-Type", input.agentType);
 	if (input.deliveryId && input.pathname === "/api/v1/hooks") {
-		headers.set("X-AgentPulse-Delivery-Id", input.deliveryId);
+		headers.set(DELIVERY_ID_HEADER, input.deliveryId);
 	}
 
 	const response = await ctx.fetch(`${ctx.config.remoteUrl}${input.pathname}${input.search}`, {
@@ -1981,8 +1991,13 @@ async function tightenStateModes(ctx: RelayContext) {
 			for (const name of await readdir(dir)) files.push(join(dir, name));
 		} catch {}
 	}
+	// F152: lstat first; symlinks and entries of the wrong type are skipped, so
+	// a link planted in the state dir can't redirect the chmod.
 	const apply = async (path: string, mode: number) => {
 		try {
+			const st = await lstat(path);
+			if (st.isSymbolicLink()) return;
+			if (mode === PRIVATE_DIR_MODE ? !st.isDirectory() : !st.isFile()) return;
 			await chmod(path, mode);
 		} catch (err) {
 			if ((err as { code?: string }).code !== "ENOENT") {
@@ -2150,6 +2165,9 @@ function parseSyncMs(raw: string | undefined) {
 	return raw && Number.isFinite(n) && n > 0 ? n : DEFAULT_SYNC_MS;
 }
 
+/** The key main() started with, so a fatal error message can be redacted. */
+let mainApiKey = "";
+
 async function main(argv: string[]) {
 	const configPath = findConfigPath(argv);
 	let fileConfig: RelayFileConfig = {};
@@ -2157,7 +2175,16 @@ async function main(argv: string[]) {
 		try {
 			fileConfig = await loadConfigFile(configPath);
 		} catch (err) {
-			console.error(`relay: can't read ${configPath}: ${errorMessage(err)}`);
+			// F153: never echo the parser's message; it can quote the file,
+			// key included.
+			const code = (err as { code?: string }).code;
+			console.error(
+				err instanceof SyntaxError
+					? `relay: invalid JSON in ${configPath}`
+					: code
+						? `relay: can't read ${configPath} (${code})`
+						: `relay: invalid config in ${configPath}`,
+			);
 			process.exit(1);
 		}
 	}
@@ -2170,6 +2197,7 @@ async function main(argv: string[]) {
 		console.error(USAGE);
 		process.exit(1);
 	}
+	mainApiKey = parsed.config.apiKey;
 	const syncMs = parseSyncMs(process.env.AGENTPULSE_RELAY_SYNC_MS);
 	const relay = await startRelay(parsed.config, { syncMs });
 	const { config } = relay.ctx;
@@ -2191,7 +2219,8 @@ async function main(argv: string[]) {
 
 if (import.meta.main) {
 	main(process.argv.slice(2)).catch((err) => {
-		console.error(`relay: ${errorMessage(err)}`);
+		const message = errorMessage(err);
+		console.error(`relay: ${mainApiKey ? message.split(mainApiKey).join("[redacted]") : message}`);
 		process.exit(1);
 	});
 }
