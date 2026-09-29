@@ -1,7 +1,8 @@
 import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import type { AgentType, SessionStatus } from "../../shared/types.js";
+import { AGENT_TYPES } from "../../shared/constants.js";
+import type { SessionStatus } from "../../shared/types.js";
 import { type AuthUser, requireAuth } from "../auth/middleware.js";
 import { callerHasManageScope, requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
@@ -21,6 +22,7 @@ import {
 	getStats,
 	renameSession,
 } from "../services/session-tracker.js";
+import { InvalidAgentTypeQueryError, parseAgentTypeQuery } from "./agent-type-query.js";
 
 const sessionsRouter = new Hono();
 sessionsRouter.use("*", requireAuth());
@@ -35,7 +37,15 @@ sessionsRouter.use("*", requireOperatorScope());
 // GET /api/v1/sessions - List sessions
 sessionsRouter.get("/sessions", async (c) => {
 	const status = c.req.query("status") as SessionStatus | undefined;
-	const agentType = c.req.query("agent_type") as AgentType | undefined;
+	let agentType: ReturnType<typeof parseAgentTypeQuery>;
+	try {
+		agentType = parseAgentTypeQuery(c.req.query("agent_type"));
+	} catch (err) {
+		if (err instanceof InvalidAgentTypeQueryError) {
+			return c.json({ error: "invalid_agent_type", value: err.value, allowed: AGENT_TYPES }, 400);
+		}
+		throw err;
+	}
 	const projectId = c.req.query("projectId") as string | undefined;
 	const limit = Number(c.req.query("limit") || 50);
 	const offset = Number(c.req.query("offset") || 0);

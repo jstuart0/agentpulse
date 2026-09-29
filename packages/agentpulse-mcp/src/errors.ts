@@ -112,6 +112,25 @@ const ERROR_TABLE: ReadonlyArray<{
 		error: "ai_paused",
 		message: "AI is paused (kill switch active) on this AgentPulse instance.",
 	},
+	// AGEN-44: sessions/templates/search reject an unrecognized agent_type
+	// with {error, value, allowed} and no `message` — without this row the
+	// generic 4xx fallback below would surface only the bare code, dropping
+	// the value/allowed context a caller needs to fix the request.
+	{
+		status: 400,
+		error: "invalid_agent_type",
+		message: (body) => {
+			const value =
+				body && typeof body === "object" && "value" in body
+					? String((body as { value?: unknown }).value)
+					: "unknown";
+			const allowed =
+				body && typeof body === "object" && Array.isArray((body as { allowed?: unknown }).allowed)
+					? (body as { allowed: unknown[] }).allowed.join(", ")
+					: undefined;
+			return `AgentPulse rejected agent_type "${value}"${allowed ? ` — allowed values: ${allowed}` : ""}.`;
+		},
+	},
 	// Deliberately NO row for (503, "ai_kill_switch_active") — that code was
 	// never shipped (ai-gates.ts:12-41). It falls through to the generic
 	// 5xx handler below, which is the correct behavior for any unrecognized
