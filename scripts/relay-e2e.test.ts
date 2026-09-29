@@ -71,12 +71,19 @@ async function waitFor<T>(
 async function spawnRelay(
 	name: string,
 	key: string,
-	opts: { policy?: "agentpulse" | "codex"; extraArgs?: string[]; reuse?: boolean } = {},
+	opts: {
+		policy?: "agentpulse" | "codex";
+		extraArgs?: string[];
+		reuse?: boolean;
+		/** Put config.json (and so the state dir) at <home>/.agentpulse, the installer default. */
+		configInHome?: boolean;
+	} = {},
 ): Promise<RelayProc> {
-	const dir = join(root, name);
-	const home = join(dir, "home");
+	const home = join(root, name, "home");
+	const dir = opts.configInHome ? join(home, ".agentpulse") : join(root, name);
 	if (!opts.reuse) {
 		await mkdir(join(home, ".codex"), { recursive: true });
+		await mkdir(dir, { recursive: true });
 		await writeFile(
 			join(dir, "config.json"),
 			JSON.stringify({
@@ -159,7 +166,11 @@ async function postHook(relay: RelayProc, agentType: string, payload: Record<str
 	expect(res.status).toBe(200);
 }
 
-async function runStatusline(relay: RelayProc, input: Record<string, unknown>) {
+async function runStatusline(
+	relay: RelayProc,
+	input: Record<string, unknown>,
+	opts: { homeOnly?: boolean } = {},
+) {
 	const proc = Bun.spawn(["bash", STATUSLINE], {
 		stdin: new TextEncoder().encode(JSON.stringify(input)),
 		stdout: "pipe",
@@ -168,7 +179,7 @@ async function runStatusline(relay: RelayProc, input: Record<string, unknown>) {
 			PATH: process.env.PATH ?? "/usr/bin:/bin",
 			HOME: relay.home,
 			AGENTPULSE_PORT: String(relay.port),
-			AGENTPULSE_DIR: relay.dir,
+			...(opts.homeOnly ? {} : { AGENTPULSE_DIR: relay.dir }),
 		},
 	});
 	const out = await new Response(proc.stdout).text();
@@ -224,6 +235,7 @@ async function sessionNamed(id: string, name: string) {
 }
 
 const CLAUDE_ID = "e2e-claude-0001";
+const STRANGER_ID = "e2e-stranger-0001";
 const CODEX3_ID = "019a0000-0000-7000-8000-000000000003";
 const CODEX6_ID = "019a0000-0000-7000-8000-000000000006";
 const CODEX7_ID = "019a0000-0000-7000-8000-000000000007";
@@ -263,6 +275,55 @@ describe("relay e2e", () => {
 			});
 			const s = await waitFor("claude session", () => getSession(CLAUDE_ID));
 			expect(s.agentType).toBe("claude_code");
+			// F113: real drift check against the real server's /health clients.
+			const drift = await waitFor("drift checked", async () => {
+				const res = await fetch(`${relay1.base}/api/v1/relay/diagnostics`);
+				const d = (await res.json()) as { drift: { relay: string } };
+				return d.drift.relay !== "unknown" ? d.drift : undefined;
+			});
+			expect(drift.relay).toBe("ok");
+		},
+		SCENARIO_TIMEOUT,
+	);
+
+	test(
+		"1b. CLAUDE.md download round-trip for a forwarded session; a server-only session is never written (F113, F106)",
+		async () => {
+			const cwd = join(root, "claude-proj");
+			await mkdir(cwd, { recursive: true });
+			const content = "# from the server\n\nline two — é\n";
+			await manage(`/api/v1/sessions/${CLAUDE_ID}/claude-md`, {
+				content,
+				path: join(cwd, "CLAUDE.md"),
+			});
+			await waitFor("CLAUDE.md written", async () => {
+				const f = Bun.file(join(cwd, "CLAUDE.md"));
+				return (await f.exists()) && (await f.text()) === content;
+			});
+
+			const strangerCwd = join(root, "stranger-proj");
+			await mkdir(strangerCwd, { recursive: true });
+			const direct = await fetch(`${serverUrl}/api/v1/hooks`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${relayKey}`,
+					"Content-Type": "application/json",
+					"X-Agent-Type": "claude_code",
+				},
+				body: JSON.stringify({
+					session_id: STRANGER_ID,
+					hook_event_name: "SessionStart",
+					cwd: strangerCwd,
+				}),
+			});
+			expect(direct.status).toBe(200);
+			await waitFor("stranger session", () => getSession(STRANGER_ID));
+			await manage(`/api/v1/sessions/${STRANGER_ID}/claude-md`, {
+				content: "# should never land\n",
+				path: join(strangerCwd, "CLAUDE.md"),
+			});
+			await Bun.sleep(1200);
+			expect(await Bun.file(join(strangerCwd, "CLAUDE.md")).exists()).toBe(false);
 		},
 		SCENARIO_TIMEOUT,
 	);
@@ -327,7 +388,24 @@ describe("relay e2e", () => {
 				return (await f.exists()) ? f.text() : undefined;
 			});
 			expect(status).toBe("key lacks observe — re-run setup-relay\n");
+			// F117: the statusline the user sees carries the relay's hint.
+			const hint = " · agentpulse: key lacks observe — re-run setup-relay";
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI escapes
+			const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").trimEnd();
+			expect(plain(await runStatusline(relay5, { session_id: CLAUDE_ID })).endsWith(hint)).toBe(
+				true,
+			);
 			await stopRelay(relay5);
+
+			// F117/F126: with the installer's default layout (config at
+			// ~/.agentpulse/config.json) the statusline needs nothing but HOME.
+			const relay5b = await spawnRelay("relay5b", ingestOnly, { configInHome: true });
+			await waitFor("status file (default layout)", () =>
+				Bun.file(join(relay5b.home, ".agentpulse", "status")).exists(),
+			);
+			const line = await runStatusline(relay5b, { session_id: CLAUDE_ID }, { homeOnly: true });
+			expect(plain(line).endsWith(hint)).toBe(true);
+			await stopRelay(relay5b);
 		},
 		SCENARIO_TIMEOUT,
 	);

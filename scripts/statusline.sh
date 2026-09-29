@@ -29,11 +29,12 @@ case "$SESSION_ID" in
   *) SAFE_ID="$SESSION_ID" ;;
 esac
 
-# Look up the AgentPulse display name from the local relay
+# Look up the AgentPulse display name from the local relay. It's server data,
+# so control characters are stripped before it reaches the terminal.
 NAME=""
 if [ -n "$SAFE_ID" ]; then
   NAME=$(curl -sf -m 1 "http://localhost:${AGENTPULSE_PORT}/api/v1/sessions/${SAFE_ID}" 2>/dev/null \
-    | jq -r '.session.displayName // ""' 2>/dev/null)
+    | jq -r '.session.displayName // ""' 2>/dev/null | tr -d '\000-\037\177')
 fi
 
 # Pull-only sync (F5): push Claude Code's native session name to AgentPulse

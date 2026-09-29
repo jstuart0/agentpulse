@@ -17,16 +17,18 @@
  */
 import {
 	constants,
-	access,
 	appendFile,
+	chmod,
+	lstat,
 	mkdir,
+	open,
 	readFile,
 	readdir,
 	rename,
 	unlink,
 	writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 const RELAY_FETCH_TIMEOUT_MS = 8_000;
 const SYNC_FETCH_TIMEOUT_MS = 5_000;
@@ -42,10 +44,27 @@ const CODEX_PAGE_SIZE = 50;
 const CODEX_MAX_PAGES = 4;
 const MAX_PUSHES_PER_TICK = CODEX_PAGE_SIZE * CODEX_MAX_PAGES;
 const STORM_WINDOW_MS = 60 * 60_000;
-const STORM_MAX_REPUSHES = 3;
+/** F109: at most this many appends per Codex id per rolling STORM_WINDOW_MS, of any kind. */
+const STORM_MAX_PUSHES = 3;
 const PULL_MAX_CONSECUTIVE_404 = 5;
 const PULL_STALE_ENTRY_MS = 24 * 60 * 60_000;
+/** F125: bounds the post-restart burst against the server's /native-name rate limit. */
+const MAX_PULL_PUTS_PER_TICK = 50;
+const MAX_PULL_STATE_ENTRIES = 5000;
+const DEFAULT_RETRY_AFTER_MS = 60_000;
+const MAX_RETRY_AFTER_MS = 60 * 60_000;
 const CLAUDE_MD_SESSION_LIMIT = 20;
+/** F106: sessions this relay forwarded, remembered for CLAUDE.md sync. */
+const MAX_LOCAL_SESSIONS = 1000;
+/** F122: a revoked key must not grow the queue without bound. */
+const MAX_QUEUE_FILES = 10_000;
+const MAX_QUEUE_AGE_MS = 24 * 60 * 60_000;
+/** F109: past this many ledger lines, drop rows no longer in the index. */
+const LEDGER_COMPACT_THRESHOLD = 2000;
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
+// O_NOFOLLOW is POSIX-only; on platforms without it the lstat check still runs.
+const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const REQUIRED_SCOPES = ["ingest", "observe"] as const;
 const INSTRUCTION_FILES = ["CLAUDE.md", "AGENTS.md"] as const;
 const DEFAULT_AGENT_TYPE = "claude_code";
@@ -233,6 +252,7 @@ export type SyncStatus = {
 	lastSuccessAt: string | null;
 };
 type PullEntryState = { seenKey: string | null; missKey: string | null; missCount: number };
+export type LocalSession = { cwd: string; agentType: string | null; seenAt: string };
 
 export function createRelayState() {
 	return {
@@ -242,8 +262,12 @@ export function createRelayState() {
 			lastHookFailureAt: null as string | null,
 			lastHookError: null as string | null,
 			consecutiveHookFailures: 0,
+			dropped: 0,
 		},
 		lastEventAtByAgent: {} as Record<string, string>,
+		/** F106: sessionId → cwd, only from hooks this relay enqueued. Map order = recency. */
+		localSessions: new Map<string, LocalSession>(),
+		localSessionsWrite: Promise.resolve() as Promise<void>,
 		auth: {
 			scopes: null as string[] | null,
 			missing: [] as string[],
@@ -269,6 +293,9 @@ export function createRelayState() {
 		},
 		relayHash: "",
 		codexPull: new Map<string, PullEntryState>(),
+		pullStateLoaded: false,
+		/** F125: epoch ms before which the pull doesn't PUT (server Retry-After). */
+		pullRetryAt: 0,
 		pushGuard: {} as Record<string, number[]>,
 		suppressedLogged: new Set<string>(),
 		refusedWrites: new Set<string>(),
@@ -288,6 +315,9 @@ export type RelayPaths = {
 	hookProcessingDir: string;
 	statusFile: string;
 	ledgerFile: string;
+	localSessionsFile: string;
+	pullStateFile: string;
+	home: string;
 	codexIndexFile: string;
 	installedStatuslineFile: string;
 	relayScriptFile: string;
@@ -304,6 +334,21 @@ export type RelayContext = {
 	log: (line: string) => void;
 	/** false in tests: nothing is scheduled behind the caller's back. */
 	autoSchedule: boolean;
+	limits: RelayLimits;
+};
+
+export type RelayLimits = {
+	maxLocalSessions: number;
+	maxQueueFiles: number;
+	maxQueueAgeMs: number;
+	ledgerCompactThreshold: number;
+};
+
+const DEFAULT_LIMITS: RelayLimits = {
+	maxLocalSessions: MAX_LOCAL_SESSIONS,
+	maxQueueFiles: MAX_QUEUE_FILES,
+	maxQueueAgeMs: MAX_QUEUE_AGE_MS,
+	ledgerCompactThreshold: LEDGER_COMPACT_THRESHOLD,
 };
 
 type ContextOptions = {
@@ -313,6 +358,7 @@ type ContextOptions = {
 	now?: () => number;
 	log?: (line: string) => void;
 	state?: RelayState;
+	limits?: Partial<RelayLimits>;
 };
 
 export function resolveRelayPaths(
@@ -329,6 +375,9 @@ export function resolveRelayPaths(
 		hookProcessingDir: join(hookQueueDir, "processing"),
 		statusFile: join(config.stateDir, "status"),
 		ledgerFile: join(config.stateDir, "codex-pushed.jsonl"),
+		localSessionsFile: join(config.stateDir, "local-sessions.json"),
+		pullStateFile: join(config.stateDir, "codex-pull-state.json"),
+		home,
 		codexIndexFile: join(codexHome, "session_index.jsonl"),
 		installedStatuslineFile: join(home, ".claude", "statusline-agentpulse.sh"),
 		relayScriptFile: scriptPath,
@@ -346,6 +395,7 @@ export function createRelayContext(config: RelayConfig, opts: ContextOptions = {
 		now: opts.now ?? Date.now,
 		log: opts.log ?? ((line) => console.log(line)),
 		autoSchedule: false,
+		limits: { ...DEFAULT_LIMITS, ...opts.limits },
 	};
 }
 
@@ -359,12 +409,71 @@ function errorMessage(err: unknown) {
 	return err instanceof Error ? err.message : String(err);
 }
 
-async function fileExists(path: string) {
+// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters before logging
+const LOG_UNSAFE_RE = /[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
+
+/** F111: server- and Codex-controlled text can't forge log lines or escapes. */
+function logSafe(value: unknown): string {
+	return String(value).replace(LOG_UNSAFE_RE, "");
+}
+
+async function ensurePrivateDir(path: string) {
+	await mkdir(path, { recursive: true, mode: PRIVATE_DIR_MODE });
+}
+
+async function writePrivateFile(path: string, content: string) {
+	await writeFile(path, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+}
+
+async function appendPrivateFile(path: string, content: string) {
+	await appendFile(path, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+}
+
+/** Atomic replace (temp + rename), private mode. */
+async function replacePrivateFile(path: string, content: string) {
+	const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+	await writePrivateFile(tmp, content);
+	await chmod(tmp, PRIVATE_FILE_MODE);
+	await rename(tmp, path);
+}
+
+type LstatKind = "file" | "symlink" | "other" | "missing";
+
+async function lstatKind(path: string): Promise<LstatKind> {
 	try {
-		await access(path, constants.F_OK);
-		return true;
+		const st = await lstat(path);
+		if (st.isSymbolicLink()) return "symlink";
+		return st.isFile() ? "file" : "other";
 	} catch {
-		return false;
+		return "missing";
+	}
+}
+
+/** F107: reads a regular file without following a symlink at the final component. */
+async function readFileNoFollow(path: string): Promise<string> {
+	if ((await lstatKind(path)) !== "file") throw new Error(`not a regular file: ${path}`);
+	const handle = await open(path, constants.O_RDONLY | O_NOFOLLOW);
+	try {
+		return await handle.readFile("utf-8");
+	} finally {
+		await handle.close();
+	}
+}
+
+/** F107: writes (creating or truncating) without following a symlink. */
+async function writeFileNoFollow(path: string, content: string) {
+	const kind = await lstatKind(path);
+	if (kind !== "file" && kind !== "missing")
+		throw new Error(`refusing to write through ${kind}: ${path}`);
+	const handle = await open(
+		path,
+		constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | O_NOFOLLOW,
+		0o644,
+	);
+	try {
+		await handle.writeFile(content, "utf-8");
+	} finally {
+		await handle.close();
 	}
 }
 
@@ -470,8 +579,8 @@ export async function writeStatusFile(ctx: RelayContext) {
 				if (err.code !== "ENOENT") throw err;
 			});
 		} else {
-			await mkdir(ctx.paths.stateDir, { recursive: true });
-			await writeFile(ctx.paths.statusFile, `${line}\n`, "utf-8");
+			await ensurePrivateDir(ctx.paths.stateDir);
+			await writePrivateFile(ctx.paths.statusFile, `${line}\n`);
 		}
 		ctx.state.statusLineWritten = line;
 	} catch (err) {
@@ -569,9 +678,10 @@ function observeMissing(ctx: RelayContext) {
 	return ctx.state.auth.checkedAt !== null && ctx.state.auth.missing.includes("observe");
 }
 
+/** F106: fails closed — only a confirmed manage-capable key uploads. */
 function canUpload(ctx: RelayContext) {
 	const a = ctx.state.auth;
-	return a.checkedAt === null || a.degraded || a.hasManage;
+	return a.checkedAt !== null && !a.degraded && a.hasManage;
 }
 
 function setSyncStatus(
@@ -619,24 +729,54 @@ export type InstructionsPathVerdict =
 	| { ok: true }
 	| {
 			ok: false;
-			reason: "path_not_absolute" | "path_traversal_rejected" | "path_outside_session_cwd";
+			reason:
+				| "path_not_absolute"
+				| "path_traversal_rejected"
+				| "path_outside_session_cwd"
+				| "path_forbidden_directory";
 	  };
 
 function hasDotDotSegment(path: string) {
 	return path.split(/[\\/]/).includes("..");
 }
 
+function isWithin(child: string, parent: string) {
+	return child === parent || child.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`);
+}
+
+/**
+ * F106 defense in depth: directories whose CLAUDE.md/AGENTS.md is never
+ * synced — $HOME itself, any ancestor of it, and anything under ~/.claude or
+ * ~/.codex (agent-global instructions and state). A relative cwd is refused.
+ */
+export function isForbiddenCwd(cwd: string, home: string): boolean {
+	if (!isAbsolute(cwd)) return true;
+	const c = resolve(cwd);
+	if (c === sep) return true;
+	if (!home || !isAbsolute(home)) return false;
+	const h = resolve(home);
+	return isWithin(h, c) || isWithin(c, join(h, ".claude")) || isWithin(c, join(h, ".codex"));
+}
+
 /**
  * The server may only write `<session cwd>/CLAUDE.md` or `AGENTS.md`, compared
- * byte-exactly (no case folding, even on case-insensitive filesystems).
+ * byte-exactly (no case folding, even on case-insensitive filesystems). The
+ * caller passes the cwd this relay itself recorded, never the server's (F106).
  */
-export function isSafeInstructionsPath(path: string, cwd: string): InstructionsPathVerdict {
+export function isSafeInstructionsPath(
+	path: string,
+	cwd: string,
+	home?: string,
+): InstructionsPathVerdict {
 	if (!isAbsolute(path)) return { ok: false, reason: "path_not_absolute" };
 	if (hasDotDotSegment(path) || hasDotDotSegment(cwd)) {
 		return { ok: false, reason: "path_traversal_rejected" };
 	}
 	if (!isAbsolute(cwd) || !INSTRUCTION_FILES.some((name) => path === join(cwd, name))) {
 		return { ok: false, reason: "path_outside_session_cwd" };
+	}
+	if (home !== undefined && isForbiddenCwd(cwd, home)) {
+		return { ok: false, reason: "path_forbidden_directory" };
 	}
 	return { ok: true };
 }
@@ -648,7 +788,96 @@ export function instructionFileOrder(agentType?: string | null): string[] {
 		: ["AGENTS.md", "CLAUDE.md"];
 }
 
-// ── CLAUDE.md / AGENTS.md sync (D11) ─────────────────────────────────────────
+// ── CLAUDE.md / AGENTS.md sync (D11, F106, F107) ─────────────────────────────
+//
+// Only sessions this relay forwarded a hook for are synced, and only in the
+// cwd that hook reported (the local session map, persisted under the state
+// dir). The server's own `cwd` is never trusted: an ingest key can set it.
+
+function parseLocalSessions(raw: string): Array<[string, LocalSession]> {
+	const data = JSON.parse(raw) as { sessions?: Record<string, Partial<LocalSession>> };
+	const entries: Array<[string, LocalSession]> = [];
+	for (const [id, v] of Object.entries(data?.sessions ?? {})) {
+		if (!v || typeof v.cwd !== "string" || !isAbsolute(v.cwd) || hasDotDotSegment(v.cwd)) continue;
+		entries.push([
+			id,
+			{
+				cwd: v.cwd,
+				agentType: typeof v.agentType === "string" ? v.agentType : null,
+				seenAt: typeof v.seenAt === "string" ? v.seenAt : "",
+			},
+		]);
+	}
+	return entries.sort((a, b) => a[1].seenAt.localeCompare(b[1].seenAt));
+}
+
+function trimLocalSessions(ctx: RelayContext): boolean {
+	const map = ctx.state.localSessions;
+	let trimmed = false;
+	while (map.size > ctx.limits.maxLocalSessions) {
+		const oldest = map.keys().next().value;
+		if (oldest === undefined) break;
+		map.delete(oldest);
+		trimmed = true;
+	}
+	return trimmed;
+}
+
+function persistLocalSessions(ctx: RelayContext): Promise<void> {
+	const snapshot = `${JSON.stringify({ version: 1, sessions: Object.fromEntries(ctx.state.localSessions) })}\n`;
+	const write = ctx.state.localSessionsWrite.then(async () => {
+		try {
+			await ensurePrivateDir(ctx.paths.stateDir);
+			await replacePrivateFile(ctx.paths.localSessionsFile, snapshot);
+		} catch (err) {
+			ctx.log(
+				`[relay] couldn't save ${ctx.paths.localSessionsFile}: ${logSafe(errorMessage(err))}`,
+			);
+		}
+	});
+	ctx.state.localSessionsWrite = write;
+	return write;
+}
+
+/** Remembers the cwd a hook this relay forwarded reported for a session. */
+export async function recordLocalSession(
+	ctx: RelayContext,
+	sessionId: string,
+	cwd: unknown,
+	agentType: string | null,
+) {
+	if (!sessionId || typeof cwd !== "string" || !isAbsolute(cwd) || hasDotDotSegment(cwd)) return;
+	const map = ctx.state.localSessions;
+	const previous = map.get(sessionId);
+	map.delete(sessionId);
+	map.set(sessionId, { cwd, agentType, seenAt: iso(ctx.now()) });
+	const changed = !previous || previous.cwd !== cwd || previous.agentType !== agentType;
+	if (trimLocalSessions(ctx) || changed) await persistLocalSessions(ctx);
+}
+
+export async function loadLocalSessions(ctx: RelayContext) {
+	let raw: string;
+	try {
+		raw = await readFile(ctx.paths.localSessionsFile, "utf-8");
+	} catch {
+		return;
+	}
+	try {
+		for (const [id, entry] of parseLocalSessions(raw)) ctx.state.localSessions.set(id, entry);
+		trimLocalSessions(ctx);
+	} catch (err) {
+		ctx.log(
+			`[relay] ignoring unreadable ${ctx.paths.localSessionsFile}: ${logSafe(errorMessage(err))}`,
+		);
+	}
+}
+
+function refuseOnce(ctx: RelayContext, sessionId: string, path: string, reason: string) {
+	const key = `${sessionId}\0${path}\0${reason}`;
+	if (ctx.state.refusedWrites.has(key)) return;
+	ctx.state.refusedWrites.add(key);
+	ctx.log(`[sync] Refused ${logSafe(path)} for ${logSafe(sessionId)}: ${reason}`);
+}
 
 async function uploadClaudeMd(
 	ctx: RelayContext,
@@ -657,11 +886,20 @@ async function uploadClaudeMd(
 	agentType?: string | null,
 ) {
 	if (!sessionId || !cwd) return;
+	if (isForbiddenCwd(cwd, ctx.paths.home)) {
+		refuseOnce(ctx, sessionId, cwd, "path_forbidden_directory");
+		return;
+	}
 	for (const name of instructionFileOrder(agentType)) {
 		const filePath = join(cwd, name);
-		if (!(await fileExists(filePath))) continue;
+		const kind = await lstatKind(filePath);
+		if (kind === "missing") continue;
+		if (kind !== "file") {
+			refuseOnce(ctx, sessionId, filePath, `refused_${kind}`);
+			return;
+		}
 		try {
-			const content = await readFile(filePath, "utf-8");
+			const content = await readFileNoFollow(filePath);
 			const checksum = await computeChecksum(content);
 			const res = await remoteFetch(
 				ctx,
@@ -673,7 +911,7 @@ async function uploadClaudeMd(
 			);
 			if (res.ok) {
 				ctx.log(
-					`[sync] Uploaded ${name} for ${sessionId} (${(content.length / 1024).toFixed(1)}KB)`,
+					`[sync] Uploaded ${name} for ${logSafe(sessionId)} (${(content.length / 1024).toFixed(1)}KB)`,
 				);
 			}
 		} catch {
@@ -713,12 +951,29 @@ export async function syncClaudeMdTick(ctx: RelayContext) {
 	const upload = canUpload(ctx);
 	let error: string | null = null;
 	for (const session of sessions) {
+		const local = ctx.state.localSessions.get(session.sessionId);
+		if (!local) continue;
 		try {
-			if (!session.claudeMdChecksum && session.cwd) {
-				if (upload) await uploadClaudeMd(ctx, session.sessionId, session.cwd, session.agentType);
+			if (session.cwd && session.cwd !== local.cwd) {
+				refuseOnce(ctx, session.sessionId, session.cwd, "server_cwd_mismatch");
 				continue;
 			}
-			if (!session.claudeMdPath || !session.claudeMdChecksum) continue;
+			if (isForbiddenCwd(local.cwd, ctx.paths.home)) {
+				refuseOnce(ctx, session.sessionId, local.cwd, "path_forbidden_directory");
+				continue;
+			}
+			if (!session.claudeMdChecksum) {
+				if (upload) {
+					await uploadClaudeMd(
+						ctx,
+						session.sessionId,
+						local.cwd,
+						local.agentType ?? session.agentType,
+					);
+				}
+				continue;
+			}
+			if (!session.claudeMdPath) continue;
 			const lastKnown = ctx.state.localChecksums.get(session.sessionId);
 			if (lastKnown === session.claudeMdChecksum) continue;
 
@@ -733,28 +988,31 @@ export async function syncClaudeMdTick(ctx: RelayContext) {
 			const md = (await res.json()) as { content?: string; path?: string; checksum?: string };
 			if (!md.content || !md.path || !md.checksum) continue;
 
-			const verdict = isSafeInstructionsPath(md.path, session.cwd ?? "");
+			const verdict = isSafeInstructionsPath(md.path, local.cwd, ctx.paths.home);
 			if (!verdict.ok) {
-				const key = `${session.sessionId}\0${md.path}\0${verdict.reason}`;
-				if (!ctx.state.refusedWrites.has(key)) {
-					ctx.state.refusedWrites.add(key);
-					ctx.log(`[sync] Refused to write ${md.path}: ${verdict.reason}`);
-				}
+				refuseOnce(ctx, session.sessionId, md.path, verdict.reason);
+				continue;
+			}
+			const kind = await lstatKind(md.path);
+			if (kind === "symlink" || kind === "other") {
+				refuseOnce(ctx, session.sessionId, md.path, `refused_${kind}`);
 				continue;
 			}
 
-			const localContent = await readTextOrEmpty(md.path);
+			const localContent = kind === "file" ? await readFileNoFollow(md.path) : "";
 			const localChecksum = localContent ? await computeChecksum(localContent) : "";
 			if (localChecksum === md.checksum) {
 				ctx.state.localChecksums.set(session.sessionId, md.checksum);
 				continue;
 			}
 			if (lastKnown && localChecksum !== lastKnown) {
-				ctx.log(`[sync] Conflict on ${md.path} -- server version wins`);
+				ctx.log(`[sync] Conflict on ${logSafe(md.path)} -- server version wins`);
 			}
-			await writeFile(md.path, md.content, "utf-8");
+			await writeFileNoFollow(md.path, md.content);
 			ctx.state.localChecksums.set(session.sessionId, md.checksum);
-			ctx.log(`[sync] Wrote ${md.path} from server (${(md.content.length / 1024).toFixed(1)}KB)`);
+			ctx.log(
+				`[sync] Wrote ${logSafe(md.path)} from server (${(md.content.length / 1024).toFixed(1)}KB)`,
+			);
 		} catch (err) {
 			error = errorMessage(err);
 		}
@@ -779,8 +1037,8 @@ export async function syncClaudeMdTick(ctx: RelayContext) {
 // PUT /native-name (a manual dashboard rename still wins, D2); push only
 // (a) manual names, (b) names into unnamed threads, (c) restores over our own
 // earlier rows. Policy `agentpulse`: never pull; push the dashboard name
-// whenever the latest row differs. Re-pushes over Codex-written rows are
-// capped per id per rolling hour (the storm guard).
+// whenever the latest row differs. Every append is capped per id per
+// rolling hour (the storm guard, F109), so no id is appended more than 3x/h.
 
 export type CodexIndexRow = { id: string; thread_name: string; updated_at: string };
 export type CodexSessionRow = {
@@ -866,31 +1124,120 @@ export function planCodexPushes(
 	const rows: CodexIndexRow[] = [];
 	const suppressedIds: string[] = [];
 	const updatedAt = iso(now);
+	// F124: offset paging over an activity-ordered list can repeat a row.
+	const seen = new Set<string>();
 	for (const session of sessions) {
 		if (rows.length >= MAX_PUSHES_PER_TICK) break;
 		if (!session.sessionId || typeof session.displayName !== "string") continue;
+		if (seen.has(session.sessionId)) continue;
+		seen.add(session.sessionId);
 		const name = sanitizeName(session.displayName);
 		if (!name) continue;
 		const current = latest.get(session.sessionId);
 		if (current?.thread_name === name) continue;
 		const foreign = current !== undefined && !ledger.has(ledgerKey(current));
 		if (!shouldPush(policy, session.nameSource, current, foreign)) continue;
-		if (foreign) {
-			const recent = nextGuard[session.sessionId] ?? [];
-			if (recent.length >= STORM_MAX_REPUSHES) {
-				suppressedIds.push(session.sessionId);
-				continue;
-			}
-			nextGuard[session.sessionId] = [...recent, now];
+		const recent = nextGuard[session.sessionId] ?? [];
+		if (recent.length >= STORM_MAX_PUSHES) {
+			suppressedIds.push(session.sessionId);
+			continue;
 		}
+		nextGuard[session.sessionId] = [...recent, now];
 		rows.push({ id: session.sessionId, thread_name: name, updated_at: updatedAt });
 	}
 	return { rows, suppressedIds, guard: nextGuard };
 }
 
-async function readCodexIndex(ctx: RelayContext) {
-	const ledger = parseLedger(await readTextOrEmpty(ctx.paths.ledgerFile));
-	return { ledger, ...parseCodexIndex(await readTextOrEmpty(ctx.paths.codexIndexFile), ledger) };
+export type CodexIndexSnapshot = {
+	ledger: Set<string>;
+	ledgerRows: CodexIndexRow[];
+	indexKeys: Set<string>;
+	latest: Map<string, CodexIndexRow>;
+	latestForeign: Map<string, CodexIndexRow>;
+};
+
+/** F129: read and parse the index and the ledger once per tick. */
+export async function readCodexIndex(ctx: RelayContext): Promise<CodexIndexSnapshot> {
+	const ledgerRaw = await readTextOrEmpty(ctx.paths.ledgerFile);
+	const indexRaw = await readTextOrEmpty(ctx.paths.codexIndexFile);
+	const ledgerRows: CodexIndexRow[] = [];
+	for (const line of ledgerRaw.split("\n")) {
+		const r = parseIndexLine(line);
+		if (r) ledgerRows.push(r);
+	}
+	const ledger = new Set(ledgerRows.map(ledgerKey));
+	const indexKeys = new Set<string>();
+	for (const line of indexRaw.split("\n")) {
+		const r = parseIndexLine(line);
+		if (r) indexKeys.add(ledgerKey(r));
+	}
+	return { ledger, ledgerRows, indexKeys, ...parseCodexIndex(indexRaw, ledger) };
+}
+
+/**
+ * F109: the ledger only needs rows that still exist in the index (they're what
+ * it classifies). Dropping any row that is still in the index could make one
+ * of our own rows look Codex-written, so that is the only compaction done.
+ */
+async function compactLedgerIfLarge(ctx: RelayContext, snap: CodexIndexSnapshot) {
+	if (snap.ledgerRows.length <= ctx.limits.ledgerCompactThreshold) return;
+	const kept = snap.ledgerRows.filter((r) => snap.indexKeys.has(ledgerKey(r)));
+	await replacePrivateFile(ctx.paths.ledgerFile, kept.length ? jsonlLines(kept) : "");
+	ctx.log(`[codex-name-sync] compacted ledger: ${snap.ledgerRows.length} → ${kept.length} rows`);
+}
+
+function setPullEntry(ctx: RelayContext, id: string, entry: PullEntryState) {
+	const map = ctx.state.codexPull;
+	map.delete(id);
+	map.set(id, entry);
+	while (map.size > MAX_PULL_STATE_ENTRIES) {
+		const oldest = map.keys().next().value;
+		if (oldest === undefined) break;
+		map.delete(oldest);
+	}
+}
+
+async function loadPullState(ctx: RelayContext) {
+	ctx.state.pullStateLoaded = true;
+	let raw: string;
+	try {
+		raw = await readFile(ctx.paths.pullStateFile, "utf-8");
+	} catch {
+		return;
+	}
+	try {
+		const data = JSON.parse(raw) as { entries?: Record<string, Partial<PullEntryState>> };
+		for (const [id, e] of Object.entries(data?.entries ?? {})) {
+			if (!e || typeof e !== "object") continue;
+			setPullEntry(ctx, id, {
+				seenKey: typeof e.seenKey === "string" ? e.seenKey : null,
+				missKey: typeof e.missKey === "string" ? e.missKey : null,
+				missCount: typeof e.missCount === "number" && e.missCount >= 0 ? e.missCount : 0,
+			});
+		}
+	} catch (err) {
+		ctx.log(`[codex-name-sync] ignoring unreadable pull state: ${logSafe(errorMessage(err))}`);
+	}
+}
+
+async function persistPullState(ctx: RelayContext) {
+	try {
+		await ensurePrivateDir(ctx.paths.stateDir);
+		await replacePrivateFile(
+			ctx.paths.pullStateFile,
+			`${JSON.stringify({ version: 1, entries: Object.fromEntries(ctx.state.codexPull) })}\n`,
+		);
+	} catch (err) {
+		ctx.log(`[codex-name-sync] couldn't save pull state: ${logSafe(errorMessage(err))}`);
+	}
+}
+
+function retryAfterMs(res: Response, now: number): number {
+	const header = res.headers.get("Retry-After");
+	let ms = DEFAULT_RETRY_AFTER_MS;
+	if (header && /^\d+$/.test(header.trim())) ms = Number(header.trim()) * 1000;
+	else if (header && Number.isFinite(Date.parse(header))) ms = Date.parse(header) - now;
+	return Math.min(MAX_RETRY_AFTER_MS, Math.max(1000, ms));
 }
 
 function isStaleEntry(entry: CodexIndexRow, now: number) {
@@ -898,18 +1245,28 @@ function isStaleEntry(entry: CodexIndexRow, now: number) {
 	return Number.isFinite(t) && now - t > PULL_STALE_ENTRY_MS;
 }
 
-type StepResult = { ok: true } | { ok: false; error: string };
+type StepResult = { ok: true; rateLimited?: boolean } | { ok: false; error: string };
 
 /**
  * Codex-written names → PUT /native-name (codex policy only). `applied:false`
  * (a pinned session) counts as seen. Unknown sessions (404) are retried at
  * most 5 times per index entry, or once if the entry is over 24h old, until
- * the entry changes (F18). Any other failure stops the tick.
+ * the entry changes (F18). The seen/miss state is persisted so a restart
+ * doesn't re-PUT everything (F125); at most 50 PUTs go out per tick, and a
+ * 429 pauses the pull until Retry-After. Any other failure stops the tick.
  */
-export async function pullCodexNames(ctx: RelayContext): Promise<StepResult> {
+export async function pullCodexNames(
+	ctx: RelayContext,
+	snapshot?: CodexIndexSnapshot,
+): Promise<StepResult> {
 	if (ctx.config.codexNamePolicy !== "codex") return { ok: true };
-	const { latestForeign } = await readCodexIndex(ctx);
+	if (!ctx.state.pullStateLoaded) await loadPullState(ctx);
 	const now = ctx.now();
+	if (now < ctx.state.pullRetryAt) return { ok: true, rateLimited: true };
+	const { latestForeign } = snapshot ?? (await readCodexIndex(ctx));
+	let puts = 0;
+	let changed = false;
+	let result: StepResult = { ok: true };
 	for (const [id, entry] of latestForeign) {
 		const key = ledgerKey(entry);
 		const st = ctx.state.codexPull.get(id) ?? { seenKey: null, missKey: null, missCount: 0 };
@@ -920,6 +1277,8 @@ export async function pullCodexNames(ctx: RelayContext): Promise<StepResult> {
 		) {
 			continue;
 		}
+		if (puts >= MAX_PULL_PUTS_PER_TICK) break;
+		puts++;
 		let res: Response;
 		try {
 			res = await remoteFetch(ctx, `/api/v1/sessions/${encodeURIComponent(id)}/native-name`, {
@@ -927,20 +1286,33 @@ export async function pullCodexNames(ctx: RelayContext): Promise<StepResult> {
 				body: { name: entry.thread_name },
 			});
 		} catch (err) {
-			return { ok: false, error: errorMessage(err) };
+			result = { ok: false, error: errorMessage(err) };
+			break;
 		}
 		if (res.ok || res.status === 400) {
 			// 400 = the name sanitizes to empty; retrying the same entry can't help.
-			ctx.state.codexPull.set(id, { seenKey: key, missKey: null, missCount: 0 });
-			if (res.ok) ctx.log(`[codex-name-sync] pull ${id.slice(0, 8)} → ${entry.thread_name}`);
+			setPullEntry(ctx, id, { seenKey: key, missKey: null, missCount: 0 });
+			changed = true;
+			if (res.ok) {
+				ctx.log(
+					`[codex-name-sync] pull ${logSafe(id.slice(0, 8))} → ${logSafe(entry.thread_name)}`,
+				);
+			}
 		} else if (res.status === 404) {
 			const missCount = st.missKey === key ? st.missCount + 1 : 1;
-			ctx.state.codexPull.set(id, { seenKey: st.seenKey, missKey: key, missCount });
+			setPullEntry(ctx, id, { seenKey: st.seenKey, missKey: key, missCount });
+			changed = true;
+		} else if (res.status === 429) {
+			ctx.state.pullRetryAt = now + retryAfterMs(res, now);
+			result = { ok: true, rateLimited: true };
+			break;
 		} else {
-			return { ok: false, error: `HTTP ${res.status} on PUT /native-name` };
+			result = { ok: false, error: `HTTP ${res.status} on PUT /native-name` };
+			break;
 		}
 	}
-	return { ok: true };
+	if (changed) await persistPullState(ctx);
+	return result;
 }
 
 async function fetchCodexSessions(
@@ -970,10 +1342,19 @@ function jsonlLines(rows: CodexIndexRow[]) {
 }
 
 /** Dashboard names → session_index.jsonl, ledger first (see header). */
-export async function pushCodexNames(ctx: RelayContext): Promise<StepResult> {
+export async function pushCodexNames(
+	ctx: RelayContext,
+	snapshot?: CodexIndexSnapshot,
+): Promise<StepResult> {
 	const listed = await fetchCodexSessions(ctx);
 	if (!listed.ok) return listed;
-	const { latest, ledger } = await readCodexIndex(ctx);
+	const snap = snapshot ?? (await readCodexIndex(ctx));
+	const { latest, ledger } = snap;
+	try {
+		await compactLedgerIfLarge(ctx, snap);
+	} catch (err) {
+		ctx.log(`[codex-name-sync] ledger compaction failed: ${logSafe(errorMessage(err))}`);
+	}
 	const plan = planCodexPushes(
 		listed.sessions,
 		latest,
@@ -988,7 +1369,7 @@ export async function pushCodexNames(ctx: RelayContext): Promise<StepResult> {
 		if (ctx.state.suppressedLogged.has(id)) continue;
 		ctx.state.suppressedLogged.add(id);
 		ctx.log(
-			`[codex-name-sync] ${id.slice(0, 8)} keeps being retitled in Codex; pushes paused for up to an hour`,
+			`[codex-name-sync] ${logSafe(id.slice(0, 8))} renamed too often; pushes paused for up to an hour`,
 		);
 	}
 	for (const id of ctx.state.suppressedLogged) {
@@ -999,15 +1380,15 @@ export async function pushCodexNames(ctx: RelayContext): Promise<StepResult> {
 	try {
 		// Ledger first: a crash between the two appends leaves an unused ledger
 		// row (harmless), never an index row that looks Codex-written.
-		await mkdir(ctx.paths.stateDir, { recursive: true });
-		await appendFile(ctx.paths.ledgerFile, lines, "utf-8");
-		await mkdir(dirname(ctx.paths.codexIndexFile), { recursive: true });
-		await appendFile(ctx.paths.codexIndexFile, lines, "utf-8");
+		await ensurePrivateDir(ctx.paths.stateDir);
+		await appendPrivateFile(ctx.paths.ledgerFile, lines);
+		await ensurePrivateDir(dirname(ctx.paths.codexIndexFile));
+		await appendPrivateFile(ctx.paths.codexIndexFile, lines);
 	} catch (err) {
 		return { ok: false, error: `append failed: ${errorMessage(err)}` };
 	}
 	for (const row of plan.rows) {
-		ctx.log(`[codex-name-sync] push ${row.id.slice(0, 8)} → ${row.thread_name}`);
+		ctx.log(`[codex-name-sync] push ${logSafe(row.id.slice(0, 8))} → ${logSafe(row.thread_name)}`);
 	}
 	return { ok: true };
 }
@@ -1017,14 +1398,17 @@ export async function syncCodexNamesTick(ctx: RelayContext) {
 		setSyncStatus(ctx, "codexNames", "disabled_missing_observe", null);
 		return;
 	}
-	const pull = await pullCodexNames(ctx);
-	const push = await pushCodexNames(ctx);
+	const snapshot = await readCodexIndex(ctx);
+	const pull = await pullCodexNames(ctx, snapshot);
+	const push = await pushCodexNames(ctx, snapshot);
 	const error = (!pull.ok && pull.error) || (!push.ok && push.error) || null;
 	const status = error
 		? "error"
-		: ctx.state.sync.codexNames.suppressedIds.length > 0
-			? "push_suppressed"
-			: "ok";
+		: pull.ok && pull.rateLimited
+			? "rate_limited"
+			: ctx.state.sync.codexNames.suppressedIds.length > 0
+				? "push_suppressed"
+				: "ok";
 	setSyncStatus(ctx, "codexNames", status, error);
 }
 
@@ -1062,8 +1446,37 @@ function agentKey(header: string | null): string {
 }
 
 async function ensureQueueDirs(ctx: RelayContext) {
-	await mkdir(ctx.paths.hookPendingDir, { recursive: true });
-	await mkdir(ctx.paths.hookProcessingDir, { recursive: true });
+	await ensurePrivateDir(ctx.paths.hookPendingDir);
+	await ensurePrivateDir(ctx.paths.hookProcessingDir);
+}
+
+/**
+ * F122: pending files are named `<enqueue ms>-<uuid>.json`, so the name order
+ * is the age order. Drops everything past the max age, then the oldest past
+ * the max count, with one log line per drop.
+ */
+async function enforceQueueLimits(ctx: RelayContext) {
+	const names = (await readdir(ctx.paths.hookPendingDir)).filter((n) => n.endsWith(".json")).sort();
+	const cutoff = ctx.now() - ctx.limits.maxQueueAgeMs;
+	const drop: string[] = [];
+	const keep: string[] = [];
+	for (const name of names) {
+		const enqueuedAt = Number(name.split("-")[0]);
+		if (Number.isFinite(enqueuedAt) && enqueuedAt < cutoff) drop.push(name);
+		else keep.push(name);
+	}
+	const overflow = keep.length - ctx.limits.maxQueueFiles;
+	if (overflow > 0) drop.push(...keep.slice(0, overflow));
+	if (drop.length === 0) return;
+	for (const name of drop) {
+		try {
+			await unlink(join(ctx.paths.hookPendingDir, name));
+		} catch {}
+	}
+	ctx.state.queue.dropped += drop.length;
+	ctx.log(
+		`[relay] dropped ${drop.length} queued hook(s): the queue keeps at most ${ctx.limits.maxQueueFiles} files, none older than ${Math.round(ctx.limits.maxQueueAgeMs / 3_600_000)}h`,
+	);
 }
 
 async function forwardApiRequest(
@@ -1128,13 +1541,13 @@ async function enqueueHook(ctx: RelayContext, req: Request, url: URL) {
 		lastError: null,
 	};
 
-	await writeFile(
-		join(ctx.paths.hookPendingDir, `${Date.now()}-${item.id}.json`),
+	await writePrivateFile(
+		join(ctx.paths.hookPendingDir, `${ctx.now()}-${item.id}.json`),
 		JSON.stringify(item),
-		"utf-8",
 	);
 	ctx.state.queue.lastHookEnqueuedAt = createdAt;
 	ctx.state.lastEventAtByAgent[agentKey(item.agentType)] = createdAt;
+	await enforceQueueLimits(ctx);
 	scheduleQueue(ctx);
 
 	try {
@@ -1143,6 +1556,10 @@ async function enqueueHook(ctx: RelayContext, req: Request, url: URL) {
 			session_id?: string;
 			cwd?: string;
 		};
+		// F106: the only source of the cwds CLAUDE.md sync may touch.
+		if (typeof payload.session_id === "string" && payload.cwd) {
+			await recordLocalSession(ctx, payload.session_id, payload.cwd, agentKey(item.agentType));
+		}
 		if (
 			url.pathname === "/api/v1/hooks" &&
 			payload.hook_event_name === "SessionStart" &&
@@ -1199,7 +1616,7 @@ async function releaseHookFailure(
 	};
 
 	try {
-		await writeFile(join(ctx.paths.hookPendingDir, fileName), JSON.stringify(updated), "utf-8");
+		await writePrivateFile(join(ctx.paths.hookPendingDir, fileName), JSON.stringify(updated));
 	} finally {
 		try {
 			await unlink(join(ctx.paths.hookProcessingDir, fileName));
@@ -1283,6 +1700,7 @@ export async function getQueueDiagnostics(ctx: RelayContext) {
 		lastHookFailureAt: q.lastHookFailureAt,
 		lastHookError: q.lastHookError,
 		consecutiveHookFailures: q.consecutiveHookFailures,
+		dropped: q.dropped,
 	};
 }
 
@@ -1302,6 +1720,8 @@ export async function buildDiagnostics(ctx: RelayContext) {
 			hasManage: auth.hasManage,
 			checkedAt: auth.checkedAt,
 			degraded: auth.degraded,
+			keyRejected: auth.keyRejected,
+			lastError: auth.lastError === null ? null : logSafe(auth.lastError),
 		},
 		sync: {
 			codexNames: {
@@ -1328,12 +1748,58 @@ export async function buildDiagnostics(ctx: RelayContext) {
 	};
 }
 
+const SESSION_DETAIL_PATH_RE = /^\/api\/v1\/sessions\/[^/]+$/;
+const NATIVE_NAME_PATH_RE = /^\/api\/v1\/sessions\/[^/]+\/native-name$/;
+
+/**
+ * F108: the proxy lends the relay's API key to any local process, so it
+ * forwards only what local producers need: hooks, the statusline's session
+ * lookup, and its native-name push.
+ */
+export function isForwardAllowed(method: string, pathname: string): boolean {
+	if (pathname === "/api/v1/hooks" || pathname.startsWith("/api/v1/hooks/")) return true;
+	const m = method.toUpperCase();
+	if (m === "GET" && SESSION_DETAIL_PATH_RE.test(pathname)) return true;
+	if (m === "PUT" && NATIVE_NAME_PATH_RE.test(pathname)) return true;
+	return false;
+}
+
+/** F111: plain http:// to anything but loopback sends the key in the clear. */
+export function isInsecureRemote(remoteUrl: string): boolean {
+	let url: URL;
+	try {
+		url = new URL(remoteUrl);
+	} catch {
+		return false;
+	}
+	if (url.protocol !== "http:") return false;
+	const host = url.hostname.toLowerCase();
+	return !(host === "localhost" || host === "[::1]" || /^127\.\d+\.\d+\.\d+$/.test(host));
+}
+
+function startupWarnings(ctx: RelayContext) {
+	if (isInsecureRemote(ctx.config.remoteUrl)) {
+		ctx.log(
+			"[relay] warning: the remote uses plain http:// to a non-loopback host; the API key and hook payloads travel unencrypted",
+		);
+	}
+	// F126: statusline.sh reads ${AGENTPULSE_DIR:-$HOME/.agentpulse}/status.
+	const home = ctx.paths.home;
+	if (home && resolve(ctx.paths.stateDir) !== resolve(join(home, ".agentpulse"))) {
+		ctx.log(
+			`[relay] statusline: this relay's status file is ${ctx.paths.statusFile}; run Claude with AGENTPULSE_DIR=${ctx.paths.stateDir} so the statusline shows its hints`,
+		);
+	}
+}
+
 export function createFetchHandler(ctx: RelayContext) {
 	return async (req: Request): Promise<Response> => {
 		const url = new URL(req.url);
 		const verdict = isAllowedLocalRequest(req.headers, ctx.port);
 		if (!verdict.ok) {
-			ctx.log(`[relay] 403 ${verdict.reason} (${verdict.detail}) ${req.method} ${url.pathname}`);
+			ctx.log(
+				`[relay] 403 ${verdict.reason} (${verdict.detail}) ${logSafe(req.method)} ${logSafe(url.pathname)}`,
+			);
 			return Response.json({ error: verdict.reason }, { status: 403 });
 		}
 
@@ -1356,6 +1822,12 @@ export function createFetchHandler(ctx: RelayContext) {
 		}
 
 		if (url.pathname.startsWith("/api/")) {
+			if (!isForwardAllowed(req.method, url.pathname)) {
+				ctx.log(
+					`[relay] 403 relay_path_not_allowed ${logSafe(req.method)} ${logSafe(url.pathname)}`,
+				);
+				return Response.json({ error: "relay_path_not_allowed" }, { status: 403 });
+			}
 			try {
 				return await forwardApiRequest(ctx, {
 					pathname: url.pathname,
@@ -1400,7 +1872,9 @@ export async function startRelay(
 	const ctx = createRelayContext(config, opts);
 	ctx.autoSchedule = timers;
 	await ensureQueueDirs(ctx);
+	await loadLocalSessions(ctx);
 	ctx.state.relayHash = (await hashFile(ctx.paths.relayScriptFile)) ?? "";
+	startupWarnings(ctx);
 
 	const handler = createFetchHandler(ctx);
 	const server = Bun.serve({
@@ -1416,7 +1890,13 @@ export async function startRelay(
 	let ready: Promise<void> = Promise.resolve();
 	if (timers) {
 		const syncMs = opts.syncMs ?? DEFAULT_SYNC_MS;
-		intervals.push(setInterval(() => void processHookQueue(ctx), HOOK_RETRY_POLL_MS));
+		intervals.push(
+			setInterval(() => {
+				void enforceQueueLimits(ctx)
+					.catch(() => {})
+					.then(() => processHookQueue(ctx));
+			}, HOOK_RETRY_POLL_MS),
+		);
 		scheduleQueue(ctx, 250);
 		// Scopes first, so the first sync round already knows what it may do.
 		ready = (async () => {

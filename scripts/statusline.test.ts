@@ -15,11 +15,15 @@ type Recorded = { method: string; path: string; body: string };
 
 let tmp: string;
 let requests: Recorded[];
+let serverDisplayName: string;
+let nativeNameStatus: number;
 let server: ReturnType<typeof Bun.serve>;
 
 beforeEach(async () => {
 	tmp = await mkdtemp(join(tmpdir(), "ap-statusline-test-"));
 	requests = [];
+	serverDisplayName = "brave-falcon";
+	nativeNameStatus = 200;
 	server = Bun.serve({
 		port: 0,
 		async fetch(req) {
@@ -27,10 +31,10 @@ beforeEach(async () => {
 			const body = req.method === "GET" ? "" : await req.text();
 			requests.push({ method: req.method, path: url.pathname, body });
 			if (req.method === "GET" && url.pathname.startsWith("/api/v1/sessions/")) {
-				return Response.json({ session: { displayName: "brave-falcon" } });
+				return Response.json({ session: { displayName: serverDisplayName } });
 			}
 			if (req.method === "PUT" && url.pathname.endsWith("/native-name")) {
-				return Response.json({ ok: true, applied: false });
+				return Response.json({ ok: nativeNameStatus === 200 }, { status: nativeNameStatus });
 			}
 			return new Response("not found", { status: 404 });
 		},
@@ -162,5 +166,43 @@ describe("statusline.sh", () => {
 		const { stdout } = await run({ session_id: "s-3", model: { display_name: "M" } });
 		expect(stdout).not.toContain("agentpulse:");
 		expect(stdout.split("\n").filter(Boolean)).toHaveLength(1);
+	});
+});
+
+describe("statusline.sh — fix round (F110, F116)", () => {
+	test("a server displayName with control characters can't break the line (F110)", async () => {
+		serverDisplayName = "name\r\u001b[2Jfake\nsecond";
+		const { stdout } = await run({ session_id: "s-ctl", model: { display_name: "M" } });
+		const lines = stdout.split("\n").filter((l) => l.length > 0);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).not.toContain("\r");
+		expect(lines[0]).not.toContain("\u001b[2J");
+		expect(stripAnsi(lines[0])).toContain("name[2Jfakesecond");
+	});
+
+	for (const status of [429, 404]) {
+		test(`a ${status} is not cached, so the next render PUTs again (F116)`, async () => {
+			nativeNameStatus = status;
+			const input = { session_id: `s-${status}`, session_name: "n1" };
+			await run(input);
+			await waitFor(() => puts().length === 1);
+			await Bun.sleep(300);
+			expect(
+				await Bun.file(join(agentpulseDir(), "cache", `native-name-s-${status}`)).exists(),
+			).toBe(false);
+			await run(input);
+			await waitFor(() => puts().length === 2);
+		});
+	}
+
+	test("a 400 is cached as final, so the next render doesn't PUT (F116)", async () => {
+		nativeNameStatus = 400;
+		const input = { session_id: "s-400", session_name: "n1" };
+		await run(input);
+		const cacheFile = join(agentpulseDir(), "cache", "native-name-s-400");
+		await waitFor(() => Bun.file(cacheFile).exists());
+		await run(input);
+		await Bun.sleep(400);
+		expect(puts()).toHaveLength(1);
 	});
 });

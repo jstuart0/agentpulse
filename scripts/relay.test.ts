@@ -6,7 +6,17 @@
  * prove the import itself is side-effect free (no port bound, no exit).
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+	lstat,
+	mkdir,
+	mkdtemp,
+	readFile,
+	readlink,
+	rm,
+	stat,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import fixtures from "../src/server/services/__fixtures__/native-name-sanitizer.json" with {
@@ -72,6 +82,8 @@ async function makeCtx(opts: {
 	now?: () => number;
 	stateDir?: string;
 	home?: string;
+	log?: (line: string) => void;
+	limits?: Record<string, number>;
 }) {
 	const R = await mod();
 	const stateDir = opts.stateDir ?? join(tmp, "state");
@@ -91,7 +103,8 @@ async function makeCtx(opts: {
 			env: { HOME: home },
 			scriptPath: RELAY_PATH,
 			now: opts.now,
-			log: () => {},
+			log: opts.log ?? (() => {}),
+			limits: opts.limits,
 		},
 	);
 }
@@ -693,9 +706,43 @@ describe("storm guard (D23, F60)", () => {
 		expect(res.suppressedIds).toEqual(["s1"]);
 	});
 
-	test("fills and restores don't count toward the guard", async () => {
-		const res = await plan("agentpulse", [S("brave-falcon", "generated")], []);
-		expect(res.guard).toEqual({});
+	test("exactly +60:00.000 after the first push → pushed again (the window is half-open)", async () => {
+		const res = await fourthAttempt(T0 + HOUR);
+		expect(res.rows).toHaveLength(1);
+		expect(res.suppressedIds).toEqual([]);
+	});
+
+	// F109: every push counts toward the per-id window, not only re-pushes
+	// over Codex-written rows, so no id can be appended more than 3x/hour.
+	test("fills and restores count toward the guard (F109)", async () => {
+		const fill = await plan("agentpulse", [S("brave-falcon", "generated")], []);
+		expect(fill.guard.s1).toEqual([T0]);
+		const ours = row("s1", "dash-name", "2026-09-28T11:30:00.000Z");
+		const restore = await plan("codex", [S("codex-title", "native")], [ours], [ours]);
+		expect(restore.rows.map((r) => r.thread_name)).toEqual(["codex-title"]);
+		expect(restore.guard.s1).toEqual([T0]);
+	});
+
+	test("a 4th push of any kind within the hour is suppressed (manual renames on the dashboard)", async () => {
+		let index: Array<Record<string, string>> = [];
+		let ledger: Array<Record<string, string>> = [];
+		let guard: Record<string, number[]> = {};
+		for (const [i, name] of ["one", "two", "three"].entries()) {
+			const r = await plan("codex", [S(name, "user")], index, ledger, guard, T0 + i * 1000);
+			expect(r.rows).toHaveLength(1);
+			index = [...index, ...r.rows];
+			ledger = [...ledger, ...r.rows];
+			guard = r.guard;
+		}
+		const fourth = await plan("codex", [S("four", "user")], index, ledger, guard, T0 + 3000);
+		expect(fourth.rows).toEqual([]);
+		expect(fourth.suppressedIds).toEqual(["s1"]);
+	});
+
+	test("duplicate session ids within one tick produce one row (F124)", async () => {
+		const res = await plan("agentpulse", [S("a", "generated"), S("b", "generated")], []);
+		expect(res.rows).toHaveLength(1);
+		expect(res.rows[0].thread_name).toBe("a");
 	});
 });
 
@@ -879,6 +926,19 @@ describe("404 backoff (F18)", () => {
 		expect(nativeNamePuts(stub.requests)).toHaveLength(1);
 	});
 
+	test("an entry exactly 24h old is not stale: it gets the full 5 attempts (F118)", async () => {
+		const R = await mod();
+		const stub = sessionsStub([]);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, now: () => T0 });
+		await writeFile(
+			indexPath(),
+			jsonl([row("edge", "name", new Date(T0 - 24 * HOUR).toISOString())]),
+		);
+		for (let i = 0; i < 6; i++) await R.pullCodexNames(ctx);
+		expect(nativeNamePuts(stub.requests)).toHaveLength(5);
+	});
+
 	test("age alone doesn't suppress a first delivery to a known session", async () => {
 		const R = await mod();
 		const sessions = [{ sessionId: "old", displayName: "g", nameSource: "generated" }];
@@ -905,7 +965,11 @@ describe("404 backoff (F18)", () => {
 		expect(nativeNamePuts(stub.requests)).toHaveLength(1);
 
 		status = 500;
-		const fresh = await makeCtx({ remote: stub.url, now: () => T0 });
+		const fresh = await makeCtx({
+			remote: stub.url,
+			now: () => T0,
+			stateDir: join(tmp, "state-2"),
+		});
 		for (let i = 0; i < 3; i++) {
 			const res = await R.pullCodexNames(fresh);
 			expect(res.ok).toBe(false);
@@ -1033,6 +1097,7 @@ describe("scope check, status file, sync gating (D10, D17)", () => {
 		});
 		stops.push(stub.stop);
 		const ctx = await makeCtx({ remote: stub.url });
+		await R.recordLocalSession(ctx, "c1", cwd, "claude_code");
 		await R.checkScopesTick(ctx);
 		await R.syncClaudeMdTick(ctx);
 		expect(stub.requests.some((r) => r.method === "PUT")).toBe(false);
@@ -1082,6 +1147,8 @@ describe("scope check, status file, sync gating (D10, D17)", () => {
 		});
 		stops.push(stub.stop);
 		const ctx = await makeCtx({ remote: stub.url });
+		await R.recordLocalSession(ctx, "good", cwd, "claude_code");
+		await R.recordLocalSession(ctx, "bad", cwd, "claude_code");
 		await R.checkScopesTick(ctx);
 		await R.syncClaudeMdTick(ctx);
 		expect(await readFile(join(cwd, "CLAUDE.md"), "utf-8")).toBe("server good\n");
@@ -1200,18 +1267,20 @@ describe("the real port-0 relay server", () => {
 			expect(q[k] === null || typeof q[k] === "string").toBe(true);
 		}
 		expect(typeof q.consecutiveHookFailures).toBe("number");
-		expect(Object.keys(q).sort()).toEqual(
-			[
-				"consecutiveHookFailures",
-				"lastHookEnqueuedAt",
-				"lastHookError",
-				"lastHookFailureAt",
-				"lastHookForwardedAt",
-				"oldestPendingAt",
-				"pending",
-				"processing",
-			].sort(),
-		);
+		const baseQueueKeys = [
+			"consecutiveHookFailures",
+			"lastHookEnqueuedAt",
+			"lastHookError",
+			"lastHookFailureAt",
+			"lastHookForwardedAt",
+			"oldestPendingAt",
+			"pending",
+			"processing",
+		];
+		for (const k of baseQueueKeys) expect(Object.keys(q)).toContain(k);
+		// Additive only (F122 added `dropped`).
+		expect(Object.keys(q).filter((k) => !baseQueueKeys.includes(k))).toEqual(["dropped"]);
+		expect(typeof q.dropped).toBe("number");
 		expect(d.auth.scopes === null || Array.isArray(d.auth.scopes)).toBe(true);
 		expect(Array.isArray(d.auth.missing)).toBe(true);
 		expect(typeof d.auth.hasManage).toBe("boolean");
@@ -1302,5 +1371,679 @@ describe("the real port-0 relay server", () => {
 		expect(q.pending).toBe(0);
 		expect(q.processing).toBe(0);
 		expect(q.lastHookError).toContain("400");
+	});
+});
+
+// ── Phase 3 fix round (F106-F111, F113-F118, F122, F124, F126, F127) ─────────
+
+type MdSession = {
+	sessionId: string;
+	cwd?: string;
+	agentType?: string;
+	claudeMdPath?: string;
+	claudeMdChecksum?: string;
+};
+
+function claudeMdStub(opts: {
+	scopes?: unknown;
+	me?: unknown;
+	sessions: MdSession[];
+	md?: Record<string, { content: string; path: string; checksum: string }>;
+}) {
+	return startStub((method, url) => {
+		if (url.pathname === "/api/v1/auth/me")
+			return Response.json(opts.me ?? { authenticated: true, user: { scopes: opts.scopes } });
+		if (url.pathname === "/api/v1/sessions")
+			return Response.json({ sessions: opts.sessions, total: opts.sessions.length });
+		const m = /^\/api\/v1\/sessions\/([^/]+)\/claude-md$/.exec(url.pathname);
+		if (m && method === "GET") {
+			const md = opts.md?.[decodeURIComponent(m[1])];
+			return md
+				? Response.json(md)
+				: Response.json({ error: "Session not found" }, { status: 404 });
+		}
+		if (m && method === "PUT") return Response.json({ ok: true });
+		return undefined;
+	});
+}
+
+const claudeMdRequests = (reqs: Recorded[]) => reqs.filter((r) => r.path.endsWith("/claude-md"));
+
+describe("CLAUDE.md sync is bound to sessions this relay forwarded (F106)", () => {
+	test("a server-listed session the relay never saw gets zero /claude-md requests and no write", async () => {
+		const R = await mod();
+		const cwd = join(tmp, "proj");
+		await mkdir(cwd, { recursive: true });
+		await writeFile(join(cwd, "AGENTS.md"), "# local secret\n");
+		const stub = claudeMdStub({
+			scopes: ["*"],
+			sessions: [
+				{ sessionId: "stranger-up", cwd },
+				{
+					sessionId: "stranger-down",
+					cwd,
+					claudeMdPath: join(cwd, "CLAUDE.md"),
+					claudeMdChecksum: "c9",
+				},
+			],
+			md: { "stranger-down": { content: "pwned\n", path: join(cwd, "CLAUDE.md"), checksum: "c9" } },
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await R.checkScopesTick(ctx);
+		await R.syncClaudeMdTick(ctx);
+		expect(claudeMdRequests(stub.requests)).toEqual([]);
+		expect(await Bun.file(join(cwd, "CLAUDE.md")).exists()).toBe(false);
+	});
+
+	test("a server cwd that differs from the relay's own record is refused both ways", async () => {
+		const R = await mod();
+		const local = join(tmp, "local-proj");
+		const claimed = join(tmp, "claimed-proj");
+		await mkdir(local, { recursive: true });
+		await mkdir(claimed, { recursive: true });
+		await writeFile(join(claimed, "CLAUDE.md"), "# other file\n");
+		const stub = claudeMdStub({
+			scopes: ["*"],
+			sessions: [
+				{ sessionId: "up", cwd: claimed },
+				{
+					sessionId: "down",
+					cwd: claimed,
+					claudeMdPath: join(claimed, "CLAUDE.md"),
+					claudeMdChecksum: "c1",
+				},
+			],
+			md: { down: { content: "server\n", path: join(claimed, "CLAUDE.md"), checksum: "c1" } },
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await R.recordLocalSession(ctx, "up", local, "claude_code");
+		await R.recordLocalSession(ctx, "down", local, "claude_code");
+		await R.checkScopesTick(ctx);
+		await R.syncClaudeMdTick(ctx);
+		expect(claudeMdRequests(stub.requests)).toEqual([]);
+		expect(await readFile(join(claimed, "CLAUDE.md"), "utf-8")).toBe("# other file\n");
+	});
+
+	test("the download path must be <local cwd>/<name>, even when the server row agrees with itself", async () => {
+		const R = await mod();
+		const local = join(tmp, "local-proj");
+		const other = join(tmp, "other");
+		await mkdir(local, { recursive: true });
+		await mkdir(other, { recursive: true });
+		const stub = claudeMdStub({
+			scopes: ["*"],
+			sessions: [
+				{ sessionId: "s", claudeMdPath: join(other, "CLAUDE.md"), claudeMdChecksum: "c1" },
+			],
+			md: { s: { content: "server\n", path: join(other, "CLAUDE.md"), checksum: "c1" } },
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await R.recordLocalSession(ctx, "s", local, "claude_code");
+		await R.checkScopesTick(ctx);
+		await R.syncClaudeMdTick(ctx);
+		expect(await Bun.file(join(other, "CLAUDE.md")).exists()).toBe(false);
+		expect(await Bun.file(join(local, "CLAUDE.md")).exists()).toBe(false);
+	});
+
+	test("isForbiddenCwd: $HOME, its ancestors, ~/.claude and ~/.codex (and below)", async () => {
+		const R = await mod();
+		const home = "/home/u";
+		for (const cwd of [
+			"/home/u",
+			"/home/u/",
+			"/home",
+			"/",
+			"/home/u/.claude",
+			"/home/u/.claude/projects/x",
+			"/home/u/.codex",
+			"/home/u/.codex/sessions",
+			"relative/dir",
+		]) {
+			expect([cwd, R.isForbiddenCwd(cwd, home)]).toEqual([cwd, true]);
+		}
+		for (const cwd of ["/home/u/code/proj", "/home/u/.claudette", "/srv/work", "/home/user2"]) {
+			expect([cwd, R.isForbiddenCwd(cwd, home)]).toEqual([cwd, false]);
+		}
+		expect(R.isSafeInstructionsPath("/home/u/.claude/CLAUDE.md", "/home/u/.claude", home)).toEqual({
+			ok: false,
+			reason: "path_forbidden_directory",
+		});
+		expect(R.isSafeInstructionsPath("/home/u/CLAUDE.md", "/home/u", home)).toEqual({
+			ok: false,
+			reason: "path_forbidden_directory",
+		});
+		expect(R.isSafeInstructionsPath("/home/u/code/p/CLAUDE.md", "/home/u/code/p", home)).toEqual({
+			ok: true,
+		});
+	});
+
+	test("a forwarded session whose cwd is ~/.claude or $HOME is never uploaded or written", async () => {
+		const R = await mod();
+		const home = join(tmp, "home");
+		const dotClaude = join(home, ".claude");
+		await mkdir(dotClaude, { recursive: true });
+		await writeFile(join(dotClaude, "CLAUDE.md"), "# global instructions\n");
+		await writeFile(join(home, "CLAUDE.md"), "# home instructions\n");
+		const stub = claudeMdStub({
+			scopes: ["*"],
+			sessions: [
+				{ sessionId: "a", cwd: dotClaude },
+				{ sessionId: "b", cwd: home },
+				{
+					sessionId: "c",
+					cwd: dotClaude,
+					claudeMdPath: join(dotClaude, "CLAUDE.md"),
+					claudeMdChecksum: "c1",
+				},
+			],
+			md: { c: { content: "pwned\n", path: join(dotClaude, "CLAUDE.md"), checksum: "c1" } },
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, home });
+		for (const [id, cwd] of [
+			["a", dotClaude],
+			["b", home],
+			["c", dotClaude],
+		] as const) {
+			await R.recordLocalSession(ctx, id, cwd, "claude_code");
+		}
+		await R.checkScopesTick(ctx);
+		await R.syncClaudeMdTick(ctx);
+		expect(claudeMdRequests(stub.requests)).toEqual([]);
+		expect(await readFile(join(dotClaude, "CLAUDE.md"), "utf-8")).toBe("# global instructions\n");
+	});
+
+	test("canUpload fails closed: unchecked and degraded scope states don't upload", async () => {
+		const R = await mod();
+		const cwd = join(tmp, "proj");
+		await mkdir(cwd, { recursive: true });
+		await writeFile(join(cwd, "CLAUDE.md"), "# hi\n");
+		for (const me of [undefined, { authenticated: true, user: { name: "old-server" } }]) {
+			const stub = claudeMdStub({ me, sessions: [{ sessionId: "u1", cwd }] });
+			stops.push(stub.stop);
+			const ctx = await makeCtx({ remote: stub.url });
+			await R.recordLocalSession(ctx, "u1", cwd, "claude_code");
+			if (me) await R.checkScopesTick(ctx);
+			expect(ctx.state.auth.degraded).toBe(Boolean(me));
+			await R.syncClaudeMdTick(ctx);
+			expect(stub.requests.some((r) => r.method === "PUT")).toBe(false);
+		}
+	});
+
+	test("upload success: codex_cli → one PUT of AGENTS.md; claude_code → CLAUDE.md (F114)", async () => {
+		const R = await mod();
+		const cwd = join(tmp, "proj");
+		await mkdir(cwd, { recursive: true });
+		await writeFile(join(cwd, "AGENTS.md"), "# agents\n");
+		await writeFile(join(cwd, "CLAUDE.md"), "# claude\n");
+		const stub = claudeMdStub({
+			scopes: ["ingest", "manage"],
+			sessions: [
+				{ sessionId: "cx", cwd, agentType: "codex_cli" },
+				{ sessionId: "cc", cwd, agentType: "claude_code" },
+			],
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await R.recordLocalSession(ctx, "cx", cwd, "codex_cli");
+		await R.recordLocalSession(ctx, "cc", cwd, "claude_code");
+		await R.checkScopesTick(ctx);
+		await R.syncClaudeMdTick(ctx);
+		const puts = stub.requests.filter((r) => r.method === "PUT");
+		expect(puts.map((r) => r.path).sort()).toEqual([
+			"/api/v1/sessions/cc/claude-md",
+			"/api/v1/sessions/cx/claude-md",
+		]);
+		const body = (id: string) =>
+			JSON.parse(puts.find((r) => r.path.includes(`/${id}/`))?.body ?? "{}") as Record<
+				string,
+				string
+			>;
+		expect(body("cx")).toEqual({
+			content: "# agents\n",
+			path: join(cwd, "AGENTS.md"),
+			checksum: await serverChecksum("# agents\n"),
+		});
+		expect(body("cc").path).toBe(join(cwd, "CLAUDE.md"));
+		expect(body("cc").checksum).toBe(await serverChecksum("# claude\n"));
+		expect(ctx.state.sync.claudeMd.status).toBe("ok");
+	});
+
+	test("the local map is persisted under the state dir, capped, oldest evicted", async () => {
+		const R = await mod();
+		const stub = startStub(() => undefined);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, limits: { maxLocalSessions: 3 } });
+		for (const id of ["s1", "s2", "s3", "s4"])
+			await R.recordLocalSession(ctx, id, join(tmp, id), "claude_code");
+		expect([...ctx.state.localSessions.keys()]).toEqual(["s2", "s3", "s4"]);
+		const file = join(tmp, "state", "local-sessions.json");
+		expect(((await stat(file)).mode & 0o777).toString(8)).toBe("600");
+		const fresh = await makeCtx({ remote: stub.url, limits: { maxLocalSessions: 3 } });
+		expect(fresh.state.localSessions.size).toBe(0);
+		await R.loadLocalSessions(fresh);
+		expect(fresh.state.localSessions.get("s4")?.cwd).toBe(join(tmp, "s4"));
+		expect(fresh.state.localSessions.has("s1")).toBe(false);
+	});
+
+	test("a relative cwd is never recorded", async () => {
+		const R = await mod();
+		const stub = startStub(() => undefined);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await R.recordLocalSession(ctx, "rel", "some/dir", "claude_code");
+		expect(ctx.state.localSessions.has("rel")).toBe(false);
+	});
+});
+
+describe("symlinks are never followed on CLAUDE.md read or write (F107)", () => {
+	test("upload: a CLAUDE.md symlink pointing outside is not read", async () => {
+		const R = await mod();
+		const cwd = join(tmp, "proj");
+		const secret = join(tmp, "secret.txt");
+		await mkdir(cwd, { recursive: true });
+		await writeFile(secret, "top secret\n");
+		await symlink(secret, join(cwd, "CLAUDE.md"));
+		const stub = claudeMdStub({ scopes: ["*"], sessions: [{ sessionId: "l1", cwd }] });
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await R.recordLocalSession(ctx, "l1", cwd, "claude_code");
+		await R.checkScopesTick(ctx);
+		await R.syncClaudeMdTick(ctx);
+		expect(stub.requests.some((r) => r.method === "PUT")).toBe(false);
+		expect(stub.requests.some((r) => r.body.includes("top secret"))).toBe(false);
+	});
+
+	test("download: a CLAUDE.md symlink is not written through", async () => {
+		const R = await mod();
+		const cwd = join(tmp, "proj");
+		const target = join(tmp, "target.txt");
+		await mkdir(cwd, { recursive: true });
+		await writeFile(target, "original\n");
+		await symlink(target, join(cwd, "CLAUDE.md"));
+		const stub = claudeMdStub({
+			scopes: ["*"],
+			sessions: [
+				{ sessionId: "l2", cwd, claudeMdPath: join(cwd, "CLAUDE.md"), claudeMdChecksum: "c1" },
+			],
+			md: { l2: { content: "server\n", path: join(cwd, "CLAUDE.md"), checksum: "c1" } },
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await R.recordLocalSession(ctx, "l2", cwd, "claude_code");
+		await R.checkScopesTick(ctx);
+		await R.syncClaudeMdTick(ctx);
+		expect(await readFile(target, "utf-8")).toBe("original\n");
+		expect((await lstat(join(cwd, "CLAUDE.md"))).isSymbolicLink()).toBe(true);
+		expect(await readlink(join(cwd, "CLAUDE.md"))).toBe(target);
+	});
+});
+
+describe("the loopback proxy forwards only what local producers need (F108)", () => {
+	test("isForwardAllowed table", async () => {
+		const R = await mod();
+		expect(R.isForwardAllowed("POST", "/api/v1/hooks")).toBe(true);
+		expect(R.isForwardAllowed("POST", "/api/v1/hooks/status")).toBe(true);
+		expect(R.isForwardAllowed("GET", "/api/v1/sessions/abc-123")).toBe(true);
+		expect(R.isForwardAllowed("PUT", "/api/v1/sessions/abc-123/native-name")).toBe(true);
+		expect(R.isForwardAllowed("GET", "/api/v1/sessions")).toBe(false);
+		expect(R.isForwardAllowed("PUT", "/api/v1/sessions/abc-123")).toBe(false);
+		expect(R.isForwardAllowed("POST", "/api/v1/sessions/abc/prompt")).toBe(false);
+		expect(R.isForwardAllowed("GET", "/api/v1/sessions/abc/claude-md")).toBe(false);
+		expect(R.isForwardAllowed("PUT", "/api/v1/sessions/abc/rename")).toBe(false);
+		expect(R.isForwardAllowed("POST", "/api/v1/api-keys")).toBe(false);
+		expect(R.isForwardAllowed("GET", "/api/v1/sessions/abc/native-name")).toBe(false);
+	});
+
+	test("through the real handler: allowed paths are forwarded, others get 403 and never reach the server", async () => {
+		const R = await mod();
+		const stub = startStub((method, url) => {
+			if (method === "GET" && url.pathname === "/api/v1/sessions/abc")
+				return Response.json({ session: {} });
+			if (method === "PUT" && url.pathname === "/api/v1/sessions/abc/native-name")
+				return Response.json({ ok: true });
+			return Response.json({ reached: true });
+		});
+		stops.push(stub.stop);
+		const stateDir = join(tmp, "state");
+		await mkdir(stateDir, { recursive: true });
+		const relay = await R.startRelay(
+			{
+				remoteUrl: stub.url,
+				apiKey: "ap_test_key",
+				port: 0,
+				codexNamePolicy: "codex",
+				stateDir,
+				configPath: null,
+			},
+			{ timers: false, env: { HOME: join(tmp, "home") }, scriptPath: RELAY_PATH, log: () => {} },
+		);
+		stops.push(() => relay.stop());
+		const base = `http://127.0.0.1:${relay.port}`;
+		expect((await fetch(`${base}/api/v1/sessions/abc`)).status).toBe(200);
+		expect(
+			(
+				await fetch(`${base}/api/v1/sessions/abc/native-name`, {
+					method: "PUT",
+					body: '{"name":"n"}',
+				})
+			).status,
+		).toBe(200);
+		for (const [method, path] of [
+			["GET", "/api/v1/sessions"],
+			["POST", "/api/v1/sessions/abc/prompt"],
+			["GET", "/api/v1/sessions/abc/claude-md"],
+			["POST", "/api/v1/api-keys"],
+		] as const) {
+			const res = await fetch(`${base}${path}`, {
+				method,
+				body: method === "GET" ? undefined : "{}",
+			});
+			expect([path, res.status]).toEqual([path, 403]);
+			expect(((await res.json()) as { error: string }).error).toBe("relay_path_not_allowed");
+		}
+		expect(stub.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+			"GET /api/v1/sessions/abc",
+			"PUT /api/v1/sessions/abc/native-name",
+		]);
+	});
+});
+
+describe("ledger ordering and compaction (F109, F115)", () => {
+	test("the ledger is written before the index: an index append failure leaves the ledger row", async () => {
+		const R = await mod();
+		const stub = sessionsStub([
+			{ sessionId: "s1", displayName: "brave-falcon", nameSource: "generated" },
+		]);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await mkdir(indexPath(), { recursive: true });
+		const res = await R.pushCodexNames(ctx);
+		expect(res.ok).toBe(false);
+		const ledger = await readJsonl(join(tmp, "state", "codex-pushed.jsonl"));
+		expect(ledger.map((r) => r.thread_name)).toEqual(["brave-falcon"]);
+	});
+
+	test("a large ledger is compacted to rows still present in the index; classification is unchanged", async () => {
+		const R = await mod();
+		const stub = sessionsStub([
+			{ sessionId: "keep", displayName: "ours", nameSource: "generated" },
+		]);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, limits: { ledgerCompactThreshold: 100 } });
+		const oursRow = row("keep", "ours", "2026-09-28T10:00:00.000Z");
+		const orphans = Array.from({ length: 150 }, (_, i) => row(`gone${i}`, `n${i}`));
+		await writeFile(join(tmp, "state", "codex-pushed.jsonl"), jsonl([...orphans, oursRow]));
+		await writeFile(indexPath(), jsonl([row("keep", "codex-title"), oursRow]));
+		await R.pushCodexNames(ctx);
+		const ledger = await readJsonl(join(tmp, "state", "codex-pushed.jsonl"));
+		expect(ledger).toEqual([oursRow]);
+		const { latestForeign } = R.parseCodexIndex(
+			await readFile(indexPath(), "utf-8"),
+			R.parseLedger(jsonl(ledger)),
+		);
+		expect(latestForeign.get("keep")?.thread_name).toBe("codex-title");
+		expect(((await stat(join(tmp, "state", "codex-pushed.jsonl"))).mode & 0o777).toString(8)).toBe(
+			"600",
+		);
+	});
+});
+
+describe("file modes, log hygiene, insecure-remote warning (F111)", () => {
+	test("state, queue, ledger and status are private (0700 dirs, 0600 files)", async () => {
+		const R = await mod();
+		const stub = sessionsStub([{ sessionId: "s1", displayName: "n", nameSource: "generated" }]);
+		stops.push(stub.stop);
+		const stateDir = join(tmp, "fresh-state");
+		const relay = await R.startRelay(
+			{
+				remoteUrl: stub.url,
+				apiKey: "k",
+				port: 0,
+				codexNamePolicy: "codex",
+				stateDir,
+				configPath: null,
+			},
+			{ timers: false, env: { HOME: join(tmp, "home") }, scriptPath: RELAY_PATH, log: () => {} },
+		);
+		stops.push(() => relay.stop());
+		await fetch(`http://127.0.0.1:${relay.port}/api/v1/hooks`, {
+			method: "POST",
+			body: JSON.stringify({ session_id: "q", hook_event_name: "Stop", cwd: join(tmp, "p") }),
+		});
+		await R.pushCodexNames(relay.ctx);
+		relay.ctx.state.auth.checkedAt = new Date().toISOString();
+		relay.ctx.state.auth.missing = ["observe"];
+		await R.writeStatusFile(relay.ctx);
+		const mode = async (p: string) => ((await stat(p)).mode & 0o777).toString(8);
+		expect(await mode(stateDir)).toBe("700");
+		expect(await mode(join(stateDir, "hook-queue"))).toBe("700");
+		expect(await mode(join(stateDir, "hook-queue", "pending"))).toBe("700");
+		expect(await mode(join(stateDir, "codex-pushed.jsonl"))).toBe("600");
+		expect(await mode(join(stateDir, "status"))).toBe("600");
+		expect(await mode(join(stateDir, "local-sessions.json"))).toBe("600");
+		const [queued] = await (await import("node:fs/promises")).readdir(
+			join(stateDir, "hook-queue", "pending"),
+		);
+		expect(await mode(join(stateDir, "hook-queue", "pending", queued))).toBe("600");
+	});
+
+	test("Codex- and server-controlled strings are stripped of control characters in logs", async () => {
+		const R = await mod();
+		const lines: string[] = [];
+		const stub = sessionsStub([
+			{ sessionId: "s1\u001b[31m", displayName: "evil\u001b[2J\rname", nameSource: "generated" },
+			{ sessionId: "s2", displayName: "g", nameSource: "generated" },
+		]);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, log: (l) => lines.push(l) });
+		await writeFile(indexPath(), jsonl([row("s2", "codex\nfake log line\u001b[0m")]));
+		await R.pullCodexNames(ctx);
+		await R.pushCodexNames(ctx);
+		expect(lines.length).toBeGreaterThan(0);
+		for (const l of lines) {
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control characters are absent
+			expect(l).not.toMatch(/[\u0000-\u001f\u007f]/);
+		}
+	});
+
+	test("isInsecureRemote: plain http to a non-loopback host", async () => {
+		const R = await mod();
+		expect(R.isInsecureRemote("http://ap.example.com")).toBe(true);
+		expect(R.isInsecureRemote("http://10.1.2.3:3000")).toBe(true);
+		expect(R.isInsecureRemote("https://ap.example.com")).toBe(false);
+		expect(R.isInsecureRemote("http://localhost:3000")).toBe(false);
+		expect(R.isInsecureRemote("http://127.0.0.1:3000")).toBe(false);
+		expect(R.isInsecureRemote("http://[::1]:3000")).toBe(false);
+	});
+
+	test("startRelay warns about an insecure remote and names AGENTPULSE_DIR when the state dir isn't the default (F126)", async () => {
+		const R = await mod();
+		const home = join(tmp, "home");
+		const start = async (remoteUrl: string, stateDir: string) => {
+			const lines: string[] = [];
+			await mkdir(stateDir, { recursive: true });
+			const relay = await R.startRelay(
+				{ remoteUrl, apiKey: "k", port: 0, codexNamePolicy: "codex", stateDir, configPath: null },
+				{ timers: false, env: { HOME: home }, scriptPath: RELAY_PATH, log: (l) => lines.push(l) },
+			);
+			relay.stop();
+			return lines.join("\n");
+		};
+		const custom = await start("http://ap.example.com", join(tmp, "custom-state"));
+		expect(custom).toContain("plain http://");
+		expect(custom).toContain(`AGENTPULSE_DIR=${join(tmp, "custom-state")}`);
+		const standard = await start("https://ap.example.com", join(home, ".agentpulse"));
+		expect(standard).not.toContain("plain http://");
+		expect(standard).not.toContain("AGENTPULSE_DIR=");
+	});
+});
+
+describe("hook queue caps (F122)", () => {
+	async function relayWithLimits(limits: Record<string, number>, now?: () => number) {
+		const R = await mod();
+		const stub = startStub(() => Response.json({ error: "revoked" }, { status: 401 }));
+		stops.push(stub.stop);
+		const stateDir = join(tmp, "state");
+		await mkdir(stateDir, { recursive: true });
+		const lines: string[] = [];
+		const relay = await R.startRelay(
+			{
+				remoteUrl: stub.url,
+				apiKey: "k",
+				port: 0,
+				codexNamePolicy: "codex",
+				stateDir,
+				configPath: null,
+			},
+			{
+				timers: false,
+				env: { HOME: join(tmp, "home") },
+				scriptPath: RELAY_PATH,
+				log: (l) => lines.push(l),
+				limits,
+				now,
+			},
+		);
+		stops.push(() => relay.stop());
+		const post = (i: number) =>
+			fetch(`http://127.0.0.1:${relay.port}/api/v1/hooks`, {
+				method: "POST",
+				body: JSON.stringify({ session_id: `q${i}`, hook_event_name: "Stop" }),
+			});
+		return { R, relay, post, lines };
+	}
+
+	test("count cap: the oldest are dropped, one log line per drop, dropped surfaces in diagnostics", async () => {
+		const { R, relay, post, lines } = await relayWithLimits({ maxQueueFiles: 3 });
+		for (let i = 0; i < 5; i++) {
+			await post(i);
+			await Bun.sleep(2);
+		}
+		const q = await R.getQueueDiagnostics(relay.ctx);
+		expect(q.pending).toBe(3);
+		expect(q.dropped).toBe(2);
+		const { readdir } = await import("node:fs/promises");
+		const bodies = await Promise.all(
+			(await readdir(join(tmp, "state", "hook-queue", "pending"))).map(async (f) =>
+				JSON.parse(await readFile(join(tmp, "state", "hook-queue", "pending", f), "utf-8")),
+			),
+		);
+		expect(bodies.map((b) => JSON.parse(b.body).session_id).sort()).toEqual(["q2", "q3", "q4"]);
+		expect(lines.filter((l) => l.includes("dropped")).length).toBe(2);
+	});
+
+	test("age cap: items older than the max age are dropped", async () => {
+		let now = T0;
+		const { R, relay, post } = await relayWithLimits({ maxQueueAgeMs: 60_000 }, () => now);
+		await post(0);
+		now = T0 + 61_000;
+		await post(1);
+		const q = await R.getQueueDiagnostics(relay.ctx);
+		expect(q.pending).toBe(1);
+		expect(q.dropped).toBe(1);
+	});
+});
+
+describe("diagnostics auth detail (F127)", () => {
+	test("keyRejected and lastError are reported; the key never appears", async () => {
+		const R = await mod();
+		const stub = startStub((_m, url) =>
+			url.pathname === "/api/v1/auth/me"
+				? Response.json({ error: "x" }, { status: 401 })
+				: undefined,
+		);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await R.checkScopesTick(ctx);
+		const d = await R.buildDiagnostics(ctx);
+		expect(d.auth.keyRejected).toBe(true);
+		expect(d.auth.lastError).toBe("HTTP 401 from /auth/me");
+		expect(JSON.stringify(d)).not.toContain("ap_test_key");
+	});
+});
+
+describe("pull restart burst and rate limits (F125)", () => {
+	test("after a restart, persisted pull state means zero PUTs for already-synced entries", async () => {
+		const R = await mod();
+		const sessions = [
+			{ sessionId: "a", displayName: "g1", nameSource: "generated" },
+			{ sessionId: "b", displayName: "g2", nameSource: "generated" },
+		];
+		const stub = sessionsStub(sessions);
+		stops.push(stub.stop);
+		const first = await makeCtx({ remote: stub.url, now: () => T0 });
+		await writeFile(
+			indexPath(),
+			jsonl([row("a", "codex-a"), row("b", "codex-b"), row("ghost", "x")]),
+		);
+		for (let i = 0; i < 5; i++) await R.pullCodexNames(first);
+		const before = nativeNamePuts(stub.requests).length;
+		expect(before).toBe(2 + 5);
+
+		const restarted = await makeCtx({ remote: stub.url, now: () => T0 });
+		expect(restarted.state.codexPull.size).toBe(0);
+		await R.pullCodexNames(restarted);
+		expect(nativeNamePuts(stub.requests).length).toBe(before);
+		const file = join(tmp, "state", "codex-pull-state.json");
+		expect(((await stat(file)).mode & 0o777).toString(8)).toBe("600");
+	});
+
+	test("a 429 ends the tick without an error status and honors Retry-After", async () => {
+		const R = await mod();
+		let now = T0;
+		let limited = true;
+		const stub = startStub((method, url) => {
+			if (method === "PUT" && url.pathname.endsWith("/native-name")) {
+				return limited
+					? Response.json(
+							{ error: "rate_limited" },
+							{ status: 429, headers: { "Retry-After": "60" } },
+						)
+					: Response.json({ ok: true, applied: true });
+			}
+			if (url.pathname === "/api/v1/sessions") return Response.json({ sessions: [], total: 0 });
+			return undefined;
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, now: () => now });
+		await writeFile(indexPath(), jsonl([row("a", "n-a"), row("b", "n-b")]));
+		await R.syncCodexNamesTick(ctx);
+		expect(nativeNamePuts(stub.requests)).toHaveLength(1);
+		expect(ctx.state.sync.codexNames.status).not.toBe("error");
+		expect(ctx.state.sync.codexNames.status).toBe("rate_limited");
+
+		now = T0 + 30_000;
+		limited = false;
+		await R.syncCodexNamesTick(ctx);
+		expect(nativeNamePuts(stub.requests)).toHaveLength(1);
+
+		now = T0 + 61_000;
+		await R.syncCodexNamesTick(ctx);
+		expect(nativeNamePuts(stub.requests)).toHaveLength(3);
+		expect(ctx.state.sync.codexNames.status).toBe("ok");
+	});
+
+	test("at most 50 pull PUTs per tick", async () => {
+		const R = await mod();
+		const sessions = Array.from({ length: 60 }, (_, i) => ({
+			sessionId: `p${i}`,
+			displayName: `g${i}`,
+			nameSource: "generated",
+		}));
+		const stub = sessionsStub(sessions);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, now: () => T0 });
+		await writeFile(
+			indexPath(),
+			jsonl(sessions.map((s) => row(s.sessionId, `codex-${s.sessionId}`))),
+		);
+		await R.pullCodexNames(ctx);
+		expect(nativeNamePuts(stub.requests)).toHaveLength(50);
+		await R.pullCodexNames(ctx);
+		expect(nativeNamePuts(stub.requests)).toHaveLength(60);
 	});
 });
