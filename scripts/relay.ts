@@ -24,6 +24,7 @@ import {
 	open,
 	readFile,
 	readdir,
+	realpath,
 	rename,
 	stat,
 	unlink,
@@ -102,6 +103,9 @@ export type RelayConfig = {
 
 export type ParseResult = { ok: true; config: RelayConfig } | { ok: false; error: string };
 
+/** RFC 6750 b64token: what a Bearer credential may contain. */
+const API_KEY_TOKEN_RE = /^[A-Za-z0-9._~+/-]+=*$/;
+
 const VALUE_FLAGS: Record<string, "port" | "key" | "config" | "policy"> = {
 	"--port": "port",
 	"--key": "key",
@@ -165,11 +169,22 @@ export function parseArgs(
 		env.scriptDir ??
 		".";
 
+	const apiKey = flags.key ?? fileConfig.api_key ?? "";
+	// F127: a key that can't be a header token (e.g. a hand-edited config.json
+	// with a trailing newline) would make fetch throw with the key in the error.
+	if (apiKey && !API_KEY_TOKEN_RE.test(apiKey)) {
+		return {
+			ok: false,
+			error:
+				"the API key has characters an Authorization header can't carry (check config.json for stray whitespace)",
+		};
+	}
+
 	return {
 		ok: true,
 		config: {
 			remoteUrl,
-			apiKey: flags.key ?? fileConfig.api_key ?? "",
+			apiKey,
 			port,
 			codexNamePolicy: policy as CodexNamePolicy,
 			stateDir,
@@ -299,6 +314,7 @@ export function createRelayState() {
 		relayHash: "",
 		codexPull: new Map<string, PullEntryState>(),
 		pullStateLoaded: false,
+		listFieldsUnsupported: false,
 		lastLedgerCompactionAt: 0,
 		/** F125: epoch ms before which the pull doesn't PUT (server Retry-After). */
 		pullRetryAt: 0,
@@ -340,6 +356,8 @@ export type RelayContext = {
 	log: (line: string) => void;
 	/** false in tests: nothing is scheduled behind the caller's back. */
 	autoSchedule: boolean;
+	/** F127: replaces the API key in any text bound for logs or diagnostics. */
+	redact: (text: string) => string;
 	limits: RelayLimits;
 };
 
@@ -394,6 +412,9 @@ export function resolveRelayPaths(
 
 export function createRelayContext(config: RelayConfig, opts: ContextOptions = {}): RelayContext {
 	const env = opts.env ?? { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME };
+	const baseLog = opts.log ?? ((line: string) => console.log(line));
+	const redact = (text: string) =>
+		config.apiKey ? text.split(config.apiKey).join("[redacted]") : text;
 	return {
 		config,
 		state: opts.state ?? createRelayState(),
@@ -401,7 +422,8 @@ export function createRelayContext(config: RelayConfig, opts: ContextOptions = {
 		port: config.port,
 		fetch: opts.fetch ?? fetch,
 		now: opts.now ?? Date.now,
-		log: opts.log ?? ((line) => console.log(line)),
+		log: (line) => baseLog(redact(line)),
+		redact,
 		autoSchedule: false,
 		limits: { ...DEFAULT_LIMITS, ...opts.limits },
 	};
@@ -411,6 +433,10 @@ export function createRelayContext(config: RelayConfig, opts: ContextOptions = {
 
 function iso(ms: number) {
 	return new Date(ms).toISOString();
+}
+
+function redact(ctx: RelayContext, text: string) {
+	return ctx.redact(text);
 }
 
 function errorMessage(err: unknown) {
@@ -445,40 +471,60 @@ async function replacePrivateFile(path: string, content: string) {
 	await rename(tmp, path);
 }
 
-type LstatKind = "file" | "symlink" | "other" | "missing";
+type LstatKind = "file" | "symlink" | "hardlink" | "other" | "missing";
 
+/** F107/F135: only a plain, singly-linked regular file counts as "file". */
 async function lstatKind(path: string): Promise<LstatKind> {
 	try {
 		const st = await lstat(path);
 		if (st.isSymbolicLink()) return "symlink";
-		return st.isFile() ? "file" : "other";
+		if (!st.isFile()) return "other";
+		return st.nlink > 1 ? "hardlink" : "file";
 	} catch {
 		return "missing";
+	}
+}
+
+type FileIdentity = { dev: number; ino: number; nlink: number; isFile: () => boolean };
+
+/**
+ * F136: where O_NOFOLLOW is unavailable (Windows) the open can race a swap
+ * of the path, so after opening, the handle must still be the file lstat saw.
+ */
+function assertSameFile(path: string, seen: FileIdentity, opened: FileIdentity) {
+	if (seen.dev !== opened.dev || seen.ino !== opened.ino || !opened.isFile() || opened.nlink > 1) {
+		throw new Error(`file changed while opening: ${path}`);
 	}
 }
 
 /** F107: reads a regular file without following a symlink at the final component. */
 async function readFileNoFollow(path: string): Promise<string> {
 	if ((await lstatKind(path)) !== "file") throw new Error(`not a regular file: ${path}`);
+	const seen = await lstat(path);
 	const handle = await open(path, constants.O_RDONLY | O_NOFOLLOW);
 	try {
+		assertSameFile(path, seen, await handle.stat());
 		return await handle.readFile("utf-8");
 	} finally {
 		await handle.close();
 	}
 }
 
-/** F107: writes (creating or truncating) without following a symlink. */
+/**
+ * F107: writes (creating or replacing content) without following a symlink.
+ * Truncation happens only after the opened handle is verified (F136), so a
+ * swapped-in file is never emptied.
+ */
 async function writeFileNoFollow(path: string, content: string) {
 	const kind = await lstatKind(path);
 	if (kind !== "file" && kind !== "missing")
 		throw new Error(`refusing to write through ${kind}: ${path}`);
-	const handle = await open(
-		path,
-		constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | O_NOFOLLOW,
-		0o644,
-	);
+	const seen = kind === "file" ? await lstat(path) : null;
+	const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | O_NOFOLLOW, 0o644);
 	try {
+		const opened = await handle.stat();
+		assertSameFile(path, seen ?? (await lstat(path)), opened);
+		await handle.truncate(0);
 		await handle.writeFile(content, "utf-8");
 	} finally {
 		await handle.close();
@@ -642,7 +688,7 @@ export async function checkScopesTick(ctx: RelayContext) {
 			});
 		}
 	} catch (err) {
-		auth.lastError = errorMessage(err);
+		auth.lastError = redact(ctx, errorMessage(err));
 	}
 	announceAuth(ctx);
 	await writeStatusFile(ctx);
@@ -701,7 +747,7 @@ function setSyncStatus(
 	const s = ctx.state.sync[key];
 	const previous = s.status;
 	s.status = status;
-	s.lastError = error;
+	s.lastError = error === null ? null : redact(ctx, error);
 	if (!error && !status.startsWith("disabled")) s.lastSuccessAt = iso(ctx.now());
 	if (previous !== status) {
 		ctx.log(`[sync] ${key}: ${status}${error ? ` (${error})` : ""}`);
@@ -757,13 +803,38 @@ function isWithin(child: string, parent: string) {
  * synced — $HOME itself, any ancestor of it, and anything under ~/.claude or
  * ~/.codex (agent-global instructions and state). A relative cwd is refused.
  */
-export function isForbiddenCwd(cwd: string, home: string): boolean {
+export function isForbiddenCwd(
+	cwd: string,
+	home: string,
+	opts: { caseInsensitive?: boolean } = {},
+): boolean {
 	if (!isAbsolute(cwd)) return true;
-	const c = resolve(cwd);
+	// F134: APFS and NTFS are case-insensitive by default, so ~/.Claude is ~/.claude.
+	const caseInsensitive =
+		opts.caseInsensitive ?? (process.platform === "darwin" || process.platform === "win32");
+	const fold = (p: string) => (caseInsensitive ? p.toLowerCase() : p);
+	const c = fold(resolve(cwd));
 	if (c === sep) return true;
 	if (!home || !isAbsolute(home)) return false;
-	const h = resolve(home);
+	const h = fold(resolve(home));
 	return isWithin(h, c) || isWithin(c, join(h, ".claude")) || isWithin(c, join(h, ".codex"));
+}
+
+async function realpathOr(path: string): Promise<string> {
+	try {
+		return await realpath(path);
+	} catch {
+		return path;
+	}
+}
+
+/**
+ * F134: the string check plus the same check on both paths resolved through
+ * symlinks, so a link (or a linked parent) into ~/.claude is still refused.
+ */
+async function isForbiddenCwdOnDisk(cwd: string, home: string): Promise<boolean> {
+	if (isForbiddenCwd(cwd, home)) return true;
+	return isForbiddenCwd(await realpathOr(cwd), home ? await realpathOr(home) : home);
 }
 
 /**
@@ -894,7 +965,7 @@ async function uploadClaudeMd(
 	agentType?: string | null,
 ) {
 	if (!sessionId || !cwd) return;
-	if (isForbiddenCwd(cwd, ctx.paths.home)) {
+	if (await isForbiddenCwdOnDisk(cwd, ctx.paths.home)) {
 		refuseOnce(ctx, sessionId, cwd, "path_forbidden_directory");
 		return;
 	}
@@ -966,7 +1037,7 @@ export async function syncClaudeMdTick(ctx: RelayContext) {
 				refuseOnce(ctx, session.sessionId, session.cwd, "server_cwd_mismatch");
 				continue;
 			}
-			if (isForbiddenCwd(local.cwd, ctx.paths.home)) {
+			if (await isForbiddenCwdOnDisk(local.cwd, ctx.paths.home)) {
 				refuseOnce(ctx, session.sessionId, local.cwd, "path_forbidden_directory");
 				continue;
 			}
@@ -1002,7 +1073,7 @@ export async function syncClaudeMdTick(ctx: RelayContext) {
 				continue;
 			}
 			const kind = await lstatKind(md.path);
-			if (kind === "symlink" || kind === "other") {
+			if (kind === "symlink" || kind === "hardlink" || kind === "other") {
 				refuseOnce(ctx, session.sessionId, md.path, `refused_${kind}`);
 				continue;
 			}
@@ -1383,10 +1454,22 @@ async function fetchCodexSessions(
 	const sessions: CodexSessionRow[] = [];
 	try {
 		for (let page = 0; page < CODEX_MAX_PAGES; page++) {
+			const fields = ctx.state.listFieldsUnsupported ? "" : `&fields=${CODEX_LIST_FIELDS}`;
 			const res = await remoteFetch(
 				ctx,
-				`/api/v1/sessions?agent_type=codex_cli&limit=${CODEX_PAGE_SIZE}&offset=${page * CODEX_PAGE_SIZE}&fields=${CODEX_LIST_FIELDS}`,
+				`/api/v1/sessions?agent_type=codex_cli&limit=${CODEX_PAGE_SIZE}&offset=${page * CODEX_PAGE_SIZE}${fields}`,
 			);
+			// F140: a server that doesn't know one of our fields answers 400
+			// invalid_field. Fall back to full rows for the life of the process.
+			if (res.status === 400 && fields) {
+				const body = (await res.json().catch(() => null)) as { error?: string } | null;
+				if (body?.error === "invalid_field") {
+					ctx.state.listFieldsUnsupported = true;
+					ctx.log("[codex-name-sync] server rejected the list projection; using full rows");
+					page--;
+					continue;
+				}
+			}
 			if (!res.ok) return { ok: false, error: `HTTP ${res.status} on GET /sessions` };
 			const data = (await res.json()) as { sessions?: CodexSessionRow[] };
 			const rows = Array.isArray(data.sessions) ? data.sessions : [];
@@ -1688,8 +1771,9 @@ async function releaseHookFailure(
 	ctx: RelayContext,
 	fileName: string,
 	item: HookQueueItem,
-	message: string,
+	rawMessage: string,
 ) {
+	const message = redact(ctx, rawMessage);
 	const updated: HookQueueItem = {
 		...item,
 		attempts: item.attempts + 1,
@@ -1780,7 +1864,7 @@ export async function getQueueDiagnostics(ctx: RelayContext) {
 		lastHookEnqueuedAt: q.lastHookEnqueuedAt,
 		lastHookForwardedAt: q.lastHookForwardedAt,
 		lastHookFailureAt: q.lastHookFailureAt,
-		lastHookError: q.lastHookError,
+		lastHookError: q.lastHookError === null ? null : redact(ctx, q.lastHookError),
 		consecutiveHookFailures: q.consecutiveHookFailures,
 		dropped: q.dropped,
 	};
@@ -1803,19 +1887,19 @@ export async function buildDiagnostics(ctx: RelayContext) {
 			checkedAt: auth.checkedAt,
 			degraded: auth.degraded,
 			keyRejected: auth.keyRejected,
-			lastError: auth.lastError === null ? null : logSafe(auth.lastError),
+			lastError: auth.lastError === null ? null : logSafe(redact(ctx, auth.lastError)),
 		},
 		sync: {
 			codexNames: {
 				status: sync.codexNames.status,
-				lastError: sync.codexNames.lastError,
+				lastError: sync.codexNames.lastError && redact(ctx, sync.codexNames.lastError),
 				lastSuccessAt: sync.codexNames.lastSuccessAt,
 				policy: ctx.config.codexNamePolicy,
 				suppressedIds: sync.codexNames.suppressedIds,
 			},
 			claudeMd: {
 				status: sync.claudeMd.status,
-				lastError: sync.claudeMd.lastError,
+				lastError: sync.claudeMd.lastError && redact(ctx, sync.claudeMd.lastError),
 				lastSuccessAt: sync.claudeMd.lastSuccessAt,
 			},
 		},
@@ -1859,6 +1943,47 @@ export function isInsecureRemote(remoteUrl: string): boolean {
 	return !(host === "localhost" || host === "[::1]" || /^127\.\d+\.\d+\.\d+$/.test(host));
 }
 
+/**
+ * F137: older relays left the state dir 0755 and its files 0644. Tighten the
+ * relay's own dirs and files at startup, best-effort (a failure logs, never
+ * throws). A dev checkout's script directory, used as the state dir only
+ * when nothing else is configured, is left alone.
+ */
+async function tightenStateModes(ctx: RelayContext) {
+	const { stateDir, home, relayScriptFile } = ctx.paths;
+	const isScriptDir = resolve(stateDir) === resolve(dirname(relayScriptFile));
+	const isDefaultDir = Boolean(home) && resolve(stateDir) === resolve(join(home, ".agentpulse"));
+	const queueDir = dirname(ctx.paths.hookPendingDir);
+	const logsDir = join(stateDir, "logs");
+	const dirs = [queueDir, ctx.paths.hookPendingDir, ctx.paths.hookProcessingDir, logsDir];
+	if (!isScriptDir || isDefaultDir) dirs.unshift(stateDir);
+	const files = [
+		ctx.paths.statusFile,
+		ctx.paths.ledgerFile,
+		ctx.paths.localSessionsFile,
+		ctx.paths.pullStateFile,
+		join(logsDir, "relay.log"),
+		join(logsDir, "relay.err"),
+		...(ctx.config.configPath ? [ctx.config.configPath] : []),
+	];
+	for (const dir of [ctx.paths.hookPendingDir, ctx.paths.hookProcessingDir]) {
+		try {
+			for (const name of await readdir(dir)) files.push(join(dir, name));
+		} catch {}
+	}
+	const apply = async (path: string, mode: number) => {
+		try {
+			await chmod(path, mode);
+		} catch (err) {
+			if ((err as { code?: string }).code !== "ENOENT") {
+				ctx.log(`[relay] couldn't restrict ${logSafe(path)}: ${logSafe(errorMessage(err))}`);
+			}
+		}
+	};
+	for (const dir of dirs) await apply(dir, PRIVATE_DIR_MODE);
+	for (const file of files) await apply(file, PRIVATE_FILE_MODE);
+}
+
 function startupWarnings(ctx: RelayContext) {
 	if (isInsecureRemote(ctx.config.remoteUrl)) {
 		ctx.log(
@@ -1898,7 +2023,7 @@ export function createFetchHandler(ctx: RelayContext) {
 			return Response.json(await buildDiagnostics(ctx));
 		}
 
-		if (url.pathname.startsWith("/api/v1/hooks")) {
+		if (url.pathname === "/api/v1/hooks" || url.pathname.startsWith("/api/v1/hooks/")) {
 			const queued = await enqueueHook(ctx, req, url);
 			return Response.json({ ok: true, relayed: false, ...queued });
 		}
@@ -1954,6 +2079,7 @@ export async function startRelay(
 	const ctx = createRelayContext(config, opts);
 	ctx.autoSchedule = timers;
 	await ensureQueueDirs(ctx);
+	await tightenStateModes(ctx);
 	await loadLocalSessions(ctx);
 	ctx.state.relayHash = (await hashFile(ctx.paths.relayScriptFile)) ?? "";
 	startupWarnings(ctx);

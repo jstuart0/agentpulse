@@ -140,13 +140,13 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 // Medium #1) records who initiated the rename. Only an explicit
 // `source: "user"` stamps `metadata.renameSource = "user"`, which
 // `applyNativeName` below checks to refuse a later native-name pull. An
-// omitted `source` — or any other explicit value, e.g. the relay's Codex
-// name-sync `source: "sync"` — is legacy-neutral: the rename happens but
-// the flag is left untouched. This protects a mixed-version old relay
-// (which sends `{ name }` with no `source` field) from being
-// misclassified as a manual rename. The dashboard (src/web/lib/api.ts)
-// and the Ask "rename X to Y" command both send `source: "user"`
-// explicitly.
+// omitted `source` is legacy-neutral: the rename happens and the flag is
+// left untouched, so a mixed-version old relay sending `{ name }` can't be
+// misclassified as a manual rename. `source: "sync"` (pre-Phase-3 relays'
+// Codex name sync) is not a plain rename: it takes the native-name path,
+// so a manual pin wins and only `metadata.nativeName` is recorded (F121,
+// below). The dashboard (src/web/lib/api.ts) and the Ask "rename X to Y"
+// command both send `source: "user"` explicitly.
 //
 // D14: `source: "reset"` is a distinct branch — it clears the manual-rename
 // pin (and applies any already-observed native name immediately) instead of

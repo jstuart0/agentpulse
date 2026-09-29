@@ -2177,3 +2177,242 @@ describe("relay state bounds (F148, F149)", () => {
 		expect(await readJsonl(ledgerFile)).toEqual([kept]);
 	});
 });
+
+describe("relay residuals (F127, F134-F138, F140)", () => {
+	test("F127: an error message carrying the key is redacted in diagnostics and logs", async () => {
+		const R = await mod();
+		const key = "ap_secretkey0123456789abcdef";
+		const lines: string[] = [];
+		const boom: typeof fetch = (async () => {
+			throw new TypeError(`Header 'authorization' has invalid value: 'Bearer ${key}'`);
+		}) as unknown as typeof fetch;
+		const stateDir = join(tmp, "state");
+		await mkdir(stateDir, { recursive: true });
+		const ctx = R.createRelayContext(
+			{
+				remoteUrl: "http://127.0.0.1:9",
+				apiKey: key,
+				port: 0,
+				codexNamePolicy: "codex",
+				stateDir,
+				configPath: null,
+			},
+			{
+				env: { HOME: join(tmp, "home") },
+				scriptPath: RELAY_PATH,
+				fetch: boom,
+				log: (l) => lines.push(l),
+			},
+		);
+		await mkdir(join(tmp, "home", ".codex"), { recursive: true });
+		await writeFile(indexPath(), jsonl([row("s1", "n")]));
+		await R.checkScopesTick(ctx);
+		await R.syncCodexNamesTick(ctx);
+		await R.syncClaudeMdTick(ctx);
+		const d = JSON.stringify(await R.buildDiagnostics(ctx));
+		expect(d).not.toContain(key);
+		expect(d).toContain("[redacted]");
+		expect(lines.join("\n")).not.toContain(key);
+	});
+
+	test("F127: keys with non-token characters are rejected by parseArgs", async () => {
+		const R = await mod();
+		const url = "https://ap.example.com";
+		expect(R.parseArgs([url, "--key", "ap_abc\n"], {}).ok).toBe(false);
+		expect(R.parseArgs([url], { api_key: "ap_abc def" }).ok).toBe(false);
+		expect(R.parseArgs([url], { api_key: "ap_abc\r" }).ok).toBe(false);
+		expect(R.parseArgs([url, "--key", "ap_0123456789abcdef"], {}).ok).toBe(true);
+		expect(R.parseArgs([url], {}).ok).toBe(true);
+	});
+
+	test("F134: forbidden-dir matching folds case where the filesystem does", async () => {
+		const R = await mod();
+		expect(R.isForbiddenCwd("/home/u/.Claude", "/home/u", { caseInsensitive: true })).toBe(true);
+		expect(R.isForbiddenCwd("/HOME/U", "/home/u", { caseInsensitive: true })).toBe(true);
+		expect(R.isForbiddenCwd("/home/u/.Claude", "/home/u", { caseInsensitive: false })).toBe(false);
+		expect(R.isForbiddenCwd("/home/u/code", "/home/u", { caseInsensitive: true })).toBe(false);
+	});
+
+	test("F134: a cwd that reaches ~/.claude through a symlink is refused", async () => {
+		const R = await mod();
+		const home = join(tmp, "home");
+		const dotClaude = join(home, ".claude");
+		await mkdir(dotClaude, { recursive: true });
+		await writeFile(join(dotClaude, "CLAUDE.md"), "# global\n");
+		const direct = join(tmp, "proj-link");
+		await symlink(dotClaude, direct);
+		const viaParent = join(tmp, "home-link");
+		await symlink(home, viaParent);
+		const stub = claudeMdStub({
+			scopes: ["*"],
+			sessions: [
+				{ sessionId: "l1", cwd: direct },
+				{ sessionId: "l2", cwd: join(viaParent, ".claude") },
+			],
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, home });
+		await R.recordLocalSession(ctx, "l1", direct, "claude_code");
+		await R.recordLocalSession(ctx, "l2", join(viaParent, ".claude"), "claude_code");
+		await R.checkScopesTick(ctx);
+		await R.syncClaudeMdTick(ctx);
+		expect(stub.requests.some((r) => r.method === "PUT")).toBe(false);
+	});
+
+	test("F135: a hard-linked CLAUDE.md is neither read nor written", async () => {
+		const R = await mod();
+		const { link } = await import("node:fs/promises");
+		const cwdUp = join(tmp, "up");
+		const cwdDown = join(tmp, "down");
+		await mkdir(cwdUp, { recursive: true });
+		await mkdir(cwdDown, { recursive: true });
+		const secret = join(tmp, "secret.txt");
+		await writeFile(secret, "top secret\n");
+		await link(secret, join(cwdUp, "CLAUDE.md"));
+		const target = join(tmp, "target.txt");
+		await writeFile(target, "original\n");
+		await link(target, join(cwdDown, "CLAUDE.md"));
+		const stub = claudeMdStub({
+			scopes: ["*"],
+			sessions: [
+				{ sessionId: "up", cwd: cwdUp },
+				{
+					sessionId: "down",
+					cwd: cwdDown,
+					claudeMdPath: join(cwdDown, "CLAUDE.md"),
+					claudeMdChecksum: "c1",
+				},
+			],
+			md: { down: { content: "server\n", path: join(cwdDown, "CLAUDE.md"), checksum: "c1" } },
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await R.recordLocalSession(ctx, "up", cwdUp, "claude_code");
+		await R.recordLocalSession(ctx, "down", cwdDown, "claude_code");
+		await R.checkScopesTick(ctx);
+		await R.syncClaudeMdTick(ctx);
+		expect(stub.requests.some((r) => r.method === "PUT")).toBe(false);
+		expect(await readFile(target, "utf-8")).toBe("original\n");
+	});
+
+	test("F137: an old install's loose modes are tightened at startup", async () => {
+		const R = await mod();
+		const { chmod } = await import("node:fs/promises");
+		const stateDir = join(tmp, "old-state");
+		await mkdir(join(stateDir, "hook-queue", "pending"), { recursive: true });
+		await mkdir(join(stateDir, "logs"), { recursive: true });
+		await chmod(stateDir, 0o755);
+		const files = [
+			join(stateDir, "codex-pushed.jsonl"),
+			join(stateDir, "status"),
+			join(stateDir, "config.json"),
+			join(stateDir, "logs", "relay.log"),
+			join(stateDir, "hook-queue", "pending", "1-a.json"),
+		];
+		for (const f of files) {
+			await writeFile(f, f.endsWith("config.json") ? "{}" : "x");
+			await chmod(f, 0o644);
+		}
+		const relay = await R.startRelay(
+			{
+				remoteUrl: "https://ap.example.com",
+				apiKey: "k",
+				port: 0,
+				codexNamePolicy: "codex",
+				stateDir,
+				configPath: join(stateDir, "config.json"),
+			},
+			{ timers: false, env: { HOME: join(tmp, "home") }, scriptPath: RELAY_PATH, log: () => {} },
+		);
+		stops.push(() => relay.stop());
+		const mode = async (p: string) => ((await stat(p)).mode & 0o777).toString(8);
+		expect(await mode(stateDir)).toBe("700");
+		expect(await mode(join(stateDir, "hook-queue"))).toBe("700");
+		expect(await mode(join(stateDir, "logs"))).toBe("700");
+		for (const f of files) expect([f, await mode(f)]).toEqual([f, "600"]);
+	});
+
+	test("F137: a dev checkout's script directory is not chmodded", async () => {
+		const R = await mod();
+		const { chmod } = await import("node:fs/promises");
+		const scriptDir = join(tmp, "checkout", "scripts");
+		await mkdir(scriptDir, { recursive: true });
+		await chmod(scriptDir, 0o755);
+		const relay = await R.startRelay(
+			{
+				remoteUrl: "https://ap.example.com",
+				apiKey: "k",
+				port: 0,
+				codexNamePolicy: "codex",
+				stateDir: scriptDir,
+				configPath: null,
+			},
+			{
+				timers: false,
+				env: { HOME: join(tmp, "home") },
+				scriptPath: join(scriptDir, "relay.ts"),
+				log: () => {},
+			},
+		);
+		stops.push(() => relay.stop());
+		expect(((await stat(scriptDir)).mode & 0o777).toString(8)).toBe("755");
+	});
+
+	test("F138: /api/v1/hooksX is neither enqueued nor forwarded", async () => {
+		const R = await mod();
+		const stub = startStub(() => Response.json({ reached: true }));
+		stops.push(stub.stop);
+		const stateDir = join(tmp, "state");
+		await mkdir(stateDir, { recursive: true });
+		const relay = await R.startRelay(
+			{
+				remoteUrl: stub.url,
+				apiKey: "k",
+				port: 0,
+				codexNamePolicy: "codex",
+				stateDir,
+				configPath: null,
+			},
+			{ timers: false, env: { HOME: join(tmp, "home") }, scriptPath: RELAY_PATH, log: () => {} },
+		);
+		stops.push(() => relay.stop());
+		const res = await fetch(`http://127.0.0.1:${relay.port}/api/v1/hooksX`, {
+			method: "POST",
+			body: "{}",
+		});
+		expect(res.status).toBe(403);
+		expect((await R.getQueueDiagnostics(relay.ctx)).pending).toBe(0);
+		expect(stub.requests).toEqual([]);
+		const ok = await fetch(`http://127.0.0.1:${relay.port}/api/v1/hooks/status`, {
+			method: "POST",
+			body: "{}",
+		});
+		expect(ok.status).toBe(200);
+		expect((await R.getQueueDiagnostics(relay.ctx)).pending).toBe(1);
+	});
+
+	test("F140: a 400 invalid_field retries once without fields and remembers it", async () => {
+		const R = await mod();
+		const sessions = [{ sessionId: "s1", displayName: "g", nameSource: "generated" }];
+		const stub = startStub((method, url) => {
+			if (method === "GET" && url.pathname === "/api/v1/sessions") {
+				if (url.searchParams.has("fields")) {
+					return Response.json({ error: "invalid_field", value: "nameSource" }, { status: 400 });
+				}
+				return Response.json({ sessions, total: 1 });
+			}
+			return undefined;
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		expect((await R.pushCodexNames(ctx)).ok).toBe(true);
+		expect((await readJsonl(indexPath())).map((r) => r.thread_name)).toEqual(["g"]);
+		await R.pushCodexNames(ctx);
+		const gets = stub.requests.filter((r) => r.path === "/api/v1/sessions");
+		expect(gets.map((r) => new URLSearchParams(r.search).has("fields"))).toEqual([
+			true,
+			false,
+			false,
+		]);
+	});
+});

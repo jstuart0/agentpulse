@@ -131,7 +131,7 @@ export function InlineRename({
 					type="button"
 					onClick={useAgentName}
 					aria-disabled={resetState === "pending"}
-					className="inline-flex items-center min-h-11 md:min-h-0 rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors aria-disabled:opacity-50 aria-disabled:cursor-wait"
+					className="relative before:absolute before:-inset-y-3 before:inset-x-0 md:before:hidden rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors aria-disabled:opacity-50 aria-disabled:cursor-wait"
 				>
 					{resetState === "pending" ? "Applying…" : "Use agent name"}
 				</button>
