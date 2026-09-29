@@ -71,6 +71,9 @@ jobs:
       - name: Build server
         run: bun run build:server
 
+      - name: Bundled server serves the embedded installers
+        run: bun run check:bundled-installers
+
       - name: Build agentpulse-mcp package
         run: bun run build:mcp
 

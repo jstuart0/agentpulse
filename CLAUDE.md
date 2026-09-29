@@ -233,7 +233,7 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - **Local (SQLite default):** `docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true` (use `127.0.0.1:` prefix to avoid publishing auth-disabled server on all host interfaces)
 - **K8s base (SQLite):** `kubectl apply -k deploy/k8s/` (uses Authentik SSO + Traefik IngressRoute; image pinned by SHA; see `deploy/k8s/README.md`)
 - **K8s Postgres overlay:** `kubectl apply -k deploy/overlays/postgres/` — see `deploy/overlays/postgres/README.md` for pre-flight steps (context check, DB + user creation, `secret-patch.yaml` fill-in). Rolling deploys are safe: boot serialization uses a session-level `pg_advisory_lock` on the migration client connection.
-- **Relay:** `curl -sSL https://your-server.example.com/setup-relay.sh | bash -s -- --key ap_xxx`
+- **Relay:** `curl -sSL https://your-server.example.com/setup-relay.sh | bash` (asks for the key on the terminal; `AGENTPULSE_KEY` or `--key` for unattended installs). The served installers are embedded in the server at build time (`src/server/installers.ts`, Bun text imports), and `/health`'s `clients` checksums hash the same strings; `bun run check:bundled-installers` proves the bundled build serves them. Tests import `scripts/relay.ts` as a module only via `"./relay.ts?module"` (Bun caches by path; `check:installers` enforces it).
 - **Docker image:** `ghcr.io/jstuart0/agentpulse:<sha>` (linux/amd64; tagged by commit SHA — see `scripts/build-and-push.sh`)
 - **Telemetry:** Cloudflare Worker + D1 (default homelab endpoint; configurable via `TELEMETRY_ENDPOINT`)
 

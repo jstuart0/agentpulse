@@ -336,7 +336,7 @@ Best if you want to monitor sessions from other devices while your agents still 
 Use the relay installer:
 
 ```bash
-curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
+curl -sSL https://your-server.example.com/setup-relay.sh | bash
 ```
 
 That installs a local relay on `localhost:4000`, configures hooks automatically, and forwards events to your remote AgentPulse server. The key needs the **Hook ingest** and **Observe (read-only)** scopes — see [Option B](#advanced-remote-dashboard--local-hooks) below.
@@ -385,10 +385,10 @@ Multiple machines can report to the same dashboard. Run the relay setup on your 
 One command sets up everything, no repo clone needed:
 
 ```bash
-curl -sSL https://your-server.example.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
+curl -sSL https://your-server.example.com/setup-relay.sh | bash
 ```
 
-The dashboard's Setup page has this command ready to copy, with a **Mint relay key** button.
+It asks for the API key on the terminal (input hidden), which keeps the key out of your shell history and the process list. For unattended installs, set `AGENTPULSE_KEY` or pass `--key ap_YOUR_KEY` instead; a re-run reuses the saved key. The dashboard's Setup page has this command ready to copy, with a **Mint relay key** button.
 
 That single command:
 - Checks the key with the server first, and writes nothing if it's missing a scope
@@ -403,7 +403,7 @@ Your agents send events to `localhost:4000` (allowed by Claude Code), the relay 
 
 **The relay key needs Hook ingest + Observe.** The relay posts hooks (*Hook ingest*) and reads your session list to sync session names and CLAUDE.md files (*Observe (read-only)*). *Manage* is optional: it only lets the relay upload CLAUDE.md edits back to the dashboard. In **Settings → API Keys**, create the key with "Hook ingest" and "Observe (read-only)" checked; scopes can't be edited later, so mint a new key rather than changing an old one. The installer refuses a key without Observe. Pass `--allow-missing-observe` to install anyway: hooks are forwarded, but name and CLAUDE.md sync stay off.
 
-**The server needs `PUBLIC_URL`.** `/setup-relay.sh` fills in the server's address from `PUBLIC_URL` (the first entry, if it's a comma-separated list) and never from the request's `Host` header. Without `PUBLIC_URL`, the server only serves the relay installer to requests from its own machine; everyone else gets a 503 saying to set it. The Kubernetes manifests already set it.
+**The server needs `PUBLIC_URL`.** `/setup-relay.sh` fills in the server's address from `PUBLIC_URL` (the first entry, if it's a comma-separated list) and never from the request's `Host` header. Without `PUBLIC_URL`, or with a `localhost` one (as in `docker-compose.yml` and `.env.example`), the server only serves the relay installer to requests from its own machine; everyone else gets a 503 saying to set it. The Kubernetes manifests already set it. The installers are built into the server, so what it serves always matches the server's version.
 
 **Codex thread names (`--codex-names`).** The relay keeps Codex's `session_index.jsonl` and the dashboard in step, under one of two policies:
 
@@ -479,7 +479,7 @@ For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in qu
 If AgentPulse runs on a different machine, install the relay (see [Option B](#advanced-remote-dashboard--local-hooks)); agents can only post hooks to localhost:
 
 ```bash
-curl -sSL https://your-server.example.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
+curl -sSL https://your-server.example.com/setup-relay.sh | bash
 ```
 
 Set `PUBLIC_URL` on the server to its public address: the relay installer takes the server URL from it, never from the request.

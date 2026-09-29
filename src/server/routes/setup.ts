@@ -1,25 +1,8 @@
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { Hono } from "hono";
 import { config } from "../config.js";
+import { INSTALLER_SOURCES, buildRelayInstaller } from "../installers.js";
 
 const setup = new Hono();
-
-/** Overrides where the served installers are read from (tests, repackaging). */
-export const SCRIPTS_DIR_ENV = "AGENTPULSE_INSTALLER_SCRIPTS_DIR";
-
-function scriptsDir() {
-	const override = process.env[SCRIPTS_DIR_ENV];
-	if (override) return override;
-	// Run from source (dev, the container image), scripts/ is three levels up.
-	// The bundled build (`bun run start` → dist/server) moves this file, but
-	// runs from the package root.
-	const fromSource = join(import.meta.dir, "../../../scripts");
-	return existsSync(join(fromSource, "setup-relay.sh"))
-		? fromSource
-		: join(process.cwd(), "scripts");
-}
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const PORT_RE = /^[0-9]{1,5}$/;
@@ -41,6 +24,10 @@ function parseHost(host: string | undefined): { hostname: string; port: string |
 	return { hostname: hostname.toLowerCase(), port };
 }
 
+function isLoopbackHostname(hostname: string) {
+	return LOOPBACK_HOSTNAMES.has(hostname) || /^127\.\d+\.\d+\.\d+$/.test(hostname);
+}
+
 /**
  * D19: base URL for the local installers (/setup.sh, /install-local.*), whose
  * hooks must hit this machine. Only a numeric Host port is used; the Host
@@ -50,49 +37,66 @@ export function resolveLocalHookBaseUrl(host: string | undefined): string {
 	return `http://localhost:${parseHost(host).port ?? config.port}`;
 }
 
+type InstallerErrorCode = keyof typeof INSTALLER_ERROR_MESSAGES;
+
 type PublicServerUrl =
 	| { ok: true; url: string }
-	| { ok: false; error: "public_url_unset" | "public_url_invalid" };
+	| { ok: false; error: Exclude<InstallerErrorCode, "installer_unavailable"> };
 
 /**
  * D19: the server URL a remote relay should talk to. It comes from PUBLIC_URL
- * only (its first entry when comma-separated), never from Host. Without an
- * explicit PUBLIC_URL, only a loopback request gets an answer.
+ * only (its first entry when comma-separated), never from the Host hostname.
+ * A request from this machine may use a localhost URL; anyone else needs a
+ * PUBLIC_URL they can actually reach (F172).
  */
 export function resolvePublicServerUrl(host: string | undefined): PublicServerUrl {
+	const requester = parseHost(host);
+	const fromThisMachine = isLoopbackHostname(requester.hostname);
 	if (!config.publicUrlExplicit) {
-		if (!LOOPBACK_HOSTNAMES.has(parseHost(host).hostname)) {
-			return { ok: false, error: "public_url_unset" };
-		}
-		return { ok: true, url: `http://localhost:${config.port}` };
+		if (!fromThisMachine) return { ok: false, error: "public_url_unset" };
+		// F174: the port the request came in on, the same rule as the local installers.
+		return { ok: true, url: `http://localhost:${requester.port ?? config.port}` };
 	}
 	const url = (config.publicUrl.split(",")[0] ?? "").trim().replace(/\/+$/, "");
 	if (!SAFE_SERVER_URL_RE.test(url)) return { ok: false, error: "public_url_invalid" };
+	if (!fromThisMachine && isLoopbackHostname(new URL(url).hostname.toLowerCase())) {
+		return { ok: false, error: "public_url_loopback" };
+	}
 	return { ok: true, url };
 }
 
+const SET_PUBLIC_URL =
+	"Set PUBLIC_URL on the AgentPulse server so the relay installer knows its public address.";
+
 const INSTALLER_ERROR_MESSAGES = {
-	public_url_unset:
-		"Set PUBLIC_URL on the AgentPulse server so the relay installer knows its public address.",
-	public_url_invalid:
-		"PUBLIC_URL on the AgentPulse server isn't a plain http(s) URL, so the relay installer can't use it.",
+	public_url_unset: SET_PUBLIC_URL,
+	public_url_invalid: `PUBLIC_URL on the AgentPulse server isn't a plain http(s) URL, so the relay installer can't use it. ${SET_PUBLIC_URL}`,
+	public_url_loopback: `PUBLIC_URL on the AgentPulse server is a localhost address, which other machines can't reach. ${SET_PUBLIC_URL}`,
 	installer_unavailable:
 		"The relay installer isn't available on this server right now. Check the server log.",
 } as const;
 
+export const INSTALLER_ERROR_CODES = Object.keys(INSTALLER_ERROR_MESSAGES) as InstallerErrorCode[];
+
 /**
- * A 503 that's still safe to pipe into bash: `curl | bash` prints the reason
- * and fails instead of executing a JSON body.
+ * F166: a 503 body that's still valid shell, so `curl | bash` prints the
+ * reason and fails instead of executing JSON. The message goes through a
+ * quoted heredoc, so no character in it needs escaping.
  */
-function installerError(error: keyof typeof INSTALLER_ERROR_MESSAGES) {
-	const body = [
+export function installerErrorBody(error: InstallerErrorCode): string {
+	return [
 		"#!/bin/sh",
 		`# ${JSON.stringify({ error })}`,
-		`echo 'AgentPulse: ${INSTALLER_ERROR_MESSAGES[error]}' >&2`,
+		"cat >&2 <<'AGENTPULSE_ERROR'",
+		`AgentPulse: ${INSTALLER_ERROR_MESSAGES[error]}`,
+		"AGENTPULSE_ERROR",
 		"exit 1",
 		"",
 	].join("\n");
-	return new Response(body, {
+}
+
+function installerError(error: InstallerErrorCode) {
+	return new Response(installerErrorBody(error), {
 		status: 503,
 		headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
 	});
@@ -234,112 +238,36 @@ echo ""
 	return scriptResponse(script, "setup.sh");
 });
 
-/**
- * Reads a local installer and fills in its localhost default. Read per
- * request; a missing file is a 503, never a throw (F16).
- */
-async function serveLocalInstaller(
-	host: string | undefined,
-	filename: string,
-	placeholder: string,
-	filled: (url: string) => string,
-) {
-	let script: string;
-	try {
-		script = await readFile(join(scriptsDir(), filename), "utf-8");
-	} catch (err) {
-		console.error(`[setup] can't read ${filename}: ${(err as Error).message}`);
-		return installerError("installer_unavailable");
-	}
-	return scriptResponse(
-		script.replace(placeholder, filled(resolveLocalHookBaseUrl(host))),
-		filename,
-	);
-}
-
 // GET /install-local.sh - Serve the local Bun+SQLite installer
 // Usage: curl -sSL http://localhost:3000/install-local.sh | bash
-setup.get("/install-local.sh", (c) =>
-	serveLocalInstaller(
-		c.req.header("Host"),
+setup.get("/install-local.sh", (c) => {
+	const url = resolveLocalHookBaseUrl(c.req.header("Host"));
+	return scriptResponse(
+		INSTALLER_SOURCES.installLocalSh.replace('PUBLIC_URL=""', () => `PUBLIC_URL="${url}"`),
 		"install-local.sh",
-		'PUBLIC_URL=""',
-		(url) => `PUBLIC_URL="${url}"`,
-	),
-);
+	);
+});
 
 // GET /install-local.ps1 - Serve the local Bun+SQLite installer for Windows
 // Usage: irm http://localhost:3000/install-local.ps1 | iex
-setup.get("/install-local.ps1", (c) =>
-	serveLocalInstaller(
-		c.req.header("Host"),
+setup.get("/install-local.ps1", (c) => {
+	const url = resolveLocalHookBaseUrl(c.req.header("Host"));
+	return scriptResponse(
+		INSTALLER_SOURCES.installLocalPs1.replace(
+			'[string]$PublicUrl = ""',
+			() => `[string]$PublicUrl = "${url}"`,
+		),
 		"install-local.ps1",
-		'[string]$PublicUrl = ""',
-		(url) => `[string]$PublicUrl = "${url}"`,
-	),
-);
-
-// The relay installer is scripts/setup-relay.sh with the relay and statusline
-// spliced in at these markers, so what it installs is byte-identical to the
-// files /api/v1/health checksums (r7). Otherwise the relay's drift check would
-// report "outdated" forever.
-const RELAY_EMBEDS = [
-	{
-		marker: "# @@AGENTPULSE_RELAY_TS@@",
-		file: "relay.ts",
-		terminator: "AGENTPULSE_RELAY_TS_EOF",
-	},
-	{
-		marker: "# @@AGENTPULSE_STATUSLINE_SH@@",
-		file: "statusline.sh",
-		terminator: "AGENTPULSE_STATUSLINE_SH_EOF",
-	},
-] as const;
-const REMOTE_URL_PLACEHOLDER = 'REMOTE_URL_DEFAULT=""';
-
-type BuiltInstaller = { ok: true; script: string } | { ok: false; reason: string };
-
-async function buildRelayInstaller(remoteUrl: string): Promise<BuiltInstaller> {
-	const dir = scriptsDir();
-	let script: string;
-	const sources: string[] = [];
-	try {
-		script = await readFile(join(dir, "setup-relay.sh"), "utf-8");
-		for (const embed of RELAY_EMBEDS) sources.push(await readFile(join(dir, embed.file), "utf-8"));
-	} catch (err) {
-		return { ok: false, reason: (err as Error).message };
-	}
-	if (script.split(REMOTE_URL_PLACEHOLDER).length !== 2) {
-		return { ok: false, reason: "setup-relay.sh lacks exactly one REMOTE_URL_DEFAULT placeholder" };
-	}
-	script = script.replace(REMOTE_URL_PLACEHOLDER, `REMOTE_URL_DEFAULT="${remoteUrl}"`);
-	for (const [i, embed] of RELAY_EMBEDS.entries()) {
-		const lines = script.split("\n");
-		const at = lines.indexOf(embed.marker);
-		if (at === -1 || lines.lastIndexOf(embed.marker) !== at) {
-			return { ok: false, reason: `setup-relay.sh lacks exactly one ${embed.marker} line` };
-		}
-		const body = sources[i].replace(/\n+$/, "");
-		if (body.includes("@@AGENTPULSE_")) {
-			return { ok: false, reason: `${embed.file} contains an installer marker` };
-		}
-		if (body.split("\n").includes(embed.terminator)) {
-			return { ok: false, reason: `${embed.file} contains the line ${embed.terminator}` };
-		}
-		lines[at] =
-			`cat > "$SRC_DIR/${embed.file}" << '${embed.terminator}'\n${body}\n${embed.terminator}`;
-		script = lines.join("\n");
-	}
-	return { ok: true, script };
-}
+	);
+});
 
 // GET /setup-relay.sh - One-command relay setup for machines whose agents
 // report to a remote AgentPulse server.
-// Usage: curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_xxx
-setup.get("/setup-relay.sh", async (c) => {
+// Usage: curl -sSL https://your-server.com/setup-relay.sh | bash
+setup.get("/setup-relay.sh", (c) => {
 	const server = resolvePublicServerUrl(c.req.header("Host"));
 	if (!server.ok) return installerError(server.error);
-	const built = await buildRelayInstaller(server.url);
+	const built = buildRelayInstaller(INSTALLER_SOURCES, server.url);
 	if (!built.ok) {
 		console.error(`[setup] relay installer unavailable: ${built.reason}`);
 		return installerError("installer_unavailable");

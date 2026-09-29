@@ -27,8 +27,10 @@ import { computeChecksum as serverChecksum } from "../src/server/util/checksum.j
 
 type RelayModule = typeof import("./relay.ts");
 let loaded: RelayModule | undefined;
+// "?module": the server embeds relay.ts with a text import, and Bun caches
+// modules by path, so a plain import here could get the text instead (F165).
 async function mod(): Promise<RelayModule> {
-	loaded ??= await import("./relay.ts");
+	loaded ??= await import("./relay.ts?module");
 	return loaded;
 }
 
@@ -158,8 +160,8 @@ describe("seam (F9)", () => {
 			throw new Error("process.exit called during import");
 		});
 		try {
-			const a = await import("./relay.ts");
-			const b = await import("./relay.ts");
+			const a = await import("./relay.ts?module");
+			const b = await import("./relay.ts?module");
 			expect(typeof a.parseArgs).toBe("function");
 			expect(b.parseArgs).toBe(a.parseArgs);
 			expect(serveSpy).not.toHaveBeenCalled();

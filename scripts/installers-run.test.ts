@@ -175,13 +175,17 @@ beforeAll(async () => {
 	openUrl = `http://127.0.0.1:${openServer.port}`;
 });
 
-/** The body /setup-relay.sh serves, with PUBLIC_URL pointed at the stub server. */
+/**
+ * The body /setup-relay.sh serves, with PUBLIC_URL pointed at the stub server.
+ * The stub is on 127.0.0.1, and F172 only hands a loopback PUBLIC_URL to a
+ * requester on the same machine, so the request comes from localhost.
+ */
 async function serveInstallerBody() {
 	const saved = { publicUrl: config.publicUrl, explicit: config.publicUrlExplicit };
 	config.publicUrl = authUrl;
 	config.publicUrlExplicit = true;
 	try {
-		const res = await setup.request("/setup-relay.sh", { headers: { Host: "attacker.example" } });
+		const res = await setup.request("/setup-relay.sh", { headers: { Host: "localhost" } });
 		expect(res.status).toBe(200);
 		servedBody = await res.text();
 		return servedBody;

@@ -16,9 +16,13 @@ set -euo pipefail
 #  5. Points Claude Code + Codex hooks at the relay
 #
 #  Usage (served by your AgentPulse server, which fills in its own URL):
-#    curl -sSL https://your-server.example.com/setup-relay.sh | bash -s -- --key ap_xxx
+#    curl -sSL https://your-server.example.com/setup-relay.sh | bash
 #  Or from a checkout:
-#    bash scripts/setup-relay.sh --url https://your-server.example.com --key ap_xxx
+#    bash scripts/setup-relay.sh --url https://your-server.example.com
+#
+#  The API key comes from --key, else $AGENTPULSE_KEY, else the last run's
+#  config. If there's none and the server needs one, it's asked for on the
+#  terminal (input hidden), which keeps it out of shell history and argv.
 #
 #  Re-run it anytime to update the relay and statusline. The key, port and
 #  Codex-names policy from the last run are kept unless you pass new ones.
@@ -30,11 +34,18 @@ set -euo pipefail
 #  --allow-missing-observe (hooks are forwarded, sync stays off).
 # ───────────────────────────────────────────────────────
 
+# One block: bash reads the whole script before running any of it, so
+# `curl | bash` never runs a half-downloaded script, and an early exit doesn't
+# leave curl writing into a closed pipe.
+{
+
 REMOTE_URL_DEFAULT=""
 DEFAULT_PORT=4000
 RELAY_DIR="$HOME/.agentpulse"
 CONFIG_FILE="$RELAY_DIR/config.json"
 KEY_RE='^[A-Za-z0-9._~+/-]+=*$'
+# Where the key prompt reads from; tests point it elsewhere.
+KEY_TTY="${AGENTPULSE_TTY:-/dev/tty}"
 
 URL_ARG=""
 KEY_ARG=""
@@ -49,7 +60,8 @@ Usage: setup-relay.sh [--url <server_url>] [--key <api_key>] [--port 4000]
                       [--codex-names agentpulse|codex] [--allow-missing-observe]
 
   --url           Your AgentPulse server (filled in when the server serves this script)
-  --key           API key with Hook ingest + Observe (kept from the last run if omitted)
+  --key           API key with Hook ingest + Observe. Without it: $AGENTPULSE_KEY, the
+                  last run's key, or a hidden prompt on the terminal
   --port          Local relay port (default 4000, or the last run's)
   --codex-names   codex (default): Codex's own thread names show on the dashboard.
                   agentpulse: dashboard names are written into Codex, replacing its
@@ -113,10 +125,14 @@ case "$REMOTE_URL" in
 esac
 [[ "$REMOTE_URL" != *[[:space:]]* ]] || fail "the server URL can't contain spaces"
 
-API_KEY="${KEY_ARG:-$(existing_config api_key)}"
-if [[ -n "$API_KEY" && ! "$API_KEY" =~ $KEY_RE ]]; then
-  fail "the API key has characters an Authorization header can't carry"
-fi
+check_key_format() {
+  if [[ -n "$API_KEY" && ! "$API_KEY" =~ $KEY_RE ]]; then
+    fail "the API key has characters an Authorization header can't carry"
+  fi
+}
+
+API_KEY="${KEY_ARG:-${AGENTPULSE_KEY:-$(existing_config api_key)}}"
+check_key_format
 
 PORT="${PORT_ARG:-$(existing_config port)}"
 PORT="${PORT:-$DEFAULT_PORT}"
@@ -147,19 +163,51 @@ echo ""
 key_help() {
   echo "    Create a key in AgentPulse under Settings → API Keys with" >&2
   echo "    \"Hook ingest\" and \"Observe (read-only)\" checked, then re-run" >&2
-  echo "    this command with --key <new key>." >&2
+  echo "    this command and paste the key when asked (or pass --key)." >&2
 }
 
-if [[ -n "$API_KEY" ]]; then
-  AUTH_ME_OUT="$(printf 'Authorization: Bearer %s\n' "$API_KEY" \
-    | curl -sS -m 15 -H @- -w '\n%{http_code}' "$REMOTE_URL/api/v1/auth/me" 2>&1)" \
-    || fail "can't reach $REMOTE_URL: $(head -n 1 <<<"$AUTH_ME_OUT")"
-else
-  AUTH_ME_OUT="$(curl -sS -m 15 -w '\n%{http_code}' "$REMOTE_URL/api/v1/auth/me" 2>&1)" \
-    || fail "can't reach $REMOTE_URL: $(head -n 1 <<<"$AUTH_ME_OUT")"
-fi
+# F167: asks on the terminal, not stdin (that's the script under curl | bash).
+prompt_for_key() {
+  local key=""
+  if { exec 3<"$KEY_TTY"; } 2>/dev/null; then
+    printf '  API key (Hook ingest + Observe), input hidden: ' >&2
+    IFS= read -rs key <&3 || true
+    exec 3<&-
+    printf '\n' >&2
+  fi
+  printf '%s' "$key"
+}
 
-VERDICT="$(AP_CODE="${AUTH_ME_OUT##*$'\n'}" AP_BODY="${AUTH_ME_OUT%$'\n'*}" python3 -c '
+# F169: said before the key is sent anywhere it could be read in transit.
+warn_if_plain_http() {
+  [[ -n "$API_KEY" && "$REMOTE_URL" == http://* ]] || return 0
+  local hostport="${REMOTE_URL#http://}" host
+  hostport="${hostport%%/*}"
+  case "$hostport" in
+    \[*) host="${hostport%%]*}]" ;;
+    *) host="${hostport%%:*}" ;;
+  esac
+  case "$host" in
+    localhost|127.*|"[::1]") return 0 ;;
+  esac
+  echo "  ! $REMOTE_URL is plain http://: your API key and hook payloads cross the" >&2
+  echo "    network unencrypted. Use an https:// URL if the server has one." >&2
+}
+
+# Sets VERDICT: ok, unknown (an older server that doesn't report scopes),
+# rejected, missing:<scopes>, or what went wrong.
+check_key() {
+  local out
+  warn_if_plain_http
+  if [[ -n "$API_KEY" ]]; then
+    out="$(printf 'Authorization: Bearer %s\n' "$API_KEY" \
+      | curl -sS -m 15 -H @- -w '\n%{http_code}' "$REMOTE_URL/api/v1/auth/me" 2>&1)" \
+      || fail "can't reach $REMOTE_URL: $(head -n 1 <<<"$out")"
+  else
+    out="$(curl -sS -m 15 -w '\n%{http_code}' "$REMOTE_URL/api/v1/auth/me" 2>&1)" \
+      || fail "can't reach $REMOTE_URL: $(head -n 1 <<<"$out")"
+  fi
+  VERDICT="$(AP_CODE="${out##*$'\n'}" AP_BODY="${out%$'\n'*}" python3 -c '
 import json, os
 def done(verdict):
     print(verdict)
@@ -179,6 +227,9 @@ if me.get("disableAuth") is True:
     done("ok")
 if me.get("authenticated") is False:
     done("missing:ingest,observe")
+# F168: only an authenticated identity without scopes is an older server.
+if me.get("authenticated") is not True:
+    done("bad_response")
 user = me.get("user") if isinstance(me.get("user"), dict) else {}
 scopes = user.get("scopes")
 if not isinstance(scopes, list):
@@ -193,6 +244,20 @@ if not manage and "observe" not in scopes:
     missing.append("observe")
 done("missing:" + ",".join(missing) if missing else "ok")
 ')"
+}
+
+check_key
+if [[ -z "$API_KEY" && "$VERDICT" == missing:* ]]; then
+  API_KEY="$(prompt_for_key)"
+  if [[ -z "$API_KEY" ]]; then
+    echo "  ✗ This server needs an API key. Run this in a terminal to be asked for it," >&2
+    echo "    or pass --key <key>, or set AGENTPULSE_KEY." >&2
+    key_help
+    exit 1
+  fi
+  check_key_format
+  check_key
+fi
 
 case "$VERDICT" in
   ok)
@@ -208,10 +273,6 @@ case "$VERDICT" in
     if [[ "$MISSING" == "observe" && "$ALLOW_MISSING_OBSERVE" == true ]]; then
       echo "  ! This key lacks Observe (read-only): hooks will be forwarded, but"
       echo "    session-name and CLAUDE.md sync stay off until you use a key with it."
-    elif [[ -z "$API_KEY" ]]; then
-      echo "  ✗ This server needs an API key (--key)." >&2
-      key_help
-      exit 1
     else
       if [[ "$MISSING" == "observe" ]]; then
         echo "  ✗ This API key can't run a relay: it's missing Observe (read-only)." >&2
@@ -270,11 +331,13 @@ else
   # TO UPGRADE: bump BUN_VERSION and BUN_INSTALLER_SHA256 together.
   #   Fetch new SHA: curl -fsSL "https://bun.sh/install" | sha256sum
   #   Verify at:     https://github.com/oven-sh/bun/releases/tag/bun-v${BUN_VERSION}
-  BUN_VERSION="1.1.30"
+  BUN_VERSION="1.3.12"
   BUN_INSTALLER_URL="https://bun.sh/install"
-  # SHA256 of the bun.sh/install script as of 2026-05-05.
+  # SHA256 of the bun.sh/install script as of 2026-09-29. 1.1.30 was dropped
+  # because its appendFile ignores `mode`, leaving relay state files 0644 (F171);
+  # 1.3.12 matches the server image (Dockerfile).
   # Re-verify with: curl -fsSL "https://bun.sh/install" | sha256sum
-  BUN_INSTALLER_SHA256="bab8acfb046aac8c72407bdcce903957665d655d7acaa3e11c7c4616beae68dd"
+  BUN_INSTALLER_SHA256="04882bf41679d49d9af108657a1e5515bf04fdf2940d12c0d0b1e5d79dc53be8"
 
   BUN_INSTALLER_TMP="$(mktemp)"
   curl -fsSL "$BUN_INSTALLER_URL" -o "$BUN_INSTALLER_TMP"
@@ -599,3 +662,5 @@ esac
 echo "    Logs:    tail -f ~/.agentpulse/logs/relay.log"
 echo "    Status:  curl -s http://localhost:$PORT/api/v1/relay/diagnostics"
 echo ""
+
+}

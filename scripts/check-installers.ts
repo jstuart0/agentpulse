@@ -1,47 +1,50 @@
 import { access, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { Glob } from "bun";
+import { INSTALLER_SOURCES, buildRelayInstaller } from "../src/server/installers.js";
+
+const ROOT = join(import.meta.dir, "..");
 
 async function mustInclude(path: string, expected: string) {
-	const content = await readFile(path, "utf8");
+	const content = await readFile(join(ROOT, path), "utf8");
 	if (!content.includes(expected)) {
 		throw new Error(`${path} is missing expected content: ${expected}`);
 	}
 }
 
-function countLines(content: string, line: string) {
-	return content.split("\n").filter((l) => l === line).length;
+/**
+ * F163: /setup-relay.sh is built by the server's own buildRelayInstaller from
+ * the embedded sources; if these scripts can't be spliced, CI fails here
+ * rather than every request answering 503.
+ */
+function checkRelayInstallerBuilds() {
+	const built = buildRelayInstaller(INSTALLER_SOURCES, "https://example.invalid");
+	if (!built.ok) throw new Error(`/setup-relay.sh can't be built: ${built.reason}`);
+	if (built.script.includes("@@AGENTPULSE_")) {
+		throw new Error("/setup-relay.sh still carries an installer marker after splicing");
+	}
 }
 
 /**
- * /setup-relay.sh splices relay.ts and statusline.sh into setup-relay.sh at
- * its markers (setup.ts). Each marker must appear once, and neither source may
- * contain a marker or its heredoc terminator, or the server answers 503.
+ * F165: the server embeds relay.ts with a text import, and Bun caches modules
+ * by path, so a plain module import of relay.ts in the same process (a test)
+ * gets the text or poisons the embed. Module imports must say "?module".
  */
-async function checkRelayInstallerMarkers() {
-	const installer = await readFile("scripts/setup-relay.sh", "utf8");
-	const embeds = [
-		["# @@AGENTPULSE_RELAY_TS@@", "scripts/relay.ts", "AGENTPULSE_RELAY_TS_EOF"],
-		["# @@AGENTPULSE_STATUSLINE_SH@@", "scripts/statusline.sh", "AGENTPULSE_STATUSLINE_SH_EOF"],
-	] as const;
-	for (const [marker, source, terminator] of embeds) {
-		if (countLines(installer, marker) !== 1) {
-			throw new Error(`scripts/setup-relay.sh must have exactly one "${marker}" line`);
-		}
-		const content = await readFile(source, "utf8");
-		if (content.includes("@@AGENTPULSE_") || countLines(content, terminator) > 0) {
-			throw new Error(`${source} contains an installer marker or the line ${terminator}`);
+async function checkNoPlainRelayModuleImport() {
+	const offenders: string[] = [];
+	const plain = /(?<!typeof )(?:import\s*\(\s*|from\s+)["'][^"']*\brelay\.(?:ts|js)["']/;
+	for (const pattern of ["scripts/**/*.ts", "src/**/*.ts", "src/**/*.tsx"]) {
+		for await (const path of new Glob(pattern).scan(ROOT)) {
+			if (path === "src/server/installers.ts") continue;
+			const content = await readFile(join(ROOT, path), "utf8");
+			content.split("\n").forEach((line, i) => {
+				if (plain.test(line)) offenders.push(`${path}:${i + 1}: ${line.trim()}`);
+			});
 		}
 	}
-	if (installer.split('REMOTE_URL_DEFAULT=""').length !== 2) {
-		throw new Error('scripts/setup-relay.sh must have exactly one REMOTE_URL_DEFAULT="" line');
+	if (offenders.length > 0) {
+		throw new Error(`import relay.ts as "relay.ts?module", not plainly:\n${offenders.join("\n")}`);
 	}
-	await mustInclude("src/server/routes/setup.ts", '"# @@AGENTPULSE_RELAY_TS@@"');
-	await mustInclude("src/server/routes/setup.ts", '"# @@AGENTPULSE_STATUSLINE_SH@@"');
-	const retired = await access("scripts/codex-hook.sh").then(
-		() => false,
-		() => true,
-	);
-	if (!retired)
-		throw new Error("scripts/codex-hook.sh was removed in favor of Codex command hooks");
 }
 
 async function main() {
@@ -54,7 +57,14 @@ async function main() {
 	await mustInclude("deploy/k8s/07-ingressroute.yaml", "Path(`/install-local.sh`)");
 	await mustInclude("deploy/k8s/07-ingressroute.yaml", "Path(`/install-local.ps1`)");
 	await mustInclude("Dockerfile", "COPY --chown=bun:bun --from=builder /app/scripts ./scripts");
-	await checkRelayInstallerMarkers();
+	checkRelayInstallerBuilds();
+	await checkNoPlainRelayModuleImport();
+	const retired = await access(join(ROOT, "scripts/codex-hook.sh")).then(
+		() => false,
+		() => true,
+	);
+	if (!retired)
+		throw new Error("scripts/codex-hook.sh was removed in favor of Codex command hooks");
 	console.log("installer checks passed");
 }
 

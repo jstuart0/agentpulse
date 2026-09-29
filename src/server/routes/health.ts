@@ -1,8 +1,7 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { Hono } from "hono";
 import pkg from "../../../package.json" with { type: "json" };
 import { isShuttingDown } from "../drain-state.js";
+import { INSTALLER_SOURCES } from "../installers.js";
 import { computeChecksum } from "../util/checksum.js";
 import { getBgErrorCount, getInFlightCount, getRateLimitedDropped } from "./ingest-counters.js";
 
@@ -35,39 +34,20 @@ export function _resetDbReadyForTest(ready = false): void {
 	_dbReady = ready;
 }
 
-type FileReader = (path: string) => Promise<string>;
-const defaultReadFile: FileReader = (path) => readFile(path, "utf-8");
-
 // D3/F20: checksums of the relay/statusline client scripts this server ships,
 // so a running relay or statusline install can detect drift against the
-// server it's talking to. `trimEnd` ignores trailing-newline-only diffs
-// (the kind git/editors introduce without changing behavior). Lenient by
-// design — a container image that doesn't ship scripts/ (or any read
-// failure) simply omits the affected key rather than failing the health
-// check the startup/liveness probes depend on: each file read is caught
-// individually, so this function itself never rejects.
-//
-// F83 (tessa mid-build): `readFileImpl` is injectable so a test can point at
-// a nonexistent path to exercise the "missing file" branch without mocking
-// node:fs globally (which risked destabilizing unrelated tests sharing the
-// process) — exported for exactly that test.
-export async function computeClientChecksums(
-	readFileImpl: FileReader = defaultReadFile,
-): Promise<Record<string, string>> {
-	const clients: Record<string, string> = {};
-	const files: Array<[key: string, relPath: string]> = [
-		["relay", "../../../scripts/relay.ts"],
-		["statusline", "../../../scripts/statusline.sh"],
-	];
-	for (const [key, relPath] of files) {
-		try {
-			const content = await readFileImpl(join(import.meta.dir, relPath));
-			clients[key] = await computeChecksum(content, { trimEnd: true });
-		} catch {
-			// Missing file — omit this key, don't fail the health check.
-		}
-	}
-	return clients;
+// server it's talking to. `trimEnd` ignores trailing-newline-only diffs (the
+// kind git/editors introduce without changing behavior). F165: they hash the
+// installer sources embedded at build time, the exact strings /setup-relay.sh
+// splices in, so there's nothing to read (or fail to read) at request time.
+let clientChecksums: Promise<Record<string, string>> | null = null;
+
+export function computeClientChecksums(): Promise<Record<string, string>> {
+	clientChecksums ??= (async () => ({
+		relay: await computeChecksum(INSTALLER_SOURCES.relay, { trimEnd: true }),
+		statusline: await computeChecksum(INSTALLER_SOURCES.statusline, { trimEnd: true }),
+	}))();
+	return clientChecksums;
 }
 
 // GET /api/v1/health - Liveness probe + operator observability.
@@ -82,8 +62,7 @@ export async function computeClientChecksums(
 //  - rateLimitedDropped: cumulative count of silently-dropped rate-limited hooks.
 //  - shuttingDown: true when drain has been triggered (readiness returns 503).
 //  - dbReady: true only after initializeDatabase() completes (S-24).
-//  - clients (D3/F20): relay/statusline script checksums, omitted entirely on
-//    read failure (see computeClientChecksums).
+//  - clients (D3/F20): relay/statusline script checksums (computeClientChecksums).
 health.get("/health", async (c) => {
 	if (!_dbReady) {
 		return c.json(
@@ -107,7 +86,7 @@ health.get("/health", async (c) => {
 		rateLimitedDropped: getRateLimitedDropped(),
 		shuttingDown: isShuttingDown(),
 		dbReady: true,
-		...(Object.keys(clients).length > 0 ? { clients } : {}),
+		clients,
 	});
 });
 

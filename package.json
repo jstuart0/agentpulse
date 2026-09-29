@@ -34,6 +34,7 @@
 		"test:watch": "bun test --watch",
 		"check:no-raw-fetch": "bash scripts/check-no-raw-fetch.sh",
 		"check:no-sync-transcript-io": "bash scripts/check-no-sync-transcript-io.sh",
+		"check:bundled-installers": "bun scripts/check-bundled-installers.ts",
 		"check:installers": "bash -n scripts/install-local.sh && bash -n scripts/setup-relay.sh && bun scripts/check-installers.ts",
 		"check:no-bun-sqlite-only-apis": "bun scripts/check-no-bun-sqlite-only-apis.ts",
 		"check:no-legacy-schema-import": "bun scripts/check-no-legacy-schema-import.ts",
