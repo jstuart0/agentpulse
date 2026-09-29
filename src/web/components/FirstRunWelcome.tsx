@@ -173,7 +173,7 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 						</span>
 						<h3 className="text-sm font-semibold text-foreground">Create an API key</h3>
 						{activeKeys.length > 0 && !revealedKey && (
-							<span className="ml-auto text-[10px] text-emerald-400">
+							<span className="ml-auto text-[10px] text-emerald-700 dark:text-emerald-400">
 								✓ {activeKeys.length} key{activeKeys.length === 1 ? "" : "s"} exists
 							</span>
 						)}
@@ -246,7 +246,9 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 						</p>
 					)}
 					{keysError && (
-						<p className="mt-2 text-xs text-red-400">Couldn&apos;t load API keys: {keysError}</p>
+						<p className="mt-2 text-xs text-red-600 dark:text-red-400">
+							Couldn&apos;t load API keys: {keysError}
+						</p>
 					)}
 				</div>
 			)}

@@ -392,7 +392,7 @@ It asks for the API key on the terminal (input hidden), which keeps the key out 
 
 That single command:
 - Checks the key with the server first, and writes nothing if it's missing a scope
-- Installs Bun if you don't have it
+- Runs the relay on your Bun if it's 1.3.12 or newer; otherwise installs that pinned, checksum-verified release privately into `~/.agentpulse/bun` (your own Bun and shell profile are left alone). Older Bun releases don't apply file modes, which the relay relies on to keep its state private.
 - Installs the relay at `~/.agentpulse/relay.ts`, with its settings in `~/.agentpulse/config.json` (mode 600; the key never appears in a process list, the plist or the unit)
 - Installs the Claude Code statusline at `~/.claude/statusline-agentpulse.sh` and turns it on if you don't already have a `statusLine` (otherwise it prints the line to add)
 - Runs the relay as a macOS LaunchAgent or a Linux systemd user service that starts on login
@@ -439,6 +439,7 @@ Both:
 | `config.json` | Server URL, API key, port, `codex_name_policy` |
 | `installed.json` | When the installer last wrote the agent hooks |
 | `relay.ts`, `logs/` | The relay and its logs |
+| `bun/` | The relay's own Bun, if your Bun was too old or missing |
 | `status` | The one-line hint the statusline shows (absent when all is well) |
 | `local-sessions.json` | Sessions this relay forwarded hooks for (the only ones it syncs CLAUDE.md for) |
 | `codex-pull-state.json` | Which Codex names were already sent to the dashboard |

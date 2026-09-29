@@ -189,10 +189,10 @@ export function SettingsPage() {
 									<span
 										className={`rounded-full px-2 py-0.5 text-[10px] ${
 											supervisor.status === "connected"
-												? "bg-emerald-500/10 text-emerald-400"
+												? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
 												: supervisor.status === "stale"
-													? "bg-amber-500/10 text-amber-400"
-													: "bg-red-500/10 text-red-400"
+													? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+													: "bg-red-500/10 text-red-600 dark:text-red-400"
 										}`}
 									>
 										{supervisor.status}
@@ -389,7 +389,9 @@ export function SettingsPage() {
 				{/* New key creation */}
 				{newKeyValue && (
 					<div className="mb-4 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-4">
-						<p className="text-sm font-medium text-emerald-400 mb-1">New API key created</p>
+						<p className="text-sm font-medium text-emerald-700 dark:text-emerald-400 mb-1">
+							New API key created
+						</p>
 						<p className="text-xs text-muted-foreground mb-2">
 							Copy this key now -- it will not be shown again.
 						</p>
@@ -495,7 +497,7 @@ export function SettingsPage() {
 									<div className="flex items-center gap-2">
 										<span className="text-sm font-medium text-foreground">{key.name}</span>
 										{!key.isActive && (
-											<span className="text-[10px] rounded bg-red-500/10 text-red-400 px-1.5 py-0.5">
+											<span className="text-[10px] rounded bg-red-500/10 text-red-600 dark:text-red-400 px-1.5 py-0.5">
 												revoked
 											</span>
 										)}
@@ -526,7 +528,7 @@ export function SettingsPage() {
 									<button
 										type="button"
 										onClick={() => handleRevokeKey(key.id)}
-										className="rounded-md px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+										className="rounded-md px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
 									>
 										Revoke
 									</button>

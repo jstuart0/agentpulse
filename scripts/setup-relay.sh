@@ -314,13 +314,46 @@ if [[ ! -s "$SRC_DIR/relay.ts" || ! -s "$SRC_DIR/statusline.sh" ]]; then
 fi
 
 # ── Find Bun ──
+# F190: the relay keeps its state files private (0600) through appendFile's
+# `mode`, which Bun 1.1.30 ignores (F171). So the service only ever runs a Bun
+# at or above the floor: the one on PATH, ~/.bun's, or a private copy of the
+# pinned release in ~/.agentpulse/bun (installed if none qualifies, without
+# touching the user's own Bun or shell profile).
 
-if command -v bun &>/dev/null; then
-  BUN_PATH="$(which bun)"
-elif [[ -f "$HOME/.bun/bin/bun" ]]; then
-  BUN_PATH="$HOME/.bun/bin/bun"
-else
-  echo "  Installing Bun..."
+BUN_VERSION="1.3.12"
+BUN_MIN_VERSION="$BUN_VERSION"
+PRIVATE_BUN_DIR="$RELAY_DIR/bun"
+
+# True when version $1 is at least $2 (numeric x.y.z; anything else is false).
+version_at_least() {
+  local IFS=. i x y
+  local -a have want
+  read -r -a have <<<"${1%%[-+]*}"
+  read -r -a want <<<"$2"
+  for i in 0 1 2; do
+    x="${have[i]:-0}"
+    y="${want[i]:-0}"
+    [[ "$x" =~ ^[0-9]+$ ]] || return 1
+    if (( x > y )); then return 0; fi
+    if (( x < y )); then return 1; fi
+  done
+  return 0
+}
+
+SEEN_BUNS=" "
+for candidate in "$(command -v bun 2>/dev/null || true)" "$HOME/.bun/bin/bun" "$PRIVATE_BUN_DIR/bin/bun"; do
+  [[ -n "$candidate" && -x "$candidate" && "$SEEN_BUNS" != *" $candidate "* ]] || continue
+  SEEN_BUNS+="$candidate "
+  candidate_version="$("$candidate" --version 2>/dev/null | head -n 1 || true)"
+  if version_at_least "$candidate_version" "$BUN_MIN_VERSION"; then
+    BUN_PATH="$candidate"
+    break
+  fi
+  echo "  ! Not using $candidate (Bun ${candidate_version:-of unknown version}): the relay needs Bun $BUN_MIN_VERSION or newer to keep its files private"
+done
+
+if [[ -z "$BUN_PATH" ]]; then
+  echo "  Installing Bun $BUN_VERSION for the relay into $PRIVATE_BUN_DIR..."
   # Pin Bun to a specific release for reproducibility and supply-chain safety (S-L2/S-L3).
   #
   # HOW THIS WORKS:
@@ -331,7 +364,6 @@ else
   # TO UPGRADE: bump BUN_VERSION and BUN_INSTALLER_SHA256 together.
   #   Fetch new SHA: curl -fsSL "https://bun.sh/install" | sha256sum
   #   Verify at:     https://github.com/oven-sh/bun/releases/tag/bun-v${BUN_VERSION}
-  BUN_VERSION="1.3.12"
   BUN_INSTALLER_URL="https://bun.sh/install"
   # SHA256 of the bun.sh/install script as of 2026-09-29. 1.1.30 was dropped
   # because its appendFile ignores `mode`, leaving relay state files 0644 (F171);
@@ -340,37 +372,39 @@ else
   BUN_INSTALLER_SHA256="04882bf41679d49d9af108657a1e5515bf04fdf2940d12c0d0b1e5d79dc53be8"
 
   BUN_INSTALLER_TMP="$(mktemp)"
-  curl -fsSL "$BUN_INSTALLER_URL" -o "$BUN_INSTALLER_TMP"
+  curl -fsSL "$BUN_INSTALLER_URL" -o "$BUN_INSTALLER_TMP" \
+    || { rm -f "$BUN_INSTALLER_TMP"; fail "couldn't download the Bun installer from $BUN_INSTALLER_URL"; }
 
-  # Verify checksum before executing (S-L2).
-  # If neither sha256sum nor shasum is available, abort — do not silently skip
-  # supply-chain verification on minimal environments (e.g. Alpine, CI runners).
-  if command -v sha256sum &>/dev/null; then
-    echo "$BUN_INSTALLER_SHA256  $BUN_INSTALLER_TMP" | sha256sum -c --quiet || {
-      echo "  ERROR: Bun installer checksum mismatch. Aborting."
-      rm -f "$BUN_INSTALLER_TMP"
-      exit 1
-    }
-  elif command -v shasum &>/dev/null; then
-    echo "$BUN_INSTALLER_SHA256  $BUN_INSTALLER_TMP" | shasum -a 256 -c --quiet 2>/dev/null || {
-      echo "  ERROR: Bun installer checksum mismatch. Aborting."
-      rm -f "$BUN_INSTALLER_TMP"
-      exit 1
-    }
+  # Verify checksum before executing (S-L2). The hash is computed and compared
+  # here rather than with `-c`: macOS ships a BSD sha256sum first on PATH that
+  # rejects GNU's --quiet, which made a good download look like a mismatch.
+  # Without shasum or sha256sum, abort — do not silently skip supply-chain
+  # verification on minimal environments (e.g. Alpine, CI runners).
+  if command -v shasum &>/dev/null; then
+    BUN_INSTALLER_ACTUAL="$(shasum -a 256 "$BUN_INSTALLER_TMP" | awk '{print $1}')"
+  elif command -v sha256sum &>/dev/null; then
+    BUN_INSTALLER_ACTUAL="$(sha256sum "$BUN_INSTALLER_TMP" | awk '{print $1}')"
   else
-    echo "  ERROR: No sha256sum or shasum found. Install coreutils and retry."
     rm -f "$BUN_INSTALLER_TMP"
-    exit 1
+    fail "no shasum or sha256sum found; install one (e.g. coreutils) and retry"
+  fi
+  if [[ "$BUN_INSTALLER_ACTUAL" != "$BUN_INSTALLER_SHA256" ]]; then
+    rm -f "$BUN_INSTALLER_TMP"
+    fail "the Bun installer's checksum doesn't match the pinned one; not running it"
   fi
 
   # Pass "bun-v${BUN_VERSION}" so the installer downloads that exact release
   # from github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/ rather
-  # than the latest release.
-  bash "$BUN_INSTALLER_TMP" "bun-v${BUN_VERSION}" >/dev/null 2>&1
+  # than the latest release. BUN_INSTALL keeps it private to the relay, and
+  # SHELL=/bin/sh stops it from adding itself to a shell profile.
+  BUN_INSTALL="$PRIVATE_BUN_DIR" SHELL=/bin/sh bash "$BUN_INSTALLER_TMP" "bun-v${BUN_VERSION}" >/dev/null 2>&1 \
+    || { rm -f "$BUN_INSTALLER_TMP"; fail "couldn't install Bun $BUN_VERSION"; }
   rm -f "$BUN_INSTALLER_TMP"
-  BUN_PATH="$HOME/.bun/bin/bun"
+  BUN_PATH="$PRIVATE_BUN_DIR/bin/bun"
+  version_at_least "$("$BUN_PATH" --version 2>/dev/null || true)" "$BUN_MIN_VERSION" \
+    || fail "the Bun just installed at $BUN_PATH isn't $BUN_MIN_VERSION or newer"
 fi
-echo "  ✓ Bun: $BUN_PATH"
+echo "  ✓ Bun: $BUN_PATH ($("$BUN_PATH" --version 2>/dev/null || true))"
 
 # ── Install the relay ──
 

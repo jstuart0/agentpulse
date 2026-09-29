@@ -6,7 +6,8 @@
  * The stubs come first on PATH so the real launchctl/systemctl are never
  * reached: a real `launchctl load` of dev.agentpulse.relay would replace the
  * developer's own running relay. The service tests assert the stub saw it.
- * A curl stub refuses anything aimed at the default relay port, :4000 (F186).
+ * A curl stub refuses anything aimed at the default relay port, :4000 (F186),
+ * and any Bun download (F190), so no test fetches Bun from the network.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -97,6 +98,8 @@ async function runInstaller(
 		env?: Record<string, string>;
 		/** Run as `curl -sS <url> | bash -s -- <args>`, the way users do. */
 		pipeFrom?: string;
+		/** Directories searched before the stubs and the real Bun. */
+		pathPrefix?: string;
 	} = {},
 ): Promise<RunResult> {
 	const stubLog = join(home, "..", `stub-${relative(root, home)}.log`);
@@ -110,7 +113,7 @@ async function runInstaller(
 		stdout: "pipe",
 		stderr: "pipe",
 		env: {
-			PATH: `${stubDir}:${BUN_DIR}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+			PATH: `${opts.pathPrefix ? `${opts.pathPrefix}:` : ""}${stubDir}:${BUN_DIR}:${process.env.PATH ?? "/usr/bin:/bin"}`,
 			HOME: home,
 			TMPDIR: tmp,
 			AP_STUB_LOG: stubLog,
@@ -149,7 +152,7 @@ beforeAll(async () => {
 		curl: [
 			'for a in "$@"; do',
 			'  case "$a" in',
-			"    *://127.0.0.1:4000|*://127.0.0.1:4000/*|*://localhost:4000|*://localhost:4000/*)",
+			"    *://127.0.0.1:4000|*://127.0.0.1:4000/*|*://localhost:4000|*://localhost:4000/*|https://bun.sh/*|https://github.com/oven-sh/*)",
 			'      echo "curl blocked $a" >> "$AP_STUB_LOG"; exit 7 ;;',
 			"  esac",
 			"done",
@@ -619,6 +622,65 @@ describe("F184: curl | bash", () => {
 			expect(res.out).not.toContain("(23)");
 			expect(res.out).not.toContain("Failure writing output");
 			expect(await listTree(home)).toEqual([]);
+		},
+		RUN_TIMEOUT,
+	);
+});
+
+/** A `bun` that only answers --version; the service is stubbed, so it never runs. */
+async function fakeBun(dir: string, version: string) {
+	await mkdir(dir, { recursive: true });
+	const file = join(dir, "bun");
+	await writeFile(file, `#!/bin/sh\n[ "$1" = "--version" ] && echo "${version}"\nexit 0\n`);
+	await chmod(file, 0o755);
+	return file;
+}
+
+describe("F190: the relay service runs on a Bun that keeps its files private", () => {
+	test(
+		"a Bun older than the floor on PATH is skipped for one that meets it",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const oldBin = join(root, `old-bun-${homeCounter}`);
+			const oldBun = await fakeBun(oldBin, "1.1.30");
+			const newBun = await fakeBun(join(home, ".bun", "bin"), "1.3.12");
+			const res = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Darwin", pathPrefix: oldBin },
+			);
+			expect(res.code).toBe(0);
+			expect(res.out).toContain("1.1.30");
+			const plist = await readFile(
+				join(home, "Library", "LaunchAgents", "dev.agentpulse.relay.plist"),
+				"utf-8",
+			);
+			expect(plist).toContain(`<string>${newBun}</string>`);
+			expect(plist).not.toContain(oldBun);
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"with only an old Bun around, the pinned one is fetched, never the old one used",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const oldBin = join(root, `old-bun-${homeCounter}`);
+			await fakeBun(oldBin, "1.1.30");
+			const res = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Linux", pathPrefix: oldBin },
+			);
+			// The download is refused by the curl stub, so the install stops there.
+			expect(res.stubLog).toContain("curl blocked https://bun.sh/install");
+			expect(res.code).not.toBe(0);
+			await expect(
+				stat(join(home, ".config", "systemd", "user", "agentpulse-relay.service")),
+			).rejects.toThrow();
+			await expect(stat(join(home, ".agentpulse", "config.json"))).rejects.toThrow();
 		},
 		RUN_TIMEOUT,
 	);

@@ -238,13 +238,15 @@ export function SetupPage() {
 							className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 						/>
 						{apiKey?.startsWith("ap_") && (
-							<p className="mt-2 text-[11px] text-emerald-400">
+							<p className="mt-2 text-[11px] text-emerald-700 dark:text-emerald-400">
 								✓ Key staged. It will appear in the config blobs below. Save it somewhere — it
 								won&apos;t be shown again.
 							</p>
 						)}
 						{keysError && (
-							<p className="mt-2 text-xs text-red-400">Couldn&apos;t load keys: {keysError}</p>
+							<p className="mt-2 text-xs text-red-600 dark:text-red-400">
+								Couldn&apos;t load keys: {keysError}
+							</p>
 						)}
 					</>
 				)}
