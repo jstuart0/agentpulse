@@ -7,16 +7,25 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
  * parity test (item 35) and the D19 source-scan drift guard + wiring pin
  * (items 36, 59).
  *
- * Test contract items 1-13, 35, 36, 52, 59.
+ * Phase 4 additions: the runbook SQL published in deploy/k8s/FORWARDAUTH.md
+ * (audit, repair, reassign-host pair, stale-launch inventory) is executed
+ * for real, extracted from the doc's own marker comments so the doc and the
+ * test can never drift silently (items 49, 50, 56, 57).
+ *
+ * Test contract items 1-13, 35, 36, 49, 50, 52, 56, 57, 59.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 import "./ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { launchRequests, managedSessions, sessions } = await import("../db/schema/index.js");
+const { controlActions, launchRequests, managedSessions, sessions, supervisors } = await import(
+	"../db/schema/index.js"
+);
+const { executeRows } = await import("../db/sql-helpers.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
+const { claimNextControlAction } = await import("./control-actions.js");
 const {
 	assertSupervisorCanWriteSession,
 	ownerLaunchJoin,
@@ -28,9 +37,11 @@ const {
 beforeAll(() => initializeDatabase());
 
 beforeEach(async () => {
+	await getDb().delete(controlActions).execute();
 	await getDb().delete(managedSessions).execute();
 	await getDb().delete(launchRequests).execute();
 	await getDb().delete(sessions).execute();
+	await getDb().delete(supervisors).execute();
 });
 
 async function seedManagedRow(
@@ -487,5 +498,280 @@ describe("owner-of-record drift guard (D19) + wiring pin", () => {
 			}
 		}
 		expect(missing).toEqual([]);
+	});
+});
+
+// ─── Phase 4: runbook SQL (deploy/k8s/FORWARDAUTH.md) ──────────────────────
+// Test contract items 49, 50, 56, 57. Every block below is extracted from
+// the doc's own marker comments and executed for real — the doc and the
+// test can't silently drift apart the way separately-maintained copies
+// could.
+
+const FORWARDAUTH_MD_PATH = join(REPO_ROOT, "deploy/k8s/FORWARDAUTH.md");
+
+function extractMarkerSql(markdown: string, marker: string): string {
+	const startTag = `<!-- ${marker}:start -->`;
+	const endTag = `<!-- ${marker}:end -->`;
+	const startIdx = markdown.indexOf(startTag);
+	const endIdx = markdown.indexOf(endTag);
+	if (startIdx === -1 || endIdx === -1) {
+		throw new Error(`FORWARDAUTH.md is missing the ${marker} markers`);
+	}
+	const between = markdown.slice(startIdx + startTag.length, endIdx);
+	const fenceMatch = between.match(/```sql\n([\s\S]*?)```/);
+	if (!fenceMatch) {
+		throw new Error(`FORWARDAUTH.md's ${marker} block has no \`\`\`sql fence`);
+	}
+	return fenceMatch[1];
+}
+
+// Splits on a statement-terminating ";" at end of line, dropping any
+// fragment that's empty once trimmed (sql-helpers.ts's executeRows already
+// dispatches .all vs .execute per dialect — no hand-written branch here).
+function splitStatements(sqlText: string): string[] {
+	return sqlText
+		.split(/;\s*\n/)
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0);
+}
+
+async function runMarkerSql(
+	marker: string,
+	placeholders: Record<string, string> = {},
+): Promise<Record<string, unknown>[]> {
+	const markdown = readFileSync(FORWARDAUTH_MD_PATH, "utf-8");
+	let text = extractMarkerSql(markdown, marker);
+	for (const [token, value] of Object.entries(placeholders)) {
+		text = text.split(`<${token}>`).join(value);
+	}
+	const statements = splitStatements(text);
+	let lastRows: Record<string, unknown>[] = [];
+	for (const statement of statements) {
+		lastRows = await executeRows(getDb(), sql.raw(statement));
+	}
+	return lastRows;
+}
+
+async function seedSupervisorRow(id: string, hostName: string) {
+	const now = new Date().toISOString();
+	await getDb()
+		.insert(supervisors)
+		.values({
+			id,
+			hostName,
+			platform: "linux",
+			arch: "x64",
+			version: "1.0.0",
+			capabilities: {
+				version: 1,
+				agentTypes: ["claude_code"],
+				launchModes: ["headless"],
+				os: "linux",
+				terminalSupport: [],
+				features: [],
+			},
+			trustedRoots: [],
+			status: "connected",
+			capabilitySchemaVersion: 2,
+			configSchemaVersion: 1,
+			lastHeartbeatAt: now,
+			heartbeatLeaseExpiresAt: now,
+			enrollmentState: "active",
+			createdAt: now,
+			updatedAt: now,
+		})
+		.execute();
+}
+
+describe("runbook — audit query (deploy/k8s/FORWARDAUTH.md, ownership-audit-sql)", () => {
+	test("flags owner_mismatch, launch-less (no_launch), launch_pointer_mismatch and launch_pointer_missing; leaves healthy rows (including the legacy fallback) alone", async () => {
+		// owner_mismatch: launch claimed by A, recorded owner B.
+		await seedOwnedLaunch("audit-mismatch-sess", "sup-A");
+		await seedManagedRow("audit-mismatch-sess", "sup-B");
+
+		// no_launch: managed row, no launch at all.
+		await seedManagedRow("audit-no-launch-sess", "sup-C");
+
+		// launch_pointer_mismatch: this session's own launch is unclaimed
+		// (no owner_mismatch), but the managed row's launch_request_id points
+		// at a DIFFERENT session's launch.
+		await seedUnclaimedLaunch("audit-ptr-mismatch-sess", "validated");
+		const otherLaunch = await seedOwnedLaunch("audit-ptr-mismatch-other-sess", "sup-D");
+		await seedManagedRow("audit-ptr-mismatch-sess", "sup-D", otherLaunch.launchId);
+
+		// launch_pointer_missing: this session's own launch is claimed by the
+		// recorded owner (no owner_mismatch), but launch_request_id is a
+		// random id naming no launch at all.
+		await seedOwnedLaunch("audit-ptr-missing-sess", "sup-E");
+		await seedManagedRow("audit-ptr-missing-sess", "sup-E", crypto.randomUUID());
+
+		// Healthy, running.
+		await seedOwnedLaunch("audit-healthy-running-sess", "sup-F", { status: "running" });
+		await seedManagedRow("audit-healthy-running-sess", "sup-F");
+
+		// Healthy, cancelled — pins that the audit ignores launch status.
+		await seedOwnedLaunch("audit-healthy-cancelled-sess", "sup-G", { status: "cancelled" });
+		await seedManagedRow("audit-healthy-cancelled-sess", "sup-G");
+
+		// Healthy, legacy fallback shape — launch_request_id === session_id,
+		// which resolves to no launch by id but is the intentional D6
+		// reconcile shape and must NOT be flagged.
+		await seedOwnedLaunch("audit-legacy-fallback-sess", "sup-H");
+		await seedManagedRow("audit-legacy-fallback-sess", "sup-H", "audit-legacy-fallback-sess");
+
+		const rows = await runMarkerSql("ownership-audit-sql");
+		const flaggedIds = new Set(rows.map((r) => r.session_id as string));
+
+		expect(flaggedIds).toEqual(
+			new Set([
+				"audit-mismatch-sess",
+				"audit-no-launch-sess",
+				"audit-ptr-mismatch-sess",
+				"audit-ptr-missing-sess",
+			]),
+		);
+		expect(flaggedIds.has("audit-legacy-fallback-sess")).toBe(false);
+
+		const missingRow = rows.find((r) => r.session_id === "audit-ptr-missing-sess");
+		expect(missingRow?.finding).toBe("launch_pointer_missing");
+	});
+});
+
+describe("runbook — repair statement (ownership-repair-sql)", () => {
+	test("realigns owner_mismatch rows with the launch claimant; leaves launch-less and pointer-broken rows for human review", async () => {
+		await seedOwnedLaunch("repair-mismatch-sess", "sup-A");
+		await seedManagedRow("repair-mismatch-sess", "sup-B");
+		await seedManagedRow("repair-no-launch-sess", "sup-C");
+		await seedOwnedLaunch("repair-ptr-missing-sess", "sup-E");
+		await seedManagedRow("repair-ptr-missing-sess", "sup-E", crypto.randomUUID());
+
+		await runMarkerSql("ownership-repair-sql");
+
+		expect(await resolveSessionOwner("repair-mismatch-sess")).toBe("sup-A");
+
+		const rows = await runMarkerSql("ownership-audit-sql");
+		const flaggedIds = new Set(rows.map((r) => r.session_id as string));
+		expect(flaggedIds).toEqual(new Set(["repair-no-launch-sess", "repair-ptr-missing-sess"]));
+	});
+});
+
+describe("runbook — reassign-host pair (ownership-reassign-sql)", () => {
+	test("moves one session's ownership to a new supervisor; a session not named is untouched; the pair is required (a managed-only update has no effect)", async () => {
+		await seedSupervisorRow("reassign-old", "old-host");
+		await seedSupervisorRow("reassign-new", "new-host");
+
+		const s1Launch = await seedOwnedLaunch("reassign-s1", "reassign-old");
+		await seedManagedRow("reassign-s1", "reassign-old", s1Launch.launchId);
+		await getDb()
+			.insert(controlActions)
+			.values({
+				sessionId: "reassign-s1",
+				launchRequestId: s1Launch.launchId,
+				actionType: "prompt",
+				requestedBy: "test",
+				status: "queued",
+				metadata: {},
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+			})
+			.execute();
+
+		await seedOwnedLaunch("reassign-s2", "reassign-old");
+		await seedManagedRow("reassign-s2", "reassign-old");
+
+		// Launch-less session, control for the "pair works even with no
+		// launch to touch" case (the launch UPDATE affects 0 rows).
+		await seedManagedRow("reassign-s3", "reassign-old");
+
+		await runMarkerSql("ownership-reassign-sql", {
+			session_id: "reassign-s1",
+			new_supervisor_id: "reassign-new",
+		});
+
+		expect(await resolveSessionOwner("reassign-s1")).toBe("reassign-new");
+		const [s1Row] = await getDb()
+			.select()
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, "reassign-s1"));
+		expect(s1Row?.supervisorId).toBe("reassign-new");
+		expect(s1Row?.hostName).toBe("new-host");
+
+		const newClaim = await claimNextControlAction("reassign-new");
+		expect(newClaim?.sessionId).toBe("reassign-s1");
+		const oldClaim = await claimNextControlAction("reassign-old");
+		expect(oldClaim).toBeNull();
+
+		// Named non-vacuity member: S2 (not named in the pair) is untouched.
+		expect(await resolveSessionOwner("reassign-s2")).toBe("reassign-old");
+
+		// Launch-less S3 moves via the managed-row UPDATE alone (0 launch rows
+		// affected, 1 managed row affected).
+		await runMarkerSql("ownership-reassign-sql", {
+			session_id: "reassign-s3",
+			new_supervisor_id: "reassign-new",
+		});
+		expect(await resolveSessionOwner("reassign-s3")).toBe("reassign-new");
+	});
+
+	test("negative control: the managed_sessions statement alone has no effect — the launch claimant still outranks it", async () => {
+		await seedSupervisorRow("reassign-neg-old", "old-host");
+		await seedSupervisorRow("reassign-neg-new", "new-host");
+		await seedOwnedLaunch("reassign-neg-sess", "reassign-neg-old");
+		await seedManagedRow("reassign-neg-sess", "reassign-neg-old");
+
+		// Run ONLY the managed_sessions half of the pair (skip the
+		// launch_requests statement) — this is what an operator would get
+		// from a broken one-statement "repair" attempted under pressure.
+		await getDb()
+			.update(managedSessions)
+			.set({ supervisorId: "reassign-neg-new", hostName: "new-host" })
+			.where(eq(managedSessions.sessionId, "reassign-neg-sess"));
+
+		expect(await resolveSessionOwner("reassign-neg-sess")).toBe("reassign-neg-old");
+	});
+});
+
+describe("runbook — stale-launch inventory (stale-launch-sql)", () => {
+	test("lists exactly the validated launches, excluding running ones; the retry pointer is visible on the row that has one", async () => {
+		const retryOriginal = await getDb()
+			.insert(launchRequests)
+			.values({
+				launchCorrelationId: "stale-original-sess",
+				agentType: "claude_code",
+				cwd: "/tmp/stale-launch-test",
+				status: "validated",
+			})
+			.returning();
+
+		const retryClone = await getDb()
+			.insert(launchRequests)
+			.values({
+				launchCorrelationId: "stale-retry-sess",
+				agentType: "claude_code",
+				cwd: "/tmp/stale-launch-test",
+				status: "validated",
+				retryOfLaunchRequestId: retryOriginal[0]?.id,
+			})
+			.returning();
+
+		await seedOwnedLaunch("stale-running-sess", "sup-A", { status: "running" });
+
+		const rows = await runMarkerSql("stale-launch-sql");
+		const ids = new Set(rows.map((r) => r.id as string));
+		expect(ids).toEqual(new Set([retryOriginal[0]?.id, retryClone[0]?.id]));
+
+		const retryRow = rows.find((r) => r.id === retryClone[0]?.id);
+		expect(retryRow?.retry_of_launch_request_id).toBe(retryOriginal[0]?.id);
+	});
+});
+
+// Test contract item 51 — presence check only; content is covered by the
+// runbook SQL tests above and the Manual doc-review verification item.
+describe("runbook — CHANGELOG.md presence check (item 51)", () => {
+	test("CHANGELOG.md names both tickets and the new error", () => {
+		const changelog = readFileSync(join(REPO_ROOT, "CHANGELOG.md"), "utf-8");
+		expect(changelog.includes("AGEN-17")).toBe(true);
+		expect(changelog.includes("AGEN-15")).toBe(true);
+		expect(changelog.includes("session_not_owned")).toBe(true);
 	});
 });
