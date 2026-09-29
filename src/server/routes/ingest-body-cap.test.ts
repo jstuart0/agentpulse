@@ -260,4 +260,25 @@ describe("D16: GET /api/v1/health includes oversizeDropped", () => {
 		const body2 = await res2.json();
 		expect(body2.oversizeDropped).toBe(1);
 	});
+
+	// F121 (tessa): nothing previously asserted these fields' actual
+	// presence/shape on the real GET /api/v1/health response — renaming or
+	// dropping them in health.ts passed every other test. Fetch through the
+	// real app and pin the exact shape.
+	test("F121: eventsDeduplicated (exactly 4 keys), legacyObserverDeliveries, and oversizeDropped are all present with the right types", async () => {
+		const res = await app.request("/api/v1/health");
+		expect(res.status).toBe(200);
+		const body = await res.json();
+
+		expect(body.eventsDeduplicated).toBeDefined();
+		expect(Object.keys(body.eventsDeduplicated).sort()).toEqual(
+			["authority", "contentWindow", "deliveryRetry", "toolUseRetry"].sort(),
+		);
+		for (const v of Object.values(body.eventsDeduplicated as Record<string, unknown>)) {
+			expect(typeof v).toBe("number");
+		}
+
+		expect(typeof body.legacyObserverDeliveries).toBe("number");
+		expect(typeof body.oversizeDropped).toBe("number");
+	});
 });

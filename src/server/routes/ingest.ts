@@ -17,9 +17,11 @@ import {
 	decrementInFlightCount,
 	getBgErrorCount,
 	getInFlightCount,
+	getOversizeDropped,
 	getRateLimitedDropped,
 	incrementBgErrorCount,
 	incrementInFlightCount,
+	incrementOversizeDropped,
 } from "./ingest-counters.js";
 
 // ── Per-session hook ordering queue ──────────────────────────────────────────
@@ -81,7 +83,63 @@ export function _resetSessionQueuesForTest(): void {
 }
 
 // Re-export counter getters for health.ts and tests.
-export { getBgErrorCount, getInFlightCount, getRateLimitedDropped };
+export { getBgErrorCount, getInFlightCount, getRateLimitedDropped, getOversizeDropped };
+
+// ── D16 (F116): body-size cap ────────────────────────────────────────────────
+//
+// c.req.json() buffers a body of any size before parsing, and the Phase 7
+// `d:` body digest does a full stringify + sha256 pass over the uncapped
+// payload — an attacker (or a runaway client) can post an arbitrarily large
+// body and burn CPU/memory on every layer before this route even validates
+// shape. The always-200 post-auth contract still applies: an oversize body
+// is silently dropped (200, no parse, no processing), exactly like a
+// rate-limited one, and counted via oversizeDropped (surfaced on /health,
+// same shape as rateLimitedDropped).
+export const MAX_HOOK_BODY_BYTES = 16 * 1024 * 1024; // 16 MiB
+
+/**
+ * Reads `request`'s body up to `maxBytes`, returning the decoded text, or
+ * null if the body exceeds the cap. Checks Content-Length first (cheap,
+ * catches well-behaved oversize clients without touching the body stream
+ * at all), then streams the body with a running total regardless — a
+ * missing or understated Content-Length (chunked transfer, a lying client)
+ * is still caught, and the stream is cancelled the moment the cap is
+ * crossed rather than read to completion. JSON.parse is never reached for
+ * a body that fails this check.
+ */
+export async function readCappedBody(request: Request, maxBytes: number): Promise<string | null> {
+	const contentLength = request.headers.get("content-length");
+	if (contentLength !== null) {
+		const declared = Number(contentLength);
+		if (Number.isFinite(declared) && declared > maxBytes) return null;
+	}
+
+	const body = request.body;
+	if (!body) return "";
+
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		if (!value) continue;
+		total += value.byteLength;
+		if (total > maxBytes) {
+			await reader.cancel().catch(() => {});
+			return null;
+		}
+		chunks.push(value);
+	}
+
+	const combined = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		combined.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return new TextDecoder().decode(combined);
+}
 
 /**
  * Strip control characters (C0 block + DEL) and truncate to `maxLen` so that
@@ -113,11 +171,19 @@ const ingest = new Hono();
 //  - Processing exception (async) → 200 already sent; bgErrorCount++.
 // Pre-auth failures (no/invalid API key) → 401/403 from requireApiKey().
 ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
+	// D16: size cap before any parsing — an oversize body never reaches
+	// JSON.parse or downstream processing.
+	const bodyText = await readCappedBody(c.req.raw, MAX_HOOK_BODY_BYTES);
+	if (bodyText === null) {
+		incrementOversizeDropped();
+		return c.json({ ok: true });
+	}
+
 	// Parse body; if malformed, return 200 with structured error log.
 	// This complies with the always-200 post-auth contract.
 	let parsed: HookEventPayload;
 	try {
-		parsed = (await c.req.json()) as HookEventPayload;
+		parsed = JSON.parse(bodyText) as HookEventPayload;
 	} catch (parseErr) {
 		console.error(
 			JSON.stringify({
@@ -224,9 +290,16 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
 //
 // Same always-200 post-auth contract as /hooks.
 ingest.post("/hooks/status", requireApiKey(), hookRateLimit(), async (c) => {
+	// D16: same size cap as /hooks.
+	const statusBodyText = await readCappedBody(c.req.raw, MAX_HOOK_BODY_BYTES);
+	if (statusBodyText === null) {
+		incrementOversizeDropped();
+		return c.json({ ok: true });
+	}
+
 	let update: SemanticStatusUpdate;
 	try {
-		update = (await c.req.json()) as SemanticStatusUpdate;
+		update = JSON.parse(statusBodyText) as SemanticStatusUpdate;
 	} catch (parseErr) {
 		console.error(
 			JSON.stringify({
