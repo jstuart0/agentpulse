@@ -19,6 +19,7 @@ import "../src/server/db/__test_db.js";
 
 const { config } = await import("../src/server/config.js");
 const { setup } = await import("../src/server/routes/setup.js");
+const { buildCodexHooksFile } = await import("../src/shared/hook-command.js");
 
 const INSTALLER = join(import.meta.dir, "setup-relay.sh");
 const RELAY_SRC = join(import.meta.dir, "relay.ts");
@@ -685,6 +686,118 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 				stat(join(home, ".config", "systemd", "user", "agentpulse-relay.service")),
 			).rejects.toThrow();
 			await expect(stat(join(home, ".agentpulse", "config.json"))).rejects.toThrow();
+		},
+		RUN_TIMEOUT,
+	);
+});
+
+describe("D12/D13 — Codex command hooks (F50, F52, r6 CODEX_HOME)", () => {
+	test(
+		"the written ~/.codex/hooks.json deep-equals buildCodexHooksFile() for all 12 events",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const res = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Darwin" },
+			);
+			expect(res.code).toBe(0);
+
+			const hooksJson = await readFile(join(home, ".codex", "hooks.json"), "utf-8");
+			const expected = buildCodexHooksFile({ baseUrl: `http://localhost:${port}`, direct: false });
+			expect(hooksJson).toBe(expected);
+
+			const parsed = JSON.parse(hooksJson);
+			expect(Object.keys(parsed.hooks)).toHaveLength(12);
+			expect(Object.keys(parsed.hooks)).toContain("Interrupt");
+			for (const event of Object.keys(parsed.hooks)) {
+				const handler = parsed.hooks[event][0].hooks[0];
+				expect(handler.type).toBe("command");
+				expect(handler.async).toBe(false);
+				expect(handler.timeout).toBe(1);
+			}
+			expect(hooksJson).not.toContain('"matcher"');
+
+			const configToml = await readFile(join(home, ".codex", "config.toml"), "utf-8").catch(
+				() => "",
+			);
+			expect(configToml).not.toContain("codex_hooks");
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"CODEX_HOME places the hooks file (and its backups) outside ~/.codex",
+		async () => {
+			const home = await newHome();
+			const codexHome = join(home, "codex-home-override");
+			await mkdir(codexHome, { recursive: true });
+			const port = await freePort();
+			const res = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Darwin", env: { CODEX_HOME: codexHome } },
+			);
+			expect(res.code).toBe(0);
+
+			await expect(readFile(join(codexHome, "hooks.json"))).resolves.toBeDefined();
+			await expect(stat(join(home, ".codex", "hooks.json"))).rejects.toThrow();
+		},
+		RUN_TIMEOUT,
+	);
+
+	test(
+		"backup rotation: a user-authored hooks.json is backed up once, unchanged re-runs print the no-re-trust line, and a URL change backs up again",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			await mkdir(join(home, ".codex"), { recursive: true });
+			await writeFile(join(home, ".codex", "hooks.json"), '{"hooks":{"custom":"mine"}}\n');
+
+			const run1 = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Darwin" },
+			);
+			expect(run1.code).toBe(0);
+			const backups1 = (await readdir(join(home, ".codex"))).filter((f) =>
+				f.includes("agentpulse-bak"),
+			);
+			expect(backups1).toHaveLength(1);
+			const firstBackupBytes = await readFile(join(home, ".codex", backups1[0]), "utf-8");
+			expect(firstBackupBytes).toBe('{"hooks":{"custom":"mine"}}\n');
+
+			const run2 = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Darwin" },
+			);
+			expect(run2.code).toBe(0);
+			expect(run2.out).toContain("Codex hooks unchanged — no re-trust needed");
+			const backups2 = (await readdir(join(home, ".codex"))).filter((f) =>
+				f.includes("agentpulse-bak"),
+			);
+			expect(backups2).toHaveLength(1);
+
+			// The backup timestamp is second-precision (D12: hooks.json.agentpulse-bak.<UTC
+			// yyyymmddTHHMMSSZ>); force a full second between runs so run3's backup
+			// can't collide with run1's and silently overwrite it.
+			await Bun.sleep(1100);
+
+			const port3 = await freePort();
+			const run3 = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port3)],
+				{ uname: "Darwin" },
+			);
+			expect(run3.code).toBe(0);
+			const backups3 = (await readdir(join(home, ".codex"))).filter((f) =>
+				f.includes("agentpulse-bak"),
+			);
+			expect(backups3).toHaveLength(2);
+			const stillFirstBackupBytes = await readFile(join(home, ".codex", backups1[0]), "utf-8");
+			expect(stillFirstBackupBytes).toBe('{"hooks":{"custom":"mine"}}\n');
 		},
 		RUN_TIMEOUT,
 	);

@@ -1187,6 +1187,135 @@ describe("scope check, status file, sync gating (D10, D17)", () => {
 	});
 });
 
+describe("D22 — hooks_not_firing (evidence-based, TUI-only per SPIKE fact 6)", () => {
+	function snapshotWith(rows: Array<{ id: string; thread_name: string; updated_at: string }>) {
+		return {
+			indexVersion: "v",
+			ledger: new Set<string>(),
+			ledgerRows: [],
+			indexKeys: new Set(rows.map((r) => `${r.id}:${r.updated_at}`)),
+			latest: new Map(rows.map((r) => [r.id, r])),
+			latestForeign: new Map(rows.map((r) => [r.id, r])),
+		};
+	}
+
+	test("no installed.json → never fires, whatever the index says", async () => {
+		const R = await mod();
+		const result = R.computeCodexHooksNotFiring(
+			{ codexHooksWrittenAt: null, copilotHooksWrittenAt: null },
+			snapshotWith([row("s1", "codex-title", "2026-09-29T12:05:00.000Z")]),
+			undefined,
+		);
+		expect(result).toBe(false);
+	});
+
+	test("installed, foreign index activity since install, no hook ever enqueued → fires", async () => {
+		const R = await mod();
+		const result = R.computeCodexHooksNotFiring(
+			{ codexHooksWrittenAt: "2026-09-29T12:00:00.000Z", copilotHooksWrittenAt: null },
+			snapshotWith([row("s1", "codex-title", "2026-09-29T12:05:00.000Z")]),
+			undefined,
+		);
+		expect(result).toBe(true);
+	});
+
+	test("installed, no foreign index activity since install → doesn't fire (Codex hasn't demonstrably run)", async () => {
+		const R = await mod();
+		const result = R.computeCodexHooksNotFiring(
+			{ codexHooksWrittenAt: "2026-09-29T12:00:00.000Z", copilotHooksWrittenAt: null },
+			snapshotWith([row("s1", "codex-title", "2026-09-29T11:00:00.000Z")]),
+			undefined,
+		);
+		expect(result).toBe(false);
+	});
+
+	test("installed, foreign activity since install, a codex_cli hook WAS enqueued since install → doesn't fire", async () => {
+		const R = await mod();
+		const result = R.computeCodexHooksNotFiring(
+			{ codexHooksWrittenAt: "2026-09-29T12:00:00.000Z", copilotHooksWrittenAt: null },
+			snapshotWith([row("s1", "codex-title", "2026-09-29T12:05:00.000Z")]),
+			"2026-09-29T12:03:00.000Z",
+		);
+		expect(result).toBe(false);
+	});
+
+	test("a hook enqueued BEFORE install doesn't count as evidence it's firing now", async () => {
+		const R = await mod();
+		const result = R.computeCodexHooksNotFiring(
+			{ codexHooksWrittenAt: "2026-09-29T12:00:00.000Z", copilotHooksWrittenAt: null },
+			snapshotWith([row("s1", "codex-title", "2026-09-29T12:05:00.000Z")]),
+			"2026-09-29T11:00:00.000Z",
+		);
+		expect(result).toBe(true);
+	});
+
+	test("self-write false positive (r3, F59): the relay's own ledgered push is excluded from the foreign-activity evidence", async () => {
+		const R = await mod();
+		// latestForeign already excludes ledgered (self-written) rows by
+		// construction (parseCodexIndex) — simulate that here: the index has a
+		// row, but it's this relay's own push, so latestForeign is empty.
+		const snap = {
+			indexVersion: "v",
+			ledger: new Set(["s1:2026-09-29T12:05:00.000Z:pushed-name"]),
+			ledgerRows: [],
+			indexKeys: new Set(["s1:2026-09-29T12:05:00.000Z"]),
+			latest: new Map([["s1", row("s1", "pushed-name", "2026-09-29T12:05:00.000Z")]]),
+			latestForeign: new Map(),
+		};
+		const result = R.computeCodexHooksNotFiring(
+			{ codexHooksWrittenAt: "2026-09-29T12:00:00.000Z", copilotHooksWrittenAt: null },
+			snap,
+			undefined,
+		);
+		expect(result).toBe(false);
+	});
+
+	test("end to end: syncCodexNamesTick sets state.hooksNotFiring, buildDiagnostics + computeStatusLine surface it, and it clears on the next tick after a hook fires", async () => {
+		const R = await mod();
+		const stub = startStub((_method, url) => {
+			if (url.pathname === "/api/v1/auth/me")
+				return Response.json({ authenticated: true, user: { scopes: ["ingest", "observe"] } });
+			if (url.pathname === "/api/v1/sessions") return Response.json({ sessions: [], total: 0 });
+			return undefined;
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		await ensurePrivateDirForTest(ctx.paths.stateDir);
+		await writeFile(
+			ctx.paths.installedFile,
+			JSON.stringify({
+				codexHooksWrittenAt: "2026-09-29T12:00:00.000Z",
+				copilotHooksWrittenAt: null,
+			}),
+		);
+		await writeFile(indexPath(), jsonl([row("s1", "codex-title", "2026-09-29T12:05:00.000Z")]));
+
+		await R.syncCodexNamesTick(ctx);
+		expect(ctx.state.hooksNotFiring.codex_cli).toBe(true);
+
+		const diag = await R.buildDiagnostics(ctx);
+		expect((diag.agents as Record<string, { status?: string; basis?: string }>).codex_cli).toEqual({
+			lastEventAt: null,
+			status: "hooks_not_firing",
+			basis: "tui_activity",
+		});
+		expect(R.computeStatusLine(ctx.state)).toBe(
+			"codex hooks not firing — run /hooks in Codex to trust them",
+		);
+		expect(await readFile(ctx.paths.statusFile, "utf-8")).toContain("codex hooks not firing");
+
+		// A codex_cli hook fires — the next tick clears the signal.
+		ctx.state.lastEventAtByAgent.codex_cli = "2026-09-29T12:10:00.000Z";
+		await R.syncCodexNamesTick(ctx);
+		expect(ctx.state.hooksNotFiring.codex_cli).toBe(false);
+		expect(await Bun.file(ctx.paths.statusFile).exists()).toBe(false);
+	});
+});
+
+async function ensurePrivateDirForTest(path: string) {
+	await mkdir(path, { recursive: true, mode: 0o700 });
+}
+
 describe("drift (D3)", () => {
 	test("relay ok + installed statusline outdated → drift + status line", async () => {
 		const R = await mod();

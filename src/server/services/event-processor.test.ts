@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import "./ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
@@ -499,5 +499,208 @@ describe("applyPermissionWaitTransition — prior status null/unset at the 0→1
 		row = await getSession("perm-1");
 		expect(row?.semanticStatus).toBeNull();
 		expect(row?.metadata).not.toHaveProperty("permissionWait");
+	});
+});
+
+// ── D21: delivery-order tolerance for detached Codex hooks ─────────────────
+//
+// Every timing case in this block uses one fake clock (bun:test's
+// setSystemTime, reset in afterEach) — processHookEvent reads new Date()
+// internally, so this is the seam. See the plan's Decision 21 for the exact
+// boundary semantics.
+describe("processHookEvent — D21 out-of-order tolerance (terminal latch, closed turns)", () => {
+	const T0 = Date.parse("2026-09-29T12:00:00.000Z");
+
+	afterEach(() => setSystemTime());
+
+	async function eventCount(sessionId: string) {
+		const rows = await getDb().select().from(events).where(eq(events.sessionId, sessionId));
+		return rows.length;
+	}
+
+	test("terminal latch: a late Stop and PostToolUse at +10s don't reanimate a SessionEnd'd session, but are stored", async () => {
+		setSystemTime(T0);
+		await processHookEvent({ session_id: "codex-1", hook_event_name: "SessionEnd" }, "codex_cli");
+		let row = await getSession("codex-1");
+		expect(row?.status).toBe("completed");
+		expect(row?.isWorking).toBe(false);
+
+		setSystemTime(T0 + 10_000);
+		await processHookEvent({ session_id: "codex-1", hook_event_name: "Stop" }, "codex_cli");
+		await processHookEvent(
+			{ session_id: "codex-1", hook_event_name: "PostToolUse", tool_name: "Bash" },
+			"codex_cli",
+		);
+
+		row = await getSession("codex-1");
+		expect(row?.status).toBe("completed");
+		expect(row?.isWorking).toBe(false);
+		expect(await eventCount("codex-1")).toBe(3);
+	});
+
+	test("exact boundary: 29.999s still latched, 30.000s and 30.001s reanimate", async () => {
+		setSystemTime(T0);
+		await processHookEvent({ session_id: "codex-2", hook_event_name: "SessionEnd" }, "codex_cli");
+
+		setSystemTime(T0 + 29_999);
+		await processHookEvent({ session_id: "codex-2", hook_event_name: "PostToolUse" }, "codex_cli");
+		expect((await getSession("codex-2"))?.status).toBe("completed");
+
+		setSystemTime(T0 + 30_000);
+		await processHookEvent({ session_id: "codex-2", hook_event_name: "PostToolUse" }, "codex_cli");
+		expect((await getSession("codex-2"))?.status).toBe("active");
+
+		// Re-latch for the 30.001s case.
+		setSystemTime(T0);
+		await processHookEvent({ session_id: "codex-3", hook_event_name: "SessionEnd" }, "codex_cli");
+		setSystemTime(T0 + 30_001);
+		await processHookEvent({ session_id: "codex-3", hook_event_name: "PostToolUse" }, "codex_cli");
+		expect((await getSession("codex-3"))?.status).toBe("active");
+	});
+
+	test("SessionEnd then UserPromptSubmit at +5s reanimates (a real resume)", async () => {
+		setSystemTime(T0);
+		await processHookEvent({ session_id: "codex-4", hook_event_name: "SessionEnd" }, "codex_cli");
+
+		setSystemTime(T0 + 5_000);
+		await processHookEvent(
+			{ session_id: "codex-4", hook_event_name: "UserPromptSubmit", prompt: "go" },
+			"codex_cli",
+		);
+		const row = await getSession("codex-4");
+		expect(row?.status).toBe("active");
+		expect(row?.isWorking).toBe(true);
+	});
+
+	test("closed turns: a late PreToolUse for an Interrupt'd turn_id doesn't reopen isWorking; a new turn_id does", async () => {
+		setSystemTime(T0);
+		await processHookEvent(
+			{ session_id: "codex-5", hook_event_name: "Interrupt", turn_id: "t1" },
+			"codex_cli",
+		);
+		expect((await getSession("codex-5"))?.isWorking).toBe(false);
+
+		await processHookEvent(
+			{ session_id: "codex-5", hook_event_name: "PreToolUse", turn_id: "t1", tool_name: "Bash" },
+			"codex_cli",
+		);
+		expect((await getSession("codex-5"))?.isWorking).toBe(false);
+
+		await processHookEvent(
+			{ session_id: "codex-5", hook_event_name: "PreToolUse", turn_id: "t2", tool_name: "Bash" },
+			"codex_cli",
+		);
+		expect((await getSession("codex-5"))?.isWorking).toBe(true);
+	});
+
+	test("permission-wait x latch: a PermissionRequest inside the latch opens no wait; outside it, it does", async () => {
+		setSystemTime(T0);
+		await processHookEvent({ session_id: "codex-6", hook_event_name: "SessionEnd" }, "codex_cli");
+
+		setSystemTime(T0 + 5_000);
+		await processHookEvent(
+			{ session_id: "codex-6", hook_event_name: "PermissionRequest", tool_use_id: "a" },
+			"codex_cli",
+		);
+		let row = await getSession("codex-6");
+		expect(row?.semanticStatus).not.toBe("waiting");
+		expect(row?.metadata).not.toHaveProperty("permissionWait");
+		expect(row?.status).toBe("completed");
+		expect(await eventCount("codex-6")).toBe(2);
+
+		setSystemTime(T0 + 30_001);
+		await processHookEvent(
+			{ session_id: "codex-6", hook_event_name: "PermissionRequest", tool_use_id: "b" },
+			"codex_cli",
+		);
+		row = await getSession("codex-6");
+		expect(row?.semanticStatus).toBe("waiting");
+		expect(row?.status).toBe("active");
+	});
+
+	test("permission-wait x closed turn: a PermissionRequest on a closed turn_id opens no wait; a new turn_id does", async () => {
+		setSystemTime(T0);
+		await processHookEvent(
+			{ session_id: "codex-7", hook_event_name: "Interrupt", turn_id: "t1" },
+			"codex_cli",
+		);
+
+		await processHookEvent(
+			{
+				session_id: "codex-7",
+				hook_event_name: "PermissionRequest",
+				turn_id: "t1",
+				tool_use_id: "b",
+			},
+			"codex_cli",
+		);
+		let row = await getSession("codex-7");
+		expect(row?.metadata).not.toHaveProperty("permissionWait");
+
+		await processHookEvent(
+			{
+				session_id: "codex-7",
+				hook_event_name: "PermissionRequest",
+				turn_id: "t2",
+				tool_use_id: "c",
+			},
+			"codex_cli",
+		);
+		row = await getSession("codex-7");
+		expect(row?.semanticStatus).toBe("waiting");
+	});
+
+	test("terminal boundary clears an outstanding wait: SessionEnd restores semanticStatus and the wait doesn't resurface", async () => {
+		await mkSession("codex-8", {
+			agentType: "codex_cli",
+			semanticStatus: "waiting",
+			metadata: { permissionWait: { ids: ["c"], anon: 0, prevStatus: "implementing" } },
+		});
+
+		setSystemTime(T0);
+		await processHookEvent({ session_id: "codex-8", hook_event_name: "SessionEnd" }, "codex_cli");
+		let row = await getSession("codex-8");
+		expect(row?.metadata).not.toHaveProperty("permissionWait");
+		expect(row?.semanticStatus).toBe("implementing");
+		expect(row?.status).toBe("completed");
+
+		setSystemTime(T0 + 3_000);
+		await processHookEvent(
+			{ session_id: "codex-8", hook_event_name: "PostToolUse", tool_use_id: "c" },
+			"codex_cli",
+		);
+		row = await getSession("codex-8");
+		expect(row?.semanticStatus).toBe("implementing");
+		expect(row?.status).toBe("completed");
+	});
+
+	test("terminal boundary clears an outstanding wait: Interrupt also restores semanticStatus", async () => {
+		await mkSession("codex-9", {
+			agentType: "codex_cli",
+			semanticStatus: "waiting",
+			metadata: { permissionWait: { ids: ["d"], anon: 0, prevStatus: "researching" } },
+		});
+
+		setSystemTime(T0);
+		await processHookEvent({ session_id: "codex-9", hook_event_name: "Interrupt" }, "codex_cli");
+		const row = await getSession("codex-9");
+		expect(row?.metadata).not.toHaveProperty("permissionWait");
+		expect(row?.semanticStatus).toBe("researching");
+		expect(row?.isWorking).toBe(false);
+	});
+
+	test("Codex SessionEnd completes the session the same as Claude's existing SessionEnd path", async () => {
+		setSystemTime(T0);
+		await processHookEvent({ session_id: "codex-10", hook_event_name: "SessionEnd" }, "codex_cli");
+		const row = await getSession("codex-10");
+		expect(row?.status).toBe("completed");
+		expect(row?.isWorking).toBe(false);
+		expect(row?.endedAt).not.toBeNull();
+	});
+
+	test("Interrupt sets isWorking=false the same as Stop", async () => {
+		await mkSession("codex-11", { agentType: "codex_cli", isWorking: true });
+		await processHookEvent({ session_id: "codex-11", hook_event_name: "Interrupt" }, "codex_cli");
+		expect((await getSession("codex-11"))?.isWorking).toBe(false);
 	});
 });

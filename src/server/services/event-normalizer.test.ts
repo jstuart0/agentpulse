@@ -56,6 +56,17 @@ describe("normalizeHookEvent — Notification (Decision 4: stays system_event)",
 	});
 });
 
+describe("normalizeHookEvent — Interrupt (D12, Codex)", () => {
+	test("Interrupt normalizes to system_event, content is 'Turn interrupted'", () => {
+		const [event] = normalizeHookEvent(
+			payload({ hook_event_name: "Interrupt", turn_id: "t1" }),
+			"codex_cli",
+		);
+		expect(event.category).toBe("system_event");
+		expect(event.content).toBe("Turn interrupted");
+	});
+});
+
 describe("normalizeHookEvent — compaction events", () => {
 	test("PreCompact without trigger", () => {
 		const [event] = normalizeHookEvent(payload({ hook_event_name: "PreCompact" }), "claude_code");

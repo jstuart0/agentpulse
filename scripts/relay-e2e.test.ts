@@ -9,6 +9,12 @@ import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import "../src/server/db/__test_db.js";
+import { buildBashHookCommand } from "../src/shared/hook-command.js";
+
+const CODEX_FIXTURES_DIR = join(
+	import.meta.dir,
+	"../src/server/services/agents/__fixtures__/codex",
+);
 
 const { config } = await import("../src/server/config.js");
 const { initializeDatabase } = await import("../src/server/db/client.js");
@@ -28,6 +34,7 @@ type RelayProc = {
 	base: string;
 	dir: string;
 	home: string;
+	codexHome: string;
 	output: () => string;
 };
 
@@ -77,12 +84,15 @@ async function spawnRelay(
 		reuse?: boolean;
 		/** Put config.json (and so the state dir) at <home>/.agentpulse, the installer default. */
 		configInHome?: boolean;
+		/** Extra env vars for the relay subprocess — e.g. CODEX_HOME (r6, item 7). */
+		env?: Record<string, string>;
 	} = {},
 ): Promise<RelayProc> {
 	const home = join(root, name, "home");
 	const dir = opts.configInHome ? join(home, ".agentpulse") : join(root, name);
+	const codexHome = opts.env?.CODEX_HOME ?? join(home, ".codex");
 	if (!opts.reuse) {
-		await mkdir(join(home, ".codex"), { recursive: true });
+		await mkdir(codexHome, { recursive: true });
 		await mkdir(dir, { recursive: true });
 		await writeFile(
 			join(dir, "config.json"),
@@ -116,6 +126,7 @@ async function spawnRelay(
 				TMPDIR: process.env.TMPDIR ?? "/tmp",
 				HOME: home,
 				AGENTPULSE_RELAY_SYNC_MS: "200",
+				...opts.env,
 			},
 		},
 	);
@@ -144,6 +155,7 @@ async function spawnRelay(
 		base: `http://127.0.0.1:${port}`,
 		dir,
 		home,
+		codexHome,
 		output: () => buf,
 	};
 	running.push(relay);
@@ -215,7 +227,7 @@ async function manage(path: string, body: unknown) {
 async function indexRows(relay: RelayProc, id: string) {
 	let raw = "";
 	try {
-		raw = await readFile(join(relay.home, ".codex", "session_index.jsonl"), "utf-8");
+		raw = await readFile(join(relay.codexHome, "session_index.jsonl"), "utf-8");
 	} catch {
 		return [];
 	}
@@ -242,7 +254,7 @@ async function ledgerRows(relay: RelayProc, id: string) {
 
 async function appendCodexRow(relay: RelayProc, id: string, thread_name: string) {
 	const line = JSON.stringify({ id, thread_name, updated_at: new Date().toISOString() });
-	await appendFile(join(relay.home, ".codex", "session_index.jsonl"), `${line}\n`);
+	await appendFile(join(relay.codexHome, "session_index.jsonl"), `${line}\n`);
 }
 
 async function sessionNamed(id: string, name: string) {
@@ -532,6 +544,79 @@ describe("relay e2e", () => {
 			expect(adopted.nativeName).toBe("codex-title-2");
 			expect(adopted.displayName).toBe("codex-title-2");
 			await stopRelay(relay7b);
+		},
+		SCENARIO_TIMEOUT,
+	);
+
+	test(
+		"8. Codex command hooks through the real relay (D12/D13, r6): SessionStart/UserPromptSubmit/Stop via the generated detached sh command",
+		async () => {
+			const CODEX8_ID = "01a0e994-8966-7df2-9441-cb89cc6ae1aa";
+			const relay8 = await spawnRelay("relay8", relayKey);
+			for (const event of ["SessionStart", "UserPromptSubmit", "Stop"]) {
+				const cmd = buildBashHookCommand({
+					baseUrl: relay8.base,
+					direct: false,
+					agent: "codex_cli",
+					event,
+				});
+				const fixture = await readFile(join(CODEX_FIXTURES_DIR, `${event}.json`), "utf-8");
+				const proc = Bun.spawn(["sh", "-c", cmd], {
+					stdin: new TextEncoder().encode(fixture),
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const [stdout, stderr, exitCode] = await Promise.all([
+					new Response(proc.stdout).text(),
+					new Response(proc.stderr).text(),
+					proc.exited,
+				]);
+				expect(exitCode).toBe(0);
+				expect(stdout).toBe("");
+				expect(stderr).toBe("");
+			}
+			const s = await waitFor("codex8 session", () => getSession(CODEX8_ID));
+			expect(s.agentType).toBe("codex_cli");
+			const done = await waitFor("codex8 isWorking false", async () => {
+				const x = await getSession(CODEX8_ID);
+				return x && x.isWorking === false ? x : undefined;
+			});
+			expect(done.isWorking).toBe(false);
+			await stopRelay(relay8);
+		},
+		SCENARIO_TIMEOUT,
+	);
+
+	test(
+		"9. D22 hooks_not_firing: installed.json in the past + a fresher foreign session_index.jsonl row + no Codex hook ever arrives",
+		async () => {
+			const codexHome = join(root, "relay9-codex-home");
+			await mkdir(codexHome, { recursive: true });
+			const relay9 = await spawnRelay("relay9", relayKey, { env: { CODEX_HOME: codexHome } });
+
+			const pastAt = new Date(Date.now() - 60 * 60_000).toISOString();
+			await writeFile(
+				join(relay9.dir, "installed.json"),
+				JSON.stringify({ codexHooksWrittenAt: pastAt, copilotHooksWrittenAt: null }),
+			);
+			await appendCodexRow(relay9, "e2e-codex9", "codex-title-from-tui");
+
+			const diag = await waitFor("hooks_not_firing", async () => {
+				const res = await fetch(`${relay9.base}/api/v1/relay/diagnostics`);
+				const d = (await res.json()) as {
+					agents: Record<string, { status?: string; basis?: string }>;
+				};
+				return d.agents.codex_cli?.status === "hooks_not_firing" ? d : undefined;
+			});
+			expect(diag.agents.codex_cli.basis).toBe("tui_activity");
+
+			const status = await waitFor("D22 status line", async () => {
+				const text = await readFile(join(relay9.dir, "status"), "utf-8").catch(() => null);
+				return text?.includes("codex hooks not firing") ? text : undefined;
+			});
+			expect(status).toContain("codex hooks not firing — run /hooks in Codex to trust them");
+
+			await stopRelay(relay9);
 		},
 		SCENARIO_TIMEOUT,
 	);
