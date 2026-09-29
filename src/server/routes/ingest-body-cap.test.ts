@@ -257,7 +257,10 @@ describe("F128 (codex r2): oversize deliveries with a recoverable session_id sto
 	test("an oversize PreToolUse with identity in the first 64 KiB stores one row, keyed by tool_use_id (replay twice → one row)", async () => {
 		const sid = newSessionId("f128-tool");
 		const toolUseId = `f128-tu-${crypto.randomUUID()}`;
-		const padding = "p".repeat(17 * 1024 * 1024);
+		// Just over the cap, not a full extra megabyte over it — this delivery
+		// is sent twice in this test, and every byte here is pure overhead
+		// once the point (>16 MiB) is made.
+		const padding = "p".repeat(MAX_HOOK_BODY_BYTES + 4096);
 		const body = JSON.stringify({
 			session_id: sid,
 			hook_event_name: "PreToolUse",
@@ -288,7 +291,7 @@ describe("F128 (codex r2): oversize deliveries with a recoverable session_id sto
 	});
 
 	test("an oversize delivery with no session_id in the prefix: no row, counter still increments", async () => {
-		const padding = "p".repeat(17 * 1024 * 1024);
+		const padding = "p".repeat(MAX_HOOK_BODY_BYTES + 4096);
 		const body = JSON.stringify({
 			hook_event_name: "Stop",
 			cwd: "/workspace",
@@ -314,7 +317,7 @@ describe("F128 (codex r2): oversize deliveries with a recoverable session_id sto
 		// both trip the 16 MiB cap and push session_id/hook_event_name well
 		// past the captured 64 KiB prefix.
 		const oversizeBody = JSON.stringify({
-			tool_response: "p".repeat(17 * 1024 * 1024),
+			tool_response: "p".repeat(MAX_HOOK_BODY_BYTES + 4096),
 			session_id: sid,
 			hook_event_name: "PreToolUse",
 			tool_use_id: "should-not-be-seen",
@@ -365,13 +368,17 @@ describe("D16: GET /api/v1/health includes oversizeDropped", () => {
 		expect(typeof body1.oversizeDropped).toBe("number");
 		expect(body1.oversizeDropped).toBe(0);
 
+		// F128: cwd (the padding) is written FIRST so session_id/hook_event_name
+		// fall outside the 64 KiB identity-extraction prefix — this stays a
+		// pure drop-and-count delivery with no background processing to await,
+		// which is all this test needs (it's only checking the counter).
 		await app.request("/api/v1/hooks", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
+				cwd: "x".repeat(17 * 1024 * 1024),
 				session_id: newSessionId("d16-health"),
 				hook_event_name: "Stop",
-				cwd: "x".repeat(17 * 1024 * 1024),
 			}),
 		});
 
