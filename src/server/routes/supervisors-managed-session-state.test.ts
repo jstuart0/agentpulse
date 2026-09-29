@@ -13,6 +13,7 @@ const { sessions } = await import("../db/schema/index.js");
 const { Hono } = await import("hono");
 const { supervisorsAgentRouter } = await import("./supervisors.js");
 const { createSupervisorEnrollmentToken } = await import("../auth/supervisor-auth.js");
+const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 
 const app = new Hono().route("/api/v1", supervisorsAgentRouter);
 const originalDisableAuth = config.disableAuth;
@@ -64,6 +65,7 @@ describe("POST /supervisors/:id/managed-session-state — response carries nameS
 				metadata: { renameSource: "user", nativeName: "codex-thread-name" },
 			})
 			.execute();
+		await seedOwnedLaunch(sessionId, id);
 
 		const res = await app.request(`/api/v1/supervisors/${id}/managed-session-state`, {
 			method: "POST",

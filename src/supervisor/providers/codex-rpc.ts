@@ -121,7 +121,23 @@ export class RpcClient {
 		}
 
 		this.notifications.push(message);
-		for (const listener of this.listeners) listener(message);
+		// F25: listeners are frequently async (they report state/events back to
+		// the server) and are dispatched fire-and-forget here — nothing else in
+		// this class awaits or catches their returned promise. A rejection
+		// (e.g. a 403 session_not_owned from a mid-session report, or any other
+		// non-2xx) would otherwise surface as an unhandled promise rejection
+		// and crash the whole supervisor process, which is exactly the
+		// crash-loop class this campaign fixes, reintroduced through the new
+		// 403. Each listener call is isolated in its own microtask so one
+		// listener's rejection can never escape this loop or block delivery to
+		// the next listener/notification.
+		for (const listener of this.listeners) {
+			Promise.resolve()
+				.then(() => listener(message))
+				.catch((err) => {
+					console.error("[codex-rpc] notification listener threw:", err);
+				});
+		}
 		for (const waiter of [...this.waiters]) {
 			if (waiter.method !== message.method) continue;
 			if (waiter.predicate && !waiter.predicate(message)) continue;

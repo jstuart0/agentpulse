@@ -1,7 +1,7 @@
 {
 	"version": "6",
 	"dialect": "sqlite",
-	"id": "18f31348-4033-4944-99ee-ce50ecd9ac0d",
+	"id": "a8af2cd0-83e2-4032-b8ad-4d0843832a08",
 	"prevId": "ab9fc3f9-ccc7-4c58-8a04-f22e7057b2b0",
 	"tables": {
 		"ai_action_requests": {
@@ -1120,6 +1120,13 @@
 					"notNull": true,
 					"autoincrement": false
 				},
+				"dedup_key": {
+					"name": "dedup_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
 				"created_at": {
 					"name": "created_at",
 					"type": "text",
@@ -1129,7 +1136,18 @@
 					"default": "(datetime('now'))"
 				}
 			},
-			"indexes": {},
+			"indexes": {
+				"idx_events_session_id_id": {
+					"name": "idx_events_session_id_id",
+					"columns": ["session_id", "id"],
+					"isUnique": false
+				},
+				"uq_events_session_dedup_key": {
+					"name": "uq_events_session_dedup_key",
+					"columns": ["session_id", "dedup_key"],
+					"isUnique": true
+				}
+			},
 			"foreignKeys": {
 				"events_session_id_sessions_session_id_fk": {
 					"name": "events_session_id_sessions_session_id_fk",
@@ -2362,11 +2380,6 @@
 					"name": "sessions_session_id_unique",
 					"columns": ["session_id"],
 					"isUnique": true
-				},
-				"idx_sessions_agent_type_last_activity": {
-					"name": "idx_sessions_agent_type_last_activity",
-					"columns": ["agent_type", "last_activity_at"],
-					"isUnique": false
 				}
 			},
 			"foreignKeys": {},

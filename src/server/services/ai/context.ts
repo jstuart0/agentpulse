@@ -1,4 +1,5 @@
 import type { Session, SessionEvent, WatcherRunTriggerKind } from "../../../shared/types.js";
+import { parseDbTimestamp } from "../util/db-time.js";
 import { estimateTokens } from "./llm/types.js";
 import { type RedactionRule, redact } from "./redactor.js";
 import { formatUntrustedInline } from "./untrusted-text.js";
@@ -200,10 +201,15 @@ export function buildWatcherContext(params: BuildParams): WatcherContext {
 	};
 }
 
+// D15: this used to special-case on whether the value contained "T", which
+// turns a Postgres "…+00" timestamp into "…+00Z" — an invalid offset that
+// parses to NaN, silently dropping every event from the watcher transcript
+// on Postgres (the :137 filter below excludes anything that fails the
+// cutoff comparison). parseDbTimestamp handles bare SQLite, ISO Z, and
+// Postgres offset forms directly; garbage still maps to NaN so the :137
+// filter's existing drop-on-unparseable behavior is unchanged.
 function parseEventTime(value: string): number {
-	// DB uses 'YYYY-MM-DD HH:MM:SS' (UTC) or ISO; normalize.
-	if (value.includes("T")) return new Date(value).getTime();
-	return new Date(`${value.replace(" ", "T")}Z`).getTime();
+	return parseDbTimestamp(value) ?? Number.NaN;
 }
 
 function collapseEvents(

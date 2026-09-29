@@ -1,5 +1,5 @@
 {
-	"id": "4a160d17-270b-4d43-881a-dd072cfa540c",
+	"id": "0ea7e93f-b675-422b-9abe-765d2fb0884f",
 	"prevId": "8ab9cfec-1615-426e-ae1f-dbe0fc894de2",
 	"version": "7",
 	"dialect": "postgresql",
@@ -1193,6 +1193,12 @@
 					"primaryKey": false,
 					"notNull": true
 				},
+				"dedup_key": {
+					"name": "dedup_key",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
 				"created_at": {
 					"name": "created_at",
 					"type": "text",
@@ -1201,7 +1207,50 @@
 					"default": "CURRENT_TIMESTAMP"
 				}
 			},
-			"indexes": {},
+			"indexes": {
+				"idx_events_session_id_id": {
+					"name": "idx_events_session_id_id",
+					"columns": [
+						{
+							"expression": "session_id",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						},
+						{
+							"expression": "id",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				},
+				"uq_events_session_dedup_key": {
+					"name": "uq_events_session_dedup_key",
+					"columns": [
+						{
+							"expression": "session_id",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						},
+						{
+							"expression": "dedup_key",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": true,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
 			"foreignKeys": {
 				"events_session_id_sessions_session_id_fk": {
 					"name": "events_session_id_sessions_session_id_fk",
@@ -2364,29 +2413,7 @@
 					"default": 0
 				}
 			},
-			"indexes": {
-				"idx_sessions_agent_type_last_activity": {
-					"name": "idx_sessions_agent_type_last_activity",
-					"columns": [
-						{
-							"expression": "agent_type",
-							"isExpression": false,
-							"asc": true,
-							"nulls": "last"
-						},
-						{
-							"expression": "last_activity_at",
-							"isExpression": false,
-							"asc": true,
-							"nulls": "last"
-						}
-					],
-					"isUnique": false,
-					"concurrently": false,
-					"method": "btree",
-					"with": {}
-				}
-			},
+			"indexes": {},
 			"foreignKeys": {},
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {

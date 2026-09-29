@@ -1,23 +1,29 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { AGENT_TYPES, SEMANTIC_STATUSES } from "../../shared/constants.js";
-import {
-	EVENT_DUPLICATE_WINDOW_MS,
-	areNearInTime,
-	getEventSourcePriority,
-	normalizeComparableContent,
-} from "../../shared/event-authority.js";
 import type {
 	AgentType,
-	EventCategory,
-	EventSource,
 	HookEventPayload,
 	SemanticStatus,
 	SemanticStatusUpdate,
+	SessionEvent,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { events, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
+import {
+	type DedupPolicy,
+	type DropReason,
+	type HookDeliveryContext,
+	type InsertPlan,
+	type PlannedRow,
+	type RecentEventRow,
+	contentWindowKey,
+	planEventInsert,
+	recordDrops,
+	recordLegacyObserverDelivery,
+} from "./event-dedup.js";
+import { toSessionEventDtos } from "./event-dto.js";
 import {
 	type NormalizedEvent,
 	normalizeHookEvent,
@@ -28,73 +34,10 @@ import { generateSessionName } from "./name-generator.js";
 import { getCachedProjects } from "./projects/cache.js";
 import { resolveProjectIdForCwd } from "./projects/resolver.js";
 
-function chooseHigherAuthorityEvent<
-	T extends { source: EventSource | string; createdAt?: string | null },
->(left: T, right: T) {
-	const leftPriority = getEventSourcePriority(left.source);
-	const rightPriority = getEventSourcePriority(right.source);
-	if (leftPriority !== rightPriority) return leftPriority > rightPriority ? left : right;
-	return (left.createdAt || "") >= (right.createdAt || "") ? left : right;
-}
+const RECENT_ROWS_FOR_DEDUP = 50;
 
-type AuthorityComparableEvent = {
-	id?: number;
-	category: EventCategory | null;
-	source: EventSource | string;
-	content: string | null;
-	createdAt?: string | null;
-};
-
-function isAssistantAuthorityDuplicate(
-	existing: AuthorityComparableEvent,
-	incoming: AuthorityComparableEvent,
-) {
-	if (existing.category !== "assistant_message" || incoming.category !== "assistant_message")
-		return false;
-	if (
-		!normalizeComparableContent(existing.content) ||
-		!normalizeComparableContent(incoming.content)
-	)
-		return false;
-	if (normalizeComparableContent(existing.content) !== normalizeComparableContent(incoming.content))
-		return false;
-	if (!areNearInTime(existing.createdAt, incoming.createdAt, EVENT_DUPLICATE_WINDOW_MS))
-		return false;
-	return getEventSourcePriority(existing.source) !== getEventSourcePriority(incoming.source);
-}
-
-function buildDedupKey(event: {
-	eventType: string;
-	category: string | null;
-	source: string;
-	content: string | null;
-	providerEventType: string | null;
-	rawPayload?: Record<string, unknown>;
-}) {
-	const transcriptId =
-		typeof event.rawPayload?.transcript_uuid === "string"
-			? event.rawPayload.transcript_uuid
-			: typeof event.rawPayload?.transcript_timestamp === "string"
-				? event.rawPayload.transcript_timestamp
-				: "";
-	return [
-		event.eventType || "",
-		event.category || "",
-		event.source || "",
-		event.content || "",
-		event.providerEventType || "",
-		transcriptId,
-	].join("::");
-}
-
-export async function insertNormalizedEvents(
-	sessionId: string,
-	normalizedEvents: NormalizedEvent[],
-) {
-	if (normalizedEvents.length === 0) return [];
-	const nowIso = new Date().toISOString();
-
-	const recentEvents = await getDb()
+async function loadRecentRows(sessionId: string): Promise<RecentEventRow[]> {
+	return getDb()
 		.select({
 			id: events.id,
 			eventType: events.eventType,
@@ -107,90 +50,179 @@ export async function insertNormalizedEvents(
 		.from(events)
 		.where(eq(events.sessionId, sessionId))
 		.orderBy(sql`${events.id} DESC`)
-		.limit(50);
+		.limit(RECENT_ROWS_FOR_DEDUP);
+}
 
-	const seen = new Set(recentEvents.map((event) => buildDedupKey({ ...event })));
-	const deleteIds = new Set<number>();
-	const retained: Array<NormalizedEvent & { createdAt: string }> = [];
-	const authorityPool: AuthorityComparableEvent[] = recentEvents.map((event) => ({
-		...event,
-		category: event.category as EventCategory | null,
-		source: event.source as EventSource,
-		createdAt: event.createdAt,
-	}));
+// A row read back from `events` (all columns, including dedup_key) — the
+// shape `.returning()` and a plain `.select()` both produce.
+type StoredEventRow = typeof events.$inferSelect;
 
-	for (const event of normalizedEvents) {
-		const normalizedEvent = { ...event, createdAt: nowIso };
-		const key = buildDedupKey(event);
-		if (seen.has(key)) continue;
+// Matches a RETURNING row back to the PlannedRow that produced it, without
+// assuming RETURNING order matches insert order (F35 — Postgres doesn't
+// guarantee it for multi-row inserts). A non-null dedupKey is unique by
+// construction (Decision 2's UNIQUE(session_id, dedup_key)); a null
+// dedupKey (content_window) falls back to contentWindowKey, which
+// planContentWindow's own `seen` Set already guarantees is unique within
+// one incoming batch.
+function matchKey(row: {
+	dedupKey: string | null;
+	eventType: string;
+	category: string | null;
+	source: string;
+	content: string | null;
+	providerEventType: string | null;
+	rawPayload?: Record<string, unknown>;
+}): string {
+	return row.dedupKey ? `k:${row.dedupKey}` : `c:${contentWindowKey(row)}`;
+}
 
-		const strongerExisting = authorityPool.find((existing) => {
-			if (!isAssistantAuthorityDuplicate(existing, normalizedEvent)) return false;
-			return chooseHigherAuthorityEvent(existing, normalizedEvent) === existing;
-		});
-		if (strongerExisting) continue;
-
-		for (const existing of authorityPool) {
-			if (!existing.id) continue;
-			if (!isAssistantAuthorityDuplicate(existing, normalizedEvent)) continue;
-			if (chooseHigherAuthorityEvent(existing, normalizedEvent) === normalizedEvent) {
-				deleteIds.add(existing.id);
-			}
-		}
-
-		seen.add(key);
-		retained.push(normalizedEvent);
-		authorityPool.push({
-			id: 0,
-			category: normalizedEvent.category,
-			source: normalizedEvent.source,
-			content: normalizedEvent.content,
-			createdAt: normalizedEvent.createdAt,
-		});
+/**
+ * The single write path for a planner InsertPlan (D9/D12): one explicit
+ * insert (never a spread of caller/planner objects — F65), then
+ * compensating deletes for rows that superseded an existing row, scoped to
+ * this session (F82) and limited to rows this call actually stored (bob
+ * L1/F47) — a row that lost an ON CONFLICT DO NOTHING race must never
+ * trigger the delete it would have earned had it been stored. Returns DTO
+ * rows (Decision 16; dedup_key never leaves this function) sorted by id.
+ */
+async function persistEvents(sessionId: string, plan: InsertPlan): Promise<SessionEvent[]> {
+	if (plan.retained.length === 0) {
+		recordDrops(plan.drops);
+		return [];
 	}
 
+	const insertedRows: StoredEventRow[] = await getDb()
+		.insert(events)
+		.values(
+			plan.retained.map((row) => ({
+				sessionId,
+				eventType: row.eventType,
+				category: row.category,
+				source: row.source,
+				content: row.content,
+				isNoise: row.isNoise,
+				providerEventType: row.providerEventType,
+				toolName: row.toolName,
+				toolInput: row.toolInput,
+				toolResponse: row.toolResponse,
+				rawPayload: row.rawPayload,
+				dedupKey: row.dedupKey,
+			})),
+		)
+		.onConflictDoNothing()
+		.returning();
+
+	const byMatchKey = new Map<string, PlannedRow>(plan.retained.map((row) => [matchKey(row), row]));
+	let stored = insertedRows
+		.map((dbRow) => ({ dbRow, planned: byMatchKey.get(matchKey(dbRow)) }))
+		.filter(
+			(pair): pair is { dbRow: StoredEventRow; planned: PlannedRow } => pair.planned !== undefined,
+		);
+
+	// Phase 7 (D2/F48): classify the identity outcome for hook_delivery rows.
+	// content_window rows never carry a dedupKey, so this never fires for them.
+	const postInsertDrops: Partial<Record<DropReason, number>> = {};
+	const bump = (reason: DropReason) => {
+		postInsertDrops[reason] = (postInsertDrops[reason] ?? 0) + 1;
+	};
+	const storedKeys = new Set(
+		stored.map(({ dbRow }) => dbRow.dedupKey).filter((key): key is string => key !== null),
+	);
+
+	// Whole-delivery drop: the delivery's primary row (rowIndex 0) is what
+	// actually distinguishes "the same delivery arrived again" from
+	// "genuinely new". If it lost the ON CONFLICT race, any sibling row this
+	// call just stored — even one whose own key happened to be free, e.g. an
+	// authority-superseded secondary that was since deleted — must not
+	// survive: keeping it would resurrect exactly the row an earlier
+	// authority delete removed. Compensate it away and count both the
+	// primary and every compensated sibling as the same kind of retry.
+	if (plan.primaryDedupKey != null && !storedKeys.has(plan.primaryDedupKey)) {
+		const kind: DropReason = plan.primaryDedupKey.startsWith("t:")
+			? "toolUseRetry"
+			: "deliveryRetry";
+		// Every planned row of this delivery counts as a retry: the primary's
+		// own natural conflict, any sibling that independently conflicted too
+		// (a genuine full re-delivery), and any sibling that must now be
+		// compensated away (its own key happened to be free, e.g. an
+		// authority-superseded row that was since deleted).
+		for (let i = 0; i < plan.retained.length; i++) bump(kind);
+		if (stored.length > 0) {
+			await getDb()
+				.delete(events)
+				.where(
+					and(
+						eq(events.sessionId, sessionId),
+						inArray(
+							events.id,
+							stored.map(({ dbRow }) => dbRow.id),
+						),
+					),
+				);
+		}
+		stored = [];
+	} else {
+		for (const row of plan.retained) {
+			if (!row.dedupKey || storedKeys.has(row.dedupKey)) continue;
+			bump(row.dedupKey.startsWith("t:") ? "toolUseRetry" : "deliveryRetry");
+		}
+	}
+
+	const deleteIds = new Set(stored.flatMap(({ planned }) => planned.deletesIfStored));
 	if (deleteIds.size > 0) {
 		await getDb()
 			.delete(events)
-			.where(inArray(events.id, Array.from(deleteIds)));
+			.where(and(eq(events.sessionId, sessionId), inArray(events.id, Array.from(deleteIds))));
 	}
 
-	if (retained.length === 0) return [];
+	recordDrops(plan.drops);
+	recordDrops(postInsertDrops);
 
-	const inserted = await getDb()
-		.insert(events)
-		.values(
-			retained.map((event) => ({
-				sessionId,
-				eventType: event.eventType,
-				category: event.category,
-				source: event.source,
-				content: event.content,
-				isNoise: event.isNoise,
-				providerEventType: event.providerEventType,
-				toolName: event.toolName,
-				toolInput: event.toolInput,
-				toolResponse: event.toolResponse,
-				rawPayload: event.rawPayload,
-			})),
-		)
-		.returning({ id: events.id });
+	return toSessionEventDtos(stored.map(({ dbRow }) => dbRow)).sort((a, b) => a.id - b.id);
+}
 
-	return retained.map((event, i) => ({
-		id: inserted[i]?.id ?? 0,
-		sessionId,
-		eventType: event.eventType,
-		category: event.category,
-		source: event.source,
-		content: event.content,
-		isNoise: event.isNoise,
-		providerEventType: event.providerEventType,
-		toolName: event.toolName,
-		toolInput: event.toolInput,
-		toolResponse: event.toolResponse,
-		rawPayload: event.rawPayload,
-		createdAt: event.createdAt,
-	}));
+/**
+ * General-purpose entry point (transcript sync, managed-session events,
+ * AI-emitted events, and anything else that isn't a raw hook delivery).
+ * Always content-windowed — these sources have no delivery-id header to
+ * key on.
+ */
+export async function insertNormalizedEvents(
+	sessionId: string,
+	normalizedEvents: NormalizedEvent[],
+): Promise<SessionEvent[]> {
+	if (normalizedEvents.length === 0) return [];
+
+	const plan = planEventInsert({
+		policy: { kind: "content_window" },
+		recent: await loadRecentRows(sessionId),
+		incoming: normalizedEvents,
+		nowIso: new Date().toISOString(),
+	});
+
+	return persistEvents(sessionId, plan);
+}
+
+/**
+ * Hook-ingestion entry point (D9's second entry point). Kept separate from
+ * insertNormalizedEvents so its policy can differ: hook deliveries use exact
+ * identity (`hook_delivery`), never the content window.
+ */
+export async function insertHookEvents(
+	sessionId: string,
+	normalizedEvents: NormalizedEvent[],
+	policy: DedupPolicy,
+): Promise<SessionEvent[]> {
+	if (normalizedEvents.length === 0) return [];
+
+	const plan = planEventInsert({
+		policy,
+		recent: await loadRecentRows(sessionId),
+		incoming: normalizedEvents,
+		nowIso: new Date().toISOString(),
+	});
+
+	return persistEvents(sessionId, plan);
 }
 
 // Detect agent type from the X-Agent-Type header. The payload argument is
@@ -532,16 +564,38 @@ export async function applyPermissionWaitTransition(
 // without duplicating field lists.
 type SessionRow = typeof import("../db/schema/index.js").sessions.$inferSelect;
 
+// Default ctx when a caller omits it (existing tests, and any producer that
+// predates Phase 7): anonymous key, no delivery id, native origin. Hook
+// deliveries still use exact identity under this default — only rows that
+// carry a tool_use_id or arrive with a real delivery id get a durable key;
+// everything else is unkeyed and always stored (fail-open, D3).
+const DEFAULT_HOOK_DELIVERY_CTX: HookDeliveryContext = {
+	keyId: "anonymous",
+	deliveryId: null,
+	origin: "native",
+};
+
 /**
  * Process an incoming hook event.
  *
- * Returns { sessionId, isNew, session } so callers (ingest route) can
- * broadcast the upserted row without a second DB round-trip.
+ * Returns { sessionId, isNew, session, events } so callers (ingest route)
+ * can broadcast the upserted session row and the actually-stored event
+ * rows — with real ids, exactly the rows this call persisted — without a
+ * second DB round-trip (Phase 6).
+ *
+ * `ctx` carries the Phase 7 identity inputs (keyId, delivery id, origin).
+ * A legacy-observer-shaped delivery — codex_cli, origin "native" (no
+ * X-AgentPulse-Origin header), no transcript_path — is the one hook shape
+ * that still goes through the content window (mozart D14): it's the only
+ * producer that predates the delivery-id/origin headers, so it has no
+ * exact identity to key on, and it's counted via recordLegacyObserverDelivery
+ * so operators can see hosts that need a supervisor upgrade.
  */
 export async function processHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
-): Promise<{ sessionId: string; isNew: boolean; session: SessionRow }> {
+	ctx: HookDeliveryContext = DEFAULT_HOOK_DELIVERY_CTX,
+): Promise<{ sessionId: string; isNew: boolean; session: SessionRow; events: SessionEvent[] }> {
 	const sessionId = payload.session_id;
 	const eventType = payload.hook_event_name;
 	const now = new Date().toISOString();
@@ -689,9 +743,22 @@ export async function processHookEvent(
 		await associateObservedSession({ sessionId });
 	}
 
-	// Store normalized timeline events
-	const normalizedEvents = normalizeHookEvent(payload, agentType);
-	await insertNormalizedEvents(sessionId, normalizedEvents);
+	// Store normalized timeline events. F140 (D21): oversize-stub semantics
+	// come only from ctx.oversizeStub (server-set), never from the payload.
+	const normalizedEvents = normalizeHookEvent(payload, agentType, ctx.oversizeStub === true);
+	const isLegacyObserver =
+		agentType === "codex_cli" && ctx.origin === "native" && !payload.transcript_path;
+	let storedEvents: SessionEvent[];
+	if (isLegacyObserver) {
+		recordLegacyObserverDelivery();
+		storedEvents = await insertNormalizedEvents(sessionId, normalizedEvents);
+	} else {
+		storedEvents = await insertHookEvents(sessionId, normalizedEvents, {
+			kind: "hook_delivery",
+			ctx,
+			rawPayload: payload,
+		});
+	}
 
 	// Evaluate project alert rules for status_completed on SessionEnd.
 	// Best-effort: rule evaluation failure must not block event ingestion.
@@ -711,7 +778,7 @@ export async function processHookEvent(
 
 	// finalSession is guaranteed to exist here — we just inserted or updated it.
 	// The non-null assertion is safe; a missing row would indicate DB corruption.
-	return { sessionId, isNew, session: finalSession! };
+	return { sessionId, isNew, session: finalSession!, events: storedEvents };
 }
 
 /**

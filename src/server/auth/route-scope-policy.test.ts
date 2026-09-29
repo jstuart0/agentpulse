@@ -770,23 +770,38 @@ describe("Row 34 — manageKey/forwardauth/DISABLE_AUTH regression sweep vs capt
 	});
 });
 
-describe("M2 — supervisor-agent routes unaffected by the sibling wildcard swap (Hono merge-semantics proof)", () => {
-	test("POST /supervisors/register with no valid credential → 401, unchanged, both mounts", async () => {
+describe("M2 — supervisor-agent routes, root-mounted (AGEN-17, Phase 3): unauthenticated register/heartbeat still 401, from the handler itself", () => {
+	// Corrected per r1 tessa / r2 harry: the pre-fix probe body
+	// ({ name: "probe-sup", token: "bad" }) never reached the register
+	// handler's own field validation — the sibling requireAuth() wildcard
+	// answered first with the generic { error: "Unauthorized" } body. Once
+	// the agent router is root-mounted, an incomplete body would instead
+	// hit the handler's "Missing required supervisor fields" 400. Valid
+	// registration fields (no credential) are what actually exercises the
+	// handler's own credential/enrollment-token check.
+	test("POST /supervisors/register with valid fields but no credential → 401, in-handler message, both mounts", async () => {
 		const results = await Promise.all(
 			MOUNTS.map((mount) =>
 				app.request(`${mount}/supervisors/register`, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ name: "probe-sup", token: "bad" }),
+					body: JSON.stringify({
+						hostName: "probe-sup",
+						platform: "linux",
+						arch: "x64",
+						version: "1.0.0",
+					}),
 				}),
 			),
 		);
 		for (const res of results) {
 			expect(res.status).toBe(401);
+			const body = (await res.json()) as { error: string };
+			expect(body.error).toBe("Supervisor registration requires enrollment token or credential");
 		}
 	});
 
-	test("POST /supervisors/:id/heartbeat with no credential → 401, unchanged, both mounts", async () => {
+	test("POST /supervisors/:id/heartbeat with no credential → 401, in-handler message, both mounts", async () => {
 		const results = await Promise.all(
 			MOUNTS.map((mount) =>
 				app.request(`${mount}/supervisors/probe-id/heartbeat`, { method: "POST" }),
@@ -794,6 +809,8 @@ describe("M2 — supervisor-agent routes unaffected by the sibling wildcard swap
 		);
 		for (const res of results) {
 			expect(res.status).toBe(401);
+			const body = (await res.json()) as { error: string };
+			expect(body.error).toBe("Missing supervisor credential");
 		}
 	});
 });

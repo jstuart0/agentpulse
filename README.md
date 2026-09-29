@@ -105,7 +105,7 @@ docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUT
 - **Random session names** -- each session gets a name like `brave-falcon` so you can tell them apart
 - **CLAUDE.md editor** -- view and edit your agent instruction files from the dashboard
 - **Setup page** -- generates hook config you can copy-paste, or use the one-liner above
-- **MCP server** -- let Claude Code, Codex CLI, or any MCP-compliant agent observe and orchestrate your fleet directly (list/inspect sessions, search, launch agents, steer live sessions, decide inbox items). Ships from a checkout via `agentpulse mcp serve`, or standalone via the `agentpulse-mcp` npm package -- no checkout required. See below.
+- **MCP server** -- let Claude Code, Codex CLI, or any MCP-compliant agent observe and orchestrate your fleet directly (list/inspect sessions, search, launch agents, steer live sessions, decide inbox items). Ships from a checkout via `agentpulse mcp serve`, or standalone via the `@agentpulse/mcp` npm package -- no checkout required. See below.
 - **AI Labs (experimental)** -- optional AI layer that watches sessions, classifies health, proposes next steps with human-in-the-loop approval, plus an **Ask** command surface that lets you launch / edit / search / summarize / alert in natural language. Each feature is behind its own Labs toggle. See below.
 
 ## MCP server
@@ -119,10 +119,10 @@ agentpulse mcp install --mint my-agent          # observe-only (read-only), the 
 agentpulse mcp install --mint my-agent --orchestrate  # adds launch/steer/decide -- read the security notes first
 ```
 
-Without cloning this repo -- the standalone [`agentpulse-mcp`](packages/agentpulse-mcp/) npm package:
+Without cloning this repo -- the standalone [`@agentpulse/mcp`](packages/agentpulse-mcp/) npm package:
 
 ```bash
-npx agentpulse-mcp install --mint my-agent
+npx @agentpulse/mcp install --mint my-agent
 ```
 
 Either way, `install` prints ready-to-paste Claude Code and Codex CLI config. See **[docs/MCP.md](docs/MCP.md)** for the full tool catalog, client setup, and a security section covering what a `manage`-scoped key can do and why Codex CLI does not honor Claude Code's confirmation prompt.
@@ -584,6 +584,53 @@ Add to `~/.claude/settings.json`:
 If you copied the statusline by hand before this sync behavior shipped, **re-run the `cp` step above** to pick it up.
 
 ## Manage a local install
+
+### Supervisor exits with 403 insufficient_scope
+
+**Symptom**: `~/.agentpulse/logs/supervisor.err.log` fills with
+`403 { "error": "insufficient_scope" }` (or `401 Unauthorized`) on every
+`register`/`heartbeat` attempt, and the supervisor never reaches "Registered"
+in its log. This was a server-side mount-order bug (AGEN-17), not a client
+misconfiguration.
+
+**Fix**: upgrade the server. No supervisor update or config change is required
+— the client already sends the correct credential; the server just needs to
+answer it.
+
+Registration itself now retries forever with backoff (starting around 5s,
+capped at 5 minutes) instead of exiting on a failed attempt, so a supervisor
+running this version of the client reconnects on its own the moment the
+server is upgraded — **no manual restart needed**. If the loop has been
+running long enough that the local log grew large, archive it (safe to do at
+any time, running or not):
+
+```bash
+gzip -c ~/.agentpulse/logs/supervisor.err.log > ~/.agentpulse/logs/supervisor.err.log.$(date +%Y%m%d).gz
+: > ~/.agentpulse/logs/supervisor.err.log
+```
+
+The notes below apply only if the supervisor's *process* actually stopped —
+an older client that predates the retry fix and crash-looped until its
+service manager gave up, or a platform (Windows) with no restart-on-failure
+policy at all:
+
+- **macOS**: `launchctl kickstart -k gui/$(id -u)/dev.agentpulse.supervisor`,
+  or a full reload:
+  ```bash
+  launchctl bootout gui/$(id -u)/dev.agentpulse.supervisor
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.agentpulse.supervisor.plist
+  ```
+- **Linux**: `systemctl --user restart agentpulse-supervisor`. If
+  `systemctl --user status agentpulse-supervisor` shows `start-limit-hit`,
+  run `systemctl --user reset-failed` first.
+- **Windows**: the scheduled task only triggers `-AtLogOn` and has no
+  restart-on-failure policy — it isn't crash-looping, it's simply stopped.
+  Run `Start-ScheduledTask AgentPulseSupervisor` or log back in.
+
+If the supervisor's credential was revoked or rotated (not this bug), it
+needs `/admin/supervisors/:id/rotate` — see
+[`deploy/k8s/FORWARDAUTH.md`](deploy/k8s/FORWARDAUTH.md#upgrading-from-a-crash-looping-supervisor-agen-17)
+for the full upgrade and ownership-audit runbook.
 
 ### macOS
 

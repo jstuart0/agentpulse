@@ -145,6 +145,42 @@ describe("buildWatcherContext", () => {
 		expect(ctx.transcriptPrompt).not.toContain("old event");
 	});
 
+	// D15: ai/context.ts's private parseEventTime used to special-case on
+	// whether the value contained "T", turning a Postgres "…+00" timestamp
+	// into the invalid "…+00Z" (parses to NaN), which the :137 cutoff filter
+	// then silently drops. util/db-time.ts's parseDbTimestamp handles the
+	// Postgres offset form directly.
+	test("a Postgres-shaped created_at is not dropped by the time-budget cutoff", () => {
+		const pgNow = new Date()
+			.toISOString()
+			.replace("T", " ")
+			.replace(/\.\d+Z$/, "+00");
+		const events = [makeEvent({ id: 1, content: "pg event", createdAt: pgNow })];
+		const ctx = buildWatcherContext({
+			session: makeSession(),
+			events,
+			triggerType: "idle",
+			transcriptTimeBudgetMs: 60_000,
+		});
+		expect(ctx.transcriptPrompt).toContain("pg event");
+		expect(ctx.eventsIncluded).toBe(1);
+		expect(ctx.eventsDropped).toBe(0);
+	});
+
+	test("a SQLite bare-timestamp created_at is unaffected (guard)", () => {
+		const bareNow = new Date().toISOString().slice(0, 19).replace("T", " ");
+		const events = [makeEvent({ id: 1, content: "sqlite event", createdAt: bareNow })];
+		const ctx = buildWatcherContext({
+			session: makeSession(),
+			events,
+			triggerType: "idle",
+			transcriptTimeBudgetMs: 60_000,
+		});
+		expect(ctx.transcriptPrompt).toContain("sqlite event");
+		expect(ctx.eventsIncluded).toBe(1);
+		expect(ctx.eventsDropped).toBe(0);
+	});
+
 	test("honors customSystemPrompt", () => {
 		const ctx = buildWatcherContext({
 			session: makeSession(),

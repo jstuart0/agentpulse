@@ -100,7 +100,7 @@ async function loadSnapshot(sessionId: string, ftsQuery?: string): Promise<Sessi
 		.where(
 			and(eq(events.sessionId, sessionId), inArray(events.eventType, [...MEANINGFUL_EVENT_TYPES])),
 		)
-		.orderBy(desc(events.createdAt))
+		.orderBy(desc(events.id))
 		.limit(tailLimit);
 
 	// De-dupe by timestamp+type — matched rows often overlap the tail.

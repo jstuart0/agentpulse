@@ -2,8 +2,17 @@ import { Hono } from "hono";
 import pkg from "../../../package.json" with { type: "json" };
 import { isShuttingDown } from "../drain-state.js";
 import { INSTALLER_SOURCES } from "../installers.js";
+import {
+	getEventsDeduplicatedCounts,
+	getLegacyObserverDeliveries,
+} from "../services/event-dedup.js";
 import { computeChecksum } from "../util/checksum.js";
-import { getBgErrorCount, getInFlightCount, getRateLimitedDropped } from "./ingest-counters.js";
+import {
+	getBgErrorCount,
+	getInFlightCount,
+	getOversizeDropped,
+	getRateLimitedDropped,
+} from "./ingest-counters.js";
 
 // Read version from package.json at module init — independent of how the
 // process was launched (file-path invocation doesn't inject npm_package_version).
@@ -60,6 +69,8 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //  - inFlight: number of async hook-processing tasks in progress.
 //  - processingErrors: cumulative count of background processing failures.
 //  - rateLimitedDropped: cumulative count of silently-dropped rate-limited hooks.
+//  - oversizeDropped: cumulative count of hooks dropped for exceeding the
+//    body-size cap (D16/F116), same shape as rateLimitedDropped.
 //  - shuttingDown: true when drain has been triggered (readiness returns 503).
 //  - dbReady: true only after initializeDatabase() completes (S-24).
 //  - clients (D3/F20): relay/statusline script checksums (computeClientChecksums).
@@ -84,9 +95,12 @@ health.get("/health", async (c) => {
 		inFlight: getInFlightCount(),
 		processingErrors: getBgErrorCount(),
 		rateLimitedDropped: getRateLimitedDropped(),
+		oversizeDropped: getOversizeDropped(),
 		shuttingDown: isShuttingDown(),
 		dbReady: true,
 		clients,
+		eventsDeduplicated: getEventsDeduplicatedCounts(),
+		legacyObserverDeliveries: getLegacyObserverDeliveries(),
 	});
 });
 

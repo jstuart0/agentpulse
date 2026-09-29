@@ -375,6 +375,36 @@ describe("applyPermissionWaitTransition — boundary full clear", () => {
 		expect(row?.semanticStatus).toBe("reviewing");
 		expect(row?.metadata).not.toHaveProperty("permissionWait");
 	});
+
+	// D21 (post-merge E4): SessionEnd and Interrupt are terminal boundaries
+	// too — a session that ends or is interrupted while "waiting" must have
+	// its waits dropped and semanticStatus restored, the same as a fresh
+	// prompt or a completed turn.
+	test("SessionEnd clears all pending waits in one shot and restores over owned waiting", async () => {
+		await mkSession("perm-1", {
+			semanticStatus: "waiting",
+			metadata: { permissionWait: { ids: ["a", "b"], anon: 1, prevStatus: "implementing" } },
+		});
+
+		await applyPermissionWaitTransition("perm-1", hookPayload({ hook_event_name: "SessionEnd" }));
+
+		const row = await getSession("perm-1");
+		expect(row?.semanticStatus).toBe("implementing");
+		expect(row?.metadata).not.toHaveProperty("permissionWait");
+	});
+
+	test("Interrupt clears all pending waits in one shot and restores over owned waiting", async () => {
+		await mkSession("perm-1", {
+			semanticStatus: "waiting",
+			metadata: { permissionWait: { ids: ["a", "b"], anon: 1, prevStatus: "implementing" } },
+		});
+
+		await applyPermissionWaitTransition("perm-1", hookPayload({ hook_event_name: "Interrupt" }));
+
+		const row = await getSession("perm-1");
+		expect(row?.semanticStatus).toBe("implementing");
+		expect(row?.metadata).not.toHaveProperty("permissionWait");
+	});
 });
 
 describe("applyPermissionWaitTransition — SessionStart crash-recovery boundary clear", () => {

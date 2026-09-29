@@ -46,6 +46,100 @@ SQLite deployments; it is removed automatically by the Postgres overlay.
 
 ---
 
+## Data volume sizing
+
+AGEN-16 changed event storage to keep every distinct tool call instead of
+silently dropping most of them under the old content-window dedup — growth
+is real and higher than a pre-AGEN-16 install would suggest. After the
+growth mitigations in this release (raw `tool_response` capped at 4,096
+chars in `rawPayload`, `tool_input` no longer duplicated into `rawPayload`),
+a 30-day replay of a real workload measured:
+
+- ~840 MB / 30 days on SQLite
+- 28 MB/day average, up to ~137 MB/day at peak
+- a storage class that **enforces** the PVC's `storage` request fills in
+  roughly **37 days** at that rate
+
+`storageClassName: local-path` (the default in `03-pvc.yaml`) does **not**
+enforce the request — it's bound by node disk instead, so it won't reject
+writes at 1Gi. On a storage class that does enforce size, raise the request
+before deploying, or accept periodic manual cleanup. Retention/VACUUM
+automation and a PVC default-size policy are tracked as follow-ups (not yet
+implemented); until then, sizing is an operator decision per deployment.
+
+---
+
+## Upgrading to migration 0003 (AGEN-16: event dedup)
+
+Migration `0003` adds a `dedup_key` column and two indexes
+(`idx_events_session_id_id`, `uq_events_session_dedup_key`) to the `events`
+table. It runs automatically on boot, on both SQLite and Postgres, but the
+two backends have different operational implications.
+
+**SQLite**
+
+- **Back up `agentpulse.db` before upgrading.** See `BACKUP-RESTORE.md` for
+  the restore runbook; the backup sidecar already does this daily, but take
+  a fresh manual backup immediately before the upgrade regardless.
+- The migration itself (the column add plus both indexes) is synchronous at
+  boot and fast at realistic database sizes. This release also does a
+  one-time rebuild of the SQLite full-text-search index (search deletes
+  move from a full-table scan to a row-id lookup); that rebuild runs inside
+  the same boot transaction, is idempotent, and is proportional to the
+  number of indexed (searchable) events — seconds, not minutes, at typical
+  database sizes. `/health` returns `503` (`dbReady: false`) until boot
+  finishes, so the `startupProbe` won't route traffic mid-migration.
+
+**Postgres**
+
+- Building `uq_events_session_dedup_key` (a unique index) takes a `SHARE`
+  lock on `events` for the duration of the build. On a small-to-moderate
+  `events` table this is milliseconds to low hundreds of milliseconds and
+  safe to let run inline at boot. On a large table, do the index builds
+  out-of-band, in a maintenance window, before rolling out this version:
+
+  ```sql
+  -- Run against the Postgres database directly, before deploying the new image.
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_session_id_id
+    ON events (session_id, id);
+  CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_events_session_dedup_key
+    ON events (session_id, dedup_key);
+  ```
+
+  `CONCURRENTLY` avoids the `SHARE` lock (it takes longer, and doesn't run
+  inside a transaction, but doesn't block writes to `events` while it
+  builds). A `CONCURRENTLY` build can fail partway through and leave an
+  **invalid** index behind — Postgres will not use an invalid index, and a
+  plain `CREATE INDEX IF NOT EXISTS` afterwards silently skips it instead of
+  fixing it. Verify both indexes are valid before considering the upgrade
+  complete:
+
+  ```sql
+  SELECT indexrelid::regclass AS index_name, indisvalid
+    FROM pg_index
+    WHERE indexrelid IN (
+      'idx_events_session_id_id'::regclass,
+      'uq_events_session_dedup_key'::regclass
+    );
+  ```
+
+  If either row shows `indisvalid = false`, drop and rebuild that index
+  before deploying:
+
+  ```sql
+  DROP INDEX CONCURRENTLY IF EXISTS <index_name>;
+  -- then re-run the matching CREATE INDEX CONCURRENTLY statement above
+  ```
+
+  Once both indexes are `indisvalid = true` out-of-band, the app's own
+  migration runner sees them already present (`IF NOT EXISTS`) and does no
+  further work for them at boot.
+
+See `deploy/overlays/postgres/README.md` for the general Postgres overlay
+setup this applies on top of.
+
+---
+
 ## Homelab overlay
 
 ```

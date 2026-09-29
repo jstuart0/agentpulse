@@ -18,6 +18,7 @@ import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
+import { ownerLaunchJoin, sessionOwnedBy } from "./session-ownership.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -25,6 +26,32 @@ function nowIso() {
 
 function lockExpiryIso() {
 	return new Date(Date.now() + 90_000).toISOString();
+}
+
+/**
+ * codex r2 F43/F44 (D10): managed-session-state.ts's upsertManagedSessionState
+ * stores `launchRequestId = sessionId` when a legitimate first report omits
+ * it (the "legacy fallback" shape the D6/D12 correlation check already
+ * treats as healthy). That value never matches a real launch_requests.id,
+ * so a plain id lookup finds nothing for those rows. When the managed
+ * row's launchRequestId is exactly the session id, and no launch has that
+ * id, fall back to resolving by launchCorrelationId = sessionId instead —
+ * the same launch the fallback shape is standing in for.
+ */
+async function resolveManagedLaunch(sessionId: string, launchRequestId: string) {
+	const [byId] = await getDb()
+		.select()
+		.from(launchRequests)
+		.where(eq(launchRequests.id, launchRequestId))
+		.limit(1);
+	if (byId) return byId;
+	if (launchRequestId !== sessionId) return null;
+	const [byCorrelation] = await getDb()
+		.select()
+		.from(launchRequests)
+		.where(eq(launchRequests.launchCorrelationId, sessionId))
+		.limit(1);
+	return byCorrelation ?? null;
 }
 
 async function expireStaleControlLock(sessionId: string) {
@@ -63,9 +90,10 @@ async function expireStaleControlLocksForSupervisor(supervisorId: string) {
 			sessionId: managedSessions.sessionId,
 		})
 		.from(managedSessions)
+		.leftJoin(launchRequests, ownerLaunchJoin)
 		.where(
 			and(
-				eq(managedSessions.supervisorId, supervisorId),
+				sessionOwnedBy(supervisorId),
 				isNotNull(managedSessions.activeControlActionId),
 				isNotNull(managedSessions.controlLockExpiresAt),
 			),
@@ -168,19 +196,26 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 			? (session.metadata as Record<string, unknown>)
 			: {};
 
-	const [launch] = await getDb()
-		.select()
-		.from(launchRequests)
-		.where(eq(launchRequests.id, managed.launchRequestId))
-		.limit(1);
+	const launch = await resolveManagedLaunch(sessionId, managed.launchRequestId);
 	if (!launch) throw new Error("Launch request not found.");
+	// D12: refuse to embed another host's launch.env in a prompt when the
+	// managed row's launchRequestId points at a launch for a *different*
+	// session — the last open vector once the write and read sides are
+	// owner-gated. The legacy launch_request_id = session_id fallback always
+	// satisfies this (a launch's own launchCorrelationId equals sessionId).
+	if (launch.launchCorrelationId !== sessionId) {
+		throw new Error("Launch request does not match session.");
+	}
 
 	const timestamp = nowIso();
 	const [action] = await getDb()
 		.insert(controlActions)
 		.values({
 			sessionId,
-			launchRequestId: managed.launchRequestId,
+			// The real launch id (F44) — managed.launchRequestId may be the
+			// legacy sessionId fallback, which resolveManagedLaunch already
+			// resolved to the actual launch row above.
+			launchRequestId: launch.id,
 			actionType: "prompt",
 			requestedBy: "local-user",
 			status: "queued",
@@ -230,12 +265,17 @@ export async function retryLaunchForSession(sessionId: string) {
 		.limit(1);
 	if (!managed) throw new Error("Session is not managed.");
 
-	const [original] = await getDb()
-		.select()
-		.from(launchRequests)
-		.where(eq(launchRequests.id, managed.launchRequestId))
-		.limit(1);
+	const original = await resolveManagedLaunch(sessionId, managed.launchRequestId);
 	if (!original) throw new Error("Original launch request not found.");
+	// F47/D12: same cross-host guard queuePromptAction applies — refuse to
+	// clone another host's launch.env into a fresh launch_requests row when
+	// the managed row's launchRequestId points at a launch for a
+	// *different* session. resolveManagedLaunch's id-lookup branch can
+	// still return such a launch (it doesn't itself enforce correlation),
+	// so this check must run before cloning env below.
+	if (original.launchCorrelationId !== sessionId) {
+		throw new Error("Launch request does not match session.");
+	}
 
 	const timestamp = nowIso();
 	const newCorrelationId = crypto.randomUUID();
@@ -361,9 +401,8 @@ export async function claimNextControlAction(supervisorId: string) {
 	await expireStaleControlLocksForSupervisor(supervisorId);
 
 	// Two routing channels share controlActions:
-	// 1. Session-bearing actions (stop/prompt/retry/etc.) — routed via the
-	//    managed_sessions.supervisor_id join, which is what the existing code
-	//    relied on.
+	// 1. Session-bearing actions (stop/prompt/retry/etc.) — routed by owner
+	//    of record (sessionOwnedBy, session-ownership.ts).
 	// 2. Session-less actions (cleanup_workarea) — pre-assigned to a host by
 	//    storing supervisorId in metadata.targetSupervisorId at queue time.
 	// Pick the oldest queued action across both channels.
@@ -371,7 +410,8 @@ export async function claimNextControlAction(supervisorId: string) {
 		.select({ action: controlActions })
 		.from(controlActions)
 		.innerJoin(managedSessions, eq(managedSessions.sessionId, controlActions.sessionId))
-		.where(and(eq(controlActions.status, "queued"), eq(managedSessions.supervisorId, supervisorId)))
+		.leftJoin(launchRequests, ownerLaunchJoin)
+		.where(and(eq(controlActions.status, "queued"), sessionOwnedBy(supervisorId)))
 		.orderBy(asc(controlActions.createdAt))
 		.limit(1);
 

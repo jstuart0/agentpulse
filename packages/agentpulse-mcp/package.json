@@ -1,5 +1,5 @@
 {
-	"name": "agentpulse-mcp",
+	"name": "@agentpulse/mcp",
 	"version": "0.2.0",
 	"description": "Standalone MCP server for AgentPulse — monitor and orchestrate AI coding agent sessions from any MCP-compatible client.",
 	"type": "module",
