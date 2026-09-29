@@ -447,6 +447,35 @@ describe("F140 (D21): the oversize-stub flag can't be forged by a client", () =>
 		expect(rows[0]?.rawPayload).not.toHaveProperty("agentpulse_oversize");
 	});
 
+	test("F142: mixed- and upper-case reserved-prefix keys are stripped too", async () => {
+		const sid = newSessionId("f142-case");
+		const toolUseId = `f142-tu-${crypto.randomUUID()}`;
+		const res = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				session_id: sid,
+				hook_event_name: "PostToolUse",
+				tool_name: "Bash",
+				tool_use_id: toolUseId,
+				tool_response: "real tool output",
+				// Case variants of the reserved prefix — a case-sensitive strip
+				// only catches the lowercase spelling.
+				Agentpulse_Oversize: true,
+				AGENTPULSE_FOO: "bar",
+			}),
+		});
+		expect(res.status).toBe(200);
+		await until(() => getInFlightCount() === 0, 10_000);
+
+		const rows = await rowsFor(sid);
+		expect(rows, JSON.stringify(rows)).toHaveLength(1);
+		expect(rows[0]?.content).not.toBe("Payload exceeded 16 MiB and was dropped");
+		expect(rows[0]?.dedupKey).toMatch(/^t:[0-9a-f]{32}$/);
+		expect(rows[0]?.rawPayload).not.toHaveProperty("Agentpulse_Oversize");
+		expect(rows[0]?.rawPayload).not.toHaveProperty("AGENTPULSE_FOO");
+	});
+
 	test("a real oversize delivery still stores the placeholder under an o: key (D19 unchanged)", async () => {
 		const sid = newSessionId("f140-real-oversize");
 		const toolUseId = `f140-real-tu-${crypto.randomUUID()}`;
