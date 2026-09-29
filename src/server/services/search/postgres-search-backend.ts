@@ -250,7 +250,7 @@ export class PostgresSearchBackend implements SearchBackend {
 				last_activity_at
 			FROM sessions
 			WHERE ${whereClause}
-			ORDER BY created_at DESC
+			ORDER BY started_at DESC
 			LIMIT ${limit} OFFSET ${offset}
 		`;
 
