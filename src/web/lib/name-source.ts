@@ -50,13 +50,28 @@ export function nameSourceCaption(
 }
 
 /**
- * D26/F98: the caption's tooltip. For a manual rename it says what the
+ * D26/F98/F199: the caption's tooltip. For a manual rename it says what the
  * rename protects against; otherwise the caption speaks for itself.
+ *
+ * F199: this tooltip replaced the caption's own text as the title, so when
+ * the caption is truncated (`truncate max-w-[...]`) the agent's suggested
+ * name it carries — `Renamed by you · agent name: "<nativeName>"` — became
+ * unreadable until "Use agent name" was pressed. When nativeName differs
+ * from the current displayName, the name is folded back in here.
  */
-export function nameSourceTitle(nameSource: NameSource, agentType: AgentType): string | null {
+export function nameSourceTitle(
+	nameSource: NameSource,
+	nativeName: string | null,
+	displayName: string,
+	agentType: AgentType,
+): string | null {
 	if (nameSource !== "user") return null;
 	const shortLabel = AGENT_METADATA[agentType]?.shortLabel ?? "the agent";
-	return `You renamed this session, so names from ${shortLabel} won't replace it.`;
+	const base = `You renamed this session, so names from ${shortLabel} won't replace it.`;
+	if (nativeName !== null && nativeName !== displayName) {
+		return `${base} Agent name: "${nativeName}"`;
+	}
+	return base;
 }
 
 export type ResetButtonState = "idle" | "pending" | "error";

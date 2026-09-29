@@ -290,11 +290,13 @@ describe("D19/F44/F55/F172/F174 — /setup-relay.sh never reflects Host", () => 
 		}
 	});
 
-	test("F172: an explicit loopback PUBLIC_URL isn't handed to another machine", async () => {
+	test("F172/F198: an explicit loopback PUBLIC_URL isn't handed to another machine", async () => {
 		for (const publicUrl of [
 			"http://localhost:3000",
 			"http://127.0.0.1:3000",
 			"http://[::1]:3000",
+			// F198: 0.0.0.0 is a bind address, not a routable host.
+			"http://0.0.0.0:3000",
 		]) {
 			setPublicUrl(publicUrl);
 			const res = await get("/setup-relay.sh", "agentpulse.example.com");
@@ -352,5 +354,28 @@ describe("F166: every 503 body is valid shell that fails loudly", () => {
 			"public_url_loopback",
 			"public_url_unset",
 		]);
+	});
+});
+
+describe("F192: installer responses are never cached across requesters", () => {
+	// Bodies embed the requester's Host (F172/F174), so a cache keyed only on
+	// the URL would serve one requester's script to the next.
+	for (const path of ALL_INSTALLERS) {
+		test(`${path}: 200 response carries Cache-Control: no-store and Vary: Host`, async () => {
+			setPublicUrl("https://agentpulse.example.com");
+			config.port = 3000;
+			const res = await get(path, "agentpulse.example.com");
+			expect(res.status).toBe(200);
+			expect(res.headers.get("Cache-Control")).toBe("no-store");
+			expect(res.headers.get("Vary")).toBe("Host");
+		});
+	}
+
+	test("/setup-relay.sh: the 503 error response also carries both headers", async () => {
+		setPublicUrl(null);
+		const res = await get("/setup-relay.sh", "attacker.example");
+		expect(res.status).toBe(503);
+		expect(res.headers.get("Cache-Control")).toBe("no-store");
+		expect(res.headers.get("Vary")).toBe("Host");
 	});
 });

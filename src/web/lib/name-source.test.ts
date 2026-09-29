@@ -113,24 +113,44 @@ describe("applyManualRename (F95)", () => {
 	});
 });
 
-describe("nameSourceTitle — the caption's tooltip (D26/F98)", () => {
+describe("nameSourceTitle — the caption's tooltip (D26/F98/F199)", () => {
 	test("'user' explains that the agent's names won't replace the rename", () => {
-		expect(nameSourceTitle("user", "codex_cli")).toBe(
+		expect(nameSourceTitle("user", null, "human-chosen-name", "codex_cli")).toBe(
 			"You renamed this session, so names from Codex won't replace it.",
 		);
-		expect(nameSourceTitle("user", "claude_code")).toBe(
+		expect(nameSourceTitle("user", null, "human-chosen-name", "claude_code")).toBe(
 			"You renamed this session, so names from Claude won't replace it.",
 		);
 	});
 
 	test("an unknown agent gets a generic label", () => {
-		expect(nameSourceTitle("user", "some_future_agent" as never)).toBe(
+		expect(nameSourceTitle("user", null, "human-chosen-name", "some_future_agent" as never)).toBe(
 			"You renamed this session, so names from the agent won't replace it.",
 		);
 	});
 
+	// F199: the caption's own text (which carries the agent name when it
+	// differs) was lost once this tooltip replaced it — folded back in here.
+	test("a differing nativeName is folded into the tooltip", () => {
+		expect(nameSourceTitle("user", "codex-thread-name", "human-chosen-name", "codex_cli")).toBe(
+			'You renamed this session, so names from Codex won\'t replace it. Agent name: "codex-thread-name"',
+		);
+	});
+
+	test("nativeName === displayName omits the agent-name suffix", () => {
+		expect(nameSourceTitle("user", "same-name", "same-name", "codex_cli")).toBe(
+			"You renamed this session, so names from Codex won't replace it.",
+		);
+	});
+
+	test("nativeName null omits the agent-name suffix", () => {
+		expect(nameSourceTitle("user", null, "human-chosen-name", "claude_code")).toBe(
+			"You renamed this session, so names from Claude won't replace it.",
+		);
+	});
+
 	test("'native' and 'generated' have no tooltip beyond the caption", () => {
-		expect(nameSourceTitle("native", "codex_cli")).toBeNull();
-		expect(nameSourceTitle("generated", "codex_cli")).toBeNull();
+		expect(nameSourceTitle("native", "n", "n", "codex_cli")).toBeNull();
+		expect(nameSourceTitle("generated", null, "brave-falcon", "codex_cli")).toBeNull();
 	});
 });

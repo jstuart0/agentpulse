@@ -1849,6 +1849,24 @@ describe("file modes, log hygiene, insecure-remote warning (F111)", () => {
 		expect(await mode(join(stateDir, "hook-queue", "pending", queued))).toBe("600");
 	});
 
+	test("appending to a state file tightens its mode even if it pre-existed looser (F201)", async () => {
+		// `mode` on appendFile is a POSIX open(2) *create* mode: it only takes
+		// effect when the call is the one creating the file. If the path
+		// already exists — an older Bun (F190), a race, a manual copy — an
+		// append never re-tightens it. The relay must not depend on that.
+		const R = await mod();
+		const stub = sessionsStub([
+			{ sessionId: "s1", displayName: "brave-falcon", nameSource: "generated" },
+		]);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url });
+		const ledgerFile = join(tmp, "state", "codex-pushed.jsonl");
+		await writeFile(ledgerFile, "", { mode: 0o644 });
+		expect(((await stat(ledgerFile)).mode & 0o777).toString(8)).toBe("644");
+		await R.pushCodexNames(ctx);
+		expect(((await stat(ledgerFile)).mode & 0o777).toString(8)).toBe("600");
+	});
+
 	test("Codex- and server-controlled strings are stripped of control characters in logs", async () => {
 		const R = await mod();
 		const lines: string[] = [];

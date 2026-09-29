@@ -19,6 +19,7 @@ import {
 	isLoopbackHostname,
 	onLocationChange,
 	relayKeyHint,
+	withRelaySuffix,
 } from "./onboarding.js";
 
 const SERVER = "https://agentpulse.example.com";
@@ -142,6 +143,25 @@ describe("defaultKeyName (F184)", () => {
 	test("a relay key is named after the machine with -relay", () => {
 		expect(defaultKeyName("local")).toBe("my-laptop");
 		expect(defaultKeyName("relay")).toBe("my-laptop-relay");
+	});
+});
+
+describe("withRelaySuffix (F198)", () => {
+	test("appends -relay to a plain name", () => {
+		expect(withRelaySuffix("my-laptop")).toBe("my-laptop-relay");
+	});
+
+	test("does not double the suffix when it's already there", () => {
+		expect(withRelaySuffix("my-laptop-relay")).toBe("my-laptop-relay");
+	});
+
+	test("falls back to the default name when blank", () => {
+		expect(withRelaySuffix("")).toBe("my-laptop-relay");
+		expect(withRelaySuffix("   ")).toBe("my-laptop-relay");
+	});
+
+	test("trims surrounding whitespace before checking the suffix", () => {
+		expect(withRelaySuffix("  work-vm-relay  ")).toBe("work-vm-relay");
 	});
 });
 

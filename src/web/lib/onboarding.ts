@@ -101,6 +101,18 @@ export function defaultKeyName(location: OnboardingLocation): string {
 	return location === "relay" ? `${DEFAULT_KEY_NAME}-relay` : DEFAULT_KEY_NAME;
 }
 
+/**
+ * F198: appends "-relay" for a relay key name, unless the name the user
+ * typed already ends with it — SetupPage's "Remote relay" card shares one
+ * name field between the local (hook) key and the relay key, so a name
+ * copied or retyped from an earlier relay key must not double up into
+ * "my-laptop-relay-relay".
+ */
+export function withRelaySuffix(name: string): string {
+	const trimmed = name.trim() || DEFAULT_KEY_NAME;
+	return trimmed.endsWith("-relay") ? trimmed : `${trimmed}-relay`;
+}
+
 export type LocationState = {
 	location: OnboardingLocation;
 	revealedKey: string | null;

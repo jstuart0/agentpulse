@@ -344,7 +344,10 @@ function CopyRow({
 		<div>
 			<p className="text-[11px] text-muted-foreground mb-1">{label}</p>
 			<div className="flex gap-2">
-				<code className="flex-1 min-w-0 whitespace-pre-wrap break-all bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground font-mono">
+				{/* F198: overflow-wrap breaks only where the line actually
+				overflows, unlike break-all, which forces a break between every
+				character pair. */}
+				<code className="flex-1 min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere] bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground font-mono">
 					{command}
 				</code>
 				<button

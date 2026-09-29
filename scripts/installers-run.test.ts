@@ -675,7 +675,11 @@ describe("F190: the relay service runs on a Bun that keeps its files private", (
 				{ uname: "Linux", pathPrefix: oldBin },
 			);
 			// The download is refused by the curl stub, so the install stops there.
-			expect(res.stubLog).toContain("curl blocked https://bun.sh/install");
+			// F197: the pinned download is now the release zip itself, not the
+			// bun.sh installer script.
+			expect(res.stubLog).toContain(
+				"curl blocked https://github.com/oven-sh/bun/releases/download/bun-v1.3.12/bun-",
+			);
 			expect(res.code).not.toBe(0);
 			await expect(
 				stat(join(home, ".config", "systemd", "user", "agentpulse-relay.service")),

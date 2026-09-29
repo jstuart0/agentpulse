@@ -8,6 +8,7 @@ import {
 	REPLACE_LOCALHOST_NOTE,
 	buildRelayCommand,
 	isLoopbackHostname,
+	withRelaySuffix,
 } from "../lib/onboarding.js";
 import { useUserStore } from "../stores/user-store.js";
 
@@ -75,10 +76,7 @@ export function SetupPage() {
 	async function handleCreateRelayKey() {
 		setCreatingRelayKey(true);
 		try {
-			const res = await api.createApiKey(
-				`${newKeyName.trim() || "my-laptop"}-relay`,
-				RELAY_KEY_SCOPES,
-			);
+			const res = await api.createApiKey(withRelaySuffix(newKeyName), RELAY_KEY_SCOPES);
 			setRelayKey(res.key);
 			const list = await api.getApiKeys().catch(() => ({ keys }));
 			setKeys(list.keys ?? []);
@@ -299,7 +297,10 @@ export function SetupPage() {
 				)}
 
 				<div className="relative mb-3">
-					<pre className="bg-background border border-border rounded-md p-3 pr-16 text-xs whitespace-pre-wrap break-all">
+					{/* F198: overflow-wrap breaks only where the line actually overflows,
+					unlike break-all, which forces a break between every character
+					pair. */}
+					<pre className="bg-background border border-border rounded-md p-3 pr-16 text-xs whitespace-pre-wrap [overflow-wrap:anywhere]">
 						<code>{relayCommand}</code>
 					</pre>
 					<button

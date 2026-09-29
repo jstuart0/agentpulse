@@ -5,7 +5,7 @@ import { INSTALLER_SOURCES, buildRelayInstaller } from "../src/server/installers
 
 const ROOT = join(import.meta.dir, "..");
 
-async function mustInclude(path: string, expected: string) {
+export async function mustInclude(path: string, expected: string) {
 	const content = await readFile(join(ROOT, path), "utf8");
 	if (!content.includes(expected)) {
 		throw new Error(`${path} is missing expected content: ${expected}`);
@@ -26,14 +26,30 @@ function checkRelayInstallerBuilds() {
 }
 
 /**
- * F165: the server embeds relay.ts with a text import, and Bun caches modules
- * by path, so a plain module import of relay.ts in the same process (a test)
- * gets the text or poisons the embed. Module imports must say "?module".
+ * F165/F194: the server embeds relay.ts with a text import, and Bun caches
+ * modules by path, so a plain module import of relay.ts in the same process
+ * (a test) gets the text or poisons the embed. Module imports must say
+ * "?module". Catches `import`/`require`, with or without a ".ts"/".js"
+ * extension — Bun and TypeScript both resolve "./relay" to relay.ts, so an
+ * extensionless import poisons the embed just as much as an unsuffixed
+ * "relay.ts" one. The word boundary before "relay" and the extension-or-quote
+ * right after it keep this from flagging unrelated names like "relayEvent".
  */
-async function checkNoPlainRelayModuleImport() {
+export async function checkNoPlainRelayModuleImport() {
 	const offenders: string[] = [];
-	const plain = /(?<!typeof )(?:import\s*\(\s*|from\s+)["'][^"']*\brelay\.(?:ts|js)["']/;
-	for (const pattern of ["scripts/**/*.ts", "src/**/*.ts", "src/**/*.tsx"]) {
+	const plain =
+		/(?<!typeof )(?:import\s*\(\s*|require\s*\(\s*|from\s+)["'][^"']*\brelay(?:\.(?:ts|js))?["']/;
+	for (const pattern of [
+		"scripts/**/*.ts",
+		"src/**/*.ts",
+		"src/**/*.tsx",
+		"bin/**/*.ts",
+		// Scoped to each package's src/ (not packages/**) so this never walks
+		// into a workspace member's own node_modules (e.g.
+		// packages/agentpulse-mcp/node_modules).
+		"packages/*/src/**/*.ts",
+		"packages/*/src/**/*.tsx",
+	]) {
 		for await (const path of new Glob(pattern).scan(ROOT)) {
 			if (path === "src/server/installers.ts") continue;
 			const content = await readFile(join(ROOT, path), "utf8");
@@ -50,8 +66,14 @@ async function checkNoPlainRelayModuleImport() {
 async function main() {
 	await mustInclude("scripts/install-local.sh", 'AUTO_SUPERVISOR="true"');
 	await mustInclude("scripts/install-local.sh", "run supervisor");
+	// F196: setup.ts's `.replace('PUBLIC_URL=""', ...)` is a silent no-op if
+	// this exact placeholder ever drifts (no error, the served script just
+	// keeps an empty PUBLIC_URL) — pin it so a drifted placeholder fails here
+	// instead of shipping a broken installer.
+	await mustInclude("scripts/install-local.sh", 'PUBLIC_URL=""');
 	await mustInclude("scripts/install-local.ps1", "AgentPulseSupervisor");
 	await mustInclude("scripts/install-local.ps1", "run supervisor");
+	await mustInclude("scripts/install-local.ps1", '[string]$PublicUrl = ""');
 	await mustInclude("src/server/routes/setup.ts", 'setup.get("/install-local.sh"');
 	await mustInclude("src/server/routes/setup.ts", 'setup.get("/install-local.ps1"');
 	await mustInclude("deploy/k8s/07-ingressroute.yaml", "Path(`/install-local.sh`)");
@@ -68,7 +90,11 @@ async function main() {
 	console.log("installer checks passed");
 }
 
-main().catch((error) => {
-	console.error(error instanceof Error ? error.message : String(error));
-	process.exit(1);
-});
+// Guarded so a test can import checkNoPlainRelayModuleImport without also
+// running (and process.exit-ing on) the full check suite.
+if (import.meta.main) {
+	main().catch((error) => {
+		console.error(error instanceof Error ? error.message : String(error));
+		process.exit(1);
+	});
+}

@@ -462,12 +462,19 @@ async function ensurePrivateDir(path: string) {
 	await mkdir(path, { recursive: true, mode: PRIVATE_DIR_MODE });
 }
 
+// F201: `mode` on writeFile/appendFile is a POSIX open(2) create mode — it
+// only applies when the call creates the file. If the path already existed
+// at some other permission (an older Bun, F190; a race; a manual copy),
+// neither call tightens it back down. The explicit chmod after each write
+// makes the private-file guarantee hold regardless of what created the path.
 async function writePrivateFile(path: string, content: string) {
 	await writeFile(path, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+	await chmod(path, PRIVATE_FILE_MODE);
 }
 
 async function appendPrivateFile(path: string, content: string) {
 	await appendFile(path, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+	await chmod(path, PRIVATE_FILE_MODE);
 }
 
 /** Atomic replace (temp + rename), private mode. */

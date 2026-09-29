@@ -166,18 +166,6 @@ key_help() {
   echo "    this command and paste the key when asked (or pass --key)." >&2
 }
 
-# F167: asks on the terminal, not stdin (that's the script under curl | bash).
-prompt_for_key() {
-  local key=""
-  if { exec 3<"$KEY_TTY"; } 2>/dev/null; then
-    printf '  API key (Hook ingest + Observe), input hidden: ' >&2
-    IFS= read -rs key <&3 || true
-    exec 3<&-
-    printf '\n' >&2
-  fi
-  printf '%s' "$key"
-}
-
 # F169: said before the key is sent anywhere it could be read in transit.
 warn_if_plain_http() {
   [[ -n "$API_KEY" && "$REMOTE_URL" == http://* ]] || return 0
@@ -248,8 +236,23 @@ done("missing:" + ",".join(missing) if missing else "ok")
 
 check_key
 if [[ -z "$API_KEY" && "$VERDICT" == missing:* ]]; then
-  API_KEY="$(prompt_for_key)"
-  if [[ -z "$API_KEY" ]]; then
+  # F167: asks on the terminal, not stdin (that's the script under
+  # curl | bash). Inlined (not a $(...) function call) so the "did we
+  # actually get to prompt" distinction below survives — a command
+  # substitution forks a subshell, so a flag set inside one is lost.
+  if { exec 3<"$KEY_TTY"; } 2>/dev/null; then
+    printf '  API key (Hook ingest + Observe), input hidden: ' >&2
+    IFS= read -rs API_KEY <&3 || true
+    exec 3<&-
+    printf '\n' >&2
+    # F198: distinct from "couldn't prompt at all" below — the user was
+    # asked and pressed Enter (or closed stdin) without typing anything.
+    if [[ -z "$API_KEY" ]]; then
+      echo "  ✗ No key entered." >&2
+      key_help
+      exit 1
+    fi
+  else
     echo "  ✗ This server needs an API key. Run this in a terminal to be asked for it," >&2
     echo "    or pass --key <key>, or set AGENTPULSE_KEY." >&2
     key_help
@@ -309,7 +312,8 @@ if [[ ! -s "$SRC_DIR/relay.ts" || ! -s "$SRC_DIR/statusline.sh" ]]; then
     cp "$SELF_DIR/relay.ts" "$SRC_DIR/relay.ts"
     cp "$SELF_DIR/statusline.sh" "$SRC_DIR/statusline.sh"
   else
-    fail "relay.ts isn't next to this script. Run scripts/setup-relay.sh from an AgentPulse checkout, or: curl -sSL <server>/setup-relay.sh | bash -s -- --key <key>"
+    # F198: no --key in the example — that puts the key in argv/shell history.
+    fail "relay.ts isn't next to this script. Run scripts/setup-relay.sh from an AgentPulse checkout, or: curl -sSL <server>/setup-relay.sh | bash (set \$AGENTPULSE_KEY first, or you'll be prompted for the key)"
   fi
 fi
 
@@ -340,6 +344,53 @@ version_at_least() {
   return 0
 }
 
+# F197: the Bun release asset for this machine. Args: os (`uname -s`), arch
+# (`uname -m`), avx2 (yes/no — CPU supports AVX2), musl (yes/no — musl libc),
+# rosetta (yes/no — x86_64 uname under Rosetta 2 on Apple Silicon). Echoes
+# nothing for a platform with no pinned asset.
+bun_asset_for() {
+  local os="$1" arch="$2" avx2="$3" musl="$4" rosetta="$5"
+  case "$os" in
+    Darwin)
+      if [[ "$arch" == "arm64" || "$rosetta" == "yes" ]]; then
+        echo "darwin-aarch64"
+      elif [[ "$arch" == "x86_64" ]]; then
+        [[ "$avx2" == "yes" ]] && echo "darwin-x64" || echo "darwin-x64-baseline"
+      fi ;;
+    Linux)
+      case "$arch" in
+        x86_64|amd64)
+          if [[ "$musl" == "yes" ]]; then
+            [[ "$avx2" == "yes" ]] && echo "linux-x64-musl" || echo "linux-x64-musl-baseline"
+          else
+            [[ "$avx2" == "yes" ]] && echo "linux-x64" || echo "linux-x64-baseline"
+          fi ;;
+        aarch64|arm64)
+          [[ "$musl" == "yes" ]] && echo "linux-aarch64-musl" || echo "linux-aarch64" ;;
+      esac ;;
+  esac
+}
+
+# SHA256 of the Bun 1.3.12 release zip for the given asset name — taken from
+# https://github.com/oven-sh/bun/releases/download/bun-v1.3.12/SHASUMS256.txt
+# and independently re-verified by downloading and hashing each file.
+# TO UPGRADE: bump BUN_VERSION above and every hash here together, from that
+# release's own SHASUMS256.txt — re-download and re-hash at least one asset
+# yourself rather than trusting the file alone (S-L2).
+bun_asset_sha256() {
+  case "$1" in
+    darwin-aarch64) echo "6c4bb87dd013ed1a8d6a16e357a3d094959fd5530b4d7061f7f3680c3c7cea1c" ;;
+    darwin-x64) echo "0f58c53a3e7947f1e626d2f8d285f97c14b7cadcca9c09ebafc0ae9d35b58c3d" ;;
+    darwin-x64-baseline) echo "cc4e22130c2bc2d944d3a286de08f2ed37fa74136e59760f3a4661e610246474" ;;
+    linux-x64) echo "11dc3ee11bc1695e149737c6ca3d5619302cf4346e6b8a6ec7988967ef01ddc5" ;;
+    linux-x64-baseline) echo "f8bb377a9ae93d44697ff91a2611164d2aedc9263415d623b0c3af24a6f55dab" ;;
+    linux-x64-musl) echo "5a9f9a2102d4bd0d5210b4f6bd345151d2310623947085177c1b306e8587dce6" ;;
+    linux-x64-musl-baseline) echo "a95e079aef96f1387b86e27b69f9a6babbd08154d9a59483f29d9de285b8e3ad" ;;
+    linux-aarch64) echo "c40bc0ebca11bde7d75af497a654a874d0c7fd8d6a8d6031c173c10c9064297b" ;;
+    linux-aarch64-musl) echo "731baab945bc471c17248ea375e66f71442879d2595c54045b3e861f4e8b9ab1" ;;
+  esac
+}
+
 SEEN_BUNS=" "
 for candidate in "$(command -v bun 2>/dev/null || true)" "$HOME/.bun/bin/bun" "$PRIVATE_BUN_DIR/bin/bun"; do
   [[ -n "$candidate" && -x "$candidate" && "$SEEN_BUNS" != *" $candidate "* ]] || continue
@@ -354,52 +405,62 @@ done
 
 if [[ -z "$BUN_PATH" ]]; then
   echo "  Installing Bun $BUN_VERSION for the relay into $PRIVATE_BUN_DIR..."
-  # Pin Bun to a specific release for reproducibility and supply-chain safety (S-L2/S-L3).
-  #
-  # HOW THIS WORKS:
-  #   1. We download the bun.sh installer script and verify its SHA256 (pins the installer).
-  #   2. We invoke it with "bun-v${BUN_VERSION}" which causes it to download that exact
-  #      release zip from github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/.
-  #
-  # TO UPGRADE: bump BUN_VERSION and BUN_INSTALLER_SHA256 together.
-  #   Fetch new SHA: curl -fsSL "https://bun.sh/install" | sha256sum
-  #   Verify at:     https://github.com/oven-sh/bun/releases/tag/bun-v${BUN_VERSION}
-  BUN_INSTALLER_URL="https://bun.sh/install"
-  # SHA256 of the bun.sh/install script as of 2026-09-29. 1.1.30 was dropped
-  # because its appendFile ignores `mode`, leaving relay state files 0644 (F171);
-  # 1.3.12 matches the server image (Dockerfile).
-  # Re-verify with: curl -fsSL "https://bun.sh/install" | sha256sum
-  BUN_INSTALLER_SHA256="04882bf41679d49d9af108657a1e5515bf04fdf2940d12c0d0b1e5d79dc53be8"
+  # F197: pin Bun to a specific release's *binary*, not just an installer
+  # script — downloading github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/
+  # directly and checking it against a hash pinned to that exact file means
+  # nothing between here and the binary running is trusted on faith (S-L2/S-L3).
+  BUN_UNAME_S="$(uname -s)"
+  BUN_UNAME_M="$(uname -m)"
+  BUN_ROSETTA="no"
+  BUN_AVX2="no"
+  BUN_MUSL="no"
+  if [[ "$BUN_UNAME_S" == "Darwin" ]]; then
+    [[ "$(sysctl -in sysctl.proc_translated 2>/dev/null)" == "1" ]] && BUN_ROSETTA="yes"
+    [[ "$(sysctl -n hw.optional.avx2_0 2>/dev/null)" == "1" ]] && BUN_AVX2="yes"
+  elif [[ "$BUN_UNAME_S" == "Linux" ]]; then
+    grep -qm1 avx2 /proc/cpuinfo 2>/dev/null && BUN_AVX2="yes"
+    { command -v ldd &>/dev/null && ldd --version 2>&1 | grep -qi musl; } && BUN_MUSL="yes"
+  fi
+  BUN_ASSET="$(bun_asset_for "$BUN_UNAME_S" "$BUN_UNAME_M" "$BUN_AVX2" "$BUN_MUSL" "$BUN_ROSETTA")"
+  [[ -n "$BUN_ASSET" ]] \
+    || fail "no pinned Bun $BUN_VERSION release for this platform ($BUN_UNAME_S/$BUN_UNAME_M); install Bun $BUN_MIN_VERSION or newer yourself and re-run"
+  BUN_ASSET_SHA256="$(bun_asset_sha256 "$BUN_ASSET")"
 
-  BUN_INSTALLER_TMP="$(mktemp)"
-  curl -fsSL "$BUN_INSTALLER_URL" -o "$BUN_INSTALLER_TMP" \
-    || { rm -f "$BUN_INSTALLER_TMP"; fail "couldn't download the Bun installer from $BUN_INSTALLER_URL"; }
+  BUN_ZIP_URL="https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-${BUN_ASSET}.zip"
+  BUN_ZIP_TMP="$(mktemp)"
+  curl -fsSL "$BUN_ZIP_URL" -o "$BUN_ZIP_TMP" \
+    || { rm -f "$BUN_ZIP_TMP"; fail "couldn't download Bun from $BUN_ZIP_URL"; }
 
-  # Verify checksum before executing (S-L2). The hash is computed and compared
-  # here rather than with `-c`: macOS ships a BSD sha256sum first on PATH that
-  # rejects GNU's --quiet, which made a good download look like a mismatch.
-  # Without shasum or sha256sum, abort — do not silently skip supply-chain
-  # verification on minimal environments (e.g. Alpine, CI runners).
+  # Verify checksum before extracting (S-L2). The hash is computed and
+  # compared here rather than with `-c`: macOS ships a BSD sha256sum first on
+  # PATH that rejects GNU's --quiet, which made a good download look like a
+  # mismatch. Without shasum or sha256sum, abort — do not silently skip
+  # supply-chain verification on minimal environments (e.g. Alpine, CI runners).
   if command -v shasum &>/dev/null; then
-    BUN_INSTALLER_ACTUAL="$(shasum -a 256 "$BUN_INSTALLER_TMP" | awk '{print $1}')"
+    BUN_ZIP_ACTUAL="$(shasum -a 256 "$BUN_ZIP_TMP" | awk '{print $1}')"
   elif command -v sha256sum &>/dev/null; then
-    BUN_INSTALLER_ACTUAL="$(sha256sum "$BUN_INSTALLER_TMP" | awk '{print $1}')"
+    BUN_ZIP_ACTUAL="$(sha256sum "$BUN_ZIP_TMP" | awk '{print $1}')"
   else
-    rm -f "$BUN_INSTALLER_TMP"
+    rm -f "$BUN_ZIP_TMP"
     fail "no shasum or sha256sum found; install one (e.g. coreutils) and retry"
   fi
-  if [[ "$BUN_INSTALLER_ACTUAL" != "$BUN_INSTALLER_SHA256" ]]; then
-    rm -f "$BUN_INSTALLER_TMP"
-    fail "the Bun installer's checksum doesn't match the pinned one; not running it"
+  if [[ "$BUN_ZIP_ACTUAL" != "$BUN_ASSET_SHA256" ]]; then
+    rm -f "$BUN_ZIP_TMP"
+    fail "the downloaded Bun release's checksum doesn't match the pinned one; not installing it"
   fi
 
-  # Pass "bun-v${BUN_VERSION}" so the installer downloads that exact release
-  # from github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/ rather
-  # than the latest release. BUN_INSTALL keeps it private to the relay, and
-  # SHELL=/bin/sh stops it from adding itself to a shell profile.
-  BUN_INSTALL="$PRIVATE_BUN_DIR" SHELL=/bin/sh bash "$BUN_INSTALLER_TMP" "bun-v${BUN_VERSION}" >/dev/null 2>&1 \
-    || { rm -f "$BUN_INSTALLER_TMP"; fail "couldn't install Bun $BUN_VERSION"; }
-  rm -f "$BUN_INSTALLER_TMP"
+  command -v unzip &>/dev/null \
+    || { rm -f "$BUN_ZIP_TMP"; fail "unzip is required to install Bun; install it and retry"; }
+  BUN_UNZIP_DIR="$(mktemp -d)"
+  unzip -q "$BUN_ZIP_TMP" "bun-${BUN_ASSET}/bun" -d "$BUN_UNZIP_DIR" \
+    || { rm -f "$BUN_ZIP_TMP"; rm -rf "$BUN_UNZIP_DIR"; fail "couldn't unzip the downloaded Bun release"; }
+  rm -f "$BUN_ZIP_TMP"
+
+  mkdir -p "$PRIVATE_BUN_DIR/bin"
+  mv "$BUN_UNZIP_DIR/bun-${BUN_ASSET}/bun" "$PRIVATE_BUN_DIR/bin/bun"
+  chmod +x "$PRIVATE_BUN_DIR/bin/bun"
+  rm -rf "$BUN_UNZIP_DIR"
+
   BUN_PATH="$PRIVATE_BUN_DIR/bin/bun"
   version_at_least "$("$BUN_PATH" --version 2>/dev/null || true)" "$BUN_MIN_VERSION" \
     || fail "the Bun just installed at $BUN_PATH isn't $BUN_MIN_VERSION or newer"

@@ -4,7 +4,11 @@ import { INSTALLER_SOURCES, buildRelayInstaller } from "../installers.js";
 
 const setup = new Hono();
 
-const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+// F198: 0.0.0.0 is the "any interface" bind address, not a routable host —
+// treated as loopback so a PUBLIC_URL of http://0.0.0.0:<port> is rejected
+// the same way http://localhost:<port> is (F172), instead of being handed
+// out to a remote installer that can never reach it.
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "0.0.0.0"]);
 const PORT_RE = /^[0-9]{1,5}$/;
 // Spliced into a double-quoted shell string, so nothing that expands there.
 const SAFE_SERVER_URL_RE =
@@ -95,10 +99,17 @@ export function installerErrorBody(error: InstallerErrorCode): string {
 	].join("\n");
 }
 
+// F192: every installer response embeds the requester's Host (port for the
+// local scripts, F174; PUBLIC_URL eligibility for the relay one, F172), so a
+// shared/CDN cache keying only on the URL would serve one requester's body to
+// another. no-store rules out caching it at all; Vary: Host documents why for
+// any cache that does inspect it.
+const INSTALLER_RESPONSE_HEADERS = { "Cache-Control": "no-store", Vary: "Host" } as const;
+
 function installerError(error: InstallerErrorCode) {
 	return new Response(installerErrorBody(error), {
 		status: 503,
-		headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+		headers: { "Content-Type": "text/plain; charset=utf-8", ...INSTALLER_RESPONSE_HEADERS },
 	});
 }
 
@@ -107,6 +118,7 @@ function scriptResponse(script: string, filename: string) {
 		headers: {
 			"Content-Type": "text/plain; charset=utf-8",
 			"Content-Disposition": `inline; filename=${filename}`,
+			...INSTALLER_RESPONSE_HEADERS,
 		},
 	});
 }

@@ -122,7 +122,7 @@ export function InlineRename({
 			{caption && (
 				<span
 					className="text-[10px] text-muted-foreground truncate max-w-[10rem] md:max-w-[18rem]"
-					title={nameSourceTitle(nameSource, agentType) ?? caption}
+					title={nameSourceTitle(nameSource, nativeName, currentName, agentType) ?? caption}
 				>
 					{caption}
 				</span>
@@ -132,6 +132,10 @@ export function InlineRename({
 					type="button"
 					onClick={useAgentName}
 					aria-disabled={resetState === "pending"}
+					// F199: the caption carrying this name may be truncated, so the
+					// button itself names it too.
+					title={`Use agent name "${nativeName}"`}
+					aria-label={`Use agent name "${nativeName}"`}
 					className="relative before:absolute before:-inset-y-3 before:inset-x-0 md:before:hidden rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors aria-disabled:opacity-50 aria-disabled:cursor-wait"
 				>
 					{resetState === "pending" ? "Applying…" : "Use agent name"}
