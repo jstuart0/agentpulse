@@ -270,6 +270,55 @@ describe("rawPayload drops the duplicate tool_input for hook tool/permission row
 		expect(rawPayload.tool_use_id).toBe("tu-g9");
 	});
 
+	// F111: G8/G9 only exercised PostToolUse and PermissionRequest — a
+	// mutant that scoped shapeHookRawPayload's tool_input drop to just those
+	// two event types (missing PreToolUse and PermissionDenied) survived
+	// every other test in the suite. shapeHookRawPayload's own condition is
+	// unconditional (`"tool_input" in shaped`), so it should already cover
+	// every hook event type; these two variants pin PreToolUse and
+	// PermissionDenied specifically, closing that gap.
+	test("G8b: a hook PreToolUse has no tool_input key, a tool_input_in_column marker, and the toolInput column matches", async () => {
+		const sid = newSessionId("g8b");
+		const toolInput = { command: "echo hi" };
+		await processHookEvent(
+			{
+				session_id: sid,
+				hook_event_name: "PreToolUse",
+				tool_name: "Bash",
+				tool_use_id: "tu-g8b",
+				tool_input: toolInput,
+			},
+			"claude_code",
+		);
+		const row = await storedRow(sid, "PreToolUse");
+		const rawPayload = row.rawPayload as Record<string, unknown>;
+		expect(rawPayload).not.toHaveProperty("tool_input");
+		expect(rawPayload.tool_input_in_column).toBe(true);
+		expect(row.toolInput).toEqual(toolInput);
+		expect(rawPayload.tool_use_id).toBe("tu-g8b");
+	});
+
+	test("G9b: the same for PermissionDenied", async () => {
+		const sid = newSessionId("g9b");
+		const toolInput = { file_path: "/etc/shadow" };
+		await processHookEvent(
+			{
+				session_id: sid,
+				hook_event_name: "PermissionDenied",
+				tool_name: "Read",
+				tool_use_id: "tu-g9b",
+				tool_input: toolInput,
+			},
+			"claude_code",
+		);
+		const row = await storedRow(sid, "PermissionDenied");
+		const rawPayload = row.rawPayload as Record<string, unknown>;
+		expect(rawPayload).not.toHaveProperty("tool_input");
+		expect(rawPayload.tool_input_in_column).toBe(true);
+		expect(row.toolInput).toEqual(toolInput);
+		expect(rawPayload.tool_use_id).toBe("tu-g9b");
+	});
+
 	test("G10: UserPromptSubmit is unchanged, with no marker", async () => {
 		const sid = newSessionId("g10-prompt");
 		const payload: HookEventPayload = {

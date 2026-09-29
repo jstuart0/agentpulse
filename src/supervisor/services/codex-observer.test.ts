@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const {
+	_resetSaveStateWarnForTest,
 	codexNativeMarkerPath,
 	evictNativeMarkers,
 	isCodexObserverEnabled,
@@ -406,15 +407,18 @@ test("O8 a legacy task_completed line posts exactly one Stop, with turn_id when 
 	expect(stops[0]?.body.turn_id).toBe("turn-legacy");
 });
 
-test("O9 saveState writes atomically, replacing pre-existing tmp garbage", () => {
+test("O9 saveState writes atomically; unrelated garbage at the legacy fixed .tmp path is untouched", () => {
+	// F107: random-suffixed tmp names mean saveState never touches the old
+	// fixed `${target}.tmp` path at all — a leftover there (from a pre-F107
+	// process, say) is simply irrelevant, not "cleaned up".
 	const dir = mkTmp("ap-codex-state-");
 	const target = join(dir, "state.json");
 	writeFileSync(`${target}.tmp`, "not json garbage {{{");
 	saveState({ files: { a: { offset: 5, sessionId: "s1" } } }, target);
-	expect(existsSync(`${target}.tmp`)).toBe(false);
 	expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({
 		files: { a: { offset: 5, sessionId: "s1" } },
 	});
+	expect(readFileSync(`${target}.tmp`, "utf8")).toBe("not json garbage {{{");
 });
 
 test("F101 saveState writes the state file with mode 0600", () => {
@@ -424,21 +428,42 @@ test("F101 saveState writes the state file with mode 0600", () => {
 	expect(statSync(target).mode & 0o777).toBe(0o600);
 });
 
-test("F101 saveState refuses a symlink pre-planted at the tmp path", () => {
+test("F107 saveState refuses a symlink pre-planted at its own tmp path and warns once", () => {
 	const dir = mkTmp("ap-codex-state-");
 	const target = join(dir, "state.json");
 	const canary = join(dir, "canary.txt");
+	const plantedTmp = join(dir, "planted.tmp");
 	writeFileSync(canary, "untouched");
-	symlinkSync(canary, `${target}.tmp`);
+	symlinkSync(canary, plantedTmp);
+	_resetSaveStateWarnForTest();
+	const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
-	saveState({ files: { a: { offset: 1, sessionId: "s1" } } }, target);
+	// Two calls forced onto the SAME pre-planted tmp path (the deterministic
+	// injectable third arg — production always generates a fresh random
+	// suffix per call, so this exact collision can't happen there, but the
+	// wx-flag refusal behaviour it exercises is identical either way).
+	saveState({ files: { a: { offset: 1, sessionId: "s1" } } }, target, plantedTmp);
+	saveState({ files: { a: { offset: 2, sessionId: "s1" } } }, target, plantedTmp);
 
-	// The symlink was never followed: the file it points to is untouched,
-	// and saveState bailed out before renaming a symlink onto the real
-	// state path, so no state file was written this cycle either — the
-	// next scan will retry, per the function's own error-swallow contract.
+	// The symlink was never followed (its target is untouched), and no
+	// state file was written this cycle — the next scan retries with a
+	// fresh random suffix, per the function's own error-swallow contract.
 	expect(readFileSync(canary, "utf8")).toBe("untouched");
 	expect(existsSync(target)).toBe(false);
+	const plantedWarnings = warnSpy.mock.calls.filter((call) =>
+		String(call[0]).includes("codex_observer_tmp_path_refused"),
+	);
+	expect(plantedWarnings).toHaveLength(1);
+	warnSpy.mockRestore();
+});
+
+test("F107 saveState succeeds normally with the default random-suffixed tmp path", () => {
+	const dir = mkTmp("ap-codex-state-");
+	const target = join(dir, "state.json");
+	saveState({ files: { a: { offset: 3, sessionId: "s1" } } }, target);
+	expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({
+		files: { a: { offset: 3, sessionId: "s1" } },
+	});
 });
 
 describe("O10 isCodexObserverEnabled", () => {

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	existsSync,
 	lstatSync,
@@ -51,33 +51,56 @@ function loadState(): ObserverState {
 	}
 }
 
+let warnedPlantedTmpPath = false;
+
+/** Reset for tests only — the once-per-process planted-tmp-path warning. */
+export function _resetSaveStateWarnForTest(): void {
+	warnedPlantedTmpPath = false;
+}
+
 /**
- * Atomic write (F43 / F73 seam): write to `${path}.tmp`, then rename over
- * `path`. renameSync is atomic on the same filesystem, so a crash mid-write
- * never leaves a half-written state file — readers see either the old
- * state or the new one, never a torn one. `path` is injectable for tests
- * (O9); production callers use the default STATE_FILE.
+ * Atomic write (F43 / F73 seam): write to a fresh, randomly-suffixed tmp
+ * path, then rename over `path`. renameSync is atomic on the same
+ * filesystem, so a crash mid-write never leaves a half-written state file —
+ * readers see either the old state or the new one, never a torn one. `path`
+ * is injectable for tests (O9); `tmpPath` is injectable too, only for
+ * exercising the collision-refusal branch deterministically (F107) —
+ * production callers use the default STATE_FILE and let the random suffix
+ * be generated.
  *
- * F101: the tmp path is refused if it's already a symlink — writeFileSync
- * follows symlinks by default, so a pre-planted `${path}.tmp` symlink
- * would otherwise let a local attacker redirect this write to an
- * arbitrary file. A plain leftover regular file (O9's tmp garbage case)
- * is not a symlink and is still safely overwritten. The state file itself
- * is written with mode 0600 — it's process-local bookkeeping, not meant
- * to be group/world readable.
+ * F107 (closes F101's residual TOCTOU): F101's lstat-then-write check still
+ * had a window between the check and the write where an attacker could
+ * plant a symlink. Writing with `{ flag: "wx" }` (O_CREAT | O_EXCL) makes
+ * "does this path already exist, as anything, including a symlink" and
+ * "create it" a single atomic filesystem operation — there is no window to
+ * race. Randomizing the tmp path's suffix per call means an attacker can no
+ * longer even predict the path to pre-plant at; F101's fixed `${path}.tmp`
+ * name is not otherwise touched by this function, so any legacy leftover at
+ * that literal path is simply irrelevant, not "cleaned up" or "blocked" —
+ * see O9's updated expectations. On refusal (EEXIST — a plant that won by
+ * guessing, or a same-tick collision) the write is skipped for this cycle
+ * (the next scan retries) and a static, identifier-free warning is logged
+ * once per process, so a local racer can't silently suppress persistence
+ * without it showing up in the logs. The state file itself is written with
+ * mode 0600 — it's process-local bookkeeping, not meant to be group/world
+ * readable.
  */
-export function saveState(state: ObserverState, path: string = STATE_FILE): void {
-	const tmpPath = `${path}.tmp`;
+export function saveState(
+	state: ObserverState,
+	path: string = STATE_FILE,
+	tmpPath = `${path}.${randomBytes(8).toString("hex")}.tmp`,
+): void {
 	try {
-		try {
-			if (lstatSync(tmpPath).isSymbolicLink()) return;
-		} catch {
-			// ENOENT is the expected case — nothing at tmpPath yet.
-		}
-		writeFileSync(tmpPath, JSON.stringify(state, null, 2), { mode: 0o600 });
+		writeFileSync(tmpPath, JSON.stringify(state, null, 2), { flag: "wx", mode: 0o600 });
 		renameSync(tmpPath, path);
-	} catch {
-		// disk full / permissions / readonly — skip; next scan will retry
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException)?.code;
+		if (code === "EEXIST" && !warnedPlantedTmpPath) {
+			warnedPlantedTmpPath = true;
+			console.warn(JSON.stringify({ kind: "codex_observer_tmp_path_refused", level: "warn" }));
+		}
+		// disk full / permissions / readonly / a planted path — skip; next
+		// scan will retry with a fresh random suffix.
 	}
 }
 

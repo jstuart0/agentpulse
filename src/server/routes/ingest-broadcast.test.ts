@@ -279,6 +279,70 @@ describe("P6-dto: no dedupKey on any live path", () => {
 		}
 	});
 
+	// F110: the above exercises appendManagedSessionEvents at the service
+	// level only — nothing had posted through the real route with a real
+	// supervisor credential. Route the same assertion through
+	// POST /api/v1/supervisors/:id/managed-sessions/:sid/events over HTTP.
+	test("POST /api/v1/supervisors/:id/managed-sessions/:sid/events (real route, real supervisor credential) response has no dedupKey key", async () => {
+		const { supervisorsAgentRouter } = await import("./supervisors.js");
+		const { createSupervisorEnrollmentToken } = await import("../auth/supervisor-auth.js");
+		const supervisorApp = new Hono().route("/api/v1", supervisorsAgentRouter);
+
+		const originalDisableAuthLocal = config.disableAuth;
+		config.disableAuth = false;
+		try {
+			const { token } = await createSupervisorEnrollmentToken("f110-supervisor", null, null);
+			const supervisorId = crypto.randomUUID();
+			const registerRes = await supervisorApp.request("/api/v1/supervisors/register", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					hostName: "f110-host",
+					platform: "linux",
+					arch: "x64",
+					version: "1.0.0",
+					enrollmentToken: token,
+					id: supervisorId,
+				}),
+			});
+			expect(registerRes.status).toBe(200);
+			const { supervisorCredential } = (await registerRes.json()) as {
+				supervisorCredential: string;
+			};
+			expect(typeof supervisorCredential).toBe("string");
+
+			const sid = newSessionId("p6dto-managed-http");
+			await mkSession(sid);
+			const eventsRes = await supervisorApp.request(
+				`/api/v1/supervisors/${supervisorId}/managed-sessions/${sid}/events`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${supervisorCredential}`,
+					},
+					body: JSON.stringify({
+						events: [
+							{
+								eventType: "ManagedMessage",
+								category: "assistant_message",
+								content: "hi over http",
+							},
+						],
+					}),
+				},
+			);
+			expect(eventsRes.status).toBe(200);
+			const body = (await eventsRes.json()) as { events: unknown[] };
+			expect(body.events.length).toBeGreaterThan(0);
+			for (const row of body.events) {
+				expect(row).not.toHaveProperty("dedupKey");
+			}
+		} finally {
+			config.disableAuth = originalDisableAuthLocal;
+		}
+	});
+
 	test("insertNormalizedEvents (the transcript path's data source) rows have no dedupKey key, then broadcasting them produces no dedupKey on sessionBus", async () => {
 		const sid = newSessionId("p6dto-transcript");
 		await mkSession(sid);
