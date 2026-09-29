@@ -237,6 +237,27 @@ describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static 
 		}
 	});
 
+	test("F248 (codex r2 D38): $markerLine is concatenated INSIDE the Start-Job block in the source, not before it", () => {
+		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
+		const start = ps1.indexOf("function New-ApHookCommand");
+		const end = ps1.indexOf("function New-ApCodexHooksFile");
+		const body = ps1.slice(start, end);
+
+		// $markerLine is DEFINED earlier in the function (PowerShell's
+		// pre-declare-then-return structure — see the note above), so this
+		// checks where it's USED in the return-string concatenation: after
+		// the "Start-Job -ScriptBlock {" line is appended, not before.
+		const startJobConcatIdx = body.indexOf('"Start-Job -ScriptBlock {`n" +');
+		const markerUsageIdx = body.indexOf('"  " + $markerLine +');
+		expect(startJobConcatIdx).toBeGreaterThan(-1);
+		expect(markerUsageIdx).toBeGreaterThan(-1);
+		expect(markerUsageIdx).toBeGreaterThan(startJobConcatIdx);
+
+		// And the marker's own generated text now reads the temp file
+		// itself rather than the parent-scope $raw variable.
+		expect(body).toContain("[IO.File]::ReadAllText(`$t)");
+	});
+
 	test("New-ApCodexHooksFile emits all 12 events with async=$false, timeout=1, no matcher key", () => {
 		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
 		const start = ps1.indexOf("function New-ApCodexHooksFile");
@@ -346,8 +367,242 @@ describe("F234 (Low): the rendered GET /setup.sh honors AGENTPULSE_KEY without a
 			const headerFile = Bun.file(join(home, ".agentpulse", "hook-auth-header"));
 			expect(await headerFile.exists()).toBe(true);
 			expect(await headerFile.text()).toBe("Authorization: Bearer ap_from_env_not_argv\n");
+
+			// D37/F243: the key lands in ~/.agentpulse/env (0600), never the
+			// rc file — only a key-free source line goes there.
+			const { stat } = await import("node:fs/promises");
+			const envPath = join(home, ".agentpulse", "env");
+			const envFile = await Bun.file(envPath).text();
+			expect(envFile).toContain('export AGENTPULSE_API_KEY="ap_from_env_not_argv"');
+			expect((await stat(envPath)).mode & 0o777).toBe(0o600);
+			const rcFile = await Bun.file(join(home, ".zshrc")).text();
+			expect(rcFile).not.toContain("ap_from_env_not_argv");
+			expect(rcFile).toContain('[ -f "$HOME/.agentpulse/env" ] && . "$HOME/.agentpulse/env"');
 		} finally {
 			await rm(home, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("F246 (High, codex r2 D38): the rendered GET /setup.sh refuses to write anything against an auth-enabled server with no key", () => {
+	function startAuthStub(disableAuth: boolean) {
+		const server = Bun.serve({
+			port: 0,
+			fetch(req) {
+				const url = new URL(req.url);
+				if (url.pathname === "/api/v1/auth/me") {
+					return Response.json({ authenticated: false, user: null, disableAuth });
+				}
+				if (url.pathname === "/api/v1/health") {
+					return Response.json({ status: "ok" });
+				}
+				return new Response("not found", { status: 404 });
+			},
+		});
+		return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+	}
+
+	async function runRendered(home: string, args: string[], env: Record<string, string> = {}) {
+		const { setup } = await import("../src/server/routes/setup.ts");
+		const app = new Hono().route("/", setup);
+		const res = await app.request("http://localhost/setup.sh", {
+			headers: { Host: "localhost:3000" },
+		});
+		const rendered = await res.text();
+		const proc = Bun.spawn(["bash", "-c", rendered, "installer", ...args], {
+			stdout: "pipe",
+			stderr: "pipe",
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, ...env },
+		});
+		const [stdout, stderr] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
+		await proc.exited;
+		return { code: proc.exitCode, out: stdout + stderr };
+	}
+
+	test("auth enabled, no --key/AGENTPULSE_KEY: exits non-zero, writes nothing", async () => {
+		const { mkdtemp, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const stub = startAuthStub(false);
+		const home = await mkdtemp(join(tmpdir(), "ap-f246-noauth-"));
+		try {
+			const res = await runRendered(home, ["--url", stub.url]);
+			expect(res.code).not.toBe(0);
+			expect(res.out).toMatch(/requires an API key/);
+			expect(await Bun.file(join(home, ".claude", "settings.json")).exists()).toBe(false);
+			expect(await Bun.file(join(home, ".codex", "hooks.json")).exists()).toBe(false);
+		} finally {
+			stub.stop();
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("auth enabled, a key IS supplied: proceeds and writes the hooks", async () => {
+		const { mkdtemp, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const stub = startAuthStub(false);
+		const home = await mkdtemp(join(tmpdir(), "ap-f246-withkey-"));
+		try {
+			const res = await runRendered(home, ["--url", stub.url, "--key", "ap_test123"]);
+			expect(res.code).toBe(0);
+			expect(await Bun.file(join(home, ".claude", "settings.json")).exists()).toBe(true);
+			expect(await Bun.file(join(home, ".codex", "hooks.json")).exists()).toBe(true);
+		} finally {
+			stub.stop();
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("auth disabled, no key: proceeds and writes the hooks", async () => {
+		const { mkdtemp, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const stub = startAuthStub(true);
+		const home = await mkdtemp(join(tmpdir(), "ap-f246-disabled-"));
+		try {
+			const res = await runRendered(home, ["--url", stub.url]);
+			expect(res.code).toBe(0);
+			expect(await Bun.file(join(home, ".claude", "settings.json")).exists()).toBe(true);
+			expect(await Bun.file(join(home, ".codex", "hooks.json")).exists()).toBe(true);
+		} finally {
+			stub.stop();
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("F247 (High, codex r2 D38): the rendered GET /setup.sh writes Copilot hooks when Copilot is detected", () => {
+	async function runRendered(
+		home: string,
+		args: string[],
+		pathPrefix?: string,
+		fullPath?: string,
+	): Promise<{ code: number | null; out: string }> {
+		const { setup } = await import("../src/server/routes/setup.ts");
+		const app = new Hono().route("/", setup);
+		const res = await app.request("http://localhost/setup.sh", {
+			headers: { Host: "localhost:3000" },
+		});
+		const rendered = await res.text();
+		const proc = Bun.spawn(["bash", "-c", rendered, "installer", ...args], {
+			stdout: "pipe",
+			stderr: "pipe",
+			env: {
+				PATH:
+					fullPath ?? `${pathPrefix ? `${pathPrefix}:` : ""}${process.env.PATH ?? "/usr/bin:/bin"}`,
+				HOME: home,
+			},
+		});
+		const [stdout, stderr] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
+		await proc.exited;
+		return { code: proc.exitCode, out: stdout + stderr };
+	}
+
+	test("copilot detected (stub binary on PATH): writes ~/.copilot/hooks/agentpulse.json matching buildCopilotHooksFile", async () => {
+		const { mkdtemp, rm, writeFile, chmod } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { buildCopilotHooksFile } = await import("../src/shared/hook-command.ts");
+
+		const home = await mkdtemp(join(tmpdir(), "ap-f247-detected-"));
+		const stubDir = await mkdtemp(join(tmpdir(), "ap-f247-copilot-stub-"));
+		await writeFile(join(stubDir, "copilot"), "#!/bin/sh\nexit 0\n");
+		await chmod(join(stubDir, "copilot"), 0o755);
+		try {
+			const res = await runRendered(home, ["--key", "ap_test123"], stubDir);
+			expect(res.code).toBe(0);
+			const copilotFile = join(home, ".copilot", "hooks", "agentpulse.json");
+			const written = await Bun.file(copilotFile).text();
+			// F247's block calls ap_copilot_hooks_json with the script's
+			// resolved default HOOK_URL — compare structurally (event set,
+			// shape), not byte-for-byte against a fixed baseUrl.
+			const parsed = JSON.parse(written);
+			const expected = JSON.parse(buildCopilotHooksFile({ baseUrl: "http://x", direct: true }));
+			expect(Object.keys(parsed.hooks).sort()).toEqual(Object.keys(expected.hooks).sort());
+			expect(parsed.version).toBe(1);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+			await rm(stubDir, { recursive: true, force: true });
+		}
+	});
+
+	test("copilot NOT detected: no copilot file written, Claude/Codex still configured", async () => {
+		const { mkdtemp, rm, mkdir, readdir, symlink } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const home = await mkdtemp(join(tmpdir(), "ap-f247-notdetected-"));
+		// D8/installers-run.test.ts's own note applies here too: a real
+		// `copilot` binary may already be installed on this machine's PATH
+		// (this repo's own Phase 0 spike did, via Homebrew) — dropping the
+		// whole directory that contains it would break python3/curl/etc
+		// that share it. Mirror each PATH dir containing `copilot` into a
+		// symlink-only copy with just that one entry omitted.
+		const inherited = (process.env.PATH ?? "/usr/bin:/bin").split(":").filter(Boolean);
+		const mirrorRoot = await mkdtemp(join(tmpdir(), "ap-f247-path-mirror-"));
+		const sanitizedDirs: string[] = [];
+		for (const [i, dir] of inherited.entries()) {
+			const hasCopilot = await Bun.file(join(dir, "copilot")).exists();
+			if (!hasCopilot) {
+				sanitizedDirs.push(dir);
+				continue;
+			}
+			const mirror = join(mirrorRoot, String(i));
+			await mkdir(mirror, { recursive: true });
+			for (const entry of await readdir(dir)) {
+				if (entry === "copilot") continue;
+				try {
+					await symlink(join(dir, entry), join(mirror, entry));
+				} catch {
+					// Dangling/unreadable entry — skip rather than fail the mirror.
+				}
+			}
+			sanitizedDirs.push(mirror);
+		}
+		const sanitizedPath = sanitizedDirs.join(":");
+		try {
+			const res = await runRendered(home, ["--key", "ap_test123"], undefined, sanitizedPath);
+			expect(res.code).toBe(0);
+			expect(await Bun.file(join(home, ".copilot", "hooks", "agentpulse.json")).exists()).toBe(
+				false,
+			);
+			expect(await Bun.file(join(home, ".claude", "settings.json")).exists()).toBe(true);
+			expect(await Bun.file(join(home, ".codex", "hooks.json")).exists()).toBe(true);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("backup rotation: a pre-existing Copilot hooks file is backed up once, unchanged re-runs skip re-writing", async () => {
+		const { mkdtemp, rm, mkdir, writeFile, chmod, readdir } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+
+		const home = await mkdtemp(join(tmpdir(), "ap-f247-backup-"));
+		const stubDir = await mkdtemp(join(tmpdir(), "ap-f247-copilot-stub-"));
+		await writeFile(join(stubDir, "copilot"), "#!/bin/sh\nexit 0\n");
+		await chmod(join(stubDir, "copilot"), 0o755);
+		try {
+			await mkdir(join(home, ".copilot", "hooks"), { recursive: true });
+			await writeFile(
+				join(home, ".copilot", "hooks", "agentpulse.json"),
+				'{"hooks":{"custom":"mine"}}\n',
+			);
+			const res1 = await runRendered(home, ["--key", "ap_test123"], stubDir);
+			expect(res1.code).toBe(0);
+			const dirAfterRun1 = await readdir(join(home, ".copilot", "hooks"));
+			const backups1 = dirAfterRun1.filter((f) => f.includes("agentpulse-bak"));
+			expect(backups1).toHaveLength(1);
+
+			const res2 = await runRendered(home, ["--key", "ap_test123"], stubDir);
+			expect(res2.code).toBe(0);
+			expect(res2.out).toContain("Copilot hooks unchanged");
+			const dirAfterRun2 = await readdir(join(home, ".copilot", "hooks"));
+			const backups2 = dirAfterRun2.filter((f) => f.includes("agentpulse-bak"));
+			expect(backups2).toHaveLength(1);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+			await rm(stubDir, { recursive: true, force: true });
 		}
 	});
 });

@@ -202,6 +202,61 @@ describe("buildBashHookCommand / buildPowerShellHookCommand — base URL validat
 	}
 });
 
+describe("buildPowerShellHookCommand — F248 (codex r2 D38): marker extraction runs inside Start-Job, not on the synchronous parent path", () => {
+	test("the codex_cli marker snippet appears AFTER Start-Job in the generated text, not before it", () => {
+		const cmd = buildPowerShellHookCommand({
+			baseUrl: "http://localhost:4000",
+			direct: true,
+			agent: "codex_cli",
+			event: "Stop",
+		});
+		const startJobIdx = cmd.indexOf("Start-Job");
+		const markerIdx = cmd.indexOf("session_id");
+		expect(startJobIdx).toBeGreaterThan(-1);
+		expect(markerIdx).toBeGreaterThan(-1);
+		expect(markerIdx).toBeGreaterThan(startJobIdx);
+	});
+
+	test("the marker snippet reads the temp file itself ([IO.File]::ReadAllText($t)), not the parent-scope $raw variable", () => {
+		const cmd = buildPowerShellHookCommand({
+			baseUrl: "http://localhost:4000",
+			direct: true,
+			agent: "codex_cli",
+			event: "Stop",
+		});
+		expect(cmd).toContain("[IO.File]::ReadAllText($t)");
+		// The parent-scope $raw is still used, but only for the synchronous
+		// stdin-drain + temp-file write (D13) — never re-read for the marker.
+		const markerSection = cmd.slice(cmd.indexOf("Start-Job"));
+		expect(markerSection).not.toMatch(/\[regex\]::Match\(\$raw,/);
+	});
+
+	test("only the synchronous stdin-drain + temp-file write happen before Start-Job", () => {
+		const cmd = buildPowerShellHookCommand({
+			baseUrl: "http://localhost:4000",
+			direct: true,
+			agent: "codex_cli",
+			event: "Stop",
+		});
+		const beforeJob = cmd.slice(0, cmd.indexOf("Start-Job"));
+		expect(beforeJob).toContain("[Console]::In.ReadToEnd()");
+		expect(beforeJob).toContain("[IO.File]::WriteAllText($t, $raw)");
+		expect(beforeJob).not.toContain("session_id");
+		expect(beforeJob).not.toContain("codex-native");
+	});
+
+	test("copilot_cli carries no marker snippet at all, before or after Start-Job", () => {
+		const cmd = buildPowerShellHookCommand({
+			baseUrl: "http://localhost:4000",
+			direct: true,
+			agent: "copilot_cli",
+			event: "postToolUse",
+		});
+		expect(cmd).not.toContain("session_id");
+		expect(cmd).not.toContain("codex-native");
+	});
+});
+
 describe("buildCodexHooksFile (D12)", () => {
 	test("all 12 CodexEvent members are present, no matcher key anywhere", () => {
 		const text = buildCodexHooksFile({ baseUrl: BASE, direct: false });

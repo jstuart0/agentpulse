@@ -18,10 +18,42 @@ describe("AUTH_STEP", () => {
 		for (const agent of ["codex_cli", "copilot_cli"] as const) {
 			const step = AUTH_STEP[agent]("ap_test123", false);
 			expect(step).not.toBeNull();
-			expect(step?.command).toContain("~/.agentpulse/hook-auth-header");
+			expect(step?.command).toContain("d=~/.agentpulse");
+			expect(step?.command).toContain('f="$d/hook-auth-header"');
 			expect(step?.command).toContain("'ap_test123'");
 			expect(step?.command).toContain("umask 077");
 		}
+	});
+
+	test("F249 (codex r2 D38): the POSIX command checks the parent directory for a symlink BEFORE mkdir -p, not just the final file", () => {
+		const step = AUTH_STEP.codex_cli("ap_test123", false);
+		const command = step?.command ?? "";
+		expect(command).toContain('if [ -L "$d" ]');
+		expect(command).toContain('elif [ -L "$f" ]');
+		// Order matters: the parent check has to run before mkdir -p, since
+		// mkdir -p on an already-existing symlinked path silently succeeds.
+		const parentCheckIdx = command.indexOf('if [ -L "$d" ]');
+		const mkdirIdx = command.indexOf("mkdir -p");
+		expect(parentCheckIdx).toBeGreaterThan(-1);
+		expect(mkdirIdx).toBeGreaterThan(-1);
+		expect(parentCheckIdx).toBeLessThan(mkdirIdx);
+		// Still writes via a temp file + atomic replace (F207), not in place.
+		expect(command).toContain('t="$f.$$.tmp"');
+		expect(command).toContain('mv -f "$t" "$f"');
+	});
+
+	test("F249 (codex r2 D38): the PowerShell command checks both the parent directory and the file for a reparse point, and writes via temp-file + Move-Item", () => {
+		const step = AUTH_STEP.codex_cli("ap_test123", false);
+		const windowsCommand = step?.windowsCommand ?? "";
+		expect(windowsCommand).toContain("function ApTestReparse");
+		expect(windowsCommand).toContain(".LinkType");
+		expect(windowsCommand).toContain("ReparsePoint");
+		// Both the parent ($d) and the file ($f) are checked.
+		expect(windowsCommand).toContain("ApTestReparse $d");
+		expect(windowsCommand).toContain("ApTestReparse $f");
+		// Temp-file + Move-Item, not a direct Set-Content at the final path.
+		expect(windowsCommand).toContain("Move-Item -Force -Path $t -Destination $f");
+		expect(windowsCommand).not.toMatch(/Set-Content -NoNewline -Path \$f\b/);
 	});
 
 	test("disableAuth:true gives null for all three agents", () => {

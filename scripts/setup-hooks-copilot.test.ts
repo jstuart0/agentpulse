@@ -7,7 +7,7 @@
  * setup-hooks.sh's own CLI-flag refusals directly, with no server needed.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -132,11 +132,118 @@ describe("F234 (Low): AGENTPULSE_KEY env var is an alternative to --key (keeps t
 				DEFAULT_PATH,
 			);
 			expect(res.code).toBe(0);
+			// D37/F243: the key itself now lives in ~/.agentpulse/env (0600),
+			// never the rc file — the rc file only gets a key-free source line.
+			const envFile = await Bun.file(join(home, ".agentpulse", "env")).text();
+			expect(envFile).toContain("ap_from_argv");
+			expect(envFile).not.toContain("ap_from_env_should_be_overridden");
 			const profile = await Bun.file(join(home, ".profile"))
 				.text()
 				.catch(() => "");
-			expect(profile).toContain("ap_from_argv");
+			expect(profile).not.toContain("ap_from_argv");
 			expect(profile).not.toContain("ap_from_env_should_be_overridden");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("D37/F243: the API key never lands in a shell rc file", () => {
+	test("claude_code: key goes to ~/.agentpulse/env (0600), rc file gets only a key-free source line", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-d37-claude-"));
+		try {
+			const res = await run(
+				["--url", "http://localhost:1", "--key", "ap_secret_key_value"],
+				home,
+				{ SHELL: "/bin/sh" },
+				DEFAULT_PATH,
+			);
+			expect(res.code).toBe(0);
+
+			const envPath = join(home, ".agentpulse", "env");
+			const envFile = await Bun.file(envPath).text();
+			expect(envFile).toContain('export AGENTPULSE_API_KEY="ap_secret_key_value"');
+			const mode = (await stat(envPath)).mode & 0o777;
+			expect(mode).toBe(0o600);
+
+			const profile = await Bun.file(join(home, ".profile")).text();
+			expect(profile).not.toContain("ap_secret_key_value");
+			expect(profile).toContain('[ -f "$HOME/.agentpulse/env" ] && . "$HOME/.agentpulse/env"');
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("codex_cli: no profile write at all — no ~/.agentpulse/env, no rc file touched", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-d37-codex-"));
+		try {
+			const res = await run(
+				["--url", "http://localhost:1", "--key", "ap_secret_key_value", "--agent", "codex_cli"],
+				home,
+				{ SHELL: "/bin/sh" },
+				DEFAULT_PATH,
+			);
+			expect(res.code).toBe(0);
+			expect(await Bun.file(join(home, ".agentpulse", "env")).exists()).toBe(false);
+			const profileExists = await Bun.file(join(home, ".profile")).exists();
+			if (profileExists) {
+				const profile = await Bun.file(join(home, ".profile")).text();
+				expect(profile).not.toContain("ap_secret_key_value");
+				expect(profile).not.toContain("AGENTPULSE");
+			}
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("copilot_cli: no profile write at all — no ~/.agentpulse/env, no rc file touched", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-d37-copilot-"));
+		const stubDir = await mkdtemp(join(tmpdir(), "ap-d37-copilot-stub-"));
+		try {
+			await Bun.write(join(stubDir, "copilot"), "#!/bin/sh\nexit 0\n");
+			await chmod(join(stubDir, "copilot"), 0o755);
+			const res = await run(
+				["--url", "http://localhost:1", "--key", "ap_secret_key_value", "--agent", "copilot_cli"],
+				home,
+				{ SHELL: "/bin/sh" },
+				`${stubDir}:${DEFAULT_PATH}`,
+			);
+			expect(res.code).toBe(0);
+			expect(await Bun.file(join(home, ".agentpulse", "env")).exists()).toBe(false);
+			const profileExists = await Bun.file(join(home, ".profile")).exists();
+			if (profileExists) {
+				const profile = await Bun.file(join(home, ".profile")).text();
+				expect(profile).not.toContain("ap_secret_key_value");
+				expect(profile).not.toContain("AGENTPULSE");
+			}
+		} finally {
+			await rm(home, { recursive: true, force: true });
+			await rm(stubDir, { recursive: true, force: true });
+		}
+	});
+
+	test("an existing plaintext export line is left alone, but a warning with removal instructions is printed", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-d37-warn-"));
+		try {
+			await mkdir(home, { recursive: true });
+			await Bun.write(
+				join(home, ".profile"),
+				'# old install\nexport AGENTPULSE_API_KEY="ap_old_plaintext_key"\n',
+			);
+			const res = await run(
+				["--url", "http://localhost:1", "--key", "ap_new_key"],
+				home,
+				{ SHELL: "/bin/sh" },
+				DEFAULT_PATH,
+			);
+			expect(res.code).toBe(0);
+			expect(res.out).toContain("already has a plaintext AGENTPULSE_API_KEY export");
+			expect(res.out).toContain("sed -i.bak");
+			const profile = await Bun.file(join(home, ".profile")).text();
+			expect(profile).toContain('export AGENTPULSE_API_KEY="ap_old_plaintext_key"');
+			// The new key still lands in the protected file regardless.
+			const envFile = await Bun.file(join(home, ".agentpulse", "env")).text();
+			expect(envFile).toContain("ap_new_key");
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}

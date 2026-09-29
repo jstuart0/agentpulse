@@ -75,6 +75,20 @@ describe("writePrivateFileSyncNoFollow", () => {
 			/refusing to write through other/,
 		);
 	});
+
+	test("F241: a symlinked parent directory is refused, its target untouched", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-private-file-"));
+		const realDir = join(dir, "real-dir");
+		mkdirSync(realDir);
+		const symlinkedDir = join(dir, "symlinked-dir");
+		symlinkSync(realDir, symlinkedDir);
+		const target = join(symlinkedDir, "secret");
+		expect(() => writePrivateFileSyncNoFollow(target, "attacker-controlled\n")).toThrow(
+			/refusing to write into a symlinked directory/,
+		);
+		expect(statSync(realDir).isDirectory()).toBe(true);
+		expect(() => statSync(join(realDir, "secret"))).toThrow();
+	});
 });
 
 /**
@@ -131,5 +145,19 @@ describe("writeConfigFileSyncNoFollow (F232)", () => {
 		writeConfigFileSyncNoFollow(target, "a very long first line that is longer\n");
 		writeConfigFileSyncNoFollow(target, "short\n");
 		expect(readFileSync(target, "utf-8")).toBe("short\n");
+	});
+
+	test("F241: a symlinked parent directory is refused, its target untouched", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-config-file-"));
+		const realDir = join(dir, "real-dir");
+		mkdirSync(realDir);
+		const symlinkedDir = join(dir, "symlinked-dir");
+		symlinkSync(realDir, symlinkedDir);
+		const target = join(symlinkedDir, "hooks.json");
+		expect(() => writeConfigFileSyncNoFollow(target, "attacker-controlled\n")).toThrow(
+			/refusing to write into a symlinked directory/,
+		);
+		expect(statSync(realDir).isDirectory()).toBe(true);
+		expect(() => statSync(join(realDir, "hooks.json"))).toThrow();
 	});
 });
