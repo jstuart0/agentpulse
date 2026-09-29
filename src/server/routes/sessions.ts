@@ -178,6 +178,19 @@ sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 
 	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
 
+	// ian F121: pre-Phase-3 relays push Codex thread titles here with
+	// source:"sync" (and a manage key). That's an agent-reported name, so it
+	// takes the native-name path: a manual pin wins, nativeName is recorded,
+	// and the response stays 200 (an unknown session is still a silent no-op).
+	if (source === "sync") {
+		const result = await applyNativeName(sessionId, name);
+		if (result.applied) {
+			const session = await getSession(sessionId);
+			if (session) notifySessionUpdated(session);
+		}
+		return c.json({ ok: true });
+	}
+
 	await renameSession(sessionId, name, { source });
 	const session = await getSession(sessionId);
 	if (session) notifySessionUpdated(session);

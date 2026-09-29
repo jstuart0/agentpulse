@@ -119,7 +119,10 @@ export function InlineRename({
 				{currentName}
 			</span>
 			{caption && (
-				<span className="text-[10px] text-muted-foreground truncate max-w-[18rem]" title={caption}>
+				<span
+					className="text-[10px] text-muted-foreground truncate max-w-[10rem] md:max-w-[18rem]"
+					title={caption}
+				>
 					{caption}
 				</span>
 			)}
@@ -128,7 +131,7 @@ export function InlineRename({
 					type="button"
 					onClick={useAgentName}
 					aria-disabled={resetState === "pending"}
-					className="rounded border border-border px-1.5 py-2 md:py-0.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors aria-disabled:opacity-50 aria-disabled:cursor-wait"
+					className="inline-flex items-center min-h-11 md:min-h-0 rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors aria-disabled:opacity-50 aria-disabled:cursor-wait"
 				>
 					{resetState === "pending" ? "Applying…" : "Use agent name"}
 				</button>

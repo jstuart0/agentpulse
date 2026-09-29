@@ -142,7 +142,7 @@ function renderSnapshot(s: SessionSnapshot): string {
 	const lines: string[] = [];
 	const title = formatUntrustedInline(s.displayName ?? s.sessionId.slice(0, 8));
 	lines.push(`## Session: ${title}`);
-	lines.push(`- id: ${s.sessionId}`);
+	lines.push(`- id: ${formatUntrustedInline(s.sessionId)}`);
 	lines.push(`- agent: ${s.agentType}`);
 	lines.push(
 		`- status: ${s.status}${s.isWorking ? " (working now)" : ""} · tool uses: ${s.totalToolUses}`,

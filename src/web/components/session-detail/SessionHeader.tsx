@@ -96,7 +96,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 				<button
 					type="button"
 					onClick={() => navigate("/")}
-					className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+					className="self-start mt-1.5 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
 					aria-label="Back to dashboard"
 				>
 					<svg
