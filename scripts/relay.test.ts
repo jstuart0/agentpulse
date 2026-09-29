@@ -1015,6 +1015,7 @@ describe("paging the Codex session list (D23, F60)", () => {
 			const q = new URLSearchParams(r.search);
 			expect(q.get("agent_type")).toBe("codex_cli");
 			expect(q.get("limit")).toBe("50");
+			expect(q.get("fields")).toBe("sessionId,displayName,nameSource");
 		}
 		const pushed = await readJsonl(indexPath());
 		expect(pushed).toHaveLength(200);

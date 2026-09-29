@@ -17,10 +17,13 @@ import {
 } from "../services/control-actions.js";
 import { notifySessionUpdated } from "../services/notifier.js";
 import {
+	type SessionListField,
 	applyNativeName,
 	getSession,
+	getSessionSummaries,
 	getSessions,
 	getStats,
+	isSessionListField,
 	renameSession,
 	resetNameSource,
 } from "../services/session-tracker.js";
@@ -43,6 +46,21 @@ sessionsRouter.get("/sessions", async (c) => {
 	const projectId = c.req.query("projectId") as string | undefined;
 	const limit = Number(c.req.query("limit") || 50);
 	const offset = Number(c.req.query("offset") || 0);
+
+	// F128: opt-in narrow projection (the relay's per-tick Codex paging). An
+	// unknown or empty field list is a 400, so a typo can't silently fall back
+	// to the heavy full rows. Without `fields` the response is unchanged.
+	const fieldsParam = c.req.query("fields");
+	if (fieldsParam !== undefined) {
+		const fields = fieldsParam.split(",").map((f) => f.trim());
+		const invalid = fields.find((f) => !isSessionListField(f));
+		if (invalid !== undefined) return c.json({ error: "invalid_field", value: invalid }, 400);
+		const rows = await getSessionSummaries(
+			{ status, agentType, projectId, limit, offset },
+			fields as SessionListField[],
+		);
+		return c.json({ sessions: rows });
+	}
 
 	const result = await getSessions({ status, agentType, projectId, limit, offset });
 	return c.json(result);

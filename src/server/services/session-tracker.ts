@@ -201,19 +201,15 @@ const LIVE_MANAGED_STATES = [
 	"pending",
 ] as const satisfies readonly ManagedState[];
 
-// Get all sessions with optional filters
-export async function getSessions(filters?: {
+type SessionListFilters = {
 	status?: SessionStatus;
 	agentType?: AgentType;
 	projectId?: string;
 	limit?: number;
 	offset?: number;
-}) {
-	const limit = filters?.limit ?? 50;
-	const offset = filters?.offset ?? 0;
+};
 
-	let query = getDb().select().from(sessions).orderBy(desc(sessions.lastActivityAt));
-
+function sessionListConditions(filters?: SessionListFilters) {
 	const conditions = [];
 	if (filters?.status) {
 		// TODO(slice-h): translate status=archived param to isArchived=true filter;
@@ -227,6 +223,66 @@ export async function getSessions(filters?: {
 	if (filters?.projectId) {
 		conditions.push(eq(sessions.projectId, filters.projectId));
 	}
+	return conditions;
+}
+
+/**
+ * F128: fields a `GET /sessions?fields=` projection may request. Narrow on
+ * purpose: the relay's name sync pages this list every tick, and a full row
+ * carries CLAUDE.md content, notes and metadata.
+ */
+export const SESSION_LIST_FIELDS = [
+	"sessionId",
+	"displayName",
+	"nameSource",
+	"nativeName",
+	"agentType",
+	"lastActivityAt",
+] as const;
+export type SessionListField = (typeof SESSION_LIST_FIELDS)[number];
+
+export function isSessionListField(value: string): value is SessionListField {
+	return (SESSION_LIST_FIELDS as readonly string[]).includes(value);
+}
+
+/**
+ * F128: the projected list. Reads only the columns the allowlist needs
+ * (metadata for nameSource/nativeName), and skips the count(*) and the
+ * managed-session lookup the full list pays for.
+ */
+export async function getSessionSummaries(
+	filters: SessionListFilters | undefined,
+	fields: readonly SessionListField[],
+): Promise<Array<Partial<Record<SessionListField, unknown>>>> {
+	const conditions = sessionListConditions(filters);
+	let query = getDb()
+		.select({
+			sessionId: sessions.sessionId,
+			displayName: sessions.displayName,
+			agentType: sessions.agentType,
+			lastActivityAt: sessions.lastActivityAt,
+			metadata: sessions.metadata,
+		})
+		.from(sessions)
+		.orderBy(desc(sessions.lastActivityAt));
+	if (conditions.length > 0) query = query.where(and(...conditions)) as typeof query;
+	const rows = await query.limit(filters?.limit ?? 50).offset(filters?.offset ?? 0);
+	return rows.map((row) => {
+		const dto = mapSessionDto(row);
+		const out: Partial<Record<SessionListField, unknown>> = {};
+		for (const field of fields) out[field] = dto[field];
+		return out;
+	});
+}
+
+// Get all sessions with optional filters
+export async function getSessions(filters?: SessionListFilters) {
+	const limit = filters?.limit ?? 50;
+	const offset = filters?.offset ?? 0;
+
+	let query = getDb().select().from(sessions).orderBy(desc(sessions.lastActivityAt));
+
+	const conditions = sessionListConditions(filters);
 
 	if (conditions.length > 0) {
 		query = query.where(and(...conditions)) as typeof query;

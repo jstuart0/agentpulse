@@ -42,6 +42,9 @@ const SCOPE_CHECK_MS = 10 * 60_000;
 const DRIFT_CHECK_MS = 60 * 60_000;
 const CODEX_PAGE_SIZE = 50;
 const CODEX_MAX_PAGES = 4;
+// F128: the narrow projection; a server without it ignores the parameter and
+// returns full rows, which carry the same three fields.
+const CODEX_LIST_FIELDS = "sessionId,displayName,nameSource";
 const MAX_PUSHES_PER_TICK = CODEX_PAGE_SIZE * CODEX_MAX_PAGES;
 const STORM_WINDOW_MS = 60 * 60_000;
 /** F109: at most this many appends per Codex id per rolling STORM_WINDOW_MS, of any kind. */
@@ -1323,7 +1326,7 @@ async function fetchCodexSessions(
 		for (let page = 0; page < CODEX_MAX_PAGES; page++) {
 			const res = await remoteFetch(
 				ctx,
-				`/api/v1/sessions?agent_type=codex_cli&limit=${CODEX_PAGE_SIZE}&offset=${page * CODEX_PAGE_SIZE}`,
+				`/api/v1/sessions?agent_type=codex_cli&limit=${CODEX_PAGE_SIZE}&offset=${page * CODEX_PAGE_SIZE}&fields=${CODEX_LIST_FIELDS}`,
 			);
 			if (!res.ok) return { ok: false, error: `HTTP ${res.status} on GET /sessions` };
 			const data = (await res.json()) as { sessions?: CodexSessionRow[] };
