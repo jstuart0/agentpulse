@@ -593,8 +593,9 @@ export async function processHookEvent(
 		await associateObservedSession({ sessionId });
 	}
 
-	// Store normalized timeline events
-	const normalizedEvents = normalizeHookEvent(payload, agentType);
+	// Store normalized timeline events. F140 (D21): oversize-stub semantics
+	// come only from ctx.oversizeStub (server-set), never from the payload.
+	const normalizedEvents = normalizeHookEvent(payload, agentType, ctx.oversizeStub === true);
 	const isLegacyObserver =
 		agentType === "codex_cli" && ctx.origin === "native" && !payload.transcript_path;
 	let storedEvents: SessionEvent[];

@@ -5,8 +5,7 @@ import type { HookEventPayload, HookEventType, SemanticStatusUpdate } from "../.
 import type { AuthUser } from "../auth/middleware.js";
 import { requireApiKey } from "../auth/middleware.js";
 import { hookRateLimit } from "../middleware/hook-rate-limit.js";
-import { parseDeliveryId, parseOrigin } from "../services/event-dedup.js";
-import type { OversizeStubPayload } from "../services/event-normalizer.js";
+import { type HookDeliveryContext, parseDeliveryId, parseOrigin } from "../services/event-dedup.js";
 import {
 	detectAgentType,
 	processHookEvent,
@@ -293,11 +292,20 @@ function unescapeJsonString(raw: string): string {
 
 /**
  * F132 (D19): scans `text` for TOP-LEVEL (depth-1) string key/value pairs
- * only, via a minimal string-aware brace/bracket depth tracker — not a
- * regex search across the whole prefix, which would also match e.g. a
- * `session_id` nested inside `tool_input` and let a crafted payload forge a
- * different session's identity (F132). `text` must already start with `{`
- * (checked by the caller, after trimStart); anything else yields no fields.
+ * only, via a minimal string-aware bracket tracker — not a regex search
+ * across the whole prefix, which would also match e.g. a `session_id`
+ * nested inside `tool_input` and let a crafted payload forge a different
+ * session's identity (F132). `text` must already start with `{` (checked by
+ * the caller, after trimStart); anything else yields no fields.
+ *
+ * F141 (D21): the bracket tracker is a stack of expected closers, not a
+ * flat depth counter. A flat counter treats `{` and `[` as interchangeable
+ * — `{"tool_input":{"nested":"x"]"session_id":"attacker",...}` closes the
+ * nested object with `]` instead of `}`; a counter just sees depth go
+ * 2 -> 1 either way and happily reads everything after that `]` as
+ * top-level, defeating F132 entirely. The stack catches the type mismatch
+ * and aborts extraction outright — no partial result, no stub, just a
+ * counted oversize drop.
  *
  * One linear pass over `text`, no regex and no backtracking at all — safe
  * against an adversarial prefix (e.g. thousands of unterminated
@@ -311,7 +319,7 @@ function scanTopLevelStringFields(
 	const result: Partial<Record<string, string>> = {};
 	if (text[0] !== "{") return result;
 
-	let depth = 0;
+	const closers: Array<"}" | "]"> = [];
 	let inString = false;
 	let escaped = false;
 	let awaitingValue = false;
@@ -332,7 +340,7 @@ function scanTopLevelStringFields(
 			}
 			if (ch === '"') {
 				inString = false;
-				if (depth === 1) {
+				if (closers.length === 1) {
 					const value = unescapeJsonString(text.slice(stringStart, i));
 					if (!awaitingValue) {
 						// A depth-1 string not currently answering a pending key is
@@ -357,15 +365,25 @@ function scanTopLevelStringFields(
 			stringStart = i + 1;
 			continue;
 		}
-		if (ch === "{" || ch === "[") {
-			depth++;
+		if (ch === "{") {
+			closers.push("}");
+			continue;
+		}
+		if (ch === "[") {
+			closers.push("]");
 			continue;
 		}
 		if (ch === "}" || ch === "]") {
-			const wasDepth = depth;
-			depth--;
-			if (depth <= 0) break; // the root object closed (or a malformed prefix) — done
-			if (wasDepth === 2 && depth === 1) {
+			const stackLenBefore = closers.length;
+			const expected = closers.pop();
+			if (expected === undefined || expected !== ch) {
+				// F141: a mismatched (or stray) closer — this prefix isn't
+				// well-formed JSON from here on, so nothing scanned so far can
+				// be trusted as genuinely top-level. Abort with nothing.
+				return {};
+			}
+			if (closers.length === 0) break; // the root object closed — done
+			if (stackLenBefore === 2) {
 				// A nested object/array just closed — that was pendingKey's
 				// value, not a string. Ready for the next top-level key.
 				awaitingValue = false;
@@ -373,7 +391,7 @@ function scanTopLevelStringFields(
 			}
 			continue;
 		}
-		if (depth === 1 && awaitingValue && ch === ",") {
+		if (closers.length === 1 && awaitingValue && ch === ",") {
 			// A non-string value (number/bool/null) ended without a closing
 			// quote of its own — ready for the next top-level key.
 			awaitingValue = false;
@@ -462,12 +480,12 @@ function sanitizeLogField(value: unknown, maxLen = 64): string {
 		.join("");
 }
 
-/** Phase 7 identity inputs (D2), shared by the real-body and F128 oversize-stub paths. */
-function buildHookDeliveryContext(c: Context): {
-	keyId: string;
-	deliveryId: string | null;
-	origin: "codex-observer" | "native";
-} {
+/**
+ * Phase 7 identity inputs (D2), shared by the real-body and F128
+ * oversize-stub paths. Never sets `oversizeStub` — only
+ * handleOversizeHookDelivery does that, on its own copy (F140/D21).
+ */
+function buildHookDeliveryContext(c: Context): HookDeliveryContext {
 	const authUser = c.get("authUser") as AuthUser | undefined;
 	return {
 		keyId: authUser?.id ?? "anonymous",
@@ -485,7 +503,7 @@ function buildHookDeliveryContext(c: Context): {
 function enqueueHookProcessing(
 	payload: HookEventPayload,
 	agentType: ReturnType<typeof detectAgentType>,
-	hookCtx: ReturnType<typeof buildHookDeliveryContext>,
+	hookCtx: HookDeliveryContext,
 ): void {
 	incrementInFlightCount();
 	enqueueSessionTask(payload.session_id, async () => {
@@ -546,17 +564,18 @@ function handleOversizeHookDelivery(c: Context, prefix: string): Response {
 		return c.json({ ok: true });
 	}
 
-	const syntheticPayload: OversizeStubPayload = {
+	const syntheticPayload: HookEventPayload = {
 		session_id: identity.sessionId,
 		hook_event_name: identity.hookEventName,
 		tool_name: identity.toolName,
 		tool_use_id: identity.toolUseId,
 		cwd: identity.cwd,
 		transcript_path: identity.transcriptPath,
-		agentpulse_oversize: true,
 	};
 	const agentType = detectAgentType(c.req.header("X-Agent-Type"), syntheticPayload);
-	const hookCtx = buildHookDeliveryContext(c);
+	// F140 (D21): oversizeStub is set here only — the one place a stub is
+	// ever legitimately built — never derived from anything in the payload.
+	const hookCtx: HookDeliveryContext = { ...buildHookDeliveryContext(c), oversizeStub: true };
 
 	const response = c.json({ ok: true });
 	enqueueHookProcessing(syntheticPayload, agentType, hookCtx);
@@ -611,6 +630,19 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
 			}),
 		);
 		return c.json({ ok: true });
+	}
+
+	// F140 (D21) defense in depth: strip any top-level key with the reserved
+	// `agentpulse_` prefix before this payload goes anywhere near
+	// processing. Stub semantics are decided solely by the server-built
+	// HookDeliveryContext.oversizeStub (never by the payload — see
+	// normalizeHookEvent/event-dedup.ts), so this has no effect on genuine
+	// oversize-stub behavior; it only closes the payload off as a spoofing
+	// surface for a namespace this server-side flag now owns exclusively.
+	for (const key of Object.keys(parsed)) {
+		if (key.startsWith("agentpulse_")) {
+			(parsed as unknown as Record<string, unknown>)[key] = undefined;
+		}
 	}
 
 	if (!parsed.session_id || !parsed.hook_event_name) {

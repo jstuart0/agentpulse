@@ -20,18 +20,6 @@ export interface NormalizedEvent {
 	rawPayload: Record<string, unknown>;
 }
 
-/**
- * F128 (codex r2): the minimal synthetic payload ingest.ts builds for an
- * oversize hook delivery, from identity fields recovered out of the body's
- * bounded prefix. A local type rather than a `src/shared/types.ts` edit
- * (plan R9 keeps that file untouched across this campaign, to avoid a merge
- * conflict with the sibling cli-parity campaign) — the same reasoning F81
- * already applied to the observer's local `HookPayload` type.
- */
-export interface OversizeStubPayload extends HookEventPayload {
-	agentpulse_oversize: true;
-}
-
 // Hook-body char caps (F29, F40, F56, F76). The stored `toolResponse`
 // column is kept short since it's read on every list/detail render; the
 // rawPayload copy (shapeHookRawPayload below) gets a wider budget since
@@ -52,10 +40,14 @@ export const SYNTHETIC_STOP_CONTENT = "Turn completed";
 // parsed for an oversize delivery, so there is no real content to render.
 export const OVERSIZE_STUB_CONTENT = "Payload exceeded 16 MiB and was dropped";
 
-// F131b (D19): the rawPayload key event-dedup.ts checks to route a row into
-// the `o:` dedup-key namespace instead of the real `t:`/`d:` ones — so an
-// oversize stub can only ever dedupe against replays of itself, never claim
-// (and thereby suppress) the identity of a real event.
+// F140 (D21): a display-only marker written into a stub row's stored
+// rawPayload so it's visibly distinguishable after the fact. It plays no
+// part in any decision — the oversize-stub decision itself is the
+// `isOversizeStub` parameter below (server-set, via HookDeliveryContext),
+// never anything read off the payload. Before D21, event-dedup.ts read this
+// same key off rawPayload to choose the `o:` key namespace, which meant a
+// client posting a normal-size body with this key could forge stub
+// semantics for a real row (F140).
 export const OVERSIZE_STUB_MARKER = "agentpulse_oversize";
 
 /**
@@ -227,9 +219,20 @@ function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): 
 	}
 }
 
+/**
+ * F140 (D21): `isOversizeStub` is the ONLY signal that decides stub
+ * semantics, and it's an explicit parameter, never read off `payload`.
+ * ingest.ts's handleOversizeHookDelivery is the only caller that passes
+ * `true`, from its own server-built HookDeliveryContext.oversizeStub — a
+ * client posting a normal-size body can no longer set a payload field to
+ * swap real content for the placeholder (F140 was exactly that: the
+ * previous version branched on `payload.agentpulse_oversize`, which came
+ * straight from client JSON).
+ */
 export function normalizeHookEvent(
-	payload: HookEventPayload | OversizeStubPayload,
+	payload: HookEventPayload,
 	agentType: AgentType,
+	isOversizeStub = false,
 ): NormalizedEvent[] {
 	const eventType = payload.hook_event_name;
 	const toolResponse = stringifyToolResponse(payload.tool_response);
@@ -240,10 +243,8 @@ export function normalizeHookEvent(
 	// render (the body was dropped before JSON.parse), so a single
 	// informative stub row stands in — categorized like a real event of this
 	// type for timeline grouping, but always keyed in the `o:` dedup
-	// namespace (F131b; see event-dedup.ts), never `t:`/`d:`. `in` narrowing
-	// (not a declared field on the shared HookEventPayload — see
-	// OversizeStubPayload above) distinguishes the union member at runtime.
-	if ("agentpulse_oversize" in payload && payload.agentpulse_oversize) {
+	// namespace (F131b; see event-dedup.ts), never `t:`/`d:`.
+	if (isOversizeStub) {
 		normalized.push({
 			eventType,
 			category: categorizeOversizeEventType(eventType),

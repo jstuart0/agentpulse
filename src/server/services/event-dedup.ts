@@ -4,7 +4,7 @@ import {
 	normalizeComparableContent,
 } from "../../shared/event-authority.js";
 import { ORIGIN_CODEX_OBSERVER } from "../../shared/hook-headers.js";
-import { type NormalizedEvent, OVERSIZE_STUB_MARKER } from "./event-normalizer.js";
+import type { NormalizedEvent } from "./event-normalizer.js";
 import { parseDbTimestamp } from "./util/db-time.js";
 import { sha256Hex } from "./util/hash.js";
 
@@ -19,6 +19,15 @@ export interface HookDeliveryContext {
 	keyId: string;
 	deliveryId: string | null;
 	origin: "native" | "codex-observer";
+	/**
+	 * F140 (D21): true only when this delivery is the server-built oversize
+	 * stub (set exclusively by ingest.ts's handleOversizeHookDelivery,
+	 * never derived from client-supplied payload fields). Drives the `o:`
+	 * dedup-key namespace choice below — a client can no longer forge this
+	 * by posting a normal-size body with an `agentpulse_oversize` field,
+	 * because nothing reads that field for this decision anymore.
+	 */
+	oversizeStub?: boolean;
 }
 
 export type DedupPolicy =
@@ -251,11 +260,18 @@ function planHookDelivery(
 	let primaryDedupKey: string | null | undefined;
 	const seenKeys = new Set<string>();
 
+	// F140 (D21): the oversize-stub decision is per-delivery, driven by ctx
+	// (server-set), never by anything read off an individual event's
+	// rawPayload — a client can set an `agentpulse_oversize` key in a
+	// normal-size POST body, so trusting the payload for this decision was
+	// a free way to swap a real row's content for the stub placeholder and
+	// file it in the collision-proof `o:` namespace.
+	const isOversizeDelivery = ctx.oversizeStub === true;
+
 	incoming.forEach((event, rowIndex) => {
 		let dedupKey: string | null = null;
-		const isOversizeStub = event.rawPayload?.[OVERSIZE_STUB_MARKER] === true;
 
-		if (isOversizeStub) {
+		if (isOversizeDelivery) {
 			// F131b (D19): a stub never claims the real t:/d: key space — its
 			// own o: namespace, keyed on tool_use_id when the delivery had one,
 			// else the stamped delivery id. With neither, it stays unkeyed
