@@ -295,7 +295,13 @@ async function setup() {
 		}
 	}
 
-	// ── Shell env ──
+	// ── Shell env (D37/F243) ──
+	// The key itself no longer goes into the rc file — world-readable by
+	// default on many systems, and the same key already gets 0600
+	// treatment in hook-auth-header, so this was an inconsistency on the
+	// key's most exposed path. Written to ~/.agentpulse/env (0600,
+	// no-follow) instead, with only a key-free, idempotent source line in
+	// the rc file.
 
 	if (key) {
 		const shell = process.env.SHELL || "/bin/zsh";
@@ -308,15 +314,30 @@ async function setup() {
 			profileContent = readFileSync(profile, "utf-8");
 		} catch {}
 
-		let added = false;
-		if (!profileContent.includes("AGENTPULSE_API_KEY")) {
-			writeFileSync(
-				profile,
-				`${profileContent}\n# AgentPulse\nexport AGENTPULSE_API_KEY="${key}"\nexport AGENTPULSE_URL="${url}"\n`,
-			);
-			added = true;
+		if (/^export AGENTPULSE_API_KEY=/m.test(profileContent)) {
+			console.log(`  ! ${profile} already has a plaintext AGENTPULSE_API_KEY export from an`);
+			console.log("    earlier install. Leaving it, but it's world-readable by default on");
+			console.log("    many systems — remove it by hand:");
+			console.log(`      sed -i.bak '/^export AGENTPULSE_API_KEY=/d' "${profile}"`);
 		}
-		console.log(added ? `  ✓ Env vars added to ${profile}` : `  ✓ Env vars already in ${profile}`);
+
+		const envDir = join(process.env.HOME || "~", ".agentpulse");
+		mkdirSync(envDir, { recursive: true });
+		const envPath = join(envDir, "env");
+		writePrivateFileSyncNoFollow(
+			envPath,
+			`export AGENTPULSE_API_KEY="${key}"\nexport AGENTPULSE_URL="${url}"\n`,
+		);
+		console.log(`  ✓ Wrote AGENTPULSE_API_KEY/AGENTPULSE_URL to ${envPath} (0600)`);
+
+		const sourceLine = '[ -f "$HOME/.agentpulse/env" ] && . "$HOME/.agentpulse/env"';
+		if (!profileContent.includes(sourceLine)) {
+			writeConfigFileSyncNoFollow(
+				profile,
+				`${profileContent}\n# AgentPulse (key lives in ~/.agentpulse/env, not here)\n${sourceLine}\n`,
+			);
+			console.log(`  ✓ Added a source line for ~/.agentpulse/env to ${profile}`);
+		}
 	}
 
 	// ── Verify ──

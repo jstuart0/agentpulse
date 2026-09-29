@@ -14,6 +14,9 @@ export interface NormalizedEvent {
 	source: EventSource;
 	content: string | null;
 	isNoise: boolean;
+	// F244 (xander, re-verify): UNTRUSTED, agent-supplied data (see
+	// provider_event_name in src/shared/types.ts) — never splice raw into a
+	// log line, prompt, or shell command.
 	providerEventType: string | null;
 	toolName: string | null;
 	toolInput: Record<string, unknown> | null;

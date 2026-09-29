@@ -310,6 +310,11 @@ export interface HookEventPayload {
 	// Copilot: the agent's own (camelCase) event name, preserved separately
 	// from the canonical hook_event_name so event-normalizer can surface it
 	// as providerEventType (D7).
+	// F244 (xander, re-verify): UNTRUSTED, agent-supplied data — sourced from
+	// the request body, the `?event=` hint, or hook_event_name, all
+	// attacker-influenced. Capped at 128 chars with control characters
+	// stripped by the Copilot canonicalizer (F235) before it reaches here;
+	// never splice raw into a log line, prompt, or shell command.
 	provider_event_name?: string;
 	// Copilot errorOccurred / postToolUseFailure: the agent's error text.
 	error_message?: string;

@@ -132,9 +132,15 @@ function New-ApHookCommand {
   $url = "$BaseUrl/api/v1/hooks?event=$EventName"
   $headerFileLine = if ($Direct) { "`$f = Join-Path `$HOME '.agentpulse\hook-auth-header'`n" } else { "`$f = `$null`n" }
   $authArg = "(if (`$f -and (Test-Path `$f -ErrorAction SilentlyContinue) -and (Get-Item `$f -ErrorAction SilentlyContinue).Length -gt 0) { @('-H',`"@`$f`") } else { @() })"
+  # F248 (codex r2 D38): marker extraction/write now runs INSIDE the
+  # Start-Job block, reading from the temp file there — D13 requires the
+  # synchronous (parent-process) path to be stdin-drain + temp-file-write
+  # only. Reads the temp file itself since Start-Job's script block runs
+  # in an isolated runspace with no access to parent variables beyond what
+  # -ArgumentList passes in.
   $markerLine = ""
   if ($AgentType -eq "codex_cli") {
-    $markerLine = "`$sid = [regex]::Match(`$raw, '`"session_id`"\s*:\s*`"([A-Za-z0-9-]{1,128})`"').Groups[1].Value; if (`$sid) { `$md = Join-Path `$HOME '.agentpulse\codex-native'; New-Item -ItemType Directory -Force `$md -ErrorAction SilentlyContinue | Out-Null; New-Item -ItemType File -Force (Join-Path `$md `$sid) -ErrorAction SilentlyContinue | Out-Null }`n"
+    $markerLine = "`$jobRaw = [IO.File]::ReadAllText(`$t); `$sid = [regex]::Match(`$jobRaw, '`"session_id`"\s*:\s*`"([A-Za-z0-9-]{1,128})`"').Groups[1].Value; if (`$sid) { `$md = Join-Path `$HOME '.agentpulse\codex-native'; New-Item -ItemType Directory -Force `$md -ErrorAction SilentlyContinue | Out-Null; New-Item -ItemType File -Force (Join-Path `$md `$sid) -ErrorAction SilentlyContinue | Out-Null }`n  "
   }
   return (
     "`$ErrorActionPreference = 'SilentlyContinue'`n" +
@@ -144,10 +150,10 @@ function New-ApHookCommand {
     "`$raw = [Console]::In.ReadToEnd()`n" +
     "[IO.File]::WriteAllText(`$t, `$raw)`n" +
     $headerFileLine +
-    $markerLine +
     "Start-Job -ScriptBlock {`n" +
     "  param(`$t, `$f, `$url, `$agent)`n" +
-    "  `$headerArgs = $authArg`n" +
+    "  " + $markerLine +
+    "`$headerArgs = $authArg`n" +
     "  `$curlArgs = @('-sS','--max-time','2','-o','NUL','-X','POST',`$url,'-H','Content-Type: application/json','-H',`"X-Agent-Type: `$agent`") + `$headerArgs + @('--data-binary',`"@`$t`")`n" +
     "  Start-Process -FilePath curl.exe -WindowStyle Hidden -ArgumentList `$curlArgs -Wait`n" +
     "  Remove-Item -Force `$t -ErrorAction SilentlyContinue`n" +
@@ -233,13 +239,39 @@ function Test-ApReparsePoint {
   return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
 }
 
+# F242 (xander, re-verify): true when $Path already has more than one hard
+# link — a second directory entry pointing at the same NTFS data stream,
+# which `fsutil hardlink list` enumerates without needing elevation (it's
+# a read-only query). Best-effort: `fsutil` can be missing, blocked by
+# policy, or fail on a non-NTFS volume — any of that fails OPEN (returns
+# $false) rather than blocking a legitimate install, since the caller's
+# reparse-point check plus the temp-file+Move-Item replace pattern (which
+# never writes into the target's existing data stream in place) are
+# already the primary defense. This is the one part of F242 not verified
+# against a real Windows machine in this environment — Windows CI
+# (scripts/test-install-local.ps1) is the real check; flag to xander if it
+# proves unreliable there.
+function Test-ApMultipleHardLinks {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return $false }
+  try {
+    $output = & fsutil hardlink list $Path 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $output) { return $false }
+    $count = @($output | Where-Object { $_.Trim().Length -gt 0 }).Count
+    return $count -gt 1
+  } catch {
+    return $false
+  }
+}
+
 # F232 (xander, Medium): writes $Content to $Path via a same-directory temp
 # file + atomic Move-Item, refusing a reparse point (symlink/junction) at
 # $Path or at its parent directory — never a plain Set-Content/Copy-Item,
 # both of which write through a reparse point at the destination. Used for
 # both a Codex/Copilot hooks.json write and its timestamped backup (same
 # primitive, different path) — mirrors ap_write_no_follow in the bash
-# installers (scripts/setup-hooks.sh et al).
+# installers (scripts/setup-hooks.sh et al). F242: also refuses a
+# multiply-hard-linked target — see Test-ApMultipleHardLinks above.
 function Write-ApFileNoFollow {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -247,6 +279,9 @@ function Write-ApFileNoFollow {
   )
   if (Test-ApReparsePoint -Path $Path) {
     throw "refusing to write through a reparse point: $Path"
+  }
+  if (Test-ApMultipleHardLinks -Path $Path) {
+    throw "refusing to write through a multiply-linked file: $Path"
   }
   $dir = Split-Path -Parent $Path
   if (Test-ApReparsePoint -Path $dir) {
@@ -273,7 +308,8 @@ function Write-ApFileNoFollow {
 # reparse-point guard — a junction at .agentpulse, or a symlink at
 # hook-auth-header itself, could redirect the API key to an
 # attacker-chosen location. Checked before either write, same as the bash
-# installers' `[ -L "$AP_AUTH_HEADER_FILE" ]` guard.
+# installers' `[ -L "$AP_AUTH_HEADER_FILE" ]` guard. F242: also refuses a
+# multiply-hard-linked target file — see Test-ApMultipleHardLinks above.
 function New-ApHookAuthHeaderFile {
   param([Parameter(Mandatory = $true)][string]$ApiKey)
   $d = Join-Path $HOME ".agentpulse"
@@ -283,6 +319,9 @@ function New-ApHookAuthHeaderFile {
   New-Item -ItemType Directory -Force -Path $d | Out-Null
   icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
   $f = Join-Path $d "hook-auth-header"
+  if (Test-ApMultipleHardLinks -Path $f) {
+    throw "refusing to write through a multiply-linked file: $f"
+  }
   if (Test-ApReparsePoint -Path $f) {
     throw "refusing to write through a reparse point: $f"
   }
@@ -391,6 +430,16 @@ function Configure-Hooks {
     }
   }
 
+  # D37/F243 (xander re-verify — "check whether install-local.ps1 persists
+  # the key in a user env var or profile, and apply the same principle"):
+  # checked. This writes to HKCU\Environment (SetEnvironmentVariable's
+  # "User" target), a per-user registry hive — not a plaintext rc FILE.
+  # Windows already isolates HKCU\Environment to the owning user's SID via
+  # registry ACLs; another local account can't read it the way a
+  # world-readable 0644 ~/.zshrc exposes a POSIX key to any local user.
+  # That's the same owner-only guarantee D37 moved the POSIX key to
+  # ~/.agentpulse/env (0600) to achieve, just via the platform-native
+  # mechanism instead — no change needed here.
   if ($ApiKey) {
     [Environment]::SetEnvironmentVariable("AGENTPULSE_API_KEY", $ApiKey, "User")
     [Environment]::SetEnvironmentVariable("AGENTPULSE_URL", $PublicUrl, "User")

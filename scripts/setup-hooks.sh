@@ -58,6 +58,53 @@ fi
 # scripts/hook-command-parity.test.ts) — this exact block also appears
 # verbatim in scripts/setup-relay.sh and the /setup.sh template served by
 # src/server/routes/setup.ts. Do not hand-edit one copy without the others.
+
+# F245 (High, codex r2 D38): same grammar as assertValidHookBaseUrl() in
+# src/shared/hook-command.ts — bare http(s)://host[:port] or
+# http(s)://[ipv6][:port], nothing else. The base URL is later embedded
+# inside single-quoted curl text in the generated hook command (ap_hook_cmd
+# below); a --url containing a quote, space, $(...), or backtick would
+# persist as shell code in hooks.json/agentpulse.json and execute on the
+# next hook fire. Call before any hook JSON generation at every site.
+ap_validate_hook_base_url() {
+	local url="$1"
+	if [[ "$url" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]]; then
+		return 0
+	fi
+	if [[ "$url" =~ ^https?://\[[0-9A-Fa-f:]+\](:[0-9]{1,5})?$ ]]; then
+		return 0
+	fi
+	echo "invalid AgentPulse base URL for a hook command: $url" >&2
+	return 1
+}
+
+# F246 (High, codex r2 D38): mirrors bin/cli.ts — with no key, against a
+# server that requires auth, refuse before writing any command hooks.
+# Without this, an auth-enabled server silently 401s every hook fire
+# forever: the detached shim discards curl's output on its synchronous
+# path by design (D13), so the failure is invisible. Only checked when no
+# key was ever provided; an unreachable server falls through (that's a
+# different failure, reported by the "Verify connectivity" check below).
+ap_check_auth_before_write() {
+	local base="$1" key="$2" body
+	if [[ -n "$key" ]]; then
+		return 0
+	fi
+	body="$(curl -sS -m 10 "${base}/api/v1/auth/me" 2>/dev/null)" || return 0
+	if printf '%s' "$body" | python3 -c '
+import json, sys
+try:
+    me = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+sys.exit(1 if me.get("disableAuth") is False else 0)
+'; then
+		return 0
+	fi
+	echo "This server requires an API key; pass --key or set AGENTPULSE_KEY." >&2
+	return 1
+}
+
 ap_hook_cmd() {
 	# $1=base $2=direct(0/1) $3=agent $4=event
 	local base="$1" direct="$2" agent="$3" event="$4"
@@ -159,6 +206,12 @@ ap_require_curl_755() {
 	fi
 }
 # <<< agentpulse-hook-cmd
+
+# F245: reject a malformed --url before any hook JSON generation.
+ap_validate_hook_base_url "$AGENTPULSE_URL" || exit 1
+
+# F246: before any file writes, refuse if this server needs a key we don't have.
+ap_check_auth_before_write "$AGENTPULSE_URL" "$AGENTPULSE_KEY" || exit 1
 
 # Verify connectivity
 echo "Checking AgentPulse server..."
@@ -317,35 +370,57 @@ else
   exit 1
 fi
 
-# ─── Environment Variable ────────────────────────────────────────────
+# ─── Environment Variable (D37/F243) ─────────────────────────────────
+#
+# codex_cli/copilot_cli never reach this point with anything to write:
+# they authenticate hook fires via ~/.agentpulse/hook-auth-header (0600,
+# written above), not an exported env var — skip the profile entirely.
+# claude_code's hooks.json embeds the literal key directly when one was
+# given (see the Claude Code Setup section above), but AGENTPULSE_API_KEY/
+# AGENTPULSE_URL are still exported for the user's own shell/CLI use —
+# formerly appended to the rc file in plaintext, which is world-readable
+# by default on many systems. Now written to a 0600 ~/.agentpulse/env
+# instead, with only a key-free, idempotent source line in the rc file.
 
-echo ""
-echo "Setting AGENTPULSE_API_KEY environment variable..."
+if [[ "$AGENT_TYPE" == "claude_code" ]]; then
+  echo ""
+  echo "Setting AGENTPULSE_API_KEY environment variable..."
 
-# Detect shell
-SHELL_NAME="$(basename "$SHELL")"
-if [[ "$SHELL_NAME" == "zsh" ]]; then
-  PROFILE="$HOME/.zshrc"
-elif [[ "$SHELL_NAME" == "bash" ]]; then
-  PROFILE="$HOME/.bashrc"
-else
-  PROFILE="$HOME/.profile"
-fi
+  SHELL_NAME="$(basename "$SHELL")"
+  if [[ "$SHELL_NAME" == "zsh" ]]; then
+    PROFILE="$HOME/.zshrc"
+  elif [[ "$SHELL_NAME" == "bash" ]]; then
+    PROFILE="$HOME/.bashrc"
+  else
+    PROFILE="$HOME/.profile"
+  fi
 
-# Add env var if not already present
-if ! grep -q "AGENTPULSE_API_KEY" "$PROFILE" 2>/dev/null; then
-  echo "" >> "$PROFILE"
-  echo "# AgentPulse API key for hook authentication" >> "$PROFILE"
-  echo "export AGENTPULSE_API_KEY=\"${AGENTPULSE_KEY}\"" >> "$PROFILE"
-  echo "Added AGENTPULSE_API_KEY to $PROFILE"
-else
-  echo "AGENTPULSE_API_KEY already set in $PROFILE"
-fi
+  if grep -q "^export AGENTPULSE_API_KEY=" "$PROFILE" 2>/dev/null; then
+    echo "! $PROFILE already has a plaintext AGENTPULSE_API_KEY export from an" >&2
+    echo "  earlier install. Leaving it, but it's world-readable by default on" >&2
+    echo "  many systems — remove it by hand:" >&2
+    echo "    sed -i.bak '/^export AGENTPULSE_API_KEY=/d' \"$PROFILE\"" >&2
+  fi
 
-# Also set AGENTPULSE_URL
-if ! grep -q "AGENTPULSE_URL" "$PROFILE" 2>/dev/null; then
-  echo "export AGENTPULSE_URL=\"${AGENTPULSE_URL}\"" >> "$PROFILE"
-  echo "Added AGENTPULSE_URL to $PROFILE"
+  mkdir -p "$HOME/.agentpulse"
+  AP_ENV_FILE="$HOME/.agentpulse/env"
+  if [[ -L "$AP_ENV_FILE" ]]; then
+    echo "refusing to write through a symlink: $AP_ENV_FILE" >&2
+    exit 1
+  fi
+  AP_ENV_TMP="${AP_ENV_FILE}.$$.tmp"
+  ( umask 077 && printf 'export AGENTPULSE_API_KEY="%s"\nexport AGENTPULSE_URL="%s"\n' \
+      "${AGENTPULSE_KEY}" "${AGENTPULSE_URL}" > "$AP_ENV_TMP" )
+  mv -f "$AP_ENV_TMP" "$AP_ENV_FILE"
+  echo "Wrote AGENTPULSE_API_KEY/AGENTPULSE_URL to $AP_ENV_FILE (0600)"
+
+  AP_SOURCE_LINE='[ -f "$HOME/.agentpulse/env" ] && . "$HOME/.agentpulse/env"'
+  if ! grep -qF "$AP_SOURCE_LINE" "$PROFILE" 2>/dev/null; then
+    echo "" >> "$PROFILE"
+    echo "# AgentPulse (key lives in ~/.agentpulse/env, not here)" >> "$PROFILE"
+    echo "$AP_SOURCE_LINE" >> "$PROFILE"
+    echo "Added a source line for ~/.agentpulse/env to $PROFILE"
+  fi
 fi
 
 # ─── Verify ──────────────────────────────────────────────────────────
@@ -365,7 +440,10 @@ else
 fi
 
 echo ""
-echo "Setup complete! Restart your shell or run:"
-echo "  source $PROFILE"
-echo ""
+echo "Setup complete!"
+if [[ "$AGENT_TYPE" == "claude_code" ]]; then
+  echo "Restart your shell or run:"
+  echo "  source $PROFILE"
+  echo ""
+fi
 echo "Then start a new ${AGENT_TYPE} session to see it in AgentPulse."

@@ -163,6 +163,53 @@ done
 # scripts/hook-command-parity.test.ts) — this exact block also appears
 # verbatim in scripts/setup-hooks.sh and scripts/setup-relay.sh. Do not
 # hand-edit one copy without the others.
+
+# F245 (High, codex r2 D38): same grammar as assertValidHookBaseUrl() in
+# src/shared/hook-command.ts — bare http(s)://host[:port] or
+# http(s)://[ipv6][:port], nothing else. The base URL is later embedded
+# inside single-quoted curl text in the generated hook command (ap_hook_cmd
+# below); a --url containing a quote, space, \$(...), or backtick would
+# persist as shell code in hooks.json/agentpulse.json and execute on the
+# next hook fire. Call before any hook JSON generation at every site.
+ap_validate_hook_base_url() {
+	local url="\$1"
+	if [[ "\$url" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?\$ ]]; then
+		return 0
+	fi
+	if [[ "\$url" =~ ^https?://\\[[0-9A-Fa-f:]+\\](:[0-9]{1,5})?\$ ]]; then
+		return 0
+	fi
+	echo "invalid AgentPulse base URL for a hook command: \$url" >&2
+	return 1
+}
+
+# F246 (High, codex r2 D38): mirrors bin/cli.ts — with no key, against a
+# server that requires auth, refuse before writing any command hooks.
+# Without this, an auth-enabled server silently 401s every hook fire
+# forever: the detached shim discards curl's output on its synchronous
+# path by design (D13), so the failure is invisible. Only checked when no
+# key was ever provided; an unreachable server falls through (that's a
+# different failure, reported elsewhere).
+ap_check_auth_before_write() {
+	local base="\$1" key="\$2" body
+	if [[ -n "\$key" ]]; then
+		return 0
+	fi
+	body="\$(curl -sS -m 10 "\${base}/api/v1/auth/me" 2>/dev/null)" || return 0
+	if printf '%s' "\$body" | python3 -c '
+import json, sys
+try:
+    me = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+sys.exit(1 if me.get("disableAuth") is False else 0)
+'; then
+		return 0
+	fi
+	echo "This server requires an API key; pass --key or set AGENTPULSE_KEY." >&2
+	return 1
+}
+
 ap_hook_cmd() {
 	# \$1=base \$2=direct(0/1) \$3=agent \$4=event
 	local base="\$1" direct="\$2" agent="\$3" event="\$4"
@@ -265,6 +312,12 @@ ap_require_curl_755() {
 }
 # <<< agentpulse-hook-cmd
 
+# F245: reject a malformed --url before any hook JSON generation.
+ap_validate_hook_base_url "\$HOOK_URL" || exit 1
+
+# F246: before any file writes, refuse if this server needs a key we don't have.
+ap_check_auth_before_write "\$HOOK_URL" "\$API_KEY" || exit 1
+
 echo ""
 echo "  AgentPulse Setup"
 echo "  ────────────────"
@@ -286,7 +339,7 @@ for i in "\${!EVENTS[@]}"; do
   if [[ -n "\$API_KEY" ]]; then
     HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
   else
-    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
+    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
   fi
 done
 HOOKS_JSON+="}"
@@ -348,17 +401,68 @@ fi
 # D12: codex_hooks is a deprecated (but still-working) legacy alias for
 # [features].hooks — left alone if present, never newly written.
 
-# ── Env vars ──
+# ── Copilot CLI (F247, codex r2 D38) ──
+# D8: only write into a real Copilot install — never create config for a
+# tool that isn't there. hook-auth-header is reused from the Codex section
+# above (same file, same key) — nothing new to write for it here.
+
+if command -v copilot >/dev/null 2>&1 || [[ -d "\$HOME/.copilot" ]]; then
+  COPILOT_DIR="\$HOME/.copilot/hooks"
+  COPILOT_HOOKS_FILE="\$COPILOT_DIR/agentpulse.json"
+  mkdir -p "\$COPILOT_DIR"
+
+  NEW_COPILOT_HOOKS_JSON="\$(ap_copilot_hooks_json "\$HOOK_URL" "1")"
+  if [[ -f "\$COPILOT_HOOKS_FILE" ]] && [[ "\$(cat "\$COPILOT_HOOKS_FILE")" == "\$NEW_COPILOT_HOOKS_JSON" ]]; then
+    echo "  ✓ Copilot hooks unchanged"
+  else
+    if [[ -f "\$COPILOT_HOOKS_FILE" ]]; then
+      COPILOT_BACKUP_FILE="\${COPILOT_HOOKS_FILE}.agentpulse-bak.\$(date -u +%Y%m%dT%H%M%SZ)"
+      cat "\$COPILOT_HOOKS_FILE" | ap_write_no_follow "\$COPILOT_BACKUP_FILE" || exit 1
+      echo "  ✓ Backed up existing Copilot hooks to \$COPILOT_BACKUP_FILE"
+    fi
+    printf '%s\\n' "\$NEW_COPILOT_HOOKS_JSON" | ap_write_no_follow "\$COPILOT_HOOKS_FILE" || exit 1
+    echo "  ✓ Copilot CLI hooks configured in \$COPILOT_HOOKS_FILE"
+  fi
+fi
+
+# ── Env vars (D37/F243) ──
+#
+# Claude Code is always configured by this script, so this always applies
+# (unlike scripts/setup-hooks.sh, which is --agent-scoped and skips this
+# entirely for codex_cli/copilot_cli). Formerly appended the key in
+# plaintext to the rc file, which is world-readable by default on many
+# systems — now written to a 0600 ~/.agentpulse/env instead, with only a
+# key-free, idempotent source line in the rc file.
 
 if [[ -n "\$API_KEY" ]]; then
   PROFILE="\$HOME/.zshrc"
   [[ "\$(basename "\$SHELL")" == "bash" ]] && PROFILE="\$HOME/.bashrc"
-  if ! grep -q "AGENTPULSE_API_KEY" "\$PROFILE" 2>/dev/null; then
+
+  if grep -q "^export AGENTPULSE_API_KEY=" "\$PROFILE" 2>/dev/null; then
+    echo "  ! \$PROFILE already has a plaintext AGENTPULSE_API_KEY export from an" >&2
+    echo "    earlier install. Leaving it, but it's world-readable by default on" >&2
+    echo "    many systems — remove it by hand:" >&2
+    echo "      sed -i.bak '/^export AGENTPULSE_API_KEY=/d' \\"\$PROFILE\\"" >&2
+  fi
+
+  mkdir -p "\$HOME/.agentpulse"
+  AP_ENV_FILE="\$HOME/.agentpulse/env"
+  if [[ -L "\$AP_ENV_FILE" ]]; then
+    echo "refusing to write through a symlink: \$AP_ENV_FILE" >&2
+    exit 1
+  fi
+  AP_ENV_TMP="\${AP_ENV_FILE}.\$\$.tmp"
+  ( umask 077 && printf 'export AGENTPULSE_API_KEY="%s"\\nexport AGENTPULSE_URL="%s"\\n' \\
+      "\$API_KEY" "\$HOOK_URL" > "\$AP_ENV_TMP" )
+  mv -f "\$AP_ENV_TMP" "\$AP_ENV_FILE"
+  echo "  ✓ Wrote AGENTPULSE_API_KEY/AGENTPULSE_URL to \$AP_ENV_FILE (0600)"
+
+  AP_SOURCE_LINE='[ -f "\$HOME/.agentpulse/env" ] && . "\$HOME/.agentpulse/env"'
+  if ! grep -qF "\$AP_SOURCE_LINE" "\$PROFILE" 2>/dev/null; then
     echo "" >> "\$PROFILE"
-    echo "# AgentPulse" >> "\$PROFILE"
-    echo "export AGENTPULSE_API_KEY=\\"\$API_KEY\\"" >> "\$PROFILE"
-    echo "export AGENTPULSE_URL=\\"\$HOOK_URL\\"" >> "\$PROFILE"
-    echo "  ✓ Added env vars to \$PROFILE"
+    echo "# AgentPulse (key lives in ~/.agentpulse/env, not here)" >> "\$PROFILE"
+    echo "\$AP_SOURCE_LINE" >> "\$PROFILE"
+    echo "  ✓ Added a source line for ~/.agentpulse/env to \$PROFILE"
   fi
 fi
 

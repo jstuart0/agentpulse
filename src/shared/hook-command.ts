@@ -122,11 +122,19 @@ export function buildPowerShellHookCommand(opts: HookCommandOptions): string {
 		: "$f = $null\n";
 	const authArg =
 		"(if ($f -and (Test-Path $f -ErrorAction SilentlyContinue) -and (Get-Item $f -ErrorAction SilentlyContinue).Length -gt 0) { @('-H',\"@$f\") } else { @() })";
+	// F248 (codex r2 D38): marker extraction/write now runs INSIDE the
+	// Start-Job block, reading from the temp file there — D13 requires the
+	// synchronous (parent-process) path to be stdin-drain + temp-file-write
+	// only, and this previously ran the marker's regex/file-write on that
+	// synchronous path (reading the parent-scope $raw) before Start-Job was
+	// even called. Reads the temp file itself since Start-Job's script
+	// block runs in an isolated runspace with no access to parent
+	// variables beyond what -ArgumentList passes in.
 	const markerLine =
 		opts.agent === "codex_cli"
-			? "$sid = [regex]::Match($raw, '\"session_id\"\\s*:\\s*\"([A-Za-z0-9-]{1,128})\"').Groups[1].Value; if ($sid) { $md = Join-Path $HOME '.agentpulse\\codex-native'; New-Item -ItemType Directory -Force $md -ErrorAction SilentlyContinue | Out-Null; New-Item -ItemType File -Force (Join-Path $md $sid) -ErrorAction SilentlyContinue | Out-Null }\n"
+			? "$jobRaw = [IO.File]::ReadAllText($t); $sid = [regex]::Match($jobRaw, '\"session_id\"\\s*:\\s*\"([A-Za-z0-9-]{1,128})\"').Groups[1].Value; if ($sid) { $md = Join-Path $HOME '.agentpulse\\codex-native'; New-Item -ItemType Directory -Force $md -ErrorAction SilentlyContinue | Out-Null; New-Item -ItemType File -Force (Join-Path $md $sid) -ErrorAction SilentlyContinue | Out-Null }\n  "
 			: "";
-	return `$ErrorActionPreference = 'SilentlyContinue'\n$d = Join-Path $env:TEMP 'agentpulse-hooks'\nNew-Item -ItemType Directory -Force $d | Out-Null\n$t = Join-Path $d ([guid]::NewGuid().ToString())\n$raw = [Console]::In.ReadToEnd()\n[IO.File]::WriteAllText($t, $raw)\n${headerFileLine}${markerLine}Start-Job -ScriptBlock {\n  param($t, $f, $url, $agent)\n  $headerArgs = ${authArg}\n  $curlArgs = @('-sS','--max-time','2','-o','NUL','-X','POST',$url,'-H','Content-Type: application/json','-H',"X-Agent-Type: $agent") + $headerArgs + @('--data-binary',"@$t")\n  Start-Process -FilePath curl.exe -WindowStyle Hidden -ArgumentList $curlArgs -Wait\n  Remove-Item -Force $t -ErrorAction SilentlyContinue\n} -ArgumentList $t, $f, '${url}', '${opts.agent}' | Out-Null\nGet-ChildItem $d -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-5) } | Remove-Item -Force -ErrorAction SilentlyContinue\nexit 0\n`;
+	return `$ErrorActionPreference = 'SilentlyContinue'\n$d = Join-Path $env:TEMP 'agentpulse-hooks'\nNew-Item -ItemType Directory -Force $d | Out-Null\n$t = Join-Path $d ([guid]::NewGuid().ToString())\n$raw = [Console]::In.ReadToEnd()\n[IO.File]::WriteAllText($t, $raw)\n${headerFileLine}Start-Job -ScriptBlock {\n  param($t, $f, $url, $agent)\n  ${markerLine}$headerArgs = ${authArg}\n  $curlArgs = @('-sS','--max-time','2','-o','NUL','-X','POST',$url,'-H','Content-Type: application/json','-H',"X-Agent-Type: $agent") + $headerArgs + @('--data-binary',"@$t")\n  Start-Process -FilePath curl.exe -WindowStyle Hidden -ArgumentList $curlArgs -Wait\n  Remove-Item -Force $t -ErrorAction SilentlyContinue\n} -ArgumentList $t, $f, '${url}', '${opts.agent}' | Out-Null\nGet-ChildItem $d -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-5) } | Remove-Item -Force -ErrorAction SilentlyContinue\nexit 0\n`;
 }
 
 /** Canonical CodexEvent order (must match src/shared/types.ts's CodexEvent union declaration order — see check-hook-event-parity.ts for the drift guard). */

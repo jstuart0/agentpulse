@@ -32,6 +32,7 @@ import {
 	openSync,
 	writeSync,
 } from "node:fs";
+import { dirname } from "node:path";
 
 export const PRIVATE_FILE_MODE = 0o600;
 export const CONFIG_FILE_MODE = 0o644;
@@ -68,8 +69,19 @@ function assertSameFileSync(path: string, seen: FileIdentity, opened: FileIdenti
  * `writeFileSync(path, content, {mode}) + no follow-up chmod` pattern
  * leaves open (the create-mode only applies when the call creates the
  * file, and a bare `writeFileSync` follows an existing symlink at `path`).
+ *
+ * F241 (xander, re-verify): O_NOFOLLOW only guards the FINAL path
+ * component — it doesn't stop `path`'s parent directory itself being a
+ * symlink (e.g. ~/.agentpulse replaced with a symlink to /etc), which
+ * O_NOFOLLOW transparently traverses. Checked explicitly here, matching
+ * the bash (`ap_write_no_follow`'s dirname check) and PowerShell
+ * (`Write-ApFileNoFollow`'s Test-ApReparsePoint on the parent) versions.
  */
 function writeFileSyncNoFollow(path: string, content: string, mode: number): void {
+	const parent = dirname(path);
+	if (lstatKindSync(parent) === "symlink") {
+		throw new Error(`refusing to write into a symlinked directory: ${parent}`);
+	}
 	const kind = lstatKindSync(path);
 	if (kind !== "file" && kind !== "missing") {
 		throw new Error(`refusing to write through ${kind}: ${path}`);

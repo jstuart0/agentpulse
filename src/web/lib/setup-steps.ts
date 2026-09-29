@@ -57,14 +57,28 @@ function buildCommandHookAuthStep(key: string, disableAuth: boolean): AuthStep |
 	// replace the destination via mv (rename(2) replaces the directory
 	// entry itself; it doesn't follow a symlink there). Mirrors
 	// scripts/setup-hooks.sh's hardened write.
-	const command = `mkdir -p ~/.agentpulse && f=~/.agentpulse/hook-auth-header && if [ -L "$f" ]; then echo "refusing to write through a symlink: $f" >&2; else t="$f.$$.tmp" && (umask 077 && printf 'Authorization: Bearer %s\\n' ${singleQuote(value)} > "$t") && mv -f "$t" "$f"; fi`;
+	// F249 (codex r2 D38): the original version here only checked the
+	// final component (hook-auth-header itself) for a symlink, not the
+	// ~/.agentpulse parent directory — a symlinked parent would still let
+	// `mkdir -p` silently succeed and the key land wherever the parent
+	// symlink points. Checked first, before mkdir -p even runs (mkdir -p
+	// on an already-existing symlinked path is a silent no-op success, so
+	// the check has to come before it, not after).
+	const command = `d=~/.agentpulse; f="$d/hook-auth-header"; if [ -L "$d" ]; then echo "refusing to write into a symlinked directory: $d" >&2; elif ! mkdir -p "$d" 2>/dev/null; then echo "can't create $d" >&2; elif [ -L "$f" ]; then echo "refusing to write through a symlink: $f" >&2; else t="$f.$$.tmp" && (umask 077 && printf 'Authorization: Bearer %s\\n' ${singleQuote(value)} > "$t") && mv -f "$t" "$f"; fi`;
 	// F208: narrow the parent directory's ACL to the current user *before*
 	// creating the file inside it, so the file inherits a private ACL from
 	// the moment it exists — a Set-Content-then-icacls-the-file sequence
 	// leaves a window where a newly (over)written file briefly holds the
 	// directory's broader, inherited ACL. The file-level icacls stays too,
 	// for idempotent hardening of a file that pre-dates this fix.
-	const windowsCommand = `$d="$env:USERPROFILE\\.agentpulse"; New-Item -ItemType Directory -Force $d | Out-Null; icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null; $f="$d\\hook-auth-header"; Set-Content -NoNewline -Path $f -Value "Authorization: Bearer ${value}\`n"; icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null`;
+	// F249: Set-Content alone had no reparse-point check at all and wrote
+	// in place rather than via a temp-file-then-move replace. Now checks
+	// both the parent directory and the file for a reparse point (symlink
+	// or junction — .LinkType alone misses a mount point, which carries
+	// only the ReparsePoint attribute) and writes through a same-directory
+	// temp file + Move-Item, mirroring install-local.ps1's
+	// Test-ApReparsePoint/Write-ApFileNoFollow.
+	const windowsCommand = `$d="$env:USERPROFILE\\.agentpulse"; function ApTestReparse($p) { $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; if (-not $i) { return $false }; if ($i.LinkType) { return $true }; return [bool]($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) }; if (ApTestReparse $d) { Write-Error "refusing to write through a reparse point: $d" } else { New-Item -ItemType Directory -Force $d | Out-Null; icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null; $f="$d\\hook-auth-header"; if (ApTestReparse $f) { Write-Error "refusing to write through a reparse point: $f" } else { $t="$f.$([guid]::NewGuid().ToString('N')).tmp"; Set-Content -NoNewline -Path $t -Value "Authorization: Bearer ${value}\`n"; Move-Item -Force -Path $t -Destination $f; icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null } }`;
 	return {
 		title: "Save your key for command hooks",
 		description:
