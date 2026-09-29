@@ -5,12 +5,11 @@
  * Built on the app.integration.test.ts:17-86 real-app scaffold. Supervisors
  * A and B are enrolled through the real enroll + register HTTP flow.
  *
- * agentHeaders(cred) sends the supervisor token PLUS a "manage"-scoped
- * Bearer key. That combination is what reaches the agent handlers pre-Phase-3
- * (repro case C: the four sibling wildcard routers mounted ahead of the
- * agent router in app.ts require an operator Bearer with "manage" scope to
- * fall through to the real handler). Phase 3 drops the Bearer requirement
- * entirely — see supervisors-ownership.test.ts's Phase 3 edit.
+ * agentHeaders(cred) sends only the supervisor token — Phase 3 (AGEN-17)
+ * root-mounts the agent router ahead of the operator bundle, so the manage
+ * Bearer this file needed pre-Phase-3 (repro case C, to fall through the
+ * sibling wildcard gates) is gone. Every T1-T11 case must still pass with
+ * token-only auth (test contract item 48).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
@@ -36,9 +35,6 @@ function agentHeaders(cred: Credential): Record<string, string> {
 	return {
 		"Content-Type": "application/json",
 		"X-AgentPulse-Supervisor-Token": cred.token,
-		// Phase 3 removes the Bearer — this combination is what reaches the
-		// handler pre-Phase-3 (repro case C).
-		Authorization: `Bearer ${manageKey}`,
 	};
 }
 
@@ -53,9 +49,7 @@ async function enrollAndRegister(hostName: string): Promise<Credential> {
 
 	const registerRes = await app.request("/api/v1/supervisors/register", {
 		method: "POST",
-		// Manage Bearer needed pre-Phase-3 to fall through the sibling wildcard
-		// gates (repro case C); see agentHeaders' comment.
-		headers: { "Content-Type": "application/json", Authorization: `Bearer ${manageKey}` },
+		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({
 			hostName,
 			platform: "linux",
