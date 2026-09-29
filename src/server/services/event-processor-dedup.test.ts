@@ -7,6 +7,12 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
 
+// Harness rule 3: TZ leaks across test files in Bun (F25) — a file that
+// switches TZ (P2.17, via withTZ below) must restore it and pin the
+// restoration with a final sentinel test (see event-authority-dedup.test.ts's
+// P1.10, event-dedup.test.ts's and util/db-time.test.ts's "TZ sentinel").
+const FILE_TZ = process.env.TZ;
+
 const { getDb, initializeDatabase } = await import("../db/client.js");
 const { events, sessions } = await import("../db/schema/index.js");
 const { eq } = await import("drizzle-orm");
@@ -795,4 +801,11 @@ test("P6-l1: an unstored row triggers no authority delete — a managed row surv
 		rows.some((r) => r.source === "managed_control" && r.content === "X"),
 		await histogram(sid),
 	).toBe(true);
+});
+
+test("P2.17 TZ sentinel: the file leaves TZ restored", () => {
+	expect(process.env.TZ).toBe(FILE_TZ ?? "UTC");
+	if (!FILE_TZ) {
+		expect(Date.parse("2026-01-01 00:00:00")).toBe(Date.UTC(2026, 0, 1));
+	}
 });
