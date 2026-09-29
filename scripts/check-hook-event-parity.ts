@@ -4,7 +4,7 @@
  * Phase 3 deliverable — plan's "Pattern parity / wiring sites" drift guard).
  *
  * The Claude Code and Codex CLI hook-event lists are duplicated across
- * seven code sites (six script/CLI sites + the in-app SetupPage.tsx "Copy
+ * six code sites (five script/CLI sites + the in-app SetupPage.tsx "Copy
  * Config" copy) that must stay in lockstep with the src/shared/types.ts
  * ClaudeCodeEvent / CodexEvent unions. This guard extracts the event-name
  * list at each site and fails on any drift — same shape as
@@ -34,6 +34,8 @@ function readFile(relPath: string): string {
 	return readFileSync(join(ROOT, relPath), "utf8");
 }
 
+const EXPECTED_RESULTS = 12;
+
 interface CheckResult {
 	site: string;
 	agent: "claude" | "codex";
@@ -62,35 +64,20 @@ function main() {
 		results.push({ site: "scripts/setup-hooks.sh", agent: "codex", events: codex ?? [] });
 	}
 
-	// scripts/setup-relay.sh — same shape.
-	{
-		const content = readFile("scripts/setup-relay.sh");
-		const [claude] = extractQuotedListBlocks(content, /(?<![A-Z_])EVENTS=\(/, ")");
-		const [codex] = extractQuotedListBlocks(content, /CODEX_EVENTS=\(/, ")");
-		results.push({ site: "scripts/setup-relay.sh", agent: "claude", events: claude ?? [] });
-		results.push({ site: "scripts/setup-relay.sh", agent: "codex", events: codex ?? [] });
-	}
-
-	// src/server/routes/setup.ts — two embedded bash templates, each with
-	// its own EVENTS=(...) / CODEX_EVENTS=(...) pair.
-	{
-		const content = readFile("src/server/routes/setup.ts");
+	// scripts/setup-relay.sh (also what /setup-relay.sh serves, verbatim) and
+	// src/server/routes/setup.ts's one embedded /setup.sh template. Exactly one
+	// list per agent each: a second copy is exactly the drift this guards.
+	for (const site of ["scripts/setup-relay.sh", "src/server/routes/setup.ts"]) {
+		const content = readFile(site);
 		const claudeBlocks = extractQuotedListBlocks(content, /(?<![A-Z_])EVENTS=\(/, ")");
 		const codexBlocks = extractQuotedListBlocks(content, /CODEX_EVENTS=\(/, ")");
-		claudeBlocks.forEach((events, i) => {
-			results.push({
-				site: `src/server/routes/setup.ts (template ${i + 1})`,
-				agent: "claude",
-				events,
-			});
-		});
-		codexBlocks.forEach((events, i) => {
-			results.push({
-				site: `src/server/routes/setup.ts (template ${i + 1})`,
-				agent: "codex",
-				events,
-			});
-		});
+		if (claudeBlocks.length !== 1 || codexBlocks.length !== 1) {
+			throw new Error(
+				`${site}: expected exactly one EVENTS=( and one CODEX_EVENTS=( list, found ${claudeBlocks.length} and ${codexBlocks.length}`,
+			);
+		}
+		results.push({ site, agent: "claude", events: claudeBlocks[0] });
+		results.push({ site, agent: "codex", events: codexBlocks[0] });
 	}
 
 	// scripts/install-local.ps1 — Claude is a flat @(...) array; Codex is a
@@ -133,6 +120,12 @@ function main() {
 		results.push({ site: "src/web/pages/SetupPage.tsx", agent: "codex", events: codex });
 	}
 
+	// 6 sites × 2 agents. A site whose extraction silently vanished would
+	// otherwise shrink the population without failing.
+	if (results.length !== EXPECTED_RESULTS) {
+		throw new Error(`expected ${EXPECTED_RESULTS} site/agent lists, extracted ${results.length}`);
+	}
+
 	const mismatches: string[] = [];
 	for (const result of results) {
 		const canonical = result.agent === "claude" ? claudeCanonical : codexCanonical;
@@ -153,8 +146,8 @@ function main() {
 		console.error("Hook-event-list parity check failed:\n");
 		console.error(mismatches.join("\n\n"));
 		console.error(
-			"\nAll seven wiring sites (scripts/setup-hooks.sh, scripts/setup-relay.sh, " +
-				"src/server/routes/setup.ts x2 templates, scripts/install-local.ps1, bin/cli.ts, " +
+			"\nAll six wiring sites (scripts/setup-hooks.sh, scripts/setup-relay.sh, " +
+				"src/server/routes/setup.ts, scripts/install-local.ps1, bin/cli.ts, " +
 				"src/web/pages/SetupPage.tsx) must register the exact same event set as the " +
 				"src/shared/types.ts ClaudeCodeEvent / CodexEvent unions.",
 		);

@@ -18,6 +18,8 @@
 | `11-serviceaccount.yaml` | ServiceAccount with no auto-mounted token |
 | `12-backup-pvc.yaml` | Backup output PVC (NFS-backed, RWX, 100Gi) |
 
+`PUBLIC_URL` (in `02-configmap.yaml`) is load-bearing: `/setup-relay.sh` takes the server address it installs from it, and answers 503 without it. Relay keys need the Hook ingest + Observe scopes.
+
 ## Storage stance and backup architecture (C3)
 
 **SQLite stays on local block storage.** WAL mode (enabled via `PRAGMA journal_mode = WAL`) requires

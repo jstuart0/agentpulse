@@ -339,7 +339,7 @@ Use the relay installer:
 curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
 ```
 
-That installs a local relay on `localhost:4000`, configures hooks automatically, and forwards events to your remote AgentPulse server.
+That installs a local relay on `localhost:4000`, configures hooks automatically, and forwards events to your remote AgentPulse server. The key needs the **Hook ingest** and **Observe (read-only)** scopes — see [Option B](#advanced-remote-dashboard--local-hooks) below.
 
 ## Advanced: Remote dashboard + local hooks
 
@@ -385,25 +385,72 @@ Multiple machines can report to the same dashboard. Run the relay setup on your 
 One command sets up everything, no repo clone needed:
 
 ```bash
-curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
+curl -sSL https://your-server.example.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
 ```
+
+The dashboard's Setup page has this command ready to copy, with a **Mint relay key** button.
 
 That single command:
+- Checks the key with the server first, and writes nothing if it's missing a scope
 - Installs Bun if you don't have it
-- Installs a tiny relay at `~/.agentpulse/relay.ts`
-- Creates a macOS LaunchAgent (or Linux systemd service) that auto-starts on login
+- Installs the relay at `~/.agentpulse/relay.ts`, with its settings in `~/.agentpulse/config.json` (mode 600; the key never appears in a process list, the plist or the unit)
+- Installs the Claude Code statusline at `~/.claude/statusline-agentpulse.sh` and turns it on if you don't already have a `statusLine` (otherwise it prints the line to add)
+- Runs the relay as a macOS LaunchAgent or a Linux systemd user service that starts on login
 - Configures Claude Code + Codex hooks to point at `localhost:4000`
-- Starts the relay immediately
+- Removes the obsolete `~/.agentpulse/codex-hook.sh` if an older install left one
 
-Your agents send events to `localhost:4000` (allowed by Claude Code), the relay forwards them to your remote server. Open the dashboard from any device to monitor your agents in real time.
+Your agents send events to `localhost:4000` (allowed by Claude Code), the relay forwards them to your remote server. Open the dashboard from any device to monitor your agents in real time. **Re-run the same command anytime to update the relay and statusline**; the key, port and Codex-names policy from the last run are kept unless you pass new ones.
+
+**The relay key needs Hook ingest + Observe.** The relay posts hooks (*Hook ingest*) and reads your session list to sync session names and CLAUDE.md files (*Observe (read-only)*). *Manage* is optional: it only lets the relay upload CLAUDE.md edits back to the dashboard. In **Settings → API Keys**, create the key with "Hook ingest" and "Observe (read-only)" checked; scopes can't be edited later, so mint a new key rather than changing an old one. The installer refuses a key without Observe. Pass `--allow-missing-observe` to install anyway: hooks are forwarded, but name and CLAUDE.md sync stay off.
+
+**The server needs `PUBLIC_URL`.** `/setup-relay.sh` fills in the server's address from `PUBLIC_URL` (the first entry, if it's a comma-separated list) and never from the request's `Host` header. Without `PUBLIC_URL`, the server only serves the relay installer to requests from its own machine; everyone else gets a 503 saying to set it. The Kubernetes manifests already set it.
+
+**Codex thread names (`--codex-names`).** The relay keeps Codex's `session_index.jsonl` and the dashboard in step, under one of two policies:
+
+- `codex` (the default): Codex's own thread names show on the dashboard. A name you set on the dashboard is written into Codex too, and generated names fill Codex threads that have no name yet.
+- `agentpulse`: dashboard names are canonical. Every Codex session's dashboard name is written into Codex, replacing its own titles, and renames made in Codex don't come back. "Use agent name" isn't offered for those sessions. Any key that can rename sessions can retitle your Codex threads this way.
+
+Switch by re-running the installer with `--codex-names agentpulse` or `--codex-names codex` (it's saved as `codex_name_policy` in `config.json`). A Codex name that's already been replaced stays replaced after you switch back. To protect Codex from a runaway loop, the relay writes a given session's name at most 3 times an hour: a 4th rename of the same session within an hour reaches Codex up to 60 minutes late (the dashboard shows it at once, and the relay reports `push_suppressed`).
+
+**Checking on the relay.** `curl -s http://localhost:4000/api/v1/relay/diagnostics` reports:
+- `auth`: the key's scopes, and which required ones are `missing`
+- `sync.codexNames` / `sync.claudeMd`: status, last error and last success (plus the active `policy` and any `suppressedIds`)
+- `drift.relay` / `drift.statusline`: `ok` when your copy matches the server's, `outdated` when it doesn't (re-run the installer), `unknown` when the server couldn't be asked, and `missing` when the statusline isn't installed
+- `queue`: hooks waiting to be forwarded
+
+When something needs your attention (a key missing Observe, an outdated relay or statusline), the relay writes one line to `~/.agentpulse/status`, and the statusline shows it as a dim `· agentpulse: …` hint.
 
 ```
-Manage the relay:
+Manage the relay (macOS):
   Stop:    launchctl unload ~/Library/LaunchAgents/dev.agentpulse.relay.plist
   Start:   launchctl load ~/Library/LaunchAgents/dev.agentpulse.relay.plist
+Manage the relay (Linux):
+  Stop:    systemctl --user stop agentpulse-relay
+  Start:   systemctl --user start agentpulse-relay
+Both:
   Logs:    tail -f ~/.agentpulse/logs/relay.log
   Config:  cat ~/.agentpulse/config.json
 ```
+
+**Reset or uninstall the relay.** Everything the relay keeps lives in `~/.agentpulse/`:
+
+| Path | What it is |
+|---|---|
+| `config.json` | Server URL, API key, port, `codex_name_policy` |
+| `installed.json` | When the installer last wrote the agent hooks |
+| `relay.ts`, `logs/` | The relay and its logs |
+| `status` | The one-line hint the statusline shows (absent when all is well) |
+| `local-sessions.json` | Sessions this relay forwarded hooks for (the only ones it syncs CLAUDE.md for) |
+| `codex-pull-state.json` | Which Codex names were already sent to the dashboard |
+| `codex-pushed.jsonl` | Every name the relay wrote into Codex's `session_index.jsonl` |
+| `hook-queue/` | Hooks waiting to be forwarded |
+| `cache/` | Claude names the statusline already sent to the dashboard |
+
+Plus the service (`~/Library/LaunchAgents/dev.agentpulse.relay.plist` or `~/.config/systemd/user/agentpulse-relay.service`) and `~/.claude/statusline-agentpulse.sh`.
+
+- **Reset** (clear sync state, keep the install): stop the relay, delete `status`, `local-sessions.json`, `codex-pull-state.json`, `cache/` and `hook-queue/` (unsent hooks are lost), then start it again.
+- **Uninstall**: stop the relay and delete the service file, all of `~/.agentpulse/` and `~/.claude/statusline-agentpulse.sh`. Remove the `statusLine` entry and the AgentPulse hooks from `~/.claude/settings.json`, and `~/.codex/hooks.json` if nothing else uses it.
+- **Keep `codex-pushed.jsonl` unless you're uninstalling.** It's how the relay tells its own writes in Codex's index from Codex's. Without it, under the `codex` policy the relay would read the names it wrote earlier as Codex's own and send them back to the dashboard as agent names.
 
 **Option C: Kubernetes with forwardauth SSO (Authentik / Authelia / oauth2-proxy / Pomerium / Cloudflare Access)**
 
@@ -429,11 +476,13 @@ For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in qu
 
 ### Remote server
 
-If AgentPulse runs on a different machine:
+If AgentPulse runs on a different machine, install the relay (see [Option B](#advanced-remote-dashboard--local-hooks)); agents can only post hooks to localhost:
 
 ```bash
-curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-server.com --key ap_YOUR_KEY
+curl -sSL https://your-server.example.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
 ```
+
+Set `PUBLIC_URL` on the server to its public address: the relay installer takes the server URL from it, never from the request.
 
 ### Database
 
@@ -504,7 +553,9 @@ The expanded hook lists above require Claude Code ≥2.1.x / Codex ≥0.124. If 
 
 ## Statusline (optional)
 
-`scripts/statusline.sh` renders your AgentPulse session name (e.g. `brave-falcon`) and context-window usage directly in Claude Code's statusline, so you can match a terminal tab to a dashboard card at a glance:
+`scripts/statusline.sh` renders your AgentPulse session name (e.g. `brave-falcon`) and context-window usage directly in Claude Code's statusline, so you can match a terminal tab to a dashboard card at a glance. It also shows the relay's hint (`· agentpulse: …`) when the relay needs attention.
+
+**With the relay**, `setup-relay.sh` installs and updates it for you (re-run the installer to update it). **Without a relay**, copy it by hand:
 
 ```bash
 chmod +x scripts/statusline.sh
@@ -517,9 +568,9 @@ Add to `~/.claude/settings.json`:
 "statusLine": { "type": "command", "command": "~/.claude/statusline-agentpulse.sh" }
 ```
 
-**Native-name sync**: when Claude Code sets a native session name (`.session_name` in the statusline JSON, requires Claude Code with statusline session-name support), the script pushes it into AgentPulse's `displayName` via `PUT /api/v1/sessions/:id/native-name`. This is pull-only -- the native name flows one direction, into AgentPulse -- and it never overwrites a name you've manually set on the dashboard (a manual rename is remembered and always wins). The push is fire-and-forget with a 1s timeout so it can never slow down statusline rendering.
+**Native-name sync**: when Claude Code sets a native session name (`.session_name` in the statusline JSON, requires Claude Code with statusline session-name support), the script pushes it into AgentPulse's `displayName` via `PUT /api/v1/sessions/:id/native-name`. An ingest-scoped key is enough. This is pull-only -- the native name flows one direction, into AgentPulse -- and it never overwrites a name you've set on the dashboard: a manual rename pins the name. To go back to the agent's name, use **Use agent name** on the session. The push is fire-and-forget with a 1s timeout so it can never slow down statusline rendering.
 
-The statusline script is a manually copied file (not managed by the setup script), so **if you installed it before this sync behavior shipped, re-run the `cp` step above** to pick it up.
+If you copied the statusline by hand before this sync behavior shipped, **re-run the `cp` step above** to pick it up.
 
 ## Manage a local install
 

@@ -89,10 +89,10 @@ describe("/setup-relay.sh — one installer, canonical sources spliced at reques
 		const relay = await readFile(join(SCRIPTS, "relay.ts"), "utf-8");
 		const statusline = await readFile(join(SCRIPTS, "statusline.sh"), "utf-8");
 		expect(body).toContain(
-			`<< 'AGENTPULSE_RELAY_EOF'\n${heredocPayload(relay)}AGENTPULSE_RELAY_EOF\n`,
+			`<< 'AGENTPULSE_RELAY_TS_EOF'\n${heredocPayload(relay)}AGENTPULSE_RELAY_TS_EOF\n`,
 		);
 		expect(body).toContain(
-			`<< 'AGENTPULSE_STATUSLINE_EOF'\n${heredocPayload(statusline)}AGENTPULSE_STATUSLINE_EOF\n`,
+			`<< 'AGENTPULSE_STATUSLINE_SH_EOF'\n${heredocPayload(statusline)}AGENTPULSE_STATUSLINE_SH_EOF\n`,
 		);
 		// The AGEN-16 stamp rides along because the copy is exact.
 		expect(body).toContain('const DELIVERY_ID_HEADER = "X-AgentPulse-Delivery-Id";');
@@ -116,11 +116,11 @@ describe("/setup-relay.sh — one installer, canonical sources spliced at reques
 		// Removing the two spliced heredocs gives back the source with the markers.
 		const unspliced = body
 			.replace(
-				/^cat > "\$SRC_DIR\/relay\.ts" << 'AGENTPULSE_RELAY_EOF'\n[\s\S]*?\nAGENTPULSE_RELAY_EOF$/m,
+				/^cat > "\$SRC_DIR\/relay\.ts" << 'AGENTPULSE_RELAY_TS_EOF'\n[\s\S]*?\nAGENTPULSE_RELAY_TS_EOF$/m,
 				"# @@AGENTPULSE_RELAY_TS@@",
 			)
 			.replace(
-				/^cat > "\$SRC_DIR\/statusline\.sh" << 'AGENTPULSE_STATUSLINE_EOF'\n[\s\S]*?\nAGENTPULSE_STATUSLINE_EOF$/m,
+				/^cat > "\$SRC_DIR\/statusline\.sh" << 'AGENTPULSE_STATUSLINE_SH_EOF'\n[\s\S]*?\nAGENTPULSE_STATUSLINE_SH_EOF$/m,
 				"# @@AGENTPULSE_STATUSLINE_SH@@",
 			)
 			.replace('REMOTE_URL_DEFAULT="https://agentpulse.example.com"', 'REMOTE_URL_DEFAULT=""');
@@ -288,7 +288,7 @@ describe("F16 — unavailable sources are a 503, never a throw", () => {
 			for (const name of ["setup-relay.sh", "statusline.sh"]) {
 				await writeFile(join(dir, name), await readFile(join(SCRIPTS, name), "utf-8"));
 			}
-			await writeFile(join(dir, "relay.ts"), "// ok\nAGENTPULSE_RELAY_EOF\nrm -rf ~\n");
+			await writeFile(join(dir, "relay.ts"), "// ok\nAGENTPULSE_RELAY_TS_EOF\nrm -rf ~\n");
 			process.env[SCRIPTS_DIR_ENV] = dir;
 			const res = await get("/setup-relay.sh");
 			expect(res.status).toBe(503);

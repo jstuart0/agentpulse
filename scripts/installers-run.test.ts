@@ -5,12 +5,15 @@
  *
  * The stubs come first on PATH so the real launchctl/systemctl are never
  * reached: a real `launchctl load` of dev.agentpulse.relay would replace the
- * developer's own running relay. Every test asserts the stub saw the call.
+ * developer's own running relay. The service tests assert the stub saw it.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+// Before config.js: the test process shares one module registry, and config
+// is read once, so the harness's env has to be in place first.
+import "../src/server/db/__test_db.js";
 
 const { config } = await import("../src/server/config.js");
 const { setup } = await import("../src/server/routes/setup.js");

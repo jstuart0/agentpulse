@@ -3,6 +3,9 @@ export const config = {
 	host: process.env.HOST || "127.0.0.1",
 	databaseUrl: process.env.DATABASE_URL || "",
 	publicUrl: process.env.PUBLIC_URL || "http://localhost:3000",
+	// D19: the default above is wrong for a remote relay, so the relay
+	// installer needs to know whether PUBLIC_URL was actually set.
+	publicUrlExplicit: Boolean(process.env.PUBLIC_URL),
 	logLevel: (process.env.LOG_LEVEL || "info") as "debug" | "info" | "warn" | "error",
 	initialApiKey: process.env.AGENTPULSE_INITIAL_API_KEY || "",
 	disableAuth: process.env.DISABLE_AUTH === "true",

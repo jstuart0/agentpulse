@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
+import { RELAY_KEY_NOTE, RELAY_KEY_SCOPES, buildRelayCommand } from "../lib/onboarding.js";
 import { useUserStore } from "../stores/user-store.js";
 
 export function SetupPage() {
@@ -16,6 +17,9 @@ export function SetupPage() {
 	const [keysError, setKeysError] = useState<string | null>(null);
 	const [newKeyName, setNewKeyName] = useState("my-laptop");
 	const [creatingKey, setCreatingKey] = useState(false);
+	const [relayKey, setRelayKey] = useState<string | null>(null);
+	const [creatingRelayKey, setCreatingRelayKey] = useState(false);
+	const [codexNamesAgentpulse, setCodexNamesAgentpulse] = useState(false);
 
 	useEffect(() => {
 		if (disableAuth) {
@@ -60,7 +64,30 @@ export function SetupPage() {
 		}
 	}
 
+	async function handleCreateRelayKey() {
+		setCreatingRelayKey(true);
+		try {
+			const res = await api.createApiKey(
+				`${newKeyName.trim() || "my-laptop"}-relay`,
+				RELAY_KEY_SCOPES,
+			);
+			setRelayKey(res.key);
+			const list = await api.getApiKeys().catch(() => ({ keys }));
+			setKeys(list.keys ?? []);
+		} catch (err) {
+			setKeysError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setCreatingRelayKey(false);
+		}
+	}
+
 	const activeKeys = keys.filter((k) => k.isActive);
+	const relayCommand = buildRelayCommand({
+		serverUrl,
+		key: relayKey ?? (apiKey || "YOUR_RELAY_KEY"),
+		disableAuth,
+		codexNamesAgentpulse,
+	});
 
 	const hookEvents =
 		agentType === "claude_code"
@@ -216,6 +243,80 @@ export function SetupPage() {
 						)}
 					</>
 				)}
+			</div>
+
+			{/* Remote relay: the one-command path for machines that can't post to this server directly */}
+			<div className="border border-border bg-card rounded-lg p-5 mb-4">
+				<h2 className="text-sm font-semibold mb-2">Remote relay</h2>
+				<p className="text-xs text-muted-foreground mb-3">
+					Agents on another machine can only post hooks to localhost. Run this there: it installs a
+					small relay as a login service, points Claude Code and Codex CLI at it, and installs the
+					Claude Code statusline. Re-run anytime to update the relay and statusline.
+				</p>
+
+				{!disableAuth && (
+					<div className="mb-3">
+						<p className="text-xs text-amber-300 mb-2">{RELAY_KEY_NOTE}</p>
+						{relayKey ? (
+							<div>
+								<p className="text-[11px] text-muted-foreground mb-1">
+									Relay key created — save it, it won&apos;t be shown again. It&apos;s already in
+									the command below.
+								</p>
+								<div className="flex gap-2">
+									<code className="flex-1 min-w-0 truncate bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground font-mono">
+										{relayKey}
+									</code>
+									<button
+										type="button"
+										onClick={() => void copy(relayKey, "Relay key copied")}
+										className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+									>
+										Copy
+									</button>
+								</div>
+							</div>
+						) : (
+							<button
+								type="button"
+								onClick={handleCreateRelayKey}
+								disabled={creatingRelayKey}
+								className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+							>
+								{creatingRelayKey ? "Creating…" : "Mint relay key"}
+							</button>
+						)}
+					</div>
+				)}
+
+				<div className="relative mb-3">
+					<pre className="bg-background border border-border rounded-md p-3 pr-16 text-xs overflow-x-auto">
+						<code>{relayCommand}</code>
+					</pre>
+					<button
+						type="button"
+						onClick={() => void copy(relayCommand, "Relay command copied")}
+						className="absolute top-2 right-2 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+					>
+						Copy
+					</button>
+				</div>
+
+				<label className="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
+					<input
+						type="checkbox"
+						checked={codexNamesAgentpulse}
+						onChange={(e) => setCodexNamesAgentpulse(e.target.checked)}
+						className="mt-0.5 rounded border-input accent-primary"
+					/>
+					<span>
+						<span className="text-foreground">Make dashboard names canonical in Codex</span> — adds{" "}
+						<code className="font-mono text-foreground">--codex-names agentpulse</code>. By default
+						Codex&apos;s own thread names show on the dashboard. With this, dashboard names are
+						written into Codex and replace its titles, renames made in Codex won&apos;t come back,
+						and Codex sessions don&apos;t offer &ldquo;Use agent name&rdquo;.
+					</span>
+				</label>
 			</div>
 
 			{/* Step 2: Agent Type */}

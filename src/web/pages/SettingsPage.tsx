@@ -8,6 +8,7 @@ import { TelegramChannelPanel } from "../components/settings/TelegramChannelPane
 import { WorkspacesPanel } from "../components/settings/WorkspacesPanel.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
+import { relayKeyHint } from "../lib/onboarding.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { type AppTheme, persistTheme, resolveInitialTheme } from "../lib/theme.js";
 import { useLabsStore } from "../stores/labs-store.js";
@@ -381,7 +382,8 @@ export function SettingsPage() {
 			<section className="border border-border bg-card rounded-lg p-5 mb-6">
 				<h2 className="text-sm font-semibold mb-1">API Keys</h2>
 				<p className="text-xs text-muted-foreground mb-4">
-					API keys authenticate hook events from Claude Code and Codex CLI.
+					API keys authenticate hook events from Claude Code and Codex CLI, and the relay that
+					forwards them from other machines.
 				</p>
 
 				{/* New key creation */}
@@ -441,7 +443,7 @@ export function SettingsPage() {
 								onChange={(e) => setNewKeyScopeIngest(e.target.checked)}
 								className="rounded border-input"
 							/>
-							<span>ingest</span>
+							<span>Hook ingest</span>
 							<span className="text-muted-foreground/60">(hook events)</span>
 						</label>
 						<label className="flex items-center gap-1.5 cursor-pointer">
@@ -451,7 +453,7 @@ export function SettingsPage() {
 								onChange={(e) => setNewKeyScopeManage(e.target.checked)}
 								className="rounded border-input"
 							/>
-							<span>manage</span>
+							<span>Manage</span>
 							<span className="text-muted-foreground/60">(supervisors, API keys)</span>
 						</label>
 						<label className="flex items-center gap-1.5 cursor-pointer">
@@ -461,7 +463,7 @@ export function SettingsPage() {
 								onChange={(e) => setNewKeyScopeObserve(e.target.checked)}
 								className="rounded border-input"
 							/>
-							<span>observe (read-only)</span>
+							<span>Observe (read-only)</span>
 							<span className="text-muted-foreground/60">(sessions, search, AI reads)</span>
 						</label>
 					</div>
@@ -516,6 +518,11 @@ export function SettingsPage() {
 											</span>
 										)}
 									</div>
+									{key.isActive && key.scopes && relayKeyHint(key.scopes) && (
+										<p className="mt-1 text-xs text-amber-300">
+											Relays need Observe — mint a new key with Hook ingest + Observe
+										</p>
+									)}
 								</div>
 								{key.isActive && (
 									<button
