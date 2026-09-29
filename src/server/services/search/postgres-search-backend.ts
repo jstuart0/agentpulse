@@ -343,7 +343,7 @@ export class PostgresSearchBackend implements SearchBackend {
 			FROM events e
 			JOIN sessions s ON s.session_id = e.session_id
 			WHERE ${whereClause}
-			ORDER BY e.created_at DESC
+			ORDER BY e.created_at DESC, e.id DESC
 			LIMIT ${limit} OFFSET ${offset}
 		`;
 

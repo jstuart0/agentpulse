@@ -1,0 +1,18 @@
+{"type":"session_meta","payload":{"id":"00000000-0000-0000-0000-000000000000","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/workspace/example-project","originator":"codex_cli","cli_version":"0.145.0","instructions":null}}
+{"type":"turn_context","payload":{"turn_id":"turn-0001","cwd":"/workspace/example-project","approval_policy":"never","sandbox_policy":{"mode":"workspace-write"},"model":"gpt-5-codex"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-0001"}}
+{"type":"developer","payload":{"note":"synthetic developer record for fixture coverage"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/workspace/example-project</cwd>\n  <shell>bash</shell>\n</environment_context>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please add input validation to the signup form and run the test suite."}]}}
+{"type":"reasoning","payload":{"summary":"Synthetic reasoning trace placeholder for fixture coverage."}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll start by reviewing the signup form component."}]}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"call_0001example","name":"exec_command","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat src/forms/signup.ts\"]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_0001example","output":"{\"output\":\"export function SignupForm() { /* synthetic */ }\\n\",\"metadata\":{\"exit_code\":0}}"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Now I'll add validation and run the tests."}]}}
+{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_0002example","name":"apply_patch","input":"*** synthetic patch placeholder ***"}}
+{"type":"response_item","payload":{"type":"function_call","call_id":"call_0003example","name":"exec_command","arguments":"{\"command\":[\"bash\",\"-lc\",\"npm test\"]}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_0003example","output":"{\"output\":\"All 12 tests passed.\\n\",\"metadata\":{\"exit_code\":0}}"}}
+{"type":"world_state","payload":{"snapshot":"synthetic filesystem snapshot placeholder"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Validation added and the full suite is green."}]}}
+{"type":"token_count","payload":{"input_tokens":1234,"output_tokens":567}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-0001","last_agent_message":"Validation added and the full suite is green."}}

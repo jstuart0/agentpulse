@@ -1,7 +1,8 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import type { EventCategory, Session, SessionEvent } from "../../../shared/types.js";
+import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
-import { sessions } from "../../db/schema/index.js";
+import { events, sessions } from "../../db/schema/index.js";
 import { executeRows } from "../../db/sql-helpers.js";
 import { getSessionOwnerConnections } from "../session-ownership.js";
 import { type SessionIntelligence, classifySession } from "./classifier.js";
@@ -13,6 +14,140 @@ import {
 } from "./hitl-service.js";
 
 const CLASSIFIER_EVENT_LOOKBACK = 50;
+
+/**
+ * The classifier's per-session event projection (Decision 15 / F53 / F76).
+ * Deliberately excludes `rawPayload` and `toolInput` — the classifier never
+ * reads them, and on Postgres `raw_payload`/`tool_input` are JSON columns
+ * that a naive `JSON.parse` on the driver's already-parsed value throws on
+ * (F76). Callers that need the full row use `loadRecentEvents` instead.
+ */
+export interface ProjectedEventRow {
+	id: number;
+	sessionId: string;
+	eventType: string;
+	category: EventCategory | null;
+	source: SessionEvent["source"];
+	content: string | null;
+	isNoise: boolean;
+	providerEventType: string | null;
+	toolName: string | null;
+	toolResponse: string | null;
+	createdAt: string;
+}
+
+function toClassifierSessionEvent(row: ProjectedEventRow): SessionEvent {
+	return {
+		id: row.id,
+		sessionId: row.sessionId,
+		eventType: row.eventType,
+		category: row.category,
+		source: row.source,
+		content: row.content,
+		isNoise: row.isNoise,
+		providerEventType: row.providerEventType,
+		toolName: row.toolName,
+		toolInput: null,
+		toolResponse: row.toolResponse,
+		rawPayload: {},
+		createdAt: row.createdAt,
+	};
+}
+
+/**
+ * Loads each session's last `limit` events, ascending by id, projected to
+ * the columns the classifier reads. Postgres runs one `LATERAL` query
+ * (avoids starving the connection pool on a large batch — F75); SQLite runs
+ * a projected per-session loop (synchronous, no pool to starve).
+ */
+export async function loadRecentEventsBySession(
+	sessionIds: string[],
+	limit: number,
+): Promise<Map<string, ProjectedEventRow[]>> {
+	const out = new Map<string, ProjectedEventRow[]>();
+	if (sessionIds.length === 0) return out;
+	for (const id of sessionIds) out.set(id, []);
+
+	if (config.dialect === "postgres") {
+		const idList = sql.join(
+			sessionIds.map((id) => sql`(${id})`),
+			sql`, `,
+		);
+		const rows = await executeRows<{
+			id: number;
+			session_id: string;
+			event_type: string;
+			category: string | null;
+			source: string;
+			content: string | null;
+			is_noise: boolean;
+			provider_event_type: string | null;
+			tool_name: string | null;
+			tool_response: string | null;
+			created_at: string;
+		}>(
+			getDb(),
+			sql`SELECT e.id, e.session_id, e.event_type, e.category, e.source, e.content, e.is_noise,
+			           e.provider_event_type, e.tool_name, e.tool_response, e.created_at
+			      FROM (VALUES ${idList}) AS s(session_id)
+			      CROSS JOIN LATERAL (
+			        SELECT * FROM events ev WHERE ev.session_id = s.session_id ORDER BY ev.id DESC LIMIT ${limit}
+			      ) e
+			     ORDER BY s.session_id, e.id ASC`,
+		);
+		for (const r of rows) {
+			const list = out.get(r.session_id);
+			if (!list) continue;
+			list.push({
+				id: r.id,
+				sessionId: r.session_id,
+				eventType: r.event_type,
+				category: (r.category as EventCategory) ?? null,
+				source: r.source as SessionEvent["source"],
+				content: r.content,
+				isNoise: !!r.is_noise,
+				providerEventType: r.provider_event_type,
+				toolName: r.tool_name,
+				toolResponse: r.tool_response,
+				createdAt: r.created_at,
+			});
+		}
+		return out;
+	}
+
+	// SQLite: synchronous, no connection pool to starve — a per-session
+	// projected query is simpler than a window-function query and just as
+	// fast at this scale (percy, mid-build).
+	for (const id of sessionIds) {
+		const rows = await getDb()
+			.select({
+				id: events.id,
+				sessionId: events.sessionId,
+				eventType: events.eventType,
+				category: events.category,
+				source: events.source,
+				content: events.content,
+				isNoise: events.isNoise,
+				providerEventType: events.providerEventType,
+				toolName: events.toolName,
+				toolResponse: events.toolResponse,
+				createdAt: events.createdAt,
+			})
+			.from(events)
+			.where(eq(events.sessionId, id))
+			.orderBy(desc(events.id))
+			.limit(limit);
+		out.set(
+			id,
+			rows.reverse().map((row) => ({
+				...row,
+				category: row.category as EventCategory | null,
+				source: row.source as SessionEvent["source"],
+			})),
+		);
+	}
+	return out;
+}
 
 /**
  * Compute intelligence for a session by stitching together the pieces the
@@ -29,7 +164,7 @@ export async function intelligenceForSession(
 		.limit(1);
 	if (!row) return null;
 
-	const events = await loadRecentEvents(sessionId, CLASSIFIER_EVENT_LOOKBACK);
+	const recentEvents = await loadRecentEvents(sessionId, CLASSIFIER_EVENT_LOOKBACK);
 	const openHitl = await getOpenHitlForSession(sessionId);
 
 	const supervisorConnected: boolean | undefined = (
@@ -38,7 +173,7 @@ export async function intelligenceForSession(
 
 	return classifySession({
 		session: row as unknown as Session,
-		recentEvents: events,
+		recentEvents,
 		openHitl,
 		supervisorConnected,
 		now,
@@ -47,10 +182,10 @@ export async function intelligenceForSession(
 
 /**
  * Bulk compute intelligence for many sessions. Issues 4 queries total
- * (sessions, events-per-session via window function, managed+supervisor
- * left join, open HITL) regardless of input size, then runs the
- * classifier in-memory per session. The single-session path remains for
- * call sites that only need one record.
+ * (sessions, projected events-per-session via loadRecentEventsBySession,
+ * managed+supervisor left join, open HITL) regardless of input size, then
+ * runs the classifier in-memory per session. The single-session path
+ * remains for call sites that only need one record.
  */
 export async function intelligenceForSessions(
 	sessionIds: string[],
@@ -70,75 +205,13 @@ export async function intelligenceForSessions(
 	// `if (!row) return null` early-out from intelligenceForSession.
 	const presentIds = sessionRows.map((r) => r.sessionId);
 
-	// 2) Recent events per session via window function. Drizzle's query
-	// builder doesn't model window fns cleanly, so use raw SQL via the
-	// portable executeRows() helper. ROW_NUMBER() OVER (...) is supported
-	// by SQLite >= 3.25 (Bun ships modern SQLite) and all Postgres versions.
-	// The IN list is built from bound parameters via sql.join so values are
-	// never string-interpolated into the SQL text.
-	const idList = sql.join(
-		presentIds.map((id) => sql`${id}`),
-		sql.raw(", "),
-	);
-	const eventRows = await executeRows<{
-		id: number;
-		session_id: string;
-		event_type: string;
-		category: string | null;
-		source: string;
-		content: string | null;
-		is_noise: number;
-		provider_event_type: string | null;
-		tool_name: string | null;
-		tool_input: string | null;
-		tool_response: string | null;
-		raw_payload: string | null;
-		created_at: string;
-	}>(
-		getDb(),
-		sql`SELECT id, session_id, event_type, category, source, content,
-		           is_noise, provider_event_type, tool_name, tool_input,
-		           tool_response, raw_payload, created_at
-		      FROM (
-		        SELECT *,
-		               ROW_NUMBER() OVER (
-		                 PARTITION BY session_id
-		                 ORDER BY created_at DESC, id DESC
-		               ) AS rn
-		          FROM events
-		         WHERE session_id IN (${idList})
-		      )
-		     WHERE rn <= ${CLASSIFIER_EVENT_LOOKBACK}
-		     ORDER BY session_id, created_at ASC, id ASC`,
-	);
+	// 2) Recent events per session, projected (Decision 15). Postgres runs
+	// one LATERAL query; SQLite runs a projected per-session loop. See
+	// loadRecentEventsBySession above.
+	const projectedBySession = await loadRecentEventsBySession(presentIds, CLASSIFIER_EVENT_LOOKBACK);
 	const eventsBySession = new Map<string, SessionEvent[]>();
-	for (const id of presentIds) eventsBySession.set(id, []);
-	for (const r of eventRows) {
-		const list = eventsBySession.get(r.session_id);
-		if (!list) continue;
-		list.push({
-			id: r.id,
-			sessionId: r.session_id,
-			eventType: r.event_type,
-			category: (r.category as EventCategory) ?? null,
-			source: r.source as SessionEvent["source"],
-			content: r.content,
-			isNoise: !!r.is_noise,
-			providerEventType: r.provider_event_type,
-			toolName: r.tool_name,
-			toolInput: r.tool_input
-				? typeof r.tool_input === "string"
-					? (JSON.parse(r.tool_input) as Record<string, unknown>)
-					: (r.tool_input as unknown as Record<string, unknown>)
-				: null,
-			toolResponse: r.tool_response,
-			rawPayload: r.raw_payload
-				? typeof r.raw_payload === "string"
-					? (JSON.parse(r.raw_payload) as Record<string, unknown>)
-					: (r.raw_payload as unknown as Record<string, unknown>)
-				: ({} as Record<string, unknown>),
-			createdAt: r.created_at,
-		});
+	for (const id of presentIds) {
+		eventsBySession.set(id, (projectedBySession.get(id) ?? []).map(toClassifierSessionEvent));
 	}
 
 	// 3) Owner-of-record supervisor connected-state, batched.

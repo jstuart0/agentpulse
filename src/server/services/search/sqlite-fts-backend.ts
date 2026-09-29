@@ -1,5 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { getSqlite } from "../../db/client.js";
+import {
+	EVENT_TEXT_COALESCE_SELECT,
+	FTS_BOOTSTRAP_SQL,
+	FTS_INDEXED_EVENT_TYPES_SQL_LIST,
+} from "../../db/fts-ddl.js";
 import type { SearchBackend, SearchFilters, SearchHit, SearchResult } from "./types.js";
 
 /**
@@ -27,92 +32,6 @@ import type { SearchBackend, SearchFilters, SearchHit, SearchResult } from "./ty
  * when the Postgres backend lands (see Postgres backend plan) callers
  * won't change.
  */
-
-const FTS_BOOTSTRAP_SQL = `
-	-- Session-level index. content='' makes this a "contentless" table —
-	-- we push rows in explicitly via triggers below rather than mirroring
-	-- the whole sessions table (which would double storage).
-	CREATE VIRTUAL TABLE IF NOT EXISTS search_sessions_fts USING fts5(
-		session_id UNINDEXED,
-		display_name,
-		cwd,
-		current_task,
-		notes,
-		agent_type UNINDEXED,
-		status UNINDEXED,
-		last_activity_at UNINDEXED,
-		tokenize = 'porter unicode61 remove_diacritics 1'
-	);
-
-	-- Per-event index. We store the event id + a normalized 'text' column
-	-- that the ingest path extracts from raw_payload / content for each
-	-- event type (UserPromptSubmit, AssistantMessage, AiReport, …).
-	CREATE VIRTUAL TABLE IF NOT EXISTS search_events_fts USING fts5(
-		event_id UNINDEXED,
-		session_id UNINDEXED,
-		event_type UNINDEXED,
-		text,
-		created_at UNINDEXED,
-		tokenize = 'porter unicode61 remove_diacritics 1'
-	);
-
-	-- Keep-in-sync triggers on sessions. We re-insert on update because
-	-- FTS5 doesn't have a clean partial-update path for changed columns.
-	CREATE TRIGGER IF NOT EXISTS trg_sessions_ai_fts AFTER INSERT ON sessions
-	BEGIN
-		INSERT INTO search_sessions_fts(session_id, display_name, cwd, current_task, notes, agent_type, status, last_activity_at)
-		VALUES (NEW.session_id, NEW.display_name, NEW.cwd, NEW.current_task, NEW.notes, NEW.agent_type, NEW.status, NEW.last_activity_at);
-	END;
-
-	CREATE TRIGGER IF NOT EXISTS trg_sessions_au_fts AFTER UPDATE ON sessions
-	BEGIN
-		DELETE FROM search_sessions_fts WHERE session_id = OLD.session_id;
-		INSERT INTO search_sessions_fts(session_id, display_name, cwd, current_task, notes, agent_type, status, last_activity_at)
-		VALUES (NEW.session_id, NEW.display_name, NEW.cwd, NEW.current_task, NEW.notes, NEW.agent_type, NEW.status, NEW.last_activity_at);
-	END;
-
-	CREATE TRIGGER IF NOT EXISTS trg_sessions_ad_fts AFTER DELETE ON sessions
-	BEGIN
-		DELETE FROM search_sessions_fts WHERE session_id = OLD.session_id;
-		DELETE FROM search_events_fts WHERE session_id = OLD.session_id;
-	END;
-
-	-- Event insert trigger — extracts searchable text from raw_payload.
-	-- We search: UserPromptSubmit prompt, AssistantMessage content,
-	-- Stop.summary, TaskCreated/TaskCompleted titles, AiReport summary,
-	-- AiProposal.why+nextPrompt, AiHitlRequest.why. Other event types
-	-- get their 'content' column (already a normalized summary).
-	-- The COALESCE chain prefers explicit extracted fields, falls back
-	-- to the 'content' column, and finally to a JSON blob string.
-	CREATE TRIGGER IF NOT EXISTS trg_events_ai_fts AFTER INSERT ON events
-	WHEN NEW.event_type IN (
-		'UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted',
-		'SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest'
-	)
-	BEGIN
-		INSERT INTO search_events_fts(event_id, session_id, event_type, text, created_at)
-		VALUES (
-			NEW.id,
-			NEW.session_id,
-			NEW.event_type,
-			COALESCE(
-				json_extract(NEW.raw_payload, '$.prompt'),
-				json_extract(NEW.raw_payload, '$.message'),
-				json_extract(NEW.raw_payload, '$.summary'),
-				json_extract(NEW.raw_payload, '$.why'),
-				json_extract(NEW.raw_payload, '$.title'),
-				NEW.content,
-				''
-			),
-			NEW.created_at
-		);
-	END;
-
-	CREATE TRIGGER IF NOT EXISTS trg_events_ad_fts AFTER DELETE ON events
-	BEGIN
-		DELETE FROM search_events_fts WHERE event_id = OLD.id;
-	END;
-`;
 
 /**
  * Convert SQLite FTS5's BM25 score (lower = better, unbounded) into a
@@ -182,17 +101,26 @@ export class SqliteFtsBackend implements SearchBackend {
 		text: string;
 		createdAt: string;
 	}): Promise<void> {
-		this.db.prepare("DELETE FROM search_events_fts WHERE event_id = ?").run(input.eventId);
+		// Decision 20 (F74): keyed by rowid = events.id, a constrained lookup
+		// instead of a full FTS5 table scan on the UNINDEXED event_id column.
+		this.db.prepare("DELETE FROM search_events_fts WHERE rowid = ?").run(input.eventId);
 		this.db
 			.prepare(
-				`INSERT INTO search_events_fts (event_id, session_id, event_type, text, created_at)
-				 VALUES (?, ?, ?, ?, ?)`,
+				`INSERT INTO search_events_fts (rowid, event_id, session_id, event_type, text, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
 			)
-			.run(input.eventId, input.sessionId, input.eventType, input.text, input.createdAt);
+			.run(
+				input.eventId,
+				input.eventId,
+				input.sessionId,
+				input.eventType,
+				input.text,
+				input.createdAt,
+			);
 	}
 
 	async removeEvent(eventId: number): Promise<void> {
-		this.db.prepare("DELETE FROM search_events_fts WHERE event_id = ?").run(eventId);
+		this.db.prepare("DELETE FROM search_events_fts WHERE rowid = ?").run(eventId);
 	}
 
 	async rebuild(): Promise<{ sessionsIndexed: number; eventsIndexed: number }> {
@@ -209,26 +137,16 @@ export class SqliteFtsBackend implements SearchBackend {
 
 		const eventsRes = this.db
 			.prepare(
-				`INSERT INTO search_events_fts (event_id, session_id, event_type, text, created_at)
+				`INSERT INTO search_events_fts (rowid, event_id, session_id, event_type, text, created_at)
 				 SELECT
+				   id,
 				   id,
 				   session_id,
 				   event_type,
-				   COALESCE(
-				     json_extract(raw_payload, '$.prompt'),
-				     json_extract(raw_payload, '$.message'),
-				     json_extract(raw_payload, '$.summary'),
-				     json_extract(raw_payload, '$.why'),
-				     json_extract(raw_payload, '$.title'),
-				     content,
-				     ''
-				   ),
+				   ${EVENT_TEXT_COALESCE_SELECT},
 				   created_at
 				 FROM events
-				 WHERE event_type IN (
-				   'UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted',
-				   'SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest'
-				 )`,
+				 WHERE event_type IN (${FTS_INDEXED_EVENT_TYPES_SQL_LIST})`,
 			)
 			.run();
 

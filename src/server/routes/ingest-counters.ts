@@ -12,6 +12,7 @@
 let bgErrorCount = 0;
 let inFlightCount = 0;
 let rateLimitedDropped = 0;
+let oversizeDropped = 0;
 
 export function getBgErrorCount(): number {
 	return bgErrorCount;
@@ -43,9 +44,18 @@ export function incrementRateLimitedDropped(): void {
 	rateLimitedDropped++;
 }
 
+/** D16 (F116): count of hook bodies dropped for exceeding the size cap. */
+export function getOversizeDropped(): number {
+	return oversizeDropped;
+}
+export function incrementOversizeDropped(): void {
+	oversizeDropped++;
+}
+
 /** Reset all counters — for use in tests only. */
 export function _resetCountersForTest(): void {
 	bgErrorCount = 0;
 	inFlightCount = 0;
 	rateLimitedDropped = 0;
+	oversizeDropped = 0;
 }

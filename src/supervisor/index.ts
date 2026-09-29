@@ -21,7 +21,7 @@ import {
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
 import { CleanupError, executeCleanupWorkArea } from "./services/cleanup-workarea.js";
-import { startCodexObserver } from "./services/codex-observer.js";
+import { isCodexObserverEnabled, startCodexObserver } from "./services/codex-observer.js";
 import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js";
 import { PrelaunchError, executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { retryWithBackoff } from "./services/registration-retry.js";
@@ -111,12 +111,20 @@ async function main() {
 	// coverage) and backfill for sessions started before the supervisor was
 	// running. Demotion to a pure fallback is a follow-up once more
 	// reliability data is collected.
-	void startCodexObserver({
-		serverUrl: config.serverUrl,
-		apiKey: config.apiKey ?? null,
-	}).catch((error) => {
-		console.error("[codex-observer] failed to start:", error);
-	});
+	//
+	// AGENTPULSE_CODEX_OBSERVER=off is an operator-only escape hatch — no
+	// installer sets it (Decision 19 supersedes the installer-disables-it
+	// approach: it fails closed whenever native hooks are untrusted).
+	if (isCodexObserverEnabled(process.env)) {
+		void startCodexObserver({
+			serverUrl: config.serverUrl,
+			apiKey: config.apiKey ?? null,
+		}).catch((error) => {
+			console.error("[codex-observer] failed to start:", error);
+		});
+	} else {
+		console.log("[codex-observer] disabled via AGENTPULSE_CODEX_OBSERVER=off");
+	}
 
 	let lastHeartbeatOkAt = Date.now();
 	const watchdogStaleMs = Math.max(registration.heartbeatIntervalMs * 3, 90_000);

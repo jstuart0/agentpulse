@@ -119,6 +119,156 @@ before this fix shipped), not for one that's simply still retrying.
   catalog and a security section covering host-side confirmation limits
   (Codex CLI does not honor Claude Code's `_meta` confirmation hint).
 
+- **`/health` dedup and oversize-drop counters (AGEN-16)** — `eventsDeduplicated`
+  (an object with `deliveryRetry`, `toolUseRetry`, `contentWindow`, and
+  `authority` counts, explaining *why* a dropped delivery was dropped),
+  `legacyObserverDeliveries` (deliveries from a not-yet-upgraded Codex
+  observer — see "Changed" below), and `oversizeDropped` (hook deliveries
+  dropped for exceeding the request-body cap).
+- **`X-AgentPulse-Delivery-Id` / `X-AgentPulse-Origin` request headers (AGEN-16)**
+  on `POST /api/v1/hooks`. A caller that can retry a delivery (a relay, the
+  Codex observer) stamps `X-AgentPulse-Delivery-Id` with a stable id for that
+  delivery so a retry dedupes instead of storing a second copy;
+  `X-AgentPulse-Origin: codex-observer` identifies deliveries from
+  AgentPulse's own Codex rollout-file observer. Both are optional — an old
+  or third-party caller that omits them falls back to the previous
+  best-effort behavior.
+- **`AGENTPULSE_CODEX_OBSERVER=off` (AGEN-16)** — environment variable for the
+  local supervisor. Disables the Codex-observer fallback entirely, for hosts
+  where native Codex hooks are already installed and working.
+- **Per-session native-hook marker (AGEN-16)** — a marker file at
+  `~/.agentpulse/codex-native/<session_id>`, written by AgentPulse's own
+  hook-install tooling, lets the Codex observer detect that native Codex
+  hooks already cover a given session and stand down for it instead of
+  posting a second copy of every event. A missing marker means the observer
+  posts (fail-open: a possible duplicate, never a lost event).
+
+### Changed
+
+- **Hook-delivery dedup is now durable identity, not content comparison
+  (AGEN-16)** — every stored event carries a server-derived `dedup_key`,
+  and a database-level unique constraint on `(session_id, dedup_key)`
+  prevents a retried delivery from being stored twice, surviving process
+  restarts. Hook deliveries are keyed by the tool's own identity
+  (`tool_use_id`) for tool calls and permission events, or by a hash of the
+  whole delivery body otherwise — never by comparing event *content*, which
+  is what caused repeated tool calls with the same tool name to collapse
+  into one another under the old scheme. Events written by other paths
+  (transcript reconciliation, managed-session state, AI proposals) keep the
+  previous window-based dedup and are unaffected. See "Upgrade notes" below
+  for the migration this requires.
+- **Hook request bodies over the size cap are dropped, not stored in full
+  (AGEN-16)** — `POST /api/v1/hooks` and `/api/v1/hooks/status` still always
+  return `200` (never a `4xx`/`5xx`, so a relay never treats an oversize
+  delivery as a hard failure), but an oversize body itself is discarded
+  before it's parsed. When enough of a `/hooks` delivery's identity
+  (session id, hook event name, and related fields) can still be recovered
+  from the truncated start of the body, a placeholder row is stored instead
+  ("Payload exceeded 16 MiB and was dropped") so the delivery isn't
+  invisible; when it can't, nothing is stored for that delivery. Every
+  dropped delivery is counted in `oversizeDropped` on `/health` either way.
+- **Reserved payload prefix (AGEN-16)** — any top-level key in a hook payload
+  whose name starts with `agentpulse_` (case-insensitive) is stripped before
+  the payload is processed. That prefix is reserved for server-internal
+  bookkeeping (e.g. the oversize placeholder marker above) and is never
+  read from client-supplied input.
+- **Session-scoped event reads are now ordered by row id (AGEN-16)**, not by
+  creation timestamp, removing ordering ambiguity between events created in
+  the same instant.
+- **AI heuristics (the session-health classifier) now see every tool event
+  for a session (AGEN-16)**, not just the ones that survived the old
+  content-window collapse.
+- **Observer-only Codex sessions show one row per completed turn (AGEN-16)**
+  — a session covered only by the Codex observer (no native Codex hooks)
+  now shows one "turn completed" row per model turn, matching Codex's own
+  turn-completion event, instead of one row per assistant-message chunk.
+  Intermediate per-chunk commentary isn't currently surfaced for
+  observer-only sessions.
+- **Upgrade Codex-observer-carrying supervisors together with the server
+  (AGEN-16)** — an out-of-date supervisor posts hook deliveries the server
+  now classifies as "legacy" (counted in `legacyObserverDeliveries`) and
+  keeps on the previous window-based dedup behavior rather than the durable
+  identity above, until the supervisor is upgraded.
+- **`rawPayload` shape for hook tool and permission rows (AGEN-16)** — the
+  raw `tool_response` copy on `PostToolUse`/`PostToolUseFailure` rows is now
+  capped at 4,096 characters (with `tool_response_truncated`/
+  `tool_response_chars` flags when cut), independently of the tighter
+  2,000-char DB column. `tool_input` is no longer duplicated into
+  `rawPayload` for hook tool/permission rows — it was already stored in the
+  `toolInput` column — and is replaced with a `tool_input_in_column: true`
+  marker. See `docs/MCP.md` for the consumer-facing note.
+- **Event storage growth (AGEN-16)** — keeping every distinct tool call
+  (rather than silently dropping most of them under the old dedup) grows
+  event storage substantially. See "Upgrade notes" below for the measured
+  figures and volume-sizing guidance.
+- **ask-qa reads only the newest 2,000 events per session (AGEN-16)**,
+  previously unbounded, to bound its context size.
+
+### Fixed
+
+- **Repeated tool calls with the same tool name were silently collapsed
+  (AGEN-16)** — hook deliveries were deduplicated by comparing recent event
+  *content* against a short rolling window, so e.g. 20 identical `Bash`
+  calls in a session could be stored as 2 rows. Every hook delivery is now
+  deduplicated by durable identity instead (see "Changed" above), so
+  distinct tool calls, turns, and permission events are all stored.
+- **Event-authority comparisons used the server process's local time zone
+  instead of UTC (AGEN-16)** — under a non-UTC `TZ`, a cross-source
+  comparison deciding which of two copies of the same event to keep (e.g. a
+  transcript-sourced assistant message superseding a hook-sourced one)
+  could misfire. These comparisons are now always UTC, regardless of the
+  server's local `TZ`.
+- **The live WebSocket feed could show a placeholder id for a newly-stored
+  event, then a different id once the client polled (AGEN-16)** — causing
+  the same event to render twice in the session timeline. The WebSocket
+  broadcast now sends the row actually stored, with its real database id.
+- **The AI digest's first day of a session's activity was silently excluded
+  from the digest window (AGEN-16)**, due to a bare-timestamp parsing bug;
+  it's now included.
+- **SQLite full-text-search deletes were a full scan of the search index per
+  deleted event (AGEN-16)** — deleting a session with tens of thousands of
+  events could take minutes and risked a liveness-probe restart mid-delete.
+  Search-index deletes are now keyed by row id, making session deletion
+  proportional to the number of rows actually removed.
+- **The SQLite search index was rebuilt on every server boot (AGEN-16)**,
+  rather than only when it was actually behind; a database that's already
+  caught up no longer pays that cost at startup.
+- **Postgres search results had no stable tiebreaker (AGEN-16)** — two
+  events with an identical timestamp could appear in a different order
+  across otherwise-identical requests, including across pages. Postgres
+  search now breaks ties by event id.
+- **The AI watcher's transcript reader failed to parse Postgres-formatted
+  timestamps (AGEN-16)**, silently dropping every event from the watcher's
+  context on a Postgres-backed install. Fixed by routing through the shared
+  timestamp parser used elsewhere.
+
+### Upgrade notes
+
+- **Database migration (AGEN-16)**: this release adds a `dedup_key` column
+  and two indexes to the `events` table. **Back up your SQLite database
+  before upgrading** (see `deploy/k8s/BACKUP-RESTORE.md`). On Postgres,
+  building the indexes takes a `SHARE` lock on `events` — see
+  `deploy/k8s/README.md` → "Upgrading to migration 0003" for the
+  out-of-band index-build procedure and the required `pg_index.indisvalid`
+  verification step; run it in a maintenance window on a large table.
+- **Storage growth (AGEN-16)**: on a 30-day replay of a real workload, event
+  storage after the growth mitigations above grew roughly 840 MB / 30 days
+  on SQLite (about 28 MB/day on average, up to ~137 MB/day at peak). A 1Gi
+  volume on a storage class that enforces the PVC's size request fills in
+  roughly 37 days at that rate; `local-path` volumes are bound by node disk
+  instead and aren't affected the same way. Size the volume accordingly —
+  see `deploy/k8s/README.md` → "Data volume sizing". Retention enforcement
+  isn't implemented yet and is tracked as a follow-up.
+- **Old (unstamped) relays (AGEN-16)**: a relay that hasn't been upgraded to
+  send `X-AgentPulse-Delivery-Id` can store a retried non-tool hook (a
+  `Stop` or a prompt) twice if the relay retries a delivery. Tool calls are
+  unaffected — they dedupe on their own `tool_use_id` regardless of the
+  header. Upgrade the relay to close this window.
+- **API keys (AGEN-16)**: use one ingest API key per producer host. Dedup
+  identity is scoped per API key, so rotating a key defeats deduplication
+  for any retry that straddles the rotation — a rare, fail-open case that
+  produces an extra stored copy, never a lost event.
+
 ## [0.5.0] — 2026-07-17
 
 Client-currency release: brings AgentPulse fully current with Claude Code
