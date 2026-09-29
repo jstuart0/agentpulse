@@ -1,14 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import {
-	EVENT_DUPLICATE_WINDOW_MS,
-	areNearInTime,
-	getEventSourcePriority,
-	normalizeComparableContent,
-} from "../../shared/event-authority.js";
 import type {
 	AgentType,
-	EventCategory,
-	EventSource,
 	HookEventPayload,
 	SemanticStatus,
 	SemanticStatusUpdate,
@@ -17,6 +9,7 @@ import { getDb } from "../db/client.js";
 import { events, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
+import { type RecentEventRow, planEventInsert } from "./event-dedup.js";
 import {
 	type NormalizedEvent,
 	normalizeHookEvent,
@@ -27,73 +20,10 @@ import { generateSessionName } from "./name-generator.js";
 import { getCachedProjects } from "./projects/cache.js";
 import { resolveProjectIdForCwd } from "./projects/resolver.js";
 
-function chooseHigherAuthorityEvent<
-	T extends { source: EventSource | string; createdAt?: string | null },
->(left: T, right: T) {
-	const leftPriority = getEventSourcePriority(left.source);
-	const rightPriority = getEventSourcePriority(right.source);
-	if (leftPriority !== rightPriority) return leftPriority > rightPriority ? left : right;
-	return (left.createdAt || "") >= (right.createdAt || "") ? left : right;
-}
+const RECENT_ROWS_FOR_DEDUP = 50;
 
-type AuthorityComparableEvent = {
-	id?: number;
-	category: EventCategory | null;
-	source: EventSource | string;
-	content: string | null;
-	createdAt?: string | null;
-};
-
-function isAssistantAuthorityDuplicate(
-	existing: AuthorityComparableEvent,
-	incoming: AuthorityComparableEvent,
-) {
-	if (existing.category !== "assistant_message" || incoming.category !== "assistant_message")
-		return false;
-	if (
-		!normalizeComparableContent(existing.content) ||
-		!normalizeComparableContent(incoming.content)
-	)
-		return false;
-	if (normalizeComparableContent(existing.content) !== normalizeComparableContent(incoming.content))
-		return false;
-	if (!areNearInTime(existing.createdAt, incoming.createdAt, EVENT_DUPLICATE_WINDOW_MS))
-		return false;
-	return getEventSourcePriority(existing.source) !== getEventSourcePriority(incoming.source);
-}
-
-function buildDedupKey(event: {
-	eventType: string;
-	category: string | null;
-	source: string;
-	content: string | null;
-	providerEventType: string | null;
-	rawPayload?: Record<string, unknown>;
-}) {
-	const transcriptId =
-		typeof event.rawPayload?.transcript_uuid === "string"
-			? event.rawPayload.transcript_uuid
-			: typeof event.rawPayload?.transcript_timestamp === "string"
-				? event.rawPayload.transcript_timestamp
-				: "";
-	return [
-		event.eventType || "",
-		event.category || "",
-		event.source || "",
-		event.content || "",
-		event.providerEventType || "",
-		transcriptId,
-	].join("::");
-}
-
-export async function insertNormalizedEvents(
-	sessionId: string,
-	normalizedEvents: NormalizedEvent[],
-) {
-	if (normalizedEvents.length === 0) return [];
-	const nowIso = new Date().toISOString();
-
-	const recentEvents = await getDb()
+async function loadRecentRows(sessionId: string): Promise<RecentEventRow[]> {
+	return getDb()
 		.select({
 			id: events.id,
 			eventType: events.eventType,
@@ -106,48 +36,23 @@ export async function insertNormalizedEvents(
 		.from(events)
 		.where(eq(events.sessionId, sessionId))
 		.orderBy(sql`${events.id} DESC`)
-		.limit(50);
+		.limit(RECENT_ROWS_FOR_DEDUP);
+}
 
-	const seen = new Set(recentEvents.map((event) => buildDedupKey({ ...event })));
-	const deleteIds = new Set<number>();
-	const retained: Array<NormalizedEvent & { createdAt: string }> = [];
-	const authorityPool: AuthorityComparableEvent[] = recentEvents.map((event) => ({
-		...event,
-		category: event.category as EventCategory | null,
-		source: event.source as EventSource,
-		createdAt: event.createdAt,
-	}));
+export async function insertNormalizedEvents(
+	sessionId: string,
+	normalizedEvents: NormalizedEvent[],
+) {
+	if (normalizedEvents.length === 0) return [];
 
-	for (const event of normalizedEvents) {
-		const normalizedEvent = { ...event, createdAt: nowIso };
-		const key = buildDedupKey(event);
-		if (seen.has(key)) continue;
+	const { retained } = planEventInsert({
+		policy: { kind: "content_window" },
+		recent: await loadRecentRows(sessionId),
+		incoming: normalizedEvents,
+		nowIso: new Date().toISOString(),
+	});
 
-		const strongerExisting = authorityPool.find((existing) => {
-			if (!isAssistantAuthorityDuplicate(existing, normalizedEvent)) return false;
-			return chooseHigherAuthorityEvent(existing, normalizedEvent) === existing;
-		});
-		if (strongerExisting) continue;
-
-		for (const existing of authorityPool) {
-			if (!existing.id) continue;
-			if (!isAssistantAuthorityDuplicate(existing, normalizedEvent)) continue;
-			if (chooseHigherAuthorityEvent(existing, normalizedEvent) === normalizedEvent) {
-				deleteIds.add(existing.id);
-			}
-		}
-
-		seen.add(key);
-		retained.push(normalizedEvent);
-		authorityPool.push({
-			id: 0,
-			category: normalizedEvent.category,
-			source: normalizedEvent.source,
-			content: normalizedEvent.content,
-			createdAt: normalizedEvent.createdAt,
-		});
-	}
-
+	const deleteIds = new Set(retained.flatMap((event) => event.deletesIfStored));
 	if (deleteIds.size > 0) {
 		await getDb()
 			.delete(events)

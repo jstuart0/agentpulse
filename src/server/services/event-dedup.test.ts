@@ -215,7 +215,26 @@ function randomCase(seed: number) {
 	}
 	const incoming: NormalizedEvent[] = [];
 	const incomingCount = 1 + Math.floor(rand() * 5);
-	for (let i = 0; i < incomingCount; i++) incoming.push(randomEvent(rand));
+	for (let i = 0; i < incomingCount; i++) {
+		const r = rand();
+		const stored = recent[Math.floor(rand() * recent.length)];
+		const previous = incoming[incoming.length - 1];
+		if (r < 0.25 && stored) {
+			// Re-delivery of a stored row: the stored key carries no rawPayload.
+			const { id: _id, createdAt: _at, ...fields } = stored;
+			incoming.push({
+				...randomEvent(rand),
+				...fields,
+				category: fields.category as EventCategory,
+				source: fields.source as EventSource,
+				rawPayload: {},
+			});
+		} else if (r < 0.4 && previous) {
+			incoming.push(structuredClone(previous));
+		} else {
+			incoming.push(randomEvent(rand));
+		}
+	}
 	return { recent, incoming, nowIso };
 }
 
@@ -279,7 +298,7 @@ describe("planEventInsert: content_window matches the 2d4bb8a loop (U1.1)", () =
 		}
 		// Population floor: the generator must actually exercise both drop paths.
 		expect(authorityCases).toBeGreaterThanOrEqual(25);
-		expect(windowCases).toBeGreaterThanOrEqual(25);
+		expect(windowCases).toBeGreaterThanOrEqual(100);
 	});
 
 	test("named member: a stronger incoming row deletes the weaker stored one", () => {
