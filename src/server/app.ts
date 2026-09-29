@@ -71,10 +71,6 @@ api.route("/v1", sessionsRouter);
 api.route("/v1", settingsRouter);
 api.route("/v1", templatesRouter);
 api.route("/v1", projectsRouter);
-// Agent endpoints — edge-public (PathPrefix /api/v1/supervisors is exempt from
-// forwardauth in IngressRoute). Each handler carries its own supervisor-token
-// or enrollment-token auth; remote machines cannot hold an SSO session.
-api.route("/v1", supervisorsAgentRouter);
 // Management endpoints — forwardauth-gated via /api/v1/admin/* which is NOT
 // in the IngressRoute exemption list and falls through to the catch-all rule.
 api.route("/v1/admin", supervisorsAdminRouter);
@@ -130,6 +126,23 @@ app.route("/api/v1", cspReportRouter);
 // Must NOT be exposed via Traefik IngressRoute (enforced in P10).
 // Mounted on root app to bypass the api bundle's auth middleware entirely.
 app.route("/api/v1/internal", internalRouter);
+
+// Supervisor agent router — root-mounted for the same Hono wildcard-merge
+// reason as telegramWebhookRouter/authRouter/cspReportRouter above (AGEN-17).
+// It used to live inside the `api` bundle, after sessionsRouter/settingsRouter/
+// templatesRouter/projectsRouter (each `.use("*", requireAuth())` +
+// `.use("*", requireOperatorScope())`); Hono merges those wildcards across
+// the whole parent router, so any later-registered handler in the bundle —
+// including every agent route — was reachable only with an operator
+// "manage"-scoped Bearer, which is not what a remote supervisor process
+// carries. Every agent handler still carries its own auth
+// (requireSupervisorAuth(), or register's in-handler credential/enrollment
+// check); session ownership on top of that is enforced in
+// session-ownership.ts (Phases 1-2). app.public-surface.test.ts is the
+// regression guard: it fails if this mount is ever moved back into the
+// bundle, or if a duplicate in-bundle mount is added alongside this one.
+app.route("/api/v1", supervisorsAgentRouter);
+app.route("/app-api/v1", supervisorsAgentRouter);
 
 app.route("/api", api);
 app.route("/app-api", api);

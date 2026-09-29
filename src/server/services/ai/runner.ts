@@ -1,10 +1,11 @@
 import { eq } from "drizzle-orm";
 import type { ManagedState, Session, SessionEvent } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
-import { managedSessions, sessions, supervisors } from "../../db/schema/index.js";
+import { managedSessions, sessions } from "../../db/schema/index.js";
 import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { stampUserPrompt, stampWatcherState } from "../managed-session-state.js";
 import { sessionBus } from "../notifier.js";
+import { getSessionOwnerConnections } from "../session-ownership.js";
 import { emitAiEvent } from "./ai-events.js";
 import {
 	evaluateFreeformRules,
@@ -746,16 +747,12 @@ async function loadManagedContext(sessionId: string): Promise<{
 		.where(eq(managedSessions.sessionId, sessionId))
 		.limit(1);
 	if (!managedRow) return null;
-	const [sup] = await getDb()
-		.select({ status: supervisors.status })
-		.from(supervisors)
-		.where(eq(supervisors.id, managedRow.supervisorId))
-		.limit(1);
+	const connected = (await getSessionOwnerConnections([sessionId])).get(sessionId) ?? false;
 	return {
 		// Drizzle column is `text`, but every producer only writes
 		// ManagedState members — narrow at the boundary.
 		managedSession: { managedState: managedRow.managedState as ManagedState },
-		supervisorConnected: sup?.status === "connected",
+		supervisorConnected: connected,
 	};
 }
 

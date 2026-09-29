@@ -23,9 +23,11 @@ const { createUser, issueSession, SESSION_DURATION_MS } = await import(
 const { createSupervisorEnrollmentToken } = await import("../auth/supervisor-auth.js");
 const { registerSupervisor } = await import("../services/supervisor-registry.js");
 
-// Mirror the real app.ts mount:
-//   agent router at /api/v1        → /api/v1/supervisors/*
-//   admin router at /api/v1/admin  → /api/v1/admin/supervisors/*
+// This composes ONLY the two supervisor routers on a bare Hono — it proves
+// each router's own auth in isolation, and does NOT reflect app.ts's mount
+// order or prove the absence of cross-router shadowing (there's nothing
+// else mounted here to shadow it). app.public-surface.test.ts, against the
+// real app, is what proves that (Phase 3, AGEN-17).
 const app = new Hono()
 	.route("/api/v1", supervisorsAgentRouter)
 	.route("/api/v1/admin", supervisorsAdminRouter);

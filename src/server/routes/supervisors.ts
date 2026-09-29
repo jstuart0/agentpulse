@@ -24,6 +24,7 @@ import {
 	upsertManagedSessionState,
 } from "../services/managed-session-state.js";
 import { notifySessionEvents, notifySessionUpdated } from "../services/notifier.js";
+import { SessionOwnershipError } from "../services/session-ownership.js";
 import { getSession } from "../services/session-tracker.js";
 import {
 	getSupervisor,
@@ -218,10 +219,22 @@ supervisorsAgentRouter.post(
 		const supervisorId = c.req.param("id") ?? "";
 		const body = await c.req.json<ManagedSessionStateInput>();
 		if (!body.sessionId) return c.json({ error: "sessionId is required" }, 400);
-		const result = await upsertManagedSessionState(supervisorId, body);
-		await associateObservedSession({ sessionId: body.sessionId, supervisorId });
-		notifySessionUpdated(result.session);
-		return c.json(result);
+		try {
+			const result = await upsertManagedSessionState(supervisorId, body);
+			await associateObservedSession({ sessionId: body.sessionId, supervisorId });
+			notifySessionUpdated(result.session);
+			return c.json(result);
+		} catch (err) {
+			if (err instanceof SessionOwnershipError) {
+				console.warn("[supervisors] session write rejected", {
+					supervisorId,
+					sessionId: body.sessionId,
+					reason: err.reason,
+				});
+				return c.json({ error: "session_not_owned" }, 403);
+			}
+			throw err;
+		}
 	},
 );
 
@@ -229,15 +242,28 @@ supervisorsAgentRouter.post(
 	"/supervisors/:id/managed-sessions/:sessionId/events",
 	requireSupervisorAuth(),
 	async (c) => {
+		const supervisorId = c.req.param("id") ?? "";
 		const sessionId = c.req.param("sessionId") ?? "";
 		const body = await c.req.json<{ events: ManagedSessionEventInput[] }>();
-		const inserted = await appendManagedSessionEvents(sessionId, body.events ?? []);
-		const session = await getSession(sessionId);
-		if (session) {
-			notifySessionUpdated(session);
-			notifySessionEvents(sessionId, inserted);
+		try {
+			const inserted = await appendManagedSessionEvents(supervisorId, sessionId, body.events ?? []);
+			const session = await getSession(sessionId);
+			if (session) {
+				notifySessionUpdated(session);
+				notifySessionEvents(sessionId, inserted);
+			}
+			return c.json({ events: inserted });
+		} catch (err) {
+			if (err instanceof SessionOwnershipError) {
+				console.warn("[supervisors] session write rejected", {
+					supervisorId,
+					sessionId,
+					reason: err.reason,
+				});
+				return c.json({ error: "session_not_owned" }, 403);
+			}
+			throw err;
 		}
-		return c.json({ events: inserted });
 	},
 );
 

@@ -7,6 +7,99 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Supervisor agent routes reachable with a supervisor credential only
+  (AGEN-17)** — a mount-order bug put the machine-agent router
+  (`/api/v1/supervisors/*`) inside the operator route bundle, after four
+  routers whose wildcard `requireAuth()`/`requireOperatorScope()` middleware
+  Hono merges across the whole parent router. Every agent-route call
+  (`register`, `heartbeat`, `launches/claim`, `managed-session-state`,
+  `provider-sync`, `control-actions/*`) was answered by the operator gate
+  instead of the handler, needing a `manage`-scoped API key a remote
+  supervisor process never carries — so any supervisor whose
+  `supervisor.json` predates the AGEN-9 API-key-scope backfill crash-loops
+  on every restart. The agent router is now root-mounted, ahead of the
+  operator bundle, at both `/api/v1` and `/app-api/v1`; every agent handler
+  still carries its own supervisor-credential (or, for `register`,
+  enrollment-token) auth, and operator routes are unaffected. No client
+  update is required — see the upgrade notes below.
+
+### Security
+
+- **Supervisors can only act on sessions they own (AGEN-15)** — before this
+  fix, any enrolled supervisor could post `managed-session-state` or events
+  for *any* session id (including fabricating a brand-new one, or promoting
+  a hook-observed session it never launched), silently rebinding it and then
+  receiving that session's future prompts — including injected environment
+  variables (`launch.env`). Every supervisor write now resolves an owner of
+  record (the launch claimant, else the session's managed row, launch
+  status ignored) and rejects a non-owner with a uniform
+  `403 { "error": "session_not_owned" }`. Claim routing, provider-sync
+  listing, stale control-lock expiry, and the lifecycle/AI-classifier
+  "is this session's supervisor connected" reads all resolve the same
+  owner of record, so a legacy hijacked row self-heals with no migration
+  the moment its rightful owner's launch is claimed. Correlation can no
+  longer be overridden by a supervisor-supplied id that doesn't match the
+  launch it's claiming.
+- A `401` from a revoked or rotated supervisor credential during an
+  in-session report (`codex-managed.ts`, `claude-headless.ts`) is now fatal:
+  the supervisor logs the rejection, terminates every child process it's
+  holding for that provider, and exits — instead of silently continuing to
+  run with a dead credential. See `deploy/k8s/FORWARDAUTH.md`'s "Supervisor
+  client behavior on a rejected in-session report" for the full behavior
+  matrix (which calls are fatal-on-401 versus log-and-retry, and why).
+- **Prompt and retry now resolve the same launch (AGEN-15)** — a managed
+  session whose recorded `launchRequestId` is the legacy fallback shape
+  (equal to its own session id, written when a report omitted a real launch
+  id) previously left `retryLaunchForSession` unable to find that session's
+  actual launch, while `queuePromptAction` already had this fixed. Both
+  paths now resolve the real launch by correlation, and both apply the same
+  cross-host guard: a managed row whose `launchRequestId` points at a launch
+  correlated to a *different* session is rejected rather than acted on.
+- The supervisor now bounds and sanitizes the server's response body and
+  status text before logging either on a failed request — an oversized
+  body, a forged log line, or a terminal escape sequence in a malicious or
+  compromised server's response can no longer be written verbatim into the
+  supervisor's local log.
+
+### Upgrade notes (AGEN-17 / AGEN-15)
+
+If any of your supervisors have been crash-looping since the AGEN-9
+API-key-scope backfill, do this before and right after deploying:
+
+**Registration now retries forever with backoff instead of exiting** (also fixed in
+this release): once you upgrade the server, a supervisor that's still
+running (even mid-retry) reconnects on its own — you don't need to manually restart
+it. The per-OS restart notes below (3, 4) are for a supervisor whose *process* actually
+stopped (e.g. Windows' scheduled task, or a systemd unit that hit its restart-limit
+before this fix shipped), not for one that's simply still retrying.
+
+1. **Inventory and cancel stale `validated` launches** before deploying —
+   one could dispatch to the first supervisor that claims it after
+   recovery. The population is normally small (a launch left unclaimed when
+   the outage began, or a dashboard retry). See the stale-launch query in
+   `deploy/k8s/FORWARDAUTH.md`.
+2. **Revoke any stopgap `manage`-scoped API key** you put in a supervisor's
+   `supervisor.json` as a workaround. That file is world-readable (`0644`)
+   by default, so treat a `manage` key placed there as compromised the
+   moment it's written — revoke it promptly rather than "eventually" once
+   the supervisor is back to using its own credential.
+3. **Windows**: the scheduled task only triggers `-AtLogOn` and doesn't
+   auto-restart on failure — run `Start-ScheduledTask AgentPulseSupervisor`
+   or log back in.
+4. **Linux**: if `systemctl --user status agentpulse-supervisor` shows
+   `start-limit-hit`, run `systemctl --user reset-failed` before restarting.
+5. **A revoked or rotated credential needs `/admin/supervisors/:id/rotate`**,
+   never a fresh enrollment — rotate keeps the supervisor's id, and
+   therefore every session it already owns. A brand-new enrollment mints a
+   new id that owns none of the host's prior sessions.
+6. **Optional**: run the ownership audit
+   (`deploy/k8s/FORWARDAUTH.md`) to find any session rows left with a stale
+   recorded owner from before this fix.
+7. **Archive** `~/.agentpulse/logs/supervisor.err.log` if it grew large
+   during the outage — the upgrade doesn't truncate it.
+
 ### Added
 
 - **MCP server (AGEN-12)** — `agentpulse mcp serve` exposes AgentPulse over the
