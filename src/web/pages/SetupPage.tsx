@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from "react";
+import { buildCodexHooksFile } from "../../shared/hook-command.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
 import {
@@ -10,6 +11,7 @@ import {
 	isLoopbackHostname,
 	withRelaySuffix,
 } from "../lib/onboarding.js";
+import { AUTH_STEP, codexSetupSteps, lastEventLine } from "../lib/setup-steps.js";
 import { useUserStore } from "../stores/user-store.js";
 
 export function SetupPage() {
@@ -29,6 +31,31 @@ export function SetupPage() {
 	const [creatingRelayKey, setCreatingRelayKey] = useState(false);
 	const [codexNamesAgentpulse, setCodexNamesAgentpulse] = useState(false);
 	const codexNamesHelpId = useId();
+	// D22: "Last Codex event" / "No Codex events yet" (SetupPage Codex card).
+	const [lastCodexEvent, setLastCodexEvent] = useState<{ at: string; cwd: string | null } | null>(
+		null,
+	);
+	const [lastCodexEventLoaded, setLastCodexEventLoaded] = useState(false);
+
+	useEffect(() => {
+		if (agentType !== "codex_cli") return;
+		let cancelled = false;
+		setLastCodexEventLoaded(false);
+		api
+			.getSessions({ agent_type: "codex_cli", limit: 1 })
+			.then((res) => {
+				if (cancelled) return;
+				const session = res.sessions[0];
+				setLastCodexEvent(session ? { at: session.lastActivityAt, cwd: session.cwd } : null);
+				setLastCodexEventLoaded(true);
+			})
+			.catch(() => {
+				if (!cancelled) setLastCodexEventLoaded(true);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [agentType]);
 
 	useEffect(() => {
 		if (disableAuth) {
@@ -92,42 +119,28 @@ export function SetupPage() {
 	// installer asks for it, and only a key minted here is offered to paste.
 	const relayCommand = buildRelayCommand({ serverUrl, codexNamesAgentpulse });
 
-	const hookEvents =
-		agentType === "claude_code"
-			? [
-					"SessionStart",
-					"SessionEnd",
-					"PreToolUse",
-					"PostToolUse",
-					"Stop",
-					"SubagentStart",
-					"SubagentStop",
-					"TaskCreated",
-					"TaskCompleted",
-					"UserPromptSubmit",
-					"PermissionRequest",
-					"PermissionDenied",
-					"Notification",
-					"PreCompact",
-					"PostCompact",
-					"PostToolUseFailure",
-				]
-			: [
-					"SessionStart",
-					"PreToolUse",
-					"PostToolUse",
-					"UserPromptSubmit",
-					"Stop",
-					"SubagentStart",
-					"SubagentStop",
-					"PermissionRequest",
-					"PreCompact",
-					"PostCompact",
-				];
+	const claudeHookEvents = [
+		"SessionStart",
+		"SessionEnd",
+		"PreToolUse",
+		"PostToolUse",
+		"Stop",
+		"SubagentStart",
+		"SubagentStop",
+		"TaskCreated",
+		"TaskCompleted",
+		"UserPromptSubmit",
+		"PermissionRequest",
+		"PermissionDenied",
+		"Notification",
+		"PreCompact",
+		"PostCompact",
+		"PostToolUseFailure",
+	];
 
 	const generateClaudeConfig = () => {
 		const hooks: Record<string, unknown[]> = {};
-		for (const event of hookEvents) {
+		for (const event of claudeHookEvents) {
 			hooks[event] = [
 				{
 					matcher: "",
@@ -149,18 +162,40 @@ export function SetupPage() {
 		return JSON.stringify({ hooks }, null, 2);
 	};
 
+	// check-hook-event-parity.ts's drift guard extracts this list (must stay
+	// in lockstep with src/shared/types.ts's CodexEvent union); also used
+	// below as a defensive floor on buildCodexHooksFile's output.
+	const codexHookEvents = [
+		"SessionStart",
+		"SessionEnd",
+		"PreToolUse",
+		"PostToolUse",
+		"UserPromptSubmit",
+		"Stop",
+		"Interrupt",
+		"SubagentStart",
+		"SubagentStop",
+		"PermissionRequest",
+		"PreCompact",
+		"PostCompact",
+	];
+
+	// D12/D13: the manual-copy config is direct-mode (reads
+	// ~/.agentpulse/hook-auth-header, written by the auth step below) — same
+	// shape the installers write, so `/hooks` trust carries over if you
+	// later switch to `setup-hooks.sh`.
 	const generateCodexConfig = () => {
-		const hooks = hookEvents.map((event) => ({
-			event,
-			type: "http",
-			url: `${serverUrl}/api/v1/hooks`,
-			async: true,
-			headers: {
-				Authorization: `Bearer ${apiKey || "YOUR_API_KEY"}`,
-				"X-Agent-Type": "codex_cli",
-			},
-		}));
-		return JSON.stringify({ hooks }, null, 2);
+		const text = buildCodexHooksFile({ baseUrl: serverUrl, direct: true });
+		const events = Object.keys(JSON.parse(text).hooks);
+		if (
+			events.length !== codexHookEvents.length ||
+			!codexHookEvents.every((e) => events.includes(e))
+		) {
+			throw new Error(
+				`buildCodexHooksFile() event set drifted from the expected ${codexHookEvents.length} CodexEvent members`,
+			);
+		}
+		return text;
 	};
 
 	const config = agentType === "claude_code" ? generateClaudeConfig() : generateCodexConfig();
@@ -375,11 +410,25 @@ export function SetupPage() {
 					</span>
 					Add to {configFile}
 				</h2>
-				<p className="text-xs text-muted-foreground mb-3">
-					{agentType === "claude_code"
-						? "Merge this into your Claude Code settings.json. If you already have hooks, add these entries to each event array."
-						: "Save this as ~/.codex/hooks.json. Hooks are enabled by default since codex-cli 0.124.0; [features] codex_hooks = true is a legacy-compat flag for older installs."}
-				</p>
+				{agentType === "claude_code" ? (
+					<p className="text-xs text-muted-foreground mb-3">
+						Merge this into your Claude Code settings.json. If you already have hooks, add these
+						entries to each event array.
+					</p>
+				) : (
+					<ol className="text-xs text-muted-foreground mb-3 list-decimal list-inside space-y-1">
+						{codexSetupSteps(
+							lastEventLine({
+								at: lastCodexEvent?.at ?? null,
+								cwd: lastCodexEvent?.cwd,
+								execIndexed: false,
+							}),
+						).map((text, i) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: static, order-stable list
+							<li key={i}>{lastCodexEventLoaded || i < 3 ? text : "Checking…"}</li>
+						))}
+					</ol>
+				)}
 				<div className="relative">
 					<pre className="bg-background border border-border rounded-md p-4 text-xs overflow-auto max-h-80">
 						<code>{config}</code>
@@ -433,21 +482,37 @@ export function SetupPage() {
 				</p>
 			</div>
 
-			{/* Step 5 (Codex) / 4 (Claude): Environment variable */}
-			<div className="border border-border bg-card rounded-lg p-5 mb-4">
-				<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
-					<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
-						{agentType === "codex_cli" ? "6" : "5"}
-					</span>
-					Set Environment Variable
-				</h2>
-				<p className="text-xs text-muted-foreground mb-3">
-					Add this to your shell profile (~/.zshrc or ~/.bashrc):
-				</p>
-				<pre className="bg-background border border-border rounded-md p-3 text-xs overflow-x-auto">
-					<code>export AGENTPULSE_API_KEY="{apiKey || "YOUR_API_KEY"}"</code>
-				</pre>
-			</div>
+			{/* Step 5 (Codex) / 4 (Claude): auth step (D13) — env var for Claude,
+			    the hook-auth-header file for command-hook agents */}
+			{(() => {
+				const authStep = AUTH_STEP[agentType](apiKey, disableAuth);
+				if (!authStep) return null;
+				return (
+					<div className="border border-border bg-card rounded-lg p-5 mb-4">
+						<h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
+							<span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">
+								{agentType === "codex_cli" ? "6" : "5"}
+							</span>
+							{authStep.title}
+						</h2>
+						<p className="text-xs text-muted-foreground mb-3">{authStep.description}</p>
+						<pre className="bg-background border border-border rounded-md p-3 text-xs overflow-x-auto">
+							<code>{authStep.command}</code>
+						</pre>
+						{authStep.windowsCommand && (
+							<>
+								<p className="text-xs text-muted-foreground mt-3 mb-1">Windows (PowerShell):</p>
+								<pre className="bg-background border border-border rounded-md p-3 text-xs overflow-x-auto">
+									<code>{authStep.windowsCommand}</code>
+								</pre>
+							</>
+						)}
+						{authStep.note && (
+							<p className="text-[11px] text-muted-foreground mt-2">{authStep.note}</p>
+						)}
+					</div>
+				);
+			})()}
 
 			{/* Step 6 (Codex) / 5 (Claude): status snippet for CLAUDE.md / AGENTS.md */}
 			<div className="border border-border bg-card rounded-lg p-5">

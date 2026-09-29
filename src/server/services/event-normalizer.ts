@@ -99,6 +99,8 @@ function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): 
 			return payload.agent_id ? `Subagent stopped: ${payload.agent_id}` : "Subagent stopped";
 		case "Stop":
 			return "Turn completed";
+		case "Interrupt":
+			return "Turn interrupted";
 		case "Notification":
 			return payload.message ? payload.message : "Notification";
 		case "PreCompact":

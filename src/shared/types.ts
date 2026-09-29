@@ -204,15 +204,20 @@ export type ClaudeCodeEvent =
 	| "PostCompact"
 	| "PostToolUseFailure";
 
-// Hook event types from Codex CLI (stable since codex-cli 0.124.0; the
-// full 10-event list confirmed empirically against 0.144.5 — see F3 in
-// thoughts/shared/plans/active/2026-07-17-deliver-client-currency-remediation.md)
+// Hook event types from Codex CLI. The 10-event list was confirmed
+// empirically against 0.144.5 (see F3 in
+// thoughts/shared/plans/active/2026-07-17-deliver-client-currency-remediation.md).
+// "SessionEnd" and "Interrupt" were added per the current doc's 12-event
+// hooks schema (learn.chatgpt.com/docs/hooks) and Phase 0's live/docs-derived
+// fixture capture — see the 2026-09-28-deliver-agent-cli-parity plan, D12.
 export type CodexEvent =
 	| "SessionStart"
+	| "SessionEnd"
 	| "PreToolUse"
 	| "PostToolUse"
 	| "UserPromptSubmit"
 	| "Stop"
+	| "Interrupt"
 	| "SubagentStart"
 	| "SubagentStop"
 	| "PermissionRequest"
@@ -258,6 +263,11 @@ export interface HookEventPayload {
 
 	// Compaction events (PreCompact/PostCompact)
 	trigger?: string;
+
+	// Codex Stop/Interrupt: identifies the turn a terminal event closes, so
+	// a same-turn event that arrives after it (D21 out-of-order tolerance)
+	// can be recognized and suppressed from reopening isWorking.
+	turn_id?: string;
 }
 
 // Semantic status update from CLAUDE.md snippet

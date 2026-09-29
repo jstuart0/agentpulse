@@ -9,7 +9,12 @@ param(
   [bool]$DisableAuth = $true,
   [string]$ApiKey = "",
   [switch]$SkipHooks,
-  [switch]$SkipSupervisor
+  [switch]$SkipSupervisor,
+  # Phase 5: dot-source with -FunctionsOnly to load the hook-command
+  # generators (New-ApHookCommand / New-ApCodexHooksFile / New-ApHookAuthHeaderFile)
+  # without running the installer's main flow — used by
+  # scripts/test-install-local.ps1 and scripts/hook-command-parity.test.ts.
+  [switch]$FunctionsOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -107,14 +112,90 @@ function Merge-Hashtable {
   }
 }
 
+# >>> agentpulse-hook-cmd
+# D13: PowerShell transcription of buildBashHookCommand/buildCodexHooksFile
+# (src/shared/hook-command.ts), verified structurally by
+# scripts/hook-command-parity.test.ts (static string comparison — pwsh isn't
+# available in the primary dev/CI environment; scripts/test-install-local.ps1
+# is the real execution coverage, run by the "Windows Installer Validation"
+# CI job). Do not hand-edit one copy without the other.
+function New-ApHookCommand {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][bool]$Direct,
+    [Parameter(Mandatory = $true)][string]$AgentType,
+    [Parameter(Mandatory = $true)][string]$EventName
+  )
+  if ($BaseUrl -notmatch '^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?$') {
+    throw "invalid AgentPulse base URL for a hook command: $BaseUrl"
+  }
+  $url = "$BaseUrl/api/v1/hooks?event=$EventName"
+  $headerFileLine = if ($Direct) { "`$f = Join-Path `$HOME '.agentpulse\hook-auth-header'`n" } else { "`$f = `$null`n" }
+  $authArg = "(if (`$f -and (Test-Path `$f -ErrorAction SilentlyContinue) -and (Get-Item `$f -ErrorAction SilentlyContinue).Length -gt 0) { @('-H',`"@`$f`") } else { @() })"
+  $markerLine = ""
+  if ($AgentType -eq "codex_cli") {
+    $markerLine = "`$sid = [regex]::Match(`$raw, '`"session_id`"\s*:\s*`"([A-Za-z0-9-]{1,128})`"').Groups[1].Value; if (`$sid) { `$md = Join-Path `$HOME '.agentpulse\codex-native'; New-Item -ItemType Directory -Force `$md -ErrorAction SilentlyContinue | Out-Null; New-Item -ItemType File -Force (Join-Path `$md `$sid) -ErrorAction SilentlyContinue | Out-Null }`n"
+  }
+  return (
+    "`$ErrorActionPreference = 'SilentlyContinue'`n" +
+    "`$d = Join-Path `$env:TEMP 'agentpulse-hooks'`n" +
+    "New-Item -ItemType Directory -Force `$d | Out-Null`n" +
+    "`$t = Join-Path `$d ([guid]::NewGuid().ToString())`n" +
+    "`$raw = [Console]::In.ReadToEnd()`n" +
+    "[IO.File]::WriteAllText(`$t, `$raw)`n" +
+    $headerFileLine +
+    $markerLine +
+    "Start-Job -ScriptBlock {`n" +
+    "  param(`$t, `$f, `$url, `$agent)`n" +
+    "  `$headerArgs = $authArg`n" +
+    "  `$curlArgs = @('-sS','--max-time','2','-o','NUL','-X','POST',`$url,'-H','Content-Type: application/json','-H',`"X-Agent-Type: `$agent`") + `$headerArgs + @('--data-binary',`"@`$t`")`n" +
+    "  Start-Process -FilePath curl.exe -WindowStyle Hidden -ArgumentList `$curlArgs -Wait`n" +
+    "  Remove-Item -Force `$t -ErrorAction SilentlyContinue`n" +
+    "} -ArgumentList `$t, `$f, '$url', '$AgentType' | Out-Null`n" +
+    "Get-ChildItem `$d -ErrorAction SilentlyContinue | Where-Object { `$_.LastWriteTime -lt (Get-Date).AddMinutes(-5) } | Remove-Item -Force -ErrorAction SilentlyContinue`n" +
+    "exit 0`n"
+  )
+}
+
+function New-ApCodexHooksFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][bool]$Direct
+  )
+  $codexEvents = @("SessionStart","SessionEnd","PreToolUse","PostToolUse","UserPromptSubmit","Stop","Interrupt","SubagentStart","SubagentStop","PermissionRequest","PreCompact","PostCompact")
+  $hooks = [ordered]@{}
+  foreach ($event in $codexEvents) {
+    $cmd = New-ApHookCommand -BaseUrl $BaseUrl -Direct $Direct -AgentType "codex_cli" -EventName $event
+    $hooks[$event] = @(
+      [ordered]@{
+        hooks = @(
+          [ordered]@{ type = "command"; command = $cmd; async = $false; timeout = 1 }
+        )
+      }
+    )
+  }
+  $obj = [ordered]@{ hooks = $hooks }
+  return ($obj | ConvertTo-Json -Depth 20) + "`n"
+}
+
+# D13: writes ~/.agentpulse/hook-auth-header with a single-ACE ACL for the
+# current user (Windows equivalent of `umask 077`).
+function New-ApHookAuthHeaderFile {
+  param([Parameter(Mandatory = $true)][string]$ApiKey)
+  $d = Join-Path $HOME ".agentpulse"
+  New-Item -ItemType Directory -Force -Path $d | Out-Null
+  $f = Join-Path $d "hook-auth-header"
+  Set-Content -NoNewline -Path $f -Value "Authorization: Bearer $ApiKey`n" -Encoding UTF8
+  icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+}
+# <<< agentpulse-hook-cmd
+
 function Configure-Hooks {
   Write-Step "Configuring Claude Code + Codex hooks..."
 
   $hookHeadersClaude = @{ "X-Agent-Type" = "claude_code" }
-  $hookHeadersCodex = @{ "X-Agent-Type" = "codex_cli" }
   if ($ApiKey) {
     $hookHeadersClaude["Authorization"] = "Bearer $ApiKey"
-    $hookHeadersCodex["Authorization"] = "Bearer $ApiKey"
   }
 
   $claudeDir = Join-Path $HOME ".claude"
@@ -146,37 +227,39 @@ function Configure-Hooks {
   }
   Set-JsonFile -Path $claudeSettings -Data $claudeData
 
-  $codexDir = Join-Path $HOME ".codex"
+  # D12 (r6, Phase 0 fact 5): Codex 0.145 loads hooks only from
+  # $CODEX_HOME/hooks.json — a project-level .codex/hooks.json is never read.
+  $codexDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
   Ensure-Dir $codexDir
-  $codexHooks = @{
-    hooks = @(
-      @{ event = "SessionStart"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "PreToolUse"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "PostToolUse"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "UserPromptSubmit"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "Stop"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "SubagentStart"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "SubagentStop"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "PermissionRequest"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "PreCompact"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "PostCompact"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex }
-    )
-  }
-  Set-JsonFile -Path (Join-Path $codexDir "hooks.json") -Data $codexHooks
+  $codexHooksFile = Join-Path $codexDir "hooks.json"
 
-  # Hooks are stable and enabled by default since codex-cli 0.124.0; codex_hooks
-  # is a recognized legacy alias for the `hooks` feature, written for
-  # compatibility with older codex-cli installs that still gate on it.
-  $codexConfig = Join-Path $codexDir "config.toml"
-  $featureBlock = "[features]`ncodex_hooks = true`n"
-  if (Test-Path $codexConfig) {
-    $content = Get-Content $codexConfig -Raw
-    if ($content -notmatch "codex_hooks") {
-      Add-Content -Path $codexConfig -Value "`n$featureBlock"
-    }
-  } else {
-    Set-Content -Path $codexConfig -Value $featureBlock -Encoding UTF8
+  if ($ApiKey) {
+    New-ApHookAuthHeaderFile -ApiKey $ApiKey
   }
+
+  $newCodexHooksJson = New-ApCodexHooksFile -BaseUrl $PublicUrl -Direct $true
+  $unchanged = $false
+  if (Test-Path $codexHooksFile) {
+    $existingCodexHooksJson = Get-Content $codexHooksFile -Raw
+    if ($existingCodexHooksJson -eq $newCodexHooksJson) {
+      $unchanged = $true
+    }
+  }
+  if ($unchanged) {
+    Write-Step "Codex hooks unchanged — no re-trust needed"
+  } else {
+    if (Test-Path $codexHooksFile) {
+      $codexBackupFile = "$codexHooksFile.agentpulse-bak.$(Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ')"
+      Copy-Item -Path $codexHooksFile -Destination $codexBackupFile
+      Write-Step "Backed up existing Codex hooks to $codexBackupFile"
+    }
+    Set-Content -NoNewline -Path $codexHooksFile -Value $newCodexHooksJson -Encoding UTF8
+    Write-Step "Codex CLI hooks configured"
+    Write-Step "Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks."
+    Write-Step "Re-trust after changing the AgentPulse URL or port."
+  }
+  # D12: codex_hooks is a deprecated (but still-working) legacy alias for
+  # [features].hooks — left alone if present, never newly written.
 
   if ($ApiKey) {
     [Environment]::SetEnvironmentVariable("AGENTPULSE_API_KEY", $ApiKey, "User")
@@ -206,6 +289,14 @@ function Register-OrUpdateTask {
 function Start-TaskNow {
   param([string]$ScriptPath)
   Start-Process -WindowStyle Hidden -FilePath "powershell.exe" -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$ScriptPath) | Out-Null
+}
+
+# Phase 5: every function above is now defined. Dot-sourcing with
+# -FunctionsOnly stops here, before the main install flow runs, so tests can
+# load New-ApHookCommand / New-ApCodexHooksFile / New-ApHookAuthHeaderFile
+# (and the rest) without executing an install.
+if ($FunctionsOnly) {
+  return
 }
 
 Write-Host ""

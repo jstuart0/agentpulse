@@ -290,6 +290,8 @@ export function createRelayState() {
 			dropped: 0,
 		},
 		lastEventAtByAgent: {} as Record<string, string>,
+		/** D22: per-agent "installed but never fired" signal, evidence-based (SPIKE fact 6: TUI-only). */
+		hooksNotFiring: {} as Record<string, boolean>,
 		/** F106: sessionId → cwd, only from hooks this relay enqueued. Map order = recency. */
 		localSessions: new Map<string, LocalSession>(),
 		localSessionsWrite: Promise.resolve() as Promise<void>,
@@ -348,6 +350,8 @@ export type RelayPaths = {
 	codexIndexFile: string;
 	installedStatuslineFile: string;
 	relayScriptFile: string;
+	/** D22: written by the installers (codexHooksWrittenAt/copilotHooksWrittenAt). */
+	installedFile: string;
 };
 
 export type RelayContext = {
@@ -412,6 +416,7 @@ export function resolveRelayPaths(
 		codexIndexFile: join(codexHome, "session_index.jsonl"),
 		installedStatuslineFile: join(home, ".claude", "statusline-agentpulse.sh"),
 		relayScriptFile: scriptPath,
+		installedFile: join(config.stateDir, "installed.json"),
 	};
 }
 
@@ -465,7 +470,8 @@ async function ensurePrivateDir(path: string) {
 // at some other permission (an older Bun, F190; a race; a manual copy),
 // neither call tightens it back down. The explicit chmod after each write
 // makes the private-file guarantee hold regardless of what created the path.
-// F203: both this open and the chmod below must resolve the *same* file a
+//
+// F203: both this open and that chmod must resolve the *same* file a
 // symlink can't redirect. openPrivateNoFollow refuses a symlink/non-regular
 // path (reusing lstatKind/assertSameFile, the same F107/F136 machinery
 // writeFileNoFollow already uses below) and returns the open handle;
@@ -661,6 +667,11 @@ export function computeWarnings(state: RelayState): string[] {
 	if (state.drift.relay === "outdated") warnings.push("relay outdated — re-run setup-relay");
 	if (state.drift.statusline === "outdated") {
 		warnings.push("statusline outdated — re-run setup-relay");
+	}
+	// D22: evidence-based — only fires once Codex has demonstrably run since
+	// install (see checkHooksNotFiring).
+	if (state.hooksNotFiring.codex_cli) {
+		warnings.push("codex hooks not firing — run /hooks in Codex to trust them");
 	}
 	return warnings;
 }
@@ -1604,12 +1615,77 @@ export async function pushCodexNames(
 	return { ok: true };
 }
 
+type InstalledState = { codexHooksWrittenAt: string | null; copilotHooksWrittenAt: string | null };
+
+async function readInstalledState(ctx: RelayContext): Promise<InstalledState> {
+	const raw = await readTextOrEmpty(ctx.paths.installedFile);
+	if (!raw) return { codexHooksWrittenAt: null, copilotHooksWrittenAt: null };
+	try {
+		const parsed = JSON.parse(raw) as Partial<InstalledState>;
+		return {
+			codexHooksWrittenAt:
+				typeof parsed.codexHooksWrittenAt === "string" ? parsed.codexHooksWrittenAt : null,
+			copilotHooksWrittenAt:
+				typeof parsed.copilotHooksWrittenAt === "string" ? parsed.copilotHooksWrittenAt : null,
+		};
+	} catch {
+		return { codexHooksWrittenAt: null, copilotHooksWrittenAt: null };
+	}
+}
+
+/**
+ * D22: "Codex hooks installed but never fired" — evidence-based, so it only
+ * fires when Codex has demonstrably run since install. SPIKE fact 6 (r6):
+ * `codex exec` never writes session_index.jsonl, so this is TUI-only
+ * (basis: "tui_activity") by construction — there's no exec-based variant.
+ *
+ * True iff: codexHooksWrittenAt is set, AND at least one *foreign*
+ * (Codex-written, not this relay's own push — see the ledger, F59) index
+ * row has updated_at later than it, AND no codex_cli hook has been enqueued
+ * since codexHooksWrittenAt.
+ */
+export function computeCodexHooksNotFiring(
+	installed: InstalledState,
+	snapshot: CodexIndexSnapshot,
+	lastCodexEventAt: string | undefined,
+): boolean {
+	if (!installed.codexHooksWrittenAt) return false;
+	const installedAt = Date.parse(installed.codexHooksWrittenAt);
+	if (!Number.isFinite(installedAt)) return false;
+
+	let sawForeignActivitySince = false;
+	for (const row of snapshot.latestForeign.values()) {
+		const t = Date.parse(row.updated_at);
+		if (Number.isFinite(t) && t > installedAt) {
+			sawForeignActivitySince = true;
+			break;
+		}
+	}
+	if (!sawForeignActivitySince) return false;
+
+	const lastEventAt = lastCodexEventAt ? Date.parse(lastCodexEventAt) : Number.NaN;
+	const hookFiredSinceInstall = Number.isFinite(lastEventAt) && lastEventAt > installedAt;
+	return !hookFiredSinceInstall;
+}
+
 export async function syncCodexNamesTick(ctx: RelayContext) {
+	// D22: independent of the observe-gated push/pull below — evidence comes
+	// from the local Codex index and this relay's own enqueue history, not
+	// from the server.
+	const installed = await readInstalledState(ctx);
+	const indexSnapshot = await readCodexIndex(ctx);
+	ctx.state.hooksNotFiring.codex_cli = computeCodexHooksNotFiring(
+		installed,
+		indexSnapshot,
+		ctx.state.lastEventAtByAgent.codex_cli,
+	);
+	await writeStatusFile(ctx);
+
 	if (observeMissing(ctx)) {
 		setSyncStatus(ctx, "codexNames", "disabled_missing_observe", null);
 		return;
 	}
-	const snapshot = await readCodexIndex(ctx);
+	const snapshot = indexSnapshot;
 	const pull = await pullCodexNames(ctx, snapshot);
 	const push = await pushCodexNames(ctx, snapshot);
 	const error = (!pull.ok && pull.error) || (!push.ok && push.error) || null;
@@ -1956,10 +2032,24 @@ export async function buildDiagnostics(ctx: RelayContext) {
 		},
 		drift: { relay: drift.relay, statusline: drift.statusline },
 		relayHash: ctx.state.relayHash,
+		// D22: an agent key can appear here from either signal — it fired at
+		// least once (lastEventAtByAgent) or the hooks_not_firing evidence
+		// fired without it ever having (installed, Codex demonstrably ran,
+		// but no hook ever arrived).
 		agents: Object.fromEntries(
-			Object.entries(ctx.state.lastEventAtByAgent).map(([agent, lastEventAt]) => [
+			[
+				...new Set([
+					...Object.keys(ctx.state.lastEventAtByAgent),
+					...Object.keys(ctx.state.hooksNotFiring),
+				]),
+			].map((agent) => [
 				agent,
-				{ lastEventAt },
+				{
+					lastEventAt: ctx.state.lastEventAtByAgent[agent] ?? null,
+					...(ctx.state.hooksNotFiring[agent]
+						? { status: "hooks_not_firing", basis: "tui_activity" }
+						: {}),
+				},
 			]),
 		),
 	};

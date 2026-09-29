@@ -19,14 +19,8 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-	describe,
-	extractKeyValueListBlock,
-	extractQuotedListBlocks,
-	extractQuotedTokens,
-	extractUnion,
-	sameSet,
-} from "./lib/parity-utils.js";
+import { buildBashHookCommand, buildCodexHooksFile } from "../src/shared/hook-command.js";
+import { describe, extractQuotedListBlocks, extractUnion, sameSet } from "./lib/parity-utils.js";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
@@ -42,6 +36,71 @@ interface CheckResult {
 	events: string[];
 }
 
+/**
+ * Phase 5 (D12/D13): the no-stdout shape every Codex/Copilot command hook
+ * must have. Exported so scripts/check-hook-event-parity.test.ts can prove
+ * the rule actually discriminates (an `; echo ok`-tampered command fails
+ * it), not just that the happy path passes.
+ *
+ * The command must:
+ *  - end with the literal D13 detached tail
+ *  - do its only non-curl stdin/stdout operation as `cat > "$t"`
+ *  - contain no echo, printf, tee, jq, or a bare `cat` (one not followed by `>`)
+ */
+export function checkNoStdoutShape(cmd: string, label: string): string[] {
+	const violations: string[] = [];
+	if (!cmd.endsWith(") </dev/null >/dev/null 2>&1 & exit 0")) {
+		violations.push(`${label}: doesn't end with the D13 detached-tail skeleton`);
+	}
+	if (/\becho\b/.test(cmd)) violations.push(`${label}: contains echo`);
+	if (/\bprintf\b/.test(cmd)) violations.push(`${label}: contains printf`);
+	if (/\btee\b/.test(cmd)) violations.push(`${label}: contains tee`);
+	if (/\bjq\b/.test(cmd)) violations.push(`${label}: contains jq`);
+	if (/\bcat\b(?!\s*>)/.test(cmd))
+		violations.push(`${label}: contains a bare cat (not followed by >)`);
+	return violations;
+}
+
+/**
+ * Phase 5: every Codex handler must be `type:"command"`, `async:false` —
+ * never `"type":"http"` (the pre-0.145 shape that Codex 0.145 can't parse)
+ * and never `async:true` (silently skipped on 0.145, SPIKE fact 4).
+ *
+ * Exercised dynamically against buildCodexHooksFile()'s real output rather
+ * than a source-text scan: the four transcription sites (setup-hooks.sh,
+ * setup-relay.sh, the /setup.sh template, install-local.ps1) don't embed a
+ * literal hooks JSON any more — they call the shared generator — and their
+ * byte-parity with it is separately proven by hook-command-parity.test.ts.
+ */
+function checkCodexHooksShape(mismatches: string[]) {
+	const json = buildCodexHooksFile({ baseUrl: "http://localhost:4000", direct: false });
+	if (json.includes('"type": "http"') || json.includes('"type":"http"')) {
+		mismatches.push('buildCodexHooksFile(): output contains a "type":"http" handler');
+	}
+	if (json.includes('"async": true') || json.includes('"async":true')) {
+		mismatches.push("buildCodexHooksFile(): output contains an async:true handler");
+	}
+	if (json.includes('"matcher"')) {
+		mismatches.push(
+			'buildCodexHooksFile(): output contains a "matcher" key (D12: omitted on every event)',
+		);
+	}
+
+	for (const agent of ["codex_cli", "copilot_cli"] as const) {
+		for (const direct of [false, true]) {
+			const cmd = buildBashHookCommand({
+				baseUrl: "http://localhost:4000",
+				direct,
+				agent,
+				event: "Stop",
+			});
+			mismatches.push(
+				...checkNoStdoutShape(cmd, `buildBashHookCommand(agent=${agent},direct=${direct})`),
+			);
+		}
+	}
+}
+
 function main() {
 	const typesContent = readFile("src/shared/types.ts");
 	const claudeCanonical = extractUnion(typesContent, "ClaudeCodeEvent");
@@ -54,20 +113,17 @@ function main() {
 
 	const results: CheckResult[] = [];
 
-	// scripts/setup-hooks.sh — both the Claude and Codex branches reuse the
-	// same `EVENTS=(...)` variable name (Claude branch first, Codex second),
-	// unlike every other site which distinguishes CODEX_EVENTS.
-	{
-		const content = readFile("scripts/setup-hooks.sh");
-		const [claude, codex] = extractQuotedListBlocks(content, /(?<![A-Z_])EVENTS=\(/, ")");
-		results.push({ site: "scripts/setup-hooks.sh", agent: "claude", events: claude ?? [] });
-		results.push({ site: "scripts/setup-hooks.sh", agent: "codex", events: codex ?? [] });
-	}
-
-	// scripts/setup-relay.sh (also what /setup-relay.sh serves, verbatim) and
-	// src/server/routes/setup.ts's one embedded /setup.sh template. Exactly one
-	// list per agent each: a second copy is exactly the drift this guards.
-	for (const site of ["scripts/setup-relay.sh", "src/server/routes/setup.ts"]) {
+	// scripts/setup-hooks.sh, scripts/setup-relay.sh (also what
+	// /setup-relay.sh serves, verbatim) and src/server/routes/setup.ts's one
+	// embedded /setup.sh template. Phase 5 (D12/D13) gave all three sites the
+	// same shared `# >>> agentpulse-hook-cmd` block, so all three now use
+	// distinct `EVENTS=(` (Claude) / `CODEX_EVENTS=(` (Codex) names — exactly
+	// one list per agent each; a second copy is exactly the drift this guards.
+	for (const site of [
+		"scripts/setup-hooks.sh",
+		"scripts/setup-relay.sh",
+		"src/server/routes/setup.ts",
+	]) {
 		const content = readFile(site);
 		const claudeBlocks = extractQuotedListBlocks(content, /(?<![A-Z_])EVENTS=\(/, ")");
 		const codexBlocks = extractQuotedListBlocks(content, /CODEX_EVENTS=\(/, ")");
@@ -80,18 +136,15 @@ function main() {
 		results.push({ site, agent: "codex", events: codexBlocks[0] });
 	}
 
-	// scripts/install-local.ps1 — Claude is a flat @(...) array; Codex is a
-	// hash-array of @{ event = "X"; ... } entries.
+	// scripts/install-local.ps1 — Claude is a flat @(...) array; Codex is now
+	// (Phase 5, D12/D13) also a flat @(...) array, consumed by
+	// New-ApCodexHooksFile via the shared hook-command generators.
 	{
 		const content = readFile("scripts/install-local.ps1");
 		const [claude] = extractQuotedListBlocks(content, /foreach \(\$eventName in @\(/, ")");
-		const codex = extractKeyValueListBlock(
-			content,
-			/\$codexHooks = @\{/,
-			"Set-JsonFile -Path (Join-Path $codexDir",
-		);
+		const [codex] = extractQuotedListBlocks(content, /\$codexEvents = @\(/, ")");
 		results.push({ site: "scripts/install-local.ps1", agent: "claude", events: claude ?? [] });
-		results.push({ site: "scripts/install-local.ps1", agent: "codex", events: codex });
+		results.push({ site: "scripts/install-local.ps1", agent: "codex", events: codex ?? [] });
 	}
 
 	// bin/cli.ts — TS array literals.
@@ -103,21 +156,19 @@ function main() {
 		results.push({ site: "bin/cli.ts", agent: "codex", events: codex ?? [] });
 	}
 
-	// src/web/pages/SetupPage.tsx — the in-app "Copy Config" ternary. Both
-	// branches share one `hookEvents =` marker; extract each bracketed list
-	// (Claude first, Codex second) directly rather than by nested markers.
+	// src/web/pages/SetupPage.tsx — Phase 5 (D12/D13) split the one
+	// `hookEvents` ternary into per-agent lists: `claudeHookEvents` still
+	// feeds the manual-copy generator directly, and `codexHookEvents` is a
+	// guard-visible floor on buildCodexHooksFile()'s output (the JSON body
+	// itself comes from the shared src/shared/hook-command.ts generator, not
+	// a literal array, since Phase 5 needs it byte-identical to the
+	// installers).
 	{
 		const content = readFile("src/web/pages/SetupPage.tsx");
-		const idx = content.search(/const hookEvents =/);
-		if (idx === -1) throw new Error("hookEvents marker not found in SetupPage.tsx");
-		const claudeStart = content.indexOf("[", idx);
-		const claudeEnd = content.indexOf("]", claudeStart);
-		const claude = extractQuotedTokens(content.slice(claudeStart, claudeEnd));
-		const codexStart = content.indexOf("[", claudeEnd);
-		const codexEnd = content.indexOf("]", codexStart);
-		const codex = extractQuotedTokens(content.slice(codexStart, codexEnd));
-		results.push({ site: "src/web/pages/SetupPage.tsx", agent: "claude", events: claude });
-		results.push({ site: "src/web/pages/SetupPage.tsx", agent: "codex", events: codex });
+		const [claude] = extractQuotedListBlocks(content, /const claudeHookEvents = \[/, "]");
+		const [codex] = extractQuotedListBlocks(content, /const codexHookEvents = \[/, "]");
+		results.push({ site: "src/web/pages/SetupPage.tsx", agent: "claude", events: claude ?? [] });
+		results.push({ site: "src/web/pages/SetupPage.tsx", agent: "codex", events: codex ?? [] });
 	}
 
 	// 6 sites × 2 agents. A site whose extraction silently vanished would
@@ -141,6 +192,8 @@ function main() {
 			);
 		}
 	}
+
+	checkCodexHooksShape(mismatches);
 
 	if (mismatches.length > 0) {
 		console.error("Hook-event-list parity check failed:\n");

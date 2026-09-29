@@ -44,6 +44,68 @@ if [[ -z "$AGENTPULSE_KEY" ]]; then
   exit 1
 fi
 
+# >>> agentpulse-hook-cmd
+# D13: shared hook-command generators. Byte-identical to buildBashHookCommand/
+# buildCodexHooksFile in src/shared/hook-command.ts (verified by
+# scripts/hook-command-parity.test.ts) — this exact block also appears
+# verbatim in scripts/setup-relay.sh and the /setup.sh template served by
+# src/server/routes/setup.ts. Do not hand-edit one copy without the others.
+ap_hook_cmd() {
+	# $1=base $2=direct(0/1) $3=agent $4=event
+	local base="$1" direct="$2" agent="$3" event="$4"
+	local marker="" call_with_header call_without_header body
+	if [ "$agent" = "codex_cli" ]; then
+		marker='sid=$(grep -o '\''"session_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9-]*"'\'' "$t" | head -n1); sid=${sid%\"}; sid=${sid##*\"}; case "$sid" in ""|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p "$HOME/.agentpulse/codex-native" 2>/dev/null; : > "$HOME/.agentpulse/codex-native/$sid" 2>/dev/null; fi ;; esac; '
+	fi
+	call_with_header="curl -sS --max-time 2 -o /dev/null -X POST '${base}/api/v1/hooks?event=${event}' -H 'Content-Type: application/json' -H 'X-Agent-Type: ${agent}'"' -H "@$f" --data-binary "@$t"'
+	call_without_header="curl -sS --max-time 2 -o /dev/null -X POST '${base}/api/v1/hooks?event=${event}' -H 'Content-Type: application/json' -H 'X-Agent-Type: ${agent}'"' --data-binary "@$t"'
+	if [ "$direct" = "1" ]; then
+		body="$marker"'f="$HOME/.agentpulse/hook-auth-header"; if [ -s "$f" ]; then '"$call_with_header"'; else '"$call_without_header"'; fi; rm -f "$t"'
+	else
+		body="$marker""$call_without_header"'; rm -f "$t"'
+	fi
+	printf '%s' 't=$(mktemp "${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX" 2>/dev/null) || exit 0; cat > "$t"; ( '"$body"' ) </dev/null >/dev/null 2>&1 & exit 0'
+}
+
+ap_codex_hooks_json() {
+	# $1=base $2=direct(0/1)
+	local base="$1" direct="$2"
+	local CODEX_EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "UserPromptSubmit" "Stop" "Interrupt" "SubagentStart" "SubagentStop" "PermissionRequest" "PreCompact" "PostCompact")
+	local event
+	{
+		for event in "${CODEX_EVENTS[@]}"; do
+			printf '%s\0%s\0' "$event" "$(ap_hook_cmd "$base" "$direct" "codex_cli" "$event")"
+		done
+	} | python3 -c '
+import json, sys
+data = sys.stdin.buffer.read().split(b"\x00")
+pairs = [(data[i].decode(), data[i + 1].decode()) for i in range(0, len(data) - 1, 2)]
+hooks = {}
+for event, cmd in pairs:
+    hooks[event] = [{"hooks": [{"type": "command", "command": cmd, "async": False, "timeout": 1}]}]
+sys.stdout.write(json.dumps({"hooks": hooks}, indent=2) + "\n")
+'
+}
+
+# D13/F57: -H "@$f" needs curl >= 7.55 (silently sends no auth below that).
+# Only direct-mode sh installers call this — relay mode sends no auth header.
+ap_require_curl_755() {
+	local ver major minor rest
+	ver="$(curl --version 2>/dev/null | head -n1 | sed -nE 's/^curl ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')"
+	if [ -z "$ver" ]; then
+		echo "AgentPulse direct hooks need curl >= 7.55 (curl not found). Upgrade curl or use the relay installer." >&2
+		exit 1
+	fi
+	major="${ver%%.*}"
+	rest="${ver#*.}"
+	minor="${rest%%.*}"
+	if [ "$major" -lt 7 ] || { [ "$major" -eq 7 ] && [ "$minor" -lt 55 ]; }; then
+		echo "AgentPulse direct hooks need curl >= 7.55 (found ${ver}). Upgrade curl or use the relay installer." >&2
+		exit 1
+	fi
+}
+# <<< agentpulse-hook-cmd
+
 # Verify connectivity
 echo "Checking AgentPulse server..."
 if ! curl -sf "${AGENTPULSE_URL}/api/v1/health" > /dev/null 2>&1; then
@@ -102,43 +164,38 @@ if [[ "$AGENT_TYPE" == "claude_code" ]]; then
 # ─── Codex CLI Setup ─────────────────────────────────────────────────
 
 elif [[ "$AGENT_TYPE" == "codex_cli" ]]; then
-  HOOKS_FILE="$HOME/.codex/hooks.json"
-  EVENTS=("SessionStart" "PreToolUse" "PostToolUse" "UserPromptSubmit" "Stop" "SubagentStart" "SubagentStop" "PermissionRequest" "PreCompact" "PostCompact")
+  # D13/F57: below curl 7.55, -H "@$f" silently sends no auth header at all.
+  ap_require_curl_755
+
+  # D12 (r6, Phase 0 fact 5): Codex 0.145 loads hooks only from
+  # $CODEX_HOME/hooks.json — a project-level .codex/hooks.json is never read.
+  CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+  HOOKS_FILE="$CODEX_DIR/hooks.json"
+  mkdir -p "$CODEX_DIR"
 
   echo "Configuring Codex CLI hooks..."
 
-  HOOKS_ARRAY="["
-  for i in "${!EVENTS[@]}"; do
-    EVENT="${EVENTS[$i]}"
-    if [[ $i -gt 0 ]]; then
-      HOOKS_ARRAY+=","
-    fi
-    HOOKS_ARRAY+="{\"event\":\"${EVENT}\",\"type\":\"http\",\"url\":\"${AGENTPULSE_URL}/api/v1/hooks\",\"async\":true,\"headers\":{\"Authorization\":\"Bearer ${AGENTPULSE_KEY}\",\"X-Agent-Type\":\"codex_cli\"}}"
-  done
-  HOOKS_ARRAY+="]"
+  # D13: the key never enters argv or the hooks file — the shim reads it
+  # from this file at hook-fire time via curl -H "@$f".
+  mkdir -p "$HOME/.agentpulse"
+  ( umask 077 && printf 'Authorization: Bearer %s\n' "${AGENTPULSE_KEY}" > "$HOME/.agentpulse/hook-auth-header" )
 
-  mkdir -p "$HOME/.codex"
-  echo "{\"hooks\":$HOOKS_ARRAY}" | python3 -m json.tool > "$HOOKS_FILE" 2>/dev/null || echo "{\"hooks\":$HOOKS_ARRAY}" > "$HOOKS_FILE"
-
-  # Hooks are stable and enabled by default since codex-cli 0.124.0;
-  # `codex_hooks` is a recognized legacy alias for the `hooks` feature
-  # (confirmed harmless via `codex doctor` on 0.144.5). Written anyway for
-  # compatibility with older codex-cli installs that still gate on it.
-  CONFIG_TOML="$HOME/.codex/config.toml"
-  if [[ -f "$CONFIG_TOML" ]]; then
-    if ! grep -q "codex_hooks" "$CONFIG_TOML"; then
-      echo "" >> "$CONFIG_TOML"
-      echo "[features]" >> "$CONFIG_TOML"
-      echo "codex_hooks = true" >> "$CONFIG_TOML"
-    fi
+  NEW_CODEX_HOOKS_JSON="$(ap_codex_hooks_json "$AGENTPULSE_URL" "1")"
+  if [[ -f "$HOOKS_FILE" ]] && [[ "$(cat "$HOOKS_FILE")" == "$NEW_CODEX_HOOKS_JSON" ]]; then
+    echo "Codex hooks unchanged — no re-trust needed"
   else
-    mkdir -p "$HOME/.codex"
-    echo '[features]' > "$CONFIG_TOML"
-    echo 'codex_hooks = true' >> "$CONFIG_TOML"
+    if [[ -f "$HOOKS_FILE" ]]; then
+      CODEX_BACKUP_FILE="${HOOKS_FILE}.agentpulse-bak.$(date -u +%Y%m%dT%H%M%SZ)"
+      cp "$HOOKS_FILE" "$CODEX_BACKUP_FILE"
+      echo "Backed up existing $HOOKS_FILE to $CODEX_BACKUP_FILE"
+    fi
+    printf '%s\n' "$NEW_CODEX_HOOKS_JSON" > "$HOOKS_FILE"
+    echo "Codex CLI hooks configured in $HOOKS_FILE"
+    echo "Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks. Re-trust after changing the AgentPulse URL or port."
   fi
 
-  echo "Codex CLI hooks configured in $HOOKS_FILE"
-  echo "Hooks feature enabled in $CONFIG_TOML"
+  # D12: codex_hooks is a deprecated (but still-working) legacy alias for
+  # [features].hooks — left alone if present, never newly written.
 
 else
   echo "Error: Unknown agent type '$AGENT_TYPE'. Use 'claude_code' or 'codex_cli'."

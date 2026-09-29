@@ -167,6 +167,13 @@ jobs:
           $ingress = Get-Content deploy/k8s/07-ingressroute.yaml -Raw
           if ($ingress -notmatch 'install-local\.ps1') { throw "ingress route does not expose install-local.ps1" }
 
+      # Phase 5 (D12/D13): real execution coverage for install-local.ps1's
+      # hook-command generators — the two steps above only parse the file
+      # and grep for references, they never run it.
+      - name: Run install-local.ps1 hook-command tests
+        shell: pwsh
+        run: pwsh -File scripts/test-install-local.ps1
+
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
