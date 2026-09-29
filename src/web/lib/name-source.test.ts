@@ -3,6 +3,7 @@ import type { AgentType, Session } from "../../shared/types.js";
 import {
 	applyManualRename,
 	nameSourceCaption,
+	nameSourceTitle,
 	resetButtonState,
 	shouldShowPin,
 } from "./name-source.js";
@@ -31,18 +32,18 @@ describe("nameSourceCaption — copy strings for each nameSource (D14)", () => {
 			"human-chosen-name",
 			"codex_cli",
 		);
-		expect(caption).toContain("Pinned by you");
+		expect(caption).toContain("Renamed by you");
 		expect(caption).toContain("codex-thread-name");
 	});
 
 	test("'user' with nativeName === displayName omits the suffix", () => {
 		const caption = nameSourceCaption("user", "same-name", "same-name", "codex_cli");
-		expect(caption).toBe("Pinned by you");
+		expect(caption).toBe("Renamed by you");
 	});
 
 	test("'user' with nativeName null still shows the caption (Claude/Codex hasNameSource)", () => {
 		const caption = nameSourceCaption("user", null, "human-chosen-name", "claude_code");
-		expect(caption).toBe("Pinned by you");
+		expect(caption).toBe("Renamed by you");
 	});
 
 	test("'native' shows a muted 'from <shortLabel>' caption", () => {
@@ -89,7 +90,7 @@ describe("unknown agent types fall back safely (F101)", () => {
 
 	test("nameSourceCaption uses a generic label", () => {
 		expect(nameSourceCaption("native", "n", "n", unknown)).toBe("from agent");
-		expect(nameSourceCaption("user", null, "x", unknown)).toBe("Pinned by you");
+		expect(nameSourceCaption("user", null, "x", unknown)).toBe("Renamed by you");
 	});
 });
 
@@ -109,5 +110,27 @@ describe("applyManualRename (F95)", () => {
 		expect(next.nameSource).toBe("user");
 		expect(next.nativeName).toBe("codex-title");
 		expect(base.displayName).toBe("codex-title");
+	});
+});
+
+describe("nameSourceTitle — the caption's tooltip (D26/F98)", () => {
+	test("'user' explains that the agent's names won't replace the rename", () => {
+		expect(nameSourceTitle("user", "codex_cli")).toBe(
+			"You renamed this session, so names from Codex won't replace it.",
+		);
+		expect(nameSourceTitle("user", "claude_code")).toBe(
+			"You renamed this session, so names from Claude won't replace it.",
+		);
+	});
+
+	test("an unknown agent gets a generic label", () => {
+		expect(nameSourceTitle("user", "some_future_agent" as never)).toBe(
+			"You renamed this session, so names from the agent won't replace it.",
+		);
+	});
+
+	test("'native' and 'generated' have no tooltip beyond the caption", () => {
+		expect(nameSourceTitle("native", "codex_cli")).toBeNull();
+		expect(nameSourceTitle("generated", "codex_cli")).toBeNull();
 	});
 });
