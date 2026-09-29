@@ -281,6 +281,7 @@ describe("planEventInsert: content_window matches the 2d4bb8a loop (U1.1)", () =
 	test("500 seeded cases", () => {
 		let authorityCases = 0;
 		let windowCases = 0;
+		let deleteCases = 0;
 		for (let seed = 1; seed <= 500; seed++) {
 			const { recent, incoming, nowIso } = randomCase(seed);
 			const expected = oracle(recent, incoming, nowIso);
@@ -295,10 +296,15 @@ describe("planEventInsert: content_window matches the 2d4bb8a loop (U1.1)", () =
 
 			if (expected.deleteIds.size > 0 || expected.authority > 0) authorityCases++;
 			if (expected.contentWindow > 0) windowCases++;
+			// F84: distinct from authorityCases — a case where at least one
+			// stored row is actually deleted (not merely an incoming row
+			// dropped because an existing row outranked it).
+			if (expected.deleteIds.size > 0) deleteCases++;
 		}
 		// Population floor: the generator must actually exercise both drop paths.
 		expect(authorityCases).toBeGreaterThanOrEqual(25);
 		expect(windowCases).toBeGreaterThanOrEqual(100);
+		expect(deleteCases).toBeGreaterThanOrEqual(10);
 	});
 
 	test("named member: a stronger incoming row deletes the weaker stored one", () => {
@@ -438,4 +444,7 @@ describe("planEventInsert: window edge (U1.6)", () => {
 
 test("TZ sentinel: the file leaves TZ restored", () => {
 	expect(process.env.TZ).toBe(FILE_TZ ?? "UTC");
+	if (!FILE_TZ) {
+		expect(Date.parse("2026-01-01 00:00:00")).toBe(Date.UTC(2026, 0, 1));
+	}
 });

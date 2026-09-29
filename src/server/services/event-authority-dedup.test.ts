@@ -94,6 +94,21 @@ function hookAssistantEvents(sessionId: string) {
 	);
 }
 
+function hookAssistant(content: string): ReturnType<typeof transcriptEvent> {
+	return {
+		eventType: "AssistantMessage",
+		category: "assistant_message",
+		source: "observed_hook",
+		content,
+		isNoise: false,
+		providerEventType: "Stop",
+		toolName: null,
+		toolInput: null,
+		toolResponse: null,
+		rawPayload: {},
+	};
+}
+
 async function hookThenTranscript(prefix: string) {
 	const sid = newSessionId(prefix);
 	await processHookEvent(stopPayload(sid), "claude_code");
@@ -162,6 +177,52 @@ describe("hook-vs-transcript authority across batches", () => {
 		await withTZ("America/New_York", () => backdatedStaysTwo("p1-5ny"));
 		await withTZ("UTC", () => backdatedStaysTwo("p1-5utc"));
 	});
+
+	// F84: a mutant that applies only the first retained row's deletes
+	// (`retained.slice(0,1).flatMap(...)` instead of `retained.flatMap(...)`
+	// in event-processor.ts) survives every other test in this suite — every
+	// other multi-row batch either has 0 or 1 rows that supersede something,
+	// or supersedes the same stored row twice. This is the population that
+	// discriminates: two DISTINCT stored rows, each superseded by its own
+	// row in one two-row incoming batch.
+	test("P1.11 a two-row batch deletes both of the two distinct rows it supersedes", async () => {
+		const sid = newSessionId("p1-11");
+		await mkSession(sid);
+
+		const [hookRow1] = await insertNormalizedEvents(sid, [hookAssistant("first message")]);
+		const [hookRow2] = await insertNormalizedEvents(sid, [hookAssistant("second message")]);
+		expect(hookRow1?.id, await histogram(sid)).toBeGreaterThan(0);
+		expect(hookRow2?.id, await histogram(sid)).toBeGreaterThan(0);
+		expect(hookRow1?.id).not.toBe(hookRow2?.id);
+
+		const inserted = await insertNormalizedEvents(sid, [
+			createAssistantTranscriptEvent(
+				"first message",
+				{ transcript_uuid: "tu-p1-11-a" },
+				"claude_transcript_text",
+			),
+			createAssistantTranscriptEvent(
+				"second message",
+				{ transcript_uuid: "tu-p1-11-b" },
+				"claude_transcript_text",
+			),
+		]);
+		expect(inserted, await histogram(sid)).toHaveLength(2);
+
+		// Exactly the two transcript rows survive — no `observed_hook` row is
+		// left behind. (Row ids aren't asserted directly: the events table's
+		// cascade-FK rebuild rebuilds it without AUTOINCREMENT, so a freed id
+		// can legitimately be recycled by an unrelated later insert; the
+		// source/count check below is what actually discriminates the mutant —
+		// under `retained.slice(0,1).flatMap(...)`, hookRow2 would survive
+		// with source "observed_hook", changing this exact array.)
+		const rows = await assistantRows(sid);
+		expect(rows, await histogram(sid)).toHaveLength(2);
+		expect(rows.map((row) => row.source).sort(), await histogram(sid)).toEqual([
+			"observed_transcript",
+			"observed_transcript",
+		]);
+	});
 });
 
 describe("content-window dedup that must survive the fix", () => {
@@ -219,4 +280,7 @@ describe("content-window dedup that must survive the fix", () => {
 
 test("P1.10 TZ sentinel: the file leaves TZ restored", () => {
 	expect(process.env.TZ).toBe(FILE_TZ ?? "UTC");
+	if (!FILE_TZ) {
+		expect(Date.parse("2026-01-01 00:00:00")).toBe(Date.UTC(2026, 0, 1));
+	}
 });

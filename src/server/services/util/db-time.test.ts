@@ -56,6 +56,23 @@ describe("parseDbTimestamp (DT-1)", () => {
 				expect(parseDbTimestamp("2026-13-45 99:00:00")).toBeNull();
 			});
 		});
+
+		// F85: a date with no time component must not silently parse as
+		// midnight — the regex requires the time portion.
+		test(`a date-only value is null under ${tz}`, () => {
+			withTZ(tz, () => {
+				expect(parseDbTimestamp("2026-09-28")).toBeNull();
+			});
+		});
+
+		// F85: 4-digit fractional seconds truncate to 3 (milliseconds), not
+		// round — ".9999" is +999ms, never +1000ms (which would silently roll
+		// into the next second).
+		test(`four-digit fractional seconds truncate to +999ms under ${tz}`, () => {
+			withTZ(tz, () => {
+				expect(parseDbTimestamp("2026-09-28 12:00:05.9999")).toBe(INSTANT + 999);
+			});
+		});
 	}
 });
 
@@ -82,4 +99,10 @@ describe("toDbTimestamp (DT-1)", () => {
 
 test("TZ sentinel: the file leaves TZ restored", () => {
 	expect(process.env.TZ).toBe(FILE_TZ ?? "UTC");
+	// F85: when the harness itself runs with no TZ override, confirm the
+	// *environment* is actually UTC (not just the env var string) — a bare
+	// SQLite-shaped string parses as UTC only when the process really is.
+	if (!FILE_TZ) {
+		expect(Date.parse("2026-01-01 00:00:00")).toBe(Date.UTC(2026, 0, 1));
+	}
 });
