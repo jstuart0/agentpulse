@@ -289,8 +289,8 @@ state report from it is already in flight when you run the pair below, that repo
 can land right after your `COMMIT`. For a session with no launch to reassign (the
 first `UPDATE` below is a no-op), that in-flight write only touches
 `managed_sessions.supervisor_id` — handing ownership straight back to the old host.
-Stop the old supervisor's process, or revoke its credential via
-`/admin/supervisors/:id/rotate`, before running this pair, and recheck the row
+Stop the old supervisor's process, or revoke it via
+`POST /admin/supervisors/:id/revoke`, before running this pair, and recheck the row
 afterward to confirm the reassignment stuck:
 
 ```sql
