@@ -116,7 +116,7 @@ in the path and act as it.
 it fails if an agent route is ever shadowed by an operator gate again, or if a
 duplicate in-bundle mount is added alongside the root mount.
 
-#### Supervisor client behavior on a rejected in-session report (D7/D8)
+#### Supervisor client behavior on a rejected in-session report
 
 The agent routes above return `403 { "error": "session_not_owned" }` when a supervisor
 tries to write state for a session it doesn't own, and `401` when its credential has
@@ -139,12 +139,12 @@ differently depending on which call hit the rejection:
   the operator revoked the credential and should either re-enroll the host (keeping
   its id via `/admin/supervisors/:id/rotate`, see below) or uninstall it.
 - **Initial registration** (`POST /supervisors/register`, the first call `main()`
-  makes on every start) **never exits on an HTTP failure**, of any status — codex r2
-  F43. A brand-new supervisor built against this fix that talks to a server that
-  hasn't been upgraded yet gets the AGEN-17 operator-gate shadow's `401`/`403` on
-  every call, register included; exiting there would recreate exactly the crash loop
-  this campaign fixes, just moved one call earlier. Instead registration retries
-  forever with exponential backoff and jitter (starting around 5s, capped at 5
+  makes on every start) **never exits on an HTTP failure**, of any status. A
+  brand-new supervisor talking to a server that hasn't been upgraded yet gets the
+  AGEN-17 operator-gate shadow's `401`/`403` on every call, register included;
+  exiting there would recreate the same crash loop, just moved one call earlier.
+  Instead registration retries forever with exponential backoff and jitter
+  (starting around 5s, capped at 5
   minutes), logging the HTTP status, status text and the server's own `error` body
   field on every attempt. Only a local failure — the config file failing to load, or
   a malformed success response — is fatal at this step; an HTTP failure never is,
@@ -217,10 +217,9 @@ Before deploying, walk through this checklist:
    targets the launch's original `requested_supervisor_id`. If a host's identity was
    genuinely lost, launch fresh sessions instead of trying to reclaim the old ones.
 4. **Optionally run the ownership audit below** to find any session rows left with a
-   stale recorded owner. Owner-of-record routing (D8, this campaign) already makes
-   claim/liveness reads correct for any row with a claimed launch, with no migration
-   needed — the audit and repair below are for the rarer launch-less legacy rows and
-   for verification.
+   stale recorded owner. Owner-of-record routing already makes claim/liveness reads
+   correct for any row with a claimed launch, with no migration needed — the audit
+   and repair below are for the rarer launch-less legacy rows and for verification.
 5. **Archive the local supervisor log** (`~/.agentpulse/logs/supervisor.err.log`) if it
    grew large during the outage — the upgrade doesn't truncate it.
 
@@ -255,8 +254,8 @@ ORDER BY ms.session_id;
 <!-- ownership-audit-sql:end -->
 
 Findings, in precedence order: `no_launch` (no launch at all names this session) >
-`owner_mismatch` (a claimed launch disagrees with the recorded owner — the exact F94
-hijack shape, already self-healed by routing, but worth knowing about) >
+`owner_mismatch` (a claimed launch disagrees with the recorded owner — a hijacked-row
+shape, already self-healed by routing, but worth knowing about) >
 `launch_pointer_missing` (`launch_request_id` names no launch that exists) >
 `launch_pointer_mismatch` (`launch_request_id` resolves, but to a different session's
 launch).
@@ -280,9 +279,26 @@ WHERE EXISTS (SELECT 1 FROM launch_requests lr
 **Reassign host** — moves *one* session to another supervisor. There is no dashboard
 flow for this; it's a manual escape hatch for a host that was re-enrolled under a new
 id, or a session deliberately handed to a different host. Updating
-`managed_sessions` alone has **no effect** — the launch claimant outranks it (D5), so
+`managed_sessions` alone has **no effect** — the launch claimant outranks it, so
 both statements must run together. Run them as a pair, inside a transaction, in one
 session:
+
+**Stop the old supervisor first.** The ownership check and this write aren't one
+transaction from the *old* supervisor's point of view: if it's still running and a
+state report from it is already in flight when you run the pair below, that report
+can land right after your `COMMIT`. For a session with no launch to reassign (the
+first `UPDATE` below is a no-op), that in-flight write only touches
+`managed_sessions.supervisor_id` — handing ownership straight back to the old host.
+Stop the old supervisor's process, or revoke its credential via
+`/admin/supervisors/:id/rotate`, before running this pair, and recheck the row
+afterward to confirm the reassignment stuck:
+
+```sql
+SELECT session_id, supervisor_id FROM managed_sessions WHERE session_id = '<session_id>';
+```
+
+If it still names the old supervisor, the old process won the race — stop it and
+repeat the pair.
 
 ```sql
 BEGIN;
