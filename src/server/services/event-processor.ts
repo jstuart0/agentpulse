@@ -4,12 +4,20 @@ import type {
 	HookEventPayload,
 	SemanticStatus,
 	SemanticStatusUpdate,
+	SessionEvent,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { events, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
-import { type RecentEventRow, planEventInsert } from "./event-dedup.js";
+import {
+	type InsertPlan,
+	type PlannedRow,
+	type RecentEventRow,
+	contentWindowKey,
+	planEventInsert,
+} from "./event-dedup.js";
+import { toSessionEventDtos } from "./event-dto.js";
 import {
 	type NormalizedEvent,
 	normalizeHookEvent,
@@ -39,62 +47,122 @@ async function loadRecentRows(sessionId: string): Promise<RecentEventRow[]> {
 		.limit(RECENT_ROWS_FOR_DEDUP);
 }
 
+// A row read back from `events` (all columns, including dedup_key) — the
+// shape `.returning()` and a plain `.select()` both produce.
+type StoredEventRow = typeof events.$inferSelect;
+
+// Matches a RETURNING row back to the PlannedRow that produced it, without
+// assuming RETURNING order matches insert order (F35 — Postgres doesn't
+// guarantee it for multi-row inserts). A non-null dedupKey is unique by
+// construction (Decision 2's UNIQUE(session_id, dedup_key)); a null
+// dedupKey (content_window) falls back to contentWindowKey, which
+// planContentWindow's own `seen` Set already guarantees is unique within
+// one incoming batch.
+function matchKey(row: {
+	dedupKey: string | null;
+	eventType: string;
+	category: string | null;
+	source: string;
+	content: string | null;
+	providerEventType: string | null;
+	rawPayload?: Record<string, unknown>;
+}): string {
+	return row.dedupKey ? `k:${row.dedupKey}` : `c:${contentWindowKey(row)}`;
+}
+
+/**
+ * The single write path for a planner InsertPlan (D9/D12): one explicit
+ * insert (never a spread of caller/planner objects — F65), then
+ * compensating deletes for rows that superseded an existing row, scoped to
+ * this session (F82) and limited to rows this call actually stored (bob
+ * L1/F47) — a row that lost an ON CONFLICT DO NOTHING race must never
+ * trigger the delete it would have earned had it been stored. Returns DTO
+ * rows (Decision 16; dedup_key never leaves this function) sorted by id.
+ */
+async function persistEvents(sessionId: string, plan: InsertPlan): Promise<SessionEvent[]> {
+	if (plan.retained.length === 0) return [];
+
+	const insertedRows: StoredEventRow[] = await getDb()
+		.insert(events)
+		.values(
+			plan.retained.map((row) => ({
+				sessionId,
+				eventType: row.eventType,
+				category: row.category,
+				source: row.source,
+				content: row.content,
+				isNoise: row.isNoise,
+				providerEventType: row.providerEventType,
+				toolName: row.toolName,
+				toolInput: row.toolInput,
+				toolResponse: row.toolResponse,
+				rawPayload: row.rawPayload,
+				dedupKey: row.dedupKey,
+			})),
+		)
+		.onConflictDoNothing()
+		.returning();
+
+	const byMatchKey = new Map<string, PlannedRow>(plan.retained.map((row) => [matchKey(row), row]));
+	const stored = insertedRows
+		.map((dbRow) => ({ dbRow, planned: byMatchKey.get(matchKey(dbRow)) }))
+		.filter(
+			(pair): pair is { dbRow: StoredEventRow; planned: PlannedRow } => pair.planned !== undefined,
+		);
+
+	const deleteIds = new Set(stored.flatMap(({ planned }) => planned.deletesIfStored));
+	if (deleteIds.size > 0) {
+		await getDb()
+			.delete(events)
+			.where(and(eq(events.sessionId, sessionId), inArray(events.id, Array.from(deleteIds))));
+	}
+
+	return toSessionEventDtos(stored.map(({ dbRow }) => dbRow)).sort((a, b) => a.id - b.id);
+}
+
+/**
+ * General-purpose entry point (transcript sync, managed-session events,
+ * AI-emitted events, and anything else that isn't a raw hook delivery).
+ * Always content-windowed — these sources have no delivery-id header to
+ * key on.
+ */
 export async function insertNormalizedEvents(
 	sessionId: string,
 	normalizedEvents: NormalizedEvent[],
-) {
+): Promise<SessionEvent[]> {
 	if (normalizedEvents.length === 0) return [];
 
-	const { retained } = planEventInsert({
+	const plan = planEventInsert({
 		policy: { kind: "content_window" },
 		recent: await loadRecentRows(sessionId),
 		incoming: normalizedEvents,
 		nowIso: new Date().toISOString(),
 	});
 
-	const deleteIds = new Set(retained.flatMap((event) => event.deletesIfStored));
-	if (deleteIds.size > 0) {
-		await getDb()
-			.delete(events)
-			.where(inArray(events.id, Array.from(deleteIds)));
-	}
+	return persistEvents(sessionId, plan);
+}
 
-	if (retained.length === 0) return [];
+/**
+ * Hook-ingestion entry point (D9's second entry point). Kept separate from
+ * insertNormalizedEvents so Phase 7 can grow this one signature (a
+ * HookDeliveryContext selecting the `hook_delivery` policy) without
+ * touching the many non-hook callers of insertNormalizedEvents. Policy
+ * selection is still content_window here — Phase 7 wires the alternative.
+ */
+export async function insertHookEvents(
+	sessionId: string,
+	normalizedEvents: NormalizedEvent[],
+): Promise<SessionEvent[]> {
+	if (normalizedEvents.length === 0) return [];
 
-	const inserted = await getDb()
-		.insert(events)
-		.values(
-			retained.map((event) => ({
-				sessionId,
-				eventType: event.eventType,
-				category: event.category,
-				source: event.source,
-				content: event.content,
-				isNoise: event.isNoise,
-				providerEventType: event.providerEventType,
-				toolName: event.toolName,
-				toolInput: event.toolInput,
-				toolResponse: event.toolResponse,
-				rawPayload: event.rawPayload,
-			})),
-		)
-		.returning({ id: events.id });
+	const plan = planEventInsert({
+		policy: { kind: "content_window" },
+		recent: await loadRecentRows(sessionId),
+		incoming: normalizedEvents,
+		nowIso: new Date().toISOString(),
+	});
 
-	return retained.map((event, i) => ({
-		id: inserted[i]?.id ?? 0,
-		sessionId,
-		eventType: event.eventType,
-		category: event.category,
-		source: event.source,
-		content: event.content,
-		isNoise: event.isNoise,
-		providerEventType: event.providerEventType,
-		toolName: event.toolName,
-		toolInput: event.toolInput,
-		toolResponse: event.toolResponse,
-		rawPayload: event.rawPayload,
-		createdAt: event.createdAt,
-	}));
+	return persistEvents(sessionId, plan);
 }
 
 // Detect agent type from the X-Agent-Type header. The payload argument is
@@ -313,13 +381,15 @@ type SessionRow = typeof import("../db/schema/index.js").sessions.$inferSelect;
 /**
  * Process an incoming hook event.
  *
- * Returns { sessionId, isNew, session } so callers (ingest route) can
- * broadcast the upserted row without a second DB round-trip.
+ * Returns { sessionId, isNew, session, events } so callers (ingest route)
+ * can broadcast the upserted session row and the actually-stored event
+ * rows — with real ids, exactly the rows this call persisted — without a
+ * second DB round-trip (Phase 6).
  */
 export async function processHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
-): Promise<{ sessionId: string; isNew: boolean; session: SessionRow }> {
+): Promise<{ sessionId: string; isNew: boolean; session: SessionRow; events: SessionEvent[] }> {
 	const sessionId = payload.session_id;
 	const eventType = payload.hook_event_name;
 	const now = new Date().toISOString();
@@ -446,7 +516,7 @@ export async function processHookEvent(
 
 	// Store normalized timeline events
 	const normalizedEvents = normalizeHookEvent(payload, agentType);
-	await insertNormalizedEvents(sessionId, normalizedEvents);
+	const storedEvents = await insertHookEvents(sessionId, normalizedEvents);
 
 	// Evaluate project alert rules for status_completed on SessionEnd.
 	// Best-effort: rule evaluation failure must not block event ingestion.
@@ -466,7 +536,7 @@ export async function processHookEvent(
 
 	// finalSession is guaranteed to exist here — we just inserted or updated it.
 	// The non-null assertion is safe; a missing row would indicate DB corruption.
-	return { sessionId, isNew, session: finalSession! };
+	return { sessionId, isNew, session: finalSession!, events: storedEvents };
 }
 
 /**

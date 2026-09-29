@@ -2,7 +2,6 @@ import { Hono } from "hono";
 import type { HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
 import { requireApiKey } from "../auth/middleware.js";
 import { hookRateLimit } from "../middleware/hook-rate-limit.js";
-import { normalizeHookEvent } from "../services/event-normalizer.js";
 import {
 	detectAgentType,
 	processHookEvent,
@@ -166,10 +165,11 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 	const capturedAgentType = agentType;
 	enqueueSessionTask(capturedParsed.session_id, async () => {
 		try {
-			const { sessionId, isNew, session } = await processHookEvent(
-				capturedParsed,
-				capturedAgentType,
-			);
+			const {
+				isNew,
+				session,
+				events: storedEvents,
+			} = await processHookEvent(capturedParsed, capturedAgentType);
 
 			// Broadcast to WebSocket subscribers using the returned session row —
 			// no second DB read needed (eliminates the N+1 getSession() call).
@@ -179,22 +179,12 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c) => {
 				notifySessionUpdated(session);
 			}
 
-			for (const event of normalizeHookEvent(capturedParsed, capturedAgentType)) {
-				notifyChannel("new_event", {
-					id: 0,
-					sessionId,
-					eventType: event.eventType,
-					category: event.category,
-					source: event.source,
-					content: event.content,
-					isNoise: event.isNoise,
-					providerEventType: event.providerEventType,
-					toolName: event.toolName,
-					toolInput: event.toolInput,
-					toolResponse: event.toolResponse,
-					rawPayload: event.rawPayload,
-					createdAt: new Date().toISOString(),
-				});
+			// Broadcast exactly the rows this call stored, with their real DB
+			// ids (Phase 6) — never a re-normalized, unstored, id:0 stand-in.
+			// A content-window-deduped or compensated-away row is correctly
+			// absent from storedEvents, so it's never broadcast either.
+			for (const event of storedEvents) {
+				notifyChannel("new_event", event);
 			}
 		} catch (err) {
 			incrementBgErrorCount();

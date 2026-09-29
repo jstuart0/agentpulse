@@ -318,6 +318,19 @@ function mergeKey(event: SessionEvent): string {
 	return event.id > 0 ? `id:${event.id}` : eventKey(event);
 }
 
+// F102: `id` is a global auto-increment across every session, not scoped to
+// one — mergeKey's `id:${event.id}` branch trusts it as a merge key without
+// any sessionId cross-check. That's safe only because every call site
+// (SessionDetailPage) already scopes both `baseEvents` (a REST poll of this
+// session) and `liveEvents` (WS events filtered to this session's id) to
+// the same session before calling this function. Before Phase 6, hook
+// broadcasts always carried id:0 and fell back to the content-based key, so
+// a same-id collision across two different sessions' events was never
+// actually reachable here — now that hook broadcasts carry real ids
+// (Phase 6), a caller that ever passes unscoped arrays would silently
+// merge another session's row in. If this function ever needs to be
+// called with un-prescoped inputs, filter by sessionId first (or add an
+// explicit assert here) — don't rely on id uniqueness alone.
 export function mergeSessionEvents(baseEvents: SessionEvent[], liveEvents: SessionEvent[]) {
 	const merged = new Map<string, SessionEvent>();
 	// Live first, then base: Map.set() on a collision keeps the later call's

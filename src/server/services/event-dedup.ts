@@ -43,8 +43,12 @@ type AuthorityCandidate = {
 };
 
 // The legacy in-memory window key. Content-derived and not unique per event,
-// so it must never be persisted as a dedup_key.
-function contentWindowKey(event: {
+// so it must never be persisted as a dedup_key. Exported (Phase 6) so
+// persistEvents can match a RETURNING row back to the PlannedRow that
+// produced it without assuming RETURNING order matches insert order (F35) —
+// this is the exact composite planContentWindow's own `seen` Set already
+// guarantees is unique within one incoming batch.
+export function contentWindowKey(event: {
 	eventType: string;
 	category: string | null;
 	source: string;

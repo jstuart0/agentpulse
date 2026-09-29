@@ -1,15 +1,17 @@
 import type { EventCategory, EventSource, SessionEvent } from "../../shared/types.js";
 
 /**
- * One event DTO (Decision 16). Applied so far (Phase 2) to the three REST
- * event reads in routes/sessions.ts; MCP reads REST over HTTP, so it
- * inherits the same shape. The WS broadcast and the supervisor events
- * response are wired to this DTO in Phase 6, not yet. In every case,
- * `dedup_key` (server-derived durable identity, Decision 2) never leaks
- * past the persistence layer. An explicit allowlist, not a
- * spread-then-delete: a future column added to the `events` table is
- * dropped by default instead of leaking until someone remembers to
- * exclude it here.
+ * One event DTO (Decision 16). Applied to the three REST event reads in
+ * routes/sessions.ts (Phase 2); MCP reads REST over HTTP, so it inherits
+ * the same shape. `persistEvents` (event-processor.ts, Phase 6) is now the
+ * single write path and returns rows through this DTO, so every live
+ * broadcast — the hook WS path (routes/ingest.ts), the supervisor managed-
+ * session-events response, and AI-emitted events (ai-events.ts) — inherits
+ * it too. In every case, `dedup_key` (server-derived durable identity,
+ * Decision 2) never leaks past the persistence layer. An explicit
+ * allowlist, not a spread-then-delete: a future column added to the
+ * `events` table is dropped by default instead of leaking until someone
+ * remembers to exclude it here.
  */
 export interface EventDtoSourceRow {
 	id: number;

@@ -42,22 +42,11 @@ export async function emitAiEvent(params: {
 		return null;
 	}
 
-	const row = inserted[0];
-	const sessionEvent: SessionEvent = {
-		id: row.id,
-		sessionId: row.sessionId,
-		eventType: row.eventType,
-		category: row.category,
-		source: row.source as SessionEvent["source"],
-		content: row.content,
-		isNoise: row.isNoise,
-		providerEventType: row.providerEventType,
-		toolName: row.toolName,
-		toolInput: row.toolInput,
-		toolResponse: row.toolResponse,
-		rawPayload: row.rawPayload,
-		createdAt: row.createdAt,
-	};
+	// insertNormalizedEvents already returns DTO rows through
+	// toSessionEventDto (Phase 6, event-processor.ts's persistEvents) — no
+	// second mapping needed here, and none that could reintroduce a leaked
+	// column if the row shape ever widens.
+	const sessionEvent = inserted[0];
 
 	notifySessionEvents(params.sessionId, [sessionEvent]);
 	return sessionEvent;
