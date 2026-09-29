@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
+	chmod,
 	lstat,
 	mkdir,
 	mkdtemp,
@@ -1709,6 +1710,50 @@ describe("symlinks are never followed on CLAUDE.md read or write (F107)", () => 
 		expect(await readFile(target, "utf-8")).toBe("original\n");
 		expect((await lstat(join(cwd, "CLAUDE.md"))).isSymbolicLink()).toBe(true);
 		expect(await readlink(join(cwd, "CLAUDE.md"))).toBe(target);
+	});
+});
+
+describe("symlinks are never followed on writePrivateFile/appendPrivateFile (F203)", () => {
+	test("writeStatusFile: a symlink planted at the status path is not written through or re-permissioned", async () => {
+		const R = await mod();
+		const outside = join(tmp, "outside-status-target.txt");
+		await writeFile(outside, "untouched\n");
+		await chmod(outside, 0o644);
+		const ctx = await makeCtx({ remote: "http://127.0.0.1:1" });
+		await mkdir(join(tmp, "state"), { recursive: true });
+		await symlink(outside, ctx.paths.statusFile);
+
+		// Force a non-null status line (an auth warning) so writeStatusFile
+		// actually attempts a write, not the null/unlink branch.
+		ctx.state.auth.keyRejected = true;
+
+		await R.writeStatusFile(ctx); // must not throw — errors are caught and logged
+
+		expect((await lstat(ctx.paths.statusFile)).isSymbolicLink()).toBe(true);
+		expect(await readlink(ctx.paths.statusFile)).toBe(outside);
+		expect(await readFile(outside, "utf-8")).toBe("untouched\n");
+		expect((await stat(outside)).mode & 0o777).toBe(0o644);
+	});
+
+	test("ledger append: a symlink planted at codex-pushed.jsonl is not written through", async () => {
+		const R = await mod();
+		const outside = join(tmp, "outside-ledger-target.txt");
+		await writeFile(outside, "untouched\n");
+		const server = sessionsStub([
+			{ sessionId: "sym1", displayName: "sym-name", nameSource: "user" },
+		]);
+		stops.push(server.stop);
+		const ctx = await makeCtx({ remote: server.url });
+		await symlink(outside, ctx.paths.ledgerFile);
+
+		const result = await R.pushCodexNames(ctx);
+
+		// The push itself may succeed or no-op depending on the index state,
+		// but it must never write through the symlink — the ledger append is
+		// exactly the appendPrivateFile call F203 hardens.
+		expect(await readFile(outside, "utf-8")).toBe("untouched\n");
+		expect((await lstat(ctx.paths.ledgerFile)).isSymbolicLink()).toBe(true);
+		void result;
 	});
 });
 

@@ -17,7 +17,6 @@
  */
 import {
 	constants,
-	appendFile,
 	chmod,
 	lstat,
 	mkdir,
@@ -28,7 +27,6 @@ import {
 	rename,
 	stat,
 	unlink,
-	writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -467,14 +465,45 @@ async function ensurePrivateDir(path: string) {
 // at some other permission (an older Bun, F190; a race; a manual copy),
 // neither call tightens it back down. The explicit chmod after each write
 // makes the private-file guarantee hold regardless of what created the path.
+// F203: both this open and the chmod below must resolve the *same* file a
+// symlink can't redirect. openPrivateNoFollow refuses a symlink/non-regular
+// path (reusing lstatKind/assertSameFile, the same F107/F136 machinery
+// writeFileNoFollow already uses below) and returns the open handle;
+// chmod-ing the handle (fchmod), not the path, closes the TOCTOU gap a
+// by-path chmod would leave between the write and the permission tighten.
+async function openPrivateNoFollow(path: string, extraFlags: number) {
+	const kind = await lstatKind(path);
+	if (kind !== "file" && kind !== "missing") {
+		throw new Error(`refusing to write through ${kind}: ${path}`);
+	}
+	const seen = kind === "file" ? await lstat(path) : null;
+	// F154: a file that appears after lstat said "missing" makes open fail
+	// (EEXIST) instead of being written through.
+	const createFlags = kind === "missing" ? constants.O_CREAT | constants.O_EXCL : 0;
+	const handle = await open(path, extraFlags | createFlags | O_NOFOLLOW, PRIVATE_FILE_MODE);
+	assertSameFile(path, seen ?? (await lstat(path)), await handle.stat());
+	return handle;
+}
+
 async function writePrivateFile(path: string, content: string) {
-	await writeFile(path, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
-	await chmod(path, PRIVATE_FILE_MODE);
+	const handle = await openPrivateNoFollow(path, constants.O_WRONLY);
+	try {
+		await handle.truncate(0);
+		await handle.writeFile(content, "utf-8");
+		await handle.chmod(PRIVATE_FILE_MODE);
+	} finally {
+		await handle.close();
+	}
 }
 
 async function appendPrivateFile(path: string, content: string) {
-	await appendFile(path, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
-	await chmod(path, PRIVATE_FILE_MODE);
+	const handle = await openPrivateNoFollow(path, constants.O_WRONLY | constants.O_APPEND);
+	try {
+		await handle.writeFile(content, "utf-8");
+		await handle.chmod(PRIVATE_FILE_MODE);
+	} finally {
+		await handle.close();
+	}
 }
 
 /** Atomic replace (temp + rename), private mode. */
