@@ -111,6 +111,8 @@ function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): 
 			return payload.trigger
 				? `Context compaction completed (${payload.trigger})`
 				: "Context compaction completed";
+		case "ErrorOccurred":
+			return payload.error_message ? `Error: ${payload.error_message}` : "Error";
 		default:
 			if (!warnedUnknownEvents.has(payload.hook_event_name)) {
 				warnedUnknownEvents.add(payload.hook_event_name);
@@ -129,6 +131,10 @@ export function normalizeHookEvent(
 	const eventType = payload.hook_event_name;
 	const toolResponse = stringifyToolResponse(payload.tool_response);
 	const normalized: NormalizedEvent[] = [];
+	// D7: Copilot's own (camelCase) event name, when present, is more
+	// useful for debugging/display than the canonical PascalCase
+	// hook_event_name every other branch here already carries.
+	const providerEventType = payload.provider_event_name ?? eventType;
 
 	if (eventType === "UserPromptSubmit" && payload.prompt) {
 		normalized.push({
@@ -137,7 +143,7 @@ export function normalizeHookEvent(
 			source: "observed_hook",
 			content: payload.prompt,
 			isNoise: false,
-			providerEventType: eventType,
+			providerEventType,
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
@@ -154,7 +160,7 @@ export function normalizeHookEvent(
 			source: "observed_hook",
 			content: formatToolContent(eventType, payload.tool_name),
 			isNoise: isNoisyTool(payload.tool_name, payload),
-			providerEventType: eventType,
+			providerEventType,
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
@@ -167,7 +173,7 @@ export function normalizeHookEvent(
 			source: "observed_hook",
 			content: formatPermissionContent(eventType, payload.tool_name),
 			isNoise: false,
-			providerEventType: eventType,
+			providerEventType,
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
@@ -186,7 +192,7 @@ export function normalizeHookEvent(
 			source: "observed_hook",
 			content: normalizeSystemEvent(payload, agentType),
 			isNoise: false,
-			providerEventType: eventType,
+			providerEventType,
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
@@ -202,7 +208,7 @@ export function normalizeHookEvent(
 			source: "observed_hook",
 			content: assistantMessage,
 			isNoise: false,
-			providerEventType: eventType,
+			providerEventType,
 			toolName: null,
 			toolInput: null,
 			toolResponse: null,

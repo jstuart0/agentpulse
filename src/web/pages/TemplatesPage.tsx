@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type {
-	AgentType,
 	LaunchMode,
 	LaunchRequest,
 	LaunchRoutingPolicy,
+	LaunchableAgentType,
 	Project,
 	ResolvedProjectData,
 	SessionTemplate,
@@ -183,7 +183,7 @@ export function TemplatesPage() {
 		}
 	}
 
-	function resetEditor(agentType: AgentType = draft.agentType) {
+	function resetEditor(agentType: LaunchableAgentType = draft.agentType) {
 		setSelectedId(null);
 		setDraft(createBlankTemplate(agentType));
 		setEnvText("");
@@ -250,10 +250,8 @@ export function TemplatesPage() {
 		if (fieldName === "cwd") {
 			setDraft((current) => ({ ...current, cwd: resolvedProject.cwd }));
 		} else if (fieldName === "agentType" && resolvedProject.defaultAgentType) {
-			setDraft((current) => ({
-				...current,
-				agentType: resolvedProject.defaultAgentType as AgentType,
-			}));
+			const agentType = resolvedProject.defaultAgentType;
+			setDraft((current) => ({ ...current, agentType }));
 		} else if (fieldName === "model") {
 			setDraft((current) => ({ ...current, model: resolvedProject.defaultModel ?? "" }));
 		}

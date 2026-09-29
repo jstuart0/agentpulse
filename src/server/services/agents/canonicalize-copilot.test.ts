@@ -120,7 +120,7 @@ describe("Phase 6 contract item 4 (F28): 64 KiB caps, no premature JSON.parse", 
 			toolResponse: hugeResponse,
 		});
 		const out = HOOK_PAYLOAD_CANONICALIZERS.copilot_cli(raw, "postToolUse");
-		expect(out.tool_response?.length).toBe(CAP_BYTES);
+		expect((out.tool_response as string).length).toBe(CAP_BYTES);
 		expect(out.tool_response).toBe(hugeResponse.slice(0, CAP_BYTES));
 	});
 

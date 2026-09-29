@@ -224,7 +224,45 @@ export type CodexEvent =
 	| "PreCompact"
 	| "PostCompact";
 
-export type HookEventType = ClaudeCodeEvent | CodexEvent;
+// Hook event types from GitHub Copilot CLI. Registered set (10 events),
+// camelCase — Copilot's own naming convention, distinct from Claude/
+// Codex's PascalCase. D7 (2026-09-28-deliver-agent-cli-parity, Phase 0).
+// All 10 fixtures are docs-derived (_source:"docs") — see
+// src/server/services/agents/__fixtures__/SPIKE.md fact 1: every live
+// Copilot invocation failed pre-model with an org-policy 403, so no hook
+// ever actually fired. Casing, field names and toolArgs shape are
+// unverified against the real CLI (waivered; re-confirm before treating
+// as ground truth).
+export type CopilotEvent =
+	| "sessionStart"
+	| "sessionEnd"
+	| "userPromptSubmitted"
+	| "postToolUse"
+	| "postToolUseFailure"
+	| "agentStop"
+	| "subagentStart"
+	| "subagentStop"
+	| "preCompact"
+	| "errorOccurred";
+
+// Maps each CopilotEvent to the canonical HookEventType this codebase
+// already models (Claude/Codex's PascalCase convention) — the
+// copilot_cli canonicalizer resolves hook_event_name through this table
+// when the incoming payload doesn't already carry a Pascal/snake variant.
+export const COPILOT_EVENT_TO_HOOK_EVENT: Record<CopilotEvent, HookEventType> = {
+	sessionStart: "SessionStart",
+	sessionEnd: "SessionEnd",
+	userPromptSubmitted: "UserPromptSubmit",
+	postToolUse: "PostToolUse",
+	postToolUseFailure: "PostToolUseFailure",
+	agentStop: "Stop",
+	subagentStart: "SubagentStart",
+	subagentStop: "SubagentStop",
+	preCompact: "PreCompact",
+	errorOccurred: "ErrorOccurred",
+};
+
+export type HookEventType = ClaudeCodeEvent | CodexEvent | "ErrorOccurred";
 
 // Raw hook event payload (union of fields from both agents)
 export interface HookEventPayload {
@@ -268,6 +306,13 @@ export interface HookEventPayload {
 	// a same-turn event that arrives after it (D21 out-of-order tolerance)
 	// can be recognized and suppressed from reopening isWorking.
 	turn_id?: string;
+
+	// Copilot: the agent's own (camelCase) event name, preserved separately
+	// from the canonical hook_event_name so event-normalizer can surface it
+	// as providerEventType (D7).
+	provider_event_name?: string;
+	// Copilot errorOccurred / postToolUseFailure: the agent's error text.
+	error_message?: string;
 }
 
 // Semantic status update from CLAUDE.md snippet

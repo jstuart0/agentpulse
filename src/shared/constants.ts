@@ -23,7 +23,7 @@ export const SEMANTIC_STATUSES = [
 // search backend's sessionStatus filter (clarity-slice-h-archive-status-removal).
 export const SESSION_STATUSES = ["active", "idle", "completed", "failed", "archived"] as const;
 
-export const AGENT_TYPES = ["claude_code", "codex_cli"] as const;
+export const AGENT_TYPES = ["claude_code", "codex_cli", "copilot_cli"] as const;
 
 // Agent types AgentPulse can actively start a process for. Everything in
 // AGENT_TYPES that isn't here is observed-only (D5): it can post hook
@@ -87,6 +87,18 @@ export const AGENT_METADATA: Record<AgentType, AgentMetadata> = {
 		instructionsFile: "AGENTS.md",
 		observeOnlyHint: null,
 		hasNameSource: true,
+	},
+	// F23: Copilot CLI is observe-only (D5) — AgentPulse can't launch or
+	// steer it, only watch hooks it posts. No native-name pull exists for
+	// it (D14/Pattern D), unlike Claude (statusline) and Codex (relay).
+	copilot_cli: {
+		label: "Copilot CLI",
+		shortLabel: "Copilot",
+		badgeClass: "bg-fuchsia-500/8 text-fuchsia-400/90 border-fuchsia-500/15",
+		dotClass: "bg-fuchsia-400/70",
+		instructionsFile: "AGENTS.md",
+		observeOnlyHint: "Observed only — AgentPulse can't launch or steer Copilot sessions.",
+		hasNameSource: false,
 	},
 };
 

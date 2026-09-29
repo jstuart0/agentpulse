@@ -35,11 +35,10 @@
 // ─── Literal unions (self-contained; mirror src/shared/constants.ts's
 //     `as const` tuples and src/shared/types.ts's inline unions) ─────────
 
-export type AgentType = "claude_code" | "codex_cli";
+export type AgentType = "claude_code" | "codex_cli" | "copilot_cli";
 // Agent types AgentPulse can launch a process for — a subset of AgentType
-// (D5, mirrors src/shared/types.ts's LaunchableAgentType). Phase 1 keeps
-// this identical to AgentType; Phase 6 widens AgentType with "copilot_cli"
-// without widening this.
+// (D5, mirrors src/shared/types.ts's LaunchableAgentType). "copilot_cli" is
+// observe-only (F23): it's in AgentType, deliberately not here.
 export type LaunchableAgentType = "claude_code" | "codex_cli";
 export type ApprovalPolicy = "default" | "suggest" | "auto" | "manual" | "untrusted" | "on-failure";
 export type SandboxMode = "default" | "workspace-write" | "read-only" | "danger-full-access";

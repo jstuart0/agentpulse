@@ -1,5 +1,5 @@
 import { relative, resolve } from "node:path";
-import { AGENT_METADATA } from "../../shared/constants.js";
+import { AGENT_METADATA, LAUNCHABLE_AGENT_TYPES } from "../../shared/constants.js";
 import type {
 	LaunchMode,
 	LaunchSpec,
@@ -39,6 +39,21 @@ export function validateAgainstSupervisor(
 	const warnings: string[] = [];
 	const errors: string[] = [];
 
+	// F66: defense-in-depth. The five claude/codex-literal branches below
+	// only ever check "is this claude_code" / "is this codex_cli" — an
+	// observe-only agentType reaching this function via an unsafe cast (a
+	// Pattern A' guard failure elsewhere, or a malformed wire payload)
+	// satisfies neither branch, so neither per-agent executable check
+	// fires. The remaining `agentTypes.includes` gate below is typed
+	// LaunchableAgentType[] but isn't runtime-validated, so a corrupted
+	// SupervisorRecord could still bypass it. Reject explicitly, first,
+	// independent of what the supervisor claims to support.
+	if (!(LAUNCHABLE_AGENT_TYPES as readonly string[]).includes(template.agentType)) {
+		errors.push(
+			`${template.agentType} cannot be launched — AgentPulse can only launch ${LAUNCHABLE_AGENT_TYPES.join(" or ")}.`,
+		);
+		return { warnings, errors };
+	}
 	if (!supervisor.capabilities.agentTypes.includes(template.agentType)) {
 		errors.push(`${supervisor.hostName} does not advertise support for ${template.agentType}.`);
 	}

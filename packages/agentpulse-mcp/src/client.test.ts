@@ -231,7 +231,7 @@ describe("createHttpClient", () => {
 			activeSessions: 4,
 			totalSessionsToday: 9,
 			totalToolUsesToday: 120,
-			byAgentType: { claude_code: 3, codex_cli: 0 },
+			byAgentType: { claude_code: 3, codex_cli: 0, copilot_cli: 0 },
 		};
 		const fetchImpl = (async () => fakeResponse(200, stats)) as unknown as typeof fetch;
 		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
