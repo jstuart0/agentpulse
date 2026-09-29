@@ -80,36 +80,69 @@ ap_validate_hook_base_url() {
 	return 1
 }
 
-# F246 (High, codex r2 D38): mirrors bin/cli.ts — with no key, against a
-# server that requires auth, refuse before writing any command hooks.
-# Without this, an auth-enabled server silently 401s every hook fire
-# forever: the detached shim discards curl's output on its synchronous
-# path by design (D13), so the failure is invisible. Only checked when no
-# key was ever provided; an unreachable server falls through (that's a
-# different failure, reported elsewhere). Unused in THIS file — relay-mode
-# hook commands never carry an auth header at all (direct=0; the relay
-# adds auth when it forwards), and this file's own auth/me VERDICT check
-# further up already gates on key validity before any file is written.
-# Kept here anyway so the three marker-block copies stay byte-identical
-# (see the header comment above).
+# F246 (High, codex r2 D38; tightened by D39): mirrors bin/cli.ts — with no
+# key, against a server that requires auth, refuse before writing any
+# command hooks. Without this, an auth-enabled server silently 401s every
+# hook fire forever: the detached shim discards curl's output on its
+# synchronous path by design (D13), so the failure is invisible. Unused in
+# THIS file — relay-mode hook commands never carry an auth header at all
+# (direct=0; the relay adds auth when it forwards), and this file's own
+# auth/me VERDICT check further up already gates on key validity before
+# any file is written. Kept here anyway so the three marker-block copies
+# stay byte-identical (see the header comment above).
+#
+# D39: fails CLOSED, not open. A key always skips the probe. With no key,
+# only an explicit disableAuth:true in the response lets the install
+# proceed — an unreachable server, a non-JSON response, or JSON missing
+# the field all refuse now, same as a real disableAuth:false. $3=1
+# (--no-auth-check) is the explicit escape hatch.
 ap_check_auth_before_write() {
-	local base="$1" key="$2" body
+	local base="$1" key="$2" skip="${3:-}" body
 	if [[ -n "$key" ]]; then
 		return 0
 	fi
-	body="$(curl -sS -m 10 "${base}/api/v1/auth/me" 2>/dev/null)" || return 0
-	if printf '%s' "$body" | python3 -c '
+	if [[ "$skip" == "1" ]]; then
+		return 0
+	fi
+	if body="$(curl -sS -m 10 "${base}/api/v1/auth/me" 2>/dev/null)" && printf '%s' "$body" | python3 -c '
 import json, sys
 try:
     me = json.load(sys.stdin)
 except Exception:
-    sys.exit(0)
-sys.exit(1 if me.get("disableAuth") is False else 0)
+    sys.exit(1)
+sys.exit(0 if me.get("disableAuth") is True else 1)
 '; then
 		return 0
 	fi
-	echo "This server requires an API key; pass --key or set AGENTPULSE_KEY." >&2
+	echo "This server requires an API key; pass --key (or AGENTPULSE_KEY), or --no-auth-check if this server runs with auth disabled." >&2
 	return 1
+}
+
+# F252 (Medium/High, xander D39 re-verify): the inline secret writers
+# (hook-auth-header for Codex/Copilot, ~/.agentpulse/env) checked only the
+# final path component for a symlink and called mkdir -p BEFORE checking
+# — a symlinked ~/.agentpulse parent directory would let mkdir -p silently
+# succeed and the secret land wherever the parent symlink points,
+# unrefused. Ports F249's ordering: refuse if the parent is a symlink,
+# THEN mkdir, THEN refuse if the file itself is a symlink, THEN the
+# umask-077 temp write + mv. $2 is the exact file content, including any
+# trailing newline the caller wants — printf '%s' writes it verbatim, no
+# extra formatting here.
+ap_write_private_no_follow() {
+	local path="$1" content="$2" dir tmp
+	dir="$(dirname -- "$path")"
+	if [ -L "$dir" ]; then
+		echo "refusing to write into a symlinked directory: $dir" >&2
+		return 1
+	fi
+	mkdir -p "$dir"
+	if [ -L "$path" ]; then
+		echo "refusing to write through a symlink: $path" >&2
+		return 1
+	fi
+	tmp="${path}.$$.tmp"
+	( umask 077 && printf '%s' "$content" > "$tmp" )
+	mv -f "$tmp" "$path"
 }
 
 ap_hook_cmd() {

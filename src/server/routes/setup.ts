@@ -148,11 +148,14 @@ HOOK_URL="${defaultLocalUrl}"
 # F234: seed from \$AGENTPULSE_KEY (if exported) so it never has to be
 # passed as an argv flag at all; --key below still overrides it.
 API_KEY="\${AGENTPULSE_KEY:-}"
+# D39 (F246): explicit escape hatch — see ap_check_auth_before_write below.
+NO_AUTH_CHECK="0"
 
 while [[ \$# -gt 0 ]]; do
   case \$1 in
     --key) API_KEY="\$2"; shift 2 ;;
     --url) HOOK_URL="\$2"; shift 2 ;;
+    --no-auth-check) NO_AUTH_CHECK="1"; shift ;;
     *) shift ;;
   esac
 done
@@ -183,31 +186,64 @@ ap_validate_hook_base_url() {
 	return 1
 }
 
-# F246 (High, codex r2 D38): mirrors bin/cli.ts — with no key, against a
-# server that requires auth, refuse before writing any command hooks.
-# Without this, an auth-enabled server silently 401s every hook fire
-# forever: the detached shim discards curl's output on its synchronous
-# path by design (D13), so the failure is invisible. Only checked when no
-# key was ever provided; an unreachable server falls through (that's a
-# different failure, reported elsewhere).
+# F246 (High, codex r2 D38; tightened by D39): mirrors bin/cli.ts — with no
+# key, against a server that requires auth, refuse before writing any
+# command hooks. Without this, an auth-enabled server silently 401s every
+# hook fire forever: the detached shim discards curl's output on its
+# synchronous path by design (D13), so the failure is invisible.
+#
+# D39: fails CLOSED, not open. A key always skips the probe. With no key,
+# only an explicit disableAuth:true in the response lets the install
+# proceed — an unreachable server, a non-JSON response, or JSON missing
+# the field all refuse now, same as a real disableAuth:false. \$3=1
+# (--no-auth-check) is the explicit escape hatch.
 ap_check_auth_before_write() {
-	local base="\$1" key="\$2" body
+	local base="\$1" key="\$2" skip="\${3:-}" body
 	if [[ -n "\$key" ]]; then
 		return 0
 	fi
-	body="\$(curl -sS -m 10 "\${base}/api/v1/auth/me" 2>/dev/null)" || return 0
-	if printf '%s' "\$body" | python3 -c '
+	if [[ "\$skip" == "1" ]]; then
+		return 0
+	fi
+	if body="\$(curl -sS -m 10 "\${base}/api/v1/auth/me" 2>/dev/null)" && printf '%s' "\$body" | python3 -c '
 import json, sys
 try:
     me = json.load(sys.stdin)
 except Exception:
-    sys.exit(0)
-sys.exit(1 if me.get("disableAuth") is False else 0)
+    sys.exit(1)
+sys.exit(0 if me.get("disableAuth") is True else 1)
 '; then
 		return 0
 	fi
-	echo "This server requires an API key; pass --key or set AGENTPULSE_KEY." >&2
+	echo "This server requires an API key; pass --key (or AGENTPULSE_KEY), or --no-auth-check if this server runs with auth disabled." >&2
 	return 1
+}
+
+# F252 (Medium/High, xander D39 re-verify): the inline secret writers
+# (hook-auth-header for Codex/Copilot, ~/.agentpulse/env) checked only the
+# final path component for a symlink and called mkdir -p BEFORE checking
+# — a symlinked ~/.agentpulse parent directory would let mkdir -p silently
+# succeed and the secret land wherever the parent symlink points,
+# unrefused. Ports F249's ordering: refuse if the parent is a symlink,
+# THEN mkdir, THEN refuse if the file itself is a symlink, THEN the
+# umask-077 temp write + mv. \$2 is the exact file content, including any
+# trailing newline the caller wants — printf '%s' writes it verbatim, no
+# extra formatting here.
+ap_write_private_no_follow() {
+	local path="\$1" content="\$2" dir tmp
+	dir="\$(dirname -- "\$path")"
+	if [ -L "\$dir" ]; then
+		echo "refusing to write into a symlinked directory: \$dir" >&2
+		return 1
+	fi
+	mkdir -p "\$dir"
+	if [ -L "\$path" ]; then
+		echo "refusing to write through a symlink: \$path" >&2
+		return 1
+	fi
+	tmp="\${path}.\$\$.tmp"
+	( umask 077 && printf '%s' "\$content" > "\$tmp" )
+	mv -f "\$tmp" "\$path"
 }
 
 ap_hook_cmd() {
@@ -316,7 +352,7 @@ ap_require_curl_755() {
 ap_validate_hook_base_url "\$HOOK_URL" || exit 1
 
 # F246: before any file writes, refuse if this server needs a key we don't have.
-ap_check_auth_before_write "\$HOOK_URL" "\$API_KEY" || exit 1
+ap_check_auth_before_write "\$HOOK_URL" "\$API_KEY" "\$NO_AUTH_CHECK" || exit 1
 
 echo ""
 echo "  AgentPulse Setup"
@@ -371,17 +407,11 @@ CODEX_DIR="\${CODEX_HOME:-\$HOME/.codex}"
 mkdir -p "\$CODEX_DIR"
 
 if [[ -n "\$API_KEY" ]]; then
-  # F207: never write through a symlink at the destination — see
-  # scripts/setup-hooks.sh's matching block for the full rationale.
-  mkdir -p "\$HOME/.agentpulse"
+  # F207/F252: never write through a symlink at the destination or its
+  # parent directory — see ap_write_private_no_follow above.
   AP_AUTH_HEADER_FILE="\$HOME/.agentpulse/hook-auth-header"
-  if [[ -L "\$AP_AUTH_HEADER_FILE" ]]; then
-    echo "refusing to write through a symlink: \$AP_AUTH_HEADER_FILE" >&2
-    exit 1
-  fi
-  AP_AUTH_HEADER_TMP="\${AP_AUTH_HEADER_FILE}.\$\$.tmp"
-  ( umask 077 && printf 'Authorization: Bearer %s\\n' "\$API_KEY" > "\$AP_AUTH_HEADER_TMP" )
-  mv -f "\$AP_AUTH_HEADER_TMP" "\$AP_AUTH_HEADER_FILE"
+  printf -v AP_AUTH_HEADER_CONTENT 'Authorization: Bearer %s\\n' "\$API_KEY"
+  ap_write_private_no_follow "\$AP_AUTH_HEADER_FILE" "\$AP_AUTH_HEADER_CONTENT" || exit 1
 fi
 
 NEW_CODEX_HOOKS_JSON="\$(ap_codex_hooks_json "\$HOOK_URL" "1")"
@@ -445,16 +475,10 @@ if [[ -n "\$API_KEY" ]]; then
     echo "      sed -i.bak '/^export AGENTPULSE_API_KEY=/d' \\"\$PROFILE\\"" >&2
   fi
 
-  mkdir -p "\$HOME/.agentpulse"
   AP_ENV_FILE="\$HOME/.agentpulse/env"
-  if [[ -L "\$AP_ENV_FILE" ]]; then
-    echo "refusing to write through a symlink: \$AP_ENV_FILE" >&2
-    exit 1
-  fi
-  AP_ENV_TMP="\${AP_ENV_FILE}.\$\$.tmp"
-  ( umask 077 && printf 'export AGENTPULSE_API_KEY="%s"\\nexport AGENTPULSE_URL="%s"\\n' \\
-      "\$API_KEY" "\$HOOK_URL" > "\$AP_ENV_TMP" )
-  mv -f "\$AP_ENV_TMP" "\$AP_ENV_FILE"
+  printf -v AP_ENV_CONTENT 'export AGENTPULSE_API_KEY="%s"\\nexport AGENTPULSE_URL="%s"\\n' \\
+      "\$API_KEY" "\$HOOK_URL"
+  ap_write_private_no_follow "\$AP_ENV_FILE" "\$AP_ENV_CONTENT" || exit 1
   echo "  ✓ Wrote AGENTPULSE_API_KEY/AGENTPULSE_URL to \$AP_ENV_FILE (0600)"
 
   AP_SOURCE_LINE='[ -f "\$HOME/.agentpulse/env" ] && . "\$HOME/.agentpulse/env"'
