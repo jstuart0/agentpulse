@@ -332,12 +332,12 @@ What the overlay does:
 
 ```bash
 # 1. Verify context
-kubectl config current-context   # should be your target cluster (e.g. thor)
+kubectl config current-context   # should be your target cluster
 
 # 2. Create database and user (on your Postgres host)
-psql -h postgres-01.xmojo.net -U psadmin \
+psql -h your-postgres-host -U psadmin \
   -c "CREATE USER agentpulse WITH PASSWORD '<password>';"
-psql -h postgres-01.xmojo.net -U psadmin \
+psql -h your-postgres-host -U psadmin \
   -c "CREATE DATABASE agentpulse OWNER agentpulse ENCODING 'UTF8' \
       LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0;"
 

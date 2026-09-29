@@ -8,8 +8,9 @@ AgentPulse is the command center for AI coding agents across all your machines. 
 - **Backend:** Hono (HTTP framework)
 - **Frontend:** React 19 + Vite + TailwindCSS
 - **State:** 8 Zustand stores
-- **Database:** SQLite (Drizzle ORM); PostgreSQL not implemented
+- **Database:** SQLite (default) and PostgreSQL (production / multi-replica, v0.4.0+) via Drizzle ORM — set `DATABASE_URL=postgres://...` to opt into Postgres
 - **Real-time:** WebSocket (native Bun) + 3s polling fallback
+- **MCP:** Model Context Protocol server in `packages/agentpulse-mcp/` (`agentpulse mcp serve|install`); see `docs/MCP.md`
 - **Linting:** Biome
 
 ## Commands
@@ -35,19 +36,20 @@ bun run test:watch       # Run tests in watch mode
 ```
 src/
   server/
-    routes/       ~26 route files: ingest.ts, sessions.ts, settings.ts, auth.ts,
+    routes/       ~24 route files: ingest.ts, sessions.ts, settings.ts, auth.ts,
                   launches.ts, templates.ts, projects.ts, search.ts, setup.ts,
                   ask.ts, channels.ts, labs.ts, supervisors.ts, health.ts,
                   internal.ts, csp-report.ts, ingest-counters.ts,
-                  ai-gates.ts, ai-inbox.ts, ai-intelligence.ts,
-                  ai-providers.ts, ai-status.ts, ai-watcher.ts
-    services/     ~30 service files + subdirs: ai/, ask/, channels/, projects/,
+                  agent-type-query.ts, ai-gates.ts, ai-inbox.ts,
+                  ai-intelligence.ts, ai-providers.ts, ai-status.ts, ai-watcher.ts
+    services/     ~22 service files + subdirs: ai/, ask/, channels/, projects/,
                   search/, templates/, util/, workspace/,
-                  event-processor.ts, session-tracker.ts, name-generator.ts,
+                  event-processor.ts, event-dedup.ts, event-dto.ts,
+                  session-tracker.ts, session-ownership.ts, name-generator.ts,
                   telemetry.ts, settings-service.ts, labs-service.ts,
                   launch-dispatch.ts, launch-validator.ts, notifier.ts, ...
-    db/           Drizzle schema, client, append-only migrations
-    auth/         API key auth, Authentik header trust middleware
+    db/           Drizzle schema (SQLite + Postgres, per-dialect), client, migrations
+    auth/         API key auth (ingest/observe/manage scopes), forwardauth header trust middleware
     ws/           WebSocket pub/sub
   web/
     pages/        AskPage, DashboardPage, DigestPage, HostsPage, InboxPage,
@@ -60,11 +62,16 @@ src/
                   projects-store, session-store, tabs-store, ui-prefs-store,
                   user-store
     hooks/        useWebSocket, useSessions
-    lib/          api.ts (single API client), parseDate.ts
+    lib/          api.ts (single API client), utils.ts (parseDate(), etc.)
   shared/         Shared types (session-state.ts, etc.)
   supervisor/     Local supervisor process (launch/control plane)
+packages/
+  agentpulse-mcp/ Standalone MCP server package (publishes to npm as
+                  @agentpulse/mcp; not yet published — run from a checkout via
+                  `agentpulse mcp serve`/`install` until it is)
 deploy/k8s/       Kubernetes manifests (namespace, deployment, service,
                   ingressroute, middleware, networkpolicy, backup PVC, etc.)
+deploy/overlays/postgres/  Kustomize overlay for Postgres-backed deployments
 scripts/          setup-relay.sh, setup-hooks.sh, relay.ts, install-local.sh,
                   install-local.ps1, build-and-push.sh, statusline.sh,
                   check-installers.ts, smoke-parsers.ts, ai-live-test.ts
@@ -87,8 +94,15 @@ Agent (Claude Code / Codex)
 
 ### Auth (two modes)
 - `DISABLE_AUTH=true` — No auth, all endpoints open (default for local use)
-- Auth enabled — API key for hooks, Authentik SSO for dashboard (k8s deployment)
-  - `AGENTPULSE_AUTHENTIK_TRUST_SECRET` required for SSO production deployments; see `deploy/k8s/AUTHENTIK-FORWARDAUTH.md`
+- Auth enabled — API key for hooks, forwardauth SSO for dashboard (k8s deployment).
+  Works with any forwardauth-capable IdP (Authentik by default, or Authelia,
+  oauth2-proxy, Pomerium, Cloudflare Access via env config).
+  `FORWARDAUTH_TRUST_SECRET` required for SSO production deployments (legacy
+  alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` accepted for one release); see
+  `deploy/k8s/FORWARDAUTH.md`.
+  - API keys carry explicit scopes: `ingest` (hooks), `observe` (read-only,
+    provably secret-free at the REST boundary), `manage` (full operator
+    control). See `src/server/auth/route-scope-policy.ts`.
 
 ### AI gate rejection codes
 
@@ -101,12 +115,15 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 
 - Biome for formatting (tabs, double quotes, semicolons)
 - Dark theme is default
-- Hook ingestion always returns 200 (rate-limited drops are silent; counter in /health)
-- SQLite datetime: `"YYYY-MM-DD HH:MM:SS"` (no T/Z) — use `parseDate()` from `src/web/lib/parseDate.ts`
+- Hook ingestion always returns 200 (rate-limited/oversize drops are silent; counters in /health)
+- Hook deliveries are deduplicated by durable identity (`events.dedup_key`), not content comparison — repeated identical tool calls are all stored
+- An unrecognized `agent_type`/`agentType` filter on `/sessions`, `/templates`, `/search` returns `400 { error: "invalid_agent_type", value, allowed }` instead of silently matching zero rows
+- SQLite datetime: `"YYYY-MM-DD HH:MM:SS"` (no T/Z) — use `parseDate()` from `src/web/lib/utils.ts`
 - Session names: adjective-noun pairs from `name-generator.ts`
-- DB migrations: append-only ALTER TABLE array in `initializeDatabase()`
+- DB migrations: Drizzle (baselines in `drizzle/sqlite/` and `drizzle/postgres/`); existing SQLite installs use the legacy `initializeDatabase()` path unless `AGENTPULSE_LEGACY_INIT=false`
 - `isWorking` toggles on UserPromptSubmit/PreToolUse (true) and Stop (false)
 - Timeline events are filtered **client-side** in session detail UI (not server-side)
+- Supervisor writes are ownership-checked (`session-ownership.ts`) — a supervisor acting on a session it doesn't own gets `403 { error: "session_not_owned" }`
 
 ## Core API Endpoints
 
@@ -129,20 +146,27 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 - `GET /api/v1/sessions/:id` — Session detail with timeline
 - `PUT /api/v1/sessions/:id/notes` — Save notes
 - `PUT /api/v1/sessions/:id/rename` — Rename
+- `PUT /api/v1/sessions/:id/native-name` — Pull-only sync of Claude Code's native session name (statusline)
 - `PUT /api/v1/sessions/:id/pin` — Toggle pin
 - `PUT /api/v1/sessions/:id/archive` — Archive
 - `DELETE /api/v1/sessions/:id` — Delete session + events
 - `GET /api/v1/sessions/:id/claude-md` — Get CLAUDE.md content
 - `PUT /api/v1/sessions/:id/claude-md` — Save CLAUDE.md content
 
+**Projects:**
+- `GET /api/v1/projects` — List projects, full detail (`manage`-scoped only)
+- `GET /api/v1/projects/summary` — Observe-safe project list (id/name/defaults, redacted `githubRepoUrl`)
+
 **Settings:**
 - `GET /api/v1/settings` — Get all settings
 - `PUT /api/v1/settings` — Update setting (403 for protected keys: `{ error: "key_not_user_settable", key }`)
 
 **Other:**
-- `GET /api/v1/search?kinds=session&q=` — FTS5 full-text search
-- `GET/POST/DELETE /api/v1/api-keys` — Manage API keys
+- `GET /api/v1/search?kinds=session&q=` — Full-text search (FTS5 on SQLite, ILIKE on Postgres)
+- `GET/POST/DELETE /api/v1/api-keys` — Manage API keys (scopes: `ingest`, `observe`, `manage`)
 - `WS /api/v1/ws` — Real-time event stream
+
+**MCP:** `agentpulse mcp serve` exposes this API over the Model Context Protocol for external agents (Claude Code, Codex CLI). See `docs/MCP.md` for the full tool catalog and scope model.
 
 ## OSS Hygiene
 

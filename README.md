@@ -122,6 +122,8 @@ Without cloning this repo -- the standalone [`@agentpulse/mcp`](packages/agentpu
 npx @agentpulse/mcp install --mint my-agent
 ```
 
+> **Not yet published.** The package and its release workflow (`.github/workflows/mcp-release.yml`, triggered by an `mcp-v*` tag) exist, but no version has shipped to npm yet. Until the first tag is cut, run the MCP server from a checkout instead (`agentpulse mcp serve` / `agentpulse mcp install`, above).
+
 Either way, `install` prints ready-to-paste Claude Code and Codex CLI config. See **[docs/MCP.md](docs/MCP.md)** for the full tool catalog, client setup, and a security section covering what a `manage`-scoped key can do and why Codex CLI does not honor Claude Code's confirmation prompt.
 
 ## AI Labs (experimental)

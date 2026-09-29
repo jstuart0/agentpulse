@@ -48,6 +48,14 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   hooks already cover a given session and stand down for it instead of
   posting a second copy of every event. A missing marker means the observer
   posts (fail-open: a possible duplicate, never a lost event).
+- **`GET /api/v1/projects/summary` + `list_projects_summary` MCP tool** — an
+  observe-safe project list: `id`, `name`, `defaultAgentType`, `defaultModel`,
+  `defaultLaunchMode`, and `githubRepoUrl` reduced to `origin`+`pathname`
+  (userinfo, query string, and fragment all stripped). Registered ahead of
+  `/projects/:id` so `summary` is never captured as an `:id`. The full-detail
+  `GET /api/v1/projects` (and its `list_projects` MCP tool) remain
+  `manage`-scoped — that DTO still carries arbitrary operator-set
+  `notes`/`metadata` and an unredacted `githubRepoUrl`.
 
 ### Changed
 

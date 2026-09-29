@@ -19,8 +19,8 @@ instead of the default SQLite backend.
 
 ```bash
 kubectl config current-context
-# Expected: thor
-# If wrong: kubectl config use-context thor
+# Expected: your target cluster context
+# If wrong: kubectl config use-context <your-context>
 ```
 
 ### 2. Create the Postgres database and user
@@ -44,7 +44,7 @@ cp deploy/overlays/postgres/secret-patch.yaml.example \
 
 # Edit secret-patch.yaml — replace <PASSWORD> and your-postgres-host.
 # Add sslmode=require (or stronger) for non-loopback connections.
-# Example: postgres://agentpulse:<pw>@postgres-01.xmojo.net:5432/agentpulse?sslmode=require
+# Example: postgres://agentpulse:<pw>@your-postgres-host:5432/agentpulse?sslmode=require
 
 # Apply credentials out-of-band (keeps them out of kustomize render history):
 kubectl apply -f deploy/overlays/postgres/secret-patch.yaml -n agentpulse

@@ -97,6 +97,7 @@ default_tools_approval_mode = "writes"
 | `get_session_intelligence` | `GET /ai/sessions/:id/intelligence` | AI health classification (requires AI enabled on the server). |
 | `get_digest` | `GET /ai/digest` | Cross-session daily digest by project. |
 | `get_ai_status` | `GET /ai/status`, optionally `GET /ai/diagnostics` | Diagnostics are opt-in (`include_diagnostics: true`) — fetching them emits a `watcher_run_queued` metric on the server, so routine polling should leave it off. |
+| `list_projects_summary` | `GET /projects/summary` | Observe-safe project list: `id`/`name`/defaults, with `githubRepoUrl` reduced to `origin`+`pathname`. Narrower sibling of the manage-only `list_projects` below. |
 
 5 more read tools require `manage` — their REST DTOs carry secrets or operator-authored content, so they're excluded from the `observe` tier (see Security):
 
@@ -105,7 +106,7 @@ default_tools_approval_mode = "writes"
 | `list_templates` / `get_template` | `GET /templates`(`/:id`) | DTO carries `env` (may hold credentials). `list_templates`' `agent_type` filter is validated the same way as `list_sessions` (AGEN-44). |
 | `list_launches` / `get_launch` | `GET /launches`(`/:id`) | DTO carries `env`, `launchSpec`, and `claimToken`. |
 | `get_inbox` | `GET /ai/inbox` | `action_*` items can embed launch `env`/`claimToken` payloads. |
-| `list_projects` | `GET /projects` | DTO carries arbitrary operator-set `notes`/`metadata` and a `githubRepoUrl` that may embed userinfo credentials. |
+| `list_projects` | `GET /projects` | DTO carries arbitrary operator-set `notes`/`metadata` and a `githubRepoUrl` that may embed userinfo credentials. Need only the id/name/defaults? Use the observe-scoped `list_projects_summary` above instead. |
 | `list_hosts` | `GET /api/v1/admin/supervisors` | Admin router; used to pick `requested_supervisor_id` for `launch_agent`. |
 
 12 tools require `manage` and mutate state. All except the two advisory ones carry `_meta["anthropic/requiresUserInteraction"]` (rUI):

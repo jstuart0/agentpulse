@@ -35,7 +35,7 @@ There is no `vitest.config`, `jest.config`, `bunfig.toml [test]` block, or any o
 
 ## What's covered
 
-The suite (~490 tests across 40+ files at time of writing) covers the watcher pipeline, classifier, launch dispatch, name generator, FTS5 search backend, control actions, Ask thread resolution, secrets encryption, prelaunch actions (workspace scaffold + git clone), Telegram channels, and the routes that wrap them. New behavioral changes ship with a regression test in the same commit.
+The suite (~1,800 tests across 150 files at time of writing) covers the watcher pipeline, classifier, launch dispatch, name generator, FTS5/ILIKE search backends (SQLite/Postgres), control actions, Ask thread resolution, secrets encryption, prelaunch actions (workspace scaffold + git clone), Telegram channels, the MCP server package, and the routes that wrap them. New behavioral changes ship with a regression test in the same commit.
 
 ## Adding a new test
 

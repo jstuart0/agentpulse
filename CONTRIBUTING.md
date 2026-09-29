@@ -25,6 +25,7 @@ This starts the API server on port 3000 and the Vite dev server on port 5173 wit
 - `src/server/` -- Hono API server (Bun runtime)
 - `src/web/` -- React 19 frontend (Vite build)
 - `src/shared/` -- Types and constants shared between server and frontend
+- `packages/agentpulse-mcp/` -- MCP server package (Bun workspace member, publishes as `@agentpulse/mcp`); see `docs/MCP.md`
 - `deploy/k8s/` -- Kubernetes manifests (reference, not required)
 - `scripts/` -- Setup scripts and relay
 - `telemetry-worker/` -- Cloudflare Worker for anonymous telemetry
