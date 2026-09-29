@@ -1,5 +1,6 @@
 import type { LaunchRequest } from "../../shared/types.js";
 import { loadSupervisorConfig } from "../config.js";
+import { reportInSessionSafely } from "../services/report-resilience.js";
 import type {
 	ClaudePromptAction,
 	HeadlessProgressUpdate,
@@ -102,8 +103,9 @@ export async function streamHeadlessClaude(opts: {
 	let lastReportAt = 0;
 	let emittedActivityCount = 0;
 
-	// F25: in-session reporting (reportState/reportEvents) now carries an
-	// ownership guard and can reject mid-stream (403 session_not_owned, or
+	// F25/D6/F31: in-session reporting (reportState/reportEvents) now
+	// carries an ownership guard and can reject mid-stream (403
+	// session_not_owned, a 401 if the credential was revoked or rotated, or
 	// any other non-2xx). flushProgress fires from the stdout/stderr line
 	// handlers below, which feed `monitor` (returned fire-and-forget as
 	// `void result.monitor` for the initial launch — see
@@ -112,17 +114,11 @@ export async function streamHeadlessClaude(opts: {
 	// unhandled promise rejection, crashing the supervisor process — the
 	// same crash-loop class this campaign fixes, reintroduced through the
 	// new 403. reportProgress (the launch-status endpoint) is untouched by
-	// the ownership guard, so it keeps its existing behavior.
-	async function reportInSession(op: string, fn: () => Promise<unknown>): Promise<void> {
-		try {
-			await fn();
-		} catch (error) {
-			console.error(
-				`[claude-headless] in-session report failed (session=${sessionId}, op=${op}): ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-		}
+	// the ownership guard, so it keeps its existing behavior. A 401 is
+	// fatal (reportInSessionSafely exits the process); everything else
+	// logs and continues.
+	function reportInSession(op: string, fn: () => Promise<unknown>): Promise<void> {
+		return reportInSessionSafely("claude-headless", sessionId, op, fn);
 	}
 
 	const flushProgress = async (force = false) => {

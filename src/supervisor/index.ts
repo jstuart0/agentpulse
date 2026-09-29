@@ -23,6 +23,7 @@ import {
 import { CleanupError, executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { startCodexObserver } from "./services/codex-observer.js";
 import { PrelaunchError, executePrelaunchActions } from "./services/prelaunch-actions.js";
+import { SupervisorRequestError } from "./services/report-resilience.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -41,7 +42,7 @@ async function request(path: string, options?: RequestInit) {
 		signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 	});
 	if (!res.ok) {
-		throw new Error(`Supervisor request failed: ${res.status} ${res.statusText}`);
+		throw new SupervisorRequestError(res.status, res.statusText);
 	}
 	return res.json();
 }

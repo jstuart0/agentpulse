@@ -1,4 +1,5 @@
 import type { LaunchRequest, ManagedSession } from "../../shared/types.js";
+import { reportInSessionSafely } from "../services/report-resilience.js";
 import { type JsonRpcNotification, findFreePort, spawnServer, waitForServer } from "./codex-rpc.js";
 import {
 	type LaunchCallbacks,
@@ -8,6 +9,22 @@ import {
 } from "./codex-shared.js";
 
 const runtimes = new Map<string, ManagedCodexRuntime>();
+
+/**
+ * F31/D7: best-effort cleanup before a fatal (401 credential-rejected) exit
+ * — dispose every managed Codex runtime this process still holds (closes
+ * the app-server control channel, kills its process) before the process
+ * itself exits.
+ */
+function disposeAllManagedCodexRuntimes(): void {
+	for (const runtime of runtimes.values()) {
+		try {
+			runtime.dispose();
+		} catch (err) {
+			console.error("[codex-managed] runtime dispose failed during fatal shutdown:", err);
+		}
+	}
+}
 
 // Log-once per distinct unexpected protocolVersion value so a persistently
 // misbehaving app-server doesn't spam logs across every managed launch.
@@ -191,23 +208,22 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 	};
 
 	client.onNotification(async (notification) => {
-		try {
-			await handleManagedCodexNotification(notification, launch, runtime, threadId, callbacks);
-		} catch (error) {
-			// F25: in-session reporting (reportState/reportEvents) can now reject
-			// with a 403 session_not_owned, or any other non-2xx, mid-session.
-			// Log and keep the process (and this notification stream) alive
-			// instead of letting it become an unhandled rejection — the
-			// dispatcher in codex-rpc.ts already isolates this, but the catch
-			// here gives a session-scoped log line and guarantees later
-			// notification branches in this same handler aren't skipped by an
-			// earlier one's failure.
-			console.error(
-				`[codex-managed] in-session report failed (session=${launch.launchCorrelationId}): ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-		}
+		// F25/D6: in-session reporting (reportState/reportEvents) can now
+		// reject with a 403 session_not_owned, a 401 (credential revoked or
+		// rotated, F31/D7), or any other non-2xx, mid-session. Logged and
+		// isolated so a rejection here can never become an unhandled
+		// rejection or skip later notification branches — except a 401,
+		// which is fatal (see reportInSessionSafely).
+		await reportInSessionSafely(
+			"codex-managed",
+			launch.launchCorrelationId,
+			"notification",
+			() => handleManagedCodexNotification(notification, launch, runtime, threadId, callbacks),
+			() => {
+				disposeAllManagedCodexRuntimes();
+				process.exit(1);
+			},
+		);
 	});
 
 	client.onClose(async (error) => {
@@ -215,24 +231,27 @@ export async function launchManagedCodexRequest(launch: LaunchRequest, callbacks
 			runtimes.delete(launch.launchCorrelationId);
 			return;
 		}
-		try {
-			await callbacks.reportState({
-				sessionId: launch.launchCorrelationId,
-				launchRequestId: launch.id,
-				managedState: "degraded",
-				providerSyncState: "failed",
-				providerSyncError: error?.message ?? "Codex control channel closed",
-			});
-		} catch (reportError) {
-			// F25: same in-session-reporting hazard as the notification handler
-			// above — the control channel is already gone, so there's nothing
-			// more useful to do than log and finish tearing the runtime down.
-			console.error(
-				`[codex-managed] degraded-state report failed (session=${launch.launchCorrelationId}): ${
-					reportError instanceof Error ? reportError.message : String(reportError)
-				}`,
-			);
-		}
+		// F25/D6: same in-session-reporting hazard as the notification
+		// handler above — the control channel is already gone, so there's
+		// nothing more useful to do than log (or, for a 401, exit) and
+		// finish tearing the runtime down.
+		await reportInSessionSafely(
+			"codex-managed",
+			launch.launchCorrelationId,
+			"degraded-state",
+			() =>
+				callbacks.reportState({
+					sessionId: launch.launchCorrelationId,
+					launchRequestId: launch.id,
+					managedState: "degraded",
+					providerSyncState: "failed",
+					providerSyncError: error?.message ?? "Codex control channel closed",
+				}),
+			() => {
+				disposeAllManagedCodexRuntimes();
+				process.exit(1);
+			},
+		);
 		runtimes.delete(launch.launchCorrelationId);
 	});
 

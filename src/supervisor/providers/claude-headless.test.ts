@@ -1,15 +1,17 @@
 /**
- * F25 (2026-09-29-deliver-supervisor-auth-routing): in-session reporting
+ * F25/F32 (2026-09-29-deliver-supervisor-auth-routing): in-session reporting
  * (reportState/reportEvents) inside streamHeadlessClaude's flushProgress /
  * monitor must not let a rejected report (e.g. a mid-session
  * 403 session_not_owned) escape as an unhandled promise rejection or stop
- * later reporting from being attempted.
+ * later reporting from being attempted. Asserts no unhandledRejection the
+ * same way codex-rpc.test.ts does (F32).
  *
  * Drives streamHeadlessClaude directly with a fake `proc` (no real `claude`
  * CLI spawn needed) — the exported seam this campaign added for exactly
  * this test.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { SupervisorRequestError } from "../services/report-resilience.js";
 import { streamHeadlessClaude } from "./claude-headless.js";
 
 function fakeProc(stdoutLines: string[], exitCode = 0) {
@@ -45,17 +47,7 @@ function fakeMetadata() {
 	};
 }
 
-describe("streamHeadlessClaude in-session reporting resilience (F25)", () => {
-	const originalUnhandledListeners = process.listeners("unhandledRejection");
-
-	afterEach(() => {
-		for (const listener of process.listeners("unhandledRejection")) {
-			if (!originalUnhandledListeners.includes(listener as never)) {
-				process.off("unhandledRejection", listener as never);
-			}
-		}
-	});
-
+describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () => {
 	test("a reportState rejection (403-shaped) during streaming doesn't crash monitor, and later reports still fire", async () => {
 		const unhandledReasons: unknown[] = [];
 		const onUnhandledRejection = (reason: unknown) => unhandledReasons.push(reason);
@@ -115,6 +107,65 @@ describe("streamHeadlessClaude in-session reporting resilience (F25)", () => {
 			expect(unhandledReasons).toEqual([]);
 		} finally {
 			process.off("unhandledRejection", onUnhandledRejection);
+		}
+	});
+
+	// F31/D7: a 401 in-session (credential revoked or rotated) is fatal —
+	// streamHeadlessClaude's flushProgress routes through
+	// reportInSessionSafely with no onFatal override, so the default
+	// (process.exit(1)) applies here.
+	test("a reportState 401 during streaming exits the process instead of continuing", async () => {
+		const unhandledReasons: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown) => unhandledReasons.push(reason);
+		process.on("unhandledRejection", onUnhandledRejection);
+		const exitSpy = spyOn(process, "exit").mockImplementation(
+			(() => undefined) as unknown as typeof process.exit,
+		);
+
+		let reportStateCallCount = 0;
+		const proc = fakeProc([JSON.stringify({ type: "tool_use", tool_name: "bash", text: "ls" })]);
+
+		try {
+			const result = await streamHeadlessClaude({
+				sessionId: "f31-headless-sess",
+				launchRequestId: "launch-1",
+				cwd: "/tmp",
+				model: null,
+				configCapabilities: {},
+				proc,
+				metadata: fakeMetadata(),
+				reportProgress: async () => {},
+				callbacks: {
+					reportState: async () => {
+						reportStateCallCount++;
+						// Call 1 (bootstrap) succeeds; call 2 (in-session) is the
+						// credential rejection under test.
+						if (reportStateCallCount === 2) {
+							throw new SupervisorRequestError(401, "Unauthorized");
+						}
+						return { session: {} as never, managedSession: {} as never };
+					},
+					reportEvents: async () => {},
+				},
+				startEvent: {
+					eventType: "HeadlessTaskStarted",
+					category: "system_event",
+					content: "started",
+					rawPayload: {},
+				},
+				completionEvent: {
+					success: "HeadlessTaskCompleted",
+					failurePrefix: "HeadlessTaskFailed",
+				},
+			});
+
+			await result.monitor;
+
+			expect(exitSpy).toHaveBeenCalledWith(1);
+			expect(unhandledReasons).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandledRejection);
+			exitSpy.mockRestore();
 		}
 	});
 });
