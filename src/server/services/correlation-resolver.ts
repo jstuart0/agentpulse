@@ -24,11 +24,18 @@ export async function resolveObservedSessionCorrelation(
 	const launchRequest = await findPendingLaunchForObservedSession(sessionId);
 	if (!launchRequest) return null;
 
+	if (supervisorId) {
+		// D7: a supervisor can only correlate a launch it claimed. This is
+		// defense-in-depth — assertSupervisorCanWriteSession already rejected
+		// the request upstream, so a mismatch here never surfaces as a second
+		// error, just a null resolution the caller treats as "nothing to do".
+		if (launchRequest.claimedBySupervisorId !== supervisorId) return null;
+		return { launchRequest, resolvedSupervisorId: supervisorId };
+	}
+
+	// Hook path (no supervisorId): unchanged.
 	const resolvedSupervisorId =
-		supervisorId ??
-		launchRequest.claimedBySupervisorId ??
-		launchRequest.requestedSupervisorId ??
-		"unknown";
+		launchRequest.claimedBySupervisorId ?? launchRequest.requestedSupervisorId ?? "unknown";
 
 	return { launchRequest, resolvedSupervisorId };
 }

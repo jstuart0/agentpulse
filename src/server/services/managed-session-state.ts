@@ -11,6 +11,7 @@ import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { generateSessionName } from "./name-generator.js";
+import { assertSupervisorCanWriteSession } from "./session-ownership.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -59,6 +60,9 @@ export async function upsertManagedSessionState(
 	supervisorId: string,
 	input: ManagedSessionStateInput,
 ): Promise<{ session: Session; managedSession: ManagedSession }> {
+	await assertSupervisorCanWriteSession(supervisorId, input.sessionId, {
+		launchRequestId: input.launchRequestId,
+	});
 	const timestamp = nowIso();
 	const [existingManaged] = await getDb()
 		.select()
@@ -211,9 +215,11 @@ export async function upsertManagedSessionState(
 }
 
 export async function appendManagedSessionEvents(
+	supervisorId: string,
 	sessionId: string,
 	events: ManagedSessionEventInput[],
 ) {
+	await assertSupervisorCanWriteSession(supervisorId, sessionId);
 	const normalized = events.map((event) => ({
 		eventType: event.eventType,
 		category: event.category,

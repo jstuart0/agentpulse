@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, sessions } from "../db/schema/index.js";
@@ -8,6 +8,14 @@ import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import { markSessionFailed } from "./event-processor.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { attachManagedSessionToLaunch } from "./managed-session-state.js";
+import { findLaunchRowByCorrelationId } from "./session-ownership.js";
+
+const PENDING_LAUNCH_STATUSES: readonly LaunchRequestStatus[] = [
+	"validated",
+	"queued",
+	"launching",
+	"awaiting_session",
+];
 
 const PROVENANCE_KEYS = ["aiInitiated", "askThreadId"] as const;
 
@@ -198,18 +206,10 @@ export async function updateLaunchDispatchStatus(input: {
 }
 
 export async function findPendingLaunchForObservedSession(sessionId: string) {
-	const [row] = await getDb()
-		.select()
-		.from(launchRequests)
-		.where(
-			and(
-				eq(launchRequests.launchCorrelationId, sessionId),
-				inArray(launchRequests.status, ["validated", "queued", "launching", "awaiting_session"]),
-			),
-		)
-		.limit(1);
-
-	return row ? mapLaunchRequest(row) : null;
+	const row = await findLaunchRowByCorrelationId(sessionId);
+	if (!row) return null;
+	if (!PENDING_LAUNCH_STATUSES.includes(row.status as LaunchRequestStatus)) return null;
+	return mapLaunchRequest(row);
 }
 
 export async function markLaunchRunning(launchId: string) {
