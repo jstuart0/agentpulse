@@ -6,6 +6,7 @@
  * The stubs come first on PATH so the real launchctl/systemctl are never
  * reached: a real `launchctl load` of dev.agentpulse.relay would replace the
  * developer's own running relay. The service tests assert the stub saw it.
+ * A curl stub refuses anything aimed at the default relay port, :4000 (F186).
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -140,7 +141,20 @@ beforeAll(async () => {
 	root = await mkdtemp(join(tmpdir(), "ap-installers-run-"));
 	stubDir = join(root, "stubs");
 	await mkdir(stubDir);
+	const realCurl = Bun.which("curl");
+	if (!realCurl) throw new Error("curl isn't on PATH");
 	const stubs: Record<string, string> = {
+		// F186: the default relay port is the developer's own live relay, so any
+		// request to it is refused and logged; everything else is real curl.
+		curl: [
+			'for a in "$@"; do',
+			'  case "$a" in',
+			"    *://127.0.0.1:4000|*://127.0.0.1:4000/*|*://localhost:4000|*://localhost:4000/*)",
+			'      echo "curl blocked $a" >> "$AP_STUB_LOG"; exit 7 ;;',
+			"  esac",
+			"done",
+			`exec "${realCurl}" "$@"`,
+		].join("\n"),
 		launchctl: 'echo "launchctl $*" >> "$AP_STUB_LOG"',
 		systemctl: 'echo "systemctl $*" >> "$AP_STUB_LOG"',
 		sleep: "exit 0",
@@ -387,6 +401,9 @@ describe("an ingest+observe key installs the relay, statusline and service", () 
 				type: "command",
 				command: "~/.claude/statusline-agentpulse.sh",
 			});
+			// F186: the health probe went to the default port, and the curl stub
+			// refused it, so the developer's own relay on :4000 was never touched.
+			expect(res.stubLog).toContain("curl blocked http://127.0.0.1:4000/api/v1/health");
 		},
 		RUN_TIMEOUT,
 	);
