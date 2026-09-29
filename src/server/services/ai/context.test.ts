@@ -149,7 +149,10 @@ describe("buildWatcherContext", () => {
 	// then silently drops. util/db-time.ts's parseDbTimestamp handles the
 	// Postgres offset form directly.
 	test("a Postgres-shaped created_at is not dropped by the time-budget cutoff", () => {
-		const pgNow = new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, "+00");
+		const pgNow = new Date()
+			.toISOString()
+			.replace("T", " ")
+			.replace(/\.\d+Z$/, "+00");
 		const events = [makeEvent({ id: 1, content: "pg event", createdAt: pgNow })];
 		const ctx = buildWatcherContext({
 			session: makeSession(),
