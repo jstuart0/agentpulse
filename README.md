@@ -531,19 +531,26 @@ The statusline script is a manually copied file (not managed by the setup script
 in its log. This was a server-side mount-order bug (AGEN-17), not a client
 misconfiguration.
 
-**Fix**: upgrade the server. No supervisor update, config change, or manual
-restart is required — the client already sends the correct credential; the
-server just needs to answer it. The service manager's normal restart policy
-picks the fix up on the next respawn (macOS: within ~10s; Linux:
-`RestartSec=3`). If the loop has been running long enough that the local
-log grew large, archive it before it recovers:
+**Fix**: upgrade the server. No supervisor update or config change is required
+— the client already sends the correct credential; the server just needs to
+answer it.
+
+Registration itself now retries forever with backoff (starting around 5s,
+capped at 5 minutes) instead of exiting on a failed attempt, so a supervisor
+running this version of the client reconnects on its own the moment the
+server is upgraded — **no manual restart needed**. If the loop has been
+running long enough that the local log grew large, archive it (safe to do at
+any time, running or not):
 
 ```bash
 gzip -c ~/.agentpulse/logs/supervisor.err.log > ~/.agentpulse/logs/supervisor.err.log.$(date +%Y%m%d).gz
 : > ~/.agentpulse/logs/supervisor.err.log
 ```
 
-Per-OS restart notes if the supervisor doesn't recover on its own:
+The notes below apply only if the supervisor's *process* actually stopped —
+an older client that predates the retry fix and crash-looped until its
+service manager gave up, or a platform (Windows) with no restart-on-failure
+policy at all:
 
 - **macOS**: `launchctl kickstart -k gui/$(id -u)/dev.agentpulse.supervisor`,
   or a full reload:

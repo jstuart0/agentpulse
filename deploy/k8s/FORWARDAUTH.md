@@ -131,22 +131,34 @@ differently depending on which call hit the rejection:
   `credential rejected (401) — supervisor credential revoked or rotated; exiting`,
   kills every child process it's holding for that provider (SIGTERM, then SIGKILL
   after a short grace if the child doesn't exit — `disposeAllManagedCodexRuntimes`/
-  `disposeAllHeadlessRuntimes`), and exits non-zero through the same controlled path a
-  failed registration already takes. The service manager (launchd/systemd/Scheduled
-  Task) then shows the failure and, on the usual restart policy, respawns the
-  supervisor — which re-registers, gets a fresh `401` if the credential is genuinely
-  gone, and exits again. That loop is loud and correct: the operator revoked the
-  credential and should either re-enroll the host (keeping its id via
-  `/admin/supervisors/:id/rotate`, see below) or uninstall it.
-- **Registration, heartbeat, launch claim, provider-sync and the control-action claim
-  loop** — these are **not** made fatal by a 401 in this release, deliberately: a
-  supervisor built against this fix that talks to an **un-fixed, un-upgraded server**
-  (a mixed-version rollout, e.g. a canary or a rolling k8s deploy) gets `401`s on
-  these calls from the operator-gate shadow AGEN-17 fixes, not from a real credential
-  problem. Making 401 fatal there would recreate exactly the crash loop this campaign
-  closes. Instead these loops log the failure and retry on their normal interval. The
-  heartbeat watchdog (`src/supervisor/index.ts`) independently exits the process if no
-  heartbeat has succeeded in at least 90 seconds, regardless of the reason, so a
+  `disposeAllHeadlessRuntimes`), and exits non-zero. The service manager
+  (launchd/systemd/Scheduled Task) then shows the failure and, on the usual restart
+  policy, respawns the supervisor — which re-registers (see below), gets a fresh `401`
+  if the credential is genuinely gone, and stays running while it retries registration
+  forever rather than exiting again. That's loud (every retry is logged) and correct:
+  the operator revoked the credential and should either re-enroll the host (keeping
+  its id via `/admin/supervisors/:id/rotate`, see below) or uninstall it.
+- **Initial registration** (`POST /supervisors/register`, the first call `main()`
+  makes on every start) **never exits on an HTTP failure**, of any status — codex r2
+  F43. A brand-new supervisor built against this fix that talks to a server that
+  hasn't been upgraded yet gets the AGEN-17 operator-gate shadow's `401`/`403` on
+  every call, register included; exiting there would recreate exactly the crash loop
+  this campaign fixes, just moved one call earlier. Instead registration retries
+  forever with exponential backoff and jitter (starting around 5s, capped at 5
+  minutes), logging the HTTP status, status text and the server's own `error` body
+  field on every attempt. Only a local failure — the config file failing to load, or
+  a malformed success response — is fatal at this step; an HTTP failure never is,
+  including a **genuine** `401` from a revoked credential. That's deliberate: a slow,
+  loud retry loop is a quieter failure mode than a launchd/systemd crash loop, and
+  gives the operator the same diagnostic signal (the log line names the status and
+  the server's error) without flapping the process.
+- **Heartbeat, launch claim, provider-sync and the control-action claim loop** — these
+  are **not** made fatal by a 401, for the same mixed-version-rollout reason as
+  registration: making them fatal would recreate the crash loop whenever a fixed
+  supervisor talks to an unfixed server. Instead these loops log the failure and
+  retry on their normal interval (unlike registration, they don't currently back off).
+  The heartbeat watchdog (`src/supervisor/index.ts`) independently exits the process
+  if no heartbeat has succeeded in at least 90 seconds, regardless of the reason, so a
   genuinely dead credential is still caught — just on the watchdog's schedule rather
   than immediately.
 - **Interactive Claude sessions** (`claude-interactive.ts`) degrade safely: a rejected

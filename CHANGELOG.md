@@ -55,6 +55,13 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 If any of your supervisors have been crash-looping since the AGEN-9
 API-key-scope backfill, do this before and right after deploying:
 
+**Registration now retries forever with backoff instead of exiting** (also fixed in
+this release, codex r2 F43): once you upgrade the server, a supervisor that's still
+running (even mid-retry) reconnects on its own — you don't need to manually restart
+it. The per-OS restart notes below (3, 4) are for a supervisor whose *process* actually
+stopped (e.g. Windows' scheduled task, or a systemd unit that hit its restart-limit
+before this fix shipped), not for one that's simply still retrying.
+
 1. **Inventory and cancel stale `validated` launches** before deploying —
    one could dispatch to the first supervisor that claims it after
    recovery. The population is normally small (a launch left unclaimed when

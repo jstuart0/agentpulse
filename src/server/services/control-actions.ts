@@ -28,6 +28,32 @@ function lockExpiryIso() {
 	return new Date(Date.now() + 90_000).toISOString();
 }
 
+/**
+ * codex r2 F43/F44 (D10): managed-session-state.ts's upsertManagedSessionState
+ * stores `launchRequestId = sessionId` when a legitimate first report omits
+ * it (the "legacy fallback" shape the D6/D12 correlation check already
+ * treats as healthy). That value never matches a real launch_requests.id,
+ * so a plain id lookup finds nothing for those rows. When the managed
+ * row's launchRequestId is exactly the session id, and no launch has that
+ * id, fall back to resolving by launchCorrelationId = sessionId instead —
+ * the same launch the fallback shape is standing in for.
+ */
+async function resolveManagedLaunch(sessionId: string, launchRequestId: string) {
+	const [byId] = await getDb()
+		.select()
+		.from(launchRequests)
+		.where(eq(launchRequests.id, launchRequestId))
+		.limit(1);
+	if (byId) return byId;
+	if (launchRequestId !== sessionId) return null;
+	const [byCorrelation] = await getDb()
+		.select()
+		.from(launchRequests)
+		.where(eq(launchRequests.launchCorrelationId, sessionId))
+		.limit(1);
+	return byCorrelation ?? null;
+}
+
 async function expireStaleControlLock(sessionId: string) {
 	const [managed] = await getDb()
 		.select()
@@ -170,11 +196,7 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 			? (session.metadata as Record<string, unknown>)
 			: {};
 
-	const [launch] = await getDb()
-		.select()
-		.from(launchRequests)
-		.where(eq(launchRequests.id, managed.launchRequestId))
-		.limit(1);
+	const launch = await resolveManagedLaunch(sessionId, managed.launchRequestId);
 	if (!launch) throw new Error("Launch request not found.");
 	// D12: refuse to embed another host's launch.env in a prompt when the
 	// managed row's launchRequestId points at a launch for a *different*
@@ -190,7 +212,10 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 		.insert(controlActions)
 		.values({
 			sessionId,
-			launchRequestId: managed.launchRequestId,
+			// The real launch id (F44) — managed.launchRequestId may be the
+			// legacy sessionId fallback, which resolveManagedLaunch already
+			// resolved to the actual launch row above.
+			launchRequestId: launch.id,
 			actionType: "prompt",
 			requestedBy: "local-user",
 			status: "queued",
@@ -240,11 +265,7 @@ export async function retryLaunchForSession(sessionId: string) {
 		.limit(1);
 	if (!managed) throw new Error("Session is not managed.");
 
-	const [original] = await getDb()
-		.select()
-		.from(launchRequests)
-		.where(eq(launchRequests.id, managed.launchRequestId))
-		.limit(1);
+	const original = await resolveManagedLaunch(sessionId, managed.launchRequestId);
 	if (!original) throw new Error("Original launch request not found.");
 
 	const timestamp = nowIso();

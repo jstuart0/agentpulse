@@ -14,15 +14,23 @@
  * Thrown by src/supervisor/index.ts's request() on any non-2xx response.
  * Carries the HTTP status so callers can distinguish a fatal credential
  * rejection (401) from an in-session ownership rejection (403) or a
- * transient server error (5xx).
+ * transient server error (5xx). `error` (codex r2 F43) is the response
+ * body's own `error` field when the body was JSON and had one — best
+ * effort, undefined for a non-JSON or empty body — so callers can log the
+ * server's actual reason (e.g. "insufficient_scope",
+ * "session_not_owned") alongside the raw status.
  */
 export class SupervisorRequestError extends Error {
 	readonly status: number;
+	readonly statusText: string;
+	readonly error?: string;
 
-	constructor(status: number, statusText: string) {
+	constructor(status: number, statusText: string, error?: string) {
 		super(`Supervisor request failed: ${status} ${statusText}`);
 		this.name = "SupervisorRequestError";
 		this.status = status;
+		this.statusText = statusText;
+		this.error = error;
 	}
 }
 
