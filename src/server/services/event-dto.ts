@@ -1,10 +1,12 @@
 import type { EventCategory, EventSource, SessionEvent } from "../../shared/types.js";
 
 /**
- * One event DTO (Decision 16). Every full-row event read returned to a
- * client — REST, WS, supervisor, MCP (which reads REST over HTTP) — goes
- * through this, so `dedup_key` (server-derived durable identity, Decision 2)
- * never leaks past the persistence layer. An explicit allowlist, not a
+ * One event DTO (Decision 16). Applied so far (Phase 2) to the three REST
+ * event reads in routes/sessions.ts; MCP reads REST over HTTP, so it
+ * inherits the same shape. The WS broadcast and the supervisor events
+ * response are wired to this DTO in Phase 6, not yet. In every case,
+ * `dedup_key` (server-derived durable identity, Decision 2) never leaks
+ * past the persistence layer. An explicit allowlist, not a
  * spread-then-delete: a future column added to the `events` table is
  * dropped by default instead of leaking until someone remembers to
  * exclude it here.

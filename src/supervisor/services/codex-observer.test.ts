@@ -32,9 +32,8 @@ const {
 	processRolloutFile,
 	saveState,
 } = await import("./codex-observer.js");
-const { CODEX_NATIVE_MARKER_DIR, DELIVERY_ID_HEADER, ORIGIN_CODEX_OBSERVER, ORIGIN_HEADER } = await import(
-	"../../shared/hook-headers.js"
-);
+const { CODEX_NATIVE_MARKER_DIR, DELIVERY_ID_HEADER, ORIGIN_CODEX_OBSERVER, ORIGIN_HEADER } =
+	await import("../../shared/hook-headers.js");
 
 const FIXTURE_PATH = join(
 	import.meta.dir,
@@ -81,7 +80,10 @@ function fixtureWithSessionId(sessionId: string): string {
 	return FIXTURE_RAW.replaceAll(PLACEHOLDER_ID, sessionId);
 }
 
-function writeFixtureCopy(dir: string, sessionId = crypto.randomUUID()): { path: string; sessionId: string } {
+function writeFixtureCopy(
+	dir: string,
+	sessionId = crypto.randomUUID(),
+): { path: string; sessionId: string } {
 	const path = join(dir, "rollout.jsonl");
 	writeFileSync(path, fixtureWithSessionId(sessionId));
 	return { path, sessionId };
@@ -99,7 +101,10 @@ function singleLineRollout(dir: string, sessionId: string, extraLines: string[])
 }
 
 function userMessageLine(content: Array<{ type: string; text: string }>): string {
-	return JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content } });
+	return JSON.stringify({
+		type: "response_item",
+		payload: { type: "message", role: "user", content },
+	});
 }
 
 // The split point used by O2s and O12(c): right after the first
@@ -121,7 +126,15 @@ describe("O1: posts exactly the expected hook sequence, with identity headers", 
 		const home = mkTmp("ap-codex-home-");
 		const { path } = writeFixtureCopy(dir);
 		const captured: Captured[] = [];
-		await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+		await processRolloutFile(
+			path,
+			undefined,
+			"http://x",
+			null,
+			new Map(),
+			fakeFetch(captured),
+			home,
+		);
 
 		expect(captured.map((c) => c.body.hook_event_name)).toEqual([
 			"SessionStart",
@@ -173,7 +186,15 @@ test("O2s a mid-turn resume sends the same bodies as a replay from zero, except 
 	const zeroPath = join(dir, "zero.jsonl");
 	writeFileSync(zeroPath, part1 + part2);
 	const zeroCaptured: Captured[] = [];
-	await processRolloutFile(zeroPath, undefined, "http://x", null, new Map(), fakeFetch(zeroCaptured), home);
+	await processRolloutFile(
+		zeroPath,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(zeroCaptured),
+		home,
+	);
 
 	const resumePath = join(dir, "resume.jsonl");
 	writeFileSync(resumePath, part1);
@@ -190,7 +211,15 @@ test("O2s a mid-turn resume sends the same bodies as a replay from zero, except 
 	writeFileSync(resumePath, part1 + part2);
 	const secondHalf: Captured[] = [];
 	// A fresh callMap simulates a process restart between the two halves.
-	await processRolloutFile(resumePath, state1, "http://x", null, new Map(), fakeFetch(secondHalf), home);
+	await processRolloutFile(
+		resumePath,
+		state1,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(secondHalf),
+		home,
+	);
 
 	const resumedAll = [...firstHalf, ...secondHalf];
 	expect(resumedAll).toHaveLength(zeroCaptured.length);
@@ -246,12 +275,28 @@ test("O4 an appended line produces exactly one new post under a new id, and the 
 	const { path } = writeFixtureCopy(dir);
 	const callMap = new Map<string, string>();
 	const first: Captured[] = [];
-	const state = await processRolloutFile(path, undefined, "http://x", null, callMap, fakeFetch(first), home);
+	const state = await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		callMap,
+		fakeFetch(first),
+		home,
+	);
 
 	const newLine = `${userMessageLine([{ type: "input_text", text: "one more thing" }])}\n`;
 	appendFileSync(path, newLine);
 	const second: Captured[] = [];
-	const state2 = await processRolloutFile(path, state, "http://x", null, callMap, fakeFetch(second), home);
+	const state2 = await processRolloutFile(
+		path,
+		state,
+		"http://x",
+		null,
+		callMap,
+		fakeFetch(second),
+		home,
+	);
 
 	expect(second).toHaveLength(1);
 	expect(second[0]?.body.hook_event_name).toBe("UserPromptSubmit");
@@ -285,7 +330,9 @@ test("O7 exactly one Stop per turn, from the fixture's task_complete", async () 
 	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
 	const stops = captured.filter((c) => c.body.hook_event_name === "Stop");
 	expect(stops).toHaveLength(1);
-	expect(stops[0]?.body.last_assistant_message).toBe("Validation added and the full suite is green.");
+	expect(stops[0]?.body.last_assistant_message).toBe(
+		"Validation added and the full suite is green.",
+	);
 	expect(stops[0]?.body.turn_id).toBe("turn-0001");
 });
 
@@ -311,7 +358,10 @@ test("O8 a legacy task_completed line posts exactly one Stop, with turn_id when 
 	const home = mkTmp("ap-codex-home-");
 	const sessionId = crypto.randomUUID();
 	const path = singleLineRollout(dir, sessionId, [
-		JSON.stringify({ type: "event_msg", payload: { type: "task_completed", turn_id: "turn-legacy" } }),
+		JSON.stringify({
+			type: "event_msg",
+			payload: { type: "task_completed", turn_id: "turn-legacy" },
+		}),
 	]);
 	const captured: Captured[] = [];
 	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
@@ -358,24 +408,44 @@ test("O11 the injected-context item is not posted; the real prompt is posted onc
 	const home = mkTmp("ap-codex-home-");
 	const { path } = writeFixtureCopy(dir);
 	const captured: Captured[] = [];
-	const state = await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+	const state = await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(captured),
+		home,
+	);
 	const prompts = captured.filter((c) => c.body.hook_event_name === "UserPromptSubmit");
 	expect(prompts).toHaveLength(1);
 	expect(prompts[0]?.body.prompt).toBe(
 		"Please add input validation to the signup form and run the test suite.",
 	);
-	expect(captured.every((c) => !String(c.body.prompt ?? "").includes("environment_context"))).toBe(true);
+	expect(captured.every((c) => !String(c.body.prompt ?? "").includes("environment_context"))).toBe(
+		true,
+	);
 	expect(state.offset).toBe(statSync(path).size);
 });
 
 describe("O11b skip-rule edges", () => {
-	async function postedPromptsFor(content: Array<{ type: string; text: string }>): Promise<Captured[]> {
+	async function postedPromptsFor(
+		content: Array<{ type: string; text: string }>,
+	): Promise<Captured[]> {
 		const dir = mkTmp("ap-codex-obs-");
 		const home = mkTmp("ap-codex-home-");
 		const sessionId = crypto.randomUUID();
 		const path = singleLineRollout(dir, sessionId, [userMessageLine(content)]);
 		const captured: Captured[] = [];
-		await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+		await processRolloutFile(
+			path,
+			undefined,
+			"http://x",
+			null,
+			new Map(),
+			fakeFetch(captured),
+			home,
+		);
 		return captured.filter((c) => c.body.hook_event_name === "UserPromptSubmit");
 	}
 
@@ -402,12 +472,16 @@ describe("O11b skip-rule edges", () => {
 	});
 
 	test("a mid-text mention is posted", async () => {
-		const posted = await postedPromptsFor([{ type: "input_text", text: "please show <environment_context>" }]);
+		const posted = await postedPromptsFor([
+			{ type: "input_text", text: "please show <environment_context>" },
+		]);
 		expect(posted).toHaveLength(1);
 	});
 
 	test('"please show <environment_context>" is posted', async () => {
-		const posted = await postedPromptsFor([{ type: "input_text", text: "please show <environment_context>" }]);
+		const posted = await postedPromptsFor([
+			{ type: "input_text", text: "please show <environment_context>" },
+		]);
 		expect(posted[0]?.body.prompt).toBe("please show <environment_context>");
 	});
 });
@@ -421,7 +495,15 @@ describe("O12 a native-hook marker stands the observer down", () => {
 		writeFileSync(codexNativeMarkerPath(home, sessionId), "");
 
 		const captured: Captured[] = [];
-		const state = await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+		const state = await processRolloutFile(
+			path,
+			undefined,
+			"http://x",
+			null,
+			new Map(),
+			fakeFetch(captured),
+			home,
+		);
 		expect(captured).toHaveLength(0);
 		expect(state.offset).toBe(statSync(path).size);
 	});
@@ -431,7 +513,15 @@ describe("O12 a native-hook marker stands the observer down", () => {
 		const home = mkTmp("ap-codex-home-");
 		const { path } = writeFixtureCopy(dir);
 		const captured: Captured[] = [];
-		await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+		await processRolloutFile(
+			path,
+			undefined,
+			"http://x",
+			null,
+			new Map(),
+			fakeFetch(captured),
+			home,
+		);
 		expect(captured.length).toBeGreaterThan(0);
 	});
 
@@ -444,7 +534,15 @@ describe("O12 a native-hook marker stands the observer down", () => {
 		writeFileSync(path, part1);
 
 		const first: Captured[] = [];
-		const state = await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(first), home);
+		const state = await processRolloutFile(
+			path,
+			undefined,
+			"http://x",
+			null,
+			new Map(),
+			fakeFetch(first),
+			home,
+		);
 		expect(first.length).toBeGreaterThan(0);
 
 		mkdirSync(join(home, ".agentpulse", "codex-native"), { recursive: true });

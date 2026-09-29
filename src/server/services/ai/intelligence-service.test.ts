@@ -192,9 +192,12 @@ describe("intelligence-service.intelligenceForSessions", () => {
 			try {
 				const bulk = await intelligenceForSessions(ids, new Date("2026-04-20T00:30:00Z"));
 				expect(bulk.size).toBe(200);
-				// sessions inArray + managedSessions left-join + listOpenHitlForSessions
-				// (3), plus one projected select per session for events (200).
-				expect(dbSelectCalls).toBeGreaterThanOrEqual(200);
+				// F99: exact count, not a floor — sessions inArray (1) +
+				// managedSessions left-join (1) + listOpenHitlForSessions (1) + one
+				// projected select per session for events (ids.length). An N+1
+				// mutant (e.g. two selects per session in
+				// loadRecentEventsBySession) must move this number.
+				expect(dbSelectCalls).toBe(ids.length + 3);
 			} finally {
 				(dbInstance as unknown as { select: typeof dbInstance.select }).select = origDbSelect;
 			}

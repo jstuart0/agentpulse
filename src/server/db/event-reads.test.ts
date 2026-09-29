@@ -233,11 +233,19 @@ describeSqliteOnly("dedup_key schema on every SQLite boot path", () => {
 	});
 });
 
-describe("generated 0003 migrations are hand-edited to IF NOT EXISTS (R3b)", () => {
+describe("generated migrations are hand-edited to IF NOT EXISTS (R3b)", () => {
 	for (const dialect of ["sqlite", "postgres"] as const) {
 		test(dialect, () => {
 			const dir = join(process.cwd(), "drizzle", dialect);
-			const files = readdirSync(dir).filter((name) => /^0003_.*\.sql$/.test(name));
+			// F92: select the migration by content (does it add dedup_key?), not
+			// by its "0003_" number — the sibling branch also claims migration
+			// index 0003, so whichever branch merges second renumbers this file
+			// on rebase, and a number-based lookup would silently match nothing
+			// (or the wrong file) after that.
+			const files = readdirSync(dir).filter(
+				(name) =>
+					name.endsWith(".sql") && readFileSync(join(dir, name), "utf8").includes("dedup_key"),
+			);
 			expect(files).toHaveLength(1);
 			const text = readFileSync(join(dir, files[0] as string), "utf8");
 			const indexStatements = text.match(/CREATE (UNIQUE )?INDEX[^;]*/g) ?? [];
@@ -481,5 +489,104 @@ describe("REST never exposes dedupKey", () => {
 		const contextBody = (await context.json()) as { events: Array<Record<string, unknown>> };
 		expect(contextBody.events.length).toBeGreaterThan(0);
 		for (const e of contextBody.events) expect("dedupKey" in e).toBe(false);
+	});
+});
+
+// ── F98: id ordering is bound to real call sites, not just a hand-written
+// SQL string ──────────────────────────────────────────────────────────────
+//
+// R1/R2 assert on Q_ID/Q_CREATED (literal SQL), which never changes even if
+// every real call site reverts to desc(events.createdAt). These two tests
+// close that gap: a source-scan guard (so any of the six sites reverting is
+// caught immediately, without needing a behavior test per site) plus one
+// behavior test that drives the actual bug through a real route.
+
+describe("F98: id-order guard against reverting to createdAt", () => {
+	function walk(dir: string, out: string[]) {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			if (entry.name === "__fixtures__" || entry.name === "node_modules") continue;
+			const full = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				walk(full, out);
+				continue;
+			}
+			if (!entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue;
+			out.push(full);
+		}
+	}
+
+	test("no non-test src/server file orders the events table by created_at without an id tiebreak", () => {
+		const root = join(process.cwd(), "src", "server");
+		const files: string[] = [];
+		walk(root, files);
+
+		const offenders: string[] = [];
+		for (const file of files) {
+			const text = readFileSync(file, "utf8");
+			if (/desc\(events\.createdAt\)/.test(text)) {
+				offenders.push(`${file}: desc(events.createdAt)`);
+			}
+			// Qualified so the sessions-table ordering in
+			// postgres-search-backend.ts (`FROM sessions ... ORDER BY created_at
+			// DESC`, no e./events. prefix) is correctly out of scope — it isn't
+			// this bug's population.
+			const rawOrderings = text.match(/ORDER BY (e\.|events\.)created_at[^\n,]*(,[^\n]*)?/g) ?? [];
+			for (const line of rawOrderings) {
+				if (/,\s*(e\.)?id (DESC|ASC)/.test(line)) continue;
+				offenders.push(`${file}: ${line.trim()}`);
+			}
+		}
+		expect(offenders).toEqual([]);
+	});
+});
+
+describe("F98: session detail returns events in id order through the real route", () => {
+	test("two events whose created_at order disagrees with id order come back id-ordered", async () => {
+		const sid = newSessionId("f98");
+		await mkSession(sid);
+		// Inserted first (smaller id) but a LATER wall-clock time. If the route
+		// reverted to ORDER BY created_at DESC, this row would sort first.
+		const [earlierIdLaterClock] = await getDb()
+			.insert(events)
+			.values({
+				sessionId: sid,
+				eventType: "PostToolUse",
+				category: "tool_event",
+				source: "observed_hook",
+				content: "later-clock",
+				isNoise: false,
+				rawPayload: {},
+				createdAt: "2026-01-01 00:00:10",
+			})
+			.returning({ id: events.id });
+		// Inserted second (larger id) but an EARLIER wall-clock time — the
+		// correct id-DESC order must put this one first.
+		const [laterIdEarlierClock] = await getDb()
+			.insert(events)
+			.values({
+				sessionId: sid,
+				eventType: "PostToolUse",
+				category: "tool_event",
+				source: "observed_hook",
+				content: "earlier-clock",
+				isNoise: false,
+				rawPayload: {},
+				createdAt: "2026-01-01 00:00:05",
+			})
+			.returning({ id: events.id });
+
+		expect((laterIdEarlierClock?.id ?? 0) > (earlierIdLaterClock?.id ?? 0)).toBe(true);
+
+		const detail = await app.fetch(new Request(`http://x/api/v1/sessions/${sid}`));
+		expect(detail.status).toBe(200);
+		const body = (await detail.json()) as { events: Array<{ id: number }> };
+		const ids = body.events.map((e) => e.id);
+		const posLater = ids.indexOf(laterIdEarlierClock?.id ?? -1);
+		const posEarlier = ids.indexOf(earlierIdLaterClock?.id ?? -1);
+		expect(posLater).toBeGreaterThanOrEqual(0);
+		expect(posEarlier).toBeGreaterThanOrEqual(0);
+		// id DESC: the larger id (posted with an earlier createdAt) must come
+		// before the smaller id, proving the route sorts by id, not createdAt.
+		expect(posLater).toBeLessThan(posEarlier);
 	});
 });
