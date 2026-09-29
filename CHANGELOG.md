@@ -118,7 +118,6 @@ before this fix shipped), not for one that's simply still retrying.
   about what that grants. See [docs/MCP.md](docs/MCP.md) for the full tool
   catalog and a security section covering host-side confirmation limits
   (Codex CLI does not honor Claude Code's `_meta` confirmation hint).
-
 - **`/health` dedup and oversize-drop counters (AGEN-16)** — `eventsDeduplicated`
   (an object with `deliveryRetry`, `toolUseRetry`, `contentWindow`, and
   `authority` counts, explaining *why* a dropped delivery was dropped),
@@ -145,6 +144,14 @@ before this fix shipped), not for one that's simply still retrying.
 
 ### Changed
 
+- **MCP package consolidated into this repo, published as `@agentpulse/mcp`**
+  — `packages/agentpulse-mcp/` (directory and `agentpulse-mcp` binary name
+  unchanged) is now the single source of truth for the MCP server package.
+  It publishes to npm as `@agentpulse/mcp` (the unscoped `agentpulse-mcp`
+  name is blocked by npm's similarity policy against the existing
+  `agent-pulse-mcp`). The previously-split standalone repo
+  `jstuart0/agentpulse-mcp` is retired; all future changes, releases, and
+  issues go through this repo.
 - **Hook-delivery dedup is now durable identity, not content comparison
   (AGEN-16)** — every stored event carries a server-derived `dedup_key`,
   and a database-level unique constraint on `(session_id, dedup_key)`

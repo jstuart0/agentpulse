@@ -32,10 +32,10 @@ export function printHelp(): void {
   agentpulse-mcp - Standalone MCP server for AgentPulse
 
   Usage:
-    npx agentpulse-mcp serve        Start the MCP server (stdio)
-    npx agentpulse-mcp serve-http   Start the MCP server (streamable HTTP)
-    npx agentpulse-mcp install      Print MCP client config for Claude Code / Codex
-    npx agentpulse-mcp --help       Show this help
+    npx @agentpulse/mcp serve        Start the MCP server (stdio)
+    npx @agentpulse/mcp serve-http   Start the MCP server (streamable HTTP)
+    npx @agentpulse/mcp install      Print MCP client config for Claude Code / Codex
+    npx @agentpulse/mcp --help       Show this help
 
   install flags:
     --key <existing key>   Reuse an existing API key (preflighted against

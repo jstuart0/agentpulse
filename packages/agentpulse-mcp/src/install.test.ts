@@ -42,7 +42,7 @@ describe("emitClaudeCommand (assertion 1)", () => {
 	test("matches the exact `claude mcp add` shape, pinned to this package's own version", () => {
 		const out = emitClaudeCommand({ url: "http://localhost:3000", keyRef: "ap_xxx" });
 		expect(out).toBe(
-			`claude mcp add --transport stdio agentpulse --env AGENTPULSE_URL=http://localhost:3000 --env AGENTPULSE_API_KEY=ap_xxx -- npx -y agentpulse-mcp@${VERSION} serve`,
+			`claude mcp add --transport stdio agentpulse --env AGENTPULSE_URL=http://localhost:3000 --env AGENTPULSE_API_KEY=ap_xxx -- npx -y @agentpulse/mcp@${VERSION} serve`,
 		);
 	});
 
@@ -59,7 +59,7 @@ describe("emitMcpJson (assertion 2)", () => {
 		expect(doc.mcpServers.agentpulse.env.AGENTPULSE_API_KEY).toBe("${AGENTPULSE_API_KEY}");
 		expect(doc.mcpServers.agentpulse.env.AGENTPULSE_URL).toBe("http://localhost:3000");
 		expect(doc.mcpServers.agentpulse.command).toBe("npx");
-		expect(doc.mcpServers.agentpulse.args).toEqual(["-y", `agentpulse-mcp@${VERSION}`, "serve"]);
+		expect(doc.mcpServers.agentpulse.args).toEqual(["-y", `@agentpulse/mcp@${VERSION}`, "serve"]);
 	});
 
 	test("NEGATIVE: never inlines a real-looking key, even when passed as keyRef", () => {
@@ -78,7 +78,7 @@ describe("emitCodexToml (assertion 3)", () => {
 		});
 		expect(out).toContain("[mcp_servers.agentpulse]");
 		expect(out).toContain('command = "npx"');
-		expect(out).toContain(`args = ["-y", "agentpulse-mcp@${VERSION}", "serve"]`);
+		expect(out).toContain(`args = ["-y", "@agentpulse/mcp@${VERSION}", "serve"]`);
 		expect(out).toContain('env_vars = ["AGENTPULSE_API_KEY"]');
 		expect(out).toContain('env = { AGENTPULSE_URL = "http://localhost:3000" }');
 	});
