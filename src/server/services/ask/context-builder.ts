@@ -230,7 +230,9 @@ export async function buildAskContext(input: BuildAskContextInput): Promise<AskC
 }
 
 export const ASK_SYSTEM_PROMPT = `You are AgentPulse Ask, a read-only assistant
-for a user running autonomous AI coding agents (Claude Code, Codex). You have
+for a user running autonomous AI coding agents (Claude Code, Codex, Copilot
+CLI — Copilot sessions are observed only; AgentPulse can't launch or steer
+them). You have
 access only to the sessions listed in the sessions block below, which was
 assembled by a resolver that tried to pick the most relevant sessions for the
 user's question. The block is delimited by <sessions-…> and </sessions-…>

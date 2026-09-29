@@ -18,6 +18,7 @@ import {
 } from "../components/session-detail/SessionHeader.js";
 import { SessionPromptComposer } from "../components/session-detail/SessionPromptComposer.js";
 import {
+	AgentObserveOnlyHint,
 	CodexStatusHint,
 	ManagedClaudeStatus,
 	ManagedCodexStatus,
@@ -344,7 +345,9 @@ export function SessionDetailPage() {
 				<ManagedClaudeStatus managedSession={session.managedSession} />
 			) : session.agentType === "codex_cli" ? (
 				<CodexStatusHint displayName={displayName} />
-			) : null}
+			) : (
+				<AgentObserveOnlyHint agentType={session.agentType} />
+			)}
 
 			<ControlHistory actions={controlActions} />
 

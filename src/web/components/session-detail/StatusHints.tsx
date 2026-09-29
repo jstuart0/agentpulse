@@ -1,5 +1,26 @@
-import type { Session } from "../../../shared/types.js";
+import { AGENT_METADATA } from "../../../shared/constants.js";
+import type { AgentType, Session } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
+
+/**
+ * F24 (D35): the caveat text for an observe-only agent (Copilot CLI), or
+ * null when `agentType` has nothing to show. Extracted as a pure function
+ * so it's testable without a DOM-rendering harness (see StatusHints.test.ts).
+ */
+export function resolveObserveOnlyHint(agentType: AgentType): string | null {
+	return AGENT_METADATA[agentType]?.observeOnlyHint ?? null;
+}
+
+/** F24 (D35): renders AGENT_METADATA[agentType].observeOnlyHint when non-null. */
+export function AgentObserveOnlyHint({ agentType }: { agentType: AgentType }) {
+	const hint = resolveObserveOnlyHint(agentType);
+	if (!hint) return null;
+	return (
+		<div className="mx-3 md:mx-6 mt-2 md:mt-3 rounded-lg border border-fuchsia-500/20 bg-fuchsia-500/5 px-3 py-2.5">
+			<p className="text-[11px] leading-relaxed text-muted-foreground">{hint}</p>
+		</div>
+	);
+}
 
 export function CodexStatusHint({ displayName }: { displayName: string }) {
 	const renameCommand = `/rename ${displayName}`;
