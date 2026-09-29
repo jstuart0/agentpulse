@@ -150,6 +150,18 @@ async function spawnRelay(
 	return relay;
 }
 
+/** On failure, attach the relay's log tail and the id's index rows. */
+async function withRelayContext<T>(relay: RelayProc, id: string, fn: () => Promise<T>): Promise<T> {
+	try {
+		return await fn();
+	} catch (err) {
+		const rows = await indexRows(relay, id);
+		throw new Error(
+			`${String(err)}\n--- index rows for ${id} ---\n${JSON.stringify(rows)}\n--- relay output (tail) ---\n${relay.output().slice(-4000)}`,
+		);
+	}
+}
+
 async function stopRelay(relay: RelayProc) {
 	relay.proc.kill();
 	await relay.proc.exited;
@@ -437,15 +449,17 @@ describe("relay e2e", () => {
 
 			await manage(`/api/v1/sessions/${CODEX6_ID}/rename`, { source: "reset" });
 			await waitFor("reset to codex-title", () => sessionNamed(CODEX6_ID, "codex-title"));
-			await waitFor("restore row", async () => {
-				const rows = await indexRows(relay1, CODEX6_ID);
-				const last = rows.at(-1);
-				if (last?.thread_name !== "codex-title") return false;
-				const ledger = await ledgerRows(relay1, CODEX6_ID);
-				return ledger.some(
-					(r) => r.thread_name === "codex-title" && r.updated_at === last.updated_at,
-				);
-			});
+			await withRelayContext(relay1, CODEX6_ID, () =>
+				waitFor("restore row", async () => {
+					const rows = await indexRows(relay1, CODEX6_ID);
+					const last = rows.at(-1);
+					if (last?.thread_name !== "codex-title") return false;
+					const ledger = await ledgerRows(relay1, CODEX6_ID);
+					return ledger.some(
+						(r) => r.thread_name === "codex-title" && r.updated_at === last.updated_at,
+					);
+				}),
+			);
 		},
 		SCENARIO_TIMEOUT,
 	);
