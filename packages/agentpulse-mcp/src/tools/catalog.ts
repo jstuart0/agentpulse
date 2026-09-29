@@ -5,6 +5,11 @@
  * in the F23 reconcile (codex r2): mapProject() returns arbitrary
  * notes/metadata and a githubRepoUrl that can carry userinfo credentials —
  * the same DTO-leak class as the C1 launches/templates exclusion.
+ *
+ * AIMR-214 Phase A adds list_projects_summary back to the observe set: a
+ * narrower sibling DTO (id/name/defaults + a redacted githubRepoUrl,
+ * dropping notes/metadata/cwd) backed by GET /projects/summary — not a
+ * reversal of the F23 reconcile above, which still governs list_projects.
  */
 import { z } from "zod";
 import { AGENT_TYPE_ENUM } from "../enums.js";
@@ -52,6 +57,25 @@ export function registerCatalogTools(ctx: ToolContext, flags: ScopeFlags): void 
 					hits: capped.items,
 					total: result.total,
 					backend: result.backend,
+					...(capped.hint ? { truncated: capped.hint } : {}),
+				};
+			},
+		);
+
+		registerReadTool(
+			ctx,
+			{
+				name: "list_projects_summary",
+				description:
+					"The observe-safe project summary: id/name/defaults only, with githubRepoUrl reduced to origin+pathname (userinfo, query, and fragment stripped). Full project detail — arbitrary operator-set notes/metadata and the unredacted githubRepoUrl — remains available only via the manage-scoped list_projects tool.",
+				inputSchema: {},
+			},
+			async (_args, client) => {
+				const { projects } = await client.listProjectsSummary();
+				const capped = capList(projects);
+				return {
+					projects: capped.items,
+					total: projects.length,
 					...(capped.hint ? { truncated: capped.hint } : {}),
 				};
 			},

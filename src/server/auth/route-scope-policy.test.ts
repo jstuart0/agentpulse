@@ -188,6 +188,12 @@ describe("classifyRoute — pure matcher (test contract section A)", () => {
 		expect(classifyRoute("GET", "/projects")).toBe(SCOPE_MANAGE);
 	});
 
+	test("A.5d AIMR-214 Phase A — /projects/summary is observe-eligible (the narrower, redacted sibling DTO; /projects and /projects/:id stay manage)", () => {
+		expect(classifyRoute("GET", "/projects/summary")).toBe(SCOPE_OBSERVE);
+		expect(classifyRoute("GET", "/projects")).toBe(SCOPE_MANAGE);
+		expect(classifyRoute("GET", "/projects/abc123")).toBe(SCOPE_MANAGE);
+	});
+
 	test("A.6 read-like POSTs stay manage (regression-proofs a future 'simplify to include POSTs' refactor)", () => {
 		expect(classifyRoute("POST", "/launches/recommendation")).toBe(SCOPE_MANAGE);
 		expect(classifyRoute("POST", "/templates/preview")).toBe(SCOPE_MANAGE);
@@ -493,6 +499,91 @@ describe("F23 — observe key + a project row with sensitive-looking notes/metad
 				(p) => p.id === "rsp-f23-project" && p.notes === "prod DB password: hunter2",
 			),
 		).toBe(true);
+	});
+});
+
+// ─── AIMR-214 Phase A — GET /projects/summary: observe-eligible, and the ────
+// full-DTO leak class (notes/metadata/cwd + a credentialed githubRepoUrl)
+// never reaches the caller even when a real row carries it. This is the
+// load-bearing assertion: the whole reason mapProjectSummary()/redactGithub-
+// RepoUrl() exist, not just that the route is classified observe in the
+// abstract.
+describe("AIMR-214 Phase A — GET /projects/summary is observe-eligible and the redacted DTO never leaks notes/metadata/cwd/credentials", () => {
+	test("observeKey → 200; notes/metadata/cwd absent, githubRepoUrl reduced to origin+path (userinfo, query, AND fragment all stripped)", async () => {
+		await getDb()
+			.insert(projects)
+			.values({
+				id: "rsp-aimr214-project",
+				name: "rsp-aimr214-sensitive-project",
+				cwd: "/tmp/rsp-aimr214-sensitive-cwd",
+				githubRepoUrl:
+					"https://ghp_secrettoken1234567890@github.com/acme/private-repo/tree/main?token=ghp_leakedquerytoken1234567890#readme",
+				notes: "prod DB password: hunter2",
+				metadata: { deployKey: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB...secret" },
+			});
+
+		const [a, b] = await requestAllMounts("GET", "/projects/summary", authBearer(observeKey));
+		expect(a.status).toBe(200);
+		expect(b.status).toBe(200);
+
+		const bodyA = (await a.json()) as { projects: Array<Record<string, unknown>> };
+		const project = bodyA.projects.find((p) => p.id === "rsp-aimr214-project");
+		expect(project).toBeDefined();
+
+		// The load-bearing reduction: userinfo AND query AND fragment gone —
+		// only origin + pathname survive. xander M-C: userinfo-only stripping
+		// would leave the `?token=`-shaped query intact.
+		expect(project?.githubRepoUrl).toBe("https://github.com/acme/private-repo/tree/main");
+
+		expect("notes" in (project as Record<string, unknown>)).toBe(false);
+		expect("metadata" in (project as Record<string, unknown>)).toBe(false);
+		expect("cwd" in (project as Record<string, unknown>)).toBe(false);
+
+		const bodyRaw = JSON.stringify(bodyA);
+		expect(bodyRaw).not.toContain("ghp_secrettoken");
+		expect(bodyRaw).not.toContain("ghp_leakedquerytoken");
+		expect(bodyRaw).not.toContain("hunter2");
+		expect(bodyRaw).not.toContain("ssh-rsa");
+
+		// Regression proof the leak-class fields really are present on the row
+		// (and reachable via the full-detail manage-only endpoint) — so a
+		// clean summary here can't be masking a route that never populated
+		// them in the first place.
+		const [mgA] = await requestAllMounts("GET", "/projects", authBearer(manageKey));
+		expect(mgA.status).toBe(200);
+		const mgBody = (await mgA.json()) as {
+			projects: Array<{ id: string; notes: string | null; githubRepoUrl: string | null }>;
+		};
+		const rawRow = mgBody.projects.find((p) => p.id === "rsp-aimr214-project");
+		expect(rawRow?.notes).toBe("prod DB password: hunter2");
+		expect(rawRow?.githubRepoUrl).toContain("ghp_secrettoken");
+	});
+
+	test("a project with a null githubRepoUrl passes through as null (not an empty string or a thrown error)", async () => {
+		await getDb().insert(projects).values({
+			id: "rsp-aimr214-nullurl",
+			name: "rsp-aimr214-nullurl-project",
+			cwd: "/tmp/rsp-aimr214-nullurl",
+		});
+		const [a] = await requestAllMounts("GET", "/projects/summary", authBearer(observeKey));
+		expect(a.status).toBe(200);
+		const body = (await a.json()) as {
+			projects: Array<{ id: string; githubRepoUrl: string | null }>;
+		};
+		const row = body.projects.find((p) => p.id === "rsp-aimr214-nullurl");
+		expect(row?.githubRepoUrl).toBeNull();
+	});
+
+	test("manageKey → 200 (manage callers can reach the summary too — it's a narrower sibling, not an observe-only replacement)", async () => {
+		const [a, b] = await requestAllMounts("GET", "/projects/summary", authBearer(manageKey));
+		expect(a.status).toBe(200);
+		expect(b.status).toBe(200);
+	});
+
+	test("ingestKey → 403 (neither observe nor manage)", async () => {
+		const [a, b] = await requestAllMounts("GET", "/projects/summary", authBearer(ingestKey));
+		expect(a.status).toBe(403);
+		expect(b.status).toBe(403);
 	});
 });
 

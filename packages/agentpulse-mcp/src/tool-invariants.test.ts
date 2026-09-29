@@ -38,6 +38,15 @@
  * the same DTO-leak class as the C1 exclusions. observe is now 10 (not
  * 11); manage's total of 29 is unchanged (list_projects still counts once,
  * just via PHASE3_MANAGE_ONLY_READ_NAMES instead of OBSERVE_TOOL_NAMES).
+ *
+ * AIMR-214 Phase A correction: list_projects_summary is a NEW observe-scoped
+ * tool (a narrower sibling DTO, GET /projects/summary — id/name/defaults +
+ * redacted githubRepoUrl) — not a reversal of the F23 move above, which
+ * still governs list_projects. observe is now 11 (10 + list_projects_summary);
+ * manage's total is now 30 (11 observe + 6 Phase-3 manage-only reads + 13
+ * Phase-4 additions); the manage-vs-observe delta (assertion 21) is
+ * unchanged at 19 names since list_projects_summary is counted once, via
+ * OBSERVE_TOOL_NAMES.
  */
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -65,6 +74,8 @@ const OBSERVE_TOOL_NAMES = [
 	"get_session_intelligence",
 	"get_digest",
 	"get_ai_status",
+	// AIMR-214 Phase A — the observe-safe project summary DTO.
+	"list_projects_summary",
 ];
 
 // F23: list_projects lives here, not OBSERVE_TOOL_NAMES — see file docstring.
@@ -193,24 +204,24 @@ describe("drift guard: no root anyOf/oneOf/allOf on any tool's input schema (ass
 });
 
 describe("drift guard: tool count sanity (assertion 20, corrected counts — see file docstring)", () => {
-	test("manage-scoped server registers exactly 29 tools (10 observe + 6 Phase-3 manage-only reads + 13 Phase-4 additions, post-F23)", async () => {
+	test("manage-scoped server registers exactly 30 tools (11 observe + 6 Phase-3 manage-only reads + 13 Phase-4 additions, post-AIMR-214-A)", async () => {
 		const { mcpClient, registry } = await connectServer(["manage"]);
 		const { tools } = await mcpClient.listTools();
-		expect(tools.length).toBe(29);
-		expect(registry.length).toBe(29);
+		expect(tools.length).toBe(30);
+		expect(registry.length).toBe(30);
 		expect(new Set(tools.map((t) => t.name))).toEqual(new Set(MANAGE_TOTAL));
 	});
 
-	test("observe-scoped server registers exactly 10 tools (F23: list_projects moved to manage-only)", async () => {
+	test("observe-scoped server registers exactly 11 tools (AIMR-214-A: list_projects_summary added)", async () => {
 		const { mcpClient } = await connectServer(["observe"]);
 		const { tools } = await mcpClient.listTools();
-		expect(tools.length).toBe(10);
+		expect(tools.length).toBe(11);
 		expect(new Set(tools.map((t) => t.name))).toEqual(new Set(OBSERVE_TOOL_NAMES));
 	});
 });
 
 describe("tools/list diff observe vs manage (assertion 21, corrected — see file docstring)", () => {
-	test("manage set is a strict superset of observe; the delta is exactly the 19 manage-only names (6 Phase-3 + 13 Phase-4, post-F23)", async () => {
+	test("manage set is a strict superset of observe; the delta is exactly the 19 manage-only names (6 Phase-3 + 13 Phase-4, post-F23/AIMR-214-A)", async () => {
 		const { mcpClient: observeClient } = await connectServer(["observe"]);
 		const { mcpClient: manageClient } = await connectServer(["manage"]);
 		const observeNames = new Set((await observeClient.listTools()).tools.map((t) => t.name));
@@ -258,6 +269,7 @@ describe("drift guard: converse read-only check with real HTTP-verb instrumentat
 		get_session_claude_md: { session_id: "s1" },
 		search: { q: "x" },
 		list_projects: {},
+		list_projects_summary: {},
 		get_session_intelligence: { session_id: "s1" },
 		get_digest: {},
 		get_ai_status: {},

@@ -40,6 +40,38 @@ function mapProject(row: typeof projects.$inferSelect) {
 	};
 }
 
+/**
+ * AIMR-214 Phase A / F23-correction — observe-safe project summary DTO.
+ *
+ * githubRepoUrl is reduced to origin + pathname only: userinfo, query, and
+ * fragment are all stripped unconditionally (xander M-C: userinfo-only
+ * stripping would leave a `?token=ghp_xxx`-shaped query intact, the exact
+ * leak class this DTO exists to close). Deliberately drops notes/metadata/
+ * cwd/timestamps — mapProject()'s full DTO stays manage-only
+ * (route-scope-policy.ts's F23 comment) because those fields can carry
+ * operator-supplied secrets.
+ */
+function redactGithubRepoUrl(url: string | null): string | null {
+	if (!url) return null;
+	try {
+		const parsed = new URL(url);
+		return `${parsed.origin}${parsed.pathname}`;
+	} catch {
+		return null;
+	}
+}
+
+function mapProjectSummary(row: typeof projects.$inferSelect) {
+	return {
+		id: row.id,
+		name: row.name,
+		defaultAgentType: row.defaultAgentType,
+		defaultModel: row.defaultModel,
+		defaultLaunchMode: row.defaultLaunchMode,
+		githubRepoUrl: redactGithubRepoUrl(row.githubRepoUrl),
+	};
+}
+
 function validateProjectInput(body: Record<string, unknown>): string[] {
 	const errors: string[] = [];
 
@@ -92,6 +124,13 @@ function validateProjectInput(body: Record<string, unknown>): string[] {
 projectsRouter.get("/projects", async (c) => {
 	const rows = await listProjects();
 	return c.json({ projects: rows.map(mapProject), total: rows.length });
+});
+
+// Must be registered before GET /projects/:id — otherwise "summary" would be
+// captured as the :id path param.
+projectsRouter.get("/projects/summary", async (c) => {
+	const rows = await listProjects();
+	return c.json({ projects: rows.map(mapProjectSummary) });
 });
 
 projectsRouter.get("/projects/:id", async (c) => {

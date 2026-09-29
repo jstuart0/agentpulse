@@ -27,6 +27,7 @@ import type {
 	LaunchRequestInput,
 	LaunchRoutingPolicy,
 	Project,
+	ProjectSummary,
 	RecommendedLaunch,
 	ResolvedProjectData,
 	SearchResult,
@@ -240,6 +241,8 @@ export interface AgentPulseClient {
 	getSessionClaudeMd(sessionId: string): Promise<ClaudeMdResponse>;
 	search(params: SearchParams): Promise<SearchResult>;
 	listProjects(): Promise<{ projects: Project[]; total: number }>;
+	/** GET /projects/summary — the observe-safe reduction (AIMR-214 Phase A). */
+	listProjectsSummary(): Promise<{ projects: ProjectSummary[] }>;
 	getSessionIntelligence(sessionId: string): Promise<{ intelligence: SessionIntelligence }>;
 	getDigest(): Promise<Digest>;
 	getAiStatus(): Promise<AiStatusResponse>;
@@ -442,6 +445,7 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 				})}`,
 			),
 		listProjects: () => request<{ projects: Project[]; total: number }>("/projects"),
+		listProjectsSummary: () => request<{ projects: ProjectSummary[] }>("/projects/summary"),
 		getSessionIntelligence: (sessionId) =>
 			request<{ intelligence: SessionIntelligence }>(
 				`/ai/sessions/${encodeURIComponent(sessionId)}/intelligence`,

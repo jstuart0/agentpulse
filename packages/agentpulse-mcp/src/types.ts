@@ -132,6 +132,23 @@ export interface Project {
 	updatedAt: string;
 }
 
+/**
+ * Observe-safe reduction of Project (AIMR-214 Phase A / F23 follow-up):
+ * id/name/defaults only, with githubRepoUrl reduced to origin+pathname
+ * (userinfo, query, and fragment stripped). See routes/projects.ts's
+ * GET /projects/summary and route-scope-policy.ts's OBSERVE_READ_PATHS entry.
+ * Full Project (notes/metadata/cwd/unredacted githubRepoUrl) stays
+ * manage-only.
+ */
+export interface ProjectSummary {
+	id: string;
+	name: string;
+	defaultAgentType: AgentType | null;
+	defaultModel: string | null;
+	defaultLaunchMode: LaunchMode | null;
+	githubRepoUrl: string | null;
+}
+
 export interface ResolvedProjectData {
 	id: string;
 	name: string;

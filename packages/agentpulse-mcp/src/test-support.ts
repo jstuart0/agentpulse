@@ -48,6 +48,7 @@ export function fakeClient(overrides: Partial<AgentPulseClient> = {}): AgentPuls
 		getSessionClaudeMd: notStubbed("getSessionClaudeMd"),
 		search: notStubbed("search"),
 		listProjects: notStubbed("listProjects"),
+		listProjectsSummary: notStubbed("listProjectsSummary"),
 		getSessionIntelligence: notStubbed("getSessionIntelligence"),
 		getDigest: notStubbed("getDigest"),
 		getAiStatus: notStubbed("getAiStatus"),
