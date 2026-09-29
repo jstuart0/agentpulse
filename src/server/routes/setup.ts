@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Hono } from "hono";
@@ -9,7 +10,15 @@ const setup = new Hono();
 export const SCRIPTS_DIR_ENV = "AGENTPULSE_INSTALLER_SCRIPTS_DIR";
 
 function scriptsDir() {
-	return process.env[SCRIPTS_DIR_ENV] || join(import.meta.dir, "../../../scripts");
+	const override = process.env[SCRIPTS_DIR_ENV];
+	if (override) return override;
+	// Run from source (dev, the container image), scripts/ is three levels up.
+	// The bundled build (`bun run start` → dist/server) moves this file, but
+	// runs from the package root.
+	const fromSource = join(import.meta.dir, "../../../scripts");
+	return existsSync(join(fromSource, "setup-relay.sh"))
+		? fromSource
+		: join(process.cwd(), "scripts");
 }
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
