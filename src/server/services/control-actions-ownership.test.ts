@@ -3,6 +3,10 @@
  * routing for claims, provider-sync listing, stale-lock expiry, and the
  * D12 forged-launch-pointer guard on queuePromptAction.
  *
+ * codex r2 F44 (D10): queuePromptAction/retryLaunchForSession must resolve
+ * the legacy launchRequestId = sessionId fallback shape (managed-session-
+ * state.ts:131) by launchCorrelationId, not just by id.
+ *
  * Test contract items 30-34.
  */
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
@@ -14,7 +18,9 @@ const { controlActions, launchRequests, managedSessions, sessions } = await impo
 	"../db/schema/index.js"
 );
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
-const { claimNextControlAction, queuePromptAction } = await import("./control-actions.js");
+const { claimNextControlAction, queuePromptAction, retryLaunchForSession } = await import(
+	"./control-actions.js"
+);
 const { listManagedSessionsNeedingSync } = await import("./managed-session-state.js");
 
 beforeAll(() => initializeDatabase());
@@ -194,5 +200,57 @@ describe("queuePromptAction rejects a forged launch pointer (D12)", () => {
 		const action = await queuePromptAction(sessionId, "hello");
 		expect(action.actionType).toBe("prompt");
 		expect(action.sessionId).toBe(sessionId);
+	});
+});
+
+describe("F44: queuePromptAction/retryLaunchForSession resolve the legacy launchRequestId=sessionId fallback", () => {
+	test("a state report with no launchRequestId (fallback shape) — prompt, then retry, both succeed", async () => {
+		const sessionId = "f44-happy-sess";
+		const launch = await seedOwnedLaunch(sessionId, "sup-A");
+		// Legacy fallback shape: managed.launchRequestId === sessionId — what
+		// upsertManagedSessionState stores when a report omits
+		// launchRequestId (managed-session-state.ts:131).
+		await seedManagedRowRaw(sessionId, "sup-A", sessionId);
+
+		const promptAction = await queuePromptAction(sessionId, "hello");
+		expect(promptAction.actionType).toBe("prompt");
+		// Queued with the REAL launch id, not the stale sessionId fallback
+		// value (F44's second requirement).
+		expect(promptAction.launchRequestId).toBe(launch.launchId);
+
+		const retryResult = await retryLaunchForSession(sessionId);
+		expect(retryResult.launchRequest.retryOfLaunchRequestId).toBe(launch.launchId);
+	});
+
+	test("cross-host refusal still fires on input shaped like the fallback: a real launch whose id collides with the session id, but whose correlation is a different session, is still rejected (D12)", async () => {
+		const sessionId = "f44-collide-sess";
+		// A real launch_requests row whose id happens to equal this session's
+		// id (the same string that would otherwise trigger the fallback
+		// lookup), but whose actual correlation belongs to a DIFFERENT
+		// session. The id lookup must still win over the fallback, so D12
+		// catches this exactly as it would any other forged pointer.
+		await getDb()
+			.insert(launchRequests)
+			.values({
+				id: sessionId,
+				launchCorrelationId: "f44-other-sess",
+				agentType: "claude_code",
+				cwd: "/tmp/f44-collide",
+				status: "running",
+				requestedSupervisorId: "sup-A",
+				claimedBySupervisorId: "sup-A",
+			})
+			.execute();
+		await seedManagedRowRaw(sessionId, "sup-A", sessionId);
+
+		await expect(queuePromptAction(sessionId, "hello")).rejects.toThrow(
+			"Launch request does not match session.",
+		);
+
+		const rows = await getDb()
+			.select()
+			.from(controlActions)
+			.where(eq(controlActions.sessionId, sessionId));
+		expect(rows.length).toBe(0);
 	});
 });

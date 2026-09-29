@@ -638,12 +638,20 @@ describe("runbook — audit query (deploy/k8s/FORWARDAUTH.md, ownership-audit-sq
 });
 
 describe("runbook — repair statement (ownership-repair-sql)", () => {
-	test("realigns owner_mismatch rows with the launch claimant; leaves launch-less and pointer-broken rows for human review", async () => {
+	test("realigns owner_mismatch rows with the launch claimant; leaves launch-less and pointer-broken rows (missing AND mismatched) for human review", async () => {
 		await seedOwnedLaunch("repair-mismatch-sess", "sup-A");
 		await seedManagedRow("repair-mismatch-sess", "sup-B");
 		await seedManagedRow("repair-no-launch-sess", "sup-C");
 		await seedOwnedLaunch("repair-ptr-missing-sess", "sup-E");
 		await seedManagedRow("repair-ptr-missing-sess", "sup-E", crypto.randomUUID());
+		// codex r2 F45: same shape as the audit test's launch_pointer_mismatch
+		// fixture — this session's own launch is unclaimed (no owner_mismatch),
+		// but the managed row's launch_request_id points at a DIFFERENT
+		// session's launch. The repair statement must not touch it (it only
+		// realigns owner_mismatch rows).
+		await seedUnclaimedLaunch("repair-ptr-mismatch-sess", "validated");
+		const otherLaunch = await seedOwnedLaunch("repair-ptr-mismatch-other-sess", "sup-D");
+		await seedManagedRow("repair-ptr-mismatch-sess", "sup-D", otherLaunch.launchId);
 
 		await runMarkerSql("ownership-repair-sql");
 
@@ -651,7 +659,9 @@ describe("runbook — repair statement (ownership-repair-sql)", () => {
 
 		const rows = await runMarkerSql("ownership-audit-sql");
 		const flaggedIds = new Set(rows.map((r) => r.session_id as string));
-		expect(flaggedIds).toEqual(new Set(["repair-no-launch-sess", "repair-ptr-missing-sess"]));
+		expect(flaggedIds).toEqual(
+			new Set(["repair-no-launch-sess", "repair-ptr-mismatch-sess", "repair-ptr-missing-sess"]),
+		);
 	});
 });
 
