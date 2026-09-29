@@ -57,11 +57,25 @@ function loadState(): ObserverState {
  * never leaves a half-written state file — readers see either the old
  * state or the new one, never a torn one. `path` is injectable for tests
  * (O9); production callers use the default STATE_FILE.
+ *
+ * F101: the tmp path is refused if it's already a symlink — writeFileSync
+ * follows symlinks by default, so a pre-planted `${path}.tmp` symlink
+ * would otherwise let a local attacker redirect this write to an
+ * arbitrary file. A plain leftover regular file (O9's tmp garbage case)
+ * is not a symlink and is still safely overwritten. The state file itself
+ * is written with mode 0600 — it's process-local bookkeeping, not meant
+ * to be group/world readable.
  */
 export function saveState(state: ObserverState, path: string = STATE_FILE): void {
+	const tmpPath = `${path}.tmp`;
 	try {
-		writeFileSync(`${path}.tmp`, JSON.stringify(state, null, 2));
-		renameSync(`${path}.tmp`, path);
+		try {
+			if (lstatSync(tmpPath).isSymbolicLink()) return;
+		} catch {
+			// ENOENT is the expected case — nothing at tmpPath yet.
+		}
+		writeFileSync(tmpPath, JSON.stringify(state, null, 2), { mode: 0o600 });
+		renameSync(tmpPath, path);
 	} catch {
 		// disk full / permissions / readonly — skip; next scan will retry
 	}
@@ -228,7 +242,14 @@ export function isNativeCovered(sessionId: string, home: string = homedir()): bo
 	const cacheKey = `${home}\u0000${sessionId}`;
 	if (nativeCoverageCache.has(cacheKey)) return true;
 	const covered = existsSync(codexNativeMarkerPath(home, sessionId));
-	if (covered) nativeCoverageCache.add(cacheKey);
+	if (covered) {
+		nativeCoverageCache.add(cacheKey);
+		// F100: logged exactly once per session per process — the cache Set
+		// above gates this branch to only the first true result for this
+		// (home, sessionId) pair; every later call short-circuits on the
+		// `.has(cacheKey)` check before reaching here.
+		console.warn(`[codex-observer] session ${sessionId} skipped: native marker present`);
+	}
 	return covered;
 }
 
