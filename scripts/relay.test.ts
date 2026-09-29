@@ -2091,3 +2091,89 @@ describe("mid-tick index race (F145)", () => {
 		expect(ctx.state.sync.codexNames.suppressedIds).toEqual([]);
 	});
 });
+
+describe("relay state bounds (F148, F149)", () => {
+	test("F148: 6,000 index ids converge to zero PUTs; ids gone from the index are pruned; no-op ticks don't rewrite", async () => {
+		const R = await mod();
+		const N = 6000;
+		const sessions = Array.from({ length: N }, (_, i) => ({
+			sessionId: `c${i}`,
+			displayName: `g${i}`,
+			nameSource: "generated",
+		}));
+		const stub = sessionsStub(sessions);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({
+			remote: stub.url,
+			now: () => T0,
+			limits: { maxPullPutsPerTick: 1000 },
+		});
+		const index = sessions.map((s) => row(s.sessionId, `codex-${s.sessionId}`));
+		await writeFile(indexPath(), jsonl(index));
+		for (let i = 0; i < 6; i++) await R.pullCodexNames(ctx);
+		expect(nativeNamePuts(stub.requests)).toHaveLength(N);
+		const stateFile = join(tmp, "state", "codex-pull-state.json");
+		const before = await stat(stateFile);
+		await R.pullCodexNames(ctx);
+		await R.pullCodexNames(ctx);
+		expect(nativeNamePuts(stub.requests)).toHaveLength(N);
+		const after = await stat(stateFile);
+		expect(after.mtimeMs).toBe(before.mtimeMs);
+		expect(ctx.state.codexPull.size).toBe(N);
+
+		await writeFile(indexPath(), jsonl(index.slice(1000)));
+		await R.pullCodexNames(ctx);
+		expect(ctx.state.codexPull.size).toBe(N - 1000);
+		expect(ctx.state.codexPull.has("c0")).toBe(false);
+		expect(nativeNamePuts(stub.requests)).toHaveLength(N);
+		const persisted = JSON.parse(await readFile(stateFile, "utf-8")) as {
+			entries: Record<string, unknown>;
+		};
+		expect(Object.keys(persisted.entries)).toHaveLength(N - 1000);
+	}, 60_000);
+
+	test("F149: a large ledger whose rows are all still in the index is not rewritten or logged", async () => {
+		const R = await mod();
+		const lines: string[] = [];
+		const stub = sessionsStub([]);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, log: (l) => lines.push(l) });
+		const rows = Array.from({ length: 2001 }, (_, i) => row(`k${i}`, `n${i}`));
+		const ledgerFile = join(tmp, "state", "codex-pushed.jsonl");
+		await writeFile(ledgerFile, jsonl(rows));
+		await writeFile(indexPath(), jsonl(rows));
+		const before = await stat(ledgerFile);
+		await R.pushCodexNames(ctx);
+		const after = await stat(ledgerFile);
+		expect([after.ino, after.mtimeMs]).toEqual([before.ino, before.mtimeMs]);
+		expect(lines.some((l) => l.includes("compacted"))).toBe(false);
+	});
+
+	test("F149: compaction is attempted at most once a day", async () => {
+		const R = await mod();
+		let now = T0;
+		const stub = sessionsStub([]);
+		stops.push(stub.stop);
+		const ctx = await makeCtx({
+			remote: stub.url,
+			now: () => now,
+			limits: { ledgerCompactThreshold: 10 },
+		});
+		const ledgerFile = join(tmp, "state", "codex-pushed.jsonl");
+		const kept = row("keep", "k");
+		const orphans = (tag: string) => Array.from({ length: 20 }, (_, i) => row(`${tag}${i}`, "x"));
+		await writeFile(indexPath(), jsonl([kept]));
+		await writeFile(ledgerFile, jsonl([...orphans("a"), kept]));
+		await R.pushCodexNames(ctx);
+		expect(await readJsonl(ledgerFile)).toEqual([kept]);
+
+		await writeFile(ledgerFile, jsonl([...orphans("b"), kept]));
+		now = T0 + HOUR;
+		await R.pushCodexNames(ctx);
+		expect(await readJsonl(ledgerFile)).toHaveLength(21);
+
+		now = T0 + 25 * HOUR;
+		await R.pushCodexNames(ctx);
+		expect(await readJsonl(ledgerFile)).toEqual([kept]);
+	});
+});

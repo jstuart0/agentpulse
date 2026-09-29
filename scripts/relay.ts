@@ -54,7 +54,8 @@ const PULL_MAX_CONSECUTIVE_404 = 5;
 const PULL_STALE_ENTRY_MS = 24 * 60 * 60_000;
 /** F125: bounds the post-restart burst against the server's /native-name rate limit. */
 const MAX_PULL_PUTS_PER_TICK = 50;
-const MAX_PULL_STATE_ENTRIES = 5000;
+/** F149: a full-ledger rewrite is attempted at most this often. */
+const LEDGER_COMPACT_INTERVAL_MS = 24 * 60 * 60_000;
 const DEFAULT_RETRY_AFTER_MS = 60_000;
 const MAX_RETRY_AFTER_MS = 60 * 60_000;
 const CLAUDE_MD_SESSION_LIMIT = 20;
@@ -298,6 +299,7 @@ export function createRelayState() {
 		relayHash: "",
 		codexPull: new Map<string, PullEntryState>(),
 		pullStateLoaded: false,
+		lastLedgerCompactionAt: 0,
 		/** F125: epoch ms before which the pull doesn't PUT (server Retry-After). */
 		pullRetryAt: 0,
 		pushGuard: {} as Record<string, number[]>,
@@ -346,6 +348,7 @@ export type RelayLimits = {
 	maxQueueFiles: number;
 	maxQueueAgeMs: number;
 	ledgerCompactThreshold: number;
+	maxPullPutsPerTick: number;
 };
 
 const DEFAULT_LIMITS: RelayLimits = {
@@ -353,6 +356,7 @@ const DEFAULT_LIMITS: RelayLimits = {
 	maxQueueFiles: MAX_QUEUE_FILES,
 	maxQueueAgeMs: MAX_QUEUE_AGE_MS,
 	ledgerCompactThreshold: LEDGER_COMPACT_THRESHOLD,
+	maxPullPutsPerTick: MAX_PULL_PUTS_PER_TICK,
 };
 
 type ContextOptions = {
@@ -1081,18 +1085,26 @@ export function parseLedger(raw: string): Set<string> {
 	return keys;
 }
 
+function parseIndexWithKeys(raw: string, ledger: Set<string>) {
+	const latest = new Map<string, CodexIndexRow>();
+	const latestForeign = new Map<string, CodexIndexRow>();
+	const keys = new Set<string>();
+	for (const line of raw.split("\n")) {
+		const row = parseIndexLine(line);
+		if (!row) continue;
+		const key = ledgerKey(row);
+		keys.add(key);
+		latest.set(row.id, row);
+		if (!ledger.has(key)) latestForeign.set(row.id, row);
+	}
+	return { latest, latestForeign, keys };
+}
+
 export function parseCodexIndex(
 	raw: string,
 	ledger: Set<string>,
 ): { latest: Map<string, CodexIndexRow>; latestForeign: Map<string, CodexIndexRow> } {
-	const latest = new Map<string, CodexIndexRow>();
-	const latestForeign = new Map<string, CodexIndexRow>();
-	for (const line of raw.split("\n")) {
-		const row = parseIndexLine(line);
-		if (!row) continue;
-		latest.set(row.id, row);
-		if (!ledger.has(ledgerKey(row))) latestForeign.set(row.id, row);
-	}
+	const { latest, latestForeign } = parseIndexWithKeys(raw, ledger);
 	return { latest, latestForeign };
 }
 
@@ -1184,18 +1196,9 @@ export async function readCodexIndex(ctx: RelayContext): Promise<CodexIndexSnaps
 		if (r) ledgerRows.push(r);
 	}
 	const ledger = new Set(ledgerRows.map(ledgerKey));
-	const indexKeys = new Set<string>();
-	for (const line of indexRaw.split("\n")) {
-		const r = parseIndexLine(line);
-		if (r) indexKeys.add(ledgerKey(r));
-	}
-	return {
-		indexVersion: version,
-		ledger,
-		ledgerRows,
-		indexKeys,
-		...parseCodexIndex(indexRaw, ledger),
-	};
+	// F150: one pass over the index yields latest, latestForeign and keys.
+	const { latest, latestForeign, keys } = parseIndexWithKeys(indexRaw, ledger);
+	return { indexVersion: version, ledger, ledgerRows, indexKeys: keys, latest, latestForeign };
 }
 
 /**
@@ -1227,20 +1230,33 @@ async function idsChangedSinceSnapshot(
  */
 async function compactLedgerIfLarge(ctx: RelayContext, snap: CodexIndexSnapshot) {
 	if (snap.ledgerRows.length <= ctx.limits.ledgerCompactThreshold) return;
+	// F149: Codex's index is append-only, so most attempts would find nothing
+	// to drop. Attempt at most once a day, and rewrite only if rows go.
+	const now = ctx.now();
+	if (now - ctx.state.lastLedgerCompactionAt < LEDGER_COMPACT_INTERVAL_MS) return;
+	ctx.state.lastLedgerCompactionAt = now;
 	const kept = snap.ledgerRows.filter((r) => snap.indexKeys.has(ledgerKey(r)));
+	if (kept.length === snap.ledgerRows.length) return;
 	await replacePrivateFile(ctx.paths.ledgerFile, kept.length ? jsonlLines(kept) : "");
 	ctx.log(`[codex-name-sync] compacted ledger: ${snap.ledgerRows.length} → ${kept.length} rows`);
 }
 
+// F148: no count cap. The index is the real bound: entries for ids no longer
+// in it are pruned each tick (pruneMissingPullEntries). A count cap with
+// eviction never converged past the cap (an evicted id looks unseen again).
 function setPullEntry(ctx: RelayContext, id: string, entry: PullEntryState) {
-	const map = ctx.state.codexPull;
-	map.delete(id);
-	map.set(id, entry);
-	while (map.size > MAX_PULL_STATE_ENTRIES) {
-		const oldest = map.keys().next().value;
-		if (oldest === undefined) break;
-		map.delete(oldest);
+	ctx.state.codexPull.set(id, entry);
+}
+
+function pruneMissingPullEntries(ctx: RelayContext, present: Map<string, unknown>): boolean {
+	let pruned = false;
+	for (const id of ctx.state.codexPull.keys()) {
+		if (!present.has(id)) {
+			ctx.state.codexPull.delete(id);
+			pruned = true;
+		}
 	}
+	return pruned;
 }
 
 async function loadPullState(ctx: RelayContext) {
@@ -1309,9 +1325,9 @@ export async function pullCodexNames(
 	if (!ctx.state.pullStateLoaded) await loadPullState(ctx);
 	const now = ctx.now();
 	if (now < ctx.state.pullRetryAt) return { ok: true, rateLimited: true };
-	const { latestForeign } = snapshot ?? (await readCodexIndex(ctx));
+	const { latest, latestForeign } = snapshot ?? (await readCodexIndex(ctx));
 	let puts = 0;
-	let changed = false;
+	let changed = pruneMissingPullEntries(ctx, latest);
 	let result: StepResult = { ok: true };
 	for (const [id, entry] of latestForeign) {
 		const key = ledgerKey(entry);
@@ -1323,7 +1339,7 @@ export async function pullCodexNames(
 		) {
 			continue;
 		}
-		if (puts >= MAX_PULL_PUTS_PER_TICK) break;
+		if (puts >= ctx.limits.maxPullPutsPerTick) break;
 		puts++;
 		let res: Response;
 		try {

@@ -121,6 +121,8 @@ export function hookRateLimit(options: HookRateLimitOptions = {}) {
 
 		if (!tryConsume(bucketKey)) {
 			if (onLimit === "429") {
+				// F151: one token refills in at most 1 s (capacity = tokens/second).
+				c.header("Retry-After", "1");
 				return c.json({ error: "rate_limited" }, 429);
 			}
 			incrementRateLimitedDropped();

@@ -184,6 +184,8 @@ describe("PUT /sessions/:id/native-name — rate limit (D20, F26)", () => {
 		expect((await put(keyA, "last-token")).status).toBe(200);
 		const limited = await put(keyA, "over-limit");
 		expect(limited.status).toBe(429);
+		// F151: the bucket refills a token within a second.
+		expect(limited.headers.get("Retry-After")).toBe("1");
 		expect(await limited.json()).toEqual({ error: "rate_limited" });
 
 		// A different key's bucket is untouched.
