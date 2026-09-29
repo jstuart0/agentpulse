@@ -267,6 +267,15 @@ export async function retryLaunchForSession(sessionId: string) {
 
 	const original = await resolveManagedLaunch(sessionId, managed.launchRequestId);
 	if (!original) throw new Error("Original launch request not found.");
+	// F47/D12: same cross-host guard queuePromptAction applies — refuse to
+	// clone another host's launch.env into a fresh launch_requests row when
+	// the managed row's launchRequestId points at a launch for a
+	// *different* session. resolveManagedLaunch's id-lookup branch can
+	// still return such a launch (it doesn't itself enforce correlation),
+	// so this check must run before cloning env below.
+	if (original.launchCorrelationId !== sessionId) {
+		throw new Error("Launch request does not match session.");
+	}
 
 	const timestamp = nowIso();
 	const newCorrelationId = crypto.randomUUID();

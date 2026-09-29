@@ -49,6 +49,19 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   run with a dead credential. See `deploy/k8s/FORWARDAUTH.md`'s "Supervisor
   client behavior on a rejected in-session report" for the full behavior
   matrix (which calls are fatal-on-401 versus log-and-retry, and why).
+- **Prompt and retry now resolve the same launch (AGEN-15)** — a managed
+  session whose recorded `launchRequestId` is the legacy fallback shape
+  (equal to its own session id, written when a report omitted a real launch
+  id) previously left `retryLaunchForSession` unable to find that session's
+  actual launch, while `queuePromptAction` already had this fixed. Both
+  paths now resolve the real launch by correlation, and both apply the same
+  cross-host guard: a managed row whose `launchRequestId` points at a launch
+  correlated to a *different* session is rejected rather than acted on.
+- The supervisor now bounds and sanitizes the server's response body and
+  status text before logging either on a failed request — an oversized
+  body, a forged log line, or a terminal escape sequence in a malicious or
+  compromised server's response can no longer be written verbatim into the
+  supervisor's local log.
 
 ### Upgrade notes (AGEN-17 / AGEN-15)
 

@@ -22,6 +22,7 @@ import {
 } from "./providers/codex-managed.js";
 import { CleanupError, executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { startCodexObserver } from "./services/codex-observer.js";
+import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js";
 import { PrelaunchError, executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { retryWithBackoff } from "./services/registration-retry.js";
 import { SupervisorRequestError } from "./services/report-resilience.js";
@@ -44,15 +45,13 @@ async function request(path: string, options?: RequestInit) {
 	});
 	if (!res.ok) {
 		// Best-effort: carry the server's own error string (F43) alongside the
-		// raw status for logging. A non-JSON or empty body leaves it undefined.
-		let bodyError: string | undefined;
-		try {
-			const body = (await res.json()) as { error?: string };
-			bodyError = body?.error;
-		} catch {
-			// not JSON / empty body
-		}
-		throw new SupervisorRequestError(res.status, res.statusText, bodyError);
+		// raw status for logging. F49: both the body and statusText are
+		// attacker-controlled (a malicious/compromised server, or a
+		// network-position attacker on an unencrypted http:// path) — bound
+		// the body read and strip control/ANSI characters before either ever
+		// reaches a log line.
+		const bodyError = await parseErrorBodyField(res);
+		throw new SupervisorRequestError(res.status, sanitizeForLog(res.statusText), bodyError);
 	}
 	return res.json();
 }
