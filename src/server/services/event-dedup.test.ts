@@ -6,7 +6,15 @@ import {
 	normalizeComparableContent,
 } from "../../shared/event-authority.js";
 import type { EventCategory, EventSource } from "../../shared/types.js";
-import { type InsertPlan, type RecentEventRow, planEventInsert } from "./event-dedup.js";
+import {
+	type HookDeliveryContext,
+	type InsertPlan,
+	type RecentEventRow,
+	computeDedupKey,
+	parseDeliveryId,
+	parseOrigin,
+	planEventInsert,
+} from "./event-dedup.js";
 import type { NormalizedEvent } from "./event-normalizer.js";
 
 const FILE_TZ = process.env.TZ;
@@ -439,6 +447,262 @@ describe("planEventInsert: window edge (U1.6)", () => {
 			nowIso: "not-a-time",
 		});
 		expect(plan.retained[0]?.deletesIfStored).toEqual([]);
+	});
+});
+
+// ── Phase 7: hook_delivery policy (pure planner tests) ──────────────────────
+
+const HOOK_NOW = "2026-09-28T12:00:00.000Z";
+const ANON_CTX: HookDeliveryContext = { keyId: "anonymous", deliveryId: null, origin: "native" };
+
+function ctxWith(deliveryId: string | null): HookDeliveryContext {
+	return { keyId: "anonymous", deliveryId, origin: "native" };
+}
+
+function toolEvent(
+	eventType: string,
+	opts: { toolUseId?: string | number; category?: EventCategory } = {},
+): NormalizedEvent {
+	const rawPayload: Record<string, unknown> =
+		opts.toolUseId === undefined ? {} : { tool_use_id: opts.toolUseId };
+	return {
+		eventType,
+		category: opts.category ?? "tool_event",
+		source: "observed_hook",
+		content: `Running ${eventType}`,
+		isNoise: false,
+		providerEventType: eventType,
+		toolName: "Bash",
+		toolInput: null,
+		toolResponse: null,
+		rawPayload,
+	};
+}
+
+function systemEvent(eventType: string, content = "Turn completed"): NormalizedEvent {
+	return {
+		eventType,
+		category: "system_event",
+		source: "observed_hook",
+		content,
+		isNoise: false,
+		providerEventType: eventType,
+		toolName: null,
+		toolInput: null,
+		toolResponse: null,
+		rawPayload: {},
+	};
+}
+
+function planHookDeliveryFor(
+	incoming: NormalizedEvent[],
+	ctx: HookDeliveryContext,
+	opts: { rawPayload?: unknown; recent?: RecentEventRow[]; nowIso?: string } = {},
+): InsertPlan {
+	return planEventInsert({
+		policy: { kind: "hook_delivery", ctx, rawPayload: opts.rawPayload ?? {} },
+		recent: opts.recent ?? [],
+		incoming,
+		nowIso: opts.nowIso ?? HOOK_NOW,
+	});
+}
+
+describe("hook_delivery: identity keying (U2.x)", () => {
+	test("U2.5 an intra-batch duplicate key keeps the first; toolUseRetry +1", () => {
+		const row = toolEvent("PostToolUse", { toolUseId: "dup1" });
+		const plan = planHookDeliveryFor([row, row], ANON_CTX);
+		expect(plan.retained).toHaveLength(1);
+		expect(plan.drops.toolUseRetry).toBe(1);
+	});
+
+	test("U2.6 tool_use_id length and type gating", () => {
+		// Valid length (200) with no delivery id → a t key.
+		const valid = planHookDeliveryFor(
+			[toolEvent("PostToolUse", { toolUseId: "a".repeat(200) })],
+			ANON_CTX,
+		);
+		expect(valid.retained[0]?.dedupKey).toMatch(/^t:[0-9a-f]{32}$/);
+
+		// Too long (201), empty, wrong type (7, a number), or absent → no t
+		// key. With no delivery id present either, the row is unkeyed.
+		for (const toolUseId of ["a".repeat(201), "", 7, undefined] as const) {
+			const plan = planHookDeliveryFor([toolEvent("PostToolUse", { toolUseId })], ANON_CTX);
+			expect(plan.retained[0]?.dedupKey, `toolUseId=${String(toolUseId)}`).toBeNull();
+		}
+
+		// With a delivery id, an id-less (or invalid) tool row falls through
+		// to a d key instead of staying unkeyed.
+		const withDelivery = planHookDeliveryFor(
+			[toolEvent("PostToolUse", { toolUseId: "" })],
+			ctxWith("delivery-id-12345678"),
+		);
+		expect(withDelivery.retained[0]?.dedupKey).toMatch(/^d:[0-9a-f]{32}$/);
+	});
+
+	test("U2.7 Pre/Post and Request/Denied pairs sharing an id get distinct keys", () => {
+		const pre = planHookDeliveryFor([toolEvent("PreToolUse", { toolUseId: "shared" })], ANON_CTX);
+		const post = planHookDeliveryFor([toolEvent("PostToolUse", { toolUseId: "shared" })], ANON_CTX);
+		expect(pre.retained[0]?.dedupKey).not.toBe(post.retained[0]?.dedupKey);
+
+		const req = planHookDeliveryFor(
+			[toolEvent("PermissionRequest", { toolUseId: "shared", category: "permission_event" })],
+			ANON_CTX,
+		);
+		const denied = planHookDeliveryFor(
+			[toolEvent("PermissionDenied", { toolUseId: "shared", category: "permission_event" })],
+			ANON_CTX,
+		);
+		expect(req.retained[0]?.dedupKey).not.toBe(denied.retained[0]?.dedupKey);
+	});
+
+	test("U2.11 an identical recent Stop: retained under hook_delivery, dropped under content_window", () => {
+		const recent: RecentEventRow[] = [
+			{
+				id: 1,
+				eventType: "Stop",
+				category: "system_event",
+				source: "observed_hook",
+				content: "Turn completed",
+				providerEventType: "Stop",
+				createdAt: HOOK_NOW,
+			},
+		];
+		const incoming = [systemEvent("Stop")];
+
+		const hookDelivery = planHookDeliveryFor(incoming, ANON_CTX, { recent });
+		expect(hookDelivery.retained).toHaveLength(1);
+		expect(hookDelivery.drops.contentWindow ?? 0).toBe(0);
+
+		const contentWindow = planEventInsert({
+			policy: { kind: "content_window" },
+			recent,
+			incoming,
+			nowIso: HOOK_NOW,
+		});
+		expect(contentWindow.retained).toHaveLength(0);
+		expect(contentWindow.drops.contentWindow).toBe(1);
+	});
+
+	test("F109: every hook_delivery dedupKey is null or prefixed t:/d: — never a raw content-window key", () => {
+		const rows = [
+			toolEvent("PreToolUse", { toolUseId: "a1" }),
+			toolEvent("PostToolUse", { toolUseId: "a1" }),
+			systemEvent("Stop"),
+			systemEvent("SessionStart"),
+		];
+		for (const ctx of [ANON_CTX, ctxWith("delivery-id-1234")]) {
+			const plan = planHookDeliveryFor(rows, ctx);
+			for (const row of plan.retained) {
+				expect(row.dedupKey === null || /^[td]:[0-9a-f]{32}$/.test(row.dedupKey)).toBe(true);
+			}
+		}
+	});
+});
+
+describe("computeDedupKey (U7.x)", () => {
+	test("U7.1 keys match ^[td]:[0-9a-f]{32}$ and are stable", () => {
+		const t = computeDedupKey({ kind: "t", keyId: "k", eventType: "PostToolUse", toolUseId: "x" });
+		const d = computeDedupKey({
+			kind: "d",
+			keyId: "k",
+			deliveryId: "D1",
+			bodyDigest: "abc",
+			rowIndex: 0,
+		});
+		expect(t).toMatch(/^t:[0-9a-f]{32}$/);
+		expect(d).toMatch(/^d:[0-9a-f]{32}$/);
+		expect(
+			computeDedupKey({ kind: "t", keyId: "k", eventType: "PostToolUse", toolUseId: "x" }),
+		).toBe(t);
+	});
+
+	test("U7.2 keys vary with keyId; t ignores deliveryId; d varies with bodyDigest and rowIndex", () => {
+		const base = { kind: "t" as const, keyId: "k1", eventType: "PostToolUse", toolUseId: "x" };
+		expect(computeDedupKey(base)).not.toBe(computeDedupKey({ ...base, keyId: "k2" }));
+
+		const dBase = {
+			kind: "d" as const,
+			keyId: "k1",
+			deliveryId: "D1",
+			bodyDigest: "abc",
+			rowIndex: 0,
+		};
+		expect(computeDedupKey(dBase)).not.toBe(computeDedupKey({ ...dBase, bodyDigest: "xyz" }));
+		expect(computeDedupKey(dBase)).not.toBe(computeDedupKey({ ...dBase, rowIndex: 1 }));
+		expect(computeDedupKey(dBase)).not.toBe(computeDedupKey({ ...dBase, keyId: "k2" }));
+	});
+
+	test("U7.3 length-prefixing: a naive colon-join would collide across a field boundary", () => {
+		const a = computeDedupKey({
+			kind: "d",
+			keyId: "a:b",
+			deliveryId: "c",
+			bodyDigest: "x",
+			rowIndex: 0,
+		});
+		const b = computeDedupKey({
+			kind: "d",
+			keyId: "a",
+			deliveryId: "b:c",
+			bodyDigest: "x",
+			rowIndex: 0,
+		});
+		expect(a).not.toBe(b);
+	});
+
+	test("U7.5 purity: identical args always produce the identical key", () => {
+		for (let i = 0; i < 20; i++) {
+			expect(
+				computeDedupKey({
+					kind: "t",
+					keyId: `k${i}`,
+					eventType: "PostToolUse",
+					toolUseId: `t${i}`,
+				}),
+			).toBe(
+				computeDedupKey({
+					kind: "t",
+					keyId: `k${i}`,
+					eventType: "PostToolUse",
+					toolUseId: `t${i}`,
+				}),
+			);
+		}
+	});
+});
+
+describe("parseDeliveryId (P4.10 unit table)", () => {
+	test.each([
+		["short7", "a".repeat(7), null],
+		["long65", "a".repeat(65), null],
+		["slash", "abcd/efgh", null],
+		["space", "abcd efgh", null],
+		["underscore", "abcd_efgh", null],
+		["dot", "abcd.efgh", null],
+		["nul", "abcd\0efgh", null],
+		["exact8", "a".repeat(8), "a".repeat(8)],
+		["exact64", "a".repeat(64), "a".repeat(64)],
+		["uuid", "01a0e994-8966-7df2-9441-cb89cc6ae1aa", "01a0e994-8966-7df2-9441-cb89cc6ae1aa"],
+		["hex32", "0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"],
+		["absent", undefined, null],
+		["empty", "", null],
+	])("%s", (_label, input, expected) => {
+		expect(parseDeliveryId(input)).toBe(expected);
+	});
+});
+
+describe("parseOrigin", () => {
+	const cases: Array<[string | undefined, "codex-observer" | "native"]> = [
+		["codex-observer", "codex-observer"],
+		["Codex-Observer", "codex-observer"],
+		["CODEX-OBSERVER", "codex-observer"],
+		[undefined, "native"],
+		["", "native"],
+		["native", "native"],
+		["something-else", "native"],
+	];
+	test.each(cases)("%s -> %s", (input, expected) => {
+		expect(parseOrigin(input)).toBe(expected);
 	});
 });
 
