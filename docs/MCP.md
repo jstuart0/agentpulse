@@ -87,13 +87,13 @@ default_tools_approval_mode = "writes"
 
 | Tool | Wraps | Notes |
 |---|---|---|
-| `list_sessions` | `GET /sessions` | Filterable by status/agent type/project; each row includes a `managed` boolean. |
+| `list_sessions` | `GET /sessions` | Filterable by status/agent type/project; each row includes a `managed` boolean. An unrecognized `agent_type` filter value 400s with the rejected value and the allowed list (AGEN-44) rather than silently returning zero results; a server predating AGEN-44 still returns zero for that case. |
 | `get_session` | `GET /sessions/:id` | Session detail + last 20 events (previews capped) + `managed` status. |
 | `get_session_timeline` | `GET /sessions/:id/timeline` | Paginated event timeline, independent of `get_session`'s 20-event trim. |
 | `get_event_context` | `GET /sessions/:id/events/:eventId/context` | Events immediately around a given event id. |
 | `get_session_claude_md` | `GET /sessions/:id/claude-md` | The CLAUDE.md content stored for a session. |
 | `get_stats` | `GET /sessions/stats` | Dashboard KPI stats. |
-| `search` | `GET /search` | Full-text across sessions/events. |
+| `search` | `GET /search` | Full-text across sessions/events. `agentType` filter validated the same way as `list_sessions` (AGEN-44). |
 | `get_session_intelligence` | `GET /ai/sessions/:id/intelligence` | AI health classification (requires AI enabled on the server). |
 | `get_digest` | `GET /ai/digest` | Cross-session daily digest by project. |
 | `get_ai_status` | `GET /ai/status`, optionally `GET /ai/diagnostics` | Diagnostics are opt-in (`include_diagnostics: true`) — fetching them emits a `watcher_run_queued` metric on the server, so routine polling should leave it off. |
@@ -102,7 +102,7 @@ default_tools_approval_mode = "writes"
 
 | Tool | Wraps | Why manage-only |
 |---|---|---|
-| `list_templates` / `get_template` | `GET /templates`(`/:id`) | DTO carries `env` (may hold credentials). |
+| `list_templates` / `get_template` | `GET /templates`(`/:id`) | DTO carries `env` (may hold credentials). `list_templates`' `agent_type` filter is validated the same way as `list_sessions` (AGEN-44). |
 | `list_launches` / `get_launch` | `GET /launches`(`/:id`) | DTO carries `env`, `launchSpec`, and `claimToken`. |
 | `get_inbox` | `GET /ai/inbox` | `action_*` items can embed launch `env`/`claimToken` payloads. |
 | `list_projects` | `GET /projects` | DTO carries arbitrary operator-set `notes`/`metadata` and a `githubRepoUrl` that may embed userinfo credentials. |

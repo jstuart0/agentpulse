@@ -194,7 +194,7 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 
 **Dashboard API:**
 - `GET /api/v1/auth/me` - Current identity; for `api_key` callers now includes `scopes: string[]` (AGEN-12) alongside the existing fields. Un-forwardauth'd by design (see Auth section).
-- `GET /api/v1/sessions` - List sessions (filterable by status, agent_type). Each row now includes a `managed: boolean` (AGEN-12) indicating whether a supervisor is holding a live process for it (i.e. whether prompt/stop/retry control actions can target it).
+- `GET /api/v1/sessions` - List sessions (filterable by status, agent_type — an `agent_type` value outside `AGENT_TYPES` (`src/shared/constants.ts`) now 400s `{ error: "invalid_agent_type", value, allowed }` (AGEN-44) instead of silently matching zero rows; a pre-AGEN-44 server still returns zero results for an unrecognized value, so a client talking to an older/newer server pair should handle both). Each row now includes a `managed: boolean` (AGEN-12) indicating whether a supervisor is holding a live process for it (i.e. whether prompt/stop/retry control actions can target it). `GET /api/v1/templates` applies the same `agent_type` validation.
 - `GET /api/v1/sessions/stats` - Dashboard KPI stats
 - `GET /api/v1/projects` - List projects. `manage`-scoped only (AGEN-12, F23): the DTO carries arbitrary operator-set `notes`/`metadata` and a `githubRepoUrl` that may embed userinfo credentials, so it's excluded from the `observe` read tier.
 - `GET /api/v1/search?kinds=session&q=` - Search sessions/events (FTS5-backed)
