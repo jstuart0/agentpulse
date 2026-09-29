@@ -95,26 +95,59 @@ async function seedSessionRow(sessionId: string) {
 
 // ─── D17 leaf check ──────────────────────────────────────────────────────────
 
+// F29: tolerates an optional trailing same-line comment after the import
+// statement (`import { x } from "y.js"; // why`) — the prior regex's `$`
+// anchor sat directly after the closing `;`/quote, so any import line
+// carrying a trailing comment silently fell out of the scanned set entirely
+// (not flagged, not cleared — just invisible to the check).
+const LEAF_IMPORT_LINE = /^import\s.+?from\s+["'][^"']+["'];?\s*(?:\/\/.*)?$/gm;
+
+function findOffendingLeafImports(source: string, allowedValueSpecifiers: Set<string>): string[] {
+	const importLines = source.match(LEAF_IMPORT_LINE) ?? [];
+	const offending: string[] = [];
+	for (const line of importLines) {
+		const isTypeOnly = /^import\s+type\s/.test(line);
+		if (isTypeOnly) continue;
+		const match = line.match(/from\s+["']([^"']+)["']/);
+		const specifier = match?.[1];
+		if (!specifier || !allowedValueSpecifiers.has(specifier)) {
+			offending.push(line);
+		}
+	}
+	return offending;
+}
+
+const LEAF_ALLOWED_SPECIFIERS = new Set([
+	"drizzle-orm",
+	"../db/client.js",
+	"../db/schema/index.js",
+]);
+
 describe("session-ownership.ts is a leaf module (D17)", () => {
 	test("value imports are only drizzle-orm, ../db/client.js, ../db/schema/index.js", () => {
 		const source = readFileSync(join(import.meta.dir, "session-ownership.ts"), "utf-8");
-		const importLines = source.match(/^import\s.+?from\s+["'][^"']+["'];?$/gm) ?? [];
-		const allowedValueSpecifiers = new Set([
-			"drizzle-orm",
-			"../db/client.js",
-			"../db/schema/index.js",
+		expect(findOffendingLeafImports(source, LEAF_ALLOWED_SPECIFIERS)).toEqual([]);
+	});
+
+	// F29 (Low, tessa): the regex must not let a trailing same-line comment
+	// hide a disallowed import from the scan. Synthetic source, not the real
+	// file — this pins the detection mechanism itself, independent of
+	// whether session-ownership.ts happens to violate it today.
+	test("a disallowed import with a trailing comment is still caught", () => {
+		const synthetic = [
+			'import { eq } from "drizzle-orm";',
+			'import { getDb } from "../db/client.js";',
+			'import { launchRequests } from "../db/schema/index.js"; // schema barrel',
+			'import { somethingBad } from "./launch-dispatch.js"; // sneaky, trailing comment',
+		].join("\n");
+		expect(findOffendingLeafImports(synthetic, LEAF_ALLOWED_SPECIFIERS)).toEqual([
+			'import { somethingBad } from "./launch-dispatch.js"; // sneaky, trailing comment',
 		]);
-		const offending: string[] = [];
-		for (const line of importLines) {
-			const isTypeOnly = /^import\s+type\s/.test(line);
-			if (isTypeOnly) continue;
-			const match = line.match(/from\s+["']([^"']+)["']/);
-			const specifier = match?.[1];
-			if (!specifier || !allowedValueSpecifiers.has(specifier)) {
-				offending.push(line);
-			}
-		}
-		expect(offending).toEqual([]);
+	});
+
+	test("an allowed import with a trailing comment is not flagged (no false positive from the fix)", () => {
+		const synthetic = 'import { eq } from "drizzle-orm"; // trailing comment, allowed specifier';
+		expect(findOffendingLeafImports(synthetic, LEAF_ALLOWED_SPECIFIERS)).toEqual([]);
 	});
 });
 

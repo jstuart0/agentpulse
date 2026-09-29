@@ -488,4 +488,139 @@ describe("supervisor ownership guard — HTTP (F94)", () => {
 			expect(await res.json()).toEqual({ error: "session_not_owned" });
 		});
 	});
+
+	// F27 (Medium, tessa): T6 never reaches the D7 code — A posting for its
+	// own session (guard passes via the managed-row fallback, matrix case
+	// (b)) is the only shape that actually exercises
+	// resolveObservedSessionCorrelation's supervisorId check, because the
+	// guard has already returned before associateObservedSession runs in
+	// every other scenario. Mutation-verified: reverting D7 (restoring
+	// `resolvedSupervisorId = supervisorId ?? claimed ?? requested ??
+	// "unknown"`) makes this test fail — the unclaimed launch below would
+	// get silently attached and transitioned to "running".
+	test("F27: D7 still refuses to attach an unclaimed launch to a caller who legitimately owns the session via the managed row", async () => {
+		const sessionId = `f27-sess-${crypto.randomUUID().slice(0, 8)}`;
+		const now = new Date().toISOString();
+
+		// Matrix case (b): an unclaimed (validated) launch correlated to this
+		// session id, plus a managed row owned by A. resolveSessionOwner falls
+		// back to the managed row's supervisor_id (the launch has no
+		// claimant), so the ownership guard passes for A.
+		await getDb().insert(launchRequests).values({
+			launchCorrelationId: sessionId,
+			agentType: "claude_code",
+			cwd: "/tmp/f27-unclaimed-launch",
+			status: "validated",
+		});
+		await getDb().insert(sessions).values({
+			sessionId,
+			displayName: sessionId,
+			agentType: "claude_code",
+			status: "active",
+			lastActivityAt: now,
+			metadata: {},
+		});
+		await getDb().insert(managedSessions).values({
+			sessionId,
+			launchRequestId: sessionId,
+			supervisorId: supervisorA.id,
+			managedState: "managed",
+			createdAt: now,
+			updatedAt: now,
+		});
+
+		const res = await app.request(`/api/v1/supervisors/${supervisorA.id}/managed-session-state`, {
+			method: "POST",
+			headers: agentHeaders(supervisorA),
+			body: JSON.stringify({ sessionId }),
+		});
+		// The guard passes — A really does own S via the managed row.
+		expect(res.status).toBe(200);
+
+		// D7 must still refuse to correlate the unclaimed launch to A: only
+		// its actual claimant may do that.
+		const [launchRow] = await getDb()
+			.select()
+			.from(launchRequests)
+			.where(eq(launchRequests.launchCorrelationId, sessionId));
+		expect(launchRow?.claimedBySupervisorId).toBeNull();
+		expect(launchRow?.status).toBe("validated");
+	});
+
+	// F28 (Medium, tessa): item T11 (response-body parity, D10) had no
+	// standalone test — it was only implicit in T1-T4's individual
+	// assertions. This collects the four rejection shapes independently and
+	// asserts they're byte-identical to each other and to the documented
+	// contract body, so a reason-per-case regression (which would let an
+	// enrolled supervisor enumerate foreign/unmanaged/fabricated/forged by
+	// watching the error shape change) is caught in one place.
+	test("F28: T11 — the 403 body is byte-identical across foreign, unmanaged, fabricated and forged-launch cases", async () => {
+		const foreignSessionId = `f28-foreign-${crypto.randomUUID().slice(0, 8)}`;
+		await seedOwnedSession(foreignSessionId, supervisorB.id);
+		const foreignRes = await app.request(
+			`/api/v1/supervisors/${supervisorA.id}/managed-session-state`,
+			{
+				method: "POST",
+				headers: agentHeaders(supervisorA),
+				body: JSON.stringify({ sessionId: foreignSessionId }),
+			},
+		);
+
+		const unmanagedSessionId = `f28-unmanaged-${crypto.randomUUID().slice(0, 8)}`;
+		await seedHookObservedSession(unmanagedSessionId);
+		const unmanagedRes = await app.request(
+			`/api/v1/supervisors/${supervisorA.id}/managed-session-state`,
+			{
+				method: "POST",
+				headers: agentHeaders(supervisorA),
+				body: JSON.stringify({ sessionId: unmanagedSessionId }),
+			},
+		);
+
+		const fabricatedSessionId = `f28-fabricated-${crypto.randomUUID().slice(0, 8)}`;
+		const fabricatedRes = await app.request(
+			`/api/v1/supervisors/${supervisorA.id}/managed-session-state`,
+			{
+				method: "POST",
+				headers: agentHeaders(supervisorA),
+				body: JSON.stringify({ sessionId: fabricatedSessionId }),
+			},
+		);
+
+		const ownSessionId = `f28-own-${crypto.randomUUID().slice(0, 8)}`;
+		await seedOwnedSession(ownSessionId, supervisorA.id);
+		const bLaunch = await seedOwnedLaunch(
+			`f28-b-launch-${crypto.randomUUID().slice(0, 8)}`,
+			supervisorB.id,
+		);
+		const forgedRes = await app.request(
+			`/api/v1/supervisors/${supervisorA.id}/managed-session-state`,
+			{
+				method: "POST",
+				headers: agentHeaders(supervisorA),
+				body: JSON.stringify({ sessionId: ownSessionId, launchRequestId: bLaunch.launchId }),
+			},
+		);
+
+		const responses = [
+			{ label: "foreign", res: foreignRes },
+			{ label: "unmanaged", res: unmanagedRes },
+			{ label: "fabricated", res: fabricatedRes },
+			{ label: "forged-launch", res: forgedRes },
+		];
+		const bodies: Array<{ label: string; status: number; body: unknown }> = [];
+		for (const { label, res } of responses) {
+			bodies.push({ label, status: res.status, body: await res.json() });
+		}
+
+		for (const entry of bodies) {
+			expect(entry.status).toBe(403);
+			expect(entry.body).toEqual({ error: "session_not_owned" });
+		}
+		// Byte-identical to each other, not just individually matching the
+		// shape — catches a reason field that happens to be absent on one
+		// path but present (and merely unequal in value) on another.
+		const serialized = bodies.map((entry) => JSON.stringify(entry.body));
+		expect(new Set(serialized).size).toBe(1);
+	});
 });
