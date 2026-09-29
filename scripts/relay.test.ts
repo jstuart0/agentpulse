@@ -5,7 +5,7 @@
  * `relay.ts` is loaded lazily through `mod()` so the very first test can
  * prove the import itself is side-effect free (no port bound, no exit).
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
 	lstat,
 	mkdir,
@@ -81,6 +81,18 @@ function startStub(handler: StubHandler) {
 
 let tmp: string;
 const stops: Array<() => unknown> = [];
+
+// AGEN-18/F202: the first Bun.serve() bind + fetch() round trip in this
+// file's execution order pays a one-time OS-scheduled "cold" tax (socket
+// bind/listen, kqueue/epoll setup, HTTP-parser warm-up). Under host
+// contention that tax can push whichever test happens to run first over the
+// fixed 5s per-test timeout, even though the test's own code is fast. Paying
+// it here, outside any test's budget, means no single test carries it.
+beforeAll(async () => {
+	const warm = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("warm") });
+	await fetch(`http://127.0.0.1:${warm.port}/`);
+	warm.stop(true);
+});
 
 beforeEach(async () => {
 	tmp = await mkdtemp(join(tmpdir(), "ap-relay-test-"));
@@ -2570,6 +2582,11 @@ describe("final residuals (F152, F153)", () => {
 		expect(await mode(realState)).toBe("755");
 	});
 
+	// AGEN-18/F202: a real Bun.spawn (fork+exec+runtime init) is scheduled by
+	// the OS kernel, not the JS event loop — under host CPU contention its
+	// latency has no upper bound the test controls. The default 5s timeout
+	// left ~50x headroom at baseline (94ms); 20s keeps the test meaningful
+	// (a genuine hang still fails it) while tolerating contention spikes.
 	test("F153: a malformed config.json is reported without echoing its content", async () => {
 		const dir = join(tmp, "badcfg");
 		await mkdir(dir, { recursive: true });
@@ -2590,5 +2607,5 @@ describe("final residuals (F152, F153)", () => {
 		expect(err).toContain(`invalid JSON in ${cfg}`);
 		expect(`${out}${err}`).not.toContain(secret);
 		expect(`${out}${err}`).not.toContain("ap_leak");
-	});
+	}, 20_000);
 });
