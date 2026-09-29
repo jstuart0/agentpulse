@@ -156,8 +156,12 @@ async function withRelayContext<T>(relay: RelayProc, id: string, fn: () => Promi
 		return await fn();
 	} catch (err) {
 		const rows = await indexRows(relay, id);
+		let diagnostics = "(unavailable)";
+		try {
+			diagnostics = await (await fetch(`${relay.base}/api/v1/relay/diagnostics`)).text();
+		} catch {}
 		throw new Error(
-			`${String(err)}\n--- index rows for ${id} ---\n${JSON.stringify(rows)}\n--- relay output (tail) ---\n${relay.output().slice(-4000)}`,
+			`${String(err)}\n--- index rows for ${id} ---\n${JSON.stringify(rows)}\n--- relay diagnostics ---\n${diagnostics}\n--- relay output (tail) ---\n${relay.output().slice(-4000)}`,
 		);
 	}
 }
@@ -265,7 +269,8 @@ beforeAll(async () => {
 	serverUrl = `http://127.0.0.1:${server.port}`;
 	manageKey = (await createApiKey("e2e-manage", ["manage"])).key;
 	relayKey = (await createApiKey("e2e-relay", ["ingest", "observe"])).key;
-});
+	// F146: migrations + key minting exceed bun's 5 s hook default under load.
+}, 30_000);
 
 afterAll(async () => {
 	for (const r of [...running]) await stopRelay(r);
@@ -431,6 +436,13 @@ describe("relay e2e", () => {
 				cwd: join(root, "codex6"),
 			});
 			await waitFor("codex6 session", () => getSession(CODEX6_ID));
+			// This scenario spends exactly 3 of the storm guard's 3 slots per hour
+			// (F109): the generated fill, the dash-name push, the restore. Wait for
+			// the fill before Codex's title so they can't interleave (F145).
+			await waitFor(
+				"codex6 fill row",
+				async () => (await ledgerRows(relay1, CODEX6_ID)).length > 0,
+			);
 			await appendCodexRow(relay1, CODEX6_ID, "codex-title");
 			await waitFor("codex-title adopted", () => sessionNamed(CODEX6_ID, "codex-title"));
 
@@ -460,6 +472,10 @@ describe("relay e2e", () => {
 					);
 				}),
 			);
+			const diag = (await (await fetch(`${relay1.base}/api/v1/relay/diagnostics`)).json()) as {
+				sync: { codexNames: { suppressedIds: string[] } };
+			};
+			expect(diag.sync.codexNames.suppressedIds).toEqual([]);
 		},
 		SCENARIO_TIMEOUT,
 	);

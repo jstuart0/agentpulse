@@ -25,6 +25,7 @@ import {
 	readFile,
 	readdir,
 	rename,
+	stat,
 	unlink,
 	writeFile,
 } from "node:fs/promises";
@@ -1152,6 +1153,8 @@ export function planCodexPushes(
 }
 
 export type CodexIndexSnapshot = {
+	/** size/mtime of session_index.jsonl when read ("" if absent), for F145. */
+	indexVersion: string;
 	ledger: Set<string>;
 	ledgerRows: CodexIndexRow[];
 	indexKeys: Set<string>;
@@ -1160,8 +1163,20 @@ export type CodexIndexSnapshot = {
 };
 
 /** F129: read and parse the index and the ledger once per tick. */
+async function indexVersion(path: string): Promise<string> {
+	try {
+		const st = await stat(path);
+		return `${st.size}:${st.mtimeMs}`;
+	} catch {
+		return "";
+	}
+}
+
 export async function readCodexIndex(ctx: RelayContext): Promise<CodexIndexSnapshot> {
 	const ledgerRaw = await readTextOrEmpty(ctx.paths.ledgerFile);
+	// Stat before reading: a write in between makes the version look older
+	// than the content, which only costs one extra re-read before appending.
+	const version = await indexVersion(ctx.paths.codexIndexFile);
 	const indexRaw = await readTextOrEmpty(ctx.paths.codexIndexFile);
 	const ledgerRows: CodexIndexRow[] = [];
 	for (const line of ledgerRaw.split("\n")) {
@@ -1174,7 +1189,35 @@ export async function readCodexIndex(ctx: RelayContext): Promise<CodexIndexSnaps
 		const r = parseIndexLine(line);
 		if (r) indexKeys.add(ledgerKey(r));
 	}
-	return { ledger, ledgerRows, indexKeys, ...parseCodexIndex(indexRaw, ledger) };
+	return {
+		indexVersion: version,
+		ledger,
+		ledgerRows,
+		indexKeys,
+		...parseCodexIndex(indexRaw, ledger),
+	};
+}
+
+/**
+ * F145: the snapshot is taken at tick start, before the pull PUTs and the
+ * session list. If Codex wrote a row in that window, a planned row for the
+ * same id is stale (a generated fill could land after Codex's title). Re-read
+ * the index only if it changed, and return the ids whose latest row moved.
+ */
+async function idsChangedSinceSnapshot(
+	ctx: RelayContext,
+	snap: CodexIndexSnapshot,
+	ids: string[],
+): Promise<Set<string>> {
+	const changed = new Set<string>();
+	if ((await indexVersion(ctx.paths.codexIndexFile)) === snap.indexVersion) return changed;
+	const { latest } = parseCodexIndex(await readTextOrEmpty(ctx.paths.codexIndexFile), snap.ledger);
+	for (const id of ids) {
+		const before = snap.latest.get(id);
+		const now = latest.get(id);
+		if ((before ? ledgerKey(before) : "") !== (now ? ledgerKey(now) : "")) changed.add(id);
+	}
+	return changed;
 }
 
 /**
@@ -1378,8 +1421,28 @@ export async function pushCodexNames(
 	for (const id of ctx.state.suppressedLogged) {
 		if (!plan.suppressedIds.includes(id)) ctx.state.suppressedLogged.delete(id);
 	}
-	if (plan.rows.length === 0) return { ok: true };
-	const lines = jsonlLines(plan.rows);
+	let rows = plan.rows;
+	if (rows.length > 0) {
+		const stale = await idsChangedSinceSnapshot(
+			ctx,
+			snap,
+			rows.map((r) => r.id),
+		);
+		if (stale.size > 0) {
+			// Drop stale plans and hand their guard slots back; the next tick
+			// re-plans against the fresh index.
+			rows = rows.filter((r) => !stale.has(r.id));
+			const guard = { ...ctx.state.pushGuard };
+			for (const id of stale) {
+				const slots = (guard[id] ?? []).slice(0, -1);
+				if (slots.length > 0) guard[id] = slots;
+				else delete guard[id];
+			}
+			ctx.state.pushGuard = guard;
+		}
+	}
+	if (rows.length === 0) return { ok: true };
+	const lines = jsonlLines(rows);
 	try {
 		// Ledger first: a crash between the two appends leaves an unused ledger
 		// row (harmless), never an index row that looks Codex-written.
@@ -1390,7 +1453,7 @@ export async function pushCodexNames(
 	} catch (err) {
 		return { ok: false, error: `append failed: ${errorMessage(err)}` };
 	}
-	for (const row of plan.rows) {
+	for (const row of rows) {
 		ctx.log(`[codex-name-sync] push ${logSafe(row.id.slice(0, 8))} → ${logSafe(row.thread_name)}`);
 	}
 	return { ok: true };

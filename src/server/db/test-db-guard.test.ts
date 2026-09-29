@@ -38,3 +38,24 @@ describe("__test_db.ts SQLITE_PATH guard (F119)", () => {
 		expect([code, stderr]).toEqual([0, ""]);
 	});
 });
+
+describe("__test_db.ts SQLITE_PATH guard — realpath branch (F147)", () => {
+	test("TMPDIR given through a symlink accepts a SQLITE_PATH under its real path", async () => {
+		const { symlinkSync, realpathSync } = await import("node:fs");
+		const real = mkdtempSync(join(tmpdir(), "ap-guard-real-"));
+		const link = `${real}-link`;
+		symlinkSync(real, link);
+		const proc = Bun.spawn([process.execPath, "-e", `await import(${JSON.stringify(HELPER)})`], {
+			env: {
+				PATH: process.env.PATH ?? "/usr/bin:/bin",
+				TMPDIR: link,
+				SQLITE_PATH: join(realpathSync(real), "t.db"),
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const stderr = await new Response(proc.stderr).text();
+		await proc.exited;
+		expect([proc.exitCode, stderr]).toEqual([0, ""]);
+	});
+});

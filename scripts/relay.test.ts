@@ -2048,3 +2048,46 @@ describe("pull restart burst and rate limits (F125)", () => {
 		expect(nativeNamePuts(stub.requests)).toHaveLength(60);
 	});
 });
+
+describe("mid-tick index race (F145)", () => {
+	test("a Codex title written during GET /sessions is never followed by a stale fill; the guard is untouched", async () => {
+		const R = await mod();
+		const sessions = [
+			{ sessionId: "s1", displayName: "brave-falcon", nameSource: "generated" },
+			{ sessionId: "s2", displayName: "calm-otter", nameSource: "generated" },
+		];
+		let raced = false;
+		const stub = startStub(async (method, url) => {
+			if (method === "GET" && url.pathname === "/api/v1/sessions") {
+				if (!raced) {
+					raced = true;
+					// Codex titles s1 while the relay is between its snapshot and its append.
+					await writeFile(
+						indexPath(),
+						jsonl([row("s1", "codex-title", "2026-09-28T12:00:00.500Z")]),
+					);
+				}
+				return Response.json({ sessions, total: sessions.length });
+			}
+			return undefined;
+		});
+		stops.push(stub.stop);
+		const ctx = await makeCtx({ remote: stub.url, now: () => T0 });
+		await writeFile(indexPath(), "");
+		await R.syncCodexNamesTick(ctx);
+
+		const rows = await readJsonl(indexPath());
+		expect(rows.filter((r) => r.id === "s1").map((r) => r.thread_name)).toEqual(["codex-title"]);
+		// An id the race didn't touch still gets its fill.
+		expect(rows.filter((r) => r.id === "s2").map((r) => r.thread_name)).toEqual(["calm-otter"]);
+		const ledger = await readJsonl(join(tmp, "state", "codex-pushed.jsonl"));
+		expect(ledger.map((r) => r.id)).toEqual(["s2"]);
+		expect(ctx.state.pushGuard.s1).toBeUndefined();
+		expect(ctx.state.pushGuard.s2).toEqual([T0]);
+
+		// Next tick: Codex's title stands under the codex policy.
+		await R.syncCodexNamesTick(ctx);
+		expect((await readJsonl(indexPath())).filter((r) => r.id === "s1")).toHaveLength(1);
+		expect(ctx.state.sync.codexNames.suppressedIds).toEqual([]);
+	});
+});
