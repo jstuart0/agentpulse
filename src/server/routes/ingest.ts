@@ -635,12 +635,14 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
 	// F140 (D21) defense in depth: strip any top-level key with the reserved
 	// `agentpulse_` prefix before this payload goes anywhere near
 	// processing. Stub semantics are decided solely by the server-built
-	// HookDeliveryContext.oversizeStub (never by the payload — see
-	// normalizeHookEvent/event-dedup.ts), so this has no effect on genuine
+	// HookDeliveryContext.oversizeStub (never by the payload — see the hook
+	// normalizer and event-dedup.ts), so this has no effect on genuine
 	// oversize-stub behavior; it only closes the payload off as a spoofing
 	// surface for a namespace this server-side flag now owns exclusively.
+	// F142 (xander): case-insensitive — `Agentpulse_Oversize` is exactly as
+	// reserved as `agentpulse_oversize`.
 	for (const key of Object.keys(parsed)) {
-		if (key.startsWith("agentpulse_")) {
+		if (key.toLowerCase().startsWith("agentpulse_")) {
 			(parsed as unknown as Record<string, unknown>)[key] = undefined;
 		}
 	}
