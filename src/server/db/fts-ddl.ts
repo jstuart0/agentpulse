@@ -50,6 +50,50 @@ export const EVENT_TEXT_COALESCE_SELECT = `COALESCE(
 			content, ''
 		)`;
 
+/**
+ * The events-table half of the FTS bootstrap: the virtual table plus its two
+ * sync triggers. Split out from FTS_BOOTSTRAP_SQL (codex r2 F129/F130) so the
+ * one-time rowid re-key in `db/client.ts` can `exec()` exactly this DDL
+ * inside the same transaction as the DROP + rebuild, instead of depending on
+ * a second, later, unguarded `sqlite.exec(FTS_BOOTSTRAP_SQL)` call to put the
+ * triggers back.
+ *
+ * F130: `trg_events_ad_fts` carries the same `WHEN OLD.event_type IN (...)`
+ * guard as the insert trigger, so a delete of a non-indexed event (the large
+ * majority — tool/permission events) never touches `search_events_fts` at
+ * all, rather than firing a no-op rowid delete on every single event row.
+ */
+export const EVENTS_FTS_DDL = `
+	CREATE VIRTUAL TABLE IF NOT EXISTS search_events_fts USING fts5(
+		event_id UNINDEXED,
+		session_id UNINDEXED,
+		event_type UNINDEXED,
+		text,
+		created_at UNINDEXED,
+		tokenize = 'porter unicode61 remove_diacritics 1'
+	);
+
+	CREATE TRIGGER IF NOT EXISTS trg_events_ai_fts AFTER INSERT ON events
+	WHEN NEW.event_type IN (${FTS_INDEXED_EVENT_TYPES_SQL_LIST})
+	BEGIN
+		INSERT INTO search_events_fts(rowid, event_id, session_id, event_type, text, created_at)
+		VALUES (
+			NEW.id,
+			NEW.id,
+			NEW.session_id,
+			NEW.event_type,
+			${EVENT_TEXT_COALESCE_NEW},
+			NEW.created_at
+		);
+	END;
+
+	CREATE TRIGGER IF NOT EXISTS trg_events_ad_fts AFTER DELETE ON events
+	WHEN OLD.event_type IN (${FTS_INDEXED_EVENT_TYPES_SQL_LIST})
+	BEGIN
+		DELETE FROM search_events_fts WHERE rowid = OLD.id;
+	END;
+`;
+
 export const FTS_BOOTSTRAP_SQL = `
 	CREATE VIRTUAL TABLE IF NOT EXISTS search_sessions_fts USING fts5(
 		session_id UNINDEXED,
@@ -60,15 +104,6 @@ export const FTS_BOOTSTRAP_SQL = `
 		agent_type UNINDEXED,
 		status UNINDEXED,
 		last_activity_at UNINDEXED,
-		tokenize = 'porter unicode61 remove_diacritics 1'
-	);
-
-	CREATE VIRTUAL TABLE IF NOT EXISTS search_events_fts USING fts5(
-		event_id UNINDEXED,
-		session_id UNINDEXED,
-		event_type UNINDEXED,
-		text,
-		created_at UNINDEXED,
 		tokenize = 'porter unicode61 remove_diacritics 1'
 	);
 
@@ -91,22 +126,5 @@ export const FTS_BOOTSTRAP_SQL = `
 		DELETE FROM search_events_fts WHERE session_id = OLD.session_id;
 	END;
 
-	CREATE TRIGGER IF NOT EXISTS trg_events_ai_fts AFTER INSERT ON events
-	WHEN NEW.event_type IN (${FTS_INDEXED_EVENT_TYPES_SQL_LIST})
-	BEGIN
-		INSERT INTO search_events_fts(rowid, event_id, session_id, event_type, text, created_at)
-		VALUES (
-			NEW.id,
-			NEW.id,
-			NEW.session_id,
-			NEW.event_type,
-			${EVENT_TEXT_COALESCE_NEW},
-			NEW.created_at
-		);
-	END;
-
-	CREATE TRIGGER IF NOT EXISTS trg_events_ad_fts AFTER DELETE ON events
-	BEGIN
-		DELETE FROM search_events_fts WHERE rowid = OLD.id;
-	END;
+	${EVENTS_FTS_DDL}
 `;

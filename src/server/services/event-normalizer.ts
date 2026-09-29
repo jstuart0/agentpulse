@@ -35,6 +35,40 @@ export const TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP = 4096;
 // a near-duplicate of it for every turn in every session.
 export const SYNTHETIC_STOP_CONTENT = "Turn completed";
 
+// F128 (codex r2): content for the stub row ingest.ts builds when a hook
+// delivery exceeded the body cap. tool_input/tool_response were never
+// parsed for an oversize delivery, so there is no real content to render.
+export const OVERSIZE_STUB_CONTENT = "Payload exceeded 16 MiB and was dropped";
+
+/**
+ * Same category mapping normalizeHookEvent uses for a real payload, applied
+ * to whatever hook_event_name an oversize delivery's identity prefix
+ * recovered — so the stub row still lands in the dedup category
+ * (TOOL_KEY_CATEGORIES) and timeline grouping a real event of that type
+ * would use, keeping `t:`-keyed dedup on tool_use_id intact.
+ */
+function categorizeOversizeEventType(eventType: string): EventCategory {
+	if (eventType === "UserPromptSubmit") return "prompt";
+	if (
+		eventType === "PreToolUse" ||
+		eventType === "PostToolUse" ||
+		eventType === "PostToolUseFailure"
+	) {
+		return "tool_event";
+	}
+	if (eventType === "PermissionRequest" || eventType === "PermissionDenied")
+		return "permission_event";
+	if (
+		eventType === "TaskCreated" ||
+		eventType === "TaskCompleted" ||
+		eventType === "SubagentStart" ||
+		eventType === "SubagentStop"
+	) {
+		return "progress_update";
+	}
+	return "system_event";
+}
+
 function serializeToolResponse(toolResponse: unknown): string | null {
 	if (!toolResponse) return null;
 	return typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse);
@@ -182,6 +216,34 @@ export function normalizeHookEvent(
 	const eventType = payload.hook_event_name;
 	const toolResponse = stringifyToolResponse(payload.tool_response);
 	const normalized: NormalizedEvent[] = [];
+
+	// F128 (codex r2): the minimal synthetic payload ingest.ts builds for an
+	// oversize delivery. There's no real prompt/tool_input/tool_response to
+	// render (the body was dropped before JSON.parse), so a single
+	// informative stub row stands in — still categorized and keyed exactly
+	// like a real event of this type would be, so tool rows still dedup on
+	// tool_use_id.
+	if (payload.agentpulse_oversize) {
+		normalized.push({
+			eventType,
+			category: categorizeOversizeEventType(eventType),
+			source: "observed_hook",
+			content: OVERSIZE_STUB_CONTENT,
+			isNoise: false,
+			providerEventType: eventType,
+			toolName: payload.tool_name || null,
+			toolInput: null,
+			toolResponse: null,
+			rawPayload: {
+				agentpulse_oversize: true,
+				hook_event_name: eventType,
+				tool_use_id: payload.tool_use_id,
+				cwd: payload.cwd,
+				transcript_path: payload.transcript_path,
+			},
+		});
+		return normalized;
+	}
 
 	if (eventType === "UserPromptSubmit" && payload.prompt) {
 		normalized.push({

@@ -10,6 +10,7 @@ import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { config } from "../config.js";
 import {
+	EVENTS_FTS_DDL,
 	EVENT_TEXT_COALESCE_SELECT,
 	FTS_BOOTSTRAP_SQL,
 	FTS_INDEXED_EVENT_TYPES_SQL_LIST,
@@ -1161,37 +1162,44 @@ async function runFtsBootstrap(sqlite: Database): Promise<void> {
 	// UNINDEXED `event_id` column, which is a full FTS5 table scan per
 	// deleted event (9.2 ms/event measured; a 41k-row session delete took
 	// 306.5 s, past the ~60 s liveness kill). Detect a pre-upgrade trigger by
-	// its stored SQL text and re-key to `rowid = events.id` once, inside one
-	// transaction, before the idempotent CREATE ... IF NOT EXISTS bootstrap
-	// below (which would otherwise leave the stale trigger in place forever).
+	// its stored SQL text and re-key to `rowid = events.id` once.
+	//
+	// F130: also detect a trigger that's already rowid-keyed but predates the
+	// `WHEN OLD.event_type IN (...)` guard (fts-ddl.ts), so an install that
+	// already picked up the rowid fix without the guard still gets upgraded.
 	let needsRowidRekey = false;
 	try {
 		const existingTrigger = sqlite
 			.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='trg_events_ad_fts'")
 			.get() as { sql: string | null } | undefined;
-		if (existingTrigger?.sql && !existingTrigger.sql.includes("rowid = OLD.id")) {
-			needsRowidRekey = true;
-			sqlite.exec("DROP TRIGGER IF EXISTS trg_events_ai_fts;");
-			sqlite.exec("DROP TRIGGER IF EXISTS trg_events_ad_fts;");
+		if (existingTrigger?.sql) {
+			const hasRowidKey = existingTrigger.sql.includes("rowid = OLD.id");
+			const hasEventTypeGuard = /WHEN\s+OLD\.event_type\s+IN/i.test(existingTrigger.sql);
+			needsRowidRekey = !hasRowidKey || !hasEventTypeGuard;
 		}
 	} catch (err) {
 		console.warn("[db] FTS rowid-upgrade check failed:", err);
 	}
 
-	// Search backend bootstrap. The SQLite FTS5 virtual tables + triggers
-	// are shared DDL (db/fts-ddl.ts) with search/sqlite-fts-backend.ts's
-	// SqliteFtsBackend.initialize() — one module, Pattern parity P-6.
-	try {
-		sqlite.exec(FTS_BOOTSTRAP_SQL);
-	} catch (err) {
-		console.warn("[db] FTS5 search index bootstrap failed:", err);
-	}
-
+	// F129: the drop, the trigger recreate and the rowid re-key rebuild used
+	// to be three separate exec() calls — a DROP outside any transaction,
+	// then a bootstrap exec, then a second BEGIN/COMMIT for the rebuild. A
+	// failure between the DROP and the rebuild (e.g. the bootstrap exec
+	// throwing) left the triggers dropped with nothing to replace them:
+	// search silently broke until the next boot happened to retry. All three
+	// steps now run inside one transaction; on any failure we roll back,
+	// which restores the pre-upgrade triggers and FTS index exactly as they
+	// were, and warn. We do not fail initializeDatabase() over this — search
+	// is not critical enough to block boot, and detection is by trigger
+	// text, so the next boot retries automatically.
 	if (needsRowidRekey) {
 		try {
 			console.log("[db] Re-keying SQLite FTS event index to rowid = events.id");
 			sqlite.exec("BEGIN;");
 			try {
+				sqlite.exec("DROP TRIGGER IF EXISTS trg_events_ai_fts;");
+				sqlite.exec("DROP TRIGGER IF EXISTS trg_events_ad_fts;");
+				sqlite.exec(EVENTS_FTS_DDL);
 				sqlite.exec("DELETE FROM search_events_fts;");
 				sqlite.exec(`
 					INSERT INTO search_events_fts(rowid, event_id, session_id, event_type, text, created_at)
@@ -1200,14 +1208,30 @@ async function runFtsBootstrap(sqlite: Database): Promise<void> {
 					WHERE event_type IN (${FTS_INDEXED_EVENT_TYPES_SQL_LIST});
 				`);
 				sqlite.exec("COMMIT;");
+				console.log("[db] FTS rowid re-key complete");
 			} catch (err) {
 				sqlite.exec("ROLLBACK;");
 				throw err;
 			}
-			console.log("[db] FTS rowid re-key complete");
 		} catch (err) {
-			console.warn("[db] FTS rowid re-key failed:", err);
+			console.warn(
+				"[db] FTS rowid re-key failed (rolled back; prior triggers/index left intact; will retry on next boot):",
+				err,
+			);
 		}
+	}
+
+	// Search backend bootstrap. The SQLite FTS5 virtual tables + triggers
+	// are shared DDL (db/fts-ddl.ts) with search/sqlite-fts-backend.ts's
+	// SqliteFtsBackend.initialize() — one module, Pattern parity P-6. Runs
+	// after the re-key: on fresh installs (no existing trigger to upgrade)
+	// this is the only place the events triggers get created; on an
+	// already-upgraded DB every statement here is a no-op (IF NOT EXISTS /
+	// the trigger already carries the guard).
+	try {
+		sqlite.exec(FTS_BOOTSTRAP_SQL);
+	} catch (err) {
+		console.warn("[db] FTS5 search index bootstrap failed:", err);
 	}
 
 	// Backfill FTS from pre-existing rows the triggers never saw. The

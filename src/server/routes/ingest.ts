@@ -92,53 +92,223 @@ export { getBgErrorCount, getInFlightCount, getRateLimitedDropped, getOversizeDr
 // payload — an attacker (or a runaway client) can post an arbitrarily large
 // body and burn CPU/memory on every layer before this route even validates
 // shape. The always-200 post-auth contract still applies: an oversize body
-// is silently dropped (200, no parse, no processing), exactly like a
-// rate-limited one, and counted via oversizeDropped (surfaced on /health,
-// same shape as rateLimitedDropped).
+// is silently acknowledged (200, no parse), and counted via oversizeDropped
+// (surfaced on /health, same shape as rateLimitedDropped).
 export const MAX_HOOK_BODY_BYTES = 16 * 1024 * 1024; // 16 MiB
 
-/**
- * Reads `request`'s body up to `maxBytes`, returning the decoded text, or
- * null if the body exceeds the cap. Checks Content-Length first (cheap,
- * catches well-behaved oversize clients without touching the body stream
- * at all), then streams the body with a running total regardless — a
- * missing or understated Content-Length (chunked transfer, a lying client)
- * is still caught, and the stream is cancelled the moment the cap is
- * crossed rather than read to completion. JSON.parse is never reached for
- * a body that fails this check.
- */
-export async function readCappedBody(request: Request, maxBytes: number): Promise<string | null> {
-	const contentLength = request.headers.get("content-length");
-	if (contentLength !== null) {
-		const declared = Number(contentLength);
-		if (Number.isFinite(declared) && declared > maxBytes) return null;
-	}
+// F128 (codex r2): D16 made an oversize delivery disappear entirely — before
+// D16 it was stored with tool_response capped at 4 KB; after D16 nothing was
+// stored at all, which can lose every event in a large delivery (a big
+// Codex chunk, a huge tool_response). readCappedBody now keeps a bounded
+// prefix of an overflowing body instead of discarding it, so
+// extractOversizeIdentity below can recover session_id/hook_event_name and
+// friends when they precede the huge field (real hook payloads always emit
+// identity fields before tool_input/tool_response) and route a minimal stub
+// row through the normal dedup/processHookEvent path.
+export const OVERSIZE_PREFIX_BYTES = 64 * 1024; // 64 KiB
 
-	const body = request.body;
-	if (!body) return "";
+export type CappedBodyResult =
+	| { oversize: false; text: string }
+	| { oversize: true; prefix: string };
 
-	const reader = body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		if (!value) continue;
-		total += value.byteLength;
-		if (total > maxBytes) {
-			await reader.cancel().catch(() => {});
-			return null;
-		}
-		chunks.push(value);
-	}
-
-	const combined = new Uint8Array(total);
+function decodeChunks(chunks: Uint8Array[], totalBytes: number): string {
+	const combined = new Uint8Array(totalBytes);
 	let offset = 0;
 	for (const chunk of chunks) {
 		combined.set(chunk, offset);
 		offset += chunk.byteLength;
 	}
 	return new TextDecoder().decode(combined);
+}
+
+/**
+ * Reads `request`'s body up to `maxBytes`. On overflow, returns
+ * `{ oversize: true, prefix }` where `prefix` is at most `OVERSIZE_PREFIX_BYTES`
+ * of the body actually read — never the full oversize body, and never more
+ * than a bounded amount even when Content-Length alone already proves the
+ * body is oversize (that path used to skip the stream entirely; it now
+ * reads just enough to capture the prefix, then cancels — still a small,
+ * fixed amount of work, never proportional to the declared or actual body
+ * size). A missing or understated Content-Length (chunked transfer, a lying
+ * client) is still caught by the running total. JSON.parse is never reached
+ * for a body that fails this check.
+ */
+export async function readCappedBody(
+	request: Request,
+	maxBytes: number,
+): Promise<CappedBodyResult> {
+	const contentLength = request.headers.get("content-length");
+	let declaredOversize = false;
+	if (contentLength !== null) {
+		const declared = Number(contentLength);
+		declaredOversize = Number.isFinite(declared) && declared > maxBytes;
+	}
+
+	const body = request.body;
+	if (!body) {
+		return declaredOversize ? { oversize: true, prefix: "" } : { oversize: false, text: "" };
+	}
+
+	const reader = body.getReader();
+	const fullChunks: Uint8Array[] = [];
+	const prefixChunks: Uint8Array[] = [];
+	let total = 0;
+	let prefixBytes = 0;
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		if (!value) continue;
+		total += value.byteLength;
+
+		if (prefixBytes < OVERSIZE_PREFIX_BYTES) {
+			const remaining = OVERSIZE_PREFIX_BYTES - prefixBytes;
+			const slice = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+			prefixChunks.push(slice);
+			prefixBytes += slice.byteLength;
+		}
+
+		// Once Content-Length already proved oversize, stop as soon as the
+		// bounded prefix is full — no need to keep draining toward the
+		// declared (possibly huge) length just to re-confirm what the header
+		// already told us.
+		const overflow = total > maxBytes || (declaredOversize && prefixBytes >= OVERSIZE_PREFIX_BYTES);
+		if (overflow) {
+			await reader.cancel().catch(() => {});
+			return { oversize: true, prefix: decodeChunks(prefixChunks, prefixBytes) };
+		}
+		fullChunks.push(value);
+	}
+
+	return { oversize: false, text: decodeChunks(fullChunks, total) };
+}
+
+// ── F128: identity extraction from an oversize body's bounded prefix ────────
+
+const OVERSIZE_FIELD_MAX_LEN = 512;
+// Matches a JSON string value: runs of non-quote/non-backslash chars, or a
+// backslash-escaped pair, bounded so this can never backtrack catastrophically
+// — and it only ever runs against a <=64 KiB prefix regardless.
+const JSON_STRING_VALUE = `((?:[^"\\\\]|\\\\.){0,${OVERSIZE_FIELD_MAX_LEN}})`;
+
+const OVERSIZE_FIELD_PATTERNS = {
+	session_id: new RegExp(`"session_id"\\s*:\\s*"${JSON_STRING_VALUE}"`),
+	hook_event_name: new RegExp(`"hook_event_name"\\s*:\\s*"${JSON_STRING_VALUE}"`),
+	tool_name: new RegExp(`"tool_name"\\s*:\\s*"${JSON_STRING_VALUE}"`),
+	tool_use_id: new RegExp(`"tool_use_id"\\s*:\\s*"${JSON_STRING_VALUE}"`),
+	turn_id: new RegExp(`"turn_id"\\s*:\\s*"${JSON_STRING_VALUE}"`),
+	cwd: new RegExp(`"cwd"\\s*:\\s*"${JSON_STRING_VALUE}"`),
+	transcript_path: new RegExp(`"transcript_path"\\s*:\\s*"${JSON_STRING_VALUE}"`),
+} as const satisfies Record<string, RegExp>;
+
+// Same charset convention as the codex-observer's native-marker session id
+// check (D19, src/supervisor/services/codex-observer.ts SESSION_ID_CHARSET):
+// session ids are UUID-shaped, so anything else is treated as an untrusted
+// or garbled extraction rather than routed onward.
+const OVERSIZE_SESSION_ID_CHARSET = /^[A-Za-z0-9-]{1,128}$/;
+
+/**
+ * Un-escapes a JSON string body (the capture group from OVERSIZE_FIELD_PATTERNS,
+ * i.e. already stripped of its surrounding quotes) by hand rather than
+ * `JSON.parse('"' + body + '"')` — the ingest route's own oversize test pins
+ * that JSON.parse is never reached for any part of an oversize body, and a
+ * hand-rolled unescape keeps that guarantee airtight instead of "only for
+ * the full body".
+ */
+function unescapeJsonString(raw: string): string {
+	let out = "";
+	for (let i = 0; i < raw.length; i++) {
+		const ch = raw[i];
+		if (ch !== "\\" || i + 1 >= raw.length) {
+			out += ch;
+			continue;
+		}
+		const next = raw[i + 1];
+		switch (next) {
+			case '"':
+			case "\\":
+			case "/":
+				out += next;
+				i++;
+				break;
+			case "n":
+				out += "\n";
+				i++;
+				break;
+			case "t":
+				out += "\t";
+				i++;
+				break;
+			case "r":
+				out += "\r";
+				i++;
+				break;
+			case "b":
+				out += "\b";
+				i++;
+				break;
+			case "f":
+				out += "\f";
+				i++;
+				break;
+			case "u": {
+				const hex = raw.slice(i + 2, i + 6);
+				if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+					out += String.fromCharCode(Number.parseInt(hex, 16));
+					i += 5;
+				} else {
+					out += ch;
+				}
+				break;
+			}
+			default:
+				out += ch;
+		}
+	}
+	return out;
+}
+
+function extractJsonStringField(prefixText: string, pattern: RegExp): string | undefined {
+	const match = pattern.exec(prefixText);
+	if (!match) return undefined;
+	const value = unescapeJsonString(match[1] as string);
+	return value.length > 0 ? value : undefined;
+}
+
+export interface OversizeIdentity {
+	sessionId: string;
+	hookEventName: string;
+	toolName?: string;
+	toolUseId?: string;
+	turnId?: string;
+	cwd?: string;
+	transcriptPath?: string;
+}
+
+/**
+ * Recovers hook identity fields from an oversize body's bounded prefix via
+ * anchored, length-capped regexes — never JSON.parse (the body may be
+ * truncated mid-value). Requires both session_id and hook_event_name
+ * (mirroring the same `!parsed.session_id || !parsed.hook_event_name` gate
+ * the normal-size path applies) and a session_id matching the existing
+ * charset convention; anything less returns null, and the caller falls back
+ * to the plain drop-and-count behavior.
+ */
+export function extractOversizeIdentity(prefixText: string): OversizeIdentity | null {
+	const sessionId = extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.session_id);
+	if (!sessionId || !OVERSIZE_SESSION_ID_CHARSET.test(sessionId)) return null;
+
+	const hookEventName = extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.hook_event_name);
+	if (!hookEventName) return null;
+
+	return {
+		sessionId,
+		hookEventName,
+		toolName: extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.tool_name),
+		toolUseId: extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.tool_use_id),
+		turnId: extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.turn_id),
+		cwd: extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.cwd),
+		transcriptPath: extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.transcript_path),
+	};
 }
 
 /**
@@ -161,6 +331,107 @@ function sanitizeLogField(value: unknown, maxLen = 64): string {
 		.join("");
 }
 
+/** Phase 7 identity inputs (D2), shared by the real-body and F128 oversize-stub paths. */
+function buildHookDeliveryContext(c: Context): {
+	keyId: string;
+	deliveryId: string | null;
+	origin: "codex-observer" | "native";
+} {
+	const authUser = c.get("authUser") as AuthUser | undefined;
+	return {
+		keyId: authUser?.id ?? "anonymous",
+		deliveryId: parseDeliveryId(c.req.header(DELIVERY_ID_HEADER)),
+		origin: parseOrigin(c.req.header(ORIGIN_HEADER)),
+	};
+}
+
+/**
+ * Enqueues normalize+dedup+persist+broadcast for one hook payload, serialized
+ * per session_id (see enqueueSessionTask above). Shared by the normal-size
+ * path and the F128 oversize-stub path — both need the same dedup/broadcast
+ * behavior, just with a different (real vs. synthetic) payload.
+ */
+function enqueueHookProcessing(
+	payload: HookEventPayload,
+	agentType: ReturnType<typeof detectAgentType>,
+	hookCtx: ReturnType<typeof buildHookDeliveryContext>,
+): void {
+	incrementInFlightCount();
+	enqueueSessionTask(payload.session_id, async () => {
+		try {
+			const {
+				isNew,
+				session,
+				events: storedEvents,
+			} = await processHookEvent(payload, agentType, hookCtx);
+
+			// Broadcast to WebSocket subscribers using the returned session row —
+			// no second DB read needed (eliminates the N+1 getSession() call).
+			if (isNew) {
+				notifySessionCreated(session);
+			} else {
+				notifySessionUpdated(session);
+			}
+
+			// Broadcast exactly the rows this call stored, with their real DB
+			// ids (Phase 6) — never a re-normalized, unstored, id:0 stand-in.
+			// A content-window-deduped or compensated-away row is correctly
+			// absent from storedEvents, so it's never broadcast either.
+			for (const event of storedEvents) {
+				notifyChannel("new_event", event);
+			}
+		} catch (err) {
+			incrementBgErrorCount();
+			console.error(
+				JSON.stringify({
+					kind: "ingest_bg_error",
+					level: "error",
+					// Sanitize user-controlled fields to prevent log injection.
+					session_id: sanitizeLogField(payload.session_id),
+					event_type: sanitizeLogField(payload.hook_event_name),
+					error: err instanceof Error ? err.message : String(err),
+					stack: err instanceof Error ? err.stack : undefined,
+				}),
+			);
+		} finally {
+			decrementInFlightCount();
+		}
+	});
+}
+
+/**
+ * F128 (codex r2): an oversize /hooks delivery. oversizeDropped is already
+ * incremented by the caller for every oversize delivery, identity-bearing or
+ * not. When the bounded prefix yields a usable session_id + hook_event_name,
+ * a minimal synthetic payload goes through the exact same dedup/persist/
+ * broadcast path as a normal hook — same hookCtx, so a stamped delivery id
+ * or tool_use_id still dedups a replayed oversize delivery to one row. With
+ * no usable identity, the delivery is dropped exactly as before D18's fix
+ * (200, counted, nothing stored).
+ */
+function handleOversizeHookDelivery(c: Context, prefix: string): Response {
+	const identity = extractOversizeIdentity(prefix);
+	if (!identity) {
+		return c.json({ ok: true });
+	}
+
+	const syntheticPayload: HookEventPayload = {
+		session_id: identity.sessionId,
+		hook_event_name: identity.hookEventName,
+		tool_name: identity.toolName,
+		tool_use_id: identity.toolUseId,
+		cwd: identity.cwd,
+		transcript_path: identity.transcriptPath,
+		agentpulse_oversize: true,
+	};
+	const agentType = detectAgentType(c.req.header("X-Agent-Type"), syntheticPayload);
+	const hookCtx = buildHookDeliveryContext(c);
+
+	const response = c.json({ ok: true });
+	enqueueHookProcessing(syntheticPayload, agentType, hookCtx);
+	return response;
+}
+
 const ingest = new Hono();
 
 // POST /api/v1/hooks - Receive hook events from Claude Code and Codex CLI
@@ -172,12 +443,15 @@ const ingest = new Hono();
 // Pre-auth failures (no/invalid API key) → 401/403 from requireApiKey().
 ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
 	// D16: size cap before any parsing — an oversize body never reaches
-	// JSON.parse or downstream processing.
-	const bodyText = await readCappedBody(c.req.raw, MAX_HOOK_BODY_BYTES);
-	if (bodyText === null) {
+	// JSON.parse. F128: on overflow, try to recover enough identity from the
+	// bounded prefix to store an informative stub row instead of dropping
+	// the delivery outright.
+	const capped = await readCappedBody(c.req.raw, MAX_HOOK_BODY_BYTES);
+	if (capped.oversize) {
 		incrementOversizeDropped();
-		return c.json({ ok: true });
+		return handleOversizeHookDelivery(c, capped.prefix);
 	}
+	const bodyText = capped.text;
 
 	// Parse body; if malformed, return 200 with structured error log.
 	// This complies with the always-200 post-auth contract.
@@ -225,64 +499,12 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
 
 	// Phase 7 identity inputs (D2). Header reads and the authUser lookup are
 	// synchronous, no I/O — this is the only new work allowed before the 200.
-	const authUser = c.get("authUser") as AuthUser | undefined;
-	const hookCtx = {
-		keyId: authUser?.id ?? "anonymous",
-		deliveryId: parseDeliveryId(c.req.header(DELIVERY_ID_HEADER)),
-		origin: parseOrigin(c.req.header(ORIGIN_HEADER)),
-	};
+	const hookCtx = buildHookDeliveryContext(c);
 
 	// Return 200 IMMEDIATELY before any DB work (A-H1: <50ms budget).
 	// Processing continues asynchronously via the per-session queue below.
 	const response = c.json({ ok: true });
-
-	// Enqueue processing for this session. All hooks for the same session_id
-	// are serialized (arrival order) to prevent concurrent-insert races and
-	// status-overwrite bugs. Hooks for distinct sessions remain fully parallel.
-	incrementInFlightCount();
-	const capturedParsed = parsed;
-	const capturedAgentType = agentType;
-	enqueueSessionTask(capturedParsed.session_id, async () => {
-		try {
-			const {
-				isNew,
-				session,
-				events: storedEvents,
-			} = await processHookEvent(capturedParsed, capturedAgentType, hookCtx);
-
-			// Broadcast to WebSocket subscribers using the returned session row —
-			// no second DB read needed (eliminates the N+1 getSession() call).
-			if (isNew) {
-				notifySessionCreated(session);
-			} else {
-				notifySessionUpdated(session);
-			}
-
-			// Broadcast exactly the rows this call stored, with their real DB
-			// ids (Phase 6) — never a re-normalized, unstored, id:0 stand-in.
-			// A content-window-deduped or compensated-away row is correctly
-			// absent from storedEvents, so it's never broadcast either.
-			for (const event of storedEvents) {
-				notifyChannel("new_event", event);
-			}
-		} catch (err) {
-			incrementBgErrorCount();
-			console.error(
-				JSON.stringify({
-					kind: "ingest_bg_error",
-					level: "error",
-					// Sanitize user-controlled fields to prevent log injection.
-					session_id: sanitizeLogField(capturedParsed.session_id),
-					event_type: sanitizeLogField(capturedParsed.hook_event_name),
-					error: err instanceof Error ? err.message : String(err),
-					stack: err instanceof Error ? err.stack : undefined,
-				}),
-			);
-		} finally {
-			decrementInFlightCount();
-		}
-	});
-
+	enqueueHookProcessing(parsed, agentType, hookCtx);
 	return response;
 });
 
@@ -290,12 +512,15 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
 //
 // Same always-200 post-auth contract as /hooks.
 ingest.post("/hooks/status", requireApiKey(), hookRateLimit(), async (c) => {
-	// D16: same size cap as /hooks.
-	const statusBodyText = await readCappedBody(c.req.raw, MAX_HOOK_BODY_BYTES);
-	if (statusBodyText === null) {
+	// D16: same size cap as /hooks. Status updates carry no tool identity
+	// worth recovering (F128's stub-row path is /hooks-specific), so an
+	// oversize status body is still a plain drop-and-count.
+	const cappedStatus = await readCappedBody(c.req.raw, MAX_HOOK_BODY_BYTES);
+	if (cappedStatus.oversize) {
 		incrementOversizeDropped();
 		return c.json({ ok: true });
 	}
+	const statusBodyText = cappedStatus.text;
 
 	let update: SemanticStatusUpdate;
 	try {
