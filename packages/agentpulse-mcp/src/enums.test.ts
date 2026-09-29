@@ -65,6 +65,20 @@ describe("tools/sessions.ts list_sessions — observed enum (OBSERVED_AGENT_TYPE
 		});
 		expect(result.isError).toBeFalsy();
 	});
+
+	// Phase 6 (F12 fully closed): the discriminating run — OBSERVED_AGENT_TYPE_ENUM
+	// must accept the real "copilot_cli" literal, not a placeholder. RED until
+	// Phase 6 adds it to the enum.
+	test("agent_type:copilot_cli is accepted (OBSERVED_AGENT_TYPE_ENUM gains copilot_cli in Phase 6)", async () => {
+		const ctx = newContext(fakeClient({ getSessions: async () => ({ sessions: [], total: 0 }) }));
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "list_sessions",
+			arguments: { agent_type: "copilot_cli" },
+		});
+		expect(result.isError).toBeFalsy();
+	});
 });
 
 describe("tools/templates.ts create_template — launchable enum (LAUNCHABLE_AGENT_TYPE_ENUM)", () => {
@@ -102,6 +116,22 @@ describe("tools/templates.ts create_template — launchable enum (LAUNCHABLE_AGE
 		});
 		expect(result.isError).toBeFalsy();
 	});
+
+	// Phase 6 (F12 fully closed): the discriminating rejection — copilot_cli
+	// is now a real AgentType elsewhere in the system, and LAUNCHABLE_AGENT_TYPE_ENUM
+	// must still reject it here. This already passes today (the enum has
+	// always been 2-valued); it becomes a meaningful, discriminating
+	// assertion once Phase 6 makes "copilot_cli" a real observed value.
+	test("agent_type:copilot_cli is rejected — LAUNCHABLE_AGENT_TYPE_ENUM never gains it", async () => {
+		const ctx = newContext(fakeClient({}));
+		registerTemplateMutationTools(ctx, { hasObserve: false, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "create_template",
+			arguments: { ...baseTemplateSnakeCase, agent_type: "copilot_cli" },
+		});
+		expect(result.isError).toBeTruthy();
+	});
 });
 
 describe("tools/orchestrate.ts recommend_launch — launchable enum (LAUNCHABLE_AGENT_TYPE_ENUM)", () => {
@@ -131,6 +161,20 @@ describe("tools/orchestrate.ts recommend_launch — launchable enum (LAUNCHABLE_
 		});
 		expect(result.isError).toBeFalsy();
 	});
+
+	// Phase 6 (F12 fully closed): the discriminating rejection — see the
+	// create_template case above for why this is meaningful post-Phase-6
+	// even though it already passes.
+	test("template.agentType:copilot_cli is rejected — LAUNCHABLE_AGENT_TYPE_ENUM never gains it", async () => {
+		const ctx = newContext(fakeClient({}));
+		registerOrchestrateTools(ctx, { hasObserve: false, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "recommend_launch",
+			arguments: { template: { ...baseTemplateCamelCase, agentType: "copilot_cli" } },
+		});
+		expect(result.isError).toBeTruthy();
+	});
 });
 
 describe("tools/catalog.ts list_templates — launchable enum (LAUNCHABLE_AGENT_TYPE_ENUM)", () => {
@@ -145,5 +189,21 @@ describe("tools/catalog.ts list_templates — launchable enum (LAUNCHABLE_AGENT_
 			arguments: { agent_type: "claude_code" },
 		});
 		expect(result.isError).toBeFalsy();
+	});
+
+	// Phase 6 (F12 fully closed): the discriminating rejection — see the
+	// create_template case above for why this is meaningful post-Phase-6
+	// even though it already passes.
+	test("agent_type:copilot_cli is rejected — LAUNCHABLE_AGENT_TYPE_ENUM never gains it", async () => {
+		const ctx = newContext(
+			fakeClient({ listTemplates: async () => ({ templates: [], total: 0 }) }),
+		);
+		registerCatalogTools(ctx, { hasObserve: false, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "list_templates",
+			arguments: { agent_type: "copilot_cli" },
+		});
+		expect(result.isError).toBeTruthy();
 	});
 });

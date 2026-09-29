@@ -255,3 +255,29 @@ describe("shared kind allowlists", () => {
 		}
 	});
 });
+
+// Phase 6 (D7, contract item 10): CopilotEvent / COPILOT_EVENT_TO_HOOK_EVENT
+// are new in Phase 6 — RED at this phase's start commit (types.ts doesn't
+// export them yet). copilot_cli is observe-only: it must never satisfy
+// isLaunchable, even once it's a real AgentType.
+describe("Phase 6: CopilotEvent / COPILOT_EVENT_TO_HOOK_EVENT (D7)", () => {
+	test("COPILOT_EVENT_TO_HOOK_EVENT is total over CopilotEvent — every key maps to a non-empty HookEventType", async () => {
+		const { COPILOT_EVENT_TO_HOOK_EVENT } = await import("./types.js");
+		const keys = Object.keys(COPILOT_EVENT_TO_HOOK_EVENT);
+		expect(keys.length).toBe(10);
+		for (const key of keys) {
+			const mapped = COPILOT_EVENT_TO_HOOK_EVENT[key as keyof typeof COPILOT_EVENT_TO_HOOK_EVENT];
+			expect(typeof mapped).toBe("string");
+			expect(mapped.length).toBeGreaterThan(0);
+		}
+	});
+
+	test("copilot_cli is never launchable, even once it's a real AgentType", () => {
+		expect(isLaunchable("copilot_cli")).toBe(false);
+	});
+
+	test("AGENT_TYPES gains copilot_cli; LAUNCHABLE_AGENT_TYPES does not", () => {
+		expect((AGENT_TYPES as readonly string[]).includes("copilot_cli")).toBe(true);
+		expect((LAUNCHABLE_AGENT_TYPES as readonly string[]).includes("copilot_cli")).toBe(false);
+	});
+});

@@ -9,6 +9,7 @@ import {
 	buildLaunchSpec,
 	pickFirstCapableSupervisor,
 	supervisorSupportsPrelaunch,
+	validateAgainstSupervisor,
 } from "./launch-compatibility.js";
 
 function makeSupervisor(overrides: Partial<SupervisorRecord> = {}): SupervisorRecord {
@@ -101,6 +102,55 @@ describe("providerCommandForSpec (via buildLaunchSpec) — D5 lookup table", () 
 			expect(spec.agentType).toBe(c.agentType);
 		});
 	}
+});
+
+// Phase 6 (F66): the five literal claude/codex `===`/`!==` branches in
+// validateAgainstSupervisor (beside PROVIDER_COMMAND) only ever check
+// "is this claude_code" / "is this codex_cli" — an observe-only agentType
+// that reaches this function via an unsafe cast (a Pattern A' guard
+// failure elsewhere, or a malformed wire payload) satisfies *neither*
+// branch, so neither per-agent executable check fires. The only remaining
+// gate is `!supervisor.capabilities.agentTypes.includes(template.agentType)`,
+// which is silently bypassed if a corrupted/malformed SupervisorRecord's
+// own `agentTypes` array (JSON off the wire, no runtime zod validation)
+// happens to already list the bogus value. RED until launch-compatibility.ts
+// adds an explicit, defense-in-depth rejection of any agentType outside
+// LAUNCHABLE_AGENT_TYPES, independent of what the supervisor claims.
+describe("Phase 6 (F66): validateAgainstSupervisor explicitly rejects a non-launchable agentType", () => {
+	test("copilot_cli reaching validateAgainstSupervisor via an unsafe cast is always rejected, even against a supervisor whose own (corrupted) capabilities.agentTypes already lists it", () => {
+		const supervisor = makeSupervisor({
+			capabilities: {
+				version: 1,
+				// Simulates a malformed/corrupted record — the field is typed
+				// LaunchableAgentType[], so this requires bypassing the type
+				// system, exactly like the unsafe cast on the template below.
+				agentTypes: ["claude_code", "codex_cli", "copilot_cli"] as unknown as LaunchableAgentType[],
+				launchModes: ["headless", "interactive_terminal"],
+				os: "macos",
+				terminalSupport: ["xterm"],
+				features: [],
+				executables: {
+					claude: {
+						available: true,
+						command: "claude",
+						resolvedPath: "/usr/bin/claude",
+						source: "auto",
+					},
+					codex: {
+						available: true,
+						command: "codex",
+						resolvedPath: "/usr/bin/codex",
+						source: "auto",
+					},
+				},
+			},
+		});
+		const template = makeTemplate({
+			agentType: "copilot_cli" as unknown as LaunchableAgentType,
+		});
+		const { errors } = validateAgainstSupervisor(template, supervisor, "interactive_terminal");
+		expect(errors.some((e) => e.includes("copilot_cli"))).toBe(true);
+	});
 });
 
 describe("supervisorSupportsPrelaunch", () => {
