@@ -415,6 +415,65 @@ describe("F131b (D19): oversize stubs never claim a real t:/d: dedup key", () =>
 	});
 });
 
+describe("F140 (D21): the oversize-stub flag can't be forged by a client", () => {
+	test("a normal-size PostToolUse with agentpulse_oversize:true stores its real content under a t: key, not the placeholder", async () => {
+		const sid = newSessionId("f140-forge");
+		const toolUseId = `f140-tu-${crypto.randomUUID()}`;
+		const res = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				session_id: sid,
+				hook_event_name: "PostToolUse",
+				tool_name: "Bash",
+				tool_use_id: toolUseId,
+				tool_response: "real tool output",
+				// The forgery attempt: a normal-size, real-looking body that
+				// claims to be an oversize stub.
+				agentpulse_oversize: true,
+			}),
+		});
+		expect(res.status).toBe(200);
+		await until(() => getInFlightCount() === 0, 10_000);
+
+		const rows = await rowsFor(sid);
+		expect(rows, JSON.stringify(rows)).toHaveLength(1);
+		expect(rows[0]?.content).not.toBe("Payload exceeded 16 MiB and was dropped");
+		expect(rows[0]?.content).toBe("Completed Bash");
+		expect(rows[0]?.toolResponse).toBe("real tool output");
+		expect(rows[0]?.dedupKey).toMatch(/^t:[0-9a-f]{32}$/);
+		// Defense in depth: the reserved key never survives into the stored
+		// rawPayload either.
+		expect(rows[0]?.rawPayload).not.toHaveProperty("agentpulse_oversize");
+	});
+
+	test("a real oversize delivery still stores the placeholder under an o: key (D19 unchanged)", async () => {
+		const sid = newSessionId("f140-real-oversize");
+		const toolUseId = `f140-real-tu-${crypto.randomUUID()}`;
+		const body = JSON.stringify({
+			session_id: sid,
+			hook_event_name: "PostToolUse",
+			tool_name: "Bash",
+			tool_use_id: toolUseId,
+			tool_response: "p".repeat(MAX_HOOK_BODY_BYTES + 4096),
+		});
+		expect(body.length).toBeGreaterThan(MAX_HOOK_BODY_BYTES);
+
+		const res = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body,
+		});
+		expect(res.status).toBe(200);
+		await until(() => getInFlightCount() === 0, 10_000);
+
+		const rows = await rowsFor(sid);
+		expect(rows, JSON.stringify(rows)).toHaveLength(1);
+		expect(rows[0]?.content).toBe("Payload exceeded 16 MiB and was dropped");
+		expect(rows[0]?.dedupKey).toMatch(/^o:[0-9a-f]{32}$/);
+	});
+});
+
 describe("F132 (D19): identity extraction is top-level-only and JSON-aware", () => {
 	test("a top-level session_id is extracted even when tool_input nests a fake one", () => {
 		const prefix = JSON.stringify({
@@ -447,6 +506,38 @@ describe("F132 (D19): identity extraction is top-level-only and JSON-aware", () 
 		});
 		const identity = extractOversizeIdentity(prefix);
 		expect(identity?.sessionId).toBe("f132-real-array");
+	});
+});
+
+describe("F141 (D21): a bracket-type mismatch aborts extraction entirely", () => {
+	test("a nested object closed by ] (not }) yields no stub — xander's adversarial prefix, padded past the cap", async () => {
+		// A flat depth counter sees `{` and `[` as interchangeable: closing the
+		// nested tool_input object with `]` still drops the counter from 2 to
+		// 1, so it reads everything after that `]` as top-level — including
+		// the attacker's forged session_id/hook_event_name/tool_use_id. The
+		// stack-based tracker must instead detect the `}` vs `]` mismatch and
+		// abort extraction outright.
+		const sid = "attacker-session";
+		const padding = "p".repeat(MAX_HOOK_BODY_BYTES + 4096);
+		const body = `{"tool_input":{"nested":"x"]"session_id":"${sid}","hook_event_name":"PostToolUse","tool_use_id":"forged-1","padding":"${padding}"}`;
+		expect(body.length).toBeGreaterThan(MAX_HOOK_BODY_BYTES);
+
+		const before = getOversizeDropped();
+		const res = await app.request("/api/v1/hooks", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body,
+		});
+		expect(res.status).toBe(200);
+		expect(getOversizeDropped() - before).toBe(1);
+
+		await until(() => getInFlightCount() === 0, 5_000);
+		expect(await rowsFor(sid)).toHaveLength(0);
+	});
+
+	test("the reverse mismatch, [ closed by }, also yields nothing", () => {
+		const prefix = '{"a":[1,2}"session_id":"f141-reverse","hook_event_name":"Stop"}';
+		expect(extractOversizeIdentity(prefix)).toBeNull();
 	});
 });
 
