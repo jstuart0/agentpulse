@@ -6,6 +6,12 @@
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
+// D40 (F251): AGENTPULSE_AI_ENABLED / AGENTPULSE_SECRETS_KEY defaults now
+// live in their own preloaded module (see bunfig.toml) — imported here too
+// so this file's own ??= behavior is unchanged for anything that imports
+// __test_db.ts directly without relying on the preload (e.g. a future
+// non-bun-test runner).
+import "./test-env-defaults.js";
 
 const TMP = mkdtempSync(join(tmpdir(), "ap-ai-test-"));
 process.env.SQLITE_PATH ??= join(TMP, "test.db");
@@ -25,7 +31,5 @@ process.env.SQLITE_PATH ??= join(TMP, "test.db");
 	}
 }
 process.env.DATA_DIR ??= TMP;
-process.env.AGENTPULSE_AI_ENABLED ??= "true";
-process.env.AGENTPULSE_SECRETS_KEY ??= "test-secrets-key-01234567890123456789";
 
 export const TEST_TMP_DIR = TMP;

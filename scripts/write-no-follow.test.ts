@@ -26,6 +26,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// D40 (F251): belt-and-braces — bunfig.toml's [test] preload already sets
+// safe env defaults before any test file's own imports run, but this file
+// dynamically imports src/server/routes/setup.ts (which statically imports
+// config.js) via renderedSetupSh() below, so keep it self-sufficient too.
+import "../src/server/db/__test_db.js";
 
 const ROOT = join(import.meta.dir, "..");
 
