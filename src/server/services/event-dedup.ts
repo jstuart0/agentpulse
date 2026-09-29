@@ -4,7 +4,7 @@ import {
 	normalizeComparableContent,
 } from "../../shared/event-authority.js";
 import { ORIGIN_CODEX_OBSERVER } from "../../shared/hook-headers.js";
-import type { NormalizedEvent } from "./event-normalizer.js";
+import { type NormalizedEvent, OVERSIZE_STUB_MARKER } from "./event-normalizer.js";
 import { parseDbTimestamp } from "./util/db-time.js";
 import { sha256Hex } from "./util/hash.js";
 
@@ -184,7 +184,12 @@ function planContentWindow(
 
 export type DedupKeyArgs =
 	| { kind: "t"; keyId: string; eventType: string; toolUseId: string }
-	| { kind: "d"; keyId: string; deliveryId: string; bodyDigest: string; rowIndex: number };
+	| { kind: "d"; keyId: string; deliveryId: string; bodyDigest: string; rowIndex: number }
+	// F131b (D19): an oversize stub's own namespace. `identity` is the row's
+	// tool_use_id, or ctx.deliveryId when there's no tool_use_id — never a
+	// body digest, so a stub never collides with (or suppresses) a real `t:`
+	// or `d:` row, only with a replay of itself.
+	| { kind: "o"; keyId: string; eventType: string; identity: string };
 
 function lengthPrefixed(fields: string[]): string {
 	return fields.map((field) => `${field.length}:${field}`).join("");
@@ -195,7 +200,9 @@ export function computeDedupKey(args: DedupKeyArgs): string {
 	const fields =
 		args.kind === "t"
 			? [args.keyId, args.eventType, args.toolUseId]
-			: [args.keyId, args.deliveryId, args.bodyDigest, String(args.rowIndex)];
+			: args.kind === "d"
+				? [args.keyId, args.deliveryId, args.bodyDigest, String(args.rowIndex)]
+				: [args.keyId, args.eventType, args.identity];
 	return `${args.kind}:${sha256Hex(lengthPrefixed(fields)).slice(0, 32)}`;
 }
 
@@ -246,28 +253,47 @@ function planHookDelivery(
 
 	incoming.forEach((event, rowIndex) => {
 		let dedupKey: string | null = null;
+		const isOversizeStub = event.rawPayload?.[OVERSIZE_STUB_MARKER] === true;
 
-		if (TOOL_KEY_CATEGORIES.has(event.category)) {
+		if (isOversizeStub) {
+			// F131b (D19): a stub never claims the real t:/d: key space — its
+			// own o: namespace, keyed on tool_use_id when the delivery had one,
+			// else the stamped delivery id. With neither, it stays unkeyed
+			// (null), same fail-open direction as any other unkeyed row (D17):
+			// a possible duplicate stub, never a suppressed real one.
 			const toolUseId = extractToolUseId(event.rawPayload);
-			if (toolUseId) {
+			const identity = toolUseId ?? ctx.deliveryId;
+			if (identity) {
 				dedupKey = computeDedupKey({
-					kind: "t",
+					kind: "o",
 					keyId: ctx.keyId,
 					eventType: event.eventType,
-					toolUseId,
+					identity,
 				});
 			}
-		}
+		} else {
+			if (TOOL_KEY_CATEGORIES.has(event.category)) {
+				const toolUseId = extractToolUseId(event.rawPayload);
+				if (toolUseId) {
+					dedupKey = computeDedupKey({
+						kind: "t",
+						keyId: ctx.keyId,
+						eventType: event.eventType,
+						toolUseId,
+					});
+				}
+			}
 
-		if (dedupKey === null && ctx.deliveryId) {
-			if (bodyDigest === null) bodyDigest = sha256Hex(JSON.stringify(rawPayload));
-			dedupKey = computeDedupKey({
-				kind: "d",
-				keyId: ctx.keyId,
-				deliveryId: ctx.deliveryId,
-				bodyDigest,
-				rowIndex,
-			});
+			if (dedupKey === null && ctx.deliveryId) {
+				if (bodyDigest === null) bodyDigest = sha256Hex(JSON.stringify(rawPayload));
+				dedupKey = computeDedupKey({
+					kind: "d",
+					keyId: ctx.keyId,
+					deliveryId: ctx.deliveryId,
+					bodyDigest,
+					rowIndex,
+				});
+			}
 		}
 
 		if (rowIndex === 0) primaryDedupKey = dedupKey;

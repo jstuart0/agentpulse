@@ -1,11 +1,12 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { DELIVERY_ID_HEADER, ORIGIN_HEADER } from "../../shared/hook-headers.js";
-import type { HookEventPayload, SemanticStatusUpdate } from "../../shared/types.js";
+import type { HookEventPayload, HookEventType, SemanticStatusUpdate } from "../../shared/types.js";
 import type { AuthUser } from "../auth/middleware.js";
 import { requireApiKey } from "../auth/middleware.js";
 import { hookRateLimit } from "../middleware/hook-rate-limit.js";
 import { parseDeliveryId, parseOrigin } from "../services/event-dedup.js";
+import type { OversizeStubPayload } from "../services/event-normalizer.js";
 import {
 	detectAgentType,
 	processHookEvent,
@@ -182,23 +183,20 @@ export async function readCappedBody(
 	return { oversize: false, text: decodeChunks(fullChunks, total) };
 }
 
-// ── F128: identity extraction from an oversize body's bounded prefix ────────
+// ── F128/F132/F133 (D19): identity extraction from an oversize body's ──────
+// bounded prefix
 
 const OVERSIZE_FIELD_MAX_LEN = 512;
-// Matches a JSON string value: runs of non-quote/non-backslash chars, or a
-// backslash-escaped pair, bounded so this can never backtrack catastrophically
-// — and it only ever runs against a <=64 KiB prefix regardless.
-const JSON_STRING_VALUE = `((?:[^"\\\\]|\\\\.){0,${OVERSIZE_FIELD_MAX_LEN}})`;
 
-const OVERSIZE_FIELD_PATTERNS = {
-	session_id: new RegExp(`"session_id"\\s*:\\s*"${JSON_STRING_VALUE}"`),
-	hook_event_name: new RegExp(`"hook_event_name"\\s*:\\s*"${JSON_STRING_VALUE}"`),
-	tool_name: new RegExp(`"tool_name"\\s*:\\s*"${JSON_STRING_VALUE}"`),
-	tool_use_id: new RegExp(`"tool_use_id"\\s*:\\s*"${JSON_STRING_VALUE}"`),
-	turn_id: new RegExp(`"turn_id"\\s*:\\s*"${JSON_STRING_VALUE}"`),
-	cwd: new RegExp(`"cwd"\\s*:\\s*"${JSON_STRING_VALUE}"`),
-	transcript_path: new RegExp(`"transcript_path"\\s*:\\s*"${JSON_STRING_VALUE}"`),
-} as const satisfies Record<string, RegExp>;
+const OVERSIZE_SCAN_FIELDS = new Set([
+	"session_id",
+	"hook_event_name",
+	"tool_name",
+	"tool_use_id",
+	"turn_id",
+	"cwd",
+	"transcript_path",
+]);
 
 // Same charset convention as the codex-observer's native-marker session id
 // check (D19, src/supervisor/services/codex-observer.ts SESSION_ID_CHARSET):
@@ -206,13 +204,39 @@ const OVERSIZE_FIELD_PATTERNS = {
 // or garbled extraction rather than routed onward.
 const OVERSIZE_SESSION_ID_CHARSET = /^[A-Za-z0-9-]{1,128}$/;
 
+// F133 (D19): a recovered hook_event_name must be one of these, or no stub
+// is built. A local literal set rather than importing from
+// `src/shared/types.ts`'s ClaudeCodeEvent/CodexEvent unions — that file
+// stays untouched across this campaign (plan R9), to avoid a merge conflict
+// with the sibling cli-parity campaign. Not one of the seven
+// parity-guarded wiring sites (scripts/check-hook-event-parity.ts); keep it
+// in lockstep by hand if those unions change. CodexEvent's values are a
+// subset of ClaudeCodeEvent's, so this list is exactly ClaudeCodeEvent.
+const KNOWN_HOOK_EVENT_TYPES: ReadonlySet<HookEventType> = new Set<HookEventType>([
+	"SessionStart",
+	"SessionEnd",
+	"PreToolUse",
+	"PostToolUse",
+	"Stop",
+	"SubagentStart",
+	"SubagentStop",
+	"TaskCreated",
+	"TaskCompleted",
+	"UserPromptSubmit",
+	"PermissionRequest",
+	"PermissionDenied",
+	"Notification",
+	"PreCompact",
+	"PostCompact",
+	"PostToolUseFailure",
+]);
+
 /**
- * Un-escapes a JSON string body (the capture group from OVERSIZE_FIELD_PATTERNS,
- * i.e. already stripped of its surrounding quotes) by hand rather than
- * `JSON.parse('"' + body + '"')` — the ingest route's own oversize test pins
- * that JSON.parse is never reached for any part of an oversize body, and a
- * hand-rolled unescape keeps that guarantee airtight instead of "only for
- * the full body".
+ * Un-escapes a JSON string body (already stripped of its surrounding
+ * quotes) by hand rather than `JSON.parse('"' + body + '"')` — the ingest
+ * route's own oversize test pins that JSON.parse is never reached for any
+ * part of an oversize body, and a hand-rolled unescape keeps that guarantee
+ * airtight instead of "only for the full body".
  */
 function unescapeJsonString(raw: string): string {
 	let out = "";
@@ -267,16 +291,117 @@ function unescapeJsonString(raw: string): string {
 	return out;
 }
 
-function extractJsonStringField(prefixText: string, pattern: RegExp): string | undefined {
-	const match = pattern.exec(prefixText);
-	if (!match) return undefined;
-	const value = unescapeJsonString(match[1] as string);
-	return value.length > 0 ? value : undefined;
+/**
+ * F132 (D19): scans `text` for TOP-LEVEL (depth-1) string key/value pairs
+ * only, via a minimal string-aware brace/bracket depth tracker — not a
+ * regex search across the whole prefix, which would also match e.g. a
+ * `session_id` nested inside `tool_input` and let a crafted payload forge a
+ * different session's identity (F132). `text` must already start with `{`
+ * (checked by the caller, after trimStart); anything else yields no fields.
+ *
+ * One linear pass over `text`, no regex and no backtracking at all — safe
+ * against an adversarial prefix (e.g. thousands of unterminated
+ * `"session_id":"` runs): the loop is strictly bounded by text.length
+ * regardless of content, and it never JSON.parses anything.
+ */
+function scanTopLevelStringFields(
+	text: string,
+	fields: ReadonlySet<string>,
+): Partial<Record<string, string>> {
+	const result: Partial<Record<string, string>> = {};
+	if (text[0] !== "{") return result;
+
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	let awaitingValue = false;
+	let pendingKey: string | null = null;
+	let stringStart = -1;
+
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i];
+
+		if (inString) {
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			if (ch === "\\") {
+				escaped = true;
+				continue;
+			}
+			if (ch === '"') {
+				inString = false;
+				if (depth === 1) {
+					const value = unescapeJsonString(text.slice(stringStart, i));
+					if (!awaitingValue) {
+						// A depth-1 string not currently answering a pending key is
+						// itself a key.
+						pendingKey = value;
+						awaitingValue = true;
+					} else {
+						if (pendingKey !== null && fields.has(pendingKey) && !(pendingKey in result)) {
+							result[pendingKey] = value.slice(0, OVERSIZE_FIELD_MAX_LEN);
+						}
+						pendingKey = null;
+						awaitingValue = false;
+					}
+				}
+				continue;
+			}
+			continue;
+		}
+
+		if (ch === '"') {
+			inString = true;
+			stringStart = i + 1;
+			continue;
+		}
+		if (ch === "{" || ch === "[") {
+			depth++;
+			continue;
+		}
+		if (ch === "}" || ch === "]") {
+			const wasDepth = depth;
+			depth--;
+			if (depth <= 0) break; // the root object closed (or a malformed prefix) — done
+			if (wasDepth === 2 && depth === 1) {
+				// A nested object/array just closed — that was pendingKey's
+				// value, not a string. Ready for the next top-level key.
+				awaitingValue = false;
+				pendingKey = null;
+			}
+			continue;
+		}
+		if (depth === 1 && awaitingValue && ch === ",") {
+			// A non-string value (number/bool/null) ended without a closing
+			// quote of its own — ready for the next top-level key.
+			awaitingValue = false;
+			pendingKey = null;
+		}
+	}
+
+	return result;
+}
+
+/**
+ * F133 (D19): strips control characters and caps length on an extracted
+ * stub field before it's ever returned — an oversize prefix is untrusted
+ * input exactly like a normal body, and a recovered field must never carry
+ * raw control characters into a stored row.
+ */
+function sanitizeStubField(
+	value: string | undefined,
+	maxLen = OVERSIZE_FIELD_MAX_LEN,
+): string | undefined {
+	if (value === undefined) return undefined;
+	const cleaned = sanitizeLogField(value, maxLen);
+	return cleaned.length > 0 ? cleaned : undefined;
 }
 
 export interface OversizeIdentity {
 	sessionId: string;
-	hookEventName: string;
+	hookEventName: HookEventType;
 	toolName?: string;
 	toolUseId?: string;
 	turnId?: string;
@@ -285,29 +410,35 @@ export interface OversizeIdentity {
 }
 
 /**
- * Recovers hook identity fields from an oversize body's bounded prefix via
- * anchored, length-capped regexes — never JSON.parse (the body may be
- * truncated mid-value). Requires both session_id and hook_event_name
- * (mirroring the same `!parsed.session_id || !parsed.hook_event_name` gate
- * the normal-size path applies) and a session_id matching the existing
- * charset convention; anything less returns null, and the caller falls back
- * to the plain drop-and-count behavior.
+ * Recovers hook identity fields from an oversize body's bounded prefix.
+ * Requires the (trimmed) prefix to start with `{` and extracts only
+ * top-level string fields (F132); requires both session_id and
+ * hook_event_name (mirroring the same `!parsed.session_id ||
+ * !parsed.hook_event_name` gate the normal-size path applies), a session_id
+ * matching the existing charset convention, and a hook_event_name that is a
+ * known HookEventType (F133) — otherwise no stub. Every returned field is
+ * control-character-stripped and length-capped (F133).
  */
 export function extractOversizeIdentity(prefixText: string): OversizeIdentity | null {
-	const sessionId = extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.session_id);
+	const trimmed = prefixText.trimStart();
+	const fields = scanTopLevelStringFields(trimmed, OVERSIZE_SCAN_FIELDS);
+
+	const sessionId = fields.session_id;
 	if (!sessionId || !OVERSIZE_SESSION_ID_CHARSET.test(sessionId)) return null;
 
-	const hookEventName = extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.hook_event_name);
-	if (!hookEventName) return null;
+	const hookEventNameRaw = fields.hook_event_name;
+	if (!hookEventNameRaw || !KNOWN_HOOK_EVENT_TYPES.has(hookEventNameRaw as HookEventType)) {
+		return null;
+	}
 
 	return {
 		sessionId,
-		hookEventName,
-		toolName: extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.tool_name),
-		toolUseId: extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.tool_use_id),
-		turnId: extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.turn_id),
-		cwd: extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.cwd),
-		transcriptPath: extractJsonStringField(prefixText, OVERSIZE_FIELD_PATTERNS.transcript_path),
+		hookEventName: hookEventNameRaw as HookEventType,
+		toolName: sanitizeStubField(fields.tool_name),
+		toolUseId: sanitizeStubField(fields.tool_use_id),
+		turnId: sanitizeStubField(fields.turn_id),
+		cwd: sanitizeStubField(fields.cwd, 4096),
+		transcriptPath: sanitizeStubField(fields.transcript_path, 4096),
 	};
 }
 
@@ -415,7 +546,7 @@ function handleOversizeHookDelivery(c: Context, prefix: string): Response {
 		return c.json({ ok: true });
 	}
 
-	const syntheticPayload: HookEventPayload = {
+	const syntheticPayload: OversizeStubPayload = {
 		session_id: identity.sessionId,
 		hook_event_name: identity.hookEventName,
 		tool_name: identity.toolName,

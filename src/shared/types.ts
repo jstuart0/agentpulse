@@ -247,12 +247,6 @@ export interface HookEventPayload {
 
 	// Compaction events (PreCompact/PostCompact)
 	trigger?: string;
-
-	// F128 (codex r2): set on the minimal synthetic payload ingest.ts builds
-	// from an oversize delivery's bounded identity prefix — real
-	// tool_input/tool_response were never read, so the normalizer renders an
-	// informative stub row instead of real content.
-	agentpulse_oversize?: boolean;
 }
 
 // Semantic status update from CLAUDE.md snippet

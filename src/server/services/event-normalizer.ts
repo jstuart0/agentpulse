@@ -20,6 +20,18 @@ export interface NormalizedEvent {
 	rawPayload: Record<string, unknown>;
 }
 
+/**
+ * F128 (codex r2): the minimal synthetic payload ingest.ts builds for an
+ * oversize hook delivery, from identity fields recovered out of the body's
+ * bounded prefix. A local type rather than a `src/shared/types.ts` edit
+ * (plan R9 keeps that file untouched across this campaign, to avoid a merge
+ * conflict with the sibling cli-parity campaign) — the same reasoning F81
+ * already applied to the observer's local `HookPayload` type.
+ */
+export interface OversizeStubPayload extends HookEventPayload {
+	agentpulse_oversize: true;
+}
+
 // Hook-body char caps (F29, F40, F56, F76). The stored `toolResponse`
 // column is kept short since it's read on every list/detail render; the
 // rawPayload copy (shapeHookRawPayload below) gets a wider budget since
@@ -40,12 +52,18 @@ export const SYNTHETIC_STOP_CONTENT = "Turn completed";
 // parsed for an oversize delivery, so there is no real content to render.
 export const OVERSIZE_STUB_CONTENT = "Payload exceeded 16 MiB and was dropped";
 
+// F131b (D19): the rawPayload key event-dedup.ts checks to route a row into
+// the `o:` dedup-key namespace instead of the real `t:`/`d:` ones — so an
+// oversize stub can only ever dedupe against replays of itself, never claim
+// (and thereby suppress) the identity of a real event.
+export const OVERSIZE_STUB_MARKER = "agentpulse_oversize";
+
 /**
  * Same category mapping normalizeHookEvent uses for a real payload, applied
  * to whatever hook_event_name an oversize delivery's identity prefix
- * recovered — so the stub row still lands in the dedup category
- * (TOOL_KEY_CATEGORIES) and timeline grouping a real event of that type
- * would use, keeping `t:`-keyed dedup on tool_use_id intact.
+ * recovered — so the stub row still lands in the timeline grouping a real
+ * event of that type would use. Dedup identity is separate (F131b): stubs
+ * always key on the `o:` namespace, never `t:`/`d:`, regardless of category.
  */
 function categorizeOversizeEventType(eventType: string): EventCategory {
 	if (eventType === "UserPromptSubmit") return "prompt";
@@ -210,7 +228,7 @@ function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): 
 }
 
 export function normalizeHookEvent(
-	payload: HookEventPayload,
+	payload: HookEventPayload | OversizeStubPayload,
 	agentType: AgentType,
 ): NormalizedEvent[] {
 	const eventType = payload.hook_event_name;
@@ -220,10 +238,12 @@ export function normalizeHookEvent(
 	// F128 (codex r2): the minimal synthetic payload ingest.ts builds for an
 	// oversize delivery. There's no real prompt/tool_input/tool_response to
 	// render (the body was dropped before JSON.parse), so a single
-	// informative stub row stands in — still categorized and keyed exactly
-	// like a real event of this type would be, so tool rows still dedup on
-	// tool_use_id.
-	if (payload.agentpulse_oversize) {
+	// informative stub row stands in — categorized like a real event of this
+	// type for timeline grouping, but always keyed in the `o:` dedup
+	// namespace (F131b; see event-dedup.ts), never `t:`/`d:`. `in` narrowing
+	// (not a declared field on the shared HookEventPayload — see
+	// OversizeStubPayload above) distinguishes the union member at runtime.
+	if ("agentpulse_oversize" in payload && payload.agentpulse_oversize) {
 		normalized.push({
 			eventType,
 			category: categorizeOversizeEventType(eventType),
@@ -235,7 +255,7 @@ export function normalizeHookEvent(
 			toolInput: null,
 			toolResponse: null,
 			rawPayload: {
-				agentpulse_oversize: true,
+				[OVERSIZE_STUB_MARKER]: true,
 				hook_event_name: eventType,
 				tool_use_id: payload.tool_use_id,
 				cwd: payload.cwd,
