@@ -52,12 +52,25 @@ export const AUTH_STEP: Record<
 function buildCommandHookAuthStep(key: string, disableAuth: boolean): AuthStep | null {
 	if (disableAuth) return null;
 	const value = key || "YOUR_API_KEY";
+	// F207: never write through a symlink at the destination — write to a
+	// sibling temp file (umask 077 -> 0600 on create), then atomically
+	// replace the destination via mv (rename(2) replaces the directory
+	// entry itself; it doesn't follow a symlink there). Mirrors
+	// scripts/setup-hooks.sh's hardened write.
+	const command = `mkdir -p ~/.agentpulse && f=~/.agentpulse/hook-auth-header && if [ -L "$f" ]; then echo "refusing to write through a symlink: $f" >&2; else t="$f.$$.tmp" && (umask 077 && printf 'Authorization: Bearer %s\\n' ${singleQuote(value)} > "$t") && mv -f "$t" "$f"; fi`;
+	// F208: narrow the parent directory's ACL to the current user *before*
+	// creating the file inside it, so the file inherits a private ACL from
+	// the moment it exists — a Set-Content-then-icacls-the-file sequence
+	// leaves a window where a newly (over)written file briefly holds the
+	// directory's broader, inherited ACL. The file-level icacls stays too,
+	// for idempotent hardening of a file that pre-dates this fix.
+	const windowsCommand = `$d="$env:USERPROFILE\\.agentpulse"; New-Item -ItemType Directory -Force $d | Out-Null; icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null; $f="$d\\hook-auth-header"; Set-Content -NoNewline -Path $f -Value "Authorization: Bearer ${value}\`n"; icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null`;
 	return {
 		title: "Save your key for command hooks",
 		description:
 			"Command hooks read the key from a file, not an environment variable — this keeps it out of process listings and shell history.",
-		command: `mkdir -p ~/.agentpulse && (umask 077 && printf 'Authorization: Bearer %s\\n' ${singleQuote(value)} > ~/.agentpulse/hook-auth-header)`,
-		windowsCommand: `\$d="\$env:USERPROFILE\\.agentpulse"; New-Item -ItemType Directory -Force \$d | Out-Null; \$f="\$d\\hook-auth-header"; Set-Content -NoNewline -Path \$f -Value "Authorization: Bearer ${value}\`n"; icacls \$f /inheritance:r /grant:r "\${env:USERNAME}:(R,W)" | Out-Null`,
+		command,
+		windowsCommand,
 		note: "requires curl 7.55+ (`curl --version`). Automated alternative: install-local.ps1.",
 	};
 }

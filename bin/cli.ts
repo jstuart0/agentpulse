@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildCodexHooksFile } from "../src/shared/hook-command.js";
+import { writePrivateFileSyncNoFollow } from "../src/shared/private-file.js";
 
 const args = process.argv.slice(2);
 const command = args[0] || "start";
@@ -171,8 +172,12 @@ async function setup() {
 		// it from this file at hook-fire time via curl -H "@$f".
 		const agentpulseDir = join(process.env.HOME || "~", ".agentpulse");
 		mkdirSync(agentpulseDir, { recursive: true });
+		// F207: symlink-safe, fchmod-on-handle write — see
+		// src/shared/private-file.ts for why a bare writeFileSync({mode})
+		// isn't enough (the mode only applies on create, and the write
+		// itself follows an existing symlink at the destination).
 		const authHeaderPath = join(agentpulseDir, "hook-auth-header");
-		writeFileSync(authHeaderPath, `Authorization: Bearer ${key}\n`, { mode: 0o600 });
+		writePrivateFileSyncNoFollow(authHeaderPath, `Authorization: Bearer ${key}\n`);
 	}
 
 	// check-hook-event-parity.ts's drift guard extracts this list (must stay

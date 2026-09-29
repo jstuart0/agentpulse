@@ -265,8 +265,17 @@ CODEX_DIR="\${CODEX_HOME:-\$HOME/.codex}"
 mkdir -p "\$CODEX_DIR"
 
 if [[ -n "\$API_KEY" ]]; then
+  # F207: never write through a symlink at the destination — see
+  # scripts/setup-hooks.sh's matching block for the full rationale.
   mkdir -p "\$HOME/.agentpulse"
-  ( umask 077 && printf 'Authorization: Bearer %s\\n' "\$API_KEY" > "\$HOME/.agentpulse/hook-auth-header" )
+  AP_AUTH_HEADER_FILE="\$HOME/.agentpulse/hook-auth-header"
+  if [[ -L "\$AP_AUTH_HEADER_FILE" ]]; then
+    echo "refusing to write through a symlink: \$AP_AUTH_HEADER_FILE" >&2
+    exit 1
+  fi
+  AP_AUTH_HEADER_TMP="\${AP_AUTH_HEADER_FILE}.\$\$.tmp"
+  ( umask 077 && printf 'Authorization: Bearer %s\\n' "\$API_KEY" > "\$AP_AUTH_HEADER_TMP" )
+  mv -f "\$AP_AUTH_HEADER_TMP" "\$AP_AUTH_HEADER_FILE"
 fi
 
 NEW_CODEX_HOOKS_JSON="\$(ap_codex_hooks_json "\$HOOK_URL" "1")"

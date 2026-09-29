@@ -177,8 +177,21 @@ elif [[ "$AGENT_TYPE" == "codex_cli" ]]; then
 
   # D13: the key never enters argv or the hooks file — the shim reads it
   # from this file at hook-fire time via curl -H "@$f".
+  #
+  # F207: never write through a symlink at the destination — a plain `>`
+  # redirect follows one. Write to a sibling temp file (umask 077 -> 0600
+  # on create) in the same directory, then atomically replace the
+  # destination via mv: rename(2) replaces the directory entry itself, it
+  # doesn't dereference a symlink there.
   mkdir -p "$HOME/.agentpulse"
-  ( umask 077 && printf 'Authorization: Bearer %s\n' "${AGENTPULSE_KEY}" > "$HOME/.agentpulse/hook-auth-header" )
+  AP_AUTH_HEADER_FILE="$HOME/.agentpulse/hook-auth-header"
+  if [[ -L "$AP_AUTH_HEADER_FILE" ]]; then
+    echo "refusing to write through a symlink: $AP_AUTH_HEADER_FILE" >&2
+    exit 1
+  fi
+  AP_AUTH_HEADER_TMP="${AP_AUTH_HEADER_FILE}.$$.tmp"
+  ( umask 077 && printf 'Authorization: Bearer %s\n' "${AGENTPULSE_KEY}" > "$AP_AUTH_HEADER_TMP" )
+  mv -f "$AP_AUTH_HEADER_TMP" "$AP_AUTH_HEADER_FILE"
 
   NEW_CODEX_HOOKS_JSON="$(ap_codex_hooks_json "$AGENTPULSE_URL" "1")"
   if [[ -f "$HOOKS_FILE" ]] && [[ "$(cat "$HOOKS_FILE")" == "$NEW_CODEX_HOOKS_JSON" ]]; then

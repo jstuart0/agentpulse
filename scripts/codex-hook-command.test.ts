@@ -431,6 +431,91 @@ describe("codex-hook-command.test.ts — fixture replay (item 3)", () => {
 	});
 });
 
+describe("F217: the D19 native-coverage marker sid gate, executed for real", () => {
+	// The marker snippet runs textually before the curl call in the
+	// generated command body (see buildBashHookCommand), in the same
+	// backgrounded subshell — so once the stub has received the request,
+	// whatever the marker gate decided has already happened. That makes
+	// "request received" a reliable, ordering-based synchronization point
+	// for these assertions, with no need to poll/sleep on the marker path
+	// itself.
+	async function runMarkerCase(home: string, payload: string) {
+		const stub = startStub();
+		stops.push(stub.stop);
+		await mkdir(join(home, "tmp"), { recursive: true });
+		const cmd = buildBashHookCommand({
+			baseUrl: stub.url,
+			direct: false,
+			agent: "codex_cli",
+			event: "Stop",
+		});
+		const result = await runSh(cmd, payload, baseEnv(home));
+		expect(await waitFor(() => stub.requests.length > 0)).toBe(true);
+		return result;
+	}
+
+	function markerPath(home: string, sid: string) {
+		return join(home, ".agentpulse", "codex-native", sid);
+	}
+
+	// Bun.file(path).exists() is false for a *directory* (it's a file
+	// handle, not a general path check) — a directory that exists but is
+	// empty would false-pass a Bun.file(dir).exists() check. readdir gives
+	// an unambiguous, type-correct "does this directory have anything in
+	// it at all" signal, and "no directory" (ENOENT) counts as empty too.
+	async function markerDirIsEmpty(home: string): Promise<boolean> {
+		try {
+			return (await readdir(join(home, ".agentpulse", "codex-native"))).length === 0;
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") return true;
+			throw err;
+		}
+	}
+
+	test("a valid sid writes the marker", async () => {
+		const home = join(tmp, "home-marker-valid");
+		const sid = "abc123-DEF456";
+		const result = await runMarkerCase(home, JSON.stringify({ session_id: sid }));
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toBe("");
+		expect(await Bun.file(markerPath(home, sid)).exists()).toBe(true);
+	});
+
+	test("a sid containing '/' leaves no marker file", async () => {
+		const home = join(tmp, "home-marker-slash");
+		const result = await runMarkerCase(home, JSON.stringify({ session_id: "abc/def" }));
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toBe("");
+		expect(await markerDirIsEmpty(home)).toBe(true);
+	});
+
+	test("a sid containing '..' leaves no marker file", async () => {
+		const home = join(tmp, "home-marker-dotdot");
+		const result = await runMarkerCase(home, JSON.stringify({ session_id: "../../etc/passwd" }));
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toBe("");
+		expect(await markerDirIsEmpty(home)).toBe(true);
+	});
+
+	test("a sid over 128 chars leaves no marker file", async () => {
+		const home = join(tmp, "home-marker-toolong");
+		const sid = "a".repeat(129); // all-valid charset, but over the length gate
+		const result = await runMarkerCase(home, JSON.stringify({ session_id: sid }));
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toBe("");
+		expect(await Bun.file(markerPath(home, sid)).exists()).toBe(false);
+		expect(await markerDirIsEmpty(home)).toBe(true);
+	});
+
+	test("a payload with no session_id field leaves no marker file", async () => {
+		const home = join(tmp, "home-marker-missing");
+		const result = await runMarkerCase(home, JSON.stringify({ hook_event_name: "Stop" }));
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toBe("");
+		expect(await markerDirIsEmpty(home)).toBe(true);
+	});
+});
+
 describe("codex-hook-command.test.ts — r6 detached-shape timing + cleanup (item 12)", () => {
 	test("process exit is bounded (D33: <5s) against a stub that never answers; p95 recorded", async () => {
 		const never = startNeverRespondingStub();

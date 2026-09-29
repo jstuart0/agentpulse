@@ -180,10 +180,20 @@ function New-ApCodexHooksFile {
 
 # D13: writes ~/.agentpulse/hook-auth-header with a single-ACE ACL for the
 # current user (Windows equivalent of `umask 077`).
+#
+# F208: narrow the parent .agentpulse directory's ACL to the current user
+# *before* creating the file inside it, so a freshly-created file inherits
+# a private ACL from the instant it exists. Set-Content-then-icacls-the-
+# file alone (the prior shape) left a window where a newly (over)written
+# file briefly held the directory's broader, inherited ACL before icacls
+# narrowed it. The file-level icacls call stays too, so re-running this
+# against a pre-existing file (from before this fix, or one an operator
+# copied in some other way) still ends up narrowed, not just new ones.
 function New-ApHookAuthHeaderFile {
   param([Parameter(Mandatory = $true)][string]$ApiKey)
   $d = Join-Path $HOME ".agentpulse"
   New-Item -ItemType Directory -Force -Path $d | Out-Null
+  icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
   $f = Join-Path $d "hook-auth-header"
   Set-Content -NoNewline -Path $f -Value "Authorization: Bearer $ApiKey`n" -Encoding UTF8
   icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null

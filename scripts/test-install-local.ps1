@@ -36,6 +36,12 @@ $content = Get-Content $headerFile -Raw
 Assert-True ($content -eq "Authorization: Bearer ap_test_key_123`n") "hook-auth-header content matches"
 $acl = Get-Acl $headerFile
 Assert-True ($acl.Access.Count -eq 1) "hook-auth-header has exactly one ACE (found $($acl.Access.Count))"
+# F208: the parent directory's ACL must be narrowed too, and narrowed
+# *before* the file was created inside it (see New-ApHookAuthHeaderFile) —
+# a broad, inherited directory ACL would have let the file inherit it for
+# the brief window between Set-Content and the file's own icacls call.
+$dirAcl = Get-Acl (Join-Path $HOME ".agentpulse")
+Assert-True ($dirAcl.Access.Count -eq 1) ".agentpulse dir has exactly one ACE (found $($dirAcl.Access.Count))"
 
 # ── New-ApHookCommand: real execution against a real HttpListener ──
 # .NET's native async pattern (BeginGetContext/EndGetContext) rather than a
@@ -80,6 +86,40 @@ if ($null -ne $captured) {
 	Assert-True ($captured.Authorization -eq "Bearer ap_test_key_123") "Authorization header present with the saved key"
 	Assert-True ($captured.Body -eq $fixture) "body arrives byte-exact"
 }
+
+# ── F217: the D19 native-coverage marker sid gate, executed for real ──
+# The marker check/write in New-ApHookCommand's generated script runs
+# synchronously, before the async Start-Job that does the network call — so
+# by the time `powershell.exe -File $scriptFile` (piped a payload on stdin)
+# exits, the marker gate has already decided. No listener/wait needed here.
+function Test-ApMarkerCase($payloadJson) {
+	$markerDir = Join-Path $HOME ".agentpulse\codex-native"
+	Remove-Item -Recurse -Force $markerDir -ErrorAction SilentlyContinue
+	$cmd = New-ApHookCommand -BaseUrl $baseUrl -Direct $true -AgentType "codex_cli" -EventName "Stop"
+	$scriptFile2 = Join-Path $tempProfile "hook-cmd-marker.ps1"
+	Set-Content -Path $scriptFile2 -Value $cmd -Encoding UTF8
+	$payloadJson | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptFile2
+	$entries = @()
+	if (Test-Path $markerDir) { $entries = @(Get-ChildItem $markerDir) }
+	return $entries
+}
+
+$validSid = "pwsh-marker-valid-abc123"
+$entries = Test-ApMarkerCase "{`"session_id`":`"$validSid`"}"
+Assert-True ($entries.Count -eq 1 -and $entries[0].Name -eq $validSid) "a valid sid writes exactly the expected marker"
+
+$entries = Test-ApMarkerCase '{"session_id":"abc/def"}'
+Assert-True ($entries.Count -eq 0) "a sid containing '/' leaves no marker file"
+
+$entries = Test-ApMarkerCase '{"session_id":"../../etc/passwd"}'
+Assert-True ($entries.Count -eq 0) "a sid containing '..' leaves no marker file"
+
+$tooLongSid = "a" * 129
+$entries = Test-ApMarkerCase "{`"session_id`":`"$tooLongSid`"}"
+Assert-True ($entries.Count -eq 0) "a sid over 128 chars leaves no marker file"
+
+$entries = Test-ApMarkerCase '{"hook_event_name":"Stop"}'
+Assert-True ($entries.Count -eq 0) "a payload with no session_id field leaves no marker file"
 
 # ── Authorization absent when hook-auth-header is missing/empty ──
 Remove-Item -Force $headerFile -ErrorAction SilentlyContinue
