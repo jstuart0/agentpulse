@@ -26,6 +26,25 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   catalog and a security section covering host-side confirmation limits
   (Codex CLI does not honor Claude Code's `_meta` confirmation hint).
 
+### Changed
+
+- **Event storage growth (AGEN-16)** — keeping every distinct tool call
+  (rather than silently dropping most of them under the old dedup) grows
+  event storage substantially: about 926 MB per 30 days on SQLite at the
+  measured workload (31 MB/day on average, up to 135 MB/day at peak). A
+  1Gi volume on a storage class that enforces size fills in about 35 days;
+  `local-path` volumes are limited by node disk instead. Size the volume
+  accordingly — see `deploy/k8s/README.md` → "Data volume sizing". Retention
+  enforcement is tracked as a follow-up.
+- **`rawPayload` shape for hook tool and permission rows (AGEN-16)** — the
+  raw `tool_response` copy on `PostToolUse`/`PostToolUseFailure` rows is now
+  capped at 4,096 characters (with `tool_response_truncated`/
+  `tool_response_chars` flags when cut), independently of the tighter
+  2,000-char DB column. `tool_input` is no longer duplicated into
+  `rawPayload` for hook tool/permission rows — it was already stored in the
+  `toolInput` column — and is replaced with a `tool_input_in_column: true`
+  marker. See `docs/MCP.md` for the consumer-facing note.
+
 ## [0.5.0] — 2026-07-17
 
 Client-currency release: brings AgentPulse fully current with Claude Code

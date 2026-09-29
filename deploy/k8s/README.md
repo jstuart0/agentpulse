@@ -44,6 +44,29 @@ SQLite deployments; it is removed automatically by the Postgres overlay.
 
 ---
 
+## Data volume sizing
+
+AGEN-16 changed event storage to keep every distinct tool call instead of
+silently dropping most of them under the old content-window dedup — growth
+is real and higher than a pre-AGEN-16 install would suggest. After the
+growth mitigations in this release (raw `tool_response` capped at 4,096
+chars in `rawPayload`, `tool_input` no longer duplicated into `rawPayload`),
+percy's real 30-day replay measured:
+
+- ~926 MB / 30 days on SQLite
+- 31 MB/day average, up to 135 MB/day at peak
+- a storage class that **enforces** the PVC's `storage` request fills in
+  roughly **35 days** at that rate
+
+`storageClassName: local-path` (the default in `03-pvc.yaml`) does **not**
+enforce the request — it's bound by node disk instead, so it won't reject
+writes at 1Gi. On a storage class that does enforce size, raise the request
+before deploying, or accept periodic manual cleanup. Retention/VACUUM
+automation and a PVC default-size policy are tracked as follow-ups (not yet
+implemented); until then, sizing is an operator decision per deployment.
+
+---
+
 ## Homelab overlay
 
 ```

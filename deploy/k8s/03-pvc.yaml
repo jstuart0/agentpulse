@@ -28,5 +28,11 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
+      # Sizing (AGEN-16, percy's real 30-day replay after growth
+      # mitigations): ~926 MB / 30 days on SQLite (31 MB/day average,
+      # 135 MB/day peak). A storage class that enforces this request
+      # (unlike local-path, which is bound by node disk) fills in
+      # roughly 35 days at that rate. See deploy/k8s/README.md →
+      # "Data volume sizing" before raising or lowering this value.
       storage: 1Gi
   storageClassName: local-path

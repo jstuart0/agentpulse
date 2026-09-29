@@ -20,11 +20,67 @@ export interface NormalizedEvent {
 	rawPayload: Record<string, unknown>;
 }
 
-function stringifyToolResponse(toolResponse: unknown): string | null {
+// Hook-body char caps (F29, F40, F56, F76). The stored `toolResponse`
+// column is kept short since it's read on every list/detail render; the
+// rawPayload copy (shapeHookRawPayload below) gets a wider budget since
+// it's the one place an operator can still see the fuller body. Both run
+// through the same serializeToolResponse step so a string response and a
+// JSON-stringified object response are capped identically.
+export const TOOL_RESPONSE_COLUMN_CHAR_CAP = 2000;
+export const TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP = 4096;
+
+// Placeholder content for a hook Stop event with no per-line message
+// (normalizeSystemEvent below). Exported so the embedding backfill (D14,
+// F34) can recognize and skip this synthetic marker instead of embedding
+// a near-duplicate of it for every turn in every session.
+export const SYNTHETIC_STOP_CONTENT = "Turn completed";
+
+function serializeToolResponse(toolResponse: unknown): string | null {
 	if (!toolResponse) return null;
-	return typeof toolResponse === "string"
-		? toolResponse.slice(0, 2000)
-		: JSON.stringify(toolResponse).slice(0, 2000);
+	return typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse);
+}
+
+function stringifyToolResponse(toolResponse: unknown): string | null {
+	const serialized = serializeToolResponse(toolResponse);
+	return serialized === null ? null : serialized.slice(0, TOOL_RESPONSE_COLUMN_CHAR_CAP);
+}
+
+/**
+ * Shapes rawPayload for a stored hook tool/permission row (F29, F56, F76):
+ * drops `tool_input` — the `toolInput` column already carries it, and
+ * storing both doubled hook-row growth — and caps `tool_response`'s raw
+ * copy at a wider limit than the DB column. Never mutates `payload`: the
+ * delivery-id body digest (Phase 7, D2) reads it uncapped, and the
+ * permission-wait code reads it directly on the same call.
+ */
+export function shapeHookRawPayload(
+	payload: HookEventPayload,
+	eventType: string,
+): Record<string, unknown> {
+	const shaped: Record<string, unknown> = { ...(payload as unknown as Record<string, unknown>) };
+
+	if ("tool_input" in shaped) {
+		// Not `delete` (Biome noDelete): assigning undefined is enough — the
+		// JSON column serializer drops undefined-valued keys, so the stored
+		// rawPayload still has no tool_input key.
+		shaped.tool_input = undefined;
+		shaped.tool_input_in_column = true;
+	}
+
+	if (eventType === "PostToolUse" || eventType === "PostToolUseFailure") {
+		const serialized = serializeToolResponse(payload.tool_response);
+		if (serialized !== null) {
+			if (serialized.length > TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP) {
+				shaped.tool_response = serialized.slice(0, TOOL_RESPONSE_RAW_PAYLOAD_CHAR_CAP);
+				shaped.tool_response_truncated = true;
+				shaped.tool_response_chars = serialized.length;
+			} else {
+				shaped.tool_response = serialized;
+			}
+		}
+	}
+
+	return shaped;
 }
 
 function getToolCommand(payload: HookEventPayload): string {
@@ -97,7 +153,7 @@ function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): 
 		case "SubagentStop":
 			return payload.agent_id ? `Subagent stopped: ${payload.agent_id}` : "Subagent stopped";
 		case "Stop":
-			return "Turn completed";
+			return SYNTHETIC_STOP_CONTENT;
 		case "Notification":
 			return payload.message ? payload.message : "Notification";
 		case "PreCompact":
@@ -155,7 +211,7 @@ export function normalizeHookEvent(
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
-			rawPayload: payload as unknown as Record<string, unknown>,
+			rawPayload: shapeHookRawPayload(payload, eventType),
 		});
 	} else if (eventType === "PermissionRequest" || eventType === "PermissionDenied") {
 		normalized.push({
@@ -168,7 +224,7 @@ export function normalizeHookEvent(
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
-			rawPayload: payload as unknown as Record<string, unknown>,
+			rawPayload: shapeHookRawPayload(payload, eventType),
 		});
 	} else {
 		normalized.push({

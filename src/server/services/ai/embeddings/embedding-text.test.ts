@@ -16,7 +16,6 @@ import "../../../db/__test_db.js";
 
 const { getDb, getSqlite, initializeDatabase } = await import("../../../db/client.js");
 const { events, sessions } = await import("../../../db/schema/index.js");
-const { SYNTHETIC_STOP_CONTENT } = await import("../../event-normalizer.js");
 const { config } = await import("../../../config.js");
 const { runBackfill, __resetEmbeddingAdapterForTests, __setEmbeddingAdapterForTests } =
 	await import("./embedding-service.js");
@@ -28,6 +27,14 @@ beforeAll(async () => {
 	// dialect resolves naturally to "sqlite" since DATABASE_URL is unset in tests.
 	(config as Record<string, unknown>).vectorSearchEnabled = true;
 });
+
+// Hardcoded rather than imported from event-normalizer.ts's
+// SYNTHETIC_STOP_CONTENT: this must match the literal
+// normalizeSystemEvent's Stop case actually emits, independent of
+// whether the exported constant exists yet (RED@P5-start) or has been
+// refactored later. A drifted duplicate here is exactly the failure this
+// test exists to catch, so the literal is deliberate, not a shortcut.
+const SYNTHETIC_STOP_TEXT = "Turn completed";
 
 function newSessionId(prefix: string) {
 	return `${prefix}-${crypto.randomUUID()}`;
@@ -51,7 +58,7 @@ async function insertStopRow(
 			eventType: "Stop",
 			category: "system_event",
 			source: "observed_hook",
-			content: SYNTHETIC_STOP_CONTENT,
+			content: SYNTHETIC_STOP_TEXT,
 			isNoise: false,
 			rawPayload,
 		})

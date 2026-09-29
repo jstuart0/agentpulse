@@ -5,6 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { config } from "../../../config.js";
 import { getDb, getSqlite } from "../../../db/client.js";
 import { events, settings } from "../../../db/schema/index.js";
+import { SYNTHETIC_STOP_CONTENT } from "../../event-normalizer.js";
 import {
 	DEFAULT_EMBEDDING_MODEL,
 	VECTOR_SEARCH_MODEL_KEY,
@@ -130,17 +131,23 @@ export async function resolveEmbeddingAdapter(): Promise<EmbeddingAdapter | null
  * trigger's COALESCE chain so the two indexes see equivalent input.
  */
 function eventTextFromRow(row: {
+	eventType: string;
 	rawPayload: unknown;
 	content: string | null;
 }): string {
 	const p = (row.rawPayload ?? {}) as Record<string, unknown>;
+	// A hook Stop event with no per-line message content normalizes to the
+	// synthetic SYNTHETIC_STOP_CONTENT marker (D14, F34) — every turn in
+	// every session would otherwise embed a near-duplicate of it. Real
+	// content in one of the payload fields above still wins.
+	const isSyntheticStop = row.eventType === "Stop" && row.content === SYNTHETIC_STOP_CONTENT;
 	const text =
 		(typeof p.prompt === "string" && p.prompt) ||
 		(typeof p.message === "string" && p.message) ||
 		(typeof p.summary === "string" && p.summary) ||
 		(typeof p.why === "string" && p.why) ||
 		(typeof p.title === "string" && p.title) ||
-		row.content ||
+		(isSyntheticStop ? "" : row.content) ||
 		"";
 	// Cap so a runaway tool output doesn't blow our token budget. Most
 	// embedding models cap at 512 tokens anyway; ~3000 chars is a
@@ -306,6 +313,7 @@ export async function runBackfill(): Promise<BackfillProgress> {
 						? (JSON.parse(row.rawPayload) as unknown)
 						: row.rawPayload;
 				const text = eventTextFromRow({
+					eventType: row.eventType,
 					rawPayload: parsed,
 					content: row.content,
 				});
