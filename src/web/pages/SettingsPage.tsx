@@ -8,7 +8,7 @@ import { TelegramChannelPanel } from "../components/settings/TelegramChannelPane
 import { WorkspacesPanel } from "../components/settings/WorkspacesPanel.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
-import { relayKeyHint } from "../lib/onboarding.js";
+import { RELAY_KEY_HINT, relayKeyHint } from "../lib/onboarding.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { type AppTheme, persistTheme, resolveInitialTheme } from "../lib/theme.js";
 import { useLabsStore } from "../stores/labs-store.js";
@@ -519,9 +519,7 @@ export function SettingsPage() {
 										)}
 									</div>
 									{key.isActive && key.scopes && relayKeyHint(key.scopes) && (
-										<p className="mt-1 text-xs text-amber-300">
-											Relays need Observe — mint a new key with Hook ingest + Observe
-										</p>
+										<p className="mt-1 text-xs text-muted-foreground">{RELAY_KEY_HINT}</p>
 									)}
 								</div>
 								{key.isActive && (

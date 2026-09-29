@@ -568,7 +568,7 @@ Add to `~/.claude/settings.json`:
 "statusLine": { "type": "command", "command": "~/.claude/statusline-agentpulse.sh" }
 ```
 
-**Native-name sync**: when Claude Code sets a native session name (`.session_name` in the statusline JSON, requires Claude Code with statusline session-name support), the script pushes it into AgentPulse's `displayName` via `PUT /api/v1/sessions/:id/native-name`. An ingest-scoped key is enough. This is pull-only -- the native name flows one direction, into AgentPulse -- and it never overwrites a name you've set on the dashboard: a manual rename pins the name. To go back to the agent's name, use **Use agent name** on the session. The push is fire-and-forget with a 1s timeout so it can never slow down statusline rendering.
+**Native-name sync**: when Claude Code sets a native session name (`.session_name` in the statusline JSON, requires Claude Code with statusline session-name support), the script pushes it into AgentPulse's `displayName` via `PUT /api/v1/sessions/:id/native-name`. An ingest-scoped key is enough. This is pull-only -- the native name flows one direction, into AgentPulse -- and it never overwrites a name you've set on the dashboard: the session shows **Renamed by you**, and the agent's names don't replace it. To go back to the agent's name, use **Use agent name** on the session. The push is fire-and-forget with a 1s timeout so it can never slow down statusline rendering.
 
 If you copied the statusline by hand before this sync behavior shipped, **re-run the `cp` step above** to pick it up.
 

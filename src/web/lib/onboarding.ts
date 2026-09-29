@@ -6,13 +6,18 @@
 
 export type OnboardingLocation = "local" | "relay";
 
-const LOCAL_KEY_SCOPES = ["ingest"];
+/** Direct hooks only post events; never manage (that's Settings' job). */
+export const LOCAL_KEY_SCOPES = ["ingest"];
 /** The relay posts hooks and reads the session list (names, CLAUDE.md). */
 export const RELAY_KEY_SCOPES = ["ingest", "observe"];
 
 export const RELAY_KEY_NOTE =
 	"Relay keys need Hook ingest + Observe. A key without Observe will be refused by the installer.";
 export const SWITCHED_NOTICE = "Switched — mint a key for this option";
+export const RELAY_KEY_HINT = "Can't be used by a relay (needs Hook ingest + Observe)";
+export const REPLACE_LOCALHOST_NOTE =
+	"Replace localhost with an address the other machine can reach.";
+const DEFAULT_KEY_NAME = "my-laptop";
 
 const HOOK_FILES = ["~/.claude/settings.json", "~/.codex/hooks.json"];
 const STATUSLINE_FILE = "~/.claude/statusline-agentpulse.sh";
@@ -23,15 +28,16 @@ function installCommand(script: string, serverUrl: string, args: string[]) {
 	return `curl -sSL ${serverUrl}/${script} | ${pipe}`;
 }
 
+/**
+ * F167: the key never goes into the command, where it would land in shell
+ * history and in bash's argv. The installer asks for it on the terminal.
+ */
 export function buildRelayCommand(opts: {
 	serverUrl: string;
-	key: string;
-	disableAuth: boolean;
 	codexNamesAgentpulse: boolean;
 }): string {
-	const args = opts.disableAuth ? [] : ["--key", opts.key];
 	// Unchecked passes no flag, so a re-run keeps whatever policy is installed.
-	if (opts.codexNamesAgentpulse) args.push("--codex-names", "agentpulse");
+	const args = opts.codexNamesAgentpulse ? ["--codex-names", "agentpulse"] : [];
 	return installCommand("setup-relay.sh", opts.serverUrl, args);
 }
 
@@ -51,7 +57,7 @@ export function buildOnboardingPlan(opts: {
 	if (opts.location === "relay") {
 		return {
 			scopes: RELAY_KEY_SCOPES,
-			command: buildRelayCommand({ ...opts, codexNamesAgentpulse: false }),
+			command: buildRelayCommand({ serverUrl: opts.serverUrl, codexNamesAgentpulse: false }),
 			files: [...HOOK_FILES, STATUSLINE_FILE],
 			keyNote: opts.disableAuth ? null : RELAY_KEY_NOTE,
 		};
@@ -81,9 +87,18 @@ export function relayKeyHint(scopes: readonly string[]): boolean {
 	);
 }
 
+export function isLoopbackHostname(hostname: string): boolean {
+	return LOOPBACK_HOSTNAMES.has(hostname);
+}
+
 /** Opening the dashboard on this machine suggests the agents run here too. */
 export function defaultLocation(hostname: string): OnboardingLocation {
-	return LOOPBACK_HOSTNAMES.has(hostname) ? "local" : "relay";
+	return isLoopbackHostname(hostname) ? "local" : "relay";
+}
+
+/** Relay keys are named so they're recognizable in the Settings key list. */
+export function defaultKeyName(location: OnboardingLocation): string {
+	return location === "relay" ? `${DEFAULT_KEY_NAME}-relay` : DEFAULT_KEY_NAME;
 }
 
 export type LocationState = {

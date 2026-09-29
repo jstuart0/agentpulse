@@ -5,8 +5,11 @@ import { api } from "../lib/api.js";
 import {
 	type LocationState,
 	type OnboardingLocation,
+	REPLACE_LOCALHOST_NOTE,
 	buildOnboardingPlan,
+	defaultKeyName,
 	defaultLocation,
+	isLoopbackHostname,
 	onLocationChange,
 } from "../lib/onboarding.js";
 import { useUserStore } from "../stores/user-store.js";
@@ -47,13 +50,15 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 	}> | null>(null);
 	const [keysError, setKeysError] = useState<string | null>(null);
 	const [creating, setCreating] = useState(false);
-	const [newKeyName, setNewKeyName] = useState("my-laptop");
+	// null until edited, so the default follows the location (F184).
+	const [newKeyName, setNewKeyName] = useState<string | null>(null);
 	const [locationState, setLocationState] = useState<LocationState>(() => ({
 		location: defaultLocation(window.location.hostname),
 		revealedKey: null,
 		notice: null,
 	}));
 	const { location, revealedKey, notice } = locationState;
+	const keyName = newKeyName ?? defaultKeyName(location);
 
 	useEffect(() => {
 		if (disableAuth) return;
@@ -73,12 +78,12 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 	}, [disableAuth]);
 
 	async function handleCreateKey() {
-		if (!newKeyName.trim()) return;
+		if (!keyName.trim()) return;
 		setCreating(true);
 		try {
 			// Scoped for the chosen location: ingest-only for direct hooks,
 			// ingest+observe for a relay. Never manage; that's Settings' job.
-			const res = await api.createApiKey(newKeyName.trim(), plan.scopes);
+			const res = await api.createApiKey(keyName.trim(), plan.scopes);
 			setLocationState((s) => ({ ...s, revealedKey: res.key, notice: null }));
 			const list = await api.getApiKeys().catch(() => ({ keys: [] as typeof keys }));
 			setKeys(list.keys ?? []);
@@ -89,9 +94,9 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 		}
 	}
 
-	// Key-for-copy: if we just minted one we have the raw value; otherwise
-	// leave the env placeholder so the command is still copyable and the
-	// user can paste their own key in.
+	// Key-for-copy (local only; the relay installer asks for its key): if we
+	// just minted one we have the raw value; otherwise leave the env
+	// placeholder so the command is still copyable.
 	const activeKeys = keys?.filter((k) => k.isActive) ?? [];
 	const keyForCommand =
 		revealedKey ?? (activeKeys.length > 0 ? "$AGENTPULSE_API_KEY" : "YOUR_API_KEY");
@@ -180,7 +185,7 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 								Save this key — it won&apos;t be shown again.
 							</p>
 							<div className="flex gap-2">
-								<code className="flex-1 min-w-0 truncate bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground font-mono">
+								<code className="flex-1 min-w-0 break-all bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground font-mono">
 									{revealedKey}
 								</code>
 								<button
@@ -191,6 +196,11 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 									Copy
 								</button>
 							</div>
+							{location === "relay" && (
+								<p className="text-xs text-muted-foreground mt-2">
+									The relay installer asks for it; paste it there.
+								</p>
+							)}
 						</div>
 					) : activeKeys.length > 0 ? (
 						<p className="text-xs text-muted-foreground">
@@ -212,7 +222,7 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 						<div className="flex flex-col sm:flex-row gap-2 mt-2">
 							<input
 								type="text"
-								value={newKeyName}
+								value={keyName}
 								onChange={(e) => setNewKeyName(e.target.value)}
 								placeholder="Key name (e.g. macbook-pro)"
 								className="flex-1 min-w-0 rounded-md border border-input bg-background px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
@@ -220,14 +230,16 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 							<button
 								type="button"
 								onClick={handleCreateKey}
-								disabled={creating || !newKeyName.trim()}
+								disabled={creating || !keyName.trim()}
 								className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
 							>
 								{creating ? "Creating…" : "Create key"}
 							</button>
 						</div>
 					)}
-					{plan.keyNote && <p className="mt-2 text-xs text-amber-300">{plan.keyNote}</p>}
+					{plan.keyNote && (
+						<p className="mt-2 text-xs text-amber-700 dark:text-amber-300">{plan.keyNote}</p>
+					)}
 					{notice && (
 						<p className="mt-2 text-xs text-muted-foreground" aria-live="polite">
 							{notice}
@@ -265,6 +277,9 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 					command={plan.command}
 					onCopy={copy}
 				/>
+				{location === "relay" && isLoopbackHostname(window.location.hostname) && (
+					<p className="text-xs text-muted-foreground mt-2">{REPLACE_LOCALHOST_NOTE}</p>
+				)}
 
 				<p className="text-xs text-muted-foreground mt-3">
 					Need something more surgical?{" "}
@@ -275,7 +290,7 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 				</p>
 			</div>
 
-			{/* Step 3: Start an agent */}
+			{/* Step 4: Start an agent */}
 			<div className="border border-border rounded-md p-4">
 				<div className="flex items-center gap-2 mb-1.5">
 					<span className="w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-bold">
@@ -327,7 +342,7 @@ function CopyRow({
 		<div>
 			<p className="text-[11px] text-muted-foreground mb-1">{label}</p>
 			<div className="flex gap-2">
-				<code className="flex-1 min-w-0 truncate bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground font-mono">
+				<code className="flex-1 min-w-0 whitespace-pre-wrap break-all bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground font-mono">
 					{command}
 				</code>
 				<button

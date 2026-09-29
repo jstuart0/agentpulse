@@ -24,7 +24,7 @@ export function shouldShowPin(
 
 /**
  * D14: caption shown next to the session name in the UI.
- *  - "user": "Pinned by you", plus the agent's suggested name when it
+ *  - "user": "Renamed by you", plus the agent's suggested name when it
  *    differs from the current displayName (nothing to show when they match
  *    or no native name has been observed yet).
  *  - "native": "from <shortLabel>" (muted, informational).
@@ -39,14 +39,24 @@ export function nameSourceCaption(
 	const shortLabel = AGENT_METADATA[agentType]?.shortLabel ?? "agent";
 	if (nameSource === "user") {
 		if (nativeName !== null && nativeName !== displayName) {
-			return `Pinned by you · agent name: "${nativeName}"`;
+			return `Renamed by you · agent name: "${nativeName}"`;
 		}
-		return "Pinned by you";
+		return "Renamed by you";
 	}
 	if (nameSource === "native") {
 		return `from ${shortLabel}`;
 	}
 	return null;
+}
+
+/**
+ * D26/F98: the caption's tooltip. For a manual rename it says what the
+ * rename protects against; otherwise the caption speaks for itself.
+ */
+export function nameSourceTitle(nameSource: NameSource, agentType: AgentType): string | null {
+	if (nameSource !== "user") return null;
+	const shortLabel = AGENT_METADATA[agentType]?.shortLabel ?? "the agent";
+	return `You renamed this session, so names from ${shortLabel} won't replace it.`;
 }
 
 export type ResetButtonState = "idle" | "pending" | "error";

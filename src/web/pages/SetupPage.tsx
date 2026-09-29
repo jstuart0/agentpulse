@@ -1,7 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
-import { RELAY_KEY_NOTE, RELAY_KEY_SCOPES, buildRelayCommand } from "../lib/onboarding.js";
+import {
+	LOCAL_KEY_SCOPES,
+	RELAY_KEY_NOTE,
+	RELAY_KEY_SCOPES,
+	REPLACE_LOCALHOST_NOTE,
+	buildRelayCommand,
+	isLoopbackHostname,
+} from "../lib/onboarding.js";
 import { useUserStore } from "../stores/user-store.js";
 
 export function SetupPage() {
@@ -20,6 +27,7 @@ export function SetupPage() {
 	const [relayKey, setRelayKey] = useState<string | null>(null);
 	const [creatingRelayKey, setCreatingRelayKey] = useState(false);
 	const [codexNamesAgentpulse, setCodexNamesAgentpulse] = useState(false);
+	const codexNamesHelpId = useId();
 
 	useEffect(() => {
 		if (disableAuth) {
@@ -53,7 +61,7 @@ export function SetupPage() {
 		try {
 			// Hook-setup keys are ingest-only: they go into agent hook config and
 			// must not carry management privileges. Use Settings to mint manage keys.
-			const res = await api.createApiKey(newKeyName.trim(), ["ingest"]);
+			const res = await api.createApiKey(newKeyName.trim(), LOCAL_KEY_SCOPES);
 			setApiKey(res.key); // flow the raw key into the config blobs below
 			const list = await api.getApiKeys().catch(() => ({ keys }));
 			setKeys(list.keys ?? []);
@@ -82,12 +90,9 @@ export function SetupPage() {
 	}
 
 	const activeKeys = keys.filter((k) => k.isActive);
-	const relayCommand = buildRelayCommand({
-		serverUrl,
-		key: relayKey ?? (apiKey || "YOUR_RELAY_KEY"),
-		disableAuth,
-		codexNamesAgentpulse,
-	});
+	// F167/F177: the key is never in the command (shell history, argv); the
+	// installer asks for it, and only a key minted here is offered to paste.
+	const relayCommand = buildRelayCommand({ serverUrl, codexNamesAgentpulse });
 
 	const hookEvents =
 		agentType === "claude_code"
@@ -234,8 +239,8 @@ export function SetupPage() {
 						/>
 						{apiKey?.startsWith("ap_") && (
 							<p className="mt-2 text-[11px] text-emerald-400">
-								✓ Key staged. It will appear in the setup commands and config blobs below. Save it
-								somewhere — it won&apos;t be shown again.
+								✓ Key staged. It will appear in the config blobs below. Save it somewhere — it
+								won&apos;t be shown again.
 							</p>
 						)}
 						{keysError && (
@@ -245,26 +250,28 @@ export function SetupPage() {
 				)}
 			</div>
 
-			{/* Remote relay: the one-command path for machines that can't post to this server directly */}
+			{/* Remote relay: the alternative to the manual hook steps, for other machines */}
 			<div className="border border-border bg-card rounded-lg p-5 mb-4">
-				<h2 className="text-sm font-semibold mb-2">Remote relay</h2>
+				<h2 className="text-sm font-semibold mb-2">
+					Agents on other machines? Use the relay instead of the manual hook steps below
+				</h2>
 				<p className="text-xs text-muted-foreground mb-3">
-					Agents on another machine can only post hooks to localhost. Run this there: it installs a
-					small relay as a login service, points Claude Code and Codex CLI at it, and installs the
-					Claude Code statusline. Re-run anytime to update the relay and statusline.
+					Claude Code only sends hooks to localhost, so on any other machine you install a small
+					relay that forwards them here. It runs as a login service, points Claude Code and Codex
+					CLI at it, and installs the statusline. Re-run it anytime to update.
 				</p>
 
 				{!disableAuth && (
 					<div className="mb-3">
-						<p className="text-xs text-amber-300 mb-2">{RELAY_KEY_NOTE}</p>
+						<p className="text-xs text-amber-700 dark:text-amber-300 mb-2">{RELAY_KEY_NOTE}</p>
 						{relayKey ? (
 							<div>
 								<p className="text-[11px] text-muted-foreground mb-1">
-									Relay key created — save it, it won&apos;t be shown again. It&apos;s already in
-									the command below.
+									Relay key created — save it, it won&apos;t be shown again. The installer asks for
+									it; paste it there.
 								</p>
 								<div className="flex gap-2">
-									<code className="flex-1 min-w-0 truncate bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground font-mono">
+									<code className="flex-1 min-w-0 break-all bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground font-mono">
 										{relayKey}
 									</code>
 									<button
@@ -290,7 +297,7 @@ export function SetupPage() {
 				)}
 
 				<div className="relative mb-3">
-					<pre className="bg-background border border-border rounded-md p-3 pr-16 text-xs overflow-x-auto">
+					<pre className="bg-background border border-border rounded-md p-3 pr-16 text-xs whitespace-pre-wrap break-all">
 						<code>{relayCommand}</code>
 					</pre>
 					<button
@@ -301,22 +308,26 @@ export function SetupPage() {
 						Copy
 					</button>
 				</div>
+				{isLoopbackHostname(window.location.hostname) && (
+					<p className="text-xs text-muted-foreground -mt-1 mb-3">{REPLACE_LOCALHOST_NOTE}</p>
+				)}
 
-				<label className="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
+				<label className="flex items-start gap-2 text-xs cursor-pointer">
 					<input
 						type="checkbox"
 						checked={codexNamesAgentpulse}
 						onChange={(e) => setCodexNamesAgentpulse(e.target.checked)}
+						aria-describedby={codexNamesHelpId}
 						className="mt-0.5 rounded border-input accent-primary"
 					/>
-					<span>
-						<span className="text-foreground">Make dashboard names canonical in Codex</span> — adds{" "}
-						<code className="font-mono text-foreground">--codex-names agentpulse</code>. By default
-						Codex&apos;s own thread names show on the dashboard. With this, dashboard names are
-						written into Codex and replace its titles, renames made in Codex won&apos;t come back,
-						and Codex sessions don&apos;t offer &ldquo;Use agent name&rdquo;.
-					</span>
+					<span className="text-foreground">Use dashboard names in Codex too</span>
 				</label>
+				<p id={codexNamesHelpId} className="mt-1 pl-5 text-xs text-muted-foreground">
+					Adds <code className="font-mono text-foreground">--codex-names agentpulse</code>. By
+					default Codex&apos;s own thread names show on the dashboard. With this, dashboard names
+					are written into Codex and replace its titles, renames made in Codex won&apos;t come back,
+					and Codex sessions don&apos;t offer &ldquo;Use agent name&rdquo;.
+				</p>
 			</div>
 
 			{/* Step 2: Agent Type */}

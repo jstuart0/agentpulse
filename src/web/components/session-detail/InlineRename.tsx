@@ -5,6 +5,7 @@ import {
 	type NameSource,
 	type ResetButtonState,
 	nameSourceCaption,
+	nameSourceTitle,
 	resetButtonState,
 	shouldShowPin,
 } from "../../lib/name-source.js";
@@ -121,7 +122,7 @@ export function InlineRename({
 			{caption && (
 				<span
 					className="text-[10px] text-muted-foreground truncate max-w-[10rem] md:max-w-[18rem]"
-					title={caption}
+					title={nameSourceTitle(nameSource, agentType) ?? caption}
 				>
 					{caption}
 				</span>
