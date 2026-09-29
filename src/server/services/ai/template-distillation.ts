@@ -63,7 +63,7 @@ export async function distillTemplate(input: DistillInput): Promise<TemplateDraf
 		.select()
 		.from(events)
 		.where(eq(events.sessionId, input.sessionId))
-		.orderBy(desc(events.createdAt))
+		.orderBy(desc(events.id))
 		.limit(200);
 
 	const userPrompts = recent

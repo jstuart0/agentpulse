@@ -88,3 +88,11 @@ kubectl -n agentpulse delete pvc agentpulse-backups
 ```
 
 See `BACKUP-RESTORE.md` for the SQLite backup runbook before deleting.
+
+## Upgrading an existing Postgres-backed install
+
+A schema migration that adds an index (for example migration `0003`, which adds a unique
+index used for hook-event deduplication) can take a `SHARE` lock on a large `events` table
+while building inline at boot. See `deploy/k8s/README.md` → "Upgrading to migration 0003"
+for the out-of-band `CREATE INDEX CONCURRENTLY` procedure and the required
+`pg_index.indisvalid` verification step.

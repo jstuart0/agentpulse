@@ -54,6 +54,27 @@ function formatEvent(event: {
 	return base;
 }
 
+// R8: with every tool call now stored (AGEN-16), an unbounded session read
+// here was 41,039 rows / 6.4 MB for one question. 2,000 rows, newest-first,
+// derived from the 40,000-char / ~10k-token budget (TOKEN_BUDGET_QA_CHARS)
+// and an assumed floor of ~20 chars per formatted line.
+const QA_EVENT_LOAD_LIMIT = 2000;
+
+export async function loadQaEvents(sessionId: string) {
+	return getDb()
+		.select({
+			id: events.id,
+			eventType: events.eventType,
+			toolName: events.toolName,
+			content: events.content,
+			createdAt: events.createdAt,
+		})
+		.from(events)
+		.where(eq(events.sessionId, sessionId))
+		.orderBy(desc(events.id))
+		.limit(QA_EVENT_LOAD_LIMIT);
+}
+
 export async function handleSessionQa(
 	intent: QaIntent,
 	_args: { origin: string; threadId: string },
@@ -100,17 +121,7 @@ export async function handleSessionQa(
 	// 6. Load events newest-first for tail truncation, then take from the front
 	//    until the character budget is reached. This keeps the most recent (most
 	//    relevant) events and drops the oldest when truncation is needed.
-	const allEvents = await getDb()
-		.select({
-			id: events.id,
-			eventType: events.eventType,
-			toolName: events.toolName,
-			content: events.content,
-			createdAt: events.createdAt,
-		})
-		.from(events)
-		.where(eq(events.sessionId, sessionId))
-		.orderBy(desc(events.id));
+	const allEvents = await loadQaEvents(sessionId);
 
 	let charCount = 0;
 	const selectedNewestFirst: typeof allEvents = [];

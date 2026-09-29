@@ -306,10 +306,38 @@ export function eventKey(
 	].join("::");
 }
 
+// Phase 3 (AGEN-16): a merge-only key, distinct from eventKey (which stays
+// purely content-based for React key / DOM id use, ActivityTimeline.tsx:63).
+// Once an event has a real persisted id, that id alone identifies it — a
+// live broadcast and its later REST poll of the same row can otherwise
+// differ in shape (createdAt in particular: ISO from the WS payload vs
+// bare "YYYY-MM-DD HH:MM:SS" from the DB), which the old content-based key
+// treated as two distinct events. id=0 (not yet persisted, e.g. a
+// pre-Phase-6/7 broadcast) falls back to the content-based key.
+function mergeKey(event: SessionEvent): string {
+	return event.id > 0 ? `id:${event.id}` : eventKey(event);
+}
+
+// F102: `id` is a global auto-increment across every session, not scoped to
+// one — mergeKey's `id:${event.id}` branch trusts it as a merge key without
+// any sessionId cross-check. That's safe only because every call site
+// (SessionDetailPage) already scopes both `baseEvents` (a REST poll of this
+// session) and `liveEvents` (WS events filtered to this session's id) to
+// the same session before calling this function. Before Phase 6, hook
+// broadcasts always carried id:0 and fell back to the content-based key, so
+// a same-id collision across two different sessions' events was never
+// actually reachable here — now that hook broadcasts carry real ids
+// (Phase 6), a caller that ever passes unscoped arrays would silently
+// merge another session's row in. If this function ever needs to be
+// called with un-prescoped inputs, filter by sessionId first (or add an
+// explicit assert here) — don't rely on id uniqueness alone.
 export function mergeSessionEvents(baseEvents: SessionEvent[], liveEvents: SessionEvent[]) {
 	const merged = new Map<string, SessionEvent>();
-	for (const event of [...baseEvents, ...liveEvents]) {
-		merged.set(eventKey(event), event);
+	// Live first, then base: Map.set() on a collision keeps the later call's
+	// value, so the polled (base) row's shape always wins over the
+	// optimistic live copy.
+	for (const event of [...liveEvents, ...baseEvents]) {
+		merged.set(mergeKey(event), event);
 	}
 	return collapseEquivalentEvents(
 		Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),

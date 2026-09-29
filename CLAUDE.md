@@ -76,12 +76,14 @@ agentpulse mcp install   # Mint/reuse a scoped API key, print client config (see
     - `util/` — TTL cache
     - `workspace/` — Clone, scaffold, feature guard
     - `control-actions.ts`, `correlation-resolver.ts`, `event-normalizer.ts`, `event-processor.ts`
+    - `event-dedup.ts` — hook-delivery dedup planner (`planEventInsert`, `DedupPolicy`, `HookDeliveryContext`, durable `t:`/`d:`/`o:` dedup-key computation); `event-dto.ts` — `toSessionEventDto`, the one shape every REST/WS/supervisor event read returns
+    - `util/db-time.ts` (`parseDbTimestamp`/`toDbTimestamp`, dialect-neutral timestamp parsing), `util/hash.ts` (synchronous `sha256Hex`, server-only)
     - `launch-compatibility.ts`, `launch-dispatch.ts`, `launch-validator.ts`
     - `labs-service.ts`, `local-auth-bootstrap.ts`, `local-auth-service.ts`
     - `managed-session-state.ts`, `name-generator.ts`, `notifier.ts`
     - `session-ownership.ts`, `session-tracker.ts`, `settings-service.ts`, `supervisor-registry.ts`
     - `telemetry.ts`, `template-preview.ts`, `transcript-sync.ts`
-  - `db/` - Drizzle client (`client.ts`), dialect-aware boot path, per-dialect migration runner; schema split across `db/schema/{core,ai,ask-projects}/` with per-dialect entry files (`schema/sqlite.ts`, `schema/postgres.ts`) and a runtime barrel (`schema/index.ts`); generated SQL baselines in `drizzle/sqlite/` and `drizzle/postgres/`
+  - `db/` - Drizzle client (`client.ts`), dialect-aware boot path, per-dialect migration runner; schema split across `db/schema/{core,ai,ask-projects}/` with per-dialect entry files (`schema/sqlite.ts`, `schema/postgres.ts`) and a runtime barrel (`schema/index.ts`); generated SQL baselines in `drizzle/sqlite/` and `drizzle/postgres/`; `fts-ddl.ts` — the single source of SQLite FTS5 table/trigger DDL, shared by `client.ts`'s boot bootstrap and the SQLite search backend
   - `auth/` - API key generation/verification, forwardauth bridge (`forwardauth-bridge.ts`), header trust gate + session resolver (`middleware.ts`)
   - `ws/` - WebSocket handler with pub/sub
 - `src/web/` - React frontend
@@ -93,8 +95,8 @@ agentpulse mcp install   # Mint/reuse a scoped API key, print client config (see
     - `templates/` — Template editor and list
   - `stores/` - 8 Zustand stores: `connection-store`, `event-store`, `labs-store`, `projects-store`, `session-store`, `tabs-store`, `ui-prefs-store`, `user-store`
   - `hooks/` - useWebSocket, useSessions
-  - `lib/` - `api.ts` (single API client), `parseDate.ts` (import from `src/web/lib/parseDate.ts`)
-- `src/shared/` - Shared types and constants (including `session-state.ts`)
+  - `lib/` - `api.ts` (single API client), `utils.ts` (`parseDate()`, import from `src/web/lib/utils.ts`)
+- `src/shared/` - Shared types and constants (including `session-state.ts`, `hook-headers.ts` — the `X-AgentPulse-Delivery-Id`/`X-AgentPulse-Origin` header names and the Codex native-hook marker directory name, shared between the server and the supervisor)
 - `src/supervisor/` - Local supervisor process (launch/control plane for same-machine sessions)
 - `packages/agentpulse-mcp/` - Standalone, publishable MCP server package (`@agentpulse/mcp` on npm; AGEN-12 + the 2026-07-23 package-extraction campaign). Bun workspace member with its own `package.json`/`tsconfig.build.json`/`README.md`; `src/` holds `client.ts` (typed HTTP client over `/api/v1`), `server.ts` (`registerReadTool`/`registerMutatingTool` wrappers — the only sanctioned way to register a tool), `scopes.ts` (`discoverScopes` via `/auth/me`, `MIN_SERVER_VERSION`), `errors.ts`/`output.ts` (error mapping + output caps), `install.ts` (key mint + Claude/Codex config emitters, version-pinned), `resources.ts`, `types.ts`/`scope-constants.ts` (vendored wire-type closure, severed from `src/server/`/`src/shared/`), `version.ts` (`createRequire`-based own-version read), `cli.ts` (bin entry, `serve`/`install`), `tools/` (per-domain tool files), `index.ts` (`serveStdio()` + public re-exports). `bin/cli.ts`'s `mcp serve`/`mcp install` are a thin in-repo shim over this package.
 - `deploy/k8s/` - Kubernetes manifests (namespace, secret template, configmap, PVC, deployment, service, middleware, ingressroute, limitrange, resourcequota, networkpolicy, serviceaccount, backup PVC)
@@ -122,7 +124,7 @@ Agent (Claude Code / Codex)
 Schema is split across `src/server/db/schema/{core,ai,ask-projects}/` with per-table files and a column-factory pattern for dual-dialect differences. Per-dialect entry files (`schema/sqlite.ts`, `schema/postgres.ts`) export the canonical table set for each backend. The runtime barrel (`schema/index.ts`) reads `config.dialect` at module load and selects the appropriate per-dialect barrel; all production importers use it (the legacy `db/schema.ts` shim is deleted, guarded by `scripts/check-no-legacy-schema-import.ts`). Exports are currently cast to SQLite-typed variants for backwards type-compat; narrowing to dual-dialect generics is a follow-up.
 
 - `sessions` - id, session_id, display_name, agent_type, status, cwd, model, is_working, is_pinned, git_branch, notes, semantic_status, current_task, plan_summary, total_tool_uses, metadata, timestamps, is_archived. Note: `is_archived` is the canonical archive predicate; `status='archived'` is a legacy value retained for backwards-compat (see `src/shared/session-state.ts`).
-- `events` - id, session_id, event_type, tool_name, tool_input, tool_response, raw_payload, created_at
+- `events` - id, session_id, event_type, tool_name, tool_input, tool_response, raw_payload, dedup_key, created_at. `dedup_key` is nullable server-derived durable identity for hook-delivered events (AGEN-16; null for events written by other paths — transcript, managed, AI). `idx_events_session_id_id` backs every session-scoped `ORDER BY id DESC` read; `uq_events_session_dedup_key` is a `UNIQUE(session_id, dedup_key)` index backing `ON CONFLICT DO NOTHING` inserts (NULL values never conflict with each other, so non-hook rows are unaffected).
 - `api_keys` - id, name, key_hash, key_prefix, is_active, scopes (JSON text, default `'["ingest"]'`), timestamps
 - `settings` - key, value, updated_at
 - AI control plane (always created; runtime gated by `AGENTPULSE_AI_ENABLED`):
@@ -177,15 +179,15 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 ## API Endpoints
 
 **Public (no auth):**
-- `GET /api/v1/health` - Health check (returns 503 until DB migrations complete)
+- `GET /api/v1/health` - Health check (returns 503 until DB migrations complete). Once ready, also returns `eventsDeduplicated` (`{deliveryRetry, toolUseRetry, contentWindow, authority}` counts — why a dropped hook delivery was dropped), `legacyObserverDeliveries` (deliveries from a not-yet-upgraded Codex observer, still on the pre-AGEN-16 window-based dedup), and `oversizeDropped` (hook deliveries dropped for exceeding the 16 MiB body cap), alongside the existing `inFlight`/`processingErrors`/`rateLimitedDropped`/`shuttingDown`/`dbReady` fields.
 - `GET /api/v1/ready` - Readiness probe (returns 503 during graceful drain; 200 when ready for traffic)
 - `POST /api/v1/csp-report` - Browser CSP violation report receiver (unauthenticated; rate-limited by Traefik)
 - `GET /setup.sh` - Self-contained hook setup script
 - `GET /setup-relay.sh` - Self-contained relay + hook setup script
 
 **Hook ingestion (API key when auth enabled):**
-- `POST /api/v1/hooks` - Receive hook events from Claude Code / Codex (always returns 200; rate-limited drops are silent, counter exposed in /health)
-- `POST /api/v1/hooks/status` - Receive semantic status updates
+- `POST /api/v1/hooks` - Receive hook events from Claude Code / Codex (always returns 200; rate-limited drops are silent, counter exposed in /health). Request bodies over 16 MiB are dropped before parsing rather than stored in full — still 200, counted in `oversizeDropped`; when enough identity survives the truncated prefix, a placeholder row is stored so the delivery isn't silently invisible. Optional `X-AgentPulse-Delivery-Id` (a caller-stamped stable id for a retriable delivery — relays, the Codex observer) and `X-AgentPulse-Origin: codex-observer` (identifies the supervisor's own Codex rollout-file observer) headers drive durable hook-delivery dedup (AGEN-16); both fall back to best-effort behavior when absent. Any top-level payload key starting with `agentpulse_` (case-insensitive) is stripped before processing — that prefix is server-reserved.
+- `POST /api/v1/hooks/status` - Receive semantic status updates (same 16 MiB body cap and always-200 contract as `/hooks`; oversize bodies are dropped and counted, with no placeholder row)
 
 **Internal (loopback-only; blocked externally by Traefik deny rule):**
 - `POST /api/v1/internal/drain` - Initiate graceful drain (sets readiness to 503; only reachable from localhost)
@@ -217,8 +219,12 @@ Claude Code blocks hooks to non-localhost IPs. The relay (`scripts/relay.ts`) ru
 - Biome for formatting (tabs, double quotes, semicolons)
 - Dark theme is default
 - Hook ingestion must be fast (< 50ms response, always return 200)
-- SQLite datetime format: "YYYY-MM-DD HH:MM:SS" (no T/Z) -- use `parseDate()` (import from `src/web/lib/parseDate.ts`) in frontend
+- SQLite datetime format: "YYYY-MM-DD HH:MM:SS" (no T/Z) -- use `parseDate()` (import from `src/web/lib/utils.ts`) in frontend
 - Session names generated from adjective-noun pairs (name-generator.ts)
+- **Hook-delivery dedup (AGEN-16)**: hook-delivered events (source `POST /api/v1/hooks`) are deduplicated by durable identity, stored in `events.dedup_key`, not by comparing content. Three key namespaces, each the first 32 hex chars of a sha256 over length-prefixed fields: `t:` keys a tool call or permission event by its own `tool_use_id`; `d:` keys everything else in a delivery by a hash of the whole delivery body (so a retried non-`t:`-eligible event dedupes only when the caller also stamps `X-AgentPulse-Delivery-Id`); `o:` is the oversize-stub placeholder's own namespace, keyed on `tool_use_id` or the delivery id, so a stub can never collide with (or suppress) a real `t:`/`d:` row. A `UNIQUE(session_id, dedup_key)` index backs `ON CONFLICT DO NOTHING` at insert time. Events from other write paths (transcript reconciliation, managed-session state, AI proposals) keep the older content-window dedup and always store `dedup_key: null`.
+- **Session-scoped event reads are ordered by `id DESC`**, not `created_at DESC` — row id is monotonic and unambiguous for events created in the same instant; `created_at` is not. `idx_events_session_id_id` backs this.
+- **SQLite FTS rowid convention**: every `search_events_fts` write and delete uses `rowid = events.id` (not the `event_id` column, which exists only because search reads it directly) — an FTS delete keyed by `rowid` is a constrained lookup instead of a full-table scan. The DDL lives in exactly one module, `src/server/db/fts-ddl.ts`, imported by both `db/client.ts`'s boot bootstrap and the SQLite search backend.
+- **Codex observer (AGEN-16)**: the local supervisor's Codex-observer fallback (`src/supervisor/services/codex-observer.ts`) tails `~/.codex/sessions` rollout files and posts hook-shaped events for hosts where native Codex hooks aren't covering a session. It stamps `X-AgentPulse-Delivery-Id`/`X-AgentPulse-Origin: codex-observer` on every post, posts one turn-completion row per Codex turn (not per assistant-message chunk), and skips a session entirely once a per-session marker file (`~/.agentpulse/codex-native/<session_id>`) shows native Codex hooks already cover it — a missing marker means it posts (fail-open). `AGENTPULSE_CODEX_OBSERVER=off` disables it outright.
 - DB migrations: SQLite fresh installs and all Postgres installs use Drizzle migrate (baselines in `drizzle/sqlite/` and `drizzle/postgres/`). Existing SQLite installs use the legacy `initializeDatabase()` path unless `AGENTPULSE_LEGACY_INIT=false`. Schema changes must generate two migrations in lockstep: `bun run db:generate:sqlite` and `bun run db:generate:postgres`.
 - isWorking toggles on UserPromptSubmit/PreToolUse (true) and Stop (false)
 - Timeline shows only UserPromptSubmit events — this filter is applied **client-side** in the session detail UI, not server-side. The API returns all events for a session; the timeline component selects the subset to display.

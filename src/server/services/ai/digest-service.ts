@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
 import { events, sessions, watcherProposals } from "../../db/schema/index.js";
+import { toDbTimestamp } from "../util/db-time.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 
 /**
@@ -146,10 +147,16 @@ export async function buildDigest(options: DigestOptions = {}): Promise<Digest> 
 				and(
 					inArray(events.sessionId, sessionIds),
 					eq(events.category, "plan_update"),
-					gte(events.createdAt, windowStart.toISOString()),
+					// R10: events.created_at is a bare "YYYY-MM-DD HH:MM:SS" (SQLite)
+					// or a Postgres-offset string — never a "T"-separated ISO string.
+					// Comparing against windowStart.toISOString() lexicographically
+					// excluded the window's first day (" " < "T" for the same wall
+					// date). toDbTimestamp formats windowStart the same way the
+					// column is stored.
+					gte(events.createdAt, toDbTimestamp(windowStart)),
 				),
 			)
-			.orderBy(desc(events.createdAt));
+			.orderBy(desc(events.id));
 		const cwdBySession = new Map(rows.map((r) => [r.sessionId, r.cwd ?? null]));
 		for (const e of planEvents) {
 			if (!e.content) continue;
