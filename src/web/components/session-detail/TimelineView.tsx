@@ -306,10 +306,25 @@ export function eventKey(
 	].join("::");
 }
 
+// Phase 3 (AGEN-16): a merge-only key, distinct from eventKey (which stays
+// purely content-based for React key / DOM id use, ActivityTimeline.tsx:63).
+// Once an event has a real persisted id, that id alone identifies it — a
+// live broadcast and its later REST poll of the same row can otherwise
+// differ in shape (createdAt in particular: ISO from the WS payload vs
+// bare "YYYY-MM-DD HH:MM:SS" from the DB), which the old content-based key
+// treated as two distinct events. id=0 (not yet persisted, e.g. a
+// pre-Phase-6/7 broadcast) falls back to the content-based key.
+function mergeKey(event: SessionEvent): string {
+	return event.id > 0 ? `id:${event.id}` : eventKey(event);
+}
+
 export function mergeSessionEvents(baseEvents: SessionEvent[], liveEvents: SessionEvent[]) {
 	const merged = new Map<string, SessionEvent>();
-	for (const event of [...baseEvents, ...liveEvents]) {
-		merged.set(eventKey(event), event);
+	// Live first, then base: Map.set() on a collision keeps the later call's
+	// value, so the polled (base) row's shape always wins over the
+	// optimistic live copy.
+	for (const event of [...liveEvents, ...baseEvents]) {
+		merged.set(mergeKey(event), event);
 	}
 	return collapseEquivalentEvents(
 		Array.from(merged.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
