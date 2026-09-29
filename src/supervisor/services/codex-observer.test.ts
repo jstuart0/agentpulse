@@ -8,7 +8,8 @@
 // positive results in a process-wide Set keyed by (home, sessionId) — a
 // fresh id per test is sufficient without a reset hook.
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	appendFileSync,
 	existsSync,
@@ -306,6 +307,41 @@ test("O4 an appended line produces exactly one new post under a new id, and the 
 	expect(state2.offset).toBe(statSync(path).size);
 });
 
+test("F105 deliveryIdFor is pinned to the start-of-line byte offset, not the end", async () => {
+	// deliveryIdFor isn't exported (it's an internal identity helper), so
+	// this pins it indirectly through the SessionStart post's header: for
+	// a from-zero run, session_meta is always the first line, so its
+	// line-start byte offset is 0. A hand-computed golden value using the
+	// documented formula (sha256Hex(`${filePath}\0${lineStartOffset}`).
+	// slice(0, 32), codex-observer.ts:117-131) must match exactly.
+	const dir = mkTmp("ap-codex-obs-");
+	const home = mkTmp("ap-codex-home-");
+	const { path } = writeFixtureCopy(dir);
+	const captured: Captured[] = [];
+	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+
+	const sessionStart = captured.find((c) => c.body.hook_event_name === "SessionStart");
+	expect(sessionStart).toBeDefined();
+
+	const startOffsetGolden = createHash("sha256")
+		.update(`${path}\u00000`)
+		.digest("hex")
+		.slice(0, 32);
+	expect(sessionStart?.headers[DELIVERY_ID_HEADER.toLowerCase()]).toBe(startOffsetGolden);
+
+	// A mutant using the end-of-line offset instead would hash the first
+	// line's byte length rather than 0 — pin that this is NOT what's used,
+	// so that mutant fails this test.
+	const writtenFirstLine = readFileSync(path, "utf8").split("\n")[0] ?? "";
+	const endOffsetBytes = Buffer.byteLength(writtenFirstLine, "utf8");
+	const endOffsetMutant = createHash("sha256")
+		.update(`${path}\u0000${endOffsetBytes}`)
+		.digest("hex")
+		.slice(0, 32);
+	expect(endOffsetBytes).toBeGreaterThan(0); // sanity: the mutant value would actually differ
+	expect(sessionStart?.headers[DELIVERY_ID_HEADER.toLowerCase()]).not.toBe(endOffsetMutant);
+});
+
 test("O5 the header/origin constants equal the exact literals", () => {
 	expect(DELIVERY_ID_HEADER).toBe("X-AgentPulse-Delivery-Id");
 	expect(ORIGIN_HEADER).toBe("X-AgentPulse-Origin");
@@ -379,6 +415,30 @@ test("O9 saveState writes atomically, replacing pre-existing tmp garbage", () =>
 	expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({
 		files: { a: { offset: 5, sessionId: "s1" } },
 	});
+});
+
+test("F101 saveState writes the state file with mode 0600", () => {
+	const dir = mkTmp("ap-codex-state-");
+	const target = join(dir, "state.json");
+	saveState({ files: { a: { offset: 1, sessionId: "s1" } } }, target);
+	expect(statSync(target).mode & 0o777).toBe(0o600);
+});
+
+test("F101 saveState refuses a symlink pre-planted at the tmp path", () => {
+	const dir = mkTmp("ap-codex-state-");
+	const target = join(dir, "state.json");
+	const canary = join(dir, "canary.txt");
+	writeFileSync(canary, "untouched");
+	symlinkSync(canary, `${target}.tmp`);
+
+	saveState({ files: { a: { offset: 1, sessionId: "s1" } } }, target);
+
+	// The symlink was never followed: the file it points to is untouched,
+	// and saveState bailed out before renaming a symlink onto the real
+	// state path, so no state file was written this cycle either — the
+	// next scan will retry, per the function's own error-swallow contract.
+	expect(readFileSync(canary, "utf8")).toBe("untouched");
+	expect(existsSync(target)).toBe(false);
 });
 
 describe("O10 isCodexObserverEnabled", () => {
@@ -553,6 +613,26 @@ describe("O12 a native-hook marker stands the observer down", () => {
 		await processRolloutFile(path, state, "http://x", null, new Map(), fakeFetch(second), home);
 		expect(second).toHaveLength(0);
 	});
+});
+
+test("F100 isNativeCovered logs once per session per process on the first true result", () => {
+	const home = mkTmp("ap-codex-home-");
+	const sessionId = crypto.randomUUID();
+	mkdirSync(join(home, ".agentpulse", "codex-native"), { recursive: true });
+	writeFileSync(codexNativeMarkerPath(home, sessionId), "");
+
+	const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		expect(isNativeCovered(sessionId, home)).toBe(true);
+		expect(isNativeCovered(sessionId, home)).toBe(true);
+		expect(isNativeCovered(sessionId, home)).toBe(true);
+		expect(warnSpy).toHaveBeenCalledTimes(1);
+		expect(warnSpy.mock.calls[0]?.[0]).toBe(
+			`[codex-observer] session ${sessionId} skipped: native marker present`,
+		);
+	} finally {
+		warnSpy.mockRestore();
+	}
 });
 
 test("O12b invalid session ids never match a marker, even if a file exists at the naive join path", () => {
