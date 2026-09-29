@@ -34,18 +34,21 @@ export function isCredentialRejected(error: unknown): boolean {
 /**
  * Run an in-session report call (reportState/reportEvents). On success,
  * resolves normally. On a 401 (credential rejected), logs a clear message
- * and invokes `onFatal` (default: process.exit(1)) — the same controlled
- * exit path a failed registration already takes. On any other failure
- * (403 session_not_owned, 5xx, network error), logs a session-scoped line
- * and returns normally so the caller's stream/notification loop keeps
- * running.
+ * and awaits `onFatal` (default: process.exit(1)) — the same controlled
+ * exit path a failed registration already takes. `onFatal` may be async
+ * (e.g. D9's disposeAllHeadlessRuntimes/disposeAllManagedCodexRuntimes,
+ * which must finish killing child processes before the process exits) —
+ * it's awaited so process.exit(1) never races ahead of that cleanup. On
+ * any other failure (403 session_not_owned, 5xx, network error), logs a
+ * session-scoped line and returns normally so the caller's
+ * stream/notification loop keeps running.
  */
 export async function reportInSessionSafely(
 	scope: string,
 	sessionId: string,
 	op: string,
 	fn: () => Promise<unknown>,
-	onFatal: () => void = () => process.exit(1),
+	onFatal: () => void | Promise<void> = () => process.exit(1),
 ): Promise<void> {
 	try {
 		await fn();
@@ -54,7 +57,7 @@ export async function reportInSessionSafely(
 			console.error(
 				`[${scope}] credential rejected (401) — supervisor credential revoked or rotated; exiting (session=${sessionId}, op=${op})`,
 			);
-			onFatal();
+			await onFatal();
 			return;
 		}
 		console.error(

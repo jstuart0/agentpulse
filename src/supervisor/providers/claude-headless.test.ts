@@ -10,11 +10,14 @@
  * CLI spawn needed) — the exported seam this campaign added for exactly
  * this test.
  */
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { SupervisorRequestError } from "../services/report-resilience.js";
-import { streamHeadlessClaude } from "./claude-headless.js";
+import { disposeAllHeadlessRuntimes, streamHeadlessClaude } from "./claude-headless.js";
 
-function fakeProc(stdoutLines: string[], exitCode = 0) {
+function fakeProc(
+	stdoutLines: string[],
+	opts?: { exitCode?: number; neverExits?: boolean; kill?: ReturnType<typeof mock> },
+) {
 	const encoder = new TextEncoder();
 	const stdout = new ReadableStream<Uint8Array>({
 		start(controller) {
@@ -27,11 +30,13 @@ function fakeProc(stdoutLines: string[], exitCode = 0) {
 			controller.close();
 		},
 	});
+	const killSpy = opts?.kill ?? mock(() => {});
 	return {
 		pid: 4242,
 		stdout,
 		stderr,
-		exited: Promise.resolve(exitCode),
+		exited: opts?.neverExits ? new Promise<number>(() => {}) : Promise.resolve(opts?.exitCode ?? 0),
+		kill: killSpy,
 		// biome-ignore lint/suspicious/noExplicitAny: fake proc only needs the fields streamHeadlessClaude reads
 	} as any;
 }
@@ -167,5 +172,108 @@ describe("streamHeadlessClaude in-session reporting resilience (F25/F32)", () =>
 			process.off("unhandledRejection", onUnhandledRejection);
 			exitSpy.mockRestore();
 		}
+	});
+
+	// D9/F41: before process.exit(1), the fatal-401 path must kill every
+	// claude child this process still holds — otherwise it's orphaned with
+	// a dead supervisor. onFatal (disposeAllHeadlessRuntimes) is exercised
+	// for real here; only process.exit itself is mocked.
+	test("a reportState 401 during streaming sends SIGTERM to the spawned child before exiting (D9/F41)", async () => {
+		const unhandledReasons: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown) => unhandledReasons.push(reason);
+		process.on("unhandledRejection", onUnhandledRejection);
+		const exitSpy = spyOn(process, "exit").mockImplementation(
+			(() => undefined) as unknown as typeof process.exit,
+		);
+
+		const killSpy = mock(() => {});
+		let reportStateCallCount = 0;
+		const proc = fakeProc([JSON.stringify({ type: "tool_use", tool_name: "bash", text: "ls" })], {
+			kill: killSpy,
+		});
+
+		try {
+			const result = await streamHeadlessClaude({
+				sessionId: "f41-headless-sess",
+				launchRequestId: "launch-1",
+				cwd: "/tmp",
+				model: null,
+				configCapabilities: {},
+				proc,
+				metadata: fakeMetadata(),
+				reportProgress: async () => {},
+				callbacks: {
+					reportState: async () => {
+						reportStateCallCount++;
+						if (reportStateCallCount === 2) {
+							throw new SupervisorRequestError(401, "Unauthorized");
+						}
+						return { session: {} as never, managedSession: {} as never };
+					},
+					reportEvents: async () => {},
+				},
+				startEvent: {
+					eventType: "HeadlessTaskStarted",
+					category: "system_event",
+					content: "started",
+					rawPayload: {},
+				},
+				completionEvent: {
+					success: "HeadlessTaskCompleted",
+					failurePrefix: "HeadlessTaskFailed",
+				},
+			});
+
+			await result.monitor;
+
+			expect(killSpy).toHaveBeenCalledWith("SIGTERM");
+			expect(exitSpy).toHaveBeenCalledWith(1);
+			// process.exit is mocked, so onFatal's await completed before the
+			// (mocked) exit call — proving disposal isn't racing ahead of it.
+			const killOrder = killSpy.mock.invocationCallOrder[0];
+			const exitOrder = exitSpy.mock.invocationCallOrder[0];
+			expect(killOrder).toBeLessThan(exitOrder);
+			expect(unhandledReasons).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandledRejection);
+			exitSpy.mockRestore();
+		}
+	});
+
+	test("disposeAllHeadlessRuntimes escalates to SIGKILL after the grace period if the child doesn't exit (D9/F41)", async () => {
+		const killSpy = mock(() => {});
+		const proc = fakeProc([], { neverExits: true, kill: killSpy });
+
+		// Registers `proc` into the module's runtime registry as a side
+		// effect (no stdout lines, so flushProgress never fires naturally —
+		// this call alone doesn't trigger the fatal path).
+		const result = await streamHeadlessClaude({
+			sessionId: "f41-grace-sess",
+			launchRequestId: "launch-1",
+			cwd: "/tmp",
+			model: null,
+			configCapabilities: {},
+			proc,
+			metadata: fakeMetadata(),
+			reportProgress: async () => {},
+			callbacks: undefined,
+			startEvent: {
+				eventType: "HeadlessTaskStarted",
+				category: "system_event",
+				content: "started",
+				rawPayload: {},
+			},
+			completionEvent: {
+				success: "HeadlessTaskCompleted",
+				failurePrefix: "HeadlessTaskFailed",
+			},
+		});
+		void result; // monitor never resolves (proc.exited never resolves) — not awaited here.
+
+		// Short grace so the test doesn't wait out the 2s production default.
+		await disposeAllHeadlessRuntimes(20);
+
+		expect(killSpy).toHaveBeenCalledWith("SIGTERM");
+		expect(killSpy).toHaveBeenCalledWith("SIGKILL");
 	});
 });
