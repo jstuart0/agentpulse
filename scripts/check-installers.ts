@@ -35,10 +35,38 @@ function checkRelayInstallerBuilds() {
  * "relay.ts" one. The word boundary before "relay" and the extension-or-quote
  * right after it keep this from flagging unrelated names like "relayEvent".
  */
+const PLAIN_RELAY_IMPORT_RE =
+	/(?<!typeof )(?:import\s*\(\s*|require\s*\(\s*|from\s+)["'][^"']*\brelay(?:\.(?:ts|js))?["']/;
+
+/**
+ * F206: `Glob.scan()` lists a snapshot of paths, then each is read
+ * separately — a path it enumerated can be deleted by the time its
+ * `readFile` runs (e.g. this file's own test suite planting and cleaning
+ * up throwaway fixtures under the very same scanned globs — see
+ * scripts/check-installers.test.ts's plant()/afterEach — racing a second,
+ * concurrent scan under host contention; confirmed by direct repro). A
+ * path that no longer exists by read time is trivially not an offender:
+ * ENOENT here is skipped, not a scan failure. Any other read error (a
+ * real permissions problem, a real corrupt file) still fails loudly.
+ */
+export async function scanPathForPlainRelayImport(
+	path: string,
+	offenders: string[],
+): Promise<void> {
+	let content: string;
+	try {
+		content = await readFile(join(ROOT, path), "utf8");
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw err;
+	}
+	content.split("\n").forEach((line, i) => {
+		if (PLAIN_RELAY_IMPORT_RE.test(line)) offenders.push(`${path}:${i + 1}: ${line.trim()}`);
+	});
+}
+
 export async function checkNoPlainRelayModuleImport() {
 	const offenders: string[] = [];
-	const plain =
-		/(?<!typeof )(?:import\s*\(\s*|require\s*\(\s*|from\s+)["'][^"']*\brelay(?:\.(?:ts|js))?["']/;
 	for (const pattern of [
 		"scripts/**/*.ts",
 		"src/**/*.ts",
@@ -52,10 +80,7 @@ export async function checkNoPlainRelayModuleImport() {
 	]) {
 		for await (const path of new Glob(pattern).scan(ROOT)) {
 			if (path === "src/server/installers.ts") continue;
-			const content = await readFile(join(ROOT, path), "utf8");
-			content.split("\n").forEach((line, i) => {
-				if (plain.test(line)) offenders.push(`${path}:${i + 1}: ${line.trim()}`);
-			});
+			await scanPathForPlainRelayImport(path, offenders);
 		}
 	}
 	if (offenders.length > 0) {

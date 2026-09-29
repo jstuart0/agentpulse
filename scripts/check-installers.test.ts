@@ -16,7 +16,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { checkNoPlainRelayModuleImport, mustInclude } from "./check-installers.js";
+import {
+	checkNoPlainRelayModuleImport,
+	mustInclude,
+	scanPathForPlainRelayImport,
+} from "./check-installers.js";
 
 const ROOT = join(import.meta.dir, "..");
 const REL = "re" + "lay";
@@ -127,6 +131,29 @@ describe("F196: the PUBLIC_URL placeholder literals are pinned", () => {
 		const source = await readFile(join(ROOT, "scripts", "check-installers.ts"), "utf8");
 		expect(source).toContain(`mustInclude("scripts/install-local.sh", 'PUBLIC_URL=""')`);
 		expect(source).toContain(`mustInclude("scripts/install-local.ps1", '[string]$PublicUrl = ""')`);
+	});
+});
+
+describe("F206: a path that disappears between listing and reading doesn't crash the scan", () => {
+	test("a nonexistent path is skipped, not thrown (ENOENT from a raced concurrent scan)", async () => {
+		const offenders: string[] = [];
+		await expect(
+			scanPathForPlainRelayImport("scripts/__f206_never_existed.ts", offenders),
+		).resolves.toBeUndefined();
+		expect(offenders).toEqual([]);
+	});
+
+	test("a real, still-present offender is still caught (ENOENT-only skip, not silent-everything)", async () => {
+		await plant("scripts/__f206_real_offender.ts", `import x from "./${REL}";\n`);
+		const offenders: string[] = [];
+		await scanPathForPlainRelayImport("scripts/__f206_real_offender.ts", offenders);
+		expect(offenders).toEqual([`scripts/__f206_real_offender.ts:1: import x from "./${REL}";`]);
+	});
+
+	test("a non-ENOENT read failure still throws (a real permissions/corruption problem isn't swallowed)", async () => {
+		// "scripts" is a real directory, not a file — readFile on it throws
+		// EISDIR, not ENOENT, and must still propagate.
+		await expect(scanPathForPlainRelayImport("scripts", [])).rejects.toThrow();
 	});
 });
 
