@@ -72,12 +72,30 @@ is still a follow-up (not yet implemented).
 or `PUT /api/v1/settings {"key":"eventsRetentionDays","value":<days>}`) is
 **disabled by default** — unset, `0`, or negative all mean "never delete."
 Set it to a positive integer to enable a background pass (every
-`AGENTPULSE_RETENTION_INTERVAL_MS`, default 1 hour) that deletes `events`
-rows older than that many days, in batches of 5,000, without blocking
-ingest. The `sessions` row and its denormalized state are never touched —
-only the `events` history ages out. `GET /api/v1/health`'s `retention`
-field reports the last pass (`rowsDeleted`, `durationMs`, `disabled`) and
-the next scheduled tick.
+`AGENTPULSE_RETENTION_INTERVAL_MS`, default 1 hour, clamped to [60s, 24h] —
+an out-of-range or non-integer value falls back to the 1-hour default with
+a warning) that deletes `events` rows older than that many days, in
+batches of 1,000 (percy TB10 review: 5,000-row batches held the event loop
+148–202ms each on SQLite), without blocking ingest. The `sessions` row and
+its denormalized state are never touched — only the `events` history ages
+out. `GET /api/v1/health`'s `retention` field reports the last pass
+(`rowsDeleted`, `durationMs`, `disabled`) and, separately, `lastSkip` when
+a pass was skipped (`already_running`, or on Postgres `lock_held_elsewhere`
+— another replica already held the per-batch advisory lock), plus the next
+scheduled tick.
+
+**Postgres time zone (percy TB10 review, item 1 — critical):** `created_at`
+is TEXT rendered in the connection's `TimeZone` GUC. Every postgres-js
+connection this app opens now pins `connection: { TimeZone: "UTC" }`
+(`src/server/db/client.ts`'s `PG_CONNECTION_OPTIONS`), so new rows always
+render "+00" regardless of the server/database's default timezone. **This
+does not retroactively fix existing rows**: if your Postgres server's
+default timezone was not UTC before upgrading to this release, rows
+written before the upgrade keep their local-time-with-offset text and are
+compared against the retention cutoff using that historical offset (they
+age out correctly once they're unambiguously past the cutoff by more than
+the offset; only rows within one offset-width of the cutoff at upgrade
+time are affected, and only until they naturally age out).
 
 **Reclaiming space after enabling retention (SQLite):** deleting rows frees
 pages inside the SQLite file but does not shrink it on disk unless the
@@ -215,6 +233,70 @@ both — a pre-created index under the same name doesn't break boot.
   Once the index is `indisvalid = true` out-of-band, the app's own
   migration runner sees it already present (`IF NOT EXISTS`) and does no
   further work for it at boot.
+
+---
+
+## Upgrading to migration 0005 (AGEN-24 percy review: event retention index)
+
+Migration `0005` adds one index, `idx_events_created_at_id`, on
+`events (created_at, id)` — it backs the event-retention pass's batch
+`SELECT ... WHERE created_at < ? ORDER BY created_at, id LIMIT ...` (percy
+measured 48ms → 0.04ms per idle tick on Postgres; SQLite already had an
+equally-capable single-column index — see below). It runs automatically
+on boot, on both SQLite and Postgres, and is idempotent (`IF NOT EXISTS`)
+on both.
+
+**SQLite**: no action needed. SQLite appends the rowid (which is `events.id`
+for this table) to every non-unique index's key internally, so the
+pre-existing `idx_events_created_at` (added before AGEN-24) already behaves
+like a `(created_at, id)` composite for this query — `EXPLAIN QUERY PLAN`
+shows either index used depending on install history, and both are
+equally non-scanning.
+
+**Postgres**
+
+- Building this index takes a `SHARE` lock on `events` for the duration of
+  the build, the same tradeoff `0003`'s indexes make. On a small-to-moderate
+  `events` table this is milliseconds and safe to run inline at boot. On a
+  large table (which is exactly the AGEN-16 growth scenario this feature
+  exists to bound), pre-create it out-of-band, in a maintenance window,
+  before rolling out this version:
+
+  ```sql
+  -- Run against the Postgres database directly, before deploying the new image.
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_created_at_id
+    ON events (created_at, id);
+  ```
+
+  `CONCURRENTLY` avoids the `SHARE` lock (it takes longer, and doesn't run
+  inside a transaction, but doesn't block writes to `events` while it
+  builds). A `CONCURRENTLY` build can fail partway through and leave an
+  **invalid** index behind — Postgres will not use an invalid index, and a
+  plain `CREATE INDEX IF NOT EXISTS` afterwards silently skips it instead of
+  fixing it. Verify it's valid before considering the upgrade complete:
+
+  ```sql
+  SELECT indexrelid::regclass AS index_name, indisvalid
+    FROM pg_index
+    WHERE indexrelid = 'idx_events_created_at_id'::regclass;
+  ```
+
+  If that row shows `indisvalid = false`, drop and rebuild it before
+  deploying:
+
+  ```sql
+  DROP INDEX CONCURRENTLY IF EXISTS idx_events_created_at_id;
+  -- then re-run the CREATE INDEX CONCURRENTLY statement above
+  ```
+
+  Once the index is `indisvalid = true` out-of-band, the app's own
+  migration runner sees it already present (`IF NOT EXISTS`) and does no
+  further work for it at boot.
+
+  **AGEN-27 note**: any migration branched off before AGEN-24 merges must
+  regenerate its Postgres migration (`bun run db:generate:postgres`) after
+  merging main, so its own migration number lands after `0005` rather than
+  colliding with it (TB11 in the ticket-batch plan).
 
 ---
 
