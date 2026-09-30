@@ -53,7 +53,7 @@ spec:
       X-authentik-name: ""
       X-authentik-uid: ""
 ---
-# DEPRECATED: renamed to agentpulse-strip-client-forwardauth in v0.5.0; this alias removed in next release.
+# DEPRECATED: renamed to agentpulse-strip-client-forwardauth in v0.5.0; this alias will be removed in v0.7.0.
 # Kept as a duplicate resource so existing overlays referencing the old name continue to work.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware

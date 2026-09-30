@@ -7,6 +7,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-29
+
 ### Added
 
 - **Copilot CLI support (AGEN-13) — labeled "contract not yet
@@ -428,6 +430,16 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   both build their event summaries from the canonical `eventType`, not
   `providerEventType` — so this is defense-in-depth, not a fix for an
   existing prompt-injection path.
+
+### Deprecated
+
+- The following aliases were scheduled for removal in this release. They
+  remain supported in 0.6.0 and **will be removed in v0.7.0**. Migrate now:
+  - `AGENTPULSE_AUTHENTIK_TRUST_SECRET` env var → use `FORWARDAUTH_TRUST_SECRET`.
+  - `agentpulse-strip-client-authentik` Traefik middleware → use
+    `agentpulse-strip-client-forwardauth`.
+  - `deploy/k8s/AUTHENTIK-FORWARDAUTH.md` → see `deploy/k8s/FORWARDAUTH.md`.
+  - The `"authentik"` auth-source value → `"forwardauth"`.
 
 ### Upgrade notes
 

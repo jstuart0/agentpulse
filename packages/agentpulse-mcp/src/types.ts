@@ -246,7 +246,7 @@ export interface DashboardStats {
 
 /**
  * GET /auth/me response shape (src/server/routes/auth.ts). `source:
- * "authentik"` is a legacy alias retained for one release server-side; new
+ * "authentik"` is a legacy alias retained until v0.7.0 server-side; new
  * responses emit "forwardauth". `scopes` is api_key-caller-only —
  * forwardauth/local callers omit the field (this package's discoverScopes
  * relies on that).
