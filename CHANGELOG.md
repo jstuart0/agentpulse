@@ -84,12 +84,15 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   rows and worse as `events` grows — a Postgres cost-misestimation for
   opaque `ILIKE` patterns, not a missing index (forcing the planner off
   the ordering index on the same data proved the trigram plan is
-  available and ~2000x faster). `searchEvents` now runs an adaptive
+  available for a rare/unique term). `searchEvents` now runs an adaptive
   two-plan strategy: Plan A is the unprepared query inside a transaction
   with a 150ms `statement_timeout`; if canceled (SQLSTATE 57014), Plan B
   re-runs the identical query in a fresh transaction with
   `enable_indexscan`/`enable_indexonlyscan` off, forcing the trigram path,
-  with a generous 10s timeout. Both `SET LOCAL`s are transaction-scoped
+  with a generous 10s timeout. Plan B's own cost scales with the size of
+  the matched set, not just table size (~400ms measured at 500,000
+  clustered matches) but stays bounded by the query's top-N heapsort
+  rather than degrading further. Both `SET LOCAL`s are transaction-scoped
   and never leak onto a pooled connection. Pagination is identical either
   way (same `ORDER BY`/`LIMIT`/`OFFSET`, enforced by Postgres regardless
   of physical plan). The events-side
