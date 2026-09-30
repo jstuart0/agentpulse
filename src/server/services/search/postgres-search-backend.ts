@@ -39,9 +39,18 @@
 // `events` grows — the exact sequential-scan-equivalent problem AGEN-27
 // exists to fix, just via a different index. Forcing the planner off that
 // index (`SET LOCAL enable_indexscan = off`) on the same data proves the
-// trigram BitmapOr plan is available and ~2000x faster (0.45ms) — the
-// planner's cost estimate for it is simply wrong for this shape, not a
-// missing index.
+// trigram BitmapOr plan is available for a genuinely rare/unique term
+// (0.45ms) — the planner's cost estimate for it is simply wrong for this
+// shape, not a missing index. Plan B's own cost is not constant, though:
+// it scales with the size of the *matched* set, not just table size —
+// percy measured ~400ms at 500,000 clustered matches (a large AND
+// spatially-clustered-in-scan-order term), so a term that's both common
+// and clustered can push Plan B's total latency into the low hundreds of
+// ms. It stays bounded rather than degrading further because the query's
+// `ORDER BY ... LIMIT` still applies on top of the Bitmap Heap Scan via a
+// top-N heapsort (Postgres sorts only enough of the matched set to
+// satisfy LIMIT, not the whole set) — slower than the rare-term case, but
+// nowhere near Plan A's near-full-table-scan failure mode.
 //
 // searchEvents therefore runs an adaptive two-plan strategy instead of a
 // single query — see executeEventsQueryWithFallback()'s doc comment below.
@@ -139,9 +148,12 @@ const SEARCHABLE_EVENT_TYPES_SQL_LIST = SEARCHABLE_EVENT_TYPES.map((t) => `'${t}
 // matrix), while still cutting off a degrading rare-term query almost
 // immediately rather than letting it run to completion. Plan B's timeout
 // is generous, not tight — once the planner is forced onto the
-// (provably correct, ~2000x faster) trigram path, a slow Plan B would
-// indicate a real problem, not an expected trade-off, so a hang should
-// still surface rather than block forever.
+// provably-correct trigram path its cost still scales with the size of
+// the matched set (percy measured ~400ms at 500,000 clustered matches,
+// bounded by the query's top-N heapsort rather than degrading further —
+// see the file header), so a slow Plan B in the low hundreds of ms is an
+// expected trade-off for a large/clustered term, not a bug; only a
+// genuine hang (10s) should still surface rather than block forever.
 const PLAN_A_STATEMENT_TIMEOUT_MS = 150;
 const PLAN_B_STATEMENT_TIMEOUT_MS = 10_000;
 
@@ -205,9 +217,24 @@ export class PostgresSearchBackend implements SearchBackend {
 	// shape in a test — percy AGEN-27 review, TB26). Never set outside tests.
 	private readonly _forcePlanBForTesting: boolean;
 
-	constructor(db?: Db, options?: { forcePlanBForTesting?: boolean }) {
+	// Test-only: override Plan A's statement_timeout. Defaults to the real
+	// production value (PLAN_A_STATEMENT_TIMEOUT_MS). Exists so correctness
+	// tests can force a genuine Plan A timeout (and therefore a genuine
+	// Plan B fallback, through the real timeout/catch/retry code path —
+	// not the _forcePlanBForTesting shortcut) against a SMALL, cheap
+	// fixture instead of needing a multi-million-row table to make the
+	// real 150ms threshold trip reliably (percy AGEN-27 review, TB27 —
+	// CI cost). A 1ms override reliably times out even a few-hundred-row
+	// scan. Never set outside tests.
+	private readonly _planATimeoutMsForTesting: number | null;
+
+	constructor(
+		db?: Db,
+		options?: { forcePlanBForTesting?: boolean; _planATimeoutMsForTesting?: number },
+	) {
 		this._db = db ?? null;
 		this._forcePlanBForTesting = options?.forcePlanBForTesting ?? false;
+		this._planATimeoutMsForTesting = options?._planATimeoutMsForTesting ?? null;
 	}
 
 	private db(): Db {
@@ -295,9 +322,13 @@ export class PostgresSearchBackend implements SearchBackend {
 		// Test-only escape hatch — see _forcePlanBForTesting's doc comment.
 		if (this._forcePlanBForTesting) return runPlanB();
 
+		// Test-only override — see _planATimeoutMsForTesting's doc comment.
+		// Defaults to the real production value.
+		const planATimeoutMs = this._planATimeoutMsForTesting ?? PLAN_A_STATEMENT_TIMEOUT_MS;
+
 		try {
 			const rows = await db.$client.begin(async (tx) => {
-				await tx.unsafe(`SET LOCAL statement_timeout = '${PLAN_A_STATEMENT_TIMEOUT_MS}ms'`, [], {
+				await tx.unsafe(`SET LOCAL statement_timeout = '${planATimeoutMs}ms'`, [], {
 					prepare: false,
 				});
 				return tx.unsafe<EventRow>(text, params, { prepare: false });
@@ -306,7 +337,7 @@ export class PostgresSearchBackend implements SearchBackend {
 		} catch (err) {
 			if (!isStatementTimeoutError(err)) throw err;
 			console.debug(
-				`[search] Plan A events query exceeded ${PLAN_A_STATEMENT_TIMEOUT_MS}ms (SQLSTATE 57014) — falling back to Plan B (enable_indexscan/enable_indexonlyscan off) to force the trigram index path.`,
+				`[search] Plan A events query exceeded ${planATimeoutMs}ms (SQLSTATE 57014) — falling back to Plan B (enable_indexscan/enable_indexonlyscan off) to force the trigram index path.`,
 			);
 			return runPlanB();
 		}
