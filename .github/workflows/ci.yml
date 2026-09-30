@@ -111,11 +111,20 @@ jobs:
           - 5432:5432
         # Health check retries up to 10 × 5s = 50s — enough for postgres:16-alpine
         # cold-start. Tests do not run until the health check passes.
+        # --shm-size=1gb (percy AGEN-27 review, TB22): Docker's tiny default
+        # shared-memory size starves DSM allocation for parallel-plan query
+        # workers under sustained load (postgres-search-backend.test.ts's
+        # 5-bucket selectivity test runs a 1M-row table through 5 x 10+
+        # queries on one connection) — observed as "could not resize shared
+        # memory segment: No space left on device" and multi-hundred-ms
+        # timing noise unrelated to the query plan itself, not a real
+        # regression.
         options: >-
           --health-cmd "pg_isready -U agentpulse_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+          --shm-size=1gb
     steps:
       - uses: actions/checkout@v4
 
