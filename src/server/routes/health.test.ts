@@ -9,6 +9,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import "../services/ai/__test_db.js";
+import { isPostgresTest } from "../test-utils/backend.js";
 
 const { initializeDatabase } = await import("../db/client.js");
 const { health, markDbReady, computeClientChecksums } = await import("./health.js");
@@ -80,5 +81,26 @@ describe("GET /health — clients checksums", () => {
 			relay: await computeChecksum(INSTALLER_SOURCES.relay, { trimEnd: true }),
 			statusline: await computeChecksum(INSTALLER_SOURCES.statusline, { trimEnd: true }),
 		});
+	});
+
+	// percy AGEN-27 review (TB17 item 3): searchIndexes surfaces Postgres
+	// trigram search-index presence, checked once at boot.
+	test("searchIndexes is null on SQLite, or { present, missing[] } on Postgres (checked at boot)", async () => {
+		const app = buildApp();
+		const res = await app.request("/api/v1/health");
+		const body = await res.json();
+
+		if (isPostgresTest) {
+			expect(body.searchIndexes).toBeDefined();
+			expect(typeof body.searchIndexes.present).toBe("boolean");
+			expect(Array.isArray(body.searchIndexes.missing)).toBe(true);
+			// This test's own beforeAll already ran initializeDatabase(), which
+			// migration 0006 + refreshSearchIndexStatus() both go through — a
+			// real (indexes present) install, so missing should be empty.
+			expect(body.searchIndexes.present).toBe(true);
+			expect(body.searchIndexes.missing).toEqual([]);
+		} else {
+			expect(body.searchIndexes).toBeNull();
+		}
 	});
 });
