@@ -277,24 +277,72 @@ if [[ "$AGENT_TYPE" == "claude_code" ]]; then
   # Events to hook
   EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit" "PermissionRequest" "PermissionDenied" "Notification" "PreCompact" "PostCompact" "PostToolUseFailure")
 
-  # Build the hooks JSON object
+  # AGEN-49/H2 (xander): Claude Code's native HTTP hook expands
+  # $AGENTPULSE_API_KEY from ITS OWN process environment, not the shell that
+  # launched Claude Code -- a GUI, IDE, or stale-terminal launch never
+  # sources ~/.agentpulse/env, so the env-var form 401s silently there.
+  # Global (user) scope trades that reliability gap for embedding the
+  # literal key -- acceptable because settings.json is tightened to 0600
+  # below (never world-readable). Project scope (a repo's
+  # .claude/settings.json, which may be committed) never gets a literal key
+  # -- it keeps the env-var/allowedEnvVars form, at the cost of the same
+  # silent-401 risk this trade accepts for global scope.
   HOOKS_JSON="{"
   for i in "${!EVENTS[@]}"; do
     EVENT="${EVENTS[$i]}"
     if [[ $i -gt 0 ]]; then
       HOOKS_JSON+=","
     fi
-    HOOKS_JSON+="\"${EVENT}\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"http\",\"url\":\"${AGENTPULSE_URL}/api/v1/hooks\",\"async\":true,\"allowedEnvVars\":[\"AGENTPULSE_API_KEY\"],\"headers\":{\"Authorization\":\"Bearer \$AGENTPULSE_API_KEY\",\"X-Agent-Type\":\"claude_code\"}}]}]"
+    if [[ "$SCOPE" == "global" ]]; then
+      HOOKS_JSON+="\"${EVENT}\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"http\",\"url\":\"${AGENTPULSE_URL}/api/v1/hooks\",\"async\":true,\"headers\":{\"Authorization\":\"Bearer ${AGENTPULSE_KEY}\",\"X-Agent-Type\":\"claude_code\"}}]}]"
+    else
+      HOOKS_JSON+="\"${EVENT}\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"http\",\"url\":\"${AGENTPULSE_URL}/api/v1/hooks\",\"async\":true,\"allowedEnvVars\":[\"AGENTPULSE_API_KEY\"],\"headers\":{\"Authorization\":\"Bearer \$AGENTPULSE_API_KEY\",\"X-Agent-Type\":\"claude_code\"}}]}]"
+    fi
   done
   HOOKS_JSON+="}"
+
+  # F<new> (H2): refuse a symlinked destination or its parent directory
+  # before any write. settings.json holds other user settings we must
+  # preserve, so this can't just delegate to ap_write_private_no_follow
+  # (which overwrites the whole file) -- same ordering as that helper:
+  # parent symlink check, mkdir, then the file's own symlink check.
+  SETTINGS_DIR="$(dirname "$SETTINGS_FILE")"
+  if [[ -L "$SETTINGS_DIR" ]]; then
+    echo "refusing to write into a symlinked directory: $SETTINGS_DIR" >&2
+    exit 1
+  fi
+  mkdir -p "$SETTINGS_DIR"
+  if [[ -L "$SETTINGS_FILE" ]]; then
+    echo "refusing to write through a symlink: $SETTINGS_FILE" >&2
+    exit 1
+  fi
 
   if [[ -f "$SETTINGS_FILE" ]]; then
     # Merge hooks into existing settings using jq if available
     if command -v jq &> /dev/null; then
       echo "Merging hooks into existing $SETTINGS_FILE..."
+      # F<new> (High, xander re-verify): a plain "${SETTINGS_FILE}.tmp"
+      # redirect target is predictable -- a pre-planted symlink there
+      # would let this write (carrying the literal key, at global scope)
+      # follow it, and the following `mv` would turn settings.json ITSELF
+      # into that symlink; the trailing chmod 600 further down would then
+      # narrow the attacker's file, not ours. mktemp's unpredictable
+      # sibling name closes that: nothing can pre-plant a symlink at a
+      # name it can't guess. The immediate -L check is defense in depth
+      # against the (already vanishingly small) race between mktemp's own
+      # atomic create and this check.
+      TMP="$(umask 077 && mktemp "${SETTINGS_FILE}.XXXXXX")" || {
+        echo "can't create a temp file for $SETTINGS_FILE" >&2
+        exit 1
+      }
+      if [[ -L "$TMP" ]]; then
+        echo "refusing to write through a symlinked temp file: $TMP" >&2
+        rm -f "$TMP"
+        exit 1
+      fi
       EXISTING=$(cat "$SETTINGS_FILE")
-      echo "$EXISTING" | jq --argjson hooks "$HOOKS_JSON" '.hooks = (.hooks // {}) * $hooks' > "${SETTINGS_FILE}.tmp"
-      mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+      echo "$EXISTING" | jq --argjson hooks "$HOOKS_JSON" '.hooks = (.hooks // {}) * $hooks' > "$TMP"
+      mv -f "$TMP" "$SETTINGS_FILE"
     else
       echo "Warning: jq not found. Cannot safely merge into existing settings."
       echo "Please manually add the following hooks to $SETTINGS_FILE:"
@@ -304,11 +352,21 @@ if [[ "$AGENT_TYPE" == "claude_code" ]]; then
     fi
   else
     # Create new settings file
-    mkdir -p "$(dirname "$SETTINGS_FILE")"
     echo "{\"hooks\":$HOOKS_JSON}" | python3 -m json.tool > "$SETTINGS_FILE" 2>/dev/null || echo "{\"hooks\":$HOOKS_JSON}" > "$SETTINGS_FILE"
   fi
 
+  # H2: global (user) scope gets the literal key above, so its settings.json
+  # is tightened to owner-only -- never world-readable. Project scope keeps
+  # whatever mode the repo's file already had (it's meant to be shared/
+  # committed, and never carries the literal key in the first place).
+  if [[ "$SCOPE" == "global" && -f "$SETTINGS_FILE" ]]; then
+    chmod 600 "$SETTINGS_FILE"
+  fi
+
   echo "Claude Code hooks configured in $SETTINGS_FILE"
+  if [[ "$SCOPE" == "project" ]]; then
+    echo "Restart Claude Code fully to pick up the key -- an app launched from a GUI or an IDE may not see \$AGENTPULSE_API_KEY from your shell."
+  fi
 
 # ─── Codex CLI Setup ─────────────────────────────────────────────────
 

@@ -447,8 +447,9 @@ for _ in $(seq 1 30); do
         echo "  ✓ Hooks configured"
       else
         echo "  ! Skipping automatic hook setup because auth is enabled and no --api-key was provided."
-        echo "    Run this next:"
-        echo "      curl -sSL ${PUBLIC_URL}/setup.sh | bash -s -- --key ap_YOUR_KEY"
+        echo "    Run this next (the key is asked for at a hidden prompt, never in the command itself):"
+        echo "      printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY"
+        echo "      [ -n \"\$AGENTPULSE_KEY\" ] && curl -sSL ${PUBLIC_URL}/setup.sh | bash"
         echo ""
       fi
     else

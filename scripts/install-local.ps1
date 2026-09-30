@@ -333,6 +333,16 @@ function New-ApHookAuthHeaderFile {
 function Configure-Hooks {
   Write-Step "Configuring Claude Code + Codex hooks..."
 
+  # AGEN-49/H2 (xander): Claude Code's native HTTP hook expands
+  # $env:AGENTPULSE_API_KEY from ITS OWN process environment, not the shell
+  # that launched Claude Code — a GUI, IDE, or stale-terminal launch never
+  # has HKCU\Environment's value in its process env either (that's set for
+  # NEW processes launched after SetEnvironmentVariable("User", ...), not
+  # ones already running), so the env-var form 401s silently there. This
+  # installer has no project-scope option (it always targets $HOME), so a
+  # supplied key gets the literal, more-reliable form — acceptable because
+  # settings.json gets a single-ACE, user-only ACL below (icacls), never
+  # broadly readable. No key at all keeps the env-var/allowedEnvVars form.
   $hookHeadersClaude = @{ "X-Agent-Type" = "claude_code" }
   if ($ApiKey) {
     $hookHeadersClaude["Authorization"] = "Bearer $ApiKey"
@@ -340,7 +350,19 @@ function Configure-Hooks {
 
   $claudeDir = Join-Path $HOME ".claude"
   $claudeSettings = Join-Path $claudeDir "settings.json"
+  # F249 ordering: refuse a reparse point at the parent BEFORE Ensure-Dir
+  # even runs (a directory create against an already-reparse-point path is
+  # a silent no-op success), then refuse one at the file itself before any
+  # read/write. settings.json holds other user settings we must preserve,
+  # so this can't just delegate to New-ApHookAuthHeaderFile (which
+  # overwrites the whole file).
+  if (Test-ApReparsePoint -Path $claudeDir) {
+    throw "refusing to write through a reparse point: $claudeDir"
+  }
   Ensure-Dir $claudeDir
+  if (Test-ApReparsePoint -Path $claudeSettings) {
+    throw "refusing to write through a reparse point: $claudeSettings"
+  }
   $claudeData = @{}
   if (Test-Path $claudeSettings) {
     $existing = Get-Content $claudeSettings -Raw | ConvertFrom-Json -AsHashtable
@@ -361,11 +383,15 @@ function Configure-Hooks {
     }
     if (-not $ApiKey) {
       $hook.hooks[0]["allowedEnvVars"] = @("AGENTPULSE_API_KEY")
-      $hook.hooks[0]["headers"]["Authorization"] = "Bearer `$env:AGENTPULSE_API_KEY"
     }
     $claudeData["hooks"][$eventName] = @($hook)
   }
   Set-JsonFile -Path $claudeSettings -Data $claudeData
+  if ($ApiKey) {
+    # H2: a literal key is embedded above, so settings.json is narrowed to
+    # a single ACE for the current user — never inherited/broadly readable.
+    icacls $claudeSettings /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+  }
 
   # D12 (r6, Phase 0 fact 5): Codex 0.145 loads hooks only from
   # $CODEX_HOME/hooks.json — a project-level .codex/hooks.json is never read.

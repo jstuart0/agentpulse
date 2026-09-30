@@ -43,6 +43,77 @@ Assert-True ($acl.Access.Count -eq 1) "hook-auth-header has exactly one ACE (fou
 $dirAcl = Get-Acl (Join-Path $HOME ".agentpulse")
 Assert-True ($dirAcl.Access.Count -eq 1) ".agentpulse dir has exactly one ACE (found $($dirAcl.Access.Count))"
 
+# ── AGEN-49/H2 (xander): $ApiKey set embeds the literal key in
+# settings.json, narrowed to a single-ACE user-only ACL — Claude Code's
+# native HTTP hook expands $env:AGENTPULSE_API_KEY from its OWN process
+# env, which a GUI/IDE/stale-terminal launch never has, so the env-var
+# form 401s silently there for a plain per-user HKCU\Environment value.
+$ApiKey = "ap_test_key_123"
+Configure-Hooks
+$claudeSettingsPath = Join-Path $HOME ".claude\settings.json"
+Assert-True (Test-Path $claudeSettingsPath) "Configure-Hooks: settings.json written"
+$claudeSettingsContent = Get-Content $claudeSettingsPath -Raw
+Assert-True ($claudeSettingsContent.Contains("Bearer ap_test_key_123")) "Configure-Hooks: settings.json carries the literal Authorization header"
+Assert-True (-not $claudeSettingsContent.Contains('$env:AGENTPULSE_API_KEY')) "Configure-Hooks: no env-var placeholder when a key was supplied"
+Assert-True (-not $claudeSettingsContent.Contains('"allowedEnvVars"')) "Configure-Hooks: no allowedEnvVars when a key was supplied"
+$claudeSettingsAcl = Get-Acl $claudeSettingsPath
+Assert-True ($claudeSettingsAcl.Access.Count -eq 1) "Configure-Hooks: settings.json has exactly one ACE (found $($claudeSettingsAcl.Access.Count))"
+
+# ── AGEN-49/H2: no $ApiKey keeps the env-var/allowedEnvVars form ──
+$ApiKey = ""
+Configure-Hooks
+$claudeSettingsContentNoKey = Get-Content $claudeSettingsPath -Raw
+Assert-True ($claudeSettingsContentNoKey.Contains('$env:AGENTPULSE_API_KEY')) "Configure-Hooks (no key): settings.json references `$env:AGENTPULSE_API_KEY, not a literal key"
+Assert-True (-not $claudeSettingsContentNoKey.Contains("ap_test_key_123")) "Configure-Hooks (no key): no stale literal key from a prior run"
+Assert-True ($claudeSettingsContentNoKey.Contains('"allowedEnvVars"')) "Configure-Hooks (no key): declares allowedEnvVars for Claude Code's env-var expansion"
+
+# ── AGEN-49/H2: existing settings.json content survives the merge ──
+$mergeProbeHome = Join-Path $tempProfile "merge-probe"
+New-Item -ItemType Directory -Force -Path (Join-Path $mergeProbeHome ".claude") | Out-Null
+$mergeProbeSettings = Join-Path $mergeProbeHome ".claude\settings.json"
+'{"theme":"dark","customSetting":42}' | Set-Content -Path $mergeProbeSettings -Encoding UTF8
+$savedHomeForMerge = $env:USERPROFILE
+$env:USERPROFILE = $mergeProbeHome
+$env:HOME = $mergeProbeHome
+$ApiKey = "ap_test_key_123"
+Configure-Hooks
+$env:USERPROFILE = $savedHomeForMerge
+$env:HOME = $savedHomeForMerge
+$mergedJson = Get-Content $mergeProbeSettings -Raw | ConvertFrom-Json
+Assert-True ($mergedJson.theme -eq "dark") "Configure-Hooks: an existing settings.json keeps its other keys (theme)"
+Assert-True ($mergedJson.customSetting -eq 42) "Configure-Hooks: an existing settings.json keeps its other keys (customSetting)"
+Assert-True ($null -ne $mergedJson.hooks) "Configure-Hooks: hooks were still added to the merged file"
+
+# ── AGEN-49/H2: a symlinked settings.json is refused, not written through ──
+$symlinkProbeHome = Join-Path $tempProfile "settings-symlink-probe"
+New-Item -ItemType Directory -Force -Path (Join-Path $symlinkProbeHome ".claude") | Out-Null
+$decoySettingsTarget = Join-Path $symlinkProbeHome "decoy-settings.json"
+Set-Content -Path $decoySettingsTarget -Value "should never change" -Encoding UTF8
+$symlinkedSettingsPath = Join-Path $symlinkProbeHome ".claude\settings.json"
+$canSymlinkSettings = $true
+try {
+  New-Item -ItemType SymbolicLink -Path $symlinkedSettingsPath -Target $decoySettingsTarget -ErrorAction Stop | Out-Null
+} catch {
+  $canSymlinkSettings = $false
+  Write-Host "warning: cannot create a symlink in this environment ($($_.Exception.Message)) — skipping the settings.json symlink-refusal assertion"
+}
+if ($canSymlinkSettings) {
+  $savedHomeForSymlink = $env:USERPROFILE
+  $env:USERPROFILE = $symlinkProbeHome
+  $env:HOME = $symlinkProbeHome
+  $ApiKey = "ap_test_key_123"
+  $symlinkThrew = $false
+  try {
+    Configure-Hooks
+  } catch {
+    $symlinkThrew = $true
+  }
+  $env:USERPROFILE = $savedHomeForSymlink
+  $env:HOME = $savedHomeForSymlink
+  Assert-True $symlinkThrew "Configure-Hooks: a symlinked settings.json throws instead of writing through it"
+  Assert-True ((Get-Content $decoySettingsTarget -Raw) -eq "should never change") "Configure-Hooks: the symlink's target is untouched after the refused write"
+}
+
 # ── New-ApHookCommand: real execution against a real HttpListener ──
 # .NET's native async pattern (BeginGetContext/EndGetContext) rather than a
 # background Job — HttpListener objects don't marshal across PowerShell
@@ -142,6 +213,25 @@ foreach ($event in $goldenEvents) {
 	Assert-True ($g.timeout -eq $n.timeout) "$event`: timeout matches ($($n.timeout))"
 	Assert-True ($g.command -eq $n.command) "$event`: command matches the golden byte-for-byte"
 }
+
+# ── AGEN-49/M2 (xander): the SetupPage windowsCommand parses as valid PowerShell ──
+# This job has no bun/node, so it can't render src/web/lib/setup-steps.ts's
+# windowsCommand itself — the golden fixture (kept in sync with the real
+# generator by setup-steps.test.ts's own byte-for-byte drift check) is the
+# only way this job gets real PowerShell parser coverage over that string.
+# [scriptblock]::Create throws a ParseException on invalid syntax; a clean
+# parse here is the actual assertion (Assert-True on top of a caught
+# exception, not just "did this line run without a shell crashing").
+$windowsAuthStepGolden = Get-Content (Resolve-Path (Join-Path $PSScriptRoot "__golden__/windows-auth-step.ps1")) -Raw
+$windowsAuthStepParses = $true
+$windowsAuthStepParseError = $null
+try {
+	[void][scriptblock]::Create($windowsAuthStepGolden)
+} catch {
+	$windowsAuthStepParses = $false
+	$windowsAuthStepParseError = $_.Exception.Message
+}
+Assert-True $windowsAuthStepParses "SetupPage windowsCommand (golden) parses as valid PowerShell$(if (-not $windowsAuthStepParses) { ": $windowsAuthStepParseError" })"
 
 # ── Phase 7 (D7/D8/D13): Copilot hooks — real execution + structural check ──
 $copilotExpectedEvents = @(

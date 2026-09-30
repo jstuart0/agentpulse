@@ -375,13 +375,14 @@ docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
   -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
   -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
   --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash
+printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY
+[ -n "$AGENTPULSE_KEY" ] && curl -sSL http://localhost:3000/setup.sh | bash
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
 
 The default config requires login via the dashboard. DO NOT add `-e DISABLE_AUTH=true` on any network you do not fully control.
 
-The `AGENTPULSE_KEY=... curl ... | bash` form keeps the key out of `ps` during install; `curl ... | bash -s -- --key ap_YOUR_API_KEY` also works but the key is briefly visible in the process list.
+The `read -rs` line reads the key with input hidden and hands it to the installer without it ever appearing in the command text — so it never lands in shell history or `ps`. It's plain POSIX `read`, not bash's `read -rsp` shorthand: `-p` means "coprocess" in zsh, macOS's default login shell, so a pasted `-rsp` silently misbehaves there. The `[ -n "$AGENTPULSE_KEY" ] &&` guard skips the install instead of running curl unauthenticated if you leave the prompt blank. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but that form is visible in shell history; `curl ... | bash -s -- --key ap_YOUR_API_KEY` works too, and is visible in both shell history and the process list — prefer the `read` form when you're at an interactive terminal.
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 
@@ -475,11 +476,14 @@ See `deploy/k8s/FORWARDAUTH.md` for provider-specific setup instructions.
 
 ### Authentication
 
-By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script — prefer the env-var form, which keeps the key out of `ps` during install:
+By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script — prefer the hidden-prompt form, which keeps the key out of both `ps` and shell history:
 
 ```bash
-AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash
+printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY
+[ -n "$AGENTPULSE_KEY" ] && curl -sSL http://localhost:3000/setup.sh | bash
 ```
+
+Plain POSIX `read`, not bash's `read -rsp` — `-p` means "coprocess" in zsh (macOS's default shell), not "prompt". For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but is visible in shell history.
 
 For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in quick start).
 
@@ -551,7 +555,7 @@ Telemetry classification defaults:
 
 Running `curl -sSL .../setup.sh | bash` configures:
 
-1. **Claude Code** -- adds HTTP hooks to `~/.claude/settings.json` for 16 events (SessionStart, Stop, PreToolUse, PostToolUse, PermissionRequest, PreCompact, etc.), `async: true`, so they never slow down the agent.
+1. **Claude Code** -- adds HTTP hooks to `~/.claude/settings.json` for 16 events (SessionStart, Stop, PreToolUse, PostToolUse, PermissionRequest, PreCompact, etc.), `async: true`, so they never slow down the agent. A supplied key is embedded directly in the header (`Authorization: Bearer ap_...`), and the file is tightened to mode `0600` (a no-follow write; a symlinked `settings.json` is refused, not written through) -- see "User scope vs. project scope" below for why.
 2. **Codex CLI** -- replaces `~/.codex/hooks.json` with 12 `command`-type events (SessionStart, SessionEnd, PreToolUse, PostToolUse, UserPromptSubmit, Stop, Interrupt, SubagentStart, SubagentStop, PermissionRequest, PreCompact, PostCompact). An existing file is backed up first as `hooks.json.agentpulse-bak.<timestamp>`, never overwritten. Codex 0.145+ requires you to run `/hooks` inside Codex once afterward and trust the AgentPulse entries -- untrusted hooks are silently skipped. Minimum tested version: Codex CLI 0.145. The legacy `codex_hooks` line in `config.toml`, if present from an older AgentPulse setup, is no longer needed and can be deleted. **Re-running the installer with an unchanged URL/key prints "Codex hooks unchanged — no re-trust needed" and leaves `hooks.json` alone** -- you only have to run `/hooks` again when the installer actually rewrites the file (a URL or key change, or an upgrade that changes the hook shape).
 3. **Copilot CLI** (detection-gated -- only when `copilot` is on `PATH` or `~/.copilot` exists) -- writes `~/.copilot/hooks/agentpulse.json` with 10 `command`-type events (sessionStart, sessionEnd, userPromptSubmitted, postToolUse, postToolUseFailure, agentStop, subagentStart, subagentStop, preCompact, errorOccurred). `preToolUse` and `permissionRequest` are deliberately not hooked -- Copilot fails closed on those events, and a synchronous AgentPulse outage would otherwise be able to block every tool call. Copilot CLI is observed only: AgentPulse can't launch or steer it.
 4. **Shell** (Claude Code only) -- writes `AGENTPULSE_API_KEY` and `AGENTPULSE_URL` to a new `~/.agentpulse/env` file (mode `0600`) and adds a key-free, idempotent `[ -f ~/.agentpulse/env ] && . ~/.agentpulse/env` source line to your `.zshrc`/`.bashrc`/`.profile`. The key itself never touches the rc file. If an earlier install already left a plaintext `export AGENTPULSE_API_KEY=...` line there, the script leaves it alone but prints a warning plus the `sed` command to remove it -- it won't edit your rc file's existing content silently. Codex CLI and Copilot CLI don't get a shell/profile write at all: their hooks authenticate via `~/.agentpulse/hook-auth-header` (also `0600`).
@@ -562,6 +566,13 @@ Codex and Copilot hooks are detached `command` handlers, not `async: true` HTTP 
 Claude/Codex/Copilot event counts: 16/12/10. If you set up AgentPulse before this version, re-run the setup script to pick up the current event names and hook shape.
 
 **No key, no write.** Before writing any hook, the installer probes `/api/v1/auth/me`. If a key was supplied (`--key` or `$AGENTPULSE_KEY`), the probe is informational and installation proceeds regardless of its result. With no key, the installer proceeds only when the probe confirms `disableAuth: true`; otherwise it refuses and writes nothing, so you never end up with hooks silently 401ing forever. Pass `--no-auth-check` to skip the probe and install anyway -- for a server that isn't reachable yet, or one that runs with auth disabled but can't be probed from here.
+
+### Claude Code: user scope vs. project scope
+
+Claude Code's native HTTP hook expands `$AGENTPULSE_API_KEY` from **its own process environment** -- not the shell that launched it. A Claude Code window opened from the Dock, a file manager, or an IDE (or one left running from before you last ran the installer) never sees a value exported into `~/.agentpulse/env` afterward, so the env-var form of the header 401s silently there: the hook fires, gets rejected, and nothing tells you.
+
+- **User scope** (`~/.claude/settings.json` -- the default for `/setup.sh`, `agentpulse setup`, and `setup-hooks.sh`'s default `--scope global`): trades that reliability gap away by embedding the literal key directly in the header. This is made acceptable by tightening the file to mode `0600` (owner-read/write only, never world-readable) with a no-follow write (a symlinked `settings.json` is refused rather than written through) -- the same standard already applied to `~/.agentpulse/hook-auth-header` and `~/.agentpulse/env`. Merging into an existing `settings.json` preserves every other key already in it.
+- **Project scope** (`setup-hooks.sh --scope project`, writing a repo's own `.claude/settings.json`): never gets a literal key -- that file can be committed to source control. It keeps the `$AGENTPULSE_API_KEY` / `allowedEnvVars` form unconditionally, and the installer prints a reminder to fully restart Claude Code afterward (a GUI- or IDE-launched instance may not see a shell-exported env var at all).
 
 ### Codex/Copilot command hooks
 
