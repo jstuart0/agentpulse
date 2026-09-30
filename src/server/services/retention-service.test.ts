@@ -1,11 +1,17 @@
 // AGEN-24 — event retention: disabled-by-default, batched delete, FTS
 // consistency, and non-blocking concurrent ingest.
+//
+// Also covers percy's follow-up review (TB10): SQLite batch-size tuning,
+// per-batch Postgres advisory-lock re-acquisition, and skipped-pass
+// reporting for /health.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
 import { describePostgresOnly, describeSqliteOnly } from "../test-utils/backend.js";
 
-const { eq } = await import("drizzle-orm");
-const { getDb, initializeDatabase } = await import("../db/client.js");
+const { eq, sql } = await import("drizzle-orm");
+const { config } = await import("../config.js");
+const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
+const { withTransaction } = await import("../db/with-transaction.js");
 const { events, sessions, settings } = await import("../db/schema/index.js");
 const { upsertSetting } = await import("./settings-service.js");
 const { getSearchBackend, __resetSearchBackendForTests } = await import("./search/index.js");
@@ -15,6 +21,8 @@ const {
 	_resetRetentionStateForTest,
 	_setRetentionBatchSizeForTest,
 	getRetentionStatus,
+	getRetentionLimits,
+	PG_RETENTION_LOCK_ID,
 } = await import("./retention-service.js");
 
 beforeAll(() => {
@@ -192,6 +200,70 @@ describe("runRetentionPass", () => {
 		expect(status.lastRun?.disabled).toBe(false);
 	});
 
+	test("getRetentionLimits reports the tuned batch size and safety cap (percy TB10)", () => {
+		const limits = getRetentionLimits();
+		expect(limits.defaultBatchSize).toBe(1_000);
+		expect(limits.maxBatchesPerPass).toBe(1_000);
+		// The 1M-rows-per-pass safety cap must survive the batch-size retune.
+		expect(limits.defaultBatchSize * limits.maxBatchesPerPass).toBe(1_000_000);
+	});
+
+	test("a skipped already_running pass is recorded as lastSkip for /health", async () => {
+		await seedSession("s1");
+		_setRetentionBatchSizeForTest(1);
+		for (let i = 0; i < 20; i++) {
+			await seedEvent("s1", daysAgo(30));
+		}
+		await upsertSetting("eventsRetentionDays", 5);
+
+		await Promise.all([runRetentionPass(), runRetentionPass()]);
+		const status = getRetentionStatus();
+		expect(status.lastSkip?.reason).toBe("already_running");
+	});
+
+	test("the batch-select query plan uses an index, not a table scan (percy TB10 item 2)", async () => {
+		await seedSession("s1");
+		await seedEvent("s1", daysAgo(10));
+		const cutoff = daysAgo(5);
+
+		if (config.dialect === "postgres") {
+			// The test table has only a handful of rows, so Postgres's
+			// cost-based planner would otherwise legitimately prefer a Seq
+			// Scan + Sort over the index — that's a table-size artifact, not
+			// evidence the index is unusable. `enable_seqscan = off` (scoped
+			// to one transaction via SET LOCAL) forces the planner to route
+			// through any index that satisfies the query, so this asserts
+			// the index CAN satisfy the exact WHERE + ORDER BY + LIMIT shape
+			// deleteBatch() issues, regardless of row count.
+			let planText = "";
+			await withTransaction(async (tx) => {
+				await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+				const rows: Array<{ "QUERY PLAN": string }> = await tx.execute(
+					sql`EXPLAIN SELECT id FROM events WHERE created_at < ${cutoff} ORDER BY created_at ASC, id ASC LIMIT 1000`,
+				);
+				planText = rows.map((r) => r["QUERY PLAN"]).join("\n");
+			});
+			expect(planText).toContain("idx_events_created_at_id");
+		} else {
+			const raw = getSqlite();
+			const rows = raw
+				.prepare(
+					"EXPLAIN QUERY PLAN SELECT id FROM events WHERE created_at < ? ORDER BY created_at ASC, id ASC LIMIT 1000",
+				)
+				.all(cutoff) as Array<{ detail: string }>;
+			const planText = rows.map((r) => r.detail).join("\n");
+			// SQLite always appends the rowid to a non-unique index's key
+			// internally, so the pre-existing single-column idx_events_created_at
+			// already satisfies this WHERE + ORDER BY as a covering index on an
+			// install whose base schema predates migration 0005 (legacy init
+			// path) — that's an equally valid, equally non-scanning plan to the
+			// new idx_events_created_at_id (which a fresh Drizzle-migrate
+			// install picks instead). Either is the percy-measured fix: no
+			// table SCAN, an index whose key starts with created_at.
+			expect(planText).toMatch(/USING (COVERING )?INDEX idx_events_created_at/);
+		}
+	});
+
 	describeSqliteOnly("SQLite-specific", () => {
 		test("no PRAGMA incremental_vacuum crash when auto_vacuum is NONE (default)", async () => {
 			// Existing installs are auto_vacuum=NONE; the pass must not attempt
@@ -220,6 +292,51 @@ describe("runRetentionPass", () => {
 			const second = await runRetentionPass();
 			expect(second.skippedReason).toBeUndefined();
 			expect(second.rowsDeleted).toBe(0);
+		});
+
+		test("stops and reports lock_held_elsewhere when another session holds the lock (percy TB10 item 4)", async () => {
+			await seedSession("s1");
+			await seedEvent("s1", daysAgo(10));
+			await upsertSetting("eventsRetentionDays", 5);
+
+			const postgres = (await import("postgres")).default;
+			// Session-level pg_advisory_lock on the SAME lock id conflicts with
+			// runRetentionPass's per-batch pg_try_advisory_xact_lock — this
+			// simulates a second replica already running a pass.
+			const holder = postgres(config.databaseUrl, { max: 1 });
+			try {
+				await holder`SELECT pg_advisory_lock(${PG_RETENTION_LOCK_ID})`;
+
+				const result = await runRetentionPass();
+				expect(result.skippedReason).toBe("lock_held_elsewhere");
+				expect(result.rowsDeleted).toBe(0);
+				expect(await countEvents("s1")).toBe(1); // untouched — pass stopped, not partially applied
+
+				const status = getRetentionStatus();
+				expect(status.lastSkip?.reason).toBe("lock_held_elsewhere");
+			} finally {
+				await holder`SELECT pg_advisory_unlock(${PG_RETENTION_LOCK_ID})`;
+				await holder.end();
+			}
+
+			// Lock released — a follow-up pass now proceeds normally.
+			const after = await runRetentionPass();
+			expect(after.skippedReason).toBeUndefined();
+			expect(after.rowsDeleted).toBe(1);
+		});
+
+		test("re-acquires the lock per batch: multiple batches still complete when uncontended", async () => {
+			await seedSession("s1");
+			_setRetentionBatchSizeForTest(2);
+			for (let i = 0; i < 5; i++) {
+				await seedEvent("s1", daysAgo(10 + i));
+			}
+			await upsertSetting("eventsRetentionDays", 5);
+
+			const result = await runRetentionPass();
+			expect(result.skippedReason).toBeUndefined();
+			expect(result.rowsDeleted).toBe(5);
+			expect(result.batches).toBe(3); // 2 + 2 + 1, each its own transaction+lock
 		});
 	});
 });
