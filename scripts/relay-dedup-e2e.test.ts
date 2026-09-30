@@ -193,6 +193,25 @@ describe("E2 (D3): relay retry against a lost ack dedupes by delivery id, not co
 				// (3 total: item1 attempt1 fail, item1 retry, item2) to land.
 				await waitFor("both queue items delivered", async () => hookAttempts >= 3, 20_000);
 
+				// /api/v1/hooks returns 200 before processing finishes, so
+				// hookAttempts >= 3 only proves the proxy has SEEN the 3rd request
+				// arrive — not that the server has finished storing/deduping it.
+				// Poll until the retry counter and the stored-row count both catch
+				// up, then assert exact values (so an overshoot, e.g. a dedup bug
+				// storing 3 rows, still fails with a clear message rather than the
+				// poll spinning to its timeout).
+				await waitFor(
+					"retry counter and stored rows catch up with delivery",
+					async () => {
+						const retryDelta = getEventsDeduplicatedCounts().deliveryRetry - before;
+						const rowCount = (
+							await getDb().select().from(events).where(eq(events.sessionId, sessionId))
+						).length;
+						return retryDelta >= 1 && rowCount >= 2 ? true : undefined;
+					},
+					10_000,
+				);
+
 				const rows = await getDb().select().from(events).where(eq(events.sessionId, sessionId));
 				expect(rows.length).toBe(2);
 
