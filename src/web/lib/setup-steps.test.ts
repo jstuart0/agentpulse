@@ -3,7 +3,11 @@
  * list, and the D22 lastEventLine helper. Pure functions — no DOM.
  */
 import { describe, expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { AUTH_STEP, codexSetupSteps, lastEventLine } from "./setup-steps.js";
+
+const WINDOWS_GOLDEN = join(import.meta.dir, "../../../scripts/__golden__/windows-auth-step.ps1");
 
 /** The exact shell bash-isms banned from a POSIX sh snippet, matching
  * src/shared/hook-command.test.ts's "posix sh compatibility" suite. */
@@ -58,7 +62,7 @@ describe("AUTH_STEP", () => {
 			expect(win).toContain("Read-Host");
 			expect(win).toContain("-AsSecureString");
 			expect(win).toContain("SecureStringToBSTR");
-			expect(win).toContain("PtrToStringAuto");
+			expect(win).toContain("PtrToStringBSTR");
 			// The unmanaged BSTR copy is freed once converted, not left dangling.
 			expect(win).toContain("ZeroFreeBSTR");
 			expect(win).toContain("Authorization: Bearer $key");
@@ -154,6 +158,20 @@ describe("AUTH_STEP", () => {
 			const step = AUTH_STEP[agent]("ap_test123", false);
 			expect(step?.note).toContain("curl 7.55+");
 		}
+	});
+
+	test("AGEN-49/M2: the rendered windowsCommand matches the checked-in golden byte-for-byte", async () => {
+		// scripts/test-install-local.ps1's Windows CI job has no bun/node —
+		// it can't render this string itself, so a golden fixture is the
+		// only way it gets a real PowerShell parser ([scriptblock]::Create)
+		// over the actual generated text. This test is the drift detector:
+		// if buildCommandHookAuthStep's windowsCommand ever changes, the
+		// golden must be regenerated in the same commit or this fails.
+		// windowsCommand is identical for codex_cli and copilot_cli (same
+		// generator, key is never embedded either way).
+		const step = AUTH_STEP.codex_cli("ignored", false);
+		const golden = await readFile(WINDOWS_GOLDEN, "utf8");
+		expect(`${step?.windowsCommand}\n`).toBe(golden);
 	});
 });
 

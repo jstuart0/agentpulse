@@ -10,7 +10,7 @@
  * degrades gracefully (see bin/cli.ts's "Verify" section).
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -113,8 +113,8 @@ describe("agentpulse setup (D37/F243): the API key never lands in a shell rc fil
 	});
 });
 
-describe("agentpulse setup (AGEN-49): the API key never lands in ~/.claude/settings.json", () => {
-	test("--key supplied: settings.json still references $AGENTPULSE_API_KEY, never the literal value", async () => {
+describe("agentpulse setup (AGEN-49/H2, xander): --key supplied embeds the literal key in ~/.claude/settings.json, tightened to 0600", () => {
+	test("--key supplied: settings.json carries the literal Authorization header, mode 0600", async () => {
 		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-agen49-"));
 		try {
 			const res = await runSetup(home, [
@@ -125,16 +125,84 @@ describe("agentpulse setup (AGEN-49): the API key never lands in ~/.claude/setti
 			]);
 			expect(res.code).toBe(0);
 
-			const settings = await Bun.file(join(home, ".claude", "settings.json")).text();
-			expect(settings).not.toContain("ap_secret_cli_value");
-			expect(settings).toContain("$AGENTPULSE_API_KEY");
-			expect(settings).toContain("allowedEnvVars");
+			const settingsPath = join(home, ".claude", "settings.json");
+			const settings = await Bun.file(settingsPath).text();
+			// H2 (xander): Claude Code's native HTTP hook expands
+			// $AGENTPULSE_API_KEY from its OWN process env — a GUI/IDE/stale-
+			// terminal launch never sources ~/.agentpulse/env, so the env-var
+			// form 401s silently there. User scope trades that reliability
+			// gap for the literal key, made acceptable by tightening the file.
+			expect(settings).toContain('Authorization": "Bearer ap_secret_cli_value');
+			expect((await stat(settingsPath)).mode & 0o777).toBe(0o600);
 
-			// The real value still lands in the private, 0600 env file — this
-			// isn't "no key was ever written anywhere," just "not in the
-			// world-readable one."
+			// The real value also still lands in the private, 0600 env file,
+			// for the other consumers of it (codex_cli/copilot_cli hooks,
+			// the user's own shell).
 			const envFile = await Bun.file(join(home, ".agentpulse", "env")).text();
 			expect(envFile).toContain("ap_secret_cli_value");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("no --key (auth-disabled server): settings.json keeps the env-var/allowedEnvVars form, never a literal", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-agen49-nokey-"));
+		try {
+			const res = await runSetup(home, ["--url", "http://127.0.0.1:1"]);
+			expect(res.code).toBe(0);
+
+			const settings = await Bun.file(join(home, ".claude", "settings.json")).text();
+			expect(settings).toContain("$AGENTPULSE_API_KEY");
+			expect(settings).toContain("allowedEnvVars");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("--key supplied: an existing settings.json keeps its other keys (merge, not overwrite)", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-agen49-merge-"));
+		try {
+			await mkdir(join(home, ".claude"), { recursive: true });
+			await Bun.write(
+				join(home, ".claude", "settings.json"),
+				JSON.stringify({ theme: "dark", customSetting: 42 }, null, 2),
+			);
+			const res = await runSetup(home, [
+				"--url",
+				"http://127.0.0.1:1",
+				"--key",
+				"ap_secret_cli_value",
+			]);
+			expect(res.code).toBe(0);
+
+			const settings = JSON.parse(await Bun.file(join(home, ".claude", "settings.json")).text());
+			expect(settings.theme).toBe("dark");
+			expect(settings.customSetting).toBe(42);
+			expect(settings.hooks).toBeDefined();
+			expect((await stat(join(home, ".claude", "settings.json"))).mode & 0o777).toBe(0o600);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("--key supplied: a symlinked settings.json is refused, not written through", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-agen49-symlink-"));
+		const decoyTarget = join(home, "decoy-settings.json");
+		try {
+			await mkdir(join(home, ".claude"), { recursive: true });
+			await Bun.write(decoyTarget, "should never change");
+			await symlink(decoyTarget, join(home, ".claude", "settings.json"));
+
+			const res = await runSetup(home, [
+				"--url",
+				"http://127.0.0.1:1",
+				"--key",
+				"ap_secret_cli_value",
+			]);
+			expect(res.code).not.toBe(0);
+
+			const decoyContent = await Bun.file(decoyTarget).text();
+			expect(decoyContent).toBe("should never change");
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
