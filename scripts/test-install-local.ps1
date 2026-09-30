@@ -43,6 +43,19 @@ Assert-True ($acl.Access.Count -eq 1) "hook-auth-header has exactly one ACE (fou
 $dirAcl = Get-Acl (Join-Path $HOME ".agentpulse")
 Assert-True ($dirAcl.Access.Count -eq 1) ".agentpulse dir has exactly one ACE (found $($dirAcl.Access.Count))"
 
+# ── AGEN-49: Configure-Hooks never writes a literal key into settings.json,
+# even when $ApiKey is set — settings.json has no ACL narrowing applied to
+# it (unlike hook-auth-header above), so a literal key there would be a
+# world-readable secret. Always the $env:AGENTPULSE_API_KEY expansion form.
+$ApiKey = "ap_test_key_123"
+Configure-Hooks
+$claudeSettingsPath = Join-Path $HOME ".claude\settings.json"
+Assert-True (Test-Path $claudeSettingsPath) "Configure-Hooks: settings.json written"
+$claudeSettingsContent = Get-Content $claudeSettingsPath -Raw
+Assert-True ($claudeSettingsContent.Contains('$env:AGENTPULSE_API_KEY')) "Configure-Hooks: settings.json references `$env:AGENTPULSE_API_KEY, not a literal key"
+Assert-True (-not $claudeSettingsContent.Contains("ap_test_key_123")) "Configure-Hooks: settings.json never contains the literal key value, even though `$ApiKey was set"
+Assert-True ($claudeSettingsContent.Contains('"allowedEnvVars"')) "Configure-Hooks: settings.json declares allowedEnvVars for Claude Code's env-var expansion"
+
 # ── New-ApHookCommand: real execution against a real HttpListener ──
 # .NET's native async pattern (BeginGetContext/EndGetContext) rather than a
 # background Job — HttpListener objects don't marshal across PowerShell

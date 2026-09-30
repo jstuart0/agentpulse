@@ -112,3 +112,31 @@ describe("agentpulse setup (D37/F243): the API key never lands in a shell rc fil
 		}
 	});
 });
+
+describe("agentpulse setup (AGEN-49): the API key never lands in ~/.claude/settings.json", () => {
+	test("--key supplied: settings.json still references $AGENTPULSE_API_KEY, never the literal value", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-agen49-"));
+		try {
+			const res = await runSetup(home, [
+				"--url",
+				"http://127.0.0.1:1",
+				"--key",
+				"ap_secret_cli_value",
+			]);
+			expect(res.code).toBe(0);
+
+			const settings = await Bun.file(join(home, ".claude", "settings.json")).text();
+			expect(settings).not.toContain("ap_secret_cli_value");
+			expect(settings).toContain("$AGENTPULSE_API_KEY");
+			expect(settings).toContain("allowedEnvVars");
+
+			// The real value still lands in the private, 0600 env file — this
+			// isn't "no key was ever written anywhere," just "not in the
+			// world-readable one."
+			const envFile = await Bun.file(join(home, ".agentpulse", "env")).text();
+			expect(envFile).toContain("ap_secret_cli_value");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+});

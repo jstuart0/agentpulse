@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+	LOCAL_KEY_NOTE,
 	LOCAL_KEY_SCOPES,
 	RELAY_KEY_HINT,
 	RELAY_KEY_NOTE,
@@ -25,17 +26,19 @@ import {
 const SERVER = "https://agentpulse.example.com";
 
 describe("buildOnboardingPlan", () => {
-	test("local: mints an ingest-only key and shows the /setup.sh command", () => {
+	test("local: mints an ingest-only key, and the command carries no key (AGEN-49)", () => {
 		const plan = buildOnboardingPlan({
 			location: "local",
 			serverUrl: SERVER,
-			key: "ap_local",
 			disableAuth: false,
 		});
 		expect(plan.scopes).toEqual(["ingest"]);
 		expect(plan.scopes).toEqual(LOCAL_KEY_SCOPES);
-		expect(plan.command).toBe(`curl -sSL ${SERVER}/setup.sh | bash -s -- --key ap_local`);
-		expect(plan.keyNote).toBeNull();
+		expect(plan.command).toBe(
+			`read -rsp 'AgentPulse API key: ' AGENTPULSE_KEY && export AGENTPULSE_KEY && echo\ncurl -sSL ${SERVER}/setup.sh | bash`,
+		);
+		expect(plan.command).not.toContain("--key");
+		expect(plan.keyNote).toBe(LOCAL_KEY_NOTE);
 		expect(plan.files).toEqual(["~/.claude/settings.json", "~/.codex/hooks.json"]);
 	});
 
@@ -43,13 +46,11 @@ describe("buildOnboardingPlan", () => {
 		const plan = buildOnboardingPlan({
 			location: "relay",
 			serverUrl: SERVER,
-			key: "ap_relay",
 			disableAuth: false,
 		});
 		expect(plan.scopes).toEqual(["ingest", "observe"]);
 		expect(plan.scopes).toEqual(RELAY_KEY_SCOPES);
 		expect(plan.command).toBe(`curl -sSL ${SERVER}/setup-relay.sh | bash`);
-		expect(plan.command).not.toContain("ap_relay");
 		expect(plan.keyNote).toBe(RELAY_KEY_NOTE);
 		expect(RELAY_KEY_NOTE).toBe(
 			"Relay keys need Hook ingest + Observe. A key without Observe will be refused by the installer.",
@@ -65,16 +66,15 @@ describe("buildOnboardingPlan", () => {
 		const local = buildOnboardingPlan({
 			location: "local",
 			serverUrl: SERVER,
-			key: "ignored",
 			disableAuth: true,
 		});
 		const relay = buildOnboardingPlan({
 			location: "relay",
 			serverUrl: SERVER,
-			key: "ignored",
 			disableAuth: true,
 		});
 		expect(local.command).toBe(`curl -sSL ${SERVER}/setup.sh | bash`);
+		expect(local.keyNote).toBeNull();
 		expect(relay.command).toBe(`curl -sSL ${SERVER}/setup-relay.sh | bash`);
 		expect(relay.keyNote).toBeNull();
 	});
