@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS `idx_events_created_at_id` ON `events` (`created_at`,`id`);

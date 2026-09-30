@@ -54,6 +54,11 @@ export const eventsSqlite = sqliteTable(
 	(t) => ({
 		sessionIdIdx: index("idx_events_session_id_id").on(t.sessionId, t.id),
 		sessionDedupKeyUniq: uniqueIndex("uq_events_session_dedup_key").on(t.sessionId, t.dedupKey),
+		// AGEN-24 (migration 0005): backs the retention pass's
+		// `WHERE created_at < ? ORDER BY created_at, id LIMIT batchSize`
+		// batch-select. percy measured 48ms → 0.04ms/tick on Postgres, 14ms
+		// scan on SQLite without it.
+		createdAtIdIdx: index("idx_events_created_at_id").on(t.createdAt, t.id),
 	}),
 );
 
@@ -83,5 +88,7 @@ export const eventsPg = pgTable(
 	(t) => ({
 		sessionIdIdx: pgIndex("idx_events_session_id_id").on(t.sessionId, t.id),
 		sessionDedupKeyUniq: pgUniqueIndex("uq_events_session_dedup_key").on(t.sessionId, t.dedupKey),
+		// AGEN-24 (migration 0005): see the SQLite table above.
+		createdAtIdIdx: pgIndex("idx_events_created_at_id").on(t.createdAt, t.id),
 	}),
 );
