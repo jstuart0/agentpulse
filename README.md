@@ -403,7 +403,7 @@ That single command:
 - Installs the relay at `~/.agentpulse/relay.ts`, with its settings in `~/.agentpulse/config.json` (mode 600; the key never appears in a process list, the plist or the unit)
 - Installs the Claude Code statusline at `~/.claude/statusline-agentpulse.sh` and turns it on if you don't already have a `statusLine` (otherwise it prints the line to add)
 - Runs the relay as a macOS LaunchAgent or a Linux systemd user service that starts on login
-- Configures Claude Code + Codex hooks to point at `localhost:4000`
+- Configures Claude Code + Codex hooks to point at `localhost:4000`, and Copilot CLI hooks too if `copilot` is detected on `PATH` or `~/.copilot` exists
 - Removes the obsolete `~/.agentpulse/codex-hook.sh` if an older install left one
 
 Your agents send events to `localhost:4000` (allowed by Claude Code), the relay forwards them to your remote server. Open the dashboard from any device to monitor your agents in real time. **Re-run the same command anytime to update the relay and statusline**; the key, port and Codex-names policy from the last run are kept unless you pass new ones.

@@ -12,9 +12,13 @@
  * `disableAuth` all fell through to "proceed," meaning the silent-401
  * install this exists to prevent could still happen after a network blip.
  * New rule: a supplied key always skips the probe; with no key, proceed
- * ONLY on an explicit `disableAuth: true`; everything else refuses, with
- * a message naming the `--no-auth-check` escape hatch for installing
- * before the server is up.
+ * ONLY on an explicit `disableAuth: true`; everything else refuses, with a
+ * message pointing at a way to bypass the check for installing before the
+ * server is up (the message stays generic across all three call sites,
+ * since only setup-hooks.sh/setup.ts's own installers actually expose a
+ * --no-auth-check flag — scripts/setup-relay.sh never calls this function
+ * at all; it keeps the shared implementation only for marker-block
+ * byte-parity with the other two).
  *
  * This tests the function itself, sourced from each file (never
  * reimplemented), against a real stub /api/v1/auth/me server — proving
@@ -106,14 +110,14 @@ function jsonStub(body: unknown) {
 
 for (const site of SITES) {
 	describe(`ap_check_auth_before_write (F246/D39) — ${site.name}`, () => {
-		test("auth ENABLED (disableAuth: false), no key: refuses with a clear message naming --no-auth-check", async () => {
+		test("auth ENABLED (disableAuth: false), no key: refuses with a clear message pointing at the bypass", async () => {
 			const stub = jsonStub({ authenticated: false, user: null, disableAuth: false });
 			try {
 				const block = await site.block();
 				const result = await runCheck(block, stub.url, "");
 				expect(result.code).not.toBe(0);
 				expect(result.stderr).toMatch(/requires an API key/);
-				expect(result.stderr).toMatch(/--no-auth-check/);
+				expect(result.stderr).toMatch(/bypass this check/);
 			} finally {
 				stub.stop();
 			}
@@ -149,7 +153,7 @@ for (const site of SITES) {
 			const result = await runCheck(block, "http://127.0.0.1:1", "");
 			expect(result.code).not.toBe(0);
 			expect(result.stderr).toMatch(/requires an API key/);
-			expect(result.stderr).toMatch(/--no-auth-check/);
+			expect(result.stderr).toMatch(/bypass this check/);
 		});
 
 		test("D39: an HTML error page (non-JSON response) from a proxy, no key: refuses", async () => {

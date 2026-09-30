@@ -114,7 +114,7 @@ sys.exit(0 if me.get("disableAuth") is True else 1)
 '; then
 		return 0
 	fi
-	echo "This server requires an API key; pass --key (or AGENTPULSE_KEY), or --no-auth-check if this server runs with auth disabled." >&2
+	echo "This server requires an API key; pass --key (or AGENTPULSE_KEY), or bypass this check if this server runs with auth disabled." >&2
 	return 1
 }
 
