@@ -322,27 +322,38 @@ pick up the indexes on the next boot.
 High 3)** — building 10 GIN indexes takes a `SHARE` lock on
 `sessions`/`events` for the duration of each build; measured ~22s at
 1,000,000 events, blocking ingest for that whole window. To avoid that on
-an existing install with meaningful data, the migration checks
-`pg_class.reltuples` for `events` before building: above 100,000
-(estimated rows — an ANALYZE/autovacuum-maintained statistic, not exact,
-which is fine for a threshold this coarse) it **skips the automatic
-build entirely** and logs a `WARNING` pointing at the `CREATE INDEX
-CONCURRENTLY` recipe below. A fresh install's `events` table has
-`reltuples = 0` (never analyzed) and always gets the automatic build — the
-skip only applies to installs that already have real data. A skipped or
-partially-completed build (see the next paragraph) is visible without
-reading logs: `GET /api/v1/health`'s `searchIndexes` field reports `{
-present: boolean, missing: string[] }`, checked once at boot
-(`src/server/services/search/search-index-status.ts`).
+an existing install with meaningful data, the migration runs `ANALYZE
+events` and then checks `pg_class.reltuples`: above 100,000 (estimated
+rows — an autovacuum-maintained statistic, not exact, which is fine for a
+threshold this coarse) it **skips the automatic build entirely** and logs
+a `WARNING` pointing at the `CREATE INDEX CONCURRENTLY` recipe below. A
+never-analyzed table reports `reltuples = -1` ("unknown"), not `0` —
+running `ANALYZE` first before the check is load-bearing (percy AGEN-27
+review, TB22): without it, a large-but-never-analyzed `events` table would
+read as "unknown" and the migration treats that the same as "too large to
+risk" — it **skips and warns** rather than assuming small and building
+inline. A genuinely fresh, empty install reports `reltuples = 0` after
+that same `ANALYZE` and always gets the automatic build — the skip only
+applies to installs that already have (or might have) real data. A
+skipped or partially-completed build (see the next paragraph) is visible
+without reading logs: `GET /api/v1/health`'s `searchIndexes` field reports
+`{ present: boolean, missing: string[] }`, checked once at boot
+(`src/server/services/search/search-index-status.ts`) by querying
+`pg_index`/`pg_class` directly and requiring `indisvalid` — an index left
+behind in an unusable state by a failed `CONCURRENTLY` build does not
+count as present.
 
 **A build failure never blocks boot (percy AGEN-27 review, Critical 2)** —
 the index-build step is wrapped in its own exception handler: a transient
 failure partway through (disk full, lock timeout, OOM, whatever) logs a
-`WARNING` with the underlying error and leaves whichever indexes did
-complete in place (`IF NOT EXISTS` makes a retry on the next boot
-idempotent) — it never aborts the migration transaction or crash-loops
-boot. Re-run the `CREATE INDEX` statements from the migration file (or the
-`CONCURRENTLY` recipe below) once the underlying issue is resolved.
+`WARNING` with the underlying error — it never aborts the migration
+transaction or crash-loops boot. Note the rollback granularity: PL/pgSQL's
+`EXCEPTION` block rolls back to an implicit savepoint at block entry, so a
+failure undoes every `CREATE INDEX` already run in *that same attempt*,
+not just the one that failed (`IF NOT EXISTS` still makes the next boot's
+retry attempt idempotent). Re-run the `CREATE INDEX` statements from the
+migration file (or the `CONCURRENTLY` recipe below) once the underlying
+issue is resolved.
 
 **Index size** — per percy's measurements, expect each trigram GIN index
 to run roughly 55-112% of the `events` table's own heap size (varies by
