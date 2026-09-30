@@ -241,6 +241,21 @@ describe("supervisor.json permissions (AGEN-21)", () => {
 			arch: "arm64",
 			version: "0.1.0",
 			trustedRoots: [],
+			// Deliberately pointed at paths that never exist: an unset
+			// claudeCommand/codexCommand makes loadSupervisorConfig() (via
+			// withExecutableCapabilities -> resolveExecutable) fall back to
+			// searching $PATH for the literal "claude"/"codex", which finds
+			// and spawns the REAL, developer-installed CLI when one happens
+			// to be on PATH (captureExecutableVersion has no reason to know
+			// it's running under a test). This describe block is about
+			// supervisor.json's permissions, not executable-capability
+			// detection — pinning both commands here keeps every
+			// loadSupervisorConfig() call in this block from spawning
+			// anything at all, independent of the global test-isolation
+			// sandbox (test-env-defaults.ts) that would otherwise redirect
+			// that spawn's HOME.
+			claudeCommand: join(homeDir, "bin", "does-not-exist-claude"),
+			codexCommand: join(homeDir, "bin", "does-not-exist-codex"),
 			capabilities: {
 				version: 1,
 				agentTypes: ["claude_code", "codex_cli"],
