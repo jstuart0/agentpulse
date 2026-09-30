@@ -1,12 +1,17 @@
-// TODO(postgres-search-perf): replace ILIKE with tsvector + pg_trgm in a
-// follow-up campaign for sub-100ms search at >100k events. The ILIKE path
-// performs full table scans (~50–200ms on typical AgentPulse instances with
-// 10k sessions / 100k events), which is functional but not production-grade
-// at high scale.
+// AGEN-27: ILIKE queries are unchanged, but as of migration 0005 they are
+// index-backed when pg_trgm is available (GIN trgm indexes on every column/
+// expression these queries OR together — see drizzle/postgres/
+// 0005_agen27_pg_trgm_search_index.sql for the index list and the reasoning
+// against a single coalesced-text index). When pg_trgm can't be installed
+// (some managed Postgres providers restrict CREATE EXTENSION), the migration
+// degrades to a NOTICE and these queries fall back to a sequential scan —
+// still correct, just not index-accelerated. See CLAUDE.md's search backend
+// note for the full writeup.
 
 import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { getDb } from "../../db/client.js";
+import { FTS_INDEXED_EVENT_TYPES } from "../../db/fts-ddl.js";
 import type * as schema from "../../db/schema/index.js";
 import { executeRows } from "../../db/sql-helpers.js";
 import { extractSnippet } from "./snippet.js";
@@ -20,7 +25,8 @@ type Db = PostgresJsDatabase<typeof schema>;
  * This is a **direct-search** backend: there is no shadow index. All
  * `index*` and `remove*` methods are no-ops. `search()` executes
  * parameterized `ILIKE '%term%'` queries directly against the `sessions`
- * and `events` tables.
+ * and `events` tables — optionally served from the pg_trgm GIN indexes
+ * migration 0005 creates (see the file header above).
  *
  * Result score is a flat 1.0 — see the TODO below for the proposed
  * deterministic rank follow-up.
@@ -46,18 +52,11 @@ type Db = PostgresJsDatabase<typeof schema>;
 // so Ask-resolver ambiguity detection works correctly on multi-hit results.
 // Filed in thoughts/postgres-followup-plans/postgres-search-rank-deterministic.md.
 
-const SEARCHABLE_EVENT_TYPES = [
-	"UserPromptSubmit",
-	"AssistantMessage",
-	"Stop",
-	"TaskCreated",
-	"TaskCompleted",
-	"SubagentStop",
-	"SessionEnd",
-	"AiProposal",
-	"AiReport",
-	"AiHitlRequest",
-] as const;
+// Single source of truth is FTS_INDEXED_EVENT_TYPES (db/fts-ddl.ts) — the
+// same list SQLite's FTS5 triggers index and migration 0005's partial GIN
+// indexes restrict to. Previously duplicated locally here; AGEN-27 removed
+// the duplicate so the two dialects cannot drift.
+const SEARCHABLE_EVENT_TYPES = FTS_INDEXED_EVENT_TYPES;
 
 /** Row returned by the sessions ILIKE query. */
 type SessionRow = {

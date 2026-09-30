@@ -36,6 +36,13 @@
 			"when": 1790712867382,
 			"tag": "0004_wakeful_cardiac",
 			"breakpoints": true
+		},
+		{
+			"idx": 5,
+			"version": "7",
+			"when": 1790743269300,
+			"tag": "0005_agen27_pg_trgm_search_index",
+			"breakpoints": true
 		}
 	]
 }

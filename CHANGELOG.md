@@ -7,6 +7,25 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Changed
+
+- **Postgres event/session search is now index-backed (AGEN-27).** Migration
+  `0005` adds `pg_trgm` GIN indexes covering every column/expression
+  `PostgresSearchBackend`'s `ILIKE '%term%'` queries already OR together —
+  no query-text changes, so match semantics are unchanged; searches that
+  previously did a sequential scan of the whole `events` table are now
+  served from the index when pg_trgm is available. The events-side indexes
+  are partial (`WHERE event_type IN (...)`), restricted to the same event
+  types SQLite's FTS5 indexes (`FTS_INDEXED_EVENT_TYPES`), so the two
+  dialects search the same population. `PostgresSearchBackend`'s local
+  `SEARCHABLE_EVENT_TYPES` constant now imports that list directly instead
+  of duplicating it. `pg_trgm` requires `CREATE EXTENSION`, which some
+  managed Postgres providers restrict — the migration feature-detects this
+  and degrades to a one-time `NOTICE` plus the existing sequential-scan
+  path when the extension can't be installed; search keeps working either
+  way. See `deploy/k8s/README.md`'s "Upgrading to migration 0005" section
+  for the `CREATE INDEX CONCURRENTLY` out-of-band path on large installs.
+
 ## [0.6.0] — 2026-09-29
 
 ### Added

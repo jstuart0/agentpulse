@@ -188,6 +188,113 @@ both — a pre-created index under the same name doesn't break boot.
 
 ---
 
+## Upgrading to migration 0005 (AGEN-27: pg_trgm search index)
+
+Migration `0005` adds `pg_trgm` GIN indexes so Postgres `ILIKE '%term%'`
+event/session search stops doing a sequential scan of the whole `events`
+table on every query — 4 indexes on `sessions`, 6 partial indexes on
+`events` (restricted to the same event types SQLite's FTS5 indexes). It
+runs automatically on boot. SQLite is unaffected — this migration is
+Postgres-only.
+
+**Extension availability**
+
+`pg_trgm` requires `CREATE EXTENSION`, which some managed Postgres
+providers restrict to superuser. The migration feature-detects this: if
+`CREATE EXTENSION pg_trgm` fails for any reason, it logs a `NOTICE` and
+skips all 10 indexes — search keeps working via the pre-existing
+sequential-scan ILIKE path, just without the speedup. Nothing else in the
+app changes behavior; there is no manual recovery step required if this
+happens, only degraded search latency at scale. If your provider supports
+installing `pg_trgm` after the fact (e.g. by granting the role
+`rds_superuser` on RDS, or running `CREATE EXTENSION pg_trgm;` yourself as
+an admin), do so and re-run the migration (or re-run the two `DO` blocks
+in `drizzle/postgres/0005_agen27_pg_trgm_search_index.sql` directly) to
+pick up the indexes on the next boot.
+
+**Postgres**
+
+- Building 10 GIN indexes takes a `SHARE` lock on `sessions`/`events` for
+  the duration of each build, the same tradeoff `0003`'s and `0004`'s
+  indexes make. On a small-to-moderate database this is milliseconds to
+  low seconds per index and safe to let run inline at boot. On a large
+  table, do the index builds out-of-band, in a maintenance window, before
+  rolling out this version:
+
+  ```sql
+  -- Run against the Postgres database directly, before deploying the new image.
+  -- Requires pg_trgm; installing the extension itself does NOT need CONCURRENTLY.
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_display_name_trgm
+    ON sessions USING gin (display_name gin_trgm_ops);
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_cwd_trgm
+    ON sessions USING gin (cwd gin_trgm_ops);
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_current_task_trgm
+    ON sessions USING gin (current_task gin_trgm_ops);
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_notes_trgm
+    ON sessions USING gin (notes gin_trgm_ops);
+
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_content_trgm
+    ON events USING gin (content gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_prompt_trgm
+    ON events USING gin ((raw_payload->>'prompt') gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_message_trgm
+    ON events USING gin ((raw_payload->>'message') gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_summary_trgm
+    ON events USING gin ((raw_payload->>'summary') gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_why_trgm
+    ON events USING gin ((raw_payload->>'why') gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_title_trgm
+    ON events USING gin ((raw_payload->>'title') gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  ```
+
+  `CONCURRENTLY` avoids the `SHARE` lock (it takes longer, and doesn't run
+  inside a transaction, but doesn't block writes to `sessions`/`events`
+  while it builds). A `CONCURRENTLY` build can fail partway through and
+  leave an **invalid** index behind — Postgres will not use an invalid
+  index, and the app's own migration (a plain `CREATE INDEX IF NOT
+  EXISTS`, no `CONCURRENTLY`) silently skips a same-named invalid index
+  instead of fixing it. Verify all 10 are valid before considering the
+  upgrade complete:
+
+  ```sql
+  SELECT indexrelid::regclass AS index_name, indisvalid
+    FROM pg_index
+    WHERE indexrelid IN (
+      'idx_sessions_display_name_trgm'::regclass,
+      'idx_sessions_cwd_trgm'::regclass,
+      'idx_sessions_current_task_trgm'::regclass,
+      'idx_sessions_notes_trgm'::regclass,
+      'idx_events_content_trgm'::regclass,
+      'idx_events_prompt_trgm'::regclass,
+      'idx_events_message_trgm'::regclass,
+      'idx_events_summary_trgm'::regclass,
+      'idx_events_why_trgm'::regclass,
+      'idx_events_title_trgm'::regclass
+    );
+  ```
+
+  If any row shows `indisvalid = false`, drop and rebuild that index
+  before deploying:
+
+  ```sql
+  DROP INDEX CONCURRENTLY IF EXISTS <index_name>;
+  -- then re-run the matching CREATE INDEX CONCURRENTLY statement above
+  ```
+
+  Once all 10 indexes are `indisvalid = true` out-of-band, the app's own
+  migration runner sees them already present (`IF NOT EXISTS`) and does no
+  further work for them at boot.
+
+---
+
 ## Homelab overlay
 
 ```
