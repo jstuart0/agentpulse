@@ -31,8 +31,8 @@ https://www.sqlite.org/wal.html#noshm
 local block storage class (e.g. `local-path`).
 
 **Durability via backup sidecar.** The `agentpulse` pod includes a `backup-sidecar` container that:
-- Wakes at 04:15 UTC daily and calls `sqlite3 /data/agentpulse.db ".backup /backups/agentpulse-<TS>.db"`.
-- The `.backup` command is concurrent-safe — the app keeps writing during the backup.
+- Wakes at 04:15 UTC daily and calls `sqlite3 /data/agentpulse.db "VACUUM INTO '/backups/agentpulse-<TS>.db.tmp'"`, then verifies with `PRAGMA integrity_check` before an atomic rename to the final name (AGEN-54).
+- `VACUUM INTO` is a read-only, concurrent-safe snapshot — the app keeps writing during the backup — and completes in one bounded pass, unlike the earlier `.backup`-based approach which could livelock under sustained write load.
 - Output lands on the `agentpulse-backups` PVC, which IS NFS-backed (only backup files, never the live DB).
 - Applies retention (30 daily + 12 monthly survivors) after each successful backup.
 - Failures surface in `kubectl logs deploy/agentpulse -c backup-sidecar`.
@@ -63,9 +63,57 @@ a 30-day replay of a real workload measured:
 `storageClassName: local-path` (the default in `03-pvc.yaml`) does **not**
 enforce the request — it's bound by node disk instead, so it won't reject
 writes at 1Gi. On a storage class that does enforce size, raise the request
-before deploying, or accept periodic manual cleanup. Retention/VACUUM
-automation and a PVC default-size policy are tracked as follow-ups (not yet
-implemented); until then, sizing is an operator decision per deployment.
+before deploying, or configure retention (below). A PVC default-size policy
+is still a follow-up (not yet implemented).
+
+### Event retention (AGEN-24)
+
+`eventsRetentionDays` (Settings → Session Configuration → Event Retention,
+or `PUT /api/v1/settings {"key":"eventsRetentionDays","value":<days>}`) is
+**disabled by default** — unset, `0`, or negative all mean "never delete."
+Set it to a positive integer to enable a background pass (every
+`AGENTPULSE_RETENTION_INTERVAL_MS`, default 1 hour, clamped to [60s, 24h] —
+an out-of-range or non-integer value falls back to the 1-hour default with
+a warning) that deletes `events` rows older than that many days, in
+batches of 1,000 (percy TB10 review: 5,000-row batches held the event loop
+148–202ms each on SQLite), without blocking ingest. The `sessions` row and
+its denormalized state are never touched — only the `events` history ages
+out. `GET /api/v1/health`'s `retention` field reports the last pass
+(`rowsDeleted`, `durationMs`, `disabled`) and, separately, `lastSkip` when
+a pass was skipped (`already_running`, or on Postgres `lock_held_elsewhere`
+— another replica already held the per-batch advisory lock), plus the next
+scheduled tick.
+
+**Postgres time zone (percy TB10 review, item 1 — critical):** `created_at`
+is TEXT rendered in the connection's `TimeZone` GUC. Every postgres-js
+connection this app opens now pins `connection: { TimeZone: "UTC" }`
+(`src/server/db/client.ts`'s `PG_CONNECTION_OPTIONS`), so new rows always
+render "+00" regardless of the server/database's default timezone. **This
+does not retroactively fix existing rows**: if your Postgres server's
+default timezone was not UTC before upgrading to this release, rows
+written before the upgrade keep their local-time-with-offset text and are
+compared against the retention cutoff using that historical offset (they
+age out correctly once they're unambiguously past the cutoff by more than
+the offset; only rows within one offset-width of the cutoff at upgrade
+time are affected, and only until they naturally age out).
+
+**Reclaiming space after enabling retention (SQLite):** deleting rows frees
+pages inside the SQLite file but does not shrink it on disk unless the
+database was created with `PRAGMA auto_vacuum = INCREMENTAL` — the
+retention pass runs `PRAGMA incremental_vacuum` automatically in that case.
+Every install prior to this release (and any fresh install using the
+default PRAGMAs) has `auto_vacuum = NONE`, so the file will not shrink on
+its own; reclaim the space with a one-time, **blocking** `VACUUM` during a
+maintenance window (stop write traffic first — `VACUUM` rewrites the whole
+file and briefly holds an exclusive lock):
+
+```bash
+kubectl -n <namespace> exec -it deploy/agentpulse -- sqlite3 /app/data/agentpulse.db 'VACUUM;'
+```
+
+This is never run automatically by the server. On the Postgres overlay,
+`autovacuum` already reclaims space from deleted rows — no manual step
+needed.
 
 ---
 
@@ -185,6 +233,70 @@ both — a pre-created index under the same name doesn't break boot.
   Once the index is `indisvalid = true` out-of-band, the app's own
   migration runner sees it already present (`IF NOT EXISTS`) and does no
   further work for it at boot.
+
+---
+
+## Upgrading to migration 0005 (AGEN-24 percy review: event retention index)
+
+Migration `0005` adds one index, `idx_events_created_at_id`, on
+`events (created_at, id)` — it backs the event-retention pass's batch
+`SELECT ... WHERE created_at < ? ORDER BY created_at, id LIMIT ...` (percy
+measured 48ms → 0.04ms per idle tick on Postgres; SQLite already had an
+equally-capable single-column index — see below). It runs automatically
+on boot, on both SQLite and Postgres, and is idempotent (`IF NOT EXISTS`)
+on both.
+
+**SQLite**: no action needed. SQLite appends the rowid (which is `events.id`
+for this table) to every non-unique index's key internally, so the
+pre-existing `idx_events_created_at` (added before AGEN-24) already behaves
+like a `(created_at, id)` composite for this query — `EXPLAIN QUERY PLAN`
+shows either index used depending on install history, and both are
+equally non-scanning.
+
+**Postgres**
+
+- Building this index takes a `SHARE` lock on `events` for the duration of
+  the build, the same tradeoff `0003`'s indexes make. On a small-to-moderate
+  `events` table this is milliseconds and safe to run inline at boot. On a
+  large table (which is exactly the AGEN-16 growth scenario this feature
+  exists to bound), pre-create it out-of-band, in a maintenance window,
+  before rolling out this version:
+
+  ```sql
+  -- Run against the Postgres database directly, before deploying the new image.
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_created_at_id
+    ON events (created_at, id);
+  ```
+
+  `CONCURRENTLY` avoids the `SHARE` lock (it takes longer, and doesn't run
+  inside a transaction, but doesn't block writes to `events` while it
+  builds). A `CONCURRENTLY` build can fail partway through and leave an
+  **invalid** index behind — Postgres will not use an invalid index, and a
+  plain `CREATE INDEX IF NOT EXISTS` afterwards silently skips it instead of
+  fixing it. Verify it's valid before considering the upgrade complete:
+
+  ```sql
+  SELECT indexrelid::regclass AS index_name, indisvalid
+    FROM pg_index
+    WHERE indexrelid = 'idx_events_created_at_id'::regclass;
+  ```
+
+  If that row shows `indisvalid = false`, drop and rebuild it before
+  deploying:
+
+  ```sql
+  DROP INDEX CONCURRENTLY IF EXISTS idx_events_created_at_id;
+  -- then re-run the CREATE INDEX CONCURRENTLY statement above
+  ```
+
+  Once the index is `indisvalid = true` out-of-band, the app's own
+  migration runner sees it already present (`IF NOT EXISTS`) and does no
+  further work for it at boot.
+
+  **AGEN-27 note**: any migration branched off before AGEN-24 merges must
+  regenerate its Postgres migration (`bun run db:generate:postgres`) after
+  merging main, so its own migration number lands after `0005` rather than
+  colliding with it (TB11 in the ticket-batch plan).
 
 ---
 

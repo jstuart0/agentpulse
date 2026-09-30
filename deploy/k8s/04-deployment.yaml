@@ -184,8 +184,9 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 6
-      # SQLITE-ONLY: the backup-sidecar runs sqlite3 .backup to copy the live
-      # SQLite WAL file to the agentpulse-backups PVC on a daily schedule.
+      # SQLITE-ONLY: the backup-sidecar runs sqlite3 VACUUM INTO (AGEN-54) to
+      # snapshot the live SQLite DB to the agentpulse-backups PVC on a daily
+      # schedule.
       # It is NOT applicable when DATABASE_URL points at Postgres — Postgres
       # deployments use Postgres-native backup (pg_dump / wal-g / managed
       # snapshots). The deploy/k8s/overlays/postgres/ Kustomize overlay removes
@@ -234,8 +235,8 @@ spec:
           mountPath: /data
           # NOT readOnly — SQLite WAL shared-memory semantics may touch
           # /data/agentpulse.db-shm. The sidecar does NOT write to
-          # agentpulse.db itself; sqlite3 .backup is a concurrent-safe
-          # read path. See deploy/k8s/BACKUP-RESTORE.md for details.
+          # agentpulse.db itself; sqlite3 VACUUM INTO is a read-only,
+          # concurrent-safe snapshot. See deploy/k8s/BACKUP-RESTORE.md.
         - name: backups
           mountPath: /backups
         - name: tmp-sidecar

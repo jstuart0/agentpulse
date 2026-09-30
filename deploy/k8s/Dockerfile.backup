@@ -3,6 +3,9 @@ FROM alpine:3.21
 # Bake in sqlite, ca-certificates, and rsync so the sidecar never needs
 # to apk add at runtime (which would require root and live network access).
 # ca-certificates is included for any future HTTPS-based notification hooks.
+# run-backup.sh uses VACUUM INTO (AGEN-54), which needs SQLite >= 3.27;
+# alpine:3.21's sqlite package ships 3.48.0 (verified via `apk add sqlite &&
+# sqlite3 -version`), so no version pin is required here.
 RUN apk add --no-cache sqlite ca-certificates rsync \
     && addgroup -g 1000 backup \
     && adduser -D -u 1000 -G backup backup

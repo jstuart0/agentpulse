@@ -23,11 +23,16 @@ export interface AuthStep {
 	note?: string;
 }
 
-function singleQuote(value: string): string {
-	// Keys are opaque tokens (ap_...) with no embedded quotes in practice;
-	// still guard against breaking out of the single-quoted shell literal.
-	return `'${value.replace(/'/g, "'\\''")}'`;
-}
+/**
+ * AGEN-49: every POSIX-sh auth step below reads the key at a hidden prompt
+ * (`read -rs`, no `-p` — that flag isn't POSIX, so the prompt is a separate
+ * `printf`) instead of embedding it literally in the copy-paste command —
+ * same principle as onboarding.ts's buildLocalCommand/buildRelayCommand. The
+ * `key` parameter each AUTH_STEP entry still takes is unused on the POSIX
+ * side as a result; codex_cli/copilot_cli's windowsCommand still embeds it
+ * (PowerShell auth step, out of this fix's scope — tracked separately).
+ */
+const READ_KEY_PROMPT = "printf 'AgentPulse API key: '; read -rs key; echo";
 
 /**
  * D13: per-agent auth step. `disableAuth: true` renders no step at all —
@@ -37,21 +42,28 @@ export const AUTH_STEP: Record<
 	SetupAgentType,
 	(key: string, disableAuth: boolean) => AuthStep | null
 > = {
-	claude_code: (key, disableAuth) => {
+	claude_code: (_key, disableAuth) => {
 		if (disableAuth) return null;
+		// Same safe-write ordering as hook-auth-header below (parent symlink
+		// check, mkdir, file symlink check, umask 077 temp file, then mv) —
+		// but targeting ~/.agentpulse/env, plus an idempotent key-free source
+		// line in the shell profile. Never the rc file directly: that's
+		// world-readable by default, the exposure D37/F243 already fixed for
+		// every other writer of this key.
+		const command = `${READ_KEY_PROMPT}; d=~/.agentpulse; f="$d/env"; if [ -L "$d" ]; then echo "refusing to write into a symlinked directory: $d" >&2; elif ! mkdir -p "$d" 2>/dev/null; then echo "can't create $d" >&2; elif [ -L "$f" ]; then echo "refusing to write through a symlink: $f" >&2; else t="$f.$$.tmp" && (umask 077 && printf 'export AGENTPULSE_API_KEY="%s"\\n' "$key" > "$t") && mv -f "$t" "$f"; fi; p=~/.zshrc; [ "$(basename "$SHELL")" = bash ] && p=~/.bashrc; s='[ -f "$HOME/.agentpulse/env" ] && . "$HOME/.agentpulse/env"'; grep -qF "$s" "$p" 2>/dev/null || printf '\\n# AgentPulse (key lives in ~/.agentpulse/env, not here)\\n%s\\n' "$s" >> "$p"`;
 		return {
-			title: "Set Environment Variable",
-			description: "Add this to your shell profile (~/.zshrc or ~/.bashrc):",
-			command: `export AGENTPULSE_API_KEY="${key || "YOUR_API_KEY"}"`,
+			title: "Save your key as an environment variable",
+			description:
+				"Run this in your terminal — it asks for the key (input hidden), writes it to ~/.agentpulse/env (mode 600, not world-readable), and adds a key-free source line to your shell profile (~/.zshrc or ~/.bashrc).",
+			command,
 		};
 	},
 	codex_cli: (key, disableAuth) => buildCommandHookAuthStep(key, disableAuth),
 	copilot_cli: (key, disableAuth) => buildCommandHookAuthStep(key, disableAuth),
 };
 
-function buildCommandHookAuthStep(key: string, disableAuth: boolean): AuthStep | null {
+function buildCommandHookAuthStep(_key: string, disableAuth: boolean): AuthStep | null {
 	if (disableAuth) return null;
-	const value = key || "YOUR_API_KEY";
 	// F207: never write through a symlink at the destination — write to a
 	// sibling temp file (umask 077 -> 0600 on create), then atomically
 	// replace the destination via mv (rename(2) replaces the directory
@@ -64,7 +76,9 @@ function buildCommandHookAuthStep(key: string, disableAuth: boolean): AuthStep |
 	// symlink points. Checked first, before mkdir -p even runs (mkdir -p
 	// on an already-existing symlinked path is a silent no-op success, so
 	// the check has to come before it, not after).
-	const command = `d=~/.agentpulse; f="$d/hook-auth-header"; if [ -L "$d" ]; then echo "refusing to write into a symlinked directory: $d" >&2; elif ! mkdir -p "$d" 2>/dev/null; then echo "can't create $d" >&2; elif [ -L "$f" ]; then echo "refusing to write through a symlink: $f" >&2; else t="$f.$$.tmp" && (umask 077 && printf 'Authorization: Bearer %s\\n' ${singleQuote(value)} > "$t") && mv -f "$t" "$f"; fi`;
+	// AGEN-49: the key is read at a hidden prompt (see READ_KEY_PROMPT
+	// above), never embedded literally in this command's text.
+	const command = `${READ_KEY_PROMPT}; d=~/.agentpulse; f="$d/hook-auth-header"; if [ -L "$d" ]; then echo "refusing to write into a symlinked directory: $d" >&2; elif ! mkdir -p "$d" 2>/dev/null; then echo "can't create $d" >&2; elif [ -L "$f" ]; then echo "refusing to write through a symlink: $f" >&2; else t="$f.$$.tmp" && (umask 077 && printf 'Authorization: Bearer %s\\n' "$key" > "$t") && mv -f "$t" "$f"; fi`;
 	// F208: narrow the parent directory's ACL to the current user *before*
 	// creating the file inside it, so the file inherits a private ACL from
 	// the moment it exists — a Set-Content-then-icacls-the-file sequence
@@ -78,11 +92,22 @@ function buildCommandHookAuthStep(key: string, disableAuth: boolean): AuthStep |
 	// only the ReparsePoint attribute) and writes through a same-directory
 	// temp file + Move-Item, mirroring install-local.ps1's
 	// Test-ApReparsePoint/Write-ApFileNoFollow.
-	const windowsCommand = `$d="$env:USERPROFILE\\.agentpulse"; function ApTestReparse($p) { $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; if (-not $i) { return $false }; if ($i.LinkType) { return $true }; return [bool]($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) }; if (ApTestReparse $d) { Write-Error "refusing to write through a reparse point: $d" } else { New-Item -ItemType Directory -Force $d | Out-Null; icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null; $f="$d\\hook-auth-header"; if (ApTestReparse $f) { Write-Error "refusing to write through a reparse point: $f" } else { $t="$f.$([guid]::NewGuid().ToString('N')).tmp"; Set-Content -NoNewline -Path $t -Value "Authorization: Bearer ${value}\`n"; Move-Item -Force -Path $t -Destination $f; icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null } }`;
+	// AGEN-49: the key is read via Read-Host -AsSecureString (input hidden,
+	// never a command argument) and converted to plaintext in memory via
+	// SecureStringToBSTR/PtrToStringBSTR, then ZeroFreeBSTR frees the
+	// unmanaged copy — no install-local.ps1 precedent existed for this
+	// (it takes -ApiKey as a plaintext parameter already), so this is new.
+	// Also adds the hard-link check install-local.ps1's own
+	// Test-ApMultipleHardLinks/New-ApHookAuthHeaderFile pair already has
+	// but this displayed snippet didn't — same reparse-point, hard-link,
+	// and user-only-ACL ordering as that function: parent reparse check,
+	// mkdir, ACL-narrow the directory, then (for the file) hard-link
+	// check, reparse check, write, ACL-narrow the file.
+	const windowsCommand = `$secure = Read-Host -Prompt 'AgentPulse API key' -AsSecureString; $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); $key = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr); [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr); function ApTestReparse($p) { $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; if (-not $i) { return $false }; if ($i.LinkType) { return $true }; return [bool]($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) }; function ApTestHardLink($p) { if (-not (Test-Path -LiteralPath $p)) { return $false }; try { $o = & fsutil hardlink list $p 2>$null; if ($LASTEXITCODE -ne 0 -or -not $o) { return $false }; return (@($o | Where-Object { $_.Trim().Length -gt 0 }).Count -gt 1) } catch { return $false } }; $d="$env:USERPROFILE\\.agentpulse"; if (ApTestReparse $d) { Write-Error "refusing to write through a reparse point: $d" } else { New-Item -ItemType Directory -Force $d | Out-Null; icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null; $f="$d\\hook-auth-header"; if (ApTestHardLink $f) { Write-Error "refusing to write through a multiply-linked file: $f" } elseif (ApTestReparse $f) { Write-Error "refusing to write through a reparse point: $f" } else { $t="$f.$([guid]::NewGuid().ToString('N')).tmp"; Set-Content -NoNewline -Path $t -Value "Authorization: Bearer $key\`n"; Move-Item -Force -Path $t -Destination $f; icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null } }; $key = $null`;
 	return {
 		title: "Save your key for command hooks",
 		description:
-			"Command hooks read the key from a file, not an environment variable — this keeps it out of process listings and shell history.",
+			"Run this in your terminal — it asks for the key (input hidden) and writes it to a file, not an environment variable, which keeps it out of process listings and shell history.",
 		command,
 		windowsCommand,
 		note: "requires curl 7.55+ (`curl --version`). Automated alternative: install-local.ps1.",

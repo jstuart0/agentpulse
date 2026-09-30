@@ -13,6 +13,14 @@ export const RELAY_KEY_SCOPES = ["ingest", "observe"];
 
 export const RELAY_KEY_NOTE =
 	"Relay keys need Hook ingest + Observe. A key without Observe will be refused by the installer.";
+/**
+ * AGEN-49: the local install command no longer carries the key (it used to
+ * be `--key ap_...`, which lands in both `ps` and shell history). The
+ * installer already accepts $AGENTPULSE_KEY (F234), so a hidden terminal
+ * prompt hands it over without ever putting the value in the command text.
+ */
+export const LOCAL_KEY_NOTE =
+	"The key stays out of this command — paste it when prompted. For a scripted/non-interactive install, set $AGENTPULSE_KEY before running the command instead (that form is visible in shell history).";
 export const SWITCHED_NOTICE = "Switched — mint a key for this option";
 export const RELAY_KEY_HINT = "Can't be used by a relay (needs Hook ingest + Observe)";
 export const REPLACE_LOCALHOST_NOTE =
@@ -41,6 +49,25 @@ export function buildRelayCommand(opts: {
 	return installCommand("setup-relay.sh", opts.serverUrl, args);
 }
 
+/**
+ * AGEN-49/H1 (xander): same principle as buildRelayCommand, applied to the
+ * direct (non-relay) installer. The prompt is POSIX `read -rs`, not
+ * `read -rsp` — `-p` means "coprocess" in zsh (macOS's default login shell),
+ * not "prompt", so a pasted `-rsp` silently does the wrong thing there. The
+ * prompt text is a separate `printf` instead. `read -rs` (no echo) keeps the
+ * key out of shell history; the bare `export` hands the already-read value
+ * to the piped-in setup.sh's environment without the value itself ever
+ * appearing in the command line. The `[ -n ... ] &&` guard means a blank
+ * answer (Ctrl-D, empty Enter) skips the install instead of running curl
+ * unauthenticated. setup.sh already falls back to $AGENTPULSE_KEY (F234) —
+ * no server-side change needed.
+ */
+function buildLocalCommand(opts: { serverUrl: string; disableAuth: boolean }): string {
+	const install = installCommand("setup.sh", opts.serverUrl, []);
+	if (opts.disableAuth) return install;
+	return `printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY\n[ -n "$AGENTPULSE_KEY" ] && ${install}`;
+}
+
 export type OnboardingPlan = {
 	scopes: string[];
 	command: string;
@@ -51,7 +78,6 @@ export type OnboardingPlan = {
 export function buildOnboardingPlan(opts: {
 	location: OnboardingLocation;
 	serverUrl: string;
-	key: string;
 	disableAuth: boolean;
 }): OnboardingPlan {
 	if (opts.location === "relay") {
@@ -64,13 +90,9 @@ export function buildOnboardingPlan(opts: {
 	}
 	return {
 		scopes: LOCAL_KEY_SCOPES,
-		command: installCommand(
-			"setup.sh",
-			opts.serverUrl,
-			opts.disableAuth ? [] : ["--key", opts.key],
-		),
+		command: buildLocalCommand({ serverUrl: opts.serverUrl, disableAuth: opts.disableAuth }),
 		files: HOOK_FILES,
-		keyNote: null,
+		keyNote: opts.disableAuth ? null : LOCAL_KEY_NOTE,
 	};
 }
 

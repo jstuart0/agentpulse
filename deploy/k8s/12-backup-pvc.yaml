@@ -15,7 +15,7 @@ spec:
     - ReadWriteMany
   # nfs storage class: backed by operator's NFS server.
   # The live SQLite database is NEVER stored here. Only backup output
-  # (consistent snapshots produced by sqlite3 .backup) lands on this volume.
+  # (consistent snapshots produced by sqlite3 VACUUM INTO) lands on this volume.
   storageClassName: nfs
   resources:
     requests:

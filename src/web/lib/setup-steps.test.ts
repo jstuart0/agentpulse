@@ -3,25 +3,90 @@
  * list, and the D22 lastEventLine helper. Pure functions — no DOM.
  */
 import { describe, expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { AUTH_STEP, codexSetupSteps, lastEventLine } from "./setup-steps.js";
 
+const WINDOWS_GOLDEN = join(import.meta.dir, "../../../scripts/__golden__/windows-auth-step.ps1");
+
+/** The exact shell bash-isms banned from a POSIX sh snippet, matching
+ * src/shared/hook-command.test.ts's "posix sh compatibility" suite. */
+function assertPosixSh(command: string) {
+	// `[[ ` (bash conditional, always followed by whitespace) is banned;
+	// `[[:space:]]` (a POSIX bracket-expression named class) is not a
+	// bash-ism and must not false-positive.
+	expect(command).not.toMatch(/\[\[\s/);
+	expect(command).not.toContain("$'");
+	expect(command).not.toMatch(/\bfunction\s/);
+	expect(command).not.toMatch(/\bsource\s/);
+	expect(command).not.toMatch(/\w+=\(/); // bash array assignment: name=(...)
+	expect(command).not.toMatch(/[^=!<>]==[^=]/); // POSIX sh test/[ use =, not ==
+}
+
 describe("AUTH_STEP", () => {
-	test("claude_code returns the env-var export step", () => {
+	test("claude_code (AGEN-49): reads the key at a hidden prompt and writes it to ~/.agentpulse/env, never the rc file", () => {
 		const step = AUTH_STEP.claude_code("ap_test123", false);
 		expect(step).not.toBeNull();
-		expect(step?.command).toContain("export AGENTPULSE_API_KEY=");
-		expect(step?.command).toContain("ap_test123");
+		const command = step?.command ?? "";
+		expect(command).not.toContain("ap_test123");
+		expect(command).toContain("read -rs key");
+		expect(command).toContain("export AGENTPULSE_API_KEY=");
+		expect(command).toContain('f="$d/env"');
+		expect(command).toContain(".agentpulse/env");
+		expect(command).toContain(".zshrc");
+		expect(command).toContain(".bashrc");
 		expect(step?.windowsCommand).toBeUndefined();
+		assertPosixSh(command);
 	});
 
-	test("codex_cli and copilot_cli return the hook-auth-header command with the key single-quoted", () => {
+	test("codex_cli and copilot_cli (AGEN-49): read the key at a hidden prompt, never embedded literally in the POSIX command", () => {
 		for (const agent of ["codex_cli", "copilot_cli"] as const) {
 			const step = AUTH_STEP[agent]("ap_test123", false);
 			expect(step).not.toBeNull();
-			expect(step?.command).toContain("d=~/.agentpulse");
-			expect(step?.command).toContain('f="$d/hook-auth-header"');
-			expect(step?.command).toContain("'ap_test123'");
-			expect(step?.command).toContain("umask 077");
+			const command = step?.command ?? "";
+			expect(command).not.toContain("ap_test123");
+			expect(command).toContain("read -rs key");
+			expect(command).toContain("d=~/.agentpulse");
+			expect(command).toContain('f="$d/hook-auth-header"');
+			expect(command).toContain("umask 077");
+			expect(command).toContain('"$key"');
+			assertPosixSh(command);
+		}
+	});
+
+	test("codex_cli and copilot_cli (AGEN-49): the PowerShell variant reads the key at a hidden, secure prompt too — the literal key is absent", () => {
+		for (const agent of ["codex_cli", "copilot_cli"] as const) {
+			const step = AUTH_STEP[agent]("ap_test123", false);
+			const win = step?.windowsCommand ?? "";
+			expect(win).not.toContain("ap_test123");
+			expect(win).toContain("Read-Host");
+			expect(win).toContain("-AsSecureString");
+			expect(win).toContain("SecureStringToBSTR");
+			expect(win).toContain("PtrToStringBSTR");
+			// The unmanaged BSTR copy is freed once converted, not left dangling.
+			expect(win).toContain("ZeroFreeBSTR");
+			expect(win).toContain("Authorization: Bearer $key");
+		}
+	});
+
+	test("codex_cli and copilot_cli (AGEN-49): the key variable never becomes an external command's argument — only Set-Content -Value (in-process) touches it", () => {
+		for (const agent of ["codex_cli", "copilot_cli"] as const) {
+			const step = AUTH_STEP[agent]("ap_test123", false);
+			const win = step?.windowsCommand ?? "";
+			// `&` (the call operator) invokes an external program with the
+			// rest of the statement as its argv — Windows' analogue of a key
+			// showing up in `ps`/Task Manager. fsutil is invoked this way
+			// (hard-link check) but never with $key/$secure/$bstr in its args.
+			const callOperatorLines = win
+				.split(";")
+				.filter((segment) => /&\s/.test(segment) || /Start-Process/.test(segment));
+			for (const segment of callOperatorLines) {
+				expect(segment).not.toMatch(/\$(key|secure|bstr)\b/);
+			}
+			// Every other place the key value appears is Set-Content -Value,
+			// an in-process .NET call, not a child process invocation.
+			const keyUses = win.match(/\$key\b/g) ?? [];
+			expect(keyUses.length).toBeGreaterThan(0);
 		}
 	});
 
@@ -56,16 +121,36 @@ describe("AUTH_STEP", () => {
 		expect(windowsCommand).not.toMatch(/Set-Content -NoNewline -Path \$f\b/);
 	});
 
+	test("AGEN-49: the PowerShell command also checks the file for a hard link, same ordering as install-local.ps1's New-ApHookAuthHeaderFile", () => {
+		const step = AUTH_STEP.codex_cli("ap_test123", false);
+		const windowsCommand = step?.windowsCommand ?? "";
+		expect(windowsCommand).toContain("function ApTestHardLink");
+		expect(windowsCommand).toContain("fsutil hardlink list");
+		expect(windowsCommand).toContain("ApTestHardLink $f");
+		// Hard-link check runs before the reparse-point check for the file,
+		// same order as New-ApHookAuthHeaderFile.
+		const hardLinkIdx = windowsCommand.indexOf("ApTestHardLink $f");
+		const fileReparseIdx = windowsCommand.indexOf("ApTestReparse $f");
+		expect(hardLinkIdx).toBeGreaterThan(-1);
+		expect(fileReparseIdx).toBeGreaterThan(-1);
+		expect(hardLinkIdx).toBeLessThan(fileReparseIdx);
+		// Both the directory and the file get an ACL narrowed to the
+		// current user — (OI)(CI)F for the directory, (R,W) for the file.
+		expect(windowsCommand).toContain("(OI)(CI)F");
+		expect(windowsCommand).toContain("(R,W)");
+	});
+
 	test("disableAuth:true gives null for all three agents", () => {
 		expect(AUTH_STEP.claude_code("ap_test123", true)).toBeNull();
 		expect(AUTH_STEP.codex_cli("ap_test123", true)).toBeNull();
 		expect(AUTH_STEP.copilot_cli("ap_test123", true)).toBeNull();
 	});
 
-	test("the PowerShell auth variant contains icacls and Authorization: Bearer, with the key in single quotes", () => {
+	test("the PowerShell auth variant contains icacls and an Authorization: Bearer header referencing the read-in key, never a literal", () => {
 		const step = AUTH_STEP.codex_cli("ap_test123", false);
 		expect(step?.windowsCommand).toContain("icacls");
-		expect(step?.windowsCommand).toContain("Authorization: Bearer ap_test123");
+		expect(step?.windowsCommand).toContain("Authorization: Bearer $key");
+		expect(step?.windowsCommand).not.toContain("Authorization: Bearer ap_test123");
 	});
 
 	test("the auth step includes curl 7.55+ for codex and copilot", () => {
@@ -73,6 +158,20 @@ describe("AUTH_STEP", () => {
 			const step = AUTH_STEP[agent]("ap_test123", false);
 			expect(step?.note).toContain("curl 7.55+");
 		}
+	});
+
+	test("AGEN-49/M2: the rendered windowsCommand matches the checked-in golden byte-for-byte", async () => {
+		// scripts/test-install-local.ps1's Windows CI job has no bun/node —
+		// it can't render this string itself, so a golden fixture is the
+		// only way it gets a real PowerShell parser ([scriptblock]::Create)
+		// over the actual generated text. This test is the drift detector:
+		// if buildCommandHookAuthStep's windowsCommand ever changes, the
+		// golden must be regenerated in the same commit or this fails.
+		// windowsCommand is identical for codex_cli and copilot_cli (same
+		// generator, key is never embedded either way).
+		const step = AUTH_STEP.codex_cli("ignored", false);
+		const golden = await readFile(WINDOWS_GOLDEN, "utf8");
+		expect(`${step?.windowsCommand}\n`).toBe(golden);
 	});
 });
 

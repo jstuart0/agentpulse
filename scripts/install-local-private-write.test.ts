@@ -342,10 +342,11 @@ describe("install-local.ps1 secret writers are wired through Write-ApPrivateFile
 				}
 			}
 		}
-		// Population floor: this codebase currently has 4 icacls call sites
+		// Population floor: this codebase currently has 5 icacls call sites
 		// (New-ApHookAuthHeaderFile's directory + file, Write-ApPrivateFile's
-		// directory + file). A count of 0 would make the loop above vacuous.
-		expect(totalIcaclsCalls).toBe(4);
+		// directory + file, AGEN-49's Configure-Hooks settings.json ACL). A
+		// count of 0 would make the loop above vacuous.
+		expect(totalIcaclsCalls).toBe(5);
 		expect(unwrapped.length, unwrapped.map((i) => `line ${i + 1}: ${lines[i]}`).join("\n")).toBe(0);
 	});
 });

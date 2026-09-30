@@ -415,10 +415,32 @@ echo ""
 
 CLAUDE_DIR="\$HOME/.claude"
 CLAUDE_SETTINGS="\$CLAUDE_DIR/settings.json"
+
+# F<new> (H2, F249 ordering): refuse a symlinked destination or its parent
+# directory BEFORE mkdir -p even runs -- mkdir -p on an already-existing
+# symlinked path is a silent no-op success, so the check has to come first,
+# not after. settings.json holds other user settings we must preserve, so
+# this can't just delegate to ap_write_no_follow (which overwrites wholesale).
+if [[ -L "\$CLAUDE_DIR" ]]; then
+  echo "  ✗ refusing to write into a symlinked directory: \$CLAUDE_DIR" >&2
+  exit 1
+fi
 mkdir -p "\$CLAUDE_DIR"
+if [[ -L "\$CLAUDE_SETTINGS" ]]; then
+  echo "  ✗ refusing to write through a symlink: \$CLAUDE_SETTINGS" >&2
+  exit 1
+fi
 
 EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit" "PermissionRequest" "PermissionDenied" "Notification" "PreCompact" "PostCompact" "PostToolUseFailure")
 
+# AGEN-49/H2 (xander): Claude Code's native HTTP hook expands
+# \$AGENTPULSE_API_KEY from ITS OWN process environment, not the shell that
+# launched Claude Code -- a GUI, IDE, or stale-terminal launch never sources
+# ~/.agentpulse/env, so the env-var form 401s silently there. This route has
+# no project-scope option (it always targets \$HOME), so a supplied key gets
+# the literal, more-reliable form -- acceptable because settings.json is
+# tightened to 0600 below (never world-readable). No key at all (an
+# auth-disabled server) keeps the env-var/allowedEnvVars form, same as before.
 HOOKS_JSON="{"
 for i in "\${!EVENTS[@]}"; do
   EVENT="\${EVENTS[\$i]}"
@@ -431,19 +453,53 @@ for i in "\${!EVENTS[@]}"; do
 done
 HOOKS_JSON+="}"
 
+# F<new> (High, xander re-verify): a plain "\$CLAUDE_SETTINGS.tmp" redirect
+# target is predictable -- a pre-planted symlink there would let either
+# merge branch's write (carrying the literal key) follow it, and the
+# following \`mv\` would turn settings.json ITSELF into that symlink; the
+# trailing chmod 600 further down would then narrow the attacker's file,
+# not ours. mktemp's unpredictable sibling name closes that. The
+# immediate -L check is defense in depth against the (already
+# vanishingly small) race between mktemp's own atomic create and this
+# check. The python3 branch produces the merged JSON on stdout into that
+# same hardened temp -- it never opens \$CLAUDE_SETTINGS for writing
+# itself (Python's open(path, "w") has no O_NOFOLLOW equivalent here).
 if [[ -f "\$CLAUDE_SETTINGS" ]] && command -v jq &>/dev/null; then
-  jq --argjson hooks "\$HOOKS_JSON" '.hooks = (.hooks // {}) * \$hooks' "\$CLAUDE_SETTINGS" > "\$CLAUDE_SETTINGS.tmp"
-  mv "\$CLAUDE_SETTINGS.tmp" "\$CLAUDE_SETTINGS"
+  AP_CLAUDE_TMP="\$(umask 077 && mktemp "\${CLAUDE_SETTINGS}.XXXXXX")" || {
+    echo "  ✗ can't create a temp file for \$CLAUDE_SETTINGS" >&2
+    exit 1
+  }
+  if [[ -L "\$AP_CLAUDE_TMP" ]]; then
+    echo "  ✗ refusing to write through a symlinked temp file: \$AP_CLAUDE_TMP" >&2
+    exit 1
+  fi
+  jq --argjson hooks "\$HOOKS_JSON" '.hooks = (.hooks // {}) * \$hooks' "\$CLAUDE_SETTINGS" > "\$AP_CLAUDE_TMP"
+  mv -f "\$AP_CLAUDE_TMP" "\$CLAUDE_SETTINGS"
 elif [[ -f "\$CLAUDE_SETTINGS" ]] && command -v python3 &>/dev/null; then
+  AP_CLAUDE_TMP="\$(umask 077 && mktemp "\${CLAUDE_SETTINGS}.XXXXXX")" || {
+    echo "  ✗ can't create a temp file for \$CLAUDE_SETTINGS" >&2
+    exit 1
+  }
+  if [[ -L "\$AP_CLAUDE_TMP" ]]; then
+    echo "  ✗ refusing to write through a symlinked temp file: \$AP_CLAUDE_TMP" >&2
+    exit 1
+  fi
   python3 -c "
 import json, sys
 with open('\$CLAUDE_SETTINGS') as f: s = json.load(f)
 h = json.loads('''\$HOOKS_JSON''')
 s.setdefault('hooks', {}).update(h)
-with open('\$CLAUDE_SETTINGS', 'w') as f: json.dump(s, f, indent=2)
-"
+json.dump(s, sys.stdout, indent=2)
+" > "\$AP_CLAUDE_TMP"
+  mv -f "\$AP_CLAUDE_TMP" "\$CLAUDE_SETTINGS"
 else
   echo '{"hooks":'\$HOOKS_JSON'}' > "\$CLAUDE_SETTINGS"
+fi
+# H2: a supplied key means the literal form above, so settings.json is
+# tightened to owner-only -- never world-readable. No key: env-var form
+# only, so the file's mode is left exactly as it was before this write.
+if [[ -n "\$API_KEY" && -f "\$CLAUDE_SETTINGS" ]]; then
+  chmod 600 "\$CLAUDE_SETTINGS"
 fi
 echo "  ✓ Claude Code hooks configured"
 

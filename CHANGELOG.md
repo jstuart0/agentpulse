@@ -7,6 +7,73 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Added
+
+- **Event retention enforcement (AGEN-24).** The `eventsRetentionDays`
+  setting (Settings → Session Configuration → Event Retention) is now
+  enforced by a periodic background pass (hourly by default; override with
+  `AGENTPULSE_RETENTION_INTERVAL_MS`, clamped to [60s, 24h] — an
+  out-of-range or non-integer value falls back to the 1-hour default with a
+  warning) that deletes `events` rows older than the configured cutoff in
+  bounded batches of 1,000 rows, yielding between batches so ingest is
+  never blocked. **Off by default**: the setting has always existed but
+  was never enforced before this release, so an upgrade does not start
+  deleting anything — retention only runs once an operator explicitly sets
+  `eventsRetentionDays` to a positive number of days (unset, `0`, or
+  negative all mean disabled). The Settings UI field was changed from a
+  misleading always-30 placeholder to a real 0-means-disabled value, and no
+  longer writes on an unmodified blur. A new index,
+  `idx_events_created_at_id` on `events (created_at, id)` (migration 0005),
+  backs the batch-select query. Deleting from `events` fires the existing
+  SQLite FTS/embeddings delete triggers, so `search_events_fts` and
+  `event_embeddings` stay consistent automatically; the session row and its
+  denormalized state (including `metadata.permissionWait`) are never
+  touched by a retention pass. On Postgres (multi-replica capable), EACH
+  BATCH runs in its own short transaction, re-acquiring a non-blocking
+  `pg_try_advisory_xact_lock`; if the lock isn't held, the pass stops and
+  is reported as skipped. SQLite deployments (single-replica) run
+  unguarded. Every Postgres connection this app opens (main pool and
+  migration client) now pins `connection: { TimeZone: "UTC" }`
+  (`db/client.ts`'s `PG_CONNECTION_OPTIONS`) — `created_at` is TEXT
+  rendered in the connection's `TimeZone` GUC, and the retention cutoff
+  comparison is a lexicographic UTC string compare, so an unpinned
+  connection on a non-UTC-default Postgres server could judge rows as
+  older than they are by the server's offset (in the worst case, a row
+  written moments ago could look older than a tight cutoff). **Upgrade
+  note**: this pin only affects new connections going forward — if your
+  Postgres server's default timezone was not UTC before upgrading, rows
+  already written keep their local-time-with-offset text; see
+  `deploy/k8s/README.md`'s "Event retention (AGEN-24)" section for the
+  precise boundary condition this leaves. After a SQLite pass that deleted
+  rows, `PRAGMA incremental_vacuum` runs automatically if the database was
+  created with `auto_vacuum = INCREMENTAL`; existing installs
+  (`auto_vacuum = NONE`) need a one-time manual `VACUUM` during a
+  maintenance window to reclaim space — see `deploy/k8s/README.md`.
+  `GET /api/v1/health` now includes a `retention` field with the last
+  pass's `rowsDeleted`/`durationMs`/`disabled`, a separate `lastSkip` field
+  for the most recent skipped pass, and the next scheduled tick.
+
+### Fixed
+
+- **Backup sidecar livelock under concurrent writes (AGEN-54).**
+  `deploy/k8s/scripts/run-backup.sh` used sqlite3's `.backup` command, which
+  restarts its page copy whenever a WAL checkpoint lands mid-copy — under
+  sustained write load it can livelock indefinitely instead of finishing (one
+  production run stalled at a fixed offset for 20+ minutes; backup history
+  showed 12-15h completions). The script now snapshots with `VACUUM INTO`
+  (a single bounded read transaction, read-only-safe against the live DB),
+  verifies the output with `PRAGMA integrity_check` before promoting it, and
+  checks free space up front. Naming, compression, retention
+  (`scripts/retention.sh`), and logging are unchanged.
+  Follow-up hardening from review: a signal trap now removes the in-flight
+  `.tmp` file on SIGINT/SIGTERM, and a startup sweep clears any `.tmp` older
+  than 60 minutes left behind by an untrappable SIGKILL; the promotion
+  rename failure is now handled explicitly (exit 7) instead of falling
+  through to an unhandled `set -e` exit; a checksum failure is now
+  non-fatal, matching the existing row-count check; the VACUUM INTO
+  connection sets `busy_timeout=5000`; and the sidecar logs its sqlite3
+  version at the start of every run.
+
 ### Security
 
 - **Supervisor and installer secret files are now written 0600, not 0644
@@ -25,7 +92,63 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   symlink at the destination. Existing installs are self-healed: the
   supervisor now tightens an over-permissive `supervisor.json` to 0600 on
   startup (logging once), refusing — not chmod'ing — if the path is a
-  symlink.
+  symlink. Both no-follow write helpers were themselves hardened against a
+  predictable temp-file name (`ap_write_private_no_follow`/
+  `ap_write_no_follow` now use `mktemp`'s unguessable `XXXXXX` suffix
+  rather than a guessable `.$$.tmp`), `tightenPrivateFilePermissionsSync`
+  refuses a hard-linked path, and the supervisor's startup permission fix
+  never crashes the process if it loses its internal TOCTOU race.
+- **API key exposure in installer commands and config files (AGEN-49,
+  reviewed by xander).** v0.6.0 moved the key out of shell rc files into
+  `~/.agentpulse/env` (mode `0600`) and added `AGENTPULSE_KEY` env-var
+  support, but several residual exposure paths remained:
+  - The dashboard's default local-install command, both README install
+    snippets, `install-local.sh`'s printed fallback instructions, and
+    SetupPage's per-agent auth-step commands (claude_code, codex_cli,
+    copilot_cli — POSIX side) all passed the key as `--key ap_...` or
+    embedded it literally in copy-paste text, landing in `ps` and/or shell
+    history. All now read the key at a hidden terminal prompt instead:
+    POSIX `printf 'AgentPulse API key: '; read -rs VAR; echo` (not
+    `read -rsp` — `-p` means "coprocess" in zsh, macOS's default shell, so
+    a pasted `-rsp` silently misbehaves there), guarded by
+    `[ -n "$VAR" ] &&` so a blank answer skips the install instead of
+    running curl unauthenticated. codex_cli/copilot_cli's PowerShell
+    variant now reads the key via `Read-Host -AsSecureString` +
+    `SecureStringToBSTR`/`PtrToStringBSTR`/`ZeroFreeBSTR` and adds the
+    hard-link check `New-ApHookAuthHeaderFile` already has but this
+    displayed snippet didn't. Documented as a trade-off for scripted/
+    non-interactive installs, which can still set `$AGENTPULSE_KEY`
+    beforehand (visible in shell history).
+  - Added execution tests that actually run the rendered onboarding
+    command and the setup-steps POSIX snippets under every shell present
+    (bash, zsh, sh), feeding the key on stdin and using a stub `curl` —
+    catching the zsh `read -rsp` regression a text-pattern check alone
+    would have missed.
+  - **Claude Code's silent-401 trade-off, resolved deliberately.** Claude
+    Code's native HTTP hook expands `$AGENTPULSE_API_KEY` from its own
+    process environment, not the shell that launched it — a GUI, IDE, or
+    stale-terminal launch never sources `~/.agentpulse/env`, so an
+    env-var-only header 401s silently there. **User scope**
+    (`~/.claude/settings.json`, the default for `/setup.sh`,
+    `agentpulse setup`, `install-local.ps1`, and `setup-hooks.sh`'s default
+    `--scope global`) now embeds the literal key again, made acceptable by
+    tightening the file to mode `0600` (POSIX) / a single-ACE user-only ACL
+    (Windows) with a no-follow write (a symlinked `settings.json` is
+    refused, not written through) — merging into an existing file preserves
+    every other key already in it. **Project scope**
+    (`setup-hooks.sh --scope project`, a repo's own `.claude/settings.json`,
+    which may be committed) never gets a literal key — it keeps the
+    `$AGENTPULSE_API_KEY`/`allowedEnvVars` form unconditionally, with a
+    printed reminder to fully restart Claude Code (a GUI/IDE-launched
+    instance may not see a shell-exported env var).
+  - Regression coverage installs each of claude_code/codex_cli/copilot_cli
+    (including `--scope project`) and the served `/setup.sh` against a
+    temp `$HOME`, then scans every resulting file for the literal key —
+    asserting it appears only in `hook-auth-header` and `env` (always,
+    mode `0600`), and in `settings.json` only for user/global scope (also
+    mode `0600`) — never in any project-scope file, at any permission.
+    Also covers: an existing `settings.json`'s other keys survive the
+    merge, and a symlinked `settings.json` is refused.
 
 ## [0.6.0] — 2026-09-29
 
