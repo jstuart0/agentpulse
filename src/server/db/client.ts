@@ -9,6 +9,7 @@ import { drizzle as drizzlePostgresJs } from "drizzle-orm/postgres-js";
 // Top-level ES default import resolves correctly on both Node and Bun.
 import postgres from "postgres";
 import { config } from "../config.js";
+import { refreshSearchIndexStatus } from "../services/search/search-index-status.js";
 import {
 	EVENTS_FTS_DDL,
 	EVENT_TEXT_COALESCE_SELECT,
@@ -376,6 +377,13 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 		// Open the main app pool AFTER migrations are complete.
 		// _client may already be set (createDatabase() called above); re-use it.
 		// The pool was created in createDatabase() and is now safe to use.
+
+		// percy AGEN-27 review (TB17 item 3): log + cache trigram search-index
+		// presence once at boot — migration 0006 can leave some/all of them
+		// missing (pg_trgm unavailable, or events too large for the automatic
+		// build). Never allowed to fail boot; refreshSearchIndexStatus()
+		// swallows its own errors.
+		await refreshSearchIndexStatus(_client.db as unknown as Db);
 
 		console.log("[db] Database initialized (postgres)");
 

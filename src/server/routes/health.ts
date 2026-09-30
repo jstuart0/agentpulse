@@ -7,6 +7,7 @@ import {
 	getLegacyObserverDeliveries,
 } from "../services/event-dedup.js";
 import { getRetentionStatus } from "../services/retention-service.js";
+import { getSearchIndexStatus } from "../services/search/search-index-status.js";
 import { computeChecksum } from "../util/checksum.js";
 import {
 	getBgErrorCount,
@@ -77,6 +78,9 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //  - clients (D3/F20): relay/statusline script checksums (computeClientChecksums).
 //  - retention (AGEN-24): last event-retention pass (rowsDeleted, durationMs,
 //    disabled) and the next scheduled tick — see services/retention-service.ts.
+//  - searchIndexes (AGEN-27 / percy TB17): Postgres trigram search-index
+//    presence ({ present, missing[] }), checked once at boot; null on
+//    SQLite (not applicable) — see services/search/search-index-status.ts.
 health.get("/health", async (c) => {
 	if (!_dbReady) {
 		return c.json(
@@ -105,6 +109,7 @@ health.get("/health", async (c) => {
 		eventsDeduplicated: getEventsDeduplicatedCounts(),
 		legacyObserverDeliveries: getLegacyObserverDeliveries(),
 		retention: getRetentionStatus(),
+		searchIndexes: getSearchIndexStatus(),
 	});
 });
 
