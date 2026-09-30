@@ -1,0 +1,148 @@
+{
+	"hooks": {
+		"SessionStart": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=SessionStart' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=SessionStart' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"SessionEnd": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=SessionEnd' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=SessionEnd' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"PreToolUse": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=PreToolUse' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=PreToolUse' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"PostToolUse": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=PostToolUse' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=PostToolUse' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"UserPromptSubmit": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=UserPromptSubmit' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=UserPromptSubmit' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"Stop": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=Stop' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=Stop' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"Interrupt": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=Interrupt' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=Interrupt' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"SubagentStart": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=SubagentStart' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=SubagentStart' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"SubagentStop": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=SubagentStop' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=SubagentStop' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"PermissionRequest": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=PermissionRequest' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=PermissionRequest' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"PreCompact": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=PreCompact' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=PreCompact' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		],
+		"PostCompact": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "t=$(mktemp \"${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX\" 2>/dev/null) || exit 0; cat > \"$t\"; ( sid=$(grep -o '\"session_id\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9-]*\"' \"$t\" | head -n1); sid=${sid%\\\"}; sid=${sid##*\\\"}; case \"$sid\" in \"\"|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p \"$HOME/.agentpulse/codex-native\" 2>/dev/null; : > \"$HOME/.agentpulse/codex-native/$sid\" 2>/dev/null; fi ;; esac; f=\"$HOME/.agentpulse/hook-auth-header\"; if [ -s \"$f\" ]; then curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=PostCompact' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' -H \"@$f\" --data-binary \"@$t\"; else curl -sS --max-time 2 -o /dev/null -X POST 'http://localhost:3000/api/v1/hooks?event=PostCompact' -H 'Content-Type: application/json' -H 'X-Agent-Type: codex_cli' --data-binary \"@$t\"; fi; rm -f \"$t\" ) </dev/null >/dev/null 2>&1 & exit 0",
+						"async": false,
+						"timeout": 1
+					}
+				]
+			}
+		]
+	}
+}

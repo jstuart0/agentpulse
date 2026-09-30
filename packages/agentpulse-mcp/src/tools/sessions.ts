@@ -7,7 +7,7 @@
  */
 import { z } from "zod";
 import type { AgentPulseClient } from "../client.js";
-import { AGENT_TYPE_ENUM, SESSION_STATUS_ENUM } from "../enums.js";
+import { OBSERVED_AGENT_TYPE_ENUM, SESSION_STATUS_ENUM } from "../enums.js";
 import { capList, capText } from "../output.js";
 import { registerReadTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
@@ -88,7 +88,7 @@ export function registerSessionsTools(ctx: ToolContext, flags: ScopeFlags): void
 				"List AgentPulse sessions across the fleet, optionally filtered by status/agent type/project. Compact rows; each includes a `managed` boolean indicating whether control tools (stop/prompt/retry) can target it.",
 			inputSchema: {
 				status: SESSION_STATUS_ENUM.optional(),
-				agent_type: AGENT_TYPE_ENUM.optional(),
+				agent_type: OBSERVED_AGENT_TYPE_ENUM.optional(),
 				project_id: z.string().optional(),
 				limit: z.number().int().min(1).max(100).optional(),
 				offset: z.number().int().min(0).optional(),

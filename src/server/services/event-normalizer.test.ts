@@ -56,6 +56,46 @@ describe("normalizeHookEvent — Notification (Decision 4: stays system_event)",
 	});
 });
 
+describe("normalizeHookEvent — Interrupt (D12, Codex)", () => {
+	test("Interrupt normalizes to system_event, content is 'Turn interrupted'", () => {
+		const [event] = normalizeHookEvent(
+			payload({ hook_event_name: "Interrupt", turn_id: "t1" }),
+			"codex_cli",
+		);
+		expect(event.category).toBe("system_event");
+		expect(event.content).toBe("Turn interrupted");
+	});
+});
+
+describe("normalizeHookEvent — ErrorOccurred (Phase 6, Copilot D7)", () => {
+	// RED at Phase 6's start commit: HookEventPayload doesn't export
+	// error_message yet (compile error), and event-normalizer.ts's switch
+	// has no ErrorOccurred case — it falls into the unknown-event default
+	// branch (content: null, a console.warn) instead of surfacing the
+	// error text.
+	test("ErrorOccurred normalizes to system_event, content reflects error_message", () => {
+		const [event] = normalizeHookEvent(
+			payload({ hook_event_name: "ErrorOccurred", error_message: "example error message" }),
+			"copilot_cli",
+		);
+		expect(event.category).toBe("system_event");
+		expect(event.content).toBe("Error: example error message");
+		expect(event.isNoise).toBe(false);
+	});
+
+	test("providerEventType is sourced from provider_event_name when present, not the canonical hook_event_name", () => {
+		const [event] = normalizeHookEvent(
+			payload({
+				hook_event_name: "ErrorOccurred",
+				error_message: "boom",
+				provider_event_name: "errorOccurred",
+			}),
+			"copilot_cli",
+		);
+		expect(event.providerEventType).toBe("errorOccurred");
+	});
+});
+
 describe("normalizeHookEvent — compaction events", () => {
 	test("PreCompact without trigger", () => {
 		const [event] = normalizeHookEvent(payload({ hook_event_name: "PreCompact" }), "claude_code");

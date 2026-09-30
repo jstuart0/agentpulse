@@ -23,13 +23,16 @@ describe("parseAgentTypeQuery", () => {
 	}
 
 	test("unknown value throws InvalidAgentTypeQueryError carrying the bad value", () => {
-		expect(() => parseAgentTypeQuery("copilot_cli")).toThrow(InvalidAgentTypeQueryError);
+		// Not "copilot_cli" — AGENT_TYPES gained that value on this branch
+		// (agent-cli-parity), so it now round-trips via the loop above instead
+		// of throwing. Use a value that's genuinely outside AGENT_TYPES.
+		expect(() => parseAgentTypeQuery("totally_bogus")).toThrow(InvalidAgentTypeQueryError);
 		try {
-			parseAgentTypeQuery("copilot_cli");
+			parseAgentTypeQuery("totally_bogus");
 			throw new Error("expected parseAgentTypeQuery to throw");
 		} catch (err) {
 			expect(err instanceof InvalidAgentTypeQueryError).toBe(true);
-			expect((err as InvalidAgentTypeQueryError).value).toBe("copilot_cli");
+			expect((err as InvalidAgentTypeQueryError).value).toBe("totally_bogus");
 		}
 	});
 });

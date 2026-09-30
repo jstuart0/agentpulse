@@ -76,3 +76,32 @@ describe("upsertManagedSessionState — metadata merge (late read-modify-write)"
 		expect(row?.metadata).toEqual({ providerRunId: "run-new" });
 	});
 });
+
+// F85 (ian mid-build): the returned `session` (what supervisors.ts's
+// `c.json(result)` sends back to the caller verbatim) must carry
+// nameSource/nativeName, not just the WS broadcast the caller can't see.
+describe("upsertManagedSessionState — result.session carries nameSource/nativeName (F85)", () => {
+	test("a manually-pinned session's result.session reflects nameSource:'user'", async () => {
+		await mkSession("managed-pinned", { renameSource: "user", nativeName: "codex-thread-name" });
+		await seedOwnedLaunch("managed-pinned", "sup-1");
+
+		const result = await upsertManagedSessionState("sup-1", {
+			sessionId: "managed-pinned",
+			metadata: { providerRunId: "run-3" },
+		});
+
+		expect(result.session.nameSource).toBe("user");
+		expect(result.session.nativeName).toBe("codex-thread-name");
+	});
+
+	test("a new session's result.session defaults to nameSource:'generated'", async () => {
+		await seedOwnedLaunch("managed-generated", "sup-1");
+
+		const result = await upsertManagedSessionState("sup-1", {
+			sessionId: "managed-generated",
+		});
+
+		expect(result.session.nameSource).toBe("generated");
+		expect(result.session.nativeName).toBeNull();
+	});
+});

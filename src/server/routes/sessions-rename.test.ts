@@ -99,6 +99,64 @@ describe("PUT /sessions/:id/rename", () => {
 		const row = await getSession("route-sync-source");
 		expect((row?.metadata as Record<string, unknown> | null)?.renameSource).toBeUndefined();
 	});
+
+	// ian F121: old relays push Codex titles via /rename {source:"sync"} with a
+	// manage key. That path goes through applyNativeName, so a D14 pin wins.
+	test("source: 'sync' on a pinned session → 200, displayName kept, nativeName recorded", async () => {
+		await mkSession("route-sync-pinned", {
+			displayName: "pinned-by-user",
+			metadata: { renameSource: "user" },
+		});
+		const res = await app.request("/api/v1/sessions/route-sync-pinned/rename", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name: "codex-title", source: "sync" }),
+		});
+		expect(res.status).toBe(200);
+		const row = await getSession("route-sync-pinned");
+		const metadata = row?.metadata as Record<string, unknown>;
+		expect(row?.displayName).toBe("pinned-by-user");
+		expect(metadata.renameSource).toBe("user");
+		expect(metadata.nativeName).toBe("codex-title");
+	});
+
+	test("source: 'sync' on an unpinned session applies it as a native name", async () => {
+		await mkSession("route-sync-unpinned", { displayName: "brave-falcon" });
+		const res = await app.request("/api/v1/sessions/route-sync-unpinned/rename", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name: "codex-title", source: "sync" }),
+		});
+		expect(res.status).toBe(200);
+		const row = await getSession("route-sync-unpinned");
+		const metadata = row?.metadata as Record<string, unknown>;
+		expect(row?.displayName).toBe("codex-title");
+		expect(metadata.nativeName).toBe("codex-title");
+		expect(metadata.lastAppliedNativeName).toBe("codex-title");
+	});
+
+	test("source: 'sync' on an unknown session keeps /rename's 200 no-op", async () => {
+		const res = await app.request("/api/v1/sessions/route-sync-missing/rename", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name: "codex-title", source: "sync" }),
+		});
+		expect(res.status).toBe(200);
+	});
+
+	// xander (Low, optional): reject a source outside the three real values
+	// instead of silently legacy-neutral no-op'ing on a typo.
+	test("an unrecognized source value → 400 invalid_source", async () => {
+		await mkSession("route-bogus-source");
+		const res = await app.request("/api/v1/sessions/route-bogus-source/rename", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name: "x", source: "bogus" }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json();
+		expect(body).toEqual({ error: "invalid_source", value: "bogus" });
+	});
 });
 
 describe("PUT /sessions/:id/native-name", () => {

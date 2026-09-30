@@ -114,10 +114,17 @@ function parseCodexTranscriptDelta(lines: string[]): NormalizedEvent[] {
 	return events;
 }
 
-function parseTranscriptDelta(agentType: AgentType, lines: string[]): NormalizedEvent[] {
-	return agentType === "claude_code"
-		? parseClaudeTranscriptDelta(lines)
-		: parseCodexTranscriptDelta(lines);
+// Partial: an observed agent type with no registered transcript parser
+// (e.g. copilot_cli) is skipped entirely rather than defaulting to either
+// existing parser (D5 Pattern A' observed domain).
+const TRANSCRIPT_PARSERS: Partial<Record<AgentType, (lines: string[]) => NormalizedEvent[]>> = {
+	claude_code: parseClaudeTranscriptDelta,
+	codex_cli: parseCodexTranscriptDelta,
+};
+
+export function parseTranscriptDelta(agentType: AgentType, lines: string[]): NormalizedEvent[] {
+	const parser = TRANSCRIPT_PARSERS[agentType];
+	return parser ? parser(lines) : [];
 }
 
 async function syncTranscriptForSession(session: SessionWithMetadata): Promise<void> {

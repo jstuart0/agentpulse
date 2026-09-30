@@ -9,6 +9,31 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Added
 
+- **Copilot CLI support (AGEN-13) — labeled "contract not yet
+  verified against a live Copilot CLI" until a live-payload diff passes.**
+  AgentPulse now observes GitHub Copilot CLI sessions: 10 registered hook
+  events (`sessionStart`, `sessionEnd`, `userPromptSubmitted`, `postToolUse`,
+  `postToolUseFailure`, `agentStop`, `subagentStart`, `subagentStop`,
+  `preCompact`, `errorOccurred` — `preToolUse`/`permissionRequest` are
+  deliberately excluded, Copilot's fail-closed paths) posted as detached
+  `command` hooks to `~/.copilot/hooks/agentpulse.json`, written only when
+  `copilot` is detected on `PATH` or `~/.copilot` exists. Copilot is
+  observed only (AgentPulse can't launch or steer it), shown with a
+  dedicated badge and an "Observed only" hint on the session detail page
+  and the Setup page. The canonicalizer accepts both Copilot's native
+  camelCase payload shape and a Pascal/snake_case mirror, and caps
+  `toolArgs`/`toolResponse` at 64 KiB. Codex CLI's own hook-event set also
+  gains `SessionEnd` and `Interrupt` (10 → 12 total events); the
+  Claude/Codex/Copilot event counts are now 16/12/10.
+  **Known version-skew gap**: an `agentpulse-mcp` 0.2.0+ client's
+  `list_sessions` can filter by `agent_type: "copilot_cli"`, but a server
+  *older than this release* has no rows with that agent type and predates
+  the unrecognized-`agent_type` 400 below — it silently returns zero
+  sessions rather than an error, which can look identical to "the filter
+  didn't apply." Upgrading the server to this release or later closes the
+  gap (see "Fixed" below); there's no client-side way to detect an older
+  server's feature set in the meantime. See
+  `packages/agentpulse-mcp/README.md`'s Hardening roadmap.
 - **MCP server (AGEN-12)** — `agentpulse mcp serve` exposes AgentPulse over the
   [Model Context Protocol](https://modelcontextprotocol.io) for external AI
   coding agents (Claude Code, Codex CLI, or any MCP-compliant client): 11
@@ -56,9 +81,120 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   `GET /api/v1/projects` (and its `list_projects` MCP tool) remain
   `manage`-scoped — that DTO still carries arbitrary operator-set
   `notes`/`metadata` and an unredacted `githubRepoUrl`.
+- **Relay diagnostics, status file, and statusline hint.** `GET /relay/diagnostics`
+  on the local relay now reports `auth` (the key's scopes and any missing
+  ones), `sync.codexNames`/`sync.claudeMd` status, `drift.relay`/
+  `drift.statusline` (`ok`/`outdated`/`unknown`/`missing`, comparing your
+  installed copy's checksum against the server's, via the new `/health`
+  `clients` field below), `agents.codex_cli.status` (`hooks_not_firing`
+  when the relay has evidence Codex has been active but no Codex hook has
+  ever arrived — almost always the un-trusted-hooks gap on Codex 0.145+),
+  and the hook queue depth. Whenever something needs attention, the relay
+  writes one line to `~/.agentpulse/status`, which `scripts/statusline.sh`
+  renders as a dim `· agentpulse: …` hint next to the session name in
+  Claude Code's statusline. See README's "Checking on the relay" section.
+- **`/health` `clients`** — checksums of the relay and statusline scripts
+  this server ships (hashed from the same strings `/setup-relay.sh` splices
+  into an install), so a running relay or statusline can detect drift
+  against the server it's talking to without re-downloading anything.
+- **Name-pin display and reset.** A session's manually-renamed state now
+  reads "Renamed by you" (instead of the previous "Pinned by you", which
+  collided with the unrelated grid-pin feature) in the session detail
+  header, with a tooltip explaining that agent-suggested names won't
+  replace it. A "Use agent name" button clears the pin and adopts the
+  agent's current suggested name.
+- **Setup page: relay card.** The Setup page now offers a "Use the relay
+  instead of the manual hook steps" card for agents on other machines: it
+  mints a scoped relay key (Hook ingest + Observe) with one click and shows
+  the exact `setup-relay.sh` command to copy, including a
+  `--codex-names agentpulse` checkbox for switching Codex's name policy.
+- **First-run "where do your agents run" step.** `FirstRunWelcome` now asks,
+  as its first step, whether agents run on this machine or elsewhere, and
+  mints an API key scoped for that choice (ingest-only for direct hooks on
+  this machine, ingest+observe for a relay on another machine) rather than
+  a one-size-fits-all key.
 
 ### Changed
 
+- ⚠ breaking — **Codex hooks are regenerated as `command` handlers.** Re-run
+  the setup or relay installer, then run `/hooks` inside Codex once to trust
+  the new entries — Codex 0.145+ silently skips untrusted hooks. See
+  README's "Codex/Copilot command hooks" section for why HTTP-type hooks
+  were dropped in favor of a detached shell command.
+- ⚠ breaking — **`setup-relay.sh` requires a key with Hook ingest + Observe**
+  (previously ingest-only was enough). The installer refuses a key missing
+  Observe; pass `--allow-missing-observe` to install anyway with name/
+  CLAUDE.md sync turned off.
+- ⚠ breaking — **The relay rejects browser-origin requests.** Any request
+  to the local relay carrying an `Origin` header, or a non-loopback/wrong-
+  port `Host` header, is rejected with `403 { "error":
+  "relay_rejects_browser_requests" }` instead of being proxied — a
+  same-origin page in a browser tab can no longer use the relay's lent API
+  key to reach the remote server.
+- ⚠ breaking — **Codex thread-name sync is agent-configurable; dashboard
+  renames now win by default.** A manual dashboard rename is written into
+  Codex's own `session_index.jsonl` (so `/resume` shows it), and Codex-side
+  renames no longer silently override a name you set on the dashboard — use
+  "Use agent name" to pull Codex's name back. New relay option
+  `--codex-names agentpulse|codex` (config `codex_name_policy`, default
+  `codex`, the previous pull-based behavior): under `agentpulse`, every
+  Codex session's dashboard name is pushed into Codex and Codex-side
+  renames never reach the dashboard. To protect against a runaway rename
+  loop, the relay pushes a given session's name at most 3 times an hour; a
+  4th rename within that hour reaches Codex up to 60 minutes late (shown as
+  `push_suppressed` in diagnostics).
+- ⚠ breaking — **`PUT /api/v1/sessions/:id/native-name` accepts `ingest`-scoped
+  keys** (previously `manage`-only) and is now rate-limited with a real
+  `429`, unlike the hook-ingest firehose's always-`200` contract.
+- ⚠ breaking — **Served installers (`/setup.sh`, `/setup-relay.sh`,
+  `/install-local.*`) ignore the `Host` header's hostname**, using only its
+  numeric port for same-machine installs; the server address for a remote
+  relay install comes solely from `PUBLIC_URL`, never from a request
+  header. `/setup-relay.sh` now returns `503` (with a message to set
+  `PUBLIC_URL`) for any non-loopback request when `PUBLIC_URL` isn't
+  configured, instead of guessing an address from the request.
+- ⚠ breaking — **Async/detached hook events observe a 30-second terminal
+  latch and a closed-turn rule.** Once a `SessionEnd` completes a session,
+  a late-arriving event (other than a real `SessionStart`/
+  `UserPromptSubmit` resume) within 30 seconds is still stored and
+  broadcast but no longer reopens the session's status, `endedAt`, or
+  `isWorking`; a `Stop`/`Interrupt` closes its `turn_id`, and a
+  late-arriving `PreToolUse` for that same turn no longer reopens
+  `isWorking` either. This bounds the delivery-order tolerance needed for
+  Codex's detached command hooks, whose POSTs can interleave with logical
+  turn order.
+- ⚠ breaking — **Direct-install command hooks (Codex, Copilot) refuse to
+  write when they can't confirm whether the server requires a key.** Before
+  writing any hook, the installer probes `/api/v1/auth/me`. With a key
+  supplied, the probe is informational only. With no key, it proceeds only
+  on a confirmed `disableAuth: true`; otherwise it exits non-zero and
+  writes nothing (previously it would write hooks that silently 401
+  forever). Pass `--no-auth-check` to skip the probe and install anyway.
+  Direct command hooks also now require **curl >= 7.55** and refuse to
+  write below that floor — older curl silently sends no auth header at all
+  for the `-H "@file"` form these hooks use.
+- ⚠ breaking — **The API key is no longer written into shell rc files.**
+  `claude_code` installs now write the key to a new `~/.agentpulse/env`
+  file (mode `0600`) and add a key-free, idempotent source line to
+  `.zshrc`/`.bashrc`/`.profile`; `codex_cli`/`copilot_cli` installs make no
+  profile write at all (they already authenticated via the `0600`
+  `~/.agentpulse/hook-auth-header`). An existing plaintext
+  `export AGENTPULSE_API_KEY=...` line from an older install is left alone
+  but the installer prints a warning and the exact `sed` command to remove
+  it.
+- **`GET /api/v1/sessions?fields=` opt-in narrow projection** — a
+  comma-separated field list (used by the relay's per-tick Codex-name
+  paging) that returns lightweight summary rows with no `total` count. An
+  unrecognized field name 400s rather than silently falling back to full
+  rows. Omitting `fields` is unchanged. Backed by a new
+  `(agent_type, last_activity_at)` index (SQLite/Postgres migration
+  `0004`) — see "Upgrade notes" and `deploy/k8s/README.md` for the
+  Postgres index-build note.
+- **Removed `scripts/codex-hook.sh`**, the old per-event Codex hook shim
+  superseded by the shared command-hook generator. The setup and relay
+  installers delete `~/.agentpulse/codex-hook.sh` on the next run if an
+  older install left one; delete it by hand if you're not re-running the
+  installer.
 - **MCP package consolidated into this repo, published as `@agentpulse/mcp`**
   — `packages/agentpulse-mcp/` (directory and `agentpulse-mcp` binary name
   unchanged) is now the single source of truth for the MCP server package.
@@ -143,6 +279,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   still carries its own supervisor-credential (or, for `register`,
   enrollment-token) auth, and operator routes are unaffected. No client
   update is required — see the upgrade notes below.
+
 - **Repeated tool calls with the same tool name were silently collapsed
   (AGEN-16)** — hook deliveries were deduplicated by comparing recent event
   *content* against a short rolling window, so e.g. 20 identical `Bash`
@@ -178,6 +315,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   timestamps (AGEN-16)**, silently dropping every event from the watcher's
   context on a Postgres-backed install. Fixed by routing through the shared
   timestamp parser used elsewhere.
+
 - **`GET /sessions`, `/templates`, and `/search` returned zero results for
   an unrecognized `agent_type`/`agentType` filter instead of rejecting it
   (AGEN-44)** — an unknown value (e.g. a newer client's agent type this
@@ -186,7 +324,45 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   value and the recognized list, instead of silently matching zero rows.
   Absent/empty `agent_type` is unchanged (no filter). The MCP server's
   error mapping surfaces this 400 with the same detail in the tool error
-  text.
+  text. `/sessions` and `/search` validate against the full observed
+  `AGENT_TYPES` (including `copilot_cli`); `/templates` validates against
+  the narrower launchable-only set, since a template can never target
+  `copilot_cli` (see "Added" above).
+- **Codex CLI hooks stopped firing on Codex >= 0.145** — the previous
+  installer wrote `"type": "http"` hooks, a shape Codex 0.145 no longer
+  supports; sessions from an up-to-date Codex silently stopped appearing.
+  Fixed by moving to `command`-type hooks (see "Changed" above).
+- **Session-name sync silently 403ing since the AGEN-9 API-key-scope
+  backfill** — `PUT /native-name` required a `manage`-scoped key, which an
+  ingest-only relay/statusline key never carries, so Claude/Codex name sync
+  failed silently from a relay install. Fixed by accepting `ingest`-scoped
+  keys on this one route (see "Changed" above).
+- **The relay dropped hooks outright on a `401`/`403` response** from the
+  server instead of retrying — a revoked/rotated key, or a brief
+  auth-related server hiccup, would permanently lose the queued hook
+  instead of holding it for the next successful auth. `401`/`403` (along
+  with `408`/`429`/`5xx`) now retry like other transient failures; only a
+  genuine `4xx` rejection (e.g. malformed payload) drops.
+- **`byAgentType` on `GET /sessions/stats` omitted agent types with zero
+  sessions** instead of reporting `0`, so a dashboard chart iterating the
+  full agent-type list could read `undefined` for one it hadn't seen yet.
+  Now zero-filled for every known agent type before the real counts are
+  applied.
+- **The launch recommender could suggest an observe-only agent type**
+  (e.g. `copilot_cli`) as the recommended agent for a new launch, which
+  can't actually be launched. Recommendations are now filtered to
+  launchable agent types only.
+- **Host-header injection in served installers** — `/setup.sh`,
+  `/setup-relay.sh`, and `/install-local.*` previously could reflect an
+  attacker-controlled `Host` header's hostname into the generated hook
+  base URL or relay target. Both now use only the numeric port from `Host`
+  for same-machine installs and take the server address solely from
+  `PUBLIC_URL` for everyone else (see "Changed" above).
+- **`GET /api/v1/search` 500'd on Postgres for any session-kind query** —
+  the session-search query ordered by a `created_at` column that exists on
+  `events` but not on `sessions` (which has `started_at`/
+  `last_activity_at`). Fixed to order by `started_at`; pre-existing on
+  Postgres installs, unrelated to this release's other Postgres changes.
 
 ### Security
 
@@ -225,6 +401,33 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   body, a forged log line, or a terminal escape sequence in a malicious or
   compromised server's response can no longer be written verbatim into the
   supervisor's local log.
+
+- **Symlink-safe Codex/Copilot hooks.json writes** — every installer
+  that writes `~/.codex/hooks.json` or `~/.copilot/hooks/agentpulse.json`
+  (and their timestamped backups) — `scripts/setup-hooks.sh`,
+  `scripts/setup-relay.sh`, the `/setup.sh` endpoint, `bin/cli.ts`, and
+  `scripts/install-local.ps1` — now refuses a symlink (or, on Windows, any
+  reparse point) at the destination or its parent directory instead of
+  writing through it, matching the hook-auth-header file's existing
+  guarantee.
+- **`install-local.ps1` reparse-point guard on the API key file** —
+  `New-ApHookAuthHeaderFile` and the `.agentpulse` directory it writes into
+  are now checked for a reparse point before every write, closing the one
+  write path on Windows that had no symlink/junction guard at all.
+- **`AGENTPULSE_KEY` env var for the direct-install curl\|bash scripts** —
+  `--key` is briefly visible in `ps` during a one-time install;
+  `scripts/setup-hooks.sh` and the `/setup.sh` endpoint now also accept
+  `AGENTPULSE_KEY=ap_xxx curl ... \| bash`, keeping the key out of the
+  process list. (`scripts/setup-relay.sh` already supported this.)
+- **`provider_event_name` is capped and control-character-stripped**
+  — the Copilot canonicalizer's `provider_event_name` (sourced from the
+  request body, the `?event=` hint, or `hook_event_name` — all
+  attacker-influenced) is now bounded to 128 characters with control
+  characters stripped, regardless of source. Audited whether it reaches an
+  LLM prompt anywhere in `src/server/services/ai`/`ask`: it doesn't —
+  both build their event summaries from the canonical `eventType`, not
+  `providerEventType` — so this is defense-in-depth, not a fix for an
+  existing prompt-injection path.
 
 ### Upgrade notes
 
@@ -291,6 +494,31 @@ before this fix shipped), not for one that's simply still retrying.
   identity is scoped per API key, so rotating a key defeats deduplication
   for any retry that straddles the rotation — a rare, fail-open case that
   produces an extra stored copy, never a lost event.
+
+#### AGEN-13
+
+- **Database migration**: this release adds one index,
+  `idx_sessions_agent_type_last_activity`, on
+  `sessions (agent_type, last_activity_at)`. It's idempotent
+  (`IF NOT EXISTS`) on both SQLite and Postgres. On Postgres, building it
+  takes a `SHARE` lock on `sessions` for the build's duration — milliseconds
+  on a small-to-moderate table, safe to run inline at boot. On a large
+  table, pre-create it out-of-band before rolling out — see
+  `deploy/k8s/README.md` → "Upgrading to migration 0004" for the exact
+  `CONCURRENTLY` command and the `pg_index.indisvalid` verification step.
+- **Re-run every installer after upgrading** — `setup-hooks.sh`,
+  `setup-relay.sh`, and `/setup.sh`. Codex's hooks are rewritten in the new
+  `command` shape (your old `hooks.json` is backed up first), and you'll
+  need to run `/hooks` inside Codex once afterward to trust them; a
+  relay's key needs Observe in addition to Hook ingest, or pass
+  `--allow-missing-observe`; and an existing plaintext key export in your
+  shell rc file is left in place with a removal warning, not edited
+  automatically — see "Changed" above for the exact new layout.
+- **`PUBLIC_URL` is now load-bearing for `/setup-relay.sh`.** Without it
+  (or with a `localhost` value), the served relay installer 503s for
+  anyone not on the server's own machine. The Kubernetes manifests already
+  set it (`deploy/k8s/02-configmap.yaml`); other deployments should confirm
+  it's set to a URL your remote machines can actually reach.
 
 ## [0.5.0] — 2026-07-17
 

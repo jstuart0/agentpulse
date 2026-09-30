@@ -102,6 +102,34 @@ describe("launch-recommender", () => {
 		expect(rec.alternatives.some((a) => a.model === "sonnet")).toBe(true);
 	});
 
+	test("never recommends an observe-only agentType (D5 Pattern A'), even outnumbered by a launchable one at the same cwd", async () => {
+		// tessa mid-build (Medium): the original version of this test seeded
+		// only copilot_cli sessions, which can't distinguish "copilot_cli is
+		// filtered" from "the recommender never surfaces anything without a
+		// launchable majority". Seed a launchable session too so the assertion
+		// proves the *filter*, not an accidental empty-result coincidence.
+		await mkSession("a", "/p", "completed", "copilot_cli");
+		await mkSession("b", "/p", "completed", "copilot_cli");
+		await mkSession("c", "/p", "completed", "codex_cli", "gpt-5");
+		await mkSupervisor("sup", ["claude_code"]);
+
+		const rec = await recommendLaunch({
+			template: {
+				name: "t",
+				agentType: "claude_code",
+				cwd: "/p",
+				baseInstructions: "",
+				taskPrompt: "",
+			},
+		});
+		// The launchable session's agent surfaces as an alternative (it
+		// differs from the template's own claude_code)...
+		expect(rec.alternatives.some((a) => a.agentType === "codex_cli")).toBe(true);
+		// ...but the observe-only agent never does, despite outnumbering it 2:1.
+		expect(rec.alternatives.every((a) => (a.agentType as string) !== "copilot_cli")).toBe(true);
+		expect(rec.rationale.every((r) => !r.includes("copilot_cli"))).toBe(true);
+	});
+
 	test("prefers explicit preferredSupervisorId when connected", async () => {
 		await mkSupervisor("a", ["claude_code"]);
 		await mkSupervisor("b", ["claude_code"]);

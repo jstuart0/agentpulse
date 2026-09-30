@@ -700,13 +700,15 @@ async function executeEditTemplateAction(
 
 				// Build a full UpdateTemplateInput from existing row + partial fields overlay.
 				// updateTemplate requires a complete SessionTemplateInput; we fill omitted fields
-				// from the existing row so only user-specified fields change.
-				type AgentType = import("../../../shared/types.js").AgentType;
+				// from the existing row so only user-specified fields change. existing.agentType
+				// is a template row's own column — already launchable by construction, since
+				// validateTemplateInput enforced it when the template was created (D5 Pattern A').
+				type LaunchableAgentType = import("../../../shared/types.js").LaunchableAgentType;
 				type ApprovalPolicy = import("../../../shared/types.js").ApprovalPolicy;
 				const merged = {
 					name: (fields.name as string | undefined) ?? existing.name,
 					description: (fields.description as string | undefined) ?? existing.description ?? "",
-					agentType: existing.agentType as AgentType,
+					agentType: existing.agentType as LaunchableAgentType,
 					cwd: existing.cwd,
 					baseInstructions: existing.baseInstructions ?? "",
 					taskPrompt:

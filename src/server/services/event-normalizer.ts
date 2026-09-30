@@ -1,3 +1,4 @@
+import { AGENT_METADATA } from "../../shared/constants.js";
 import type {
 	AgentType,
 	EventCategory,
@@ -13,6 +14,9 @@ export interface NormalizedEvent {
 	source: EventSource;
 	content: string | null;
 	isNoise: boolean;
+	// F244 (xander, re-verify): UNTRUSTED, agent-supplied data (see
+	// provider_event_name in src/shared/types.ts) — never splice raw into a
+	// log line, prompt, or shell command.
 	providerEventType: string | null;
 	toolName: string | null;
 	toolInput: Record<string, unknown> | null;
@@ -185,7 +189,7 @@ const warnedUnknownEvents = new Set<string>();
 function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): string | null {
 	switch (payload.hook_event_name) {
 		case "SessionStart":
-			return `${agentType === "codex_cli" ? "Codex" : "Claude"} session started`;
+			return `${AGENT_METADATA[agentType].shortLabel} session started`;
 		case "SessionEnd":
 			return "Session ended";
 		case "TaskCreated":
@@ -198,6 +202,8 @@ function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): 
 			return payload.agent_id ? `Subagent stopped: ${payload.agent_id}` : "Subagent stopped";
 		case "Stop":
 			return SYNTHETIC_STOP_CONTENT;
+		case "Interrupt":
+			return "Turn interrupted";
 		case "Notification":
 			return payload.message ? payload.message : "Notification";
 		case "PreCompact":
@@ -208,6 +214,8 @@ function normalizeSystemEvent(payload: HookEventPayload, agentType: AgentType): 
 			return payload.trigger
 				? `Context compaction completed (${payload.trigger})`
 				: "Context compaction completed";
+		case "ErrorOccurred":
+			return payload.error_message ? `Error: ${payload.error_message}` : "Error";
 		default:
 			if (!warnedUnknownEvents.has(payload.hook_event_name)) {
 				warnedUnknownEvents.add(payload.hook_event_name);
@@ -237,6 +245,10 @@ export function normalizeHookEvent(
 	const eventType = payload.hook_event_name;
 	const toolResponse = stringifyToolResponse(payload.tool_response);
 	const normalized: NormalizedEvent[] = [];
+	// D7: Copilot's own (camelCase) event name, when present, is more
+	// useful for debugging/display than the canonical PascalCase
+	// hook_event_name every other branch here already carries.
+	const providerEventType = payload.provider_event_name ?? eventType;
 
 	// F128 (codex r2): the minimal synthetic payload ingest.ts builds for an
 	// oversize delivery. There's no real prompt/tool_input/tool_response to
@@ -273,7 +285,7 @@ export function normalizeHookEvent(
 			source: "observed_hook",
 			content: payload.prompt,
 			isNoise: false,
-			providerEventType: eventType,
+			providerEventType,
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
@@ -290,7 +302,7 @@ export function normalizeHookEvent(
 			source: "observed_hook",
 			content: formatToolContent(eventType, payload.tool_name),
 			isNoise: isNoisyTool(payload.tool_name, payload),
-			providerEventType: eventType,
+			providerEventType,
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
@@ -303,7 +315,7 @@ export function normalizeHookEvent(
 			source: "observed_hook",
 			content: formatPermissionContent(eventType, payload.tool_name),
 			isNoise: false,
-			providerEventType: eventType,
+			providerEventType,
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
@@ -322,7 +334,7 @@ export function normalizeHookEvent(
 			source: "observed_hook",
 			content: normalizeSystemEvent(payload, agentType),
 			isNoise: false,
-			providerEventType: eventType,
+			providerEventType,
 			toolName: payload.tool_name || null,
 			toolInput: payload.tool_input || null,
 			toolResponse,
@@ -338,7 +350,7 @@ export function normalizeHookEvent(
 			source: "observed_hook",
 			content: assistantMessage,
 			isNoise: false,
-			providerEventType: eventType,
+			providerEventType,
 			toolName: null,
 			toolInput: null,
 			toolResponse: null,

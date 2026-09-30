@@ -1,8 +1,19 @@
-import type { AGENT_TYPES, SEMANTIC_STATUSES, SESSION_STATUSES } from "./constants.js";
+import type {
+	AGENT_TYPES,
+	LAUNCHABLE_AGENT_TYPES,
+	SEMANTIC_STATUSES,
+	SESSION_STATUSES,
+} from "./constants.js";
 
 // Agent types supported. Canonical const list lives in constants.ts;
 // derive the type here for easy import discoverability.
 export type AgentType = (typeof AGENT_TYPES)[number];
+
+// Agent types AgentPulse can launch a process for — a subset of AgentType
+// (D5). Use isLaunchable() to narrow a session/request-derived AgentType
+// (or raw string) down to this type; never an unchecked type assertion on
+// such a value (enforced by the plan's drift-guard grep in Verification).
+export type LaunchableAgentType = (typeof LAUNCHABLE_AGENT_TYPES)[number];
 
 export const APPROVAL_POLICIES = [
 	"default",
@@ -193,22 +204,65 @@ export type ClaudeCodeEvent =
 	| "PostCompact"
 	| "PostToolUseFailure";
 
-// Hook event types from Codex CLI (stable since codex-cli 0.124.0; the
-// full 10-event list confirmed empirically against 0.144.5 — see F3 in
-// thoughts/shared/plans/active/2026-07-17-deliver-client-currency-remediation.md)
+// Hook event types from Codex CLI. The 10-event list was confirmed
+// empirically against 0.144.5 (see F3 in
+// thoughts/shared/plans/active/2026-07-17-deliver-client-currency-remediation.md).
+// "SessionEnd" and "Interrupt" were added per the current doc's 12-event
+// hooks schema (learn.chatgpt.com/docs/hooks) and Phase 0's live/docs-derived
+// fixture capture — see the 2026-09-28-deliver-agent-cli-parity plan, D12.
 export type CodexEvent =
 	| "SessionStart"
+	| "SessionEnd"
 	| "PreToolUse"
 	| "PostToolUse"
 	| "UserPromptSubmit"
 	| "Stop"
+	| "Interrupt"
 	| "SubagentStart"
 	| "SubagentStop"
 	| "PermissionRequest"
 	| "PreCompact"
 	| "PostCompact";
 
-export type HookEventType = ClaudeCodeEvent | CodexEvent;
+// Hook event types from GitHub Copilot CLI. Registered set (10 events),
+// camelCase — Copilot's own naming convention, distinct from Claude/
+// Codex's PascalCase. D7 (2026-09-28-deliver-agent-cli-parity, Phase 0).
+// All 10 fixtures are docs-derived (_source:"docs") — see
+// src/server/services/agents/__fixtures__/SPIKE.md fact 1: every live
+// Copilot invocation failed pre-model with an org-policy 403, so no hook
+// ever actually fired. Casing, field names and toolArgs shape are
+// unverified against the real CLI (waivered; re-confirm before treating
+// as ground truth).
+export type CopilotEvent =
+	| "sessionStart"
+	| "sessionEnd"
+	| "userPromptSubmitted"
+	| "postToolUse"
+	| "postToolUseFailure"
+	| "agentStop"
+	| "subagentStart"
+	| "subagentStop"
+	| "preCompact"
+	| "errorOccurred";
+
+// Maps each CopilotEvent to the canonical HookEventType this codebase
+// already models (Claude/Codex's PascalCase convention) — the
+// copilot_cli canonicalizer resolves hook_event_name through this table
+// when the incoming payload doesn't already carry a Pascal/snake variant.
+export const COPILOT_EVENT_TO_HOOK_EVENT: Record<CopilotEvent, HookEventType> = {
+	sessionStart: "SessionStart",
+	sessionEnd: "SessionEnd",
+	userPromptSubmitted: "UserPromptSubmit",
+	postToolUse: "PostToolUse",
+	postToolUseFailure: "PostToolUseFailure",
+	agentStop: "Stop",
+	subagentStart: "SubagentStart",
+	subagentStop: "SubagentStop",
+	preCompact: "PreCompact",
+	errorOccurred: "ErrorOccurred",
+};
+
+export type HookEventType = ClaudeCodeEvent | CodexEvent | "ErrorOccurred";
 
 // Raw hook event payload (union of fields from both agents)
 export interface HookEventPayload {
@@ -247,12 +301,30 @@ export interface HookEventPayload {
 
 	// Compaction events (PreCompact/PostCompact)
 	trigger?: string;
+
+	// Codex Stop/Interrupt: identifies the turn a terminal event closes, so
+	// a same-turn event that arrives after it (D21 out-of-order tolerance)
+	// can be recognized and suppressed from reopening isWorking.
+	turn_id?: string;
+
+	// Copilot: the agent's own (camelCase) event name, preserved separately
+	// from the canonical hook_event_name so event-normalizer can surface it
+	// as providerEventType (D7).
+	// F244 (xander, re-verify): UNTRUSTED, agent-supplied data — sourced from
+	// the request body, the `?event=` hint, or hook_event_name, all
+	// attacker-influenced. Capped at 128 chars with control characters
+	// stripped by the Copilot canonicalizer (F235) before it reaches here;
+	// never splice raw into a log line, prompt, or shell command.
+	provider_event_name?: string;
+	// Copilot errorOccurred / postToolUseFailure: the agent's error text.
+	error_message?: string;
 }
 
 // Semantic status update from CLAUDE.md snippet
 export interface SemanticStatusUpdate {
 	session_id: string;
-	status: SemanticStatus;
+	/** Optional on the wire; values outside SEMANTIC_STATUSES are dropped server-side. */
+	status?: SemanticStatus;
 	task?: string;
 	plan?: string[];
 }
@@ -282,7 +354,7 @@ export interface Project {
 	name: string;
 	cwd: string;
 	githubRepoUrl: string | null;
-	defaultAgentType: AgentType | null;
+	defaultAgentType: LaunchableAgentType | null;
 	defaultModel: string | null;
 	defaultLaunchMode: LaunchMode | null;
 	notes: string | null;
@@ -297,7 +369,7 @@ export interface ProjectInput {
 	name: string;
 	cwd: string;
 	githubRepoUrl?: string | null;
-	defaultAgentType?: AgentType | null;
+	defaultAgentType?: LaunchableAgentType | null;
 	defaultModel?: string | null;
 	defaultLaunchMode?: LaunchMode | null;
 	notes?: string | null;
@@ -326,6 +398,17 @@ export interface Session {
 	isWorking: boolean;
 	isPinned: boolean;
 	gitBranch: string | null;
+	/**
+	 * Derived, not a schema column — computed by mapSessionDto (D14/F48)
+	 * from metadata.renameSource / metadata.lastAppliedNativeName.
+	 * "user": a manual dashboard rename (renameSource==="user") pins the
+	 * name against future native-name pulls. "native": displayName was
+	 * last set by an agent's own native-name pull. "generated": neither —
+	 * the adjective-noun default.
+	 */
+	nameSource: "user" | "native" | "generated";
+	/** Mirrors metadata.nativeName — the last agent-reported name seen, even if a pin refused to apply it. Null if none has ever been observed. */
+	nativeName: string | null;
 	claudeMdContent: string | null;
 	claudeMdPath: string | null;
 	claudeMdUpdatedAt: string | null;
@@ -481,7 +564,7 @@ export interface ResolvedProjectData {
 	id: string;
 	name: string;
 	cwd: string;
-	defaultAgentType: AgentType | null;
+	defaultAgentType: LaunchableAgentType | null;
 	defaultModel: string | null;
 	defaultLaunchMode: LaunchMode | null;
 }
@@ -492,7 +575,7 @@ export interface SessionTemplate {
 	overriddenFields: string[];
 	name: string;
 	description: string | null;
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	cwd: string;
 	baseInstructions: string;
 	taskPrompt: string;
@@ -509,7 +592,7 @@ export interface SessionTemplate {
 export interface SessionTemplateInput {
 	name: string;
 	description?: string | null;
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	cwd: string;
 	baseInstructions?: string;
 	taskPrompt?: string;
@@ -547,7 +630,7 @@ export interface LaunchSpec {
 	version: 1;
 	launchCorrelationId: string;
 	managedMode: "unmanaged_preview";
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	launchMode?: LaunchMode;
 	cwd: string;
 	model: string | null;
@@ -610,7 +693,7 @@ export type LaunchRequestStatus =
 
 export interface SupervisorCapabilities {
 	version: 1;
-	agentTypes: AgentType[];
+	agentTypes: LaunchableAgentType[];
 	launchModes: LaunchMode[];
 	os: "macos" | "linux" | "windows" | "unknown";
 	terminalSupport: string[];
@@ -668,7 +751,7 @@ export interface LaunchRequest {
 	id: string;
 	templateId: string | null;
 	launchCorrelationId: string;
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	cwd: string;
 	baseInstructions: string;
 	taskPrompt: string;
@@ -719,7 +802,7 @@ export interface ControlAction {
 
 export interface ManagedSessionStateInput {
 	sessionId: string;
-	agentType?: AgentType;
+	agentType?: LaunchableAgentType;
 	cwd?: string | null;
 	model?: string | null;
 	status?: SessionStatus;

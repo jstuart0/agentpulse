@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { AGENT_TYPES, SEMANTIC_STATUSES } from "../../shared/constants.js";
 import type {
 	AgentType,
 	HookEventPayload,
@@ -230,8 +231,9 @@ export function detectAgentType(
 	headerAgentType: string | undefined,
 	_payload: HookEventPayload,
 ): AgentType {
-	if (headerAgentType === "claude_code") return "claude_code";
-	if (headerAgentType === "codex_cli") return "codex_cli";
+	if (headerAgentType && (AGENT_TYPES as readonly string[]).includes(headerAgentType)) {
+		return headerAgentType as AgentType;
+	}
 
 	// No recognized X-Agent-Type header: default to claude_code. Every
 	// producer (Claude settings.json, Codex hooks.json, relay, observer)
@@ -263,9 +265,115 @@ const PERMISSION_WAIT_EVENT_TYPES = new Set([
 	"UserPromptSubmit",
 	"Stop",
 	"SessionStart",
+	// D21: terminal boundaries that must also clear an outstanding wait.
+	"SessionEnd",
+	"Interrupt",
 ]);
 
-const BOUNDARY_EVENT_TYPES = new Set(["UserPromptSubmit", "Stop", "SessionStart"]);
+// D21: SessionEnd and Interrupt are terminal boundaries too — a session that
+// ends or is interrupted while "waiting" must have its waits dropped and
+// semanticStatus restored, the same as a fresh prompt or a completed turn.
+const BOUNDARY_EVENT_TYPES = new Set([
+	"UserPromptSubmit",
+	"Stop",
+	"SessionStart",
+	"SessionEnd",
+	"Interrupt",
+]);
+
+// ── D21: delivery-order tolerance for async/detached Codex hooks ───────
+//
+// Codex's command hooks detach their POST (D13), so delivery order to the
+// server can interleave with logical turn order. Two bounded rules cover
+// this:
+//
+// 1. Terminal latch: once SessionEnd completes a session, a late event
+//    (other than SessionStart/UserPromptSubmit, which are real resumes)
+//    within TERMINAL_LATCH_WINDOW_MS is still stored and broadcast, but
+//    doesn't reanimate status/endedAt/isWorking.
+// 2. Closed turns: a Stop/Interrupt carrying turn_id marks that turn
+//    closed; a later PreToolUse for the same turn_id doesn't reopen
+//    isWorking.
+//
+// See the plan's Decision 21 for the full rationale and the exact
+// boundary semantics (29.999s latched, 30.000s/30.001s not).
+const TERMINAL_LATCH_WINDOW_MS = 30_000;
+const CLOSED_TURN_ID_LIMIT = 20;
+
+interface EndedByEventState {
+	at: string;
+}
+
+export interface D21State {
+	/** True iff this event arrived within the post-SessionEnd latch window. */
+	latched: boolean;
+	/** True iff this event's turn_id was already closed by a prior Stop/Interrupt. */
+	closedTurn: boolean;
+}
+
+function isWithinLatchWindow(endedByEvent: unknown, nowMs: number): boolean {
+	if (!endedByEvent || typeof endedByEvent !== "object") return false;
+	const at = (endedByEvent as EndedByEventState).at;
+	const atMs = typeof at === "string" ? Date.parse(at) : Number.NaN;
+	if (!Number.isFinite(atMs)) return false;
+	return nowMs - atMs < TERMINAL_LATCH_WINDOW_MS;
+}
+
+function computeD21State(
+	priorMetadata: Record<string, unknown>,
+	payload: HookEventPayload,
+	nowMs: number,
+): D21State {
+	const eventType = payload.hook_event_name;
+	// SessionStart/UserPromptSubmit are always real resumes — never latched.
+	const latched =
+		eventType !== "SessionStart" &&
+		eventType !== "UserPromptSubmit" &&
+		isWithinLatchWindow(priorMetadata.endedByEvent, nowMs);
+
+	const closedTurnIds = Array.isArray(priorMetadata.closedTurnIds)
+		? (priorMetadata.closedTurnIds as unknown[]).filter(
+				(id): id is string => typeof id === "string",
+			)
+		: [];
+	const closedTurn = Boolean(payload.turn_id) && closedTurnIds.includes(payload.turn_id as string);
+
+	return { latched, closedTurn };
+}
+
+/**
+ * Merge this event's D21 metadata effects (endedByEvent / closedTurnIds) into
+ * `priorMetadata`. Returns null when nothing changed, so the caller can skip
+ * writing the metadata column.
+ */
+function computeD21MetadataUpdate(
+	priorMetadata: Record<string, unknown>,
+	payload: HookEventPayload,
+	now: string,
+): Record<string, unknown> | null {
+	const eventType = payload.hook_event_name;
+	let changed = false;
+	const next = { ...priorMetadata };
+
+	if (eventType === "SessionEnd") {
+		next.endedByEvent = { at: now } satisfies EndedByEventState;
+		changed = true;
+	}
+
+	if ((eventType === "Stop" || eventType === "Interrupt") && payload.turn_id) {
+		const priorIds = Array.isArray(priorMetadata.closedTurnIds)
+			? (priorMetadata.closedTurnIds as unknown[]).filter(
+					(id): id is string => typeof id === "string",
+				)
+			: [];
+		const ids = priorIds.filter((id) => id !== payload.turn_id);
+		ids.push(payload.turn_id);
+		next.closedTurnIds = ids.slice(-CLOSED_TURN_ID_LIMIT);
+		changed = true;
+	}
+
+	return changed ? next : null;
+}
 
 // Per-session FIFO queue, local to this helper. Production hook processing
 // is already serialized per session by ingest.ts's enqueueSessionTask before
@@ -312,10 +420,24 @@ function enqueuePermissionWaitTask(sessionId: string, task: () => Promise<void>)
  * immediately before writing so concurrent hooks can't resurrect stale
  * state or drop unrelated metadata keys. No-ops (reads, writes nothing)
  * when the event type isn't permission-relevant or no wait exists to touch.
+ *
+ * D21: `d21` is the same { latched, closedTurn } computed by the caller for
+ * this event. A PermissionRequest inside the terminal latch or on an
+ * already-closed turn opens no wait — the event is still stored/broadcast
+ * by the caller, but metadata.permissionWait and semanticStatus are left
+ * untouched. Clear-capable events (including the boundary events, now
+ * SessionEnd/Interrupt too) always run their clear logic regardless of d21,
+ * since clearing is idempotent and is exactly what restores state when a
+ * terminal boundary lands while a wait is outstanding.
+ *
+ * `d21` defaults to the no-op state ({latched:false, closedTurn:false}) —
+ * existing direct callers that predate D21 (tests exercising the base
+ * permission-wait machinery in isolation) are unaffected.
  */
 export async function applyPermissionWaitTransition(
 	sessionId: string,
 	event: HookEventPayload,
+	d21: D21State = { latched: false, closedTurn: false },
 ): Promise<void> {
 	const eventType = event.hook_event_name;
 	if (!PERMISSION_WAIT_EVENT_TYPES.has(eventType)) return;
@@ -334,6 +456,11 @@ export async function applyPermissionWaitTransition(
 			const currentStatus = row.semanticStatus as SemanticStatus | null;
 
 			if (eventType === "PermissionRequest") {
+				// D21: a request that arrives inside the terminal latch, or whose
+				// turn was already closed by a prior Stop/Interrupt, opens no
+				// wait — the event is still stored/broadcast by the caller.
+				if (d21.latched || d21.closedTurn) return;
+
 				const pendingBefore = currentWait ? currentWait.ids.length + currentWait.anon : 0;
 				const next: PermissionWaitState = currentWait
 					? {
@@ -500,32 +627,54 @@ export async function processHookEvent(
 			});
 	}
 
+	// D21: compute the terminal-latch/closed-turn state from the metadata as
+	// it stood *before* this event, then fold this event's own effects
+	// (SessionEnd sets endedByEvent; a turn-scoped Stop/Interrupt records
+	// closedTurnIds) into the metadata write below. isNew sessions have no
+	// prior metadata, so d21 is trivially {latched:false, closedTurn:false}.
+	const priorMetadata = (
+		isNew ? {} : ((existing[0]?.metadata ?? {}) as Record<string, unknown>)
+	) as Record<string, unknown>;
+	const nowMs = Date.parse(now);
+	const d21 = computeD21State(priorMetadata, payload, nowMs);
+	const metadataUpdate = computeD21MetadataUpdate(priorMetadata, payload, now);
+
 	// Update session based on event type. Any event other than SessionEnd
 	// reanimates the session back to "active" — including events that
-	// arrive after the lifecycle ticked it over to idle or completed.
-	// We also clear endedAt so the reanimated session doesn't carry a
-	// stale terminal timestamp forward.
-	const updates: Record<string, unknown> = {
-		lastActivityAt: now,
-		status: "active",
-		endedAt: null,
-	};
+	// arrive after the lifecycle ticked it over to idle or completed. We
+	// also clear endedAt so the reanimated session doesn't carry a stale
+	// terminal timestamp forward. D21: inside the post-SessionEnd terminal
+	// latch, status/endedAt/isWorking are held — the event is still stored
+	// and broadcast (below), it just can't reanimate a completed session.
+	const updates: Record<string, unknown> = { lastActivityAt: now };
+	if (!d21.latched) {
+		updates.status = "active";
+		updates.endedAt = null;
+	}
+	if (metadataUpdate) updates.metadata = metadataUpdate;
 
 	if (payload.cwd) updates.cwd = payload.cwd;
 	if (payload.model) updates.model = payload.model;
 
 	// Handle session end events
-	if (eventType === "SessionEnd") {
+	if (eventType === "SessionEnd" && !d21.latched) {
 		updates.status = "completed";
 		updates.endedAt = now;
 		updates.isWorking = false;
 	}
 
-	// Track working state: agent is working between prompt/tool start and Stop
-	if (eventType === "UserPromptSubmit" || eventType === "PreToolUse") {
+	// Track working state: agent is working between prompt/tool start and
+	// Stop/Interrupt. D21: a PreToolUse whose turn was already closed by a
+	// prior Stop/Interrupt doesn't reopen isWorking (UserPromptSubmit always
+	// starts a fresh turn, so closedTurn never suppresses it); latched
+	// events don't touch isWorking at all.
+	if (eventType === "UserPromptSubmit" && !d21.latched) {
 		updates.isWorking = true;
 	}
-	if (eventType === "Stop") {
+	if (eventType === "PreToolUse" && !d21.closedTurn && !d21.latched) {
+		updates.isWorking = true;
+	}
+	if ((eventType === "Stop" || eventType === "Interrupt") && !d21.latched) {
 		updates.isWorking = false;
 	}
 
@@ -569,8 +718,9 @@ export async function processHookEvent(
 
 	// Decision 10: permission-wait tracking. Runs after the main update (not
 	// folded into the early-snapshot `updates` object above) via its own late
-	// read-modify-write transaction — see applyPermissionWaitTransition.
-	await applyPermissionWaitTransition(sessionId, payload);
+	// read-modify-write transaction — see applyPermissionWaitTransition. D21:
+	// gated by the same { latched, closedTurn } computed above for this event.
+	await applyPermissionWaitTransition(sessionId, payload, d21);
 
 	// Resolve project_id based on cwd. Compare against the persisted value
 	// so we only write when it actually changed.
@@ -652,7 +802,20 @@ export async function markSessionFailed(sessionId: string): Promise<void> {
 }
 
 // Process a semantic status update from CLAUDE.md snippet
-export async function processStatusUpdate(update: SemanticStatusUpdate): Promise<boolean> {
+/** True only for the declared SEMANTIC_STATUSES values. */
+export function isSemanticStatus(value: unknown): value is SemanticStatus {
+	return typeof value === "string" && (SEMANTIC_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * xander F90: `status` arrives from an ingest-keyed POST /hooks/status body
+ * and is later rendered into LLM prompts, so anything outside the declared
+ * set is dropped (the rest of the update still applies; ingest never errors).
+ */
+export async function processStatusUpdate(input: SemanticStatusUpdate): Promise<boolean> {
+	const { status, ...rest } = input;
+	const update: SemanticStatusUpdate = isSemanticStatus(status) ? { ...rest, status } : rest;
+
 	const existing = await getDb()
 		.select()
 		.from(sessions)

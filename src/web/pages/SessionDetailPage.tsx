@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { ControlAction, Session, SessionEvent } from "../../shared/types.js";
+import { AGENT_METADATA } from "../../shared/constants.js";
+import type { AgentType, ControlAction, Session, SessionEvent } from "../../shared/types.js";
 import { ActivityTimeline } from "../components/session-detail/ActivityTimeline.js";
 import { AiPanel } from "../components/session-detail/AiPanel.js";
 import { ControlHistory } from "../components/session-detail/ControlHistory.js";
@@ -17,9 +18,11 @@ import {
 } from "../components/session-detail/SessionHeader.js";
 import { SessionPromptComposer } from "../components/session-detail/SessionPromptComposer.js";
 import {
+	AgentObserveOnlyHint,
 	CodexStatusHint,
 	ManagedClaudeStatus,
 	ManagedCodexStatus,
+	selectStatusHint,
 } from "../components/session-detail/StatusHints.js";
 import {
 	type TimelineMode,
@@ -27,8 +30,9 @@ import {
 	mergeSessionEvents,
 } from "../components/session-detail/TimelineView.js";
 import { api } from "../lib/api.js";
+import { applyManualRename } from "../lib/name-source.js";
 import { useEventStore } from "../stores/event-store.js";
-import { useSessionStore } from "../stores/session-store.js";
+import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 
 /** Merge new events into the existing persisted events array, de-duped by id, sorted asc. */
@@ -105,6 +109,13 @@ export function SessionDetailPage() {
 		setControlActions([]);
 		setLoading(!cached);
 	}, [sessionId]);
+
+	// F95: apply live WebSocket session updates (renames, resets, status) as
+	// they land in the store, instead of waiting for the 10 s poll.
+	const storeSession = useSessionStore((s) => s.sessions.find((x) => x.sessionId === sessionId));
+	useEffect(() => {
+		setSession((current) => mergeSessionIntoDetail(current, storeSession));
+	}, [storeSession]);
 
 	useEffect(() => {
 		if (!sessionId) return;
@@ -324,17 +335,24 @@ export function SessionDetailPage() {
 				onToggleSystem={() => setShowSystem((v) => !v)}
 				onJumpTop={jumpTimelineTop}
 				onJumpBottom={jumpTimelineBottom}
-				onRename={(name) => setSession({ ...session, displayName: name })}
+				onRename={(name) => setSession(applyManualRename(session, name))}
+				onRefresh={loadSessionWorkspace}
 				onStop={handleStop}
 			/>
 
-			{session.agentType === "codex_cli" && session.managedSession ? (
-				<ManagedCodexStatus managedSession={session.managedSession} />
-			) : session.agentType === "claude_code" && session.managedSession ? (
-				<ManagedClaudeStatus managedSession={session.managedSession} />
-			) : session.agentType === "codex_cli" ? (
-				<CodexStatusHint displayName={displayName} />
-			) : null}
+			{(() => {
+				const sel = selectStatusHint(session, displayName);
+				switch (sel.component) {
+					case "ManagedCodexStatus":
+						return <ManagedCodexStatus managedSession={sel.managedSession} />;
+					case "ManagedClaudeStatus":
+						return <ManagedClaudeStatus managedSession={sel.managedSession} />;
+					case "CodexStatusHint":
+						return <CodexStatusHint displayName={sel.displayName} />;
+					case "AgentObserveOnlyHint":
+						return <AgentObserveOnlyHint agentType={sel.agentType} />;
+				}
+			})()}
 
 			<ControlHistory actions={controlActions} />
 
@@ -342,7 +360,10 @@ export function SessionDetailPage() {
 				{workspaceTab === "overview" ? (
 					<div className="grid gap-4 p-3 md:p-6 md:grid-cols-2 xl:grid-cols-4">
 						<SummaryField label="Project" value={session.cwd} mono />
-						<SummaryField label="Agent" value={session.agentType} />
+						<SummaryField
+							label="Agent"
+							value={AGENT_METADATA[session.agentType as AgentType]?.label ?? session.agentType}
+						/>
 						<SummaryField label="Started" value={session.startedAt} />
 						<SummaryField label="Status" value={session.status} />
 						<SummaryField label="Model" value={session.model} />

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { CachedProject } from "../projects/cache.js";
 import { gatePasses, parseLaunchIntentResponse } from "./launch-intent-detector.js";
 
@@ -247,5 +248,65 @@ describe("parseLaunchIntentResponse", () => {
 		expect(result.kind).toBe("launch_needs_project");
 		if (result.kind !== "launch_needs_project") throw new Error("unreachable");
 		expect(result.cloneSpec?.url).toBe("https://github.com/foo/bar");
+	});
+});
+
+describe("parseLaunchIntentResponse — D5 Pattern A' non-launchable agentType refusal", () => {
+	test("agentType:copilot_cli yields the refusal object, not null/undefined, with a launch intent", () => {
+		const result = parseLaunchIntentResponse(
+			{ intent: "launch", projectName: "agentpulse", agentType: "copilot_cli" },
+			projects,
+		);
+		expect(result.kind).toBe("agent_refused");
+		if (result.kind !== "agent_refused") throw new Error("unreachable");
+		expect(result.replyText).toBe(
+			"Copilot CLI can't be launched — AgentPulse can only launch Claude Code or Codex.",
+		);
+	});
+
+	test("agentType:copilot_cli yields the refusal object with a launch_needs_project intent too", () => {
+		const result = parseLaunchIntentResponse(
+			{ intent: "launch_needs_project", agentType: "copilot_cli" },
+			projects,
+		);
+		expect(result.kind).toBe("agent_refused");
+	});
+
+	test("the parse step recognizes copilot_cli before the refusal fires — proven by feeding the literal parsed value, not a placeholder", () => {
+		// This asserts against the actual production value ("copilot_cli"),
+		// not a generic "any unrecognized string" stand-in — the whole
+		// point is that the classifier's own literal output triggers the
+		// refusal, not a coincidentally-similar fallback path.
+		const bogus = parseLaunchIntentResponse(
+			{ intent: "launch", projectName: "agentpulse", agentType: "not-a-real-agent" },
+			projects,
+		);
+		expect(bogus.kind).toBe("launch");
+
+		const copilot = parseLaunchIntentResponse(
+			{ intent: "launch", projectName: "agentpulse", agentType: "copilot_cli" },
+			projects,
+		);
+		expect(copilot.kind).toBe("agent_refused");
+	});
+
+	test("claude_code and codex_cli are unaffected by the guard", () => {
+		for (const agentType of ["claude_code", "codex_cli"]) {
+			const result = parseLaunchIntentResponse(
+				{ intent: "launch", projectName: "agentpulse", agentType },
+				projects,
+			);
+			expect(result.kind).toBe("launch");
+		}
+	});
+
+	test("the classifier system prompt itself mentions copilot (static source check — INTENT_SYSTEM_PROMPT isn't exported)", () => {
+		const source = readFileSync(new URL("./launch-intent-detector.ts", import.meta.url), "utf8");
+		const promptStart = source.indexOf("const INTENT_SYSTEM_PROMPT");
+		const promptEnd = source.indexOf("\n) =>", promptStart);
+		expect(promptStart).toBeGreaterThan(-1);
+		expect(source.slice(promptStart, promptEnd > -1 ? promptEnd + 2000 : undefined)).toContain(
+			"copilot",
+		);
 	});
 });

@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import type { AgentType, LaunchMode, Project, ProjectInput } from "../../../shared/types.js";
+import { isLaunchable } from "../../../shared/constants.js";
+import type {
+	LaunchMode,
+	LaunchableAgentType,
+	Project,
+	ProjectInput,
+} from "../../../shared/types.js";
 
 interface ProjectFormProps {
 	initial?: Project | null;
@@ -13,7 +19,7 @@ export function ProjectForm({ initial, onSave, onCancel, saving, error }: Projec
 	const [name, setName] = useState(initial?.name ?? "");
 	const [cwd, setCwd] = useState(initial?.cwd ?? "");
 	const [githubRepoUrl, setGithubRepoUrl] = useState(initial?.githubRepoUrl ?? "");
-	const [defaultAgentType, setDefaultAgentType] = useState<AgentType | "">(
+	const [defaultAgentType, setDefaultAgentType] = useState<LaunchableAgentType | "">(
 		initial?.defaultAgentType ?? "",
 	);
 	const [defaultModel, setDefaultModel] = useState(initial?.defaultModel ?? "");
@@ -112,7 +118,10 @@ export function ProjectForm({ initial, onSave, onCancel, saving, error }: Projec
 					<select
 						id="proj-agent"
 						value={defaultAgentType}
-						onChange={(e) => setDefaultAgentType(e.target.value as AgentType | "")}
+						onChange={(e) => {
+							const v = e.target.value;
+							setDefaultAgentType(v !== "" && isLaunchable(v) ? v : "");
+						}}
 						className={fieldClass}
 					>
 						<option value="">— none —</option>

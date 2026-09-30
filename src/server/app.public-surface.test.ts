@@ -270,7 +270,14 @@ const PUBLIC_NO_CRED_EXPECT: Record<string, { status: number; error?: string }> 
 	"GET /api/v1/health": { status: 200 },
 	"GET /api/v1/ready": { status: 200 },
 	"GET /setup.sh": { status: 200 },
-	"GET /setup-relay.sh": { status: 200 },
+	// D19/F172/F174 (cli-parity): /setup-relay.sh refuses to serve when it
+	// can't safely resolve a public address — PUBLIC_URL unset (as in this
+	// test env) plus a non-loopback-looking Host (Hono's app.request() sends
+	// none by default) is exactly that case. See
+	// setup-relay-served.test.ts's "PUBLIC_URL unset + non-loopback Host →
+	// 503 public_url_unset" for the dedicated coverage; the 503 body here is
+	// a shell script, not JSON, so no `error` field to assert.
+	"GET /setup-relay.sh": { status: 503 },
 	"GET /install-local.sh": { status: 200 },
 	"GET /install-local.ps1": { status: 200 },
 	// auth/*, telegram webhook, csp-report — already root-mounted, unaffected

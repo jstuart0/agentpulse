@@ -11,7 +11,7 @@
  * by templateBodyFromArgs below.
  */
 import { z } from "zod";
-import { AGENT_TYPE_ENUM, APPROVAL_POLICY_ENUM, SANDBOX_MODE_ENUM } from "../enums.js";
+import { APPROVAL_POLICY_ENUM, LAUNCHABLE_AGENT_TYPE_ENUM, SANDBOX_MODE_ENUM } from "../enums.js";
 import { registerMutatingTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
 
@@ -26,7 +26,7 @@ const CONFIRMATION_PORTABILITY_NOTE =
 const TEMPLATE_FIELDS_SHAPE = {
 	name: z.string(),
 	description: z.string().nullable().optional(),
-	agent_type: AGENT_TYPE_ENUM,
+	agent_type: LAUNCHABLE_AGENT_TYPE_ENUM,
 	cwd: z.string(),
 	base_instructions: z.string().optional(),
 	task_prompt: z.string().optional(),

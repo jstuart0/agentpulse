@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS "idx_sessions_agent_type_last_activity" ON "sessions" USING btree ("agent_type","last_activity_at");

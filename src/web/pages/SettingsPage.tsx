@@ -8,6 +8,7 @@ import { TelegramChannelPanel } from "../components/settings/TelegramChannelPane
 import { WorkspacesPanel } from "../components/settings/WorkspacesPanel.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { api } from "../lib/api.js";
+import { RELAY_KEY_HINT, relayKeyHint } from "../lib/onboarding.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { type AppTheme, persistTheme, resolveInitialTheme } from "../lib/theme.js";
 import { useLabsStore } from "../stores/labs-store.js";
@@ -188,10 +189,10 @@ export function SettingsPage() {
 									<span
 										className={`rounded-full px-2 py-0.5 text-[10px] ${
 											supervisor.status === "connected"
-												? "bg-emerald-500/10 text-emerald-400"
+												? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
 												: supervisor.status === "stale"
-													? "bg-amber-500/10 text-amber-400"
-													: "bg-red-500/10 text-red-400"
+													? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+													: "bg-red-500/10 text-red-600 dark:text-red-400"
 										}`}
 									>
 										{supervisor.status}
@@ -381,13 +382,16 @@ export function SettingsPage() {
 			<section className="border border-border bg-card rounded-lg p-5 mb-6">
 				<h2 className="text-sm font-semibold mb-1">API Keys</h2>
 				<p className="text-xs text-muted-foreground mb-4">
-					API keys authenticate hook events from Claude Code and Codex CLI.
+					API keys authenticate hook events from Claude Code, Codex CLI, and Copilot CLI, and the
+					relay that forwards them from other machines.
 				</p>
 
 				{/* New key creation */}
 				{newKeyValue && (
 					<div className="mb-4 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-4">
-						<p className="text-sm font-medium text-emerald-400 mb-1">New API key created</p>
+						<p className="text-sm font-medium text-emerald-700 dark:text-emerald-400 mb-1">
+							New API key created
+						</p>
 						<p className="text-xs text-muted-foreground mb-2">
 							Copy this key now -- it will not be shown again.
 						</p>
@@ -441,7 +445,7 @@ export function SettingsPage() {
 								onChange={(e) => setNewKeyScopeIngest(e.target.checked)}
 								className="rounded border-input"
 							/>
-							<span>ingest</span>
+							<span>Hook ingest</span>
 							<span className="text-muted-foreground/60">(hook events)</span>
 						</label>
 						<label className="flex items-center gap-1.5 cursor-pointer">
@@ -451,7 +455,7 @@ export function SettingsPage() {
 								onChange={(e) => setNewKeyScopeManage(e.target.checked)}
 								className="rounded border-input"
 							/>
-							<span>manage</span>
+							<span>Manage</span>
 							<span className="text-muted-foreground/60">(supervisors, API keys)</span>
 						</label>
 						<label className="flex items-center gap-1.5 cursor-pointer">
@@ -461,7 +465,7 @@ export function SettingsPage() {
 								onChange={(e) => setNewKeyScopeObserve(e.target.checked)}
 								className="rounded border-input"
 							/>
-							<span>observe (read-only)</span>
+							<span>Observe (read-only)</span>
 							<span className="text-muted-foreground/60">(sessions, search, AI reads)</span>
 						</label>
 					</div>
@@ -493,7 +497,7 @@ export function SettingsPage() {
 									<div className="flex items-center gap-2">
 										<span className="text-sm font-medium text-foreground">{key.name}</span>
 										{!key.isActive && (
-											<span className="text-[10px] rounded bg-red-500/10 text-red-400 px-1.5 py-0.5">
+											<span className="text-[10px] rounded bg-red-500/10 text-red-600 dark:text-red-400 px-1.5 py-0.5">
 												revoked
 											</span>
 										)}
@@ -516,12 +520,15 @@ export function SettingsPage() {
 											</span>
 										)}
 									</div>
+									{key.isActive && key.scopes && relayKeyHint(key.scopes) && (
+										<p className="mt-1 text-xs text-muted-foreground">{RELAY_KEY_HINT}</p>
+									)}
 								</div>
 								{key.isActive && (
 									<button
 										type="button"
 										onClick={() => handleRevokeKey(key.id)}
-										className="rounded-md px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+										className="rounded-md px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors"
 									>
 										Revoke
 									</button>

@@ -1,10 +1,16 @@
 import { and, count, desc, eq, inArray, lt, notInArray, sql } from "drizzle-orm";
-import { SESSION_END_TIMEOUT_MS, SESSION_IDLE_TIMEOUT_MS } from "../../shared/constants.js";
+import {
+	AGENT_TYPES,
+	SESSION_END_TIMEOUT_MS,
+	SESSION_IDLE_TIMEOUT_MS,
+} from "../../shared/constants.js";
 import type { AgentType, ManagedState, SessionStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { managedSessions, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { getManagedSession } from "./managed-session-state.js";
+import { sanitizeNativeName } from "./name-sanitizer.js";
+import { mapSessionDto } from "./session-dto.js";
 import { listLiveOwnedManagedSessionIds } from "./session-ownership.js";
 
 /**
@@ -94,11 +100,22 @@ export async function renameSession(
  * behavior, because the statusline caller needs to distinguish "session not
  * yet ingested — retry next render" from a successful call.
  */
+// F79 (librarian mid-build): sanitizeNativeName moved to name-sanitizer.ts
+// so it's independently importable for the shared fixture-based test, and
+// (F82, percy) so the pre-cap perf guard lives next to the function it
+// protects.
 export async function applyNativeName(
 	sessionId: string,
 	nativeName: string,
-): Promise<{ found: boolean; applied: boolean }> {
-	const trimmed = nativeName.trim();
+): Promise<{
+	found: boolean;
+	applied: boolean;
+	reason?: "manual_rename" | "empty_after_sanitize";
+}> {
+	const sanitized = sanitizeNativeName(nativeName);
+	if (sanitized.length === 0) {
+		return { found: false, applied: false, reason: "empty_after_sanitize" };
+	}
 	return withTransaction(async (tx) => {
 		const [row] = await tx
 			.select({ displayName: sessions.displayName, metadata: sessions.metadata })
@@ -108,30 +125,66 @@ export async function applyNativeName(
 		if (!row) return { found: false, applied: false };
 
 		const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
-		const alreadySeen = metadata.nativeName === trimmed;
+		const alreadySeen = metadata.nativeName === sanitized;
 
 		if (metadata.renameSource === "user") {
 			// Manual rename wins. Record that we saw this native name (for
 			// idempotency and so later state-diff logic isn't confused about
 			// whether it was observed), but refuse to apply it.
-			if (alreadySeen) return { found: true, applied: false };
-			metadata.nativeName = trimmed;
+			if (alreadySeen) return { found: true, applied: false, reason: "manual_rename" };
+			metadata.nativeName = sanitized;
 			await tx.update(sessions).set({ metadata }).where(eq(sessions.sessionId, sessionId));
-			return { found: true, applied: false };
+			return { found: true, applied: false, reason: "manual_rename" };
 		}
 
-		if (alreadySeen && row.displayName === trimmed) {
+		if (alreadySeen && row.displayName === sanitized) {
 			// No-op: already applied on a prior call, nothing changed.
 			return { found: true, applied: true };
 		}
 
-		metadata.nativeName = trimmed;
-		metadata.lastAppliedNativeName = trimmed;
+		metadata.nativeName = sanitized;
+		metadata.lastAppliedNativeName = sanitized;
 		await tx
 			.update(sessions)
-			.set({ displayName: trimmed, metadata })
+			.set({ displayName: sanitized, metadata })
 			.where(eq(sessions.sessionId, sessionId));
 		return { found: true, applied: true };
+	});
+}
+
+/**
+ * D14: clear the manual-rename pin and, if an agent-reported native name
+ * has ever been observed, apply it immediately (so the DTO's nameSource
+ * reads "native" right away, without waiting for the next /native-name
+ * pull). No-op on displayName when nativeName was never recorded — the
+ * session just becomes eligible for the next native-name pull again.
+ */
+export async function resetNameSource(
+	sessionId: string,
+): Promise<{ found: boolean; nativeNameApplied: boolean }> {
+	return withTransaction(async (tx) => {
+		const [row] = await tx
+			.select({ displayName: sessions.displayName, metadata: sessions.metadata })
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		if (!row) return { found: false, nativeNameApplied: false };
+
+		const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
+		// biome-ignore lint/performance/noDelete: clearing a JSON metadata key must remove it, not set it to undefined (which would still serialize)
+		delete metadata.renameSource;
+
+		const nativeName = metadata.nativeName;
+		const updates: Record<string, unknown> = { metadata };
+		let nativeNameApplied = false;
+		if (typeof nativeName === "string" && nativeName.length > 0) {
+			updates.displayName = nativeName;
+			metadata.lastAppliedNativeName = nativeName;
+			nativeNameApplied = true;
+		}
+
+		await tx.update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+		return { found: true, nativeNameApplied };
 	});
 }
 
@@ -149,19 +202,15 @@ const LIVE_MANAGED_STATES = [
 	"pending",
 ] as const satisfies readonly ManagedState[];
 
-// Get all sessions with optional filters
-export async function getSessions(filters?: {
+type SessionListFilters = {
 	status?: SessionStatus;
 	agentType?: AgentType;
 	projectId?: string;
 	limit?: number;
 	offset?: number;
-}) {
-	const limit = filters?.limit ?? 50;
-	const offset = filters?.offset ?? 0;
+};
 
-	let query = getDb().select().from(sessions).orderBy(desc(sessions.lastActivityAt));
-
+function sessionListConditions(filters?: SessionListFilters) {
 	const conditions = [];
 	if (filters?.status) {
 		// TODO(slice-h): translate status=archived param to isArchived=true filter;
@@ -175,6 +224,66 @@ export async function getSessions(filters?: {
 	if (filters?.projectId) {
 		conditions.push(eq(sessions.projectId, filters.projectId));
 	}
+	return conditions;
+}
+
+/**
+ * F128: fields a `GET /sessions?fields=` projection may request. Narrow on
+ * purpose: the relay's name sync pages this list every tick, and a full row
+ * carries CLAUDE.md content, notes and metadata.
+ */
+export const SESSION_LIST_FIELDS = [
+	"sessionId",
+	"displayName",
+	"nameSource",
+	"nativeName",
+	"agentType",
+	"lastActivityAt",
+] as const;
+export type SessionListField = (typeof SESSION_LIST_FIELDS)[number];
+
+export function isSessionListField(value: string): value is SessionListField {
+	return (SESSION_LIST_FIELDS as readonly string[]).includes(value);
+}
+
+/**
+ * F128: the projected list. Reads only the columns the allowlist needs
+ * (metadata for nameSource/nativeName), and skips the count(*) and the
+ * managed-session lookup the full list pays for.
+ */
+export async function getSessionSummaries(
+	filters: SessionListFilters | undefined,
+	fields: readonly SessionListField[],
+): Promise<Array<Partial<Record<SessionListField, unknown>>>> {
+	const conditions = sessionListConditions(filters);
+	let query = getDb()
+		.select({
+			sessionId: sessions.sessionId,
+			displayName: sessions.displayName,
+			agentType: sessions.agentType,
+			lastActivityAt: sessions.lastActivityAt,
+			metadata: sessions.metadata,
+		})
+		.from(sessions)
+		.orderBy(desc(sessions.lastActivityAt));
+	if (conditions.length > 0) query = query.where(and(...conditions)) as typeof query;
+	const rows = await query.limit(filters?.limit ?? 50).offset(filters?.offset ?? 0);
+	return rows.map((row) => {
+		const dto = mapSessionDto(row);
+		const out: Partial<Record<SessionListField, unknown>> = {};
+		for (const field of fields) out[field] = dto[field];
+		return out;
+	});
+}
+
+// Get all sessions with optional filters
+export async function getSessions(filters?: SessionListFilters) {
+	const limit = filters?.limit ?? 50;
+	const offset = filters?.offset ?? 0;
+
+	let query = getDb().select().from(sessions).orderBy(desc(sessions.lastActivityAt));
+
+	const conditions = sessionListConditions(filters);
 
 	if (conditions.length > 0) {
 		query = query.where(and(...conditions)) as typeof query;
@@ -203,7 +312,9 @@ export async function getSessions(filters?: {
 					.where(inArray(managedSessions.sessionId, pageSessionIds))
 			: [];
 	const managedIds = new Set(managedRows.map((row) => row.sessionId));
-	const rowsWithManaged = rows.map((row) => ({ ...row, managed: managedIds.has(row.sessionId) }));
+	const rowsWithManaged = rows.map((row) =>
+		mapSessionDto(row, { managed: managedIds.has(row.sessionId) }),
+	);
 
 	return { sessions: rowsWithManaged, total };
 }
@@ -217,7 +328,7 @@ export async function getSession(sessionId: string) {
 		.limit(1);
 	if (!session) return null;
 	const managedSession = await getManagedSession(sessionId);
-	return { ...session, managedSession };
+	return mapSessionDto(session, { managedSession });
 }
 
 // Get dashboard stats
@@ -249,7 +360,10 @@ export async function getStats() {
 		.where(eq(sessions.status, "active"))
 		.groupBy(sessions.agentType);
 
-	const byAgentType: Record<string, number> = {};
+	// D18: zero-fill every known agent type so a consumer never has to
+	// special-case "absent means 0" — an unrecognized historic value still
+	// gets an extra key rather than being dropped.
+	const byAgentType: Record<string, number> = Object.fromEntries(AGENT_TYPES.map((t) => [t, 0]));
 	for (const row of byType) {
 		byAgentType[row.agentType] = row.count;
 	}

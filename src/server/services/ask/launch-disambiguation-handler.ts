@@ -1,9 +1,10 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { type AskMessageMeta, encodeAskMeta, parseAskMeta } from "../../../shared/ask-meta.js";
+import { isLaunchable } from "../../../shared/constants.js";
 import type {
-	AgentType,
 	AskThreadOrigin,
 	LaunchMode,
+	LaunchableAgentType,
 	PrelaunchAction,
 } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
@@ -28,6 +29,7 @@ import {
 	WorkspacePathValidationError,
 	scaffoldWorkArea,
 } from "../workspace/scaffold.js";
+import { launchRefusalCopy } from "./agent-refusal-copy.js";
 import { handleAskLaunchIntent } from "./ask-launch-handler.js";
 import type { CloneSpec, LaunchIntent, TaskBrief } from "./launch-intent-detector.js";
 
@@ -167,6 +169,19 @@ export interface CreateLaunchDisambiguationDraftArgs {
 export interface DisambiguationResult {
 	replyText: string;
 	actionRequestId: string | null;
+}
+
+// Narrows a persisted draft's raw `agentType` field. D5 Pattern A': the
+// value came from the classifier at draft-creation time and could in
+// principle be any string, so an unchecked type assertion here would be a
+// silent, unvalidated trust boundary. isLaunchable() acts as the
+// type guard the drift guard's grep requires. Call this directly in an
+// `if (!isLaunchableFieldValue(fields.agentType))` guard so TS narrows
+// `fields.agentType` itself for the rest of the enclosing scope.
+function isLaunchableFieldValue(
+	agentType: string | undefined,
+): agentType is LaunchableAgentType | undefined {
+	return agentType === undefined || isLaunchable(agentType);
 }
 
 function sqlNow(): string {
@@ -388,6 +403,13 @@ export async function resolveLaunchDisambiguation(
 		});
 	}
 
+	// D5 Pattern A': a recognized-but-non-launchable agentType persisted on
+	// the draft (e.g. copilot_cli) is refused here, before either branch
+	// below reconstructs a LaunchIntent and hands it to the launch pipeline.
+	if (!isLaunchableFieldValue(fields.agentType)) {
+		return { replyText: launchRefusalCopy(fields.agentType), actionRequestId: null };
+	}
+
 	const parsed = parseDisambiguationReply(reply, choices);
 	const now = sqlNow();
 
@@ -400,7 +422,7 @@ export async function resolveLaunchDisambiguation(
 				kind: "launch",
 				projectName: choice.name,
 				mode: fields.mode as LaunchMode | undefined,
-				agentType: fields.agentType as AgentType | undefined,
+				agentType: fields.agentType,
 				taskHint: fields.taskHint,
 				displayName: fields.displayName,
 				taskBrief: fields.taskBrief as TaskBrief | undefined,
@@ -424,7 +446,7 @@ export async function resolveLaunchDisambiguation(
 					kind: "launch",
 					projectName: projectByCwd.name,
 					mode: fields.mode as LaunchMode | undefined,
-					agentType: fields.agentType as AgentType | undefined,
+					agentType: fields.agentType,
 					taskHint: fields.taskHint,
 					displayName: fields.displayName,
 					taskBrief: fields.taskBrief as TaskBrief | undefined,
@@ -856,6 +878,12 @@ async function executeScaffoldConfirm(
 ): Promise<DisambiguationResult> {
 	const { draft, origin, threadId, telegramChatId, fields, pending } = args;
 
+	// D5 Pattern A': refuse before creating anything if the persisted
+	// agentType isn't launchable.
+	if (!isLaunchableFieldValue(fields.agentType)) {
+		return { replyText: launchRefusalCopy(fields.agentType), actionRequestId: null };
+	}
+
 	// Ensure the project name is unique. createProject's findCwdConflict
 	// already gates by cwd, but a name clash (someone else registered
 	// "plan-caching" under a different cwd) would still 409 — append a
@@ -898,7 +926,7 @@ async function executeScaffoldConfirm(
 		kind: "launch",
 		projectName: created.project.name,
 		mode: fields.mode as LaunchMode | undefined,
-		agentType: fields.agentType as AgentType | undefined,
+		agentType: fields.agentType,
 		taskHint: fields.taskHint,
 		displayName: fields.displayName,
 		taskBrief: fields.taskBrief as TaskBrief | undefined,
@@ -1435,6 +1463,12 @@ interface ExecuteCloneConfirmArgs {
 async function executeCloneConfirm(args: ExecuteCloneConfirmArgs): Promise<DisambiguationResult> {
 	const { draft, origin, threadId, telegramChatId, fields, pending } = args;
 
+	// D5 Pattern A': refuse before creating anything if the persisted
+	// agentType isn't launchable.
+	if (!isLaunchableFieldValue(fields.agentType)) {
+		return { replyText: launchRefusalCopy(fields.agentType), actionRequestId: null };
+	}
+
 	// Ensure project name uniqueness — same disambiguation pattern as
 	// executeScaffoldConfirm. The basename slug may collide with an
 	// existing project even though the cwd is fresh.
@@ -1473,7 +1507,7 @@ async function executeCloneConfirm(args: ExecuteCloneConfirmArgs): Promise<Disam
 		kind: "launch",
 		projectName: created.project.name,
 		mode: fields.mode as LaunchMode | undefined,
-		agentType: fields.agentType as AgentType | undefined,
+		agentType: fields.agentType,
 		taskHint: fields.taskHint,
 		displayName: fields.displayName,
 		taskBrief: fields.taskBrief as TaskBrief | undefined,

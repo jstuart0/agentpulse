@@ -1,8 +1,9 @@
 import { and, eq, gt } from "drizzle-orm";
+import { isLaunchable } from "../../../shared/constants.js";
 import type {
-	AgentType,
 	AskThreadOrigin,
 	LaunchMode,
+	LaunchableAgentType,
 	PrelaunchAction,
 	SessionTemplateInput,
 } from "../../../shared/types.js";
@@ -118,8 +119,15 @@ export async function handleAskLaunchIntent(
 	}
 
 	// === Step 2: Build template from project defaults + intent overrides ===
-	const agentType: AgentType =
-		intent.agentType ?? (project.defaultAgentType as AgentType | null) ?? "claude_code";
+	// project.defaultAgentType is a raw DB string (projects-service.ts's row
+	// type is deliberately loose) — narrow via isLaunchable rather than
+	// trusting it (D5 Pattern A').
+	const projectDefaultAgentType =
+		project.defaultAgentType && isLaunchable(project.defaultAgentType)
+			? project.defaultAgentType
+			: null;
+	const agentType: LaunchableAgentType =
+		intent.agentType ?? projectDefaultAgentType ?? "claude_code";
 	const launchMode: LaunchMode =
 		intent.mode ?? (project.defaultLaunchMode as LaunchMode | null) ?? "interactive_terminal";
 

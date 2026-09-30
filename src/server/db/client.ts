@@ -653,6 +653,7 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 		CREATE INDEX IF NOT EXISTS idx_sessions_agent_type ON sessions(agent_type);
 		CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity_at);
+		CREATE INDEX IF NOT EXISTS idx_sessions_agent_type_last_activity ON sessions(agent_type, last_activity_at);
 		CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
 		CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
 		CREATE INDEX IF NOT EXISTS idx_events_event_type ON events(event_type);

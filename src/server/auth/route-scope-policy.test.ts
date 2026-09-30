@@ -33,9 +33,13 @@ const { controlActions, launchRequests, projects, sessionTemplates, sessions } =
 	"../db/schema/index.js"
 );
 const { createApiKey, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE } = await import("./api-key.js");
-const { classifyRoute, OBSERVE_READ_PATHS, INTENTIONALLY_MANAGE_ONLY } = await import(
-	"./route-scope-policy.js"
-);
+const {
+	classifyRoute,
+	OBSERVE_READ_PATHS,
+	INTENTIONALLY_MANAGE_ONLY,
+	INGEST_WRITABLE_ROUTES,
+	isIngestWritable,
+} = await import("./route-scope-policy.js");
 
 const TEST_SECRET = "rsp-test-secret-32-characters!!!";
 const TEST_USERNAME = "rsp-forwardauth-user";
@@ -1021,6 +1025,97 @@ describe("Route-drift guard — every GET/HEAD route in the swapped bundle is cl
 	test("OBSERVE_READ_PATHS and INTENTIONALLY_MANAGE_ONLY do not overlap", () => {
 		for (const path of OBSERVE_READ_PATHS) {
 			expect(INTENTIONALLY_MANAGE_ONLY.has(path)).toBe(false);
+		}
+	});
+});
+
+// ─── Phase 2: INGEST_WRITABLE_ROUTES (D1, D20) ─────────────────────────────
+
+describe("isIngestWritable — pure matcher table", () => {
+	test("PUT .../native-name -> true", () => {
+		expect(isIngestWritable("PUT", "/api/v1/sessions/abc123/native-name")).toBe(true);
+	});
+
+	test("PUT .../rename -> false", () => {
+		expect(isIngestWritable("PUT", "/api/v1/sessions/abc123/rename")).toBe(false);
+	});
+
+	test("GET .../native-name -> false (method-qualified, not path-only)", () => {
+		expect(isIngestWritable("GET", "/api/v1/sessions/abc123/native-name")).toBe(false);
+	});
+
+	test("dual-mount /app-api/v1 prefix normalizes the same as /api/v1", () => {
+		expect(isIngestWritable("PUT", "/app-api/v1/sessions/abc123/native-name")).toBe(true);
+	});
+
+	test("a trailing extra segment does not match", () => {
+		expect(isIngestWritable("PUT", "/api/v1/sessions/abc123/native-name/extra")).toBe(false);
+	});
+});
+
+describe("Route-drift guard (F10) — bidirectional check between app.routes and INGEST_WRITABLE_ROUTES", () => {
+	function normalize(routePath: string): string | null {
+		for (const prefix of ["/api/v1", "/app-api/v1"]) {
+			if (routePath.startsWith(prefix)) {
+				return routePath.slice(prefix.length) || "/";
+			}
+		}
+		return null;
+	}
+
+	test("no route outside INGEST_WRITABLE_ROUTES reports isIngestWritable===true", () => {
+		let checked = 0;
+		for (const route of app.routes) {
+			if (!["PUT", "POST", "DELETE"].includes(route.method)) continue;
+			const normalized = normalize(route.path);
+			if (normalized === null) continue;
+			checked++;
+			const listed = [...INGEST_WRITABLE_ROUTES].some(
+				(entry) => entry === `${route.method} ${normalized}`,
+			);
+			expect(isIngestWritable(route.method, route.path)).toBe(listed);
+		}
+		expect(checked).toBeGreaterThan(10);
+	});
+
+	test("every INGEST_WRITABLE_ROUTES entry matches at least one real registered route", () => {
+		const registered = new Set(
+			app.routes
+				.filter((r) => ["PUT", "POST", "DELETE"].includes(r.method))
+				.map((r) => {
+					const normalized = normalize(r.path);
+					return normalized === null ? null : `${r.method} ${normalized}`;
+				})
+				.filter((v): v is string => v !== null),
+		);
+		for (const entry of INGEST_WRITABLE_ROUTES) {
+			expect(registered.has(entry)).toBe(true);
+		}
+	});
+});
+
+describe("requireOperatorScope — an ingest-only key on PUT /sessions/:id/native-name (real app.request())", () => {
+	test("ingest-only key passes native-name but is still 403 on /rename", async () => {
+		const { key } = await createApiKey("ingest-writable-test", [SCOPE_INGEST]);
+		for (const mount of MOUNTS) {
+			const jsonHeaders = new Headers(authBearer(key));
+			jsonHeaders.set("Content-Type", "application/json");
+
+			const nativeRes = await app.request(`${mount}/sessions/does-not-exist/native-name`, {
+				method: "PUT",
+				headers: jsonHeaders,
+				body: JSON.stringify({ name: "x" }),
+			});
+			// 404 (unknown session) proves the scope check passed and the
+			// route handler ran — a 403 would mean the scope check itself failed.
+			expect(nativeRes.status).toBe(404);
+
+			const renameRes = await app.request(`${mount}/sessions/does-not-exist/rename`, {
+				method: "PUT",
+				headers: jsonHeaders,
+				body: JSON.stringify({ name: "x", source: "user" }),
+			});
+			expect(renameRes.status).toBe(403);
 		}
 	});
 });

@@ -40,6 +40,9 @@ export const eventsSqlite = sqliteTable(
 		source: text("source").notNull().default("observed_hook"),
 		content: text("content"),
 		isNoise: integer("is_noise", { mode: "boolean" }).notNull().default(false),
+		// F244: UNTRUSTED, agent-supplied data (see provider_event_name in
+		// src/shared/types.ts) — never splice raw into a log line, prompt, or
+		// shell command.
 		providerEventType: text("provider_event_type"),
 		toolName: text("tool_name"),
 		toolInput: jsonColumn<Record<string, unknown>>("sqlite", "tool_input"),
@@ -68,6 +71,7 @@ export const eventsPg = pgTable(
 		source: pgText("source").notNull().default("observed_hook"),
 		content: pgText("content"),
 		isNoise: boolean("is_noise").notNull().default(false),
+		// F244: UNTRUSTED, agent-supplied data — see the sqlite table above.
 		providerEventType: pgText("provider_event_type"),
 		toolName: pgText("tool_name"),
 		toolInput: jsonColumn<Record<string, unknown>>("postgres", "tool_input"),

@@ -1,18 +1,18 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { AGENT_TYPES } from "../../shared/constants.js";
+import { AGENT_METADATA, isLaunchable } from "../../shared/constants.js";
 import type {
-	AgentType,
 	ApprovalPolicy,
 	LaunchMode,
 	LaunchRoutingPolicy,
 	LaunchSpec,
+	LaunchableAgentType,
 	ProviderLaunchGuidance,
 	SandboxMode,
 	SessionTemplateInput,
 	TemplatePreview,
 } from "../../shared/types.js";
-import { buildTemplateHostCompatibility } from "./launch-compatibility.js";
+import { PROVIDER_COMMAND, buildTemplateHostCompatibility } from "./launch-compatibility.js";
 import { listSupervisors } from "./supervisor-registry.js";
 const SUSPICIOUS_ENV_NAMES = new Set([
 	"OPENAI_API_KEY",
@@ -57,9 +57,13 @@ function quoteShell(value: string): string {
 }
 
 export function normalizeTemplateInput(input: Partial<SessionTemplateInput>): SessionTemplateInput {
-	const agentType = AGENT_TYPES.includes(input.agentType as AgentType)
-		? (input.agentType as AgentType)
-		: "codex_cli";
+	// The codex_cli default applies only when agentType is absent. An
+	// explicitly supplied non-launchable value (e.g. "copilot_cli") passes
+	// through unchanged, so validateTemplateInput below can reject it with a
+	// real error instead of this silently coercing it away (D5 Pattern A').
+	const agentType = (
+		input.agentType === undefined ? "codex_cli" : input.agentType
+	) as LaunchableAgentType;
 	const cwdInput = sanitizeString(input.cwd);
 	const cwd = cwdInput ? (isAbsolute(cwdInput) ? cwdInput : resolve(process.cwd(), cwdInput)) : "";
 	return {
@@ -86,8 +90,7 @@ export function validateTemplateInput(input: SessionTemplateInput) {
 	const env = input.env ?? {};
 
 	if (!input.name) errors.push("Name is required.");
-	if (!AGENT_TYPES.includes(input.agentType))
-		errors.push("Agent type must be claude_code or codex_cli.");
+	if (!isLaunchable(input.agentType)) errors.push("Agent type must be claude_code or codex_cli.");
 	if (!input.cwd) errors.push("Working directory is required.");
 
 	if (input.name.length > 120) errors.push("Name must be 120 characters or fewer.");
@@ -113,13 +116,13 @@ export function validateTemplateInput(input: SessionTemplateInput) {
 }
 
 function buildProviderGuidance(
-	agentType: AgentType,
+	agentType: LaunchableAgentType,
 	template: SessionTemplateInput,
 	correlationId: string,
 	requestedLaunchMode: LaunchMode,
 ): ProviderLaunchGuidance {
 	const base = [`cd ${quoteShell(template.cwd)}`];
-	const provider = agentType === "claude_code" ? "claude" : "codex";
+	const provider = PROVIDER_COMMAND[agentType];
 	const args: string[] = [];
 
 	if (template.model) args.push(`--model ${quoteShell(template.model)}`);
@@ -150,7 +153,7 @@ function buildProviderGuidance(
 				];
 
 	return {
-		label: agentType === "claude_code" ? "Claude Code" : "Codex CLI",
+		label: AGENT_METADATA[agentType].label,
 		command: [...base, command].join(" && "),
 		recommended: agentType === template.agentType,
 		notes,
@@ -168,9 +171,19 @@ export async function buildTemplatePreview(
 	const normalizedTemplate = normalizeTemplateInput(input);
 	const requestedLaunchMode = options?.requestedLaunchMode ?? "interactive_terminal";
 	const launchCorrelationId = crypto.randomUUID();
-	const providerCommand = normalizedTemplate.agentType === "claude_code" ? "claude" : "codex";
-	const instructionsFile =
-		normalizedTemplate.agentType === "claude_code" ? "CLAUDE.md" : "AGENTS.md";
+	// normalizedTemplate.agentType is typed LaunchableAgentType, but
+	// normalizeTemplateInput deliberately passes an explicit non-launchable
+	// value through unchanged (D5 Pattern A') so validateTemplateInput below
+	// can reject it with a real 400 — that means it can be a lie at runtime
+	// here. Guard the keyed lookups so an invalid agentType can't crash this
+	// function before validation ever runs (ian, Phase 1 mid-build): the
+	// fallback is display-only, since an invalid agentType is always
+	// rejected below and by the route's own post-preview validation.
+	const previewAgentType = isLaunchable(normalizedTemplate.agentType)
+		? normalizedTemplate.agentType
+		: "codex_cli";
+	const providerCommand = PROVIDER_COMMAND[previewAgentType];
+	const instructionsFile = AGENT_METADATA[previewAgentType].instructionsFile;
 
 	const launchSpec: LaunchSpec = {
 		version: 1,

@@ -1,5 +1,10 @@
 import { desc, eq } from "drizzle-orm";
-import type { AgentType, LaunchMode, SessionTemplateInput } from "../../../shared/types.js";
+import { isLaunchable } from "../../../shared/constants.js";
+import type {
+	LaunchMode,
+	LaunchableAgentType,
+	SessionTemplateInput,
+} from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { sessions, supervisors } from "../../db/schema/index.js";
 
@@ -11,7 +16,7 @@ import { sessions, supervisors } from "../../db/schema/index.js";
  */
 
 export interface RecommendedLaunch {
-	agentType: AgentType;
+	agentType: LaunchableAgentType;
 	model: string | null;
 	launchMode: LaunchMode;
 	suggestedSupervisorId: string | null;
@@ -19,7 +24,7 @@ export interface RecommendedLaunch {
 	rationale: string[];
 	warnings: string[];
 	alternatives: Array<{
-		agentType?: AgentType;
+		agentType?: LaunchableAgentType;
 		model?: string | null;
 		launchMode?: LaunchMode;
 		reason: string;
@@ -56,14 +61,23 @@ export async function recommendLaunch(input: RecommenderInput): Promise<Recommen
 				.limit(20)
 		: [];
 
-	const completedAtCwd = priorAtCwd.filter((s) => s.status === "completed");
+	// Only launchable-agent completions inform the recommendation: an
+	// observe-only agent (e.g. copilot_cli) can never be the suggested or
+	// alternative agentType (D5 Pattern A').
+	const completedAtCwd = priorAtCwd.filter(
+		(s) => s.status === "completed" && isLaunchable(s.agentType),
+	);
 	if (completedAtCwd.length > 0) {
 		// Pick the most common (agentType, model) pair.
-		const score = new Map<string, { agent: AgentType; model: string | null; count: number }>();
+		const score = new Map<
+			string,
+			{ agent: LaunchableAgentType; model: string | null; count: number }
+		>();
 		for (const s of completedAtCwd) {
+			if (!isLaunchable(s.agentType)) continue;
 			const key = `${s.agentType}|${s.model ?? ""}`;
 			const cur = score.get(key) ?? {
-				agent: s.agentType as AgentType,
+				agent: s.agentType,
 				model: s.model ?? null,
 				count: 0,
 			};
@@ -115,7 +129,7 @@ export async function recommendLaunch(input: RecommenderInput): Promise<Recommen
 	if (!suggested) {
 		for (const s of live) {
 			const caps = s.capabilities as {
-				agentTypes?: AgentType[];
+				agentTypes?: LaunchableAgentType[];
 				launchModes?: LaunchMode[];
 			};
 			if (caps.agentTypes?.includes(agentType)) {
@@ -128,7 +142,7 @@ export async function recommendLaunch(input: RecommenderInput): Promise<Recommen
 	if (suggested) {
 		rationale.push(`Host ${suggested.hostName} is connected and claims ${agentType}`);
 		const caps = suggested.capabilities as {
-			agentTypes?: AgentType[];
+			agentTypes?: LaunchableAgentType[];
 			launchModes?: LaunchMode[];
 		};
 		if (caps.launchModes?.includes("headless")) {

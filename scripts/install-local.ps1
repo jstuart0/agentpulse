@@ -9,7 +9,12 @@ param(
   [bool]$DisableAuth = $true,
   [string]$ApiKey = "",
   [switch]$SkipHooks,
-  [switch]$SkipSupervisor
+  [switch]$SkipSupervisor,
+  # Phase 5: dot-source with -FunctionsOnly to load the hook-command
+  # generators (New-ApHookCommand / New-ApCodexHooksFile / New-ApHookAuthHeaderFile)
+  # without running the installer's main flow — used by
+  # scripts/test-install-local.ps1 and scripts/hook-command-parity.test.ts.
+  [switch]$FunctionsOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -107,14 +112,230 @@ function Merge-Hashtable {
   }
 }
 
+# >>> agentpulse-hook-cmd
+# D13: PowerShell transcription of buildBashHookCommand/buildCodexHooksFile
+# (src/shared/hook-command.ts), verified structurally by
+# scripts/hook-command-parity.test.ts (static string comparison — pwsh isn't
+# available in the primary dev/CI environment; scripts/test-install-local.ps1
+# is the real execution coverage, run by the "Windows Installer Validation"
+# CI job). Do not hand-edit one copy without the other.
+function New-ApHookCommand {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][bool]$Direct,
+    [Parameter(Mandatory = $true)][string]$AgentType,
+    [Parameter(Mandatory = $true)][string]$EventName
+  )
+  if ($BaseUrl -notmatch '^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?$') {
+    throw "invalid AgentPulse base URL for a hook command: $BaseUrl"
+  }
+  $url = "$BaseUrl/api/v1/hooks?event=$EventName"
+  $headerFileLine = if ($Direct) { "`$f = Join-Path `$HOME '.agentpulse\hook-auth-header'`n" } else { "`$f = `$null`n" }
+  $authArg = "(if (`$f -and (Test-Path `$f -ErrorAction SilentlyContinue) -and (Get-Item `$f -ErrorAction SilentlyContinue).Length -gt 0) { @('-H',`"@`$f`") } else { @() })"
+  # F248 (codex r2 D38): marker extraction/write now runs INSIDE the
+  # Start-Job block, reading from the temp file there — D13 requires the
+  # synchronous (parent-process) path to be stdin-drain + temp-file-write
+  # only. Reads the temp file itself since Start-Job's script block runs
+  # in an isolated runspace with no access to parent variables beyond what
+  # -ArgumentList passes in.
+  $markerLine = ""
+  if ($AgentType -eq "codex_cli") {
+    $markerLine = "`$jobRaw = [IO.File]::ReadAllText(`$t); `$sid = [regex]::Match(`$jobRaw, '`"session_id`"\s*:\s*`"([A-Za-z0-9-]{1,128})`"').Groups[1].Value; if (`$sid) { `$md = Join-Path `$HOME '.agentpulse\codex-native'; New-Item -ItemType Directory -Force `$md -ErrorAction SilentlyContinue | Out-Null; New-Item -ItemType File -Force (Join-Path `$md `$sid) -ErrorAction SilentlyContinue | Out-Null }`n  "
+  }
+  return (
+    "`$ErrorActionPreference = 'SilentlyContinue'`n" +
+    "`$d = Join-Path `$env:TEMP 'agentpulse-hooks'`n" +
+    "New-Item -ItemType Directory -Force `$d | Out-Null`n" +
+    "`$t = Join-Path `$d ([guid]::NewGuid().ToString())`n" +
+    "`$raw = [Console]::In.ReadToEnd()`n" +
+    "[IO.File]::WriteAllText(`$t, `$raw)`n" +
+    $headerFileLine +
+    "Start-Job -ScriptBlock {`n" +
+    "  param(`$t, `$f, `$url, `$agent)`n" +
+    "  " + $markerLine +
+    "`$headerArgs = $authArg`n" +
+    "  `$curlArgs = @('-sS','--max-time','2','-o','NUL','-X','POST',`$url,'-H','Content-Type: application/json','-H',`"X-Agent-Type: `$agent`") + `$headerArgs + @('--data-binary',`"@`$t`")`n" +
+    "  Start-Process -FilePath curl.exe -WindowStyle Hidden -ArgumentList `$curlArgs -Wait`n" +
+    "  Remove-Item -Force `$t -ErrorAction SilentlyContinue`n" +
+    "} -ArgumentList `$t, `$f, '$url', '$AgentType' | Out-Null`n" +
+    "Get-ChildItem `$d -ErrorAction SilentlyContinue | Where-Object { `$_.LastWriteTime -lt (Get-Date).AddMinutes(-5) } | Remove-Item -Force -ErrorAction SilentlyContinue`n" +
+    "exit 0`n"
+  )
+}
+
+function New-ApCodexHooksFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][bool]$Direct
+  )
+  $codexEvents = @("SessionStart","SessionEnd","PreToolUse","PostToolUse","UserPromptSubmit","Stop","Interrupt","SubagentStart","SubagentStop","PermissionRequest","PreCompact","PostCompact")
+  $hooks = [ordered]@{}
+  foreach ($event in $codexEvents) {
+    $cmd = New-ApHookCommand -BaseUrl $BaseUrl -Direct $Direct -AgentType "codex_cli" -EventName $event
+    $hooks[$event] = @(
+      [ordered]@{
+        hooks = @(
+          [ordered]@{ type = "command"; command = $cmd; async = $false; timeout = 1 }
+        )
+      }
+    )
+  }
+  $obj = [ordered]@{ hooks = $hooks }
+  return ($obj | ConvertTo-Json -Depth 20) + "`n"
+}
+
+# D13: the POSIX `sh` equivalent of New-ApHookCommand, transcribed natively
+# in PowerShell (never shells out to bash) — Copilot's agentpulse.json
+# carries both a `bash` and a `powershell` handler per event (D13), and this
+# builds the former. Scoped to Copilot only: it never needs the Codex
+# native-coverage marker snippet, so there's no marker branch here (compare
+# buildBashHookCommand/ap_hook_cmd's `agent -eq codex_cli` check).
+function New-ApCopilotBashHookCommand {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][bool]$Direct,
+    [Parameter(Mandatory = $true)][string]$EventName
+  )
+  $curl = "curl -sS --max-time 2 -o /dev/null -X POST '$BaseUrl/api/v1/hooks?event=$EventName' -H 'Content-Type: application/json' -H 'X-Agent-Type: copilot_cli'"
+  $withHeader = "$curl" + " -H `"@`$f`" --data-binary `"@`$t`""
+  $withoutHeader = "$curl --data-binary `"@`$t`""
+  $body = if ($Direct) {
+    "f=`"`$HOME/.agentpulse/hook-auth-header`"; if [ -s `"`$f`" ]; then $withHeader; else $withoutHeader; fi; rm -f `"`$t`""
+  } else {
+    "$withoutHeader; rm -f `"`$t`""
+  }
+  $mktempPrefix = "t=`$(mktemp `"`${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX`" 2>/dev/null) || exit 0; cat > `"`$t`"; "
+  return "$mktempPrefix( $body ) </dev/null >/dev/null 2>&1 & exit 0"
+}
+
+function New-ApCopilotHooksFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][bool]$Direct
+  )
+  $copilotEvents = @("sessionStart","sessionEnd","userPromptSubmitted","postToolUse","postToolUseFailure","agentStop","subagentStart","subagentStop","preCompact","errorOccurred")
+  $hooks = [ordered]@{}
+  foreach ($event in $copilotEvents) {
+    $bash = New-ApCopilotBashHookCommand -BaseUrl $BaseUrl -Direct $Direct -EventName $event
+    $ps = New-ApHookCommand -BaseUrl $BaseUrl -Direct $Direct -AgentType "copilot_cli" -EventName $event
+    $hooks[$event] = @(
+      [ordered]@{ type = "command"; bash = $bash; powershell = $ps; timeoutSec = 5 }
+    )
+  }
+  $obj = [ordered]@{ version = 1; hooks = $hooks }
+  return ($obj | ConvertTo-Json -Depth 20) + "`n"
+}
+
+# F233 (xander, Medium): true for a symlink OR a junction/mount-point
+# reparse point at $Path — `.LinkType` alone misses some reparse-point
+# kinds (e.g. a mount point has no LinkType but does carry the
+# ReparsePoint attribute), so both are checked. A missing path (the common
+# case — nothing to refuse) returns $false, not an error.
+function Test-ApReparsePoint {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+  if (-not $item) { return $false }
+  if ($item.LinkType) { return $true }
+  return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
+# F242 (xander, re-verify): true when $Path already has more than one hard
+# link — a second directory entry pointing at the same NTFS data stream,
+# which `fsutil hardlink list` enumerates without needing elevation (it's
+# a read-only query). Best-effort: `fsutil` can be missing, blocked by
+# policy, or fail on a non-NTFS volume — any of that fails OPEN (returns
+# $false) rather than blocking a legitimate install, since the caller's
+# reparse-point check plus the temp-file+Move-Item replace pattern (which
+# never writes into the target's existing data stream in place) are
+# already the primary defense. This is the one part of F242 not verified
+# against a real Windows machine in this environment — Windows CI
+# (scripts/test-install-local.ps1) is the real check; flag to xander if it
+# proves unreliable there.
+function Test-ApMultipleHardLinks {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return $false }
+  try {
+    $output = & fsutil hardlink list $Path 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $output) { return $false }
+    $count = @($output | Where-Object { $_.Trim().Length -gt 0 }).Count
+    return $count -gt 1
+  } catch {
+    return $false
+  }
+}
+
+# F232 (xander, Medium): writes $Content to $Path via a same-directory temp
+# file + atomic Move-Item, refusing a reparse point (symlink/junction) at
+# $Path or at its parent directory — never a plain Set-Content/Copy-Item,
+# both of which write through a reparse point at the destination. Used for
+# both a Codex/Copilot hooks.json write and its timestamped backup (same
+# primitive, different path) — mirrors ap_write_no_follow in the bash
+# installers (scripts/setup-hooks.sh et al). F242: also refuses a
+# multiply-hard-linked target — see Test-ApMultipleHardLinks above.
+function Write-ApFileNoFollow {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Content
+  )
+  if (Test-ApReparsePoint -Path $Path) {
+    throw "refusing to write through a reparse point: $Path"
+  }
+  if (Test-ApMultipleHardLinks -Path $Path) {
+    throw "refusing to write through a multiply-linked file: $Path"
+  }
+  $dir = Split-Path -Parent $Path
+  if (Test-ApReparsePoint -Path $dir) {
+    throw "refusing to write into a reparse-point directory: $dir"
+  }
+  $tmp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+  Set-Content -NoNewline -Path $tmp -Value $Content -Encoding UTF8
+  Move-Item -Force -Path $tmp -Destination $Path
+}
+
+# D13: writes ~/.agentpulse/hook-auth-header with a single-ACE ACL for the
+# current user (Windows equivalent of `umask 077`).
+#
+# F208: narrow the parent .agentpulse directory's ACL to the current user
+# *before* creating the file inside it, so a freshly-created file inherits
+# a private ACL from the instant it exists. Set-Content-then-icacls-the-
+# file alone (the prior shape) left a window where a newly (over)written
+# file briefly held the directory's broader, inherited ACL before icacls
+# narrowed it. The file-level icacls call stays too, so re-running this
+# against a pre-existing file (from before this fix, or one an operator
+# copied in some other way) still ends up narrowed, not just new ones.
+#
+# F233 (xander, Medium): neither the directory nor the file had a
+# reparse-point guard — a junction at .agentpulse, or a symlink at
+# hook-auth-header itself, could redirect the API key to an
+# attacker-chosen location. Checked before either write, same as the bash
+# installers' `[ -L "$AP_AUTH_HEADER_FILE" ]` guard. F242: also refuses a
+# multiply-hard-linked target file — see Test-ApMultipleHardLinks above.
+function New-ApHookAuthHeaderFile {
+  param([Parameter(Mandatory = $true)][string]$ApiKey)
+  $d = Join-Path $HOME ".agentpulse"
+  if (Test-ApReparsePoint -Path $d) {
+    throw "refusing to write through a reparse point: $d"
+  }
+  New-Item -ItemType Directory -Force -Path $d | Out-Null
+  icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+  $f = Join-Path $d "hook-auth-header"
+  if (Test-ApMultipleHardLinks -Path $f) {
+    throw "refusing to write through a multiply-linked file: $f"
+  }
+  if (Test-ApReparsePoint -Path $f) {
+    throw "refusing to write through a reparse point: $f"
+  }
+  Set-Content -NoNewline -Path $f -Value "Authorization: Bearer $ApiKey`n" -Encoding UTF8
+  icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+}
+# <<< agentpulse-hook-cmd
+
 function Configure-Hooks {
   Write-Step "Configuring Claude Code + Codex hooks..."
 
   $hookHeadersClaude = @{ "X-Agent-Type" = "claude_code" }
-  $hookHeadersCodex = @{ "X-Agent-Type" = "codex_cli" }
   if ($ApiKey) {
     $hookHeadersClaude["Authorization"] = "Bearer $ApiKey"
-    $hookHeadersCodex["Authorization"] = "Bearer $ApiKey"
   }
 
   $claudeDir = Join-Path $HOME ".claude"
@@ -146,38 +367,79 @@ function Configure-Hooks {
   }
   Set-JsonFile -Path $claudeSettings -Data $claudeData
 
-  $codexDir = Join-Path $HOME ".codex"
+  # D12 (r6, Phase 0 fact 5): Codex 0.145 loads hooks only from
+  # $CODEX_HOME/hooks.json — a project-level .codex/hooks.json is never read.
+  $codexDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
   Ensure-Dir $codexDir
-  $codexHooks = @{
-    hooks = @(
-      @{ event = "SessionStart"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "PreToolUse"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "PostToolUse"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "UserPromptSubmit"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "Stop"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "SubagentStart"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "SubagentStop"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "PermissionRequest"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "PreCompact"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex },
-      @{ event = "PostCompact"; type = "http"; url = "$PublicUrl/api/v1/hooks"; async = $true; headers = $hookHeadersCodex }
-    )
-  }
-  Set-JsonFile -Path (Join-Path $codexDir "hooks.json") -Data $codexHooks
+  $codexHooksFile = Join-Path $codexDir "hooks.json"
 
-  # Hooks are stable and enabled by default since codex-cli 0.124.0; codex_hooks
-  # is a recognized legacy alias for the `hooks` feature, written for
-  # compatibility with older codex-cli installs that still gate on it.
-  $codexConfig = Join-Path $codexDir "config.toml"
-  $featureBlock = "[features]`ncodex_hooks = true`n"
-  if (Test-Path $codexConfig) {
-    $content = Get-Content $codexConfig -Raw
-    if ($content -notmatch "codex_hooks") {
-      Add-Content -Path $codexConfig -Value "`n$featureBlock"
+  if ($ApiKey) {
+    New-ApHookAuthHeaderFile -ApiKey $ApiKey
+  }
+
+  $newCodexHooksJson = New-ApCodexHooksFile -BaseUrl $PublicUrl -Direct $true
+  $unchanged = $false
+  if (Test-Path $codexHooksFile) {
+    $existingCodexHooksJson = Get-Content $codexHooksFile -Raw
+    if ($existingCodexHooksJson -eq $newCodexHooksJson) {
+      $unchanged = $true
     }
+  }
+  if ($unchanged) {
+    Write-Step "Codex hooks unchanged — no re-trust needed"
   } else {
-    Set-Content -Path $codexConfig -Value $featureBlock -Encoding UTF8
+    if (Test-Path $codexHooksFile) {
+      $codexBackupFile = "$codexHooksFile.agentpulse-bak.$(Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ')"
+      Write-ApFileNoFollow -Path $codexBackupFile -Content $existingCodexHooksJson
+      Write-Step "Backed up existing Codex hooks to $codexBackupFile"
+    }
+    Write-ApFileNoFollow -Path $codexHooksFile -Content $newCodexHooksJson
+    Write-Step "Codex CLI hooks configured"
+    Write-Step "Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks."
+    Write-Step "Re-trust after changing the AgentPulse URL or port."
+  }
+  # D12: codex_hooks is a deprecated (but still-working) legacy alias for
+  # [features].hooks — left alone if present, never newly written.
+
+  # D8: only written when copilot is detected — never create config for a
+  # tool that isn't installed.
+  $copilotDetected = (Get-Command copilot -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $HOME ".copilot"))
+  if ($copilotDetected) {
+    $copilotDir = Join-Path $HOME ".copilot\hooks"
+    Ensure-Dir $copilotDir
+    $copilotHooksFile = Join-Path $copilotDir "agentpulse.json"
+
+    $newCopilotHooksJson = New-ApCopilotHooksFile -BaseUrl $PublicUrl -Direct $true
+    $copilotUnchanged = $false
+    if (Test-Path $copilotHooksFile) {
+      $existingCopilotHooksJson = Get-Content $copilotHooksFile -Raw
+      if ($existingCopilotHooksJson -eq $newCopilotHooksJson) {
+        $copilotUnchanged = $true
+      }
+    }
+    if ($copilotUnchanged) {
+      Write-Step "Copilot hooks unchanged"
+    } else {
+      if (Test-Path $copilotHooksFile) {
+        $copilotBackupFile = "$copilotHooksFile.agentpulse-bak.$(Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ')"
+        Write-ApFileNoFollow -Path $copilotBackupFile -Content $existingCopilotHooksJson
+        Write-Step "Backed up existing Copilot hooks to $copilotBackupFile"
+      }
+      Write-ApFileNoFollow -Path $copilotHooksFile -Content $newCopilotHooksJson
+      Write-Step "Copilot CLI hooks configured"
+    }
   }
 
+  # D37/F243 (xander re-verify — "check whether install-local.ps1 persists
+  # the key in a user env var or profile, and apply the same principle"):
+  # checked. This writes to HKCU\Environment (SetEnvironmentVariable's
+  # "User" target), a per-user registry hive — not a plaintext rc FILE.
+  # Windows already isolates HKCU\Environment to the owning user's SID via
+  # registry ACLs; another local account can't read it the way a
+  # world-readable 0644 ~/.zshrc exposes a POSIX key to any local user.
+  # That's the same owner-only guarantee D37 moved the POSIX key to
+  # ~/.agentpulse/env (0600) to achieve, just via the platform-native
+  # mechanism instead — no change needed here.
   if ($ApiKey) {
     [Environment]::SetEnvironmentVariable("AGENTPULSE_API_KEY", $ApiKey, "User")
     [Environment]::SetEnvironmentVariable("AGENTPULSE_URL", $PublicUrl, "User")
@@ -206,6 +468,14 @@ function Register-OrUpdateTask {
 function Start-TaskNow {
   param([string]$ScriptPath)
   Start-Process -WindowStyle Hidden -FilePath "powershell.exe" -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$ScriptPath) | Out-Null
+}
+
+# Phase 5: every function above is now defined. Dot-sourcing with
+# -FunctionsOnly stops here, before the main install flow runs, so tests can
+# load New-ApHookCommand / New-ApCodexHooksFile / New-ApHookAuthHeaderFile
+# (and the rest) without executing an install.
+if ($FunctionsOnly) {
+  return
 }
 
 Write-Host ""

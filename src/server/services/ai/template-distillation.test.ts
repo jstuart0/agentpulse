@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { events, sessions, sessionTemplates } = await import("../../db/schema/index.js");
+const { events, sessions, sessionTemplates, projects } = await import("../../db/schema/index.js");
 const { distillTemplate, provenanceMetadata } = await import("./template-distillation.js");
 
 beforeAll(() => {
@@ -13,6 +13,7 @@ beforeEach(async () => {
 	await getDb().delete(events).execute();
 	await getDb().delete(sessions).execute();
 	await getDb().delete(sessionTemplates).execute();
+	await getDb().delete(projects).execute();
 });
 
 async function mkSession(sessionId: string, overrides: Record<string, unknown> = {}) {
@@ -110,5 +111,64 @@ describe("template-distillation", () => {
 		expect(draft?.draft.name).toContain("Base (distilled");
 		expect(draft?.draft.tags).toContain("alpha");
 		expect(draft?.draft.tags).toContain("distilled");
+	});
+});
+
+const AGENT_TYPE_SUBSTITUTED_NOTE = "agent_type_substituted: copilot_cli is observe-only";
+
+describe("template-distillation — D5 Pattern A' agentType substitution", () => {
+	test("an observe-only session with no base and no project falls back to codex_cli, with a provenance note", async () => {
+		await mkSession("obs1", { agentType: "copilot_cli", cwd: null });
+		await mkEvent("obs1", "prompt", "hello");
+
+		const draft = await distillTemplate({ sessionId: "obs1" });
+		expect(draft?.draft.agentType).toBe("codex_cli");
+		expect(draft?.notes).toContain(AGENT_TYPE_SUBSTITUTED_NOTE);
+
+		if (!draft) throw new Error("draft null");
+		const meta = provenanceMetadata(draft, null);
+		expect(meta.provenance.notes).toContain(AGENT_TYPE_SUBSTITUTED_NOTE);
+	});
+
+	test("an observe-only session with a registered project falls back to the project's default agent type", async () => {
+		await getDb()
+			.insert(projects)
+			.values({ id: "proj1", name: "P", cwd: "/tmp/obsproj", defaultAgentType: "codex_cli" })
+			.execute();
+		await mkSession("obs2", { agentType: "copilot_cli", cwd: "/tmp/obsproj" });
+		await mkEvent("obs2", "prompt", "hello");
+
+		const draft = await distillTemplate({ sessionId: "obs2" });
+		expect(draft?.draft.agentType).toBe("codex_cli");
+		expect(draft?.notes).toContain(AGENT_TYPE_SUBSTITUTED_NOTE);
+	});
+
+	test("when base is provided, the substitution never overrides it, and no provenance note is added, even for an observe-only session", async () => {
+		await getDb()
+			.insert(sessionTemplates)
+			.values({
+				id: "tpl-launchable",
+				name: "Base",
+				agentType: "claude_code",
+				cwd: "/existing",
+				baseInstructions: "",
+				taskPrompt: "",
+			})
+			.execute();
+		await mkSession("obs3", { agentType: "copilot_cli" });
+		await mkEvent("obs3", "prompt", "hello");
+
+		const draft = await distillTemplate({ sessionId: "obs3", baseTemplateId: "tpl-launchable" });
+		expect(draft?.draft.agentType).toBe("claude_code");
+		expect(draft?.notes).not.toContain(AGENT_TYPE_SUBSTITUTED_NOTE);
+	});
+
+	test("a launchable session is unchanged, with no provenance note", async () => {
+		await mkSession("launchable1", { agentType: "claude_code" });
+		await mkEvent("launchable1", "prompt", "hello");
+
+		const draft = await distillTemplate({ sessionId: "launchable1" });
+		expect(draft?.draft.agentType).toBe("claude_code");
+		expect(draft?.notes).not.toContain(AGENT_TYPE_SUBSTITUTED_NOTE);
 	});
 });

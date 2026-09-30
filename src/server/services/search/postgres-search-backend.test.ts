@@ -223,38 +223,84 @@ describe("PostgresSearchBackend — execute shape (mock-based, unconditional)", 
 describePostgresOnly(
 	"PostgresSearchBackend — live Postgres search (AGENTPULSE_TEST_BACKEND=postgres)",
 	() => {
-		// These tests require a live Postgres DB via the Phase 7 test harness.
-		// They are intentionally empty stubs in Phase 5; Phase 7 populates them
-		// with fixture-based assertions against a controlled schema.
-		//
-		// When wiring Phase 7, replace the stubs below with:
-		//   1. `beforeAll`: call getTestPgDb() to get a schema-isolated PG handle.
-		//   2. Insert controlled fixtures into sessions + events tables.
-		//   3. Construct PostgresSearchBackend(pgHandle).
-		//   4. Assert search() returns expected hits, snippet contains <mark>,
-		//      and AND/OR mode filtering works correctly.
+		function uid(prefix: string) {
+			return `${prefix}-${crypto.randomUUID()}`;
+		}
 
 		test("search() returns hits for sessions matching display_name", async () => {
-			// Stub: will be implemented in Phase 7 with a real PG fixture.
-			// For now, assert only that the backend instantiates and the method
-			// signature is correct (covered by the no-op block above).
-			expect(true).toBe(true);
-		});
+			// Regression for a real production bug this test suite never caught:
+			// the session-search query's `ORDER BY created_at` referenced a
+			// column that doesn't exist on `sessions` (which has `started_at` /
+			// `last_activity_at`, not `created_at`) — every session-kind search
+			// with a non-empty query 500'd on a real Postgres backend. The stub
+			// `expect(true).toBe(true)` this test replaces never actually ran a
+			// query, so it passed regardless. Caught only when
+			// search-agent-type-filter.test.ts's copilot_cli case exercised
+			// GET /search?q=... end-to-end against a real Postgres container.
+			const { getDb, initializeDatabase } = await import("../../db/client.js");
+			const { sessions } = await import("../../db/schema/index.js");
+			const { PostgresSearchBackend } = await import("./postgres-search-backend.js");
+			await initializeDatabase();
 
-		test("search() returns hits for events matching raw_payload fields", async () => {
-			expect(true).toBe(true);
-		});
+			const sid = uid("pgsearch");
+			const token = uid("tok").replace(/-/g, "");
 
-		test("AND mode requires all tokens; OR mode requires any", async () => {
-			expect(true).toBe(true);
-		});
+			await getDb()
+				.insert(sessions)
+				.values({
+					sessionId: sid,
+					displayName: `session ${token}`,
+					agentType: "claude_code",
+					status: "active",
+				})
+				.execute();
 
-		test("snippet contains <mark>…</mark> around matched term", async () => {
-			expect(true).toBe(true);
+			const backend = new PostgresSearchBackend();
+			const result = await backend.search({ q: token, kinds: ["session"] });
+
+			expect(result.backend).toBe("postgres-ilike");
+			expect(result.hits.length).toBe(1);
+			expect(result.hits[0]?.kind).toBe("session");
+			expect(result.hits[0]?.sessionId).toBe(sid);
+			expect(result.hits[0]?.sessionDisplayName).toBe(`session ${token}`);
 		});
 
 		test("agentType filter restricts results via session join", async () => {
-			expect(true).toBe(true);
+			const { getDb, initializeDatabase } = await import("../../db/client.js");
+			const { sessions } = await import("../../db/schema/index.js");
+			const { PostgresSearchBackend } = await import("./postgres-search-backend.js");
+			await initializeDatabase();
+
+			const token = uid("tok").replace(/-/g, "");
+			const claudeSid = uid("pgsearch-claude");
+			const codexSid = uid("pgsearch-codex");
+
+			await getDb()
+				.insert(sessions)
+				.values([
+					{
+						sessionId: claudeSid,
+						displayName: `agentfilter ${token}`,
+						agentType: "claude_code",
+						status: "active",
+					},
+					{
+						sessionId: codexSid,
+						displayName: `agentfilter ${token}`,
+						agentType: "codex_cli",
+						status: "active",
+					},
+				])
+				.execute();
+
+			const backend = new PostgresSearchBackend();
+			const result = await backend.search({
+				q: token,
+				kinds: ["session"],
+				agentType: "codex_cli",
+			});
+
+			expect(result.hits.map((h) => h.sessionId)).toEqual([codexSid]);
 		});
 	},
 );

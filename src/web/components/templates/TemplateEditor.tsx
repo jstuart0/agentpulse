@@ -1,10 +1,10 @@
 import { Link } from "react-router-dom";
 import type {
-	AgentType,
 	ApprovalPolicy,
 	LaunchMode,
 	LaunchRequest,
 	LaunchRoutingPolicy,
+	LaunchableAgentType,
 	Project,
 	ResolvedProjectData,
 	SandboxMode,
@@ -199,7 +199,7 @@ export function TemplateEditorPanel(props: {
 						value={draft.agentType}
 						onChange={(e) => {
 							if (isInherited("agentType")) onOverrideField("agentType");
-							onUpdateDraft("agentType", e.target.value as AgentType);
+							onUpdateDraft("agentType", e.target.value as LaunchableAgentType);
 						}}
 						className={isInherited("agentType") ? inheritedInputClass : normalInputClass}
 					>

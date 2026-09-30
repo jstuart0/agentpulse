@@ -10,7 +10,12 @@
  */
 import { z } from "zod";
 
-export const AGENT_TYPE_ENUM = z.enum(["claude_code", "codex_cli"]);
+// Split per D5 (2026-09-28-deliver-agent-cli-parity): OBSERVED covers every
+// agent type that can post hook events and appear on the dashboard;
+// LAUNCHABLE covers only what AgentPulse can actively start a process for.
+// Phase 6: "copilot_cli" is observe-only (D5/F23) — added to OBSERVED only.
+export const OBSERVED_AGENT_TYPE_ENUM = z.enum(["claude_code", "codex_cli", "copilot_cli"]);
+export const LAUNCHABLE_AGENT_TYPE_ENUM = z.enum(["claude_code", "codex_cli"]);
 export const SESSION_STATUS_ENUM = z.enum(["active", "idle", "completed", "failed", "archived"]);
 
 // Phase 4: mirrors src/shared/types.ts's LaunchMode/LaunchRoutingPolicy/

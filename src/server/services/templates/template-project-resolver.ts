@@ -1,6 +1,6 @@
 import type {
-	AgentType,
 	ApprovalPolicy,
+	LaunchableAgentType,
 	SandboxMode,
 	SessionTemplateInput,
 } from "../../../shared/types.js";
@@ -33,10 +33,14 @@ export function resolveTemplateWithProject(
 
 	const cwd = overrides.has("cwd") || !project.cwd ? template.cwd : project.cwd;
 
+	// template.agentType and project.defaultAgentType are both row columns —
+	// already launchable by construction, since validateTemplateInput (for
+	// the template) and the project-creation route (for the project) enforce
+	// LAUNCHABLE_AGENT_TYPES before either row can be written (D5 Pattern A').
 	const agentType =
 		overrides.has("agentType") || !project.defaultAgentType
-			? (template.agentType as AgentType)
-			: (project.defaultAgentType as AgentType);
+			? (template.agentType as LaunchableAgentType)
+			: (project.defaultAgentType as LaunchableAgentType);
 
 	const model = overrides.has("model") ? template.model : (project.defaultModel ?? template.model);
 
@@ -72,7 +76,10 @@ function toSessionTemplateInput(template: TemplateRow): SessionTemplateInput {
 	return {
 		name: template.name,
 		description: template.description,
-		agentType: template.agentType as AgentType,
+		// template.agentType is a template row's own column — already
+		// launchable by construction, since validateTemplateInput enforced
+		// it when the template was created (D5 Pattern A').
+		agentType: template.agentType as LaunchableAgentType,
 		cwd: template.cwd,
 		baseInstructions: template.baseInstructions,
 		taskPrompt: template.taskPrompt,

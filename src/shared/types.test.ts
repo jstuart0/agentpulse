@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { AGENT_TYPES, SEMANTIC_STATUSES, SESSION_STATUSES } from "./constants.js";
+import {
+	AGENT_METADATA,
+	AGENT_TYPES,
+	LAUNCHABLE_AGENT_TYPES,
+	SEMANTIC_STATUSES,
+	SESSION_STATUSES,
+	isLaunchable,
+} from "./constants.js";
 import {
 	ACTION_REQUEST_DECISIONS,
 	APPROVAL_POLICIES,
@@ -227,5 +234,50 @@ describe("shared kind allowlists", () => {
 		expect(AGENT_TYPES.includes("bogus" as AgentType)).toBe(false);
 		expect(SESSION_STATUSES.includes("bogus" as SessionStatus)).toBe(false);
 		expect(SEMANTIC_STATUSES.includes("bogus" as SemanticStatus)).toBe(false);
+	});
+
+	test("LAUNCHABLE_AGENT_TYPES is a subset of AGENT_TYPES (D5)", () => {
+		for (const t of LAUNCHABLE_AGENT_TYPES) {
+			expect((AGENT_TYPES as readonly string[]).includes(t)).toBe(true);
+			expect(isLaunchable(t)).toBe(true);
+		}
+		expect(isLaunchable("bogus")).toBe(false);
+	});
+
+	test("every AGENT_TYPES member has a well-formed AGENT_METADATA entry (D5)", () => {
+		for (const t of AGENT_TYPES) {
+			const meta = AGENT_METADATA[t];
+			expect(meta).toBeDefined();
+			expect(meta.label.length).toBeGreaterThan(0);
+			expect(meta.shortLabel.length).toBeGreaterThan(0);
+			expect(["CLAUDE.md", "AGENTS.md"]).toContain(meta.instructionsFile);
+			expect(typeof meta.hasNameSource).toBe("boolean");
+		}
+	});
+});
+
+// Phase 6 (D7, contract item 10): CopilotEvent / COPILOT_EVENT_TO_HOOK_EVENT
+// are new in Phase 6 — RED at this phase's start commit (types.ts doesn't
+// export them yet). copilot_cli is observe-only: it must never satisfy
+// isLaunchable, even once it's a real AgentType.
+describe("Phase 6: CopilotEvent / COPILOT_EVENT_TO_HOOK_EVENT (D7)", () => {
+	test("COPILOT_EVENT_TO_HOOK_EVENT is total over CopilotEvent — every key maps to a non-empty HookEventType", async () => {
+		const { COPILOT_EVENT_TO_HOOK_EVENT } = await import("./types.js");
+		const keys = Object.keys(COPILOT_EVENT_TO_HOOK_EVENT);
+		expect(keys.length).toBe(10);
+		for (const key of keys) {
+			const mapped = COPILOT_EVENT_TO_HOOK_EVENT[key as keyof typeof COPILOT_EVENT_TO_HOOK_EVENT];
+			expect(typeof mapped).toBe("string");
+			expect(mapped.length).toBeGreaterThan(0);
+		}
+	});
+
+	test("copilot_cli is never launchable, even once it's a real AgentType", () => {
+		expect(isLaunchable("copilot_cli")).toBe(false);
+	});
+
+	test("AGENT_TYPES gains copilot_cli; LAUNCHABLE_AGENT_TYPES does not", () => {
+		expect((AGENT_TYPES as readonly string[]).includes("copilot_cli")).toBe(true);
+		expect((LAUNCHABLE_AGENT_TYPES as readonly string[]).includes("copilot_cli")).toBe(false);
 	});
 });

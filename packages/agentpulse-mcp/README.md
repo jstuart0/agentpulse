@@ -69,6 +69,7 @@ Tracked follow-ups in the main repo, not silently accepted gaps — these apply 
 - **No rate limiting on mutating MCP tools.** Nothing currently throttles repeated `launch_agent`/`prompt_session`/etc. calls from a misbehaving or looping client.
 - **No server-side HITL risk-threshold gate.** `decide_hitl`/`decide_action_request` let a `manage`-scoped key approve *any* HITL item, including ones a human would want to review personally for high-risk actions.
 - **No server-side recomputation of a submitted `launchSpec`.** `POST /launches` trusts the client-supplied `launchSpec` after reloading the template by id rather than recomputing it fresh.
+- **`agent_type: "copilot_cli"` needs a server at or above this package version.** `list_sessions`'s `agent_type` filter is validated client-side by this package's own zod enum (`OBSERVED_AGENT_TYPE_ENUM`, which now accepts `copilot_cli`). The server itself rejects an unrecognized `agent_type` with a `400` as of this release, but a server *older* than this release predates both Copilot CLI support and that validation, so its request handler treats an unknown value as an equality filter against nothing. Filtering by `copilot_cli` against a server that old silently returns zero sessions rather than an error, which can look identical to "the filter didn't apply" from the client side. There's no client-side way to detect a server's actual feature set today; upgrading the server closes the gap.
 
 ## Upgrading
 

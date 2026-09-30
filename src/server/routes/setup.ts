@@ -1,20 +1,135 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { Hono } from "hono";
 import { config } from "../config.js";
+import { INSTALLER_SOURCES, buildRelayInstaller } from "../installers.js";
 
 const setup = new Hono();
+
+// F198: 0.0.0.0 is the "any interface" bind address, not a routable host —
+// treated as loopback so a PUBLIC_URL of http://0.0.0.0:<port> is rejected
+// the same way http://localhost:<port> is (F172), instead of being handed
+// out to a remote installer that can never reach it.
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "0.0.0.0"]);
+const PORT_RE = /^[0-9]{1,5}$/;
+// Spliced into a double-quoted shell string, so nothing that expands there.
+const SAFE_SERVER_URL_RE =
+	/^https?:\/\/(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?(\/[A-Za-z0-9._~%/-]*)?$/;
+
+/** Splits a Host header into hostname and port; the port is null unless numeric. */
+function parseHost(host: string | undefined): { hostname: string; port: string | null } {
+	if (!host) return { hostname: "", port: null };
+	const bracketed = /^(\[[^\]]*\])(?::(.*))?$/.exec(host);
+	const [hostname, rawPort] = bracketed
+		? [bracketed[1], bracketed[2]]
+		: host.indexOf(":") === host.lastIndexOf(":")
+			? (host.split(":") as [string, string | undefined])
+			: [host, undefined];
+	const port =
+		rawPort !== undefined && PORT_RE.test(rawPort) && Number(rawPort) <= 65535 ? rawPort : null;
+	return { hostname: hostname.toLowerCase(), port };
+}
+
+function isLoopbackHostname(hostname: string) {
+	return LOOPBACK_HOSTNAMES.has(hostname) || /^127\.\d+\.\d+\.\d+$/.test(hostname);
+}
+
+/**
+ * D19: base URL for the local installers (/setup.sh, /install-local.*), whose
+ * hooks must hit this machine. Only a numeric Host port is used; the Host
+ * hostname never is.
+ */
+export function resolveLocalHookBaseUrl(host: string | undefined): string {
+	return `http://localhost:${parseHost(host).port ?? config.port}`;
+}
+
+type InstallerErrorCode = keyof typeof INSTALLER_ERROR_MESSAGES;
+
+type PublicServerUrl =
+	| { ok: true; url: string }
+	| { ok: false; error: Exclude<InstallerErrorCode, "installer_unavailable"> };
+
+/**
+ * D19: the server URL a remote relay should talk to. It comes from PUBLIC_URL
+ * only (its first entry when comma-separated), never from the Host hostname.
+ * A request from this machine may use a localhost URL; anyone else needs a
+ * PUBLIC_URL they can actually reach (F172).
+ */
+export function resolvePublicServerUrl(host: string | undefined): PublicServerUrl {
+	const requester = parseHost(host);
+	const fromThisMachine = isLoopbackHostname(requester.hostname);
+	if (!config.publicUrlExplicit) {
+		if (!fromThisMachine) return { ok: false, error: "public_url_unset" };
+		// F174: the port the request came in on, the same rule as the local installers.
+		return { ok: true, url: `http://localhost:${requester.port ?? config.port}` };
+	}
+	const url = (config.publicUrl.split(",")[0] ?? "").trim().replace(/\/+$/, "");
+	if (!SAFE_SERVER_URL_RE.test(url)) return { ok: false, error: "public_url_invalid" };
+	if (!fromThisMachine && isLoopbackHostname(new URL(url).hostname.toLowerCase())) {
+		return { ok: false, error: "public_url_loopback" };
+	}
+	return { ok: true, url };
+}
+
+const SET_PUBLIC_URL =
+	"Set PUBLIC_URL on the AgentPulse server so the relay installer knows its public address.";
+
+const INSTALLER_ERROR_MESSAGES = {
+	public_url_unset: SET_PUBLIC_URL,
+	public_url_invalid: `PUBLIC_URL on the AgentPulse server isn't a plain http(s) URL, so the relay installer can't use it. ${SET_PUBLIC_URL}`,
+	public_url_loopback: `PUBLIC_URL on the AgentPulse server is a localhost address, which other machines can't reach. ${SET_PUBLIC_URL}`,
+	installer_unavailable:
+		"The relay installer isn't available on this server right now. Check the server log.",
+} as const;
+
+export const INSTALLER_ERROR_CODES = Object.keys(INSTALLER_ERROR_MESSAGES) as InstallerErrorCode[];
+
+/**
+ * F166: a 503 body that's still valid shell, so `curl | bash` prints the
+ * reason and fails instead of executing JSON. The message goes through a
+ * quoted heredoc, so no character in it needs escaping.
+ */
+export function installerErrorBody(error: InstallerErrorCode): string {
+	return [
+		"#!/bin/sh",
+		`# ${JSON.stringify({ error })}`,
+		"cat >&2 <<'AGENTPULSE_ERROR'",
+		`AgentPulse: ${INSTALLER_ERROR_MESSAGES[error]}`,
+		"AGENTPULSE_ERROR",
+		"exit 1",
+		"",
+	].join("\n");
+}
+
+// F192: every installer response embeds the requester's Host (port for the
+// local scripts, F174; PUBLIC_URL eligibility for the relay one, F172), so a
+// shared/CDN cache keying only on the URL would serve one requester's body to
+// another. no-store rules out caching it at all; Vary: Host documents why for
+// any cache that does inspect it.
+const INSTALLER_RESPONSE_HEADERS = { "Cache-Control": "no-store", Vary: "Host" } as const;
+
+function installerError(error: InstallerErrorCode) {
+	return new Response(installerErrorBody(error), {
+		status: 503,
+		headers: { "Content-Type": "text/plain; charset=utf-8", ...INSTALLER_RESPONSE_HEADERS },
+	});
+}
+
+function scriptResponse(script: string, filename: string) {
+	return new Response(script, {
+		headers: {
+			"Content-Type": "text/plain; charset=utf-8",
+			"Content-Disposition": `inline; filename=${filename}`,
+			...INSTALLER_RESPONSE_HEADERS,
+		},
+	});
+}
 
 // GET /setup.sh - Serve a self-contained install script
 // Usage: curl -sSL https://your-server.com/setup.sh | bash
 // Or:    curl -sSL https://your-server.com/setup.sh | bash -s -- --key ap_xxx
+// F234: --key is briefly visible in `ps` during that one-time install;
+// AGENTPULSE_KEY=ap_xxx curl ... | bash keeps it out of the process list.
 setup.get("/setup.sh", (c) => {
-	// Detect the port from the request URL so hooks always point to localhost
-	const requestHost = c.req.header("Host") || `localhost:${config.port}`;
-	const requestPort = requestHost.includes(":")
-		? requestHost.split(":")[1]
-		: config.port.toString();
-	const defaultLocalUrl = `http://localhost:${requestPort}`;
+	const defaultLocalUrl = resolveLocalHookBaseUrl(c.req.header("Host"));
 
 	const script = `#!/usr/bin/env bash
 set -euo pipefail
@@ -23,19 +138,221 @@ set -euo pipefail
 #  AgentPulse - One-Command Hook Setup
 #  Configures Claude Code + Codex CLI to report to AgentPulse
 # ───────────────────────────────────────────────────
+#
+# F234: --key is briefly visible in \`ps\` during this one-time install.
+# Prefer: AGENTPULSE_KEY=ap_xxx curl -sSL .../setup.sh | bash
 
 # Hooks MUST point to localhost -- Claude Code and Codex block
 # HTTP hooks to remote/private IPs as a security measure.
 HOOK_URL="${defaultLocalUrl}"
-API_KEY=""
+# F234: seed from \$AGENTPULSE_KEY (if exported) so it never has to be
+# passed as an argv flag at all; --key below still overrides it.
+API_KEY="\${AGENTPULSE_KEY:-}"
+# D39 (F246): explicit escape hatch — see ap_check_auth_before_write below.
+NO_AUTH_CHECK="0"
 
 while [[ \$# -gt 0 ]]; do
   case \$1 in
     --key) API_KEY="\$2"; shift 2 ;;
     --url) HOOK_URL="\$2"; shift 2 ;;
+    --no-auth-check) NO_AUTH_CHECK="1"; shift ;;
     *) shift ;;
   esac
 done
+
+# >>> agentpulse-hook-cmd
+# D13: shared hook-command generators. Byte-identical to buildBashHookCommand/
+# buildCodexHooksFile in src/shared/hook-command.ts (verified by
+# scripts/hook-command-parity.test.ts) — this exact block also appears
+# verbatim in scripts/setup-hooks.sh and scripts/setup-relay.sh. Do not
+# hand-edit one copy without the others.
+
+# F245 (High, codex r2 D38): same grammar as assertValidHookBaseUrl() in
+# src/shared/hook-command.ts — bare http(s)://host[:port] or
+# http(s)://[ipv6][:port], nothing else. The base URL is later embedded
+# inside single-quoted curl text in the generated hook command (ap_hook_cmd
+# below); a --url containing a quote, space, \$(...), or backtick would
+# persist as shell code in hooks.json/agentpulse.json and execute on the
+# next hook fire. Call before any hook JSON generation at every site.
+ap_validate_hook_base_url() {
+	local url="\$1"
+	if [[ "\$url" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?\$ ]]; then
+		return 0
+	fi
+	if [[ "\$url" =~ ^https?://\\[[0-9A-Fa-f:]+\\](:[0-9]{1,5})?\$ ]]; then
+		return 0
+	fi
+	echo "invalid AgentPulse base URL for a hook command: \$url" >&2
+	return 1
+}
+
+# F246 (High, codex r2 D38; tightened by D39): mirrors bin/cli.ts — with no
+# key, against a server that requires auth, refuse before writing any
+# command hooks. Without this, an auth-enabled server silently 401s every
+# hook fire forever: the detached shim discards curl's output on its
+# synchronous path by design (D13), so the failure is invisible.
+#
+# D39: fails CLOSED, not open. A key always skips the probe. With no key,
+# only an explicit disableAuth:true in the response lets the install
+# proceed — an unreachable server, a non-JSON response, or JSON missing
+# the field all refuse now, same as a real disableAuth:false. \$3=1
+# (--no-auth-check) is the explicit escape hatch.
+ap_check_auth_before_write() {
+	local base="\$1" key="\$2" skip="\${3:-}" body
+	if [[ -n "\$key" ]]; then
+		return 0
+	fi
+	if [[ "\$skip" == "1" ]]; then
+		return 0
+	fi
+	if body="\$(curl -sS -m 10 "\${base}/api/v1/auth/me" 2>/dev/null)" && printf '%s' "\$body" | python3 -c '
+import json, sys
+try:
+    me = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if me.get("disableAuth") is True else 1)
+'; then
+		return 0
+	fi
+	echo "This server requires an API key; pass --key (or AGENTPULSE_KEY), or bypass this check if this server runs with auth disabled." >&2
+	return 1
+}
+
+# F252 (Medium/High, xander D39 re-verify): the inline secret writers
+# (hook-auth-header for Codex/Copilot, ~/.agentpulse/env) checked only the
+# final path component for a symlink and called mkdir -p BEFORE checking
+# — a symlinked ~/.agentpulse parent directory would let mkdir -p silently
+# succeed and the secret land wherever the parent symlink points,
+# unrefused. Ports F249's ordering: refuse if the parent is a symlink,
+# THEN mkdir, THEN refuse if the file itself is a symlink, THEN the
+# umask-077 temp write + mv. \$2 is the exact file content, including any
+# trailing newline the caller wants — printf '%s' writes it verbatim, no
+# extra formatting here.
+ap_write_private_no_follow() {
+	local path="\$1" content="\$2" dir tmp
+	dir="\$(dirname -- "\$path")"
+	if [ -L "\$dir" ]; then
+		echo "refusing to write into a symlinked directory: \$dir" >&2
+		return 1
+	fi
+	mkdir -p "\$dir"
+	if [ -L "\$path" ]; then
+		echo "refusing to write through a symlink: \$path" >&2
+		return 1
+	fi
+	tmp="\${path}.\$\$.tmp"
+	( umask 077 && printf '%s' "\$content" > "\$tmp" )
+	mv -f "\$tmp" "\$path"
+}
+
+ap_hook_cmd() {
+	# \$1=base \$2=direct(0/1) \$3=agent \$4=event
+	local base="\$1" direct="\$2" agent="\$3" event="\$4"
+	local marker="" call_with_header call_without_header body
+	if [ "\$agent" = "codex_cli" ]; then
+		marker='sid=\$(grep -o '\\''"session_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9-]*"'\\'' "\$t" | head -n1); sid=\${sid%\\"}; sid=\${sid##*\\"}; case "\$sid" in ""|*[!A-Za-z0-9-]*) ;; *) if [ \${#sid} -le 128 ]; then mkdir -p "\$HOME/.agentpulse/codex-native" 2>/dev/null; : > "\$HOME/.agentpulse/codex-native/\$sid" 2>/dev/null; fi ;; esac; '
+	fi
+	call_with_header="curl -sS --max-time 2 -o /dev/null -X POST '\${base}/api/v1/hooks?event=\${event}' -H 'Content-Type: application/json' -H 'X-Agent-Type: \${agent}'"' -H "@\$f" --data-binary "@\$t"'
+	call_without_header="curl -sS --max-time 2 -o /dev/null -X POST '\${base}/api/v1/hooks?event=\${event}' -H 'Content-Type: application/json' -H 'X-Agent-Type: \${agent}'"' --data-binary "@\$t"'
+	if [ "\$direct" = "1" ]; then
+		body="\$marker"'f="\$HOME/.agentpulse/hook-auth-header"; if [ -s "\$f" ]; then '"\$call_with_header"'; else '"\$call_without_header"'; fi; rm -f "\$t"'
+	else
+		body="\$marker""\$call_without_header"'; rm -f "\$t"'
+	fi
+	printf '%s' 't=\$(mktemp "\${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX" 2>/dev/null) || exit 0; cat > "\$t"; ( '"\$body"' ) </dev/null >/dev/null 2>&1 & exit 0'
+}
+
+ap_codex_hooks_json() {
+	# \$1=base \$2=direct(0/1)
+	local base="\$1" direct="\$2"
+	local CODEX_EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "UserPromptSubmit" "Stop" "Interrupt" "SubagentStart" "SubagentStop" "PermissionRequest" "PreCompact" "PostCompact")
+	local event
+	{
+		for event in "\${CODEX_EVENTS[@]}"; do
+			printf '%s\\0%s\\0' "\$event" "\$(ap_hook_cmd "\$base" "\$direct" "codex_cli" "\$event")"
+		done
+	} | python3 -c '
+import json, sys
+data = sys.stdin.buffer.read().split(b"\\x00")
+pairs = [(data[i].decode(), data[i + 1].decode()) for i in range(0, len(data) - 1, 2)]
+hooks = {}
+for event, cmd in pairs:
+    hooks[event] = [{"hooks": [{"type": "command", "command": cmd, "async": False, "timeout": 1}]}]
+sys.stdout.write(json.dumps({"hooks": hooks}, indent=2) + "\\n")
+'
+}
+
+ap_copilot_hooks_json() {
+	# \$1=base \$2=direct(0/1)
+	local base="\$1" direct="\$2"
+	local COPILOT_EVENTS=("sessionStart" "sessionEnd" "userPromptSubmitted" "postToolUse" "postToolUseFailure" "agentStop" "subagentStart" "subagentStop" "preCompact" "errorOccurred")
+	local event
+	{
+		for event in "\${COPILOT_EVENTS[@]}"; do
+			printf '%s\\0%s\\0' "\$event" "\$(ap_hook_cmd "\$base" "\$direct" "copilot_cli" "\$event")"
+		done
+	} | python3 -c '
+import json, sys
+data = sys.stdin.buffer.read().split(b"\\x00")
+pairs = [(data[i].decode(), data[i + 1].decode()) for i in range(0, len(data) - 1, 2)]
+hooks = {}
+for event, cmd in pairs:
+    hooks[event] = [{"type": "command", "bash": cmd, "timeoutSec": 5}]
+sys.stdout.write(json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\\n")
+'
+}
+
+# F232 (xander, Medium): writes stdin to \$1 via a same-directory temp file +
+# atomic rename, refusing a symlink at \$1 or at \$1's parent directory —
+# never a plain \`>\` redirect or \`cp\`, both of which follow a symlink at the
+# destination. Used for both a Codex hooks.json write and its timestamped
+# backup (same primitive, different path).
+ap_write_no_follow() {
+	local path="\$1" dir tmp
+	if [ -L "\$path" ]; then
+		echo "refusing to write through a symlink: \$path" >&2
+		return 1
+	fi
+	dir="\$(dirname -- "\$path")"
+	if [ -L "\$dir" ]; then
+		echo "refusing to write into a symlinked directory: \$dir" >&2
+		return 1
+	fi
+	tmp="\${path}.\$\$.tmp"
+	if [ -e "\$tmp" ] || [ -L "\$tmp" ]; then
+		echo "refusing: stale temp file present: \$tmp" >&2
+		return 1
+	fi
+	( umask 022 && cat > "\$tmp" )
+	chmod 0644 "\$tmp"
+	mv -f "\$tmp" "\$path"
+}
+
+# D13/F57: -H "@\$f" needs curl >= 7.55 (silently sends no auth below that).
+# Only direct-mode sh installers call this — relay mode sends no auth header.
+ap_require_curl_755() {
+	local ver major minor rest
+	ver="\$(curl --version 2>/dev/null | head -n1 | sed -nE 's/^curl ([0-9]+\\.[0-9]+\\.[0-9]+).*/\\1/p')"
+	if [ -z "\$ver" ]; then
+		echo "AgentPulse direct hooks need curl >= 7.55 (curl not found). Upgrade curl or use the relay installer." >&2
+		exit 1
+	fi
+	major="\${ver%%.*}"
+	rest="\${ver#*.}"
+	minor="\${rest%%.*}"
+	if [ "\$major" -lt 7 ] || { [ "\$major" -eq 7 ] && [ "\$minor" -lt 55 ]; }; then
+		echo "AgentPulse direct hooks need curl >= 7.55 (found \${ver}). Upgrade curl or use the relay installer." >&2
+		exit 1
+	fi
+}
+# <<< agentpulse-hook-cmd
+
+# F245: reject a malformed --url before any hook JSON generation.
+ap_validate_hook_base_url "\$HOOK_URL" || exit 1
+
+# F246: before any file writes, refuse if this server needs a key we don't have.
+ap_check_auth_before_write "\$HOOK_URL" "\$API_KEY" "\$NO_AUTH_CHECK" || exit 1
 
 echo ""
 echo "  AgentPulse Setup"
@@ -58,7 +375,7 @@ for i in "\${!EVENTS[@]}"; do
   if [[ -n "\$API_KEY" ]]; then
     HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
   else
-    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
+    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
   fi
 done
 HOOKS_JSON+="}"
@@ -81,43 +398,95 @@ echo "  ✓ Claude Code hooks configured"
 
 # ── Codex CLI ──
 
-CODEX_DIR="\$HOME/.codex"
+# D13/F57: below curl 7.55, -H "@\$f" silently sends no auth header at all.
+ap_require_curl_755
+
+# D12 (r6, Phase 0 fact 5): Codex 0.145 loads hooks only from
+# \$CODEX_HOME/hooks.json — a project-level .codex/hooks.json is never read.
+CODEX_DIR="\${CODEX_HOME:-\$HOME/.codex}"
 mkdir -p "\$CODEX_DIR"
 
-CODEX_EVENTS=("SessionStart" "PreToolUse" "PostToolUse" "UserPromptSubmit" "Stop" "SubagentStart" "SubagentStop" "PermissionRequest" "PreCompact" "PostCompact")
-CODEX_HOOKS="["
-for i in "\${!CODEX_EVENTS[@]}"; do
-  [[ \$i -gt 0 ]] && CODEX_HOOKS+=","
-  if [[ -n "\$API_KEY" ]]; then
-    CODEX_HOOKS+="{\\"event\\":\\"\${CODEX_EVENTS[\$i]}\\",\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"codex_cli\\"}}"
-  else
-    CODEX_HOOKS+="{\\"event\\":\\"\${CODEX_EVENTS[\$i]}\\",\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"X-Agent-Type\\":\\"codex_cli\\"}}"
-  fi
-done
-CODEX_HOOKS+="]"
-
-echo '{"hooks":'\$CODEX_HOOKS'}' > "\$CODEX_DIR/hooks.json"
-# Hooks are stable and enabled by default since codex-cli 0.124.0; codex_hooks
-# is a recognized legacy alias for the \`hooks\` feature, written for
-# compatibility with older codex-cli installs that still gate on it.
-if [[ -f "\$CODEX_DIR/config.toml" ]]; then
-  grep -q "codex_hooks" "\$CODEX_DIR/config.toml" || echo -e "\\n[features]\\ncodex_hooks = true" >> "\$CODEX_DIR/config.toml"
-else
-  echo -e "[features]\\ncodex_hooks = true" > "\$CODEX_DIR/config.toml"
+if [[ -n "\$API_KEY" ]]; then
+  # F207/F252: never write through a symlink at the destination or its
+  # parent directory — see ap_write_private_no_follow above.
+  AP_AUTH_HEADER_FILE="\$HOME/.agentpulse/hook-auth-header"
+  printf -v AP_AUTH_HEADER_CONTENT 'Authorization: Bearer %s\\n' "\$API_KEY"
+  ap_write_private_no_follow "\$AP_AUTH_HEADER_FILE" "\$AP_AUTH_HEADER_CONTENT" || exit 1
 fi
-echo "  ✓ Codex CLI hooks configured"
 
-# ── Env vars ──
+NEW_CODEX_HOOKS_JSON="\$(ap_codex_hooks_json "\$HOOK_URL" "1")"
+if [[ -f "\$CODEX_DIR/hooks.json" ]] && [[ "\$(cat "\$CODEX_DIR/hooks.json")" == "\$NEW_CODEX_HOOKS_JSON" ]]; then
+  echo "  ✓ Codex hooks unchanged — no re-trust needed"
+else
+  if [[ -f "\$CODEX_DIR/hooks.json" ]]; then
+    CODEX_BACKUP_FILE="\$CODEX_DIR/hooks.json.agentpulse-bak.\$(date -u +%Y%m%dT%H%M%SZ)"
+    cat "\$CODEX_DIR/hooks.json" | ap_write_no_follow "\$CODEX_BACKUP_FILE" || exit 1
+    echo "  ✓ Backed up existing Codex hooks to \$CODEX_BACKUP_FILE"
+  fi
+  printf '%s\\n' "\$NEW_CODEX_HOOKS_JSON" | ap_write_no_follow "\$CODEX_DIR/hooks.json" || exit 1
+  echo "  ✓ Codex CLI hooks configured"
+  echo "    Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks."
+  echo "    Re-trust after changing the AgentPulse URL or port."
+fi
+# D12: codex_hooks is a deprecated (but still-working) legacy alias for
+# [features].hooks — left alone if present, never newly written.
+
+# ── Copilot CLI (F247, codex r2 D38) ──
+# D8: only write into a real Copilot install — never create config for a
+# tool that isn't there. hook-auth-header is reused from the Codex section
+# above (same file, same key) — nothing new to write for it here.
+
+if command -v copilot >/dev/null 2>&1 || [[ -d "\$HOME/.copilot" ]]; then
+  COPILOT_DIR="\$HOME/.copilot/hooks"
+  COPILOT_HOOKS_FILE="\$COPILOT_DIR/agentpulse.json"
+  mkdir -p "\$COPILOT_DIR"
+
+  NEW_COPILOT_HOOKS_JSON="\$(ap_copilot_hooks_json "\$HOOK_URL" "1")"
+  if [[ -f "\$COPILOT_HOOKS_FILE" ]] && [[ "\$(cat "\$COPILOT_HOOKS_FILE")" == "\$NEW_COPILOT_HOOKS_JSON" ]]; then
+    echo "  ✓ Copilot hooks unchanged"
+  else
+    if [[ -f "\$COPILOT_HOOKS_FILE" ]]; then
+      COPILOT_BACKUP_FILE="\${COPILOT_HOOKS_FILE}.agentpulse-bak.\$(date -u +%Y%m%dT%H%M%SZ)"
+      cat "\$COPILOT_HOOKS_FILE" | ap_write_no_follow "\$COPILOT_BACKUP_FILE" || exit 1
+      echo "  ✓ Backed up existing Copilot hooks to \$COPILOT_BACKUP_FILE"
+    fi
+    printf '%s\\n' "\$NEW_COPILOT_HOOKS_JSON" | ap_write_no_follow "\$COPILOT_HOOKS_FILE" || exit 1
+    echo "  ✓ Copilot CLI hooks configured in \$COPILOT_HOOKS_FILE"
+  fi
+fi
+
+# ── Env vars (D37/F243) ──
+#
+# Claude Code is always configured by this script, so this always applies
+# (unlike scripts/setup-hooks.sh, which is --agent-scoped and skips this
+# entirely for codex_cli/copilot_cli). Formerly appended the key in
+# plaintext to the rc file, which is world-readable by default on many
+# systems — now written to a 0600 ~/.agentpulse/env instead, with only a
+# key-free, idempotent source line in the rc file.
 
 if [[ -n "\$API_KEY" ]]; then
   PROFILE="\$HOME/.zshrc"
   [[ "\$(basename "\$SHELL")" == "bash" ]] && PROFILE="\$HOME/.bashrc"
-  if ! grep -q "AGENTPULSE_API_KEY" "\$PROFILE" 2>/dev/null; then
+
+  if grep -q "^export AGENTPULSE_API_KEY=" "\$PROFILE" 2>/dev/null; then
+    echo "  ! \$PROFILE already has a plaintext AGENTPULSE_API_KEY export from an" >&2
+    echo "    earlier install. Leaving it, but it's world-readable by default on" >&2
+    echo "    many systems — remove it by hand:" >&2
+    echo "      sed -i.bak '/^export AGENTPULSE_API_KEY=/d' \\"\$PROFILE\\"" >&2
+  fi
+
+  AP_ENV_FILE="\$HOME/.agentpulse/env"
+  printf -v AP_ENV_CONTENT 'export AGENTPULSE_API_KEY="%s"\\nexport AGENTPULSE_URL="%s"\\n' \\
+      "\$API_KEY" "\$HOOK_URL"
+  ap_write_private_no_follow "\$AP_ENV_FILE" "\$AP_ENV_CONTENT" || exit 1
+  echo "  ✓ Wrote AGENTPULSE_API_KEY/AGENTPULSE_URL to \$AP_ENV_FILE (0600)"
+
+  AP_SOURCE_LINE='[ -f "\$HOME/.agentpulse/env" ] && . "\$HOME/.agentpulse/env"'
+  if ! grep -qF "\$AP_SOURCE_LINE" "\$PROFILE" 2>/dev/null; then
     echo "" >> "\$PROFILE"
-    echo "# AgentPulse" >> "\$PROFILE"
-    echo "export AGENTPULSE_API_KEY=\\"\$API_KEY\\"" >> "\$PROFILE"
-    echo "export AGENTPULSE_URL=\\"\$HOOK_URL\\"" >> "\$PROFILE"
-    echo "  ✓ Added env vars to \$PROFILE"
+    echo "# AgentPulse (key lives in ~/.agentpulse/env, not here)" >> "\$PROFILE"
+    echo "\$AP_SOURCE_LINE" >> "\$PROFILE"
+    echo "  ✓ Added a source line for ~/.agentpulse/env to \$PROFILE"
   fi
 fi
 
@@ -134,502 +503,44 @@ echo "  Done! Open a new terminal and start a Claude Code or Codex session."
 echo ""
 `;
 
-	return new Response(script, {
-		headers: {
-			"Content-Type": "text/plain; charset=utf-8",
-			"Content-Disposition": "inline; filename=setup.sh",
-		},
-	});
+	return scriptResponse(script, "setup.sh");
 });
 
 // GET /install-local.sh - Serve the local Bun+SQLite installer
 // Usage: curl -sSL http://localhost:3000/install-local.sh | bash
 setup.get("/install-local.sh", (c) => {
-	const requestHost = c.req.header("Host") || `localhost:${config.port}`;
-	const requestPort = requestHost.includes(":")
-		? requestHost.split(":")[1]
-		: config.port.toString();
-	const defaultLocalUrl = `http://localhost:${requestPort}`;
-	const installScriptPath = join(import.meta.dir, "../../../scripts/install-local.sh");
-
-	let script = readFileSync(installScriptPath, "utf-8");
-	script = script.replace('PUBLIC_URL=""', `PUBLIC_URL="${defaultLocalUrl}"`);
-
-	return new Response(script, {
-		headers: {
-			"Content-Type": "text/plain; charset=utf-8",
-			"Content-Disposition": "inline; filename=install-local.sh",
-		},
-	});
+	const url = resolveLocalHookBaseUrl(c.req.header("Host"));
+	return scriptResponse(
+		INSTALLER_SOURCES.installLocalSh.replace('PUBLIC_URL=""', () => `PUBLIC_URL="${url}"`),
+		"install-local.sh",
+	);
 });
 
 // GET /install-local.ps1 - Serve the local Bun+SQLite installer for Windows
 // Usage: irm http://localhost:3000/install-local.ps1 | iex
 setup.get("/install-local.ps1", (c) => {
-	const requestHost = c.req.header("Host") || `localhost:${config.port}`;
-	const requestPort = requestHost.includes(":")
-		? requestHost.split(":")[1]
-		: config.port.toString();
-	const defaultLocalUrl = `http://localhost:${requestPort}`;
-	const installScriptPath = join(import.meta.dir, "../../../scripts/install-local.ps1");
-
-	let script = readFileSync(installScriptPath, "utf-8");
-	script = script.replace('[string]$PublicUrl = ""', `[string]$PublicUrl = "${defaultLocalUrl}"`);
-
-	return new Response(script, {
-		headers: {
-			"Content-Type": "text/plain; charset=utf-8",
-			"Content-Disposition": "inline; filename=install-local.ps1",
-		},
-	});
+	const url = resolveLocalHookBaseUrl(c.req.header("Host"));
+	return scriptResponse(
+		INSTALLER_SOURCES.installLocalPs1.replace(
+			'[string]$PublicUrl = ""',
+			() => `[string]$PublicUrl = "${url}"`,
+		),
+		"install-local.ps1",
+	);
 });
 
-// GET /setup-relay.sh - Self-contained relay setup for remote server users
-// Usage: curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_xxx
+// GET /setup-relay.sh - One-command relay setup for machines whose agents
+// report to a remote AgentPulse server.
+// Usage: curl -sSL https://your-server.com/setup-relay.sh | bash
 setup.get("/setup-relay.sh", (c) => {
-	const serverUrl = config.publicUrl || `https://${c.req.header("Host")}`;
-
-	const script = `#!/usr/bin/env bash
-set -euo pipefail
-
-# ───────────────────────────────────────────────────────
-#  AgentPulse Relay Setup (one command, no repo needed)
-#
-#  Installs a tiny relay on localhost that forwards hook events
-#  to your remote AgentPulse server. Includes a LaunchAgent
-#  so it auto-starts on login and restarts if it crashes.
-#
-#  Claude Code blocks hooks to remote IPs -- this relay solves that.
-# ───────────────────────────────────────────────────────
-
-REMOTE_URL="${serverUrl}"
-API_KEY=""
-PORT=4000
-
-while [[ \$# -gt 0 ]]; do
-  case \$1 in
-    --key) API_KEY="\$2"; shift 2 ;;
-    --port) PORT="\$2"; shift 2 ;;
-    --url) REMOTE_URL="\$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-
-REMOTE_URL="\${REMOTE_URL%/}"
-
-echo ""
-echo "  AgentPulse Relay Setup"
-echo "  ──────────────────────"
-echo "  Remote:  \$REMOTE_URL"
-echo "  Local:   http://localhost:\$PORT"
-echo ""
-
-# ── Install Bun if needed ──
-
-BUN_PATH=""
-if command -v bun &>/dev/null; then
-  BUN_PATH="\$(which bun)"
-elif [[ -f "\$HOME/.bun/bin/bun" ]]; then
-  BUN_PATH="\$HOME/.bun/bin/bun"
-else
-  echo "  Installing Bun..."
-  # Pin Bun to a specific release for reproducibility and supply-chain safety (S-L2/S-L3).
-  #
-  # HOW THIS WORKS:
-  #   1. Download the bun.sh installer script and verify its SHA256 (pins the installer).
-  #   2. Invoke with "bun-v\${BUN_VERSION}" so the installer fetches that exact
-  #      release from github.com/oven-sh/bun/releases/download/bun-v\${BUN_VERSION}/.
-  #
-  # TO UPGRADE: bump BUN_VERSION and BUN_INSTALLER_SHA256 together.
-  #   Fetch new SHA: curl -fsSL "https://bun.sh/install" | sha256sum
-  #   Verify at:     https://github.com/oven-sh/bun/releases/tag/bun-v\${BUN_VERSION}
-  BUN_VERSION="1.1.30"
-  BUN_INSTALLER_URL="https://bun.sh/install"
-  # SHA256 of the bun.sh/install script as of 2026-05-05.
-  # Re-verify with: curl -fsSL "https://bun.sh/install" | sha256sum
-  BUN_INSTALLER_SHA256="bab8acfb046aac8c72407bdcce903957665d655d7acaa3e11c7c4616beae68dd"
-
-  BUN_INSTALLER_TMP="\$(mktemp)"
-  curl -fsSL "\$BUN_INSTALLER_URL" -o "\$BUN_INSTALLER_TMP"
-
-  # Verify checksum before executing (S-L2).
-  # If neither sha256sum nor shasum is available, abort — do not silently skip
-  # supply-chain verification on minimal environments (e.g. Alpine, CI runners).
-  if command -v sha256sum &>/dev/null; then
-    echo "\$BUN_INSTALLER_SHA256  \$BUN_INSTALLER_TMP" | sha256sum -c --quiet || {
-      echo "  ERROR: Bun installer checksum mismatch. Aborting."
-      rm -f "\$BUN_INSTALLER_TMP"
-      exit 1
-    }
-  elif command -v shasum &>/dev/null; then
-    echo "\$BUN_INSTALLER_SHA256  \$BUN_INSTALLER_TMP" | shasum -a 256 -c --quiet 2>/dev/null || {
-      echo "  ERROR: Bun installer checksum mismatch. Aborting."
-      rm -f "\$BUN_INSTALLER_TMP"
-      exit 1
-    }
-  else
-    echo "  ERROR: No sha256sum or shasum found. Install coreutils and retry."
-    rm -f "\$BUN_INSTALLER_TMP"
-    exit 1
-  fi
-
-  # Pass "bun-v\${BUN_VERSION}" so the installer downloads that exact release
-  # from github.com/oven-sh/bun/releases/download/bun-v\${BUN_VERSION}/ rather
-  # than the latest release.
-  bash "\$BUN_INSTALLER_TMP" "bun-v\${BUN_VERSION}" >/dev/null 2>&1
-  rm -f "\$BUN_INSTALLER_TMP"
-  BUN_PATH="\$HOME/.bun/bin/bun"
-fi
-echo "  ✓ Bun: \$BUN_PATH"
-
-# ── Install relay script ──
-
-RELAY_DIR="\$HOME/.agentpulse"
-mkdir -p "\$RELAY_DIR/logs"
-
-cat > "\$RELAY_DIR/relay.ts" << 'INNER_EOF'
-#!/usr/bin/env bun
-import { access, mkdir, readFile, readdir, rename, unlink, writeFile } from "fs/promises";
-import { constants } from "fs";
-import { join } from "path";
-const args = process.argv.slice(2);
-let remoteUrl = "", port = 4000, apiKey = "";
-const RELAY_FETCH_TIMEOUT_MS = 8000;
-const RELAY_IDLE_TIMEOUT_S = 30;
-const HOOK_RETRY_BASE_MS = 2000;
-const HOOK_RETRY_MAX_MS = 60000;
-const HOOK_RETRY_POLL_MS = 5000;
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--port" && args[i+1]) port = Number(args[++i]);
-  else if (args[i] === "--key" && args[i+1]) apiKey = args[++i];
-  else if (!args[i].startsWith("--")) remoteUrl = args[i].replace(/\\/$/, "");
-}
-if (!remoteUrl) { console.error("Usage: relay.ts <url> [--port N] [--key K]"); process.exit(1); }
-async function fe(p:string){try{await access(p,constants.F_OK);return true}catch{return false}}
-const relayDir = import.meta.dir;
-const hookQueueDir = join(relayDir, "hook-queue");
-const hookPendingDir = join(hookQueueDir, "pending");
-const hookProcessingDir = join(hookQueueDir, "processing");
-let queueRunning = false;
-let queueTimer = null;
-const relayState = {
-  lastHookEnqueuedAt: null,
-  lastHookForwardedAt: null,
-  lastHookFailureAt: null,
-  lastHookError: null,
-  consecutiveHookFailures: 0,
-};
-async function ensureQueueDirs() {
-  await mkdir(hookPendingDir, { recursive: true });
-  await mkdir(hookProcessingDir, { recursive: true });
-}
-function nextBackoffMs(attempts:number) {
-  return Math.min(HOOK_RETRY_MAX_MS, HOOK_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1));
-}
-function scheduleQueue(delayMs = 0) {
-  if (queueTimer) clearTimeout(queueTimer);
-  queueTimer = setTimeout(() => {
-    queueTimer = null;
-    void processHookQueue();
-  }, delayMs);
-}
-async function forwardApiRequest(input:{ pathname:string; search:string; method:string; contentType:string; agentType?:string|null; body?:string }) {
-  const headers = new Headers();
-  headers.set("Content-Type", input.contentType || "application/json");
-  if (apiKey) headers.set("Authorization", "Bearer " + apiKey);
-  if (input.agentType) headers.set("X-Agent-Type", input.agentType);
-  const res = await fetch(remoteUrl + input.pathname + input.search, {
-    method: input.method,
-    headers,
-    body: input.method !== "GET" ? input.body : undefined,
-    signal: AbortSignal.timeout(RELAY_FETCH_TIMEOUT_MS),
-  });
-  return new Response(await res.text(), {
-    status: res.status,
-    headers: { "Content-Type": res.headers.get("Content-Type") || "application/json" },
-  });
-}
-async function enqueueHook(req:Request, url:URL) {
-  await ensureQueueDirs();
-  const item = {
-    id: crypto.randomUUID(),
-    pathname: url.pathname,
-    search: url.search,
-    method: req.method,
-    contentType: req.headers.get("Content-Type") || "application/json",
-    agentType: req.headers.get("X-Agent-Type"),
-    body: await req.text(),
-    createdAt: new Date().toISOString(),
-    attempts: 0,
-    nextAttemptAt: new Date().toISOString(),
-    lastError: null,
-  };
-  await writeFile(join(hookPendingDir, \`\${Date.now()}-\${item.id}.json\`), JSON.stringify(item), "utf-8");
-  relayState.lastHookEnqueuedAt = item.createdAt;
-  scheduleQueue();
-  return item.id;
-}
-async function leaseNextHook() {
-  await ensureQueueDirs();
-  const fileNames = (await readdir(hookPendingDir)).filter((name) => name.endsWith(".json")).sort();
-  const now = Date.now();
-  for (const fileName of fileNames) {
-    const pendingPath = join(hookPendingDir, fileName);
-    try {
-      const item = JSON.parse(await readFile(pendingPath, "utf-8"));
-      if (Date.parse(item.nextAttemptAt) > now) continue;
-      await rename(pendingPath, join(hookProcessingDir, fileName));
-      return { fileName, item };
-    } catch {
-      try { await unlink(pendingPath); } catch {}
-    }
-  }
-  return null;
-}
-async function processHookQueue() {
-  if (queueRunning) return;
-  queueRunning = true;
-  try {
-    while (true) {
-      const leased = await leaseNextHook();
-      if (!leased) break;
-      try {
-        await forwardApiRequest(leased.item);
-        try { await unlink(join(hookProcessingDir, leased.fileName)); } catch {}
-        relayState.lastHookForwardedAt = new Date().toISOString();
-        relayState.lastHookError = null;
-        relayState.consecutiveHookFailures = 0;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const updated = {
-          ...leased.item,
-          attempts: leased.item.attempts + 1,
-          lastError: message,
-          nextAttemptAt: new Date(Date.now() + nextBackoffMs(leased.item.attempts + 1)).toISOString(),
-        };
-        await writeFile(join(hookPendingDir, leased.fileName), JSON.stringify(updated), "utf-8");
-        try { await unlink(join(hookProcessingDir, leased.fileName)); } catch {}
-        relayState.lastHookFailureAt = new Date().toISOString();
-        relayState.lastHookError = message;
-        relayState.consecutiveHookFailures += 1;
-        scheduleQueue(nextBackoffMs(updated.attempts));
-      }
-    }
-  } finally {
-    queueRunning = false;
-  }
-}
-async function queueDiagnostics() {
-  await ensureQueueDirs();
-  const pending = (await readdir(hookPendingDir)).filter((name) => name.endsWith(".json"));
-  const processing = (await readdir(hookProcessingDir)).filter((name) => name.endsWith(".json"));
-  return { pending: pending.length, processing: processing.length, ...relayState };
-}
-Bun.serve({
-  port, hostname: "127.0.0.1", idleTimeout: RELAY_IDLE_TIMEOUT_S,
-  async fetch(req) {
-    const url = new URL(req.url);
-    if (url.pathname === "/api/v1/health") return Response.json({ status: "ok", relay: true, remote: remoteUrl });
-    if (url.pathname === "/api/v1/relay/diagnostics") {
-      return Response.json({ status: "ok", relay: true, remote: remoteUrl, queue: await queueDiagnostics() });
-    }
-    // Handle agents-md locally (remote can't read local files)
-    if (url.pathname === "/api/v1/agents-md" && req.method === "GET") {
-      const pp = url.searchParams.get("path");
-      if (!pp || pp.includes("..")) return Response.json({ error: "Invalid" }, { status: 400 });
-      const files = [];
-      for (const n of ["CLAUDE.md","AGENTS.md"]) {
-        const fp = join(pp, n); const ex = await fe(fp);
-        let c = ""; if (ex) try { c = await readFile(fp, "utf-8") } catch {}
-        files.push({ name: n, path: fp, content: c, exists: ex });
-      }
-      return Response.json({ files, projectPath: pp });
-    }
-    if (url.pathname === "/api/v1/agents-md" && req.method === "PUT") {
-      const { path: fp, content: c } = await req.json() as any;
-      if (!fp || fp.includes("..")) return Response.json({ error: "Invalid" }, { status: 400 });
-      const bn = fp.split("/").pop() || "";
-      if (!["CLAUDE.md","AGENTS.md"].includes(bn)) return Response.json({ error: "Not allowed" }, { status: 400 });
-      try { await writeFile(fp, c, "utf-8"); return Response.json({ ok: true }); } catch(e) { return Response.json({ error: String(e) }, { status: 500 }); }
-    }
-    if (url.pathname.startsWith("/api/v1/hooks")) {
-      const queueId = await enqueueHook(req, url);
-      return Response.json({ ok: true, relayed: false, queued: true, queueId });
-    }
-    if (url.pathname.startsWith("/api/")) {
-      try {
-        return await forwardApiRequest({
-          pathname: url.pathname,
-          search: url.search,
-          method: req.method,
-          contentType: req.headers.get("Content-Type") || "application/json",
-          agentType: req.headers.get("X-Agent-Type"),
-          body: req.method !== "GET" ? await req.text() : undefined,
-        });
-      } catch {
-        return Response.json({ error: "Relay failed" }, { status: 502 });
-      }
-    }
-    return Response.redirect(remoteUrl + url.pathname, 302);
-  },
-});
-setInterval(() => { void processHookQueue(); }, HOOK_RETRY_POLL_MS);
-void ensureQueueDirs().then(() => scheduleQueue(250));
-console.log("AgentPulse Relay: localhost:" + port + " -> " + remoteUrl + " (queued hook forwarding)");
-INNER_EOF
-
-echo "  ✓ Relay script installed"
-
-# ── macOS LaunchAgent ──
-
-if [[ "\$(uname)" == "Darwin" ]]; then
-  PLIST="\$HOME/Library/LaunchAgents/dev.agentpulse.relay.plist"
-  mkdir -p "\$HOME/Library/LaunchAgents"
-
-  ARGS_XML="    <string>\${BUN_PATH}</string>
-    <string>\${RELAY_DIR}/relay.ts</string>
-    <string>\${REMOTE_URL}</string>
-    <string>--port</string>
-    <string>\${PORT}</string>"
-
-  if [[ -n "\$API_KEY" ]]; then
-    ARGS_XML="\${ARGS_XML}
-    <string>--key</string>
-    <string>\${API_KEY}</string>"
-  fi
-
-  cat > "\$PLIST" << PLIST_EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>dev.agentpulse.relay</string>
-  <key>ProgramArguments</key><array>
-\${ARGS_XML}
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>\${RELAY_DIR}/logs/relay.log</string>
-  <key>StandardErrorPath</key><string>\${RELAY_DIR}/logs/relay.err</string>
-  <key>WorkingDirectory</key><string>\${RELAY_DIR}</string>
-</dict>
-</plist>
-PLIST_EOF
-
-  launchctl unload "\$PLIST" 2>/dev/null || true
-  launchctl load "\$PLIST"
-  echo "  ✓ LaunchAgent installed (auto-starts on login)"
-else
-  # Linux: create a systemd user service
-  SYSTEMD_DIR="\$HOME/.config/systemd/user"
-  mkdir -p "\$SYSTEMD_DIR"
-
-  KEY_ARG=""
-  [[ -n "\$API_KEY" ]] && KEY_ARG="--key \$API_KEY"
-
-  cat > "\$SYSTEMD_DIR/agentpulse-relay.service" << SYSTEMD_EOF
-[Unit]
-Description=AgentPulse Relay
-After=network.target
-
-[Service]
-ExecStart=\${BUN_PATH} \${RELAY_DIR}/relay.ts \${REMOTE_URL} --port \${PORT} \${KEY_ARG}
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-SYSTEMD_EOF
-
-  systemctl --user daemon-reload
-  systemctl --user enable agentpulse-relay
-  systemctl --user start agentpulse-relay
-  echo "  ✓ systemd service installed (auto-starts on login)"
-fi
-
-# Wait for relay
-sleep 2
-if curl -sf "http://localhost:\${PORT}/api/v1/health" >/dev/null 2>&1; then
-  echo "  ✓ Relay running on localhost:\$PORT"
-else
-  echo "  ! Relay may still be starting. Check logs: tail ~/.agentpulse/logs/relay.err"
-fi
-
-# ── Configure hooks ──
-
-echo ""
-
-# Claude Code
-CLAUDE_DIR="\$HOME/.claude"
-CLAUDE_SETTINGS="\$CLAUDE_DIR/settings.json"
-mkdir -p "\$CLAUDE_DIR"
-
-EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit" "PermissionRequest" "PermissionDenied" "Notification" "PreCompact" "PostCompact" "PostToolUseFailure")
-HOOKS_JSON="{"
-for i in "\${!EVENTS[@]}"; do
-  [[ \$i -gt 0 ]] && HOOKS_JSON+=","
-  HOOKS_JSON+="\\"\${EVENTS[\$i]}\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"http://localhost:\${PORT}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
-done
-HOOKS_JSON+="}"
-
-if [[ -f "\$CLAUDE_SETTINGS" ]] && command -v jq &>/dev/null; then
-  jq --argjson hooks "\$HOOKS_JSON" '.hooks = (.hooks // {}) * \$hooks' "\$CLAUDE_SETTINGS" > "\${CLAUDE_SETTINGS}.tmp"
-  mv "\${CLAUDE_SETTINGS}.tmp" "\$CLAUDE_SETTINGS"
-elif [[ -f "\$CLAUDE_SETTINGS" ]] && command -v python3 &>/dev/null; then
-  python3 -c "
-import json
-with open('\$CLAUDE_SETTINGS') as f: s = json.load(f)
-s.setdefault('hooks', {}).update(json.loads('''\$HOOKS_JSON'''))
-with open('\$CLAUDE_SETTINGS', 'w') as f: json.dump(s, f, indent=2)
-"
-else
-  echo "{\\"hooks\\":\$HOOKS_JSON}" > "\$CLAUDE_SETTINGS"
-fi
-echo "  ✓ Claude Code hooks → localhost:\$PORT"
-
-# Codex CLI
-CODEX_DIR="\$HOME/.codex"
-mkdir -p "\$CODEX_DIR"
-CODEX_EVENTS=("SessionStart" "PreToolUse" "PostToolUse" "UserPromptSubmit" "Stop" "SubagentStart" "SubagentStop" "PermissionRequest" "PreCompact" "PostCompact")
-CODEX_HOOKS="["
-for i in "\${!CODEX_EVENTS[@]}"; do
-  [[ \$i -gt 0 ]] && CODEX_HOOKS+=","
-  CODEX_HOOKS+="{\\"event\\":\\"\${CODEX_EVENTS[\$i]}\\",\\"type\\":\\"http\\",\\"url\\":\\"http://localhost:\${PORT}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"X-Agent-Type\\":\\"codex_cli\\"}}"
-done
-CODEX_HOOKS+="]"
-echo "{\\"hooks\\":\$CODEX_HOOKS}" > "\$CODEX_DIR/hooks.json"
-# Hooks are stable and enabled by default since codex-cli 0.124.0; codex_hooks
-# is a recognized legacy alias for the \`hooks\` feature, written for
-# compatibility with older codex-cli installs that still gate on it.
-if [[ -f "\$CODEX_DIR/config.toml" ]]; then
-  grep -q "codex_hooks" "\$CODEX_DIR/config.toml" || echo -e "\\n[features]\\ncodex_hooks = true" >> "\$CODEX_DIR/config.toml"
-else
-  echo -e "[features]\\ncodex_hooks = true" > "\$CODEX_DIR/config.toml"
-fi
-echo "  ✓ Codex CLI hooks → localhost:\$PORT"
-
-echo ""
-echo "  Done! Open a new Claude Code or Codex session."
-echo "  Dashboard: \$REMOTE_URL"
-echo ""
-echo "  Manage relay:"
-if [[ "\$(uname)" == "Darwin" ]]; then
-  echo "    Stop:  launchctl unload ~/Library/LaunchAgents/dev.agentpulse.relay.plist"
-  echo "    Start: launchctl load ~/Library/LaunchAgents/dev.agentpulse.relay.plist"
-else
-  echo "    Stop:  systemctl --user stop agentpulse-relay"
-  echo "    Start: systemctl --user start agentpulse-relay"
-fi
-echo "    Logs:  tail -f ~/.agentpulse/logs/relay.log"
-echo ""
-`;
-
-	return new Response(script, {
-		headers: {
-			"Content-Type": "text/plain; charset=utf-8",
-			"Content-Disposition": "inline; filename=setup-relay.sh",
-		},
-	});
+	const server = resolvePublicServerUrl(c.req.header("Host"));
+	if (!server.ok) return installerError(server.error);
+	const built = buildRelayInstaller(INSTALLER_SOURCES, server.url);
+	if (!built.ok) {
+		console.error(`[setup] relay installer unavailable: ${built.reason}`);
+		return installerError("installer_unavailable");
+	}
+	return scriptResponse(built.script, "setup-relay.sh");
 });
 
 export { setup };

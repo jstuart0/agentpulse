@@ -4,6 +4,7 @@ import {
 	type AgentType,
 	type ApprovalPolicy,
 	type LaunchMode,
+	type LaunchableAgentType,
 	SANDBOX_MODES,
 	type SandboxMode,
 	type SessionTemplateInput,
@@ -18,7 +19,9 @@ export const approvalPolicies: Array<ApprovalPolicy | ""> = ["", ...APPROVAL_POL
 
 export const sandboxModes: Array<SandboxMode | ""> = ["", ...SANDBOX_MODES];
 
-export function createBlankTemplate(agentType: AgentType = "codex_cli"): SessionTemplateInput {
+export function createBlankTemplate(
+	agentType: LaunchableAgentType = "codex_cli",
+): SessionTemplateInput {
 	return {
 		name: "New template",
 		description: "",
@@ -41,7 +44,7 @@ export const launchModeLabels: Record<LaunchMode, string> = {
 	managed_codex: "Managed Codex",
 };
 
-export function getLaunchModeOptions(agentType: AgentType) {
+export function getLaunchModeOptions(agentType: LaunchableAgentType) {
 	if (agentType === "claude_code") {
 		return [
 			{
@@ -69,7 +72,7 @@ export function getLaunchModeOptions(agentType: AgentType) {
 	];
 }
 
-export function defaultLaunchModeForAgent(agentType: AgentType): LaunchMode {
+export function defaultLaunchModeForAgent(agentType: LaunchableAgentType): LaunchMode {
 	return agentType === "claude_code" ? "headless" : "managed_codex";
 }
 

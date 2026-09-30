@@ -1,7 +1,8 @@
 import { Wand2 } from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
-import type { Session, SessionEvent } from "../../../shared/types.js";
+import { AGENT_METADATA } from "../../../shared/constants.js";
+import type { AgentType, Session, SessionEvent } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { formatDuration } from "../../lib/utils.js";
 import { useLabsStore } from "../../stores/labs-store.js";
@@ -47,6 +48,8 @@ interface SessionHeaderProps {
 	onJumpTop: () => void;
 	onJumpBottom: () => void;
 	onRename: (name: string) => void;
+	/** F95: re-fetch the session (used after a name reset). */
+	onRefresh?: () => Promise<void> | void;
 	onStop: () => void;
 }
 
@@ -74,6 +77,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 		onJumpTop,
 		onJumpBottom,
 		onRename,
+		onRefresh,
 		onStop,
 	} = props;
 	const navigate = useNavigate();
@@ -92,7 +96,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 				<button
 					type="button"
 					onClick={() => navigate("/")}
-					className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+					className="self-start mt-1.5 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
 					aria-label="Back to dashboard"
 				>
 					<svg
@@ -114,7 +118,11 @@ export function SessionHeader(props: SessionHeaderProps) {
 					<InlineRename
 						sessionId={session.sessionId}
 						currentName={displayName}
+						nameSource={session.nameSource}
+						nativeName={session.nativeName}
+						agentType={session.agentType}
 						onRenamed={onRename}
+						onRefresh={onRefresh}
 					/>
 					{session.isWorking && (
 						<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
@@ -243,7 +251,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 					/>
 					<WorkspaceTabButton
 						active={workspaceTab === "instructions"}
-						label={session.agentType === "codex_cli" ? "AGENTS.md" : "CLAUDE.md"}
+						label={AGENT_METADATA[session.agentType as AgentType]?.instructionsFile ?? "CLAUDE.md"}
 						onClick={() => onSelectTab("instructions")}
 					/>
 					{session.managedSession?.launchRequestId && (

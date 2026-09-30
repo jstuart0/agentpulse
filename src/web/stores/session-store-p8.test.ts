@@ -32,6 +32,8 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 		totalToolUses: 0,
 		isWorking: false,
 		isPinned: false,
+		nameSource: "generated",
+		nativeName: null,
 		gitBranch: null,
 		claudeMdContent: null,
 		claudeMdPath: null,

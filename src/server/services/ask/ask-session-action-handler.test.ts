@@ -98,7 +98,7 @@ describe("handleSessionAction rename", () => {
 		);
 
 		const pullResult = await applyNativeName("ask-rename-precedence", "claude-native-name");
-		expect(pullResult).toEqual({ found: true, applied: false });
+		expect(pullResult).toEqual({ found: true, applied: false, reason: "manual_rename" });
 
 		const row = await getSession("ask-rename-precedence");
 		expect(row?.displayName).toBe("auth-refactor");

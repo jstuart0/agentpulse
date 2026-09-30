@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import pkg from "../../../package.json" with { type: "json" };
 import { isShuttingDown } from "../drain-state.js";
+import { INSTALLER_SOURCES } from "../installers.js";
 import {
 	getEventsDeduplicatedCounts,
 	getLegacyObserverDeliveries,
 } from "../services/event-dedup.js";
+import { computeChecksum } from "../util/checksum.js";
 import {
 	getBgErrorCount,
 	getInFlightCount,
@@ -41,6 +43,22 @@ export function _resetDbReadyForTest(ready = false): void {
 	_dbReady = ready;
 }
 
+// D3/F20: checksums of the relay/statusline client scripts this server ships,
+// so a running relay or statusline install can detect drift against the
+// server it's talking to. `trimEnd` ignores trailing-newline-only diffs (the
+// kind git/editors introduce without changing behavior). F165: they hash the
+// installer sources embedded at build time, the exact strings /setup-relay.sh
+// splices in, so there's nothing to read (or fail to read) at request time.
+let clientChecksums: Promise<Record<string, string>> | null = null;
+
+export function computeClientChecksums(): Promise<Record<string, string>> {
+	clientChecksums ??= (async () => ({
+		relay: await computeChecksum(INSTALLER_SOURCES.relay, { trimEnd: true }),
+		statusline: await computeChecksum(INSTALLER_SOURCES.statusline, { trimEnd: true }),
+	}))();
+	return clientChecksums;
+}
+
 // GET /api/v1/health - Liveness probe + operator observability.
 //
 // Returns 503 until the database has finished initialising (startupProbe
@@ -55,7 +73,8 @@ export function _resetDbReadyForTest(ready = false): void {
 //    body-size cap (D16/F116), same shape as rateLimitedDropped.
 //  - shuttingDown: true when drain has been triggered (readiness returns 503).
 //  - dbReady: true only after initializeDatabase() completes (S-24).
-health.get("/health", (c) => {
+//  - clients (D3/F20): relay/statusline script checksums (computeClientChecksums).
+health.get("/health", async (c) => {
 	if (!_dbReady) {
 		return c.json(
 			{
@@ -67,6 +86,7 @@ health.get("/health", (c) => {
 			503,
 		);
 	}
+	const clients = await computeClientChecksums();
 	return c.json({
 		status: "ok",
 		service: "agentpulse",
@@ -78,6 +98,7 @@ health.get("/health", (c) => {
 		oversizeDropped: getOversizeDropped(),
 		shuttingDown: isShuttingDown(),
 		dbReady: true,
+		clients,
 		eventsDeduplicated: getEventsDeduplicatedCounts(),
 		legacyObserverDeliveries: getLegacyObserverDeliveries(),
 	});

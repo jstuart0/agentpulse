@@ -1,4 +1,5 @@
-import type { Session, SessionEvent } from "../../../shared/types.js";
+import { AGENT_METADATA } from "../../../shared/constants.js";
+import type { AgentType, Session, SessionEvent } from "../../../shared/types.js";
 
 /**
  * Build a Markdown export of a session's timeline for copy/paste. Pure
@@ -34,7 +35,7 @@ export function buildExportMarkdown(
 	return `# ${displayName}
 
 **Project:** ${session.cwd}
-**Agent:** ${session.agentType}
+**Agent:** ${AGENT_METADATA[session.agentType as AgentType]?.label ?? session.agentType}
 **Started:** ${session.startedAt}
 **Tools:** ${session.totalToolUses}
 ${session.gitBranch ? `**Branch:** ${session.gitBranch}\n` : ""}${

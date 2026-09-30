@@ -32,23 +32,39 @@ interface Bucket {
 // restart (intentional — state is ephemeral, not persisted).
 const buckets = new Map<string, Bucket>();
 
+// F132: the middleware reads time through this seam so an integration test
+// can freeze it; otherwise a backend slower than the refill rate (Postgres,
+// ~15 ms per request vs one token per 10 ms) never drains a bucket.
+let rateLimitClock: () => number = Date.now;
+
+/** Test-only: freeze (or with null, restore) the clock the middleware uses. */
+export function _setRateLimitClockForTest(clock: (() => number) | null): void {
+	rateLimitClock = clock ?? Date.now;
+}
+
 /**
  * Consume one token for `keyId`.
  * Returns true if the request is allowed, false if it should be dropped.
+ *
+ * F84 (tessa mid-build): `now` is injectable so a unit test can pin an exact
+ * instant (no wall-clock refill between calls) and prove the capacity
+ * boundary precisely — capacity is default-exported at RATE_LIMIT, not
+ * fuzzed by real elapsed time the way the integration-tier tests are.
+ * Defaults to `Date.now` for every production call site.
  */
-function tryConsume(keyId: string): boolean {
-	const now = Date.now();
+export function tryConsume(keyId: string, now: () => number = rateLimitClock): boolean {
+	const nowMs = now();
 	let bucket = buckets.get(keyId);
 
 	if (!bucket) {
-		bucket = { tokens: RATE_LIMIT, lastRefillMs: now };
+		bucket = { tokens: RATE_LIMIT, lastRefillMs: nowMs };
 		buckets.set(keyId, bucket);
 	}
 
 	// Refill tokens proportional to elapsed time (continuous refill).
-	const elapsedSec = (now - bucket.lastRefillMs) / 1000;
+	const elapsedSec = (nowMs - bucket.lastRefillMs) / 1000;
 	bucket.tokens = Math.min(RATE_LIMIT, bucket.tokens + elapsedSec * RATE_LIMIT);
-	bucket.lastRefillMs = now;
+	bucket.lastRefillMs = nowMs;
 
 	if (bucket.tokens >= 1) {
 		bucket.tokens -= 1;
@@ -57,23 +73,58 @@ function tryConsume(keyId: string): boolean {
 	return false;
 }
 
-/**
- * Hono middleware factory for hook ingest rate limiting.
- *
- * Expects `c.get("apiKeyId")` to be set by requireApiKey() upstream.
- * On rate-limit hit: increments rateLimitedDropped, returns 200 immediately
- * — no downstream handler is invoked.
- */
-export function hookRateLimit() {
-	return async (c: Context, next: Next): Promise<Response | undefined> => {
-		// authUser is set by requireApiKey() before this middleware runs.
-		// authUser.id is the API key's database id (unique per key).
-		// In DISABLE_AUTH mode id is "anonymous" — one shared bucket, which
-		// is fine since there's no per-key isolation to enforce.
-		const authUser = c.get("authUser") as { id?: string } | undefined;
-		const apiKeyId = authUser?.id ?? "anonymous";
+/** The configured capacity (tokens per second / per key). Exported for tests. */
+export const RATE_LIMIT_CAPACITY = RATE_LIMIT;
 
-		if (!tryConsume(apiKeyId)) {
+export interface HookRateLimitOptions {
+	/**
+	 * Prefixes the bucket key so this call site gets its own token bucket,
+	 * independent of `/hooks`'s default (unprefixed) buckets. D20:
+	 * `/native-name` uses `"native-name:"`.
+	 */
+	bucketPrefix?: string;
+	/**
+	 * `/hooks` must never return 429 post-auth (CLAUDE.md mandate) — the
+	 * default "200-silent" drops the request silently. D20's `/native-name`
+	 * limiter opts into a real 429 via "429" instead.
+	 */
+	onLimit?: "200-silent" | "429";
+}
+
+/**
+ * Hono middleware factory for hook-shaped rate limiting.
+ *
+ * Bucket key: api_key callers use their key id (`<bucketPrefix><id>`, one
+ * bucket per key — D20). Non-api_key callers (forwardauth/local/
+ * DISABLE_AUTH) use `<bucketPrefix><source>:<sessionId>`, keyed per session
+ * rather than one shared bucket, since a dashboard operator resetting many
+ * different sessions' names shouldn't be throttled as a single caller.
+ *
+ * On rate-limit hit: `onLimit:"200-silent"` (default) increments
+ * rateLimitedDropped and returns 200 immediately, no downstream handler —
+ * the /hooks always-200 contract. `onLimit:"429"` returns
+ * 429 { error: "rate_limited" } instead.
+ */
+export function hookRateLimit(options: HookRateLimitOptions = {}) {
+	const bucketPrefix = options.bucketPrefix ?? "";
+	const onLimit = options.onLimit ?? "200-silent";
+	return async (c: Context, next: Next): Promise<Response | undefined> => {
+		// authUser is set by requireApiKey()/requireAuth() before this
+		// middleware runs. authUser.id is the API key's database id (unique
+		// per key). In DISABLE_AUTH mode id is "anonymous" — one shared
+		// bucket, which is fine since there's no per-key isolation to enforce.
+		const authUser = c.get("authUser") as { id?: string; source?: string } | undefined;
+		const bucketKey =
+			authUser?.source === "api_key" || authUser === undefined
+				? `${bucketPrefix}${authUser?.id ?? "anonymous"}`
+				: `${bucketPrefix}${authUser.source}:${c.req.param("sessionId") ?? "none"}`;
+
+		if (!tryConsume(bucketKey)) {
+			if (onLimit === "429") {
+				// F151: one token refills in at most 1 s (capacity = tokens/second).
+				c.header("Retry-After", "1");
+				return c.json({ error: "rate_limited" }, 429);
+			}
 			incrementRateLimitedDropped();
 			// Return 200 — never 429 post-auth (CLAUDE.md mandate).
 			return c.json({ ok: true });

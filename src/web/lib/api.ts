@@ -1,5 +1,6 @@
 import type {
 	ActionRequestDecision,
+	AgentType,
 	AskMessageRole,
 	AskThreadOrigin,
 	AuthMeResponse,
@@ -143,7 +144,7 @@ export const api = {
 		q: string;
 		sessionId?: string;
 		cwd?: string;
-		agentType?: "claude_code" | "codex_cli";
+		agentType?: AgentType;
 		sessionStatus?: "active" | "idle" | "completed" | "archived";
 		eventType?: string;
 		since?: string;
@@ -218,6 +219,15 @@ export const api = {
 		request<{ ok: true }>(`/sessions/${sessionId}/rename`, {
 			method: "PUT",
 			body: JSON.stringify({ name, source: "user" }),
+		}),
+
+	resetSessionName: (sessionId: string) =>
+		// D14: clears the manual-rename pin (metadata.renameSource) and, if an
+		// agent-reported native name has ever been observed, applies it
+		// immediately server-side.
+		request<{ ok: true }>(`/sessions/${sessionId}/rename`, {
+			method: "PUT",
+			body: JSON.stringify({ source: "reset" }),
 		}),
 
 	updateSessionPin: (sessionId: string, pinned: boolean) =>

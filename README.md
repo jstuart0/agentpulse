@@ -9,15 +9,15 @@
 
 **Command center for AI coding agents across all your machines.**
 
-If you run multiple Claude Code or Codex CLI sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.
+If you run multiple Claude Code, Codex CLI, or Copilot CLI sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.
 
-![AgentPulse dashboard — live view of every active Claude Code / Codex session](src/web/assets/screenshots/agentpulse-dashboard.png)
+![AgentPulse dashboard — live view of every active Claude Code / Codex / Copilot session](src/web/assets/screenshots/agentpulse-dashboard.png)
 
 ## What AgentPulse is
 
 AgentPulse has two major modes:
 
-- **Observability** -- watch Claude Code and Codex sessions in real time, with prompts, responses, progress, notes, and session history in one dashboard
+- **Observability** -- watch Claude Code, Codex, and Copilot CLI sessions in real time, with prompts, responses, progress, notes, and session history in one dashboard (Copilot CLI is observed only -- AgentPulse can't launch or steer it)
 - **Orchestration** -- launch and manage sessions from AgentPulse itself with templates, supervisors, headless tasks, interactive sessions, retries, and host routing
 
 Plus an **AI Labs** layer that's very new and explicitly experimental -- see [the Labs section below](#ai-labs-experimental).
@@ -41,6 +41,9 @@ Your terminal tabs                          AgentPulse dashboard
 ├─────────────────┤                        ├──────────────────────┤
 │ Codex CLI       │──── hook events ──────>│  warm-crane: idle    │
 │ (idle)          │                        │  last: 5m ago        │
+├─────────────────┤                        ├──────────────────────┤
+│ Copilot CLI     │──── hook events ──────>│  quiet-otter: active │
+│ (observed only) │                        │  "review the diff"   │
 └─────────────────┘                        └──────────────────────┘
 ```
 
@@ -338,10 +341,10 @@ Best if you want to monitor sessions from other devices while your agents still 
 Use the relay installer:
 
 ```bash
-curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
+curl -sSL https://your-server.example.com/setup-relay.sh | bash
 ```
 
-That installs a local relay on `localhost:4000`, configures hooks automatically, and forwards events to your remote AgentPulse server.
+That installs a local relay on `localhost:4000`, configures hooks automatically, and forwards events to your remote AgentPulse server. The key needs the **Hook ingest** and **Observe (read-only)** scopes — see [Option B](#advanced-remote-dashboard--local-hooks) below.
 
 ## Advanced: Remote dashboard + local hooks
 
@@ -372,11 +375,13 @@ docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
   -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
   -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
   --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-curl -sSL http://localhost:3000/setup.sh | bash -s -- --key ap_YOUR_API_KEY
+AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
 
 The default config requires login via the dashboard. DO NOT add `-e DISABLE_AUTH=true` on any network you do not fully control.
+
+The `AGENTPULSE_KEY=... curl ... | bash` form keeps the key out of `ps` during install; `curl ... | bash -s -- --key ap_YOUR_API_KEY` also works but the key is briefly visible in the process list.
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 
@@ -387,25 +392,74 @@ Multiple machines can report to the same dashboard. Run the relay setup on your 
 One command sets up everything, no repo clone needed:
 
 ```bash
-curl -sSL https://your-server.com/setup-relay.sh | bash -s -- --key ap_YOUR_KEY
+curl -sSL https://your-server.example.com/setup-relay.sh | bash
 ```
+
+It asks for the API key on the terminal (input hidden), which keeps the key out of your shell history and the process list. For unattended installs, set `AGENTPULSE_KEY` or pass `--key ap_YOUR_KEY` instead; a re-run reuses the saved key. The dashboard's Setup page has this command ready to copy, with a **Mint relay key** button.
 
 That single command:
-- Installs Bun if you don't have it
-- Installs a tiny relay at `~/.agentpulse/relay.ts`
-- Creates a macOS LaunchAgent (or Linux systemd service) that auto-starts on login
-- Configures Claude Code + Codex hooks to point at `localhost:4000`
-- Starts the relay immediately
+- Checks the key with the server first, and writes nothing if it's missing a scope
+- Runs the relay on your Bun if it's 1.3.12 or newer; otherwise installs that pinned, checksum-verified release privately into `~/.agentpulse/bun` (your own Bun and shell profile are left alone). Older Bun releases don't apply file modes, which the relay relies on to keep its state private.
+- Installs the relay at `~/.agentpulse/relay.ts`, with its settings in `~/.agentpulse/config.json` (mode 600; the key never appears in a process list, the plist or the unit)
+- Installs the Claude Code statusline at `~/.claude/statusline-agentpulse.sh` and turns it on if you don't already have a `statusLine` (otherwise it prints the line to add)
+- Runs the relay as a macOS LaunchAgent or a Linux systemd user service that starts on login
+- Configures Claude Code + Codex hooks to point at `localhost:4000`, and Copilot CLI hooks too if `copilot` is detected on `PATH` or `~/.copilot` exists
+- Removes the obsolete `~/.agentpulse/codex-hook.sh` if an older install left one
 
-Your agents send events to `localhost:4000` (allowed by Claude Code), the relay forwards them to your remote server. Open the dashboard from any device to monitor your agents in real time.
+Your agents send events to `localhost:4000` (allowed by Claude Code), the relay forwards them to your remote server. Open the dashboard from any device to monitor your agents in real time. **Re-run the same command anytime to update the relay and statusline**; the key, port and Codex-names policy from the last run are kept unless you pass new ones.
+
+**The relay key needs Hook ingest + Observe.** The relay posts hooks (*Hook ingest*) and reads your session list to sync session names and CLAUDE.md files (*Observe (read-only)*). *Manage* is optional: it only lets the relay upload CLAUDE.md edits back to the dashboard. In **Settings → API Keys**, create the key with "Hook ingest" and "Observe (read-only)" checked; scopes can't be edited later, so mint a new key rather than changing an old one. The installer refuses a key without Observe. Pass `--allow-missing-observe` to install anyway: hooks are forwarded, but name and CLAUDE.md sync stay off.
+
+**The server needs `PUBLIC_URL`.** `/setup-relay.sh` fills in the server's address from `PUBLIC_URL` (the first entry, if it's a comma-separated list) and never from the request's `Host` header. Without `PUBLIC_URL`, or with a `localhost` one (as in `docker-compose.yml` and `.env.example`), the server only serves the relay installer to requests from its own machine; everyone else gets a 503 saying to set it. The Kubernetes manifests already set it. The installers are built into the server, so what it serves always matches the server's version.
+
+**Codex thread names (`--codex-names`).** The relay keeps Codex's `session_index.jsonl` and the dashboard in step, under one of two policies:
+
+- `codex` (the default): Codex's own thread names show on the dashboard. A name you set on the dashboard is written into Codex too, and generated names fill Codex threads that have no name yet.
+- `agentpulse`: dashboard names are canonical. Every Codex session's dashboard name is written into Codex, replacing its own titles, and renames made in Codex don't come back. "Use agent name" isn't offered for those sessions. Any key that can rename sessions can retitle your Codex threads this way.
+
+Switch by re-running the installer with `--codex-names agentpulse` or `--codex-names codex` (it's saved as `codex_name_policy` in `config.json`). A Codex name that's already been replaced stays replaced after you switch back. To protect Codex from a runaway loop, the relay writes a given session's name at most 3 times an hour: a 4th rename of the same session within an hour reaches Codex up to 60 minutes late (the dashboard shows it at once, and the relay reports `push_suppressed`).
+
+**Checking on the relay.** `curl -s http://localhost:4000/api/v1/relay/diagnostics` reports:
+- `auth`: the key's scopes, and which required ones are `missing`
+- `sync.codexNames` / `sync.claudeMd`: status, last error and last success (plus the active `policy` and any `suppressedIds`)
+- `drift.relay` / `drift.statusline`: `ok` when your copy matches the server's, `outdated` when it doesn't (re-run the installer), `unknown` when the server couldn't be asked, and `missing` when the statusline isn't installed
+- `agents.codex_cli.status`: `hooks_not_firing` when the relay has evidence Codex has been active (a foreign name change in `session_index.jsonl` since the hooks were installed) but no Codex hook has ever reached the relay -- almost always the un-trusted-hooks gap on Codex 0.145+ (run `/hooks` in Codex once), or a headless/non-interactive Codex session where nothing ever ran `/hooks` to trust them in the first place. Absent when there's no such evidence yet, so it can't false-positive on a Codex install that simply hasn't been used since setup.
+- `queue`: hooks waiting to be forwarded
+
+When something needs your attention (a key missing Observe, an outdated relay or statusline, `hooks_not_firing`), the relay writes one line to `~/.agentpulse/status`, and the statusline shows it as a dim `· agentpulse: …` hint -- e.g. `· agentpulse: codex hooks not firing — run /hooks in Codex to trust them`.
 
 ```
-Manage the relay:
+Manage the relay (macOS):
   Stop:    launchctl unload ~/Library/LaunchAgents/dev.agentpulse.relay.plist
   Start:   launchctl load ~/Library/LaunchAgents/dev.agentpulse.relay.plist
+Manage the relay (Linux):
+  Stop:    systemctl --user stop agentpulse-relay
+  Start:   systemctl --user start agentpulse-relay
+Both:
   Logs:    tail -f ~/.agentpulse/logs/relay.log
   Config:  cat ~/.agentpulse/config.json
 ```
+
+**Reset or uninstall the relay.** Everything the relay keeps lives in `~/.agentpulse/`:
+
+| Path | What it is |
+|---|---|
+| `config.json` | Server URL, API key, port, `codex_name_policy` |
+| `installed.json` | When the installer last wrote the agent hooks |
+| `relay.ts`, `logs/` | The relay and its logs |
+| `bun/` | The relay's own Bun, if your Bun was too old or missing |
+| `status` | The one-line hint the statusline shows (absent when all is well) |
+| `local-sessions.json` | Sessions this relay forwarded hooks for (the only ones it syncs CLAUDE.md for) |
+| `codex-pull-state.json` | Which Codex names were already sent to the dashboard |
+| `codex-pushed.jsonl` | Every name the relay wrote into Codex's `session_index.jsonl` |
+| `hook-queue/` | Hooks waiting to be forwarded |
+| `cache/` | Claude names the statusline already sent to the dashboard |
+
+Plus the service (`~/Library/LaunchAgents/dev.agentpulse.relay.plist` or `~/.config/systemd/user/agentpulse-relay.service`) and `~/.claude/statusline-agentpulse.sh`.
+
+- **Reset** (clear sync state, keep the install): stop the relay, delete `status`, `local-sessions.json`, `codex-pull-state.json`, `cache/` and `hook-queue/` (unsent hooks are lost), then start it again.
+- **Uninstall**: stop the relay and delete the service file, all of `~/.agentpulse/` and `~/.claude/statusline-agentpulse.sh`. Remove the `statusLine` entry and the AgentPulse hooks from `~/.claude/settings.json`, and `~/.codex/hooks.json` if nothing else uses it.
+- **Keep `codex-pushed.jsonl` unless you're uninstalling.** It's how the relay tells its own writes in Codex's index from Codex's. Without it, under the `codex` policy the relay would read the names it wrote earlier as Codex's own and send them back to the dashboard as agent names.
 
 **Option C: Kubernetes with forwardauth SSO (Authentik / Authelia / oauth2-proxy / Pomerium / Cloudflare Access)**
 
@@ -421,21 +475,23 @@ See `deploy/k8s/FORWARDAUTH.md` for provider-specific setup instructions.
 
 ### Authentication
 
-By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script:
+By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script — prefer the env-var form, which keeps the key out of `ps` during install:
 
 ```bash
-curl -sSL http://localhost:3000/setup.sh | bash -s -- --key ap_YOUR_KEY
+AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash
 ```
 
 For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in quick start).
 
 ### Remote server
 
-If AgentPulse runs on a different machine:
+If AgentPulse runs on a different machine, install the relay (see [Option B](#advanced-remote-dashboard--local-hooks)); agents can only post hooks to localhost:
 
 ```bash
-curl -sSL https://your-server.com/setup.sh | bash -s -- --url https://your-server.com --key ap_YOUR_KEY
+curl -sSL https://your-server.example.com/setup-relay.sh | bash
 ```
+
+Set `PUBLIC_URL` on the server to its public address: the relay installer takes the server URL from it, never from the request.
 
 ### Database
 
@@ -495,18 +551,27 @@ Telemetry classification defaults:
 
 Running `curl -sSL .../setup.sh | bash` configures:
 
-1. **Claude Code** -- adds HTTP hooks to `~/.claude/settings.json` for 16 events (SessionStart, Stop, PreToolUse, PostToolUse, PermissionRequest, PreCompact, etc.)
-2. **Codex CLI** -- creates `~/.codex/hooks.json` with 10 events (SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, Stop, SubagentStart, SubagentStop, PermissionRequest, PreCompact, PostCompact) and writes the legacy-compat `codex_hooks` flag in `config.toml` (hooks are enabled by default since codex-cli 0.124.0)
-3. **Shell** -- adds `AGENTPULSE_API_KEY` and `AGENTPULSE_URL` to your `.zshrc` or `.bashrc` (if API key provided)
-4. **Verify** -- sends a test event to confirm connectivity
+1. **Claude Code** -- adds HTTP hooks to `~/.claude/settings.json` for 16 events (SessionStart, Stop, PreToolUse, PostToolUse, PermissionRequest, PreCompact, etc.), `async: true`, so they never slow down the agent.
+2. **Codex CLI** -- replaces `~/.codex/hooks.json` with 12 `command`-type events (SessionStart, SessionEnd, PreToolUse, PostToolUse, UserPromptSubmit, Stop, Interrupt, SubagentStart, SubagentStop, PermissionRequest, PreCompact, PostCompact). An existing file is backed up first as `hooks.json.agentpulse-bak.<timestamp>`, never overwritten. Codex 0.145+ requires you to run `/hooks` inside Codex once afterward and trust the AgentPulse entries -- untrusted hooks are silently skipped. Minimum tested version: Codex CLI 0.145. The legacy `codex_hooks` line in `config.toml`, if present from an older AgentPulse setup, is no longer needed and can be deleted. **Re-running the installer with an unchanged URL/key prints "Codex hooks unchanged — no re-trust needed" and leaves `hooks.json` alone** -- you only have to run `/hooks` again when the installer actually rewrites the file (a URL or key change, or an upgrade that changes the hook shape).
+3. **Copilot CLI** (detection-gated -- only when `copilot` is on `PATH` or `~/.copilot` exists) -- writes `~/.copilot/hooks/agentpulse.json` with 10 `command`-type events (sessionStart, sessionEnd, userPromptSubmitted, postToolUse, postToolUseFailure, agentStop, subagentStart, subagentStop, preCompact, errorOccurred). `preToolUse` and `permissionRequest` are deliberately not hooked -- Copilot fails closed on those events, and a synchronous AgentPulse outage would otherwise be able to block every tool call. Copilot CLI is observed only: AgentPulse can't launch or steer it.
+4. **Shell** (Claude Code only) -- writes `AGENTPULSE_API_KEY` and `AGENTPULSE_URL` to a new `~/.agentpulse/env` file (mode `0600`) and adds a key-free, idempotent `[ -f ~/.agentpulse/env ] && . ~/.agentpulse/env` source line to your `.zshrc`/`.bashrc`/`.profile`. The key itself never touches the rc file. If an earlier install already left a plaintext `export AGENTPULSE_API_KEY=...` line there, the script leaves it alone but prints a warning plus the `sed` command to remove it -- it won't edit your rc file's existing content silently. Codex CLI and Copilot CLI don't get a shell/profile write at all: their hooks authenticate via `~/.agentpulse/hook-auth-header` (also `0600`).
+5. **Verify** -- sends a test event to confirm connectivity
 
-All hooks use `async: true` so they never slow down your agents.
+Codex and Copilot hooks are detached `command` handlers, not `async: true` HTTP hooks -- see [Codex/Copilot command hooks](#codexcopilot-command-hooks) below for why. Direct (non-relay) installs store the API key at `~/.agentpulse/hook-auth-header` (mode `0600`), never in the hooks file itself or in argv. Because they authenticate with `curl -H "@$f"` (reading the header value from a file instead of argv), **direct command hooks need curl >= 7.55** -- older curl silently sends no `Authorization` header at all instead of failing loudly. `setup-hooks.sh`/`/setup.sh` check the installed curl version and refuse to write hooks below that floor, pointing you at the relay installer instead (the relay proxies hooks through itself, so the agent-side `curl` never needs to carry the header).
 
-The expanded hook lists above require Claude Code ≥2.1.x / Codex ≥0.124. If you set up AgentPulse before this version, re-run the setup script to pick up the new event names.
+Claude/Codex/Copilot event counts: 16/12/10. If you set up AgentPulse before this version, re-run the setup script to pick up the current event names and hook shape.
+
+**No key, no write.** Before writing any hook, the installer probes `/api/v1/auth/me`. If a key was supplied (`--key` or `$AGENTPULSE_KEY`), the probe is informational and installation proceeds regardless of its result. With no key, the installer proceeds only when the probe confirms `disableAuth: true`; otherwise it refuses and writes nothing, so you never end up with hooks silently 401ing forever. Pass `--no-auth-check` to skip the probe and install anyway -- for a server that isn't reachable yet, or one that runs with auth disabled but can't be probed from here.
+
+### Codex/Copilot command hooks
+
+Codex CLI and Copilot CLI hooks run a small detached shell command instead of AgentPulse's own HTTP hook type (which only Claude Code supports): the command drains the hook payload to a temp file, backgrounds a `curl` POST to AgentPulse, and returns in milliseconds regardless of network conditions -- `curl`'s own `--max-time 2` is a second, independent backstop. It never writes to stdout/stderr (so it can't be mistaken for tool output) and always exits `0` (so a hook can never fail an agent's turn closed). This is why Codex hooks are `"type": "command"` (not `"http"`) and `async: false` with a `timeout` -- the detaching happens inside the command itself, not via Codex's own async hook flag, which Codex 0.145 silently drops for every event except `SessionEnd`.
 
 ## Statusline (optional)
 
-`scripts/statusline.sh` renders your AgentPulse session name (e.g. `brave-falcon`) and context-window usage directly in Claude Code's statusline, so you can match a terminal tab to a dashboard card at a glance:
+`scripts/statusline.sh` renders your AgentPulse session name (e.g. `brave-falcon`) and context-window usage directly in Claude Code's statusline, so you can match a terminal tab to a dashboard card at a glance. It also shows the relay's hint (`· agentpulse: …`) when the relay needs attention.
+
+**With the relay**, `setup-relay.sh` installs and updates it for you (re-run the installer to update it). **Without a relay**, copy it by hand:
 
 ```bash
 chmod +x scripts/statusline.sh
@@ -519,9 +584,9 @@ Add to `~/.claude/settings.json`:
 "statusLine": { "type": "command", "command": "~/.claude/statusline-agentpulse.sh" }
 ```
 
-**Native-name sync**: when Claude Code sets a native session name (`.session_name` in the statusline JSON, requires Claude Code with statusline session-name support), the script pushes it into AgentPulse's `displayName` via `PUT /api/v1/sessions/:id/native-name`. This is pull-only -- the native name flows one direction, into AgentPulse -- and it never overwrites a name you've manually set on the dashboard (a manual rename is remembered and always wins). The push is fire-and-forget with a 1s timeout so it can never slow down statusline rendering.
+**Native-name sync**: when Claude Code sets a native session name (`.session_name` in the statusline JSON, requires Claude Code with statusline session-name support), the script pushes it into AgentPulse's `displayName` via `PUT /api/v1/sessions/:id/native-name`. An ingest-scoped key is enough. This is pull-only -- the native name flows one direction, into AgentPulse -- and it never overwrites a name you've set on the dashboard: the session shows **Renamed by you**, and the agent's names don't replace it. To go back to the agent's name, use **Use agent name** on the session. The push is fire-and-forget with a 1s timeout so it can never slow down statusline rendering.
 
-The statusline script is a manually copied file (not managed by the setup script), so **if you installed it before this sync behavior shipped, re-run the `cp` step above** to pick it up.
+If you copied the statusline by hand before this sync behavior shipped, **re-run the `cp` step above** to pick it up.
 
 ## Manage a local install
 

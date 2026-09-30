@@ -1,13 +1,21 @@
 import { relative, resolve } from "node:path";
+import { AGENT_METADATA, LAUNCHABLE_AGENT_TYPES } from "../../shared/constants.js";
 import type {
-	AgentType,
 	LaunchMode,
 	LaunchSpec,
+	LaunchableAgentType,
 	PrelaunchAction,
 	SessionTemplateInput,
 	SupervisorRecord,
 	TemplateHostCompatibility,
 } from "../../shared/types.js";
+
+// Shared with template-preview.ts (which imports this) so both provider
+// command lookups can't drift.
+export const PROVIDER_COMMAND: Record<LaunchableAgentType, string> = {
+	claude_code: "claude",
+	codex_cli: "codex",
+};
 
 function isWithinTrustedRoot(cwd: string, roots: string[]) {
 	const resolvedCwd = resolve(cwd);
@@ -31,6 +39,21 @@ export function validateAgainstSupervisor(
 	const warnings: string[] = [];
 	const errors: string[] = [];
 
+	// F66: defense-in-depth. The five claude/codex-literal branches below
+	// only ever check "is this claude_code" / "is this codex_cli" — an
+	// observe-only agentType reaching this function via an unsafe cast (a
+	// Pattern A' guard failure elsewhere, or a malformed wire payload)
+	// satisfies neither branch, so neither per-agent executable check
+	// fires. The remaining `agentTypes.includes` gate below is typed
+	// LaunchableAgentType[] but isn't runtime-validated, so a corrupted
+	// SupervisorRecord could still bypass it. Reject explicitly, first,
+	// independent of what the supervisor claims to support.
+	if (!(LAUNCHABLE_AGENT_TYPES as readonly string[]).includes(template.agentType)) {
+		errors.push(
+			`${template.agentType} cannot be launched — AgentPulse can only launch ${LAUNCHABLE_AGENT_TYPES.join(" or ")}.`,
+		);
+		return { warnings, errors };
+	}
 	if (!supervisor.capabilities.agentTypes.includes(template.agentType)) {
 		errors.push(`${supervisor.hostName} does not advertise support for ${template.agentType}.`);
 	}
@@ -151,8 +174,8 @@ function quoteShellForSpec(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function providerCommandForSpec(agentType: AgentType): string {
-	return agentType === "claude_code" ? "claude" : "codex";
+function providerCommandForSpec(agentType: LaunchableAgentType): string {
+	return PROVIDER_COMMAND[agentType];
 }
 
 /**
@@ -173,8 +196,7 @@ export function buildLaunchSpec(
 ): LaunchSpec {
 	const agentType = template.agentType;
 	const command = providerCommandForSpec(agentType);
-	const instructionsFile: "CLAUDE.md" | "AGENTS.md" =
-		agentType === "claude_code" ? "CLAUDE.md" : "AGENTS.md";
+	const instructionsFile = AGENT_METADATA[agentType].instructionsFile;
 	const cliArgs: string[] = [];
 	if (template.model) cliArgs.push("--model", quoteShellForSpec(template.model));
 	if (agentType === "claude_code" && mode === "headless") {

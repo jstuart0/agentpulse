@@ -24,12 +24,13 @@ src/server/services/launch-dispatch.test.ts
 
 We do **not** maintain a top-level `tests/` directory. Colocation keeps the test next to the code it covers, makes refactors easier (move both files together), and matches the convention the AI control plane was built on.
 
-There is no `vitest.config`, `jest.config`, `bunfig.toml [test]` block, or any other framework config — Bun's default test runner picks up `**/*.test.ts` automatically. If you're auditing this repo and looking for "evidence of a test framework," look for the `*.test.ts` files themselves; their existence is the evidence.
+There is no `vitest.config`, `jest.config`, or any other framework config — Bun's default test runner picks up `**/*.test.ts` automatically. There is one `bunfig.toml`, with a single `[test] preload` entry (see below); it exists to close a specific env-ordering bug, not to configure the runner itself. If you're auditing this repo and looking for "evidence of a test framework," look for the `*.test.ts` files themselves; their existence is the evidence.
 
 ## Conventions
 
 - Use `bun:test` imports: `import { describe, expect, test, beforeEach, beforeAll } from "bun:test"`.
-- For tests that touch the AI control plane, import `./ai/__test_db.js` (or relative path) at the top — it sets up `SQLITE_PATH`, `DATA_DIR`, `AGENTPULSE_AI_ENABLED`, and `AGENTPULSE_SECRETS_KEY` to a tmpdir before the schema imports.
+- For tests that touch the AI control plane, import `./ai/__test_db.js` (or relative path) at the top — it sets up `SQLITE_PATH`, `DATA_DIR`, and the temp-path safety guard before the schema imports.
+- `bunfig.toml`'s `[test] preload` loads `src/server/db/test-env-defaults.ts` before any test file's own imports, setting `AGENTPULSE_AI_ENABLED`/`AGENTPULSE_SECRETS_KEY` defaults deterministically regardless of Bun's module-graph discovery order (`src/server/config.ts` freezes these into a plain object at first import, and whichever file happens to reach it first otherwise wins). `__test_db.js` still imports the same module for anything that runs it outside `bun test`.
 - Use `beforeEach` to delete fixture rows; the database is shared across the suite.
 - Test names describe the behavior being locked down, not the function name (`"rejects when no default provider is configured"`, not `"test getDefaultProvider null"`).
 

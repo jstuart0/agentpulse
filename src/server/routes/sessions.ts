@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { AGENT_TYPES } from "../../shared/constants.js";
 import type { SessionStatus } from "../../shared/types.js";
 import { type AuthUser, requireAuth } from "../auth/middleware.js";
@@ -8,6 +9,7 @@ import { callerHasManageScope, requireOperatorScope } from "../auth/route-scope-
 import { getDb } from "../db/client.js";
 import { events, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { hookRateLimit } from "../middleware/hook-rate-limit.js";
 import {
 	listControlActionsForSession,
 	queuePromptAction,
@@ -15,13 +17,19 @@ import {
 	retryLaunchForSession,
 } from "../services/control-actions.js";
 import { toSessionEventDtos } from "../services/event-dto.js";
+import { notifySessionUpdated } from "../services/notifier.js";
 import {
+	type SessionListField,
 	applyNativeName,
 	getSession,
+	getSessionSummaries,
 	getSessions,
 	getStats,
+	isSessionListField,
 	renameSession,
+	resetNameSource,
 } from "../services/session-tracker.js";
+import { computeChecksum } from "../util/checksum.js";
 import { InvalidAgentTypeQueryError, parseAgentTypeQuery } from "./agent-type-query.js";
 
 const sessionsRouter = new Hono();
@@ -49,6 +57,21 @@ sessionsRouter.get("/sessions", async (c) => {
 	const projectId = c.req.query("projectId") as string | undefined;
 	const limit = Number(c.req.query("limit") || 50);
 	const offset = Number(c.req.query("offset") || 0);
+
+	// F128: opt-in narrow projection (the relay's per-tick Codex paging). An
+	// unknown or empty field list is a 400, so a typo can't silently fall back
+	// to the heavy full rows. Without `fields` the response is unchanged.
+	const fieldsParam = c.req.query("fields");
+	if (fieldsParam !== undefined) {
+		const fields = fieldsParam.split(",").map((f) => f.trim());
+		const invalid = fields.find((f) => !isSessionListField(f));
+		if (invalid !== undefined) return c.json({ error: "invalid_field", value: invalid }, 400);
+		const rows = await getSessionSummaries(
+			{ status, agentType, projectId, limit, offset },
+			fields as SessionListField[],
+		);
+		return c.json({ sessions: rows });
+	}
 
 	const result = await getSessions({ status, agentType, projectId, limit, offset });
 	return c.json(result);
@@ -132,20 +155,60 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 // Medium #1) records who initiated the rename. Only an explicit
 // `source: "user"` stamps `metadata.renameSource = "user"`, which
 // `applyNativeName` below checks to refuse a later native-name pull. An
-// omitted `source` — or any other explicit value, e.g. the relay's Codex
-// name-sync `source: "sync"` — is legacy-neutral: the rename happens but
-// the flag is left untouched. This protects a mixed-version old relay
-// (which sends `{ name }` with no `source` field) from being
-// misclassified as a manual rename. The dashboard (src/web/lib/api.ts)
-// and the Ask "rename X to Y" command both send `source: "user"`
-// explicitly.
+// omitted `source` is legacy-neutral: the rename happens and the flag is
+// left untouched, so a mixed-version old relay sending `{ name }` can't be
+// misclassified as a manual rename. `source: "sync"` (pre-Phase-3 relays'
+// Codex name sync) is not a plain rename: it takes the native-name path,
+// so a manual pin wins and only `metadata.nativeName` is recorded (F121,
+// below). The dashboard (src/web/lib/api.ts) and the Ask "rename X to Y"
+// command both send `source: "user"` explicitly.
+//
+// D14: `source: "reset"` is a distinct branch — it clears the manual-rename
+// pin (and applies any already-observed native name immediately) instead of
+// setting a new display name, so `name` is optional ONLY in this branch
+// (F47: the carve-out must not leak into the plain-rename 400-on-missing-name
+// check). Stays manage-only; it is deliberately NOT in
+// INGEST_WRITABLE_ROUTES.
+// xander (Low, optional): the only three values anything ever sends are
+// "user" (dashboard/Ask), "sync" (relay Codex name-sync) and "reset" (D14) —
+// reject anything else outright instead of silently legacy-neutral no-op'ing
+// on a typo'd or unexpected value.
+const ALLOWED_RENAME_SOURCES = new Set(["user", "sync", "reset"]);
+
 sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 	const sessionId = c.req.param("sessionId");
-	const { name, source } = await c.req.json<{ name: string; source?: string }>();
+	const { name, source } = await c.req.json<{ name?: string; source?: string }>();
+
+	if (source !== undefined && !ALLOWED_RENAME_SOURCES.has(source)) {
+		return c.json({ error: "invalid_source", value: source }, 400);
+	}
+
+	if (source === "reset") {
+		const result = await resetNameSource(sessionId);
+		if (!result.found) return c.json({ error: "Session not found" }, 404);
+		const session = await getSession(sessionId);
+		if (session) notifySessionUpdated(session);
+		return c.json({ ok: true });
+	}
 
 	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
 
+	// ian F121: pre-Phase-3 relays push Codex thread titles here with
+	// source:"sync" (and a manage key). That's an agent-reported name, so it
+	// takes the native-name path: a manual pin wins, nativeName is recorded,
+	// and the response stays 200 (an unknown session is still a silent no-op).
+	if (source === "sync") {
+		const result = await applyNativeName(sessionId, name);
+		if (result.applied) {
+			const session = await getSession(sessionId);
+			if (session) notifySessionUpdated(session);
+		}
+		return c.json({ ok: true });
+	}
+
 	await renameSession(sessionId, name, { source });
+	const session = await getSession(sessionId);
+	if (session) notifySessionUpdated(session);
 	return c.json({ ok: true });
 });
 
@@ -157,17 +220,43 @@ sessionsRouter.put("/sessions/:sessionId/rename", async (c) => {
 // statusline caller can distinguish "not yet ingested, retry next render"
 // from a successful call. See Decision 6 and applyNativeName for the
 // manual-rename precedence rule.
-sessionsRouter.put("/sessions/:sessionId/native-name", async (c) => {
-	const sessionId = c.req.param("sessionId");
-	const { name } = await c.req.json<{ name: string }>();
+//
+// D1/D20: this is the one INGEST_WRITABLE_ROUTES entry — an ingest-scoped
+// relay/statusline key may call it directly. hookRateLimit here opts into a
+// real 429 (unlike /hooks' always-200 contract) since this is a dashboard-
+// adjacent write path, not the ingest firehose.
+// xander F92: a native name is at most 200 code points after sanitizing; 16
+// KiB is generous and keeps an ingest key from making the server buffer and
+// parse arbitrarily large bodies.
+const NATIVE_NAME_BODY_LIMIT_BYTES = 16 * 1024;
 
-	if (!name?.trim()) return c.json({ error: "Name required" }, 400);
+sessionsRouter.put(
+	"/sessions/:sessionId/native-name",
+	bodyLimit({
+		maxSize: NATIVE_NAME_BODY_LIMIT_BYTES,
+		onError: (c) => c.json({ error: "payload_too_large" }, 413),
+	}),
+	hookRateLimit({ bucketPrefix: "native-name:", onLimit: "429" }),
+	async (c) => {
+		const sessionId = c.req.param("sessionId");
+		const { name } = await c.req.json<{ name: string }>();
 
-	const result = await applyNativeName(sessionId, name);
-	if (!result.found) return c.json({ error: "Session not found" }, 404);
+		if (!name?.trim()) return c.json({ error: "Name required" }, 400);
 
-	return c.json({ ok: true, applied: result.applied });
-});
+		const result = await applyNativeName(sessionId, name);
+		if (result.reason === "empty_after_sanitize") {
+			return c.json({ error: "Name required" }, 400);
+		}
+		if (!result.found) return c.json({ error: "Session not found" }, 404);
+
+		if (result.applied) {
+			const session = await getSession(sessionId);
+			if (session) notifySessionUpdated(session);
+		}
+
+		return c.json({ ok: true, applied: result.applied });
+	},
+);
 
 sessionsRouter.get("/sessions/:sessionId/control-actions", async (c) => {
 	const actions = await listControlActionsForSession(c.req.param("sessionId"));
@@ -271,16 +360,6 @@ sessionsRouter.get("/sessions/:sessionId/events/:eventId/context", async (c) => 
 
 	return c.json({ events: combined, target: { id: eventId } });
 });
-
-// Compute a simple hash for sync detection
-async function computeChecksum(content: string): Promise<string> {
-	const data = new TextEncoder().encode(content);
-	const hash = await crypto.subtle.digest("SHA-256", data);
-	return Array.from(new Uint8Array(hash))
-		.map((b) => b.toString(16).padStart(2, "0"))
-		.join("")
-		.slice(0, 16);
-}
 
 // GET /api/v1/sessions/:sessionId/claude-md - Get CLAUDE.md content from DB
 sessionsRouter.get("/sessions/:sessionId/claude-md", async (c) => {

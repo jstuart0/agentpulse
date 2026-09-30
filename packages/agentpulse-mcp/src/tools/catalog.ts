@@ -12,7 +12,7 @@
  * reversal of the F23 reconcile above, which still governs list_projects.
  */
 import { z } from "zod";
-import { AGENT_TYPE_ENUM } from "../enums.js";
+import { LAUNCHABLE_AGENT_TYPE_ENUM } from "../enums.js";
 import { capList, capText } from "../output.js";
 import { registerReadTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
@@ -108,7 +108,7 @@ export function registerCatalogTools(ctx: ToolContext, flags: ScopeFlags): void 
 				name: "list_templates",
 				description:
 					"Session launch templates. Manage-scoped: template DTOs carry `env` (may include credentials).",
-				inputSchema: { agent_type: AGENT_TYPE_ENUM.optional() },
+				inputSchema: { agent_type: LAUNCHABLE_AGENT_TYPE_ENUM.optional() },
 			},
 			async (args, client) => {
 				const { templates, total } = await client.listTemplates({ agentType: args.agent_type });
