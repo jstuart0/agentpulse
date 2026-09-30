@@ -62,9 +62,8 @@ export const AUTH_STEP: Record<
 	copilot_cli: (key, disableAuth) => buildCommandHookAuthStep(key, disableAuth),
 };
 
-function buildCommandHookAuthStep(key: string, disableAuth: boolean): AuthStep | null {
+function buildCommandHookAuthStep(_key: string, disableAuth: boolean): AuthStep | null {
 	if (disableAuth) return null;
-	const value = key || "YOUR_API_KEY";
 	// F207: never write through a symlink at the destination — write to a
 	// sibling temp file (umask 077 -> 0600 on create), then atomically
 	// replace the destination via mv (rename(2) replaces the directory
@@ -93,9 +92,18 @@ function buildCommandHookAuthStep(key: string, disableAuth: boolean): AuthStep |
 	// only the ReparsePoint attribute) and writes through a same-directory
 	// temp file + Move-Item, mirroring install-local.ps1's
 	// Test-ApReparsePoint/Write-ApFileNoFollow.
-	// Not addressed by AGEN-49 (out of scope, tracked separately): this
-	// PowerShell variant still embeds the literal key in the copy-paste text.
-	const windowsCommand = `$d="$env:USERPROFILE\\.agentpulse"; function ApTestReparse($p) { $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; if (-not $i) { return $false }; if ($i.LinkType) { return $true }; return [bool]($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) }; if (ApTestReparse $d) { Write-Error "refusing to write through a reparse point: $d" } else { New-Item -ItemType Directory -Force $d | Out-Null; icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null; $f="$d\\hook-auth-header"; if (ApTestReparse $f) { Write-Error "refusing to write through a reparse point: $f" } else { $t="$f.$([guid]::NewGuid().ToString('N')).tmp"; Set-Content -NoNewline -Path $t -Value "Authorization: Bearer ${value}\`n"; Move-Item -Force -Path $t -Destination $f; icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null } }`;
+	// AGEN-49: the key is read via Read-Host -AsSecureString (input hidden,
+	// never a command argument) and converted to plaintext in memory via
+	// SecureStringToBSTR/PtrToStringAuto, then ZeroFreeBSTR frees the
+	// unmanaged copy — no install-local.ps1 precedent existed for this
+	// (it takes -ApiKey as a plaintext parameter already), so this is new.
+	// Also adds the hard-link check install-local.ps1's own
+	// Test-ApMultipleHardLinks/New-ApHookAuthHeaderFile pair already has
+	// but this displayed snippet didn't — same reparse-point, hard-link,
+	// and user-only-ACL ordering as that function: parent reparse check,
+	// mkdir, ACL-narrow the directory, then (for the file) hard-link
+	// check, reparse check, write, ACL-narrow the file.
+	const windowsCommand = `$secure = Read-Host -Prompt 'AgentPulse API key' -AsSecureString; $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); $key = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr); [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr); function ApTestReparse($p) { $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; if (-not $i) { return $false }; if ($i.LinkType) { return $true }; return [bool]($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) }; function ApTestHardLink($p) { if (-not (Test-Path -LiteralPath $p)) { return $false }; try { $o = & fsutil hardlink list $p 2>$null; if ($LASTEXITCODE -ne 0 -or -not $o) { return $false }; return (@($o | Where-Object { $_.Trim().Length -gt 0 }).Count -gt 1) } catch { return $false } }; $d="$env:USERPROFILE\\.agentpulse"; if (ApTestReparse $d) { Write-Error "refusing to write through a reparse point: $d" } else { New-Item -ItemType Directory -Force $d | Out-Null; icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null; $f="$d\\hook-auth-header"; if (ApTestHardLink $f) { Write-Error "refusing to write through a multiply-linked file: $f" } elseif (ApTestReparse $f) { Write-Error "refusing to write through a reparse point: $f" } else { $t="$f.$([guid]::NewGuid().ToString('N')).tmp"; Set-Content -NoNewline -Path $t -Value "Authorization: Bearer $key\`n"; Move-Item -Force -Path $t -Destination $f; icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null } }; $key = $null`;
 	return {
 		title: "Save your key for command hooks",
 		description:
