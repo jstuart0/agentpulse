@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { isLaunchable } from "../../../shared/constants.js";
 import type {
 	LaunchMode,
 	LaunchableAgentType,
@@ -117,7 +118,10 @@ export function ProjectForm({ initial, onSave, onCancel, saving, error }: Projec
 					<select
 						id="proj-agent"
 						value={defaultAgentType}
-						onChange={(e) => setDefaultAgentType(e.target.value as LaunchableAgentType | "")}
+						onChange={(e) => {
+							const v = e.target.value;
+							setDefaultAgentType(v !== "" && isLaunchable(v) ? v : "");
+						}}
 						className={fieldClass}
 					>
 						<option value="">— none —</option>
