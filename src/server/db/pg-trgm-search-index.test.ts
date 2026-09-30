@@ -148,6 +148,20 @@ describePostgresOnly("AGEN-27: pg_trgm search index (live Postgres)", () => {
 			`[AGEN-27] events search latency at ${ROW_COUNT} rows — seq scan: ${seqMs.toFixed(1)}ms, trigram index: ${idxMs.toFixed(1)}ms`,
 		);
 		expect(idxMs).toBeLessThan(seqMs);
+
+		// Cleanup: this suite's other files (e.g. ingest-copilot.test.ts) run
+		// an unfiltered `DELETE FROM events` in beforeEach — leaving this
+		// test's 200k rows behind turns that into a full-table delete on a
+		// bloated table and can blow past their 5s hook timeout. Targeted by
+		// session_id so it's a fast, indexed delete, not a table scan.
+		await executeRows(
+			db as unknown as import("./client.js").Db,
+			sql`DELETE FROM events WHERE session_id = ${sid}`,
+		);
+		await executeRows(
+			db as unknown as import("./client.js").Db,
+			sql`DELETE FROM sessions WHERE session_id = ${sid}`,
+		);
 	}, 30_000);
 
 	test("sessions search predicate is served by the trigram index (not a sequential scan) at >=50k rows", async () => {
@@ -195,6 +209,13 @@ describePostgresOnly("AGEN-27: pg_trgm search index (live Postgres)", () => {
 
 		expect(nodeTypes).not.toContain("Seq Scan");
 		expect(indexNames.some((name) => name?.startsWith("idx_sessions_"))).toBe(true);
+
+		// Cleanup — see the events test above for why this matters to the
+		// rest of the suite.
+		await executeRows(
+			db as unknown as import("./client.js").Db,
+			sql`DELETE FROM sessions WHERE session_id LIKE 'agen27-perf-sess-%'`,
+		);
 	}, 30_000);
 
 	test("gracefully skips the trigram index when pg_trgm can't be installed (simulated low-privilege role)", async () => {
