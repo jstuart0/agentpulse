@@ -375,13 +375,14 @@ docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
   -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
   -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
   --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash
+read -rsp 'AgentPulse API key: ' AGENTPULSE_KEY && export AGENTPULSE_KEY && echo
+curl -sSL http://localhost:3000/setup.sh | bash
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
 
 The default config requires login via the dashboard. DO NOT add `-e DISABLE_AUTH=true` on any network you do not fully control.
 
-The `AGENTPULSE_KEY=... curl ... | bash` form keeps the key out of `ps` during install; `curl ... | bash -s -- --key ap_YOUR_API_KEY` also works but the key is briefly visible in the process list.
+The `read -rsp ... && export ...` line reads the key with input hidden and hands it to the installer without it ever appearing in the command text — so it never lands in shell history or `ps`. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but that form is visible in shell history; `curl ... | bash -s -- --key ap_YOUR_API_KEY` works too, and is visible in both shell history and the process list — prefer the `read`/`export` form when you're at an interactive terminal.
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 
@@ -475,11 +476,14 @@ See `deploy/k8s/FORWARDAUTH.md` for provider-specific setup instructions.
 
 ### Authentication
 
-By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script — prefer the env-var form, which keeps the key out of `ps` during install:
+By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script — prefer the hidden-prompt form, which keeps the key out of both `ps` and shell history:
 
 ```bash
-AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash
+read -rsp 'AgentPulse API key: ' AGENTPULSE_KEY && export AGENTPULSE_KEY && echo
+curl -sSL http://localhost:3000/setup.sh | bash
 ```
+
+For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but is visible in shell history.
 
 For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in quick start).
 

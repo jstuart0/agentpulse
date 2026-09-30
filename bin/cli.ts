@@ -84,6 +84,11 @@ async function setup() {
 		mkdirSync(join(process.env.HOME || "~", ".claude"), { recursive: true });
 	}
 
+	// AGEN-49: always the env-var-expansion form, matching the served /setup.sh
+	// and scripts/setup-hooks.sh's claude_code path — a literal key here would
+	// land in ~/.claude/settings.json (world-readable by default), the same
+	// class of exposure D37/F243 moved the rc-file export out of. The actual
+	// value still lands in ~/.agentpulse/env (0600) whenever one was supplied.
 	const hookEntry = (agentType: string) => ({
 		matcher: "",
 		hooks: [
@@ -91,12 +96,8 @@ async function setup() {
 				type: "http",
 				url: `${url}/api/v1/hooks`,
 				async: true,
-				...(key
-					? { headers: { Authorization: `Bearer ${key}`, "X-Agent-Type": agentType } }
-					: {
-							allowedEnvVars: ["AGENTPULSE_API_KEY"],
-							headers: { Authorization: "Bearer $AGENTPULSE_API_KEY", "X-Agent-Type": agentType },
-						}),
+				allowedEnvVars: ["AGENTPULSE_API_KEY"],
+				headers: { Authorization: "Bearer $AGENTPULSE_API_KEY", "X-Agent-Type": agentType },
 			},
 		],
 	});

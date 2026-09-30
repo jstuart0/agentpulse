@@ -372,11 +372,12 @@ HOOKS_JSON="{"
 for i in "\${!EVENTS[@]}"; do
   EVENT="\${EVENTS[\$i]}"
   [[ \$i -gt 0 ]] && HOOKS_JSON+=","
-  if [[ -n "\$API_KEY" ]]; then
-    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
-  else
-    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
-  fi
+  # AGEN-49: always the env-var-expansion form, matching scripts/setup-hooks.sh's
+  # claude_code path — a literal key here would land in ~/.claude/settings.json
+  # (world-readable by default), the same class of exposure D37/F243 moved the
+  # rc-file export out of. The actual value still lands in \$AP_ENV_FILE (0600)
+  # below whenever one was supplied.
+  HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
 done
 HOOKS_JSON+="}"
 

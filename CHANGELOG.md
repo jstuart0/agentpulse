@@ -7,6 +7,35 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Security
+
+- **API key exposure in installer commands and config files (AGEN-49).**
+  v0.6.0 moved the key out of shell rc files into `~/.agentpulse/env` (mode
+  `0600`) and added `AGENTPULSE_KEY` env-var support, but three residual
+  exposure paths remained:
+  - The dashboard's default local-install command still passed the key as
+    `--key ap_...`, which lands in both `ps` and shell history for the
+    duration of the install. It's now a hidden terminal prompt
+    (`read -rsp ... && export ...`), the same pattern already used for the
+    relay installer — the key never appears in the copyable command text.
+    Documented as a trade-off for scripted/non-interactive installs, which
+    can still set `$AGENTPULSE_KEY` beforehand (visible in shell history).
+  - The served `/setup.sh` route, `scripts/install-local.ps1`'s
+    `Configure-Hooks`, and `agentpulse setup` (`bin/cli.ts`) each wrote the
+    literal key into `~/.claude/settings.json` as a plaintext
+    `Authorization: Bearer ap_...` header whenever a key was supplied at
+    install time — a world-readable file by default. All three now always
+    use the `$AGENTPULSE_API_KEY` / `$env:AGENTPULSE_API_KEY`
+    environment-variable-expansion form instead, matching
+    `scripts/setup-hooks.sh`'s existing (and now-verified) behavior. The
+    real key value still lands only in the already-private
+    `~/.agentpulse/env` (POSIX) or `HKCU\Environment` (Windows).
+  - Added regression coverage that installs each of claude_code/codex_cli/
+    copilot_cli (including `--scope project`) and the served `/setup.sh`
+    against a temp `$HOME`, then scans every resulting file for the literal
+    key — asserting it appears only in `hook-auth-header` and `env`, both
+    mode `0600`.
+
 ## [0.6.0] — 2026-09-29
 
 ### Added

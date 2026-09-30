@@ -333,9 +333,15 @@ function New-ApHookAuthHeaderFile {
 function Configure-Hooks {
   Write-Step "Configuring Claude Code + Codex hooks..."
 
-  $hookHeadersClaude = @{ "X-Agent-Type" = "claude_code" }
-  if ($ApiKey) {
-    $hookHeadersClaude["Authorization"] = "Bearer $ApiKey"
+  # AGEN-49: always the env-var-expansion form, matching setup-hooks.sh's
+  # claude_code path — a literal key here would land in settings.json (no
+  # ACL narrowing applied to that file), the same class of exposure the
+  # D37/F243 HKCU\Environment move fixed for the rc-file case. The actual
+  # value still lands in HKCU\Environment via SetEnvironmentVariable below
+  # whenever one was supplied.
+  $hookHeadersClaude = @{
+    "X-Agent-Type" = "claude_code"
+    "Authorization" = "Bearer `$env:AGENTPULSE_API_KEY"
   }
 
   $claudeDir = Join-Path $HOME ".claude"
@@ -356,12 +362,9 @@ function Configure-Hooks {
         type = "http"
         url = "$PublicUrl/api/v1/hooks"
         async = $true
+        allowedEnvVars = @("AGENTPULSE_API_KEY")
         headers = $hookHeadersClaude
       })
-    }
-    if (-not $ApiKey) {
-      $hook.hooks[0]["allowedEnvVars"] = @("AGENTPULSE_API_KEY")
-      $hook.hooks[0]["headers"]["Authorization"] = "Bearer `$env:AGENTPULSE_API_KEY"
     }
     $claudeData["hooks"][$eventName] = @($hook)
   }

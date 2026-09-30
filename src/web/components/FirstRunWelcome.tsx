@@ -94,13 +94,11 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 		}
 	}
 
-	// Key-for-copy (local only; the relay installer asks for its key): if we
-	// just minted one we have the raw value; otherwise leave the env
-	// placeholder so the command is still copyable.
+	// AGEN-49: neither installer command carries the key any more (local
+	// asks for it at a hidden terminal prompt, same as the relay always
+	// has) — buildOnboardingPlan needs only the location and auth mode.
 	const activeKeys = keys?.filter((k) => k.isActive) ?? [];
-	const keyForCommand =
-		revealedKey ?? (activeKeys.length > 0 ? "$AGENTPULSE_API_KEY" : "YOUR_API_KEY");
-	const plan = buildOnboardingPlan({ location, serverUrl, key: keyForCommand, disableAuth });
+	const plan = buildOnboardingPlan({ location, serverUrl, disableAuth });
 	const step = (n: number) => String(disableAuth ? n - 1 : n);
 
 	return (
