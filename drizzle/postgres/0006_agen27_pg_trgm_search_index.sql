@@ -40,9 +40,11 @@
 -- The index-build DO block (percy AGEN-27 review, Critical 2) is likewise
 -- wrapped in its own BEGIN...EXCEPTION WHEN OTHERS block: a transient
 -- failure partway through the 10 CREATE INDEX statements (disk full, lock
--- timeout, OOM, whatever) degrades to a WARNING and leaves whichever
--- indexes DID complete in place (IF NOT EXISTS makes a retry on the next
--- boot idempotent) — it does not propagate an uncaught error. This
+-- timeout, OOM, whatever) degrades to a WARNING instead of propagating an
+-- uncaught error. PL/pgSQL implements EXCEPTION via an implicit SAVEPOINT
+-- taken at BEGIN — a failure rolls back to it, undoing every CREATE INDEX
+-- already run in *that same attempt*, not just the one that failed (IF NOT
+-- EXISTS makes a retry on the next boot idempotent regardless). This
 -- graceful-degrade path is exercised by a live-PG test running as a
 -- low-privilege role, and separately by a test injecting a build failure
 -- (see src/server/db/pg-trgm-search-index.test.ts).
@@ -59,17 +61,27 @@
 -- Large existing installs (percy AGEN-27 review, High 3): building 10 GIN
 -- indexes takes a SHARE lock on `sessions`/`events` for the duration of
 -- each build — measured ~22s at 1,000,000 events, blocking ingest for that
--- whole window. The index-build DO block checks pg_class.reltuples for
--- `events` first; above 100,000 (estimated rows — updated by ANALYZE/
--- autovacuum, not exact, which is fine for a threshold this coarse) it
--- SKIPS the automatic build entirely and RAISEs a WARNING pointing at the
--- CREATE INDEX CONCURRENTLY recipe instead. A fresh install's `events`
--- table has reltuples = 0 (never analyzed) and always gets the automatic
--- build. Do the CONCURRENTLY builds out-of-band, in a maintenance window,
--- for any install that skips — see deploy/k8s/README.md's "Upgrading to
--- migration 0006" section for the exact statements, the indisvalid
--- verification query, and the index-size note (roughly 55-112% of the
--- events heap size, per percy's measurements).
+-- whole window. The index-build DO block runs `EXECUTE 'ANALYZE events'`
+-- first (percy re-verify, TB22 Critical: a never-analyzed table — e.g. a
+-- restored backup, or a lagging autovacuum — reports pg_class.reltuples =
+-- -1, a sentinel meaning "unknown," NOT zero; checking the threshold
+-- without analyzing first would silently skip the size guard entirely and
+-- let the ~22s lock through uncontested), then checks pg_class.reltuples
+-- for `events`: above 100,000 (an ANALYZE-maintained estimate, not exact,
+-- which is fine for a threshold this coarse) it SKIPS the automatic build
+-- entirely and RAISEs a WARNING pointing at the CREATE INDEX CONCURRENTLY
+-- recipe instead; NULL or still negative after the ANALYZE (shouldn't
+-- happen, but the table might not exist, or stats might not have
+-- propagated for some other reason) is treated the same way — unknown row
+-- count fails safe to "skip and warn," never "assume small and build." A
+-- fresh install's `events` table reports reltuples = 0 once analyzed (an
+-- empty table is a known, not unknown, row count) and always gets the
+-- automatic build. Do the CONCURRENTLY builds out-of-band, in a
+-- maintenance window, for any install that skips — see
+-- deploy/k8s/README.md's "Upgrading to migration 0006" section for the
+-- exact statements, the indisvalid verification query, and the index-size
+-- note (roughly 55-112% of the events heap size, per percy's
+-- measurements).
 --> statement-breakpoint
 DO $$
 BEGIN
@@ -85,9 +97,14 @@ DECLARE
 	events_reltuples real;
 BEGIN
 	IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN
+		-- A never-analyzed table reports reltuples = -1 ("unknown"), not 0 —
+		-- analyze first so the threshold check below sees a real estimate.
+		EXECUTE 'ANALYZE events';
 		SELECT reltuples INTO events_reltuples FROM pg_class WHERE oid = to_regclass('events');
 
-		IF events_reltuples IS NOT NULL AND events_reltuples > 100000 THEN
+		IF events_reltuples IS NULL OR events_reltuples < 0 THEN
+			RAISE WARNING 'AGEN-27: events row count is unknown (reltuples=%) even after ANALYZE — skipping the automatic trigram index build as a precaution against an unbounded SHARE-lock window over sessions/events during boot. Build the indexes out-of-band with CREATE INDEX CONCURRENTLY instead — see deploy/k8s/README.md''s "Upgrading to migration 0006" section for the exact statements.', events_reltuples;
+		ELSIF events_reltuples > 100000 THEN
 			RAISE WARNING 'AGEN-27: events has ~% estimated rows (over the 100,000-row automatic-build threshold) — skipping the automatic trigram index build to avoid a ~SHARE-lock window over sessions/events during boot. Build the indexes out-of-band with CREATE INDEX CONCURRENTLY instead — see deploy/k8s/README.md''s "Upgrading to migration 0006" section for the exact statements.', events_reltuples;
 		ELSE
 			BEGIN

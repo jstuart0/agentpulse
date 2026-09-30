@@ -10,8 +10,11 @@
  *
  * `refreshSearchIndexStatus()` is called once at boot, Postgres only
  * (`db/client.ts`'s `initializeDatabase()`, right after migrations
- * complete): it queries `pg_indexes`, logs a startup warning if any
- * expected index is missing, and caches the result. `getSearchIndexStatus()`
+ * complete): it queries `pg_index`/`pg_class` for the expected index names
+ * with `indisvalid` true (percy AGEN-27 review, TB22 High — an INVALID
+ * index, e.g. left behind by a failed CONCURRENTLY build, must not count as
+ * present; Postgres will never actually use it), logs a startup warning if
+ * any expected index is missing, and caches the result. `getSearchIndexStatus()`
  * reads that cache synchronously — mirroring `retention-service.ts`'s
  * `getRetentionStatus()` pattern (checked once/periodically, read
  * synchronously by `GET /api/v1/health`) rather than querying on every
@@ -74,13 +77,27 @@ export async function refreshSearchIndexStatus(db: Db): Promise<SearchIndexStatu
 		// list of individually bound params is fine here (this isn't subject
 		// to the Critical 1 partial-index-planning issue: no partial index
 		// predicate needs to match this query at all).
+		//
+		// percy AGEN-27 review (TB22 High): pg_indexes (the convenience view)
+		// doesn't expose indisvalid, so an INVALID index (e.g. a CONCURRENTLY
+		// build that failed partway and left an unusable index behind, or one
+		// this migration's own IF NOT EXISTS then silently skips fixing)
+		// would count as "present" even though Postgres will never actually
+		// use it. Querying pg_index joined to pg_class directly and requiring
+		// indisvalid catches that.
 		const nameList = sql.join(
 			EXPECTED_TRIGRAM_INDEXES.map((name): SQL => sql`${name}`),
 			sql`, `,
 		);
 		const rows = await executeRows<{ indexname: string }>(
 			db,
-			sql`SELECT indexname FROM pg_indexes WHERE indexname IN (${nameList})`,
+			sql`
+				SELECT c.relname AS indexname
+				FROM pg_index i
+				JOIN pg_class c ON c.oid = i.indexrelid
+				WHERE c.relname IN (${nameList})
+					AND i.indisvalid
+			`,
 		);
 		const found = new Set(rows.map((r) => r.indexname));
 		const missing = EXPECTED_TRIGRAM_INDEXES.filter((name) => !found.has(name));

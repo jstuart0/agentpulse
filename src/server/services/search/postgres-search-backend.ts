@@ -4,16 +4,32 @@
 // 0006_agen27_pg_trgm_search_index.sql for the index list and the reasoning
 // against a single coalesced-text index). When pg_trgm can't be installed
 // (some managed Postgres providers restrict CREATE EXTENSION), the migration
-// degrades to a NOTICE and these queries fall back to a sequential scan —
+// degrades to a WARNING and these queries fall back to a sequential scan —
 // still correct, just not index-accelerated. See CLAUDE.md's search backend
 // note for the full writeup.
+//
+// percy AGEN-27 review (TB22 re-verify): searchEvents/searchSessions run
+// with server-side prepared statements explicitly disabled (see
+// executeUnprepared() below) — NOT wrapped in a MATERIALIZED CTE, which an
+// earlier revision of this file used and TB22 removed. The CTE forced
+// Postgres to fully materialize every WHERE-matching row before applying
+// ORDER BY/LIMIT, which is correct for a *rare* term but catastrophic for a
+// *common* one: a term matching 50% of a 1M-row table regressed 0.18ms ->
+// 1.8s (10,000x+) and spilled ~50MB of temp per query, because early-LIMIT
+// short-circuiting (walk the rows in the query's sort order, stop the
+// instant 50 matches are found) never gets a chance to kick in when
+// everything is materialized first. Disabling prepared statements instead
+// keeps the planner looking at the real bound ILIKE pattern and the real
+// session_id on every single execution (no prepared-statement plan ever
+// gets cached and reused with stale, value-oblivious cost estimates), so
+// rare terms use the trigram indexes and common terms benefit from
+// early-LIMIT the same way an ad hoc, never-prepared query always would.
 
 import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { getDb } from "../../db/client.js";
 import { FTS_INDEXED_EVENT_TYPES } from "../../db/fts-ddl.js";
 import type * as schema from "../../db/schema/index.js";
-import { executeRows } from "../../db/sql-helpers.js";
 import { extractSnippet } from "./snippet.js";
 import type { SearchBackend, SearchFilters, SearchHit, SearchResult } from "./types.js";
 
@@ -39,12 +55,16 @@ type Db = PostgresJsDatabase<typeof schema>;
  * the Drizzle `sql` template tag — never inlined into the SQL string.
  * User-supplied query text cannot break out of the parameterized binding.
  *
- * Implementation note: all queries are built with Drizzle's `sql` template
- * tag and executed via `executeRows()` (sql-helpers.ts), which handles the
- * per-dialect return-shape difference. Do NOT call `db.execute({ sql, params })`
- * directly — the postgres-js Drizzle adapter does not accept that shape and
- * does not return `{ rows: T[] }`; it accepts a Drizzle SQL template and
- * returns T[] directly. The `executeRows()` helper normalizes this.
+ * Implementation note: both queries are built with Drizzle's `sql` template
+ * tag (for the composable, safely-bound filter-clause construction) but
+ * executed via this class's own `executeUnprepared()`, not the shared
+ * `executeRows()` helper (sql-helpers.ts) other backends use — see
+ * `executeUnprepared()`'s own doc comment for why (percy AGEN-27 review,
+ * TB22: server-side prepared statements must stay disabled for these two
+ * queries specifically). Do NOT call `db.execute({ sql, params })` directly
+ * — the postgres-js Drizzle adapter does not accept that shape and does not
+ * return `{ rows: T[] }`; it accepts a Drizzle SQL template and returns T[]
+ * directly.
  */
 
 // TODO(postgres-search-rank): replace flat 1.0 score with a deterministic
@@ -128,6 +148,34 @@ export class PostgresSearchBackend implements SearchBackend {
 
 	private db(): Db {
 		return this._db ?? (getDb() as unknown as Db);
+	}
+
+	/**
+	 * Execute a Drizzle `SQL` template with server-side prepared statements
+	 * disabled for this one call — see the file header (percy AGEN-27
+	 * review, TB22) for why. `executeRows()` (sql-helpers.ts) can't do this:
+	 * it always goes through Drizzle's own `db.execute()`, which builds a
+	 * `PostgresJsPreparedQuery` and always calls `client.unsafe(query,
+	 * params)` with no options — postgres-js's own default for that 2-arg
+	 * form is `prepare: false` already, but relying on an unstated default
+	 * is fragile; this makes the choice explicit and local to these two
+	 * queries only. `db.$client` is postgres-js's own documented escape
+	 * hatch for the underlying client (same instance the app's pool already
+	 * uses — this does not open a second connection or bypass pooling), and
+	 * `db.dialect.sqlToQuery()` is the same call Drizzle's own `db.execute()`
+	 * uses internally to turn a `sql` template into `{ sql, params }`.
+	 * Global client config (`createDatabase()`'s `prepare` option, unset —
+	 * postgres-js's own global default) is untouched.
+	 */
+	private async executeUnprepared<T>(query: SQL): Promise<T[]> {
+		const db = this.db() as unknown as {
+			dialect: { sqlToQuery(q: SQL): { sql: string; params: unknown[] } };
+			$client: {
+				unsafe: (text: string, params: unknown[], opts: { prepare: boolean }) => Promise<T[]>;
+			};
+		};
+		const { sql: text, params } = db.dialect.sqlToQuery(query);
+		return db.$client.unsafe(text, params, { prepare: false });
 	}
 
 	// ── no-op index methods (direct-search family) ────────────────────────────
@@ -263,44 +311,23 @@ export class PostgresSearchBackend implements SearchBackend {
 
 		const whereClause = sql.join(filterClauses, sql` AND `);
 
-		// percy AGEN-27 review, Critical 1 (extended): under a generic plan,
-		// Postgres can choose to walk an index that already provides the
-		// ORDER BY's sort order (e.g. a future `started_at` index) backward,
-		// filtering as it goes, hoping to satisfy LIMIT early — rather than
-		// using the trigram indexes to filter first and sort the (much
-		// smaller) result after. That choice is driven by a generic,
-		// value-oblivious selectivity guess, and can be badly wrong for a
-		// rare search term. Fencing the filter in a `MATERIALIZED` CTE
-		// forces Postgres to fully evaluate WHERE (index-backed) before the
-		// ORDER BY/LIMIT ever sees the rows, closing that escape hatch
-		// regardless of which indexes exist on the sort column both now and
-		// in the future. Verified to add no measurable overhead on the
-		// already-fast custom-plan path.
 		const query = sql<SessionRow>`
-			WITH matched AS MATERIALIZED (
-				SELECT
-					session_id,
-					display_name,
-					cwd,
-					current_task,
-					notes,
-					agent_type,
-					status,
-					last_activity_at,
-					started_at
-				FROM sessions
-				WHERE ${whereClause}
-			)
-			SELECT * FROM matched
+			SELECT
+				session_id,
+				display_name,
+				cwd,
+				current_task,
+				notes,
+				agent_type,
+				status,
+				last_activity_at
+			FROM sessions
+			WHERE ${whereClause}
 			ORDER BY started_at DESC
 			LIMIT ${limit} OFFSET ${offset}
 		`;
 
-		const db = this.db();
-		const rows = await executeRows<SessionRow>(
-			db as unknown as import("../../db/client.js").Db,
-			query,
-		);
+		const rows = await this.executeUnprepared<SessionRow>(query);
 
 		return rows.map((row) => ({
 			kind: "session" as const,
@@ -367,50 +394,28 @@ export class PostgresSearchBackend implements SearchBackend {
 
 		const whereClause = sql.join(filterClauses, sql` AND `);
 
-		// percy AGEN-27 review, Critical 1 (extended): a literal event_type
-		// list alone isn't sufficient once another index satisfies the ORDER
-		// BY column — e.g. AGEN-24's idx_events_created_at_id. Under a
-		// generic plan, Postgres can choose to walk that index backward,
-		// filtering as it goes and hoping to satisfy LIMIT early, rather than
-		// filtering via the trigram indexes first and sorting the (much
-		// smaller) result after — a choice driven by a generic,
-		// value-oblivious selectivity guess that can be badly wrong for a
-		// rare search term (measured: 162ms walking idx_events_created_at_id
-		// vs 7ms via the trigram indexes, same data, same forced-generic
-		// session). Fencing the filter in a `MATERIALIZED` CTE forces
-		// Postgres to fully evaluate WHERE before ORDER BY/LIMIT ever sees
-		// the rows, closing that escape hatch regardless of which indexes
-		// exist on the sort columns both now and in the future. Verified to
-		// add no measurable overhead on the already-fast custom-plan path.
 		const query = sql<EventRow>`
-			WITH matched AS MATERIALIZED (
-				SELECT
-					e.id,
-					e.session_id,
-					e.event_type,
-					e.created_at,
-					e.raw_payload->>'prompt'   AS raw_payload_prompt,
-					e.raw_payload->>'message'  AS raw_payload_message,
-					e.raw_payload->>'summary'  AS raw_payload_summary,
-					e.raw_payload->>'why'      AS raw_payload_why,
-					e.raw_payload->>'title'    AS raw_payload_title,
-					e.content,
-					s.display_name             AS session_display_name,
-					s.cwd                      AS session_cwd
-				FROM events e
-				JOIN sessions s ON s.session_id = e.session_id
-				WHERE ${whereClause}
-			)
-			SELECT * FROM matched
-			ORDER BY created_at DESC, id DESC
+			SELECT
+				e.id,
+				e.session_id,
+				e.event_type,
+				e.created_at,
+				e.raw_payload->>'prompt'   AS raw_payload_prompt,
+				e.raw_payload->>'message'  AS raw_payload_message,
+				e.raw_payload->>'summary'  AS raw_payload_summary,
+				e.raw_payload->>'why'      AS raw_payload_why,
+				e.raw_payload->>'title'    AS raw_payload_title,
+				e.content,
+				s.display_name             AS session_display_name,
+				s.cwd                      AS session_cwd
+			FROM events e
+			JOIN sessions s ON s.session_id = e.session_id
+			WHERE ${whereClause}
+			ORDER BY e.created_at DESC, e.id DESC
 			LIMIT ${limit} OFFSET ${offset}
 		`;
 
-		const db = this.db();
-		const rows = await executeRows<EventRow>(
-			db as unknown as import("../../db/client.js").Db,
-			query,
-		);
+		const rows = await this.executeUnprepared<EventRow>(query);
 
 		return rows.map((row) => {
 			const text =
