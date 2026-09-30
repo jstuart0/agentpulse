@@ -293,10 +293,172 @@ equally non-scanning.
   migration runner sees it already present (`IF NOT EXISTS`) and does no
   further work for it at boot.
 
-  **AGEN-27 note**: any migration branched off before AGEN-24 merges must
-  regenerate its Postgres migration (`bun run db:generate:postgres`) after
-  merging main, so its own migration number lands after `0005` rather than
-  colliding with it (TB11 in the ticket-batch plan).
+---
+
+## Upgrading to migration 0006 (AGEN-27: pg_trgm search index)
+
+Migration `0006` adds `pg_trgm` GIN indexes so Postgres `ILIKE '%term%'`
+event/session search stops doing a sequential scan of the whole `events`
+table on every query — 4 indexes on `sessions`, 6 partial indexes on
+`events` (restricted to the same event types SQLite's FTS5 indexes). SQLite
+is unaffected — this migration is Postgres-only.
+
+**Extension availability**
+
+`pg_trgm` requires `CREATE EXTENSION`, which some managed Postgres
+providers restrict to superuser. The migration feature-detects this: if
+`CREATE EXTENSION pg_trgm` fails for any reason, it logs a `WARNING` and
+skips all 10 indexes — search keeps working via the pre-existing
+sequential-scan ILIKE path, just without the speedup. Nothing else in the
+app changes behavior; there is no manual recovery step required if this
+happens, only degraded search latency at scale. If your provider supports
+installing `pg_trgm` after the fact (e.g. by granting the role
+`rds_superuser` on RDS, or running `CREATE EXTENSION pg_trgm;` yourself as
+an admin), do so and re-run the migration (or re-run the two `DO` blocks
+in the `drizzle/postgres/0006_*.sql` migration file directly) to
+pick up the indexes on the next boot.
+
+**Automatic build is skipped above 100,000 rows (percy AGEN-27 review,
+High 3)** — building 10 GIN indexes takes a `SHARE` lock on
+`sessions`/`events` for the duration of each build; measured ~22s at
+1,000,000 events, blocking ingest for that whole window. To avoid that on
+an existing install with meaningful data, the migration runs `ANALYZE
+events` and then checks `pg_class.reltuples`: above 100,000 (estimated
+rows — an autovacuum-maintained statistic, not exact, which is fine for a
+threshold this coarse) it **skips the automatic build entirely** and logs
+a `WARNING` pointing at the `CREATE INDEX CONCURRENTLY` recipe below. A
+never-analyzed table reports `reltuples = -1` ("unknown"), not `0` —
+running `ANALYZE` first before the check is load-bearing (percy AGEN-27
+review, TB22): without it, a large-but-never-analyzed `events` table would
+read as "unknown" and the migration treats that the same as "too large to
+risk" — it **skips and warns** rather than assuming small and building
+inline. A genuinely fresh, empty install reports `reltuples = 0` after
+that same `ANALYZE` and always gets the automatic build — the skip only
+applies to installs that already have (or might have) real data. A
+skipped or partially-completed build (see the next paragraph) is visible
+without reading logs: `GET /api/v1/health`'s `searchIndexes` field reports
+`{ present: boolean, missing: string[] }`, checked once at boot
+(`src/server/services/search/search-index-status.ts`) by querying
+`pg_index`/`pg_class` directly and requiring `indisvalid` — an index left
+behind in an unusable state by a failed `CONCURRENTLY` build does not
+count as present.
+
+**After a bulk import or restore, run `ANALYZE events;`** — Postgres's
+planner relies on up-to-date statistics to pick a good query plan, and a
+bulk-loaded table (a restored backup, a data migration) can otherwise sit
+with stale or empty statistics until autovacuum catches up on its own
+schedule. This matters beyond the reltuples gate above: `searchEvents`'
+adaptive two-plan strategy (percy AGEN-27 review, TB26 — see CLAUDE.md's
+search backend note) leans on the planner picking a reasonable default
+plan for the common case, falling back to a forced trigram scan only when
+that default plan is canceled by its own 150ms timeout. Stale statistics
+don't break correctness (the fallback still catches a slow plan and
+completes it correctly), but they can make Plan A fall back more often
+than necessary. `VACUUM (ANALYZE) events;` is safe to run at any time,
+including against a live database.
+
+**A build failure never blocks boot (percy AGEN-27 review, Critical 2)** —
+the index-build step is wrapped in its own exception handler: a transient
+failure partway through (disk full, lock timeout, OOM, whatever) logs a
+`WARNING` with the underlying error — it never aborts the migration
+transaction or crash-loops boot. Note the rollback granularity: PL/pgSQL's
+`EXCEPTION` block rolls back to an implicit savepoint at block entry, so a
+failure undoes every `CREATE INDEX` already run in *that same attempt*,
+not just the one that failed (`IF NOT EXISTS` still makes the next boot's
+retry attempt idempotent). Re-run the `CREATE INDEX` statements from the
+migration file (or the `CONCURRENTLY` recipe below) once the underlying
+issue is resolved.
+
+**Index size** — per percy's measurements, expect each trigram GIN index
+to run roughly 55-112% of the `events` table's own heap size (varies by
+which column/expression it covers and how much of it is non-null across
+the partial index's event-type population). Building all 6 events indexes
+on a large table is therefore a meaningful, multi-index storage cost, not
+just a locking one — budget disk headroom accordingly before running the
+`CONCURRENTLY` recipe on a large existing install.
+
+**Postgres**
+
+- Building 10 GIN indexes takes a `SHARE` lock on `sessions`/`events` for
+  the duration of each build, the same tradeoff `0003`'s and `0004`'s
+  indexes make. On a small-to-moderate database (below the 100,000-row
+  automatic-skip threshold above) this is milliseconds to low seconds per
+  index and safe to let run inline at boot. On a large table (whether the
+  migration skipped automatically, or a build attempt failed partway and
+  logged a `WARNING`), do the index builds out-of-band, in a maintenance
+  window, before rolling out this version:
+
+  ```sql
+  -- Run against the Postgres database directly, before deploying the new image.
+  -- Requires pg_trgm; installing the extension itself does NOT need CONCURRENTLY.
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_display_name_trgm
+    ON sessions USING gin (display_name gin_trgm_ops);
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_cwd_trgm
+    ON sessions USING gin (cwd gin_trgm_ops);
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_current_task_trgm
+    ON sessions USING gin (current_task gin_trgm_ops);
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_notes_trgm
+    ON sessions USING gin (notes gin_trgm_ops);
+
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_content_trgm
+    ON events USING gin (content gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_prompt_trgm
+    ON events USING gin ((raw_payload->>'prompt') gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_message_trgm
+    ON events USING gin ((raw_payload->>'message') gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_summary_trgm
+    ON events USING gin ((raw_payload->>'summary') gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_why_trgm
+    ON events USING gin ((raw_payload->>'why') gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_title_trgm
+    ON events USING gin ((raw_payload->>'title') gin_trgm_ops)
+    WHERE event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest');
+  ```
+
+  `CONCURRENTLY` avoids the `SHARE` lock (it takes longer, and doesn't run
+  inside a transaction, but doesn't block writes to `sessions`/`events`
+  while it builds). A `CONCURRENTLY` build can fail partway through and
+  leave an **invalid** index behind — Postgres will not use an invalid
+  index, and the app's own migration (a plain `CREATE INDEX IF NOT
+  EXISTS`, no `CONCURRENTLY`) silently skips a same-named invalid index
+  instead of fixing it. Verify all 10 are valid before considering the
+  upgrade complete:
+
+  ```sql
+  SELECT indexrelid::regclass AS index_name, indisvalid
+    FROM pg_index
+    WHERE indexrelid IN (
+      'idx_sessions_display_name_trgm'::regclass,
+      'idx_sessions_cwd_trgm'::regclass,
+      'idx_sessions_current_task_trgm'::regclass,
+      'idx_sessions_notes_trgm'::regclass,
+      'idx_events_content_trgm'::regclass,
+      'idx_events_prompt_trgm'::regclass,
+      'idx_events_message_trgm'::regclass,
+      'idx_events_summary_trgm'::regclass,
+      'idx_events_why_trgm'::regclass,
+      'idx_events_title_trgm'::regclass
+    );
+  ```
+
+  If any row shows `indisvalid = false`, drop and rebuild that index
+  before deploying:
+
+  ```sql
+  DROP INDEX CONCURRENTLY IF EXISTS <index_name>;
+  -- then re-run the matching CREATE INDEX CONCURRENTLY statement above
+  ```
+
+  Once all 10 indexes are `indisvalid = true` out-of-band, the app's own
+  migration runner sees them already present (`IF NOT EXISTS`) and does no
+  further work for them at boot.
 
 ---
 

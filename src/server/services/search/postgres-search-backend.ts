@@ -1,14 +1,66 @@
-// TODO(postgres-search-perf): replace ILIKE with tsvector + pg_trgm in a
-// follow-up campaign for sub-100ms search at >100k events. The ILIKE path
-// performs full table scans (~50–200ms on typical AgentPulse instances with
-// 10k sessions / 100k events), which is functional but not production-grade
-// at high scale.
+// AGEN-27: ILIKE queries are unchanged, but as of migration 0006 they are
+// index-backed when pg_trgm is available (GIN trgm indexes on every column/
+// expression these queries OR together — see drizzle/postgres/
+// 0006_agen27_pg_trgm_search_index.sql for the index list and the reasoning
+// against a single coalesced-text index). When pg_trgm can't be installed
+// (some managed Postgres providers restrict CREATE EXTENSION), the migration
+// degrades to a WARNING and these queries fall back to a sequential scan —
+// still correct, just not index-accelerated. See CLAUDE.md's search backend
+// note for the full writeup.
+//
+// percy AGEN-27 review (TB22 re-verify): searchSessions runs with
+// server-side prepared statements explicitly disabled (see
+// executeUnprepared() below) — NOT wrapped in a MATERIALIZED CTE, which an
+// earlier revision of this file used and TB22 removed. The CTE forced
+// Postgres to fully materialize every WHERE-matching row before applying
+// ORDER BY/LIMIT, which is correct for a *rare* term but catastrophic for a
+// *common* one: a term matching 50% of a 1M-row table regressed 0.18ms ->
+// 1.8s (10,000x+) and spilled ~50MB of temp per query, because early-LIMIT
+// short-circuiting (walk the rows in the query's sort order, stop the
+// instant 50 matches are found) never gets a chance to kick in when
+// everything is materialized first. Disabling prepared statements instead
+// keeps the planner looking at the real bound ILIKE pattern and the real
+// session_id on every single execution (no prepared-statement plan ever
+// gets cached and reused with stale, value-oblivious cost estimates).
+//
+// percy AGEN-27 review (TB25/TB26): removing the CTE fence solved the
+// *common*-term regression, but investigation (EXPLAIN ANALYZE against a
+// worst-case fixture: identical created_at across 1M rows, so a *unique*
+// match sits at the very end of `ORDER BY created_at DESC, id DESC` scan
+// order) found the planner *never* picks the trigram BitmapOr plan for
+// this query shape, at any selectivity — Postgres's ILIKE '%term%'
+// selectivity estimator has no way to know a literal substring is rare vs.
+// common (it's opaque at ANALYZE time), so it always assigns the same
+// small default selectivity and always prefers walking
+// idx_events_created_at_id with early-LIMIT. That's correct and fast
+// (0.15-3ms) for every bucket *except* a genuinely rare/unique term, where
+// early-LIMIT never triggers and the scan degrades to a near-full-table
+// walk: measured 892-926ms on a warm 1M-row table, and it gets worse as
+// `events` grows — the exact sequential-scan-equivalent problem AGEN-27
+// exists to fix, just via a different index. Forcing the planner off that
+// index (`SET LOCAL enable_indexscan = off`) on the same data proves the
+// trigram BitmapOr plan is available for a genuinely rare/unique term
+// (0.45ms) — the planner's cost estimate for it is simply wrong for this
+// shape, not a missing index. Plan B's own cost is not constant, though:
+// it scales with the size of the *matched* set, not just table size —
+// percy measured ~400ms at 500,000 clustered matches (a large AND
+// spatially-clustered-in-scan-order term), so a term that's both common
+// and clustered can push Plan B's total latency into the low hundreds of
+// ms. It stays bounded rather than degrading further because the query's
+// `ORDER BY ... LIMIT` still applies on top of the Bitmap Heap Scan via a
+// top-N heapsort (Postgres sorts only enough of the matched set to
+// satisfy LIMIT, not the whole set) — slower than the rare-term case, but
+// nowhere near Plan A's near-full-table-scan failure mode.
+//
+// searchEvents therefore runs an adaptive two-plan strategy instead of a
+// single query — see executeEventsQueryWithFallback()'s doc comment below.
 
 import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { getDb } from "../../db/client.js";
+import { FTS_INDEXED_EVENT_TYPES } from "../../db/fts-ddl.js";
 import type * as schema from "../../db/schema/index.js";
-import { executeRows } from "../../db/sql-helpers.js";
+import { isStatementTimeoutError } from "../../db/sql-helpers.js";
 import { extractSnippet } from "./snippet.js";
 import type { SearchBackend, SearchFilters, SearchHit, SearchResult } from "./types.js";
 
@@ -20,7 +72,8 @@ type Db = PostgresJsDatabase<typeof schema>;
  * This is a **direct-search** backend: there is no shadow index. All
  * `index*` and `remove*` methods are no-ops. `search()` executes
  * parameterized `ILIKE '%term%'` queries directly against the `sessions`
- * and `events` tables.
+ * and `events` tables — optionally served from the pg_trgm GIN indexes
+ * migration 0006 creates (see the file header above).
  *
  * Result score is a flat 1.0 — see the TODO below for the proposed
  * deterministic rank follow-up.
@@ -33,12 +86,19 @@ type Db = PostgresJsDatabase<typeof schema>;
  * the Drizzle `sql` template tag — never inlined into the SQL string.
  * User-supplied query text cannot break out of the parameterized binding.
  *
- * Implementation note: all queries are built with Drizzle's `sql` template
- * tag and executed via `executeRows()` (sql-helpers.ts), which handles the
- * per-dialect return-shape difference. Do NOT call `db.execute({ sql, params })`
- * directly — the postgres-js Drizzle adapter does not accept that shape and
- * does not return `{ rows: T[] }`; it accepts a Drizzle SQL template and
- * returns T[] directly. The `executeRows()` helper normalizes this.
+ * Implementation note: both queries are built with Drizzle's `sql` template
+ * tag (for the composable, safely-bound filter-clause construction) but
+ * executed via this class's own raw-client helpers, not the shared
+ * `executeRows()` helper (sql-helpers.ts) other backends use — see
+ * `executeUnprepared()`'s own doc comment for why (percy AGEN-27 review,
+ * TB22: server-side prepared statements must stay disabled for these
+ * queries). `searchEvents` specifically runs through
+ * `executeEventsQueryWithFallback()` (TB25/TB26's adaptive two-plan
+ * strategy — see the file header) rather than `executeUnprepared()`
+ * directly; `searchSessions` is unchanged. Do NOT call
+ * `db.execute({ sql, params })` directly — the postgres-js Drizzle adapter
+ * does not accept that shape and does not return `{ rows: T[] }`; it
+ * accepts a Drizzle SQL template and returns T[] directly.
  */
 
 // TODO(postgres-search-rank): replace flat 1.0 score with a deterministic
@@ -46,18 +106,69 @@ type Db = PostgresJsDatabase<typeof schema>;
 // so Ask-resolver ambiguity detection works correctly on multi-hit results.
 // Filed in thoughts/postgres-followup-plans/postgres-search-rank-deterministic.md.
 
-const SEARCHABLE_EVENT_TYPES = [
-	"UserPromptSubmit",
-	"AssistantMessage",
-	"Stop",
-	"TaskCreated",
-	"TaskCompleted",
-	"SubagentStop",
-	"SessionEnd",
-	"AiProposal",
-	"AiReport",
-	"AiHitlRequest",
-] as const;
+// Single source of truth is FTS_INDEXED_EVENT_TYPES (db/fts-ddl.ts) — the
+// same list SQLite's FTS5 triggers index and migration 0006's partial GIN
+// indexes restrict to. Previously duplicated locally here; AGEN-27 removed
+// the duplicate so the two dialects cannot drift.
+const SEARCHABLE_EVENT_TYPES = FTS_INDEXED_EVENT_TYPES;
+
+// percy AGEN-27 review, Critical 1: event_type IN (...) must be rendered as
+// literal SQL text, not bound parameters. postgres-js prepares statements by
+// default; once Postgres's planner switches a repeatedly-executed prepared
+// statement from a per-call "custom" plan to a cached "generic" one (its
+// default heuristic, typically within the first ~5-10 executions), a
+// *bound-parameter* IN list is opaque at plan time — the planner cannot
+// prove the query's event_type predicate satisfies the six events trigram
+// indexes' partial WHERE clause, so all six get silently dropped in favor
+// of a sequential scan (measured: 617ms vs 1.17ms at 1M rows). A *literal*
+// IN list is visible in the query text at plan time regardless of custom vs.
+// generic planning, so the partial-index match is provable either way.
+// SEARCHABLE_EVENT_TYPES is a hardcoded constant, never user input — the
+// assertion below is a structural guarantee that stays true, not a runtime
+// input-validation gate. The user's own query text remains a bound
+// parameter throughout; only this fixed, compile-time-known list is
+// rendered as literal text.
+const EVENT_TYPE_LITERAL_RE = /^[A-Za-z]+$/;
+for (const eventType of SEARCHABLE_EVENT_TYPES) {
+	if (!EVENT_TYPE_LITERAL_RE.test(eventType)) {
+		throw new Error(
+			`SEARCHABLE_EVENT_TYPES contains a value unsafe to inline as literal SQL: ${JSON.stringify(eventType)}`,
+		);
+	}
+}
+const SEARCHABLE_EVENT_TYPES_SQL_LIST = SEARCHABLE_EVENT_TYPES.map((t) => `'${t}'`).join(",");
+
+// percy AGEN-27 review (TB26): searchEvents' adaptive two-plan strategy.
+// Plan A gets a tight timeout because it is a bet: it usually wins in
+// ~0.15-3ms, but for a rare/unique term it can silently degrade toward a
+// near-full-table scan (measured 892-926ms at 1M rows) with no way to
+// distinguish that case from the fast one ahead of time. 150ms is
+// generous enough that no legitimately-fast bucket has ever been observed
+// anywhere close to it (see postgres-search-backend.test.ts's 5-bucket
+// matrix), while still cutting off a degrading rare-term query almost
+// immediately rather than letting it run to completion. Plan B's timeout
+// is generous, not tight — once the planner is forced onto the
+// provably-correct trigram path its cost still scales with the size of
+// the matched set (percy measured ~400ms at 500,000 clustered matches,
+// bounded by the query's top-N heapsort rather than degrading further —
+// see the file header), so a slow Plan B in the low hundreds of ms is an
+// expected trade-off for a large/clustered term, not a bug; only a
+// genuine hang (10s) should still surface rather than block forever.
+const PLAN_A_STATEMENT_TIMEOUT_MS = 150;
+const PLAN_B_STATEMENT_TIMEOUT_MS = 10_000;
+
+/** Structural type for a single postgres-js query call, prepare disabled. */
+type RawPgUnsafeCall = <T>(
+	text: string,
+	params: unknown[],
+	opts: { prepare: boolean },
+) => Promise<T[]>;
+
+/** Structural type for postgres-js's raw client, including `.begin()` for Plan A/B transactions. */
+type RawPgClient = {
+	unsafe: RawPgUnsafeCall;
+	begin: <T>(cb: (tx: { unsafe: RawPgUnsafeCall }) => Promise<T>) => Promise<T>;
+};
 
 /** Row returned by the sessions ILIKE query. */
 type SessionRow = {
@@ -97,12 +208,139 @@ export class PostgresSearchBackend implements SearchBackend {
 	// Mirrors the SqliteFtsBackend constructor pattern so tests can inject.
 	private readonly _db: Db | null;
 
-	constructor(db?: Db) {
+	// Test-only: skip straight to Plan B, bypassing Plan A's statement_timeout
+	// race entirely. Exists so pagination-parity tests can compare Plan A's
+	// and Plan B's output for a term that would never naturally time out
+	// (a mid-selectivity term genuinely doesn't need Plan B in production —
+	// this is the only way to exercise Plan B's pagination deterministically,
+	// through the real query-building code, without duplicating the query
+	// shape in a test — percy AGEN-27 review, TB26). Never set outside tests.
+	private readonly _forcePlanBForTesting: boolean;
+
+	// Test-only: override Plan A's statement_timeout. Defaults to the real
+	// production value (PLAN_A_STATEMENT_TIMEOUT_MS). Exists so correctness
+	// tests can force a genuine Plan A timeout (and therefore a genuine
+	// Plan B fallback, through the real timeout/catch/retry code path —
+	// not the _forcePlanBForTesting shortcut) against a SMALL, cheap
+	// fixture instead of needing a multi-million-row table to make the
+	// real 150ms threshold trip reliably (percy AGEN-27 review, TB27 —
+	// CI cost). A 1ms override reliably times out even a few-hundred-row
+	// scan. Never set outside tests.
+	private readonly _planATimeoutMsForTesting: number | null;
+
+	constructor(
+		db?: Db,
+		options?: { forcePlanBForTesting?: boolean; _planATimeoutMsForTesting?: number },
+	) {
 		this._db = db ?? null;
+		this._forcePlanBForTesting = options?.forcePlanBForTesting ?? false;
+		this._planATimeoutMsForTesting = options?._planATimeoutMsForTesting ?? null;
 	}
 
 	private db(): Db {
 		return this._db ?? (getDb() as unknown as Db);
+	}
+
+	/**
+	 * Execute a Drizzle `SQL` template with server-side prepared statements
+	 * disabled for this one call — see the file header (percy AGEN-27
+	 * review, TB22) for why. `executeRows()` (sql-helpers.ts) can't do this:
+	 * it always goes through Drizzle's own `db.execute()`, which builds a
+	 * `PostgresJsPreparedQuery` and always calls `client.unsafe(query,
+	 * params)` with no options — postgres-js's own default for that 2-arg
+	 * form is `prepare: false` already, but relying on an unstated default
+	 * is fragile; this makes the choice explicit and local to these two
+	 * queries only. `db.$client` is postgres-js's own documented escape
+	 * hatch for the underlying client (same instance the app's pool already
+	 * uses — this does not open a second connection or bypass pooling), and
+	 * `db.dialect.sqlToQuery()` is the same call Drizzle's own `db.execute()`
+	 * uses internally to turn a `sql` template into `{ sql, params }`.
+	 * Global client config (`createDatabase()`'s `prepare` option, unset —
+	 * postgres-js's own global default) is untouched.
+	 */
+	private async executeUnprepared<T>(query: SQL): Promise<T[]> {
+		const db = this.db() as unknown as {
+			dialect: { sqlToQuery(q: SQL): { sql: string; params: unknown[] } };
+			$client: RawPgClient;
+		};
+		const { sql: text, params } = db.dialect.sqlToQuery(query);
+		return db.$client.unsafe<T>(text, params, { prepare: false });
+	}
+
+	/**
+	 * Adaptive two-plan strategy for the events query — see the file header
+	 * (percy AGEN-27 review, TB25/TB26) for the investigation that motivated
+	 * this. Both plans run the identical query text/params (same
+	 * `ORDER BY e.created_at DESC, e.id DESC LIMIT … OFFSET …`) inside a
+	 * transaction so `SET LOCAL` only affects this one call — Postgres
+	 * resets every `LOCAL` GUC at COMMIT/ROLLBACK regardless of connection
+	 * pooling, so neither setting can leak onto a later pooled connection
+	 * (verified by "SET LOCAL does not leak onto a later pooled connection"
+	 * in postgres-search-backend.test.ts).
+	 *
+	 * Plan A: `SET LOCAL statement_timeout = '150ms'`, then the query with
+	 * `prepare: false` (unchanged from TB22). Fast path for the overwhelming
+	 * majority of terms.
+	 *
+	 * Plan B: only reached if Plan A is canceled by its own statement_timeout
+	 * (SQLSTATE 57014, `isStatementTimeoutError`). Re-runs the same query in
+	 * a *fresh* transaction with `enable_indexscan`/`enable_indexonlyscan`
+	 * off, forcing the planner onto the trigram BitmapOr/Bitmap Heap Scan
+	 * path — empirically the correct plan for whatever made Plan A time out
+	 * (`enable_indexonlyscan` is off defensively; this query's wide SELECT
+	 * list already rules out an index-only scan today, but the wide SELECT
+	 * list is the only thing preventing it). Plan B's own timeout is
+	 * generous (`PLAN_B_STATEMENT_TIMEOUT_MS`), not tight — this plan is now
+	 * believed correct, so a hang here is a real problem, not an expected
+	 * trade-off.
+	 *
+	 * Any other error (including a statement_timeout NOT caused by Plan A's
+	 * own guard — a lock_timeout, a different SQLSTATE) propagates from
+	 * Plan A unchanged; only 57014 triggers Plan B.
+	 */
+	private async executeEventsQueryWithFallback(
+		query: SQL,
+	): Promise<{ rows: EventRow[]; usedFallback: boolean }> {
+		const db = this.db() as unknown as {
+			dialect: { sqlToQuery(q: SQL): { sql: string; params: unknown[] } };
+			$client: RawPgClient;
+		};
+		const { sql: text, params } = db.dialect.sqlToQuery(query);
+
+		const runPlanB = async (): Promise<{ rows: EventRow[]; usedFallback: true }> => {
+			const rows = await db.$client.begin(async (tx) => {
+				await tx.unsafe(`SET LOCAL statement_timeout = '${PLAN_B_STATEMENT_TIMEOUT_MS}ms'`, [], {
+					prepare: false,
+				});
+				await tx.unsafe("SET LOCAL enable_indexscan = off", [], { prepare: false });
+				await tx.unsafe("SET LOCAL enable_indexonlyscan = off", [], { prepare: false });
+				return tx.unsafe<EventRow>(text, params, { prepare: false });
+			});
+			return { rows, usedFallback: true };
+		};
+
+		// Test-only escape hatch — see _forcePlanBForTesting's doc comment.
+		if (this._forcePlanBForTesting) return runPlanB();
+
+		// Test-only override — see _planATimeoutMsForTesting's doc comment.
+		// Defaults to the real production value.
+		const planATimeoutMs = this._planATimeoutMsForTesting ?? PLAN_A_STATEMENT_TIMEOUT_MS;
+
+		try {
+			const rows = await db.$client.begin(async (tx) => {
+				await tx.unsafe(`SET LOCAL statement_timeout = '${planATimeoutMs}ms'`, [], {
+					prepare: false,
+				});
+				return tx.unsafe<EventRow>(text, params, { prepare: false });
+			});
+			return { rows, usedFallback: false };
+		} catch (err) {
+			if (!isStatementTimeoutError(err)) throw err;
+			console.debug(
+				`[search] Plan A events query exceeded ${planATimeoutMs}ms (SQLSTATE 57014) — falling back to Plan B (enable_indexscan/enable_indexonlyscan off) to force the trigram index path.`,
+			);
+			return runPlanB();
+		}
 	}
 
 	// ── no-op index methods (direct-search family) ────────────────────────────
@@ -170,6 +408,10 @@ export class PostgresSearchBackend implements SearchBackend {
 
 		const hits: SearchHit[] = [];
 		let total = 0;
+		// percy AGEN-27 review (TB26): whether searchEvents' Plan B fallback
+		// fired — test/debug instrumentation only, see SearchResult.debug's
+		// doc comment. undefined when kinds doesn't include "event" at all.
+		let eventsUsedFallback: boolean | undefined;
 
 		// ── session search ──────────────────────────────────────────────────
 
@@ -182,9 +424,16 @@ export class PostgresSearchBackend implements SearchBackend {
 		// ── event search ────────────────────────────────────────────────────
 
 		if (kinds.includes("event")) {
-			const eventHits = await this.searchEvents(tokens, mode, filters, limit, offset);
+			const { hits: eventHits, usedFallback } = await this.searchEvents(
+				tokens,
+				mode,
+				filters,
+				limit,
+				offset,
+			);
 			hits.push(...eventHits);
 			total += eventHits.length;
+			eventsUsedFallback = usedFallback;
 		}
 
 		// Sort by score (all flat 1.0 today, so stable by insertion order
@@ -195,6 +444,9 @@ export class PostgresSearchBackend implements SearchBackend {
 			hits: hits.slice(0, limit),
 			total,
 			backend: this.name,
+			...(eventsUsedFallback !== undefined
+				? { debug: { postgresEventsUsedFallback: eventsUsedFallback } }
+				: {}),
 		};
 	}
 
@@ -254,11 +506,7 @@ export class PostgresSearchBackend implements SearchBackend {
 			LIMIT ${limit} OFFSET ${offset}
 		`;
 
-		const db = this.db();
-		const rows = await executeRows<SessionRow>(
-			db as unknown as import("../../db/client.js").Db,
-			query,
-		);
+		const rows = await this.executeUnprepared<SessionRow>(query);
 
 		return rows.map((row) => ({
 			kind: "session" as const,
@@ -279,7 +527,7 @@ export class PostgresSearchBackend implements SearchBackend {
 		filters: SearchFilters,
 		limit: number,
 		offset: number,
-	): Promise<SearchHit[]> {
+	): Promise<{ hits: SearchHit[]; usedFallback: boolean }> {
 		// For events, ILIKE across: content column and five raw_payload JSON fields.
 		// raw_payload is Postgres `json` (Decision 14); ->> extracts text directly.
 		//
@@ -294,13 +542,12 @@ export class PostgresSearchBackend implements SearchBackend {
 
 		const filterClauses: SQL[] = [sql`(${tokenWhere})`];
 
-		// Restrict to the same event types the FTS trigger indexed.
-		// Pass as individual bound params via a VALUES list joined by commas.
-		const eventTypeList = sql.join(
-			SEARCHABLE_EVENT_TYPES.map((t) => sql`${t}`),
-			sql`, `,
-		);
-		filterClauses.push(sql`e.event_type IN (${eventTypeList})`);
+		// Restrict to the same event types the FTS trigger indexed. Rendered
+		// as literal SQL text (sql.raw), not bound params — see
+		// SEARCHABLE_EVENT_TYPES_SQL_LIST's definition above for why a bound
+		// IN list defeats the partial trigram indexes once Postgres switches
+		// to a generic query plan.
+		filterClauses.push(sql`e.event_type IN (${sql.raw(SEARCHABLE_EVENT_TYPES_SQL_LIST)})`);
 
 		if (filters.sessionId) {
 			filterClauses.push(sql`e.session_id = ${filters.sessionId}`);
@@ -347,13 +594,9 @@ export class PostgresSearchBackend implements SearchBackend {
 			LIMIT ${limit} OFFSET ${offset}
 		`;
 
-		const db = this.db();
-		const rows = await executeRows<EventRow>(
-			db as unknown as import("../../db/client.js").Db,
-			query,
-		);
+		const { rows, usedFallback } = await this.executeEventsQueryWithFallback(query);
 
-		return rows.map((row) => {
+		const hits = rows.map((row) => {
 			const text =
 				row.raw_payload_prompt ??
 				row.raw_payload_message ??
@@ -375,6 +618,8 @@ export class PostgresSearchBackend implements SearchBackend {
 				sessionCwd: row.session_cwd,
 			};
 		});
+
+		return { hits, usedFallback };
 	}
 
 	/** Build a snippet from whichever session field first matches the token. */

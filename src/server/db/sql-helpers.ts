@@ -170,6 +170,37 @@ export function isUniqueViolationError(err: unknown): boolean {
 	return message.includes("SQLITE_CONSTRAINT_UNIQUE");
 }
 
+// ── isStatementTimeoutError ───────────────────────────────────────────────────
+
+/**
+ * Returns true when `err` represents a statement canceled by
+ * `statement_timeout` on Postgres: `error.code === '57014'` (SQLSTATE
+ * query_canceled). Postgres-only — SQLite has no statement-timeout
+ * concept, so this always returns false there.
+ *
+ * Used by `PostgresSearchBackend`'s two-plan `searchEvents` strategy
+ * (percy AGEN-27 review, TB26) to detect Plan A's own deliberate
+ * `SET LOCAL statement_timeout` firing so it can fall back to Plan B —
+ * NOT a generic "swallow any timeout" helper. Any other error (including
+ * a statement_timeout set by something *other* than Plan A's own guard,
+ * a lock_timeout, or an idle_in_transaction_session_timeout — all
+ * distinct SQLSTATEs) must propagate unchanged.
+ */
+export function isStatementTimeoutError(err: unknown): boolean {
+	if (!err || typeof err !== "object") return false;
+	const obj = err as Record<string, unknown>;
+	if (obj.code === "57014") return true;
+	// Defense in depth, mirroring isUniqueViolationError: this path runs the
+	// raw postgres-js client directly (not through Drizzle's db.execute()),
+	// so today the error is never Drizzle-wrapped — but check one level of
+	// .cause anyway in case that changes.
+	const cause = obj.cause;
+	if (cause && typeof cause === "object" && (cause as Record<string, unknown>).code === "57014") {
+		return true;
+	}
+	return false;
+}
+
 // ── likeContains ─────────────────────────────────────────────────────────────
 
 /**

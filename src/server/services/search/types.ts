@@ -91,6 +91,16 @@ export interface SearchResult {
 	total: number;
 	/** Backend identifier for telemetry / debugging. */
 	backend: "sqlite-fts5" | "postgres-ilike" | "postgres-tsvector";
+	/**
+	 * Backend-specific test/debug instrumentation — NOT a routing or UI
+	 * contract. Only `PostgresSearchBackend` populates this today
+	 * (`postgresEventsUsedFallback`: whether AGEN-27 TB26's Plan B fallback
+	 * fired for the events query, i.e. Plan A's `statement_timeout` was
+	 * exceeded and the query re-ran with the trigram path forced). Other
+	 * backends omit it entirely; callers must not rely on its presence or
+	 * shape.
+	 */
+	debug?: { postgresEventsUsedFallback?: boolean };
 }
 
 export interface SearchBackend {

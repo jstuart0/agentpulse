@@ -68,8 +68,14 @@ describePostgresOnly("Postgres search order is stable for same-second events (R1
 	test("the raw-SQL ordering guard: every event ORDER BY has an id tiebreak", async () => {
 		const { readFileSync } = await import("node:fs");
 		const src = readFileSync(new URL("./postgres-search-backend.ts", import.meta.url), "utf8");
-		const orderings = src.match(/ORDER BY [a-z_.]*created_at[^\n]*/g) ?? [];
-		const eventOrderings = orderings.filter((line) => line.includes("e.created_at"));
+		// Matches the events query's ORDER BY regardless of table-alias
+		// prefix — AGEN-27's MATERIALIZED CTE fence (percy TB17 review,
+		// Critical 1) moved the final ORDER BY onto the CTE's own
+		// (unprefixed) output columns, so "e.created_at" no longer appears
+		// literally; "created_at" does, and no other ORDER BY clause in this
+		// file mentions it (the sessions query orders by started_at), so this
+		// match is unambiguously the events ordering either way.
+		const eventOrderings = src.match(/ORDER BY [a-z_.]*created_at[^\n]*/g) ?? [];
 		expect(eventOrderings.length).toBeGreaterThan(0);
 		for (const line of eventOrderings) {
 			expect(line).toMatch(/,\s*(e\.)?id (DESC|ASC)/);
