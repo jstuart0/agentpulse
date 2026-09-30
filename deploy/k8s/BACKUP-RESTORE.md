@@ -41,8 +41,30 @@ SQLite's WAL mode creates a `-wal` and `-shm` file in the same directory as
 the database. If those files don't exist when the sidecar opens the database,
 SQLite attempts to create them. A read-only mount prevents that creation and
 causes the backup to fail. The sidecar mount is writable; the sidecar simply
-does not write to `agentpulse.db` directly — it only calls `sqlite3 .backup`,
-which is the safe concurrent-read API.
+does not write to `agentpulse.db` directly — it only runs `VACUUM INTO`,
+which is a read-only, concurrent-safe snapshot of the source database (see
+"Why `VACUUM INTO` and not `.backup`" below).
+
+### Why `VACUUM INTO` and not `.backup` (AGEN-54)
+
+Earlier releases used sqlite3's `.backup` command, which drives the SQLite
+backup API: it copies the source page-by-page and re-reads any page that
+changed during the copy. Under sustained concurrent write load, a busy
+database can checkpoint its WAL faster than `.backup` can finish a pass,
+so the copy restarts indefinitely — a livelock, not a slow backup. In
+production this was observed stalled at a fixed byte offset for 20+ minutes,
+and backup history showed completions taking 12-15 hours.
+
+`run-backup.sh` now snapshots with `VACUUM INTO '<path>'` instead. It takes a
+single read transaction and writes the whole live-page set in one bounded
+pass — no restart-on-checkpoint behavior — while remaining read-only against
+the source, so it's safe to run against the live, actively-written DB. A
+2.4 GB production database snapshots in ~31 seconds this way.
+
+`run-backup.sh` also checks free space in the backup directory before
+running (`VACUUM INTO` needs roughly one DB-size worth of headroom) and
+refuses outright if the computed output path would embed a single quote
+(the path is spliced into a SQL string literal).
 
 ### Backup image
 
@@ -57,7 +79,9 @@ Scripts baked into the image:
 
 ### Backup schedule
 
-The sidecar runs a `while true` loop that wakes at 04:15 UTC daily:
+The sidecar runs a `while true` loop that wakes at 04:15 UTC daily. Note the
+log excerpt below predates the AGEN-54 `VACUUM INTO` switch and is otherwise
+unchanged (same file names, same counts/retention output):
 
 ```
 [backup-loop] next run in <N>s ...
@@ -200,7 +224,7 @@ kubectl exec -n <agentpulse-namespace> agentpulse-restore -- sh -c '
   mv /data/agentpulse.db-wal /data/agentpulse.db-wal.preempt 2>/dev/null || true
   mv /data/agentpulse.db-shm /data/agentpulse.db-shm.preempt 2>/dev/null || true
 
-  # Copy the backup in. sqlite3 .backup output has no WAL/SHM — it is a
+  # Copy the backup in. VACUUM INTO output has no WAL/SHM — it is a
   # fully-written, self-consistent DB file.
   cp /backups/agentpulse-<TS>.db /data/agentpulse.db
 

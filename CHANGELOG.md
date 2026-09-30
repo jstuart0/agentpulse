@@ -7,6 +7,19 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Backup sidecar livelock under concurrent writes (AGEN-54).**
+  `deploy/k8s/scripts/run-backup.sh` used sqlite3's `.backup` command, which
+  restarts its page copy whenever a WAL checkpoint lands mid-copy — under
+  sustained write load it can livelock indefinitely instead of finishing (one
+  production run stalled at a fixed offset for 20+ minutes; backup history
+  showed 12-15h completions). The script now snapshots with `VACUUM INTO`
+  (a single bounded read transaction, read-only-safe against the live DB),
+  verifies the output with `PRAGMA integrity_check` before promoting it, and
+  checks free space up front. Naming, compression, retention
+  (`scripts/retention.sh`), and logging are unchanged.
+
 ## [0.6.0] — 2026-09-29
 
 ### Added
