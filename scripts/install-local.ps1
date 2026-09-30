@@ -310,6 +310,11 @@ function Write-ApFileNoFollow {
 # attacker-chosen location. Checked before either write, same as the bash
 # installers' `[ -L "$AP_AUTH_HEADER_FILE" ]` guard. F242: also refuses a
 # multiply-hard-linked target file — see Test-ApMultipleHardLinks above.
+#
+# AGEN-21 (xander, Medium): both icacls calls are best-effort — a missing/
+# blocked icacls (non-NTFS volume, policy restriction) must not crash the
+# install over an ACL that couldn't be verified. Matches Write-ApPrivateFile
+# below and private-file.ts's tightenWindowsAclBestEffort on the TS side.
 function New-ApHookAuthHeaderFile {
   param([Parameter(Mandatory = $true)][string]$ApiKey)
   $d = Join-Path $HOME ".agentpulse"
@@ -317,7 +322,11 @@ function New-ApHookAuthHeaderFile {
     throw "refusing to write through a reparse point: $d"
   }
   New-Item -ItemType Directory -Force -Path $d | Out-Null
-  icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+  try {
+    icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+  } catch {
+    Write-Host "warning: could not narrow ACL on $d : $($_.Exception.Message)"
+  }
   $f = Join-Path $d "hook-auth-header"
   if (Test-ApMultipleHardLinks -Path $f) {
     throw "refusing to write through a multiply-linked file: $f"
@@ -326,9 +335,65 @@ function New-ApHookAuthHeaderFile {
     throw "refusing to write through a reparse point: $f"
   }
   Set-Content -NoNewline -Path $f -Value "Authorization: Bearer $ApiKey`n" -Encoding UTF8
-  icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+  try {
+    icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+  } catch {
+    Write-Host "warning: could not narrow ACL on $f : $($_.Exception.Message)"
+  }
 }
 # <<< agentpulse-hook-cmd
+
+# AGEN-21 (security, Medium): .env.local and supervisor.json both hold
+# secrets in plaintext (AGENTPULSE_INITIAL_API_KEY, and the supervisor
+# credential/enrollment token respectively) and were previously written via
+# plain Set-Content/Set-JsonFile — no reparse-point guard, and node's/
+# PowerShell's mode bits don't narrow the ACL other local Windows accounts
+# hold on the file. Write-ApPrivateFile reuses Write-ApFileNoFollow (the
+# same reparse-point-safe primitive as the Codex/Copilot hooks writers
+# above) then narrows the ACL to the current user only, mirroring
+# New-ApHookAuthHeaderFile's `icacls ... /inheritance:r /grant:r
+# "user:(R,W)"`. Kept outside the agentpulse-hook-cmd marker block above:
+# it isn't part of the cross-file hook-install parity that block tracks.
+#
+# AGEN-21 (xander, High): narrows the parent directory's ACL *before*
+# Write-ApFileNoFollow creates the file inside it — same F208 ordering as
+# New-ApHookAuthHeaderFile. Directory-then-file (the prior shape) left a
+# window where a freshly-created file briefly held the directory's
+# broader, inherited ACL before the file-level icacls call narrowed it.
+# Every icacls call is best-effort: a missing/blocked icacls (non-NTFS
+# volume, policy restriction) must not fail the install over an ACL that
+# couldn't be verified — matches Test-ApMultipleHardLinks's precedent and
+# private-file.ts's tightenWindowsAclBestEffort on the TS side.
+function Write-ApPrivateFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Content
+  )
+  $dir = Split-Path -Parent $Path
+  if (Test-ApReparsePoint -Path $dir) {
+    throw "refusing to write into a reparse-point directory: $dir"
+  }
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  try {
+    icacls $dir /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+  } catch {
+    Write-Host "warning: could not narrow ACL on $dir : $($_.Exception.Message)"
+  }
+  Write-ApFileNoFollow -Path $Path -Content $Content
+  try {
+    icacls $Path /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+  } catch {
+    Write-Host "warning: could not narrow ACL on $Path : $($_.Exception.Message)"
+  }
+}
+
+function Write-ApPrivateJsonFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][object]$Data
+  )
+  Write-ApPrivateFile -Path $Path -Content ($Data | ConvertTo-Json -Depth 20)
+}
 
 function Configure-Hooks {
   Write-Step "Configuring Claude Code + Codex hooks..."
@@ -390,7 +455,13 @@ function Configure-Hooks {
   if ($ApiKey) {
     # H2: a literal key is embedded above, so settings.json is narrowed to
     # a single ACE for the current user — never inherited/broadly readable.
-    icacls $claudeSettings /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+    # AGEN-21 (xander, Medium): best-effort, matching every other icacls
+    # call site — a missing/blocked icacls must not crash the install.
+    try {
+      icacls $claudeSettings /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+    } catch {
+      Write-Host "warning: could not narrow ACL on $claudeSettings : $($_.Exception.Message)"
+    }
   }
 
   # D12 (r6, Phase 0 fact 5): Codex 0.145 loads hooks only from
@@ -541,7 +612,10 @@ Write-Step "Installing dependencies..."
 Write-Step "Building application..."
 & $bun run build
 
-@"
+# AGEN-21: was a bare `Set-Content` — no reparse-point guard, and .env.local
+# holds AGENTPULSE_INITIAL_API_KEY in plaintext. Write-ApPrivateFile writes
+# it reparse-point-safe and ACL-narrowed to the current user only.
+$envFileContent = @"
 PORT=$Port
 HOST=$HostName
 PUBLIC_URL=$PublicUrl
@@ -550,7 +624,8 @@ AGENTPULSE_INITIAL_API_KEY=$ApiKey
 DATA_DIR=$DataDir
 SQLITE_PATH=$DataDir\agentpulse.db
 NODE_ENV=production
-"@ | Set-Content -Path $EnvFile -Encoding UTF8
+"@
+Write-ApPrivateFile -Path $EnvFile -Content $envFileContent
 Write-Step "✓ Wrote $EnvFile"
 
 $serverScript = Join-Path $AgentPulseDir "start-agentpulse-server.ps1"
@@ -627,7 +702,10 @@ if (-not $SkipSupervisor) {
     $codex = Get-Command codex -ErrorAction SilentlyContinue
     if ($claude) { $supervisorConfig["claudeCommand"] = $claude.Source }
     if ($codex) { $supervisorConfig["codexCommand"] = $codex.Source }
-    Set-JsonFile -Path $SupervisorConfigPath -Data $supervisorConfig
+    # AGEN-21: was Set-JsonFile (plain Set-Content, no reparse-point guard,
+    # no ACL narrowing) — supervisor.json holds the supervisor credential /
+    # enrollment token in plaintext.
+    Write-ApPrivateJsonFile -Path $SupervisorConfigPath -Data $supervisorConfig
     Write-Step "✓ Wrote $SupervisorConfigPath"
 
     @"

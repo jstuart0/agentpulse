@@ -82,6 +82,66 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# >>> agentpulse-private-write
+# AGEN-21 (security, Medium): .env.local and supervisor.json both hold
+# secrets in plaintext (AGENTPULSE_INITIAL_API_KEY, and the supervisor
+# credential/enrollment token respectively) and were previously written
+# with a bare `cat > path <<EOF` / python3 `open(path, "w")` — both follow
+# a symlink at the destination and leave the file at the OS-default create
+# mode (0644 under a typical umask), readable by any local user.
+# ap_write_private_no_follow is the same no-follow, 0600 primitive already
+# established in scripts/setup-hooks.sh and scripts/setup-relay.sh for
+# exactly this class of file (hook-auth-header); ported here verbatim
+# rather than shared, since install-local.sh has no other dependency on
+# those files and stays a single self-contained installer.
+#
+# AGEN-21 (xander, High): the old `tmp="${path}.$$.tmp"` is predictable —
+# an attacker doesn't need to win any race, just pre-plant a symlink at
+# every plausible PID's tmp name before the script ever runs; the old
+# `> "$tmp"` then follows straight through it. mktemp's XXXXXX suffix is
+# unguessable and O_CREAT|O_EXCL under the hood (atomic — refuses if
+# anything, symlink or not, already exists at that exact random path), so
+# nothing can be pre-planted at it. The `[ -L "$tmp" ]` check afterward and
+# `set -C`'s noclobber are belt-and-suspenders, not the primary defense: an
+# environment with no mktemp falls back to a PID+$RANDOM name plus its own
+# noclobber create-or-fail (uniqueness, not the atomicity mktemp gives).
+ap_write_private_no_follow() {
+  local path="$1" content="$2" dir tmp
+  dir="$(dirname -- "$path")"
+  if [ -L "$dir" ]; then
+    echo "refusing to write into a symlinked directory: $dir" >&2
+    return 1
+  fi
+  mkdir -p "$dir"
+  if [ -L "$path" ]; then
+    echo "refusing to write through a symlink: $path" >&2
+    return 1
+  fi
+  if command -v mktemp >/dev/null 2>&1; then
+    tmp="$(mktemp "${dir}/.$(basename -- "$path").XXXXXX")" || {
+      echo "refusing: could not create a private temp file in $dir" >&2
+      return 1
+    }
+  else
+    tmp="${dir}/.$(basename -- "$path").$$.${RANDOM}${RANDOM}.tmp"
+    if ! ( umask 077 && set -C && : > "$tmp" ) 2>/dev/null; then
+      echo "refusing: could not create a private temp file: $tmp" >&2
+      return 1
+    fi
+  fi
+  if [ -L "$tmp" ]; then
+    echo "refusing to write through a symlink: $tmp" >&2
+    return 1
+  fi
+  if ! ( set -C && printf '%s' "$content" >| "$tmp" ); then
+    echo "refusing: could not write private temp file: $tmp" >&2
+    rm -f -- "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  mv -f -- "$tmp" "$path"
+}
+# <<< agentpulse-private-write
+
 install_bun() {
   if need_cmd bun; then
     echo "  ✓ Bun: $(command -v bun)"
@@ -127,7 +187,7 @@ echo "  Building application..."
 NODE_ENV=production bun run build
 
 ENV_FILE="${INSTALL_DIR}/.env.local"
-cat > "${ENV_FILE}" <<EOF
+ENV_CONTENT="$(cat <<EOF
 PORT=${PORT}
 HOST=${HOST}
 PUBLIC_URL=${PUBLIC_URL}
@@ -137,6 +197,8 @@ DATA_DIR=${DATA_DIR}
 SQLITE_PATH=${DATA_DIR}/agentpulse.db
 NODE_ENV=production
 EOF
+)"$'\n'
+ap_write_private_no_follow "${ENV_FILE}" "${ENV_CONTENT}" || exit 1
 echo "  ✓ Wrote ${ENV_FILE}"
 
 AGENTPULSE_DIR="${HOME}/.agentpulse"
@@ -176,7 +238,8 @@ configure_supervisor() {
     codex_json="$(json_escape "$(command -v codex)")"
   fi
 
-  python3 - "${SUPERVISOR_CONFIG_FILE}" "${PUBLIC_URL}" "${trusted_root}" "${enrollment_json}" "${api_key_json}" "${claude_json}" "${codex_json}" <<'PY'
+  local merged_json
+  merged_json="$(python3 - "${SUPERVISOR_CONFIG_FILE}" "${PUBLIC_URL}" "${trusted_root}" "${enrollment_json}" "${api_key_json}" "${claude_json}" "${codex_json}" <<'PY'
 import json, os, socket, sys
 path, server_url, trusted_root, enrollment_json, api_key_json, claude_json, codex_json = sys.argv[1:]
 data = {}
@@ -198,10 +261,16 @@ if claude:
 codex = json.loads(codex_json)
 if codex:
     data["codexCommand"] = codex
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
+json.dump(data, sys.stdout, indent=2)
+sys.stdout.write("\n")
 PY
+  )"
+  # AGEN-21: was a bare python3 `open(path, "w")` — follows a symlink at the
+  # destination and leaves the file at the OS-default create mode (0644
+  # under a typical umask). supervisor.json holds the supervisor credential
+  # / enrollment token in plaintext; ap_write_private_no_follow (above)
+  # writes it at 0600 without following a symlink.
+  ap_write_private_no_follow "${SUPERVISOR_CONFIG_FILE}" "${merged_json}"$'\n' || exit 1
   echo "  ✓ Wrote ${SUPERVISOR_CONFIG_FILE}"
 }
 

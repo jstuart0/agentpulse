@@ -21,7 +21,19 @@
  * but at PRIVATE_FILE_MODE's non-secret sibling, CONFIG_FILE_MODE (0644):
  * hooks.json isn't a secret — Codex/Copilot themselves need to read it —
  * so locking it to 0600 would just break the tool it's configuring.
+ *
+ * AGEN-21 (Medium, security): ~/.agentpulse/supervisor.json — the local
+ * supervisor's own config, holding its `aps_...` credential and/or
+ * enrollment token — was written with `Bun.write` (no explicit mode, no
+ * symlink refusal), leaving it at the OS-default create mode (0644 under a
+ * typical umask): any local user could read the credential and act as that
+ * supervisor. src/supervisor/config.ts's saveSupervisorConfig now routes
+ * through writePrivateFileSyncNoFollow like every other secret file here.
+ * tightenPrivateFilePermissionsSync (below) additionally self-heals an
+ * existing over-permissive file at supervisor startup, for installs that
+ * predate this fix.
  */
+import { execFileSync } from "node:child_process";
 import {
 	constants,
 	closeSync,
@@ -101,9 +113,15 @@ function writeFileSyncNoFollow(path: string, content: string, mode: number): voi
 	}
 }
 
-/** Secret-bearing files (hook-auth-header): 0600, owner-read-only. */
+/**
+ * Secret-bearing files (hook-auth-header, supervisor.json): 0600,
+ * owner-read-only. AGEN-21: also best-effort narrows the ACL to the
+ * current user on win32, where fchmod alone doesn't restrict other local
+ * accounts — see tightenWindowsAclBestEffort below.
+ */
 export function writePrivateFileSyncNoFollow(path: string, content: string): void {
 	writeFileSyncNoFollow(path, content, PRIVATE_FILE_MODE);
+	tightenWindowsAclBestEffort(path);
 }
 
 /**
@@ -114,4 +132,86 @@ export function writePrivateFileSyncNoFollow(path: string, content: string): voi
  */
 export function writeConfigFileSyncNoFollow(path: string, content: string): void {
 	writeFileSyncNoFollow(path, content, CONFIG_FILE_MODE);
+}
+
+/**
+ * AGEN-21: node's fchmodSync only flips the read-only attribute on win32 —
+ * it does not narrow the ACL other local Windows accounts hold on the file.
+ * Best-effort narrows the ACL to the current user only, mirroring
+ * scripts/install-local.ps1's New-ApHookAuthHeaderFile (`icacls ...
+ * /inheritance:r /grant:r "user:(R,W)"`). Never throws: a missing/blocked
+ * icacls (non-NTFS volume, policy restriction, missing USERNAME) leaves the
+ * POSIX-style fchmod already applied as the fallback, matching every other
+ * best-effort Windows check in this codebase (see install-local.ps1's
+ * Test-ApMultipleHardLinks). No-op on non-Windows platforms.
+ */
+function tightenWindowsAclBestEffort(path: string): void {
+	if (process.platform !== "win32") return;
+	const username = process.env.USERNAME || process.env.USER;
+	if (!username) return;
+	try {
+		execFileSync("icacls", [path, "/inheritance:r", "/grant:r", `${username}:(R,W)`], {
+			stdio: "ignore",
+		});
+	} catch {
+		// best-effort — see comment above.
+	}
+}
+
+export type TightenPermissionsResult =
+	| { tightened: true; previousMode: number }
+	| {
+			tightened: false;
+			reason: "missing" | "symlink" | "hardlink" | "not-a-file" | "already-private";
+	  };
+
+/**
+ * AGEN-21: idempotent startup guard for an existing secret-bearing file
+ * (currently ~/.agentpulse/supervisor.json, which holds the supervisor
+ * credential / enrollment token). Older installs — and any writer that
+ * predates routing through writePrivateFileSyncNoFollow — may have left the
+ * file at the OS-default create mode (0644 under a typical umask),
+ * world-readable. Call this once at process startup, before reading the
+ * file: narrows an over-permissive file in place via fchmod on a no-follow-
+ * opened handle (never a path-based chmod, which would follow a symlink
+ * swapped in between the permission check and the chmod).
+ *
+ * Never follows a symlink at `path` — refused (not chmod'd, not thrown; the
+ * caller decides what to log), target left untouched. A missing path (fresh
+ * install — writePrivateFileSyncNoFollow always creates at 0600 already) or
+ * an already-private file is a silent no-op, both reported via `reason` so
+ * a caller can choose not to log routine cases.
+ *
+ * AGEN-21 (xander, Medium): also refuses a multiply hard-linked path —
+ * fchmod narrows the shared inode's mode for every directory entry
+ * pointing at it, so tightening one link's permissions would silently
+ * narrow (or, for the write path, corrupt) whatever the other link is
+ * actually for. Same refusal writeFileSyncNoFollow already applies.
+ */
+export function tightenPrivateFilePermissionsSync(path: string): TightenPermissionsResult {
+	const kind = lstatKindSync(path);
+	if (kind === "missing") return { tightened: false, reason: "missing" };
+	if (kind === "symlink") return { tightened: false, reason: "symlink" };
+	if (kind === "hardlink") return { tightened: false, reason: "hardlink" };
+	if (kind === "other") return { tightened: false, reason: "not-a-file" };
+
+	const seen = lstatSync(path);
+	const previousMode = seen.mode & 0o777;
+	if ((previousMode & 0o077) === 0) {
+		tightenWindowsAclBestEffort(path);
+		return { tightened: false, reason: "already-private" };
+	}
+
+	const fd = openSync(path, constants.O_RDONLY | O_NOFOLLOW);
+	try {
+		const opened = fstatSync(fd);
+		if (seen.dev !== opened.dev || seen.ino !== opened.ino) {
+			throw new Error(`file changed while opening: ${path}`);
+		}
+		fchmodSync(fd, PRIVATE_FILE_MODE);
+	} finally {
+		closeSync(fd);
+	}
+	tightenWindowsAclBestEffort(path);
+	return { tightened: true, previousMode };
 }

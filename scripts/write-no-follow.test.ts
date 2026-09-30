@@ -16,9 +16,12 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	readdirSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -43,6 +46,22 @@ function extractMarkerBlock(source: string): string {
 		throw new Error("agentpulse-hook-cmd markers not found");
 	}
 	return source.slice(start, end + endMarker.length);
+}
+
+/**
+ * Slices out just `fnName`'s own body (from its `fnName() {` line through
+ * its own closing `}` on its own line) — never the doc-comment above it
+ * (which, for ap_write_no_follow's AGEN-21 note, quotes the old
+ * predictable pattern verbatim as documentation) or any sibling function
+ * that follows.
+ */
+function extractFunctionBody(block: string, fnName: string): string {
+	const start = block.indexOf(`${fnName}() {`);
+	if (start === -1) throw new Error(`${fnName} not found`);
+	const afterStart = block.indexOf("\n", start) + 1;
+	const closeIdx = block.indexOf("\n}", afterStart);
+	if (closeIdx === -1) throw new Error(`${fnName} has no closing brace`);
+	return block.slice(start, closeIdx + 2);
 }
 
 async function renderedSetupSh(): Promise<string> {
@@ -90,6 +109,62 @@ async function runWriteNoFollow(
 	});
 	const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
 	return { code: exitCode, stderr };
+}
+
+/**
+ * AGEN-21 (xander, High): same pre-plant-at-the-old-predictable-name proof
+ * as write-private-no-follow.test.ts's runWritePrivateNoFollowWithPredictableNameDecoy
+ * — the child publishes its real PID via a handshake file and blocks at a
+ * busy-wait gate until the test has planted the decoy, so this is
+ * deterministic rather than racing the child's own startup/parsing time.
+ * The content still arrives on the child's real stdin, buffered in the
+ * pipe until ap_write_no_follow's own `cat` finally reads it after the go
+ * signal — the busy-wait loop never touches stdin itself.
+ */
+async function runWriteNoFollowWithPredictableNameDecoy(
+	block: string,
+	path: string,
+	content: string,
+	dir: string,
+): Promise<{ code: number | null; stderr: string; decoyPaths: string[]; decoyTarget: string }> {
+	const pidFile = join(dir, ".ap-test-pid-handshake");
+	const goFile = join(dir, ".ap-test-go-handshake");
+	const script = `${block}
+echo "$$" > "$2"
+while [ ! -f "$3" ]; do sleep 0.02; done
+ap_write_no_follow "$1"`;
+	const proc = Bun.spawn(["bash", "-c", script, "_", path, pidFile, goFile], {
+		stdin: new TextEncoder().encode(content),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+
+	const deadline = Date.now() + 10_000;
+	let pid: number | null = null;
+	while (Date.now() < deadline) {
+		if (existsSync(pidFile)) {
+			const raw = readFileSync(pidFile, "utf-8").trim();
+			if (raw) {
+				pid = Number(raw);
+				break;
+			}
+		}
+		await Bun.sleep(10);
+	}
+	if (pid === null) throw new Error("child bash process never published its PID");
+
+	const decoyTarget = join(dir, "decoy-target");
+	writeFileSync(decoyTarget, "should never change\n");
+	const decoyPaths: string[] = [];
+	for (const candidate of [pid - 1, pid, pid + 1, pid + 2]) {
+		const decoyPath = `${path}.${candidate}.tmp`;
+		symlinkSync(decoyTarget, decoyPath);
+		decoyPaths.push(decoyPath);
+	}
+
+	writeFileSync(goFile, "go\n");
+	const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+	return { code: exitCode, stderr, decoyPaths, decoyTarget };
 }
 
 for (const site of SITES) {
@@ -165,6 +240,55 @@ for (const site of SITES) {
 				expect(result.code).toBe(0);
 				expect(readFileSync(target, "utf-8")).toBe('{"hooks":{}}\n');
 				expect(statSync(target).mode & 0o777).toBe(0o644);
+			} finally {
+				cleanup();
+			}
+		});
+
+		test("the function body no longer uses the predictable ${path}.$$.tmp temp name", async () => {
+			const block = await site.block();
+			const fnBody = extractFunctionBody(block, "ap_write_no_follow");
+			expect(fnBody).not.toMatch(/\$\{?path\}?\.\$\$\.tmp/);
+			expect(fnBody).toContain("mktemp");
+		});
+
+		test("AGEN-21 (xander, High): a decoy symlink pre-planted at the old predictable temp name is never followed", async () => {
+			dir = mkdtempSync(join(tmpdir(), "ap-write-no-follow-"));
+			try {
+				const target = join(dir, "hooks.json");
+
+				const block = await site.block();
+				const result = await runWriteNoFollowWithPredictableNameDecoy(
+					block,
+					target,
+					'{"hooks":{}}\n',
+					dir,
+				);
+
+				expect(result.code).toBe(0);
+				expect(readFileSync(target, "utf-8")).toBe('{"hooks":{}}\n');
+				expect(statSync(target).mode & 0o777).toBe(0o644);
+
+				expect(readFileSync(result.decoyTarget, "utf-8")).toBe("should never change\n");
+				for (const decoyPath of result.decoyPaths) {
+					const st = lstatSync(decoyPath);
+					expect(st.isSymbolicLink()).toBe(true);
+				}
+			} finally {
+				cleanup();
+			}
+		});
+
+		test("AGEN-21 (xander, High): no leftover temp file matches the old predictable *.<pid>.tmp pattern after a normal write", async () => {
+			dir = mkdtempSync(join(tmpdir(), "ap-write-no-follow-"));
+			try {
+				const target = join(dir, "hooks.json");
+
+				const block = await site.block();
+				await runWriteNoFollow(block, target, '{"hooks":{}}\n');
+
+				const leftovers = readdirSync(dir).filter((name) => /^hooks\.json\.\d+\.tmp$/.test(name));
+				expect(leftovers).toEqual([]);
 			} finally {
 				cleanup();
 			}

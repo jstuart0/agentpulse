@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SupervisorConfig } from "./config.js";
-import { captureExecutableVersion, withExecutableCapabilities } from "./config.js";
+import {
+	captureExecutableVersion,
+	ensureSupervisorConfigPrivate,
+	loadSupervisorConfig,
+	saveSupervisorConfig,
+	withExecutableCapabilities,
+} from "./config.js";
 
 let scratchDir: string;
 
@@ -14,6 +21,10 @@ beforeEach(async () => {
 afterEach(async () => {
 	if (scratchDir) await rm(scratchDir, { recursive: true, force: true });
 });
+
+function fileMode(path: string) {
+	return statSync(path).mode & 0o777;
+}
 
 async function writeExecutableScript(name: string, script: string): Promise<string> {
 	const path = join(scratchDir, name);
@@ -183,5 +194,131 @@ describe("withExecutableCapabilities", () => {
 			source: "config",
 			binaryVersion: null,
 		});
+	});
+});
+
+/**
+ * AGEN-21 (security, Medium): saveSupervisorConfig previously wrote
+ * supervisor.json via a bare `Bun.write` — no explicit mode, no symlink
+ * refusal — leaving the file at the OS-default create mode (0644 under a
+ * typical umask) and readable by any local user. Overrides HOME to a temp
+ * dir for every test here: getSupervisorConfigPath() reads os.homedir(),
+ * which re-reads process.env.HOME on each call, so this never touches the
+ * real ~/.agentpulse/supervisor.json.
+ */
+describe("supervisor.json permissions (AGEN-21)", () => {
+	let homeDir: string;
+	let originalHome: string | undefined;
+	let originalUserProfile: string | undefined;
+
+	beforeEach(async () => {
+		homeDir = await mkdtemp(join(tmpdir(), "ap-supervisor-home-"));
+		originalHome = process.env.HOME;
+		originalUserProfile = process.env.USERPROFILE;
+		process.env.HOME = homeDir;
+		process.env.USERPROFILE = homeDir;
+	});
+
+	afterEach(async () => {
+		// biome-ignore lint/performance/noDelete: clear memo for teardown parity
+		if (originalHome === undefined) delete process.env.HOME;
+		else process.env.HOME = originalHome;
+		// biome-ignore lint/performance/noDelete: clear memo for teardown parity
+		if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = originalUserProfile;
+		await rm(homeDir, { recursive: true, force: true });
+	});
+
+	function supervisorConfigPath() {
+		return join(homeDir, ".agentpulse", "supervisor.json");
+	}
+
+	function makeSupervisorConfig(overrides: Partial<SupervisorConfig> = {}): SupervisorConfig {
+		return {
+			serverUrl: "http://localhost:3000",
+			hostName: "test-host",
+			platform: "darwin",
+			arch: "arm64",
+			version: "0.1.0",
+			trustedRoots: [],
+			capabilities: {
+				version: 1,
+				agentTypes: ["claude_code", "codex_cli"],
+				launchModes: ["headless"],
+				os: "macos",
+				terminalSupport: [],
+				features: [],
+			},
+			...overrides,
+		};
+	}
+
+	test("a fresh saveSupervisorConfig write ends up at 0600", async () => {
+		await saveSupervisorConfig(
+			makeSupervisorConfig({ supervisorCredential: "aps_test_credential_value" }),
+		);
+
+		expect(fileMode(supervisorConfigPath())).toBe(0o600);
+		const loaded = await loadSupervisorConfig();
+		expect(loaded.supervisorCredential).toBe("aps_test_credential_value");
+	});
+
+	test("a rotation rewrite (saveSupervisorConfig called again) keeps the file at 0600", async () => {
+		await saveSupervisorConfig(makeSupervisorConfig({ supervisorCredential: "aps_test_original" }));
+		expect(fileMode(supervisorConfigPath())).toBe(0o600);
+
+		await saveSupervisorConfig(makeSupervisorConfig({ supervisorCredential: "aps_test_rotated" }));
+
+		expect(fileMode(supervisorConfigPath())).toBe(0o600);
+		const loaded = await loadSupervisorConfig();
+		expect(loaded.supervisorCredential).toBe("aps_test_rotated");
+	});
+
+	test("ensureSupervisorConfigPrivate tightens a pre-existing 0644 file to 0600 on startup", () => {
+		mkdirSync(join(homeDir, ".agentpulse"), { recursive: true });
+		writeFileSync(
+			supervisorConfigPath(),
+			JSON.stringify({
+				serverUrl: "http://localhost:3000",
+				supervisorCredential: "aps_test_legacy",
+			}),
+			{ mode: 0o644 },
+		);
+		expect(fileMode(supervisorConfigPath())).toBe(0o644);
+
+		ensureSupervisorConfigPrivate();
+
+		expect(fileMode(supervisorConfigPath())).toBe(0o600);
+		// content is untouched by the permission fix, not just the mode bit
+		expect(JSON.parse(readFileSync(supervisorConfigPath(), "utf-8")).supervisorCredential).toBe(
+			"aps_test_legacy",
+		);
+	});
+
+	test("ensureSupervisorConfigPrivate is a silent no-op when supervisor.json does not exist yet", () => {
+		expect(() => ensureSupervisorConfigPrivate()).not.toThrow();
+	});
+
+	test("ensureSupervisorConfigPrivate is a no-op when the file is already 0600", async () => {
+		await saveSupervisorConfig(makeSupervisorConfig({ supervisorCredential: "aps_test_value" }));
+		expect(fileMode(supervisorConfigPath())).toBe(0o600);
+
+		ensureSupervisorConfigPrivate();
+
+		expect(fileMode(supervisorConfigPath())).toBe(0o600);
+	});
+
+	test("ensureSupervisorConfigPrivate refuses a symlink at the config path, target untouched", () => {
+		const outsideDir = join(homeDir, "outside");
+		mkdirSync(outsideDir, { recursive: true });
+		const decoyTarget = join(outsideDir, "decoy.json");
+		writeFileSync(decoyTarget, '{"planted":"should never change"}', { mode: 0o644 });
+		mkdirSync(join(homeDir, ".agentpulse"), { recursive: true });
+		symlinkSync(decoyTarget, supervisorConfigPath());
+
+		ensureSupervisorConfigPrivate();
+
+		expect(fileMode(decoyTarget)).toBe(0o644);
+		expect(readFileSync(decoyTarget, "utf-8")).toBe('{"planted":"should never change"}');
 	});
 });

@@ -130,6 +130,17 @@ sys.exit(0 if me.get("disableAuth") is True else 1)
 # umask-077 temp write + mv. $2 is the exact file content, including any
 # trailing newline the caller wants — printf '%s' writes it verbatim, no
 # extra formatting here.
+#
+# AGEN-21 (xander, High): the old `tmp="${path}.$$.tmp"` is predictable —
+# an attacker doesn't need to win any race, just pre-plant a symlink at
+# every plausible PID's tmp name before the script ever runs; the old
+# `> "$tmp"` then follows straight through it. mktemp's XXXXXX suffix is
+# unguessable and O_CREAT|O_EXCL under the hood (atomic — refuses if
+# anything, symlink or not, already exists at that exact random path), so
+# nothing can be pre-planted at it. The `[ -L "$tmp" ]` check afterward and
+# `set -C`'s noclobber are belt-and-suspenders, not the primary defense: an
+# environment with no mktemp falls back to a PID+$RANDOM name plus its own
+# noclobber create-or-fail (uniqueness, not the atomicity mktemp gives).
 ap_write_private_no_follow() {
 	local path="$1" content="$2" dir tmp
 	dir="$(dirname -- "$path")"
@@ -142,9 +153,28 @@ ap_write_private_no_follow() {
 		echo "refusing to write through a symlink: $path" >&2
 		return 1
 	fi
-	tmp="${path}.$$.tmp"
-	( umask 077 && printf '%s' "$content" > "$tmp" )
-	mv -f "$tmp" "$path"
+	if command -v mktemp >/dev/null 2>&1; then
+		tmp="$(mktemp "${dir}/.$(basename -- "$path").XXXXXX")" || {
+			echo "refusing: could not create a private temp file in $dir" >&2
+			return 1
+		}
+	else
+		tmp="${dir}/.$(basename -- "$path").$$.${RANDOM}${RANDOM}.tmp"
+		if ! ( umask 077 && set -C && : > "$tmp" ) 2>/dev/null; then
+			echo "refusing: could not create a private temp file: $tmp" >&2
+			return 1
+		fi
+	fi
+	if [ -L "$tmp" ]; then
+		echo "refusing to write through a symlink: $tmp" >&2
+		return 1
+	fi
+	if ! ( set -C && printf '%s' "$content" >| "$tmp" ); then
+		echo "refusing: could not write private temp file: $tmp" >&2
+		rm -f -- "$tmp" 2>/dev/null || true
+		return 1
+	fi
+	mv -f -- "$tmp" "$path"
 }
 
 ap_hook_cmd() {
@@ -209,6 +239,12 @@ sys.stdout.write(json.dumps({"version": 1, "hooks": hooks}, indent=2) + "\n")
 # never a plain `>` redirect or `cp`, both of which follow a symlink at the
 # destination. Used for both a Codex/Copilot hooks.json write and its
 # timestamped backup (same primitive, different path).
+#
+# AGEN-21 (xander, High): same predictable-tmp-name fix as
+# ap_write_private_no_follow above — mktemp's XXXXXX is unguessable and
+# atomic (O_CREAT|O_EXCL), closing the pre-planted-symlink attack the old
+# `tmp="${path}.$$.tmp"` was open to. See that function's comment for the
+# full rationale; not repeated here.
 ap_write_no_follow() {
 	local path="$1" dir tmp
 	if [ -L "$path" ]; then
@@ -220,14 +256,29 @@ ap_write_no_follow() {
 		echo "refusing to write into a symlinked directory: $dir" >&2
 		return 1
 	fi
-	tmp="${path}.$$.tmp"
-	if [ -e "$tmp" ] || [ -L "$tmp" ]; then
-		echo "refusing: stale temp file present: $tmp" >&2
+	if command -v mktemp >/dev/null 2>&1; then
+		tmp="$(mktemp "${dir}/.$(basename -- "$path").XXXXXX")" || {
+			echo "refusing: could not create a temp file in $dir" >&2
+			return 1
+		}
+	else
+		tmp="${dir}/.$(basename -- "$path").$$.${RANDOM}${RANDOM}.tmp"
+		if ! ( umask 022 && set -C && : > "$tmp" ) 2>/dev/null; then
+			echo "refusing: could not create a temp file: $tmp" >&2
+			return 1
+		fi
+	fi
+	if [ -L "$tmp" ]; then
+		echo "refusing to write through a symlink: $tmp" >&2
 		return 1
 	fi
-	( umask 022 && cat > "$tmp" )
+	if ! ( set -C && cat >| "$tmp" ); then
+		echo "refusing: could not write temp file: $tmp" >&2
+		rm -f -- "$tmp" 2>/dev/null || true
+		return 1
+	fi
 	chmod 0644 "$tmp"
-	mv -f "$tmp" "$path"
+	mv -f -- "$tmp" "$path"
 }
 
 # D13/F57: -H "@$f" needs curl >= 7.55 (silently sends no auth below that).

@@ -2,6 +2,10 @@ import { constants, accessSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { arch, homedir, hostname, platform } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import {
+	tightenPrivateFilePermissionsSync,
+	writePrivateFileSyncNoFollow,
+} from "../shared/private-file.js";
 import type { SupervisorRegistrationInput } from "../shared/types.js";
 
 export interface SupervisorConfig {
@@ -21,7 +25,24 @@ export interface SupervisorConfig {
 	terminalPreference?: string;
 }
 
-const defaultConfigPath = join(homedir(), ".agentpulse", "supervisor.json");
+// AGEN-21: reads process.env.HOME/USERPROFILE directly rather than
+// os.homedir() — Bun's os.homedir() resolves the home directory once and
+// does not track a process.env.HOME/USERPROFILE override made afterward
+// (Node's does), which is exactly what tests need to point this at a temp
+// dir instead of the real ~/.agentpulse/supervisor.json. Falls back to
+// os.homedir() when the platform's env var isn't set, matching Node's own
+// documented os.homedir() behavior.
+function resolveHomeDir(): string {
+	const envHome = platform() === "win32" ? process.env.USERPROFILE : process.env.HOME;
+	return envHome || homedir();
+}
+
+// A function rather than a module-level constant: computing this lazily is
+// what lets tests point it at a temp HOME (AGEN-21) instead of the real
+// ~/.agentpulse/supervisor.json.
+function getSupervisorConfigPath(): string {
+	return join(resolveHomeDir(), ".agentpulse", "supervisor.json");
+}
 
 function currentOs() {
 	return platform() === "darwin"
@@ -252,7 +273,7 @@ export async function withExecutableCapabilities(
 
 export async function loadSupervisorConfig() {
 	const defaults = buildDefaultConfig();
-	const file = Bun.file(defaultConfigPath);
+	const file = Bun.file(getSupervisorConfigPath());
 	const exists = await file.exists();
 	if (exists) {
 		const raw = (await file.json()) as Partial<SupervisorConfig>;
@@ -269,7 +290,67 @@ export async function loadSupervisorConfig() {
 	return withExecutableCapabilities(defaults);
 }
 
+/**
+ * AGEN-21: routes through writePrivateFileSyncNoFollow (0600, O_NOFOLLOW,
+ * symlinked-parent refusal, fchmod on the opened handle) instead of a bare
+ * `Bun.write`, which follows a symlink at the destination and leaves the
+ * file at the OS-default create mode (0644 under a typical umask) — any
+ * local user could read the supervisor credential / enrollment token.
+ * Called both on first registration and every credential rotation
+ * (src/supervisor/index.ts's main()), so a rotated credential never
+ * regresses back to a world-readable file.
+ */
 export async function saveSupervisorConfig(config: SupervisorConfig) {
-	await mkdir(join(homedir(), ".agentpulse"), { recursive: true });
-	await Bun.write(defaultConfigPath, JSON.stringify(config, null, 2));
+	await mkdir(join(resolveHomeDir(), ".agentpulse"), { recursive: true });
+	writePrivateFileSyncNoFollow(getSupervisorConfigPath(), JSON.stringify(config, null, 2));
+}
+
+/**
+ * AGEN-21: call once at supervisor startup, before loadSupervisorConfig().
+ * Self-heals an existing supervisor.json left over-permissive by an
+ * installer or a pre-fix version of saveSupervisorConfig — corrects it to
+ * 0600 in place and logs once. A missing file (fresh install), an
+ * already-private file, or a hard-linked path is a silent no-op. Refuses
+ * (and logs, but never throws) if the path is a symlink — startup
+ * continues either way; the permission fix is a hardening pass, not a
+ * load-time gate.
+ *
+ * AGEN-21 (xander, Medium): tightenPrivateFilePermissionsSync itself
+ * throws if it loses its internal TOCTOU race (the file changed identity
+ * between the lstat and the verifying fstat) — deliberately, since that's
+ * the one path where continuing would risk fchmod'ing the wrong inode.
+ * This function is the one place that race is allowed to surface, and it
+ * must never propagate: a lost race at startup is not worth crash-looping
+ * the supervisor over. Caught, logged, startup continues either way.
+ *
+ * `tighten` is a test seam (defaults to the real
+ * tightenPrivateFilePermissionsSync): the real TOCTOU race is a few CPU
+ * instructions wide and can't be hit reliably by racing two real
+ * processes in a test, so config-ensure-private-race.test.ts passes a
+ * function that throws on demand instead. A default-parameter seam here
+ * — not module mocking — because mock.module replaces module resolution
+ * process-wide; ../shared/private-file.js is imported by other test
+ * files' real-implementation coverage (config.test.ts,
+ * private-file.test.ts) that share this test run's module registry, and
+ * a mock registered by one file was observed to leak into another
+ * (confirmed empirically), corrupting their assertions.
+ */
+export function ensureSupervisorConfigPrivate(
+	tighten: typeof tightenPrivateFilePermissionsSync = tightenPrivateFilePermissionsSync,
+): void {
+	const path = getSupervisorConfigPath();
+	try {
+		const result = tighten(path);
+		if (result.tightened) {
+			console.warn(
+				`[supervisor] corrected ${path} permissions to 0600 (was 0${result.previousMode.toString(8)})`,
+			);
+		} else if (result.reason === "symlink") {
+			console.error(`[supervisor] refusing to correct permissions: ${path} is a symlink`);
+		}
+	} catch (error) {
+		console.error(
+			`[supervisor] failed to check/correct ${path} permissions: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }

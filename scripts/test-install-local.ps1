@@ -439,6 +439,52 @@ if ($canHardlink) {
 	$env:HOME = $savedHomeHardlink
 }
 
+# ── AGEN-21 (security, Medium): Write-ApPrivateFile / Write-ApPrivateJsonFile — real execution ──
+# .env.local and supervisor.json both hold secrets in plaintext and now
+# route through these, instead of a bare Set-Content/Set-JsonFile: same
+# reparse-point refusal as Write-ApFileNoFollow above, plus a single-ACE
+# ACL for the current user (D13's pattern, verified for hook-auth-header
+# above).
+$privateWriteProbeDir = Join-Path $tempProfile "private-write-probe"
+New-Item -ItemType Directory -Force -Path $privateWriteProbeDir | Out-Null
+
+$privateJsonPath = Join-Path $privateWriteProbeDir "supervisor.json"
+Write-ApPrivateJsonFile -Path $privateJsonPath -Data @{ supervisorCredential = "aps_test_value" }
+Assert-True (Test-Path $privateJsonPath) "Write-ApPrivateJsonFile: supervisor.json exists"
+$privateJsonParsed = Get-Content $privateJsonPath -Raw | ConvertFrom-Json
+Assert-True ($privateJsonParsed.supervisorCredential -eq "aps_test_value") "Write-ApPrivateJsonFile: content round-trips"
+$privateJsonAcl = Get-Acl $privateJsonPath
+Assert-True ($privateJsonAcl.Access.Count -eq 1) "Write-ApPrivateJsonFile: supervisor.json has exactly one ACE (found $($privateJsonAcl.Access.Count))"
+# AGEN-21 (xander, High): the parent directory's ACL must be narrowed too
+# (F208's ordering, ported to Write-ApPrivateFile) — a broad, inherited
+# directory ACL would otherwise let the file inherit it for the brief
+# window between file creation and the file-level icacls call.
+$privateWriteDirAcl = Get-Acl $privateWriteProbeDir
+Assert-True ($privateWriteDirAcl.Access.Count -eq 1) "Write-ApPrivateFile: parent directory has exactly one ACE (found $($privateWriteDirAcl.Access.Count))"
+
+# Rewrite (rotation) keeps the file single-ACE.
+Write-ApPrivateJsonFile -Path $privateJsonPath -Data @{ supervisorCredential = "aps_test_rotated" }
+$privateJsonRotated = Get-Content $privateJsonPath -Raw | ConvertFrom-Json
+Assert-True ($privateJsonRotated.supervisorCredential -eq "aps_test_rotated") "Write-ApPrivateJsonFile: rotation rewrite content updates"
+$privateJsonAclAfterRotate = Get-Acl $privateJsonPath
+Assert-True ($privateJsonAclAfterRotate.Access.Count -eq 1) "Write-ApPrivateJsonFile: still single-ACE after a rotation rewrite"
+
+if ($canSymlink) {
+	# Write-ApPrivateFile refuses a symlink at the destination — decoy untouched.
+	$privateDecoyPath = Join-Path $privateWriteProbeDir "decoy-env.local"
+	Set-Content -Path $privateDecoyPath -Value "should never change" -Encoding UTF8
+	$privateLinkPath = Join-Path $privateWriteProbeDir "env.local"
+	New-Item -ItemType SymbolicLink -Path $privateLinkPath -Target $privateDecoyPath | Out-Null
+	$privateThrew = $false
+	try {
+		Write-ApPrivateFile -Path $privateLinkPath -Content "AGENTPULSE_INITIAL_API_KEY=attacker-controlled"
+	} catch {
+		$privateThrew = $true
+	}
+	Assert-True $privateThrew "Write-ApPrivateFile: a symlink at the destination throws instead of writing through it"
+	Assert-True ((Get-Content $privateDecoyPath -Raw) -eq "should never change") "Write-ApPrivateFile: the symlink's target is untouched after the refused write"
+}
+
 Remove-Item -Recurse -Force $tempProfile -ErrorAction SilentlyContinue
 
 if ($failures -gt 0) {
