@@ -321,9 +321,28 @@ if [[ "$AGENT_TYPE" == "claude_code" ]]; then
     # Merge hooks into existing settings using jq if available
     if command -v jq &> /dev/null; then
       echo "Merging hooks into existing $SETTINGS_FILE..."
+      # F<new> (High, xander re-verify): a plain "${SETTINGS_FILE}.tmp"
+      # redirect target is predictable -- a pre-planted symlink there
+      # would let this write (carrying the literal key, at global scope)
+      # follow it, and the following `mv` would turn settings.json ITSELF
+      # into that symlink; the trailing chmod 600 further down would then
+      # narrow the attacker's file, not ours. mktemp's unpredictable
+      # sibling name closes that: nothing can pre-plant a symlink at a
+      # name it can't guess. The immediate -L check is defense in depth
+      # against the (already vanishingly small) race between mktemp's own
+      # atomic create and this check.
+      TMP="$(umask 077 && mktemp "${SETTINGS_FILE}.XXXXXX")" || {
+        echo "can't create a temp file for $SETTINGS_FILE" >&2
+        exit 1
+      }
+      if [[ -L "$TMP" ]]; then
+        echo "refusing to write through a symlinked temp file: $TMP" >&2
+        rm -f "$TMP"
+        exit 1
+      fi
       EXISTING=$(cat "$SETTINGS_FILE")
-      echo "$EXISTING" | jq --argjson hooks "$HOOKS_JSON" '.hooks = (.hooks // {}) * $hooks' > "${SETTINGS_FILE}.tmp"
-      mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+      echo "$EXISTING" | jq --argjson hooks "$HOOKS_JSON" '.hooks = (.hooks // {}) * $hooks' > "$TMP"
+      mv -f "$TMP" "$SETTINGS_FILE"
     else
       echo "Warning: jq not found. Cannot safely merge into existing settings."
       echo "Please manually add the following hooks to $SETTINGS_FILE:"

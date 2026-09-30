@@ -402,17 +402,45 @@ for i in "\${!EVENTS[@]}"; do
 done
 HOOKS_JSON+="}"
 
+# F<new> (High, xander re-verify): a plain "\$CLAUDE_SETTINGS.tmp" redirect
+# target is predictable -- a pre-planted symlink there would let either
+# merge branch's write (carrying the literal key) follow it, and the
+# following \`mv\` would turn settings.json ITSELF into that symlink; the
+# trailing chmod 600 further down would then narrow the attacker's file,
+# not ours. mktemp's unpredictable sibling name closes that. The
+# immediate -L check is defense in depth against the (already
+# vanishingly small) race between mktemp's own atomic create and this
+# check. The python3 branch produces the merged JSON on stdout into that
+# same hardened temp -- it never opens \$CLAUDE_SETTINGS for writing
+# itself (Python's open(path, "w") has no O_NOFOLLOW equivalent here).
 if [[ -f "\$CLAUDE_SETTINGS" ]] && command -v jq &>/dev/null; then
-  jq --argjson hooks "\$HOOKS_JSON" '.hooks = (.hooks // {}) * \$hooks' "\$CLAUDE_SETTINGS" > "\$CLAUDE_SETTINGS.tmp"
-  mv "\$CLAUDE_SETTINGS.tmp" "\$CLAUDE_SETTINGS"
+  AP_CLAUDE_TMP="\$(umask 077 && mktemp "\${CLAUDE_SETTINGS}.XXXXXX")" || {
+    echo "  ✗ can't create a temp file for \$CLAUDE_SETTINGS" >&2
+    exit 1
+  }
+  if [[ -L "\$AP_CLAUDE_TMP" ]]; then
+    echo "  ✗ refusing to write through a symlinked temp file: \$AP_CLAUDE_TMP" >&2
+    exit 1
+  fi
+  jq --argjson hooks "\$HOOKS_JSON" '.hooks = (.hooks // {}) * \$hooks' "\$CLAUDE_SETTINGS" > "\$AP_CLAUDE_TMP"
+  mv -f "\$AP_CLAUDE_TMP" "\$CLAUDE_SETTINGS"
 elif [[ -f "\$CLAUDE_SETTINGS" ]] && command -v python3 &>/dev/null; then
+  AP_CLAUDE_TMP="\$(umask 077 && mktemp "\${CLAUDE_SETTINGS}.XXXXXX")" || {
+    echo "  ✗ can't create a temp file for \$CLAUDE_SETTINGS" >&2
+    exit 1
+  }
+  if [[ -L "\$AP_CLAUDE_TMP" ]]; then
+    echo "  ✗ refusing to write through a symlinked temp file: \$AP_CLAUDE_TMP" >&2
+    exit 1
+  fi
   python3 -c "
 import json, sys
 with open('\$CLAUDE_SETTINGS') as f: s = json.load(f)
 h = json.loads('''\$HOOKS_JSON''')
 s.setdefault('hooks', {}).update(h)
-with open('\$CLAUDE_SETTINGS', 'w') as f: json.dump(s, f, indent=2)
-"
+json.dump(s, sys.stdout, indent=2)
+" > "\$AP_CLAUDE_TMP"
+  mv -f "\$AP_CLAUDE_TMP" "\$CLAUDE_SETTINGS"
 else
   echo '{"hooks":'\$HOOKS_JSON'}' > "\$CLAUDE_SETTINGS"
 fi
