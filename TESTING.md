@@ -30,7 +30,7 @@ There is no `vitest.config`, `jest.config`, or any other framework config — Bu
 
 - Use `bun:test` imports: `import { describe, expect, test, beforeEach, beforeAll } from "bun:test"`.
 - For tests that touch the AI control plane, import `./ai/__test_db.js` (or relative path) at the top — it sets up `SQLITE_PATH`, `DATA_DIR`, and the temp-path safety guard before the schema imports.
-- `bunfig.toml`'s `[test] preload` loads `src/server/db/test-env-defaults.ts` before any test file's own imports, setting `AGENTPULSE_AI_ENABLED`/`AGENTPULSE_SECRETS_KEY` defaults deterministically regardless of Bun's module-graph discovery order (F251 — `src/server/config.ts` freezes these into a plain object at first import, and whichever file happens to reach it first otherwise wins). `__test_db.js` still imports the same module for anything that runs it outside `bun test`.
+- `bunfig.toml`'s `[test] preload` loads `src/server/db/test-env-defaults.ts` before any test file's own imports, setting `AGENTPULSE_AI_ENABLED`/`AGENTPULSE_SECRETS_KEY` defaults deterministically regardless of Bun's module-graph discovery order (`src/server/config.ts` freezes these into a plain object at first import, and whichever file happens to reach it first otherwise wins). `__test_db.js` still imports the same module for anything that runs it outside `bun test`.
 - Use `beforeEach` to delete fixture rows; the database is shared across the suite.
 - Test names describe the behavior being locked down, not the function name (`"rejects when no default provider is configured"`, not `"test getDefaultProvider null"`).
 

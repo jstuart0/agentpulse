@@ -76,7 +76,7 @@ Note: the drizzle-kit ESM `.js`→`.ts` resolver requires `scripts/drizzle-hook.
 ## Key Conventions
 
 - Hook ingestion (`POST /api/v1/hooks`) must always return 200 and respond fast (<50ms). Never block the agent.
-- The relay (`scripts/relay.ts`) queues hooks and syncs names and CLAUDE.md files itself, and forwards other API calls to the remote server. `/setup-relay.sh` serves it verbatim from `scripts/`, so edit that file, never a copy.
+- The relay (`scripts/relay.ts`) queues hooks and syncs names and CLAUDE.md files itself, and proxies only an allowlisted subset of API calls to the remote server: `/api/v1/hooks` and its subpaths, `GET /api/v1/sessions/:id`, and `PUT /api/v1/sessions/:id/native-name` (`isForwardAllowed`) — the key it lends to local processes must not reach anything wider. `/setup-relay.sh` serves it verbatim from `scripts/`, so edit that file, never a copy.
 - SQLite datetime format is `YYYY-MM-DD HH:MM:SS` (no T/Z). Use `parseDate()` in the frontend.
 - DB migrations: see the "Database migrations" section above. Do NOT add new ALTER TABLE statements to the legacy `initializeDatabase()` array — add schema changes to the Drizzle schema files and generate migrations.
 - Session display names are generated from `src/server/services/name-generator.ts`.
