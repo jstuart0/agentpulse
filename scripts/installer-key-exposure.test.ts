@@ -20,9 +20,25 @@
  * present) — no live server is needed, matching the existing
  * scripts/setup-hooks-copilot.test.ts convention of an intentionally
  * unreachable http://localhost:1.
+ *
+ * xander re-verify (High): the merge-into-existing-settings.json write
+ * used a plain, predictable "${SETTINGS_FILE}.tmp" redirect target —
+ * a symlink pre-planted at that exact path would have the merge write
+ * (carrying the literal key) follow it, and the subsequent `mv` would
+ * turn settings.json itself into the attacker's symlink. Fixed by
+ * writing to an mktemp-generated, unpredictable sibling temp instead.
+ * The "pre-planted settings.json.tmp symlink" tests below target this
+ * specifically, for both scripts/setup-hooks.sh (jq only — it has no
+ * python3 merge fallback) and the served /setup.sh (both its jq and
+ * python3 merge branches; setup.ts's OLD python3 branch had a
+ * differently-shaped bug — opening settings.json directly with no
+ * O_NOFOLLOW equivalent, not via a predictable tmp path — already
+ * covered by the pre-existing "a symlinked settings.json is refused"
+ * tests below; these new ones additionally prove the python3 branch's
+ * rewritten form doesn't regress to either shape).
  */
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, stat, symlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Glob } from "bun";
@@ -44,6 +60,36 @@ async function servedSetupSh(): Promise<string> {
 	app.route("/", setup);
 	const res = await app.request("/setup.sh");
 	return res.text();
+}
+
+/**
+ * Builds a PATH pointing at a stub directory that symlinks every
+ * executable from the real PATH except `jq`, so a script's
+ * `command -v jq` check fails and it falls through to its python3
+ * fallback merge path. Returns the stub dir too, so the caller can clean
+ * it up.
+ */
+async function pathWithoutJq(): Promise<{ path: string; stubDir: string }> {
+	const stubDir = await mkdtemp(join(tmpdir(), "ap-agen49-no-jq-"));
+	const seen = new Set<string>();
+	for (const dir of DEFAULT_PATH.split(":")) {
+		let entries: string[];
+		try {
+			entries = await readdir(dir);
+		} catch {
+			continue;
+		}
+		for (const name of entries) {
+			if (name === "jq" || seen.has(name)) continue;
+			seen.add(name);
+			try {
+				await symlink(join(dir, name), join(stubDir, name));
+			} catch {
+				// A broken/duplicate entry in some PATH dir — skip it, not fatal.
+			}
+		}
+	}
+	return { path: stubDir, stubDir };
 }
 
 async function run(args: string[], home: string, path: string = DEFAULT_PATH, cwd?: string) {
@@ -178,6 +224,41 @@ describe("AGEN-49/H2: the API key never lands in a world-readable file", () => {
 		}
 	});
 
+	test("scripts/setup-hooks.sh (global scope): a pre-planted settings.json.tmp symlink is never followed", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-agen49-tmp-symlink-"));
+		const decoyTarget = join(home, "evil-tmp-target");
+		try {
+			await mkdir(join(home, ".claude"), { recursive: true });
+			await Bun.write(
+				join(home, ".claude", "settings.json"),
+				JSON.stringify({ theme: "dark" }, null, 2),
+			);
+			// The OLD predictable "${SETTINGS_FILE}.tmp" path -- a symlink
+			// planted here before the install runs must never be written
+			// through, and the merge write must land somewhere else entirely
+			// (mktemp's unpredictable name), never touching this decoy.
+			await symlink(decoyTarget, join(home, ".claude", "settings.json.tmp"));
+
+			const res = await run(
+				[INSTALLER, "--url", UNREACHABLE_URL, "--key", KEY, "--scope", "global"],
+				home,
+			);
+			expect(res.code).toBe(0);
+			expect(await Bun.file(decoyTarget).exists()).toBe(false);
+
+			const settingsPath = join(home, ".claude", "settings.json");
+			expect((await lstat(settingsPath)).isSymbolicLink()).toBe(false);
+			const settings = JSON.parse(await Bun.file(settingsPath).text());
+			expect(settings.theme).toBe("dark");
+			expect(settings.hooks).toBeDefined();
+			const raw = await Bun.file(settingsPath).text();
+			expect(raw).toContain(`Bearer ${KEY}`);
+			expect((await stat(settingsPath)).mode & 0o777).toBe(0o600);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
 	test("scripts/setup-hooks.sh (global scope): a symlinked settings.json is refused, not written through", async () => {
 		const home = await mkdtemp(join(tmpdir(), "ap-agen49-symlink-"));
 		const decoyTarget = join(home, "decoy-settings.json");
@@ -279,6 +360,77 @@ describe("AGEN-49/H2: the API key never lands in a world-readable file", () => {
 			expect(await Bun.file(decoyTarget).text()).toBe("should never change");
 		} finally {
 			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("the served /setup.sh (jq merge path): a pre-planted settings.json.tmp symlink is never followed", async () => {
+		const script = await servedSetupSh();
+		const home = await mkdtemp(join(tmpdir(), "ap-agen49-served-tmp-symlink-jq-"));
+		const decoyTarget = join(home, "evil-tmp-target");
+		try {
+			await mkdir(join(home, ".claude"), { recursive: true });
+			await Bun.write(
+				join(home, ".claude", "settings.json"),
+				JSON.stringify({ theme: "dark" }, null, 2),
+			);
+			await symlink(decoyTarget, join(home, ".claude", "settings.json.tmp"));
+			const file = join(home, "setup.sh");
+			await Bun.write(file, script);
+
+			const res = await run([file, "--key", KEY, "--url", UNREACHABLE_URL], home);
+			expect(res.code).toBe(0);
+			expect(await Bun.file(decoyTarget).exists()).toBe(false);
+
+			const settingsPath = join(home, ".claude", "settings.json");
+			expect((await lstat(settingsPath)).isSymbolicLink()).toBe(false);
+			const settings = JSON.parse(await Bun.file(settingsPath).text());
+			expect(settings.theme).toBe("dark");
+			expect(settings.hooks).toBeDefined();
+			const raw = await Bun.file(settingsPath).text();
+			expect(raw).toContain(`Bearer ${KEY}`);
+			expect((await stat(settingsPath)).mode & 0o777).toBe(0o600);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("the served /setup.sh (python3 fallback merge path, jq hidden from PATH): a pre-planted settings.json.tmp symlink is never followed", async () => {
+		const script = await servedSetupSh();
+		const home = await mkdtemp(join(tmpdir(), "ap-agen49-served-tmp-symlink-py-"));
+		const decoyTarget = join(home, "evil-tmp-target");
+		const { path: noJqPath, stubDir } = await pathWithoutJq();
+		try {
+			// Sanity-check the test harness itself: jq must genuinely be
+			// unreachable under this PATH, or this test would pass for the
+			// wrong reason (exercising the jq branch, not the python3 one).
+			const jqCheck = await run(["-c", "command -v jq"], home, noJqPath);
+			expect(jqCheck.code).not.toBe(0);
+
+			await mkdir(join(home, ".claude"), { recursive: true });
+			await Bun.write(
+				join(home, ".claude", "settings.json"),
+				JSON.stringify({ theme: "dark", customSetting: 7 }, null, 2),
+			);
+			await symlink(decoyTarget, join(home, ".claude", "settings.json.tmp"));
+			const file = join(home, "setup.sh");
+			await Bun.write(file, script);
+
+			const res = await run([file, "--key", KEY, "--url", UNREACHABLE_URL], home, noJqPath);
+			expect(res.code).toBe(0);
+			expect(await Bun.file(decoyTarget).exists()).toBe(false);
+
+			const settingsPath = join(home, ".claude", "settings.json");
+			expect((await lstat(settingsPath)).isSymbolicLink()).toBe(false);
+			const settings = JSON.parse(await Bun.file(settingsPath).text());
+			expect(settings.theme).toBe("dark");
+			expect(settings.customSetting).toBe(7);
+			expect(settings.hooks).toBeDefined();
+			const raw = await Bun.file(settingsPath).text();
+			expect(raw).toContain(`Bearer ${KEY}`);
+			expect((await stat(settingsPath)).mode & 0o777).toBe(0o600);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+			await rm(stubDir, { recursive: true, force: true });
 		}
 	});
 });
