@@ -46,6 +46,11 @@ const ALLOWLISTED_SUFFIXES = [
 	"src/server/db/__test_db.ts",
 	"src/server/services/ai/__test_db.ts",
 	"src/server/services/search/sqlite-fts-backend.ts",
+	// AGEN-24: raw PRAGMA auto_vacuum / incremental_vacuum access, needed
+	// because Drizzle has no portable PRAGMA API. Guarded by an explicit
+	// `config.dialect === "sqlite"` check at the only call site
+	// (runRetentionPass) — never reached on the Postgres backend.
+	"src/server/services/retention-service.ts",
 	// Phase 0 carry-over (fully resolved in Phase 1): the 5 files that used
 	// sync transaction callbacks are now ported to withTransaction() and
 	// removed from this allowlist. Their remaining tx.* sync calls inside

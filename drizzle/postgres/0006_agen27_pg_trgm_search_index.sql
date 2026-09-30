@@ -46,7 +46,7 @@
 -- `sessions`/`events` for the duration of each build (same tradeoff as
 -- migrations 0003/0004). Do the builds out-of-band with CREATE INDEX
 -- CONCURRENTLY in a maintenance window first — see deploy/k8s/README.md's
--- "Upgrading to migration 0005" section for the exact statements and the
+-- "Upgrading to migration 0006" section for the exact statements and the
 -- indisvalid verification query.
 --> statement-breakpoint
 DO $$

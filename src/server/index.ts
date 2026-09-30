@@ -24,6 +24,7 @@ import {
 	listProjects,
 	resolveAllSessionsForProject,
 } from "./services/projects/projects-service.js";
+import { scheduleRetentionInterval } from "./services/retention-service.js";
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
@@ -240,6 +241,11 @@ setInterval(async () => {
 		console.error("[tracker] Error updating stale sessions:", err);
 	}
 }, 60_000);
+
+// AGEN-24: periodic event-retention pass. No-ops every tick unless the
+// operator has explicitly set eventsRetentionDays > 0 (see
+// services/retention-service.ts for the full data-safety rationale).
+scheduleRetentionInterval(config.retentionIntervalMs);
 
 // Ensure at least one API key exists
 const defaultKey = await ensureDefaultApiKey();

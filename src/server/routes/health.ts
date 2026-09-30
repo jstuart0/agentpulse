@@ -6,6 +6,7 @@ import {
 	getEventsDeduplicatedCounts,
 	getLegacyObserverDeliveries,
 } from "../services/event-dedup.js";
+import { getRetentionStatus } from "../services/retention-service.js";
 import { computeChecksum } from "../util/checksum.js";
 import {
 	getBgErrorCount,
@@ -74,6 +75,8 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //  - shuttingDown: true when drain has been triggered (readiness returns 503).
 //  - dbReady: true only after initializeDatabase() completes (S-24).
 //  - clients (D3/F20): relay/statusline script checksums (computeClientChecksums).
+//  - retention (AGEN-24): last event-retention pass (rowsDeleted, durationMs,
+//    disabled) and the next scheduled tick — see services/retention-service.ts.
 health.get("/health", async (c) => {
 	if (!_dbReady) {
 		return c.json(
@@ -101,6 +104,7 @@ health.get("/health", async (c) => {
 		clients,
 		eventsDeduplicated: getEventsDeduplicatedCounts(),
 		legacyObserverDeliveries: getLegacyObserverDeliveries(),
+		retention: getRetentionStatus(),
 	});
 });
 

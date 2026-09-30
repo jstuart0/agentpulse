@@ -84,6 +84,35 @@ export function isIdempotentMigrationError(message: string): boolean {
 	);
 }
 
+/**
+ * Postgres session parameters shared by EVERY postgres-js connection this
+ * app opens (the main app pool below, and the dedicated single-connection
+ * migration client further down). AGEN-24 percy review (TB10, item 1 —
+ * Critical):
+ *
+ * `events.created_at` (and every other tsColumn) is TEXT rendered in the
+ * connection's `TimeZone` GUC. Retention (and other callers — see
+ * services/retention-service.ts, services/ai/digest-service.ts) compares
+ * that text lexicographically against a cutoff computed in UTC. If the
+ * server/database's default TimeZone is not UTC, `CURRENT_TIMESTAMP`
+ * renders as local wall-clock text with an offset suffix (e.g.
+ * "2026-09-30 08:00:00-04"), which can sort as "older" than a same-instant
+ * UTC-computed cutoff — rows get judged early by the offset, or worse, a
+ * fresh row can look older than a tight cutoff entirely.
+ *
+ * Spreading `PG_CONNECTION_OPTIONS` into every `postgres(url, {...})` call
+ * makes postgres-js send `TimeZone` as a startup parameter, overriding the
+ * database's default GUC for that session regardless of how the
+ * server/database was provisioned. Every new row's created_at is then
+ * always rendered "+00", so a UTC-computed cutoff compares correctly.
+ *
+ * This does NOT retroactively fix rows written before this pin was in
+ * place under a non-UTC session TimeZone — those rows keep their
+ * local-time-with-offset text. See CHANGELOG.md / deploy/k8s/README.md for
+ * the upgrade note.
+ */
+export const PG_CONNECTION_OPTIONS = { connection: { TimeZone: "UTC" } } as const;
+
 function createDatabase() {
 	if (config.dialect === "postgres") {
 		// Postgres path: build a postgres-js connection pool and wrap it with
@@ -140,6 +169,7 @@ function createDatabase() {
 			max,
 			idle_timeout: 30,
 			connect_timeout: 10,
+			...PG_CONNECTION_OPTIONS,
 		});
 		const pgDb = drizzlePostgresJs(sql, { schema });
 		// Phase 1 bridging: DbClient.db is typed as the SQLite adapter (the only
@@ -162,9 +192,9 @@ function createDatabase() {
 	// to a network filesystem (NFS, network-mounted Ceph, etc.) — WAL
 	// shared-memory semantics break and corruption is silent. See:
 	// https://www.sqlite.org/wal.html#noshm
-	// Durability strategy in this deployment: scheduled .backup to operator's
-	// NFS via in-pod backup-sidecar in deploy/k8s/04-deployment.yaml;
-	// runbook in deploy/k8s/BACKUP-RESTORE.md.
+	// Durability strategy in this deployment: scheduled VACUUM INTO snapshot
+	// to operator's NFS via in-pod backup-sidecar in
+	// deploy/k8s/04-deployment.yaml; runbook in deploy/k8s/BACKUP-RESTORE.md.
 	sqlite.exec("PRAGMA journal_mode = WAL;");
 	sqlite.exec("PRAGMA foreign_keys = ON;");
 	// Block + retry for up to 5s on transient SQLITE_BUSY (e.g. a concurrent
@@ -322,6 +352,7 @@ export async function initializeDatabase(handle?: Database): Promise<void> {
 			max: 1, // single connection — guaranteed session-level lock affinity
 			idle_timeout: 5,
 			connect_timeout: 10,
+			...PG_CONNECTION_OPTIONS,
 		});
 		const migrationDb = drizzlePostgresJs(migrationPgClient, { schema });
 		const migrationConn = migrationDb as unknown as Parameters<typeof migrate>[0];
@@ -657,6 +688,7 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
 		CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
 		CREATE INDEX IF NOT EXISTS idx_events_event_type ON events(event_type);
+		CREATE INDEX IF NOT EXISTS idx_events_created_at_id ON events(created_at, id);
 		CREATE INDEX IF NOT EXISTS idx_templates_agent_type ON session_templates(agent_type);
 		CREATE INDEX IF NOT EXISTS idx_templates_updated_at ON session_templates(updated_at);
 		CREATE INDEX IF NOT EXISTS idx_supervisors_status ON supervisors(status);
