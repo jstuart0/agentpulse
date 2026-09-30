@@ -2416,7 +2416,7 @@ describe("relay state bounds (F148, F149)", () => {
 describe("relay residuals (F127, F134-F138, F140)", () => {
 	test("F127: an error message carrying the key is redacted in diagnostics and logs", async () => {
 		const R = await mod();
-		const key = "ap_secretkey0123456789abcdef";
+		const key = "ap_test_secret_key_0123456789";
 		const lines: string[] = [];
 		const boom: typeof fetch = (async () => {
 			throw new TypeError(`Header 'authorization' has invalid value: 'Bearer ${key}'`);
@@ -2456,7 +2456,7 @@ describe("relay residuals (F127, F134-F138, F140)", () => {
 		expect(R.parseArgs([url, "--key", "ap_abc\n"], {}).ok).toBe(false);
 		expect(R.parseArgs([url], { api_key: "ap_abc def" }).ok).toBe(false);
 		expect(R.parseArgs([url], { api_key: "ap_abc\r" }).ok).toBe(false);
-		expect(R.parseArgs([url, "--key", "ap_0123456789abcdef"], {}).ok).toBe(true);
+		expect(R.parseArgs([url, "--key", "ap_test_0123456789"], {}).ok).toBe(true);
 		expect(R.parseArgs([url], {}).ok).toBe(true);
 	});
 
@@ -2764,7 +2764,7 @@ describe("final residuals (F152, F153)", () => {
 	test("F153: a malformed config.json is reported without echoing its content", async () => {
 		const dir = join(tmp, "badcfg");
 		await mkdir(dir, { recursive: true });
-		const secret = "ap_leakcheck0123456789abcdef";
+		const secret = "ap_test_leakcheck_0123456789";
 		const cfg = join(dir, "config.json");
 		await writeFile(cfg, `{"api_key": "${secret}", "remote_url": `);
 		const proc = Bun.spawn([process.execPath, RELAY_PATH, "--config", cfg, "--port", "0"], {
@@ -2780,6 +2780,6 @@ describe("final residuals (F152, F153)", () => {
 		expect(proc.exitCode).toBe(1);
 		expect(err).toContain(`invalid JSON in ${cfg}`);
 		expect(`${out}${err}`).not.toContain(secret);
-		expect(`${out}${err}`).not.toContain("ap_leak");
+		expect(`${out}${err}`).not.toContain("ap_test_leakcheck");
 	}, 20_000);
 });

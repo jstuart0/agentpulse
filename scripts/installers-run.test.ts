@@ -39,10 +39,10 @@ const STATUSLINE_SRC = join(import.meta.dir, "statusline.sh");
 const BUN_DIR = dirname(process.execPath);
 const RUN_TIMEOUT = 60_000;
 
-const INGEST_ONLY_KEY = "ap_testIngestOnlyKey";
-const RELAY_KEY = "ap_testRelayKey";
+const INGEST_ONLY_KEY = "ap_test_ingest_only";
+const RELAY_KEY = "ap_test_relay_key";
 /** Authenticated per HTTP status, but the body says neither authenticated nor scopes. */
-const ODD_KEY = "ap_testNoAuthFlagKey";
+const ODD_KEY = "ap_test_no_auth_flag";
 const KEY_PROMPT = "API key (Hook ingest + Observe)";
 const POLICY_LINE = (policy: string) =>
 	`Codex names: ${policy} — pass --codex-names agentpulse|codex to change`;
@@ -651,7 +651,7 @@ describe("key handling (F167, F168, F169)", () => {
 			const home = await newHome();
 			const port = await freePort();
 			const tty = join(root, `tty-open-${homeCounter}`);
-			await writeFile(tty, "ap_shouldNeverBeRead\n");
+			await writeFile(tty, "ap_test_should_never_be_read\n");
 			const res = await runInstaller(home, ["--url", openUrl, "--port", String(port)], {
 				env: { AGENTPULSE_TTY: tty },
 			});
