@@ -50,17 +50,22 @@ export function buildRelayCommand(opts: {
 }
 
 /**
- * AGEN-49: same principle as buildRelayCommand, applied to the direct
- * (non-relay) installer. `read -rsp` reads the key without echoing it or
- * recording it in shell history; the bare `export` hands the already-read
- * value to the piped-in setup.sh's environment without the value itself
- * ever appearing in the command line. setup.sh already falls back to
- * $AGENTPULSE_KEY (F234) — no server-side change needed.
+ * AGEN-49/H1 (xander): same principle as buildRelayCommand, applied to the
+ * direct (non-relay) installer. The prompt is POSIX `read -rs`, not
+ * `read -rsp` — `-p` means "coprocess" in zsh (macOS's default login shell),
+ * not "prompt", so a pasted `-rsp` silently does the wrong thing there. The
+ * prompt text is a separate `printf` instead. `read -rs` (no echo) keeps the
+ * key out of shell history; the bare `export` hands the already-read value
+ * to the piped-in setup.sh's environment without the value itself ever
+ * appearing in the command line. The `[ -n ... ] &&` guard means a blank
+ * answer (Ctrl-D, empty Enter) skips the install instead of running curl
+ * unauthenticated. setup.sh already falls back to $AGENTPULSE_KEY (F234) —
+ * no server-side change needed.
  */
 function buildLocalCommand(opts: { serverUrl: string; disableAuth: boolean }): string {
 	const install = installCommand("setup.sh", opts.serverUrl, []);
 	if (opts.disableAuth) return install;
-	return `read -rsp 'AgentPulse API key: ' AGENTPULSE_KEY && export AGENTPULSE_KEY && echo\n${install}`;
+	return `printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY\n[ -n "$AGENTPULSE_KEY" ] && ${install}`;
 }
 
 export type OnboardingPlan = {
