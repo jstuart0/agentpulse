@@ -15,7 +15,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeConfigFileSyncNoFollow, writePrivateFileSyncNoFollow } from "./private-file.js";
+import {
+	tightenPrivateFilePermissionsSync,
+	writeConfigFileSyncNoFollow,
+	writePrivateFileSyncNoFollow,
+} from "./private-file.js";
 
 let dir: string;
 
@@ -159,5 +163,75 @@ describe("writeConfigFileSyncNoFollow (F232)", () => {
 		);
 		expect(statSync(realDir).isDirectory()).toBe(true);
 		expect(() => statSync(join(realDir, "hooks.json"))).toThrow();
+	});
+});
+
+/**
+ * AGEN-21: tightenPrivateFilePermissionsSync is the startup self-heal for a
+ * secret-bearing file left over-permissive by an installer or a pre-fix
+ * writer — currently ~/.agentpulse/supervisor.json. Never follows a
+ * symlink; never creates a missing file (nothing to tighten on first run,
+ * since writePrivateFileSyncNoFollow already creates at 0600).
+ */
+describe("tightenPrivateFilePermissionsSync (AGEN-21)", () => {
+	test("a missing path is a no-op", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-tighten-"));
+		const target = join(dir, "supervisor.json");
+		expect(tightenPrivateFilePermissionsSync(target)).toEqual({
+			tightened: false,
+			reason: "missing",
+		});
+	});
+
+	test("a pre-existing 0644 file is tightened to 0600", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-tighten-"));
+		const target = join(dir, "supervisor.json");
+		writeFileSync(target, '{"serverUrl":"http://localhost:3000"}\n', { mode: 0o644 });
+		expect(fileMode(target)).toBe(0o644);
+
+		const result = tightenPrivateFilePermissionsSync(target);
+
+		expect(result).toEqual({ tightened: true, previousMode: 0o644 });
+		expect(fileMode(target)).toBe(0o600);
+		expect(readFileSync(target, "utf-8")).toBe('{"serverUrl":"http://localhost:3000"}\n');
+	});
+
+	test("an already-0600 file is a no-op (content and mode both untouched)", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-tighten-"));
+		const target = join(dir, "supervisor.json");
+		writeFileSync(target, "already private\n", { mode: 0o600 });
+
+		expect(tightenPrivateFilePermissionsSync(target)).toEqual({
+			tightened: false,
+			reason: "already-private",
+		});
+		expect(fileMode(target)).toBe(0o600);
+		expect(readFileSync(target, "utf-8")).toBe("already private\n");
+	});
+
+	test("a symlink at the path is refused, not followed — target mode and content untouched", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-tighten-"));
+		const real = join(dir, "outside-target");
+		writeFileSync(real, "should never change\n", { mode: 0o644 });
+		const target = join(dir, "supervisor.json");
+		symlinkSync(real, target);
+
+		expect(tightenPrivateFilePermissionsSync(target)).toEqual({
+			tightened: false,
+			reason: "symlink",
+		});
+		expect(readFileSync(real, "utf-8")).toBe("should never change\n");
+		expect(fileMode(real)).toBe(0o644);
+	});
+
+	test("refuses a directory at the path rather than fchmod'ing it", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-tighten-"));
+		const target = join(dir, "a-directory");
+		mkdirSync(target, { mode: 0o755 });
+
+		expect(tightenPrivateFilePermissionsSync(target)).toEqual({
+			tightened: false,
+			reason: "not-a-file",
+		});
 	});
 });
