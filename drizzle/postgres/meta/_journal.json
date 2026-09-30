@@ -1,55 +1,55 @@
 {
-  "version": "7",
-  "dialect": "postgresql",
-  "entries": [
-    {
-      "idx": 0,
-      "version": "7",
-      "when": 1777965217898,
-      "tag": "0000_even_tattoo",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1782762924855,
-      "tag": "0001_large_agent_brand",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1782783354860,
-      "tag": "0002_dark_tombstone",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1790684791768,
-      "tag": "0003_polite_ultimo",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1790712867382,
-      "tag": "0004_wakeful_cardiac",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1790744157804,
-      "tag": "0005_clean_winter_soldier",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1790746797144,
-      "tag": "0006_agen27_pg_trgm_search_index",
-      "breakpoints": true
-    }
-  ]
+	"version": "7",
+	"dialect": "postgresql",
+	"entries": [
+		{
+			"idx": 0,
+			"version": "7",
+			"when": 1777965217898,
+			"tag": "0000_even_tattoo",
+			"breakpoints": true
+		},
+		{
+			"idx": 1,
+			"version": "7",
+			"when": 1782762924855,
+			"tag": "0001_large_agent_brand",
+			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "7",
+			"when": 1782783354860,
+			"tag": "0002_dark_tombstone",
+			"breakpoints": true
+		},
+		{
+			"idx": 3,
+			"version": "7",
+			"when": 1790684791768,
+			"tag": "0003_polite_ultimo",
+			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "7",
+			"when": 1790712867382,
+			"tag": "0004_wakeful_cardiac",
+			"breakpoints": true
+		},
+		{
+			"idx": 5,
+			"version": "7",
+			"when": 1790744157804,
+			"tag": "0005_clean_winter_soldier",
+			"breakpoints": true
+		},
+		{
+			"idx": 6,
+			"version": "7",
+			"when": 1790746797144,
+			"tag": "0006_agen27_pg_trgm_search_index",
+			"breakpoints": true
+		}
+	]
 }
