@@ -302,5 +302,203 @@ describePostgresOnly(
 
 			expect(result.hits.map((h) => h.sessionId)).toEqual([codexSid]);
 		});
+
+		// ── AGEN-27: event-type restriction, pagination order, SQLite parity ──
+
+		test("excludes non-indexed event types (e.g. PreToolUse) even when the text matches", async () => {
+			const { getDb, initializeDatabase } = await import("../../db/client.js");
+			const { sessions, events } = await import("../../db/schema/index.js");
+			const { PostgresSearchBackend } = await import("./postgres-search-backend.js");
+			await initializeDatabase();
+
+			const sid = uid("pgsearch-excl");
+			const token = uid("tok").replace(/-/g, "");
+
+			await getDb()
+				.insert(sessions)
+				.values({ sessionId: sid, agentType: "claude_code", status: "active" })
+				.execute();
+
+			await getDb()
+				.insert(events)
+				.values([
+					{
+						sessionId: sid,
+						eventType: "UserPromptSubmit",
+						content: `indexed hit ${token}`,
+						rawPayload: { prompt: `indexed hit ${token}` },
+					},
+					{
+						// PreToolUse is not in FTS_INDEXED_EVENT_TYPES — must never
+						// surface in search results, matching text or not.
+						sessionId: sid,
+						eventType: "PreToolUse",
+						content: `non-indexed hit ${token}`,
+						rawPayload: {},
+					},
+				])
+				.execute();
+
+			const backend = new PostgresSearchBackend();
+			const result = await backend.search({ q: token, kinds: ["event"], sessionId: sid });
+
+			expect(result.hits.length).toBe(1);
+			expect(result.hits[0]?.eventType).toBe("UserPromptSubmit");
+		});
+
+		test("orders events by created_at DESC, id DESC (same-timestamp tiebreak)", async () => {
+			const { getDb, initializeDatabase } = await import("../../db/client.js");
+			const { sessions, events } = await import("../../db/schema/index.js");
+			const { PostgresSearchBackend } = await import("./postgres-search-backend.js");
+			await initializeDatabase();
+
+			const sid = uid("pgsearch-order");
+			const token = uid("tok").replace(/-/g, "");
+			const sameTimestamp = "2026-01-01 00:00:00";
+
+			await getDb()
+				.insert(sessions)
+				.values({ sessionId: sid, agentType: "claude_code", status: "active" })
+				.execute();
+
+			// Three rows sharing one created_at value, inserted out of id order,
+			// so a correct tiebreak can only come from `id DESC`, not insertion
+			// order or timestamp alone.
+			const inserted = await getDb()
+				.insert(events)
+				.values([
+					{
+						sessionId: sid,
+						eventType: "UserPromptSubmit",
+						content: `order ${token} a`,
+						rawPayload: { prompt: `order ${token} a` },
+						createdAt: sameTimestamp,
+					},
+					{
+						sessionId: sid,
+						eventType: "UserPromptSubmit",
+						content: `order ${token} b`,
+						rawPayload: { prompt: `order ${token} b` },
+						createdAt: sameTimestamp,
+					},
+					{
+						sessionId: sid,
+						eventType: "UserPromptSubmit",
+						content: `order ${token} c`,
+						rawPayload: { prompt: `order ${token} c` },
+						createdAt: sameTimestamp,
+					},
+				])
+				.returning({ id: events.id })
+				.execute();
+
+			const ids = inserted.map((r) => r.id);
+			expect(ids.length).toBe(3);
+			const expectedOrder = [...ids].sort((a, b) => b - a);
+
+			const backend = new PostgresSearchBackend();
+			const result = await backend.search({
+				q: token,
+				kinds: ["event"],
+				sessionId: sid,
+				mode: "or",
+			});
+
+			expect(result.hits.map((h) => h.eventId)).toEqual(expectedOrder);
+		});
+
+		test("result parity with the SQLite FTS backend: same hit set for the same fixture (score/ranking excluded)", async () => {
+			const { getDb, initializeDatabase } = await import("../../db/client.js");
+			const { sessions, events } = await import("../../db/schema/index.js");
+			const { PostgresSearchBackend } = await import("./postgres-search-backend.js");
+			const { SqliteFtsBackend } = await import("./sqlite-fts-backend.js");
+			const { FTS_BOOTSTRAP_SQL } = await import("../../db/fts-ddl.js");
+			const { Database } = await import("bun:sqlite");
+			await initializeDatabase();
+
+			const sid = uid("pgsearch-parity");
+			const token = uid("tok").replace(/-/g, "");
+
+			// Fixture: one indexed row matching the token via `prompt` (should
+			// hit on both dialects), one indexed row matching only via a
+			// secondary raw_payload field (`why`) while `content` holds
+			// unrelated text — the case that rules out a single-coalesced-text
+			// index (see drizzle/postgres/0005_agen27_pg_trgm_search_index.sql)
+			// — and one non-indexed row that must be excluded on both sides.
+			const fixture = [
+				{
+					eventType: "UserPromptSubmit",
+					content: `${token} prompt hit`,
+					rawPayload: { prompt: `${token} prompt hit` },
+				},
+				{
+					eventType: "AiProposal",
+					content: "unrelated proposal text",
+					rawPayload: { proposal_id: "p1", why: `${token} why hit` },
+				},
+				{
+					eventType: "PreToolUse",
+					content: `${token} noise, must be excluded`,
+					rawPayload: {},
+				},
+			];
+
+			// ── Postgres side (real app tables) ──
+			await getDb()
+				.insert(sessions)
+				.values({ sessionId: sid, agentType: "claude_code", status: "active" })
+				.execute();
+			await getDb()
+				.insert(events)
+				.values(fixture.map((f) => ({ sessionId: sid, ...f })))
+				.execute();
+
+			const pgBackend = new PostgresSearchBackend();
+			const pgResult = await pgBackend.search({ q: token, kinds: ["event"], sessionId: sid });
+
+			// ── SQLite side (isolated in-memory fixture; independent of the
+			// process-wide dialect, which is "postgres" for this test run) ──
+			const sqliteDb = new Database(":memory:");
+			sqliteDb.exec(`
+				CREATE TABLE sessions (
+					session_id TEXT PRIMARY KEY, display_name TEXT, cwd TEXT,
+					current_task TEXT, notes TEXT, agent_type TEXT NOT NULL,
+					status TEXT NOT NULL, last_activity_at TEXT NOT NULL DEFAULT (datetime('now'))
+				);
+			`);
+			sqliteDb.exec(`
+				CREATE TABLE events (
+					id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+					event_type TEXT NOT NULL, content TEXT, raw_payload TEXT NOT NULL DEFAULT '{}',
+					created_at TEXT NOT NULL DEFAULT (datetime('now'))
+				);
+			`);
+			sqliteDb.exec(FTS_BOOTSTRAP_SQL);
+			sqliteDb
+				.prepare("INSERT INTO sessions (session_id, agent_type, status) VALUES (?, ?, ?)")
+				.run(sid, "claude_code", "active");
+			const insertEvent = sqliteDb.prepare(
+				"INSERT INTO events (session_id, event_type, content, raw_payload) VALUES (?, ?, ?, ?)",
+			);
+			for (const f of fixture) {
+				insertEvent.run(sid, f.eventType, f.content, JSON.stringify(f.rawPayload));
+			}
+
+			const sqliteBackend = new SqliteFtsBackend(sqliteDb);
+			const sqliteResult = await sqliteBackend.search({
+				q: token,
+				kinds: ["event"],
+				sessionId: sid,
+			});
+			sqliteDb.close();
+
+			// Compare by event_type set, not score/rank/id (dialect-specific).
+			const pgTypes = pgResult.hits.map((h) => h.eventType).sort();
+			const sqliteTypes = sqliteResult.hits.map((h) => h.eventType).sort();
+
+			expect(pgTypes).toEqual(["AiProposal", "UserPromptSubmit"]);
+			expect(sqliteTypes).toEqual(["AiProposal", "UserPromptSubmit"]);
+			expect(pgTypes).toEqual(sqliteTypes);
+		});
 	},
 );
