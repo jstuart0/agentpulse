@@ -1,7 +1,7 @@
-// AGEN-27: ILIKE queries are unchanged, but as of migration 0005 they are
+// AGEN-27: ILIKE queries are unchanged, but as of migration 0006 they are
 // index-backed when pg_trgm is available (GIN trgm indexes on every column/
 // expression these queries OR together — see drizzle/postgres/
-// 0005_agen27_pg_trgm_search_index.sql for the index list and the reasoning
+// 0006_agen27_pg_trgm_search_index.sql for the index list and the reasoning
 // against a single coalesced-text index). When pg_trgm can't be installed
 // (some managed Postgres providers restrict CREATE EXTENSION), the migration
 // degrades to a NOTICE and these queries fall back to a sequential scan —
@@ -26,7 +26,7 @@ type Db = PostgresJsDatabase<typeof schema>;
  * `index*` and `remove*` methods are no-ops. `search()` executes
  * parameterized `ILIKE '%term%'` queries directly against the `sessions`
  * and `events` tables — optionally served from the pg_trgm GIN indexes
- * migration 0005 creates (see the file header above).
+ * migration 0006 creates (see the file header above).
  *
  * Result score is a flat 1.0 — see the TODO below for the proposed
  * deterministic rank follow-up.
@@ -53,10 +53,36 @@ type Db = PostgresJsDatabase<typeof schema>;
 // Filed in thoughts/postgres-followup-plans/postgres-search-rank-deterministic.md.
 
 // Single source of truth is FTS_INDEXED_EVENT_TYPES (db/fts-ddl.ts) — the
-// same list SQLite's FTS5 triggers index and migration 0005's partial GIN
+// same list SQLite's FTS5 triggers index and migration 0006's partial GIN
 // indexes restrict to. Previously duplicated locally here; AGEN-27 removed
 // the duplicate so the two dialects cannot drift.
 const SEARCHABLE_EVENT_TYPES = FTS_INDEXED_EVENT_TYPES;
+
+// percy AGEN-27 review, Critical 1: event_type IN (...) must be rendered as
+// literal SQL text, not bound parameters. postgres-js prepares statements by
+// default; once Postgres's planner switches a repeatedly-executed prepared
+// statement from a per-call "custom" plan to a cached "generic" one (its
+// default heuristic, typically within the first ~5-10 executions), a
+// *bound-parameter* IN list is opaque at plan time — the planner cannot
+// prove the query's event_type predicate satisfies the six events trigram
+// indexes' partial WHERE clause, so all six get silently dropped in favor
+// of a sequential scan (measured: 617ms vs 1.17ms at 1M rows). A *literal*
+// IN list is visible in the query text at plan time regardless of custom vs.
+// generic planning, so the partial-index match is provable either way.
+// SEARCHABLE_EVENT_TYPES is a hardcoded constant, never user input — the
+// assertion below is a structural guarantee that stays true, not a runtime
+// input-validation gate. The user's own query text remains a bound
+// parameter throughout; only this fixed, compile-time-known list is
+// rendered as literal text.
+const EVENT_TYPE_LITERAL_RE = /^[A-Za-z]+$/;
+for (const eventType of SEARCHABLE_EVENT_TYPES) {
+	if (!EVENT_TYPE_LITERAL_RE.test(eventType)) {
+		throw new Error(
+			`SEARCHABLE_EVENT_TYPES contains a value unsafe to inline as literal SQL: ${JSON.stringify(eventType)}`,
+		);
+	}
+}
+const SEARCHABLE_EVENT_TYPES_SQL_LIST = SEARCHABLE_EVENT_TYPES.map((t) => `'${t}'`).join(",");
 
 /** Row returned by the sessions ILIKE query. */
 type SessionRow = {
@@ -237,18 +263,35 @@ export class PostgresSearchBackend implements SearchBackend {
 
 		const whereClause = sql.join(filterClauses, sql` AND `);
 
+		// percy AGEN-27 review, Critical 1 (extended): under a generic plan,
+		// Postgres can choose to walk an index that already provides the
+		// ORDER BY's sort order (e.g. a future `started_at` index) backward,
+		// filtering as it goes, hoping to satisfy LIMIT early — rather than
+		// using the trigram indexes to filter first and sort the (much
+		// smaller) result after. That choice is driven by a generic,
+		// value-oblivious selectivity guess, and can be badly wrong for a
+		// rare search term. Fencing the filter in a `MATERIALIZED` CTE
+		// forces Postgres to fully evaluate WHERE (index-backed) before the
+		// ORDER BY/LIMIT ever sees the rows, closing that escape hatch
+		// regardless of which indexes exist on the sort column both now and
+		// in the future. Verified to add no measurable overhead on the
+		// already-fast custom-plan path.
 		const query = sql<SessionRow>`
-			SELECT
-				session_id,
-				display_name,
-				cwd,
-				current_task,
-				notes,
-				agent_type,
-				status,
-				last_activity_at
-			FROM sessions
-			WHERE ${whereClause}
+			WITH matched AS MATERIALIZED (
+				SELECT
+					session_id,
+					display_name,
+					cwd,
+					current_task,
+					notes,
+					agent_type,
+					status,
+					last_activity_at,
+					started_at
+				FROM sessions
+				WHERE ${whereClause}
+			)
+			SELECT * FROM matched
 			ORDER BY started_at DESC
 			LIMIT ${limit} OFFSET ${offset}
 		`;
@@ -293,13 +336,12 @@ export class PostgresSearchBackend implements SearchBackend {
 
 		const filterClauses: SQL[] = [sql`(${tokenWhere})`];
 
-		// Restrict to the same event types the FTS trigger indexed.
-		// Pass as individual bound params via a VALUES list joined by commas.
-		const eventTypeList = sql.join(
-			SEARCHABLE_EVENT_TYPES.map((t) => sql`${t}`),
-			sql`, `,
-		);
-		filterClauses.push(sql`e.event_type IN (${eventTypeList})`);
+		// Restrict to the same event types the FTS trigger indexed. Rendered
+		// as literal SQL text (sql.raw), not bound params — see
+		// SEARCHABLE_EVENT_TYPES_SQL_LIST's definition above for why a bound
+		// IN list defeats the partial trigram indexes once Postgres switches
+		// to a generic query plan.
+		filterClauses.push(sql`e.event_type IN (${sql.raw(SEARCHABLE_EVENT_TYPES_SQL_LIST)})`);
 
 		if (filters.sessionId) {
 			filterClauses.push(sql`e.session_id = ${filters.sessionId}`);
@@ -325,24 +367,42 @@ export class PostgresSearchBackend implements SearchBackend {
 
 		const whereClause = sql.join(filterClauses, sql` AND `);
 
+		// percy AGEN-27 review, Critical 1 (extended): a literal event_type
+		// list alone isn't sufficient once another index satisfies the ORDER
+		// BY column — e.g. AGEN-24's idx_events_created_at_id. Under a
+		// generic plan, Postgres can choose to walk that index backward,
+		// filtering as it goes and hoping to satisfy LIMIT early, rather than
+		// filtering via the trigram indexes first and sorting the (much
+		// smaller) result after — a choice driven by a generic,
+		// value-oblivious selectivity guess that can be badly wrong for a
+		// rare search term (measured: 162ms walking idx_events_created_at_id
+		// vs 7ms via the trigram indexes, same data, same forced-generic
+		// session). Fencing the filter in a `MATERIALIZED` CTE forces
+		// Postgres to fully evaluate WHERE before ORDER BY/LIMIT ever sees
+		// the rows, closing that escape hatch regardless of which indexes
+		// exist on the sort columns both now and in the future. Verified to
+		// add no measurable overhead on the already-fast custom-plan path.
 		const query = sql<EventRow>`
-			SELECT
-				e.id,
-				e.session_id,
-				e.event_type,
-				e.created_at,
-				e.raw_payload->>'prompt'   AS raw_payload_prompt,
-				e.raw_payload->>'message'  AS raw_payload_message,
-				e.raw_payload->>'summary'  AS raw_payload_summary,
-				e.raw_payload->>'why'      AS raw_payload_why,
-				e.raw_payload->>'title'    AS raw_payload_title,
-				e.content,
-				s.display_name             AS session_display_name,
-				s.cwd                      AS session_cwd
-			FROM events e
-			JOIN sessions s ON s.session_id = e.session_id
-			WHERE ${whereClause}
-			ORDER BY e.created_at DESC, e.id DESC
+			WITH matched AS MATERIALIZED (
+				SELECT
+					e.id,
+					e.session_id,
+					e.event_type,
+					e.created_at,
+					e.raw_payload->>'prompt'   AS raw_payload_prompt,
+					e.raw_payload->>'message'  AS raw_payload_message,
+					e.raw_payload->>'summary'  AS raw_payload_summary,
+					e.raw_payload->>'why'      AS raw_payload_why,
+					e.raw_payload->>'title'    AS raw_payload_title,
+					e.content,
+					s.display_name             AS session_display_name,
+					s.cwd                      AS session_cwd
+				FROM events e
+				JOIN sessions s ON s.session_id = e.session_id
+				WHERE ${whereClause}
+			)
+			SELECT * FROM matched
+			ORDER BY created_at DESC, id DESC
 			LIMIT ${limit} OFFSET ${offset}
 		`;
 
