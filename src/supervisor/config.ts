@@ -309,19 +309,48 @@ export async function saveSupervisorConfig(config: SupervisorConfig) {
  * AGEN-21: call once at supervisor startup, before loadSupervisorConfig().
  * Self-heals an existing supervisor.json left over-permissive by an
  * installer or a pre-fix version of saveSupervisorConfig — corrects it to
- * 0600 in place and logs once. A missing file (fresh install) or an
- * already-private file is a silent no-op. Refuses (and logs, but never
- * throws) if the path is a symlink — startup continues either way; the
- * permission fix is a hardening pass, not a load-time gate.
+ * 0600 in place and logs once. A missing file (fresh install), an
+ * already-private file, or a hard-linked path is a silent no-op. Refuses
+ * (and logs, but never throws) if the path is a symlink — startup
+ * continues either way; the permission fix is a hardening pass, not a
+ * load-time gate.
+ *
+ * AGEN-21 (xander, Medium): tightenPrivateFilePermissionsSync itself
+ * throws if it loses its internal TOCTOU race (the file changed identity
+ * between the lstat and the verifying fstat) — deliberately, since that's
+ * the one path where continuing would risk fchmod'ing the wrong inode.
+ * This function is the one place that race is allowed to surface, and it
+ * must never propagate: a lost race at startup is not worth crash-looping
+ * the supervisor over. Caught, logged, startup continues either way.
+ *
+ * `tighten` is a test seam (defaults to the real
+ * tightenPrivateFilePermissionsSync): the real TOCTOU race is a few CPU
+ * instructions wide and can't be hit reliably by racing two real
+ * processes in a test, so config-ensure-private-race.test.ts passes a
+ * function that throws on demand instead. A default-parameter seam here
+ * — not module mocking — because mock.module replaces module resolution
+ * process-wide; ../shared/private-file.js is imported by other test
+ * files' real-implementation coverage (config.test.ts,
+ * private-file.test.ts) that share this test run's module registry, and
+ * a mock registered by one file was observed to leak into another
+ * (confirmed empirically), corrupting their assertions.
  */
-export function ensureSupervisorConfigPrivate(): void {
+export function ensureSupervisorConfigPrivate(
+	tighten: typeof tightenPrivateFilePermissionsSync = tightenPrivateFilePermissionsSync,
+): void {
 	const path = getSupervisorConfigPath();
-	const result = tightenPrivateFilePermissionsSync(path);
-	if (result.tightened) {
-		console.warn(
-			`[supervisor] corrected ${path} permissions to 0600 (was 0${result.previousMode.toString(8)})`,
+	try {
+		const result = tighten(path);
+		if (result.tightened) {
+			console.warn(
+				`[supervisor] corrected ${path} permissions to 0600 (was 0${result.previousMode.toString(8)})`,
+			);
+		} else if (result.reason === "symlink") {
+			console.error(`[supervisor] refusing to correct permissions: ${path} is a symlink`);
+		}
+	} catch (error) {
+		console.error(
+			`[supervisor] failed to check/correct ${path} permissions: ${error instanceof Error ? error.message : String(error)}`,
 		);
-	} else if (result.reason === "symlink") {
-		console.error(`[supervisor] refusing to correct permissions: ${path} is a symlink`);
 	}
 }

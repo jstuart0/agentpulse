@@ -160,7 +160,10 @@ function tightenWindowsAclBestEffort(path: string): void {
 
 export type TightenPermissionsResult =
 	| { tightened: true; previousMode: number }
-	| { tightened: false; reason: "missing" | "symlink" | "not-a-file" | "already-private" };
+	| {
+			tightened: false;
+			reason: "missing" | "symlink" | "hardlink" | "not-a-file" | "already-private";
+	  };
 
 /**
  * AGEN-21: idempotent startup guard for an existing secret-bearing file
@@ -178,11 +181,18 @@ export type TightenPermissionsResult =
  * install — writePrivateFileSyncNoFollow always creates at 0600 already) or
  * an already-private file is a silent no-op, both reported via `reason` so
  * a caller can choose not to log routine cases.
+ *
+ * AGEN-21 (xander, Medium): also refuses a multiply hard-linked path —
+ * fchmod narrows the shared inode's mode for every directory entry
+ * pointing at it, so tightening one link's permissions would silently
+ * narrow (or, for the write path, corrupt) whatever the other link is
+ * actually for. Same refusal writeFileSyncNoFollow already applies.
  */
 export function tightenPrivateFilePermissionsSync(path: string): TightenPermissionsResult {
 	const kind = lstatKindSync(path);
 	if (kind === "missing") return { tightened: false, reason: "missing" };
 	if (kind === "symlink") return { tightened: false, reason: "symlink" };
+	if (kind === "hardlink") return { tightened: false, reason: "hardlink" };
 	if (kind === "other") return { tightened: false, reason: "not-a-file" };
 
 	const seen = lstatSync(path);
