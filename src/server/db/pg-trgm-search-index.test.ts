@@ -425,15 +425,23 @@ describePostgresOnly("AGEN-27: pg_trgm search index (live Postgres)", () => {
 		}
 	}, 30_000);
 
-	test("skips the automatic index build and warns when events is already large (>100,000 rows)", async () => {
+	test("skips the automatic index build and warns when events is already large (>100,000 rows, never analyzed)", async () => {
 		const { scratchAdmin, cleanup } = await createScratchDb(config.databaseUrl);
 		try {
-			// reltuples is a planner statistic (updated by ANALYZE/autovacuum,
-			// not exact) — setting it directly is the fast, deterministic way
-			// to exercise the threshold without seeding 100k+ real rows.
+			// percy re-verify (TB22, Critical): a never-analyzed table reports
+			// pg_class.reltuples = -1 ("unknown"), not 0 — the real-world
+			// trigger is a restored backup or a lagging autovacuum. Bulk-load
+			// real rows with NO explicit ANALYZE, so reltuples is genuinely
+			// -1 going into the migration; its own `EXECUTE 'ANALYZE events'`
+			// (added this review) must be what makes the threshold check see
+			// the true size, not a pre-existing accurate statistic.
 			await scratchAdmin.unsafe(
-				"UPDATE pg_class SET reltuples = 200000 WHERE oid = 'events'::regclass",
+				"INSERT INTO events (session_id, event_type, content, raw_payload, created_at) SELECT 's1', 'UserPromptSubmit', 'x', '{}'::json, now()::text FROM generate_series(1, 150000) g",
 			);
+			const preMigrationReltuples = await scratchAdmin.unsafe(
+				"SELECT reltuples FROM pg_class WHERE oid = to_regclass('events')",
+			);
+			expect(Number(preMigrationReltuples[0]?.reltuples)).toBeLessThan(0);
 
 			const statements = readMigration0006Statements();
 			for (const statement of statements) {
@@ -444,6 +452,42 @@ describePostgresOnly("AGEN-27: pg_trgm search index (live Postgres)", () => {
 				"SELECT indexname FROM pg_indexes WHERE indexname LIKE 'idx_%trgm'",
 			);
 			expect(idx.length).toBe(0);
+
+			// The migration's own ANALYZE ran and correctly found the real
+			// (large) row count — this isn't "the gate never fired because
+			// stats were stale," it's "the gate correctly fired because the
+			// migration itself refreshed the stats first."
+			const postMigrationReltuples = await scratchAdmin.unsafe(
+				"SELECT reltuples FROM pg_class WHERE oid = to_regclass('events')",
+			);
+			expect(Number(postMigrationReltuples[0]?.reltuples)).toBeGreaterThan(100000);
+		} finally {
+			await cleanup();
+		}
+	}, 30_000);
+
+	test("still builds on a fresh empty table (reltuples reports 0, not -1, once the migration's own ANALYZE runs)", async () => {
+		const { scratchAdmin, cleanup } = await createScratchDb(config.databaseUrl);
+		try {
+			const preMigrationReltuples = await scratchAdmin.unsafe(
+				"SELECT reltuples FROM pg_class WHERE oid = to_regclass('events')",
+			);
+			expect(Number(preMigrationReltuples[0]?.reltuples)).toBeLessThan(0);
+
+			const statements = readMigration0006Statements();
+			for (const statement of statements) {
+				await scratchAdmin.unsafe(statement);
+			}
+
+			const idx = await scratchAdmin.unsafe(
+				"SELECT indexname FROM pg_indexes WHERE indexname LIKE 'idx_%trgm'",
+			);
+			expect(idx.length).toBe(10);
+
+			const postMigrationReltuples = await scratchAdmin.unsafe(
+				"SELECT reltuples FROM pg_class WHERE oid = to_regclass('events')",
+			);
+			expect(Number(postMigrationReltuples[0]?.reltuples)).toBe(0);
 		} finally {
 			await cleanup();
 		}

@@ -150,22 +150,42 @@ describe("extractSnippet helper", () => {
 // the broken `{ sql: string, params: [] }` object shape.
 
 describe("PostgresSearchBackend — execute shape (mock-based, unconditional)", () => {
-	test("searchSessions calls executeRows with a Drizzle SQL template, not { sql, params }", async () => {
-		let capturedQuery: unknown = undefined;
-
-		// Capture from whichever path executeRows() takes on this dialect.
-		// executeRows branches on config.dialect: Postgres → db.execute(q), SQLite → db.all(q).
-		// Both paths receive the same Drizzle SQL template object.
-		const mockDb = {
-			execute: (q: unknown) => {
-				capturedQuery = q;
-				return Promise.resolve([] as unknown[]);
+	// percy AGEN-27 review (TB22): searchSessions/searchEvents no longer call
+	// executeRows()/db.execute() — they go through executeUnprepared(),
+	// which calls db.dialect.sqlToQuery() (to get { sql, params } from the
+	// Drizzle SQL template) and then db.$client.unsafe(text, params, {
+	// prepare: false }) directly, so prepared-statement caching never
+	// engages for these two queries. This mock asserts that exact shape:
+	// a real Drizzle SQL template goes into sqlToQuery, and unsafe() gets a
+	// string + array + explicit prepare:false, never the broken
+	// `{ sql, params }`-as-query shape an earlier campaign's bug produced.
+	function buildMockDb(capture: {
+		query?: unknown;
+		text?: string;
+		params?: unknown;
+		opts?: unknown;
+	}) {
+		return {
+			dialect: {
+				sqlToQuery: (q: unknown) => {
+					capture.query = q;
+					return { sql: "SELECT 1", params: [] };
+				},
 			},
-			all: (q: unknown) => {
-				capturedQuery = q;
-				return [] as unknown[];
+			$client: {
+				unsafe: (text: string, params: unknown, opts: unknown) => {
+					capture.text = text;
+					capture.params = params;
+					capture.opts = opts;
+					return Promise.resolve([] as unknown[]);
+				},
 			},
 		};
+	}
+
+	test("searchSessions calls dialect.sqlToQuery with a Drizzle SQL template, then $client.unsafe with prepare:false", async () => {
+		const capture: { query?: unknown; text?: string; params?: unknown; opts?: unknown } = {};
+		const mockDb = buildMockDb(capture);
 
 		const backend = new PostgresSearchBackend(
 			mockDb as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
@@ -173,34 +193,23 @@ describe("PostgresSearchBackend — execute shape (mock-based, unconditional)", 
 			>,
 		);
 
-		// Call search() so searchSessions() is invoked.
 		await backend.search({ q: "hello", kinds: ["session"] });
 
-		// capturedQuery must be a Drizzle SQL template object, not a plain object
-		// with a `sql` string and a `params` array (the broken shape that would
-		// throw `TypeError: query.getSQL is not a function` on the real adapter).
-		expect(capturedQuery).toBeDefined();
-		expect(typeof capturedQuery).toBe("object");
-		// Drizzle SQL templates have a `getSQL()` method; plain `{ sql, params }` objects do not.
+		expect(capture.query).toBeDefined();
+		expect(typeof capture.query).toBe("object");
+		// Drizzle SQL templates have a `getSQL()` method; a plain
+		// `{ sql, params }` object (the earlier campaign's broken shape) does not.
 		// biome-ignore lint/suspicious/noExplicitAny: testing internal drizzle shape
-		expect(typeof (capturedQuery as any).getSQL).toBe("function");
-		// Must NOT be a plain { sql: string, params: [] } object.
-		expect(typeof (capturedQuery as Record<string, unknown>)?.sql).not.toBe("string");
+		expect(typeof (capture.query as any).getSQL).toBe("function");
+
+		expect(typeof capture.text).toBe("string");
+		expect(Array.isArray(capture.params)).toBe(true);
+		expect(capture.opts).toEqual({ prepare: false });
 	});
 
-	test("searchEvents calls executeRows with a Drizzle SQL template, not { sql, params }", async () => {
-		let capturedQuery: unknown = undefined;
-
-		const mockDb = {
-			execute: (q: unknown) => {
-				capturedQuery = q;
-				return Promise.resolve([] as unknown[]);
-			},
-			all: (q: unknown) => {
-				capturedQuery = q;
-				return [] as unknown[];
-			},
-		};
+	test("searchEvents calls dialect.sqlToQuery with a Drizzle SQL template, then $client.unsafe with prepare:false", async () => {
+		const capture: { query?: unknown; text?: string; params?: unknown; opts?: unknown } = {};
+		const mockDb = buildMockDb(capture);
 
 		const backend = new PostgresSearchBackend(
 			mockDb as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
@@ -210,11 +219,14 @@ describe("PostgresSearchBackend — execute shape (mock-based, unconditional)", 
 
 		await backend.search({ q: "world", kinds: ["event"] });
 
-		expect(capturedQuery).toBeDefined();
-		expect(typeof capturedQuery).toBe("object");
+		expect(capture.query).toBeDefined();
+		expect(typeof capture.query).toBe("object");
 		// biome-ignore lint/suspicious/noExplicitAny: testing internal drizzle shape
-		expect(typeof (capturedQuery as any).getSQL).toBe("function");
-		expect(typeof (capturedQuery as Record<string, unknown>)?.sql).not.toBe("string");
+		expect(typeof (capture.query as any).getSQL).toBe("function");
+
+		expect(typeof capture.text).toBe("string");
+		expect(Array.isArray(capture.params)).toBe(true);
+		expect(capture.opts).toEqual({ prepare: false });
 	});
 });
 
@@ -501,28 +513,27 @@ describePostgresOnly(
 			expect(pgTypes).toEqual(sqliteTypes);
 		});
 
-		// ── percy AGEN-27 review, Critical 1: event indexes survive plan-cache warm-up ──
+		// ── percy AGEN-27 review (TB22 re-verify): 5-bucket selectivity matrix ──
 		//
-		// postgres-js prepares statements by default. Postgres's own planner
-		// switches a repeatedly-executed prepared statement from a per-call
-		// "custom" plan (which sees the actual bound values) to a cached
-		// "generic" plan (built once, ignorant of values) once it estimates
-		// the generic plan is cheap enough — typically within the first
-		// ~5-10 executions, though the exact trigger is cost-heuristic and
-		// data-dependent, not a fixed call count. A *bound-parameter*
-		// `event_type IN (...)` list is opaque at generic-plan-build time, so
-		// the planner can't prove the six events trigram indexes' partial
-		// `WHERE event_type IN (...)` predicate is satisfied — all six get
-		// silently dropped in favor of a sequential scan.
+		// Replaces the MATERIALIZED-CTE-fence test TB17 added. The fence
+		// forced Postgres to fully materialize every WHERE-matching row
+		// before LIMIT — correct for a rare term, catastrophic for a common
+		// one (percy measured a 50%-selectivity term at 1M rows regress
+		// 0.18ms -> 1.8s, ~50MB of temp spilled). TB22 removed the fence:
+		// searchEvents/searchSessions now run with server-side prepared
+		// statements disabled (executeUnprepared(), prepare: false) instead,
+		// so every execution sees the real bound ILIKE pattern — rare terms
+		// use the trigram indexes, common terms benefit from early-LIMIT
+		// (walk in sort order, stop the instant enough matches are found)
+		// exactly like an ad hoc query always would.
 		//
-		// This test drives the real production path (PostgresSearchBackend.
-		// search()) on one dedicated connection, warms it 8+ times (per the
-		// review), then forces `plan_cache_mode = force_generic_plan` on
-		// that same connection — deterministically reproducing the
-		// worst-case post-warm-up state the natural heuristic reaches only
-		// eventually and data-dependently — and asserts the next call stays
-		// index-fast, not seq-scan-slow.
-		test("stays index-backed after prepared-statement warm-up (not a bound event_type IN list)", async () => {
+		// Five buckets across the selectivity spectrum, all through the real
+		// production path (PostgresSearchBackend.search()) on one dedicated
+		// connection, each warmed up more than 8 times before the timed call:
+		// a rare term (1 row), ~10%, ~50%, ~90%, and a 1-2 char term (too
+		// short for pg_trgm to index at all — trigram extraction needs 3+
+		// characters — so this is the pure early-LIMIT case).
+		test("stays fast across the selectivity spectrum: rare, 10%, 50%, 90%, and a 1-2 char term", async () => {
 			const { default: postgres } = await import("postgres");
 			const { drizzle } = await import("drizzle-orm/postgres-js");
 			const { getDb, initializeDatabase } = await import("../../db/client.js");
@@ -534,89 +545,137 @@ describePostgresOnly(
 			type PgDb = import("drizzle-orm/postgres-js").PostgresJsDatabase<typeof schema>;
 			await initializeDatabase();
 
-			// One dedicated connection so postgres-js's own prepared-statement
-			// cache and Postgres's plan-cache state both persist across every
-			// call below — a pooled connection could silently route calls to
-			// different physical backends, each with its own plan cache.
+			// One dedicated connection for the whole matrix — a pooled
+			// connection could silently route calls to different
+			// physical backends.
 			const pgClient = postgres(config.databaseUrl, { max: 1 });
 			const dedicatedDb: PgDb = drizzle(pgClient, { schema });
-			const sid = uid("pgsearch-warmup");
+			const sid = uid("pgsearch-buckets");
+			const ROW_COUNT = 1_000_000;
 
 			try {
 				const backend = new PostgresSearchBackend(dedicatedDb);
-
-				const marker = uid("tok").replace(/-/g, "");
-				const ROW_COUNT = 300_000;
 
 				await executeRows(
 					dedicatedDb as unknown as import("../../db/client.js").Db,
 					sql`INSERT INTO sessions (id, session_id, agent_type, status) VALUES (gen_random_uuid()::text, ${sid}, 'claude_code', 'active')`,
 				);
 
-				// Rare marker (1 in 5000), realistic selectivity — a naive
-				// "every 5th row" fixture is unrealistically easy for a seq
-				// scan and would hide the index's actual advantage.
+				// Every row is UserPromptSubmit (an indexed type) so bucket
+				// percentages are exact fractions of ROW_COUNT, not diluted
+				// by non-indexed noise rows. Four independent markers, each
+				// gated by its own modulo so the buckets don't interfere:
+				// rare (row 1 only), 10% (g % 10 = 0), 50% (g % 2 = 0), 90%
+				// (the complement of the 10% bucket). The 1-2 char bucket
+				// needs no marker — every row's base text already contains
+				// "re" (from "refactor").
 				await executeRows(
 					dedicatedDb as unknown as import("../../db/client.js").Db,
 					sql`
 							INSERT INTO events (session_id, event_type, content, raw_payload, created_at)
 							SELECT
 								${sid},
-								(ARRAY['UserPromptSubmit','AssistantMessage','Stop','PreToolUse','PostToolUse'])[1 + (g % 5)],
-								CASE WHEN g % 5 = 2 THEN 'Turn completed' ELSE 'refactor payload ' || g END,
-								CASE WHEN g % 5 = 0 THEN
-									CASE WHEN g % 5000 = 0 THEN json_build_object('prompt', 'refactor payload ' || g || ' ' || ${marker})
-										ELSE json_build_object('prompt', 'refactor payload ' || g) END
-									ELSE '{}'::json END,
+								'UserPromptSubmit',
+								'refactor payload ' || g
+									|| (CASE WHEN g = 1 THEN ' RAREBKT' ELSE '' END)
+									|| (CASE WHEN g % 10 = 0 THEN ' TENBKT' ELSE '' END)
+									|| (CASE WHEN g % 2 = 0 THEN ' FIFTYBKT' ELSE '' END)
+									|| (CASE WHEN g % 10 != 0 THEN ' NINETYBKT' ELSE '' END),
+								json_build_object(
+									'prompt',
+									'refactor payload ' || g
+										|| (CASE WHEN g = 1 THEN ' RAREBKT' ELSE '' END)
+										|| (CASE WHEN g % 10 = 0 THEN ' TENBKT' ELSE '' END)
+										|| (CASE WHEN g % 2 = 0 THEN ' FIFTYBKT' ELSE '' END)
+										|| (CASE WHEN g % 10 != 0 THEN ' NINETYBKT' ELSE '' END)
+								),
 								now()::text
 							FROM generate_series(1, ${ROW_COUNT}) AS g
 						`,
 				);
+				// VACUUM (not just ANALYZE): this test shares the `events`
+				// table with every other test in this suite, several of
+				// which insert-then-delete 200k-1M rows of their own —
+				// dead tuples autovacuum hasn't caught up to yet bloat the
+				// table's physical size beyond this test's own 1M live
+				// rows. VACUUM reclaims that space so timing reflects this
+				// test's own data, not a neighbor's leftover churn. (The
+				// dominant cause of the flaky multi-hundred-ms timings
+				// this comment used to describe was actually the test
+				// Postgres container's default shared-memory size
+				// starving parallel-plan query workers under sustained
+				// load — Docker's default `--shm-size` (~64MB) surfaces
+				// as "could not resize shared memory segment: No space
+				// left on device"; fixed by running the container with
+				// `--shm-size=1gb` (see .github/workflows/ci.yml's
+				// test-postgres job). VACUUM is cheap, real hygiene, and
+				// kept regardless of that fix.)
+				await pgClient.unsafe("VACUUM (ANALYZE) events");
+				// Prime the OS/Postgres page cache: right after a 1M-row bulk
+				// insert, the freshly-written pages aren't cached yet, and a
+				// full-table read (checkpoint I/O, cold pages) can dominate
+				// the *first* query's timing regardless of which plan it
+				// uses — a seeding artifact, not a planner regression. A
+				// full sequential read here pulls every page in once, so
+				// the timed measurements below reflect query-plan cost, not
+				// cold-cache I/O.
 				await executeRows(
 					dedicatedDb as unknown as import("../../db/client.js").Db,
-					sql`ANALYZE events`,
+					sql`SELECT count(*) FROM events WHERE session_id = ${sid}`,
 				);
 
-				// Warm up ≥8 executions through the real production call path.
-				for (let i = 0; i < 8; i++) {
-					await backend.search({ q: marker, kinds: ["event"], sessionId: sid });
+				const buckets: Array<{ name: string; term: string; expectHits: boolean }> = [
+					{ name: "rare (1 row)", term: "RAREBKT", expectHits: true },
+					{ name: "~10%", term: "TENBKT", expectHits: true },
+					{ name: "~50%", term: "FIFTYBKT", expectHits: true },
+					{ name: "~90%", term: "NINETYBKT", expectHits: true },
+					{ name: '1-2 char ("re")', term: "re", expectHits: true },
+				];
+
+				// Measured 2-4ms per bucket, consistently, once the test
+				// Postgres container has enough shared memory for
+				// parallel-plan queries (`--shm-size` — Docker's tiny
+				// default starves DSM allocation for parallel workers
+				// under the sustained query load this suite generates,
+				// which produced multi-hundred-ms noise unrelated to
+				// planning; not this test's concern once the container is
+				// sized correctly). The true regression this guards
+				// against (the removed MATERIALIZED fence on a common
+				// term) measured 480ms-1.8s — orders of magnitude above
+				// 50ms.
+				const SANE_BOUND_MS = 50;
+				const timings: Record<string, number> = {};
+
+				for (const bucket of buckets) {
+					// Warm up more than 8 times through the real production
+					// call path before the timed call.
+					for (let i = 0; i < 9; i++) {
+						await backend.search({ q: bucket.term, kinds: ["event"], sessionId: sid });
+					}
+					const start = performance.now();
+					const result = await backend.search({
+						q: bucket.term,
+						kinds: ["event"],
+						sessionId: sid,
+					});
+					const elapsedMs = performance.now() - start;
+					timings[bucket.name] = elapsedMs;
+
+					if (bucket.expectHits) {
+						expect(result.hits.length).toBeGreaterThan(0);
+					}
+					expect(elapsedMs).toBeLessThan(SANE_BOUND_MS);
 				}
 
-				// Corroborating evidence: this connection really did go through
-				// postgres-js's own server-side prepared-statement machinery
-				// (prepare: true, the default) — not some test-only shortcut.
-				const prepared = await executeRows<{ count: string }>(
-					dedicatedDb as unknown as import("../../db/client.js").Db,
-					sql`SELECT count(*)::text AS count FROM pg_prepared_statements`,
+				// percy asked for the 5-bucket numbers in the report — this
+				// is the source of truth.
+				console.log(
+					`[AGEN-27 TB22] 5-bucket selectivity matrix at ${ROW_COUNT} rows:`,
+					JSON.stringify(timings),
 				);
-				expect(Number(prepared[0]?.count ?? 0)).toBeGreaterThan(0);
-
-				// Deterministically reproduce the worst case the natural
-				// custom-vs-generic heuristic reaches only eventually and
-				// data-dependently: force every subsequent execution on this
-				// connection to use a generic plan.
-				await pgClient.unsafe("SET plan_cache_mode = force_generic_plan");
-
-				const start = performance.now();
-				const result = await backend.search({ q: marker, kinds: ["event"], sessionId: sid });
-				const elapsedMs = performance.now() - start;
-
-				// Correctness: the search must still find the seeded hit.
-				expect(result.hits.length).toBeGreaterThan(0);
-
-				// The whole point: index-backed stays fast even under a forced
-				// generic plan. Broken (bound event_type IN list, or an
-				// unfenced ORDER BY/LIMIT that lets the planner walk
-				// idx_events_created_at_id instead): 160-185ms measured at
-				// this row count. Fixed (literal IN list + MATERIALIZED CTE
-				// fence): a few ms of raw query time, tens of ms including
-				// JS-side row mapping and connection round-trip. 80ms leaves
-				// a wide margin below the broken numbers and above observed
-				// fixed-path noise.
-				expect(elapsedMs).toBeLessThan(80);
 			} finally {
 				// Cleanup — see pg-trgm-search-index.test.ts for why leaving
-				// 300k rows behind pollutes later tests' unfiltered deletes.
+				// 1M rows behind pollutes later tests' unfiltered deletes.
 				// Run on the shared pool (getDb()), not the dedicated
 				// connection, since it's about to close.
 				await executeRows(
@@ -629,6 +688,6 @@ describePostgresOnly(
 				).catch(() => {});
 				await pgClient.end();
 			}
-		}, 60_000);
+		}, 120_000);
 	},
 );
