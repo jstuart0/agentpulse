@@ -50,10 +50,39 @@ describe("AUTH_STEP", () => {
 		}
 	});
 
-	test("codex_cli and copilot_cli: the PowerShell variant is unaffected (out of AGEN-49's scope) — still carries the literal key", () => {
+	test("codex_cli and copilot_cli (AGEN-49): the PowerShell variant reads the key at a hidden, secure prompt too — the literal key is absent", () => {
 		for (const agent of ["codex_cli", "copilot_cli"] as const) {
 			const step = AUTH_STEP[agent]("ap_test123", false);
-			expect(step?.windowsCommand).toContain("ap_test123");
+			const win = step?.windowsCommand ?? "";
+			expect(win).not.toContain("ap_test123");
+			expect(win).toContain("Read-Host");
+			expect(win).toContain("-AsSecureString");
+			expect(win).toContain("SecureStringToBSTR");
+			expect(win).toContain("PtrToStringAuto");
+			// The unmanaged BSTR copy is freed once converted, not left dangling.
+			expect(win).toContain("ZeroFreeBSTR");
+			expect(win).toContain("Authorization: Bearer $key");
+		}
+	});
+
+	test("codex_cli and copilot_cli (AGEN-49): the key variable never becomes an external command's argument — only Set-Content -Value (in-process) touches it", () => {
+		for (const agent of ["codex_cli", "copilot_cli"] as const) {
+			const step = AUTH_STEP[agent]("ap_test123", false);
+			const win = step?.windowsCommand ?? "";
+			// `&` (the call operator) invokes an external program with the
+			// rest of the statement as its argv — Windows' analogue of a key
+			// showing up in `ps`/Task Manager. fsutil is invoked this way
+			// (hard-link check) but never with $key/$secure/$bstr in its args.
+			const callOperatorLines = win
+				.split(";")
+				.filter((segment) => /&\s/.test(segment) || /Start-Process/.test(segment));
+			for (const segment of callOperatorLines) {
+				expect(segment).not.toMatch(/\$(key|secure|bstr)\b/);
+			}
+			// Every other place the key value appears is Set-Content -Value,
+			// an in-process .NET call, not a child process invocation.
+			const keyUses = win.match(/\$key\b/g) ?? [];
+			expect(keyUses.length).toBeGreaterThan(0);
 		}
 	});
 
@@ -88,16 +117,36 @@ describe("AUTH_STEP", () => {
 		expect(windowsCommand).not.toMatch(/Set-Content -NoNewline -Path \$f\b/);
 	});
 
+	test("AGEN-49: the PowerShell command also checks the file for a hard link, same ordering as install-local.ps1's New-ApHookAuthHeaderFile", () => {
+		const step = AUTH_STEP.codex_cli("ap_test123", false);
+		const windowsCommand = step?.windowsCommand ?? "";
+		expect(windowsCommand).toContain("function ApTestHardLink");
+		expect(windowsCommand).toContain("fsutil hardlink list");
+		expect(windowsCommand).toContain("ApTestHardLink $f");
+		// Hard-link check runs before the reparse-point check for the file,
+		// same order as New-ApHookAuthHeaderFile.
+		const hardLinkIdx = windowsCommand.indexOf("ApTestHardLink $f");
+		const fileReparseIdx = windowsCommand.indexOf("ApTestReparse $f");
+		expect(hardLinkIdx).toBeGreaterThan(-1);
+		expect(fileReparseIdx).toBeGreaterThan(-1);
+		expect(hardLinkIdx).toBeLessThan(fileReparseIdx);
+		// Both the directory and the file get an ACL narrowed to the
+		// current user — (OI)(CI)F for the directory, (R,W) for the file.
+		expect(windowsCommand).toContain("(OI)(CI)F");
+		expect(windowsCommand).toContain("(R,W)");
+	});
+
 	test("disableAuth:true gives null for all three agents", () => {
 		expect(AUTH_STEP.claude_code("ap_test123", true)).toBeNull();
 		expect(AUTH_STEP.codex_cli("ap_test123", true)).toBeNull();
 		expect(AUTH_STEP.copilot_cli("ap_test123", true)).toBeNull();
 	});
 
-	test("the PowerShell auth variant contains icacls and Authorization: Bearer, with the key in single quotes", () => {
+	test("the PowerShell auth variant contains icacls and an Authorization: Bearer header referencing the read-in key, never a literal", () => {
 		const step = AUTH_STEP.codex_cli("ap_test123", false);
 		expect(step?.windowsCommand).toContain("icacls");
-		expect(step?.windowsCommand).toContain("Authorization: Bearer ap_test123");
+		expect(step?.windowsCommand).toContain("Authorization: Bearer $key");
+		expect(step?.windowsCommand).not.toContain("Authorization: Bearer ap_test123");
 	});
 
 	test("the auth step includes curl 7.55+ for codex and copilot", () => {
