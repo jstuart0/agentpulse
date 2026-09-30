@@ -1,6 +1,6 @@
-// D40 (F251): AGENTPULSE_AI_ENABLED / AGENTPULSE_SECRETS_KEY safe defaults,
-// factored out of __test_db.ts so bunfig.toml's [test] preload can set them
-// before ANY test file's own imports run.
+// AGENTPULSE_AI_ENABLED / AGENTPULSE_SECRETS_KEY safe defaults, factored
+// out of __test_db.ts so bunfig.toml's [test] preload can set them before
+// ANY test file's own imports run.
 //
 // src/server/config.ts computes `aiEnabled`/`secretsKey` (and every other
 // field) once, into a plain object literal, at first import — and Bun
@@ -14,8 +14,7 @@
 // reaches config.ts transitively before its own imports run, e.g. via a
 // dynamically-imported route module) could still freeze config with unsafe
 // values. A preload guarantees these two defaults land first, regardless
-// of load order — see .mozart/investigations/active/
-// 2026-09-29-diagnose-f251-full-suite-pollution.md for the full root cause.
+// of load order.
 //
 // __test_db.ts still owns SQLITE_PATH/DATA_DIR and the temp-path safety
 // guard (those need the temp directory it creates, so they stay there) and

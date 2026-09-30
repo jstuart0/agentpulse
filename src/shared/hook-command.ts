@@ -23,8 +23,8 @@
  *   4. No synchronous redaction or payload processing: the shim never
  *      parses/filters/transforms the payload on the *synchronous* path.
  *
- * Cross-campaign requirement (event-dedup D12 / mozart D19): the Codex
- * command-hook shim additionally writes an empty native-coverage marker file
+ * Cross-campaign requirement: the Codex command-hook shim additionally
+ * writes an empty native-coverage marker file
  * at `$HOME/.agentpulse/codex-native/<session_id>` *inside the detached
  * subshell, before the curl* — off the synchronous path, exactly like the
  * POST — so a sibling campaign's supervisor-side reader can tell a native

@@ -40,7 +40,7 @@ while [[ $# -gt 0 ]]; do
       echo "           --key is briefly visible in \`ps\` during a curl|bash install."
       echo "  --agent  Agent type: claude_code (default), codex_cli, or copilot_cli"
       echo "  --scope  Scope: global (default) or project"
-      echo "  --no-auth-check  Skip the auth/me probe (D39) — for installing"
+      echo "  --no-auth-check  Skip the auth/me probe — for installing"
       echo "                   against a server that isn't reachable yet or that"
       echo "                   runs with auth disabled but can't be probed."
       echo "  -h       Show this help"

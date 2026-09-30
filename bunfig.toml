@@ -1,7 +1,10 @@
-# D40 (F251): loaded before every test file's own imports, guaranteeing
+# Loaded before every test file's own imports, guaranteeing
 # src/server/config.ts's AGENTPULSE_AI_ENABLED/AGENTPULSE_SECRETS_KEY
-# defaults land regardless of Bun's module-graph discovery order. See
-# src/server/db/test-env-defaults.ts and
-# .mozart/investigations/active/2026-09-29-diagnose-f251-full-suite-pollution.md.
+# defaults land regardless of Bun's module-graph discovery order. Without
+# this, whichever test file happens to import config.ts first (an order
+# Bun's own module graph decides, not something any individual test
+# controls) permanently freezes those two env vars for the rest of the
+# process, since config.ts computes them once into a plain object at
+# first import. See src/server/db/test-env-defaults.ts for the values.
 [test]
 preload = ["./src/server/db/test-env-defaults.ts"]
