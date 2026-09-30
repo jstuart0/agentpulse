@@ -43,7 +43,7 @@ describe("buildBashHookCommand — relay mode", () => {
 });
 
 describe("buildBashHookCommand — direct mode", () => {
-	test('references hook-auth-header via -H "@$f" and has no $(cat', () => {
+	test('the key never enters argv: references hook-auth-header via -H "@$f" and has no $(cat', () => {
 		const cmd = buildBashHookCommand({
 			baseUrl: BASE,
 			direct: true,
@@ -106,6 +106,25 @@ describe("buildBashHookCommand — D13 shape (r6 detached)", () => {
 				// every `cat` must be immediately followed by a redirect (`cat > "$t"`)
 				const bareCat = cmd.match(/\bcat\b(?!\s*>)/g);
 				expect(bareCat).toBeNull();
+			}
+		}
+	});
+});
+
+describe("buildBashHookCommand — posix sh compatibility (no bash-isms)", () => {
+	test("generated command has no [[, $'...', function/source keywords, array assignment, or == comparison", () => {
+		for (const agent of ["codex_cli", "copilot_cli"] as const) {
+			for (const direct of [false, true]) {
+				const cmd = buildBashHookCommand({ baseUrl: BASE, direct, agent, event: "Stop" });
+				// `[[ ` (bash conditional, always followed by whitespace) is banned;
+				// `[[:space:]]` (a POSIX bracket-expression named class, used inside
+				// grep -o here) is not a bash-ism and must not false-positive.
+				expect(cmd).not.toMatch(/\[\[\s/);
+				expect(cmd).not.toContain("$'");
+				expect(cmd).not.toMatch(/\bfunction\s/);
+				expect(cmd).not.toMatch(/\bsource\s/);
+				expect(cmd).not.toMatch(/\w+=\(/); // bash array assignment: name=(...)
+				expect(cmd).not.toMatch(/[^=!<>]==[^=]/); // POSIX sh test/[ use =, not ==
 			}
 		}
 	});
