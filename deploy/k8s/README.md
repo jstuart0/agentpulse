@@ -31,8 +31,8 @@ https://www.sqlite.org/wal.html#noshm
 local block storage class (e.g. `local-path`).
 
 **Durability via backup sidecar.** The `agentpulse` pod includes a `backup-sidecar` container that:
-- Wakes at 04:15 UTC daily and calls `sqlite3 /data/agentpulse.db ".backup /backups/agentpulse-<TS>.db"`.
-- The `.backup` command is concurrent-safe — the app keeps writing during the backup.
+- Wakes at 04:15 UTC daily and calls `sqlite3 /data/agentpulse.db "VACUUM INTO '/backups/agentpulse-<TS>.db.tmp'"`, then verifies with `PRAGMA integrity_check` before an atomic rename to the final name (AGEN-54).
+- `VACUUM INTO` is a read-only, concurrent-safe snapshot — the app keeps writing during the backup — and completes in one bounded pass, unlike the earlier `.backup`-based approach which could livelock under sustained write load.
 - Output lands on the `agentpulse-backups` PVC, which IS NFS-backed (only backup files, never the live DB).
 - Applies retention (30 daily + 12 monthly survivors) after each successful backup.
 - Failures surface in `kubectl logs deploy/agentpulse -c backup-sidecar`.

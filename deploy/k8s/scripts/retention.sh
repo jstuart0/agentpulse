@@ -7,9 +7,12 @@
 #
 # Called by run-backup.sh after a successful backup. Safe to call
 # manually from the backup-sidecar container.
+#
+# AGENTPULSE_BACKUP_DIR is overridable via env for tests against a temp dir;
+# the backup-sidecar container never sets it and gets the production path.
 set -eu
 
-cd /backups
+cd "${AGENTPULSE_BACKUP_DIR:-/backups}"
 
 # Build a sorted list (newest first) of backup db files.
 # ls -1t = sort by mtime descending. Only .db files (not .sha256 / .counts.txt).
