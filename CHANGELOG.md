@@ -60,22 +60,39 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   `PostgresSearchBackend`'s `ILIKE '%term%'` queries already OR together —
   match semantics are unchanged (still the same OR-across-columns ILIKE);
   searches that previously did a sequential scan of the whole `events`
-  table are now served from the index when pg_trgm is available. Two
-  things were needed for the indexes to actually stay in effect: the
+  table are now served from the index when pg_trgm is available. The
   `event_type IN (...)` restriction is rendered as literal SQL text (a
   hardcoded, compile-time-known list, never user input) rather than bound
   parameters — a bound list is opaque to Postgres's planner once it plans
   generically, which can silently drop all six events indexes in favor of
-  a sequential scan; and `searchEvents`/`searchSessions` run with
-  server-side prepared statements explicitly disabled (postgres-js
-  per-query `prepare: false`, global client config untouched), so every
-  execution sees the real bound values on every plan. An earlier revision
-  used a `MATERIALIZED` CTE fence instead of disabling prepare — percy's
-  re-measurement found the fence forces Postgres to fully materialize
-  every matching row before `LIMIT`, which is correct for a rare search
-  term but regressed a common one (~50% selectivity) 0.18ms -> 1.8s at 1M
-  rows (10,000x+, ~50MB of temp spilled per query) by defeating
-  early-`LIMIT` short-circuiting; the fence is gone. The events-side
+  a sequential scan. `searchSessions` runs with server-side prepared
+  statements explicitly disabled (postgres-js per-query `prepare: false`,
+  global client config untouched), so every execution sees the real bound
+  values on every plan.
+
+  `searchEvents` needed more: an earlier revision fenced the filter in a
+  `MATERIALIZED` CTE, which forces Postgres to fully materialize every
+  matching row before `LIMIT` — correct for a rare term, but a common one
+  (~50% selectivity) regressed 0.18ms -> 1.8s at 1M rows (10,000x+, ~50MB
+  of temp spilled per query) by defeating early-`LIMIT` short-circuiting;
+  removing the fence (disabling prepare instead, same as `searchSessions`)
+  fixed that. But further investigation (EXPLAIN ANALYZE against a
+  worst-case fixture — a genuinely *unique* match at the very end of scan
+  order, not a spread-out one) found the planner never picks the trigram
+  index plan for this query shape at any selectivity: a rare/unique term
+  degrades toward a near-full-table scan instead, measured 892-926ms at 1M
+  rows and worse as `events` grows — a Postgres cost-misestimation for
+  opaque `ILIKE` patterns, not a missing index (forcing the planner off
+  the ordering index on the same data proved the trigram plan is
+  available and ~2000x faster). `searchEvents` now runs an adaptive
+  two-plan strategy: Plan A is the unprepared query inside a transaction
+  with a 150ms `statement_timeout`; if canceled (SQLSTATE 57014), Plan B
+  re-runs the identical query in a fresh transaction with
+  `enable_indexscan`/`enable_indexonlyscan` off, forcing the trigram path,
+  with a generous 10s timeout. Both `SET LOCAL`s are transaction-scoped
+  and never leak onto a pooled connection. Pagination is identical either
+  way (same `ORDER BY`/`LIMIT`/`OFFSET`, enforced by Postgres regardless
+  of physical plan). The events-side
   indexes are partial (`WHERE event_type IN (...)`), restricted to the
   same event types SQLite's FTS5 indexes (`FTS_INDEXED_EVENT_TYPES`), so
   the two dialects search the same population. `pg_trgm` requires `CREATE
@@ -96,7 +113,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   startup log line when they're not. See `deploy/k8s/README.md`'s
   "Upgrading to migration 0006" section for the `CREATE INDEX
   CONCURRENTLY` out-of-band path (including the index-size note —
-  roughly 55-112% of the `events` heap, per percy's measurements).
+  roughly 55-112% of the `events` heap, per percy's measurements — and a
+  reminder to run `ANALYZE events;` after any bulk import or restore).
 
 ### Fixed
 

@@ -343,6 +343,20 @@ without reading logs: `GET /api/v1/health`'s `searchIndexes` field reports
 behind in an unusable state by a failed `CONCURRENTLY` build does not
 count as present.
 
+**After a bulk import or restore, run `ANALYZE events;`** — Postgres's
+planner relies on up-to-date statistics to pick a good query plan, and a
+bulk-loaded table (a restored backup, a data migration) can otherwise sit
+with stale or empty statistics until autovacuum catches up on its own
+schedule. This matters beyond the reltuples gate above: `searchEvents`'
+adaptive two-plan strategy (percy AGEN-27 review, TB26 — see CLAUDE.md's
+search backend note) leans on the planner picking a reasonable default
+plan for the common case, falling back to a forced trigram scan only when
+that default plan is canceled by its own 150ms timeout. Stale statistics
+don't break correctness (the fallback still catches a slow plan and
+completes it correctly), but they can make Plan A fall back more often
+than necessary. `VACUUM (ANALYZE) events;` is safe to run at any time,
+including against a live database.
+
 **A build failure never blocks boot (percy AGEN-27 review, Critical 2)** —
 the index-build step is wrapped in its own exception handler: a transient
 failure partway through (disk full, lock timeout, OOM, whatever) logs a
