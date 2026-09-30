@@ -330,6 +330,39 @@ function New-ApHookAuthHeaderFile {
 }
 # <<< agentpulse-hook-cmd
 
+# AGEN-21 (security, Medium): .env.local and supervisor.json both hold
+# secrets in plaintext (AGENTPULSE_INITIAL_API_KEY, and the supervisor
+# credential/enrollment token respectively) and were previously written via
+# plain Set-Content/Set-JsonFile — no reparse-point guard, and node's/
+# PowerShell's mode bits don't narrow the ACL other local Windows accounts
+# hold on the file. Write-ApPrivateFile reuses Write-ApFileNoFollow (the
+# same reparse-point-safe primitive as the Codex/Copilot hooks writers
+# above) then narrows the ACL to the current user only, mirroring
+# New-ApHookAuthHeaderFile's `icacls ... /inheritance:r /grant:r
+# "user:(R,W)"`. Kept outside the agentpulse-hook-cmd marker block above:
+# it isn't part of the cross-file hook-install parity that block tracks.
+function Write-ApPrivateFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Content
+  )
+  $dir = Split-Path -Parent $Path
+  if (Test-ApReparsePoint -Path $dir) {
+    throw "refusing to write into a reparse-point directory: $dir"
+  }
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  Write-ApFileNoFollow -Path $Path -Content $Content
+  icacls $Path /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+}
+
+function Write-ApPrivateJsonFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][object]$Data
+  )
+  Write-ApPrivateFile -Path $Path -Content ($Data | ConvertTo-Json -Depth 20)
+}
+
 function Configure-Hooks {
   Write-Step "Configuring Claude Code + Codex hooks..."
 
@@ -515,7 +548,10 @@ Write-Step "Installing dependencies..."
 Write-Step "Building application..."
 & $bun run build
 
-@"
+# AGEN-21: was a bare `Set-Content` — no reparse-point guard, and .env.local
+# holds AGENTPULSE_INITIAL_API_KEY in plaintext. Write-ApPrivateFile writes
+# it reparse-point-safe and ACL-narrowed to the current user only.
+$envFileContent = @"
 PORT=$Port
 HOST=$HostName
 PUBLIC_URL=$PublicUrl
@@ -524,7 +560,8 @@ AGENTPULSE_INITIAL_API_KEY=$ApiKey
 DATA_DIR=$DataDir
 SQLITE_PATH=$DataDir\agentpulse.db
 NODE_ENV=production
-"@ | Set-Content -Path $EnvFile -Encoding UTF8
+"@
+Write-ApPrivateFile -Path $EnvFile -Content $envFileContent
 Write-Step "✓ Wrote $EnvFile"
 
 $serverScript = Join-Path $AgentPulseDir "start-agentpulse-server.ps1"
@@ -601,7 +638,10 @@ if (-not $SkipSupervisor) {
     $codex = Get-Command codex -ErrorAction SilentlyContinue
     if ($claude) { $supervisorConfig["claudeCommand"] = $claude.Source }
     if ($codex) { $supervisorConfig["codexCommand"] = $codex.Source }
-    Set-JsonFile -Path $SupervisorConfigPath -Data $supervisorConfig
+    # AGEN-21: was Set-JsonFile (plain Set-Content, no reparse-point guard,
+    # no ACL narrowing) — supervisor.json holds the supervisor credential /
+    # enrollment token in plaintext.
+    Write-ApPrivateJsonFile -Path $SupervisorConfigPath -Data $supervisorConfig
     Write-Step "✓ Wrote $SupervisorConfigPath"
 
     @"

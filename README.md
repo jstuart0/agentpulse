@@ -261,7 +261,8 @@ What it does:
 - starts AgentPulse as a local service
   - macOS: `launchd`
   - Linux: `systemd --user` when available
-- writes `~/.agentpulse/supervisor.json`
+- writes `~/.agentpulse/supervisor.json` (mode `0600`, holds the supervisor
+  credential — see AGEN-21 in the changelog)
 - starts the local supervisor service on the same machine
 - configures Claude Code + Codex hooks automatically when auth is disabled or an API key is provided
 - gives you local live-session control without extra manual setup on the same machine

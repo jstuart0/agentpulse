@@ -7,6 +7,26 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Security
+
+- **Supervisor and installer secret files are now written 0600, not 0644
+  (AGEN-21).** `~/.agentpulse/supervisor.json` (the supervisor credential /
+  enrollment token), `~/.agentpulse/.env.local` /
+  `<install-dir>/.env.local` (`AGENTPULSE_INITIAL_API_KEY`) were written
+  with the OS-default create mode under a typical umask — world-readable,
+  any local user could read the credential and act as that supervisor.
+  `saveSupervisorConfig` (`src/supervisor/config.ts`) and both local
+  installers (`scripts/install-local.sh`, `scripts/install-local.ps1`) now
+  write through the same no-follow, 0600 primitive already used for
+  `hook-auth-header` (`src/shared/private-file.ts`'s
+  `writePrivateFileSyncNoFollow` in TS; `ap_write_private_no_follow` in
+  bash; `Write-ApPrivateFile`/`Write-ApPrivateJsonFile` — ACL-narrowed to
+  the current user — in PowerShell), refusing rather than following a
+  symlink at the destination. Existing installs are self-healed: the
+  supervisor now tightens an over-permissive `supervisor.json` to 0600 on
+  startup (logging once), refusing — not chmod'ing — if the path is a
+  symlink.
+
 ## [0.6.0] — 2026-09-29
 
 ### Added

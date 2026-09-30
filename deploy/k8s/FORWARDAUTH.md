@@ -180,9 +180,12 @@ lever entirely.
 - Wrap `claude-interactive.ts`'s report calls in `reportInSessionSafely` for
   consistency with the other two providers, even though its current handling is
   already safe.
-- `supervisor.json` is currently written `0644` (world-readable) and should be
-  `chmod 600` at install time — this matters most while a stopgap `manage`-scoped API
-  key is in use (see the upgrade notes below).
+- ~~`supervisor.json` is currently written `0644` (world-readable) and should be
+  `chmod 600` at install time~~ — fixed in AGEN-21: `saveSupervisorConfig` and both
+  local installers now write it (and `.env.local`) at `0600`/no-follow, and the
+  supervisor self-heals a pre-fix `0644` file to `0600` on startup. This still
+  matters for the stopgap `manage`-scoped API key note below on any supervisor
+  that hasn't yet restarted onto the AGEN-21 fix.
 - The supervisor-posted event content (tool output, assistant messages) feeding the AI
   watcher and classifier is not currently trust-checked against prompt injection from
   the agent process itself. Content trust is a separate hardening effort.
@@ -206,8 +209,9 @@ Before deploying, walk through this checklist:
 2. **Revoke any stopgap `manage`-scoped API key.** If you worked around the crash loop
    by putting an operator key with `manage` scope into `supervisor.json`, revoke it
    once the server is upgraded and the supervisor is back to using its own credential
-   for agent routes. That file is `0644` by default — treat a `manage` key placed
-   there as compromised the moment it's written, and revoke it promptly rather than
+   for agent routes. As of AGEN-21 that file is `0600` (restart the supervisor once to
+   self-heal a pre-fix `0644` copy); either way, treat a `manage` key placed there as
+   compromised the moment it's written, and revoke it promptly rather than
    "eventually" (mint a replacement `ingest`-only key first if the codex observer still
    needs one for `/hooks`; there's no scope-edit endpoint, only mint-new/revoke-old).
 3. **Re-key a re-enrolled host via `/admin/supervisors/:id/rotate`, never a fresh

@@ -8,7 +8,11 @@ import type {
 	Session,
 } from "../shared/types.js";
 import { MANAGED_STATES } from "../shared/types.js";
-import { loadSupervisorConfig, saveSupervisorConfig } from "./config.js";
+import {
+	ensureSupervisorConfigPrivate,
+	loadSupervisorConfig,
+	saveSupervisorConfig,
+} from "./config.js";
 import {
 	launchClaudeHeadlessRequest,
 	launchClaudeInteractiveRequest,
@@ -57,6 +61,9 @@ async function request(path: string, options?: RequestInit) {
 }
 
 async function main() {
+	// AGEN-21: self-heal a pre-fix, over-permissive supervisor.json before
+	// anything reads it.
+	ensureSupervisorConfigPrivate();
 	const config = await loadSupervisorConfig();
 	// F43/D10: registration retries forever on any HTTP failure (including
 	// an old-shadow 401/403 from a not-yet-upgraded server during a
