@@ -46,15 +46,21 @@
  * transaction), so a pass never holds the one SQLite writer connection for
  * longer than one batch — ingest writes interleave between batches.
  *
- * Postgres (multi-replica capable): the whole pass runs inside one
- * transaction guarded by `pg_try_advisory_xact_lock` — non-blocking, and
- * automatically released at commit/rollback, so it needs no dedicated
- * connection or explicit unlock (contrast with the migration boot lock in
- * db/client.ts, which is session-scoped and does need one). If another
- * replica already holds the lock, this pass no-ops for this tick; the next
+ * Postgres (multi-replica capable): EACH BATCH runs inside its own short
+ * transaction, re-acquiring `pg_try_advisory_xact_lock` every time (percy
+ * review, TB10 item 4 — a single transaction spanning the whole pass has a
+ * fatter p99 tail and denies autovacuum incremental reclaim of the rows we
+ * just freed). The lock is non-blocking and auto-released at each batch's
+ * commit/rollback — no dedicated connection or explicit unlock needed
+ * (contrast with the migration boot lock in db/client.ts, which is
+ * session-scoped and does need one). If the lock isn't acquired for a
+ * batch — another replica already holds it, whether that's before the
+ * first batch or partway through the pass — the pass stops immediately and
+ * is reported as skipped (`skippedReason: "lock_held_elsewhere"`); any
+ * batches already committed before that point stay deleted. The next
  * scheduled tick tries again. Row-level DELETE locks don't contend with
- * concurrent INSERTs on unrelated rows, so ingest is not blocked while the
- * transaction is open.
+ * concurrent INSERTs on unrelated rows, so ingest is not blocked while a
+ * batch's transaction is open.
  */
 import { type SQL, asc, eq, inArray, lt, sql } from "drizzle-orm";
 import { config } from "../config.js";
@@ -65,9 +71,14 @@ import { toDbTimestamp } from "./util/db-time.js";
 
 export const EVENTS_RETENTION_DAYS_KEY = "eventsRetentionDays";
 
-const DEFAULT_BATCH_SIZE = 5_000;
+// percy review (TB10 item 3): 5,000 rows/batch held the event loop
+// 148–202ms per batch on SQLite (a single DELETE with a 5,000-row IN list
+// is not cheap). 1,000 rows/batch keeps each batch's event-loop hold well
+// under the range that would delay ingest-handling ticks, at the cost of
+// more (smaller) round trips.
+const DEFAULT_BATCH_SIZE = 1_000;
 // Mutable so tests can force multiple small batches without waiting to
-// insert 5,000+ rows. Production code never calls the setter.
+// insert 1,000+ rows. Production code never calls the setter.
 let batchSize = DEFAULT_BATCH_SIZE;
 
 /** Override the batch size — test-only. Pass null to restore the default. */
@@ -75,16 +86,24 @@ export function _setRetentionBatchSizeForTest(size: number | null): void {
 	batchSize = size ?? DEFAULT_BATCH_SIZE;
 }
 
-// Safety cap: 200 batches x DEFAULT_BATCH_SIZE rows = 1,000,000 rows per
-// pass at the production batch size. A backlog larger than that (e.g. the
-// first pass after enabling retention on a very old install) is finished
-// across subsequent scheduled ticks rather than running one unbounded pass.
-const MAX_BATCHES_PER_PASS = 200;
+// Safety cap: MAX_BATCHES_PER_PASS x DEFAULT_BATCH_SIZE = 1,000,000 rows per
+// pass at the production batch size — unchanged from before the TB10
+// retune (1,000 x 1,000 now, was 200 x 5,000). A backlog larger than that
+// (e.g. the first pass after enabling retention on a very old install) is
+// finished across subsequent scheduled ticks rather than running one
+// unbounded pass.
+const MAX_BATCHES_PER_PASS = 1_000;
+
+/** Tuned constants, exposed for tests and documentation — never mutated at runtime. */
+export function getRetentionLimits(): { defaultBatchSize: number; maxBatchesPerPass: number } {
+	return { defaultBatchSize: DEFAULT_BATCH_SIZE, maxBatchesPerPass: MAX_BATCHES_PER_PASS };
+}
 
 // pg_try_advisory_xact_lock id. Derived from ASCII "RETN" (0x52 0x45 0x54
 // 0x4E), distinct from the migration boot lock's 0xA9E1A917 in db/client.ts
-// so the two never collide.
-const PG_RETENTION_LOCK_ID = 0x5245544e; // 1_380_275_022
+// so the two never collide. Exported for tests that need to simulate a
+// competing replica by holding this same lock externally.
+export const PG_RETENTION_LOCK_ID = 0x5245544e; // 1_380_275_022
 
 export interface RetentionRunResult {
 	startedAt: string;
@@ -99,24 +118,39 @@ export interface RetentionRunResult {
 	skippedReason?: "lock_held_elsewhere" | "already_running";
 }
 
+export interface RetentionSkip {
+	at: string;
+	reason: NonNullable<RetentionRunResult["skippedReason"]>;
+}
+
 export interface RetentionStatus {
 	lastRun: RetentionRunResult | null;
+	/** percy review (TB10 item 5): the last skipped pass, tracked separately
+	 *  from lastRun so /health can surface "a pass was skipped" even on a
+	 *  tick where a later, successful pass overwrote lastRun. */
+	lastSkip: RetentionSkip | null;
 	nextRunAt: string | null;
 }
 
 let lastRun: RetentionRunResult | null = null;
+let lastSkip: RetentionSkip | null = null;
 let nextRunAt: string | null = null;
 let passInProgress = false;
 let scheduledInterval: ReturnType<typeof setInterval> | null = null;
 
+function recordSkip(reason: RetentionSkip["reason"]): void {
+	lastSkip = { at: new Date().toISOString(), reason };
+}
+
 /** Current retention status for /api/v1/health. */
 export function getRetentionStatus(): RetentionStatus {
-	return { lastRun, nextRunAt };
+	return { lastRun, lastSkip, nextRunAt };
 }
 
 /** Reset all module state — test-only. */
 export function _resetRetentionStateForTest(): void {
 	lastRun = null;
+	lastSkip = null;
 	nextRunAt = null;
 	passInProgress = false;
 	if (scheduledInterval !== null) {
@@ -138,9 +172,13 @@ async function readRetentionDays(): Promise<number> {
 }
 
 /**
- * Delete up to BATCH_SIZE rows older than `cutoff` using `db` (either the
- * shared pool for SQLite, or the current transaction handle for Postgres —
- * see runRetentionPass). Returns the number of rows deleted.
+ * Delete up to `batchSize` rows older than `cutoff` using `db` (either the
+ * shared pool for SQLite, or the current batch's transaction handle for
+ * Postgres — see runPostgresBatchLoop). Returns the number of rows deleted.
+ *
+ * ORDER BY (created_at, id) matches idx_events_created_at_id (migration
+ * 0005, percy TB10 item 2) exactly, so both planners can satisfy the WHERE
+ * + ORDER BY + LIMIT entirely from the index — no separate sort step.
  */
 // biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 async function deleteBatch(db: any, cutoff: string): Promise<number> {
@@ -148,7 +186,7 @@ async function deleteBatch(db: any, cutoff: string): Promise<number> {
 		.select({ id: events.id })
 		.from(events)
 		.where(lt(events.createdAt, cutoff))
-		.orderBy(asc(events.id))
+		.orderBy(asc(events.createdAt), asc(events.id))
 		.limit(batchSize);
 	if (rows.length === 0) return 0;
 	const ids = rows.map((r) => r.id);
@@ -156,26 +194,55 @@ async function deleteBatch(db: any, cutoff: string): Promise<number> {
 	return rows.length;
 }
 
-async function runBatchLoop(
-	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle
-	db: any,
+/** SQLite batch loop: no locking (single-replica), each batch is an
+ *  independent auto-committing statement — see the module docstring. */
+async function runSqliteBatchLoop(
 	cutoff: string,
 ): Promise<{ rowsDeleted: number; batches: number }> {
 	let rowsDeleted = 0;
 	let batches = 0;
 	for (let i = 0; i < MAX_BATCHES_PER_PASS; i++) {
-		const deleted = await deleteBatch(db, cutoff);
+		const deleted = await deleteBatch(getDb(), cutoff);
 		if (deleted === 0) break;
 		rowsDeleted += deleted;
 		batches++;
 		// Yield to the event loop between batches so ingest requests (and any
 		// other pending work) interleave rather than waiting behind the whole
-		// pass. On Postgres this doesn't release the transaction's connection,
-		// but row-level DELETE locks don't contend with unrelated INSERTs, so
-		// concurrent ingest on other connections is unaffected either way.
+		// pass.
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
 	return { rowsDeleted, batches };
+}
+
+/**
+ * Postgres batch loop (percy TB10 item 4): each batch gets its OWN short
+ * transaction, re-acquiring `pg_try_advisory_xact_lock` every time. If a
+ * batch can't acquire the lock — another replica already holds it — the
+ * loop stops immediately; `lockLost` tells the caller to report the pass
+ * as skipped. Batches already committed before that point stay deleted.
+ */
+async function runPostgresBatchLoop(
+	cutoff: string,
+): Promise<{ rowsDeleted: number; batches: number; lockLost: boolean }> {
+	let rowsDeleted = 0;
+	let batches = 0;
+	for (let i = 0; i < MAX_BATCHES_PER_PASS; i++) {
+		let acquired = false;
+		let deletedThisBatch = 0;
+		await withTransaction(async (tx) => {
+			acquired = await tryAdvisoryXactLock(tx);
+			if (!acquired) return;
+			deletedThisBatch = await deleteBatch(tx, cutoff);
+		});
+		if (!acquired) {
+			return { rowsDeleted, batches, lockLost: true };
+		}
+		if (deletedThisBatch === 0) break;
+		rowsDeleted += deletedThisBatch;
+		batches++;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	return { rowsDeleted, batches, lockLost: false };
 }
 
 /**
@@ -220,6 +287,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 	// yields to another call at an `await` point, so this check-and-set is
 	// atomic with respect to any other invocation of this function.
 	if (passInProgress) {
+		recordSkip("already_running");
 		const result: RetentionRunResult = {
 			startedAt: now.toISOString(),
 			finishedAt: now.toISOString(),
@@ -257,24 +325,20 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 		let skippedReason: RetentionRunResult["skippedReason"];
 
 		if (config.dialect === "postgres") {
-			await withTransaction(async (tx) => {
-				const acquired = await tryAdvisoryXactLock(tx);
-				if (!acquired) {
-					skippedReason = "lock_held_elsewhere";
-					return;
-				}
-				const result = await runBatchLoop(tx, cutoff);
-				rowsDeleted = result.rowsDeleted;
-				batches = result.batches;
-			});
+			const result = await runPostgresBatchLoop(cutoff);
+			rowsDeleted = result.rowsDeleted;
+			batches = result.batches;
+			if (result.lockLost) skippedReason = "lock_held_elsewhere";
 		} else {
-			const result = await runBatchLoop(getDb(), cutoff);
+			const result = await runSqliteBatchLoop(cutoff);
 			rowsDeleted = result.rowsDeleted;
 			batches = result.batches;
 			if (rowsDeleted > 0) {
 				maybeIncrementalVacuum();
 			}
 		}
+
+		if (skippedReason) recordSkip(skippedReason);
 
 		const finishedAtMs = Date.now();
 		lastRun = {
