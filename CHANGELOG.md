@@ -55,6 +55,32 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Fixed
 
+- **Test suite could write to the developer's real home directory.** A
+  test run previously wrote a `supervisor.json`, appended to `.zshrc`, and
+  created `~/.agentpulse/env` in a real developer home instead of a
+  sandboxed temp directory. Root cause was two Bun-specific gaps beyond
+  each test's own `process.env.HOME` override: Bun's `os.homedir()`
+  doesn't track a `process.env.HOME`/`USERPROFILE` mutation made after the
+  process starts (Node's does), and `Bun.spawn`/`Bun.spawnSync` default to
+  a snapshot of the process's own OS-level startup environment when `env`
+  is omitted, not a live read of `process.env` — a subprocess spawned with
+  no explicit `env` (e.g. `src/supervisor/config.ts`'s
+  `captureExecutableVersion`, which shells out to the real
+  `claude`/`codex` CLI when a config under test leaves those commands
+  unset) silently used the developer's real environment regardless of any
+  in-test override. `bunfig.toml`'s `[test] preload`
+  (`src/server/db/test-env-defaults.ts`) now redirects
+  `HOME`/`USERPROFILE`/`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`CODEX_HOME`/`CLAUDE_CONFIG_DIR`
+  to a fresh per-process temp directory before any test file's own imports
+  run, and patches both `node:os`'s `homedir()` and `Bun.spawn`'s/
+  `Bun.spawnSync`'s default `env` to match — closing the gap structurally
+  for every test file rather than depending on each one remembering its
+  own override. `src/server/db/test-home-sandbox.test.ts` guards both
+  findings; `src/supervisor/config.test.ts`'s executable-capability tests
+  were also hardened to pin `claudeCommand`/`codexCommand` to
+  guaranteed-nonexistent paths so they never shell out to a real installed
+  CLI in the first place. See `TESTING.md`.
+
 - **Backup sidecar livelock under concurrent writes (AGEN-54).**
   `deploy/k8s/scripts/run-backup.sh` used sqlite3's `.backup` command, which
   restarts its page copy whenever a WAL checkpoint lands mid-copy — under
