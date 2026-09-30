@@ -365,6 +365,12 @@ $privateJsonParsed = Get-Content $privateJsonPath -Raw | ConvertFrom-Json
 Assert-True ($privateJsonParsed.supervisorCredential -eq "aps_test_value") "Write-ApPrivateJsonFile: content round-trips"
 $privateJsonAcl = Get-Acl $privateJsonPath
 Assert-True ($privateJsonAcl.Access.Count -eq 1) "Write-ApPrivateJsonFile: supervisor.json has exactly one ACE (found $($privateJsonAcl.Access.Count))"
+# AGEN-21 (xander, High): the parent directory's ACL must be narrowed too
+# (F208's ordering, ported to Write-ApPrivateFile) — a broad, inherited
+# directory ACL would otherwise let the file inherit it for the brief
+# window between file creation and the file-level icacls call.
+$privateWriteDirAcl = Get-Acl $privateWriteProbeDir
+Assert-True ($privateWriteDirAcl.Access.Count -eq 1) "Write-ApPrivateFile: parent directory has exactly one ACE (found $($privateWriteDirAcl.Access.Count))"
 
 # Rewrite (rotation) keeps the file single-ACE.
 Write-ApPrivateJsonFile -Path $privateJsonPath -Data @{ supervisorCredential = "aps_test_rotated" }

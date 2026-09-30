@@ -5,6 +5,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+	linkSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -78,6 +79,18 @@ describe("writePrivateFileSyncNoFollow", () => {
 		expect(() => writePrivateFileSyncNoFollow(target, "x\n")).toThrow(
 			/refusing to write through other/,
 		);
+	});
+
+	test("AGEN-21 (xander): a multiply hard-linked path is refused, the other link's data untouched", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-private-file-"));
+		const original = join(dir, "original-secret");
+		writeFileSync(original, "should never change\n", { mode: 0o644 });
+		const target = join(dir, "secret");
+		linkSync(original, target);
+		expect(() => writePrivateFileSyncNoFollow(target, "attacker-controlled\n")).toThrow(
+			/refusing to write through hardlink/,
+		);
+		expect(readFileSync(original, "utf-8")).toBe("should never change\n");
 	});
 
 	test("F241: a symlinked parent directory is refused, its target untouched", () => {
@@ -222,6 +235,21 @@ describe("tightenPrivateFilePermissionsSync (AGEN-21)", () => {
 		});
 		expect(readFileSync(real, "utf-8")).toBe("should never change\n");
 		expect(fileMode(real)).toBe(0o644);
+	});
+
+	test("AGEN-21 (xander): a multiply hard-linked path is refused, not fchmod'd via the other link", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-tighten-"));
+		const original = join(dir, "original-supervisor.json");
+		writeFileSync(original, '{"serverUrl":"http://localhost:3000"}\n', { mode: 0o644 });
+		const target = join(dir, "supervisor.json");
+		linkSync(original, target);
+
+		expect(tightenPrivateFilePermissionsSync(target)).toEqual({
+			tightened: false,
+			reason: "hardlink",
+		});
+		expect(fileMode(original)).toBe(0o644);
+		expect(fileMode(target)).toBe(0o644);
 	});
 
 	test("refuses a directory at the path rather than fchmod'ing it", () => {
