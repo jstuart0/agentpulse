@@ -1,1 +1,1 @@
-CREATE INDEX `idx_sessions_agent_type_last_activity` ON `sessions` (`agent_type`,`last_activity_at`);
+CREATE INDEX IF NOT EXISTS `idx_sessions_agent_type_last_activity` ON `sessions` (`agent_type`,`last_activity_at`);

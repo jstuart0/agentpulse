@@ -140,6 +140,54 @@ setup this applies on top of.
 
 ---
 
+## Upgrading to migration 0004 (agent-type filter index)
+
+Migration `0004` adds one index, `idx_sessions_agent_type_last_activity`,
+on `sessions (agent_type, last_activity_at)`. It runs automatically on
+boot, on both SQLite and Postgres, and is idempotent (`IF NOT EXISTS`) on
+both — a pre-created index under the same name doesn't break boot.
+
+**Postgres**
+
+- Building this index takes a `SHARE` lock on `sessions` for the duration
+  of the build, the same tradeoff `0003`'s indexes make on `events`. On a
+  small-to-moderate `sessions` table this is milliseconds and safe to run
+  inline at boot. On a large table, pre-create it out-of-band, in a
+  maintenance window, before rolling out this version:
+
+  ```sql
+  -- Run against the Postgres database directly, before deploying the new image.
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_agent_type_last_activity
+    ON sessions (agent_type, last_activity_at);
+  ```
+
+  `CONCURRENTLY` avoids the `SHARE` lock (it takes longer, and doesn't run
+  inside a transaction, but doesn't block writes to `sessions` while it
+  builds). A `CONCURRENTLY` build can fail partway through and leave an
+  **invalid** index behind — Postgres will not use an invalid index, and a
+  plain `CREATE INDEX IF NOT EXISTS` afterwards silently skips it instead of
+  fixing it. Verify it's valid before considering the upgrade complete:
+
+  ```sql
+  SELECT indexrelid::regclass AS index_name, indisvalid
+    FROM pg_index
+    WHERE indexrelid = 'idx_sessions_agent_type_last_activity'::regclass;
+  ```
+
+  If that row shows `indisvalid = false`, drop and rebuild it before
+  deploying:
+
+  ```sql
+  DROP INDEX CONCURRENTLY IF EXISTS idx_sessions_agent_type_last_activity;
+  -- then re-run the CREATE INDEX CONCURRENTLY statement above
+  ```
+
+  Once the index is `indisvalid = true` out-of-band, the app's own
+  migration runner sees it already present (`IF NOT EXISTS`) and does no
+  further work for it at boot.
+
+---
+
 ## Homelab overlay
 
 ```
