@@ -35,9 +35,15 @@ describe("buildOnboardingPlan", () => {
 		expect(plan.scopes).toEqual(["ingest"]);
 		expect(plan.scopes).toEqual(LOCAL_KEY_SCOPES);
 		expect(plan.command).toBe(
-			`read -rsp 'AgentPulse API key: ' AGENTPULSE_KEY && export AGENTPULSE_KEY && echo\ncurl -sSL ${SERVER}/setup.sh | bash`,
+			`printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY\n[ -n "$AGENTPULSE_KEY" ] && curl -sSL ${SERVER}/setup.sh | bash`,
 		);
 		expect(plan.command).not.toContain("--key");
+		// H1 (xander): `read -rsp` is a bash-only spelling -- `-p` means
+		// "coprocess" in zsh, macOS's default shell. Pin the POSIX form.
+		expect(plan.command).not.toContain("read -rsp");
+		expect(plan.command).toContain("read -rs AGENTPULSE_KEY");
+		// An empty answer must not run curl unauthenticated.
+		expect(plan.command).toContain('[ -n "$AGENTPULSE_KEY" ] &&');
 		expect(plan.keyNote).toBe(LOCAL_KEY_NOTE);
 		expect(plan.files).toEqual(["~/.claude/settings.json", "~/.codex/hooks.json"]);
 	});
