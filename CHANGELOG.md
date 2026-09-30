@@ -19,6 +19,14 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   verifies the output with `PRAGMA integrity_check` before promoting it, and
   checks free space up front. Naming, compression, retention
   (`scripts/retention.sh`), and logging are unchanged.
+  Follow-up hardening from review: a signal trap now removes the in-flight
+  `.tmp` file on SIGINT/SIGTERM, and a startup sweep clears any `.tmp` older
+  than 60 minutes left behind by an untrappable SIGKILL; the promotion
+  rename failure is now handled explicitly (exit 7) instead of falling
+  through to an unhandled `set -e` exit; a checksum failure is now
+  non-fatal, matching the existing row-count check; the VACUUM INTO
+  connection sets `busy_timeout=5000`; and the sidecar logs its sqlite3
+  version at the start of every run.
 
 ## [0.6.0] — 2026-09-29
 

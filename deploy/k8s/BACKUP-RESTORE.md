@@ -66,6 +66,16 @@ running (`VACUUM INTO` needs roughly one DB-size worth of headroom) and
 refuses outright if the computed output path would embed a single quote
 (the path is spliced into a SQL string literal).
 
+**Interrupted-run cleanup.** A graceful termination (SIGINT/SIGTERM) is
+trapped: the in-flight `agentpulse-<TS>.db.tmp` is removed immediately so
+retention.sh (which only globs `agentpulse-*.db`, never `.tmp`) can't be
+asked to reason about a partial file. A SIGKILL cannot be trapped, so
+`run-backup.sh` also sweeps `agentpulse-*.db.tmp` files older than 60
+minutes at the start of every run, logging what it removes. A failed
+promotion rename (`mv` of the `.tmp` to its final name) is handled
+explicitly — the `.tmp` is removed and the run exits non-zero (exit 7)
+rather than falling through to a generic `set -e` exit.
+
 ### Backup image
 
 The `agentpulse-backup:<SHA>` image is built from `deploy/k8s/Dockerfile.backup`.

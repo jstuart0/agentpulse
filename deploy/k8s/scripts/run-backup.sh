@@ -22,6 +22,8 @@
 #   4 — unsafe backup path (embeds a single quote; refused)
 #   5 — VACUUM INTO command failed
 #   6 — integrity_check failed (corrupt backup; tmp file removed)
+#   7 — promotion rename (mv tmp -> final name) failed
+# 143 — interrupted by SIGINT/SIGTERM (128 + 15); tmp file removed
 set -eu
 umask 077
 
@@ -32,7 +34,36 @@ RETENTION_SCRIPT="${AGENTPULSE_RETENTION_SCRIPT:-/usr/local/bin/retention.sh}"
 OUT="${BACKUP_DIR}/agentpulse-${TS}.db"
 OUT_TMP="${OUT}.tmp"
 
+# Belt-and-suspenders cleanup: a SIGINT/SIGTERM (e.g. a graceful pod
+# termination) must not leave a partial agentpulse-<TS>.db.tmp behind —
+# retention.sh only globs agentpulse-*.db (no .tmp), so a leaked tmp file
+# would sit on the backups PVC forever. cleanup_tmp is idempotent and
+# disarmed (OUT_TMP cleared) once the promotion rename below succeeds, so
+# it is a no-op for the rest of the script's lifetime after that point.
+# A SIGKILL cannot be trapped at all — the startup sweep below is what
+# catches that case, on the next run.
+cleanup_tmp() {
+	if [ -n "${OUT_TMP:-}" ]; then
+		rm -f "$OUT_TMP" 2>/dev/null || true
+	fi
+}
+trap cleanup_tmp EXIT
+trap 'cleanup_tmp; echo "[backup] ERROR: interrupted by signal; tmp file removed"; exit 143' INT TERM
+
 echo "[backup] starting: $TS"
+echo "[backup] $(sqlite3 -version)"
+
+# Startup sweep: a prior run killed with SIGKILL (which cannot be trapped)
+# can leave agentpulse-*.db.tmp behind indefinitely — retention.sh only
+# globs agentpulse-*.db (no .tmp) and would never remove it. Clear anything
+# older than 60 minutes before starting a new backup.
+if [ -d "$BACKUP_DIR" ]; then
+	SWEPT=$(find "$BACKUP_DIR" -maxdepth 1 -name 'agentpulse-*.db.tmp' -mmin +60 -print -delete 2>/dev/null || true)
+	if [ -n "$SWEPT" ]; then
+		echo "[backup] swept stale tmp file(s) older than 60m:"
+		echo "$SWEPT"
+	fi
+fi
 
 # Preflight: source must exist.
 if [ ! -f "$SRC" ]; then
@@ -82,26 +113,39 @@ fi
 # written DB. Write to a .tmp file first so a mid-copy SIGKILL never leaves
 # a partial .db file that retention.sh would treat as valid (it only globs
 # *.db).
+# busy_timeout guards against a transient SQLITE_BUSY when acquiring the
+# read snapshot under write load; VACUUM INTO itself does not block writers
+# once it has started.
 # Escape any embedded single quote by doubling it (SQL string literal
 # escaping) before splicing the path into the statement — the case guard
 # above already refuses this case, so this is defense in depth, not the
 # primary safeguard.
 OUT_TMP_SQL=$(printf '%s' "$OUT_TMP" | sed "s/'/''/g")
-sqlite3 "$SRC" "VACUUM INTO '${OUT_TMP_SQL}';" || {
+sqlite3 "$SRC" "PRAGMA busy_timeout=5000; VACUUM INTO '${OUT_TMP_SQL}';" || {
 	echo "[backup] ERROR: VACUUM INTO failed"
-	rm -f "$OUT_TMP"
 	exit 5
 }
 
-# Verify the backup is not corrupt before we declare success.
-if ! sqlite3 "$OUT_TMP" "PRAGMA integrity_check;" | grep -qx ok; then
+# Verify the backup is not corrupt before we declare success. Opened
+# read-only (mode=ro): if OUT_TMP was removed out from under us (e.g. by
+# the signal trap above racing a still-running VACUUM INTO), a read-write
+# open would silently create a fresh empty database and integrity_check
+# would report "ok" on it — a phantom empty backup. mode=ro instead fails
+# to open, which we treat the same as a corrupt/missing backup.
+if ! sqlite3 "file:${OUT_TMP}?mode=ro" "PRAGMA integrity_check;" 2>/dev/null | grep -qx ok; then
 	echo "[backup] ERROR: integrity_check failed on $OUT_TMP"
-	rm -f "$OUT_TMP"
 	exit 6
 fi
 
 # Atomic promotion: rename into final name only after a clean integrity check.
-mv "$OUT_TMP" "$OUT"
+mv "$OUT_TMP" "$OUT" || {
+	echo "[backup] ERROR: promotion rename failed"
+	rm -f "$OUT_TMP"
+	exit 7
+}
+# Disarm cleanup_tmp: the file at $OUT_TMP no longer exists (renamed to
+# $OUT), so there is nothing left for the trap to remove.
+OUT_TMP=""
 chmod 600 "$OUT"
 
 # Capture row counts as a quick sanity reference for restore verification.
@@ -111,7 +155,13 @@ sqlite3 "$OUT" "SELECT count(*) FROM sessions; SELECT count(*) FROM events;" >"$
 	true
 }
 chmod 600 "${OUT}.counts.txt"
-sha256sum "$OUT" >"${OUT}.sha256"
+
+# Checksum the backup. Non-fatal: a checksum hiccup must not make an
+# otherwise-good backup look failed or skip retention.
+sha256sum "$OUT" >"${OUT}.sha256" || {
+	echo "[backup] WARN: sha256sum failed (checksum missing); continuing"
+	true
+}
 chmod 600 "${OUT}.sha256"
 
 echo "[backup] ok: $OUT"
