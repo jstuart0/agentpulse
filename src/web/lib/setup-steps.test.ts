@@ -5,23 +5,55 @@
 import { describe, expect, test } from "bun:test";
 import { AUTH_STEP, codexSetupSteps, lastEventLine } from "./setup-steps.js";
 
+/** The exact shell bash-isms banned from a POSIX sh snippet, matching
+ * src/shared/hook-command.test.ts's "posix sh compatibility" suite. */
+function assertPosixSh(command: string) {
+	// `[[ ` (bash conditional, always followed by whitespace) is banned;
+	// `[[:space:]]` (a POSIX bracket-expression named class) is not a
+	// bash-ism and must not false-positive.
+	expect(command).not.toMatch(/\[\[\s/);
+	expect(command).not.toContain("$'");
+	expect(command).not.toMatch(/\bfunction\s/);
+	expect(command).not.toMatch(/\bsource\s/);
+	expect(command).not.toMatch(/\w+=\(/); // bash array assignment: name=(...)
+	expect(command).not.toMatch(/[^=!<>]==[^=]/); // POSIX sh test/[ use =, not ==
+}
+
 describe("AUTH_STEP", () => {
-	test("claude_code returns the env-var export step", () => {
+	test("claude_code (AGEN-49): reads the key at a hidden prompt and writes it to ~/.agentpulse/env, never the rc file", () => {
 		const step = AUTH_STEP.claude_code("ap_test123", false);
 		expect(step).not.toBeNull();
-		expect(step?.command).toContain("export AGENTPULSE_API_KEY=");
-		expect(step?.command).toContain("ap_test123");
+		const command = step?.command ?? "";
+		expect(command).not.toContain("ap_test123");
+		expect(command).toContain("read -rs key");
+		expect(command).toContain("export AGENTPULSE_API_KEY=");
+		expect(command).toContain('f="$d/env"');
+		expect(command).toContain(".agentpulse/env");
+		expect(command).toContain(".zshrc");
+		expect(command).toContain(".bashrc");
 		expect(step?.windowsCommand).toBeUndefined();
+		assertPosixSh(command);
 	});
 
-	test("codex_cli and copilot_cli return the hook-auth-header command with the key single-quoted", () => {
+	test("codex_cli and copilot_cli (AGEN-49): read the key at a hidden prompt, never embedded literally in the POSIX command", () => {
 		for (const agent of ["codex_cli", "copilot_cli"] as const) {
 			const step = AUTH_STEP[agent]("ap_test123", false);
 			expect(step).not.toBeNull();
-			expect(step?.command).toContain("d=~/.agentpulse");
-			expect(step?.command).toContain('f="$d/hook-auth-header"');
-			expect(step?.command).toContain("'ap_test123'");
-			expect(step?.command).toContain("umask 077");
+			const command = step?.command ?? "";
+			expect(command).not.toContain("ap_test123");
+			expect(command).toContain("read -rs key");
+			expect(command).toContain("d=~/.agentpulse");
+			expect(command).toContain('f="$d/hook-auth-header"');
+			expect(command).toContain("umask 077");
+			expect(command).toContain('"$key"');
+			assertPosixSh(command);
+		}
+	});
+
+	test("codex_cli and copilot_cli: the PowerShell variant is unaffected (out of AGEN-49's scope) — still carries the literal key", () => {
+		for (const agent of ["codex_cli", "copilot_cli"] as const) {
+			const step = AUTH_STEP[agent]("ap_test123", false);
+			expect(step?.windowsCommand).toContain("ap_test123");
 		}
 	});
 
