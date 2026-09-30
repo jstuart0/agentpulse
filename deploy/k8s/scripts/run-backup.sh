@@ -118,5 +118,9 @@ echo "[backup] ok: $OUT"
 cat "${OUT}.counts.txt"
 
 # Apply retention (non-fatal — a retention failure must not prevent the
-# backup itself from being reported successful).
-"$RETENTION_SCRIPT" || echo "[retention] non-fatal failure; backup still ok"
+# backup itself from being reported successful). Invoked via `sh` rather
+# than executed directly so this doesn't depend on the script's execute
+# bit — retention.sh ships non-executable in the repo (Dockerfile.backup
+# sets +x at image build time) and AGENTPULSE_RETENTION_SCRIPT overrides
+# in tests point straight at the repo file.
+sh "$RETENTION_SCRIPT" || echo "[retention] non-fatal failure; backup still ok"
