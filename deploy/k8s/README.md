@@ -300,15 +300,14 @@ equally non-scanning.
 Migration `0006` adds `pg_trgm` GIN indexes so Postgres `ILIKE '%term%'`
 event/session search stops doing a sequential scan of the whole `events`
 table on every query — 4 indexes on `sessions`, 6 partial indexes on
-`events` (restricted to the same event types SQLite's FTS5 indexes). It
-runs automatically on boot. SQLite is unaffected — this migration is
-Postgres-only.
+`events` (restricted to the same event types SQLite's FTS5 indexes). SQLite
+is unaffected — this migration is Postgres-only.
 
 **Extension availability**
 
 `pg_trgm` requires `CREATE EXTENSION`, which some managed Postgres
 providers restrict to superuser. The migration feature-detects this: if
-`CREATE EXTENSION pg_trgm` fails for any reason, it logs a `NOTICE` and
+`CREATE EXTENSION pg_trgm` fails for any reason, it logs a `WARNING` and
 skips all 10 indexes — search keeps working via the pre-existing
 sequential-scan ILIKE path, just without the speedup. Nothing else in the
 app changes behavior; there is no manual recovery step required if this
@@ -319,14 +318,50 @@ an admin), do so and re-run the migration (or re-run the two `DO` blocks
 in the `drizzle/postgres/0006_*.sql` migration file directly) to
 pick up the indexes on the next boot.
 
+**Automatic build is skipped above 100,000 rows (percy AGEN-27 review,
+High 3)** — building 10 GIN indexes takes a `SHARE` lock on
+`sessions`/`events` for the duration of each build; measured ~22s at
+1,000,000 events, blocking ingest for that whole window. To avoid that on
+an existing install with meaningful data, the migration checks
+`pg_class.reltuples` for `events` before building: above 100,000
+(estimated rows — an ANALYZE/autovacuum-maintained statistic, not exact,
+which is fine for a threshold this coarse) it **skips the automatic
+build entirely** and logs a `WARNING` pointing at the `CREATE INDEX
+CONCURRENTLY` recipe below. A fresh install's `events` table has
+`reltuples = 0` (never analyzed) and always gets the automatic build — the
+skip only applies to installs that already have real data. A skipped or
+partially-completed build (see the next paragraph) is visible without
+reading logs: `GET /api/v1/health`'s `searchIndexes` field reports `{
+present: boolean, missing: string[] }`, checked once at boot
+(`src/server/services/search/search-index-status.ts`).
+
+**A build failure never blocks boot (percy AGEN-27 review, Critical 2)** —
+the index-build step is wrapped in its own exception handler: a transient
+failure partway through (disk full, lock timeout, OOM, whatever) logs a
+`WARNING` with the underlying error and leaves whichever indexes did
+complete in place (`IF NOT EXISTS` makes a retry on the next boot
+idempotent) — it never aborts the migration transaction or crash-loops
+boot. Re-run the `CREATE INDEX` statements from the migration file (or the
+`CONCURRENTLY` recipe below) once the underlying issue is resolved.
+
+**Index size** — per percy's measurements, expect each trigram GIN index
+to run roughly 55-112% of the `events` table's own heap size (varies by
+which column/expression it covers and how much of it is non-null across
+the partial index's event-type population). Building all 6 events indexes
+on a large table is therefore a meaningful, multi-index storage cost, not
+just a locking one — budget disk headroom accordingly before running the
+`CONCURRENTLY` recipe on a large existing install.
+
 **Postgres**
 
 - Building 10 GIN indexes takes a `SHARE` lock on `sessions`/`events` for
   the duration of each build, the same tradeoff `0003`'s and `0004`'s
-  indexes make. On a small-to-moderate database this is milliseconds to
-  low seconds per index and safe to let run inline at boot. On a large
-  table, do the index builds out-of-band, in a maintenance window, before
-  rolling out this version:
+  indexes make. On a small-to-moderate database (below the 100,000-row
+  automatic-skip threshold above) this is milliseconds to low seconds per
+  index and safe to let run inline at boot. On a large table (whether the
+  migration skipped automatically, or a build attempt failed partway and
+  logged a `WARNING`), do the index builds out-of-band, in a maintenance
+  window, before rolling out this version:
 
   ```sql
   -- Run against the Postgres database directly, before deploying the new image.

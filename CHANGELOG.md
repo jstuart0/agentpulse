@@ -58,19 +58,39 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - **Postgres event/session search is now index-backed (AGEN-27).** Migration
   `0006` adds `pg_trgm` GIN indexes covering every column/expression
   `PostgresSearchBackend`'s `ILIKE '%term%'` queries already OR together —
-  no query-text changes, so match semantics are unchanged; searches that
-  previously did a sequential scan of the whole `events` table are now
-  served from the index when pg_trgm is available. The events-side indexes
-  are partial (`WHERE event_type IN (...)`), restricted to the same event
+  match semantics are unchanged (still the same OR-across-columns ILIKE);
+  searches that previously did a sequential scan of the whole `events`
+  table are now served from the index when pg_trgm is available. Two
+  query-shape changes were required for the indexes to actually stay in
+  effect once Postgres warms up a prepared statement (percy review,
+  Critical 1): the `event_type IN (...)` restriction is rendered as
+  literal SQL text (a hardcoded, compile-time-known list, never user
+  input) rather than bound parameters — a bound list is opaque to
+  Postgres's planner once it switches to a cached "generic" plan, which
+  silently drops all six events indexes in favor of a sequential scan
+  (measured 617ms vs 1.17ms at 1M rows); and the filtered rows are fenced
+  in a `MATERIALIZED` CTE before the final `ORDER BY`/`LIMIT`, closing a
+  related escape hatch where a generic plan could walk an unrelated
+  ordering index (e.g. AGEN-24's `idx_events_created_at_id`) instead of
+  filtering via the trigram indexes first. The events-side indexes are
+  partial (`WHERE event_type IN (...)`), restricted to the same event
   types SQLite's FTS5 indexes (`FTS_INDEXED_EVENT_TYPES`), so the two
   dialects search the same population. `PostgresSearchBackend`'s local
   `SEARCHABLE_EVENT_TYPES` constant now imports that list directly instead
   of duplicating it. `pg_trgm` requires `CREATE EXTENSION`, which some
   managed Postgres providers restrict — the migration feature-detects this
-  and degrades to a one-time `NOTICE` plus the existing sequential-scan
-  path when the extension can't be installed; search keeps working either
-  way. See `deploy/k8s/README.md`'s "Upgrading to migration 0006" section
-  for the `CREATE INDEX CONCURRENTLY` out-of-band path on large installs.
+  and degrades to a `WARNING` plus the existing sequential-scan path when
+  the extension can't be installed, and separately when an index build
+  fails partway through (percy review, Critical 2) — neither aborts the
+  migration or blocks boot. On an existing install with `events` already
+  over 100,000 rows, the automatic build is skipped (percy review, High 3)
+  to avoid a multi-second `SHARE` lock on `sessions`/`events` at boot;
+  `GET /api/v1/health`'s new `searchIndexes: { present, missing[] }` field
+  (checked once at boot) reports whether the trigram indexes are actually
+  in place, alongside a startup log line when they're not. See
+  `deploy/k8s/README.md`'s "Upgrading to migration 0006" section for the
+  `CREATE INDEX CONCURRENTLY` out-of-band path (including the index-size
+  note — roughly 55-112% of the `events` heap, per percy's measurements).
 
 ### Fixed
 
