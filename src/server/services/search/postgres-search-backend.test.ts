@@ -500,5 +500,135 @@ describePostgresOnly(
 			expect(sqliteTypes).toEqual(["AiProposal", "UserPromptSubmit"]);
 			expect(pgTypes).toEqual(sqliteTypes);
 		});
+
+		// ── percy AGEN-27 review, Critical 1: event indexes survive plan-cache warm-up ──
+		//
+		// postgres-js prepares statements by default. Postgres's own planner
+		// switches a repeatedly-executed prepared statement from a per-call
+		// "custom" plan (which sees the actual bound values) to a cached
+		// "generic" plan (built once, ignorant of values) once it estimates
+		// the generic plan is cheap enough — typically within the first
+		// ~5-10 executions, though the exact trigger is cost-heuristic and
+		// data-dependent, not a fixed call count. A *bound-parameter*
+		// `event_type IN (...)` list is opaque at generic-plan-build time, so
+		// the planner can't prove the six events trigram indexes' partial
+		// `WHERE event_type IN (...)` predicate is satisfied — all six get
+		// silently dropped in favor of a sequential scan.
+		//
+		// This test drives the real production path (PostgresSearchBackend.
+		// search()) on one dedicated connection, warms it 8+ times (per the
+		// review), then forces `plan_cache_mode = force_generic_plan` on
+		// that same connection — deterministically reproducing the
+		// worst-case post-warm-up state the natural heuristic reaches only
+		// eventually and data-dependently — and asserts the next call stays
+		// index-fast, not seq-scan-slow.
+		test("stays index-backed after prepared-statement warm-up (not a bound event_type IN list)", async () => {
+			const { default: postgres } = await import("postgres");
+			const { drizzle } = await import("drizzle-orm/postgres-js");
+			const { getDb, initializeDatabase } = await import("../../db/client.js");
+			const schema = await import("../../db/schema/index.js");
+			const { config } = await import("../../config.js");
+			const { sql } = await import("drizzle-orm");
+			const { executeRows } = await import("../../db/sql-helpers.js");
+			const { PostgresSearchBackend } = await import("./postgres-search-backend.js");
+			type PgDb = import("drizzle-orm/postgres-js").PostgresJsDatabase<typeof schema>;
+			await initializeDatabase();
+
+			// One dedicated connection so postgres-js's own prepared-statement
+			// cache and Postgres's plan-cache state both persist across every
+			// call below — a pooled connection could silently route calls to
+			// different physical backends, each with its own plan cache.
+			const pgClient = postgres(config.databaseUrl, { max: 1 });
+			const dedicatedDb: PgDb = drizzle(pgClient, { schema });
+			const sid = uid("pgsearch-warmup");
+
+			try {
+				const backend = new PostgresSearchBackend(dedicatedDb);
+
+				const marker = uid("tok").replace(/-/g, "");
+				const ROW_COUNT = 300_000;
+
+				await executeRows(
+					dedicatedDb as unknown as import("../../db/client.js").Db,
+					sql`INSERT INTO sessions (id, session_id, agent_type, status) VALUES (gen_random_uuid()::text, ${sid}, 'claude_code', 'active')`,
+				);
+
+				// Rare marker (1 in 5000), realistic selectivity — a naive
+				// "every 5th row" fixture is unrealistically easy for a seq
+				// scan and would hide the index's actual advantage.
+				await executeRows(
+					dedicatedDb as unknown as import("../../db/client.js").Db,
+					sql`
+							INSERT INTO events (session_id, event_type, content, raw_payload, created_at)
+							SELECT
+								${sid},
+								(ARRAY['UserPromptSubmit','AssistantMessage','Stop','PreToolUse','PostToolUse'])[1 + (g % 5)],
+								CASE WHEN g % 5 = 2 THEN 'Turn completed' ELSE 'refactor payload ' || g END,
+								CASE WHEN g % 5 = 0 THEN
+									CASE WHEN g % 5000 = 0 THEN json_build_object('prompt', 'refactor payload ' || g || ' ' || ${marker})
+										ELSE json_build_object('prompt', 'refactor payload ' || g) END
+									ELSE '{}'::json END,
+								now()::text
+							FROM generate_series(1, ${ROW_COUNT}) AS g
+						`,
+				);
+				await executeRows(
+					dedicatedDb as unknown as import("../../db/client.js").Db,
+					sql`ANALYZE events`,
+				);
+
+				// Warm up ≥8 executions through the real production call path.
+				for (let i = 0; i < 8; i++) {
+					await backend.search({ q: marker, kinds: ["event"], sessionId: sid });
+				}
+
+				// Corroborating evidence: this connection really did go through
+				// postgres-js's own server-side prepared-statement machinery
+				// (prepare: true, the default) — not some test-only shortcut.
+				const prepared = await executeRows<{ count: string }>(
+					dedicatedDb as unknown as import("../../db/client.js").Db,
+					sql`SELECT count(*)::text AS count FROM pg_prepared_statements`,
+				);
+				expect(Number(prepared[0]?.count ?? 0)).toBeGreaterThan(0);
+
+				// Deterministically reproduce the worst case the natural
+				// custom-vs-generic heuristic reaches only eventually and
+				// data-dependently: force every subsequent execution on this
+				// connection to use a generic plan.
+				await pgClient.unsafe("SET plan_cache_mode = force_generic_plan");
+
+				const start = performance.now();
+				const result = await backend.search({ q: marker, kinds: ["event"], sessionId: sid });
+				const elapsedMs = performance.now() - start;
+
+				// Correctness: the search must still find the seeded hit.
+				expect(result.hits.length).toBeGreaterThan(0);
+
+				// The whole point: index-backed stays fast even under a forced
+				// generic plan. Broken (bound event_type IN list, or an
+				// unfenced ORDER BY/LIMIT that lets the planner walk
+				// idx_events_created_at_id instead): 160-185ms measured at
+				// this row count. Fixed (literal IN list + MATERIALIZED CTE
+				// fence): a few ms of raw query time, tens of ms including
+				// JS-side row mapping and connection round-trip. 80ms leaves
+				// a wide margin below the broken numbers and above observed
+				// fixed-path noise.
+				expect(elapsedMs).toBeLessThan(80);
+			} finally {
+				// Cleanup — see pg-trgm-search-index.test.ts for why leaving
+				// 300k rows behind pollutes later tests' unfiltered deletes.
+				// Run on the shared pool (getDb()), not the dedicated
+				// connection, since it's about to close.
+				await executeRows(
+					getDb() as unknown as import("../../db/client.js").Db,
+					sql`DELETE FROM events WHERE session_id = ${sid}`,
+				).catch(() => {});
+				await executeRows(
+					getDb() as unknown as import("../../db/client.js").Db,
+					sql`DELETE FROM sessions WHERE session_id = ${sid}`,
+				).catch(() => {});
+				await pgClient.end();
+			}
+		}, 60_000);
 	},
 );
