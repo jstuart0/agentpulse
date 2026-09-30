@@ -13,6 +13,13 @@ export const config = {
 	dataDir: process.env.DATA_DIR || "./data",
 	sqlitePathOverride: process.env.SQLITE_PATH || "",
 
+	// AGEN-24: how often the event-retention pass ticks. The pass itself is a
+	// no-op unless the operator has set the `eventsRetentionDays` setting to
+	// a positive integer (see services/retention-service.ts) — this interval
+	// only controls how promptly a configured cutoff is enforced, not whether
+	// it runs at all.
+	retentionIntervalMs: Number(process.env.AGENTPULSE_RETENTION_INTERVAL_MS) || 60 * 60 * 1000,
+
 	// AI watcher feature — two-level opt-in. AGENTPULSE_AI_ENABLED gates the
 	// feature surface at boot (tables, routes, UI); a runtime settings toggle
 	// controls whether the compiled-in feature actually runs. When enabled,

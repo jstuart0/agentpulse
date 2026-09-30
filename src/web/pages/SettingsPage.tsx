@@ -309,17 +309,29 @@ export function SettingsPage() {
 							Event Retention (days)
 						</label>
 						<p className="text-xs text-muted-foreground mb-2">
-							Events older than this are automatically cleaned up.
+							Disabled by default (0). When set to a positive number of days, events older than that
+							are periodically and permanently deleted.
 						</p>
 						<input
 							id="setting-event-retention"
 							type="number"
 							defaultValue={
-								typeof settings.eventsRetentionDays === "number" ? settings.eventsRetentionDays : 30
+								typeof settings.eventsRetentionDays === "number" ? settings.eventsRetentionDays : 0
 							}
-							min={1}
+							min={0}
 							max={365}
-							onBlur={(e) => saveSetting("eventsRetentionDays", Number(e.target.value))}
+							onBlur={(e) => {
+								const parsed = Number(e.target.value);
+								const current =
+									typeof settings.eventsRetentionDays === "number"
+										? settings.eventsRetentionDays
+										: 0;
+								// Only write when the operator actually changed the value — a
+								// blur with no edit must never turn retention on (or off) as a
+								// side effect of tabbing through the form.
+								if (!Number.isFinite(parsed) || parsed < 0 || parsed === current) return;
+								saveSetting("eventsRetentionDays", Math.floor(parsed));
+							}}
 							className="w-24 rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 						/>
 					</div>
