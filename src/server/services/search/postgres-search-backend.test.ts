@@ -252,6 +252,14 @@ describePostgresOnly(
 			return `${prefix}-${crypto.randomUUID()}`;
 		}
 
+		// Opt-in perf mode (D32/D33's existing pattern) — gates the
+		// multi-million-row wall-clock test below. Computed once at
+		// file-eval time so `test.skipIf` can decide whether to run the
+		// test body (and therefore its seed) at all (percy AGEN-27 review,
+		// TB27 — CI cost: the correctness tests no longer need a
+		// multi-million-row fixture, only this one perf-only test does).
+		const PERF_TESTS = process.env.AGENTPULSE_PERF_TESTS === "1";
+
 		test("search() returns hits for sessions matching display_name", async () => {
 			// Regression for a real production bug this test suite never caught:
 			// the session-search query's `ORDER BY created_at` referenced a
@@ -526,7 +534,7 @@ describePostgresOnly(
 			expect(pgTypes).toEqual(sqliteTypes);
 		});
 
-		// ── percy AGEN-27 review (TB26): adaptive two-plan searchEvents ──────
+		// ── percy AGEN-27 review (TB26/TB27): adaptive two-plan searchEvents ─
 		//
 		// Supersedes the TB22/TB24 "5-bucket selectivity matrix" wall-clock
 		// test and the TB25 EXPLAIN-plan-shape design (never committed —
@@ -555,18 +563,30 @@ describePostgresOnly(
 		//   where it degrades to a near-full-table scan: measured
 		//   892-926ms at 1M rows, and worse as `events` grows — forcing
 		//   the planner off that index on the same data proved the trigram
-		//   plan is available and ~2000x faster (0.45ms).
+		//   plan is available for a rare/unique term (0.45ms).
 		//
-		//   TB26 (this section): searchEvents now runs Plan A (the TB22
-		//   query, unprepared, inside a transaction with
-		//   `SET LOCAL statement_timeout = '150ms'`) and, only if Plan A
-		//   is canceled by that timeout (SQLSTATE 57014), re-runs the
-		//   identical query in a *fresh* transaction with
-		//   `enable_indexscan`/`enable_indexonlyscan` off (Plan B), forcing
-		//   the provably-correct trigram path. See
+		//   TB26: searchEvents now runs Plan A (the TB22 query, unprepared,
+		//   inside a transaction with `SET LOCAL statement_timeout =
+		//   '150ms'`) and, only if Plan A is canceled by that timeout
+		//   (SQLSTATE 57014), re-runs the identical query in a *fresh*
+		//   transaction with `enable_indexscan`/`enable_indexonlyscan` off
+		//   (Plan B), forcing the provably-correct trigram path. See
 		//   executeEventsQueryWithFallback()'s doc comment in
 		//   postgres-search-backend.ts for the full design.
-		test("adaptive two-plan strategy: a unique/rare term falls back to Plan B and returns the correct result; common and short terms stay on Plan A", async () => {
+		//
+		//   TB27 (CI cost): the correctness properties below (fallback
+		//   fires, debug flag set, rows correct, pagination matches, Plan A
+		//   succeeds with no fallback at the real 150ms threshold) don't
+		//   actually need a multi-million-row fixture — they need Plan A's
+		//   *real timeout/catch/retry code path* to trip, which
+		//   `_planATimeoutMsForTesting` (a test-only constructor override,
+		//   defaulting to the real 150) can force deterministically on a
+		//   fixture of a few hundred rows. Only the wall-clock measurement
+		//   itself (how many ms does the fallback path actually cost)
+		//   needs the original multi-million-row fixture — that's now its
+		//   own test, gated entirely behind AGENTPULSE_PERF_TESTS=1
+		//   (skipped via test.skipIf so the seed never runs by default).
+		test("adaptive two-plan strategy: correctness on a small, cheap fixture — fallback fires with the correct result, pagination matches between Plan A and Plan B, and Plan A succeeds with no fallback at the real 150ms threshold", async () => {
 			const { default: postgres } = await import("postgres");
 			const { drizzle } = await import("drizzle-orm/postgres-js");
 			const { getDb, initializeDatabase } = await import("../../db/client.js");
@@ -578,49 +598,25 @@ describePostgresOnly(
 			type PgDb = import("drizzle-orm/postgres-js").PostgresJsDatabase<typeof schema>;
 			await initializeDatabase();
 
-			// One dedicated connection for the whole matrix — a pooled
-			// connection could silently route calls to different
-			// physical backends.
 			const pgClient = postgres(config.databaseUrl, { max: 1 });
 			const dedicatedDb: PgDb = drizzle(pgClient, { schema });
-			const sid = uid("pgsearch-buckets");
-			// >= 300k floor per TB26's spec. 2M (not 1M) for margin: when
-			// this test runs standalone right after container start, 1M
-			// rows reliably pushed Plan A past its 150ms timeout (~900ms
-			// cold-cache scan, per the TB25 investigation). Running as
-			// part of the full file (after several earlier tests' bulk
-			// inserts/deletes/VACUUMs have already warmed shared_buffers
-			// and the OS page cache for `events`) occasionally let a
-			// fully-cached 1M-row scan finish under 150ms on pure CPU cost
-			// alone — Plan A legitimately "won its bet," not a bug, but it
-			// made the fallback-was-taken assertion flaky. Doubling the
-			// row count roughly doubles that same CPU-bound cost even in
-			// the fully-cached case, restoring comfortable margin above
-			// 150ms without relying on cold-cache I/O at all.
-			const ROW_COUNT = 2_000_000;
-			const PERF_TESTS = process.env.AGENTPULSE_PERF_TESTS === "1";
+			const sid = uid("pgsearch-small");
+			// Hundreds of rows, per TB27 — small enough to seed in
+			// milliseconds, large enough for a stable mid-selectivity
+			// bucket (MIDBKT, ~50%) to paginate meaningfully.
+			const ROW_COUNT = 500;
 
 			try {
-				const backend = new PostgresSearchBackend(dedicatedDb);
-
 				await executeRows(
 					dedicatedDb as unknown as import("../../db/client.js").Db,
 					sql`INSERT INTO sessions (id, session_id, agent_type, status) VALUES (gen_random_uuid()::text, ${sid}, 'claude_code', 'active')`,
 				);
 
-				// Every row is UserPromptSubmit (an indexed type), identical
-				// created_at (matches the real fixture's own bulk-insert
-				// shape — every row's created_at comes from the same
-				// statement's `now()`, frozen for the whole statement) so
-				// ORDER BY ties break purely on `id DESC` — meaning
+				// Identical created_at (every row's timestamp comes from
+				// this one statement's `now()`, frozen for the whole
+				// statement) so ORDER BY ties break purely on `id DESC` —
 				// RAREBKT (g=1, the smallest id) sits at the very *end* of
-				// scan order: the genuine worst case, not percy's original
-				// spread-out fixture. Four independent markers, each gated
-				// by its own modulo so the buckets don't interfere: rare
-				// (row 1 only), 10% (g % 10 = 0), 50% (g % 2 = 0), 90%
-				// (the complement of the 10% bucket). The 1-2 char bucket
-				// needs no marker — every row's base text already contains
-				// "re" (from "refactor").
+				// scan order, the genuine worst case for Plan A.
 				await executeRows(
 					dedicatedDb as unknown as import("../../db/client.js").Db,
 					sql`
@@ -630,190 +626,81 @@ describePostgresOnly(
 								'UserPromptSubmit',
 								'refactor payload ' || g
 									|| (CASE WHEN g = 1 THEN ' RAREBKT' ELSE '' END)
-									|| (CASE WHEN g % 10 = 0 THEN ' TENBKT' ELSE '' END)
-									|| (CASE WHEN g % 2 = 0 THEN ' FIFTYBKT' ELSE '' END)
-									|| (CASE WHEN g % 10 != 0 THEN ' NINETYBKT' ELSE '' END),
+									|| (CASE WHEN g % 2 = 0 THEN ' MIDBKT' ELSE '' END),
 								json_build_object(
 									'prompt',
 									'refactor payload ' || g
 										|| (CASE WHEN g = 1 THEN ' RAREBKT' ELSE '' END)
-										|| (CASE WHEN g % 10 = 0 THEN ' TENBKT' ELSE '' END)
-										|| (CASE WHEN g % 2 = 0 THEN ' FIFTYBKT' ELSE '' END)
-										|| (CASE WHEN g % 10 != 0 THEN ' NINETYBKT' ELSE '' END)
+										|| (CASE WHEN g % 2 = 0 THEN ' MIDBKT' ELSE '' END)
 								),
 								now()::text
 							FROM generate_series(1, ${ROW_COUNT}) AS g
 						`,
 				);
-				// ANALYZE (via VACUUM ANALYZE, not just ANALYZE — this test
-				// shares `events` with every other test in this suite,
-				// several of which insert-then-delete rows of their own,
-				// and VACUUM reclaims that dead-tuple bloat so timing/plan
-				// choice reflects this test's own live rows, not a
-				// neighbor's leftover churn) is required: the reltuples
-				// migration-0006 gate (percy AGEN-27 review, TB22) and the
-				// planner's own row-count estimates both need real,
-				// up-to-date statistics — an un-ANALYZEd table reports
-				// reltuples = -1 ("unknown"), not 0.
-				await pgClient.unsafe("VACUUM (ANALYZE) events");
-				// Prime the OS/Postgres page cache: right after a large bulk
-				// insert, the freshly-written pages aren't cached yet, and a
-				// full-table read (checkpoint I/O, cold pages) can dominate
-				// the *first* query's timing regardless of which plan it
-				// uses — a seeding artifact, not a planner regression.
-				await executeRows(
-					dedicatedDb as unknown as import("../../db/client.js").Db,
-					sql`SELECT count(*) FROM events WHERE session_id = ${sid}`,
-				);
-
-				const buckets: Array<{
-					name: string;
-					term: string;
-					expectFallback: boolean;
-				}> = [
-					{
-						name: "rare (1 row, unique, worst-case scan position)",
-						term: "RAREBKT",
-						expectFallback: true,
-					},
-					{ name: "~10%", term: "TENBKT", expectFallback: false },
-					{ name: "~50%", term: "FIFTYBKT", expectFallback: false },
-					{ name: "~90%", term: "NINETYBKT", expectFallback: false },
-					{ name: '1-2 char ("re")', term: "re", expectFallback: false },
-				];
-
-				// Worst-case wall-clock: Plan A's own 150ms statement_timeout
-				// bounds the slow path, and Plan B's forced trigram scan
-				// measured ~0.45ms — so total worst-case latency (including
-				// the fallback) should stay comfortably under a few hundred
-				// ms regardless of which bucket. Opt-in only
-				// (AGENTPULSE_PERF_TESTS=1, the existing D32/D33 pattern) —
-				// correctness and the fallback flag are asserted
-				// unconditionally below; only the wall-clock number needs
-				// the shared-host-noise escape hatch.
-				const SANE_BOUND_MS = 250;
-				const timings: Record<string, number> = {};
-
-				for (const bucket of buckets) {
-					// Warm up more than 8 times through the real production
-					// call path before the timed call.
-					for (let i = 0; i < 9; i++) {
-						await backend.search({ q: bucket.term, kinds: ["event"], sessionId: sid });
-					}
-					const start = performance.now();
-					const result = await backend.search({
-						q: bucket.term,
-						kinds: ["event"],
-						sessionId: sid,
-					});
-					const elapsedMs = performance.now() - start;
-					timings[bucket.name] = elapsedMs;
-
-					expect(result.hits.length).toBeGreaterThan(0);
-					if (bucket.term === "RAREBKT") {
-						// The correct single result, not just "some" result.
-						expect(result.hits.length).toBe(1);
-						expect(result.hits[0]?.snippet).toContain("RAREBKT");
-					}
-					expect(result.debug?.postgresEventsUsedFallback).toBe(bucket.expectFallback);
-
-					if (PERF_TESTS) {
-						expect(elapsedMs).toBeLessThan(SANE_BOUND_MS);
-					}
-				}
-
-				console.log(
-					`[AGEN-27 TB26] two-plan search timings at ${ROW_COUNT} rows (wall-clock bound checked only under AGENTPULSE_PERF_TESTS=1):`,
-					JSON.stringify(timings),
-				);
-			} finally {
-				// Cleanup — see pg-trgm-search-index.test.ts for why leaving
-				// leftover rows behind pollutes later tests' unfiltered deletes.
-				// Run on the shared pool (getDb()), not the dedicated
-				// connection, since it's about to close.
-				await executeRows(
-					getDb() as unknown as import("../../db/client.js").Db,
-					sql`DELETE FROM events WHERE session_id = ${sid}`,
-				).catch(() => {});
-				await executeRows(
-					getDb() as unknown as import("../../db/client.js").Db,
-					sql`DELETE FROM sessions WHERE session_id = ${sid}`,
-				).catch(() => {});
-				await pgClient.end();
-			}
-		}, 120_000);
-
-		test("pagination parity: Plan A and Plan B agree on page 2 for a mid-selectivity term", async () => {
-			const { default: postgres } = await import("postgres");
-			const { drizzle } = await import("drizzle-orm/postgres-js");
-			const { getDb, initializeDatabase } = await import("../../db/client.js");
-			const schema = await import("../../db/schema/index.js");
-			const { config } = await import("../../config.js");
-			const { sql } = await import("drizzle-orm");
-			const { executeRows } = await import("../../db/sql-helpers.js");
-			const { PostgresSearchBackend } = await import("./postgres-search-backend.js");
-			type PgDb = import("drizzle-orm/postgres-js").PostgresJsDatabase<typeof schema>;
-			await initializeDatabase();
-
-			const pgClient = postgres(config.databaseUrl, { max: 1 });
-			const dedicatedDb: PgDb = drizzle(pgClient, { schema });
-			const sid = uid("pgsearch-pagination");
-			const ROW_COUNT = 500_000;
-
-			try {
-				await executeRows(
-					dedicatedDb as unknown as import("../../db/client.js").Db,
-					sql`INSERT INTO sessions (id, session_id, agent_type, status) VALUES (gen_random_uuid()::text, ${sid}, 'claude_code', 'active')`,
-				);
-				await executeRows(
-					dedicatedDb as unknown as import("../../db/client.js").Db,
-					sql`
-						INSERT INTO events (session_id, event_type, content, raw_payload, created_at)
-						SELECT
-							${sid},
-							'UserPromptSubmit',
-							'refactor payload ' || g || (CASE WHEN g % 2 = 0 THEN ' MIDBKT' ELSE '' END),
-							json_build_object(
-								'prompt',
-								'refactor payload ' || g || (CASE WHEN g % 2 = 0 THEN ' MIDBKT' ELSE '' END)
-							),
-							now()::text
-						FROM generate_series(1, ${ROW_COUNT}) AS g
-					`,
-				);
 				await pgClient.unsafe("VACUUM (ANALYZE) events");
 
-				// Plan A: the normal path. A ~50%-selectivity term never
-				// naturally times out, so this genuinely exercises Plan A.
+				// 1ms is far below any real query's completion time, so it
+				// reliably drives Plan A's real timeout/catch/retry code
+				// path into Plan B even on this tiny fixture — exercising
+				// the actual production mechanism, not the
+				// forcePlanBForTesting shortcut.
+				const forced = new PostgresSearchBackend(dedicatedDb, {
+					_planATimeoutMsForTesting: 1,
+				});
+
+				// Fallback fires with the correct single result for a
+				// rare/unique term.
+				const rareResult = await forced.search({
+					q: "RAREBKT",
+					kinds: ["event"],
+					sessionId: sid,
+				});
+				expect(rareResult.hits.length).toBe(1);
+				expect(rareResult.hits[0]?.snippet).toContain("RAREBKT");
+				expect(rareResult.debug?.postgresEventsUsedFallback).toBe(true);
+
+				// Pagination matches between real Plan A (naturally
+				// completes without fallback on this small fixture) and
+				// Plan B (forced via forcePlanBForTesting, through the
+				// exact same query-building code — no query text
+				// duplicated here, avoiding the query-shape drift risk the
+				// TB25 investigation surfaced) for a mid-selectivity term's
+				// page 2 — proving identical ORDER BY/LIMIT/OFFSET results
+				// regardless of which physical plan actually served it.
 				const planA = new PostgresSearchBackend(dedicatedDb);
 				const planAResult = await planA.search({
 					q: "MIDBKT",
 					kinds: ["event"],
 					sessionId: sid,
-					limit: 10,
-					offset: 10,
+					limit: 5,
+					offset: 5,
 				});
-
-				// Plan B: forced via the test-only constructor hook, through
-				// the exact same query-building code (searchEvents) — no
-				// query text is duplicated here, avoiding the query-shape
-				// drift risk the TB25 investigation surfaced.
 				const planB = new PostgresSearchBackend(dedicatedDb, { forcePlanBForTesting: true });
 				const planBResult = await planB.search({
 					q: "MIDBKT",
 					kinds: ["event"],
 					sessionId: sid,
-					limit: 10,
-					offset: 10,
+					limit: 5,
+					offset: 5,
 				});
-
 				expect(planAResult.debug?.postgresEventsUsedFallback).toBe(false);
 				expect(planBResult.debug?.postgresEventsUsedFallback).toBe(true);
-
 				const planAIds = planAResult.hits.map((h) => h.eventId);
 				const planBIds = planBResult.hits.map((h) => h.eventId);
-				expect(planAIds.length).toBe(10);
+				expect(planAIds.length).toBe(5);
 				expect(planAIds).toEqual(planBIds);
+
+				// Plan A succeeds with no fallback at the REAL production
+				// 150ms threshold on this same small fixture — confirms
+				// the tight timeout never causes an unnecessary fallback
+				// for a realistically-small install (most real installs
+				// have far fewer than hundreds of thousands of events).
+				const real = new PostgresSearchBackend(dedicatedDb);
+				for (const term of ["RAREBKT", "MIDBKT", "re"]) {
+					const result = await real.search({ q: term, kinds: ["event"], sessionId: sid });
+					expect(result.hits.length).toBeGreaterThan(0);
+					expect(result.debug?.postgresEventsUsedFallback).toBe(false);
+				}
 			} finally {
 				await executeRows(
 					getDb() as unknown as import("../../db/client.js").Db,
@@ -825,7 +712,161 @@ describePostgresOnly(
 				).catch(() => {});
 				await pgClient.end();
 			}
-		}, 60_000);
+		}, 30_000);
+
+		// Wall-clock measurement only — entirely opt-in (AGENTPULSE_PERF_TESTS=1).
+		// test.skipIf means the test body (and therefore its multi-million-row
+		// seed) never runs by default; the correctness properties this used to
+		// also assert now live in the small-fixture test above (percy AGEN-27
+		// review, TB27 — CI cost).
+		test.skipIf(!PERF_TESTS)(
+			"[perf] two-plan search stays within a sane wall-clock bound across the selectivity spectrum (AGENTPULSE_PERF_TESTS=1)",
+			async () => {
+				const { default: postgres } = await import("postgres");
+				const { drizzle } = await import("drizzle-orm/postgres-js");
+				const { getDb, initializeDatabase } = await import("../../db/client.js");
+				const schema = await import("../../db/schema/index.js");
+				const { config } = await import("../../config.js");
+				const { sql } = await import("drizzle-orm");
+				const { executeRows } = await import("../../db/sql-helpers.js");
+				const { PostgresSearchBackend } = await import("./postgres-search-backend.js");
+				type PgDb = import("drizzle-orm/postgres-js").PostgresJsDatabase<typeof schema>;
+				await initializeDatabase();
+
+				// One dedicated connection for the whole matrix — a pooled
+				// connection could silently route calls to different
+				// physical backends.
+				const pgClient = postgres(config.databaseUrl, { max: 1 });
+				const dedicatedDb: PgDb = drizzle(pgClient, { schema });
+				const sid = uid("pgsearch-buckets-perf");
+				// 2M for margin: 1M reliably pushed Plan A past its 150ms
+				// timeout when run standalone right after container start
+				// (~900ms cold-cache scan, per the TB25 investigation), but
+				// running as part of the full file (after several earlier
+				// tests' bulk inserts/deletes/VACUUMs have already warmed
+				// shared_buffers and the OS page cache for `events`)
+				// occasionally let a fully-cached 1M-row scan finish under
+				// 150ms on pure CPU cost alone — Plan A legitimately "won
+				// its bet," not a bug, but it made the fallback-was-taken
+				// assertion flaky. Doubling the row count roughly doubles
+				// that same CPU-bound cost even in the fully-cached case.
+				const ROW_COUNT = 2_000_000;
+
+				try {
+					const backend = new PostgresSearchBackend(dedicatedDb);
+
+					await executeRows(
+						dedicatedDb as unknown as import("../../db/client.js").Db,
+						sql`INSERT INTO sessions (id, session_id, agent_type, status) VALUES (gen_random_uuid()::text, ${sid}, 'claude_code', 'active')`,
+					);
+
+					// Four independent markers, each gated by its own modulo
+					// so the buckets don't interfere: rare (row 1 only), 10%
+					// (g % 10 = 0), 50% (g % 2 = 0), 90% (the complement of
+					// the 10% bucket). The 1-2 char bucket needs no marker —
+					// every row's base text already contains "re" (from
+					// "refactor").
+					await executeRows(
+						dedicatedDb as unknown as import("../../db/client.js").Db,
+						sql`
+								INSERT INTO events (session_id, event_type, content, raw_payload, created_at)
+								SELECT
+									${sid},
+									'UserPromptSubmit',
+									'refactor payload ' || g
+										|| (CASE WHEN g = 1 THEN ' RAREBKT' ELSE '' END)
+										|| (CASE WHEN g % 10 = 0 THEN ' TENBKT' ELSE '' END)
+										|| (CASE WHEN g % 2 = 0 THEN ' FIFTYBKT' ELSE '' END)
+										|| (CASE WHEN g % 10 != 0 THEN ' NINETYBKT' ELSE '' END),
+									json_build_object(
+										'prompt',
+										'refactor payload ' || g
+											|| (CASE WHEN g = 1 THEN ' RAREBKT' ELSE '' END)
+											|| (CASE WHEN g % 10 = 0 THEN ' TENBKT' ELSE '' END)
+											|| (CASE WHEN g % 2 = 0 THEN ' FIFTYBKT' ELSE '' END)
+											|| (CASE WHEN g % 10 != 0 THEN ' NINETYBKT' ELSE '' END)
+									),
+									now()::text
+								FROM generate_series(1, ${ROW_COUNT}) AS g
+							`,
+					);
+					// VACUUM reclaims dead-tuple bloat from neighboring
+					// tests sharing this table, and ANALYZE gives the
+					// planner (and the migration-0006 reltuples gate)
+					// real, up-to-date statistics — an un-ANALYZEd table
+					// reports reltuples = -1 ("unknown"), not 0.
+					await pgClient.unsafe("VACUUM (ANALYZE) events");
+					// Prime the OS/Postgres page cache: right after a large
+					// bulk insert, the freshly-written pages aren't cached
+					// yet, and a full-table read (checkpoint I/O, cold
+					// pages) can dominate the *first* query's timing
+					// regardless of which plan it uses — a seeding
+					// artifact, not a planner regression.
+					await executeRows(
+						dedicatedDb as unknown as import("../../db/client.js").Db,
+						sql`SELECT count(*) FROM events WHERE session_id = ${sid}`,
+					);
+
+					const buckets: Array<{ name: string; term: string }> = [
+						{ name: "rare (1 row, unique, worst-case scan position)", term: "RAREBKT" },
+						{ name: "~10%", term: "TENBKT" },
+						{ name: "~50%", term: "FIFTYBKT" },
+						{ name: "~90%", term: "NINETYBKT" },
+						{ name: '1-2 char ("re")', term: "re" },
+					];
+
+					// Worst-case wall-clock: Plan A's own 150ms
+					// statement_timeout bounds the slow path, and Plan B's
+					// forced trigram scan measured ~0.45ms for a rare term
+					// (though its cost scales with match-set size for a
+					// common/clustered one — see the file header) — so
+					// total worst-case latency should stay comfortably
+					// under a few hundred ms regardless of bucket.
+					const SANE_BOUND_MS = 250;
+					const timings: Record<string, number> = {};
+
+					for (const bucket of buckets) {
+						// Warm up more than 8 times through the real
+						// production call path before the timed call.
+						for (let i = 0; i < 9; i++) {
+							await backend.search({ q: bucket.term, kinds: ["event"], sessionId: sid });
+						}
+						const start = performance.now();
+						const result = await backend.search({
+							q: bucket.term,
+							kinds: ["event"],
+							sessionId: sid,
+						});
+						const elapsedMs = performance.now() - start;
+						timings[bucket.name] = elapsedMs;
+
+						expect(result.hits.length).toBeGreaterThan(0);
+						expect(elapsedMs).toBeLessThan(SANE_BOUND_MS);
+					}
+
+					console.log(
+						`[AGEN-27 TB26/TB27 perf] two-plan search timings at ${ROW_COUNT} rows:`,
+						JSON.stringify(timings),
+					);
+				} finally {
+					// Cleanup — see pg-trgm-search-index.test.ts for why
+					// leaving leftover rows behind pollutes later tests'
+					// unfiltered deletes. Run on the shared pool (getDb()),
+					// not the dedicated connection, since it's about to
+					// close.
+					await executeRows(
+						getDb() as unknown as import("../../db/client.js").Db,
+						sql`DELETE FROM events WHERE session_id = ${sid}`,
+					).catch(() => {});
+					await executeRows(
+						getDb() as unknown as import("../../db/client.js").Db,
+						sql`DELETE FROM sessions WHERE session_id = ${sid}`,
+					).catch(() => {});
+					await pgClient.end();
+				}
+			},
+			120_000,
+		);
 
 		test("SET LOCAL from Plan B does not leak onto a later pooled connection", async () => {
 			const { default: postgres } = await import("postgres");
