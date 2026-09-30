@@ -9,7 +9,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Added
 
-- **Copilot CLI support (AGEN-13, D7/D8/D13) — labeled "contract not yet
+- **Copilot CLI support (AGEN-13) — labeled "contract not yet
   verified against a live Copilot CLI" until a live-payload diff passes.**
   AgentPulse now observes GitHub Copilot CLI sessions: 10 registered hook
   events (`sessionStart`, `sessionEnd`, `userPromptSubmitted`, `postToolUse`,
@@ -188,8 +188,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   unrecognized field name 400s rather than silently falling back to full
   rows. Omitting `fields` is unchanged. Backed by a new
   `(agent_type, last_activity_at)` index (SQLite/Postgres migration
-  `0004`) — see "Upgrade notes" and `deploy/overlays/postgres/README.md`
-  for the Postgres index-build note.
+  `0004`) — see "Upgrade notes" and `deploy/k8s/README.md` for the
+  Postgres index-build note.
 - **Removed `scripts/codex-hook.sh`**, the old per-event Codex hook shim
   superseded by the shared command-hook generator. The setup and relay
   installers delete `~/.agentpulse/codex-hook.sh` on the next run if an
@@ -402,23 +402,24 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   compromised server's response can no longer be written verbatim into the
   supervisor's local log.
 
-- **Symlink-safe Codex/Copilot hooks.json writes (F232)** — every installer
+- **Symlink-safe Codex/Copilot hooks.json writes** — every installer
   that writes `~/.codex/hooks.json` or `~/.copilot/hooks/agentpulse.json`
   (and their timestamped backups) — `scripts/setup-hooks.sh`,
   `scripts/setup-relay.sh`, the `/setup.sh` endpoint, `bin/cli.ts`, and
   `scripts/install-local.ps1` — now refuses a symlink (or, on Windows, any
   reparse point) at the destination or its parent directory instead of
-  writing through it, matching F207's existing hook-auth-header guarantee.
-- **`install-local.ps1` reparse-point guard on the API key file (F233)** —
+  writing through it, matching the hook-auth-header file's existing
+  guarantee.
+- **`install-local.ps1` reparse-point guard on the API key file** —
   `New-ApHookAuthHeaderFile` and the `.agentpulse` directory it writes into
   are now checked for a reparse point before every write, closing the one
   write path on Windows that had no symlink/junction guard at all.
-- **`AGENTPULSE_KEY` env var for the direct-install curl\|bash scripts
-  (F234)** — `--key` is briefly visible in `ps` during a one-time install;
+- **`AGENTPULSE_KEY` env var for the direct-install curl\|bash scripts** —
+  `--key` is briefly visible in `ps` during a one-time install;
   `scripts/setup-hooks.sh` and the `/setup.sh` endpoint now also accept
   `AGENTPULSE_KEY=ap_xxx curl ... \| bash`, keeping the key out of the
   process list. (`scripts/setup-relay.sh` already supported this.)
-- **`provider_event_name` is capped and control-character-stripped (F235)**
+- **`provider_event_name` is capped and control-character-stripped**
   — the Copilot canonicalizer's `provider_event_name` (sourced from the
   request body, the `?event=` hint, or `hook_event_name` — all
   attacker-influenced) is now bounded to 128 characters with control
