@@ -9,32 +9,57 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Security
 
-- **API key exposure in installer commands and config files (AGEN-49).**
-  v0.6.0 moved the key out of shell rc files into `~/.agentpulse/env` (mode
-  `0600`) and added `AGENTPULSE_KEY` env-var support, but three residual
-  exposure paths remained:
-  - The dashboard's default local-install command still passed the key as
-    `--key ap_...`, which lands in both `ps` and shell history for the
-    duration of the install. It's now a hidden terminal prompt
-    (`read -rsp ... && export ...`), the same pattern already used for the
-    relay installer — the key never appears in the copyable command text.
-    Documented as a trade-off for scripted/non-interactive installs, which
-    can still set `$AGENTPULSE_KEY` beforehand (visible in shell history).
-  - The served `/setup.sh` route, `scripts/install-local.ps1`'s
-    `Configure-Hooks`, and `agentpulse setup` (`bin/cli.ts`) each wrote the
-    literal key into `~/.claude/settings.json` as a plaintext
-    `Authorization: Bearer ap_...` header whenever a key was supplied at
-    install time — a world-readable file by default. All three now always
-    use the `$AGENTPULSE_API_KEY` / `$env:AGENTPULSE_API_KEY`
-    environment-variable-expansion form instead, matching
-    `scripts/setup-hooks.sh`'s existing (and now-verified) behavior. The
-    real key value still lands only in the already-private
-    `~/.agentpulse/env` (POSIX) or `HKCU\Environment` (Windows).
-  - Added regression coverage that installs each of claude_code/codex_cli/
-    copilot_cli (including `--scope project`) and the served `/setup.sh`
-    against a temp `$HOME`, then scans every resulting file for the literal
-    key — asserting it appears only in `hook-auth-header` and `env`, both
-    mode `0600`.
+- **API key exposure in installer commands and config files (AGEN-49,
+  reviewed by xander).** v0.6.0 moved the key out of shell rc files into
+  `~/.agentpulse/env` (mode `0600`) and added `AGENTPULSE_KEY` env-var
+  support, but several residual exposure paths remained:
+  - The dashboard's default local-install command, both README install
+    snippets, `install-local.sh`'s printed fallback instructions, and
+    SetupPage's per-agent auth-step commands (claude_code, codex_cli,
+    copilot_cli — POSIX side) all passed the key as `--key ap_...` or
+    embedded it literally in copy-paste text, landing in `ps` and/or shell
+    history. All now read the key at a hidden terminal prompt instead:
+    POSIX `printf 'AgentPulse API key: '; read -rs VAR; echo` (not
+    `read -rsp` — `-p` means "coprocess" in zsh, macOS's default shell, so
+    a pasted `-rsp` silently misbehaves there), guarded by
+    `[ -n "$VAR" ] &&` so a blank answer skips the install instead of
+    running curl unauthenticated. codex_cli/copilot_cli's PowerShell
+    variant now reads the key via `Read-Host -AsSecureString` +
+    `SecureStringToBSTR`/`PtrToStringBSTR`/`ZeroFreeBSTR` and adds the
+    hard-link check `New-ApHookAuthHeaderFile` already has but this
+    displayed snippet didn't. Documented as a trade-off for scripted/
+    non-interactive installs, which can still set `$AGENTPULSE_KEY`
+    beforehand (visible in shell history).
+  - Added execution tests that actually run the rendered onboarding
+    command and the setup-steps POSIX snippets under every shell present
+    (bash, zsh, sh), feeding the key on stdin and using a stub `curl` —
+    catching the zsh `read -rsp` regression a text-pattern check alone
+    would have missed.
+  - **Claude Code's silent-401 trade-off, resolved deliberately.** Claude
+    Code's native HTTP hook expands `$AGENTPULSE_API_KEY` from its own
+    process environment, not the shell that launched it — a GUI, IDE, or
+    stale-terminal launch never sources `~/.agentpulse/env`, so an
+    env-var-only header 401s silently there. **User scope**
+    (`~/.claude/settings.json`, the default for `/setup.sh`,
+    `agentpulse setup`, `install-local.ps1`, and `setup-hooks.sh`'s default
+    `--scope global`) now embeds the literal key again, made acceptable by
+    tightening the file to mode `0600` (POSIX) / a single-ACE user-only ACL
+    (Windows) with a no-follow write (a symlinked `settings.json` is
+    refused, not written through) — merging into an existing file preserves
+    every other key already in it. **Project scope**
+    (`setup-hooks.sh --scope project`, a repo's own `.claude/settings.json`,
+    which may be committed) never gets a literal key — it keeps the
+    `$AGENTPULSE_API_KEY`/`allowedEnvVars` form unconditionally, with a
+    printed reminder to fully restart Claude Code (a GUI/IDE-launched
+    instance may not see a shell-exported env var).
+  - Regression coverage installs each of claude_code/codex_cli/copilot_cli
+    (including `--scope project`) and the served `/setup.sh` against a
+    temp `$HOME`, then scans every resulting file for the literal key —
+    asserting it appears only in `hook-auth-header` and `env` (always,
+    mode `0600`), and in `settings.json` only for user/global scope (also
+    mode `0600`) — never in any project-scope file, at any permission.
+    Also covers: an existing `settings.json`'s other keys survive the
+    merge, and a symlinked `settings.json` is refused.
 
 ## [0.6.0] — 2026-09-29
 

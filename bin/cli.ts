@@ -84,23 +84,42 @@ async function setup() {
 		mkdirSync(join(process.env.HOME || "~", ".claude"), { recursive: true });
 	}
 
-	// AGEN-49: always the env-var-expansion form, matching the served /setup.sh
-	// and scripts/setup-hooks.sh's claude_code path — a literal key here would
-	// land in ~/.claude/settings.json (world-readable by default), the same
-	// class of exposure D37/F243 moved the rc-file export out of. The actual
-	// value still lands in ~/.agentpulse/env (0600) whenever one was supplied.
-	const hookEntry = (agentType: string) => ({
-		matcher: "",
-		hooks: [
-			{
-				type: "http",
-				url: `${url}/api/v1/hooks`,
-				async: true,
-				allowedEnvVars: ["AGENTPULSE_API_KEY"],
-				headers: { Authorization: "Bearer $AGENTPULSE_API_KEY", "X-Agent-Type": agentType },
-			},
-		],
-	});
+	// AGEN-49/H2 (xander): Claude Code's native HTTP hook expands
+	// $AGENTPULSE_API_KEY from ITS OWN process environment, not the shell
+	// that launched Claude Code — a GUI, IDE, or stale-terminal launch never
+	// sources ~/.agentpulse/env, so the env-var form 401s silently there.
+	// `setup` has no project-scope option (it always targets $HOME), so a
+	// supplied key gets the literal, more-reliable form — acceptable because
+	// settings.json is written with writePrivateFileSyncNoFollow below
+	// (0600, no-follow) whenever a key is present, never world-readable. No
+	// key at all (an auth-disabled server) keeps the env-var/allowedEnvVars
+	// form. The value also still lands in ~/.agentpulse/env (0600) below
+	// whenever one was supplied, for other consumers of it.
+	const hookEntry = (agentType: string) =>
+		key
+			? {
+					matcher: "",
+					hooks: [
+						{
+							type: "http",
+							url: `${url}/api/v1/hooks`,
+							async: true,
+							headers: { Authorization: `Bearer ${key}`, "X-Agent-Type": agentType },
+						},
+					],
+				}
+			: {
+					matcher: "",
+					hooks: [
+						{
+							type: "http",
+							url: `${url}/api/v1/hooks`,
+							async: true,
+							allowedEnvVars: ["AGENTPULSE_API_KEY"],
+							headers: { Authorization: "Bearer $AGENTPULSE_API_KEY", "X-Agent-Type": agentType },
+						},
+					],
+				};
 
 	const claudeEvents = [
 		"SessionStart",
@@ -131,7 +150,15 @@ async function setup() {
 		...hooks,
 	};
 
-	writeFileSync(claudeSettingsPath, `${JSON.stringify(claudeSettings, null, 2)}\n`);
+	const claudeSettingsContent = `${JSON.stringify(claudeSettings, null, 2)}\n`;
+	if (key) {
+		// H2: a literal key is embedded above, so the file is tightened to
+		// 0600 and written no-follow (refuses a symlink at the destination
+		// or its parent directory) — never world-readable.
+		writePrivateFileSyncNoFollow(claudeSettingsPath, claudeSettingsContent);
+	} else {
+		writeFileSync(claudeSettingsPath, claudeSettingsContent);
+	}
 	console.log(`  ✓ Claude Code hooks → ${claudeSettingsPath}`);
 
 	// ── Codex CLI ──

@@ -364,20 +364,41 @@ echo ""
 
 CLAUDE_DIR="\$HOME/.claude"
 CLAUDE_SETTINGS="\$CLAUDE_DIR/settings.json"
+
+# F<new> (H2, F249 ordering): refuse a symlinked destination or its parent
+# directory BEFORE mkdir -p even runs -- mkdir -p on an already-existing
+# symlinked path is a silent no-op success, so the check has to come first,
+# not after. settings.json holds other user settings we must preserve, so
+# this can't just delegate to ap_write_no_follow (which overwrites wholesale).
+if [[ -L "\$CLAUDE_DIR" ]]; then
+  echo "  ✗ refusing to write into a symlinked directory: \$CLAUDE_DIR" >&2
+  exit 1
+fi
 mkdir -p "\$CLAUDE_DIR"
+if [[ -L "\$CLAUDE_SETTINGS" ]]; then
+  echo "  ✗ refusing to write through a symlink: \$CLAUDE_SETTINGS" >&2
+  exit 1
+fi
 
 EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit" "PermissionRequest" "PermissionDenied" "Notification" "PreCompact" "PostCompact" "PostToolUseFailure")
 
+# AGEN-49/H2 (xander): Claude Code's native HTTP hook expands
+# \$AGENTPULSE_API_KEY from ITS OWN process environment, not the shell that
+# launched Claude Code -- a GUI, IDE, or stale-terminal launch never sources
+# ~/.agentpulse/env, so the env-var form 401s silently there. This route has
+# no project-scope option (it always targets \$HOME), so a supplied key gets
+# the literal, more-reliable form -- acceptable because settings.json is
+# tightened to 0600 below (never world-readable). No key at all (an
+# auth-disabled server) keeps the env-var/allowedEnvVars form, same as before.
 HOOKS_JSON="{"
 for i in "\${!EVENTS[@]}"; do
   EVENT="\${EVENTS[\$i]}"
   [[ \$i -gt 0 ]] && HOOKS_JSON+=","
-  # AGEN-49: always the env-var-expansion form, matching scripts/setup-hooks.sh's
-  # claude_code path — a literal key here would land in ~/.claude/settings.json
-  # (world-readable by default), the same class of exposure D37/F243 moved the
-  # rc-file export out of. The actual value still lands in \$AP_ENV_FILE (0600)
-  # below whenever one was supplied.
-  HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
+  if [[ -n "\$API_KEY" ]]; then
+    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
+  else
+    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
+  fi
 done
 HOOKS_JSON+="}"
 
@@ -394,6 +415,12 @@ with open('\$CLAUDE_SETTINGS', 'w') as f: json.dump(s, f, indent=2)
 "
 else
   echo '{"hooks":'\$HOOKS_JSON'}' > "\$CLAUDE_SETTINGS"
+fi
+# H2: a supplied key means the literal form above, so settings.json is
+# tightened to owner-only -- never world-readable. No key: env-var form
+# only, so the file's mode is left exactly as it was before this write.
+if [[ -n "\$API_KEY" && -f "\$CLAUDE_SETTINGS" ]]; then
+  chmod 600 "\$CLAUDE_SETTINGS"
 fi
 echo "  ✓ Claude Code hooks configured"
 
