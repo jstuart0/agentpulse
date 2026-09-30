@@ -63,9 +63,39 @@ a 30-day replay of a real workload measured:
 `storageClassName: local-path` (the default in `03-pvc.yaml`) does **not**
 enforce the request — it's bound by node disk instead, so it won't reject
 writes at 1Gi. On a storage class that does enforce size, raise the request
-before deploying, or accept periodic manual cleanup. Retention/VACUUM
-automation and a PVC default-size policy are tracked as follow-ups (not yet
-implemented); until then, sizing is an operator decision per deployment.
+before deploying, or configure retention (below). A PVC default-size policy
+is still a follow-up (not yet implemented).
+
+### Event retention (AGEN-24)
+
+`eventsRetentionDays` (Settings → Session Configuration → Event Retention,
+or `PUT /api/v1/settings {"key":"eventsRetentionDays","value":<days>}`) is
+**disabled by default** — unset, `0`, or negative all mean "never delete."
+Set it to a positive integer to enable a background pass (every
+`AGENTPULSE_RETENTION_INTERVAL_MS`, default 1 hour) that deletes `events`
+rows older than that many days, in batches of 5,000, without blocking
+ingest. The `sessions` row and its denormalized state are never touched —
+only the `events` history ages out. `GET /api/v1/health`'s `retention`
+field reports the last pass (`rowsDeleted`, `durationMs`, `disabled`) and
+the next scheduled tick.
+
+**Reclaiming space after enabling retention (SQLite):** deleting rows frees
+pages inside the SQLite file but does not shrink it on disk unless the
+database was created with `PRAGMA auto_vacuum = INCREMENTAL` — the
+retention pass runs `PRAGMA incremental_vacuum` automatically in that case.
+Every install prior to this release (and any fresh install using the
+default PRAGMAs) has `auto_vacuum = NONE`, so the file will not shrink on
+its own; reclaim the space with a one-time, **blocking** `VACUUM` during a
+maintenance window (stop write traffic first — `VACUUM` rewrites the whole
+file and briefly holds an exclusive lock):
+
+```bash
+kubectl -n <namespace> exec -it deploy/agentpulse -- sqlite3 /app/data/agentpulse.db 'VACUUM;'
+```
+
+This is never run automatically by the server. On the Postgres overlay,
+`autovacuum` already reclaims space from deleted rows — no manual step
+needed.
 
 ---
 

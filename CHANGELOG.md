@@ -7,6 +7,33 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Added
+
+- **Event retention enforcement (AGEN-24).** The `eventsRetentionDays`
+  setting (Settings → Session Configuration → Event Retention) is now
+  enforced by a periodic background pass (hourly by default; override with
+  `AGENTPULSE_RETENTION_INTERVAL_MS`) that deletes `events` rows older than
+  the configured cutoff in bounded batches of 5,000 rows, yielding between
+  batches so ingest is never blocked. **Off by default**: the setting has
+  always existed but was never enforced before this release, so an upgrade
+  does not start deleting anything — retention only runs once an operator
+  explicitly sets `eventsRetentionDays` to a positive number of days (unset,
+  `0`, or negative all mean disabled). The Settings UI field was changed
+  from a misleading always-30 placeholder to a real 0-means-disabled value,
+  and no longer writes on an unmodified blur. Deleting from `events` fires
+  the existing SQLite FTS/embeddings delete triggers, so `search_events_fts`
+  and `event_embeddings` stay consistent automatically; the session row and
+  its denormalized state (including `metadata.permissionWait`) are never
+  touched by a retention pass. On Postgres (multi-replica capable), a pass
+  is guarded by `pg_try_advisory_xact_lock` so only one replica runs at a
+  time; SQLite deployments (single-replica) run unguarded. After a SQLite
+  pass that deleted rows, `PRAGMA incremental_vacuum` runs automatically if
+  the database was created with `auto_vacuum = INCREMENTAL`; existing
+  installs (`auto_vacuum = NONE`) need a one-time manual `VACUUM` during a
+  maintenance window to reclaim space — see `deploy/k8s/README.md`.
+  `GET /api/v1/health` now includes a `retention` field with the last pass's
+  `rowsDeleted`/`durationMs`/`disabled` and the next scheduled tick.
+
 ## [0.6.0] — 2026-09-29
 
 ### Added
