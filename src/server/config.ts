@@ -13,12 +13,44 @@ export const config = {
 	dataDir: process.env.DATA_DIR || "./data",
 	sqlitePathOverride: process.env.SQLITE_PATH || "",
 
-	// AGEN-24: how often the event-retention pass ticks. The pass itself is a
-	// no-op unless the operator has set the `eventsRetentionDays` setting to
-	// a positive integer (see services/retention-service.ts) — this interval
-	// only controls how promptly a configured cutoff is enforced, not whether
-	// it runs at all.
-	retentionIntervalMs: Number(process.env.AGENTPULSE_RETENTION_INTERVAL_MS) || 60 * 60 * 1000,
+	/**
+	 * AGEN-24: how often the event-retention pass ticks. The pass itself is
+	 * a no-op unless the operator has set the `eventsRetentionDays` setting
+	 * to a positive integer (see services/retention-service.ts) — this
+	 * interval only controls how promptly a configured cutoff is enforced,
+	 * not whether it runs at all.
+	 *
+	 * percy review (TB10 item 6): clamped to [60s, 24h], following the exact
+	 * AGENTPULSE_PG_POOL_MAX pattern in db/client.ts — an out-of-range or
+	 * non-integer value is not snapped to the nearest boundary, it's
+	 * rejected wholesale and falls back to the 1-hour default, with a
+	 * warning. Memoized like `forwardauthTrustSecret` below (env is read
+	 * once per process lifetime); `configurable: true` lets tests reset it.
+	 */
+	get retentionIntervalMs(): number {
+		if (Object.prototype.hasOwnProperty.call(this, "_retentionIntervalMs")) {
+			return (this as unknown as { _retentionIntervalMs: number })._retentionIntervalMs;
+		}
+		const MIN_MS = 60_000; // 60s
+		const MAX_MS = 24 * 60 * 60 * 1000; // 24h
+		const DEFAULT_MS = 60 * 60 * 1000; // 1h
+		const raw = Number(process.env.AGENTPULSE_RETENTION_INTERVAL_MS ?? DEFAULT_MS);
+		const resolved = Number.isInteger(raw) && raw >= MIN_MS && raw <= MAX_MS ? raw : DEFAULT_MS;
+		if (process.env.AGENTPULSE_RETENTION_INTERVAL_MS && resolved !== raw) {
+			const sanitized = String(process.env.AGENTPULSE_RETENTION_INTERVAL_MS)
+				.replace(/[\r\n]/g, "\\n")
+				.slice(0, 50);
+			console.warn(
+				`[config] AGENTPULSE_RETENTION_INTERVAL_MS=${sanitized} is invalid (must be an integer in [${MIN_MS}, ${MAX_MS}]); falling back to ${resolved}`,
+			);
+		}
+		Object.defineProperty(this, "_retentionIntervalMs", {
+			value: resolved,
+			writable: true,
+			configurable: true,
+		});
+		return resolved;
+	},
 
 	// AI watcher feature — two-level opt-in. AGENTPULSE_AI_ENABLED gates the
 	// feature surface at boot (tables, routes, UI); a runtime settings toggle
