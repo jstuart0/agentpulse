@@ -103,4 +103,33 @@ describe("GET /health — clients checksums", () => {
 			expect(body.searchIndexes).toBeNull();
 		}
 	});
+
+	// hosts-visibility fix: a non-reversible per-database fingerprint so the
+	// dashboard can detect a split-brain multi-instance SQLite deployment.
+	test("instance.dbFingerprint is 12 hex chars; instance.dialect matches config.dialect", async () => {
+		const app = buildApp();
+		const res = await app.request("/api/v1/health");
+		const body = await res.json();
+
+		expect(body.instance).toBeDefined();
+		expect(body.instance.dbFingerprint).toMatch(/^[0-9a-f]{12}$/);
+		expect(body.instance.dialect).toBe(isPostgresTest ? "postgres" : "sqlite");
+	});
+
+	test("instance.dbFingerprint is stable across repeated requests", async () => {
+		const app = buildApp();
+		const first = await (await app.request("/api/v1/health")).json();
+		const second = await (await app.request("/api/v1/health")).json();
+		expect(first.instance.dbFingerprint).toBe(second.instance.dbFingerprint);
+	});
+
+	test("instance never exposes a raw installation_id-shaped UUID", async () => {
+		const app = buildApp();
+		const res = await app.request("/api/v1/health");
+		const body = await res.json();
+		// installation_id is a UUID (has dashes, 36 chars); the fingerprint
+		// must not be — it's a 12-char hex digest.
+		expect(body.instance.dbFingerprint).not.toContain("-");
+		expect(body.instance.dbFingerprint.length).toBe(12);
+	});
 });

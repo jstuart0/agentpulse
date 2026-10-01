@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import pkg from "../../../package.json" with { type: "json" };
+import { config } from "../config.js";
 import { isShuttingDown } from "../drain-state.js";
 import { INSTALLER_SOURCES } from "../installers.js";
+import { getDbFingerprint } from "../services/db-fingerprint.js";
 import {
 	getEventsDeduplicatedCounts,
 	getLegacyObserverDeliveries,
@@ -81,6 +83,15 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //  - searchIndexes (AGEN-27 / percy TB17): Postgres trigram search-index
 //    presence ({ present, missing[] }), checked once at boot; null on
 //    SQLite (not applicable) — see services/search/search-index-status.ts.
+//  - instance.dbFingerprint (hosts-visibility fix): first 12 hex chars of
+//    sha256("agentpulse-db-fingerprint:" + installation_id) — a
+//    non-reversible way for the dashboard to detect it's talking to more
+//    than one SQLite database behind a load balancer (SQLite is
+//    single-instance only). On Postgres every replica shares one database,
+//    so this is always a single, stable value. Never the raw
+//    installation_id, and derived with a different salt than anything
+//    telemetry.ts sends, so it can't be correlated against a telemetry
+//    ping. See services/db-fingerprint.ts.
 health.get("/health", async (c) => {
 	if (!_dbReady) {
 		return c.json(
@@ -94,6 +105,7 @@ health.get("/health", async (c) => {
 		);
 	}
 	const clients = await computeClientChecksums();
+	const dbFingerprint = await getDbFingerprint();
 	return c.json({
 		status: "ok",
 		service: "agentpulse",
@@ -110,6 +122,7 @@ health.get("/health", async (c) => {
 		legacyObserverDeliveries: getLegacyObserverDeliveries(),
 		retention: getRetentionStatus(),
 		searchIndexes: getSearchIndexStatus(),
+		instance: { dbFingerprint, dialect: config.dialect },
 	});
 });
 
