@@ -1,13 +1,40 @@
 import { useEffect, useState } from "react";
 import type { SupervisorRecord } from "../../shared/types.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
-import { api } from "../lib/api.js";
+import { ApiError, api } from "../lib/api.js";
+import { useDbFingerprintStore } from "../stores/db-fingerprint-store.js";
+import { deriveHostsViewState } from "./hosts-view-state.js";
+
+/**
+ * "<status> <server message>" for a real HTTP error (e.g. "403
+ * insufficient_scope"), or "network error" otherwise — distinguishing an
+ * auth/scope problem from a network failure, instead of the generic
+ * "Failed to ..." text every action on this page used to show regardless
+ * of cause.
+ */
+function formatApiErrorDetail(err: unknown): string {
+	if (err instanceof ApiError) {
+		return `${err.status} ${err.message}`;
+	}
+	return "network error";
+}
+
+/**
+ * Builds the load-failure copy shown in place of the list — distinct from
+ * the genuine "no hosts registered" empty state, which is the bug this
+ * exists to fix: a failed list request used to render identically to a
+ * server with zero registered hosts.
+ */
+function formatLoadError(err: unknown): string {
+	return `Couldn't load hosts: ${formatApiErrorDetail(err)}`;
+}
 
 export function HostsPage() {
 	const { copy } = useCopyFeedback();
 	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [refreshing, setRefreshing] = useState(false);
+	const [loadError, setLoadError] = useState<string | null>(null);
 	const [enrollName, setEnrollName] = useState("");
 	const [enrollExpiresAt, setEnrollExpiresAt] = useState("");
 	const [creatingToken, setCreatingToken] = useState(false);
@@ -29,12 +56,12 @@ export function HostsPage() {
 			setRefreshing(true);
 		}
 		try {
-			setError("");
 			const result = (await api.getSupervisors()) as { supervisors: SupervisorRecord[] };
 			setSupervisors(result.supervisors ?? []);
+			setLoadError(null);
 		} catch (err) {
 			console.error("Failed to load supervisors:", err);
-			setError("Failed to load hosts.");
+			setLoadError(formatLoadError(err));
 		} finally {
 			setLoading(false);
 			setRefreshing(false);
@@ -43,6 +70,20 @@ export function HostsPage() {
 
 	useEffect(() => {
 		loadSupervisors(true);
+
+		// Record this page's own health sample too — don't wait for App.tsx's
+		// next ~60s poll tick to notice a split database (see
+		// db-fingerprint-watch.ts).
+		api
+			.getHealth()
+			.then((health) => {
+				if (health.instance?.dbFingerprint) {
+					useDbFingerprintStore.getState().record(health.instance.dbFingerprint);
+				}
+			})
+			.catch(() => {
+				// Best-effort; the periodic App.tsx poll will try again.
+			});
 	}, []);
 
 	async function handleCreateEnrollmentToken() {
@@ -64,7 +105,7 @@ export function HostsPage() {
 			setEnrollExpiresAt("");
 		} catch (err) {
 			console.error("Failed to create enrollment token:", err);
-			setError("Failed to create enrollment token.");
+			setError(`Failed to create enrollment token: ${formatApiErrorDetail(err)}`);
 		} finally {
 			setCreatingToken(false);
 		}
@@ -83,7 +124,7 @@ export function HostsPage() {
 			await loadSupervisors();
 		} catch (err) {
 			console.error("Failed to revoke supervisor:", err);
-			setError("Failed to revoke host.");
+			setError(`Failed to revoke host: ${formatApiErrorDetail(err)}`);
 		} finally {
 			setRevokingId(null);
 		}
@@ -103,7 +144,7 @@ export function HostsPage() {
 			});
 		} catch (err) {
 			console.error("Failed to rotate supervisor credential:", err);
-			setError("Failed to create re-enrollment token.");
+			setError(`Failed to create re-enrollment token: ${formatApiErrorDetail(err)}`);
 		} finally {
 			setRotatingId(null);
 		}
@@ -130,6 +171,8 @@ export function HostsPage() {
 	const revokedCount = supervisors.filter(
 		(supervisor) => supervisor.enrollmentState === "revoked",
 	).length;
+
+	const viewState = deriveHostsViewState({ loading, loadError, supervisors });
 
 	return (
 		<div className="p-3 md:p-6">
@@ -292,7 +335,7 @@ export function HostsPage() {
 					</div>
 				)}
 
-				{loading ? (
+				{viewState.kind === "loading" ? (
 					<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
 						{Array.from({ length: 3 }).map((_, index) => (
 							<div
@@ -301,7 +344,23 @@ export function HostsPage() {
 							/>
 						))}
 					</div>
-				) : supervisors.length === 0 ? (
+				) : viewState.kind === "error" ? (
+					<div className="rounded-lg border border-red-500/30 bg-red-500/5 p-6">
+						<div className="text-sm font-medium text-red-300">{viewState.message}</div>
+						<div className="mt-2 max-w-2xl text-sm text-muted-foreground">
+							This is different from "no hosts registered" — the request to list hosts itself
+							failed, so any hosts that have actually registered may not be shown.
+						</div>
+						<button
+							type="button"
+							onClick={() => loadSupervisors()}
+							disabled={refreshing}
+							className="mt-4 inline-flex h-9 items-center justify-center rounded-md border border-red-500/30 px-3 text-sm text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+						>
+							{refreshing ? "Retrying..." : "Retry"}
+						</button>
+					</div>
+				) : viewState.kind === "empty" ? (
 					<div className="rounded-lg border border-dashed border-border p-6">
 						<div className="text-sm font-medium text-foreground">No hosts are registered yet.</div>
 						<div className="mt-2 max-w-2xl text-sm text-muted-foreground">
@@ -314,7 +373,7 @@ export function HostsPage() {
 					</div>
 				) : (
 					<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-						{supervisors.map((supervisor) => (
+						{viewState.supervisors.map((supervisor) => (
 							<div key={supervisor.id} className="rounded-lg border border-border bg-card p-4">
 								<div className="flex items-start justify-between gap-3">
 									<div>

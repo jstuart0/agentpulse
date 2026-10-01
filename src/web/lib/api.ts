@@ -89,6 +89,23 @@ export function looksLikeAuthBounce(res: Response): boolean {
 	return false;
 }
 
+/**
+ * Thrown by `request()` for any non-2xx HTTP response. Carries the status
+ * code separately from the message (the server's `{error}`/`{message}`
+ * body when present, else `res.statusText`) so callers that need to render
+ * a precise "403 insufficient_scope"-style error — rather than just logging
+ * `err.message` — don't have to re-parse it out of a formatted string.
+ */
+export class ApiError extends Error {
+	readonly status: number;
+
+	constructor(status: number, message: string) {
+		super(message);
+		this.name = "ApiError";
+		this.status = status;
+	}
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	let res: Response;
 	try {
@@ -133,7 +150,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 				// ignore — we'll fall back to statusText
 			}
 		}
-		throw new Error(detail ?? `API error: ${res.status} ${res.statusText}`);
+		throw new ApiError(res.status, detail ?? res.statusText);
 	}
 
 	return res.json();
@@ -463,7 +480,12 @@ export const api = {
 			method: "DELETE",
 		}),
 
-	getHealth: () => request<{ status: string; version?: string }>("/health"),
+	getHealth: () =>
+		request<{
+			status: string;
+			version?: string;
+			instance?: { dbFingerprint: string; dialect: "sqlite" | "postgres" };
+		}>("/health"),
 
 	getAuthMe: () => request<AuthMeResponse>("/auth/me"),
 
