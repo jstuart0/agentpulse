@@ -9,6 +9,27 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Added
 
+- **Split-SQLite-database detection (hosts-visibility fix).** `GET
+  /api/v1/health` now reports `instance: { dbFingerprint, dialect }` — a
+  short, non-reversible fingerprint of the backing database (first 12 hex
+  chars of a salted sha256 of the existing `installation_id`; never the raw
+  id, and derived with a different salt than telemetry.ts sends, so it
+  can't be correlated against a telemetry ping). On Postgres every replica
+  shares one database, so this is always a single stable value — correct
+  by construction. On SQLite, running more than one server instance (each
+  gets its own independent local database file; SQLite is single-instance
+  only — see CLAUDE.md "Single-replica constraint") produces more than one
+  fingerprint. The dashboard now polls `/health` on load and every ~60s,
+  tracks distinct fingerprints seen in the current browser session, and
+  shows a persistent warning banner when it detects alternation between
+  two or more (tolerating a single clean transition, e.g. a server
+  restart). The server also logs a best-effort, heuristic warning once at
+  boot when it detects SQLite running under an orchestrator that commonly
+  scales to >1 replica (`ECS_CONTAINER_METADATA_URI`/`_V4` or
+  `KUBERNETES_SERVICE_HOST` set). See the README "A host registered but
+  doesn't appear on the Hosts page" troubleshooting entry and
+  `deploy/k8s/README.md`'s "Detecting a split SQLite deployment" section.
+
 - **Event retention enforcement (AGEN-24).** The `eventsRetentionDays`
   setting (Settings → Session Configuration → Event Retention) is now
   enforced by a periodic background pass (hourly by default; override with
@@ -120,6 +141,19 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   reminder to run `ANALYZE events;` after any bulk import or restore).
 
 ### Fixed
+
+- **Hosts page silently rendered an empty list when the list request
+  failed (hosts-visibility fix).** `GET /api/v1/admin/supervisors` failing
+  (an expired session, an under-scoped API key, a network error) used to
+  render identically to a server with zero registered hosts — a
+  registered-but-invisible host went unnoticed because the page never
+  distinguished "no hosts" from "couldn't check." The Hosts page now shows
+  a distinct error state with the status code and server message when
+  available (e.g. "Couldn't load hosts: 403 insufficient_scope") and a
+  Retry button; this takes priority over any stale supervisor list still
+  on screen. The enrollment/revoke/rotate actions on the same page now
+  surface the same status-code detail instead of a generic "Failed to
+  ..." message.
 
 - **Test suite could write to the developer's real home directory.** A
   test run previously wrote a `supervisor.json`, appended to `.zshrc`, and

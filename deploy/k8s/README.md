@@ -620,6 +620,31 @@ polls this endpoint with a 150-second budget (30 attempts × 5s). Only after
 
 ---
 
+## Detecting a split SQLite deployment (hosts-visibility fix)
+
+The base manifest here is `replicas: 1` / `strategy: Recreate` precisely
+because SQLite is a local file with no cross-instance coordination (see the
+repo CLAUDE.md "Single-replica constraint"). If that constraint is ever
+violated outside this repo's own manifests (e.g. a hand-edited `replicas: 2`,
+or an equivalent ECS/Compose scale-out), each instance gets its own
+independent local database file, and state written against one instance
+(a registered supervisor, a session, a setting) is invisible from another.
+
+`GET /api/v1/health` now reports `instance: { dbFingerprint, dialect }` — a
+short, non-reversible fingerprint of the backing database derived from its
+`installation_id` (never the raw id itself, and derived with a different
+salt than telemetry.ts uses, so it can't be correlated against a telemetry
+ping). On Postgres every replica shares one database, so this is always a
+single stable value — correct by construction, no replica-count detection
+needed. On SQLite, two instances report two different fingerprints. The
+dashboard polls this on an interval and raises a persistent warning banner
+the moment it observes more than one. The server also logs a best-effort
+boot-time warning when it detects it's running on SQLite under an
+orchestrator that commonly scales to >1 replica (`ECS_CONTAINER_METADATA_URI`
+or `KUBERNETES_SERVICE_HOST` set).
+
+---
+
 ## Why we pin Hono to a minor version
 
 `package.json` pins Hono with a tilde (`~4.7.0`) rather than a caret (`^4.7.0`).
