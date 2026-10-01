@@ -138,7 +138,10 @@ async function setSettingValue(key: string, value: unknown): Promise<void> {
 		});
 }
 
-async function getOrCreateInstallationId(): Promise<{ id: string; created: boolean }> {
+// Exported (AGEN hosts-visibility fix) so services/db-fingerprint.ts can
+// derive a non-reversible /health fingerprint from the same installation
+// identity telemetry already owns, instead of minting a second id.
+export async function getOrCreateInstallationId(): Promise<{ id: string; created: boolean }> {
 	const existing = await getSettingValue<string>(INSTALLATION_ID_KEY);
 
 	if (existing) {

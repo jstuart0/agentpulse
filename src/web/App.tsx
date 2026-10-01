@@ -5,9 +5,14 @@ import { Layout } from "./components/Layout.js";
 import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js";
 import { api } from "./lib/api.js";
 import { applyTheme, getStoredTheme } from "./lib/theme.js";
+import { useDbFingerprintStore } from "./stores/db-fingerprint-store.js";
 import { useLabsStore } from "./stores/labs-store.js";
 import { useProjectsStore } from "./stores/projects-store.js";
 import { useUserStore } from "./stores/user-store.js";
+
+// How often the dashboard polls GET /api/v1/health purely to sample
+// instance.dbFingerprint — see db-fingerprint-watch.ts / db-fingerprint-store.ts.
+const DB_FINGERPRINT_POLL_MS = 60_000;
 
 const DashboardPage = lazy(() =>
 	import("./pages/DashboardPage.js").then((module) => ({ default: module.DashboardPage })),
@@ -121,6 +126,25 @@ export function App() {
 		return () => {
 			cancelled = true;
 		};
+	}, []);
+
+	useEffect(() => {
+		const record = useDbFingerprintStore.getState().record;
+
+		async function pollFingerprint() {
+			try {
+				const health = await api.getHealth();
+				if (health.instance?.dbFingerprint) {
+					record(health.instance.dbFingerprint);
+				}
+			} catch {
+				// Transient /health failures don't affect split-database detection.
+			}
+		}
+
+		void pollFingerprint();
+		const interval = setInterval(pollFingerprint, DB_FINGERPRINT_POLL_MS);
+		return () => clearInterval(interval);
 	}, []);
 
 	return (

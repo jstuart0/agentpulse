@@ -649,6 +649,40 @@ needs `/admin/supervisors/:id/rotate` — see
 [`deploy/k8s/FORWARDAUTH.md`](deploy/k8s/FORWARDAUTH.md#upgrading-from-a-crash-looping-supervisor-agen-17)
 for the full upgrade and ownership-audit runbook.
 
+### A host registered but doesn't appear on the Hosts page
+
+**Symptom**: the supervisor's own log shows a successful registration
+(`[supervisor] Registered <hostName> (<id>)`), but the host never shows up
+on `/hosts` in the dashboard.
+
+**Likely causes, in order of likelihood**:
+
+1. **Multiple SQLite server instances behind a load balancer.** AgentPulse
+   on SQLite only supports a single running server instance — see
+   [Production / multi-replica with Postgres](#production--multi-replica-with-postgres).
+   If the server was deployed with more than one replica/task (common on
+   ECS, Kubernetes with `replicas > 1`, or `docker compose --scale`), each
+   instance has its own independent local database file; a registration
+   landing on instance A is invisible from instance B. The dashboard now
+   detects this automatically and shows a persistent warning banner when
+   it's talking to more than one database. To check by hand: open
+   `GET /api/v1/health` in your browser a few times in a row (or across a
+   page refresh) and compare `instance.dbFingerprint` — if it changes
+   between requests (and isn't just a one-time value from a server
+   restart), you have more than one instance. `instance.dialect` tells you
+   `sqlite` vs `postgres`.
+2. **The list request itself failed.** The Hosts page used to render
+   silently as "No hosts are registered yet" even when
+   `GET /api/v1/admin/supervisors` actually failed (an expired session, an
+   under-scoped API key, a network blip). It now shows a distinct error
+   state with the status code and server message (e.g. "Couldn't load
+   hosts: 403 insufficient_scope") and a Retry button — if you still see
+   this on a current version, that error message is the actual cause.
+3. **Version/URL mismatch.** Confirm the supervisor's configured
+   `serverUrl` points at the exact host:port your browser hits, and that
+   both are on a version that includes the supervisor agent-routing fix
+   (AGEN-17, v0.6.0+) — see the 403 section above.
+
 ### macOS
 
 ```bash
@@ -727,6 +761,16 @@ Connection pool size defaults to 10. Tune it via `AGENTPULSE_PG_POOL_MAX` based 
 The Postgres overlay removes the SQLite backup sidecar (no longer needed). The SQLite PVC is left in place until you confirm data has been migrated or is no longer needed, then delete it manually.
 
 See `deploy/overlays/postgres/README.md` for the full pre-flight checklist and rollback notes.
+
+**Verifying you're not accidentally running split SQLite instances**: `GET
+/api/v1/health` includes `instance: { dbFingerprint, dialect }` — a short,
+non-reversible fingerprint of the backing database (never the raw
+installation id). On Postgres every replica shares one database, so this
+is always one stable value. On SQLite, if you poll `/health` across
+requests (or just watch the dashboard, which now does this for you and
+raises a banner) and see more than one `dbFingerprint`, you have more than
+one SQLite instance running — see the Hosts-page troubleshooting entry
+above.
 
 ## Develop
 

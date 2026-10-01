@@ -25,6 +25,7 @@ import {
 	resolveAllSessionsForProject,
 } from "./services/projects/projects-service.js";
 import { scheduleRetentionInterval } from "./services/retention-service.js";
+import { buildSqliteScaleWarning, detectOrchestratorHint } from "./services/scale-warning.js";
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
@@ -276,6 +277,18 @@ if (config.disableAuth) {
 	console.warn(
 		"[auth] DISABLE_AUTH=true — scope enforcement is bypassed. All API routes are open.",
 	);
+}
+
+// hosts-visibility fix: best-effort advisory. SQLite only supports a single
+// running server instance (CLAUDE.md "Single-replica constraint") — running
+// it under an orchestrator that commonly scales to >1 replica (ECS,
+// Kubernetes) gives each instance its own independent local database file,
+// which silently diverges (e.g. a registered supervisor that only ever
+// shows up on the instance it registered against). Heuristic and
+// best-effort: a warning, never a failure.
+{
+	const scaleWarning = buildSqliteScaleWarning(config.dialect, detectOrchestratorHint(process.env));
+	if (scaleWarning) console.warn(scaleWarning);
 }
 
 // One-shot footgun warning. DISABLE_AUTH=true binds every mutation route

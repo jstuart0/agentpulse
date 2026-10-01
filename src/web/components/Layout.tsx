@@ -9,6 +9,7 @@ import { cn } from "../lib/utils.js";
 import { useConnectionStore } from "../stores/connection-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useUserStore } from "../stores/user-store.js";
+import { DbSplitWarningBanner } from "./DbSplitWarningBanner.js";
 import { LabsBadge } from "./LabsBadge.js";
 import { SessionTabs } from "./SessionTabs.js";
 import { TopBar } from "./TopBar.js";
@@ -462,6 +463,7 @@ export function Layout() {
 
 			{/* Main column: top bar (Admin + User) + tabs strip + scrollable content */}
 			<div className="flex flex-col flex-1 min-w-0 mt-14 md:mt-0">
+				<DbSplitWarningBanner />
 				<TopBar />
 				<SessionTabs />
 				<main className="flex-1 overflow-x-hidden overflow-y-auto bg-dots">
