@@ -410,9 +410,14 @@ describe.each(SHELLS)(
 	"the key and the user's shell state after the snippet under $name",
 	(shell) => {
 		test("no key variable or export is left behind, and the user's traps are untouched", async () => {
-			const home = await mkdtemp(join(tmpdir(), "ap-shell-exec-hygiene-"));
-			try {
-				for (const snippet of [claudeSnippet(), codexSnippet()]) {
+			for (const snippet of [claudeSnippet(), codexSnippet()]) {
+				// A home of its own per snippet: the first one adds a source line for the
+				// key file to ~/.bashrc, and a Debian/Ubuntu bash reads ~/.bashrc even for
+				// `-c` when its stdin is a socket (which is what a spawned pipe is on
+				// Linux). That would load the saved key into the second run's shell, which
+				// is the user's own startup file doing its job, not the snippet leaking.
+				const home = await mkdtemp(join(tmpdir(), "ap-shell-exec-hygiene-"));
+				try {
 					const script = `trap 'echo MY_TRAP' INT; ${snippet}; printf 'LEFT:%s:%s:%s:%s\\n' "\${key-unset}" "\${AGENTPULSE_KEY-unset}" "\${ap_key-unset}" "\${AGENTPULSE_API_KEY-unset}"; trap`;
 					const res = await runShell(shell, script, {
 						stdin: `${KEY}\n`,
@@ -421,9 +426,9 @@ describe.each(SHELLS)(
 					expect(res.stdout).toContain("LEFT:unset:unset:unset:unset");
 					expect(res.stdout).toContain("echo MY_TRAP");
 					expect(res.stdout + res.stderr).not.toContain(KEY);
+				} finally {
+					await rm(home, { recursive: true, force: true });
 				}
-			} finally {
-				await rm(home, { recursive: true, force: true });
 			}
 		});
 
