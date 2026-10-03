@@ -119,36 +119,53 @@ export function createRolloutIndex(options: {
 	const now = options.now ?? Date.now;
 	const coldRecheckMs = options.coldRecheckMs ?? COLD_RECHECK_MS;
 	const relistFallbackMs = options.relistFallbackMs ?? RELIST_FALLBACK_MS;
+	const localOffsetMs =
+		options.localOffsetMs ?? ((t: number) => -new Date(t).getTimezoneOffset() * 60_000);
 	const dirs = new Map<string, DirNode>();
 	const fileMtimes = new Map<string, number>();
+	const fileIds = new Map<string, string>();
 
+	/**
+	 * Today and the backfill days, named for the UTC date and for the local date:
+	 * nothing here establishes which of the two Codex uses, and a session started
+	 * near midnight must be in the set either way.
+	 */
 	function recentDayDirs(t: number): Set<string> {
 		const result = new Set<string>();
 		for (let i = 0; i <= options.backfillDays; i++) {
-			const d = new Date(t - i * 86_400_000);
-			result.add(
-				join(
-					options.root,
-					String(d.getUTCFullYear()),
-					String(d.getUTCMonth() + 1).padStart(2, "0"),
-					String(d.getUTCDate()).padStart(2, "0"),
-				),
-			);
+			const at = t - i * 86_400_000;
+			for (const shifted of [at, at + localOffsetMs(at)]) {
+				const d = new Date(shifted);
+				result.add(
+					join(
+						options.root,
+						String(d.getUTCFullYear()),
+						String(d.getUTCMonth() + 1).padStart(2, "0"),
+						String(d.getUTCDate()).padStart(2, "0"),
+					),
+				);
+			}
 		}
 		return result;
+	}
+
+	function forgetFile(file: string): void {
+		fileMtimes.delete(file);
+		fileIds.delete(file);
 	}
 
 	function forget(dir: string): void {
 		const node = dirs.get(dir);
 		if (!node) return;
-		for (const file of node.files) fileMtimes.delete(file);
+		for (const file of node.files) forgetFile(file);
 		for (const sub of node.subdirs) forget(sub);
 		dirs.delete(dir);
 	}
 
-	function relist(dir: string, node: DirNode, t: number): void {
+	/** False when the directory could not be read; the old listing then stays as it was. */
+	function relist(dir: string, node: DirNode, t: number): boolean {
 		const entries = fs.readdir(dir);
-		if (!entries) return;
+		if (!entries) return false;
 		const subdirs: string[] = [];
 		const files: string[] = [];
 		for (const entry of entries) {
@@ -158,10 +175,11 @@ export function createRolloutIndex(options: {
 			}
 		}
 		for (const gone of node.subdirs) if (!subdirs.includes(gone)) forget(gone);
-		for (const gone of node.files) if (!files.includes(gone)) fileMtimes.delete(gone);
+		for (const gone of node.files) if (!files.includes(gone)) forgetFile(gone);
 		node.subdirs = subdirs;
 		node.files = files;
 		node.listedAt = t;
+		return true;
 	}
 
 	function spread(dir: string): number {
@@ -170,7 +188,13 @@ export function createRolloutIndex(options: {
 		return h % coldRecheckMs;
 	}
 
-	function visit(dir: string, depth: number, recent: Set<string>, t: number): void {
+	function visit(
+		dir: string,
+		depth: number,
+		recent: Set<string>,
+		t: number,
+		visitedIds: Set<string>,
+	): void {
 		let node = dirs.get(dir);
 		const isRecentDay = recent.has(dir);
 		const holdsDirs = node ? node.subdirs.length > 0 || node.files.length === 0 : true;
@@ -181,6 +205,11 @@ export function createRolloutIndex(options: {
 			if (mtime === null) {
 				forget(dir);
 				return;
+			}
+			// A directory reached by a second path (a symlink) is walked once, by whichever path came first.
+			if (dirStat?.id !== undefined) {
+				if (visitedIds.has(dirStat.id)) return;
+				visitedIds.add(dirStat.id);
 			}
 			if (!node) {
 				node = {
@@ -193,38 +222,51 @@ export function createRolloutIndex(options: {
 				dirs.set(dir, node);
 			}
 			if (mtime !== node.mtimeMs || t - node.listedAt >= relistFallbackMs) {
-				relist(dir, node, t);
-				node.mtimeMs = mtime;
+				if (relist(dir, node, t)) node.mtimeMs = mtime;
 			}
 			let hot = isRecentDay;
 			for (const file of node.files) {
-				const m = fs.stat(file)?.mtimeMs ?? null;
-				if (m === null) {
-					fileMtimes.delete(file);
+				const fileStat = fs.stat(file);
+				const m = fileStat?.mtimeMs ?? null;
+				if (fileStat === null || m === null) {
+					forgetFile(file);
 					continue;
 				}
 				fileMtimes.set(file, m);
+				if (fileStat.id !== undefined) fileIds.set(file, fileStat.id);
 				if (t - m < options.resumeWindowMs) hot = true;
 			}
 			node.nextCheckAt = hot ? 0 : t + coldRecheckMs + spread(dir);
 		}
 		if (!node || depth >= MAX_DEPTH) return;
-		for (const sub of node.subdirs) visit(sub, depth + 1, recent, t);
+		for (const sub of node.subdirs) visit(sub, depth + 1, recent, t, visitedIds);
 	}
 
 	return {
 		list() {
 			const t = now();
 			const recent = recentDayDirs(t);
-			visit(options.root, 0, recent, t);
+			visit(options.root, 0, recent, t, new Set());
 
 			const found: { path: string; mtimeMs: number }[] = [];
 			const resumedOnly = new Set<string>();
+			// One real file reached through several paths is reported once, under the path that sorts first, so it is the same path every scan.
+			const firstPathById = new Map<string, string>();
+			for (const dir of dirs.keys()) {
+				for (const file of dirs.get(dir)?.files ?? []) {
+					const id = fileIds.get(file);
+					if (id === undefined) continue;
+					const seen = firstPathById.get(id);
+					if (seen === undefined || file < seen) firstPathById.set(id, file);
+				}
+			}
 			for (const [dir, node] of dirs) {
 				const isRecentDay = recent.has(dir);
 				for (const file of node.files) {
 					const mtimeMs = fileMtimes.get(file);
 					if (mtimeMs === undefined) continue;
+					const id = fileIds.get(file);
+					if (id !== undefined && firstPathById.get(id) !== file) continue;
 					if (isRecentDay) found.push({ path: file, mtimeMs });
 					else if (t - mtimeMs < options.resumeWindowMs) {
 						found.push({ path: file, mtimeMs });
