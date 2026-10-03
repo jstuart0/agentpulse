@@ -31,6 +31,7 @@ const { normalizeStoredMachineNames, normalizeStoredMachineNamesSafely } = await
 	"../services/effective-machine.js"
 );
 const { enrollSupervisor } = await import("../services/supervisor-registry.js");
+const { attachManagedSessionToLaunch } = await import("../services/managed-session-state.js");
 const { eq } = await import("drizzle-orm");
 
 beforeAll(async () => {
@@ -183,6 +184,107 @@ describe("a stored supervisor whose name is nothing but unprintable characters",
 			headers,
 		);
 		expect(listed.body.total).toBe(2);
+	});
+});
+
+describe("a session linked to a supervisor is on that supervisor's machine, whatever its relay claims", () => {
+	const input = (hostName: string) =>
+		({
+			hostName,
+			platform: "darwin",
+			arch: "arm64",
+			version: "1.0.0",
+			capabilities: {},
+			trustedRoots: [],
+		}) as never;
+
+	async function seedSession(sessionId: string, reported: string | null) {
+		await getDb()
+			.insert(sessions)
+			.values({ sessionId, agentType: "claude_code", status: "active", reportedHost: reported });
+	}
+	const managedHost = async (sessionId: string) =>
+		(
+			await getDb().select().from(managedSessions).where(eq(managedSessions.sessionId, sessionId))
+		)[0]?.hostName;
+
+	test("attaching stores the supervisor's name, not NULL", async () => {
+		const sup = (await enrollSupervisor(input("real-host"), null)).supervisor;
+		await seedSession("att-1", "spoofed-name");
+		await attachManagedSessionToLaunch({
+			sessionId: "att-1",
+			launchRequestId: "l-att",
+			supervisorId: sup.id,
+		});
+		// If the attach still wrote NULL the session would be filed under what its relay claimed.
+		expect(await managedHost("att-1")).toBe("real-host");
+	});
+
+	test("a supervisor that is gone leaves the host empty, and an existing host is kept", async () => {
+		await seedSession("att-2", null);
+		await attachManagedSessionToLaunch({
+			sessionId: "att-2",
+			launchRequestId: "l-2",
+			supervisorId: "no-such-supervisor",
+		});
+		expect(await managedHost("att-2")).toBeNull();
+		const sup = (await enrollSupervisor(input("later-host"), null)).supervisor;
+		await seedSession("att-3", null);
+		await getDb()
+			.insert(managedSessions)
+			.values({
+				sessionId: "att-3",
+				launchRequestId: "l-3",
+				supervisorId: sup.id,
+				hostName: "kept-host",
+			});
+		await attachManagedSessionToLaunch({
+			sessionId: "att-3",
+			launchRequestId: "l-3b",
+			supervisorId: sup.id,
+		});
+		expect(await managedHost("att-3")).toBe("kept-host");
+	});
+
+	test("a row stored with no host (by an older server) is repaired at boot from its live, named supervisor, and the session then groups and filters under that machine, not the reported one", async () => {
+		const headers = await viewer();
+		const sup = (await enrollSupervisor(input("real-host"), null)).supervisor;
+		await seedManaged("old-1", null, "spoofed-name", sup.id);
+		await seedManaged("old-2", null, "innocent-box", sup.id);
+		await seedManaged("orphan", null, "reported-only", "gone-supervisor");
+		await normalizeStoredMachineNames();
+		await normalizeStoredMachineNames();
+		expect(await managedHost("old-1")).toBe("real-host");
+		expect(await managedHost("old-2")).toBe("real-host");
+		expect(await managedHost("orphan")).toBeNull();
+		const { body } = await get<Groups>("/sessions/stats?group_by=host", headers);
+		expect(Object.fromEntries(body.groups.map((g) => [g.host, g.total]))).toEqual({
+			"real-host": 2,
+			"reported-only": 1,
+		});
+		expect((await get<List>("/sessions?host=real-host&limit=10", headers)).body.total).toBe(2);
+		// a spoofed reported host no longer decides the machine of a supervised session
+		expect((await get<List>("/sessions?host=spoofed-name&limit=10", headers)).body.total).toBe(0);
+	});
+
+	test("the fill is compare-and-set: a host another writer gave the row after the read stays, and a supervisor renamed meanwhile is followed", async () => {
+		const sup = (await enrollSupervisor(input("first-name"), null)).supervisor;
+		await seedManaged("cas-1", null, null, sup.id);
+		await seedManaged("cas-2", null, null, sup.id);
+		await normalizeStoredMachineNames({
+			afterRead: async () => {
+				await getDb()
+					.update(managedSessions)
+					.set({ hostName: "writer-name" })
+					.where(eq(managedSessions.sessionId, "cas-1"));
+				await getDb()
+					.update(supervisors)
+					.set({ hostName: "renamed-host" })
+					.where(eq(supervisors.id, sup.id));
+			},
+		});
+		expect(await managedHost("cas-1")).toBe("writer-name");
+		expect(await managedHost("cas-2")).toBe("renamed-host");
 	});
 });
 
