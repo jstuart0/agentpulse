@@ -25,6 +25,9 @@ const { initializeDatabase } = await import("../src/server/db/client.js");
 const { app } = await import("../src/server/app.js");
 const { createApiKey } = await import("../src/server/auth/api-key.js");
 const { getSession } = await import("../src/server/services/session-tracker.js");
+const { getDb } = await import("../src/server/db/client.js");
+const { events } = await import("../src/server/db/schema/index.js");
+const { and, eq } = await import("drizzle-orm");
 const { _resetDbReadyForTest } = await import("../src/server/routes/health.js");
 
 const RELAY = join(import.meta.dir, "relay.ts");
@@ -255,6 +258,15 @@ async function ledgerRows(relay: RelayProc, id: string) {
 		.filter((l) => l.trim())
 		.map((l) => JSON.parse(l) as { id: string; thread_name: string; updated_at: string })
 		.filter((r) => r.id === id);
+}
+
+async function hasStoredEvent(sessionId: string, eventType: string) {
+	const rows = await getDb()
+		.select({ id: events.id })
+		.from(events)
+		.where(and(eq(events.sessionId, sessionId), eq(events.eventType, eventType)))
+		.limit(1);
+	return rows.length > 0;
 }
 
 async function appendCodexRow(relay: RelayProc, id: string, thread_name: string) {
@@ -580,6 +592,10 @@ describe("relay e2e", () => {
 				expect(exitCode).toBe(0);
 				expect(stdout).toBe("");
 				expect(stderr).toBe("");
+				// The generated command forks its network call and returns at once, so
+				// firing the next hook straight away lets Stop overtake UserPromptSubmit
+				// and leave the session working. Each hook is stored before the next fires.
+				await waitFor(`codex8 ${event} stored`, () => hasStoredEvent(CODEX8_ID, event));
 			}
 			const s = await waitFor("codex8 session", () => getSession(CODEX8_ID));
 			expect(s.agentType).toBe("codex_cli");

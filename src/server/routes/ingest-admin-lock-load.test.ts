@@ -3,10 +3,19 @@
  * answered before its database work, so a write that fails afterwards is lost
  * silently: the only honest check is to count events stored against hooks sent.
  * Regression net for hook transactions colliding with the admin lock on SQLite.
+ *
+ * Runs on both backends, but the work is sized per backend: on Postgres every
+ * operation queues for one of a small pool of connections behind the hook
+ * workers, so an operation costs ~100x more wall time than on SQLite and a
+ * slow CI runner would otherwise blow the timeout. A body that outlives its
+ * timeout keeps hammering the shared database during later test files, so the
+ * loop carries its own deadline and always stops the workers.
  */
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { inArray, like } from "drizzle-orm";
 import { Hono } from "hono";
+
+import { isPostgresTest } from "../test-utils/backend.js";
 
 await import("../db/__test_db.js");
 
@@ -21,7 +30,9 @@ const { setUserRole, LastAdminError } = await import("../services/user-managemen
 const { applyApiKeyPatch, KeyNotManageError } = await import("../services/service-keys.js");
 const { OwnerDisabledError } = await import("../auth/owner-state.js");
 
-const OPS = 100;
+const OPS = isPostgresTest ? 30 : 100;
+const TEST_TIMEOUT_MS = 90000;
+const LOOP_DEADLINE_MS = 60000;
 const CONC = 16;
 const OP_GAP_MS = 1;
 
@@ -146,49 +157,59 @@ const ops: Op[] = [
 	},
 ];
 
-test("every hook answered 200 has its session and event stored while refused locked operations run", async () => {
-	const run = crypto.randomUUID().slice(0, 6);
-	const droppedBefore = getRateLimitedDropped();
-	const stop = { v: false };
-	const workers = Array.from({ length: CONC }, () => hookWorker(run, stop));
-	const perOp: Record<string, { ran: number; refused: number }> = {};
-	for (let i = 0; i < OPS; i++) {
-		await new Promise((r) => setTimeout(r, OP_GAP_MS));
-		const op = ops[i % ops.length];
-		const rec = perOp[op.name] ?? { ran: 0, refused: 0 };
-		perOp[op.name] = rec;
-		rec.ran++;
+test(
+	"every hook answered 200 has its session and event stored while refused locked operations run",
+	async () => {
+		const run = crypto.randomUUID().slice(0, 6);
+		const droppedBefore = getRateLimitedDropped();
+		const stop = { v: false };
+		const workers = Array.from({ length: CONC }, () => hookWorker(run, stop));
+		const perOp: Record<string, { ran: number; refused: number }> = {};
+		const startedAt = Date.now();
 		try {
-			await op.run();
-		} catch (e) {
-			if (e instanceof (op.err as never)) rec.refused++;
-			else throw e;
+			for (let i = 0; i < OPS; i++) {
+				if (Date.now() - startedAt > LOOP_DEADLINE_MS)
+					throw new Error(`operation loop exceeded ${LOOP_DEADLINE_MS}ms at op ${i}/${OPS}`);
+				await new Promise((r) => setTimeout(r, OP_GAP_MS));
+				const op = ops[i % ops.length];
+				const rec = perOp[op.name] ?? { ran: 0, refused: 0 };
+				perOp[op.name] = rec;
+				rec.ran++;
+				try {
+					await op.run();
+				} catch (e) {
+					if (e instanceof (op.err as never)) rec.refused++;
+					else throw e;
+				}
+			}
+		} finally {
+			stop.v = true;
+			await Promise.all(workers);
 		}
-	}
-	stop.v = true;
-	await Promise.all(workers);
-	expect(sentIds.size).toBeGreaterThan(100);
-	await drain();
+		expect(sentIds.size).toBeGreaterThan(100);
+		await drain();
 
-	const ids = [...sentIds].filter((id) => id.startsWith(`tx-${run}-`));
-	let sessionRows = 0;
-	let eventSessions = 0;
-	for (let i = 0; i < ids.length; i += 500) {
-		const chunk = ids.slice(i, i + 500);
-		const s = await getDb()
-			.select({ id: sessions.sessionId })
-			.from(sessions)
-			.where(inArray(sessions.sessionId, chunk));
-		sessionRows += s.length;
-		const e = await getDb()
-			.select({ id: events.sessionId })
-			.from(events)
-			.where(inArray(events.sessionId, chunk));
-		eventSessions += new Set(e.map((r: { id: string }) => r.id)).size;
-	}
-	for (const [name, r] of Object.entries(perOp))
-		expect(`${name}:${r.refused}`).toBe(`${name}:${r.ran}`);
-	expect(getRateLimitedDropped()).toBe(droppedBefore);
-	expect(sessionRows).toBe(ids.length);
-	expect(eventSessions).toBe(ids.length);
-}, 30000);
+		const ids = [...sentIds].filter((id) => id.startsWith(`tx-${run}-`));
+		let sessionRows = 0;
+		let eventSessions = 0;
+		for (let i = 0; i < ids.length; i += 500) {
+			const chunk = ids.slice(i, i + 500);
+			const s = await getDb()
+				.select({ id: sessions.sessionId })
+				.from(sessions)
+				.where(inArray(sessions.sessionId, chunk));
+			sessionRows += s.length;
+			const e = await getDb()
+				.select({ id: events.sessionId })
+				.from(events)
+				.where(inArray(events.sessionId, chunk));
+			eventSessions += new Set(e.map((r: { id: string }) => r.id)).size;
+		}
+		for (const [name, r] of Object.entries(perOp))
+			expect(`${name}:${r.refused}`).toBe(`${name}:${r.ran}`);
+		expect(getRateLimitedDropped()).toBe(droppedBefore);
+		expect(sessionRows).toBe(ids.length);
+		expect(eventSessions).toBe(ids.length);
+	},
+	TEST_TIMEOUT_MS,
+);

@@ -19,9 +19,12 @@ import { type LoadExcludeRulesResult, evaluateExclusion } from "../../shared/exc
 import {
 	CODEX_NATIVE_MARKER_DIR,
 	DELIVERY_ID_HEADER,
+	HOST_HEADER,
 	ORIGIN_CODEX_OBSERVER,
 	ORIGIN_HEADER,
 } from "../../shared/hook-headers.js";
+import { encodeReportedHostHeader } from "../../shared/reported-host.js";
+import { createRolloutIndex, resumeWindowMsFromEnv } from "./codex-rollout-index.js";
 
 const CODEX_SESSIONS_ROOT = join(homedir(), ".codex", "sessions");
 const STATE_FILE = join(homedir(), ".agentpulse", "codex-observer-state.json");
@@ -37,9 +40,15 @@ const BACKFILL_DAYS = Math.max(
 	0,
 	Number.parseInt(process.env.AGENTPULSE_CODEX_BACKFILL_DAYS ?? "0", 10) || 0,
 );
-// The observer only ever tails today's files plus BACKFILL_DAYS, so a
-// marker older than that plus a small margin is safe to evict.
-const NATIVE_MARKER_MAX_AGE_MS = (BACKFILL_DAYS + 2) * 24 * 60 * 60 * 1000;
+// A file written to within this long is tailed wherever it sits in the sessions
+// tree (a resumed session keeps its original date directory); a file seen for
+// the first time that way starts at its current end. 0 turns it off.
+const RESUME_WINDOW_MS = resumeWindowMsFromEnv(process.env);
+// The observer only ever tails today's files plus BACKFILL_DAYS, or files
+// written within the resume window, so a marker older than the larger of those
+// plus a small margin is safe to evict.
+const NATIVE_MARKER_MAX_AGE_MS =
+	(Math.max(BACKFILL_DAYS, Math.ceil(RESUME_WINDOW_MS / 86_400_000)) + 2) * 24 * 60 * 60 * 1000;
 
 export type FileState = {
 	offset: number;
@@ -133,29 +142,6 @@ export function saveState(
 	}
 }
 
-function listRolloutFiles(sinceDaysAgo: number): string[] {
-	const result: string[] = [];
-	const now = new Date();
-	for (let i = 0; i <= sinceDaysAgo; i++) {
-		const d = new Date(now.getTime() - i * 86_400_000);
-		const year = String(d.getUTCFullYear());
-		const month = String(d.getUTCMonth() + 1).padStart(2, "0");
-		const day = String(d.getUTCDate()).padStart(2, "0");
-		const dir = join(CODEX_SESSIONS_ROOT, year, month, day);
-		if (!existsSync(dir)) continue;
-		try {
-			for (const entry of readdirSync(dir)) {
-				if (entry.startsWith("rollout-") && entry.endsWith(".jsonl")) {
-					result.push(join(dir, entry));
-				}
-			}
-		} catch {
-			// unreadable dir — skip
-		}
-	}
-	return result;
-}
-
 // A plain function shape, not `typeof fetch` — Bun's global fetch type
 // carries extra static members (e.g. `preconnect`) that a test's fake
 // fetchImpl has no reason to implement.
@@ -202,6 +188,7 @@ async function postHook(
 	apiKey: string | null,
 	payload: HookPayload,
 	deliveryId: string,
+	hostName?: string | null,
 ) {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
@@ -209,6 +196,9 @@ async function postHook(
 		[ORIGIN_HEADER]: ORIGIN_CODEX_OBSERVER,
 		[DELIVERY_ID_HEADER]: deliveryId,
 	};
+	// This machine's name, for display on the dashboard (unauthenticated; see reported-host.ts).
+	const reportedHost = hostName ? encodeReportedHostHeader(hostName) : "";
+	if (reportedHost) headers[HOST_HEADER] = reportedHost;
 	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 	const res = await fetchImpl(`${serverUrl}/api/v1/hooks`, {
 		method: "POST",
@@ -277,11 +267,13 @@ const NO_RULES_GIVEN: LoadExcludeRulesResult = { state: "invalid", rules: [] };
 const HEAD_SCAN_BYTES = 256 * 1024;
 
 /**
- * The directory in a rollout file's first session_meta, read from the start of
- * the file (never posting anything); null when there is none to be found. Only
- * for an entry saved before the directory was recorded.
+ * The id and directory in a rollout file's first session_meta, read from the
+ * start of the file (never posting anything); null where there is none to be
+ * found. Used for an entry saved before the directory was recorded, and to start
+ * a resumed file at its end.
  */
-function discoverCwd(filePath: string): string | null {
+function discoverMeta(filePath: string): { id: string | null; cwd: string | null } {
+	const none = { id: null, cwd: null };
 	let head: string;
 	try {
 		const fd = openSync(filePath, "r");
@@ -293,20 +285,96 @@ function discoverCwd(filePath: string): string | null {
 			closeSync(fd);
 		}
 	} catch {
-		return null;
+		return none;
 	}
 	const lines = head.split("\n");
 	lines.pop(); // the last element is an unfinished line or the empty tail
 	for (const line of lines) {
 		if (!line.includes('"session_meta"')) continue;
 		try {
-			const entry = JSON.parse(line) as { type?: string; payload?: { cwd?: unknown } };
+			const entry = JSON.parse(line) as {
+				type?: string;
+				payload?: { id?: unknown; cwd?: unknown };
+			};
 			if (entry.type === "session_meta") {
-				return typeof entry.payload?.cwd === "string" ? entry.payload.cwd : null;
+				return {
+					id: typeof entry.payload?.id === "string" ? entry.payload.id : null,
+					cwd: typeof entry.payload?.cwd === "string" ? entry.payload.cwd : null,
+				};
 			}
 		} catch {}
 	}
-	return null;
+	return none;
+}
+
+/**
+ * A resumed file is followed from its first line written within this long before
+ * it was found: the cold-recheck interval plus a margin, so the prompt that
+ * resumed the session is not lost to the delay in noticing it.
+ */
+const SEED_LOOKBACK_MS = 15 * 60 * 1000;
+/** How much of the end of a resumed file is searched for that first recent line. */
+const SEED_TAIL_BYTES = 256 * 1024;
+
+/**
+ * Where to start following a file seen for the first time outside the recent
+ * days: the first complete line, within the last SEED_TAIL_BYTES, whose timestamp
+ * is at or after `since`; the end of the last complete line when no line there
+ * has one.
+ */
+function findSeedOffset(filePath: string, size: number, since: number): number {
+	const tailStart = Math.max(0, size - SEED_TAIL_BYTES);
+	const buf = Buffer.alloc(size - tailStart);
+	let read = 0;
+	try {
+		const fd = openSync(filePath, "r");
+		try {
+			read = readSync(fd, buf, 0, buf.length, tailStart);
+		} finally {
+			closeSync(fd);
+		}
+	} catch {
+		return size;
+	}
+	const lastLf = buf.subarray(0, read).lastIndexOf(0x0a);
+	if (lastLf === -1) return tailStart === 0 ? 0 : size;
+	const end = tailStart + lastLf + 1;
+	let pos = 0;
+	if (tailStart > 0) {
+		// The tail starts mid-line unless it happens to start on a line; skip to the first whole one.
+		pos = buf.indexOf(0x0a) + 1;
+	}
+	while (pos <= lastLf) {
+		const lf = buf.indexOf(0x0a, pos);
+		const line = buf.toString("utf8", pos, lf);
+		if (line.includes('"timestamp"')) {
+			try {
+				const at = Date.parse((JSON.parse(line) as { timestamp?: unknown }).timestamp as string);
+				if (Number.isFinite(at) && at >= since) return tailStart + pos;
+			} catch {}
+		}
+		pos = lf + 1;
+	}
+	return end;
+}
+
+/**
+ * The first entry for a file seen for the first time outside the recent days (a
+ * resumed session). The exclusion decision comes first and is stored without the
+ * directory; with the rules invalid it is stored as a normal first sight would be
+ * (read to the end, nothing posted); otherwise it starts at the first recent line.
+ */
+function seedResumedFile(filePath: string, rules: LoadExcludeRulesResult, now: number): FileState {
+	const size = statSync(filePath).size;
+	const meta = discoverMeta(filePath);
+	const sessionId = meta.id ?? "";
+	const posting = postingFor(rules, meta.cwd);
+	if (posting === "excluded") return { offset: size, sessionId, excluded: true };
+	const offset =
+		posting === "post"
+			? findSeedOffset(filePath, size, now - SEED_LOOKBACK_MS)
+			: findSeedOffset(filePath, size, Number.POSITIVE_INFINITY);
+	return { offset, sessionId, cwd: meta.cwd };
 }
 
 type Posting = "post" | "paused" | "excluded";
@@ -402,6 +470,67 @@ export function isCodexObserverEnabled(env: NodeJS.ProcessEnv): boolean {
 	return env.AGENTPULSE_CODEX_OBSERVER !== "off";
 }
 
+/**
+ * The most one pass takes from a file, in bytes and in lines. The rest waits for
+ * the next scan, so one long session cannot hold up the others or fill memory.
+ * A single line longer than the byte cap is still read whole.
+ */
+export const MAX_PASS_BYTES = 1024 * 1024;
+export const MAX_PASS_LINES = 500;
+
+/** Wraps an async job so a call made while it is still running does nothing. */
+export function singleFlight<T>(job: () => Promise<T>): () => Promise<T | undefined> {
+	let running = false;
+	return async () => {
+		if (running) return undefined;
+		running = true;
+		try {
+			return await job();
+		} finally {
+			running = false;
+		}
+	};
+}
+
+type PassLine = { text: string; start: number };
+
+/**
+ * Up to MAX_PASS_LINES complete lines from `startOffset`, reading at most
+ * MAX_PASS_BYTES (more only while the first line is still unfinished). Lines are
+ * split on the LF byte, so a CRLF ending keeps its CR in the text and every
+ * offset is a byte offset whatever the characters are; `consumedBytes` ends just
+ * after the last LF taken. A last line without its LF yet is left alone.
+ */
+async function readPass(
+	filePath: string,
+	startOffset: number,
+	fileSize: number,
+): Promise<{ lines: PassLine[]; consumedBytes: number }> {
+	const available = fileSize - startOffset;
+	const fd = await open(filePath, "r");
+	try {
+		let want = Math.min(available, MAX_PASS_BYTES);
+		for (;;) {
+			const buf = Buffer.alloc(want);
+			const { bytesRead } = await fd.read(buf, 0, want, startOffset);
+			const lines: PassLine[] = [];
+			let lineStart = 0;
+			while (lines.length < MAX_PASS_LINES) {
+				const lf = buf.indexOf(0x0a, lineStart);
+				if (lf === -1 || lf >= bytesRead) break;
+				lines.push({ text: buf.toString("utf8", lineStart, lf), start: startOffset + lineStart });
+				lineStart = lf + 1;
+			}
+			if (lines.length > 0 || want >= available || bytesRead < want) {
+				return { lines, consumedBytes: lineStart };
+			}
+			want = Math.min(available, want * 2);
+		}
+	} finally {
+		await fd.close();
+	}
+}
+
 export async function processRolloutFile(
 	filePath: string,
 	stateEntry: FileState | undefined,
@@ -411,6 +540,7 @@ export async function processRolloutFile(
 	fetchImpl: FetchLike = fetch,
 	homeDir: string = homedir(),
 	rules?: ObserverRules,
+	hostName?: string | null,
 ): Promise<FileState> {
 	const stat = statSync(filePath);
 	const startOffset = stateEntry?.offset ?? 0;
@@ -419,6 +549,13 @@ export async function processRolloutFile(
 		return { offset: stat.size, sessionId: stateEntry.sessionId, excluded: true };
 	}
 	if (stat.size === startOffset) {
+		// Nothing to read, but a directory the rules now cover must not stay on disk.
+		if (
+			stateEntry?.cwd !== undefined &&
+			postingFor(rules?.current() ?? NO_RULES_GIVEN, stateEntry.cwd) === "excluded"
+		) {
+			return { offset: stat.size, sessionId: stateEntry.sessionId, excluded: true };
+		}
 		return stateEntry ?? { offset: 0, sessionId: "" };
 	}
 	if (stat.size < startOffset) {
@@ -432,6 +569,7 @@ export async function processRolloutFile(
 			fetchImpl,
 			homeDir,
 			rules,
+			hostName,
 		);
 	}
 
@@ -440,32 +578,13 @@ export async function processRolloutFile(
 	// file has none until its session_meta line comes up below.
 	const currentRules = rules?.current() ?? NO_RULES_GIVEN;
 	let cwd: string | null | undefined = stateEntry?.cwd;
-	if (cwd === undefined && stateEntry && startOffset > 0) cwd = discoverCwd(filePath);
+	if (cwd === undefined && stateEntry && startOffset > 0) cwd = discoverMeta(filePath).cwd;
 	let posting: Posting | "pending" = cwd === undefined ? "pending" : postingFor(currentRules, cwd);
 	if (posting === "excluded") {
 		return { offset: stat.size, sessionId: stateEntry?.sessionId ?? "", excluded: true };
 	}
 
-	const bytesToRead = stat.size - startOffset;
-	const buf = Buffer.alloc(bytesToRead);
-	const fd = await open(filePath, "r");
-	try {
-		await fd.read(buf, 0, bytesToRead, startOffset);
-	} finally {
-		await fd.close();
-	}
-
-	const chunk = buf.toString("utf8");
-	const endsWithNewline = chunk.endsWith("\n");
-	// Every element of `allLines` except the last is guaranteed to be
-	// followed by exactly one "\n" byte in the chunk — true whether or not
-	// the chunk itself ends with a newline (split("\n") always appends a
-	// trailing "" when it does). This lets the loop below track each
-	// line's start byte offset precisely, which the delivery id needs.
-	const allLines = chunk.split("\n");
-	const completeLines = allLines.slice(0, -1);
-	const incomplete = endsWithNewline ? "" : (allLines[allLines.length - 1] ?? "");
-	const consumedBytes = bytesToRead - Buffer.byteLength(incomplete, "utf8");
+	const { lines, consumedBytes } = await readPass(filePath, startOffset, stat.size);
 	const newOffset = startOffset + consumedBytes;
 
 	let sessionId = stateEntry?.sessionId ?? "";
@@ -474,7 +593,9 @@ export async function processRolloutFile(
 	let covered = sessionId ? isNativeCovered(sessionId, homeDir) : false;
 	/** Posts only while posting is allowed; while the rules are invalid the line is read and its offset advances, nothing more. */
 	const post = async (payload: HookPayload, deliveryId: string) => {
-		if (posting === "post") await postHook(fetchImpl, serverUrl, apiKey, payload, deliveryId);
+		if (posting === "post") {
+			await postHook(fetchImpl, serverUrl, apiKey, payload, deliveryId, hostName);
+		}
 	};
 
 	// Rollout lines whose `type` isn't one of the cases handled below fall
@@ -494,11 +615,7 @@ export async function processRolloutFile(
 	// here vs. assistant-message-only deltas there). Consolidating the two
 	// parsers is an explicit non-goal this campaign — see "Out of scope" in
 	// thoughts/shared/plans/active/2026-07-17-deliver-client-currency-remediation.md.
-	let lineStartOffset = startOffset;
-	for (const line of completeLines) {
-		const thisLineStart = lineStartOffset;
-		lineStartOffset += Buffer.byteLength(line, "utf8") + 1; // +1 for the "\n"
-
+	for (const { text: line, start: thisLineStart } of lines) {
 		if (!line.trim()) continue;
 		let entry: { type?: string; payload?: Record<string, unknown> };
 		try {
@@ -517,7 +634,7 @@ export async function processRolloutFile(
 			cwd = startedIn ?? null;
 			posting = postingFor(currentRules, cwd);
 			if (posting === "excluded") {
-				return { offset: startOffset + consumedBytes, sessionId, excluded: true };
+				return { offset: newOffset, sessionId, excluded: true };
 			}
 			if (covered) continue;
 			const model = typeof p.model === "string" ? p.model : undefined;
@@ -632,6 +749,12 @@ export interface ScanContext {
 	rules?: ObserverRules;
 	fetchImpl?: FetchLike;
 	homeDir?: string;
+	/** Files seen for the first time that are listed here are followed from their first recent line (see seedResumedFile) instead of being replayed from the start. */
+	seedAtEnd?: ReadonlySet<string>;
+	/** The clock, for the lookback applied to a resumed file; tests only. */
+	now?: () => number;
+	/** This machine's name, reported on every hook posted (display only). */
+	hostName?: string | null;
 	/** Called only when an entry was added or changed. */
 	save: (state: ObserverState) => void;
 }
@@ -651,7 +774,12 @@ export async function scanRolloutFiles(files: string[], ctx: ScanContext): Promi
 				callMap = new Map<string, string>();
 				ctx.callMapsByFile.set(file, callMap);
 			}
-			const previous = ctx.state.files[file];
+			let previous = ctx.state.files[file];
+			if (!previous && ctx.seedAtEnd?.has(file)) {
+				previous = seedResumedFile(file, snapshot ?? NO_RULES_GIVEN, (ctx.now ?? Date.now)());
+				ctx.state.files[file] = previous;
+				ctx.save(ctx.state);
+			}
 			const next = await processRolloutFile(
 				file,
 				previous,
@@ -661,10 +789,13 @@ export async function scanRolloutFiles(files: string[], ctx: ScanContext): Promi
 				ctx.fetchImpl,
 				ctx.homeDir,
 				rulesView,
+				ctx.hostName,
 			);
 			ctx.state.files[file] = next;
 			if (!previous || JSON.stringify(previous) !== JSON.stringify(next)) ctx.save(ctx.state);
 		} catch (err) {
+			// Deleted since it was listed: gone, not an error.
+			if ((err as NodeJS.ErrnoException)?.code === "ENOENT") continue;
 			const message = err instanceof Error ? err.message : String(err);
 			console.error(`[codex-observer] ${file}: ${message}`);
 		}
@@ -676,6 +807,8 @@ export async function startCodexObserver(options: {
 	apiKey: string | null;
 	/** The exclude rules, shared with the report gate. The observer does not see AGENTPULSE_SKIP; path rules are what cover it. */
 	rules?: ObserverRules;
+	/** This machine's name, reported on every hook posted so the dashboard can show where a Codex session ran. */
+	hostName?: string | null;
 }) {
 	if (!existsSync(CODEX_SESSIONS_ROOT)) {
 		console.log("[codex-observer] no ~/.codex/sessions directory; observer idle");
@@ -684,15 +817,23 @@ export async function startCodexObserver(options: {
 
 	const state = loadState();
 	const callMapsByFile = new Map<string, CallMap>();
+	const rolloutIndex = createRolloutIndex({
+		root: CODEX_SESSIONS_ROOT,
+		backfillDays: BACKFILL_DAYS,
+		resumeWindowMs: RESUME_WINDOW_MS,
+	});
 	let lastEvictionAt = 0;
 
-	async function scan() {
-		await scanRolloutFiles(listRolloutFiles(BACKFILL_DAYS), {
+	const scan = singleFlight(async () => {
+		const listing = rolloutIndex.list();
+		await scanRolloutFiles(listing.files, {
+			seedAtEnd: listing.resumedOnly,
 			state,
 			callMapsByFile,
 			serverUrl: options.serverUrl,
 			apiKey: options.apiKey,
 			rules: options.rules,
+			hostName: options.hostName,
 			save: (saved) => saveState(saved),
 		});
 
@@ -701,7 +842,7 @@ export async function startCodexObserver(options: {
 			lastEvictionAt = now;
 			evictNativeMarkers(homedir(), now, NATIVE_MARKER_MAX_AGE_MS);
 		}
-	}
+	});
 
 	console.log("[codex-observer] scanning ~/.codex/sessions every", SCAN_INTERVAL_MS / 1000, "s");
 	await scan();

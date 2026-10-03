@@ -109,6 +109,14 @@ function main() {
 		if (name === "Session" && !sharedFields.includes("ownerKind")) {
 			errors.push(`${name}: src/shared/types.ts is missing "ownerKind"`);
 		}
+		// The reported machine must be present on both sides too, not just equal.
+		if (name === "Session") {
+			for (const field of ["reportedHost"]) {
+				if (!sharedFields.includes(field) || !mcpFields.includes(field)) {
+					errors.push(`${name}: "${field}" must be declared on both sides`);
+				}
+			}
+		}
 		// The owner-scope echo is what the MCP tools verify a response against.
 		if (name === "DashboardStats") {
 			for (const field of ["ownerScope", "total", "scratchHidden"]) {

@@ -41,7 +41,7 @@ import {
 	stat,
 	unlink,
 } from "node:fs/promises";
-import { homedir as osHomedir, userInfo } from "node:os";
+import { homedir as osHomedir, hostname as osHostname, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 const RELAY_FETCH_TIMEOUT_MS = 8_000;
@@ -1385,6 +1385,34 @@ export type ParseResult = { ok: true; config: RelayConfig } | { ok: false; error
  */
 export const DELIVERY_ID_HEADER = "X-AgentPulse-Delivery-Id";
 
+/**
+ * The machine name this relay reports on every hook it forwards. Display only:
+ * the server stores it for the dashboard and never decides anything on it. The
+ * same literal as src/shared/hook-headers.ts (this file cannot import it; a
+ * test pins them equal).
+ */
+export const HOST_HEADER = "X-AgentPulse-Host";
+const HOST_NAME_MAX_CHARS = 128;
+
+/**
+ * The header value for a machine name: cut to the server's cap, then
+ * percent-encoded so a name with characters outside Latin-1 (a typographic
+ * apostrophe in a Mac's name) is still a valid header and can't make the
+ * forward fail. "" means there is no usable name: send no header.
+ */
+function hostHeaderValue(name: string): string {
+	// Lone surrogates are dropped first: encodeURIComponent throws on them, and a throw here
+	// would fail every forward of every hook.
+	const cleaned = name.replace(/\p{Cs}/gu, "").trim();
+	const capped = Array.from(cleaned).slice(0, HOST_NAME_MAX_CHARS).join("");
+	if (!capped) return "";
+	try {
+		return encodeURIComponent(capped);
+	} catch {
+		return "";
+	}
+}
+
 /** RFC 6750 b64token: what a Bearer credential may contain. */
 const API_KEY_TOKEN_RE = /^[A-Za-z0-9._~+/-]+=*$/;
 
@@ -1684,6 +1712,8 @@ export type RelayContext = {
 	excludeFs: ExcludeProbeFs;
 	/** The account's home from the user database (not HOME), or undefined when the system has none. */
 	accountHome: () => string | undefined;
+	/** This machine's name, reported on forwarded hooks; read at each forward so a rename shows up. */
+	hostName: () => string;
 	/** Test seam: called while a queue file is being written, once the temp file is open and once it is complete, just before the rename. */
 	queueWriteHook?: (stage: "opened" | "written", tmpPath: string, finalPath: string) => void;
 	/** Test seam: called while the status file is being written, once the file being written is open and once its content is complete. */
@@ -1727,6 +1757,8 @@ type ContextOptions = {
 	homedir?: () => string;
 	/** The account's home as the operating system's user database has it (not HOME); only used to notice rules the relay never reads. */
 	accountHome?: () => string | undefined;
+	/** This machine's name; defaults to the operating system's host name. */
+	hostName?: () => string;
 };
 
 /** HOME, else the operating system's answer for this account; "" only when neither exists. */
@@ -1799,6 +1831,7 @@ export function createRelayContext(config: RelayConfig, opts: ContextOptions = {
 		limits: { ...DEFAULT_LIMITS, ...opts.limits },
 		excludeFs: opts.excludeFs ?? { statSync, lstatSync },
 		accountHome: opts.accountHome ?? defaultAccountHome,
+		hostName: opts.hostName ?? osHostname,
 	};
 }
 
@@ -3574,6 +3607,14 @@ async function enforceQueueLimits(ctx: RelayContext) {
 	);
 }
 
+function safeHostName(ctx: RelayContext): string {
+	try {
+		return ctx.hostName();
+	} catch {
+		return "";
+	}
+}
+
 async function forwardApiRequest(
 	ctx: RelayContext,
 	input: {
@@ -3593,6 +3634,10 @@ async function forwardApiRequest(
 	if (input.agentType) headers.set("X-Agent-Type", input.agentType);
 	if (input.deliveryId && input.pathname === "/api/v1/hooks") {
 		headers.set(DELIVERY_ID_HEADER, input.deliveryId);
+	}
+	if (input.pathname === "/api/v1/hooks") {
+		const host = hostHeaderValue(safeHostName(ctx));
+		if (host) headers.set(HOST_HEADER, host);
 	}
 
 	const response = await ctx.fetch(`${ctx.config.remoteUrl}${input.pathname}${input.search}`, {

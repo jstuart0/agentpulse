@@ -547,6 +547,27 @@ if ($canSymlink) {
 	Assert-True ((Get-Content $privateDecoyPath -Raw) -eq "should never change") "Write-ApPrivateFile: the symlink's target is untouched after the refused write"
 }
 
+# ── Merge-ApCodexHooksFile: another tool's hooks survive (first real execution) ──
+Assert-True (Test-ApJsonNodesAvailable) "System.Text.Json.Nodes is available on this PowerShell"
+$mergeOurs = New-ApCodexHooksFile -BaseUrl "http://localhost:3000" -Direct $true
+$mergeTheirs = '{"x-other-tool":{"enabled":true},"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"othertool start"}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"othertool guard"}]}]}}'
+$merge1 = Merge-ApCodexHooksFile -Existing $mergeTheirs -Ours $mergeOurs
+Assert-True ($merge1.Status -eq "changed") "merge into another tool's hooks.json reports changed"
+$merged = $merge1.Text | ConvertFrom-Json
+Assert-True ($merged."x-other-tool".enabled -eq $true) "merge keeps the unknown top-level key"
+Assert-True ($merged.hooks.SessionStart.Count -eq 2) "SessionStart holds the other tool's group and ours"
+Assert-True ($merged.hooks.SessionStart[0].hooks[0].command -eq "othertool start") "the other tool's SessionStart hook stays first"
+Assert-True ($merged.hooks.SessionStart[1].hooks[0].command -match [regex]::Escape("/api/v1/hooks?event=SessionStart")) "our SessionStart hook is present"
+Assert-True ($merged.hooks.PreToolUse[0].hooks[0].command -eq "othertool guard") "the other tool's PreToolUse hook survives"
+Assert-True ($merged.hooks.PreToolUse.Count -eq 2) "PreToolUse also holds ours"
+Assert-True (@($merged.hooks.PSObject.Properties).Count -eq 12) "all 12 events are present"
+$merge2 = Merge-ApCodexHooksFile -Existing $merge1.Text -Ours $mergeOurs
+Assert-True ($merge2.Status -eq "unchanged") "merging the merged file again is unchanged"
+$mergeBad = Merge-ApCodexHooksFile -Existing "{not json" -Ours $mergeOurs
+Assert-True ($mergeBad.Status -eq "unusable") "malformed JSON is unusable, never rewritten"
+$mergeNew = Merge-ApCodexHooksFile -Existing $null -Ours $mergeOurs
+Assert-True ($mergeNew.Status -eq "changed" -and $mergeNew.Text -ceq $mergeOurs) "no existing file: ours is written as is"
+
 Remove-Item -Recurse -Force $tempProfile -ErrorAction SilentlyContinue
 
 if ($failures -gt 0) {
