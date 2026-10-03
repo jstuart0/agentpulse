@@ -10,11 +10,11 @@
  * the events, so nothing here decides who may see or change a session.
  */
 import {
+	type ParsedHostParam,
 	UNKNOWN_HOST_PARAM,
 	hostEchoMatchesRequest,
 	machineMatchesHost,
 	parseHostParam,
-	type ParsedHostParam,
 } from "../../shared/machine-scope.js";
 import { ScopeMismatchError } from "./owner-scope.js";
 

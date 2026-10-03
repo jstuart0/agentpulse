@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OwnerStatsGroup } from "../../shared/types.js";
 import { api } from "../lib/api.js";
+import { echoMatchesHost } from "../lib/host-scope.js";
 import { requestKey, useRequestGuard } from "../lib/live-request.js";
 import { type DashboardScope, echoMatchesRequest } from "../lib/owner-scope.js";
 import { scopedQuery } from "../lib/scoped-query.js";
@@ -32,6 +33,7 @@ export function useOwnerGroupStats(scope: DashboardScope | null, enabled: boolea
 			const res = await api.getStatsByOwner(scopedQuery(asked));
 			if (generation !== generationRef.current || !isCurrent(askedKey)) return;
 			if (!echoMatchesRequest(asked.owner, viewerUserId, res.ownerScope)) return;
+			if (!echoMatchesHost(asked.host, res.hostFilter)) return;
 			setGroups(ownerStatsByKey(res.groups));
 		} catch {
 			// The headers fall back to counting the cards that are shown.

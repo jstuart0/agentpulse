@@ -12,7 +12,13 @@ export function requestKey(
 	...filters: Array<string | number | boolean | null | undefined>
 ): string {
 	if (scope === null) return "";
-	return [scope.owner, scope.excludeScratch, scope.host ?? "", ...filters.map((f) => f ?? "")].join("|");
+	// Encoded, not joined on a separator: a machine name or a search may hold any character.
+	return JSON.stringify([
+		scope.owner,
+		scope.excludeScratch,
+		scope.host ?? "",
+		...filters.map((f) => f ?? ""),
+	]);
 }
 
 /**

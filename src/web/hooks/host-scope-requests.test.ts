@@ -38,8 +38,14 @@ const real = { ...api };
 const asked: Array<{ call: string; host?: string; owner?: string; excludeScratch?: boolean }> = [];
 let intervals: Array<() => void> = [];
 const realSetInterval = globalThis.setInterval;
-/** What every answer claims to have applied; a test changes it to say something else. */
-let echo: unknown = BUILD;
+const FOLLOW_REQUEST = Symbol("follow the request");
+/** What every answer claims to have applied: by default what was asked, as a server would; a test sets it to say something else. */
+let echo: unknown = FOLLOW_REQUEST;
+function appliedFor(query: { host?: string }): unknown {
+	if (echo !== FOLLOW_REQUEST) return echo;
+	if (!query.host) return { kind: "all" };
+	return query.host === HOST_UNKNOWN ? { kind: "unknown" } : { kind: "host", host: query.host };
+}
 
 function record(call: string, query: ScopedQuery) {
 	asked.push({ call, host: query.host, owner: query.owner, excludeScratch: query.excludeScratch });
@@ -51,36 +57,36 @@ afterAll(() => removeDomStubs());
 beforeEach(() => {
 	asked.length = 0;
 	intervals = [];
-	echo = BUILD;
+	echo = FOLLOW_REQUEST;
 	useUserStore.setState({ userId: "viewer", mode: "team" } as never);
 	useSessionStore.getState().resetForScope("reset");
-	const stats = () => ({
+	const stats = (query: { host?: string }) => ({
 		operational: { waiting: 1, working: 0, idle: 0, error: 0 },
-		hostFilter: echo,
+		hostFilter: appliedFor(query),
 	});
 	client.getSessions = (query: ScopedQuery) => {
 		record(query.operational ? `list:${query.operational}` : query.q ? "search" : "list", query);
 		return Promise.resolve({
 			sessions: [{ sessionId: "s-1", ownerUserId: ALICE, machine: "build-01" }],
 			total: 1,
-			hostFilter: echo,
+			hostFilter: appliedFor(query),
 		});
 	};
 	client.getStats = (query: ScopedQuery) => {
 		record("stats", query);
-		return Promise.resolve(stats());
+		return Promise.resolve(stats(query));
 	};
 	client.getStatsByOwner = (query: ScopedQuery) => {
 		record("groups", query);
-		return Promise.resolve({ groups: [], hostFilter: echo });
+		return Promise.resolve({ groups: [], hostFilter: appliedFor(query) });
 	};
 	client.getStatsByHost = (query: ScopedQuery) => {
 		record("machines", query);
-		return Promise.resolve({ groups: [], truncated: false, hostFilter: echo });
+		return Promise.resolve({ groups: [], truncated: false, hostFilter: appliedFor(query) });
 	};
 	client.getEveryoneStats = (excludeScratch: boolean, host?: string) => {
 		asked.push({ call: "everyone", host, excludeScratch });
-		return Promise.resolve(stats());
+		return Promise.resolve(stats({ host }));
 	};
 	// biome-ignore lint/suspicious/noExplicitAny: replacing the timer for the test
 	(globalThis as any).setInterval = (cb: () => void) => {
@@ -243,13 +249,17 @@ describe("a switch of machine never lets the old machine's answer land", () => {
 		const onBuild = scope;
 		const onEdge: DashboardScope = { ...scope, host: "edge-02" };
 		const hook = renderHook((s: DashboardScope) => useSessions(s), onBuild);
-		await hook.render(onBuild);
-		await hook.render(onEdge);
-		await flush();
-		act(() => release?.());
-		await flush();
-		expect(hook.current.value?.sessions.map((s) => s.sessionId)).toEqual(["on-edge-02"]);
-		await hook.unmount();
+		try {
+			await hook.render(onBuild);
+			await hook.render(onEdge);
+			await flush();
+			expect(hook.current.value?.sessions.map((s) => s.sessionId)).toEqual(["on-edge-02"]);
+			act(() => release?.());
+			await flush();
+			expect(hook.current.value?.sessions.map((s) => s.sessionId)).toEqual(["on-edge-02"]);
+		} finally {
+			await hook.unmount();
+		}
 	});
 });
 
@@ -280,9 +290,10 @@ describe("useMachineStats: the machines the filter offers", () => {
 	});
 
 	test("nothing is asked before the scope is known, and nothing from another scope or a filtered answer is kept", async () => {
-		const hook = renderHook((args: { s: DashboardScope | null }) => useMachineStats(args.s), {
-			s: null,
-		});
+		const hook = renderHook<{ s: DashboardScope | null }, ReturnType<typeof useMachineStats>>(
+			(args) => useMachineStats(args.s),
+			{ s: null },
+		);
 		await hook.render({ s: null });
 		await flush();
 		expect(asked).toEqual([]);
