@@ -7,10 +7,17 @@ import type {
 	Session,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { launchRequests, managedSessions, sessions, supervisors } from "../db/schema/index.js";
+import {
+	launchRequests,
+	managedSessions,
+	sessions,
+	supervisors,
+	users,
+} from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { generateSessionName } from "./name-generator.js";
+import { ownerForNewSession } from "./session-attribution.js";
 import { mapSessionDto } from "./session-dto.js";
 import {
 	assertSupervisorCanWriteSession,
@@ -89,6 +96,35 @@ export async function upsertManagedSessionState(
 	if (input.model !== undefined) sessionUpdates.model = input.model;
 
 	if (!existingSession) {
+		// The supervisor-report creation path. Owner comes from a
+		// correlated launch's requester when this report already names one
+		// (input.launchRequestId), else from the supervisor's own owner.
+		// ingestKeyId always stays null here — only the hook path ever sets
+		// it. onConflictDoNothing because the hook path can race to create
+		// the same session id first; currentSession is re-read unconditionally
+		// right below regardless of which side's insert actually won.
+		let launchRequesterUserId: string | null = null;
+		if (input.launchRequestId) {
+			const [launch] = await getDb()
+				.select({ requestedByUserId: launchRequests.requestedByUserId })
+				.from(launchRequests)
+				.where(eq(launchRequests.id, input.launchRequestId))
+				.limit(1);
+			launchRequesterUserId = launch?.requestedByUserId ?? null;
+		}
+		// A host kept when its owner was disabled still works, but its owner is
+		// gone: the join leaves a disabled owner out, so the session is unowned.
+		const [supervisorRow] = await getDb()
+			.select({ ownerUserId: users.id })
+			.from(supervisors)
+			.leftJoin(users, and(eq(users.id, supervisors.ownerUserId), isNull(users.disabledAt)))
+			.where(eq(supervisors.id, supervisorId))
+			.limit(1);
+		const owner = ownerForNewSession({
+			launchRequesterUserId,
+			supervisorOwnerUserId: supervisorRow?.ownerUserId ?? null,
+		});
+
 		await getDb()
 			.insert(sessions)
 			.values({
@@ -101,7 +137,10 @@ export async function upsertManagedSessionState(
 				startedAt: timestamp,
 				lastActivityAt: timestamp,
 				metadata: input.metadata ?? {},
-			});
+				ownerUserId: owner.ownerUserId,
+				ingestKeyId: owner.ingestKeyId,
+			})
+			.onConflictDoNothing({ target: sessions.sessionId });
 	} else {
 		await withTransaction(async (tx) => {
 			const updates: Record<string, unknown> = { ...sessionUpdates };

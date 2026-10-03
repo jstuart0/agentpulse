@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
 import { describeSqliteOnly } from "../../test-utils/backend.js";
 
@@ -31,6 +31,14 @@ beforeEach(async () => {
 	await getDb().delete(askThreads).execute();
 	await getDb().delete(projects).execute();
 	await getDb().delete(sessions).execute();
+});
+
+// Several tests below write settings.WORKSPACE_DEFAULT_ROOT_KEY, which the
+// beforeEach above never cleans up (not even between this file's own
+// tests) — it would otherwise leak into whatever file or full-suite run
+// happens next against the same database.
+afterAll(async () => {
+	await getDb().delete(settings).execute();
 });
 
 const choices: ProjectChoiceSnapshot[] = [

@@ -1,6 +1,9 @@
 import { desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { isLaunchable } from "../../shared/constants.js";
+import { actorFromAuthUser } from "../auth/actor.js";
+import type { AuthUser } from "../auth/middleware.js";
 import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
@@ -14,6 +17,7 @@ import {
 	updateProject,
 } from "../services/projects/projects-service.js";
 import { normalizeCwd } from "../services/projects/resolver.js";
+import { mapSessionDto } from "../services/session-dto.js";
 import { listSupervisors } from "../services/supervisor-registry.js";
 
 const projectsRouter = new Hono();
@@ -150,7 +154,7 @@ projectsRouter.get("/projects/:id/sessions", async (c) => {
 		.where(eq(sessions.projectId, id))
 		.orderBy(desc(sessions.lastActivityAt));
 
-	return c.json({ sessions: rows, total: rows.length });
+	return c.json({ sessions: rows.map((row) => mapSessionDto(row)), total: rows.length });
 });
 
 projectsRouter.post("/projects", async (c) => {
@@ -243,7 +247,7 @@ projectsRouter.delete("/projects/:id", async (c) => {
 // route is the policy gate, the supervisor is the safety gate. Cascade
 // deletion of the project row + its sessions runs in
 // updateControlAction once the supervisor reports success.
-projectsRouter.post("/projects/:id/cleanup-workarea", async (c) => {
+projectsRouter.post("/projects/:id/cleanup-workarea", async (c: Context) => {
 	const id = c.req.param("id");
 	const project = await getProject(id);
 	if (!project) return c.json({ error: "Project not found" }, 404);
@@ -270,11 +274,15 @@ projectsRouter.post("/projects/:id/cleanup-workarea", async (c) => {
 		.from(sessions)
 		.where(eq(sessions.projectId, id));
 
-	const action = await queueCleanupWorkArea({
-		projectId: id,
-		cwd: project.cwd,
-		targetSupervisorId: target.id,
-	});
+	const authUser = c.get("authUser") as AuthUser | undefined;
+	const action = await queueCleanupWorkArea(
+		{
+			projectId: id,
+			cwd: project.cwd,
+			targetSupervisorId: target.id,
+		},
+		actorFromAuthUser(authUser),
+	);
 
 	return c.json({
 		action,

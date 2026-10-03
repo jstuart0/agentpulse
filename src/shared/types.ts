@@ -4,6 +4,8 @@ import type {
 	SEMANTIC_STATUSES,
 	SESSION_STATUSES,
 } from "./constants.js";
+import type { OwnerScopeEcho } from "./owner-scope.js";
+import type { ActiveOperationalStatus, OperationalStatus } from "./session-state.js";
 
 // Agent types supported. Canonical const list lives in constants.ts;
 // derive the type here for easy import discoverability.
@@ -262,7 +264,26 @@ export const COPILOT_EVENT_TO_HOOK_EVENT: Record<CopilotEvent, HookEventType> = 
 	errorOccurred: "ErrorOccurred",
 };
 
-export type HookEventType = ClaudeCodeEvent | CodexEvent | "ErrorOccurred";
+// Synthetic events produced by AgentPulse's own tooling (not by a CLI hook),
+// delivered through the same POST /api/v1/hooks ingestion path. Kept out of
+// the ClaudeCodeEvent/CodexEvent/CopilotEvent unions on purpose: those lists
+// are mirrored into hook-setup templates (check-hook-event-parity), and
+// nobody configures a CLI hook for these.
+//
+//   UserAcknowledge — the user acknowledged the latest finished agent turn
+//   without starting new work (e.g. a successful Claude Code `/copy`,
+//   detected by a relay-side transcript watcher). Carries `source` and
+//   `acknowledged_at` (hook-side ISO timestamp, informational).
+//   UserUnacknowledge — "mark as unseen" (AGEN): the dashboard cleared a
+//   prior acknowledgement, putting the session back into WAITING/ERROR.
+//   Carries `source` the same way UserAcknowledge does.
+export type AgentPulseSyntheticEvent = "UserAcknowledge" | "UserUnacknowledge";
+
+export type HookEventType =
+	| ClaudeCodeEvent
+	| CodexEvent
+	| "ErrorOccurred"
+	| AgentPulseSyntheticEvent;
 
 // Raw hook event payload (union of fields from both agents)
 export interface HookEventPayload {
@@ -302,6 +323,11 @@ export interface HookEventPayload {
 	// Compaction events (PreCompact/PostCompact)
 	trigger?: string;
 
+	// UserAcknowledge (synthetic): when the acknowledgement happened on the
+	// client, e.g. the transcript record timestamp of a successful /copy.
+	// Informational only — the server stamps its own receive time.
+	acknowledged_at?: string;
+
 	// Codex Stop/Interrupt: identifies the turn a terminal event closes, so
 	// a same-turn event that arrives after it (D21 out-of-order tolerance)
 	// can be recognized and suppressed from reopening isWorking.
@@ -338,6 +364,8 @@ export type EventCategory =
 	| "status_update"
 	| "system_event"
 	| "permission_event"
+	// User acknowledged the latest finished turn (synthetic UserAcknowledge).
+	| "user_ack"
 	// AI watcher categories (only present when the AI feature is enabled)
 	| "ai_proposal_pending"
 	| "ai_proposal"
@@ -416,6 +444,17 @@ export interface Session {
 	metadata: Record<string, unknown>;
 	projectId: string | null;
 	isArchived: boolean;
+	/**
+	 * Acknowledgement model. `lastAgentTurnCompletedAt` is set on every Stop;
+	 * `lastUserAcknowledgedAt` on every UserPromptSubmit and UserAcknowledge.
+	 * Both are server receive-time ISO timestamps so they compare against each
+	 * other; both are null for sessions that predate the columns or have not
+	 * seen the event yet. A finished turn newer than the acknowledgement means
+	 * the user has not looked at the result (WAITING); otherwise the session is
+	 * IDLE when not working. See `getOperationalStatus` in session-state.ts.
+	 */
+	lastAgentTurnCompletedAt: string | null;
+	lastUserAcknowledgedAt: string | null;
 	managedSession?: ManagedSession | null;
 	/**
 	 * Cheap presence flag: true when a managed_sessions row exists for this
@@ -426,6 +465,29 @@ export interface Session {
 	 * present on list rows.
 	 */
 	managed?: boolean;
+	/**
+	 * Derived from owner_user_id / ingest_key_id (mapSessionDto): "user" when
+	 * the session has an owner, "service" when it's unowned but a service
+	 * key's event created or filled it, "unassigned" when both are still
+	 * null. Optional: an older server won't send it.
+	 */
+	ownerKind?: "user" | "service" | "unassigned";
+	/**
+	 * The user who owns this session (set once at creation; never mutated by
+	 * ingest). Null when unassigned. Already on the wire via mapSessionDto's
+	 * passthrough (ingestKeyId is the only field it strips) — declared here
+	 * so client code (the acknowledge-permission check) can read it without
+	 * an unchecked cast. Optional: an older server may not send it.
+	 */
+	ownerUserId?: string | null;
+	/**
+	 * Derived by mapSessionDto via getOperationalStatus (session-state.ts):
+	 * the single source of truth for the dashboard's WORKING / WAITING /
+	 * IDLE / ERROR / COMPLETED state. Optional: an older server won't send
+	 * it, and a client-side fallback can still compute it from the raw
+	 * fields above.
+	 */
+	operationalStatus?: OperationalStatus;
 }
 
 export interface ManagedSession {
@@ -494,14 +556,107 @@ export interface ApiKeyInfo {
 	lastUsedAt: string | null;
 	/** Capability set. Parsed from the DB's JSON-text column; never raw TEXT. */
 	scopes: string[];
+	/** The user the key belongs to; null for a service key. Absent on an older server. */
+	ownerUserId?: string | null;
+	/** The user who minted it; null when no user did. Absent on an older server. */
+	createdByUserId?: string | null;
+	/** True when an ownerless manage key is kept as an admin service key. Absent on an older server. */
+	adminService?: boolean;
+	/** True when the key is a service key: admin-minted, kept as an admin service key, or listed as a plain one. Absent on an older server. */
+	serviceKey?: boolean;
 }
 
 // Dashboard stats
+/**
+ * The dashboard's three tab sizes. They partition the scope: every session is
+ * in exactly one tab, so the three add up to `total`, and each equals the
+ * `total` of `GET /sessions?tab=<name>` under the same owner and scratch
+ * parameters.
+ */
+export interface SessionTabCounts {
+	active: number;
+	completed: number;
+	archived: number;
+}
+
 export interface DashboardStats {
+	/**
+	 * The owner scope this response applied (`{kind:"all"}` when none was asked
+	 * for); `me` carries the user id it resolved to.
+	 */
+	ownerScope: OwnerScopeEcho;
+	/**
+	 * Every session in the applied scope, archived and completed included
+	 * (scratch workspaces left out when the request excluded them) — the same
+	 * set every other count here is a part of.
+	 */
+	total: number;
+	/**
+	 * With excludeScratch on: how many sessions in the applied owner scope were
+	 * left out of every count here because they belong to a scratch workspace
+	 * (0 when scratch isn't excluded). Counts and `total` don't include them.
+	 */
+	scratchHidden: number;
 	activeSessions: number;
 	totalSessionsToday: number;
 	totalToolUsesToday: number;
 	byAgentType: Record<AgentType, number>;
+	/**
+	 * The four operational counts (AGEN), computed server-side by the same
+	 * classifier the DTO's operationalStatus field uses — correct beyond
+	 * whatever page size a client happens to have fetched.
+	 */
+	operational: Record<ActiveOperationalStatus, number>;
+	/**
+	 * True when the bounded operational candidate scan
+	 * (fetchOperationalCandidates, session-tracker.ts) hit its cap — the
+	 * operational counts and any operational= filter may under-report.
+	 * Surfaced on the dashboard as a small note on the status cards.
+	 */
+	truncated: boolean;
+	/**
+	 * Server-side counts for the Completed and Archived tab badges (AGEN) —
+	 * correct beyond whatever page useSessions() has loaded. completedCount
+	 * excludes archived rows (those count under archivedCount instead) and
+	 * mirrors getOperationalStatus's own "completed" branch, including a
+	 * dismissed failure.
+	 */
+	completedCount: number;
+	archivedCount: number;
+	/**
+	 * The three tab sizes (see SessionTabCounts). `completed` and `archived`
+	 * equal completedCount and archivedCount; `active` is every other session —
+	 * unlike activeSessions, which counts only lifecycle status 'active'.
+	 */
+	tabCounts: SessionTabCounts;
+}
+
+/**
+ * One owner's counts in GET /sessions/stats?group_by=owner. `active` is the
+ * operational active set (working + waiting + idle + error), `idle` the
+ * operational idle count, `completed` matches DashboardStats.completedCount's
+ * rule; `total` counts every session the owner has, archived included.
+ */
+export interface OwnerStatsGroup {
+	ownerUserId: string | null;
+	ownerKind: "user" | "service" | "unassigned";
+	total: number;
+	active: number;
+	idle: number;
+	completed: number;
+	/** This owner's tab sizes, counted as DashboardStats.tabCounts is. */
+	tabCounts: SessionTabCounts;
+	working: number;
+	waiting: number;
+	error: number;
+}
+
+/** GET /sessions/stats?group_by=owner. `truncated` as on DashboardStats. */
+export interface OwnerStatsResponse {
+	/** The owner scope this response applied; see DashboardStats.ownerScope. */
+	ownerScope: OwnerScopeEcho;
+	groups: OwnerStatsGroup[];
+	truncated: boolean;
 }
 
 /**
@@ -527,10 +682,40 @@ export interface AuthMeResponse {
 		id: string | null;
 		role: "user" | "admin" | null;
 		scopes?: string[];
+		/**
+		 * users.id for local and SSO callers; the key's owner for api_key
+		 * callers; null for service keys, DISABLE_AUTH, and supervisor
+		 * credentials. Optional: an older server won't send it.
+		 */
+		userId?: string | null;
+		/**
+		 * A display label for the caller, never the stored
+		 * "sso:provider:subject" username. Optional: an older server won't
+		 * send it.
+		 */
+		displayName?: string | null;
+		/**
+		 * True until the user replaces a password someone else chose; the server
+		 * refuses every other dashboard route with password_change_required
+		 * meanwhile. Optional: an older server won't send it.
+		 */
+		mustChangePassword?: boolean;
+		/**
+		 * What the caller may do to team-owned things right now (admin, or
+		 * member), resolved per request: an owned key reports its owner's
+		 * current role, an ownerless manage key is an admin in solo and, in
+		 * team mode, only when kept as an admin service key. Optional: an
+		 * older server won't send it.
+		 */
+		effectiveRole?: "admin" | "member";
 	} | null;
 	signOutUrl: string | null;
 	disableAuth: boolean;
 	allowSignup: boolean;
+	/** The instance mode for an authenticated caller. Optional: an older server won't send it. */
+	mode?: "solo" | "team";
+	/** True when AGENTPULSE_MODE fixes the mode, so the UI can't change it. Optional: an older server won't send it. */
+	modeLockedByEnv?: boolean;
 }
 
 // WebSocket message types
@@ -745,6 +930,8 @@ export interface SupervisorRecord {
 	enrollmentState?: "pending" | "active" | "revoked";
 	createdAt: string;
 	updatedAt: string;
+	/** The caller who enrolled (or, for a pre-upgrade host, later rotated) this supervisor. Null if never attributed. */
+	ownerUserId?: string | null;
 }
 
 export interface LaunchRequest {
@@ -782,6 +969,8 @@ export interface LaunchRequest {
 	desiredDisplayName: string | null;
 	createdAt: string;
 	updatedAt: string;
+	/** The user who requested this launch. Null for DISABLE_AUTH / unattributed callers. */
+	requestedByUserId: string | null;
 }
 
 export interface ControlAction {
@@ -790,6 +979,8 @@ export interface ControlAction {
 	launchRequestId: string | null;
 	actionType: ControlActionType;
 	requestedBy: string | null;
+	/** The user who requested this action. Null for DISABLE_AUTH / unattributed callers. */
+	requestedByUserId: string | null;
 	status: ControlActionStatus;
 	error: string | null;
 	metadata: Record<string, unknown> | null;
@@ -854,6 +1045,8 @@ export interface SupervisorEnrollmentTokenInfo {
 	createdAt: string;
 	usedAt: string | null;
 	revokedAt: string | null;
+	/** The caller who created this token (enroll or rotate). Null when there was no caller userId. */
+	createdByUserId: string | null;
 }
 
 export interface LaunchRequestInput {

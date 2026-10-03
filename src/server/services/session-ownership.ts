@@ -133,6 +133,29 @@ export async function listLiveOwnedManagedSessionIds(states: readonly string[]):
 }
 
 /**
+ * The host a session runs on, by the owner-of-record rule: the supervisor that
+ * claimed the launch for this session id, else the managed row's supervisor.
+ * That covers the gap between the session row and its managed row, when only
+ * the claimed launch names a host. Null when neither does (or the supervisor
+ * row is gone). `ownerUserId` is the host's owner, null when it has none.
+ * One statement.
+ */
+export async function resolveSessionHost(
+	sessionId: string,
+): Promise<{ ownerUserId: string | null } | null> {
+	const hostId = sql`coalesce(
+		(select ${launchRequests.claimedBySupervisorId} from ${launchRequests} where ${launchRequests.launchCorrelationId} = ${sessionId} limit 1),
+		(select ${managedSessions.supervisorId} from ${managedSessions} where ${managedSessions.sessionId} = ${sessionId} limit 1)
+	)`;
+	const [row] = await getDb()
+		.select({ ownerUserId: supervisors.ownerUserId })
+		.from(supervisors)
+		.where(eq(supervisors.id, hostId))
+		.limit(1);
+	return row ? { ownerUserId: row.ownerUserId ?? null } : null;
+}
+
+/**
  * Resolve the owner of record for a session (D5). Returns null when nobody
  * owns it (no managed row and no claimed launch).
  */

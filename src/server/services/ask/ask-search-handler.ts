@@ -1,14 +1,34 @@
 import { and, desc, eq, gte, inArray, like, lte } from "drizzle-orm";
+import type { ActiveOperationalStatus } from "../../../shared/session-state.js";
 import { getDb } from "../../db/client.js";
 import { sessions } from "../../db/schema/index.js";
+import { OwnTurnBusyError } from "../../util/own-turn.js";
 import type { CachedProject } from "../projects/cache.js";
 import { getSearchBackend } from "../search/index.js";
 import type { SearchFilters, SearchHit } from "../search/types.js";
+import { classifySessions, findSessionsByOperational } from "../session-tracker.js";
+
+/**
+ * What a question can ask for: the lifecycle filters the search backends
+ * understand, plus the dashboard's operational state (waiting / error / ...),
+ * which only the session classifier can answer, so it is applied here and
+ * never handed to a backend.
+ */
+export type AskSearchFilters = SearchFilters & {
+	operational?: readonly ActiveOperationalStatus[];
+};
 
 interface SessionMeta {
 	status: string;
 	agentType: string;
 }
+
+// Said when a waiting question's scan of the sessions hit its cap.
+const SCAN_CAPPED_NOTE =
+	"_(There are more sessions than could be scanned, so this list may be incomplete.)_";
+
+// Hits fetched from a text search before it is narrowed to an operational state.
+const OPERATIONAL_SEARCH_WIDTH = 50;
 
 // ---- Status synonym table -----------------------------------------------
 
@@ -17,6 +37,11 @@ const STUCK_SYNONYMS = /\b(stuck|blocked)\b/i;
 const COMPLETED_RE = /\bcomplet/i;
 const ACTIVE_RE = /\bactive\b/i;
 const ARCHIVED_RE = /\barchived?\b/i;
+// The dashboard's operational states, as people ask for them. "Waiting" is the
+// Waiting card; "needs attention" is what the inbox treats as needing a person:
+// waiting or error.
+const WAITING_RE = /\bwaiting\b/i;
+const NEEDS_ATTENTION_RE = /\bneed(?:s|ing)?\s+(?:my\s+|your\s+)?attention\b/i;
 
 // ---- Time helpers --------------------------------------------------------
 
@@ -44,12 +69,16 @@ export function buildSearchFilters(
 	message: string,
 	projects: CachedProject[],
 	now: Date = new Date(),
-): SearchFilters {
-	const filters: SearchFilters = { q: "", mode: "or", limit: 10 };
+): AskSearchFilters {
+	const filters: AskSearchFilters = { q: "", mode: "or", limit: 10 };
 
 	// Status filter — check synonyms before other patterns.
 	if (FAILED_SYNONYMS.test(message)) {
 		filters.sessionStatus = "failed";
+	} else if (NEEDS_ATTENTION_RE.test(message)) {
+		filters.operational = ["waiting", "error"];
+	} else if (WAITING_RE.test(message)) {
+		filters.operational = ["waiting"];
 	} else if (STUCK_SYNONYMS.test(message)) {
 		filters.sessionStatus = "idle";
 	} else if (COMPLETED_RE.test(message)) {
@@ -91,6 +120,8 @@ export function buildSearchFilters(
 	// the FTS query doesn't repeat what the structured filters already cover.
 	// This is best-effort — extra noise tokens just widen an OR query.
 	let q = message
+		.replace(NEEDS_ATTENTION_RE, "")
+		.replace(WAITING_RE, "")
 		.replace(FAILED_SYNONYMS, "")
 		.replace(STUCK_SYNONYMS, "")
 		.replace(COMPLETED_RE, "")
@@ -98,6 +129,7 @@ export function buildSearchFilters(
 		.replace(ARCHIVED_RE, "")
 		.replace(/\blast\s+\d+\s+(hour|day)s?\b/gi, "")
 		.replace(/\b(yesterday|today)\b/gi, "")
+		.replace(/['’]s\b/g, "")
 		.replace(/\b(find|search|show|list|get|what|which|any|me)\b/gi, "")
 		.replace(/\b(sessions?|about|with|that|for|on|in|the)\b/gi, "");
 
@@ -164,8 +196,8 @@ export function formatSearchResults(
  * round-trip.
  */
 async function querySessionsDirect(
-	filters: SearchFilters,
-): Promise<{ hits: SearchHit[]; meta: Map<string, SessionMeta> }> {
+	filters: AskSearchFilters,
+): Promise<{ hits: SearchHit[]; meta: Map<string, SessionMeta>; scanCapped: boolean }> {
 	const clauses = [];
 	if (filters.sessionStatus) clauses.push(eq(sessions.status, filters.sessionStatus));
 	if (filters.cwd) clauses.push(like(sessions.cwd, `%${filters.cwd}%`));
@@ -202,10 +234,44 @@ async function querySessionsDirect(
 		rows.map((r) => [r.sessionId, { status: r.status, agentType: r.agentType }]),
 	);
 
-	return { hits, meta };
+	return { hits, meta, scanCapped: false };
+}
+
+/**
+ * Direct query for a waiting / needs-attention question with no text to
+ * match: the sessions the dashboard shows in those states, with the state
+ * (not the lifecycle status) as the label in the reply.
+ */
+async function querySessionsByOperational(
+	filters: AskSearchFilters,
+	statuses: readonly ActiveOperationalStatus[],
+): Promise<{ hits: SearchHit[]; meta: Map<string, SessionMeta>; scanCapped: boolean }> {
+	const { rows, truncated } = await findSessionsByOperational(statuses, {
+		cwd: filters.cwd,
+		since: filters.since,
+		until: filters.until,
+		limit: filters.limit ?? 10,
+	});
+	const hits: SearchHit[] = rows.map((r) => ({
+		kind: "session" as const,
+		sessionId: r.sessionId,
+		eventId: null,
+		eventType: null,
+		snippet: r.cwd ?? "",
+		score: 1.0,
+		timestamp: r.lastActivityAt,
+		sessionDisplayName: r.displayName,
+		sessionCwd: r.cwd,
+	}));
+	const meta = new Map(
+		rows.map((r) => [r.sessionId, { status: r.operational, agentType: r.agentType }]),
+	);
+	return { hits, meta, scanCapped: truncated };
 }
 
 // ---- Public handler ------------------------------------------------------
+
+const SCAN_BUSY_REPLY = "The session scan is busy right now — try again in a moment.";
 
 /**
  * Run the NL search and format results as a plain-text reply block.
@@ -225,26 +291,52 @@ export async function handleNlSearch(
 		filters.sessionStatus !== undefined ||
 		filters.cwd !== undefined ||
 		filters.since !== undefined ||
-		filters.until !== undefined;
+		filters.until !== undefined ||
+		filters.operational !== undefined;
 	if (!filters.q && !hasStructured) return null;
 
 	let hits: SearchHit[];
 	let sessionMeta: Map<string, SessionMeta>;
+	// The candidate scan behind an operational question hit its cap.
+	let scanCapped = false;
 
 	if (!filters.q && hasStructured) {
 		// FTS backend requires non-empty q — use direct query instead.
 		// querySessionsDirect already has status+agentType in its SELECT.
-		const result = await querySessionsDirect(filters);
+		let result: Awaited<ReturnType<typeof querySessionsDirect>>;
+		try {
+			result = filters.operational
+				? await querySessionsByOperational(filters, filters.operational)
+				: await querySessionsDirect(filters);
+		} catch (err) {
+			if (err instanceof OwnTurnBusyError) return SCAN_BUSY_REPLY;
+			throw err;
+		}
 		hits = result.hits;
 		sessionMeta = result.meta;
+		scanCapped = result.scanCapped;
 	} else {
 		const backend = getSearchBackend();
-		const result = await backend.search(filters);
+		// An operational question is narrowed after the text match, so ask the
+		// backend for a wider page than the 10 that will be shown.
+		const result = await backend.search(
+			filters.operational ? { ...filters, limit: OPERATIONAL_SEARCH_WIDTH } : filters,
+		);
 		hits = result.hits;
 
 		// Batch-fetch status + agentType for the matched sessions in one query.
 		const ids = [...new Set(hits.map((h) => h.sessionId))];
-		if (ids.length === 0) {
+		if (filters.operational) {
+			const classified = await classifySessions(ids);
+			const wanted = filters.operational as readonly string[];
+			hits = hits.filter((h) => wanted.includes(classified.get(h.sessionId)?.operational ?? ""));
+			sessionMeta = new Map(
+				[...classified.values()].map((r) => [
+					r.sessionId,
+					{ status: r.operational, agentType: r.agentType },
+				]),
+			);
+		} else if (ids.length === 0) {
 			sessionMeta = new Map();
 		} else {
 			const rows = await getDb()
@@ -266,5 +358,6 @@ export async function handleNlSearch(
 
 	const capped = unique.length >= 10;
 	const display = unique.slice(0, 10);
-	return formatSearchResults(display, capped, sessionMeta);
+	const reply = formatSearchResults(display, capped, sessionMeta);
+	return scanCapped ? `${reply}\n${SCAN_CAPPED_NOTE}` : reply;
 }

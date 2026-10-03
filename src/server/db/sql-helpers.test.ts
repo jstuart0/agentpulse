@@ -18,6 +18,7 @@ import type { BuildQueryConfig } from "drizzle-orm/sql/sql";
 import { config } from "../config.js";
 import {
 	intervalSecondsSql,
+	jsonExtractJson,
 	jsonExtractText,
 	likeContains,
 	likeStartsWith,
@@ -164,6 +165,33 @@ describe("jsonExtractText()", () => {
 	});
 });
 
+// ── jsonExtractJson ───────────────────────────────────────────────────────────
+
+describe("jsonExtractJson()", () => {
+	afterEach(restoreDialect);
+
+	test("SQLite → json_quote(json_extract(col, '$.field')) with bound path param", () => {
+		setDialect("sqlite");
+		const { sql: rendered, params } = renderSql(jsonExtractJson(metaSql, "$.permissionWait"));
+		expect(rendered).toContain("json_quote(json_extract(");
+		expect(params).toContain("$.permissionWait");
+	});
+
+	test("Postgres → ((col::json)->'field')::text with bound field param", () => {
+		setDialect("postgres");
+		const { sql: rendered, params } = renderSql(jsonExtractJson(metaSql, "$.permissionWait"));
+		expect(rendered).toContain("::json");
+		expect(rendered).toContain(")::text");
+		expect(rendered).not.toContain("->>");
+		expect(params).toContain("permissionWait");
+	});
+
+	test("throws on a nested path", () => {
+		setDialect("sqlite");
+		expect(() => jsonExtractJson(metaSql, "$.a.b")).toThrow(/path must match/);
+	});
+});
+
 // ── likeStartsWith ────────────────────────────────────────────────────────────
 
 describe("likeStartsWith()", () => {
@@ -182,6 +210,17 @@ describe("likeStartsWith()", () => {
 		const { sql: rendered, params } = renderSql(likeStartsWith(colSql, "/home/user"));
 		expect(rendered).toContain("ILIKE");
 		expect(params).toContain("/home/user%");
+	});
+
+	// AGEN: a literal `%`/`_` in user-supplied input must match itself, not
+	// act as a wildcard -- both dialects get an explicit ESCAPE clause and
+	// the fragment's own metacharacters escaped before the trailing `%` is
+	// appended.
+	test("a literal % in the prefix is escaped and matched literally, not as a wildcard", () => {
+		setDialect("sqlite");
+		const { sql: rendered, params } = renderSql(likeStartsWith(colSql, "100%_done"));
+		expect(rendered).toContain("ESCAPE");
+		expect(params).toContain("100\\%\\_done%");
 	});
 });
 
@@ -203,5 +242,28 @@ describe("likeContains()", () => {
 		const { sql: rendered, params } = renderSql(likeContains(colSql, "myproject"));
 		expect(rendered).toContain("ILIKE");
 		expect(params).toContain("%myproject%");
+	});
+
+	// AGEN: a search for a literal `%` must not become "match anything" --
+	// the fragment's own `%`/`_`/backslash are escaped before the
+	// surrounding wildcards are appended, on both dialects.
+	test("a literal % in the search fragment is escaped and matched literally", () => {
+		setDialect("sqlite");
+		const { sql: rendered, params } = renderSql(likeContains(colSql, "100%"));
+		expect(rendered).toContain("ESCAPE");
+		expect(params).toContain("%100\\%%");
+	});
+
+	test("a literal _ in the search fragment is escaped and matched literally", () => {
+		setDialect("postgres");
+		const { sql: rendered, params } = renderSql(likeContains(colSql, "a_b"));
+		expect(rendered).toContain("ESCAPE");
+		expect(params).toContain("%a\\_b%");
+	});
+
+	test("a literal backslash is escaped before % / _ so the escape char itself can't be smuggled in", () => {
+		setDialect("sqlite");
+		const { params } = renderSql(likeContains(colSql, "a\\b"));
+		expect(params).toContain("%a\\\\b%");
 	});
 });

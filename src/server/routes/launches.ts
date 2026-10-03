@@ -1,9 +1,11 @@
 import { desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { isLaunchable } from "../../shared/constants.js";
 import type { LaunchRequestInput, SessionTemplateInput } from "../../shared/types.js";
-import { requireAuth } from "../auth/middleware.js";
+import { actorFromAuthUser } from "../auth/actor.js";
+import { type AuthUser, requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, sessionTemplates } from "../db/schema/index.js";
@@ -39,9 +41,11 @@ launchesRouter.get("/launches/:id", async (c) => {
 	return c.json({ launchRequest, session });
 });
 
-launchesRouter.post("/launches", async (c) => {
+launchesRouter.post("/launches", async (c: Context) => {
 	try {
 		const body = await c.req.json<LaunchRequestInput & { templateId?: string | null }>();
+		const authUser = c.get("authUser") as AuthUser | undefined;
+		const actor = actorFromAuthUser(authUser);
 
 		// When a templateId is provided, load the template and resolve project
 		// defaults before passing to the validator. The validator sees a plain
@@ -62,11 +66,11 @@ launchesRouter.post("/launches", async (c) => {
 				...body,
 				template: resolvedTemplate,
 			};
-			const result = await createValidatedLaunchRequest(resolvedBody);
+			const result = await createValidatedLaunchRequest(resolvedBody, actor);
 			return c.json(result, result.launchRequest.status === "validated" ? 201 : 200);
 		}
 
-		const result = await createValidatedLaunchRequest(body);
+		const result = await createValidatedLaunchRequest(body, actor);
 		return c.json(result, result.launchRequest.status === "validated" ? 201 : 200);
 	} catch (error) {
 		if (error instanceof HTTPException) {

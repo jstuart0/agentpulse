@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AgentType, ManagedState } from "../../shared/types.js";
+import { useUserStore } from "./user-store.js";
 
 export interface OpenTab {
 	sessionId: string;
@@ -17,13 +18,20 @@ export interface OpenTab {
 	cwd?: string | null;
 }
 
-const STORAGE_KEY = "agentpulse.openTabs";
+const STORAGE_BASE = "agentpulse.openTabs";
 const MAX_TABS = 12;
 
-function load(): OpenTab[] {
+/** Where this viewer's tabs live. Null until the viewer is known: nothing is read or written before then. */
+let storageKey: string | null = null;
+
+function keyFor(userId: string | null): string {
+	return userId === null ? STORAGE_BASE : `${STORAGE_BASE}.${userId}`;
+}
+
+function read(key: string): OpenTab[] {
 	if (typeof localStorage === "undefined") return [];
 	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
+		const raw = localStorage.getItem(key);
 		if (!raw) return [];
 		const parsed = JSON.parse(raw) as unknown;
 		if (!Array.isArray(parsed)) return [];
@@ -39,22 +47,44 @@ function load(): OpenTab[] {
 }
 
 function save(tabs: OpenTab[]) {
+	if (storageKey === null) return;
 	try {
-		localStorage.setItem(STORAGE_KEY, JSON.stringify(tabs));
+		localStorage.setItem(storageKey, JSON.stringify(tabs));
 	} catch {
 		// quota or privacy mode — ignore
 	}
 }
 
+/**
+ * Tabs the page kept under one shared key before they belonged to a person:
+ * a viewer with no id of their own (solo without sign-in) keeps using that key
+ * as it was; for everyone else it is removed, never shown to a different person.
+ */
+function retireSharedKey(adoptedUserId: string | null) {
+	if (adoptedUserId === null || typeof localStorage === "undefined") return;
+	try {
+		localStorage.removeItem(STORAGE_BASE);
+	} catch {
+		// Storage refused: the shared key is simply never read again.
+	}
+}
+
 interface TabsStore {
 	tabs: OpenTab[];
+	/** The viewer is known (or changed): show and save their tabs, not the previous person's. */
+	adopt: (userId: string | null) => void;
 	open: (tab: OpenTab) => void;
 	close: (sessionId: string) => void;
 	clear: () => void;
 }
 
 export const useTabsStore = create<TabsStore>((set) => ({
-	tabs: load(),
+	tabs: [],
+	adopt: (userId) => {
+		storageKey = keyFor(userId);
+		retireSharedKey(userId);
+		set({ tabs: read(storageKey) });
+	},
 	open: (tab) =>
 		set((state) => {
 			const existingIndex = state.tabs.findIndex((t) => t.sessionId === tab.sessionId);
@@ -89,3 +119,18 @@ export const useTabsStore = create<TabsStore>((set) => ({
 		set({ tabs: [] });
 	},
 }));
+
+// Open tabs follow the signed-in person: when who is looking becomes known or changes, load theirs.
+let adoptedFor: { userId: string | null } | null = null;
+function adoptViewer() {
+	const { loaded, userId } = useUserStore.getState();
+	if (!loaded) {
+		adoptedFor = null;
+		return;
+	}
+	if (adoptedFor && adoptedFor.userId === userId) return;
+	adoptedFor = { userId };
+	useTabsStore.getState().adopt(userId);
+}
+useUserStore.subscribe(adoptViewer);
+adoptViewer();

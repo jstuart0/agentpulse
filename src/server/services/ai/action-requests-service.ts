@@ -7,6 +7,7 @@ import {
 	KNOWN_NOTIFICATION_CHANNEL_KINDS,
 	type NotificationChannelKind,
 } from "../../../shared/types.js";
+import type { Actor } from "../../auth/actor.js";
 import { getDb } from "../../db/client.js";
 import {
 	events,
@@ -19,6 +20,12 @@ import {
 	sessionTemplates,
 	sessions,
 } from "../../db/schema/index.js";
+import {
+	NotOwnerError,
+	assertCanArchiveSession,
+	assertCanChangeSessions,
+	assertCanDeleteSession,
+} from "../authorization.js";
 import { getChannelCredential } from "../channels/channels-service.js";
 import { getTelegramBotToken } from "../channels/telegram-credentials.js";
 import { sendTelegramMessage } from "../channels/telegram.js";
@@ -29,6 +36,13 @@ import { createProject, deleteProject, updateProject } from "../projects/project
 import { getSearchBackend } from "../search/index.js";
 import { listSupervisors } from "../supervisor-registry.js";
 import { deleteTemplate, updateTemplate } from "../templates/templates-service.js";
+
+/**
+ * The actor for AI execution that no human approved: not a user, not a member
+ * of anything. Team mode refuses it every owner-or-admin operation (archive,
+ * delete); an approved action runs as the approving human instead.
+ */
+export const AI_EXECUTOR_ACTOR: Actor = { userId: null, label: "ai" };
 import {
 	type ActionRequestKind,
 	type ActionRequestPayload,
@@ -200,6 +214,7 @@ export async function listOpenActionRequests(): Promise<ActionRequest[]> {
 
 type ResolveResult =
 	| { ok: true; status: ActionRequestDecision }
+	| { ok: false; reason: "not_owner" }
 	| { ok: false; reason: "race_lost"; currentStatus: string }
 	| { ok: false; reason: "expired"; failureReason: string }
 	| { ok: false; reason: "failed"; failureReason: string };
@@ -216,6 +231,7 @@ async function conditionalUpdate(
 		status: ActionRequestStatus;
 		failureReason?: string;
 		resolvedBy?: string;
+		resolvedByUserId?: string | null;
 		resultEventId?: string;
 	},
 ): Promise<{ rowsAffected: number }> {
@@ -226,6 +242,7 @@ async function conditionalUpdate(
 			status: patch.status,
 			...(patch.failureReason !== undefined && { failureReason: patch.failureReason }),
 			...(patch.resolvedBy !== undefined && { resolvedBy: patch.resolvedBy }),
+			...(patch.resolvedByUserId !== undefined && { resolvedByUserId: patch.resolvedByUserId }),
 			...(patch.resultEventId !== undefined && { resultEventId: patch.resultEventId }),
 			...(["applied", "failed", "expired", "declined"].includes(patch.status) && {
 				resolvedAt: now,
@@ -388,6 +405,7 @@ async function runExecutor<K extends ActionRequestKind>(
 async function executeLaunchAction(
 	request: ActionRequest,
 	resolvedBy: string,
+	actor: Actor,
 ): Promise<ResolveResult> {
 	const payload = narrowPayload(request, "launch_request");
 	const { template, launchSpec, requestedLaunchMode, validatedSupervisorId } = payload;
@@ -446,14 +464,17 @@ async function executeLaunchAction(
 						...(payloadAskThreadId ? { askThreadId: payloadAskThreadId } : {}),
 					}
 				: null;
-		const { launchRequest } = await createValidatedLaunchRequest({
-			template,
-			launchSpec: finalLaunchSpec,
-			requestedSupervisorId: executingSupervisor.id,
-			requestedLaunchMode,
-			metadata: launchMetadata,
-			desiredDisplayName: desiredDisplayName ?? null,
-		});
+		const { launchRequest } = await createValidatedLaunchRequest(
+			{
+				template,
+				launchSpec: finalLaunchSpec,
+				requestedSupervisorId: executingSupervisor.id,
+				requestedLaunchMode,
+				metadata: launchMetadata,
+				desiredDisplayName: desiredDisplayName ?? null,
+			},
+			actor,
+		);
 
 		return succeed(
 			request,
@@ -591,6 +612,7 @@ async function executeSessionMutation(
 async function executeSessionStopAction(
 	request: ActionRequest,
 	resolvedBy: string,
+	actor: Actor,
 ): Promise<ResolveResult> {
 	return executeSessionMutation(request, resolvedBy, async (sessionId) => {
 		// Verify managed_sessions at execute time — the session may have
@@ -604,15 +626,17 @@ async function executeSessionStopAction(
 		if (!managed) {
 			throw new Error("Session is not managed by AgentPulse");
 		}
-		await queueStopAction(sessionId);
+		await queueStopAction(sessionId, actor);
 	});
 }
 
 async function executeSessionArchiveAction(
 	request: ActionRequest,
 	resolvedBy: string,
+	actor: Actor,
 ): Promise<ResolveResult> {
 	return executeSessionMutation(request, resolvedBy, async (sessionId) => {
+		await assertCanArchiveSession(actor, sessionId);
 		await getDb()
 			.update(sessions)
 			.set({ isArchived: true })
@@ -623,8 +647,10 @@ async function executeSessionArchiveAction(
 async function executeSessionDeleteAction(
 	request: ActionRequest,
 	resolvedBy: string,
+	actor: Actor,
 ): Promise<ResolveResult> {
 	return executeSessionMutation(request, resolvedBy, async (sessionId) => {
+		await assertCanDeleteSession(actor, sessionId);
 		// Remove FTS index entries first, then the events, then the session row.
 		const backend = getSearchBackend();
 		await backend.removeSession(sessionId);
@@ -1025,6 +1051,7 @@ async function executeCreateFreeformAlertRuleAction(
 async function stopOne(
 	sessionId: string,
 	name: string,
+	actor: Actor,
 ): Promise<{ sessionId: string; name: string; ok: boolean; error?: string }> {
 	const [managed] = await getDb()
 		.select({ sessionId: managedSessions.sessionId })
@@ -1036,7 +1063,7 @@ async function stopOne(
 		// guard here in case the executor receives a bypassed payload.
 		return { sessionId, name, ok: false, error: "hook-only session" };
 	}
-	await queueStopAction(sessionId);
+	await queueStopAction(sessionId, actor);
 	return { sessionId, name, ok: true };
 }
 
@@ -1044,10 +1071,12 @@ async function archiveOne(
 	sessionId: string,
 	name: string,
 	session: { isArchived: boolean },
+	actor: Actor,
 ): Promise<{ sessionId: string; name: string; ok: boolean; error?: string }> {
 	if (session.isArchived) {
 		return { sessionId, name, ok: true, error: "already archived" };
 	}
+	await assertCanArchiveSession(actor, sessionId);
 	await getDb().update(sessions).set({ isArchived: true }).where(eq(sessions.sessionId, sessionId));
 	return { sessionId, name, ok: true };
 }
@@ -1056,6 +1085,7 @@ async function deleteOne(
 	sessionId: string,
 	name: string,
 	session: { endedAt: string | null; status: string },
+	actor: Actor,
 ): Promise<{ sessionId: string; name: string; ok: boolean; error?: string }> {
 	const activeStatuses = ["active", "idle"];
 	if (!session.endedAt && activeStatuses.includes(session.status)) {
@@ -1067,6 +1097,7 @@ async function deleteOne(
 			error: "cannot delete active session — stop or archive first",
 		};
 	}
+	await assertCanDeleteSession(actor, sessionId);
 	const backend = getSearchBackend();
 	await backend.removeSession(sessionId);
 	await getDb().delete(events).where(eq(events.sessionId, sessionId));
@@ -1101,6 +1132,7 @@ function formatBulkOutcomes(
 async function executeBulkSessionAction(
 	request: ActionRequest,
 	resolvedBy: string,
+	actor: Actor,
 ): Promise<ResolveResult> {
 	const payload = narrowPayload(request, "bulk_session_action");
 	const { action, sessionIds, sessionNames } = payload;
@@ -1140,12 +1172,12 @@ async function executeBulkSessionAction(
 				if (session.endedAt) {
 					outcomes.push({ sessionId, name, ok: true, error: "already stopped" });
 				} else {
-					outcomes.push(await stopOne(sessionId, name));
+					outcomes.push(await stopOne(sessionId, name, actor));
 				}
 			} else if (action === "archive") {
-				outcomes.push(await archiveOne(sessionId, name, session));
+				outcomes.push(await archiveOne(sessionId, name, session, actor));
 			} else if (action === "delete") {
-				outcomes.push(await deleteOne(sessionId, name, session));
+				outcomes.push(await deleteOne(sessionId, name, session, actor));
 			}
 		} catch (err) {
 			outcomes.push({
@@ -1184,7 +1216,11 @@ export function ruleTypeLabel(ruleType: AlertRuleType, thresholdMinutes?: number
 	}
 }
 
-type KindExecutor = (request: ActionRequest, resolvedBy: string) => Promise<ResolveResult>;
+type KindExecutor = (
+	request: ActionRequest,
+	resolvedBy: string,
+	actor: Actor,
+) => Promise<ResolveResult>;
 
 const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
 	launch_request: executeLaunchAction,
@@ -1202,18 +1238,54 @@ const KIND_EXECUTORS: Partial<Record<string, KindExecutor>> = {
 	bulk_session_action: executeBulkSessionAction,
 };
 
+/**
+ * Would the owner-or-admin rule let this actor run the request? Only the kinds
+ * that archive or delete sessions are owner-gated (a bulk request needs the
+ * actor to be allowed on every session it names); everything else, and a
+ * request that is gone or already claimed, is left to the claim below.
+ */
+async function actorMayApply(id: string, actor: Actor): Promise<boolean> {
+	const request = await getActionRequest(id);
+	if (!request || request.status !== "awaiting_reply") return true;
+	try {
+		if (request.kind === "session_archive") {
+			const payload = narrowPayload(request, "session_archive");
+			await assertCanArchiveSession(actor, payload.sessionId);
+		} else if (request.kind === "session_delete") {
+			const payload = narrowPayload(request, "session_delete");
+			await assertCanDeleteSession(actor, payload.sessionId);
+		} else if (request.kind === "bulk_session_action") {
+			const payload = narrowPayload(request, "bulk_session_action");
+			if (payload.action !== "stop") await assertCanChangeSessions(actor, payload.sessionIds);
+		}
+		return true;
+	} catch (err) {
+		if (err instanceof NotOwnerError) return false;
+		throw err;
+	}
+}
+
+/**
+ * Resolve an action request. `actor` is who is deciding: the signed-in human
+ * approving it on the web, a Telegram chat, or (for execution no human
+ * approved) AI_EXECUTOR_ACTOR. Every executor that reaches an owner-or-admin
+ * operation runs the rule for that actor, so a member approver can't archive or
+ * delete another user's session through an action request in team mode.
+ */
 export async function resolveActionRequest(args: {
 	id: string;
 	decision: ActionRequestDecision;
 	resolvedBy: string;
+	actor: Actor;
 }): Promise<ResolveResult> {
-	const { id, decision, resolvedBy } = args;
+	const { id, decision, resolvedBy, actor } = args;
 
 	if (decision === "declined") {
 		// Atomic conditional UPDATE — same pattern as "applied" path below.
 		const claimed = await conditionalUpdate(id, "awaiting_reply", {
 			status: "declined",
 			resolvedBy,
+			resolvedByUserId: actor.userId,
 		});
 		if (claimed.rowsAffected === 0) {
 			const current = await getActionRequest(id);
@@ -1243,12 +1315,19 @@ export async function resolveActionRequest(args: {
 
 	// decision === "applied"
 	//
+	// Authorization comes first, before the request is claimed: a refusal must
+	// leave it open for the owner or an admin, not burn it.
+	if (!(await actorMayApply(id, actor))) return { ok: false, reason: "not_owner" };
+
 	// Atomic claim: single UPDATE WHERE status = 'awaiting_reply'. If two
 	// concurrent approvals race (e.g. web UI + Telegram), exactly one will
 	// see rowsAffected = 1 and proceed; the other gets 0 and returns race-lost.
 	// This is the only correct pattern — a "read then write" approach would
 	// allow both to pass the read check before either writes.
-	const claimed = await conditionalUpdate(id, "awaiting_reply", { status: "applying" });
+	const claimed = await conditionalUpdate(id, "awaiting_reply", {
+		status: "applying",
+		resolvedByUserId: actor.userId,
+	});
 	if (claimed.rowsAffected === 0) {
 		const current = await getActionRequest(id);
 		return { ok: false, reason: "race_lost", currentStatus: current?.status ?? "missing" };
@@ -1275,5 +1354,5 @@ export async function resolveActionRequest(args: {
 			failureReason: `Unsupported action kind: ${request.kind}`,
 		};
 	}
-	return executor(request, resolvedBy);
+	return executor(request, resolvedBy, actor);
 }

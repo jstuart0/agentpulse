@@ -486,13 +486,26 @@ function sanitizeLogField(value: unknown, maxLen = 64): string {
  * oversize-stub paths. Never sets `oversizeStub` — only
  * handleOversizeHookDelivery does that, on its own copy (F140/D21).
  */
-function buildHookDeliveryContext(c: Context): HookDeliveryContext {
+export function buildHookDeliveryContext(c: Context): HookDeliveryContext {
 	const authUser = c.get("authUser") as AuthUser | undefined;
 	return {
 		keyId: authUser?.id ?? "anonymous",
 		deliveryId: parseDeliveryId(c.req.header(DELIVERY_ID_HEADER)),
 		origin: parseOrigin(c.req.header(ORIGIN_HEADER)),
+		attribution: postingAttribution(authUser),
 	};
+}
+
+/**
+ * Who posted this write: the posting key's owner and the key itself. Read
+ * straight off the already-resolved AuthUser set by requireApiKey() — no extra
+ * lookup, synchronous, no I/O.
+ */
+function postingAttribution(authUser: AuthUser | undefined): {
+	ownerUserId: string | null;
+	ingestKeyId: string | null;
+} {
+	return { ownerUserId: authUser?.userId ?? null, ingestKeyId: authUser?.keyId ?? null };
 }
 
 /**
@@ -501,7 +514,28 @@ function buildHookDeliveryContext(c: Context): HookDeliveryContext {
  * path and the F128 oversize-stub path — both need the same dedup/broadcast
  * behavior, just with a different (real vs. synthetic) payload.
  */
+// Test-only seam: lets a test replace the background enqueue work for the
+// duration of a call — e.g. holding it behind a latch so a DB-statement
+// count taken around app.request() can't race the detached microtask chain
+// (see ingest-latency.test.ts's "nothing between the 200 and
+// enqueueHookProcessing" behavioral test). A no-op indirection in
+// production (the override is never set).
+let _enqueueHookProcessingOverride: typeof enqueueHookProcessingReal | null = null;
+export function _setEnqueueHookProcessingOverrideForTest(
+	fn: typeof enqueueHookProcessingReal | null,
+): void {
+	_enqueueHookProcessingOverride = fn;
+}
+
 function enqueueHookProcessing(
+	payload: HookEventPayload,
+	agentType: ReturnType<typeof detectAgentType>,
+	hookCtx: HookDeliveryContext,
+): void {
+	(_enqueueHookProcessingOverride ?? enqueueHookProcessingReal)(payload, agentType, hookCtx);
+}
+
+function enqueueHookProcessingReal(
 	payload: HookEventPayload,
 	agentType: ReturnType<typeof detectAgentType>,
 	hookCtx: HookDeliveryContext,
@@ -517,6 +551,9 @@ function enqueueHookProcessing(
 
 			// Broadcast to WebSocket subscribers using the returned session row —
 			// no second DB read needed (eliminates the N+1 getSession() call).
+			// A null row means the event was dropped (UserAcknowledge for an
+			// unknown session): nothing changed, nothing to broadcast.
+			if (!session) return;
 			if (isNew) {
 				notifySessionCreated(session);
 			} else {
@@ -678,7 +715,7 @@ ingest.post("/hooks", requireApiKey(), hookRateLimit(), async (c: Context) => {
 // POST /api/v1/hooks/status - Receive semantic status updates
 //
 // Same always-200 post-auth contract as /hooks.
-ingest.post("/hooks/status", requireApiKey(), hookRateLimit(), async (c) => {
+ingest.post("/hooks/status", requireApiKey(), hookRateLimit(), async (c: Context) => {
 	// D16: same size cap as /hooks. Status updates carry no tool identity
 	// worth recovering (F128's stub-row path is /hooks-specific), so an
 	// oversize status body is still a plain drop-and-count.
@@ -726,11 +763,12 @@ ingest.post("/hooks/status", requireApiKey(), hookRateLimit(), async (c) => {
 
 	// Return 200 immediately; process async.
 	const response = c.json({ ok: true });
+	const attribution = postingAttribution(c.get("authUser") as AuthUser | undefined);
 
 	incrementInFlightCount();
 	void (async () => {
 		try {
-			const success = await processStatusUpdate(update);
+			const success = await processStatusUpdate(update, attribution);
 
 			if (success) {
 				const session = await getSession(update.session_id);

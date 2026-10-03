@@ -259,6 +259,15 @@ function renderEventLine(event: SessionEvent): string {
 			return event.content ? `[${t}] SYSTEM: ${truncate(event.content, 120)}` : "";
 		case "permission_event":
 			return event.content ? `[${t}] PERMISSION: ${truncate(event.content, 160)}` : "";
+		case "user_ack":
+			// AGEN: content is built from payload.source (event-normalizer.ts),
+			// client-controlled free text in the general case — never render
+			// it as user speech (a USER: line) or echo it at all, sanitized or
+			// not. The watcher only needs to know an (un)acknowledgement
+			// happened, and which direction.
+			return event.eventType === "UserUnacknowledge"
+				? `[${t}] SYSTEM: user marked the result as unseen again`
+				: `[${t}] SYSTEM: user marked the result as seen`;
 		// AI watcher categories — render a one-line trace so the classifier
 		// has visibility into prior watcher activity. Listed explicitly so
 		// the `never` guard below catches new EventCategory members at

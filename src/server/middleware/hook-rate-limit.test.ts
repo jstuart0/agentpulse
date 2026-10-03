@@ -1,5 +1,13 @@
-import { beforeEach, describe, expect, test } from "bun:test";
-import { RATE_LIMIT_CAPACITY, _resetBucketsForTest, tryConsume } from "./hook-rate-limit.js";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+	RATE_LIMIT_CAPACITY,
+	_resetBucketsForTest,
+	_setBucketCapForTest,
+	_setRateLimitClockForTest,
+	_trackedBucketsForTest,
+	hookRateLimit,
+	tryConsume,
+} from "./hook-rate-limit.js";
 
 beforeEach(() => {
 	_resetBucketsForTest();
@@ -53,5 +61,85 @@ describe("tryConsume — exact capacity boundary at one fixed instant (F84)", ()
 		expect(tryConsume("key-a", now)).toBe(false);
 		// key-b's bucket is untouched by key-a's exhaustion.
 		expect(tryConsume("key-b", now)).toBe(true);
+	});
+});
+
+describe("hookRateLimit — a dashboard caller's bucket is per caller AND per session", () => {
+	const { Hono } = require("hono") as typeof import("hono");
+
+	function appFor() {
+		const app = new Hono();
+		app.use("*", async (c, next) => {
+			const who = c.req.header("X-Test-User") ?? "nobody";
+			c.set("authUser" as never, { id: who, userId: who, source: "local" } as never);
+			await next();
+		});
+		app.post(
+			"/sessions/:sessionId/acknowledge",
+			hookRateLimit({ bucketPrefix: "ack-test:", onLimit: "429" }),
+			(c) => c.json({ ok: true }),
+		);
+		return app;
+	}
+
+	test("one user exhausting a session's bucket doesn't throttle another user on the same session, or themselves on another session", async () => {
+		_setRateLimitClockForTest(() => 7_000_000);
+		const app = appFor();
+		const hit = (user: string, session: string) =>
+			app.request(`/sessions/${session}/acknowledge`, {
+				method: "POST",
+				headers: { "X-Test-User": user },
+			});
+
+		for (let i = 0; i < RATE_LIMIT_CAPACITY; i++)
+			expect((await hit("user-a", "s1")).status).toBe(200);
+		expect((await hit("user-a", "s1")).status).toBe(429);
+
+		expect((await hit("user-b", "s1")).status).toBe(200);
+		expect((await hit("user-a", "s2")).status).toBe(200);
+		_setRateLimitClockForTest(null);
+	});
+});
+
+describe("the bucket table doesn't grow without bound", () => {
+	afterEach(() => _setBucketCapForTest(null));
+
+	test("idle buckets (they would have refilled in full) are dropped on a schedule", () => {
+		let nowMs = 1_000_000;
+		const now = () => nowMs;
+		for (const key of ["idle-1", "idle-2", "idle-3"]) tryConsume(key, now);
+		expect(_trackedBucketsForTest()).toBe(3);
+
+		nowMs += 11_000;
+		tryConsume("fresh", now);
+
+		expect(_trackedBucketsForTest()).toBe(1);
+	});
+
+	test("a drained bucket is not dropped before it would have refilled", () => {
+		let nowMs = 2_000_000;
+		const now = () => nowMs;
+		tryConsume("warm-up", now);
+		nowMs += 4_800;
+		for (let i = 0; i < RATE_LIMIT_CAPACITY; i++) tryConsume("busy", now);
+		expect(tryConsume("busy", now)).toBe(false);
+
+		// The sweep runs now, but "busy" was last used 200 ms ago: it has only
+		// refilled for those 200 ms, so a dropped (fresh, full) bucket would let
+		// the whole capacity through again.
+		nowMs += 200;
+		tryConsume("other", now);
+		let allowed = 0;
+		for (let i = 0; i < RATE_LIMIT_CAPACITY; i++) if (tryConsume("busy", now)) allowed++;
+		expect(allowed).toBe(Math.floor(RATE_LIMIT_CAPACITY * 0.2));
+	});
+
+	test("the table is capped: the oldest entries go first, and a new key still gets a bucket", () => {
+		_setBucketCapForTest(5);
+		const now = () => 3_000_000;
+		for (let i = 0; i < 8; i++) tryConsume(`cap-${i}`, now);
+		expect(_trackedBucketsForTest()).toBeGreaterThan(0);
+		expect(_trackedBucketsForTest()).toBeLessThanOrEqual(5);
+		expect(tryConsume("cap-8", now)).toBe(true);
 	});
 });

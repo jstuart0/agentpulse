@@ -14,8 +14,13 @@ import { computeChecksum } from "../util/checksum.js";
 import {
 	getBgErrorCount,
 	getInFlightCount,
+	getIngestForeignKeyDroppedCount,
+	getIngestKeyBoundCount,
+	getIngestOwnerMismatchCount,
+	getIngestUnacknowledgeDroppedCount,
 	getOversizeDropped,
 	getRateLimitedDropped,
+	getSessionCreationLimitedCount,
 } from "./ingest-counters.js";
 
 // Read version from package.json at module init — independent of how the
@@ -75,6 +80,15 @@ export function computeClientChecksums(): Promise<Record<string, string>> {
 //  - rateLimitedDropped: cumulative count of silently-dropped rate-limited hooks.
 //  - oversizeDropped: cumulative count of hooks dropped for exceeding the
 //    body-size cap (D16/F116), same shape as rateLimitedDropped.
+//  - unacknowledgeDropped (AGEN security): cumulative count of
+//    UserUnacknowledge hook deliveries dropped unconditionally -- "mark as
+//    unseen" is never hook-reachable, regardless of ownership.
+//  - foreignKeyDropped (team mode): cumulative count of hook events and native-name
+//    writes dropped because the posting key is foreign to an owned session.
+//  - ingestKeyBound (team mode): cumulative count of sessions whose first event from an
+//    ownerless key recorded that key as the session's ingest key.
+//  - sessionCreationLimited: cumulative count of new sessions dropped because the
+//    posting key went over its per-minute creation limit.
 //  - shuttingDown: true when drain has been triggered (readiness returns 503).
 //  - dbReady: true only after initializeDatabase() completes (S-24).
 //  - clients (D3/F20): relay/statusline script checksums (computeClientChecksums).
@@ -115,6 +129,11 @@ health.get("/health", async (c) => {
 		processingErrors: getBgErrorCount(),
 		rateLimitedDropped: getRateLimitedDropped(),
 		oversizeDropped: getOversizeDropped(),
+		ingestOwnerMismatch: getIngestOwnerMismatchCount(),
+		foreignKeyDropped: getIngestForeignKeyDroppedCount(),
+		ingestKeyBound: getIngestKeyBoundCount(),
+		sessionCreationLimited: getSessionCreationLimitedCount(),
+		unacknowledgeDropped: getIngestUnacknowledgeDroppedCount(),
 		shuttingDown: isShuttingDown(),
 		dbReady: true,
 		clients,

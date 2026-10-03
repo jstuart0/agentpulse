@@ -9,15 +9,28 @@
  * is memoized, we reset the memo by deleting the _forwardauthTrustSecret
  * property between tests.
  *
- * DB is not used here — middleware functions are pure wrt the database.
- * We import the __test_db helper only to set SQLITE_PATH so any transitive
- * module that opens the DB doesn't collide with the main test suite.
+ * The forwardauth success branch resolves a real `users` row via
+ * resolveSsoUser, so this file's DB must be initialized before any test —
+ * including the pure-looking trust-gate ones — reaches that branch.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
 // Set SQLITE_PATH before any other import opens the DB.
 import "../db/__test_db.ts";
+
+const { initializeDatabase } = await import("../db/client.js");
+const { resetIdentityState } = await import("../test-utils/identity-reset.js");
+
+beforeAll(async () => {
+	await initializeDatabase();
+});
+
+// This file creates local and SSO user rows (with random, per-test
+// identifiers) across many describe blocks below, but other files in the
+// suite assert on user/admin counts and share this same database — reset
+// before each test so this file doesn't leave rows behind for them.
+beforeEach(resetIdentityState);
 
 // ── env snapshot / restore ────────────────────────────────────────────────────
 
@@ -451,5 +464,258 @@ describe("signOutUrl provider selection (route-level condition)", () => {
 
 	test("local user returns API logout path", () => {
 		expect(deriveSignOutUrl({ source: "local" })).toBe("/api/v1/auth/logout");
+	});
+});
+
+describe("no-uid IdP: the inline path and the forwardauth bridge resolve the same users.id", () => {
+	test("getAuthUserFromHeaders (inline) and bridgeForwardauthSession (bridge) for the same no-uid username converge on one users row", async () => {
+		process.env.FORWARDAUTH_TRUST_SECRET = "convergence-secret";
+		resetConfigMemo();
+
+		const username = `no-uid-convergence-${crypto.randomUUID().slice(0, 8)}`;
+		const headers = new Headers({
+			"X-Authentik-Username": username,
+			"X-Authentik-Verify": "convergence-secret",
+			// Deliberately no X-Authentik-Uid.
+		});
+
+		// Inline path: middleware.ts's getAuthUserFromHeaders, step 1.
+		const inlineUser = await getAuthUserFromHeaders(headers);
+		expect(inlineUser?.source).toBe("forwardauth");
+		expect(inlineUser?.userId).toBeTruthy();
+
+		// Bridge path: forwardauth-bridge.ts, driven through a real Hono request.
+		const { bridgeForwardauthSession } = await import("./forwardauth-bridge.js");
+		const { Hono } = await import("hono");
+		const bridgeApp = new Hono();
+		bridgeApp.use("*", bridgeForwardauthSession());
+		bridgeApp.get("/probe", (c) => c.json({ ok: true }));
+		const bridgeHeaders = new Headers(headers);
+		await bridgeApp.request("/probe", { headers: bridgeHeaders });
+
+		// Both paths resolved through forwardauthSubject + resolveSsoUser for
+		// the same (provider, username) — same row, no second insert.
+		const { getDb } = await import("../db/client.js");
+		const { users } = await import("../db/schema/index.js");
+		const { eq, and } = await import("drizzle-orm");
+		const rows = await getDb()
+			.select()
+			.from(users)
+			.where(and(eq(users.provider, "authentik"), eq(users.subject, username)));
+		expect(rows).toHaveLength(1);
+		expect(inlineUser?.userId).toBeTruthy();
+		expect(rows[0].id).toBe(inlineUser?.userId as string);
+	});
+});
+
+describe("AuthUser.userId/keyId/mustChangePassword per source", () => {
+	test("DISABLE_AUTH: userId null, keyId null, mustChangePassword false", async () => {
+		const { config: cfg } = await import("../config.js");
+		const original = cfg.disableAuth;
+		(cfg as Record<string, unknown>).disableAuth = true;
+		try {
+			const user = await getAuthUserFromHeaders(new Headers());
+			expect(user?.source).toBe("api_key");
+			expect(user?.userId).toBeNull();
+			expect(user?.keyId).toBeNull();
+			expect(user?.mustChangePassword).toBe(false);
+		} finally {
+			(cfg as Record<string, unknown>).disableAuth = original;
+		}
+	});
+
+	test("forwardauth headers (SSO): userId is the resolved users.id, keyId null, id unchanged", async () => {
+		process.env.FORWARDAUTH_TRUST_SECRET = "s3cr3t";
+		resetConfigMemo();
+
+		const h = authentikHeaders({
+			username: `alice-${crypto.randomUUID().slice(0, 8)}`,
+			uid: `uid-${crypto.randomUUID().slice(0, 8)}`,
+			verify: "s3cr3t",
+		});
+		const uid = h.get("X-Authentik-Uid");
+		const user = await getAuthUserFromHeaders(h);
+		expect(user?.source).toBe("forwardauth");
+		// id is unchanged for SSO — still the uid header value.
+		expect(user?.id).toBe(uid ?? undefined);
+		expect(user?.userId).not.toBeNull();
+		expect(typeof user?.userId).toBe("string");
+		expect(user?.role).toBe("user");
+		expect(user?.keyId).toBeNull();
+		expect(user?.mustChangePassword).toBe(false);
+	});
+
+	test("local cookie: userId equals the row's id, keyId null, mustChangePassword reflects the row", async () => {
+		const { initializeDatabase } = await import("../db/client.js");
+		await initializeDatabase();
+		const { createUser, issueSession } = await import("../services/local-auth-service.js");
+		const user = await createUser({
+			username: `localuser-${crypto.randomUUID().slice(0, 8)}`,
+			password: "S3cur3P@ssword!",
+		});
+		const { token } = await issueSession({ userId: user.id });
+
+		const h = new Headers();
+		h.set("Cookie", `ap_session=${token}`);
+		const authUser = await getAuthUserFromHeaders(h);
+		expect(authUser?.source).toBe("local");
+		expect(authUser?.userId).toBe(user.id);
+		expect(authUser?.keyId).toBeNull();
+		expect(authUser?.mustChangePassword).toBe(false);
+	});
+
+	test("api_key (Bearer ap_*): userId is the key's ownerUserId (null — nothing sets it yet), keyId is the key's id", async () => {
+		const { initializeDatabase } = await import("../db/client.js");
+		await initializeDatabase();
+		const { createApiKey } = await import("./api-key.js");
+		const { key, id } = await createApiKey(`test-key-${crypto.randomUUID().slice(0, 8)}`);
+
+		const h = new Headers();
+		h.set("Authorization", `Bearer ${key}`);
+		const authUser = await getAuthUserFromHeaders(h);
+		expect(authUser?.source).toBe("api_key");
+		expect(authUser?.userId).toBeNull();
+		expect(authUser?.keyId).toBe(id);
+		expect(authUser?.mustChangePassword).toBe(false);
+	});
+
+	test("supervisor credential (requireSupervisorAuth): keyId is null — a supervisor id is never an api_keys.id", async () => {
+		const { initializeDatabase } = await import("../db/client.js");
+		await initializeDatabase();
+		const { createSupervisorCredential } = await import("./supervisor-auth.js");
+		const { requireSupervisorAuth } = await import("./middleware.js");
+		const { Hono } = await import("hono");
+
+		const supervisorId = crypto.randomUUID();
+		const { token } = await createSupervisorCredential(supervisorId, "test-supervisor");
+
+		const app = new Hono<{
+			Variables: { authUser: import("./middleware.js").AuthUser };
+		}>();
+		let captured: import("./middleware.js").AuthUser | undefined;
+		app.use("*", requireSupervisorAuth());
+		app.get("/probe", (c) => {
+			captured = c.get("authUser");
+			return c.json({ ok: true });
+		});
+		const res = await app.request("/probe", {
+			headers: { "X-AgentPulse-Supervisor-Token": token },
+		});
+		expect(res.status).toBe(200);
+		expect(captured?.id).toBe(supervisorId);
+		expect(captured?.keyId).toBeNull();
+		expect(captured?.userId).toBeNull();
+		expect(captured?.mustChangePassword).toBe(false);
+	});
+});
+
+describe("a pre-upgrade cookie row (auth_sessions.user_id = 'sso:x', no users row) still resolves", () => {
+	test("a session row shaped exactly like the old SSO bridge resolves to a valid identity, not a 500 or a dropped session", async () => {
+		const { initializeDatabase } = await import("../db/client.js");
+		await initializeDatabase();
+		const { issueSession, SSO_SESSION_DURATION_MS } = await import(
+			"../services/local-auth-service.js"
+		);
+		const { getDb } = await import("../db/client.js");
+		const { users } = await import("../db/schema/index.js");
+		const { eq, and } = await import("drizzle-orm");
+
+		const provider = "authentik";
+		const subject = `pre-upgrade-${crypto.randomUUID().slice(0, 8)}`;
+
+		// Seed exactly the old shape: auth_sessions carries the literal
+		// "sso:" + subject as user_id; no users row exists yet.
+		const { token } = await issueSession({
+			userId: `sso:${subject}`,
+			durationMs: SSO_SESSION_DURATION_MS,
+			authSource: "forwardauth",
+			ssoSubject: subject,
+			ssoUsername: "pre-upgrade-user",
+			provider,
+		});
+
+		const h = new Headers();
+		h.set("Cookie", `ap_session=${token}`);
+		const authUser = await getAuthUserFromHeaders(h);
+
+		expect(authUser).not.toBeNull();
+		expect(authUser?.source).toBe("forwardauth");
+		expect(authUser?.id).toBe(subject);
+		expect(authUser?.userId).toBeTruthy();
+		expect(authUser?.role).toBe("user");
+
+		// A real users row now exists for this (provider, subject), created on
+		// first resolve, with a null subject_source (the cookie path has no
+		// headers to attribute a source to).
+		const [row] = await getDb()
+			.select()
+			.from(users)
+			.where(and(eq(users.provider, provider), eq(users.subject, subject)))
+			.limit(1);
+		expect(row).toBeDefined();
+		expect(row.subjectSource).toBeNull();
+	});
+});
+
+describe("a disabled local user's cookie returns null; a disabled SSO user's headers return null", () => {
+	test("a disabled local user's cookie no longer authenticates (live regression on main)", async () => {
+		const { initializeDatabase } = await import("../db/client.js");
+		await initializeDatabase();
+		const { createUser, issueSession } = await import("../services/local-auth-service.js");
+		const { getDb } = await import("../db/client.js");
+		const { users } = await import("../db/schema/index.js");
+		const { eq } = await import("drizzle-orm");
+
+		const user = await createUser({
+			username: `disabled-local-${crypto.randomUUID().slice(0, 8)}`,
+			password: "S3cur3P@ssword!",
+		});
+		const { token } = await issueSession({ userId: user.id });
+
+		// Disable the user after the session was issued.
+		await getDb()
+			.update(users)
+			.set({ disabledAt: new Date().toISOString() })
+			.where(eq(users.id, user.id));
+
+		const h = new Headers();
+		h.set("Cookie", `ap_session=${token}`);
+		const authUser = await getAuthUserFromHeaders(h);
+		expect(authUser).toBeNull();
+	});
+
+	test("a disabled SSO user's forwardauth headers return null", async () => {
+		const { initializeDatabase } = await import("../db/client.js");
+		await initializeDatabase();
+		const { resolveSsoUser } = await import("../services/user-identity.js");
+		const { getDb } = await import("../db/client.js");
+		const { users } = await import("../db/schema/index.js");
+		const { eq } = await import("drizzle-orm");
+
+		process.env.FORWARDAUTH_TRUST_SECRET = "s3cr3t";
+		resetConfigMemo();
+
+		const provider = "authentik";
+		const subject = `disabled-sso-${crypto.randomUUID().slice(0, 8)}`;
+
+		// Create the row, then disable it.
+		const created = await resolveSsoUser({
+			provider,
+			subject,
+			source: "uid",
+			username: "disabled-sso-user",
+		});
+		await getDb()
+			.update(users)
+			.set({ disabledAt: new Date().toISOString() })
+			.where(eq(users.id, created.id));
+
+		const h = authentikHeaders({
+			username: "disabled-sso-user",
+			uid: subject,
+			verify: "s3cr3t",
+		});
+		const authUser = await getAuthUserFromHeaders(h);
+		expect(authUser).toBeNull();
 	});
 });

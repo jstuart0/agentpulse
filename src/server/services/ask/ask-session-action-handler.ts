@@ -1,8 +1,17 @@
 import { eq, sql } from "drizzle-orm";
 import type { AskThreadOrigin } from "../../../shared/types.js";
+import type { Actor } from "../../auth/actor.js";
 import { getDb } from "../../db/client.js";
 import { managedSessions, sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
+import {
+	NOT_OWNER_MESSAGE,
+	NotOwnerError,
+	assertCanArchiveSession,
+	assertCanDeleteSession,
+	assertCanPinSession,
+	assertCanRenameSession,
+} from "../authorization.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import { renameSession } from "../session-tracker.js";
 import type { ResolvedSession } from "./ask-resolver.js";
@@ -17,6 +26,8 @@ export interface HandleSessionActionArgs {
 	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
+	/** Who is asking; pin, unpin, rename, archive and delete run the owner-or-admin rule for it. */
+	actor: Actor;
 }
 
 export interface HandleSessionActionResult {
@@ -26,11 +37,21 @@ export interface HandleSessionActionResult {
 
 // ---- Public handler ------------------------------------------------------
 
+const OWNER_GATES: Partial<
+	Record<SessionActionIntent["action"], (actor: Actor, sessionId: string) => Promise<void>>
+> = {
+	pin: assertCanPinSession,
+	unpin: assertCanPinSession,
+	rename: assertCanRenameSession,
+	archive: assertCanArchiveSession,
+	delete: assertCanDeleteSession,
+};
+
 export async function handleSessionAction(
 	intent: SessionActionIntent,
 	args: HandleSessionActionArgs,
 ): Promise<HandleSessionActionResult> {
-	const { origin, threadId, telegramChatId } = args;
+	const { origin, threadId, telegramChatId, actor } = args;
 
 	const resolution = await resolveSession(intent.sessionHint);
 	if (!resolution.ok) {
@@ -39,6 +60,20 @@ export async function handleSessionAction(
 
 	const session = resolution.session;
 	const name = session.displayName ?? session.sessionId.slice(0, 8);
+
+	// Everything below that changes the session itself is owner-or-admin in
+	// team mode, judged for the real actor. Adding a note and queueing a stop
+	// stay open, as they are on the dashboard.
+	const gate = OWNER_GATES[intent.action];
+	if (gate) {
+		try {
+			await gate(actor, session.sessionId);
+		} catch (err) {
+			if (err instanceof NotOwnerError)
+				return { replyText: NOT_OWNER_MESSAGE, actionRequestId: null };
+			throw err;
+		}
+	}
 
 	// ---- Non-destructive: direct execute --------------------------------
 
@@ -67,7 +102,7 @@ export async function handleSessionAction(
 			.set({
 				notes: sql`CASE
           WHEN COALESCE(notes, '') = '' THEN ${noteContent}
-          ELSE notes || char(10) || ${noteContent}
+          ELSE notes || CAST(${"\n"} AS TEXT) || ${noteContent}
         END`,
 			})
 			.where(eq(sessions.sessionId, session.sessionId));

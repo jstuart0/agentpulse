@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
+import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
 import { useSignOut } from "../hooks/useSignOut.js";
+import { isAiDisabledError } from "../lib/api-errors.js";
 import { type InboxWorkItem, type LabsFlag, api } from "../lib/api.js";
 import { formatProviderLabel } from "../lib/formatProviderLabel.js";
+import { drawerItems } from "../lib/nav-items.js";
 import { cn } from "../lib/utils.js";
 import { useConnectionStore } from "../stores/connection-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
@@ -13,12 +16,6 @@ import { DbSplitWarningBanner } from "./DbSplitWarningBanner.js";
 import { LabsBadge } from "./LabsBadge.js";
 import { SessionTabs } from "./SessionTabs.js";
 import { TopBar } from "./TopBar.js";
-
-const ADMIN_DRAWER_LINKS = [
-	{ to: "/setup", label: "Setup" },
-	{ to: "/hosts", label: "Hosts" },
-	{ to: "/settings", label: "Settings" },
-];
 
 const SIDEBAR_STORAGE_KEY = "agentpulse.sidebarCollapsed";
 const INBOX_VIEWED_AT_STORAGE_KEY = "agentpulse.inboxLastViewedAt";
@@ -86,6 +83,8 @@ export function Layout() {
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
 	const labsFlags = useLabsStore((s) => s.flags);
 	const user = useUserStore((s) => s.user);
+	const ownershipUi = useOwnershipUi();
+	const drawer = drawerItems(ownershipUi, { isLocal: user?.source === "local" });
 	const navigate = useNavigate();
 	const { handleSignOut: signOut, signOutUrl } = useSignOut();
 	const location = useLocation();
@@ -296,9 +295,9 @@ export function Layout() {
 
 							<div className="mt-2 pt-2 border-t border-border/70 space-y-0.5">
 								<div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-									Admin
+									{drawer.heading}
 								</div>
-								{ADMIN_DRAWER_LINKS.map((item) => (
+								{drawer.links.map((item) => (
 									<NavLink
 										key={item.to}
 										to={item.to}
@@ -565,13 +564,15 @@ function useInboxIndicator(enabled: boolean, viewingInbox: boolean) {
 				if (cancelled) return;
 				setTotal(inbox.total);
 				setLatestItemAt(inbox.items[0] ? timestampForInboxItem(inbox.items[0]) : 0);
-			} catch {
+			} catch (err) {
 				if (cancelled) return;
+				// The feature is off: every later poll would be the same refusal.
+				if (isAiDisabledError(err)) clearInterval(interval);
 			}
 		}
 
-		void load();
 		const interval = setInterval(load, 15_000);
+		void load();
 		return () => {
 			cancelled = true;
 			clearInterval(interval);

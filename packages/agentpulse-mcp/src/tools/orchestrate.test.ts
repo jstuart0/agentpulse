@@ -230,6 +230,36 @@ describe("launch_agent — direct mode (template+launch_spec)", () => {
 		});
 		expect((createLaunchBody as { templateId?: unknown }).templateId).toBeUndefined();
 	});
+
+	test("accepts launch_spec with launchCorrelationId omitted (AGEN-65 round 2: server-ignored, not server-required)", async () => {
+		const { launchCorrelationId, ...launchSpecWithoutCorrelationId } = FAKE_LAUNCH_SPEC;
+		void launchCorrelationId;
+		let createLaunchBody: unknown;
+		const client = fakeClient({
+			createLaunch: async (body) => {
+				createLaunchBody = body;
+				return { launchRequest: FAKE_LAUNCH_REQUEST, supervisor: FAKE_SUPERVISOR };
+			},
+		});
+
+		const ctx = newContext(client);
+		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+
+		const result = await mcpClient.callTool({
+			name: "launch_agent",
+			arguments: {
+				template: FAKE_PREVIEW.normalizedTemplate,
+				launch_spec: launchSpecWithoutCorrelationId,
+			},
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(
+			(createLaunchBody as { launchSpec?: { launchCorrelationId?: unknown } }).launchSpec
+				?.launchCorrelationId,
+		).toBeUndefined();
+	});
 });
 
 describe("launch_agent — exactly-one-mode validation (assertions 3-4, dexter High: partial combos)", () => {

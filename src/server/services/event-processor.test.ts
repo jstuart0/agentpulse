@@ -445,21 +445,21 @@ describe("applyPermissionWaitTransition — anonymous fallback", () => {
 		expect(row?.metadata).not.toHaveProperty("permissionWait");
 	});
 
-	test("a tool_use_id not present in ids does not accidentally decrement anon", async () => {
+	test("a tool_use_id not present in ids answers one anonymous request, which may be a folded id", async () => {
 		await mkSession("perm-1", {
 			semanticStatus: "waiting",
-			metadata: { permissionWait: { ids: [], anon: 1, prevStatus: "planning" } },
+			metadata: { permissionWait: { ids: ["kept"], anon: 2, prevStatus: "planning" } },
 		});
 
 		await applyPermissionWaitTransition(
 			"perm-1",
-			hookPayload({ hook_event_name: "PostToolUse", tool_use_id: "unrelated" }),
+			hookPayload({ hook_event_name: "PostToolUse", tool_use_id: "folded" }),
 		);
 
 		const row = await getSession("perm-1");
 		expect(row?.semanticStatus).toBe("waiting");
 		expect(row?.metadata).toEqual({
-			permissionWait: { ids: [], anon: 1, prevStatus: "planning" },
+			permissionWait: { ids: ["kept"], anon: 1, prevStatus: "planning" },
 		});
 	});
 });

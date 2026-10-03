@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import type { Session } from "../../../shared/types.js";
+import { describeApiError } from "../../lib/api-errors.js";
 import { api } from "../../lib/api.js";
 
 export function SessionPromptComposer({
@@ -78,6 +80,7 @@ export function SessionPromptComposer({
 			await onSubmitted();
 		} catch (error) {
 			console.error("Failed to send prompt", error);
+			toast.error(describeApiError(error, "Couldn't send the prompt. Try again."));
 		} finally {
 			setSending(false);
 		}

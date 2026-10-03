@@ -24,7 +24,7 @@ import { Hono } from "hono";
 import { logger } from "hono/logger";
 import { bridgeForwardauthSession } from "./auth/forwardauth-bridge.js";
 import { requireAuth } from "./auth/middleware.js";
-import { requireOperatorScope } from "./auth/route-scope-policy.js";
+import { requireOperatorScope, requireRolePolicy } from "./auth/route-scope-policy.js";
 import { config } from "./config.js";
 import { securityHeaders } from "./middleware/security-headers.js";
 import aiInboxRouter from "./routes/ai-inbox.js";
@@ -38,6 +38,7 @@ import { channelsRouter, telegramWebhookRouter } from "./routes/channels.js";
 import { cspReportRouter } from "./routes/csp-report.js";
 import { health } from "./routes/health.js";
 import { ingest } from "./routes/ingest.js";
+import { instanceRouter } from "./routes/instance.js";
 import { internalRouter } from "./routes/internal.js";
 import { labsRouter } from "./routes/labs.js";
 import { launchesRouter } from "./routes/launches.js";
@@ -48,6 +49,7 @@ import { settingsRouter } from "./routes/settings.js";
 import { setup as setupRoute } from "./routes/setup.js";
 import { supervisorsAdminRouter, supervisorsAgentRouter } from "./routes/supervisors.js";
 import { templatesRouter } from "./routes/templates.js";
+import { usersRouter } from "./routes/users.js";
 
 export const app = new Hono();
 
@@ -67,8 +69,16 @@ app.use("*", bridgeForwardauthSession());
 const api = new Hono();
 api.route("/v1", health);
 api.route("/v1", ingest);
+// Role policy (always-admin routes in both modes, team-admin routes in team
+// mode). Registered after health and ingest, whose handlers answer before it
+// is reached (hook ingest is never behind it), and before every router below:
+// it authenticates the request itself, so the identity is judged first and
+// each router's own requireAuth finds it already resolved.
+api.use("/v1/*", requireRolePolicy());
 api.route("/v1", sessionsRouter);
 api.route("/v1", settingsRouter);
+api.route("/v1", instanceRouter);
+api.route("/v1", usersRouter);
 api.route("/v1", templatesRouter);
 api.route("/v1", projectsRouter);
 // Management endpoints — forwardauth-gated via /api/v1/admin/* which is NOT

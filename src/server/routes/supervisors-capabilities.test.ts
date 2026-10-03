@@ -367,6 +367,52 @@ describe("capability checks run after authentication", () => {
 	});
 });
 
+describe("a refused registration does not spend the enrollment token", () => {
+	const withAuthOn = async (run: () => Promise<void>) => {
+		const previous = config.disableAuth;
+		config.disableAuth = false;
+		try {
+			await run();
+		} finally {
+			config.disableAuth = previous;
+		}
+	};
+
+	test("a scoped token with malformed capabilities gets 400, then still registers", async () => {
+		const first = await register({});
+		const { supervisor } = (await first.json()) as { supervisor: { id: string } };
+		const { createSupervisorEnrollmentToken } = await import("../auth/supervisor-auth.js");
+		const { token } = await createSupervisorEnrollmentToken("rekey", null, supervisor.id, null);
+
+		await withAuthOn(async () => {
+			const bad = await register({ enrollmentToken: token, capabilities: { agentTypes: "x" } });
+			expect(bad.status).toBe(400);
+			const badRoots = await register({ enrollmentToken: token, trustedRoots: ["relative"] });
+			expect(badRoots.status).toBe(400);
+
+			const good = await register({ enrollmentToken: token, capabilities: {} });
+			expect(good.status).toBe(200);
+			const body = (await good.json()) as {
+				supervisor: { id: string };
+				supervisorCredential: string;
+			};
+			expect(body.supervisor.id).toBe(supervisor.id);
+			expect(body.supervisorCredential).toBeTruthy();
+
+			const reused = await register({ enrollmentToken: token });
+			expect(reused.status).toBe(401);
+		});
+	});
+
+	test("an unauthenticated oversized body is refused with 413 before it is parsed", async () => {
+		await withAuthOn(async () => {
+			const res = await registerRaw(rawBody("{}", `,"padding":"${"x".repeat(70_000)}"`));
+			expect(res.status).toBe(413);
+		});
+		expect(await listSupervisors()).toEqual([]);
+	});
+});
+
 // ── trustedRoots ─────────────────────────────────────────────────────────────
 
 describe("trustedRoots", () => {

@@ -17,6 +17,9 @@ import { jsonColumn, tsColumn } from "../factory.js";
 // the ascending index backward for DESC. The legacy SQLite init path declares
 // the same index in client.ts.
 const AGENT_TYPE_LAST_ACTIVITY_INDEX = "idx_sessions_agent_type_last_activity";
+// Serves the owner-scoped list/stats query. Both engines scan this for
+// `WHERE owner_user_id = ? ORDER BY last_activity_at DESC`.
+const OWNER_LAST_ACTIVITY_INDEX = "idx_sessions_owner_last_activity";
 
 export const sessionsSqlite = sqliteTable(
 	"sessions",
@@ -53,9 +56,20 @@ export const sessionsSqlite = sqliteTable(
 		watcherLastRunAt: text("watcher_last_run_at"),
 		watcherLastUserPromptAt: text("watcher_last_user_prompt_at"),
 		aiSpendCents: integer("ai_spend_cents").notNull().default(0),
+		/** User owner. Null = unassigned, or service-key-owned (see ingestKeyId). Set once at creation; ingest never changes a non-null owner. */
+		ownerUserId: text("owner_user_id"),
+		/** The key that posted the first hook event for this session. Never emitted on the wire (DTO strips it). */
+		ingestKeyId: text("ingest_key_id"),
+		// Acknowledgement model (WAITING vs IDLE): when the agent last finished a
+		// turn (Stop) and when the user last acknowledged a result (UserPromptSubmit
+		// or the synthetic UserAcknowledge hook). Both nullable, server receive-time
+		// ISO strings; rows predating the columns stay null.
+		lastAgentTurnCompletedAt: text("last_agent_turn_completed_at"),
+		lastUserAcknowledgedAt: text("last_user_acknowledged_at"),
 	},
 	(t) => ({
 		agentTypeLastActivity: index(AGENT_TYPE_LAST_ACTIVITY_INDEX).on(t.agentType, t.lastActivityAt),
+		ownerLastActivity: index(OWNER_LAST_ACTIVITY_INDEX).on(t.ownerUserId, t.lastActivityAt),
 	}),
 );
 
@@ -94,11 +108,16 @@ export const sessionsPg = pgTable(
 		watcherLastRunAt: pgText("watcher_last_run_at"),
 		watcherLastUserPromptAt: pgText("watcher_last_user_prompt_at"),
 		aiSpendCents: pgInteger("ai_spend_cents").notNull().default(0),
+		ownerUserId: pgText("owner_user_id"),
+		ingestKeyId: pgText("ingest_key_id"),
+		lastAgentTurnCompletedAt: pgText("last_agent_turn_completed_at"),
+		lastUserAcknowledgedAt: pgText("last_user_acknowledged_at"),
 	},
 	(t) => ({
 		agentTypeLastActivity: pgIndex(AGENT_TYPE_LAST_ACTIVITY_INDEX).on(
 			t.agentType,
 			t.lastActivityAt,
 		),
+		ownerLastActivity: pgIndex(OWNER_LAST_ACTIVITY_INDEX).on(t.ownerUserId, t.lastActivityAt),
 	}),
 );

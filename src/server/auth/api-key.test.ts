@@ -151,3 +151,44 @@ describe("verifyApiKey — scopes parsed from stored record", () => {
 		expect(result).toBeNull();
 	});
 });
+
+// ── createApiKey records who minted it ────────────────────────────────────────
+
+describe("createApiKey — owner and creator recorded at mint time", () => {
+	test("a key minted by a caller with a userId is owned by that user, and records them as the creator", async () => {
+		const { getDb } = await import("../db/client.js");
+		const { apiKeys } = await import("../db/schema/index.js");
+		const { eq } = await import("drizzle-orm");
+
+		const { id } = await createApiKey("owned-key-test", ["ingest"], "user-A");
+
+		const [row] = await getDb().select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+		expect(row.ownerUserId).toBe("user-A");
+		expect(row.createdByUserId).toBe("user-A");
+	});
+
+	test("a key minted with no caller userId (DISABLE_AUTH, a service key, or setup) is a service key: both columns stay null", async () => {
+		const { getDb } = await import("../db/client.js");
+		const { apiKeys } = await import("../db/schema/index.js");
+		const { eq } = await import("drizzle-orm");
+
+		const { id } = await createApiKey("service-key-test", ["ingest"], null);
+
+		const [row] = await getDb().select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+		expect(row.ownerUserId).toBeNull();
+		expect(row.createdByUserId).toBeNull();
+	});
+
+	test("ensureDefaultApiKey's bootstrap key stays ownerless even though it's minted at boot with no caller", async () => {
+		const { getDb } = await import("../db/client.js");
+		const { apiKeys } = await import("../db/schema/index.js");
+		const { ensureDefaultApiKey } = await import("./api-key.js");
+
+		await getDb().delete(apiKeys);
+		await ensureDefaultApiKey();
+
+		const [row] = await getDb().select().from(apiKeys).limit(1);
+		expect(row.ownerUserId).toBeNull();
+		expect(row.createdByUserId).toBeNull();
+	});
+});

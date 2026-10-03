@@ -19,6 +19,7 @@ export const supervisorEnrollmentTokensSqlite = sqliteTable("supervisor_enrollme
 	usedAt: text("used_at"),
 	revokedAt: text("revoked_at"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+	createdByUserId: text("created_by_user_id"),
 });
 
 export const supervisorEnrollmentTokensPg = pgTable("supervisor_enrollment_tokens", {
@@ -34,4 +35,5 @@ export const supervisorEnrollmentTokensPg = pgTable("supervisor_enrollment_token
 	usedAt: pgText("used_at"),
 	revokedAt: pgText("revoked_at"),
 	createdAt: tsColumn("postgres", "created_at"),
+	createdByUserId: pgText("created_by_user_id"),
 });

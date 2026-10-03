@@ -1,5 +1,6 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import type { AskMessageRole, AskThreadOrigin } from "../../../shared/types.js";
+import type { Actor } from "../../auth/actor.js";
 import { getDb } from "../../db/client.js";
 import { askMessages, askThreads, sessionTemplates } from "../../db/schema/index.js";
 import { getAdapter } from "../ai/llm/registry.js";
@@ -274,6 +275,12 @@ export interface AskTurnInput {
 	 * the chat id so we bind the created thread to that chat.
 	 */
 	telegramChatId?: string | null;
+	/**
+	 * Who is asking: the signed-in caller on the web, TELEGRAM_ACTOR for a
+	 * chat. Every intent that changes a session runs the owner-or-admin rule
+	 * for this actor.
+	 */
+	actor: Actor;
 }
 
 export interface AskTurnResult {
@@ -406,7 +413,12 @@ interface AskGateCtx {
 	threadId: string;
 	telegramChatId: string | null | undefined;
 	// askArgs intentionally mirrors origin/threadId/telegramChatId — see comment above.
-	askArgs: { origin: AskThreadOrigin; threadId: string; telegramChatId: string | null | undefined };
+	askArgs: {
+		origin: AskThreadOrigin;
+		threadId: string;
+		telegramChatId: string | null | undefined;
+		actor: Actor;
+	};
 }
 
 // Returned by a gate's classify function. `kind: "matched"` carries the typed
@@ -726,7 +738,12 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 	const { thread, userMessage, context, transcript, text } = await prepareTurn(input);
 
 	const origin = input.origin ?? "web";
-	const askArgs = { origin, threadId: thread.id, telegramChatId: input.telegramChatId };
+	const askArgs = {
+		origin,
+		threadId: thread.id,
+		telegramChatId: input.telegramChatId,
+		actor: input.actor,
+	};
 	const ctx: AskGateCtx = {
 		origin,
 		threadId: thread.id,
@@ -949,7 +966,12 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 	const { thread, userMessage, context, transcript, text } = await prepareTurn(input);
 
 	const origin = input.origin ?? "web";
-	const askArgs = { origin, threadId: thread.id, telegramChatId: input.telegramChatId };
+	const askArgs = {
+		origin,
+		threadId: thread.id,
+		telegramChatId: input.telegramChatId,
+		actor: input.actor,
+	};
 	const ctx: AskGateCtx = {
 		origin,
 		threadId: thread.id,

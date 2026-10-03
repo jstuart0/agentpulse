@@ -26,6 +26,7 @@ import type {
 	LaunchRequest,
 	LaunchRequestInput,
 	LaunchRoutingPolicy,
+	OwnerScopeEcho,
 	Project,
 	ProjectSummary,
 	RecommendedLaunch,
@@ -119,8 +120,29 @@ export interface ListSessionsParams {
 	status?: SessionStatus;
 	agentType?: AgentType;
 	projectId?: string;
+	/**
+	 * Filter by the derived operational state (AGEN) rather than the raw
+	 * lifecycle status. A server predating this filter ignores the unknown
+	 * `operational` query param and returns its normal (unfiltered) page —
+	 * no error, same degrade-gracefully behavior REST query params get
+	 * everywhere else in this client.
+	 */
+	operational?: "waiting" | "error" | "working" | "idle";
+	/**
+	 * Whose sessions: `me`, a user id, `unassigned`, `service`, or `all`
+	 * (the default). A server predating owner scoping ignores the unknown
+	 * `owner` query param and returns everyone's sessions.
+	 */
+	owner?: string;
 	limit?: number;
 	offset?: number;
+}
+
+export interface ListSessionsResult {
+	sessions: Session[];
+	total: number;
+	/** The owner scope the server applied; absent on a server that predates owner scoping. */
+	ownerScope?: OwnerScopeEcho;
 }
 
 export interface GetSessionResult {
@@ -223,11 +245,11 @@ export interface CreateApiKeyResult {
 export interface AgentPulseClient {
 	/** The canonicalized base URL (`<origin>/api/v1`) — surfaced for error messages. */
 	readonly baseUrl: string;
-	getStats(): Promise<DashboardStats>;
+	getStats(params?: { owner?: string }): Promise<DashboardStats>;
 	getAuthMe(): Promise<AuthMeResponse>;
 
 	// --- Observe-scoped reads (D2) ---
-	getSessions(params?: ListSessionsParams): Promise<{ sessions: Session[]; total: number }>;
+	getSessions(params?: ListSessionsParams): Promise<ListSessionsResult>;
 	getSession(sessionId: string): Promise<GetSessionResult>;
 	getSessionTimeline(
 		sessionId: string,
@@ -407,15 +429,18 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 
 	return {
 		baseUrl,
-		getStats: () => request<DashboardStats>("/sessions/stats"),
+		getStats: (params) =>
+			request<DashboardStats>(`/sessions/stats${toQuery({ owner: params?.owner })}`),
 		getAuthMe: () => request<AuthMeResponse>("/auth/me"),
 
 		getSessions: (params) =>
-			request<{ sessions: Session[]; total: number }>(
+			request<ListSessionsResult>(
 				`/sessions${toQuery({
 					status: params?.status,
 					agent_type: params?.agentType,
 					projectId: params?.projectId,
+					operational: params?.operational,
+					owner: params?.owner,
 					limit: params?.limit,
 					offset: params?.offset,
 				})}`,

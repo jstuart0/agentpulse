@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 import { AGENT_METADATA } from "../../shared/constants.js";
+import { type OperationalStatus, getOperationalStatus } from "../../shared/session-state.js";
 import type { AgentType, ControlAction, Session, SessionEvent } from "../../shared/types.js";
 import { ActivityTimeline } from "../components/session-detail/ActivityTimeline.js";
 import { AiPanel } from "../components/session-detail/AiPanel.js";
@@ -16,6 +18,7 @@ import {
 	WORKSPACE_TABS,
 	type WorkspaceTab,
 } from "../components/session-detail/SessionHeader.js";
+import { SessionOwnerDialog } from "../components/session-detail/SessionOwnerDialog.js";
 import { SessionPromptComposer } from "../components/session-detail/SessionPromptComposer.js";
 import {
 	AgentObserveOnlyHint,
@@ -29,11 +32,27 @@ import {
 	getVisibleEvents,
 	mergeSessionEvents,
 } from "../components/session-detail/TimelineView.js";
+import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
+import { describeApiError } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
 import { applyManualRename } from "../lib/name-source.js";
+import { ownerChip } from "../lib/owner-chip.js";
+import { ownerLabel, sessionOwnerText } from "../lib/owner-label.js";
+import { assignablePeople } from "../lib/people.js";
+import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
 import { useEventStore } from "../stores/event-store.js";
 import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
+import { useUserStore } from "../stores/user-store.js";
+import { useUsersStore } from "../stores/users-store.js";
+import {
+	AUTO_ACK_DWELL_MS,
+	UNDO_WINDOW_MS,
+	ackToastText,
+	classifyAckResponse,
+	deriveAckActionForViewer,
+	shouldAutoAcknowledge,
+} from "./dashboard-view-state.js";
 
 /** Merge new events into the existing persisted events array, de-duped by id, sorted asc. */
 function insertEvents(existing: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
@@ -72,12 +91,27 @@ export function SessionDetailPage() {
 	const [loadingContext, setLoadingContext] = useState(false);
 	const [contextNotFound, setContextNotFound] = useState(false);
 
+	// AGEN: the auto-acknowledge effect's only visible side effect used to be
+	// the badge quietly flipping from WAITING to IDLE -- nothing told a
+	// screen-reader user it happened, and a sighted user who looked away for
+	// a moment had no way to undo it. Announced via this live region and a
+	// toast with its own Undo (see the auto-ack effect below).
+	const [liveAnnouncement, setLiveAnnouncement] = useState("");
+
 	const timelineContainerRef = useRef<HTMLDivElement>(null);
 	const timelineEndRef = useRef<HTMLDivElement>(null);
+	const headerRef = useRef<HTMLDivElement>(null);
 	const shouldFollowTimelineRef = useRef(true);
 	const previousEventCountRef = useRef(0);
 	const liveEventsMap = useEventStore((s) => s.liveEvents);
 	const clearLiveEvents = useEventStore((s) => s.clearSession);
+	const watchSession = useEventStore((s) => s.watch);
+	// While this page is open its session's live events are kept even if the
+	// dashboard doesn't hold the session (someone else's, under Mine).
+	useEffect(() => {
+		watchSession(sessionId ?? null);
+		return () => watchSession(null);
+	}, [sessionId, watchSession]);
 
 	// Tracks which (sessionId, eventId) combo has already been flashed so that
 	// incoming WebSocket events don't re-trigger the scroll/flash.
@@ -116,6 +150,164 @@ export function SessionDetailPage() {
 	useEffect(() => {
 		setSession((current) => mergeSessionIntoDetail(current, storeSession));
 	}, [storeSession]);
+
+	// AGEN: opening a session's detail page marks it seen — but only when
+	// EVERY condition in shouldAutoAcknowledge holds: WAITING (never
+	// ERROR — that needs an explicit Dismiss error), the viewer may
+	// acknowledge it, the tab is actually visible, and it has stayed open
+	// and visible for AUTO_ACK_DWELL_MS. A background or restored
+	// (not-yet-visible) tab must not fire until it becomes visible.
+	// ackedTurnKeyRef guards against re-firing for the same finished turn
+	// while the page stays open (keyed on sessionId + the turn timestamp,
+	// not just sessionId, so a NEW finished turn after a prior
+	// auto-acknowledge gets its own 2s dwell).
+	const viewerUserId = useUserStore((s) => s.userId);
+	const disableAuth = useUserStore((s) => s.disableAuth);
+	const { adminMayClearOthersAttention, ownerGatesSessionActions, showOwnerFields } =
+		useOwnershipUi();
+	const directory = useUsersStore((s) => s.byId);
+	const isAdmin = useViewerIsAdmin();
+	const [ownerDialogOpen, setOwnerDialogOpen] = useState(false);
+	const noteUnknownUser = useUsersStore((s) => s.noteUnknown);
+	const applySessionUpdate = useSessionStore((s) => s.applySessionUpdate);
+	const ackedTurnKeyRef = useRef<string | null>(null);
+	const sessionRef = useRef<Session | null>(session);
+	useEffect(() => {
+		sessionRef.current = session;
+	}, [session]);
+	const opStatus = session ? getOperationalStatus(session) : null;
+	const turnKey = session?.lastAgentTurnCompletedAt ?? null;
+	const canAck = session ? canAcknowledgeSession(session, viewerUserId, disableAuth) : false;
+	const sessionOwnerId = session?.ownerUserId ?? null;
+	useEffect(() => {
+		if (showOwnerFields) noteUnknownUser(sessionOwnerId);
+	}, [showOwnerFields, sessionOwnerId, noteUnknownUser]);
+
+	// Who launched it, for a session launched from the dashboard: the launch
+	// request knows; the session itself doesn't.
+	const launchRequestId = session?.managedSession?.launchRequestId ?? null;
+	const [launchedById, setLaunchedById] = useState<string | null>(null);
+	useEffect(() => {
+		setLaunchedById(null);
+		if (!showOwnerFields || !launchRequestId) return;
+		let cancelled = false;
+		api
+			.getLaunch(launchRequestId)
+			.then((res) => {
+				if (!cancelled) setLaunchedById(res.launchRequest.requestedByUserId ?? null);
+			})
+			.catch(() => {
+				// No launch details: the field simply isn't shown.
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [showOwnerFields, launchRequestId]);
+	useEffect(() => {
+		if (showOwnerFields) noteUnknownUser(launchedById);
+	}, [showOwnerFields, launchedById, noteUnknownUser]);
+
+	// AGEN: the auto-ack toast's Undo action. Deliberately does NOT clear
+	// ackedTurnKeyRef -- the auto-ack effect's alreadyAckedThisTurn guard
+	// must keep this turn suppressed after an Undo, or the effect would
+	// immediately re-fire the moment lastUserAcknowledgedAt goes back to
+	// null (the session is still WAITING, still visible, still past dwell).
+	async function undoAutoAck() {
+		if (!sessionId) return;
+		try {
+			const result = await api.unacknowledgeSession(sessionId);
+			if (classifyAckResponse(result) !== "applied") {
+				toast.error("Couldn't undo");
+				return;
+			}
+			const current = sessionRef.current;
+			if (current && current.sessionId === sessionId) {
+				const stamped = { ...current, lastUserAcknowledgedAt: null };
+				setSession(stamped);
+				applySessionUpdate(stamped);
+			}
+			setLiveAnnouncement("Marked as unseen");
+		} catch {
+			toast.error("Couldn't undo");
+		}
+	}
+
+	// AGEN: the gate itself is shouldAutoAcknowledge (dashboard-view-state.ts,
+	// tested) — this effect only measures real dwell time (how long the tab
+	// has been open AND visible, continuously) and schedules a re-evaluation
+	// at the moment that measurement would cross AUTO_ACK_DWELL_MS. No
+	// second copy of the WAITING/ownership/visibility/dwell/already-acked
+	// rule lives here.
+	useEffect(() => {
+		if (!sessionId || !opStatus) return;
+		const ackKey = `${sessionId}:${turnKey ?? "none"}`;
+		let dwellStartMs: number | null = document.visibilityState === "visible" ? Date.now() : null;
+		let timer: ReturnType<typeof setTimeout> | null = null;
+
+		function fire() {
+			ackedTurnKeyRef.current = ackKey;
+			api
+				.acknowledgeSession(sessionId as string)
+				.then((result) => {
+					if (classifyAckResponse(result) !== "applied") return;
+					const now = new Date().toISOString();
+					const current = sessionRef.current;
+					if (!current || current.sessionId !== sessionId) return;
+					const stamped = { ...current, lastUserAcknowledgedAt: now };
+					setSession(stamped);
+					applySessionUpdate(stamped);
+					setLiveAnnouncement("Marked as seen");
+					toast.success("Marked as seen", {
+						action: { label: "Undo", onClick: () => void undoAutoAck() },
+						duration: UNDO_WINDOW_MS,
+					});
+				})
+				.catch(() => {
+					if (ackedTurnKeyRef.current === ackKey) ackedTurnKeyRef.current = null;
+				});
+		}
+
+		function evaluate() {
+			if (timer) {
+				clearTimeout(timer);
+				timer = null;
+			}
+			const dwellMs = dwellStartMs != null ? Date.now() - dwellStartMs : 0;
+			const tabVisible = document.visibilityState === "visible";
+			const should = shouldAutoAcknowledge({
+				operationalStatus: opStatus as OperationalStatus,
+				canAcknowledge: canAck,
+				tabVisible,
+				dwellMs,
+				alreadyAckedThisTurn: ackedTurnKeyRef.current === ackKey,
+			});
+			if (should) {
+				fire();
+				return;
+			}
+			// Still visible and not yet past the dwell threshold -- schedule
+			// exactly one re-check at the moment it would be.
+			if (tabVisible && dwellStartMs != null && dwellMs < AUTO_ACK_DWELL_MS) {
+				timer = setTimeout(evaluate, AUTO_ACK_DWELL_MS - dwellMs + 1);
+			}
+		}
+
+		function onVisibility() {
+			if (document.visibilityState === "visible") {
+				dwellStartMs = Date.now();
+			} else {
+				dwellStartMs = null;
+			}
+			evaluate();
+		}
+
+		evaluate();
+		document.addEventListener("visibilitychange", onVisibility);
+		return () => {
+			if (timer) clearTimeout(timer);
+			document.removeEventListener("visibilitychange", onVisibility);
+		};
+	}, [sessionId, opStatus, turnKey, canAck, applySessionUpdate]);
 
 	useEffect(() => {
 		if (!sessionId) return;
@@ -286,7 +478,95 @@ export function SessionDetailPage() {
 			await loadSessionWorkspace();
 		} catch (error) {
 			console.error("Failed to stop session:", error);
+			toast.error(describeApiError(error, "Couldn't stop the session."));
 		}
+	}
+
+	// Manual acknowledge actions for the header. Unlike the auto-acknowledge
+	// effect above, these are explicit — in particular ERROR is NEVER
+	// cleared automatically; only handleDismissError (via "dismiss-error")
+	// does that.
+	async function runAckAction(
+		action: () => Promise<{ acknowledged?: boolean; unacknowledged?: boolean; reason?: string }>,
+		nextLastUserAcknowledgedAt: string | null,
+		failureMessage: string,
+		onApplied?: () => void,
+	) {
+		try {
+			const result = await action();
+			const outcome = classifyAckResponse(result);
+			if (outcome === "applied") {
+				setSession((current) =>
+					current ? { ...current, lastUserAcknowledgedAt: nextLastUserAcknowledgedAt } : current,
+				);
+				const current = sessionRef.current;
+				if (current)
+					applySessionUpdate({ ...current, lastUserAcknowledgedAt: nextLastUserAcknowledgedAt });
+				onApplied?.();
+				return;
+			}
+			if (outcome === "not_owner") toast.error("Only the owner or an admin can do this");
+			else toast.error(failureMessage);
+		} catch {
+			toast.error(failureMessage);
+		}
+	}
+
+	// After an explicit acknowledge: the same toast-with-Undo the card gives, and
+	// focus on the header. The button that was clicked changes or vanishes (an
+	// admin acting for the owner can't act again), which would drop focus to the
+	// page.
+	function afterExplicitAck(kind: "mark_seen" | "dismiss_error", forOwnerName: string | null) {
+		const text = ackToastText(kind, forOwnerName);
+		if (text) {
+			setLiveAnnouncement(text);
+			toast.success(text, {
+				action: {
+					label: "Undo",
+					onClick: () => void (kind === "mark_seen" ? undoAutoAck() : handleRestoreError()),
+				},
+				duration: UNDO_WINDOW_MS,
+			});
+		}
+		requestAnimationFrame(() => headerRef.current?.focus());
+	}
+
+	function handleMarkSeen(forOwnerName: string | null) {
+		if (!sessionId) return;
+		return runAckAction(
+			() => api.acknowledgeSession(sessionId),
+			new Date().toISOString(),
+			"Couldn't mark as seen",
+			() => afterExplicitAck("mark_seen", forOwnerName),
+		);
+	}
+
+	function handleDismissError(forOwnerName: string | null) {
+		if (!sessionId) return;
+		return runAckAction(
+			() => api.acknowledgeSession(sessionId, "dismiss-error"),
+			new Date().toISOString(),
+			"Couldn't dismiss the error",
+			() => afterExplicitAck("dismiss_error", forOwnerName),
+		);
+	}
+
+	function handleMarkUnseen() {
+		if (!sessionId) return;
+		return runAckAction(() => api.unacknowledgeSession(sessionId), null, "Couldn't mark as unseen");
+	}
+
+	// AGEN: the reverse of a dismissed error ("Restore error") — a distinct
+	// source token so the timeline/toast vocabulary says "Error restored"
+	// rather than the generic "Marked as unseen" (see userAckLabel in
+	// TimelineView.tsx).
+	function handleRestoreError() {
+		if (!sessionId) return;
+		return runAckAction(
+			() => api.unacknowledgeSession(sessionId, "restore-error"),
+			null,
+			"Couldn't restore",
+		);
 	}
 
 	function handleTimelineScroll() {
@@ -317,8 +597,45 @@ export function SessionDetailPage() {
 		setSearchParams(next, { replace: true });
 	}
 
+	// Detail-header action: the same derivation the session card uses (AGEN)
+	// — mark_seen / dismiss_error / restore_error / mark_unseen, or a
+	// permission-wait / not-owner note instead of a button. No second copy
+	// of the precedence rule lives here; only the kind -> handler mapping
+	// does.
+	const detailAckAccess = explicitAckAccess(
+		session,
+		viewerUserId,
+		disableAuth,
+		adminMayClearOthersAttention,
+	);
+	const ackDerivation = deriveAckActionForViewer(session, {
+		isOwnerOrUnowned: canAcknowledgeSession(session, viewerUserId, disableAuth),
+		teamMode: ownerGatesSessionActions,
+		adminForOwnerName: detailAckAccess.forOwnerId
+			? ownerLabel(directory[detailAckAccess.forOwnerId], detailAckAccess.forOwnerId, {
+					selfId: viewerUserId,
+				})
+			: null,
+	});
+	const ackActionHandlers: Record<(typeof ackDerivation)["kind"] & string, () => void> = {
+		mark_seen: () => handleMarkSeen(ackDerivation.forOwnerName),
+		dismiss_error: () => handleDismissError(ackDerivation.forOwnerName),
+		restore_error: handleRestoreError,
+		mark_unseen: handleMarkUnseen,
+	};
+	const ackAction = ackDerivation.kind
+		? {
+				kind: ackDerivation.kind,
+				forOwnerName: ackDerivation.forOwnerName,
+				onClick: ackActionHandlers[ackDerivation.kind],
+			}
+		: null;
+
 	return (
 		<div className="flex flex-col h-full">
+			<div aria-live="polite" className="sr-only">
+				{liveAnnouncement}
+			</div>
 			<SessionHeader
 				session={session}
 				displayName={displayName}
@@ -338,6 +655,19 @@ export function SessionDetailPage() {
 				onRename={(name) => setSession(applyManualRename(session, name))}
 				onRefresh={loadSessionWorkspace}
 				onStop={handleStop}
+				ackAction={ackAction}
+				headerRef={headerRef}
+				permissionWaitNote={ackDerivation.permissionWaitNote}
+				notOwnerNote={ackDerivation.notOwnerNote}
+				ownerChip={
+					showOwnerFields
+						? ownerChip(session, {
+								viewerUserId,
+								lookup: (id) => directory[id],
+								initialsById: new Map(),
+							})
+						: null
+				}
 			/>
 
 			{(() => {
@@ -366,6 +696,33 @@ export function SessionDetailPage() {
 						/>
 						<SummaryField label="Started" value={session.startedAt} />
 						<SummaryField label="Status" value={session.status} />
+						{showOwnerFields && (
+							<SummaryField
+								label="Owner"
+								value={sessionOwnerText(session, (id) => directory[id], viewerUserId)}
+								action={
+									isAdmin ? (
+										<button
+											type="button"
+											onClick={() => setOwnerDialogOpen(true)}
+											aria-label={`Change owner of ${displayName}`}
+											className="mt-1 min-h-[44px] rounded-md px-1 text-xs font-medium text-primary underline underline-offset-2 hover:text-foreground md:min-h-0"
+										>
+											Change owner
+										</button>
+									) : undefined
+								}
+							/>
+						)}
+						{showOwnerFields && launchedById && (
+							<SummaryField
+								label="Launched by"
+								value={ownerLabel(directory[launchedById], launchedById, {
+									selfId: viewerUserId,
+									style: "you",
+								})}
+							/>
+						)}
 						<SummaryField label="Model" value={session.model} />
 						<SummaryField label="Branch" value={session.gitBranch} mono />
 						<SummaryField label="Current task" value={session.currentTask} />
@@ -416,6 +773,22 @@ export function SessionDetailPage() {
 					</div>
 				)}
 			</div>
+			{ownerDialogOpen && (
+				<SessionOwnerDialog
+					sessionId={session.sessionId}
+					sessionName={displayName}
+					currentOwnerId={session.ownerUserId ?? null}
+					people={assignablePeople(Object.values(directory), viewerUserId)}
+					onClose={() => setOwnerDialogOpen(false)}
+					onChanged={(updated) => {
+						setOwnerDialogOpen(false);
+						if (updated) {
+							setSession(updated);
+							applySessionUpdate(updated);
+						}
+					}}
+				/>
+			)}
 			{session.agentType === "claude_code" && session.managedSession ? (
 				<SessionPromptComposer session={session} onSubmitted={loadSessionWorkspace} />
 			) : null}

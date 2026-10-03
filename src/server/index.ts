@@ -1,21 +1,22 @@
 import packageJson from "../../package.json" with { type: "json" };
-import { app } from "./app.js";
-import { ensureDefaultApiKey } from "./auth/api-key.js";
 import { config } from "./config.js";
 import { initializeDatabase } from "./db/client.js";
 import { setShuttingDown } from "./drain-state.js";
 import { handleTelegramUpdate } from "./routes/channels.js";
 import { markDbReady } from "./routes/health.js";
 import { getInFlightCount } from "./routes/ingest-counters.js";
+import { handleServerRequest } from "./server-fetch.js";
 import { embedEvent, startBackfillIfNeeded } from "./services/ai/embeddings/embedding-service.js";
 import { validateAiStartupConfig } from "./services/ai/feature.js";
 import { maybeStartWatcherRunner } from "./services/ai/runner.js";
+import { ensureDefaultKeyThenWarn } from "./services/boot-keys.js";
 import {
 	getTelegramBotToken,
 	getTelegramDeliveryMode,
 	initTelegramCredentials,
 } from "./services/channels/telegram-credentials.js";
 import { startTelegramPolling } from "./services/channels/telegram-poller.js";
+import { assertBootable, warnAboutRiskySubjectSourceAdmins } from "./services/instance-mode.js";
 import { ensureBootstrapAdmin } from "./services/local-auth-bootstrap.js";
 import { reapExpiredSessions } from "./services/local-auth-service.js";
 import { sessionBus } from "./services/notifier.js";
@@ -29,6 +30,7 @@ import { buildSqliteScaleWarning, detectOrchestratorHint } from "./services/scal
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
+import { validateForwardauthProviderConfig } from "./services/user-identity.js";
 import {
 	handleWsClose,
 	handleWsMessage,
@@ -36,7 +38,6 @@ import {
 	initWsBroadcaster,
 	startHeartbeat,
 } from "./ws/handler.js";
-import { guardWsUpgrade } from "./ws/ws-auth.js";
 
 // ── Graceful drain state ──────────────────────────────────────────────────────
 //
@@ -79,6 +80,10 @@ process.on("SIGINT", () => void gracefulExit("sigint"));
 // Fail fast if AI is enabled but the instance secrets key is missing or weak.
 validateAiStartupConfig();
 
+// Fail fast if the configured forwardauth provider label can't be encoded
+// unambiguously into the synthetic SSO username.
+validateForwardauthProviderConfig();
+
 // S-M5: if TELEGRAM_BOT_TOKEN is set but TELEGRAM_WEBHOOK_SECRET is absent,
 // the webhook update endpoint is exposed without request verification.
 // Warn at startup and refuse the webhook-setup endpoint at runtime (the
@@ -114,6 +119,32 @@ if (!config.forwardauthTrustSecret && !config.disableAuth) {
 	);
 }
 
+// When a forwardauth identity provider is configured, SSO sign-in never
+// creates a local account, so the local user count can stay at zero
+// forever — without this, first-run signup would stay open indefinitely
+// on an SSO-fronted install just because nobody has signed up locally
+// yet. Require the same explicit opt-in there as everywhere else.
+if (config.forwardauthTrustSecret && !config.allowSignup) {
+	console.log(
+		"[auth] First-run signup is closed by default: a forwardauth identity provider is configured " +
+			"and AGENTPULSE_ALLOW_SIGNUP is not set. Use AGENTPULSE_LOCAL_ADMIN_USERNAME / " +
+			"AGENTPULSE_LOCAL_ADMIN_PASSWORD to create a local admin, or set AGENTPULSE_ALLOW_SIGNUP=true " +
+			"to allow local signup alongside SSO.",
+	);
+} else if (config.forwardauthTrustSecret && config.allowSignup) {
+	// The explicit opt-in case: unlike a non-SSO install, where the first
+	// real signup closes the window for good, an SSO-fronted install's
+	// local user count never grows on its own (SSO sign-in doesn't create a
+	// local row), so this stays open indefinitely until an operator turns
+	// it back off — surfaced at boot so it isn't a silent, forgotten state.
+	console.warn(
+		"[auth] First-run signup is open: AGENTPULSE_ALLOW_SIGNUP=true is set explicitly alongside a " +
+			"configured forwardauth identity provider. Local signup will remain available indefinitely " +
+			"(SSO sign-in never creates a local account, so the local user count won't close this on its " +
+			"own) until you unset AGENTPULSE_ALLOW_SIGNUP.",
+	);
+}
+
 // Initialize database (explicit eager-open; all getDb() calls from handlers
 // will now return this already-open connection without re-opening).
 // markDbReady() must be called immediately after await so /api/v1/health stops
@@ -122,6 +153,20 @@ if (!config.forwardauthTrustSecret && !config.disableAuth) {
 // ensures markDbReady() only fires after all migrations complete, preserving
 // the synchronous-assumption guarantee that previously held (codex C3).
 await initializeDatabase();
+
+// Refuse to start in a mode configuration that can't work (see
+// assertBootable). Before markDbReady so the readiness probe never goes green
+// for an instance that is about to exit, and before Bun.serve so nothing is
+// listening.
+try {
+	await assertBootable();
+} catch (err) {
+	console.error(`[boot] ${err instanceof Error ? err.message : String(err)}`);
+	process.exit(1);
+}
+// The default key is minted before the warning looks for unlisted admin service keys.
+const defaultKey = await ensureDefaultKeyThenWarn();
+await warnAboutRiskySubjectSourceAdmins();
 markDbReady();
 
 // Eagerly populate the projects cache before hook ingestion routes are mounted
@@ -154,32 +199,7 @@ let bunServer: ReturnType<typeof Bun.serve> | undefined;
 bunServer = Bun.serve({
 	port: config.port,
 	hostname: config.host,
-	async fetch(req: Request, server: unknown) {
-		const url = new URL(req.url);
-
-		// Handle WebSocket upgrade
-		if (url.pathname === "/api/v1/ws" || url.pathname === "/app-api/v1/ws") {
-			// Strict Origin check — no NODE_ENV branching.
-			// Allowed origins are derived from PUBLIC_URL (comma-separated).
-			// Dev setups: set PUBLIC_URL=https://prod.example.com,http://localhost:5173
-			const origin = req.headers.get("Origin");
-			if (!origin || !config.allowedOrigins.includes(origin)) {
-				return new Response("Forbidden", { status: 403 });
-			}
-
-			const wsReject = await guardWsUpgrade(req.headers);
-			if (wsReject) return wsReject;
-			const s = server as { upgrade(req: Request): boolean };
-			const upgraded = s.upgrade(req);
-			if (upgraded) return undefined as unknown as Response;
-			return new Response("WebSocket upgrade failed", { status: 400 });
-		}
-
-		// Handle HTTP via Hono. Pass the Bun server handle as Hono's `env` so
-		// that `getConnInfo(c)` (backed by `server.requestIP`) can resolve the
-		// TCP peer address for rate limiting and IP logging.
-		return app.fetch(req, { server });
-	},
+	fetch: handleServerRequest,
 	websocket: {
 		open: handleWsOpen,
 		message: handleWsMessage,
@@ -247,9 +267,6 @@ setInterval(async () => {
 // operator has explicitly set eventsRetentionDays > 0 (see
 // services/retention-service.ts for the full data-safety rationale).
 scheduleRetentionInterval(config.retentionIntervalMs);
-
-// Ensure at least one API key exists
-const defaultKey = await ensureDefaultApiKey();
 
 console.log("");
 console.log("  ╔═══════════════════════════════════════════╗");

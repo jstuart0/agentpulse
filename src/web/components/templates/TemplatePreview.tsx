@@ -1,5 +1,6 @@
 import type { LaunchRequest, SupervisorRecord, TemplatePreview } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
+import { useHostLabel } from "../../hooks/useHostLabel.js";
 import { RecentLaunchesPanel } from "./RecentLaunchesPanel.js";
 
 export function TemplatePreviewPanel({
@@ -18,6 +19,7 @@ export function TemplatePreviewPanel({
 	recentLaunches: LaunchRequest[];
 }) {
 	const { copy } = useCopyFeedback();
+	const hostLabel = useHostLabel();
 	return (
 		<section className="rounded-lg border border-border bg-card p-4 space-y-4">
 			<div>
@@ -31,7 +33,7 @@ export function TemplatePreviewPanel({
 			<div className="rounded-md border border-border bg-background/60 p-3 text-xs">
 				<div className="font-medium text-foreground">
 					{connectedSupervisor
-						? `Validated against ${selectedSupervisor?.hostName ?? connectedSupervisor.hostName}`
+						? `Validated against ${hostLabel(selectedSupervisor ?? connectedSupervisor)}`
 						: "No connected supervisor"}
 				</div>
 				<div className="mt-1 text-muted-foreground">

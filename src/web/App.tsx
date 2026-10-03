@@ -2,13 +2,19 @@ import { Suspense, lazy, useEffect } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 import { Layout } from "./components/Layout.js";
+import { ServerUnreachableNotice } from "./components/ServerUnreachableNotice.js";
+import { ForcedPasswordChange } from "./components/settings/ForcedPasswordChange.js";
+import { useOwnershipUi } from "./hooks/useOwnershipUi.js";
 import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js";
 import { api } from "./lib/api.js";
-import { applyTheme, getStoredTheme } from "./lib/theme.js";
+import { deriveAppGate } from "./lib/app-gate.js";
+import { useToastPosition } from "./lib/dialog-open.js";
+import { applyTheme, getStoredTheme, themeToApply } from "./lib/theme.js";
 import { useDbFingerprintStore } from "./stores/db-fingerprint-store.js";
 import { useLabsStore } from "./stores/labs-store.js";
 import { useProjectsStore } from "./stores/projects-store.js";
 import { useUserStore } from "./stores/user-store.js";
+import { useUsersStore } from "./stores/users-store.js";
 
 // How often the dashboard polls GET /api/v1/health purely to sample
 // instance.dbFingerprint — see db-fingerprint-watch.ts / db-fingerprint-store.ts.
@@ -55,20 +61,26 @@ const ProjectsPage = lazy(() =>
 );
 
 /**
- * Redirects unauthenticated users to /login. Only guards routes inside
- * the Layout shell — /login itself and the login bootstrap flow stay
- * public. While auth state is still loading we show the route fallback
- * rather than a flash of login.
+ * Decides what the shell renders: nothing but the loading state until
+ * /auth/me answers, the sign-in page for a signed-out visitor, only the
+ * password form for someone who must choose a new password, and the app
+ * otherwise. Only routes inside the Layout shell are guarded — /login itself
+ * and the login bootstrap flow stay public.
  */
 function AuthGate({ children }: { children: React.ReactNode }) {
 	const loaded = useUserStore((s) => s.loaded);
 	const authenticated = useUserStore((s) => s.authenticated);
 	const disableAuth = useUserStore((s) => s.disableAuth);
+	const mustChangePassword = useUserStore((s) => s.mustChangePassword);
 	const location = useLocation();
 
-	if (!loaded) return <RouteFallback />;
-	if (disableAuth || authenticated) return <>{children}</>;
-	return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+	const gate = deriveAppGate({ loaded, authenticated, disableAuth, mustChangePassword });
+	if (gate === "loading") return <RouteFallback />;
+	if (gate === "change_password") return <ForcedPasswordChange />;
+	if (gate === "login") {
+		return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+	}
+	return <>{children}</>;
 }
 
 function RouteFallback() {
@@ -89,44 +101,67 @@ function RouteFallback() {
 
 export function App() {
 	useNotificationPermission();
-	useWebSocket();
 	const loadLabs = useLabsStore((s) => s.load);
 	const loadUser = useUserStore((s) => s.load);
 	const loadProjects = useProjectsStore((s) => s.load);
+	const loaded = useUserStore((s) => s.loaded);
+	const authenticated = useUserStore((s) => s.authenticated);
+	const disableAuth = useUserStore((s) => s.disableAuth);
+	const mustChangePassword = useUserStore((s) => s.mustChangePassword);
+	const { themeIsPerBrowser, callDirectory } = useOwnershipUi();
+	const loadDirectory = useUsersStore((s) => s.load);
+	// Toasts go to the top while a bottom-sheet dialog is open on a phone, so they don't sit on its buttons.
+	const toastPosition = useToastPosition();
+
+	// Nothing but /auth/me runs until the viewer may use the app: a signed-out
+	// or must-change-password viewer would only collect refusals (and a
+	// reconnecting socket) behind the screen they are allowed to see.
+	const appReady =
+		deriveAppGate({ loaded, authenticated, disableAuth, mustChangePassword }) === "app";
+	useWebSocket(appReady);
 
 	useEffect(() => {
-		void loadLabs();
 		void loadUser();
-		void loadProjects();
-	}, [loadLabs, loadUser, loadProjects]);
+	}, [loadUser]);
 
 	useEffect(() => {
+		if (!appReady) return;
+		void loadLabs();
+		void loadProjects();
+	}, [appReady, loadLabs, loadProjects]);
+
+	// Owner names, and the people a key or host can be handed to. Team mode only.
+	useEffect(() => {
+		if (appReady && callDirectory) void loadDirectory();
+	}, [appReady, callDirectory, loadDirectory]);
+
+	useEffect(() => {
+		if (!appReady) return;
 		let cancelled = false;
 
 		async function syncTheme() {
+			let server: unknown;
 			try {
-				const settings = await api.getSettings();
-				const savedTheme = settings.theme;
-				if (!cancelled && (savedTheme === "dark" || savedTheme === "light")) {
-					applyTheme(savedTheme);
-					window.localStorage.setItem("agentpulse-theme", savedTheme);
-					return;
-				}
+				server = (await api.getSettings()).theme;
 			} catch {
 				// Ignore settings load failure and keep local theme.
 			}
-
-			if (!cancelled) {
-				const stored = getStoredTheme();
-				if (stored) applyTheme(stored);
-			}
+			if (cancelled) return;
+			const choice = themeToApply({
+				perBrowser: themeIsPerBrowser,
+				stored: getStoredTheme(),
+				server,
+			});
+			if (!choice) return;
+			applyTheme(choice.theme);
+			if (choice.persist) window.localStorage.setItem("agentpulse-theme", choice.theme);
 		}
 
 		void syncTheme();
 		return () => {
 			cancelled = true;
 		};
-	}, []);
+	}, [appReady, themeIsPerBrowser]);
 
 	useEffect(() => {
 		const record = useDbFingerprintStore.getState().record;
@@ -149,7 +184,8 @@ export function App() {
 
 	return (
 		<>
-			<Toaster position="bottom-right" />
+			<Toaster position={toastPosition} />
+			<ServerUnreachableNotice />
 			<Suspense fallback={<RouteFallback />}>
 				<Routes>
 					<Route path="/login" element={<LoginPage />} />

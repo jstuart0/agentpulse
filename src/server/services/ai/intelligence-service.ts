@@ -3,6 +3,7 @@ import type { EventCategory, Session, SessionEvent } from "../../../shared/types
 import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
 import { events, sessions } from "../../db/schema/index.js";
+import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../../db/session-columns.js";
 import { executeRows } from "../../db/sql-helpers.js";
 import { getSessionOwnerConnections } from "../session-ownership.js";
 import { type SessionIntelligence, classifySession } from "./classifier.js";
@@ -158,7 +159,7 @@ export async function intelligenceForSession(
 	now = new Date(),
 ): Promise<SessionIntelligence | null> {
 	const [row] = await getDb()
-		.select()
+		.select(SESSION_COLUMNS_SANS_OWNERSHIP)
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);
@@ -196,7 +197,7 @@ export async function intelligenceForSessions(
 
 	// 1) Session rows
 	const sessionRows = await getDb()
-		.select()
+		.select(SESSION_COLUMNS_SANS_OWNERSHIP)
 		.from(sessions)
 		.where(inArray(sessions.sessionId, sessionIds));
 	if (sessionRows.length === 0) return out;

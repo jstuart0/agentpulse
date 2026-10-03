@@ -72,6 +72,7 @@ function categorizeOversizeEventType(eventType: string): EventCategory {
 	}
 	if (eventType === "PermissionRequest" || eventType === "PermissionDenied")
 		return "permission_event";
+	if (eventType === "UserAcknowledge" || eventType === "UserUnacknowledge") return "user_ack";
 	if (
 		eventType === "TaskCreated" ||
 		eventType === "TaskCompleted" ||
@@ -91,6 +92,59 @@ function serializeToolResponse(toolResponse: unknown): string | null {
 function stringifyToolResponse(toolResponse: unknown): string | null {
 	const serialized = serializeToolResponse(toolResponse);
 	return serialized === null ? null : serialized.slice(0, TOOL_RESPONSE_COLUMN_CHAR_CAP);
+}
+
+// AGEN: `payload.source` on a UserAcknowledge event identifies what produced
+// the synthetic ack (e.g. "dashboard", "copy") — it is not free text. A
+// hostile or malformed value (unbounded length, newlines, an injection
+// attempt) is never embedded in stored content or rendered into the AI
+// watcher's context; it collapses to "unknown" instead.
+const USER_ACK_SOURCE_PATTERN = /^[a-z0-9_-]{1,32}$/;
+
+function sanitizeUserAckSource(source: string | undefined): string {
+	return source !== undefined && USER_ACK_SOURCE_PATTERN.test(source) ? source : "unknown";
+}
+
+/**
+ * Human-readable origin for a UserAcknowledge/UserUnacknowledge event's
+ * content string (AGEN) -- null when `source` is exactly the DEFAULT
+ * token for the verb it already selected (e.g. "dismiss-error" is the
+ * default for "Error dismissed"), since naming it again would just repeat
+ * the verb. This is the fix for the Debug timeline row reading
+ * "Error dismissed (dismiss-error)" -- a literal duplicate of itself.
+ * "unknown" (a missing or rejected source) reads as "from a hook": the
+ * dashboard always sends one of its own explicit tokens, so an
+ * unrecognized source means the event arrived some other way.
+ */
+function userAckOrigin(
+	eventType: "UserAcknowledge" | "UserUnacknowledge",
+	source: string,
+): string | null {
+	const defaultSource =
+		eventType === "UserUnacknowledge"
+			? source === "restore-error"
+				? "restore-error"
+				: "dashboard"
+			: source === "dismiss-error"
+				? "dismiss-error"
+				: "dashboard";
+	if (source === defaultSource) return null;
+	if (source === "dashboard") return "from dashboard";
+	if (source === "unknown") return "from a hook";
+	return `from ${source}`;
+}
+
+// A rejected source is never stored verbatim in content, but it may still
+// be useful forensically in the raw payload — capped so an unbounded
+// hostile value can't bloat the row the way tool responses are capped above.
+const USER_ACK_RAW_SOURCE_CHAR_CAP = 200;
+
+function shapeUserAcknowledgeRawPayload(payload: HookEventPayload): Record<string, unknown> {
+	const shaped: Record<string, unknown> = { ...(payload as unknown as Record<string, unknown>) };
+	if (typeof shaped.source === "string" && shaped.source.length > USER_ACK_RAW_SOURCE_CHAR_CAP) {
+		shaped.source = shaped.source.slice(0, USER_ACK_RAW_SOURCE_CHAR_CAP);
+	}
+	return shaped;
 }
 
 /**
@@ -307,6 +361,42 @@ export function normalizeHookEvent(
 			toolInput: payload.tool_input || null,
 			toolResponse,
 			rawPayload: shapeHookRawPayload(payload, eventType),
+		});
+	} else if (eventType === "UserAcknowledge" || eventType === "UserUnacknowledge") {
+		// Synthetic acknowledgement/unacknowledgement (see
+		// AgentPulseSyntheticEvent): one non-noise timeline row recording
+		// that the user looked at (or un-marked) the latest result. Carries
+		// no tool fields; the client-side `acknowledged_at` stays in
+		// rawPayload. `source` is restricted to a short token (AGEN) — a
+		// rejected value is never embedded in content, only the sanitized
+		// "unknown" fallback.
+		//
+		// dismiss-error / restore-error get their own verb, everything else
+		// reads as the plain mark-seen/mark-unseen case; the origin suffix
+		// (userAckOrigin) is appended only when `source` isn't the default
+		// for that verb, so the Debug timeline row never repeats itself.
+		const ackSource = sanitizeUserAckSource(payload.source);
+		const verb =
+			eventType === "UserUnacknowledge"
+				? ackSource === "restore-error"
+					? "Error restored"
+					: "Marked as unseen"
+				: ackSource === "dismiss-error"
+					? "Error dismissed"
+					: "Marked as seen";
+		const origin = userAckOrigin(eventType, ackSource);
+		const content = origin ? `${verb} (${origin})` : verb;
+		normalized.push({
+			eventType,
+			category: "user_ack",
+			source: "observed_hook",
+			content,
+			isNoise: false,
+			providerEventType,
+			toolName: null,
+			toolInput: null,
+			toolResponse: null,
+			rawPayload: shapeUserAcknowledgeRawPayload(payload),
 		});
 	} else if (eventType === "PermissionRequest" || eventType === "PermissionDenied") {
 		normalized.push({

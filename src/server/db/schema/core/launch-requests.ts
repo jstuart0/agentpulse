@@ -52,6 +52,8 @@ export const launchRequestsSqlite = sqliteTable("launch_requests", {
 	desiredDisplayName: text("desired_display_name"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+	/** The user who requested this launch. Null for DISABLE_AUTH / unattributed callers. */
+	requestedByUserId: text("requested_by_user_id"),
 });
 
 export const launchRequestsPg = pgTable("launch_requests", {
@@ -99,4 +101,5 @@ export const launchRequestsPg = pgTable("launch_requests", {
 	desiredDisplayName: pgText("desired_display_name"),
 	createdAt: tsColumn("postgres", "created_at"),
 	updatedAt: tsColumn("postgres", "updated_at"),
+	requestedByUserId: pgText("requested_by_user_id"),
 });

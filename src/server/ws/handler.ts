@@ -1,17 +1,35 @@
 import type { ServerWebSocket } from "bun";
 import { WS_HEARTBEAT_INTERVAL_MS } from "../../shared/constants.js";
 import type { Session, SessionEvent, WsMessage, WsMessageType } from "../../shared/types.js";
+import { getInactiveApiKeyIds } from "../auth/api-key.js";
+import { getUserGateStates } from "../services/user-identity.js";
+import type { WsConnectionData } from "./ws-auth.js";
+
+/** Close code for a socket the server ends because its identity stopped being allowed. */
+const WS_CLOSE_IDENTITY_REVOKED = 4001;
 
 interface WsClient {
 	ws: ServerWebSocket<unknown>;
 	channels: Set<string>;
+	/** The user the connection is acting as: the cookie/SSO user, or an API key's owner. Null for DISABLE_AUTH, a service key, a supervisor credential. */
+	userId: string | null;
+	/** The API key the connection authenticated with, null when it didn't use one. */
+	keyId: string | null;
 }
 
 const clients = new Map<ServerWebSocket<unknown>, WsClient>();
 
-// Handle new WebSocket connection
+// Handle new WebSocket connection. The identity was resolved at upgrade
+// time (guardWsUpgrade) and rides on `ws.data`; a socket opened without it
+// (none in production) is treated as having no user and no key.
 export function handleWsOpen(ws: ServerWebSocket<unknown>) {
-	clients.set(ws, { ws, channels: new Set(["sessions"]) });
+	const data = ws.data as Partial<WsConnectionData> | undefined;
+	clients.set(ws, {
+		ws,
+		channels: new Set(["sessions"]),
+		userId: data?.userId ?? null,
+		keyId: data?.keyId ?? null,
+	});
 	console.log(`[ws] Client connected (${clients.size} total)`);
 }
 
@@ -77,7 +95,78 @@ export function startHeartbeat() {
 				// Will be cleaned up on close
 			}
 		}
+		void heartbeatTick();
 	}, WS_HEARTBEAT_INTERVAL_MS);
+}
+
+function closeClient(client: WsClient, reason: string): void {
+	try {
+		client.ws.close(WS_CLOSE_IDENTITY_REVOKED, reason);
+	} catch {
+		// Already closed/closing — nothing left to do.
+	}
+	clients.delete(client.ws);
+}
+
+/**
+ * Close every open socket belonging to a user. Runs on disable and
+ * whenever must_change_password is set. Idempotent — a user with no open
+ * sockets is a no-op.
+ */
+export function closeSocketsForUser(userId: string): void {
+	for (const client of [...clients.values()]) {
+		if (client.userId === userId) closeClient(client, "account_disabled");
+	}
+}
+
+/**
+ * One heartbeat-interval sweep: re-checks, in two batched queries, every
+ * connected user's disabled/must-change-password state and every
+ * connected key's active flag, and closes any socket whose identity is now
+ * gated. This is what bounds "a replica that didn't handle the disable" to
+ * one heartbeat interval. Never rejects: a database error is logged and the
+ * sweep is retried on the next tick (sockets stay as they were). Exported
+ * separately from startHeartbeat's setInterval wrapper so a test can invoke
+ * exactly one sweep instead of waiting WS_HEARTBEAT_INTERVAL_MS.
+ */
+export async function heartbeatTick(): Promise<void> {
+	try {
+		await sweepGatedIdentities();
+	} catch (err) {
+		console.error(
+			JSON.stringify({
+				kind: "ws_heartbeat_failed",
+				level: "error",
+				error: err instanceof Error ? err.message : String(err),
+			}),
+		);
+	}
+}
+
+async function sweepGatedIdentities(): Promise<void> {
+	const userIds = new Set<string>();
+	const keyIds = new Set<string>();
+	for (const client of clients.values()) {
+		if (client.userId) userIds.add(client.userId);
+		if (client.keyId) keyIds.add(client.keyId);
+	}
+	if (userIds.size === 0 && keyIds.size === 0) return;
+
+	const [userStates, inactiveKeyIds] = await Promise.all([
+		getUserGateStates([...userIds]),
+		getInactiveApiKeyIds([...keyIds]),
+	]);
+
+	for (const client of [...clients.values()]) {
+		if (client.keyId && inactiveKeyIds.has(client.keyId)) {
+			closeClient(client, "api_key_revoked");
+			continue;
+		}
+		const state = client.userId ? userStates.get(client.userId) : undefined;
+		if (!state) continue; // no user, or a deleted one — nothing to reconcile here
+		if (state.disabled) closeClient(client, "account_disabled");
+		else if (state.mustChangePassword) closeClient(client, "password_change_required");
+	}
 }
 
 // Get current connection count

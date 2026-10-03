@@ -145,6 +145,41 @@ export function extractZodEnum(content: string, constName: string): string[] {
 	return [...slice.matchAll(/"([A-Za-z_]+)"/g)].map((m) => m[1]);
 }
 
+/**
+ * Extract an interface's declared field names, e.g. from
+ * `export interface SupervisorRecord { id: string; ownerUserId?: string | null; }`
+ * returns `["id", "ownerUserId"]`. Comments (both `//` and `/* ... *\/`)
+ * are stripped first so a field name mentioned only in a doc comment
+ * doesn't false-match; the optional `?` marker is normalized away so
+ * `ownerUserId?:` and `ownerUserId:` extract identically.
+ */
+export function extractInterfaceFields(content: string, interfaceName: string): string[] {
+	const marker = new RegExp(`export interface ${interfaceName}\\b[^{]*\\{`);
+	const idx = content.search(marker);
+	if (idx === -1) throw new Error(`interface not found: ${interfaceName}`);
+	const braceStart = content.indexOf("{", idx);
+	let depth = 0;
+	let end = -1;
+	for (let i = braceStart; i < content.length; i++) {
+		if (content[i] === "{") depth++;
+		else if (content[i] === "}") {
+			depth--;
+			if (depth === 0) {
+				end = i;
+				break;
+			}
+		}
+	}
+	if (end === -1) throw new Error(`unterminated interface: ${interfaceName}`);
+	let slice = content.slice(braceStart + 1, end);
+	slice = slice.replace(/\/\*[\s\S]*?\*\//g, "");
+	slice = slice.replace(/\/\/.*$/gm, "");
+	// A field starts at the top of the slice, or right after the previous
+	// field's `;`/`,` separator or a newline — not strictly "start of
+	// line," since a synthetic single-line interface has no newlines at all.
+	return [...slice.matchAll(/(?:^|[;,\n])\s*([A-Za-z_][A-Za-z0-9_]*)\??:/g)].map((m) => m[1]);
+}
+
 export function sameSet(a: string[], b: string[]): boolean {
 	if (a.length !== b.length) return false;
 	const sortedA = [...a].sort();

@@ -12,6 +12,7 @@ import type {
 	SupervisorRecord,
 	TemplateHostCompatibility,
 } from "../../../shared/types.js";
+import { useHostLabel } from "../../hooks/useHostLabel.js";
 import { HostCompatibilityPanel } from "./HostCompatibilityPanel.js";
 import { approvalPolicies, formatLaunchTime, launchModeLabels, sandboxModes } from "./utils.js";
 
@@ -57,6 +58,7 @@ export function TemplateEditorPanel(props: {
 	onDuplicate: () => void;
 	onCreateLaunch: () => void;
 }) {
+	const hostLabel = useHostLabel();
 	const {
 		selectedId,
 		draft,
@@ -330,7 +332,7 @@ export function TemplateEditorPanel(props: {
 					</option>
 					{supervisors.map((supervisor) => (
 						<option key={supervisor.id} value={supervisor.id}>
-							{supervisor.hostName} · {supervisor.status}
+							{hostLabel(supervisor)} · {supervisor.status}
 						</option>
 					))}
 				</select>

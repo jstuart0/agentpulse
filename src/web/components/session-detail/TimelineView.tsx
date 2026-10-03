@@ -190,6 +190,8 @@ export function eventLabel(category: EventCategory | null): string {
 			return "System";
 		case "permission_event":
 			return "Permission";
+		case "user_ack":
+			return "Acknowledged";
 		case "ai_proposal_pending":
 			return "AI Proposal Pending";
 		case "ai_proposal":
@@ -214,45 +216,45 @@ export function eventLabel(category: EventCategory | null): string {
 	}
 }
 
+/**
+ * Which TimelineMode(s) each EventCategory shows in by default (before
+ * showTools/showSystem overrides). A `Record<EventCategory, ...>` — not a
+ * switch over TimelineMode — so adding a member to the EventCategory union
+ * without deciding where it shows is a TypeScript error here, the same way
+ * eventLabel's switch above is exhaustive over category.
+ *
+ * "user_ack" (AGEN) shows in Debug only: acknowledge/unacknowledge/dismiss
+ * events are real signal for someone debugging the operational-status
+ * model, but noise for every other view. The ai_* categories show nowhere
+ * via this component today (AiPanel/the AI tab owns their display) —
+ * explicit empty arrays, not an omission.
+ */
+const CATEGORY_MODES: Record<EventCategory, readonly TimelineMode[]> = {
+	prompt: ["prompts", "conversation", "progress", "terminal", "debug"],
+	assistant_message: ["conversation", "progress", "terminal", "debug"],
+	progress_update: ["progress", "terminal", "debug"],
+	plan_update: ["progress", "terminal", "debug"],
+	status_update: ["progress", "terminal", "debug"],
+	tool_event: ["terminal", "debug"],
+	system_event: ["progress", "terminal", "debug"],
+	permission_event: ["progress", "terminal", "debug"],
+	user_ack: ["debug"],
+	ai_proposal_pending: [],
+	ai_proposal: [],
+	ai_report: [],
+	ai_hitl_request: [],
+	ai_hitl_response: [],
+	ai_continue_sent: [],
+	ai_continue_blocked: [],
+	ai_error: [],
+};
+
 function getBaseCategories(mode: TimelineMode): Set<EventCategory> {
-	switch (mode) {
-		case "prompts":
-			return new Set(["prompt"]);
-		case "conversation":
-			return new Set(["prompt", "assistant_message"]);
-		case "progress":
-			return new Set([
-				"prompt",
-				"assistant_message",
-				"progress_update",
-				"plan_update",
-				"status_update",
-				"system_event",
-				"permission_event",
-			]);
-		case "terminal":
-			return new Set([
-				"prompt",
-				"assistant_message",
-				"progress_update",
-				"plan_update",
-				"status_update",
-				"tool_event",
-				"system_event",
-				"permission_event",
-			]);
-		case "debug":
-			return new Set([
-				"prompt",
-				"assistant_message",
-				"progress_update",
-				"plan_update",
-				"status_update",
-				"tool_event",
-				"system_event",
-				"permission_event",
-			]);
+	const categories = new Set<EventCategory>();
+	for (const key of Object.keys(CATEGORY_MODES) as EventCategory[]) {
+		if (CATEGORY_MODES[key].includes(mode)) categories.add(key);
 	}
+	return categories;
 }
 
 export function getVisibleEvents(

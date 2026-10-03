@@ -30,10 +30,16 @@
  * from the table schemas they pass into tx.insert/select/update/delete.
  */
 import { config } from "../config.js";
+import {
+	assertNotInsideAdminLock,
+	isSqliteAdminLockBusy,
+	waitForSqliteAdminLock,
+} from "./admin-lock.js";
 import { getDb, getSqlite } from "./client.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: tx type unified in Phase 2a
 export async function withTransaction<T>(fn: (tx: any) => T | Promise<T>): Promise<T> {
+	assertNotInsideAdminLock();
 	const db = getDb();
 
 	if (config.dialect === "sqlite") {
@@ -52,6 +58,11 @@ export async function withTransaction<T>(fn: (tx: any) => T | Promise<T>): Promi
 		//   Those forms work against the shared Drizzle instance; they still land on
 		//   the same underlying SQLite connection, which SQLite serialises, so all
 		//   ops are within the BEGIN/COMMIT block.
+		//
+		// The admin lock is an open BEGIN IMMEDIATE on this same connection, so a
+		// transaction can't start while it is held: wait for it (no cost when it
+		// is free) rather than throw and lose the work.
+		if (isSqliteAdminLockBusy()) await waitForSqliteAdminLock();
 		const sqlite = getSqlite();
 		sqlite.exec("BEGIN");
 		try {

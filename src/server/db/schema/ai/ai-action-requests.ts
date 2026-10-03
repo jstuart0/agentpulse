@@ -24,6 +24,8 @@ export const aiActionRequestsSqlite = sqliteTable("ai_action_requests", {
 	resultEventId: text("result_event_id"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+	/** The human who resolved this request. resolvedBy stays the actor-kind label (e.g. "user", "api_key", "ai"). */
+	resolvedByUserId: text("resolved_by_user_id"),
 });
 
 export const aiActionRequestsPg = pgTable("ai_action_requests", {
@@ -43,4 +45,5 @@ export const aiActionRequestsPg = pgTable("ai_action_requests", {
 	resultEventId: pgText("result_event_id"),
 	createdAt: tsColumn("postgres", "created_at"),
 	updatedAt: tsColumn("postgres", "updated_at"),
+	resolvedByUserId: pgText("resolved_by_user_id"),
 });

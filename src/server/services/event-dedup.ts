@@ -28,6 +28,14 @@ export interface HookDeliveryContext {
 	 * because nothing reads that field for this decision anymore.
 	 */
 	oversizeStub?: boolean;
+	/**
+	 * Session-attribution inputs: the posting key's owner and id, read
+	 * from the already-resolved AuthUser — never re-queried. Omitted by a
+	 * caller that doesn't build a real HookDeliveryContext (an internal
+	 * default, a test calling processHookEvent directly) is treated as no
+	 * attribution at all — the same as a DISABLE_AUTH caller.
+	 */
+	attribution?: { ownerUserId: string | null; ingestKeyId: string | null };
 }
 
 export type DedupPolicy =

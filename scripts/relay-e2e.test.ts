@@ -292,6 +292,7 @@ afterAll(async () => {
 	for (const r of [...running]) await stopRelay(r);
 	server?.stop(true);
 	config.disableAuth = originalDisableAuth;
+	_resetDbReadyForTest(false);
 	if (root) await rm(root, { recursive: true, force: true });
 });
 

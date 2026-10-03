@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { plainErrorMessage } from "../../lib/api-errors.js";
 import {
 	type AiProposal,
 	type AiProvider,
@@ -47,7 +48,7 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 				}
 			}
 		} catch (err) {
-			setBanner({ kind: "error", text: String(err) });
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		} finally {
 			setLoading(false);
 		}
@@ -74,7 +75,7 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 			});
 			await reload();
 		} catch (err) {
-			setBanner({ kind: "error", text: String(err) });
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		}
 	}
 
@@ -83,7 +84,7 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 			await api.updateAiWatcher(sessionId, { enabled: false });
 			await reload();
 		} catch (err) {
-			setBanner({ kind: "error", text: String(err) });
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		}
 	}
 
@@ -96,7 +97,7 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 			await api.updateAiWatcher(sessionId, { [key]: value } as Record<string, unknown>);
 			await reload();
 		} catch (err) {
-			setBanner({ kind: "error", text: String(err) });
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		}
 	}
 
@@ -390,7 +391,7 @@ function HitlCard({
 			});
 			onResolved();
 		} catch (err) {
-			onError(String(err));
+			onError(plainErrorMessage(err));
 		} finally {
 			setSubmitting(false);
 		}

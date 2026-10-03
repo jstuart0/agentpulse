@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import "./ai/__test_db.js";
 
@@ -36,6 +36,17 @@ beforeEach(async () => {
 	invalidateAiFlagsCache();
 });
 
+// The beforeEach above wipes `settings` before each test in THIS file, but
+// nothing reset it after the LAST one — a stray ai.enabled=true (several
+// tests below set it directly) would otherwise leak into whatever file or
+// full-suite run happens next against the same database. File discovery
+// order isn't guaranteed, so "this file doesn't touch settings in its last
+// describe block" isn't a safe assumption to rely on instead.
+afterAll(async () => {
+	await getDb().delete(settings).execute();
+	invalidateAiFlagsCache();
+});
+
 async function mkSession(sessionId: string, metadata: Record<string, unknown> = {}) {
 	await getDb()
 		.insert(sessions)
@@ -44,11 +55,28 @@ async function mkSession(sessionId: string, metadata: Record<string, unknown> = 
 			displayName: sessionId,
 			agentType: "claude_code",
 			status: "active",
+			// Explicit ISO stamp, matching real session-insert code
+			// (event-processor.ts) — never left to the DB's raw default,
+			// whose format/resolution differs enough across dialects (and
+			// from mkLaunchRequest's own default below) to corrupt
+			// resolveObservedSessionCorrelation's chronological comparison.
+			startedAt: new Date().toISOString(),
 			lastActivityAt: new Date().toISOString(),
 			metadata,
 		})
 		.execute();
 }
+
+// Fixed sentinel well in the past: in production a launch_requests row is
+// always created before the session it correlates to even exists (the
+// supervisor spawns the process only after the launch is created), so
+// resolveObservedSessionCorrelation's squat guard treats an OLDER session
+// than its pending launch as evidence of squatting. This suite's tests
+// don't care about real chronology between the two inserts, so pin the
+// launch's createdAt safely in the past rather than leaving it to a DB
+// default whose format/resolution isn't guaranteed to predate mkSession's
+// explicit `new Date().toISOString()` stamp above.
+const LAUNCH_SENTINEL_CREATED_AT = "2020-01-01T00:00:00.000Z";
 
 async function mkLaunchRequest(
 	correlationId: string,
@@ -64,6 +92,8 @@ async function mkLaunchRequest(
 			cwd: "/tmp/x",
 			requestedLaunchMode: "interactive_terminal",
 			status: "validated",
+			createdAt: LAUNCH_SENTINEL_CREATED_AT,
+			updatedAt: LAUNCH_SENTINEL_CREATED_AT,
 			...overrides,
 		})
 		.execute();

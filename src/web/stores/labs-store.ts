@@ -1,4 +1,6 @@
+import { toast } from "sonner";
 import { create } from "zustand";
+import { plainErrorMessage } from "../lib/api-errors.js";
 import { type LabsFlag, type LabsFlagDefinition, type LabsFlags, api } from "../lib/api.js";
 
 interface LabsState {
@@ -33,7 +35,7 @@ export const useLabsStore = create<LabsState>((set, get) => ({
 		} catch (err) {
 			set({
 				loading: false,
-				error: err instanceof Error ? err.message : String(err),
+				error: plainErrorMessage(err),
 			});
 		}
 	},
@@ -47,7 +49,10 @@ export const useLabsStore = create<LabsState>((set, get) => ({
 			set({ flags: res.flags });
 		} catch (err) {
 			if (prev) set({ flags: prev });
-			set({ error: err instanceof Error ? err.message : String(err) });
+			const message = plainErrorMessage(err);
+			set({ error: message });
+			// The list can be long: say it where the person is looking, too.
+			toast.error(message);
 		}
 	},
 

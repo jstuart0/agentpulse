@@ -32,6 +32,8 @@ export const supervisorsSqlite = sqliteTable("supervisors", {
 	enrollmentState: text("enrollment_state").notNull().default("active"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+	/** The user who enrolled this host. Null for a pre-upgrade or unowned host. */
+	ownerUserId: text("owner_user_id"),
 });
 
 export const supervisorsPg = pgTable("supervisors", {
@@ -56,4 +58,5 @@ export const supervisorsPg = pgTable("supervisors", {
 	enrollmentState: pgText("enrollment_state").notNull().default("active"),
 	createdAt: tsColumn("postgres", "created_at"),
 	updatedAt: tsColumn("postgres", "updated_at"),
+	ownerUserId: pgText("owner_user_id"),
 });

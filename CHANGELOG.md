@@ -9,6 +9,23 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Added
 
+- **Operational session state: WAITING / WORKING / IDLE / ERROR (AGEN).**
+  Original feature contributed by [@Pawel0c0l](https://github.com/Pawel0c0l)
+  — thank you! Sessions now carry two acknowledgement timestamps
+  (`lastAgentTurnCompletedAt`, stamped on Stop; `lastUserAcknowledgedAt`,
+  stamped on UserPromptSubmit and on acknowledging) and a derived
+  `operationalStatus`, computed identically on the server and in the
+  dashboard by the shared classifier in `src/shared/session-state.ts`. The
+  dashboard shows four status cards (a single-select filter), and
+  `GET /sessions/stats` carries the same four counts so they're correct
+  beyond one page. A session you haven't looked at since the agent
+  finished shows WAITING; opening it, or using the new "mark as seen"
+  controls (per-card, or "mark all waiting as seen"), clears it. A failed
+  session shows ERROR until acknowledged, at which point it's dismissed as
+  completed. `POST /sessions/:id/acknowledge` is the new endpoint behind
+  "mark as seen"; it only counts for the session's owner (or anyone, on an
+  unowned session or with auth disabled).
+
 - **Split-SQLite-database detection (hosts-visibility fix).** `GET
   /api/v1/health` now reports `instance: { dbFingerprint, dialect }` — a
   short, non-reversible fingerprint of the backing database (first 12 hex
@@ -202,6 +219,29 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Security
 
+- **Launch-correlation squatting.** A `manage`-scoped caller (REST `POST
+  /api/v1/launches` or MCP `launch_agent`) could previously set a launch's
+  correlation id to an existing or guessed-future session id. On that
+  session's next `SessionStart` event, the session would be silently
+  attached to the attacker's launch instead of its real one, handing the
+  attacker's supervisor ownership of record — making the session's queued
+  prompt/stop control actions claimable by the attacker's supervisor
+  instead of the legitimate one. The server now always mints the
+  correlation id itself (`createValidatedLaunchRequest`) and ignores any
+  caller-supplied value; the no-supervisor hook-path correlation resolver
+  additionally refuses to attach a pending launch to a session that's
+  already managed under a different launch, or that already existed
+  before the launch was created; and `queuePromptAction`/
+  `queueStopAction`/`retryLaunchForSession` now assert the resolved
+  launch's claimant matches the session's actual owner of record before
+  trusting its data or routing a new action to it. No legitimate launch
+  flow (template launch, retry, AI-initiated launch, MCP's
+  `preview_template` → `launch_agent` pass-through) ever depended on a
+  caller-chosen correlation id being honored. The resolver's chronology
+  comparison normalizes both sides to an instant (`parseDbTimestamp`)
+  rather than comparing the stored strings directly, since a raw string
+  comparison can silently flip the wrong way between the SQLite and
+  Postgres default timestamp formats.
 - **Supervisor and installer secret files are now written 0600, not 0644
   (AGEN-21).** `~/.agentpulse/supervisor.json` (the supervisor credential /
   enrollment token), `~/.agentpulse/.env.local` /
@@ -275,6 +315,37 @@ section with a `⚠ breaking` prefix so they're easy to spot.
     mode `0600`) — never in any project-scope file, at any permission.
     Also covers: an existing `settings.json`'s other keys survive the
     merge, and a symlinked `settings.json` is refused.
+- **First-run signup on an SSO-fronted install.** When a forwardauth
+  identity provider is configured (`FORWARDAUTH_TRUST_SECRET` set), signing
+  in via SSO never creates a local account, so the local user count can
+  stay at zero indefinitely. Previously, first-run signup's own gate
+  (`AGENTPULSE_ALLOW_SIGNUP`, off by default) was the only thing standing
+  between an anonymous visitor and self-registering a local admin on such
+  an install — and unlike a non-SSO install, where the first real signup
+  closes the window for good, an SSO-fronted install's local count never
+  grows on its own, so a stray `AGENTPULSE_ALLOW_SIGNUP=true` left over
+  from testing stays open forever instead of closing itself. Signup is now
+  **closed by default** whenever a forwardauth provider is configured:
+  boot logs one line stating that. Set `AGENTPULSE_ALLOW_SIGNUP=true`
+  explicitly if you want local signup available alongside SSO — boot then
+  logs a separate warning that it will stay open indefinitely for exactly
+  the reason above, so the choice to keep it open isn't a silent one. The
+  documented, recommended way to create a
+  local admin on an SSO install remains `AGENTPULSE_LOCAL_ADMIN_USERNAME` /
+  `AGENTPULSE_LOCAL_ADMIN_PASSWORD`, which is unaffected either way.
+  Installs without forwardauth configured are unaffected.
+- **Login timing for a disabled user.** `verifyCredentials` returned
+  immediately for a disabled account, skipping the password-hash cost that
+  every other failure path (unknown username, wrong password) pays — a
+  timing side channel that could distinguish "this username exists but is
+  disabled" from "wrong password." The disabled branch now runs the same
+  dummy password verify as the other failure paths.
+- **Forwardauth provider label.** `FORWARDAUTH_PROVIDER` is encoded
+  directly into the synthetic SSO username as `sso:<provider>:<subject>`. A
+  provider value containing `:` would make that encoding ambiguous; an
+  empty or whitespace-only value would collide across installs. The server
+  now refuses to boot with a clear error if the configured provider is
+  invalid.
 
 ## [0.6.0] — 2026-09-29
 

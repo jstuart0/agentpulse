@@ -28,9 +28,32 @@ interface Bucket {
 	lastRefillMs: number;
 }
 
-// In-memory per-key buckets. One entry per API key id; cleared on process
-// restart (intentional — state is ephemeral, not persisted).
+// In-memory per-key buckets. One entry per API key id (or per signed-in caller
+// and session); cleared on process restart (intentional — state is ephemeral,
+// not persisted). Two bounds keep the table from growing without limit:
+//  - a bucket idle for a full second has refilled to capacity, which is
+//    exactly what a missing bucket starts as, so idle ones are swept on a
+//    schedule (once per SWEEP_INTERVAL_MS, never a scan per call);
+//  - a hard cap on the table, evicting the oldest entries first.
 const buckets = new Map<string, Bucket>();
+const SWEEP_INTERVAL_MS = 5_000;
+const IDLE_REFILLED_MS = 1_000;
+const DEFAULT_MAX_BUCKETS = 50_000;
+let maxBuckets = DEFAULT_MAX_BUCKETS;
+let nextSweepAtMs = 0;
+
+function sweepIdleBuckets(nowMs: number): void {
+	for (const [key, bucket] of buckets) {
+		if (nowMs - bucket.lastRefillMs >= IDLE_REFILLED_MS) buckets.delete(key);
+	}
+}
+
+function evictOldestBeyondCap(): void {
+	for (const key of buckets.keys()) {
+		if (buckets.size <= maxBuckets) return;
+		buckets.delete(key);
+	}
+}
 
 // F132: the middleware reads time through this seam so an integration test
 // can freeze it; otherwise a backend slower than the refill rate (Postgres,
@@ -54,11 +77,16 @@ export function _setRateLimitClockForTest(clock: (() => number) | null): void {
  */
 export function tryConsume(keyId: string, now: () => number = rateLimitClock): boolean {
 	const nowMs = now();
+	if (nowMs >= nextSweepAtMs) {
+		sweepIdleBuckets(nowMs);
+		nextSweepAtMs = nowMs + SWEEP_INTERVAL_MS;
+	}
 	let bucket = buckets.get(keyId);
 
 	if (!bucket) {
 		bucket = { tokens: RATE_LIMIT, lastRefillMs: nowMs };
 		buckets.set(keyId, bucket);
+		if (buckets.size > maxBuckets) evictOldestBeyondCap();
 	}
 
 	// Refill tokens proportional to elapsed time (continuous refill).
@@ -95,10 +123,10 @@ export interface HookRateLimitOptions {
  * Hono middleware factory for hook-shaped rate limiting.
  *
  * Bucket key: api_key callers use their key id (`<bucketPrefix><id>`, one
- * bucket per key — D20). Non-api_key callers (forwardauth/local/
- * DISABLE_AUTH) use `<bucketPrefix><source>:<sessionId>`, keyed per session
- * rather than one shared bucket, since a dashboard operator resetting many
- * different sessions' names shouldn't be throttled as a single caller.
+ * bucket per key). Non-api_key callers (forwardauth/local) use
+ * `<bucketPrefix><source>:<user>:<sessionId>`: per caller AND per session, so
+ * neither an operator working through many sessions nor one teammate's burst
+ * on a session throttles anyone else.
  *
  * On rate-limit hit: `onLimit:"200-silent"` (default) increments
  * rateLimitedDropped and returns 200 immediately, no downstream handler —
@@ -113,11 +141,13 @@ export function hookRateLimit(options: HookRateLimitOptions = {}) {
 		// middleware runs. authUser.id is the API key's database id (unique
 		// per key). In DISABLE_AUTH mode id is "anonymous" — one shared
 		// bucket, which is fine since there's no per-key isolation to enforce.
-		const authUser = c.get("authUser") as { id?: string; source?: string } | undefined;
+		const authUser = c.get("authUser") as
+			| { id?: string; source?: string; userId?: string | null }
+			| undefined;
 		const bucketKey =
 			authUser?.source === "api_key" || authUser === undefined
 				? `${bucketPrefix}${authUser?.id ?? "anonymous"}`
-				: `${bucketPrefix}${authUser.source}:${c.req.param("sessionId") ?? "none"}`;
+				: `${bucketPrefix}${authUser.source}:${authUser.userId ?? authUser.id ?? "anonymous"}:${c.req.param("sessionId") ?? "none"}`;
 
 		if (!tryConsume(bucketKey)) {
 			if (onLimit === "429") {
@@ -140,4 +170,15 @@ export function hookRateLimit(options: HookRateLimitOptions = {}) {
  */
 export function _resetBucketsForTest(): void {
 	buckets.clear();
+	nextSweepAtMs = 0;
+}
+
+/** Test-only: how many buckets are held right now. */
+export function _trackedBucketsForTest(): number {
+	return buckets.size;
+}
+
+/** Test-only: shrink (or with null, restore) the cap on the bucket table. */
+export function _setBucketCapForTest(cap: number | null): void {
+	maxBuckets = cap ?? DEFAULT_MAX_BUCKETS;
 }

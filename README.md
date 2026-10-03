@@ -94,7 +94,7 @@ docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUT
 
 ![Session detail — chat-style timeline with inline tool usage](src/web/assets/screenshots/agentpulse-session.png)
 
-- **Dashboard** -- grid of all sessions with status, project name, session name, duration, and tool use count
+- **Dashboard** -- grid of all sessions with status, project name, session name, duration, and tool use count. Each session is in exactly one operational state: **Waiting** (the agent finished a turn, or has an outstanding permission prompt, and is waiting on you -- "Mark as seen" clears it), **Error** (the session failed and hasn't been dismissed -- "Dismiss error" clears it), **Working** (the agent is actively working right now), or **Idle** (nothing is waiting and the agent isn't working). Status cards above the grid filter by state; a "What do these states mean?" popover repeats this explanation in the UI
 - **Session detail** -- click a session to see a chat-style timeline with your prompts as blue bubbles and tool usage inline
 - **Projects** -- first-class projects with cwd-based session resolution; sessions stamp themselves with the right project on ingest, templates inherit project defaults (cwd, agentType, model) with per-field overrides, and a `/projects` page lets you create / edit / delete them. Saving a template under a new directory auto-creates the project for you
 - **Session templates** -- save reusable Claude Code and Codex session setups, link them to a project for live-inheritance defaults, preview normalized launch specs, and route launches to the right host

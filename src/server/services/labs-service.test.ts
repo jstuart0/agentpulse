@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
@@ -11,6 +11,12 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
+	await getDb().delete(settings).execute();
+});
+
+// Nothing resets `settings` after the LAST test in this file — the
+// beforeEach above only protects tests within this file from each other.
+afterAll(async () => {
 	await getDb().delete(settings).execute();
 });
 

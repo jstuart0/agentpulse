@@ -1,17 +1,19 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type { ManagedState } from "../../shared/types.js";
 
 export function cn(...inputs: ClassValue[]) {
 	return twMerge(clsx(inputs));
 }
 
-// SQLite returns "2026-04-16 03:54:45", browsers need ISO format with T and Z
+// SQLite returns a bare "YYYY-MM-DD HH:MM:SS" (zone-less, UTC); Postgres
+// returns the same shape with an explicit offset. parseStoredTimestamp
+// (src/shared/timestamp.ts) is the one parser for both forms plus ISO;
+// NaN preserves this function's existing "unparsable -> NaN" contract for
+// its callers (formatDuration etc.) rather than throwing or returning null.
 export function parseDate(dateStr: string): number {
-	// Already ISO format
-	if (dateStr.includes("T")) return new Date(dateStr).getTime();
-	// SQLite format: "YYYY-MM-DD HH:MM:SS" -- treat as UTC
-	return new Date(`${dateStr.replace(" ", "T")}Z`).getTime();
+	return parseStoredTimestamp(dateStr) ?? Number.NaN;
 }
 
 export function formatDuration(startedAt: string): string {
@@ -74,6 +76,40 @@ export interface ProjectColor {
 	accent: string;
 	/** Final resolved hue (0-359) — exposed for callers that want text. */
 	hue: number;
+	/** Which of the saturation and lightness steps this project got (0-based), so neighbours differ in more than hue. */
+	satStep: number;
+	lightStep: number;
+}
+
+/**
+ * Dark-theme wash saturation and lightness, and the matching light-theme pair,
+ * one step per project. The bounds are what keeps muted text readable on every
+ * tinted card (4.5:1 in both themes, checked for every step by
+ * tint-contrast.test.ts) while no wash reads as grey: dark washes stay at or
+ * below 13% lightness, light washes at or above 89%, each with enough
+ * saturation to stay a colour.
+ */
+const SATURATION_STEPS = [
+	{ dark: 36, light: 58 },
+	{ dark: 42, light: 66 },
+	{ dark: 48, light: 74 },
+];
+const LIGHTNESS_STEPS = [
+	{ dark: 9, light: 93 },
+	{ dark: 11, light: 91 },
+	{ dark: 13, light: 89 },
+];
+
+/** A second and third hash of the same name, independent of the hue's, so saturation and lightness don't just follow it. */
+function stepFromString(input: string, seed: number, steps: number): number {
+	let h = seed;
+	for (let i = 0; i < input.length; i += 1) {
+		h = (Math.imul(h, 16777619) ^ input.charCodeAt(i)) | 0;
+	}
+	h ^= h >>> 15;
+	h = Math.imul(h, 2246822507);
+	h ^= h >>> 13;
+	return Math.abs(h) % steps;
 }
 
 function hueFromString(input: string): number {
@@ -82,16 +118,16 @@ function hueFromString(input: string): number {
 	for (let i = 0; i < input.length; i += 1) {
 		h = (h * 31 + input.charCodeAt(i)) | 0;
 	}
-	// Spread across a curated band of hues that all produce pleasant
-	// pastels in dark mode. Avoid the 50–80 range (yellows) which read
-	// as warning, and 0–15 (pure red) which reads as error.
+	// Spread across curated bands of cool hues (green through violet), which
+	// make pleasant pastels in dark mode and can never be mistaken for the two
+	// status badges a card renders right next to its tint: amber/orange (the
+	// WAITING badge) and red/pink/magenta (the ERROR badge, and the wine a dark
+	// magenta wash turns into) are excluded entirely.
 	const BANDS = [
-		[20, 48], // amber / orange
-		[90, 160], // green / teal
-		[170, 220], // cyan / blue
-		[230, 270], // indigo / violet
-		[280, 320], // purple / magenta
-		[330, 360], // pink / rose
+		[100, 150], // green
+		[160, 195], // teal / cyan
+		[200, 235], // blue
+		[240, 270], // indigo / violet
 	];
 	const band = BANDS[Math.abs(h) % BANDS.length];
 	const offset = Math.abs(h >> 8) % (band[1] - band[0] + 1);
@@ -103,6 +139,10 @@ export function projectColor(cwd: string | null): ProjectColor | null {
 	const key = extractProjectName(cwd);
 	if (!key || key === "Unknown") return null;
 	const hue = hueFromString(key);
+	const satStep = stepFromString(key, 2166136261, SATURATION_STEPS.length);
+	const lightStep = stepFromString(key, 3266489917, LIGHTNESS_STEPS.length);
+	const sat = SATURATION_STEPS[satStep];
+	const light = LIGHTNESS_STEPS[lightStep];
 	// CSS light-dark() resolves per html.dark class (we pair it with
 	// color-scheme: light / dark in globals.css). Light theme gets a
 	// true pastel wash (high lightness, low saturation); dark theme
@@ -110,8 +150,10 @@ export function projectColor(cwd: string | null): ProjectColor | null {
 	// background.
 	return {
 		hue,
-		bg: `light-dark(hsl(${hue} 55% 94%), hsl(${hue} 28% 13%))`,
-		border: `light-dark(hsl(${hue} 45% 78%), hsl(${hue} 40% 38%))`,
+		satStep,
+		lightStep,
+		bg: `light-dark(hsl(${hue} ${sat.light}% ${light.light}%), hsl(${hue} ${sat.dark}% ${light.dark}%))`,
+		border: `light-dark(hsl(${hue} 45% 78%), hsl(${hue} ${sat.dark + 10}% 38%))`,
 		accent: `light-dark(hsl(${hue} 55% 55%), hsl(${hue} 65% 65%))`,
 	};
 }
@@ -182,4 +224,39 @@ export function getSessionMode(session: {
 	const managedState = session.managedSession?.managedState;
 	if (!managedState) return OBSERVED_STYLE;
 	return MANAGED_STATE_STYLES[managedState];
+}
+
+/**
+ * Mirrors the server's acknowledge-permission rule for the owner path: the
+ * session's owner, an unowned session (including one from an older server that
+ * sends no owner), or auth disabled. Auto-acknowledge on the detail page and
+ * "Mark all as seen" use only this; viewing or bulk-clearing must never act on
+ * someone else's session. An admin's override lives in `explicitAckAccess`.
+ */
+export function canAcknowledgeSession(
+	session: { ownerUserId?: string | null },
+	viewerUserId: string | null | undefined,
+	disableAuth: boolean,
+): boolean {
+	return session.ownerUserId == null || disableAuth || viewerUserId === session.ownerUserId;
+}
+
+/**
+ * The single-session buttons ("Mark as seen", "Dismiss error"): the owner
+ * path, plus an admin in team mode acting for someone else. `forOwnerId` is
+ * set only when the override is what allows it, so the button can say whose
+ * session it is.
+ */
+export function explicitAckAccess(
+	session: { ownerUserId?: string | null },
+	viewerUserId: string | null | undefined,
+	disableAuth: boolean,
+	adminOverride: boolean,
+): { allowed: boolean; forOwnerId: string | null } {
+	if (canAcknowledgeSession(session, viewerUserId, disableAuth)) {
+		return { allowed: true, forOwnerId: null };
+	}
+	return adminOverride && session.ownerUserId != null
+		? { allowed: true, forOwnerId: session.ownerUserId }
+		: { allowed: false, forOwnerId: null };
 }

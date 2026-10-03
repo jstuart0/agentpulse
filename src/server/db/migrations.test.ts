@@ -66,6 +66,40 @@ const SSO_COLUMNS = ["auth_source", "sso_subject", "sso_username", "provider"] a
 /** The api_keys.scopes column added in AGEN-9. */
 const SCOPES_COLUMN = "scopes";
 
+/** The 15 user-ownership columns added across users, api_keys, sessions, supervisors, supervisor_enrollment_tokens, launch_requests, control_actions, and ai_action_requests. */
+const OWNERSHIP_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
+	{ table: "users", column: "auth_source" },
+	{ table: "users", column: "provider" },
+	{ table: "users", column: "subject" },
+	{ table: "users", column: "subject_source" },
+	{ table: "users", column: "display_name" },
+	{ table: "users", column: "must_change_password" },
+	{ table: "api_keys", column: "owner_user_id" },
+	{ table: "api_keys", column: "created_by_user_id" },
+	{ table: "sessions", column: "owner_user_id" },
+	{ table: "sessions", column: "ingest_key_id" },
+	{ table: "supervisors", column: "owner_user_id" },
+	{ table: "supervisor_enrollment_tokens", column: "created_by_user_id" },
+	{ table: "launch_requests", column: "requested_by_user_id" },
+	{ table: "control_actions", column: "requested_by_user_id" },
+	{ table: "ai_action_requests", column: "resolved_by_user_id" },
+];
+
+/** The 3 user-ownership indexes. */
+const OWNERSHIP_INDEXES = [
+	"idx_users_provider_subject",
+	"idx_sessions_owner_last_activity",
+	"idx_api_keys_owner",
+] as const;
+
+/** Returns all index names present on a SQLite DB (any table). */
+function getIndexNames(db: Database): string[] {
+	const rows = db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as Array<{
+		name: string;
+	}>;
+	return rows.map((r) => r.name);
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
@@ -208,6 +242,23 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 				apiKeyCols,
 				`expected column "${SCOPES_COLUMN}" on api_keys after fresh Drizzle migrate`,
 			).toContain(SCOPES_COLUMN);
+
+			// All 15 user-ownership columns + 3 indexes must be present after a
+			// fresh Drizzle migrate (via 0006_user_ownership.sql), not just the
+			// legacy array.
+			for (const { table, column } of OWNERSHIP_COLUMNS) {
+				const cols = getColumnNames(freshDb, table);
+				expect(
+					cols,
+					`expected column "${column}" on "${table}" after fresh Drizzle migrate`,
+				).toContain(column);
+			}
+			const freshIndexNames = getIndexNames(freshDb);
+			for (const idx of OWNERSHIP_INDEXES) {
+				expect(freshIndexNames, `expected index "${idx}" after fresh Drizzle migrate`).toContain(
+					idx,
+				);
+			}
 
 			freshDb.close();
 		} finally {
@@ -400,6 +451,313 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 
 		db.close();
 	});
+
+	test("legacy path on a pre-existing DB adds all 15 ownership columns + 3 indexes", async () => {
+		// Minimal pre-existing seed: only `sessions` present, exactly like the
+		// "existing install" test above. The legacy CREATE TABLE IF NOT EXISTS
+		// blocks and the ALTER array build everything else, including the new
+		// ownership columns and indexes.
+		const db = new Database(":memory:");
+		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		db.exec(`
+			CREATE TABLE sessions (
+				id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL UNIQUE,
+				agent_type TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'active',
+				started_at TEXT NOT NULL DEFAULT (datetime('now')),
+				last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+				total_tool_uses INTEGER NOT NULL DEFAULT 0,
+				metadata TEXT DEFAULT '{}'
+			);
+		`);
+
+		await initializeDatabase(db);
+
+		// Assert presence, not exclusivity — tolerate columns added by other
+		// unrelated changes (e.g. supervisors.exclude_rules_state).
+		for (const { table, column } of OWNERSHIP_COLUMNS) {
+			const cols = getColumnNames(db, table);
+			expect(cols, `expected column "${column}" on "${table}" after legacy init`).toContain(column);
+		}
+
+		const indexNames = getIndexNames(db);
+		for (const idx of OWNERSHIP_INDEXES) {
+			expect(indexNames, `expected index "${idx}" after legacy init`).toContain(idx);
+		}
+
+		db.close();
+	});
+
+	test("Drizzle-born DB upgraded through the legacy path, then booted again (legacy) — no duplicate-column failure", async () => {
+		// Build a DB migrated to the PRIOR migration (0005) via Drizzle, matching
+		// the SQLite schema before these ownership columns existed. Then run
+		// the legacy path (simulating an operator who hasn't
+		// set AGENTPULSE_LEGACY_INIT yet) so the ALTER array applies the 15
+		// ownership columns. A second legacy boot must be a clean no-op.
+		//
+		// AGENTPULSE_LEGACY_INIT=false forcing Drizzle afterwards is out of
+		// scope (AGEN-67): the legacy path never stamps __drizzle_migrations,
+		// so a forced migrate() re-running prior ALTERs throws on main today
+		// for 0001-0003, independent of these changes.
+		const dbPath = tmpDbPath();
+		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+		const { drizzle } = await import("drizzle-orm/bun-sqlite");
+		const { existsSync: fileExists, mkdtempSync: mkdtemp, cpSync } = await import("node:fs");
+		const { join: joinPath, resolve } = await import("node:path");
+
+		// Copy drizzle/sqlite into a scratch dir and truncate the journal at 0005
+		// so `migrate()` only applies migrations up to (not including)
+		// 0006_user_ownership.
+		const fullMigrationsDir = fileExists(joinPath(process.cwd(), "drizzle", "sqlite"))
+			? joinPath(process.cwd(), "drizzle", "sqlite")
+			: resolve(import.meta.dir, "../../../drizzle/sqlite");
+		const priorMigrationsDir = mkdtemp(join(tmpdir(), "ap-prior-migrations-"));
+		cpSync(fullMigrationsDir, priorMigrationsDir, { recursive: true });
+
+		const journalPath = joinPath(priorMigrationsDir, "meta", "_journal.json");
+		const { readFileSync, writeFileSync, unlinkSync } = await import("node:fs");
+		const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
+			entries: Array<{ tag: string }>;
+		};
+		// Truncate AT and AFTER the ownership entry by index, not a filter that
+		// only drops the literally-tagged entry: a later migration (e.g. the
+		// acknowledgement-timestamp columns) sorts after user_ownership in the
+		// journal, and leaving it in while removing only user_ownership would
+		// open a gap (idx 7 missing, idx 8 present) that confuses the
+		// migrator's sequential tracking once the full folder is applied on
+		// top. A true "before ownership" snapshot has nothing past that point.
+		const ownershipIdx = journal.entries.findIndex((e) => e.tag.includes("user_ownership"));
+		const priorEntries =
+			ownershipIdx === -1 ? journal.entries : journal.entries.slice(0, ownershipIdx);
+		const droppedEntries = ownershipIdx === -1 ? [] : journal.entries.slice(ownershipIdx);
+		writeFileSync(journalPath, JSON.stringify({ ...journal, entries: priorEntries }, null, 2));
+		for (const dropped of droppedEntries) {
+			unlinkSync(joinPath(priorMigrationsDir, `${dropped.tag}.sql`));
+		}
+
+		const freshDb = new Database(dbPath);
+		freshDb.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		migrate(drizzle(freshDb), { migrationsFolder: priorMigrationsDir });
+
+		// Sanity: the ownership columns are absent before the legacy path runs.
+		for (const { table, column } of OWNERSHIP_COLUMNS) {
+			expect(
+				getColumnNames(freshDb, table),
+				`column "${column}" on "${table}" should not exist on the prior-migration DB`,
+			).not.toContain(column);
+		}
+
+		// Run the legacy path once (the `sessions` table already exists, so
+		// initializeDatabase(freshDb) routes to legacy init).
+		await initializeDatabase(freshDb);
+
+		for (const { table, column } of OWNERSHIP_COLUMNS) {
+			expect(
+				getColumnNames(freshDb, table),
+				`expected column "${column}" on "${table}" after legacy init on a Drizzle-born DB`,
+			).toContain(column);
+		}
+		const indexNamesAfterFirst = getIndexNames(freshDb);
+		for (const idx of OWNERSHIP_INDEXES) {
+			expect(indexNamesAfterFirst).toContain(idx);
+		}
+
+		// __drizzle_migrations is untouched by the legacy path.
+		const tablesAfterFirst = getTableNames(freshDb);
+		expect(tablesAfterFirst).toContain("__drizzle_migrations");
+
+		// Second legacy boot is clean (idempotent) — no duplicate-column throw.
+		await initializeDatabase(freshDb);
+		for (const { table, column } of OWNERSHIP_COLUMNS) {
+			expect(getColumnNames(freshDb, table)).toContain(column);
+		}
+
+		freshDb.close();
+	});
+
+	test("a seeded pre-existing database with real rows upgrades cleanly: rows intact, new users local with no forced password change, the unique index tolerates multiple NULL pairs, and existing users can still log in", async () => {
+		const db = new Database(":memory:");
+		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		db.exec(`
+			CREATE TABLE sessions (
+				id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL UNIQUE,
+				agent_type TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'active',
+				started_at TEXT NOT NULL DEFAULT (datetime('now')),
+				last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+				total_tool_uses INTEGER NOT NULL DEFAULT 0,
+				metadata TEXT DEFAULT '{}'
+			);
+			CREATE TABLE users (
+				id TEXT PRIMARY KEY,
+				username TEXT NOT NULL UNIQUE,
+				password_hash TEXT NOT NULL,
+				role TEXT NOT NULL DEFAULT 'user',
+				disabled_at TEXT,
+				last_login_at TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+			);
+			CREATE TABLE api_keys (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				key_hash TEXT NOT NULL UNIQUE,
+				key_prefix TEXT NOT NULL,
+				is_active INTEGER NOT NULL DEFAULT 1,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				last_used_at TEXT
+			);
+			CREATE TABLE supervisors (
+				id TEXT PRIMARY KEY,
+				host_name TEXT NOT NULL,
+				platform TEXT NOT NULL,
+				arch TEXT NOT NULL,
+				version TEXT NOT NULL,
+				capabilities_json TEXT NOT NULL DEFAULT '{}',
+				trusted_roots_json TEXT NOT NULL DEFAULT '[]',
+				status TEXT NOT NULL DEFAULT 'connected',
+				capability_schema_version INTEGER NOT NULL DEFAULT 1,
+				config_schema_version INTEGER NOT NULL DEFAULT 1,
+				last_heartbeat_at TEXT NOT NULL DEFAULT (datetime('now')),
+				heartbeat_lease_expires_at TEXT NOT NULL DEFAULT (datetime('now', '+90 seconds')),
+				enrollment_state TEXT NOT NULL DEFAULT 'active',
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+			);
+			CREATE TABLE launch_requests (
+				id TEXT PRIMARY KEY,
+				template_id TEXT,
+				launch_correlation_id TEXT NOT NULL UNIQUE,
+				agent_type TEXT NOT NULL,
+				cwd TEXT NOT NULL,
+				base_instructions TEXT NOT NULL DEFAULT '',
+				task_prompt TEXT NOT NULL DEFAULT '',
+				model TEXT,
+				approval_policy TEXT,
+				sandbox_mode TEXT,
+				requested_by TEXT,
+				requested_supervisor_id TEXT,
+				routing_policy TEXT,
+				resolved_supervisor_id TEXT,
+				routing_decision_json TEXT,
+				claimed_by_supervisor_id TEXT,
+				claim_token TEXT,
+				status TEXT NOT NULL DEFAULT 'draft',
+				error TEXT,
+				validation_warnings_json TEXT NOT NULL DEFAULT '[]',
+				validation_summary TEXT,
+				dispatch_started_at TEXT,
+				dispatch_finished_at TEXT,
+				awaiting_session_deadline_at TEXT,
+				pid INTEGER,
+				provider_launch_metadata_json TEXT,
+				retry_of_launch_request_id TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+			);
+		`);
+
+		// Two local users, one of them an admin — this is what a real
+		// pre-existing install's users table looks like before these new
+		// columns exist (no auth_source, no must_change_password).
+		const adminHash = await Bun.password.hash("Adm1nPassw0rd!", { algorithm: "argon2id" });
+		const memberHash = await Bun.password.hash("Memb3rPassw0rd!", { algorithm: "argon2id" });
+		db.exec(
+			`INSERT INTO users (id, username, password_hash, role) VALUES
+				('seed-admin', 'seed-admin-user', '${adminHash}', 'admin'),
+				('seed-member', 'seed-member-user', '${memberHash}', 'user')`,
+		);
+		db.exec(
+			`INSERT INTO api_keys (id, name, key_hash, key_prefix) VALUES
+				('seed-key', 'seed key', 'seed-key-hash', 'ap_seedseed')`,
+		);
+		db.exec(
+			`INSERT INTO sessions (id, session_id, agent_type) VALUES
+				('seed-session-row', 'seed-session-1', 'claude_code')`,
+		);
+		db.exec(
+			`INSERT INTO supervisors (id, host_name, platform, arch, version) VALUES
+				('seed-supervisor', 'seed-host', 'darwin', 'arm64', '1.0.0')`,
+		);
+		db.exec(
+			`INSERT INTO launch_requests (id, launch_correlation_id, agent_type, cwd) VALUES
+				('seed-launch', 'seed-session-1', 'claude_code', '/tmp/seed')`,
+		);
+
+		await initializeDatabase(db);
+
+		// Rows intact.
+		const userRows = db.prepare("SELECT * FROM users ORDER BY id").all() as Array<
+			Record<string, unknown>
+		>;
+		expect(userRows).toHaveLength(2);
+		const admin = userRows.find((r) => r.id === "seed-admin");
+		const member = userRows.find((r) => r.id === "seed-member");
+		expect(admin).toBeDefined();
+		expect(member).toBeDefined();
+		expect(admin?.username).toBe("seed-admin-user");
+		expect(admin?.role).toBe("admin");
+		expect(member?.username).toBe("seed-member-user");
+
+		// New columns backfilled correctly: existing users are local, never
+		// forced to change their password just by virtue of the upgrade.
+		for (const row of [admin, member]) {
+			expect(row?.auth_source).toBe("local");
+			expect(row?.must_change_password).toBe(0); // SQLite boolean storage
+			expect(row?.provider).toBeNull();
+			expect(row?.subject).toBeNull();
+		}
+
+		expect(db.prepare("SELECT COUNT(*) as n FROM api_keys").get() as { n: number }).toEqual({
+			n: 1,
+		});
+		expect(db.prepare("SELECT COUNT(*) as n FROM sessions").get() as { n: number }).toEqual({
+			n: 1,
+		});
+		expect(db.prepare("SELECT COUNT(*) as n FROM supervisors").get() as { n: number }).toEqual({
+			n: 1,
+		});
+		expect(db.prepare("SELECT COUNT(*) as n FROM launch_requests").get() as { n: number }).toEqual({
+			n: 1,
+		});
+
+		// AGEN: the seeded `sessions` table predates the acknowledgement
+		// columns entirely (no last_agent_turn_completed_at /
+		// last_user_acknowledged_at in its CREATE TABLE above) — after the
+		// upgrade both columns must exist and be NULL on the pre-existing
+		// row, not missing or defaulted to some other value.
+		expect(getColumnNames(db, "sessions")).toContain("last_agent_turn_completed_at");
+		expect(getColumnNames(db, "sessions")).toContain("last_user_acknowledged_at");
+		const seededSessionRow = db
+			.prepare("SELECT * FROM sessions WHERE id = 'seed-session-row'")
+			.get() as Record<string, unknown>;
+		expect(seededSessionRow.last_agent_turn_completed_at).toBeNull();
+		expect(seededSessionRow.last_user_acknowledged_at).toBeNull();
+
+		// The unique (provider, subject) index was built successfully even
+		// though both existing users have NULL/NULL — SQL NULLs are never
+		// equal to each other in a unique index, so two NULL pairs don't
+		// collide.
+		const indexNames = getIndexNames(db);
+		expect(indexNames).toContain("idx_users_provider_subject");
+
+		// Existing users can still log in after the upgrade. verifyCredentials
+		// reads through the shared singleton connection (getDb()), not this
+		// test's isolated handle, so verify the same way it does — by row
+		// lookup plus a real password verify — directly against the seeded
+		// handle instead.
+		expect(await Bun.password.verify("Adm1nPassw0rd!", admin?.password_hash as string)).toBe(true);
+		expect(await Bun.password.verify("Memb3rPassw0rd!", member?.password_hash as string)).toBe(
+			true,
+		);
+		// A wrong password still fails after the upgrade (not accidentally
+		// disabled or locked out by it).
+		expect(await Bun.password.verify("wrong-password", admin?.password_hash as string)).toBe(false);
+
+		db.close();
+	});
 });
 
 // ── Postgres case (optional — requires running Postgres) ───────────────────────
@@ -485,8 +843,241 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 			`) as Array<{ table_name: string; delete_rule: string }>;
 
 			expect(cascadeFks.length, "expected 7 cascade FKs on sessions(session_id)").toBe(7);
+
+			// All 15 user-ownership columns + 3 indexes on Postgres, by
+			// information_schema.columns / pg_indexes.
+			for (const { table, column } of OWNERSHIP_COLUMNS) {
+				const pgCols = (await sql`
+					SELECT column_name
+					FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = ${table}
+				`) as Array<{ column_name: string }>;
+				const pgColNames = pgCols.map((r) => r.column_name);
+				expect(
+					pgColNames,
+					`expected column "${column}" on "${table}" in Postgres after Drizzle migrate`,
+				).toContain(column);
+			}
+
+			const pgIndexRows = (await sql`
+				SELECT indexname FROM pg_indexes WHERE schemaname = 'public'
+			`) as Array<{ indexname: string }>;
+			const pgIndexNames = pgIndexRows.map((r) => r.indexname);
+			for (const idx of OWNERSHIP_INDEXES) {
+				expect(pgIndexNames, `expected index "${idx}" in Postgres after Drizzle migrate`).toContain(
+					idx,
+				);
+			}
 		} finally {
 			await sql.end();
+		}
+	});
+
+	test("a seeded pre-existing Postgres database with real rows upgrades cleanly: new users default to local with no forced password change, and the unique index tolerates multiple NULL pairs", async () => {
+		// A real upgrade, not a schema-already-at-0007 simulation: migrates a
+		// FRESH, uniquely named database to the migration tag just before
+		// 0007_user_ownership (the same journal-truncation technique
+		// db/migrations.test.ts's SQLite "Drizzle-born DB upgraded" test
+		// uses), seeds real rows on that pre-upgrade schema, then runs the
+		// FULL migrations folder on a NEW connection and asserts the rows
+		// survived with correct backfilled defaults. A dedicated database
+		// (not just a dedicated schema) sidesteps drizzle-orm's migration-
+		// tracking table being schema-global but not per-logical-schema —
+		// two different target schemas sharing one tracking table would
+		// make the second migrate() call think 0007 was already applied.
+		const { default: postgres } = await import("postgres");
+		const { migrate } = await import("drizzle-orm/postgres-js/migrator");
+		const { drizzle: drizzlePg } = await import("drizzle-orm/postgres-js");
+		const {
+			existsSync: fileExists,
+			mkdtempSync: mkdtemp,
+			cpSync,
+			readFileSync,
+			writeFileSync,
+			unlinkSync,
+		} = await import("node:fs");
+		const { join: joinPath, resolve } = await import("node:path");
+
+		const baseUrl = process.env.DATABASE_URL ?? "";
+		const dbName = `ap_seeded_upgrade_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+		const parsed = new URL(baseUrl);
+		const adminUrl = baseUrl;
+		parsed.pathname = `/${dbName}`;
+		const scratchDbUrl = parsed.toString();
+
+		// Truncated journal: a copy of drizzle/postgres with the
+		// 0007_user_ownership entry (and its .sql file) removed, so
+		// migrate() against it only reaches the pre-ownership schema.
+		const fullMigrationsDir = fileExists(joinPath(process.cwd(), "drizzle", "postgres"))
+			? joinPath(process.cwd(), "drizzle", "postgres")
+			: resolve(import.meta.dir, "../../../drizzle/postgres");
+		const priorMigrationsDir = mkdtemp(join(tmpdir(), "ap-prior-pg-migrations-"));
+		cpSync(fullMigrationsDir, priorMigrationsDir, { recursive: true });
+		const journalPath = joinPath(priorMigrationsDir, "meta", "_journal.json");
+		const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
+			entries: Array<{ tag: string }>;
+		};
+		// Truncate AT and AFTER the ownership entry by index, not a filter that
+		// only drops the literally-tagged entry: a later migration (e.g. the
+		// acknowledgement-timestamp columns) sorts after user_ownership in the
+		// journal, and leaving it in while removing only user_ownership would
+		// open a gap (idx 7 missing, idx 8 present) that confuses the
+		// migrator's sequential tracking once the full folder is applied on
+		// top. A true "before ownership" snapshot has nothing past that point.
+		const ownershipIdx = journal.entries.findIndex((e) => e.tag.includes("user_ownership"));
+		const priorEntries =
+			ownershipIdx === -1 ? journal.entries : journal.entries.slice(0, ownershipIdx);
+		const droppedEntries = ownershipIdx === -1 ? [] : journal.entries.slice(ownershipIdx);
+		writeFileSync(journalPath, JSON.stringify({ ...journal, entries: priorEntries }, null, 2));
+		for (const dropped of droppedEntries) {
+			unlinkSync(joinPath(priorMigrationsDir, `${dropped.tag}.sql`));
+		}
+
+		const admin = postgres(adminUrl, { max: 1, idle_timeout: 5 });
+		try {
+			await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+		} finally {
+			await admin.end();
+		}
+
+		const adminHash = await Bun.password.hash("Adm1nPassw0rd!", { algorithm: "argon2id" });
+		const memberHash = await Bun.password.hash("Memb3rPassw0rd!", { algorithm: "argon2id" });
+		const adminId = "seed-admin";
+		const memberId = "seed-member";
+
+		try {
+			const clientA = postgres(scratchDbUrl, { max: 1, idle_timeout: 5 });
+			try {
+				await migrate(drizzlePg(clientA), { migrationsFolder: priorMigrationsDir });
+
+				// Sanity: the ownership columns are absent before the full
+				// migration runs.
+				for (const { table, column } of OWNERSHIP_COLUMNS) {
+					const cols = (await clientA`
+						SELECT column_name FROM information_schema.columns
+						WHERE table_schema = 'public' AND table_name = ${table} AND column_name = ${column}
+					`) as Array<{ column_name: string }>;
+					expect(
+						cols,
+						`column "${column}" on "${table}" should not exist on the prior-migration database`,
+					).toHaveLength(0);
+				}
+
+				// Two local users (one admin), an API key, a session, a
+				// supervisor, and a launch request — the same population the
+				// SQLite "Drizzle-born DB upgraded" test seeds, on this
+				// pre-ownership schema (no ownership columns to name).
+				await clientA`INSERT INTO users (id, username, password_hash, role) VALUES
+					(${adminId}, 'seed-admin-user', ${adminHash}, 'admin'),
+					(${memberId}, 'seed-member-user', ${memberHash}, 'user')`;
+				await clientA`INSERT INTO api_keys (id, name, key_hash, key_prefix) VALUES
+					('seed-key', 'seed key', 'seed-key-hash', 'ap_seedseed')`;
+				await clientA`INSERT INTO sessions (id, session_id, agent_type) VALUES
+					('seed-session-row', 'seed-session-1', 'claude_code')`;
+				await clientA`INSERT INTO supervisors (id, host_name, platform, arch, version) VALUES
+					('seed-supervisor', 'seed-host', 'darwin', 'arm64', '1.0.0')`;
+				await clientA`INSERT INTO launch_requests (id, launch_correlation_id, agent_type, cwd) VALUES
+					('seed-launch', 'seed-session-1', 'claude_code', '/tmp/seed')`;
+			} finally {
+				await clientA.end();
+			}
+
+			// A NEW connection, the full (untruncated) migrations folder —
+			// this is the real upgrade step.
+			const clientB = postgres(scratchDbUrl, { max: 1, idle_timeout: 5 });
+			try {
+				await migrate(drizzlePg(clientB), { migrationsFolder: fullMigrationsDir });
+
+				const userRows = (await clientB`
+					SELECT * FROM users WHERE id IN (${adminId}, ${memberId}) ORDER BY id
+				`) as Array<Record<string, unknown>>;
+				expect(userRows).toHaveLength(2);
+				const admin_ = userRows.find((r) => r.id === adminId);
+				const member = userRows.find((r) => r.id === memberId);
+				expect(admin_?.role).toBe("admin");
+
+				for (const row of [admin_, member]) {
+					expect(row?.auth_source).toBe("local");
+					expect(row?.must_change_password).toBe(false);
+					expect(row?.provider).toBeNull();
+					expect(row?.subject).toBeNull();
+				}
+
+				// The unique (provider, subject) index exists and tolerates
+				// both rows having NULL/NULL — SQL NULLs are never equal to
+				// each other in a unique index, so the seed insert above
+				// (which named neither column) didn't conflict.
+				const pgIndexRows = (await clientB`
+					SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'idx_users_provider_subject'
+				`) as Array<{ indexname: string }>;
+				expect(pgIndexRows).toHaveLength(1);
+
+				// These users can still log in: the stored hash still
+				// verifies against the original plaintext password after the
+				// columns the upgrade added exist alongside it.
+				expect(await Bun.password.verify("Adm1nPassw0rd!", admin_?.password_hash as string)).toBe(
+					true,
+				);
+				expect(await Bun.password.verify("Memb3rPassw0rd!", member?.password_hash as string)).toBe(
+					true,
+				);
+				expect(await Bun.password.verify("wrong-password", admin_?.password_hash as string)).toBe(
+					false,
+				);
+
+				// The other seeded rows (API key, session, supervisor, launch
+				// request) survived the upgrade too.
+				const keyRows = await clientB`SELECT id FROM api_keys WHERE id = 'seed-key'`;
+				expect(keyRows).toHaveLength(1);
+				const sessionRows = await clientB`SELECT id FROM sessions WHERE id = 'seed-session-row'`;
+				expect(sessionRows).toHaveLength(1);
+
+				// AGEN: the seeded row predates the acknowledgement columns too
+				// (their migration sorts after user_ownership in the journal —
+				// see the truncation comment above) — after the full upgrade
+				// both columns must exist and be NULL on that pre-existing row.
+				const ackCols = (await clientB`
+					SELECT column_name FROM information_schema.columns
+					WHERE table_schema = 'public' AND table_name = 'sessions'
+					  AND column_name IN ('last_agent_turn_completed_at', 'last_user_acknowledged_at')
+				`) as Array<{ column_name: string }>;
+				expect(ackCols.map((r) => r.column_name).sort()).toEqual([
+					"last_agent_turn_completed_at",
+					"last_user_acknowledged_at",
+				]);
+				const [seededSessionRow] = (await clientB`
+					SELECT last_agent_turn_completed_at, last_user_acknowledged_at
+					FROM sessions WHERE id = 'seed-session-row'
+				`) as Array<{ last_agent_turn_completed_at: unknown; last_user_acknowledged_at: unknown }>;
+				expect(seededSessionRow.last_agent_turn_completed_at).toBeNull();
+				expect(seededSessionRow.last_user_acknowledged_at).toBeNull();
+				const supervisorRows =
+					await clientB`SELECT id FROM supervisors WHERE id = 'seed-supervisor'`;
+				expect(supervisorRows).toHaveLength(1);
+				const launchRows = await clientB`SELECT id FROM launch_requests WHERE id = 'seed-launch'`;
+				expect(launchRows).toHaveLength(1);
+
+				for (const { table, column } of OWNERSHIP_COLUMNS) {
+					const cols = (await clientB`
+						SELECT column_name FROM information_schema.columns
+						WHERE table_schema = 'public' AND table_name = ${table} AND column_name = ${column}
+					`) as Array<{ column_name: string }>;
+					expect(
+						cols,
+						`expected column "${column}" on "${table}" after the full upgrade`,
+					).toHaveLength(1);
+				}
+			} finally {
+				await clientB.end();
+			}
+		} finally {
+			const admin2 = postgres(adminUrl, { max: 1, idle_timeout: 5 });
+			try {
+				await admin2.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+			} finally {
+				await admin2.end();
+			}
 		}
 	});
 });

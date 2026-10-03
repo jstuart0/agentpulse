@@ -31,6 +31,36 @@ describe("mapError — network/timeout", () => {
 	});
 });
 
+describe("mapError — ownership and role refusals (403)", () => {
+	const cases: Array<[code: string, mustContain: string]> = [
+		["not_owner", "owner or an admin"],
+		["admin_required", "needs an admin"],
+		["human_admin_required", "signed-in admin"],
+		["password_change_required", "change the password"],
+		["bad_origin", "dashboard"],
+	];
+	for (const [code, mustContain] of cases) {
+		test(`403 ${code} → a plain message, not the bare code`, () => {
+			const text = mapError(new ApiError(403, { error: code }), BASE_URL).content[0].text;
+			expect(text.toLowerCase()).toContain(mustContain.toLowerCase());
+			expect(text).not.toBe(code);
+			expect(text.startsWith("AgentPulse")).toBe(true);
+		});
+	}
+
+	test("the five refusals read differently from one another and from insufficient_scope", () => {
+		const texts = [...cases.map(([code]) => code), "insufficient_scope"].map(
+			(code) => mapError(new ApiError(403, { error: code }), BASE_URL).content[0].text,
+		);
+		expect(new Set(texts).size).toBe(texts.length);
+	});
+
+	test("a 403 with an unrecognised code still falls through to the generic message", () => {
+		const text = mapError(new ApiError(403, { error: "something_else" }), BASE_URL).content[0].text;
+		expect(text).toContain("something_else");
+	});
+});
+
 describe("mapError — ApiError status/body pairs", () => {
 	test("401 → API key rejected", () => {
 		const result = mapError(new ApiError(401, { error: "unauthorized" }), BASE_URL);

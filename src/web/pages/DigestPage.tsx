@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { LabsBadge } from "../components/LabsBadge.js";
 import { SkeletonCard, SkeletonCardList } from "../components/SkeletonCard.js";
 import { StatCard } from "../components/StatCard.js";
+import { plainErrorMessage } from "../lib/api-errors.js";
 import { type Digest, type RepoDigest, api } from "../lib/api.js";
 import { formatTimeAgo } from "../lib/utils.js";
 
@@ -22,7 +23,7 @@ export function DigestPage() {
 			const data = fresh ? await api.refreshDigest() : await api.getDigest();
 			setDigest(data);
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			setError(plainErrorMessage(err));
 		} finally {
 			setLoading(false);
 		}

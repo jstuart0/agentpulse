@@ -12,8 +12,9 @@
  * reversal of the F23 reconcile above, which still governs list_projects.
  */
 import { z } from "zod";
-import { LAUNCHABLE_AGENT_TYPE_ENUM } from "../enums.js";
+import { LAUNCHABLE_AGENT_TYPE_ENUM, OWNER_SCOPE } from "../enums.js";
 import { capList, capText } from "../output.js";
+import { assertOwnerScopeEchoed } from "../scopes.js";
 import { registerReadTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
 
@@ -24,10 +25,14 @@ export function registerCatalogTools(ctx: ToolContext, flags: ScopeFlags): void 
 			{
 				name: "get_stats",
 				description:
-					"Dashboard KPI stats: active session count, sessions started today, tool uses today, and a breakdown by agent type.",
-				inputSchema: {},
+					"Dashboard KPI stats: active session count, sessions started today, tool uses today, a breakdown by agent type, completed/archived counts and the waiting/working/idle/error counts. `owner` (me, a user id, unassigned, service, or all — the default) scopes every count to that owner's sessions. The server must confirm the scope it applied (`ownerScope` in the response); an older server ignores `owner`, so a response that doesn't confirm it is refused instead of returning everyone's counts.",
+				inputSchema: { owner: OWNER_SCOPE.optional() },
 			},
-			async (_args, client) => client.getStats(),
+			async (args, client) => {
+				const stats = await client.getStats(args.owner ? { owner: args.owner } : undefined);
+				assertOwnerScopeEchoed(args.owner, stats.ownerScope);
+				return stats;
+			},
 		);
 
 		registerReadTool(

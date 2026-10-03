@@ -1,13 +1,20 @@
-import { Wand2 } from "lucide-react";
-import { useState } from "react";
+import { AlertTriangle, Check, Info, Undo2, Wand2 } from "lucide-react";
+import { type Ref, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { AGENT_METADATA } from "../../../shared/constants.js";
+import { getOperationalStatus } from "../../../shared/session-state.js";
 import type { AgentType, Session, SessionEvent } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
+import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
+import type { OwnerChipModel } from "../../lib/owner-chip.js";
+import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/ownership-ui.js";
 import { formatDuration } from "../../lib/utils.js";
+import { type AckActionKind, ackActionLabel } from "../../pages/dashboard-view-state.js";
 import { useLabsStore } from "../../stores/labs-store.js";
 import { useProjectsStore } from "../../stores/projects-store.js";
+import { useUserStore } from "../../stores/user-store.js";
 import { AgentTypeBadge } from "../AgentTypeBadge.js";
+import { OwnerChip } from "../OwnerChip.js";
 import { StatusBadge } from "../StatusBadge.js";
 import { InlineRename } from "./InlineRename.js";
 import { SessionOverflowMenu } from "./SessionOverflowMenu.js";
@@ -51,6 +58,16 @@ interface SessionHeaderProps {
 	/** F95: re-fetch the session (used after a name reset). */
 	onRefresh?: () => Promise<void> | void;
 	onStop: () => void;
+	/** The one acknowledge-family action available right now (AGEN), or null when none applies (see permissionWaitNote/notOwnerNote for why). */
+	ackAction: { kind: AckActionKind; forOwnerName?: string | null; onClick: () => void } | null;
+	/** Set when a WAITING session is blocked on an outstanding permission prompt — no button can clear it (deriveAckAction). */
+	permissionWaitNote?: string | null;
+	/** Set when the viewer isn't the session's owner. */
+	notOwnerNote?: string | null;
+	/** Where focus goes after an action whose own button is gone (an acknowledge). */
+	headerRef?: Ref<HTMLDivElement>;
+	/** Team mode: who owns the session, shown in the header on desktop (the page opens on Activity, where the Overview's Owner field isn't). */
+	ownerChip?: OwnerChipModel | null;
 }
 
 /**
@@ -79,18 +96,41 @@ export function SessionHeader(props: SessionHeaderProps) {
 		onRename,
 		onRefresh,
 		onStop,
+		ackAction,
+		permissionWaitNote,
+		notOwnerNote,
+		headerRef,
 	} = props;
 	const navigate = useNavigate();
 	const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 	const aiTabEnabled = useLabsStore((s) => s.isEnabled("aiSessionTab"));
 	const linkedProject = useProjectsStore((s) => s.getById(session.projectId));
 	const { copy } = useCopyFeedback();
+	const ownership = useOwnershipUi();
+	const viewerUserId = useUserStore((s) => s.userId);
+	const effectiveRole = useUserStore((s) => s.effectiveRole);
+	const access = sessionActionAccess(ownership, session, { userId: viewerUserId, effectiveRole });
+	// Operational state (WAITING/WORKING/IDLE/ERROR), FAILED for a
+	// dismissed error, or ARCHIVED — the same badge/classifier the
+	// dashboard cards use (SessionCard.tsx's badgeStatus), so a WAITING
+	// session never reads ACTIVE here just because that's the raw
+	// lifecycle status.
+	const rawOpStatus = getOperationalStatus(session);
+	const operationalStatus = session.isArchived
+		? "archived"
+		: session.status === "failed" && rawOpStatus === "completed"
+			? "failed"
+			: rawOpStatus;
 
 	const canStop =
 		session.agentType === "codex_cli" && session.managedSession?.managedState === "managed";
 
 	return (
-		<div className="sticky top-0 z-10 bg-background border-b border-border flex-shrink-0">
+		<div
+			ref={headerRef}
+			tabIndex={-1}
+			className="sticky top-0 z-10 bg-background border-b border-border flex-shrink-0 focus:outline-none"
+		>
 			{/* Top row */}
 			<div className="px-3 md:px-6 py-2 md:py-2.5 flex items-center gap-2 md:gap-3">
 				<button
@@ -123,6 +163,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 						agentType={session.agentType}
 						onRenamed={onRename}
 						onRefresh={onRefresh}
+						renameBlockedReason={access.canRename ? null : RENAME_BLOCKED_REASON}
 					/>
 					{session.isWorking && (
 						<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
@@ -130,6 +171,10 @@ export function SessionHeader(props: SessionHeaderProps) {
 							working
 						</span>
 					)}
+					{/* AGEN: visible on phone widths too -- this was previously
+					    inside the "hidden md:flex" action row below, so a phone
+					    visitor saw no operational state at all. */}
+					<StatusBadge status={operationalStatus} className="flex-shrink-0" />
 					{/* Desktop-only inline metadata */}
 					<span className="hidden md:inline text-xs text-muted-foreground truncate">
 						{session.cwd?.split("/").pop()}
@@ -137,6 +182,11 @@ export function SessionHeader(props: SessionHeaderProps) {
 					<span className="hidden md:inline text-xs text-muted-foreground">
 						{formatDuration(session.startedAt)}
 					</span>
+					{props.ownerChip && (
+						<span className="inline-flex min-w-0">
+							<OwnerChip chip={props.ownerChip} widthClass="max-w-[16rem]" />
+						</span>
+					)}
 					{session.gitBranch && (
 						<span className="hidden md:inline text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">
 							{session.gitBranch}
@@ -167,6 +217,37 @@ export function SessionHeader(props: SessionHeaderProps) {
 				<div className="ml-auto flex items-center gap-2 flex-shrink-0">
 					<div className="hidden md:flex items-center gap-2">
 						<ScrollJumpControls onTop={onJumpTop} onBottom={onJumpBottom} />
+						{ackAction && (
+							<button
+								type="button"
+								onClick={ackAction.onClick}
+								className={
+									ackAction.kind === "dismiss_error"
+										? "inline-flex min-h-[44px] md:min-h-0 items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-700 dark:text-red-300 hover:bg-red-500/20 transition-colors"
+										: ackAction.kind === "restore_error"
+											? "inline-flex min-h-[44px] md:min-h-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+											: "inline-flex min-h-[44px] md:min-h-0 items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-800 dark:text-amber-300 hover:bg-amber-500/20 transition-colors"
+								}
+							>
+								{ackAction.kind === "dismiss_error" ? (
+									<AlertTriangle className="w-3 h-3" aria-hidden="true" />
+								) : ackAction.kind === "restore_error" ? (
+									<Undo2 className="w-3 h-3" aria-hidden="true" />
+								) : (
+									<Check className="w-3 h-3" aria-hidden="true" />
+								)}
+								{ackActionLabel(ackAction.kind, ackAction.forOwnerName)}
+							</button>
+						)}
+						{/* No button applies (an outstanding permission prompt, or the
+						    viewer isn't the owner) -- say why instead of showing
+						    nothing at all (AGEN). */}
+						{!ackAction && (permissionWaitNote || notOwnerNote) && (
+							<span className="inline-flex items-center gap-1 text-[11px] text-foreground max-w-[14rem]">
+								<Info className="w-3 h-3 flex-shrink-0 text-muted-foreground" aria-hidden="true" />
+								<span className="truncate">{permissionWaitNote || notOwnerNote}</span>
+							</span>
+						)}
 						{session.managedSession?.launchRequestId && (
 							<button
 								type="button"
@@ -214,8 +295,38 @@ export function SessionHeader(props: SessionHeaderProps) {
 						</button>
 						<span className="text-xs text-muted-foreground">{session.totalToolUses} tools</span>
 						<AgentTypeBadge agentType={session.agentType} />
-						<StatusBadge status={session.status} />
 					</div>
+					{/* AGEN: the primary ack action, visible (not buried in the
+					    overflow menu) on phone widths too -- same button the
+					    desktop row shows, sized for touch. */}
+					{ackAction && (
+						<button
+							type="button"
+							onClick={ackAction.onClick}
+							className={
+								ackAction.kind === "dismiss_error"
+									? "md:hidden inline-flex min-h-[44px] items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 text-[11px] font-medium text-red-700 dark:text-red-300"
+									: ackAction.kind === "restore_error"
+										? "md:hidden inline-flex min-h-[44px] items-center gap-1.5 rounded-md border border-border px-2.5 text-[11px] font-medium text-muted-foreground"
+										: "md:hidden inline-flex min-h-[44px] items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 text-[11px] font-medium text-amber-800 dark:text-amber-300"
+							}
+						>
+							{ackAction.kind === "dismiss_error" ? (
+								<AlertTriangle className="w-3 h-3" aria-hidden="true" />
+							) : ackAction.kind === "restore_error" ? (
+								<Undo2 className="w-3 h-3" aria-hidden="true" />
+							) : (
+								<Check className="w-3 h-3" aria-hidden="true" />
+							)}
+							{ackActionLabel(ackAction.kind, ackAction.forOwnerName)}
+						</button>
+					)}
+					{!ackAction && (permissionWaitNote || notOwnerNote) && (
+						<span className="md:hidden inline-flex items-center gap-1 text-[11px] text-foreground max-w-[10rem]">
+							<Info className="w-3 h-3 flex-shrink-0 text-muted-foreground" aria-hidden="true" />
+							<span className="truncate">{permissionWaitNote || notOwnerNote}</span>
+						</span>
+					)}
 					<div className="md:hidden">
 						<SessionOverflowMenu
 							session={session}

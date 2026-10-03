@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { requireAuth } from "../auth/middleware.js";
-import { requireOperatorScope } from "../auth/route-scope-policy.js";
+import { getRequestActor, requireOperatorScope } from "../auth/route-scope-policy.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import {
 	archiveThread,
@@ -85,6 +85,7 @@ askRouter.post("/ai/ask", async (c) => {
 			threadId: body.threadId ?? null,
 			message: body.message,
 			sessionIds: body.sessionIds,
+			actor: await getRequestActor(c),
 		});
 		return c.json(res);
 	} catch (err) {
@@ -111,6 +112,7 @@ askRouter.post("/ai/ask/stream", async (c) => {
 	if (!body.message || typeof body.message !== "string") {
 		return c.json({ error: "message required" }, 400);
 	}
+	const actor = await getRequestActor(c);
 	// Build the SSE stream by hand instead of using hono/streaming. That
 	// helper sets `Transfer-Encoding: chunked` which is a connection-
 	// specific header forbidden by HTTP/2 — Traefik terminates HTTP/2
@@ -147,6 +149,7 @@ askRouter.post("/ai/ask/stream", async (c) => {
 					message: body.message ?? "",
 					sessionIds: body.sessionIds,
 					origin: "web",
+					actor,
 				})) {
 					write(evt);
 				}

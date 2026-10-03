@@ -8,8 +8,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../server.js";
-import { fakeClient } from "../test-support.js";
-import type { LaunchRequest, SessionTemplate } from "../types.js";
+import { FAKE_STATS, fakeClient } from "../test-support.js";
+import type { LaunchRequest, OwnerScopeEcho, SessionTemplate } from "../types.js";
 import { registerCatalogTools } from "./catalog.js";
 
 /** Minimal fixtures — LaunchRequest/SessionTemplate carry ~15-30 fields irrelevant to these pass-through happy-path tests; cast rather than enumerate every one. */
@@ -34,6 +34,76 @@ function textOf(result: unknown): string {
 	const content = (result as { content?: unknown }).content;
 	return (content as Array<{ type: string; text: string }>)[0]?.text ?? "";
 }
+
+describe("get_stats — owner scope", () => {
+	const USER_ID = "3f2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b";
+	const ECHOES: Array<[string, OwnerScopeEcho]> = [
+		["me", { kind: "me", userId: USER_ID }],
+		["unassigned", { kind: "unassigned" }],
+		["service", { kind: "service" }],
+		[USER_ID, { kind: "user", userId: USER_ID }],
+	];
+
+	async function callStats(args: Record<string, unknown>, echo: OwnerScopeEcho | undefined) {
+		const asked: Array<string | undefined> = [];
+		let authMeCalls = 0;
+		const ctx = newContext(
+			fakeClient({
+				getAuthMe: async () => {
+					authMeCalls += 1;
+					throw new Error("identity is not the capability test any more");
+				},
+				getStats: async (params) => {
+					asked.push(params?.owner);
+					const response = { ...FAKE_STATS, ...(echo ? { ownerScope: echo } : {}) };
+					return response;
+				},
+			}),
+		);
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "get_stats", arguments: args });
+		return { result, asked, authMeCalls: () => authMeCalls };
+	}
+
+	test("owner is forwarded, and counts echoing that scope are accepted", async () => {
+		for (const [owner, echo] of ECHOES) {
+			const { result, asked } = await callStats({ owner }, echo);
+			expect({ owner, isError: result.isError }).toEqual({ owner, isError: undefined });
+			expect(asked).toEqual([owner]);
+		}
+	});
+
+	test("counts without the echo are refused, never shown as the caller's", async () => {
+		for (const [owner] of ECHOES) {
+			const { result } = await callStats({ owner }, undefined);
+			expect({ owner, isError: result.isError }).toEqual({ owner, isError: true });
+			expect(textOf(result)).toContain("owner");
+			expect(textOf(result)).not.toContain("activeSessions");
+		}
+	});
+
+	test("counts echoing a different scope than the one asked for are refused", async () => {
+		const { result } = await callStats({ owner: "me" }, { kind: "all" });
+		expect(result.isError).toBe(true);
+		const other = await callStats({ owner: "service" }, { kind: "unassigned" });
+		expect(other.result.isError).toBe(true);
+	});
+
+	test("without owner, or with all, nothing is required of the server", async () => {
+		const bare = await callStats({}, undefined);
+		expect(bare.result.isError).toBeFalsy();
+		expect(bare.asked).toEqual([undefined]);
+		const all = await callStats({ owner: "all" }, undefined);
+		expect(all.result.isError).toBeFalsy();
+		expect(all.asked).toEqual(["all"]);
+	});
+
+	test("no request for the caller's identity is made", async () => {
+		const { authMeCalls } = await callStats({ owner: "me" }, { kind: "me", userId: USER_ID });
+		expect(authMeCalls()).toBe(0);
+	});
+});
 
 describe("search — cap behavior (test-contract 13)", () => {
 	test("an oversized aggregate of hit snippets is capped via output.ts, not passed through raw", async () => {

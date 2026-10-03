@@ -7,8 +7,14 @@
  */
 import { z } from "zod";
 import type { AgentPulseClient } from "../client.js";
-import { OBSERVED_AGENT_TYPE_ENUM, SESSION_STATUS_ENUM } from "../enums.js";
+import {
+	OBSERVED_AGENT_TYPE_ENUM,
+	OPERATIONAL_STATUS_ENUM,
+	OWNER_SCOPE,
+	SESSION_STATUS_ENUM,
+} from "../enums.js";
 import { capList, capText } from "../output.js";
+import { assertOwnerScopeEchoed } from "../scopes.js";
 import { registerReadTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
 
@@ -42,6 +48,13 @@ export function compactSessionRow(
 		lastActivityAt: session.lastActivityAt,
 		totalToolUses: session.totalToolUses,
 		managed: Boolean(session.managed),
+		// Who owns the session. Optional: an older server doesn't send them.
+		ownerUserId: session.ownerUserId,
+		ownerKind: session.ownerKind,
+		// Optional: an AgentPulse server predating the operational-status
+		// model (AGEN) simply doesn't send this field, and it stays
+		// undefined here too — no error, no stale guess.
+		operationalStatus: session.operationalStatus,
 	};
 }
 
@@ -85,11 +98,16 @@ export function registerSessionsTools(ctx: ToolContext, flags: ScopeFlags): void
 		{
 			name: "list_sessions",
 			description:
-				"List AgentPulse sessions across the fleet, optionally filtered by status/agent type/project. Compact rows; each includes a `managed` boolean indicating whether control tools (stop/prompt/retry) can target it.",
+				"List AgentPulse sessions across the fleet, optionally filtered by status/agent type/project/operational state, or by owner. Compact rows; each includes a `managed` boolean indicating whether control tools (stop/prompt/retry) can target it, who owns it (`ownerUserId`, `ownerKind`: user/service/unassigned), and (when the server supports it) `operationalStatus` — waiting/working/idle/error/completed. `owner` is `me` (the key's owner), a user id, `unassigned`, `service`, or `all` (default); `total` counts the same scoped set. The server must confirm the scope it applied (`ownerScope` in the response); an older server ignores `owner`, so a response that doesn't confirm it is refused instead of returning everyone's sessions.",
 			inputSchema: {
 				status: SESSION_STATUS_ENUM.optional(),
 				agent_type: OBSERVED_AGENT_TYPE_ENUM.optional(),
 				project_id: z.string().optional(),
+				// Filters by the derived operational state (AGEN) rather than
+				// the raw lifecycle `status` above. Older servers ignore this
+				// param and return an unfiltered page instead of erroring.
+				operational: OPERATIONAL_STATUS_ENUM.optional(),
+				owner: OWNER_SCOPE.optional(),
 				limit: z.number().int().min(1).max(100).optional(),
 				offset: z.number().int().min(0).optional(),
 			},
@@ -97,18 +115,22 @@ export function registerSessionsTools(ctx: ToolContext, flags: ScopeFlags): void
 		async (args, client) => {
 			const limit = args.limit ?? 20;
 			const offset = args.offset ?? 0;
-			const { sessions, total } = await client.getSessions({
+			const { sessions, total, ownerScope } = await client.getSessions({
 				status: args.status,
 				agentType: args.agent_type,
 				projectId: args.project_id,
+				operational: args.operational,
+				owner: args.owner,
 				limit,
 				offset,
 			});
+			assertOwnerScopeEchoed(args.owner, ownerScope);
 			const capped = capList(sessions.map(compactSessionRow), { offset });
 			const hasMore = offset + sessions.length < total;
 			return {
 				sessions: capped.items,
 				total,
+				...(ownerScope ? { ownerScope } : {}),
 				...(capped.hint ? { truncated: capped.hint } : {}),
 				...(hasMore
 					? {

@@ -46,22 +46,49 @@ describe("getDbFingerprint", () => {
 
 	test("differs from a different installation_id (simulated second database)", async () => {
 		const before = await getDbFingerprint();
+		const [originalRow] = await getDb()
+			.select()
+			.from(settings)
+			.where(eq(settings.key, "installation_id"))
+			.limit(1);
+		const originalValue = originalRow?.value as string | undefined;
 
-		await getDb().delete(settings).where(eq(settings.key, "installation_id")).execute();
-		await getDb()
-			.insert(settings)
-			.values({
-				key: "installation_id",
-				value: "a-completely-different-uuid",
-				updatedAt: new Date().toISOString(),
-			})
-			.onConflictDoUpdate({
-				target: settings.key,
-				set: { value: "a-completely-different-uuid", updatedAt: new Date().toISOString() },
-			});
+		try {
+			await getDb().delete(settings).where(eq(settings.key, "installation_id")).execute();
+			await getDb()
+				.insert(settings)
+				.values({
+					key: "installation_id",
+					value: "a-completely-different-uuid",
+					updatedAt: new Date().toISOString(),
+				})
+				.onConflictDoUpdate({
+					target: settings.key,
+					set: { value: "a-completely-different-uuid", updatedAt: new Date().toISOString() },
+				});
 
-		const after = await getDbFingerprint();
-		expect(after).not.toBe(before);
+			const after = await getDbFingerprint();
+			expect(after).not.toBe(before);
+		} finally {
+			// installation_id is a real, process-wide identity row — leaving
+			// it overwritten would change what every other test (and a later
+			// full-suite run against the same database) sees.
+			if (originalValue !== undefined) {
+				await getDb()
+					.insert(settings)
+					.values({
+						key: "installation_id",
+						value: originalValue,
+						updatedAt: new Date().toISOString(),
+					})
+					.onConflictDoUpdate({
+						target: settings.key,
+						set: { value: originalValue, updatedAt: new Date().toISOString() },
+					});
+			} else {
+				await getDb().delete(settings).where(eq(settings.key, "installation_id")).execute();
+			}
+		}
 	});
 
 	test("never leaks the raw installation_id (fingerprint is not a substring of it and vice versa)", async () => {
@@ -76,5 +103,14 @@ describe("getDbFingerprint", () => {
 
 		expect(installationId).not.toContain(fingerprint);
 		expect(fingerprint).not.toContain(installationId);
+	});
+
+	test("a fresh database answers one fingerprint to concurrent first callers", async () => {
+		await getDb().delete(settings).where(eq(settings.key, "installation_id")).execute();
+
+		const answers = await Promise.all(Array.from({ length: 8 }, () => getDbFingerprint()));
+
+		expect(new Set(answers).size).toBe(1);
+		expect(await getDbFingerprint()).toBe(answers[0]);
 	});
 });

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
+import { loginNotice } from "../lib/auth-session.js";
 import { useUserStore } from "../stores/user-store.js";
 
 /**
@@ -22,6 +23,7 @@ export function LoginPage() {
 	const [confirmPassword, setConfirmPassword] = useState("");
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const notice = loginNotice(location.search);
 
 	// Redirect if already authenticated or auth is disabled globally.
 	useEffect(() => {
@@ -124,6 +126,12 @@ export function LoginPage() {
 								required
 							/>
 						</label>
+					)}
+
+					{notice && !error && (
+						<output className="block rounded border border-border bg-muted/50 px-3 py-2 text-xs text-foreground">
+							{notice}
+						</output>
 					)}
 
 					{error && (

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { plainErrorMessage } from "../../lib/api-errors.js";
 import type { InboxWorkItem } from "../../lib/api.js";
 import { formatTimeAgo } from "../../lib/utils.js";
 import { KindBadge } from "./shared/KindBadge.js";
@@ -23,7 +24,7 @@ export function HitlCard({
 		try {
 			await onDecide(item.id, action);
 		} catch (e) {
-			setErr(e instanceof Error ? e.message : String(e));
+			setErr(plainErrorMessage(e));
 		} finally {
 			setBusy(false);
 		}

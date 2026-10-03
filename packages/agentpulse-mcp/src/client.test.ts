@@ -232,6 +232,8 @@ describe("createHttpClient", () => {
 			totalSessionsToday: 9,
 			totalToolUsesToday: 120,
 			byAgentType: { claude_code: 3, codex_cli: 0, copilot_cli: 0 },
+			completedCount: 6,
+			archivedCount: 2,
 		};
 		const fetchImpl = (async () => fakeResponse(200, stats)) as unknown as typeof fetch;
 		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
@@ -305,6 +307,30 @@ describe("createHttpClient — Phase 3 request construction (tessa H-3)", () => 
 		expect(url.searchParams.has("project_id")).toBe(false);
 		expect(url.searchParams.get("limit")).toBe("10");
 		expect(url.searchParams.get("offset")).toBe("5");
+	});
+
+	test("getSessions() forwards owner, and omits it when not given", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ sessions: [], total: 0 });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.getSessions({ owner: "unassigned", limit: 5 });
+		expect(new URL(getUrl() ?? "").searchParams.get("owner")).toBe("unassigned");
+
+		await client.getSessions({ limit: 5 });
+		expect(new URL(getUrl() ?? "").searchParams.has("owner")).toBe(false);
+	});
+
+	test("getStats() forwards owner to the stats route, and stays a bare path without it", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({});
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.getStats({ owner: "me" });
+		const scoped = new URL(getUrl() ?? "");
+		expect(scoped.pathname).toBe("/api/v1/sessions/stats");
+		expect(scoped.searchParams.get("owner")).toBe("me");
+
+		await client.getStats();
+		expect(getUrl()).toBe("http://localhost:3000/api/v1/sessions/stats");
 	});
 
 	test("getSessions() with no params omits every query key entirely", async () => {

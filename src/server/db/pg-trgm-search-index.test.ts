@@ -153,103 +153,115 @@ describePostgresOnly("AGEN-27: pg_trgm search index (live Postgres)", () => {
 			.values({ sessionId: sid, agentType: "claude_code", status: "active" })
 			.execute();
 
-		// Bulk-seed >= 50k events across a mix of indexed and non-indexed
-		// event types. The marker (the search term) lands in only 1 row per
-		// 5000 — a rare, realistic hit rate, not the ~20% a naive "every
-		// 5th row" fixture would give (which is unrealistically easy for a
-		// seq scan and hides the index's actual advantage).
-		await executeRows(
-			db as unknown as import("./client.js").Db,
-			sql`
-					INSERT INTO events (session_id, event_type, content, raw_payload, created_at)
-					SELECT
-						${sid},
-						(ARRAY['UserPromptSubmit','AssistantMessage','Stop','PreToolUse','PostToolUse'])[1 + (g % 5)],
-						CASE WHEN g % 5 = 2 THEN 'Turn completed' ELSE 'refactor payload ' || g END,
-						CASE WHEN g % 5 = 0 THEN
-							CASE WHEN g % 5000 = 0 THEN json_build_object('prompt', 'refactor payload ' || g || ' ' || ${marker})
-								ELSE json_build_object('prompt', 'refactor payload ' || g) END
-							ELSE '{}'::json END,
-						now()::text
-					FROM generate_series(1, ${ROW_COUNT}) AS g
-				`,
-		);
-		// A freshly bulk-inserted table has no statistics yet; without them
-		// the planner may still cost a seq scan as cheaper than it actually
-		// is. ANALYZE makes the plan choice deterministic for this test.
-		await executeRows(db as unknown as import("./client.js").Db, sql`ANALYZE events`);
+		// The cleanup at the end of this try block must run even when one of
+		// this test's own assertions fails (a timing assertion especially —
+		// "container I/O varies too much for a stable threshold" per the
+		// comment below, so it can fail without the seeded data itself being
+		// wrong). Skipping cleanup on a failed assertion leaves 200k+ rows
+		// behind, which is exactly the bloat the comment at the bottom of
+		// this block warns ingest-copilot.test.ts's unfiltered `DELETE FROM
+		// events` about — a flaky assertion here used to cascade into an
+		// unrelated file's hook timing out.
+		try {
+			// Bulk-seed >= 50k events across a mix of indexed and non-indexed
+			// event types. The marker (the search term) lands in only 1 row per
+			// 5000 — a rare, realistic hit rate, not the ~20% a naive "every
+			// 5th row" fixture would give (which is unrealistically easy for a
+			// seq scan and hides the index's actual advantage).
+			await executeRows(
+				db as unknown as import("./client.js").Db,
+				sql`
+						INSERT INTO events (session_id, event_type, content, raw_payload, created_at)
+						SELECT
+							${sid},
+							(ARRAY['UserPromptSubmit','AssistantMessage','Stop','PreToolUse','PostToolUse'])[1 + (g % 5)],
+							CASE WHEN g % 5 = 2 THEN 'Turn completed' ELSE 'refactor payload ' || g END,
+							CASE WHEN g % 5 = 0 THEN
+								CASE WHEN g % 5000 = 0 THEN json_build_object('prompt', 'refactor payload ' || g || ' ' || ${marker})
+									ELSE json_build_object('prompt', 'refactor payload ' || g) END
+								ELSE '{}'::json END,
+							now()::text
+						FROM generate_series(1, ${ROW_COUNT}) AS g
+					`,
+			);
+			// A freshly bulk-inserted table has no statistics yet; without them
+			// the planner may still cost a seq scan as cheaper than it actually
+			// is. ANALYZE makes the plan choice deterministic for this test.
+			await executeRows(db as unknown as import("./client.js").Db, sql`ANALYZE events`);
 
-		const searchSql = sql`
-				SELECT e.id, e.session_id, e.event_type, e.created_at
-				FROM events e
-				WHERE (e.content ILIKE ${`%${marker}%`} OR (e.raw_payload->>'prompt') ILIKE ${`%${marker}%`})
-					AND e.event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest')
-				ORDER BY e.created_at DESC, e.id DESC
-				LIMIT 50
-			`;
+			const searchSql = sql`
+					SELECT e.id, e.session_id, e.event_type, e.created_at
+					FROM events e
+					WHERE (e.content ILIKE ${`%${marker}%`} OR (e.raw_payload->>'prompt') ILIKE ${`%${marker}%`})
+						AND e.event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest')
+					ORDER BY e.created_at DESC, e.id DESC
+					LIMIT 50
+				`;
 
-		const rows = await executeRows<ExplainRow>(
-			db as unknown as import("./client.js").Db,
-			sql`EXPLAIN (FORMAT JSON) ${searchSql}`,
-		);
+			const rows = await executeRows<ExplainRow>(
+				db as unknown as import("./client.js").Db,
+				sql`EXPLAIN (FORMAT JSON) ${searchSql}`,
+			);
 
-		const plan = rows[0]?.["QUERY PLAN"]?.[0]?.Plan;
-		expect(plan).toBeDefined();
-		// biome-ignore lint/style/noNonNullAssertion: asserted defined above
-		const nodes = collectNodes(plan!);
-		const nodeTypes = nodes.map((n) => n["Node Type"]);
-		const indexNames = nodes.map((n) => n["Index Name"]).filter(Boolean);
+			const plan = rows[0]?.["QUERY PLAN"]?.[0]?.Plan;
+			expect(plan).toBeDefined();
+			// biome-ignore lint/style/noNonNullAssertion: asserted defined above
+			const nodes = collectNodes(plan!);
+			const nodeTypes = nodes.map((n) => n["Node Type"]);
+			const indexNames = nodes.map((n) => n["Index Name"]).filter(Boolean);
 
-		expect(nodeTypes).not.toContain("Seq Scan");
-		expect(indexNames.some((name) => name?.startsWith("idx_events_"))).toBe(true);
+			expect(nodeTypes).not.toContain("Seq Scan");
+			expect(indexNames.some((name) => name?.startsWith("idx_events_"))).toBe(true);
 
-		// Before/after latency, same data, same query, one dedicated
-		// connection (SET is session-scoped — the pooled `db` could route
-		// the follow-up query to a different physical connection and
-		// silently lose the setting): force a sequential scan (index
-		// disabled) vs. the planner's normal choice (the trigram index).
-		// Reported, not gated on a specific ratio — container I/O varies
-		// too much for a stable threshold, but the direction should hold.
-		const timingConn = postgres(config.databaseUrl, { max: 1 });
-		cleanupConnections.push(timingConn);
-		const searchText = `
-				SELECT e.id, e.session_id, e.event_type, e.created_at
-				FROM events e
-				WHERE (e.content ILIKE $1 OR (e.raw_payload->>'prompt') ILIKE $1)
-					AND e.event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest')
-				ORDER BY e.created_at DESC, e.id DESC
-				LIMIT 50
-			`;
-		const pattern = `%${marker}%`;
+			// Before/after latency, same data, same query, one dedicated
+			// connection (SET is session-scoped — the pooled `db` could route
+			// the follow-up query to a different physical connection and
+			// silently lose the setting): force a sequential scan (index
+			// disabled) vs. the planner's normal choice (the trigram index).
+			// Reported, not gated on a specific ratio — container I/O varies
+			// too much for a stable threshold, but the direction should hold.
+			const timingConn = postgres(config.databaseUrl, { max: 1 });
+			cleanupConnections.push(timingConn);
+			const searchText = `
+					SELECT e.id, e.session_id, e.event_type, e.created_at
+					FROM events e
+					WHERE (e.content ILIKE $1 OR (e.raw_payload->>'prompt') ILIKE $1)
+						AND e.event_type IN ('UserPromptSubmit','AssistantMessage','Stop','TaskCreated','TaskCompleted','SubagentStop','SessionEnd','AiProposal','AiReport','AiHitlRequest')
+					ORDER BY e.created_at DESC, e.id DESC
+					LIMIT 50
+				`;
+			const pattern = `%${marker}%`;
 
-		await timingConn.unsafe("SET enable_indexscan = off; SET enable_bitmapscan = off;");
-		const seqStart = performance.now();
-		await timingConn.unsafe(searchText, [pattern]);
-		const seqMs = performance.now() - seqStart;
+			await timingConn.unsafe("SET enable_indexscan = off; SET enable_bitmapscan = off;");
+			const seqStart = performance.now();
+			await timingConn.unsafe(searchText, [pattern]);
+			const seqMs = performance.now() - seqStart;
 
-		await timingConn.unsafe("SET enable_indexscan = on; SET enable_bitmapscan = on;");
-		const idxStart = performance.now();
-		await timingConn.unsafe(searchText, [pattern]);
-		const idxMs = performance.now() - idxStart;
+			await timingConn.unsafe("SET enable_indexscan = on; SET enable_bitmapscan = on;");
+			const idxStart = performance.now();
+			await timingConn.unsafe(searchText, [pattern]);
+			const idxMs = performance.now() - idxStart;
 
-		console.log(
-			`[AGEN-27] events search latency at ${ROW_COUNT} rows — seq scan: ${seqMs.toFixed(1)}ms, trigram index: ${idxMs.toFixed(1)}ms`,
-		);
-		expect(idxMs).toBeLessThan(seqMs);
-
-		// Cleanup: this suite's other files (e.g. ingest-copilot.test.ts) run
-		// an unfiltered `DELETE FROM events` in beforeEach — leaving this
-		// test's 200k rows behind turns that into a full-table delete on a
-		// bloated table and can blow past their 5s hook timeout. Targeted by
-		// session_id so it's a fast, indexed delete, not a table scan.
-		await executeRows(
-			db as unknown as import("./client.js").Db,
-			sql`DELETE FROM events WHERE session_id = ${sid}`,
-		);
-		await executeRows(
-			db as unknown as import("./client.js").Db,
-			sql`DELETE FROM sessions WHERE session_id = ${sid}`,
-		);
+			console.log(
+				`[AGEN-27] events search latency at ${ROW_COUNT} rows — seq scan: ${seqMs.toFixed(1)}ms, trigram index: ${idxMs.toFixed(1)}ms`,
+			);
+			expect(idxMs).toBeLessThan(seqMs);
+		} finally {
+			// This suite's other files (e.g. ingest-copilot.test.ts) run an
+			// unfiltered `DELETE FROM events` in beforeEach — leaving this
+			// test's 200k rows behind turns that into a full-table delete on a
+			// bloated table and can blow past their 5s hook timeout. Targeted
+			// by session_id so it's a fast, indexed delete, not a table scan.
+			// Runs even when an assertion above threw.
+			await executeRows(
+				db as unknown as import("./client.js").Db,
+				sql`DELETE FROM events WHERE session_id = ${sid}`,
+			);
+			await executeRows(
+				db as unknown as import("./client.js").Db,
+				sql`DELETE FROM sessions WHERE session_id = ${sid}`,
+			);
+		}
 	}, 30_000);
 
 	// What this test does and does not claim.

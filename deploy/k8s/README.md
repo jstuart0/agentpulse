@@ -462,6 +462,30 @@ just a locking one — budget disk headroom accordingly before running the
 
 ---
 
+## Upgrading to migration 0007 (SQLite) / 0008 (Postgres): acknowledgement timestamps
+
+These two migrations (`drizzle/sqlite/0007_session_ack_timestamps.sql`,
+`drizzle/postgres/0008_session_ack_timestamps.sql` — the numbers differ
+because Postgres carries an extra Postgres-only migration (`0006`,
+AGEN-27's pg_trgm indexes) that SQLite never got, and user ownership
+(sqlite `0006` / postgres `0007`) landed before this one) add two
+nullable text columns to `sessions`:
+`last_agent_turn_completed_at` (stamped on Stop) and
+`last_user_acknowledged_at` (stamped on UserPromptSubmit and on the
+synthetic `UserAcknowledge` hook). They back the dashboard's
+WAITING-vs-IDLE distinction. Both are plain `ALTER TABLE ... ADD COLUMN`
+with no default, no backfill and no index: instant on both dialects at any
+table size, no lock window worth planning around, nothing to pre-create
+out-of-band. Existing SQLite installs on the legacy `initializeDatabase()`
+path get the same columns through its additive ALTER list. The Postgres
+migration uses `ADD COLUMN IF NOT EXISTS` so an operator who already added
+the columns by hand does not fail the in-band migration.
+
+Rows that predate the columns stay `NULL`; the dashboard shows such a
+session (active, not working) as IDLE until its next Stop or prompt
+stamps one of the timestamps — nothing has finished yet, so nothing is
+awaiting the user. No action is required; no backfill.
+
 ## Homelab overlay
 
 ```

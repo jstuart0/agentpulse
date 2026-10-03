@@ -1,7 +1,10 @@
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AGENT_METADATA } from "../../../shared/constants.js";
 import type { AgentType, LaunchRequest, Session } from "../../../shared/types.js";
+import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
+import { describeApiError } from "../../lib/api-errors.js";
 import { api } from "../../lib/api.js";
 import { MarkdownContent } from "../MarkdownContent.js";
 import { ModeButton, ScrollJumpControls } from "./SharedControls.js";
@@ -13,6 +16,8 @@ export function NotesPanel({
 	const [notes, setNotes] = useState(initialNotes);
 	const [saving, setSaving] = useState(false);
 	const [lastSaved, setLastSaved] = useState<string | null>(null);
+	const [saveError, setSaveError] = useState<string | null>(null);
+	const { showTeamCopy } = useOwnershipUi();
 	const [mode, setMode] = useState<"edit" | "preview">("edit");
 	const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 	const editRef = useRef<HTMLTextAreaElement>(null);
@@ -26,7 +31,10 @@ export function NotesPanel({
 				try {
 					await api.saveSessionNotes(sessionId, value);
 					setLastSaved(new Date().toLocaleTimeString());
-				} catch {}
+					setSaveError(null);
+				} catch (err) {
+					setSaveError(describeApiError(err, "Couldn't save. Your text is still here."));
+				}
 				setSaving(false);
 			}, 1000);
 		},
@@ -40,6 +48,7 @@ export function NotesPanel({
 					<span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
 						Notes
 					</span>
+					{showTeamCopy && <span className="text-[10px] text-hint">Shared with everyone</span>}
 					<div className="flex items-center rounded-md border border-border p-0.5">
 						<ModeButton active={mode === "edit"} label="Edit" onClick={() => setMode("edit")} />
 						<ModeButton
@@ -66,9 +75,15 @@ export function NotesPanel({
 						}}
 					/>
 				</div>
-				<span className="text-[10px] text-muted-foreground">
-					{saving ? "Saving..." : lastSaved ? `Saved ${lastSaved}` : ""}
-				</span>
+				{saveError ? (
+					<span role="alert" className="text-[10px] text-red-700 dark:text-red-400">
+						{saveError}
+					</span>
+				) : (
+					<span className="text-[10px] text-muted-foreground">
+						{saving ? "Saving..." : lastSaved ? `Saved ${lastSaved}` : ""}
+					</span>
+				)}
 			</div>
 			{mode === "edit" ? (
 				<textarea
@@ -241,7 +256,14 @@ export function SummaryField({
 	label,
 	value,
 	mono = false,
-}: { label: string; value: string | null | undefined; mono?: boolean }) {
+	action,
+}: {
+	label: string;
+	value: string | null | undefined;
+	mono?: boolean;
+	/** A control that changes this field (a "Change owner" button), shown under the value. */
+	action?: ReactNode;
+}) {
 	if (!value) return null;
 	return (
 		<div className="rounded-md border border-border bg-background/60 p-3">
@@ -249,6 +271,7 @@ export function SummaryField({
 			<div className={`mt-1 text-sm text-foreground ${mono ? "font-mono break-all text-xs" : ""}`}>
 				{value}
 			</div>
+			{action}
 		</div>
 	);
 }

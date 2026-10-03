@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
+import { plainErrorMessage } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
 import {
 	type LocationState,
@@ -68,7 +69,7 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 				const res = await api.getApiKeys();
 				if (!cancelled) setKeys(res.keys);
 			} catch (err) {
-				if (!cancelled) setKeysError(err instanceof Error ? err.message : String(err));
+				if (!cancelled) setKeysError(plainErrorMessage(err));
 			}
 		}
 		void load();
@@ -88,7 +89,7 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 			const list = await api.getApiKeys().catch(() => ({ keys: [] as typeof keys }));
 			setKeys(list.keys ?? []);
 		} catch (err) {
-			setKeysError(err instanceof Error ? err.message : String(err));
+			setKeysError(plainErrorMessage(err));
 		} finally {
 			setCreating(false);
 		}

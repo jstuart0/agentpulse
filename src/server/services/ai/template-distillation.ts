@@ -3,6 +3,7 @@ import { isLaunchable } from "../../../shared/constants.js";
 import type { SessionTemplateInput } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { events, sessionTemplates, sessions } from "../../db/schema/index.js";
+import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../../db/session-columns.js";
 import { getProjectByCwd } from "../projects/projects-service.js";
 import { normalizeCwd } from "../projects/resolver.js";
 
@@ -39,7 +40,7 @@ export interface DistillInput {
 
 export async function distillTemplate(input: DistillInput): Promise<TemplateDraft | null> {
 	const [session] = await getDb()
-		.select()
+		.select(SESSION_COLUMNS_SANS_OWNERSHIP)
 		.from(sessions)
 		.where(eq(sessions.sessionId, input.sessionId))
 		.limit(1);

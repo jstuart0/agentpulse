@@ -50,6 +50,20 @@
 			"when": 1790746797144,
 			"tag": "0006_agen27_pg_trgm_search_index",
 			"breakpoints": true
+		},
+		{
+			"idx": 7,
+			"version": "7",
+			"when": 1790829882603,
+			"tag": "0007_user_ownership",
+			"breakpoints": true
+		},
+		{
+			"idx": 8,
+			"version": "7",
+			"when": 1790892327194,
+			"tag": "0008_session_ack_timestamps",
+			"breakpoints": true
 		}
 	]
 }

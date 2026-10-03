@@ -58,6 +58,7 @@ beforeEach(async () => {
 	await bumpVersionAndReload();
 });
 
+const TEST_ACTOR = { userId: null, label: "anonymous" as const };
 const REFUSAL = "Copilot CLI can't be launched — AgentPulse can only launch Claude Code or Codex.";
 const RESUME_REFUSAL =
 	"Resume isn't supported for Copilot CLI sessions — AgentPulse can only launch Claude Code or Codex.";
@@ -69,7 +70,10 @@ describe("runAskTurn — agent_refused reaches a real persisted reply, no launch
 			projectName: "agentpulse",
 			agentType: "copilot_cli",
 		});
-		const result = await runAskTurn({ message: "launch copilot for agentpulse" });
+		const result = await runAskTurn({
+			message: "launch copilot for agentpulse",
+			actor: TEST_ACTOR,
+		});
 		expect(result.assistantMessage.content).toBe(REFUSAL);
 		expect(result.includedSessionIds).toEqual([]);
 		const rows = await getDb().select().from(launchRequests).execute();
@@ -83,7 +87,10 @@ describe("runAskTurn — agent_refused reaches a real persisted reply, no launch
 			newPrompt: "keep going",
 			agentType: "copilot_cli",
 		});
-		const result = await runAskTurn({ message: "resume my session with: keep going" });
+		const result = await runAskTurn({
+			message: "resume my session with: keep going",
+			actor: TEST_ACTOR,
+		});
 		expect(result.assistantMessage.content).toBe(RESUME_REFUSAL);
 		expect(result.includedSessionIds).toEqual([]);
 	});
@@ -98,7 +105,10 @@ describe("runAskTurnStream — agent_refused streams start/delta/done, no side e
 		});
 		const events: Array<{ kind: string }> = [];
 		let deltaText = "";
-		for await (const event of runAskTurnStream({ message: "launch copilot for agentpulse" })) {
+		for await (const event of runAskTurnStream({
+			message: "launch copilot for agentpulse",
+			actor: TEST_ACTOR,
+		})) {
 			events.push(event);
 			if (event.kind === "delta") deltaText += (event as { delta: string }).delta;
 			if (event.kind === "done" || events.length > 10) break;

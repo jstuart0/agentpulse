@@ -13,6 +13,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
+import type { Actor } from "../auth/actor.js";
 import "../db/__test_db.js";
 import { deleteAllSupervisors } from "../services/__test_supervisors.js";
 
@@ -23,6 +24,7 @@ const { createApiKey } = await import("../auth/api-key.js");
 const { events, launchRequests, managedSessions, sessions } = await import("../db/schema/index.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 const { queuePromptAction } = await import("../services/control-actions.js");
+const TEST_ACTOR: Actor = { userId: null, label: "user" };
 
 type Credential = { id: string; token: string };
 
@@ -162,7 +164,7 @@ describe("supervisor ownership guard — HTTP (F94)", () => {
 	test("T1: A posts managed-session-state for B's session → 403, unchanged row, B still claims its prompt", async () => {
 		const sessionId = `t1-sess-${crypto.randomUUID().slice(0, 8)}`;
 		await seedOwnedSession(sessionId, supervisorB.id);
-		await queuePromptAction(sessionId, "hello from B");
+		await queuePromptAction(sessionId, "hello from B", TEST_ACTOR);
 
 		const res = await app.request(`/api/v1/supervisors/${supervisorA.id}/managed-session-state`, {
 			method: "POST",

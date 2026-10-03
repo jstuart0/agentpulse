@@ -46,3 +46,24 @@ data:
   # agentpulse-strip-client-forwardauth removes these by exact name; this
   # env var tells AgentPulse which prefix to expect from the IdP.
   # FORWARDAUTH_HEADER_STRIP_PREFIX: "X-Authentik-"
+
+  # ── Teams (optional) ──────────────────────────────────────────────────────
+  # Everything below is off by default: an install runs in solo mode (every
+  # signed-in user sees everything, nothing about ownership is enforced) until
+  # an admin turns team mode on in Settings, or you pin it here.
+  #
+  # Pin the instance mode. "team" turns on members, admins and owner-checked
+  # actions and locks the mode (the UI can't change it); "solo" locks it the
+  # other way. Team mode needs authentication and at least one way to sign in
+  # as an admin (a local bootstrap admin or a subject listed below), or the
+  # server refuses to start.
+  # AGENTPULSE_MODE: "solo"
+  #
+  # Comma-separated identity-provider subjects (the stable uid, never a display
+  # username) who are admins. Keep it to uids; a username can be handed to
+  # someone else by the identity provider.
+  # AGENTPULSE_ADMIN_SSO_SUBJECTS: ""
+  #
+  # In team mode, how many new sessions one person (or, for a key with no owner,
+  # one key) may create per minute before the rest are dropped. Default 120.
+  # AGENTPULSE_SESSION_CREATE_LIMIT: "120"

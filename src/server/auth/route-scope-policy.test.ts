@@ -785,7 +785,7 @@ const BASELINE_STATUS: Record<string, number> = {
 	"GET /sessions/nope/timeline": 200,
 	"POST /sessions/nope/prompt": 400,
 	"POST /sessions/nope/stop": 400,
-	"PUT /sessions/nope/rename": 500,
+	"PUT /sessions/nope/rename": 400, // was 500 before malformed bodies were refused with invalid_body
 	"DELETE /sessions/nope": 200,
 	"GET /settings": 200,
 	"GET /api-keys": 200,
@@ -1004,6 +1004,8 @@ describe("Route-drift guard — every GET/HEAD route in the swapped bundle is cl
 		"labs",
 		"channels",
 		"ai",
+		"users",
+		"instance",
 	]);
 
 	function normalize(routePath: string): string | null {
@@ -1131,6 +1133,36 @@ describe("requireOperatorScope — an ingest-only key on PUT /sessions/:id/nativ
 				body: JSON.stringify({ name: "x", source: "user" }),
 			});
 			expect(renameRes.status).toBe(403);
+		}
+	});
+});
+
+describe("the team routes' reads are classified (observe-readable: /instance, /users/directory; manage-only: /users, /api-keys/:id)", () => {
+	test("set membership", () => {
+		expect(OBSERVE_READ_PATHS.has("/instance")).toBe(true);
+		expect(OBSERVE_READ_PATHS.has("/users/directory")).toBe(true);
+		expect(INTENTIONALLY_MANAGE_ONLY.has("/users")).toBe(true);
+		expect(INTENTIONALLY_MANAGE_ONLY.has("/api-keys/:id")).toBe(true);
+	});
+
+	test("an observe key reads /instance and /users/directory, and is refused on /users and /api-keys/:id", async () => {
+		for (const mount of MOUNTS) {
+			const headers = new Headers(authBearer(observeKey));
+			expect((await app.request(`${mount}/instance`, { headers })).status).toBe(200);
+			expect((await app.request(`${mount}/users/directory`, { headers })).status).toBe(200);
+			expect((await app.request(`${mount}/users`, { headers })).status).toBe(403);
+			expect((await app.request(`${mount}/api-keys/some-id`, { headers })).status).toBe(403);
+		}
+	});
+
+	test("a route exists for each, so the drift guard walks them", () => {
+		const registered = new Set(
+			app.routes
+				.filter((route) => route.method === "GET")
+				.map((route) => route.path.replace(/^\/(api|app-api)\/v1/, "")),
+		);
+		for (const path of ["/instance", "/users/directory", "/users", "/api-keys/:id"]) {
+			expect({ path, registered: registered.has(path) }).toEqual({ path, registered: true });
 		}
 	});
 });

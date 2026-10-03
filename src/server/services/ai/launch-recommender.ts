@@ -54,7 +54,7 @@ export async function recommendLaunch(input: RecommenderInput): Promise<Recommen
 	const cwd = input.template.cwd;
 	const priorAtCwd = cwd
 		? await getDb()
-				.select()
+				.select({ status: sessions.status, agentType: sessions.agentType, model: sessions.model })
 				.from(sessions)
 				.where(eq(sessions.cwd, cwd))
 				.orderBy(desc(sessions.lastActivityAt))

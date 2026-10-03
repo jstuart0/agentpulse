@@ -1,10 +1,12 @@
 import type {
 	ActionRequestDecision,
 	AgentType,
+	ApiKeyInfo,
 	AskMessageRole,
 	AskThreadOrigin,
 	AuthMeResponse,
 	ControlAction,
+	DashboardStats,
 	DecisionKind,
 	HitlReplyKind,
 	Inbox,
@@ -13,6 +15,7 @@ import type {
 	InboxWorkItem,
 	LaunchRequest,
 	NotificationChannelKind,
+	OwnerStatsResponse,
 	Project,
 	ProjectInput,
 	ProviderKind,
@@ -42,7 +45,10 @@ export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
 export type AiProviderKind = ProviderKind;
 export type AiWatcherPolicy = WatcherPolicy;
 export type { AskMessageRole, DecisionKind, HitlReplyKind } from "../../shared/types.js";
+import { decideFetchFailure, isOutageResponse, parseRetryAfter } from "./network-retry.js";
+import type { ScopeQuery } from "./owner-scope.js";
 import { APP_API_BASE } from "./paths.js";
+import { type ScopedQuery, type SessionFilters, assertScopedQuery } from "./scoped-query.js";
 
 const BASE_URL = APP_API_BASE;
 
@@ -68,15 +74,58 @@ const BASE_URL = APP_API_BASE;
  */
 let authBounceInFlight = false;
 
+const AUTH_BOUNCE_STORAGE_KEY = "agentpulse.authBounceAt";
+
+function readLastBounce(): number | null {
+	try {
+		const raw = window.sessionStorage.getItem(AUTH_BOUNCE_STORAGE_KEY);
+		const value = raw === null ? Number.NaN : Number(raw);
+		return Number.isFinite(value) ? value : null;
+	} catch {
+		return null;
+	}
+}
+
+function recordBounce(now: number): void {
+	try {
+		window.sessionStorage.setItem(AUTH_BOUNCE_STORAGE_KEY, String(now));
+	} catch {
+		// Storage can be unavailable (private mode); the in-memory flag still holds for this page.
+	}
+}
+
 export function triggerAuthReload(reason: string): void {
 	if (authBounceInFlight) return;
 	if (typeof window === "undefined") return;
 	authBounceInFlight = true;
+	recordBounce(Date.now());
 	console.warn(`[api] ${reason} — reloading to reacquire auth`);
 	// Defer a tick so any error logs get flushed before the nav.
 	setTimeout(() => {
 		window.location.reload();
 	}, 50);
+}
+
+/** Tells whoever shows connectivity whether requests are getting answered. */
+interface NetworkHandler {
+	failed: () => void;
+	ok: () => void;
+}
+let networkHandler: NetworkHandler | null = null;
+
+export function setNetworkHandler(handler: NetworkHandler | null): void {
+	networkHandler = handler;
+}
+
+/**
+ * A request that got no answer. The first one in a minute may be an expired
+ * sign-in, so it reloads once; every later one is an outage, reported for the
+ * visible "can't reach the server" state (which paces its own retries).
+ */
+function handleFetchFailure(reason: string): void {
+	const decision = decideFetchFailure({ lastBounceAt: readLastBounce(), now: Date.now() });
+	if (decision.action === "reload") triggerAuthReload(reason);
+	else networkHandler?.failed();
 }
 
 export function looksLikeAuthBounce(res: Response): boolean {
@@ -90,20 +139,56 @@ export function looksLikeAuthBounce(res: Response): boolean {
 }
 
 /**
- * Thrown by `request()` for any non-2xx HTTP response. Carries the status
- * code separately from the message (the server's `{error}`/`{message}`
- * body when present, else `res.statusText`) so callers that need to render
- * a precise "403 insufficient_scope"-style error — rather than just logging
- * `err.message` — don't have to re-parse it out of a formatted string.
+ * Thrown by `request()` for any non-2xx HTTP response. Carries the status,
+ * the server's error code (the `{error}` string of a JSON body, e.g.
+ * "not_owner") and the parsed body itself, so callers can branch on a refusal
+ * (and read what came with it, like the keys of a 409) instead of
+ * re-parsing a formatted message. `message` is the server's `{message}` or
+ * `{error}` text when present, else `res.statusText`.
  */
 export class ApiError extends Error {
 	readonly status: number;
+	readonly code: string | null;
+	readonly body: unknown;
+	/** Whole seconds the server asked the caller to wait (the Retry-After header), when it sent one. */
+	readonly retryAfterSeconds: number | null;
 
-	constructor(status: number, message: string) {
+	constructor(
+		status: number,
+		message: string,
+		body: unknown = null,
+		retryAfterSeconds: number | null = null,
+	) {
 		super(message);
 		this.name = "ApiError";
 		this.status = status;
+		this.body = body;
+		this.retryAfterSeconds = retryAfterSeconds;
+		const code = (body as { error?: unknown } | null)?.error;
+		this.code = typeof code === "string" ? code : null;
 	}
+}
+
+/** What a refused call looked like, for whoever wants to react to the standing of the viewer changing. */
+export interface RequestFailure {
+	status: number;
+	code: string | null;
+	path: string;
+}
+
+let requestFailureHandler: ((failure: RequestFailure) => void) | null = null;
+let requestSuccessHandler: ((path: string) => void) | null = null;
+
+/** One listener for every request that came back 2xx. */
+export function setRequestSuccessHandler(handler: ((path: string) => void) | null): void {
+	requestSuccessHandler = handler;
+}
+
+/** One listener, set by the user store: it decides whether a failure means "look at who I am again". */
+export function setRequestFailureHandler(
+	handler: ((failure: RequestFailure) => void) | null,
+): void {
+	requestFailureHandler = handler;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -123,13 +208,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 		// network error. Either way, reload — the worst case is one
 		// extra full-page refresh.
 		if (err instanceof TypeError) {
-			triggerAuthReload(`fetch threw (${err.message})`);
+			handleFetchFailure(`fetch threw (${err.message})`);
 		}
 		throw err;
 	}
 
 	if (looksLikeAuthBounce(res)) {
-		triggerAuthReload(`auth-bounce on ${path}`);
+		handleFetchFailure(`auth-bounce on ${path}`);
 		// Throw so callers don't try to JSON-parse the opaque response.
 		throw new Error("Session expired; reloading to reauthenticate.");
 	}
@@ -138,11 +223,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 		// Try to surface the server-side `{error: string}` body so callers
 		// get something actionable instead of a generic "502 Bad Gateway".
 		let detail: string | null = null;
+		let parsed: unknown = null;
 		try {
-			const body = (await res.clone().json()) as { error?: string; message?: string };
+			parsed = await res.clone().json();
+			const body = parsed as { error?: string; message?: string } | null;
 			if (body?.message) detail = body.message;
 			else if (body?.error) detail = body.error;
 		} catch {
+			parsed = null;
 			try {
 				const text = await res.clone().text();
 				if (text?.trim()) detail = text.trim().slice(0, 500);
@@ -150,11 +238,63 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 				// ignore — we'll fall back to statusText
 			}
 		}
-		throw new ApiError(res.status, detail ?? res.statusText);
+		const failure = new ApiError(
+			res.status,
+			detail ?? res.statusText,
+			parsed,
+			parseRetryAfter(res.headers.get("Retry-After"), Date.now()),
+		);
+		if (isOutageResponse(res.status, failure.code, path)) networkHandler?.failed();
+		else networkHandler?.ok();
+		requestFailureHandler?.({ status: res.status, code: failure.code, path });
+		throw failure;
 	}
 
+	networkHandler?.ok();
+	requestSuccessHandler?.(path);
 	return res.json();
 }
+
+function statsQuery(params?: ScopeQuery, extra?: string): string {
+	const query = new URLSearchParams(extra);
+	if (params?.excludeScratch) query.set("excludeScratch", "true");
+	if (params?.owner) query.set("owner", params.owner);
+	const qs = query.toString();
+	return qs ? `?${qs}` : "";
+}
+
+function sessionsQueryString(params: SessionFilters & ScopeQuery): string {
+	const query = new URLSearchParams();
+	if (params.status) query.set("status", params.status);
+	if (params.agent_type) query.set("agent_type", params.agent_type);
+	if (params.projectId) query.set("projectId", params.projectId);
+	if (params.operational) query.set("operational", params.operational);
+	if (params.tab) query.set("tab", params.tab);
+	if (params.q) query.set("q", params.q);
+	if (params.excludeScratch) query.set("excludeScratch", "true");
+	if (params.owner) query.set("owner", params.owner);
+	if (params.limit) query.set("limit", String(params.limit));
+	if (params.offset) query.set("offset", String(params.offset));
+	const qs = query.toString();
+	return qs ? `?${qs}` : "";
+}
+
+/**
+ * Runs a scoped call only for a query scopedQuery() made. In a production
+ * build the refusal is a rejected promise (callers already handle those); in
+ * development and tests it throws on the spot so the mistake can't hide.
+ */
+function whenScoped<T>(query: ScopedQuery, run: () => Promise<T>): Promise<T> {
+	try {
+		assertScopedQuery(query);
+	} catch (err) {
+		if (import.meta.env?.PROD) return Promise.reject(err);
+		throw err;
+	}
+	return run();
+}
+
+type SessionsResponse = { sessions: Session[]; total: number; ownerScope?: unknown };
 
 export const api = {
 	search: (filters: {
@@ -193,6 +333,9 @@ export const api = {
 				timestamp: string;
 				sessionDisplayName: string | null;
 				sessionCwd: string | null;
+				/** Whose session the hit belongs to, when the server says (team mode). */
+				ownerUserId?: string | null;
+				ownerKind?: "user" | "service" | "unassigned";
 			}>;
 			total: number;
 			backend: string;
@@ -204,14 +347,15 @@ export const api = {
 			method: "POST",
 		}),
 
-	getSessions: (params?: { status?: string; agent_type?: string; limit?: number }) => {
-		const query = new URLSearchParams();
-		if (params?.status) query.set("status", params.status);
-		if (params?.agent_type) query.set("agent_type", params.agent_type);
-		if (params?.limit) query.set("limit", String(params.limit));
-		const qs = query.toString();
-		return request<{ sessions: Session[]; total: number }>(`/sessions${qs ? `?${qs}` : ""}`);
-	},
+	/** The dashboard's list. The query is built from the live scope by scopedQuery(), the only way to make one. */
+	getSessions: (query: ScopedQuery) =>
+		whenScoped(query, () => request<SessionsResponse>(`/sessions${sessionsQueryString(query)}`)),
+
+	/** The newest Codex session anywhere, for the Setup page's "has Codex reported yet" check. Deliberately not the dashboard's scope. */
+	getCodexProbeSessions: () =>
+		request<SessionsResponse>(
+			`/sessions${sessionsQueryString({ agent_type: "codex_cli", limit: 1 })}`,
+		),
 
 	getSession: (sessionId: string) =>
 		request<{ session: Session; events: SessionEvent[]; controlActions?: ControlAction[] }>(
@@ -223,7 +367,25 @@ export const api = {
 			`/sessions/${sessionId}/timeline?limit=${limit}&offset=${offset}`,
 		),
 
-	getStats: () => request<unknown>("/sessions/stats"),
+	/** Counts for the dashboard's scope; same one-function rule as getSessions. */
+	getStats: (query: ScopedQuery) =>
+		whenScoped(query, () =>
+			request<DashboardStats & { ownerScope?: unknown }>(`/sessions/stats${statsQuery(query)}`),
+		),
+
+	/** Counts for everyone, following only the scratch toggle: the other half of "N more active across the team" under Mine. Deliberately not the dashboard's scope. */
+	getEveryoneStats: (excludeScratch: boolean) =>
+		request<DashboardStats & { ownerScope?: unknown }>(
+			`/sessions/stats${statsQuery({ excludeScratch })}`,
+		),
+
+	/** Per-owner counts for the same scope (the dashboard's Group by User headers). */
+	getStatsByOwner: (query: ScopedQuery) =>
+		whenScoped(query, () =>
+			request<OwnerStatsResponse & { ownerScope?: unknown }>(
+				`/sessions/stats${statsQuery(query, "group_by=owner")}`,
+			),
+		),
 
 	getSessionControlActions: (sessionId: string) =>
 		request<{ controlActions: ControlAction[] }>(`/sessions/${sessionId}/control-actions`),
@@ -257,6 +419,24 @@ export const api = {
 		request<{ ok: true }>(`/sessions/${sessionId}/archive`, {
 			method: "PUT",
 		}),
+
+	// AGEN: dashboard "mark as seen". `acknowledged: false` means the caller
+	// doesn't own the session (another user's WAITING) -- not an error, so
+	// callers should check the flag rather than only catching a thrown error.
+	// `source` labels the resulting timeline row — "dismiss-error" for the
+	// explicit Dismiss-error action, default "dashboard" otherwise.
+	acknowledgeSession: (sessionId: string, source?: string) =>
+		request<{ acknowledged: boolean; reason?: "not_owner" }>(`/sessions/${sessionId}/acknowledge`, {
+			method: "POST",
+			body: JSON.stringify(source ? { source } : {}),
+		}),
+
+	// AGEN: dashboard "mark as unseen" — the inverse of acknowledgeSession.
+	unacknowledgeSession: (sessionId: string, source?: string) =>
+		request<{ unacknowledged: boolean; reason?: "not_owner" }>(
+			`/sessions/${sessionId}/acknowledge`,
+			{ method: "DELETE", body: JSON.stringify(source ? { source } : {}) },
+		),
 
 	deleteSession: (sessionId: string) =>
 		request<{ ok: true }>(`/sessions/${sessionId}`, {
@@ -453,31 +633,108 @@ export const api = {
 			body: JSON.stringify(update),
 		}),
 
-	getApiKeys: () =>
-		request<{
-			keys: Array<{
-				id: string;
-				name: string;
-				keyPrefix: string;
-				isActive: boolean;
-				createdAt: string;
-				lastUsedAt: string | null;
-				scopes: string[];
-			}>;
-		}>("/api-keys"),
+	getApiKeys: () => request<{ keys: ApiKeyRow[] }>("/api-keys"),
 
-	createApiKey: (name: string, scopes?: string[]) =>
+	getApiKey: (id: string) =>
+		request<{ key: ApiKeyRow; serviceSessionCount: number }>(`/api-keys/${id}`),
+
+	/** `service: true` (admins, team mode) mints a key that belongs to no one. */
+	createApiKey: (name: string, scopes?: string[], options?: { service?: boolean }) =>
 		request<{ id: string; key: string; name: string; scopes: string[]; message: string }>(
 			"/api-keys",
 			{
 				method: "POST",
-				body: JSON.stringify({ name, ...(scopes !== undefined ? { scopes } : {}) }),
+				body: JSON.stringify({
+					name,
+					...(scopes !== undefined ? { scopes } : {}),
+					...(options?.service ? { service: true } : {}),
+				}),
 			},
 		),
+
+	/** An admin's change to a key: hand it to a user (optionally with the sessions it reported), or keep/unkeep it as an admin service key. */
+	patchApiKey: (
+		id: string,
+		body: {
+			ownerUserId?: string | null;
+			attributeSessions?: boolean;
+			adminService?: boolean;
+			/** Record an ownerless key as a plain service key (admins; 409 key_has_owner for an owned key). */
+			serviceKey?: boolean;
+		},
+	) =>
+		request<{ ok: true; attributedSessions: number }>(`/api-keys/${id}`, {
+			method: "PATCH",
+			body: JSON.stringify(body),
+		}),
 
 	revokeApiKey: (id: string) =>
 		request<{ ok: true }>(`/api-keys/${id}`, {
 			method: "DELETE",
+		}),
+
+	// --- Instance mode, people, ownership ---
+	getInstance: () =>
+		request<{ mode: "solo" | "team"; modeLockedByEnv: boolean; counts: InstanceCounts }>(
+			"/instance",
+		),
+
+	/** An admin hands a session to a person, or clears its owner. */
+	setSessionOwner: (sessionId: string, ownerUserId: string | null) =>
+		request<{ ok: true; session: Session | null }>(`/sessions/${sessionId}/owner`, {
+			method: "PATCH",
+			body: JSON.stringify({ ownerUserId }),
+		}),
+
+	setInstanceMode: (mode: "solo" | "team", serviceKeyDecisions: ServiceKeyDecision[]) =>
+		request<{ mode: "solo" | "team"; changed: boolean }>("/instance/mode", {
+			method: "PUT",
+			body: JSON.stringify({ mode, serviceKeyDecisions }),
+		}),
+
+	claimUnassignedSessions: (userId: string) =>
+		request<{ claimed: number }>("/instance/claim-unassigned", {
+			method: "POST",
+			body: JSON.stringify({ userId }),
+		}),
+
+	getUserDirectory: () => request<{ users: DirectoryUser[] }>("/users/directory"),
+
+	getUsers: () => request<{ users: AdminUserRow[] }>("/users"),
+
+	createUser: (body: { username: string; role: "user" | "admin" }) =>
+		request<{ user: { id: string; username: string; role: "user" | "admin" }; password: string }>(
+			"/users",
+			{ method: "POST", body: JSON.stringify(body) },
+		),
+
+	setUserRole: (id: string, role: "user" | "admin") =>
+		request<{ user: { id: string; role: "user" | "admin" } }>(`/users/${id}`, {
+			method: "PATCH",
+			body: JSON.stringify({ role }),
+		}),
+
+	disableUser: (id: string, body: { revokeHosts: boolean }) =>
+		request<{ ok: true }>(`/users/${id}/disable`, {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
+	enableUser: (id: string) => request<{ ok: true }>(`/users/${id}/enable`, { method: "POST" }),
+
+	resetUserPassword: (id: string) =>
+		request<{ password: string }>(`/users/${id}/reset-password`, { method: "POST" }),
+
+	setSupervisorOwner: (id: string, ownerUserId: string | null) =>
+		request<{ ok: true; ownerUserId: string | null }>(`/admin/supervisors/${id}`, {
+			method: "PATCH",
+			body: JSON.stringify({ ownerUserId }),
+		}),
+
+	changePassword: (body: { currentPassword: string; newPassword: string }) =>
+		request<{ ok: true }>("/auth/change-password", {
+			method: "POST",
+			body: JSON.stringify(body),
 		}),
 
 	getHealth: () =>
@@ -825,6 +1082,58 @@ export const api = {
 			method: "POST",
 		}),
 };
+
+/** One entry of GET /users/directory: everyone who can own something, for labels and pickers. */
+export interface DirectoryUser {
+	id: string;
+	/** A local account's login name, or an SSO account's display name (null when the IdP sent none). */
+	displayName: string | null;
+	/** How the account signs in ("local" or the SSO provider), when the server says; lets a label tell a real "admin" login from an impostor's display name. */
+	authSource?: string | null;
+	disabled: boolean;
+}
+
+/** One row of GET /users (admins only). */
+export interface AdminUserRow {
+	id: string;
+	username: string;
+	displayName: string | null;
+	role: "user" | "admin";
+	disabled: boolean;
+	authSource: string;
+	provider: string | null;
+	/** How the identity was matched: a stable uid, a username (re-usable by the IdP), or not yet known. */
+	subjectSource: "uid" | "username" | null;
+	lastLoginAt: string | null;
+	roleLockedByEnv: boolean;
+	mustChangePassword: boolean;
+	keyCount: number;
+	hostCount: number;
+}
+
+export interface InstanceCounts {
+	/** Sessions nobody owns and no key is recorded for. */
+	unassignedSessions: number;
+	/** Active API keys with no owner. */
+	serviceKeys: number;
+	/** Active ownerless manage keys that aren't kept as admin service keys. */
+	undecidedManageServiceKeys: number;
+	/**
+	 * Active ownerless keys that are neither admin-minted service keys, kept
+	 * admin keys, nor marked as service keys. Absent on a server that doesn't
+	 * record the decision.
+	 */
+	undecidedServiceKeys?: number;
+}
+
+/** A key row as the list returns it: `serviceKey` is the server's record of "this ownerless key is meant to have no owner" (absent on an older server). */
+export type ApiKeyRow = ApiKeyInfo & { serviceKey?: boolean };
+
+/** What an admin decides for each ownerless manage/wildcard key when turning team mode on. */
+export type ServiceKeyDecision =
+	| { keyId: string; decision: "keep" }
+	| { keyId: string; decision: "revoke" }
+	| { keyId: string; decision: "assign"; userId: string };
 
 export interface TelegramBotInfo {
 	id: number;

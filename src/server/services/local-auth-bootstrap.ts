@@ -2,14 +2,22 @@ import { eq } from "drizzle-orm";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import { settings, users } from "../db/schema/index.js";
-import { createUser, getUserByUsername } from "./local-auth-service.js";
+import {
+	createUser,
+	getLocalUserByUsername,
+	getUserByUsername,
+	validateUsername,
+} from "./local-auth-service.js";
 
 /**
  * Ensure the local admin user exists on startup if
  * AGENTPULSE_LOCAL_ADMIN_USERNAME + _PASSWORD are set. Idempotent:
  *   - no env → do nothing (first-run signup path takes over)
  *   - env set, user missing → create admin
- *   - env set, user exists → rehash if password drifted, keep admin role
+ *   - env set, user exists (local) → rehash if password drifted, keep admin role
+ *   - env set, username collides with a non-local (SSO) row → do nothing but
+ *     log a clear error: the bootstrap lookup is local-only and never
+ *     rewrites an SSO-bridged row.
  *
  * The password is the source of truth when the env var is set, so
  * rotating it is the way to force a change.
@@ -18,9 +26,27 @@ export async function ensureBootstrapAdmin(): Promise<void> {
 	const username = config.localAdminUsername.trim();
 	const password = config.localAdminPassword;
 	if (!username || !password) return;
+	try {
+		validateUsername(username);
+	} catch (err) {
+		console.error(
+			`[auth] AGENTPULSE_LOCAL_ADMIN_USERNAME "${username}" is invalid:`,
+			err instanceof Error ? err.message : err,
+		);
+		config.localAdminPassword = "";
+		return;
+	}
 
-	const existing = await getUserByUsername(username);
+	const existing = await getLocalUserByUsername(username);
 	if (!existing) {
+		const nonLocalCollision = await getUserByUsername(username);
+		if (nonLocalCollision) {
+			console.error(
+				`[auth] AGENTPULSE_LOCAL_ADMIN_USERNAME "${username}" collides with an existing non-local (SSO) account. Refusing to rewrite it. Choose a different bootstrap username.`,
+			);
+			config.localAdminPassword = "";
+			return;
+		}
 		try {
 			await createUser({ username, password, role: "admin" });
 			// Mark first-run as complete so a later soft-delete of this admin

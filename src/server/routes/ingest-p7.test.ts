@@ -54,6 +54,11 @@ function buildLoopbackDrainApp(peerIp = "127.0.0.1") {
 	return app;
 }
 
+// Other files read /health expecting the not-ready state a fresh process has.
+afterAll(async () => {
+	(await import("./health.js"))._resetDbReadyForTest(false);
+});
+
 beforeAll(async () => {
 	await initializeDatabase();
 	config.disableAuth = true;
@@ -440,9 +445,9 @@ describe("processHookEvent returns session row (no N+1 getSession)", () => {
 		expect(typeof result.isNew).toBe("boolean");
 		expect(result.session).not.toBeNull();
 		// session is the full DB row.
-		expect(result.session.sessionId).toBe(sessionId);
-		expect(typeof result.session.id).toBe("string");
-		expect(result.session.agentType).toBe("claude_code");
+		expect(result.session?.sessionId).toBe(sessionId);
+		expect(typeof result.session?.id).toBe("string");
+		expect(result.session?.agentType).toBe("claude_code");
 	});
 });
 
