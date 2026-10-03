@@ -223,6 +223,13 @@ export interface Session {
 	 * none was reported. Optional: an older server won't send it.
 	 */
 	reportedHost?: string | null;
+	/**
+	 * The machine the session is on, as the dashboard filters and groups it: the
+	 * supervisor's host name for a supervisor-launched session, else
+	 * `reportedHost`, else null. Display and filtering only. Present on list
+	 * rows; absent from the detail response and from an older server.
+	 */
+	machine?: string | null;
 	managedSession?: ManagedSession | null;
 	managed?: boolean;
 	// F86 (ian mid-build, D14/Phase 2): optional for backward-compat with a
@@ -278,6 +285,12 @@ export interface OwnerScopeEcho {
 	userId?: string;
 }
 
+/**
+ * The machine filter a server says it applied. Vendored from
+ * src/shared/machine-scope.ts (HostFilterEcho): this package can't import it.
+ */
+export type HostFilterEcho = { kind: "all" } | { kind: "unknown" } | { kind: "host"; host: string };
+
 /** The dashboard's three tab sizes; they partition the sessions in scope. */
 export interface SessionTabCounts {
 	active: number;
@@ -288,6 +301,8 @@ export interface SessionTabCounts {
 export interface DashboardStats {
 	/** The owner scope the server applied. Absent on a server that predates owner scoping. */
 	ownerScope?: OwnerScopeEcho;
+	/** The machine filter the server applied. Absent on a server that predates the machine filter. */
+	hostFilter?: HostFilterEcho;
 	/** Every session in the applied scope. Absent on an older server. */
 	total?: number;
 	/** Sessions in the applied scope the scratch exclusion left out; 0 without it. Absent on an older server. */

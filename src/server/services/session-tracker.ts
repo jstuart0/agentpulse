@@ -4,6 +4,7 @@ import {
 	count,
 	desc,
 	eq,
+	getTableColumns,
 	inArray,
 	isNotNull,
 	isNull,
@@ -18,6 +19,7 @@ import {
 	SESSION_END_TIMEOUT_MS,
 	SESSION_IDLE_TIMEOUT_MS,
 } from "../../shared/constants.js";
+import type { HostScope } from "../../shared/machine-scope.js";
 import type { OwnerScope } from "../../shared/owner-scope.js";
 import {
 	type ActiveOperationalStatus,
@@ -30,6 +32,8 @@ import {
 import { parseStoredTimestamp } from "../../shared/timestamp.js";
 import type {
 	AgentType,
+	HostStatsGroup,
+	HostStatsResponse,
 	ManagedState,
 	OwnerStatsGroup,
 	OwnerStatsResponse,
@@ -52,6 +56,7 @@ import { withTransaction } from "../db/with-transaction.js";
 import { createInFlight } from "../util/in-flight.js";
 import { runInOwnTurn } from "../util/own-turn.js";
 import { mayClearAttention } from "./authorization.js";
+import { EFFECTIVE_MACHINE, hostScopeCondition } from "./effective-machine.js";
 import { normalizeHookEvent } from "./event-normalizer.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { getManagedSession, mapManagedSession } from "./managed-session-state.js";
@@ -428,6 +433,12 @@ type SessionListFilters = {
 	 */
 	owner?: OwnerScope;
 	/**
+	 * Which machine's sessions: an exact effective machine, or none at all (see
+	 * effective-machine.ts). Composes with every other filter; omitted = every
+	 * machine, and the statement is then exactly what it was before.
+	 */
+	host?: HostScope;
+	/**
 	 * One of the dashboard's three tabs: exactly the sessions the matching stats
 	 * count describes (see tabCondition). Not combined with `status` or
 	 * `operational`.
@@ -482,7 +493,7 @@ function allOf(...conditions: Array<SQL | undefined>): SQL | undefined {
 
 /**
  * The predicates every session query shares, whichever builder runs it:
- * agent type, project, scratch exclusion, search, owner scope, directory, time
+ * agent type, project, scratch exclusion, search, owner scope, machine, directory, time
  * window and (when given) lifecycle status. The plain list and the operational candidate scan both
  * start from this so a filter can never apply to one and not the other.
  */
@@ -506,6 +517,8 @@ function sharedFilterConditions(
 	if (search) conditions.push(search);
 	const owner = ownerScopeCondition(filters?.owner);
 	if (owner) conditions.push(owner);
+	const host = hostScopeCondition(filters?.host);
+	if (host) conditions.push(host);
 	if (filters?.cwd) conditions.push(likeContains(sessions.cwd, filters.cwd));
 	if (filters?.since) conditions.push(sql`${sessions.lastActivityAt} >= ${filters.since}`);
 	if (filters?.until) conditions.push(sql`${sessions.lastActivityAt} < ${filters.until}`);
@@ -584,6 +597,9 @@ const CANDIDATE_COLUMNS = {
  */
 const CANDIDATE_SELECT_LIST = sql`${sessions.sessionId} AS "sessionId", ${sessions.status} AS "status", ${sessions.isWorking} AS "isWorking", ${sessions.isArchived} AS "isArchived", ${sessions.endedAt} AS "endedAt", ${sessions.semanticStatus} AS "semanticStatus", ${sessions.lastAgentTurnCompletedAt} AS "lastAgentTurnCompletedAt", ${sessions.lastUserAcknowledgedAt} AS "lastUserAcknowledgedAt", ${sessions.lastActivityAt} AS "lastActivityAt", ${sessions.ownerUserId} AS "ownerUserId", ${sessions.ingestKeyId} AS "ingestKeyId", ${PERMISSION_WAIT_SQL} AS "permissionWait"`;
 
+/** The candidate columns plus the effective machine, for the per-machine grouping only: it costs a lookup per row. */
+const CANDIDATE_SELECT_LIST_WITH_MACHINE = sql`${CANDIDATE_SELECT_LIST}, ${EFFECTIVE_MACHINE} AS "machine"`;
+
 type CandidateRow = Pick<
 	typeof sessions.$inferSelect,
 	| "sessionId"
@@ -597,7 +613,7 @@ type CandidateRow = Pick<
 	| "lastActivityAt"
 	| "ownerUserId"
 	| "ingestKeyId"
-> & { permissionWait: string | null };
+> & { permissionWait: string | null; machine?: string | null };
 
 /** A candidate row carrying what the classifier reads: it expects the permission wait under `metadata`. */
 type ClassifiableRow = CandidateRow & { metadata: OperationalStatusInput["metadata"] };
@@ -815,10 +831,14 @@ interface CandidateProbe {
 async function probeCandidates(
 	filters: SessionListFilters | undefined,
 	scratchProjectIds: readonly string[],
+	attentionCap: AttentionCap,
 ): Promise<CandidateProbe> {
 	const where = and(...operationalCandidateConditions(filters, scratchProjectIds)) as SQL;
 	const cap = operationalCandidateCap();
-	const rows = await queryCandidates(sql`WHERE ${where} LIMIT ${cap + 1}`);
+	const rows = await queryCandidates(
+		sql`WHERE ${where} LIMIT ${cap + 1}`,
+		attentionCap === "per-host",
+	);
 	return { where, cap, rows, truncated: rows.length > cap };
 }
 
@@ -830,22 +850,23 @@ async function completeTruncatedCandidates(
 	logOperationalCandidatesTruncated(cap, probe.rows.length);
 	const inAttentionTier = and(where, sql`${operationalAttentionTier()} = 1`) as SQL;
 	const attention =
-		attentionCap === "per-owner"
-			? await fetchAttentionTierPerOwner(inAttentionTier, cap)
-			: await queryCandidates(
+		attentionCap === "overall"
+			? await queryCandidates(
 					sql`WHERE ${inAttentionTier} ORDER BY ${ATTENTION_ORDER} LIMIT ${cap}`,
-				);
-	// The poll's cap is one budget shared by both tiers; per owner, the attention
-	// tier has its own budget per owner and the fill keeps a whole one, within a
-	// global ceiling on everything read.
+				)
+			: await fetchAttentionTierPerGroup(inAttentionTier, cap, attentionCap);
+	// The poll's cap is one budget shared by both tiers; per owner (or machine), the
+	// attention tier has its own budget per group and the fill keeps a whole one,
+	// within a global ceiling on everything read.
 	const fillLimit =
-		attentionCap === "per-owner"
-			? Math.min(cap, perOwnerCeiling(cap) - attention.length)
-			: cap - attention.length;
+		attentionCap === "overall"
+			? cap - attention.length
+			: Math.min(cap, perGroupCeiling(cap) - attention.length);
 	const fill =
 		fillLimit > 0
 			? await queryCandidates(
 					sql`WHERE ${and(where, sql`${operationalAttentionTier()} = 0`)} LIMIT ${fillLimit}`,
+					attentionCap === "per-host",
 				)
 			: [];
 	return [...attention, ...fill];
@@ -859,14 +880,14 @@ async function completeTruncatedCandidates(
 const ATTENTION_ORDER = sql`CASE WHEN ${sessions.status} = 'failed' THEN 0 ELSE 1 END, ${sessions.lastActivityAt} DESC`;
 
 /**
- * The most rows a per-owner scan reads in total (attention and fill): a
- * multiple of the cap, however many owners there are. Each owner's rows rank
- * first-come across owners, so a team over the ceiling shares it fairly and the
- * response, already flagged truncated, is approximate.
+ * The most rows a per-owner or per-machine scan reads in total (attention and
+ * fill): a multiple of the cap, however many groups there are. Each group's rows
+ * rank first-come across groups, so an instance over the ceiling shares it
+ * fairly and the response, already flagged truncated, is approximate.
  */
-const PER_OWNER_CEILING_FACTOR = 4;
-function perOwnerCeiling(cap: number): number {
-	return PER_OWNER_CEILING_FACTOR * cap;
+const PER_GROUP_CEILING_FACTOR = 4;
+function perGroupCeiling(cap: number): number {
+	return PER_GROUP_CEILING_FACTOR * cap;
 }
 
 /**
@@ -879,11 +900,12 @@ function heavyScan<T>(work: () => Promise<T>): Promise<T> {
 	return config.dialect === "sqlite" ? runInOwnTurn(work) : work();
 }
 
-/** The candidate columns for the rows a `WHERE ... [ORDER BY] LIMIT ...` tail selects. */
-async function queryCandidates(tail: SQL): Promise<CandidateRow[]> {
+/** The candidate columns (and the effective machine when `withMachine`) for the rows a `WHERE ... [ORDER BY] LIMIT ...` tail selects. */
+async function queryCandidates(tail: SQL, withMachine = false): Promise<CandidateRow[]> {
+	const columns = withMachine ? CANDIDATE_SELECT_LIST_WITH_MACHINE : CANDIDATE_SELECT_LIST;
 	const rows = await executeRows<Record<string, unknown>>(
 		getDb(),
-		sql`SELECT ${CANDIDATE_SELECT_LIST} FROM ${sessions} ${tail}`,
+		sql`SELECT ${columns} FROM ${sessions} ${tail}`,
 	);
 	return rows as unknown as CandidateRow[];
 }
@@ -891,28 +913,44 @@ async function queryCandidates(tail: SQL): Promise<CandidateRow[]> {
 /**
  * How far the attention tier is bounded: `overall` keeps the newest `cap` rows
  * across everyone (the poll), `per-owner` keeps the newest `cap` of EACH owner
- * (the per-owner grouping), so one owner's flood can't push another owner's
- * waiting or failed rows out of the tier.
+ * (the per-owner grouping) and `per-host` of EACH machine (the per-machine
+ * grouping, whose rows also carry their machine), so one group's flood can't
+ * push another group's waiting or failed rows out of the tier.
  */
-type AttentionCap = "overall" | "per-owner";
+type AttentionCap = "overall" | "per-owner" | "per-host";
 
 /**
- * The attention tier ranked within each owner (a user, or the ownerless
- * sessions split by whether a key reported them — the same buckets the grouping
- * reports), failures first and then newest, keeping `cap` per owner and at most
- * perOwnerCeiling(cap) rows overall. One statement however many owners there are.
+ * How each grouped scan splits its rows. Owners are a user, or the ownerless
+ * sessions split by whether a key reported them (the same buckets the grouping
+ * reports); machines are the effective machine, none being one group of its own.
  */
-async function fetchAttentionTierPerOwner(where: SQL, cap: number): Promise<CandidateRow[]> {
+const GROUP_PARTITION: Record<Exclude<AttentionCap, "overall">, SQL> = {
+	"per-owner": sql`PARTITION BY ${sessions.ownerUserId}, (${sessions.ingestKeyId} IS NULL)`,
+	"per-host": sql`PARTITION BY ${EFFECTIVE_MACHINE}`,
+};
+
+/**
+ * The attention tier ranked within each group, failures first and then newest,
+ * keeping `cap` per group and at most perGroupCeiling(cap) rows overall. One
+ * statement however many groups there are.
+ */
+async function fetchAttentionTierPerGroup(
+	where: SQL,
+	cap: number,
+	attentionCap: Exclude<AttentionCap, "overall">,
+): Promise<CandidateRow[]> {
+	const columns =
+		attentionCap === "per-host" ? CANDIDATE_SELECT_LIST_WITH_MACHINE : CANDIDATE_SELECT_LIST;
 	const rows = await executeRows<Record<string, unknown>>(
 		getDb(),
 		sql`SELECT * FROM (
-			SELECT ${CANDIDATE_SELECT_LIST}, ROW_NUMBER() OVER (
-				PARTITION BY ${sessions.ownerUserId}, (${sessions.ingestKeyId} IS NULL)
+			SELECT ${columns}, ROW_NUMBER() OVER (
+				${GROUP_PARTITION[attentionCap]}
 				ORDER BY ${ATTENTION_ORDER}
-			) AS "ownerRank"
+			) AS "groupRank"
 			FROM ${sessions} WHERE ${where}
-		) AS ranked WHERE "ownerRank" <= ${cap}
-		ORDER BY "ownerRank" ASC, "lastActivityAt" DESC LIMIT ${perOwnerCeiling(cap)}`,
+		) AS ranked WHERE "groupRank" <= ${cap}
+		ORDER BY "groupRank" ASC, "lastActivityAt" DESC LIMIT ${perGroupCeiling(cap)}`,
 	);
 	return rows as unknown as CandidateRow[];
 }
@@ -933,6 +971,9 @@ function filtersKey(filters: SessionListFilters | undefined): string {
 		filters?.q?.trim() || null,
 		filters?.excludeScratch === true,
 		owner ? [owner.kind, owner.kind === "user" ? owner.userId : null] : null,
+		filters?.host
+			? [filters.host.kind, filters.host.kind === "host" ? filters.host.host : null]
+			: null,
 		filters?.cwd || null,
 		filters?.since ?? null,
 		filters?.until ?? null,
@@ -1016,7 +1057,7 @@ async function runScan(
 	const first = await heavyScan(async () => {
 		entry.started = true;
 		const totals = entry.totals ? await entry.totals() : undefined;
-		return { totals, probe: await probeCandidates(filters, scratchProjectIds) };
+		return { totals, probe: await probeCandidates(filters, scratchProjectIds, attentionCap) };
 	});
 	const { probe } = first;
 	const candidates = probe.truncated
@@ -1147,12 +1188,20 @@ export async function getSessionSummaries(
 	});
 }
 
+/**
+ * A full session row plus the machine the dashboard shows it on, read in the
+ * same statement (one lookup per row of the page, never per row of the table).
+ * The columns stay flat: the DTO mappers and every consumer read the same shape.
+ */
+const SESSION_ROW_WITH_MACHINE = { ...getTableColumns(sessions), machine: EFFECTIVE_MACHINE };
+type SessionRowWithMachine = typeof sessions.$inferSelect & { machine: string | null };
+
 // Get all sessions with optional filters
 export async function getSessions(filters?: SessionListFilters) {
 	const limit = filters?.limit ?? 50;
 	const offset = filters?.offset ?? 0;
 
-	let rows: (typeof sessions.$inferSelect)[];
+	let rows: SessionRowWithMachine[];
 	let total: number;
 
 	if (filters?.operational) {
@@ -1171,17 +1220,15 @@ export async function getSessions(filters?: SessionListFilters) {
 			rows = [];
 		} else {
 			const pageRows = await getDb()
-				.select()
+				.select(SESSION_ROW_WITH_MACHINE)
 				.from(sessions)
 				.where(inArray(sessions.sessionId, ids));
 			const byId = new Map(pageRows.map((row) => [row.sessionId, row]));
-			rows = ids
-				.map((id) => byId.get(id))
-				.filter((row): row is typeof sessions.$inferSelect => !!row);
+			rows = ids.map((id) => byId.get(id)).filter((row): row is SessionRowWithMachine => !!row);
 		}
 	} else {
 		let query = getDb()
-			.select()
+			.select(SESSION_ROW_WITH_MACHINE)
 			.from(sessions)
 			.orderBy(desc(sessions.lastActivityAt), desc(sessions.id));
 
@@ -1225,7 +1272,7 @@ export async function getSessions(filters?: SessionListFilters) {
 // Get a single session by session_id
 export async function getSession(sessionId: string) {
 	const [session] = await getDb()
-		.select()
+		.select(SESSION_ROW_WITH_MACHINE)
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);
@@ -1238,19 +1285,25 @@ export async function getSession(sessionId: string) {
 export function getStats(options?: {
 	excludeScratch?: boolean;
 	owner?: OwnerScope;
+	host?: HostScope;
 }): Promise<StatsResult> {
 	return statsInFlight(filtersKey(options), () => computeStats(options));
 }
 
 const statsInFlight = createInFlight<StatsResult>();
 
-async function computeStats(options?: { excludeScratch?: boolean; owner?: OwnerScope }) {
+async function computeStats(options?: {
+	excludeScratch?: boolean;
+	owner?: OwnerScope;
+	host?: HostScope;
+}) {
 	// The aggregate and the candidate scan are taken together (see
 	// scanWithTotals), so every number below describes one database state, and a
 	// concurrent caller asking only for the scan (the operational list) joins it.
 	const filters: SessionListFilters = {
 		excludeScratch: options?.excludeScratch,
 		owner: options?.owner,
+		host: options?.host,
 	};
 	// Looked up once for both queries, so every number below is about the same set.
 	const scratchProjectIds = await scratchProjectIdsFor(filters);
@@ -1328,9 +1381,9 @@ async function queryAggregateTotals(
 ): Promise<StatsTotals> {
 	const now = new Date();
 	const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-	// The owner scope narrows every query, so the cards, the tab counts and the
-	// four operational counts all describe the same set of sessions.
-	const scope = allOf(...sharedFilterConditions({ owner: filters.owner }, []));
+	// The owner scope and the machine narrow every query, so the cards, the tab
+	// counts and the four operational counts all describe the same set of sessions.
+	const scope = allOf(...sharedFilterConditions({ owner: filters.owner, host: filters.host }, []));
 	const visible = filters.excludeScratch ? notScratchCondition(scratchProjectIds) : undefined;
 	const counted = (condition: SQL | undefined): SQL =>
 		(condition && visible ? and(condition, visible) : (condition ?? visible)) as SQL;
@@ -1429,7 +1482,12 @@ export function emptyStats(): StatsResult {
 }
 
 /** The per-owner grouping of a scope with no sessions at all. */
-export function emptyStatsByOwner(): Omit<OwnerStatsResponse, "ownerScope"> {
+export function emptyStatsByOwner(): OwnerStatsBody {
+	return { groups: [], truncated: false };
+}
+
+/** The per-machine grouping of a scope with no sessions at all. */
+export function emptyStatsByHost(): HostStatsBody {
 	return { groups: [], truncated: false };
 }
 
@@ -1543,19 +1601,24 @@ function ownerGroupKey(owner: { ownerUserId: string | null; hasKey: boolean }): 
 export function getStatsByOwner(options?: {
 	excludeScratch?: boolean;
 	owner?: OwnerScope;
-}): Promise<Omit<OwnerStatsResponse, "ownerScope">> {
+	host?: HostScope;
+}): Promise<OwnerStatsBody> {
 	return statsByOwnerInFlight(filtersKey(options), () => computeStatsByOwner(options));
 }
 
-const statsByOwnerInFlight = createInFlight<Omit<OwnerStatsResponse, "ownerScope">>();
+type OwnerStatsBody = Omit<OwnerStatsResponse, "ownerScope" | "hostFilter">;
+
+const statsByOwnerInFlight = createInFlight<OwnerStatsBody>();
 
 async function computeStatsByOwner(options?: {
 	excludeScratch?: boolean;
 	owner?: OwnerScope;
-}): Promise<Omit<OwnerStatsResponse, "ownerScope">> {
+	host?: HostScope;
+}): Promise<OwnerStatsBody> {
 	const filters: SessionListFilters = {
 		excludeScratch: options?.excludeScratch,
 		owner: options?.owner,
+		host: options?.host,
 	};
 	const scratchProjectIds = await scratchProjectIdsFor(filters);
 	const hasKey = sql<number>`CASE WHEN ${sessions.ingestKeyId} IS NULL THEN 0 ELSE 1 END`;
@@ -1614,6 +1677,92 @@ async function computeStatsByOwner(options?: {
 		groups: [...groups.values()].sort((a, b) => b.total - a.total),
 		truncated,
 	};
+}
+
+type HostStatsBody = Omit<HostStatsResponse, "ownerScope" | "hostFilter">;
+
+/**
+ * Per-machine counts, the way getStatsByOwner counts per owner: a GROUP BY on
+ * the effective machine for each machine's total and tab sizes, and the bounded
+ * candidate scan classified and tallied per machine in memory (two statements
+ * however many machines there are). Machines come back by name, the sessions
+ * with no machine last. Past the cap the scan keeps each machine's attention
+ * rows (up to the cap PER MACHINE), so one machine's flood never changes
+ * another machine's waiting and error columns; `truncated` says the working and
+ * idle columns may under-count.
+ */
+export function getStatsByHost(options?: {
+	excludeScratch?: boolean;
+	owner?: OwnerScope;
+	host?: HostScope;
+}): Promise<HostStatsBody> {
+	return statsByHostInFlight(filtersKey(options), () => computeStatsByHost(options));
+}
+
+const statsByHostInFlight = createInFlight<HostStatsBody>();
+
+function byMachineName(a: HostStatsGroup, b: HostStatsGroup): number {
+	if (a.host === null || b.host === null)
+		return (a.host === null ? 1 : 0) - (b.host === null ? 1 : 0);
+	return (
+		a.host.localeCompare(b.host, "en", { sensitivity: "base" }) ||
+		(a.host < b.host ? -1 : a.host > b.host ? 1 : 0)
+	);
+}
+
+async function computeStatsByHost(options?: {
+	excludeScratch?: boolean;
+	owner?: OwnerScope;
+	host?: HostScope;
+}): Promise<HostStatsBody> {
+	const filters: SessionListFilters = {
+		excludeScratch: options?.excludeScratch,
+		owner: options?.owner,
+		host: options?.host,
+	};
+	const scratchProjectIds = await scratchProjectIdsFor(filters);
+	const tabs = tabConditions();
+	const tabSum = (condition: SQL) =>
+		sql<number>`COALESCE(SUM(CASE WHEN ${condition} THEN 1 ELSE 0 END), 0)`.mapWith(Number);
+	// Grouped by position: the machine is a correlated lookup, which a GROUP BY
+	// on the expression itself would have to repeat (and Postgres would reject).
+	const totalsQuery = getDb()
+		.select({
+			host: EFFECTIVE_MACHINE,
+			total: count(),
+			completed: tabSum(tabs.completed),
+			tabActive: tabSum(tabs.active),
+			tabArchived: tabSum(tabs.archived),
+		})
+		.from(sessions)
+		.where(allOf(...sharedFilterConditions(filters, scratchProjectIds)))
+		.groupBy(sql`1`);
+	const {
+		scan: { rows: candidates, truncated },
+		totals,
+	} = await scanWithTotals(filters, scratchProjectIds, "per-host", async () => await totalsQuery);
+
+	const groups = new Map<string | null, HostStatsGroup>();
+	for (const row of totals) {
+		groups.set(row.host, {
+			host: row.host,
+			total: row.total,
+			active: 0,
+			idle: 0,
+			completed: row.completed,
+			tabCounts: { active: row.tabActive, completed: row.completed, archived: row.tabArchived },
+			working: 0,
+			waiting: 0,
+			error: 0,
+		});
+	}
+	for (const row of candidates) {
+		const group = groups.get(row.machine ?? null);
+		if (!group) continue;
+		group[row.operational] += 1;
+		group.active += 1;
+	}
+	return { groups: [...groups.values()].sort(byMachineName), truncated };
 }
 
 // Recovery cutoff for sessions stuck with isWorking=true. If an agent

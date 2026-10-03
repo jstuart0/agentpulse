@@ -4,6 +4,13 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { AGENT_TYPES } from "../../shared/constants.js";
 import {
+	type HostFilterEcho,
+	type HostScope,
+	hostFilterEcho,
+	parseHostParam,
+	resolveHostScope,
+} from "../../shared/machine-scope.js";
+import {
 	type OwnerScope,
 	type OwnerScopeEcho,
 	ownerScopeEcho,
@@ -58,11 +65,13 @@ import {
 	acknowledgeSession,
 	applyNativeName,
 	emptyStats,
+	emptyStatsByHost,
 	emptyStatsByOwner,
 	getSession,
 	getSessionSummaries,
 	getSessions,
 	getStats,
+	getStatsByHost,
 	getStatsByOwner,
 	isSessionListField,
 	renameSession,
@@ -213,6 +222,20 @@ function ownerScopeFromQuery(
 	const scope = resolveOwnerScope(parsed, authUser?.userId);
 	if (scope === null) return { refusal: c.json({ error: "owner_me_unavailable" }, 400) };
 	return { scope, echo: ownerScopeEcho(parsed, scope) };
+}
+
+/**
+ * `?host=` for the list and the stats poll: the machine to filter on (an exact
+ * name, or the reserved token for sessions with none), or the 400 to send. The
+ * refusal echoes at most a short prefix of what was sent.
+ */
+function hostScopeFromQuery(
+	c: Context,
+): { scope: HostScope | undefined; echo: HostFilterEcho } | { refusal: Response } {
+	const raw = c.req.query("host");
+	const parsed = parseHostParam(raw);
+	if (!parsed) return { refusal: c.json({ error: "invalid_host", value: echoed(raw) }, 400) };
+	return { scope: resolveHostScope(parsed), echo: hostFilterEcho(parsed) };
 }
 
 /**
@@ -393,6 +416,10 @@ sessionsRouter.get("/sessions", async (c) => {
 	if ("refusal" in ownerResult) return ownerResult.refusal;
 	const owner = ownerResult.scope;
 	const ownerScope = ownerResult.echo;
+	const hostResult = hostScopeFromQuery(c);
+	if ("refusal" in hostResult) return hostResult.refusal;
+	const host = hostResult.scope;
+	const hostFilter = hostResult.echo;
 
 	// F128: opt-in narrow projection (the relay's per-tick Codex paging). An
 	// unknown or empty field list is a 400, so a typo can't silently fall back
@@ -408,15 +435,19 @@ sessionsRouter.get("/sessions", async (c) => {
 		const invalid = fields.find((f) => !isSessionListField(f));
 		if (invalid !== undefined)
 			return c.json({ error: "invalid_field", value: echoed(invalid) }, 400);
-		if (await namesNoSuchUser(ownerScope)) return c.json({ sessions: [], ownerScope });
+		if (await namesNoSuchUser(ownerScope)) {
+			return c.json({ sessions: [], ownerScope, hostFilter });
+		}
 		const rows = await getSessionSummaries(
-			{ status, tab, agentType, projectId, q, excludeScratch, owner, limit, offset },
+			{ status, tab, agentType, projectId, q, excludeScratch, owner, host, limit, offset },
 			fields as SessionListField[],
 		);
-		return c.json({ sessions: rows, ownerScope });
+		return c.json({ sessions: rows, ownerScope, hostFilter });
 	}
 
-	if (await namesNoSuchUser(ownerScope)) return c.json({ sessions: [], total: 0, ownerScope });
+	if (await namesNoSuchUser(ownerScope)) {
+		return c.json({ sessions: [], total: 0, ownerScope, hostFilter });
+	}
 
 	return orBusy(c, async () => {
 		const result = await getSessions({
@@ -428,10 +459,11 @@ sessionsRouter.get("/sessions", async (c) => {
 			q,
 			excludeScratch,
 			owner,
+			host,
 			limit,
 			offset,
 		});
-		return c.json({ ...result, ownerScope });
+		return c.json({ ...result, ownerScope, hostFilter });
 	});
 });
 
@@ -442,21 +474,37 @@ sessionsRouter.get("/sessions/stats", async (c) => {
 	if ("refusal" in ownerResult) return ownerResult.refusal;
 	const owner = ownerResult.scope;
 	const ownerScope = ownerResult.echo;
+	const hostResult = hostScopeFromQuery(c);
+	if ("refusal" in hostResult) return hostResult.refusal;
+	const host = hostResult.scope;
+	const hostFilter = hostResult.echo;
 
-	// AGEN: `group_by=owner` answers the whole team in one grouped pass. The
-	// response shape differs from the plain poll, so it is opt-in.
+	// AGEN: `group_by=owner` answers the whole team in one grouped pass, and
+	// `group_by=host` the same for every machine. The response shape differs from
+	// the plain poll, so it is opt-in.
 	const groupBy = c.req.query("group_by");
-	if (groupBy !== undefined && groupBy !== "owner") {
+	if (groupBy !== undefined && groupBy !== "owner" && groupBy !== "host") {
 		return c.json({ error: "invalid_group_by", value: echoed(groupBy) }, 400);
 	}
 	if (await namesNoSuchUser(ownerScope)) {
-		return c.json({ ownerScope, ...(groupBy ? emptyStatsByOwner() : emptyStats()) });
+		const empty =
+			groupBy === "owner"
+				? emptyStatsByOwner()
+				: groupBy === "host"
+					? emptyStatsByHost()
+					: emptyStats();
+		return c.json({ ownerScope, hostFilter, ...empty });
 	}
-	return orBusy(c, async () =>
-		groupBy
-			? c.json({ ownerScope, ...(await getStatsByOwner({ excludeScratch, owner })) })
-			: c.json({ ownerScope, ...(await getStats({ excludeScratch, owner })) }),
-	);
+	const options = { excludeScratch, owner, host };
+	return orBusy(c, async () => {
+		if (groupBy === "owner") {
+			return c.json({ ownerScope, hostFilter, ...(await getStatsByOwner(options)) });
+		}
+		if (groupBy === "host") {
+			return c.json({ ownerScope, hostFilter, ...(await getStatsByHost(options)) });
+		}
+		return c.json({ ownerScope, hostFilter, ...(await getStats(options)) });
+	});
 });
 
 // GET /api/v1/sessions/:sessionId - Session detail

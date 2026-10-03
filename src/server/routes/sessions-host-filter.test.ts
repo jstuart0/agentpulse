@@ -397,7 +397,7 @@ describe("host validation", () => {
 	test("a value outside the grammar is 400 invalid_host with a capped echo, on the list and the stats", async () => {
 		const w = await teamWorld();
 		const long = "x".repeat(300);
-		for (const bad of ["a\nb", "nul\u0000", "bidi‮name", long, `${UNKNOWN}extra`]) {
+		for (const bad of ["a\nb", "nul\u0000", "bidi‮name", long, `${UNKNOWN_HOST_PARAM}extra`]) {
 			for (const path of ["/sessions", "/sessions/stats", "/sessions/stats?group_by=host&x=1"]) {
 				const sep = path.includes("?") ? "&" : "?";
 				const res = await app.request(`/api/v1${path}${sep}host=${encodeURIComponent(bad)}`, {

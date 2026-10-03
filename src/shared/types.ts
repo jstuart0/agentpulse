@@ -4,6 +4,7 @@ import type {
 	SEMANTIC_STATUSES,
 	SESSION_STATUSES,
 } from "./constants.js";
+import type { HostFilterEcho } from "./machine-scope.js";
 import type { OwnerScopeEcho } from "./owner-scope.js";
 import type { ActiveOperationalStatus, OperationalStatus } from "./session-state.js";
 
@@ -464,6 +465,15 @@ export interface Session {
 	 * won't send it.
 	 */
 	reportedHost?: string | null;
+	/**
+	 * The machine the session is on, as the dashboard filters and groups it: the
+	 * supervisor's host name for a supervisor-launched session, else
+	 * `reportedHost`, else null (blank counts as none). Display and filtering
+	 * only. Present on list rows and on live updates read the same way; absent
+	 * on the detail response, on a row pushed live that didn't look it up, and
+	 * from an older server.
+	 */
+	machine?: string | null;
 	managedSession?: ManagedSession | null;
 	/**
 	 * Cheap presence flag: true when a managed_sessions row exists for this
@@ -595,6 +605,11 @@ export interface DashboardStats {
 	 */
 	ownerScope: OwnerScopeEcho;
 	/**
+	 * The machine filter this response applied (`{kind:"all"}` when none was
+	 * asked for). Absent from an older server.
+	 */
+	hostFilter?: HostFilterEcho;
+	/**
 	 * Every session in the applied scope, archived and completed included
 	 * (scratch workspaces left out when the request excluded them) — the same
 	 * set every other count here is a part of.
@@ -664,7 +679,34 @@ export interface OwnerStatsGroup {
 export interface OwnerStatsResponse {
 	/** The owner scope this response applied; see DashboardStats.ownerScope. */
 	ownerScope: OwnerScopeEcho;
+	/** The machine filter this response applied; see DashboardStats.hostFilter. */
+	hostFilter?: HostFilterEcho;
 	groups: OwnerStatsGroup[];
+	truncated: boolean;
+}
+
+/**
+ * One machine's counts in GET /sessions/stats?group_by=host, counted as
+ * OwnerStatsGroup counts an owner. `host` is the effective machine's name, or
+ * null for the sessions that have none.
+ */
+export interface HostStatsGroup {
+	host: string | null;
+	total: number;
+	active: number;
+	idle: number;
+	completed: number;
+	tabCounts: SessionTabCounts;
+	working: number;
+	waiting: number;
+	error: number;
+}
+
+/** GET /sessions/stats?group_by=host: machines by name, the sessions with no machine last. */
+export interface HostStatsResponse {
+	ownerScope: OwnerScopeEcho;
+	hostFilter: HostFilterEcho;
+	groups: HostStatsGroup[];
 	truncated: boolean;
 }
 

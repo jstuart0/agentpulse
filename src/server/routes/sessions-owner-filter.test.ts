@@ -417,6 +417,7 @@ describe("operational=waiting composed with owner and q", () => {
 
 interface StatsBody {
 	ownerScope: { kind: string; userId?: string };
+	hostFilter: { kind: string };
 	total: number;
 	scratchHidden: number;
 	activeSessions: number;
@@ -502,6 +503,7 @@ describe("GET /sessions/stats?owner=", () => {
 		const mine = await get<StatsBody>("/sessions/stats?owner=me", w.me.headers);
 		expect(mine).toEqual({
 			ownerScope: { kind: "me", userId: w.me.id },
+			hostFilter: { kind: "all" },
 			total: 6,
 			scratchHidden: 0,
 			activeSessions: 2,
@@ -522,6 +524,7 @@ describe("GET /sessions/stats?owner=", () => {
 		const everyone = await get<StatsBody>("/sessions/stats", w.me.headers);
 		expect(everyone).toEqual({
 			ownerScope: { kind: "all" },
+			hostFilter: { kind: "all" },
 			total: 12,
 			scratchHidden: 0,
 			activeSessions: 5,
