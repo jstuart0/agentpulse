@@ -611,6 +611,7 @@ Disable the person in AgentPulse (**Settings → Team**, the person's row). Remo
 - The **Inbox** is not narrowed by Mine | Everyone or the Owner select: it lists items across every session.
 - **Show scratch workspaces** now applies to every count, not just the grid; while it is off, the number of scratch sessions left out is shown beside it. This applies in solo mode too.
 - Desktop notifications in team mode fire only for your own sessions, whichever filter is on. Solo mode notifies for every session.
+- **Which machine.** A session shows "on <machine>" when a supervisor launched it, or when its relay or the Codex observer reported a machine name. That name is the sender's own claim and is shown to everyone who can see the session; AgentPulse never uses it to decide who may do what. Hooks posted straight to the server, without a relay, show no machine.
 
 ### Limits
 

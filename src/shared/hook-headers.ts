@@ -24,6 +24,15 @@ export const ORIGIN_CODEX_OBSERVER = "codex-observer";
 export const CODEX_NATIVE_MARKER_DIR = ".agentpulse/codex-native";
 
 /**
+ * HOST_HEADER: the machine name a relay or the Codex observer reports for the
+ * hooks it forwards (percent-encoded; see reported-host.ts). Display only and
+ * unauthenticated: the server stores it on the session for the dashboard and
+ * never uses it for ownership, access or routing. scripts/relay.ts, which
+ * cannot import this file, carries the same literal (pinned by a test).
+ */
+export const HOST_HEADER = "X-AgentPulse-Host";
+
+/**
  * Exclude-rule literals: a user can list directories whose sessions should
  * never be reported, checked locally on their own machine before anything
  * is sent. Every evaluator (src/shared/exclude-rules.ts, the generated

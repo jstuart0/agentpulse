@@ -876,6 +876,7 @@ export async function processHookEvent(
 				metadata: {},
 				ownerUserId: owner.ownerUserId,
 				ingestKeyId: owner.ingestKeyId,
+				reportedHost: ctx.reportedHost ?? null,
 			})
 			.onConflictDoNothing({ target: sessions.sessionId })
 			.returning();
@@ -960,6 +961,14 @@ export async function processHookEvent(
 
 	if (payload.cwd) updates.cwd = payload.cwd;
 	if (payload.model) updates.model = payload.model;
+
+	// The machine the sender reported (display only, unauthenticated: nothing
+	// here or anywhere else decides on it). Folded into this same UPDATE, and
+	// only when it differs from the row already read above, so an unchanged
+	// host costs no statement at all and a changed one costs none extra.
+	if (ctx.reportedHost && priorRow && ctx.reportedHost !== priorRow.reportedHost) {
+		updates.reportedHost = ctx.reportedHost;
+	}
 
 	// Handle session end events
 	if (eventType === "SessionEnd" && !d21.latched) {

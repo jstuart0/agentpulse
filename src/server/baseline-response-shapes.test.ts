@@ -28,6 +28,9 @@
  * `lastAgentTurnCompletedAt` and `lastUserAcknowledgedAt` (both null for a
  * session that has only seen SessionStart), plus a derived `operationalStatus`
  * ("idle" for that same session — active, not working, nothing finished yet).
+ *
+ * The session-host change adds one more nullable session field, `reportedHost`
+ * (null for a session no relay or observer reported a machine for).
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import "./db/__test_db.js";
@@ -393,6 +396,7 @@ describe("sessions and api-keys endpoints for a manage caller — baseline shape
 			ownerUserId: null,
 			planSummary: null,
 			projectId: null,
+			reportedHost: null,
 			semanticStatus: null,
 			sessionId: "<ID>",
 			startedAt: "<TIMESTAMP>",

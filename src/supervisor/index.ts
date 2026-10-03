@@ -134,6 +134,7 @@ async function main() {
 			serverUrl: config.serverUrl,
 			apiKey: config.apiKey ?? null,
 			rules,
+			hostName: config.hostName,
 		}).catch((error) => {
 			console.error("[codex-observer] failed to start:", error);
 		});
