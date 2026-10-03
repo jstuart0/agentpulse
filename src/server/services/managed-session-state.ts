@@ -305,6 +305,15 @@ export async function attachManagedSessionToLaunch(input: {
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, input.sessionId))
 		.limit(1);
+	// The claiming supervisor is authenticated, so its row exists unless it was
+	// deleted since; its name is the session's machine (a supervisor-launched
+	// session is on its supervisor's host, whatever a relay reports for it).
+	const [supervisor] = await getDb()
+		.select({ hostName: supervisors.hostName })
+		.from(supervisors)
+		.where(eq(supervisors.id, input.supervisorId))
+		.limit(1);
+	const hostName = existingManaged?.hostName ?? cleanMachineName(supervisor?.hostName);
 	// Narrow Drizzle row's `string` to ManagedState. Every producer only
 	// writes union members, so this cast is safe at the boundary.
 	const resolvedManagedState: ManagedState =
@@ -328,7 +337,7 @@ export async function attachManagedSessionToLaunch(input: {
 			lastProviderSyncAt: existingManaged?.lastProviderSyncAt ?? null,
 			providerProtocolVersion: existingManaged?.providerProtocolVersion ?? null,
 			providerCapabilitySnapshot: existingManaged?.providerCapabilitySnapshot ?? null,
-			hostName: existingManaged?.hostName ?? null,
+			hostName,
 			hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
 			createdAt: timestamp,
 			updatedAt: timestamp,
@@ -350,7 +359,7 @@ export async function attachManagedSessionToLaunch(input: {
 				lastProviderSyncAt: existingManaged?.lastProviderSyncAt ?? null,
 				providerProtocolVersion: existingManaged?.providerProtocolVersion ?? null,
 				providerCapabilitySnapshot: existingManaged?.providerCapabilitySnapshot ?? null,
-				hostName: existingManaged?.hostName ?? null,
+				hostName,
 				hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
 				updatedAt: timestamp,
 			},

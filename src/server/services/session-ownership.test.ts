@@ -404,9 +404,10 @@ const ALLOWED_OCCURRENCES: Record<string, number> = {
 	"src/server/routes/supervisors.ts": 6,
 	// the one-time boot repair of a stored host NAME (normalizeStoredMachineNames):
 	// pairs a managed session's copy of the name with its supervisor's repaired
-	// name, so it reads the id as a display-name lookup key and decides nothing
-	// about who owns or may drive a session
-	"src/server/services/effective-machine.ts": 2,
+	// name, and gives a row stored with no host its supervisor's name (four reads
+	// of the id: the two selects and the two compare-and-set WHEREs). The id is
+	// only a display-name lookup key; nothing here decides who owns or may drive a session
+	"src/server/services/effective-machine.ts": 4,
 	// action-claimant check (updateControlAction's input.supervisorId) —
 	// verifying who claimed THIS action, not session ownership
 	"src/server/services/control-actions.ts": 1,
@@ -418,8 +419,10 @@ const ALLOWED_OCCURRENCES: Record<string, number> = {
 	// insert + onConflictDoUpdate); and listManagedSessionsNeedingSync's
 	// explicit column selection, which must still carry supervisorId through
 	// to mapManagedSession's row shape even though routing itself now goes
-	// through sessionOwnedBy() in the WHERE clause, not this column
-	"src/server/services/managed-session-state.ts": 4,
+	// through sessionOwnedBy() in the WHERE clause, not this column; and the
+	// attach's lookup of that claimant's own host NAME (input.supervisorId as
+	// the key into supervisors, for the session's machine: display only)
+	"src/server/services/managed-session-state.ts": 5,
 	// host-compatibility candidate list, unrelated to session ownership
 	"src/server/services/template-preview.ts": 1,
 };

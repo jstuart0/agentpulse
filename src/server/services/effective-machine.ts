@@ -22,7 +22,7 @@
  *    needs the value of every row anyway.
  * None of them changes the row shape the statements around them return.
  */
-import { type SQL, and, eq, isNotNull, sql } from "drizzle-orm";
+import { type SQL, and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { HostScope } from "../../shared/machine-scope.js";
 import type { Session } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
@@ -124,6 +124,23 @@ export async function normalizeStoredMachineNames(seams?: {
 			.where(
 				and(eq(managedSessions.hostName, name), eq(managedSessions.supervisorId, supervisorId)),
 			);
+	}
+	// A managed row stored with no host (an older server attached it that way) takes
+	// its supervisor's name, so a supervisor-launched session is on its supervisor's
+	// machine rather than whatever a relay reports for it. A row whose supervisor is
+	// gone stays empty. Compare-and-set on "still no host": a writer that gave the
+	// row one after the read keeps it.
+	const unnamed = await db
+		.selectDistinct({ supervisorId: managedSessions.supervisorId })
+		.from(managedSessions)
+		.where(isNull(managedSessions.hostName));
+	for (const { supervisorId } of unnamed) {
+		const name = current.get(supervisorId);
+		if (!name) continue;
+		await db
+			.update(managedSessions)
+			.set({ hostName: name })
+			.where(and(isNull(managedSessions.hostName), eq(managedSessions.supervisorId, supervisorId)));
 	}
 }
 

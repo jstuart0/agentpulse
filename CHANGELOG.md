@@ -62,6 +62,11 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - Sessions pushed over the WebSocket now carry their `machine`, looked up
   concurrently with a short timeout and sent in order within each session, so a
   slow lookup never stalls anyone else's live feed.
+- A session linked to a supervisor's launch is now on that supervisor's host,
+  not on whatever name its relay reports: the host is filled in when the
+  session is attached, and sessions an older server attached without one are
+  repaired at boot. A launched session that showed its relay's name will show
+  the supervisor's host.
 - Supervisor host names are cleaned like reported names (and rows stored by an
   older server once at boot), so every machine the grouping lists can be
   selected. The sessions with no machine reported are called "No machine
