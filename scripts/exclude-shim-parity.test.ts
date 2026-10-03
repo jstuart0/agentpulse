@@ -129,6 +129,43 @@ const SHELLS: ShellHandle[] = [
 	...CANDIDATE_SHELLS.map((c) => c.handle).filter((h): h is ShellHandle => h !== null),
 ];
 
+const stubProbeResults = new Map<string, boolean>();
+/**
+ * True when the shell runs a stub placed first on PATH in place of the real
+ * `ls`. A busybox built with its applets preferred over PATH (Debian/Ubuntu's
+ * is) runs its own `ls` and `id` without looking at PATH, so a PATH stub never
+ * executes there; the stub-based cases would then "refuse" nothing and prove
+ * nothing. Probed per shell, not assumed from its name.
+ */
+function honorsPathStubs(shell: ShellHandle): boolean {
+	const cached = stubProbeResults.get(shell.name);
+	if (cached !== undefined) return cached;
+	const dir = mkdtempSync(join(tmpdir(), "ap-stub-probe-"));
+	try {
+		const stub = join(dir, "ls");
+		writeFileSync(stub, "#!/bin/sh\necho STUB_RAN\n");
+		chmodSync(stub, 0o755);
+		const probe = spawnSync(shell.bin, [...(shell.args ?? []), "-c", "ls /"], {
+			env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` },
+			encoding: "utf-8",
+		});
+		const honors = (probe.stdout ?? "").includes("STUB_RAN");
+		stubProbeResults.set(shell.name, honors);
+		return honors;
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+const NO_PATH_STUBS_REASON =
+	"this shell runs its built-in applets without consulting PATH, so a PATH stub never runs";
+
+/** A case that bends `ls`/`id` through a PATH stub: a named skip in a shell that would never run the stub. */
+function stubTest(shell: ShellHandle, name: string, fn: () => void): void {
+	if (honorsPathStubs(shell)) test(`${name} [${shell.name}]`, fn);
+	else test.skip(`${name} [${shell.name}] (skipped — ${NO_PATH_STUBS_REASON})`, () => {});
+}
+
 /** A test-only edit of the generated text at one named seam (e.g. to delete the rules file between two of its steps); applied exactly once, asserted. */
 interface SnippetTransform {
 	key: string;
@@ -244,10 +281,15 @@ const dottedCwdFixtures = fixtures.filter(
 );
 
 const coveredDedicated = new Set<string>();
-function dedicatedTest(name: string, fn: (shell: ShellHandle) => void): void {
+function dedicatedTest(
+	name: string,
+	fn: (shell: ShellHandle) => void,
+	opts: { needsPathStubs?: boolean } = {},
+): void {
 	coveredDedicated.add(name);
 	for (const shell of SHELLS) {
-		test(`${name} [${shell.name}]`, () => fn(shell));
+		if (opts.needsPathStubs) stubTest(shell, name, () => fn(shell));
+		else test(`${name} [${shell.name}]`, () => fn(shell));
 	}
 }
 
@@ -577,36 +619,40 @@ describe("exclude-shim-parity — dedicated on-disk constructions", () => {
 	// technique the TypeScript suite uses (an injected getuid), ported to a
 	// real shell process. The file's real owner (this test process) never
 	// changes, so this runs on every host, not just as root.
-	dedicatedTest("not-owned-file-invalid", (shell) => {
-		const home = tempHome();
-		const stubDir = mkdtempSync(join(tmpdir(), "ap-stub-id-"));
-		try {
-			const realId = execFileSync("which", ["id"], { encoding: "utf-8" }).trim();
-			const stubPath = join(stubDir, "id");
-			writeFileSync(
-				stubPath,
-				`#!/bin/sh\nif [ "$1" = "-u" ]; then echo 999999; exit 0; fi\nexec "${realId}" "$@"\n`,
-			);
-			chmodSync(stubPath, 0o755);
-			writeRulesFile(home, "/a/work\n");
-			const result = runShell(shell, home, home, undefined, {
-				PATH: `${stubDir}:${process.env.PATH ?? ""}`,
-			});
-			expect(result.stdout).toBe("");
-			expect(result.stderr).toBe("");
-			expect(result.excluded).toBe(true);
-		} finally {
-			rmSync(home, { recursive: true, force: true });
-			rmSync(stubDir, { recursive: true, force: true });
-		}
-	});
+	dedicatedTest(
+		"not-owned-file-invalid",
+		(shell) => {
+			const home = tempHome();
+			const stubDir = mkdtempSync(join(tmpdir(), "ap-stub-id-"));
+			try {
+				const realId = execFileSync("which", ["id"], { encoding: "utf-8" }).trim();
+				const stubPath = join(stubDir, "id");
+				writeFileSync(
+					stubPath,
+					`#!/bin/sh\nif [ "$1" = "-u" ]; then echo 999999; exit 0; fi\nexec "${realId}" "$@"\n`,
+				);
+				chmodSync(stubPath, 0o755);
+				writeRulesFile(home, "/a/work\n");
+				const result = runShell(shell, home, home, undefined, {
+					PATH: `${stubDir}:${process.env.PATH ?? ""}`,
+				});
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toBe("");
+				expect(result.excluded).toBe(true);
+			} finally {
+				rmSync(home, { recursive: true, force: true });
+				rmSync(stubDir, { recursive: true, force: true });
+			}
+		},
+		{ needsPathStubs: true },
+	);
 
 	// The rules file below is owned by this process (so the file's own
 	// owner check passes); only the DIRECTORY's reported owner is faked,
 	// by a stub `ls` that rewrites the uid column when asked about a
 	// directory. Proves the directory owner check is its own refusal.
 	for (const shell of SHELLS) {
-		test(`.agentpulse directory owned by someone else is invalid [${shell.name}]`, () => {
+		stubTest(shell, ".agentpulse directory owned by someone else is invalid", () => {
 			const home = tempHome();
 			const stubDir = mkdtempSync(join(tmpdir(), "ap-stub-ls-"));
 			try {
@@ -1156,7 +1202,7 @@ describe("exclude-shim-parity — `ls` output is parsed strictly and the call ca
 			expectExcluded: boolean,
 			env: Record<string, string> = {},
 		) =>
-			test(`${label} [${shell.name}]`, () => {
+			stubTest(shell, label, () => {
 				const home = tempHome();
 				const stubDir = mkdtempSync(join(tmpdir(), "ap-stub-ls-"));
 				try {
@@ -1186,7 +1232,7 @@ describe("exclude-shim-parity — `ls` output is parsed strictly and the call ca
 
 		// A GNU-style ls that honours the block-size variables for `-l` sizes:
 		// the snippet must pin them, or a 64 KiB + 1 file reads as small.
-		test(`block-size variables in the environment can't shrink the size [${shell.name}]`, () => {
+		stubTest(shell, "block-size variables in the environment can't shrink the size", () => {
 			const home = tempHome();
 			const stubDir = mkdtempSync(join(tmpdir(), "ap-stub-ls-"));
 			try {
@@ -1216,7 +1262,7 @@ describe("exclude-shim-parity — `ls` output is parsed strictly and the call ca
 
 describe("exclude-shim-parity — owner checks are separate refusals", () => {
 	for (const shell of SHELLS) {
-		test(`a stub that changes only the FILE's reported owner refuses [${shell.name}]`, () => {
+		stubTest(shell, "a stub that changes only the FILE's reported owner refuses", () => {
 			const home = tempHome();
 			const stubDir = mkdtempSync(join(tmpdir(), "ap-stub-ls-"));
 			try {
@@ -1235,22 +1281,26 @@ describe("exclude-shim-parity — owner checks are separate refusals", () => {
 			}
 		});
 
-		test(`a stub that changes only the DIRECTORY's reported owner refuses and writes no marker [${shell.name}]`, () => {
-			const home = tempHome();
-			const stubDir = mkdtempSync(join(tmpdir(), "ap-stub-ls-"));
-			try {
-				writeRulesFile(home, "/a/work\n");
-				stubLs(stubDir, "dir", "$3 = 999999");
-				const result = runShell(shell, home, home, undefined, {
-					PATH: `${stubDir}:${process.env.PATH ?? ""}`,
-				});
-				expect(result.excluded).toBe(true);
-				expect(existsSync(join(agentpulseDir(home), "exclude.invalid"))).toBe(false);
-			} finally {
-				rmSync(home, { recursive: true, force: true });
-				rmSync(stubDir, { recursive: true, force: true });
-			}
-		});
+		stubTest(
+			shell,
+			"a stub that changes only the DIRECTORY's reported owner refuses and writes no marker",
+			() => {
+				const home = tempHome();
+				const stubDir = mkdtempSync(join(tmpdir(), "ap-stub-ls-"));
+				try {
+					writeRulesFile(home, "/a/work\n");
+					stubLs(stubDir, "dir", "$3 = 999999");
+					const result = runShell(shell, home, home, undefined, {
+						PATH: `${stubDir}:${process.env.PATH ?? ""}`,
+					});
+					expect(result.excluded).toBe(true);
+					expect(existsSync(join(agentpulseDir(home), "exclude.invalid"))).toBe(false);
+				} finally {
+					rmSync(home, { recursive: true, force: true });
+					rmSync(stubDir, { recursive: true, force: true });
+				}
+			},
+		);
 	}
 });
 
@@ -1259,7 +1309,7 @@ describe("exclude-shim-parity — stderr stays empty whatever an external utilit
 	// proves each external call carries its own stderr redirect, rather
 	// than relying on provoking a real failure.
 	for (const shell of SHELLS) {
-		test(`noisy id, ls and rm [${shell.name}]`, () => {
+		stubTest(shell, "noisy id, ls and rm", () => {
 			const home = tempHome();
 			const stubDir = mkdtempSync(join(tmpdir(), "ap-stub-noisy-"));
 			try {
