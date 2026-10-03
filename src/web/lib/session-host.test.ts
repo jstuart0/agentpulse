@@ -30,7 +30,7 @@ describe("sessionHostLabel", () => {
 		expect(label?.srText).toBe("Reported machine: alice-mbp");
 	});
 
-	test("a list row (no managed session loaded) uses the reported host", () => {
+	test("a list row from an older server (no machine field, no managed session) uses the reported host", () => {
 		expect(sessionHostLabel({ reportedHost: "box" })?.text).toBe("on box");
 	});
 
@@ -53,5 +53,43 @@ describe("sessionHostLabel", () => {
 		const label = sessionHostLabel({ reportedHost: "<b>x</b>" });
 		expect(label?.name).toBe("<b>x</b>");
 		expect(label?.text).toBe("on <b>x</b>");
+	});
+});
+
+describe("sessionHostLabel on a row that carries the server's machine", () => {
+	test("a supervisor-launched session's card shows its supervisor's host, the one the filter and grouping use", () => {
+		const label = sessionHostLabel({ machine: "build-01", reportedHost: "some-laptop" });
+		expect(label).toMatchObject({ source: "supervisor", name: "build-01", text: "on build-01" });
+		expect(label?.title).not.toContain("some-laptop");
+	});
+
+	test("when the machine is the reported name, it is labelled as reported", () => {
+		const label = sessionHostLabel({ machine: "alice-mbp", reportedHost: "  alice-mbp " });
+		expect(label).toMatchObject({ source: "reported", name: "alice-mbp" });
+	});
+
+	test("a supervisor host with nothing reported is still the supervisor's", () => {
+		expect(sessionHostLabel({ machine: "edge-02", reportedHost: null })?.source).toBe("supervisor");
+	});
+
+	test("no machine means no label, even if a stale reported name is still on the row", () => {
+		expect(sessionHostLabel({ machine: null, reportedHost: "stale" })).toBeNull();
+		expect(sessionHostLabel({ machine: "  ", reportedHost: null })).toBeNull();
+	});
+
+	test("the label always names what the filter would select: a name, trimmed, or nothing", () => {
+		for (const machine of ["build-01", "  build-01  ", null, "", "  "]) {
+			const label = sessionHostLabel({ machine, reportedHost: "other" });
+			expect(label?.name ?? null).toBe(machine?.trim() || null);
+		}
+	});
+
+	test("the detail view's loaded managed session still wins over a machine carried on the row", () => {
+		const label = sessionHostLabel({
+			managedSession: { hostName: "detail-host" },
+			machine: "row-host",
+			reportedHost: "r",
+		});
+		expect(label?.name).toBe("detail-host");
 	});
 });
