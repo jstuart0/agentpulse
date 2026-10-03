@@ -187,14 +187,24 @@ fi
 
 # Look up the AgentPulse display name from the local relay. It's server data,
 # so control characters are stripped before it reaches the terminal.
+# The ask is for the name only (?fields=displayName): a few dozen bytes however
+# long the session is, instead of the whole session detail (megabytes on a long
+# one, which timed out and left the session id on the line). A server that
+# predates that answers the whole detail, which holds the same
+# .session.displayName, so nothing else has to change for it.
 # The answer's status code is kept (curl -f would hide a 404's body): a relay that
 # refuses an excluded session says so locally with 404 {"error":"excluded"}, and
 # then nothing more is asked about the session, including the name push below.
 # A 404 {"error":"unknown_session"} only means the relay has never seen the id.
+# The last name seen for the session is kept in cache/name-<id>, used only when
+# the lookup itself fails (no answer in time, a server error): a miss, an
+# unknown session and an excluded one never show a remembered name.
 NAME=""
 EXCLUDED_BY_RELAY=false
+NAME_CACHE_FILE=""
 if [ -n "$SAFE_ID" ]; then
-  LOOKUP=$(curl -s -m 1 -w '\n%{http_code}' "http://localhost:${AGENTPULSE_PORT}/api/v1/sessions/${SAFE_ID}" 2>/dev/null)
+  NAME_CACHE_FILE="$AGENTPULSE_DIR/cache/name-$SAFE_ID"
+  LOOKUP=$(curl -s -m 1 -w '\n%{http_code}' "http://localhost:${AGENTPULSE_PORT}/api/v1/sessions/${SAFE_ID}?fields=displayName" 2>/dev/null)
   LOOKUP_CODE="${LOOKUP##*$'\n'}"
   LOOKUP_BODY="${LOOKUP%$'\n'*}"
   if [ "$LOOKUP_CODE" = "404" ] && [ "$(printf '%s' "$LOOKUP_BODY" | jq -r '.error // ""' 2>/dev/null)" = "excluded" ]; then
@@ -202,6 +212,16 @@ if [ -n "$SAFE_ID" ]; then
     SAFE_ID=""
   elif [ "$LOOKUP_CODE" = "200" ]; then
     NAME=$(printf '%s' "$LOOKUP_BODY" | jq -r '.session.displayName // ""' 2>/dev/null | tr -d '\000-\037\177')
+    if [ -n "$NAME" ] && [ "$NAME" != "null" ]; then
+      REMEMBERED=""
+      [ -f "$NAME_CACHE_FILE" ] && REMEMBERED=$(cat "$NAME_CACHE_FILE" 2>/dev/null)
+      if [ "$NAME" != "$REMEMBERED" ]; then
+        { mkdir -p "$AGENTPULSE_DIR/cache" && printf '%s' "$NAME" > "$NAME_CACHE_FILE"; } 2>/dev/null
+      fi
+    fi
+  elif [ "$LOOKUP_CODE" != "404" ] && [ -f "$NAME_CACHE_FILE" ]; then
+    # No answer in time, a server error, anything but a clear "no such session".
+    NAME=$(head -n 1 "$NAME_CACHE_FILE" 2>/dev/null | tr -d '\000-\037\177')
   fi
 fi
 if [ "$EXCLUDED_BY_RELAY" = true ] && [ -z "$EXCLUDE_LINE" ] && relay_covers_this_session; then
