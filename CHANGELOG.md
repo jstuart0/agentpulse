@@ -7,6 +7,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-03
+
 ### Added
 
 - **Team mode and user ownership (AGEN-64).** An install now runs in one of
@@ -494,6 +496,38 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   empty or whitespace-only value would collide across installs. The server
   now refuses to boot with a clear error if the configured provider is
   invalid.
+
+### Deprecated
+
+- The following aliases were scheduled for removal in this release. They
+  remain supported in 0.7.0 and **will be removed in v0.8.0**. Migrate now:
+  - `AGENTPULSE_AUTHENTIK_TRUST_SECRET` env var → use `FORWARDAUTH_TRUST_SECRET`.
+  - `agentpulse-strip-client-authentik` Traefik middleware → use
+    `agentpulse-strip-client-forwardauth`.
+  - `deploy/k8s/AUTHENTIK-FORWARDAUTH.md` → see `deploy/k8s/FORWARDAUTH.md`.
+  - The `"authentik"` auth-source value → `"forwardauth"`.
+
+### Upgrade notes
+
+- **Migrations run at boot and are additive.** SQLite `0005`–`0008` and
+  Postgres `0005`–`0009` apply automatically on first start. Nothing is
+  dropped or rewritten.
+- **Postgres owner index.** Postgres `0007` builds
+  `idx_sessions_owner_last_activity` without `CONCURRENTLY`, which takes a
+  `SHARE` lock on `sessions` while it builds, so hook writes wait. On a
+  large table, pre-create it first with `CREATE INDEX CONCURRENTLY IF NOT
+  EXISTS`; the migration then skips it. See `deploy/overlays/postgres/README.md`.
+  The `pg_trgm` search indexes (`0006`) have their own out-of-band path in
+  `deploy/k8s/README.md` ("Upgrading to migration 0006").
+- **The instance stays in solo mode until you switch it.** Upgrading does
+  not turn on team mode; an admin switches it in Settings → Team, or set
+  `AGENTPULSE_MODE`.
+- **Re-run relay setup on each machine** to pick up the current relay and
+  hook shape (`setup-relay.sh`; re-running is safe and keeps your key and
+  port). **Re-approve the Codex hooks** afterwards: the hook command
+  changed, so Codex asks you to trust it again (`/hooks` inside Codex).
+- **Exclude rule on Windows.** The PowerShell support for the exclude rule
+  has not been tested on Windows.
 
 ## [0.6.0] — 2026-09-29
 

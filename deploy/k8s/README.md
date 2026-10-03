@@ -833,7 +833,7 @@ The base manifests include four Traefik middlewares for SSO in `06-middleware.ya
 | Middleware | Role |
 |---|---|
 | `agentpulse-strip-client-forwardauth` | Strips any client-supplied IdP headers before forwardauth runs |
-| `agentpulse-strip-client-authentik` | **Deprecated alias** — same spec; kept until v0.7.0 so existing overlays referencing the old name continue to work. Removed next release. |
+| `agentpulse-strip-client-authentik` | **Deprecated alias** — same spec; kept until v0.8.0 so existing overlays referencing the old name continue to work. Removed in v0.8.0. |
 | `agentpulse-forwardauth` | IdP validates the session and injects identity headers |
 | `agentpulse-inject-verify` | Traefik adds the `FORWARDAUTH_TRUST_SECRET` as a verify header after forwardauth passes |
 

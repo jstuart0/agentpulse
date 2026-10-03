@@ -92,7 +92,7 @@ spec:
               # Optional so local-auth-only deployments can boot without it
               # (the trust gate just falls through and other auth methods are tried).
               optional: true
-        # DEPRECATED: removed in v0.7.0; use FORWARDAUTH_TRUST_SECRET going forward.
+        # DEPRECATED: removed in v0.8.0; use FORWARDAUTH_TRUST_SECRET going forward.
         # Bound to the same secret key as FORWARDAUTH_TRUST_SECRET for one-release back-compat.
         # Operators using the legacy env var name continue to work without any secret changes.
         - name: AGENTPULSE_AUTHENTIK_TRUST_SECRET

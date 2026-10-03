@@ -442,7 +442,7 @@ upgrading without env changes see identical behaviour.
 
 | Variable | Default | Description |
 |---|---|---|
-| `FORWARDAUTH_TRUST_SECRET` | _(empty)_ | Shared secret for the header trust gate. Generate with `openssl rand -hex 32`. Also accepts the deprecated alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` until v0.7.0. |
+| `FORWARDAUTH_TRUST_SECRET` | _(empty)_ | Shared secret for the header trust gate. Generate with `openssl rand -hex 32`. Also accepts the deprecated alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` until v0.8.0. |
 | `FORWARDAUTH_PROVIDER` | `authentik` | Provider label (used in `/auth/me` response and dashboard UI). Free-form string; only `"authentik"` triggers the Authentik sign-out URL. |
 | `FORWARDAUTH_HEADER_USERNAME` | `X-Authentik-Username` | Header carrying the authenticated username. |
 | `FORWARDAUTH_HEADER_EMAIL` | `X-Authentik-Email` | Header carrying the authenticated email address. |
@@ -456,7 +456,7 @@ upgrading without env changes see identical behaviour.
 
 The deployment manifest (`04-deployment.yaml`) also binds the deprecated
 `AGENTPULSE_AUTHENTIK_TRUST_SECRET` env var to the same secret key as
-`FORWARDAUTH_TRUST_SECRET` until v0.7.0. Operators rotating their secret update
+`FORWARDAUTH_TRUST_SECRET` until v0.8.0. Operators rotating their secret update
 one Kubernetes Secret field; both env vars receive the new value.
 
 The `agentpulse-config` ConfigMap (`02-configmap.yaml`) includes all eight
@@ -493,7 +493,7 @@ The env var binding in `04-deployment.yaml` picks this up automatically
 (`optional: true` so existing installs without the key configured continue to boot
 — the trust gate is simply not active until the secret is present).
 
-The deprecated key name `AGENTPULSE_AUTHENTIK_TRUST_SECRET` also works until v0.7.0 and is bound to the same secret field in `04-deployment.yaml`.
+The deprecated key name `AGENTPULSE_AUTHENTIK_TRUST_SECRET` also works until v0.8.0 and is bound to the same secret field in `04-deployment.yaml`.
 
 ### Step 3 — Inject the secret into the Traefik middleware
 
