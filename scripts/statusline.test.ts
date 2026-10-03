@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 const SCRIPT = join(import.meta.dir, "statusline.sh");
 
-type Recorded = { method: string; path: string; body: string };
+type Recorded = { method: string; path: string; search: string; body: string };
 
 let tmp: string;
 let requests: Recorded[];
@@ -22,7 +22,7 @@ let healthRelay: boolean | null;
 /** Whether the stub's health answer carries the field that says the relay enforces exclude rules (an older relay has none). */
 let healthEnforces: boolean | undefined;
 /** What the stub's session lookup answers: normally, with the relay's local 404 {error:"excluded"} or {error:"unknown_session"}, or with a plain 404. */
-let sessionLookup: "ok" | "excluded" | "unknown" | "missing";
+let sessionLookup: "ok" | "excluded" | "unknown" | "missing" | "full" | "error" | "slow";
 let server: ReturnType<typeof Bun.serve>;
 
 beforeEach(async () => {
@@ -38,7 +38,7 @@ beforeEach(async () => {
 		async fetch(req) {
 			const url = new URL(req.url);
 			const body = req.method === "GET" ? "" : await req.text();
-			requests.push({ method: req.method, path: url.pathname, body });
+			requests.push({ method: req.method, path: url.pathname, search: url.search, body });
 			if (req.method === "GET" && url.pathname === "/api/v1/health") {
 				return healthRelay === null
 					? new Response("not found", { status: 404 })
@@ -53,6 +53,21 @@ beforeEach(async () => {
 					return Response.json({ error: "excluded" }, { status: 404 });
 				if (sessionLookup === "missing")
 					return Response.json({ error: "not found" }, { status: 404 });
+				if (sessionLookup === "unknown")
+					return Response.json({ error: "unknown_session" }, { status: 404 });
+				if (sessionLookup === "error") return Response.json({ error: "down" }, { status: 502 });
+				if (sessionLookup === "slow") {
+					await new Promise((resolve) => setTimeout(resolve, 1600));
+					return Response.json({ session: { displayName: serverDisplayName } });
+				}
+				// a server that predates the name-only read: the whole detail, whatever the query
+				if (sessionLookup === "full") {
+					return Response.json({
+						session: { sessionId: "x", displayName: serverDisplayName, agentType: "claude_code" },
+						events: [{ id: 1, eventType: "PostToolUse" }],
+						controlActions: [],
+					});
+				}
 				return Response.json({ session: { displayName: serverDisplayName } });
 			}
 			if (req.method === "PUT" && url.pathname.endsWith("/native-name")) {
@@ -869,5 +884,101 @@ describe("statusline.sh — against a real relay with rules", () => {
 		const { stdout } = await runAgainst(live.port, { AGENTPULSE_SKIP: "1" });
 		expect(stripAnsi(stdout)).not.toContain("not reported");
 		expect(stripAnsi(stdout)).toContain("direct mode");
+	});
+});
+
+describe("statusline.sh — the name lookup is the small read", () => {
+	const INPUT = {
+		session_id: "abc123",
+		model: { display_name: "Opus" },
+		context_window: { used_percentage: 10 },
+	};
+	const lookups = () =>
+		requests.filter((r) => r.method === "GET" && r.path.startsWith("/api/v1/sessions/"));
+	const shownName = (stdout: string) => stdout.replace(/\x1b\[[0-9;]*m/g, "");
+
+	test("it asks for the name only: ?fields=displayName on the session path, once", async () => {
+		const { stdout } = await run(INPUT);
+		// If the script still asked for the whole detail, search would be empty.
+		expect(lookups().map((r) => `${r.path}${r.search}`)).toEqual([
+			"/api/v1/sessions/abc123?fields=displayName",
+		]);
+		expect(shownName(stdout)).toContain("brave-falcon");
+	});
+
+	test("a server that predates the read answers the whole detail: the name still shows, with no second request", async () => {
+		sessionLookup = "full";
+		const { stdout } = await run(INPUT);
+		expect(shownName(stdout)).toContain("brave-falcon");
+		expect(lookups()).toHaveLength(1);
+	});
+
+	test("found: the name is remembered; unknown and excluded: it is not shown and no remembered name is used", async () => {
+		await run(INPUT);
+		expect(await readFile(join(agentpulseDir(), "cache", "name-abc123"), "utf-8")).toBe(
+			"brave-falcon",
+		);
+		for (const mode of ["unknown", "excluded", "missing"] as const) {
+			sessionLookup = mode;
+			const { stdout } = await run(INPUT);
+			expect({ mode, line: shownName(stdout).includes("brave-falcon") }).toEqual({
+				mode,
+				line: false,
+			});
+			expect(shownName(stdout)).toContain("abc123".slice(0, 8));
+		}
+	});
+
+	test("the lookup failing (a server error, or no answer in time) shows the last name seen for this session, not the id", async () => {
+		await run(INPUT);
+		for (const mode of ["error", "slow"] as const) {
+			sessionLookup = mode;
+			const { stdout } = await run(INPUT);
+			expect({ mode, name: shownName(stdout).includes("brave-falcon") }).toEqual({
+				mode,
+				name: true,
+			});
+		}
+		server.stop(true);
+		const { stdout } = await run(INPUT);
+		expect(shownName(stdout)).toContain("brave-falcon");
+	});
+
+	test("a lookup that fails for a session never seen shows the id, as before", async () => {
+		sessionLookup = "error";
+		const { stdout } = await run(INPUT);
+		expect(shownName(stdout)).toContain("abc123");
+		expect(shownName(stdout)).not.toContain("brave-falcon");
+	});
+
+	test("a name that changed replaces the remembered one; one that didn't isn't rewritten", async () => {
+		await run(INPUT);
+		const file = join(agentpulseDir(), "cache", "name-abc123");
+		const before = (await Bun.file(file).stat()).mtimeMs;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await run(INPUT);
+		expect((await Bun.file(file).stat()).mtimeMs).toBe(before);
+		serverDisplayName = "renamed-otter";
+		await run(INPUT);
+		expect(await readFile(file, "utf-8")).toBe("renamed-otter");
+	});
+
+	test("a remembered name with control characters can't break the line, and an unsafe id never reaches the cache", async () => {
+		await mkdir(join(agentpulseDir(), "cache"), { recursive: true });
+		await writeFile(join(agentpulseDir(), "cache", "name-abc123"), "evil\u001b[2Jname\nsecond");
+		sessionLookup = "error";
+		const { stdout } = await run(INPUT);
+		expect(stdout.trimEnd().split("\n")).toHaveLength(1);
+		expect(stdout).not.toContain("\u001b[2J");
+		await run({ ...INPUT, session_id: "../../etc/x" });
+		expect((await readdir(agentpulseDir())).filter((n) => n.includes("etc"))).toEqual([]);
+	});
+
+	test("with AGENTPULSE_SKIP set nothing is asked and no remembered name is read or written", async () => {
+		await run(INPUT, { AGENTPULSE_SKIP: "1" });
+		expect(lookups()).toEqual([]);
+		await rm(join(agentpulseDir(), "cache"), { recursive: true, force: true });
+		await run(INPUT, { AGENTPULSE_SKIP: "1" });
+		expect(await readdir(agentpulseDir()).catch(() => [])).not.toContain("cache");
 	});
 });
