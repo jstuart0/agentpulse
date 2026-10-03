@@ -58,7 +58,11 @@ import { toSessionEventDtos } from "../services/event-dto.js";
 import { notifySessionUpdated } from "../services/notifier.js";
 import { readServiceKeyLists } from "../services/service-key-lists.js";
 import { isServiceKeyRow } from "../services/service-keys.js";
-import { type SessionDetailRead, getSessionDetail } from "../services/session-detail.js";
+import {
+	type SessionDetailRead,
+	getSessionDetail,
+	getSessionName,
+} from "../services/session-detail.js";
 import { changeSessionOwner } from "../services/session-owner-admin.js";
 import {
 	type SessionListField,
@@ -508,8 +512,31 @@ sessionsRouter.get("/sessions/stats", async (c) => {
 });
 
 // GET /api/v1/sessions/:sessionId - Session detail
+/** The one projection the detail serves: the status line's name lookup. */
+const SESSION_DETAIL_FIELDS = ["displayName"] as const;
+
 sessionsRouter.get("/sessions/:sessionId", async (c: Context) => {
 	const sessionId = c.req.param("sessionId");
+
+	// `?fields=displayName`: the sessions row's name and nothing else (no events,
+	// no timeline), so a caller that asks on every render gets a small, fast
+	// answer however long the session is. The shape is a subset of the detail's
+	// (`{ session: { sessionId, displayName } }`), so a client asking a server that
+	// predates this (which ignores the parameter) still finds the name.
+	const rawFields = c.req.query("fields");
+	if (rawFields !== undefined) {
+		const invalid = rawFields
+			.split(",")
+			.map((field) => field.trim())
+			.find((field) => !(SESSION_DETAIL_FIELDS as readonly string[]).includes(field));
+		if (invalid !== undefined) {
+			return c.json({ error: "invalid_field", value: echoed(invalid) }, 400);
+		}
+		const named = await getSessionName(sessionId);
+		if (!named) return c.json({ error: "Session not found" }, 404);
+		return c.json({ session: named });
+	}
+
 	const detail = await getSessionDetail(sessionId);
 
 	if (!detail) {
