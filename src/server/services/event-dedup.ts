@@ -36,6 +36,13 @@ export interface HookDeliveryContext {
 	 * attribution at all — the same as a DISABLE_AUTH caller.
 	 */
 	attribution?: { ownerUserId: string | null; ingestKeyId: string | null };
+	/**
+	 * The machine name the sender reported in X-AgentPulse-Host, already decoded and
+	 * cleaned (parseReportedHostHeader). Display only and unauthenticated: the
+	 * processor stores it on the session and nothing else may read it for a
+	 * decision. Null/omitted when the sender sent none.
+	 */
+	reportedHost?: string | null;
 }
 
 export type DedupPolicy =

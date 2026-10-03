@@ -1122,6 +1122,10 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		// legacy init path.
 		"ALTER TABLE sessions ADD COLUMN last_agent_turn_completed_at TEXT",
 		"ALTER TABLE sessions ADD COLUMN last_user_acknowledged_at TEXT",
+		// The machine a relay or the Codex observer reported (display only,
+		// unauthenticated). Mirrors the drizzle migrations for installs on the
+		// legacy init path.
+		"ALTER TABLE sessions ADD COLUMN reported_host TEXT",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

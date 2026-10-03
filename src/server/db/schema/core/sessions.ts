@@ -66,6 +66,13 @@ export const sessionsSqlite = sqliteTable(
 		// ISO strings; rows predating the columns stay null.
 		lastAgentTurnCompletedAt: text("last_agent_turn_completed_at"),
 		lastUserAcknowledgedAt: text("last_user_acknowledged_at"),
+		/**
+		 * The machine name a relay or the Codex observer reported for this session (display only).
+		 * Self-declared by the sender, so it is unauthenticated: never use it for ownership, access
+		 * or routing. Null when nothing reported one (direct-mode hooks send none). A managed
+		 * session's real host is managed_sessions.host_name, not this.
+		 */
+		reportedHost: text("reported_host"),
 	},
 	(t) => ({
 		agentTypeLastActivity: index(AGENT_TYPE_LAST_ACTIVITY_INDEX).on(t.agentType, t.lastActivityAt),
@@ -112,6 +119,7 @@ export const sessionsPg = pgTable(
 		ingestKeyId: pgText("ingest_key_id"),
 		lastAgentTurnCompletedAt: pgText("last_agent_turn_completed_at"),
 		lastUserAcknowledgedAt: pgText("last_user_acknowledged_at"),
+		reportedHost: pgText("reported_host"),
 	},
 	(t) => ({
 		agentTypeLastActivity: pgIndex(AGENT_TYPE_LAST_ACTIVITY_INDEX).on(

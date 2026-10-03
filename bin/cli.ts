@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { userInfo } from "node:os";
 import { join, resolve } from "node:path";
+import { installCodexHooksFile } from "../src/shared/codex-hooks-install.js";
 import { addExcludeRule } from "../src/shared/exclude-rules-write.js";
 import {
 	type ExcludeDecisionReason,
@@ -235,7 +236,12 @@ async function setup() {
 	// $CODEX_HOME/hooks.json — a project-level .codex/hooks.json is never read.
 
 	const codexDir = process.env.CODEX_HOME || join(home, ".codex");
-	mkdirSync(codexDir, { recursive: true });
+	let codexDirError: string | null = null;
+	try {
+		mkdirSync(codexDir, { recursive: true });
+	} catch (err) {
+		codexDirError = err instanceof Error ? err.message : String(err);
+	}
 
 	// D13 (F49): a direct installer with no --key, against a server that
 	// requires auth, refuses before writing any command hooks.
@@ -311,30 +317,29 @@ async function setup() {
 			`buildCodexHooksFile() event set drifted from the expected ${codexEvents.length} CodexEvent members`,
 		);
 	}
-	const unchanged =
-		existsSync(codexHooksPath) && readFileSync(codexHooksPath, "utf-8") === newCodexHooksJson;
-	if (unchanged) {
+	const codexResult = codexDirError
+		? ({
+				status: "skipped",
+				message: `Codex hooks not updated: ${codexDir} could not be created (${codexDirError}). To add the AgentPulse hooks, fix that directory and run agentpulse setup again.`,
+			} as const)
+		: installCodexHooksFile(codexHooksPath, newCodexHooksJson);
+	if (codexResult.status === "unchanged") {
 		console.log("  ✓ Codex hooks unchanged — no re-trust needed");
+	} else if (codexResult.status === "refused-symlink") {
+		console.error(`  ✗ refusing to write through a symlink: ${codexHooksPath}`);
+		process.exit(1);
+	} else if (codexResult.status === "skipped") {
+		console.error(`  ! ${codexResult.message}`);
 	} else {
-		const hadHooks = existsSync(codexHooksPath);
-		if (hadHooks) {
-			const stamp = new Date()
-				.toISOString()
-				.replace(/[-:]/g, "")
-				.replace(/\.\d{3}Z$/, "Z");
-			const backupPath = `${codexHooksPath}.agentpulse-bak.${stamp}`;
-			// F232: never write through a symlink at the destination or the
-			// backup path — see src/shared/private-file.ts.
-			writeConfigFileSyncNoFollow(backupPath, readFileSync(codexHooksPath, "utf-8"));
-			console.log(`  ✓ Backed up existing Codex hooks to ${backupPath}`);
+		if (codexResult.backupPath) {
+			console.log(`  ✓ Backed up existing Codex hooks to ${codexResult.backupPath}`);
 		}
-		writeConfigFileSyncNoFollow(codexHooksPath, newCodexHooksJson);
 		console.log(`  ✓ Codex CLI hooks  → ${codexHooksPath}`);
 		console.log(
 			"    Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks.",
 		);
 		console.log("    Re-trust after changing the AgentPulse URL or port.");
-		codexHooksWritten = hadHooks ? "updated" : "new";
+		codexHooksWritten = codexResult.hadFile ? "updated" : "new";
 	}
 	console.log(`    ${EXCLUDE_CHECK_HINT}`);
 	// D12: codex_hooks is a deprecated (but still-working) legacy alias for

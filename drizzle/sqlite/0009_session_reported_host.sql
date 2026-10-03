@@ -1,0 +1,1 @@
+ALTER TABLE `sessions` ADD `reported_host` text;

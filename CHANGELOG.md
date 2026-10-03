@@ -7,6 +7,47 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-10-03
+
+Ideas from a fork by @flexi767 (https://github.com/flexi767/agentpulse); re-implemented here.
+
+### Added
+
+- **Resumed Codex sessions are followed.** The supervisor's Codex observer now
+  picks up a rollout file that was written to recently wherever it sits under
+  `~/.codex/sessions`, so a session resumed from an older date directory is
+  tracked instead of silently ignored. A long-dormant session that wakes up is
+  discovered within about ten minutes. A resumed file seen for the first time
+  is followed from its first line written in the last 15 minutes, not replayed
+  from the start; if no recent timestamp is found it is followed from its end.
+  The exclude rules are applied before anything is posted.
+  `AGENTPULSE_CODEX_RESUME_WINDOW_HOURS` (default 24, `0` turns it off) sets how
+  recently a file must have been written.
+- **The Codex observer replays in bounded passes.** Each scan reads at most
+  1 MiB and 500 lines per file and carries on from where it stopped on the next
+  scan, and a scan never overlaps the one before it, so a large or long backlog
+  can no longer stall the supervisor.
+- **Codex hook setup merges into an existing `hooks.json`.** The setup scripts
+  add AgentPulse's hooks alongside the ones already there instead of replacing
+  the file, and refuse to touch a file they cannot reproduce exactly. On
+  Windows the merge needs PowerShell 7.2 or later; on Windows PowerShell 5.1 an
+  existing file is left alone and the installer says so. The Windows path has
+  never been run on Windows.
+- **Which machine a session runs on, for observed sessions too.** The relay and
+  the supervisor's Codex observer now name their machine in an
+  `X-AgentPulse-Host` header on the hooks they forward, and the server keeps it
+  on the session (`reportedHost`, a new nullable column; two migrations). The
+  session detail header and dashboard cards show it as "on <machine>", and the
+  Overview labels it "Reported host". It is display only and self-declared, so
+  nothing treats it as proof and no permission check reads it; a
+  supervisor-launched session still shows its supervisor's host. Direct-mode
+  hooks send nothing and show no host.
+
+### Upgrade notes
+
+- Migrations run at boot and only add one nullable column (`sessions.reported_host`; SQLite 0009, Postgres 0010).
+- Re-run the relay setup on each machine to get the relay that reports its machine name. Codex hooks are merged into an existing `~/.codex/hooks.json`; Codex may ask you to re-approve them.
+
 ## [0.7.0] — 2026-10-03
 
 ### Added

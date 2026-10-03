@@ -8,6 +8,7 @@ import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
 import type { OwnerChipModel } from "../../lib/owner-chip.js";
 import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/ownership-ui.js";
+import { sessionHostLabel } from "../../lib/session-host.js";
 import { formatDuration } from "../../lib/utils.js";
 import { type AckActionKind, ackActionLabel } from "../../pages/dashboard-view-state.js";
 import { useLabsStore } from "../../stores/labs-store.js";
@@ -15,6 +16,7 @@ import { useProjectsStore } from "../../stores/projects-store.js";
 import { useUserStore } from "../../stores/user-store.js";
 import { AgentTypeBadge } from "../AgentTypeBadge.js";
 import { OwnerChip } from "../OwnerChip.js";
+import { SessionHostTag } from "../SessionHostTag.js";
 import { StatusBadge } from "../StatusBadge.js";
 import { InlineRename } from "./InlineRename.js";
 import { SessionOverflowMenu } from "./SessionOverflowMenu.js";
@@ -124,6 +126,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 
 	const canStop =
 		session.agentType === "codex_cli" && session.managedSession?.managedState === "managed";
+	const hostLabel = sessionHostLabel(session);
 
 	return (
 		<div
@@ -187,6 +190,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 							<OwnerChip chip={props.ownerChip} widthClass="max-w-[16rem]" />
 						</span>
 					)}
+					{hostLabel && <SessionHostTag label={hostLabel} className="max-w-[16rem]" />}
 					{session.gitBranch && (
 						<span className="hidden md:inline text-[10px] font-mono text-[hsl(var(--working-text))] dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">
 							{session.gitBranch}

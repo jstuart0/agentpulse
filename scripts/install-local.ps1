@@ -838,7 +838,7 @@ function New-ApHookCommand {
 # asked to approve them again. Never executed on Windows by anything in this change.
 function ConvertTo-ApHooksJson {
   param([Parameter(Mandatory = $true)][object]$Data)
-  $json = $Data | ConvertTo-Json -Depth 20
+  $json = $Data | ConvertTo-Json -Depth 100
   $json = [regex]::Replace($json, '\\u(0027|003c|003e|0026)', { param($m) [string][char][Convert]::ToInt32($m.Groups[1].Value, 16) }, 'IgnoreCase')
   $json = [regex]::Replace($json, '[^\x20-\x7e\r\n]', { param($m) '\u{0:x4}' -f [int][char]$m.Value })
   return $json + "`n"
@@ -863,6 +863,141 @@ function New-ApCodexHooksFile {
   }
   $obj = [ordered]@{ hooks = $hooks }
   return ConvertTo-ApHooksJson -Data $obj
+}
+
+# Merging AgentPulse's Codex hooks into an existing hooks.json (the sh copy is
+# ap_codex_merge_hooks_json, the reference is mergeCodexHooksFile in
+# src/shared/hook-command.ts; scripts/codex-hooks-merge.test.ts holds the
+# markers and the flow to the same text by reading). A handler is AgentPulse's
+# when its "command" contains BOTH /api/v1/hooks?event= and X-Agent-Type; every
+# other handler, event and top-level key stays where it is, in the same order.
+# Duplicate keys in the existing file keep only the last one, in every copy.
+# Returns a hashtable: Status is "changed" (Text is the file to write),
+# "unchanged", "unusable" (Reason says why; the file must be left alone) or
+# "needs-pwsh7" (this PowerShell cannot do the comparison; leave the file alone).
+# An absent or empty file needs no merge and works on every PowerShell.
+#
+# Other tools' bytes are never altered. ConvertFrom-Json changes some values
+# (ISO-date strings become DateTime, large or fractional numbers are re-typed,
+# ConvertTo-Json truncates past its depth), so before anything is written the
+# parsed file is serialised again and compared, through one JSON writer
+# (System.Text.Json), with the original text; any difference at all makes the file
+# unusable. Objects are ordinal-comparer ordered dictionaries, so "Stop" and
+# "stop", or "command" and "Command", never collapse.
+# Never executed on Windows by anything in this change.
+function ConvertTo-ApOrdered {
+  param([AllowNull()]$Value)
+  if ($Value -is [System.Management.Automation.PSCustomObject]) {
+    $o = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
+    foreach ($p in $Value.PSObject.Properties) { $o[$p.Name] = ConvertTo-ApOrdered $p.Value }
+    return $o
+  }
+  if ($Value -is [System.Collections.IList]) {
+    $items = New-Object System.Collections.ArrayList
+    foreach ($i in $Value) { [void]$items.Add((ConvertTo-ApOrdered $i)) }
+    return ,($items.ToArray())
+  }
+  return $Value
+}
+
+# The comparison below needs System.Text.Json.Nodes (.NET 6+, PowerShell 7.2+);
+# Windows PowerShell 5.1 does not have it, and a missing type only fails at the
+# moment it is used. So the types are touched ONLY inside this function and
+# Get-ApCanonicalJson, each within try/catch, and Merge-ApCodexHooksFile asks
+# here first: where this says no, an existing hooks.json is left alone.
+function Test-ApJsonNodesAvailable {
+  $v = $PSVersionTable.PSVersion
+  if ($v.Major -lt 7 -or ($v.Major -eq 7 -and $v.Minor -lt 2)) { return $false }
+  try {
+    [void][System.Text.Json.Nodes.JsonNode]::Parse('{}')
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Get-ApCanonicalJson {
+  param([string]$Text)
+  try { return [System.Text.Json.Nodes.JsonNode]::Parse($Text).ToJsonString() } catch { return $null }
+}
+
+function Test-ApAgentPulseHandler {
+  param([AllowNull()]$Handler)
+  return ($Handler -is [System.Collections.IDictionary]) -and $Handler.Contains('command') -and ($Handler['command'] -is [string]) -and $Handler['command'].Contains('/api/v1/hooks?event=') -and $Handler['command'].Contains('X-Agent-Type')
+}
+
+function Merge-ApCodexHooksFile {
+  param(
+    [AllowNull()][string]$Existing,
+    [Parameter(Mandatory = $true)][string]$Ours
+  )
+  if ($null -eq $Existing -or $Existing.Trim() -eq '') {
+    return @{ Status = 'changed'; Text = $Ours }
+  }
+  if (-not (Test-ApJsonNodesAvailable)) {
+    return @{ Status = 'needs-pwsh7' }
+  }
+  $oursHooks = (ConvertTo-ApOrdered (ConvertFrom-Json $Ours))['hooks']
+  try {
+    $doc = ConvertTo-ApOrdered (ConvertFrom-Json $Existing)
+  } catch {
+    return @{ Status = 'unusable'; Reason = 'is not valid JSON' }
+  }
+  if ($doc -isnot [System.Collections.Specialized.OrderedDictionary]) {
+    return @{ Status = 'unusable'; Reason = 'is not a JSON object' }
+  }
+  if ($doc.Contains('hooks') -and ($doc['hooks'] -isnot [System.Collections.Specialized.OrderedDictionary])) {
+    return @{ Status = 'unusable'; Reason = 'has a "hooks" entry that is not an object' }
+  }
+  $before = ConvertTo-ApHooksJson -Data $doc
+  $canonicalExisting = Get-ApCanonicalJson -Text $Existing
+  if ($null -eq $canonicalExisting -or $canonicalExisting -cne (Get-ApCanonicalJson -Text $before)) {
+    return @{ Status = 'unusable'; Reason = 'has content that cannot be kept exactly as written' }
+  }
+  $hooks = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
+  if ($doc.Contains('hooks')) {
+    foreach ($k in @($doc['hooks'].Keys)) { $hooks[$k] = $doc['hooks'][$k] }
+  }
+  foreach ($event in @($oursHooks.Keys)) {
+    if ($hooks.Contains($event) -and ($hooks[$event] -isnot [System.Array])) {
+      return @{ Status = 'unusable'; Reason = "has a non-list `"$event`" entry" }
+    }
+  }
+  foreach ($event in @($hooks.Keys)) {
+    $groups = $hooks[$event]
+    if ($groups -isnot [System.Array]) { continue }
+    $kept = New-Object System.Collections.ArrayList
+    $slot = -1
+    foreach ($g in $groups) {
+      $handlers = $null
+      if ($g -is [System.Collections.IDictionary] -and $g.Contains('hooks')) { $handlers = $g['hooks'] }
+      $hasOurs = $false
+      if ($handlers -is [System.Array]) {
+        foreach ($h in $handlers) { if (Test-ApAgentPulseHandler -Handler $h) { $hasOurs = $true } }
+      }
+      if (-not $hasOurs) { [void]$kept.Add($g); continue }
+      if ($slot -eq -1) { $slot = $kept.Count }
+      $rest = @($handlers | Where-Object { -not (Test-ApAgentPulseHandler -Handler $_) })
+      if ($rest.Count -gt 0) {
+        $g2 = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
+        foreach ($k in @($g.Keys)) { $g2[$k] = $g[$k] }
+        $g2['hooks'] = $rest
+        [void]$kept.Add($g2)
+      }
+    }
+    $pos = if ($slot -eq -1) { $kept.Count } else { $slot }
+    if ($oursHooks.Contains($event)) {
+      $kept.InsertRange($pos, [object[]]$oursHooks[$event])
+    }
+    if ($kept.Count -gt 0 -or $slot -eq -1) { $hooks[$event] = $kept.ToArray() } else { $hooks.Remove($event) }
+  }
+  foreach ($event in @($oursHooks.Keys)) {
+    if (-not $hooks.Contains($event)) { $hooks[$event] = $oursHooks[$event] }
+  }
+  $doc['hooks'] = $hooks
+  $after = ConvertTo-ApHooksJson -Data $doc
+  if ($after -ceq $before) { return @{ Status = 'unchanged' } }
+  return @{ Status = 'changed'; Text = $after }
 }
 
 # The POSIX `sh` equivalent of New-ApHookCommand, built natively in PowerShell
@@ -1232,27 +1367,56 @@ function Configure-Hooks {
   Install-ApExcludeScripts
 
   $newCodexHooksJson = New-ApCodexHooksFile -BaseUrl $PublicUrl -Direct $true
-  $unchanged = $false
+  $existingCodexHooksJson = $null
+  $codexReadFailed = $false
   if (Test-Path $codexHooksFile) {
-    $existingCodexHooksJson = Get-Content $codexHooksFile -Raw
-    if ($existingCodexHooksJson -eq $newCodexHooksJson) {
-      $unchanged = $true
+    try {
+      $existingCodexHooksJson = Get-Content $codexHooksFile -Raw -ErrorAction Stop
+      if ($null -eq $existingCodexHooksJson) { $existingCodexHooksJson = "" }
+    } catch {
+      $codexReadFailed = $true
     }
   }
-  if ($unchanged) {
-    Write-Step "Codex hooks unchanged — no re-trust needed"
+  $codexSkipTail = "It was left untouched. To add the AgentPulse hooks, fix or move that file and run this installer again."
+  if ($codexReadFailed) {
+    $codexMerge = @{ Status = "unreadable" }
   } else {
-    if (Test-Path $codexHooksFile) {
-      $script:CodexHooksWritten = "updated"
-      $codexBackupFile = "$codexHooksFile.agentpulse-bak.$(Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ')"
-      Write-ApFileNoFollow -Path $codexBackupFile -Content $existingCodexHooksJson
-      Write-Step "Backed up existing Codex hooks to $codexBackupFile"
+    $codexMerge = Merge-ApCodexHooksFile -Existing $existingCodexHooksJson -Ours $newCodexHooksJson
+  }
+  if ($codexMerge.Status -eq "unchanged") {
+    Write-Step "Codex hooks unchanged — no re-trust needed"
+  } elseif (Test-ApReparsePoint -Path $codexHooksFile) {
+    throw "refusing to write through a reparse point: $codexHooksFile"
+  } elseif ($codexMerge.Status -eq "unreadable") {
+    Write-Host "! Codex hooks not updated: $codexHooksFile could not be read. $codexSkipTail"
+  } elseif ($codexMerge.Status -eq "needs-pwsh7") {
+    Write-Host "! Codex hooks not updated: merging needs PowerShell 7.2 or later; $codexHooksFile was left untouched. Install PowerShell 7 and run this installer again."
+  } elseif ($codexMerge.Status -eq "unusable") {
+    Write-Host "! Codex hooks not updated: $codexHooksFile $($codexMerge.Reason). $codexSkipTail"
+  } else {
+    $codexBackupFile = $null
+    try {
+      if ($null -ne $existingCodexHooksJson) {
+        $codexBackupFile = "$codexHooksFile.agentpulse-bak.$(Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ')"
+        Write-ApFileNoFollow -Path $codexBackupFile -Content $existingCodexHooksJson
+      }
+      Write-ApFileNoFollow -Path $codexHooksFile -Content $codexMerge.Text
+      $codexWritten = $true
+    } catch {
+      $codexWritten = $false
+      if ($codexBackupFile) { Remove-Item -LiteralPath $codexBackupFile -Force -ErrorAction SilentlyContinue }
+      Write-Host "! Codex hooks not updated: $codexHooksFile could not be written ($($_.Exception.Message)). $codexSkipTail"
     }
-    Write-ApFileNoFollow -Path $codexHooksFile -Content $newCodexHooksJson
-    Write-Step "Codex CLI hooks configured"
-    Write-Step "Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks."
-    Write-Step "Re-trust after changing the AgentPulse URL or port."
-    if ($script:CodexHooksWritten -ne "updated") { $script:CodexHooksWritten = "new" }
+    if ($codexWritten) {
+      if ($codexBackupFile) {
+        $script:CodexHooksWritten = "updated"
+        Write-Step "Backed up existing Codex hooks to $codexBackupFile"
+      }
+      Write-Step "Codex CLI hooks configured"
+      Write-Step "Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks."
+      Write-Step "Re-trust after changing the AgentPulse URL or port."
+      if ($script:CodexHooksWritten -ne "updated") { $script:CodexHooksWritten = "new" }
+    }
   }
   Write-Step "After editing ~/.agentpulse/exclude by hand, run: agentpulse exclude check"
   # D12: codex_hooks is a deprecated (but still-working) legacy alias for
