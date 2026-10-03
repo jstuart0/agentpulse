@@ -1738,8 +1738,6 @@ async function computeStatsByHost(options?: {
 	};
 	const scratchProjectIds = await scratchProjectIdsFor(filters);
 	const tabs = tabConditions();
-	const tabSum = (condition: SQL) =>
-		sql<number>`COALESCE(SUM(CASE WHEN ${condition} THEN 1 ELSE 0 END), 0)`.mapWith(Number);
 	// Grouped by position, so the expression is written once; the managed table is
 	// joined because every row's machine is needed (a join, not a lookup per row).
 	const grouped = getDb()
