@@ -263,50 +263,131 @@ describe("a switch of machine never lets the old machine's answer land", () => {
 });
 
 describe("useMachineStats: the machines the filter offers", () => {
-	test("asks for every machine, in the owner scope and scratch setting on screen, and hands back the groups", async () => {
+	const answer = (over: Record<string, unknown> = {}) => ({
+		groups: [
+			{ host: "build-01", total: 4, waiting: 1 },
+			{ host: null, total: 1, waiting: 0 },
+		],
+		truncated: false,
+		groupsTruncated: false,
+		otherMachines: 0,
+		otherTotal: 0,
+		ownerScope: { kind: "all" },
+		hostFilter: { kind: "all" },
+		...over,
+	});
+	type Args = { s: DashboardScope | null };
+	const mount = async (s: DashboardScope | null) => {
+		const hook = renderHook<Args, ReturnType<typeof useMachineStats>>(
+			(args) => useMachineStats(args.s),
+			{ s },
+		);
+		await hook.render({ s });
+		await flush();
+		return hook;
+	};
+	let storage: Map<string, string>;
+	beforeEach(() => {
+		storage = new Map();
+		(globalThis as unknown as { localStorage: unknown }).localStorage = {
+			getItem: (k: string) => storage.get(k) ?? null,
+			setItem: (k: string, v: string) => void storage.set(k, v),
+		};
+	});
+
+	test("under Everyone it asks once, about every machine, in the scratch setting on screen, and counts the machines", async () => {
 		client.getStatsByHost = (query: ScopedQuery) => {
 			record("machines", query);
-			return Promise.resolve({
-				groups: [
-					{ host: "build-01", total: 4 },
-					{ host: null, total: 1 },
-				],
-				truncated: false,
-				ownerScope: { kind: "user", userId: ALICE },
-				hostFilter: { kind: "all" },
-			});
+			return Promise.resolve(answer());
 		};
-		const hook = renderHook((args: { s: DashboardScope | null }) => useMachineStats(args.s), {
-			s: scope,
-		});
-		await hook.render({ s: scope });
-		await flush();
+		const hook = await mount({ owner: "all", excludeScratch: true, host: "build-01" });
 		expect(asked).toEqual([
-			{ call: "machines", host: undefined, owner: ALICE, excludeScratch: true },
+			{ call: "machines", host: undefined, owner: undefined, excludeScratch: true },
 		]);
 		expect(hook.current.value?.groups?.map((g) => g.host)).toEqual(["build-01", null]);
+		expect(hook.current.value?.machineCount).toBe(2);
 		await hook.unmount();
 	});
 
-	test("nothing is asked before the scope is known, and nothing from another scope or a filtered answer is kept", async () => {
-		const hook = renderHook<{ s: DashboardScope | null }, ReturnType<typeof useMachineStats>>(
-			(args) => useMachineStats(args.s),
-			{ s: null },
-		);
-		await hook.render({ s: null });
-		await flush();
+	test("under one owner it also asks about everyone, once, only to count the machines, and the options stay that owner's", async () => {
+		client.getStatsByHost = (query: ScopedQuery) => {
+			record("machines", query);
+			return Promise.resolve(
+				query.owner
+					? answer({
+							groups: [{ host: "build-01", total: 4, waiting: 1 }],
+							ownerScope: { kind: "user", userId: ALICE },
+						})
+					: answer({
+							groups: [
+								{ host: "a", total: 1, waiting: 0 },
+								{ host: "b", total: 1, waiting: 0 },
+								{ host: "c", total: 1, waiting: 0 },
+							],
+						}),
+			);
+		};
+		const hook = await mount(scope);
+		expect(asked.map((e) => e.owner).sort()).toEqual([ALICE, undefined].sort());
+		expect(asked.every((e) => e.host === undefined)).toBe(true);
+		expect(hook.current.value?.groups?.map((g) => g.host)).toEqual(["build-01"]);
+		expect(hook.current.value?.machineCount).toBe(3);
+		await hook.unmount();
+	});
+
+	test("a cut list counts the machines that were rolled up", async () => {
+		client.getStatsByHost = () =>
+			Promise.resolve(answer({ groupsTruncated: true, otherMachines: 30 }));
+		const hook = await mount({ owner: "all", excludeScratch: true });
+		expect(hook.current.value?.machineCount).toBe(32);
+		expect(hook.current.value?.groupsTruncated).toBe(true);
+		expect(hook.current.value?.otherMachines).toBe(30);
+		await hook.unmount();
+	});
+
+	test("the last known count survives a change of scope while the new answer loads, and across visits", async () => {
+		client.getStatsByHost = () => Promise.resolve(answer());
+		const hook = await mount({ owner: "all", excludeScratch: true });
+		expect(hook.current.value?.machineCount).toBe(2);
+		client.getStatsByHost = () => new Promise(() => {});
+		await hook.render({ s: { owner: "all", excludeScratch: false } });
+		expect(hook.current.value?.groups).toBeNull();
+		expect(hook.current.value?.machineCount).toBe(2);
+		await hook.unmount();
+		client.getStatsByHost = () => new Promise(() => {});
+		const next = await mount({ owner: "all", excludeScratch: true });
+		expect(next.current.value?.machineCount).toBe(2);
+		await next.unmount();
+	});
+
+	test("nothing is asked before the scope is known, and the count is unknown", async () => {
+		const hook = await mount(null);
 		expect(asked).toEqual([]);
 		expect(hook.current.value?.groups).toBeNull();
-
-		client.getStatsByHost = () =>
-			Promise.resolve({
-				groups: [{ host: "build-01", total: 4 }],
-				truncated: false,
-				hostFilter: { kind: "host", host: "build-01" },
-			});
-		await hook.render({ s: scope });
-		await flush();
-		expect(hook.current.value?.groups).toBeNull();
 		await hook.unmount();
+	});
+
+	test("an answer that doesn't say it covered every machine is dropped: a filtered one, a missing one", async () => {
+		for (const hostFilter of [{ kind: "host", host: "build-01" }, { kind: "unknown" }, undefined]) {
+			client.getStatsByHost = () => Promise.resolve(answer({ hostFilter }));
+			const hook = await mount({ owner: "all", excludeScratch: true });
+			expect({ hostFilter, groups: hook.current.value?.groups }).toEqual({
+				hostFilter,
+				groups: null,
+			});
+			await hook.unmount();
+		}
+	});
+
+	test("an answer for another owner than the one asked about is dropped, and one with no owner echo is accepted only for everyone", async () => {
+		client.getStatsByHost = () =>
+			Promise.resolve(answer({ ownerScope: { kind: "user", userId: "someone-else" } }));
+		const wrong = await mount(scope);
+		expect(wrong.current.value?.groups).toBeNull();
+		await wrong.unmount();
+		client.getStatsByHost = () => Promise.resolve(answer({ ownerScope: { kind: "service" } }));
+		const mismatched = await mount({ owner: "all", excludeScratch: true });
+		expect(mismatched.current.value?.groups).toBeNull();
+		await mismatched.unmount();
 	});
 });

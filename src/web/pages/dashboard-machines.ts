@@ -2,6 +2,7 @@ import type { ActiveOperationalStatus } from "../../shared/session-state.js";
 import type { HostStatsGroup } from "../../shared/types.js";
 import { HOST_ALL, HOST_UNKNOWN, type HostParam } from "../lib/host-scope.js";
 import type { EmptyState } from "./dashboard-empty.js";
+import { ownerGroupTotal } from "./dashboard-groups.js";
 import type { GroupBy } from "./dashboard-groups.js";
 
 /**
@@ -12,11 +13,14 @@ import type { GroupBy } from "./dashboard-groups.js";
  * who may see or change a session.
  */
 export const ALL_MACHINES_LABEL = "All machines";
-export const UNKNOWN_MACHINE_LABEL = "Unknown machine";
+/** The one name for the sessions whose events reported no machine, in the select, the headers, the empty state and the docs. */
+export const UNKNOWN_MACHINE_LABEL = "No machine reported";
 
 export interface MachineOption {
 	value: HostParam;
 	label: string;
+	/** A line that says something (how many machines aren't listed) and can't be chosen. */
+	disabled?: boolean;
 }
 
 /** A machine's name for people: unknown is a phrase, every machine is its own label. */
@@ -31,28 +35,47 @@ function withCount(label: string, count: number | null): string {
 
 /**
  * Every machine, then each one the server counted (by name, as it sent them)
- * with how many sessions it has in this view, then the sessions with no machine
- * while there are any. A chosen machine the server doesn't list is still offered,
- * so the select never shows something it isn't. Before the counts arrive only
+ * with how many sessions it has in the tab (or status card) on screen, then the
+ * sessions with no machine reported while there are any. A chosen machine the
+ * server doesn't list is still offered, so the select never shows something it
+ * isn't: with a zero when the list is complete, with no count when the list was
+ * cut to the busiest machines (it may simply be one of those). A cut list ends
+ * in a line saying how many machines aren't listed. Before the counts arrive only
  * every machine and the current choice are offered, without counts.
  */
 export function machineOptions(
 	groups: readonly HostStatsGroup[] | null,
 	current: HostParam,
+	view: {
+		tab: string;
+		statusFilter: ActiveOperationalStatus | null;
+		groupsTruncated: boolean;
+		otherMachines: number;
+	},
 ): MachineOption[] {
 	const options: MachineOption[] = [{ value: HOST_ALL, label: ALL_MACHINES_LABEL }];
-	const counted = (host: string | null) => groups?.find((g) => g.host === host)?.total ?? null;
+	const countOf = (group: HostStatsGroup): number | null =>
+		ownerGroupTotal(group, view.tab, view.statusFilter);
 	const named = (groups ?? []).filter((g) => g.host !== null) as Array<
 		HostStatsGroup & { host: string }
 	>;
-	for (const g of named) options.push({ value: g.host, label: withCount(g.host, g.total) });
+	for (const g of named) options.push({ value: g.host, label: withCount(g.host, countOf(g)) });
+	const unlistedCount = groups === null || view.groupsTruncated ? null : 0;
 	if (current !== HOST_ALL && current !== HOST_UNKNOWN && !named.some((g) => g.host === current)) {
-		options.push({ value: current, label: withCount(current, groups === null ? null : 0) });
+		options.push({ value: current, label: withCount(current, unlistedCount) });
 	}
-	if (counted(null) !== null || current === HOST_UNKNOWN) {
+	const none = groups?.find((g) => g.host === null);
+	if (none || current === HOST_UNKNOWN) {
 		options.push({
 			value: HOST_UNKNOWN,
-			label: withCount(UNKNOWN_MACHINE_LABEL, groups === null ? null : (counted(null) ?? 0)),
+			label: withCount(UNKNOWN_MACHINE_LABEL, none ? countOf(none) : unlistedCount),
+		});
+	}
+	if (view.groupsTruncated && view.otherMachines > 0) {
+		options.push({
+			value: "\u0000more",
+			label: `${view.otherMachines} more machine${view.otherMachines === 1 ? "" : "s"} not listed`,
+			disabled: true,
 		});
 	}
 	return options;
@@ -61,21 +84,55 @@ export function machineOptions(
 /**
  * Whether the control is drawn. With one machine (or none reported) there is
  * nothing to tell apart, so the page stays as it was; as soon as two groups
- * exist it appears. It stays while a machine is chosen or the cards are grouped
- * by machine, so the way back is never taken away by a count that dropped.
+ * exist anywhere in the install it appears. `machineCount` is the last known
+ * count of machines across everyone (the sessions with no machine reported count
+ * as one), not the owner-scoped one, so choosing another owner can't make the
+ * control come and go, and it stays what it was while a new answer loads. It also
+ * stays while a machine is chosen or the cards are grouped by machine, so the way
+ * back is never taken away by a count that dropped.
  */
 export function machineControlVisible(input: {
-	groups: readonly HostStatsGroup[] | null;
+	machineCount: number | null;
 	host: HostParam;
 	groupBy: GroupBy;
 }): boolean {
 	if (input.host !== HOST_ALL || input.groupBy === "machine") return true;
-	return input.groups !== null && input.groups.length > 1;
+	return input.machineCount !== null && input.machineCount > 1;
+}
+
+/** The waiting sessions on every machine but the chosen one, from the counts already fetched; 0 with every machine chosen or before they arrive. */
+export function waitingOnOtherMachines(
+	groups: readonly HostStatsGroup[] | null,
+	host: HostParam,
+): number {
+	if (groups === null || host === HOST_ALL) return 0;
+	const chosen = host === HOST_UNKNOWN ? null : host;
+	return groups.filter((g) => g.host !== chosen).reduce((sum, g) => sum + g.waiting, 0);
+}
+
+/** The one line by the stat cards: which machine the numbers are for, and what is waiting elsewhere. */
+export function machineScopeText(host: HostParam, waitingElsewhere: number): string {
+	const where = host === HOST_UNKNOWN ? "sessions with no machine reported" : host;
+	const elsewhere = waitingElsewhere > 0 ? ` ${waitingElsewhere} waiting on other machines.` : "";
+	return `Showing ${where} only.${elsewhere}`;
+}
+
+/** Whether a row (a pushed session) is on a machine the control's counts don't list yet, so they should be asked for again now. */
+export function hasUnlistedMachine(
+	rows: ReadonlyArray<{ machine?: string | null }>,
+	groups: readonly HostStatsGroup[] | null,
+): boolean {
+	if (groups === null) return false;
+	const listed = new Set(groups.map((g) => g.host));
+	return rows.some((row) => {
+		if (row.machine === undefined) return false;
+		return !listed.has(row.machine?.trim() || null);
+	});
 }
 
 export function machineAnnouncement(host: HostParam): string {
 	if (host === HOST_ALL) return "Showing sessions on every machine.";
-	if (host === HOST_UNKNOWN) return "Showing sessions with no machine.";
+	if (host === HOST_UNKNOWN) return "Showing sessions with no machine reported.";
 	return `Showing sessions on ${host}.`;
 }
 
@@ -127,7 +184,7 @@ export function machineEmptyState(input: {
 	ownerNarrowed: boolean;
 }): EmptyState | null {
 	if (input.host === HOST_ALL || input.searchActive || (input.tabCount ?? 0) > 0) return null;
-	const where = input.host === HOST_UNKNOWN ? "with no machine" : `on ${input.host}`;
+	const where = input.host === HOST_UNKNOWN ? "with no machine reported" : `on ${input.host}`;
 	const word = input.scopeTotal === 0 ? null : (input.statusFilter ?? TAB_WORD[input.tab] ?? null);
 	const heading = `No ${word ? `${word} ` : ""}sessions ${where}`;
 	const tabOrNot = input.scopeTotal === 0 ? "" : "tab, ";

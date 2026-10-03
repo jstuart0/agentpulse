@@ -71,7 +71,7 @@ function machineKey(session: GroupableSession): string {
 	return session.machine?.trim() || HOST_UNKNOWN;
 }
 
-const UNKNOWN_MACHINE_GROUP_LABEL = "Unknown machine";
+const UNKNOWN_MACHINE_GROUP_LABEL = "No machine reported";
 
 /** By name without regard to case, ties by spelling (the server's order), the sessions with no machine last. */
 function compareMachineGroups(
@@ -102,6 +102,10 @@ export function groupDashboardSessions<T extends GroupableSession>(
 	sessions: readonly T[],
 	groupBy: GroupBy,
 	ctx: GroupingContext,
+	options?: {
+		/** Machine groups only: a group for each of these keys even before any of its cards are loaded, so headers don't appear above the reader as pages load. */
+		machineKeys?: readonly string[];
+	},
 ): { groups: DashboardGroup<T>[]; flat: boolean } {
 	let groups: DashboardGroup<T>[];
 	if (groupBy === "agent") {
@@ -119,6 +123,17 @@ export function groupDashboardSessions<T extends GroupableSession>(
 			(s) => s.isPinned,
 			compareMachineGroups,
 		);
+		const present = new Set(groups.map((g) => g.key));
+		for (const key of options?.machineKeys ?? []) {
+			if (present.has(key)) continue;
+			groups.push({
+				key,
+				label: key === HOST_UNKNOWN ? UNKNOWN_MACHINE_GROUP_LABEL : key,
+				sessions: [],
+				pinned: false,
+			});
+		}
+		groups.sort(compareMachineGroups);
 	} else if (groupBy === "user") {
 		const label = (key: string) =>
 			key === SERVICE_GROUP_KEY
@@ -162,6 +177,17 @@ export function ownerStatsByKey(groups: readonly OwnerStatsGroup[]): Map<string,
 /** The server's per-machine counts keyed the way machine groups are, so a header can look its own up. */
 export function hostStatsByKey(groups: readonly HostStatsGroup[]): Map<string, HostStatsGroup> {
 	return new Map(groups.map((group) => [group.host ?? HOST_UNKNOWN, group]));
+}
+
+/** The machines that get a header on this tab (or under this status card): those the server counted with sessions there, in the server's order. */
+export function machineKeysWithSessions(
+	groups: readonly HostStatsGroup[] | null,
+	tab: string,
+	statusFilter: ActiveOperationalStatus | null,
+): string[] {
+	return (groups ?? [])
+		.filter((group) => (ownerGroupTotal(group, tab, statusFilter) ?? 0) > 0)
+		.map((group) => group.host ?? HOST_UNKNOWN);
 }
 
 // ── Headers ─────────────────────────────────────────────────────────────────
@@ -271,7 +297,7 @@ function machineHeader<T extends GroupableSession>(
 						label: "Show all",
 						ariaLabel: named
 							? `Show all sessions on ${group.label}`
-							: "Show all sessions with no machine",
+							: "Show all sessions with no machine reported",
 					}
 				: null,
 	};

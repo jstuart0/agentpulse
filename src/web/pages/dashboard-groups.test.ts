@@ -8,6 +8,7 @@ import {
 	groupDashboardSessions,
 	groupHeader,
 	hostStatsByKey,
+	machineKeysWithSessions,
 	ownerGroupTotal,
 	parseGroupBy,
 } from "./dashboard-groups.js";
@@ -473,7 +474,28 @@ describe("grouping by machine", () => {
 			(g) => g.key === HOST_UNKNOWN_KEY,
 		);
 		expect(unknown?.sessions.map((s) => s.sessionId)).toEqual(["3", "6", "7"]);
-		expect(unknown?.label).toBe("Unknown machine");
+		expect(unknown?.label).toBe("No machine reported");
+	});
+
+	test("a header for every machine the server counted, with cards filling in as pages load", () => {
+		const loaded = [row("1", { machine: "edge-02" })];
+		const { groups } = groupDashboardSessions(loaded, "machine", ctx, {
+			machineKeys: ["build-01", "edge-02", "studio-mac", HOST_UNKNOWN_KEY],
+		});
+		expect(groups.map((g) => [g.key, g.sessions.length])).toEqual([
+			["build-01", 0],
+			["edge-02", 1],
+			["studio-mac", 0],
+			[HOST_UNKNOWN_KEY, 0],
+		]);
+		expect(groups.at(-1)?.label).toBe("No machine reported");
+	});
+
+	test("a loaded row on a machine the server didn't list still gets its group, in name order", () => {
+		const { groups } = groupDashboardSessions([row("1", { machine: "aaa" })], "machine", ctx, {
+			machineKeys: ["build-01"],
+		});
+		expect(groups.map((g) => g.key)).toEqual(["aaa", "build-01"]);
 	});
 
 	test("one machine is flat; none at all is flat", () => {
@@ -522,7 +544,7 @@ const buildStats = hostStats({
 function machineGroup(n: number, key = "build-01"): DashboardGroup<Row> {
 	return {
 		key,
-		label: key === HOST_UNKNOWN_KEY ? "Unknown machine" : key,
+		label: key === HOST_UNKNOWN_KEY ? "No machine reported" : key,
 		sessions: Array.from({ length: n }, (_, i) => row(`m${i}`, { machine: key })),
 		pinned: false,
 	};
@@ -594,12 +616,12 @@ describe("machine group header", () => {
 			"machine",
 			machineCtx({ machineStats: new Map([[HOST_UNKNOWN_KEY, unknownStats]]) }),
 		);
-		expect(header.title).toBe("Unknown machine");
+		expect(header.title).toBe("No machine reported");
 		expect(header.countText).toBe("3 shown of 9");
 		expect(header.showAllHost).toEqual({
 			host: HOST_UNKNOWN_KEY,
 			label: "Show all",
-			ariaLabel: "Show all sessions with no machine",
+			ariaLabel: "Show all sessions with no machine reported",
 		});
 	});
 
@@ -613,5 +635,58 @@ describe("machine group header", () => {
 		);
 		expect(groupHeader(machineGroup(2), "machine", none).countText).toBe("2 shown");
 		expect(groupHeader(machineGroup(2), "machine", none).showAllHost).toBeNull();
+	});
+});
+
+describe("machineKeysWithSessions", () => {
+	const mk = (host: string | null, tabs: { active: number; completed: number; archived: number }) =>
+		hostStats({
+			host,
+			total: tabs.active + tabs.completed + tabs.archived,
+			tabCounts: tabs,
+			active: tabs.active,
+			completed: tabs.completed,
+		});
+	const groups = [
+		mk("busy", { active: 3, completed: 1, archived: 0 }),
+		mk("old-box", { active: 0, completed: 2, archived: 1 }),
+		mk(null, { active: 1, completed: 0, archived: 0 }),
+	];
+
+	test("a machine gets a header on a tab only if it has sessions there", () => {
+		expect(machineKeysWithSessions(groups, "active", null)).toEqual(["busy", HOST_UNKNOWN_KEY]);
+		expect(machineKeysWithSessions(groups, "completed", null)).toEqual(["busy", "old-box"]);
+		expect(machineKeysWithSessions(groups, "archived", null)).toEqual(["old-box"]);
+		expect(machineKeysWithSessions(groups, "all", null)).toEqual([
+			"busy",
+			"old-box",
+			HOST_UNKNOWN_KEY,
+		]);
+	});
+
+	test("under a status card, the machines with sessions in that state", () => {
+		const waiting = [
+			{ ...mk("a", { active: 2, completed: 0, archived: 0 }), waiting: 1 },
+			mk("b", { active: 2, completed: 0, archived: 0 }),
+		];
+		expect(machineKeysWithSessions(waiting, "active", "waiting")).toEqual(["a"]);
+	});
+
+	test("nothing before the counts arrive", () => {
+		expect(machineKeysWithSessions(null, "active", null)).toEqual([]);
+	});
+});
+
+describe("a machine header with no cards loaded yet", () => {
+	test("says how many there are and still offers 'Show all'", () => {
+		const empty: DashboardGroup<Row> = {
+			key: "build-01",
+			label: "build-01",
+			sessions: [],
+			pinned: false,
+		};
+		const header = groupHeader(empty, "machine", machineCtx({ tab: "all" }));
+		expect(header.countText).toBe("0 shown of 130");
+		expect(header.showAllHost?.host).toBe("build-01");
 	});
 });
