@@ -669,7 +669,7 @@ describe("GET /sessions/stats?group_by=owner", () => {
 
 	test("an unknown group_by is 400 invalid_group_by", async () => {
 		const w = await world();
-		const res = await app.request("/api/v1/sessions/stats?group_by=host", {
+		const res = await app.request("/api/v1/sessions/stats?group_by=project", {
 			headers: w.me.headers,
 		});
 		expect(res.status).toBe(400);
