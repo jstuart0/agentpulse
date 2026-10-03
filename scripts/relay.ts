@@ -1648,6 +1648,8 @@ export function createRelayState() {
 		statusWrite: Promise.resolve() as Promise<void>,
 		queueRunning: false,
 		queueTimer: null as ReturnType<typeof setTimeout> | null,
+		/** The status line's name lookup, remembered briefly by session id (see nameCacheGet). */
+		nameCache: new Map<string, { body: string; at: number }>(),
 		exclude: {
 			/** The rules as last loaded; reloaded only when the file's signature changes. */
 			rules: { state: "none", rules: [] } as LoadExcludeRulesResult,
@@ -4075,6 +4077,54 @@ export async function buildDiagnostics(ctx: RelayContext) {
 }
 
 const SESSION_DETAIL_PATH_RE = /^\/api\/v1\/sessions\/[^/]+$/;
+
+/**
+ * The status line asks for a session's name on every render:
+ * GET /api/v1/sessions/<id>?fields=displayName, which the server answers with a
+ * few dozen bytes. A successful answer is remembered for a few seconds so a
+ * render costs no server round trip; a rename on the dashboard shows within that
+ * window, and pushing a name through this relay forgets the entry at once. Only
+ * small 200 answers are kept (a server that predates the projection answers the
+ * whole detail, which is never held), never a miss or an error, at most
+ * NAME_CACHE_MAX_ENTRIES sessions (the oldest go first), and never for a session
+ * the exclude rules refuse: the gate runs before the memory is read, and a
+ * refusal drops the entry.
+ */
+export const NAME_CACHE_TTL_MS = 5_000;
+export const NAME_CACHE_MAX_ENTRIES = 256;
+const NAME_CACHE_MAX_BODY_BYTES = 4_096;
+
+/** Whether this is exactly the name-only read: a GET of the detail path asking for displayName and nothing else. */
+function isNameLookup(method: string, url: URL): boolean {
+	return (
+		method === "GET" &&
+		SESSION_DETAIL_PATH_RE.test(url.pathname) &&
+		[...url.searchParams.keys()].length === 1 &&
+		url.searchParams.get("fields") === "displayName"
+	);
+}
+
+function nameCacheGet(ctx: RelayContext, id: string): string | null {
+	const entry = ctx.state.nameCache.get(id);
+	if (!entry) return null;
+	if (ctx.now() - entry.at >= NAME_CACHE_TTL_MS) {
+		ctx.state.nameCache.delete(id);
+		return null;
+	}
+	return entry.body;
+}
+
+function nameCacheSet(ctx: RelayContext, id: string, body: string): void {
+	if (Buffer.byteLength(body) > NAME_CACHE_MAX_BODY_BYTES) return;
+	const cache = ctx.state.nameCache;
+	cache.delete(id);
+	cache.set(id, { body, at: ctx.now() });
+	while (cache.size > NAME_CACHE_MAX_ENTRIES) {
+		const oldest = cache.keys().next().value;
+		if (oldest === undefined) break;
+		cache.delete(oldest);
+	}
+}
 const NATIVE_NAME_PATH_RE = /^\/api\/v1\/sessions\/[^/]+\/native-name$/;
 
 /**
@@ -4236,12 +4286,24 @@ export function createFetchHandler(ctx: RelayContext) {
 			if (sessionId) {
 				const gate = gateSession(ctx, { sessionId, skip: req.headers.get(SKIP_HEADER) });
 				if (!gate.send) {
+					ctx.state.nameCache.delete(sessionId);
 					countExcludeDrop(ctx, gate.reason);
 					return Response.json({ error: refusedLookupError(gate.reason) }, { status: 404 });
 				}
+				if (isNameLookup(req.method, url)) {
+					const remembered = nameCacheGet(ctx, sessionId);
+					if (remembered !== null) {
+						return new Response(remembered, {
+							status: 200,
+							headers: { "Content-Type": "application/json" },
+						});
+					}
+				}
+				// A name pushed through this relay is the newest word on the session.
+				if (req.method === "PUT") ctx.state.nameCache.delete(sessionId);
 			}
 			try {
-				return await forwardApiRequest(ctx, {
+				const forwarded = await forwardApiRequest(ctx, {
 					pathname: url.pathname,
 					search: url.search,
 					method: req.method,
@@ -4249,6 +4311,10 @@ export function createFetchHandler(ctx: RelayContext) {
 					agentType: req.headers.get("X-Agent-Type"),
 					body: req.method !== "GET" ? await req.text() : undefined,
 				});
+				if (sessionId && forwarded.status === 200 && isNameLookup(req.method, url)) {
+					nameCacheSet(ctx, sessionId, await forwarded.clone().text());
+				}
+				return forwarded;
 			} catch {
 				return Response.json({ error: "Relay failed" }, { status: 502 });
 			}
