@@ -96,3 +96,64 @@ describe("a row that says nothing about its owner", () => {
 		expect(applySessionUpdateToList(list, refreshed, mineScope)).toEqual([refreshed]);
 	});
 });
+
+describe("applySessionUpdateToList under a machine filter", () => {
+	const on = (sessionId: string, machine: string | null | undefined): Session =>
+		({
+			id: sessionId,
+			sessionId,
+			ownerUserId: ME,
+			ownerKind: "user",
+			machine,
+		}) as unknown as Session;
+	const build = { owner: "all", viewerUserId: ME, host: "build-01" };
+
+	test("a row on another machine is not added and the list is returned untouched", () => {
+		const list = [on("a", "build-01")];
+		expect(applySessionUpdateToList(list, on("b", "edge-02"), build)).toBe(list);
+	});
+
+	test("a row on the machine is added at the front", () => {
+		const result = applySessionUpdateToList([on("a", "build-01")], on("b", "build-01"), build);
+		expect(result.map((s) => s.sessionId)).toEqual(["b", "a"]);
+	});
+
+	test("a row that moved to another machine is removed, and an unknown view takes only none", () => {
+		const moved = applySessionUpdateToList(
+			[on("a", "build-01"), on("b", "build-01")],
+			on("a", "edge-02"),
+			build,
+		);
+		expect(moved.map((s) => s.sessionId)).toEqual(["b"]);
+		const unknown = { owner: "all", viewerUserId: ME, host: "\u001funknown" };
+		expect(applySessionUpdateToList([], on("n", null), unknown).map((s) => s.sessionId)).toEqual([
+			"n",
+		]);
+		expect(applySessionUpdateToList([], on("m", "build-01"), unknown)).toEqual([]);
+	});
+
+	test("a row that doesn't say its machine is refreshed if shown, not added if not", () => {
+		const list = [on("a", "build-01")];
+		const refreshed = applySessionUpdateToList(list, on("a", undefined), build);
+		expect(refreshed.map((s) => s.sessionId)).toEqual(["a"]);
+		expect(refreshed[0]).not.toBe(list[0]);
+		expect(applySessionUpdateToList(list, on("z", undefined), build)).toBe(list);
+	});
+
+	test("no host in the scope, or every machine, behaves as before", () => {
+		const list = [on("a", "build-01")];
+		for (const scope of [everyone, { ...everyone, host: "" }]) {
+			expect(
+				applySessionUpdateToList(list, on("b", "edge-02"), scope).map((s) => s.sessionId),
+			).toEqual(["b", "a"]);
+		}
+	});
+
+	test("it composes with the owner scope", () => {
+		const mineOnBuild = { owner: "me", viewerUserId: ME, host: "build-01" };
+		const hers = { ...on("h", "build-01"), ownerUserId: ALICE } as Session;
+		expect(applySessionUpdateToList([], hers, mineOnBuild)).toEqual([]);
+		expect(applySessionUpdateToList([], on("m", "edge-02"), mineOnBuild)).toEqual([]);
+		expect(applySessionUpdateToList([], on("m", "build-01"), mineOnBuild)).toHaveLength(1);
+	});
+});
