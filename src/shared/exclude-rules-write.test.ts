@@ -21,6 +21,7 @@ import {
 	readFileSync,
 	readdirSync,
 	rmSync,
+	statSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -183,6 +184,30 @@ describe("exclude lock — stale takeover by rename", () => {
 		});
 		expect(release, "the fresh lock is live, so this waiter must not get the lock").toBeNull();
 		expect(existsSync(lock), "the rival's fresh lock is still there").toBe(true);
+		expect(readFileSync(lock, "utf-8")).toBe(`${process.pid}\n`);
+		expect(readdirSync(dir), "nothing renamed is left behind").toEqual(["exclude.lock"]);
+	});
+
+	// Linux filesystems hand a just-freed inode number to the next file created, so a
+	// fresh lock can carry the stale one's device and inode. Overwriting the stale lock
+	// in place is the deterministic form of that: same inode, new holder.
+	test("a fresh lock that carries the stale lock's inode is still told apart from it and is not removed", () => {
+		const dir = newDir();
+		const lock = join(dir, "exclude.lock");
+		writeFileSync(lock, `${DEAD_PID}\n`);
+		const inoBefore = statSync(lock).ino;
+		let inoDuringRival = -1;
+		const release = acquire(dir, {
+			waitMs: 400,
+			afterStaleJudgement: () => {
+				writeFileSync(lock, `${process.pid}\n`);
+				inoDuringRival = statSync(lock).ino;
+			},
+		});
+		expect(inoDuringRival, "the rival's lock reuses the inode (the case under test)").toBe(
+			inoBefore,
+		);
+		expect(release, "the fresh lock is live, so this waiter must not get the lock").toBeNull();
 		expect(readFileSync(lock, "utf-8")).toBe(`${process.pid}\n`);
 		expect(readdirSync(dir), "nothing renamed is left behind").toEqual(["exclude.lock"]);
 	});
