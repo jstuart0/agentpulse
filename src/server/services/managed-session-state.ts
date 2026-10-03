@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type {
 	ManagedSession,
 	ManagedSessionEventInput,
@@ -307,13 +307,13 @@ export async function attachManagedSessionToLaunch(input: {
 		.limit(1);
 	// The claiming supervisor is authenticated, so its row exists unless it was
 	// deleted since; its name is the session's machine (a supervisor-launched
-	// session is on its supervisor's host, whatever a relay reports for it).
-	const [supervisor] = await getDb()
-		.select({ hostName: supervisors.hostName })
-		.from(supervisors)
-		.where(eq(supervisors.id, input.supervisorId))
-		.limit(1);
-	const hostName = existingManaged?.hostName ?? cleanMachineName(supervisor?.hostName);
+	// session is on its supervisor's host, whatever a relay reports for it). Read
+	// inside the write, so the hot path costs no extra statement; supervisor names
+	// are cleaned when written, so the copy is already clean.
+	const supervisorHost = sql<
+		string | null
+	>`(SELECT ${supervisors.hostName} FROM ${supervisors} WHERE ${supervisors.id} = ${input.supervisorId})`;
+	const hostName = existingManaged?.hostName ?? supervisorHost;
 	// Narrow Drizzle row's `string` to ManagedState. Every producer only
 	// writes union members, so this cast is safe at the boundary.
 	const resolvedManagedState: ManagedState =
