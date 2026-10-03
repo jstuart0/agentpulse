@@ -3,7 +3,7 @@
  * Architecture guard: every test-injection seam in the exclude-rule
  * feature — the fs/uid provider argument of loadExcludeRules and
  * evaluateExclusion (src/shared/exclude-rules.ts), the rename-provider
- * override on writePrivateFileAtomicNoFollow (src/shared/private-file.ts),
+ * override on writePrivateFileAtomicNoFollow and writeConfigFileAtomicNoFollow (src/shared/private-file.ts),
  * and the AGENTPULSE_TEST_FORCE_SHELL_RESULT env
  * var excludeCheck reads to force a TypeScript/shell disagreement
  * and the AGENTPULSE_TEST_ACCOUNT_HOME env var it reads in place of the
@@ -39,6 +39,7 @@ const CALL_SPECS: Record<string, number> = {
 	loadExcludeRules: 1,
 	evaluateExclusion: 1,
 	writePrivateFileAtomicNoFollow: 2,
+	writeConfigFileAtomicNoFollow: 2,
 	acquireExcludeLock: 1,
 };
 

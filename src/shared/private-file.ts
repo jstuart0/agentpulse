@@ -215,6 +215,20 @@ export function writePrivateFileAtomicNoFollow(
 }
 
 /**
+ * Non-secret config files other tools read (Codex hooks.json and its backups):
+ * the same temp-file-and-rename write at CONFIG_FILE_MODE, so a failed or short
+ * write (disk full, a file-size limit) leaves the old file whole. `provider` is
+ * the test seam, as for writePrivateFileAtomicNoFollow.
+ */
+export function writeConfigFileAtomicNoFollow(
+	path: string,
+	content: string,
+	provider: AtomicWriteProvider = {},
+): void {
+	writeFileAtomicNoFollow(path, content, CONFIG_FILE_MODE, provider);
+}
+
+/**
  * The installed exclusion check (~/.agentpulse/exclude-check.sh): the same
  * temp-file-and-rename write, at mode 0500. A rename never follows a link at
  * the destination, and a symlinked parent is refused up front.

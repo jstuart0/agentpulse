@@ -919,6 +919,58 @@ describe("D12/D13 — Codex command hooks (F50, F52, r6 CODEX_HOME)", () => {
 		},
 		RUN_TIMEOUT,
 	);
+
+	test(
+		"an existing hooks.json keeps another tool's hooks and unknown keys; a re-run changes nothing; malformed JSON is left alone",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const hooksPath = join(home, ".codex", "hooks.json");
+			await mkdir(join(home, ".codex"), { recursive: true });
+			const theirs = {
+				"x-other-tool": { enabled: true },
+				hooks: {
+					SessionStart: [
+						{ matcher: "startup", hooks: [{ type: "command", command: "othertool start" }] },
+					],
+					PreToolUse: [
+						{ matcher: "Bash", hooks: [{ type: "command", command: "othertool guard" }] },
+					],
+				},
+			};
+			await writeFile(hooksPath, `${JSON.stringify(theirs, null, 2)}\n`);
+			const args = ["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)];
+
+			const run1 = await runInstaller(home, args, { uname: "Darwin" });
+			expect(run1.code).toBe(0);
+			const merged = await readJson(hooksPath);
+			expect(merged["x-other-tool"]).toEqual({ enabled: true });
+			expect(merged.hooks.SessionStart[0]).toEqual(theirs.hooks.SessionStart[0]);
+			expect(merged.hooks.PreToolUse[0]).toEqual(theirs.hooks.PreToolUse[0]);
+			expect(merged.hooks.SessionStart).toHaveLength(2);
+			expect(Object.keys(merged.hooks)).toHaveLength(12);
+			const bytes1 = await readFile(hooksPath, "utf-8");
+			const ino1 = (await stat(hooksPath)).ino;
+
+			const run2 = await runInstaller(home, args, { uname: "Darwin" });
+			expect(run2.code).toBe(0);
+			expect(run2.out).toContain("Codex hooks unchanged — no re-trust needed");
+			expect(await readFile(hooksPath, "utf-8")).toBe(bytes1);
+			expect((await stat(hooksPath)).ino).toBe(ino1);
+
+			const home2 = await newHome();
+			await mkdir(join(home2, ".codex"), { recursive: true });
+			await writeFile(join(home2, ".codex", "hooks.json"), "{not json");
+			const run3 = await runInstaller(home2, args, { uname: "Darwin" });
+			expect(run3.code).toBe(0);
+			expect(run3.out).toContain("Codex hooks not updated");
+			expect(await readFile(join(home2, ".codex", "hooks.json"), "utf-8")).toBe("{not json");
+			expect(
+				(await readdir(join(home2, ".codex"))).filter((f) => f.includes("agentpulse-bak")),
+			).toHaveLength(0);
+		},
+		RUN_TIMEOUT,
+	);
 });
 
 describe("the relay installer's closing lines about the exclude rules", () => {
