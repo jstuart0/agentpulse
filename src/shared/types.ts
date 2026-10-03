@@ -469,10 +469,11 @@ export interface Session {
 	 * The machine the session is on, as the dashboard filters and groups it: the
 	 * supervisor's host name for a supervisor-launched session, else
 	 * `reportedHost`, else null (blank counts as none). Display and filtering
-	 * only. Present on list rows, on the detail response and on session pushes
-	 * over the socket (stamped by the broadcaster); absent on a row a card action
-	 * returned, on a push whose lookup failed, and from an older server. Absent
-	 * means "can't tell", never "no machine": that is null.
+	 * only. Present on list rows, on the session a card action returns and on
+	 * session pushes over the socket (stamped by the broadcaster); absent on the
+	 * detail response (which carries the managed session instead), on a push whose
+	 * lookup failed, and from an older server. Absent means "can't tell", never
+	 * "no machine": that is null.
 	 */
 	machine?: string | null;
 	managedSession?: ManagedSession | null;
