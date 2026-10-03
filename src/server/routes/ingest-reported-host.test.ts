@@ -472,10 +472,23 @@ describe("display only: the reported host decides nothing", () => {
 
 	describe("the machine, by every name an access check could reach it through", () => {
 		/** Comments stripped, so prose about "the machine" isn't a reader. */
-		const code = (text: string) =>
+		const withoutComments = (text: string) =>
 			text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+		/** String contents blanked, so a message or an import path that says "machine" isn't a reader. */
+		const withoutStrings = (text: string) =>
+			text.replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g, '""');
+		/**
+		 * Any identifier `machine` (a property read in any spelling: `.machine`,
+		 * `?.machine`, `!.machine`, a destructured `{ machine }`, an object key), the
+		 * names that lead to it, and the bracket spelling `row["machine"]`.
+		 */
 		const NAMES =
-			/EFFECTIVE_MACHINE|MACHINE_JOINED|SUPERVISOR_JOIN|hostScopeCondition|stampMachine|[\w)\]]\.machine\b|\bmachine:/;
+			/EFFECTIVE_MACHINE|MACHINE_JOINED|SUPERVISOR_JOIN|hostScopeCondition|stampMachine|\bmachine\b/;
+		const BRACKET = /\[\s*(["'`])machine\1\s*\]/;
+		const reachesMachine = (text: string) => {
+			const bare = withoutComments(text);
+			return NAMES.test(withoutStrings(bare)) || BRACKET.test(bare);
+		};
 		/** Every file that reaches the effective machine, and why it may. */
 		const ALLOWED = new Set([
 			"services/effective-machine.ts", // the definition
@@ -484,7 +497,7 @@ describe("display only: the reported host decides nothing", () => {
 		]);
 		const readers = (files: Record<string, string>) =>
 			Object.entries(files)
-				.filter(([name, text]) => NAMES.test(code(text)) && !ALLOWED.has(name))
+				.filter(([name, text]) => reachesMachine(text) && !ALLOWED.has(name))
 				.map(([name]) => name)
 				.sort();
 
@@ -497,6 +510,16 @@ describe("display only: the reported host decides nothing", () => {
 				"if (session.machine === 'x') deny()",
 				"return { machine: row.x }",
 				"leftJoin(SUPERVISOR_JOIN)",
+				// The spellings a plain `.machine` pattern misses.
+				"if (session?.machine === 'x') deny()",
+				"if (session!.machine === 'x') deny()",
+				"if (session['machine'] === 'x') deny()",
+				'if (session["machine"] === "x") deny()',
+				"if (session[`machine`] === 'x') deny()",
+				"const { machine } = session; if (machine) deny()",
+				"const { machine: where } = session",
+				"const { id, machine, ...rest } = session",
+				"function f({ machine }: S) { return machine }",
 			]) {
 				expect({ use, flagged: readers({ "auth/middleware.ts": use }).length }).toEqual({
 					use,
@@ -544,7 +567,7 @@ describe("display only: the reported host decides nothing", () => {
 			const files: Record<string, string> = {};
 			for (const name of names) files[name] = await readFile(join(serverRoot, name), "utf8");
 			expect(readers(files)).toEqual([]);
-			for (const allowed of ALLOWED) expect(NAMES.test(code(files[allowed]))).toBe(true);
+			for (const allowed of ALLOWED) expect(reachesMachine(files[allowed])).toBe(true);
 		});
 	});
 
