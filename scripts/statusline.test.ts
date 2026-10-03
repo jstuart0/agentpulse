@@ -895,7 +895,8 @@ describe("statusline.sh — the name lookup is the small read", () => {
 	};
 	const lookups = () =>
 		requests.filter((r) => r.method === "GET" && r.path.startsWith("/api/v1/sessions/"));
-	const shownName = (stdout: string) => stdout.replace(/\x1b\[[0-9;]*m/g, "");
+	const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+	const shownName = (stdout: string) => stdout.replace(ANSI, "");
 
 	test("it asks for the name only: ?fields=displayName on the session path, once", async () => {
 		const { stdout } = await run(INPUT);

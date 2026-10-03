@@ -122,7 +122,7 @@ describe("the name-only read", () => {
 		await seedSession("c-long", "b", 600);
 		const statements = (path: string) => countDbCalls(async () => void (await get(path)));
 		// a request refused before any read costs only the caller's own auth lookups
-		const auth = await statements(`/sessions/c-short?fields=events`);
+		const auth = await statements("/sessions/c-short?fields=events");
 		const short = await statements(`/sessions/c-short${LIGHT}`);
 		const long = await statements(`/sessions/c-long${LIGHT}`);
 		const unknown = await statements(`/sessions/c-nope${LIGHT}`);
