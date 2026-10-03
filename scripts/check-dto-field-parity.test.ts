@@ -129,3 +129,22 @@ describe("owner scope echo parity — real files", () => {
 		}
 	});
 });
+
+describe("Session.reportedHost parity — real files", () => {
+	const root = new URL("..", import.meta.url).pathname;
+	const read = (path: string) => readFileSync(join(root, path), "utf8");
+
+	test("the machine a hook reported is declared on both the shared and the vendored Session", () => {
+		for (const path of ["src/shared/types.ts", "packages/agentpulse-mcp/src/types.ts"]) {
+			const fields = extractInterfaceFields(read(path), "Session");
+			expect({ path, reportedHost: fields.includes("reportedHost") }).toEqual({
+				path,
+				reportedHost: true,
+			});
+		}
+	});
+
+	test("the guard itself requires the field, so deleting it from both sides cannot pass", () => {
+		expect(read("scripts/check-dto-field-parity.ts")).toContain('"reportedHost"');
+	});
+});
