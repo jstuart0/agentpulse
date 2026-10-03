@@ -35,11 +35,16 @@ export function MachineSelect({
 				ref={selectRef}
 				value={host}
 				onChange={(e) => onChange(e.target.value)}
-				title="Show only the sessions running on one machine. A machine's name is what its relay or supervisor reported; it narrows the view and decides nothing about access."
-				className="min-h-[44px] min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring md:min-h-0 md:max-w-[14rem] md:flex-none"
+				title="Show only the sessions on one machine. A machine is the name its relay or supervisor reported, so a machine's count includes sessions that only claim that name."
+				className={cn(
+					"min-h-[44px] min-w-0 flex-1 rounded-md border px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring md:min-h-0 md:w-52 md:flex-none",
+					host === ""
+						? "border-input bg-background"
+						: "border-primary/60 bg-primary/10 font-medium ring-1 ring-primary/40",
+				)}
 			>
 				{options.map((option) => (
-					<option key={option.value} value={option.value}>
+					<option key={option.value} value={option.value} disabled={option.disabled}>
 						{option.label}
 					</option>
 				))}

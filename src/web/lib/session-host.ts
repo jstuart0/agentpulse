@@ -24,7 +24,7 @@ export interface SessionHostLabel {
 	/** The short chip text. */
 	text: string;
 	/** The Overview field's label. */
-	fieldLabel: "Host" | "Reported host";
+	fieldLabel: "Machine" | "Reported machine";
 	/** The mouse tooltip. */
 	title: string;
 	/** What a screen reader says in place of the visual chip. */
@@ -60,9 +60,9 @@ function supervisorLabel(name: string): SessionHostLabel {
 		source: "supervisor",
 		name,
 		text: `on ${name}`,
-		fieldLabel: "Host",
+		fieldLabel: "Machine",
 		title: `Runs on ${name}, the machine whose AgentPulse supervisor launched it.`,
-		srText: `Host: ${name}`,
+		srText: `Machine: ${name}`,
 	};
 }
 
@@ -71,7 +71,7 @@ function reportedLabel(name: string): SessionHostLabel {
 		source: "reported",
 		name,
 		text: `on ${name}`,
-		fieldLabel: "Reported host",
+		fieldLabel: "Reported machine",
 		title: `Reported by the machine that sent this session's events (${name}); not verified.`,
 		srText: `Reported machine: ${name}`,
 	};

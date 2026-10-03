@@ -178,6 +178,10 @@ export interface MachineGridProps {
 	tab: string;
 	statusFilter: ActiveOperationalStatus | null;
 	searchActive: boolean;
+	/** The machines that get a header on this tab even before their cards are loaded (the server's counts), in order. */
+	machineKeys: readonly string[];
+	/** Machines the server rolled up beyond its listed ones (it cut the list to the busiest), or null. */
+	otherMachines: { machines: number; sessions: number } | null;
 	/** The machine the view is already narrowed to. */
 	currentHost: HostParam;
 	/** Set when the view is narrowed to a machine and nothing matches: it names the machine and offers the way back. */
@@ -347,7 +351,12 @@ export function SessionGrid({
 	}
 
 	const groupBy = team?.groupBy ?? machineView?.groupBy ?? "project";
-	const { groups, flat } = groupDashboardSessions(ordered, groupBy, { viewerUserId, nameOf });
+	const { groups, flat } = groupDashboardSessions(
+		ordered,
+		groupBy,
+		{ viewerUserId, nameOf },
+		{ machineKeys: groupBy === "machine" ? (machineView?.machineKeys ?? []) : [] },
+	);
 
 	// Single project: flat grid. The hover/focus/recent-ack hold handlers
 	// live on this container (and the multi-project one below) so a card
@@ -406,6 +415,15 @@ export function SessionGrid({
 					</div>
 				);
 			})}
+			{groupBy === "machine" && machineView?.otherMachines && (
+				<p className="text-xs text-hint">
+					{machineView.otherMachines.machines} more machine
+					{machineView.otherMachines.machines === 1 ? "" : "s"} (
+					{machineView.otherMachines.sessions} session
+					{machineView.otherMachines.sessions === 1 ? "" : "s"}) aren't listed here. The busiest
+					machines are.
+				</p>
+			)}
 		</div>
 	);
 }
@@ -429,7 +447,12 @@ function GroupHeaderRow({
 	const showAllHost = header.showAllHost;
 	return (
 		<div className="flex flex-col items-start gap-1.5 mb-3 md:flex-row md:items-center md:gap-2">
-			<h3 className="text-sm font-semibold text-foreground">{header.title}</h3>
+			<h3
+				title={header.title}
+				className="max-w-full break-words text-sm font-semibold text-foreground [overflow-wrap:anywhere]"
+			>
+				{header.title}
+			</h3>
 			<span className="text-xs text-muted-foreground">{header.countText}</span>
 			{header.waiting > 0 && (
 				<span className="text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300 bg-amber-500/15 border border-amber-500/20 rounded px-1.5 py-0">

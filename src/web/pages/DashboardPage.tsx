@@ -61,17 +61,22 @@ import {
 	type GroupBy,
 	groupByStorageKey,
 	hostStatsByKey,
+	machineKeysWithSessions,
 	parseGroupBy,
 } from "./dashboard-groups.js";
 import {
 	MACHINE_DROPPED_NOTE,
 	MACHINE_REFUSED_NOTE,
 	groupByOptions,
+	hasUnlistedMachine,
 	machineAnnouncement,
 	machineControlVisible,
 	machineEmptyState,
+	machineLabel,
 	machineOptions,
+	machineScopeText,
 	viewControlsVisible,
+	waitingOnOtherMachines,
 } from "./dashboard-machines.js";
 import {
 	type ViewKind,
@@ -160,7 +165,11 @@ export function DashboardPage() {
 	// The machines the filter offers and the Group by Machine headers' counts: one
 	// request for both, always about every machine in the owner scope on screen.
 	const machineStats = useMachineStats(scope);
-	const machineControl = machineControlVisible({ groups: machineStats.groups, host, groupBy });
+	const machineControl = machineControlVisible({
+		machineCount: machineStats.machineCount,
+		host,
+		groupBy,
+	});
 	// A "user" grouping stored in a team has nothing to group by in solo.
 	const groupByNow: GroupBy = !ui.showGroupBy && groupBy === "user" ? "project" : groupBy;
 	const machineSelectRef = useRef<HTMLSelectElement>(null);
@@ -340,7 +349,15 @@ export function DashboardPage() {
 			firstPendingRef.current = null;
 			void refreshCounts();
 			if (ui.showGroupBy && groupBy === "user") void ownerGroupStats.refresh();
-			if (machineControl || groupBy === "machine") void machineStats.refresh();
+			// A pushed session on a machine the control doesn't list yet brings the control (or
+			// its new option) in now, not at the next poll.
+			if (
+				machineControl ||
+				groupBy === "machine" ||
+				hasUnlistedMachine(useSessionStore.getState().sessions, machineStats.groups)
+			) {
+				void machineStats.refresh();
+			}
 		}, delay);
 		operationalList.scheduleRefresh();
 		tabList.scheduleRefresh();
@@ -548,6 +565,21 @@ export function DashboardPage() {
 			? mergeSearchRows(tabList.rows, pageMatches)
 			: tabList.rows
 		: operationalList.rows;
+
+	// The last session of a chosen machine leaving the view is said, not just shown.
+	const hadMachineRowsRef = useRef(false);
+	useEffect(() => {
+		const settled = !isLoading && (listedTab ? !tabList.loading : true);
+		if (host === HOST_ALL || !settled) {
+			hadMachineRowsRef.current = false;
+			return;
+		}
+		if (filtered.length > 0) hadMachineRowsRef.current = true;
+		else if (hadMachineRowsRef.current) {
+			hadMachineRowsRef.current = false;
+			setMachineNote(`No sessions left on ${machineLabel(host)} in this view.`);
+		}
+	}, [filtered.length, host, isLoading, listedTab, tabList.loading]);
 
 	// Live strip: the active operational set, ordered so the ones that need a
 	// human (waiting, error) come first, then working, then idle.
@@ -804,6 +836,21 @@ export function DashboardPage() {
 					)}
 					<ConnectMachineCard suppress={emptyState?.actions.includes("setup") ?? false} />
 
+					{host !== HOST_ALL && (
+						<p className="mb-2 text-xs text-foreground" data-machine-scope>
+							<span className="font-medium">
+								{machineScopeText(host, waitingOnOtherMachines(machineStats.groups, host))}
+							</span>{" "}
+							<button
+								type="button"
+								onClick={viewAllMachines}
+								className="min-h-[44px] rounded font-medium text-primary underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:min-h-0"
+							>
+								Show all machines
+							</button>
+						</p>
+					)}
+
 					{/* Operational status cards — the four states every active session is
 			    in exactly one of, counted over the full active set. Clicking a card
 			    is a single-select filter on the grid below; click again to clear.
@@ -982,7 +1029,7 @@ export function DashboardPage() {
 						{tabHint(filter) && <p className="-mt-1 text-xs text-hint">{tabHint(filter)}</p>}
 
 						<div className="flex flex-wrap items-center gap-3">
-							<div className="relative w-full md:max-w-xs">
+							<div className="relative w-full min-w-0 md:w-auto md:min-w-[9rem] md:max-w-xs md:flex-1 md:basis-44">
 								<svg
 									aria-hidden="true"
 									className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground"
@@ -1041,7 +1088,12 @@ export function DashboardPage() {
 										machineControl
 											? {
 													host,
-													options: machineOptions(machineStats.groups, host),
+													options: machineOptions(machineStats.groups, host, {
+														tab: filter,
+														statusFilter: filter === "active" ? statusFilter : null,
+														groupsTruncated: machineStats.groupsTruncated,
+														otherMachines: machineStats.otherMachines,
+													}),
 													onChange: chooseMachine,
 													selectRef: machineSelectRef,
 												}
@@ -1246,6 +1298,14 @@ export function DashboardPage() {
 							machineView={{
 								groupBy: groupByNow,
 								stats: machineCountsByKey,
+								machineKeys: machineKeysWithSessions(
+									machineStats.groups,
+									filter,
+									filter === "active" ? statusFilter : null,
+								),
+								otherMachines: machineStats.groupsTruncated
+									? { machines: machineStats.otherMachines, sessions: machineStats.otherTotal }
+									: null,
 								tab: filter,
 								statusFilter,
 								searchActive,

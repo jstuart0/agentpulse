@@ -11,7 +11,7 @@ describe("sessionHostLabel", () => {
 			source: "supervisor",
 			name: "build-01",
 			text: "on build-01",
-			fieldLabel: "Host",
+			fieldLabel: "Machine",
 		});
 		expect(label?.title).toContain("build-01");
 		expect(label?.title).not.toContain("some-laptop");
@@ -23,7 +23,7 @@ describe("sessionHostLabel", () => {
 			source: "reported",
 			name: "alice-mbp",
 			text: "on alice-mbp",
-			fieldLabel: "Reported host",
+			fieldLabel: "Reported machine",
 		});
 		expect(label?.title.toLowerCase()).toContain("reported");
 		expect(label?.title.toLowerCase()).toContain("not verified");
@@ -91,5 +91,29 @@ describe("sessionHostLabel on a row that carries the server's machine", () => {
 			reportedHost: "r",
 		});
 		expect(label?.name).toBe("detail-host");
+	});
+});
+
+describe("one term for a machine, everywhere a session names it", () => {
+	test("the field labels and the screen-reader text say machine, never host, for both sources", () => {
+		const supervisor = sessionHostLabel({ managedSession: { hostName: "build-01" } });
+		const reported = sessionHostLabel({ reportedHost: "alice-mbp" });
+		expect(supervisor?.fieldLabel).toBe("Machine");
+		expect(supervisor?.srText).toBe("Machine: build-01");
+		expect(reported?.fieldLabel).toBe("Reported machine");
+		expect(reported?.srText).toBe("Reported machine: alice-mbp");
+		for (const label of [supervisor, reported]) {
+			expect(`${label?.fieldLabel} ${label?.srText}`.toLowerCase()).not.toContain("host");
+		}
+	});
+
+	test("a supervisor host that is also what was reported is the supervisor's: it is not 'reported, not verified'", () => {
+		const label = sessionHostLabel({
+			managedSession: { hostName: "build-01" },
+			reportedHost: "build-01",
+		});
+		expect(label?.source).toBe("supervisor");
+		expect(label?.fieldLabel).toBe("Machine");
+		expect(label?.title.toLowerCase()).not.toContain("not verified");
 	});
 });
