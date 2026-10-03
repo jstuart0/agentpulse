@@ -23,8 +23,8 @@ import {
 	ORIGIN_CODEX_OBSERVER,
 	ORIGIN_HEADER,
 } from "../../shared/hook-headers.js";
-import { createRolloutIndex, resumeWindowMsFromEnv } from "./codex-rollout-index.js";
 import { encodeReportedHostHeader } from "../../shared/reported-host.js";
+import { createRolloutIndex, resumeWindowMsFromEnv } from "./codex-rollout-index.js";
 
 const CODEX_SESSIONS_ROOT = join(homedir(), ".codex", "sessions");
 const STATE_FILE = join(homedir(), ".agentpulse", "codex-observer-state.json");
