@@ -36,7 +36,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   machine's sessions as one machine's.
 
 - `group_by=host` lists at most 50 machines (the busiest, plus the sessions with
-  no machine reported and every machine a registered supervisor names, up to 200) and rolls the rest into `otherMachines` / `otherTotal`
+  no machine reported and every machine that has sessions and that a registered supervisor names, up to 200) and rolls the rest into `otherMachines` / `otherTotal`
   with `groupsTruncated`, so a key that invents machine names can't bloat every
   viewer's poll. A machine's count includes sessions that only claim that name.
 - A chosen machine shows as active: the select is highlighted, a line by the
@@ -44,6 +44,18 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   machines, and "Show all machines" is one click away. Machine counts in the
   select follow the selected tab. Group by Machine shows a header for every
   machine from the first page on.
+
+### Fixed
+
+- **The status line could show the first characters of the session id instead of
+  the session's name on a long session.** It fetched the whole session detail
+  (about 1.6 MB for a long session) on every render and gave up after one
+  second. It now asks for the name only (`?fields=displayName`, about 60 bytes
+  however long the session is), the relay remembers the answer for five
+  seconds, and the status line keeps the last name it saw and shows it if a
+  lookup fails. Measured on a scratch server with a 4,848-event session: the
+  request went from 2.9 MB to 60 bytes, and over a simulated 10 Mbit/s link
+  from 2.2 s to about 1 ms.
 
 ### Changed
 
@@ -61,6 +73,17 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Upgrade notes
 
+- **To get the status-line fix, re-run the installer on each machine that has
+  the relay**, after upgrading the server: `curl -sSL https://<your-server>/setup-relay.sh | bash`
+  (it asks for the key on the terminal, or use `AGENTPULSE_KEY`). It replaces
+  `~/.agentpulse/relay.ts` and `~/.claude/statusline-agentpulse.sh` and restarts
+  the relay. A hand-copied status line needs `cp scripts/statusline.sh
+  ~/.claude/statusline-agentpulse.sh` again. Every mix works in the meantime:
+  a new status line against an older relay or server still shows the name (an
+  older server answers the whole detail, as before, so the fix needs the
+  upgraded server); an older status line against the new server is unchanged.
+  `GET /api/v1/health`'s `clients.statusline` / `clients.relay` checksums and
+  the relay's `drift` field tell a machine it is behind.
 - No migration. The new web and the new server go together: a web client asking
   an older server for a machine refuses the answer rather than showing every
   machine's sessions under one machine's name.
