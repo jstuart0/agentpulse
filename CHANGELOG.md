@@ -36,7 +36,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   machine's sessions as one machine's.
 
 - `group_by=host` lists at most 50 machines (the busiest, plus the sessions with
-  no machine reported) and rolls the rest into `otherMachines` / `otherTotal`
+  no machine reported and every machine a registered supervisor names, up to 200) and rolls the rest into `otherMachines` / `otherTotal`
   with `groupsTruncated`, so a key that invents machine names can't bloat every
   viewer's poll. A machine's count includes sessions that only claim that name.
 - A chosen machine shows as active: the select is highlighted, a line by the
