@@ -27,7 +27,9 @@ import {
 const { initializeDatabase, getDb } = await import("../db/client.js");
 const { sessions, managedSessions, supervisors } = await import("../db/schema/index.js");
 const { app } = await import("../app.js");
-const { normalizeStoredMachineNames } = await import("../services/effective-machine.js");
+const { normalizeStoredMachineNames, normalizeStoredMachineNamesSafely } = await import(
+	"../services/effective-machine.js"
+);
 const { enrollSupervisor } = await import("../services/supervisor-registry.js");
 const { eq } = await import("drizzle-orm");
 
@@ -68,7 +70,7 @@ async function seedManaged(
 		.values({ sessionId, agentType: "claude_code", status: "active", reportedHost: reported });
 	await getDb()
 		.insert(managedSessions)
-		.values({ sessionId, launchRequestId: `l-${counter}`, supervisorId: "sup-1", hostName });
+		.values({ sessionId, launchRequestId: `l-${counter}`, supervisorId, hostName });
 }
 
 async function viewer() {
@@ -139,6 +141,80 @@ describe("every machine the grouping lists can be selected, and returns its own 
 			.from(managedSessions)
 			.where(eq(managedSessions.sessionId, "only-junk"));
 		expect(row.hostName).toBeNull();
+	});
+});
+
+describe("a stored supervisor whose name is nothing but unprintable characters", () => {
+	const input = (hostName: string) =>
+		({
+			hostName,
+			platform: "darwin",
+			arch: "arm64",
+			version: "1.0.0",
+			capabilities: {},
+			trustedRoots: [],
+		}) as never;
+	const RAW = "\u0001\u200b";
+
+	test("gets the name registration would give it, by id, and its sessions' copies follow, so everything stays listed and selectable", async () => {
+		const headers = await viewer();
+		const first = (await enrollSupervisor(input("temp-a"), null)).supervisor;
+		const second = (await enrollSupervisor(input("temp-b"), null)).supervisor;
+		for (const sup of [first, second]) {
+			await getDb().update(supervisors).set({ hostName: RAW }).where(eq(supervisors.id, sup.id));
+		}
+		await seedManaged("legacy-1", RAW, "somewhere", first.id);
+		await seedManaged("legacy-2", RAW, null, second.id);
+		await seedManaged("orphan", RAW, "reported-box", "no-such-supervisor");
+		await normalizeStoredMachineNames();
+		const stored = await getDb().select().from(supervisors);
+		expect(stored.map((r) => r.hostName)).toEqual(["unnamed host", "unnamed host"]);
+		const managed = await getDb().select().from(managedSessions);
+		const byId = Object.fromEntries(managed.map((m) => [m.sessionId, m.hostName]));
+		expect(byId).toEqual({ "legacy-1": "unnamed host", "legacy-2": "unnamed host", orphan: null });
+		const { body } = await get<Groups>("/sessions/stats?group_by=host", headers);
+		expect(Object.fromEntries(body.groups.map((g) => [g.host, g.total]))).toEqual({
+			"unnamed host": 2,
+			"reported-box": 1,
+		});
+		const listed = await get<List>(
+			`/sessions?host=${encodeURIComponent("unnamed host")}&limit=10`,
+			headers,
+		);
+		expect(listed.body.total).toBe(2);
+	});
+});
+
+describe("the boot cleanup is cosmetic and can't stop boot", () => {
+	test("a cleanup that throws is logged as one structured line and swallowed", async () => {
+		const logged: string[] = [];
+		const real = console.error;
+		console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+		try {
+			await normalizeStoredMachineNamesSafely(async () => {
+				throw new Error("db unavailable");
+			});
+		} finally {
+			console.error = real;
+		}
+		expect(logged).toHaveLength(1);
+		expect(JSON.parse(logged[0])).toMatchObject({
+			kind: "machine_names_cleanup_failed",
+			level: "error",
+			error: "db unavailable",
+		});
+	});
+
+	test("a cleanup that succeeds logs nothing", async () => {
+		const logged: string[] = [];
+		const real = console.error;
+		console.error = (...args: unknown[]) => void logged.push(String(args[0]));
+		try {
+			await normalizeStoredMachineNamesSafely(async () => {});
+		} finally {
+			console.error = real;
+		}
+		expect(logged).toEqual([]);
 	});
 });
 

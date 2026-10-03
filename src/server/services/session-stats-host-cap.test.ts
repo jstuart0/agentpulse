@@ -8,14 +8,18 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { sessions, managedSessions } = await import("../db/schema/index.js");
-const { getStatsByHost, MAX_MACHINE_GROUPS } = await import("./session-tracker.js");
+const { sessions, managedSessions, supervisors } = await import("../db/schema/index.js");
+const { enrollSupervisor, revokeSupervisor } = await import("./supervisor-registry.js");
+const { getStatsByHost, MAX_MACHINE_GROUPS, MAX_REGISTERED_MACHINE_GROUPS } = await import(
+	"./session-tracker.js"
+);
 const { countDbCalls } = await import("../test-utils/db-call-counter.js");
 
 beforeAll(() => initializeDatabase());
 beforeEach(async () => {
 	await getDb().delete(managedSessions).execute();
 	await getDb().delete(sessions).execute();
+	await getDb().delete(supervisors).execute();
 });
 
 /** machine i has `size(i)` sessions; a null name is a session with none. */
@@ -48,6 +52,102 @@ async function seedMachines(count: number, size: (i: number) => number, noMachin
 			.execute();
 	}
 }
+
+const register = async (hostName: string) =>
+	(
+		await enrollSupervisor(
+			{
+				hostName,
+				platform: "darwin",
+				arch: "arm64",
+				version: "1",
+				capabilities: {},
+				trustedRoots: [],
+			} as never,
+			null,
+		)
+	).supervisor;
+
+describe("a registered machine can't be pushed out of the listing by invented busy names", () => {
+	test("50+ busier invented names and one quiet supervisor machine: the supervisor machine is listed with its own total, and everything still adds up", async () => {
+		await seedMachines(MAX_MACHINE_GROUPS + 5, () => 4);
+		await getDb()
+			.insert(sessions)
+			.values({
+				sessionId: "quiet-1",
+				agentType: "claude_code",
+				status: "active",
+				metadata: {},
+				reportedHost: "quiet-sup",
+			} as never)
+			.execute();
+		await register("quiet-sup");
+		const result = await getStatsByHost();
+		const names = result.groups.map((g) => g.host);
+		expect(names).toContain("quiet-sup");
+		expect(result.groups.find((g) => g.host === "quiet-sup")?.total).toBe(1);
+		expect(result.groupsTruncated).toBe(true);
+		expect(result.groups).toHaveLength(MAX_MACHINE_GROUPS + 1);
+		expect(result.otherMachines).toBe(5);
+		const everything = (MAX_MACHINE_GROUPS + 5) * 4 + 1;
+		expect(result.groups.reduce((a, g) => a + g.total, 0) + result.otherTotal).toBe(everything);
+	});
+
+	test("a revoked supervisor's machine has no such protection", async () => {
+		await seedMachines(MAX_MACHINE_GROUPS + 5, () => 4);
+		await getDb()
+			.insert(sessions)
+			.values({
+				sessionId: "quiet-1",
+				agentType: "claude_code",
+				status: "active",
+				metadata: {},
+				reportedHost: "quiet-sup",
+			} as never)
+			.execute();
+		const sup = await register("quiet-sup");
+		await revokeSupervisor(sup.id);
+		const result = await getStatsByHost();
+		expect(result.groups.map((g) => g.host)).not.toContain("quiet-sup");
+	});
+
+	test("the registered machines are bounded too, so the listing can't be inflated by registering many", async () => {
+		await seedMachines(MAX_MACHINE_GROUPS + 5, () => 4);
+		for (let i = 0; i < 3; i++) {
+			await getDb()
+				.insert(sessions)
+				.values({
+					sessionId: `reg-${i}`,
+					agentType: "claude_code",
+					status: "active",
+					metadata: {},
+					reportedHost: `reg-${i}`,
+				} as never)
+				.execute();
+			await register(`reg-${i}`);
+		}
+		const result = await getStatsByHost();
+		expect(result.groups.length).toBe(MAX_MACHINE_GROUPS + 3);
+		expect(MAX_REGISTERED_MACHINE_GROUPS).toBeGreaterThanOrEqual(50);
+	});
+
+	test("a machine named in the supervisor's registration is selectable by name, with its own total", async () => {
+		await seedMachines(MAX_MACHINE_GROUPS + 5, () => 4);
+		await getDb()
+			.insert(sessions)
+			.values({
+				sessionId: "quiet-1",
+				agentType: "claude_code",
+				status: "active",
+				metadata: {},
+				reportedHost: "quiet-sup",
+			} as never)
+			.execute();
+		await register("quiet-sup");
+		const filtered = await getStatsByHost({ host: { kind: "host", host: "quiet-sup" } });
+		expect(filtered.groups.map((g) => [g.host, g.total])).toEqual([["quiet-sup", 1]]);
+	});
+});
 
 describe("the per-machine grouping is bounded", () => {
 	test("the cap is a documented constant and is not tiny", () => {
