@@ -31,8 +31,12 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import "../src/server/db/__test_db.js";
 import {
+	AGENTPULSE_HOOK_HEADER,
+	AGENTPULSE_HOOK_MARKER,
 	CODEX_EVENT_ORDER,
+	buildBashHookCommand,
 	buildCodexHooksFile,
+	buildPowerShellHookCommand,
 	mergeCodexHooksFile,
 } from "../src/shared/hook-command.js";
 
@@ -137,6 +141,74 @@ const FIXTURES: { name: string; existing: string | null }[] = [
 		name: "a non-list under an event that is not ours is left alone",
 		existing: '{"hooks": {"custom": "mine"}}',
 	},
+	{
+		name: "another tool's script that merely calls our URL is not ours",
+		existing: JSON.stringify({
+			hooks: {
+				Stop: [
+					{
+						hooks: [
+							{ type: "command", command: "curl http://localhost:3000/api/v1/hooks?event=Stop" },
+						],
+					},
+				],
+			},
+		}),
+	},
+	{
+		name: "a command with our header text but not our URL is not ours",
+		existing: JSON.stringify({
+			hooks: {
+				Stop: [
+					{
+						hooks: [
+							{
+								type: "command",
+								command: "curl -H 'X-Agent-Type: codex_cli' http://other.invalid/x",
+							},
+						],
+					},
+				],
+			},
+		}),
+	},
+	{
+		name: "another tool's groups on both sides of ours",
+		existing: JSON.stringify({
+			hooks: {
+				Stop: [
+					{ matcher: "a", hooks: [{ type: "command", command: "before-tool" }] },
+					{ hooks: [{ type: "command", command: OLD_FORMAT_COMMAND }] },
+					{ matcher: "b", hooks: [{ type: "command", command: "after-tool" }] },
+				],
+			},
+		}),
+	},
+	{
+		name: "events named like Object.prototype members",
+		existing:
+			'{"hooks": {"constructor": [{"hooks": [{"type": "command", "command": "c"}]}], "__proto__": [{"hooks": [{"type": "command", "command": "p"}]}], "toString": "x", "hasOwnProperty": []}}',
+	},
+	{
+		name: "a number beyond 2^53 in another tool's entry",
+		existing: '{"x": 12345678901234567890, "hooks": {}}',
+	},
+	{ name: "an integer just past 2^53", existing: '{"x": 9007199254740993}' },
+	{ name: "a number written 1.0", existing: '{"x": {"t": 1.0}, "hooks": {}}' },
+	{ name: "an exponent number", existing: '{"x": 1E5}' },
+	{ name: "negative zero", existing: '{"x": -0}' },
+	{ name: "negative zero as a float", existing: '{"x": -0.0}' },
+	{ name: "NaN", existing: '{"x": NaN}' },
+	{ name: "Infinity", existing: '{"x": Infinity}' },
+	{
+		name: "plain integers and short decimals are kept exactly",
+		existing: '{"x": [0, -7, 123456789012345, 0.5, -2.25, 12.125, 0.001], "hooks": {"Other": []}}',
+	},
+	{
+		name: "a number-looking string is just a string",
+		existing: '{"x": "12345678901234567890", "hooks": {}}',
+	},
+	{ name: "duplicate keys keep only the last", existing: '{"a": 1, "a": 2, "hooks": {}}' },
 ];
 
 describe("mergeCodexHooksFile — the reference merge", () => {
@@ -228,6 +300,87 @@ describe("mergeCodexHooksFile — the reference merge", () => {
 		expect(JSON.parse(r.text).hooks.Stop).toHaveLength(4);
 	});
 
+	const LOSSY = "has a number that cannot be kept exactly as written";
+	for (const [name, reason] of [
+		["a number beyond 2^53 in another tool's entry", LOSSY],
+		["an integer just past 2^53", LOSSY],
+		["a number written 1.0", LOSSY],
+		["an exponent number", LOSSY],
+		["negative zero", LOSSY],
+		["negative zero as a float", LOSSY],
+		["NaN", "is not valid JSON"],
+		["Infinity", "is not valid JSON"],
+	] as const) {
+		test(`unusable, never rewritten: ${name}`, () => {
+			const fixture = FIXTURES.find((f) => f.name === name);
+			expect(mergeCodexHooksFile(fixture?.existing ?? null, OURS)).toEqual({
+				status: "unusable",
+				reason,
+			});
+		});
+	}
+
+	test("plain integers and short decimals survive byte for byte", () => {
+		const fixture = FIXTURES.find((f) => f.name.startsWith("plain integers"));
+		const r = mergeCodexHooksFile(fixture?.existing ?? null, OURS);
+		if (r.status !== "changed") throw new Error("expected changed");
+		expect(r.text).toContain("123456789012345");
+		expect(r.text).toContain("12.125");
+		expect(r.text).toContain("0.001");
+		expect(JSON.parse(r.text).x).toEqual([0, -7, 123456789012345, 0.5, -2.25, 12.125, 0.001]);
+	});
+
+	test("event names that are Object.prototype members do not throw or corrupt the result", () => {
+		const fixture = FIXTURES.find((f) => f.name.startsWith("events named like"));
+		const r = mergeCodexHooksFile(fixture?.existing ?? null, OURS);
+		if (r.status !== "changed") throw new Error("expected changed");
+		const merged = JSON.parse(r.text);
+		expect(Object.hasOwn(merged.hooks, "constructor")).toBe(true);
+		expect(Object.hasOwn(merged.hooks, "__proto__")).toBe(true);
+		expect(merged.hooks.toString).toBe("x");
+		expect(merged.hooks.hasOwnProperty).toEqual([]);
+		expect(r.text).toContain('"command": "c"');
+		expect(r.text).toContain('"command": "p"');
+		for (const event of CODEX_EVENT_ORDER) expect(merged.hooks[event]).toHaveLength(1);
+	});
+
+	test("our marker needs both the hook URL and the agent header; every generated command has both", () => {
+		for (const direct of [false, true]) {
+			for (const event of CODEX_EVENT_ORDER) {
+				for (const build of [buildBashHookCommand, buildPowerShellHookCommand]) {
+					const cmd = build({ baseUrl: BASE, direct, agent: "codex_cli", event });
+					expect(cmd).toContain(AGENTPULSE_HOOK_MARKER);
+					expect(cmd).toContain(AGENTPULSE_HOOK_HEADER);
+				}
+			}
+		}
+		expect(OLD_FORMAT_COMMAND).toContain(AGENTPULSE_HOOK_MARKER);
+		expect(OLD_FORMAT_COMMAND).toContain(AGENTPULSE_HOOK_HEADER);
+	});
+
+	test("another tool's script that merely calls our URL is kept", () => {
+		const fixture = FIXTURES.find((f) => f.name.startsWith("another tool's script"));
+		const r = mergeCodexHooksFile(fixture?.existing ?? null, OURS);
+		if (r.status !== "changed") throw new Error("expected changed");
+		const stop = JSON.parse(r.text).hooks.Stop;
+		expect(stop).toHaveLength(2);
+		expect(stop[0].hooks[0].command).toBe("curl http://localhost:3000/api/v1/hooks?event=Stop");
+	});
+
+	test("another tool's groups on both sides of ours keep their places", () => {
+		const fixture = FIXTURES.find((f) => f.name.startsWith("another tool's groups"));
+		const r = mergeCodexHooksFile(fixture?.existing ?? null, OURS);
+		if (r.status !== "changed") throw new Error("expected changed");
+		const stop = JSON.parse(r.text).hooks.Stop;
+		expect(
+			stop.map((g: { hooks: { command: string }[] }) => g.hooks[0].command.slice(0, 11)),
+		).toEqual([
+			"before-tool",
+			JSON.parse(OURS).hooks.Stop[0].hooks[0].command.slice(0, 11),
+			"after-tool",
+		]);
+	});
+
 	for (const name of [
 		"invalid JSON",
 		"top level is an array",
@@ -314,6 +467,19 @@ for (const site of ["scripts/setup-relay.sh", "scripts/setup-hooks.sh", "rendere
 				else expect(existsSync(file)).toBe(false);
 			});
 		}
+	});
+}
+
+for (const site of ["scripts/setup-relay.sh", "scripts/setup-hooks.sh", "rendered /setup.sh"]) {
+	test(`${site}: a directory where hooks.json should be is reported as unreadable, not as bad JSON`, async () => {
+		const dir = scratch("ap-merge-dir-");
+		const file = join(dir, "hooks.json");
+		mkdirSync(file);
+		const got = await runShellMerge(await sourceBlock(site), file);
+		expect(got.code).toBe(4);
+		expect(got.stderr).toContain("could not be read");
+		expect(got.stderr).not.toContain("not valid JSON");
+		expect(got.stdout).toBe("");
 	});
 }
 
@@ -481,5 +647,39 @@ describe("install-local.ps1's Codex merge (by reading; not executed on Windows)"
 		const fn = ps.slice(ps.indexOf("function Merge-ApCodexHooksFile"));
 		expect(fn).toContain("Codex hooks not updated");
 		expect(ps).toContain("Codex hooks not updated");
+	});
+
+	test("compares the files case-sensitively and keeps event names and handler keys case-sensitive", () => {
+		const fn = ps.slice(
+			ps.indexOf("function ConvertTo-ApOrdered"),
+			ps.indexOf("# The POSIX `sh` equivalent"),
+		);
+		expect(fn).toContain("-ceq");
+		expect(fn).not.toMatch(/\$after -eq \$before/);
+		expect(fn).toContain("[System.StringComparer]::Ordinal");
+		expect(fn).not.toContain("[ordered]@{}");
+	});
+
+	test("requires the agent header text as well as the hook URL, like every other copy", () => {
+		const fn = ps.slice(
+			ps.indexOf("function Test-ApAgentPulseHandler"),
+			ps.indexOf("function Merge-ApCodexHooksFile"),
+		);
+		expect(fn).toContain(AGENTPULSE_HOOK_MARKER);
+		expect(fn).toContain(AGENTPULSE_HOOK_HEADER);
+	});
+
+	test("refuses to write unless the other tools' entries survive the round trip through ConvertFrom-Json/ConvertTo-Json unchanged", () => {
+		const fn = ps.slice(
+			ps.indexOf("function Merge-ApCodexHooksFile"),
+			ps.indexOf("# The POSIX `sh` equivalent"),
+		);
+		expect(fn).toContain("Get-ApCanonicalJson");
+		expect(fn).toContain("cannot be kept exactly as written");
+		expect(ps).toMatch(/function ConvertTo-ApHooksJson[\s\S]*-Depth 100/);
+	});
+
+	test("notes that duplicate JSON keys keep only the last", () => {
+		expect(ps).toContain("Duplicate keys");
 	});
 });

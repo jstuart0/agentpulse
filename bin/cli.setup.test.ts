@@ -10,7 +10,7 @@
  * degrades gracefully (see bin/cli.ts's "Verify" section).
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, rm, stat, symlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -441,6 +441,47 @@ describe("agentpulse setup merges into an existing ~/.codex/hooks.json", () => {
 			const res = await runSetup(home, setupArgs);
 			expect(res.code).not.toBe(0);
 			expect(await Bun.file(decoy).text()).toBe("should never change\n");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("a hooks.json that cannot be read or written is reported and setup carries on, with no stack trace", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-merge-ro-"));
+		try {
+			await mkdir(join(home, ".codex", "hooks.json"), { recursive: true });
+			const asDir = await runSetup(home, setupArgs);
+			expect(asDir.code).toBe(0);
+			expect(asDir.out).toContain("Codex hooks not updated");
+			expect(asDir.out).toContain("could not be read");
+			expect(asDir.out).not.toContain("    at ");
+			expect(await Bun.file(join(home, ".agentpulse", "env")).exists()).toBe(true);
+			await rm(join(home, ".codex", "hooks.json"), { recursive: true });
+
+			await Bun.write(join(home, ".codex", "hooks.json"), '{"hooks":{}}\n');
+			await chmod(join(home, ".codex", "hooks.json"), 0o444);
+			const readOnly = await runSetup(home, setupArgs);
+			expect(readOnly.code).toBe(0);
+			expect(readOnly.out).toContain("Codex hooks not updated");
+			expect(await Bun.file(join(home, ".codex", "hooks.json")).text()).toBe('{"hooks":{}}\n');
+			expect(
+				(await readdir(join(home, ".codex"))).filter((f) => f.includes("agentpulse-bak")),
+			).toHaveLength(0);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("a symlinked ~/.codex: the Codex step is reported as not written, nothing lands in the target, setup carries on", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-merge-dirlink-"));
+		try {
+			await mkdir(join(home, "real-codex"));
+			await symlink(join(home, "real-codex"), join(home, ".codex"));
+			const res = await runSetup(home, setupArgs);
+			expect(res.code).toBe(0);
+			expect(res.out).toContain("Codex hooks not updated");
+			expect(res.out).not.toContain("    at ");
+			expect(await readdir(join(home, "real-codex"))).toEqual([]);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
