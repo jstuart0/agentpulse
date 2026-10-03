@@ -785,8 +785,8 @@ describe("the machine on a row, the filter and the grouping are one definition",
 			byMachine.set(key, [...(byMachine.get(key) ?? []), row.sessionId]);
 		}
 		expect([...byMachine.keys()].filter((m) => m !== null).sort()).toEqual([
-			"192.0.2.7",
 			"100% sure_name",
+			"192.0.2.7",
 			"My Box",
 			"fallback-name",
 			"my box",
