@@ -85,18 +85,31 @@ export async function stampMachine(session: Session): Promise<Session> {
  * stands). Idempotent, and run at every boot so a name written by an older
  * server is covered too.
  */
-export async function normalizeStoredMachineNames(): Promise<void> {
+export async function normalizeStoredMachineNames(seams?: {
+	/** Test seam: runs between the read and the writes, where another replica could write. */
+	afterRead?: () => Promise<void>;
+}): Promise<void> {
 	const db = getDb();
-	const repaired = new Map<string, string>();
-	for (const { id, name } of await db
+	const stored = await db
 		.select({ id: supervisors.id, name: supervisors.hostName })
-		.from(supervisors)) {
+		.from(supervisors);
+	await seams?.afterRead?.();
+	// Compare-and-set on the id AND the name that was read: a re-registration that
+	// another replica accepted since keeps the name it wrote.
+	for (const { id, name } of stored) {
 		const cleaned = cleanMachineName(name) ?? UNNAMED_HOST_NAME;
-		repaired.set(id, cleaned);
-		if (cleaned !== name) {
-			await db.update(supervisors).set({ hostName: cleaned }).where(eq(supervisors.id, id));
-		}
+		if (cleaned === name) continue;
+		await db
+			.update(supervisors)
+			.set({ hostName: cleaned })
+			.where(and(eq(supervisors.id, id), eq(supervisors.hostName, name)));
 	}
+	// The managed copies follow the supervisors as they are now, not as they were read.
+	const current = new Map(
+		(await db.select({ id: supervisors.id, name: supervisors.hostName }).from(supervisors)).map(
+			(row) => [row.id, row.name],
+		),
+	);
 	const managed = await db
 		.selectDistinct({ name: managedSessions.hostName, supervisorId: managedSessions.supervisorId })
 		.from(managedSessions)
@@ -107,7 +120,7 @@ export async function normalizeStoredMachineNames(): Promise<void> {
 		if (cleaned === name) continue;
 		await db
 			.update(managedSessions)
-			.set({ hostName: cleaned ?? repaired.get(supervisorId) ?? null })
+			.set({ hostName: cleaned ?? current.get(supervisorId) ?? null })
 			.where(
 				and(eq(managedSessions.hostName, name), eq(managedSessions.supervisorId, supervisorId)),
 			);
