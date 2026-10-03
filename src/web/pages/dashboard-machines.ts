@@ -130,11 +130,15 @@ export function machineEmptyState(input: {
 	const where = input.host === HOST_UNKNOWN ? "with no machine" : `on ${input.host}`;
 	const word = input.scopeTotal === 0 ? null : (input.statusFilter ?? TAB_WORD[input.tab] ?? null);
 	const heading = `No ${word ? `${word} ` : ""}sessions ${where}`;
-	const body =
-		input.scopeTotal === 0
+	const tabOrNot = input.scopeTotal === 0 ? "" : "tab, ";
+	const body = input.ownerNarrowed
+		? `Try another ${tabOrNot}owner or machine.`
+		: input.scopeTotal === 0
 			? "Try another machine."
-			: input.ownerNarrowed
-				? "Try another tab, owner or machine."
-				: "Try another tab or machine.";
-	return { heading, body, actions: ["allMachines"] };
+			: "Try another tab or machine.";
+	// Narrowed to one owner as well: widening to everyone is a way out too.
+	const actions: EmptyState["actions"] = input.ownerNarrowed
+		? ["allMachines", "viewEveryone"]
+		: ["allMachines"];
+	return { heading, body, actions };
 }

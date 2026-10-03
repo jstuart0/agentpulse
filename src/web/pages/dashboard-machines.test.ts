@@ -211,6 +211,20 @@ describe("machineEmptyState", () => {
 		);
 	});
 
+	test("when whose sessions is narrowed too, the way out includes everyone's, and the body says owner as well", () => {
+		const empty = machineEmptyState({ ...base, ownerNarrowed: true });
+		expect(empty).toEqual({
+			heading: "No sessions on build-01",
+			body: "Try another owner or machine.",
+			actions: ["allMachines", "viewEveryone"],
+		});
+		expect(machineEmptyState({ ...base, scopeTotal: 9, ownerNarrowed: true })?.actions).toEqual([
+			"allMachines",
+			"viewEveryone",
+		]);
+		expect(machineEmptyState({ ...base, scopeTotal: 9 })?.actions).toEqual(["allMachines"]);
+	});
+
 	test("unknown reads as no machine, and a narrowed owner is mentioned in the way out", () => {
 		const unknown = machineEmptyState({
 			...base,
