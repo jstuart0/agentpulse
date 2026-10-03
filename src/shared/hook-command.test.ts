@@ -662,6 +662,14 @@ describe("buildPowerShellExcludeSnippet — read, fail-closed and resolution rul
 		expect(snippet).not.toMatch(/\$apSkipTrimmed\.Trim\(\)/);
 	});
 
+	test('the skip value and the cwd are compared ordinally, never with a culture-aware -eq/-contains/StartsWith (ICU ignores a byte-order mark and other zero-width characters, so "\\ufeff1" would equal "1") (by reading; never executed)', () => {
+		expect(snippet).toContain("[Array]::IndexOf(@('1','true','yes','on'), $apSkipTrimmed)");
+		expect(snippet).not.toMatch(/-contains \$apSkipTrimmed/);
+		expect(snippet).toContain("[string]::Equals($apCwdCmp, $apResolvedCmp, 'Ordinal')");
+		expect(snippet).toContain("$apCwdCmp.StartsWith($apResolvedWithSep, 'Ordinal')");
+		expect(snippet).not.toMatch(/\$apCwdCmp -eq/);
+	});
+
 	test("cwd and rules both resolve through symlinks and junctions with the same walker", () => {
 		expect(snippet).toContain("function ApResolveLinks");
 		expect(snippet).toContain(".LinkType");

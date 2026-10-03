@@ -133,10 +133,13 @@ describe("exclude-shim-parity-ps — pwsh availability", () => {
 });
 
 // Rows that don't touch Windows ACL semantics at all — safe to run under
-// pwsh on any platform. "no rules file" fixtures reach Test-Path's "false"
-// branch before ApCheckSecurity is ever called; skip-value fixtures return
-// before the rules file is even looked at.
-const ACL_INDEPENDENT_NAMES = new Set(["missing-file-none", "empty-file-none"]);
+// pwsh on any platform. "no rules file" fixtures reach the not-found branch
+// before ApCheckSecurity is ever called; skip-value fixtures return before the
+// rules file is even looked at. An EMPTY rules file is not one of these: the
+// file exists, so its directory and its ACL are checked, and off Windows that
+// check fails closed (the file is judged invalid, the event excluded). The first
+// Linux run showed that, and it is not what the fixture expects.
+const ACL_INDEPENDENT_NAMES = new Set(["missing-file-none"]);
 const skipValueFixtures = fixtures.filter((f) => f.expectedSkip !== undefined);
 const aclIndependentFixtures = fixtures.filter((f) => ACL_INDEPENDENT_NAMES.has(f.name));
 

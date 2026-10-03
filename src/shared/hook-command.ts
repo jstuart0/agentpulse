@@ -1118,7 +1118,7 @@ function ApResolve($apTarget) {
 $apSkipTrimmed = $env:AGENTPULSE_SKIP
 if ($null -eq $apSkipTrimmed) { $apSkipTrimmed = '' }
 $apSkipTrimmed = $apSkipTrimmed.Trim(' ', "\`t", "\`r", "\`n").ToLowerInvariant()
-if (@('1','true','yes','on') -contains $apSkipTrimmed) { $apExcluded = $true }
+if ([Array]::IndexOf(@('1','true','yes','on'), $apSkipTrimmed) -ge 0) { $apExcluded = $true }
 
 $apPresent = $false
 $apLookupError = $false
@@ -1224,7 +1224,7 @@ if ($apPresent) {
       $apResolvedCmp = $apResolved.Replace('/', '\\').ToLowerInvariant()
       $apResolvedIsRoot = $apResolvedCmp -match '^[a-z]:\\\\$'
       $apResolvedWithSep = if ($apResolvedIsRoot) { $apResolvedCmp } else { "$apResolvedCmp\\" }
-      if ($apCwdCmp -eq $apResolvedCmp -or $apCwdCmp.StartsWith($apResolvedWithSep)) {
+      if ([string]::Equals($apCwdCmp, $apResolvedCmp, 'Ordinal') -or $apCwdCmp.StartsWith($apResolvedWithSep, 'Ordinal')) {
         $apMatch = $true
       }
     }

@@ -130,7 +130,7 @@ function Merge-Hashtable {
 # return, byte order mark), restored when it is written. Never executed on
 # Windows by anything in this change.
 $script:ApExcludePsScript = @'
-# agentpulse-exclude-check 0e6ebf918412c5
+# agentpulse-exclude-check 0ab94c52bff92b
 # Trust: the hook command runs this file only when it and ~/.agentpulse are owned by you
 # and not group- or world-writable. Only that directory and this file are checked, not the
 # directory's ancestors: a ~/.agentpulse symlink that points under a directory other users
@@ -231,7 +231,7 @@ function ApResolve($apTarget) {
 $apSkipTrimmed = $env:AGENTPULSE_SKIP
 if ($null -eq $apSkipTrimmed) { $apSkipTrimmed = '' }
 $apSkipTrimmed = $apSkipTrimmed.Trim(' ', "`t", "`r", "`n").ToLowerInvariant()
-if (@('1','true','yes','on') -contains $apSkipTrimmed) { $apExcluded = $true }
+if ([Array]::IndexOf(@('1','true','yes','on'), $apSkipTrimmed) -ge 0) { $apExcluded = $true }
 
 $apPresent = $false
 $apLookupError = $false
@@ -337,7 +337,7 @@ if ($apPresent) {
       $apResolvedCmp = $apResolved.Replace('/', '\').ToLowerInvariant()
       $apResolvedIsRoot = $apResolvedCmp -match '^[a-z]:\\$'
       $apResolvedWithSep = if ($apResolvedIsRoot) { $apResolvedCmp } else { "$apResolvedCmp\" }
-      if ($apCwdCmp -eq $apResolvedCmp -or $apCwdCmp.StartsWith($apResolvedWithSep)) {
+      if ([string]::Equals($apCwdCmp, $apResolvedCmp, 'Ordinal') -or $apCwdCmp.StartsWith($apResolvedWithSep, 'Ordinal')) {
         $apMatch = $true
       }
     }
