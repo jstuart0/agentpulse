@@ -402,13 +402,65 @@ export function isCodexObserverEnabled(env: NodeJS.ProcessEnv): boolean {
 	return env.AGENTPULSE_CODEX_OBSERVER !== "off";
 }
 
-/** The most one pass reads from a file, and the most lines it replays. */
+/**
+ * The most one pass takes from a file, in bytes and in lines. The rest waits for
+ * the next scan, so one long session cannot hold up the others or fill memory.
+ * A single line longer than the byte cap is still read whole.
+ */
 export const MAX_PASS_BYTES = 1024 * 1024;
 export const MAX_PASS_LINES = 500;
 
 /** Wraps an async job so a call made while it is still running does nothing. */
 export function singleFlight<T>(job: () => Promise<T>): () => Promise<T | undefined> {
-	return job;
+	let running = false;
+	return async () => {
+		if (running) return undefined;
+		running = true;
+		try {
+			return await job();
+		} finally {
+			running = false;
+		}
+	};
+}
+
+type PassLine = { text: string; start: number };
+
+/**
+ * Up to MAX_PASS_LINES complete lines from `startOffset`, reading at most
+ * MAX_PASS_BYTES (more only while the first line is still unfinished). Lines are
+ * split on the LF byte, so a CRLF ending keeps its CR in the text and every
+ * offset is a byte offset whatever the characters are; `consumedBytes` ends just
+ * after the last LF taken. A last line without its LF yet is left alone.
+ */
+async function readPass(
+	filePath: string,
+	startOffset: number,
+	fileSize: number,
+): Promise<{ lines: PassLine[]; consumedBytes: number }> {
+	const available = fileSize - startOffset;
+	const fd = await open(filePath, "r");
+	try {
+		let want = Math.min(available, MAX_PASS_BYTES);
+		for (;;) {
+			const buf = Buffer.alloc(want);
+			const { bytesRead } = await fd.read(buf, 0, want, startOffset);
+			const lines: PassLine[] = [];
+			let lineStart = 0;
+			while (lines.length < MAX_PASS_LINES) {
+				const lf = buf.indexOf(0x0a, lineStart);
+				if (lf === -1 || lf >= bytesRead) break;
+				lines.push({ text: buf.toString("utf8", lineStart, lf), start: startOffset + lineStart });
+				lineStart = lf + 1;
+			}
+			if (lines.length > 0 || want >= available || bytesRead < want) {
+				return { lines, consumedBytes: lineStart };
+			}
+			want = Math.min(available, want * 2);
+		}
+	} finally {
+		await fd.close();
+	}
 }
 
 export async function processRolloutFile(
@@ -455,26 +507,7 @@ export async function processRolloutFile(
 		return { offset: stat.size, sessionId: stateEntry?.sessionId ?? "", excluded: true };
 	}
 
-	const bytesToRead = stat.size - startOffset;
-	const buf = Buffer.alloc(bytesToRead);
-	const fd = await open(filePath, "r");
-	try {
-		await fd.read(buf, 0, bytesToRead, startOffset);
-	} finally {
-		await fd.close();
-	}
-
-	const chunk = buf.toString("utf8");
-	const endsWithNewline = chunk.endsWith("\n");
-	// Every element of `allLines` except the last is guaranteed to be
-	// followed by exactly one "\n" byte in the chunk — true whether or not
-	// the chunk itself ends with a newline (split("\n") always appends a
-	// trailing "" when it does). This lets the loop below track each
-	// line's start byte offset precisely, which the delivery id needs.
-	const allLines = chunk.split("\n");
-	const completeLines = allLines.slice(0, -1);
-	const incomplete = endsWithNewline ? "" : (allLines[allLines.length - 1] ?? "");
-	const consumedBytes = bytesToRead - Buffer.byteLength(incomplete, "utf8");
+	const { lines, consumedBytes } = await readPass(filePath, startOffset, stat.size);
 	const newOffset = startOffset + consumedBytes;
 
 	let sessionId = stateEntry?.sessionId ?? "";
@@ -503,11 +536,7 @@ export async function processRolloutFile(
 	// here vs. assistant-message-only deltas there). Consolidating the two
 	// parsers is an explicit non-goal this campaign — see "Out of scope" in
 	// thoughts/shared/plans/active/2026-07-17-deliver-client-currency-remediation.md.
-	let lineStartOffset = startOffset;
-	for (const line of completeLines) {
-		const thisLineStart = lineStartOffset;
-		lineStartOffset += Buffer.byteLength(line, "utf8") + 1; // +1 for the "\n"
-
+	for (const { text: line, start: thisLineStart } of lines) {
 		if (!line.trim()) continue;
 		let entry: { type?: string; payload?: Record<string, unknown> };
 		try {
@@ -526,7 +555,7 @@ export async function processRolloutFile(
 			cwd = startedIn ?? null;
 			posting = postingFor(currentRules, cwd);
 			if (posting === "excluded") {
-				return { offset: startOffset + consumedBytes, sessionId, excluded: true };
+				return { offset: newOffset, sessionId, excluded: true };
 			}
 			if (covered) continue;
 			const model = typeof p.model === "string" ? p.model : undefined;
@@ -695,7 +724,7 @@ export async function startCodexObserver(options: {
 	const callMapsByFile = new Map<string, CallMap>();
 	let lastEvictionAt = 0;
 
-	async function scan() {
+	const scan = singleFlight(async () => {
 		await scanRolloutFiles(listRolloutFiles(BACKFILL_DAYS), {
 			state,
 			callMapsByFile,
@@ -710,7 +739,7 @@ export async function startCodexObserver(options: {
 			lastEvictionAt = now;
 			evictNativeMarkers(homedir(), now, NATIVE_MARKER_MAX_AGE_MS);
 		}
-	}
+	});
 
 	console.log("[codex-observer] scanning ~/.codex/sessions every", SCAN_INTERVAL_MS / 1000, "s");
 	await scan();

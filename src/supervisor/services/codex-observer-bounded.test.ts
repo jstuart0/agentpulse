@@ -235,7 +235,8 @@ describe("the cap can fall anywhere in a line", () => {
 		const path = join(dir, "rollout-emoji.jsonl");
 		const meta = metaLine("emoji-1", dir);
 		const metaBytes = Buffer.byteLength(meta);
-		const base = Buffer.byteLength(promptLine("😀")) - 5;
+		// Bytes of the line before its text: the line minus the emoji, the closing JSON and the LF.
+		const base = Buffer.byteLength(promptLine("😀")) - 4 - Buffer.byteLength('"}]}}\n');
 		// Two bytes of the emoji fall before the cap, two after.
 		const pad = MAX_PASS_BYTES - metaBytes - base - 2;
 		const text = `${filler(pad)}😀`;
