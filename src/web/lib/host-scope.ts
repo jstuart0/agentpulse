@@ -38,6 +38,11 @@ export function normalizedHost(raw: string | null | undefined): HostParam {
 	return parsed.kind === "unknown" ? HOST_UNKNOWN : parsed.host;
 }
 
+/** Whether the filter can express this value at all (the grammar accepts it). */
+export function isExpressibleHost(raw: string | null | undefined): boolean {
+	return parseHostParam(raw) !== null;
+}
+
 /** Whether a response's echo of the machine filter it applied is the one that was asked for (see hostEchoMatchesRequest). */
 export function echoMatchesHost(requested: HostParam | undefined, echo: unknown): boolean {
 	return hostEchoMatchesRequest(parsedHost(requested), echo);

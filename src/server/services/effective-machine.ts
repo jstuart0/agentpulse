@@ -22,11 +22,12 @@
  *    needs the value of every row anyway.
  * None of them changes the row shape the statements around them return.
  */
-import { type SQL, eq, sql } from "drizzle-orm";
+import { type SQL, eq, isNotNull, sql } from "drizzle-orm";
 import type { HostScope } from "../../shared/machine-scope.js";
 import type { Session } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { managedSessions, sessions } from "../db/schema/index.js";
+import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
+import { cleanMachineName } from "./machine-name.js";
 
 const SUPERVISOR_HOST = sql`(SELECT NULLIF(TRIM(ms.host_name), '') FROM ${managedSessions} AS ms WHERE ms.session_id = ${sessions.sessionId})`;
 
@@ -72,4 +73,34 @@ export async function stampMachine(session: Session): Promise<Session> {
 		.where(eq(sessions.sessionId, session.sessionId))
 		.limit(1);
 	return row ? { ...session, machine: row.machine } : session;
+}
+
+/**
+ * Cleans the host names stored before names were cleaned on the way in: every
+ * distinct supervisor host name and managed-session host name that isn't already
+ * what cleaning would give is rewritten (to nothing, for a managed session's
+ * name with nothing left, which makes the reported name stand). Idempotent, and
+ * run at every boot so a name written by an older server is covered too.
+ */
+export async function normalizeStoredMachineNames(): Promise<void> {
+	const db = getDb();
+	const managed = await db
+		.selectDistinct({ name: managedSessions.hostName })
+		.from(managedSessions)
+		.where(isNotNull(managedSessions.hostName));
+	for (const { name } of managed) {
+		if (name === null) continue;
+		const cleaned = cleanMachineName(name);
+		if (cleaned === name) continue;
+		await db
+			.update(managedSessions)
+			.set({ hostName: cleaned })
+			.where(eq(managedSessions.hostName, name));
+	}
+	const hosts = await db.selectDistinct({ name: supervisors.hostName }).from(supervisors);
+	for (const { name } of hosts) {
+		const cleaned = cleanMachineName(name);
+		if (cleaned === null || cleaned === name) continue;
+		await db.update(supervisors).set({ hostName: cleaned }).where(eq(supervisors.hostName, name));
+	}
 }

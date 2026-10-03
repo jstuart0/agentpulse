@@ -61,12 +61,21 @@ describe("the machine the dashboard opens on", () => {
 		await h.unmount();
 	});
 
-	test("a stored value outside the grammar can't hide the list", async () => {
+	test("a stored value outside the grammar can't hide the list, and the hook says it was dropped", async () => {
 		store.set(hostStorageKey("viewer"), "bad\nvalue");
 		const h = renderHook(() => useHostScope(), null);
 		await h.render(null);
 		await flush();
 		expect(useDashboardScopeStore.getState()).toMatchObject({ host: "", hostResolved: true });
+		expect(h.current.value?.storedChoiceDropped).toBe(true);
+		await h.unmount();
+	});
+
+	test("nothing stored, or a good value, drops nothing", async () => {
+		const h = renderHook(() => useHostScope(), null);
+		await h.render(null);
+		await flush();
+		expect(h.current.value?.storedChoiceDropped).toBe(false);
 		await h.unmount();
 	});
 
@@ -94,14 +103,33 @@ describe("choosing a machine", () => {
 		await h.unmount();
 	});
 
-	test("a name is stored trimmed, and one outside the grammar is refused as every machine", async () => {
+	test("a name is stored trimmed", async () => {
 		const h = renderHook(() => useHostScope(), null);
 		await h.render(null);
 		await flush();
-		await act(async () => h.current.value?.choose("  build-01 "));
+		await act(async () => void h.current.value?.choose("  build-01 "));
 		expect(useDashboardScopeStore.getState().host).toBe("build-01");
-		await act(async () => h.current.value?.choose("a\nb"));
-		expect(useDashboardScopeStore.getState().host).toBe("");
+		expect(store.get(hostStorageKey("viewer"))).toBe("build-01");
+		await h.unmount();
+	});
+
+	test("a choice the filter can't express is refused and reported, and the view is left as it was, never widened to every machine", async () => {
+		const h = renderHook(() => useHostScope(), null);
+		await h.render(null);
+		await flush();
+		await act(async () => void h.current.value?.choose("edge-02"));
+		let accepted = true;
+		await act(async () => {
+			accepted = h.current.value?.choose("a\nb") ?? true;
+		});
+		expect(accepted).toBe(false);
+		expect(useDashboardScopeStore.getState().host).toBe("edge-02");
+		expect(store.get(hostStorageKey("viewer"))).toBe("edge-02");
+		await act(async () => {
+			accepted = h.current.value?.choose("x".repeat(300)) ?? true;
+		});
+		expect(accepted).toBe(false);
+		expect(useDashboardScopeStore.getState().host).toBe("edge-02");
 		await h.unmount();
 	});
 

@@ -16,6 +16,7 @@ import {
 import { awaitSeamInsideAdminLock, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { supervisors } from "../db/schema/index.js";
+import { cleanMachineName } from "./machine-name.js";
 import { readTrustedRoots, withCapabilityDefaults } from "./supervisor-capabilities.js";
 import { excludeRulesStateOf } from "./supervisor-exclude-state.js";
 
@@ -126,6 +127,7 @@ async function writeSupervisor(
 	createdByUserId: string | null,
 ) {
 	const id = input.id ?? crypto.randomUUID();
+	const hostName = cleanMachineName(input.hostName) ?? "unnamed host";
 	const timestamp = nowIso();
 	const leaseExpiry = leaseExpiryIso();
 
@@ -133,7 +135,7 @@ async function writeSupervisor(
 		.insert(supervisors)
 		.values({
 			id,
-			hostName: input.hostName,
+			hostName,
 			platform: input.platform,
 			arch: input.arch,
 			version: input.version,
@@ -152,7 +154,7 @@ async function writeSupervisor(
 		.onConflictDoUpdate({
 			target: supervisors.id,
 			set: {
-				hostName: input.hostName,
+				hostName,
 				platform: input.platform,
 				arch: input.arch,
 				version: input.version,

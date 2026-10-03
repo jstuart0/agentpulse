@@ -6,6 +6,7 @@ import {
 	echoMatchesHost,
 	hostStorageKey,
 	hostVerdict,
+	isExpressibleHost,
 	normalizedHost,
 	parsedHost,
 } from "./host-scope.js";
@@ -102,5 +103,14 @@ describe("storage", () => {
 		expect(hostStorageKey("u-1")).not.toBe(hostStorageKey("u-2"));
 		expect(hostStorageKey(null)).toBe(hostStorageKey(null));
 		expect(hostStorageKey("u-1")).not.toContain("groupBy");
+	});
+});
+
+describe("isExpressibleHost", () => {
+	test("names, padded names, unknown and every machine are; control characters and over-long names are not", () => {
+		for (const ok of ["build-01", "  x ", HOST_UNKNOWN, "", "Alice's MBP"])
+			expect(isExpressibleHost(ok)).toBe(true);
+		for (const bad of ["a\nb", "tab\there", "x".repeat(300), "bidi\u202ename"])
+			expect(isExpressibleHost(bad)).toBe(false);
 	});
 });

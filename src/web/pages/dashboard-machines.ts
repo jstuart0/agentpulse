@@ -142,3 +142,9 @@ export function machineEmptyState(input: {
 		: ["allMachines"];
 	return { heading, body, actions };
 }
+
+/** Said (not shown) when a machine can't be expressed as a filter: the view is never silently widened. */
+export const MACHINE_REFUSED_NOTE =
+	"That machine's name can't be used as a filter, so the view was not changed.";
+export const MACHINE_DROPPED_NOTE =
+	"The saved machine filter couldn't be applied, so every machine is shown.";

@@ -64,6 +64,8 @@ import {
 	parseGroupBy,
 } from "./dashboard-groups.js";
 import {
+	MACHINE_DROPPED_NOTE,
+	MACHINE_REFUSED_NOTE,
 	groupByOptions,
 	machineAnnouncement,
 	machineControlVisible,
@@ -130,7 +132,7 @@ export function DashboardPage() {
 	// ONE description of what the page shows: whose sessions, and whether scratch
 	// workspaces are in. Every request below is built from it with scopedQuery().
 	const { owner, resolved: ownerResolved, choose: chooseOwner } = useDefaultOwnerScope();
-	const { host, resolved: hostResolved, choose: chooseHost } = useHostScope();
+	const { host, resolved: hostResolved, choose: chooseHost, storedChoiceDropped } = useHostScope();
 	const scopeResolved = ownerResolved && hostResolved;
 	const scope = useMemo<DashboardScope | null>(
 		() => (scopeResolved ? { owner, excludeScratch: !showScratch, host } : null),
@@ -165,11 +167,15 @@ export function DashboardPage() {
 	const [machineNote, setMachineNote] = useState("");
 	const chooseMachine = useCallback(
 		(next: string) => {
-			chooseHost(next);
-			setMachineNote(machineAnnouncement(next));
+			if (chooseHost(next)) setMachineNote(machineAnnouncement(next));
+			else setMachineNote(MACHINE_REFUSED_NOTE);
 		},
 		[chooseHost],
 	);
+	// A saved machine the filter can't express was dropped at load: say so.
+	useEffect(() => {
+		if (storedChoiceDropped) setMachineNote(MACHINE_DROPPED_NOTE);
+	}, [storedChoiceDropped]);
 	// Group-by "machine" counts come from the same answer as the filter's options.
 	const machineCountsByKey = useMemo(
 		() => (machineStats.groups ? hostStatsByKey(machineStats.groups) : null),

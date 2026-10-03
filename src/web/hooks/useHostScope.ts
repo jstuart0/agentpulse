@@ -1,5 +1,10 @@
-import { useCallback, useEffect } from "react";
-import { type HostParam, hostStorageKey, normalizedHost } from "../lib/host-scope.js";
+import { useCallback, useEffect, useState } from "react";
+import {
+	type HostParam,
+	hostStorageKey,
+	isExpressibleHost,
+	normalizedHost,
+} from "../lib/host-scope.js";
 import { browserStorage } from "../lib/id-set-storage.js";
 import { useDashboardScopeStore } from "../stores/dashboard-scope-store.js";
 import { useUserStore } from "../stores/user-store.js";
@@ -17,14 +22,24 @@ export function useHostScope() {
 	const resolveHost = useDashboardScopeStore((s) => s.resolveHost);
 	const setHost = useDashboardScopeStore((s) => s.setHost);
 
+	const [storedChoiceDropped, setStoredChoiceDropped] = useState(false);
+
 	useEffect(() => {
 		if (resolved) return;
-		resolveHost(normalizedHost(browserStorage()?.getItem(hostStorageKey(userId)) ?? null));
+		const stored = browserStorage()?.getItem(hostStorageKey(userId)) ?? null;
+		// A saved value the filter can't express shows every machine, and says so.
+		setStoredChoiceDropped(stored !== null && !isExpressibleHost(stored));
+		resolveHost(normalizedHost(stored));
 	}, [resolved, userId, resolveHost]);
 
-	/** The viewer picked a machine (or every machine): apply it and remember it for next time. */
+	/**
+	 * The viewer picked a machine (or every machine): apply it and remember it for
+	 * next time. A name the filter can't express is refused (false) and the view is
+	 * left as it was: it is never quietly widened to every machine.
+	 */
 	const choose = useCallback(
-		(next: HostParam) => {
+		(next: HostParam): boolean => {
+			if (!isExpressibleHost(next)) return false;
 			const chosen = normalizedHost(next);
 			setHost(chosen);
 			try {
@@ -32,9 +47,10 @@ export function useHostScope() {
 			} catch {
 				// Storage refused the write: the choice still holds for this visit.
 			}
+			return true;
 		},
 		[setHost, userId],
 	);
 
-	return { host, resolved, choose };
+	return { host, resolved, choose, storedChoiceDropped };
 }

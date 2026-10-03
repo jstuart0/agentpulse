@@ -16,6 +16,7 @@ import {
 } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { insertNormalizedEvents } from "./event-processor.js";
+import { cleanMachineName } from "./machine-name.js";
 import { generateSessionName } from "./name-generator.js";
 import { ownerForNewSession } from "./session-attribution.js";
 import { mapSessionDto } from "./session-dto.js";
@@ -217,7 +218,7 @@ export async function upsertManagedSessionState(
 			providerCapabilitySnapshot,
 			createdAt: timestamp,
 			updatedAt: timestamp,
-			hostName: existingManaged?.hostName ?? supervisor?.hostName ?? null,
+			hostName: existingManaged?.hostName ?? cleanMachineName(supervisor?.hostName),
 			hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
 		})
 		.onConflictDoUpdate({
@@ -237,7 +238,7 @@ export async function upsertManagedSessionState(
 				lastProviderSyncAt,
 				providerProtocolVersion,
 				providerCapabilitySnapshot,
-				hostName: existingManaged?.hostName ?? supervisor?.hostName ?? null,
+				hostName: existingManaged?.hostName ?? cleanMachineName(supervisor?.hostName),
 				hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
 				updatedAt: timestamp,
 			},
