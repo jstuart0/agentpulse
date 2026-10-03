@@ -111,6 +111,22 @@ describe("the per-machine grouping is bounded", () => {
 		expect(many).toBe(few);
 	});
 
+	test("machines are ordered by name without regard to case, ties by spelling (the order the dashboard shows)", async () => {
+		const rows = ["b-box", "A-box", "a-box", "C-box", "B-box"].map((reportedHost, i) => ({
+			sessionId: `case-${i}`,
+			agentType: "claude_code",
+			status: "active",
+			metadata: {},
+			reportedHost,
+		}));
+		await getDb()
+			.insert(sessions)
+			.values(rows as never)
+			.execute();
+		const result = await getStatsByHost();
+		expect(result.groups.map((g) => g.host)).toEqual(["A-box", "a-box", "B-box", "b-box", "C-box"]);
+	});
+
 	test("an empty instance is not cut", async () => {
 		const result = await getStatsByHost();
 		expect(result).toMatchObject({

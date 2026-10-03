@@ -49,6 +49,17 @@ describe("parseHostParam", () => {
 		expect(parseHostParam("a".repeat(HOST_PARAM_MAX_LENGTH + 1))).toBeNull();
 	});
 
+	test("the length cap counts the value as sent, before trimming", () => {
+		const exact = "x".repeat(HOST_PARAM_MAX_LENGTH);
+		expect(parseHostParam(exact)).toEqual({ kind: "host", host: exact });
+		expect(parseHostParam(` ${exact}`)).toBeNull();
+		expect(parseHostParam(`${exact} `)).toBeNull();
+		expect(parseHostParam(`  ${"x".repeat(HOST_PARAM_MAX_LENGTH - 4)}  `)).toEqual({
+			kind: "host",
+			host: "x".repeat(HOST_PARAM_MAX_LENGTH - 4),
+		});
+	});
+
 	test("SQL-looking and path-looking text is just a name", () => {
 		expect(parseHostParam("x' OR '1'='1")).toEqual({ kind: "host", host: "x' OR '1'='1" });
 		expect(parseHostParam("../etc")).toEqual({ kind: "host", host: "../etc" });

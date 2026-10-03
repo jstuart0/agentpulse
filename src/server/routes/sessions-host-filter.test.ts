@@ -393,6 +393,31 @@ describe("GET /sessions?host=", () => {
 	});
 });
 
+describe("a scope that names nobody still says which machine filter it applied", () => {
+	const NOBODY = "3f2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b";
+
+	test("the plain list, the narrow projection and every stats shape echo hostFilter", async () => {
+		const w = await teamWorld();
+		await seed([{ sessionId: "n-1", reportedHost: "build-01" }]);
+		const echo = { kind: "host", host: "build-01" };
+		const paths = [
+			`/sessions?owner=${NOBODY}&host=build-01`,
+			`/sessions?owner=${NOBODY}&host=build-01&fields=sessionId`,
+			`/sessions/stats?owner=${NOBODY}&host=build-01`,
+			`/sessions/stats?owner=${NOBODY}&host=build-01&group_by=host`,
+			`/sessions/stats?owner=${NOBODY}&host=build-01&group_by=owner`,
+		];
+		for (const path of paths) {
+			const body = await get<{ hostFilter?: unknown; sessions?: unknown[]; groups?: unknown[] }>(
+				path,
+				w.me.headers,
+			);
+			expect({ path, hostFilter: body.hostFilter }).toEqual({ path, hostFilter: echo });
+			expect(body.sessions ?? body.groups ?? []).toEqual([]);
+		}
+	});
+});
+
 describe("host validation", () => {
 	test("a value outside the grammar is 400 invalid_host with a capped echo, on the list and the stats", async () => {
 		const w = await teamWorld();
