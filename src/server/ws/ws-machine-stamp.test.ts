@@ -146,7 +146,7 @@ describe("initWsBroadcaster with an annotator", () => {
 		}
 	});
 
-	test("pushes keep their order when an earlier lookup is the slowest", async () => {
+	test("a session's own pushes keep their order when an earlier lookup is the slowest, and its event waits for its creation", async () => {
 		const bus = new TestBus();
 		const gates = new Map<string, () => void>();
 		initWsBroadcaster(bus, {
@@ -162,18 +162,98 @@ describe("initWsBroadcaster with an annotator", () => {
 				sessionId: "ord-1",
 				event: { id: 1 } as unknown as SessionEvent,
 			});
-			bus.emit("session_updated", pushed("ord-2"));
-			gates.get("ord-2")?.();
 			await flush();
 			expect(socket.received).toEqual([]);
 			gates.get("ord-1")?.();
+			await flush();
+			expect(socket.received.map((m) => m.type)).toEqual(["session_created", "new_event"]);
+		} finally {
+			socket.close();
+		}
+	});
+
+	test("one session's slow lookup never holds up another session's push, or an event for a session with nothing pending", async () => {
+		const bus = new TestBus();
+		initWsBroadcaster(bus, {
+			annotate: (session) =>
+				session.sessionId === "slow"
+					? new Promise<Session>(() => {})
+					: Promise.resolve({ ...session, machine: "m" }),
+			annotateTimeoutMs: 10_000,
+		});
+		const socket = openSocket();
+		try {
+			bus.emit("session_updated", pushed("slow"));
+			bus.emit("session_updated", pushed("fast"));
+			bus.emit("session_event", { sessionId: "idle", event: { id: 1 } as unknown as SessionEvent });
 			await flush();
 			expect(
 				socket.received.map(
 					(m) =>
 						`${m.type}:${(m.data.session as { sessionId?: string } | undefined)?.sessionId ?? ""}`,
 				),
-			).toEqual(["session_created:ord-1", "new_event:", "session_updated:ord-2"]);
+			).toEqual(["session_updated:fast", "new_event:"]);
+		} finally {
+			socket.close();
+		}
+	});
+
+	test("a lookup that never answers is given up on: the row goes out unstamped after the timeout, and the session's later push follows it", async () => {
+		const bus = new TestBus();
+		let calls = 0;
+		initWsBroadcaster(bus, {
+			annotate: (session) => {
+				calls += 1;
+				return calls === 1
+					? new Promise<Session>(() => {})
+					: Promise.resolve({ ...session, machine: "m" });
+			},
+			annotateTimeoutMs: 30,
+		});
+		const socket = openSocket();
+		try {
+			bus.emit("session_updated", pushed("hung"));
+			bus.emit("session_updated", pushed("hung"));
+			await new Promise((resolve) => setTimeout(resolve, 15));
+			expect(socket.received).toEqual([]);
+			await new Promise((resolve) => setTimeout(resolve, 60));
+			const rows = socket.received.map((m) => m.data.session as { machine?: string });
+			expect(rows.length).toBe(2);
+			expect("machine" in rows[0]).toBe(false);
+			expect(rows[1].machine).toBe("m");
+		} finally {
+			socket.close();
+		}
+	});
+
+	test("lookups in flight are bounded: past the bound a push is sent unstamped without asking, and the bound frees as lookups settle", async () => {
+		const bus = new TestBus();
+		const gates: Array<() => void> = [];
+		let asked = 0;
+		initWsBroadcaster(bus, {
+			annotate: (session) => {
+				asked += 1;
+				return new Promise<Session>((resolve) =>
+					gates.push(() => resolve({ ...session, machine: "m" })),
+				);
+			},
+			annotateTimeoutMs: 10_000,
+			annotateMaxInFlight: 3,
+		});
+		const socket = openSocket();
+		try {
+			for (let i = 0; i < 6; i++) bus.emit("session_updated", pushed(`b-${i}`));
+			await flush();
+			expect(asked).toBe(3);
+			expect(
+				socket.received.map((m) => (m.data.session as { sessionId: string }).sessionId).sort(),
+			).toEqual(["b-3", "b-4", "b-5"]);
+			for (const open of gates) open();
+			await flush();
+			expect(socket.received.length).toBe(6);
+			bus.emit("session_updated", pushed("b-after"));
+			await flush();
+			expect(asked).toBe(4);
 		} finally {
 			socket.close();
 		}
