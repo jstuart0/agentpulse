@@ -57,3 +57,22 @@ export const OWNER_SCOPE_PATTERN =
 export const OWNER_SCOPE = z
 	.string()
 	.regex(OWNER_SCOPE_PATTERN, "owner must be me, all, unassigned, service, or a user id");
+
+/**
+ * The `host` filter on list_sessions and get_stats: an exact machine name, or
+ * the reserved token for sessions with no machine (`no_host` writes it, since a
+ * caller can't easily type a control character). Mirrors src/shared/machine-scope.ts,
+ * spelled out here because this package can't import from src/shared;
+ * src/shared/machine-scope-mcp-parity.test.ts holds the two to the same answers.
+ */
+export const UNKNOWN_HOST_PARAM = "\u001funknown";
+/** Room for the reported cap (128) and for a supervisor's own, unchecked, host name. */
+export const HOST_PARAM_MAX_LENGTH = 256;
+export const HOST_NAME = z
+	.string()
+	.optional()
+	.describe("Exact machine name (case-sensitive). Blank means every machine.");
+export const NO_HOST = z
+	.boolean()
+	.optional()
+	.describe("Only sessions that have no machine at all. Not combinable with host.");
