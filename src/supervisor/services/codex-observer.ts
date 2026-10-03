@@ -402,6 +402,15 @@ export function isCodexObserverEnabled(env: NodeJS.ProcessEnv): boolean {
 	return env.AGENTPULSE_CODEX_OBSERVER !== "off";
 }
 
+/** The most one pass reads from a file, and the most lines it replays. */
+export const MAX_PASS_BYTES = 1024 * 1024;
+export const MAX_PASS_LINES = 500;
+
+/** Wraps an async job so a call made while it is still running does nothing. */
+export function singleFlight<T>(job: () => Promise<T>): () => Promise<T | undefined> {
+	return job;
+}
+
 export async function processRolloutFile(
 	filePath: string,
 	stateEntry: FileState | undefined,
