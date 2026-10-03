@@ -762,7 +762,7 @@ describe("the machine on a row, the filter and the grouping are one definition",
 			{ sessionId: "p-12" },
 			{ sessionId: "p-13" },
 			{ sessionId: "p-14", reportedHost: "only-reported-with-blank-supervisor" },
-			{ sessionId: "p-15", reportedHost: "10.0.0.7" },
+			{ sessionId: "p-15", reportedHost: "192.0.2.7" },
 			{ sessionId: "p-16", reportedHost: "100% sure_name" },
 		]);
 		await seedManaged("p-6", "  supervisor-padded  ");
@@ -785,7 +785,7 @@ describe("the machine on a row, the filter and the grouping are one definition",
 			byMachine.set(key, [...(byMachine.get(key) ?? []), row.sessionId]);
 		}
 		expect([...byMachine.keys()].filter((m) => m !== null).sort()).toEqual([
-			"10.0.0.7",
+			"192.0.2.7",
 			"100% sure_name",
 			"My Box",
 			"fallback-name",
