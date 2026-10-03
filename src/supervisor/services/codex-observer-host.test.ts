@@ -66,14 +66,14 @@ describe("codex observer host header", () => {
 			fakeFetch(captured),
 			home,
 			NO_EXCLUDE_RULES,
-			"Jay’s MacBook Pro",
+			"Alex’s MacBook Pro",
 		);
 
 		expect(captured.length).toBeGreaterThan(1);
 		for (const call of captured) {
 			expect(call.url).toBe("http://x/api/v1/hooks");
 			expect(parseReportedHostHeader(call.headers[HOST_HEADER.toLowerCase()])).toBe(
-				"Jay’s MacBook Pro",
+				"Alex’s MacBook Pro",
 			);
 		}
 	});

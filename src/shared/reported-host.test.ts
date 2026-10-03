@@ -63,7 +63,7 @@ describe("sanitizeReportedHost", () => {
 	});
 
 	test("keeps a non-ASCII name such as a typographic apostrophe", () => {
-		expect(sanitizeReportedHost("Jay’s MacBook Pro")).toBe("Jay’s MacBook Pro");
+		expect(sanitizeReportedHost("Alex’s MacBook Pro")).toBe("Alex’s MacBook Pro");
 	});
 });
 
@@ -79,7 +79,7 @@ describe("parseReportedHostHeader", () => {
 	});
 
 	test("a percent-encoded value is decoded", () => {
-		expect(parseReportedHostHeader("Jay%E2%80%99s%20MacBook")).toBe("Jay’s MacBook");
+		expect(parseReportedHostHeader("Alex%E2%80%99s%20MacBook")).toBe("Alex’s MacBook");
 	});
 
 	test("a decoded value is sanitised too", () => {
@@ -103,13 +103,13 @@ describe("parseReportedHostHeader", () => {
 
 describe("encodeReportedHostHeader (what the senders put on the wire)", () => {
 	test("is always a valid header value, even for a name with characters outside Latin-1", () => {
-		const encoded = encodeReportedHostHeader("Jay’s \u{1F4BB} é");
+		const encoded = encodeReportedHostHeader("Alex’s \u{1F4BB} é");
 		expect(() => new Headers({ "X-AgentPulse-Host": encoded })).not.toThrow();
 		expect(encoded).toMatch(/^[\x21-\x7e]*$/);
 	});
 
 	test("round-trips through the parser", () => {
-		const name = "Jay’s MacBook Pro (2)";
+		const name = "Alex’s MacBook Pro (2)";
 		expect(parseReportedHostHeader(encodeReportedHostHeader(name))).toBe(name);
 	});
 

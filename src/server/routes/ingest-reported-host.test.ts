@@ -120,9 +120,9 @@ describe("the header", () => {
 		await postHook(
 			key,
 			{ session_id: id, hook_event_name: "SessionStart" },
-			{ [WIRE_HOST_HEADER]: "Jay%E2%80%99s%20Mac%0A%1B%5B31m%E2%80%AE" },
+			{ [WIRE_HOST_HEADER]: "Alex%E2%80%99s%20Mac%0A%1B%5B31m%E2%80%AE" },
 		);
-		expect((await row(id))?.reportedHost).toBe("Jay’s Mac[31m");
+		expect((await row(id))?.reportedHost).toBe("Alex’s Mac[31m");
 	});
 
 	test("no header means no host, and the field is null on the wire", async () => {

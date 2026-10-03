@@ -122,13 +122,13 @@ describe("relay host header", () => {
 	test("a machine name outside Latin-1 is encoded, so the forward still goes through", async () => {
 		const stub = startStub();
 		stops.push(stub.stop);
-		const { R, relay, base } = await startRelayFor(stub.url, () => "Jay’s MacBook Pro");
+		const { R, relay, base } = await startRelayFor(stub.url, () => "Alex’s MacBook Pro");
 		await sendHook(base, { session_id: "h3", hook_event_name: "Stop" });
 		await R.processHookQueue(relay.ctx);
 		const call = stub.requests.find((r) => r.path === "/api/v1/hooks");
 		expect(call).toBeDefined();
 		expect(parseReportedHostHeader(call?.headers[HOST_HEADER.toLowerCase()])).toBe(
-			"Jay’s MacBook Pro",
+			"Alex’s MacBook Pro",
 		);
 	});
 
