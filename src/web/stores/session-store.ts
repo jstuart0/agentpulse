@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { DashboardStats, Session } from "../../shared/types.js";
+import { type HostParam, hostVerdict } from "../lib/host-scope.js";
 import { OWNER_ALL, type OwnerParam, hasOwnerInfo, matchesOwnerScope } from "../lib/owner-scope.js";
 import { useDashboardScopeStore } from "./dashboard-scope-store.js";
 import { useUserStore } from "./user-store.js";
@@ -7,6 +8,8 @@ import { useUserStore } from "./user-store.js";
 /** What the list is showing, so a row that doesn't belong is neither added nor kept. */
 export interface SessionListScope {
 	owner: OwnerParam;
+	/** Which machine's sessions are shown; absent or empty is every machine. */
+	host?: HostParam;
 	viewerUserId: string | null;
 }
 
@@ -72,6 +75,15 @@ export function applySessionUpdateToList(
 		// Not this view's: never added, and dropped if its owner just changed away.
 		return idx === -1 ? sessions : sessions.filter((s) => s.sessionId !== session.sessionId);
 	}
+	const verdict = scope ? hostVerdict(session, scope.host ?? "") : "in";
+	if (verdict === "unknown") {
+		// Fail open, as for an ownerless row: a filter can't judge a row that doesn't say its machine.
+		return idx === -1 ? sessions : sessions.map((s, i) => (i === idx ? session : s));
+	}
+	if (verdict === "out") {
+		// Not this machine's: never added, and dropped if it just moved away.
+		return idx === -1 ? sessions : sessions.filter((s) => s.sessionId !== session.sessionId);
+	}
 	if (idx === -1) return [session, ...sessions];
 	return sessions.map((s) => (s.sessionId === session.sessionId ? session : s));
 }
@@ -90,6 +102,7 @@ export function updateSessionInList(
 function currentListScope(): SessionListScope {
 	return {
 		owner: useDashboardScopeStore.getState().owner,
+		host: useDashboardScopeStore.getState().host,
 		viewerUserId: useUserStore.getState().userId,
 	};
 }
