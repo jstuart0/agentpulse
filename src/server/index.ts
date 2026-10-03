@@ -16,7 +16,7 @@ import {
 	initTelegramCredentials,
 } from "./services/channels/telegram-credentials.js";
 import { startTelegramPolling } from "./services/channels/telegram-poller.js";
-import { normalizeStoredMachineNames, stampMachine } from "./services/effective-machine.js";
+import { normalizeStoredMachineNamesSafely, stampMachine } from "./services/effective-machine.js";
 import { assertBootable, warnAboutRiskySubjectSourceAdmins } from "./services/instance-mode.js";
 import { ensureBootstrapAdmin } from "./services/local-auth-bootstrap.js";
 import { reapExpiredSessions } from "./services/local-auth-service.js";
@@ -154,7 +154,7 @@ if (config.forwardauthTrustSecret && !config.allowSignup) {
 // ensures markDbReady() only fires after all migrations complete, preserving
 // the synchronous-assumption guarantee that previously held (codex C3).
 await initializeDatabase();
-await normalizeStoredMachineNames();
+await normalizeStoredMachineNamesSafely();
 
 // Refuse to start in a mode configuration that can't work (see
 // assertBootable). Before markDbReady so the readiness probe never goes green

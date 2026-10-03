@@ -10,6 +10,7 @@ import "./ai/__test_db.js";
 const { getDb, initializeDatabase } = await import("../db/client.js");
 const { sessions, managedSessions, supervisors } = await import("../db/schema/index.js");
 const { enrollSupervisor, revokeSupervisor } = await import("./supervisor-registry.js");
+const { eq } = await import("drizzle-orm");
 const { getStatsByHost, MAX_MACHINE_GROUPS, MAX_REGISTERED_MACHINE_GROUPS } = await import(
 	"./session-tracker.js"
 );
@@ -129,6 +130,34 @@ describe("a registered machine can't be pushed out of the listing by invented bu
 		const result = await getStatsByHost();
 		expect(result.groups.length).toBe(MAX_MACHINE_GROUPS + 3);
 		expect(MAX_REGISTERED_MACHINE_GROUPS).toBeGreaterThanOrEqual(50);
+	});
+
+	test("past the registered bound, the quietest registered machines roll up like any other, and the totals still add up", async () => {
+		const template = await register("template-box");
+		const [row] = await getDb().select().from(supervisors);
+		const extra = MAX_REGISTERED_MACHINE_GROUPS + 4;
+		const hosts = Array.from({ length: extra }, (_, i) => `reg-${String(i).padStart(3, "0")}`);
+		await getDb()
+			.insert(supervisors)
+			.values(hosts.map((hostName, i) => ({ ...row, id: `clone-${i}`, hostName })) as never)
+			.execute();
+		await getDb().delete(supervisors).where(eq(supervisors.id, template.id));
+		await getDb()
+			.insert(sessions)
+			.values(
+				hosts.map((reportedHost, i) => ({
+					sessionId: `many-${i}`,
+					agentType: "claude_code",
+					status: "active",
+					metadata: {},
+					reportedHost,
+				})) as never,
+			)
+			.execute();
+		const result = await getStatsByHost();
+		expect(result.groups).toHaveLength(MAX_REGISTERED_MACHINE_GROUPS);
+		expect(result.otherMachines).toBe(4);
+		expect(result.groups.reduce((a, g) => a + g.total, 0) + result.otherTotal).toBe(extra);
 	});
 
 	test("a machine named in the supervisor's registration is selectable by name, with its own total", async () => {
