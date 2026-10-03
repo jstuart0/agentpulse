@@ -375,6 +375,26 @@ describe("scan cost on a large tree", () => {
 		fx.failing.add(day); // the recent day directory itself cannot be read
 		expect(() => index.list()).not.toThrow();
 	});
+
+	test("a directory removed after it was listed takes its files with it, even if its parent never changed", () => {
+		const fx = memoryFs();
+		fx.addFile(fx.addDay(root, 0, T0), "rollout-today.jsonl", T0);
+		const oldDay = fx.addDay(root, 30, T0 - 30 * DAY);
+		const resumed = fx.addFile(oldDay, "rollout-resumed.jsonl", T0 - HOUR);
+		let t = T0;
+		const index = createRolloutIndex({
+			root,
+			backfillDays: 0,
+			resumeWindowMs: DAY,
+			now: () => t,
+			fs: fx.fs,
+		});
+		expect(index.list().files).toContain(resumed);
+		fx.dirs.delete(oldDay);
+		fx.files.delete(resumed);
+		t += 2 * COLD_RECHECK_MS;
+		expect(index.list().files).not.toContain(resumed);
+	});
 });
 
 describe("a resumed file seen for the first time is tailed from its end", () => {
@@ -538,5 +558,26 @@ describe("a listed file that has been deleted", () => {
 			errors.mockRestore();
 		}
 		expect(seen).toEqual(["SessionStart"]);
+	});
+
+	test("any other failure on a file is still reported", async () => {
+		const root = scratch();
+		const notAFile = join(root, "rollout-dir.jsonl");
+		mkdirSync(notAFile);
+		const errors = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await scanRolloutFiles([notAFile], {
+				state: { files: {} },
+				callMapsByFile: new Map(),
+				serverUrl: "http://x",
+				apiKey: null,
+				rules: NO_EXCLUDE_RULES,
+				homeDir: root,
+				save: () => {},
+			});
+			expect(errors).toHaveBeenCalledTimes(1);
+		} finally {
+			errors.mockRestore();
+		}
 	});
 });

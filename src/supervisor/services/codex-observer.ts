@@ -22,6 +22,7 @@ import {
 	ORIGIN_CODEX_OBSERVER,
 	ORIGIN_HEADER,
 } from "../../shared/hook-headers.js";
+import { createRolloutIndex, resumeWindowMsFromEnv } from "./codex-rollout-index.js";
 
 const CODEX_SESSIONS_ROOT = join(homedir(), ".codex", "sessions");
 const STATE_FILE = join(homedir(), ".agentpulse", "codex-observer-state.json");
@@ -37,9 +38,15 @@ const BACKFILL_DAYS = Math.max(
 	0,
 	Number.parseInt(process.env.AGENTPULSE_CODEX_BACKFILL_DAYS ?? "0", 10) || 0,
 );
-// The observer only ever tails today's files plus BACKFILL_DAYS, so a
-// marker older than that plus a small margin is safe to evict.
-const NATIVE_MARKER_MAX_AGE_MS = (BACKFILL_DAYS + 2) * 24 * 60 * 60 * 1000;
+// A file written to within this long is tailed wherever it sits in the sessions
+// tree (a resumed session keeps its original date directory); a file seen for
+// the first time that way starts at its current end. 0 turns it off.
+const RESUME_WINDOW_MS = resumeWindowMsFromEnv(process.env);
+// The observer only ever tails today's files plus BACKFILL_DAYS, or files
+// written within the resume window, so a marker older than the larger of those
+// plus a small margin is safe to evict.
+const NATIVE_MARKER_MAX_AGE_MS =
+	(Math.max(BACKFILL_DAYS, Math.ceil(RESUME_WINDOW_MS / 86_400_000)) + 2) * 24 * 60 * 60 * 1000;
 
 export type FileState = {
 	offset: number;
@@ -131,29 +138,6 @@ export function saveState(
 		// disk full / permissions / readonly / a planted path — skip; next
 		// scan will retry with a fresh random suffix.
 	}
-}
-
-function listRolloutFiles(sinceDaysAgo: number): string[] {
-	const result: string[] = [];
-	const now = new Date();
-	for (let i = 0; i <= sinceDaysAgo; i++) {
-		const d = new Date(now.getTime() - i * 86_400_000);
-		const year = String(d.getUTCFullYear());
-		const month = String(d.getUTCMonth() + 1).padStart(2, "0");
-		const day = String(d.getUTCDate()).padStart(2, "0");
-		const dir = join(CODEX_SESSIONS_ROOT, year, month, day);
-		if (!existsSync(dir)) continue;
-		try {
-			for (const entry of readdirSync(dir)) {
-				if (entry.startsWith("rollout-") && entry.endsWith(".jsonl")) {
-					result.push(join(dir, entry));
-				}
-			}
-		} catch {
-			// unreadable dir — skip
-		}
-	}
-	return result;
 }
 
 // A plain function shape, not `typeof fetch` — Bun's global fetch type
@@ -277,11 +261,13 @@ const NO_RULES_GIVEN: LoadExcludeRulesResult = { state: "invalid", rules: [] };
 const HEAD_SCAN_BYTES = 256 * 1024;
 
 /**
- * The directory in a rollout file's first session_meta, read from the start of
- * the file (never posting anything); null when there is none to be found. Only
- * for an entry saved before the directory was recorded.
+ * The id and directory in a rollout file's first session_meta, read from the
+ * start of the file (never posting anything); null where there is none to be
+ * found. Used for an entry saved before the directory was recorded, and to start
+ * a resumed file at its end.
  */
-function discoverCwd(filePath: string): string | null {
+function discoverMeta(filePath: string): { id: string | null; cwd: string | null } {
+	const none = { id: null, cwd: null };
 	let head: string;
 	try {
 		const fd = openSync(filePath, "r");
@@ -293,20 +279,33 @@ function discoverCwd(filePath: string): string | null {
 			closeSync(fd);
 		}
 	} catch {
-		return null;
+		return none;
 	}
 	const lines = head.split("\n");
 	lines.pop(); // the last element is an unfinished line or the empty tail
 	for (const line of lines) {
 		if (!line.includes('"session_meta"')) continue;
 		try {
-			const entry = JSON.parse(line) as { type?: string; payload?: { cwd?: unknown } };
+			const entry = JSON.parse(line) as {
+				type?: string;
+				payload?: { id?: unknown; cwd?: unknown };
+			};
 			if (entry.type === "session_meta") {
-				return typeof entry.payload?.cwd === "string" ? entry.payload.cwd : null;
+				return {
+					id: typeof entry.payload?.id === "string" ? entry.payload.id : null,
+					cwd: typeof entry.payload?.cwd === "string" ? entry.payload.cwd : null,
+				};
 			}
 		} catch {}
 	}
-	return null;
+	return none;
+}
+
+/** A file seen for the first time outside the recent days starts at its current end: its history is not replayed, only what is written from now on. */
+function seedAtCurrentEnd(filePath: string): FileState {
+	const size = statSync(filePath).size;
+	const meta = discoverMeta(filePath);
+	return { offset: size, sessionId: meta.id ?? "", cwd: meta.cwd };
 }
 
 type Posting = "post" | "paused" | "excluded";
@@ -501,7 +500,7 @@ export async function processRolloutFile(
 	// file has none until its session_meta line comes up below.
 	const currentRules = rules?.current() ?? NO_RULES_GIVEN;
 	let cwd: string | null | undefined = stateEntry?.cwd;
-	if (cwd === undefined && stateEntry && startOffset > 0) cwd = discoverCwd(filePath);
+	if (cwd === undefined && stateEntry && startOffset > 0) cwd = discoverMeta(filePath).cwd;
 	let posting: Posting | "pending" = cwd === undefined ? "pending" : postingFor(currentRules, cwd);
 	if (posting === "excluded") {
 		return { offset: stat.size, sessionId: stateEntry?.sessionId ?? "", excluded: true };
@@ -692,6 +691,11 @@ export async function scanRolloutFiles(files: string[], ctx: ScanContext): Promi
 				ctx.callMapsByFile.set(file, callMap);
 			}
 			const previous = ctx.state.files[file];
+			if (!previous && ctx.seedAtEnd?.has(file)) {
+				ctx.state.files[file] = seedAtCurrentEnd(file);
+				ctx.save(ctx.state);
+				continue;
+			}
 			const next = await processRolloutFile(
 				file,
 				previous,
@@ -705,6 +709,8 @@ export async function scanRolloutFiles(files: string[], ctx: ScanContext): Promi
 			ctx.state.files[file] = next;
 			if (!previous || JSON.stringify(previous) !== JSON.stringify(next)) ctx.save(ctx.state);
 		} catch (err) {
+			// Deleted since it was listed: gone, not an error.
+			if ((err as NodeJS.ErrnoException)?.code === "ENOENT") continue;
 			const message = err instanceof Error ? err.message : String(err);
 			console.error(`[codex-observer] ${file}: ${message}`);
 		}
@@ -724,10 +730,17 @@ export async function startCodexObserver(options: {
 
 	const state = loadState();
 	const callMapsByFile = new Map<string, CallMap>();
+	const rolloutIndex = createRolloutIndex({
+		root: CODEX_SESSIONS_ROOT,
+		backfillDays: BACKFILL_DAYS,
+		resumeWindowMs: RESUME_WINDOW_MS,
+	});
 	let lastEvictionAt = 0;
 
 	const scan = singleFlight(async () => {
-		await scanRolloutFiles(listRolloutFiles(BACKFILL_DAYS), {
+		const listing = rolloutIndex.list();
+		await scanRolloutFiles(listing.files, {
+			seedAtEnd: listing.resumedOnly,
 			state,
 			callMapsByFile,
 			serverUrl: options.serverUrl,
