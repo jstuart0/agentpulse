@@ -708,8 +708,16 @@ export interface HostStatsGroup {
 export interface HostStatsResponse {
 	ownerScope: OwnerScopeEcho;
 	hostFilter: HostFilterEcho;
+	/** The busiest machines (at most MAX_MACHINE_GROUPS, 50), by name, the sessions with no machine (`host: null`) last and always present. */
 	groups: HostStatsGroup[];
+	/** The working and idle columns may under-count (the candidate scan was capped). */
 	truncated: boolean;
+	/** More machines exist than are listed: `groups` was cut to the busiest. */
+	groupsTruncated: boolean;
+	/** How many machines were rolled up (0 when nothing was cut). */
+	otherMachines: number;
+	/** The sessions on those machines. */
+	otherTotal: number;
 }
 
 /**

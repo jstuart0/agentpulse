@@ -1,6 +1,7 @@
 import {
 	type SQL,
 	and,
+	asc,
 	count,
 	desc,
 	eq,
@@ -1495,7 +1496,7 @@ export function emptyStatsByOwner(): OwnerStatsBody {
 
 /** The per-machine grouping of a scope with no sessions at all. */
 export function emptyStatsByHost(): HostStatsBody {
-	return { groups: [], truncated: false };
+	return { groups: [], truncated: false, groupsTruncated: false, otherMachines: 0, otherTotal: 0 };
 }
 
 /** A session an Ask reply can name, with the dashboard state it is in. */
@@ -1708,6 +1709,14 @@ export function getStatsByHost(options?: {
 
 const statsByHostInFlight = createInFlight<HostStatsBody>();
 
+/**
+ * The most groups `group_by=host` lists (the sessions with no machine always
+ * among them). An ingest key can mint any number of machine names and every
+ * viewer's poll asks for this, so the busiest machines are listed, ties by name,
+ * and the rest are rolled into `otherMachines`/`otherTotal`.
+ */
+export const MAX_MACHINE_GROUPS = 50;
+
 function byMachineName(a: HostStatsGroup, b: HostStatsGroup): number {
 	if (a.host === null || b.host === null)
 		return (a.host === null ? 1 : 0) - (b.host === null ? 1 : 0);
@@ -1733,18 +1742,46 @@ async function computeStatsByHost(options?: {
 		sql<number>`COALESCE(SUM(CASE WHEN ${condition} THEN 1 ELSE 0 END), 0)`.mapWith(Number);
 	// Grouped by position, so the expression is written once; the managed table is
 	// joined because every row's machine is needed (a join, not a lookup per row).
-	const totalsQuery = getDb()
+	const grouped = getDb()
 		.select({
-			host: MACHINE_JOINED,
-			total: count(),
-			completed: tabSum(tabs.completed),
-			tabActive: tabSum(tabs.active),
-			tabArchived: tabSum(tabs.archived),
+			host: sql<string | null>`${MACHINE_JOINED}`.as("host"),
+			total: sql<number>`count(*)`.as("total"),
+			completed: sql<number>`COALESCE(SUM(CASE WHEN ${tabs.completed} THEN 1 ELSE 0 END), 0)`.as(
+				"completed",
+			),
+			tabActive: sql<number>`COALESCE(SUM(CASE WHEN ${tabs.active} THEN 1 ELSE 0 END), 0)`.as(
+				"tab_active",
+			),
+			tabArchived: sql<number>`COALESCE(SUM(CASE WHEN ${tabs.archived} THEN 1 ELSE 0 END), 0)`.as(
+				"tab_archived",
+			),
 		})
 		.from(sessions)
 		.leftJoin(managedSessions, eq(managedSessions.sessionId, sessions.sessionId))
 		.where(allOf(...sharedFilterConditions(filters, scratchProjectIds)))
-		.groupBy(sql`1`);
+		.groupBy(sql`1`)
+		.as("g");
+	const num = (column: SQL.Aliased<number> | SQL<number>) => sql<number>`${column}`.mapWith(Number);
+	// One statement however many machines there are: the busiest MAX_MACHINE_GROUPS
+	// (the sessions with no machine first), with the machine count and the sum over
+	// every machine alongside, so what was cut can be said without a second pass.
+	const totalsQuery = getDb()
+		.select({
+			host: grouped.host,
+			total: num(grouped.total),
+			completed: num(grouped.completed),
+			tabActive: num(grouped.tabActive),
+			tabArchived: num(grouped.tabArchived),
+			machines: sql<number>`count(*) over ()`.mapWith(Number),
+			allTotal: sql<number>`sum(${grouped.total}) over ()`.mapWith(Number),
+		})
+		.from(grouped)
+		.orderBy(
+			sql`CASE WHEN ${grouped.host} IS NULL THEN 0 ELSE 1 END`,
+			desc(grouped.total),
+			asc(grouped.host),
+		)
+		.limit(MAX_MACHINE_GROUPS);
 	const {
 		scan: { rows: candidates, truncated },
 		totals,
@@ -1770,7 +1807,16 @@ async function computeStatsByHost(options?: {
 		group[row.operational] += 1;
 		group.active += 1;
 	}
-	return { groups: [...groups.values()].sort(byMachineName), truncated };
+	const listed = [...groups.values()];
+	const machines = totals[0]?.machines ?? 0;
+	const listedTotal = listed.reduce((sum, group) => sum + group.total, 0);
+	return {
+		groups: listed.sort(byMachineName),
+		truncated,
+		groupsTruncated: machines > listed.length,
+		otherMachines: Math.max(0, machines - listed.length),
+		otherTotal: Math.max(0, (totals[0]?.allTotal ?? 0) - listedTotal),
+	};
 }
 
 // Recovery cutoff for sessions stuck with isWorking=true. If an agent

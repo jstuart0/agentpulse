@@ -728,7 +728,7 @@ describe("what the machine filter costs the database", () => {
 		}
 	});
 
-	test("the machine grouping costs what the owner grouping costs, however many machines there are", async () => {
+	test("the machine grouping costs one builder more than the owner grouping (one statement), however many machines there are", async () => {
 		const w = await teamWorld();
 		await seed([{ sessionId: "c-1", reportedHost: "alice-mbp" }, { sessionId: "c-2" }]);
 		const few = await calls("/sessions/stats?group_by=host", w.me.headers);
@@ -740,7 +740,10 @@ describe("what the machine filter costs the database", () => {
 			})),
 		);
 		const many = await calls("/sessions/stats?group_by=host", w.me.headers);
-		expect({ few, many }).toEqual({ few: owner, many: owner });
+		// The machine totals are one statement built from a subquery (the busiest
+		// machines, with the count of the rest alongside), which the builder counter
+		// sees as two builders: one more than the owner grouping, however many machines.
+		expect({ few, many }).toEqual({ few: owner + 1, many: owner + 1 });
 	});
 });
 
