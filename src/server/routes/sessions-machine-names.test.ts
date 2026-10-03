@@ -186,6 +186,56 @@ describe("a stored supervisor whose name is nothing but unprintable characters",
 	});
 });
 
+describe("the boot repair never overwrites a name written after it read", () => {
+	const input = (hostName: string) =>
+		({
+			hostName,
+			platform: "darwin",
+			arch: "arm64",
+			version: "1.0.0",
+			capabilities: {},
+			trustedRoots: [],
+		}) as never;
+	const RAW = "\u0001\u200b";
+
+	test("a supervisor re-registered under a new name between the read and the write keeps the new name, and its managed copies follow the name it has now", async () => {
+		const sup = (await enrollSupervisor(input("temp-a"), null)).supervisor;
+		await getDb().update(supervisors).set({ hostName: RAW }).where(eq(supervisors.id, sup.id));
+		await seedManaged("race-1", RAW, "reported-box", sup.id);
+		await normalizeStoredMachineNames({
+			afterRead: async () => {
+				// another replica accepts the supervisor's re-registration under its real name
+				await getDb()
+					.update(supervisors)
+					.set({ hostName: "fresh-name" })
+					.where(eq(supervisors.id, sup.id));
+			},
+		});
+		const [row] = await getDb().select().from(supervisors).where(eq(supervisors.id, sup.id));
+		// If the write were keyed by id alone it would have replaced "fresh-name" with "unnamed host".
+		expect(row.hostName).toBe("fresh-name");
+		const [managed] = await getDb()
+			.select()
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, "race-1"));
+		expect(managed.hostName).toBe("fresh-name");
+	});
+
+	test("without a race the repair is what it was (the control)", async () => {
+		const sup = (await enrollSupervisor(input("temp-b"), null)).supervisor;
+		await getDb().update(supervisors).set({ hostName: RAW }).where(eq(supervisors.id, sup.id));
+		await seedManaged("race-2", RAW, null, sup.id);
+		await normalizeStoredMachineNames();
+		const [row] = await getDb().select().from(supervisors).where(eq(supervisors.id, sup.id));
+		expect(row.hostName).toBe("unnamed host");
+		const [managed] = await getDb()
+			.select()
+			.from(managedSessions)
+			.where(eq(managedSessions.sessionId, "race-2"));
+		expect(managed.hostName).toBe("unnamed host");
+	});
+});
+
 describe("the boot cleanup is cosmetic and can't stop boot", () => {
 	test("a cleanup that throws is logged as one structured line and swallowed", async () => {
 		const logged: string[] = [];
