@@ -40,8 +40,8 @@ export type DirEntry = { name: string; isDir: boolean };
 export interface RolloutFs {
 	/** The entries of a directory, or null when it cannot be read. */
 	readdir(dir: string): DirEntry[] | null;
-	/** The modification time of a file or directory, or null when it cannot be statted. */
-	mtimeMs(path: string): number | null;
+	/** The modification time of a file or directory and, where the system has one, an identity that is the same for every path to the same file; null when it cannot be statted. */
+	stat(path: string): { mtimeMs: number; id?: string } | null;
 }
 
 export const realRolloutFs: RolloutFs = {
@@ -62,9 +62,13 @@ export const realRolloutFs: RolloutFs = {
 			return null;
 		}
 	},
-	mtimeMs(path) {
+	stat(path) {
 		try {
-			return statSync(path).mtimeMs;
+			const st = statSync(path, { bigint: true });
+			return {
+				mtimeMs: Number(st.mtimeMs),
+				id: st.ino === 0n ? undefined : `${st.dev}:${st.ino}`,
+			};
 		} catch {
 			return null;
 		}
@@ -170,7 +174,8 @@ export function createRolloutIndex(options: {
 		const holdsDirs = node ? node.subdirs.length > 0 || node.files.length === 0 : true;
 		const due = !node || isRecentDay || holdsDirs || t >= node.nextCheckAt;
 		if (due) {
-			const mtime = fs.mtimeMs(dir);
+			const dirStat = fs.stat(dir);
+			const mtime = dirStat?.mtimeMs ?? null;
 			if (mtime === null) {
 				forget(dir);
 				return;
@@ -191,7 +196,7 @@ export function createRolloutIndex(options: {
 			}
 			let hot = isRecentDay;
 			for (const file of node.files) {
-				const m = fs.mtimeMs(file);
+				const m = fs.stat(file)?.mtimeMs ?? null;
 				if (m === null) {
 					fileMtimes.delete(file);
 					continue;

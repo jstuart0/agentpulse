@@ -153,10 +153,11 @@ function memoryFs() {
 			if (failing.has(dir)) return null;
 			return dirs.get(dir)?.entries.map((e) => ({ ...e })) ?? null;
 		},
-		mtimeMs(path) {
+		stat(path) {
 			calls.mtime++;
 			if (failing.has(path)) return null;
-			return dirs.get(path)?.mtime ?? files.get(path) ?? null;
+			const mtimeMs = dirs.get(path)?.mtime ?? files.get(path);
+			return mtimeMs === undefined ? null : { mtimeMs };
 		},
 	};
 	const ensureDir = (dir: string, mtime: number) => {
