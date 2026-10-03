@@ -56,7 +56,12 @@ import { withTransaction } from "../db/with-transaction.js";
 import { createInFlight } from "../util/in-flight.js";
 import { runInOwnTurn } from "../util/own-turn.js";
 import { mayClearAttention } from "./authorization.js";
-import { EFFECTIVE_MACHINE, hostScopeCondition } from "./effective-machine.js";
+import {
+	EFFECTIVE_MACHINE,
+	MACHINE_JOINED,
+	SUPERVISOR_JOIN,
+	hostScopeCondition,
+} from "./effective-machine.js";
 import { normalizeHookEvent } from "./event-normalizer.js";
 import { insertNormalizedEvents } from "./event-processor.js";
 import { getManagedSession, mapManagedSession } from "./managed-session-state.js";
@@ -597,8 +602,8 @@ const CANDIDATE_COLUMNS = {
  */
 const CANDIDATE_SELECT_LIST = sql`${sessions.sessionId} AS "sessionId", ${sessions.status} AS "status", ${sessions.isWorking} AS "isWorking", ${sessions.isArchived} AS "isArchived", ${sessions.endedAt} AS "endedAt", ${sessions.semanticStatus} AS "semanticStatus", ${sessions.lastAgentTurnCompletedAt} AS "lastAgentTurnCompletedAt", ${sessions.lastUserAcknowledgedAt} AS "lastUserAcknowledgedAt", ${sessions.lastActivityAt} AS "lastActivityAt", ${sessions.ownerUserId} AS "ownerUserId", ${sessions.ingestKeyId} AS "ingestKeyId", ${PERMISSION_WAIT_SQL} AS "permissionWait"`;
 
-/** The candidate columns plus the effective machine, for the per-machine grouping only: it costs a lookup per row. */
-const CANDIDATE_SELECT_LIST_WITH_MACHINE = sql`${CANDIDATE_SELECT_LIST}, ${EFFECTIVE_MACHINE} AS "machine"`;
+/** The candidate columns plus the effective machine, for the per-machine grouping only (its statements join the managed table: see SUPERVISOR_JOIN). */
+const CANDIDATE_SELECT_LIST_WITH_MACHINE = sql`${CANDIDATE_SELECT_LIST}, ${MACHINE_JOINED} AS "machine"`;
 
 type CandidateRow = Pick<
 	typeof sessions.$inferSelect,
@@ -903,9 +908,10 @@ function heavyScan<T>(work: () => Promise<T>): Promise<T> {
 /** The candidate columns (and the effective machine when `withMachine`) for the rows a `WHERE ... [ORDER BY] LIMIT ...` tail selects. */
 async function queryCandidates(tail: SQL, withMachine = false): Promise<CandidateRow[]> {
 	const columns = withMachine ? CANDIDATE_SELECT_LIST_WITH_MACHINE : CANDIDATE_SELECT_LIST;
+	const from = withMachine ? sql`${sessions} ${SUPERVISOR_JOIN}` : sql`${sessions}`;
 	const rows = await executeRows<Record<string, unknown>>(
 		getDb(),
-		sql`SELECT ${columns} FROM ${sessions} ${tail}`,
+		sql`SELECT ${columns} FROM ${from} ${tail}`,
 	);
 	return rows as unknown as CandidateRow[];
 }
@@ -926,7 +932,7 @@ type AttentionCap = "overall" | "per-owner" | "per-host";
  */
 const GROUP_PARTITION: Record<Exclude<AttentionCap, "overall">, SQL> = {
 	"per-owner": sql`PARTITION BY ${sessions.ownerUserId}, (${sessions.ingestKeyId} IS NULL)`,
-	"per-host": sql`PARTITION BY ${EFFECTIVE_MACHINE}`,
+	"per-host": sql`PARTITION BY ${MACHINE_JOINED}`,
 };
 
 /**
@@ -939,8 +945,9 @@ async function fetchAttentionTierPerGroup(
 	cap: number,
 	attentionCap: Exclude<AttentionCap, "overall">,
 ): Promise<CandidateRow[]> {
-	const columns =
-		attentionCap === "per-host" ? CANDIDATE_SELECT_LIST_WITH_MACHINE : CANDIDATE_SELECT_LIST;
+	const perHost = attentionCap === "per-host";
+	const columns = perHost ? CANDIDATE_SELECT_LIST_WITH_MACHINE : CANDIDATE_SELECT_LIST;
+	const from = perHost ? sql`${sessions} ${SUPERVISOR_JOIN}` : sql`${sessions}`;
 	const rows = await executeRows<Record<string, unknown>>(
 		getDb(),
 		sql`SELECT * FROM (
@@ -948,7 +955,7 @@ async function fetchAttentionTierPerGroup(
 				${GROUP_PARTITION[attentionCap]}
 				ORDER BY ${ATTENTION_ORDER}
 			) AS "groupRank"
-			FROM ${sessions} WHERE ${where}
+			FROM ${from} WHERE ${where}
 		) AS ranked WHERE "groupRank" <= ${cap}
 		ORDER BY "groupRank" ASC, "lastActivityAt" DESC LIMIT ${perGroupCeiling(cap)}`,
 	);
@@ -1724,17 +1731,18 @@ async function computeStatsByHost(options?: {
 	const tabs = tabConditions();
 	const tabSum = (condition: SQL) =>
 		sql<number>`COALESCE(SUM(CASE WHEN ${condition} THEN 1 ELSE 0 END), 0)`.mapWith(Number);
-	// Grouped by position: the machine is a correlated lookup, which a GROUP BY
-	// on the expression itself would have to repeat (and Postgres would reject).
+	// Grouped by position, so the expression is written once; the managed table is
+	// joined because every row's machine is needed (a join, not a lookup per row).
 	const totalsQuery = getDb()
 		.select({
-			host: EFFECTIVE_MACHINE,
+			host: MACHINE_JOINED,
 			total: count(),
 			completed: tabSum(tabs.completed),
 			tabActive: tabSum(tabs.active),
 			tabArchived: tabSum(tabs.archived),
 		})
 		.from(sessions)
+		.leftJoin(managedSessions, eq(managedSessions.sessionId, sessions.sessionId))
 		.where(allOf(...sharedFilterConditions(filters, scratchProjectIds)))
 		.groupBy(sql`1`);
 	const {

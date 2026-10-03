@@ -744,6 +744,72 @@ describe("what the machine filter costs the database", () => {
 	});
 });
 
+describe("the machine on a row, the filter and the grouping are one definition", () => {
+	/** Padding, case, spaces inside a name, blank and missing values, on both sides of the supervisor/reported split. */
+	async function seedAwkwardMachines() {
+		await seed([
+			{ sessionId: "p-1", reportedHost: "My Box" },
+			{ sessionId: "p-2", reportedHost: "my box" },
+			{ sessionId: "p-3", reportedHost: "  padded-reported  " },
+			{ sessionId: "p-4", reportedHost: "padded-reported" },
+			{ sessionId: "p-5", reportedHost: "reported-only" },
+			{ sessionId: "p-6", reportedHost: "outranked" },
+			{ sessionId: "p-7", reportedHost: "outranked" },
+			{ sessionId: "p-8", reportedHost: "fallback-name" },
+			{ sessionId: "p-9", reportedHost: "fallback-name" },
+			{ sessionId: "p-10", reportedHost: "" },
+			{ sessionId: "p-11", reportedHost: "   " },
+			{ sessionId: "p-12" },
+			{ sessionId: "p-13" },
+			{ sessionId: "p-14", reportedHost: "only-reported-with-blank-supervisor" },
+			{ sessionId: "p-15", reportedHost: "10.0.0.7" },
+			{ sessionId: "p-16", reportedHost: "100% sure_name" },
+		]);
+		await seedManaged("p-6", "  supervisor-padded  ");
+		await seedManaged("p-7", "supervisor-padded");
+		await seedManaged("p-8", "");
+		await seedManaged("p-9", null);
+		await seedManaged("p-12", "supervisor-only");
+		await seedManaged("p-13", "   ");
+		await seedManaged("p-14", "  ");
+	}
+
+	test("every row's machine selects exactly the rows that share it, and the grouping has one group per machine with that many", async () => {
+		const w = await teamWorld();
+		await seedAwkwardMachines();
+		const all = await get<ListBody>("/sessions?limit=100", w.me.headers);
+		expect(all.sessions).toHaveLength(16);
+		const byMachine = new Map<string | null, string[]>();
+		for (const row of all.sessions) {
+			const key = row.machine ?? null;
+			byMachine.set(key, [...(byMachine.get(key) ?? []), row.sessionId]);
+		}
+		expect([...byMachine.keys()].filter((m) => m !== null).sort()).toEqual([
+			"10.0.0.7",
+			"100% sure_name",
+			"My Box",
+			"fallback-name",
+			"my box",
+			"only-reported-with-blank-supervisor",
+			"padded-reported",
+			"reported-only",
+			"supervisor-only",
+			"supervisor-padded",
+		]);
+		const groups = await get<HostGroupsBody>("/sessions/stats?group_by=host", w.me.headers);
+		expect(new Map(groups.groups.map((g) => [g.host, g.total]))).toEqual(
+			new Map([...byMachine].map(([machine, rows]) => [machine, rows.length])),
+		);
+		for (const [machine, expected] of byMachine) {
+			const host = machine === null ? UNKNOWN : encodeURIComponent(machine);
+			const body = await get<ListBody>(`/sessions?host=${host}&limit=100`, w.me.headers);
+			expect({ machine, ids: ids(body) }).toEqual({ machine, ids: [...expected].sort() });
+			const stats = await get<StatsBody>(`/sessions/stats?host=${host}`, w.me.headers);
+			expect({ machine, total: stats.total }).toEqual({ machine, total: expected.length });
+		}
+	});
+});
+
 describe("concurrent requests for different machines are not shared", () => {
 	test("stats for two machines answered together are each their own machine's", async () => {
 		const w = await teamWorld();
