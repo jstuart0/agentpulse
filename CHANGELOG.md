@@ -7,6 +7,48 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-10-03
+
+### Added
+
+- **Filter or group the dashboard by machine.** A Machine select narrows the
+  dashboard to the sessions on one machine (or to the sessions with no machine),
+  and Group by gains Machine. The choice is applied by the server, so the
+  cards, the Active, Completed and Archived tabs, the status cards, Load more,
+  search, the per-owner headers, "Mark all as seen" and every count describe the
+  same set, and a session arriving live is included or left out by the same
+  rule. It is remembered per person, works in solo and in a team (and combines
+  with Mine | Everyone and the Owner select), and stays out of the way until a
+  second machine appears. A machine is the supervisor's host for a
+  supervisor-launched session, otherwise the name its relay reported; that name
+  is self-declared, so the filter is a view and nothing about access reads it.
+  "Show all" over a machine's group, and an empty machine view that names the
+  machine and offers the way back, are included.
+- **`host=` on `GET /sessions` and `GET /sessions/stats`, `group_by=host`, and
+  `hostFilter`.** `host=<name>` is an exact, case-sensitive machine name;
+  `host=%1Funknown` selects sessions with no machine. Every list and stats
+  answer says which filter it applied (`hostFilter`), and list rows carry
+  `machine`. `group_by=host` counts each machine the way `group_by=owner`
+  counts each owner. A bad value is `400 invalid_host`.
+- **MCP: `host` and `no_host` on `list_sessions` and `get_stats`**, with the
+  same echo check as `owner`: an answer that doesn't confirm the machine filter
+  asked for is refused, so a server that predates it can't return every
+  machine's sessions as one machine's.
+
+### Changed
+
+- Sessions pushed over the WebSocket now carry their `machine`, looked up per
+  push and sent in the order they were emitted.
+- A dashboard card shows the machine the filter selects on: for a
+  supervisor-launched session that is the supervisor's host, where it used to
+  show the name the session reported.
+
+### Upgrade notes
+
+- No migration. The new web and the new server go together: a web client asking
+  an older server for a machine refuses the answer rather than showing every
+  machine's sessions under one machine's name.
+
 ## [0.7.1] — 2026-10-03
 
 Ideas from a fork by @flexi767 (https://github.com/flexi767/agentpulse); re-implemented here.
