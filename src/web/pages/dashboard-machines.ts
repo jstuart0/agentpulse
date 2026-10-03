@@ -110,11 +110,31 @@ export function waitingOnOtherMachines(
 	return groups.filter((g) => g.host !== chosen).reduce((sum, g) => sum + g.waiting, 0);
 }
 
-/** The one line by the stat cards: which machine the numbers are for, and what is waiting elsewhere. */
-export function machineScopeText(host: HostParam, waitingElsewhere: number): string {
-	const where = host === HOST_UNKNOWN ? "sessions with no machine reported" : host;
-	const elsewhere = waitingElsewhere > 0 ? ` ${waitingElsewhere} waiting on other machines.` : "";
-	return `Showing ${where} only.${elsewhere}`;
+/**
+ * The one line by the stat cards: which machine the numbers are for, and what is
+ * waiting elsewhere. When the machine list was cut, the figure counts only the
+ * machines that are listed, so it is a floor ("At least"), and nothing is said
+ * when it is zero (unlisted machines might still have some).
+ */
+export function machineScopeText(
+	host: HostParam,
+	waitingElsewhere: number,
+	atLeast: boolean,
+): string {
+	const scope =
+		host === HOST_UNKNOWN
+			? "Showing only sessions with no machine reported."
+			: `Showing ${host} only.`;
+	if (waitingElsewhere <= 0) return scope;
+	const n = atLeast ? `At least ${waitingElsewhere}` : `${waitingElsewhere}`;
+	return `${scope} ${n} waiting on other machines.`;
+}
+
+/** The "N more active across the team" line; under a machine filter it says whose machine, so a machine-scoped number doesn't read as team-wide. */
+export function teamLineText(count: number, host: HostParam): string {
+	const base = `${count} more active across the team`;
+	if (host === HOST_ALL) return `${base}.`;
+	return host === HOST_UNKNOWN ? `${base} with no machine reported.` : `${base} on ${host}.`;
 }
 
 /** Whether a row (a pushed session) is on a machine the control's counts don't list yet, so they should be asked for again now. */

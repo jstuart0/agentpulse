@@ -21,6 +21,7 @@ import {
 	type GroupHeader,
 	groupDashboardSessions,
 	groupHeader,
+	unlistedMachineCount,
 } from "../pages/dashboard-groups.js";
 import {
 	MAX_POINTER_HOLD_MS,
@@ -379,6 +380,9 @@ export function SessionGrid({
 		);
 	}
 
+	const unlisted = machineView?.otherMachines
+		? unlistedMachineCount(machineView.otherMachines.machines, groups, machineView.machineKeys)
+		: 0;
 	// Several groups, in stable order (see groupDashboardSessions).
 	return (
 		<div className="space-y-5 md:space-y-6" {...interactionHandlers}>
@@ -396,32 +400,32 @@ export function SessionGrid({
 					searchActive: team?.searchActive ?? machineView?.searchActive ?? false,
 				});
 				return (
-					<div key={group.key}>
+					<div key={group.key} className={cn(group.sessions.length === 0 && "!mt-2 md:!mt-3")}>
 						<GroupHeaderRow
 							header={header}
 							onShowAllOf={team?.onShowAllOf}
 							onShowAllOfHost={machineView?.onShowAllOfHost}
+							compact={group.sessions.length === 0}
 						/>
-						<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
-							{group.sessions.map((session) => (
-								<SessionCard
-									key={session.sessionId}
-									session={session}
-									intelligence={intelligence[session.sessionId]}
-									ownerChip={chipFor(session)}
-								/>
-							))}
-						</div>
+						{group.sessions.length > 0 && (
+							<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
+								{group.sessions.map((session) => (
+									<SessionCard
+										key={session.sessionId}
+										session={session}
+										intelligence={intelligence[session.sessionId]}
+										ownerChip={chipFor(session)}
+									/>
+								))}
+							</div>
+						)}
 					</div>
 				);
 			})}
-			{groupBy === "machine" && machineView?.otherMachines && (
+			{groupBy === "machine" && machineView?.otherMachines && unlisted > 0 && (
 				<p className="text-xs text-hint">
-					{machineView.otherMachines.machines} more machine
-					{machineView.otherMachines.machines === 1 ? "" : "s"} (
-					{machineView.otherMachines.sessions} session
-					{machineView.otherMachines.sessions === 1 ? "" : "s"}) aren't listed here. The busiest
-					machines are.
+					{unlisted} more machine{unlisted === 1 ? "" : "s"} aren't listed here: only the busiest
+					machines, and any whose sessions are loaded below, get a header.
 				</p>
 			)}
 		</div>
@@ -438,15 +442,24 @@ function GroupHeaderRow({
 	header,
 	onShowAllOf,
 	onShowAllOfHost,
+	compact = false,
 }: {
 	header: GroupHeader;
 	onShowAllOf?: (ownerId: string) => void;
 	onShowAllOfHost?: (host: HostParam) => void;
+	/** A header with no cards under it (its sessions aren't loaded yet): one wrapping row, not a stack, so many of them don't push the first card far down on a phone. */
+	compact?: boolean;
 }) {
 	const showAll = header.showAll;
 	const showAllHost = header.showAllHost;
 	return (
-		<div className="flex flex-col items-start gap-1.5 mb-3 md:flex-row md:items-center md:gap-2">
+		<div
+			className={cn(
+				compact
+					? "flex flex-row flex-wrap items-center gap-x-2 gap-y-0.5"
+					: "flex flex-col items-start gap-1.5 mb-3 md:flex-row md:items-center md:gap-2",
+			)}
+		>
 			<h3
 				title={header.title}
 				className="max-w-full break-words text-sm font-semibold text-foreground [overflow-wrap:anywhere]"

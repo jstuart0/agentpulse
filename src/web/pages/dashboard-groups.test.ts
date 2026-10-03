@@ -9,9 +9,9 @@ import {
 	groupHeader,
 	hostStatsByKey,
 	machineKeysWithSessions,
-	unlistedMachineCount,
 	ownerGroupTotal,
 	parseGroupBy,
+	unlistedMachineCount,
 } from "./dashboard-groups.js";
 import { groupByProjectKey, groupSessionsStable } from "./dashboard-view-state.js";
 
@@ -693,7 +693,12 @@ describe("a machine header with no cards loaded yet", () => {
 });
 
 describe("unlistedMachineCount: the cut notice never contradicts the page", () => {
-	const g = (key: string): DashboardGroup<Row> => ({ key, label: key, sessions: [], pinned: false });
+	const g = (key: string): DashboardGroup<Row> => ({
+		key,
+		label: key,
+		sessions: [],
+		pinned: false,
+	});
 	test("counts only the rolled-up machines that have no header on screen", () => {
 		const listed = ["a", "b"];
 		const shown = [g("a"), g("b"), g("x"), g("y")];

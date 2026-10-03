@@ -190,6 +190,21 @@ export function machineKeysWithSessions(
 		.map((group) => group.host ?? HOST_UNKNOWN);
 }
 
+/**
+ * How many of the machines the server rolled up have no header on screen. A
+ * rolled-up machine whose sessions are among the loaded rows gets a header like
+ * any other, so counting it as "not listed" would contradict the page.
+ */
+export function unlistedMachineCount(
+	otherMachines: number,
+	shown: ReadonlyArray<{ key: string }>,
+	listedKeys: readonly string[],
+): number {
+	const listed = new Set(listedKeys);
+	const extraHeaders = shown.filter((group) => !listed.has(group.key)).length;
+	return Math.max(0, otherMachines - extraHeaders);
+}
+
 // ── Headers ─────────────────────────────────────────────────────────────────
 
 export interface GroupHeader {

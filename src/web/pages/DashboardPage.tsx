@@ -75,6 +75,7 @@ import {
 	machineLabel,
 	machineOptions,
 	machineScopeText,
+	teamLineText,
 	viewControlsVisible,
 	waitingOnOtherMachines,
 } from "./dashboard-machines.js";
@@ -839,7 +840,11 @@ export function DashboardPage() {
 					{host !== HOST_ALL && (
 						<p className="mb-2 text-xs text-foreground [overflow-wrap:anywhere]" data-machine-scope>
 							<span className="font-medium">
-								{machineScopeText(host, waitingOnOtherMachines(machineStats.groups, host))}
+								{machineScopeText(
+									host,
+									waitingOnOtherMachines(machineStats.groups, host),
+									machineStats.groupsTruncated,
+								)}
 							</span>{" "}
 							<button
 								type="button"
@@ -897,7 +902,7 @@ export function DashboardPage() {
 					)}
 					{othersActive > 0 && !emptyState?.actions.includes("viewEveryone") && (
 						<p className="mb-2 text-xs text-hint">
-							{othersActive} more active across the team.{" "}
+							{teamLineText(othersActive, host)}{" "}
 							<button
 								type="button"
 								onClick={viewEveryone}
