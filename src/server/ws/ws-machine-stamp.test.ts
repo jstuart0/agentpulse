@@ -188,11 +188,13 @@ describe("initWsBroadcaster with an annotator", () => {
 			bus.emit("session_event", { sessionId: "idle", event: { id: 1 } as unknown as SessionEvent });
 			await flush();
 			expect(
-				socket.received.map(
-					(m) =>
-						`${m.type}:${(m.data.session as { sessionId?: string } | undefined)?.sessionId ?? ""}`,
-				),
-			).toEqual(["session_updated:fast", "new_event:"]);
+				socket.received
+					.map(
+						(m) =>
+							`${m.type}:${(m.data.session as { sessionId?: string } | undefined)?.sessionId ?? ""}`,
+					)
+					.sort(),
+			).toEqual(["new_event:", "session_updated:fast"]);
 		} finally {
 			socket.close();
 		}

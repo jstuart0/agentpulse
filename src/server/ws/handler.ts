@@ -193,6 +193,17 @@ interface SessionBusLike {
 // the production singleton.
 const initializedBuses = new WeakSet<object>();
 
+/** How long a push waits for its machine lookup before going out unstamped. */
+export const WS_ANNOTATE_TIMEOUT_MS = 250;
+/** Most machine lookups allowed in flight at once; past it pushes go out unstamped without asking. */
+export const WS_ANNOTATE_MAX_IN_FLIGHT = 200;
+
+export interface WsBroadcasterOptions {
+	annotate?: (session: Session) => Promise<Session>;
+	annotateTimeoutMs?: number;
+	annotateMaxInFlight?: number;
+}
+
 /**
  * Wire up the WS broadcaster as a single subscriber on the in-process
  * session bus. Call once at startup (index.ts). notifier.ts only emits
@@ -207,16 +218,19 @@ const initializedBuses = new WeakSet<object>();
  * (logs a warning). Prevents listener accumulation on hot-reload or accidental
  * double-init.
  *
- * `annotate` adds what a pushed session row can't carry itself (its machine, which
- * the composition root supplies). The broadcaster stays ignorant of how. Lookups run concurrently but pushes leave in the order
- * they were emitted, session events included, so a session's creation still
- * reaches a dashboard before its first event. A lookup that fails sends the row
- * as it was. Without it every push is sent at once, untouched.
+ * `annotate` adds what a pushed session row can't carry itself (its machine,
+ * which the composition root supplies). The broadcaster stays ignorant of how.
+ * Order matters only within one session (its creation must reach a dashboard
+ * before its first event), so each session has its own short chain: a slow
+ * lookup holds up that session's later pushes and nothing else, and an event for
+ * a session with nothing pending is sent at once. A lookup is given up on after a
+ * short timeout (the row goes out as it was; the dashboard reads a missing
+ * machine as "can't tell"), and at most a bounded number are in flight, so a
+ * hung database can neither stall the live feed nor grow a queue. A lookup that
+ * fails sends the row as it was. Without `annotate` every push is sent at once,
+ * untouched.
  */
-export function initWsBroadcaster(
-	bus: SessionBusLike,
-	options?: { annotate?: (session: Session) => Promise<Session> },
-): void {
+export function initWsBroadcaster(bus: SessionBusLike, options?: WsBroadcasterOptions): void {
 	if (initializedBuses.has(bus)) {
 		console.warn(JSON.stringify({ kind: "ws_broadcaster_double_init", level: "warn" }));
 		return;
@@ -224,29 +238,61 @@ export function initWsBroadcaster(
 	initializedBuses.add(bus);
 
 	const annotate = options?.annotate;
-	let sent: Promise<void> = Promise.resolve();
-	const sendInOrder = (ready: Promise<() => void>) => {
-		sent = sent
-			.then(() => ready)
-			.then((send) => send())
-			.catch(() => undefined);
+	const timeoutMs = options?.annotateTimeoutMs ?? WS_ANNOTATE_TIMEOUT_MS;
+	const maxInFlight = options?.annotateMaxInFlight ?? WS_ANNOTATE_MAX_IN_FLIGHT;
+	const chains = new Map<string, Promise<void>>();
+	let inFlight = 0;
+
+	const sendInOrder = (sessionId: string, send: () => void | Promise<void>) => {
+		const next = (chains.get(sessionId) ?? Promise.resolve()).then(send).catch(() => undefined);
+		chains.set(sessionId, next);
+		void next.then(() => {
+			if (chains.get(sessionId) === next) chains.delete(sessionId);
+		});
 	};
+
+	/** The row with its machine, or as it was when the lookup fails, hangs or isn't allowed. */
+	const stamped = (session: Session): Promise<Session> => {
+		if (!annotate || inFlight >= maxInFlight) return Promise.resolve(session);
+		inFlight += 1;
+		const lookup = annotate(session);
+		void lookup.then(
+			() => {
+				inFlight -= 1;
+			},
+			() => {
+				inFlight -= 1;
+			},
+		);
+		return new Promise<Session>((resolve) => {
+			const timer = setTimeout(() => resolve(session), timeoutMs);
+			lookup.then(
+				(row) => {
+					clearTimeout(timer);
+					resolve(row);
+				},
+				(err) => {
+					clearTimeout(timer);
+					console.error(
+						JSON.stringify({
+							kind: "ws_annotate_failed",
+							level: "error",
+							error: err instanceof Error ? err.message : String(err),
+						}),
+					);
+					resolve(session);
+				},
+			);
+		});
+	};
+
 	const pushSession = (type: "session_created" | "session_updated", session: Session) => {
 		if (!annotate) {
 			broadcast(type, { session });
 			return;
 		}
-		const stamped = annotate(session).catch((err) => {
-			console.error(
-				JSON.stringify({
-					kind: "ws_annotate_failed",
-					level: "error",
-					error: err instanceof Error ? err.message : String(err),
-				}),
-			);
-			return session;
-		});
-		sendInOrder(stamped.then((row) => () => broadcast(type, { session: row })));
+		const ready = stamped(session);
+		sendInOrder(session.sessionId, async () => broadcast(type, { session: await ready }));
 	};
 
 	bus.on("session_created", (session) => pushSession("session_created", session));
@@ -254,10 +300,10 @@ export function initWsBroadcaster(
 	bus.on("session_updated", (session) => pushSession("session_updated", session));
 
 	bus.on("session_event", ({ sessionId, event }) => {
-		if (!annotate) {
-			broadcastToSession(sessionId, "new_event", event);
+		if (annotate && chains.has(sessionId)) {
+			sendInOrder(sessionId, () => broadcastToSession(sessionId, "new_event", event));
 			return;
 		}
-		sendInOrder(Promise.resolve(() => broadcastToSession(sessionId, "new_event", event)));
+		broadcastToSession(sessionId, "new_event", event);
 	});
 }
