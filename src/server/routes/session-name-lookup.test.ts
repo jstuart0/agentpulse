@@ -117,17 +117,23 @@ describe("the name-only read", () => {
 		expect(fullLong).toBeGreaterThan(lightLong * 1000);
 	});
 
-	test("one statement of its own, whatever the session holds: a found session costs what an unknown one does (the auth lookups plus the one select), with no events, managed-session, key or control-action read", async () => {
+	test("exactly one statement of its own, whatever the session holds: the auth lookups plus the one select, with no events, managed-session, key or control-action read", async () => {
 		await seedSession("c-short", "a", 1);
 		await seedSession("c-long", "b", 600);
 		const statements = (path: string) => countDbCalls(async () => void (await get(path)));
-		const unknown = await statements(`/sessions/c-nope${LIGHT}`);
+		// a request refused before any read costs only the caller's own auth lookups
+		const auth = await statements(`/sessions/c-short?fields=events`);
 		const short = await statements(`/sessions/c-short${LIGHT}`);
 		const long = await statements(`/sessions/c-long${LIGHT}`);
-		// If an events read (or any second statement) crept in for found sessions, short and long would exceed unknown.
-		expect({ short, long }).toEqual({ short: unknown, long: unknown });
+		const unknown = await statements(`/sessions/c-nope${LIGHT}`);
+		// If a second statement (an events read, say) crept in, these would be auth + 2.
+		expect({ short, long, unknown }).toEqual({
+			short: auth + 1,
+			long: auth + 1,
+			unknown: auth + 1,
+		});
 		// the control: the full detail costs more statements than the small read
-		expect(await statements("/sessions/c-long")).toBeGreaterThan(unknown + 1);
+		expect(await statements("/sessions/c-long")).toBeGreaterThan(auth + 2);
 	});
 
 	test("an unknown session is the same 404 the detail gives, so a client tells found from unknown as before", async () => {
