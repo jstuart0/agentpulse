@@ -44,7 +44,7 @@ import type {
 import type { Actor } from "../auth/actor.js";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
-import { managedSessions, projects, sessions } from "../db/schema/index.js";
+import { managedSessions, projects, sessions, supervisors } from "../db/schema/index.js";
 import {
 	executeRows,
 	isAppIsoTimestamp,
@@ -1710,12 +1710,20 @@ export function getStatsByHost(options?: {
 const statsByHostInFlight = createInFlight<HostStatsBody>();
 
 /**
- * The most groups `group_by=host` lists (the sessions with no machine always
- * among them). An ingest key can mint any number of machine names and every
+ * The most groups `group_by=host` lists apart from the sessions with no machine and the registered machines below. An ingest key can mint any number of machine names and every
  * viewer's poll asks for this, so the busiest machines are listed, ties by name,
  * and the rest are rolled into `otherMachines`/`otherTotal`.
  */
 export const MAX_MACHINE_GROUPS = 50;
+
+/**
+ * On top of those, the machines named by a registered (non-revoked) supervisor are
+ * always listed, up to this many, so a real machine can't be pushed out of the
+ * listing (and out of the select, where an unlisted machine can't be chosen) by
+ * invented busy names. Registering a supervisor needs a manage-level credential,
+ * which an ingest key is not, so this bound can't be inflated from outside.
+ */
+export const MAX_REGISTERED_MACHINE_GROUPS = 200;
 
 function byMachineName(a: HostStatsGroup, b: HostStatsGroup): number {
 	if (a.host === null || b.host === null)
@@ -1760,26 +1768,46 @@ async function computeStatsByHost(options?: {
 		.groupBy(sql`1`)
 		.as("g");
 	const num = (column: SQL.Aliased<number> | SQL<number>) => sql<number>`${column}`.mapWith(Number);
-	// One statement however many machines there are: the busiest MAX_MACHINE_GROUPS
-	// (the sessions with no machine first), with the machine count and the sum over
-	// every machine alongside, so what was cut can be said without a second pass.
-	const totalsQuery = getDb()
+	// Each machine's kind: 0 none reported, 1 a registered (non-revoked) supervisor's
+	// host, 2 anything else. Registering a supervisor takes a manage-level credential,
+	// so an ingest key can't inflate kind 1; it can only invent kind 2 names.
+	const kindOf = sql`CASE WHEN ${grouped.host} IS NULL THEN 0 WHEN ${grouped.host} IN (SELECT ${supervisors.hostName} FROM ${supervisors} WHERE ${supervisors.enrollmentState} <> 'revoked') THEN 1 ELSE 2 END`;
+	// The machine count and the sum over every machine are taken before anything is
+	// left out, so what was cut can be said without a second pass.
+	const ranked = getDb()
 		.select({
 			host: grouped.host,
-			total: num(grouped.total),
-			completed: num(grouped.completed),
-			tabActive: num(grouped.tabActive),
-			tabArchived: num(grouped.tabArchived),
-			machines: sql<number>`count(*) over ()`.mapWith(Number),
-			allTotal: sql<number>`sum(${grouped.total}) over ()`.mapWith(Number),
+			total: grouped.total,
+			completed: grouped.completed,
+			tabActive: grouped.tabActive,
+			tabArchived: grouped.tabArchived,
+			kind: sql<number>`${kindOf}`.as("kind"),
+			rnk: sql<number>`row_number() OVER (PARTITION BY ${kindOf} ORDER BY ${grouped.total} DESC, ${grouped.host} ASC)`.as(
+				"rnk",
+			),
+			machines: sql<number>`count(*) OVER ()`.as("machines"),
+			allTotal: sql<number>`sum(${grouped.total}) OVER ()`.as("all_total"),
 		})
 		.from(grouped)
-		.orderBy(
-			sql`CASE WHEN ${grouped.host} IS NULL THEN 0 ELSE 1 END`,
-			desc(grouped.total),
-			asc(grouped.host),
+		.as("r");
+	// One statement however many machines there are: the sessions with no machine,
+	// then up to MAX_REGISTERED_MACHINE_GROUPS registered machines, then the busiest
+	// MAX_MACHINE_GROUPS of the rest.
+	const totalsQuery = getDb()
+		.select({
+			host: ranked.host,
+			total: num(ranked.total),
+			completed: num(ranked.completed),
+			tabActive: num(ranked.tabActive),
+			tabArchived: num(ranked.tabArchived),
+			machines: num(ranked.machines),
+			allTotal: num(ranked.allTotal),
+		})
+		.from(ranked)
+		.where(
+			sql`(${ranked.kind} = 0) OR (${ranked.kind} = 1 AND ${ranked.rnk} <= ${MAX_REGISTERED_MACHINE_GROUPS}) OR (${ranked.kind} = 2 AND ${ranked.rnk} <= ${MAX_MACHINE_GROUPS})`,
 		)
-		.limit(MAX_MACHINE_GROUPS);
+		.orderBy(desc(ranked.total), asc(ranked.host));
 	const {
 		scan: { rows: candidates, truncated },
 		totals,

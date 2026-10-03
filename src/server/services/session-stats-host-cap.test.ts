@@ -185,12 +185,12 @@ describe("the per-machine grouping is bounded", () => {
 		);
 	});
 
-	test("sessions with no machine are always listed, however few they are", async () => {
+	test("sessions with no machine reported are always listed on top of the cap, however few they are", async () => {
 		await seedMachines(MAX_MACHINE_GROUPS + 5, () => 3, 1);
 		const result = await getStatsByHost();
-		expect(result.groups).toHaveLength(MAX_MACHINE_GROUPS);
+		expect(result.groups).toHaveLength(MAX_MACHINE_GROUPS + 1);
 		expect(result.groups.at(-1)).toMatchObject({ host: null, total: 1 });
-		expect(result.groups.filter((g) => g.host !== null)).toHaveLength(MAX_MACHINE_GROUPS - 1);
+		expect(result.otherMachines).toBe(5);
 	});
 
 	test("asking for one machine outside the top gives that machine's own group, whole, and is not cut", async () => {

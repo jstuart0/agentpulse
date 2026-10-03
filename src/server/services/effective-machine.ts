@@ -22,12 +22,12 @@
  *    needs the value of every row anyway.
  * None of them changes the row shape the statements around them return.
  */
-import { type SQL, eq, isNotNull, sql } from "drizzle-orm";
+import { type SQL, and, eq, isNotNull, sql } from "drizzle-orm";
 import type { HostScope } from "../../shared/machine-scope.js";
 import type { Session } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { managedSessions, sessions, supervisors } from "../db/schema/index.js";
-import { cleanMachineName } from "./machine-name.js";
+import { UNNAMED_HOST_NAME, cleanMachineName } from "./machine-name.js";
 
 const SUPERVISOR_HOST = sql`(SELECT NULLIF(TRIM(ms.host_name), '') FROM ${managedSessions} AS ms WHERE ms.session_id = ${sessions.sessionId})`;
 
@@ -76,31 +76,61 @@ export async function stampMachine(session: Session): Promise<Session> {
 }
 
 /**
- * Cleans the host names stored before names were cleaned on the way in: every
- * distinct supervisor host name and managed-session host name that isn't already
- * what cleaning would give is rewritten (to nothing, for a managed session's
- * name with nothing left, which makes the reported name stand). Idempotent, and
- * run at every boot so a name written by an older server is covered too.
+ * Cleans the host names stored before names were cleaned on the way in. A
+ * supervisor's name is rewritten to what cleaning gives, or to the name
+ * registration falls back to when nothing printable is left, keyed by the
+ * supervisor's id (two supervisors may share a raw name). A managed session's
+ * copy follows: cleaned, or, when nothing is left, its supervisor's repaired
+ * name (nothing at all when that supervisor is gone, so the reported name
+ * stands). Idempotent, and run at every boot so a name written by an older
+ * server is covered too.
  */
 export async function normalizeStoredMachineNames(): Promise<void> {
 	const db = getDb();
+	const repaired = new Map<string, string>();
+	for (const { id, name } of await db
+		.select({ id: supervisors.id, name: supervisors.hostName })
+		.from(supervisors)) {
+		const cleaned = cleanMachineName(name) ?? UNNAMED_HOST_NAME;
+		repaired.set(id, cleaned);
+		if (cleaned !== name) {
+			await db.update(supervisors).set({ hostName: cleaned }).where(eq(supervisors.id, id));
+		}
+	}
 	const managed = await db
-		.selectDistinct({ name: managedSessions.hostName })
+		.selectDistinct({ name: managedSessions.hostName, supervisorId: managedSessions.supervisorId })
 		.from(managedSessions)
 		.where(isNotNull(managedSessions.hostName));
-	for (const { name } of managed) {
+	for (const { name, supervisorId } of managed) {
 		if (name === null) continue;
 		const cleaned = cleanMachineName(name);
 		if (cleaned === name) continue;
 		await db
 			.update(managedSessions)
-			.set({ hostName: cleaned })
-			.where(eq(managedSessions.hostName, name));
+			.set({ hostName: cleaned ?? repaired.get(supervisorId) ?? null })
+			.where(
+				and(eq(managedSessions.hostName, name), eq(managedSessions.supervisorId, supervisorId)),
+			);
 	}
-	const hosts = await db.selectDistinct({ name: supervisors.hostName }).from(supervisors);
-	for (const { name } of hosts) {
-		const cleaned = cleanMachineName(name);
-		if (cleaned === null || cleaned === name) continue;
-		await db.update(supervisors).set({ hostName: cleaned }).where(eq(supervisors.hostName, name));
+}
+
+/**
+ * The boot step: the cleanup is cosmetic, so a failure (a transient database
+ * error) is logged as one structured line and boot carries on rather than
+ * crash-looping over it. `cleanup` is the seam a test drives.
+ */
+export async function normalizeStoredMachineNamesSafely(
+	cleanup: () => Promise<void> = normalizeStoredMachineNames,
+): Promise<void> {
+	try {
+		await cleanup();
+	} catch (err) {
+		console.error(
+			JSON.stringify({
+				kind: "machine_names_cleanup_failed",
+				level: "error",
+				error: err instanceof Error ? err.message : String(err),
+			}),
+		);
 	}
 }

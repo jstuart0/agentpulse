@@ -767,8 +767,8 @@ describe("what the machine filter costs the database", () => {
 		const many = await calls("/sessions/stats?group_by=host", w.me.headers);
 		// The machine totals are one statement built from a subquery (the busiest
 		// machines, with the count of the rest alongside), which the builder counter
-		// sees as two builders: one more than the owner grouping, however many machines.
-		expect({ few, many }).toEqual({ few: owner + 1, many: owner + 1 });
+		// sees as three builders: two more than the owner grouping, however many machines.
+		expect({ few, many }).toEqual({ few: owner + 2, many: owner + 2 });
 	});
 });
 

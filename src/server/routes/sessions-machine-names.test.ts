@@ -63,6 +63,7 @@ async function seedManaged(
 	sessionId: string,
 	hostName: string | null,
 	reported: string | null = null,
+	supervisorId = "sup-1",
 ) {
 	counter += 1;
 	await getDb()

@@ -10,3 +10,6 @@ import { sanitizeReportedHost } from "../../shared/reported-host.js";
 export function cleanMachineName(value: string | null | undefined): string | null {
 	return sanitizeReportedHost(value);
 }
+
+/** What a supervisor whose host name has nothing printable in it is called, wherever its name is written or repaired. */
+export const UNNAMED_HOST_NAME = "unnamed host";

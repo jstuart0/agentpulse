@@ -111,9 +111,9 @@ describe("one machine's flood does not change another machine's row", () => {
 		const calls = await countDbCalls(async () => {
 			await getStatsByHost();
 		});
-		// the totals (a subquery and its outer select: two builders, one statement),
+		// the totals (nested subqueries and the outer select: three builders, one statement),
 		// the probe, the per-machine attention tier and the fill
-		expect(calls).toBe(5);
+		expect(calls).toBe(6);
 	});
 
 	test("nothing capped: not truncated, every column exact", async () => {
