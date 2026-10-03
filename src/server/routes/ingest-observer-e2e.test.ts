@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import "../services/ai/__test_db.js";
+import { NO_EXCLUDE_RULES } from "../../supervisor/services/codex-observer-test-support.js";
 
 const { config } = await import("../config.js");
 const { initializeDatabase, getDb } = await import("../db/client.js");
@@ -134,6 +135,7 @@ async function runToCompletion(dir: string, sessionId: string) {
 		new Map(),
 		fetchImpl,
 		dir,
+		NO_EXCLUDE_RULES,
 	);
 	await until(() => getInFlightCount() === 0, 10_000);
 	return state;
@@ -190,7 +192,16 @@ test("E1(b): a state-loss replay stores nothing", async () => {
 	// The fixture copy is written fresh each call, but writeFixtureCopy
 	// creates a NEW random filename target only if the caller asks — reuse
 	// the same on-disk file path this session already used.
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fetchImpl, dir);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fetchImpl,
+		dir,
+		NO_EXCLUDE_RULES,
+	);
 	await until(() => getInFlightCount() === 0, 10_000);
 
 	const after = await rowsFor(sessionId);
@@ -248,7 +259,16 @@ test("E1(c): without a marker, native and observer copies are both kept", async 
 	const { appendFileSync } = await import("node:fs");
 	const { path } = { path: join(dir, "rollout.jsonl") };
 	appendFileSync(path, extraCallLine);
-	await processRolloutFile(path, state, "http://x", null, new Map(), fetchImpl, dir);
+	await processRolloutFile(
+		path,
+		state,
+		"http://x",
+		null,
+		new Map(),
+		fetchImpl,
+		dir,
+		NO_EXCLUDE_RULES,
+	);
 	await until(() => getInFlightCount() === 0, 10_000);
 
 	const afterAppend = await rowsFor(sessionId);
@@ -290,7 +310,16 @@ test("E1(d): with a marker, only the native copy is stored", async () => {
 	const { appendFileSync } = await import("node:fs");
 	const path = join(dir, "rollout.jsonl");
 	appendFileSync(path, extraCallLine);
-	await processRolloutFile(path, state, "http://x", null, new Map(), fetchImpl, dir);
+	await processRolloutFile(
+		path,
+		state,
+		"http://x",
+		null,
+		new Map(),
+		fetchImpl,
+		dir,
+		NO_EXCLUDE_RULES,
+	);
 	await until(() => getInFlightCount() === 0, 10_000);
 
 	const afterRows = await rowsFor(sessionId);
@@ -334,19 +363,38 @@ test("E1-split: a restart mid-turn plus a later replay stores nothing new", asyn
 		new Map(),
 		fetchImpl,
 		dir,
+		NO_EXCLUDE_RULES,
 	);
 	await until(() => getInFlightCount() === 0, 10_000);
 
 	appendFileSync(path, part2);
 	// A restart: a brand new callMap, simulating a fresh observer process.
-	await processRolloutFile(path, midState, "http://x", null, new Map(), fetchImpl, dir);
+	await processRolloutFile(
+		path,
+		midState,
+		"http://x",
+		null,
+		new Map(),
+		fetchImpl,
+		dir,
+		NO_EXCLUDE_RULES,
+	);
 	await until(() => getInFlightCount() === 0, 10_000);
 
 	const rowCount = (await rowsFor(sessionId)).length;
 
 	// Reset state and replay the whole file from offset 0, again with a
 	// fresh callMap.
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fetchImpl, dir);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fetchImpl,
+		dir,
+		NO_EXCLUDE_RULES,
+	);
 	await until(() => getInFlightCount() === 0, 10_000);
 
 	const finalRowCount = (await rowsFor(sessionId)).length;

@@ -137,6 +137,8 @@ export function ModeExistingScreen({
 			onClose();
 			return;
 		}
+		// What went through is not sent again by Try again.
+		if (settled.claimDone) setClaim(false);
 		setKeyChoices(settled.remainingKeyChoices);
 		setHostChoices(settled.remainingHostChoices);
 		setFailures(settled.failures);

@@ -13,6 +13,7 @@ import {
 	isLoopbackHostname,
 	onLocationChange,
 } from "../lib/onboarding.js";
+import { FIRST_RUN_EXCLUDE_LINK } from "../lib/setup-steps.js";
 import { useUserStore } from "../stores/user-store.js";
 
 const LOCATION_OPTIONS: Array<{ value: OnboardingLocation; title: string; detail: string }> = [
@@ -288,6 +289,12 @@ export function FirstRunWelcome({ serverUrl }: { serverUrl: string }) {
 						Open the full Setup page
 					</Link>{" "}
 					for a step-by-step walkthrough with editable config blobs.
+				</p>
+				<p className="text-xs text-muted-foreground mt-2">
+					{FIRST_RUN_EXCLUDE_LINK.lead}{" "}
+					<Link to={FIRST_RUN_EXCLUDE_LINK.to} className="text-primary hover:underline">
+						{FIRST_RUN_EXCLUDE_LINK.linkText}
+					</Link>
 				</p>
 			</div>
 

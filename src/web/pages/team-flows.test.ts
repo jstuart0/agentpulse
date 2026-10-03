@@ -19,6 +19,7 @@ import {
 	ownerlessHostsToReview,
 	roleChangeAction,
 	selfDemoteConfirm,
+	soloSwitchGate,
 	undecidedOwnerlessKeys,
 } from "./team-flows.js";
 
@@ -532,5 +533,25 @@ describe("the Change owner dialog for a key", () => {
 			assignKeyPlan({ keyHadOwner: false, choice: SERVICE_OWNER_CHOICE, recordServiceKeys: true })
 				.ops,
 		).toEqual([{ kind: "mark-service-key" }]);
+	});
+});
+
+describe("the switch back to solo while it reads the people", () => {
+	test("Switch waits until they are loaded", () => {
+		expect(soloSwitchGate({ loaded: false, loadFailed: false })).toEqual({
+			confirmDisabled: true,
+			showRetry: false,
+		});
+		expect(soloSwitchGate({ loaded: true, loadFailed: false })).toEqual({
+			confirmDisabled: false,
+			showRetry: false,
+		});
+	});
+
+	test("a read that failed offers Try again instead of a button that never enables", () => {
+		expect(soloSwitchGate({ loaded: false, loadFailed: true })).toEqual({
+			confirmDisabled: true,
+			showRetry: true,
+		});
 	});
 });

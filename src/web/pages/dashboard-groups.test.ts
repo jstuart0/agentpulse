@@ -215,13 +215,40 @@ describe("user group header", () => {
 		// the All tab compares with the owner's non-archived sessions, which the All list pages through
 		expect(header.title).toBe("Alice Smith");
 		expect(header.countText).toBe("22 shown of 130");
-		expect(header.working).toBe(3);
-		expect(header.waiting).toBe(1);
 		expect(header.showAll).toMatchObject({
 			ownerId: ALICE,
 			label: "Show all",
 			ariaLabel: "Show all of Alice Smith's sessions",
 		});
+	});
+
+	test("the owner's own working and waiting counts show only on the Active tab with no status card", () => {
+		const active = groupHeader(userGroup(22), "user", headerCtx());
+		expect(active.working).toBe(3);
+		expect(active.waiting).toBe(1);
+	});
+
+	test("on any other tab, or under a status card, the chips come from the cards shown, never from the owner's active totals", () => {
+		const shownCards: DashboardGroup<Row> = {
+			key: ALICE,
+			label: "Alice Smith",
+			pinned: false,
+			sessions: [row("w", { ownerUserId: ALICE, isWorking: true })],
+		};
+		for (const over of [
+			{ tab: "all" },
+			{ tab: "completed" },
+			{ tab: "archived" },
+			{ tab: "active", statusFilter: "waiting" as const },
+			{ tab: "active", statusFilter: "working" as const },
+		]) {
+			const header = groupHeader(shownCards, "user", headerCtx(over));
+			expect({ over, working: header.working, waiting: header.waiting }).toEqual({
+				over,
+				working: 1,
+				waiting: 0,
+			});
+		}
 	});
 
 	test("on the Active tab 'of' is the owner's active count; on Completed, their completed count", () => {

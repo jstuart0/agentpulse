@@ -107,7 +107,7 @@ default_tools_approval_mode = "writes"
 | `list_launches` / `get_launch` | `GET /launches`(`/:id`) | DTO carries `env`, `launchSpec`, and `claimToken`. |
 | `get_inbox` | `GET /ai/inbox` | `action_*` items can embed launch `env`/`claimToken` payloads. |
 | `list_projects` | `GET /projects` | DTO carries arbitrary operator-set `notes`/`metadata` and a `githubRepoUrl` that may embed userinfo credentials. Need only the id/name/defaults? Use the observe-scoped `list_projects_summary` above instead. |
-| `list_hosts` | `GET /api/v1/admin/supervisors` | Admin router; used to pick `requested_supervisor_id` for `launch_agent`. |
+| `list_hosts` | `GET /api/v1/admin/supervisors` | Admin router; used to pick `requested_supervisor_id` for `launch_agent`. Each host may carry `excludeRulesState`: `"invalid"` when the exclude file on that host has an error and its supervisor is sending no session data until it is fixed, otherwise `null` or absent (the server keeps no other state). |
 
 12 tools require `manage` and mutate state. All except the two advisory ones carry `_meta["anthropic/requiresUserInteraction"]` (rUI):
 
@@ -126,6 +126,20 @@ default_tools_approval_mode = "writes"
 | `decide_action_request` | `POST /ai/action-requests/:id/decide` | Approve/decline a single pending action request. rUI. |
 
 "Managed sessions only" means AgentPulse rejects the call with `"Session is not managed."` for any session the server isn't holding a live process for (hook-observed-only sessions).
+
+### Team mode (AGEN-64)
+
+When the server runs in team mode (see the README's "Teams" section), a key's authority follows its owner:
+
+- **A key a person owns acts as that person**, with the role they have *now* (read with the key on every request, so demoting an admin takes admin power from their keys at once). `agentpulse mcp install --mint`, run with a key a member owns, mints a key owned by that member.
+- **An ownerless key (a service key)** acts as a member, even with `manage` scope, unless an admin has kept it as an *admin service key*. In solo mode an ownerless `manage` key keeps its old admin-equivalent authority. With `AGENTPULSE_MODE=team` set in the environment, existing ownerless `manage` keys become members until an admin lists them, so a tool or script using one for settings or key management now gets `403 admin_required`.
+- **A key whose owner is disabled is refused**; one whose owner must still replace a generated password gets `403 password_change_required` until they do.
+- **`observe` still reads everything.** Team mode records who owns a session; it doesn't hide anything. Every `observe` key reads every session's prompts, events, notes, names, hosts and launch outcomes. Filtering by `owner` is a view, not access control.
+- **What `manage` can and can't do to other people's sessions.** `prompt_session`, `stop_session`, `retry_launch` and `launch_agent` aren't owner-checked: any `manage` key can use them on any managed session or host. `update_session` (notes, rename, pin, archive) needs the session's owner or an admin; a field the key's owner may not change comes back in the result's `failed` list. A launch that the host's supervisor refuses because the directory is excluded fails with the same generic message as a trusted-roots refusal, so the error doesn't say which it was (the server's own request-time check of the trusted roots is unchanged and still names the problem).
+- **`list_sessions` and `get_stats` take `owner`** (see their rows above), with the echo requirement: a server that predates owner scoping would silently answer with everyone's sessions, so the tool refuses an answer whose `ownerScope` doesn't match what it asked for. Use `me` for your own sessions; the server refuses it for a key with no owning user.
+- **`get_session`'s `reportedByKey`** (the name of the key that first reported the session, and whether it is a service key) is returned only to `manage` callers, and in team mode only to an admin, the session's owner and the key's owner; for anyone else it is omitted entirely. The key's id is never returned.
+- **`GET /users/directory`** answers `observe` keys: for everyone who can own something, `{ id, displayName, disabled, authSource }` and nothing else. It is a REST route; there is no MCP tool for it. Use it to turn a person into the user id that `owner` takes. The rest of `/users` (list, create, disable, reset password) is for admins, and every change refuses an API key outright.
+- **`list_hosts`** returns `ownerUserId` per host, and `excludeRulesState` (above). Owning a host controls who may rotate or revoke it, not who may launch on it.
 
 ### What's deliberately excluded (and why)
 

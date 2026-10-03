@@ -17,7 +17,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Actor } from "../auth/actor.js";
 import { deactivateCreatorlessEnrollmentTokens } from "../auth/supervisor-auth.js";
 import { config } from "../config.js";
-import { withAdminLock } from "../db/admin-lock.js";
+import { awaitSeamInsideAdminLock, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, sessions, settings, users } from "../db/schema/index.js";
 import {
@@ -282,7 +282,7 @@ export async function setMode(input: SetModeInput, actor: Actor): Promise<SetMod
 	if (input.mode === "team" && config.disableAuth) throw new TeamRequiresAuthError();
 
 	const outcome = await withAdminLock(async (tx) => {
-		await modeSwitchStepHook?.("lock-acquired");
+		await awaitSeamInsideAdminLock(modeSwitchStepHook, "lock-acquired");
 		await assertHumanAdmin(tx, actor);
 
 		const from = (await readStoredMode(tx)) ?? "solo";
@@ -292,10 +292,10 @@ export async function setMode(input: SetModeInput, actor: Actor): Promise<SetMod
 			input.mode === "team"
 				? await applyDecisionsForTeam(tx, input.serviceKeyDecisions)
 				: await clearForSolo(tx, input.serviceKeyDecisions);
-		await modeSwitchStepHook?.("decisions-applied");
+		await awaitSeamInsideAdminLock(modeSwitchStepHook, "decisions-applied");
 
 		await upsertSetting(MODE_SETTING, input.mode, { allowProtected: true, tx });
-		await modeSwitchStepHook?.("mode-written");
+		await awaitSeamInsideAdminLock(modeSwitchStepHook, "mode-written");
 		return { changed: true as const, from, tally };
 	});
 

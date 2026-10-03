@@ -35,6 +35,7 @@ import {
 	NotOwnerError,
 	assertCanArchiveSession,
 	assertCanDeleteSession,
+	assertCanEditSessionNotes,
 	assertCanPinSession,
 	assertCanRenameSession,
 	bindIngestKey,
@@ -115,7 +116,7 @@ sessionsRouter.use("*", requireOperatorScope());
 type SessionAssertion = typeof assertCanDeleteSession;
 
 /**
- * Team mode: archive, rename, pin and delete need the session's owner or an
+ * Team mode: archive, rename, pin, notes, the stored CLAUDE.md and delete need the session's owner or an
  * admin (an unowned session is open to any member). Returns the 403
  * not_owner response when refused, null to carry on. Solo never refuses.
  */
@@ -526,6 +527,8 @@ sessionsRouter.put("/sessions/:sessionId/notes", async (c) => {
 	const body = await readJsonObject(c);
 	// null clears the notes; a missing or non-string value is a malformed call.
 	if (!body || !(typeof body.notes === "string" || body.notes === null)) return invalidBody(c);
+	const refusal = await refuseUnlessOwnerOrAdmin(c, sessionId, assertCanEditSessionNotes);
+	if (refusal) return refusal;
 
 	await getDb()
 		.update(sessions)
@@ -904,7 +907,12 @@ sessionsRouter.get("/sessions/:sessionId/claude-md", async (c) => {
 // PUT /api/v1/sessions/:sessionId/claude-md - Save CLAUDE.md content to DB
 sessionsRouter.put("/sessions/:sessionId/claude-md", async (c) => {
 	const sessionId = c.req.param("sessionId");
-	const { content, path } = await c.req.json<{ content: string; path?: string }>();
+	const body = await readJsonObject(c);
+	if (!body || typeof body.content !== "string") return invalidBody(c);
+	if (body.path !== undefined && typeof body.path !== "string") return invalidBody(c);
+	const { content, path } = body as { content: string; path?: string };
+	const refusal = await refuseUnlessOwnerOrAdmin(c, sessionId, assertCanEditSessionNotes);
+	if (refusal) return refusal;
 
 	const now = new Date().toISOString();
 	const checksum = await computeChecksum(content);

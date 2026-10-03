@@ -14,9 +14,9 @@
  * the id "abc" (owned by the local user where the schema has an owner), put back
  * before every call, so the owner-or-admin checks run for real.
  *
- * Deliberate change since the recording: the pin and notes rows were 500 and 200
- * for the empty probe body; both now answer 400 invalid_body (a missing or
- * mistyped field is refused instead of reaching the database).
+ * Deliberate change since the recording: the pin, notes and claude-md rows were
+ * 500, 200 and 200 for the empty probe body; all now answer 400 invalid_body (a
+ * missing or mistyped field is refused instead of reaching the database).
  */
 export const BASE_ROUTE_STATUSES: ReadonlyArray<readonly [string, readonly number[]]> = [
 	["POST /channels/telegram/webhook", [404, 404, 404, 404, 404]],
@@ -57,7 +57,7 @@ export const BASE_ROUTE_STATUSES: ReadonlyArray<readonly [string, readonly numbe
 	["DELETE /sessions/:sessionId/acknowledge", [200, 200, 200, 200, 200]],
 	["GET /sessions/:sessionId/events/:eventId/context", [404, 404, 404, 404, 404]],
 	["GET /sessions/:sessionId/claude-md", [200, 200, 200, 200, 200]],
-	["PUT /sessions/:sessionId/claude-md", [200, 200, 200, 200, 200]],
+	["PUT /sessions/:sessionId/claude-md", [400, 400, 400, 400, 400]],
 	["PUT /sessions/:sessionId/archive", [200, 200, 200, 200, 200]],
 	["DELETE /sessions/:sessionId", [200, 200, 200, 200, 200]],
 	["GET /settings", [200, 200, 200, 200, 200]],

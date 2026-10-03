@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SupervisorRecord } from "../../shared/types.js";
 import { ConfirmDialog } from "../components/ConfirmDialog.js";
+import { HostExcludeNotice } from "../components/HostExcludeNotice.js";
 import { HostOwnerDialog } from "../components/HostOwnerDialog.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
@@ -10,7 +11,7 @@ import { describeApiError } from "../lib/api-errors.js";
 import { ApiError, api } from "../lib/api.js";
 import { SECRET_LIFETIME_NOTE } from "../lib/one-time-secret.js";
 import { ownerLabel } from "../lib/owner-label.js";
-import { assignablePeople } from "../lib/people.js";
+import { assignablePeople, withCurrentOwner } from "../lib/people.js";
 import { useDbFingerprintStore } from "../stores/db-fingerprint-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { useUsersStore } from "../stores/users-store.js";
@@ -448,6 +449,8 @@ export function HostsPage() {
 										</div>
 									</div>
 
+									<HostExcludeNotice supervisor={supervisor} />
+
 									<div className="mt-4 space-y-3 text-xs">
 										{access.ownerText !== null && (
 											<div>
@@ -626,7 +629,12 @@ export function HostsPage() {
 				{ownerDialogHost && (
 					<HostOwnerDialog
 						host={ownerDialogHost}
-						people={people}
+						people={withCurrentOwner(
+							people,
+							ownerDialogHost.ownerUserId,
+							directory[ownerDialogHost.ownerUserId ?? ""],
+							viewerUserId,
+						)}
 						onClose={() => setOwnerDialogHost(null)}
 						onChanged={() => {
 							setOwnerDialogHost(null);

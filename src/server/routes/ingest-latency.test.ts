@@ -187,7 +187,7 @@ describe("per-event DB cost (measured inside processHookEvent, not racing a deta
 		console.log(`[ingest-latency] existing-session event: ${existingSessionCalls} statements`);
 
 		// Pinned as measured, not derived: these are processHookEvent's full
-		// statement counts for each case (insert-vs-update, D21 metadata,
+		// statement counts for each case (insert-vs-update, latch metadata,
 		// permission-wait tracking, and project-id resolution all differ
 		// between a new and an existing row for reasons unrelated to
 		// attribution) — not just attribution's own marginal share. The part

@@ -18,6 +18,7 @@ let ingestUnacknowledgeDropped = 0;
 let ingestForeignKeyDropped = 0;
 let sessionCreationLimited = 0;
 let ingestKeyBound = 0;
+let skipHeaderDropped = 0;
 
 export function getBgErrorCount(): number {
 	return bgErrorCount;
@@ -118,6 +119,14 @@ export function incrementSessionCreationLimited(): void {
 	sessionCreationLimited++;
 }
 
+/** Hook deliveries dropped because they carried an allowlisted X-AgentPulse-Skip header. */
+export function getSkipHeaderDropped(): number {
+	return skipHeaderDropped;
+}
+export function incrementSkipHeaderDropped(): void {
+	skipHeaderDropped++;
+}
+
 /** Reset all counters — for use in tests only. */
 export function _resetCountersForTest(): void {
 	bgErrorCount = 0;
@@ -129,6 +138,7 @@ export function _resetCountersForTest(): void {
 	ingestForeignKeyDropped = 0;
 	sessionCreationLimited = 0;
 	ingestKeyBound = 0;
+	skipHeaderDropped = 0;
 }
 
 /** Reset only the mismatch counter — for use in tests only. */

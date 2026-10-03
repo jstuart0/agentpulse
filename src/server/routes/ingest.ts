@@ -5,6 +5,7 @@ import type { HookEventPayload, HookEventType, SemanticStatusUpdate } from "../.
 import type { AuthUser } from "../auth/middleware.js";
 import { requireApiKey } from "../auth/middleware.js";
 import { hookRateLimit } from "../middleware/hook-rate-limit.js";
+import { skipHeaderDrop } from "../middleware/skip-header-drop.js";
 import { canonicalizeHookPayload } from "../services/agents/canonicalize.js";
 import { type HookDeliveryContext, parseDeliveryId, parseOrigin } from "../services/event-dedup.js";
 import {
@@ -621,6 +622,11 @@ function handleOversizeHookDelivery(c: Context, prefix: string): Response {
 }
 
 const ingest = new Hono();
+
+// An allowlisted X-AgentPulse-Skip header is answered before the body is read
+// and before the rate limiter (see middleware/skip-header-drop.ts).
+ingest.use("/hooks", skipHeaderDrop());
+ingest.use("/hooks/status", skipHeaderDrop());
 
 // POST /api/v1/hooks - Receive hook events from Claude Code and Codex CLI
 //

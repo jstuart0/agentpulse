@@ -16,8 +16,8 @@
  *     success or ROLLBACK on throw. The callback receives the Drizzle db handle
  *     as `tx` (same object as getDb()). Use `await tx.insert(...)` etc. — Drizzle's
  *     bun-sqlite ops are synchronous under the hood, so the awaits are no-ops, but
- *     the form is dialect-portable. SQLite serialises connections so concurrent
- *     BEGIN/COMMIT pairs are safe.
+ *     the form is dialect-portable. Concurrent calls queue FIFO (shared with the
+ *     admin lock) so only one BEGIN/COMMIT pair is open on the connection at a time.
  *   - On the Postgres path: calls db.transaction(fn) which natively returns a
  *     Promise and supports async callbacks with rollback on rejection.
  *
@@ -30,11 +30,7 @@
  * from the table schemas they pass into tx.insert/select/update/delete.
  */
 import { config } from "../config.js";
-import {
-	assertNotInsideAdminLock,
-	isSqliteAdminLockBusy,
-	waitForSqliteAdminLock,
-} from "./admin-lock.js";
+import { assertNotInsideAdminLock, runInSqliteTransactionSlot } from "./admin-lock.js";
 import { getDb, getSqlite } from "./client.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: tx type unified in Phase 2a
@@ -59,25 +55,28 @@ export async function withTransaction<T>(fn: (tx: any) => T | Promise<T>): Promi
 		//   the same underlying SQLite connection, which SQLite serialises, so all
 		//   ops are within the BEGIN/COMMIT block.
 		//
-		// The admin lock is an open BEGIN IMMEDIATE on this same connection, so a
-		// transaction can't start while it is held: wait for it (no cost when it
-		// is free) rather than throw and lose the work.
-		if (isSqliteAdminLockBusy()) await waitForSqliteAdminLock();
-		const sqlite = getSqlite();
-		sqlite.exec("BEGIN");
-		try {
-			const result = await fn(db);
-			sqlite.exec("COMMIT");
-			return result;
-		} catch (err) {
+		// The admin lock is an open BEGIN IMMEDIATE on this same connection, and a
+		// second BEGIN inside any open transaction throws. So every transaction
+		// here, and the admin lock, takes its turn on one FIFO: a BEGIN is never
+		// issued while another transaction is open, and waiters start one at a
+		// time as each predecessor commits or rolls back.
+		return runInSqliteTransactionSlot(async () => {
+			const sqlite = getSqlite();
+			sqlite.exec("BEGIN");
 			try {
-				sqlite.exec("ROLLBACK");
-			} catch {
-				// ROLLBACK can fail if the connection dropped or BEGIN was never reached.
-				// Swallow to surface the original error instead.
+				const result = await fn(db);
+				sqlite.exec("COMMIT");
+				return result;
+			} catch (err) {
+				try {
+					sqlite.exec("ROLLBACK");
+				} catch {
+					// ROLLBACK can fail if the connection dropped or BEGIN was never reached.
+					// Swallow to surface the original error instead.
+				}
+				throw err;
 			}
-			throw err;
-		}
+		});
 	}
 
 	// Postgres: drizzle-orm/postgres-js natively supports async transaction

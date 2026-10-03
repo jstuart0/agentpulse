@@ -46,10 +46,55 @@ describe("open tabs belong to the person who opened them", () => {
 		expect(useTabsStore.getState().tabs.map((t) => t.sessionId)).toEqual(["s1"]);
 	});
 
-	test("tabs the shared key held are never shown to a team member, and the key is removed", () => {
+	test("tabs the shared key held on upgrade move to the first person who signs in, and the shared key is removed", () => {
 		files.set("agentpulse.openTabs", JSON.stringify([tab("old")]));
 		useUserStore.setState({ userId: "A", loaded: true } as never);
-		expect(useTabsStore.getState().tabs).toEqual([]);
+		expect(useTabsStore.getState().tabs.map((t) => t.sessionId)).toEqual(["old"]);
 		expect(files.has("agentpulse.openTabs")).toBe(false);
+		expect(JSON.parse(files.get("agentpulse.openTabs.A") ?? "[]")).toHaveLength(1);
+
+		// They were moved, not copied: the next person on this browser doesn't get them.
+		useUserStore.setState({ userId: "B" } as never);
+		expect(useTabsStore.getState().tabs).toEqual([]);
+		useUserStore.setState({ userId: "A" } as never);
+		expect(useTabsStore.getState().tabs.map((t) => t.sessionId)).toEqual(["old"]);
+	});
+
+	test("a person who already has tabs of their own keeps them; the shared key is still removed", () => {
+		files.set("agentpulse.openTabs", JSON.stringify([tab("old")]));
+		files.set("agentpulse.openTabs.A", JSON.stringify([tab("mine")]));
+		useUserStore.setState({ userId: "A", loaded: true } as never);
+		expect(useTabsStore.getState().tabs.map((t) => t.sessionId)).toEqual(["mine"]);
+		expect(files.has("agentpulse.openTabs")).toBe(false);
+	});
+
+	test("with no sign-in (solo) the shared key is kept in place, as it always was", () => {
+		files.set("agentpulse.openTabs", JSON.stringify([tab("old")]));
+		useUserStore.setState({ userId: null, loaded: true } as never);
+		expect(useTabsStore.getState().tabs.map((t) => t.sessionId)).toEqual(["old"]);
+		expect(files.has("agentpulse.openTabs")).toBe(true);
+	});
+});
+
+describe("after sign-out", () => {
+	test("the previous person's tabs leave memory, and nothing is written until the next viewer is known", () => {
+		useUserStore.setState({ userId: "A", loaded: true } as never);
+		useTabsStore.getState().open(tab("s1"));
+		const stored = files.get("agentpulse.openTabs.A");
+
+		useUserStore.setState({ userId: null, loaded: false } as never);
+		expect(useTabsStore.getState().tabs).toEqual([]);
+
+		useTabsStore.getState().open(tab("stray"));
+		expect(files.get("agentpulse.openTabs.A")).toBe(stored);
+		expect(files.has("agentpulse.openTabs")).toBe(false);
+	});
+
+	test("their saved tabs are still there when they sign back in", () => {
+		useUserStore.setState({ userId: "A", loaded: true } as never);
+		useTabsStore.getState().open(tab("s1"));
+		useUserStore.setState({ userId: null, loaded: false } as never);
+		useUserStore.setState({ userId: "A", loaded: true } as never);
+		expect(useTabsStore.getState().tabs.map((t) => t.sessionId)).toEqual(["s1"]);
 	});
 });

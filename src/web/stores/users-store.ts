@@ -14,6 +14,8 @@ export interface UsersState {
 	byId: Record<string, DirectoryUser>;
 	loaded: boolean;
 	load: () => Promise<void>;
+	/** The directory changed (someone added, disabled, enabled, promoted): load again, after any load already in flight. */
+	reload: () => Promise<void>;
 	lookup: (id: string | null | undefined) => DirectoryUser | undefined;
 	/** An id was seen that the directory doesn't list: refetch once, debounced. */
 	noteUnknown: (id: string | null | undefined) => void;
@@ -28,32 +30,56 @@ const UNKNOWN_ID_DEBOUNCE_MS = 300;
  * request on every render.
  */
 export function createUsersStore(deps: UsersStoreDeps) {
-	let inflight: Promise<void> | null = null;
+	let inflight: Promise<boolean> | null = null;
+	let trailing: Promise<boolean> | null = null;
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	const waiting = new Set<string>();
 	const stillMissing = new Set<string>();
 
 	return create<UsersState>((set, get) => {
-		function load(): Promise<void> {
-			if (!deps.canCall()) return Promise.resolve();
-			if (inflight) return inflight;
-			inflight = (async () => {
-				try {
-					const users = await deps.loadDirectory();
-					set({ byId: Object.fromEntries(users.map((user) => [user.id, user])), loaded: true });
-				} catch {
-					// Keep what was known; the next unknown id or page load tries again.
-				} finally {
-					inflight = null;
-				}
-			})();
-			return inflight;
+		async function read(): Promise<boolean> {
+			try {
+				const users = await deps.loadDirectory();
+				set({ byId: Object.fromEntries(users.map((user) => [user.id, user])), loaded: true });
+				return true;
+			} catch {
+				// Keep what was known; the next unknown id or page load tries again.
+				return false;
+			}
+		}
+
+		/** Resolves true when the directory was read. */
+		function start(): Promise<boolean> {
+			const run: Promise<boolean> = read().finally(() => {
+				if (inflight === run) inflight = null;
+			});
+			inflight = run;
+			return run;
+		}
+
+		function load(): Promise<boolean> {
+			if (!deps.canCall()) return Promise.resolve(false);
+			return inflight ?? start();
+		}
+
+		/** A load that begins after the one in flight ends, shared by everyone who asks meanwhile. */
+		function reload(): Promise<boolean> {
+			if (!deps.canCall()) return Promise.resolve(false);
+			if (!inflight) return start();
+			if (!trailing) {
+				trailing = inflight.then(() => {
+					trailing = null;
+					return start();
+				});
+			}
+			return trailing;
 		}
 
 		return {
 			byId: {},
 			loaded: false,
-			load,
+			load: async () => void (await load()),
+			reload: async () => void (await reload()),
 			lookup: (id) => (id ? get().byId[id] : undefined),
 			noteUnknown: (id) => {
 				if (!id || !deps.canCall() || get().byId[id] || stillMissing.has(id)) return;
@@ -63,7 +89,8 @@ export function createUsersStore(deps: UsersStoreDeps) {
 					timer = null;
 					const asked = [...waiting];
 					waiting.clear();
-					await load();
+					// Only a directory that was really read can say an id isn't in it.
+					if (!(await load())) return;
 					for (const askedId of asked) if (!get().byId[askedId]) stillMissing.add(askedId);
 				}, deps.debounceMs);
 			},

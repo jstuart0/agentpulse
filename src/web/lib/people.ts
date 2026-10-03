@@ -39,3 +39,28 @@ export function assignablePeople(
 					: a.label.localeCompare(b.label, undefined, { sensitivity: "base" }),
 		);
 }
+
+/**
+ * The people an owner picker offers, plus the current owner when they are
+ * disabled (and so not assignable): listed as "<name> (disabled)" so the
+ * picker can show who owns it now, choosing nothing sends nothing, and
+ * Unassigned stays a real change from it.
+ */
+export function withCurrentOwner(
+	people: PersonOption[],
+	currentOwnerId: string | null | undefined,
+	entry: DirectoryEntry | undefined,
+	viewerUserId: string | null,
+): PersonOption[] {
+	if (!currentOwnerId || people.some((person) => person.id === currentOwnerId)) return people;
+	const current = {
+		id: currentOwnerId,
+		displayName: null,
+		...entry,
+		disabled: true,
+	};
+	return [
+		{ id: currentOwnerId, label: ownerLabel(current, currentOwnerId, { selfId: viewerUserId }) },
+		...people,
+	];
+}

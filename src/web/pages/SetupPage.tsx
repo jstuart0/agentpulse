@@ -1,7 +1,9 @@
 import { useEffect, useId, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { AGENT_METADATA } from "../../shared/constants.js";
 import { buildCodexHooksFile, buildCopilotHooksFile } from "../../shared/hook-command.js";
 import type { AgentType, ApiKeyInfo } from "../../shared/types.js";
+import { ExcludeDirectoriesCard } from "../components/ExcludeDirectoriesCard.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
 import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
 import { describeApiError, keyCreationErrorMessage } from "../lib/api-errors.js";
@@ -15,7 +17,14 @@ import {
 	isLoopbackHostname,
 	withRelaySuffix,
 } from "../lib/onboarding.js";
-import { AUTH_STEP, codexSetupSteps, lastEventLine } from "../lib/setup-steps.js";
+import {
+	AUTH_STEP,
+	CLAUDE_SKIP_LINE,
+	EXCLUDE_CARD_ANCHOR,
+	RELAY_PARAGRAPH,
+	codexSetupSteps,
+	lastEventLine,
+} from "../lib/setup-steps.js";
 import { useUserStore } from "../stores/user-store.js";
 import { keysForSetup } from "./team-view-state.js";
 
@@ -38,6 +47,7 @@ export function SetupPage() {
 	const [agentType, setAgentType] = useState<AgentType>("claude_code");
 	const disableAuth = useUserStore((s) => s.disableAuth);
 	const ownership = useOwnershipUi();
+	const { hash } = useLocation();
 	const viewerUserId = useUserStore((s) => s.userId);
 	const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
 	const [keysLoaded, setKeysLoaded] = useState(false);
@@ -56,12 +66,19 @@ export function SetupPage() {
 	);
 	const [lastCodexEventLoaded, setLastCodexEventLoaded] = useState(false);
 
+	// The first-run card links to /setup#exclude-directories; the router doesn't scroll to anchors itself.
+	useEffect(() => {
+		if (hash !== `#${EXCLUDE_CARD_ANCHOR}`) return;
+		document.getElementById(EXCLUDE_CARD_ANCHOR)?.scrollIntoView({ block: "start" });
+		document.getElementById(`${EXCLUDE_CARD_ANCHOR}-title`)?.focus({ preventScroll: true });
+	}, [hash]);
+
 	useEffect(() => {
 		if (agentType !== "codex_cli") return;
 		let cancelled = false;
 		setLastCodexEventLoaded(false);
 		api
-			.getCodexProbeSessions()
+			.getCodexProbeSessions(ownership.showScope)
 			.then((res) => {
 				if (cancelled) return;
 				const session = res.sessions[0];
@@ -74,7 +91,7 @@ export function SetupPage() {
 		return () => {
 			cancelled = true;
 		};
-	}, [agentType]);
+	}, [agentType, ownership.showScope]);
 
 	useEffect(() => {
 		if (disableAuth) {
@@ -171,10 +188,11 @@ export function SetupPage() {
 							type: "http",
 							url: `${serverUrl}/api/v1/hooks`,
 							async: true,
-							allowedEnvVars: ["AGENTPULSE_API_KEY"],
+							allowedEnvVars: ["AGENTPULSE_API_KEY", "AGENTPULSE_SKIP"],
 							headers: {
 								Authorization: "Bearer $AGENTPULSE_API_KEY",
 								"X-Agent-Type": "claude_code",
+								"X-AgentPulse-Skip": "$AGENTPULSE_SKIP",
 							},
 						},
 					],
@@ -373,11 +391,7 @@ export function SetupPage() {
 				<h2 className="text-sm font-semibold mb-2">
 					Agents on other machines? Use the relay instead of the manual hook steps below
 				</h2>
-				<p className="text-xs text-muted-foreground mb-3">
-					Claude Code only sends hooks to localhost, so on any other machine you install a small
-					relay that forwards them here. It runs as a login service, points Claude Code and Codex
-					CLI at it, and installs the statusline. Re-run it anytime to update.
-				</p>
+				<p className="text-xs text-muted-foreground mb-3">{RELAY_PARAGRAPH}</p>
 
 				{!disableAuth && (
 					<div className="mb-3">
@@ -533,6 +547,9 @@ export function SetupPage() {
 						Copy
 					</button>
 				</div>
+				{agentType === "claude_code" && (
+					<p className="text-xs text-muted-foreground mt-3">{CLAUDE_SKIP_LINE}</p>
+				)}
 			</div>
 
 			{/* Step 4: Codex-only — Status Line integration */}
@@ -641,6 +658,11 @@ curl -s -X POST "${serverUrl}/api/v1/hooks/status" \\
 					</pre>
 				</div>
 			)}
+
+			<ExcludeDirectoriesCard
+				onCopy={(text, label) => copy(text, label)}
+				showTeamCopy={ownership.showTeamCopy}
+			/>
 		</div>
 	);
 }

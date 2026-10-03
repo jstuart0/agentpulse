@@ -28,11 +28,14 @@ export function useDefaultOwnerScope() {
 	const setOwner = useDashboardScopeStore((s) => s.setOwner);
 
 	useEffect(() => {
-		if (resolved) return;
+		// Without the switch (solo, or the instance was switched back to solo
+		// while this tab was open) nothing but Everyone can be on, and nothing
+		// on the page could change it.
 		if (!ui.showScope) {
-			resolveOwner(OWNER_ALL);
+			if (!resolved || owner !== OWNER_ALL) resolveOwner(OWNER_ALL);
 			return;
 		}
+		if (resolved) return;
 		const stored = parseScopeChoice(browserStorage()?.getItem(scopeStorageKey(userId)) ?? null);
 		if (stored) {
 			resolveOwner(defaultOwner({ stored, ownSessions: null }));
@@ -45,7 +48,7 @@ export function useDefaultOwnerScope() {
 		return () => {
 			cancelled = true;
 		};
-	}, [resolved, ui.showScope, userId, resolveOwner]);
+	}, [resolved, owner, ui.showScope, userId, resolveOwner]);
 
 	/** The viewer picked Mine, Everyone or an owner: apply it and remember Mine | Everyone for next time. */
 	const choose = useCallback(

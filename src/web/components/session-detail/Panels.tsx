@@ -8,17 +8,20 @@ import { describeApiError } from "../../lib/api-errors.js";
 import { api } from "../../lib/api.js";
 import { MarkdownContent } from "../MarkdownContent.js";
 import { ModeButton, ScrollJumpControls } from "./SharedControls.js";
+import { notesPanelState } from "./notes-panel-state.js";
 
 export function NotesPanel({
 	sessionId,
 	initialNotes,
-}: { sessionId: string; initialNotes: string }) {
+	readOnlyReason,
+}: { sessionId: string; initialNotes: string; readOnlyReason?: string | null }) {
 	const [notes, setNotes] = useState(initialNotes);
 	const [saving, setSaving] = useState(false);
 	const [lastSaved, setLastSaved] = useState<string | null>(null);
 	const [saveError, setSaveError] = useState<string | null>(null);
 	const { showTeamCopy } = useOwnershipUi();
-	const [mode, setMode] = useState<"edit" | "preview">("edit");
+	const [chosenMode, setMode] = useState<"edit" | "preview">("edit");
+	const { mode, showModeToggle } = notesPanelState({ readOnlyReason, chosenMode });
 	const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 	const editRef = useRef<HTMLTextAreaElement>(null);
 	const previewRef = useRef<HTMLDivElement>(null);
@@ -48,15 +51,21 @@ export function NotesPanel({
 					<span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
 						Notes
 					</span>
-					{showTeamCopy && <span className="text-[10px] text-hint">Shared with everyone</span>}
-					<div className="flex items-center rounded-md border border-border p-0.5">
-						<ModeButton active={mode === "edit"} label="Edit" onClick={() => setMode("edit")} />
-						<ModeButton
-							active={mode === "preview"}
-							label="Preview"
-							onClick={() => setMode("preview")}
-						/>
-					</div>
+					{readOnlyReason ? (
+						<span className="text-[10px] text-hint">{readOnlyReason}</span>
+					) : (
+						showTeamCopy && <span className="text-[10px] text-hint">Visible to everyone</span>
+					)}
+					{showModeToggle && (
+						<div className="flex items-center rounded-md border border-border p-0.5">
+							<ModeButton active={mode === "edit"} label="Edit" onClick={() => setMode("edit")} />
+							<ModeButton
+								active={mode === "preview"}
+								label="Preview"
+								onClick={() => setMode("preview")}
+							/>
+						</div>
+					)}
 					<ScrollJumpControls
 						onTop={() =>
 							mode === "edit"
@@ -89,6 +98,7 @@ export function NotesPanel({
 				<textarea
 					ref={editRef}
 					value={notes}
+					readOnly={!!readOnlyReason}
 					onChange={(e) => {
 						setNotes(e.target.value);
 						scheduleAutosave(e.target.value);
@@ -112,7 +122,12 @@ export function NotesPanel({
 export function ClaudeMdPanel({
 	session,
 	onPathChanged,
-}: { session: Session; onPathChanged?: (path: string) => void }) {
+	readOnlyReason,
+}: {
+	session: Session;
+	onPathChanged?: (path: string) => void;
+	readOnlyReason?: string | null;
+}) {
 	const [content, setContent] = useState("");
 	const [filePath, setFilePath] = useState("");
 	const [loading, setLoading] = useState(true);
@@ -140,6 +155,7 @@ export function ClaudeMdPanel({
 	}, [session.sessionId]);
 
 	async function handleSave(path = filePath, message = "Saved") {
+		if (readOnlyReason) return;
 		setSaving(true);
 		try {
 			await api.saveSessionInstructions(session.sessionId, { content, path });
@@ -169,7 +185,7 @@ export function ClaudeMdPanel({
 							if (!session.cwd) return;
 							void handleSave(`${session.cwd}/${preferredFile}`, `Created ${preferredFile}`);
 						}}
-						disabled={saving}
+						disabled={saving || !!readOnlyReason}
 						className="text-[10px] rounded px-2 py-0.5 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
 					>
 						Create {preferredFile}
@@ -219,10 +235,10 @@ export function ClaudeMdPanel({
 					/>
 				</div>
 				<div className="flex items-center gap-2">
-					<span className="text-[10px] text-muted-foreground">{saveMsg}</span>
+					<span className="text-[10px] text-muted-foreground">{readOnlyReason ?? saveMsg}</span>
 					<button
 						onClick={() => void handleSave()}
-						disabled={saving}
+						disabled={saving || !!readOnlyReason}
 						className="text-[10px] rounded px-2 py-0.5 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
 					>
 						{saving ? "..." : "Save"}
@@ -233,6 +249,7 @@ export function ClaudeMdPanel({
 				<textarea
 					ref={editRef}
 					value={content}
+					readOnly={!!readOnlyReason}
 					onChange={(e) => setContent(e.target.value)}
 					className="flex-1 w-full resize-none bg-transparent p-3 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm leading-relaxed"
 					placeholder="No CLAUDE.md found"

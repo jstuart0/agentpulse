@@ -26,13 +26,11 @@ export function HostOwnerDialog({
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
+	const unchanged = hostOwnerUnchanged(host.ownerUserId, owner);
+
 	async function submit(e: FormEvent) {
 		e.preventDefault();
-		if (hostOwnerUnchanged(host.ownerUserId, owner)) {
-			toast(`${host.hostName} already has that owner.`);
-			onClose();
-			return;
-		}
+		if (unchanged) return;
 		setBusy(true);
 		setError(null);
 		try {
@@ -62,6 +60,7 @@ export function HostOwnerDialog({
 						</label>
 						<select
 							id={selectId}
+							data-autofocus=""
 							value={owner}
 							onChange={(e) => setOwner(e.target.value)}
 							className={FIELD_CONTROL}
@@ -85,7 +84,7 @@ export function HostOwnerDialog({
 					<button type="button" onClick={onClose} disabled={busy} className={SECONDARY_BUTTON}>
 						Cancel
 					</button>
-					<button type="submit" disabled={busy} className={PRIMARY_BUTTON}>
+					<button type="submit" disabled={busy || unchanged} className={PRIMARY_BUTTON}>
 						{busy ? "Saving…" : "Save owner"}
 					</button>
 				</DialogFooter>

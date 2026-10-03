@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 import { Layout } from "./components/Layout.js";
 import { ServerUnreachableNotice } from "./components/ServerUnreachableNotice.js";
 import { ForcedPasswordChange } from "./components/settings/ForcedPasswordChange.js";
+import { useIdentityRecheck } from "./hooks/useIdentityRecheck.js";
 import { useOwnershipUi } from "./hooks/useOwnershipUi.js";
 import { useNotificationPermission, useWebSocket } from "./hooks/useWebSocket.js";
 import { api } from "./lib/api.js";
@@ -119,6 +120,7 @@ export function App() {
 	const appReady =
 		deriveAppGate({ loaded, authenticated, disableAuth, mustChangePassword }) === "app";
 	useWebSocket(appReady);
+	useIdentityRecheck(appReady);
 
 	useEffect(() => {
 		void loadUser();

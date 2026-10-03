@@ -7,7 +7,8 @@
  * sign-on session looks like (the redirect is blocked), and it is also what an
  * unreachable server looks like. One reload per visit window covers the first;
  * anything after that is treated as an outage, which gets a visible notice and
- * a growing wait instead of another reload.
+ * a growing wait instead of another reload. With no way to remember the reload
+ * (storage unavailable), the reload is never tried.
  */
 export const RETRY_BASE_MS = 1_000;
 export const RETRY_MAX_MS = 30_000;
@@ -26,13 +27,43 @@ export function shouldBounceForAuth(lastBounceAt: number | null, now: number): b
 	return now - lastBounceAt >= AUTH_BOUNCE_WINDOW_MS;
 }
 
+export const AUTH_BOUNCE_STORAGE_KEY = "agentpulse.authBounceAt";
+
+/** When the last auth reload happened, null when none is recorded, "unavailable" when storage can't say. */
+export type LastBounce = number | null | "unavailable";
+
+export function readLastBounce(storage: Pick<Storage, "getItem">): LastBounce {
+	try {
+		const raw = storage.getItem(AUTH_BOUNCE_STORAGE_KEY);
+		const value = raw === null ? Number.NaN : Number(raw);
+		return Number.isFinite(value) ? value : null;
+	} catch {
+		return "unavailable";
+	}
+}
+
+/**
+ * Whether the time was stored. When it can't be, a reload would be followed by
+ * another one with nothing to say it already happened, so the caller must not
+ * reload.
+ */
+export function recordBounce(storage: Pick<Storage, "setItem">, now: number): boolean {
+	try {
+		storage.setItem(AUTH_BOUNCE_STORAGE_KEY, String(now));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export type FetchFailureDecision = { action: "reload" } | { action: "retry" };
 
 /** What to do about a request that got no answer. A retry waits as long as the visible notice's probes say (retryDelayMs of the probes so far), not as long as the number of requests that failed. */
 export function decideFetchFailure(input: {
-	lastBounceAt: number | null;
+	lastBounceAt: LastBounce;
 	now: number;
 }): FetchFailureDecision {
+	if (input.lastBounceAt === "unavailable") return { action: "retry" };
 	return shouldBounceForAuth(input.lastBounceAt, input.now)
 		? { action: "reload" }
 		: { action: "retry" };

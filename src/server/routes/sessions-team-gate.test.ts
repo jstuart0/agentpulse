@@ -2,9 +2,10 @@
  * Who may change a session, per mode.
  *
  * Team: archive (it dismisses the owner's ERROR/WAITING), rename (including
- * reset-name), pin and DELETE need the session's owner or an admin; notes,
- * CLAUDE.md, prompt, stop and retry stay open to any member (anyone can open
- * and steer a session; notes are shared). An unowned session is open to any
+ * reset-name), pin, notes, the stored CLAUDE.md (it feeds the owner's AI
+ * watcher) and DELETE need the session's owner or an admin; prompt, stop and
+ * retry stay open to any member (anyone can open and steer a session). An
+ * unowned session is open to any
  * member. A refused request is 403 not_owner and writes nothing. Acknowledge
  * and un-acknowledge: a member only on their own or an unowned session, an
  * admin on any. Solo: nothing changes.
@@ -130,13 +131,24 @@ const GATED: GatedRoute[] = [
 		applied: async (id) => (await row(id))?.isPinned === true,
 	},
 	{
+		name: "notes",
+		send: (id, h) => app.request(`${base(id)}/notes`, jsonRequest("PUT", { notes: "a note" }, h)),
+		applied: async (id) => (await row(id))?.notes === "a note",
+	},
+	{
+		name: "claude-md",
+		send: (id, h) =>
+			app.request(`${base(id)}/claude-md`, jsonRequest("PUT", { content: "# stored" }, h)),
+		applied: async (id) => (await row(id))?.claudeMdContent === "# stored",
+	},
+	{
 		name: "delete",
 		send: (id, h) => app.request(base(id), { method: "DELETE", headers: h }),
 		applied: async (id) => (await row(id)) === undefined,
 	},
 ];
 
-describe("team mode: archive, rename, reset-name, pin and delete need the owner or an admin", () => {
+describe("team mode: archive, rename, reset-name, pin, notes, CLAUDE.md and delete need the owner or an admin", () => {
 	for (const route of GATED) {
 		test(`${route.name}: the owner, an admin cookie, an admin-owned key and a kept service key are let in`, async () => {
 			await setStoredMode("team");
@@ -186,26 +198,7 @@ describe("team mode: archive, rename, reset-name, pin and delete need the owner 
 	}
 });
 
-describe("team mode: notes, CLAUDE.md, prompt, stop and retry stay open to any member", () => {
-	test("notes and CLAUDE.md are written for a non-owner", async () => {
-		await setStoredMode("team");
-		const w = await world();
-		await seedSession("sg-open", w.ownerId);
-		const notes = await app.request(
-			`${base("sg-open")}/notes`,
-			jsonRequest("PUT", { notes: "shared note" }, w.otherCookie),
-		);
-		expect(notes.status).toBe(200);
-		const md = await app.request(
-			`${base("sg-open")}/claude-md`,
-			jsonRequest("PUT", { content: "# hello" }, w.otherCookie),
-		);
-		expect(md.status).toBe(200);
-		const r = await row("sg-open");
-		expect(r?.notes).toBe("shared note");
-		expect(r?.claudeMdContent).toBe("# hello");
-	});
-
+describe("team mode: prompt, stop and retry stay open to any member", () => {
 	test("prompt, stop and retry are not refused for ownership (an unmanaged session answers 400 for its own reasons)", async () => {
 		await setStoredMode("team");
 		const w = await world();
@@ -221,6 +214,22 @@ describe("team mode: notes, CLAUDE.md, prompt, stop and retry stay open to any m
 			);
 			expect({ path, forbidden: res.status === 403 }).toEqual({ path, forbidden: false });
 		}
+	});
+});
+
+describe("claude-md body validation", () => {
+	test("a content that is not a string is 400 invalid_body and writes nothing", async () => {
+		const w = await world();
+		await seedSession("sg-md-body", w.ownerId);
+		for (const body of [{ content: 5 }, { content: null }, {}, { content: "x", path: 7 }]) {
+			const res = await app.request(
+				`${base("sg-md-body")}/claude-md`,
+				jsonRequest("PUT", body, w.ownerCookie),
+			);
+			expect({ body, status: res.status }).toEqual({ body, status: 400 });
+			expect(await res.json()).toEqual({ error: "invalid_body" });
+		}
+		expect((await row("sg-md-body"))?.claudeMdContent).toBeNull();
 	});
 });
 

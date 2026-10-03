@@ -82,7 +82,7 @@ export async function resolveObservedSessionCorrelation(
 		// datetime('now'), Postgres's offset-bearing CURRENT_TIMESTAMP
 		// text) — a raw string `<` compares lexicographically, not
 		// chronologically, and silently flips the wrong way across formats
-		// (AGEN-65 round 2). parseDbTimestamp (shared with event-dedup.ts /
+		// (AGEN-65). parseDbTimestamp (shared with event-dedup.ts /
 		// ai/context.ts) normalizes all three to epoch ms, treating an
 		// absent zone as UTC.
 		//

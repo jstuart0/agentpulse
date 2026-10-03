@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { SupervisorRecord } from "../../shared/types.js";
 import { ownershipUi } from "../lib/ownership-ui.js";
 import {
 	deriveHostAccess,
+	deriveHostExcludeNotice,
 	deriveHostsViewState,
 	enrollmentOwnershipNote,
 	hostActionConfirm,
@@ -239,5 +242,125 @@ describe("hostOwnerUnchanged", () => {
 		expect(hostOwnerUnchanged("u1", "u2")).toBe(false);
 		expect(hostOwnerUnchanged("u1", "")).toBe(false);
 		expect(hostOwnerUnchanged(null, "u1")).toBe(false);
+	});
+});
+
+describe("deriveHostExcludeNotice", () => {
+	const NOW = Date.parse("2026-03-01T12:00:00Z");
+	const live = new Date(NOW + 60_000).toISOString();
+	const expired = new Date(NOW - 1_000).toISOString();
+	const notice = (
+		state: unknown,
+		over: { status?: string; heartbeatLeaseExpiresAt?: string } = {},
+	) =>
+		deriveHostExcludeNotice(
+			{
+				excludeRulesState: state,
+				status: "connected",
+				heartbeatLeaseExpiresAt: live,
+				...over,
+			} as unknown as Pick<
+				SupervisorRecord,
+				"excludeRulesState" | "status" | "heartbeatLeaseExpiresAt"
+			>,
+			NOW,
+		);
+
+	test("only an invalid exclude file earns a notice, in these words", () => {
+		expect(notice("invalid")).toEqual({
+			text: "This host's supervisor is sending nothing: its exclude file or its saved exclude state has an error. Run agentpulse exclude check on that machine.",
+		});
+	});
+
+	test("rules in use or absent (the server no longer stores those), unknown (null or absent: an older supervisor) and anything unexpected show nothing", () => {
+		for (const state of ["none", "ok", null, undefined, "frozen", 5, "", "INVALID"]) {
+			expect(notice(state), String(state)).toBeNull();
+		}
+	});
+
+	test("it never says the machine has stopped (the host is still reporting its own state; only session data is held back)", () => {
+		expect(notice("invalid")?.text.toLowerCase()).not.toContain("stopped");
+		// "on that machine" is where to run the check; nothing says the machine itself is down.
+		expect(notice("invalid")?.text.toLowerCase()).not.toMatch(/machine (has|is|was)/);
+	});
+
+	test("a host whose heartbeat lease has expired shows no notice: the flag is the last thing it said, not what is true now", () => {
+		expect(notice("invalid", { heartbeatLeaseExpiresAt: expired })).toBeNull();
+		expect(notice("invalid", { status: "stale", heartbeatLeaseExpiresAt: expired })).toBeNull();
+		expect(notice("invalid", { status: "offline", heartbeatLeaseExpiresAt: expired })).toBeNull();
+	});
+
+	test("a host the server already calls stale or offline shows none, even when the lease date in the record is still ahead of this browser's clock", () => {
+		expect(notice("invalid", { status: "stale" })).toBeNull();
+		expect(notice("invalid", { status: "offline" })).toBeNull();
+	});
+
+	test("an unreadable lease date is not a live lease", () => {
+		expect(notice("invalid", { heartbeatLeaseExpiresAt: "not a date" })).toBeNull();
+		expect(notice("invalid", { heartbeatLeaseExpiresAt: undefined })).toBeNull();
+	});
+
+	test("the lease's last instant still counts as expired, and the moment before it does not", () => {
+		expect(notice("invalid", { heartbeatLeaseExpiresAt: new Date(NOW).toISOString() })).toBeNull();
+		expect(
+			notice("invalid", { heartbeatLeaseExpiresAt: new Date(NOW + 1).toISOString() }),
+		).not.toBeNull();
+	});
+});
+
+describe("the exclude notice on a member-owned host", () => {
+	const names = (id: string) => ({ u1: "Alice", u2: "Bob" })[id as "u1" | "u2"] ?? "someone";
+	const NOW = Date.parse("2026-03-01T12:00:00Z");
+	const live = new Date(NOW + 60_000).toISOString();
+	const host = (flag: "invalid" | null): SupervisorRecord => ({
+		...supervisor("owned"),
+		ownerUserId: "u1",
+		excludeRulesState: flag,
+		heartbeatLeaseExpiresAt: live,
+	});
+	const views = [
+		{ who: "the owner", viewer: "u1", isAdmin: false, role: "member" as const },
+		{ who: "another member", viewer: "u2", isAdmin: false, role: "member" as const },
+		{ who: "an admin", viewer: "u2", isAdmin: true, role: "admin" as const },
+	];
+
+	test("every viewer gets the notice, as host data", () => {
+		for (const v of views) {
+			expect(deriveHostExcludeNotice(host("invalid"), NOW), v.who).not.toBeNull();
+		}
+	});
+
+	test("the flag changes nothing about ownership or who may manage the host", () => {
+		for (const v of views) {
+			const ctx = {
+				ui: ownershipUi("team", { effectiveRole: v.role }),
+				viewerUserId: v.viewer,
+				isAdmin: v.isAdmin,
+				ownerName: names,
+			};
+			expect(deriveHostAccess(host("invalid"), ctx), v.who).toEqual(
+				deriveHostAccess(host(null), ctx),
+			);
+			expect(deriveHostAccess(host("invalid"), ctx).ownerText, v.who).toBe("Alice");
+		}
+	});
+});
+
+describe("the owner dialogs", () => {
+	const read = (...parts: string[]) => readFileSync(join(import.meta.dir, "..", ...parts), "utf8");
+	for (const [name, file] of [
+		["host", ["components", "HostOwnerDialog.tsx"]],
+		["session", ["components", "session-detail", "SessionOwnerDialog.tsx"]],
+	] as const) {
+		test(`the ${name} owner dialog starts on its select and keeps Save off until the owner changes`, () => {
+			const source = read(...file);
+			expect(source).toContain('data-autofocus=""');
+			expect(source).toMatch(/disabled=\{busy \|\| unchanged\}/);
+		});
+	}
+
+	test("both pages offer a disabled current owner in the picker", () => {
+		expect(read("pages", "HostsPage.tsx")).toContain("withCurrentOwner(");
+		expect(read("pages", "SessionDetailPage.tsx")).toContain("withCurrentOwner(");
 	});
 });

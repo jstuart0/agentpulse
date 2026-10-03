@@ -21,6 +21,7 @@ import {
 	getOversizeDropped,
 	getRateLimitedDropped,
 	getSessionCreationLimitedCount,
+	getSkipHeaderDropped,
 } from "./ingest-counters.js";
 
 // Read version from package.json at module init — independent of how the
@@ -134,6 +135,7 @@ health.get("/health", async (c) => {
 		ingestKeyBound: getIngestKeyBoundCount(),
 		sessionCreationLimited: getSessionCreationLimitedCount(),
 		unacknowledgeDropped: getIngestUnacknowledgeDroppedCount(),
+		skipHeaderDropped: getSkipHeaderDropped(),
 		shuttingDown: isShuttingDown(),
 		dbReady: true,
 		clients,

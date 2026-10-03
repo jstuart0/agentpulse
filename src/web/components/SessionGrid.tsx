@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
 	type ActiveOperationalStatus,
@@ -6,11 +6,12 @@ import {
 	getOperationalStatus,
 } from "../../shared/session-state.js";
 import type { OwnerStatsGroup, Session } from "../../shared/types.js";
+import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
 import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
 import { isAiDisabledError } from "../lib/api-errors.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
 import { ownerChip } from "../lib/owner-chip.js";
-import { disambiguateInitials, ownerLabel } from "../lib/owner-label.js";
+import { ownerLabel } from "../lib/owner-label.js";
 import type { OwnerParam } from "../lib/owner-scope.js";
 import { cn } from "../lib/utils.js";
 import type { EmptyState } from "../pages/dashboard-empty.js";
@@ -233,10 +234,7 @@ export function SessionGrid({
 		(userId: string) => ownerLabel(directory[userId], userId, { selfId: viewerUserId }),
 		[directory, viewerUserId],
 	);
-	const initialsById = useMemo(
-		() => disambiguateInitials(Object.values(directory).map((entry) => ({ id: entry.id, entry }))),
-		[directory],
-	);
+	const initialsById = useDirectoryInitials(directory);
 	const chipFor = (session: Session) =>
 		team?.showOwnerChip
 			? ownerChip(session, {

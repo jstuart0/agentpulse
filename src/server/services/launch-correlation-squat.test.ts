@@ -302,7 +302,7 @@ describe("hook-path correlation resolver refuses to squat an existing session", 
 	});
 });
 
-describe("chronology guard: DB-default timestamps (AGEN-65 round 2)", () => {
+describe("chronology guard: DB-default timestamps (AGEN-65)", () => {
 	// The chronology comparison in resolveObservedSessionCorrelation parses
 	// both sides with parseDbTimestamp (db-time.ts), not a raw string `<`.
 	// These tests seed at least one side through the REAL column default
@@ -515,7 +515,7 @@ describe("control-actions ownership-consistency guard (beyond correlationId equa
 	});
 });
 
-describe("legitimate flows still attach after the fix (AGEN-65 round 2)", () => {
+describe("legitimate flows still attach after the fix (AGEN-65)", () => {
 	test("managed Codex launch via the supervisorId branch still attaches (unaffected by the hook-path guards)", async () => {
 		const supervisorId = `sup-codex-${crypto.randomUUID()}`;
 		await seedConnectedSupervisor(supervisorId);
@@ -559,7 +559,7 @@ describe("legitimate flows still attach after the fix (AGEN-65 round 2)", () => 
 				},
 				launchSpec: {
 					version: 1,
-					// Round 1 fix: createValidatedLaunchRequest ignores this and
+					// createValidatedLaunchRequest ignores this and
 					// mints its own id regardless, so this value is never the
 					// one that actually gets attached — read it back from the
 					// created launch_requests row below instead.

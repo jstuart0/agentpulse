@@ -86,6 +86,30 @@ describe("the first identity check during an outage", () => {
 		expect(useUserStore.getState().loaded).toBe(true);
 	});
 
+	test("a health answer while the first identity check is unanswered does not end the outage", async () => {
+		identityStatus = 503;
+		await useUserStore.getState().load();
+		expect(useReachabilityStore.getState().unreachable).toBe(true);
+
+		await api.getHealth();
+
+		// Still waiting: the notice keeps its retry, and the skeleton is not the end state.
+		expect(useReachabilityStore.getState().unreachable).toBe(true);
+		expect(useUserStore.getState().loaded).toBe(false);
+
+		identityStatus = 200;
+		await useUserStore.getState().load();
+		expect(useReachabilityStore.getState().unreachable).toBe(false);
+		expect(useUserStore.getState().loaded).toBe(true);
+	});
+
+	test("once the identity is known, any answer ends an outage as before", async () => {
+		useUserStore.setState({ loaded: true, authenticated: true } as never);
+		useReachabilityStore.setState({ unreachable: true });
+		await api.getHealth();
+		expect(useReachabilityStore.getState().unreachable).toBe(false);
+	});
+
 	test("a gateway error on any call is an outage; an ordinary error is not", async () => {
 		const call = () =>
 			api.getSessions(scopedQuery({ owner: "all", excludeScratch: false })).catch(() => {});

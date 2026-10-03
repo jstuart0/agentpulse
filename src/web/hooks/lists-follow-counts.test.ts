@@ -228,7 +228,7 @@ describe("useSessions resyncs", () => {
 		useUserStore.setState({ sessionUnconfirmed: true } as never);
 		await act(async () => {
 			useReachabilityStore.setState({ unreachable: true });
-			useReachabilityStore.getState().reportSuccess();
+			useReachabilityStore.getState().reportSuccess("/sessions");
 		});
 		await flush();
 		expect(asked).toBe(1);

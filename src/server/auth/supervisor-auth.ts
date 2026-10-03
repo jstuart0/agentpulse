@@ -183,16 +183,27 @@ export async function revokeEnrollmentToken(id: string) {
 		.where(eq(supervisorEnrollmentTokens.id, id));
 }
 
-export async function createSupervisorCredential(
+/** A credential token and its stored hash, made ahead of time so the hash isn't awaited inside the admin lock. */
+export interface PreparedSupervisorCredential {
+	token: string;
+	tokenHash: string;
+	tokenPrefix: string;
+}
+
+export async function prepareSupervisorCredential(): Promise<PreparedSupervisorCredential> {
+	const token = generateToken("aps_");
+	return { token, tokenHash: await hashToken(token), tokenPrefix: token.slice(0, 11) };
+}
+
+/** Stores a prepared credential for a host, replacing its earlier one. Database work only. */
+export async function storeSupervisorCredential(
 	supervisorId: string,
 	name: string,
+	prepared: PreparedSupervisorCredential,
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	tx?: any,
 ) {
-	const token = generateToken("aps_");
-	const tokenHash = await hashToken(token);
-	const tokenPrefix = token.slice(0, 11);
-
+	const { token, tokenHash, tokenPrefix } = prepared;
 	const [record] = await (tx ?? getDb())
 		.insert(supervisorCredentials)
 		.values({
@@ -219,6 +230,15 @@ export async function createSupervisorCredential(
 		id: record.id,
 		tokenPrefix: record.tokenPrefix,
 	};
+}
+
+export async function createSupervisorCredential(
+	supervisorId: string,
+	name: string,
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx?: any,
+) {
+	return storeSupervisorCredential(supervisorId, name, await prepareSupervisorCredential(), tx);
 }
 
 export async function verifySupervisorCredential(token: string) {

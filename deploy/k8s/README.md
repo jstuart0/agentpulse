@@ -462,6 +462,75 @@ just a locking one — budget disk headroom accordingly before running the
 
 ---
 
+## Upgrading to Postgres migrations 0007 and 0009 (user ownership, exclude flag)
+
+Three Postgres migrations arrive with team mode and the exclude rule; `0008`
+(acknowledgement timestamps) is described in the next section. SQLite has the
+same schema under different numbers (`0006`, `0007`, `0008`), applied by the
+same boot path; the lock discussion below is Postgres-only. All three run
+in-band at boot, under the existing advisory lock, and need no manual step on
+a small install.
+
+**`0007_user_ownership.sql`** adds 15 columns, all with
+`ADD COLUMN IF NOT EXISTS`: nullable `text` ownership columns on `sessions`
+(`owner_user_id`, `ingest_key_id`), `api_keys` (`owner_user_id`,
+`created_by_user_id`), `supervisors` (`owner_user_id`),
+`supervisor_enrollment_tokens` (`created_by_user_id`), `control_actions` and
+`launch_requests` (`requested_by_user_id`) and `ai_action_requests`
+(`resolved_by_user_id`); and six on `users` (`auth_source` `NOT NULL DEFAULT
+'local'`, `provider`, `subject`, `subject_source`, `display_name`,
+`must_change_password` `NOT NULL DEFAULT false`). Adding a column with a
+constant default doesn't rewrite the table on Postgres 11 or later. It also
+creates three indexes, **none of them `CONCURRENTLY`**:
+
+| Index | On | Note |
+|---|---|---|
+| `idx_sessions_owner_last_activity` | `sessions (owner_user_id, last_activity_at)` | Takes a `SHARE` lock on `sessions` while it builds: hook writes (which update `sessions`) wait until it finishes. |
+| `idx_api_keys_owner` | `api_keys (owner_user_id)` | Small table. |
+| `idx_users_provider_subject` (unique) | `users (provider, subject)` | Small table. |
+
+On a large `sessions` table, pre-create the big one out-of-band, in a
+maintenance window, before rolling out this version. The migration uses
+`CREATE INDEX IF NOT EXISTS`, so it then skips the build:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_owner_last_activity
+  ON sessions (owner_user_id, last_activity_at);
+```
+
+Then verify the index is valid; a failed concurrent build leaves an invalid
+index behind that has to be dropped and recreated:
+
+```sql
+SELECT indisvalid FROM pg_index
+ WHERE indexrelid = 'idx_sessions_owner_last_activity'::regclass;
+```
+
+**`0009_supervisor_exclude_rules_state.sql`** adds one nullable `text` column,
+`supervisors.exclude_rules_state`, with `ADD COLUMN IF NOT EXISTS`. Instant at
+any size. It holds only `invalid` (a host whose exclude file has an error) or
+null; see the README's "Excluding directories" section.
+
+Existing SQLite installs on the legacy `initializeDatabase()` path get the
+same columns through its additive ALTER list.
+
+Nothing about team mode changes at upgrade: the instance stays in solo mode
+until an admin switches it, or you set `AGENTPULSE_MODE` (commented
+placeholders are in `02-configmap.yaml`).
+
+**Several limits are per replica.** Rolling updates on the Postgres overlay are
+safe for migrations only. These live in each process's memory and reset on
+restart, so with N replicas they are N times looser, and they briefly double
+while a rolling deploy runs two generations: the hook rate limiter, the
+per-owner session-creation limit (`AGENTPULSE_SESSION_CREATE_LIMIT`, default
+120 a minute, team mode), the API-key mint limit (10 a minute), the
+password-change failure limit (5 per 15 minutes per account), and the stats
+scan queue and in-flight coalescing. The instance mode and every ownership
+fact are read from the database on each request (no cache), so they are
+consistent across replicas. Keep a single replica until the process-local
+state is externalised; see "Detecting a split SQLite deployment" below for
+what happens with more than one SQLite instance.
+
 ## Upgrading to migration 0007 (SQLite) / 0008 (Postgres): acknowledgement timestamps
 
 These two migrations (`drizzle/sqlite/0007_session_ack_timestamps.sql`,
@@ -619,6 +688,13 @@ is applied to exactly these 6 paths:
 - `/api/v1/hooks` — in-process per-key limiter (P7); always-200 contract
 - `/api/v1/hooks/status` — same
 
+**Also without an edge rate limit**: `/api/v1/auth/change-password` and
+`/app-api/v1/auth/change-password`, exempt from forwardauth for the reason
+in `FORWARDAUTH.md` ("Why change-password stays off forwardauth"), the same way
+login and signup are today. The handler requires a valid session and limits
+failed current-password attempts to 5 per account per 15 minutes, in memory per
+replica.
+
 **Explicitly blocked** (no rate limit, returns 503 via non-existent service):
 - `/api/v1/internal/*` — loopback-only endpoint; Traefik deny rule is defense-in-depth
 
@@ -731,6 +807,12 @@ kubectl apply -k deploy/overlays/postgres/
 the dedicated migration connection) before running Drizzle migrations. Two replicas booting
 simultaneously serialize on this lock; the second waits until the first finishes migrating and
 releases the lock. No external coordination is needed.
+
+**Not everything is safe to roll**: the advisory lock covers migrations only. The
+hook rate limiter, the per-owner session-creation limit, the key-mint limit, the
+password-change failure limit and the stats scan queue are per-process memory
+(N replicas make each N times looser; a rolling deploy briefly doubles them). See
+"Upgrading to Postgres migrations 0007 and 0009" above.
 
 **Connection pool tuning**: `AGENTPULSE_PG_POOL_MAX` (integer [1, 100], default 10). For a single
 replica: `max_connections / 2` is a safe starting point. Scale down proportionally for multiple

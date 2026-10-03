@@ -228,6 +228,10 @@ export function groupHeader<T extends GroupableSession & OperationalStatusInput>
 	const total = stats ? ownerGroupTotal(stats, ctx.tab, ctx.statusFilter) : null;
 	const alreadyThisOwner = ctx.currentOwner === group.key || (isSelf && ctx.currentOwner === "me");
 	const moreThanShown = total === null || total > shown;
+	// The owner's working and waiting totals describe their active sessions: they
+	// match only the Active tab with no status card; elsewhere the cards shown are the truth.
+	const ownerActiveTotals =
+		stats !== null && !searching && ctx.tab === "active" && !ctx.statusFilter;
 	return {
 		title: isSelf ? `${group.label} (you)` : group.label,
 		path: null,
@@ -236,8 +240,8 @@ export function groupHeader<T extends GroupableSession & OperationalStatusInput>
 			: total !== null && total > shown
 				? `${shown} shown of ${total}`
 				: `${shown} shown`,
-		working: stats && !searching ? stats.working : fromCards.working,
-		waiting: stats && !searching ? stats.waiting : fromCards.waiting,
+		working: ownerActiveTotals ? stats.working : fromCards.working,
+		waiting: ownerActiveTotals ? stats.waiting : fromCards.waiting,
 		showAll:
 			!alreadyThisOwner && !searching && moreThanShown
 				? {

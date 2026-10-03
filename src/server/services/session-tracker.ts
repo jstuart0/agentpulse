@@ -1372,7 +1372,7 @@ async function queryAggregateTotals(
 		.where(scope);
 	const totals = row as Record<string, number>;
 
-	// D18: zero-fill every known agent type so a consumer never has to
+	// Zero-fill every known agent type so a consumer never has to
 	// special-case "absent means 0".
 	const activeByAgentType: Record<string, number> = {};
 	let knownActive = 0;

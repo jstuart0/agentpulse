@@ -797,7 +797,7 @@ describe("env promotion to admin (AGENTPULSE_ADMIN_SSO_SUBJECTS)", () => {
 		const held = new Promise<void>((resolve) => {
 			release = resolve;
 		});
-		const holder = withAdminLock(async () => held);
+		const holder = withAdminLock(async () => held, { sqliteAllowYield: true });
 		await Bun.sleep(10);
 		const settledOrWaiting = (p: Promise<unknown>) =>
 			Promise.race([p.then(() => "settled"), Bun.sleep(100).then(() => "waiting")]);

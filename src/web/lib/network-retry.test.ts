@@ -5,6 +5,8 @@ import {
 	RETRY_MAX_MS,
 	decideFetchFailure,
 	parseRetryAfter,
+	readLastBounce,
+	recordBounce,
 	retryDelayMs,
 	shouldBounceForAuth,
 } from "./network-retry.js";
@@ -120,5 +122,40 @@ describe("parseRetryAfter bounds and forms", () => {
 	test("the other two date forms keep working", () => {
 		expect(parseRetryAfter("Sun, 06 Nov 1994 08:50:37 GMT", now)).toBe(97);
 		expect(parseRetryAfter("Sunday, 06-Nov-94 08:50:37 GMT", now)).toBe(97);
+	});
+});
+
+describe("when session storage is unavailable", () => {
+	const throwing = {
+		getItem: () => {
+			throw new Error("SecurityError");
+		},
+		setItem: () => {
+			throw new Error("QuotaExceededError");
+		},
+	};
+
+	test("the last reload can't be read, which is not 'never reloaded'", () => {
+		expect(readLastBounce(throwing)).toBe("unavailable");
+	});
+
+	test("a failed request is an outage (retry), never a reload", () => {
+		const lastBounceAt = readLastBounce(throwing);
+		expect(decideFetchFailure({ lastBounceAt, now: 5_000 })).toEqual({ action: "retry" });
+	});
+
+	test("a reload time that can't be stored is reported as not stored", () => {
+		expect(recordBounce(throwing, 5_000)).toBe(false);
+	});
+
+	test("working storage still reads and records", () => {
+		const data = new Map<string, string>();
+		const storage = {
+			getItem: (k: string) => data.get(k) ?? null,
+			setItem: (k: string, v: string) => void data.set(k, v),
+		};
+		expect(readLastBounce(storage)).toBeNull();
+		expect(recordBounce(storage, 7_000)).toBe(true);
+		expect(readLastBounce(storage)).toBe(7_000);
 	});
 });

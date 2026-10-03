@@ -129,3 +129,32 @@ export function hostOwnerDialogNote(host: Pick<SupervisorRecord, "enrollmentStat
 	const base = "The owner (and any admin) can rotate or revoke this host.";
 	return host.enrollmentState === "revoked" ? base : `${base} Anyone can still launch on it.`;
 }
+
+/**
+ * The one notice a host card carries about its exclude file: only when the
+ * supervisor said the file is invalid (it then sends no session data until the
+ * file is fixed) AND that supervisor is still alive. A host whose heartbeat lease
+ * has run out (or that the server already calls stale or offline) said "invalid"
+ * some time ago and may since have been fixed, restarted or removed, so the flag
+ * is not evidence of anything now. Anything else, including null or absent (the
+ * server keeps no other state) and anything unexpected, shows nothing.
+ */
+export type HostExcludeNotice = { text: string };
+
+export const HOST_EXCLUDE_INVALID_TEXT =
+	"This host's supervisor is sending nothing: its exclude file or its saved exclude state has an error. Run agentpulse exclude check on that machine.";
+
+function leaseIsLive(leaseExpiresAt: string | undefined, now: number): boolean {
+	const expiry = Date.parse(leaseExpiresAt ?? "");
+	return Number.isFinite(expiry) && expiry > now;
+}
+
+export function deriveHostExcludeNotice(
+	supervisor: Pick<SupervisorRecord, "excludeRulesState" | "status" | "heartbeatLeaseExpiresAt">,
+	now: number = Date.now(),
+): HostExcludeNotice | null {
+	if (supervisor.excludeRulesState !== "invalid") return null;
+	if (supervisor.status !== "connected") return null;
+	if (!leaseIsLive(supervisor.heartbeatLeaseExpiresAt, now)) return null;
+	return { text: HOST_EXCLUDE_INVALID_TEXT };
+}

@@ -1,0 +1,4 @@
+# The installers carry shell and PowerShell text that is compared byte for byte
+# against the generator, and write scripts that sh must read: LF everywhere.
+*.sh text eol=lf
+*.ps1 text eol=lf

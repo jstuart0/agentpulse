@@ -112,7 +112,7 @@ export async function loadTsFiles(repoRoot: string, roots: string[]): Promise<Se
  * (newlines kept), so a scan for identifiers and braces sees only code and
  * line numbers still match the original.
  */
-function blankCommentsAndStrings(content: string): string {
+export function blankCommentsAndStrings(content: string): string {
 	let out = "";
 	let i = 0;
 	const blank = (ch: string) => (ch === "\n" ? "\n" : " ");

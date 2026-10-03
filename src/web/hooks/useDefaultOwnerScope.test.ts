@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { act } from "react";
 import { api } from "../lib/api.js";
 import { useDashboardScopeStore } from "../stores/dashboard-scope-store.js";
 import { useUserStore } from "../stores/user-store.js";
@@ -83,6 +84,23 @@ describe("the scope the dashboard opens on", () => {
 		const h = renderHook(() => useDefaultOwnerScope(), null);
 		await h.render(null);
 		await flush();
+		expect(useDashboardScopeStore.getState()).toMatchObject({ owner: "all", resolved: true });
+		await h.unmount();
+	});
+
+	test("switching the instance back to solo puts a dashboard that was on Mine back on Everyone", async () => {
+		store.set("agentpulse.dashboard.scope.viewer", "mine");
+		client.getSessions = () => Promise.resolve({ sessions: [], total: 3 });
+		const h = renderHook(() => useDefaultOwnerScope(), null);
+		await h.render(null);
+		await flush();
+		expect(useDashboardScopeStore.getState()).toMatchObject({ owner: "me", resolved: true });
+
+		await act(async () => {
+			useUserStore.setState({ mode: "solo" } as never);
+		});
+		await flush();
+
 		expect(useDashboardScopeStore.getState()).toMatchObject({ owner: "all", resolved: true });
 		await h.unmount();
 	});

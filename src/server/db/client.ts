@@ -921,6 +921,7 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		"ALTER TABLE supervisors ADD COLUMN config_schema_version INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE supervisors ADD COLUMN heartbeat_lease_expires_at TEXT NOT NULL DEFAULT (datetime('now', '+90 seconds'))",
 		"ALTER TABLE supervisors ADD COLUMN enrollment_state TEXT NOT NULL DEFAULT 'active'",
+		"ALTER TABLE supervisors ADD COLUMN exclude_rules_state TEXT",
 		"ALTER TABLE supervisor_enrollment_tokens ADD COLUMN supervisor_id TEXT",
 		"ALTER TABLE launch_requests ADD COLUMN requested_launch_mode TEXT NOT NULL DEFAULT 'interactive_terminal'",
 		"ALTER TABLE launch_requests ADD COLUMN routing_policy TEXT",

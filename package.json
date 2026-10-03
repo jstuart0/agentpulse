@@ -29,13 +29,13 @@
 		"db:studio:postgres": "drizzle-kit studio --config drizzle.config.postgres.ts",
 		"check": "biome check .",
 		"check:fix": "biome check --write .",
-		"typecheck": "tsc --noEmit && tsc -p packages/agentpulse-mcp/tsconfig.json --noEmit",
+		"typecheck": "tsc --noEmit && tsc -p tsconfig.bin.json --noEmit && tsc -p packages/agentpulse-mcp/tsconfig.json --noEmit",
 		"test": "bun test",
 		"test:watch": "bun test --watch",
 		"check:no-raw-fetch": "bash scripts/check-no-raw-fetch.sh",
 		"check:no-sync-transcript-io": "bash scripts/check-no-sync-transcript-io.sh",
 		"check:bundled-installers": "bun scripts/check-bundled-installers.ts",
-		"check:installers": "bash -n scripts/install-local.sh && bash -n scripts/setup-relay.sh && bun scripts/check-installers.ts",
+		"check:installers": "bash -n scripts/install-local.sh && bash -n scripts/setup-relay.sh && bash -n scripts/setup-hooks.sh && bun scripts/check-installers.ts",
 		"check:no-bun-sqlite-only-apis": "bun scripts/check-no-bun-sqlite-only-apis.ts",
 		"check:no-legacy-schema-import": "bun scripts/check-no-legacy-schema-import.ts",
 		"check:no-authentik-literals": "bun scripts/check-no-authentik-literals.ts",
@@ -47,7 +47,11 @@
 		"check:mcp-no-cross-boundary-import": "bun scripts/check-mcp-no-cross-boundary-import.ts",
 		"check:mcp-tarball": "bun scripts/check-mcp-tarball.ts",
 		"check:no-test-seam-leaks": "bun scripts/check-no-test-seam-leaks.ts",
-		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity && bun run check:agent-type-parity && bun run check:dto-field-parity && bun run check:no-console-log-mcp && bun run check:mcp-no-raw-register-tool && bun run check:mcp-no-cross-boundary-import && bun run check:no-test-seam-leaks"
+		"check:relay-exclude-embed": "bun scripts/check-relay-exclude-embed.ts",
+		"embed:exclude-rules": "bun scripts/embed-exclude-rules.ts",
+		"check:ownership-guards": "bun scripts/check-ownership-guards.ts",
+		"check:no-exclude-provider-outside-tests": "bun scripts/check-no-exclude-provider-outside-tests.ts",
+		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity && bun run check:agent-type-parity && bun run check:dto-field-parity && bun run check:no-console-log-mcp && bun run check:mcp-no-raw-register-tool && bun run check:mcp-no-cross-boundary-import && bun run check:no-test-seam-leaks && bun run check:no-exclude-provider-outside-tests && bun run check:relay-exclude-embed && bun run check:ownership-guards"
 	},
 	"dependencies": {
 		"@codemirror/lang-markdown": "^6.3.1",

@@ -5,6 +5,7 @@ import { ownerChipVisible } from "./owner-chip.js";
 import { scopeQuery } from "./owner-scope.js";
 import {
 	ADMIN_ONLY_SETTINGS_NOTICE,
+	NOTES_BLOCKED_REASON,
 	RENAME_BLOCKED_REASON,
 	ownershipUi,
 	sessionActionAccess,
@@ -119,12 +120,32 @@ describe("ownershipUi in team mode", () => {
 	});
 });
 
+describe("notes and CLAUDE.md editing", () => {
+	test("the blocked reason names who can edit", () => {
+		expect(NOTES_BLOCKED_REASON).toBe(
+			"Only the owner or an admin can edit this session's notes and CLAUDE.md.",
+		);
+	});
+});
+
 describe("sessionActionAccess", () => {
 	const solo = ownershipUi("solo", { effectiveRole: "member" });
 	const teamMember = ownershipUi("team", { effectiveRole: "member" });
 	const teamAdmin = ownershipUi("team", { effectiveRole: "admin" });
-	const all = { canRename: true, canPin: true, canArchive: true, canDelete: true };
-	const none = { canRename: false, canPin: false, canArchive: false, canDelete: false };
+	const all = {
+		canRename: true,
+		canPin: true,
+		canArchive: true,
+		canDelete: true,
+		canEditNotes: true,
+	};
+	const none = {
+		canRename: false,
+		canPin: false,
+		canArchive: false,
+		canDelete: false,
+		canEditNotes: false,
+	};
 
 	test("solo: always allowed, whoever owns the session", () => {
 		expect(sessionActionAccess(solo, { ownerUserId: "alice" }, { userId: "bob" })).toEqual(all);

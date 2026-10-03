@@ -45,8 +45,14 @@ export type { Inbox, InboxFilter, InboxSeverity, InboxWorkItem };
 export type AiProviderKind = ProviderKind;
 export type AiWatcherPolicy = WatcherPolicy;
 export type { AskMessageRole, DecisionKind, HitlReplyKind } from "../../shared/types.js";
-import { decideFetchFailure, isOutageResponse, parseRetryAfter } from "./network-retry.js";
-import type { ScopeQuery } from "./owner-scope.js";
+import {
+	decideFetchFailure,
+	isOutageResponse,
+	parseRetryAfter,
+	readLastBounce,
+	recordBounce,
+} from "./network-retry.js";
+import { OWNER_ME, type ScopeQuery } from "./owner-scope.js";
 import { APP_API_BASE } from "./paths.js";
 import { type ScopedQuery, type SessionFilters, assertScopedQuery } from "./scoped-query.js";
 
@@ -74,31 +80,21 @@ const BASE_URL = APP_API_BASE;
  */
 let authBounceInFlight = false;
 
-const AUTH_BOUNCE_STORAGE_KEY = "agentpulse.authBounceAt";
-
-function readLastBounce(): number | null {
-	try {
-		const raw = window.sessionStorage.getItem(AUTH_BOUNCE_STORAGE_KEY);
-		const value = raw === null ? Number.NaN : Number(raw);
-		return Number.isFinite(value) ? value : null;
-	} catch {
-		return null;
-	}
-}
-
-function recordBounce(now: number): void {
-	try {
-		window.sessionStorage.setItem(AUTH_BOUNCE_STORAGE_KEY, String(now));
-	} catch {
-		// Storage can be unavailable (private mode); the in-memory flag still holds for this page.
-	}
-}
+/** The browser's session storage, reached lazily: even touching it can throw. */
+const bounceStorage = {
+	getItem: (key: string) => window.sessionStorage.getItem(key),
+	setItem: (key: string, value: string) => window.sessionStorage.setItem(key, value),
+};
 
 export function triggerAuthReload(reason: string): void {
 	if (authBounceInFlight) return;
 	if (typeof window === "undefined") return;
+	if (!recordBounce(bounceStorage, Date.now())) {
+		console.warn(`[api] ${reason} — not reloading: this browser can't remember that it did`);
+		networkHandler?.failed();
+		return;
+	}
 	authBounceInFlight = true;
-	recordBounce(Date.now());
 	console.warn(`[api] ${reason} — reloading to reacquire auth`);
 	// Defer a tick so any error logs get flushed before the nav.
 	setTimeout(() => {
@@ -109,7 +105,8 @@ export function triggerAuthReload(reason: string): void {
 /** Tells whoever shows connectivity whether requests are getting answered. */
 interface NetworkHandler {
 	failed: () => void;
-	ok: () => void;
+	/** The path that was answered, so a listener can tell the identity check from any other call. */
+	ok: (path: string) => void;
 }
 let networkHandler: NetworkHandler | null = null;
 
@@ -123,7 +120,10 @@ export function setNetworkHandler(handler: NetworkHandler | null): void {
  * visible "can't reach the server" state (which paces its own retries).
  */
 function handleFetchFailure(reason: string): void {
-	const decision = decideFetchFailure({ lastBounceAt: readLastBounce(), now: Date.now() });
+	const decision = decideFetchFailure({
+		lastBounceAt: readLastBounce(bounceStorage),
+		now: Date.now(),
+	});
 	if (decision.action === "reload") triggerAuthReload(reason);
 	else networkHandler?.failed();
 }
@@ -245,12 +245,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 			parseRetryAfter(res.headers.get("Retry-After"), Date.now()),
 		);
 		if (isOutageResponse(res.status, failure.code, path)) networkHandler?.failed();
-		else networkHandler?.ok();
+		else networkHandler?.ok(path);
 		requestFailureHandler?.({ status: res.status, code: failure.code, path });
 		throw failure;
 	}
 
-	networkHandler?.ok();
+	networkHandler?.ok(path);
 	requestSuccessHandler?.(path);
 	return res.json();
 }
@@ -351,10 +351,18 @@ export const api = {
 	getSessions: (query: ScopedQuery) =>
 		whenScoped(query, () => request<SessionsResponse>(`/sessions${sessionsQueryString(query)}`)),
 
-	/** The newest Codex session anywhere, for the Setup page's "has Codex reported yet" check. Deliberately not the dashboard's scope. */
-	getCodexProbeSessions: () =>
+	/**
+	 * The newest Codex session, for the Setup page's "has Codex reported yet"
+	 * check. Solo asks about the whole instance (deliberately not the
+	 * dashboard's scope); team mode asks about the viewer's own sessions.
+	 */
+	getCodexProbeSessions: (ownOnly: boolean) =>
 		request<SessionsResponse>(
-			`/sessions${sessionsQueryString({ agent_type: "codex_cli", limit: 1 })}`,
+			`/sessions${sessionsQueryString({
+				agent_type: "codex_cli",
+				limit: 1,
+				...(ownOnly ? { owner: OWNER_ME } : {}),
+			})}`,
 		),
 
 	getSession: (sessionId: string) =>

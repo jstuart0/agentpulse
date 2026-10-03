@@ -159,6 +159,30 @@ describe("settleExistingItems", () => {
 		expect(result.summary.assignedKeys).toBe(1);
 	});
 
+	test("a claim that went through is done, even when a key after it failed: Try again must not send it again", () => {
+		const result = settleExistingItems({
+			...input,
+			results: [
+				ok({ kind: "claim-sessions", userId: "u" }, { claimed: 5 }),
+				{ op: { kind: "assign-key", keyId: "k1", userId: "u" }, ok: false, message: "no" },
+			],
+			keyChoices: { k1: { kind: "assign", userId: "u" } },
+		});
+		expect(result.claimDone).toBe(true);
+		expect(result.failures).toHaveLength(1);
+		expect(Object.keys(result.remainingKeyChoices)).toEqual(["k1"]);
+	});
+
+	test("a claim that failed, or none at all, is not done", () => {
+		expect(
+			settleExistingItems({
+				...input,
+				results: [{ op: { kind: "claim-sessions", userId: "u" }, ok: false }],
+			}).claimDone,
+		).toBe(false);
+		expect(settleExistingItems({ ...input, results: [] }).claimDone).toBe(false);
+	});
+
 	test("a failed claim and a failed host are labelled for what they were", () => {
 		const result = settleExistingItems({
 			...input,

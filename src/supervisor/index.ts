@@ -1,18 +1,12 @@
-import type {
-	ControlAction,
-	LaunchRequest,
-	ManagedSession,
-	ManagedSessionEventInput,
-	ManagedSessionStateInput,
-	ManagedState,
-	Session,
-} from "../shared/types.js";
-import { MANAGED_STATES } from "../shared/types.js";
+import { homedir } from "node:os";
+import type { ControlAction, LaunchRequest, ManagedSession } from "../shared/types.js";
 import {
 	ensureSupervisorConfigPrivate,
 	loadSupervisorConfig,
 	saveSupervisorConfig,
 } from "./config.js";
+import { createControlActionHandler } from "./control-actions.js";
+import { createLaunchDispatcher } from "./launch-dispatch.js";
 import {
 	launchClaudeHeadlessRequest,
 	launchClaudeInteractiveRequest,
@@ -24,14 +18,22 @@ import {
 	reconcileManagedCodexTitles,
 	stopManagedCodexSession,
 } from "./providers/codex-managed.js";
-import { CleanupError, executeCleanupWorkArea } from "./services/cleanup-workarea.js";
+import { executeCleanupWorkArea } from "./services/cleanup-workarea.js";
 import { isCodexObserverEnabled, startCodexObserver } from "./services/codex-observer.js";
+import {
+	createRulesWatch,
+	resolveAccountHome,
+	warnIfHomeMismatch,
+} from "./services/exclude-rules-watch.js";
 import { parseErrorBodyField, sanitizeForLog } from "./services/log-sanitize.js";
-import { PrelaunchError, executePrelaunchActions } from "./services/prelaunch-actions.js";
+import { executePrelaunchActions } from "./services/prelaunch-actions.js";
 import { retryWithBackoff } from "./services/registration-retry.js";
+import { createReportGate, heartbeatBody } from "./services/report-gate.js";
 import { SupervisorRequestError } from "./services/report-resilience.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
+/** How often the exclude rules are re-read for a changed symlink, the stamp is refreshed and sessions a new rule covers are closed. */
+const EXCLUDE_SCAN_MS = 15_000;
 
 async function request(path: string, options?: RequestInit) {
 	const config = await loadSupervisorConfig();
@@ -112,6 +114,11 @@ async function main() {
 		`[supervisor] Registered ${registration.supervisor.hostName} (${registration.supervisor.id})`,
 	);
 
+	// The user's exclude rules, read once and shared by the report gate and the Codex observer.
+	const home = process.env.HOME || homedir();
+	const rules = createRulesWatch({ home });
+	warnIfHomeMismatch(home, resolveAccountHome(), (line) => console.warn(line));
+
 	// Observe local Codex rollout files and forward events as hooks. Codex's
 	// own HTTP hooks have been stable since codex-cli 0.124.0 and are the
 	// primary event source; the observer stays as belt-and-suspenders (dual
@@ -126,6 +133,7 @@ async function main() {
 		void startCodexObserver({
 			serverUrl: config.serverUrl,
 			apiKey: config.apiKey ?? null,
+			rules,
 		}).catch((error) => {
 			console.error("[codex-observer] failed to start:", error);
 		});
@@ -148,166 +156,41 @@ async function main() {
 		Math.max(10_000, Math.floor(registration.heartbeatIntervalMs / 2)),
 	).unref();
 
-	async function runPrelaunchActionsForLaunch(launch: LaunchRequest): Promise<boolean> {
-		const actions = launch.launchSpec.prelaunchActions;
-		if (!actions || actions.length === 0) return true;
-		try {
-			await executePrelaunchActions(actions, {
-				trustedRoots: config.trustedRoots,
-				logProgress: (msg) => console.log(`[prelaunch] ${msg}`),
-				logWarning: (msg) => console.warn(msg),
-			});
-			return true;
-		} catch (error) {
-			const detail = error instanceof PrelaunchError ? error.toJSON() : null;
-			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
-				method: "POST",
-				body: JSON.stringify({
-					status: "failed",
-					error: detail?.message ?? (error instanceof Error ? error.message : "Prelaunch failed"),
-					providerLaunchMetadata: detail ? { prelaunchError: detail } : null,
-				}),
-			});
-			return false;
-		}
-	}
+	// Every report about a session leaves through this gate (see report-gate.ts): it holds the
+	// directories sessions and launches were started in, and the one closing report a newly
+	// excluded session gets. The rules it reads are the observer's too.
+	const gate = createReportGate({
+		request,
+		supervisorId: registration.supervisor.id,
+		home,
+		version: config.version,
+		rules,
+	});
+	const dispatchLaunch = createLaunchDispatcher({
+		gate,
+		trustedRoots: config.trustedRoots,
+		providers: {
+			launchManagedCodex: launchManagedCodexRequest,
+			launchClaudeHeadless: launchClaudeHeadlessRequest,
+			launchClaudeInteractive: launchClaudeInteractiveRequest,
+		},
+		executePrelaunchActions,
+	});
+	const handleControlAction = createControlActionHandler({
+		gate,
+		trustedRoots: config.trustedRoots,
+		providers: {
+			stopManagedCodexSession,
+			promptClaudeHeadlessSession,
+			promptClaudeInteractiveSession,
+		},
+		executeCleanupWorkArea,
+	});
 
-	async function dispatchLaunch(launch: LaunchRequest) {
-		if (launch.agentType === "codex_cli" && launch.requestedLaunchMode === "managed_codex") {
-			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
-				method: "POST",
-				body: JSON.stringify({
-					status: "launching",
-				}),
-			});
-
-			if (!(await runPrelaunchActionsForLaunch(launch))) return;
-
-			try {
-				const result = await launchManagedCodexRequest(launch, {
-					reportState: async (body) =>
-						(await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
-							method: "POST",
-							body: JSON.stringify(body),
-						})) as { session: Session; managedSession: ManagedSession },
-					reportEvents: async (events) => {
-						await request(
-							`/supervisors/${registration.supervisor.id}/managed-sessions/${launch.launchCorrelationId}/events`,
-							{
-								method: "POST",
-								body: JSON.stringify({ events }),
-							},
-						);
-					},
-				});
-				await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
-					method: "POST",
-					body: JSON.stringify({
-						status: "running",
-						pid: result.pid,
-						providerLaunchMetadata: result.metadata,
-					}),
-				});
-				return;
-			} catch (error) {
-				await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
-					method: "POST",
-					body: JSON.stringify({
-						status: "failed",
-						error: error instanceof Error ? error.message : "Managed Codex launch failed",
-					}),
-				});
-				return;
-			}
-		}
-
-		if (launch.agentType !== "claude_code") {
-			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
-				method: "POST",
-				body: JSON.stringify({
-					status: "failed",
-					error: "Phase 3 dispatch currently supports Claude Code only.",
-				}),
-			});
-			return;
-		}
-
-		await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
-			method: "POST",
-			body: JSON.stringify({
-				status: "launching",
-			}),
-		});
-
-		if (!(await runPrelaunchActionsForLaunch(launch))) return;
-
-		try {
-			const claudeCallbacks = {
-				reportState: async (body: ManagedSessionStateInput) =>
-					(await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
-						method: "POST",
-						body: JSON.stringify(body),
-					})) as { session: Session; managedSession: ManagedSession },
-				reportEvents: async (events: ManagedSessionEventInput[]) => {
-					await request(
-						`/supervisors/${registration.supervisor.id}/managed-sessions/${launch.launchCorrelationId}/events`,
-						{
-							method: "POST",
-							body: JSON.stringify({ events }),
-						},
-					);
-				},
-			};
-			if (launch.requestedLaunchMode === "headless") {
-				const result = await launchClaudeHeadlessRequest(
-					launch,
-					async (update) => {
-						await request(
-							`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`,
-							{
-								method: "POST",
-								body: JSON.stringify({
-									status: update.status,
-									pid: update.pid ?? null,
-									error: update.error ?? null,
-									providerLaunchMetadata: update.providerLaunchMetadata,
-								}),
-							},
-						);
-					},
-					claudeCallbacks,
-				);
-				await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
-					method: "POST",
-					body: JSON.stringify({
-						status: "running",
-						pid: result.pid,
-						providerLaunchMetadata: result.metadata,
-					}),
-				});
-				void result.monitor;
-				return;
-			}
-
-			const result = await launchClaudeInteractiveRequest(launch, claudeCallbacks);
-			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
-				method: "POST",
-				body: JSON.stringify({
-					status: "awaiting_session",
-					pid: result.pid,
-					providerLaunchMetadata: result.metadata,
-				}),
-			});
-		} catch (error) {
-			await request(`/supervisors/${registration.supervisor.id}/launches/${launch.id}/status`, {
-				method: "POST",
-				body: JSON.stringify({
-					status: "failed",
-					error: error instanceof Error ? error.message : "Launch failed",
-				}),
-			});
-		}
-	}
+	void gate.scan();
+	setInterval(() => {
+		gate.scan().catch((error) => console.error("[supervisor] exclude scan failed", error));
+	}, EXCLUDE_SCAN_MS).unref();
 
 	setInterval(async () => {
 		try {
@@ -324,8 +207,11 @@ async function main() {
 
 	setInterval(async () => {
 		try {
+			// Whether the exclude file on this host is in use, absent or broken, for the Hosts page.
+			// Optional on the wire: a server that predates the field ignores the body.
 			await request(`/supervisors/${registration.supervisor.id}/heartbeat`, {
 				method: "POST",
+				body: heartbeatBody(gate.rulesState()),
 			});
 			lastHeartbeatOkAt = Date.now();
 			console.log("[supervisor] heartbeat ok");
@@ -339,12 +225,9 @@ async function main() {
 			const result = (await request(
 				`/supervisors/${registration.supervisor.id}/provider-sync`,
 			)) as { managedSessions: ManagedSession[] };
-			await reconcileManagedCodexTitles(result.managedSessions ?? [], async (body) => {
-				return (await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
-					method: "POST",
-					body: JSON.stringify(body),
-				})) as { session: Session; managedSession: ManagedSession };
-			});
+			await reconcileManagedCodexTitles(result.managedSessions ?? [], (body) =>
+				gate.reportState(body),
+			);
 		} catch (error) {
 			console.error("[supervisor] provider sync failed", error);
 		}
@@ -356,242 +239,7 @@ async function main() {
 				`/supervisors/${registration.supervisor.id}/control-actions/claim`,
 				{ method: "POST" },
 			)) as { action: ControlAction | null };
-			if (!result.action) return;
-
-			if (result.action.actionType === "stop" && result.action.sessionId) {
-				try {
-					await stopManagedCodexSession(result.action.sessionId);
-					await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
-						method: "POST",
-						body: JSON.stringify({
-							sessionId: result.action.sessionId,
-							status: "completed",
-							managedState: "stopped" satisfies ManagedState,
-							providerSyncState: "synced",
-						}),
-					});
-					await request(
-						`/supervisors/${registration.supervisor.id}/managed-sessions/${result.action.sessionId}/events`,
-						{
-							method: "POST",
-							body: JSON.stringify({
-								events: [
-									{
-										eventType: "ManagedSessionStopped",
-										category: "system_event",
-										content: "Managed session stopped by operator.",
-									},
-								],
-							}),
-						},
-					);
-					await request(
-						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
-						{
-							method: "POST",
-							body: JSON.stringify({ status: "succeeded" }),
-						},
-					);
-				} catch (error) {
-					await request(
-						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
-						{
-							method: "POST",
-							body: JSON.stringify({
-								status: "failed",
-								error: error instanceof Error ? error.message : "Failed to stop managed session",
-							}),
-						},
-					);
-				}
-				return;
-			}
-
-			if (result.action.actionType === "prompt" && result.action.sessionId) {
-				const metadata = (result.action.metadata ?? {}) as Record<string, unknown>;
-				const prompt = typeof metadata.prompt === "string" ? metadata.prompt : "";
-				const cwd = typeof metadata.cwd === "string" ? metadata.cwd : "";
-				const model = typeof metadata.model === "string" ? metadata.model : null;
-				// Coerce metadata.managedState (cross-process JSON, untyped) into the
-				// canonical ManagedState union; unknown values fall through as null
-				// so the prompt routing below treats them as the default headless path.
-				const managedState: ManagedState | null =
-					typeof metadata.managedState === "string" &&
-					(MANAGED_STATES as readonly string[]).includes(metadata.managedState)
-						? (metadata.managedState as ManagedState)
-						: null;
-				const env =
-					metadata.env && typeof metadata.env === "object" && !Array.isArray(metadata.env)
-						? (metadata.env as Record<string, string>)
-						: {};
-				const terminalOwner =
-					metadata.terminalOwner &&
-					typeof metadata.terminalOwner === "object" &&
-					!Array.isArray(metadata.terminalOwner)
-						? (metadata.terminalOwner as Record<string, unknown>)
-						: null;
-				const interactiveBridge =
-					metadata.interactiveBridge &&
-					typeof metadata.interactiveBridge === "object" &&
-					!Array.isArray(metadata.interactiveBridge)
-						? (metadata.interactiveBridge as Record<string, unknown>)
-						: null;
-				const claudeCallbacks = {
-					reportState: async (body: ManagedSessionStateInput) =>
-						(await request(`/supervisors/${registration.supervisor.id}/managed-session-state`, {
-							method: "POST",
-							body: JSON.stringify(body),
-						})) as { session: Session; managedSession: ManagedSession },
-					reportEvents: async (events: ManagedSessionEventInput[]) => {
-						await request(
-							`/supervisors/${registration.supervisor.id}/managed-sessions/${result.action?.sessionId}/events`,
-							{
-								method: "POST",
-								body: JSON.stringify({ events }),
-							},
-						);
-					},
-				};
-
-				try {
-					if (!prompt || !cwd) {
-						throw new Error("Prompt action is missing prompt or working directory.");
-					}
-
-					if (managedState === "interactive_terminal") {
-						const response = await promptClaudeInteractiveSession(
-							{
-								sessionId: result.action.sessionId,
-								prompt,
-								cwd,
-								model,
-								env,
-								managedState,
-								terminalOwner,
-								interactiveBridge,
-							},
-							claudeCallbacks,
-						);
-						await request(
-							`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
-							{
-								method: "POST",
-								body: JSON.stringify({
-									status: "succeeded",
-									metadata: response.metadata,
-								}),
-							},
-						);
-						return;
-					}
-
-					const response = await promptClaudeHeadlessSession(
-						{
-							sessionId: result.action.sessionId,
-							prompt,
-							cwd,
-							model,
-							env,
-							managedState,
-						},
-						async () => {},
-						claudeCallbacks,
-					);
-					void response.monitor
-						.then(async () => {
-							await request(
-								`/supervisors/${registration.supervisor.id}/control-actions/${result.action?.id}/status`,
-								{
-									method: "POST",
-									body: JSON.stringify({
-										status: "succeeded",
-										metadata: response.metadata,
-									}),
-								},
-							);
-						})
-						.catch(async (error) => {
-							await request(
-								`/supervisors/${registration.supervisor.id}/control-actions/${result.action?.id}/status`,
-								{
-									method: "POST",
-									body: JSON.stringify({
-										status: "failed",
-										error: error instanceof Error ? error.message : "Failed to execute prompt",
-									}),
-								},
-							);
-						});
-					return;
-				} catch (error) {
-					await request(
-						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
-						{
-							method: "POST",
-							body: JSON.stringify({
-								status: "failed",
-								error: error instanceof Error ? error.message : "Failed to execute prompt action",
-							}),
-						},
-					);
-				}
-				return;
-			}
-
-			if (result.action.actionType === "cleanup_workarea") {
-				const metadata = (result.action.metadata ?? {}) as Record<string, unknown>;
-				const cwd = typeof metadata.cwd === "string" ? metadata.cwd : "";
-				try {
-					if (!cwd) throw new Error("cleanup_workarea action is missing cwd metadata.");
-					const cleanupResult = await executeCleanupWorkArea({
-						cwd,
-						trustedRoots: config.trustedRoots,
-						logProgress: (msg) => console.log(`[cleanup] ${msg}`),
-					});
-					await request(
-						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
-						{
-							method: "POST",
-							body: JSON.stringify({
-								status: "succeeded",
-								metadata: {
-									...(metadata ?? {}),
-									cleanup: {
-										removed: cleanupResult.removed,
-										resolvedPath: cleanupResult.resolvedPath,
-									},
-								},
-							}),
-						},
-					);
-				} catch (error) {
-					const detail = error instanceof CleanupError ? error.toJSON() : null;
-					await request(
-						`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
-						{
-							method: "POST",
-							body: JSON.stringify({
-								status: "failed",
-								error:
-									detail?.message ?? (error instanceof Error ? error.message : "Cleanup failed"),
-								metadata: detail ? { ...(metadata ?? {}), cleanupError: detail } : (metadata ?? {}),
-							}),
-						},
-					);
-				}
-				return;
-			}
-
-			await request(
-				`/supervisors/${registration.supervisor.id}/control-actions/${result.action.id}/status`,
-				{
-					method: "POST",
-					body: JSON.stringify({
-						status: "failed",
-						error: `Unsupported control action: ${result.action.actionType}`,
-					}),
-				},
-			);
+			if (result.action) await handleControlAction(result.action);
 		} catch (error) {
 			console.error("[supervisor] control action failed", error);
 		}

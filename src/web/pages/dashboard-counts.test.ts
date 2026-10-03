@@ -6,6 +6,7 @@ import {
 	expectedListTotal,
 	liveStripText,
 	tabBadgeCount,
+	tabHint,
 } from "./dashboard-counts.js";
 
 function stats(over: Partial<StatsWithTabs> = {}): StatsWithTabs {
@@ -75,6 +76,21 @@ describe("the total a loaded list should end up with", () => {
 	test("unknown until the stats arrive", () => {
 		expect(expectedListTotal({ tab: "active", status: null, stats: null })).toBeUndefined();
 	});
+
+	test("expects nothing while a search is active: the counts describe the unsearched list", () => {
+		const s = stats({ tabCounts: { active: 7, completed: 22, archived: 11 } });
+		for (const tab of ["active", "completed", "archived", "all"]) {
+			expect(
+				expectedListTotal({ tab, status: null, stats: s, searching: true }),
+				tab,
+			).toBeUndefined();
+		}
+		expect(
+			expectedListTotal({ tab: "active", status: "waiting", stats: s, searching: true }),
+		).toBeUndefined();
+		// Positive control: the same call without a search expects a number.
+		expect(expectedListTotal({ tab: "active", status: null, stats: s, searching: false })).toBe(7);
+	});
 });
 
 describe("the Live Sessions strip's numbers", () => {
@@ -106,5 +122,19 @@ describe("the Live Sessions strip's numbers", () => {
 
 	test("nothing needing a person says nothing about it", () => {
 		expect(liveStripText({ ...base, attention: 0 }).attention).toBeNull();
+	});
+});
+
+describe("tabHint", () => {
+	test("All says it leaves archived sessions out; the other tabs say nothing", () => {
+		expect(tabHint("all")).toBe("Everything except archived sessions.");
+		for (const tab of ["active", "completed", "archived"]) expect(tabHint(tab)).toBeNull();
+	});
+
+	test("the dashboard shows the hint under the tabs and on the tab itself", async () => {
+		const { readFileSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const page = readFileSync(join(import.meta.dir, "DashboardPage.tsx"), "utf8");
+		expect(page.match(/tabHint\(/g)?.length).toBeGreaterThanOrEqual(2);
 	});
 });

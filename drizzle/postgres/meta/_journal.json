@@ -64,6 +64,13 @@
 			"when": 1790892327194,
 			"tag": "0008_session_ack_timestamps",
 			"breakpoints": true
+		},
+		{
+			"idx": 9,
+			"version": "7",
+			"when": 1791008597857,
+			"tag": "0009_supervisor_exclude_rules_state",
+			"breakpoints": true
 		}
 	]
 }

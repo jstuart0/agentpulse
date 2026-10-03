@@ -96,3 +96,35 @@ index used for hook-event deduplication) can take a `SHARE` lock on a large `eve
 while building inline at boot. See `deploy/k8s/README.md` → "Upgrading to migration 0003"
 for the out-of-band `CREATE INDEX CONCURRENTLY` procedure and the required
 `pg_index.indisvalid` verification step.
+
+### Migrations 0007, 0008 and 0009
+
+The next three Postgres migrations run in-band at boot, under the same advisory
+lock, with `IF NOT EXISTS` guards:
+
+- `0007_user_ownership.sql` (team mode): 15 `ADD COLUMN IF NOT EXISTS` and three
+  indexes, **none built `CONCURRENTLY`**: `idx_sessions_owner_last_activity`
+  (takes a `SHARE` lock on `sessions`, so hook writes wait while it builds),
+  `idx_api_keys_owner` and the unique `idx_users_provider_subject`. On a large
+  `sessions` table, pre-create the first with
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_owner_last_activity ON sessions (owner_user_id, last_activity_at);`
+  in a maintenance window and check `pg_index.indisvalid`; the migration then
+  skips it.
+- `0008_session_ack_timestamps.sql`: two nullable columns on `sessions`, instant.
+- `0009_supervisor_exclude_rules_state.sql`: one nullable column on `supervisors`,
+  instant.
+
+The full write-up, with the verification query, is in `deploy/k8s/README.md` under
+"Upgrading to Postgres migrations 0007 and 0009".
+
+### Rolling updates are safe for migrations only
+
+`RollingUpdate` is safe because migrations serialize on the advisory lock. It does
+not make the rest of the process replica-safe. The hook rate limiter, the per-owner
+session-creation limit (`AGENTPULSE_SESSION_CREATE_LIMIT`, default 120 a minute, in
+team mode), the API-key mint limit, the password-change failure limit (5 per 15
+minutes per account) and the stats scan queue live in each replica's memory and
+reset on restart: with N replicas each is N times looser, and during a rolling
+deploy two generations run at once. The instance mode and ownership are read from
+the database on every request, so those are consistent across replicas. Until that
+process-local state is externalised, run one replica.

@@ -129,6 +129,7 @@ async function spawnRelay(
 				PATH: process.env.PATH ?? "/usr/bin:/bin",
 				TMPDIR: process.env.TMPDIR ?? "/tmp",
 				HOME: home,
+				AGENTPULSE_TEST_RELAY_ACCOUNT_HOME: "",
 				AGENTPULSE_RELAY_SYNC_MS: "200",
 				...opts.env,
 			},

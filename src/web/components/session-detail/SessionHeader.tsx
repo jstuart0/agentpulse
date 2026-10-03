@@ -166,7 +166,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 						renameBlockedReason={access.canRename ? null : RENAME_BLOCKED_REASON}
 					/>
 					{session.isWorking && (
-						<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
+						<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-900 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
 							<span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" />
 							working
 						</span>
@@ -188,14 +188,14 @@ export function SessionHeader(props: SessionHeaderProps) {
 						</span>
 					)}
 					{session.gitBranch && (
-						<span className="hidden md:inline text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">
+						<span className="hidden md:inline text-[10px] font-mono text-[hsl(var(--working-text))] dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">
 							{session.gitBranch}
 						</span>
 					)}
 					{linkedProject && (
 						<NavLink
 							to="/projects"
-							className="hidden md:inline text-[10px] font-medium text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-1.5 py-0.5 hover:bg-blue-500/20 transition-colors"
+							className="hidden md:inline text-[10px] font-medium text-blue-800 dark:text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-1.5 py-0.5 hover:bg-blue-500/20 transition-colors"
 							title={`Project: ${linkedProject.name}`}
 						>
 							{linkedProject.name}
@@ -223,7 +223,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 								onClick={ackAction.onClick}
 								className={
 									ackAction.kind === "dismiss_error"
-										? "inline-flex min-h-[44px] md:min-h-0 items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-700 dark:text-red-300 hover:bg-red-500/20 transition-colors"
+										? "inline-flex min-h-[44px] md:min-h-0 items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-800 dark:text-red-300 hover:bg-red-500/20 transition-colors"
 										: ackAction.kind === "restore_error"
 											? "inline-flex min-h-[44px] md:min-h-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
 											: "inline-flex min-h-[44px] md:min-h-0 items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-800 dark:text-amber-300 hover:bg-amber-500/20 transition-colors"
@@ -261,7 +261,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 							<button
 								type="button"
 								onClick={onStop}
-								className="rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-300 hover:bg-red-500/20 transition-colors"
+								className="rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-800 dark:text-red-300 hover:bg-red-500/20 transition-colors"
 							>
 								Stop
 							</button>
@@ -305,7 +305,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 							onClick={ackAction.onClick}
 							className={
 								ackAction.kind === "dismiss_error"
-									? "md:hidden inline-flex min-h-[44px] items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 text-[11px] font-medium text-red-700 dark:text-red-300"
+									? "md:hidden inline-flex min-h-[44px] items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 text-[11px] font-medium text-red-800 dark:text-red-300"
 									: ackAction.kind === "restore_error"
 										? "md:hidden inline-flex min-h-[44px] items-center gap-1.5 rounded-md border border-border px-2.5 text-[11px] font-medium text-muted-foreground"
 										: "md:hidden inline-flex min-h-[44px] items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 text-[11px] font-medium text-amber-800 dark:text-amber-300"

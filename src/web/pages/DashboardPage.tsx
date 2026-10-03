@@ -46,6 +46,7 @@ import {
 	expectedListTotal,
 	liveStripText,
 	tabBadgeCount,
+	tabHint,
 } from "./dashboard-counts.js";
 import {
 	dashboardEmptyState,
@@ -259,7 +260,12 @@ export function DashboardPage() {
 	useListFollowsCount({
 		listTotal: countedList?.total ?? null,
 		settled: countedList !== null && !countedList.loading,
-		expected: expectedListTotal({ tab: filter, status: statusFilter, stats }),
+		expected: expectedListTotal({
+			tab: filter,
+			status: statusFilter,
+			stats,
+			searching: searchTerm.length > 0,
+		}),
 		countsVersion: stats,
 		refresh: () => countedList?.scheduleRefresh(),
 	});
@@ -579,6 +585,7 @@ export function DashboardPage() {
 		loadedCount: sessions.length,
 		owner,
 		failed: loadError !== null,
+		stats,
 	});
 
 	if (showFirstRun) {
@@ -878,6 +885,7 @@ export function DashboardPage() {
 									<button
 										key={f}
 										type="button"
+										title={tabHint(f) ?? undefined}
 										onClick={() => selectTab(f)}
 										className={`shrink-0 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
 											filter === f
@@ -902,6 +910,8 @@ export function DashboardPage() {
 								);
 							})}
 						</div>
+
+						{tabHint(filter) && <p className="-mt-1 text-xs text-hint">{tabHint(filter)}</p>}
 
 						<div className="flex flex-wrap items-center gap-3">
 							<div className="relative w-full md:max-w-xs">

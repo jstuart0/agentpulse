@@ -927,6 +927,8 @@ export interface SupervisorRecord {
 	configSchemaVersion: number;
 	lastHeartbeatAt: string;
 	heartbeatLeaseExpiresAt: string;
+	/** "invalid" when the supervisor last reported that the exclude file on its host has an error; null or absent otherwise (nothing to act on, or an older supervisor). */
+	excludeRulesState?: "invalid" | null;
 	enrollmentState?: "pending" | "active" | "revoked";
 	createdAt: string;
 	updatedAt: string;

@@ -208,14 +208,17 @@ describe("no key or host is created for a disabled owner", () => {
 		const mayCommit = new Promise<void>((resolve) => {
 			commitDisable = resolve;
 		});
-		const disabling = withAdminLock(async (tx) => {
-			await tx
-				.update(users)
-				.set({ disabledAt: new Date().toISOString() })
-				.where(eq(users.id, target.id));
-			disableIsPending();
-			await mayCommit;
-		});
+		const disabling = withAdminLock(
+			async (tx) => {
+				await tx
+					.update(users)
+					.set({ disabledAt: new Date().toISOString() })
+					.where(eq(users.id, target.id));
+				disableIsPending();
+				await mayCommit;
+			},
+			{ sqliteAllowYield: true },
+		);
 		await disablePending;
 
 		const minting = createApiKey(uniqueName("race-key"), ["ingest"], target.id);

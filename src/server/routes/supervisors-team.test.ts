@@ -321,3 +321,34 @@ describe("host ownership gates rotate and revoke, never who may launch on the ho
 		expect((await revoke(w.ownedHost, w.other.cookie)).status).toBe(403);
 	});
 });
+
+describe("enrolling a host", () => {
+	const enroll = (headers: Headers) =>
+		app.request(
+			"/api/v1/admin/supervisors/enroll",
+			jsonRequest("POST", { name: "new-host" }, headers),
+		);
+
+	test("team: a key with no owner that is not kept as an admin service key is refused: 403 admin_required, no token minted", async () => {
+		await setStoredMode("team");
+		const w = await world();
+		const unlisted = bearerHeaders((await seedKey("st-unlisted", ["manage"])).key);
+		const before = await tokenCount();
+
+		const refused = await enroll(unlisted);
+
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ error: "admin_required" });
+		expect(await tokenCount()).toBe(before);
+
+		// Positive control: everyone with a user, and the kept service key, may.
+		for (const headers of [w.owner.cookie, w.admin.cookie, w.adminKey, w.listed]) {
+			expect({ status: (await enroll(headers)).status }).toEqual({ status: 201 });
+		}
+	});
+
+	test("solo is unchanged: a key with no owner may enroll", async () => {
+		const unlisted = bearerHeaders((await seedKey("st-solo-unlisted", ["manage"])).key);
+		expect((await enroll(unlisted)).status).toBe(201);
+	});
+});

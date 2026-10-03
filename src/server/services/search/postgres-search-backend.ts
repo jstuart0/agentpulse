@@ -61,6 +61,7 @@ import { getDb } from "../../db/client.js";
 import { FTS_INDEXED_EVENT_TYPES } from "../../db/fts-ddl.js";
 import type * as schema from "../../db/schema/index.js";
 import { isStatementTimeoutError } from "../../db/sql-helpers.js";
+import { deriveOwnerKind } from "../session-dto.js";
 import { extractSnippet } from "./snippet.js";
 import type { SearchBackend, SearchFilters, SearchHit, SearchResult } from "./types.js";
 
@@ -180,6 +181,8 @@ type SessionRow = {
 	agent_type: string;
 	status: string;
 	last_activity_at: string;
+	owner_user_id: string | null;
+	ingest_key_id: string | null;
 	[key: string]: unknown;
 };
 
@@ -499,7 +502,9 @@ export class PostgresSearchBackend implements SearchBackend {
 				notes,
 				agent_type,
 				status,
-				last_activity_at
+				last_activity_at,
+				owner_user_id,
+				ingest_key_id
 			FROM sessions
 			WHERE ${whereClause}
 			ORDER BY started_at DESC
@@ -518,6 +523,11 @@ export class PostgresSearchBackend implements SearchBackend {
 			timestamp: row.last_activity_at,
 			sessionDisplayName: row.display_name,
 			sessionCwd: row.cwd,
+			ownerUserId: row.owner_user_id,
+			ownerKind: deriveOwnerKind({
+				ownerUserId: row.owner_user_id,
+				ingestKeyId: row.ingest_key_id,
+			}),
 		}));
 	}
 

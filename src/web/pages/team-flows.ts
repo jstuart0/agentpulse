@@ -332,3 +332,16 @@ export function createKeyRequest(input: {
 		...(input.service && input.allowService ? { service: true as const } : {}),
 	};
 }
+
+/**
+ * What the switch-back-to-solo confirmation may do while it reads the people
+ * on the install: Switch waits for them (the sentence names them), and when
+ * the read failed there is a way to ask again rather than a button that never
+ * enables.
+ */
+export function soloSwitchGate(input: { loaded: boolean; loadFailed: boolean }): {
+	confirmDisabled: boolean;
+	showRetry: boolean;
+} {
+	return { confirmDisabled: !input.loaded, showRetry: input.loadFailed && !input.loaded };
+}

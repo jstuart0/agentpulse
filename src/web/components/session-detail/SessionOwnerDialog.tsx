@@ -29,8 +29,11 @@ export function SessionOwnerDialog({
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
+	const unchanged = owner === (currentOwnerId ?? "");
+
 	async function submit(e: FormEvent) {
 		e.preventDefault();
+		if (unchanged) return;
 		setBusy(true);
 		setError(null);
 		try {
@@ -60,6 +63,7 @@ export function SessionOwnerDialog({
 						</label>
 						<select
 							id={selectId}
+							data-autofocus=""
 							value={owner}
 							onChange={(e) => setOwner(e.target.value)}
 							className={FIELD_CONTROL}
@@ -85,7 +89,7 @@ export function SessionOwnerDialog({
 					<button type="button" onClick={onClose} disabled={busy} className={SECONDARY_BUTTON}>
 						Cancel
 					</button>
-					<button type="submit" disabled={busy} className={PRIMARY_BUTTON}>
+					<button type="submit" disabled={busy || unchanged} className={PRIMARY_BUTTON}>
 						{busy ? "Saving…" : "Save owner"}
 					</button>
 				</DialogFooter>

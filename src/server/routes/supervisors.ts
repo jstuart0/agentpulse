@@ -23,6 +23,7 @@ import {
 	AdminRequiredError,
 	HostNotFoundError,
 	NotOwnerError,
+	assertCanEnrollHost,
 	assertCanIssueHostToken,
 	assertCanManageHost,
 	isHostTokenCreatorStillAllowed,
@@ -39,6 +40,7 @@ import { notifySessionEvents, notifySessionUpdated } from "../services/notifier.
 import { SessionOwnershipError } from "../services/session-ownership.js";
 import { getSession } from "../services/session-tracker.js";
 import { parseRegistrationShape } from "../services/supervisor-capabilities.js";
+import { recordHeartbeatExcludeState } from "../services/supervisor-exclude-state.js";
 import {
 	enrollSupervisor,
 	getSupervisor,
@@ -84,6 +86,12 @@ supervisorsAdminRouter.post("/supervisors/enroll", async (c: Context) => {
 		expiresAt?: string | null;
 		supervisorId?: string | null;
 	}>();
+	try {
+		await assertCanEnrollHost(await getRequestActor(c));
+	} catch (err) {
+		if (err instanceof AdminRequiredError) return c.json({ error: "admin_required" }, 403);
+		throw err;
+	}
 	const scopedHostId = body.supervisorId ?? null;
 	if (scopedHostId) {
 		const refusal = await refuseUnlessMayIssueHostToken(c, scopedHostId);
@@ -252,6 +260,9 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 					403,
 				);
 			}
+			// A credential speaks for its own host only; without an id the upsert
+			// would insert a new, unowned host row.
+			registrationInput.id = credential.supervisorId;
 		} else if (registrationInput.enrollmentToken) {
 			const verifiedEnrollment = await verifyEnrollmentToken(registrationInput.enrollmentToken);
 			if (!verifiedEnrollment) return c.json({ error: "Invalid enrollment token" }, 401);
@@ -310,6 +321,7 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 
 supervisorsAgentRouter.post("/supervisors/:id/heartbeat", requireSupervisorAuth(), async (c) => {
 	const supervisorId = c.req.param("id") ?? "";
+	await recordHeartbeatExcludeState(c, supervisorId);
 	const supervisor = await heartbeatSupervisor(supervisorId);
 	if (!supervisor) return c.json({ error: "Supervisor not found" }, 404);
 	return c.json({ supervisor });

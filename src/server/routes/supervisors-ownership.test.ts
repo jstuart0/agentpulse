@@ -21,7 +21,9 @@ const { config } = await import("../config.js");
 const { initializeDatabase, getDb } = await import("../db/client.js");
 const { app } = await import("../app.js");
 const { createApiKey } = await import("../auth/api-key.js");
-const { events, launchRequests, managedSessions, sessions } = await import("../db/schema/index.js");
+const { events, launchRequests, managedSessions, sessions, supervisors } = await import(
+	"../db/schema/index.js"
+);
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 const { queuePromptAction } = await import("../services/control-actions.js");
 const TEST_ACTOR: Actor = { userId: null, label: "user" };
@@ -620,5 +622,35 @@ describe("supervisor ownership guard — HTTP (F94)", () => {
 		// path but present (and merely unequal in value) on another.
 		const serialized = bodies.map((entry) => JSON.stringify(entry.body));
 		expect(new Set(serialized).size).toBe(1);
+	});
+});
+
+describe("a credential that registers without an id", () => {
+	test("re-registers its own host and never inserts a new one", async () => {
+		const before = (await getDb().select().from(supervisors)).map((row) => row.id).sort();
+		const res = await app.request("/api/v1/supervisors/register", {
+			method: "POST",
+			headers: agentHeaders(supervisorA),
+			body: JSON.stringify({
+				hostName: "credential-no-id",
+				platform: "linux",
+				arch: "x64",
+				version: "1.0.0",
+				capabilities: {
+					version: 1,
+					agentTypes: ["claude_code"],
+					launchModes: ["headless"],
+					os: "linux",
+					terminalSupport: [],
+					features: [],
+				},
+				trustedRoots: [],
+			}),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { supervisor: { id: string } };
+		expect(body.supervisor.id).toBe(supervisorA.id);
+		const after = (await getDb().select().from(supervisors)).map((row) => row.id).sort();
+		expect(after).toEqual(before);
 	});
 });

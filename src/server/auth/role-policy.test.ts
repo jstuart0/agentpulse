@@ -118,7 +118,18 @@ const humanAdminRequired = { status: 403, error: "human_admin_required", reached
 describe("the route sets", () => {
 	test("have exactly the pinned sizes", () => {
 		expect(ALWAYS_ADMIN_ROUTES.size).toBe(11);
-		expect(TEAM_ADMIN_ROUTES.size).toBe(16);
+		expect(TEAM_ADMIN_ROUTES.size).toBe(20);
+	});
+
+	test("every mutating channel route is admin-only in team mode, by name", () => {
+		for (const named of [
+			"POST /channels",
+			"DELETE /channels/:id",
+			"PATCH /channels/:id/config",
+			"POST /channels/:id/test",
+		]) {
+			expect({ named, listed: TEAM_ADMIN_ROUTES.has(named) }).toEqual({ named, listed: true });
+		}
 	});
 
 	test("no route is in both sets, and the human-only entries are exactly the user, mode and claim mutations", () => {
@@ -163,7 +174,7 @@ describe("the route sets match the real app", () => {
 describe("routes judged inside the handler (owner-or-admin, through the authorization service)", () => {
 	test("are listed, pinned in size, registered on the real app, and in neither policy set", async () => {
 		const { app } = await import("../app.js");
-		expect(OWNER_CHECKED_ROUTES.size).toBe(14);
+		expect(OWNER_CHECKED_ROUTES.size).toBe(16);
 		const registered = new Set(app.routes.map((route) => `${route.method} ${route.path}`));
 		for (const entry of OWNER_CHECKED_ROUTES) {
 			const [method, template] = entry.split(" ");

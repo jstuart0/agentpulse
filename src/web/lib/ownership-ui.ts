@@ -88,6 +88,8 @@ export interface SessionActionAccess {
 	canPin: boolean;
 	canArchive: boolean;
 	canDelete: boolean;
+	/** The session's notes and its stored CLAUDE.md. */
+	canEditNotes: boolean;
 }
 
 const ALL_ALLOWED: SessionActionAccess = {
@@ -95,19 +97,21 @@ const ALL_ALLOWED: SessionActionAccess = {
 	canPin: true,
 	canArchive: true,
 	canDelete: true,
+	canEditNotes: true,
 };
 const NONE_ALLOWED: SessionActionAccess = {
 	canRename: false,
 	canPin: false,
 	canArchive: false,
 	canDelete: false,
+	canEditNotes: false,
 };
 
 /**
  * Mirrors the server's owner-or-admin rule for changing a session: solo never
  * refuses; in team mode the owner, an admin, or anyone when the session has
- * no owner. Notes, prompts, stop and retry are open to everyone and aren't
- * asked about here.
+ * no owner. Prompts, stop and retry are open to everyone and aren't asked
+ * about here.
  */
 export function sessionActionAccess(
 	ui: OwnershipUi,
@@ -120,6 +124,10 @@ export function sessionActionAccess(
 	if (owner === null) return ALL_ALLOWED;
 	return viewer.userId != null && viewer.userId === owner ? ALL_ALLOWED : NONE_ALLOWED;
 }
+
+/** What the Notes and CLAUDE.md editors say when the viewer can't edit them. */
+export const NOTES_BLOCKED_REASON =
+	"Only the owner or an admin can edit this session's notes and CLAUDE.md.";
 
 /** What the session name says when someone who can't rename tries to. The detail page has no other owner-gated control that explains itself. */
 export const RENAME_BLOCKED_REASON = "Only the owner or an admin can rename this session.";

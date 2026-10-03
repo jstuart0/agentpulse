@@ -224,13 +224,24 @@ export async function applyApiKeyPatch(
 		const [existing] = await tx.select().from(apiKeys).where(eq(apiKeys.id, keyId)).limit(1);
 		if (!existing) return { found: false as const };
 
+		// Every refusal comes before the first write.
+		const ownerAfter = patch.ownerUserId !== undefined ? patch.ownerUserId : existing.ownerUserId;
+		if (patch.ownerUserId !== undefined && patch.ownerUserId !== null) {
+			await assertOwnerAssignable(tx, patch.ownerUserId);
+			if (!callerIsHumanAdmin)
+				await assertHandoverIsNotAnEscalation(tx, existing, patch.ownerUserId);
+		}
+		if (patch.adminService === true) {
+			if (ownerAfter !== null) throw new KeyHasOwnerError();
+			const scopes = parseScopes(existing.scopes);
+			if (!scopes.includes(SCOPE_MANAGE) && !scopes.includes(SCOPE_ALL)) {
+				throw new KeyNotManageError();
+			}
+		}
+		if (patch.serviceKey !== undefined && ownerAfter !== null) throw new KeyHasOwnerError();
+
 		let attributedSessions = 0;
 		if (patch.ownerUserId !== undefined) {
-			if (patch.ownerUserId !== null) {
-				await assertOwnerAssignable(tx, patch.ownerUserId);
-				if (!callerIsHumanAdmin)
-					await assertHandoverIsNotAnEscalation(tx, existing, patch.ownerUserId);
-			}
 			await tx.update(apiKeys).set({ ownerUserId: patch.ownerUserId }).where(eq(apiKeys.id, keyId));
 			await delistAdminServiceKey(keyId, tx);
 			if (patch.ownerUserId !== null) await delistServiceKey(keyId, tx);
@@ -245,32 +256,23 @@ export async function applyApiKeyPatch(
 		}
 
 		if (patch.adminService === true) {
-			const ownerAfter = patch.ownerUserId !== undefined ? patch.ownerUserId : existing.ownerUserId;
-			if (ownerAfter !== null) throw new KeyHasOwnerError();
-			const scopes = parseScopes(existing.scopes);
-			if (!scopes.includes(SCOPE_MANAGE) && !scopes.includes(SCOPE_ALL)) {
-				throw new KeyNotManageError();
-			}
 			await listAdminServiceKey(keyId, tx);
 		} else if (patch.adminService === false) {
 			await delistAdminServiceKey(keyId, tx);
 		}
 
 		if (patch.serviceKey !== undefined) {
-			const ownerAfter = patch.ownerUserId !== undefined ? patch.ownerUserId : existing.ownerUserId;
-			if (ownerAfter !== null) throw new KeyHasOwnerError();
 			if (patch.serviceKey) await listServiceKey(keyId, tx);
 			else await delistServiceKey(keyId, tx);
 		}
 
 		const admin = await getAdminServiceKeyIds(tx);
 		const plain = await getServiceKeyIds(tx);
-		const ownerNow = patch.ownerUserId !== undefined ? patch.ownerUserId : existing.ownerUserId;
 		return {
 			found: true as const,
 			attributedSessions,
 			adminService: admin.includes(keyId),
-			serviceKey: isServiceKeyRow({ id: keyId, ownerUserId: ownerNow }, { admin, plain }),
+			serviceKey: isServiceKeyRow({ id: keyId, ownerUserId: ownerAfter }, { admin, plain }),
 		};
 	});
 }

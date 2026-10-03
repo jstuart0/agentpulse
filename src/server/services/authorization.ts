@@ -128,6 +128,8 @@ export const assertCanDeleteSession = assertSessionOwnerOrAdmin;
 export const assertCanArchiveSession = assertSessionOwnerOrAdmin;
 export const assertCanRenameSession = assertSessionOwnerOrAdmin;
 export const assertCanPinSession = assertSessionOwnerOrAdmin;
+/** Notes and the stored CLAUDE.md (which feeds the owner's AI watcher context). */
+export const assertCanEditSessionNotes = assertSessionOwnerOrAdmin;
 
 async function assertKeyOwnerOrAdmin(actor: Actor, keyId: string): Promise<void> {
 	if ((await modeOf(actor)) === "solo") return;
@@ -153,6 +155,18 @@ export async function assertCanManageHost(actor: Actor, supervisorId: string): P
 		.limit(1);
 	if (!row) return;
 	if (!isOwnerOrAdmin(actor, row.ownerUserId, false)) throw new NotOwnerError("host");
+}
+
+/**
+ * Enrolling a host (minting an enrollment token) in team mode needs someone to
+ * own the host: a caller with a user id, or an admin (a kept admin service
+ * key, which has no user). An ownerless key that is not kept as an admin
+ * service key is a plain member with no identity, so it can't. Solo is left
+ * exactly as it was.
+ */
+export async function assertCanEnrollHost(actor: Actor): Promise<void> {
+	if ((await modeOf(actor)) === "solo") return;
+	if (actor.userId === null && actor.role !== "admin") throw new AdminRequiredError();
 }
 
 /**

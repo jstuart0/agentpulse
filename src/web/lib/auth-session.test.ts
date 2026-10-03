@@ -7,6 +7,7 @@ import {
 	UNCONFIRMED_AFTER_REFUSALS,
 	afterPasswordChange,
 	classifyPasswordChangeFailure,
+	createRecheckGate,
 	createSingleFlight,
 	isNetworkFailure,
 	loadedAfter,
@@ -49,6 +50,20 @@ describe("reduceAuthLoad", () => {
 
 	test("a different user than before is a switched reset", () => {
 		expect(reduceAuthLoad(signedInA, { kind: "ok", res: me("B") }).reset).toBe("switched");
+	});
+
+	test("a change to or from an identity with no user id is a switched reset too", () => {
+		const ownerless: AuthMeResponse = {
+			...me("A"),
+			user: { name: "key", source: "api_key", id: "k1", userId: null } as never,
+		};
+		expect(reduceAuthLoad(signedInA, { kind: "ok", res: ownerless }).reset).toBe("switched");
+		expect(
+			reduceAuthLoad({ userId: null, authenticated: true }, { kind: "ok", res: me("B") }).reset,
+		).toBe("switched");
+		expect(
+			reduceAuthLoad({ userId: null, authenticated: true }, { kind: "ok", res: ownerless }).reset,
+		).toBeNull();
 	});
 
 	test("the first sign-in (nobody before) needs no reset", () => {
@@ -140,8 +155,15 @@ describe("shouldRecheckAuth", () => {
 		).toBe(true);
 	});
 
+	test("a refusal that says the viewer's role or ownership isn't what the page thought: look again", () => {
+		for (const code of ["admin_required", "human_admin_required", "not_owner"]) {
+			expect(shouldRecheckAuth({ status: 403, code, path: "/sessions/1" })).toBe(true);
+		}
+	});
+
 	test("other refusals are the caller's business", () => {
-		expect(shouldRecheckAuth({ status: 403, code: "not_owner", path: "/sessions/1" })).toBe(false);
+		expect(shouldRecheckAuth({ status: 403, code: "bad_origin", path: "/sessions/1" })).toBe(false);
+		expect(shouldRecheckAuth({ status: 403, code: null, path: "/sessions/1" })).toBe(false);
 		expect(shouldRecheckAuth({ status: 404, code: null, path: "/sessions/1" })).toBe(false);
 	});
 
@@ -362,5 +384,27 @@ describe("reduceSignInWatch", () => {
 	test("the identity check answering clears it", () => {
 		const refusals = Array<"refused">(UNCONFIRMED_AFTER_REFUSALS).fill("refused");
 		expect(run("identity_unanswered", ...refusals, "identity_answered").unconfirmed).toBe(false);
+	});
+});
+
+describe("createRecheckGate", () => {
+	test("lets one run start, refuses another while it is in flight, and allows one after the quiet interval", () => {
+		let now = 1_000;
+		const gate = createRecheckGate(5_000, () => now);
+		expect(gate.tryStart()).toBe(true);
+		expect(gate.tryStart()).toBe(false);
+		gate.finish();
+		now += 4_999;
+		expect(gate.tryStart()).toBe(false);
+		now += 1;
+		expect(gate.tryStart()).toBe(true);
+	});
+
+	test("a run that never finishes does not block forever past the interval's ten-fold", () => {
+		let now = 0;
+		const gate = createRecheckGate(1_000, () => now);
+		expect(gate.tryStart()).toBe(true);
+		now += 60_000;
+		expect(gate.tryStart()).toBe(true);
 	});
 });

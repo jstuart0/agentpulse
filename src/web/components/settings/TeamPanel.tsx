@@ -6,7 +6,7 @@ import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
 import { describeApiError } from "../../lib/api-errors.js";
 import { type AdminUserRow, type ApiKeyRow, type InstanceCounts, api } from "../../lib/api.js";
 import { addToIdSet, browserStorage, readIdSet, userScopedKey } from "../../lib/id-set-storage.js";
-import { assembleChecklist } from "../../pages/team-flows.js";
+import { assembleChecklist, soloSwitchGate } from "../../pages/team-flows.js";
 import {
 	type ChecklistItem,
 	membersManageKeyCount,
@@ -15,6 +15,7 @@ import {
 	teamRowState,
 } from "../../pages/team-view-state.js";
 import { useUserStore } from "../../stores/user-store.js";
+import { useUsersStore } from "../../stores/users-store.js";
 import { ConfirmDialog } from "../ConfirmDialog.js";
 import { ModeDialog } from "./ModeDialog.js";
 import { TeamMembers } from "./TeamMembers.js";
@@ -86,6 +87,7 @@ export function TeamPanel({
 					fallbackFocusId={TEAM_HEADING_ID}
 					onClose={() => setDialog(null)}
 					onChanged={() => {
+						void useUsersStore.getState().reload();
 						onKeysChanged();
 						onSupervisorsChanged();
 					}}
@@ -230,6 +232,8 @@ function TeamAdmin({
 	}, [users, counts, apiKeys, supervisors, dismissed, viewerUserId, storage]);
 
 	function changed() {
+		// Owner labels and pickers elsewhere read the directory store: it follows every change made here.
+		void useUsersStore.getState().reload();
 		void reload();
 		onKeysChanged();
 		onSupervisorsChanged();
@@ -403,22 +407,36 @@ function SoloSwitchDialog({
 	const [users, setUsers] = useState<AdminUserRow[] | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [loadFailed, setLoadFailed] = useState(false);
+	const [attempt, setAttempt] = useState(0);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: Try again is the only re-trigger
 	useEffect(() => {
 		let cancelled = false;
 		api
 			.getUsers()
 			.then((res) => {
-				if (!cancelled) setUsers(res.users);
+				if (cancelled) return;
+				setUsers(res.users);
+				setLoadFailed(false);
+				setError(null);
 			})
 			.catch((err) => {
-				if (!cancelled)
-					setError(describeApiError(err, "Couldn't load the people on this install."));
+				if (cancelled) return;
+				setLoadFailed(true);
+				setError(describeApiError(err, "Couldn't load the people on this install."));
 			});
 		return () => {
 			cancelled = true;
 		};
-	}, []);
+	}, [attempt]);
+
+	const gate = soloSwitchGate({ loaded: users !== null, loadFailed });
+
+	function retryLoad() {
+		setError(null);
+		setAttempt((n) => n + 1);
+	}
 
 	const copy = soloSwitchCopy({
 		people: (users ?? []).filter((user) => !user.disabled).length,
@@ -446,7 +464,7 @@ function SoloSwitchDialog({
 			confirmLabel={copy.confirmLabel}
 			destructive
 			busy={busy}
-			confirmDisabled={users === null}
+			confirmDisabled={gate.confirmDisabled}
 			error={error}
 			fallbackFocusId={TEAM_HEADING_ID}
 			onConfirm={() => void confirm()}
@@ -463,6 +481,11 @@ function SoloSwitchDialog({
 					),
 				)}
 			</p>
+			{gate.showRetry && (
+				<button type="button" onClick={retryLoad} className={ACTION_LINK}>
+					Try again
+				</button>
+			)}
 		</ConfirmDialog>
 	);
 }

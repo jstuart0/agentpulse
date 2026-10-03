@@ -126,7 +126,7 @@ export function codexSetupSteps(lastEventLineText: string): string[] {
 	return [
 		"Back up your existing file first (`cp ~/.codex/hooks.json ~/.codex/hooks.json.bak`), then replace `~/.codex/hooks.json` with this file. The old AgentPulse `http` hook format no longer loads on Codex 0.145+.",
 		"Save your key header (see the auth step below).",
-		"Open Codex and run `/hooks`, then trust the AgentPulse hooks — Codex silently skips untrusted hooks. Re-trust if you change the AgentPulse URL or port.",
+		"Open Codex and run `/hooks`, then trust the AgentPulse hooks — Codex silently skips untrusted hooks. Approve them again after an update changes the hook command, or if you change the AgentPulse URL or port.",
 		lastEventLineText,
 	];
 }
@@ -173,3 +173,87 @@ export function lastEventLine(input: LastEventLineInput): string {
 		"No Codex events yet — after installing, open Codex and run `/hooks` to trust the AgentPulse hooks.";
 	return input.execIndexed === false ? `${base} (${TUI_SCOPE_NOTE})` : base;
 }
+
+/**
+ * The Setup page's "Exclude directories" card, FirstRunWelcome's link to it,
+ * and the two sentences around the Claude config and the relay. What each
+ * sender row says is what the code does: the hook command (Codex, Copilot), the
+ * relay (Claude through it) and the supervisor (launched sessions, the Codex
+ * observer) apply the rules; Claude Code posting straight to the server applies
+ * only the skip variable. Nothing about the PowerShell versions has been run on
+ * Windows, so the card says so.
+ */
+
+export interface ExcludeSenderRow {
+	sender: string;
+	applies: string;
+	/** Rendered as the amber note: this sender is NOT covered by path rules. */
+	caution?: boolean;
+}
+
+export interface ExcludeCommand {
+	label: string;
+	command: string;
+}
+
+export const EXCLUDE_RULES_PATH = "~/.agentpulse/exclude";
+
+export const EXCLUDE_CARD_ANCHOR = "exclude-directories";
+
+export const EXCLUDE_CARD: {
+	title: string;
+	intro: string;
+	commands: ExcludeCommand[];
+	senders: ExcludeSenderRow[];
+	windowsNote: string;
+	newEventsNote: string;
+	teamNote: string;
+} = {
+	title: "Exclude directories",
+	intro: `Stop sessions in chosen directories from being reported. Rules live in ${EXCLUDE_RULES_PATH} on each machine.`,
+	commands: [
+		{ label: "Exclude a directory", command: "agentpulse exclude add ~/scratch" },
+		{ label: "Check what is excluded here", command: "agentpulse exclude check" },
+	],
+	senders: [
+		{
+			sender: "Codex CLI, Copilot CLI",
+			applies:
+				"The hook command checks the rules before anything is sent. If the rules file can't be read or trusted, nothing is sent. AGENTPULSE_SKIP=1 skips one run.",
+		},
+		{
+			sender: "Claude Code through the relay",
+			applies:
+				"The relay on that machine checks the rules before anything is stored or passed on, and sends nothing while the rules file is invalid. AGENTPULSE_SKIP=1 skips one run.",
+		},
+		{
+			sender: "Sessions AgentPulse launches, and the Codex observer",
+			applies:
+				"The supervisor on that machine applies the rules. A launch into an excluded directory is refused. The supervisor doesn't see AGENTPULSE_SKIP; the directory rules are what cover these.",
+		},
+		{
+			sender: "Claude Code straight to the server",
+			applies:
+				"Path rules are not applied on this machine, and a broken rules file doesn't stop it. Use the relay, or set AGENTPULSE_SKIP=1. With the skip variable the request still reaches the server, which discards it.",
+			caution: true,
+		},
+	],
+	windowsNote:
+		"Windows (PowerShell): not yet tested on Windows. Don't rely on exclude rules there.",
+	newEventsNote:
+		"Rules apply to new events. Sessions already reported stay on the dashboard until you delete them.",
+	teamNote:
+		"Rules stay on each machine and aren't visible to admins or other members. The one thing a supervisor reports is that its exclude file or its saved exclude state has an error. Run agentpulse exclude check on that machine.",
+};
+
+export const CLAUDE_SKIP_LINE =
+	"X-AgentPulse-Skip lets you turn reporting off for one run: AGENTPULSE_SKIP=1 claude. Events from that run are discarded, not stored.";
+
+export const RELAY_PARAGRAPH =
+	"On another machine, install a small relay. It keeps your key out of agent config, queues events when the server is unreachable, and applies your exclude rules before anything is sent. It runs as a login service, points Claude Code and Codex CLI at it, and installs the statusline. Re-run it anytime to update.";
+
+export const FIRST_RUN_EXCLUDE_LINK = {
+	lead: "Working somewhere you don't want reported?",
+	linkText: "Exclude a directory.",
+	to: `/setup#${EXCLUDE_CARD_ANCHOR}`,
+};

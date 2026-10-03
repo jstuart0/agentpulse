@@ -401,7 +401,7 @@ const ALLOWED_OCCURRENCES: Record<string, number> = {
 	"src/server/auth/supervisor-auth.ts": 4,
 	// enrollment/credential id checks — route :id param plumbing, not
 	// session-ownership routing
-	"src/server/routes/supervisors.ts": 5,
+	"src/server/routes/supervisors.ts": 6,
 	// action-claimant check (updateControlAction's input.supervisorId) —
 	// verifying who claimed THIS action, not session ownership
 	"src/server/services/control-actions.ts": 1,

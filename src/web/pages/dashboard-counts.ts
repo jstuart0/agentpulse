@@ -58,9 +58,11 @@ export function expectedListTotal(input: {
 	tab: string;
 	status: ActiveOperationalStatus | null;
 	stats: StatsWithTabs | null;
+	/** A text search narrows the list below every count: there is nothing to compare it with. */
+	searching?: boolean;
 }): number | undefined {
-	const { tab, status, stats } = input;
-	if (!stats) return undefined;
+	const { tab, status, stats, searching } = input;
+	if (!stats || searching) return undefined;
 	if (status !== null) return stats.operational[status];
 	if (tab === "all") return stats.total;
 	return tabBadgeCount(tab, stats, null);
@@ -92,4 +94,13 @@ export function liveStripText(input: {
 		working: `${input.working} working`,
 		attention: input.attention > 0 ? `${input.attention} waiting or error` : null,
 	};
+}
+
+/**
+ * A short line for a tab whose name hides something: All leaves archived
+ * sessions out (they have their own tab), which the tab's badge and Total
+ * Sessions would otherwise seem to contradict.
+ */
+export function tabHint(tab: string): string | null {
+	return tab === "all" ? "Everything except archived sessions." : null;
 }

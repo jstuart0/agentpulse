@@ -1,0 +1,1 @@
+ALTER TABLE "supervisors" ADD COLUMN IF NOT EXISTS "exclude_rules_state" text;

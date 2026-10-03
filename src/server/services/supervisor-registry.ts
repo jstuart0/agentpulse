@@ -8,11 +8,16 @@ import type {
 	SupervisorStatus,
 } from "../../shared/types.js";
 import { assertOwnerActive, assertOwnerAssignable } from "../auth/owner-state.js";
-import { createSupervisorCredential, revokeSupervisorCredential } from "../auth/supervisor-auth.js";
-import { withAdminLock } from "../db/admin-lock.js";
+import {
+	prepareSupervisorCredential,
+	revokeSupervisorCredential,
+	storeSupervisorCredential,
+} from "../auth/supervisor-auth.js";
+import { awaitSeamInsideAdminLock, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { supervisors } from "../db/schema/index.js";
 import { readTrustedRoots, withCapabilityDefaults } from "./supervisor-capabilities.js";
+import { excludeRulesStateOf } from "./supervisor-exclude-state.js";
 
 const HEARTBEAT_LEASE_MS = 90_000;
 
@@ -48,6 +53,7 @@ function mapSupervisor(row: typeof supervisors.$inferSelect): SupervisorRecord {
 		configSchemaVersion: row.configSchemaVersion,
 		lastHeartbeatAt: row.lastHeartbeatAt,
 		heartbeatLeaseExpiresAt: row.heartbeatLeaseExpiresAt,
+		excludeRulesState: excludeRulesStateOf(row),
 		enrollmentState: (row.enrollmentState as SupervisorRecord["enrollmentState"]) ?? "active",
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
@@ -91,13 +97,17 @@ export async function enrollSupervisor(
 	input: SupervisorRegistrationInput,
 	createdByUserId: string | null,
 ) {
+	// The credential's hash is made before the admin lock is taken: a locked body
+	// on SQLite must not wait on anything but the database.
+	const prepared = await prepareSupervisorCredential();
 	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
 	const enrollOn = async (handle: any) => {
 		const result = await writeSupervisor(handle, input, createdByUserId);
 		await revokeSupervisorCredential(result.supervisor.id, handle);
-		const issued = await createSupervisorCredential(
+		const issued = await storeSupervisorCredential(
 			result.supervisor.id,
 			`supervisor:${result.supervisor.hostName}`,
+			prepared,
 			handle,
 		);
 		return { ...result, supervisorCredential: issued.token };
@@ -160,6 +170,11 @@ async function writeSupervisor(
 				// does. A no-op write, not a conditional one: createdByUserId is
 				// ignored here on purpose.
 				ownerUserId: sql`${supervisors.ownerUserId}`,
+				// A registration starts from nothing to act on: what the previous run
+				// said about its exclude file is not about this one. Written in the same
+				// statement (not a second connection) so it holds inside the admin-lock
+				// transaction too.
+				excludeRulesState: null,
 			},
 		});
 
@@ -252,7 +267,7 @@ export async function revokeSupervisor(id: string, tx?: any) {
 export async function revokeHost(id: string): Promise<void> {
 	await withAdminLock(async (tx) => {
 		await revokeSupervisor(id, tx);
-		await revokeHostStepHook?.("host-revoked");
+		await awaitSeamInsideAdminLock(revokeHostStepHook, "host-revoked");
 		await revokeSupervisorCredential(id, tx);
 	});
 }

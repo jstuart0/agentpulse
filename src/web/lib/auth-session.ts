@@ -50,7 +50,7 @@ export function reduceAuthLoad(
 	const next = authStateFromMe(outcome.res);
 	let reset: AuthReset = null;
 	if (prev.authenticated && !next.authenticated) reset = "signed_out";
-	else if (prev.userId !== null && next.userId !== null && prev.userId !== next.userId) {
+	else if (prev.authenticated && next.authenticated && prev.userId !== next.userId) {
 		reset = "switched";
 	}
 	return { patch: { ...next, error: null }, reset };
@@ -64,6 +64,30 @@ export function reduceAuthLoad(
  */
 export function loadedAfter(wasLoaded: boolean, outcome: AuthLoadOutcome): boolean {
 	return wasLoaded || outcome.kind === "ok" || !outcome.network;
+}
+
+const PASSWORD_CHANGE_REQUIRED = "password_change_required";
+
+/**
+ * 403 codes that say the viewer's role or ownership may not be what the page
+ * thought: a password change that became required, or a change of role or
+ * mode made somewhere else.
+ */
+const ROLE_REFUSAL_CODES: ReadonlySet<string> = new Set([
+	PASSWORD_CHANGE_REQUIRED,
+	"admin_required",
+	"human_admin_required",
+	"not_owner",
+]);
+
+/** Whether a failed call is a hint to look again that is also a good deal less urgent than an ended session. */
+export function isRoleRefusal(failure: { status: number; code: string | null }): boolean {
+	return (
+		failure.status === 403 &&
+		failure.code !== null &&
+		failure.code !== PASSWORD_CHANGE_REQUIRED &&
+		ROLE_REFUSAL_CODES.has(failure.code)
+	);
 }
 
 const WRONG_CURRENT_PASSWORD = "Invalid current password";
@@ -80,7 +104,7 @@ export function shouldRecheckAuth(failure: {
 	path: string;
 }): boolean {
 	if (failure.path === IDENTITY_PATH) return false;
-	if (failure.status === 403) return failure.code === "password_change_required";
+	if (failure.status === 403) return failure.code !== null && ROLE_REFUSAL_CODES.has(failure.code);
 	if (failure.status !== 401) return false;
 	return !(failure.path === PASSWORD_CHANGE_PATH && failure.code === WRONG_CURRENT_PASSWORD);
 }
@@ -223,3 +247,37 @@ export function afterPasswordChange(reloaded: boolean): { message: string; ok: b
 					"Your password was changed, but we couldn't confirm your sign-in. Reload the page.",
 			};
 }
+
+/**
+ * Bounds how often the viewer's identity is re-asked on the strength of a
+ * hint (a refusal, a tab coming back, a socket reconnecting): one at a time,
+ * and not again within the quiet interval. A run that never reports back
+ * stops counting as in flight after ten intervals.
+ */
+export function createRecheckGate(
+	minIntervalMs: number,
+	now: () => number = Date.now,
+): { tryStart: () => boolean; finish: () => void } {
+	let startedAt: number | null = null;
+	let inFlight = false;
+	let lastStartedAt = Number.NEGATIVE_INFINITY;
+	return {
+		tryStart() {
+			const at = now();
+			if (inFlight && startedAt !== null && at - startedAt < minIntervalMs * STUCK_RUN_INTERVALS) {
+				return false;
+			}
+			if (at - lastStartedAt < minIntervalMs) return false;
+			inFlight = true;
+			startedAt = at;
+			lastStartedAt = at;
+			return true;
+		},
+		finish() {
+			inFlight = false;
+		},
+	};
+}
+
+/** A re-check that never reports back stops counting as in flight after this many quiet intervals. */
+const STUCK_RUN_INTERVALS = 10;

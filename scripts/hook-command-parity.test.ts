@@ -22,10 +22,22 @@ import { Hono } from "hono";
 // config.js) via renderedSetupSh() below, so keep it self-sufficient too.
 import "../src/server/db/__test_db.js";
 import {
+	CODEX_MARKER_SH_PIECE,
+	PS_CODEX_MARKER_PIECE,
+	PS_COMMAND_TEMPLATE,
+	PS_GATE_PIECE,
+	PS_PRELUDE_PIECE,
+	SH_COMMAND_TEMPLATE,
+	SH_GATE_PIECE,
+	buildBashExcludeScriptForInstaller,
 	buildBashHookCommand,
 	buildCodexHooksFile,
 	buildCopilotHooksFile,
+	buildPowerShellExcludeScript,
+	buildPowerShellHookCommand,
 } from "../src/shared/hook-command.js";
+import * as hookCommandModule from "../src/shared/hook-command.js";
+import { psFunctionBody, runPsBuilder } from "./powershell-installer-eval.js";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -200,10 +212,10 @@ describe("hook-command-parity — ap_copilot_hooks_json equals buildCopilotHooks
 	});
 });
 
-describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static structural check)", () => {
+describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static structural check; never executed)", () => {
 	test("the function body contains the same distinctive D13 markers as buildPowerShellHookCommand's output, in the same order", () => {
 		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
-		const start = ps1.indexOf("function New-ApHookCommand");
+		const start = ps1.indexOf("# >>> agentpulse-hook-cmd");
 		const end = ps1.indexOf("function New-ApCodexHooksFile");
 		expect(start).toBeGreaterThan(-1);
 		expect(end).toBeGreaterThan(-1);
@@ -242,25 +254,21 @@ describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static 
 		}
 	});
 
-	test("F248 (codex r2 D38): $markerLine is concatenated INSIDE the Start-Job block in the source, not before it", () => {
+	test("the marker hole sits INSIDE the Start-Job block of the template, and the marker reads the temp file itself", () => {
+		const startJob = PS_COMMAND_TEMPLATE.indexOf("Start-Job -ScriptBlock {");
+		const markerHole = PS_COMMAND_TEMPLATE.indexOf("@@AP_MARKER@@");
+		expect(startJob).toBeGreaterThan(-1);
+		expect(markerHole).toBeGreaterThan(startJob);
+		expect(PS_CODEX_MARKER_PIECE).toContain("[IO.File]::ReadAllText($t)");
 		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
-		const start = ps1.indexOf("function New-ApHookCommand");
-		const end = ps1.indexOf("function New-ApCodexHooksFile");
-		const body = ps1.slice(start, end);
-
-		// $markerLine is DEFINED earlier in the function (PowerShell's
-		// pre-declare-then-return structure — see the note above), so this
-		// checks where it's USED in the return-string concatenation: after
-		// the "Start-Job -ScriptBlock {" line is appended, not before.
-		const startJobConcatIdx = body.indexOf('"Start-Job -ScriptBlock {`n" +');
-		const markerUsageIdx = body.indexOf('"  " + $markerLine +');
-		expect(startJobConcatIdx).toBeGreaterThan(-1);
-		expect(markerUsageIdx).toBeGreaterThan(-1);
-		expect(markerUsageIdx).toBeGreaterThan(startJobConcatIdx);
-
-		// And the marker's own generated text now reads the temp file
-		// itself rather than the parent-scope $raw variable.
-		expect(body).toContain("[IO.File]::ReadAllText(`$t)");
+		const body = ps1.slice(
+			ps1.indexOf("function New-ApHookCommand"),
+			ps1.indexOf("function New-ApCodexHooksFile"),
+		);
+		// the marker is only supplied for Codex
+		expect(body).toMatch(
+			/if \(\$AgentType -eq "codex_cli"\) \{\n\s+\$marker = " {2}" \+ \$script:ApPsMarkerPiece \+ "`n"/,
+		);
 	});
 
 	test("New-ApCodexHooksFile emits all 12 events with async=$false, timeout=1, no matcher key", () => {
@@ -338,7 +346,7 @@ describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static 
 		// directory and the file itself before writing.
 		const authFn = ps1.slice(
 			ps1.indexOf("function New-ApHookAuthHeaderFile"),
-			ps1.indexOf("# <<< agentpulse-hook-cmd"),
+			ps1.indexOf("# The shell check as written to disk"),
 		);
 		const reparseChecks = authFn.match(/Test-ApReparsePoint -Path/g) ?? [];
 		expect(reparseChecks.length).toBe(2);
@@ -618,5 +626,378 @@ describe("F247 (High, codex r2 D38): the rendered GET /setup.sh writes Copilot h
 			await rm(home, { recursive: true, force: true });
 			await rm(stubDir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("hook-command-parity — every shell installer carries the check script and the hook command's pieces, held byte-identical to the generator", () => {
+	const scriptHeredoc = `<<'AP_EXCLUDE_SCRIPT_EOF' || true\n${buildBashExcludeScriptForInstaller()}AP_EXCLUDE_SCRIPT_EOF\n`;
+	const markerHeredoc = `<<'AP_MARKER_PIECE_EOF' || true\n${CODEX_MARKER_SH_PIECE}\nAP_MARKER_PIECE_EOF\n`;
+	const gateHeredoc = `<<'AP_GATE_PIECE_EOF' || true\n${SH_GATE_PIECE}\nAP_GATE_PIECE_EOF\n`;
+
+	for (const site of ["scripts/setup-relay.sh", "scripts/setup-hooks.sh"]) {
+		test(`${site} carries the generator's script, marker and gate text in its here-documents, each once`, () => {
+			const source = readFileSync(join(ROOT, site), "utf-8");
+			for (const heredoc of [scriptHeredoc, markerHeredoc, gateHeredoc]) {
+				expect(source.split(heredoc).length - 1).toBe(1);
+			}
+			expect(source).not.toContain("ap_load_exclude_snippet");
+			expect(source).not.toContain("AP_EXCLUDE_SNIPPET_EOF");
+		});
+	}
+
+	test("the rendered GET /setup.sh carries the generator's script, marker and gate text in its here-documents", async () => {
+		const { setup } = await import("../src/server/routes/setup.ts");
+		const app = new Hono().route("/", setup);
+		const res = await app.request("http://localhost/setup.sh", {
+			headers: { Host: "localhost:3000" },
+		});
+		const rendered = await res.text();
+		for (const heredoc of [scriptHeredoc, markerHeredoc, gateHeredoc]) {
+			expect(rendered).toContain(heredoc);
+		}
+	});
+
+	test("install-local.ps1 carries both scripts, both command templates and every piece as literal here-strings, byte-identical to the generator (by reading; never executed)", () => {
+		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
+		// A PowerShell here-string holds its text without the newline before the closing '@.
+		const literal = (name: string, text: string) =>
+			`$script:${name} = @'\n${text.endsWith("\n") ? text : `${text}\n`}'@\n`;
+		const cases: [string, string][] = [
+			["ApExcludePsScript", buildPowerShellExcludeScript()],
+			["ApExcludeBashScript", buildBashExcludeScriptForInstaller()],
+			["ApShCommandTemplate", `${SH_COMMAND_TEMPLATE}`],
+			["ApShGatePiece", SH_GATE_PIECE],
+			["ApPsCommandTemplate", PS_COMMAND_TEMPLATE],
+			["ApPsPreludePiece", PS_PRELUDE_PIECE],
+			["ApPsMarkerPiece", PS_CODEX_MARKER_PIECE],
+			["ApPsGatePiece", PS_GATE_PIECE],
+		];
+		for (const [name, text] of cases) {
+			expect(ps1.split(literal(name, text)).length - 1, name).toBe(1);
+		}
+	});
+
+	test("install-local.ps1 normalises CRLF to LF in every carried text, and in the shell script after the placeholders are restored (by reading; never executed)", () => {
+		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
+		expect(ps1).toContain('.Replace("`r`n", "`n")');
+		const loop = ps1.slice(
+			ps1.indexOf("foreach ($apName in @("),
+			ps1.indexOf("function New-ApHookCommand"),
+		);
+		for (const name of [
+			"ApExcludePsScript",
+			"ApExcludeBashScript",
+			"ApShCommandTemplate",
+			"ApShGatePiece",
+			"ApPsCommandTemplate",
+			"ApPsPreludePiece",
+			"ApPsMarkerPiece",
+			"ApPsGatePiece",
+		]) {
+			expect(loop).toContain(`'${name}'`);
+		}
+		const fn = ps1.slice(
+			ps1.indexOf("function Get-ApExcludeBashScriptText"),
+			ps1.indexOf("function Install-ApExcludeScripts"),
+		);
+		expect(fn.indexOf("'@@AP_BOM@@'")).toBeLessThan(fn.lastIndexOf('.Replace("`r`n", "`n")'));
+	});
+
+	test("no installer source holds a literal CR or BOM (the snippet's invisible characters are placeholders)", () => {
+		for (const site of [
+			"scripts/setup-relay.sh",
+			"scripts/setup-hooks.sh",
+			"scripts/install-local.ps1",
+			"src/server/routes/setup.ts",
+		]) {
+			const source = readFileSync(join(ROOT, site), "utf-8");
+			expect(/[\r\uFEFF]/.test(source), site).toBe(false);
+		}
+	});
+
+	test("install-local.ps1's Copilot bash command fills the generator's template: marker empty, the gate, the send (by reading; never executed)", () => {
+		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
+		const start = ps1.indexOf("function New-ApCopilotBashHookCommand");
+		const end = ps1.indexOf("function New-ApCopilotHooksFile");
+		const body = ps1.slice(start, end);
+		expect(body).toContain("$command = $script:ApShCommandTemplate");
+		expect(body).toContain("$command.Replace('@@AP_MARKER@@', '')");
+		expect(body).toContain("$command.Replace('@@AP_GATE@@', $script:ApShGatePiece)");
+		expect(body).toContain("$command.Replace('@@AP_SEND@@', $send)");
+		// and the template has exactly those three holes
+		expect([...SH_COMMAND_TEMPLATE.matchAll(/@@AP_[A-Z_]+@@/g)].map((m) => m[0])).toEqual([
+			"@@AP_MARKER@@",
+			"@@AP_GATE@@",
+			"@@AP_SEND@@",
+		]);
+	});
+
+	test("install-local.ps1's New-ApHookCommand fills every hole of the generator's PowerShell template, once each (by reading; never executed)", () => {
+		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
+		const body = ps1.slice(
+			ps1.indexOf("function New-ApHookCommand"),
+			ps1.indexOf("function New-ApCodexHooksFile"),
+		);
+		const holes = [
+			...new Set([...PS_COMMAND_TEMPLATE.matchAll(/@@AP_[A-Z_]+@@/g)].map((m) => m[0])),
+		];
+		expect(holes.sort()).toEqual(
+			[
+				"@@AP_AGENT@@",
+				"@@AP_AUTH_ARG@@",
+				"@@AP_GATE@@",
+				"@@AP_HEADER_FILE@@",
+				"@@AP_MARKER@@",
+				"@@AP_PRELUDE@@",
+				"@@AP_URL@@",
+			].sort(),
+		);
+		for (const hole of holes) {
+			expect(body.split(`.Replace('${hole}',`).length - 1, hole).toBe(1);
+		}
+		expect(body).toContain("$command = $script:ApPsCommandTemplate");
+	});
+
+	test("install-local.ps1 installs both check scripts through the no-follow writer, before the hooks are written (by reading; never executed)", () => {
+		const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
+		const fn = ps1.slice(
+			ps1.indexOf("function Install-ApExcludeScripts"),
+			ps1.indexOf("# <<< agentpulse-hook-cmd"),
+		);
+		expect(fn).toContain("Test-ApReparsePoint -Path $dir");
+		expect(fn).toContain('"exclude-check.sh"');
+		expect(fn).toContain('"exclude-check.ps1"');
+		expect(fn).toContain("Write-ApFileNoFollow -Path $file.Path -Content $file.Content");
+		const configure = ps1.slice(
+			ps1.indexOf("function Configure-Hooks"),
+			ps1.indexOf("function New-TaskActionForPowerShell"),
+		);
+		expect(configure.indexOf("Install-ApExcludeScripts")).toBeGreaterThan(-1);
+		expect(configure.indexOf("Install-ApExcludeScripts")).toBeLessThan(
+			configure.indexOf("New-ApCodexHooksFile"),
+		);
+	});
+});
+
+describe("hook-command-parity — the checked-in Codex golden is the generator's output", () => {
+	test("scripts/__golden__/codex-hooks.direct.json equals buildCodexHooksFile for http://localhost:3000, direct", () => {
+		const golden = readFileSync(join(ROOT, "scripts/__golden__/codex-hooks.direct.json"), "utf-8");
+		const generated = buildCodexHooksFile({ baseUrl: "http://localhost:3000", direct: true });
+		// The golden is stored tab-indented; compare the parsed structure and the
+		// commands byte for byte.
+		expect(JSON.parse(golden)).toEqual(JSON.parse(generated));
+	});
+});
+
+describe("the Windows installer test script's inputs (scripts/test-install-local.ps1; never executed)", () => {
+	const TEST_PS1 = readFileSync(join(ROOT, "scripts/test-install-local.ps1"), "utf-8");
+
+	/** The PowerShell Codex hooks file builder, looked up by name so its absence is a test failure and not an import error. */
+	function buildPowerShellCodexHooksFile(opts: { baseUrl: string; direct: boolean }): string {
+		const fn = (hookCommandModule as unknown as Record<string, unknown>)
+			.buildPowerShellCodexHooksFile;
+		if (typeof fn !== "function") throw new Error("buildPowerShellCodexHooksFile is not exported");
+		return (fn as (o: object) => string)(opts);
+	}
+
+	test("the PowerShell golden is the PowerShell builder's output (PowerShell commands, the same file shape as the shell golden)", () => {
+		const golden = readFileSync(
+			join(ROOT, "scripts/__golden__/codex-hooks.direct.powershell.json"),
+			"utf-8",
+		);
+		const generated = buildPowerShellCodexHooksFile({
+			baseUrl: "http://localhost:3000",
+			direct: true,
+		});
+		expect(JSON.parse(golden)).toEqual(JSON.parse(generated));
+		const commands = Object.values(JSON.parse(golden).hooks).map(
+			(e) => (e as { hooks: { command: string }[] }[])[0]?.hooks[0]?.command ?? "",
+		);
+		expect(commands).toHaveLength(12);
+		for (const command of commands) {
+			expect(command).toContain("Start-Job");
+			expect(command).not.toContain("/bin/sh");
+			expect(command.length).toBeLessThan(8191);
+		}
+	});
+
+	test("the shell golden and the PowerShell golden are different files with different commands", () => {
+		const shell = readFileSync(join(ROOT, "scripts/__golden__/codex-hooks.direct.json"), "utf-8");
+		const powershell = readFileSync(
+			join(ROOT, "scripts/__golden__/codex-hooks.direct.powershell.json"),
+			"utf-8",
+		);
+		expect(powershell).not.toBe(shell);
+		expect(shell).not.toContain("Start-Job");
+	});
+
+	test("the test script compares New-ApCodexHooksFile with the PowerShell golden, never the shell one", () => {
+		expect(TEST_PS1).toContain("codex-hooks.direct.powershell.json");
+		expect(TEST_PS1).not.toContain("__golden__/codex-hooks.direct.json");
+	});
+
+	test("the test script expects what the installer emits for the skip variable: allowedEnvVars exactly AGENTPULSE_SKIP with a key, the skip header at every event", () => {
+		expect(TEST_PS1).not.toContain("no allowedEnvVars when a key was supplied");
+		expect(TEST_PS1).toContain("allowedEnvVars is exactly AGENTPULSE_SKIP");
+		expect(TEST_PS1).toContain("X-AgentPulse-Skip");
+		expect(TEST_PS1).toContain("AGENTPULSE_API_KEY,AGENTPULSE_SKIP");
+	});
+
+	test("without a key the installer writes no Authorization header, so the test no longer looks for an environment-variable placeholder in the file", () => {
+		expect(TEST_PS1).not.toContain("settings.json references `$env:AGENTPULSE_API_KEY");
+		expect(TEST_PS1).toContain("no Authorization header is written");
+	});
+
+	test("the test script waits for the detached job before reading its marker, and checks the installed scripts and the command sizes", () => {
+		expect(TEST_PS1).toContain("function Wait-ApHookJob");
+		expect(TEST_PS1).toContain("exclude-check.sh");
+		expect(TEST_PS1).toContain("exclude-check.ps1");
+		expect(TEST_PS1).toContain("-lt 8191");
+	});
+});
+
+describe("install-local.ps1's command builders, evaluated and compared with the generator (never executed: no PowerShell host runs; a small evaluator runs the builders' own statements)", () => {
+	const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8").replace(/\r\n/g, "\n");
+
+	/** The here-string literals the installer carries, as PowerShell reads them (without the newline before the closing marker). */
+	function carried(name: string): string {
+		const m = new RegExp(`\\$script:${name} = @'\\n([\\s\\S]*?)\\n'@\\n`).exec(ps1);
+		if (!m) throw new Error(`here-string ${name} not found`);
+		return m[1] as string;
+	}
+	const scriptVars = () => ({
+		"script:ApShCommandTemplate": carried("ApShCommandTemplate"),
+		"script:ApShGatePiece": carried("ApShGatePiece"),
+		"script:ApPsCommandTemplate": carried("ApPsCommandTemplate"),
+		"script:ApPsPreludePiece": carried("ApPsPreludePiece"),
+		"script:ApPsMarkerPiece": carried("ApPsMarkerPiece"),
+		"script:ApPsGatePiece": carried("ApPsGatePiece"),
+	});
+
+	const EVENTS: [string, string][] = [
+		["codex_cli", "SessionStart"],
+		["codex_cli", "Stop"],
+		["copilot_cli", "sessionStart"],
+		["copilot_cli", "agentStop"],
+	];
+	const URLS = ["http://localhost:4000", "https://agentpulse.example.test", "http://[::1]:3000"];
+
+	for (const baseUrl of URLS) {
+		for (const direct of [false, true]) {
+			test(`New-ApCopilotBashHookCommand builds exactly buildBashHookCommand's text [${baseUrl}, direct=${direct}]`, () => {
+				const body = psFunctionBody(ps1, "New-ApCopilotBashHookCommand");
+				for (const event of ["sessionStart", "agentStop", "errorOccurred"]) {
+					const scope = runPsBuilder(body, {
+						BaseUrl: baseUrl,
+						Direct: direct,
+						EventName: event,
+						...scriptVars(),
+					});
+					expect(scope.command).toBe(
+						buildBashHookCommand({ baseUrl, direct, agent: "copilot_cli", event }),
+					);
+				}
+			});
+
+			test(`New-ApHookCommand builds exactly buildPowerShellHookCommand's text for Codex and Copilot [${baseUrl}, direct=${direct}]`, () => {
+				const body = psFunctionBody(ps1, "New-ApHookCommand");
+				for (const [agent, event] of EVENTS) {
+					const scope = runPsBuilder(body, {
+						BaseUrl: baseUrl,
+						Direct: direct,
+						AgentType: agent,
+						EventName: event,
+						...scriptVars(),
+					});
+					expect(scope.command, `${agent} ${event}`).toBe(
+						buildPowerShellHookCommand({ baseUrl, direct, agent, event }),
+					);
+				}
+			});
+		}
+	}
+
+	test("the evaluator is not vacuous: breaking one hole fill in a copy of the function makes the comparison fail", () => {
+		const body = psFunctionBody(ps1, "New-ApCopilotBashHookCommand").replace(
+			"$command.Replace('@@AP_SEND@@', $send)",
+			"$command.Replace('@@AP_SEND@@', $withoutHeader)",
+		);
+		const scope = runPsBuilder(body, {
+			BaseUrl: "http://localhost:4000",
+			Direct: true,
+			EventName: "agentStop",
+			...scriptVars(),
+		});
+		expect(scope.command).not.toBe(
+			buildBashHookCommand({
+				baseUrl: "http://localhost:4000",
+				direct: true,
+				agent: "copilot_cli",
+				event: "agentStop",
+			}),
+		);
+	});
+
+	test("the evaluator refuses a statement outside its subset instead of skipping it", () => {
+		const body = `${psFunctionBody(ps1, "New-ApCopilotBashHookCommand")}\n  $command = Get-Date\n`;
+		expect(() =>
+			runPsBuilder(body, {
+				BaseUrl: "http://localhost:4000",
+				Direct: false,
+				EventName: "agentStop",
+				...scriptVars(),
+			}),
+		).toThrow(/outside the evaluator's subset/);
+	});
+});
+
+describe("install-local.ps1 writes the installed files without a byte order mark and reads the checks back (by reading; never executed)", () => {
+	const ps1 = readFileSync(join(ROOT, "scripts/install-local.ps1"), "utf-8");
+	const fn = (name: string): string => {
+		const start = ps1.indexOf(`function ${name}`);
+		expect(start, name).toBeGreaterThan(-1);
+		const end = ps1.indexOf("\n}\n", start);
+		return ps1.slice(start, end);
+	};
+
+	test("Write-ApFileNoFollow does not use Set-Content -Encoding UTF8, which writes a byte order mark in Windows PowerShell 5.1", () => {
+		const body = fn("Write-ApFileNoFollow");
+		expect(body).not.toContain("-Encoding UTF8");
+		expect(body).toContain("UTF8Encoding($false)");
+		expect(body).toContain("[System.IO.File]::WriteAllText($tmp");
+	});
+
+	test("Install-ApExcludeScripts reads each installed file back, compares it with what it meant to write, and removes a mismatch", () => {
+		const body = fn("Install-ApExcludeScripts");
+		expect(body).toContain("[System.IO.File]::ReadAllText($file.Path");
+		expect(body).toContain("-ne $file.Content");
+		expect(body).toContain("Remove-Item -LiteralPath $file.Path");
+		expect(body).toContain("could not be verified");
+	});
+});
+
+describe("the PowerShell gate treats an invalid marker like the shell gate does (by reading; never executed)", () => {
+	const MARKER_PROBE = [
+		"    if (-not $apHand) {",
+		"      try { $null = Get-Item -LiteralPath (Join-Path $apDir 'exclude.invalid') -Force -ErrorAction Stop; $apHand = $true }",
+		"      catch [System.Management.Automation.ItemNotFoundException] { }",
+		"      catch [System.Management.Automation.DriveNotFoundException] { }",
+		"      catch { $apHand = $true }",
+		"    }",
+	].join("\n");
+
+	test("with no rules file but a marker present, the check script still decides: the marker is probed with the rules file's own three-way catch, before the hand-over", () => {
+		const rulesProbe = PS_GATE_PIECE.indexOf("(Join-Path $apDir 'exclude') -Force");
+		const markerProbe = PS_GATE_PIECE.indexOf(MARKER_PROBE);
+		const handOver = PS_GATE_PIECE.indexOf("    if ($apHand) {");
+		expect(rulesProbe).toBeGreaterThan(-1);
+		expect(markerProbe).toBeGreaterThan(rulesProbe);
+		expect(handOver).toBeGreaterThan(markerProbe);
+	});
+
+	test("the shell gate does the same (the behaviour being matched)", () => {
+		expect(SH_GATE_PIECE).toContain(
+			'[ ! -e "$d/exclude.invalid" ] && [ ! -L "$d/exclude.invalid" ]',
+		);
 	});
 });

@@ -142,6 +142,8 @@ export function tabListCaption(input: {
 /**
  * The first-run screen is for an install with nothing in it. A narrowed view
  * that happens to be empty is not that: it keeps the page, and the switch.
+ * Neither is one whose sessions are all scratch: the list is fetched without
+ * them, so it is empty, but the page and its toggle are how they are shown.
  */
 export function shouldShowFirstRun(input: {
 	isLoading: boolean;
@@ -149,6 +151,15 @@ export function shouldShowFirstRun(input: {
 	owner: OwnerParam;
 	/** The first answer failed: nothing is known about the install, so it can't be called empty. */
 	failed?: boolean;
+	/** The counts' own words on whether anything exists, scratch sessions included. */
+	stats?: { total?: number; scratchHidden?: number } | null;
 }): boolean {
-	return !input.isLoading && !input.failed && input.loadedCount === 0 && input.owner === OWNER_ALL;
+	const nothingAtAll = (input.stats?.total ?? 0) === 0 && (input.stats?.scratchHidden ?? 0) === 0;
+	return (
+		!input.isLoading &&
+		!input.failed &&
+		input.loadedCount === 0 &&
+		input.owner === OWNER_ALL &&
+		nothingAtAll
+	);
 }

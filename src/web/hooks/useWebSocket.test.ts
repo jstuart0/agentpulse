@@ -1,9 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
+import { useConnectionStore } from "../stores/connection-store.js";
 import { useDashboardScopeStore } from "../stores/dashboard-scope-store.js";
 import { useEventStore } from "../stores/event-store.js";
 import { useSessionStore } from "../stores/session-store.js";
-import { useUserStore } from "../stores/user-store.js";
+import { _resetIdentityRecheckForTest, useUserStore } from "../stores/user-store.js";
 import {
 	installDomStubs,
 	removeDomStubs,
@@ -212,5 +213,50 @@ describe("a row from a server that sends no owner at all", () => {
 		const rows = useSessionStore.getState().sessions;
 		expect(rows.map((s) => s.sessionId)).toEqual(["s-shown"]);
 		expect(rows[0].isWorking).toBe(true);
+	});
+});
+
+describe("a socket that reconnects re-asks who the viewer is", () => {
+	const realFetch = globalThis.fetch;
+	let meCalls = 0;
+
+	beforeEach(() => {
+		meCalls = 0;
+		_resetIdentityRecheckForTest();
+		useConnectionStore.setState({ lastConnectedAt: null });
+		globalThis.fetch = (() => {
+			meCalls += 1;
+			return Promise.resolve(
+				new Response(
+					JSON.stringify({
+						authenticated: true,
+						user: { name: "me", source: "local", id: ME, role: "user", userId: ME },
+						signOutUrl: null,
+						disableAuth: false,
+						allowSignup: false,
+						mode: "team",
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+			);
+		}) as unknown as typeof fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = realFetch;
+	});
+
+	test("the first connection asks nothing; the second does, once", async () => {
+		await act(async () => {
+			socket.onopen?.();
+		});
+		await new Promise((r) => setTimeout(r, 20));
+		expect(meCalls).toBe(0);
+
+		await act(async () => {
+			socket.onopen?.();
+		});
+		await new Promise((r) => setTimeout(r, 20));
+		expect(meCalls).toBe(1);
 	});
 });

@@ -32,13 +32,15 @@ import {
 	getVisibleEvents,
 	mergeSessionEvents,
 } from "../components/session-detail/TimelineView.js";
+import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
 import { applyManualRename } from "../lib/name-source.js";
 import { ownerChip } from "../lib/owner-chip.js";
 import { ownerLabel, sessionOwnerText } from "../lib/owner-label.js";
-import { assignablePeople } from "../lib/people.js";
+import { NOTES_BLOCKED_REASON, sessionActionAccess } from "../lib/ownership-ui.js";
+import { assignablePeople, withCurrentOwner } from "../lib/people.js";
 import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
 import { useEventStore } from "../stores/event-store.js";
 import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
@@ -163,10 +165,20 @@ export function SessionDetailPage() {
 	// auto-acknowledge gets its own 2s dwell).
 	const viewerUserId = useUserStore((s) => s.userId);
 	const disableAuth = useUserStore((s) => s.disableAuth);
+	const ownershipFlags = useOwnershipUi();
 	const { adminMayClearOthersAttention, ownerGatesSessionActions, showOwnerFields } =
-		useOwnershipUi();
+		ownershipFlags;
 	const directory = useUsersStore((s) => s.byId);
+	const initialsById = useDirectoryInitials(directory);
 	const isAdmin = useViewerIsAdmin();
+	const notesReadOnlyReason =
+		session &&
+		!sessionActionAccess(ownershipFlags, session, {
+			userId: viewerUserId,
+			effectiveRole: isAdmin ? "admin" : "member",
+		}).canEditNotes
+			? NOTES_BLOCKED_REASON
+			: null;
 	const [ownerDialogOpen, setOwnerDialogOpen] = useState(false);
 	const noteUnknownUser = useUsersStore((s) => s.noteUnknown);
 	const applySessionUpdate = useSessionStore((s) => s.applySessionUpdate);
@@ -664,7 +676,7 @@ export function SessionDetailPage() {
 						? ownerChip(session, {
 								viewerUserId,
 								lookup: (id) => directory[id],
-								initialsById: new Map(),
+								initialsById,
 							})
 						: null
 				}
@@ -757,9 +769,13 @@ export function SessionDetailPage() {
 						/>
 					</>
 				) : workspaceTab === "notes" ? (
-					<NotesPanel sessionId={session.sessionId} initialNotes={session.notes || ""} />
+					<NotesPanel
+						sessionId={session.sessionId}
+						initialNotes={session.notes || ""}
+						readOnlyReason={notesReadOnlyReason}
+					/>
 				) : workspaceTab === "instructions" ? (
-					<ClaudeMdPanel session={session} />
+					<ClaudeMdPanel session={session} readOnlyReason={notesReadOnlyReason} />
 				) : workspaceTab === "ai" ? (
 					<AiPanel
 						sessionId={session.sessionId}
@@ -778,7 +794,12 @@ export function SessionDetailPage() {
 					sessionId={session.sessionId}
 					sessionName={displayName}
 					currentOwnerId={session.ownerUserId ?? null}
-					people={assignablePeople(Object.values(directory), viewerUserId)}
+					people={withCurrentOwner(
+						assignablePeople(Object.values(directory), viewerUserId),
+						session.ownerUserId,
+						directory[session.ownerUserId ?? ""],
+						viewerUserId,
+					)}
 					onClose={() => setOwnerDialogOpen(false)}
 					onChanged={(updated) => {
 						setOwnerDialogOpen(false);

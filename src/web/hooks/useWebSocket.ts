@@ -71,7 +71,10 @@ export function useWebSocket(enabled = true) {
 		ws.onopen = () => {
 			console.log("[ws] Connected");
 			consecutiveFailuresRef.current = 0;
+			// A reconnect (not the first connection) may follow a role or mode change made elsewhere.
+			const isReconnect = useConnectionStore.getState().lastConnectedAt !== null;
 			markConnected();
+			if (isReconnect) useUserStore.getState().recheck();
 			ws.send(JSON.stringify({ type: "subscribe", channels: ["sessions"] }));
 		};
 

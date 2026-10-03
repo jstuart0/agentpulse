@@ -757,7 +757,7 @@ export async function processHookEvent(
 	// and nothing else. It never creates a session (an ack for an unknown or
 	// deleted session is dropped — `session: null`, nothing stored), never
 	// flips isWorking, never touches lifecycle status/endedAt (so it cannot
-	// reanimate a completed session and is independent of the D21 latch),
+	// reanimate a completed session and is independent of the working/waiting latch),
 	// never clears a permission wait (it is not in PERMISSION_WAIT_EVENT_TYPES)
 	// and does not move lastAgentTurnCompletedAt or lastActivityAt — a
 	// replaying sender must not be able to keep a dead session alive and

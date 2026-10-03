@@ -147,6 +147,7 @@ describe("E2 (D3): relay retry against a lost ack dedupes by delivery id, not co
 						PATH: process.env.PATH ?? "/usr/bin:/bin",
 						TMPDIR: process.env.TMPDIR ?? "/tmp",
 						HOME: home,
+						AGENTPULSE_TEST_RELAY_ACCOUNT_HOME: "",
 						AGENTPULSE_RELAY_SYNC_MS: "200",
 					},
 				},

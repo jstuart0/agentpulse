@@ -42,12 +42,15 @@ function latch() {
 async function holdAdminLock(order: string[] = [], name = "lock") {
 	const gate = latch();
 	const entered = latch();
-	const done = withAdminLock(async () => {
-		order.push(`${name}-start`);
-		entered.release();
-		await gate.held;
-		order.push(`${name}-end`);
-	});
+	const done = withAdminLock(
+		async () => {
+			order.push(`${name}-start`);
+			entered.release();
+			await gate.held;
+			order.push(`${name}-end`);
+		},
+		{ sqliteAllowYield: true },
+	);
 	cleanups.push(async () => {
 		gate.release();
 		await done.catch(() => {});
@@ -110,6 +113,69 @@ describeSqliteOnly("the transaction helper and a held admin lock", () => {
 		expect(
 			(await getDb().select().from(events).where(eq(events.sessionId, sessionId))).length,
 		).toBeGreaterThan(0);
+	});
+
+	test("several transactions queued behind one held lock all commit, one at a time", async () => {
+		const lock = await holdAdminLock();
+		const open: number[] = [];
+		let maxOpen = 0;
+		const writers = Array.from({ length: 5 }, (_, i) =>
+			withTransaction(async (tx) => {
+				open.push(i);
+				maxOpen = Math.max(maxOpen, open.length);
+				await tx.insert(sessions).values({
+					sessionId: `queued-${i}`,
+					agentType: "claude_code",
+					status: "active",
+				});
+				await tx.insert(events).values({
+					sessionId: `queued-${i}`,
+					eventType: "UserPromptSubmit",
+					rawPayload: {},
+				});
+				open.splice(open.indexOf(i), 1);
+			}),
+		);
+		await Bun.sleep(20);
+		lock.release();
+		await lock.done;
+		const settled = await Promise.allSettled(writers);
+
+		expect(settled.map((s) => s.status)).toEqual(Array(5).fill("fulfilled"));
+		expect(maxOpen).toBe(1);
+		const stored = await getDb().select().from(events);
+		expect(stored.filter((e) => e.sessionId.startsWith("queued-")).length).toBe(5);
+	});
+
+	test("transactions started together, with no lock held, queue instead of colliding", async () => {
+		const settled = await Promise.allSettled(
+			Array.from({ length: 5 }, (_, i) =>
+				withTransaction(async (tx) => {
+					await tx.insert(sessions).values({
+						sessionId: `free-${i}`,
+						agentType: "claude_code",
+						status: "active",
+					});
+				}),
+			),
+		);
+		expect(settled.map((s) => s.status)).toEqual(Array(5).fill("fulfilled"));
+		expect((await getDb().select().from(sessions)).length).toBe(5);
+	});
+
+	test("a transaction nested inside another is refused at once, not left waiting for itself", async () => {
+		const outcome = await Promise.race([
+			withTransaction(async () => {
+				await withTransaction(async () => "inner");
+			}).then(
+				() => "completed",
+				(error: Error) => error.message,
+			),
+			Bun.sleep(1500).then(() => "hung"),
+		]);
+		expect(outcome).not.toBe("hung");
+		expect(outcome).not.toBe("completed");
+		expect(await withTransaction(async () => "after")).toBe("after");
 	});
 
 	test("with the lock free the helper runs straight away and still rolls back on a throw", async () => {

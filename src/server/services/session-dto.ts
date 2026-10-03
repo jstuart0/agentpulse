@@ -29,7 +29,7 @@ interface SessionRowLike {
 	ingestKeyId?: string | null;
 	/** Present when the row is an already-mapped session (its key id is gone). */
 	ownerKind?: OwnerKind;
-	// Optional: a narrow projection (F128's getSessionSummaries) doesn't
+	// Optional: a narrow projection (getSessionSummaries) doesn't
 	// select these. operationalStatus comes out wrong (defaults to "idle")
 	// on such a row, but no caller of that projection reads the field —
 	// see computeOperationalStatus's fallback below.
@@ -58,7 +58,9 @@ function computeOperationalStatus(
 	});
 }
 
-function deriveOwnerKind(row: SessionRowLike): OwnerKind {
+export function deriveOwnerKind(
+	row: Pick<SessionRowLike, "ownerUserId" | "ingestKeyId" | "ownerKind">,
+): OwnerKind {
 	// A session that was already mapped has had its key id stripped, so
 	// "unassigned" can't be told from "service" by looking again: keep the
 	// kind it was given.

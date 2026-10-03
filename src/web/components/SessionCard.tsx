@@ -633,7 +633,7 @@ export function SessionCard({ session, intelligence, ownerChip }: SessionCardPro
 					type="button"
 					onClick={(e) => handleAcknowledge(e, "dismissed")}
 					aria-label={`Dismiss error for ${name}`}
-					className="mb-2 inline-flex min-h-[44px] md:min-h-0 items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-500/20 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					className="mb-2 inline-flex min-h-[44px] md:min-h-0 items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-800 dark:text-red-300 hover:bg-red-500/20 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 				>
 					<AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
 					{ackActionLabel("dismiss_error")}

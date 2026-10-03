@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AdminUserRow } from "./api.js";
 import type { DirectoryEntry } from "./owner-label.js";
-import { assignablePeople, directoryEntryFromAdminRow } from "./people.js";
+import { assignablePeople, directoryEntryFromAdminRow, withCurrentOwner } from "./people.js";
 
 function row(over: Partial<AdminUserRow> & { id: string; username: string }): AdminUserRow {
 	return {
@@ -93,5 +93,39 @@ describe("assignablePeople", () => {
 	test("nobody is lost and an empty directory gives an empty list", () => {
 		expect(assignablePeople([], "u1")).toEqual([]);
 		expect(assignablePeople(everyone, "u1")).toHaveLength(4);
+	});
+});
+
+describe("withCurrentOwner", () => {
+	const options = [
+		{ id: "u1", label: "You" },
+		{ id: "u3", label: "carol" },
+	];
+
+	test("a disabled current owner is listed as '<name> (disabled)', so the select can show and keep it", () => {
+		const gone = person("u9", "Dave Jones", true);
+		const result = withCurrentOwner(options, "u9", gone, "u1");
+		expect(result.find((option) => option.id === "u9")).toEqual({
+			id: "u9",
+			label: "Dave Jones (disabled)",
+		});
+		expect(result.map((option) => option.id)).toEqual(["u9", "u1", "u3"]);
+	});
+
+	test("an active owner, no owner, or an owner already listed changes nothing", () => {
+		expect(withCurrentOwner(options, "u3", person("u3", "carol"), "u1")).toEqual(options);
+		expect(withCurrentOwner(options, null, undefined, "u1")).toEqual(options);
+		expect(withCurrentOwner(options, undefined, undefined, "u1")).toEqual(options);
+	});
+
+	test("an owner the directory doesn't know still shows, by a readable fallback", () => {
+		const result = withCurrentOwner(options, "abcd1234", undefined, "u1");
+		expect(result[0].id).toBe("abcd1234");
+		expect(result[0].label).toBe("User abcd (disabled)");
+	});
+
+	test("the viewer is never offered twice", () => {
+		const me = person("u1", "me", true);
+		expect(withCurrentOwner(options, "u1", me, "u1")).toEqual(options);
 	});
 });

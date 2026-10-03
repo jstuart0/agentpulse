@@ -178,3 +178,106 @@ describe("the working pill", () => {
 		expect(working.includes("text-[hsl(var(--working-text))] dark:text-emerald-400")).toBe(true);
 	});
 });
+
+/** Tailwind's own palette, as the app's classes resolve it. */
+const PALETTE: Record<string, [number, number, number]> = {
+	"amber-500": [245 / 255, 158 / 255, 11 / 255],
+	"amber-800": [146 / 255, 64 / 255, 14 / 255],
+	"amber-900": [120 / 255, 53 / 255, 15 / 255],
+	"blue-500": [59 / 255, 130 / 255, 246 / 255],
+	"blue-700": [29 / 255, 78 / 255, 216 / 255],
+	"blue-800": [30 / 255, 64 / 255, 175 / 255],
+	"emerald-500": EMERALD_500,
+	"red-500": [239 / 255, 68 / 255, 68 / 255],
+	"red-800": [153 / 255, 27 / 255, 27 / 255],
+	"red-700": [185 / 255, 28 / 255, 28 / 255],
+	"amber-400": [251 / 255, 191 / 255, 36 / 255],
+	"blue-400": [96 / 255, 165 / 255, 250 / 255],
+	"emerald-400": [52 / 255, 211 / 255, 153 / 255],
+};
+
+/** The light-theme text colour and the wash (colour and strength) a pill's class string asks for. */
+function pillColours(classes: string): {
+	text: [number, number, number];
+	wash: [number, number, number];
+	alpha: number;
+} {
+	const tokens = classes.split(/\s+/).filter((token) => !token.includes(":"));
+	const textToken = tokens.find((token) =>
+		/^text-(?:[a-z]+-\d+|\[hsl\(var\(--working-text\)\)\])$/.test(token),
+	);
+	const text = textToken?.includes("--working-text")
+		? toRgb(LIGHT["working-text"])
+		: PALETTE[(textToken ?? "").replace("text-", "")];
+	const washMatch = tokens.map((token) => /^bg-([a-z]+-500)\/(\d+)$/.exec(token)).find(Boolean);
+	if (!text || !washMatch) throw new Error(`can't read colours from: ${classes}`);
+	return { text, wash: PALETTE[washMatch[1]], alpha: Number(washMatch[2]) / 100 };
+}
+
+const read = (...parts: string[]) => readFileSync(join(import.meta.dir, "..", ...parts), "utf8");
+const HEADER = read("components", "session-detail", "SessionHeader.tsx");
+const CARD = read("components", "SessionCard.tsx");
+
+/** Every class string in `source` that matches `pattern` (its first capture group). */
+function classStrings(source: string, pattern: RegExp): string[] {
+	return [...source.matchAll(pattern)].map((match) => match[1]);
+}
+
+const SESSION_DETAIL_PILLS: Record<string, string[]> = {
+	"the working pill": classStrings(
+		HEADER,
+		/className="([^"]*)">\s*<span className="w-1\.5 h-1\.5 rounded-full bg-amber-400 animate-pulse-dot"/g,
+	),
+	"the project link pill": classStrings(HEADER, /className="([^"]*)"\s*title=\{`Project:/g),
+	"the branch pill": classStrings(HEADER, /className="([^"]*)">\s*\{session\.gitBranch\}/g),
+	"Dismiss error and Stop (header)": classStrings(
+		HEADER,
+		/"([^"]*border-red-500\/30 bg-red-500\/10[^"]*)"/g,
+	),
+	"Dismiss error (card)": classStrings(CARD, /"([^"]*border-red-500\/30 bg-red-500\/10[^"]*)"/g),
+};
+
+describe("the session page's pills and buttons, light theme", () => {
+	test("positive control: every one was found, and the old working pill colour fails", () => {
+		for (const [name, found] of Object.entries(SESSION_DETAIL_PILLS)) {
+			expect(found.length, name).toBeGreaterThanOrEqual(1);
+		}
+		expect(SESSION_DETAIL_PILLS["Dismiss error and Stop (header)"]).toHaveLength(3);
+		const oldWorking = over(PALETTE["amber-400"], 0.1, toRgb(LIGHT.background));
+		expect(contrast(PALETTE["amber-400"], oldWorking)).toBeLessThan(MIN_CONTRAST);
+	});
+
+	for (const [name, found] of Object.entries(SESSION_DETAIL_PILLS)) {
+		test(`${name} is at least 4.5:1 on its wash over the page, a card and every tint`, () => {
+			for (const classes of found) {
+				const { text, wash, alpha } = pillColours(classes);
+				const worst = Math.min(
+					...lightBackdrops().map((bg) => contrast(text, over(wash, alpha, bg))),
+				);
+				expect({ classes, ok: worst >= MIN_CONTRAST, worst: worst.toFixed(2) }).toEqual({
+					classes,
+					ok: true,
+					worst: worst.toFixed(2),
+				});
+			}
+		});
+	}
+
+	test("dark theme is unchanged: each keeps its dark: colour", () => {
+		for (const classes of Object.values(SESSION_DETAIL_PILLS).flat()) {
+			expect(classes).toMatch(/dark:text-(amber|blue|emerald|red)-(300|400)/);
+		}
+		const originalDark = {
+			working: "dark:text-amber-400",
+			project: "dark:text-blue-400",
+			branch: "dark:text-emerald-400",
+			dismiss: "dark:text-red-300",
+		};
+		expect(SESSION_DETAIL_PILLS["the working pill"][0]).toContain(originalDark.working);
+		expect(SESSION_DETAIL_PILLS["the project link pill"][0]).toContain(originalDark.project);
+		expect(SESSION_DETAIL_PILLS["the branch pill"][0]).toContain(originalDark.branch);
+		for (const classes of SESSION_DETAIL_PILLS["Dismiss error and Stop (header)"]) {
+			expect(classes).toContain(originalDark.dismiss);
+		}
+	});
+});

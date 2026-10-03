@@ -13,7 +13,7 @@ import {
 	revokeSupervisorCredential,
 } from "../auth/supervisor-auth.js";
 import { config } from "../config.js";
-import { withAdminLock } from "../db/admin-lock.js";
+import { awaitSeamInsideAdminLock, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, sessions, supervisors, users } from "../db/schema/index.js";
 import { closeSocketsForUser } from "../ws/handler.js";
@@ -158,7 +158,7 @@ export async function disableUser(
 		await deactivateApiKeysOwnedByUser(targetUserId, tx);
 		await deactivateEnrollmentTokensCreatedByUser(targetUserId, tx);
 
-		await _disableUserStepHookForTest?.("credentials-deactivated");
+		await awaitSeamInsideAdminLock(_disableUserStepHookForTest, "credentials-deactivated");
 
 		if (opts.revokeHosts !== false) {
 			const supervisorIds = await listSupervisorIdsOwnedByUser(targetUserId, tx);
@@ -167,7 +167,7 @@ export async function disableUser(
 				await revokeSupervisorCredential(supervisorId, tx);
 			}
 		}
-		await _disableUserStepHookForTest?.("hosts-revoked");
+		await awaitSeamInsideAdminLock(_disableUserStepHookForTest, "hosts-revoked");
 	});
 
 	// Socket teardown happens after the lock/transaction commits — closing a

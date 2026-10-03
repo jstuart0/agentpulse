@@ -1,0 +1,1 @@
+ALTER TABLE `supervisors` ADD `exclude_rules_state` text;

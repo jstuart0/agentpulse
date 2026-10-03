@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { retryDelayMs } from "../lib/network-retry.js";
 import { useReachabilityStore } from "./reachability-store.js";
+import { useUserStore } from "./user-store.js";
 
 function probeFailed() {
 	(
@@ -10,6 +11,8 @@ function probeFailed() {
 
 function reset() {
 	useReachabilityStore.setState({ unreachable: false, attempt: 0, recoveries: 0 });
+	// Past the first identity check: any answer then ends an outage.
+	useUserStore.setState({ loaded: true } as never);
 }
 
 describe("the retry backoff counts probes, not failed requests", () => {
@@ -39,7 +42,7 @@ describe("the retry backoff counts probes, not failed requests", () => {
 		useReachabilityStore.getState().reportFailure();
 		probeFailed();
 		probeFailed();
-		useReachabilityStore.getState().reportSuccess();
+		useReachabilityStore.getState().reportSuccess("/sessions");
 		const after = useReachabilityStore.getState();
 		expect(after.unreachable).toBe(false);
 		expect(after.attempt).toBe(0);
@@ -48,7 +51,7 @@ describe("the retry backoff counts probes, not failed requests", () => {
 	});
 
 	test("an answer when nothing was wrong changes nothing (no refetch storm)", () => {
-		useReachabilityStore.getState().reportSuccess();
+		useReachabilityStore.getState().reportSuccess("/sessions");
 		expect(useReachabilityStore.getState().recoveries).toBe(0);
 	});
 });

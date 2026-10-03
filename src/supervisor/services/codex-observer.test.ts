@@ -24,6 +24,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NO_EXCLUDE_RULES } from "./codex-observer-test-support.js";
 
 const {
 	_resetSaveStateWarnForTest,
@@ -136,6 +137,7 @@ describe("O1: posts exactly the expected hook sequence, with identity headers", 
 			new Map(),
 			fakeFetch(captured),
 			home,
+			NO_EXCLUDE_RULES,
 		);
 
 		expect(captured.map((c) => c.body.hook_event_name)).toEqual([
@@ -169,9 +171,27 @@ test("O2 a replay from zero sends identical bodies and ids", async () => {
 	const { path } = writeFixtureCopy(dir);
 
 	const first: Captured[] = [];
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(first), home);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(first),
+		home,
+		NO_EXCLUDE_RULES,
+	);
 	const second: Captured[] = [];
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(second), home);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(second),
+		home,
+		NO_EXCLUDE_RULES,
+	);
 
 	expect(second.map((c) => c.headers[DELIVERY_ID_HEADER.toLowerCase()])).toEqual(
 		first.map((c) => c.headers[DELIVERY_ID_HEADER.toLowerCase()]),
@@ -196,6 +216,7 @@ test("O2s a mid-turn resume sends the same bodies as a replay from zero, except 
 		new Map(),
 		fakeFetch(zeroCaptured),
 		home,
+		NO_EXCLUDE_RULES,
 	);
 
 	const resumePath = join(dir, "resume.jsonl");
@@ -209,6 +230,7 @@ test("O2s a mid-turn resume sends the same bodies as a replay from zero, except 
 		new Map(),
 		fakeFetch(firstHalf),
 		home,
+		NO_EXCLUDE_RULES,
 	);
 	writeFileSync(resumePath, part1 + part2);
 	const secondHalf: Captured[] = [];
@@ -221,6 +243,7 @@ test("O2s a mid-turn resume sends the same bodies as a replay from zero, except 
 		new Map(),
 		fakeFetch(secondHalf),
 		home,
+		NO_EXCLUDE_RULES,
 	);
 
 	const resumedAll = [...firstHalf, ...secondHalf];
@@ -256,6 +279,7 @@ test("O3 a 500 on the 3rd post throws; a rerun re-posts 1-2 identically", async 
 			new Map(),
 			fakeFetch(firstAttempt, { fail: (n) => n === 3 }),
 			home,
+			NO_EXCLUDE_RULES,
 		);
 	} catch {
 		threw = true;
@@ -264,7 +288,16 @@ test("O3 a 500 on the 3rd post throws; a rerun re-posts 1-2 identically", async 
 	expect(firstAttempt).toHaveLength(2);
 
 	const rerun: Captured[] = [];
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(rerun), home);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(rerun),
+		home,
+		NO_EXCLUDE_RULES,
+	);
 	expect(rerun.slice(0, 2).map((c) => c.body)).toEqual(firstAttempt.map((c) => c.body));
 	expect(rerun.slice(0, 2).map((c) => c.headers[DELIVERY_ID_HEADER.toLowerCase()])).toEqual(
 		firstAttempt.map((c) => c.headers[DELIVERY_ID_HEADER.toLowerCase()]),
@@ -285,6 +318,7 @@ test("O4 an appended line produces exactly one new post under a new id, and the 
 		callMap,
 		fakeFetch(first),
 		home,
+		NO_EXCLUDE_RULES,
 	);
 
 	const newLine = `${userMessageLine([{ type: "input_text", text: "one more thing" }])}\n`;
@@ -298,6 +332,7 @@ test("O4 an appended line produces exactly one new post under a new id, and the 
 		callMap,
 		fakeFetch(second),
 		home,
+		NO_EXCLUDE_RULES,
 	);
 
 	expect(second).toHaveLength(1);
@@ -319,7 +354,16 @@ test("F105 deliveryIdFor is pinned to the start-of-line byte offset, not the end
 	const home = mkTmp("ap-codex-home-");
 	const { path } = writeFixtureCopy(dir);
 	const captured: Captured[] = [];
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(captured),
+		home,
+		NO_EXCLUDE_RULES,
+	);
 
 	const sessionStart = captured.find((c) => c.body.hook_event_name === "SessionStart");
 	expect(sessionStart).toBeDefined();
@@ -354,7 +398,16 @@ test("O6 every post's session_id equals session_meta.payload.id", async () => {
 	const home = mkTmp("ap-codex-home-");
 	const { path, sessionId } = writeFixtureCopy(dir);
 	const captured: Captured[] = [];
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(captured),
+		home,
+		NO_EXCLUDE_RULES,
+	);
 	expect(captured.length).toBeGreaterThan(0);
 	for (const c of captured) expect(c.body.session_id).toBe(sessionId);
 });
@@ -364,7 +417,16 @@ test("O7 exactly one Stop per turn, from the fixture's task_complete", async () 
 	const home = mkTmp("ap-codex-home-");
 	const { path } = writeFixtureCopy(dir);
 	const captured: Captured[] = [];
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(captured),
+		home,
+		NO_EXCLUDE_RULES,
+	);
 	const stops = captured.filter((c) => c.body.hook_event_name === "Stop");
 	expect(stops).toHaveLength(1);
 	expect(stops[0]?.body.last_assistant_message).toBe(
@@ -384,7 +446,16 @@ test("O7c a task_complete with an empty last_agent_message posts a Stop with no 
 		}),
 	]);
 	const captured: Captured[] = [];
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(captured),
+		home,
+		NO_EXCLUDE_RULES,
+	);
 	const stop = captured.find((c) => c.body.hook_event_name === "Stop");
 	expect(stop).toBeDefined();
 	expect("last_assistant_message" in (stop?.body ?? {})).toBe(false);
@@ -401,7 +472,16 @@ test("O8 a legacy task_completed line posts exactly one Stop, with turn_id when 
 		}),
 	]);
 	const captured: Captured[] = [];
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(captured),
+		home,
+		NO_EXCLUDE_RULES,
+	);
 	const stops = captured.filter((c) => c.body.hook_event_name === "Stop");
 	expect(stops).toHaveLength(1);
 	expect(stops[0]?.body.turn_id).toBe("turn-legacy");
@@ -501,6 +581,7 @@ test("O11 the injected-context item is not posted; the real prompt is posted onc
 		new Map(),
 		fakeFetch(captured),
 		home,
+		NO_EXCLUDE_RULES,
 	);
 	const prompts = captured.filter((c) => c.body.hook_event_name === "UserPromptSubmit");
 	expect(prompts).toHaveLength(1);
@@ -530,6 +611,7 @@ describe("O11b skip-rule edges", () => {
 			new Map(),
 			fakeFetch(captured),
 			home,
+			NO_EXCLUDE_RULES,
 		);
 		return captured.filter((c) => c.body.hook_event_name === "UserPromptSubmit");
 	}
@@ -588,6 +670,7 @@ describe("O12 a native-hook marker stands the observer down", () => {
 			new Map(),
 			fakeFetch(captured),
 			home,
+			NO_EXCLUDE_RULES,
 		);
 		expect(captured).toHaveLength(0);
 		expect(state.offset).toBe(statSync(path).size);
@@ -606,6 +689,7 @@ describe("O12 a native-hook marker stands the observer down", () => {
 			new Map(),
 			fakeFetch(captured),
 			home,
+			NO_EXCLUDE_RULES,
 		);
 		expect(captured.length).toBeGreaterThan(0);
 	});
@@ -627,6 +711,7 @@ describe("O12 a native-hook marker stands the observer down", () => {
 			new Map(),
 			fakeFetch(first),
 			home,
+			NO_EXCLUDE_RULES,
 		);
 		expect(first.length).toBeGreaterThan(0);
 
@@ -635,7 +720,16 @@ describe("O12 a native-hook marker stands the observer down", () => {
 		writeFileSync(path, part1 + part2);
 
 		const second: Captured[] = [];
-		await processRolloutFile(path, state, "http://x", null, new Map(), fakeFetch(second), home);
+		await processRolloutFile(
+			path,
+			state,
+			"http://x",
+			null,
+			new Map(),
+			fakeFetch(second),
+			home,
+			NO_EXCLUDE_RULES,
+		);
 		expect(second).toHaveLength(0);
 	});
 });
@@ -732,7 +826,16 @@ test("O14 no UserPromptSubmit body has a turn_id key", async () => {
 	const home = mkTmp("ap-codex-home-");
 	const { path } = writeFixtureCopy(dir);
 	const captured: Captured[] = [];
-	await processRolloutFile(path, undefined, "http://x", null, new Map(), fakeFetch(captured), home);
+	await processRolloutFile(
+		path,
+		undefined,
+		"http://x",
+		null,
+		new Map(),
+		fakeFetch(captured),
+		home,
+		NO_EXCLUDE_RULES,
+	);
 	const prompts = captured.filter((c) => c.body.hook_event_name === "UserPromptSubmit");
 	expect(prompts.length).toBeGreaterThan(0);
 	for (const c of prompts) expect("turn_id" in c.body).toBe(false);

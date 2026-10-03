@@ -190,4 +190,17 @@ describe("shouldShowFirstRun", () => {
 			expect(shouldShowFirstRun({ isLoading: false, loadedCount: 0, owner })).toBe(false);
 		}
 	});
+
+	test("an install whose every session is scratch keeps the page, and the toggle that shows them", () => {
+		const base = { isLoading: false, loadedCount: 0, owner: "all" };
+		expect(shouldShowFirstRun({ ...base, stats: { total: 0, scratchHidden: 4 } })).toBe(false);
+		expect(shouldShowFirstRun({ ...base, stats: { total: 5, scratchHidden: 0 } })).toBe(false);
+	});
+
+	test("the stats say there is nothing at all, or say nothing: first run", () => {
+		const base = { isLoading: false, loadedCount: 0, owner: "all" };
+		expect(shouldShowFirstRun({ ...base, stats: { total: 0, scratchHidden: 0 } })).toBe(true);
+		expect(shouldShowFirstRun({ ...base, stats: null })).toBe(true);
+		expect(shouldShowFirstRun({ ...base, stats: { total: 0 } })).toBe(true);
+	});
 });

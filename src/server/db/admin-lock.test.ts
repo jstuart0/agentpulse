@@ -37,6 +37,9 @@ function uniqueUsername(label: string): string {
 
 const PASSWORD = "a-very-long-password-123";
 
+/** For bodies that hold the lock open on purpose, which the SQLite yield guard otherwise refuses. */
+const YIELDS = { sqliteAllowYield: true };
+
 /** A latch: `held` stays pending until `release()` is called. */
 function latch() {
 	let release!: () => void;
@@ -70,7 +73,7 @@ describe("withAdminLock — generic mechanics", () => {
 				await new Promise((r) => setTimeout(r, 5));
 				counter = before + 1;
 				observedDuringSecond.push(counter);
-			});
+			}, YIELDS);
 		}
 
 		await Promise.all([criticalSection(), criticalSection()]);
@@ -122,7 +125,7 @@ describe("withAdminLock — generic mechanics", () => {
 			order.push("first-start");
 			await gate.held;
 			order.push("first-end");
-		});
+		}, YIELDS);
 		await Bun.sleep(10);
 		const second = withAdminLock(async () => {
 			order.push("second");
@@ -200,7 +203,7 @@ describeSqliteOnly("withAdminLock — SQLite mutex and BEGIN IMMEDIATE retry", (
 					[1, 2, 3, 4].map((n) =>
 						withAdminLock(async () => {
 							await Bun.sleep(5 * n);
-						}),
+						}, YIELDS),
 					),
 				);
 			},
@@ -219,7 +222,7 @@ describeSqliteOnly("withAdminLock — SQLite mutex and BEGIN IMMEDIATE retry", (
 					order.push(`start-${n}`);
 					await Bun.sleep(5);
 					order.push(`end-${n}`);
-				}),
+				}, YIELDS),
 			),
 		);
 
@@ -339,7 +342,7 @@ describe("withAdminLock protects the last admin", () => {
 	test("a demotion waits behind a held admin lock", async () => {
 		const [a] = await twoAdmins("held-demote");
 		const gate = latch();
-		const holder = withAdminLock(async () => gate.held);
+		const holder = withAdminLock(async () => gate.held, YIELDS);
 		await Bun.sleep(10);
 
 		const demotion = setUserRole(a.id, "user", { userId: a.id, label: "user" });
@@ -354,7 +357,7 @@ describe("withAdminLock protects the last admin", () => {
 	test("a disable waits behind a held admin lock", async () => {
 		const [a] = await twoAdmins("held-disable");
 		const gate = latch();
-		const holder = withAdminLock(async () => gate.held);
+		const holder = withAdminLock(async () => gate.held, YIELDS);
 		await Bun.sleep(10);
 
 		const disabling = disableUser(a.id, {}, { userId: a.id, label: "user" });

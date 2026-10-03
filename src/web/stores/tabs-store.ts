@@ -56,17 +56,28 @@ function save(tabs: OpenTab[]) {
 }
 
 /**
- * Tabs the page kept under one shared key before they belonged to a person:
- * a viewer with no id of their own (solo without sign-in) keeps using that key
- * as it was; for everyone else it is removed, never shown to a different person.
+ * Tabs the page kept under one shared key before they belonged to a person: a
+ * viewer with no id of their own (solo without sign-in) keeps using that key as
+ * it was. For the first person who signs in after the upgrade they are moved
+ * into that person's own key (unless it already holds tabs) and the shared key
+ * is removed, so no other person on this browser is shown them.
  */
-function retireSharedKey(adoptedUserId: string | null) {
+function moveSharedTabsTo(adoptedUserId: string | null, ownKey: string) {
 	if (adoptedUserId === null || typeof localStorage === "undefined") return;
 	try {
+		const shared = localStorage.getItem(STORAGE_BASE);
+		if (shared === null) return;
+		if (localStorage.getItem(ownKey) === null) localStorage.setItem(ownKey, shared);
 		localStorage.removeItem(STORAGE_BASE);
 	} catch {
 		// Storage refused: the shared key is simply never read again.
 	}
+}
+
+/** Nobody is known: drop the previous person's tabs from memory and stop writing. Their saved tabs stay on disk for their next visit. */
+function forget() {
+	storageKey = null;
+	if (useTabsStore.getState().tabs.length > 0) useTabsStore.setState({ tabs: [] });
 }
 
 interface TabsStore {
@@ -82,7 +93,7 @@ export const useTabsStore = create<TabsStore>((set) => ({
 	tabs: [],
 	adopt: (userId) => {
 		storageKey = keyFor(userId);
-		retireSharedKey(userId);
+		moveSharedTabsTo(userId, storageKey);
 		set({ tabs: read(storageKey) });
 	},
 	open: (tab) =>
@@ -126,6 +137,7 @@ function adoptViewer() {
 	const { loaded, userId } = useUserStore.getState();
 	if (!loaded) {
 		adoptedFor = null;
+		forget();
 		return;
 	}
 	if (adoptedFor && adoptedFor.userId === userId) return;

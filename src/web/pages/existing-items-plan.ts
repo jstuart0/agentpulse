@@ -71,6 +71,8 @@ export interface ExistingSettlement {
 	remainingKeyChoices: Record<string, OwnerChoice | undefined>;
 	remainingHostChoices: Record<string, OwnerChoice | undefined>;
 	failures: Array<{ label: string; message: string }>;
+	/** The past-sessions claim went through: a Try again must not send it a second time. */
+	claimDone: boolean;
 	summary: ExistingSummary;
 	/** Ids to remember (per person, in this browser) as looked at and left unassigned. Keys only: a host with no owner stays listed until it has one. */
 	reviewedKeyIds: string[];
@@ -106,6 +108,7 @@ export function settleExistingItems(input: {
 		untouched: 0,
 	};
 	const failedKeyIds = new Set<string>();
+	let claimDone = false;
 
 	for (const { op, ok, claimed, message } of input.results) {
 		if (!ok) {
@@ -119,8 +122,10 @@ export function settleExistingItems(input: {
 			if (op.kind === "assign-key" || op.kind === "mark-service-key") failedKeyIds.add(op.keyId);
 			continue;
 		}
-		if (op.kind === "claim-sessions") summary.claimed = claimed ?? 0;
-		else if (op.kind === "assign-key") {
+		if (op.kind === "claim-sessions") {
+			summary.claimed = claimed ?? 0;
+			claimDone = true;
+		} else if (op.kind === "assign-key") {
 			summary.assignedKeys += 1;
 			delete remainingKeyChoices[op.keyId];
 		} else if (op.kind === "mark-service-key") {
@@ -151,6 +156,7 @@ export function settleExistingItems(input: {
 		remainingKeyChoices,
 		remainingHostChoices,
 		failures,
+		claimDone,
 		summary,
 		reviewedKeyIds: input.recordServiceKeys ? [] : keptKeyIds,
 	};

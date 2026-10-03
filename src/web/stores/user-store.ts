@@ -4,8 +4,10 @@ import {
 	type AuthLoadOutcome,
 	FRESH_WATCH,
 	type SignInEvent,
+	createRecheckGate,
 	createSingleFlight,
 	isNetworkFailure,
+	isRoleRefusal,
 	loadedAfter,
 	reduceAuthLoad,
 	reduceSignInWatch,
@@ -42,7 +44,18 @@ interface UserState extends AuthState {
 	sessionUnconfirmed: boolean;
 	/** Resolves true when the server answered. Calls made during a load share one fresh trailing load. */
 	load: () => Promise<boolean>;
+	/**
+	 * Asks again on a hint that the viewer's standing changed elsewhere (a role
+	 * refusal, the tab coming back, a socket reconnecting). Bounded: one at a
+	 * time and not again within a few seconds. Fire and forget; the answer
+	 * updates the store (or resets the app for a different person).
+	 */
+	recheck: () => void;
 }
+
+/** After a hint-driven re-check starts, another is not made for this long. */
+const RECHECK_MIN_INTERVAL_MS = 5_000;
+let recheckGate = createRecheckGate(RECHECK_MIN_INTERVAL_MS);
 
 let signInWatchSink: ((event: SignInEvent) => void) | null = null;
 
@@ -99,6 +112,10 @@ export const useUserStore = create<UserState>((set, get) => {
 		error: null,
 		sessionUnconfirmed: false,
 		load: loadOnce,
+		recheck: () => {
+			if (!recheckGate.tryStart()) return;
+			void loadOnce().finally(() => recheckGate.finish());
+		},
 	};
 });
 
@@ -106,6 +123,12 @@ export const useUserStore = create<UserState>((set, get) => {
 // required: ask who the viewer is again, and the gate (or the login page) takes over.
 setRequestFailureHandler((failure) => {
 	if (failure.status === 401 && failure.path !== IDENTITY_PATH) signInWatchSink?.("refused");
-	if (shouldRecheckAuth(failure)) void useUserStore.getState().load();
+	if (!shouldRecheckAuth(failure)) return;
+	if (isRoleRefusal(failure)) useUserStore.getState().recheck();
+	else void useUserStore.getState().load();
 });
 setRequestSuccessHandler(() => signInWatchSink?.("answered"));
+
+export function _resetIdentityRecheckForTest(): void {
+	recheckGate = createRecheckGate(RECHECK_MIN_INTERVAL_MS);
+}
