@@ -682,4 +682,59 @@ describe("install-local.ps1's Codex merge (by reading; not executed on Windows)"
 	test("notes that duplicate JSON keys keep only the last", () => {
 		expect(ps).toContain("Duplicate keys");
 	});
+
+	test("every System.Text.Json reference sits inside a try block of the two guarded functions, and the merge asks first", () => {
+		const code = ps
+			.split("\n")
+			.filter((line) => !line.trimStart().startsWith("#"))
+			.join("\n");
+		const refs = [...code.matchAll(/System\.Text\.Json/g)].map((m) => m.index as number);
+		expect(refs.length).toBeGreaterThan(0);
+		const guarded = ["function Test-ApJsonNodesAvailable", "function Get-ApCanonicalJson"].map(
+			(name) => {
+				const start = code.indexOf(name);
+				const end = code.indexOf("\nfunction ", start + 1);
+				return { start, end, body: code.slice(start, end) };
+			},
+		);
+		for (const ref of refs) {
+			const fn = guarded.find((g) => ref > g.start && ref < g.end);
+			expect(fn, "a System.Text.Json reference outside the guarded functions").toBeDefined();
+			const tryAt = (fn as { body: string; start: number }).body.indexOf("try {");
+			expect(tryAt).toBeGreaterThan(-1);
+			expect(ref - (fn as { start: number }).start).toBeGreaterThan(tryAt);
+		}
+		const merge = ps.slice(
+			ps.indexOf("function Merge-ApCodexHooksFile"),
+			ps.indexOf("# The POSIX `sh` equivalent"),
+		);
+		expect(merge.indexOf("Test-ApJsonNodesAvailable")).toBeGreaterThan(merge.indexOf("-eq ''"));
+		expect(merge.indexOf("Test-ApJsonNodesAvailable")).toBeLessThan(
+			merge.indexOf("ConvertFrom-Json"),
+		);
+		expect(merge).not.toContain("System.Text.Json");
+	});
+
+	test("the version gate is below 7.2 and an unusable type means the file is left alone with the stated message", () => {
+		const fn = ps.slice(
+			ps.indexOf("function Test-ApJsonNodesAvailable"),
+			ps.indexOf("function Get-ApCanonicalJson"),
+		);
+		expect(fn).toContain("$PSVersionTable.PSVersion");
+		expect(fn).toContain("-lt 7");
+		expect(fn).toContain("-lt 2");
+		expect(ps).toContain(
+			"Codex hooks not updated: merging needs PowerShell 7.2 or later; $codexHooksFile was left untouched. Install PowerShell 7 and run this installer again.",
+		);
+		const call = ps.slice(ps.indexOf("$codexMerge = Merge-ApCodexHooksFile"));
+		expect(call.indexOf("needs-pwsh7")).toBeLessThan(
+			call.indexOf("Write-ApFileNoFollow -Path $codexHooksFile"),
+		);
+	});
+
+	test("the Windows CI script runs the merge against another tool's hooks.json", () => {
+		const ci = readFileSync(join(ROOT, "scripts/test-install-local.ps1"), "utf-8");
+		expect(ci).toContain("Merge-ApCodexHooksFile -Existing");
+		expect(ci).toContain("othertool start");
+	});
 });

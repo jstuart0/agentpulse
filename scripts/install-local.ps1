@@ -873,7 +873,9 @@ function New-ApCodexHooksFile {
 # other handler, event and top-level key stays where it is, in the same order.
 # Duplicate keys in the existing file keep only the last one, in every copy.
 # Returns a hashtable: Status is "changed" (Text is the file to write),
-# "unchanged", or "unusable" (Reason says why; the file must be left alone).
+# "unchanged", "unusable" (Reason says why; the file must be left alone) or
+# "needs-pwsh7" (this PowerShell cannot do the comparison; leave the file alone).
+# An absent or empty file needs no merge and works on every PowerShell.
 #
 # Other tools' bytes are never altered. ConvertFrom-Json changes some values
 # (ISO-date strings become DateTime, large or fractional numbers are re-typed,
@@ -898,6 +900,22 @@ function ConvertTo-ApOrdered {
   return $Value
 }
 
+# The comparison below needs System.Text.Json.Nodes (.NET 6+, PowerShell 7.2+);
+# Windows PowerShell 5.1 does not have it, and a missing type only fails at the
+# moment it is used. So the types are touched ONLY inside this function and
+# Get-ApCanonicalJson, each within try/catch, and Merge-ApCodexHooksFile asks
+# here first: where this says no, an existing hooks.json is left alone.
+function Test-ApJsonNodesAvailable {
+  $v = $PSVersionTable.PSVersion
+  if ($v.Major -lt 7 -or ($v.Major -eq 7 -and $v.Minor -lt 2)) { return $false }
+  try {
+    [void][System.Text.Json.Nodes.JsonNode]::Parse('{}')
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 function Get-ApCanonicalJson {
   param([string]$Text)
   try { return [System.Text.Json.Nodes.JsonNode]::Parse($Text).ToJsonString() } catch { return $null }
@@ -915,6 +933,9 @@ function Merge-ApCodexHooksFile {
   )
   if ($null -eq $Existing -or $Existing.Trim() -eq '') {
     return @{ Status = 'changed'; Text = $Ours }
+  }
+  if (-not (Test-ApJsonNodesAvailable)) {
+    return @{ Status = 'needs-pwsh7' }
   }
   $oursHooks = (ConvertTo-ApOrdered (ConvertFrom-Json $Ours))['hooks']
   try {
@@ -1368,6 +1389,8 @@ function Configure-Hooks {
     throw "refusing to write through a reparse point: $codexHooksFile"
   } elseif ($codexMerge.Status -eq "unreadable") {
     Write-Host "! Codex hooks not updated: $codexHooksFile could not be read. $codexSkipTail"
+  } elseif ($codexMerge.Status -eq "needs-pwsh7") {
+    Write-Host "! Codex hooks not updated: merging needs PowerShell 7.2 or later; $codexHooksFile was left untouched. Install PowerShell 7 and run this installer again."
   } elseif ($codexMerge.Status -eq "unusable") {
     Write-Host "! Codex hooks not updated: $codexHooksFile $($codexMerge.Reason). $codexSkipTail"
   } else {
