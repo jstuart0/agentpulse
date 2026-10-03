@@ -5,11 +5,12 @@ import {
 	compareOperational,
 	getOperationalStatus,
 } from "../../shared/session-state.js";
-import type { OwnerStatsGroup, Session } from "../../shared/types.js";
+import type { HostStatsGroup, OwnerStatsGroup, Session } from "../../shared/types.js";
 import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
 import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
 import { isAiDisabledError } from "../lib/api-errors.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
+import type { HostParam } from "../lib/host-scope.js";
 import { ownerChip } from "../lib/owner-chip.js";
 import { ownerLabel } from "../lib/owner-label.js";
 import type { OwnerParam } from "../lib/owner-scope.js";
@@ -165,6 +166,24 @@ interface SessionGridProps {
 	quietWhenEmpty?: boolean;
 	/** Team mode: what the cards are grouped by, and the context group headers and owner chips need. Absent in solo, which groups by project exactly as before. */
 	team?: TeamGridProps;
+	/** The machine filter and grouping, in solo and in a team alike. Absent: the grid groups by project (or the team's choice) and an empty view uses its own copy. */
+	machineView?: MachineGridProps;
+}
+
+export interface MachineGridProps {
+	/** What the cards are grouped by when there is no team (a team's own `groupBy` wins). */
+	groupBy: GroupBy;
+	/** The server's per-machine counts, by group key; null until they arrive. */
+	stats: ReadonlyMap<string, HostStatsGroup> | null;
+	tab: string;
+	statusFilter: ActiveOperationalStatus | null;
+	searchActive: boolean;
+	/** The machine the view is already narrowed to. */
+	currentHost: HostParam;
+	/** Set when the view is narrowed to a machine and nothing matches: it names the machine and offers the way back. */
+	emptyState: EmptyState | null;
+	onShowAllOfHost: (host: HostParam) => void;
+	onViewAllMachines: () => void;
 }
 
 export interface TeamGridProps {
@@ -225,6 +244,7 @@ export function SessionGrid({
 	searchQuery,
 	quietWhenEmpty,
 	team,
+	machineView,
 }: SessionGridProps) {
 	const intelligence = useSessionIntelligence(sessions);
 	const viewerUserId = useUserStore((s) => s.userId);
@@ -276,8 +296,15 @@ export function SessionGrid({
 
 	if (sessions.length === 0 && quietWhenEmpty) return null;
 
-	if (sessions.length === 0 && team?.emptyState) {
-		return <NarrowedEmptyState state={team.emptyState} onViewEveryone={team.onViewEveryone} />;
+	const narrowedEmpty = machineView?.emptyState ?? team?.emptyState;
+	if (sessions.length === 0 && narrowedEmpty) {
+		return (
+			<NarrowedEmptyState
+				state={narrowedEmpty}
+				onViewEveryone={team?.onViewEveryone}
+				onViewAllMachines={machineView?.onViewAllMachines}
+			/>
+		);
 	}
 
 	if (sessions.length === 0) {
@@ -319,7 +346,7 @@ export function SessionGrid({
 		);
 	}
 
-	const groupBy = team?.groupBy ?? "project";
+	const groupBy = team?.groupBy ?? machineView?.groupBy ?? "project";
 	const { groups, flat } = groupDashboardSessions(ordered, groupBy, { viewerUserId, nameOf });
 
 	// Single project: flat grid. The hover/focus/recent-ack hold handlers
@@ -352,14 +379,20 @@ export function SessionGrid({
 					nameOf,
 					teamHeaders: team !== undefined,
 					ownerStats: team?.ownerStats ?? null,
-					tab: team?.tab ?? "active",
-					statusFilter: team?.statusFilter ?? null,
+					tab: team?.tab ?? machineView?.tab ?? "active",
+					statusFilter: team?.statusFilter ?? machineView?.statusFilter ?? null,
 					currentOwner: team?.owner ?? "all",
-					searchActive: team?.searchActive ?? false,
+					machineStats: machineView?.stats ?? null,
+					currentHost: machineView?.currentHost ?? "",
+					searchActive: team?.searchActive ?? machineView?.searchActive ?? false,
 				});
 				return (
 					<div key={group.key}>
-						<GroupHeaderRow header={header} onShowAllOf={team?.onShowAllOf} />
+						<GroupHeaderRow
+							header={header}
+							onShowAllOf={team?.onShowAllOf}
+							onShowAllOfHost={machineView?.onShowAllOfHost}
+						/>
 						<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
 							{group.sessions.map((session) => (
 								<SessionCard
@@ -377,15 +410,23 @@ export function SessionGrid({
 	);
 }
 
+const SHOW_ALL_CLASS = cn(
+	"inline-flex min-h-[44px] items-center rounded px-1 text-xs font-medium text-primary underline underline-offset-2 hover:text-foreground md:min-h-[24px] [@media(pointer:coarse)]:min-h-[44px]",
+	"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+);
+
 /** The header over one group. For project groups in solo this is the markup the dashboard has always had. */
 function GroupHeaderRow({
 	header,
 	onShowAllOf,
+	onShowAllOfHost,
 }: {
 	header: GroupHeader;
 	onShowAllOf?: (ownerId: string) => void;
+	onShowAllOfHost?: (host: HostParam) => void;
 }) {
 	const showAll = header.showAll;
+	const showAllHost = header.showAllHost;
 	return (
 		<div className="flex flex-col items-start gap-1.5 mb-3 md:flex-row md:items-center md:gap-2">
 			<h3 className="text-sm font-semibold text-foreground">{header.title}</h3>
@@ -410,12 +451,19 @@ function GroupHeaderRow({
 					type="button"
 					onClick={() => onShowAllOf(showAll.ownerId)}
 					aria-label={showAll.ariaLabel}
-					className={cn(
-						"inline-flex min-h-[44px] items-center rounded px-1 text-xs font-medium text-primary underline underline-offset-2 hover:text-foreground md:min-h-[24px] [@media(pointer:coarse)]:min-h-[44px]",
-						"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-					)}
+					className={SHOW_ALL_CLASS}
 				>
 					{showAll.label}
+				</button>
+			)}
+			{showAllHost && onShowAllOfHost && (
+				<button
+					type="button"
+					onClick={() => onShowAllOfHost(showAllHost.host)}
+					aria-label={showAllHost.ariaLabel}
+					className={SHOW_ALL_CLASS}
+				>
+					{showAllHost.label}
 				</button>
 			)}
 		</div>
@@ -426,9 +474,11 @@ function GroupHeaderRow({
 function NarrowedEmptyState({
 	state,
 	onViewEveryone,
+	onViewAllMachines,
 }: {
 	state: EmptyState;
-	onViewEveryone: () => void;
+	onViewEveryone?: () => void;
+	onViewAllMachines?: () => void;
 }) {
 	return (
 		<div className="flex flex-col items-center justify-center px-4 py-16 text-center">
@@ -444,7 +494,16 @@ function NarrowedEmptyState({
 							Set up my machine
 						</Link>
 					)}
-					{state.actions.includes("viewEveryone") && (
+					{state.actions.includes("allMachines") && onViewAllMachines && (
+						<button
+							type="button"
+							onClick={onViewAllMachines}
+							className="min-h-[44px] rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent md:min-h-0"
+						>
+							Show all machines
+						</button>
+					)}
+					{state.actions.includes("viewEveryone") && onViewEveryone && (
 						<button
 							type="button"
 							onClick={onViewEveryone}
