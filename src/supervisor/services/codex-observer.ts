@@ -670,6 +670,8 @@ export interface ScanContext {
 	rules?: ObserverRules;
 	fetchImpl?: FetchLike;
 	homeDir?: string;
+	/** Files seen for the first time that are listed here start at their current end instead of being replayed from the start. */
+	seedAtEnd?: ReadonlySet<string>;
 	/** Called only when an entry was added or changed. */
 	save: (state: ObserverState) => void;
 }
