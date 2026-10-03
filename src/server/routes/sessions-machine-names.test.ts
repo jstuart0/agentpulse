@@ -230,14 +230,12 @@ describe("a session linked to a supervisor is on that supervisor's machine, what
 		expect(await managedHost("att-2")).toBeNull();
 		const sup = (await enrollSupervisor(input("later-host"), null)).supervisor;
 		await seedSession("att-3", null);
-		await getDb()
-			.insert(managedSessions)
-			.values({
-				sessionId: "att-3",
-				launchRequestId: "l-3",
-				supervisorId: sup.id,
-				hostName: "kept-host",
-			});
+		await getDb().insert(managedSessions).values({
+			sessionId: "att-3",
+			launchRequestId: "l-3",
+			supervisorId: sup.id,
+			hostName: "kept-host",
+		});
 		await attachManagedSessionToLaunch({
 			sessionId: "att-3",
 			launchRequestId: "l-3b",
