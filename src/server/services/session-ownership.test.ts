@@ -402,6 +402,11 @@ const ALLOWED_OCCURRENCES: Record<string, number> = {
 	// enrollment/credential id checks — route :id param plumbing, not
 	// session-ownership routing
 	"src/server/routes/supervisors.ts": 6,
+	// the one-time boot repair of a stored host NAME (normalizeStoredMachineNames):
+	// pairs a managed session's copy of the name with its supervisor's repaired
+	// name, so it reads the id as a display-name lookup key and decides nothing
+	// about who owns or may drive a session
+	"src/server/services/effective-machine.ts": 2,
 	// action-claimant check (updateControlAction's input.supervisorId) —
 	// verifying who claimed THIS action, not session ownership
 	"src/server/services/control-actions.ts": 1,
