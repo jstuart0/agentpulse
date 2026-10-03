@@ -12,6 +12,7 @@ import {
 	machineLabel,
 	machineOptions,
 	machineScopeText,
+	teamLineText,
 	viewControlsVisible,
 	waitingOnOtherMachines,
 } from "./dashboard-machines.js";
@@ -195,14 +196,32 @@ describe("waitingOnOtherMachines", () => {
 });
 
 describe("machineScopeText", () => {
-	test("names the machine and says what is elsewhere", () => {
-		expect(machineScopeText("build-01", 0)).toBe("Showing build-01 only.");
-		expect(machineScopeText("build-01", 3)).toBe(
-			"Showing build-01 only. 3 waiting on other machines.",
+	test("names the machine and says what is waiting elsewhere", () => {
+		expect(machineScopeText("build-01", 0, false)).toBe("Showing build-01 only.");
+		expect(machineScopeText("build-01", 3, false)).toBe("Showing build-01 only. 3 waiting on other machines.");
+	});
+
+	test("the sessions with no machine reported read as a filter, not a machine called that", () => {
+		expect(machineScopeText(HOST_UNKNOWN, 1, false)).toBe(
+			"Showing only sessions with no machine reported. 1 waiting on other machines.",
 		);
-		expect(machineScopeText(HOST_UNKNOWN, 1)).toBe(
-			"Showing sessions with no machine reported only. 1 waiting on other machines.",
+	});
+
+	test("when the machine list was cut, the figure is a floor: some may be waiting on machines that aren't listed", () => {
+		expect(machineScopeText("build-01", 18, true)).toBe(
+			"Showing build-01 only. At least 18 waiting on other machines.",
 		);
+		expect(machineScopeText("build-01", 0, true)).toBe("Showing build-01 only.");
+	});
+});
+
+describe("teamLineText: the team line under a machine filter says whose machine", () => {
+	test("every machine is the team-wide wording it always was", () => {
+		expect(teamLineText(4, HOST_ALL)).toBe("4 more active across the team.");
+	});
+	test("a machine is named, so a machine-scoped number doesn't read as team-wide", () => {
+		expect(teamLineText(1, "build-01")).toBe("1 more active across the team on build-01.");
+		expect(teamLineText(2, HOST_UNKNOWN)).toBe("2 more active across the team with no machine reported.");
 	});
 });
 

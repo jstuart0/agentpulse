@@ -9,6 +9,7 @@ import {
 	groupHeader,
 	hostStatsByKey,
 	machineKeysWithSessions,
+	unlistedMachineCount,
 	ownerGroupTotal,
 	parseGroupBy,
 } from "./dashboard-groups.js";
@@ -688,5 +689,21 @@ describe("a machine header with no cards loaded yet", () => {
 		const header = groupHeader(empty, "machine", machineCtx({ tab: "all" }));
 		expect(header.countText).toBe("0 shown of 130");
 		expect(header.showAllHost?.host).toBe("build-01");
+	});
+});
+
+describe("unlistedMachineCount: the cut notice never contradicts the page", () => {
+	const g = (key: string): DashboardGroup<Row> => ({ key, label: key, sessions: [], pinned: false });
+	test("counts only the rolled-up machines that have no header on screen", () => {
+		const listed = ["a", "b"];
+		const shown = [g("a"), g("b"), g("x"), g("y")];
+		expect(unlistedMachineCount(20, shown, listed)).toBe(18);
+	});
+	test("nothing to say when every rolled-up machine has a header, or nothing was rolled up", () => {
+		expect(unlistedMachineCount(2, [g("a"), g("x"), g("y")], ["a"])).toBe(0);
+		expect(unlistedMachineCount(0, [g("a")], ["a"])).toBe(0);
+	});
+	test("never negative", () => {
+		expect(unlistedMachineCount(1, [g("x"), g("y"), g("z")], [])).toBe(0);
 	});
 });
