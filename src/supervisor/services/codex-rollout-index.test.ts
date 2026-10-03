@@ -30,8 +30,13 @@ import { NO_EXCLUDE_RULES } from "./codex-observer-test-support.js";
 import { createRulesWatch } from "./exclude-rules-watch.js";
 
 const { scanRolloutFiles } = await import("./codex-observer.js");
-const { COLD_RECHECK_MS, RELIST_FALLBACK_MS, createRolloutIndex, resumeWindowMsFromEnv } =
-	await import("./codex-rollout-index.js");
+const {
+	COLD_RECHECK_MS,
+	RELIST_FALLBACK_MS,
+	createRolloutIndex,
+	realRolloutFs,
+	resumeWindowMsFromEnv,
+} = await import("./codex-rollout-index.js");
 type RolloutFs = import("./codex-rollout-index.js").RolloutFs;
 
 const HOUR = 3_600_000;
@@ -501,15 +506,26 @@ describe("one real file reached through several paths", () => {
 		mkdirSync(otherDay, { recursive: true });
 		symlinkSync(real, join(otherDay, "rollout-link.jsonl"));
 		const now = Date.now();
+		let reads = 0;
 		const index = createRolloutIndex({
 			root,
 			backfillDays: 3,
 			resumeWindowMs: DAY,
 			now: () => now,
 			localOffsetMs: () => 0,
+			fs: {
+				readdir: (dir) => {
+					reads++;
+					return realRolloutFs.readdir(dir);
+				},
+				stat: (path) => realRolloutFs.stat(path),
+			},
 		});
 		const first = index.list().files;
-		expect(first).toHaveLength(1);
+		// of the two paths to the same real file, the one that sorts first
+		expect(first).toEqual([join(otherDay, "rollout-link.jsonl")]);
+		// root, year, month and the two day directories: each real directory once
+		expect(reads).toBeLessThanOrEqual(5);
 		const second = index.list().files;
 		expect(second).toEqual(first);
 	});
@@ -736,6 +752,24 @@ describe("a resumed file seen for the first time is tailed from its end", () => 
 		} = b.state.files[normal] as Record<string, unknown>;
 		expect(seededRest).toEqual(normalRest);
 		expect((a.state.files[resumed] as { offset: number }).offset).toBe(statSync(resumed).size);
+	});
+
+	test("with invalid rules a resumed file with recent lines is still read to its end, not from the lookback", async () => {
+		const w = world();
+		writeFileSync(join(w.home, ".agentpulse", "exclude"), "relative/path\n", { mode: 0o600 });
+		chmodSync(join(w.home, ".agentpulse", "exclude"), 0o600);
+		const rules = createRulesWatch({ home: w.home });
+		const dir = join(w.root, "sessions", "2025", "01", "02");
+		mkdirSync(dir, { recursive: true });
+		const path = join(dir, "rollout-paused-recent.jsonl");
+		writeFileSync(
+			path,
+			stampedMeta("paused-r", w.open, NOW - 60_000) + stamped("recent", NOW - 1000),
+		);
+		const { context, posts, state } = ctx(w, { seedAtEnd: new Set([path]), rules, now: () => NOW });
+		await scanRolloutFiles([path], context as never);
+		expect(posts).toEqual([]);
+		expect((state.files[path] as { offset: number }).offset).toBe(statSync(path).size);
 	});
 
 	test("a saved entry with a directory that the rules now cover is turned into an excluded one even when the file has not grown", async () => {

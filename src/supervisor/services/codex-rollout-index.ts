@@ -174,6 +174,8 @@ export function createRolloutIndex(options: {
 				files.push(join(dir, entry.name));
 			}
 		}
+		// A fixed order, so of two paths to one directory the same one is always the one walked.
+		subdirs.sort();
 		for (const gone of node.subdirs) if (!subdirs.includes(gone)) forget(gone);
 		for (const gone of node.files) if (!files.includes(gone)) forgetFile(gone);
 		node.subdirs = subdirs;

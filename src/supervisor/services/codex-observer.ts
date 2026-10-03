@@ -301,11 +301,74 @@ function discoverMeta(filePath: string): { id: string | null; cwd: string | null
 	return none;
 }
 
-/** A file seen for the first time outside the recent days starts at its current end: its history is not replayed, only what is written from now on. */
-function seedAtCurrentEnd(filePath: string): FileState {
+/**
+ * A resumed file is followed from its first line written within this long before
+ * it was found: the cold-recheck interval plus a margin, so the prompt that
+ * resumed the session is not lost to the delay in noticing it.
+ */
+const SEED_LOOKBACK_MS = 15 * 60 * 1000;
+/** How much of the end of a resumed file is searched for that first recent line. */
+const SEED_TAIL_BYTES = 256 * 1024;
+
+/**
+ * Where to start following a file seen for the first time outside the recent
+ * days: the first complete line, within the last SEED_TAIL_BYTES, whose timestamp
+ * is at or after `since`; the end of the last complete line when no line there
+ * has one.
+ */
+function findSeedOffset(filePath: string, size: number, since: number): number {
+	const tailStart = Math.max(0, size - SEED_TAIL_BYTES);
+	const buf = Buffer.alloc(size - tailStart);
+	let read = 0;
+	try {
+		const fd = openSync(filePath, "r");
+		try {
+			read = readSync(fd, buf, 0, buf.length, tailStart);
+		} finally {
+			closeSync(fd);
+		}
+	} catch {
+		return size;
+	}
+	const lastLf = buf.subarray(0, read).lastIndexOf(0x0a);
+	if (lastLf === -1) return tailStart === 0 ? 0 : size;
+	const end = tailStart + lastLf + 1;
+	let pos = 0;
+	if (tailStart > 0) {
+		// The tail starts mid-line unless it happens to start on a line; skip to the first whole one.
+		pos = buf.indexOf(0x0a) + 1;
+	}
+	while (pos <= lastLf) {
+		const lf = buf.indexOf(0x0a, pos);
+		const line = buf.toString("utf8", pos, lf);
+		if (line.includes('"timestamp"')) {
+			try {
+				const at = Date.parse((JSON.parse(line) as { timestamp?: unknown }).timestamp as string);
+				if (Number.isFinite(at) && at >= since) return tailStart + pos;
+			} catch {}
+		}
+		pos = lf + 1;
+	}
+	return end;
+}
+
+/**
+ * The first entry for a file seen for the first time outside the recent days (a
+ * resumed session). The exclusion decision comes first and is stored without the
+ * directory; with the rules invalid it is stored as a normal first sight would be
+ * (read to the end, nothing posted); otherwise it starts at the first recent line.
+ */
+function seedResumedFile(filePath: string, rules: LoadExcludeRulesResult, now: number): FileState {
 	const size = statSync(filePath).size;
 	const meta = discoverMeta(filePath);
-	return { offset: size, sessionId: meta.id ?? "", cwd: meta.cwd };
+	const sessionId = meta.id ?? "";
+	const posting = postingFor(rules, meta.cwd);
+	if (posting === "excluded") return { offset: size, sessionId, excluded: true };
+	const offset =
+		posting === "post"
+			? findSeedOffset(filePath, size, now - SEED_LOOKBACK_MS)
+			: findSeedOffset(filePath, size, Number.POSITIVE_INFINITY);
+	return { offset, sessionId, cwd: meta.cwd };
 }
 
 type Posting = "post" | "paused" | "excluded";
@@ -479,6 +542,13 @@ export async function processRolloutFile(
 		return { offset: stat.size, sessionId: stateEntry.sessionId, excluded: true };
 	}
 	if (stat.size === startOffset) {
+		// Nothing to read, but a directory the rules now cover must not stay on disk.
+		if (
+			stateEntry?.cwd !== undefined &&
+			postingFor(rules?.current() ?? NO_RULES_GIVEN, stateEntry.cwd) === "excluded"
+		) {
+			return { offset: stat.size, sessionId: stateEntry.sessionId, excluded: true };
+		}
 		return stateEntry ?? { offset: 0, sessionId: "" };
 	}
 	if (stat.size < startOffset) {
@@ -669,7 +739,7 @@ export interface ScanContext {
 	rules?: ObserverRules;
 	fetchImpl?: FetchLike;
 	homeDir?: string;
-	/** Files seen for the first time that are listed here start at their current end instead of being replayed from the start. */
+	/** Files seen for the first time that are listed here are followed from their first recent line (see seedResumedFile) instead of being replayed from the start. */
 	seedAtEnd?: ReadonlySet<string>;
 	/** The clock, for the lookback applied to a resumed file; tests only. */
 	now?: () => number;
@@ -692,11 +762,11 @@ export async function scanRolloutFiles(files: string[], ctx: ScanContext): Promi
 				callMap = new Map<string, string>();
 				ctx.callMapsByFile.set(file, callMap);
 			}
-			const previous = ctx.state.files[file];
+			let previous = ctx.state.files[file];
 			if (!previous && ctx.seedAtEnd?.has(file)) {
-				ctx.state.files[file] = seedAtCurrentEnd(file);
+				previous = seedResumedFile(file, snapshot ?? NO_RULES_GIVEN, (ctx.now ?? Date.now)());
+				ctx.state.files[file] = previous;
 				ctx.save(ctx.state);
-				continue;
 			}
 			const next = await processRolloutFile(
 				file,
