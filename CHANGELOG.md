@@ -35,10 +35,26 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   asked for is refused, so a server that predates it can't return every
   machine's sessions as one machine's.
 
+- `group_by=host` lists at most 50 machines (the busiest, plus the sessions with
+  no machine reported) and rolls the rest into `otherMachines` / `otherTotal`
+  with `groupsTruncated`, so a key that invents machine names can't bloat every
+  viewer's poll. A machine's count includes sessions that only claim that name.
+- A chosen machine shows as active: the select is highlighted, a line by the
+  stat cards says "Showing <machine> only" with how many are waiting on other
+  machines, and "Show all machines" is one click away. Machine counts in the
+  select follow the selected tab. Group by Machine shows a header for every
+  machine from the first page on.
+
 ### Changed
 
-- Sessions pushed over the WebSocket now carry their `machine`, looked up per
-  push and sent in the order they were emitted.
+- Sessions pushed over the WebSocket now carry their `machine`, looked up
+  concurrently with a short timeout and sent in order within each session, so a
+  slow lookup never stalls anyone else's live feed.
+- Supervisor host names are cleaned like reported names (and rows stored by an
+  older server once at boot), so every machine the grouping lists can be
+  selected. The sessions with no machine reported are called "No machine
+  reported" everywhere; the session detail labels say "Machine" / "Reported
+  machine".
 - A dashboard card shows the machine the filter selects on: for a
   supervisor-launched session that is the supervisor's host, where it used to
   show the name the session reported.
