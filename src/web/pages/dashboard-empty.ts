@@ -30,7 +30,7 @@ export interface EmptyStateInput {
 export interface EmptyState {
 	heading: string;
 	body: string | null;
-	actions: Array<"setup" | "viewEveryone">;
+	actions: Array<"setup" | "viewEveryone" | "allMachines">;
 }
 
 const TAB_WORD: Record<string, string> = {
@@ -149,6 +149,8 @@ export function shouldShowFirstRun(input: {
 	isLoading: boolean;
 	loadedCount: number;
 	owner: OwnerParam;
+	/** The machine on screen: a machine with no sessions is an empty view, never an empty install. */
+	host?: string;
 	/** The first answer failed: nothing is known about the install, so it can't be called empty. */
 	failed?: boolean;
 	/** The counts' own words on whether anything exists, scratch sessions included. */
@@ -158,6 +160,7 @@ export function shouldShowFirstRun(input: {
 	return (
 		!input.isLoading &&
 		!input.failed &&
+		(input.host ?? "") === "" &&
 		input.loadedCount === 0 &&
 		input.owner === OWNER_ALL &&
 		nothingAtAll

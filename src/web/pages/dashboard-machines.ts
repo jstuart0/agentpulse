@@ -1,5 +1,7 @@
+import type { ActiveOperationalStatus } from "../../shared/session-state.js";
 import type { HostStatsGroup } from "../../shared/types.js";
 import { HOST_ALL, HOST_UNKNOWN, type HostParam } from "../lib/host-scope.js";
+import type { EmptyState } from "./dashboard-empty.js";
 import type { GroupBy } from "./dashboard-groups.js";
 
 /**
@@ -75,4 +77,64 @@ export function machineAnnouncement(host: HostParam): string {
 	if (host === HOST_ALL) return "Showing sessions on every machine.";
 	if (host === HOST_UNKNOWN) return "Showing sessions with no machine.";
 	return `Showing sessions on ${host}.`;
+}
+
+/** What Group by offers: users only in a team, machines once the Machine control is on offer (see machineControlVisible). */
+export function groupByOptions(input: { team: boolean; machineControl: boolean }): GroupBy[] {
+	if (input.team) {
+		return input.machineControl
+			? ["project", "user", "agent", "machine"]
+			: ["project", "user", "agent"];
+	}
+	return input.machineControl ? ["project", "machine", "agent"] : ["project", "agent"];
+}
+
+/**
+ * Whether the Group by and scratch controls are drawn together. A team always has
+ * them. Solo keeps the page it had (the scratch toggle alone) unless there are
+ * two machines to choose between, or a grouping other than project is on, so it
+ * can always be undone.
+ */
+export function viewControlsVisible(input: {
+	team: boolean;
+	machineControl: boolean;
+	groupBy: GroupBy;
+}): boolean {
+	return input.team || input.machineControl || input.groupBy !== "project";
+}
+
+const TAB_WORD: Record<string, string> = {
+	active: "active",
+	completed: "completed",
+	archived: "archived",
+};
+
+/**
+ * The empty state for a view narrowed to a machine, or null where the grid's own
+ * copy is right (no machine chosen, a search is on, or the tab's badge says there
+ * is something, so it is never called empty). It names the machine and offers
+ * the way back to every machine.
+ */
+export function machineEmptyState(input: {
+	host: HostParam;
+	tab: string;
+	statusFilter: ActiveOperationalStatus | null;
+	searchActive: boolean;
+	/** Every session in this view, whatever the tab. */
+	scopeTotal: number;
+	tabCount?: number;
+	/** Whose sessions is also narrowed (Mine, a person, service keys, unassigned). */
+	ownerNarrowed: boolean;
+}): EmptyState | null {
+	if (input.host === HOST_ALL || input.searchActive || (input.tabCount ?? 0) > 0) return null;
+	const where = input.host === HOST_UNKNOWN ? "with no machine" : `on ${input.host}`;
+	const word = input.scopeTotal === 0 ? null : (input.statusFilter ?? TAB_WORD[input.tab] ?? null);
+	const heading = `No ${word ? `${word} ` : ""}sessions ${where}`;
+	const body =
+		input.scopeTotal === 0
+			? "Try another machine."
+			: input.ownerNarrowed
+				? "Try another tab, owner or machine."
+				: "Try another tab or machine.";
+	return { heading, body, actions: ["allMachines"] };
 }
