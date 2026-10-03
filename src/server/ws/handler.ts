@@ -207,8 +207,8 @@ const initializedBuses = new WeakSet<object>();
  * (logs a warning). Prevents listener accumulation on hot-reload or accidental
  * double-init.
  *
- * `annotate` adds what a pushed session row can't carry itself (its machine, see
- * effective-machine.ts). Lookups run concurrently but pushes leave in the order
+ * `annotate` adds what a pushed session row can't carry itself (its machine, which
+ * the composition root supplies). The broadcaster stays ignorant of how. Lookups run concurrently but pushes leave in the order
  * they were emitted, session events included, so a session's creation still
  * reaches a dashboard before its first event. A lookup that fails sends the row
  * as it was. Without it every push is sent at once, untouched.

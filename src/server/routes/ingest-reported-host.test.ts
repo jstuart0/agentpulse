@@ -452,7 +452,7 @@ describe("display only: the reported host decides nothing", () => {
 		expect((await row(id))?.lastUserAcknowledgedAt).toBeNull();
 	});
 
-	test("the effective machine is read by the session list and counts and by nothing that decides access", async () => {
+	test("the effective machine is read by the session list and counts, and wired into the live push by the composition root, and by nothing that decides access", async () => {
 		const serverRoot = join(import.meta.dir, "..");
 		const IMPORTS = /effective-machine/;
 		expect(IMPORTS.test('import { x } from "./effective-machine.js";')).toBe(true);
@@ -464,7 +464,10 @@ describe("display only: the reported host decides nothing", () => {
 		for (const file of files) {
 			if (IMPORTS.test(await readFile(join(serverRoot, file), "utf8"))) importers.push(file);
 		}
-		expect(importers.sort()).toEqual(["services/session-tracker.ts"]);
+		// session-tracker answers the list and the counts; index.ts only hands the
+		// stamp to the socket broadcaster (a view of the same name). Neither is an
+		// access, ownership, routing or attribution decision.
+		expect(importers.sort()).toEqual(["index.ts", "services/session-tracker.ts"]);
 	});
 
 	test("only the known write and DTO sites mention the reported host", async () => {
