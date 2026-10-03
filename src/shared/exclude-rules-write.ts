@@ -162,20 +162,46 @@ function sleepMs(ms: number): void {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Identity of the lock a waiter judged stale, so a takeover can tell it removed that one and not a fresh lock that replaced it. */
+/**
+ * Identity of the lock a waiter judged stale, so a takeover can tell it removed
+ * that one and not a fresh lock that replaced it. Device and inode alone are
+ * not enough: Linux filesystems hand a just-freed inode number to the next file
+ * created, so a rival's fresh lock can carry the same pair. The modification
+ * time (nanoseconds; a rename doesn't change it) and the holder's content are
+ * part of the identity too.
+ */
 interface LockIdentity {
-	dev: number;
-	ino: number;
+	dev: bigint;
+	ino: bigint;
+	mtimeNs: bigint;
+	content: string;
+}
+
+function identityOf(path: string): LockIdentity {
+	const st = lstatSync(path, { bigint: true });
+	let content = "";
+	if (st.isFile()) {
+		try {
+			content = readFileSync(path, "utf-8");
+		} catch {
+			// unreadable: the other three fields still tell locks apart
+		}
+	}
+	return { dev: st.dev, ino: st.ino, mtimeNs: st.mtimeNs, content };
+}
+
+function sameLock(a: LockIdentity, b: LockIdentity): boolean {
+	return a.dev === b.dev && a.ino === b.ino && a.mtimeNs === b.mtimeNs && a.content === b.content;
 }
 
 /** The identity of the lock when it is stale (old, or held by a process that no longer exists), else null. */
 function judgeStale(lockPath: string): LockIdentity | null {
 	try {
+		const identity = identityOf(lockPath);
 		const st = lstatSync(lockPath);
-		const identity = { dev: st.dev, ino: st.ino };
 		if (Date.now() - st.mtimeMs > LOCK_STALE_MS) return identity;
 		if (!st.isFile()) return null;
-		const pid = Number.parseInt(readFileSync(lockPath, "utf-8").trim(), 10);
+		const pid = Number.parseInt(identity.content.trim(), 10);
 		if (!Number.isInteger(pid) || pid <= 0) return null;
 		try {
 			process.kill(pid, 0);
@@ -208,8 +234,7 @@ function takeOverStaleLock(
 		return; // someone else moved or removed it first
 	}
 	try {
-		const moved = lstatSync(aside);
-		if (moved.dev !== judged.dev || moved.ino !== judged.ino) {
+		if (!sameLock(identityOf(aside), judged)) {
 			try {
 				linkSync(aside, lockPath);
 			} catch {
