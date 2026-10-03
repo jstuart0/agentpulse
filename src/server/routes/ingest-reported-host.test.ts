@@ -470,6 +470,84 @@ describe("display only: the reported host decides nothing", () => {
 		expect(importers.sort()).toEqual(["index.ts", "services/session-tracker.ts"]);
 	});
 
+	describe("the machine, by every name an access check could reach it through", () => {
+		/** Comments stripped, so prose about "the machine" isn't a reader. */
+		const code = (text: string) =>
+			text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+		const NAMES =
+			/EFFECTIVE_MACHINE|MACHINE_JOINED|SUPERVISOR_JOIN|hostScopeCondition|stampMachine|[\w)\]]\.machine\b|\bmachine:/;
+		/** Every file that reaches the effective machine, and why it may. */
+		const ALLOWED = new Set([
+			"services/effective-machine.ts", // the definition
+			"services/session-tracker.ts", // the list rows, the filter and the counts
+			"index.ts", // hands the stamp to the socket broadcaster
+		]);
+		const readers = (files: Record<string, string>) =>
+			Object.entries(files)
+				.filter(([name, text]) => NAMES.test(code(text)) && !ALLOWED.has(name))
+				.map(([name]) => name)
+				.sort();
+
+		test("the matcher flags each name, in a file that decides access", () => {
+			for (const use of [
+				"import { EFFECTIVE_MACHINE } from './effective-machine.js'",
+				"where(MACHINE_JOINED)",
+				"const c = hostScopeCondition(h)",
+				"await stampMachine(s)",
+				"if (session.machine === 'x') deny()",
+				"return { machine: row.x }",
+				"leftJoin(SUPERVISOR_JOIN)",
+			]) {
+				expect({ use, flagged: readers({ "auth/middleware.ts": use }).length }).toEqual({
+					use,
+					flagged: 1,
+				});
+			}
+		});
+
+		test("prose about a machine is not a reader, and the allowlisted files are not flagged", () => {
+			expect(
+				readers({
+					"auth/middleware.ts":
+						"/* the request left the machine: ok */\n// this machine.\nconst a = 1;",
+				}),
+			).toEqual([]);
+			expect(
+				readers({ "services/session-tracker.ts": "row.machine", "index.ts": "stampMachine" }),
+			).toEqual([]);
+		});
+
+		test("it fails when an auth, attribution or routing file uses one", () => {
+			expect(
+				readers({
+					"services/authorization.ts": "if (row.machine) allow()",
+					"services/session-ownership.ts": "EFFECTIVE_MACHINE",
+				}),
+			).toEqual(["services/authorization.ts", "services/session-ownership.ts"]);
+		});
+
+		test("in the tree: no file outside the allowlist reaches the machine, and the allowlist is accounted for", async () => {
+			const serverRoot = join(import.meta.dir, "..");
+			const names = (await readdir(serverRoot, { recursive: true })).filter(
+				(n) => n.endsWith(".ts") && !n.endsWith(".test.ts"),
+			);
+			expect(names.length).toBeGreaterThan(100);
+			for (const named of [
+				"auth/middleware.ts",
+				"services/authorization.ts",
+				"services/session-attribution.ts",
+				"services/launch-dispatch.ts",
+				"services/session-ownership.ts",
+			]) {
+				expect(names).toContain(named);
+			}
+			const files: Record<string, string> = {};
+			for (const name of names) files[name] = await readFile(join(serverRoot, name), "utf8");
+			expect(readers(files)).toEqual([]);
+			for (const allowed of ALLOWED) expect(NAMES.test(code(files[allowed]))).toBe(true);
+		});
+	});
+
 	test("only the known write and DTO sites mention the reported host", async () => {
 		const serverRoot = join(import.meta.dir, "..");
 		const MENTION = /reportedHost|reported_host|HOST_HEADER|reported-host/;
