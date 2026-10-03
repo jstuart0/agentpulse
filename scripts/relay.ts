@@ -1401,8 +1401,16 @@ const HOST_NAME_MAX_CHARS = 128;
  * forward fail. "" means there is no usable name: send no header.
  */
 function hostHeaderValue(name: string): string {
-	const trimmed = Array.from(name.trim()).slice(0, HOST_NAME_MAX_CHARS).join("");
-	return trimmed ? encodeURIComponent(trimmed) : "";
+	// Lone surrogates are dropped first: encodeURIComponent throws on them, and a throw here
+	// would fail every forward of every hook.
+	const cleaned = name.replace(/\p{Cs}/gu, "").trim();
+	const capped = Array.from(cleaned).slice(0, HOST_NAME_MAX_CHARS).join("");
+	if (!capped) return "";
+	try {
+		return encodeURIComponent(capped);
+	} catch {
+		return "";
+	}
 }
 
 /** RFC 6750 b64token: what a Bearer credential may contain. */

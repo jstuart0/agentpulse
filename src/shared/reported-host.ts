@@ -21,10 +21,13 @@ const REPORTED_HOST_HEADER_MAX_LENGTH = 2048;
 /** Control, format (zero-width, bidi), line and paragraph separator, and lone surrogate characters. */
 const UNSAFE_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu;
 
-/** Trim, strip unsafe characters, cap at 128 characters; null when nothing is left. */
+/** Any run of whitespace, including NBSP and other space separators. */
+const WHITESPACE_RUN = /[\s\p{Zs}]+/gu;
+
+/** Trim, strip unsafe characters, collapse interior whitespace to one space, cap at 128 characters; null when nothing is left. */
 export function sanitizeReportedHost(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const cleaned = value.replace(UNSAFE_CHARACTERS, "").trim();
+	const cleaned = value.replace(UNSAFE_CHARACTERS, "").replace(WHITESPACE_RUN, " ").trim();
 	const capped = Array.from(cleaned).slice(0, REPORTED_HOST_MAX_LENGTH).join("").trim();
 	return capped.length > 0 ? capped : null;
 }

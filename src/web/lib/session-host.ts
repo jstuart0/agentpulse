@@ -7,6 +7,11 @@
  * Codex observer sent: self-declared and unauthenticated, so it is labelled as
  * reported and used for display only. Never feed it into a permission, routing
  * or ownership decision.
+ *
+ * Where each shows: the dashboard card only has the list row, which carries no
+ * managed session, so a managed session's card shows its reported host (if any);
+ * its detail view loads `managedSession` and shows the supervisor host instead.
+ * The two can differ.
  */
 import type { Session } from "../../shared/types.js";
 
