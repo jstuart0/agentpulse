@@ -64,7 +64,8 @@ describe("host= on the wire", () => {
 			await api.getStatsByOwner(scopedQuery(scope));
 			await api.getStatsByHost(scopedQuery(scope));
 			await api.getEveryoneStats(false, host);
-			for (const url of urls) expect({ url, has: search(url).has("host") }).toEqual({ url, has: false });
+			for (const url of urls)
+				expect({ url, has: search(url).has("host") }).toEqual({ url, has: false });
 		}
 	});
 });

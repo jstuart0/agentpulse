@@ -837,7 +837,7 @@ export function DashboardPage() {
 					<ConnectMachineCard suppress={emptyState?.actions.includes("setup") ?? false} />
 
 					{host !== HOST_ALL && (
-						<p className="mb-2 text-xs text-foreground" data-machine-scope>
+						<p className="mb-2 text-xs text-foreground [overflow-wrap:anywhere]" data-machine-scope>
 							<span className="font-medium">
 								{machineScopeText(host, waitingOnOtherMachines(machineStats.groups, host))}
 							</span>{" "}
