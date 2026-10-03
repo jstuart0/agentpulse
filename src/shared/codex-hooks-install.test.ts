@@ -162,18 +162,26 @@ describe("installCodexHooksFile", () => {
 		expect(readdirSync(join(dir, "real"))).toEqual([]);
 	});
 
-	test("a failing write (EFBIG, as under ulimit -f): the file is untouched, no backup, no temp file, message says so", () => {
+	test("a failing write (EFBIG, as under ulimit -f) while backing up: the file is untouched, no temp file, message says so", () => {
 		const dir = scratch();
 		const path = join(dir, "hooks.json");
 		writeFileSync(path, THEIRS);
 		const r = installCodexHooksFile(path, OURS, failingWriter("EFBIG"));
 		expect(r.status).toBe("skipped");
 		if (r.status === "skipped") {
-			expect(r.message).toContain("could not be written");
+			expect(r.message).toContain("could not be backed up");
 			expect(r.message).toContain("EFBIG");
 		}
 		expect(readFileSync(path, "utf-8")).toBe(THEIRS);
 		expect(readdirSync(dir)).toEqual(["hooks.json"]);
+	});
+
+	test("a failing write with no existing file: nothing is created", () => {
+		const dir = scratch();
+		const r = installCodexHooksFile(join(dir, "hooks.json"), OURS, failingWriter("EFBIG"));
+		expect(r.status).toBe("skipped");
+		if (r.status === "skipped") expect(r.message).toContain("could not be written");
+		expect(readdirSync(dir)).toEqual([]);
 	});
 
 	test("the main write failing after the backup succeeded removes the backup again", () => {

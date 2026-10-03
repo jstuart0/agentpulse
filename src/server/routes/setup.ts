@@ -410,42 +410,66 @@ sys.stdout.write(json.dumps({"hooks": hooks}, indent=2) + "\\n")
 # replacing it (src/shared/hook-command.ts mergeCodexHooksFile is the
 # reference; scripts/codex-hooks-merge.test.ts holds every copy to it).
 # \$1 = the hooks.json path, stdin = the file ap_codex_hooks_json generated.
-# A handler is AgentPulse's when its "command" contains /api/v1/hooks?event= ;
-# every other handler, event and top-level key is kept in place. Writes nothing
-# itself. Exit 0: stdout is the merged file, write it. Exit 3: nothing to change.
-# Exit 4: the file is not usable JSON of the expected shape; a message is
-# printed and the file must be left alone. Exit 1: \$1 is a symlink and a write
-# would be needed.
+# A handler is AgentPulse's when its "command" contains BOTH /api/v1/hooks?event=
+# and X-Agent-Type (every generated command has both); every other handler,
+# event and top-level key is kept in place. Other tools' bytes are never
+# altered: a number that would not come back as the same text (beyond 15
+# digits, 1.0, 1E5, -0, NaN) makes the file unusable. Duplicate keys in the
+# existing file keep only the last one, in every copy. Writes nothing itself.
+# Exit 0: stdout is the merged file, write it. Exit 3: nothing to change.
+# Exit 4: the file is unreadable or not usable JSON of the expected shape; a
+# message is printed and the file must be left alone. Exit 1: \$1 is a symlink
+# and a write would be needed.
 ap_codex_merge_hooks_json() {
 	local path="\$1" ours py out rc=0
 	ours="\$(cat)"
 	IFS= read -r -d '' py <<'AP_MERGE_PY_EOF' || true
-import json, os, sys
+import json, os, re, sys
 mark = "/api/v1/hooks?event="
+header = "X-Agent-Type"
 q = chr(34)
 path = sys.argv[1]
 doc_ours = json.loads(sys.stdin.read())
 ours = doc_ours["hooks"]
+num_ok = re.compile(r"-?(?:0|[1-9][0-9]{0,14})|-?[1-9][0-9]{0,8}[.][0-9]{0,5}[1-9]|-?0[.][0-9]{0,3}[1-9]")
+class Lossy(Exception):
+    pass
+def keep_number(tok):
+    if tok == "-0" or not num_ok.fullmatch(tok):
+        raise Lossy()
+    return float(tok) if "." in tok else int(tok)
+def bad_constant(tok):
+    raise ValueError(tok)
 def dump(o):
     return json.dumps(o, indent=2).replace(chr(127), chr(92) + "u007f")
 def mine(h):
-    return isinstance(h, dict) and isinstance(h.get("command"), str) and mark in h["command"]
+    return isinstance(h, dict) and isinstance(h.get("command"), str) and mark in h["command"] and header in h["command"]
 def refuse(reason):
     sys.stderr.write("! Codex hooks not updated: " + path + " " + reason + ". It was left untouched. To add the AgentPulse hooks, fix or move that file and run this installer again." + chr(10))
     sys.exit(4)
-text = None
+raw = None
 if os.path.exists(path):
     try:
-        text = open(path, "rb").read().decode("utf-8")
+        raw = open(path, "rb").read()
     except Exception:
+        refuse("could not be read")
+text = None
+if raw is not None:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
         refuse("is not valid JSON")
 if text is None or text.strip() == "":
     sys.stdout.write(dump(doc_ours) + chr(10))
     sys.exit(0)
 try:
-    doc = json.loads(text)
-except ValueError:
+    json.loads(text, parse_constant=bad_constant)
+except (ValueError, RecursionError):
     refuse("is not valid JSON")
+try:
+    doc = json.loads(text, parse_int=keep_number, parse_float=keep_number)
+except Lossy:
+    refuse("has a number that cannot be kept exactly as written")
 if not isinstance(doc, dict):
     refuse("is not a JSON object")
 if "hooks" in doc and not isinstance(doc["hooks"], dict):
