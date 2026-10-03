@@ -47,3 +47,33 @@ export function resolveHostScope(parsed: ParsedHostParam): HostScope | undefined
 export function hostFilterEcho(parsed: ParsedHostParam): HostFilterEcho {
 	return parsed;
 }
+
+/**
+ * Whether a session whose effective machine is `machine` belongs in the view for
+ * `scope`: the client's copy of what the server's SQL decides, so a live update
+ * is included or left out by the same rule as a listed row. A blank name is no
+ * machine. Nothing but a view reads this.
+ */
+export function machineMatchesHost(
+	scope: ParsedHostParam,
+	machine: string | null | undefined,
+): boolean {
+	if (scope.kind === "all") return true;
+	const name = machine?.trim() || null;
+	if (scope.kind === "unknown") return name === null;
+	return name === scope.host;
+}
+
+/**
+ * Whether a response's echo of the machine filter it applied is the one that
+ * was asked for. Unlike the owner echo, a missing one is accepted only when no
+ * filter was asked for: a server that doesn't know the parameter ignores it and
+ * would otherwise pass off every machine's sessions as one machine's.
+ */
+export function hostEchoMatchesRequest(requested: ParsedHostParam, echo: unknown): boolean {
+	if (echo === undefined) return requested.kind === "all";
+	if (typeof echo !== "object" || echo === null) return false;
+	const { kind, host } = echo as { kind?: unknown; host?: unknown };
+	if (kind !== requested.kind) return false;
+	return requested.kind !== "host" || host === requested.host;
+}
