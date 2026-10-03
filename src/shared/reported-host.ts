@@ -24,6 +24,11 @@ const UNSAFE_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu;
 /** Any run of whitespace, including NBSP and other space separators. */
 const WHITESPACE_RUN = /[\s\p{Zs}]+/gu;
 
+/** Whether the text holds any character {@link sanitizeReportedHost} would strip: such text can never be a stored machine name. */
+export function containsUnsafeHostCharacters(value: string): boolean {
+	return value.search(UNSAFE_CHARACTERS) !== -1;
+}
+
 /** Trim, strip unsafe characters, collapse interior whitespace to one space, cap at 128 characters; null when nothing is left. */
 export function sanitizeReportedHost(value: unknown): string | null {
 	if (typeof value !== "string") return null;
