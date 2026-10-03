@@ -7,6 +7,18 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Added
+
+- **Which machine a session runs on, for observed sessions too.** The relay and
+  the supervisor's Codex observer now name their machine in an
+  `X-AgentPulse-Host` header on the hooks they forward, and the server keeps it
+  on the session (`reportedHost`, a new nullable column; two migrations). The
+  session detail header and dashboard cards show it as "on <machine>", and the
+  Overview labels it "Reported host". It is display only and self-declared, so
+  nothing treats it as proof and no permission check reads it; a
+  supervisor-launched session still shows its supervisor's host. Direct-mode
+  hooks send nothing and show no host.
+
 ## [0.7.0] — 2026-10-03
 
 ### Added

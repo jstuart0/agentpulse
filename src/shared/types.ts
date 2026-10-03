@@ -455,6 +455,15 @@ export interface Session {
 	 */
 	lastAgentTurnCompletedAt: string | null;
 	lastUserAcknowledgedAt: string | null;
+	/**
+	 * The machine name a relay or the Codex observer reported for this session.
+	 * Display only: self-declared by the sender, so unauthenticated and never
+	 * used for ownership, access or routing. Null when none was reported
+	 * (direct-mode hooks send none). A managed session's host is
+	 * `managedSession.hostName`, which outranks this. Optional: an older server
+	 * won't send it.
+	 */
+	reportedHost?: string | null;
 	managedSession?: ManagedSession | null;
 	/**
 	 * Cheap presence flag: true when a managed_sessions row exists for this

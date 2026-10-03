@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { DELIVERY_ID_HEADER, ORIGIN_HEADER } from "../../shared/hook-headers.js";
+import { DELIVERY_ID_HEADER, HOST_HEADER, ORIGIN_HEADER } from "../../shared/hook-headers.js";
+import { parseReportedHostHeader } from "../../shared/reported-host.js";
 import type { HookEventPayload, HookEventType, SemanticStatusUpdate } from "../../shared/types.js";
 import type { AuthUser } from "../auth/middleware.js";
 import { requireApiKey } from "../auth/middleware.js";
@@ -494,6 +495,7 @@ export function buildHookDeliveryContext(c: Context): HookDeliveryContext {
 		deliveryId: parseDeliveryId(c.req.header(DELIVERY_ID_HEADER)),
 		origin: parseOrigin(c.req.header(ORIGIN_HEADER)),
 		attribution: postingAttribution(authUser),
+		reportedHost: parseReportedHostHeader(c.req.header(HOST_HEADER)),
 	};
 }
 

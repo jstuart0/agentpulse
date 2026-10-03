@@ -217,6 +217,12 @@ export interface Session {
 	// always sends both (null until the session has seen the event).
 	lastAgentTurnCompletedAt?: string | null;
 	lastUserAcknowledgedAt?: string | null;
+	/**
+	 * The machine name a relay or the Codex observer reported for this session.
+	 * Display only: self-declared by the sender, so unauthenticated. Null when
+	 * none was reported. Optional: an older server won't send it.
+	 */
+	reportedHost?: string | null;
 	managedSession?: ManagedSession | null;
 	managed?: boolean;
 	// F86 (ian mid-build, D14/Phase 2): optional for backward-compat with a

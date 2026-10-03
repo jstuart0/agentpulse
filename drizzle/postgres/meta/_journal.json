@@ -71,6 +71,13 @@
 			"when": 1791008597857,
 			"tag": "0009_supervisor_exclude_rules_state",
 			"breakpoints": true
+		},
+		{
+			"idx": 10,
+			"version": "7",
+			"when": 1791038765977,
+			"tag": "0010_session_reported_host",
+			"breakpoints": true
 		}
 	]
 }

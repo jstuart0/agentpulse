@@ -5,7 +5,16 @@
  * decision. These tests cover the header on the wire, the one write per change,
  * the statement cost, the exclude rule, and the "display only" promise.
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	spyOn,
+	test,
+} from "bun:test";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -200,6 +209,84 @@ describe("written once, when it changes", () => {
 		expect((await getSession(id))?.reportedHost).toBe("dto-box");
 		const listed = (await getSessions({ limit: 50 })).sessions.find((s) => s.sessionId === id);
 		expect(listed?.reportedHost).toBe("dto-box");
+	});
+});
+
+describe("only a changed host is written", () => {
+	/** Every value the processor passes to an UPDATE on sessions while `fn` runs. */
+	async function sessionUpdateValues(
+		fn: () => Promise<void>,
+	): Promise<Array<Record<string, unknown>>> {
+		const db = getDb();
+		const real = db.update.bind(db);
+		const seen: Array<Record<string, unknown>> = [];
+		// biome-ignore lint/suspicious/noExplicitAny: wrapping the builder surface only
+		const spy = spyOn(db, "update").mockImplementation(((table: any) => {
+			const builder = real(table);
+			const set = builder.set.bind(builder);
+			// biome-ignore lint/suspicious/noExplicitAny: wrapping the builder surface only
+			builder.set = ((values: any) => {
+				seen.push(values);
+				return set(values);
+			}) as typeof builder.set;
+			return builder;
+			// biome-ignore lint/suspicious/noExplicitAny: wrapping the builder surface only
+		}) as any);
+		try {
+			await fn();
+		} finally {
+			spy.mockRestore();
+		}
+		return seen;
+	}
+
+	const ctx = (reportedHost: string | null) => ({
+		keyId: "key-host-once",
+		deliveryId: null,
+		origin: "native" as const,
+		attribution: { ownerUserId: null, ingestKeyId: "key-host-once" },
+		reportedHost,
+	});
+
+	test("an unchanged host is not part of the update; a changed one is; none reported leaves it out", async () => {
+		const id = newId("host-once");
+		await processHookEvent(
+			{ session_id: id, hook_event_name: "SessionStart" },
+			"claude_code",
+			ctx("box"),
+		);
+
+		const same = await sessionUpdateValues(async () => {
+			await processHookEvent(
+				{ session_id: id, hook_event_name: "PostToolUse" },
+				"claude_code",
+				ctx("box"),
+			);
+		});
+		const changed = await sessionUpdateValues(async () => {
+			await processHookEvent(
+				{ session_id: id, hook_event_name: "PostToolUse" },
+				"claude_code",
+				ctx("other"),
+			);
+		});
+		const none = await sessionUpdateValues(async () => {
+			await processHookEvent(
+				{ session_id: id, hook_event_name: "PostToolUse" },
+				"claude_code",
+				ctx(null),
+			);
+		});
+
+		// Population floor: the hook really did UPDATE the session each time.
+		for (const updates of [same, changed, none]) {
+			expect(updates.some((v) => "lastActivityAt" in v)).toBe(true);
+		}
+		expect(same.some((v) => "reportedHost" in v)).toBe(false);
+		expect(changed.filter((v) => "reportedHost" in v)).toEqual([
+			expect.objectContaining({ reportedHost: "other" }),
+		]);
+		expect(none.some((v) => "reportedHost" in v)).toBe(false);
 	});
 });
 

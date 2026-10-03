@@ -19,9 +19,11 @@ import { type LoadExcludeRulesResult, evaluateExclusion } from "../../shared/exc
 import {
 	CODEX_NATIVE_MARKER_DIR,
 	DELIVERY_ID_HEADER,
+	HOST_HEADER,
 	ORIGIN_CODEX_OBSERVER,
 	ORIGIN_HEADER,
 } from "../../shared/hook-headers.js";
+import { encodeReportedHostHeader } from "../../shared/reported-host.js";
 
 const CODEX_SESSIONS_ROOT = join(homedir(), ".codex", "sessions");
 const STATE_FILE = join(homedir(), ".agentpulse", "codex-observer-state.json");
@@ -202,6 +204,7 @@ async function postHook(
 	apiKey: string | null,
 	payload: HookPayload,
 	deliveryId: string,
+	hostName?: string | null,
 ) {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
@@ -209,6 +212,9 @@ async function postHook(
 		[ORIGIN_HEADER]: ORIGIN_CODEX_OBSERVER,
 		[DELIVERY_ID_HEADER]: deliveryId,
 	};
+	// This machine's name, for display on the dashboard (unauthenticated; see reported-host.ts).
+	const reportedHost = hostName ? encodeReportedHostHeader(hostName) : "";
+	if (reportedHost) headers[HOST_HEADER] = reportedHost;
 	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 	const res = await fetchImpl(`${serverUrl}/api/v1/hooks`, {
 		method: "POST",
@@ -411,6 +417,7 @@ export async function processRolloutFile(
 	fetchImpl: FetchLike = fetch,
 	homeDir: string = homedir(),
 	rules?: ObserverRules,
+	hostName?: string | null,
 ): Promise<FileState> {
 	const stat = statSync(filePath);
 	const startOffset = stateEntry?.offset ?? 0;
@@ -432,6 +439,7 @@ export async function processRolloutFile(
 			fetchImpl,
 			homeDir,
 			rules,
+			hostName,
 		);
 	}
 
@@ -474,7 +482,9 @@ export async function processRolloutFile(
 	let covered = sessionId ? isNativeCovered(sessionId, homeDir) : false;
 	/** Posts only while posting is allowed; while the rules are invalid the line is read and its offset advances, nothing more. */
 	const post = async (payload: HookPayload, deliveryId: string) => {
-		if (posting === "post") await postHook(fetchImpl, serverUrl, apiKey, payload, deliveryId);
+		if (posting === "post") {
+			await postHook(fetchImpl, serverUrl, apiKey, payload, deliveryId, hostName);
+		}
 	};
 
 	// Rollout lines whose `type` isn't one of the cases handled below fall
@@ -632,6 +642,8 @@ export interface ScanContext {
 	rules?: ObserverRules;
 	fetchImpl?: FetchLike;
 	homeDir?: string;
+	/** This machine's name, reported on every hook posted (display only). */
+	hostName?: string | null;
 	/** Called only when an entry was added or changed. */
 	save: (state: ObserverState) => void;
 }
@@ -661,6 +673,7 @@ export async function scanRolloutFiles(files: string[], ctx: ScanContext): Promi
 				ctx.fetchImpl,
 				ctx.homeDir,
 				rulesView,
+				ctx.hostName,
 			);
 			ctx.state.files[file] = next;
 			if (!previous || JSON.stringify(previous) !== JSON.stringify(next)) ctx.save(ctx.state);
@@ -676,6 +689,8 @@ export async function startCodexObserver(options: {
 	apiKey: string | null;
 	/** The exclude rules, shared with the report gate. The observer does not see AGENTPULSE_SKIP; path rules are what cover it. */
 	rules?: ObserverRules;
+	/** This machine's name, reported on every hook posted so the dashboard can show where a Codex session ran. */
+	hostName?: string | null;
 }) {
 	if (!existsSync(CODEX_SESSIONS_ROOT)) {
 		console.log("[codex-observer] no ~/.codex/sessions directory; observer idle");
@@ -693,6 +708,7 @@ export async function startCodexObserver(options: {
 			serverUrl: options.serverUrl,
 			apiKey: options.apiKey,
 			rules: options.rules,
+			hostName: options.hostName,
 			save: (saved) => saveState(saved),
 		});
 

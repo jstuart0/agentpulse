@@ -9,6 +9,7 @@ import { describeApiError } from "../lib/api-errors.js";
 import { type SessionIntelligence, api } from "../lib/api.js";
 import type { OwnerChipModel } from "../lib/owner-chip.js";
 import { sessionActionAccess } from "../lib/ownership-ui.js";
+import { sessionHostLabel } from "../lib/session-host.js";
 import {
 	canAcknowledgeSession,
 	extractProjectName,
@@ -34,6 +35,7 @@ import { useUserStore } from "../stores/user-store.js";
 import { AgentTypeBadge } from "./AgentTypeBadge.js";
 import { IntelligenceBadge } from "./IntelligenceBadge.js";
 import { OwnerChip } from "./OwnerChip.js";
+import { SessionHostTag } from "./SessionHostTag.js";
 import { StatusBadge } from "./StatusBadge.js";
 
 interface SessionCardProps {
@@ -112,6 +114,7 @@ export function SessionCard({ session, intelligence, ownerChip }: SessionCardPro
 	const name = session.displayName || session.sessionId?.slice(0, 8) || "session";
 	const linkedProject = useProjectsStore((s) => s.getById(session.projectId));
 	const isScratch = (linkedProject?.tags ?? []).includes("scratch");
+	const hostLabel = sessionHostLabel(session);
 	const opStatus = getOperationalStatus(session);
 	// Dimmed (60% opacity) treatment is for operationally COMPLETED sessions
 	// (including an acknowledged failure) and archived ones — never for an
@@ -678,6 +681,9 @@ export function SessionCard({ session, intelligence, ownerChip }: SessionCardPro
 					>
 						{session.cwd}
 					</p>
+					{hostLabel && (
+						<SessionHostTag label={hostLabel} className="hidden md:inline-flex max-w-[10rem]" />
+					)}
 					{session.gitBranch && (
 						<span className="flex-shrink-0 text-[10px] font-mono text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0">
 							{session.gitBranch}

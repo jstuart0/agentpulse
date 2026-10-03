@@ -41,6 +41,7 @@ import { ownerChip } from "../lib/owner-chip.js";
 import { ownerLabel, sessionOwnerText } from "../lib/owner-label.js";
 import { NOTES_BLOCKED_REASON, sessionActionAccess } from "../lib/ownership-ui.js";
 import { assignablePeople, withCurrentOwner } from "../lib/people.js";
+import { sessionHostLabel } from "../lib/session-host.js";
 import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
 import { useEventStore } from "../stores/event-store.js";
 import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
@@ -642,6 +643,7 @@ export function SessionDetailPage() {
 				onClick: ackActionHandlers[ackDerivation.kind],
 			}
 		: null;
+	const hostLabel = sessionHostLabel(session);
 
 	return (
 		<div className="flex flex-col h-full">
@@ -739,8 +741,8 @@ export function SessionDetailPage() {
 						<SummaryField label="Branch" value={session.gitBranch} mono />
 						<SummaryField label="Current task" value={session.currentTask} />
 						<SummaryField label="Tools" value={String(session.totalToolUses)} />
-						{session.managedSession?.hostName ? (
-							<SummaryField label="Host" value={session.managedSession.hostName} mono />
+						{hostLabel ? (
+							<SummaryField label={hostLabel.fieldLabel} value={hostLabel.name} mono />
 						) : null}
 						{session.managedSession?.launchRequestId ? (
 							<SummaryField
