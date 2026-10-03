@@ -42,7 +42,6 @@ export function useMachineStats(scope: DashboardScope | null) {
 		}
 	}, [isCurrent, viewerUserId]);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: the key stands for the scope; load reads the current one
 	useEffect(() => {
 		generationRef.current += 1;
 		setGroups(null);

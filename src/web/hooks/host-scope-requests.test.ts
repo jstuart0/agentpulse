@@ -29,7 +29,6 @@ import { useSessions } from "./useSessions.js";
 import { useTabSessionList } from "./useTabSessionList.js";
 
 const ALICE = "7d1c2a90-3b1e-4a0f-8e44-5c2f9b6a1d02";
-const BUILD = { kind: "host", host: "build-01" };
 const scope: DashboardScope = { owner: ALICE, excludeScratch: true, host: "build-01" };
 
 // biome-ignore lint/suspicious/noExplicitAny: the client is replaced method by method
