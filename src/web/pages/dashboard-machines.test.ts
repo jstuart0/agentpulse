@@ -4,10 +4,13 @@ import { HOST_ALL, HOST_UNKNOWN } from "../lib/host-scope.js";
 import {
 	ALL_MACHINES_LABEL,
 	UNKNOWN_MACHINE_LABEL,
+	groupByOptions,
 	machineAnnouncement,
 	machineControlVisible,
+	machineEmptyState,
 	machineLabel,
 	machineOptions,
+	viewControlsVisible,
 } from "./dashboard-machines.js";
 
 function group(host: string | null, total: number): HostStatsGroup {
@@ -118,5 +121,104 @@ describe("labels and announcements", () => {
 		expect(machineAnnouncement(HOST_ALL)).toBe("Showing sessions on every machine.");
 		expect(machineAnnouncement("build-01")).toBe("Showing sessions on build-01.");
 		expect(machineAnnouncement(HOST_UNKNOWN)).toBe("Showing sessions with no machine.");
+	});
+});
+
+describe("groupByOptions", () => {
+	test("a team: project, user, agent, and machine once machines can be told apart", () => {
+		expect(groupByOptions({ team: true, machineControl: false })).toEqual([
+			"project",
+			"user",
+			"agent",
+		]);
+		expect(groupByOptions({ team: true, machineControl: true })).toEqual([
+			"project",
+			"user",
+			"agent",
+			"machine",
+		]);
+	});
+
+	test("solo has no users to group by: project, machine, agent", () => {
+		expect(groupByOptions({ team: false, machineControl: true })).toEqual([
+			"project",
+			"machine",
+			"agent",
+		]);
+		expect(groupByOptions({ team: false, machineControl: false })).toEqual(["project", "agent"]);
+	});
+});
+
+describe("viewControlsVisible: solo keeps its page unless there is something to choose", () => {
+	test("a team always has Group by", () => {
+		expect(viewControlsVisible({ team: true, machineControl: false, groupBy: "project" })).toBe(
+			true,
+		);
+	});
+
+	test("solo shows them with two machines, or while a grouping other than project is on, so it can always be undone", () => {
+		expect(viewControlsVisible({ team: false, machineControl: false, groupBy: "project" })).toBe(
+			false,
+		);
+		expect(viewControlsVisible({ team: false, machineControl: true, groupBy: "project" })).toBe(
+			true,
+		);
+		expect(viewControlsVisible({ team: false, machineControl: false, groupBy: "agent" })).toBe(
+			true,
+		);
+		expect(viewControlsVisible({ team: false, machineControl: false, groupBy: "machine" })).toBe(
+			true,
+		);
+	});
+});
+
+describe("machineEmptyState", () => {
+	const base = {
+		host: "build-01",
+		tab: "active",
+		statusFilter: null,
+		searchActive: false,
+		scopeTotal: 0,
+		tabCount: 0,
+		ownerNarrowed: false,
+	} as const;
+
+	test("no machine chosen, a search, or a tab whose badge says there is something: the grid's own copy", () => {
+		expect(machineEmptyState({ ...base, host: HOST_ALL })).toBeNull();
+		expect(machineEmptyState({ ...base, searchActive: true })).toBeNull();
+		expect(machineEmptyState({ ...base, tabCount: 3, scopeTotal: 3 })).toBeNull();
+	});
+
+	test("a machine with nothing at all says so and offers the way back", () => {
+		expect(machineEmptyState(base)).toEqual({
+			heading: "No sessions on build-01",
+			body: "Try another machine.",
+			actions: ["allMachines"],
+		});
+	});
+
+	test("a machine with sessions, none in this tab or state, names the filter", () => {
+		expect(machineEmptyState({ ...base, scopeTotal: 9 })).toEqual({
+			heading: "No active sessions on build-01",
+			body: "Try another tab or machine.",
+			actions: ["allMachines"],
+		});
+		expect(machineEmptyState({ ...base, scopeTotal: 9, statusFilter: "waiting" })?.heading).toBe(
+			"No waiting sessions on build-01",
+		);
+		expect(machineEmptyState({ ...base, scopeTotal: 9, tab: "all" })?.heading).toBe(
+			"No sessions on build-01",
+		);
+	});
+
+	test("unknown reads as no machine, and a narrowed owner is mentioned in the way out", () => {
+		const unknown = machineEmptyState({
+			...base,
+			host: HOST_UNKNOWN,
+			scopeTotal: 9,
+			ownerNarrowed: true,
+		});
+		expect(unknown?.heading).toBe("No active sessions with no machine");
+		expect(unknown?.body).toBe("Try another tab, owner or machine.");
 	});
 });
