@@ -206,23 +206,58 @@ const initializedBuses = new WeakSet<object>();
  * M1: idempotent — calling with the same bus object a second time is a no-op
  * (logs a warning). Prevents listener accumulation on hot-reload or accidental
  * double-init.
+ *
+ * `annotate` adds what a pushed session row can't carry itself (its machine, see
+ * effective-machine.ts). Lookups run concurrently but pushes leave in the order
+ * they were emitted, session events included, so a session's creation still
+ * reaches a dashboard before its first event. A lookup that fails sends the row
+ * as it was. Without it every push is sent at once, untouched.
  */
-export function initWsBroadcaster(bus: SessionBusLike): void {
+export function initWsBroadcaster(
+	bus: SessionBusLike,
+	options?: { annotate?: (session: Session) => Promise<Session> },
+): void {
 	if (initializedBuses.has(bus)) {
 		console.warn(JSON.stringify({ kind: "ws_broadcaster_double_init", level: "warn" }));
 		return;
 	}
 	initializedBuses.add(bus);
 
-	bus.on("session_created", (session) => {
-		broadcast("session_created", { session });
-	});
+	const annotate = options?.annotate;
+	let sent: Promise<void> = Promise.resolve();
+	const sendInOrder = (ready: Promise<() => void>) => {
+		sent = sent
+			.then(() => ready)
+			.then((send) => send())
+			.catch(() => undefined);
+	};
+	const pushSession = (type: "session_created" | "session_updated", session: Session) => {
+		if (!annotate) {
+			broadcast(type, { session });
+			return;
+		}
+		const stamped = annotate(session).catch((err) => {
+			console.error(
+				JSON.stringify({
+					kind: "ws_annotate_failed",
+					level: "error",
+					error: err instanceof Error ? err.message : String(err),
+				}),
+			);
+			return session;
+		});
+		sendInOrder(stamped.then((row) => () => broadcast(type, { session: row })));
+	};
 
-	bus.on("session_updated", (session) => {
-		broadcast("session_updated", { session });
-	});
+	bus.on("session_created", (session) => pushSession("session_created", session));
+
+	bus.on("session_updated", (session) => pushSession("session_updated", session));
 
 	bus.on("session_event", ({ sessionId, event }) => {
-		broadcastToSession(sessionId, "new_event", event);
+		if (!annotate) {
+			broadcastToSession(sessionId, "new_event", event);
+			return;
+		}
+		sendInOrder(Promise.resolve(() => broadcastToSession(sessionId, "new_event", event)));
 	});
 }

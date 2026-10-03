@@ -22,8 +22,10 @@
  *    needs the value of every row anyway.
  * None of them changes the row shape the statements around them return.
  */
-import { type SQL, sql } from "drizzle-orm";
+import { type SQL, eq, sql } from "drizzle-orm";
 import type { HostScope } from "../../shared/machine-scope.js";
+import type { Session } from "../../shared/types.js";
+import { getDb } from "../db/client.js";
 import { managedSessions, sessions } from "../db/schema/index.js";
 
 const SUPERVISOR_HOST = sql`(SELECT NULLIF(TRIM(ms.host_name), '') FROM ${managedSessions} AS ms WHERE ms.session_id = ${sessions.sessionId})`;
@@ -55,3 +57,19 @@ export const SUPERVISOR_JOIN = sql`LEFT JOIN ${managedSessions} ON ${managedSess
 export const MACHINE_JOINED = sql<
 	string | null
 >`COALESCE(NULLIF(TRIM(${managedSessions.hostName}), ''), ${REPORTED_HOST})`;
+
+/**
+ * A session about to be pushed over the socket, with its effective machine read
+ * the way the list reads it: a pushed row never joins the managed table, so
+ * without this a supervisor-launched session's host would be invisible to the
+ * dashboard's live filter. A session that is no longer stored is returned as it
+ * came, unstamped (the receiver treats "no machine field" as "can't tell").
+ */
+export async function stampMachine(session: Session): Promise<Session> {
+	const [row] = await getDb()
+		.select({ machine: EFFECTIVE_MACHINE })
+		.from(sessions)
+		.where(eq(sessions.sessionId, session.sessionId))
+		.limit(1);
+	return row ? { ...session, machine: row.machine } : session;
+}
