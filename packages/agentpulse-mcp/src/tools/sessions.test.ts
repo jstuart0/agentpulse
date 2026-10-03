@@ -12,7 +12,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ApiError } from "../client.js";
 import type { ToolContext } from "../server.js";
 import { fakeClient } from "../test-support.js";
-import type { ControlAction, OwnerScopeEcho, Session, SessionEvent } from "../types.js";
+import type {
+	ControlAction,
+	HostFilterEcho,
+	OwnerScopeEcho,
+	Session,
+	SessionEvent,
+} from "../types.js";
 import { registerSessionsTools } from "./sessions.js";
 
 function newContext(client: ReturnType<typeof fakeClient>): ToolContext {
@@ -550,6 +556,107 @@ describe("list_sessions — owner scope", () => {
 		const description = tools.find((t) => t.name === "list_sessions")?.description ?? "";
 		expect(description).toContain("owner");
 		expect(description.toLowerCase()).toContain("confirm");
+	});
+});
+
+describe("list_sessions — machine filter", () => {
+	const UNKNOWN = "\u001funknown";
+
+	async function callWith(args: Record<string, unknown>, echo: HostFilterEcho | undefined) {
+		const asked: Array<string | undefined> = [];
+		const ctx = newContext(
+			fakeClient({
+				getSessions: async (params) => {
+					asked.push(params?.host);
+					return {
+						sessions: [baseSession({ sessionId: "on-box", machine: "build-01" })],
+						total: 1,
+						...(echo ? { hostFilter: echo } : {}),
+					};
+				},
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_sessions", arguments: args });
+		return { result, asked };
+	}
+
+	test("a machine is forwarded, and a response that says it applied that machine is accepted and passed on", async () => {
+		const { result, asked } = await callWith(
+			{ host: "build-01" },
+			{ kind: "host", host: "build-01" },
+		);
+		expect(result.isError).toBeFalsy();
+		expect(asked).toEqual(["build-01"]);
+		const parsed = JSON.parse(textOf(result));
+		expect(parsed.hostFilter).toEqual({ kind: "host", host: "build-01" });
+		expect(parsed.sessions[0].machine).toBe("build-01");
+	});
+
+	test("no_host asks for the sessions with no machine, and needs the unknown echo", async () => {
+		const ok = await callWith({ no_host: true }, { kind: "unknown" });
+		expect(ok.result.isError).toBeFalsy();
+		expect(ok.asked).toEqual([UNKNOWN]);
+		const wrong = await callWith({ no_host: true }, { kind: "all" });
+		expect(wrong.result.isError).toBe(true);
+	});
+
+	test("a response without the echo, or echoing another machine, is refused and shows no sessions", async () => {
+		for (const echo of [
+			undefined,
+			{ kind: "all" },
+			{ kind: "unknown" },
+			{ kind: "host", host: "edge-02" },
+			{ kind: "host", host: "Build-01" },
+		] as Array<HostFilterEcho | undefined>) {
+			const { result } = await callWith({ host: "build-01" }, echo);
+			expect({ echo, isError: result.isError }).toEqual({ echo, isError: true });
+			expect(textOf(result)).toContain("host");
+			expect(textOf(result)).not.toContain("on-box");
+		}
+	});
+
+	test("with no machine asked for, nothing is required of the server, but a filtered echo is refused", async () => {
+		const bare = await callWith({}, undefined);
+		expect(bare.result.isError).toBeFalsy();
+		expect(bare.asked).toEqual([undefined]);
+		const all = await callWith({}, { kind: "all" });
+		expect(all.result.isError).toBeFalsy();
+		const filtered = await callWith({}, { kind: "host", host: "build-01" });
+		expect(filtered.result.isError).toBe(true);
+	});
+
+	test("a machine and no_host together, or a name outside the grammar, is rejected before any request", async () => {
+		for (const args of [
+			{ host: "build-01", no_host: true },
+			{ host: "a\nb" },
+			{ host: "x".repeat(257) },
+		]) {
+			const { result, asked } = await callWith(args, { kind: "all" });
+			expect({ args, isError: result.isError }).toEqual({ args, isError: true });
+			expect(asked).toEqual([]);
+		}
+	});
+
+	test("a blank machine, or no_host false, means every machine", async () => {
+		for (const args of [{ host: "  " }, { host: "" }, { no_host: false }]) {
+			const { result, asked } = await callWith(args, undefined);
+			expect({ args, isError: result.isError }).toEqual({ args, isError: undefined });
+			expect(asked).toEqual([undefined]);
+		}
+	});
+
+	test("the description says what the machine is and that the server must confirm it", async () => {
+		const ctx = newContext(fakeClient());
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const { tools } = await mcpClient.listTools();
+		const description = tools.find((t) => t.name === "list_sessions")?.description ?? "";
+		expect(description).toContain("host");
+		expect(description).toContain("no_host");
+		expect(description.toLowerCase()).toContain("confirm");
+		expect(description.toLowerCase()).toContain("display");
 	});
 });
 
