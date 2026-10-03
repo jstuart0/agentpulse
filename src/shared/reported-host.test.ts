@@ -27,6 +27,17 @@ describe("sanitizeReportedHost", () => {
 		expect(sanitizeReportedHost("a b c")).toBe("abc");
 	});
 
+	test("collapses runs of interior whitespace, NBSP and other space separators to one space", () => {
+		expect(sanitizeReportedHost("a   b")).toBe("a b");
+		expect(sanitizeReportedHost("a\u00a0\u00a0b")).toBe("a b");
+		expect(sanitizeReportedHost("a\u2003\u3000 \u202fb")).toBe("a b");
+		expect(sanitizeReportedHost("my  \u00a0 box  name")).toBe("my box name");
+	});
+
+	test("strips lone surrogates", () => {
+		expect(sanitizeReportedHost("bad\ud800name")).toBe("badname");
+	});
+
 	test("rejects a value that is empty once cleaned", () => {
 		expect(sanitizeReportedHost("")).toBeNull();
 		expect(sanitizeReportedHost("   ")).toBeNull();

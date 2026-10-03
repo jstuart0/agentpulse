@@ -132,6 +132,29 @@ describe("relay host header", () => {
 		);
 	});
 
+	test("a name with a lone surrogate still forwards (it would make encodeURIComponent throw)", async () => {
+		const stub = startStub();
+		stops.push(stub.stop);
+		const { R, relay, base } = await startRelayFor(stub.url, () => "bad\ud800name");
+		await sendHook(base, { session_id: "h6", hook_event_name: "Stop" });
+		await R.processHookQueue(relay.ctx);
+		const call = stub.requests.find((r) => r.path === "/api/v1/hooks");
+		expect(call).toBeDefined();
+		expect(parseReportedHostHeader(call?.headers[HOST_HEADER.toLowerCase()])).toBe("badname");
+		expect((await R.getQueueDiagnostics(relay.ctx)).pending).toBe(0);
+	});
+
+	test("a name made only of lone surrogates sends no header but still forwards", async () => {
+		const stub = startStub();
+		stops.push(stub.stop);
+		const { R, relay, base } = await startRelayFor(stub.url, () => "\ud800\udc00".slice(0, 1));
+		await sendHook(base, { session_id: "h7", hook_event_name: "Stop" });
+		await R.processHookQueue(relay.ctx);
+		const call = stub.requests.find((r) => r.path === "/api/v1/hooks");
+		expect(call).toBeDefined();
+		expect(call?.headers[HOST_HEADER.toLowerCase()]).toBeUndefined();
+	});
+
 	test("by default the name is the operating system's host name", async () => {
 		const stub = startStub();
 		stops.push(stub.stop);

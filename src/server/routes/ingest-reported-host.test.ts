@@ -452,38 +452,42 @@ describe("display only: the reported host decides nothing", () => {
 		expect((await row(id))?.lastUserAcknowledgedAt).toBeNull();
 	});
 
-	test("no ownership, access or routing module reads the reported host", async () => {
+	test("only the known write and DTO sites mention the reported host", async () => {
 		const serverRoot = join(import.meta.dir, "..");
-		const guarded = [
-			"services/authorization.ts",
-			"services/session-attribution.ts",
-			"services/actor.ts",
-			"services/session-creation-limit.ts",
-			"services/service-keys.ts",
-			"services/instance-mode.ts",
-			"services/launch-dispatch.ts",
-			"services/supervisor-registry.ts",
-			"services/correlation-resolver.ts",
-		];
-		const authFiles = (await readdir(join(serverRoot, "auth"))).filter(
+		const MENTION = /reportedHost|reported_host|HOST_HEADER|reported-host/;
+		// The one place each of these appears: the insert/update, the header parse, the column,
+		// the delivery context type, and the legacy-init column line. Anything else is a new reader.
+		const allowed = new Set([
+			"services/event-processor.ts",
+			"routes/ingest.ts",
+			"db/schema/core/sessions.ts",
+			"services/event-dedup.ts",
+			"db/client.ts",
+		]);
+
+		// Positive control: the matcher does flag a reader.
+		expect(MENTION.test("if (session.reportedHost === x) allow()")).toBe(true);
+
+		const files = (await readdir(serverRoot, { recursive: true })).filter(
 			(n) => n.endsWith(".ts") && !n.endsWith(".test.ts"),
 		);
-		const files = [...guarded, ...authFiles.map((n) => `auth/${n}`)];
-		let scanned = 0;
-		for (const file of files) {
-			let text: string;
-			try {
-				text = await readFile(join(serverRoot, file), "utf8");
-			} catch {
-				continue;
-			}
-			scanned++;
-			expect(text.includes("reportedHost")).toBe(false);
-			expect(text.includes("reported_host")).toBe(false);
-			expect(text.includes("HOST_HEADER")).toBe(false);
+		// Population floor, with named members from the areas that decide access.
+		expect(files.length).toBeGreaterThan(100);
+		for (const named of [
+			"auth/middleware.ts",
+			"services/authorization.ts",
+			"services/session-attribution.ts",
+			"services/launch-dispatch.ts",
+		]) {
+			expect(files).toContain(named);
 		}
-		// Population floor: the scan must really have looked at the auth directory and the named modules.
-		expect(scanned).toBeGreaterThanOrEqual(10);
-		expect(authFiles).toContain("middleware.ts");
+
+		const mentioning: string[] = [];
+		for (const file of files) {
+			if (MENTION.test(await readFile(join(serverRoot, file), "utf8"))) mentioning.push(file);
+		}
+		expect(mentioning.filter((f) => !allowed.has(f)).sort()).toEqual([]);
+		// The allowlist is not stale: each allowed site really mentions it.
+		expect(mentioning.sort()).toEqual([...allowed].sort());
 	});
 });
