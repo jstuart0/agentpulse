@@ -157,11 +157,19 @@ describe("mergeCodexHooksFile — the reference merge", () => {
 			{ hooks: [{ type: "command", command: "othertool custom" }] },
 		]);
 		for (const event of CODEX_EVENT_ORDER) {
-			expect(merged.hooks[event].some((g: unknown) => JSON.stringify(g) === JSON.stringify(ours[event][0]))).toBe(true);
+			expect(
+				merged.hooks[event].some(
+					(g: unknown) => JSON.stringify(g) === JSON.stringify(ours[event][0]),
+				),
+			).toBe(true);
 		}
 		// other entries keep their place; new events follow in generator order
 		expect(Object.keys(merged)).toEqual(["x-other-tool", "hooks"]);
-		expect(Object.keys(merged.hooks).slice(0, 3)).toEqual(["SessionStart", "PreToolUse", "CustomEvent"]);
+		expect(Object.keys(merged.hooks).slice(0, 3)).toEqual([
+			"SessionStart",
+			"PreToolUse",
+			"CustomEvent",
+		]);
 	});
 
 	test("idempotent: merging the merged file again is 'unchanged'", () => {
@@ -190,7 +198,9 @@ describe("mergeCodexHooksFile — the reference merge", () => {
 		const r = mergeCodexHooksFile(FIXTURES[5].existing, OURS);
 		if (r.status !== "changed") throw new Error("expected changed");
 		const stop = JSON.parse(r.text).hooks.Stop;
-		const commands = stop.flatMap((g: { hooks: { command: string }[] }) => g.hooks.map((h) => h.command));
+		const commands = stop.flatMap((g: { hooks: { command: string }[] }) =>
+			g.hooks.map((h) => h.command),
+		);
 		expect(commands.filter((c: string) => c === "othertool stop")).toHaveLength(1);
 		expect(commands.filter((c: string) => c.includes("/api/v1/hooks?event="))).toHaveLength(1);
 	});
@@ -362,7 +372,9 @@ for (const site of ["scripts/setup-hooks.sh", "rendered /setup.sh"]) {
 			expect(parsed.hooks.SessionStart[0]).toEqual(OTHER_START);
 			expect(parsed.hooks.PreToolUse[0]).toEqual(OTHER_PRE);
 			expect(parsed.hooks.SessionStart).toHaveLength(2);
-			expect(parsed.hooks.SessionStart[1].hooks[0].command).toContain("/api/v1/hooks?event=SessionStart");
+			expect(parsed.hooks.SessionStart[1].hooks[0].command).toContain(
+				"/api/v1/hooks?event=SessionStart",
+			);
 			expect(Object.keys(parsed.hooks)).toEqual(
 				expect.arrayContaining([...CODEX_EVENT_ORDER, "CustomEvent"]),
 			);

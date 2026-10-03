@@ -930,8 +930,12 @@ describe("D12/D13 — Codex command hooks (F50, F52, r6 CODEX_HOME)", () => {
 			const theirs = {
 				"x-other-tool": { enabled: true },
 				hooks: {
-					SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: "othertool start" }] }],
-					PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "othertool guard" }] }],
+					SessionStart: [
+						{ matcher: "startup", hooks: [{ type: "command", command: "othertool start" }] },
+					],
+					PreToolUse: [
+						{ matcher: "Bash", hooks: [{ type: "command", command: "othertool guard" }] },
+					],
 				},
 			};
 			await writeFile(hooksPath, `${JSON.stringify(theirs, null, 2)}\n`);
@@ -961,7 +965,9 @@ describe("D12/D13 — Codex command hooks (F50, F52, r6 CODEX_HOME)", () => {
 			expect(run3.code).toBe(0);
 			expect(run3.out).toContain("Codex hooks not updated");
 			expect(await readFile(join(home2, ".codex", "hooks.json"), "utf-8")).toBe("{not json");
-			expect((await readdir(join(home2, ".codex"))).filter((f) => f.includes("agentpulse-bak"))).toHaveLength(0);
+			expect(
+				(await readdir(join(home2, ".codex"))).filter((f) => f.includes("agentpulse-bak")),
+			).toHaveLength(0);
 		},
 		RUN_TIMEOUT,
 	);

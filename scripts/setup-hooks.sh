@@ -621,6 +621,97 @@ sys.stdout.write(json.dumps({"hooks": hooks}, indent=2) + "\n")
 '
 }
 
+# Merges AgentPulse's Codex hooks into an existing hooks.json instead of
+# replacing it (src/shared/hook-command.ts mergeCodexHooksFile is the
+# reference; scripts/codex-hooks-merge.test.ts holds every copy to it).
+# $1 = the hooks.json path, stdin = the file ap_codex_hooks_json generated.
+# A handler is AgentPulse's when its "command" contains /api/v1/hooks?event= ;
+# every other handler, event and top-level key is kept in place. Writes nothing
+# itself. Exit 0: stdout is the merged file, write it. Exit 3: nothing to change.
+# Exit 4: the file is not usable JSON of the expected shape; a message is
+# printed and the file must be left alone. Exit 1: $1 is a symlink and a write
+# would be needed.
+ap_codex_merge_hooks_json() {
+	local path="$1" ours py out rc=0
+	ours="$(cat)"
+	IFS= read -r -d '' py <<'AP_MERGE_PY_EOF' || true
+import json, os, sys
+mark = "/api/v1/hooks?event="
+q = chr(34)
+path = sys.argv[1]
+doc_ours = json.loads(sys.stdin.read())
+ours = doc_ours["hooks"]
+def dump(o):
+    return json.dumps(o, indent=2).replace(chr(127), chr(92) + "u007f")
+def mine(h):
+    return isinstance(h, dict) and isinstance(h.get("command"), str) and mark in h["command"]
+def refuse(reason):
+    sys.stderr.write("! Codex hooks not updated: " + path + " " + reason + ". It was left untouched. To add the AgentPulse hooks, fix or move that file and run this installer again." + chr(10))
+    sys.exit(4)
+text = None
+if os.path.exists(path):
+    try:
+        text = open(path, "rb").read().decode("utf-8")
+    except Exception:
+        refuse("is not valid JSON")
+if text is None or text.strip() == "":
+    sys.stdout.write(dump(doc_ours) + chr(10))
+    sys.exit(0)
+try:
+    doc = json.loads(text)
+except ValueError:
+    refuse("is not valid JSON")
+if not isinstance(doc, dict):
+    refuse("is not a JSON object")
+if "hooks" in doc and not isinstance(doc["hooks"], dict):
+    refuse("has a " + q + "hooks" + q + " entry that is not an object")
+before = dump(doc)
+hooks = dict(doc["hooks"]) if "hooks" in doc else {}
+for event in ours:
+    if event in hooks and not isinstance(hooks[event], list):
+        refuse("has a non-list " + q + event + q + " entry")
+for event in list(hooks):
+    groups = hooks[event]
+    if not isinstance(groups, list):
+        continue
+    kept = []
+    slot = -1
+    for g in groups:
+        hs = g.get("hooks") if isinstance(g, dict) else None
+        if not isinstance(hs, list) or not any(mine(h) for h in hs):
+            kept.append(g)
+            continue
+        if slot == -1:
+            slot = len(kept)
+        rest = [h for h in hs if not mine(h)]
+        if rest:
+            g2 = dict(g)
+            g2["hooks"] = rest
+            kept.append(g2)
+    pos = len(kept) if slot == -1 else slot
+    kept[pos:pos] = ours.get(event, [])
+    if kept or slot == -1:
+        hooks[event] = kept
+    else:
+        del hooks[event]
+for event in ours:
+    if event not in hooks:
+        hooks[event] = ours[event]
+doc["hooks"] = hooks
+after = dump(doc)
+if after == before:
+    sys.exit(3)
+sys.stdout.write(after + chr(10))
+AP_MERGE_PY_EOF
+	if [ -L "$path" ]; then
+		out="$(printf '%s\n' "$ours" | python3 -c "$py" "$path" 2>/dev/null)" || rc=$?
+		if [ "$rc" = "3" ]; then return 3; fi
+		echo "refusing to write through a symlink: $path" >&2
+		return 1
+	fi
+	printf '%s\n' "$ours" | python3 -c "$py" "$path"
+}
+
 ap_copilot_hooks_json() {
 	# $1=base $2=direct(0/1)
 	local base="$1" direct="$2"
@@ -927,8 +1018,14 @@ elif [[ "$AGENT_TYPE" == "codex_cli" ]]; then
 
   ap_install_exclude_script
   NEW_CODEX_HOOKS_JSON="$(ap_codex_hooks_json "$AGENTPULSE_URL" "1")"
-  if [[ -f "$HOOKS_FILE" ]] && [[ "$(cat "$HOOKS_FILE")" == "$NEW_CODEX_HOOKS_JSON" ]]; then
+  CODEX_MERGE_RC=0
+  MERGED_CODEX_HOOKS_JSON="$(printf '%s\n' "$NEW_CODEX_HOOKS_JSON" | ap_codex_merge_hooks_json "$HOOKS_FILE")" || CODEX_MERGE_RC=$?
+  if [[ "$CODEX_MERGE_RC" == "3" ]]; then
     echo "Codex hooks unchanged — no re-trust needed"
+  elif [[ "$CODEX_MERGE_RC" == "4" ]]; then
+    : # ap_codex_merge_hooks_json already said why; the file is left as it was
+  elif [[ "$CODEX_MERGE_RC" != "0" ]]; then
+    exit 1
   else
     if [[ -f "$HOOKS_FILE" ]]; then
       CODEX_HOOKS_WRITTEN="updated"
@@ -936,7 +1033,7 @@ elif [[ "$AGENT_TYPE" == "codex_cli" ]]; then
       cat "$HOOKS_FILE" | ap_write_no_follow "$CODEX_BACKUP_FILE" || exit 1
       echo "Backed up existing $HOOKS_FILE to $CODEX_BACKUP_FILE"
     fi
-    printf '%s\n' "$NEW_CODEX_HOOKS_JSON" | ap_write_no_follow "$HOOKS_FILE" || exit 1
+    printf '%s\n' "$MERGED_CODEX_HOOKS_JSON" | ap_write_no_follow "$HOOKS_FILE" || exit 1
     echo "Codex CLI hooks configured in $HOOKS_FILE"
     echo "Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks. Re-trust after changing the AgentPulse URL or port."
     [[ "$CODEX_HOOKS_WRITTEN" == "updated" ]] || CODEX_HOOKS_WRITTEN="new"

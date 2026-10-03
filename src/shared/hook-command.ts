@@ -283,6 +283,101 @@ export function buildCodexHooksFile(opts: { baseUrl: string; direct: boolean }):
 }
 
 /**
+ * What marks a Codex hook handler as AgentPulse's own: its `command` posts to
+ * the AgentPulse hook endpoint. Every command the installers have generated
+ * (sh and PowerShell, relay and direct) contains this path with the event
+ * query, whatever the host or port, so a handler written by an older release or
+ * for another URL is still recognised and replaced. Nothing else is matched: not
+ * the word "agentpulse", not the agent name, not a bare `/api/v1/hooks`, and not
+ * handlers without a `command` string. The shell and PowerShell merges use the
+ * same text (scripts/codex-hooks-merge.test.ts holds them to it).
+ */
+export const AGENTPULSE_HOOK_MARKER = "/api/v1/hooks?event=";
+
+export type CodexHooksMergeResult =
+	| { status: "changed"; text: string }
+	| { status: "unchanged" }
+	| { status: "unusable"; reason: string };
+
+function isAgentPulseHandler(handler: unknown): boolean {
+	if (typeof handler !== "object" || handler === null) return false;
+	const command = (handler as { command?: unknown }).command;
+	return typeof command === "string" && command.includes(AGENTPULSE_HOOK_MARKER);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Merges AgentPulse's Codex hooks (`ours`, the output of buildCodexHooksFile)
+ * into the text of an existing hooks.json (`null` when there is no file).
+ *
+ * Every handler that is not AgentPulse's stays where it is, as do unknown
+ * top-level keys and unknown events. AgentPulse's handlers are removed from
+ * wherever they are (including events AgentPulse no longer uses) and its current
+ * entries go back into the slot the first old one held, or at the end of the
+ * event's list; events that did not exist are appended in generator order. The
+ * result is idempotent: merging it again is "unchanged", and so is merging a file
+ * that already says the same thing in different formatting.
+ *
+ * A file that is not valid JSON, is not an object, or has a `hooks` value (or
+ * one of AgentPulse's own events) of the wrong type is "unusable" and the caller
+ * must leave it alone. The shell copies (ap_codex_merge_hooks_json) and the
+ * PowerShell copy (Merge-ApCodexHooksFile) implement the same rules.
+ */
+export function mergeCodexHooksFile(existing: string | null, ours: string): CodexHooksMergeResult {
+	const oursHooks = (JSON.parse(ours) as { hooks: Record<string, unknown[]> }).hooks;
+	if (existing === null || existing.trim() === "") return { status: "changed", text: ours };
+
+	let doc: unknown;
+	try {
+		doc = JSON.parse(existing);
+	} catch {
+		return { status: "unusable", reason: "is not valid JSON" };
+	}
+	if (!isPlainObject(doc)) return { status: "unusable", reason: "is not a JSON object" };
+	if ("hooks" in doc && !isPlainObject(doc.hooks)) {
+		return { status: "unusable", reason: 'has a "hooks" entry that is not an object' };
+	}
+	const before = stringifyHooksJson(doc);
+
+	const hooks: Record<string, unknown> = isPlainObject(doc.hooks) ? { ...doc.hooks } : {};
+	for (const event of Object.keys(oursHooks)) {
+		if (event in hooks && !Array.isArray(hooks[event])) {
+			return { status: "unusable", reason: `has a non-list "${event}" entry` };
+		}
+	}
+
+	for (const event of Object.keys(hooks)) {
+		const groups = hooks[event];
+		if (!Array.isArray(groups)) continue;
+		const kept: unknown[] = [];
+		let slot = -1;
+		for (const group of groups) {
+			const handlers = isPlainObject(group) ? group.hooks : undefined;
+			if (!Array.isArray(handlers) || !handlers.some(isAgentPulseHandler)) {
+				kept.push(group);
+				continue;
+			}
+			if (slot === -1) slot = kept.length;
+			const rest = handlers.filter((h) => !isAgentPulseHandler(h));
+			if (rest.length > 0) kept.push({ ...(group as Record<string, unknown>), hooks: rest });
+		}
+		const mine = oursHooks[event] ?? [];
+		kept.splice(slot === -1 ? kept.length : slot, 0, ...mine);
+		if (kept.length > 0 || slot === -1) hooks[event] = kept;
+		else delete hooks[event];
+	}
+	for (const event of Object.keys(oursHooks)) {
+		if (!(event in hooks)) hooks[event] = oursHooks[event];
+	}
+
+	const merged = stringifyHooksJson({ ...doc, hooks });
+	return merged === before ? { status: "unchanged" } : { status: "changed", text: `${merged}\n` };
+}
+
+/**
  * The PowerShell installer's Codex hooks file: the same 12 events and the same
  * handler shape as buildCodexHooksFile, but each command is the PowerShell
  * command (buildPowerShellHookCommand), the form install-local.ps1 writes for

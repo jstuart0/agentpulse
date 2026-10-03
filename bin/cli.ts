@@ -31,6 +31,7 @@ import {
 	buildBashExcludeScript,
 	buildCodexHooksFile,
 	buildCopilotHooksFile,
+	mergeCodexHooksFile,
 } from "../src/shared/hook-command.js";
 import {
 	CODEX_APPROVE_LINE,
@@ -311,13 +312,21 @@ async function setup() {
 			`buildCodexHooksFile() event set drifted from the expected ${codexEvents.length} CodexEvent members`,
 		);
 	}
-	const unchanged =
-		existsSync(codexHooksPath) && readFileSync(codexHooksPath, "utf-8") === newCodexHooksJson;
-	if (unchanged) {
+	const existingCodexHooks = existsSync(codexHooksPath)
+		? readFileSync(codexHooksPath, "utf-8")
+		: null;
+	const merge = mergeCodexHooksFile(existingCodexHooks, newCodexHooksJson);
+	if (merge.status === "unchanged") {
 		console.log("  ✓ Codex hooks unchanged — no re-trust needed");
+	} else if (lstatSync(codexHooksPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
+		console.error(`  ✗ refusing to write through a symlink: ${codexHooksPath}`);
+		process.exit(1);
+	} else if (merge.status === "unusable") {
+		console.error(
+			`  ! Codex hooks not updated: ${codexHooksPath} ${merge.reason}. It was left untouched. To add the AgentPulse hooks, fix or move that file and run agentpulse setup again.`,
+		);
 	} else {
-		const hadHooks = existsSync(codexHooksPath);
-		if (hadHooks) {
+		if (existingCodexHooks !== null) {
 			const stamp = new Date()
 				.toISOString()
 				.replace(/[-:]/g, "")
@@ -325,16 +334,16 @@ async function setup() {
 			const backupPath = `${codexHooksPath}.agentpulse-bak.${stamp}`;
 			// F232: never write through a symlink at the destination or the
 			// backup path — see src/shared/private-file.ts.
-			writeConfigFileSyncNoFollow(backupPath, readFileSync(codexHooksPath, "utf-8"));
+			writeConfigFileSyncNoFollow(backupPath, existingCodexHooks);
 			console.log(`  ✓ Backed up existing Codex hooks to ${backupPath}`);
 		}
-		writeConfigFileSyncNoFollow(codexHooksPath, newCodexHooksJson);
+		writeConfigFileSyncNoFollow(codexHooksPath, merge.text);
 		console.log(`  ✓ Codex CLI hooks  → ${codexHooksPath}`);
 		console.log(
 			"    Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks.",
 		);
 		console.log("    Re-trust after changing the AgentPulse URL or port.");
-		codexHooksWritten = hadHooks ? "updated" : "new";
+		codexHooksWritten = existingCodexHooks !== null ? "updated" : "new";
 	}
 	console.log(`    ${EXCLUDE_CHECK_HINT}`);
 	// D12: codex_hooks is a deprecated (but still-working) legacy alias for

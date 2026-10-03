@@ -369,7 +369,9 @@ describe("agentpulse setup merges into an existing ~/.codex/hooks.json", () => {
 	const theirs = {
 		"x-other-tool": { enabled: true },
 		hooks: {
-			SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: "othertool start" }] }],
+			SessionStart: [
+				{ matcher: "startup", hooks: [{ type: "command", command: "othertool start" }] },
+			],
 			PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "othertool guard" }] }],
 		},
 	};
@@ -392,7 +394,9 @@ describe("agentpulse setup merges into an existing ~/.codex/hooks.json", () => {
 			expect(Object.keys(merged.hooks)).toHaveLength(12);
 			const bytes1 = await Bun.file(hooksPath).text();
 			const ino1 = (await stat(hooksPath)).ino;
-			const backups1 = (await readdir(join(home, ".codex"))).filter((f) => f.includes("agentpulse-bak"));
+			const backups1 = (await readdir(join(home, ".codex"))).filter((f) =>
+				f.includes("agentpulse-bak"),
+			);
 			expect(backups1).toHaveLength(1);
 
 			const res2 = await runSetup(home, setupArgs);
@@ -400,7 +404,9 @@ describe("agentpulse setup merges into an existing ~/.codex/hooks.json", () => {
 			expect(res2.out).toContain("Codex hooks unchanged");
 			expect(await Bun.file(hooksPath).text()).toBe(bytes1);
 			expect((await stat(hooksPath)).ino).toBe(ino1);
-			expect((await readdir(join(home, ".codex"))).filter((f) => f.includes("agentpulse-bak"))).toHaveLength(1);
+			expect(
+				(await readdir(join(home, ".codex"))).filter((f) => f.includes("agentpulse-bak")),
+			).toHaveLength(1);
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}
@@ -416,7 +422,9 @@ describe("agentpulse setup merges into an existing ~/.codex/hooks.json", () => {
 			expect(res.code).toBe(0);
 			expect(await Bun.file(hooksPath).text()).toBe("{not json");
 			expect(res.out).toContain("Codex hooks not updated");
-			expect((await readdir(join(home, ".codex"))).filter((f) => f.includes("agentpulse-bak"))).toHaveLength(0);
+			expect(
+				(await readdir(join(home, ".codex"))).filter((f) => f.includes("agentpulse-bak")),
+			).toHaveLength(0);
 			expect(await Bun.file(join(home, ".agentpulse", "env")).exists()).toBe(true);
 		} finally {
 			await rm(home, { recursive: true, force: true });
