@@ -12,6 +12,7 @@ import { api } from "../lib/api.js";
 import { HOST_UNKNOWN } from "../lib/host-scope.js";
 import type { DashboardScope } from "../lib/owner-scope.js";
 import { type ScopedQuery, scopedQuery } from "../lib/scoped-query.js";
+import { useConnectionStore } from "../stores/connection-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import {
@@ -259,6 +260,139 @@ describe("a switch of machine never lets the old machine's answer land", () => {
 		} finally {
 			await hook.unmount();
 		}
+	});
+});
+
+describe("Mark all as seen under a machine", () => {
+	test("the waiting sessions of the chosen machine are collected, not dropped (the happy path under a host)", async () => {
+		const hook = renderHook((s: DashboardScope) => useAllWaitingSessions(s, 2), scope);
+		await hook.render(scope);
+		await flush(MARK_ALL_SETTLE_MS + TIMER_MARGIN_MS);
+		expect(hook.current.value?.map((row) => row.sessionId)).toEqual(["s-1"]);
+		await hook.unmount();
+	});
+
+	test("an answer for another machine leaves nothing to mark", async () => {
+		echo = { kind: "host", host: "edge-02" };
+		const hook = renderHook((s: DashboardScope) => useAllWaitingSessions(s, 2), scope);
+		await hook.render(scope);
+		await flush(MARK_ALL_SETTLE_MS + TIMER_MARGIN_MS);
+		expect(hook.current.value).toEqual([]);
+		await hook.unmount();
+	});
+});
+
+describe("useSessions: each endpoint's echo is checked on its own", () => {
+	type Echoes = { list?: unknown; stats?: unknown; everyone?: unknown };
+	const everyoneAsked: Array<string | undefined> = [];
+	function wire(over: Echoes) {
+		const pick = (key: keyof Echoes, query: { host?: string }) =>
+			key in over ? over[key] : appliedFor(query);
+		client.getSessions = (q: ScopedQuery) =>
+			Promise.resolve({ sessions: [], total: 0, hostFilter: pick("list", q) });
+		client.getStats = (q: ScopedQuery) =>
+			Promise.resolve({
+				operational: { waiting: 1, working: 0, idle: 0, error: 0 },
+				hostFilter: pick("stats", q),
+			});
+		client.getEveryoneStats = (_scratch: boolean, host?: string) => {
+			everyoneAsked.push(host);
+			return Promise.resolve({
+				operational: { waiting: 2, working: 0, idle: 0, error: 0 },
+				ownerScope: { kind: "all" },
+				hostFilter: pick("everyone", { host }),
+			});
+		};
+	}
+	const wrong = { kind: "host", host: "edge-02" };
+	const mineOnBuild: DashboardScope = { owner: "me", excludeScratch: true, host: "build-01" };
+
+	async function run(over: Echoes, s: DashboardScope = mineOnBuild) {
+		wire(over);
+		const hook = renderHook((sc: DashboardScope) => useSessions(sc), s);
+		await hook.render(s);
+		await flush();
+		return hook;
+	}
+
+	beforeEach(() => {
+		everyoneAsked.length = 0;
+	});
+
+	test("all three right: shown, and the team line is kept (the control)", async () => {
+		const hook = await run({});
+		expect(hook.current.value?.scopeMismatch).toBe(false);
+		expect(hook.current.value?.stats).not.toBeNull();
+		expect(hook.current.value?.othersStats).not.toBeNull();
+		expect(everyoneAsked).toEqual(["build-01"]);
+		await hook.unmount();
+	});
+
+	test("only the list's echo wrong: refused", async () => {
+		const hook = await run({ list: wrong });
+		expect(hook.current.value?.scopeMismatch).toBe(true);
+		expect(hook.current.value?.stats).toBeNull();
+		await hook.unmount();
+	});
+
+	test("only the stats' echo wrong: refused", async () => {
+		const hook = await run({ stats: wrong });
+		expect(hook.current.value?.scopeMismatch).toBe(true);
+		await hook.unmount();
+	});
+
+	test("only the team line's echo wrong (or missing): the view stands and the line is dropped, never shown as this machine's", async () => {
+		for (const everyone of [wrong, { kind: "all" }, undefined]) {
+			const hook = await run({ everyone });
+			expect({ everyone, mismatch: hook.current.value?.scopeMismatch }).toEqual({
+				everyone,
+				mismatch: false,
+			});
+			expect({ everyone, others: hook.current.value?.othersStats }).toEqual({
+				everyone,
+				others: null,
+			});
+			expect(hook.current.value?.stats).not.toBeNull();
+			await hook.unmount();
+		}
+	});
+
+	test("the refresh path checks its own answers too: the stats echo, the team line's echo, and asks the team line for the machine", async () => {
+		const hook = await run({});
+		everyoneAsked.length = 0;
+		wire({ stats: wrong });
+		await act(async () => void (await hook.current.value?.refreshCounts()));
+		expect(hook.current.value?.scopeMismatch).toBe(true);
+		await hook.unmount();
+
+		const again = await run({});
+		everyoneAsked.length = 0;
+		wire({ everyone: wrong });
+		await act(async () => void (await again.current.value?.refreshCounts()));
+		expect(again.current.value?.scopeMismatch).toBe(false);
+		expect(again.current.value?.othersStats).toBeNull();
+		expect(everyoneAsked).toEqual(["build-01"]);
+		await again.unmount();
+	});
+
+	test("a socket that reconnects asks everything again, still for the machine", async () => {
+		const hook = await run({});
+		const lists: Array<string | undefined> = [];
+		const original = client.getSessions;
+		client.getSessions = (q: ScopedQuery) => {
+			lists.push(q.host);
+			return original(q);
+		};
+		act(() => useConnectionStore.setState({ wsState: "connected" }));
+		await flush();
+		act(() => useConnectionStore.setState({ wsState: "reconnecting" }));
+		await flush();
+		act(() => useConnectionStore.setState({ wsState: "connected" }));
+		await flush();
+		expect(lists).toEqual(["build-01"]);
+		expect(everyoneAsked.at(-1)).toBe("build-01");
+		await hook.unmount();
+		useConnectionStore.setState({ wsState: "reconnecting" });
 	});
 });
 
