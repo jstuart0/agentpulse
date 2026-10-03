@@ -112,6 +112,8 @@ export function createRolloutIndex(options: {
 	fs?: RolloutFs;
 	coldRecheckMs?: number;
 	relistFallbackMs?: number;
+	/** The local time zone's offset from UTC at a given time, in ms (default: the process's); for tests. */
+	localOffsetMs?: (t: number) => number;
 }): RolloutIndex {
 	const fs = options.fs ?? realRolloutFs;
 	const now = options.now ?? Date.now;

@@ -671,6 +671,8 @@ export interface ScanContext {
 	homeDir?: string;
 	/** Files seen for the first time that are listed here start at their current end instead of being replayed from the start. */
 	seedAtEnd?: ReadonlySet<string>;
+	/** The clock, for the lookback applied to a resumed file; tests only. */
+	now?: () => number;
 	/** Called only when an entry was added or changed. */
 	save: (state: ObserverState) => void;
 }
