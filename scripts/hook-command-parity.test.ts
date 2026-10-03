@@ -346,47 +346,56 @@ describe("hook-command-parity — install-local.ps1's New-ApHookCommand (static 
 });
 
 describe("F234 (Low): the rendered GET /setup.sh honors AGENTPULSE_KEY without a --key flag", () => {
-	test("AGENTPULSE_KEY in the environment, no --key: hook-auth-header is written with that key", async () => {
-		const { mkdtemp, rm } = await import("node:fs/promises");
-		const { tmpdir } = await import("node:os");
+	// The installer picks the rc file from $SHELL. Left unset, bash fills in the
+	// invoking user's login shell, so the result depended on who ran the test.
+	test.each([
+		["/bin/zsh", ".zshrc"],
+		["/bin/bash", ".bashrc"],
+	])(
+		"AGENTPULSE_KEY in the environment, no --key, SHELL=%s: hook-auth-header is written with that key and the rc file is %s",
+		async (loginShell, rcName) => {
+			const { mkdtemp, rm } = await import("node:fs/promises");
+			const { tmpdir } = await import("node:os");
 
-		const { setup } = await import("../src/server/routes/setup.ts");
-		const app = new Hono().route("/", setup);
-		const res = await app.request("http://localhost/setup.sh", {
-			headers: { Host: "localhost:3000" },
-		});
-		const rendered = await res.text();
-
-		const home = await mkdtemp(join(tmpdir(), "ap-setup-sh-envkey-"));
-		try {
-			const proc = Bun.spawn(["bash", "-c", rendered, "installer"], {
-				stdout: "pipe",
-				stderr: "pipe",
-				env: {
-					PATH: process.env.PATH ?? "/usr/bin:/bin",
-					HOME: home,
-					AGENTPULSE_KEY: "ap_from_env_not_argv",
-				},
+			const { setup } = await import("../src/server/routes/setup.ts");
+			const app = new Hono().route("/", setup);
+			const res = await app.request("http://localhost/setup.sh", {
+				headers: { Host: "localhost:3000" },
 			});
-			await proc.exited;
-			const headerFile = Bun.file(join(home, ".agentpulse", "hook-auth-header"));
-			expect(await headerFile.exists()).toBe(true);
-			expect(await headerFile.text()).toBe("Authorization: Bearer ap_from_env_not_argv\n");
+			const rendered = await res.text();
 
-			// D37/F243: the key lands in ~/.agentpulse/env (0600), never the
-			// rc file — only a key-free source line goes there.
-			const { stat } = await import("node:fs/promises");
-			const envPath = join(home, ".agentpulse", "env");
-			const envFile = await Bun.file(envPath).text();
-			expect(envFile).toContain('export AGENTPULSE_API_KEY="ap_from_env_not_argv"');
-			expect((await stat(envPath)).mode & 0o777).toBe(0o600);
-			const rcFile = await Bun.file(join(home, ".zshrc")).text();
-			expect(rcFile).not.toContain("ap_from_env_not_argv");
-			expect(rcFile).toContain('[ -f "$HOME/.agentpulse/env" ] && . "$HOME/.agentpulse/env"');
-		} finally {
-			await rm(home, { recursive: true, force: true });
-		}
-	});
+			const home = await mkdtemp(join(tmpdir(), "ap-setup-sh-envkey-"));
+			try {
+				const proc = Bun.spawn(["bash", "-c", rendered, "installer"], {
+					stdout: "pipe",
+					stderr: "pipe",
+					env: {
+						PATH: process.env.PATH ?? "/usr/bin:/bin",
+						HOME: home,
+						AGENTPULSE_KEY: "ap_from_env_not_argv",
+						SHELL: loginShell,
+					},
+				});
+				await proc.exited;
+				const headerFile = Bun.file(join(home, ".agentpulse", "hook-auth-header"));
+				expect(await headerFile.exists()).toBe(true);
+				expect(await headerFile.text()).toBe("Authorization: Bearer ap_from_env_not_argv\n");
+
+				// The key lands in ~/.agentpulse/env (0600), never the
+				// rc file — only a key-free source line goes there.
+				const { stat } = await import("node:fs/promises");
+				const envPath = join(home, ".agentpulse", "env");
+				const envFile = await Bun.file(envPath).text();
+				expect(envFile).toContain('export AGENTPULSE_API_KEY="ap_from_env_not_argv"');
+				expect((await stat(envPath)).mode & 0o777).toBe(0o600);
+				const rcFile = await Bun.file(join(home, rcName)).text();
+				expect(rcFile).not.toContain("ap_from_env_not_argv");
+				expect(rcFile).toContain('[ -f "$HOME/.agentpulse/env" ] && . "$HOME/.agentpulse/env"');
+			} finally {
+				await rm(home, { recursive: true, force: true });
+			}
+		},
+	);
 });
 
 describe("F246 (High, codex r2 D38): the rendered GET /setup.sh refuses to write anything against an auth-enabled server with no key", () => {

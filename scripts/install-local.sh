@@ -517,8 +517,7 @@ for _ in $(seq 1 30); do
       else
         echo "  ! Skipping automatic hook setup because auth is enabled and no --api-key was provided."
         echo "    Run this next (the key is asked for at a hidden prompt, never in the command itself):"
-        echo "      printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY"
-        echo "      [ -n \"\$AGENTPULSE_KEY\" ] && curl -sSL ${PUBLIC_URL}/setup.sh | bash"
+        echo "      ( ap_key=\$(if [ -t 0 ]; then s=\$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo \"Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead.\" >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty \"\$s\" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s \"\$k\") && case \"\$ap_key\" in '') echo \"No API key entered; nothing was installed.\" >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo \"The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed.\" >&2; false;; *) export AGENTPULSE_KEY=\"\$ap_key\"; curl -sSL ${PUBLIC_URL}/setup.sh | bash;; esac )"
         echo ""
       fi
     else

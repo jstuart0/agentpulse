@@ -5,6 +5,8 @@
  * the command a user copies are pinned without a DOM.
  */
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	LOCAL_KEY_NOTE,
 	LOCAL_KEY_SCOPES,
@@ -34,16 +36,22 @@ describe("buildOnboardingPlan", () => {
 		});
 		expect(plan.scopes).toEqual(["ingest"]);
 		expect(plan.scopes).toEqual(LOCAL_KEY_SCOPES);
-		expect(plan.command).toBe(
-			`printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY\n[ -n "$AGENTPULSE_KEY" ] && curl -sSL ${SERVER}/setup.sh | bash`,
-		);
 		expect(plan.command).not.toContain("--key");
-		// H1 (xander): `read -rsp` is a bash-only spelling -- `-p` means
-		// "coprocess" in zsh, macOS's default shell. Pin the POSIX form.
-		expect(plan.command).not.toContain("read -rsp");
-		expect(plan.command).toContain("read -rs AGENTPULSE_KEY");
-		// An empty answer must not run curl unauthenticated.
-		expect(plan.command).toContain('[ -n "$AGENTPULSE_KEY" ] &&');
+		// `read -s` is not POSIX (dash rejects it) and `read -rsp` means
+		// "coprocess" in zsh. Input is hidden with stty instead, and echo is
+		// restored by a trap even if the prompt is interrupted.
+		expect(plan.command).not.toMatch(/read -rs/);
+		expect(plan.command).toContain("stty -echo");
+		expect(plan.command).toContain("stty -g");
+		expect(plan.command).toContain("trap 'echo >&2; exit 130' INT TERM HUP");
+		expect(plan.command).toContain("IFS= read -r k;");
+		// The key is exported only inside the snippet's own subshell.
+		expect(plan.command.startsWith("( ")).toBe(true);
+		expect(plan.command).toContain('export AGENTPULSE_KEY="$ap_key"');
+		// An empty answer or odd characters must not run curl, and say why.
+		expect(plan.command).toContain("can only contain");
+		expect(plan.command).toContain(`curl -sSL ${SERVER}/setup.sh | bash`);
+		expect(plan.command).toContain("No API key entered");
 		expect(plan.keyNote).toBe(LOCAL_KEY_NOTE);
 		expect(plan.files).toEqual(["~/.claude/settings.json", "~/.codex/hooks.json"]);
 	});
@@ -190,5 +198,18 @@ describe("onLocationChange", () => {
 	test("re-selecting the current option keeps the minted key", () => {
 		const state = { location: "relay" as const, revealedKey: "ap_minted", notice: null };
 		expect(onLocationChange(state, "relay")).toBe(state);
+	});
+});
+
+describe("README install snippet", () => {
+	test("shows exactly the command the dashboard hands out, with no `read -s`", () => {
+		const readme = readFileSync(join(import.meta.dir, "../../../README.md"), "utf8");
+		const { command } = buildOnboardingPlan({
+			location: "local",
+			serverUrl: "http://localhost:3000",
+			disableAuth: false,
+		});
+		expect(readme).toContain(command);
+		expect(readme).not.toMatch(/read -rs/);
 	});
 });

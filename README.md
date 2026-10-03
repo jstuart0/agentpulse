@@ -376,14 +376,13 @@ docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
   -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
   -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
   --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY
-[ -n "$AGENTPULSE_KEY" ] && curl -sSL http://localhost:3000/setup.sh | bash
+( ap_key=$(if [ -t 0 ]; then s=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo "Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead." >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty "$s" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s "$k") && case "$ap_key" in '') echo "No API key entered; nothing was installed." >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo "The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed." >&2; false;; *) export AGENTPULSE_KEY="$ap_key"; curl -sSL http://localhost:3000/setup.sh | bash;; esac )
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
 
 The default config requires login via the dashboard. DO NOT add `-e DISABLE_AUTH=true` on any network you do not fully control.
 
-The `read -rs` line reads the key with input hidden and hands it to the installer without it ever appearing in the command text — so it never lands in shell history or `ps`. It's plain POSIX `read`, not bash's `read -rsp` shorthand: `-p` means "coprocess" in zsh, macOS's default login shell, so a pasted `-rsp` silently misbehaves there. The `[ -n "$AGENTPULSE_KEY" ] &&` guard skips the install instead of running curl unauthenticated if you leave the prompt blank. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but that form is visible in shell history; `curl ... | bash -s -- --key ap_YOUR_API_KEY` works too, and is visible in both shell history and the process list — prefer the `read` form when you're at an interactive terminal.
+The prompt reads the key with input hidden and hands it to the installer without it ever appearing in the command text — so it never lands in shell history or `ps`. It hides input with `stty -echo` rather than `read -s`, which dash — the `sh` on Debian and Ubuntu — doesn't have; it also works in bash and zsh. The whole snippet runs in a subshell, so the key never stays in your shell or its environment, and Ctrl-C at the prompt cancels it and restores your terminal. It refuses to ask if it can't hide what you type, and a blank answer or a key with characters outside letters, digits, `.`, `_` and `-` installs nothing and says why, rather than running curl unauthenticated. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but that form is visible in shell history; `curl ... | bash -s -- --key ap_YOUR_API_KEY` works too, and is visible in both shell history and the process list — prefer the `read` form when you're at an interactive terminal.
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 
@@ -480,11 +479,10 @@ See `deploy/k8s/FORWARDAUTH.md` for provider-specific setup instructions.
 By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script — prefer the hidden-prompt form, which keeps the key out of both `ps` and shell history:
 
 ```bash
-printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY
-[ -n "$AGENTPULSE_KEY" ] && curl -sSL http://localhost:3000/setup.sh | bash
+( ap_key=$(if [ -t 0 ]; then s=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo "Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead." >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty "$s" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s "$k") && case "$ap_key" in '') echo "No API key entered; nothing was installed." >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo "The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed." >&2; false;; *) export AGENTPULSE_KEY="$ap_key"; curl -sSL http://localhost:3000/setup.sh | bash;; esac )
 ```
 
-Plain POSIX `read`, not bash's `read -rsp` — `-p` means "coprocess" in zsh (macOS's default shell), not "prompt". For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but is visible in shell history.
+Works in dash, bash and zsh. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but is visible in shell history.
 
 For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in quick start).
 

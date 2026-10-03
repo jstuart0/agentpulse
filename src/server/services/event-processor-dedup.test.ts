@@ -809,7 +809,10 @@ test("P6-l1: an unstored row triggers no authority delete — a managed row surv
 });
 
 test("P2.17 TZ sentinel: the file leaves TZ restored", () => {
-	expect(process.env.TZ).toBe(FILE_TZ ?? "UTC");
+	// withTZ restores an unset TZ as "UTC", so unset and "UTC" are the same
+	// state here; without this the test also failed when it ran before any
+	// withTZ test had set and restored it.
+	expect(process.env.TZ ?? "UTC").toBe(FILE_TZ ?? "UTC");
 	if (!FILE_TZ) {
 		expect(Date.parse("2026-01-01 00:00:00")).toBe(Date.UTC(2026, 0, 1));
 	}

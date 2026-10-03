@@ -311,10 +311,11 @@ function Write-ApFileNoFollow {
 # installers' `[ -L "$AP_AUTH_HEADER_FILE" ]` guard. F242: also refuses a
 # multiply-hard-linked target file — see Test-ApMultipleHardLinks above.
 #
-# AGEN-21 (xander, Medium): both icacls calls are best-effort — a missing/
+# AGEN-21: both icacls calls are best-effort — a missing/
 # blocked icacls (non-NTFS volume, policy restriction) must not crash the
 # install over an ACL that couldn't be verified. Matches Write-ApPrivateFile
-# below and private-file.ts's tightenWindowsAclBestEffort on the TS side.
+# below and private-file.ts's tightenWindowsAclBestEffort on the TS side. A
+# failure is not silent, though: see Write-ApAclWarning.
 function New-ApHookAuthHeaderFile {
   param([Parameter(Mandatory = $true)][string]$ApiKey)
   $d = Join-Path $HOME ".agentpulse"
@@ -323,9 +324,12 @@ function New-ApHookAuthHeaderFile {
   }
   New-Item -ItemType Directory -Force -Path $d | Out-Null
   try {
-    icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+    $icaclsOutput = icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+    }
   } catch {
-    Write-Host "warning: could not narrow ACL on $d : $($_.Exception.Message)"
+    Write-ApAclWarning -Path $d -Detail $_.Exception.Message
   }
   $f = Join-Path $d "hook-auth-header"
   if (Test-ApMultipleHardLinks -Path $f) {
@@ -336,12 +340,26 @@ function New-ApHookAuthHeaderFile {
   }
   Set-Content -NoNewline -Path $f -Value "Authorization: Bearer $ApiKey`n" -Encoding UTF8
   try {
-    icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+    $icaclsOutput = icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+    }
   } catch {
-    Write-Host "warning: could not narrow ACL on $f : $($_.Exception.Message)"
+    Write-ApAclWarning -Path $f -Detail $_.Exception.Message
   }
 }
 # <<< agentpulse-hook-cmd
+
+# Narrowing an ACL is best-effort (restricted and non-NTFS volumes), but a
+# failure must never be silent: until it is fixed, other local users may be
+# able to read what was just written there.
+function Write-ApAclWarning {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Detail
+  )
+  Write-Warning "Could not restrict access to $Path ($Detail). Other local users may be able to read the API key or credentials stored there."
+}
 
 # AGEN-21 (security, Medium): .env.local and supervisor.json both hold
 # secrets in plaintext (AGENTPULSE_INITIAL_API_KEY, and the supervisor
@@ -375,15 +393,21 @@ function Write-ApPrivateFile {
   }
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   try {
-    icacls $dir /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+    $icaclsOutput = icacls $dir /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+    }
   } catch {
-    Write-Host "warning: could not narrow ACL on $dir : $($_.Exception.Message)"
+    Write-ApAclWarning -Path $dir -Detail $_.Exception.Message
   }
   Write-ApFileNoFollow -Path $Path -Content $Content
   try {
-    icacls $Path /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+    $icaclsOutput = icacls $Path /inheritance:r /grant:r "$($env:USERNAME):(R,W)" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+    }
   } catch {
-    Write-Host "warning: could not narrow ACL on $Path : $($_.Exception.Message)"
+    Write-ApAclWarning -Path $Path -Detail $_.Exception.Message
   }
 }
 
@@ -458,9 +482,12 @@ function Configure-Hooks {
     # AGEN-21 (xander, Medium): best-effort, matching every other icacls
     # call site — a missing/blocked icacls must not crash the install.
     try {
-      icacls $claudeSettings /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+      $icaclsOutput = icacls $claudeSettings /inheritance:r /grant:r "$($env:USERNAME):(R,W)" 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+      }
     } catch {
-      Write-Host "warning: could not narrow ACL on $claudeSettings : $($_.Exception.Message)"
+      Write-ApAclWarning -Path $claudeSettings -Detail $_.Exception.Message
     }
   }
 

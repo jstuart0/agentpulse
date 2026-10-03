@@ -3,7 +3,7 @@ import "../ai/__test_db.js";
 import { describeSqliteOnly } from "../../test-utils/backend.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
-const { aiPendingProjectDrafts, askThreads, projects, sessions } = await import(
+const { aiPendingProjectDrafts, askThreads, projects, sessions, supervisors } = await import(
 	"../../db/schema/index.js"
 );
 const {
@@ -26,6 +26,7 @@ import type { ProjectChoiceSnapshot } from "../../db/schema/index.js";
 beforeAll(() => initializeDatabase());
 
 beforeEach(async () => {
+	await getDb().delete(supervisors).execute();
 	await getDb().delete(aiPendingProjectDrafts).execute();
 	await getDb().delete(askThreads).execute();
 	await getDb().delete(projects).execute();

@@ -24,6 +24,7 @@
  * stale 200 expectation. Flagged for mid-build review (tessa/xander).
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { inArray } from "drizzle-orm";
 import "../db/__test_db.js";
 
 const { config } = await import("../config.js");
@@ -79,6 +80,20 @@ let ingestKey: string;
 
 beforeAll(async () => {
 	await initializeDatabase();
+	// The regression sweep below assumes the AI runtime flag is off (AI routes answer
+	// 409). Other test files switch it on and leave it, and the flag is cached
+	// for a few seconds, so clear both the rows and the cache here.
+	{
+		const { settings } = await import("../db/schema/index.js");
+		const { AI_KILL_SWITCH_KEY, AI_RUNTIME_ENABLED_KEY, invalidateAiFlagsCache } = await import(
+			"../services/ai/feature.js"
+		);
+		await getDb()
+			.delete(settings)
+			.where(inArray(settings.key, [AI_RUNTIME_ENABLED_KEY, AI_KILL_SWITCH_KEY]))
+			.execute();
+		invalidateAiFlagsCache();
+	}
 	process.env.FORWARDAUTH_TRUST_SECRET = TEST_SECRET;
 	process.env.FORWARDAUTH_PROVIDER = "authentik";
 	(config as Record<string, unknown>).disableAuth = false;

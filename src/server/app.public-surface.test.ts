@@ -13,6 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import "./db/__test_db.js";
+import { deleteAllSupervisors } from "./services/__test_supervisors.js";
 
 const { config } = await import("./config.js");
 const { initializeDatabase, getDb } = await import("./db/client.js");
@@ -93,7 +94,8 @@ beforeAll(async () => {
 	supervisorX = await enrollAndRegister(`sup-x-${crypto.randomUUID().slice(0, 8)}`);
 });
 
-afterAll(() => {
+afterAll(async () => {
+	await deleteAllSupervisors();
 	(config as Record<string, unknown>).disableAuth = originalDisableAuth;
 	_resetDbReadyForTest(false);
 });

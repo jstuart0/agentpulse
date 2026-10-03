@@ -23,6 +23,9 @@ describe("getDbFingerprint", () => {
 	});
 
 	test("matches an independently computed sha256('agentpulse-db-fingerprint:' + installation_id), first 12 hex chars", async () => {
+		// The installation_id row is created on first use; do not rely on an
+		// earlier test having done that.
+		await getDbFingerprint();
 		const [row] = await getDb()
 			.select()
 			.from(settings)
@@ -62,13 +65,14 @@ describe("getDbFingerprint", () => {
 	});
 
 	test("never leaks the raw installation_id (fingerprint is not a substring of it and vice versa)", async () => {
+		const fingerprint = await getDbFingerprint();
 		const [row] = await getDb()
 			.select()
 			.from(settings)
 			.where(eq(settings.key, "installation_id"))
 			.limit(1);
 		const installationId = (row?.value as string) ?? "";
-		const fingerprint = await getDbFingerprint();
+		expect(installationId).toBeTruthy();
 
 		expect(installationId).not.toContain(fingerprint);
 		expect(fingerprint).not.toContain(installationId);

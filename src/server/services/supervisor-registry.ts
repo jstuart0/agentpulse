@@ -3,13 +3,13 @@
 // (Date.now() + ms).toISOString() is pure JS — fully portable to Postgres.
 import { and, desc, eq, gt } from "drizzle-orm";
 import type {
-	SupervisorCapabilities,
 	SupervisorRecord,
 	SupervisorRegistrationInput,
 	SupervisorStatus,
 } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { supervisors } from "../db/schema/index.js";
+import { readTrustedRoots, withCapabilityDefaults } from "./supervisor-capabilities.js";
 
 const HEARTBEAT_LEASE_MS = 90_000;
 
@@ -38,15 +38,8 @@ function mapSupervisor(row: typeof supervisors.$inferSelect): SupervisorRecord {
 		platform: row.platform,
 		arch: row.arch,
 		version: row.version,
-		capabilities: (row.capabilities ?? {
-			version: 1,
-			agentTypes: [],
-			launchModes: [],
-			os: "unknown",
-			terminalSupport: [],
-			features: [],
-		}) as unknown as SupervisorCapabilities,
-		trustedRoots: row.trustedRoots ?? [],
+		capabilities: withCapabilityDefaults(row.capabilities),
+		trustedRoots: readTrustedRoots(row.trustedRoots),
 		status: deriveStatus(row.heartbeatLeaseExpiresAt, row.enrollmentState),
 		capabilitySchemaVersion: row.capabilitySchemaVersion,
 		configSchemaVersion: row.configSchemaVersion,

@@ -29,7 +29,12 @@ describe("AUTH_STEP", () => {
 		expect(step).not.toBeNull();
 		const command = step?.command ?? "";
 		expect(command).not.toContain("ap_test123");
-		expect(command).toContain("read -rs key");
+		expect(command).not.toMatch(/read -rs/);
+		expect(command).toContain("stty -echo");
+		expect(command).toContain("IFS= read -r k;");
+		expect(command).toContain("stty -g");
+		expect(command).toContain("can only contain");
+		expect(command).toContain("No API key entered");
 		expect(command).toContain("export AGENTPULSE_API_KEY=");
 		expect(command).toContain('f="$d/env"');
 		expect(command).toContain(".agentpulse/env");
@@ -45,7 +50,12 @@ describe("AUTH_STEP", () => {
 			expect(step).not.toBeNull();
 			const command = step?.command ?? "";
 			expect(command).not.toContain("ap_test123");
-			expect(command).toContain("read -rs key");
+			expect(command).not.toMatch(/read -rs/);
+			expect(command).toContain("stty -echo");
+			expect(command).toContain("IFS= read -r k;");
+			expect(command).toContain("stty -g");
+			expect(command).toContain("can only contain");
+			expect(command).toContain("No API key entered");
 			expect(command).toContain("d=~/.agentpulse");
 			expect(command).toContain('f="$d/hook-auth-header"');
 			expect(command).toContain("umask 077");

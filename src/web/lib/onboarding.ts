@@ -4,6 +4,8 @@
  * install command the user copies.
  */
 
+import { withHiddenKey } from "./hidden-key-prompt.js";
+
 export type OnboardingLocation = "local" | "relay";
 
 /** Direct hooks only post events; never manage (that's Settings' job). */
@@ -51,21 +53,23 @@ export function buildRelayCommand(opts: {
 
 /**
  * AGEN-49/H1 (xander): same principle as buildRelayCommand, applied to the
- * direct (non-relay) installer. The prompt is POSIX `read -rs`, not
- * `read -rsp` — `-p` means "coprocess" in zsh (macOS's default login shell),
- * not "prompt", so a pasted `-rsp` silently does the wrong thing there. The
- * prompt text is a separate `printf` instead. `read -rs` (no echo) keeps the
- * key out of shell history; the bare `export` hands the already-read value
- * to the piped-in setup.sh's environment without the value itself ever
- * appearing in the command line. The `[ -n ... ] &&` guard means a blank
- * answer (Ctrl-D, empty Enter) skips the install instead of running curl
- * unauthenticated. setup.sh already falls back to $AGENTPULSE_KEY (F234) —
+ * direct (non-relay) installer. The key is read at a hidden prompt (see
+ * hidden-key-prompt.ts: `stty -echo`, not `read -s`, which dash lacks, nor
+ * `read -rsp`, whose `-p` means "coprocess" in zsh). That keeps the key out
+ * of shell history; the bare `export` hands the already-read value to the
+ * piped-in setup.sh's environment without the value itself ever appearing in
+ * the command line. A blank answer (Ctrl-D, empty Enter) skips the install
+ * with an error instead of running curl unauthenticated. setup.sh already falls back to $AGENTPULSE_KEY —
  * no server-side change needed.
  */
 function buildLocalCommand(opts: { serverUrl: string; disableAuth: boolean }): string {
 	const install = installCommand("setup.sh", opts.serverUrl, []);
 	if (opts.disableAuth) return install;
-	return `printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY\n[ -n "$AGENTPULSE_KEY" ] && ${install}`;
+	return withHiddenKey(
+		"ap_key",
+		`export AGENTPULSE_KEY="$ap_key"; ${install}`,
+		"nothing was installed.",
+	);
 }
 
 export type OnboardingPlan = {

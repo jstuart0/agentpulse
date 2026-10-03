@@ -1,7 +1,13 @@
-import { describe, expect, spyOn, test } from "bun:test";
-import { resolveProviderProtocolVersion } from "./codex-managed.js";
+import { beforeEach, describe, expect, spyOn, test } from "bun:test";
+import {
+	_resetWarnedProtocolVersionsForTest,
+	resolveProviderProtocolVersion,
+} from "./codex-managed.js";
 
 describe("resolveProviderProtocolVersion", () => {
+	// The warn-once memory is module-level; each test needs to start without it.
+	beforeEach(() => _resetWarnedProtocolVersionsForTest());
+
 	test("returns the reported protocolVersion when it's a string", () => {
 		expect(resolveProviderProtocolVersion({ protocolVersion: "2026.1" })).toBe("2026.1");
 	});

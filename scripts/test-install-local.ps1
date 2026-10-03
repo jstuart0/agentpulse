@@ -41,6 +41,14 @@ Assert-True ($acl.Access.Count -eq 1) "hook-auth-header has exactly one ACE (fou
 # a broad, inherited directory ACL would have let the file inherit it for
 # the brief window between Set-Content and the file's own icacls call.
 $dirAcl = Get-Acl (Join-Path $HOME ".agentpulse")
+if ($dirAcl.Access.Count -ne 1) {
+	# Write-Error below ends the run, so show what is actually on the
+	# directory first: the next CI run then says which entries are there and
+	# whether they are inherited.
+	Write-Host "diagnostic: $HOME\.agentpulse has $($dirAcl.Access.Count) ACEs (USERNAME=$($env:USERNAME), inheritance protected: $($dirAcl.AreAccessRulesProtected))"
+	icacls (Join-Path $HOME ".agentpulse") | Out-Host
+	$dirAcl.Access | Format-List IdentityReference, FileSystemRights, AccessControlType, IsInherited, InheritanceFlags, PropagationFlags | Out-Host
+}
 Assert-True ($dirAcl.Access.Count -eq 1) ".agentpulse dir has exactly one ACE (found $($dirAcl.Access.Count))"
 
 # ── AGEN-49/H2 (xander): $ApiKey set embeds the literal key in

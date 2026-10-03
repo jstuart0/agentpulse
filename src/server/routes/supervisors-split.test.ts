@@ -12,6 +12,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import "../db/__test_db.js";
+import { deleteAllSupervisors } from "../services/__test_supervisors.js";
 
 const { config } = await import("../config.js");
 const { initializeDatabase } = await import("../db/client.js");
@@ -40,7 +41,8 @@ beforeAll(async () => {
 	(config as Record<string, unknown>).disableAuth = false;
 });
 
-afterAll(() => {
+afterAll(async () => {
+	await deleteAllSupervisors();
 	(config as Record<string, unknown>).disableAuth = originalDisableAuth;
 });
 

@@ -311,6 +311,33 @@ describe("install-local.ps1 secret writers are wired through Write-ApPrivateFile
 		expect(writeNoFollowIdx).toBeGreaterThan(dirIcaclsIdx);
 	});
 
+	test("every icacls call checks its exit code and, on failure, warns that other local users may read the secret, without stopping the install (static; never executed)", () => {
+		// icacls is a native command: a failure never throws by itself, and its
+		// output used to be discarded, so a failed ACL step was invisible. The
+		// step stays best-effort (restricted and non-NTFS volumes) but is loud.
+		const calls = [...source.matchAll(/^\s*\$icaclsOutput = icacls /gm)];
+		expect(calls.length).toBe(5);
+		for (const call of calls) {
+			const site = source.slice(call.index, (call.index ?? 0) + 700);
+			expect(site).toContain("$LASTEXITCODE -ne 0");
+			expect(site).toContain("$icaclsOutput -join");
+			expect(site).toMatch(/catch \{\s*Write-ApAclWarning -Path /);
+			expect(site.slice(0, site.indexOf("Write-ApAclWarning"))).not.toMatch(
+				/\bthrow "could not narrow/,
+			);
+		}
+		expect(source).not.toMatch(/icacls [^\n]*\| Out-Null/);
+		expect(source).not.toContain('Write-Host "warning: could not narrow ACL');
+	});
+
+	test("Write-ApAclWarning names the path and says other local users may be able to read what is stored there", () => {
+		const fn = source.slice(source.indexOf("function Write-ApAclWarning"));
+		const body = fn.slice(0, fn.indexOf("\n}\n"));
+		expect(body).toContain("Write-Warning");
+		expect(body).toContain("$Path");
+		expect(body).toContain("Other local users may be able to read");
+	});
+
 	test("AGEN-21 (xander, Medium): every icacls call is wrapped in try/catch (best-effort, matching the TS side's tightenWindowsAclBestEffort contract)", () => {
 		// $ErrorActionPreference = "Stop" only converts terminating
 		// PowerShell-cmdlet errors; a native icacls.exe failure (missing
@@ -330,7 +357,7 @@ describe("install-local.ps1 secret writers are wired through Write-ApPrivateFile
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i] ?? "";
 			const trimmed = line.trim();
-			if (/^icacls\s/.test(trimmed)) {
+			if (/^(\$\w+\s*=\s*)?icacls\s/.test(trimmed)) {
 				totalIcaclsCalls++;
 				if (!stack.some((f) => f.isTry)) unwrapped.push(i);
 			}

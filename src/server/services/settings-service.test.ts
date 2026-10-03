@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
 import type { ProtectedSettingError as ProtectedSettingErrorType } from "./settings-service.js";
 
@@ -9,6 +9,12 @@ const { ProtectedSettingError, upsertSetting } = await import("./settings-servic
 
 beforeAll(() => {
 	return initializeDatabase();
+});
+
+// Cleared before as well as after: other files leave settings rows behind
+// (for example ai.enabled) and these tests assert a key is absent.
+beforeEach(async () => {
+	await getDb().delete(settings).execute();
 });
 
 afterEach(async () => {

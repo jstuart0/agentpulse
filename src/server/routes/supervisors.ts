@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type {
 	ManagedSessionEventInput,
 	ManagedSessionStateInput,
@@ -26,6 +27,7 @@ import {
 import { notifySessionEvents, notifySessionUpdated } from "../services/notifier.js";
 import { SessionOwnershipError } from "../services/session-ownership.js";
 import { getSession } from "../services/session-tracker.js";
+import { parseRegistrationShape } from "../services/supervisor-capabilities.js";
 import {
 	getSupervisor,
 	heartbeatSupervisor,
@@ -100,8 +102,34 @@ supervisorsAdminRouter.post("/supervisors/:id/revoke", async (c) => {
 
 const supervisorsAgentRouter = new Hono();
 
-supervisorsAgentRouter.post("/supervisors/register", async (c) => {
-	const body = await c.req.json<SupervisorRegistrationInput>();
+// Registration is reachable before any credential check, so its body is capped.
+const REGISTER_BODY_LIMIT_BYTES = 64 * 1024;
+
+// The shape of capabilities and trusted roots is only checked once the caller
+// has proved who it is, and before the enrollment token is spent.
+const invalidShape = (input: SupervisorRegistrationInput) => {
+	const shape = parseRegistrationShape(input);
+	if (!shape.ok) return shape.body;
+	input.capabilities = shape.capabilities;
+	input.trustedRoots = shape.trustedRoots;
+	return null;
+};
+
+const registerBodyLimit = bodyLimit({
+	maxSize: REGISTER_BODY_LIMIT_BYTES,
+	onError: (c) => c.json({ error: "payload_too_large" }, 413),
+});
+
+supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c) => {
+	const body = await c.req.json<SupervisorRegistrationInput | null>().catch((err: unknown) => {
+		// Only malformed JSON is the caller's mistake to report here; anything
+		// else, such as the body limit aborting an oversized read, must propagate.
+		if (!(err instanceof SyntaxError)) throw err;
+		return null;
+	});
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		return c.json({ error: "Request body must be a JSON object" }, 400);
+	}
 	const registrationInput: SupervisorRegistrationInput = { ...body };
 	if (
 		!registrationInput.hostName ||
@@ -146,6 +174,8 @@ supervisorsAgentRouter.post("/supervisors/register", async (c) => {
 					return c.json({ error: "supervisor_exists_use_rotate" }, 409);
 				}
 			}
+			const shapeError = invalidShape(registrationInput);
+			if (shapeError) return c.json(shapeError, 400);
 			const consumed = await consumeEnrollmentToken(registrationInput.enrollmentToken);
 			if (!consumed) return c.json({ error: "Enrollment token is no longer valid" }, 409);
 		} else {
@@ -155,6 +185,8 @@ supervisorsAgentRouter.post("/supervisors/register", async (c) => {
 			);
 		}
 	}
+	const shapeError = invalidShape(registrationInput);
+	if (shapeError) return c.json(shapeError, 400);
 	const result = await registerSupervisor(registrationInput);
 	if (!credential) {
 		await revokeSupervisorCredential(result.supervisor.id);

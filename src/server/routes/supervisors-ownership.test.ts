@@ -14,6 +14,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import "../db/__test_db.js";
+import { deleteAllSupervisors } from "../services/__test_supervisors.js";
 
 const { config } = await import("../config.js");
 const { initializeDatabase, getDb } = await import("../db/client.js");
@@ -145,7 +146,8 @@ beforeAll(async () => {
 	supervisorB = await enrollAndRegister(`sup-b-${crypto.randomUUID().slice(0, 8)}`);
 });
 
-afterAll(() => {
+afterAll(async () => {
+	await deleteAllSupervisors();
 	(config as Record<string, unknown>).disableAuth = originalDisableAuth;
 });
 

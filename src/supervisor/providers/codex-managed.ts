@@ -32,6 +32,11 @@ function disposeAllManagedCodexRuntimes(): void {
 // pricing.ts's warnedFallbackModels / event-normalizer.ts's unknown-event set).
 const warnedProtocolVersions = new Set<string>();
 
+/** Test hook: forget which values were already warned about. */
+export function _resetWarnedProtocolVersionsForTest(): void {
+	warnedProtocolVersions.clear();
+}
+
 /**
  * Coerce the app-server's `initialize` response into a stored protocol
  * version string. `initResult.protocolVersion` is untyped wire data — when
