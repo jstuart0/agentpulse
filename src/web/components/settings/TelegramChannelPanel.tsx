@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
+import { plainErrorMessage } from "../../lib/api-errors.js";
 import {
 	type ChannelStats,
 	type NotificationChannelRecord,
@@ -109,7 +110,7 @@ export function TelegramChannelPanel() {
 				setWebhookMatchesExpected(null);
 			}
 		} catch (err) {
-			showToast("err", err instanceof Error ? err.message : String(err));
+			showToast("err", plainErrorMessage(err));
 		} finally {
 			setLoading(false);
 		}
@@ -147,7 +148,7 @@ export function TelegramChannelPanel() {
 			});
 			await load();
 		} catch (err) {
-			showToast("err", err instanceof Error ? err.message : String(err));
+			showToast("err", plainErrorMessage(err));
 		}
 	}
 
@@ -164,7 +165,7 @@ export function TelegramChannelPanel() {
 			showToast("ok", "Channel deleted.");
 			await load();
 		} catch (err) {
-			showToast("err", err instanceof Error ? err.message : String(err));
+			showToast("err", plainErrorMessage(err));
 		}
 	}
 
@@ -174,7 +175,7 @@ export function TelegramChannelPanel() {
 			showToast("ok", "Webhook set. Telegram will now deliver updates here.");
 			await load();
 		} catch (err) {
-			showToast("err", err instanceof Error ? err.message : String(err));
+			showToast("err", plainErrorMessage(err));
 		}
 	}
 
@@ -206,7 +207,7 @@ export function TelegramChannelPanel() {
 			await load();
 			return { ok: true };
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+			const msg = plainErrorMessage(err);
 			showToast("err", msg);
 			return { ok: false, error: msg };
 		}
@@ -224,7 +225,7 @@ export function TelegramChannelPanel() {
 			showToast("ok", "Bot token removed.");
 			await load();
 		} catch (err) {
-			showToast("err", err instanceof Error ? err.message : String(err));
+			showToast("err", plainErrorMessage(err));
 		}
 	}
 
@@ -239,7 +240,7 @@ export function TelegramChannelPanel() {
 			);
 			await load();
 		} catch (err) {
-			showToast("err", err instanceof Error ? err.message : String(err));
+			showToast("err", plainErrorMessage(err));
 		}
 	}
 
@@ -248,7 +249,7 @@ export function TelegramChannelPanel() {
 			await api.testChannel(id);
 			showToast("ok", "Test message sent to Telegram.");
 		} catch (err) {
-			showToast("err", err instanceof Error ? err.message : String(err));
+			showToast("err", plainErrorMessage(err));
 		}
 	}
 

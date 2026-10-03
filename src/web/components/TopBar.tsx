@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { useDropdownClose } from "../hooks/useDropdownClose.js";
+import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
 import { useSignOut } from "../hooks/useSignOut.js";
 import { formatProviderLabel } from "../lib/formatProviderLabel.js";
+import { machinesMenuItems, userMenuItems } from "../lib/nav-items.js";
 import { useUserStore } from "../stores/user-store.js";
 import { WsStatusChip } from "./WsStatusChip.js";
 
@@ -35,6 +37,7 @@ export function TopBar() {
 function AdminMenu() {
 	const [open, setOpen] = useState(false);
 	const ref = useDropdownClose(() => setOpen(false));
+	const ui = useOwnershipUi();
 	return (
 		<div className="relative" ref={ref}>
 			<button
@@ -57,7 +60,7 @@ function AdminMenu() {
 						d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
 					/>
 				</svg>
-				Admin
+				{ui.machinesMenuLabel}
 				<svg
 					className="w-3 h-3 opacity-70"
 					viewBox="0 0 24 24"
@@ -70,8 +73,14 @@ function AdminMenu() {
 			</button>
 			{open && (
 				<MenuPanel onClose={() => setOpen(false)}>
-					<MenuLink to="/setup" label="Setup" onClick={() => setOpen(false)} />
-					<MenuLink to="/hosts" label="Hosts" onClick={() => setOpen(false)} />
+					{machinesMenuItems(ui).map((item) => (
+						<MenuLink
+							key={item.to}
+							to={item.to}
+							label={item.label}
+							onClick={() => setOpen(false)}
+						/>
+					))}
 				</MenuPanel>
 			)}
 		</div>
@@ -109,6 +118,7 @@ function UserMenu({
 			? "Local account"
 			: "API key";
 	const isLocal = user?.source === "local";
+	const ui = useOwnershipUi();
 
 	async function handleSignOut() {
 		setOpen(false);
@@ -146,14 +156,14 @@ function UserMenu({
 							Signed in · {sourceLabel}
 						</div>
 					)}
-					<MenuLink to="/settings" label="Settings" onClick={() => setOpen(false)} />
-					{isLocal && (
+					{userMenuItems(ui, { isLocal }).map((item) => (
 						<MenuLink
-							to="/settings?panel=account"
-							label="Change password"
+							key={item.to}
+							to={item.to}
+							label={item.label}
 							onClick={() => setOpen(false)}
 						/>
-					)}
+					))}
 					{user && (
 						<button
 							type="button"

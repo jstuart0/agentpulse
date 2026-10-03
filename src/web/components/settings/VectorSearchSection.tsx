@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { plainErrorMessage } from "../../lib/api-errors.js";
 import { api } from "../../lib/api.js";
 
 /**
@@ -48,7 +49,7 @@ export function VectorSearchSection() {
 			setStatus(s);
 			setDraftModel(s.model);
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			setError(plainErrorMessage(err));
 		} finally {
 			setLoading(false);
 		}
@@ -75,7 +76,7 @@ export function VectorSearchSection() {
 			await api.updateVectorSearchStatus({ enabled });
 			await reload();
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			setError(plainErrorMessage(err));
 		} finally {
 			setBusy(false);
 		}
@@ -89,7 +90,7 @@ export function VectorSearchSection() {
 			await api.updateVectorSearchStatus({ model: draftModel.trim() });
 			await reload();
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			setError(plainErrorMessage(err));
 		} finally {
 			setBusy(false);
 		}
@@ -102,7 +103,7 @@ export function VectorSearchSection() {
 			await api.rebuildVectorIndex();
 			await reload();
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			setError(plainErrorMessage(err));
 		} finally {
 			setBusy(false);
 		}

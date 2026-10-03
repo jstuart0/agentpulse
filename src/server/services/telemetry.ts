@@ -148,12 +148,20 @@ export async function getOrCreateInstallationId(): Promise<{ id: string; created
 		return { id: existing, created: false };
 	}
 
-	const id = crypto.randomUUID();
+	// Insert-if-absent, then read back: concurrent first callers (the dashboard
+	// polls /health while telemetry boots) must all end up with the one id that
+	// won, not each mint their own and overwrite the last.
 	const createdAt = new Date().toISOString();
-	await setSettingValue(INSTALLATION_ID_KEY, id);
-	await setSettingValue(INSTALLATION_CREATED_AT_KEY, createdAt);
+	const inserted = await getDb()
+		.insert(settings)
+		.values({ key: INSTALLATION_ID_KEY, value: crypto.randomUUID(), updatedAt: createdAt })
+		.onConflictDoNothing({ target: settings.key })
+		.returning({ value: settings.value });
+	const won = inserted.length > 0;
+	if (won) await setSettingValue(INSTALLATION_CREATED_AT_KEY, createdAt);
 
-	return { id, created: true };
+	const id = (await getSettingValue<string>(INSTALLATION_ID_KEY)) as string;
+	return { id, created: won };
 }
 
 async function nextEventKind(installationCreated: boolean): Promise<TelemetryEventKind> {

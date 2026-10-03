@@ -119,22 +119,90 @@ export function jsonExtractText(col: AnyColumn | SQLWrapper, path: string): SQL 
 	return sql`json_extract(${col as SQL}, ${path})`;
 }
 
+// ── jsonExtractJson ───────────────────────────────────────────────────────────
+
+/**
+ * Returns a SQL expression that extracts a top-level JSON field as JSON TEXT:
+ * the value as it would be written in a JSON document, so a string value keeps
+ * its quotes and an object stays an object. A caller that parses the text gets
+ * exactly the value `JSON.parse` of the whole column would have given at that
+ * key, which `jsonExtractText` cannot promise (it unquotes strings, so the
+ * text `{"a":1}` could be an object or a string holding that text). A missing
+ * key is SQL NULL on Postgres and the text `null` on SQLite; a JSON null is
+ * the text `null` on both, so treat NULL and `null` alike.
+ *
+ * Same path rule as `jsonExtractText`: `$.fieldName`, one level.
+ *
+ *   SQLite:   json_quote(json_extract(<col>, <path>))
+ *   Postgres: ((<col>::json)-><fieldName>)::text
+ */
+export function jsonExtractJson(col: AnyColumn | SQLWrapper, path: string): SQL {
+	const PATH_RE = /^\$\.[a-zA-Z_][a-zA-Z0-9_]*$/;
+	if (!PATH_RE.test(path)) {
+		throw new Error(`jsonExtractJson: path must match $.fieldName (got: ${JSON.stringify(path)})`);
+	}
+	if (config.dialect === "postgres") {
+		return sql`((${col as SQL}::json)->${path.slice(2)})::text`;
+	}
+	return sql`json_quote(json_extract(${col as SQL}, ${path}))`;
+}
+
+// ── jsonReadable ──────────────────────────────────────────────────────────────
+
+/**
+ * A SQL condition that is true when extracting a key from the JSON column is
+ * safe, so a statement that reads one key from every row can skip a row it
+ * cannot read instead of failing for all of them.
+ *
+ *   SQLite:   the column's text is valid JSON (`json_valid`); the column is
+ *             plain text, so anything can be in it.
+ *   Postgres: the column is `json`, which is stored verbatim, so a document
+ *             with a NUL (`\u0000`) or a surrogate-range escape can be stored
+ *             but not read back by key. The test is on the text of the
+ *             escape: any such escape counts, including a valid surrogate pair
+ *             and a backslash followed by that text as data. The app's own
+ *             writer never produces the first and writes the second as the
+ *             character, so this errs only toward "unreadable".
+ */
+export function jsonReadable(col: AnyColumn | SQLWrapper): SQL {
+	if (config.dialect === "postgres") {
+		return sql`CAST(${col as SQL} AS text) !~ ${"\\\\u(0000|[dD][89a-fA-F][0-9a-fA-F]{2})"}`;
+	}
+	return sql`json_valid(${col as SQL})`;
+}
+
+// ── LIKE metacharacter escaping ───────────────────────────────────────────────
+
+/**
+ * Escapes `%`, `_`, and the escape character itself (`\`) in a user-supplied
+ * LIKE/ILIKE fragment so it matches literally once wrapped in wildcards —
+ * e.g. a search for `100%` must match the literal string `100%`, not "100
+ * followed by anything". Backslash is escaped FIRST so a pre-existing
+ * backslash in the input can't be mistaken for one this function added.
+ * Every caller that builds a pattern below pairs this with an explicit
+ * `ESCAPE '\'` clause.
+ */
+function escapeLikeMetacharacters(input: string): string {
+	return input.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
 // ── likeStartsWith ────────────────────────────────────────────────────────────
 
 /**
  * Returns a SQL LIKE / ILIKE fragment that matches values starting with
- * `prefix`. The `%` wildcard is appended at this layer (not by the caller)
+ * `prefix`. The `%` wildcard is appended at this layer (not by the caller);
+ * any `%`/`_`/`\` already in `prefix` is escaped so it matches literally,
  * and the full pattern is passed as a bound parameter.
  *
- *   SQLite:   <col> LIKE  '<prefix>%'
- *   Postgres: <col> ILIKE '<prefix>%'
+ *   SQLite:   <col> LIKE  '<prefix>%' ESCAPE '\'
+ *   Postgres: <col> ILIKE '<prefix>%' ESCAPE '\'
  */
 export function likeStartsWith(col: AnyColumn | SQLWrapper, prefix: string): SQL {
-	const pattern = `${prefix}%`;
+	const pattern = `${escapeLikeMetacharacters(prefix)}%`;
 	if (config.dialect === "postgres") {
-		return sql`${col as SQL} ILIKE ${pattern}`;
+		return sql`${col as SQL} ILIKE ${pattern} ESCAPE '\\'`;
 	}
-	return sql`${col as SQL} LIKE ${pattern}`;
+	return sql`${col as SQL} LIKE ${pattern} ESCAPE '\\'`;
 }
 
 // ── isUniqueViolationError ────────────────────────────────────────────────────
@@ -201,20 +269,53 @@ export function isStatementTimeoutError(err: unknown): boolean {
 	return false;
 }
 
+// ── isAppIsoTimestamp ────────────────────────────────────────────────────────
+
+/**
+ * Returns a SQL predicate that is true only when `col` holds exactly the
+ * ISO-with-milliseconds-and-Z shape `new Date().toISOString()` writes
+ * (e.g. "2026-10-01T09:00:00.000Z") — the one shape every app-side
+ * timestamp write actually produces. NULL input evaluates to NULL (falsy),
+ * same as any other SQL comparison against NULL.
+ *
+ * A plain text `>=` comparison between two stored-timestamp columns is only
+ * safe to use as a SQL-side shortcut for "a >= b" when BOTH sides are this
+ * exact shape — a legacy SQLite bare value ("2026-10-01 09:00:00", no "T",
+ * no "Z") or a Postgres offset value ("2026-10-01 09:00:00+00") sorts
+ * lexically against an ISO value by the "T"/" " byte at the same position,
+ * not by actual time, and can disagree with parseStoredTimestamp's answer.
+ * Gate any such shortcut on this predicate for every column it compares;
+ * when it's false, keep the row as a candidate and let the classifier
+ * (which parses properly) decide, rather than trusting the SQL text
+ * comparison.
+ *
+ *   SQLite:   <col> GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+ *   Postgres: <col> ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+ */
+export function isAppIsoTimestamp(col: AnyColumn | SQLWrapper): SQL {
+	if (config.dialect === "postgres") {
+		return sql`${col as SQL} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$'`;
+	}
+	return sql`${col as SQL} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'`;
+}
+
 // ── likeContains ─────────────────────────────────────────────────────────────
 
 /**
  * Returns a SQL LIKE / ILIKE fragment that matches values containing
- * `fragment` anywhere. Both `%` boundaries are appended at this layer and
- * the full pattern is passed as a bound parameter.
+ * `fragment` anywhere. Both `%` boundaries are appended at this layer; any
+ * `%`/`_`/`\` already in `fragment` is escaped so it matches literally
+ * (e.g. a search for the literal string `100%` doesn't become "100
+ * followed by anything"), and the full pattern is passed as a bound
+ * parameter.
  *
- *   SQLite:   <col> LIKE  '%<fragment>%'
- *   Postgres: <col> ILIKE '%<fragment>%'
+ *   SQLite:   <col> LIKE  '%<fragment>%' ESCAPE '\'
+ *   Postgres: <col> ILIKE '%<fragment>%' ESCAPE '\'
  */
 export function likeContains(col: AnyColumn | SQLWrapper, fragment: string): SQL {
-	const pattern = `%${fragment}%`;
+	const pattern = `%${escapeLikeMetacharacters(fragment)}%`;
 	if (config.dialect === "postgres") {
-		return sql`${col as SQL} ILIKE ${pattern}`;
+		return sql`${col as SQL} ILIKE ${pattern} ESCAPE '\\'`;
 	}
-	return sql`${col as SQL} LIKE ${pattern}`;
+	return sql`${col as SQL} LIKE ${pattern} ESCAPE '\\'`;
 }

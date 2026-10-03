@@ -9,9 +9,10 @@
  * A curl stub refuses anything aimed at the default relay port, :4000 (F186),
  * and any Bun download (F190), so no test fetches Bun from the network.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
 	chmod,
+	lstat,
 	mkdir,
 	mkdtemp,
 	readFile,
@@ -26,6 +27,12 @@ import { dirname, join, relative } from "node:path";
 // Before config.js: the test process shares one module registry, and config
 // is read once, so the harness's env has to be in place first.
 import "../src/server/db/__test_db.js";
+import {
+	CODEX_APPROVE_LINE,
+	CODEX_REAPPROVE_LINE,
+	EXCLUDE_CHECK_HINT,
+} from "../src/shared/hook-headers.js";
+import { expectClaudeHooksCarrySkip } from "./claude-hook-assertions.js";
 
 const { config } = await import("../src/server/config.js");
 const { setup } = await import("../src/server/routes/setup.js");
@@ -37,6 +44,8 @@ const INSTALLER = join(import.meta.dir, "setup-relay.sh");
 const RELAY_SRC = join(import.meta.dir, "relay.ts");
 const STATUSLINE_SRC = join(import.meta.dir, "statusline.sh");
 const BUN_DIR = dirname(process.execPath);
+// Each case runs a real installer in a subprocess; several take most of the 5 s default on a loaded machine.
+setDefaultTimeout(30_000);
 const RUN_TIMEOUT = 60_000;
 
 const INGEST_ONLY_KEY = "ap_test_ingest_only";
@@ -130,6 +139,8 @@ async function runInstaller(
 			PATH: `${opts.pathPrefix ? `${opts.pathPrefix}:` : ""}${stubDir}:${BUN_DIR}:${sanitizedPath}`,
 			HOME: home,
 			TMPDIR: tmp,
+			// Apple's python3 shim writes a bytecode cache under HOME, which the "writes nothing" cases would count.
+			PYTHONDONTWRITEBYTECODE: "1",
 			AP_STUB_LOG: stubLog,
 			AP_TEST_UNAME: opts.uname ?? "Darwin",
 			// Never the developer's terminal: a prompt would hang the test.
@@ -144,6 +155,15 @@ async function runInstaller(
 	]);
 	await proc.exited;
 	return { code: proc.exitCode, out: stdout + stderr, stubLog: await readFile(stubLog, "utf-8") };
+}
+
+/** The installed check: present, byte for byte the generator's, mode 0500, in a ~/.agentpulse only its owner can use. */
+async function expectCheckScriptInstalled(home: string) {
+	const { buildBashExcludeScript } = await import("../src/shared/hook-command.js");
+	const script = join(home, ".agentpulse", "exclude-check.sh");
+	expect(await readFile(script, "utf-8")).toBe(buildBashExcludeScript());
+	expect(await modeOf(script)).toBe(0o500);
+	expect(await modeOf(join(home, ".agentpulse"))).toBe(0o700);
 }
 
 async function readJson(path: string) {
@@ -395,6 +415,13 @@ describe("an ingest+observe key installs the relay, statusline and service", () 
 				command: `AGENTPULSE_PORT=${port} ~/.claude/statusline-agentpulse.sh`,
 			});
 			expect(Object.keys(settings.hooks).length).toBeGreaterThan(0);
+			// the relay form: no key in the file, the skip header left unexpanded
+			expectClaudeHooksCarrySkip(settings, { allowedEnvVars: ["AGENTPULSE_SKIP"] });
+			for (const entries of Object.values(settings.hooks) as {
+				hooks: { headers: Record<string, string> }[];
+			}[][]) {
+				expect(entries[0]?.hooks[0]?.headers.Authorization).toBeUndefined();
+			}
 
 			await expect(stat(join(relayDir, "codex-hook.sh"))).rejects.toThrow();
 			expect(res.out).toContain("Removed obsolete ~/.agentpulse/codex-hook.sh");
@@ -412,7 +439,7 @@ describe("an ingest+observe key installs the relay, statusline and service", () 
 	);
 
 	test(
-		"a stub copilot on PATH → agentpulse.json has exactly the 10 CopilotEvent keys, each with its own ?event= and X-Agent-Type; no ap_ literal",
+		"a stub copilot on PATH → agentpulse.json has exactly the 10 CopilotEvent keys, each with its own ?event= and X-Agent-Type; the key never appears",
 		async () => {
 			const home = await newHome();
 			const port = await freePort();
@@ -436,11 +463,16 @@ describe("an ingest+observe key installs the relay, statusline and service", () 
 				const bash = written.hooks[event][0].bash as string;
 				expect(bash).toContain(`?event=${event}`);
 				expect(bash).toContain("X-Agent-Type: copilot_cli");
-				expect(bash).not.toContain("ap_");
+				// The key never appears in the command. (A bare "ap_" prefix check
+				// is no longer meaningful: the exclusion check's own variables are
+				// named ap_dir, ap_rules, ...)
+				expect(bash).not.toContain(RELAY_KEY);
 			}
 			expect(written).toEqual(
 				JSON.parse(buildCopilotHooksFile({ baseUrl: `http://localhost:${port}`, direct: false })),
 			);
+
+			await expectCheckScriptInstalled(home);
 
 			const installed = await readJson(join(home, ".agentpulse", "installed.json"));
 			expect(typeof installed.copilotHooksWrittenAt).toBe("string");
@@ -802,6 +834,8 @@ describe("D12/D13 — Codex command hooks (F50, F52, r6 CODEX_HOME)", () => {
 				expect(handler.timeout).toBe(1);
 			}
 			expect(hooksJson).not.toContain('"matcher"');
+			// the hooks carry the gate, so the script the gate runs must be there
+			await expectCheckScriptInstalled(home);
 
 			const configToml = await readFile(join(home, ".codex", "config.toml"), "utf-8").catch(
 				() => "",
@@ -882,6 +916,68 @@ describe("D12/D13 — Codex command hooks (F50, F52, r6 CODEX_HOME)", () => {
 			expect(backups3).toHaveLength(2);
 			const stillFirstBackupBytes = await readFile(join(home, ".codex", backups1[0]), "utf-8");
 			expect(stillFirstBackupBytes).toBe('{"hooks":{"custom":"mine"}}\n');
+		},
+		RUN_TIMEOUT,
+	);
+});
+
+describe("the relay installer's closing lines about the exclude rules", () => {
+	test(
+		"a fresh install ends with the Codex approve line and prints the exclude hint; an unchanged re-run does not ask again",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			const args = ["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)];
+			const first = await runInstaller(home, args, { uname: "Darwin" });
+			expect(first.code).toBe(0);
+			expect(first.out).toContain(EXCLUDE_CHECK_HINT);
+			expect(
+				first.out.trimEnd().endsWith(CODEX_APPROVE_LINE),
+				"a fresh install asks to approve",
+			).toBe(true);
+			expect(first.out).not.toContain(CODEX_REAPPROVE_LINE);
+
+			const second = await runInstaller(home, args, { uname: "Darwin" });
+			expect(second.code).toBe(0);
+			expect(second.out).toContain(EXCLUDE_CHECK_HINT);
+			expect(second.out).not.toContain(CODEX_REAPPROVE_LINE);
+			expect(second.out).not.toContain(CODEX_APPROVE_LINE);
+		},
+		RUN_TIMEOUT,
+	);
+});
+
+describe("a symlinked ~/.claude/settings.json is never severed (real setup-relay.sh subprocess)", () => {
+	test(
+		"the link survives, the user's other settings survive, and the target is either written through or left alone with a message",
+		async () => {
+			const home = await newHome();
+			const port = await freePort();
+			await mkdir(join(home, ".claude"), { recursive: true });
+			await mkdir(join(home, "dotfiles"), { recursive: true });
+			const target = join(home, "dotfiles", "settings.json");
+			await writeFile(target, `${JSON.stringify({ theme: "dark" })}\n`);
+			const link = join(home, ".claude", "settings.json");
+			await symlink(target, link);
+
+			const res = await runInstaller(
+				home,
+				["--url", authUrl, "--key", RELAY_KEY, "--port", String(port)],
+				{ uname: "Darwin" },
+			);
+			expect((await lstat(link)).isSymbolicLink(), "the link was replaced by a regular file").toBe(
+				true,
+			);
+			const after = await readJson(target);
+			expect(after.theme).toBe("dark");
+			if (res.code === 0) {
+				expect(
+					Object.keys(after.hooks ?? {}).length,
+					"written through to the target",
+				).toBeGreaterThan(0);
+			} else {
+				expect(res.out).toMatch(/refusing to write through a symlink/);
+			}
 		},
 		RUN_TIMEOUT,
 	);

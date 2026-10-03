@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
 // Defer DB-touching imports so __test_db can configure SQLITE_PATH first.
@@ -26,6 +26,21 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	invalidateAiFlagsCache();
+});
+
+// The per-test beforeEach above wipes `settings` before each test in THIS
+// file, but nothing previously reset it after the LAST one — a test that
+// leaves ai.enabled/ai.killSwitch set to true (several here do, to exercise
+// the flag) then leaked that state forward: to every file that runs later
+// in the same process, and — since `settings` is a real table, not
+// in-memory — to a second full-suite run against the same, unwiped
+// database. Found via exactly that: the full Postgres suite run twice in a
+// row surfaced route-scope-policy.test.ts's AI-gated sweep expecting the
+// default (AI disabled) 409 and getting a 500 instead, because this file's
+// last test had left ai.enabled=true sitting in the real settings table.
+afterAll(async () => {
+	await getDb().delete(settings).execute();
 	invalidateAiFlagsCache();
 });
 

@@ -1,4 +1,9 @@
 import { Hono } from "hono";
+import {
+	CODEX_MARKER_SH_PIECE,
+	SH_GATE_PIECE,
+	buildBashExcludeScriptForInstaller,
+} from "../../shared/hook-command.js";
 import { config } from "../config.js";
 import { INSTALLER_SOURCES, buildRelayInstaller } from "../installers.js";
 
@@ -247,7 +252,7 @@ ap_write_private_no_follow() {
 		echo "refusing to write into a symlinked directory: \$dir" >&2
 		return 1
 	fi
-	mkdir -p "\$dir"
+	( umask 077 && mkdir -p "\$dir" )
 	if [ -L "\$path" ]; then
 		echo "refusing to write through a symlink: \$path" >&2
 		return 1
@@ -276,21 +281,109 @@ ap_write_private_no_follow() {
 	mv -f -- "\$tmp" "\$path"
 }
 
+# The exclusion check: ONE script, ~/.agentpulse/exclude-check.sh, written once by
+# ap_install_exclude_script and run by the hook command's gate only when a rules
+# file exists (src/shared/hook-command.ts, buildBashExcludeScript). Carried as
+# ASCII text with three placeholders for the characters the check needs as real
+# bytes (tab, carriage return, byte order mark), so no editor or line-ending
+# conversion can change them; restored here.
+ap_load_exclude_script() {
+	IFS= read -r -d '' ap_exclude_script_text <<'AP_EXCLUDE_SCRIPT_EOF' || true
+${buildBashExcludeScriptForInstaller()}AP_EXCLUDE_SCRIPT_EOF
+	ap_exclude_script_text=\${ap_exclude_script_text//@@AP_TAB@@/\$'\\t'}
+	ap_exclude_script_text=\${ap_exclude_script_text//@@AP_CR@@/\$'\\r'}
+	ap_exclude_script_text=\${ap_exclude_script_text//@@AP_BOM@@/\$'\\xef\\xbb\\xbf'}
+}
+
+# The two pieces of the hook command that carry logic (src/shared/hook-command.ts:
+# CODEX_MARKER_SH_PIECE and SH_GATE_PIECE), stored verbatim.
+ap_load_hook_pieces() {
+	IFS= read -r -d '' ap_marker_piece <<'AP_MARKER_PIECE_EOF' || true
+${CODEX_MARKER_SH_PIECE}
+AP_MARKER_PIECE_EOF
+	ap_marker_piece=\${ap_marker_piece%\$'\\n'}
+	IFS= read -r -d '' ap_gate_piece <<'AP_GATE_PIECE_EOF' || true
+${SH_GATE_PIECE}
+AP_GATE_PIECE_EOF
+	ap_gate_piece=\${ap_gate_piece%\$'\\n'}
+}
+
+# Installs (or refreshes) the check at ~/.agentpulse/exclude-check.sh: atomic
+# (temp file in the same directory, then rename), never through a link, mode
+# 0500. A missing ~/.agentpulse is created 0700; an existing one is never
+# loosened, and is used only when it (or what a symlink resolves to) is a
+# directory you own that nobody else can write. Anything else prints a warning
+# and installs nothing: hooks still work, and a rules file then makes them send
+# nothing (fail closed) until the check is installed.
+ap_install_exclude_script() {
+	local dir="\$HOME/.agentpulse" real tmp perms
+	if [ -z "\$HOME" ]; then
+		echo "! Exclusion check not installed: HOME is not set." >&2
+		return 0
+	fi
+	if [ ! -e "\$dir" ] && [ ! -L "\$dir" ]; then
+		if ! ( umask 077 && mkdir "\$dir" ) 2>/dev/null; then
+			echo "! Exclusion check not installed: could not create \$dir." >&2
+			return 0
+		fi
+	fi
+	real="\$(cd -P "\$dir" 2>/dev/null && pwd -P)" || real=""
+	perms="\$(ls -ld "\$real" 2>/dev/null)" || perms=""
+	if [ -z "\$real" ] || [ ! -d "\$real" ] || [ ! -O "\$real" ] || [ "\${perms:5:1}" != "-" ] || [ "\${perms:8:1}" != "-" ]; then
+		echo "! Exclusion check not installed: \$dir must be a directory you own that nobody else can write." >&2
+		return 0
+	fi
+	if [ -L "\$real/exclude-check.sh" ] || [ -d "\$real/exclude-check.sh" ]; then
+		echo "! Exclusion check not installed: \$real/exclude-check.sh is a link or a directory; remove it and run this again." >&2
+		return 0
+	fi
+	if ! command -v mktemp >/dev/null 2>&1; then
+		echo "! Exclusion check not installed: mktemp not found." >&2
+		return 0
+	fi
+	ap_load_exclude_script
+	# A current copy (same text, mode 0500, ours) is left alone, like the TypeScript installer does.
+	if [ -f "\$real/exclude-check.sh" ] && [ -O "\$real/exclude-check.sh" ] \\
+		&& [ "\$(ls -ld "\$real/exclude-check.sh" 2>/dev/null | cut -c1-10)" = "-r-x------" ] \\
+		&& [ "\$(cat "\$real/exclude-check.sh" 2>/dev/null)" = "\${ap_exclude_script_text%\$'\\n'}" ]; then
+		echo "Exclusion check is current: \$real/exclude-check.sh"
+		return 0
+	fi
+	tmp="\$(mktemp "\$real/.exclude-check.sh.XXXXXX")" || {
+		echo "! Exclusion check not installed: could not create a temp file in \$real." >&2
+		return 0
+	}
+	if ! printf '%s' "\$ap_exclude_script_text" >| "\$tmp" || ! chmod 0500 "\$tmp"; then
+		rm -f -- "\$tmp" 2>/dev/null || true
+		echo "! Exclusion check not installed: could not write \$tmp." >&2
+		return 0
+	fi
+	sync 2>/dev/null || true
+	mv -f -- "\$tmp" "\$real/exclude-check.sh"
+	if [ "\$(cat "\$real/exclude-check.sh" 2>/dev/null)" != "\${ap_exclude_script_text%\$'\\n'}" ]; then
+		rm -f -- "\$real/exclude-check.sh" 2>/dev/null || true
+		echo "! Exclusion check not installed: what was written to \$real/exclude-check.sh could not be verified; run this again." >&2
+		return 0
+	fi
+	echo "Exclusion check installed: \$real/exclude-check.sh"
+}
+
 ap_hook_cmd() {
 	# \$1=base \$2=direct(0/1) \$3=agent \$4=event
 	local base="\$1" direct="\$2" agent="\$3" event="\$4"
-	local marker="" call_with_header call_without_header body
+	local marker="" call_with_header call_without_header send
+	ap_load_hook_pieces
 	if [ "\$agent" = "codex_cli" ]; then
-		marker='sid=\$(grep -o '\\''"session_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9-]*"'\\'' "\$t" | head -n1); sid=\${sid%\\"}; sid=\${sid##*\\"}; case "\$sid" in ""|*[!A-Za-z0-9-]*) ;; *) if [ \${#sid} -le 128 ]; then mkdir -p "\$HOME/.agentpulse/codex-native" 2>/dev/null; : > "\$HOME/.agentpulse/codex-native/\$sid" 2>/dev/null; fi ;; esac; '
+		marker="\$ap_marker_piece"
 	fi
 	call_with_header="curl -sS --max-time 2 -o /dev/null -X POST '\${base}/api/v1/hooks?event=\${event}' -H 'Content-Type: application/json' -H 'X-Agent-Type: \${agent}'"' -H "@\$f" --data-binary "@\$t"'
 	call_without_header="curl -sS --max-time 2 -o /dev/null -X POST '\${base}/api/v1/hooks?event=\${event}' -H 'Content-Type: application/json' -H 'X-Agent-Type: \${agent}'"' --data-binary "@\$t"'
 	if [ "\$direct" = "1" ]; then
-		body="\$marker"'f="\$HOME/.agentpulse/hook-auth-header"; if [ -s "\$f" ]; then '"\$call_with_header"'; else '"\$call_without_header"'; fi; rm -f "\$t"'
+		send='f="\$HOME/.agentpulse/hook-auth-header"; if [ -s "\$f" ]; then '"\$call_with_header"'; else '"\$call_without_header"'; fi'
 	else
-		body="\$marker""\$call_without_header"'; rm -f "\$t"'
+		send="\$call_without_header"
 	fi
-	printf '%s' 't=\$(mktemp "\${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX" 2>/dev/null) || exit 0; cat > "\$t"; ( '"\$body"' ) </dev/null >/dev/null 2>&1 & exit 0'
+	printf '%s' 't=\$(mktemp "\${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX" 2>/dev/null) || exit 0; cat > "\$t"; ( trap '\\''rm -f "\$t"'\\'' EXIT; trap '\\''exit 1'\\'' HUP INT TERM; '"\$marker""\$ap_gate_piece""\$send"' ) </dev/null >/dev/null 2>&1 & exit 0'
 }
 
 ap_codex_hooks_json() {
@@ -446,9 +539,9 @@ for i in "\${!EVENTS[@]}"; do
   EVENT="\${EVENTS[\$i]}"
   [[ \$i -gt 0 ]] && HOOKS_JSON+=","
   if [[ -n "\$API_KEY" ]]; then
-    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
+    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_SKIP\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \$API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\",\\"X-AgentPulse-Skip\\":\\"\\\$AGENTPULSE_SKIP\\"}}]}]"
   else
-    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\"}}]}]"
+    HOOKS_JSON+="\\"\$EVENT\\":[{\\"matcher\\":\\"\\",\\"hooks\\":[{\\"type\\":\\"http\\",\\"url\\":\\"\${HOOK_URL}/api/v1/hooks\\",\\"async\\":true,\\"allowedEnvVars\\":[\\"AGENTPULSE_API_KEY\\",\\"AGENTPULSE_SKIP\\"],\\"headers\\":{\\"Authorization\\":\\"Bearer \\\$AGENTPULSE_API_KEY\\",\\"X-Agent-Type\\":\\"claude_code\\",\\"X-AgentPulse-Skip\\":\\"\\\$AGENTPULSE_SKIP\\"}}]}]"
   fi
 done
 HOOKS_JSON+="}"
@@ -521,11 +614,16 @@ if [[ -n "\$API_KEY" ]]; then
   ap_write_private_no_follow "\$AP_AUTH_HEADER_FILE" "\$AP_AUTH_HEADER_CONTENT" || exit 1
 fi
 
+# Set when Codex hooks were really (re)written, so the closing line can ask the
+# user to approve them again.
+CODEX_HOOKS_WRITTEN="0"
+ap_install_exclude_script
 NEW_CODEX_HOOKS_JSON="\$(ap_codex_hooks_json "\$HOOK_URL" "1")"
 if [[ -f "\$CODEX_DIR/hooks.json" ]] && [[ "\$(cat "\$CODEX_DIR/hooks.json")" == "\$NEW_CODEX_HOOKS_JSON" ]]; then
   echo "  ✓ Codex hooks unchanged — no re-trust needed"
 else
   if [[ -f "\$CODEX_DIR/hooks.json" ]]; then
+    CODEX_HOOKS_WRITTEN="updated"
     CODEX_BACKUP_FILE="\$CODEX_DIR/hooks.json.agentpulse-bak.\$(date -u +%Y%m%dT%H%M%SZ)"
     cat "\$CODEX_DIR/hooks.json" | ap_write_no_follow "\$CODEX_BACKUP_FILE" || exit 1
     echo "  ✓ Backed up existing Codex hooks to \$CODEX_BACKUP_FILE"
@@ -534,7 +632,9 @@ else
   echo "  ✓ Codex CLI hooks configured"
   echo "    Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks."
   echo "    Re-trust after changing the AgentPulse URL or port."
+  [[ "\$CODEX_HOOKS_WRITTEN" == "updated" ]] || CODEX_HOOKS_WRITTEN="new"
 fi
+echo "  After editing ~/.agentpulse/exclude by hand, run: agentpulse exclude check"
 # D12: codex_hooks is a deprecated (but still-working) legacy alias for
 # [features].hooks — left alone if present, never newly written.
 
@@ -548,6 +648,7 @@ if command -v copilot >/dev/null 2>&1 || [[ -d "\$HOME/.copilot" ]]; then
   COPILOT_HOOKS_FILE="\$COPILOT_DIR/agentpulse.json"
   mkdir -p "\$COPILOT_DIR"
 
+  ap_install_exclude_script
   NEW_COPILOT_HOOKS_JSON="\$(ap_copilot_hooks_json "\$HOOK_URL" "1")"
   if [[ -f "\$COPILOT_HOOKS_FILE" ]] && [[ "\$(cat "\$COPILOT_HOOKS_FILE")" == "\$NEW_COPILOT_HOOKS_JSON" ]]; then
     echo "  ✓ Copilot hooks unchanged"
@@ -560,6 +661,7 @@ if command -v copilot >/dev/null 2>&1 || [[ -d "\$HOME/.copilot" ]]; then
     printf '%s\\n' "\$NEW_COPILOT_HOOKS_JSON" | ap_write_no_follow "\$COPILOT_HOOKS_FILE" || exit 1
     echo "  ✓ Copilot CLI hooks configured in \$COPILOT_HOOKS_FILE"
   fi
+  echo "  After editing ~/.agentpulse/exclude by hand, run: agentpulse exclude check"
 fi
 
 # ── Env vars (D37/F243) ──
@@ -608,6 +710,11 @@ fi
 echo ""
 echo "  Done! Open a new terminal and start a Claude Code or Codex session."
 echo ""
+if [[ "\$CODEX_HOOKS_WRITTEN" == "new" ]]; then
+  echo "  Codex needs you to approve these hooks: run /hooks in Codex."
+elif [[ "\$CODEX_HOOKS_WRITTEN" == "updated" ]]; then
+  echo "  Codex: open /hooks and approve the updated AgentPulse hooks again; the hook command changed, so Codex asks once more."
+fi
 `;
 
 	return scriptResponse(script, "setup.sh");

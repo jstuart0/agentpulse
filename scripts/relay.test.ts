@@ -36,6 +36,18 @@ async function mod(): Promise<RelayModule> {
 }
 
 const RELAY_PATH = join(import.meta.dir, "relay.ts");
+
+/**
+ * Every in-process relay a test starts is told it has no account home: the default asks the operating
+ * system's user database, which ignores HOME, and would look at the real account's rules file.
+ */
+async function startTestRelay(
+	config: Parameters<RelayModule["startRelay"]>[0],
+	opts: Parameters<RelayModule["startRelay"]>[1] = {},
+) {
+	const R = await mod();
+	return R.startRelay(config, { accountHome: () => undefined, ...opts });
+}
 const HOUR = 60 * 60 * 1000;
 const T0 = Date.parse("2026-09-28T12:00:00.000Z");
 // F159: the relay redacts its key out of every log line and diagnostic, so a
@@ -53,7 +65,7 @@ type StubHandler = (
 	method: string,
 	url: URL,
 	body: string,
-) => Response | Promise<Response> | undefined;
+) => Response | undefined | Promise<Response | undefined>;
 
 function startStub(handler: StubHandler) {
 	const requests: Recorded[] = [];
@@ -1294,7 +1306,14 @@ describe("D22 — hooks_not_firing (evidence-based, TUI-only per SPIKE fact 6)",
 		expect(ctx.state.hooksNotFiring.codex_cli).toBe(true);
 
 		const diag = await R.buildDiagnostics(ctx);
-		expect((diag.agents as Record<string, { status?: string; basis?: string }>).codex_cli).toEqual({
+		expect(
+			(
+				diag.agents as Record<
+					string,
+					{ lastEventAt?: string | null; status?: string; basis?: string }
+				>
+			).codex_cli,
+		).toEqual({
 			lastEventAt: null,
 			status: "hooks_not_firing",
 			basis: "tui_activity",
@@ -1385,10 +1404,9 @@ type Diagnostics = {
 
 describe("the real port-0 relay server", () => {
 	async function startAgainst(remote: string, policy: Policy = "codex") {
-		const R = await mod();
 		const stateDir = join(tmp, "state");
 		await mkdir(stateDir, { recursive: true });
-		const relay = await R.startRelay(
+		const relay = await startTestRelay(
 			{
 				remoteUrl: remote,
 				apiKey: "ap_test_key",
@@ -1438,9 +1456,10 @@ describe("the real port-0 relay server", () => {
 			"processing",
 		];
 		for (const k of baseQueueKeys) expect(Object.keys(q)).toContain(k);
-		// Additive only (F122 added `dropped`).
-		expect(Object.keys(q).filter((k) => !baseQueueKeys.includes(k))).toEqual(["dropped"]);
+		// Additive only (`dropped`, then `parked`: hooks set aside after repeated errors).
+		expect(Object.keys(q).filter((k) => !baseQueueKeys.includes(k))).toEqual(["dropped", "parked"]);
 		expect(typeof q.dropped).toBe("number");
+		expect(typeof q.parked).toBe("number");
 		expect(d.auth.scopes === null || Array.isArray(d.auth.scopes)).toBe(true);
 		expect(Array.isArray(d.auth.missing)).toBe(true);
 		expect(typeof d.auth.hasManage).toBe("boolean");
@@ -1903,7 +1922,6 @@ describe("the loopback proxy forwards only what local producers need (F108)", ()
 	});
 
 	test("through the real handler: allowed paths are forwarded, others get 403 and never reach the server", async () => {
-		const R = await mod();
 		const stub = startStub((method, url) => {
 			if (method === "GET" && url.pathname === "/api/v1/sessions/abc")
 				return Response.json({ session: {} });
@@ -1914,7 +1932,7 @@ describe("the loopback proxy forwards only what local producers need (F108)", ()
 		stops.push(stub.stop);
 		const stateDir = join(tmp, "state");
 		await mkdir(stateDir, { recursive: true });
-		const relay = await R.startRelay(
+		const relay = await startTestRelay(
 			{
 				remoteUrl: stub.url,
 				apiKey: "ap_test_key",
@@ -2002,7 +2020,7 @@ describe("file modes, log hygiene, insecure-remote warning (F111)", () => {
 		const stub = sessionsStub([{ sessionId: "s1", displayName: "n", nameSource: "generated" }]);
 		stops.push(stub.stop);
 		const stateDir = join(tmp, "fresh-state");
-		const relay = await R.startRelay(
+		const relay = await startTestRelay(
 			{
 				remoteUrl: stub.url,
 				apiKey: TEST_KEY,
@@ -2083,12 +2101,11 @@ describe("file modes, log hygiene, insecure-remote warning (F111)", () => {
 	});
 
 	test("startRelay warns about an insecure remote and names AGENTPULSE_DIR when the state dir isn't the default (F126)", async () => {
-		const R = await mod();
 		const home = join(tmp, "home");
 		const start = async (remoteUrl: string, stateDir: string) => {
 			const lines: string[] = [];
 			await mkdir(stateDir, { recursive: true });
-			const relay = await R.startRelay(
+			const relay = await startTestRelay(
 				{
 					remoteUrl,
 					apiKey: TEST_KEY,
@@ -2119,7 +2136,7 @@ describe("hook queue caps (F122)", () => {
 		const stateDir = join(tmp, "state");
 		await mkdir(stateDir, { recursive: true });
 		const lines: string[] = [];
-		const relay = await R.startRelay(
+		const relay = await startTestRelay(
 			{
 				remoteUrl: stub.url,
 				apiKey: TEST_KEY,
@@ -2531,7 +2548,6 @@ describe("relay residuals (F127, F134-F138, F140)", () => {
 	});
 
 	test("F137: an old install's loose modes are tightened at startup", async () => {
-		const R = await mod();
 		const { chmod } = await import("node:fs/promises");
 		const stateDir = join(tmp, "old-state");
 		await mkdir(join(stateDir, "hook-queue", "pending"), { recursive: true });
@@ -2548,7 +2564,7 @@ describe("relay residuals (F127, F134-F138, F140)", () => {
 			await writeFile(f, f.endsWith("config.json") ? "{}" : "x");
 			await chmod(f, 0o644);
 		}
-		const relay = await R.startRelay(
+		const relay = await startTestRelay(
 			{
 				remoteUrl: "https://ap.example.com",
 				apiKey: TEST_KEY,
@@ -2568,12 +2584,11 @@ describe("relay residuals (F127, F134-F138, F140)", () => {
 	});
 
 	test("F137: a dev checkout's script directory is not chmodded", async () => {
-		const R = await mod();
 		const { chmod } = await import("node:fs/promises");
 		const scriptDir = join(tmp, "checkout", "scripts");
 		await mkdir(scriptDir, { recursive: true });
 		await chmod(scriptDir, 0o755);
-		const relay = await R.startRelay(
+		const relay = await startTestRelay(
 			{
 				remoteUrl: "https://ap.example.com",
 				apiKey: TEST_KEY,
@@ -2599,7 +2614,7 @@ describe("relay residuals (F127, F134-F138, F140)", () => {
 		stops.push(stub.stop);
 		const stateDir = join(tmp, "state");
 		await mkdir(stateDir, { recursive: true });
-		const relay = await R.startRelay(
+		const relay = await startTestRelay(
 			{
 				remoteUrl: stub.url,
 				apiKey: TEST_KEY,
@@ -2666,7 +2681,7 @@ describe("delivery-id header for the server's dedup (AGEN-16 handoff)", () => {
 		stops.push(stub.stop);
 		const stateDir = join(tmp, "state");
 		await mkdir(stateDir, { recursive: true });
-		const relay = await R.startRelay(
+		const relay = await startTestRelay(
 			{
 				remoteUrl: stub.url,
 				apiKey: TEST_KEY,
@@ -2722,7 +2737,6 @@ describe("delivery-id header for the server's dedup (AGEN-16 handoff)", () => {
 
 describe("final residuals (F152, F153)", () => {
 	test("F152: startup chmod never follows a symlink (files, state dir, config)", async () => {
-		const R = await mod();
 		const { chmod } = await import("node:fs/promises");
 		const realState = join(tmp, "real-state");
 		await mkdir(realState, { recursive: true });
@@ -2738,7 +2752,7 @@ describe("final residuals (F152, F153)", () => {
 		await chmod(configTarget, 0o644);
 		const configLink = join(tmp, "config-link.json");
 		await symlink(configTarget, configLink);
-		const relay = await R.startRelay(
+		const relay = await startTestRelay(
 			{
 				remoteUrl: "https://ap.example.com",
 				apiKey: TEST_KEY,
@@ -2768,7 +2782,11 @@ describe("final residuals (F152, F153)", () => {
 		const cfg = join(dir, "config.json");
 		await writeFile(cfg, `{"api_key": "${secret}", "remote_url": `);
 		const proc = Bun.spawn([process.execPath, RELAY_PATH, "--config", cfg, "--port", "0"], {
-			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: join(tmp, "home") },
+			env: {
+				PATH: process.env.PATH ?? "/usr/bin:/bin",
+				HOME: join(tmp, "home"),
+				AGENTPULSE_TEST_RELAY_ACCOUNT_HOME: "",
+			},
 			stdout: "pipe",
 			stderr: "pipe",
 		});

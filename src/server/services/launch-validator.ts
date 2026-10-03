@@ -6,6 +6,7 @@ import type {
 	LaunchSpec,
 	SessionTemplateInput,
 } from "../../shared/types.js";
+import type { Actor } from "../auth/actor.js";
 import { getDb } from "../db/client.js";
 import { launchRequests } from "../db/schema/index.js";
 import { pickFirstCapableSupervisor, validateAgainstSupervisor } from "./launch-compatibility.js";
@@ -48,6 +49,7 @@ function mapLaunchRequest(row: typeof launchRequests.$inferSelect): LaunchReques
 		desiredDisplayName: row.desiredDisplayName ?? null,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
+		requestedByUserId: row.requestedByUserId ?? null,
 	};
 }
 
@@ -139,7 +141,7 @@ async function resolveSupervisorForLaunch(
 	};
 }
 
-export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
+export async function createValidatedLaunchRequest(input: LaunchRequestInput, actor: Actor) {
 	const normalizedTemplate = normalizeTemplateInput(input.template);
 	const templateValidation = validateTemplateInput(normalizedTemplate);
 	if (templateValidation.errors.length > 0) {
@@ -167,11 +169,22 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 			? `Validated for ${supervisor.hostName}`
 			: `Rejected by ${supervisor.hostName}: ${supervisorValidation.errors.join(" ")}`;
 
-	const launchCorrelationId =
-		typeof input.launchSpec.launchCorrelationId === "string" &&
-		input.launchSpec.launchCorrelationId.trim()
-			? input.launchSpec.launchCorrelationId.trim()
-			: crypto.randomUUID();
+	// Security (launch-correlation squatting): the server ALWAYS mints the
+	// correlation id here and never honors a caller-supplied value. Every
+	// legitimate producer of a launchSpec (buildLaunchSpec, template-preview's
+	// previewTemplate, retryLaunchForSession) already generates its own fresh
+	// crypto.randomUUID() and never reuses an existing session id, so nothing
+	// legitimate depends on this field surviving the round trip through a REST
+	// body or an MCP launch_spec argument. A caller (REST `POST /api/v1/launches`
+	// or MCP `launch_agent`'s direct mode) that sets launchCorrelationId to an
+	// existing or guessed-future session id could otherwise have that session
+	// attached to its launch on the session's next SessionStart event,
+	// hijacking ownership of someone else's session (see
+	// resolveObservedSessionCorrelation's companion guards in
+	// launch-dispatch.ts). Silently overwriting rather than rejecting keeps the
+	// documented "pass preview_template's output straight through" MCP flow
+	// working unchanged — no caller has ever needed this value honored.
+	const launchCorrelationId = crypto.randomUUID();
 	const normalizedLaunchSpec: LaunchSpec = {
 		...input.launchSpec,
 		launchCorrelationId,
@@ -193,7 +206,8 @@ export async function createValidatedLaunchRequest(input: LaunchRequestInput) {
 			requestedLaunchMode,
 			env: normalizedTemplate.env ?? {},
 			launchSpec: normalizedLaunchSpec as unknown as Record<string, unknown>,
-			requestedBy: "local-user",
+			requestedBy: actor.label,
+			requestedByUserId: actor.userId,
 			requestedSupervisorId: input.requestedSupervisorId ?? null,
 			routingPolicy,
 			resolvedSupervisorId: supervisor.id,

@@ -16,7 +16,7 @@ import { notifySessionEvents } from "./notifier.js";
  * as timeline events, and delegates fanout to the notifier service.
  *
  * Design invariants:
- *   - async IO only — never synchronous readFileSync/statSync
+ *   - async IO only — no synchronous file reads or stat calls
  *   - bounded per-tick work (at most TICK_BUDGET sessions)
  *   - round-robin through active sessions across ticks so one hot
  *     transcript can't starve others

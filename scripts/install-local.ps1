@@ -119,6 +119,686 @@ function Merge-Hashtable {
 # available in the primary dev/CI environment; scripts/test-install-local.ps1
 # is the real execution coverage, run by the "Windows Installer Validation"
 # CI job). Do not hand-edit one copy without the other.
+# The exclusion check is NOT inlined in the hook commands. It is two installed
+# scripts, ~/.agentpulse/exclude-check.sh (run by Copilot's bash handler) and
+# ~/.agentpulse/exclude-check.ps1 (run by the PowerShell handlers), written by
+# Install-ApExcludeScripts, and each hook command runs one only when a rules file
+# exists. Everything below is literal text held byte-identical to
+# src/shared/hook-command.ts by scripts/hook-command-parity.test.ts: both scripts,
+# the two command templates, and the pieces that fill them. The shell script holds
+# three placeholders for the characters it needs as real bytes (tab, carriage
+# return, byte order mark), restored when it is written. Never executed on
+# Windows by anything in this change.
+$script:ApExcludePsScript = @'
+# agentpulse-exclude-check 0ab94c52bff92b
+# Trust: the hook command runs this file only when it and ~/.agentpulse are owned by you
+# and not group- or world-writable. Only that directory and this file are checked, not the
+# directory's ancestors: a ~/.agentpulse symlink that points under a directory other users
+# can write is not protected.
+$apDir = Join-Path $HOME '.agentpulse'
+$apRules = Join-Path $apDir 'exclude'
+$apMarker = Join-Path $apDir 'exclude.invalid'
+$apExcluded = $false
+$apValid = $true
+$apDirOk = $true
+$apMatch = $false
+$apNRules = 0
+
+function ApIsReparsePoint($apPath) {
+  $apItem = Get-Item -LiteralPath $apPath -Force -ErrorAction SilentlyContinue
+  if (-not $apItem) { return $false }
+  if ($apItem.LinkType) { return $true }
+  return [bool]($apItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
+function ApHasMultipleHardLinks($apPath) {
+  if (-not (Test-Path -LiteralPath $apPath)) { return $false }
+  try {
+    $apOutput = & fsutil hardlink list $apPath 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $apOutput) { return $false }
+    $apCount = @($apOutput | Where-Object { $_.Trim().Length -gt 0 }).Count
+    return $apCount -gt 1
+  } catch {
+    return $false
+  }
+}
+
+function ApCheckSecurity($apPath) {
+  try {
+    $apAcl = Get-Acl -LiteralPath $apPath -ErrorAction Stop
+  } catch {
+    return $false
+  }
+  $apCurrentSid = $null
+  try { $apCurrentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch {}
+  if (-not $apCurrentSid) { return $false }
+  $apOwnerSid = $null
+  try { $apOwnerSid = $apAcl.Owner.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch {}
+  if (-not $apOwnerSid) {
+    try { $apOwnerSid = ([System.Security.Principal.NTAccount]$apAcl.Owner).Translate([System.Security.Principal.SecurityIdentifier]).Value } catch {}
+  }
+  $apExempt = @($apCurrentSid, 'S-1-5-18', 'S-1-5-32-544')
+  if (-not $apOwnerSid -or -not ($apExempt -contains $apOwnerSid)) { return $false }
+  $apWriteNames = @('WriteData','AppendData','WriteAttributes','WriteExtendedAttributes','WriteDac','ChangePermissions','WriteOwner','TakeOwnership','Delete','DeleteSubdirectoriesAndFiles','Modify','FullControl','Write','GenericWrite','GenericAll')
+  $apWriteRightsMask = 0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
+  foreach ($apAce in $apAcl.Access) {
+    if ($apAce.AccessControlType.ToString() -ne 'Allow') { continue }
+    $apRightsStr = $apAce.FileSystemRights.ToString().Trim()
+    $apHasWrite = $false
+    if ($apRightsStr -match '^-?\d+$') {
+      if (([int64]$apRightsStr -band $apWriteRightsMask) -ne 0) { $apHasWrite = $true }
+    } else {
+      foreach ($apName in ($apRightsStr -split ',')) {
+        if ($apWriteNames -contains $apName.Trim()) { $apHasWrite = $true; break }
+      }
+    }
+    if (-not $apHasWrite) { continue }
+    $apAceSid = $null
+    try { $apAceSid = $apAce.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch {}
+    if ($apAceSid -and ($apExempt -contains $apAceSid)) { continue }
+    return $false
+  }
+  return $true
+}
+
+function ApResolveLinks($apPath, $apDepth) {
+  if ($apDepth -gt 32) { return $null }
+  $apRoot = [System.IO.Path]::GetPathRoot($apPath)
+  if ([string]::IsNullOrEmpty($apRoot)) { return $apPath }
+  $apCur = $apRoot
+  foreach ($apSeg in ($apPath.Substring($apRoot.Length) -split '[\\/]' | Where-Object { $_.Length -gt 0 })) {
+    $apNext = Join-Path $apCur $apSeg
+    $apItem = Get-Item -LiteralPath $apNext -Force -ErrorAction SilentlyContinue
+    if ($apItem -and $apItem.LinkType) {
+      $apTarget = @($apItem.Target)[0]
+      if (-not [System.IO.Path]::IsPathRooted($apTarget)) { $apTarget = Join-Path $apCur $apTarget }
+      $apNext = ApResolveLinks ([System.IO.Path]::GetFullPath($apTarget)) ($apDepth + 1)
+      if ($null -eq $apNext) { return $null }
+    }
+    $apCur = $apNext
+  }
+  return $apCur
+}
+
+function ApResolve($apTarget) {
+  $apFull = $apTarget
+  try { $apFull = [System.IO.Path]::GetFullPath($apTarget) } catch {}
+  $apOut = ApResolveLinks $apFull 0
+  if ($null -eq $apOut) { return $apFull }
+  return $apOut
+}
+
+$apSkipTrimmed = $env:AGENTPULSE_SKIP
+if ($null -eq $apSkipTrimmed) { $apSkipTrimmed = '' }
+$apSkipTrimmed = $apSkipTrimmed.Trim(' ', "`t", "`r", "`n").ToLowerInvariant()
+if ([Array]::IndexOf(@('1','true','yes','on'), $apSkipTrimmed) -ge 0) { $apExcluded = $true }
+
+$apPresent = $false
+$apLookupError = $false
+if (-not $apExcluded) {
+  if ([string]::IsNullOrEmpty($HOME)) {
+    $apExcluded = $true
+  } else {
+    try {
+      $null = Get-Item -LiteralPath $apRules -Force -ErrorAction Stop
+      $apPresent = $true
+    } catch [System.Management.Automation.ItemNotFoundException] {
+      $apPresent = $false
+    } catch [System.Management.Automation.DriveNotFoundException] {
+      $apPresent = $false
+    } catch {
+      $apPresent = $true
+      $apLookupError = $true
+    }
+    if (-not $apPresent) {
+      $apDirItem = Get-Item -LiteralPath $apDir -Force -ErrorAction SilentlyContinue
+      if ($apDirItem -and $apDirItem.LinkType -and -not (Test-Path -LiteralPath $apDir)) {
+        $apPresent = $true
+        $apLookupError = $true
+      }
+    }
+  }
+}
+
+if (-not $apPresent -and -not $apExcluded) {
+  if (Test-Path -LiteralPath $apMarker) {
+    $apDirReal = ApResolveLinks $apDir 0
+    if (-not [string]::IsNullOrEmpty($apDirReal) -and (Test-Path -LiteralPath $apDirReal -PathType Container) -and (ApCheckSecurity $apDirReal)) {
+      Remove-Item -LiteralPath (Join-Path $apDirReal 'exclude.invalid') -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+if ($apPresent) {
+  $apDirReal = ApResolveLinks $apDir 0
+  if ($apLookupError -or [string]::IsNullOrEmpty($apDirReal)) {
+    $apDirOk = $false
+  } elseif (-not (Test-Path -LiteralPath $apDirReal -PathType Container -ErrorAction SilentlyContinue)) {
+    $apDirOk = $false
+  } elseif (-not (ApCheckSecurity $apDirReal)) {
+    $apDirOk = $false
+  }
+  $apValid = $apDirOk
+  if ($apDirOk) {
+    $apRules = Join-Path $apDirReal 'exclude'
+    $apMarker = Join-Path $apDirReal 'exclude.invalid'
+  }
+
+  if ($apValid) {
+    if (ApIsReparsePoint $apRules) {
+      $apValid = $false
+    } elseif (Test-Path -LiteralPath $apRules -PathType Container) {
+      $apValid = $false
+    } elseif (ApHasMultipleHardLinks $apRules) {
+      $apValid = $false
+    } elseif (-not (ApCheckSecurity $apRules)) {
+      $apValid = $false
+    } else {
+      $apInfo = Get-Item -LiteralPath $apRules -Force -ErrorAction SilentlyContinue
+      if ($null -eq $apInfo -or $apInfo.Length -gt 65536) { $apValid = $false }
+    }
+  }
+
+  if ($apValid) {
+    $apCwd = ApResolveLinks ((Get-Location).Path) 0
+    $apText = $null
+    try {
+      $apText = [System.IO.File]::ReadAllText($apRules, (New-Object System.Text.UTF8Encoding($false)))
+    } catch { $apValid = $false }
+    if ($null -eq $apText) { $apValid = $false }
+  }
+
+  if ($apValid) {
+    $apCwdCmp = ''
+    if (-not [string]::IsNullOrEmpty($apCwd)) { $apCwdCmp = $apCwd.Replace('/', '\').ToLowerInvariant() }
+    foreach ($apRawLine in ($apText -split "`n")) {
+      $apLine = $apRawLine
+      if ($apLine.EndsWith("`r")) { $apLine = $apLine.Substring(0, $apLine.Length - 1) }
+      $apLine = $apLine.TrimEnd(' ', "`t")
+      if ($apLine.Length -eq 0) { continue }
+      if ($apLine.StartsWith('#')) { continue }
+      $apNRules = $apNRules + 1
+      if ($apNRules -gt 500) { $apValid = $false; break }
+      if ($apLine -match '[*?\[\]]') { $apValid = $false; break }
+      $apIsAbsolute = $apLine.StartsWith('/') -or $apLine -eq '~' -or $apLine.StartsWith('~/') -or ($apLine -match '^[A-Za-z]:[\\/]')
+      if (-not $apIsAbsolute) { $apValid = $false; break }
+      $apSegments = $apLine -split '[\\/]' | Where-Object { $_.Length -gt 0 }
+      if (($apSegments -contains '.') -or ($apSegments -contains '..')) { $apValid = $false; break }
+      if ($apMatch) { continue }
+      if ($apLine -eq '~') {
+        $apExpanded = $HOME
+      } elseif ($apLine.StartsWith('~/')) {
+        $apExpanded = Join-Path $HOME ($apLine.Substring(2))
+      } else {
+        $apExpanded = $apLine
+      }
+      $apResolved = ApResolve $apExpanded
+      if ($apResolved -notmatch '^[A-Za-z]:[\\/]' -and -not $apResolved.StartsWith('\\')) { $apValid = $false; break }
+      $apResolvedCmp = $apResolved.Replace('/', '\').ToLowerInvariant()
+      $apResolvedIsRoot = $apResolvedCmp -match '^[a-z]:\\$'
+      $apResolvedWithSep = if ($apResolvedIsRoot) { $apResolvedCmp } else { "$apResolvedCmp\" }
+      if ([string]::Equals($apCwdCmp, $apResolvedCmp, 'Ordinal') -or $apCwdCmp.StartsWith($apResolvedWithSep, 'Ordinal')) {
+        $apMatch = $true
+      }
+    }
+    if ($apValid -and $apNRules -gt 0 -and [string]::IsNullOrEmpty($apCwd)) { $apMatch = $true }
+  }
+
+  if ($apValid) {
+    Remove-Item -LiteralPath $apMarker -Force -ErrorAction SilentlyContinue
+    if ($apMatch) { $apExcluded = $true }
+  } else {
+    if ($apDirOk -and -not (ApIsReparsePoint $apMarker)) {
+      try {
+        $apFs = [System.IO.File]::Open($apMarker, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        $apFs.Close()
+      } catch {}
+    }
+    $apExcluded = $true
+  }
+}
+if ($apExcluded) { exit 1 }
+exit 42
+'@
+
+$script:ApExcludeBashScript = @'
+#!/bin/sh
+# agentpulse-exclude-check 1eceddec1f369c
+# Trust: the hook command runs this file only when it and ~/.agentpulse are owned by you
+# and not group- or world-writable. Only that directory and this file are checked, not the
+# directory's ancestors: a ~/.agentpulse symlink that points under a directory other users
+# can write is not protected.
+ap_dir="$HOME/.agentpulse"
+ap_rules="$ap_dir/exclude"
+ap_marker="$ap_dir/exclude.invalid"
+ap_excluded=0
+ap_valid=1
+ap_dir_ok=1
+ap_match=0
+ap_nrules=0
+ap_cr='@@AP_CR@@'
+ap_bom='@@AP_BOM@@'
+ap_trimset=" @@AP_TAB@@$ap_cr
+"
+ap_ascii='] !"#$%&'\''()*+,./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\^_`abcdefghijklmnopqrstuvwxyz{|}~-'
+ap_is_darwin=0
+if [ -d /System/Library/CoreServices ]; then ap_is_darwin=1; fi
+
+ap_lower() {
+  ap_lc_in="$1"
+  ap_lc_out=""
+  while :; do
+    case "$ap_lc_in" in
+      *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) : ;;
+      *) break ;;
+    esac
+    ap_lc_pre=${ap_lc_in%%[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*}
+    ap_lc_in=${ap_lc_in#"$ap_lc_pre"}
+    ap_lc_c=${ap_lc_in%"${ap_lc_in#?}"}
+    ap_lc_in=${ap_lc_in#?}
+    case "$ap_lc_c" in
+      A) ap_lc_c=a ;; B) ap_lc_c=b ;; C) ap_lc_c=c ;; D) ap_lc_c=d ;; E) ap_lc_c=e ;;
+      F) ap_lc_c=f ;; G) ap_lc_c=g ;; H) ap_lc_c=h ;; I) ap_lc_c=i ;; J) ap_lc_c=j ;;
+      K) ap_lc_c=k ;; L) ap_lc_c=l ;; M) ap_lc_c=m ;; N) ap_lc_c=n ;; O) ap_lc_c=o ;;
+      P) ap_lc_c=p ;; Q) ap_lc_c=q ;; R) ap_lc_c=r ;; S) ap_lc_c=s ;; T) ap_lc_c=t ;;
+      U) ap_lc_c=u ;; V) ap_lc_c=v ;; W) ap_lc_c=w ;; X) ap_lc_c=x ;; Y) ap_lc_c=y ;;
+      Z) ap_lc_c=z ;;
+    esac
+    ap_lc_out="$ap_lc_out$ap_lc_pre$ap_lc_c"
+  done
+  ap_lc_out="$ap_lc_out$ap_lc_in"
+}
+
+ap_stat() {
+  ap_stat_mode=""
+  ap_stat_line=$(LC_ALL=C LS_BLOCK_SIZE=1 BLOCK_SIZE=1 BLOCKSIZE=1 ls -ldn "$1" 2>/dev/null) || return 1
+  IFS=" " read -r ap_stat_mode ap_stat_nlink ap_stat_uid ap_stat_gid ap_stat_size ap_stat_tail <<AP_STAT_EOF
+$ap_stat_line
+AP_STAT_EOF
+  ap_stat_m=$ap_stat_mode
+  case "$ap_stat_m" in *[@+.]) ap_stat_m=${ap_stat_m%?} ;; esac
+  case "$ap_stat_m" in
+    [-dlcbpsDw?][-r][-w][-xsS][-r][-w][-xsS][-r][-w][-xtT]) : ;;
+    *) return 1 ;;
+  esac
+  case "$ap_stat_nlink" in ""|*[!0-9]*) return 1 ;; esac
+  case "$ap_stat_uid" in ""|*[!0-9]*) return 1 ;; esac
+  case "$ap_stat_size" in ""|*[!0-9]*) return 1 ;; esac
+  ap_stat_rest=${ap_stat_m#?????}
+  ap_stat_gw=${ap_stat_rest%"${ap_stat_rest#?}"}
+  ap_stat_rest2=${ap_stat_m#????????}
+  ap_stat_ow=${ap_stat_rest2%"${ap_stat_rest2#?}"}
+  return 0
+}
+
+ap_physical() {
+  if [ "$ap_is_darwin" = "1" ]; then
+    case "$1" in
+      *[!"$ap_ascii"]*) /bin/pwd -P 2>/dev/null; return ;;
+    esac
+  fi
+  pwd -P 2>/dev/null
+}
+
+ap_skip_raw=${AGENTPULSE_SKIP:-}
+while :; do
+  case "$ap_skip_raw" in
+    *["$ap_trimset"]) ap_skip_raw=${ap_skip_raw%?} ;;
+    *) break ;;
+  esac
+done
+while :; do
+  case "$ap_skip_raw" in
+    ["$ap_trimset"]*) ap_skip_raw=${ap_skip_raw#?} ;;
+    *) break ;;
+  esac
+done
+case "$ap_skip_raw" in
+  [1]|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) ap_excluded=1 ;;
+esac
+
+ap_present=0
+if [ "$ap_excluded" != "1" ]; then
+  if [ -z "$HOME" ]; then
+    ap_excluded=1
+  elif [ -e "$ap_rules" ] || [ -L "$ap_rules" ]; then
+    ap_present=1
+  else
+    case "$ap_dir" in /*) ap_wp="" ;; *) ap_wp="." ;; esac
+    ap_wrest=${ap_dir#/}
+    while [ -n "$ap_wrest" ]; do
+      case "$ap_wrest" in
+        */*)
+          ap_wseg=${ap_wrest%%/*}
+          ap_wrest=${ap_wrest#*/}
+          ;;
+        *)
+          ap_wseg="$ap_wrest"
+          ap_wrest=""
+          ;;
+      esac
+      if [ -z "$ap_wseg" ]; then continue; fi
+      ap_wp="$ap_wp/$ap_wseg"
+      if [ -L "$ap_wp" ] && [ ! -e "$ap_wp" ]; then ap_present=1; break; fi
+      if [ -d "$ap_wp" ]; then
+        if [ ! -x "$ap_wp" ]; then ap_present=1; break; fi
+      else
+        break
+      fi
+    done
+  fi
+fi
+
+ap_check_dir() {
+  ap_dir_ok=1
+  if [ -L "$ap_dir" ]; then
+    ap_dir_real=$(cd "$ap_dir" 2>/dev/null && pwd -P 2>/dev/null)
+  else
+    ap_dir_real="$ap_dir"
+  fi
+  if [ -z "$ap_dir_real" ] || [ ! -d "$ap_dir_real" ] || [ ! -x "$ap_dir_real" ]; then
+    ap_dir_ok=0
+  else
+    ap_my_uid=$(id -u 2>/dev/null)
+    case "$ap_my_uid" in ""|*[!0-9]*) ap_dir_ok=0 ;; esac
+    if ap_stat "$ap_dir_real"; then
+      if [ "$ap_stat_uid" != "$ap_my_uid" ]; then ap_dir_ok=0; fi
+      if [ "$ap_stat_gw" = "w" ] || [ "$ap_stat_ow" = "w" ]; then ap_dir_ok=0; fi
+    else
+      ap_dir_ok=0
+    fi
+  fi
+}
+
+if [ "$ap_present" != "1" ] && [ "$ap_excluded" != "1" ]; then
+  if [ -e "$ap_marker" ] || [ -L "$ap_marker" ]; then
+    ap_check_dir
+    if [ "$ap_dir_ok" = "1" ]; then rm -f "$ap_dir_real/exclude.invalid" 2>/dev/null; fi
+  fi
+fi
+
+if [ "$ap_present" = "1" ]; then
+  ap_check_dir
+  ap_valid=$ap_dir_ok
+  ap_marker="$ap_dir_real/exclude.invalid"
+
+  if [ "$ap_valid" = "1" ]; then
+    if [ -L "$ap_rules" ]; then
+      ap_valid=0
+    elif [ ! -f "$ap_rules" ]; then
+      ap_valid=0
+    elif ap_stat "$ap_rules"; then
+      if [ "$ap_stat_nlink" -gt 1 ]; then ap_valid=0; fi
+      if [ "$ap_stat_uid" != "$ap_my_uid" ]; then ap_valid=0; fi
+      if [ "$ap_stat_gw" = "w" ] || [ "$ap_stat_ow" = "w" ]; then ap_valid=0; fi
+      if [ "$ap_valid" = "1" ] && [ ! -r "$ap_rules" ]; then ap_valid=0; fi
+      if [ "$ap_valid" = "1" ] && [ "$ap_stat_size" -gt 65536 ]; then ap_valid=0; fi
+    else
+      ap_valid=0
+    fi
+  fi
+
+  if [ "$ap_valid" = "1" ]; then
+    ap_cwd=$(pwd -P 2>/dev/null)
+    if [ -n "$ap_cwd" ] && [ ! -d "$ap_cwd" ]; then ap_cwd=""; fi
+    if [ "$ap_is_darwin" = "1" ]; then
+      case "$ap_cwd" in
+        *[!"$ap_ascii"]*) ap_cwd=$(/bin/pwd -P 2>/dev/null) ;;
+      esac
+      ap_lower "$ap_cwd"
+      ap_cwd="$ap_lc_out"
+    fi
+
+    ap_line_no=0
+    ap_read_ok=0
+    {
+    while IFS= read -r ap_line || [ -n "$ap_line" ]; do
+      ap_line_no=$((ap_line_no + 1))
+      case "$ap_line" in *"$ap_cr") ap_line=${ap_line%"$ap_cr"} ;; esac
+      if [ "$ap_line_no" = "1" ]; then
+        case "$ap_line" in "$ap_bom"*) ap_line=${ap_line#"$ap_bom"} ;; esac
+      fi
+      while :; do
+        case "$ap_line" in
+          *["$ap_trimset"]) ap_line=${ap_line%?} ;;
+          *) break ;;
+        esac
+      done
+      case "$ap_line" in
+        "") continue ;;
+        "#"*) continue ;;
+      esac
+      ap_nrules=$((ap_nrules + 1))
+      if [ "$ap_nrules" -gt 500 ]; then ap_valid=0; break; fi
+      case "$ap_line" in
+        *'*'*|*'?'*|*'['*|*']'*) ap_valid=0; break ;;
+      esac
+      case "$ap_line" in
+        /*) : ;;
+        "~") : ;;
+        "~/"*) : ;;
+        *) ap_valid=0; break ;;
+      esac
+      case "$ap_line" in
+        "~") ap_expanded="$HOME" ;;
+        "~/"*) ap_expanded="$HOME/${ap_line#\~/}" ;;
+        *) ap_expanded="$ap_line" ;;
+      esac
+      case "/$ap_expanded/" in
+        *"/./"*|*"/../"*) ap_valid=0; break ;;
+      esac
+      if [ "$ap_match" = "1" ]; then continue; fi
+
+      ap_seg_rest=${ap_expanded#/}
+      ap_prefix=""
+      ap_needs_resolve=0
+      ap_deepest=""
+      ap_remainder=""
+      while [ -n "$ap_seg_rest" ]; do
+        case "$ap_seg_rest" in
+          */*)
+            ap_seg=${ap_seg_rest%%/*}
+            ap_seg_rest=${ap_seg_rest#*/}
+            ;;
+          *)
+            ap_seg="$ap_seg_rest"
+            ap_seg_rest=""
+            ;;
+        esac
+        if [ -z "$ap_seg" ]; then continue; fi
+        ap_prefix="$ap_prefix/$ap_seg"
+        if [ -L "$ap_prefix" ]; then ap_needs_resolve=1; fi
+        if [ -e "$ap_prefix" ]; then
+          ap_deepest="$ap_prefix"
+          ap_remainder=""
+        else
+          ap_remainder="$ap_remainder/$ap_seg"
+        fi
+      done
+      if [ -z "$ap_prefix" ]; then ap_prefix="/"; fi
+      if [ "$ap_is_darwin" = "1" ]; then
+        case "$ap_deepest" in
+          *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-]*)
+            case "$ap_deepest" in
+              *[!"$ap_ascii"]*) ap_needs_resolve=1 ;;
+            esac ;;
+        esac
+      fi
+
+      if [ "$ap_needs_resolve" = "1" ]; then
+        ap_rt="${ap_deepest:-/}"
+        ap_rrem="$ap_remainder"
+        while :; do
+          ap_resolved=$(cd "$ap_rt" 2>/dev/null && ap_physical "$ap_rt")
+          if [ -n "$ap_resolved" ]; then break; fi
+          if [ "$ap_rt" = "/" ]; then ap_resolved="/"; break; fi
+          ap_rrem="/${ap_rt##*/}$ap_rrem"
+          ap_rt=${ap_rt%/*}
+          if [ -z "$ap_rt" ]; then ap_rt="/"; fi
+        done
+        if [ "$ap_resolved" = "/" ]; then ap_resolved=""; fi
+        ap_resolved="$ap_resolved$ap_rrem"
+        if [ -z "$ap_resolved" ]; then ap_resolved="/"; fi
+      else
+        ap_resolved="$ap_prefix"
+      fi
+
+      if [ "$ap_is_darwin" = "1" ]; then
+        ap_lower "$ap_resolved"
+        ap_resolved="$ap_lc_out"
+      fi
+
+      if [ "$ap_resolved" = "/" ]; then
+        ap_match=1
+      elif [ "$ap_cwd" = "$ap_resolved" ]; then
+        ap_match=1
+      else
+        ap_rem=${ap_cwd#"$ap_resolved"/}
+        if [ "$ap_rem" != "$ap_cwd" ]; then ap_match=1; fi
+      fi
+    done
+    ap_read_ok=1
+    } 2>/dev/null < "$ap_rules"
+    if [ "$ap_read_ok" != "1" ]; then ap_valid=0; fi
+    if [ "$ap_valid" = "1" ] && [ "$ap_nrules" -gt 0 ] && [ -z "$ap_cwd" ]; then ap_match=1; fi
+  fi
+
+  if [ "$ap_valid" = "1" ]; then
+    if [ -e "$ap_marker" ] || [ -L "$ap_marker" ]; then rm -f "$ap_marker" 2>/dev/null; fi
+    if [ "$ap_match" = "1" ]; then ap_excluded=1; fi
+  else
+    if [ "$ap_dir_ok" = "1" ] && [ ! -L "$ap_marker" ]; then { :; } 2>/dev/null >"$ap_marker"; fi
+    ap_excluded=1
+  fi
+fi
+if [ "$ap_excluded" = "1" ]; then exit 1; fi
+exit 42
+'@
+
+$script:ApShCommandTemplate = @'
+t=$(mktemp "${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX" 2>/dev/null) || exit 0; cat > "$t"; ( trap 'rm -f "$t"' EXIT; trap 'exit 1' HUP INT TERM; @@AP_MARKER@@@@AP_GATE@@@@AP_SEND@@ ) </dev/null >/dev/null 2>&1 & exit 0
+'@
+
+$script:ApShGatePiece = @'
+w=$(printf ' \t\r\n.'); w=${w%.}; x=${AGENTPULSE_SKIP:-}; y=${x%%[!"$w"]*}; x=${x#"$y"}; y=${x##*[!"$w"]}; x=${x%"$y"}; case $x in 1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) exit 0 ;; esac; d=$HOME/.agentpulse; g=0; if [ -n "$HOME" ] && [ ! -e "$d/exclude" ] && [ ! -L "$d/exclude" ] && [ ! -e "$d/exclude.invalid" ] && [ ! -L "$d/exclude.invalid" ]; then if [ -d "$d" ] && [ -x "$d" ]; then g=1; elif [ ! -e "$d" ] && [ ! -L "$d" ] && [ -d "$HOME" ] && [ -x "$HOME" ]; then g=1; fi; fi; if [ "$g" != 1 ]; then l=$(LC_ALL=C LS_BLOCK_SIZE=1 BLOCK_SIZE=1 BLOCKSIZE=1 ls -ldn "$d/" "$d/exclude-check.sh" 2>/dev/null) || exit 0; u=$(id -u 2>/dev/null); ap_f() { y=${x%%[!" "]*}; x=${x#"$y"}; y=${x%%" "*}; x=${x#"$y"}; }; ap_v() { x=$1; ap_f; k=${y%[@+.]}; ap_f; ap_f; [ -n "$y" ] && [ "$y" = "$u" ] && case $k in $2[-r][-w][-xsS][-r]-[-xsS][-r]-[-xtT]) ;; *) false ;; esac; }; n=${w#???}; ap_v "${l%%"$n"*}" d && ap_v "${l#*"$n"}" - && { /bin/sh "$d/exclude-check.sh"; [ $? = 42 ]; } || exit 0; fi; 
+'@
+
+$script:ApPsCommandTemplate = @'
+$ErrorActionPreference = 'SilentlyContinue'
+$d = Join-Path $env:TEMP 'agentpulse-hooks'
+New-Item -ItemType Directory -Force $d | Out-Null
+$t = Join-Path $d ([guid]::NewGuid().ToString())
+$raw = [Console]::In.ReadToEnd()
+[IO.File]::WriteAllText($t, $raw)
+@@AP_HEADER_FILE@@
+Start-Job -ScriptBlock {
+  param($t, $f, $url, $agent, $apJobCwd, $apJobSkip)
+  try {
+@@AP_PRELUDE@@
+@@AP_MARKER@@@@AP_GATE@@
+  if ($apGo) {
+    @@AP_AUTH_ARG@@
+    $curlArgs = @('-sS','--max-time','2','-o','NUL','-X','POST',$url,'-H','Content-Type: application/json','-H',"X-Agent-Type: $agent") + $headerArgs + @('--data-binary',"@$t")
+    Start-Process -FilePath curl.exe -WindowStyle Hidden -ArgumentList $curlArgs -Wait
+  }
+  } finally {
+    Remove-Item -Force $t -ErrorAction SilentlyContinue
+  }
+} -ArgumentList $t, $f, '@@AP_URL@@', '@@AP_AGENT@@', (Get-Location).Path, $env:AGENTPULSE_SKIP | Out-Null
+Get-ChildItem $d -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-5) } | Remove-Item -Force -ErrorAction SilentlyContinue
+exit 0
+'@
+
+$script:ApPsPreludePiece = @'
+  function ApIsReparsePoint($apPath) {
+    $apItem = Get-Item -LiteralPath $apPath -Force -ErrorAction SilentlyContinue
+    if (-not $apItem) { return $false }
+    if ($apItem.LinkType) { return $true }
+    return [bool]($apItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+  }
+'@
+
+$script:ApPsMarkerPiece = @'
+$jobRaw = [IO.File]::ReadAllText($t); $sid = [regex]::Match($jobRaw, '"session_id"\s*:\s*"([A-Za-z0-9-]{1,128})"').Groups[1].Value; if ($sid) { $md = Join-Path $HOME '.agentpulse\codex-native'; if (-not (ApIsReparsePoint $md)) { New-Item -ItemType Directory -Force $md -ErrorAction SilentlyContinue | Out-Null; $mf = Join-Path $md $sid; if (-not (ApIsReparsePoint $mf)) { try { [IO.File]::Open($mf, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite).Close() } catch {} } } }
+'@
+
+$script:ApPsGatePiece = @'
+  $apGo = $true
+  $apSkip = $apJobSkip
+  if ($null -eq $apSkip) { $apSkip = '' }
+  if (@('1','true','yes','on') -contains $apSkip.Trim(' ', "`t", "`r", "`n").ToLowerInvariant()) { $apGo = $false }
+  elseif ([string]::IsNullOrEmpty($HOME)) { $apGo = $false }
+  else {
+    $apDir = Join-Path $HOME '.agentpulse'
+    $apHand = $false
+    try { $null = Get-Item -LiteralPath (Join-Path $apDir 'exclude') -Force -ErrorAction Stop; $apHand = $true }
+    catch [System.Management.Automation.ItemNotFoundException] { }
+    catch [System.Management.Automation.DriveNotFoundException] { }
+    catch { $apHand = $true }
+    if (-not $apHand) {
+      try { $null = Get-Item -LiteralPath (Join-Path $apDir 'exclude.invalid') -Force -ErrorAction Stop; $apHand = $true }
+      catch [System.Management.Automation.ItemNotFoundException] { }
+      catch [System.Management.Automation.DriveNotFoundException] { }
+      catch { $apHand = $true }
+    }
+    if (-not $apHand) {
+      $apDirItem = Get-Item -LiteralPath $apDir -Force -ErrorAction SilentlyContinue
+      if ($apDirItem -and $apDirItem.LinkType -and -not (Test-Path -LiteralPath $apDir)) { $apHand = $true }
+    }
+    if ($apHand) {
+      $apGo = $false
+      function ApCheckSecurity($apPath) {
+        try {
+          $apAcl = Get-Acl -LiteralPath $apPath -ErrorAction Stop
+        } catch {
+          return $false
+        }
+        $apCurrentSid = $null
+        try { $apCurrentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch {}
+        if (-not $apCurrentSid) { return $false }
+        $apOwnerSid = $null
+        try { $apOwnerSid = $apAcl.Owner.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch {}
+        if (-not $apOwnerSid) {
+          try { $apOwnerSid = ([System.Security.Principal.NTAccount]$apAcl.Owner).Translate([System.Security.Principal.SecurityIdentifier]).Value } catch {}
+        }
+        $apExempt = @($apCurrentSid, 'S-1-5-18', 'S-1-5-32-544')
+        if (-not $apOwnerSid -or -not ($apExempt -contains $apOwnerSid)) { return $false }
+        $apWriteNames = @('WriteData','AppendData','WriteAttributes','WriteExtendedAttributes','WriteDac','ChangePermissions','WriteOwner','TakeOwnership','Delete','DeleteSubdirectoriesAndFiles','Modify','FullControl','Write','GenericWrite','GenericAll')
+        $apWriteRightsMask = 0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
+        foreach ($apAce in $apAcl.Access) {
+          if ($apAce.AccessControlType.ToString() -ne 'Allow') { continue }
+          $apRightsStr = $apAce.FileSystemRights.ToString().Trim()
+          $apHasWrite = $false
+          if ($apRightsStr -match '^-?\d+$') {
+            if (([int64]$apRightsStr -band $apWriteRightsMask) -ne 0) { $apHasWrite = $true }
+          } else {
+            foreach ($apName in ($apRightsStr -split ',')) {
+              if ($apWriteNames -contains $apName.Trim()) { $apHasWrite = $true; break }
+            }
+          }
+          if (-not $apHasWrite) { continue }
+          $apAceSid = $null
+          try { $apAceSid = $apAce.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch {}
+          if ($apAceSid -and ($apExempt -contains $apAceSid)) { continue }
+          return $false
+        }
+        return $true
+      }
+      $apScript = Join-Path $apDir 'exclude-check.ps1'
+      if ((Test-Path -LiteralPath $apScript -PathType Leaf) -and -not (ApIsReparsePoint $apScript) -and (ApCheckSecurity $apDir) -and (ApCheckSecurity $apScript)) {
+        $apHost = (Get-Process -Id $PID).Path
+        $apProc = Start-Process -FilePath $apHost -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"' + $apScript + '"')) -WorkingDirectory $apJobCwd -WindowStyle Hidden -Wait -PassThru
+        if ($apProc -and $apProc.ExitCode -eq 42) { $apGo = $true }
+      }
+    }
+  }
+'@
+
+# A checkout that converts line endings must not change any of the text above.
+foreach ($apName in @('ApExcludePsScript','ApExcludeBashScript','ApShCommandTemplate','ApShGatePiece','ApPsCommandTemplate','ApPsPreludePiece','ApPsMarkerPiece','ApPsGatePiece')) {
+  Set-Variable -Scope Script -Name $apName -Value ((Get-Variable -Scope Script -Name $apName -ValueOnly).Replace("`r`n", "`n"))
+}
+
 function New-ApHookCommand {
   param(
     [Parameter(Mandatory = $true)][string]$BaseUrl,
@@ -130,37 +810,38 @@ function New-ApHookCommand {
     throw "invalid AgentPulse base URL for a hook command: $BaseUrl"
   }
   $url = "$BaseUrl/api/v1/hooks?event=$EventName"
-  $headerFileLine = if ($Direct) { "`$f = Join-Path `$HOME '.agentpulse\hook-auth-header'`n" } else { "`$f = `$null`n" }
-  $authArg = "(if (`$f -and (Test-Path `$f -ErrorAction SilentlyContinue) -and (Get-Item `$f -ErrorAction SilentlyContinue).Length -gt 0) { @('-H',`"@`$f`") } else { @() })"
-  # F248 (codex r2 D38): marker extraction/write now runs INSIDE the
-  # Start-Job block, reading from the temp file there — D13 requires the
-  # synchronous (parent-process) path to be stdin-drain + temp-file-write
-  # only. Reads the temp file itself since Start-Job's script block runs
-  # in an isolated runspace with no access to parent variables beyond what
-  # -ArgumentList passes in.
-  $markerLine = ""
+  $headerFile = if ($Direct) { "`$f = Join-Path `$HOME '.agentpulse\hook-auth-header'" } else { "`$f = `$null" }
+  $authArg = "`$headerArgs = @()`n    if (`$f -and (Test-Path `$f -ErrorAction SilentlyContinue) -and (Get-Item `$f -ErrorAction SilentlyContinue).Length -gt 0) { `$headerArgs = @('-H', `"@`$f`") }"
+  # The marker runs INSIDE the Start-Job block, reading the temp file there; the
+  # parent only drains stdin and writes the temp file.
+  $marker = ""
   if ($AgentType -eq "codex_cli") {
-    $markerLine = "`$jobRaw = [IO.File]::ReadAllText(`$t); `$sid = [regex]::Match(`$jobRaw, '`"session_id`"\s*:\s*`"([A-Za-z0-9-]{1,128})`"').Groups[1].Value; if (`$sid) { `$md = Join-Path `$HOME '.agentpulse\codex-native'; New-Item -ItemType Directory -Force `$md -ErrorAction SilentlyContinue | Out-Null; New-Item -ItemType File -Force (Join-Path `$md `$sid) -ErrorAction SilentlyContinue | Out-Null }`n  "
+    $marker = "  " + $script:ApPsMarkerPiece + "`n"
   }
-  return (
-    "`$ErrorActionPreference = 'SilentlyContinue'`n" +
-    "`$d = Join-Path `$env:TEMP 'agentpulse-hooks'`n" +
-    "New-Item -ItemType Directory -Force `$d | Out-Null`n" +
-    "`$t = Join-Path `$d ([guid]::NewGuid().ToString())`n" +
-    "`$raw = [Console]::In.ReadToEnd()`n" +
-    "[IO.File]::WriteAllText(`$t, `$raw)`n" +
-    $headerFileLine +
-    "Start-Job -ScriptBlock {`n" +
-    "  param(`$t, `$f, `$url, `$agent)`n" +
-    "  " + $markerLine +
-    "`$headerArgs = $authArg`n" +
-    "  `$curlArgs = @('-sS','--max-time','2','-o','NUL','-X','POST',`$url,'-H','Content-Type: application/json','-H',`"X-Agent-Type: `$agent`") + `$headerArgs + @('--data-binary',`"@`$t`")`n" +
-    "  Start-Process -FilePath curl.exe -WindowStyle Hidden -ArgumentList `$curlArgs -Wait`n" +
-    "  Remove-Item -Force `$t -ErrorAction SilentlyContinue`n" +
-    "} -ArgumentList `$t, `$f, '$url', '$AgentType' | Out-Null`n" +
-    "Get-ChildItem `$d -ErrorAction SilentlyContinue | Where-Object { `$_.LastWriteTime -lt (Get-Date).AddMinutes(-5) } | Remove-Item -Force -ErrorAction SilentlyContinue`n" +
-    "exit 0`n"
-  )
+  # The template, and the pieces that fill it, are the generator's text (see above);
+  # each hole is filled by one plain substitution.
+  $command = $script:ApPsCommandTemplate + "`n"
+  $command = $command.Replace('@@AP_HEADER_FILE@@', $headerFile)
+  $command = $command.Replace('@@AP_PRELUDE@@', $script:ApPsPreludePiece)
+  $command = $command.Replace('@@AP_MARKER@@', $marker)
+  $command = $command.Replace('@@AP_GATE@@', $script:ApPsGatePiece)
+  $command = $command.Replace('@@AP_AUTH_ARG@@', $authArg)
+  $command = $command.Replace('@@AP_URL@@', $url)
+  $command = $command.Replace('@@AP_AGENT@@', $AgentType)
+  return $command
+}
+
+# ConvertTo-Json writes ', <, > and & as \uXXXX and leaves other non-ASCII
+# characters raw; the TypeScript and shell writers do the opposite (those four
+# raw, every character outside space..~ as a lowercase \uXXXX). Normalise to the
+# shared form so the same hooks compare equal across installers and Codex isn't
+# asked to approve them again. Never executed on Windows by anything in this change.
+function ConvertTo-ApHooksJson {
+  param([Parameter(Mandatory = $true)][object]$Data)
+  $json = $Data | ConvertTo-Json -Depth 20
+  $json = [regex]::Replace($json, '\\u(0027|003c|003e|0026)', { param($m) [string][char][Convert]::ToInt32($m.Groups[1].Value, 16) }, 'IgnoreCase')
+  $json = [regex]::Replace($json, '[^\x20-\x7e\r\n]', { param($m) '\u{0:x4}' -f [int][char]$m.Value })
+  return $json + "`n"
 }
 
 function New-ApCodexHooksFile {
@@ -181,15 +862,14 @@ function New-ApCodexHooksFile {
     )
   }
   $obj = [ordered]@{ hooks = $hooks }
-  return ($obj | ConvertTo-Json -Depth 20) + "`n"
+  return ConvertTo-ApHooksJson -Data $obj
 }
 
-# D13: the POSIX `sh` equivalent of New-ApHookCommand, transcribed natively
-# in PowerShell (never shells out to bash) — Copilot's agentpulse.json
-# carries both a `bash` and a `powershell` handler per event (D13), and this
-# builds the former. Scoped to Copilot only: it never needs the Codex
-# native-coverage marker snippet, so there's no marker branch here (compare
-# buildBashHookCommand/ap_hook_cmd's `agent -eq codex_cli` check).
+# The POSIX `sh` equivalent of New-ApHookCommand, built natively in PowerShell
+# (never shells out to bash) from the generator's template — Copilot's
+# agentpulse.json carries both a `bash` and a `powershell` handler per event, and
+# this builds the former. Copilot only: no Codex marker here (compare
+# buildBashHookCommand's `agent === "codex_cli"` check).
 function New-ApCopilotBashHookCommand {
   param(
     [Parameter(Mandatory = $true)][string]$BaseUrl,
@@ -199,13 +879,16 @@ function New-ApCopilotBashHookCommand {
   $curl = "curl -sS --max-time 2 -o /dev/null -X POST '$BaseUrl/api/v1/hooks?event=$EventName' -H 'Content-Type: application/json' -H 'X-Agent-Type: copilot_cli'"
   $withHeader = "$curl" + " -H `"@`$f`" --data-binary `"@`$t`""
   $withoutHeader = "$curl --data-binary `"@`$t`""
-  $body = if ($Direct) {
-    "f=`"`$HOME/.agentpulse/hook-auth-header`"; if [ -s `"`$f`" ]; then $withHeader; else $withoutHeader; fi; rm -f `"`$t`""
+  $send = if ($Direct) {
+    "f=`"`$HOME/.agentpulse/hook-auth-header`"; if [ -s `"`$f`" ]; then $withHeader; else $withoutHeader; fi"
   } else {
-    "$withoutHeader; rm -f `"`$t`""
+    "$withoutHeader"
   }
-  $mktempPrefix = "t=`$(mktemp `"`${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX`" 2>/dev/null) || exit 0; cat > `"`$t`"; "
-  return "$mktempPrefix( $body ) </dev/null >/dev/null 2>&1 & exit 0"
+  $command = $script:ApShCommandTemplate
+  $command = $command.Replace('@@AP_MARKER@@', '')
+  $command = $command.Replace('@@AP_GATE@@', $script:ApShGatePiece)
+  $command = $command.Replace('@@AP_SEND@@', $send)
+  return $command
 }
 
 function New-ApCopilotHooksFile {
@@ -223,7 +906,7 @@ function New-ApCopilotHooksFile {
     )
   }
   $obj = [ordered]@{ version = 1; hooks = $hooks }
-  return ($obj | ConvertTo-Json -Depth 20) + "`n"
+  return ConvertTo-ApHooksJson -Data $obj
 }
 
 # F233 (xander, Medium): true for a symlink OR a junction/mount-point
@@ -288,7 +971,10 @@ function Write-ApFileNoFollow {
     throw "refusing to write into a reparse-point directory: $dir"
   }
   $tmp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
-  Set-Content -NoNewline -Path $tmp -Value $Content -Encoding UTF8
+  # Written through .NET with an explicit no-BOM encoding: Windows PowerShell 5.1's own UTF8
+  # encoding for Set-Content adds a byte order mark, and the installed check would then
+  # differ from the generated text.
+  [System.IO.File]::WriteAllText($tmp, $Content, (New-Object System.Text.UTF8Encoding($false)))
   Move-Item -Force -Path $tmp -Destination $Path
 }
 
@@ -311,10 +997,11 @@ function Write-ApFileNoFollow {
 # installers' `[ -L "$AP_AUTH_HEADER_FILE" ]` guard. F242: also refuses a
 # multiply-hard-linked target file — see Test-ApMultipleHardLinks above.
 #
-# AGEN-21 (xander, Medium): both icacls calls are best-effort — a missing/
+# AGEN-21: both icacls calls are best-effort — a missing/
 # blocked icacls (non-NTFS volume, policy restriction) must not crash the
 # install over an ACL that couldn't be verified. Matches Write-ApPrivateFile
-# below and private-file.ts's tightenWindowsAclBestEffort on the TS side.
+# below and private-file.ts's tightenWindowsAclBestEffort on the TS side. A
+# failure is not silent, though: see Write-ApAclWarning.
 function New-ApHookAuthHeaderFile {
   param([Parameter(Mandatory = $true)][string]$ApiKey)
   $d = Join-Path $HOME ".agentpulse"
@@ -323,9 +1010,12 @@ function New-ApHookAuthHeaderFile {
   }
   New-Item -ItemType Directory -Force -Path $d | Out-Null
   try {
-    icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+    $icaclsOutput = icacls $d /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+    }
   } catch {
-    Write-Host "warning: could not narrow ACL on $d : $($_.Exception.Message)"
+    Write-ApAclWarning -Path $d -Detail $_.Exception.Message
   }
   $f = Join-Path $d "hook-auth-header"
   if (Test-ApMultipleHardLinks -Path $f) {
@@ -336,12 +1026,67 @@ function New-ApHookAuthHeaderFile {
   }
   Set-Content -NoNewline -Path $f -Value "Authorization: Bearer $ApiKey`n" -Encoding UTF8
   try {
-    icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+    $icaclsOutput = icacls $f /inheritance:r /grant:r "$($env:USERNAME):(R,W)" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+    }
   } catch {
-    Write-Host "warning: could not narrow ACL on $f : $($_.Exception.Message)"
+    Write-ApAclWarning -Path $f -Detail $_.Exception.Message
   }
 }
+
+# The shell check as written to disk: the placeholders become the real tab,
+# carriage return and byte order mark, then any CRLF a checkout introduced is
+# normalised to LF (the script must be LF-only for sh).
+function Get-ApExcludeBashScriptText {
+  return ($script:ApExcludeBashScript + "`n").Replace('@@AP_TAB@@', [string][char]9).Replace('@@AP_CR@@', [string][char]13).Replace('@@AP_BOM@@', [string][char]0xFEFF).Replace("`r`n", "`n")
+}
+
+# Installs (or refreshes) ~/.agentpulse/exclude-check.sh and exclude-check.ps1,
+# the checks every hook command runs when a rules file exists. Written through
+# Write-ApFileNoFollow (temp file, atomic move, never through a reparse point). A
+# directory that is a link, or a target that can't be written, prints a warning and
+# installs nothing: the hooks still send as before until a rules file exists, and
+# with one present they send nothing until the checks are installed. Never executed
+# on Windows by anything in this change.
+function Install-ApExcludeScripts {
+  $dir = Join-Path $HOME ".agentpulse"
+  if (Test-ApReparsePoint -Path $dir) {
+    Write-Host "! Exclusion check not installed: $dir is a link; remove it and run this again."
+    return
+  }
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $files = @(
+    @{ Path = (Join-Path $dir "exclude-check.sh"); Content = (Get-ApExcludeBashScriptText) },
+    @{ Path = (Join-Path $dir "exclude-check.ps1"); Content = ($script:ApExcludePsScript + "`n") }
+  )
+  foreach ($file in $files) {
+    try {
+      Write-ApFileNoFollow -Path $file.Path -Content $file.Content
+      if ([System.IO.File]::ReadAllText($file.Path, (New-Object System.Text.UTF8Encoding($false))) -ne $file.Content) {
+        Remove-Item -LiteralPath $file.Path -Force -ErrorAction SilentlyContinue
+        Write-Host "! Exclusion check not installed: what was written to $($file.Path) could not be verified; run this again."
+        return
+      }
+    } catch {
+      Write-Host "! Exclusion check not installed: $($_.Exception.Message)"
+      return
+    }
+  }
+  Write-Step "Exclusion check installed: $dir"
+}
 # <<< agentpulse-hook-cmd
+
+# Narrowing an ACL is best-effort (restricted and non-NTFS volumes), but a
+# failure must never be silent: until it is fixed, other local users may be
+# able to read what was just written there.
+function Write-ApAclWarning {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Detail
+  )
+  Write-Warning "Could not restrict access to $Path ($Detail). Other local users may be able to read the API key or credentials stored there."
+}
 
 # AGEN-21 (security, Medium): .env.local and supervisor.json both hold
 # secrets in plaintext (AGENTPULSE_INITIAL_API_KEY, and the supervisor
@@ -375,15 +1120,21 @@ function Write-ApPrivateFile {
   }
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   try {
-    icacls $dir /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+    $icaclsOutput = icacls $dir /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+    }
   } catch {
-    Write-Host "warning: could not narrow ACL on $dir : $($_.Exception.Message)"
+    Write-ApAclWarning -Path $dir -Detail $_.Exception.Message
   }
   Write-ApFileNoFollow -Path $Path -Content $Content
   try {
-    icacls $Path /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+    $icaclsOutput = icacls $Path /inheritance:r /grant:r "$($env:USERNAME):(R,W)" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+    }
   } catch {
-    Write-Host "warning: could not narrow ACL on $Path : $($_.Exception.Message)"
+    Write-ApAclWarning -Path $Path -Detail $_.Exception.Message
   }
 }
 
@@ -408,10 +1159,14 @@ function Configure-Hooks {
   # supplied key gets the literal, more-reliable form — acceptable because
   # settings.json gets a single-ACE, user-only ACL below (icacls), never
   # broadly readable. No key at all keeps the env-var/allowedEnvVars form.
-  $hookHeadersClaude = @{ "X-Agent-Type" = "claude_code" }
+  $hookHeadersClaude = @{ "X-Agent-Type" = "claude_code"; "X-AgentPulse-Skip" = '$AGENTPULSE_SKIP' }
   if ($ApiKey) {
     $hookHeadersClaude["Authorization"] = "Bearer $ApiKey"
   }
+  # Claude Code expands a header variable only for names listed in
+  # allowedEnvVars, so the skip variable is listed in every form.
+  $allowedEnvVars = @("AGENTPULSE_SKIP")
+  if (-not $ApiKey) { $allowedEnvVars = @("AGENTPULSE_API_KEY", "AGENTPULSE_SKIP") }
 
   $claudeDir = Join-Path $HOME ".claude"
   $claudeSettings = Join-Path $claudeDir "settings.json"
@@ -446,9 +1201,7 @@ function Configure-Hooks {
         headers = $hookHeadersClaude
       })
     }
-    if (-not $ApiKey) {
-      $hook.hooks[0]["allowedEnvVars"] = @("AGENTPULSE_API_KEY")
-    }
+    $hook.hooks[0]["allowedEnvVars"] = $allowedEnvVars
     $claudeData["hooks"][$eventName] = @($hook)
   }
   Set-JsonFile -Path $claudeSettings -Data $claudeData
@@ -458,9 +1211,12 @@ function Configure-Hooks {
     # AGEN-21 (xander, Medium): best-effort, matching every other icacls
     # call site — a missing/blocked icacls must not crash the install.
     try {
-      icacls $claudeSettings /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+      $icaclsOutput = icacls $claudeSettings /inheritance:r /grant:r "$($env:USERNAME):(R,W)" 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        throw "icacls exited with code ${LASTEXITCODE}: $($icaclsOutput -join ' ')"
+      }
     } catch {
-      Write-Host "warning: could not narrow ACL on $claudeSettings : $($_.Exception.Message)"
+      Write-ApAclWarning -Path $claudeSettings -Detail $_.Exception.Message
     }
   }
 
@@ -473,6 +1229,7 @@ function Configure-Hooks {
   if ($ApiKey) {
     New-ApHookAuthHeaderFile -ApiKey $ApiKey
   }
+  Install-ApExcludeScripts
 
   $newCodexHooksJson = New-ApCodexHooksFile -BaseUrl $PublicUrl -Direct $true
   $unchanged = $false
@@ -486,6 +1243,7 @@ function Configure-Hooks {
     Write-Step "Codex hooks unchanged — no re-trust needed"
   } else {
     if (Test-Path $codexHooksFile) {
+      $script:CodexHooksWritten = "updated"
       $codexBackupFile = "$codexHooksFile.agentpulse-bak.$(Get-Date -AsUTC -Format 'yyyyMMddTHHmmssZ')"
       Write-ApFileNoFollow -Path $codexBackupFile -Content $existingCodexHooksJson
       Write-Step "Backed up existing Codex hooks to $codexBackupFile"
@@ -494,7 +1252,9 @@ function Configure-Hooks {
     Write-Step "Codex CLI hooks configured"
     Write-Step "Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks."
     Write-Step "Re-trust after changing the AgentPulse URL or port."
+    if ($script:CodexHooksWritten -ne "updated") { $script:CodexHooksWritten = "new" }
   }
+  Write-Step "After editing ~/.agentpulse/exclude by hand, run: agentpulse exclude check"
   # D12: codex_hooks is a deprecated (but still-working) legacy alias for
   # [features].hooks — left alone if present, never newly written.
 
@@ -525,6 +1285,7 @@ function Configure-Hooks {
       Write-ApFileNoFollow -Path $copilotHooksFile -Content $newCopilotHooksJson
       Write-Step "Copilot CLI hooks configured"
     }
+    Write-Step "After editing ~/.agentpulse/exclude by hand, run: agentpulse exclude check"
   }
 
   # D37/F243 (xander re-verify — "check whether install-local.ps1 persists
@@ -750,3 +1511,10 @@ if ($SkipSupervisor) {
 }
 Write-Host "  Open:"
 Write-Host "    $PublicUrl"
+if ($script:CodexHooksWritten -eq "new") {
+  Write-Host ""
+  Write-Step "Codex needs you to approve these hooks: run /hooks in Codex."
+} elseif ($script:CodexHooksWritten -eq "updated") {
+  Write-Host ""
+  Write-Step "Codex: open /hooks and approve the updated AgentPulse hooks again; the hook command changed, so Codex asks once more."
+}

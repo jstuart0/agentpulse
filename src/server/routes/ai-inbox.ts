@@ -1,5 +1,7 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import type { ActionRequestDecision, HitlReplyKind } from "../../shared/types.js";
+import { getRequestActor } from "../auth/route-scope-policy.js";
 import {
 	getActionRequest,
 	listOpenActionRequests,
@@ -20,6 +22,7 @@ import {
 	unsnooze,
 	unsnoozeTarget,
 } from "../services/ai/inbox-snooze-service.js";
+import { NOT_OWNER_MESSAGE } from "../services/authorization.js";
 import { requireAiActive, requireAiBuild } from "./ai-gates.js";
 
 const aiInboxRouter = new Hono();
@@ -179,7 +182,7 @@ aiInboxRouter.get("/ai/action-requests", async (c) => {
 	return c.json({ actionRequests: items });
 });
 
-aiInboxRouter.post("/ai/action-requests/:id/decide", async (c) => {
+aiInboxRouter.post("/ai/action-requests/:id/decide", async (c: Context) => {
 	const gate = await requireAiActive(c);
 	if (gate) return gate;
 	const id = c.req.param("id") ?? "";
@@ -190,10 +193,14 @@ aiInboxRouter.post("/ai/action-requests/:id/decide", async (c) => {
 	const existing = await getActionRequest(id);
 	if (!existing) return c.json({ error: "action request not found" }, 404);
 
+	// The approving human (or key) runs the owner-or-admin rules for whatever
+	// the action does; it is not recorded as "the AI".
+	const actor = await getRequestActor(c);
 	const result = await resolveActionRequest({
 		id,
 		decision: body.decision,
-		resolvedBy: "local-user",
+		resolvedBy: actor.label,
+		actor,
 	});
 
 	if (result.ok) {
@@ -202,6 +209,17 @@ aiInboxRouter.post("/ai/action-requests/:id/decide", async (c) => {
 	}
 
 	const updated = await getActionRequest(id);
+
+	if (result.reason === "not_owner") {
+		return c.json(
+			{
+				error: "not_owner",
+				message: NOT_OWNER_MESSAGE,
+				actionRequest: updated,
+			},
+			403,
+		);
+	}
 
 	if (result.reason === "race_lost") {
 		return c.json(

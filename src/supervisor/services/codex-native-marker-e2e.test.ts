@@ -17,6 +17,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } 
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { buildBashHookCommand } from "../../shared/hook-command.js";
+import { NO_EXCLUDE_RULES } from "./codex-observer-test-support.js";
 
 const { codexNativeMarkerPath, isNativeCovered, processRolloutFile } = await import(
 	"./codex-observer.js"
@@ -119,7 +120,16 @@ describe("E3 (D19): the sibling's shim writes exactly the marker the observer re
 			postCount++;
 			return new Response("{}", { status: 200 });
 		};
-		await processRolloutFile(rolloutPath, undefined, "http://x", null, new Map(), fetchImpl, home);
+		await processRolloutFile(
+			rolloutPath,
+			undefined,
+			"http://x",
+			null,
+			new Map(),
+			fetchImpl,
+			home,
+			NO_EXCLUDE_RULES,
+		);
 		expect(postCount).toBe(0);
 	});
 

@@ -146,7 +146,7 @@ ap_write_private_no_follow() {
 		echo "refusing to write into a symlinked directory: $dir" >&2
 		return 1
 	fi
-	mkdir -p "$dir"
+	( umask 077 && mkdir -p "$dir" )
 	if [ -L "$path" ]; then
 		echo "refusing to write through a symlink: $path" >&2
 		return 1
@@ -175,21 +175,420 @@ ap_write_private_no_follow() {
 	mv -f -- "$tmp" "$path"
 }
 
+# The exclusion check: ONE script, ~/.agentpulse/exclude-check.sh, written once by
+# ap_install_exclude_script and run by the hook command's gate only when a rules
+# file exists (src/shared/hook-command.ts, buildBashExcludeScript). Carried as
+# ASCII text with three placeholders for the characters the check needs as real
+# bytes (tab, carriage return, byte order mark), so no editor or line-ending
+# conversion can change them; restored here.
+ap_load_exclude_script() {
+	IFS= read -r -d '' ap_exclude_script_text <<'AP_EXCLUDE_SCRIPT_EOF' || true
+#!/bin/sh
+# agentpulse-exclude-check 1eceddec1f369c
+# Trust: the hook command runs this file only when it and ~/.agentpulse are owned by you
+# and not group- or world-writable. Only that directory and this file are checked, not the
+# directory's ancestors: a ~/.agentpulse symlink that points under a directory other users
+# can write is not protected.
+ap_dir="$HOME/.agentpulse"
+ap_rules="$ap_dir/exclude"
+ap_marker="$ap_dir/exclude.invalid"
+ap_excluded=0
+ap_valid=1
+ap_dir_ok=1
+ap_match=0
+ap_nrules=0
+ap_cr='@@AP_CR@@'
+ap_bom='@@AP_BOM@@'
+ap_trimset=" @@AP_TAB@@$ap_cr
+"
+ap_ascii='] !"#$%&'\''()*+,./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\^_`abcdefghijklmnopqrstuvwxyz{|}~-'
+ap_is_darwin=0
+if [ -d /System/Library/CoreServices ]; then ap_is_darwin=1; fi
+
+ap_lower() {
+  ap_lc_in="$1"
+  ap_lc_out=""
+  while :; do
+    case "$ap_lc_in" in
+      *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) : ;;
+      *) break ;;
+    esac
+    ap_lc_pre=${ap_lc_in%%[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*}
+    ap_lc_in=${ap_lc_in#"$ap_lc_pre"}
+    ap_lc_c=${ap_lc_in%"${ap_lc_in#?}"}
+    ap_lc_in=${ap_lc_in#?}
+    case "$ap_lc_c" in
+      A) ap_lc_c=a ;; B) ap_lc_c=b ;; C) ap_lc_c=c ;; D) ap_lc_c=d ;; E) ap_lc_c=e ;;
+      F) ap_lc_c=f ;; G) ap_lc_c=g ;; H) ap_lc_c=h ;; I) ap_lc_c=i ;; J) ap_lc_c=j ;;
+      K) ap_lc_c=k ;; L) ap_lc_c=l ;; M) ap_lc_c=m ;; N) ap_lc_c=n ;; O) ap_lc_c=o ;;
+      P) ap_lc_c=p ;; Q) ap_lc_c=q ;; R) ap_lc_c=r ;; S) ap_lc_c=s ;; T) ap_lc_c=t ;;
+      U) ap_lc_c=u ;; V) ap_lc_c=v ;; W) ap_lc_c=w ;; X) ap_lc_c=x ;; Y) ap_lc_c=y ;;
+      Z) ap_lc_c=z ;;
+    esac
+    ap_lc_out="$ap_lc_out$ap_lc_pre$ap_lc_c"
+  done
+  ap_lc_out="$ap_lc_out$ap_lc_in"
+}
+
+ap_stat() {
+  ap_stat_mode=""
+  ap_stat_line=$(LC_ALL=C LS_BLOCK_SIZE=1 BLOCK_SIZE=1 BLOCKSIZE=1 ls -ldn "$1" 2>/dev/null) || return 1
+  IFS=" " read -r ap_stat_mode ap_stat_nlink ap_stat_uid ap_stat_gid ap_stat_size ap_stat_tail <<AP_STAT_EOF
+$ap_stat_line
+AP_STAT_EOF
+  ap_stat_m=$ap_stat_mode
+  case "$ap_stat_m" in *[@+.]) ap_stat_m=${ap_stat_m%?} ;; esac
+  case "$ap_stat_m" in
+    [-dlcbpsDw?][-r][-w][-xsS][-r][-w][-xsS][-r][-w][-xtT]) : ;;
+    *) return 1 ;;
+  esac
+  case "$ap_stat_nlink" in ""|*[!0-9]*) return 1 ;; esac
+  case "$ap_stat_uid" in ""|*[!0-9]*) return 1 ;; esac
+  case "$ap_stat_size" in ""|*[!0-9]*) return 1 ;; esac
+  ap_stat_rest=${ap_stat_m#?????}
+  ap_stat_gw=${ap_stat_rest%"${ap_stat_rest#?}"}
+  ap_stat_rest2=${ap_stat_m#????????}
+  ap_stat_ow=${ap_stat_rest2%"${ap_stat_rest2#?}"}
+  return 0
+}
+
+ap_physical() {
+  if [ "$ap_is_darwin" = "1" ]; then
+    case "$1" in
+      *[!"$ap_ascii"]*) /bin/pwd -P 2>/dev/null; return ;;
+    esac
+  fi
+  pwd -P 2>/dev/null
+}
+
+ap_skip_raw=${AGENTPULSE_SKIP:-}
+while :; do
+  case "$ap_skip_raw" in
+    *["$ap_trimset"]) ap_skip_raw=${ap_skip_raw%?} ;;
+    *) break ;;
+  esac
+done
+while :; do
+  case "$ap_skip_raw" in
+    ["$ap_trimset"]*) ap_skip_raw=${ap_skip_raw#?} ;;
+    *) break ;;
+  esac
+done
+case "$ap_skip_raw" in
+  [1]|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) ap_excluded=1 ;;
+esac
+
+ap_present=0
+if [ "$ap_excluded" != "1" ]; then
+  if [ -z "$HOME" ]; then
+    ap_excluded=1
+  elif [ -e "$ap_rules" ] || [ -L "$ap_rules" ]; then
+    ap_present=1
+  else
+    case "$ap_dir" in /*) ap_wp="" ;; *) ap_wp="." ;; esac
+    ap_wrest=${ap_dir#/}
+    while [ -n "$ap_wrest" ]; do
+      case "$ap_wrest" in
+        */*)
+          ap_wseg=${ap_wrest%%/*}
+          ap_wrest=${ap_wrest#*/}
+          ;;
+        *)
+          ap_wseg="$ap_wrest"
+          ap_wrest=""
+          ;;
+      esac
+      if [ -z "$ap_wseg" ]; then continue; fi
+      ap_wp="$ap_wp/$ap_wseg"
+      if [ -L "$ap_wp" ] && [ ! -e "$ap_wp" ]; then ap_present=1; break; fi
+      if [ -d "$ap_wp" ]; then
+        if [ ! -x "$ap_wp" ]; then ap_present=1; break; fi
+      else
+        break
+      fi
+    done
+  fi
+fi
+
+ap_check_dir() {
+  ap_dir_ok=1
+  if [ -L "$ap_dir" ]; then
+    ap_dir_real=$(cd "$ap_dir" 2>/dev/null && pwd -P 2>/dev/null)
+  else
+    ap_dir_real="$ap_dir"
+  fi
+  if [ -z "$ap_dir_real" ] || [ ! -d "$ap_dir_real" ] || [ ! -x "$ap_dir_real" ]; then
+    ap_dir_ok=0
+  else
+    ap_my_uid=$(id -u 2>/dev/null)
+    case "$ap_my_uid" in ""|*[!0-9]*) ap_dir_ok=0 ;; esac
+    if ap_stat "$ap_dir_real"; then
+      if [ "$ap_stat_uid" != "$ap_my_uid" ]; then ap_dir_ok=0; fi
+      if [ "$ap_stat_gw" = "w" ] || [ "$ap_stat_ow" = "w" ]; then ap_dir_ok=0; fi
+    else
+      ap_dir_ok=0
+    fi
+  fi
+}
+
+if [ "$ap_present" != "1" ] && [ "$ap_excluded" != "1" ]; then
+  if [ -e "$ap_marker" ] || [ -L "$ap_marker" ]; then
+    ap_check_dir
+    if [ "$ap_dir_ok" = "1" ]; then rm -f "$ap_dir_real/exclude.invalid" 2>/dev/null; fi
+  fi
+fi
+
+if [ "$ap_present" = "1" ]; then
+  ap_check_dir
+  ap_valid=$ap_dir_ok
+  ap_marker="$ap_dir_real/exclude.invalid"
+
+  if [ "$ap_valid" = "1" ]; then
+    if [ -L "$ap_rules" ]; then
+      ap_valid=0
+    elif [ ! -f "$ap_rules" ]; then
+      ap_valid=0
+    elif ap_stat "$ap_rules"; then
+      if [ "$ap_stat_nlink" -gt 1 ]; then ap_valid=0; fi
+      if [ "$ap_stat_uid" != "$ap_my_uid" ]; then ap_valid=0; fi
+      if [ "$ap_stat_gw" = "w" ] || [ "$ap_stat_ow" = "w" ]; then ap_valid=0; fi
+      if [ "$ap_valid" = "1" ] && [ ! -r "$ap_rules" ]; then ap_valid=0; fi
+      if [ "$ap_valid" = "1" ] && [ "$ap_stat_size" -gt 65536 ]; then ap_valid=0; fi
+    else
+      ap_valid=0
+    fi
+  fi
+
+  if [ "$ap_valid" = "1" ]; then
+    ap_cwd=$(pwd -P 2>/dev/null)
+    if [ -n "$ap_cwd" ] && [ ! -d "$ap_cwd" ]; then ap_cwd=""; fi
+    if [ "$ap_is_darwin" = "1" ]; then
+      case "$ap_cwd" in
+        *[!"$ap_ascii"]*) ap_cwd=$(/bin/pwd -P 2>/dev/null) ;;
+      esac
+      ap_lower "$ap_cwd"
+      ap_cwd="$ap_lc_out"
+    fi
+
+    ap_line_no=0
+    ap_read_ok=0
+    {
+    while IFS= read -r ap_line || [ -n "$ap_line" ]; do
+      ap_line_no=$((ap_line_no + 1))
+      case "$ap_line" in *"$ap_cr") ap_line=${ap_line%"$ap_cr"} ;; esac
+      if [ "$ap_line_no" = "1" ]; then
+        case "$ap_line" in "$ap_bom"*) ap_line=${ap_line#"$ap_bom"} ;; esac
+      fi
+      while :; do
+        case "$ap_line" in
+          *["$ap_trimset"]) ap_line=${ap_line%?} ;;
+          *) break ;;
+        esac
+      done
+      case "$ap_line" in
+        "") continue ;;
+        "#"*) continue ;;
+      esac
+      ap_nrules=$((ap_nrules + 1))
+      if [ "$ap_nrules" -gt 500 ]; then ap_valid=0; break; fi
+      case "$ap_line" in
+        *'*'*|*'?'*|*'['*|*']'*) ap_valid=0; break ;;
+      esac
+      case "$ap_line" in
+        /*) : ;;
+        "~") : ;;
+        "~/"*) : ;;
+        *) ap_valid=0; break ;;
+      esac
+      case "$ap_line" in
+        "~") ap_expanded="$HOME" ;;
+        "~/"*) ap_expanded="$HOME/${ap_line#\~/}" ;;
+        *) ap_expanded="$ap_line" ;;
+      esac
+      case "/$ap_expanded/" in
+        *"/./"*|*"/../"*) ap_valid=0; break ;;
+      esac
+      if [ "$ap_match" = "1" ]; then continue; fi
+
+      ap_seg_rest=${ap_expanded#/}
+      ap_prefix=""
+      ap_needs_resolve=0
+      ap_deepest=""
+      ap_remainder=""
+      while [ -n "$ap_seg_rest" ]; do
+        case "$ap_seg_rest" in
+          */*)
+            ap_seg=${ap_seg_rest%%/*}
+            ap_seg_rest=${ap_seg_rest#*/}
+            ;;
+          *)
+            ap_seg="$ap_seg_rest"
+            ap_seg_rest=""
+            ;;
+        esac
+        if [ -z "$ap_seg" ]; then continue; fi
+        ap_prefix="$ap_prefix/$ap_seg"
+        if [ -L "$ap_prefix" ]; then ap_needs_resolve=1; fi
+        if [ -e "$ap_prefix" ]; then
+          ap_deepest="$ap_prefix"
+          ap_remainder=""
+        else
+          ap_remainder="$ap_remainder/$ap_seg"
+        fi
+      done
+      if [ -z "$ap_prefix" ]; then ap_prefix="/"; fi
+      if [ "$ap_is_darwin" = "1" ]; then
+        case "$ap_deepest" in
+          *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-]*)
+            case "$ap_deepest" in
+              *[!"$ap_ascii"]*) ap_needs_resolve=1 ;;
+            esac ;;
+        esac
+      fi
+
+      if [ "$ap_needs_resolve" = "1" ]; then
+        ap_rt="${ap_deepest:-/}"
+        ap_rrem="$ap_remainder"
+        while :; do
+          ap_resolved=$(cd "$ap_rt" 2>/dev/null && ap_physical "$ap_rt")
+          if [ -n "$ap_resolved" ]; then break; fi
+          if [ "$ap_rt" = "/" ]; then ap_resolved="/"; break; fi
+          ap_rrem="/${ap_rt##*/}$ap_rrem"
+          ap_rt=${ap_rt%/*}
+          if [ -z "$ap_rt" ]; then ap_rt="/"; fi
+        done
+        if [ "$ap_resolved" = "/" ]; then ap_resolved=""; fi
+        ap_resolved="$ap_resolved$ap_rrem"
+        if [ -z "$ap_resolved" ]; then ap_resolved="/"; fi
+      else
+        ap_resolved="$ap_prefix"
+      fi
+
+      if [ "$ap_is_darwin" = "1" ]; then
+        ap_lower "$ap_resolved"
+        ap_resolved="$ap_lc_out"
+      fi
+
+      if [ "$ap_resolved" = "/" ]; then
+        ap_match=1
+      elif [ "$ap_cwd" = "$ap_resolved" ]; then
+        ap_match=1
+      else
+        ap_rem=${ap_cwd#"$ap_resolved"/}
+        if [ "$ap_rem" != "$ap_cwd" ]; then ap_match=1; fi
+      fi
+    done
+    ap_read_ok=1
+    } 2>/dev/null < "$ap_rules"
+    if [ "$ap_read_ok" != "1" ]; then ap_valid=0; fi
+    if [ "$ap_valid" = "1" ] && [ "$ap_nrules" -gt 0 ] && [ -z "$ap_cwd" ]; then ap_match=1; fi
+  fi
+
+  if [ "$ap_valid" = "1" ]; then
+    if [ -e "$ap_marker" ] || [ -L "$ap_marker" ]; then rm -f "$ap_marker" 2>/dev/null; fi
+    if [ "$ap_match" = "1" ]; then ap_excluded=1; fi
+  else
+    if [ "$ap_dir_ok" = "1" ] && [ ! -L "$ap_marker" ]; then { :; } 2>/dev/null >"$ap_marker"; fi
+    ap_excluded=1
+  fi
+fi
+if [ "$ap_excluded" = "1" ]; then exit 1; fi
+exit 42
+AP_EXCLUDE_SCRIPT_EOF
+	ap_exclude_script_text=${ap_exclude_script_text//@@AP_TAB@@/$'\t'}
+	ap_exclude_script_text=${ap_exclude_script_text//@@AP_CR@@/$'\r'}
+	ap_exclude_script_text=${ap_exclude_script_text//@@AP_BOM@@/$'\xef\xbb\xbf'}
+}
+
+# The two pieces of the hook command that carry logic (src/shared/hook-command.ts:
+# CODEX_MARKER_SH_PIECE and SH_GATE_PIECE), stored verbatim.
+ap_load_hook_pieces() {
+	IFS= read -r -d '' ap_marker_piece <<'AP_MARKER_PIECE_EOF' || true
+sid=$(grep -o '"session_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9-]*"' "$t" | head -n1); sid=${sid%\"}; sid=${sid##*\"}; case "$sid" in ""|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ] && [ ! -L "$HOME/.agentpulse/codex-native" ]; then mkdir -p "$HOME/.agentpulse/codex-native" 2>/dev/null; set -C; { :; } 2>/dev/null >"$HOME/.agentpulse/codex-native/$sid"; set +C; fi ;; esac; 
+AP_MARKER_PIECE_EOF
+	ap_marker_piece=${ap_marker_piece%$'\n'}
+	IFS= read -r -d '' ap_gate_piece <<'AP_GATE_PIECE_EOF' || true
+w=$(printf ' \t\r\n.'); w=${w%.}; x=${AGENTPULSE_SKIP:-}; y=${x%%[!"$w"]*}; x=${x#"$y"}; y=${x##*[!"$w"]}; x=${x%"$y"}; case $x in 1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) exit 0 ;; esac; d=$HOME/.agentpulse; g=0; if [ -n "$HOME" ] && [ ! -e "$d/exclude" ] && [ ! -L "$d/exclude" ] && [ ! -e "$d/exclude.invalid" ] && [ ! -L "$d/exclude.invalid" ]; then if [ -d "$d" ] && [ -x "$d" ]; then g=1; elif [ ! -e "$d" ] && [ ! -L "$d" ] && [ -d "$HOME" ] && [ -x "$HOME" ]; then g=1; fi; fi; if [ "$g" != 1 ]; then l=$(LC_ALL=C LS_BLOCK_SIZE=1 BLOCK_SIZE=1 BLOCKSIZE=1 ls -ldn "$d/" "$d/exclude-check.sh" 2>/dev/null) || exit 0; u=$(id -u 2>/dev/null); ap_f() { y=${x%%[!" "]*}; x=${x#"$y"}; y=${x%%" "*}; x=${x#"$y"}; }; ap_v() { x=$1; ap_f; k=${y%[@+.]}; ap_f; ap_f; [ -n "$y" ] && [ "$y" = "$u" ] && case $k in $2[-r][-w][-xsS][-r]-[-xsS][-r]-[-xtT]) ;; *) false ;; esac; }; n=${w#???}; ap_v "${l%%"$n"*}" d && ap_v "${l#*"$n"}" - && { /bin/sh "$d/exclude-check.sh"; [ $? = 42 ]; } || exit 0; fi; 
+AP_GATE_PIECE_EOF
+	ap_gate_piece=${ap_gate_piece%$'\n'}
+}
+
+# Installs (or refreshes) the check at ~/.agentpulse/exclude-check.sh: atomic
+# (temp file in the same directory, then rename), never through a link, mode
+# 0500. A missing ~/.agentpulse is created 0700; an existing one is never
+# loosened, and is used only when it (or what a symlink resolves to) is a
+# directory you own that nobody else can write. Anything else prints a warning
+# and installs nothing: hooks still work, and a rules file then makes them send
+# nothing (fail closed) until the check is installed.
+ap_install_exclude_script() {
+	local dir="$HOME/.agentpulse" real tmp perms
+	if [ -z "$HOME" ]; then
+		echo "! Exclusion check not installed: HOME is not set." >&2
+		return 0
+	fi
+	if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+		if ! ( umask 077 && mkdir "$dir" ) 2>/dev/null; then
+			echo "! Exclusion check not installed: could not create $dir." >&2
+			return 0
+		fi
+	fi
+	real="$(cd -P "$dir" 2>/dev/null && pwd -P)" || real=""
+	perms="$(ls -ld "$real" 2>/dev/null)" || perms=""
+	if [ -z "$real" ] || [ ! -d "$real" ] || [ ! -O "$real" ] || [ "${perms:5:1}" != "-" ] || [ "${perms:8:1}" != "-" ]; then
+		echo "! Exclusion check not installed: $dir must be a directory you own that nobody else can write." >&2
+		return 0
+	fi
+	if [ -L "$real/exclude-check.sh" ] || [ -d "$real/exclude-check.sh" ]; then
+		echo "! Exclusion check not installed: $real/exclude-check.sh is a link or a directory; remove it and run this again." >&2
+		return 0
+	fi
+	if ! command -v mktemp >/dev/null 2>&1; then
+		echo "! Exclusion check not installed: mktemp not found." >&2
+		return 0
+	fi
+	ap_load_exclude_script
+	# A current copy (same text, mode 0500, ours) is left alone, like the TypeScript installer does.
+	if [ -f "$real/exclude-check.sh" ] && [ -O "$real/exclude-check.sh" ] \
+		&& [ "$(ls -ld "$real/exclude-check.sh" 2>/dev/null | cut -c1-10)" = "-r-x------" ] \
+		&& [ "$(cat "$real/exclude-check.sh" 2>/dev/null)" = "${ap_exclude_script_text%$'\n'}" ]; then
+		echo "Exclusion check is current: $real/exclude-check.sh"
+		return 0
+	fi
+	tmp="$(mktemp "$real/.exclude-check.sh.XXXXXX")" || {
+		echo "! Exclusion check not installed: could not create a temp file in $real." >&2
+		return 0
+	}
+	if ! printf '%s' "$ap_exclude_script_text" >| "$tmp" || ! chmod 0500 "$tmp"; then
+		rm -f -- "$tmp" 2>/dev/null || true
+		echo "! Exclusion check not installed: could not write $tmp." >&2
+		return 0
+	fi
+	sync 2>/dev/null || true
+	mv -f -- "$tmp" "$real/exclude-check.sh"
+	if [ "$(cat "$real/exclude-check.sh" 2>/dev/null)" != "${ap_exclude_script_text%$'\n'}" ]; then
+		rm -f -- "$real/exclude-check.sh" 2>/dev/null || true
+		echo "! Exclusion check not installed: what was written to $real/exclude-check.sh could not be verified; run this again." >&2
+		return 0
+	fi
+	echo "Exclusion check installed: $real/exclude-check.sh"
+}
+
 ap_hook_cmd() {
 	# $1=base $2=direct(0/1) $3=agent $4=event
 	local base="$1" direct="$2" agent="$3" event="$4"
-	local marker="" call_with_header call_without_header body
+	local marker="" call_with_header call_without_header send
+	ap_load_hook_pieces
 	if [ "$agent" = "codex_cli" ]; then
-		marker='sid=$(grep -o '\''"session_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9-]*"'\'' "$t" | head -n1); sid=${sid%\"}; sid=${sid##*\"}; case "$sid" in ""|*[!A-Za-z0-9-]*) ;; *) if [ ${#sid} -le 128 ]; then mkdir -p "$HOME/.agentpulse/codex-native" 2>/dev/null; : > "$HOME/.agentpulse/codex-native/$sid" 2>/dev/null; fi ;; esac; '
+		marker="$ap_marker_piece"
 	fi
 	call_with_header="curl -sS --max-time 2 -o /dev/null -X POST '${base}/api/v1/hooks?event=${event}' -H 'Content-Type: application/json' -H 'X-Agent-Type: ${agent}'"' -H "@$f" --data-binary "@$t"'
 	call_without_header="curl -sS --max-time 2 -o /dev/null -X POST '${base}/api/v1/hooks?event=${event}' -H 'Content-Type: application/json' -H 'X-Agent-Type: ${agent}'"' --data-binary "@$t"'
 	if [ "$direct" = "1" ]; then
-		body="$marker"'f="$HOME/.agentpulse/hook-auth-header"; if [ -s "$f" ]; then '"$call_with_header"'; else '"$call_without_header"'; fi; rm -f "$t"'
+		send='f="$HOME/.agentpulse/hook-auth-header"; if [ -s "$f" ]; then '"$call_with_header"'; else '"$call_without_header"'; fi'
 	else
-		body="$marker""$call_without_header"'; rm -f "$t"'
+		send="$call_without_header"
 	fi
-	printf '%s' 't=$(mktemp "${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX" 2>/dev/null) || exit 0; cat > "$t"; ( '"$body"' ) </dev/null >/dev/null 2>&1 & exit 0'
+	printf '%s' 't=$(mktemp "${TMPDIR:-/tmp}/agentpulse-hook.XXXXXX" 2>/dev/null) || exit 0; cat > "$t"; ( trap '\''rm -f "$t"'\'' EXIT; trap '\''exit 1'\'' HUP INT TERM; '"$marker""$ap_gate_piece""$send"' ) </dev/null >/dev/null 2>&1 & exit 0'
 }
 
 ap_codex_hooks_json() {
@@ -770,7 +1169,9 @@ fi
 # statusLine is set only when it's absent; someone else's is never replaced.
 STATUSLINE_RESULT="$(AP_SETTINGS="$CLAUDE_DIR/settings.json" AP_CMD="$STATUSLINE_CMD" python3 -c '
 import json, os, shutil
-path = os.environ["AP_SETTINGS"]
+# A symlinked settings.json (a dotfiles repo, say) is written through: the file
+# it points at is replaced and the link is left as it was.
+path = os.path.realpath(os.environ["AP_SETTINGS"])
 want = {"type": "command", "command": os.environ["AP_CMD"]}
 try:
     with open(path) as f:
@@ -907,6 +1308,11 @@ echo "  Configuring agent hooks..."
 CLAUDE_DIR="$HOME/.claude"
 CLAUDE_SETTINGS="$CLAUDE_DIR/settings.json"
 mkdir -p "$CLAUDE_DIR"
+# A symlinked settings.json (a dotfiles repo, say) is written through, so the
+# merge below replaces the file the link points at and leaves the link alone.
+if [[ -L "$CLAUDE_SETTINGS" ]]; then
+  CLAUDE_SETTINGS="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$CLAUDE_SETTINGS")"
+fi
 
 EVENTS=("SessionStart" "SessionEnd" "PreToolUse" "PostToolUse" "Stop" "SubagentStart" "SubagentStop" "TaskCreated" "TaskCompleted" "UserPromptSubmit" "PermissionRequest" "PermissionDenied" "Notification" "PreCompact" "PostCompact" "PostToolUseFailure")
 
@@ -914,7 +1320,7 @@ HOOKS_JSON="{"
 for i in "${!EVENTS[@]}"; do
   EVENT="${EVENTS[$i]}"
   [[ $i -gt 0 ]] && HOOKS_JSON+=","
-  HOOKS_JSON+="\"${EVENT}\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"http\",\"url\":\"http://localhost:${PORT}/api/v1/hooks\",\"async\":true,\"headers\":{\"X-Agent-Type\":\"claude_code\"}}]}]"
+  HOOKS_JSON+="\"${EVENT}\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"http\",\"url\":\"http://localhost:${PORT}/api/v1/hooks\",\"async\":true,\"allowedEnvVars\":[\"AGENTPULSE_SKIP\"],\"headers\":{\"X-Agent-Type\":\"claude_code\",\"X-AgentPulse-Skip\":\"\$AGENTPULSE_SKIP\"}}]}]"
 done
 HOOKS_JSON+="}"
 
@@ -940,11 +1346,16 @@ echo "  ✓ Claude Code hooks → localhost:$PORT"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 mkdir -p "$CODEX_DIR"
 
+# Set when Codex hooks were really (re)written, so the closing line can ask the
+# user to approve them again.
+CODEX_HOOKS_WRITTEN="0"
+ap_install_exclude_script
 NEW_CODEX_HOOKS_JSON="$(ap_codex_hooks_json "http://localhost:${PORT}" "0")"
 if [[ -f "$CODEX_DIR/hooks.json" ]] && [[ "$(cat "$CODEX_DIR/hooks.json")" == "$NEW_CODEX_HOOKS_JSON" ]]; then
   echo "  ✓ Codex hooks unchanged — no re-trust needed"
 else
   if [[ -f "$CODEX_DIR/hooks.json" ]]; then
+    CODEX_HOOKS_WRITTEN="updated"
     CODEX_BACKUP_FILE="$CODEX_DIR/hooks.json.agentpulse-bak.$(date -u +%Y%m%dT%H%M%SZ)"
     cat "$CODEX_DIR/hooks.json" | ap_write_no_follow "$CODEX_BACKUP_FILE" || exit 1
     echo "  ✓ Backed up existing Codex hooks to $CODEX_BACKUP_FILE"
@@ -953,7 +1364,9 @@ else
   echo "  ✓ Codex CLI hooks → localhost:$PORT"
   echo "    Open Codex and run /hooks, then trust the AgentPulse hooks — Codex silently skips untrusted hooks."
   echo "    Re-trust after changing the AgentPulse URL or port."
+  [[ "$CODEX_HOOKS_WRITTEN" == "updated" ]] || CODEX_HOOKS_WRITTEN="new"
 fi
+echo "    After editing ~/.agentpulse/exclude by hand, run: agentpulse exclude check"
 # D12: codex_hooks is a deprecated (but still-working) legacy alias for
 # [features].hooks — left alone if present, never newly written.
 
@@ -965,6 +1378,7 @@ if command -v copilot >/dev/null 2>&1 || [[ -d "$HOME/.copilot" ]]; then
   COPILOT_HOOKS_FILE="$COPILOT_DIR/agentpulse.json"
   mkdir -p "$COPILOT_DIR"
 
+  ap_install_exclude_script
   NEW_COPILOT_HOOKS_JSON="$(ap_copilot_hooks_json "http://localhost:${PORT}" "0")"
   if [[ -f "$COPILOT_HOOKS_FILE" ]] && [[ "$(cat "$COPILOT_HOOKS_FILE")" == "$NEW_COPILOT_HOOKS_JSON" ]]; then
     echo "  ✓ Copilot hooks unchanged"
@@ -1034,5 +1448,10 @@ esac
 echo "    Logs:    tail -f ~/.agentpulse/logs/relay.log"
 echo "    Status:  curl -s http://localhost:$PORT/api/v1/relay/diagnostics"
 echo ""
+if [[ "$CODEX_HOOKS_WRITTEN" == "new" ]]; then
+  echo "  Codex needs you to approve these hooks: run /hooks in Codex."
+elif [[ "$CODEX_HOOKS_WRITTEN" == "updated" ]]; then
+  echo "  Codex: open /hooks and approve the updated AgentPulse hooks again; the hook command changed, so Codex asks once more."
+fi
 
 }

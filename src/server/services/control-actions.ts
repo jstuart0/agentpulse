@@ -5,6 +5,7 @@ import type {
 	ControlActionType,
 	LaunchRequest,
 } from "../../shared/types.js";
+import type { Actor } from "../auth/actor.js";
 import { getDb } from "../db/client.js";
 import {
 	events,
@@ -18,7 +19,7 @@ import { jsonExtractText } from "../db/sql-helpers.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { bumpVersionAndReload } from "./projects/cache.js";
-import { ownerLaunchJoin, sessionOwnedBy } from "./session-ownership.js";
+import { ownerLaunchJoin, resolveSessionOwner, sessionOwnedBy } from "./session-ownership.js";
 
 function nowIso() {
 	return new Date().toISOString();
@@ -52,6 +53,29 @@ async function resolveManagedLaunch(sessionId: string, launchRequestId: string) 
 		.where(eq(launchRequests.launchCorrelationId, sessionId))
 		.limit(1);
 	return byCorrelation ?? null;
+}
+
+/**
+ * Security (launch-correlation squatting): `launch.launchCorrelationId ===
+ * sessionId` is satisfied by construction for ANY launch resolveManagedLaunch
+ * can return — attachManagedSessionToLaunch only ever attaches a launch
+ * whose own correlation id equals the session id, and the legacy
+ * launchRequestId=sessionId fallback branch above looks the launch up BY
+ * that same correlation id. That equality proves the launch spawned (or
+ * claims to have spawned) this session; it proves nothing about who the
+ * launch belongs to. Assert the resolved launch's claimant (or requested
+ * supervisor, pre-claim) matches the session's actual owner of record
+ * before trusting launch.env or routing a new control action to it.
+ */
+async function assertLaunchOwnedBySessionOwner(
+	sessionId: string,
+	launch: typeof launchRequests.$inferSelect,
+): Promise<void> {
+	const owner = await resolveSessionOwner(sessionId);
+	const launchOwner = launch.claimedBySupervisorId ?? launch.requestedSupervisorId ?? null;
+	if (owner !== null && launchOwner !== null && owner !== launchOwner) {
+		throw new Error("Launch request does not match session.");
+	}
 }
 
 async function expireStaleControlLock(sessionId: string) {
@@ -111,6 +135,7 @@ function mapControlAction(row: typeof controlActions.$inferSelect): ControlActio
 		launchRequestId: row.launchRequestId ?? null,
 		actionType: row.actionType as ControlActionType,
 		requestedBy: row.requestedBy ?? null,
+		requestedByUserId: row.requestedByUserId ?? null,
 		status: row.status as ControlActionStatus,
 		error: row.error ?? null,
 		metadata: (row.metadata as Record<string, unknown> | null) ?? null,
@@ -131,7 +156,7 @@ export async function listControlActionsForSession(sessionId: string) {
 	return rows.map(mapControlAction);
 }
 
-export async function queueStopAction(sessionId: string) {
+export async function queueStopAction(sessionId: string, actor: Actor) {
 	await expireStaleControlLock(sessionId);
 	const [managed] = await getDb()
 		.select()
@@ -143,6 +168,11 @@ export async function queueStopAction(sessionId: string) {
 		throw new Error("Another control action is already in progress for this session.");
 	}
 
+	const stopLaunch = await resolveManagedLaunch(sessionId, managed.launchRequestId);
+	if (stopLaunch) {
+		await assertLaunchOwnedBySessionOwner(sessionId, stopLaunch);
+	}
+
 	const timestamp = nowIso();
 	const [action] = await getDb()
 		.insert(controlActions)
@@ -150,7 +180,8 @@ export async function queueStopAction(sessionId: string) {
 			sessionId,
 			launchRequestId: managed.launchRequestId,
 			actionType: "stop",
-			requestedBy: "local-user",
+			requestedBy: actor.label,
+			requestedByUserId: actor.userId,
 			status: "queued",
 			metadata: {},
 			createdAt: timestamp,
@@ -170,7 +201,7 @@ export async function queueStopAction(sessionId: string) {
 	return mapControlAction(action);
 }
 
-export async function queuePromptAction(sessionId: string, prompt: string) {
+export async function queuePromptAction(sessionId: string, prompt: string, actor: Actor) {
 	const cleanPrompt = prompt.trim();
 	if (!cleanPrompt) throw new Error("Prompt is required.");
 	await expireStaleControlLock(sessionId);
@@ -206,6 +237,7 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 	if (launch.launchCorrelationId !== sessionId) {
 		throw new Error("Launch request does not match session.");
 	}
+	await assertLaunchOwnedBySessionOwner(sessionId, launch);
 
 	const timestamp = nowIso();
 	const [action] = await getDb()
@@ -217,7 +249,8 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 			// resolved to the actual launch row above.
 			launchRequestId: launch.id,
 			actionType: "prompt",
-			requestedBy: "local-user",
+			requestedBy: actor.label,
+			requestedByUserId: actor.userId,
 			status: "queued",
 			metadata: {
 				prompt: cleanPrompt,
@@ -257,7 +290,7 @@ export async function queuePromptAction(sessionId: string, prompt: string) {
 	return mapControlAction(action);
 }
 
-export async function retryLaunchForSession(sessionId: string) {
+export async function retryLaunchForSession(sessionId: string, actor: Actor) {
 	const [managed] = await getDb()
 		.select()
 		.from(managedSessions)
@@ -276,6 +309,7 @@ export async function retryLaunchForSession(sessionId: string) {
 	if (original.launchCorrelationId !== sessionId) {
 		throw new Error("Launch request does not match session.");
 	}
+	await assertLaunchOwnedBySessionOwner(sessionId, original);
 
 	const timestamp = nowIso();
 	const newCorrelationId = crypto.randomUUID();
@@ -297,7 +331,8 @@ export async function retryLaunchForSession(sessionId: string) {
 				...(original.launchSpec as Record<string, unknown>),
 				launchCorrelationId: newCorrelationId,
 			},
-			requestedBy: "local-user",
+			requestedBy: actor.label,
+			requestedByUserId: actor.userId,
 			requestedSupervisorId: original.requestedSupervisorId,
 			routingPolicy: original.routingPolicy,
 			resolvedSupervisorId: original.resolvedSupervisorId,
@@ -318,7 +353,8 @@ export async function retryLaunchForSession(sessionId: string) {
 			sessionId,
 			launchRequestId: cloned.id,
 			actionType: "retry",
-			requestedBy: "local-user",
+			requestedBy: actor.label,
+			requestedByUserId: actor.userId,
 			status: "succeeded",
 			metadata: {
 				retryOfLaunchRequestId: original.id,
@@ -340,7 +376,6 @@ export interface QueueCleanupWorkAreaInput {
 	projectId: string;
 	cwd: string;
 	targetSupervisorId: string;
-	requestedBy?: string | null;
 }
 
 /**
@@ -352,6 +387,7 @@ export interface QueueCleanupWorkAreaInput {
  */
 export async function queueCleanupWorkArea(
 	input: QueueCleanupWorkAreaInput,
+	actor: Actor,
 ): Promise<ControlAction> {
 	const timestamp = nowIso();
 	const [action] = await getDb()
@@ -360,7 +396,8 @@ export async function queueCleanupWorkArea(
 			sessionId: null,
 			launchRequestId: null,
 			actionType: "cleanup_workarea",
-			requestedBy: input.requestedBy ?? "local-user",
+			requestedBy: actor.label,
+			requestedByUserId: actor.userId,
 			status: "queued",
 			metadata: {
 				projectId: input.projectId,

@@ -49,7 +49,20 @@ const SESSION_TEMPLATE_INPUT_OBJECT = z.object(SESSION_TEMPLATE_INPUT_SHAPE);
 
 const LAUNCH_SPEC_OBJECT = z.object({
 	version: z.literal(1),
-	launchCorrelationId: z.string(),
+	// Security (launch-correlation squatting, docs/MCP.md "Launch correlation
+	// ids"): optional because the server always mints its own value and
+	// ignores whatever is submitted here. Still accepted when present so
+	// preview_template's output (which does set it) can be passed straight
+	// through unchanged — never trust this value for anything server-side.
+	launchCorrelationId: z
+		.string()
+		.optional()
+		.describe(
+			"Ignored by the server — it always generates its own correlation id. " +
+				"Safe to omit; safe to pass through preview_template's output " +
+				"unchanged. Read the authoritative value from the returned " +
+				"launchRequest.launchCorrelationId instead.",
+		),
 	managedMode: z.literal("unmanaged_preview"),
 	agentType: LAUNCHABLE_AGENT_TYPE_ENUM,
 	launchMode: LAUNCH_MODE_ENUM.optional(),
@@ -159,7 +172,7 @@ export function registerOrchestrateTools(ctx: ToolContext, flags: ScopeFlags): v
 		{
 			name: "launch_agent",
 			title: "Launch agent",
-			description: `Launch a real AI coding agent (Claude Code or Codex CLI) on a connected host. Spawns an actual process — requires human confirmation. Call recommend_launch and/or preview_template first to see what will happen before committing. Exactly one launch mode: EITHER template_id alone (launches a saved template — the server re-resolves it fresh) OR template+launch_spec together (a fully-specified direct launch, typically preview_template's own output passed straight through). Supplying both, or neither, is rejected — including partial combinations like template_id together with only one of template/launch_spec. ${CONFIRMATION_PORTABILITY_NOTE}`,
+			description: `Launch a real AI coding agent (Claude Code or Codex CLI) on a connected host. Spawns an actual process — requires human confirmation. Call recommend_launch and/or preview_template first to see what will happen before committing. Exactly one launch mode: EITHER template_id alone (launches a saved template — the server re-resolves it fresh) OR template+launch_spec together (a fully-specified direct launch, typically preview_template's own output passed straight through). Supplying both, or neither, is rejected — including partial combinations like template_id together with only one of template/launch_spec. The server always generates launch_spec.launchCorrelationId itself; any value you supply is ignored, so read the real one back from the returned launchRequest. ${CONFIRMATION_PORTABILITY_NOTE}`,
 			annotations: { openWorldHint: true },
 			inputSchema: {
 				template_id: z.string().optional(),

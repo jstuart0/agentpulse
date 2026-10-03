@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, sessions } from "../db/schema/index.js";
@@ -251,6 +251,17 @@ export async function associateObservedSession(input: {
 		supervisorId: resolution.resolvedSupervisorId,
 		correlationSource: "session_id",
 	});
+
+	// This is the one place a launch can set a session's owner AFTER
+	// creation (the row was created by the supervisor-report path
+	// with no launch context yet). Guarded in SQL — it can never take a
+	// session that already has an owner.
+	if (resolution.launchRequest.requestedByUserId !== null) {
+		await getDb()
+			.update(sessions)
+			.set({ ownerUserId: resolution.launchRequest.requestedByUserId })
+			.where(and(eq(sessions.sessionId, input.sessionId), isNull(sessions.ownerUserId)));
+	}
 
 	await applyLaunchProvenanceToSession(input.sessionId, resolution.launchRequest.metadata);
 	await applyDesiredDisplayName(input.sessionId, resolution.launchRequest);

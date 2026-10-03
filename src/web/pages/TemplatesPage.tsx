@@ -28,9 +28,13 @@ import {
 	parseTags,
 	tagsToString,
 } from "../components/templates/utils.js";
+import { useHostLabel } from "../hooks/useHostLabel.js";
+import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
+import { describeApiError } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
 
 export function TemplatesPage() {
+	const hostLabel = useHostLabel();
 	const navigate = useNavigate();
 	const [templates, setTemplates] = useState<SessionTemplate[]>([]);
 	const [agentFilter, setAgentFilter] = useState<AgentFilter>("all");
@@ -44,6 +48,7 @@ export function TemplatesPage() {
 	const [saving, setSaving] = useState(false);
 	const [statusMessage, setStatusMessage] = useState("");
 	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
+	useNoteUnknownOwners(supervisors.map((supervisor) => supervisor.ownerUserId));
 	const [recentLaunches, setRecentLaunches] = useState<LaunchRequest[]>([]);
 	const [lastCreatedLaunch, setLastCreatedLaunch] = useState<LaunchRequest | null>(null);
 	const [launching, setLaunching] = useState(false);
@@ -88,7 +93,9 @@ export function TemplatesPage() {
 				setPreviewError("");
 			} catch (error) {
 				setPreview(null);
-				setPreviewError(error instanceof Error ? error.message : "Preview unavailable");
+				setPreviewError(
+					describeApiError(error, error instanceof Error ? error.message : "Preview unavailable"),
+				);
 			}
 		}, 250);
 
@@ -285,7 +292,9 @@ export function TemplatesPage() {
 				setStatusMessage("Template created.");
 			}
 		} catch (error) {
-			setStatusMessage(error instanceof Error ? error.message : "Save failed.");
+			setStatusMessage(
+				describeApiError(error, error instanceof Error ? error.message : "Save failed."),
+			);
 		} finally {
 			setSaving(false);
 		}
@@ -300,7 +309,9 @@ export function TemplatesPage() {
 			await loadTemplates();
 			setStatusMessage("Template deleted.");
 		} catch (error) {
-			setStatusMessage(error instanceof Error ? error.message : "Delete failed.");
+			setStatusMessage(
+				describeApiError(error, error instanceof Error ? error.message : "Delete failed."),
+			);
 		}
 	}
 
@@ -313,7 +324,9 @@ export function TemplatesPage() {
 			await loadTemplates();
 			setStatusMessage("Template duplicated.");
 		} catch (error) {
-			setStatusMessage(error instanceof Error ? error.message : "Duplicate failed.");
+			setStatusMessage(
+				describeApiError(error, error instanceof Error ? error.message : "Duplicate failed."),
+			);
 		}
 	}
 
@@ -342,7 +355,7 @@ export function TemplatesPage() {
 			setLastCreatedLaunch(result.launchRequest);
 			setStatusMessage(
 				result.launchRequest.status === "validated" || result.launchRequest.status === "queued"
-					? `Launch request created for ${result.supervisor.hostName}. Opening live launch detail…`
+					? `Launch request created for ${hostLabel(result.supervisor)}. Opening live launch detail…`
 					: result.launchRequest.validationSummary ||
 							result.launchRequest.error ||
 							"Launch request rejected.",
@@ -350,7 +363,12 @@ export function TemplatesPage() {
 			await loadPhaseTwoData();
 			navigate(`/launches/${result.launchRequest.id}`);
 		} catch (error) {
-			setStatusMessage(error instanceof Error ? error.message : "Launch validation failed.");
+			setStatusMessage(
+				describeApiError(
+					error,
+					error instanceof Error ? error.message : "Launch validation failed.",
+				),
+			);
 		} finally {
 			setLaunching(false);
 		}
@@ -423,10 +441,10 @@ export function TemplatesPage() {
 						<span className="text-xs text-muted-foreground">
 							{routingPolicy === "manual_target"
 								? selectedSupervisor
-									? `Target host: ${selectedSupervisor.hostName}`
+									? `Target host: ${hostLabel(selectedSupervisor)}`
 									: "No target host selected"
 								: firstCapableHost
-									? `Routing: first capable host (${firstCapableHost.hostName})`
+									? `Routing: first capable host (${hostLabel(firstCapableHost)})`
 									: "Routing: first capable host"}
 						</span>
 					</div>

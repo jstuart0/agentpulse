@@ -24,6 +24,7 @@
  * stale 200 expectation. Flagged for mid-build review (tessa/xander).
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { inArray } from "drizzle-orm";
 import "../db/__test_db.js";
 
 const { config } = await import("../config.js");
@@ -79,6 +80,20 @@ let ingestKey: string;
 
 beforeAll(async () => {
 	await initializeDatabase();
+	// The regression sweep below assumes the AI runtime flag is off (AI routes answer
+	// 409). Other test files switch it on and leave it, and the flag is cached
+	// for a few seconds, so clear both the rows and the cache here.
+	{
+		const { settings } = await import("../db/schema/index.js");
+		const { AI_KILL_SWITCH_KEY, AI_RUNTIME_ENABLED_KEY, invalidateAiFlagsCache } = await import(
+			"../services/ai/feature.js"
+		);
+		await getDb()
+			.delete(settings)
+			.where(inArray(settings.key, [AI_RUNTIME_ENABLED_KEY, AI_KILL_SWITCH_KEY]))
+			.execute();
+		invalidateAiFlagsCache();
+	}
 	process.env.FORWARDAUTH_TRUST_SECRET = TEST_SECRET;
 	process.env.FORWARDAUTH_PROVIDER = "authentik";
 	(config as Record<string, unknown>).disableAuth = false;
@@ -770,7 +785,7 @@ const BASELINE_STATUS: Record<string, number> = {
 	"GET /sessions/nope/timeline": 200,
 	"POST /sessions/nope/prompt": 400,
 	"POST /sessions/nope/stop": 400,
-	"PUT /sessions/nope/rename": 500,
+	"PUT /sessions/nope/rename": 400, // was 500 before malformed bodies were refused with invalid_body
 	"DELETE /sessions/nope": 200,
 	"GET /settings": 200,
 	"GET /api-keys": 200,
@@ -989,6 +1004,8 @@ describe("Route-drift guard — every GET/HEAD route in the swapped bundle is cl
 		"labs",
 		"channels",
 		"ai",
+		"users",
+		"instance",
 	]);
 
 	function normalize(routePath: string): string | null {
@@ -1116,6 +1133,36 @@ describe("requireOperatorScope — an ingest-only key on PUT /sessions/:id/nativ
 				body: JSON.stringify({ name: "x", source: "user" }),
 			});
 			expect(renameRes.status).toBe(403);
+		}
+	});
+});
+
+describe("the team routes' reads are classified (observe-readable: /instance, /users/directory; manage-only: /users, /api-keys/:id)", () => {
+	test("set membership", () => {
+		expect(OBSERVE_READ_PATHS.has("/instance")).toBe(true);
+		expect(OBSERVE_READ_PATHS.has("/users/directory")).toBe(true);
+		expect(INTENTIONALLY_MANAGE_ONLY.has("/users")).toBe(true);
+		expect(INTENTIONALLY_MANAGE_ONLY.has("/api-keys/:id")).toBe(true);
+	});
+
+	test("an observe key reads /instance and /users/directory, and is refused on /users and /api-keys/:id", async () => {
+		for (const mount of MOUNTS) {
+			const headers = new Headers(authBearer(observeKey));
+			expect((await app.request(`${mount}/instance`, { headers })).status).toBe(200);
+			expect((await app.request(`${mount}/users/directory`, { headers })).status).toBe(200);
+			expect((await app.request(`${mount}/users`, { headers })).status).toBe(403);
+			expect((await app.request(`${mount}/api-keys/some-id`, { headers })).status).toBe(403);
+		}
+	});
+
+	test("a route exists for each, so the drift guard walks them", () => {
+		const registered = new Set(
+			app.routes
+				.filter((route) => route.method === "GET")
+				.map((route) => route.path.replace(/^\/(api|app-api)\/v1/, "")),
+		);
+		for (const path of ["/instance", "/users/directory", "/users", "/api-keys/:id"]) {
+			expect({ path, registered: registered.has(path) }).toEqual({ path, registered: true });
 		}
 	});
 });

@@ -20,6 +20,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+	SH_TRIM_SET_PRINTF,
 	buildBashHookCommand,
 	buildCodexHooksFile,
 	buildCopilotHooksFile,
@@ -41,6 +42,9 @@ function readFile(relPath: string): string {
 // 6 sites x 3 agents (Claude, Codex, Copilot).
 const EXPECTED_RESULTS = 18;
 
+/** Claude HTTP hook emitting constructs across the six sites (see CLAUDE_HTTP_HOOK_SITES). */
+const EXPECTED_CLAUDE_HTTP_CONSTRUCTS = 9;
+
 interface CheckResult {
 	site: string;
 	agent: "claude" | "codex" | "copilot";
@@ -56,7 +60,9 @@ interface CheckResult {
  * The command must:
  *  - end with the literal D13 detached tail
  *  - do its only non-curl stdin/stdout operation as `cat > "$t"`
- *  - contain no echo, printf, tee, jq, or a bare `cat` (one not followed by `>`)
+ *  - contain no echo, printf, tee, jq, or a bare `cat` (one not followed by `>`);
+ *    the one printf allowed is the exact trim-set substitution the skip check
+ *    uses (a shell built-in that writes into a variable, never to stdout)
  */
 export function checkNoStdoutShape(cmd: string, label: string): string[] {
 	const violations: string[] = [];
@@ -64,7 +70,8 @@ export function checkNoStdoutShape(cmd: string, label: string): string[] {
 		violations.push(`${label}: doesn't end with the D13 detached-tail skeleton`);
 	}
 	if (/\becho\b/.test(cmd)) violations.push(`${label}: contains echo`);
-	if (/\bprintf\b/.test(cmd)) violations.push(`${label}: contains printf`);
+	if (/\bprintf\b/.test(cmd.split(SH_TRIM_SET_PRINTF).join("")))
+		violations.push(`${label}: contains printf`);
 	if (/\btee\b/.test(cmd)) violations.push(`${label}: contains tee`);
 	if (/\bjq\b/.test(cmd)) violations.push(`${label}: contains jq`);
 	if (/\bcat\b(?!\s*>)/.test(cmd))
@@ -127,6 +134,97 @@ function checkCodexHooksShape(mismatches: string[]) {
 			);
 		}
 	}
+}
+
+/** The six files that emit Claude Code HTTP hook JSON, and how many emitting constructs each holds today (nine in all). */
+const CLAUDE_HTTP_HOOK_SITES = [
+	{ site: "scripts/setup-hooks.sh", kind: "sh-lines", constructs: 2 },
+	{ site: "scripts/setup-relay.sh", kind: "sh-lines", constructs: 1 },
+	{ site: "src/server/routes/setup.ts", kind: "sh-lines", constructs: 2 },
+	{ site: "scripts/install-local.ps1", kind: "powershell", constructs: 1 },
+	{ site: "bin/cli.ts", kind: "ts-objects", constructs: 2 },
+	{ site: "src/web/pages/SetupPage.tsx", kind: "ts-objects", constructs: 1 },
+] as const;
+
+/** The text of the `{ ... }` object literal that encloses `index` (brace-balanced, ignoring braces inside strings). */
+function enclosingObject(content: string, index: number): string {
+	let start = index;
+	for (let depth = 0; start > 0; start--) {
+		const ch = content[start];
+		if (ch === "}") depth++;
+		if (ch === "{") {
+			if (depth === 0) break;
+			depth--;
+		}
+	}
+	let end = start;
+	for (let depth = 0; end < content.length; end++) {
+		const ch = content[end];
+		if (ch === "{") depth++;
+		if (ch === "}") {
+			depth--;
+			if (depth === 0) break;
+		}
+	}
+	return content.slice(start, end + 1);
+}
+
+/** Every construct in `content` that emits one Claude HTTP hook entry. */
+function claudeHttpHookConstructs(
+	content: string,
+	kind: (typeof CLAUDE_HTTP_HOOK_SITES)[number]["kind"],
+): string[] {
+	if (kind === "sh-lines") {
+		return content.split("\n").filter((line) => /HOOKS_JSON\+=.*http/.test(line));
+	}
+	if (kind === "ts-objects") {
+		return [...content.matchAll(/type:\s*"http"/g)].map((m) => enclosingObject(content, m.index));
+	}
+	// install-local.ps1 builds the headers table, the hook table and the
+	// allowedEnvVars assignment in separate statements: take them as one.
+	const start = content.indexOf("$hookHeadersClaude = @{");
+	const end = content.indexOf("Set-JsonFile -Path $claudeSettings", start);
+	return start === -1 || end === -1 ? [] : [content.slice(start, end)];
+}
+
+/**
+ * Every Claude HTTP hook entry, at all six sites, must carry the skip
+ * header (`X-AgentPulse-Skip: $AGENTPULSE_SKIP`) and list AGENTPULSE_SKIP in
+ * `allowedEnvVars` — Claude Code expands header variables only for names
+ * on that list. Exported so scripts/check-hook-event-parity.test.ts can
+ * prove the rule discriminates.
+ */
+export function checkClaudeHttpHookSites(read: (relPath: string) => string): {
+	problems: string[];
+	constructCount: number;
+} {
+	const problems: string[] = [];
+	let constructCount = 0;
+	for (const { site, kind, constructs: expected } of CLAUDE_HTTP_HOOK_SITES) {
+		const found = claudeHttpHookConstructs(read(site), kind);
+		constructCount += found.length;
+		if (found.length !== expected) {
+			problems.push(
+				`${site}: expected ${expected} Claude HTTP hook construct(s), found ${found.length} — extraction likely broken`,
+			);
+		}
+		for (const [i, text] of found.entries()) {
+			const label = `${site} [Claude HTTP hook #${i + 1}]`;
+			if (!/X-AgentPulse-Skip[^A-Za-z0-9]{1,12}AGENTPULSE_SKIP/.test(text)) {
+				problems.push(`${label}: missing the X-AgentPulse-Skip: $AGENTPULSE_SKIP header`);
+			}
+			if (kind === "powershell") {
+				// The PowerShell installer builds the list in variables, one per form.
+				const lists = [...text.matchAll(/\$allowedEnvVars = @\(([^)]*)\)/g)].map((m) => m[1] ?? "");
+				if (lists.length === 0 || lists.some((list) => !list.includes("AGENTPULSE_SKIP"))) {
+					problems.push(`${label}: every $allowedEnvVars list must include AGENTPULSE_SKIP`);
+				}
+			} else if (!/allowedEnvVars[^\]\)]*AGENTPULSE_SKIP/.test(text)) {
+				problems.push(`${label}: allowedEnvVars does not list AGENTPULSE_SKIP`);
+			}
+		}
+	}
+	return { problems, constructCount };
 }
 
 function main() {
@@ -267,6 +365,14 @@ function main() {
 
 	checkCodexHooksShape(mismatches);
 
+	const claudeHttp = checkClaudeHttpHookSites(readFile);
+	mismatches.push(...claudeHttp.problems);
+	if (claudeHttp.constructCount !== EXPECTED_CLAUDE_HTTP_CONSTRUCTS) {
+		mismatches.push(
+			`expected ${EXPECTED_CLAUDE_HTTP_CONSTRUCTS} Claude HTTP hook constructs across the six sites, found ${claudeHttp.constructCount}`,
+		);
+	}
+
 	if (mismatches.length > 0) {
 		console.error("Hook-event-list parity check failed:\n");
 		console.error(mismatches.join("\n\n"));
@@ -274,7 +380,9 @@ function main() {
 			"\nAll six wiring sites (scripts/setup-hooks.sh, scripts/setup-relay.sh, " +
 				"src/server/routes/setup.ts, scripts/install-local.ps1, bin/cli.ts, " +
 				"src/web/pages/SetupPage.tsx) must register the exact same event set as the " +
-				"src/shared/types.ts ClaudeCodeEvent / CodexEvent / CopilotEvent unions.",
+				"src/shared/types.ts ClaudeCodeEvent / CodexEvent / CopilotEvent unions, and " +
+				"every Claude HTTP hook they write must carry the skip header and list " +
+				"AGENTPULSE_SKIP in allowedEnvVars.",
 		);
 		process.exit(1);
 	}
@@ -284,4 +392,4 @@ function main() {
 	);
 }
 
-main();
+if (import.meta.main) main();

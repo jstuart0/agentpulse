@@ -12,7 +12,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ApiError } from "../client.js";
 import type { ToolContext } from "../server.js";
 import { fakeClient } from "../test-support.js";
-import type { ControlAction, Session, SessionEvent } from "../types.js";
+import type { ControlAction, OwnerScopeEcho, Session, SessionEvent } from "../types.js";
 import { registerSessionsTools } from "./sessions.js";
 
 function newContext(client: ReturnType<typeof fakeClient>): ToolContext {
@@ -358,6 +358,198 @@ describe("list_sessions — pagination (test-contract 9-10, 12)", () => {
 		const result = await mcpClient.callTool({ name: "list_sessions", arguments: {} });
 		const parsed = JSON.parse(textOf(result));
 		expect(parsed.sessions[0].managed).toBe(true);
+	});
+
+	test("compact rows carry operationalStatus (AGEN) when the server sends it", async () => {
+		const ctx = newContext(
+			fakeClient({
+				getSessions: async () => ({
+					sessions: [baseSession({ sessionId: "waiting-1", operationalStatus: "waiting" })],
+					total: 1,
+				}),
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_sessions", arguments: {} });
+		const parsed = JSON.parse(textOf(result));
+		expect(parsed.sessions[0].operationalStatus).toBe("waiting");
+	});
+
+	test("compact rows keep who owns the session (ownerUserId, ownerKind) when the server sends them", async () => {
+		const ctx = newContext(
+			fakeClient({
+				getSessions: async () => ({
+					sessions: [
+						baseSession({ sessionId: "owned-1", ownerUserId: "user-1", ownerKind: "user" }),
+						baseSession({ sessionId: "svc-1", ownerUserId: null, ownerKind: "service" }),
+					],
+					total: 2,
+				}),
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const parsed = JSON.parse(
+			textOf(await mcpClient.callTool({ name: "list_sessions", arguments: {} })),
+		);
+		expect(parsed.sessions[0].ownerUserId).toBe("user-1");
+		expect(parsed.sessions[0].ownerKind).toBe("user");
+		expect(parsed.sessions[1].ownerUserId).toBeNull();
+		expect(parsed.sessions[1].ownerKind).toBe("service");
+	});
+
+	test("an older server that omits operationalStatus leaves the compact row's field undefined, not an error", async () => {
+		const ctx = newContext(
+			fakeClient({
+				getSessions: async () => ({ sessions: [baseSession()], total: 1 }),
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_sessions", arguments: {} });
+		expect(result.isError).toBeFalsy();
+		const parsed = JSON.parse(textOf(result));
+		expect(parsed.sessions[0].operationalStatus).toBeUndefined();
+	});
+
+	test("the operational filter is forwarded to the client's getSessions call", async () => {
+		let capturedOperational: string | undefined;
+		const ctx = newContext(
+			fakeClient({
+				getSessions: async (params) => {
+					capturedOperational = params?.operational;
+					return { sessions: [], total: 0 };
+				},
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		await mcpClient.callTool({ name: "list_sessions", arguments: { operational: "waiting" } });
+		expect(capturedOperational).toBe("waiting");
+	});
+
+	test("an invalid operational value is rejected by the tool's own schema", async () => {
+		const ctx = newContext(fakeClient({ getSessions: async () => ({ sessions: [], total: 0 }) }));
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "list_sessions",
+			arguments: { operational: "not-a-real-state" },
+		});
+		expect(result.isError).toBeTruthy();
+	});
+});
+
+const USER_ID = "3f2b8c1e-5d4a-4b6f-9a7e-1c2d3e4f5a6b";
+
+describe("list_sessions — owner scope", () => {
+	/** What a current server echoes for each value a caller can ask for. */
+	const ECHOES: Array<[string, OwnerScopeEcho]> = [
+		["me", { kind: "me", userId: USER_ID }],
+		["unassigned", { kind: "unassigned" }],
+		["service", { kind: "service" }],
+		[USER_ID, { kind: "user", userId: USER_ID }],
+	];
+
+	async function callWith(
+		args: Record<string, unknown>,
+		echo: OwnerScopeEcho | undefined,
+		onAuthMe?: () => void,
+	): Promise<{
+		result: Awaited<ReturnType<Client["callTool"]>>;
+		listed: Array<string | undefined>;
+	}> {
+		const listed: Array<string | undefined> = [];
+		const ctx = newContext(
+			fakeClient({
+				getAuthMe: async () => {
+					onAuthMe?.();
+					throw new Error("identity is not the capability test any more");
+				},
+				getSessions: async (params) => {
+					listed.push(params?.owner);
+					const response = { sessions: [], total: 0, ...(echo ? { ownerScope: echo } : {}) };
+					return response;
+				},
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_sessions", arguments: args });
+		return { result, listed };
+	}
+
+	test("owner is forwarded, and a response echoing that scope is accepted", async () => {
+		for (const [owner, echo] of ECHOES) {
+			const { result, listed } = await callWith({ owner }, echo);
+			expect({ owner, error: result.isError }).toEqual({ owner, error: undefined });
+			expect(listed).toEqual([owner]);
+		}
+	});
+
+	test("a response without the echo is refused, never shown as the caller's list", async () => {
+		for (const [owner] of ECHOES) {
+			const { result } = await callWith({ owner }, undefined);
+			expect({ owner, isError: result.isError }).toEqual({ owner, isError: true });
+			expect(textOf(result)).toContain("owner");
+			expect(textOf(result)).not.toContain('"sessions"');
+		}
+	});
+
+	test("a response echoing a different scope than the one asked for is refused", async () => {
+		const mismatches: Array<[string, OwnerScopeEcho]> = [
+			["me", { kind: "all" }],
+			["unassigned", { kind: "service" }],
+			["service", { kind: "unassigned" }],
+			[USER_ID, { kind: "user", userId: "9a1c2d3e-4f5a-4b6f-8a7e-0c1d2e3f4a5b" }],
+			["me", { kind: "me" }],
+		];
+		for (const [owner, echo] of mismatches) {
+			const { result } = await callWith({ owner }, echo);
+			expect({ owner, echo, isError: result.isError }).toEqual({ owner, echo, isError: true });
+		}
+	});
+
+	test("an uppercase user id matches the server's lowercase echo", async () => {
+		const { result } = await callWith(
+			{ owner: USER_ID.toUpperCase() },
+			{ kind: "user", userId: USER_ID },
+		);
+		expect(result.isError).toBeFalsy();
+	});
+
+	test("all and no owner need no echo: an older server answers both correctly", async () => {
+		for (const args of [{ owner: "all" }, {}]) {
+			const { result } = await callWith(args, undefined);
+			expect({ args, isError: result.isError }).toEqual({ args, isError: undefined });
+		}
+	});
+
+	test("no request for the caller's identity is made", async () => {
+		let authMeCalls = 0;
+		await callWith({ owner: "me" }, { kind: "me", userId: USER_ID }, () => {
+			authMeCalls += 1;
+		});
+		expect(authMeCalls).toBe(0);
+	});
+
+	test("a value outside the owner grammar is rejected before any request", async () => {
+		for (const owner of ["everybody", "ME", "not-a-uuid"]) {
+			const { result, listed } = await callWith({ owner }, { kind: "all" });
+			expect({ owner, isError: result.isError }).toEqual({ owner, isError: true });
+			expect(listed).toEqual([]);
+		}
+	});
+
+	test("the description tells a caller the server must confirm the scope", async () => {
+		const ctx = newContext(fakeClient());
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const { tools } = await mcpClient.listTools();
+		const description = tools.find((t) => t.name === "list_sessions")?.description ?? "";
+		expect(description).toContain("owner");
+		expect(description.toLowerCase()).toContain("confirm");
 	});
 });
 

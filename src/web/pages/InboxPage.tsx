@@ -6,6 +6,7 @@ import { FailedProposalCard } from "../components/inbox/FailedProposalCard.js";
 import { HitlCard } from "../components/inbox/HitlCard.js";
 import { RiskyCard } from "../components/inbox/RiskyCard.js";
 import { StuckCard } from "../components/inbox/StuckCard.js";
+import { plainErrorMessage } from "../lib/api-errors.js";
 import { type ActionRequestDecision, type Inbox, type InboxWorkItem, api } from "../lib/api.js";
 
 /**
@@ -58,7 +59,7 @@ export function InboxPage() {
 			});
 			setInbox(data);
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			setError(plainErrorMessage(err));
 		} finally {
 			setLoading(false);
 		}

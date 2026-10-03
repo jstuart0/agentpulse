@@ -1,11 +1,15 @@
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { actorFromAuthUser } from "../auth/actor.js";
 import { getTrustedClientIp } from "../auth/client-ip.js";
 import { getAuthUser, requireAuth } from "../auth/middleware.js";
+import { isHumanAdmin, refuseBadOrigin, resolveEffectiveRole } from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
 import { settings, users } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { logAdminAction } from "../services/audit-log.js";
+import { getMode } from "../services/instance-mode.js";
 import {
 	SESSION_COOKIE_NAME,
 	SESSION_DURATION_MS,
@@ -14,8 +18,14 @@ import {
 	createUser,
 	issueSession,
 	revokeSessionByToken,
+	validateUsername,
 	verifyCredentials,
 } from "../services/local-auth-service.js";
+import {
+	clearPasswordChangeFailures,
+	passwordChangeRetryAfterSeconds,
+	recordPasswordChangeFailure,
+} from "../services/password-change-limit.js";
 
 // ── Rate limiting (S-H1) ─────────────────────────────────────────────────────
 //
@@ -37,7 +47,7 @@ const DECAY_MS = 15 * 60 * 1_000; // 15 minutes inactivity → bucket eviction
 // Evicting oldest means the entry that is most likely already dormant is dropped
 // before a fresh attacker; the alternative (refuse insert → allow on a separate
 // code path) would be a worse failure mode.
-const MAX_BUCKETS = 50_000;
+export const MAX_BUCKETS = 50_000;
 
 interface RateBucket {
 	failures: number;
@@ -145,6 +155,11 @@ function clearBucket(key: string): void {
  * Returns the current number of active rate-limit buckets.
  * Exported for testing only — do not call from production code.
  */
+/** Whether a bucket exists for `key`. Exported for testing only. */
+export function hasRateBucket(key: string): boolean {
+	return rateBuckets.has(key);
+}
+
 export function getRateBucketCount(): number {
 	return rateBuckets.size;
 }
@@ -224,6 +239,13 @@ authRouter.get("/auth/me", async (c) => {
 			: user.source === "local"
 				? "/api/v1/auth/logout"
 				: null;
+	// displayName never shows the stored "sso:provider:subject" username —
+	// fall back to the caller's name (the uid/username header value, or the
+	// local username) when the already-resolved identity has none. Carried
+	// on AuthUser from the request's own resolve — no extra lookup here.
+	const displayName = user.displayName ?? user.name;
+	const mode = await getMode();
+	const effectiveRole = await resolveEffectiveRole(user, mode);
 	return c.json({
 		authenticated: true,
 		user: {
@@ -236,11 +258,24 @@ authRouter.get("/auth/me", async (c) => {
 			// callers never carry scopes (AuthUser docstring); JSON.stringify
 			// drops the key entirely when undefined, so it's simply absent there.
 			scopes: user.scopes,
+			// users.id for local/SSO callers; the key's owner for api_key
+			// callers; null for service keys, DISABLE_AUTH, and supervisor
+			// credentials.
+			userId: user.userId,
+			displayName,
+			// True until the user replaces a password someone else chose; every
+			// other route refuses them with password_change_required meanwhile.
+			mustChangePassword: user.mustChangePassword,
+			// What the caller may do to team-owned things right now: admin, or
+			// member. Resolved per request, so a demotion shows at once.
+			effectiveRole,
 		},
 		signOutUrl,
 		localAuthEnabled: true,
 		allowSignup: false,
 		disableAuth: config.disableAuth,
+		mode,
+		modeLockedByEnv: config.modeEnv !== null,
 	});
 });
 
@@ -320,6 +355,16 @@ authRouter.post("/auth/signup", async (c) => {
 		return c.json({ error: complexityError }, 400);
 	}
 
+	// The first-run path below inserts directly, not through createUser(),
+	// so the username pattern must be validated here too — otherwise the
+	// "sso:" + provider + ":" + subject convention could collide with a
+	// user-chosen local username.
+	try {
+		validateUsername(body.username);
+	} catch (err) {
+		return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+	}
+
 	// Advisory pre-check outside the transaction (saves a hash on the obvious-deny path).
 	const existingCount = await countActiveUsers();
 	const caller = await getAuthUser(c);
@@ -333,12 +378,26 @@ authRouter.post("/auth/signup", async (c) => {
 	}
 
 	// Admin-caller path: no race condition possible (already authenticated).
+	// This route is outside the role-policy bundle, so it applies the same
+	// rules itself: the Origin check, a human admin who isn't mid password
+	// change, and an audit line.
 	if (isAdminCaller) {
+		const badOrigin = refuseBadOrigin(c);
+		if (badOrigin) return badOrigin;
+		if (caller.mustChangePassword) return c.json({ error: "password_change_required" }, 403);
+		if (!isHumanAdmin(caller)) return c.json({ error: "human_admin_required" }, 403);
 		try {
 			const user = await createUser({
 				username: body.username,
 				password: body.password,
 				role: "user",
+				// The admin chose this password, so the new user replaces it at first login.
+				mustChangePassword: true,
+			});
+			logAdminAction("user_created", actorFromAuthUser(caller), {
+				userId: user.id,
+				role: "user",
+				via: "signup",
 			});
 			return c.json({ ok: true, user }, 201);
 		} catch (err) {
@@ -358,13 +417,17 @@ authRouter.post("/auth/signup", async (c) => {
 		// so async callbacks are safe — COMMIT only fires after the Promise resolves.
 		// On the Postgres path, db.transaction(fn) natively supports async callbacks.
 		await withTransaction(async (tx) => {
-			// Re-check: count ALL users (including soft-deleted) and the
+			// Re-check: count ALL local users (including soft-deleted) and the
 			// firstRunCompleted flag inside the transaction so two concurrent
 			// signups can't both pass. We intentionally count disabled users:
 			// a soft-deleted bootstrap admin should NOT re-open the signup
 			// window — the flag provides belt-and-suspenders, but the total
-			// user count is the primary guard.
-			const userRows = await tx.select({ id: users.id }).from(users);
+			// user count is the primary guard. SSO-bridged rows never count
+			// here — an install with only SSO sign-ins keeps signup open.
+			const userRows = await tx
+				.select({ id: users.id })
+				.from(users)
+				.where(eq(users.authSource, "local"));
 			const totalCount = userRows.length;
 
 			const flagRows = await tx
@@ -386,6 +449,7 @@ authRouter.post("/auth/signup", async (c) => {
 				username: body.username as string,
 				passwordHash,
 				role: "admin",
+				authSource: "local",
 				createdAt: now,
 				updatedAt: now,
 			});
@@ -423,10 +487,20 @@ authRouter.post("/auth/signup", async (c) => {
 	return c.json({ ok: true, user: { id: userId, username: body.username, role: "admin" } }, 201);
 });
 
-authRouter.post("/auth/change-password", requireAuth(), async (c) => {
+// The one route a user who must change their password may use besides /auth/me
+// and logout: requireAuth refuses a flagged caller everywhere else.
+const allowPasswordChange = requireAuth({ allowPasswordChangeRequired: true });
+authRouter.post("/auth/change-password", allowPasswordChange, async (c) => {
 	const user = await getAuthUser(c);
 	if (!user || user.source !== "local" || !user.id) {
 		return c.json({ error: "Only local accounts can change password here" }, 400);
+	}
+	// Failed attempts are counted per user: this route is reachable with a
+	// session cookie alone, so it must not be a way to guess the password.
+	const retryAfterSecs = passwordChangeRetryAfterSeconds(user.id);
+	if (retryAfterSecs !== null) {
+		c.header("Retry-After", String(retryAfterSecs));
+		return c.json({ error: "Too many failed attempts. Try again later." }, 429);
 	}
 	const body = await c.req.json<{
 		currentPassword?: string;
@@ -446,7 +520,11 @@ authRouter.post("/auth/change-password", requireAuth(), async (c) => {
 			currentPassword: body.currentPassword,
 			newPassword: body.newPassword,
 		});
-		if (!ok) return c.json({ error: "Invalid current password" }, 401);
+		if (!ok) {
+			recordPasswordChangeFailure(user.id);
+			return c.json({ error: "Invalid current password" }, 401);
+		}
+		clearPasswordChangeFailures(user.id);
 		// All sessions were revoked — issue a fresh one for this caller.
 		const session = await issueSession({
 			userId: user.id,

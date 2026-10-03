@@ -98,7 +98,10 @@ describe("toDbTimestamp (DT-1)", () => {
 });
 
 test("TZ sentinel: the file leaves TZ restored", () => {
-	expect(process.env.TZ).toBe(FILE_TZ ?? "UTC");
+	// withTZ restores an unset TZ as "UTC", so unset and "UTC" are the same
+	// state here; without this the test also failed when it ran before any
+	// withTZ test had set and restored it.
+	expect(process.env.TZ ?? "UTC").toBe(FILE_TZ ?? "UTC");
 	// F85: when the harness itself runs with no TZ override, confirm the
 	// *environment* is actually UTC (not just the env var string) — a bare
 	// SQLite-shaped string parses as UTC only when the process really is.

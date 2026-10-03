@@ -18,6 +18,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { type AlertRuleType, KNOWN_ALERT_RULE_TYPES } from "../../../shared/types.js";
 import "./__test_db.js";
+import { ANONYMOUS_ACTOR } from "../../auth/actor.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { aiActionRequests, sessions } = await import("../../db/schema/index.js");
@@ -75,6 +76,7 @@ describe("KIND_EXECUTORS registry — session_archive", () => {
 			id: req.id,
 			decision: "applied",
 			resolvedBy: "test-user",
+			actor: ANONYMOUS_ACTOR,
 		});
 
 		expect(result.ok).toBe(true);
@@ -106,6 +108,7 @@ describe("KIND_EXECUTORS registry — session_delete", () => {
 			id: req.id,
 			decision: "applied",
 			resolvedBy: "test-user",
+			actor: ANONYMOUS_ACTOR,
 		});
 
 		expect(result.ok).toBe(true);
@@ -136,6 +139,7 @@ describe("KIND_EXECUTORS registry — missing-session race-loss", () => {
 			id: req.id,
 			decision: "applied",
 			resolvedBy: "test-user",
+			actor: ANONYMOUS_ACTOR,
 		});
 
 		expect(result.ok).toBe(false);
@@ -169,6 +173,7 @@ describe("KIND_EXECUTORS registry — unsupported kind", () => {
 			id,
 			decision: "applied",
 			resolvedBy: "test-user",
+			actor: ANONYMOUS_ACTOR,
 		});
 
 		expect(result.ok).toBe(false);

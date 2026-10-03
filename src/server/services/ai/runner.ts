@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import type { ManagedState, Session, SessionEvent } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { managedSessions, sessions } from "../../db/schema/index.js";
+import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../../db/session-columns.js";
 import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { stampUserPrompt, stampWatcherState } from "../managed-session-state.js";
 import { sessionBus } from "../notifier.js";
@@ -246,7 +247,7 @@ export class WatcherRunner {
 		}
 
 		const [session] = await getDb()
-			.select()
+			.select(SESSION_COLUMNS_SANS_OWNERSHIP)
 			.from(sessions)
 			.where(eq(sessions.sessionId, sessionId))
 			.limit(1);

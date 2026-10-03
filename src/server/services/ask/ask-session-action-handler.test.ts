@@ -46,7 +46,12 @@ async function getSession(id: string) {
 // with a simple query (most-recently-active non-archived session), so it
 // needs no search-backend/FTS mocking. Using a null sessionHint keeps this
 // test focused on the rename precedence contract rather than NL resolution.
-const baseArgs = { origin: "web" as const, threadId: "thread-1", telegramChatId: null };
+const baseArgs = {
+	origin: "web" as const,
+	threadId: "thread-1",
+	telegramChatId: null,
+	actor: { userId: null, label: "anonymous" as const },
+};
 
 describe("handleSessionAction rename", () => {
 	test("stamps metadata.renameSource: 'user' via renameSession (not a direct displayName write)", async () => {

@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AGENT_METADATA, AGENT_TYPES } from "../../shared/constants.js";
 import type { AgentType } from "../../shared/types.js";
+import { plainErrorMessage } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
+import { hitOwnerText } from "../lib/owner-label.js";
+import { useUserStore } from "../stores/user-store.js";
+import { useUsersStore } from "../stores/users-store.js";
 
 /**
  * Global search across session metadata + event content.
@@ -70,7 +74,7 @@ export function SearchPage() {
 				setTotal(res.total);
 			})
 			.catch((err) => {
-				if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+				if (!cancelled) setError(plainErrorMessage(err));
 			})
 			.finally(() => {
 				if (!cancelled) setLoading(false);
@@ -144,7 +148,10 @@ export function SearchPage() {
 					options={[
 						{ value: "", label: "Any" },
 						{ value: "active", label: "Active" },
-						{ value: "idle", label: "Idle" },
+						// "Lifecycle:" distinguishes this from the dashboard's
+						// operational IDLE state (AGEN) — a session can be
+						// lifecycle-idle while operationally WAITING or ERROR.
+						{ value: "idle", label: "Lifecycle: idle" },
 						{ value: "completed", label: "Completed" },
 						{ value: "archived", label: "Archived" },
 					]}
@@ -239,6 +246,9 @@ function FilterSelect({
 }
 
 function ResultRow({ hit }: { hit: Hit }) {
+	const directory = useUsersStore((s) => s.byId);
+	const viewerUserId = useUserStore((s) => s.userId);
+	const owner = hitOwnerText(hit, (id) => directory[id], viewerUserId);
 	const title =
 		hit.sessionDisplayName ??
 		`${hit.sessionId.slice(0, 8)}${hit.sessionCwd ? ` — ${hit.sessionCwd.split("/").pop()}` : ""}`;
@@ -257,6 +267,12 @@ function ResultRow({ hit }: { hit: Hit }) {
 						{hit.kind === "event" ? (hit.eventType ?? "event") : "session"}
 					</span>
 					<span className="truncate">{title}</span>
+					{owner !== null && (
+						<span className="shrink-0 truncate rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-foreground">
+							<span className="sr-only">Owner: </span>
+							{owner}
+						</span>
+					)}
 					<span className="ml-auto text-[10px] opacity-70">
 						{new Date(hit.timestamp).toLocaleString()}
 					</span>

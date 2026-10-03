@@ -98,7 +98,7 @@ Agent (Claude Code / Codex / Copilot CLI)
   Works with any forwardauth-capable IdP (Authentik by default, or Authelia,
   oauth2-proxy, Pomerium, Cloudflare Access via env config).
   `FORWARDAUTH_TRUST_SECRET` required for SSO production deployments (legacy
-  alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` accepted until v0.7.0); see
+  alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` accepted until v0.8.0); see
   `deploy/k8s/FORWARDAUTH.md`.
   - API keys carry explicit scopes: `ingest` (hooks), `observe` (read-only,
     provably secret-free at the REST boundary), `manage` (full operator

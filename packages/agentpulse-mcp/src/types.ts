@@ -211,6 +211,12 @@ export interface Session {
 	metadata: Record<string, unknown>;
 	projectId: string | null;
 	isArchived: boolean;
+	// Acknowledgement model (WAITING vs IDLE): when the agent last finished a
+	// turn (Stop) and when the user last acknowledged a result. Optional for
+	// backward-compat with a server predating the columns; a current server
+	// always sends both (null until the session has seen the event).
+	lastAgentTurnCompletedAt?: string | null;
+	lastUserAcknowledgedAt?: string | null;
 	managedSession?: ManagedSession | null;
 	managed?: boolean;
 	// F86 (ian mid-build, D14/Phase 2): optional for backward-compat with a
@@ -219,6 +225,25 @@ export interface Session {
 	// intentionally omits them.
 	nameSource?: "user" | "native" | "generated";
 	nativeName?: string | null;
+	/**
+	 * Derived from owner_user_id / ingest_key_id (mapSessionDto): "user" when
+	 * the session has an owner, "service" when it's unowned but a service
+	 * key's event created or filled it, "unassigned" when both are still
+	 * null. Optional: an older server won't send it.
+	 */
+	ownerKind?: "user" | "service" | "unassigned";
+	/**
+	 * The user who owns this session; null when unassigned. Optional: an
+	 * older server may not send it.
+	 */
+	ownerUserId?: string | null;
+	/**
+	 * The dashboard's WORKING / WAITING / IDLE / ERROR / COMPLETED state
+	 * (mapSessionDto via getOperationalStatus). Optional: an older server
+	 * won't send it. Vendored literal union — this package can't import
+	 * src/shared's OperationalStatus type.
+	 */
+	operationalStatus?: "waiting" | "working" | "idle" | "error" | "completed";
 }
 
 export interface SessionEvent {
@@ -237,16 +262,48 @@ export interface SessionEvent {
 	createdAt: string;
 }
 
+/**
+ * The owner scope a server says it applied. Vendored from
+ * src/shared/owner-scope.ts (OwnerScopeEcho): this package can't import it.
+ * `me` carries the user id it resolved to.
+ */
+export interface OwnerScopeEcho {
+	kind: "all" | "me" | "user" | "unassigned" | "service";
+	userId?: string;
+}
+
+/** The dashboard's three tab sizes; they partition the sessions in scope. */
+export interface SessionTabCounts {
+	active: number;
+	completed: number;
+	archived: number;
+}
+
 export interface DashboardStats {
+	/** The owner scope the server applied. Absent on a server that predates owner scoping. */
+	ownerScope?: OwnerScopeEcho;
+	/** Every session in the applied scope. Absent on an older server. */
+	total?: number;
+	/** Sessions in the applied scope the scratch exclusion left out; 0 without it. Absent on an older server. */
+	scratchHidden?: number;
 	activeSessions: number;
 	totalSessionsToday: number;
 	totalToolUsesToday: number;
 	byAgentType: Record<AgentType, number>;
+	/** Server-side counts for the Completed/Archived tab badges (AGEN). */
+	completedCount: number;
+	archivedCount: number;
+	/** The three tab sizes; they partition `total`. Absent on an older server. */
+	tabCounts?: SessionTabCounts;
+	/** The waiting/working/idle/error counts. Optional: an older server doesn't send them. */
+	operational?: Record<"waiting" | "working" | "idle" | "error", number>;
+	/** True when the server's candidate scan hit its cap and the operational counts may under-report. */
+	truncated?: boolean;
 }
 
 /**
  * GET /auth/me response shape (src/server/routes/auth.ts). `source:
- * "authentik"` is a legacy alias retained until v0.7.0 server-side; new
+ * "authentik"` is a legacy alias retained until v0.8.0 server-side; new
  * responses emit "forwardauth". `scopes` is api_key-caller-only —
  * forwardauth/local callers omit the field (this package's discoverScopes
  * relies on that).
@@ -260,10 +317,22 @@ export interface AuthMeResponse {
 		id: string | null;
 		role: "user" | "admin" | null;
 		scopes?: string[];
+		/** users.id for local/SSO callers; the key's owner for api_key callers; null otherwise. Absent on an older server. */
+		userId?: string | null;
+		/** A display label for the caller, never the stored "sso:provider:subject" username. Absent on an older server. */
+		displayName?: string | null;
+		/** True until the user replaces a password someone else chose; the server refuses other routes meanwhile. Absent on an older server. */
+		mustChangePassword?: boolean;
+		/** What the caller may do to team-owned things right now (admin or member); an owned key reports its owner's current role. Absent on an older server. */
+		effectiveRole?: "admin" | "member";
 	} | null;
 	signOutUrl: string | null;
 	disableAuth: boolean;
 	allowSignup: boolean;
+	/** The instance mode for an authenticated caller. Absent on an older server. */
+	mode?: "solo" | "team";
+	/** True when AGENTPULSE_MODE fixes the mode. Absent on an older server. */
+	modeLockedByEnv?: boolean;
 }
 
 export interface SessionTemplate {
@@ -415,9 +484,13 @@ export interface SupervisorRecord {
 	configSchemaVersion: number;
 	lastHeartbeatAt: string;
 	heartbeatLeaseExpiresAt: string;
+	/** "invalid" when the supervisor last reported that the exclude file on its host has an error; null or absent otherwise (nothing to act on, or an older supervisor). */
+	excludeRulesState?: "invalid" | null;
 	enrollmentState?: "pending" | "active" | "revoked";
 	createdAt: string;
 	updatedAt: string;
+	/** The caller who enrolled (or, for a pre-upgrade host, later rotated) this supervisor. Null if never attributed. */
+	ownerUserId?: string | null;
 }
 
 export interface LaunchRequest {

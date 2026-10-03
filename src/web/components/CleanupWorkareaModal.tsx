@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { Project } from "../../shared/types.js";
+import { useDialogFocusTrap } from "../hooks/useDialogFocusTrap.js";
+import { describeApiError } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
 
 interface CleanupWorkareaModalProps {
@@ -57,31 +59,7 @@ export function CleanupWorkareaModal({ project, onClose, onCleanedUp }: CleanupW
 		cancelRef.current?.focus();
 	}, []);
 
-	useEffect(() => {
-		function handleKey(e: KeyboardEvent) {
-			if (e.key === "Escape" && !submitting) {
-				e.preventDefault();
-				onClose();
-			}
-			if (e.key === "Tab" && dialogRef.current) {
-				const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
-					"input, button:not([disabled]), [tabindex]:not([tabindex='-1'])",
-				);
-				if (focusable.length === 0) return;
-				const first = focusable[0];
-				const last = focusable[focusable.length - 1];
-				if (e.shiftKey && document.activeElement === first) {
-					e.preventDefault();
-					last.focus();
-				} else if (!e.shiftKey && document.activeElement === last) {
-					e.preventDefault();
-					first.focus();
-				}
-			}
-		}
-		document.addEventListener("keydown", handleKey);
-		return () => document.removeEventListener("keydown", handleKey);
-	}, [onClose, submitting]);
+	useDialogFocusTrap(dialogRef, submitting ? undefined : onClose);
 
 	const canConfirm = !submitting && confirmText.trim().toLowerCase() === CONFIRM_PHRASE;
 
@@ -93,7 +71,9 @@ export function CleanupWorkareaModal({ project, onClose, onCleanedUp }: CleanupW
 			await api.cleanupWorkarea(project.id);
 			onCleanedUp();
 		} catch (err) {
-			setError(err instanceof Error ? err.message : "Cleanup request failed");
+			setError(
+				describeApiError(err, err instanceof Error ? err.message : "Cleanup request failed"),
+			);
 			setSubmitting(false);
 		}
 	}

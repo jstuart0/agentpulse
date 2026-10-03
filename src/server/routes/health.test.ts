@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 /**
  * Phase 2 (D3, F20): GET /health gains an additive `clients: {relay,
  * statusline}` field — each a computeChecksum(content, {trimEnd:true})
@@ -21,6 +21,11 @@ function buildApp() {
 	app.route("/api/v1", health);
 	return app;
 }
+
+// Other files read /health expecting the not-ready state a fresh process has.
+afterAll(async () => {
+	(await import("./health.js"))._resetDbReadyForTest(false);
+});
 
 beforeAll(async () => {
 	await initializeDatabase();
@@ -131,5 +136,16 @@ describe("GET /health — clients checksums", () => {
 		// must not be — it's a 12-char hex digest.
 		expect(body.instance.dbFingerprint).not.toContain("-");
 		expect(body.instance.dbFingerprint.length).toBe(12);
+	});
+
+	// AGEN security: unacknowledgeDropped counts UserUnacknowledge hook
+	// deliveries dropped unconditionally (see event-processor.ts) — present
+	// and zero on a fresh process, same additive shape as the existing
+	// ingestOwnerMismatch/oversizeDropped/rateLimitedDropped counters.
+	test("unacknowledgeDropped is a number, starting at 0 on a fresh process", async () => {
+		const app = buildApp();
+		const res = await app.request("/api/v1/health");
+		const body = await res.json();
+		expect(typeof body.unacknowledgeDropped).toBe("number");
 	});
 });

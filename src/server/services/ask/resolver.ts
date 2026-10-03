@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
 import { sessions } from "../../db/schema/index.js";
+import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../../db/session-columns.js";
 import type { SemanticEnricher } from "../ai/semantic-enricher.js";
 import { getSearchBackend } from "../search/index.js";
 
@@ -85,7 +86,13 @@ function tokenize(message: string): string[] {
 	);
 }
 
-function scoreSession(tokens: string[], row: typeof sessions.$inferSelect): number {
+function scoreSession(
+	tokens: string[],
+	row: Pick<
+		typeof sessions.$inferSelect,
+		"isWorking" | "status" | "displayName" | "cwd" | "gitBranch" | "currentTask" | "agentType"
+	>,
+): number {
 	if (tokens.length === 0) {
 		// Floor score so we can still rank by activity downstream.
 		return row.isWorking ? 2 : row.status === "active" ? 1 : 0;
@@ -208,7 +215,7 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 	// Slice G: explicit isArchived exclusion wraps the OR so archived sessions
 	// with status='active' (a valid orthogonal state) don't leak into the pool.
 	const pool = await getDb()
-		.select()
+		.select(SESSION_COLUMNS_SANS_OWNERSHIP)
 		.from(sessions)
 		.where(
 			and(
@@ -255,7 +262,7 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
 			// where I did X" is often a question about past, finished work.
 			// Slice G: filter on isArchived (canonical truth), not status='archived'.
 			const extra = await getDb()
-				.select()
+				.select(SESSION_COLUMNS_SANS_OWNERSHIP)
 				.from(sessions)
 				.where(and(inArray(sessions.sessionId, missingIds), eq(sessions.isArchived, false)));
 			extendedPool = pool.concat(extra);
@@ -302,7 +309,10 @@ export async function resolveCandidateSessions(input: ResolveInput): Promise<Res
  */
 export async function fetchSessionsById(ids: string[]): Promise<ResolvedSession[]> {
 	if (ids.length === 0) return [];
-	const rows = await getDb().select().from(sessions).where(inArray(sessions.sessionId, ids));
+	const rows = await getDb()
+		.select(SESSION_COLUMNS_SANS_OWNERSHIP)
+		.from(sessions)
+		.where(inArray(sessions.sessionId, ids));
 	// SQLite's IN clause doesn't preserve input order; re-order rows to match
 	// the caller's id list so "@mention"-style references in the UI stay stable.
 	const byId = new Map(rows.map((row) => [row.sessionId, row]));

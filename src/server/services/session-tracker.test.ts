@@ -1,4 +1,5 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import type { Session } from "../../shared/types.js";
 import "./ai/__test_db.js";
 import { describeSqliteOnly } from "../test-utils/backend.js";
 
@@ -8,6 +9,7 @@ const { applyNativeName, getSessions, getStats, renameSession, updateStaleSessio
 	"./session-tracker.js"
 );
 const { AGENT_TYPES } = await import("../../shared/constants.js");
+const { sessionBus } = await import("./notifier.js");
 
 beforeAll(() => {
 	return initializeDatabase();
@@ -142,6 +144,81 @@ describe("updateStaleSessions lifecycle rules", () => {
 		const row = await getSession("stuck-mild");
 		expect(row?.isWorking).toBe(false);
 		expect(row?.status).toBe("completed");
+	});
+});
+
+describe("updateStaleSessions broadcasts what it changed", () => {
+	let seen: Session[] = [];
+	const listener = (session: Session) => {
+		seen.push(session);
+	};
+
+	beforeEach(() => {
+		seen = [];
+		sessionBus.on("session_updated", listener);
+	});
+	afterEach(() => {
+		sessionBus.off("session_updated", listener);
+	});
+
+	test("one update per changed session, carrying the new state", async () => {
+		await mkSession("stuck-b", {
+			status: "active",
+			isWorking: true,
+			lastActivityAt: isoAgo(65 * MINUTE),
+		});
+		await mkSession("idle-b", {
+			status: "active",
+			isWorking: false,
+			lastActivityAt: isoAgo(10 * MINUTE),
+		});
+		await mkSession("done-b", {
+			status: "idle",
+			isWorking: false,
+			lastActivityAt: isoAgo(40 * MINUTE),
+		});
+		await mkSession("fresh-b", { status: "active", isWorking: false });
+		await updateStaleSessions();
+		const byId = new Map(seen.map((s) => [s.sessionId, s]));
+		expect(seen.length).toBe(3);
+		expect(byId.get("stuck-b")?.status).toBe("completed");
+		expect(byId.get("stuck-b")?.isWorking).toBe(false);
+		expect(byId.get("idle-b")?.status).toBe("idle");
+		expect(byId.get("done-b")?.status).toBe("completed");
+		expect(byId.has("fresh-b")).toBe(false);
+		for (const s of seen) expect("ingestKeyId" in s).toBe(false);
+	});
+
+	test("nothing changed, nothing broadcast", async () => {
+		await mkSession("quiet-b", { status: "active", isWorking: false });
+		await mkSession("working-b", {
+			status: "active",
+			isWorking: true,
+			lastActivityAt: isoAgo(10 * MINUTE),
+		});
+		await updateStaleSessions();
+		expect(seen.length).toBe(0);
+	});
+
+	test("a large sweep batches its reads", async () => {
+		const total = 1200;
+		const rows = Array.from({ length: total }, (_, i) => ({
+			sessionId: `bulk-${i}`,
+			displayName: `bulk-${i}`,
+			agentType: "claude_code" as const,
+			status: "active" as const,
+			isWorking: false,
+			lastActivityAt: isoAgo(10 * MINUTE),
+		}));
+		for (let i = 0; i < rows.length; i += 200) {
+			await getDb()
+				.insert(sessions)
+				.values(rows.slice(i, i + 200))
+				.execute();
+		}
+		await updateStaleSessions();
+		expect(seen.length).toBe(total);
+		expect(new Set(seen.map((s) => s.sessionId)).size).toBe(total);
 	});
 });
 
@@ -580,5 +657,319 @@ describe("getStats — byAgentType zero-fill (D18)", () => {
 		const stats = await getStats();
 		expect(stats.byAgentType.claude_code).toBe(2);
 		expect(stats.byAgentType.codex_cli).toBe(0);
+	});
+});
+
+describe("getStats — operational counts (AGEN)", () => {
+	test("counts match the shared classifier over a seeded mix, excluding completed", async () => {
+		await mkSession("op-working", { isWorking: true });
+		await mkSession("op-waiting", { lastAgentTurnCompletedAt: isoAgo(0) });
+		await mkSession("op-idle", {});
+		await mkSession("op-error", { status: "failed", endedAt: isoAgo(0) });
+		await mkSession("op-completed", { status: "completed", endedAt: isoAgo(0) });
+		const stats = await getStats();
+		expect(stats.operational).toEqual({ waiting: 1, working: 1, idle: 1, error: 1 });
+	});
+});
+
+describe("getSessions — operational filter, pagination over the full matching set (AGEN)", () => {
+	test("total reflects every matching row, not just the returned page", async () => {
+		for (let i = 0; i < 5; i++) {
+			await mkSession(`op-page-${i}`, {
+				lastAgentTurnCompletedAt: isoAgo((5 - i) * MINUTE),
+				lastActivityAt: isoAgo((5 - i) * MINUTE),
+			});
+		}
+		const result = await getSessions({ operational: "waiting", limit: 2, offset: 0 });
+		expect(result.total).toBe(5);
+		expect(result.sessions).toHaveLength(2);
+	});
+
+	test("page 2 returns the next slice in the same recency order as page 1", async () => {
+		for (let i = 0; i < 5; i++) {
+			await mkSession(`op-order-${i}`, {
+				lastAgentTurnCompletedAt: isoAgo((5 - i) * MINUTE),
+				lastActivityAt: isoAgo((5 - i) * MINUTE),
+			});
+		}
+		const page1 = await getSessions({ operational: "waiting", limit: 2, offset: 0 });
+		const page2 = await getSessions({ operational: "waiting", limit: 2, offset: 2 });
+		const ids1 = page1.sessions.map((s) => s.sessionId);
+		const ids2 = page2.sessions.map((s) => s.sessionId);
+		expect(ids1).toEqual(["op-order-4", "op-order-3"]);
+		expect(ids2).toEqual(["op-order-2", "op-order-1"]);
+	});
+
+	test("every session returned for a given filter actually classifies to that status", async () => {
+		await mkSession("op-mix-working", { isWorking: true });
+		await mkSession("op-mix-waiting", { lastAgentTurnCompletedAt: isoAgo(0) });
+		await mkSession("op-mix-idle", {});
+		const result = await getSessions({ operational: "waiting" });
+		expect(result.sessions.every((s) => s.sessionId === "op-mix-waiting")).toBe(true);
+		expect(result.total).toBe(1);
+	});
+
+	test("a failed-and-acknowledged session never appears under any operational filter", async () => {
+		await mkSession("op-failed-acked", {
+			status: "failed",
+			endedAt: isoAgo(10 * MINUTE),
+			lastUserAcknowledgedAt: isoAgo(0),
+		});
+		for (const status of ["waiting", "working", "idle", "error"] as const) {
+			const result = await getSessions({ operational: status });
+			expect(result.sessions.some((s) => s.sessionId === "op-failed-acked")).toBe(false);
+		}
+	});
+
+	// AGEN: the SQL dismissed-failure shortcut compares lastUserAcknowledgedAt
+	// and endedAt as plain text. A non-ISO stored shape (a legacy SQLite bare
+	// value, or a Postgres offset value) sorts against an ISO value by the
+	// "T"/" " byte at the same character position, not by actual time — an
+	// unacknowledged ERROR with an earlier-same-day ISO ack and a non-ISO
+	// endedAt must stay a candidate and classify as "error", never fall out
+	// as a false "dismissed".
+	test("a non-ISO SQLite-bare endedAt never falsely excludes an unacknowledged error", async () => {
+		await mkSession("op-bare-ended", {
+			status: "failed",
+			endedAt: "2026-10-01 23:00:00",
+			lastUserAcknowledgedAt: "2026-10-01T00:00:01.000Z",
+		});
+		const stats = await getStats();
+		expect(stats.operational.error).toBe(1);
+		const result = await getSessions({ operational: "error" });
+		expect(result.sessions.some((s) => s.sessionId === "op-bare-ended")).toBe(true);
+	});
+
+	test("a non-ISO Postgres-offset endedAt never falsely excludes an unacknowledged error", async () => {
+		await mkSession("op-offset-ended", {
+			status: "failed",
+			endedAt: "2026-10-01 23:00:00+00",
+			lastUserAcknowledgedAt: "2026-10-01T00:00:01.000Z",
+		});
+		const stats = await getStats();
+		expect(stats.operational.error).toBe(1);
+		const result = await getSessions({ operational: "error" });
+		expect(result.sessions.some((s) => s.sessionId === "op-offset-ended")).toBe(true);
+	});
+
+	test("a genuinely ISO-shaped dismissal (both columns ISO, ack after end) is still excluded", async () => {
+		await mkSession("op-iso-dismissed", {
+			status: "failed",
+			endedAt: "2026-10-01T09:00:00.000Z",
+			lastUserAcknowledgedAt: "2026-10-01T09:05:00.000Z",
+		});
+		const stats = await getStats();
+		expect(stats.operational.error).toBe(0);
+		const result = await getSessions({ operational: "error" });
+		expect(result.sessions.some((s) => s.sessionId === "op-iso-dismissed")).toBe(false);
+	});
+});
+
+describe("getStats / getSessions(operational=) — statement counts (AGEN)", () => {
+	// AGEN: getStats is one aggregate over the table (counts per agent type,
+	// from which today's, completed and archived counts are summed) plus the
+	// candidate scan the operational counts are classified from.
+	test("pins the statement count for both, no per-row queries", async () => {
+		const { countDbCalls } = await import("../test-utils/db-call-counter.js");
+		await mkSession("stmt-waiting", { lastAgentTurnCompletedAt: isoAgo(0) });
+		await mkSession("stmt-working", { isWorking: true });
+		await mkSession("stmt-idle", {});
+
+		const statsCalls = await countDbCalls(async () => {
+			await getStats();
+		});
+		console.log(`[session-tracker] getStats statement count: ${statsCalls}`);
+		expect(statsCalls).toBe(2);
+
+		const listCalls = await countDbCalls(async () => {
+			await getSessions({ operational: "waiting" });
+		});
+		console.log(`[session-tracker] getSessions(operational) statement count: ${listCalls}`);
+		expect(listCalls).toBe(3);
+	});
+});
+
+// AGEN: the dashboard's Completed/Archived tab badges must come from the
+// server's own count, not from `visibleSessions.filter(...)` over whatever
+// page useSessions() happens to have loaded (capped at 100) -- otherwise
+// the badge silently under-reports past the first page. completedCount
+// mirrors getOperationalStatus's own "completed" branch (archived rows
+// excluded -- those have their own badge): status='completed'/'archived',
+// endedAt set for any non-failed status, or a failed-and-ISO-dismissed row.
+describe("getStats — completedCount / archivedCount (AGEN)", () => {
+	test("completedCount matches the classifier's completed set; archivedCount matches isArchived", async () => {
+		await mkSession("cnt-active", {});
+		await mkSession("cnt-waiting", { lastAgentTurnCompletedAt: isoAgo(0) });
+		await mkSession("cnt-completed-status", { status: "completed", endedAt: isoAgo(0) });
+		await mkSession("cnt-ended-no-status", { status: "active", endedAt: isoAgo(0) });
+		await mkSession("cnt-failed-undismissed", { status: "failed", endedAt: isoAgo(0) });
+		await mkSession("cnt-failed-dismissed", {
+			status: "failed",
+			endedAt: isoAgo(10 * MINUTE),
+			lastUserAcknowledgedAt: isoAgo(0),
+		});
+		await mkSession("cnt-archived", { isArchived: true });
+
+		const stats = await getStats();
+		expect(stats.completedCount).toBe(3); // completed-status, ended-no-status, failed-dismissed
+		expect(stats.archivedCount).toBe(1);
+	});
+
+	test("a non-ISO failed-dismissed row is conservatively NOT counted completed (same guard as the candidate scan)", async () => {
+		await mkSession("cnt-non-iso-dismissed", {
+			status: "failed",
+			endedAt: "2026-10-01 23:00:00",
+			lastUserAcknowledgedAt: "2026-10-01T00:00:01.000Z",
+		});
+		const stats = await getStats();
+		expect(stats.completedCount).toBe(0);
+	});
+});
+
+// AGEN: a failed session stays a *candidate* forever (its status never
+// changes once acknowledged), so an operator who never archives dismissed
+// failures accumulates an unbounded dead backlog. Excluding
+// acknowledged-failed rows in SQL (not just by the classifier, after the
+// fact) keeps that backlog from crowding real candidates out of a bounded
+// scan, and a cap bounds the scan itself regardless.
+describe("getStats / getSessions(operational=) — candidate cap and dead-backlog exclusion (AGEN)", () => {
+	afterEach(async () => {
+		const { _setOperationalCandidateCapForTest } = await import("./session-tracker.js");
+		_setOperationalCandidateCapForTest(null);
+	});
+
+	test("hundreds of acknowledged-failed rows are excluded in SQL — they never crowd out live rows under a small cap", async () => {
+		const { _setOperationalCandidateCapForTest } = await import("./session-tracker.js");
+		const { countDbCalls } = await import("../test-utils/db-call-counter.js");
+		_setOperationalCandidateCapForTest(10);
+
+		const deadRows = Array.from({ length: 300 }, (_, i) => ({
+			sessionId: `dead-${i}`,
+			displayName: `dead-${i}`,
+			agentType: "claude_code" as const,
+			status: "failed" as const,
+			isWorking: false,
+			endedAt: isoAgo(10 * MINUTE),
+			lastUserAcknowledgedAt: isoAgo(0),
+			lastActivityAt: isoAgo(0),
+		}));
+		await getDb().insert(sessions).values(deadRows).execute();
+
+		await mkSession("live-waiting-1", {
+			lastAgentTurnCompletedAt: isoAgo(5 * MINUTE),
+			lastActivityAt: isoAgo(5 * MINUTE),
+		});
+		await mkSession("live-waiting-2", {
+			lastAgentTurnCompletedAt: isoAgo(6 * MINUTE),
+			lastActivityAt: isoAgo(6 * MINUTE),
+		});
+
+		let stats: Awaited<ReturnType<typeof getStats>> | undefined;
+		const statsCalls = await countDbCalls(async () => {
+			stats = await getStats();
+		});
+		expect(statsCalls).toBe(2);
+		expect(stats?.operational.waiting).toBe(2);
+		expect(stats?.truncated).toBe(false);
+
+		const result = await getSessions({ operational: "waiting" });
+		expect(result.sessions.map((s) => s.sessionId).sort()).toEqual([
+			"live-waiting-1",
+			"live-waiting-2",
+		]);
+	});
+
+	test("more live rows than the cap: truncated:true on stats, capped at the cap, one structured log line", async () => {
+		const { _setOperationalCandidateCapForTest } = await import("./session-tracker.js");
+		_setOperationalCandidateCapForTest(5);
+
+		for (let i = 0; i < 8; i++) {
+			await mkSession(`cap-waiting-${i}`, {
+				lastAgentTurnCompletedAt: isoAgo(i * MINUTE),
+				lastActivityAt: isoAgo(i * MINUTE),
+			});
+		}
+
+		const logSpy = spyOn(console, "log");
+		const stats = await getStats();
+		expect(stats.truncated).toBe(true);
+		expect(stats.operational.waiting).toBeLessThanOrEqual(5);
+		const truncationLogs = logSpy.mock.calls.filter((args) =>
+			String(args[0]).includes("operational_candidates_truncated"),
+		);
+		expect(truncationLogs).toHaveLength(1);
+		logSpy.mockRestore();
+	});
+
+	// AGEN: the candidate scan is newest-first, so a burst of fresh idle
+	// sessions can push an old WAITING/ERROR row out of a small cap before
+	// the classifier ever sees it. Ordering attention-needing rows first
+	// (whatever SQL can tell cheaply: failed, an unacknowledged finished
+	// turn, or permission-wait metadata), then by recency, keeps old
+	// attention rows in the scan regardless of how much fresh idle noise
+	// arrives after them.
+	test("old WAITING and ERROR rows survive a small cap even when newer idle rows would otherwise crowd them out", async () => {
+		const { _setOperationalCandidateCapForTest } = await import("./session-tracker.js");
+		_setOperationalCandidateCapForTest(3);
+
+		await mkSession("old-waiting", {
+			lastAgentTurnCompletedAt: isoAgo(60 * MINUTE),
+			lastActivityAt: isoAgo(60 * MINUTE),
+		});
+		await mkSession("old-error", {
+			status: "failed",
+			endedAt: isoAgo(60 * MINUTE),
+			lastActivityAt: isoAgo(60 * MINUTE),
+		});
+		for (let i = 0; i < 5; i++) {
+			await mkSession(`fresh-idle-${i}`, { lastActivityAt: isoAgo(i * 1000) });
+		}
+
+		const stats = await getStats();
+		expect(stats.operational.waiting).toBe(1);
+		expect(stats.operational.error).toBe(1);
+		expect(stats.truncated).toBe(true);
+
+		const waiting = await getSessions({ operational: "waiting" });
+		expect(waiting.sessions.map((s) => s.sessionId)).toContain("old-waiting");
+		const errored = await getSessions({ operational: "error" });
+		expect(errored.sessions.map((s) => s.sessionId)).toContain("old-error");
+	});
+
+	test("a session with outstanding permission-wait metadata also sorts ahead of fresh idle noise", async () => {
+		const { _setOperationalCandidateCapForTest } = await import("./session-tracker.js");
+		_setOperationalCandidateCapForTest(3);
+
+		await mkSession("old-permission-wait", {
+			isWorking: true,
+			semanticStatus: "waiting",
+			metadata: { permissionWait: { ids: ["t1"], anon: 0 } },
+			lastActivityAt: isoAgo(60 * MINUTE),
+		});
+		for (let i = 0; i < 5; i++) {
+			await mkSession(`fresh-idle-pw-${i}`, { lastActivityAt: isoAgo(i * 1000) });
+		}
+
+		const stats = await getStats();
+		expect(stats.operational.waiting).toBe(1);
+		const waiting = await getSessions({ operational: "waiting" });
+		expect(waiting.sessions.map((s) => s.sessionId)).toContain("old-permission-wait");
+	});
+});
+
+describe("getStats / getSessions(operational=) — correct past the default page size (AGEN)", () => {
+	test("55 waiting sessions: stats counts all 55, the default-limit list page returns 50 with total 55", async () => {
+		for (let i = 0; i < 55; i++) {
+			await mkSession(`op-default-page-${i}`, {
+				lastAgentTurnCompletedAt: isoAgo((55 - i) * MINUTE),
+				lastActivityAt: isoAgo((55 - i) * MINUTE),
+			});
+		}
+		const stats = await getStats();
+		expect(stats.operational.waiting).toBe(55);
+
+		const result = await getSessions({ operational: "waiting" });
+		expect(result.total).toBe(55);
+		expect(result.sessions).toHaveLength(50);
 	});
 });

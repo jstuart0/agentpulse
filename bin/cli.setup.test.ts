@@ -9,10 +9,13 @@
  * network dependency — the server-reachability check is caught and
  * degrades gracefully (see bin/cli.ts's "Verify" section).
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// Every case starts a bun process; several take 2.5-3.6 s of the 5 s default on a loaded machine.
+setDefaultTimeout(30_000);
 
 const CLI = join(import.meta.dir, "cli.ts");
 
@@ -200,9 +203,162 @@ describe("agentpulse setup (AGEN-49/H2, xander): --key supplied embeds the liter
 				"ap_secret_cli_value",
 			]);
 			expect(res.code).not.toBe(0);
+			// a plain explanation, not an uncaught exception with a stack
+			expect(res.out).toContain("settings.json is a symbolic link");
+			expect(res.out).toContain("without --key");
+			expect(res.out).not.toMatch(/^\s+at .*\(.*:\d+:\d+\)/m);
+			expect(res.out).not.toContain("error: ");
 
 			const decoyContent = await Bun.file(decoyTarget).text();
 			expect(decoyContent).toBe("should never change");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("agentpulse setup installs the exclusion check next to the hooks", () => {
+	test("writes ~/.agentpulse/exclude-check.sh (mode 0500) and a Codex hooks file small enough to read", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-script-"));
+		try {
+			const res = await runSetup(home, ["--url", "http://127.0.0.1:1", "--key", "ap_script_key"]);
+			expect(res.code).toBe(0);
+			const script = join(home, ".agentpulse", "exclude-check.sh");
+			const { buildBashExcludeScript } = await import("../src/shared/hook-command.js");
+			expect(await Bun.file(script).text()).toBe(buildBashExcludeScript());
+			expect((await stat(script)).mode & 0o777).toBe(0o500);
+			expect(res.out).toContain("Exclusion check");
+			const hooks = await Bun.file(join(home, ".codex", "hooks.json")).text();
+			expect(hooks.length).toBeLessThan(40_000);
+			expect(hooks).toContain("exclude-check.sh");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("re-running refreshes a stale copy and leaves a current one alone", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-script-refresh-"));
+		try {
+			const args = ["--url", "http://127.0.0.1:1", "--key", "ap_script_key"];
+			await runSetup(home, args);
+			const script = join(home, ".agentpulse", "exclude-check.sh");
+			const first = (await stat(script)).ino;
+			await runSetup(home, args);
+			expect((await stat(script)).ino, "a current copy is not rewritten").toBe(first);
+			const { chmod, writeFile } = await import("node:fs/promises");
+			await chmod(script, 0o600);
+			await writeFile(script, "#!/bin/sh\nexit 0\n");
+			await runSetup(home, args);
+			const { buildBashExcludeScript } = await import("../src/shared/hook-command.js");
+			expect(await Bun.file(script).text()).toBe(buildBashExcludeScript());
+			expect((await stat(script)).mode & 0o777).toBe(0o500);
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("an existing ~/.agentpulse is never loosened; a missing one is created 0700", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-script-mode-"));
+		try {
+			await runSetup(home, ["--url", "http://127.0.0.1:1", "--key", "ap_script_key"]);
+			expect((await stat(join(home, ".agentpulse"))).mode & 0o777).toBe(0o700);
+			const second = await mkdtemp(join(tmpdir(), "ap-cli-setup-script-mode2-"));
+			try {
+				const { chmod } = await import("node:fs/promises");
+				await mkdir(join(second, ".agentpulse"));
+				await chmod(join(second, ".agentpulse"), 0o750);
+				await runSetup(second, ["--url", "http://127.0.0.1:1", "--key", "ap_script_key"]);
+				expect((await stat(join(second, ".agentpulse"))).mode & 0o777).toBe(0o750);
+			} finally {
+				await rm(second, { recursive: true, force: true });
+			}
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
+	test("a symlink where the script goes is refused with a message, and the setup still completes", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-script-link-"));
+		try {
+			await mkdir(join(home, ".agentpulse"), { mode: 0o700 });
+			const victim = join(home, "victim");
+			await Bun.write(victim, "keep");
+			await symlink(victim, join(home, ".agentpulse", "exclude-check.sh"));
+			const res = await runSetup(home, ["--url", "http://127.0.0.1:1", "--key", "ap_script_key"]);
+			expect(res.code).toBe(0);
+			expect(res.out).toContain("Exclusion check not installed");
+			expect(await Bun.file(victim).text()).toBe("keep");
+		} finally {
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("agentpulse setup resolves the home directory in one place", () => {
+	async function runBare(env: Record<string, string>, cwd: string, args: string[]) {
+		const proc = Bun.spawn(["bun", CLI, "setup", ...args], {
+			cwd,
+			stdout: "pipe",
+			stderr: "pipe",
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", SHELL: "/bin/zsh", ...env },
+		});
+		const [out, err] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
+		await proc.exited;
+		return { code: proc.exitCode, out: out + err };
+	}
+
+	test("neither HOME nor USERPROFILE set: it stops with a message and creates no literal '~' directory", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "ap-cli-setup-nohome-"));
+		try {
+			const res = await runBare({}, cwd, ["--url", "http://127.0.0.1:1", "--statusline"]);
+			expect(res.code).not.toBe(0);
+			expect(res.out).toContain("HOME");
+			expect((await readdir(cwd)).sort()).toEqual([]);
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("USERPROFILE alone is used for the settings and for the statusline, so both land in the same place", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "ap-cli-setup-userprofile-"));
+		const profile = await mkdtemp(join(tmpdir(), "ap-cli-setup-profile-"));
+		try {
+			const res = await runBare({ USERPROFILE: profile }, cwd, [
+				"--url",
+				"http://127.0.0.1:1",
+				"--statusline",
+			]);
+			expect(res.code, res.out).toBe(0);
+			expect(await Bun.file(join(profile, ".claude", "settings.json")).exists()).toBe(true);
+			expect(await Bun.file(join(profile, ".claude", "statusline-agentpulse.sh")).exists()).toBe(
+				true,
+			);
+			expect((await readdir(cwd)).sort()).toEqual([]);
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+			await rm(profile, { recursive: true, force: true });
+		}
+	});
+
+	test("a symlinked settings.json with no key keeps its link and gets the hooks and the statusline written through", async () => {
+		const home = await mkdtemp(join(tmpdir(), "ap-cli-setup-symlink-"));
+		try {
+			await mkdir(join(home, ".claude"), { recursive: true });
+			await mkdir(join(home, "dotfiles"), { recursive: true });
+			const target = join(home, "dotfiles", "settings.json");
+			await Bun.write(target, `${JSON.stringify({ theme: "dark" })}\n`);
+			await symlink(target, join(home, ".claude", "settings.json"));
+			const res = await runSetup(home, ["--url", "http://127.0.0.1:1", "--statusline"]);
+			expect(res.code, res.out).toBe(0);
+			const { lstat } = await import("node:fs/promises");
+			expect((await lstat(join(home, ".claude", "settings.json"))).isSymbolicLink()).toBe(true);
+			const after = JSON.parse(await Bun.file(target).text());
+			expect(after.theme).toBe("dark");
+			expect(Object.keys(after.hooks).length).toBeGreaterThan(0);
+			expect(after.statusLine.command).toBe("~/.claude/statusline-agentpulse.sh");
 		} finally {
 			await rm(home, { recursive: true, force: true });
 		}

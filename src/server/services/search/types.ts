@@ -28,6 +28,7 @@
  */
 
 import type { AgentType } from "../../../shared/types.js";
+import type { OwnerKind } from "../session-dto.js";
 
 export type SearchRowKind = "session" | "event";
 
@@ -84,6 +85,10 @@ export interface SearchHit {
 	sessionDisplayName: string | null;
 	/** Denormalized session cwd. */
 	sessionCwd: string | null;
+	/** Session hits only: the owning user, or null. Never a key id. */
+	ownerUserId?: string | null;
+	/** Session hits only: same derivation as the session DTO. */
+	ownerKind?: OwnerKind;
 }
 
 export interface SearchResult {

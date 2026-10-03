@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "../ai/__test_db.js";
+import { deleteAllSupervisors } from "../__test_supervisors.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { sessions, launchRequests } = await import("../../db/schema/index.js");
@@ -8,6 +9,7 @@ const { handleResumeIntent } = await import("./ask-resume-handler.js");
 beforeAll(() => initializeDatabase());
 
 beforeEach(async () => {
+	await deleteAllSupervisors();
 	await getDb().delete(sessions).execute();
 	await getDb().delete(launchRequests).execute();
 });

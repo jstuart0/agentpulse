@@ -39,15 +39,20 @@ import {
 	closeSync,
 	fchmodSync,
 	fstatSync,
+	fsyncSync,
 	ftruncateSync,
 	lstatSync,
 	openSync,
+	renameSync,
+	unlinkSync,
 	writeSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export const PRIVATE_FILE_MODE = 0o600;
 export const CONFIG_FILE_MODE = 0o644;
+/** A script the user's own hooks execute: readable and runnable by the owner, writable by no one. */
+export const OWNER_EXECUTABLE_FILE_MODE = 0o500;
 
 // O_NOFOLLOW is POSIX-only; on platforms without it the lstat check still runs.
 const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
@@ -156,6 +161,115 @@ function tightenWindowsAclBestEffort(path: string): void {
 	} catch {
 		// best-effort — see comment above.
 	}
+}
+
+/**
+ * Test-only seam: lets a test force a failure between the temp file being
+ * written and the atomic rename, to prove the real target is never
+ * observed empty or partially written. Guarded by
+ * scripts/check-no-exclude-provider-outside-tests.ts, the same
+ * architecture check that guards exclude-rules.ts's fs provider — a
+ * production call site passing a third argument is a hard CI failure.
+ */
+export interface AtomicWriteProvider {
+	rename?: (from: string, to: string) => void;
+	/** Writes up to `length` bytes of `buffer` from `offset`; returns how many it wrote (a real write may be short). */
+	write?: (fd: number, buffer: Buffer, offset: number, length: number) => number;
+}
+
+/** A write may transfer fewer bytes than asked; keep going until every byte is out, and fail rather than spin when a write makes no progress. */
+function writeAll(
+	fd: number,
+	bytes: Buffer,
+	write: (fd: number, buffer: Buffer, offset: number, length: number) => number,
+): void {
+	let offset = 0;
+	while (offset < bytes.length) {
+		const written = write(fd, bytes, offset, bytes.length - offset);
+		if (written <= 0) throw new Error("short write made no progress");
+		offset += written;
+	}
+}
+
+/**
+ * agentpulse exclude add used to write the rules
+ * file in place (open, truncate, write) — a crash between the truncate
+ * and the write left the file empty, which loadExcludeRules reads back
+ * as "no rules" (everything reported, nothing excluded). Writes to a
+ * fresh temp file in the SAME directory (mkstemp-style unique name, so
+ * the final rename is same-filesystem and therefore atomic), fsyncs it,
+ * then renames it over the target. A rename never follows a symlink at
+ * the destination — it replaces whatever directory entry is there,
+ * atomically — so the target is always either the old content or the
+ * complete new content, never a partial write, regardless of when a
+ * crash happens. Still refuses a symlinked PARENT directory up front
+ * (same check writeFileSyncNoFollow uses) since the parent symlink
+ * itself is the TOCTOU risk a rename can't close.
+ */
+export function writePrivateFileAtomicNoFollow(
+	path: string,
+	content: string,
+	provider: AtomicWriteProvider = {},
+): void {
+	writeFileAtomicNoFollow(path, content, PRIVATE_FILE_MODE, provider);
+}
+
+/**
+ * The installed exclusion check (~/.agentpulse/exclude-check.sh): the same
+ * temp-file-and-rename write, at mode 0500. A rename never follows a link at
+ * the destination, and a symlinked parent is refused up front.
+ */
+export function writeExecutableFileAtomicNoFollow(path: string, content: string): void {
+	writeFileAtomicNoFollow(path, content, OWNER_EXECUTABLE_FILE_MODE, {});
+}
+
+function writeFileAtomicNoFollow(
+	path: string,
+	content: string,
+	mode: number,
+	provider: AtomicWriteProvider,
+): void {
+	const dir = dirname(path);
+	if (lstatKindSync(dir) === "symlink") {
+		throw new Error(`refusing to write into a symlinked directory: ${dir}`);
+	}
+	const rename = provider.rename ?? renameSync;
+	const write =
+		provider.write ?? ((fd, buffer, offset, length) => writeSync(fd, buffer, offset, length));
+	const tmpPath = join(
+		dir,
+		`.${basename(path)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`,
+	);
+	const fd = openSync(
+		tmpPath,
+		constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW,
+		mode,
+	);
+	try {
+		writeAll(fd, Buffer.from(content, "utf-8"), write);
+		fchmodSync(fd, mode);
+		fsyncSync(fd);
+	} catch (err) {
+		closeSync(fd);
+		try {
+			unlinkSync(tmpPath);
+		} catch {
+			// best-effort cleanup — the original target is untouched either way.
+		}
+		throw err;
+	}
+	closeSync(fd);
+	try {
+		rename(tmpPath, path);
+	} catch (err) {
+		try {
+			unlinkSync(tmpPath);
+		} catch {
+			// best-effort cleanup — the original target is untouched either way.
+		}
+		throw err;
+	}
+	tightenWindowsAclBestEffort(path);
 }
 
 export type TightenPermissionsResult =

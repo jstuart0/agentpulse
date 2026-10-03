@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
@@ -23,6 +23,16 @@ beforeEach(async () => {
 	// These tests bypass `upsertSetting` (raw inserts) so the post-write
 	// cache hook in settings-service never fires. Drop cached flags
 	// manually so each case starts from a clean read.
+	invalidateAiFlagsCache();
+});
+
+// The beforeEach above wipes `settings` before each test in THIS file, but
+// nothing reset it after the LAST one — several tests here leave
+// ai.enabled=true (via setRuntimeEnabled) in the real settings table with
+// no cleanup, which otherwise leaks into whatever file or full-suite run
+// happens next against the same database.
+afterAll(async () => {
+	await getDb().delete(settings).execute();
 	invalidateAiFlagsCache();
 });
 

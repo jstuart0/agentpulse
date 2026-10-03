@@ -8,6 +8,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import "../services/ai/__test_db.js";
+import { deleteAllSupervisors } from "../services/__test_supervisors.js";
 
 const { config } = await import("../config.js");
 const { initializeDatabase } = await import("../db/client.js");
@@ -23,6 +24,7 @@ function buildApp() {
 
 beforeAll(async () => {
 	await initializeDatabase();
+	await deleteAllSupervisors();
 	config.disableAuth = true;
 });
 

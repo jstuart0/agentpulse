@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
 import { events, sessions } from "../../db/schema/index.js";
+import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../../db/session-columns.js";
 import { formatUntrustedInline } from "../ai/untrusted-text.js";
 import { getSearchBackend } from "../search/index.js";
 import type { ResolvedSession } from "./resolver.js";
@@ -45,7 +46,7 @@ const MEANINGFUL_EVENT_TYPES = new Set([
 
 async function loadSnapshot(sessionId: string, ftsQuery?: string): Promise<SessionSnapshot | null> {
 	const [row] = await getDb()
-		.select()
+		.select(SESSION_COLUMNS_SANS_OWNERSHIP)
 		.from(sessions)
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);

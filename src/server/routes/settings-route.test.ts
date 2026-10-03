@@ -33,8 +33,14 @@ beforeAll(async () => {
 	config.disableAuth = true;
 });
 
-afterAll(() => {
+afterAll(async () => {
 	config.disableAuth = originalDisableAuth;
+	// The beforeEach wipe below resets `settings` before each test in this
+	// file, but nothing reset it after the LAST one — several tests here
+	// (ai.enabled, vector-search keys) leave real rows in the shared
+	// settings table, which would otherwise leak into whichever file or
+	// full-suite run happens next against the same database.
+	await getDb().delete(settings).execute();
 });
 
 beforeEach(async () => {

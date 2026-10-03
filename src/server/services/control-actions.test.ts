@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import "./ai/__test_db.js";
+import type { Actor } from "../auth/actor.js";
 import { itSqliteOnly } from "../test-utils/backend.js";
+
+const TEST_ACTOR: Actor = { userId: null, label: "user" };
 
 const { getDb, getSqlite, initializeDatabase } = await import("../db/client.js");
 const { controlActions, events, projects, sessions, supervisors } = await import(
@@ -79,11 +82,14 @@ describe("cleanup_workarea control action", () => {
 		const supervisorId = await seedSupervisor();
 		const projectId = await seedScratchProject();
 
-		const queued = await queueCleanupWorkArea({
-			projectId,
-			cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
-			targetSupervisorId: supervisorId,
-		});
+		const queued = await queueCleanupWorkArea(
+			{
+				projectId,
+				cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
+				targetSupervisorId: supervisorId,
+			},
+			TEST_ACTOR,
+		);
 		expect(queued.actionType).toBe("cleanup_workarea");
 
 		const claimed = await claimNextControlAction(supervisorId);
@@ -96,11 +102,14 @@ describe("cleanup_workarea control action", () => {
 		const supervisorId = await seedSupervisor();
 		const projectId = await seedScratchProject();
 
-		await queueCleanupWorkArea({
-			projectId,
-			cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
-			targetSupervisorId: "some-other-supervisor",
-		});
+		await queueCleanupWorkArea(
+			{
+				projectId,
+				cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
+				targetSupervisorId: "some-other-supervisor",
+			},
+			TEST_ACTOR,
+		);
 
 		const claimed = await claimNextControlAction(supervisorId);
 		expect(claimed).toBeNull();
@@ -133,11 +142,14 @@ describe("cleanup_workarea control action", () => {
 				createdAt: now,
 			});
 
-		const queued = await queueCleanupWorkArea({
-			projectId,
-			cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
-			targetSupervisorId: supervisorId,
-		});
+		const queued = await queueCleanupWorkArea(
+			{
+				projectId,
+				cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
+				targetSupervisorId: supervisorId,
+			},
+			TEST_ACTOR,
+		);
 		const claimed = await claimNextControlAction(supervisorId);
 		expect(claimed?.id).toBe(queued.id);
 
@@ -160,11 +172,14 @@ describe("cleanup_workarea control action", () => {
 		const supervisorId = await seedSupervisor();
 		const projectId = await seedScratchProject();
 
-		const queued = await queueCleanupWorkArea({
-			projectId,
-			cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
-			targetSupervisorId: supervisorId,
-		});
+		const queued = await queueCleanupWorkArea(
+			{
+				projectId,
+				cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
+				targetSupervisorId: supervisorId,
+			},
+			TEST_ACTOR,
+		);
 		await claimNextControlAction(supervisorId);
 		await updateControlAction({
 			actionId: queued.id,
@@ -215,11 +230,14 @@ describe("cleanup_workarea control action", () => {
 					createdAt: now,
 				});
 
-			const queued = await queueCleanupWorkArea({
-				projectId,
-				cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
-				targetSupervisorId: supervisorId,
-			});
+			const queued = await queueCleanupWorkArea(
+				{
+					projectId,
+					cwd: `/tmp/scratch-${projectId.slice(0, 8)}`,
+					targetSupervisorId: supervisorId,
+				},
+				TEST_ACTOR,
+			);
 			await claimNextControlAction(supervisorId);
 
 			// Trigger fires when the cascade tries to delete the project row,

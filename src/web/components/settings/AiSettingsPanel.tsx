@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { plainErrorMessage } from "../../lib/api-errors.js";
 import { type AiProvider, type AiProviderKind, api } from "../../lib/api.js";
 import { VectorSearchSection } from "./VectorSearchSection.js";
 
@@ -48,7 +49,7 @@ export function AiSettingsPanel() {
 				setSpendCents(spend.spendCents);
 			}
 		} catch (err) {
-			setBanner({ kind: "error", text: `Failed to load AI settings: ${String(err)}` });
+			setBanner({ kind: "error", text: `Failed to load AI settings: ${plainErrorMessage(err)}` });
 		} finally {
 			setLoading(false);
 		}
@@ -64,7 +65,7 @@ export function AiSettingsPanel() {
 			setStatus(next);
 			if (enabled) void reload();
 		} catch (err) {
-			setBanner({ kind: "error", text: String(err) });
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		}
 	}
 
@@ -73,7 +74,7 @@ export function AiSettingsPanel() {
 			const next = await api.updateAiStatus({ killSwitch });
 			setStatus(next);
 		} catch (err) {
-			setBanner({ kind: "error", text: String(err) });
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		}
 	}
 
@@ -82,7 +83,7 @@ export function AiSettingsPanel() {
 			const next = await api.updateAiStatus({ autoEnableWatcherForAsk });
 			setStatus(next);
 		} catch (err) {
-			setBanner({ kind: "error", text: String(err) });
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		}
 	}
 
@@ -92,7 +93,7 @@ export function AiSettingsPanel() {
 			await api.deleteAiProvider(id);
 			await reload();
 		} catch (err) {
-			setBanner({ kind: "error", text: String(err) });
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		}
 	}
 
@@ -101,7 +102,7 @@ export function AiSettingsPanel() {
 			await api.updateAiProvider(id, { isDefault: true });
 			await reload();
 		} catch (err) {
-			setBanner({ kind: "error", text: String(err) });
+			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		}
 	}
 
@@ -311,7 +312,7 @@ function ProviderForm({
 			}
 		} catch (err) {
 			setAvailableModels(null);
-			setModelsError(err instanceof Error ? err.message : String(err));
+			setModelsError(plainErrorMessage(err));
 		} finally {
 			setLoadingModels(false);
 		}
@@ -363,7 +364,7 @@ function ProviderForm({
 			setModelsError(null);
 			onCreated();
 		} catch (err) {
-			onError(String(err));
+			onError(plainErrorMessage(err));
 		} finally {
 			setSubmitting(false);
 		}
@@ -532,7 +533,7 @@ function RedactorPreview() {
 			const res = await api.aiRedactorDryRun(sample);
 			setResult(res);
 		} catch (err) {
-			setResult({ text: `Error: ${err}`, hits: [] });
+			setResult({ text: `Error: ${plainErrorMessage(err)}`, hits: [] });
 		} finally {
 			setBusy(false);
 		}

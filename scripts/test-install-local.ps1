@@ -41,6 +41,14 @@ Assert-True ($acl.Access.Count -eq 1) "hook-auth-header has exactly one ACE (fou
 # a broad, inherited directory ACL would have let the file inherit it for
 # the brief window between Set-Content and the file's own icacls call.
 $dirAcl = Get-Acl (Join-Path $HOME ".agentpulse")
+if ($dirAcl.Access.Count -ne 1) {
+	# Write-Error below ends the run, so show what is actually on the
+	# directory first: the next CI run then says which entries are there and
+	# whether they are inherited.
+	Write-Host "diagnostic: $HOME\.agentpulse has $($dirAcl.Access.Count) ACEs (USERNAME=$($env:USERNAME), inheritance protected: $($dirAcl.AreAccessRulesProtected))"
+	icacls (Join-Path $HOME ".agentpulse") | Out-Host
+	$dirAcl.Access | Format-List IdentityReference, FileSystemRights, AccessControlType, IsInherited, InheritanceFlags, PropagationFlags | Out-Host
+}
 Assert-True ($dirAcl.Access.Count -eq 1) ".agentpulse dir has exactly one ACE (found $($dirAcl.Access.Count))"
 
 # ── AGEN-49/H2 (xander): $ApiKey set embeds the literal key in
@@ -55,7 +63,31 @@ Assert-True (Test-Path $claudeSettingsPath) "Configure-Hooks: settings.json writ
 $claudeSettingsContent = Get-Content $claudeSettingsPath -Raw
 Assert-True ($claudeSettingsContent.Contains("Bearer ap_test_key_123")) "Configure-Hooks: settings.json carries the literal Authorization header"
 Assert-True (-not $claudeSettingsContent.Contains('$env:AGENTPULSE_API_KEY')) "Configure-Hooks: no env-var placeholder when a key was supplied"
-Assert-True (-not $claudeSettingsContent.Contains('"allowedEnvVars"')) "Configure-Hooks: no allowedEnvVars when a key was supplied"
+# Claude Code expands a header variable only for names listed in allowedEnvVars, so
+# the installer lists the skip variable at every event whether or not a key was
+# supplied: with a key the list is exactly AGENTPULSE_SKIP, and the header value
+# stays the literal text $AGENTPULSE_SKIP (expanded when the hook fires, not now).
+$claudeParsed = $claudeSettingsContent | ConvertFrom-Json
+$claudeEvents = @($claudeParsed.hooks.PSObject.Properties.Name)
+Assert-True ($claudeEvents.Count -eq 16) "Configure-Hooks: all 16 Claude events are wired (found $($claudeEvents.Count))"
+foreach ($claudeEvent in $claudeEvents) {
+	$claudeHook = $claudeParsed.hooks.$claudeEvent[0].hooks[0]
+	Assert-True ((@($claudeHook.allowedEnvVars) -join ",") -eq "AGENTPULSE_SKIP") "Configure-Hooks: $claudeEvent allowedEnvVars is exactly AGENTPULSE_SKIP when a key was supplied"
+	Assert-True ($claudeHook.headers.'X-AgentPulse-Skip' -eq '$AGENTPULSE_SKIP') "Configure-Hooks: $claudeEvent carries the X-AgentPulse-Skip header unexpanded"
+}
+
+# The two check scripts every hook command runs when a rules file exists are
+# installed next to the hooks (written without a byte order mark in front of the
+# interpreter line, LF-only so sh can read the shell one).
+$apDirPath = Join-Path $HOME ".agentpulse"
+foreach ($checkName in @("exclude-check.sh", "exclude-check.ps1")) {
+	Assert-True (Test-Path (Join-Path $apDirPath $checkName)) "Configure-Hooks: $checkName is installed"
+}
+$checkSh = [System.IO.File]::ReadAllText((Join-Path $apDirPath "exclude-check.sh"))
+Assert-True ($checkSh.StartsWith("#!/bin/sh`n# agentpulse-exclude-check ")) "exclude-check.sh opens with the interpreter line and the content hash"
+Assert-True (-not $checkSh.Contains("`r`n")) "exclude-check.sh is LF-only"
+$checkPs = [System.IO.File]::ReadAllText((Join-Path $apDirPath "exclude-check.ps1"))
+Assert-True ($checkPs.StartsWith("# agentpulse-exclude-check ")) "exclude-check.ps1 opens with the content hash comment"
 $claudeSettingsAcl = Get-Acl $claudeSettingsPath
 Assert-True ($claudeSettingsAcl.Access.Count -eq 1) "Configure-Hooks: settings.json has exactly one ACE (found $($claudeSettingsAcl.Access.Count))"
 
@@ -63,9 +95,15 @@ Assert-True ($claudeSettingsAcl.Access.Count -eq 1) "Configure-Hooks: settings.j
 $ApiKey = ""
 Configure-Hooks
 $claudeSettingsContentNoKey = Get-Content $claudeSettingsPath -Raw
-Assert-True ($claudeSettingsContentNoKey.Contains('$env:AGENTPULSE_API_KEY')) "Configure-Hooks (no key): settings.json references `$env:AGENTPULSE_API_KEY, not a literal key"
+# With no key the installer writes no Authorization header at all (a server with
+# auth disabled needs none), and lists the key variable and the skip variable.
+$claudeParsedNoKey = $claudeSettingsContentNoKey | ConvertFrom-Json
+$noKeyHook = $claudeParsedNoKey.hooks.SessionStart[0].hooks[0]
+Assert-True ($null -eq $noKeyHook.headers.Authorization) "Configure-Hooks (no key): no Authorization header is written"
+Assert-True (-not $claudeSettingsContentNoKey.Contains("Bearer")) "Configure-Hooks (no key): no bearer value anywhere in settings.json"
 Assert-True (-not $claudeSettingsContentNoKey.Contains("ap_test_key_123")) "Configure-Hooks (no key): no stale literal key from a prior run"
-Assert-True ($claudeSettingsContentNoKey.Contains('"allowedEnvVars"')) "Configure-Hooks (no key): declares allowedEnvVars for Claude Code's env-var expansion"
+Assert-True ((@($noKeyHook.allowedEnvVars) -join ",") -eq "AGENTPULSE_API_KEY,AGENTPULSE_SKIP") "Configure-Hooks (no key): allowedEnvVars lists AGENTPULSE_API_KEY,AGENTPULSE_SKIP"
+Assert-True ($noKeyHook.headers.'X-AgentPulse-Skip' -eq '$AGENTPULSE_SKIP') "Configure-Hooks (no key): the skip header is unexpanded"
 
 # ── AGEN-49/H2: existing settings.json content survives the merge ──
 $mergeProbeHome = Join-Path $tempProfile "merge-probe"
@@ -127,6 +165,7 @@ $listener.Start()
 $asyncResult = $listener.BeginGetContext($null, $null)
 
 $cmd = New-ApHookCommand -BaseUrl $baseUrl -Direct $true -AgentType "codex_cli" -EventName "Stop"
+Assert-True ($cmd.Length -lt 8191) "the PowerShell hook command is under cmd.exe's 8,191-character limit (found $($cmd.Length))"
 $scriptFile = Join-Path $tempProfile "hook-cmd.ps1"
 Set-Content -Path $scriptFile -Value $cmd -Encoding UTF8
 
@@ -158,18 +197,34 @@ if ($null -ne $captured) {
 	Assert-True ($captured.Body -eq $fixture) "body arrives byte-exact"
 }
 
-# ── F217: the D19 native-coverage marker sid gate, executed for real ──
-# The marker check/write in New-ApHookCommand's generated script runs
-# synchronously, before the async Start-Job that does the network call — so
-# by the time `powershell.exe -File $scriptFile` (piped a payload on stdin)
-# exits, the marker gate has already decided. No listener/wait needed here.
+# ── The native-coverage marker sid gate, executed for real ──
+# The marker is written inside the hook's detached job (the parent only drains
+# stdin and writes the payload to a temp file), so the case waits until the job
+# has removed the payload it was given before it looks at what the job left.
+function Get-ApHookTempNames {
+	$hookTemp = Join-Path $env:TEMP "agentpulse-hooks"
+	if (-not (Test-Path $hookTemp)) { return @() }
+	return @(Get-ChildItem $hookTemp -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+}
+
+function Wait-ApHookJob($before) {
+	$deadline = (Get-Date).AddSeconds(20)
+	while ((Get-Date) -lt $deadline) {
+		$new = @(Get-ApHookTempNames | Where-Object { $before -notcontains $_ })
+		if ($new.Count -eq 0) { return }
+		Start-Sleep -Milliseconds 200
+	}
+}
+
 function Test-ApMarkerCase($payloadJson) {
 	$markerDir = Join-Path $HOME ".agentpulse\codex-native"
 	Remove-Item -Recurse -Force $markerDir -ErrorAction SilentlyContinue
 	$cmd = New-ApHookCommand -BaseUrl $baseUrl -Direct $true -AgentType "codex_cli" -EventName "Stop"
 	$scriptFile2 = Join-Path $tempProfile "hook-cmd-marker.ps1"
 	Set-Content -Path $scriptFile2 -Value $cmd -Encoding UTF8
+	$before = Get-ApHookTempNames
 	$payloadJson | powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptFile2
+	Wait-ApHookJob $before
 	$entries = @()
 	if (Test-Path $markerDir) { $entries = @(Get-ChildItem $markerDir) }
 	return $entries
@@ -197,8 +252,12 @@ Remove-Item -Force $headerFile -ErrorAction SilentlyContinue
 $cmdNoAuth = New-ApHookCommand -BaseUrl $baseUrl -Direct $true -AgentType "codex_cli" -EventName "SessionStart"
 Assert-True ($cmdNoAuth.Length -gt 0) "command still generates without a key file present"
 
-# ── New-ApCodexHooksFile: deep-equals the checked-in golden ──
-$golden = Get-Content (Resolve-Path (Join-Path $PSScriptRoot "__golden__/codex-hooks.direct.json")) -Raw | ConvertFrom-Json
+# ── New-ApCodexHooksFile: deep-equals the checked-in PowerShell golden ──
+# (The shell golden, codex-hooks.direct.json, holds shell commands for the shell
+# installers; this installer writes PowerShell commands, so it is compared with
+# the golden produced by the PowerShell builder: scripts/hook-command-parity.test.ts
+# pins that file to src/shared/hook-command.ts's buildPowerShellCodexHooksFile.)
+$golden = Get-Content (Resolve-Path (Join-Path $PSScriptRoot "__golden__/codex-hooks.direct.powershell.json")) -Raw | ConvertFrom-Json
 $generated = New-ApCodexHooksFile -BaseUrl "http://localhost:3000" -Direct $true | ConvertFrom-Json
 
 $goldenEvents = $golden.hooks.PSObject.Properties.Name | Sort-Object
@@ -212,6 +271,7 @@ foreach ($event in $goldenEvents) {
 	Assert-True ($g.async -eq $n.async) "$event`: async matches ($($n.async))"
 	Assert-True ($g.timeout -eq $n.timeout) "$event`: timeout matches ($($n.timeout))"
 	Assert-True ($g.command -eq $n.command) "$event`: command matches the golden byte-for-byte"
+	Assert-True ($n.command.Length -lt 8191) "$event`: the command is under cmd.exe's 8,191-character limit (found $($n.command.Length))"
 }
 
 # ── AGEN-49/M2 (xander): the SetupPage windowsCommand parses as valid PowerShell ──
@@ -254,6 +314,8 @@ foreach ($event in $copilotGeneratedEvents) {
 	Assert-True ($handler.powershell -is [string] -and $handler.powershell.Length -gt 0) "$event (Copilot): powershell handler is a non-empty string"
 	Assert-True ($handler.bash.Contains("?event=$event")) "$event (Copilot): bash command targets its own event"
 	Assert-True ($handler.bash.Contains("X-Agent-Type: copilot_cli")) "$event (Copilot): bash command carries X-Agent-Type: copilot_cli"
+	Assert-True ($handler.bash.Length -lt 8191) "$event (Copilot): the bash command is under 8,191 characters (found $($handler.bash.Length))"
+	Assert-True ($handler.powershell.Length -lt 8191) "$event (Copilot): the powershell command is under 8,191 characters (found $($handler.powershell.Length))"
 }
 
 # Real execution of the PowerShell handler for one event (mirrors the

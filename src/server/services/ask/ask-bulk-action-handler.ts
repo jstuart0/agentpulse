@@ -1,8 +1,10 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { AskThreadOrigin, SessionMutationKind } from "../../../shared/types.js";
+import type { Actor } from "../../auth/actor.js";
 import { getDb } from "../../db/client.js";
 import { managedSessions, sessions } from "../../db/schema/index.js";
 import { createActionRequest } from "../ai/action-requests-service.js";
+import { NOT_OWNER_MESSAGE, sessionIdsActorMayChange } from "../authorization.js";
 import { findActiveChannelByChatId } from "../channels/channels-service.js";
 import type { CachedProject } from "../projects/cache.js";
 import { getSearchBackend } from "../search/index.js";
@@ -13,6 +15,8 @@ export interface HandleBulkActionArgs {
 	origin: AskThreadOrigin;
 	threadId: string;
 	telegramChatId?: string | null;
+	/** Who is asking; archive and delete only name the sessions this actor may change. */
+	actor: Actor;
 }
 
 export interface HandleBulkActionResult {
@@ -219,14 +223,28 @@ export async function handleBulkAction(
 	args: HandleBulkActionArgs,
 ): Promise<HandleBulkActionResult> {
 	const { action, filter } = intent;
-	const { origin, threadId, telegramChatId } = args;
+	const { origin, threadId, telegramChatId, actor } = args;
 
 	const candidates =
 		filter.strategy === "attribute"
 			? await resolveByAttribute(filter, projects)
 			: await resolveByHint(filter, projects);
 
-	const { included, excluded } = await applyPreflightExclusions(candidates, action);
+	// Archive and delete are owner-or-admin in team mode: leave out what the
+	// actor couldn't change themselves. Stop is open, as it is on the dashboard.
+	let permitted = candidates;
+	if (action !== "stop") {
+		const mayChange = await sessionIdsActorMayChange(
+			actor,
+			candidates.map((c) => c.sessionId),
+		);
+		permitted = candidates.filter((c) => mayChange.has(c.sessionId));
+		if (permitted.length === 0 && candidates.length > 0) {
+			return { replyText: NOT_OWNER_MESSAGE, actionRequestId: null };
+		}
+	}
+
+	const { included, excluded } = await applyPreflightExclusions(permitted, action);
 
 	if (included.length === 0) {
 		return {

@@ -230,6 +230,36 @@ describe("launch_agent — direct mode (template+launch_spec)", () => {
 		});
 		expect((createLaunchBody as { templateId?: unknown }).templateId).toBeUndefined();
 	});
+
+	test("accepts launch_spec with launchCorrelationId omitted (AGEN-65: server-ignored, not server-required)", async () => {
+		const { launchCorrelationId, ...launchSpecWithoutCorrelationId } = FAKE_LAUNCH_SPEC;
+		void launchCorrelationId;
+		let createLaunchBody: unknown;
+		const client = fakeClient({
+			createLaunch: async (body) => {
+				createLaunchBody = body;
+				return { launchRequest: FAKE_LAUNCH_REQUEST, supervisor: FAKE_SUPERVISOR };
+			},
+		});
+
+		const ctx = newContext(client);
+		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+
+		const result = await mcpClient.callTool({
+			name: "launch_agent",
+			arguments: {
+				template: FAKE_PREVIEW.normalizedTemplate,
+				launch_spec: launchSpecWithoutCorrelationId,
+			},
+		});
+
+		expect(result.isError).toBeFalsy();
+		expect(
+			(createLaunchBody as { launchSpec?: { launchCorrelationId?: unknown } }).launchSpec
+				?.launchCorrelationId,
+		).toBeUndefined();
+	});
 });
 
 describe("launch_agent — exactly-one-mode validation (assertions 3-4, dexter High: partial combos)", () => {
@@ -454,6 +484,27 @@ describe("list_hosts — manage-only RO tool (D2, L3)", () => {
 		const parsed = JSON.parse(textOf(result));
 		expect(parsed.total).toBe(1);
 		expect(parsed.supervisors[0].id).toBe("sup-1");
+	});
+});
+
+describe("list_hosts passes a host's exclude-file state through unchanged", () => {
+	test("with excludeRulesState (invalid, null) and without it", async () => {
+		const hosts: SupervisorRecord[] = [
+			{ ...FAKE_SUPERVISOR, id: "h-invalid", excludeRulesState: "invalid" },
+			{ ...FAKE_SUPERVISOR, id: "h-unknown", excludeRulesState: null },
+			{ ...FAKE_SUPERVISOR, id: "h-old" },
+		];
+		const ctx = newContext(
+			fakeClient({ listHosts: async () => ({ supervisors: hosts, total: 3 }) }),
+		);
+		registerOrchestrateTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_hosts", arguments: {} });
+		const parsed = JSON.parse(textOf(result)) as { supervisors: Record<string, unknown>[] };
+		const byId = Object.fromEntries(parsed.supervisors.map((h) => [h.id, h]));
+		expect(byId["h-invalid"]?.excludeRulesState).toBe("invalid");
+		expect(byId["h-unknown"]?.excludeRulesState).toBeNull();
+		expect("excludeRulesState" in (byId["h-old"] ?? {})).toBe(false);
 	});
 });
 

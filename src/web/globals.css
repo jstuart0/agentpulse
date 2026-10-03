@@ -10,12 +10,14 @@
 		--foreground: 220 25% 10%;
 		--card: 0 0% 100%;
 		--card-foreground: 220 25% 10%;
-		--primary: 173 80% 40%;
+		--primary: 175 80% 24%;
 		--primary-foreground: 0 0% 100%;
+		--primary-on-tint: 175 80% 18%;
+		--working-text: 163 88% 20%;
 		--secondary: 210 20% 93%;
 		--secondary-foreground: 220 25% 15%;
 		--muted: 210 15% 93%;
-		--muted-foreground: 215 14% 50%;
+		--muted-foreground: 215 16% 36%;
 		--accent: 210 20% 93%;
 		--accent-foreground: 220 25% 15%;
 		--destructive: 0 72% 51%;
@@ -37,10 +39,11 @@
 		--card-foreground: 210 30% 92%;
 		--primary: 173 80% 46%;
 		--primary-foreground: 225 35% 5.5%;
+		--primary-on-tint: 173 80% 46%;
 		--secondary: 225 20% 14%;
 		--secondary-foreground: 210 30% 92%;
 		--muted: 225 20% 14%;
-		--muted-foreground: 215 15% 55%;
+		--muted-foreground: 215 15% 60%;
 		--accent: 225 20% 14%;
 		--accent-foreground: 210 30% 92%;
 		--destructive: 0 62% 35%;
@@ -275,6 +278,22 @@
 	background: hsl(var(--muted-foreground) / 0.5);
 }
 
+/* ── Copy that must stay readable ──
+   --muted-foreground is a touch light for 4.5:1 on a white card. Reasons for
+   a disabled control and the team copy use this instead. */
+.text-hint {
+	color: hsl(var(--foreground) / 0.72);
+}
+
+/* Admin-only settings that a member can read but not change. */
+fieldset:disabled input,
+fieldset:disabled select,
+fieldset:disabled textarea,
+fieldset:disabled button {
+	cursor: not-allowed;
+	opacity: 0.6;
+}
+
 /* ── Focus visible ── */
 *:focus-visible {
 	outline: 2px solid hsl(var(--ring));
@@ -346,5 +365,13 @@
 
 	.event-flash {
 		animation: event-flash 2.2s ease-out;
+	}
+}
+
+/* Toast buttons (Undo) are a 44px target on phones. */
+@media (max-width: 767px) {
+	[data-sonner-toast] [data-button] {
+		min-height: 44px;
+		padding-inline: 14px;
 	}
 }

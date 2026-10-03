@@ -51,8 +51,10 @@ spec:
     # reachable WITHOUT forwardauth so the login page itself can render
     # (it calls /auth/me to detect "you're already signed in") and so
     # local-auth fallback users can complete login.
-    # /auth/change-password attaches requireAuth() in-handler so it remains
-    # auth-protected at the route layer.
+    # /auth/change-password is exempt too, so a local account behind SSO (one an
+    # admin created, who must change the generated password first) can reach it
+    # at all; it attaches requireAuth() in-handler, so it still needs a signed-in
+    # user and is refused without one.
     - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/me`)
       kind: Rule
       services:
@@ -72,6 +74,12 @@ spec:
           port: 3000
 
     - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/signup`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/auth/change-password`)
       kind: Rule
       services:
         - name: agentpulse
@@ -103,6 +111,12 @@ spec:
           port: 3000
 
     - match: Host(`agentpulse.example.com`) && Path(`/app-api/v1/auth/signup`)
+      kind: Rule
+      services:
+        - name: agentpulse
+          port: 3000
+
+    - match: Host(`agentpulse.example.com`) && Path(`/app-api/v1/auth/change-password`)
       kind: Rule
       services:
         - name: agentpulse

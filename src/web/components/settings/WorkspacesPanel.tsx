@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { plainErrorMessage } from "../../lib/api-errors.js";
 import { api } from "../../lib/api.js";
 
 type WorkspaceFields = {
@@ -62,6 +63,8 @@ export function WorkspacesPanel() {
 	const [confirmation, setConfirmation] = useState<string | null>(null);
 	const [banner, setBanner] = useState<{ kind: "info" | "error"; text: string } | null>(null);
 	const [rootError, setRootError] = useState<string | null>(null);
+	// A refused save is said beside the Save button, not at the top of a long form.
+	const [saveError, setSaveError] = useState<string | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -84,7 +87,7 @@ export function WorkspacesPanel() {
 				if (cancelled) return;
 				setBanner({
 					kind: "error",
-					text: `Failed to load workspace settings: ${err instanceof Error ? err.message : String(err)}`,
+					text: `Failed to load workspace settings: ${plainErrorMessage(err)}`,
 				});
 			} finally {
 				if (!cancelled) setLoading(false);
@@ -141,6 +144,7 @@ export function WorkspacesPanel() {
 
 		setSubmitting(true);
 		setBanner(null);
+		setSaveError(null);
 		setConfirmation(null);
 		try {
 			const next = await api.saveWorkspaceSettings({
@@ -170,10 +174,7 @@ export function WorkspacesPanel() {
 			setConfirmation("Saved");
 			window.setTimeout(() => setConfirmation(null), 2000);
 		} catch (err) {
-			setBanner({
-				kind: "error",
-				text: err instanceof Error ? err.message : String(err),
-			});
+			setSaveError(plainErrorMessage(err));
 		} finally {
 			setSubmitting(false);
 		}
@@ -467,7 +468,12 @@ export function WorkspacesPanel() {
 					</div>
 				</div>
 
-				<div className="border-t border-border pt-4 flex items-center justify-end gap-3">
+				<div className="border-t border-border pt-4 flex flex-wrap items-center justify-end gap-3">
+					{saveError && (
+						<p role="alert" className="mr-auto text-xs text-red-700 dark:text-red-400">
+							{saveError}
+						</p>
+					)}
 					{confirmation && (
 						<span className="text-xs text-muted-foreground" aria-live="polite">
 							{confirmation}

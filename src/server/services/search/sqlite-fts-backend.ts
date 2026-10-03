@@ -5,6 +5,7 @@ import {
 	FTS_BOOTSTRAP_SQL,
 	FTS_INDEXED_EVENT_TYPES_SQL_LIST,
 } from "../../db/fts-ddl.js";
+import { deriveOwnerKind } from "../session-dto.js";
 import type { SearchBackend, SearchFilters, SearchHit, SearchResult } from "./types.js";
 
 /**
@@ -255,6 +256,8 @@ export class SqliteFtsBackend implements SearchBackend {
 					f.last_activity_at,
 					s.display_name AS session_display_name,
 					s.cwd AS session_cwd,
+					s.owner_user_id AS owner_user_id,
+					s.ingest_key_id AS ingest_key_id,
 					snippet(search_sessions_fts, -1, '<mark>', '</mark>', '…', 32) AS snippet,
 					rank
 				FROM search_sessions_fts f
@@ -284,6 +287,8 @@ export class SqliteFtsBackend implements SearchBackend {
 				last_activity_at: string;
 				session_display_name: string | null;
 				session_cwd: string | null;
+				owner_user_id: string | null;
+				ingest_key_id: string | null;
 				snippet: string;
 				rank: number;
 			}>;
@@ -299,6 +304,11 @@ export class SqliteFtsBackend implements SearchBackend {
 					timestamp: row.last_activity_at,
 					sessionDisplayName: row.session_display_name,
 					sessionCwd: row.session_cwd,
+					ownerUserId: row.owner_user_id,
+					ownerKind: deriveOwnerKind({
+						ownerUserId: row.owner_user_id,
+						ingestKeyId: row.ingest_key_id,
+					}),
 				});
 			}
 			total += rows.length;

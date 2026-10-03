@@ -195,4 +195,43 @@ export const config = {
 		if (this.sqlitePathOverride) return this.sqlitePathOverride;
 		return `${this.dataDir}/agentpulse.db`;
 	},
+
+	/**
+	 * Instance mode, env form: AGENTPULSE_MODE with surrounding whitespace
+	 * removed, or null when unset or blank. Any value, valid or not — boot
+	 * uses this to tell "unset" from "set to something unrecognised".
+	 */
+	get modeEnvRaw(): string | null {
+		const trimmed = (process.env.AGENTPULSE_MODE ?? "").trim();
+		return trimmed === "" ? null : trimmed;
+	},
+
+	/**
+	 * Instance mode, env form. "solo" | "team" when AGENTPULSE_MODE is set to
+	 * one of those two values (after trimming, ignoring case) — locks the UI
+	 * and overrides the stored instance.mode setting. Null when unset or
+	 * unrecognised; an unrecognised value is not coerced here, and
+	 * assertBootable refuses to boot on it (see modeEnvRaw), so a typo can
+	 * neither silently lock the install into the wrong mode nor be ignored.
+	 */
+	get modeEnv(): "solo" | "team" | null {
+		const raw = this.modeEnvRaw?.toLowerCase();
+		return raw === "solo" || raw === "team" ? raw : null;
+	},
+
+	/**
+	 * SSO subjects promoted to admin at resolve time. Comma-separated;
+	 * entries are trimmed and empty entries dropped. Each entry is a subject
+	 * (the stable uid, never the display username) of the configured
+	 * forwardauth provider; it only takes effect for a row of that provider
+	 * whose persisted subject_source is "uid", and for a request whose subject
+	 * also came from the uid header (see user-identity.ts).
+	 */
+	get adminSsoSubjects(): string[] {
+		const raw = process.env.AGENTPULSE_ADMIN_SSO_SUBJECTS || "";
+		return raw
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean);
+	},
 };

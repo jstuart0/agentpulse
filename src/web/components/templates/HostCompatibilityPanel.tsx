@@ -3,6 +3,7 @@ import type {
 	SupervisorRecord,
 	TemplateHostCompatibility,
 } from "../../../shared/types.js";
+import { useHostLabel } from "../../hooks/useHostLabel.js";
 
 /**
  * Renders the backend-computed host-compatibility list. Does not
@@ -20,6 +21,7 @@ export function HostCompatibilityPanel({
 	}>;
 	agentType: AgentType;
 }) {
+	const hostLabel = useHostLabel();
 	return (
 		<div className="rounded-md border border-border bg-background/40 p-3">
 			<div className="text-xs font-medium text-foreground">Host compatibility</div>
@@ -27,7 +29,7 @@ export function HostCompatibilityPanel({
 				{compatibleHosts.map(({ supervisor, compatibility }) => (
 					<div key={supervisor.id} className="rounded-md border border-border/70 px-3 py-2 text-xs">
 						<div className="flex items-center justify-between gap-2">
-							<span className="font-medium text-foreground">{supervisor.hostName}</span>
+							<span className="font-medium text-foreground">{hostLabel(supervisor)}</span>
 							<span
 								className={
 									compatibility.ok

@@ -5,6 +5,7 @@ import { AskProjectPicker } from "../components/AskProjectPicker.js";
 import { AskWorkspaceCloner } from "../components/AskWorkspaceCloner.js";
 import { AskWorkspaceScaffolder } from "../components/AskWorkspaceScaffolder.js";
 import { MarkdownContent } from "../components/MarkdownContent.js";
+import { plainErrorMessage } from "../lib/api-errors.js";
 import {
 	type AskMessage,
 	type AskThread,
@@ -105,7 +106,7 @@ export function AskPage() {
 			setThreads(res.threads);
 			setLoadingThreads(false);
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			setError(plainErrorMessage(err));
 			setLoadingThreads(false);
 		}
 	}, []);
@@ -130,7 +131,7 @@ export function AskPage() {
 				setActiveThreadOrigin(res.thread.origin);
 			})
 			.catch((err) => {
-				if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+				if (!cancelled) setError(plainErrorMessage(err));
 			})
 			.finally(() => {
 				if (!cancelled) setLoadingMessages(false);
@@ -165,7 +166,7 @@ export function AskPage() {
 			if (activeThreadId === id) selectThread(null);
 			await reloadThreads();
 		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			setError(plainErrorMessage(err));
 		}
 	}
 
@@ -263,7 +264,7 @@ export function AskPage() {
 			});
 			await reloadThreads();
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+			const msg = plainErrorMessage(err);
 			// Surface the specific browser error so a generic "failed to
 			// fetch" at least hints what went wrong (check /ai/ask/stream
 			// in the Network panel for the real response).

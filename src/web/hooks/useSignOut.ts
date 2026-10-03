@@ -1,12 +1,14 @@
-import { useNavigate } from "react-router-dom";
 import { useUserStore } from "../stores/user-store.js";
 
 /**
+ * Sign-out always ends in a full page load, so no store keeps the previous
+ * person's data for the next one to see.
+ *
  * Encapsulates the sign-out flow shared by Layout (mobile drawer) and
  * TopBar (desktop UserMenu). Handles all three sign-out paths:
  *
  *   Local session (signOutUrl starts with "/api/"): POST the session-
- *   specific logout URL, clear local user state, navigate to /login.
+ *   specific logout URL, load /login.
  *
  *   SSO/forwardauth session with an IdP logout URL: POST /auth/logout
  *   first to revoke the bridged ap_session server-side, then hard-navigate
@@ -14,21 +16,18 @@ import { useUserStore } from "../stores/user-store.js";
  *
  *   SSO/forwardauth session without an IdP logout URL (non-Authentik
  *   providers that expose no logout endpoint): POST /auth/logout to revoke
- *   the ap_session, then clear local user state and navigate to /login.
+ *   the ap_session, then load /login.
  *   The Sign out control is always shown to authenticated users regardless
  *   of whether signOutUrl is set — the caller must not hide it on null.
  */
 export function useSignOut() {
 	const signOutUrl = useUserStore((s) => s.signOutUrl);
-	const reloadUser = useUserStore((s) => s.load);
-	const navigate = useNavigate();
 
 	async function handleSignOut() {
 		if (signOutUrl?.startsWith("/api/")) {
 			// Local session: POST to the session-specific logout endpoint.
 			await fetch(signOutUrl, { method: "POST", credentials: "same-origin" }).catch(() => {});
-			await reloadUser();
-			navigate("/login", { replace: true });
+			window.location.assign("/login");
 		} else {
 			// SSO/forwardauth session: revoke the ap_session cookie server-side first
 			// so subsequent un-forwardauth'd /auth/me calls are unauthenticated,
@@ -41,9 +40,8 @@ export function useSignOut() {
 				// IdP has a logout URL — hand off so the provider can clear its session.
 				window.location.assign(signOutUrl);
 			} else {
-				// Provider has no logout URL: just clear local state and bounce to /login.
-				await reloadUser();
-				navigate("/login", { replace: true });
+				// Provider has no logout URL: a full load of /login drops every store.
+				window.location.assign("/login");
 			}
 		}
 	}

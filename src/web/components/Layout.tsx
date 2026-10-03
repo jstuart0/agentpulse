@@ -2,9 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import brandIcon from "../assets/agentpulse-icon.svg";
+import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
 import { useSignOut } from "../hooks/useSignOut.js";
+import { isAiDisabledError } from "../lib/api-errors.js";
 import { type InboxWorkItem, type LabsFlag, api } from "../lib/api.js";
 import { formatProviderLabel } from "../lib/formatProviderLabel.js";
+import { readInboxViewed, writeInboxViewed } from "../lib/inbox-viewed.js";
+import { drawerItems } from "../lib/nav-items.js";
 import { cn } from "../lib/utils.js";
 import { useConnectionStore } from "../stores/connection-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
@@ -14,15 +18,7 @@ import { LabsBadge } from "./LabsBadge.js";
 import { SessionTabs } from "./SessionTabs.js";
 import { TopBar } from "./TopBar.js";
 
-const ADMIN_DRAWER_LINKS = [
-	{ to: "/setup", label: "Setup" },
-	{ to: "/hosts", label: "Hosts" },
-	{ to: "/settings", label: "Settings" },
-];
-
 const SIDEBAR_STORAGE_KEY = "agentpulse.sidebarCollapsed";
-const INBOX_VIEWED_AT_STORAGE_KEY = "agentpulse.inboxLastViewedAt";
-const INBOX_VIEWED_TOTAL_STORAGE_KEY = "agentpulse.inboxLastViewedTotal";
 
 function loadSidebarCollapsed(): boolean {
 	if (typeof localStorage === "undefined") return false;
@@ -86,6 +82,8 @@ export function Layout() {
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
 	const labsFlags = useLabsStore((s) => s.flags);
 	const user = useUserStore((s) => s.user);
+	const ownershipUi = useOwnershipUi();
+	const drawer = drawerItems(ownershipUi, { isLocal: user?.source === "local" });
 	const navigate = useNavigate();
 	const { handleSignOut: signOut, signOutUrl } = useSignOut();
 	const location = useLocation();
@@ -296,9 +294,9 @@ export function Layout() {
 
 							<div className="mt-2 pt-2 border-t border-border/70 space-y-0.5">
 								<div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-									Admin
+									{drawer.heading}
 								</div>
-								{ADMIN_DRAWER_LINKS.map((item) => (
+								{drawer.links.map((item) => (
 									<NavLink
 										key={item.to}
 										to={item.to}
@@ -513,22 +511,6 @@ function InboxNavPills({ total, hasNew }: { total: number; hasNew: boolean }) {
 	);
 }
 
-function loadInboxViewedAt(): number {
-	if (typeof localStorage === "undefined") return 0;
-	const raw = localStorage.getItem(INBOX_VIEWED_AT_STORAGE_KEY);
-	if (!raw) return 0;
-	const value = Number(raw);
-	return Number.isFinite(value) ? value : 0;
-}
-
-function loadInboxViewedTotal(): number {
-	if (typeof localStorage === "undefined") return 0;
-	const raw = localStorage.getItem(INBOX_VIEWED_TOTAL_STORAGE_KEY);
-	if (!raw) return 0;
-	const value = Number(raw);
-	return Number.isFinite(value) ? value : 0;
-}
-
 function timestampForInboxItem(item: InboxWorkItem): number {
 	switch (item.kind) {
 		case "hitl":
@@ -544,11 +526,20 @@ function timestampForInboxItem(item: InboxWorkItem): number {
 	}
 }
 
+function storageOrUndefined(): Storage | undefined {
+	return typeof localStorage === "undefined" ? undefined : localStorage;
+}
+
 function useInboxIndicator(enabled: boolean, viewingInbox: boolean) {
 	const [total, setTotal] = useState(0);
 	const [latestItemAt, setLatestItemAt] = useState(0);
-	const [lastViewedAt, setLastViewedAt] = useState(loadInboxViewedAt);
-	const [lastViewedTotal, setLastViewedTotal] = useState(loadInboxViewedTotal);
+	const userId = useUserStore((s) => s.userId);
+	const [viewed, setViewed] = useState(() => readInboxViewed(storageOrUndefined(), userId));
+	const viewedFor = useRef(userId);
+	if (viewedFor.current !== userId) {
+		viewedFor.current = userId;
+		setViewed(readInboxViewed(storageOrUndefined(), userId));
+	}
 
 	useEffect(() => {
 		if (!enabled) {
@@ -565,13 +556,15 @@ function useInboxIndicator(enabled: boolean, viewingInbox: boolean) {
 				if (cancelled) return;
 				setTotal(inbox.total);
 				setLatestItemAt(inbox.items[0] ? timestampForInboxItem(inbox.items[0]) : 0);
-			} catch {
+			} catch (err) {
 				if (cancelled) return;
+				// The feature is off: every later poll would be the same refusal.
+				if (isAiDisabledError(err)) clearInterval(interval);
 			}
 		}
 
-		void load();
 		const interval = setInterval(load, 15_000);
+		void load();
 		return () => {
 			cancelled = true;
 			clearInterval(interval);
@@ -581,21 +574,16 @@ function useInboxIndicator(enabled: boolean, viewingInbox: boolean) {
 	useEffect(() => {
 		if (!enabled || !viewingInbox) return;
 		const nextViewedAt = Math.max(Date.now(), latestItemAt);
-		try {
-			localStorage.setItem(INBOX_VIEWED_AT_STORAGE_KEY, String(nextViewedAt));
-			localStorage.setItem(INBOX_VIEWED_TOTAL_STORAGE_KEY, String(total));
-		} catch {
-			// ignore storage failures
-		}
-		setLastViewedAt(nextViewedAt);
-		setLastViewedTotal(total);
-	}, [enabled, viewingInbox, latestItemAt, total]);
+		const next = { at: nextViewedAt, total };
+		writeInboxViewed(storageOrUndefined(), userId, next);
+		setViewed(next);
+	}, [enabled, viewingInbox, latestItemAt, total, userId]);
 
 	return useMemo(
 		() => ({
 			total,
-			hasNew: total > 0 && (latestItemAt > lastViewedAt || total > lastViewedTotal),
+			hasNew: total > 0 && (latestItemAt > viewed.at || total > viewed.total),
 		}),
-		[total, latestItemAt, lastViewedAt, lastViewedTotal],
+		[total, latestItemAt, viewed],
 	);
 }

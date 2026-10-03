@@ -27,6 +27,8 @@ export const controlActionsSqlite = sqliteTable("control_actions", {
 	finishedAt: text("finished_at"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+	/** The user who requested this control action. requestedBy stays the actor-kind label (e.g. "user", "api_key", "ai"). */
+	requestedByUserId: text("requested_by_user_id"),
 });
 
 export const controlActionsPg = pgTable("control_actions", {
@@ -48,4 +50,5 @@ export const controlActionsPg = pgTable("control_actions", {
 	finishedAt: pgText("finished_at"),
 	createdAt: tsColumn("postgres", "created_at"),
 	updatedAt: tsColumn("postgres", "updated_at"),
+	requestedByUserId: pgText("requested_by_user_id"),
 });

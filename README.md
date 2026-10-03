@@ -94,7 +94,7 @@ docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUT
 
 ![Session detail — chat-style timeline with inline tool usage](src/web/assets/screenshots/agentpulse-session.png)
 
-- **Dashboard** -- grid of all sessions with status, project name, session name, duration, and tool use count
+- **Dashboard** -- grid of all sessions with status, project name, session name, duration, and tool use count. Each session is in exactly one operational state: **Waiting** (the agent finished a turn, or has an outstanding permission prompt, and is waiting on you -- "Mark as seen" clears it), **Error** (the session failed and hasn't been dismissed -- "Dismiss error" clears it), **Working** (the agent is actively working right now), or **Idle** (nothing is waiting and the agent isn't working). Status cards above the grid filter by state; a "What do these states mean?" popover repeats this explanation in the UI
 - **Session detail** -- click a session to see a chat-style timeline with your prompts as blue bubbles and tool usage inline
 - **Projects** -- first-class projects with cwd-based session resolution; sessions stamp themselves with the right project on ingest, templates inherit project defaults (cwd, agentType, model) with per-field overrides, and a `/projects` page lets you create / edit / delete them. Saving a template under a new directory auto-creates the project for you
 - **Session templates** -- save reusable Claude Code and Codex session setups, link them to a project for live-inheritance defaults, preview normalized launch specs, and route launches to the right host
@@ -153,6 +153,7 @@ When enabled, AgentPulse can use an LLM provider you choose (Anthropic, OpenAI, 
   - *"set up a Telegram channel called personal"* — creates a pending notification channel and returns the enrollment code
   - *"summarize session brave-falcon"* / *"why did session amber-wolf fail"* — bounded-transcript Q&A with provenance footer; cached for 15 minutes per `(session, normalized question)` and invalidated by new events
   - *"show me failed sessions"* / *"what happened today"* — read-only NL search and digest; both heuristic-only (no LLM call), so they're fast and free
+  - *"which sessions are waiting"* / *"what needs attention"* — answered from the same operational state as the dashboard's status cards (waiting, or error for needs attention). The project digest and the bulk actions (*"archive completed sessions…"*) still use the lifecycle states (active, completed, failed): they have no waiting or needs-attention filter.
 - **Operator inbox** -- single `/inbox` view that aggregates open HITL requests, Ask-driven action requests, stuck / risky sessions, and recently failed proposals across every session and project. Approve / decline inline, snooze noisy failed proposals for 1h / 4h / 24h / 7d, or batch decline.
 - **Project digest** -- `/digest` rolls up the last 24 hours of activity grouped by working directory: active / blocked / stuck / completed counts per repo, top plan completions, notable failures. Cached daily, manual refresh available.
 - **Project alert rules** -- per-project rules that fire when sessions transition (`status_failed`, `status_completed`, `status_stuck`, `no_activity_minutes`) or when a freeform LLM-evaluated condition matches an event. Evaluation runs in `WatcherRunner`'s 60-second sweep with re-entry guard and first-run backfill (so a new `status_stuck` rule on a project with thirty already-stuck sessions doesn't notification-storm). Freeform rules carry their own daily token budget so cost stays bounded.
@@ -376,14 +377,13 @@ docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
   -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
   -e AGENTPULSE_LOCAL_ADMIN_PASSWORD=<strong-password> \
   --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse
-printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY
-[ -n "$AGENTPULSE_KEY" ] && curl -sSL http://localhost:3000/setup.sh | bash
+( ap_key=$(if [ -t 0 ]; then s=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo "Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead." >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty "$s" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s "$k") && case "$ap_key" in '') echo "No API key entered; nothing was installed." >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo "The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed." >&2; false;; *) export AGENTPULSE_KEY="$ap_key"; curl -sSL http://localhost:3000/setup.sh | bash;; esac )
 # Dashboard: http://localhost:3000 (local) or http://your-ip:3000 (LAN)
 ```
 
 The default config requires login via the dashboard. DO NOT add `-e DISABLE_AUTH=true` on any network you do not fully control.
 
-The `read -rs` line reads the key with input hidden and hands it to the installer without it ever appearing in the command text — so it never lands in shell history or `ps`. It's plain POSIX `read`, not bash's `read -rsp` shorthand: `-p` means "coprocess" in zsh, macOS's default login shell, so a pasted `-rsp` silently misbehaves there. The `[ -n "$AGENTPULSE_KEY" ] &&` guard skips the install instead of running curl unauthenticated if you leave the prompt blank. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but that form is visible in shell history; `curl ... | bash -s -- --key ap_YOUR_API_KEY` works too, and is visible in both shell history and the process list — prefer the `read` form when you're at an interactive terminal.
+The prompt reads the key with input hidden and hands it to the installer without it ever appearing in the command text — so it never lands in shell history or `ps`. It hides input with `stty -echo` rather than `read -s`, which dash — the `sh` on Debian and Ubuntu — doesn't have; it also works in bash and zsh. The whole snippet runs in a subshell, so the key never stays in your shell or its environment, and Ctrl-C at the prompt cancels it and restores your terminal. It refuses to ask if it can't hide what you type, and a blank answer or a key with characters outside letters, digits, `.`, `_` and `-` installs nothing and says why, rather than running curl unauthenticated. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_API_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but that form is visible in shell history; `curl ... | bash -s -- --key ap_YOUR_API_KEY` works too, and is visible in both shell history and the process list — prefer the `read` form when you're at an interactive terminal.
 
 **Option B: Remote server with local relay (recommended for k8s/VPS)**
 
@@ -480,17 +480,16 @@ See `deploy/k8s/FORWARDAUTH.md` for provider-specific setup instructions.
 By default, AgentPulse generates an API key on first start (printed in server logs). Pass it to the setup script — prefer the hidden-prompt form, which keeps the key out of both `ps` and shell history:
 
 ```bash
-printf 'AgentPulse API key: '; read -rs AGENTPULSE_KEY; echo; export AGENTPULSE_KEY
-[ -n "$AGENTPULSE_KEY" ] && curl -sSL http://localhost:3000/setup.sh | bash
+( ap_key=$(if [ -t 0 ]; then s=$(stty -g 2>/dev/null) && stty -echo 2>/dev/null || { echo "Can't hide the key while you type it, so it won't be asked for here. Use the scripted form in the docs instead." >&2; exit 1; }; trap 'echo >&2; exit 130' INT TERM HUP; trap 'stty "$s" 2>/dev/null' EXIT; fi; printf 'AgentPulse API key: ' >&2; IFS= read -r k; if [ -t 0 ]; then echo >&2; fi; printf %s "$k") && case "$ap_key" in '') echo "No API key entered; nothing was installed." >&2; false;; *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-]*) echo "The API key can only contain letters, digits, '.', '_' and '-'; nothing was installed." >&2; false;; *) export AGENTPULSE_KEY="$ap_key"; curl -sSL http://localhost:3000/setup.sh | bash;; esac )
 ```
 
-Plain POSIX `read`, not bash's `read -rsp` — `-p` means "coprocess" in zsh (macOS's default shell), not "prompt". For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but is visible in shell history.
+Works in dash, bash and zsh. For a scripted/non-interactive install, `AGENTPULSE_KEY=ap_YOUR_KEY curl -sSL http://localhost:3000/setup.sh | bash` also works, but is visible in shell history.
 
 For local use where you don't need auth, set `DISABLE_AUTH=true` (as shown in quick start).
 
 ### Remote server
 
-If AgentPulse runs on a different machine, install the relay (see [Option B](#advanced-remote-dashboard--local-hooks)); agents can only post hooks to localhost:
+If AgentPulse runs on a different machine, install the relay (see [Option B](#advanced-remote-dashboard--local-hooks)). It runs on that machine, keeps your key out of agent config, queues events on disk when the server is unreachable, and applies your [exclude rules](#excluding-directories-from-agentpulse) before anything is sent:
 
 ```bash
 curl -sSL https://your-server.example.com/setup-relay.sh | bash
@@ -521,6 +520,11 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `SQLITE_PATH` | `${DATA_DIR}/agentpulse.db` | Override the SQLite database file path |
 | `DISABLE_AUTH` | `false` | Skip all authentication |
 | `AGENTPULSE_ALLOW_SIGNUP` | `false` | Allow open signup on an empty instance. Set `true` to enable the first-run signup flow. Once any user exists, signup is blocked regardless. |
+| `AGENTPULSE_MODE` | (unset) | `solo` or `team`. Fixes the instance mode and stops the UI changing it; any other value stops boot. Unset: the mode is chosen in Settings (solo until an admin switches). See [Teams](#teams). |
+| `AGENTPULSE_ADMIN_SSO_SUBJECTS` | (unset) | Comma-separated identity-provider subjects (stable uids, never usernames) that are admins. Needs the uid header configured; see `deploy/k8s/FORWARDAUTH.md`. |
+| `AGENTPULSE_SESSION_CREATE_LIMIT` | `120` | Team mode: new sessions one person (or one key with no owner) may create per minute. A positive whole number. Counted in memory, per server process. |
+| `AGENTPULSE_SKIP` | (unset) | Set in an agent's environment to `1`, `true`, `yes` or `on` to keep that run from being reported. A client-side setting; see [Excluding directories](#excluding-directories-from-agentpulse). |
+| `AGENTPULSE_RELAY_LOCAL_URL` | `http://localhost:4000` | Where `agentpulse exclude check` looks for the local relay. |
 | `FORWARDAUTH_TRUST_SECRET` | | Shared secret for the forwardauth header trust gate (k8s SSO deployments). Generate with `openssl rand -hex 32`. See `deploy/k8s/FORWARDAUTH.md`. Legacy alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` accepted for one release. |
 | `FORWARDAUTH_PROVIDER` | `authentik` | Forwardauth provider label. Appears in the dashboard UI and `/auth/me` response. Only `"authentik"` triggers the Authentik sign-out URL; other values render the provider name and return `signOutUrl: null`. |
 | `FORWARDAUTH_HEADER_USERNAME` | `X-Authentik-Username` | Header carrying the authenticated username from the upstream IdP. |
@@ -551,6 +555,122 @@ Telemetry classification defaults:
 - prerelease/dev builds report as `dev`
 - stable production builds report as `self_hosted_real`
 - set `AGENTPULSE_TELEMETRY_MODE=test` or `AGENTPULSE_TELEMETRY_TEST=1` for local/test deployments so they do not pollute real-world usage counts
+
+## Teams
+
+AgentPulse runs in one of two modes. **Solo** is the default and behaves as it always has: every signed-in user sees and can do everything, and nothing about ownership is enforced. **Team** adds people, admins and owner checks on top. Switching never deletes anything; sessions, keys and hosts keep the owner they were recorded with, and solo mode simply hides the labels.
+
+Team mode needs authentication. It can't be turned on while `DISABLE_AUTH=true`, and the server refuses to boot that way.
+
+### Switching
+
+- **From Settings.** An admin opens **Settings → Team → Set up team mode**. Every API key that has no owner and can manage needs a decision first: keep it as an admin service key, give it an owner, or revoke it. The decisions and the switch happen together or not at all. **Switch back to solo mode** is in the same place and asks again next time.
+- **From the environment.** `AGENTPULSE_MODE=team` (or `solo`) fixes the mode and the UI can't change it. A value that is neither is refused at boot. With `team`, the server also refuses to start unless someone can sign in as an admin (`AGENTPULSE_LOCAL_ADMIN_USERNAME` with `AGENTPULSE_LOCAL_ADMIN_PASSWORD`, an existing admin, or a subject in `AGENTPULSE_ADMIN_SSO_SUBJECTS`). Keys with no owner and manage scope are not asked about in this case: they act as members until an admin keeps or assigns them in Settings, so automation that used one for settings or key management gets `403 admin_required`. Boot logs a warning naming such keys by prefix.
+- **SSO-only installs** can't switch from the UI until `AGENTPULSE_ADMIN_SSO_SUBJECTS` lists at least one admin and the server has restarted. List stable uids (your identity provider's uid header, see `deploy/k8s/FORWARDAUTH.md`), never display usernames: an identity provider can hand a username to someone else.
+
+### What team mode is not
+
+**Everyone who can sign in sees every session.** Team mode attributes work to people. It does not make anything private.
+
+- Any member can open any session, and read its prompts, events, notes, names, hosts and launch outcomes. The owner filter in the dashboard is a view, not access control.
+- Any member can prompt, stop or retry any managed session, and can launch on any host, including hosts other members enrolled. A launch carries its prompt and environment to that host's supervisor. A launch that names no host runs on the first host that can run it, which may be another member's machine: name your own host to keep the prompt and environment on your machines.
+- A host's owner (their supervisor, and anyone holding that host's credential) can read, write to and close sessions launched on that host by anyone, because the agent runs on their machine. Owning a host controls who may rotate or revoke it, not who may launch on it.
+- Live updates go to every signed-in browser, whatever its owner filter says. Every observe-scoped API key reads everything too.
+- Open tabs keep session names and directories in the browser's local storage, per signed-in user.
+
+What team mode does enforce: deleting, archiving, renaming, pinning a session, and editing its notes or stored CLAUDE.md, need the session's owner or an admin (a session nobody owns is open to any signed-in member). Revoking a key needs its owner or an admin. Rotating or revoking a host needs its owner or an admin. Marking a session as seen counts for its owner or an admin. Every setting except the theme, plus the AI, Telegram, labs and search administration routes and scratch-workspace cleanup, is admin-only. User management and the mode switch need a signed-in human admin; an API key can never do them, whoever owns it.
+
+### Who owns what
+
+- **A session's owner is whoever's API key reported it**, decided when the session is first created. This is attribution by key possession, not authentication of a person: anyone holding your key reports as you. The first write wins; later events never change the owner. A session launched from the dashboard is owned by whoever launched it. An admin can change an owner on the session page.
+- **Use your own key on each machine.** A key you mint is owned by you, and so are the sessions it reports. A key minted by a member (on the Setup page or in Settings), or by a key that member owns (`agentpulse mcp install --mint`), belongs to that member.
+- **Service keys** have no owner (shared automation, CI). An admin marks one when minting it. A service key that can manage and is kept as an **admin service key** acts as an admin in team mode; any other service key acts as a member. Sessions reported only by a service key show as "Service key"; sessions nobody owns show as "Unassigned". An admin can hand every unassigned session to one person.
+- In team mode, once an owned session exists, hook events for it from a key that belongs to someone else are dropped (still answered `200`) and counted. Events are accepted from the owner's keys, the key the session was first reported with, keys owned by the owner of the host the session runs on, and, for a launched session whose host has no recorded key yet, a service key.
+
+### After switching to team: hosts
+
+Every host (supervisor) that existed before the switch has no owner. Hook events for a session launched from the dashboard on a host are accepted only from a key owned by that host's owner, or from a service key. So **give each existing host an owner** (Hosts page → Change owner, or `PATCH /api/v1/admin/supervisors/:id`), or keep the key that machine reports with as a service key. Until then, hook events for dashboard-launched sessions from that host are ignored. Enrollment tokens with no recorded creator are deactivated by the switch; enroll again as a signed-in member.
+
+### Offboarding
+
+Disable the person in AgentPulse (**Settings → Team**, the person's row). Removing them at the identity provider is not enough: their API keys and any host they own keep working until they are disabled here. Disabling ends their sign-ins, deactivates their API keys and enrollment tokens, revokes the hosts they own, and closes their open dashboard connections. The dialog shows an "Also revoke their N hosts" box (on by default, and only when the person owns hosts); unchecked, the hosts stay enrolled, still owned by the disabled person, and can still run launches. The API takes the same choice as `revokeHosts: false`. Their sessions stay, still owned by them. Re-enabling does not restore revoked keys or hosts. The last active admin can't be disabled or demoted, nor can an admin whose role comes from `AGENTPULSE_ADMIN_SSO_SUBJECTS`.
+
+### People
+
+- SSO users get an account the first time they sign in. They are members unless their uid is in `AGENTPULSE_ADMIN_SSO_SUBJECTS`.
+- An admin can add a local account (**Settings → Team**). AgentPulse generates a password, shows it once and makes the person replace it at first sign-in; until they do, their API keys get `403 password_change_required` everywhere except hook ingestion, which keeps accepting events (this is true on solo installs too). An admin can reset a local account's password the same way; that ends the account's sign-ins.
+- Changing a password is limited to 5 failed current-password attempts per account per 15 minutes.
+
+### The dashboard in team mode
+
+- **Mine | Everyone** switch. It opens on Mine if you own any session, otherwise Everyone, and remembers what you pick.
+- **Owner** select: Everyone, you, each person, service keys, unassigned.
+- **Group by** Project, User or Agent.
+- Status cards, the tabs (Active, Completed, Archived and All, which leaves archived sessions out) and their badges all follow the owner you've selected, and are counted by the server, so the numbers stay correct beyond the rows loaded. On a very large install the status counts come from a bounded scan: when the response says `truncated` (the dashboard notes it on the status cards) they are approximate.
+- The **Inbox** is not narrowed by Mine | Everyone or the Owner select: it lists items across every session.
+- **Show scratch workspaces** now applies to every count, not just the grid; while it is off, the number of scratch sessions left out is shown beside it. This applies in solo mode too.
+- Desktop notifications in team mode fire only for your own sessions, whichever filter is on. Solo mode notifies for every session.
+
+### Limits
+
+In team mode one person (or, for a key with no owner, one key) may create at most 120 new sessions a minute (`AGENTPULSE_SESSION_CREATE_LIMIT`). The rest are dropped with the usual `200` and counted as `sessionCreationLimited` on `/health`. Minting API keys is limited to 10 a minute per person. Solo mode has no creation limit.
+
+With `DISABLE_AUTH=true`, live updates connect only from a loopback address or from the configured `PUBLIC_URL` (a protection against pages that resolve to your machine). Reach such an instance on another address and the dashboard falls back to polling until you set `PUBLIC_URL`.
+
+### Counters on `/health`
+
+`/health` is public. In team mode its counters include `foreignKeyDropped` (events dropped because the key belonged to someone else), `ingestKeyBound`, `sessionCreationLimited` and `skipHeaderDropped` (deliveries skipped by `AGENTPULSE_SKIP`). They are aggregate counts, but they do reveal that team mode, and exclusion, are in use.
+
+## Excluding directories from AgentPulse
+
+Members and solo users alike can stop sessions in chosen directories from being reported. Rules live on each machine, in `~/.agentpulse/exclude`, one absolute directory per line (`~/` is expanded; blank lines and lines starting with `#` are ignored). A rule covers the directory and everything under it. No wildcards, no `.` or `..` segments, at most 500 rules.
+
+```bash
+agentpulse exclude add ~/scratch     # validates, then writes the file
+agentpulse exclude list
+agentpulse exclude check [dir]       # is this directory excluded, and who enforces it
+```
+
+`exclude check` exits 0 for excluded, 1 for not excluded and 2 when the rules file is invalid.
+
+**The server never learns what is excluded.** The rules stay on the machine. They are not visible to admins or other members. The one thing a host's supervisor reports is a flag that its exclude file (or its saved exclude state) is invalid.
+
+### Fails closed
+
+If the rules file can't be trusted, whatever applies the rules sends nothing. The file is invalid when: it or `~/.agentpulse` is not owned by you, or is writable by group or others; the file is a symlink or hardlink or not a regular file; it can't be read; it's over 64 KiB; or a line isn't a plain absolute path (relative path, wildcard, `.`/`..` segment, NUL byte, more than 500 rules). The message names the line and the fix. Recreating the file with `agentpulse exclude add` is always safe.
+
+### Skipping one run
+
+`AGENTPULSE_SKIP=1` (also `true`, `yes`, `on`, any case) in the environment of an agent stops that run's events from being reported. Claude Code's hook configuration forwards the variable as an `X-AgentPulse-Skip` header; the server answers `200` and drops those deliveries. The other senders read the variable directly, as the table says.
+
+### Who applies the rules
+
+| Sender | What applies your rules |
+|---|---|
+| Codex CLI, Copilot CLI | The hook command checks the rules before anything is sent. If the rules file can't be read or trusted, nothing is sent. `AGENTPULSE_SKIP=1` skips one run. |
+| Claude Code through the relay | The relay on that machine checks the rules before anything is stored or passed on, and sends nothing while the rules file is invalid. `AGENTPULSE_SKIP=1` skips one run. |
+| Sessions AgentPulse launches, and the Codex observer | The supervisor on that machine applies the rules. A launch into an excluded directory is refused. The supervisor doesn't see `AGENTPULSE_SKIP`; the directory rules cover these. |
+| Claude Code straight to the server | Path rules are **not applied**, and a broken rules file doesn't stop it. Use the relay, or set `AGENTPULSE_SKIP=1`. With the skip variable the request still reaches the server, which discards it. |
+
+An old relay or supervisor doesn't apply rules at all. Update or reinstall it; `agentpulse exclude check` reports a running relay that predates exclude rules as not enforcing.
+
+### How to notice
+
+- `agentpulse exclude check` prints a per-sender verdict.
+- While the file is invalid, the hooks write an empty marker file, `~/.agentpulse/exclude.invalid`.
+- The statusline (where installed) says `not reported (excluded)`, `not reported (AGENTPULSE_SKIP)`, or that the rules are invalid and which senders are paused.
+- The Hosts page shows a warning on a host whose supervisor reports its exclude file as invalid.
+- A machine that only runs Codex or Copilot in direct mode has none of the last two: use the marker file and `exclude check`, and run it after any hand edit of the file.
+
+### Limits and gaps
+
+- Rules apply to **new** events. A session reported before a rule existed stays at its last state on the dashboard until the periodic sweep ends it: after 5 minutes without activity it goes idle, and after 30 it's completed; a session still marked as working is cleared after 60 minutes of silence. Delete it yourself to remove it sooner. A managed session whose directory becomes excluded is reported once as completed and the dashboard stops tracking it while the agent may still be running.
+- A skipped request has already left the machine; it is only kept out of the database. The skip header and the rules are honoured by the client, and the server can't enforce them against a modified client.
+- A launch the host refuses because the directory is excluded reads the same as a refusal for a directory outside the host's trusted roots, and the reason goes only to the host's own log. The wording of such a refusal still differs depending on whether the host has an exclude file at all, and the server's own request-time trusted-roots check is unchanged. So a member who can launch on a host, and watches for refusals, can learn which directories under that host's trusted roots are excluded. A host whose exclude file is invalid refuses every launch.
+- The Hosts page shows every member a warning on a host whose supervisor reports its exclude file (or its saved exclude state) as invalid. That is the only thing about exclusion the server keeps, and it says nothing about which directories.
+- Codex asks you to re-approve its hooks after you re-run setup, because the hook command changed.
+- Transcripts the agents keep on disk are not touched.
+- **Windows (PowerShell) support is written but has never been executed on Windows.** Don't rely on it.
 
 ## What the setup script does
 
@@ -755,6 +875,8 @@ kubectl apply -k deploy/overlays/postgres/
 ```
 
 AgentPulse runs Drizzle migrations on boot using a dedicated single-connection client. A session-level `pg_advisory_lock` serializes migration across replicas booting simultaneously, making rolling deploys safe without coordination overhead.
+
+Rolling updates are safe for **migrations** only. Several limits live in each replica's memory and reset on restart, so with N replicas they are N times looser, and they briefly double during a rolling deploy: the hook rate limiter, the per-owner session-creation limit (`AGENTPULSE_SESSION_CREATE_LIMIT`), the API-key mint limit, the password-change failure limit, and the stats scan queue and in-flight coalescing. The instance mode and every owner are read from the database on each request, so those are consistent across replicas. Until process-local state is externalised, run a single replica.
 
 Connection pool size defaults to 10. Tune it via `AGENTPULSE_PG_POOL_MAX` based on your Postgres `max_connections` setting and replica count.
 

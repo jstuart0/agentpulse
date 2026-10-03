@@ -1,0 +1,693 @@
+{
+	"_comment": "Shared cross-evaluator fixture matrix for the directory-exclude feature. Consumed by src/shared/exclude-rules.test.ts (the TypeScript evaluator's own tests) and, unchanged, by the sh and PowerShell parity runners. `dedicated: true` means this case's real behavior is asserted by a dedicated test elsewhere (it needs on-disk construction a declarative row can't express — a symlink, a hardlink, a specific permission bit, a case-variant real directory, or a Windows ACL); this row only satisfies the by-name existence/floor check. A home/cwd/rulesFileLines value on a dedicated row is documentation of intent, not literal input to any generic loop.",
+	"cases": [
+		{
+			"name": "exact-match",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "descendant-match",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/sub/deep",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "sibling-prefix-not-excluded",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/workshop",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": false, "reason": null }
+		},
+		{
+			"name": "trailing-slash-rule",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/sub",
+			"rulesFileLines": ["/a/work/"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "trailing-slash-cwd",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "tilde-expansion-rule",
+			"platform": "any",
+			"home": "/home/alice",
+			"cwd": "/home/alice/work/sub",
+			"rulesFileLines": ["~/work"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "symlinked-cwd-into-excluded-dir",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/home/user/work-link",
+			"rulesFileLines": ["/home/user/work"],
+			"expected": { "excluded": true, "reason": "path" },
+			"dedicated": true
+		},
+		{
+			"name": "symlinked-rule-target",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/home/user/real-target",
+			"rulesFileLines": ["/home/user/work-link"],
+			"expected": { "excluded": true, "reason": "path" },
+			"dedicated": true
+		},
+		{
+			"name": "nonexistent-rule-dir",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/ghost-dir/sub",
+			"rulesFileLines": ["/a/ghost-dir"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "relative-rule-invalid",
+			"platform": "any",
+			"home": "/home/user",
+			"rulesFileLines": ["relative/path"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"expectedLine": 1
+		},
+		{
+			"name": "wildcard-rule-invalid-star",
+			"platform": "any",
+			"home": "/home/user",
+			"rulesFileLines": ["/a/work/*"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"expectedLine": 1
+		},
+		{
+			"name": "wildcard-rule-invalid-question",
+			"platform": "any",
+			"home": "/home/user",
+			"rulesFileLines": ["/a/wo?k"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"expectedLine": 1
+		},
+		{
+			"name": "wildcard-rule-invalid-bracket-open",
+			"platform": "any",
+			"home": "/home/user",
+			"rulesFileLines": ["/a/wo[rk"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"expectedLine": 1
+		},
+		{
+			"name": "wildcard-rule-invalid-bracket-close",
+			"platform": "any",
+			"home": "/home/user",
+			"rulesFileLines": ["/a/work]"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"expectedLine": 1
+		},
+		{
+			"name": "nul-byte-rule-invalid",
+			"platform": "any",
+			"home": "/home/user",
+			"rulesFileLines": ["/a/wo\u0000rk"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"expectedLine": 1
+		},
+		{
+			"name": "unreadable-file-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "oversize-file-invalid",
+			"platform": "any",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "not-owned-file-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true,
+			"skippable": true
+		},
+		{
+			"name": "missing-file-none",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work",
+			"expected": { "excluded": false, "reason": null }
+		},
+		{
+			"name": "bom-first-line",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/sub",
+			"rulesFileLinesRaw": "\ufeff/a/work\n",
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "crlf-line-endings",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/sub",
+			"rulesFileLinesRaw": "/a/work\r\n",
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "trailing-spaces-and-tabs",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/sub",
+			"rulesFileLinesRaw": "/a/work   \t\n",
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "empty-file-none",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work",
+			"rulesFileLinesRaw": "",
+			"expected": { "excluded": false, "reason": null }
+		},
+		{
+			"name": "comment-lines-skipped",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/sub",
+			"rulesFileLinesRaw": "# a comment\n/a/work\n# another comment\n",
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "blank-lines-skipped",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/sub",
+			"rulesFileLinesRaw": "\n\n/a/work\n\n",
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "spaces-in-path",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/my work dir/sub",
+			"rulesFileLines": ["/a/my work dir"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "quotes-in-path",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/it's \"a\" dir/sub",
+			"rulesFileLines": ["/a/it's \"a\" dir"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "unicode-in-path",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/café/日本語/sub",
+			"rulesFileLines": ["/a/café/日本語"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{ "name": "skip-1", "platform": "any", "skip": "1", "expectedSkip": true },
+		{ "name": "skip-true", "platform": "any", "skip": "true", "expectedSkip": true },
+		{ "name": "skip-TRUE", "platform": "any", "skip": "TRUE", "expectedSkip": true },
+		{ "name": "skip-yes", "platform": "any", "skip": "yes", "expectedSkip": true },
+		{ "name": "skip-on", "platform": "any", "skip": "on", "expectedSkip": true },
+		{ "name": "skip-empty", "platform": "any", "skip": "", "expectedSkip": false },
+		{ "name": "skip-0", "platform": "any", "skip": "0", "expectedSkip": false },
+		{ "name": "skip-false", "platform": "any", "skip": "false", "expectedSkip": false },
+		{ "name": "skip-no", "platform": "any", "skip": "no", "expectedSkip": false },
+		{ "name": "skip-2", "platform": "any", "skip": "2", "expectedSkip": false },
+		{
+			"name": "skip-literal-dollar-agentpulse-skip",
+			"platform": "any",
+			"skip": "$AGENTPULSE_SKIP",
+			"expectedSkip": false
+		},
+		{
+			"name": "skip-literal-braced-dollar-agentpulse-skip",
+			"platform": "any",
+			"skip": "${AGENTPULSE_SKIP}",
+			"expectedSkip": false
+		},
+		{
+			"name": "darwin-case-insensitive-volume",
+			"platform": "darwin",
+			"home": "/Users/alice",
+			"cwd": "/users/ALICE/work/sub",
+			"rulesFileLines": ["/Users/alice/Work"],
+			"expected": { "excluded": true, "reason": "path" },
+			"dedicated": true
+		},
+		{
+			"name": "win32-case-and-separator",
+			"platform": "win32",
+			"home": "C:\\Users\\alice",
+			"cwd": "c:/users/alice/WORK/sub",
+			"rulesFileLines": ["C:\\Users\\alice\\work"],
+			"expected": { "excluded": true, "reason": "path" },
+			"dedicated": true
+		},
+		{
+			"name": "symlink-file-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "hardlink-file-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "nonregular-file-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "group-writable-file-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "world-writable-file-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "win32-not-owner-invalid",
+			"platform": "win32",
+			"home": "C:\\Users\\alice",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "win32-foreign-write-ace-invalid",
+			"platform": "win32",
+			"home": "C:\\Users\\alice",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "win32-system-and-admins-ace-valid",
+			"platform": "win32",
+			"home": "C:\\Users\\alice",
+			"cwd": "C:\\Users\\alice\\work\\sub",
+			"rulesFileLines": ["C:\\Users\\alice\\work"],
+			"expected": { "excluded": true, "reason": "path" },
+			"dedicated": true
+		},
+		{
+			"name": "win32-agentpulse-dir-foreign-write-ace-invalid",
+			"platform": "win32",
+			"home": "C:\\Users\\alice",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "root-rule-excludes-deep-cwd",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/very/deep/path",
+			"rulesFileLines": ["/"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "root-rule-excludes-root-cwd",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/",
+			"rulesFileLines": ["/"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "win32-drive-root-rule-excludes-deep-cwd",
+			"platform": "win32",
+			"home": "C:\\Users\\alice",
+			"cwd": "C:\\Users\\alice\\work\\sub",
+			"rulesFileLines": ["C:\\"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "agentpulse-dir-symlinked-good-target-ok",
+			"platform": "posix",
+			"home": "/home/user",
+			"cwd": "/a/work",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "path" },
+			"dedicated": true
+		},
+		{
+			"name": "agentpulse-dir-group-writable-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "agentpulse-dir-world-writable-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "rule-with-dotdot-invalid",
+			"platform": "any",
+			"home": "/home/user",
+			"rulesFileLines": ["/a/notsecret/../secret"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"expectedLine": 1
+		},
+		{
+			"name": "rule-with-dot-segment-invalid",
+			"platform": "any",
+			"home": "/home/user",
+			"rulesFileLines": ["/a/./work"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"expectedLine": 1
+		},
+		{
+			"name": "tilde-dotdot-invalid",
+			"platform": "any",
+			"home": "/home/alice",
+			"rulesFileLines": ["~/../secret"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"expectedLine": 1
+		},
+		{
+			"name": "tilde-dot-segment-invalid",
+			"platform": "any",
+			"home": "/home/alice",
+			"rulesFileLines": ["~/./work"],
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"expectedLine": 1
+		},
+		{
+			"name": "cwd-with-unresolvable-dotdot-no-cwd",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/ghost/../x",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "no_cwd" }
+		},
+		{
+			"name": "symlink-dotdot-kernel-target-excluded",
+			"platform": "any",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "path" },
+			"dedicated": true
+		},
+		{
+			"name": "symlink-dotdot-kernel-target-not-excluded-lexical-only",
+			"platform": "any",
+			"home": "/home/user",
+			"expected": { "excluded": false, "reason": null },
+			"dedicated": true
+		},
+		{
+			"name": "duplicate-slashes-normalised",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a//work///sub",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "symlinked-parent-rule-not-yet-created",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/home/user/linked-parent/not-yet-created/sub",
+			"rulesFileLines": ["/home/user/linked-parent/not-yet-created"],
+			"expected": { "excluded": true, "reason": "path" },
+			"dedicated": true
+		},
+		{
+			"name": "darwin-case-mismatch-nonexistent-leaf",
+			"platform": "darwin",
+			"home": "/home/user",
+			"cwd": "/home/user/work/sub",
+			"rulesFileLines": ["/home/user/Work"],
+			"expected": { "excluded": true, "reason": "path" },
+			"dedicated": true
+		},
+		{
+			"name": "darwin-nfc-nfd-mismatch-nonexistent-leaf",
+			"platform": "darwin",
+			"home": "/home/user",
+			"cwd": "/home/user/cafe\u0301/sub",
+			"rulesFileLines": ["/home/user/caf\u00e9"],
+			"expected": { "excluded": false, "reason": null },
+			"dedicated": true
+		},
+		{
+			"name": "darwin-case-rule-upper-cwd-lower",
+			"platform": "darwin",
+			"home": "/home/user",
+			"cwd": "/a/work/sub",
+			"rulesFileLines": ["/a/Work"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "darwin-case-rule-lower-cwd-upper",
+			"platform": "darwin",
+			"home": "/home/user",
+			"cwd": "/a/WORK/sub",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "darwin-case-fold-mixed-positions",
+			"platform": "darwin",
+			"home": "/home/user",
+			"cwd": "/a/MiXeD-CaSe_PRoj.V2/Sub/Z",
+			"rulesFileLines": ["/a/mixed-case_proj.v2/sub/z"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "darwin-case-fold-keeps-segment-boundary",
+			"platform": "darwin",
+			"home": "/home/user",
+			"cwd": "/a/WORKSHOP",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": false, "reason": null }
+		},
+		{
+			"name": "linux-case-differs-not-excluded",
+			"platform": "linux",
+			"home": "/home/user",
+			"cwd": "/a/work/sub",
+			"rulesFileLines": ["/a/Work"],
+			"expected": { "excluded": false, "reason": null }
+		},
+		{
+			"name": "linux-case-same-excluded",
+			"platform": "linux",
+			"home": "/home/user",
+			"cwd": "/a/Work/sub",
+			"rulesFileLines": ["/a/Work"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "win32-case-rule-upper-cwd-lower-nonexistent-leaf",
+			"platform": "win32",
+			"home": "C:\\Users\\alice",
+			"cwd": "C:\\Users\\alice\\work\\sub",
+			"rulesFileLines": ["C:\\Users\\alice\\Work"],
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "bom-trailing-space-tab-cr",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/sub",
+			"rulesFileLinesRaw": "\ufeff/a/work \t\r\n",
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "exact-cap-size-file-ok",
+			"platform": "any",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "path" },
+			"dedicated": true
+		},
+		{
+			"name": "oversize-by-one-byte-invalid",
+			"platform": "any",
+			"home": "/home/user",
+			"expected": { "excluded": true, "reason": "rules_invalid" },
+			"dedicated": true
+		},
+		{
+			"name": "skip-leading-space-1",
+			"platform": "any",
+			"skip": " 1",
+			"expectedSkip": true
+		},
+		{
+			"name": "skip-trailing-newline-1",
+			"platform": "any",
+			"skip": "1\n",
+			"expectedSkip": true
+		},
+		{
+			"name": "skip-trailing-space-true",
+			"platform": "any",
+			"skip": "true ",
+			"expectedSkip": true
+		},
+		{
+			"name": "skip-tab-on-crlf",
+			"platform": "any",
+			"skip": "\tON\r\n",
+			"expectedSkip": true
+		},
+		{
+			"name": "skip-spaced-2",
+			"platform": "any",
+			"skip": " 2 ",
+			"expectedSkip": false
+		},
+		{
+			"name": "skip-whitespace-only",
+			"platform": "any",
+			"skip": "   ",
+			"expectedSkip": false
+		},
+		{
+			"name": "skip-trailing-formfeed-1",
+			"platform": "any",
+			"skip": "1\f",
+			"expectedSkip": false
+		},
+		{
+			"name": "skip-leading-formfeed-true",
+			"platform": "any",
+			"skip": "\ftrue",
+			"expectedSkip": false
+		},
+		{
+			"name": "skip-vertical-tab-wrapped-yes",
+			"platform": "any",
+			"skip": "\u000byes\u000b",
+			"expectedSkip": false
+		},
+		{
+			"name": "skip-nbsp-wrapped-yes",
+			"platform": "any",
+			"skip": "\u00a0yes\u00a0",
+			"expectedSkip": false
+		},
+		{
+			"name": "skip-line-separator-on",
+			"platform": "any",
+			"skip": "on\u2028",
+			"expectedSkip": false
+		},
+		{
+			"name": "skip-bom-wrapped-1",
+			"platform": "any",
+			"skip": "\ufeff1",
+			"expectedSkip": false
+		},
+		{
+			"name": "rules-count-500-last-rule-matches",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/sub",
+			"rulesFileLinesRaw": "/a/f0\n/a/f1\n/a/f2\n/a/f3\n/a/f4\n/a/f5\n/a/f6\n/a/f7\n/a/f8\n/a/f9\n/a/f10\n/a/f11\n/a/f12\n/a/f13\n/a/f14\n/a/f15\n/a/f16\n/a/f17\n/a/f18\n/a/f19\n/a/f20\n/a/f21\n/a/f22\n/a/f23\n/a/f24\n/a/f25\n/a/f26\n/a/f27\n/a/f28\n/a/f29\n/a/f30\n/a/f31\n/a/f32\n/a/f33\n/a/f34\n/a/f35\n/a/f36\n/a/f37\n/a/f38\n/a/f39\n/a/f40\n/a/f41\n/a/f42\n/a/f43\n/a/f44\n/a/f45\n/a/f46\n/a/f47\n/a/f48\n/a/f49\n/a/f50\n/a/f51\n/a/f52\n/a/f53\n/a/f54\n/a/f55\n/a/f56\n/a/f57\n/a/f58\n/a/f59\n/a/f60\n/a/f61\n/a/f62\n/a/f63\n/a/f64\n/a/f65\n/a/f66\n/a/f67\n/a/f68\n/a/f69\n/a/f70\n/a/f71\n/a/f72\n/a/f73\n/a/f74\n/a/f75\n/a/f76\n/a/f77\n/a/f78\n/a/f79\n/a/f80\n/a/f81\n/a/f82\n/a/f83\n/a/f84\n/a/f85\n/a/f86\n/a/f87\n/a/f88\n/a/f89\n/a/f90\n/a/f91\n/a/f92\n/a/f93\n/a/f94\n/a/f95\n/a/f96\n/a/f97\n/a/f98\n/a/f99\n/a/f100\n/a/f101\n/a/f102\n/a/f103\n/a/f104\n/a/f105\n/a/f106\n/a/f107\n/a/f108\n/a/f109\n/a/f110\n/a/f111\n/a/f112\n/a/f113\n/a/f114\n/a/f115\n/a/f116\n/a/f117\n/a/f118\n/a/f119\n/a/f120\n/a/f121\n/a/f122\n/a/f123\n/a/f124\n/a/f125\n/a/f126\n/a/f127\n/a/f128\n/a/f129\n/a/f130\n/a/f131\n/a/f132\n/a/f133\n/a/f134\n/a/f135\n/a/f136\n/a/f137\n/a/f138\n/a/f139\n/a/f140\n/a/f141\n/a/f142\n/a/f143\n/a/f144\n/a/f145\n/a/f146\n/a/f147\n/a/f148\n/a/f149\n/a/f150\n/a/f151\n/a/f152\n/a/f153\n/a/f154\n/a/f155\n/a/f156\n/a/f157\n/a/f158\n/a/f159\n/a/f160\n/a/f161\n/a/f162\n/a/f163\n/a/f164\n/a/f165\n/a/f166\n/a/f167\n/a/f168\n/a/f169\n/a/f170\n/a/f171\n/a/f172\n/a/f173\n/a/f174\n/a/f175\n/a/f176\n/a/f177\n/a/f178\n/a/f179\n/a/f180\n/a/f181\n/a/f182\n/a/f183\n/a/f184\n/a/f185\n/a/f186\n/a/f187\n/a/f188\n/a/f189\n/a/f190\n/a/f191\n/a/f192\n/a/f193\n/a/f194\n/a/f195\n/a/f196\n/a/f197\n/a/f198\n/a/f199\n/a/f200\n/a/f201\n/a/f202\n/a/f203\n/a/f204\n/a/f205\n/a/f206\n/a/f207\n/a/f208\n/a/f209\n/a/f210\n/a/f211\n/a/f212\n/a/f213\n/a/f214\n/a/f215\n/a/f216\n/a/f217\n/a/f218\n/a/f219\n/a/f220\n/a/f221\n/a/f222\n/a/f223\n/a/f224\n/a/f225\n/a/f226\n/a/f227\n/a/f228\n/a/f229\n/a/f230\n/a/f231\n/a/f232\n/a/f233\n/a/f234\n/a/f235\n/a/f236\n/a/f237\n/a/f238\n/a/f239\n/a/f240\n/a/f241\n/a/f242\n/a/f243\n/a/f244\n/a/f245\n/a/f246\n/a/f247\n/a/f248\n/a/f249\n/a/f250\n/a/f251\n/a/f252\n/a/f253\n/a/f254\n/a/f255\n/a/f256\n/a/f257\n/a/f258\n/a/f259\n/a/f260\n/a/f261\n/a/f262\n/a/f263\n/a/f264\n/a/f265\n/a/f266\n/a/f267\n/a/f268\n/a/f269\n/a/f270\n/a/f271\n/a/f272\n/a/f273\n/a/f274\n/a/f275\n/a/f276\n/a/f277\n/a/f278\n/a/f279\n/a/f280\n/a/f281\n/a/f282\n/a/f283\n/a/f284\n/a/f285\n/a/f286\n/a/f287\n/a/f288\n/a/f289\n/a/f290\n/a/f291\n/a/f292\n/a/f293\n/a/f294\n/a/f295\n/a/f296\n/a/f297\n/a/f298\n/a/f299\n/a/f300\n/a/f301\n/a/f302\n/a/f303\n/a/f304\n/a/f305\n/a/f306\n/a/f307\n/a/f308\n/a/f309\n/a/f310\n/a/f311\n/a/f312\n/a/f313\n/a/f314\n/a/f315\n/a/f316\n/a/f317\n/a/f318\n/a/f319\n/a/f320\n/a/f321\n/a/f322\n/a/f323\n/a/f324\n/a/f325\n/a/f326\n/a/f327\n/a/f328\n/a/f329\n/a/f330\n/a/f331\n/a/f332\n/a/f333\n/a/f334\n/a/f335\n/a/f336\n/a/f337\n/a/f338\n/a/f339\n/a/f340\n/a/f341\n/a/f342\n/a/f343\n/a/f344\n/a/f345\n/a/f346\n/a/f347\n/a/f348\n/a/f349\n/a/f350\n/a/f351\n/a/f352\n/a/f353\n/a/f354\n/a/f355\n/a/f356\n/a/f357\n/a/f358\n/a/f359\n/a/f360\n/a/f361\n/a/f362\n/a/f363\n/a/f364\n/a/f365\n/a/f366\n/a/f367\n/a/f368\n/a/f369\n/a/f370\n/a/f371\n/a/f372\n/a/f373\n/a/f374\n/a/f375\n/a/f376\n/a/f377\n/a/f378\n/a/f379\n/a/f380\n/a/f381\n/a/f382\n/a/f383\n/a/f384\n/a/f385\n/a/f386\n/a/f387\n/a/f388\n/a/f389\n/a/f390\n/a/f391\n/a/f392\n/a/f393\n/a/f394\n/a/f395\n/a/f396\n/a/f397\n/a/f398\n/a/f399\n/a/f400\n/a/f401\n/a/f402\n/a/f403\n/a/f404\n/a/f405\n/a/f406\n/a/f407\n/a/f408\n/a/f409\n/a/f410\n/a/f411\n/a/f412\n/a/f413\n/a/f414\n/a/f415\n/a/f416\n/a/f417\n/a/f418\n/a/f419\n/a/f420\n/a/f421\n/a/f422\n/a/f423\n/a/f424\n/a/f425\n/a/f426\n/a/f427\n/a/f428\n/a/f429\n/a/f430\n/a/f431\n/a/f432\n/a/f433\n/a/f434\n/a/f435\n/a/f436\n/a/f437\n/a/f438\n/a/f439\n/a/f440\n/a/f441\n/a/f442\n/a/f443\n/a/f444\n/a/f445\n/a/f446\n/a/f447\n/a/f448\n/a/f449\n/a/f450\n/a/f451\n/a/f452\n/a/f453\n/a/f454\n/a/f455\n/a/f456\n/a/f457\n/a/f458\n/a/f459\n/a/f460\n/a/f461\n/a/f462\n/a/f463\n/a/f464\n/a/f465\n/a/f466\n/a/f467\n/a/f468\n/a/f469\n/a/f470\n/a/f471\n/a/f472\n/a/f473\n/a/f474\n/a/f475\n/a/f476\n/a/f477\n/a/f478\n/a/f479\n/a/f480\n/a/f481\n/a/f482\n/a/f483\n/a/f484\n/a/f485\n/a/f486\n/a/f487\n/a/f488\n/a/f489\n/a/f490\n/a/f491\n/a/f492\n/a/f493\n/a/f494\n/a/f495\n/a/f496\n/a/f497\n/a/f498\n/a/work\n",
+			"expected": { "excluded": true, "reason": "path" }
+		},
+		{
+			"name": "rules-count-501-invalid",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/other",
+			"rulesFileLinesRaw": "/a/f0\n/a/f1\n/a/f2\n/a/f3\n/a/f4\n/a/f5\n/a/f6\n/a/f7\n/a/f8\n/a/f9\n/a/f10\n/a/f11\n/a/f12\n/a/f13\n/a/f14\n/a/f15\n/a/f16\n/a/f17\n/a/f18\n/a/f19\n/a/f20\n/a/f21\n/a/f22\n/a/f23\n/a/f24\n/a/f25\n/a/f26\n/a/f27\n/a/f28\n/a/f29\n/a/f30\n/a/f31\n/a/f32\n/a/f33\n/a/f34\n/a/f35\n/a/f36\n/a/f37\n/a/f38\n/a/f39\n/a/f40\n/a/f41\n/a/f42\n/a/f43\n/a/f44\n/a/f45\n/a/f46\n/a/f47\n/a/f48\n/a/f49\n/a/f50\n/a/f51\n/a/f52\n/a/f53\n/a/f54\n/a/f55\n/a/f56\n/a/f57\n/a/f58\n/a/f59\n/a/f60\n/a/f61\n/a/f62\n/a/f63\n/a/f64\n/a/f65\n/a/f66\n/a/f67\n/a/f68\n/a/f69\n/a/f70\n/a/f71\n/a/f72\n/a/f73\n/a/f74\n/a/f75\n/a/f76\n/a/f77\n/a/f78\n/a/f79\n/a/f80\n/a/f81\n/a/f82\n/a/f83\n/a/f84\n/a/f85\n/a/f86\n/a/f87\n/a/f88\n/a/f89\n/a/f90\n/a/f91\n/a/f92\n/a/f93\n/a/f94\n/a/f95\n/a/f96\n/a/f97\n/a/f98\n/a/f99\n/a/f100\n/a/f101\n/a/f102\n/a/f103\n/a/f104\n/a/f105\n/a/f106\n/a/f107\n/a/f108\n/a/f109\n/a/f110\n/a/f111\n/a/f112\n/a/f113\n/a/f114\n/a/f115\n/a/f116\n/a/f117\n/a/f118\n/a/f119\n/a/f120\n/a/f121\n/a/f122\n/a/f123\n/a/f124\n/a/f125\n/a/f126\n/a/f127\n/a/f128\n/a/f129\n/a/f130\n/a/f131\n/a/f132\n/a/f133\n/a/f134\n/a/f135\n/a/f136\n/a/f137\n/a/f138\n/a/f139\n/a/f140\n/a/f141\n/a/f142\n/a/f143\n/a/f144\n/a/f145\n/a/f146\n/a/f147\n/a/f148\n/a/f149\n/a/f150\n/a/f151\n/a/f152\n/a/f153\n/a/f154\n/a/f155\n/a/f156\n/a/f157\n/a/f158\n/a/f159\n/a/f160\n/a/f161\n/a/f162\n/a/f163\n/a/f164\n/a/f165\n/a/f166\n/a/f167\n/a/f168\n/a/f169\n/a/f170\n/a/f171\n/a/f172\n/a/f173\n/a/f174\n/a/f175\n/a/f176\n/a/f177\n/a/f178\n/a/f179\n/a/f180\n/a/f181\n/a/f182\n/a/f183\n/a/f184\n/a/f185\n/a/f186\n/a/f187\n/a/f188\n/a/f189\n/a/f190\n/a/f191\n/a/f192\n/a/f193\n/a/f194\n/a/f195\n/a/f196\n/a/f197\n/a/f198\n/a/f199\n/a/f200\n/a/f201\n/a/f202\n/a/f203\n/a/f204\n/a/f205\n/a/f206\n/a/f207\n/a/f208\n/a/f209\n/a/f210\n/a/f211\n/a/f212\n/a/f213\n/a/f214\n/a/f215\n/a/f216\n/a/f217\n/a/f218\n/a/f219\n/a/f220\n/a/f221\n/a/f222\n/a/f223\n/a/f224\n/a/f225\n/a/f226\n/a/f227\n/a/f228\n/a/f229\n/a/f230\n/a/f231\n/a/f232\n/a/f233\n/a/f234\n/a/f235\n/a/f236\n/a/f237\n/a/f238\n/a/f239\n/a/f240\n/a/f241\n/a/f242\n/a/f243\n/a/f244\n/a/f245\n/a/f246\n/a/f247\n/a/f248\n/a/f249\n/a/f250\n/a/f251\n/a/f252\n/a/f253\n/a/f254\n/a/f255\n/a/f256\n/a/f257\n/a/f258\n/a/f259\n/a/f260\n/a/f261\n/a/f262\n/a/f263\n/a/f264\n/a/f265\n/a/f266\n/a/f267\n/a/f268\n/a/f269\n/a/f270\n/a/f271\n/a/f272\n/a/f273\n/a/f274\n/a/f275\n/a/f276\n/a/f277\n/a/f278\n/a/f279\n/a/f280\n/a/f281\n/a/f282\n/a/f283\n/a/f284\n/a/f285\n/a/f286\n/a/f287\n/a/f288\n/a/f289\n/a/f290\n/a/f291\n/a/f292\n/a/f293\n/a/f294\n/a/f295\n/a/f296\n/a/f297\n/a/f298\n/a/f299\n/a/f300\n/a/f301\n/a/f302\n/a/f303\n/a/f304\n/a/f305\n/a/f306\n/a/f307\n/a/f308\n/a/f309\n/a/f310\n/a/f311\n/a/f312\n/a/f313\n/a/f314\n/a/f315\n/a/f316\n/a/f317\n/a/f318\n/a/f319\n/a/f320\n/a/f321\n/a/f322\n/a/f323\n/a/f324\n/a/f325\n/a/f326\n/a/f327\n/a/f328\n/a/f329\n/a/f330\n/a/f331\n/a/f332\n/a/f333\n/a/f334\n/a/f335\n/a/f336\n/a/f337\n/a/f338\n/a/f339\n/a/f340\n/a/f341\n/a/f342\n/a/f343\n/a/f344\n/a/f345\n/a/f346\n/a/f347\n/a/f348\n/a/f349\n/a/f350\n/a/f351\n/a/f352\n/a/f353\n/a/f354\n/a/f355\n/a/f356\n/a/f357\n/a/f358\n/a/f359\n/a/f360\n/a/f361\n/a/f362\n/a/f363\n/a/f364\n/a/f365\n/a/f366\n/a/f367\n/a/f368\n/a/f369\n/a/f370\n/a/f371\n/a/f372\n/a/f373\n/a/f374\n/a/f375\n/a/f376\n/a/f377\n/a/f378\n/a/f379\n/a/f380\n/a/f381\n/a/f382\n/a/f383\n/a/f384\n/a/f385\n/a/f386\n/a/f387\n/a/f388\n/a/f389\n/a/f390\n/a/f391\n/a/f392\n/a/f393\n/a/f394\n/a/f395\n/a/f396\n/a/f397\n/a/f398\n/a/f399\n/a/f400\n/a/f401\n/a/f402\n/a/f403\n/a/f404\n/a/f405\n/a/f406\n/a/f407\n/a/f408\n/a/f409\n/a/f410\n/a/f411\n/a/f412\n/a/f413\n/a/f414\n/a/f415\n/a/f416\n/a/f417\n/a/f418\n/a/f419\n/a/f420\n/a/f421\n/a/f422\n/a/f423\n/a/f424\n/a/f425\n/a/f426\n/a/f427\n/a/f428\n/a/f429\n/a/f430\n/a/f431\n/a/f432\n/a/f433\n/a/f434\n/a/f435\n/a/f436\n/a/f437\n/a/f438\n/a/f439\n/a/f440\n/a/f441\n/a/f442\n/a/f443\n/a/f444\n/a/f445\n/a/f446\n/a/f447\n/a/f448\n/a/f449\n/a/f450\n/a/f451\n/a/f452\n/a/f453\n/a/f454\n/a/f455\n/a/f456\n/a/f457\n/a/f458\n/a/f459\n/a/f460\n/a/f461\n/a/f462\n/a/f463\n/a/f464\n/a/f465\n/a/f466\n/a/f467\n/a/f468\n/a/f469\n/a/f470\n/a/f471\n/a/f472\n/a/f473\n/a/f474\n/a/f475\n/a/f476\n/a/f477\n/a/f478\n/a/f479\n/a/f480\n/a/f481\n/a/f482\n/a/f483\n/a/f484\n/a/f485\n/a/f486\n/a/f487\n/a/f488\n/a/f489\n/a/f490\n/a/f491\n/a/f492\n/a/f493\n/a/f494\n/a/f495\n/a/f496\n/a/f497\n/a/f498\n/a/f499\n/a/work\n",
+			"expected": { "excluded": true, "reason": "rules_invalid" }
+		},
+		{
+			"name": "agentpulse-dir-dangling-symlink-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"dedicated": true,
+			"expected": { "excluded": true, "reason": "rules_invalid" }
+		},
+		{
+			"name": "agentpulse-dir-looping-symlink-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"dedicated": true,
+			"expected": { "excluded": true, "reason": "rules_invalid" }
+		},
+		{
+			"name": "home-ancestor-unsearchable-invalid",
+			"platform": "posix",
+			"home": "/home/user",
+			"dedicated": true,
+			"expected": { "excluded": true, "reason": "rules_invalid" }
+		},
+		{
+			"name": "cwd-exactly-4096-chars-still-matches",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "path" },
+			"dataCwdOnly": true
+		},
+		{
+			"name": "cwd-over-4096-chars-is-no-cwd",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"rulesFileLines": ["/a/work"],
+			"expected": { "excluded": true, "reason": "no_cwd" },
+			"dataCwdOnly": true
+		},
+		{
+			"name": "cwd-over-4096-chars-outside-every-rule-is-no-cwd",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"rulesFileLines": ["/b/other"],
+			"expected": { "excluded": true, "reason": "no_cwd" },
+			"dataCwdOnly": true
+		},
+		{
+			"name": "cwd-over-4096-chars-with-no-rules-file-is-not-excluded",
+			"platform": "any",
+			"home": "/home/user",
+			"cwd": "/a/work/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			"expected": { "excluded": false, "reason": null },
+			"dataCwdOnly": true
+		}
+	]
+}

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { TELEGRAM_ACTOR } from "../auth/actor.js";
 import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
@@ -150,6 +151,7 @@ async function handleTelegramAskMessage(message: TelegramMessage): Promise<void>
 			message: normalized,
 			origin: "telegram",
 			telegramChatId: chatId,
+			actor: TELEGRAM_ACTOR,
 		});
 		await telegramSendMessage(
 			chatId,
@@ -297,10 +299,23 @@ async function handleActionCallback(cb: TelegramCallbackQuery): Promise<void> {
 
 	const decision = data.action === "approve" ? "applied" : "declined";
 	const resolvedBy = String(cb.from.id);
-	const result = await resolveActionRequest({ id: request.id, decision, resolvedBy });
+	// A Telegram chat is a member with no identity: team mode refuses it every
+	// owner-or-admin operation an approved action would run, and leaves the
+	// request open for the dashboard.
+	const result = await resolveActionRequest({
+		id: request.id,
+		decision,
+		resolvedBy,
+		actor: TELEGRAM_ACTOR,
+	});
 
 	if (!result.ok) {
-		await answerCallbackQuery(cb.id, "Already claimed by another approval.");
+		await answerCallbackQuery(
+			cb.id,
+			result.reason === "not_owner"
+				? "Approve this in the dashboard. Chat approvals can't act on a member's session in team mode."
+				: "Already claimed by another approval.",
+		);
 		return;
 	}
 	await answerCallbackQuery(

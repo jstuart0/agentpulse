@@ -30,8 +30,11 @@ export const supervisorsSqlite = sqliteTable("supervisors", {
 		.notNull()
 		.default(sql`(datetime('now', '+90 seconds'))`),
 	enrollmentState: text("enrollment_state").notNull().default("active"),
+	excludeRulesState: text("exclude_rules_state"),
 	createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
 	updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+	/** The user who enrolled this host. Null for a pre-upgrade or unowned host. */
+	ownerUserId: text("owner_user_id"),
 });
 
 export const supervisorsPg = pgTable("supervisors", {
@@ -54,6 +57,8 @@ export const supervisorsPg = pgTable("supervisors", {
 		.notNull()
 		.default(sql`CURRENT_TIMESTAMP + INTERVAL '90 seconds'`),
 	enrollmentState: pgText("enrollment_state").notNull().default("active"),
+	excludeRulesState: pgText("exclude_rules_state"),
 	createdAt: tsColumn("postgres", "created_at"),
 	updatedAt: tsColumn("postgres", "updated_at"),
+	ownerUserId: pgText("owner_user_id"),
 });

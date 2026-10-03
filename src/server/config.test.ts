@@ -72,3 +72,70 @@ describe("config.retentionIntervalMs", () => {
 		expect(config.retentionIntervalMs).toBe(60 * 60 * 1000);
 	});
 });
+
+describe("config.modeEnv / config.modeEnvRaw", () => {
+	const MODE_KEY = "AGENTPULSE_MODE";
+	const originalMode = process.env[MODE_KEY];
+
+	afterEach(() => {
+		if (originalMode === undefined) delete process.env[MODE_KEY];
+		else process.env[MODE_KEY] = originalMode;
+	});
+
+	test("unset or blank is no value at all", () => {
+		delete process.env[MODE_KEY];
+		expect(config.modeEnv).toBeNull();
+		expect(config.modeEnvRaw).toBeNull();
+		process.env[MODE_KEY] = "   ";
+		expect(config.modeEnv).toBeNull();
+		expect(config.modeEnvRaw).toBeNull();
+	});
+
+	test("solo and team are recognised after trimming and ignoring case", () => {
+		for (const [raw, expected] of [
+			["solo", "solo"],
+			["team", "team"],
+			["  TEAM ", "team"],
+			["Solo", "solo"],
+		] as const) {
+			process.env[MODE_KEY] = raw;
+			expect(config.modeEnv).toBe(expected);
+			expect(config.modeEnvRaw).toBe(raw.trim());
+		}
+	});
+
+	test("anything else is set-but-unrecognised: no mode, but the raw value is visible so boot can refuse it", () => {
+		process.env[MODE_KEY] = " teem ";
+		expect(config.modeEnv).toBeNull();
+		expect(config.modeEnvRaw).toBe("teem");
+	});
+});
+
+describe("config.adminSsoSubjects", () => {
+	const SUBJECTS_KEY = "AGENTPULSE_ADMIN_SSO_SUBJECTS";
+	const originalSubjects = process.env[SUBJECTS_KEY];
+
+	afterEach(() => {
+		if (originalSubjects === undefined) delete process.env[SUBJECTS_KEY];
+		else process.env[SUBJECTS_KEY] = originalSubjects;
+	});
+
+	test("unset or blank is an empty list", () => {
+		delete process.env[SUBJECTS_KEY];
+		expect(config.adminSsoSubjects).toEqual([]);
+		process.env[SUBJECTS_KEY] = " , ,";
+		expect(config.adminSsoSubjects).toEqual([]);
+	});
+
+	test("splits on commas, trims entries and drops empty ones, keeping case and order", () => {
+		process.env[SUBJECTS_KEY] = " Uid-A, uid-b ,,UID-c ";
+		expect(config.adminSsoSubjects).toEqual(["Uid-A", "uid-b", "UID-c"]);
+	});
+
+	test("is read at call time, so a changed env is seen without re-importing", () => {
+		process.env[SUBJECTS_KEY] = "one";
+		expect(config.adminSsoSubjects).toEqual(["one"]);
+		process.env[SUBJECTS_KEY] = "two";
+		expect(config.adminSsoSubjects).toEqual(["two"]);
+	});
+});

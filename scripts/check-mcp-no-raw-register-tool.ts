@@ -28,17 +28,20 @@ const REGISTER_TOOL_RE = /\.registerTool\s*\(/;
 // registerTool directly.
 const ALLOWLISTED_FILES = new Set(["packages/agentpulse-mcp/src/server.ts"]);
 
-async function* walkTs(dir: string): AsyncGenerator<string> {
+async function* walkTs(dir: string, top = dir): AsyncGenerator<string> {
 	let entries: import("node:fs").Dirent[];
 	try {
 		entries = await readdir(dir, { withFileTypes: true });
-	} catch {
-		return;
+	} catch (err) {
+		// Only a missing top-level directory is tolerated here (the caller then
+		// fails because nothing was scanned); any other read error is real.
+		if (dir === top && (err as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw err;
 	}
 	for (const entry of entries) {
 		const full = join(dir, entry.name);
 		if (entry.isDirectory()) {
-			yield* walkTs(full);
+			yield* walkTs(full, top);
 		} else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
 			yield full;
 		}
@@ -48,12 +51,14 @@ async function* walkTs(dir: string): AsyncGenerator<string> {
 async function main() {
 	const mcpDir = join(ROOT, "packages", "agentpulse-mcp", "src");
 	const violations: string[] = [];
+	let scanned = 0;
 
 	for await (const filePath of walkTs(mcpDir)) {
 		const rel = relative(ROOT, filePath);
 		if (ALLOWLISTED_FILES.has(rel)) continue;
 
 		const content = await readFile(filePath, "utf8");
+		scanned++;
 		const lines = content.split("\n");
 
 		for (let i = 0; i < lines.length; i++) {
@@ -63,6 +68,13 @@ async function main() {
 				);
 			}
 		}
+	}
+
+	if (scanned === 0) {
+		console.error(
+			"ERROR: no .ts files found under packages/agentpulse-mcp/src/ — the guard scanned nothing",
+		);
+		process.exit(1);
 	}
 
 	if (violations.length > 0) {

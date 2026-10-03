@@ -10,7 +10,7 @@
 // tool whose own contract is DB-wide — it forbids *this test* depending on
 // an empty DB, which the id-scoped assertions below avoid).
 
-import { beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { describeSqliteOnly } from "../../../test-utils/backend.js";
 import "../../../db/__test_db.js";
 
@@ -26,6 +26,10 @@ beforeAll(async () => {
 	await initializeDatabase();
 	// dialect resolves naturally to "sqlite" since DATABASE_URL is unset in tests.
 	(config as Record<string, unknown>).vectorSearchEnabled = true;
+});
+
+afterAll(() => {
+	(config as Record<string, unknown>).vectorSearchEnabled = originalVectorSearch;
 });
 
 // Hardcoded rather than imported from event-normalizer.ts's

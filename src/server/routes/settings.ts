@@ -1,10 +1,27 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import { InvalidScopeError, createApiKey, parseScopes } from "../auth/api-key.js";
+import type { Context } from "hono";
+import { InvalidScopeError, SCOPE_MANAGE, createApiKey, parseScopes } from "../auth/api-key.js";
+import type { AuthUser } from "../auth/middleware.js";
 import { requireAuth } from "../auth/middleware.js";
-import { requireOperatorScope } from "../auth/route-scope-policy.js";
+import { OwnerDisabledError, OwnerNotFoundError } from "../auth/owner-state.js";
+import { getRequestActor, isHumanAdmin, requireOperatorScope } from "../auth/route-scope-policy.js";
 import { getDb } from "../db/client.js";
-import { apiKeys, settings } from "../db/schema/index.js";
+import { apiKeys, sessions, settings } from "../db/schema/index.js";
+import { logAdminAction } from "../services/audit-log.js";
+import { NotOwnerError, assertCanRevokeKey, assertCanViewKey } from "../services/authorization.js";
+import { tryConsumeKeyMint } from "../services/key-mint-limit.js";
+import {
+	HumanAdminRequiredForOwnerError,
+	KeyHasOwnerError,
+	KeyNotManageError,
+	applyApiKeyPatch,
+	getAdminServiceKeyIds,
+	getServiceKeyIds,
+	isServiceKeyRow,
+	listAdminServiceKey,
+	revokeApiKey,
+} from "../services/service-keys.js";
 import { ProtectedSettingError, upsertSetting } from "../services/settings-service.js";
 import { getTelemetryDiagnostics, sendTelemetryNow } from "../services/telemetry.js";
 import {
@@ -20,11 +37,19 @@ settingsRouter.use("*", requireAuth());
 // Deliberately manage-only (no route here is in OBSERVE_READ_PATHS).
 settingsRouter.use("*", requireOperatorScope());
 
+const INSTANCE_SETTING_PREFIX = "instance.";
+// The one user-settable key a member may write in team mode; the others are an admin's.
+const MEMBER_WRITABLE_SETTING = "theme";
+
 // GET /api/v1/settings - Get all settings
 settingsRouter.get("/settings", async (c) => {
 	const rows = await getDb().select().from(settings);
 	const result: Record<string, unknown> = {};
 	for (const row of rows) {
+		// The instance rows (the mode, the kept admin service keys) are not for
+		// clients: the mode is read from /instance, the kept list from the
+		// `adminService` flag on a key, for admins only.
+		if (row.key.startsWith(INSTANCE_SETTING_PREFIX)) continue;
 		result[row.key] = row.value;
 	}
 	return c.json(result);
@@ -36,6 +61,14 @@ settingsRouter.put("/settings", async (c) => {
 
 	if (!key) {
 		return c.json({ error: "Missing key" }, 400);
+	}
+
+	// Team mode: the theme stays a member's; every other key is an admin's.
+	if (key !== MEMBER_WRITABLE_SETTING) {
+		const actor = await getRequestActor(c);
+		if (actor.mode === "team" && actor.role !== "admin") {
+			return c.json({ error: "admin_required" }, 403);
+		}
 	}
 
 	try {
@@ -167,8 +200,21 @@ settingsRouter.put("/settings/workspace", async (c) => {
 	}
 });
 
-// GET /api/v1/api-keys - List all API keys (without the actual key).
+/** Whose allowance a key mint counts against: the person (their cookie and keys share it), else the key. */
+function keyMintSubject(authUser: AuthUser): string {
+	if (authUser.userId !== null) return `user:${authUser.userId}`;
+	return `key:${authUser.keyId ?? "anonymous"}`;
+}
+
+// GET /api/v1/api-keys - List API keys (without the actual key). Solo: all of
+// them, as always. Team: your own; an admin sees every key, and ?owner=<user id>
+// or ?owner=service narrows the list.
 settingsRouter.get("/api-keys", async (c) => {
+	const actor = await getRequestActor(c);
+	const sees = actor.mode === "team" && actor.role !== "admin" ? "own" : "all";
+	const ownerFilter = actor.mode === "team" && sees === "all" ? c.req.query("owner") : undefined;
+	if (sees === "own" && actor.userId === null) return c.json({ keys: [] });
+
 	const rows = await getDb()
 		.select({
 			id: apiKeys.id,
@@ -178,51 +224,222 @@ settingsRouter.get("/api-keys", async (c) => {
 			createdAt: apiKeys.createdAt,
 			lastUsedAt: apiKeys.lastUsedAt,
 			scopes: apiKeys.scopes,
+			ownerUserId: apiKeys.ownerUserId,
+			createdByUserId: apiKeys.createdByUserId,
 		})
 		.from(apiKeys)
+		.where(
+			sees === "own"
+				? eq(apiKeys.ownerUserId, actor.userId as string)
+				: ownerFilter === "service"
+					? isNull(apiKeys.ownerUserId)
+					: ownerFilter
+						? eq(apiKeys.ownerUserId, ownerFilter)
+						: undefined,
+		)
 		.orderBy(apiKeys.createdAt);
 
-	const keys = rows.map((k) => ({ ...k, scopes: parseScopes(k.scopes) }));
+	const kept = await getAdminServiceKeyIds();
+	const plain = await getServiceKeyIds();
+	const keys = rows.map((k) => ({
+		...k,
+		scopes: parseScopes(k.scopes),
+		adminService: kept.includes(k.id),
+		serviceKey: isServiceKeyRow(k, { admin: kept, plain }),
+	}));
 	return c.json({ keys });
 });
 
-// POST /api/v1/api-keys - Create a new API key.
-settingsRouter.post("/api-keys", async (c) => {
-	const { name, scopes } = await c.req.json<{ name: string; scopes?: string[] }>();
+// GET /api/v1/api-keys/:id - One key (without the secret), for its owner or an admin;
+// a member asking for anyone else's gets the same 404 as for a key that doesn't exist.
+settingsRouter.get("/api-keys/:id", async (c) => {
+	const id = c.req.param("id");
+	try {
+		await assertCanViewKey(await getRequestActor(c), id);
+	} catch (err) {
+		// "Not yours" answers exactly as "doesn't exist", so a member can't probe key ids.
+		if (err instanceof NotOwnerError) return c.json({ error: "API key not found" }, 404);
+		throw err;
+	}
+	const [row] = await getDb().select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+	if (!row) return c.json({ error: "API key not found" }, 404);
+
+	const [service] = await getDb()
+		.select({ count: sql<number>`count(*)`.mapWith(Number) })
+		.from(sessions)
+		.where(and(eq(sessions.ingestKeyId, id), isNull(sessions.ownerUserId)));
+	const kept = await getAdminServiceKeyIds();
+	const plain = await getServiceKeyIds();
+	return c.json({
+		key: {
+			id: row.id,
+			name: row.name,
+			keyPrefix: row.keyPrefix,
+			isActive: row.isActive,
+			createdAt: row.createdAt,
+			lastUsedAt: row.lastUsedAt,
+			scopes: parseScopes(row.scopes),
+			ownerUserId: row.ownerUserId,
+			createdByUserId: row.createdByUserId,
+			adminService: kept.includes(row.id),
+			serviceKey: isServiceKeyRow(row, { admin: kept, plain }),
+		},
+		serviceSessionCount: service?.count ?? 0,
+	});
+});
+
+// POST /api/v1/api-keys - Create a new API key, owned by whoever minted it.
+//
+// `service: true` makes a key with no owner (the creator is still recorded) and
+// needs an admin; a service key that can manage also needs a human admin and
+// is kept as an admin service key. A caller with no user id (DISABLE_AUTH, a
+// service key) always produces a service key, and in team mode must be an admin.
+settingsRouter.post("/api-keys", async (c: Context) => {
+	const { name, scopes, service } = await c.req.json<{
+		name: string;
+		scopes?: string[];
+		service?: boolean;
+	}>();
 
 	if (!name || name.trim().length === 0) {
 		return c.json({ error: "Name is required" }, 400);
 	}
 
+	const authUser = c.get("authUser") as AuthUser;
+	if (!tryConsumeKeyMint(keyMintSubject(authUser))) {
+		c.header("Retry-After", "60");
+		return c.json({ error: "rate_limited" }, 429);
+	}
+	const actor = await getRequestActor(c);
+	const wantsService = service === true;
+	const callerHasNoUser = authUser.userId === null;
+	const canManage = (scopes ?? []).includes(SCOPE_MANAGE);
+	if (wantsService && actor.role !== "admin") return c.json({ error: "admin_required" }, 403);
+	if (!wantsService && callerHasNoUser && actor.mode === "team" && actor.role !== "admin") {
+		return c.json({ error: "admin_required" }, 403);
+	}
+	// A key never mints a service key: a key-minted key belongs to the caller's
+	// owner (or to nobody, if the caller has none) and is never more than that.
+	if (wantsService && !isHumanAdmin(authUser)) {
+		return c.json({ error: "human_admin_required" }, 403);
+	}
+	const keptAsAdminService = wantsService && canManage;
+
 	try {
-		const { key, id } = await createApiKey(name.trim(), scopes);
+		const { key, id } = await createApiKey(name.trim(), scopes, authUser.userId, {
+			service: wantsService,
+			withinTransaction:
+				wantsService && canManage ? (tx, keyId) => listAdminServiceKey(keyId, tx) : undefined,
+		});
 
 		return c.json({
 			id,
 			key, // Only returned once on creation
 			name: name.trim(),
 			scopes: scopes ?? ["ingest"],
+			ownerUserId: wantsService ? null : authUser.userId,
+			// Whether the key is kept as an admin service key. An ownerless key a
+			// service key minted is not: in team mode it acts as a member.
+			adminService: keptAsAdminService,
 			message: "Save this key -- it will not be shown again.",
 		});
 	} catch (err) {
 		if (err instanceof InvalidScopeError) {
 			return c.json({ error: "invalid_scope", value: err.value }, 400);
 		}
+		if (err instanceof OwnerDisabledError) {
+			return c.json({ error: "user_disabled" }, 409);
+		}
 		throw err;
 	}
 });
 
-// DELETE /api/v1/api-keys/:id - Revoke an API key.
-settingsRouter.delete("/api-keys/:id", async (c) => {
+// PATCH /api/v1/api-keys/:id - An admin's change: { ownerUserId | null,
+// attributeSessions?, adminService?, serviceKey? }. Setting adminService needs a
+// human admin; serviceKey (keep an ownerless key as a plain service key) any admin.
+settingsRouter.patch("/api-keys/:id", async (c: Context) => {
 	const id = c.req.param("id");
+	const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+	if (body === null || typeof body !== "object") return c.json({ error: "invalid_patch" }, 400);
 
-	const [existing] = await getDb().select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
-
-	if (!existing) {
-		return c.json({ error: "API key not found" }, 404);
+	const hasOwner = "ownerUserId" in body;
+	const owner = body.ownerUserId;
+	const attributeSessions = body.attributeSessions;
+	const adminService = body.adminService;
+	const serviceKey = body.serviceKey;
+	const ownerOk = !hasOwner || owner === null || typeof owner === "string";
+	const flagsOk =
+		(attributeSessions === undefined || typeof attributeSessions === "boolean") &&
+		(adminService === undefined || typeof adminService === "boolean") &&
+		(serviceKey === undefined || typeof serviceKey === "boolean");
+	const changesSomething = hasOwner || adminService !== undefined || serviceKey !== undefined;
+	// Keeping a key as an admin service key is only meaningful for a key with no
+	// owner, so an owner together with adminService is refused; clearing the
+	// owner together with adminService: true is how a kept key stays kept.
+	const conflicting = hasOwner && owner !== null && adminService !== undefined;
+	const attributesWithoutOwner =
+		attributeSessions !== undefined && !(hasOwner && typeof owner === "string");
+	if (!ownerOk || !flagsOk || !changesSomething || conflicting || attributesWithoutOwner) {
+		return c.json({ error: "invalid_patch" }, 400);
 	}
 
-	await getDb().update(apiKeys).set({ isActive: false }).where(eq(apiKeys.id, id));
+	const authUser = c.get("authUser") as AuthUser;
+	if (adminService !== undefined && !isHumanAdmin(authUser)) {
+		return c.json({ error: "human_admin_required" }, 403);
+	}
+
+	try {
+		const result = await applyApiKeyPatch(
+			id,
+			{
+				...(hasOwner ? { ownerUserId: owner as string | null } : {}),
+				attributeSessions: attributeSessions as boolean | undefined,
+				adminService: adminService as boolean | undefined,
+				serviceKey: serviceKey as boolean | undefined,
+			},
+			isHumanAdmin(authUser),
+		);
+		if (!result.found) return c.json({ error: "API key not found" }, 404);
+		logAdminAction("api_key_updated", await getRequestActor(c), {
+			keyId: id,
+			...(hasOwner ? { ownerUserId: owner } : {}),
+			...(adminService !== undefined ? { adminService } : {}),
+			...(serviceKey !== undefined ? { serviceKey } : {}),
+			attributedSessions: result.attributedSessions,
+		});
+		return c.json({
+			ok: true,
+			attributedSessions: result.attributedSessions,
+			adminService: result.adminService,
+			serviceKey: result.serviceKey,
+		});
+	} catch (err) {
+		if (err instanceof OwnerNotFoundError) return c.json({ error: "user_not_found" }, 404);
+		if (err instanceof OwnerDisabledError) return c.json({ error: "user_disabled" }, 409);
+		if (err instanceof KeyHasOwnerError) return c.json({ error: "key_has_owner" }, 409);
+		if (err instanceof KeyNotManageError) return c.json({ error: "key_not_manage" }, 409);
+		if (err instanceof HumanAdminRequiredForOwnerError) {
+			return c.json({ error: "human_admin_required" }, 403);
+		}
+		throw err;
+	}
+});
+
+// DELETE /api/v1/api-keys/:id - Revoke an API key. Solo: anyone, as always.
+// Team: the key's owner or an admin; a service key is an admin's. "Not yours"
+// answers exactly as "doesn't exist" (404), so a member can't probe key ids.
+settingsRouter.delete("/api-keys/:id", async (c) => {
+	const id = c.req.param("id");
+	try {
+		await assertCanRevokeKey(await getRequestActor(c), id);
+	} catch (err) {
+		if (err instanceof NotOwnerError) return c.json({ error: "API key not found" }, 404);
+		throw err;
+	}
+
+	if (!(await revokeApiKey(id))) {
+		return c.json({ error: "API key not found" }, 404);
+	}
 
 	return c.json({ ok: true });
 });

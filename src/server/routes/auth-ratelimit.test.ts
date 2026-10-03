@@ -14,7 +14,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import "../services/ai/__test_db.js";
 
 // Top-level await imports — same pattern as settings-route.test.ts
-const { checkPasswordComplexity, getRateBucketCount, recordFailure } = await import("./auth.js");
+const { MAX_BUCKETS, checkPasswordComplexity, getRateBucketCount, hasRateBucket, recordFailure } =
+	await import("./auth.js");
 const { Hono } = await import("hono");
 const { authRouter } = await import("./auth.js");
 const { config } = await import("../config.js");
@@ -121,22 +122,24 @@ describe("change-password complexity enforcement", () => {
 // the production code path for the eviction invariant.
 
 describe("rateBuckets size cap", () => {
-	const MAX_BUCKETS = 50_000;
+	test("the cap is 50 000 buckets", () => {
+		expect(MAX_BUCKETS).toBe(50_000);
+	});
 
-	test("Map size stays at MAX_BUCKETS after MAX_BUCKETS+1 unique IP+username inserts", () => {
-		// Insert MAX_BUCKETS+1 distinct keys. Each call to recordFailure with a
-		// new key will attempt to add a fresh bucket. Once the map reaches
-		// MAX_BUCKETS, the next insert must evict the oldest before adding.
-		for (let i = 0; i <= MAX_BUCKETS; i++) {
-			recordFailure(`cap_test_ip_${i}:cap_test_user_${i}`);
-		}
+	test("past the cap the oldest bucket is evicted first and the newest survives", () => {
+		// More inserts than any earlier test left behind, so every older
+		// bucket is evicted before one of these could be.
+		const extra = 200;
+		const key = (i: number) => `evict_order_ip_${i}:evict_order_user_${i}`;
+		for (let i = 0; i < MAX_BUCKETS + extra; i++) recordFailure(key(i));
 
-		const count = getRateBucketCount();
-		// After MAX_BUCKETS+1 inserts, the eviction should have fired exactly once,
-		// keeping the map at ≤ MAX_BUCKETS. Some buckets from earlier tests may
-		// already be in the map (the module-level Map persists across tests in a
-		// single run), so we check ≤ MAX_BUCKETS rather than == MAX_BUCKETS.
-		expect(count).toBeLessThanOrEqual(MAX_BUCKETS);
+		expect(getRateBucketCount()).toBe(MAX_BUCKETS);
+		// Exactly `extra` buckets were evicted, oldest first: the first of
+		// these inserts is gone, the one right after the evicted run and the
+		// last one are still there.
+		expect(hasRateBucket(key(0))).toBe(false);
+		expect(hasRateBucket(key(extra))).toBe(true);
+		expect(hasRateBucket(key(MAX_BUCKETS + extra - 1))).toBe(true);
 	});
 });
 

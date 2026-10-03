@@ -188,3 +188,13 @@ describe("does not false-positive", () => {
 		SCAN_TIMEOUT_MS,
 	);
 });
+
+describe("the check:installers script syntax-checks every shell installer", () => {
+	test("setup-hooks.sh, setup-relay.sh and install-local.sh are each passed to bash -n", async () => {
+		const pkg = JSON.parse(await readFile(join(ROOT, "package.json"), "utf-8"));
+		const script: string = pkg.scripts["check:installers"];
+		for (const installer of ["install-local.sh", "setup-relay.sh", "setup-hooks.sh"]) {
+			expect(script, installer).toContain(`bash -n scripts/${installer}`);
+		}
+	});
+});

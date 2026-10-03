@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { ActionInboxItem } from "../../../shared/types.js";
+import { plainErrorMessage } from "../../lib/api-errors.js";
 import type { ActionRequestDecision } from "../../lib/api.js";
 import { formatTimeAgo } from "../../lib/utils.js";
 import { KindBadge } from "./shared/KindBadge.js";
@@ -328,7 +329,7 @@ export function ActionRequestCard({
 		try {
 			await onDecide(item.id, decision);
 		} catch (e) {
-			setErr(e instanceof Error ? e.message : String(e));
+			setErr(plainErrorMessage(e));
 		} finally {
 			setBusy(false);
 		}

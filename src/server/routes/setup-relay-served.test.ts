@@ -6,7 +6,7 @@
  * checksums the same embedded strings, and nothing is derived from the `Host`
  * hostname. The three local installers take at most a numeric port from `Host`.
  */
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,6 +76,11 @@ const sources = () => ({
 	setupRelay: INSTALLER_SOURCES.setupRelay,
 	relay: INSTALLER_SOURCES.relay,
 	statusline: INSTALLER_SOURCES.statusline,
+});
+
+// Other files read /health expecting the not-ready state a fresh process has.
+afterAll(async () => {
+	(await import("./health.js"))._resetDbReadyForTest(false);
 });
 
 beforeAll(async () => {

@@ -46,9 +46,9 @@ describe("guardWsUpgrade — ingest-only api_key → 403", () => {
 	test("ingest-scoped key → returns 403 with insufficient_scope", async () => {
 		const { key } = await createApiKey("ws-guard-ingest-only", ["ingest"]);
 		const result = await guardWsUpgrade(bearerHeaders(key));
-		if (!result) throw new Error("expected a rejection Response, got null");
-		expect(result.status).toBe(403);
-		const body = (await result.json()) as { error: string; required: string };
+		if (result.allowed) throw new Error("expected a rejection, got an allowed upgrade");
+		expect(result.response.status).toBe(403);
+		const body = (await result.response.json()) as { error: string; required: string };
 		expect(body.error).toBe("insufficient_scope");
 		expect(body.required).toBe("manage");
 	});
@@ -57,16 +57,18 @@ describe("guardWsUpgrade — ingest-only api_key → 403", () => {
 // ─── Manage-scoped keys: must be allowed (null) ───────────────────────────────
 
 describe("guardWsUpgrade — manage-scoped api_key → allowed", () => {
-	test("ingest+manage key → returns null (allowed)", async () => {
-		const { key } = await createApiKey("ws-guard-ingest-manage", ["ingest", "manage"]);
+	test("ingest+manage key → allowed, carrying the key id and no user id (service key)", async () => {
+		const { key, id } = await createApiKey("ws-guard-ingest-manage", ["ingest", "manage"]);
 		const result = await guardWsUpgrade(bearerHeaders(key));
-		expect(result).toBeNull();
+		expect(result.allowed).toBe(true);
+		if (!result.allowed) return;
+		expect(result.data).toEqual({ userId: null, keyId: id });
 	});
 
-	test("manage-only key → returns null (WS does not require ingest)", async () => {
+	test("manage-only key → allowed (WS does not require ingest)", async () => {
 		const { key } = await createApiKey("ws-guard-manage-only", ["manage"]);
 		const result = await guardWsUpgrade(bearerHeaders(key));
-		expect(result).toBeNull();
+		expect(result.allowed).toBe(true);
 	});
 });
 
@@ -74,7 +76,7 @@ describe("guardWsUpgrade — manage-scoped api_key → allowed", () => {
 // (SSO sessions are self-contained; no local_auth_users row required.)
 
 describe("guardWsUpgrade — SSO session cookie → allowed", () => {
-	test("valid SSO session cookie → returns null (allowed)", async () => {
+	test("valid SSO session cookie → allowed, carrying the SSO user's id", async () => {
 		const { token } = await issueSession({
 			userId: "sso:ws-guard-sso-subject",
 			durationMs: 3_600_000,
@@ -84,7 +86,10 @@ describe("guardWsUpgrade — SSO session cookie → allowed", () => {
 			provider: "authentik",
 		});
 		const result = await guardWsUpgrade(cookieHeaders(token));
-		expect(result).toBeNull();
+		expect(result.allowed).toBe(true);
+		if (!result.allowed) return;
+		expect(result.data.userId).toBeTruthy();
+		expect(result.data.keyId).toBeNull();
 	});
 });
 
@@ -93,13 +98,29 @@ describe("guardWsUpgrade — SSO session cookie → allowed", () => {
 describe("guardWsUpgrade — unauthenticated → 401", () => {
 	test("no auth headers → returns 401", async () => {
 		const result = await guardWsUpgrade(new Headers());
-		if (!result) throw new Error("expected a rejection Response, got null");
-		expect(result.status).toBe(401);
+		if (result.allowed) throw new Error("expected a rejection, got an allowed upgrade");
+		expect(result.response.status).toBe(401);
 	});
 
 	test("invalid Bearer token → returns 401", async () => {
 		const result = await guardWsUpgrade(bearerHeaders("ap_completelybogus000000000000"));
-		if (!result) throw new Error("expected a rejection Response, got null");
-		expect(result.status).toBe(401);
+		if (result.allowed) throw new Error("expected a rejection, got an allowed upgrade");
+		expect(result.response.status).toBe(401);
+	});
+});
+
+// ─── DISABLE_AUTH: allowed, no identity ──────────────────────────────────────
+
+describe("guardWsUpgrade — DISABLE_AUTH", () => {
+	test("allowed with neither a user id nor a key id", async () => {
+		(config as Record<string, unknown>).disableAuth = true;
+		try {
+			const result = await guardWsUpgrade(new Headers());
+			expect(result.allowed).toBe(true);
+			if (!result.allowed) return;
+			expect(result.data).toEqual({ userId: null, keyId: null });
+		} finally {
+			(config as Record<string, unknown>).disableAuth = false;
+		}
 	});
 });

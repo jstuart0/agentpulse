@@ -129,6 +129,7 @@ async function spawnRelay(
 				PATH: process.env.PATH ?? "/usr/bin:/bin",
 				TMPDIR: process.env.TMPDIR ?? "/tmp",
 				HOME: home,
+				AGENTPULSE_TEST_RELAY_ACCOUNT_HOME: "",
 				AGENTPULSE_RELAY_SYNC_MS: "200",
 				...opts.env,
 			},
@@ -292,6 +293,7 @@ afterAll(async () => {
 	for (const r of [...running]) await stopRelay(r);
 	server?.stop(true);
 	config.disableAuth = originalDisableAuth;
+	_resetDbReadyForTest(false);
 	if (root) await rm(root, { recursive: true, force: true });
 });
 

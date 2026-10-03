@@ -42,6 +42,14 @@ export interface UpsertSettingOptions {
 	 * {@link ProtectedSettingError}.
 	 */
 	allowProtected?: boolean;
+	/**
+	 * Transaction handle. A caller running inside withAdminLock (the
+	 * mode switch, the admin-service-key list) passes this so the write
+	 * lands on the same tx as the rest of the sequence, not a fresh
+	 * connection.
+	 */
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx?: any;
 }
 
 /**
@@ -62,7 +70,7 @@ export async function upsertSetting(
 		throw new ProtectedSettingError(key);
 	}
 	const now = new Date().toISOString();
-	await getDb()
+	await (opts.tx ?? getDb())
 		.insert(settings)
 		.values({ key, value, updatedAt: now })
 		.onConflictDoUpdate({

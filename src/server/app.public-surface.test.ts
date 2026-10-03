@@ -13,6 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import "./db/__test_db.js";
+import { deleteAllSupervisors } from "./services/__test_supervisors.js";
 
 const { config } = await import("./config.js");
 const { initializeDatabase, getDb } = await import("./db/client.js");
@@ -93,7 +94,8 @@ beforeAll(async () => {
 	supervisorX = await enrollAndRegister(`sup-x-${crypto.randomUUID().slice(0, 8)}`);
 });
 
-afterAll(() => {
+afterAll(async () => {
+	await deleteAllSupervisors();
 	(config as Record<string, unknown>).disableAuth = originalDisableAuth;
 	_resetDbReadyForTest(false);
 });
@@ -126,10 +128,14 @@ const NON_AGENT_PUBLIC_ROUTES: Array<{ method: string; path: string }> = [
 	{ method: "POST", path: "/api/v1/auth/login" },
 	{ method: "POST", path: "/api/v1/auth/logout" },
 	{ method: "POST", path: "/api/v1/auth/signup" },
+	// Exempt so a local account behind SSO can change its password: the
+	// in-handler requireAuth still refuses a request with no credential.
+	{ method: "POST", path: "/api/v1/auth/change-password" },
 	{ method: "GET", path: "/app-api/v1/auth/me" },
 	{ method: "POST", path: "/app-api/v1/auth/login" },
 	{ method: "POST", path: "/app-api/v1/auth/logout" },
 	{ method: "POST", path: "/app-api/v1/auth/signup" },
+	{ method: "POST", path: "/app-api/v1/auth/change-password" },
 	{ method: "POST", path: "/api/v1/channels/telegram/webhook" },
 	{ method: "GET", path: "/setup.sh" },
 	{ method: "GET", path: "/setup-relay.sh" },
@@ -294,6 +300,8 @@ const PUBLIC_NO_CRED_EXPECT: Record<string, { status: number; error?: string }> 
 		status: 400,
 		error: "Password must be at least 12 characters.",
 	},
+	"POST /api/v1/auth/change-password": { status: 401 },
+	"POST /app-api/v1/auth/change-password": { status: 401 },
 	"POST /api/v1/channels/telegram/webhook": { status: 404, error: "telegram_disabled" },
 	"POST /api/v1/csp-report": { status: 204 },
 };
@@ -359,10 +367,15 @@ describe("(b2) shadowing check — no credential at all, per-route expected stat
 
 			// Global rule: no row may carry the sibling operator-gate's exact
 			// rejection signature — the whole point of this pass.
+			// The change-password routes are the exception: they are exempt from
+			// forwardauth only so a local account can reach them, and require a
+			// signed-in user in the handler, so their 401 is that handler's own.
 			const looksLikeSiblingGate =
 				(res.status === 401 && parsedError === "Unauthorized") ||
 				(res.status === 403 && parsedError === "insufficient_scope");
-			expect(looksLikeSiblingGate, `${key} looked like a shadowed operator gate`).toBe(false);
+			if (!path.endsWith("/auth/change-password")) {
+				expect(looksLikeSiblingGate, `${key} looked like a shadowed operator gate`).toBe(false);
+			}
 		}
 	});
 });

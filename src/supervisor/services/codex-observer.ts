@@ -1,8 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
+	closeSync,
 	existsSync,
 	lstatSync,
+	openSync,
 	readFileSync,
+	readSync,
 	readdirSync,
 	renameSync,
 	statSync,
@@ -12,6 +15,7 @@ import {
 import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { type LoadExcludeRulesResult, evaluateExclusion } from "../../shared/exclude-rules.js";
 import {
 	CODEX_NATIVE_MARKER_DIR,
 	DELIVERY_ID_HEADER,
@@ -37,18 +41,43 @@ const BACKFILL_DAYS = Math.max(
 // marker older than that plus a small margin is safe to evict.
 const NATIVE_MARKER_MAX_AGE_MS = (BACKFILL_DAYS + 2) * 24 * 60 * 60 * 1000;
 
-type FileState = { offset: number; sessionId: string };
-type ObserverState = { files: Record<string, FileState> };
+export type FileState = {
+	offset: number;
+	sessionId: string;
+	/** The directory the session is in, from the latest session_meta; null = looked for and not found, undefined = never looked. Never kept for an excluded session. */
+	cwd?: string | null;
+	/** Set once the directory was covered by an exclude rule; never cleared. The only thing kept about such a session besides where its file was read to. */
+	excluded?: boolean;
+};
+export type ObserverState = { files: Record<string, FileState> };
 
-function loadState(): ObserverState {
+export function loadState(path: string = STATE_FILE): ObserverState {
 	try {
-		if (!existsSync(STATE_FILE)) return { files: {} };
-		const raw = readFileSync(STATE_FILE, "utf8");
-		const parsed = JSON.parse(raw) as ObserverState;
-		return parsed && typeof parsed === "object" && parsed.files ? parsed : { files: {} };
+		if (!existsSync(path)) return { files: {} };
+		const raw = readFileSync(path, "utf8");
+		const parsed = JSON.parse(raw) as { files?: Record<string, unknown> };
+		if (!parsed || typeof parsed !== "object" || !parsed.files) return { files: {} };
+		const files: Record<string, FileState> = {};
+		for (const [file, entry] of Object.entries(parsed.files)) {
+			const clean = sanitizeEntry(entry);
+			if (clean) files[file] = clean;
+		}
+		return { files };
 	} catch {
 		return { files: {} };
 	}
+}
+
+/** An entry from before the directory and exclusion fields has neither; one with a field of the wrong type loses just that field. */
+function sanitizeEntry(entry: unknown): FileState | null {
+	if (!entry || typeof entry !== "object") return null;
+	const e = entry as Record<string, unknown>;
+	if (typeof e.offset !== "number" || !Number.isFinite(e.offset) || e.offset < 0) return null;
+	if (typeof e.sessionId !== "string") return null;
+	const clean: FileState = { offset: e.offset, sessionId: e.sessionId };
+	if (typeof e.cwd === "string" || e.cwd === null) clean.cwd = e.cwd;
+	if (e.excluded === true) clean.excluded = true;
+	return clean;
 }
 
 let warnedPlantedTmpPath = false;
@@ -237,6 +266,59 @@ function tryParseJson(value: unknown): unknown {
 	}
 }
 
+/** What the observer asks of the exclude rules: their state as it is now. */
+export interface ObserverRules {
+	current(): LoadExcludeRulesResult;
+}
+
+/** What a caller that passed no rules gets: nothing can be judged, so nothing is posted (the same as while the rules file is invalid). */
+const NO_RULES_GIVEN: LoadExcludeRulesResult = { state: "invalid", rules: [] };
+/** How much of a file's start is read to find its first session_meta. */
+const HEAD_SCAN_BYTES = 256 * 1024;
+
+/**
+ * The directory in a rollout file's first session_meta, read from the start of
+ * the file (never posting anything); null when there is none to be found. Only
+ * for an entry saved before the directory was recorded.
+ */
+function discoverCwd(filePath: string): string | null {
+	let head: string;
+	try {
+		const fd = openSync(filePath, "r");
+		try {
+			const buf = Buffer.alloc(HEAD_SCAN_BYTES);
+			const n = readSync(fd, buf, 0, HEAD_SCAN_BYTES, 0);
+			head = buf.subarray(0, n).toString("utf8");
+		} finally {
+			closeSync(fd);
+		}
+	} catch {
+		return null;
+	}
+	const lines = head.split("\n");
+	lines.pop(); // the last element is an unfinished line or the empty tail
+	for (const line of lines) {
+		if (!line.includes('"session_meta"')) continue;
+		try {
+			const entry = JSON.parse(line) as { type?: string; payload?: { cwd?: unknown } };
+			if (entry.type === "session_meta") {
+				return typeof entry.payload?.cwd === "string" ? entry.payload.cwd : null;
+			}
+		} catch {}
+	}
+	return null;
+}
+
+type Posting = "post" | "paused" | "excluded";
+
+/** What may be posted for a session in `cwd` under these rules: everything, nothing for now (invalid rules), or nothing ever (covered, or not known while rules exist). */
+function postingFor(rules: LoadExcludeRulesResult, cwd: string | null): Posting {
+	if (rules.state === "invalid") return "paused";
+	if (rules.state === "none") return "post";
+	if (cwd === null) return "excluded";
+	return evaluateExclusion({ cwd, skip: undefined, rules }).excluded ? "excluded" : "post";
+}
+
 type CallMap = Map<string, string>; // call_id -> tool_name
 
 // ── Decision 19: the native-coverage marker ─────────────────────────────
@@ -328,15 +410,40 @@ export async function processRolloutFile(
 	callMap: CallMap,
 	fetchImpl: FetchLike = fetch,
 	homeDir: string = homedir(),
+	rules?: ObserverRules,
 ): Promise<FileState> {
 	const stat = statSync(filePath);
 	const startOffset = stateEntry?.offset ?? 0;
+	// Excluded is sticky: nothing of this session is read or posted again, whatever happens to the rules.
+	if (stateEntry?.excluded) {
+		return { offset: stat.size, sessionId: stateEntry.sessionId, excluded: true };
+	}
 	if (stat.size === startOffset) {
 		return stateEntry ?? { offset: 0, sessionId: "" };
 	}
 	if (stat.size < startOffset) {
 		// file truncated / replaced — restart from 0
-		return processRolloutFile(filePath, undefined, serverUrl, apiKey, callMap, fetchImpl, homeDir);
+		return processRolloutFile(
+			filePath,
+			undefined,
+			serverUrl,
+			apiKey,
+			callMap,
+			fetchImpl,
+			homeDir,
+			rules,
+		);
+	}
+
+	// The rules as they are now, asked for once. The directory is known from the saved entry, or
+	// (for an entry saved before it was recorded) read from the file's first session_meta; a new
+	// file has none until its session_meta line comes up below.
+	const currentRules = rules?.current() ?? NO_RULES_GIVEN;
+	let cwd: string | null | undefined = stateEntry?.cwd;
+	if (cwd === undefined && stateEntry && startOffset > 0) cwd = discoverCwd(filePath);
+	let posting: Posting | "pending" = cwd === undefined ? "pending" : postingFor(currentRules, cwd);
+	if (posting === "excluded") {
+		return { offset: stat.size, sessionId: stateEntry?.sessionId ?? "", excluded: true };
 	}
 
 	const bytesToRead = stat.size - startOffset;
@@ -365,6 +472,10 @@ export async function processRolloutFile(
 	// Decision 19: checked once per call (not per line) — negative results
 	// are re-evaluated on the next call; a positive result caches.
 	let covered = sessionId ? isNativeCovered(sessionId, homeDir) : false;
+	/** Posts only while posting is allowed; while the rules are invalid the line is read and its offset advances, nothing more. */
+	const post = async (payload: HookPayload, deliveryId: string) => {
+		if (posting === "post") await postHook(fetchImpl, serverUrl, apiKey, payload, deliveryId);
+	};
 
 	// Rollout lines whose `type` isn't one of the cases handled below fall
 	// through silently and are skipped. This is intentional forward-compat:
@@ -401,15 +512,18 @@ export async function processRolloutFile(
 			const p = entry.payload ?? {};
 			sessionId = typeof p.id === "string" ? p.id : sessionId;
 			covered = sessionId ? isNativeCovered(sessionId, homeDir) : covered;
+			const startedIn = typeof p.cwd === "string" ? p.cwd : undefined;
+			// Every session_meta is judged by its own directory: a file can hold more than one session.
+			cwd = startedIn ?? null;
+			posting = postingFor(currentRules, cwd);
+			if (posting === "excluded") {
+				return { offset: startOffset + consumedBytes, sessionId, excluded: true };
+			}
 			if (covered) continue;
-			const cwd = typeof p.cwd === "string" ? p.cwd : undefined;
 			const model = typeof p.model === "string" ? p.model : undefined;
 			if (sessionId) {
-				await postHook(
-					fetchImpl,
-					serverUrl,
-					apiKey,
-					{ session_id: sessionId, hook_event_name: "SessionStart", cwd, model },
+				await post(
+					{ session_id: sessionId, hook_event_name: "SessionStart", cwd: startedIn, model },
 					deliveryId,
 				);
 			}
@@ -429,10 +543,7 @@ export async function processRolloutFile(
 					if (isInjectedContextItem(p.content)) continue;
 					const text = extractTextContent(p.content);
 					if (!text) continue;
-					await postHook(
-						fetchImpl,
-						serverUrl,
-						apiKey,
+					await post(
 						{ session_id: sessionId, hook_event_name: "UserPromptSubmit", prompt: text },
 						deliveryId,
 					);
@@ -447,10 +558,7 @@ export async function processRolloutFile(
 				const toolName = typeof p.name === "string" ? p.name : "unknown_tool";
 				const toolInput = tryParseJson(p.arguments);
 				if (callId) callMap.set(callId, toolName);
-				await postHook(
-					fetchImpl,
-					serverUrl,
-					apiKey,
+				await post(
 					{
 						session_id: sessionId,
 						hook_event_name: "PreToolUse",
@@ -473,10 +581,7 @@ export async function processRolloutFile(
 				const toolName = callMap.get(callId) ?? "unknown_tool";
 				const rawOutput = (p as { output?: unknown }).output;
 				const toolResponse = tryParseJson(rawOutput);
-				await postHook(
-					fetchImpl,
-					serverUrl,
-					apiKey,
+				await post(
 					{
 						session_id: sessionId,
 						hook_event_name: "PostToolUse",
@@ -503,10 +608,7 @@ export async function processRolloutFile(
 					typeof p.last_agent_message === "string" && p.last_agent_message.length > 0
 						? p.last_agent_message
 						: undefined;
-				await postHook(
-					fetchImpl,
-					serverUrl,
-					apiKey,
+				await post(
 					{
 						session_id: sessionId,
 						hook_event_name: "Stop",
@@ -519,12 +621,61 @@ export async function processRolloutFile(
 		}
 	}
 
-	return { offset: newOffset, sessionId };
+	return { offset: newOffset, sessionId, ...(cwd === undefined ? {} : { cwd }) };
+}
+
+export interface ScanContext {
+	state: ObserverState;
+	callMapsByFile: Map<string, CallMap>;
+	serverUrl: string;
+	apiKey: string | null;
+	rules?: ObserverRules;
+	fetchImpl?: FetchLike;
+	homeDir?: string;
+	/** Called only when an entry was added or changed. */
+	save: (state: ObserverState) => void;
+}
+
+/**
+ * One pass over the rollout files: each is processed against one snapshot of the
+ * rules, and the state file is rewritten only when an entry actually changed.
+ */
+export async function scanRolloutFiles(files: string[], ctx: ScanContext): Promise<void> {
+	// One signature check for the whole scan; every file is judged against that snapshot.
+	const snapshot = ctx.rules?.current();
+	const rulesView = snapshot ? { current: () => snapshot } : undefined;
+	for (const file of files) {
+		try {
+			let callMap = ctx.callMapsByFile.get(file);
+			if (!callMap) {
+				callMap = new Map<string, string>();
+				ctx.callMapsByFile.set(file, callMap);
+			}
+			const previous = ctx.state.files[file];
+			const next = await processRolloutFile(
+				file,
+				previous,
+				ctx.serverUrl,
+				ctx.apiKey,
+				callMap,
+				ctx.fetchImpl,
+				ctx.homeDir,
+				rulesView,
+			);
+			ctx.state.files[file] = next;
+			if (!previous || JSON.stringify(previous) !== JSON.stringify(next)) ctx.save(ctx.state);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			console.error(`[codex-observer] ${file}: ${message}`);
+		}
+	}
 }
 
 export async function startCodexObserver(options: {
 	serverUrl: string;
 	apiKey: string | null;
+	/** The exclude rules, shared with the report gate. The observer does not see AGENTPULSE_SKIP; path rules are what cover it. */
+	rules?: ObserverRules;
 }) {
 	if (!existsSync(CODEX_SESSIONS_ROOT)) {
 		console.log("[codex-observer] no ~/.codex/sessions directory; observer idle");
@@ -536,28 +687,14 @@ export async function startCodexObserver(options: {
 	let lastEvictionAt = 0;
 
 	async function scan() {
-		const files = listRolloutFiles(BACKFILL_DAYS);
-		for (const file of files) {
-			try {
-				let callMap = callMapsByFile.get(file);
-				if (!callMap) {
-					callMap = new Map<string, string>();
-					callMapsByFile.set(file, callMap);
-				}
-				const next = await processRolloutFile(
-					file,
-					state.files[file],
-					options.serverUrl,
-					options.apiKey,
-					callMap,
-				);
-				state.files[file] = next;
-				saveState(state);
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				console.error(`[codex-observer] ${file}: ${message}`);
-			}
-		}
+		await scanRolloutFiles(listRolloutFiles(BACKFILL_DAYS), {
+			state,
+			callMapsByFile,
+			serverUrl: options.serverUrl,
+			apiKey: options.apiKey,
+			rules: options.rules,
+			save: (saved) => saveState(saved),
+		});
 
 		const now = Date.now();
 		if (now - lastEvictionAt >= EVICTION_INTERVAL_MS) {

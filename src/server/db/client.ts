@@ -518,7 +518,13 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			disabled_at TEXT,
 			last_login_at TEXT,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
-			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			auth_source TEXT NOT NULL DEFAULT 'local',
+			provider TEXT,
+			subject TEXT,
+			subject_source TEXT,
+			display_name TEXT,
+			must_change_password INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 
@@ -545,7 +551,9 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			is_active INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			last_used_at TEXT,
-			scopes TEXT NOT NULL DEFAULT '["ingest"]'
+			scopes TEXT NOT NULL DEFAULT '["ingest"]',
+			owner_user_id TEXT,
+			created_by_user_id TEXT
 		);
 
 		CREATE TABLE IF NOT EXISTS settings (
@@ -913,6 +921,7 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		"ALTER TABLE supervisors ADD COLUMN config_schema_version INTEGER NOT NULL DEFAULT 1",
 		"ALTER TABLE supervisors ADD COLUMN heartbeat_lease_expires_at TEXT NOT NULL DEFAULT (datetime('now', '+90 seconds'))",
 		"ALTER TABLE supervisors ADD COLUMN enrollment_state TEXT NOT NULL DEFAULT 'active'",
+		"ALTER TABLE supervisors ADD COLUMN exclude_rules_state TEXT",
 		"ALTER TABLE supervisor_enrollment_tokens ADD COLUMN supervisor_id TEXT",
 		"ALTER TABLE launch_requests ADD COLUMN requested_launch_mode TEXT NOT NULL DEFAULT 'interactive_terminal'",
 		"ALTER TABLE launch_requests ADD COLUMN routing_policy TEXT",
@@ -1084,6 +1093,35 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		// AGEN-9: API key scopes. DEFAULT '["ingest"]' backfills all existing rows
 		// to ingest-only, closing the supervisor-management escalation hole.
 		"ALTER TABLE api_keys ADD COLUMN scopes TEXT NOT NULL DEFAULT '[\"ingest\"]'",
+		// Identity columns on users, owner/creator columns on api_keys and
+		// sessions, and owner/requester columns threaded through hosts,
+		// launches, control actions, and AI action requests.
+		// Idempotent — re-running on an already-migrated DB hits "duplicate column
+		// name" (swallowed by isIdempotentMigrationError) for the ALTERs, and the
+		// index statements already carry IF NOT EXISTS.
+		"ALTER TABLE users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local'",
+		"ALTER TABLE users ADD COLUMN provider TEXT",
+		"ALTER TABLE users ADD COLUMN subject TEXT",
+		"ALTER TABLE users ADD COLUMN subject_source TEXT",
+		"ALTER TABLE users ADD COLUMN display_name TEXT",
+		"ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE api_keys ADD COLUMN owner_user_id TEXT",
+		"ALTER TABLE api_keys ADD COLUMN created_by_user_id TEXT",
+		"ALTER TABLE sessions ADD COLUMN owner_user_id TEXT",
+		"ALTER TABLE sessions ADD COLUMN ingest_key_id TEXT",
+		"ALTER TABLE supervisors ADD COLUMN owner_user_id TEXT",
+		"ALTER TABLE supervisor_enrollment_tokens ADD COLUMN created_by_user_id TEXT",
+		"ALTER TABLE launch_requests ADD COLUMN requested_by_user_id TEXT",
+		"ALTER TABLE control_actions ADD COLUMN requested_by_user_id TEXT",
+		"ALTER TABLE ai_action_requests ADD COLUMN resolved_by_user_id TEXT",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_users_provider_subject ON users(provider, subject)",
+		"CREATE INDEX IF NOT EXISTS idx_sessions_owner_last_activity ON sessions(owner_user_id, last_activity_at)",
+		"CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner_user_id)",
+		// Acknowledgement model (WAITING vs IDLE): nullable, additive. Mirrors the
+		// drizzle migrations (sqlite 0007 / postgres 0008) for installs on the
+		// legacy init path.
+		"ALTER TABLE sessions ADD COLUMN last_agent_turn_completed_at TEXT",
+		"ALTER TABLE sessions ADD COLUMN last_user_acknowledged_at TEXT",
 	];
 
 	// Vector search opt-in. The embeddings table only materializes when

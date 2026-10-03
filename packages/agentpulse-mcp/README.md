@@ -36,6 +36,10 @@ npx @agentpulse/mcp serve
 
 Tools span three tiers: `observe`-scoped reads, additional `manage`-only reads (their DTOs carry secrets or operator-authored content), and `manage`-scoped mutations — plus 3 read-only `@`-mentionable Claude Code resources. See the full per-tool catalog, wrapped-endpoint table, and the list of deliberately-excluded operations in the main repo's [`docs/MCP.md`](https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md#tool-catalog) — this package's tool set, schemas, output caps, and scope gating are byte-identical to what's documented there.
 
+`list_hosts` returns each supervisor host as the server reports it, including `excludeRulesState`: `"invalid"` when the exclude file on that host has an error and its supervisor is sending no session data until it is fixed, otherwise `null` or absent (the server keeps no other state).
+
+**Team mode.** Against a server in team mode, a key acts as its owner (a member, or an admin if the owner is one), and an ownerless service key acts as a member unless an admin has kept it as an admin service key. `observe` keys still read every session; owner filtering is a view, not access control. `list_sessions` and `get_stats` accept `owner` (`me`, a user id, `unassigned`, `service`, `all`) and return an error instead of a list when the server's `ownerScope` echo is missing or doesn't match what was asked, because a server that predates owner scoping would ignore the filter and answer with everyone's sessions. `prompt_session`, `stop_session`, `retry_launch` and `launch_agent` aren't owner-checked; `update_session` needs the session's owner or an admin, field by field. A launch the host's supervisor refuses because the directory is excluded fails with the same generic message as a trusted-roots refusal. `GET /users/directory` (REST only, no tool) is readable by `observe` keys and returns `id`, `displayName`, `disabled` and `authSource` for everyone who can own something. Details: [`docs/MCP.md`](https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md#team-mode-agen-64).
+
 ## Security
 
 This is the load-bearing section. Read it before minting a `manage`-scoped key.

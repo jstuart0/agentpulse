@@ -1,7 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { SupervisorEnrollmentTokenInfo } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { supervisorCredentials, supervisorEnrollmentTokens } from "../db/schema/index.js";
+import { supervisorCredentials, supervisorEnrollmentTokens, users } from "../db/schema/index.js";
 
 function generateToken(prefix: string): string {
 	const bytes = new Uint8Array(16);
@@ -42,6 +42,7 @@ function mapEnrollment(
 		createdAt: row.createdAt,
 		usedAt: row.usedAt ?? null,
 		revokedAt: row.revokedAt ?? null,
+		createdByUserId: row.createdByUserId ?? null,
 	};
 }
 
@@ -49,6 +50,7 @@ export async function createSupervisorEnrollmentToken(
 	name: string,
 	expiresAt?: string | null,
 	supervisorId?: string | null,
+	createdByUserId?: string | null,
 ) {
 	const token = generateToken("ape_");
 	const tokenHash = await hashToken(token);
@@ -62,6 +64,7 @@ export async function createSupervisorEnrollmentToken(
 			tokenHash,
 			tokenPrefix,
 			expiresAt: expiresAt ?? null,
+			createdByUserId: createdByUserId ?? null,
 		})
 		.returning();
 
@@ -81,22 +84,93 @@ export async function verifyEnrollmentToken(token: string) {
 		.limit(1);
 	if (!record || !record.isActive || record.usedAt || record.revokedAt) return null;
 	if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) return null;
+	if (record.createdByUserId && (await isUserDisabled(record.createdByUserId))) return null;
 	return mapEnrollment(record);
 }
 
+async function isUserDisabled(userId: string): Promise<boolean> {
+	const [row] = await getDb()
+		.select({ disabledAt: users.disabledAt })
+		.from(users)
+		.where(eq(users.id, userId))
+		.limit(1);
+	return row !== undefined && row.disabledAt !== null;
+}
+
+/**
+ * Marks the token used and returns it, or null when it isn't usable. The
+ * update itself carries the "still active and unused" condition, so two
+ * simultaneous consumes (or a consume racing the creator's disable, which
+ * deactivates the token) can't both win: only the call whose update matched
+ * a row gets the token back.
+ */
 export async function consumeEnrollmentToken(token: string) {
 	const verified = await verifyEnrollmentToken(token);
 	if (!verified) return null;
 	const tokenHash = await hashToken(token);
-	const timestamp = new Date().toISOString();
-	await getDb()
+	const claimed = await getDb()
 		.update(supervisorEnrollmentTokens)
 		.set({
 			isActive: false,
-			usedAt: timestamp,
+			usedAt: new Date().toISOString(),
 		})
-		.where(eq(supervisorEnrollmentTokens.tokenHash, tokenHash));
-	return verified;
+		.where(
+			and(
+				eq(supervisorEnrollmentTokens.tokenHash, tokenHash),
+				eq(supervisorEnrollmentTokens.isActive, true),
+				isNull(supervisorEnrollmentTokens.usedAt),
+			),
+		)
+		.returning({ id: supervisorEnrollmentTokens.id });
+	return claimed.length > 0 ? verified : null;
+}
+
+/**
+ * Deactivate (and mark revoked) every unused enrollment token a user
+ * created. Part of disabling the user; accepts the admin lock's transaction
+ * handle so it commits or rolls back with the rest of the disable. A token
+ * that was already used or revoked keeps its history.
+ */
+export async function deactivateEnrollmentTokensCreatedByUser(
+	userId: string,
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx?: any,
+): Promise<void> {
+	await (tx ?? getDb())
+		.update(supervisorEnrollmentTokens)
+		.set({ isActive: false, revokedAt: new Date().toISOString() })
+		.where(
+			and(
+				eq(supervisorEnrollmentTokens.createdByUserId, userId),
+				eq(supervisorEnrollmentTokens.isActive, true),
+				isNull(supervisorEnrollmentTokens.usedAt),
+				isNull(supervisorEnrollmentTokens.revokedAt),
+			),
+		);
+}
+
+/**
+ * Deactivate (and mark revoked) every unused enrollment token with no recorded
+ * creator. Part of the solo to team switch, on the admin lock's transaction
+ * handle: a token minted in solo can't be judged against a creator when it is
+ * used, so it must not outlive the switch (a host-scoped one could re-key a
+ * host). Used, revoked and creator-recorded tokens keep their state.
+ */
+export async function deactivateCreatorlessEnrollmentTokens(
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx: any,
+): Promise<void> {
+	await tx
+		.update(supervisorEnrollmentTokens)
+		.set({ isActive: false, revokedAt: new Date().toISOString() })
+		.where(
+			and(
+				isNull(supervisorEnrollmentTokens.createdByUserId),
+				eq(supervisorEnrollmentTokens.isActive, true),
+				isNull(supervisorEnrollmentTokens.usedAt),
+				isNull(supervisorEnrollmentTokens.revokedAt),
+			),
+		);
 }
 
 export async function revokeEnrollmentToken(id: string) {
@@ -109,12 +183,28 @@ export async function revokeEnrollmentToken(id: string) {
 		.where(eq(supervisorEnrollmentTokens.id, id));
 }
 
-export async function createSupervisorCredential(supervisorId: string, name: string) {
-	const token = generateToken("aps_");
-	const tokenHash = await hashToken(token);
-	const tokenPrefix = token.slice(0, 11);
+/** A credential token and its stored hash, made ahead of time so the hash isn't awaited inside the admin lock. */
+export interface PreparedSupervisorCredential {
+	token: string;
+	tokenHash: string;
+	tokenPrefix: string;
+}
 
-	const [record] = await getDb()
+export async function prepareSupervisorCredential(): Promise<PreparedSupervisorCredential> {
+	const token = generateToken("aps_");
+	return { token, tokenHash: await hashToken(token), tokenPrefix: token.slice(0, 11) };
+}
+
+/** Stores a prepared credential for a host, replacing its earlier one. Database work only. */
+export async function storeSupervisorCredential(
+	supervisorId: string,
+	name: string,
+	prepared: PreparedSupervisorCredential,
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx?: any,
+) {
+	const { token, tokenHash, tokenPrefix } = prepared;
+	const [record] = await (tx ?? getDb())
 		.insert(supervisorCredentials)
 		.values({
 			supervisorId,
@@ -142,6 +232,15 @@ export async function createSupervisorCredential(supervisorId: string, name: str
 	};
 }
 
+export async function createSupervisorCredential(
+	supervisorId: string,
+	name: string,
+	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+	tx?: any,
+) {
+	return storeSupervisorCredential(supervisorId, name, await prepareSupervisorCredential(), tx);
+}
+
 export async function verifySupervisorCredential(token: string) {
 	if (!token?.startsWith("aps_")) return null;
 	const tokenHash = await hashToken(token);
@@ -164,8 +263,13 @@ export async function verifySupervisorCredential(token: string) {
 	};
 }
 
-export async function revokeSupervisorCredential(supervisorId: string) {
-	await getDb()
+/**
+ * Accepts an optional transaction handle so a caller running inside
+ * withAdminLock issues this on the same tx as the rest of the sequence.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+export async function revokeSupervisorCredential(supervisorId: string, tx?: any) {
+	await (tx ?? getDb())
 		.update(supervisorCredentials)
 		.set({
 			isActive: false,

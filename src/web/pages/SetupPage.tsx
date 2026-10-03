@@ -1,8 +1,12 @@
 import { useEffect, useId, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { AGENT_METADATA } from "../../shared/constants.js";
 import { buildCodexHooksFile, buildCopilotHooksFile } from "../../shared/hook-command.js";
-import type { AgentType } from "../../shared/types.js";
+import type { AgentType, ApiKeyInfo } from "../../shared/types.js";
+import { ExcludeDirectoriesCard } from "../components/ExcludeDirectoriesCard.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
+import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
+import { describeApiError, keyCreationErrorMessage } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
 import {
 	LOCAL_KEY_SCOPES,
@@ -13,8 +17,16 @@ import {
 	isLoopbackHostname,
 	withRelaySuffix,
 } from "../lib/onboarding.js";
-import { AUTH_STEP, codexSetupSteps, lastEventLine } from "../lib/setup-steps.js";
+import {
+	AUTH_STEP,
+	CLAUDE_SKIP_LINE,
+	EXCLUDE_CARD_ANCHOR,
+	RELAY_PARAGRAPH,
+	codexSetupSteps,
+	lastEventLine,
+} from "../lib/setup-steps.js";
 import { useUserStore } from "../stores/user-store.js";
+import { keysForSetup } from "./team-view-state.js";
 
 const AGENT_TOGGLE: Array<{ value: AgentType; label: string }> = [
 	{ value: "claude_code", label: "Claude Code" },
@@ -34,11 +46,14 @@ export function SetupPage() {
 	const serverUrl = window.location.origin;
 	const [agentType, setAgentType] = useState<AgentType>("claude_code");
 	const disableAuth = useUserStore((s) => s.disableAuth);
-	const [keys, setKeys] = useState<
-		Array<{ id: string; name: string; keyPrefix: string; isActive: boolean }>
-	>([]);
+	const ownership = useOwnershipUi();
+	const { hash } = useLocation();
+	const viewerUserId = useUserStore((s) => s.userId);
+	const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
 	const [keysLoaded, setKeysLoaded] = useState(false);
 	const [keysError, setKeysError] = useState<string | null>(null);
+	const [createKeyError, setCreateKeyError] = useState<string | null>(null);
+	const [relayKeyError, setRelayKeyError] = useState<string | null>(null);
 	const [newKeyName, setNewKeyName] = useState("my-laptop");
 	const [creatingKey, setCreatingKey] = useState(false);
 	const [relayKey, setRelayKey] = useState<string | null>(null);
@@ -51,12 +66,19 @@ export function SetupPage() {
 	);
 	const [lastCodexEventLoaded, setLastCodexEventLoaded] = useState(false);
 
+	// The first-run card links to /setup#exclude-directories; the router doesn't scroll to anchors itself.
+	useEffect(() => {
+		if (hash !== `#${EXCLUDE_CARD_ANCHOR}`) return;
+		document.getElementById(EXCLUDE_CARD_ANCHOR)?.scrollIntoView({ block: "start" });
+		document.getElementById(`${EXCLUDE_CARD_ANCHOR}-title`)?.focus({ preventScroll: true });
+	}, [hash]);
+
 	useEffect(() => {
 		if (agentType !== "codex_cli") return;
 		let cancelled = false;
 		setLastCodexEventLoaded(false);
 		api
-			.getSessions({ agent_type: "codex_cli", limit: 1 })
+			.getCodexProbeSessions(ownership.showScope)
 			.then((res) => {
 				if (cancelled) return;
 				const session = res.sessions[0];
@@ -69,7 +91,7 @@ export function SetupPage() {
 		return () => {
 			cancelled = true;
 		};
-	}, [agentType]);
+	}, [agentType, ownership.showScope]);
 
 	useEffect(() => {
 		if (disableAuth) {
@@ -86,7 +108,7 @@ export function SetupPage() {
 				}
 			} catch (err) {
 				if (!cancelled) {
-					setKeysError(err instanceof Error ? err.message : String(err));
+					setKeysError(describeApiError(err, err instanceof Error ? err.message : String(err)));
 					setKeysLoaded(true);
 				}
 			}
@@ -100,6 +122,7 @@ export function SetupPage() {
 	async function handleCreateKey() {
 		if (!newKeyName.trim()) return;
 		setCreatingKey(true);
+		setCreateKeyError(null);
 		try {
 			// Hook-setup keys are ingest-only: they go into agent hook config and
 			// must not carry management privileges. Use Settings to mint manage keys.
@@ -108,7 +131,7 @@ export function SetupPage() {
 			const list = await api.getApiKeys().catch(() => ({ keys }));
 			setKeys(list.keys ?? []);
 		} catch (err) {
-			setKeysError(err instanceof Error ? err.message : String(err));
+			setCreateKeyError(keyCreationErrorMessage(err));
 		} finally {
 			setCreatingKey(false);
 		}
@@ -116,19 +139,21 @@ export function SetupPage() {
 
 	async function handleCreateRelayKey() {
 		setCreatingRelayKey(true);
+		setRelayKeyError(null);
 		try {
 			const res = await api.createApiKey(withRelaySuffix(newKeyName), RELAY_KEY_SCOPES);
 			setRelayKey(res.key);
 			const list = await api.getApiKeys().catch(() => ({ keys }));
 			setKeys(list.keys ?? []);
 		} catch (err) {
-			setKeysError(err instanceof Error ? err.message : String(err));
+			setRelayKeyError(keyCreationErrorMessage(err));
 		} finally {
 			setCreatingRelayKey(false);
 		}
 	}
 
-	const activeKeys = keys.filter((k) => k.isActive);
+	// Team mode lists only the caller's own keys, even for an admin who can list everyone's.
+	const activeKeys = keysForSetup(keys, ownership, viewerUserId);
 	// F167/F177: the key is never in the command (shell history, argv); the
 	// installer asks for it, and only a key minted here is offered to paste.
 	const relayCommand = buildRelayCommand({ serverUrl, codexNamesAgentpulse });
@@ -163,10 +188,11 @@ export function SetupPage() {
 							type: "http",
 							url: `${serverUrl}/api/v1/hooks`,
 							async: true,
-							allowedEnvVars: ["AGENTPULSE_API_KEY"],
+							allowedEnvVars: ["AGENTPULSE_API_KEY", "AGENTPULSE_SKIP"],
 							headers: {
 								Authorization: "Bearer $AGENTPULSE_API_KEY",
 								"X-Agent-Type": "claude_code",
+								"X-AgentPulse-Skip": "$AGENTPULSE_SKIP",
 							},
 						},
 					],
@@ -287,8 +313,11 @@ export function SetupPage() {
 				) : (
 					<>
 						<p className="text-xs text-muted-foreground mb-3">
-							Mint one key per machine. Active keys are listed below for reference (only the prefix
-							is stored — the full key is shown once at creation).
+							{ownership.showTeamCopy
+								? "This key is yours. Sessions it reports are shown as yours, so use one key per machine and don't share it."
+								: "Mint one key per machine."}{" "}
+							{ownership.showTeamCopy ? "Your" : "Active"} keys are listed below for reference (only
+							the prefix is stored — the full key is shown once at creation).
 						</p>
 
 						{keysLoaded && activeKeys.length > 0 && (
@@ -331,6 +360,12 @@ export function SetupPage() {
 							placeholder="ap_..."
 							className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 						/>
+						{ownership.showTeamCopy && (
+							<p className="mt-1 text-[11px] text-hint">
+								A key that belongs to someone else, or a service key, will report sessions under
+								that owner instead of you.
+							</p>
+						)}
 						{apiKey?.startsWith("ap_") && (
 							<p className="mt-2 text-[11px] text-emerald-700 dark:text-emerald-400">
 								✓ Key staged. It will appear in the config blobs below. Save it somewhere — it
@@ -342,6 +377,11 @@ export function SetupPage() {
 								Couldn&apos;t load keys: {keysError}
 							</p>
 						)}
+						{createKeyError && (
+							<p role="alert" className="mt-2 text-xs text-red-600 dark:text-red-400">
+								{createKeyError}
+							</p>
+						)}
 					</>
 				)}
 			</div>
@@ -351,11 +391,7 @@ export function SetupPage() {
 				<h2 className="text-sm font-semibold mb-2">
 					Agents on other machines? Use the relay instead of the manual hook steps below
 				</h2>
-				<p className="text-xs text-muted-foreground mb-3">
-					Claude Code only sends hooks to localhost, so on any other machine you install a small
-					relay that forwards them here. It runs as a login service, points Claude Code and Codex
-					CLI at it, and installs the statusline. Re-run it anytime to update.
-				</p>
+				<p className="text-xs text-muted-foreground mb-3">{RELAY_PARAGRAPH}</p>
 
 				{!disableAuth && (
 					<div className="mb-3">
@@ -388,6 +424,11 @@ export function SetupPage() {
 							>
 								{creatingRelayKey ? "Creating…" : "Mint relay key"}
 							</button>
+						)}
+						{relayKeyError && (
+							<p role="alert" className="mt-2 text-xs text-red-600 dark:text-red-400">
+								{relayKeyError}
+							</p>
 						)}
 					</div>
 				)}
@@ -506,6 +547,9 @@ export function SetupPage() {
 						Copy
 					</button>
 				</div>
+				{agentType === "claude_code" && (
+					<p className="text-xs text-muted-foreground mt-3">{CLAUDE_SKIP_LINE}</p>
+				)}
 			</div>
 
 			{/* Step 4: Codex-only — Status Line integration */}
@@ -614,6 +658,11 @@ curl -s -X POST "${serverUrl}/api/v1/hooks/status" \\
 					</pre>
 				</div>
 			)}
+
+			<ExcludeDirectoriesCard
+				onCopy={(text, label) => copy(text, label)}
+				showTeamCopy={ownership.showTeamCopy}
+			/>
 		</div>
 	);
 }

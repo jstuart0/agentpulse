@@ -7,7 +7,75 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-03
+
 ### Added
+
+- **Team mode and user ownership (AGEN-64).** An install now runs in one of
+  two modes. Solo, the default, behaves as before. Team mode (switched in
+  Settings → Team by an admin, or fixed with `AGENTPULSE_MODE`) records who
+  owns each session, API key and host, adds admins and members, and checks
+  the owner or an admin before a session is deleted, archived, renamed,
+  pinned or its notes edited, before a key is revoked, and before a host is
+  rotated or revoked. A session's owner is whoever's API key first reported
+  it (the first write wins); a launched session is owned by whoever
+  launched it. Team mode is attribution, not privacy: every signed-in
+  member still sees every session, can prompt, stop or retry any managed
+  session, and can launch on any host. New: `GET /instance`,
+  `PUT /instance/mode`, `GET/POST/PATCH /users` and the disable, enable and
+  reset-password routes, `GET /users/directory` (readable by `observe`
+  keys), `PATCH /sessions/:id/owner`, `PATCH /api-keys/:id`,
+  `PATCH /admin/supervisors/:id`, and an `owner` filter on
+  `GET /sessions` and `GET /sessions/stats`. The dashboard gains
+  Mine | Everyone, an Owner select, Group by (Project, User, Agent), owner
+  chips, and server-counted tab badges. SSO users get an account on first
+  sign-in; `AGENTPULSE_ADMIN_SSO_SUBJECTS` lists admin uids. New
+  variables: `AGENTPULSE_MODE`, `AGENTPULSE_ADMIN_SSO_SUBJECTS`,
+  `AGENTPULSE_SESSION_CREATE_LIMIT` (team mode: 120 new sessions a minute
+  per person or ownerless key). With `AGENTPULSE_MODE=team` set in the
+  environment, existing API keys with no owner and manage scope act as
+  members until an admin keeps or assigns them, so automation using one for
+  settings or key management gets `403 admin_required`. After switching,
+  every existing host needs an owner (or its key kept as a service key), or
+  hook events for dashboard-launched sessions from it are ignored.
+  Offboarding means disabling the person in AgentPulse; removing them at
+  the identity provider is not enough. See the README's "Teams" section and
+  `deploy/k8s/RUNBOOK-secrets-rotation.md`. Migration: Postgres `0007` /
+  SQLite `0006`.
+
+- **Exclude rule: keep chosen directories out of AgentPulse (AGEN-63).**
+  `~/.agentpulse/exclude` lists directories (one absolute path per line)
+  whose sessions are never reported, checked on the user's own machine
+  before anything is sent. Codex and Copilot hook commands, the relay and
+  the supervisor apply it; an invalid rules file fails closed for each of
+  them. `AGENTPULSE_SKIP=1` skips one run (Claude Code's hooks forward it as
+  an `X-AgentPulse-Skip` header, which the server drops after
+  authenticating). `agentpulse exclude add|list|check` manage and verify
+  the rules; the Setup page has an "Exclude directories" card; the
+  statusline, a marker file and the Hosts page say when rules are invalid.
+  The server never learns what is excluded, only a host's invalid flag
+  (`excludeRulesState` on hosts, migration Postgres `0009` / SQLite
+  `0008`). Claude Code posting straight to the server does not apply path
+  rules. Re-run setup for Codex: it asks you to re-approve the changed hook
+  command. Windows (PowerShell) support is written but has not been
+  executed on Windows. An older relay or supervisor ignores the rules.
+
+- **Operational session state: WAITING / WORKING / IDLE / ERROR (AGEN).**
+  Original feature contributed by [@Pawel0c0l](https://github.com/Pawel0c0l)
+  — thank you! Sessions now carry two acknowledgement timestamps
+  (`lastAgentTurnCompletedAt`, stamped on Stop; `lastUserAcknowledgedAt`,
+  stamped on UserPromptSubmit and on acknowledging) and a derived
+  `operationalStatus`, computed identically on the server and in the
+  dashboard by the shared classifier in `src/shared/session-state.ts`. The
+  dashboard shows four status cards (a single-select filter), and
+  `GET /sessions/stats` carries the same four counts so they're correct
+  beyond one page. A session you haven't looked at since the agent
+  finished shows WAITING; opening it, or using the new "mark as seen"
+  controls (per-card, or "mark all waiting as seen"), clears it. A failed
+  session shows ERROR until acknowledged, at which point it's dismissed as
+  completed. `POST /sessions/:id/acknowledge` is the new endpoint behind
+  "mark as seen"; it only counts for the session's owner (or anyone, on an
+  unowned session or with auth disabled).
 
 - **Split-SQLite-database detection (hosts-visibility fix).** `GET
   /api/v1/health` now reports `instance: { dbFingerprint, dialect }` — a
@@ -76,6 +144,57 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Changed
 
+- **Counts follow the scratch toggle.** "Show scratch workspaces" now
+  applies to every number on the dashboard (status cards, tab badges,
+  totals), not only the grid; while it is off, how many scratch sessions
+  are left out is shown beside it. This applies to solo installs too.
+- **The Idle tab is gone.** Idle sessions are listed under Active, and
+  the Idle status card filters to them. The tabs are Active, Completed,
+  Archived and All (All leaves archived sessions out, which it now says).
+- **Accounts an admin creates must change their password at first
+  sign-in.** The password the admin hands over is temporary: until the
+  person replaces it, their API keys get `403 password_change_required`
+  on every route except hook ingestion, which keeps accepting events. This
+  applies on solo installs too.
+- **Signup is stricter.** Creating an account through `/auth/signup`
+  refuses a request from a foreign `Origin`, and once any user exists it
+  needs a signed-in human admin (an API key can't).
+- **Open dashboard tabs are kept per person.** On upgrade, the tabs the
+  browser had open move into the first person who signs in (and stay with
+  a solo install that signs in); after that each person gets their own.
+- **Channel management is admin-only in team mode, enforced by the server.**
+  Creating, deleting, configuring and testing a notification channel, and
+  the Telegram bot setup, return `403 admin_required` for a member; the
+  Team and Settings pages already hid them. Solo is unchanged.
+- **Enrolling a host in team mode needs someone to own it.** A key with no
+  owner that isn't kept as an admin service key gets `403 admin_required`
+  from `POST /admin/supervisors/enroll`. Solo is unchanged.
+- **Malformed request bodies answer 400.** `PUT /sessions/:id/pin`,
+  `/archive`, `/notes`, `/rename` and `/claude-md` now return
+  `400 { error: "invalid_body" }` for a body that isn't a JSON object with
+  the right field types. Before, some answered 500, and some changed data
+  silently: a notes body without `notes` wiped the notes, and
+  `"archived": "no"` archived the session. `GET /sessions/:id/timeline`
+  now validates `limit` and `offset` (400 `invalid_limit` /
+  `invalid_offset`).
+- **Live updates with authentication off.** With `DISABLE_AUTH=true`, the
+  WebSocket accepts a connection only when the request's host is a
+  loopback address or one named by `PUBLIC_URL`. Reach such an install on
+  another address and set `PUBLIC_URL`, or the dashboard polls instead.
+- **A launch refusal for a trusted-roots violation is generic while an
+  exclude file exists.** The supervisor's `path_outside_trusted_roots`
+  error no longer names the path or the reason, so a refusal doesn't reveal
+  whether a directory is excluded. The host's own log has the detail.
+  Hosts with no exclude file keep the old message.
+- **Postgres migrations `0007` and `0009`.** `0007` (user ownership) adds
+  15 nullable or defaulted columns, plus `idx_sessions_owner_last_activity`,
+  `idx_api_keys_owner` and a unique `idx_users_provider_subject`. None is
+  built `CONCURRENTLY`: the sessions index takes a `SHARE` lock, so hook
+  writes wait while it builds. On a large table, pre-create it first with
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS`; the migration then skips it.
+  `0009` adds the nullable `supervisors.exclude_rules_state`. Both run in
+  band under the advisory lock; see `deploy/overlays/postgres/README.md`.
+
 - **Postgres event/session search is now index-backed (AGEN-27).** Migration
   `0006` adds `pg_trgm` GIN indexes covering every column/expression
   `PostgresSearchBackend`'s `ILIKE '%term%'` queries already OR together —
@@ -142,6 +261,54 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Fixed
 
+- **A refused admin action could roll back hook writes (SQLite).** The
+  admin lock on SQLite is an open transaction on the one shared
+  connection, and a hook write that landed inside it was lost with it when
+  the action was refused (last admin, undecided key at the mode switch,
+  disabled owner). A locked body now cannot be interleaved with: the lock
+  waits a turn before it starts, its body only awaits database calls, and a
+  body that yields fails tests and logs `admin_lock_body_yielded`.
+- **An open tab learns about role and mode changes made elsewhere.** The
+  dashboard re-checks who you are after a refusal that names your role or
+  ownership, when the tab comes back to the front and when the live
+  connection reconnects, at most once every few seconds. A different
+  person signed in from another tab resets the page; a changed role or
+  mode updates it.
+- **The dashboard returns to Everyone when the instance goes back to
+  solo.** Before, it stayed on Mine with no switch to change it.
+- **A solo install whose sessions are all scratch keeps its dashboard.**
+  The first-run screen shows only when there are no sessions at all.
+- **A first load that only `/auth/me` fails** shows the "Can't reach the
+  server" notice and keeps retrying, instead of staying on the loading
+  screen.
+- **Search results name the owner** of a session hit (`ownerUserId`,
+  `ownerKind`), on both search backends.
+- **A healthy host's heartbeat no longer writes the exclude flag.**
+- **Smaller team-mode fixes in the dashboard.** Change-owner dialogs list a
+  disabled current owner ("name (disabled)") and keep Save off until the
+  owner changes; the Team list and the owner chips use the same initials; a
+  session you don't own shows its notes as text, with the reason and no
+  editor; group-by-User headers show an owner's working and waiting counts
+  only on the Active tab (otherwise they're counted from the cards shown);
+  the Setup page's Codex check asks for your own sessions in team mode; a
+  search no longer makes the list refetch on every count refresh; Try again
+  after a partly failed "Existing items" step doesn't resend what already
+  went through; switching back to solo offers Try again if the people list
+  fails to load; session-page pills and the Stop and Dismiss error buttons
+  reach 4.5:1 contrast in the light theme; the first-run link to the
+  exclude card scrolls clear of the header and focuses its heading; the
+  Hosts notice for an invalid exclude file says to run
+  `agentpulse exclude check` on that machine.
+
+- **Installation id minted twice on a fresh database.** Concurrent first
+  requests each created an id and the last write won, so a new install
+  briefly reported two database fingerprints and the dashboard raised its
+  split-database warning. The id is now minted once.
+- **The stale-session sweep now tells open dashboards.** Sessions the sweep
+  idled or completed used to change in the database without a live update,
+  so lists and count badges disagreed until a reload. Each changed session
+  is now broadcast.
+
 - **Hosts page silently rendered an empty list when the list request
   failed (hosts-visibility fix).** `GET /api/v1/admin/supervisors` failing
   (an expired session, an under-scoped API key, a network error) used to
@@ -202,6 +369,29 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Security
 
+- **Launch-correlation squatting.** A `manage`-scoped caller (REST `POST
+  /api/v1/launches` or MCP `launch_agent`) could previously set a launch's
+  correlation id to an existing or guessed-future session id. On that
+  session's next `SessionStart` event, the session would be silently
+  attached to the attacker's launch instead of its real one, handing the
+  attacker's supervisor ownership of record — making the session's queued
+  prompt/stop control actions claimable by the attacker's supervisor
+  instead of the legitimate one. The server now always mints the
+  correlation id itself (`createValidatedLaunchRequest`) and ignores any
+  caller-supplied value; the no-supervisor hook-path correlation resolver
+  additionally refuses to attach a pending launch to a session that's
+  already managed under a different launch, or that already existed
+  before the launch was created; and `queuePromptAction`/
+  `queueStopAction`/`retryLaunchForSession` now assert the resolved
+  launch's claimant matches the session's actual owner of record before
+  trusting its data or routing a new action to it. No legitimate launch
+  flow (template launch, retry, AI-initiated launch, MCP's
+  `preview_template` → `launch_agent` pass-through) ever depended on a
+  caller-chosen correlation id being honored. The resolver's chronology
+  comparison normalizes both sides to an instant (`parseDbTimestamp`)
+  rather than comparing the stored strings directly, since a raw string
+  comparison can silently flip the wrong way between the SQLite and
+  Postgres default timestamp formats.
 - **Supervisor and installer secret files are now written 0600, not 0644
   (AGEN-21).** `~/.agentpulse/supervisor.json` (the supervisor credential /
   enrollment token), `~/.agentpulse/.env.local` /
@@ -275,6 +465,69 @@ section with a `⚠ breaking` prefix so they're easy to spot.
     mode `0600`) — never in any project-scope file, at any permission.
     Also covers: an existing `settings.json`'s other keys survive the
     merge, and a symlinked `settings.json` is refused.
+- **First-run signup on an SSO-fronted install.** When a forwardauth
+  identity provider is configured (`FORWARDAUTH_TRUST_SECRET` set), signing
+  in via SSO never creates a local account, so the local user count can
+  stay at zero indefinitely. Previously, first-run signup's own gate
+  (`AGENTPULSE_ALLOW_SIGNUP`, off by default) was the only thing standing
+  between an anonymous visitor and self-registering a local admin on such
+  an install — and unlike a non-SSO install, where the first real signup
+  closes the window for good, an SSO-fronted install's local count never
+  grows on its own, so a stray `AGENTPULSE_ALLOW_SIGNUP=true` left over
+  from testing stays open forever instead of closing itself. Signup is now
+  **closed by default** whenever a forwardauth provider is configured:
+  boot logs one line stating that. Set `AGENTPULSE_ALLOW_SIGNUP=true`
+  explicitly if you want local signup available alongside SSO — boot then
+  logs a separate warning that it will stay open indefinitely for exactly
+  the reason above, so the choice to keep it open isn't a silent one. The
+  documented, recommended way to create a
+  local admin on an SSO install remains `AGENTPULSE_LOCAL_ADMIN_USERNAME` /
+  `AGENTPULSE_LOCAL_ADMIN_PASSWORD`, which is unaffected either way.
+  Installs without forwardauth configured are unaffected.
+- **Login timing for a disabled user.** `verifyCredentials` returned
+  immediately for a disabled account, skipping the password-hash cost that
+  every other failure path (unknown username, wrong password) pays — a
+  timing side channel that could distinguish "this username exists but is
+  disabled" from "wrong password." The disabled branch now runs the same
+  dummy password verify as the other failure paths.
+- **Forwardauth provider label.** `FORWARDAUTH_PROVIDER` is encoded
+  directly into the synthetic SSO username as `sso:<provider>:<subject>`. A
+  provider value containing `:` would make that encoding ambiguous; an
+  empty or whitespace-only value would collide across installs. The server
+  now refuses to boot with a clear error if the configured provider is
+  invalid.
+
+### Deprecated
+
+- The following aliases were scheduled for removal in this release. They
+  remain supported in 0.7.0 and **will be removed in v0.8.0**. Migrate now:
+  - `AGENTPULSE_AUTHENTIK_TRUST_SECRET` env var → use `FORWARDAUTH_TRUST_SECRET`.
+  - `agentpulse-strip-client-authentik` Traefik middleware → use
+    `agentpulse-strip-client-forwardauth`.
+  - `deploy/k8s/AUTHENTIK-FORWARDAUTH.md` → see `deploy/k8s/FORWARDAUTH.md`.
+  - The `"authentik"` auth-source value → `"forwardauth"`.
+
+### Upgrade notes
+
+- **Migrations run at boot and are additive.** SQLite `0005`–`0008` and
+  Postgres `0005`–`0009` apply automatically on first start. Nothing is
+  dropped or rewritten.
+- **Postgres owner index.** Postgres `0007` builds
+  `idx_sessions_owner_last_activity` without `CONCURRENTLY`, which takes a
+  `SHARE` lock on `sessions` while it builds, so hook writes wait. On a
+  large table, pre-create it first with `CREATE INDEX CONCURRENTLY IF NOT
+  EXISTS`; the migration then skips it. See `deploy/overlays/postgres/README.md`.
+  The `pg_trgm` search indexes (`0006`) have their own out-of-band path in
+  `deploy/k8s/README.md` ("Upgrading to migration 0006").
+- **The instance stays in solo mode until you switch it.** Upgrading does
+  not turn on team mode; an admin switches it in Settings → Team, or set
+  `AGENTPULSE_MODE`.
+- **Re-run relay setup on each machine** to pick up the current relay and
+  hook shape (`setup-relay.sh`; re-running is safe and keeps your key and
+  port). **Re-approve the Codex hooks** afterwards: the hook command
+  changed, so Codex asks you to trust it again (`/hooks` inside Codex).
+- **Exclude rule on Windows.** The PowerShell support for the exclude rule
+  has not been tested on Windows.
 
 ## [0.6.0] — 2026-09-29
 

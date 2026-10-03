@@ -13,15 +13,20 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
+import type { Actor } from "../auth/actor.js";
 import "../db/__test_db.js";
+import { deleteAllSupervisors } from "../services/__test_supervisors.js";
 
 const { config } = await import("../config.js");
 const { initializeDatabase, getDb } = await import("../db/client.js");
 const { app } = await import("../app.js");
 const { createApiKey } = await import("../auth/api-key.js");
-const { events, launchRequests, managedSessions, sessions } = await import("../db/schema/index.js");
+const { events, launchRequests, managedSessions, sessions, supervisors } = await import(
+	"../db/schema/index.js"
+);
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 const { queuePromptAction } = await import("../services/control-actions.js");
+const TEST_ACTOR: Actor = { userId: null, label: "user" };
 
 type Credential = { id: string; token: string };
 
@@ -145,7 +150,8 @@ beforeAll(async () => {
 	supervisorB = await enrollAndRegister(`sup-b-${crypto.randomUUID().slice(0, 8)}`);
 });
 
-afterAll(() => {
+afterAll(async () => {
+	await deleteAllSupervisors();
 	(config as Record<string, unknown>).disableAuth = originalDisableAuth;
 });
 
@@ -160,7 +166,7 @@ describe("supervisor ownership guard — HTTP (F94)", () => {
 	test("T1: A posts managed-session-state for B's session → 403, unchanged row, B still claims its prompt", async () => {
 		const sessionId = `t1-sess-${crypto.randomUUID().slice(0, 8)}`;
 		await seedOwnedSession(sessionId, supervisorB.id);
-		await queuePromptAction(sessionId, "hello from B");
+		await queuePromptAction(sessionId, "hello from B", TEST_ACTOR);
 
 		const res = await app.request(`/api/v1/supervisors/${supervisorA.id}/managed-session-state`, {
 			method: "POST",
@@ -616,5 +622,35 @@ describe("supervisor ownership guard — HTTP (F94)", () => {
 		// path but present (and merely unequal in value) on another.
 		const serialized = bodies.map((entry) => JSON.stringify(entry.body));
 		expect(new Set(serialized).size).toBe(1);
+	});
+});
+
+describe("a credential that registers without an id", () => {
+	test("re-registers its own host and never inserts a new one", async () => {
+		const before = (await getDb().select().from(supervisors)).map((row) => row.id).sort();
+		const res = await app.request("/api/v1/supervisors/register", {
+			method: "POST",
+			headers: agentHeaders(supervisorA),
+			body: JSON.stringify({
+				hostName: "credential-no-id",
+				platform: "linux",
+				arch: "x64",
+				version: "1.0.0",
+				capabilities: {
+					version: 1,
+					agentTypes: ["claude_code"],
+					launchModes: ["headless"],
+					os: "linux",
+					terminalSupport: [],
+					features: [],
+				},
+				trustedRoots: [],
+			}),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { supervisor: { id: string } };
+		expect(body.supervisor.id).toBe(supervisorA.id);
+		const after = (await getDb().select().from(supervisors)).map((row) => row.id).sort();
+		expect(after).toEqual(before);
 	});
 });

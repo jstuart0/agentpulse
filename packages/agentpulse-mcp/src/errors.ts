@@ -24,6 +24,18 @@ export interface McpErrorResult {
 	content: [{ type: "text"; text: string }];
 }
 
+/**
+ * A request this package refuses to send because it can't be answered
+ * correctly — the message is already written for the caller and is returned
+ * as is. Thrown before any HTTP call, so nothing was sent.
+ */
+export class ToolInputError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ToolInputError";
+	}
+}
+
 const MAX_BODY_PREVIEW_CHARS = 1000;
 
 function errorResult(text: string): McpErrorResult {
@@ -91,6 +103,36 @@ const ERROR_TABLE: ReadonlyArray<{
 			return `AgentPulse rejected the request: this key lacks the "${required}" scope.`;
 		},
 	},
+	// Ownership and role refusals (team mode). The bare codes are opaque to a
+	// model or a script; each says what is needed instead.
+	{
+		status: 403,
+		error: "not_owner",
+		message: "AgentPulse refused: only the owner or an admin can do that.",
+	},
+	{
+		status: 403,
+		error: "admin_required",
+		message: "AgentPulse refused: this needs an admin on the AgentPulse instance.",
+	},
+	{
+		status: 403,
+		error: "human_admin_required",
+		message:
+			"AgentPulse refused: this needs a signed-in admin; an API key can't do it, even an admin's.",
+	},
+	{
+		status: 403,
+		error: "password_change_required",
+		message:
+			"AgentPulse refused: the account behind this key must change the password first. Sign in to the dashboard to change the password.",
+	},
+	{
+		status: 403,
+		error: "bad_origin",
+		message:
+			"AgentPulse refused: the request carried a browser Origin that isn't this instance's. Send it from the AgentPulse dashboard, or without an Origin header.",
+	},
 	// requireAiBuild → 404 (AI not compiled in). requireAiActive → 409
 	// (compiled in but runtime-disabled) — a DIFFERENT message from both the
 	// 404 case and the 409 ai_paused (kill switch) case below (ai-gates.ts:
@@ -145,6 +187,8 @@ function findMapping(status: number, code: string | undefined) {
 
 /** Maps a thrown client-layer error (or anything else) to an MCP tool error result. */
 export function mapError(err: unknown, baseUrl: string): McpErrorResult {
+	if (err instanceof ToolInputError) return errorResult(err.message);
+
 	if (err instanceof TimeoutError || err instanceof NetworkError) {
 		return errorResult(
 			`AgentPulse unreachable at ${baseUrl} — verify state before retrying any mutation (no automatic retries). (${err.message})`,

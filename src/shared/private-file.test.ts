@@ -9,16 +9,19 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	readdirSync,
 	rmSync,
 	statSync,
 	symlinkSync,
 	writeFileSync,
+	writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	tightenPrivateFilePermissionsSync,
 	writeConfigFileSyncNoFollow,
+	writePrivateFileAtomicNoFollow,
 	writePrivateFileSyncNoFollow,
 } from "./private-file.js";
 
@@ -114,6 +117,105 @@ describe("writePrivateFileSyncNoFollow", () => {
  * tool needs to read back (Codex/Copilot hooks.json and their backups),
  * where a 0600 lockdown would just break the tool being configured.
  */
+describe("writePrivateFileAtomicNoFollow", () => {
+	test("writes content and leaves the file at 0600", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-private-"));
+		const target = join(dir, "exclude");
+		writePrivateFileAtomicNoFollow(target, "/a/work\n");
+		expect(readFileSync(target, "utf-8")).toBe("/a/work\n");
+		expect(fileMode(target)).toBe(0o600);
+	});
+
+	test("refuses a symlinked parent directory", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-private-"));
+		const realDir = join(dir, "real");
+		mkdirSync(realDir);
+		const linkedDir = join(dir, "linked");
+		symlinkSync(realDir, linkedDir);
+		expect(() => writePrivateFileAtomicNoFollow(join(linkedDir, "exclude"), "x\n")).toThrow(
+			/symlinked directory/,
+		);
+	});
+
+	test("overwrites existing content correctly", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-private-"));
+		const target = join(dir, "exclude");
+		writePrivateFileAtomicNoFollow(target, "/a/first\n");
+		writePrivateFileAtomicNoFollow(target, "/a/first\n/a/second\n");
+		expect(readFileSync(target, "utf-8")).toBe("/a/first\n/a/second\n");
+	});
+
+	// The core guarantee: a failure injected between the temp write and the
+	// rename must never leave the real target empty or partially written —
+	// it must still hold whatever it held before this call started.
+	test("a failure between write and rename leaves the original target intact, never empty", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-private-"));
+		const target = join(dir, "exclude");
+		writePrivateFileAtomicNoFollow(target, "/a/original\n");
+		expect(readFileSync(target, "utf-8")).toBe("/a/original\n");
+
+		expect(() =>
+			writePrivateFileAtomicNoFollow(target, "/a/original\n/a/new\n", {
+				rename: () => {
+					throw new Error("simulated crash between write and rename");
+				},
+			}),
+		).toThrow(/simulated crash/);
+
+		// The target is untouched — still the ORIGINAL content, never empty,
+		// never the new content either (the rename that would have swapped
+		// it in never happened).
+		expect(readFileSync(target, "utf-8")).toBe("/a/original\n");
+	});
+
+	test("a failure between write and rename doesn't leak the temp file", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-private-"));
+		const target = join(dir, "exclude");
+		expect(() =>
+			writePrivateFileAtomicNoFollow(target, "/a/new\n", {
+				rename: () => {
+					throw new Error("simulated crash between write and rename");
+				},
+			}),
+		).toThrow();
+		const entries = readdirSync(dir);
+		expect(entries).toEqual([]);
+	});
+
+	test("a short write is continued until every byte is on disk", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-private-"));
+		const target = join(dir, "exclude");
+		const content = "/a/one\n/a/two\n/a/three\n";
+		let calls = 0;
+		writePrivateFileAtomicNoFollow(target, content, {
+			write: (fd, buffer, offset, length) => {
+				calls++;
+				return writeSync(fd, buffer, offset, Math.min(length, 5));
+			},
+		});
+		expect(readFileSync(target, "utf-8")).toBe(content);
+		expect(calls).toBeGreaterThan(1);
+	});
+
+	test("a write that makes no progress fails instead of looping, and leaves the original", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-private-"));
+		const target = join(dir, "exclude");
+		writePrivateFileAtomicNoFollow(target, "/a/original\n");
+		expect(() => writePrivateFileAtomicNoFollow(target, "/a/new\n", { write: () => 0 })).toThrow(
+			/no progress|short write/i,
+		);
+		expect(readFileSync(target, "utf-8")).toBe("/a/original\n");
+		expect(readdirSync(dir)).toEqual(["exclude"]);
+	});
+
+	test("the real rename is used by default and actually renames (not a copy left behind)", () => {
+		dir = mkdtempSync(join(tmpdir(), "ap-private-"));
+		const target = join(dir, "exclude");
+		writePrivateFileAtomicNoFollow(target, "/a/work\n");
+		expect(readdirSync(dir)).toEqual(["exclude"]);
+	});
+});
+
 describe("writeConfigFileSyncNoFollow (F232)", () => {
 	test("creates a new file at 0644, not 0600", () => {
 		dir = mkdtempSync(join(tmpdir(), "ap-config-file-"));

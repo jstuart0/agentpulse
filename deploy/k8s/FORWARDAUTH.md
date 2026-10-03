@@ -61,6 +61,22 @@ IngressRoute rules without the forwardauth middleware chain, by design:
 These endpoints MUST stay off forwardauth. If moved behind it, the bridge and the
 auth handler would both set `ap_session` on the same request, silently breaking SSO.
 
+### Why change-password stays off forwardauth
+
+`POST /api/v1/auth/change-password` (and `/app-api/v1/auth/change-password`) is
+also exempt from forwardauth in `07-ingressroute.yaml`, by exact path on both
+API prefixes. A local account an admin created behind an SSO install must
+replace its generated password before it may do anything else, and such a
+person has no SSO session to pass the forwardauth chain with. If the route were
+behind forwardauth they could never reach it.
+
+The exemption doesn't open the route: the handler requires a valid session or
+key and answers 401 without one, before it reads the body, and it counts failed
+current-password attempts per account (5 per 15 minutes, kept in memory, so per
+replica; a restart clears it). Like login and signup, it has **no edge rate
+limit**: the in-app limit is the only one. If you add path rules of your own,
+keep both change-password paths on the same footing as `/auth/login`.
+
 ### Cookie attributes
 
 The `ap_session` cookie minted by the bridge:
@@ -78,15 +94,63 @@ different provider, local session — result in a fresh mint.
 
 ### SSO session properties
 
-SSO sessions are non-admin. `/auth/me` returns:
+SSO users are members unless their subject is listed in
+`AGENTPULSE_ADMIN_SSO_SUBJECTS` (see "Teams" below). `/auth/me` returns, for an
+ordinary SSO user:
 
 ```json
 { "source": "forwardauth", "provider": "<FORWARDAUTH_PROVIDER value>", "role": null }
 ```
 
-No shadow `users` row is created. Identity is stored on the `auth_sessions` row via
-four additive columns (`auth_source`, `sso_subject`, `sso_username`, `provider`). Local
-sessions see `auth_source = "local"` and null SSO columns.
+with the person's `userId` and, in team mode, their effective role alongside.
+Identity is stored on the `auth_sessions` row via four additive columns
+(`auth_source`, `sso_subject`, `sso_username`, `provider`); the session's
+`user_id` is the `users.id` of that person's own row. Local sessions see
+`auth_source = "local"` and null SSO columns.
+
+### Teams: what SSO users get, and what the proxy must guarantee
+
+On first sign-in an SSO user gets a row in `users`, keyed by (provider,
+subject). That row is what owns sessions, keys and hosts in team mode, can be
+disabled by an admin (a disabled SSO user is refused on the next request, and
+their open dashboard disconnects within one heartbeat), and is never recreated
+once disabled. See the README's "Teams" section for what team mode does and
+doesn't do.
+
+- **Admin subjects need the uid header.** `AGENTPULSE_ADMIN_SSO_SUBJECTS` is a
+  comma-separated list of subjects (the stable identifier your identity
+  provider sends in the header named by `FORWARDAUTH_HEADER_UID`), never
+  display usernames. An entry only takes effect for a person whose subject
+  actually came from the uid header. If your provider sends no uid, the
+  username is used as the subject, and AgentPulse treats that as weaker: a
+  username your provider later gives to someone else would inherit the role
+  and everything the first person owned. Boot logs a warning listing active
+  admins identified that way.
+- **A subject is matched exactly as your provider sends it.** AgentPulse
+  doesn't fold case or trim whitespace: two subjects that differ only in
+  case or in surrounding whitespace become two different users, each with
+  their own sessions, keys and hosts, and `AGENTPULSE_ADMIN_SSO_SUBJECTS`
+  must list the form the header actually carries. If your provider can
+  change the form it sends (a case change, a padded value), expect a second
+  account and have an admin disable the old one.
+- **The proxy must strip client-supplied identity headers.** AgentPulse takes
+  the identity headers at face value on a request whose verify header matches
+  `FORWARDAUTH_TRUST_SECRET`; the secret stays required and is not a
+  substitute for stripping. Keep `agentpulse-strip-client-forwardauth` first in
+  the chain, covering every identity header your provider uses
+  (`FORWARDAUTH_HEADER_STRIP_PREFIX` and the exact names in the middleware),
+  so a client-supplied uid or username can never arrive beside a verify header
+  Traefik added. With team mode on, a forged uid is a forged person.
+- **Don't change `FORWARDAUTH_PROVIDER` after people have signed in.** The label
+  is part of every SSO user's identity. Change it and everyone is a new person
+  with a new, empty row; what they owned stays with the old rows. The server
+  refuses to boot if the label is empty or contains a colon.
+- **SSO-only installs and the first admin.** Team mode needs someone who can sign
+  in as an admin. On an SSO-only install, list at least one uid in
+  `AGENTPULSE_ADMIN_SSO_SUBJECTS` and restart before using the Settings switch,
+  or set `AGENTPULSE_LOCAL_ADMIN_USERNAME` and `AGENTPULSE_LOCAL_ADMIN_PASSWORD`.
+  Local signup is closed by default whenever a forwardauth provider is
+  configured.
 
 ### Supervisor endpoint split
 
@@ -378,7 +442,7 @@ upgrading without env changes see identical behaviour.
 
 | Variable | Default | Description |
 |---|---|---|
-| `FORWARDAUTH_TRUST_SECRET` | _(empty)_ | Shared secret for the header trust gate. Generate with `openssl rand -hex 32`. Also accepts the deprecated alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` until v0.7.0. |
+| `FORWARDAUTH_TRUST_SECRET` | _(empty)_ | Shared secret for the header trust gate. Generate with `openssl rand -hex 32`. Also accepts the deprecated alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` until v0.8.0. |
 | `FORWARDAUTH_PROVIDER` | `authentik` | Provider label (used in `/auth/me` response and dashboard UI). Free-form string; only `"authentik"` triggers the Authentik sign-out URL. |
 | `FORWARDAUTH_HEADER_USERNAME` | `X-Authentik-Username` | Header carrying the authenticated username. |
 | `FORWARDAUTH_HEADER_EMAIL` | `X-Authentik-Email` | Header carrying the authenticated email address. |
@@ -387,10 +451,12 @@ upgrading without env changes see identical behaviour.
 | `FORWARDAUTH_HEADER_UID` | `X-Authentik-Uid` | Header carrying the unique user identifier. |
 | `FORWARDAUTH_HEADER_VERIFY` | `X-Authentik-Verify` | Header used to carry the trust secret from Traefik to AgentPulse. Set this to match the header name you inject in `agentpulse-inject-verify`. |
 | `FORWARDAUTH_HEADER_STRIP_PREFIX` | `X-Authentik-` | Prefix of headers stripped before forwardauth runs. Set to the common prefix of your IdP's identity headers. |
+| `AGENTPULSE_ADMIN_SSO_SUBJECTS` | _(empty)_ | Comma-separated SSO subjects (uids, from the header named by `FORWARDAUTH_HEADER_UID`) who are admins. Needs the uid header; see "Teams" above. |
+| `AGENTPULSE_MODE` | _(unset)_ | `solo` or `team`; fixes the instance mode. See the README's "Teams" section. |
 
 The deployment manifest (`04-deployment.yaml`) also binds the deprecated
 `AGENTPULSE_AUTHENTIK_TRUST_SECRET` env var to the same secret key as
-`FORWARDAUTH_TRUST_SECRET` until v0.7.0. Operators rotating their secret update
+`FORWARDAUTH_TRUST_SECRET` until v0.8.0. Operators rotating their secret update
 one Kubernetes Secret field; both env vars receive the new value.
 
 The `agentpulse-config` ConfigMap (`02-configmap.yaml`) includes all eight
@@ -427,7 +493,7 @@ The env var binding in `04-deployment.yaml` picks this up automatically
 (`optional: true` so existing installs without the key configured continue to boot
 — the trust gate is simply not active until the secret is present).
 
-The deprecated key name `AGENTPULSE_AUTHENTIK_TRUST_SECRET` also works until v0.7.0 and is bound to the same secret field in `04-deployment.yaml`.
+The deprecated key name `AGENTPULSE_AUTHENTIK_TRUST_SECRET` also works until v0.8.0 and is bound to the same secret field in `04-deployment.yaml`.
 
 ### Step 3 — Inject the secret into the Traefik middleware
 

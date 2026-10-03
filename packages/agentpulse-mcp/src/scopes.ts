@@ -12,7 +12,9 @@
  * clearly; a silently-empty tool set would look like a broken server.
  */
 import type { AgentPulseClient } from "./client.js";
+import { ToolInputError } from "./errors.js";
 import { SCOPE_ALL, SCOPE_MANAGE, SCOPE_OBSERVE } from "./scope-constants.js";
+import type { OwnerScopeEcho } from "./types.js";
 
 export class ScopeDiscoveryError extends Error {
 	constructor(message: string) {
@@ -81,4 +83,40 @@ export async function discoverScopes(client: AgentPulseClient): Promise<string[]
 	}
 
 	return held;
+}
+
+/** Does the scope the server echoed back say it applied what was asked for? */
+function echoConfirms(requested: string, echo: OwnerScopeEcho | undefined): boolean {
+	if (echo === undefined) return false;
+	switch (requested) {
+		case "me":
+			return echo.kind === "me" && typeof echo.userId === "string" && echo.userId !== "";
+		case "unassigned":
+		case "service":
+			return echo.kind === requested;
+		default:
+			// A user id. The server lowercases ids; an uppercase request still means the same user.
+			return echo.kind === "user" && echo.userId?.toLowerCase() === requested.toLowerCase();
+	}
+}
+
+/**
+ * Refuses a response that doesn't confirm the owner scope the caller asked for.
+ * A server that predates owner scoping ignores the `owner` query parameter and
+ * answers with everyone's results, which would read as the caller's own; the
+ * only reliable tell is the response itself, which a current server tags with
+ * the scope it applied (`ownerScope`). So when a scope was asked for the
+ * response must echo exactly that scope, and anything else is an explicit error
+ * rather than an unfiltered list. Nothing is required for `all` or no owner —
+ * everyone's results are what an older server returns, and what was asked for.
+ */
+export function assertOwnerScopeEchoed(
+	requested: string | undefined,
+	echo: OwnerScopeEcho | undefined,
+): void {
+	if (requested === undefined || requested === "all") return;
+	if (echoConfirms(requested, echo)) return;
+	throw new ToolInputError(
+		`This AgentPulse server did not confirm that it applied the owner scope "${requested}" (it may predate owner scoping and ignore "owner", or it applied a different scope), so these results could be everyone's. Upgrade the server, or leave owner unset. For "me" the key must belong to a user.`,
+	);
 }

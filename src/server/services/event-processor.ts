@@ -10,7 +10,20 @@ import type {
 import { getDb } from "../db/client.js";
 import { events, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
+import {
+	incrementIngestForeignKeyDropped,
+	incrementIngestOwnerMismatch,
+	incrementIngestUnacknowledgeDropped,
+	incrementSessionCreationLimited,
+} from "../routes/ingest-counters.js";
 import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
+import {
+	type ForeignKeyVerdict,
+	commitForeignKeyVerdict,
+	judgeForeignKeyWrite,
+	mayCreateSessionForPendingLaunch,
+} from "./authorization.js";
+import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import {
 	type DedupPolicy,
 	type DropReason,
@@ -29,10 +42,23 @@ import {
 	normalizeHookEvent,
 	normalizeStatusEvents,
 } from "./event-normalizer.js";
+import { getMode } from "./instance-mode.js";
 import { associateObservedSession } from "./launch-dispatch.js";
 import { generateSessionName } from "./name-generator.js";
 import { getCachedProjects } from "./projects/cache.js";
 import { resolveProjectIdForCwd } from "./projects/resolver.js";
+import {
+	type Attribution,
+	canAcknowledgeOwnedSession,
+	fillForUnownedRow,
+	isOwnerMismatch,
+	ownerForNewSession,
+} from "./session-attribution.js";
+import {
+	noteOverLimitOnce,
+	sessionCreationLimitSubject,
+	tryConsumeSessionCreation,
+} from "./session-creation-limit.js";
 
 const RECENT_ROWS_FOR_DEDUP = 50;
 
@@ -412,6 +438,25 @@ function enqueuePermissionWaitTask(sessionId: string, task: () => Promise<void>)
 }
 
 /**
+ * The most permission-wait ids kept per session. Every stats poll reads this
+ * metadata, and a hook stream can open requests without ever closing them.
+ */
+const MAX_PERMISSION_WAIT_IDS = 256;
+
+/**
+ * Keeps the newest ids and counts the rest as anonymous, so the session still
+ * reads as waiting for as many requests as were opened. (An id that was folded
+ * can no longer be cleared by name: answering an id that isn't stored subtracts
+ * from the anonymous count instead.)
+ */
+function foldOldestIdsIntoAnon(wait: PermissionWaitState): void {
+	const overflow = wait.ids.length - MAX_PERMISSION_WAIT_IDS;
+	if (overflow <= 0) return;
+	wait.ids = wait.ids.slice(overflow);
+	wait.anon += overflow;
+}
+
+/**
  * Apply the Decision 10 permission-wait state transition for one hook event.
  *
  * Invoked unconditionally for every permission-relevant event type
@@ -480,6 +525,7 @@ export async function applyPermissionWaitTransition(
 				} else {
 					next.anon += 1;
 				}
+				foldOldestIdsIntoAnon(next);
 
 				metadata.permissionWait = next;
 				await tx
@@ -515,11 +561,14 @@ export async function applyPermissionWaitTransition(
 				if (toolUseId && next.ids.includes(toolUseId)) {
 					next.ids = next.ids.filter((id) => id !== toolUseId);
 					changed = true;
-				} else if (!toolUseId && next.anon > 0) {
+				} else if (next.anon > 0) {
+					// No id, or an id that isn't stored: it may be one folded into the
+					// anonymous count past the id cap, which can only be answered by
+					// subtracting from the count.
 					next.anon -= 1;
 					changed = true;
 				}
-				// Otherwise: unrelated tool_use_id or nothing to decrement — no-op.
+				// Otherwise: nothing outstanding that this could answer — no-op.
 			}
 
 			if (!changed) return;
@@ -564,6 +613,18 @@ export async function applyPermissionWaitTransition(
 // without duplicating field lists.
 type SessionRow = typeof import("../db/schema/index.js").sessions.$inferSelect;
 
+// Test-only seam (see the call site in processHookEvent): a hook a test can
+// set to deterministically land a competing session-row insert between the
+// existence check and this call's own insert, reproducing the creation-race
+// loser path on demand. Never consulted for correctness — unset (null) in
+// production.
+let _preInsertRaceHookForTest: ((sessionId: string) => Promise<void>) | null = null;
+export function _setPreInsertRaceHookForTest(
+	hook: ((sessionId: string) => Promise<void>) | null,
+): void {
+	_preInsertRaceHookForTest = hook;
+}
+
 // Default ctx when a caller omits it (existing tests, and any producer that
 // predates Phase 7): anonymous key, no delivery id, native origin. Hook
 // deliveries still use exact identity under this default — only rows that
@@ -574,6 +635,43 @@ const DEFAULT_HOOK_DELIVERY_CTX: HookDeliveryContext = {
 	deliveryId: null,
 	origin: "native",
 };
+
+/**
+ * Team mode only: has this poster (its key's owner, else the key) used up its
+ * session-creation allowance for the minute? Counts the drop on /health and
+ * logs it once per window. Solo is never limited, and the mode is read only
+ * once the allowance is spent.
+ */
+async function isOverCreationLimit(attribution: Attribution): Promise<boolean> {
+	const subject = sessionCreationLimitSubject(attribution);
+	if (subject === null || tryConsumeSessionCreation(subject)) return false;
+	if ((await getMode()) !== "team") return false;
+	incrementSessionCreationLimited();
+	if (noteOverLimitOnce(subject)) {
+		console.warn(
+			JSON.stringify({
+				kind: "session_creation_limited",
+				level: "warn",
+				keyId: attribution.ingestKeyId,
+				ownerUserId: attribution.ownerUserId,
+				message:
+					"New sessions from this poster are being dropped: over the per-minute creation limit.",
+			}),
+		);
+	}
+	return true;
+}
+
+/** The hook rule's verdict, committed straight away: for a write that is applied as soon as it is admitted. */
+async function admitForeignKeyWrite(
+	session: Parameters<typeof judgeForeignKeyWrite>[0],
+	attribution: Attribution,
+): Promise<boolean> {
+	return commitForeignKeyVerdict(
+		session.sessionId,
+		await judgeForeignKeyWrite(session, attribution),
+	);
+}
 
 /**
  * Process an incoming hook event.
@@ -595,10 +693,32 @@ export async function processHookEvent(
 	payload: HookEventPayload,
 	agentType: AgentType,
 	ctx: HookDeliveryContext = DEFAULT_HOOK_DELIVERY_CTX,
-): Promise<{ sessionId: string; isNew: boolean; session: SessionRow; events: SessionEvent[] }> {
+): Promise<{
+	sessionId: string;
+	isNew: boolean;
+	/** Null only when the event was dropped (UserAcknowledge for an unknown session). */
+	session: SessionRow | null;
+	events: SessionEvent[];
+}> {
 	const sessionId = payload.session_id;
 	const eventType = payload.hook_event_name;
 	const now = new Date().toISOString();
+	const attribution: Attribution = ctx.attribution ?? { ownerUserId: null, ingestKeyId: null };
+
+	// AGEN (security): "mark as unseen" is never hook-reachable, unlike
+	// UserAcknowledge. This is not an ownership question -- every
+	// UserUnacknowledge hook delivery is dropped before it touches the
+	// database, known session or not, owner match or not. Without this, the
+	// event falls into the generic path below, which sets status:"active"
+	// and clears endedAt -- any ingest key could reanimate a failed
+	// session and hide its ERROR state. The dashboard's own DELETE
+	// /sessions/:id/acknowledge route (unacknowledgeSession in
+	// session-tracker.ts) is the only legitimate way to clear an
+	// acknowledgement; it does not go through this hook path.
+	if (eventType === "UserUnacknowledge") {
+		incrementIngestUnacknowledgeDropped();
+		return { sessionId, isNew: false, session: null, events: [] };
+	}
 
 	// Check if session exists
 	const existing = await getDb()
@@ -607,11 +727,141 @@ export async function processHookEvent(
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);
 
-	const isNew = existing.length === 0;
+	// Whether this row existed before this call touched anything. Distinct
+	// from `isNew` below, which also flips to false when this call's own
+	// insert loses a creation race — the owner-fill exception applies to
+	// that race-loser case specifically, never to a row that was already
+	// here when this call started.
+	const existedBeforeThisCall = existing.length > 0;
+	let isNew = !existedBeforeThisCall;
+	let priorRow: (typeof existing)[number] | undefined = existing[0];
+	let isRaceLoser = false;
+
+	// Team mode: an event for an owned session from a key that isn't the
+	// owner's (nor the session's own recorded key) is dropped before anything
+	// is stored — it could otherwise reanimate a failed session, clear the
+	// owner's WAITING, or open or clear a permission wait. 200 all the same
+	// (the hook route's contract), counted on /health. The check is free for
+	// the owner's own keys; only a foreign-looking key costs the mode lookup.
+	let keyVerdict: ForeignKeyVerdict | null = null;
+	if (priorRow) {
+		keyVerdict = await judgeForeignKeyWrite(priorRow, attribution);
+		if (keyVerdict.drop) {
+			incrementIngestForeignKeyDropped();
+			return { sessionId, isNew: false, session: null, events: [] };
+		}
+	}
+
+	// Synthetic acknowledgement (e.g. a relay-side transcript watcher saw a
+	// successful /copy): it records that the user looked at the latest result
+	// and nothing else. It never creates a session (an ack for an unknown or
+	// deleted session is dropped — `session: null`, nothing stored), never
+	// flips isWorking, never touches lifecycle status/endedAt (so it cannot
+	// reanimate a completed session and is independent of the working/waiting latch),
+	// never clears a permission wait (it is not in PERMISSION_WAIT_EVENT_TYPES)
+	// and does not move lastAgentTurnCompletedAt or lastActivityAt — a
+	// replaying sender must not be able to keep a dead session alive and
+	// suppress the no-activity alert by repeatedly "acknowledging" it. The
+	// stamp is server receive time so it compares with the Stop-side stamp
+	// (hooks and acks travel the same per-session FIFO, so arrival order is
+	// event order); the client-side `acknowledged_at` stays in the stored
+	// event payload.
+	if (eventType === "UserAcknowledge") {
+		if (isNew) return { sessionId, isNew: false, session: null, events: [] };
+		// Ownership guard (AGEN): a stranger's key (or a lagging relay) must
+		// not clear another user's WAITING/ERROR state, and — unlike the
+		// creation-race fill path's isOwnerMismatch check — an ownerless key
+		// (no caller context, or a service key) is never let in just because
+		// its own side is null: only a session with no owner accepts any
+		// caller. A rejected ack is a silent no-op, same shape as the
+		// unknown-session case — never an error, since the hook route is
+		// always-200 — but it does bump the owner-mismatch counter so a
+		// stranger repeatedly probing an owned session is observable.
+		if (
+			!canAcknowledgeOwnedSession({ ownerUserId: existing[0]?.ownerUserId ?? null }, attribution)
+		) {
+			incrementIngestOwnerMismatch();
+			return { sessionId, isNew: false, session: null, events: [] };
+		}
+		const ackUpdates: Record<string, unknown> = { lastUserAcknowledgedAt: now };
+		await getDb().update(sessions).set(ackUpdates).where(eq(sessions.sessionId, sessionId));
+		const storedEvents = await insertHookEvents(sessionId, normalizeHookEvent(payload, agentType), {
+			kind: "hook_delivery",
+			ctx,
+			rawPayload: payload,
+		});
+		const [ackSession] = await getDb()
+			.select()
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		return { sessionId, isNew: false, session: ackSession ?? null, events: storedEvents };
+	}
+
+	// Past every refusal that leaves the row untouched (an acknowledgement is
+	// refused above for any ownerless key): the event will be applied, so a
+	// service key that was accepted only on condition of being recorded is
+	// recorded now. Of two service keys racing for the same session, one wins
+	// and the other is dropped here.
+	if (priorRow && keyVerdict && !(await commitForeignKeyVerdict(sessionId, keyVerdict))) {
+		incrementIngestForeignKeyDropped();
+		return { sessionId, isNew: false, session: null, events: [] };
+	}
 
 	if (isNew) {
-		// Create new session with a friendly display name
-		await getDb()
+		// A real key may only create so many sessions a minute; over the limit
+		// the creation is dropped (200, counted) before any statement is spent.
+		if (await isOverCreationLimit(attribution)) {
+			return { sessionId, isNew: false, session: null, events: [] };
+		}
+
+		// Extra read-only queries, only on a brand-new session — does a
+		// pending launch correlate to this session id? If so its requester
+		// wins the owner slot regardless of which path (hook or supervisor
+		// report) creates the row first. Read-only: the actual launch
+		// attach/running-transition still happens later via
+		// associateObservedSession, unchanged. Not "one extra select": when
+		// no pending launch matches, resolveObservedSessionCorrelation stops
+		// after its own single lookup; when one does match, it goes on to
+		// check for a conflicting managed row and a conflicting pre-existing
+		// session (the squat guard, AGEN-65) — up to 3 selects total on this
+		// path. See ingest-latency.test.ts's pinned statement counts for the
+		// exact measured numbers on both dialects.
+		const correlation = await resolveObservedSessionCorrelation(sessionId);
+		// The new row will record the posting key as its ingest key (write access
+		// for the session's life), so in team mode only the requester's keys, the
+		// target host owner's keys and service keys may start it; any other key's
+		// first event creates nothing.
+		if (
+			correlation &&
+			!(await mayCreateSessionForPendingLaunch(correlation.launchRequest, attribution))
+		) {
+			incrementIngestForeignKeyDropped();
+			return { sessionId, isNew: false, session: null, events: [] };
+		}
+		const owner = ownerForNewSession({
+			launchRequesterUserId: correlation?.launchRequest.requestedByUserId ?? null,
+			attribution,
+		});
+
+		// Test-only seam: lets a test deterministically land a competing
+		// insert for this exact session id between our existence check above
+		// and our insert below, reproducing the race-loser path on demand
+		// instead of hoping real concurrency lands the same way. A no-op in
+		// production (the hook is unset).
+		if (_preInsertRaceHookForTest) {
+			await _preInsertRaceHookForTest(sessionId);
+		}
+
+		// onConflictDoNothing + re-read (not a plain insert): two different
+		// creation paths (this hook path and managed-session-state.ts's
+		// supervisor path) can race to create the same session id. Without
+		// this, the loser throws a unique-constraint error and the event is
+		// lost; with it, the loser's insert is silently a no-op and it falls
+		// through to the race-loser reconciliation below using the winner's
+		// row. `session_id` remains the only session identity (cwd, project,
+		// display name and agent type never participate).
+		const inserted = await getDb()
 			.insert(sessions)
 			.values({
 				sessionId,
@@ -624,17 +874,72 @@ export async function processHookEvent(
 				startedAt: now,
 				lastActivityAt: now,
 				metadata: {},
-			});
+				ownerUserId: owner.ownerUserId,
+				ingestKeyId: owner.ingestKeyId,
+			})
+			.onConflictDoNothing({ target: sessions.sessionId })
+			.returning();
+
+		if (inserted.length === 0) {
+			isNew = false;
+			isRaceLoser = true;
+			const [row] = await getDb()
+				.select()
+				.from(sessions)
+				.where(eq(sessions.sessionId, sessionId))
+				.limit(1);
+			priorRow = row;
+			if (priorRow && !(await admitForeignKeyWrite(priorRow, attribution))) {
+				incrementIngestForeignKeyDropped();
+				return { sessionId, isNew: false, session: null, events: [] };
+			}
+		} else {
+			priorRow = undefined;
+		}
+	}
+
+	if (priorRow && isRaceLoser) {
+		// The one exception to "owner is decided only at creation": this
+		// call's own insert lost the creation race in this same call, to
+		// another request creating the same session id. It may fill the
+		// winner's row, but only if both owner columns are still null —
+		// guarded in SQL, not just in memory, so a second concurrent filler
+		// (e.g. a third racer, or the supervisor path's own creation write)
+		// can't double-apply.
+		const fill = fillForUnownedRow(priorRow, attribution);
+		if (fill) {
+			await getDb()
+				.update(sessions)
+				.set(fill)
+				.where(
+					and(
+						eq(sessions.sessionId, sessionId),
+						sql`${sessions.ownerUserId} IS NULL AND ${sessions.ingestKeyId} IS NULL`,
+					),
+				);
+		}
+		if (isOwnerMismatch(priorRow, attribution)) {
+			incrementIngestOwnerMismatch();
+		}
+	} else if (priorRow && existedBeforeThisCall) {
+		// A genuinely pre-existing row — this call did not create it and did
+		// not just lose a creation race for it. Ingest never fills an owner
+		// here, even when both columns are still null: the owner is decided
+		// only at creation, and an unassigned session (including one that
+		// predates this feature) stays unassigned until an admin sets it
+		// explicitly. The mismatch counter is independent of fill
+		// eligibility and still applies to every existing-row event.
+		if (isOwnerMismatch(priorRow, attribution)) {
+			incrementIngestOwnerMismatch();
+		}
 	}
 
 	// D21: compute the terminal-latch/closed-turn state from the metadata as
 	// it stood *before* this event, then fold this event's own effects
 	// (SessionEnd sets endedByEvent; a turn-scoped Stop/Interrupt records
-	// closedTurnIds) into the metadata write below. isNew sessions have no
-	// prior metadata, so d21 is trivially {latched:false, closedTurn:false}.
-	const priorMetadata = (
-		isNew ? {} : ((existing[0]?.metadata ?? {}) as Record<string, unknown>)
-	) as Record<string, unknown>;
+	// closedTurnIds) into the metadata write below. A genuinely new row has
+	// no prior metadata, so d21 is trivially {latched:false, closedTurn:false}.
+	const priorMetadata = (priorRow?.metadata ?? {}) as Record<string, unknown>;
 	const nowMs = Date.parse(now);
 	const d21 = computeD21State(priorMetadata, payload, nowMs);
 	const metadataUpdate = computeD21MetadataUpdate(priorMetadata, payload, now);
@@ -668,14 +973,25 @@ export async function processHookEvent(
 	// prior Stop/Interrupt doesn't reopen isWorking (UserPromptSubmit always
 	// starts a fresh turn, so closedTurn never suppresses it); latched
 	// events don't touch isWorking at all.
+	//
+	// Acknowledgement model: a new prompt also acknowledges whatever the agent
+	// produced before it (the user necessarily interacted with the previous
+	// result), and Stop marks the agent turn as completed — the two
+	// timestamps the WAITING/IDLE distinction is derived from (see
+	// getOperationalStatus in src/shared/session-state.ts). lastActivityAt is
+	// deliberately not used for this: Notification and other hooks bump it
+	// too. Interrupt clears isWorking but stamps neither — the user cut the
+	// turn short, so there is no finished result awaiting acknowledgement.
 	if (eventType === "UserPromptSubmit" && !d21.latched) {
 		updates.isWorking = true;
+		updates.lastUserAcknowledgedAt = now;
 	}
 	if (eventType === "PreToolUse" && !d21.closedTurn && !d21.latched) {
 		updates.isWorking = true;
 	}
 	if ((eventType === "Stop" || eventType === "Interrupt") && !d21.latched) {
 		updates.isWorking = false;
+		if (eventType === "Stop") updates.lastAgentTurnCompletedAt = now;
 	}
 
 	// Increment tool use count for tool events
@@ -812,7 +1128,10 @@ export function isSemanticStatus(value: unknown): value is SemanticStatus {
  * and is later rendered into LLM prompts, so anything outside the declared
  * set is dropped (the rest of the update still applies; ingest never errors).
  */
-export async function processStatusUpdate(input: SemanticStatusUpdate): Promise<boolean> {
+export async function processStatusUpdate(
+	input: SemanticStatusUpdate,
+	attribution: Attribution = { ownerUserId: null, ingestKeyId: null },
+): Promise<boolean> {
 	const { status, ...rest } = input;
 	const update: SemanticStatusUpdate = isSemanticStatus(status) ? { ...rest, status } : rest;
 
@@ -824,6 +1143,13 @@ export async function processStatusUpdate(input: SemanticStatusUpdate): Promise<
 
 	if (existing.length === 0) {
 		return false; // Session not found
+	}
+
+	// Same rule and counter as a hook event: a key that is foreign to an owned
+	// session can't reanimate it or rewrite its status, task or plan.
+	if (!(await admitForeignKeyWrite(existing[0], attribution))) {
+		incrementIngestForeignKeyDropped();
+		return false;
 	}
 
 	const updates: Record<string, unknown> = {

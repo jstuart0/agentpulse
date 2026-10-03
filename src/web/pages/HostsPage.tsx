@@ -1,9 +1,26 @@
 import { useEffect, useState } from "react";
 import type { SupervisorRecord } from "../../shared/types.js";
+import { ConfirmDialog } from "../components/ConfirmDialog.js";
+import { HostExcludeNotice } from "../components/HostExcludeNotice.js";
+import { HostOwnerDialog } from "../components/HostOwnerDialog.js";
 import { useCopyFeedback } from "../hooks/useCopyFeedback.js";
+import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
+import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
+import { useSecretLifetime } from "../hooks/useSecretLifetime.js";
+import { describeApiError } from "../lib/api-errors.js";
 import { ApiError, api } from "../lib/api.js";
+import { SECRET_LIFETIME_NOTE } from "../lib/one-time-secret.js";
+import { ownerLabel } from "../lib/owner-label.js";
+import { assignablePeople, withCurrentOwner } from "../lib/people.js";
 import { useDbFingerprintStore } from "../stores/db-fingerprint-store.js";
-import { deriveHostsViewState } from "./hosts-view-state.js";
+import { useUserStore } from "../stores/user-store.js";
+import { useUsersStore } from "../stores/users-store.js";
+import {
+	deriveHostAccess,
+	deriveHostsViewState,
+	enrollmentOwnershipNote,
+	hostActionConfirm,
+} from "./hosts-view-state.js";
 
 /**
  * "<status> <server message>" for a real HTTP error (e.g. "403
@@ -19,6 +36,11 @@ function formatApiErrorDetail(err: unknown): string {
 	return "network error";
 }
 
+/** A known refusal reads as a plain sentence; anything else keeps the status-and-message detail. */
+function failureText(prefix: string, err: unknown): string {
+	return describeApiError(err, "") || `${prefix}: ${formatApiErrorDetail(err)}`;
+}
+
 /**
  * Builds the load-failure copy shown in place of the list — distinct from
  * the genuine "no hosts registered" empty state, which is the bug this
@@ -31,6 +53,11 @@ function formatLoadError(err: unknown): string {
 
 export function HostsPage() {
 	const { copy } = useCopyFeedback();
+	const ui = useOwnershipUi();
+	const viewerUserId = useUserStore((s) => s.userId);
+	const isAdmin = useViewerIsAdmin();
+	const directory = useUsersStore((s) => s.byId);
+	const [ownerDialogHost, setOwnerDialogHost] = useState<SupervisorRecord | null>(null);
 	const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [refreshing, setRefreshing] = useState(false);
@@ -38,9 +65,14 @@ export function HostsPage() {
 	const [enrollName, setEnrollName] = useState("");
 	const [enrollExpiresAt, setEnrollExpiresAt] = useState("");
 	const [creatingToken, setCreatingToken] = useState(false);
-	const [revokingId, setRevokingId] = useState<string | null>(null);
-	const [rotatingId, setRotatingId] = useState<string | null>(null);
-	const [error, setError] = useState("");
+	const [pendingAction, setPendingAction] = useState<{
+		kind: "rotate" | "revoke";
+		supervisor: SupervisorRecord;
+	} | null>(null);
+	const [actionBusy, setActionBusy] = useState(false);
+	const [actionError, setActionError] = useState<string | null>(null);
+	// Refusals sit next to the control that was used: the token form's own, or the host card's.
+	const [enrollError, setEnrollError] = useState("");
 	const [createdToken, setCreatedToken] = useState<{
 		token: string;
 		name: string;
@@ -88,7 +120,7 @@ export function HostsPage() {
 
 	async function handleCreateEnrollmentToken() {
 		setCreatingToken(true);
-		setError("");
+		setEnrollError("");
 		try {
 			const result = await api.enrollSupervisor({
 				name: enrollName.trim() || "supervisor",
@@ -105,7 +137,7 @@ export function HostsPage() {
 			setEnrollExpiresAt("");
 		} catch (err) {
 			console.error("Failed to create enrollment token:", err);
-			setError(`Failed to create enrollment token: ${formatApiErrorDetail(err)}`);
+			setEnrollError(failureText("Failed to create enrollment token", err));
 		} finally {
 			setCreatingToken(false);
 		}
@@ -116,37 +148,36 @@ export function HostsPage() {
 		await copy(createdToken.token, "Enrollment token copied");
 	}
 
-	async function handleRevokeSupervisor(id: string) {
-		setRevokingId(id);
-		setError("");
+	async function runPendingAction() {
+		if (!pendingAction) return;
+		const { kind, supervisor } = pendingAction;
+		setActionBusy(true);
+		setActionError(null);
 		try {
-			await api.revokeSupervisor(id);
-			await loadSupervisors();
+			if (kind === "revoke") {
+				await api.revokeSupervisor(supervisor.id);
+				await loadSupervisors();
+			} else {
+				const result = await api.rotateSupervisor(supervisor.id, {});
+				setCreatedToken({
+					token: result.token,
+					name: result.info.name,
+					expiresAt: result.info.expiresAt,
+					mode: "rotate",
+					hostName: supervisor.hostName,
+				});
+			}
+			setPendingAction(null);
 		} catch (err) {
-			console.error("Failed to revoke supervisor:", err);
-			setError(`Failed to revoke host: ${formatApiErrorDetail(err)}`);
+			console.error(`Failed to ${kind} supervisor:`, err);
+			setActionError(
+				failureText(
+					kind === "revoke" ? "Failed to revoke host" : "Failed to create re-enrollment token",
+					err,
+				),
+			);
 		} finally {
-			setRevokingId(null);
-		}
-	}
-
-	async function handleRotateSupervisor(supervisor: SupervisorRecord) {
-		setRotatingId(supervisor.id);
-		setError("");
-		try {
-			const result = await api.rotateSupervisor(supervisor.id, {});
-			setCreatedToken({
-				token: result.token,
-				name: result.info.name,
-				expiresAt: result.info.expiresAt,
-				mode: "rotate",
-				hostName: supervisor.hostName,
-			});
-		} catch (err) {
-			console.error("Failed to rotate supervisor credential:", err);
-			setError(`Failed to create re-enrollment token: ${formatApiErrorDetail(err)}`);
-		} finally {
-			setRotatingId(null);
+			setActionBusy(false);
 		}
 	}
 
@@ -173,13 +204,21 @@ export function HostsPage() {
 	).length;
 
 	const viewState = deriveHostsViewState({ loading, loadError, supervisors });
+	useNoteUnknownOwners(supervisors.map((supervisor) => supervisor.ownerUserId));
+	useSecretLifetime(createdToken !== null, () => setCreatedToken(null));
+	const ownerName = (id: string) =>
+		ownerLabel(directory[id], id, { selfId: viewerUserId, style: "you" });
+	const people = assignablePeople(Object.values(directory), viewerUserId);
+	const enrollmentNote = enrollmentOwnershipNote(ui);
 
 	return (
 		<div className="p-3 md:p-6">
 			<div className="max-w-6xl space-y-6">
 				<div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
 					<div>
-						<h1 className="text-xl md:text-2xl font-bold text-foreground">Hosts</h1>
+						<h1 id="hosts-heading" className="text-xl md:text-2xl font-bold text-foreground">
+							Hosts
+						</h1>
 						<p className="mt-1 text-sm text-muted-foreground">
 							Connected supervisors, their capabilities, and their trusted roots.
 						</p>
@@ -203,6 +242,7 @@ export function HostsPage() {
 									Create a one-time token, start a host with it, then AgentPulse will issue a
 									persistent scoped supervisor credential automatically.
 								</p>
+								{enrollmentNote && <p className="mt-1 text-xs text-hint">{enrollmentNote}</p>}
 							</div>
 						</div>
 
@@ -237,6 +277,15 @@ export function HostsPage() {
 							</div>
 						</div>
 
+						{enrollError && (
+							<p
+								role="alert"
+								className="mt-3 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 text-sm text-red-700 dark:text-red-300"
+							>
+								{enrollError}
+							</p>
+						)}
+
 						{createdToken && (
 							<div className="mt-4 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4">
 								<div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -247,7 +296,8 @@ export function HostsPage() {
 												: "Enrollment token created"}
 										</div>
 										<div className="mt-1 text-xs text-muted-foreground">
-											This is only shown once. Save it before closing this page.
+											This is only shown once. Save it before closing this page.{" "}
+											{SECRET_LIFETIME_NOTE}
 										</div>
 									</div>
 									<button
@@ -329,12 +379,6 @@ export function HostsPage() {
 					</div>
 				</div>
 
-				{error && (
-					<div className="rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-300">
-						{error}
-					</div>
-				)}
-
 				{viewState.kind === "loading" ? (
 					<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
 						{Array.from({ length: 3 }).map((_, index) => (
@@ -373,150 +417,230 @@ export function HostsPage() {
 					</div>
 				) : (
 					<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-						{viewState.supervisors.map((supervisor) => (
-							<div key={supervisor.id} className="rounded-lg border border-border bg-card p-4">
-								<div className="flex items-start justify-between gap-3">
-									<div>
-										<div className="text-sm font-semibold text-foreground">
-											{supervisor.hostName}
+						{viewState.supervisors.map((supervisor) => {
+							const access = deriveHostAccess(supervisor, {
+								ui,
+								viewerUserId,
+								isAdmin,
+								ownerName,
+							});
+							return (
+								<div key={supervisor.id} className="rounded-lg border border-border bg-card p-4">
+									<div className="flex items-start justify-between gap-3">
+										<div>
+											<div className="text-sm font-semibold text-foreground">
+												{supervisor.hostName}
+											</div>
+											<div className="mt-1 text-[11px] text-muted-foreground">
+												{supervisor.platform} · {supervisor.arch} · v{supervisor.version}
+											</div>
 										</div>
-										<div className="mt-1 text-[11px] text-muted-foreground">
-											{supervisor.platform} · {supervisor.arch} · v{supervisor.version}
+										<div className="flex flex-col items-end gap-2">
+											<span
+												className={`rounded-full px-2 py-1 text-[10px] font-medium ${statusClasses(supervisor.status)}`}
+											>
+												{supervisor.status}
+											</span>
+											<span
+												className={`rounded-full px-2 py-1 text-[10px] font-medium ${enrollmentClasses(supervisor.enrollmentState)}`}
+											>
+												{supervisor.enrollmentState ?? "active"}
+											</span>
 										</div>
 									</div>
-									<div className="flex flex-col items-end gap-2">
-										<span
-											className={`rounded-full px-2 py-1 text-[10px] font-medium ${statusClasses(supervisor.status)}`}
-										>
-											{supervisor.status}
-										</span>
-										<span
-											className={`rounded-full px-2 py-1 text-[10px] font-medium ${enrollmentClasses(supervisor.enrollmentState)}`}
-										>
-											{supervisor.enrollmentState ?? "active"}
-										</span>
-									</div>
-								</div>
 
-								<div className="mt-4 space-y-3 text-xs">
-									<div>
-										<div className="text-muted-foreground">Supervisor ID</div>
-										<div className="mt-1 break-all text-foreground">{supervisor.id}</div>
-									</div>
-									<div>
-										<div className="text-muted-foreground">Launch modes</div>
-										<div className="mt-1 text-foreground">
-											{supervisor.capabilities.launchModes.join(", ")}
-										</div>
-									</div>
-									<div>
-										<div className="text-muted-foreground">Agent types</div>
-										<div className="mt-1 text-foreground">
-											{supervisor.capabilities.agentTypes.join(", ")}
-										</div>
-									</div>
-									<div>
-										<div className="text-muted-foreground">Features</div>
-										<div className="mt-1 text-foreground">
-											{supervisor.capabilities.features.join(", ") || "None"}
-										</div>
-									</div>
-									<div>
-										<div className="text-muted-foreground">Executables</div>
-										<div className="mt-1 text-foreground">
-											<div className="break-all">
-												Claude:{" "}
-												{supervisor.capabilities.executables?.claude?.resolvedPath ? (
-													<>
-														{supervisor.capabilities.executables.claude.resolvedPath}{" "}
-														<span className="text-muted-foreground">
-															(
-															{supervisor.capabilities.executables.claude.binaryVersion ||
-																"version unknown"}
-															)
-														</span>
-													</>
-												) : (
-													"Unavailable"
-												)}
-											</div>
-											<div className="break-all">
-												Codex:{" "}
-												{supervisor.capabilities.executables?.codex?.resolvedPath ? (
-													<>
-														{supervisor.capabilities.executables.codex.resolvedPath}{" "}
-														<span className="text-muted-foreground">
-															(
-															{supervisor.capabilities.executables.codex.binaryVersion ||
-																"version unknown"}
-															)
-														</span>
-													</>
-												) : (
-													"Unavailable"
-												)}
-											</div>
-										</div>
-									</div>
-									<div>
-										<div className="text-muted-foreground">Interactive control</div>
-										<div className="mt-1 text-foreground">
+									<HostExcludeNotice supervisor={supervisor} />
+
+									<div className="mt-4 space-y-3 text-xs">
+										{access.ownerText !== null && (
 											<div>
-												{supervisor.capabilities.interactiveTerminalControl?.available
-													? "Ready"
-													: "Launch-only"}
-											</div>
-											{supervisor.capabilities.interactiveTerminalControl?.reason && (
-												<div className="mt-1 text-[11px] text-amber-300">
-													{supervisor.capabilities.interactiveTerminalControl.reason}
+												<div className="text-hint">Owner</div>
+												<div className="mt-1 flex flex-wrap items-center gap-2 text-foreground">
+													<span>{access.ownerText}</span>
+													{access.canChangeOwner && (
+														<button
+															type="button"
+															onClick={() => setOwnerDialogHost(supervisor)}
+															aria-label={`Change owner of ${supervisor.hostName}`}
+															className="min-h-[44px] rounded-md px-2 text-xs font-medium text-primary underline underline-offset-2 hover:text-foreground md:min-h-0"
+														>
+															Change owner
+														</button>
+													)}
 												</div>
-											)}
+											</div>
+										)}
+										<div>
+											<div className="text-muted-foreground">Supervisor ID</div>
+											<div className="mt-1 break-all text-foreground">{supervisor.id}</div>
+										</div>
+										<div>
+											<div className="text-muted-foreground">Launch modes</div>
+											<div className="mt-1 text-foreground">
+												{supervisor.capabilities.launchModes.join(", ")}
+											</div>
+										</div>
+										<div>
+											<div className="text-muted-foreground">Agent types</div>
+											<div className="mt-1 text-foreground">
+												{supervisor.capabilities.agentTypes.join(", ")}
+											</div>
+										</div>
+										<div>
+											<div className="text-muted-foreground">Features</div>
+											<div className="mt-1 text-foreground">
+												{supervisor.capabilities.features.join(", ") || "None"}
+											</div>
+										</div>
+										<div>
+											<div className="text-muted-foreground">Executables</div>
+											<div className="mt-1 text-foreground">
+												<div className="break-all">
+													Claude:{" "}
+													{supervisor.capabilities.executables?.claude?.resolvedPath ? (
+														<>
+															{supervisor.capabilities.executables.claude.resolvedPath}{" "}
+															<span className="text-muted-foreground">
+																(
+																{supervisor.capabilities.executables.claude.binaryVersion ||
+																	"version unknown"}
+																)
+															</span>
+														</>
+													) : (
+														"Unavailable"
+													)}
+												</div>
+												<div className="break-all">
+													Codex:{" "}
+													{supervisor.capabilities.executables?.codex?.resolvedPath ? (
+														<>
+															{supervisor.capabilities.executables.codex.resolvedPath}{" "}
+															<span className="text-muted-foreground">
+																(
+																{supervisor.capabilities.executables.codex.binaryVersion ||
+																	"version unknown"}
+																)
+															</span>
+														</>
+													) : (
+														"Unavailable"
+													)}
+												</div>
+											</div>
+										</div>
+										<div>
+											<div className="text-muted-foreground">Interactive control</div>
+											<div className="mt-1 text-foreground">
+												<div>
+													{supervisor.capabilities.interactiveTerminalControl?.available
+														? "Ready"
+														: "Launch-only"}
+												</div>
+												{supervisor.capabilities.interactiveTerminalControl?.reason && (
+													<div className="mt-1 text-[11px] text-amber-300">
+														{supervisor.capabilities.interactiveTerminalControl.reason}
+													</div>
+												)}
+											</div>
+										</div>
+										<div>
+											<div className="text-muted-foreground">Trusted roots</div>
+											<div className="mt-1 break-all text-foreground">
+												{supervisor.trustedRoots.join(", ") || "None"}
+											</div>
+										</div>
+										<div>
+											<div className="text-muted-foreground">Last heartbeat</div>
+											<div className="mt-1 text-foreground">{supervisor.lastHeartbeatAt}</div>
 										</div>
 									</div>
-									<div>
-										<div className="text-muted-foreground">Trusted roots</div>
-										<div className="mt-1 break-all text-foreground">
-											{supervisor.trustedRoots.join(", ") || "None"}
-										</div>
-									</div>
-									<div>
-										<div className="text-muted-foreground">Last heartbeat</div>
-										<div className="mt-1 text-foreground">{supervisor.lastHeartbeatAt}</div>
-									</div>
-								</div>
 
-								<div className="mt-4 flex items-center justify-between gap-3 border-t border-border pt-4">
-									<div className="text-[11px] text-muted-foreground">
-										{supervisor.enrollmentState === "revoked"
-											? "Supervisor access revoked"
-											: "Scoped credential active"}
+									<div className="mt-4 flex items-center justify-between gap-3 border-t border-border pt-4">
+										<div className="text-[11px] text-muted-foreground">
+											{supervisor.enrollmentState === "revoked"
+												? "Supervisor access revoked"
+												: "Scoped credential active"}
+										</div>
+										<div className="flex items-center gap-2">
+											<button
+												type="button"
+												onClick={() => {
+													setActionError(null);
+													setPendingAction({ kind: "rotate", supervisor });
+												}}
+												disabled={supervisor.enrollmentState === "revoked" || !access.canManage}
+												aria-describedby={
+													access.manageReason ? `host-reason-${supervisor.id}` : undefined
+												}
+												className="inline-flex h-8 items-center justify-center rounded-md border border-border px-3 text-xs text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+											>
+												Rotate
+											</button>
+											<button
+												type="button"
+												onClick={() => {
+													setActionError(null);
+													setPendingAction({ kind: "revoke", supervisor });
+												}}
+												disabled={supervisor.enrollmentState === "revoked" || !access.canManage}
+												aria-describedby={
+													access.manageReason ? `host-reason-${supervisor.id}` : undefined
+												}
+												className="inline-flex h-8 items-center justify-center rounded-md border border-red-500/30 px-3 text-xs text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+											>
+												Revoke
+											</button>
+										</div>
 									</div>
-									<div className="flex items-center gap-2">
-										<button
-											type="button"
-											onClick={() => handleRotateSupervisor(supervisor)}
-											disabled={
-												supervisor.enrollmentState === "revoked" || rotatingId === supervisor.id
-											}
-											className="inline-flex h-8 items-center justify-center rounded-md border border-border px-3 text-xs text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+									{access.manageReason && (
+										<div
+											id={`host-reason-${supervisor.id}`}
+											className="mt-2 space-y-0.5 text-xs text-hint"
 										>
-											{rotatingId === supervisor.id ? "Rotating..." : "Rotate"}
-										</button>
-										<button
-											type="button"
-											onClick={() => handleRevokeSupervisor(supervisor.id)}
-											disabled={
-												supervisor.enrollmentState === "revoked" || revokingId === supervisor.id
-											}
-											className="inline-flex h-8 items-center justify-center rounded-md border border-red-500/30 px-3 text-xs text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-										>
-											{revokingId === supervisor.id ? "Revoking..." : "Revoke"}
-										</button>
-									</div>
+											<p>{access.manageReason}</p>
+											{access.launchNote && <p>{access.launchNote}</p>}
+										</div>
+									)}
 								</div>
-							</div>
-						))}
+							);
+						})}
 					</div>
+				)}
+				{pendingAction &&
+					(() => {
+						const copy = hostActionConfirm(pendingAction.kind, pendingAction.supervisor.hostName);
+						return (
+							<ConfirmDialog
+								title={copy.title}
+								confirmLabel={copy.confirmLabel}
+								destructive={pendingAction.kind === "revoke"}
+								focusCancel
+								busy={actionBusy}
+								error={actionError}
+								fallbackFocusId="hosts-heading"
+								onConfirm={() => void runPendingAction()}
+								onCancel={() => setPendingAction(null)}
+							>
+								<p>{copy.body}</p>
+							</ConfirmDialog>
+						);
+					})()}
+				{ownerDialogHost && (
+					<HostOwnerDialog
+						host={ownerDialogHost}
+						people={withCurrentOwner(
+							people,
+							ownerDialogHost.ownerUserId,
+							directory[ownerDialogHost.ownerUserId ?? ""],
+							viewerUserId,
+						)}
+						onClose={() => setOwnerDialogHost(null)}
+						onChanged={() => {
+							setOwnerDialogHost(null);
+							void loadSupervisors();
+						}}
+					/>
 				)}
 			</div>
 		</div>

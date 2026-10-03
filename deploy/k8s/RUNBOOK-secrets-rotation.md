@@ -155,3 +155,64 @@ The previous secret should be in your password manager (Vaultwarden or equivalen
   or any hint of its value in responses.
 - Store the active secret in your password manager. The k8s Secret is the runtime
   source of truth; the password manager is the backup.
+
+---
+
+# Runbook: Offboarding a person (team mode)
+
+When someone leaves, **disable them in AgentPulse**. Removing them at the
+identity provider is not enough on its own: the API keys they minted and the
+hosts they enrolled authenticate without the identity provider, and keep
+working until AgentPulse revokes them.
+
+## Steps
+
+1. Sign in as an admin (a signed-in person, not an API key; user-management
+   changes refuse every key).
+2. **Settings → Team**, the person's row, **Disable**. Disabling, in one step:
+   - ends all their sign-ins (cookie sessions) and refuses their next request;
+   - deactivates every API key they own and every enrollment token they
+     created;
+   - revokes every host (supervisor) they own and its credential, so the
+     machine's supervisor stops working until it is enrolled again by someone
+     else. The Disable dialog shows an "Also revoke their N hosts" box (on
+     by default, only when they own hosts). Unchecked, the hosts stay
+     enrolled, still owned by the disabled person, and can still run
+     launches; the API takes the same choice as `revokeHosts: false`;
+   - closes their open dashboard connections, at once.
+
+   It refuses to disable the last active admin, or an admin whose role comes
+   from `AGENTPULSE_ADMIN_SSO_SUBJECTS` (take the subject off the list and
+   restart, demote them in Settings → Team, then disable them; removing the
+   subject alone doesn't demote anyone).
+3. Their sessions stay, still owned by them. If someone should take them over,
+   an admin changes the owner on each session page, or gives every unassigned
+   session to one person from Settings → Team.
+4. Revoked hosts need a new owner: enroll the machine again as a signed-in
+   member. Their machine's old key no longer reports.
+5. Re-enabling clears the disabled flag only; it does not bring back revoked
+   keys or hosts.
+6. Then remove the person at the identity provider, if you haven't.
+
+## Service keys and admin service keys
+
+A key with no owner is a service key (CI, shared automation). In team mode an
+ownerless key that can manage is a member's key unless an admin has kept it as an
+**admin service key**: Settings → API keys, **Keep as admin key** on that key
+(a signed-in admin only; an API key can never do it). **Keep as service key**
+keeps an ownerless key that can't manage as a plain service key. Giving a
+key an owner, or revoking it, takes it off both lists.
+
+Switching to team mode in Settings asks for a decision about each ownerless
+manage key first (keep, assign to a person, revoke). With
+`AGENTPULSE_MODE=team` set in the environment there is no such question: every
+ownerless manage key acts as a member until an admin keeps or assigns it there,
+and automation that used one for settings or key management gets
+`403 admin_required`. Boot logs one warning naming those keys by prefix.
+
+## Not undone by any of this
+
+A disabled person's sessions, notes and prompts remain visible to every member:
+team mode attributes work, it doesn't make anything private. Anyone still
+holding a copy of their API key can no longer use it; a key they copied into
+someone else's tooling stops working with the key.

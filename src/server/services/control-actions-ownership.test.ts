@@ -11,7 +11,10 @@
  */
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
+import type { Actor } from "../auth/actor.js";
 import "./ai/__test_db.js";
+
+const TEST_ACTOR: Actor = { userId: null, label: "user" };
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
 const { controlActions, launchRequests, managedSessions, sessions } = await import(
@@ -181,7 +184,7 @@ describe("queuePromptAction rejects a forged launch pointer (D12)", () => {
 		const otherLaunch = await seedOwnedLaunch("d12-other-sess", "sup-A");
 		await seedManagedRowRaw(sessionId, "sup-A", otherLaunch.launchId);
 
-		await expect(queuePromptAction(sessionId, "hello")).rejects.toThrow(
+		await expect(queuePromptAction(sessionId, "hello", TEST_ACTOR)).rejects.toThrow(
 			"Launch request does not match session.",
 		);
 
@@ -197,7 +200,7 @@ describe("queuePromptAction rejects a forged launch pointer (D12)", () => {
 		const launch = await seedOwnedLaunch(sessionId, "sup-A");
 		await seedManagedRowRaw(sessionId, "sup-A", launch.launchId);
 
-		const action = await queuePromptAction(sessionId, "hello");
+		const action = await queuePromptAction(sessionId, "hello", TEST_ACTOR);
 		expect(action.actionType).toBe("prompt");
 		expect(action.sessionId).toBe(sessionId);
 	});
@@ -212,7 +215,7 @@ describe("retryLaunchForSession rejects a forged launch pointer (D12/F47)", () =
 		const otherLaunch = await seedOwnedLaunch("d12-retry-other-sess", "sup-A");
 		await seedManagedRowRaw(sessionId, "sup-A", otherLaunch.launchId);
 
-		await expect(retryLaunchForSession(sessionId)).rejects.toThrow(
+		await expect(retryLaunchForSession(sessionId, TEST_ACTOR)).rejects.toThrow(
 			"Launch request does not match session.",
 		);
 
@@ -232,7 +235,7 @@ describe("retryLaunchForSession rejects a forged launch pointer (D12/F47)", () =
 		const launch = await seedOwnedLaunch(sessionId, "sup-A");
 		await seedManagedRowRaw(sessionId, "sup-A", launch.launchId);
 
-		const result = await retryLaunchForSession(sessionId);
+		const result = await retryLaunchForSession(sessionId, TEST_ACTOR);
 		expect(result.launchRequest.retryOfLaunchRequestId).toBe(launch.launchId);
 	});
 });
@@ -246,13 +249,13 @@ describe("F44: queuePromptAction/retryLaunchForSession resolve the legacy launch
 		// launchRequestId (managed-session-state.ts:131).
 		await seedManagedRowRaw(sessionId, "sup-A", sessionId);
 
-		const promptAction = await queuePromptAction(sessionId, "hello");
+		const promptAction = await queuePromptAction(sessionId, "hello", TEST_ACTOR);
 		expect(promptAction.actionType).toBe("prompt");
 		// Queued with the REAL launch id, not the stale sessionId fallback
 		// value (F44's second requirement).
 		expect(promptAction.launchRequestId).toBe(launch.launchId);
 
-		const retryResult = await retryLaunchForSession(sessionId);
+		const retryResult = await retryLaunchForSession(sessionId, TEST_ACTOR);
 		expect(retryResult.launchRequest.retryOfLaunchRequestId).toBe(launch.launchId);
 	});
 
@@ -277,7 +280,7 @@ describe("F44: queuePromptAction/retryLaunchForSession resolve the legacy launch
 			.execute();
 		await seedManagedRowRaw(sessionId, "sup-A", sessionId);
 
-		await expect(queuePromptAction(sessionId, "hello")).rejects.toThrow(
+		await expect(queuePromptAction(sessionId, "hello", TEST_ACTOR)).rejects.toThrow(
 			"Launch request does not match session.",
 		);
 

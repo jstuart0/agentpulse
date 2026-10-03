@@ -46,7 +46,11 @@ export function LabsPanel() {
 					/>
 				</div>
 			))}
-			{error && <div className="text-xs text-red-300">{error}</div>}
+			{error && (
+				<div role="alert" className="text-xs text-red-700 dark:text-red-300">
+					{error}
+				</div>
+			)}
 		</div>
 	);
 }
