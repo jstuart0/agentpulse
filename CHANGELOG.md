@@ -7,6 +7,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-10-03
+
 Ideas from a fork by @flexi767 (https://github.com/flexi767/agentpulse); re-implemented here.
 
 ### Added
@@ -40,6 +42,11 @@ Ideas from a fork by @flexi767 (https://github.com/flexi767/agentpulse); re-impl
   nothing treats it as proof and no permission check reads it; a
   supervisor-launched session still shows its supervisor's host. Direct-mode
   hooks send nothing and show no host.
+
+### Upgrade notes
+
+- Migrations run at boot and only add one nullable column (`sessions.reported_host`; SQLite 0009, Postgres 0010).
+- Re-run the relay setup on each machine to get the relay that reports its machine name. Codex hooks are merged into an existing `~/.codex/hooks.json`; Codex may ask you to re-approve them.
 
 ## [0.7.0] — 2026-10-03
 
