@@ -4,7 +4,8 @@ import {
 	type OperationalStatusInput,
 	getOperationalStatus,
 } from "../../shared/session-state.js";
-import type { AgentType, OwnerStatsGroup } from "../../shared/types.js";
+import type { AgentType, HostStatsGroup, OwnerStatsGroup } from "../../shared/types.js";
+import { HOST_UNKNOWN, type HostParam } from "../lib/host-scope.js";
 import type { OwnerParam } from "../lib/owner-scope.js";
 import { extractProjectName } from "../lib/utils.js";
 import { groupByProjectKey, groupSessionsStable } from "./dashboard-view-state.js";
@@ -14,12 +15,13 @@ import { groupByProjectKey, groupSessionsStable } from "./dashboard-view-state.j
  * Project is today's grouping, unchanged; User and Agent reuse the same stable
  * ordering machinery with a different key. Urgency never reorders groups.
  */
-export type GroupBy = "project" | "user" | "agent";
+export type GroupBy = "project" | "user" | "agent" | "machine";
 
 export const GROUP_BY_LABEL: Record<GroupBy, string> = {
 	project: "Project",
 	user: "User",
 	agent: "Agent",
+	machine: "Machine",
 };
 
 export interface GroupableSession {
@@ -28,6 +30,8 @@ export interface GroupableSession {
 	isPinned: boolean;
 	ownerUserId?: string | null;
 	ownerKind?: "user" | "service" | "unassigned";
+	/** Where the session runs, as the server filters and groups it; null is none, absent is unknown to this row. */
+	machine?: string | null;
 }
 
 export interface DashboardGroup<T> {
@@ -54,12 +58,33 @@ export function groupByStorageKey(userId: string | null): string {
 }
 
 export function parseGroupBy(raw: string | null): GroupBy {
-	return raw === "user" || raw === "agent" ? raw : "project";
+	return raw === "user" || raw === "agent" || raw === "machine" ? raw : "project";
 }
 
 function ownerKey(session: GroupableSession): string {
 	if (session.ownerUserId) return session.ownerUserId;
 	return session.ownerKind === "service" ? SERVICE_GROUP_KEY : UNASSIGNED_GROUP_KEY;
+}
+
+/** A machine group is keyed by its name, the sessions with no machine by the reserved filter value, so a group key is also the filter that selects it. */
+function machineKey(session: GroupableSession): string {
+	return session.machine?.trim() || HOST_UNKNOWN;
+}
+
+const UNKNOWN_MACHINE_GROUP_LABEL = "Unknown machine";
+
+/** By name without regard to case, ties by spelling (the server's order), the sessions with no machine last. */
+function compareMachineGroups(
+	a: { key: string; label: string },
+	b: { key: string; label: string },
+) {
+	if (a.key === HOST_UNKNOWN || b.key === HOST_UNKNOWN) {
+		return (a.key === HOST_UNKNOWN ? 1 : 0) - (b.key === HOST_UNKNOWN ? 1 : 0);
+	}
+	return (
+		a.label.localeCompare(b.label, "en", { sensitivity: "base" }) ||
+		(a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+	);
 }
 
 const SERVICE_GROUP_LABEL = "Service keys";
@@ -85,6 +110,14 @@ export function groupDashboardSessions<T extends GroupableSession>(
 			(s) => s.agentType,
 			(key) => AGENT_METADATA[key as AgentType]?.label ?? key,
 			(s) => s.isPinned,
+		);
+	} else if (groupBy === "machine") {
+		groups = groupSessionsStable(
+			sessions,
+			machineKey,
+			(key) => (key === HOST_UNKNOWN ? UNKNOWN_MACHINE_GROUP_LABEL : key),
+			(s) => s.isPinned,
+			compareMachineGroups,
 		);
 	} else if (groupBy === "user") {
 		const label = (key: string) =>
@@ -126,6 +159,11 @@ export function ownerStatsByKey(groups: readonly OwnerStatsGroup[]): Map<string,
 	);
 }
 
+/** The server's per-machine counts keyed the way machine groups are, so a header can look its own up. */
+export function hostStatsByKey(groups: readonly HostStatsGroup[]): Map<string, HostStatsGroup> {
+	return new Map(groups.map((group) => [group.host ?? HOST_UNKNOWN, group]));
+}
+
 // ── Headers ─────────────────────────────────────────────────────────────────
 
 export interface GroupHeader {
@@ -136,6 +174,8 @@ export interface GroupHeader {
 	working: number;
 	waiting: number;
 	showAll: { ownerId: string; label: string; ariaLabel: string } | null;
+	/** Machine groups: narrow the view to this machine (`host` is the filter value that selects it). */
+	showAllHost: { host: HostParam; label: string; ariaLabel: string } | null;
 }
 
 export interface HeaderContext extends GroupingContext {
@@ -146,19 +186,23 @@ export interface HeaderContext extends GroupingContext {
 	tab: string;
 	statusFilter: ActiveOperationalStatus | null;
 	currentOwner: OwnerParam;
+	/** The server's per-machine counts, by group key; null until they arrive (or when not asked for). */
+	machineStats?: ReadonlyMap<string, HostStatsGroup> | null;
+	/** The machine the view is already narrowed to (empty is every machine). */
+	currentHost?: HostParam;
 	/** A text search is on: counts are matches, and "show all of theirs" would contradict it. */
 	searchActive?: boolean;
 }
 
 /** The server's count that matches what the current tab and status card are showing, for "N shown of M". Null when it has none. */
 export function ownerGroupTotal(
-	group: OwnerStatsGroup,
+	group: Omit<OwnerStatsGroup, "ownerUserId" | "ownerKind">,
 	tab: string,
 	statusFilter: ActiveOperationalStatus | null,
 ): number | null {
 	if (statusFilter) return group[statusFilter];
 	// This owner's size of the same tab the list shows; an older server sends no tab counts.
-	const tabs = group.tabCounts as OwnerStatsGroup["tabCounts"] | undefined;
+	const tabs = group.tabCounts as HostStatsGroup["tabCounts"] | undefined;
 	if (tab === "active") return tabs?.active ?? group.active;
 	if (tab === "completed") return tabs?.completed ?? group.completed;
 	if (tab === "archived") return tabs?.archived ?? null;
@@ -194,6 +238,45 @@ function showAllAriaLabel(
 	return isSelf ? "Show all of your sessions" : `Show all of ${nameOf(key)}'s sessions`;
 }
 
+function machineHeader<T extends GroupableSession>(
+	group: DashboardGroup<T>,
+	ctx: HeaderContext,
+	fromCards: { working: number; waiting: number },
+): GroupHeader {
+	const shown = group.sessions.length;
+	const searching = ctx.searchActive === true;
+	const stats = ctx.machineStats?.get(group.key) ?? null;
+	const total = stats ? ownerGroupTotal(stats, ctx.tab, ctx.statusFilter) : null;
+	const moreThanShown = total !== null && total > shown;
+	// As for an owner: the machine's own working and waiting totals describe its
+	// active sessions, so they stand in only for the Active tab with no status card.
+	const machineActiveTotals =
+		stats !== null && !searching && ctx.tab === "active" && !ctx.statusFilter;
+	const named = group.key !== HOST_UNKNOWN;
+	return {
+		title: group.label,
+		path: null,
+		countText: searching
+			? shownCount(shown, true, true)
+			: moreThanShown
+				? `${shown} shown of ${total}`
+				: shownCount(shown, ctx.teamHeaders),
+		working: machineActiveTotals ? stats.working : fromCards.working,
+		waiting: machineActiveTotals ? stats.waiting : fromCards.waiting,
+		showAll: null,
+		showAllHost:
+			ctx.currentHost !== group.key && !searching && moreThanShown
+				? {
+						host: group.key,
+						label: "Show all",
+						ariaLabel: named
+							? `Show all sessions on ${group.label}`
+							: "Show all sessions with no machine",
+					}
+				: null,
+	};
+}
+
 export function groupHeader<T extends GroupableSession & OperationalStatusInput>(
 	group: DashboardGroup<T>,
 	groupBy: GroupBy,
@@ -209,6 +292,7 @@ export function groupHeader<T extends GroupableSession & OperationalStatusInput>
 			countText: shownCount(shown, ctx.teamHeaders, ctx.searchActive),
 			...fromCards,
 			showAll: null,
+			showAllHost: null,
 		};
 	}
 	if (groupBy === "agent") {
@@ -218,8 +302,11 @@ export function groupHeader<T extends GroupableSession & OperationalStatusInput>
 			countText: shownCount(shown, ctx.teamHeaders, ctx.searchActive),
 			...fromCards,
 			showAll: null,
+			showAllHost: null,
 		};
 	}
+
+	if (groupBy === "machine") return machineHeader(group, ctx, fromCards);
 
 	const isPerson = group.key !== SERVICE_GROUP_KEY && group.key !== UNASSIGNED_GROUP_KEY;
 	const isSelf = isPerson && ctx.viewerUserId !== null && group.key === ctx.viewerUserId;
@@ -250,5 +337,6 @@ export function groupHeader<T extends GroupableSession & OperationalStatusInput>
 						ariaLabel: showAllAriaLabel(group.key, isSelf, ctx.nameOf),
 					}
 				: null,
+		showAllHost: null,
 	};
 }

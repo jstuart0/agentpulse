@@ -443,18 +443,18 @@ describe("grouping by machine", () => {
 		row("2", { machine: "Build-01" }),
 		row("3", { machine: null }),
 		row("4", { machine: "build-01" }),
-		row("5", { machine: "  edge-02 " }),
+		row("5", { machine: "  edge-02 ", isPinned: true }),
 		row("6", { machine: "" }),
 		row("7", {}),
-		row("8", { machine: "alice-mbp", isPinned: true }),
+		row("8", { machine: "alice-mbp" }),
 	];
 
-	test("by name without regard to case, the sessions with no machine last, and pinned cards don't reorder the groups", () => {
+	test("by name without regard to case (the server's own order, ties by spelling), the sessions with no machine last, and a pinned card doesn't move its group", () => {
 		const { groups } = groupDashboardSessions(onMachines, "machine", ctx);
 		expect(groups.map((g) => g.key)).toEqual([
 			"alice-mbp",
-			"build-01",
 			"Build-01",
+			"build-01",
 			"edge-02",
 			HOST_UNKNOWN_KEY,
 		]);
