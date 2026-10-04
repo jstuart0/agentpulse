@@ -306,6 +306,32 @@ describeSqliteOnly("Telegram turns", () => {
 		});
 	});
 
+	test("a hung Telegram API call never holds the slot: the slot is freed when the turn ends, before the reply is sent, and typing is not waited on", async () => {
+		const { handleTelegramUpdate } = await import("./channels.js");
+		const credentials = await enrolChat();
+		const realFetch = globalThis.fetch;
+		const hung: string[] = [];
+		globalThis.fetch = (async (url: string) => {
+			const method = String(url).split("/").pop() as string;
+			if (method === "sendChatAction" || method === "sendMessage") {
+				hung.push(method);
+				return new Promise<Response>(() => {}); // never answers, like a stalled connection
+			}
+			return new Response("{}", { status: 200 });
+		}) as typeof fetch;
+		try {
+			void handleTelegramUpdate(update("hello there"));
+			await waitFor(() => hung.includes("sendMessage"), "the reply to be sent");
+			// the turn is over and its answer is waiting on a hung send: no slot is held
+			expect(hung).toContain("sendChatAction");
+			expect(stats().running).toBe(0);
+		} finally {
+			globalThis.fetch = realFetch;
+			(config as Record<string, unknown>).telegramBotToken = "";
+			await credentials.refreshTelegramCredentials();
+		}
+	});
+
 	test("a message over the cap never takes a slot, even when the limiter is full", async () => {
 		const { ASK_TOO_LONG_REPLY } = await import("../services/channels/telegram-replies.js");
 		const { handleTelegramUpdate } = await import("./channels.js");
