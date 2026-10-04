@@ -4,6 +4,8 @@ import {
 	SUMMARY_OUTCOME_LABELS,
 	SUMMARY_OUTCOME_STATUSES,
 	SUMMARY_SCHEMA_VERSION,
+	SUMMARY_SUSPECT_REASONS,
+	SUSPECT_REASON_TIER,
 	type StoredEvidenceFact,
 	type SummaryProvenance,
 } from "./session-summary.js";
@@ -41,5 +43,26 @@ describe("shared summary vocabulary", () => {
 		const provenanceKeys: Array<keyof SummaryProvenance> = ["throughAt", "schemaVersion"];
 		expect(fact.result).toBe("completed");
 		expect(provenanceKeys).toHaveLength(2);
+	});
+
+	test("TC-4.76 the tripwire has seven codes; a risky command and a malformed address are warnings", () => {
+		expect([...SUMMARY_SUSPECT_REASONS]).toEqual([
+			"role_marker",
+			"override_phrase",
+			"pipe_to_shell",
+			"unexpected_url",
+			"unrecorded_command",
+			"risky_command",
+			"malformed_url",
+		]);
+		expect(SUSPECT_REASON_TIER).toEqual({
+			role_marker: "warning",
+			override_phrase: "warning",
+			pipe_to_shell: "warning",
+			unexpected_url: "note",
+			unrecorded_command: "note",
+			risky_command: "warning",
+			malformed_url: "warning",
+		});
 	});
 });

@@ -1750,3 +1750,26 @@ describe("TC-3.J4 the excerpt is gated by output text, and the label then reads 
 		expect(ledger.text).not.toContain("SENTINEL");
 	});
 });
+
+describe("TC-3.J5 the ledger marks the commands whose text it printed", () => {
+	test("a validation and an ordinary command are shown; withheld, not-shown and over-cap commands are not", () => {
+		const padded = `true # ${"x".repeat(600)}`;
+		const ledger = build([
+			bash(1, "bun test", { response: "3 pass" }),
+			bash(2, "git push origin main"),
+			bash(3, "cat .env"),
+			bash(4, "node -e 'x'"),
+			bash(5, padded),
+		]);
+		expect(ledger.ids.get("E1")?.shown).toBe(true);
+		expect(ledger.ids.get("E2")?.shown).toBe(true);
+		for (const id of ["E3", "E4", "E5"]) {
+			expect(ledger.ids.get(id)?.shown, id).not.toBe(true);
+			expect(ledger.text, id).toContain("[withheld");
+		}
+	});
+	test("storedFact drops `shown` with `observed`", () => {
+		const stored = storedFact({ kind: "command", at: null, observed: true, shown: true });
+		expect("shown" in stored).toBe(false);
+	});
+});

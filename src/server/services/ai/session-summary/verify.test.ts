@@ -927,3 +927,48 @@ describe("the reasons are stored as codes (I-1, I-3)", () => {
 		expect(provenance.suspect).toBe(false);
 	});
 });
+
+// ── fix pass 2: what a command backs ─────────────────────────────────────────
+
+describe("B-1 claim backing is not overstated", () => {
+	const unvChange = (kind: SummaryDraft["changes"][number]["kind"], fact: LedgerFactForVerify) =>
+		run({
+			ledger: ledgerOf({ E1: fact }),
+			draft: draftOf({ changes: [{ kind, text: "Deployed to prod", evidence: ["E1"] }] }),
+		}).summary.changes[0]?.unverified;
+	const unvClaim = (fact: LedgerFactForVerify) =>
+		run({
+			ledger: ledgerOf({ E1: fact }),
+			draft: draftOf({ accomplishments: [{ text: "did it", evidence: ["E1"] }] }),
+		}).summary.accomplishments[0]?.unverified;
+
+	test("TC-4.73 a passing validation does not back a git or infrastructure change", () => {
+		for (const kind of ["git", "infrastructure"] as const) {
+			expect(unvChange(kind, fact("validation", true, "ok")), kind).toBe(true);
+			expect(unvChange(kind, fact("command", true, "ok")), `${kind} by a command`).toBe(false);
+		}
+	});
+
+	test("TC-4.74 a command whose text is not shown backs nothing, whether `shown` is false or absent", () => {
+		const notShown = { kind: "command", at: null, observed: true, result: "ok" } as const;
+		for (const f of [{ ...notShown, shown: false }, notShown]) {
+			expect(unvClaim(f), JSON.stringify(f)).toBe(true);
+			expect(unvChange("other", f), JSON.stringify(f)).toBe(true);
+			expect(unvChange("git", f), JSON.stringify(f)).toBe(true);
+		}
+		expect(unvClaim({ ...notShown, shown: true })).toBe(false);
+		expect(unvClaim(fact("command", true, "ok"))).toBe(false);
+	});
+
+	test("TC-4.75 `shown` is not stored in the evidence", () => {
+		const out = run({
+			ledger: ledgerOf({ E1: fact("command", true, "ok") }),
+			draft: draftOf({ accomplishments: [{ text: "x", evidence: ["E1"] }] }),
+		});
+		expect(out.evidence.E1).toEqual({
+			kind: "command",
+			at: "2026-10-03T10:00:00.000Z",
+			result: "ok",
+		});
+	});
+});
