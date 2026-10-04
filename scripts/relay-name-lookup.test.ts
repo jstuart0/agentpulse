@@ -259,6 +259,53 @@ describe("the short memory of a successful answer", () => {
 		expect(upstreamReads()).toBe(Object.keys(bodies).length * 2 + 2 + 1);
 	});
 
+	test("only the exact name-only request is answered from memory: any other fields value, a repeated or empty one, or an extra query key goes to the server", async () => {
+		answers.s1 = light("s1", "brave-falcon");
+		const { relay, base } = await start();
+		await fetch(`${base}/api/v1/sessions/s1${LIGHT}`);
+		expect(relay.ctx.state.nameCache.has("s1")).toBe(true);
+		const reads = upstreamReads();
+		// the remembered answer is the small projection; these ask for something else and must see the server's own answer
+		answers.s1 = () =>
+			Response.json({ session: { sessionId: "s1", displayName: "from-the-server" }, events: [] });
+		const others = [
+			"?fields=events",
+			"?fields=displayName,events",
+			"?fields=displayName&fields=events",
+			"?fields=",
+			"?fields=displayname",
+			"?displayName=1",
+			"?fields=displayName&extra=1",
+			"?extra=1&fields=displayName",
+			"",
+		];
+		for (const [i, query] of others.entries()) {
+			const res = await fetch(`${base}/api/v1/sessions/s1${query}`);
+			const body = (await res.json()) as { session: { displayName: string } };
+			// If any of these were answered from memory, the name would still be "brave-falcon" and no request would reach the server.
+			expect({ query, name: body.session.displayName, asked: upstreamReads() - reads }).toEqual({
+				query,
+				name: "from-the-server",
+				asked: i + 1,
+			});
+		}
+	});
+
+	test("the memory's window is exactly 5 s: still remembered at 4,999 ms, asked again at 5,000 ms", async () => {
+		const R = await mod();
+		expect(R.NAME_CACHE_TTL_MS).toBe(5_000);
+		answers.s1 = light("s1", "first");
+		const { base } = await start();
+		await fetch(`${base}/api/v1/sessions/s1${LIGHT}`);
+		expect(upstreamReads()).toBe(1);
+		clock += R.NAME_CACHE_TTL_MS - 1;
+		await fetch(`${base}/api/v1/sessions/s1${LIGHT}`);
+		expect(upstreamReads()).toBe(1);
+		clock += 1;
+		await fetch(`${base}/api/v1/sessions/s1${LIGHT}`);
+		expect(upstreamReads()).toBe(2);
+	});
+
 	test("it is bounded: past the cap the oldest entries go", async () => {
 		const { relay, base } = await start();
 		const cap = (await mod()).NAME_CACHE_MAX_ENTRIES;
