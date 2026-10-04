@@ -66,6 +66,7 @@ export interface VectorScanStats {
 	stopReason: VectorScanStopReason;
 	ms: number;
 	busyMs: number;
+	/** Time spent asleep paying CPU debt, or waiting on another scan's sleep. */
 	sleptMs: number;
 	/** The longest synchronous slice: one chunk's read and scoring. */
 	maxSliceMs: number;
