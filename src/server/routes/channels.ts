@@ -191,49 +191,49 @@ async function handleTelegramAskMessage(message: TelegramMessage): Promise<void>
 		});
 		return;
 	}
+	// The slot guards the turn, not the Telegram calls around it: those have no
+	// timeout, so a stalled connection must never be able to hold a slot.
+	let answer: string;
 	try {
 		const thread = await findOrCreateTelegramThread({
 			telegramChatId: chatId,
 			seedTitle: normalized,
 		});
 
-		// Typing indicator so the user sees the bot is thinking.
-		await telegramChatAction(chatId, "typing").catch(() => {
-			// ignore — informational only
+		// Typing indicator so the user sees the bot is thinking. Informational, so
+		// not waited on.
+		telegramChatAction(chatId, "typing").catch(() => {
+			// ignore
 		});
 
-		try {
-			const res = await runAskTurn({
-				threadId: thread.id,
-				message: normalized,
-				origin: "telegram",
-				telegramChatId: chatId,
-				actor: TELEGRAM_ACTOR,
-				slot,
-			});
-			await telegramSendMessage(
-				chatId,
-				res.assistantMessage.errorMessage
-					? `⚠️ ${res.assistantMessage.content}`
-					: res.assistantMessage.content,
-			);
-		} catch (err) {
-			// The detail goes to the log; the chat is told nothing about it.
-			const detail = err instanceof Error ? err.message : String(err);
-			console.error(
-				JSON.stringify({
-					kind: "telegram_ask_failed",
-					level: "error",
-					error: detail.slice(0, 300),
-				}),
-			);
-			await telegramSendMessage(chatId, ASK_FAILED_REPLY).catch(() => {
-				// ignore
-			});
-		}
+		const res = await runAskTurn({
+			threadId: thread.id,
+			message: normalized,
+			origin: "telegram",
+			telegramChatId: chatId,
+			actor: TELEGRAM_ACTOR,
+			slot,
+		});
+		answer = res.assistantMessage.errorMessage
+			? `⚠️ ${res.assistantMessage.content}`
+			: res.assistantMessage.content;
+	} catch (err) {
+		// The detail goes to the log; the chat is told nothing about it.
+		const detail = err instanceof Error ? err.message : String(err);
+		console.error(
+			JSON.stringify({
+				kind: "telegram_ask_failed",
+				level: "error",
+				error: detail.slice(0, 300),
+			}),
+		);
+		answer = ASK_FAILED_REPLY;
 	} finally {
 		slot.release();
 	}
+	await telegramSendMessage(chatId, answer).catch(() => {
+		// ignore
+	});
 }
 
 /**
