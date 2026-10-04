@@ -122,22 +122,49 @@ describe("normalisation and schema", () => {
 		for (const status of SUMMARY_OUTCOME_STATUSES) expect(reached.has(status)).toBe(true);
 	});
 
-	test("TC-4.14 an unknown status or validation result is a schema failure at its path, with no silent default", () => {
-		const badStatus = parse(answer({ outcome: { status: "done", explanation: "e" } }));
-		expect(badStatus).toEqual({ ok: false, path: "outcome.status" });
-		const badResult = parse(
-			answer({ validation: [{ what: "x", result: "n/a", detail: "", evidence: [] }] }),
+	test("TC-4.14 an unknown or missing status or validation result takes the least-claiming value and costs no repair (P4-14)", () => {
+		const badStatus = draftFrom(
+			JSON.stringify(answer({ outcome: { status: "done", explanation: "e" } })),
 		);
-		expect(badResult).toEqual({ ok: false, path: "validation.0.result" });
-		const second = parse(
-			answer({
-				validation: [
-					{ what: "a", result: "passed", detail: "", evidence: [] },
-					{ what: "x", result: "pass", detail: "", evidence: [] },
-				],
-			}),
+		expect(badStatus.outcome).toEqual({ status: "unclear", explanation: "e" });
+		const noStatus = draftFrom(JSON.stringify(answer({ outcome: { explanation: "e" } })));
+		expect(noStatus.outcome.status).toBe("unclear");
+		const noOutcome = draftFrom(JSON.stringify(answer({ outcome: undefined })));
+		expect(noOutcome.outcome).toEqual({ status: "unclear", explanation: "" });
+		const results = draftFrom(
+			JSON.stringify(
+				answer({
+					validation: [
+						{ what: "a", result: "n/a", detail: "", evidence: [] },
+						{ what: "b", result: "pass", detail: "", evidence: [] },
+						{ what: "c", detail: "", evidence: [] },
+						{ what: "d", result: "passed", detail: "", evidence: [] },
+					],
+				}),
+			),
 		);
-		expect(second).toEqual({ ok: false, path: "validation.1.result" });
+		expect(results.validation.map((v) => v.result)).toEqual([
+			"unknown",
+			"unknown",
+			"unknown",
+			"passed",
+		]);
+	});
+
+	test("TC-4.14b a wrapper that is an array or a string is a failure at the top level, even around a complete answer (P4-F6)", () => {
+		for (const raw of [JSON.stringify([answer()]), JSON.stringify(JSON.stringify(answer()))]) {
+			expect(parseAnswer(raw, NONCE), raw.slice(0, 30)).toEqual({ ok: false, path: "top level" });
+		}
+	});
+
+	test("TC-4.14c the raw answer is read to 200,000 characters: a late object is not found, a huge tail is not scanned (P4-15)", () => {
+		const json = JSON.stringify(answer());
+		const started = performance.now();
+		const late = parseAnswer(`${"x ".repeat(150_000)}${json}`, NONCE);
+		const tail = parseAnswer(`${json}${"{".repeat(5_000_000)}`, NONCE);
+		expect(late).toEqual({ ok: false, path: "top level" });
+		expect(tail.ok).toBe(true);
+		expect(performance.now() - started).toBeLessThan(2000);
 	});
 
 	test("TC-4.15 an unknown or missing changes.kind maps to other and costs no retry", () => {
@@ -236,8 +263,8 @@ describe("normalisation and schema", () => {
 		expect(hasLoneSurrogate(past.overview)).toBe(false);
 	});
 
-	test("TC-4.17a each of the ten keys removed in turn: arrays become [], the three required ones fail", () => {
-		const required = new Set(["overview", "outcome", "handoff"]);
+	test("TC-4.17a each of the ten keys removed in turn: arrays become [], overview and handoff fail, a missing outcome defaults to unclear", () => {
+		const required = new Set(["overview", "handoff"]);
 		for (const key of SUMMARY_SECTION_KEYS) {
 			const value = answer();
 			delete value[key];
@@ -246,7 +273,8 @@ describe("normalisation and schema", () => {
 				expect(result.ok).toBe(false);
 			} else {
 				expect(result.ok).toBe(true);
-				if (result.ok) expect(result.draft[key as "problems"]).toEqual([]);
+				if (result.ok && key === "outcome") expect(result.draft.outcome.status).toBe("unclear");
+				else if (result.ok) expect(result.draft[key as "problems"]).toEqual([]);
 			}
 		}
 	});
@@ -255,8 +283,10 @@ describe("normalisation and schema", () => {
 		expect(parse(answer({ overview: "" })).ok).toBe(false);
 		expect(parse(answer({ overview: "   \n" })).ok).toBe(false);
 		expect(parse(answer({ handoff: "" })).ok).toBe(false);
-		expect(parse(answer({ outcome: {} })).ok).toBe(false);
-		expect(parse(answer({ outcome: "completed" })).ok).toBe(false);
+		for (const outcome of [{}, "completed"]) {
+			const defaulted = parse(answer({ outcome }));
+			expect(defaulted.ok && defaulted.draft.outcome.status).toBe("unclear");
+		}
 		const bare = parse(answer({ outcome: { status: "blocked" } }));
 		expect(bare.ok).toBe(true);
 		if (bare.ok) expect(bare.draft.outcome.explanation).toBe("");
@@ -357,10 +387,13 @@ describe("repair", () => {
 	test("TC-4.21c nothing the model wrote reaches a trailer: an invalid enum value, a JSON.parse failure, a hostile path", () => {
 		const sentinel = "SENTINEL-MODEL-TEXT-91f3";
 		const badEnum = parse(answer({ outcome: { status: sentinel, explanation: "e" } }));
-		expect(badEnum.ok).toBe(false);
-		if (!badEnum.ok) {
-			expect(badEnum.path).toBe("outcome.status");
-			expect(repairTrailer({ kind: "parse", path: badEnum.path })).not.toContain(sentinel);
+		expect(badEnum.ok && badEnum.draft.outcome.status).toBe("unclear");
+		expect(JSON.stringify(badEnum)).not.toContain(sentinel);
+		const badKey = parse(answer({ overview: "" }));
+		expect(badKey.ok).toBe(false);
+		if (!badKey.ok) {
+			expect(badKey.path).toBe("overview");
+			expect(repairTrailer({ kind: "parse", path: badKey.path })).not.toContain(sentinel);
 		}
 		const brokenJson = parseAnswer(`{"overview": "${sentinel}", oops`, NONCE);
 		expect(brokenJson.ok).toBe(false);
