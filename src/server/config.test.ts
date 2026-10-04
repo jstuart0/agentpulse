@@ -139,3 +139,62 @@ describe("config.adminSsoSubjects", () => {
 		expect(config.adminSsoSubjects).toEqual(["two"]);
 	});
 });
+
+describe("vector scan settings", () => {
+	const KEYS = [
+		"AGENTPULSE_VECTOR_SCAN_MAX_ROWS",
+		"AGENTPULSE_VECTOR_SCAN_MAX_MS",
+		"AGENTPULSE_VECTOR_SCAN_CPU_SHARE",
+	] as const;
+	const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+	let fresh = 0;
+
+	afterEach(() => {
+		for (const key of KEYS) {
+			if (saved[key] === undefined) delete process.env[key];
+			else process.env[key] = saved[key];
+		}
+	});
+
+	/** config.ts computes these once at import, so each case imports a fresh copy of the module. */
+	async function load(env: Partial<Record<(typeof KEYS)[number], string>>) {
+		for (const key of KEYS) delete process.env[key];
+		Object.assign(process.env, env);
+		const mod = (await import(`./config.js?vector-scan-${++fresh}`)) as { config: typeof config };
+		const c = mod.config as unknown as Record<string, number>;
+		return {
+			rows: c.vectorScanMaxRows,
+			ms: c.vectorScanMaxMs,
+			share: c.vectorScanCpuShare,
+		};
+	}
+
+	test("defaults are 50,000 rows, 4,000 ms and a 0.30 share", async () => {
+		expect(await load({})).toEqual({ rows: 50_000, ms: 4_000, share: 0.3 });
+	});
+
+	test("rows clamp to 1,000..5,000,000, with the boundaries accepted exactly", async () => {
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "999" })).rows).toBe(1_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "1000" })).rows).toBe(1_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "5000000" })).rows).toBe(5_000_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "5000001" })).rows).toBe(5_000_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "70000" })).rows).toBe(70_000);
+	});
+
+	test("time clamps to 250..60,000 ms, with the boundaries accepted exactly", async () => {
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "249" })).ms).toBe(250);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "250" })).ms).toBe(250);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "60000" })).ms).toBe(60_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "60001" })).ms).toBe(60_000);
+	});
+
+	test("CPU share clamps to 0.05..1, and junk falls back to the default", async () => {
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_CPU_SHARE: "0.04" })).share).toBe(0.05);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_CPU_SHARE: "0.05" })).share).toBe(0.05);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_CPU_SHARE: "1" })).share).toBe(1);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_CPU_SHARE: "1.01" })).share).toBe(1);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_CPU_SHARE: "junk" })).share).toBe(0.3);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "junk" })).rows).toBe(50_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "" })).ms).toBe(4_000);
+	});
+});

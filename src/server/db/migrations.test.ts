@@ -815,6 +815,13 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 			}
 			expect(tableNames).not.toContain("event_embeddings");
 
+			// The scan index belongs to event_embeddings, which Postgres never has.
+			const scanIndexes = (await sql`
+				SELECT indexname FROM pg_indexes
+				WHERE schemaname = 'public' AND indexname = 'idx_event_embeddings_model_dim_event'
+			`) as Array<{ indexname: string }>;
+			expect(scanIndexes).toEqual([]);
+
 			// Phase 1: all 4 SSO identity columns must be present on auth_sessions (AC 11).
 			const pgAuthCols = (await sql`
 				SELECT column_name
@@ -1179,3 +1186,70 @@ describePostgresOnly(
 		});
 	},
 );
+
+// ── vector scan index (SQLite only; Postgres has no event_embeddings) ────────
+
+const SCAN_INDEX = "idx_event_embeddings_model_dim_event";
+
+function indexColumns(db: Database, index: string): string[] {
+	return (db.prepare(`PRAGMA index_info(${index})`).all() as Array<{ seqno: number; name: string }>)
+		.sort((a, b) => a.seqno - b.seqno)
+		.map((r) => r.name);
+}
+
+describeSqliteOnly("vector scan index on both SQLite install shapes", () => {
+	test("fresh Drizzle migrate creates it on (model, dim, event_id); re-running its migration SQL is a no-op", async () => {
+		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+		const { drizzle } = await import("drizzle-orm/bun-sqlite");
+		const { readdirSync, readFileSync } = await import("node:fs");
+		const migrationsFolder = join(process.cwd(), "drizzle", "sqlite");
+		const dbPath = tmpDbPath();
+		const fresh = new Database(dbPath);
+		fresh.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		try {
+			migrate(drizzle(fresh), { migrationsFolder });
+
+			expect(getIndexNames(fresh)).toContain(SCAN_INDEX);
+			expect(indexColumns(fresh, SCAN_INDEX)).toEqual(["model", "dim", "event_id"]);
+
+			const migrationFile = readdirSync(migrationsFolder)
+				.filter((f) => /^\d{4}_.*\.sql$/.test(f))
+				.find((f) => readFileSync(join(migrationsFolder, f), "utf8").includes(SCAN_INDEX));
+			expect(migrationFile, "a drizzle/sqlite migration creates the scan index").toBeDefined();
+			const sql = readFileSync(join(migrationsFolder, migrationFile as string), "utf8");
+			expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS/);
+			for (const statement of sql.split("--> statement-breakpoint")) fresh.exec(statement);
+			expect(getIndexNames(fresh).filter((n) => n === SCAN_INDEX).length).toBe(1);
+		} finally {
+			fresh.close();
+		}
+	});
+
+	test("legacy init creates it on an existing install when vector search is built in, and a second boot is a no-op", async () => {
+		const { config } = await import("../config.js");
+		const original = config.vectorSearchEnabled;
+		(config as Record<string, unknown>).vectorSearchEnabled = true;
+		const db = new Database(":memory:");
+		db.exec(`CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL UNIQUE,
+			agent_type TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			started_at TEXT NOT NULL DEFAULT (datetime('now')),
+			last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+			total_tool_uses INTEGER NOT NULL DEFAULT 0,
+			metadata TEXT DEFAULT '{}'
+		)`);
+		try {
+			await initializeDatabase(db);
+			expect(getIndexNames(db)).toContain(SCAN_INDEX);
+			expect(indexColumns(db, SCAN_INDEX)).toEqual(["model", "dim", "event_id"]);
+
+			await initializeDatabase(db);
+			expect(getIndexNames(db).filter((n) => n === SCAN_INDEX).length).toBe(1);
+		} finally {
+			(config as Record<string, unknown>).vectorSearchEnabled = original;
+			db.close();
+		}
+	});
+});
