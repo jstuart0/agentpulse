@@ -420,21 +420,14 @@ describeSqliteOnly("what the loop selects and how it fails", () => {
 	});
 });
 
-describeSqliteOnly("text edge cases the old code could not handle", () => {
-	test("invalid JSON, an empty payload and a missing-field payload fall back to content, and the rest of the batch embeds", async () => {
-		insertEventRow({
-			type: "UserPromptSubmit",
-			content: "bad json content",
-			rawPayload: "{not json",
-		});
-		insertEventRow({ type: "UserPromptSubmit", content: "empty content", rawPayload: "" });
-		insertEventRow({ type: "UserPromptSubmit", rawPayload: { prompt: "fine" } });
-		useAdapter();
-
-		const result = await service.runBackfill();
-
-		expect(result.error).toBeNull();
-		expect(texts).toEqual(["bad json content", "empty content", "fine"]);
+describeSqliteOnly("text edge cases", () => {
+	test("the events table refuses a payload that is not valid JSON, so the json_valid guard is a backstop, not a path real data takes", () => {
+		expect(() => insertEventRow({ type: "UserPromptSubmit", rawPayload: "{not json" })).toThrow(
+			/malformed JSON/,
+		);
+		expect(() => insertEventRow({ type: "UserPromptSubmit", rawPayload: "" })).toThrow(
+			/malformed JSON/,
+		);
 	});
 
 	test("an astral character across the 3,000 boundary is cut by character in SQL, not by UTF-16 unit", async () => {
