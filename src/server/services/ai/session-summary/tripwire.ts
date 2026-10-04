@@ -774,15 +774,110 @@ function afterWrappers(tokens: string[]): string[] {
 	return tokens.slice(i);
 }
 
-function isRiskyCommand(tokens: string[]): boolean {
+const LOOPBACK_TOKEN_RE =
+	/^(?:\w+:\/\/)?(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?::\d{1,5})?(?:[/?#]\S*)?$/i;
+const FETCH_TOOLS = new Set(["curl", "wget", "iwr", "irm"]);
+const GIT_FORCE_RE = /^(?:--force(?:-with-lease|-if-includes)?(?:=.*)?|-[a-zA-Z]*f[a-zA-Z]*)$/;
+const NETWORK_GIT = new Set(["push", "pull", "fetch"]);
+const MANIFEST_INSTALLERS = new Set(["bun", "npm", "pnpm", "yarn"]);
+
+/**
+ * Exception 1: a fetch tool whose every target is a loopback address (at least
+ * one), with no upload from a file and no pipe or download-then-run in the span.
+ * Any other host, a malformed address or an upload makes it risky as before.
+ */
+function isLoopbackOnly(tokens: string[], span: string, index: Index): boolean {
+	const t = afterWrappers(tokens);
+	if (!FETCH_TOOLS.has(t[0] as string)) return false;
+	if (t.some((x) => x.startsWith("@") || x.includes("=@"))) return false;
+	if (hasPipeToShell(span)) return false;
+	let loopback = 0;
+	for (const x of t.slice(1)) if (LOOPBACK_TOKEN_RE.test(x)) loopback++;
+	if (loopback === 0) return false;
+	const rest = t.slice(1).filter((x) => !LOOPBACK_TOKEN_RE.test(x));
+	for (const c of candidates(rest.join(" "), true)) {
+		if (c.malformed || !LOOPBACK_HOSTS.test(c.host)) return false;
+	}
+	for (const c of candidates(t.slice(1).join(" "), true)) if (c.malformed) return false;
+	return urlFindings(rest.join(" "), index.typed, index.records, false).unexpected === false;
+}
+
+/** A path that stays inside the repository: relative, no `..`, no scheme, no home. */
+const isRepoPath = (p: string): boolean =>
+	p !== "" &&
+	!p.startsWith("/") &&
+	!p.startsWith("~") &&
+	!p.includes(":") &&
+	!p.split("/").includes("..");
+
+/** Exception 2: an install that names no package, URL or outside path: `bun install`, `npm ci`, `pip install -r requirements.txt`, `pip install -e .`. */
+function isManifestInstall(t: string[]): boolean {
+	const verb = t[0] as string;
+	const args = t.slice(1);
+	if (MANIFEST_INSTALLERS.has(verb)) {
+		const sub = args.find((x) => !x.startsWith("-"));
+		if (sub !== "install" && sub !== "i" && sub !== "ci") return false;
+		return args.every((x) => x === sub || (x.startsWith("-") && !/[/:]/.test(x)));
+	}
+	if (verb !== "pip" && verb !== "pip3") return false;
+	if (args[0] !== "install") return false;
+	let sawManifest = false;
+	for (let i = 1; i < args.length; i++) {
+		const x = args[i] as string;
+		if (x === "-r" || x === "--requirement") {
+			if (!isRepoPath(args[++i] ?? "")) return false;
+			sawManifest = true;
+		} else if (x.startsWith("--requirement=")) {
+			if (!isRepoPath(x.slice("--requirement=".length))) return false;
+			sawManifest = true;
+		} else if (x === "-e" || x === "--editable") {
+			const target = args[++i];
+			if (target !== "." && target !== "./") return false;
+			sawManifest = true;
+		} else if (!x.startsWith("-") || /[/:]/.test(x)) return false;
+	}
+	return sawManifest;
+}
+
+/** The git subcommand, past global options; `config` is set when a `-c` override came first. */
+function gitSub(t: string[]): { sub: string | undefined; override: boolean; rest: string[] } {
+	let override = false;
+	for (let i = 1; i < t.length; i++) {
+		const x = t[i] as string;
+		if (x === "-c") {
+			override = true;
+			i++;
+		} else if (x === "-C") i++;
+		else if (!x.startsWith("-")) return { sub: x, override, rest: t.slice(i + 1) };
+	}
+	return { sub: undefined, override, rest: [] };
+}
+
+/** Exception 3: push, pull or fetch to a plain remote name (or the default), with no force. */
+function isNamedRemoteGit(t: string[]): boolean {
+	const { sub, override, rest } = gitSub(t);
+	if (override || sub === undefined || !NETWORK_GIT.has(sub)) return false;
+	if (rest.some((x) => GIT_FORCE_RE.test(x) || x.startsWith("+"))) return false;
+	const remote = rest.find((x) => !x.startsWith("-"));
+	return remote === undefined || !/[:/@.\\]/.test(remote);
+}
+
+function isRiskyCommand(tokens: string[], span: string, index: Index): boolean {
 	const t = afterWrappers(tokens);
 	const verb = t[0];
 	if (!verb) return false;
-	if (RISKY_VERBS.has(verb)) return true;
+	if (verb === "git") {
+		const { sub, override } = gitSub(t);
+		if (override) return true;
+		if (sub === undefined || !RISKY_SUBCOMMANDS.git?.has(sub)) return false;
+		return !(NETWORK_GIT.has(sub) && isNamedRemoteGit(t));
+	}
+	if (RISKY_VERBS.has(verb)) return !isLoopbackOnly(tokens, span, index);
 	const subs = RISKY_SUBCOMMANDS[verb];
 	if (!subs) return false;
 	const sub = t.slice(1).find((x) => !x.startsWith("-"));
-	return sub !== undefined && subs.has(sub);
+	if (sub === undefined || !subs.has(sub)) return false;
+	return !isManifestInstall(t);
 }
 
 /**
@@ -793,7 +888,8 @@ function isRiskyCommand(tokens: string[]): boolean {
 function hasRiskyCommand(folded: string, index: Index, emitsHandoff: boolean): boolean {
 	for (const span of commandSpans(folded)) {
 		for (const tokens of segmentsOf(span)) {
-			if (!isRiskyCommand(tokens) || index.records.segments.has(segmentKey(tokens))) continue;
+			if (!isRiskyCommand(tokens, span, index) || index.records.segments.has(segmentKey(tokens)))
+				continue;
 			if (urlFindings(segmentKey(tokens), index.typed, index.records, false).unexpected)
 				return true;
 			if (emitsHandoff && isUnrecorded(tokens, index.records)) return true;
