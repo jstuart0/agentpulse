@@ -79,6 +79,7 @@ export async function resetAskWorld(): Promise<void> {
 		"launch_requests",
 		"ai_action_requests",
 		"ai_pending_project_drafts",
+		"ai_qa_cache",
 		"projects",
 	]) {
 		sqlite.exec(`DELETE FROM ${table}`);
