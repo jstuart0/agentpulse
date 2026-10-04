@@ -455,7 +455,7 @@ Both:
 | `codex-pull-state.json` | Which Codex names were already sent to the dashboard |
 | `codex-pushed.jsonl` | Every name the relay wrote into Codex's `session_index.jsonl` |
 | `hook-queue/` | Hooks waiting to be forwarded |
-| `cache/` | Claude names the statusline already sent to the dashboard, and the last name it saw for each session (shown only if a lookup fails) |
+| `cache/` | A checksum of each Claude name the statusline already sent to the dashboard (not the name itself) |
 
 Plus the service (`~/Library/LaunchAgents/dev.agentpulse.relay.plist` or `~/.config/systemd/user/agentpulse-relay.service`) and `~/.claude/statusline-agentpulse.sh`.
 
@@ -722,7 +722,7 @@ Add to `~/.claude/settings.json`:
 
 If you copied the statusline by hand before this sync behavior shipped, **re-run the `cp` step above** to pick it up.
 
-**The name lookup is small**: the statusline asks the relay for the name only (`GET /api/v1/sessions/<id>?fields=displayName`, tens of bytes however long the session is; the relay remembers it for five seconds), and keeps the last name it saw in `~/.agentpulse/cache/` to show if a lookup ever fails, instead of falling back to the first characters of the session id. This needs the server at 0.7.2 or later; re-run the installer (or the `cp` step) to update the statusline and relay.
+**The name lookup is small**: the statusline asks the relay for the name only (`GET /api/v1/sessions/<id>?fields=displayName`, tens of bytes however long the session is; the relay remembers it for five seconds), and shows the first characters of the session id if a lookup ever fails. This needs the server at 0.7.2 or later; re-run the installer (or the `cp` step) to update the statusline and relay.
 
 ## Manage a local install
 

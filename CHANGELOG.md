@@ -50,21 +50,22 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - **An unrecognised `fields` value on `GET /api/v1/sessions/:id` is now a 400**
   (`invalid_field`); it used to be ignored and the whole detail came back. Every
   value of a repeated `fields` is checked.
-- **The status line forgets what it may not keep.** The last name it saw is
-  removed when the relay says the session is excluded (and the native-name
-  record with it), unknown, or the exclude rules are invalid, and while
-  `AGENTPULSE_SKIP` is on, so a later timeout never prints a stale name. Those
-  files are private (0700/0600), never followed through a link, written
-  atomically, and pruned after 30 days. Names are stripped of terminal-acting
-  characters (C1 controls, bidi and zero-width format characters) before they
-  are printed; ordinary accents, CJK and emoji are unchanged.
+- **The status line's record of pushed names is private and holds no name.**
+  `~/.agentpulse/cache/native-name-<id>` (what stops a name being pushed on every
+  render) now stores a checksum of the name, not the name; it is removed when the
+  relay says the session is excluded and while `AGENTPULSE_SKIP` is on, is 0600
+  in a 0700 directory (an older, looser one is tightened whenever the script
+  touches it), is never followed through a link, is written atomically, and is
+  pruned after 30 days. Names printed to the terminal are stripped of
+  terminal-acting characters (C1 controls, bidi and zero-width format
+  characters); ordinary accents, CJK and emoji are unchanged.
 - **The status line could show the first characters of the session id instead of
   the session's name on a long session.** It fetched the whole session detail
   (about 1.6 MB for a long session) on every render and gave up after one
   second. It now asks for the name only (`?fields=displayName`, about 60 bytes
-  however long the session is), the relay remembers the answer for five
-  seconds, and the status line keeps the last name it saw and shows it if a
-  lookup fails. Measured on a scratch server with a 4,848-event session: the
+  however long the session is), and the relay remembers the answer for five
+  seconds. If a lookup does fail the line shows the short session id, as before.
+  Measured on a scratch server with a 4,848-event session: the
   request went from 2.9 MB to 60 bytes, and over a simulated 10 Mbit/s link
   from 2.2 s to about 1 ms.
 
