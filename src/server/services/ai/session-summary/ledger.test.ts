@@ -5,7 +5,15 @@
  */
 import { describe, expect, test } from "bun:test";
 import { prng } from "../../../test-utils/random-sessions.js";
-import { type EvidenceRow, type LedgerInput, type ScanSummary, buildLedger } from "./ledger.js";
+import {
+	type EvidenceRow,
+	type LedgerInput,
+	type ScanSummary,
+	applyBudget,
+	buildLedger,
+	buildLedgerAsync,
+	storedFact,
+} from "./ledger.js";
 import { LEDGER_CHAR_BUDGET, LEDGER_PROTECTED_TAIL } from "./limits.js";
 
 // ── builders ─────────────────────────────────────────────────────────────────
@@ -77,12 +85,19 @@ function scanFor(rows: EvidenceRow[], over: Partial<ScanSummary> = {}): ScanSumm
 		eligibleRead: rows.length,
 		droppedByCap: 0,
 		reachedFirstEvent: true,
-		oldestReadAt: null,
+		// P3-22: a real timestamp, so a cutoff that leaks into an interior case is seen
+		oldestReadAt: "2026-10-01 09:00:00",
 		...over,
 	};
 }
 function build(rows: EvidenceRow[], over: Partial<LedgerInput> = {}) {
-	return buildLedger({ rows, firstPromptRows: [], scan: scanFor(rows), ...over });
+	return buildLedger({
+		rows,
+		firstPromptRows: [],
+		scan: scanFor(rows),
+		agentType: "claude_code",
+		...over,
+	});
 }
 const lines = (text: string) => (text === "" ? [] : text.split("\n"));
 const printedIds = (text: string) => new Set(text.match(/E\d+/g) ?? []);
@@ -103,7 +118,7 @@ describe("what is in the ledger", () => {
 		];
 		const ledger = build(rows);
 		for (const path of ["src/a.ts", "src/b.ts", "src/c.ts"]) {
-			expect(ledger.text).toContain(`OBSERVED edit ${path}`);
+			expect(ledger.text).toContain(`OBSERVED edit "${path}"`);
 		}
 		for (const sentinel of ["READ-", "GLOB-", "GREP-", "LS-", "PRE-"]) {
 			expect(ledger.text).not.toContain(sentinel);
@@ -124,7 +139,7 @@ describe("what is in the ledger", () => {
 		expect(text[1]).toMatch(/`rm -rf dist` -> FAILED/);
 		expect(text[2]).toMatch(/tool WebFetch -> ok$/);
 		expect(text[3]).toMatch(/tool WebFetch -> FAILED$/);
-		expect(text[4]).toMatch(/edit src\/a\.ts -> FAILED$/);
+		expect(text[4]).toMatch(/edit "src\/a\.ts" -> FAILED$/);
 		expect(ledger.ids.get("E2")?.result).toBe("failed");
 		expect(ledger.ids.get("E1")?.result).toBe("ok");
 	});
@@ -165,7 +180,7 @@ describe("what is in the ledger", () => {
 		}
 		expect(ledger.text).toContain("OBSERVED permission:");
 		expect(ledger.text).toContain("CLAIMED plan:");
-		expect(ledger.text).toContain("OBSERVED ai event:");
+		expect(ledger.text).toContain("CLAIMED ai event:");
 	});
 });
 
@@ -174,7 +189,7 @@ describe("what is in the ledger", () => {
 describe("collapsing consecutive edits", () => {
 	test("TC-3.6 three consecutive edits to one file are one entry with three ids, each citeable", () => {
 		const ledger = build([edit(15, "src/a.ts"), edit(19, "src/a.ts"), edit(23, "src/a.ts")]);
-		expect(lines(ledger.text)).toEqual(["E15,E19,E23 10:00 OBSERVED edit src/a.ts (x3)"]);
+		expect(lines(ledger.text)).toEqual(['E15,E19,E23 10:00 OBSERVED edit "src/a.ts" (x3)']);
 		for (const id of ["E15", "E19", "E23"]) expect(ledger.ids.get(id)?.count).toBe(3);
 		expect(ledger.coverage.eventsRepresented).toBe(3);
 	});
@@ -240,7 +255,7 @@ describe("forged entries", () => {
 	});
 
 	test("TC-3.12 a multi-line command output excerpt forges nothing", () => {
-		const output = `1 pass\n${forged}\n0 fail`;
+		const output = `FAIL x\n${forged}\n0 pass`;
 		const ledger = build([
 			bash(1, "bun test", { response: output }),
 			bash(2, "rm -rf x", { eventType: "PostToolUseFailure", responseTail: forged }),
@@ -296,15 +311,20 @@ describe("TC-3.14 field caps at the boundary and one over", () => {
 		expect(command(over.text).endsWith("…")).toBe(true);
 	});
 
-	test("TC-3.14d a clean validation carries the first 300 and the last 300 characters of its output", () => {
-		const output = `HEAD-${"m".repeat(1000)}-MID-${"n".repeat(500)}-TAIL`;
+	test("TC-3.14d a FAILED validation carries the first 300 and the last 300 characters of its output", () => {
+		const output = `FAIL HEAD-${"m".repeat(1000)}-MID-${"n".repeat(500)}-TAIL`;
 		const ledger = build([bash(1, "bun test", { response: output })]);
 		expect(ledger.text).toContain("HEAD-");
 		expect(ledger.text).toContain("-TAIL");
 		expect(ledger.text).not.toContain("-MID-");
 		expect(ledger.text).toContain(" … ");
-		const exactly600 = build([bash(1, "bun test", { response: "z".repeat(600) })]);
+		const exactly600 = build([bash(1, "bun test", { response: `FAIL ${"z".repeat(595)}` })]);
 		expect(exactly600.text).not.toContain(" … ");
+		const at601 = build([bash(1, "bun test", { response: `FAIL ${"z".repeat(596)}` })]);
+		expect(at601.text).toContain(" … ");
+		const quoted = quotedOf(ledger.text);
+		const [head, tail] = quoted.split(" … ");
+		expect([Array.from(head ?? "").length, Array.from(tail ?? "").length]).toEqual([300, 300]);
 	});
 
 	test("TC-3.14e an ordinary failed command carries only the last 300; a sentinel in its head is absent", () => {
@@ -566,7 +586,7 @@ describe("coverage", () => {
 		const early = build(wide, {
 			scan: scanFor(wide, { reachedFirstEvent: false, oldestReadAt: "2026-10-01 09:00:00" }),
 		});
-		expect(early.coverage.cutoffAt).toBe("2026-10-01 09:00:00");
+		expect(early.coverage.cutoffAt).toBe("2026-10-01T09:00:00.000Z");
 		expect(early.coverage.status).toBe("partial");
 	});
 
@@ -576,7 +596,7 @@ describe("coverage", () => {
 			scan: scanFor(rows, { reachedFirstEvent: false, oldestReadAt: "2026-10-01 08:30:00" }),
 		});
 		expect(ledger.coverage.status).toBe("partial");
-		expect(ledger.coverage.cutoffAt).toBe("2026-10-01 08:30:00");
+		expect(ledger.coverage.cutoffAt).toBe("2026-10-01T08:30:00.000Z");
 	});
 
 	test("TC-3.22 no prompts at all builds without throwing and has no user prompt line", () => {
@@ -661,7 +681,12 @@ describe("TC-3.38 output by class", () => {
 			expect(ledger.text).not.toContain(SENT);
 			expect(ledger.text).not.toContain("SECRET-CMD");
 			expect(ledger.text).not.toContain(".env");
-			expect(ledger.text).toMatch(/\[withheld: reads credentials\] -> (ok|FAILED)$/);
+			expect(ledger.text).toMatch(
+				failed
+					? /\[withheld: reads credentials\] -> FAILED$/
+					: /\[withheld: reads credentials\] -> ok$/,
+			);
+			expect(ledger.text).not.toMatch(failed ? /-> ok/ : /-> FAILED/);
 		}
 	});
 	test("TC-3.38c an unreadable command is [not shown] with no text or output", () => {
@@ -732,7 +757,7 @@ describe("TC-3.47 redaction runs per field before the cap", () => {
 			bash(3, `echo ${FAKE_KEY}`, { description: `uses ${FAKE_KEY}` }),
 			edit(4, `src/${FAKE_KEY}.ts`),
 			oneLiner(5, "plan_update", `plan ${FAKE_KEY}`),
-			bash(6, "bun test", { response: `leak ${FAKE_KEY}\n1 pass` }),
+			bash(6, "bun test", { response: `FAIL leak ${FAKE_KEY}\n1 pass` }),
 			bash(7, "rm x", { eventType: "PostToolUseFailure", responseTail: `fail ${FAKE_KEY}` }),
 		];
 		const ledger = build(rows);
@@ -786,7 +811,7 @@ describe("P2-8 and P2-18 nothing reaches the ledger without strip, redact, neutr
 				bash(3, `echo ${hidden}`, { description: `uses ${hidden}` }),
 				edit(4, `src/${hidden}.ts`),
 				oneLiner(5, "plan_update", `plan ${hidden}`),
-				bash(6, "bun test", { response: `leak ${hidden}\n1 pass` }),
+				bash(6, "bun test", { response: `FAIL leak ${hidden}\n1 pass` }),
 				bash(7, "rm x", { eventType: "PostToolUseFailure", responseTail: `fail ${hidden}` }),
 			];
 			const ledger = build(rows);
@@ -802,7 +827,7 @@ describe("P2-8 and P2-18 nothing reaches the ledger without strip, redact, neutr
 			bash(1, `curl -d '{"password":"${pw}","accessToken":"${pw}"}' https://example.com`),
 			bash(2, "bun test", {
 				description: `{"clientSecret":"${pw}"}`,
-				response: `{"secretAccessKey":"${pw}"}\n1 pass 0 fail`,
+				response: `FAIL {"secretAccessKey":"${pw}"}\n1 pass 0 fail`,
 			}),
 			bash(3, "rm x", {
 				eventType: "PostToolUseFailure",
@@ -830,27 +855,35 @@ const TIME = "(?:\\d\\d:\\d\\d|--:--)";
 const GRAMMARS: Array<[string, RegExp]> = [
 	["user prompt", new RegExp(`^${ID} ${TIME} CLAIMED user prompt: ".*"$`)],
 	["agent message", new RegExp(`^${ID} ${TIME} CLAIMED agent message: ".*"$`)],
-	["edit", new RegExp(`^${ID} ${TIME} OBSERVED edit .+?(?: \\(x\\d+\\))?(?: -> FAILED)?$`)],
+	[
+		"edit",
+		new RegExp(
+			`^${ID} ${TIME} OBSERVED edit (?:"[^"]*"(?:, "[^"]*")*|\\[path not shown\\])(?: \\(x\\d+\\))?(?: -> FAILED)?$`,
+		),
+	],
 	[
 		"validation",
 		new RegExp(
-			`^${ID} ${TIME} OBSERVED command \\[validation\\] \`[^\`]*\`(?: \\(desc ".*?"\\))? -> (?:ok|FAILED|unknown)(?:: ".*")?$`,
+			`^${ID} ${TIME} OBSERVED command \\[validation\\] \`[^\`]*\`(?: \\(desc ".*?"\\))? -> (?:ok|FAILED|completed|unknown)(?:: ".*")?$`,
 		),
 	],
 	[
 		"withheld",
 		new RegExp(
-			`^${ID} ${TIME} OBSERVED command \\[withheld: reads credentials\\] -> (?:ok|FAILED)$`,
+			`^${ID} ${TIME} OBSERVED command \\[withheld: reads credentials\\] -> (?:ok|FAILED|completed)$`,
 		),
 	],
-	["not shown", new RegExp(`^${ID} ${TIME} OBSERVED command \\[not shown\\] -> (?:ok|FAILED)$`)],
+	[
+		"not shown",
+		new RegExp(`^${ID} ${TIME} OBSERVED command \\[not shown\\] -> (?:ok|FAILED|completed)$`),
+	],
 	[
 		"ordinary",
 		new RegExp(
-			`^${ID} ${TIME} OBSERVED command \`[^\`]*\`(?: \\(desc ".*?"\\))? -> (?:ok|FAILED)(?:: ".*")?$`,
+			`^${ID} ${TIME} OBSERVED command \`[^\`]*\`(?: \\(desc ".*?"\\))? -> (?:ok|FAILED|completed)(?:: ".*")?$`,
 		),
 	],
-	["tool", new RegExp(`^${ID} ${TIME} OBSERVED tool [A-Za-z0-9_.:-]+ -> (?:ok|FAILED)$`)],
+	["tool", new RegExp(`^${ID} ${TIME} OBSERVED tool [A-Za-z0-9_.:-]+ -> (?:ok|FAILED|completed)$`)],
 	[
 		"one-liner",
 		new RegExp(
@@ -868,7 +901,8 @@ describe("TC-3.44 grammar closure", () => {
 		edit(4, "src/a.ts"),
 		edit(5, "src/a.ts"),
 		edit(6, "src/b.ts", "Write", true),
-		bash(7, "bun test", { response: hostile, description: hostile }),
+		bash(7, "bun test", { response: `FAIL ${hostile}`, description: hostile }),
+		bash(19, "bun test", { response: "4 pass" }),
 		bash(8, "cat .env"),
 		bash(9, "sh -c 'x'", { eventType: "PostToolUseFailure" }),
 		bash(10, `echo ${hostile.replace(/[`"\n]/g, "")}`, { description: hostile }),
@@ -907,5 +941,639 @@ describe("TC-3.44 grammar closure", () => {
 				line,
 			).toBe(false);
 		}
+	});
+});
+
+// ── P3 review fixes ──────────────────────────────────────────────────────────
+
+const lineFor = (ledger: ReturnType<typeof build>, id: number) =>
+	lines(ledger.text).find((l) => l.split(" ")[0]?.split(",").includes(`E${id}`)) ?? "";
+const bodyOf = (line: string) => line.replace(/^\S+ \S+ /, "");
+
+describe("P3-18 / P3-19 OBSERVED versus CLAIMED travels with the entry and the id", () => {
+	test("every entry kind carries `observed`, and an id carries it too, apart from the stored fact", () => {
+		const rows = [
+			prompt(1, "p"),
+			agent(2, "a"),
+			edit(3, "src/a.ts"),
+			bash(4, "bun test", { response: "1 pass" }),
+			bash(5, "git status"),
+			{ ...base(6), toolName: "WebFetch" },
+			oneLiner(7, "permission_event", "perm"),
+			oneLiner(8, "plan_update", "plan"),
+		];
+		const ledger = build(rows);
+		const observed = ledger.entries.map((e) => [e.kind, e.observed]);
+		expect(observed).toEqual([
+			["user_prompt", false],
+			["agent_message", false],
+			["edit", true],
+			["command", true],
+			["command", true],
+			["tool", true],
+			["one_liner", true],
+			["one_liner", false],
+		]);
+		for (const [id, want] of [
+			["E1", false],
+			["E2", false],
+			["E3", true],
+			["E4", true],
+			["E7", true],
+			["E8", false],
+		] as const) {
+			expect(ledger.ids.get(id)?.observed, id).toBe(want);
+		}
+		const fact = storedFact(ledger.ids.get("E4") as NonNullable<ReturnType<typeof ledger.ids.get>>);
+		expect(Object.keys(fact).sort()).toEqual(["at", "kind", "result"]);
+		expect(JSON.stringify(fact)).not.toContain("observed");
+	});
+
+	test("R-C: each ai_* category and its label", () => {
+		const table: Array<[string, "OBSERVED" | "CLAIMED"]> = [
+			["ai_proposal_pending", "CLAIMED"],
+			["ai_proposal", "CLAIMED"],
+			["ai_report", "CLAIMED"],
+			["ai_hitl_request", "CLAIMED"],
+			["ai_hitl_response", "OBSERVED"],
+			["ai_continue_sent", "CLAIMED"],
+			["ai_continue_blocked", "OBSERVED"],
+			["ai_error", "OBSERVED"],
+			["ai_something_new", "CLAIMED"],
+		];
+		for (const [category, label] of table) {
+			const ledger = build([oneLiner(1, category, "text")]);
+			expect(bodyOf(ledger.text), category).toMatch(new RegExp(`^${label} ai event: `));
+			expect(ledger.ids.get("E1")?.observed, category).toBe(label === "OBSERVED");
+		}
+	});
+});
+
+describe("P3-20 the cut-off time is ISO-8601 like every other time", () => {
+	test("an early end gives the same format as a fact's `at`", () => {
+		const rows = [prompt(1, "x")];
+		const ledger = build(rows, {
+			scan: scanFor(rows, { reachedFirstEvent: false, oldestReadAt: "2026-10-01 08:30:00" }),
+		});
+		expect(ledger.coverage.cutoffAt).toBe("2026-10-01T08:30:00.000Z");
+		expect(ledger.ids.get("E1")?.at).toBe(new Date(Date.UTC(2026, 9, 1, 10, 0, 1)).toISOString());
+		expect(ledger.coverage.cutoffAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+	});
+	test("an unreadable time is null, not a made-up one", () => {
+		const rows = [prompt(1, "x")];
+		const ledger = build(rows, {
+			scan: scanFor(rows, { reachedFirstEvent: false, oldestReadAt: "garbage" }),
+		});
+		expect(ledger.coverage.cutoffAt).toBeNull();
+		expect(ledger.coverage.status).toBe("partial");
+	});
+});
+
+describe("P3-22 / P3-21 interior omissions have no cut-off; they are described by their own counts", () => {
+	test("a spine-cap drop, an action-cap drop and a budget drop with a real oldestReadAt all give cutoffAt null", () => {
+		const spineRows = Array.from({ length: 300 }, (_, i) => prompt(i + 2, "tencharsxx"));
+		const spine = build(spineRows, {
+			scan: scanFor(spineRows, {
+				eventsTotal: 301,
+				eventsRead: 301,
+				eligibleRead: 301,
+				droppedByCap: 1,
+			}),
+		});
+		const actionRows = Array.from({ length: 350 }, (_, i) => bash(i + 51, `echo ${i}`));
+		const action = build(actionRows, {
+			scan: scanFor(actionRows, {
+				eventsTotal: 400,
+				eventsRead: 400,
+				eligibleRead: 400,
+				droppedByCap: 50,
+			}),
+		});
+		const wide = budgetRows(1500).concat(
+			Array.from({ length: 60 }, (_, i) => edit(500 + i, `x${i}/${"e".repeat(250)}`)),
+		);
+		const budget = build(wide);
+		for (const [name, ledger] of [
+			["spine", spine],
+			["action", action],
+			["budget", budget],
+		] as const) {
+			expect(ledger.coverage.status, name).toBe("partial");
+			expect(ledger.coverage.cutoffAt, name).toBeNull();
+		}
+		expect(spine.coverage.droppedByCap).toBe(1);
+		expect(budget.coverage.droppedByBudget).toBeGreaterThan(0);
+		expect(budget.coverage.eventsRepresented + budget.coverage.droppedByBudget).toBe(wide.length);
+	});
+});
+
+describe("P3-9 a result is ok or FAILED only when the evidence says so", () => {
+	test("an agent with a failure event: PostToolUse is ok, PostToolUseFailure is FAILED", () => {
+		for (const agentType of ["claude_code", "copilot_cli"]) {
+			const ledger = build([bash(1, "ls"), bash(2, "ls", { eventType: "PostToolUseFailure" })], {
+				agentType,
+			});
+			expect(bodyOf(lineFor(ledger, 1)), agentType).toMatch(/-> ok$/);
+			expect(bodyOf(lineFor(ledger, 2)), agentType).toMatch(/-> FAILED$/);
+		}
+	});
+	test("codex: no exit code in the response is `completed`, never ok; a code decides", () => {
+		const input = (rows: EvidenceRow[]) => build(rows, { agentType: "codex_cli" });
+		const ledger = input([
+			bash(1, "ls", { response: "a\nb\n" }),
+			bash(2, "ls", { response: JSON.stringify({ output: "x", metadata: { exit_code: 0 } }) }),
+			bash(3, "ls", { response: JSON.stringify({ output: "x", metadata: { exit_code: 2 } }) }),
+			bash(4, "ls"),
+			bash(5, "cat .env", { response: JSON.stringify({ metadata: { exit_code: 1 } }) }),
+			bash(6, "python -c 1"),
+			{ ...base(7), toolName: "WebFetch" },
+			{ ...base(8), toolName: "apply_patch", filePath: "src/a.ts" },
+		]);
+		expect(bodyOf(lineFor(ledger, 1))).toMatch(/`ls` -> completed$/);
+		expect(bodyOf(lineFor(ledger, 2))).toMatch(/`ls` -> ok$/);
+		expect(bodyOf(lineFor(ledger, 3))).toMatch(/`ls` -> FAILED/);
+		expect(bodyOf(lineFor(ledger, 4))).toMatch(/`ls` -> completed$/);
+		expect(bodyOf(lineFor(ledger, 5))).toBe(
+			"OBSERVED command [withheld: reads credentials] -> FAILED",
+		);
+		expect(bodyOf(lineFor(ledger, 6))).toBe("OBSERVED command [not shown] -> completed");
+		expect(bodyOf(lineFor(ledger, 7))).toBe("OBSERVED tool WebFetch -> completed");
+		expect(ledger.ids.get("E1")?.result).toBe("completed");
+		expect(ledger.ids.get("E2")?.result).toBe("ok");
+		expect(ledger.ids.get("E3")?.result).toBe("failed");
+		expect(ledger.counts.failedCommands).toBe(2);
+	});
+	test("an unknown agent type is treated as having no failure event", () => {
+		const ledger = build([bash(1, "ls")], { agentType: null });
+		expect(bodyOf(ledger.text.replace(/^\S+ \S+ /, ""))).toMatch(/-> completed$/);
+		expect(bodyOf(lineFor(build([bash(1, "ls")], { agentType: undefined }), 1))).toMatch(
+			/-> completed$/,
+		);
+	});
+	test("a validation on codex takes its result from its output; an exit code that says failed makes it failed", () => {
+		const ledger = build(
+			[
+				bash(1, "bun test", { response: "4 pass\n0 fail" }),
+				bash(2, "bun test", { response: "no recognised output" }),
+				bash(3, "bun test", {
+					response: JSON.stringify({ output: "weird", metadata: { exit_code: 1 } }),
+				}),
+			],
+			{ agentType: "codex_cli" },
+		);
+		expect(bodyOf(lineFor(ledger, 1))).toMatch(/-> ok: "4 pass"$/);
+		expect(bodyOf(lineFor(ledger, 2))).toMatch(/-> unknown$/);
+		expect(bodyOf(lineFor(ledger, 3))).toMatch(/-> FAILED: "weird"$/);
+	});
+});
+
+describe("P3-23 result-status lies", () => {
+	test("edits to one file with different outcomes never collapse into one ok entry, in either order", () => {
+		for (const failedFirst of [true, false]) {
+			const rows = failedFirst
+				? [edit(1, "a.ts", "Edit", true), edit(2, "a.ts", "Edit", false)]
+				: [edit(1, "a.ts", "Edit", false), edit(2, "a.ts", "Edit", true)];
+			const ledger = build(rows);
+			expect(lines(ledger.text), String(failedFirst)).toHaveLength(2);
+			const failedId = failedFirst ? 1 : 2;
+			expect(lineFor(ledger, failedId)).toMatch(/-> FAILED$/);
+			expect(lineFor(ledger, failedId === 1 ? 2 : 1)).not.toMatch(/FAILED/);
+			expect(ledger.ids.get(`E${failedId}`)?.result).toBe("failed");
+			expect(ledger.counts.editsByFile).toEqual([{ path: "a.ts", count: 2 }]);
+		}
+	});
+	test("a failed withheld command is exactly -> FAILED; an ok one exactly -> ok", () => {
+		const ledger = build([
+			bash(1, "cat .env", { eventType: "PostToolUseFailure" }),
+			bash(2, "cat .env"),
+		]);
+		expect(bodyOf(lineFor(ledger, 1))).toBe(
+			"OBSERVED command [withheld: reads credentials] -> FAILED",
+		);
+		expect(bodyOf(lineFor(ledger, 2))).toBe("OBSERVED command [withheld: reads credentials] -> ok");
+	});
+});
+
+describe("R-A what is sent of a command's output", () => {
+	test("a passing validation sends its status and one matched line of at most 120 characters, nothing else", () => {
+		const output = "SENTINEL-HEAD\nrunning\n 12 pass\n 0 fail\nSENTINEL-TAIL";
+		const ledger = build([bash(1, "bun test", { response: output })]);
+		expect(bodyOf(ledger.text)).toBe('OBSERVED command [validation] `bun test` -> ok: "12 pass"');
+		expect(ledger.text).not.toContain("SENTINEL");
+	});
+	test("a pass line over 120 characters is cut at 120", () => {
+		const ledger = build([bash(1, "bun test", { response: `${"w".repeat(130)} 5 pass` })]);
+		expect(Array.from(quotedOf(ledger.text))).toHaveLength(120);
+	});
+	test("an unknown validation sends no output; a masked pass is unknown", () => {
+		const unknown = build([bash(1, "bun test", { response: "SENTINEL compiled things" })]);
+		expect(unknown.text).not.toContain("SENTINEL");
+		expect(unknown.text).toMatch(/-> unknown$/);
+		const masked = build([bash(1, "bun test | tail -5", { response: "SENTINEL 12 pass" })]);
+		expect(masked.text).toMatch(/-> unknown$/);
+		expect(masked.text).not.toContain("SENTINEL");
+	});
+	test("a failed validation sends its head and tail; a failure with only an error text sends that", () => {
+		const ledger = build([
+			bash(1, "bun test", { response: "FAIL src/a.test.ts\nexpected 1 got 2" }),
+			bash(2, "bun test", { eventType: "PostToolUseFailure", responseTail: "boom: it broke" }),
+		]);
+		expect(bodyOf(lineFor(ledger, 1))).toMatch(
+			/-> FAILED: "FAIL src\/a\.test\.ts expected 1 got 2"$/,
+		);
+		expect(bodyOf(lineFor(ledger, 2))).toMatch(/-> FAILED: "boom: it broke"$/);
+	});
+	test("an ordinary failure sends its tail only when every segment is on the allowlist", () => {
+		const fail = (command: string) =>
+			bash(1, command, { eventType: "PostToolUseFailure", responseTail: "TAIL-TEXT" });
+		expect(build([fail("rm -rf build")]).text).toContain("TAIL-TEXT");
+		expect(build([fail("git push origin main")]).text).toContain("TAIL-TEXT");
+		for (const command of [
+			"cat README.md",
+			"npx some-tool",
+			"git diff",
+			"make deploy",
+			"rm x | cat",
+			"ls; cat y",
+			"echo hi",
+		]) {
+			expect(build([fail(command)]).text, command).not.toContain("TAIL-TEXT");
+			expect(build([fail(command)]).text, command).toMatch(/-> FAILED$/);
+		}
+	});
+	test("a successful ordinary command sends no output; a codex command with an exit code of 1 is a failure with a tail", () => {
+		expect(build([bash(1, "rm x", { response: "SENT" })]).text).not.toContain("SENT");
+		const codex = build(
+			[
+				bash(1, "rm x", {
+					response: JSON.stringify({ output: "rm: denied", metadata: { exit_code: 1 } }),
+				}),
+			],
+			{ agentType: "codex_cli" },
+		);
+		expect(bodyOf(codex.text)).toMatch(/-> FAILED: "rm: denied"$/);
+	});
+	test("P3-13 the failure tail is redacted over the whole stored text, then cut to the last 300", () => {
+		const token = "aB3dE5fG7h".repeat(40);
+		const tail = `Authorization: Bearer ${token}`;
+		expect(tail.length).toBeGreaterThan(300 + 22);
+		const ledger = build([
+			bash(1, "rm x", { eventType: "PostToolUseFailure", responseTail: tail }),
+		]);
+		expect(ledger.text).not.toContain("aB3dE5fG7h");
+		expect(ledger.redactionHits).toBeGreaterThanOrEqual(1);
+	});
+	test("a JSON-object response is read as text: real lines in the excerpt", () => {
+		const response = JSON.stringify({ stdout: "ok line\nFAIL src/a.test.ts\n", stderr: "" });
+		const ledger = build([bash(1, "bun test", { response })]);
+		expect(bodyOf(ledger.text)).toMatch(/-> FAILED: "ok line FAIL src\/a\.test\.ts"$/);
+		expect(ledger.text).not.toContain("\\n");
+	});
+});
+
+describe("P3-4 / P3-5 / P3-11 patches, Windows shells and the tool-name population", () => {
+	const patch =
+		"*** Begin Patch\n*** Add File: src/new.ts\n+SECRET_BODY=hunter2hunter2\n*** Update File: src/old.ts\n@@\n-a\n+b\n*** End Patch";
+	test("an apply_patch command in array form shows only the paths", () => {
+		for (const command of [
+			JSON.stringify(["shell", "apply_patch", patch]),
+			JSON.stringify(["apply_patch", patch]),
+		]) {
+			const ledger = build([bash(1, command, { toolName: "shell" })]);
+			expect(bodyOf(ledger.text)).toBe('OBSERVED edit "src/new.ts", "src/old.ts"');
+			expect(ledger.text).not.toContain("SECRET_BODY");
+			expect(ledger.entries[0]?.kind).toBe("edit");
+			expect(ledger.ids.get("E1")?.kind).toBe("edit");
+		}
+	});
+	test("the apply_patch tool with the patch in its command field", () => {
+		const ledger = build([{ ...base(1), toolName: "apply_patch", command: patch }]);
+		expect(bodyOf(ledger.text)).toBe('OBSERVED edit "src/new.ts", "src/old.ts"');
+		expect(ledger.text).not.toContain("SECRET_BODY");
+	});
+	test("tool powershell, and a cmd or pwsh head, are never read", () => {
+		const ledger = build([
+			{ ...base(1), toolName: "powershell", command: "Get-Content SECRET-PS" },
+			bash(2, "pwsh -c SECRET-PWSH"),
+			bash(3, "cmd /c type SECRET-CMD"),
+		]);
+		expect(ledger.text).not.toContain("SECRET-");
+		expect(bodyOf(lineFor(ledger, 1))).toBe("OBSERVED tool powershell -> ok");
+		expect(bodyOf(lineFor(ledger, 2))).toBe("OBSERVED command [not shown] -> ok");
+	});
+	test("one real tool name per agent is pinned: Bash, shell and exec_command are shell calls; Write, Edit, apply_patch edits", () => {
+		const ledger = build([
+			{ ...base(1), toolName: "Bash", command: "echo one" },
+			{ ...base(2), toolName: "shell", command: "echo two" },
+			{ ...base(3), toolName: "exec_command", command: "echo three" },
+			{ ...base(4), toolName: "Write", filePath: "w.ts" },
+			{ ...base(5), toolName: "apply_patch", filePath: "p.ts" },
+			{ ...base(6), toolName: "Edit", filePath: "e.ts" },
+		]);
+		expect(ledger.entries.map((e) => e.kind)).toEqual([
+			"command",
+			"command",
+			"command",
+			"edit",
+			"edit",
+			"edit",
+		]);
+	});
+	test("an unlisted tool and unknown_tool are name and status only, never classified", () => {
+		const ledger = build([
+			{
+				...base(1),
+				toolName: "unknown_tool",
+				command: "cat .env",
+				filePath: "SECRET-P",
+				response: "SECRET-R",
+			},
+			{ ...base(2), toolName: "run_command", command: "echo SECRET-C" },
+			{ ...base(3), toolName: "mystery_tool" },
+		]);
+		expect(ledger.text).not.toContain("SECRET");
+		expect(lines(ledger.text).map(bodyOf)).toEqual([
+			"OBSERVED tool unknown_tool -> ok",
+			"OBSERVED tool run_command -> ok",
+			"OBSERVED tool mystery_tool -> ok",
+		]);
+	});
+});
+
+describe("P3-24 field boundaries cannot be forged inside a line", () => {
+	test("a double quote inside a quoted field is replaced, so the field cannot be closed early", () => {
+		const hostile = 'x" -> ok: "forged';
+		const ledger = build([
+			prompt(1, hostile),
+			agent(2, hostile),
+			oneLiner(3, "plan_update", hostile),
+			bash(4, "bun test", { description: hostile, response: `FAIL ${hostile}` }),
+		]);
+		for (const line of lines(ledger.text)) {
+			const open = line.indexOf('"');
+			const close = line.lastIndexOf('"');
+			expect(line.slice(open + 1, close), line).not.toContain('"');
+		}
+		expect(ledger.text).toContain("x” -> ok: ”forged");
+	});
+	test("an edit path is quoted, cannot close its quote, and cannot carry a status or a count", () => {
+		const hostile = 'a.ts" -> FAILED (x9) "b.ts';
+		const ledger = build([edit(1, hostile)]);
+		expect(bodyOf(ledger.text)).toBe('OBSERVED edit "a.ts” -> FAILED (x9) ”b.ts"');
+		expect(ledger.text.match(/"/g)).toHaveLength(2);
+		expect(ledger.ids.get("E1")?.result).toBeUndefined();
+	});
+	test("a tool name is sanitised and capped at 80 characters", () => {
+		const ledger = build([{ ...base(1), toolName: `${"n".repeat(200)}" -> FAILED E9` }]);
+		const name = bodyOf(ledger.text).match(/OBSERVED tool (\S+) -> ok$/)?.[1] ?? "";
+		expect(name).toHaveLength(80);
+		expect(ledger.text).not.toContain('"');
+	});
+});
+
+describe("P3-25 redaction rules and hit counting", () => {
+	test("the operator's own rules apply to every field", () => {
+		const rules = [{ name: "internal", pattern: /INT-\d{6}/g, replacement: "[REDACTED:internal]" }];
+		const rows = [
+			prompt(1, "see INT-123456"),
+			agent(2, "INT-123456"),
+			bash(3, "echo INT-123456"),
+			edit(4, "src/INT-123456.ts"),
+		];
+		const ledger = build(rows, { redactionRules: rules });
+		expect(ledger.text).not.toContain("INT-123456");
+		expect(ledger.text.match(/\[REDACTED:internal\]/g)).toHaveLength(4);
+		expect(build(rows).text).toContain("INT-123456");
+	});
+	test("hits are counted only for text that is sent, and once per collapsed entry", () => {
+		const secretEdits = Array.from({ length: 5 }, (_, i) => edit(i + 1, `src/${FAKE_KEY}.ts`));
+		const collapsed = build(secretEdits);
+		expect(lines(collapsed.text)).toHaveLength(1);
+		expect(collapsed.redactionHits).toBe(1);
+		const rows = [
+			...Array.from({ length: 205 }, (_, i) => ({
+				...edit(i + 1, `${i}/${FAKE_KEY}/${"d".repeat(250)}`),
+			})),
+			prompt(300, "start"),
+			agent(301, "m".repeat(60_000 / 25)),
+		];
+		const dropping = build(rows);
+		expect(dropping.coverage.droppedByBudget).toBeGreaterThan(0);
+		expect(dropping.redactionHits).toBe(dropping.entries.filter((e) => e.kind === "edit").length);
+	});
+});
+
+describe("P3-26 contract numbers are literals here, not the limits file as its own oracle", () => {
+	test("the description cap is 120", () => {
+		const exact = build([bash(1, "bun test", { description: "d".repeat(120) })]);
+		const over = build([bash(1, "bun test", { description: "d".repeat(121) })]);
+		const desc = (t: string) => t.match(/\(desc "([^"]*)"\)/)?.[1] ?? "";
+		expect(Array.from(desc(exact.text))).toHaveLength(120);
+		expect(Array.from(desc(over.text))).toHaveLength(121);
+		expect(desc(over.text).endsWith("…")).toBe(true);
+	});
+	test("the output head is 300", () => {
+		const out = `FAIL ${"h".repeat(295)}|${"m".repeat(600)}|${"t".repeat(295)} END`;
+		const ledger = build([bash(1, "bun test", { response: out })]);
+		const [head] = quotedOf(ledger.text).split(" … ");
+		expect(Array.from(head ?? "")).toHaveLength(300);
+		expect(head?.endsWith("|")).toBe(true);
+	});
+	test("a one-liner is 200, a path 300, a command 300 code points, with the ellipsis one more", () => {
+		const ledger = build([
+			oneLiner(1, "plan_update", "p".repeat(201)),
+			edit(2, "e".repeat(301)),
+			bash(3, `echo ${"c".repeat(296)}`),
+		]);
+		expect(Array.from(quotedOf(lineFor(ledger, 1)))).toHaveLength(201);
+		expect(Array.from(quotedOf(lineFor(ledger, 2)))).toHaveLength(301);
+		const command = lineFor(ledger, 3).match(/`([^`]*)`/)?.[1] ?? "";
+		expect(Array.from(command)).toHaveLength(301);
+	});
+	test("TC-3.16c drop order: actions go before agent messages even when the actions are older", () => {
+		const prompts = [prompt(1, "first"), prompt(2, "second"), prompt(3, "third")];
+		const actions = Array.from({ length: 30 }, (_, i) =>
+			edit(10 + i, `${String(i).padStart(2, "0")}/${"d".repeat(250)}`),
+		);
+		const messages = Array.from({ length: 52 }, (_, i) =>
+			agent(100 + i, `${String(i).padStart(2, "0")}-${"m".repeat(1150)}`),
+		);
+		const small = build([...prompts, ...actions, ...messages.slice(0, 48)]);
+		expect(small.coverage.droppedByBudget).toBeGreaterThan(0);
+		const fewerActions = lines(small.text).filter((l) => l.includes("OBSERVED edit")).length;
+		expect(fewerActions).toBeLessThan(30);
+		expect(lines(small.text).filter((l) => l.includes("agent message"))).toHaveLength(48);
+		const big = build([...prompts, ...actions, ...messages]);
+		expect(lines(big.text).filter((l) => l.includes("OBSERVED edit"))).toHaveLength(0);
+		expect(lines(big.text).filter((l) => l.includes("agent message")).length).toBeLessThan(52);
+		expect(
+			lines(big.text).filter((l) => l.includes("agent message")).length,
+		).toBeGreaterThanOrEqual(20);
+	});
+	test("TC-3.17 more than 3 early prompts: the first 3 stay, the 4th and 5th can go", () => {
+		const rows: EvidenceRow[] = [
+			...Array.from({ length: 5 }, (_, i) => prompt(i + 1, `${i + 1}${"a".repeat(4000)}`)),
+			...Array.from({ length: 400 }, (_, i) => edit(10 + i, `f${i}/${"d".repeat(280)}`)),
+			...Array.from({ length: 20 }, (_, i) => prompt(1000 + i, "p".repeat(2000))),
+		];
+		const ledger = build(rows);
+		const text = lines(ledger.text);
+		expect(text.slice(0, 3).map((l) => quotedOf(l).slice(0, 1))).toEqual(["1", "2", "3"]);
+		expect(ledger.text.length).toBeLessThanOrEqual(60_000);
+		expect(ledger.ids.has("E1")).toBe(true);
+		expect(ledger.overBudget).toBe(false);
+	});
+});
+
+describe("P3-27 the un-droppable set and the budget's own outcome", () => {
+	test("the protected set at its maximum size is below the budget", () => {
+		const rows: EvidenceRow[] = [
+			prompt(1, "a".repeat(4000)),
+			prompt(2, "b".repeat(1500)),
+			prompt(3, "c".repeat(1500)),
+			...Array.from({ length: 20 }, (_, i) => agent(10 + i, "m".repeat(i === 19 ? 3000 : 1200))),
+		];
+		const protectedOnly = build(rows);
+		expect(protectedOnly.text.length).toBeLessThan(60_000);
+		const worstEntries = [
+			...Array.from({ length: 20 }, (_, i) => prompt(100 + i, "p".repeat(1500))),
+		];
+		const sizes = build([...rows.slice(0, 3), ...worstEntries]).text.length;
+		expect(sizes).toBeLessThan(60_000 / 1.4);
+	});
+	test("applyBudget with a tiny budget terminates and marks an outcome it cannot meet", () => {
+		const entry = (i: number, over: Record<string, unknown> = {}) => ({
+			kind: "edit" as const,
+			text: `E${i} 10:00 ${"x".repeat(90)}`,
+			eventCount: 1,
+			shownIds: [i],
+			firstPrompt: false,
+			rowIds: [i],
+			at: null,
+			fact: { kind: "edit" as const },
+			editPath: null,
+			observed: true,
+			hits: 0,
+			...over,
+		});
+		const entries = Array.from({ length: 30 }, (_, i) => entry(i + 1));
+		const tiny = applyBudget(entries as never, 100);
+		expect(tiny.kept.length).toBeLessThan(30);
+		expect(tiny.kept.length).toBeGreaterThanOrEqual(LEDGER_PROTECTED_TAIL);
+		expect(tiny.overBudget).toBe(true);
+		expect(tiny.droppedEvents).toBe(30 - tiny.kept.length);
+		const roomy = applyBudget(entries as never, 1_000_000);
+		expect(roomy).toMatchObject({ droppedEvents: 0, overBudget: false });
+		expect(roomy.kept).toHaveLength(30);
+		const exact = applyBudget(entries as never, 30 * 100 + 29);
+		expect(exact.droppedEvents).toBe(0);
+		const oneOver = applyBudget(entries as never, 30 * 100 + 28);
+		expect(oneOver.droppedEvents).toBe(1);
+		expect(oneOver.overBudget).toBe(false);
+	});
+});
+
+describe("P3-31 TC-3.9 on richer sessions", () => {
+	test("over 60 seeded sessions with budget drops, long collapses and NULL fields: ids printed equal the key set, every line fits a grammar", () => {
+		let sawBudgetDrop = false;
+		let sawLongCollapse = false;
+		for (let seed = 1; seed <= 60; seed++) {
+			const rand = prng(seed * 7919);
+			const rows: EvidenceRow[] = [];
+			const count = 20 + Math.floor(rand() * 300);
+			const long = seed % 3 === 0;
+			for (let id = 1; id <= count; id++) {
+				const roll = rand();
+				if (long && id > 5 && id < 40) rows.push(edit(id, "src/same.ts"));
+				else if (roll < 0.1) rows.push(prompt(id, `prompt ${id}`));
+				else if (roll < 0.2) rows.push(agent(id, `message ${id}`));
+				else if (roll < 0.5) rows.push(edit(id, `${id}/${"p".repeat(seed % 5 === 0 ? 280 : 20)}`));
+				else if (roll < 0.6) rows.push(bash(id, "bun test", { response: "5 pass\n0 fail" }));
+				else if (roll < 0.65) rows.push(bash(id, null));
+				else if (roll < 0.7) rows.push({ ...base(id), toolName: null });
+				else if (roll < 0.75) rows.push({ ...base(id), toolName: "Bash", createdAt: "garbage" });
+				else if (roll < 0.8) rows.push({ ...base(id), toolName: "mcp__x__y" });
+				else if (roll < 0.85) rows.push({ ...base(id), toolName: "Read" });
+				else rows.push(oneLiner(id, "permission_event", `perm ${id}`));
+			}
+			if (seed % 4 === 0) {
+				for (let id = count + 1; id <= count + 250; id++) rows.push(agent(id, "m".repeat(1190)));
+			}
+			const ledger = build(rows);
+			sawBudgetDrop ||= ledger.coverage.droppedByBudget > 0;
+			sawLongCollapse ||= ledger.entries.some((e) => e.eventCount > 6);
+			expect(printedIds(ledger.text), `seed ${seed}`).toEqual(new Set(ledger.ids.keys()));
+			for (const line of lines(ledger.text)) {
+				expect(GRAMMARS.filter(([, re]) => re.test(line)).length, `seed ${seed}: ${line}`).toBe(1);
+			}
+		}
+		expect(sawBudgetDrop, "the generator produced a budget drop").toBe(true);
+		expect(sawLongCollapse, "the generator produced a collapse of more than 6 ids").toBe(true);
+	});
+	test("boundaries at 555, 556 and 557 code points: a command is shown up to 555", () => {
+		const at = (n: number) => bash(1, `echo ${"a".repeat(n - 5)}`);
+		expect(build([at(555)]).text).toContain("`echo ");
+		expect(build([at(556)]).text).toContain("[not shown]");
+		expect(build([at(557)]).text).toContain("[not shown]");
+	});
+	test("a secret that straddles each cap starts at cap-20", () => {
+		const key = `ghp_${"aB3dE5fG7h".repeat(4)}`;
+		const cases: Array<[string, EvidenceRow[]]> = [
+			[
+				"prompt",
+				[prompt(1, "x"), prompt(2, "x"), prompt(3, "x"), prompt(4, `${"a".repeat(1480)} ${key}`)],
+			],
+			["first prompt", [prompt(1, `${"a".repeat(3980)} ${key}`)]],
+			["agent", [agent(1, `${"a".repeat(1180)} ${key}`), agent(2, "z")]],
+			["command", [bash(1, `echo ${"a".repeat(275)} ${key}`)]],
+			["path", [edit(1, `${"a".repeat(280)} ${key}`)]],
+			["one-liner", [oneLiner(1, "plan_update", `${"a".repeat(180)} ${key}`)]],
+		];
+		for (const [name, rows] of cases) {
+			const ledger = build(rows);
+			expect(ledger.text, name).not.toContain("aB3dE5fG7h");
+			expect(ledger.redactionHits, name).toBeGreaterThanOrEqual(1);
+		}
+	});
+});
+
+describe("P3-36 the ledger is built in slices that yield", () => {
+	const heavy = () =>
+		Array.from({ length: 800 }, (_, i) =>
+			bash(i + 1, `echo ${String(i).padStart(4, "0")} ${"a".repeat(540)}`.slice(0, 555)),
+		);
+	test("the async build gives the same ledger as the sync one, in slices, with its time recorded", async () => {
+		const rows = [
+			prompt(1, "start"),
+			...heavy().map((r) => ({ ...r, id: r.id + 1 })),
+			agent(900, "done"),
+		];
+		const sync = build(rows);
+		const asyncLedger = await buildLedgerAsync({
+			rows,
+			firstPromptRows: [],
+			scan: scanFor(rows),
+			agentType: "claude_code",
+		});
+		expect(asyncLedger.text).toBe(sync.text);
+		expect([...asyncLedger.ids.keys()]).toEqual([...sync.ids.keys()]);
+		expect(asyncLedger.coverage).toEqual(sync.coverage);
+		expect(asyncLedger.diagnostics.slices).toBeGreaterThanOrEqual(8);
+		expect(asyncLedger.diagnostics.buildMs).toBeGreaterThan(0);
+		expect(asyncLedger.diagnostics.maxSliceMs).toBeLessThanOrEqual(asyncLedger.diagnostics.buildMs);
+	});
+	test("the event loop turns between slices", async () => {
+		const rows = heavy();
+		let turns = 0;
+		const timer = setInterval(() => turns++, 1);
+		await buildLedgerAsync({
+			rows,
+			firstPromptRows: [],
+			scan: scanFor(rows),
+			agentType: "claude_code",
+		});
+		clearInterval(timer);
+		console.log(`[perf] ledger build: ${turns} timer turns during 800 x 555-char commands`);
+		expect(turns).toBeGreaterThanOrEqual(1);
 	});
 });

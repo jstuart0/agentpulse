@@ -408,7 +408,7 @@ function shownIdsOf(rowIds: number[]): number[] {
 	return [...rowIds.slice(0, half), ...rowIds.slice(-half)];
 }
 
-interface Built extends LedgerEntry {
+export interface Built extends LedgerEntry {
 	firstPrompt: boolean;
 	rowIds: number[];
 	at: string | null;
@@ -447,8 +447,12 @@ function bodyLength(entries: Built[]): number {
 const ACTION_KINDS = new Set<EntryKind>(["edit", "command", "tool"]);
 
 /** Drops the oldest action entries, then the oldest agent messages, then the rest, until it fits. */
-function applyBudget(entries: Built[]): { kept: Built[]; droppedEvents: number } {
-	if (bodyLength(entries) <= LEDGER_CHAR_BUDGET) return { kept: entries, droppedEvents: 0 };
+export function applyBudget(
+	entries: Built[],
+	_budget = LEDGER_CHAR_BUDGET,
+): { kept: Built[]; droppedEvents: number; overBudget: boolean } {
+	if (bodyLength(entries) <= LEDGER_CHAR_BUDGET)
+		return { kept: entries, droppedEvents: 0, overBudget: false };
 	const protectedFrom = Math.max(0, entries.length - LEDGER_PROTECTED_TAIL);
 	const isProtected = (entry: Built, index: number) => entry.firstPrompt || index >= protectedFrom;
 	const dropped = new Set<number>();
@@ -468,7 +472,7 @@ function applyBudget(entries: Built[]): { kept: Built[]; droppedEvents: number }
 	}
 	const kept = entries.filter((_, i) => !dropped.has(i));
 	const droppedEvents = entries.reduce((n, e, i) => n + (dropped.has(i) ? e.eventCount : 0), 0);
-	return { kept, droppedEvents };
+	return { kept, droppedEvents, overBudget: false };
 }
 
 // ── build ────────────────────────────────────────────────────────────────────
@@ -573,4 +577,12 @@ function countsOf(
 		editedFiles: sorted.length,
 		editsByFile: sorted.slice(0, TOP_FILES),
 	};
+}
+
+/** Stub, replaced in the fix commit. */
+export function storedFact(info: EvidenceFact): EvidenceFact {
+	return info;
+}
+export async function buildLedgerAsync(input: LedgerInput): Promise<Ledger> {
+	return buildLedger(input);
 }
