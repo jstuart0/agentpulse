@@ -27,9 +27,12 @@ import {
 const { initializeDatabase, getDb } = await import("../db/client.js");
 const { sessions, managedSessions, supervisors } = await import("../db/schema/index.js");
 const { app } = await import("../app.js");
-const { normalizeStoredMachineNames, normalizeStoredMachineNamesSafely } = await import(
-	"../services/effective-machine.js"
-);
+const {
+	normalizeStoredMachineNames,
+	normalizeStoredMachineNamesSafely,
+	_normalizeStoredMachineNamesWithHookForTest,
+	_normalizeStoredMachineNamesSafelyForTest,
+} = await import("../services/effective-machine.js");
 const { enrollSupervisor } = await import("../services/supervisor-registry.js");
 const { attachManagedSessionToLaunch } = await import("../services/managed-session-state.js");
 const { eq } = await import("drizzle-orm");
@@ -269,7 +272,7 @@ describe("a session linked to a supervisor is on that supervisor's machine, what
 		const sup = (await enrollSupervisor(input("first-name"), null)).supervisor;
 		await seedManaged("cas-1", null, null, sup.id);
 		await seedManaged("cas-2", null, null, sup.id);
-		await normalizeStoredMachineNames({
+		await _normalizeStoredMachineNamesWithHookForTest({
 			afterRead: async () => {
 				await getDb()
 					.update(managedSessions)
@@ -302,7 +305,7 @@ describe("the boot repair never overwrites a name written after it read", () => 
 		const sup = (await enrollSupervisor(input("temp-a"), null)).supervisor;
 		await getDb().update(supervisors).set({ hostName: RAW }).where(eq(supervisors.id, sup.id));
 		await seedManaged("race-1", RAW, "reported-box", sup.id);
-		await normalizeStoredMachineNames({
+		await _normalizeStoredMachineNamesWithHookForTest({
 			afterRead: async () => {
 				// another replica accepts the supervisor's re-registration under its real name
 				await getDb()
@@ -342,7 +345,7 @@ describe("the boot cleanup is cosmetic and can't stop boot", () => {
 		const real = console.error;
 		console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
 		try {
-			await normalizeStoredMachineNamesSafely(async () => {
+			await _normalizeStoredMachineNamesSafelyForTest(async () => {
 				throw new Error("db unavailable");
 			});
 		} finally {
@@ -361,7 +364,7 @@ describe("the boot cleanup is cosmetic and can't stop boot", () => {
 		const real = console.error;
 		console.error = (...args: unknown[]) => void logged.push(String(args[0]));
 		try {
-			await normalizeStoredMachineNamesSafely(async () => {});
+			await _normalizeStoredMachineNamesSafelyForTest(async () => {});
 		} finally {
 			console.error = real;
 		}

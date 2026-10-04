@@ -232,6 +232,33 @@ describe("the short memory of a successful answer", () => {
 		expect(relay.ctx.state.nameCache.size).toBe(0);
 	});
 
+	test("only a body that is exactly the projection is remembered: not a small full detail from an older server, not extra keys, not other JSON", async () => {
+		const bodies: Record<string, unknown> = {
+			tiny: {
+				session: { sessionId: "tiny", displayName: "n", status: "active" },
+				events: [],
+				controlActions: [],
+			},
+			extra: { session: { sessionId: "extra", displayName: "n", agentType: "claude_code" } },
+			top: { session: { sessionId: "top", displayName: "n" }, events: [] },
+			noname: { session: { sessionId: "noname" } },
+			badtype: { session: { sessionId: "badtype", displayName: 7 } },
+			array: [1, 2],
+		};
+		for (const [id, body] of Object.entries(bodies)) answers[id] = () => Response.json(body);
+		answers.notjson = () => new Response("plainly not json", { status: 200 });
+		answers.nullname = () =>
+			Response.json({ session: { sessionId: "nullname", displayName: null } });
+		const { relay, base } = await start();
+		for (const id of [...Object.keys(bodies), "notjson", "nullname"]) {
+			await fetch(`${base}/api/v1/sessions/${id}${LIGHT}`);
+			await fetch(`${base}/api/v1/sessions/${id}${LIGHT}`);
+		}
+		// each of the refused ones was asked twice; the exact projection (a null name included) once
+		expect([...relay.ctx.state.nameCache.keys()]).toEqual(["nullname"]);
+		expect(upstreamReads()).toBe(Object.keys(bodies).length * 2 + 2 + 1);
+	});
+
 	test("it is bounded: past the cap the oldest entries go", async () => {
 		const { relay, base } = await start();
 		const cap = (await mod()).NAME_CACHE_MAX_ENTRIES;

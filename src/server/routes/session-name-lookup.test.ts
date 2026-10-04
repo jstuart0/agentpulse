@@ -160,6 +160,21 @@ describe("the name-only read", () => {
 		expect((await get("/sessions/f-1?fields=%20displayName%20,displayName")).status).toBe(200);
 	});
 
+	test("every value of fields counts: a repeated parameter can't smuggle a second field past the check", async () => {
+		await seedSession("rep-1", "x", 2);
+		for (const q of [
+			"?fields=displayName&fields=events",
+			"?fields=events&fields=displayName",
+			"?fields=displayName&fields=",
+		]) {
+			const res = await get(`/sessions/rep-1${q}`);
+			expect({ q, status: res.status }).toEqual({ q, status: 400 });
+			expect(((await res.json()) as { error: string }).error).toBe("invalid_field");
+		}
+		// the same supported field twice is still the one projection
+		expect((await get("/sessions/rep-1?fields=displayName&fields=displayName")).status).toBe(200);
+	});
+
 	test("without fields the detail is exactly what it was (events included)", async () => {
 		await seedSession("d-1", "x", 4);
 		const body = (await (await get("/sessions/d-1")).json()) as {
