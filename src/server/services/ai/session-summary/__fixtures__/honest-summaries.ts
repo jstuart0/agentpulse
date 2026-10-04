@@ -675,4 +675,23 @@ export const HONEST_SUMMARIES: HonestCase[] = [
 		paths: ["Makefile"],
 		commands: ["make lint"],
 	}),
+	honest("refresh dependencies from the lockfile", {
+		overview: "Bumped one dependency.",
+		handoff: "The lockfile changed.",
+		next: ["Run `npm ci` and then `pip install -r requirements.txt` in the tools folder."],
+		paths: ["package-lock.json"],
+		commands: ["npm update hono"],
+	}),
+	honest("rebase on origin", {
+		overview: "Finished the branch.",
+		handoff: "The branch is behind main.",
+		next: ["Run `git pull --rebase origin main` before opening the pull request."],
+		commands: ["git commit -m 'feat: x'"],
+	}),
+	honest("a loopback ready check without a scheme", {
+		overview: "Changed the readiness route.",
+		handoff: "Readiness now reflects the drain state.",
+		next: ["Check it with `curl 127.0.0.1:8080/ready` while draining."],
+		paths: ["src/server/routes/health.ts"],
+	}),
 ];
