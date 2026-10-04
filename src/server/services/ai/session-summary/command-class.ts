@@ -12,14 +12,30 @@
  *   4 otherwise a command with an unreadable construct is "not shown";
  *   5 everything else is ordinary.
  * Pure: no I/O, never throws (an internal error is "not shown").
+ *
+ * Reading is deliberately narrow (review P3-1): the command word of every
+ * segment must be a plain name with nothing expanded or quoted, every word of
+ * every segment is searched for credential paths, interpreters and wrappers
+ * the code cannot read fail closed, and a validation's arguments must have a
+ * strict shape. What may be sent of a command's OUTPUT is decided by the
+ * ledger from `kind`, `masked` and `tailAllowed`.
  */
+import {
+	FAILURE_TAIL_GIT_DENIED,
+	FAILURE_TAIL_PLAIN_HEADS,
+	FAILURE_TAIL_SUBCOMMANDS,
+	PASS_LINE_CAP,
+	TOOL_INPUT_FIELD_SQL_CAP,
+} from "./limits.js";
 
 export type CommandClass =
 	| { kind: "validation"; masked: boolean }
 	| { kind: "withheld" }
 	| { kind: "not_shown" }
-	/** `hasViewer`: a segment runs a file viewer, so a failure's output is never excerpted. */
-	| { kind: "ordinary"; hasViewer: boolean };
+	/** An `apply_patch` call: only the file names it names, never its body. */
+	| { kind: "patch"; files: string[] }
+	/** `tailAllowed`: every segment is on the failure-tail allowlist (limits.ts), so a failure's last lines may be sent. */
+	| { kind: "ordinary"; tailAllowed: boolean };
 
 export type ValidationResult = "ok" | "failed" | "unknown";
 
@@ -115,8 +131,75 @@ const SSH_FLAGS_WITH_ARG = new Set([
 	"-B",
 	"-Q",
 ]);
+/** A segment that is only this closes a loop or branch; it runs nothing. */
+const BLOCK_TERMINATORS = new Set(["fi", "done", "esac"]);
 const MAX_UNWRAP_DEPTH = 8;
 const MAX_SEGMENTS = 400;
+
+/** Heads whose arguments run code or another program the classifier cannot read (fail closed). */
+const UNREADABLE_HEADS = new Set([
+	"node",
+	"nodejs",
+	"deno",
+	"ruby",
+	"perl",
+	"php",
+	"lua",
+	"rscript",
+	"r",
+	"pwsh",
+	"powershell",
+	"powershell.exe",
+	"cmd",
+	"cmd.exe",
+	"fish",
+	"busybox",
+	"strace",
+	"ltrace",
+	"flock",
+	"watch",
+	"stdbuf",
+	"unbuffer",
+	"chroot",
+	"nsenter",
+	"parallel",
+	"su",
+	"script",
+	"source",
+	".",
+	"eval",
+]);
+const SYSTEM_BIN_DIRS = new Set([
+	"/bin",
+	"/usr/bin",
+	"/usr/local/bin",
+	"/sbin",
+	"/usr/sbin",
+	"/opt/homebrew/bin",
+]);
+const FIND_EXEC_FLAGS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+const PLAIN_HEAD_RE = /^[A-Za-z0-9_.+/-]+$/;
+const CREDENTIAL_SPLIT_RE = /[\s=:,;<>@|&()'"\\]/;
+const FLAG_RE = /^--?[A-Za-z][\w-]*(=[\w./,:@-]+)?$/;
+const OPERAND_RE = /^[\w./@%+:-]+$/;
+/** Flags that load or run code, or point a tool at an arbitrary file. */
+const DENIED_VALIDATION_FLAGS = new Set([
+	"-exec",
+	"-vettool",
+	"--config",
+	"-p",
+	"-c",
+	"--reporter",
+	"--exec",
+	"--preload",
+	"--require",
+	"--import",
+	"--loader",
+	"--plugin",
+	"--rcfile",
+]);
+const PATCH_FILE_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+?)\s*$/gm;
+const PATCH_HEAD_RE = /^\s*(?:(?:shell|bash|sh)\s+(?:-\w+\s+)?['"]?)?(?:\S*\/)?apply_patch(?:\s|$)/;
 
 // ── tokenising ───────────────────────────────────────────────────────────────
 
@@ -137,6 +220,8 @@ interface Flags {
 	pythonC: boolean;
 	nodeE: boolean;
 	shDashC: boolean;
+	/** A backslash before a name character outside quotes: Windows paths and word-splitting tricks. */
+	oddEscape: boolean;
 	unparseable: boolean;
 }
 interface Parsed {
@@ -153,6 +238,7 @@ function newFlags(): Flags {
 		pythonC: false,
 		nodeE: false,
 		shDashC: false,
+		oddEscape: false,
 		unparseable: false,
 	};
 }
@@ -245,6 +331,7 @@ function scan(text: string, depth: number, out: Parsed): void {
 
 		if (c === "\\") {
 			if (i + 1 >= text.length) throw new Unparseable("trailing backslash");
+			if (/[A-Za-z0-9_.~/:-]/.test(text[i + 1] as string)) out.flags.oddEscape = true;
 			addChar(text[i + 1] as string, c + text[i + 1]);
 			i += 2;
 			continue;
@@ -449,7 +536,11 @@ function skipFlags(words: Word[], from: number, withArg: Set<string>): number {
 	let i = from;
 	while (i < words.length) {
 		const v = (words[i] as Word).value;
-		if (!v.startsWith("-") || v === "-" || v === "--") break;
+		if (v === "--") {
+			i++;
+			break;
+		}
+		if (!v.startsWith("-") || v === "-") break;
 		i += withArg.has(v) ? 2 : 1;
 	}
 	return i;
@@ -482,6 +573,7 @@ function unwrap(
 		words = words.slice(i);
 		const head = words[0];
 		if (!head) return;
+		if (words.length === 1 && BLOCK_TERMINATORS.has(head.value)) return;
 		const cmd = baseName(head.value);
 
 		if (cmd === "sudo" || cmd === "doas") {
@@ -516,6 +608,7 @@ function unwrap(
 		if (cmd === "timeout") {
 			let j = skipFlags(words, 1, new Set(["-s", "-k", "--signal", "--kill-after"]));
 			if (j < words.length && /^\d/.test((words[j] as Word).value)) j++;
+			if (words[j]?.value === "--") j++;
 			words = words.slice(j);
 			continue;
 		}
@@ -604,34 +697,83 @@ function mergeFlags(into: Flags, from: Flags): void {
 
 // ── credential reading ───────────────────────────────────────────────────────
 
-function isCredentialFile(token: string): boolean {
-	const candidates = token.includes("=") ? [token, token.slice(token.indexOf("=") + 1)] : [token];
-	return candidates.some((c) => {
-		const path = c.toLowerCase().replace(/\/+$/, "");
-		if (!path) return false;
-		const base = path.slice(path.lastIndexOf("/") + 1);
-		return (
-			base.startsWith(".env") ||
-			base === ".netrc" ||
-			base === ".npmrc" ||
-			base === ".pypirc" ||
-			base === ".git-credentials" ||
-			base.startsWith("id_rsa") ||
-			base.startsWith("id_ed25519") ||
-			base.startsWith("id_ecdsa") ||
-			base.startsWith("id_dsa") ||
-			base.endsWith(".pem") ||
-			base.endsWith(".key") ||
-			base === "kubeconfig" ||
-			path.endsWith("/.kube/config") ||
-			path === ".kube/config" ||
-			base.startsWith("credentials") ||
-			/(^|[._-])secrets?([._-]|$)/.test(base) ||
-			/(^|\/)config\/prod/.test(path) ||
-			base.endsWith(".tfvars") ||
-			base.endsWith(".tfvars.json")
-		);
-	});
+const SECRET_WORD_RE = /token|password|passwd|credential|private|apikey|api_key/;
+const CREDENTIAL_DIRS = [
+	"/.ssh/",
+	"/.aws/",
+	"/.gnupg/",
+	"/.config/gh/",
+	"/.config/gcloud/",
+	"/.azure/",
+	"/.kube/",
+];
+
+/**
+ * True when `token` names a file that holds credentials: by file name, by a
+ * credential directory it sits in, or, when the token is path-shaped (or a bare
+ * operand of a file reader), by a secret word in a path component.
+ */
+function isCredentialPath(token: string, bare = false): boolean {
+	const path = token.toLowerCase().replace(/\/+$/, "");
+	if (!path) return false;
+	const base = path.slice(path.lastIndexOf("/") + 1);
+	if (
+		base.startsWith(".env") ||
+		base === ".netrc" ||
+		base === ".npmrc" ||
+		base === ".pypirc" ||
+		base === ".git-credentials" ||
+		base === ".pgpass" ||
+		base === ".my.cnf" ||
+		base === ".s3cfg" ||
+		base === ".vault-token" ||
+		base === ".htpasswd" ||
+		base.startsWith("id_rsa") ||
+		base.startsWith("id_ed25519") ||
+		base.startsWith("id_ecdsa") ||
+		base.startsWith("id_dsa") ||
+		/\.(pem|key|p12|pfx|jks|keystore|ppk)$/.test(base) ||
+		base.includes(".tfstate") ||
+		base.includes("kubeconfig") ||
+		base.startsWith("credentials") ||
+		/(^|[._-])secrets?([._-]|$)/.test(base) ||
+		/(^|\/)config\/prod/.test(path) ||
+		base.endsWith(".tfvars") ||
+		base.endsWith(".tfvars.json") ||
+		path.endsWith("/.kube/config") ||
+		path === ".kube/config" ||
+		path.endsWith(".git/config") ||
+		path.endsWith(".docker/config.json") ||
+		path.endsWith("gh/hosts.yml") ||
+		path.endsWith("etc/shadow") ||
+		path.endsWith("etc/gshadow")
+	) {
+		return true;
+	}
+	const inDirectory = `/${path}/`;
+	if (CREDENTIAL_DIRS.some((d) => inDirectory.includes(d))) return true;
+	if (bare || path.includes("/") || path.includes(".")) {
+		return path.split("/").some((component) => SECRET_WORD_RE.test(component));
+	}
+	return false;
+}
+
+/** The words of a word, split where a shell would see a separate path, on both its raw and cooked forms. */
+function credentialTokens(word: Word): string[] {
+	const tokens = new Set<string>();
+	for (const form of [word.value, word.raw]) {
+		for (const token of form.split(CREDENTIAL_SPLIT_RE)) if (token) tokens.add(token);
+	}
+	return [...tokens];
+}
+
+function isFileReader(cmd: string): boolean {
+	return VIEWER_COMMANDS.has(cmd) || EXTRA_FILE_READERS.has(cmd);
+}
+
+/** The first operand and the one after it, skipping flags that carry no value. */
+function operandsOf(args: string[]): string[] {
+	return args.filter((a) => !a.startsWith("-"));
 }
 
 function readsCredentials(words: Word[]): boolean {
@@ -642,8 +784,12 @@ function readsCredentials(words: Word[]): boolean {
 	const rawText = joinRaw(words);
 	const has = (...names: string[]) => names.every((n) => args.includes(n));
 	const firstNonFlag = args.find((a) => !a.startsWith("-"));
+	const bare = isFileReader(cmd);
 
 	if (/\/proc\/[^\s]*\/environ/.test(rawText)) return true;
+	for (const word of words) {
+		if (credentialTokens(word).some((t) => isCredentialPath(t, bare))) return true;
+	}
 	switch (cmd) {
 		case "printenv":
 		case "env":
@@ -655,7 +801,7 @@ function readsCredentials(words: Word[]): boolean {
 			return args.length === 0 || args.includes("-p");
 		case "declare":
 		case "typeset":
-			return args.length === 0 || args.some((a) => a === "-x" || a === "-p" || a === "-xp");
+			return args.length === 0 || args.some((a) => /^-[a-zA-Z]*[xp]/.test(a));
 		case "echo":
 		case "printf":
 			// `$(` alone is a substitution (judged by its own segments and the fail-closed rule).
@@ -701,10 +847,15 @@ function readsCredentials(words: Word[]): boolean {
 				args.some((a) => ["--get", "-l", "--list", "--get-all", "--get-regexp"].includes(a))
 			)
 				return true;
+			if (gitSubcommand(args) === "remote") return true;
 			break;
 		case "docker":
 		case "podman":
 			if (args[0] === "inspect") return true;
+			if (operandsOf(args)[0] === "compose" && args.includes("config")) return true;
+			break;
+		case "docker-compose":
+			if (args.includes("config")) return true;
 			break;
 		case "kubectl":
 			if (
@@ -729,21 +880,173 @@ function readsCredentials(words: Word[]): boolean {
 		/process\.env/.test(rawText)
 	)
 		return true;
+	return false;
+}
 
-	if (VIEWER_COMMANDS.has(cmd) || EXTRA_FILE_READERS.has(cmd)) {
-		if (args.some((a) => isCredentialFile(a))) return true;
+/** The git subcommand, past the global options (`-C <path>`, `-c k=v`, `--no-pager`, ...). */
+function gitSubcommand(args: string[]): string | undefined {
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i] as string;
+		if (
+			a === "-C" ||
+			a === "-c" ||
+			a === "--git-dir" ||
+			a === "--work-tree" ||
+			a === "--namespace"
+		) {
+			i++;
+			continue;
+		}
+		if (a.startsWith("-")) continue;
+		return a;
 	}
-	for (const [index, w] of words.entries()) {
-		if (w.value === "<" && words[index + 1] && isCredentialFile((words[index + 1] as Word).value))
-			return true;
-		if (/^<[^<]/.test(w.value) && isCredentialFile(w.value.slice(1))) return true;
+	return undefined;
+}
+
+// ── readability ──────────────────────────────────────────────────────────────
+
+/** True when a segment's command word is something the classifier cannot read as plain. */
+function isUnreadable(final: Final): boolean {
+	const head = final.words[0];
+	if (!head) return true;
+	if (head.raw !== head.value || !PLAIN_HEAD_RE.test(head.value)) return true;
+	const slash = head.value.lastIndexOf("/");
+	if (slash !== -1 && !SYSTEM_BIN_DIRS.has(head.value.slice(0, slash) || "/")) return true;
+	const cmd = baseName(head.value);
+	if (isValidationCommand(final.words)) return false;
+	const args = final.words.slice(1).map((w) => w.value);
+	if (UNREADABLE_HEADS.has(cmd.toLowerCase()) || /^python[\d.]*$/.test(cmd) || SHELLS.has(cmd)) {
+		return true;
+	}
+	if (
+		cmd === "bun" &&
+		(args[0] === "eval" || args.some((a) => ["-e", "--eval", "-p", "--print"].includes(a)))
+	) {
+		return true;
+	}
+	if (cmd === "find" && args.some((a) => FIND_EXEC_FLAGS.has(a))) return true;
+	if (
+		/^[gm]?awk$/.test(cmd) &&
+		final.words.some((w) => /system\s*\(|\|\s*getline|"\s*\|/.test(w.raw))
+	) {
+		return true;
 	}
 	return false;
 }
 
+// ── failure tail ─────────────────────────────────────────────────────────────
+
+const KUBECTL_FLAGS_WITH_VALUE = new Set([
+	"--context",
+	"-n",
+	"--namespace",
+	"--kubeconfig",
+	"-s",
+	"--server",
+	"--cluster",
+	"--user",
+]);
+const KUBECTL_STRUCTURED_OUTPUT_RE = /^(yaml|json|jsonpath|go-template|template|custom-columns)/;
+
+function kubectlOperands(args: string[]): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i] as string;
+		if (a.startsWith("-")) {
+			if (KUBECTL_FLAGS_WITH_VALUE.has(a)) i++;
+			continue;
+		}
+		out.push(a);
+	}
+	return out;
+}
+
+function kubectlStructuredOutput(args: string[]): boolean {
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i] as string;
+		const eq = a.indexOf("=");
+		const flag = eq === -1 ? a : a.slice(0, eq);
+		if (flag === "-o" || flag === "--output") {
+			const value = eq === -1 ? (args[i + 1] ?? "") : a.slice(eq + 1);
+			if (KUBECTL_STRUCTURED_OUTPUT_RE.test(value)) return true;
+		} else if (/^-o[a-z]/.test(a) && KUBECTL_STRUCTURED_OUTPUT_RE.test(a.slice(2))) return true;
+	}
+	return false;
+}
+
+/** True when this segment's failure output may be sent: its head neither reads files nor interprets code. */
+function tailAllowedFor(final: Final): boolean {
+	const head = final.words[0];
+	if (!head) return false;
+	const cmd = baseName(head.value);
+	const args = final.words.slice(1).map((w) => w.value);
+	if (FAILURE_TAIL_PLAIN_HEADS.includes(cmd)) return true;
+	if (cmd === "git") {
+		if (args.some((a) => a === "-c" || a.startsWith("--exec-path"))) return false;
+		const sub = gitSubcommand(args);
+		if (sub === undefined) return true;
+		if (FAILURE_TAIL_GIT_DENIED.includes(sub)) return false;
+		return !(sub === "stash" && args[args.indexOf("stash") + 1] === "show");
+	}
+	const allowedSubs = FAILURE_TAIL_SUBCOMMANDS[cmd];
+	if (!allowedSubs) return false;
+	if (cmd === "kubectl") {
+		const ops = kubectlOperands(args);
+		if (!ops[0] || !allowedSubs.includes(ops[0])) return false;
+		if (ops[0] === "get") {
+			if (kubectlStructuredOutput(args)) return false;
+			if (ops.slice(1).some((o) => /^(configmaps?|cm)(\/|$)/i.test(o))) return false;
+		}
+		return true;
+	}
+	if (cmd === "gh") {
+		const ops = operandsOf(args);
+		if (!ops[0] || !allowedSubs.includes(ops[0])) return false;
+		return !args.some(
+			(a) => a === "--log" || a === "--log-failed" || a === "--json" || a.startsWith("--jq"),
+		);
+	}
+	const ops = operandsOf(args);
+	const one = ops[0] ?? "";
+	const two = `${ops[0] ?? ""} ${ops[1] ?? ""}`;
+	return allowedSubs.includes(one) || allowedSubs.includes(two);
+}
+
 // ── validation ───────────────────────────────────────────────────────────────
 
-function isValidationCommand(words: Word[]): boolean {
+/** Drops redirections (`> out.log`, `2>&1`, `&>f`, `< in`) so the arguments left are the tool's own. */
+function withoutRedirects(words: Word[]): Word[] {
+	const out: Word[] = [];
+	for (let i = 0; i < words.length; i++) {
+		const v = (words[i] as Word).value;
+		if (/^(?:\d*|&)(?:>>?|<)&?[\d-]+$/.test(v)) continue;
+		if (/^(?:\d*|&)(?:>>?|<)$/.test(v)) {
+			i++;
+			continue;
+		}
+		if (/^(?:\d*|&)(?:>>?|<)\S/.test(v)) continue;
+		out.push(words[i] as Word);
+	}
+	return out;
+}
+
+/** Every argument has a plain shape: no quoting, no expansion, no flag that loads or runs code, no credential path. */
+function validationArgsClean(words: Word[]): boolean {
+	for (const w of withoutRedirects(words.slice(1))) {
+		const v = w.value;
+		if (w.raw !== v) return false;
+		if (v === "--") continue;
+		if (v.startsWith("-")) {
+			if (!FLAG_RE.test(v)) return false;
+			if (DENIED_VALIDATION_FLAGS.has(v.split("=")[0] as string)) return false;
+			continue;
+		}
+		if (!OPERAND_RE.test(v) || isCredentialPath(v)) return false;
+	}
+	return true;
+}
+
+function isValidationHead(words: Word[]): boolean {
 	const head = words[0];
 	if (!head) return false;
 	const cmd = baseName(head.value);
@@ -779,6 +1082,43 @@ function isValidationCommand(words: Word[]): boolean {
 	}
 }
 
+function isValidationCommand(words: Word[]): boolean {
+	return isValidationHead(words) && validationArgsClean(words);
+}
+
+const FILLER_DENIED_FLAG_RE =
+	/^(?:-[A-Za-z]*[rRfF][A-Za-z]*|--(?:include|exclude|file|recursive|dereference-recursive|directories|follow|retry).*)$/;
+const NUMERIC_RE = /^[+-]?\d+$/;
+
+/** A filter after a pipe that reads only its input: no file operand, no recursion, one pattern at most. */
+function isBenignPipeFiller(final: Final, cmd: string): boolean {
+	if (final.sep !== "|") return false;
+	const args = withoutRedirects(final.words.slice(1));
+	let operands = 0;
+	for (let i = 0; i < args.length; i++) {
+		const v = (args[i] as Word).value;
+		if (v.startsWith("-") && !NUMERIC_RE.test(v)) {
+			if (FILLER_DENIED_FLAG_RE.test(v)) return false;
+			if (cmd === "tee") continue;
+			if (["-n", "-c", "-m", "-A", "-B", "-C"].includes(v)) {
+				if (!NUMERIC_RE.test(args[i + 1]?.value ?? "x")) return false;
+				i++;
+			} else if (cmd === "grep" && v === "-e") {
+				i++;
+				operands++;
+			}
+			continue;
+		}
+		if (cmd === "head" || cmd === "tail") {
+			if (!NUMERIC_RE.test(v)) return false;
+		} else if (cmd === "tee") {
+			if ((args[i] as Word).raw !== v || !OPERAND_RE.test(v) || isCredentialPath(v)) return false;
+			if (++operands > 1) return false;
+		} else if (++operands > 1) return false;
+	}
+	return true;
+}
+
 function isBenignValidationFiller(final: Final): boolean {
 	const head = final.words[0];
 	if (!head) return false;
@@ -786,7 +1126,7 @@ function isBenignValidationFiller(final: Final): boolean {
 	if (cmd === "cd") return true;
 	if (cmd === "echo") return !joinRaw(final.words.slice(1)).includes("$");
 	if (cmd === "true") return true;
-	return EXIT_MASKING_PIPE_CONSUMERS.has(cmd);
+	return EXIT_MASKING_PIPE_CONSUMERS.has(cmd) && isBenignPipeFiller(final, cmd);
 }
 
 function isExitMasking(final: Final): boolean {
@@ -826,6 +1166,13 @@ function quoteArray(parts: string[]): string {
 		.join(" ");
 }
 
+/** The length the loader's SQL cut applies to: the stored text, or the JSON of an array given directly. */
+function storedLength(input: unknown): number {
+	const stored =
+		typeof input === "string" ? input : Array.isArray(input) ? JSON.stringify(input) : "";
+	return Array.from(stored).length;
+}
+
 export function classifyCommand(input: unknown): CommandClass {
 	try {
 		return classify(input);
@@ -834,9 +1181,16 @@ export function classifyCommand(input: unknown): CommandClass {
 	}
 }
 
+function patchFiles(text: string): string[] {
+	return [...text.matchAll(PATCH_FILE_RE)].map((m) => (m[1] as string).trim());
+}
+
 function classify(input: unknown): CommandClass {
+	// A command as long as the SQL cut may have lost its end: never classified.
+	if (storedLength(input) >= TOOL_INPUT_FIELD_SQL_CAP) return { kind: "not_shown" };
 	const text = toCommandString(input);
 	if (text === null || text === "") return { kind: "not_shown" };
+	if (PATCH_HEAD_RE.test(text)) return { kind: "patch", files: patchFiles(text) };
 	const parsed = parse(text);
 	if (parsed.flags.unparseable) return { kind: "not_shown" };
 
@@ -846,7 +1200,11 @@ function classify(input: unknown): CommandClass {
 	if (flags.unparseable) return { kind: "not_shown" };
 	if (finals.length === 0) return { kind: "not_shown" };
 
-	if (finals.some((f) => readsCredentials(f.words))) return { kind: "withheld" };
+	// Before unwrapping too: a wrapper's own flag value (`xargs -a .env`) is not in the final.
+	const namesCredential = parsed.segments.some((seg) =>
+		seg.words.some((w) => credentialTokens(w).some((t) => isCredentialPath(t))),
+	);
+	if (namesCredential || finals.some((f) => readsCredentials(f.words))) return { kind: "withheld" };
 
 	const unreadable =
 		flags.subst ||
@@ -854,7 +1212,9 @@ function classify(input: unknown): CommandClass {
 		flags.evalCmd ||
 		flags.base64Cmd ||
 		flags.pythonC ||
-		flags.nodeE;
+		flags.nodeE ||
+		flags.oddEscape ||
+		finals.some(isUnreadable);
 	if (!unreadable) {
 		const allowlisted = finals.filter((f) => isValidationCommand(f.words));
 		const allClean = finals.every(
@@ -865,10 +1225,7 @@ function classify(input: unknown): CommandClass {
 		}
 	}
 	if (unreadable || flags.shDashC) return { kind: "not_shown" };
-	return {
-		kind: "ordinary",
-		hasViewer: finals.some((f) => VIEWER_COMMANDS.has(baseName(f.words[0]?.value ?? ""))),
-	};
+	return { kind: "ordinary", tailAllowed: finals.every(tailAllowedFor) };
 }
 
 // ── validation results ───────────────────────────────────────────────────────
@@ -916,30 +1273,18 @@ export function validationResult(
 }
 
 /**
- * Words a command contains when it MIGHT be a validation, as lowercase
- * substrings. The loader's SQL uses them to decide whether to read the full
- * response, so this list is a superset of the classifier's allowlist.
+ * The first line of `response` a pass pattern matched, trimmed and cut to
+ * PASS_LINE_CAP code points: the one line of a passing validation that may be
+ * sent. Null when no line matched. Lines are split on real newlines only.
  */
-export const COARSE_VALIDATION_TERMS: readonly string[] = [
-	"test",
-	"vitest",
-	"jest",
-	"pytest",
-	"tox",
-	"tsc",
-	"biome",
-	"eslint",
-	"ruff",
-	"mypy",
-	"typecheck",
-	"check",
-	"lint",
-	"build",
-	"vet",
-	"clippy",
-];
-
-/** The first line a pass pattern matched, capped (stub, replaced in the fix commit). */
-export function passSummaryLine(_response: string | null | undefined): string | null {
+export function passSummaryLine(response: string | null | undefined): string | null {
+	for (const line of (response ?? "").split(/\r?\n/)) {
+		if (PASS_PATTERNS.some((p) => p.test(line))) {
+			return Array.from(line.trim()).slice(0, PASS_LINE_CAP).join("");
+		}
+	}
 	return null;
 }
+
+/** Superseded: the loader reads every shell row's response now (removed with the loader change). */
+export const COARSE_VALIDATION_TERMS: readonly string[] = ["test"];

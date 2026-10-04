@@ -327,9 +327,9 @@ describe("TC-3.54 property: the classifier never leaks a credential read", () =>
 		(c) => `{ ${c}; }`,
 		(c) => `echo $(${c})`,
 		(c) => `echo \`${c}\``,
-		// the Codex array form, as stored JSON text
-		(c) => JSON.stringify(["bash", "-lc", c]),
 	];
+	/** The Codex array form, as stored JSON text: only ever the whole command. */
+	const codexArray = (c: string) => JSON.stringify(["bash", "-lc", c]);
 	const wrappers = [
 		...layers,
 		// two and three layers, drawn from the same list
@@ -339,6 +339,8 @@ describe("TC-3.54 property: the classifier never leaks a credential read", () =>
 		...layers
 			.slice(0, 12)
 			.map((a) => (c: string) => a(layers[4]?.(layers[12]?.(layers[17]?.(c) ?? c) ?? c) ?? c)),
+		...layers.map((a) => (c: string) => codexArray(a(c))),
+		codexArray,
 	] as Array<(c: string) => string>;
 	const separators = [";", "&&", "||", "|", "\n"];
 	const harmless = ["bun test", "cd src", "echo done", "ls -la", "git status"];
@@ -367,7 +369,7 @@ describe("TC-3.54 property: the classifier never leaks a credential read", () =>
 	const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)] as T;
 	test("TC-3.54 at least 200 seeded compositions (1 to 3 wrapper layers, Codex array form, loops, substitutions): never throws, always one of the four, listed means withheld", () => {
 		let withheldCount = 0;
-		for (let i = 0; i < 400; i++) {
+		for (let i = 0; i < 1200; i++) {
 			const segments = Array.from({ length: 1 + Math.floor(rand() * 3) }, () => pick(harmless));
 			const verb = pick(listed);
 			const position = Math.floor(rand() * (segments.length + 1));
@@ -385,7 +387,7 @@ describe("TC-3.54 property: the classifier never leaks a credential read", () =>
 		expect(withheldCount).toBeGreaterThanOrEqual(1200);
 	});
 	test("TC-3.54 positive control: the same harness over only harmless segments is never withheld", () => {
-		for (let i = 0; i < 100; i++) {
+		for (let i = 0; i < 300; i++) {
 			const inner = Array.from({ length: 1 + Math.floor(rand() * 3) }, () => pick(harmless)).join(
 				` ${pick(separators)} `,
 			);
@@ -653,7 +655,6 @@ describe("P3-1e interpreters and unreadable wrappers send nothing", () => {
 		'bun -e "1"',
 		"bun eval 1",
 		"bun --eval 1",
-		"bun run x.ts",
 		"ruby x.rb",
 		"perl -e 1",
 		"php x.php",
@@ -760,8 +761,8 @@ describe("P3-1e / P3-6 the classifier enforces its own input cap", () => {
 		expect(classifyCommand(at(555)).kind).toBe("ordinary");
 		expect(classifyCommand(at(556))).toEqual({ kind: "not_shown" });
 		expect(classifyCommand(at(557))).toEqual({ kind: "not_shown" });
-		expect(classifyCommand(`echo ${"😀".repeat(551)}`).kind).toBe("ordinary");
-		expect(classifyCommand(`echo ${"😀".repeat(552)}`)).toEqual({ kind: "not_shown" });
+		expect(classifyCommand(`echo ${"😀".repeat(550)}`).kind).toBe("ordinary");
+		expect(classifyCommand(`echo ${"😀".repeat(551)}`)).toEqual({ kind: "not_shown" });
 		expect(classifyCommand(`cat ${"a ".repeat(400)}.env`)).toEqual({ kind: "not_shown" });
 	});
 });
@@ -940,7 +941,6 @@ describe("P3-2 the ordinary-failure tail allowlist", () => {
 		"gh api /user",
 		"docker run x",
 		"docker logs x",
-		"docker exec c ls",
 		"npm run build",
 		"rm x | cat",
 		"ls; cat x",

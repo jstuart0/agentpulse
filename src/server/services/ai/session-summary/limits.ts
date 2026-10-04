@@ -33,8 +33,16 @@ export const OUTPUT_TAIL = 300;
 export const SQL_REDACTION_MARGIN = 256;
 /** `tool_input` fields are cut in SQL here; a command this long is not classified (fail closed). */
 export const TOOL_INPUT_FIELD_SQL_CAP = 556;
-/** Stored `tool_response` is at most this many characters (event-normalizer). */
-export const FULL_RESPONSE_CHARS = 2000;
+/** SQL reads at most this many characters of a stored response (the writer's own cap is the same). */
+export const RESPONSE_SQL_CAP = 2000;
+/** A pass summary line is cut here (code points). */
+export const PASS_LINE_CAP = 120;
+/** Most characters of `tool_input` bytes whose fields one chunk extracts; rows past it are `[not shown]`. */
+export const TOOL_INPUT_BYTE_BUDGET = 8_000_000;
+/** A Post row with no input is paired with a Pre row of the same call at most this many ids before it. */
+export const PAIR_WINDOW_IDS = 200;
+/** The ledger builds this many rows, then yields the event loop. */
+export const LEDGER_SLICE_ROWS = 100;
 
 /** Characters in the ledger body; over this the oldest entries are dropped. */
 export const LEDGER_CHAR_BUDGET = 60_000;
@@ -45,47 +53,93 @@ export const MAX_IDS_PER_ENTRY = 6;
 /** Edited files listed in the counts line. */
 export const TOP_FILES = 30;
 
-/** Rows and bytes one chunk statement may return into JS (asserted per statement). */
+/**
+ * What one chunk statement may return into JS. The loader does not enforce it:
+ * `substr(..., RESPONSE_SQL_CAP)` and the 350-row cap do, and the fat-body and
+ * 300 KB-response tests assert this figure as an oracle.
+ */
 export const CHUNK_BYTES_CEILING = 1_500_000;
 
-// Tool names (lowercase) by how the ledger treats them (plan D-30). Claude Code
-// names, Codex's `apply_patch`, and Copilot's `view`/`create`/`shell` are listed
-// because `canonicalize.ts` does not rename tools. Anything else is "other".
-export const READ_CLASS_TOOLS: readonly string[] = [
-	"read",
-	"glob",
-	"grep",
-	"ls",
-	"notebookread",
-	"view",
-	"list",
-	"find",
-	"search",
-	"read_file",
-	"list_dir",
-];
+// Tool names (lowercase) by how the ledger treats them (plan D-30). Only names
+// with evidence are listed; any other tool renders as its name and a status.
+// Evidence: Claude Code's built-in tool names (Read, Glob, Grep, LS, Write, Edit,
+// MultiEdit, NotebookEdit, Bash) are the names its own hook payloads carry
+// (agents/__fixtures__ and the ingest tests); `apply_patch`, `shell` and
+// `exec_command` are Codex's, from the observer (supervisor/services/codex-observer.ts)
+// and the Codex fixtures; Copilot's `shell` is in copilot/postToolUse.json.
+// `view` and `create` are Copilot CLI's file viewer and creator as its published
+// tool list names them; no capture of either is in this tree (SPIKE.md captured
+// `shell` only). `view` stays so a Copilot session's file views do not flood the ledger.
+// `unknown_tool` (the observer's name after a supervisor restart) is never listed:
+// it may be a shell call, so it is name and status only unless the loader pairs
+// it with its Pre row.
+export const READ_CLASS_TOOLS: readonly string[] = ["read", "glob", "grep", "ls", "view"];
 export const EDIT_TOOLS: readonly string[] = [
 	"write",
 	"edit",
 	"multiedit",
 	"notebookedit",
-	"create",
-	"str_replace",
-	"str_replace_editor",
-	"str_replace_based_edit_tool",
 	"apply_patch",
-	"edit_file",
-	"write_file",
+	"create",
 ];
-export const SHELL_TOOLS: readonly string[] = [
-	"bash",
-	"shell",
-	"sh",
-	"run_command",
-	"run_shell_command",
-	"exec_command",
-	"local_shell",
-	"execute_bash",
-	"powershell",
-	"terminal",
+export const SHELL_TOOLS: readonly string[] = ["bash", "shell", "exec_command"];
+
+/** Agents whose hooks include a failure event: for them a PostToolUse row is evidence of success. */
+export const FAILURE_EVENT_AGENTS: readonly string[] = ["claude_code", "copilot_cli"];
+
+// The ordinary-failure tail allowlist (ruling R-A.1). Deliberately short: a
+// command's failure output is sent only when every segment's head is a tool that
+// neither reads files nor interprets code, so its error text cannot be a file's
+// contents. Not measured against real sessions. Entries a reviewer may question:
+// `docker build` echoes Dockerfile RUN lines; `bun/npm add` run package scripts;
+// `kubectl get` is allowed only without -o yaml|json and not for configmaps.
+export const FAILURE_TAIL_PLAIN_HEADS: readonly string[] = [
+	"ls",
+	"mkdir",
+	"rm",
+	"mv",
+	"touch",
+	"chmod",
+	"cd",
+	"pwd",
+	"which",
 ];
+/** `git` is allowed for any subcommand except these (they print file or history content or config). */
+export const FAILURE_TAIL_GIT_DENIED: readonly string[] = [
+	"show",
+	"diff",
+	"log",
+	"config",
+	"remote",
+	"cat-file",
+	"grep",
+	"blame",
+	"diff-tree",
+	"diff-index",
+	"difftool",
+	"format-patch",
+	"whatchanged",
+	"archive",
+	"bundle",
+	"credential",
+	"var",
+	"notes",
+	"reflog",
+	"fast-export",
+	"show-branch",
+];
+/** Head -> first operand(s) that are allowed. A two-word entry is `a b`. */
+export const FAILURE_TAIL_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = {
+	bun: ["install", "add", "remove", "i"],
+	npm: ["install", "ci", "i"],
+	pnpm: ["install", "add", "i"],
+	yarn: ["install", "add"],
+	pip: ["install"],
+	pip3: ["install"],
+	cargo: ["add"],
+	go: ["mod tidy", "mod download"],
+	docker: ["build", "pull", "push", "compose up", "compose down"],
+	"docker-compose": ["up", "down"],
+	kubectl: ["apply", "rollout", "get"],
+	gh: ["pr", "issue", "run"],
+};
