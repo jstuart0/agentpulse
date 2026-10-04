@@ -293,8 +293,10 @@ export function useSessionSummary(
 ): UseSessionSummary {
 	const [state, setState] = useState<State>(INITIAL);
 	const { adminSettingsLocked, showSummarySharedNote } = useOwnershipUi();
-	const viewerRef = useRef<SummaryViewer>({ adminSettingsLocked, showSummarySharedNote });
-	viewerRef.current = { adminSettingsLocked, showSummarySharedNote };
+	const aiPanelAvailable = useLabsStore((s) => s.isEnabled("aiSettingsPanel"));
+	const viewer: SummaryViewer = { adminSettingsLocked, showSummarySharedNote, aiPanelAvailable };
+	const viewerRef = useRef<SummaryViewer>(viewer);
+	viewerRef.current = viewer;
 	const controller = useRef<Controller | null>(null);
 
 	useEffect(() => {

@@ -30,6 +30,7 @@ import {
 	CLAIM_ONLY_SECTION_NOTE,
 	CODEX_CLAIM_ONLY_LINE,
 	NO_UNFINISHED_WORK,
+	type RefusalCopy,
 	SUSPECT_LEAD,
 	SUSPECT_REASON_LINES,
 	type SummaryLoad,
@@ -1344,7 +1345,10 @@ describe("refusalCopy", () => {
 		({ status, code: code as any, retryAfterSeconds });
 
 	test("TC-7.39g every refusal code in the contract has an entry, and none is the generic one", () => {
-		const EXPECTED: Record<SummaryRefusalCode, { text: string | null; refetch: string | null }> = {
+		const EXPECTED: Record<
+			SummaryRefusalCode,
+			{ text: string | null; refetch: RefusalCopy["refetch"] }
+		> = {
 			ai_disabled: { text: "AI was just turned off.", refetch: "ai_status" },
 			ai_paused: { text: "AI was just paused.", refetch: "ai_status" },
 			session_summary_disabled: {
@@ -1637,8 +1641,8 @@ describe("clipboard builders", () => {
 		const unknownTime = line(buildHandoffMarkdown(STORED, { ...META, generatedAt: null }));
 		expect(unknownTime).toContain("Activity through 2026-10-04 06:41 UTC");
 		expect(unknownTime).not.toContain("Summarized");
-		expect(line(buildHandoffMarkdown(STORED, { name: "n", branch: null, cwd: null }))).toContain(
-			"activity through 06:41",
+		expect(line(buildHandoffMarkdown(STORED, { name: "n", branch: null, cwd: null }))).toBe(
+			"Session: n | Activity through 2026-10-04 06:41 UTC",
 		);
 	});
 
