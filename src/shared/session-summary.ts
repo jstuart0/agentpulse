@@ -123,6 +123,8 @@ export type ValidationAdjustReason =
 	| "no_validation_cited"
 	/** A cited validation ran but its output did not show a pass or a failure. */
 	| "cited_unknown"
+	/** The model said passed; every cited validation failed. */
+	| "cited_failed"
 	/** The cited validations disagree. */
 	| "mixed"
 	/** The model said failed; no cited validation failed. */

@@ -283,6 +283,7 @@ describe("normalisation and schema", () => {
 			"E12",
 			"e13",
 			"12",
+			"77",
 			12,
 			"E012",
 			"E1 ,E2",

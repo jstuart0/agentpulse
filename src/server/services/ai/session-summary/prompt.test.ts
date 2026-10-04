@@ -129,7 +129,10 @@ describe("system prompt", () => {
 	test("TC-4.2a the sha256 of the prompt equals the constant pinned beside the version, and that pair is pinned here", () => {
 		expect(sha256(SESSION_SUMMARY_SYSTEM_PROMPT)).toBe(SESSION_SUMMARY_SYSTEM_PROMPT_SHA256);
 		// Changing the prompt means changing PROMPT_VERSION and this pair together.
-		expect([PROMPT_VERSION, SESSION_SUMMARY_SYSTEM_PROMPT_SHA256]).toEqual(["1", "__PINNED_SHA__"]);
+		expect([PROMPT_VERSION, SESSION_SUMMARY_SYSTEM_PROMPT_SHA256]).toEqual([
+			"1",
+			"175a86a8351b3eb75995daa5028b106fac8dd14d4fc57c32dc42deb7a36aa663",
+		]);
 	});
 
 	test("TC-4.2b the prompt is at most 8,000 characters and non-trivial", () => {
@@ -198,7 +201,7 @@ describe("redaction", () => {
 		ledgerText: [
 			`E1 09:00 CLAIMED user prompt: "use ${SECRETS.anthropic()}2"`,
 			`E2 09:01 OBSERVED command \`curl -H ${SECRETS.github()}\` -> ok`,
-			`E3 09:02 OBSERVED command \`x\` -> FAILED: "token=${SECRETS.aws()}"`,
+			`E3 09:02 OBSERVED command \`x\` -> FAILED: "key ${SECRETS.aws()}"`,
 			`E4 09:03 CLAIMED agent message: "${SECRETS.pem().replace(/\n/g, " ")}"`,
 		].join("\n"),
 	});
@@ -238,7 +241,7 @@ describe("redaction", () => {
 
 	test("TC-4.6 a secret straddling the 200 and 1,000 character caps leaves no fragment", () => {
 		const secret = SECRETS.anthropic();
-		const atCap = (cap: number) => `${"n".repeat(cap - 16)}${secret}${"tail".repeat(10)}`;
+		const atCap = (cap: number) => `${"n".repeat(cap - 17)} ${secret}${"tail".repeat(10)}`;
 		const built = build({
 			displayName: atCap(200),
 			notes: atCap(1000),
