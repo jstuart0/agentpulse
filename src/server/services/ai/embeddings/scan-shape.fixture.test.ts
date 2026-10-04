@@ -26,6 +26,8 @@ if (SHAPE === "legacy") {
 			started_at TEXT NOT NULL DEFAULT (datetime('now')),
 			last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
 			total_tool_uses INTEGER NOT NULL DEFAULT 0,
+			cwd TEXT,
+			current_task TEXT,
 			metadata TEXT DEFAULT '{}'
 		)`);
 		seed.close();

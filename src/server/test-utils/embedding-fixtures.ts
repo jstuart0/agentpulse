@@ -41,10 +41,11 @@ export interface SeedRow {
 	orphan?: boolean;
 }
 
+/** Sessions are created `completed`, so the Ask resolver's "active sessions" fallback never picks them. */
 export function ensureSessions(sessionIds: string[]): void {
 	const sqlite = getSqlite();
 	const insert = sqlite.prepare(
-		"INSERT OR IGNORE INTO sessions (id, session_id, agent_type) VALUES (?, ?, 'claude_code')",
+		"INSERT OR IGNORE INTO sessions (id, session_id, agent_type, status) VALUES (?, ?, 'claude_code', 'completed')",
 	);
 	sqlite.transaction(() => {
 		for (const id of sessionIds) insert.run(`row-${id}`, id);
@@ -52,6 +53,7 @@ export function ensureSessions(sessionIds: string[]): void {
 }
 
 export function seedRows(rows: SeedRow[]): void {
+	ensureSessions([...new Set(rows.filter((r) => !r.orphan).map((r) => r.sessionId))]);
 	const sqlite = getSqlite();
 	const insertEvent = sqlite.prepare(
 		"INSERT OR REPLACE INTO events (id, session_id, event_type, content, raw_payload, created_at) VALUES (?, ?, 'UserPromptSubmit', ?, '{}', ?)",

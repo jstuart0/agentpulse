@@ -1,6 +1,6 @@
 /**
  * Records every statement executed through the raw bun:sqlite handle: its
- * SQL, bound parameters, rows returned and bytes returned. Lets a test
+ * SQL, bound parameters, rows returned and BLOB bytes returned. Lets a test
  * assert what one statement materialised without measuring RSS or wall time.
  *
  * It wraps `prepare` and `query` on the handle, so code under test must
@@ -13,6 +13,7 @@ export interface StatementExecution {
 	sql: string;
 	params: unknown[];
 	rows: number;
+	/** Bytes of BLOB values returned (strings and numbers are not counted). */
 	bytes: number;
 	seq: number;
 	/** The executor used: all, get, values, run or iterate. */
@@ -30,10 +31,9 @@ export interface StatementMeter {
 
 const EXECUTORS = ["all", "get", "values", "run", "iterate"] as const;
 
+/** Only BLOB values count: that is the part of a vector read that scales with the dimension. */
 function sizeOf(value: unknown): number {
-	if (value instanceof Uint8Array) return value.byteLength;
-	if (typeof value === "string") return Buffer.byteLength(value);
-	return 0;
+	return value instanceof Uint8Array ? value.byteLength : 0;
 }
 
 function measure(result: unknown): { rows: number; bytes: number } {

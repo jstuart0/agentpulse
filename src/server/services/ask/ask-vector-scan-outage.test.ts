@@ -26,6 +26,9 @@ const { __setEmbeddingAdapterForTests, __resetEmbeddingAdapterForTests } = await
 	"../ai/embeddings/embedding-service.js"
 );
 const { runAskTurn, runAskTurnStream } = await import("./ask-service.js");
+const { scanSessionSimilarity, __resetVectorScanStateForTests } = await import(
+	"../ai/embeddings/vector-scan.js"
+);
 const { installStatementMeter } = await import("../../test-utils/statement-meter.js");
 const { startTicker } = await import("../../test-utils/ticker.js");
 const { createFakeClock } = await import("../../test-utils/fake-clock.js");
@@ -37,7 +40,7 @@ import type { StatementMeter } from "../../test-utils/statement-meter.js";
 const ACTOR = { userId: null, label: "anonymous" as const };
 const PLANTED_SESSION = "planted-session";
 const MESSAGE = "hello there, remind me what the retry thing was about";
-const EMBEDDINGS = /event_embeddings/;
+const EMBEDDINGS = /SELECT[\s\S]*FROM event_embeddings/;
 
 const originalSecretsKey = config.secretsKey;
 const originalVectorSearch = config.vectorSearchEnabled;
@@ -98,6 +101,7 @@ beforeAll(async () => {
 	});
 	setSetting("ai.enabled", true);
 	setSetting("vectorSearch.enabled", true);
+	setSetting("labs", { askAssistant: true });
 });
 
 afterAll(() => {
@@ -110,6 +114,8 @@ beforeEach(async () => {
 	await getDb().delete(askMessages).execute();
 	await getDb().delete(askThreads).execute();
 	clearEmbeddingFixtures();
+	getSqlite().exec("DELETE FROM sessions");
+	__resetVectorScanStateForTests();
 	// No pacing sleeps: the ticker assertions are about statements and yields.
 	scanConfig.vectorScanCpuShare = 1;
 	scanConfig.vectorScanMaxRows = 50_000;
@@ -135,7 +141,7 @@ describe("an Ask turn over 1,200 stored vectors of 4096 dims", () => {
 		expect(Math.max(...scans.map((e) => e.bytes))).toBeLessThanOrEqual(262_144);
 		expect(scans.every((e) => e.method !== "iterate")).toBe(true);
 		expect(result.assistantMessage.content.length).toBeGreaterThan(0);
-		expect(result.includedSessionIds).toContain(PLANTED_SESSION);
+		expect(result.includedSessionIds).toEqual([PLANTED_SESSION]);
 	});
 
 	test("the event loop turns between statements: one to two ticks, at most 16 rows per tick", async () => {
@@ -206,7 +212,6 @@ describe("statement size follows the vector dimension", () => {
 
 describe("the scan shares the process with everything else", () => {
 	test("a real HTTP request and a real hook delivery are served while a paced scan is mid-flight", async () => {
-		const { scanSessionSimilarity } = await import("../ai/embeddings/vector-scan.js");
 		const { app } = await import("../../app.js");
 		const { createApiKey } = await import("../../auth/api-key.js");
 		const query = seedCorpus({ count: 1_200, dim: 4096, model: "fake-4096", plantedId: 600 });
@@ -222,9 +227,9 @@ describe("the scan shares the process with everything else", () => {
 			});
 			await nextImmediate();
 
-			const health = await fetch(`http://127.0.0.1:${server.port}/api/v1/health`);
-			expect(health.status).toBeLessThan(500);
-			const statementsAfterHealth = meter.matching(EMBEDDINGS).length;
+			const ready = await fetch(`http://127.0.0.1:${server.port}/api/v1/ready`);
+			expect(ready.status).toBe(200);
+			const statementsAfterReady = meter.matching(EMBEDDINGS).length;
 			expect(finished).toBe(false);
 
 			const sessionId = `hook-during-scan-${crypto.randomUUID()}`;
@@ -248,7 +253,7 @@ describe("the scan shares the process with everything else", () => {
 			expect(stored).toBe(true);
 			expect(finished).toBe(false);
 			expect(meter.matching(EMBEDDINGS).length).toBeLessThan(76);
-			expect(statementsAfterHealth).toBeLessThan(76);
+			expect(statementsAfterReady).toBeLessThan(76);
 
 			const result = await scan;
 			expect(result.stats.stopReason).toBe("exhausted");
@@ -258,7 +263,6 @@ describe("the scan shares the process with everything else", () => {
 	}, 30_000);
 
 	test("a setImmediate queued before the scan's first yield runs before its second statement", async () => {
-		const { scanSessionSimilarity } = await import("../ai/embeddings/vector-scan.js");
 		const query = seedCorpus({ count: 100, dim: 4096, model: "fake-4096", plantedId: 50 });
 		let immediateRanAtStatement = -1;
 		let statements = 0;
@@ -266,16 +270,15 @@ describe("the scan shares the process with everything else", () => {
 			if (!EMBEDDINGS.test(execution.sql)) return;
 			statements++;
 		});
-		const promise = scanSessionSimilarity(query, { model: "fake-4096", dim: 4096 });
+		// Queued before the scan starts, so it is ahead of the scan's own first yield.
 		setImmediate(() => {
 			immediateRanAtStatement = statements;
 		});
-		await promise;
+		await scanSessionSimilarity(query, { model: "fake-4096", dim: 4096 });
 		expect(immediateRanAtStatement).toBe(1);
 	});
 
 	test("an event inserted mid-scan is not in the scan's population and nothing throws", async () => {
-		const { scanSessionSimilarity } = await import("../ai/embeddings/vector-scan.js");
 		const query = seedCorpus({ count: 200, dim: 4096, model: "fake-4096", plantedId: 100 });
 		let inserted = false;
 		meter.setAfterExecute((execution) => {
@@ -312,7 +315,7 @@ describe("a missing scan index degrades the turn instead of failing it", () => {
 
 		const sync = await runAskTurn({ message: MESSAGE, actor: ACTOR });
 		expect(sync.assistantMessage.content.length).toBeGreaterThan(0);
-		expect(sync.includedSessionIds).not.toContain(PLANTED_SESSION);
+		expect(sync.includedSessionIds).toEqual([]);
 
 		let streamedSessions: string[] | null = null;
 		let finished = false;
@@ -321,7 +324,7 @@ describe("a missing scan index degrades the turn instead of failing it", () => {
 			if (event.kind === "done") finished = true;
 		}
 		expect(finished).toBe(true);
-		expect(streamedSessions).not.toContain(PLANTED_SESSION);
+		expect(streamedSessions).toEqual([]);
 	});
 
 	test("POST /ai/ask answers 200, not 500, and nothing goes unhandled", async () => {

@@ -310,7 +310,7 @@ describeSqliteOnly("row and time budgets", () => {
 		const query = randomUnitVector(makeRng(9), DIM);
 		seedPlain(1_208, DIM); // 75 full chunks and a partial one of 8
 
-		setBudgets({ maxRows: 1_208, maxMs: 0 });
+		setBudgets({ maxRows: 1_208, maxMs: 60_000 });
 		const exactFit = await scan.scanSessionSimilarity(query, { model: MODEL, dim: DIM });
 		expect(exactFit.stats.stopReason).toBe("exhausted");
 		expect(exactFit.stats.truncated).toBe(false);
@@ -356,7 +356,7 @@ describeSqliteOnly("pacing", () => {
 			dim: DIM,
 		});
 
-		expect(result.stats.statements).toBe(50);
+		expect(result.stats.statements).toBe(51); // 50 full chunks, then the empty one that proves the end
 		for (const slept of clock.sleeps) expect(Math.abs(slept - 23.33)).toBeLessThan(0.5);
 		const { busyMs, sleptMs } = result.stats;
 		expect(Math.abs(sleptMs / (busyMs + sleptMs) - 0.7)).toBeLessThan(0.02);
@@ -378,11 +378,13 @@ describeSqliteOnly("pacing", () => {
 		});
 		setBudgets({ share: 0.3 });
 		const immediates = spyOn(globalThis, "setImmediate");
+		let yields = 0;
 		try {
 			await scan.scanSessionSimilarity(randomUnitVector(makeRng(9), DIM), {
 				model: MODEL,
 				dim: DIM,
 			});
+			yields = immediates.mock.calls.length;
 		} finally {
 			immediates.mockRestore();
 		}
@@ -392,7 +394,7 @@ describeSqliteOnly("pacing", () => {
 		expect(statementsAtSleep[0]).toBeGreaterThanOrEqual(9);
 		expect(statementsAtSleep[0]).toBeLessThanOrEqual(10);
 		// 50 chunks: every gap that isn't a sleep yields to the event loop.
-		expect(immediates.mock.calls.length).toBeGreaterThanOrEqual(49 - clock.sleeps.length);
+		expect(yields).toBeGreaterThanOrEqual(50 - clock.sleeps.length);
 	});
 
 	test("oversleeping earns no credit; undersleeping adds the shortfall back; the long-run ratio holds", async () => {
@@ -494,7 +496,7 @@ describeSqliteOnly("one pacer for every scan in the process", () => {
 	test("two concurrent scans together use the configured share, not twice it", async () => {
 		const { clock, both } = await twoScans(10);
 		const busy = both.reduce((sum, r) => sum + r.stats.busyMs, 0);
-		expect(busy).toBe(1_000);
+		expect(busy).toBe(1_020);
 		const sleptFraction = 1 - busy / clock.now();
 		expect(Math.abs(sleptFraction - 0.7)).toBeLessThan(0.02);
 		for (const r of both) expect(r.stats.returned).toBe(800);

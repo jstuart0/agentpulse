@@ -1237,6 +1237,8 @@ describeSqliteOnly("vector scan index on both SQLite install shapes", () => {
 			status TEXT NOT NULL DEFAULT 'active',
 			started_at TEXT NOT NULL DEFAULT (datetime('now')),
 			last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+			cwd TEXT,
+			current_task TEXT,
 			total_tool_uses INTEGER NOT NULL DEFAULT 0,
 			metadata TEXT DEFAULT '{}'
 		)`);

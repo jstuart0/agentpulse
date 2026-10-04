@@ -1,3 +1,15 @@
+/**
+ * An env number snapped into [min, max]; unset, blank or non-numeric gives
+ * the fallback. Evaluated once at import, like the rest of `config`.
+ */
+function clampedEnvNumber(name: string, fallback: number, min: number, max: number): number {
+	const raw = process.env[name];
+	if (raw === undefined || raw.trim() === "") return fallback;
+	const value = Number(raw);
+	if (!Number.isFinite(value)) return fallback;
+	return Math.min(max, Math.max(min, value));
+}
+
 export const config = {
 	port: Number(process.env.PORT || 3000),
 	host: process.env.HOST || "127.0.0.1",
@@ -65,6 +77,19 @@ export const config = {
 	// no UI, no embed calls). Set = surface is built; users still toggle on
 	// at runtime in Settings.
 	vectorSearchEnabled: process.env.AGENTPULSE_VECTOR_SEARCH === "true",
+
+	// Bounds on the Ask turn's semantic scan over `event_embeddings` (see
+	// services/ai/embeddings/vector-scan.ts). The scan reads newest vectors
+	// first and stops at whichever budget it reaches first; all concurrent
+	// scans together use at most `vectorScanCpuShare` of CPU. The scan reads
+	// these fields on every call, so they are plain numbers a test can set.
+	vectorScanMaxRows: Math.floor(
+		clampedEnvNumber("AGENTPULSE_VECTOR_SCAN_MAX_ROWS", 50_000, 1_000, 5_000_000),
+	),
+	vectorScanMaxMs: Math.floor(
+		clampedEnvNumber("AGENTPULSE_VECTOR_SCAN_MAX_MS", 4_000, 250, 60_000),
+	),
+	vectorScanCpuShare: clampedEnvNumber("AGENTPULSE_VECTOR_SCAN_CPU_SHARE", 0.3, 0.05, 1),
 
 	// Telegram HITL channel — instance-wide bot token serves every
 	// per-user channel enrollment. When unset, Telegram features stay

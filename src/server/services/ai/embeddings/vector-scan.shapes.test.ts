@@ -60,14 +60,14 @@ describeSqliteOnly("scan against both install shapes", () => {
 		test("the scan holds its per-statement bounds and its plan", async () => {
 			const { exitCode, output, report } = await runShape(shape);
 
-			expect(report, output).not.toBeNull();
+			expect(report).not.toBeNull();
 			expect(report?.shape).toBe(shape);
 			expect(report?.hasDrizzleMigrations).toBe(shape === "drizzle");
 			expect(report?.hasLegacyModelIndex).toBe(shape === "legacy");
 			expect(report?.hasDeleteTrigger).toBe(shape === "legacy");
 			expect(report?.hasScanIndex).toBe(true);
-			expect(output).toContain(` ${EXPECTED_TESTS} pass`);
-			expect(output).toContain(" 0 fail");
+			expect(output.match(/\n\s*(\d+) pass/)?.[1]).toBe(String(EXPECTED_TESTS));
+			expect(output.match(/\n\s*(\d+) fail/)?.[1]).toBe("0");
 			expect(exitCode).toBe(0);
 		}, 120_000);
 	});
