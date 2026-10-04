@@ -82,7 +82,7 @@ export function ownershipUi(mode: InstanceMode, viewer: OwnershipViewer): Owners
 		showTeamCopy: true,
 		ownerGatesSessionActions: true,
 		adminMayClearOthersAttention: isAdmin,
-		showSummarySharedNote: false,
+		showSummarySharedNote: true,
 		machinesMenuLabel: "Machines",
 	};
 }

@@ -78,7 +78,8 @@ async function tick(ms: number) {
 }
 
 type Props = { id: string | undefined; enabled: boolean };
-async function mount(id: string | undefined = "s1", enabled = true) {
+async function mount(sessionId: string | null = "s1", enabled = true) {
+	const id = sessionId ?? undefined;
 	const h = renderHook<Props, UseSessionSummary>((p) => useSessionSummary(p.id, p.enabled), {
 		id,
 		enabled,
@@ -162,11 +163,15 @@ describe("loading", () => {
 		const m = await mount();
 		expect(m.v.load.status).toBe("error");
 		script(new ApiError(503, "busy", { error: "busy" }, 1));
-		m.v.retry();
+		await act(async () => {
+			m.v.retry();
+		});
 		await settle();
 		expect(m.v.load.status).toBe("error");
 		script(F.ready);
-		m.v.retry();
+		await act(async () => {
+			m.v.retry();
+		});
 		await settle();
 		expect(m.v.load.status).toBe("ready");
 	});
@@ -175,7 +180,7 @@ describe("loading", () => {
 		script(F.empty);
 		const off = await mount("s1", false);
 		expect(off.v.load.status).toBe("unavailable");
-		const none = await mount(undefined, true);
+		const none = await mount(null, true);
 		expect(none.v.load.status).toBe("unavailable");
 		expect(gets).toEqual([]);
 		await off.rerender({ id: "s1", enabled: true });
@@ -417,7 +422,7 @@ describe("generate", () => {
 		let second: unknown;
 		await act(async () => {
 			void m.v.generate();
-			second = await m.v.generate();
+			second = await Promise.race([m.v.generate(), Promise.resolve("still waiting")]);
 		});
 		expect(second).toBe("ignored");
 		expect(posts).toBe(1);

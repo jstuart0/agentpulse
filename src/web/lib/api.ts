@@ -29,10 +29,11 @@ import type {
 	WatcherPolicy,
 } from "../../shared/types.js";
 
-import type {
-	SessionSummaryStartBody,
-	SessionSummaryView,
-	SummaryRefusalCode,
+import {
+	SUMMARY_REFUSAL_CODES,
+	type SessionSummaryStartBody,
+	type SessionSummaryView,
+	type SummaryRefusalCode,
 } from "../../shared/session-summary-view.js";
 
 export type {
@@ -881,11 +882,19 @@ export const api = {
 		}),
 
 	// --- Session summary (AGEN-69) ---
-	getSessionSummary: (_sessionId: string): Promise<SessionSummaryView> => {
-		throw new Error("not implemented");
-	},
-	generateSessionSummary: (_sessionId: string): Promise<GenerateSummaryResult> => {
-		throw new Error("not implemented");
+	getSessionSummary: (sessionId: string) =>
+		request<SessionSummaryView>(`/ai/sessions/${encodeURIComponent(sessionId)}/summary`),
+	generateSessionSummary: async (sessionId: string): Promise<GenerateSummaryResult> => {
+		try {
+			const body = await request<SessionSummaryStartBody>(
+				`/ai/sessions/${encodeURIComponent(sessionId)}/summary`,
+				{ method: "POST" },
+			);
+			return { ok: true, body };
+		} catch (err) {
+			if (err instanceof ApiError) return { ok: false, refusal: toSummaryRefusal(err) };
+			throw err;
+		}
 	},
 
 	// --- Vector search ---
@@ -1368,6 +1377,27 @@ export interface SummaryRefusal {
 export type GenerateSummaryResult =
 	| { ok: true; body: SessionSummaryStartBody }
 	| { ok: false; refusal: SummaryRefusal };
+
+const KNOWN_SUMMARY_REFUSALS: ReadonlySet<string> = new Set(SUMMARY_REFUSAL_CODES);
+
+/** The body's `retryAfterSeconds` wins; the `Retry-After` header (already parsed onto the error) is the fallback. */
+function toSummaryRefusal(err: ApiError): SummaryRefusal {
+	const body = err.body as { retryAfterSeconds?: unknown } | null;
+	const fromBody =
+		typeof body?.retryAfterSeconds === "number" &&
+		Number.isFinite(body.retryAfterSeconds) &&
+		body.retryAfterSeconds >= 0
+			? Math.ceil(body.retryAfterSeconds)
+			: null;
+	return {
+		status: err.status,
+		code:
+			err.code !== null && KNOWN_SUMMARY_REFUSALS.has(err.code)
+				? (err.code as SummaryRefusalCode)
+				: null,
+		retryAfterSeconds: fromBody ?? err.retryAfterSeconds,
+	};
+}
 
 export interface AiStatusResponse {
 	build: boolean;

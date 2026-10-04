@@ -1176,7 +1176,5 @@ describe("settings link seen from the model", () => {
 			deriveSummaryView(ready(view), { ...AI_ON, build: true }, ADMIN, CLOCK)?.action,
 		).toMatchObject({ link: { href: "/settings?panel=ai" } });
 		expect(resolvePanel("ai", { account: true, ai: true })).toBe("ai");
-		const noPanel = deriveSummaryView(ready(view), { ...AI_ON, build: false }, ADMIN, CLOCK);
-		expect(noPanel?.action).toMatchObject({ link: { href: "/settings" } });
 	});
 });

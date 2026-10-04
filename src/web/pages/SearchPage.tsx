@@ -4,6 +4,7 @@ import { AGENT_METADATA, AGENT_TYPES } from "../../shared/constants.js";
 import type { AgentType } from "../../shared/types.js";
 import { plainErrorMessage } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
+import { evidenceHref } from "../lib/event-deep-link.js";
 import { hitOwnerText } from "../lib/owner-label.js";
 import { useUserStore } from "../stores/user-store.js";
 import { useUsersStore } from "../stores/users-store.js";
@@ -253,9 +254,9 @@ function ResultRow({ hit }: { hit: Hit }) {
 		hit.sessionDisplayName ??
 		`${hit.sessionId.slice(0, 8)}${hit.sessionCwd ? ` — ${hit.sessionCwd.split("/").pop()}` : ""}`;
 	const href =
-		hit.kind === "event" && hit.eventId != null
-			? `/sessions/${hit.sessionId}?tab=activity#event-${hit.eventId}`
-			: `/sessions/${hit.sessionId}`;
+		(hit.kind === "event" && hit.eventId != null
+			? evidenceHref(hit.sessionId, hit.eventId)
+			: null) ?? `/sessions/${hit.sessionId}`;
 	return (
 		<li>
 			<Link

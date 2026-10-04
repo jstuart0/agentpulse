@@ -257,13 +257,13 @@ function getBaseCategories(mode: TimelineMode): Set<EventCategory> {
 	return categories;
 }
 
-export function getVisibleEvents(
-	allEvents: SessionEvent[],
+export function getVisibleEvents<E extends Pick<SessionEvent, "category" | "isNoise" | "content">>(
+	allEvents: E[],
 	mode: TimelineMode,
 	showTools: boolean,
 	showNoisyTools: boolean,
 	showSystem: boolean,
-) {
+): E[] {
 	const categories = getBaseCategories(mode);
 	if (showTools) categories.add("tool_event");
 	if (!showSystem) categories.delete("system_event");
