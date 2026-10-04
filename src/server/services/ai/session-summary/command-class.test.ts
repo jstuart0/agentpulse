@@ -1007,3 +1007,68 @@ describe("P3-1 pass summary line", () => {
 		expect(passSummaryLine("a\\n 4 pass")).toBe("a\\n 4 pass");
 	});
 });
+
+// ── phase 3 re-check fixes (G-1, G-3, G-6) ───────────────────────────────────
+
+describe("TC-3.G1b an ordinary command carries no output permission", () => {
+	test("the classification is just `ordinary`", () => {
+		for (const command of [
+			"rm -rf build",
+			"git push origin main",
+			"cat notes.txt; false",
+			"grep -r foo src",
+		]) {
+			expect(classifyCommand(command), command).toEqual({ kind: "ordinary" });
+		}
+	});
+});
+
+describe("TC-3.G3 filler operands are strict", () => {
+	test("a glob, a variable or a home path in a filler operand makes the command not a clean validation", () => {
+		for (const command of [
+			"bun test | grep .*",
+			'bun test | grep "$X"',
+			"bun test | grep $X",
+			"bun test | grep -e 'a' ~/x",
+			"bun test | grep -e .*",
+			"bun test | head ~/x",
+			"bun test | tail *.log",
+			"bun test | tee out?.log",
+			"bun test | grep [a-z]",
+		]) {
+			expect(kind(command), command).not.toBe("validation");
+		}
+	});
+	test("positive control: plain fillers stay clean", () => {
+		for (const command of [
+			"bun test | tail -5",
+			"bun test | head -n 20",
+			"bun test | grep FAIL",
+			"bun test | tee out.log",
+		]) {
+			expect(kind(command), command).toBe("validation");
+		}
+	});
+});
+
+describe("TC-3.G6 npx and bunx --package", () => {
+	test("--package and --package=x are denied validation flags", () => {
+		for (const command of [
+			"npx --package=evil tsc",
+			"npx --package evil tsc",
+			"bunx --package=evil tsc",
+		]) {
+			expect(kind(command), command).not.toBe("validation");
+		}
+		expect(kind("npx tsc --noEmit")).toBe("validation");
+	});
+});
+
+describe("TC-3.G2b the pass summary is built from counts", () => {
+	test("passSummaryLine returns server-built counts, or null without counts", () => {
+		expect(passSummaryLine("compiling\n12 pass X=1 SECRET\n 0 fail")).toBe("12 pass, 0 fail");
+		expect(passSummaryLine("5 passed")).toBe("5 pass, 0 fail");
+		expect(passSummaryLine("Found 0 errors. SECRET")).toBeNull();
+		expect(passSummaryLine("")).toBeNull();
+	});
+});

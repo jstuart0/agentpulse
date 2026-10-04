@@ -1579,3 +1579,92 @@ describe("P3-36 the ledger is built in slices that yield", () => {
 		expect(turns).toBeGreaterThanOrEqual(1);
 	});
 });
+
+// ── phase 3 re-check fixes (G-1, G-2, G-4) ───────────────────────────────────
+
+describe("TC-3.G1 no output is ever sent for an ordinary command", () => {
+	const LEAK = "LEAKED-OUTPUT-SENTINEL";
+	const commands = [
+		'ls "$ANTHROPIC_API_KEY"',
+		'cd "$X"',
+		'git checkout "$T"',
+		'docker pull "$T"',
+		"kubectl get --raw /api/v1/namespaces/ns/secrets/db && kubectl get nope",
+		"kubectl apply --dry-run=client -o yaml -f deploy.yaml",
+		"docker build .",
+		"docker compose up",
+		"gh pr diff",
+		"git stash list -p",
+		"git submodule foreach 'cat .e*'",
+		"rm -rf build",
+		"git push origin main",
+		"mkdir out",
+	];
+	for (const command of commands) {
+		test(`a failed \`${command}\` is status only`, () => {
+			const ledger = build([
+				bash(1, command, {
+					eventType: "PostToolUseFailure",
+					response: `${LEAK} head`,
+					responseTail: `${LEAK} tail`,
+				}),
+			]);
+			expect(ledger.text).not.toContain(LEAK);
+			expect(ledger.text).toMatch(/-> FAILED$/);
+		});
+	}
+	test("a Codex command that exits 1 is FAILED with no output text", () => {
+		const ledger = build(
+			[
+				bash(1, "rm x", {
+					response: JSON.stringify({ output: `${LEAK} rm: denied`, metadata: { exit_code: 1 } }),
+				}),
+			],
+			{ agentType: "codex_cli" },
+		);
+		expect(ledger.text).not.toContain(LEAK);
+		expect(bodyOf(ledger.text)).toBe("OBSERVED command `rm x` -> FAILED");
+	});
+});
+
+describe("TC-3.G2 a pass is shown as counts the server built, never the raw line", () => {
+	const LEAK = "LEAKED-ENV-SENTINEL";
+	test("a pass line with trailing text shows only the captured counts", () => {
+		const ledger = build([
+			bash(1, "bun test", { response: `12 pass ${LEAK} DB_HOST=prod\n 0 fail` }),
+		]);
+		expect(ledger.text).not.toContain(LEAK);
+		expect(ledger.text).not.toContain("DB_HOST");
+		expect(bodyOf(ledger.text)).toBe(
+			'OBSERVED command [validation] `bun test` -> ok: "12 pass, 0 fail"',
+		);
+	});
+	test("a pass pattern without counts shows no text at all", () => {
+		const ledger = build([bash(1, "tsc --noEmit", { response: `Found 0 errors. ${LEAK}` })]);
+		expect(ledger.text).not.toContain(LEAK);
+		expect(bodyOf(ledger.text)).toBe("OBSERVED command [validation] `tsc --noEmit` -> ok");
+	});
+});
+
+describe("TC-3.G4 a completed status never yields a validation ok", () => {
+	const codex = (response: string) =>
+		build([bash(1, "bun test", { response })], { agentType: "codex_cli" });
+	test("a pass pattern in a row with no exit code is unknown", () => {
+		expect(bodyOf(codex("4 pass\n0 fail").text)).toMatch(/-> unknown$/);
+		expect(bodyOf(codex("all good, 12 passed").text)).toMatch(/-> unknown$/);
+	});
+	test("a failure pattern in a row with no exit code is still failed", () => {
+		expect(bodyOf(codex("FAIL src/a.test.ts\n1 pass").text)).toMatch(/-> FAILED/);
+	});
+	test("positive control: the same pass text with exit code 0 is ok", () => {
+		const ok = build(
+			[
+				bash(1, "bun test", {
+					response: JSON.stringify({ output: "4 pass\n0 fail", metadata: { exit_code: 0 } }),
+				}),
+			],
+			{ agentType: "codex_cli" },
+		);
+		expect(bodyOf(ok.text)).toMatch(/-> ok: "4 pass, 0 fail"$/);
+	});
+});

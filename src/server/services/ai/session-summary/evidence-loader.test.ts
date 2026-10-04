@@ -1964,3 +1964,53 @@ function quotedOfLine(text: string, n: number): string {
 	const line = lines(text)[n - 1] ?? "";
 	return line.slice(line.indexOf('"') + 1, line.lastIndexOf('"'));
 }
+
+describe("TC-3.G5 the pairing probe is bounded", () => {
+	const PRE_PAYLOAD_PADDING = "p".repeat(100_000);
+	test("a Claude Bash Post row without input is not paired (positive control: unknown_tool still is)", async () => {
+		const sid = await newSession("g5-claude");
+		await seed([
+			ev(sid, {
+				eventType: "PreToolUse",
+				category: "tool_event",
+				toolName: "Bash",
+				toolInput: { command: "echo PRE-ONE" },
+				rawPayload: { tool_use_id: "one" },
+			}),
+			toolEv(sid, "Bash", null, { rawPayload: { tool_use_id: "one" } }),
+			ev(sid, {
+				eventType: "PreToolUse",
+				category: "tool_event",
+				toolName: "Bash",
+				toolInput: { command: "echo PRE-TWO" },
+				rawPayload: { tool_use_id: "two" },
+			}),
+			toolEv(sid, "unknown_tool", null, { rawPayload: { tool_use_id: "two" } }),
+		]);
+		const text = buildLedger(await loadEvidence(sid)).text;
+		expect(text).not.toContain("echo PRE-ONE");
+		expect(text).toContain("echo PRE-TWO");
+	});
+	test("a Codex candidate whose raw_payload is over the cap is skipped; one under it is paired", async () => {
+		const sid = await newSession("g5-codex", "codex_cli");
+		const pre = (id: string, command: string, padding: string) =>
+			ev(sid, {
+				eventType: "PreToolUse",
+				category: "tool_event",
+				toolName: "exec_command",
+				toolInput: { cmd: command },
+				rawPayload: { tool_use_id: id, padding },
+			});
+		const post = (id: string) =>
+			toolEv(sid, "exec_command", null, { rawPayload: { tool_use_id: id } });
+		await seed([
+			pre("big", "echo BIG-PRE", PRE_PAYLOAD_PADDING),
+			post("big"),
+			pre("small", "echo SMALL-PRE", "x"),
+			post("small"),
+		]);
+		const text = buildLedger(await loadEvidence(sid)).text;
+		expect(text).not.toContain("echo BIG-PRE");
+		expect(text).toContain("echo SMALL-PRE");
+	}, 60_000);
+});
