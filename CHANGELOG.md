@@ -47,6 +47,16 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Fixed
 
+- **The session detail header no longer says "working" twice.** A working
+  session read "working WORKING": a small amber chip driven by the raw
+  `isWorking` flag, then the operational badge. The badge already counts that
+  flag, so the chip is gone and the state is said once (it could also read
+  "working" beside ARCHIVED when the flag was stale).
+- **The git branch no longer runs on into the next line of output** (it read
+  `feat/x\nYour`). A branch read from a `git status` or `git branch` response
+  now ends at the end of its name, and `git branch`'s `* ` marker is found in an
+  object response. A branch already stored wrongly is replaced the next time
+  the session runs a git command.
 - **An unrecognised `fields` value on `GET /api/v1/sessions/:id` is now a 400**
   (`invalid_field`); it used to be ignored and the whole detail came back. Every
   value of a repeated `fields` is checked.
