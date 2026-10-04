@@ -119,6 +119,13 @@ export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
 	"/ai/sessions/:sessionId/watcher",
 	"/ai/inbox/snoozes",
 	"/ai/risk-classes",
+	// AGEN-69 — the session summary is derived from prompts and tool data, so
+	// the read is manage-only, never observe. Its POST is manage by method and
+	// deliberately in no other set (not OWNER_CHECKED_ROUTES): any reader of a
+	// summary can already read its source through the timeline, launching and
+	// prompting are not owner-checked either, and in team mode only an admin
+	// can turn the Labs flag on (D-3).
+	"/ai/sessions/:sessionId/summary",
 ]);
 
 /**
