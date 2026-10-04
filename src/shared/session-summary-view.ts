@@ -62,9 +62,10 @@ export interface SessionSummaryView {
 	stored: StoredSessionSummary | null;
 	/** `generated_at` (Data, column 3); null with no stored summary. */
 	generatedAt: string | null;
-	/** Time of the newest event the summary covers (the event `through_event_id` names). Phase 5 keeps it in provenance at generation time. Null with no stored summary. UX → "Outcome row": "through 06:41". */
-	throughAt: string | null;
-	/** `through_event_id` (Data, column 5). */
+	/**
+	 * `through_event_id` (Data, column 5). The time of the newest event the summary covers is
+	 * `stored.provenance.throughAt` (UX → "Outcome row": "through 06:41"); the view has no copy of it.
+	 */
 	throughEventId: number | null;
 	/** The attempt row (Data, columns 4, 6, 8). A lapsed lease is already reported here as `failed` / `interrupted` (TC-5.22). */
 	attempt: {
