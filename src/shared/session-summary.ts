@@ -154,7 +154,13 @@ export type SummaryAdjustment =
 /**
  * Every rule of the instruction tripwire has its own code, in the order they are
  * stored. `pipe_to_shell` covers both a pipe into a shell or interpreter and a
- * download followed by a run step.
+ * download followed by a run step (also across the fields one copy action emits).
+ * `risky_command`: an address the user never typed, or a command the session
+ * never ran, inside a command whose verb reaches the network or runs or deletes
+ * things (`curl`, `git clone`, `npm install`, `rm`, `sudo`, ...).
+ * `malformed_url`: an address with a shape no honest summary has (a backslash or
+ * percent sign in the host, `javascript:`, `data:`, `file:`, userinfo, a numeric
+ * or hex host).
  */
 export const SUMMARY_SUSPECT_REASONS = [
 	"role_marker",
@@ -162,13 +168,17 @@ export const SUMMARY_SUSPECT_REASONS = [
 	"pipe_to_shell",
 	"unexpected_url",
 	"unrecorded_command",
+	"risky_command",
+	"malformed_url",
 ] as const;
 export type SummarySuspectReason = (typeof SUMMARY_SUSPECT_REASONS)[number];
 
 /**
- * `warning`: text that addresses an agent or runs downloaded code; the page uses
- * its warning wording and the "... anyway" buttons. `note`: an address the user
- * never typed, or a command the session never ran; a neutral line, normal buttons.
+ * `warning`: text that addresses an agent, runs downloaded code, or tells the
+ * reader to run a network or exec command that the session never ran (or to open
+ * a malformed address); the page uses its warning wording and the "... anyway"
+ * buttons. `note`: an address the user never typed, or a command the session
+ * never ran, when its verb is harmless; a neutral line, normal buttons.
  */
 export const SUSPECT_REASON_TIER: Record<SummarySuspectReason, "warning" | "note"> = {
 	role_marker: "warning",
@@ -176,6 +186,8 @@ export const SUSPECT_REASON_TIER: Record<SummarySuspectReason, "warning" | "note
 	pipe_to_shell: "warning",
 	unexpected_url: "note",
 	unrecorded_command: "note",
+	risky_command: "warning",
+	malformed_url: "warning",
 };
 
 /** The kinds of fact a ledger id can be: what the summary's citations may point at. */

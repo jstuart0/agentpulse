@@ -125,7 +125,7 @@ const TLDS = new Set(
 	).split(" "),
 );
 
-/** Product names whose "TLD" is part of the name; accepted as names, not hosts (decision recorded in the test). */
+/** Product names whose "TLD" is part of the name; accepted as names, not hosts, only written with no path (`asp.net/Core` is the real domain). */
 const PRODUCT_NAMES = new Set(["asp.net", "socket.io", "vb.net"]);
 
 // ── URLs ─────────────────────────────────────────────────────────────────────
@@ -141,6 +141,7 @@ const SCP_URL_RE = /(?<![\w.@-])[\w.-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+):([\w./~-]+
 const WWW_URL_RE = /(?<![\w.@/-])www\.[^\s<>"'`]+/gi;
 const BARE_URL_RE = /(?<![\w./@:-])(?:[a-z0-9-]+\.)+[a-z]{2,24}(?::\d{1,5})?\/[^\s<>"'`]*/gi;
 const IPV4_URL_RE = /(?<![\w./@:-])\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\/[^\s<>"'`]*/g;
+const BARE_IPV4_RE = /(?<![\w./@:-])\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?(?![\w/-])(?!\.\d)/g;
 const BARE_HOST_RE = /(?<![\w./@:-])(?:[a-z0-9-]+\.)+[a-z]{2,24}(?![\w/-])/gi;
 
 const TRAILING_PUNCTUATION = new Set([...".,;:!?)]}>'\"*_`"]);
@@ -158,13 +159,27 @@ interface Candidate {
 	path: string;
 	/** Written without a scheme: a file name can look like this, so the ledger is consulted. */
 	bare: boolean;
-	/** A shape no honest summary has: backslash or percent in the authority, `javascript:`, unparsable. */
+	/** A shape no honest summary has: backslash or percent in the authority, `javascript:`, unparsable, a numeric or hex host. */
 	suspect: boolean;
+	/** `suspect`, or userinfo in the authority: what `malformed_url` reports. */
+	malformed: boolean;
 	/** The token as written (lowercase, no scheme), for the ledger-path comparison. */
 	token: string;
 }
 
 const LOOPBACK_HOSTS = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])$/;
+
+const NUMERIC_PART_RE = /^(?:0x[0-9a-f]+|\d+)$/i;
+const PLAIN_OCTET_RE = /^(?:0|[1-9]\d{0,2})$/;
+
+/** `2130706433`, `0x7f.0.0.1`, `0177.0.0.1`, `127.1`: a host the URL parser turns into an address. A plain dotted quad is not odd. */
+function isOddNumericHost(host: string): boolean {
+	const parts = host.split(".");
+	if (parts.length > 4 || !parts.every((p) => NUMERIC_PART_RE.test(p))) return false;
+	const plainQuad =
+		parts.length === 4 && parts.every((p) => PLAIN_OCTET_RE.test(p) && Number(p) <= 255);
+	return !plainQuad;
+}
 
 /** Parses one candidate with the URL parser (a scheme is added when missing) and compares `hostname`. */
 function parseCandidate(rawIn: string, hasScheme: boolean): Candidate | null {
@@ -174,12 +189,21 @@ function parseCandidate(rawIn: string, hasScheme: boolean): Candidate | null {
 	const authorityEnd = withoutScheme.search(/[/?#]/);
 	const authority = authorityEnd === -1 ? withoutScheme : withoutScheme.slice(0, authorityEnd);
 	if (!authority) return null;
-	const suspect = /[\\%]/.test(authority);
+	const userinfo = hasScheme && authority.includes("@");
+	const hostPart = authority.slice(authority.lastIndexOf("@") + 1).replace(/:\d*$/, "");
+	const suspect = /[\\%]/.test(authority) || (hasScheme && isOddNumericHost(hostPart));
 	let url: URL;
 	try {
 		url = new URL(hasScheme ? raw : `http://${raw}`);
 	} catch {
-		return { host: authority.toLowerCase(), path: "", bare: !hasScheme, suspect: true, token: raw };
+		return {
+			host: authority.toLowerCase(),
+			path: "",
+			bare: !hasScheme,
+			suspect: true,
+			malformed: true,
+			token: raw,
+		};
 	}
 	const host = url.hostname.replace(/\.$/, "").replace(/^www\./, "");
 	if (!host) return null;
@@ -188,6 +212,7 @@ function parseCandidate(rawIn: string, hasScheme: boolean): Candidate | null {
 		path: url.pathname.replace(/\/+$/, ""),
 		bare: !hasScheme,
 		suspect,
+		malformed: suspect || userinfo,
 		token: withoutScheme.replace(/[?#].*$/, "").toLowerCase(),
 	};
 }
@@ -195,7 +220,14 @@ function parseCandidate(rawIn: string, hasScheme: boolean): Candidate | null {
 const tldOf = (host: string): string => host.slice(host.lastIndexOf(".") + 1);
 
 function opaqueCandidate(raw: string): Candidate {
-	return { host: raw.slice(0, 24).toLowerCase(), path: "", bare: false, suspect: true, token: raw };
+	return {
+		host: raw.slice(0, 24).toLowerCase(),
+		path: "",
+		bare: false,
+		suspect: true,
+		malformed: true,
+		token: raw,
+	};
 }
 
 function candidates(folded: string, includeBareHosts: boolean): Candidate[] {
@@ -203,16 +235,17 @@ function candidates(folded: string, includeBareHosts: boolean): Candidate[] {
 	const seen = new Set<string>();
 	const push = (c: Candidate | null, hostOnly = false) => {
 		if (!c) return;
-		const id = `${c.host}${c.path}|${hostOnly}|${c.suspect}`;
+		const id = `${c.host}${c.path}|${hostOnly}|${c.suspect}|${c.malformed}`;
 		if (seen.has(id)) return;
 		seen.add(id);
 		out.push(c);
 	};
 	const bareAllowed = (c: Candidate | null): Candidate | null => {
 		if (!c) return null;
-		if (PRODUCT_NAMES.has(c.host)) return null;
+		if (PRODUCT_NAMES.has(c.host) && c.path === "") return null;
 		const tld = tldOf(c.host);
-		const isIp = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(c.host);
+		const isIp =
+			/^\d{1,3}(?:\.\d{1,3}){3}$/.test(c.host) && c.host.split(".").every((o) => Number(o) <= 255);
 		return TLDS.has(tld) || isIp ? c : null;
 	};
 	for (const m of folded.matchAll(SCHEME_URL_RE)) push(parseCandidate(m[0], true));
@@ -227,6 +260,9 @@ function candidates(folded: string, includeBareHosts: boolean): Candidate[] {
 	for (const m of folded.matchAll(IPV4_URL_RE)) push(bareAllowed(parseCandidate(m[0], false)));
 	if (includeBareHosts) {
 		for (const m of folded.matchAll(BARE_HOST_RE)) {
+			push(bareAllowed(parseCandidate(m[0], false)), true);
+		}
+		for (const m of folded.matchAll(BARE_IPV4_RE)) {
 			push(bareAllowed(parseCandidate(m[0], false)), true);
 		}
 	}
@@ -244,7 +280,7 @@ export function extractUrlKeys(text: string, mode: "model" | "user"): string[] {
 /**
  * The URLs a user typed, as normalised keys. Call it on each prompt's text the
  * loader returns: that text is SQL-cut (1,756 / 4,256 code points), so a URL
- * past the cut is not seen here and raises `unexpected_url` (a warning, the
+ * past the cut is not seen here and raises `unexpected_url` (a note, the
  * safe direction).
  */
 export function collectUserPromptUrls(texts: Iterable<string>): Set<string> {
@@ -283,33 +319,12 @@ function squash(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }
 
-/** Verbs whose second word is a subcommand: `git push` and `git pull` are different commands. */
-const SUBCOMMAND_VERBS = new Set([
-	"git",
-	"bun",
-	"npm",
-	"pnpm",
-	"yarn",
-	"docker",
-	"kubectl",
-	"cargo",
-	"go",
-	"pip",
-	"pip3",
-	"make",
-	"gh",
-	"helm",
-	"terraform",
-	"systemctl",
-	"brew",
-	"apt",
-	"apt-get",
-]);
-
 /** Command words that make a code span or a "run ..." phrase read as a command. */
 const COMMAND_VERBS = new Set([
 	"curl",
 	"wget",
+	"iwr",
+	"irm",
 	"sh",
 	"bash",
 	"zsh",
@@ -376,52 +391,41 @@ const COMMAND_VERBS = new Set([
 
 const READ_ONLY_GIT = new Set(["status", "diff", "log", "show", "branch"]);
 
+/** A redirect that only silences or merges output (`2>&1`, `>/dev/null`): it cannot name a file worth writing, so it does not make a command another command. */
+const HARMLESS_REDIRECT_RE = /^(?:\d*>&\d|&?\d*>>?\/dev\/null)$/;
+
 /** Segments of a command line that name a command with arguments, as `[verb, rest...]` token lists. */
 function segmentsOf(command: string): string[][] {
 	return command
 		.split(COMMAND_SPLIT_RE)
-		.map((s) => squash(s).replace(/^\$ /, "").split(" "))
+		.map((s) =>
+			squash(s)
+				.replace(/^\$ /, "")
+				.split(" ")
+				.filter((t) => !HARMLESS_REDIRECT_RE.test(t)),
+		)
 		.filter((tokens) => tokens.length > 0 && tokens[0] !== "");
 }
 
-/** Verbs whose `run` subcommand takes a script name: `bun run build` and `bun run db:generate` differ. */
-const SCRIPT_RUNNERS = new Set(["bun", "npm", "pnpm", "yarn"]);
-
-function headOf(tokens: string[]): string {
-	const verb = tokens[0] as string;
-	if (SUBCOMMAND_VERBS.has(verb)) {
-		const operands = tokens.slice(1).filter((t) => !t.startsWith("-"));
-		const sub = operands[0];
-		if (!sub) return verb;
-		if (SCRIPT_RUNNERS.has(verb) && sub === "run" && operands[1])
-			return `${verb} run ${operands[1]}`;
-		return `${verb} ${sub}`;
-	}
-	return tokens.join(" ");
-}
+/** The identity of a command segment: it matches a recorded one only when every token does. */
+const segmentKey = (tokens: string[]): string => tokens.join(" ");
 
 interface RecordIndex {
 	paths: Set<string>;
 	commandText: string;
-	heads: Set<string>;
-	/** Recorded commands of verbs with no subcommand, whole. */
-	whole: Set<string>;
+	/** Every segment of every recorded command, whole (`bun install`, not just `bun`), built once. */
+	segments: Set<string>;
 }
 
 function indexRecords(ctx: TripwireContext): RecordIndex {
-	const heads = new Set<string>();
-	const whole = new Set<string>();
+	const segments = new Set<string>();
 	for (const command of ctx.recordedCommands) {
-		for (const tokens of segmentsOf(fold(command))) {
-			heads.add(headOf(tokens));
-			whole.add(tokens.join(" "));
-		}
+		for (const tokens of segmentsOf(fold(command))) segments.add(segmentKey(tokens));
 	}
 	return {
 		paths: new Set(ctx.recordedPaths.map((p) => fold(p).toLowerCase())),
 		commandText: fold(ctx.recordedCommands.join("\n")).toLowerCase(),
-		heads,
-		whole,
+		segments,
 	};
 }
 
@@ -458,10 +462,36 @@ function indexTyped(userPromptUrls: ReadonlySet<string>): TypedUrls {
 	return { keys: userPromptUrls, hosts, paths };
 }
 
-function hasUnexpectedUrl(folded: string, typed: TypedUrls, records: RecordIndex): boolean {
+interface UrlFindings {
+	/** An address the user never typed (and, outside `loopbackNote`, not a loopback one). */
+	unexpected: boolean;
+	/** An address with a shape no honest summary has. */
+	malformed: boolean;
+}
+
+/**
+ * `loopbackNote`: a loopback address counts as unexpected unless typed. The
+ * sections Copy handoff emits are judged that way; elsewhere, and when judging a
+ * command span for `risky_command`, loopback is exempt.
+ */
+function urlFindings(
+	folded: string,
+	typed: TypedUrls,
+	records: RecordIndex,
+	loopbackNote: boolean,
+): UrlFindings {
+	const found: UrlFindings = { unexpected: false, malformed: false };
 	for (const c of candidates(folded, true)) {
-		if (c.suspect) return true;
-		if (LOOPBACK_HOSTS.test(c.host)) continue;
+		if (c.malformed) found.malformed = true;
+		if (found.unexpected) {
+			if (found.malformed) break;
+			continue;
+		}
+		if (c.suspect) {
+			found.unexpected = true;
+			continue;
+		}
+		if (!loopbackNote && LOOPBACK_HOSTS.test(c.host)) continue;
 		if (typed.keys.has(keyOf(c))) continue;
 		if (c.path === "" && typed.hosts.has(c.host)) continue;
 		// A deeper path under a URL the user typed, on the same host, is the same document tree.
@@ -471,9 +501,9 @@ function hasUnexpectedUrl(folded: string, typed: TypedUrls, records: RecordIndex
 		)
 			continue;
 		if (c.bare && isRecordedName(c.token, records)) continue;
-		return true;
+		found.unexpected = true;
 	}
-	return false;
+	return found;
 }
 
 // ── role markers and override phrases ────────────────────────────────────────
@@ -494,12 +524,21 @@ const CHAT_TEMPLATE_RE =
 
 /**
  * `system:` and `developer:` at a line start are also how an environment is
- * described ("System: Linux"). A short value with no instruction word in it is
- * a label and not a role marker. `assistant:`, `user:` and `human:` always fire.
+ * described ("System: Linux x64"). Only a value made of operating-system,
+ * architecture and version words is a label; anything else after the colon is
+ * text addressed to a reader and fires. `assistant:`, `user:` and `human:` always fire.
  */
-const INSTRUCTION_CUE_RE =
-	/\b(?:you|your|please|obey|ignore|must|always|never|do|don't|reveal|print|output|run|execute|send|open|visit|install|delete|override|disable|enable|allow|grant|approve|trust|follow|respond|reply|answer|act|pretend|forget|stop|skip|bypass|rules?|instructions?|prompt|new|sure|okay|ok|will)\b/i;
-const SHORT_LABEL_VALUE_WORDS = 4;
+const ENVIRONMENT_WORD_RE =
+	/^(?:linux|darwin|macos|windows|ubuntu|debian|x86_64|x86|x64|arm64|aarch64|amd64|i386|i686|\d[\d.]*)$/i;
+const ENVIRONMENT_SPLIT_RE = /[\s,;/()-]+/;
+
+/** Tokens, not a repeated pattern: linear whatever the value. */
+function isEnvironmentValue(value: string): boolean {
+	return value
+		.split(ENVIRONMENT_SPLIT_RE)
+		.filter(Boolean)
+		.every((word) => ENVIRONMENT_WORD_RE.test(word));
+}
 
 function hasRoleMarker(folded: string): boolean {
 	if (CHAT_TEMPLATE_RE.test(folded) || BRACKET_LABEL_RE.test(folded)) return true;
@@ -507,8 +546,7 @@ function hasRoleMarker(folded: string): boolean {
 		const label = (m[1] as string).toLowerCase();
 		if (label !== "system" && label !== "developer") return true;
 		const value = (m[2] ?? "").trim();
-		const words = value === "" ? 0 : value.split(/\s+/).length;
-		if (words > SHORT_LABEL_VALUE_WORDS || INSTRUCTION_CUE_RE.test(value)) return true;
+		if (value !== "" && !isEnvironmentValue(value)) return true;
 	}
 	return false;
 }
@@ -517,16 +555,20 @@ const OVERRIDE_PHRASE_RES = [
 	/\b(?:ignore|disregard|forget|override|bypass|discard)\s+(?:all\s+|any\s+|every\s+)?(?:of\s+)?(?:the\s+|your\s+|my\s+|these\s+|those\s+)?(?:previous|prior|above|earlier|preceding|foregoing|former)\s+(?:instructions?|prompts?|messages?|rules?|guidelines?|directions?|commands?|context)\b/i,
 	/\b(?:ignore|disregard|forget|override|bypass)\s+(?:(?:everything|anything|all)\s+)?(?:the\s+)?above\b/i,
 	/\b(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+)?(?:of\s+)?(?:your|my)\s+(?:instructions?|guidelines?|rules?|system\s+prompt|programming|directions?|restrictions?)\b/i,
-	/\byou\s+are\s+now\s+(?:a|an|the|my|dan|acting|playing|operating|free|unrestricted|in\s+(?:developer|dan|debug|admin|god)\b)/i,
+	/\byou\s+are\s+now\s+(?:a|an|the|my|dan|acting|playing|operating|free|unrestricted|in\s+(?:developer|dan|debug|admin|god)\b|(?:authori[sz]ed|allowed|permitted|able|cleared|granted|root|admin|in\s+charge)\b)/i,
 	/\bpretend\s+(?:to\s+be|you\s+are)\b/i,
 	/\bnew\s+instructions?\s*[:：]/i,
 	/\b(?:your|following|these)\s+new\s+instructions?\b/i,
-	/\bfrom\s+now\s+on,?\s+(?:you|your|always|never|ignore|respond|reply|answer|say|obey|only|do\s+not|don't|must|every)\b/i,
+	/\bnew\s+instructions?\s+(?:are\s+to|is\s+to|say|says|said|tell|tells|state|states|require|requires|order|orders|mean|means|must|should)\b/i,
+	/\bfrom\s+now\s+on\s*,/i,
+	/\bfrom\s+now\s+on\s+(?:you|your|always|never|ignore|respond|reply|answer|say|obey|only|do|don't|must|every|run|push|skip|use|deploy|send|commit|stop|treat|assume|write|execute|delete|install|open|call|make|add|remove|change|disable|enable|approve|merge|force|ask|tell|show|print|reveal|output|follow|trust|accept|allow|bypass|override|forget|pretend|act)\b/i,
 ];
 
 // ── fetch and run ────────────────────────────────────────────────────────────
 
-const FETCH_RE = /\b(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod|git\s+clone)\b/i;
+/** Fetch tools that read as a download wherever they stand in the text. */
+const FETCH_ANYWHERE_RE =
+	/\b(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod|git\s+clone|aria2c|scp|go\s+install)\b|\bpip3?\s+install\s+(?:-\S+\s+)*(?:\w+:\/\/|git\+)/i;
 
 const INTERPRETER = String.raw`(?:python[\d.]*|node|perl|ruby|php|pwsh|powershell(?:\.exe)?)`;
 const SHELL = String.raw`(?:(?:ba|z|da|k|c|tc|fi)?sh)`;
@@ -534,15 +576,32 @@ const WRAPPERS = String.raw`(?:(?:sudo|env|exec|command|nohup|time)(?:\s+(?:-\S+
 const BIN_DIR = String.raw`(?:/(?:usr/)?(?:local/)?s?bin/)?`;
 const NOT_WORD = String.raw`(?![\w.-])`;
 const NOT_JSON_TOOL = String.raw`(?!\s+-m\s+json\.tool\b)`;
+/** In command position: after a separator, a backtick, `$(` or a line start. */
+const COMMAND_POSITION = String.raw`(?:^|[\n;&|(\`]|\$\()[ \t]*${WRAPPERS}${BIN_DIR}`;
 
-/** A run step, in command position: after a separator, a backtick, `$(` or a line start. */
+/** Fetch tools that only count in command position (`fetch`, `npx` and HTTPie are common words or names). */
+const FETCH_COMMAND_RE = new RegExp(
+	[
+		COMMAND_POSITION,
+		String.raw`(?:fetch[ \t]+(?:-\S+[ \t]+)*\S*(?:\w+://|\.\w{2,}/)|aria2c${NOT_WORD}|npx${NOT_WORD}|bunx${NOT_WORD}|`,
+		String.raw`https?[ \t]+(?:-\S+[ \t]+)*(?:(?:GET|POST|PUT|PATCH|DELETE|HEAD)[ \t]+)?[\w.:\[-]+(?:/|[ \t]|$))`,
+	].join(""),
+	"i",
+);
+
+const NOT_PROSE_AFTER_MAKE = String.raw`(?![ \t]+(?:sure|sense|it|a|an|the|this|that|these|those|your|my|our|changes?|progress|certain|them|do|any|no)\b)`;
+
+/** A run step, in command position. */
 const RUN_STEP_RE = new RegExp(
 	[
-		String.raw`(?:^|[\n;&|(\`]|\$\()[ \t]*${WRAPPERS}${BIN_DIR}(?:`,
+		COMMAND_POSITION,
+		"(?:",
 		`${SHELL}${NOT_WORD}|`,
 		`${INTERPRETER}${NOT_WORD}${NOT_JSON_TOOL}|`,
-		String.raw`chmod\s+(?:-\w+\s+)*\+x\b|source${NOT_WORD}|eval${NOT_WORD}|exec${NOT_WORD}|`,
-		String.raw`base64\s+(?:-d|--decode|-D)\b|iex${NOT_WORD}`,
+		String.raw`chmod\s+(?:-\w+\s+)*(?:[ugoa]*\+x|[0-7]?[1357][0-7]{2})\b|source${NOT_WORD}|eval${NOT_WORD}|exec${NOT_WORD}|`,
+		String.raw`base64\s+(?:-d|--decode|-D)\b|iex${NOT_WORD}|`,
+		String.raw`\.{1,2}/[\w.-]|\.[ \t]+\.{0,2}/[\w.-]|open[ \t]+(?:-\w+[ \t]+)*\S*[./~]\S*|`,
+		String.raw`make${NOT_WORD}${NOT_PROSE_AFTER_MAKE}|(?:npm|pnpm|yarn|bun)[ \t]+(?:install|add|i)${NOT_WORD}|docker[ \t]+run${NOT_WORD}`,
 		")",
 	].join(""),
 	"i",
@@ -566,11 +625,22 @@ const PIPE_TO_SHELL_RES = [
 	/\b(?:perl|ruby)\s+-e\b/i,
 ];
 
-/** A fetch tool anywhere in the field, then a run step in command position anywhere after the first one. */
+/** Where the earliest fetch tool in `folded` ends, or -1. */
+function firstFetchEnd(folded: string): number {
+	let end = -1;
+	for (const re of [FETCH_ANYWHERE_RE, FETCH_COMMAND_RE]) {
+		const m = re.exec(folded);
+		if (m && (end === -1 || m.index + m[0].length < end)) end = m.index + m[0].length;
+	}
+	return end;
+}
+
+/** A fetch tool anywhere in the text, then a run step in command position anywhere after the first one. */
 function fetchesAndRuns(folded: string): boolean {
-	const fetch = FETCH_RE.exec(folded);
-	if (!fetch) return false;
-	return RUN_STEP_RE.test(folded.slice(fetch.index + fetch[0].length));
+	const end = firstFetchEnd(folded);
+	if (end === -1) return false;
+	// The marker keeps the start of the slice from counting as a command position.
+	return RUN_STEP_RE.test(`\u0001${folded.slice(end)}`);
 }
 
 function hasPipeToShell(folded: string): boolean {
@@ -603,8 +673,11 @@ function commandSpans(folded: string): string[] {
 	const outside = parts.filter((_, i) => i % 2 === 0).join("\n");
 	for (const m of outside.matchAll(DOLLAR_LINE_RE)) spans.push(m[1] as string);
 	for (const m of outside.matchAll(INLINE_CODE_RE)) {
-		const tokens = squash(m[1] as string).split(" ");
-		if (tokens.length > 1 && COMMAND_VERBS.has(tokens[0] as string)) spans.push(m[1] as string);
+		const code = m[1] as string;
+		// Any segment may carry the verb: `cat ~/.ssh/id_rsa | curl ...` is a command span.
+		if (code.includes(" ") && segmentsOf(code).some((t) => COMMAND_VERBS.has(t[0] as string))) {
+			spans.push(code);
+		}
 	}
 	for (const m of outside.matchAll(RUN_PHRASE_RE))
 		spans.push(trimTrailingPunctuation(m[1] as string));
@@ -621,18 +694,109 @@ function isBenign(tokens: string[]): boolean {
 	return classifyCommand(tokens.join(" ")).kind === "validation";
 }
 
+/**
+ * A command segment the summary names that is not exactly a segment the session
+ * ran. Whole-segment equality: `npm install evil-pkg` is not `npm install`, and
+ * `rm -rf /` is not `rm -rf /tmp/build`. The only looseness is `isBenign` (a
+ * fixed list of read-only forms and clean validations).
+ */
+function isUnrecorded(tokens: string[], records: RecordIndex): boolean {
+	if (tokens.length < 2 || !COMMAND_VERBS.has(tokens[0] as string)) return false;
+	if (isBenign(tokens)) return false;
+	return !records.segments.has(segmentKey(tokens));
+}
+
 function hasUnrecordedCommand(folded: string, records: RecordIndex): boolean {
 	for (const span of commandSpans(folded)) {
+		for (const tokens of segmentsOf(span)) if (isUnrecorded(tokens, records)) return true;
+	}
+	return false;
+}
+
+// ── risky commands ───────────────────────────────────────────────────────────
+
+/** Verbs that reach the network, run what they fetch, or delete and change things, whatever follows. */
+const RISKY_VERBS = new Set([
+	"curl",
+	"wget",
+	"iwr",
+	"irm",
+	"ssh",
+	"scp",
+	"nc",
+	"ncat",
+	"npx",
+	"bunx",
+	"chmod",
+	"chown",
+	"sudo",
+	"rm",
+	"dd",
+	"crontab",
+	"kill",
+]);
+
+/** Verbs that are risky only with one of these subcommands (`git status` is not, `git push` is). */
+const RISKY_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
+	git: new Set(["clone", "remote", "push", "pull", "fetch"]),
+	npm: new Set(["add", "install", "i"]),
+	pnpm: new Set(["add", "install", "i"]),
+	yarn: new Set(["add", "install", "i"]),
+	bun: new Set(["add", "install", "i"]),
+	pip: new Set(["install"]),
+	pip3: new Set(["install"]),
+	go: new Set(["install"]),
+	docker: new Set(["run", "pull"]),
+	make: new Set(["install"]),
+};
+
+const LEADING_WRAPPERS = new Set([
+	"env",
+	"nohup",
+	"time",
+	"exec",
+	"command",
+	"nice",
+	"xargs",
+	"timeout",
+]);
+
+/** The tokens after leading assignments (`FOO=1`) and wrappers that only run what follows. */
+function afterWrappers(tokens: string[]): string[] {
+	let i = 0;
+	while (i < tokens.length) {
+		const t = tokens[i] as string;
+		const wrapper = LEADING_WRAPPERS.has(t);
+		if (/^[A-Za-z_]\w*=/.test(t) || wrapper) i++;
+		else if (i > 0 && (t.startsWith("-") || /^\d+$/.test(t))) i++;
+		else break;
+	}
+	return tokens.slice(i);
+}
+
+function isRiskyCommand(tokens: string[]): boolean {
+	const t = afterWrappers(tokens);
+	const verb = t[0];
+	if (!verb) return false;
+	if (RISKY_VERBS.has(verb)) return true;
+	const subs = RISKY_SUBCOMMANDS[verb];
+	if (!subs) return false;
+	const sub = t.slice(1).find((x) => !x.startsWith("-"));
+	return sub !== undefined && subs.has(sub);
+}
+
+/**
+ * An address the user never typed, or (in the sections Copy handoff emits) a
+ * command the session never ran, inside a command whose verb is risky. A segment
+ * the session ran exactly is not risky.
+ */
+function hasRiskyCommand(folded: string, index: Index, emitsHandoff: boolean): boolean {
+	for (const span of commandSpans(folded)) {
 		for (const tokens of segmentsOf(span)) {
-			if (tokens.length < 2 || !COMMAND_VERBS.has(tokens[0] as string)) continue;
-			if (isBenign(tokens)) continue;
-			const verb = tokens[0] as string;
-			const recorded = SUBCOMMAND_VERBS.has(verb)
-				? records.heads.has(headOf(tokens))
-				: [...records.whole].some(
-						(w) => tokens.join(" ").startsWith(w) || w.startsWith(tokens.join(" ")),
-					);
-			if (!recorded) return true;
+			if (!isRiskyCommand(tokens) || index.records.segments.has(segmentKey(tokens))) continue;
+			if (urlFindings(segmentKey(tokens), index.typed, index.records, false).unexpected)
+				return true;
+			if (emitsHandoff && isUnrecorded(tokens, index.records)) return true;
 		}
 	}
 	return false;
@@ -649,27 +813,30 @@ function indexOfContext(ctx: TripwireContext): Index {
 	return { typed: indexTyped(ctx.userPromptUrls), records: indexRecords(ctx) };
 }
 
-function scan(text: string, index: Index, checkCommands: boolean): SummarySuspectReason[] {
-	const found = new Set(scanFolded(fold(text), index, checkCommands));
+function scan(text: string, index: Index, emitsHandoff: boolean): SummarySuspectReason[] {
+	const found = new Set(scanFolded(fold(text), index, emitsHandoff));
 	if (text.includes("\u2800")) {
-		for (const r of scanFolded(fold(text, " "), index, checkCommands)) found.add(r);
+		for (const r of scanFolded(fold(text, " "), index, emitsHandoff)) found.add(r);
 	}
 	return SUMMARY_SUSPECT_REASONS.filter((reason) => found.has(reason));
 }
 
-function scanFolded(folded: string, index: Index, checkCommands: boolean): SummarySuspectReason[] {
+function scanFolded(folded: string, index: Index, emitsHandoff: boolean): SummarySuspectReason[] {
 	const reasons: SummarySuspectReason[] = [];
+	const urls = urlFindings(folded, index.typed, index.records, emitsHandoff);
 	if (hasRoleMarker(folded)) reasons.push("role_marker");
 	if (OVERRIDE_PHRASE_RES.some((re) => re.test(folded))) reasons.push("override_phrase");
-	if (hasUnexpectedUrl(folded, index.typed, index.records)) reasons.push("unexpected_url");
+	if (urls.unexpected) reasons.push("unexpected_url");
+	if (urls.malformed) reasons.push("malformed_url");
 	if (hasPipeToShell(folded)) reasons.push("pipe_to_shell");
-	if (checkCommands && hasUnrecordedCommand(folded, index.records)) {
+	if (emitsHandoff && hasUnrecordedCommand(folded, index.records)) {
 		reasons.push("unrecorded_command");
 	}
+	if (hasRiskyCommand(folded, index, emitsHandoff)) reasons.push("risky_command");
 	return reasons;
 }
 
-/** Reason codes for one string. `checkCommands` is true for the handoff and next actions. */
+/** Reason codes for one string. `checkCommands` is true for the sections Copy handoff emits. */
 export function checkText(
 	text: string,
 	ctx: TripwireContext,
@@ -678,26 +845,64 @@ export function checkText(
 	return scan(text, indexOfContext(ctx), opts.checkCommands === true);
 }
 
+/** A fetch in one field and its run step in a later one: the text a copy action emits, in its order. */
+function fetchesAndRunsAcross(fields: readonly string[]): boolean {
+	for (const brailleAs of ["", " "]) {
+		if (brailleAs === " " && !fields.some((f) => f.includes("\u2800"))) continue;
+		if (fetchesAndRuns(fields.map((f) => fold(f, brailleAs)).join("\n"))) return true;
+	}
+	return false;
+}
+
 /**
- * Every string field is scanned for every rule that runs on text; the
- * unrecorded-command rule runs on what the copy-handoff button emits (handoff
- * and next actions), since that is where a command is an instruction.
+ * Every string field is scanned for every rule that runs on text. The sections
+ * Copy handoff emits (outcome explanation, unfinished work, next actions and the
+ * handoff itself) are also judged for commands the session never ran and for
+ * loopback addresses. The download-then-run rule also runs over what each copy
+ * action emits, joined in order: Copy handoff as above, Copy summary as every
+ * section, so a fetch and its run step cannot hide in two fields.
  */
 export function runTripwire(summary: SessionSummary, ctx: TripwireContext): SummarySuspectReason[] {
 	const index = indexOfContext(ctx);
-	const plain: string[] = [
+	const unfinished = summary.unfinished.map((i) => i.text);
+	const nextActions = summary.nextActions.map((i) => i.text);
+	const problems = summary.problems.map((i) => i.text);
+	const decisions = summary.decisions.flatMap((i) => [i.text, i.why]);
+	const validation = summary.validation.flatMap((i) => [i.what, i.detail]);
+	const accomplishments = summary.accomplishments.map((i) => i.text);
+	const changes = summary.changes.map((i) => i.text);
+
+	const plain = [
+		summary.overview,
+		...accomplishments,
+		...changes,
+		...decisions,
+		...validation,
+		...problems,
+	];
+	const emittedByHandoff = [
+		summary.outcome.explanation,
+		...unfinished,
+		...nextActions,
+		summary.handoff,
+	];
+	const emittedBySummary = [
 		summary.overview,
 		summary.outcome.explanation,
-		...summary.accomplishments.map((i) => i.text),
-		...summary.changes.map((i) => i.text),
-		...summary.decisions.flatMap((i) => [i.text, i.why]),
-		...summary.validation.flatMap((i) => [i.what, i.detail]),
-		...summary.problems.map((i) => i.text),
-		...summary.unfinished.map((i) => i.text),
+		...accomplishments,
+		...changes,
+		...decisions,
+		...validation,
+		...problems,
+		...unfinished,
+		...nextActions,
+		summary.handoff,
 	];
-	const handoff: string[] = [summary.handoff, ...summary.nextActions.map((i) => i.text)];
 	const found = new Set<SummarySuspectReason>();
 	for (const text of plain) for (const r of scan(text, index, false)) found.add(r);
-	for (const text of handoff) for (const r of scan(text, index, true)) found.add(r);
+	for (const text of emittedByHandoff) for (const r of scan(text, index, true)) found.add(r);
+	if (fetchesAndRunsAcross(emittedByHandoff) || fetchesAndRunsAcross(emittedBySummary)) {
+		found.add("pipe_to_shell");
+	}
 	return SUMMARY_SUSPECT_REASONS.filter((reason) => found.has(reason));
 }

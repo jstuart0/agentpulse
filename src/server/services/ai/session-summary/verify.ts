@@ -51,6 +51,11 @@ export interface LedgerFactForVerify {
 	result?: EvidenceFactResult;
 	count?: number;
 	validationClass?: string;
+	/**
+	 * For a command or validation: the ledger printed its text. Absent means not shown,
+	 * and a command that was not shown (withheld, over the SQL cap, a patch) backs nothing.
+	 */
+	shown?: boolean;
 	/** OBSERVED (the system recorded it) versus CLAIMED (a person or a model said it). */
 	observed: boolean;
 }
@@ -94,7 +99,7 @@ export interface VerifyInput {
 	 * Normalised URLs the user typed, from `collectUserPromptUrls` over `userPromptTexts(bundle)`.
 	 * That text is the loader's SQL-cut prompt text (1,756 / 4,256 code points) and only prompts
 	 * inside the scanned window exist, so a URL past the cut or in an unread prompt raises
-	 * `unexpected_url`, which fails toward a warning.
+	 * `unexpected_url`, a note (inside a risky command it also raises `risky_command`, a warning).
 	 */
 	userPromptUrls: ReadonlySet<string>;
 	/** The fence nonce of the prompt that produced the draft. */
@@ -125,9 +130,12 @@ function scrubber(nonce: string, rules: RedactionRule[] | undefined) {
 
 /**
  * What backs a claim (ruling R-E): an OBSERVED fact that is a recorded edit that
- * did not fail, or a command or validation that finished `ok`. A `completed` or
- * `unknown` command, a `tool` entry, a failed entry, and anything CLAIMED back
- * nothing on their own: "the command ran" is not "the claim is true".
+ * did not fail, or a command or validation whose text the ledger SHOWED and that
+ * finished `ok`. A withheld or not-shown command has hidden text, so it supports
+ * nothing specific ("not shown" is reachable by padding a command past the SQL
+ * cap). A `completed` or `unknown` command, a `tool` entry, a failed entry, and
+ * anything CLAIMED back nothing on their own: "the command ran" is not "the
+ * claim is true".
  */
 function backsClaim(fact: LedgerFactForVerify): boolean {
 	if (!fact.observed) return false;
@@ -136,7 +144,7 @@ function backsClaim(fact: LedgerFactForVerify): boolean {
 			return fact.result !== "failed";
 		case "command":
 		case "validation":
-			return fact.result === "ok";
+			return fact.result === "ok" && fact.shown === true;
 		default:
 			return false;
 	}
@@ -159,8 +167,8 @@ function backsChange(kind: SummaryChangeKind, fact: LedgerFactForVerify): boolea
 	if (!backsClaim(fact)) return false;
 	const needs = CHANGE_NEEDS[kind];
 	if (!needs) return true;
-	// A validation that passed is a command that ran, and backs a git or infrastructure change as one.
-	return needs.includes(fact.kind) || (fact.kind === "validation" && needs.includes("command"));
+	// A passing test run says nothing about a push or a deploy: only a cited command backs those.
+	return needs.includes(fact.kind);
 }
 
 function storedFact(fact: LedgerFactForVerify): StoredEvidenceFact {

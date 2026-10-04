@@ -118,6 +118,12 @@ export interface EvidenceFact {
 	count?: number;
 	/** For a validation: its class (`bun test`, `tsc`), chosen by the server from the command, never the command text. */
 	validationClass?: string;
+	/**
+	 * For a command or validation: the ledger printed the command's text. Absent for a
+	 * withheld, not-shown, over-cap or patch command, whose result can back nothing
+	 * specific. Not part of the stored fact: see `storedFact`.
+	 */
+	shown?: boolean;
 }
 
 /** A cited id as the ledger knows it: the fact, and whether it records something the system saw. */
@@ -126,9 +132,9 @@ export interface LedgerIdInfo extends EvidenceFact {
 	observed: boolean;
 }
 
-/** The evidence fact to store for an id: the fields of the fact, without `observed`. */
+/** The evidence fact to store for an id: the fields of the fact, without `observed` and `shown`. */
 export function storedFact(info: LedgerIdInfo | EvidenceFact): EvidenceFact {
-	const { observed: _observed, ...fact } = info as LedgerIdInfo;
+	const { observed: _observed, shown: _shown, ...fact } = info as LedgerIdInfo;
 	return fact;
 }
 
@@ -402,9 +408,12 @@ interface Rendered {
 function commandFact(
 	kind: FactKind,
 	result: EvidenceFact["result"],
-	validationClass?: string | null,
+	options: { validationClass?: string | null; shown?: boolean } = {},
 ): Draft["fact"] {
-	return validationClass ? { kind, result, validationClass } : { kind, result };
+	const fact: Draft["fact"] = { kind, result };
+	if (options.validationClass) fact.validationClass = options.validationClass;
+	if (options.shown) fact.shown = true;
+	return fact;
 }
 
 function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: Ctx): Rendered {
@@ -441,13 +450,16 @@ function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: C
 		}
 		return {
 			body: `OBSERVED command [validation] \`${command}\`${description} -> ${resultWord(result)}${out}`,
-			fact: commandFact("validation", result, validationClassOf(row.command)),
+			fact: commandFact("validation", result, {
+				validationClass: validationClassOf(row.command),
+				shown: true,
+			}),
 			shownCommand: command,
 		};
 	}
 	return {
 		body: `OBSERVED command \`${command}\`${description} -> ${resultWord(status)}`,
-		fact: commandFact("command", status),
+		fact: commandFact("command", status, { shown: true }),
 		shownCommand: command,
 	};
 }

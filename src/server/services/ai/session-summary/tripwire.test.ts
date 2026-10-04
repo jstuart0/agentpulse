@@ -568,7 +568,8 @@ describe("P4-11 commands the session never ran", () => {
 		expect(handoff("Then `git push origin main` to publish.", ran)).not.toContain(
 			"unrecorded_command",
 		);
-		expect(handoff("`git push origin feat/x` works too", ran)).not.toContain("unrecorded_command");
+		// another branch is another command (C-1): the old verb-and-subcommand match let this through
+		expect(handoff("`git push origin feat/x` works too", ran)).toContain("unrecorded_command");
 		expect(handoff("Run `bun test src/other.test.ts`.")).not.toContain("unrecorded_command");
 		expect(handoff("Run `bun run typecheck`.")).not.toContain("unrecorded_command");
 		expect(handoff("`git status` then `git diff`")).not.toContain("unrecorded_command");
@@ -1011,7 +1012,7 @@ describe("C-2 a risky command or a malformed address is a warning", () => {
 	test("TC-4.78c an unrecorded command with a harmless verb stays a note; so does an unknown link in prose", () => {
 		for (const text of [
 			"Run `docker build -t x .` next.",
-			"Run `cargo build --release` next.",
+			"Run `cargo publish --dry-run` next.",
 			"Run `kubectl apply -f x.yaml` next.",
 			"Run `git commit -m x` next.",
 		]) {
@@ -1175,7 +1176,7 @@ describe("C-3 the narrowings of the last pass are not evadable", () => {
 		}
 		expect(codes("see http://2130706433:3000/x")).toContain("malformed_url");
 		expect(
-			codes("see http://localhost:3000", { urls: typed("run it on localhost:3000") }),
+			codes("see http://localhost:3000", { urls: typed("run it on http://localhost:3000") }),
 		).not.toContain("unexpected_url");
 	});
 });
