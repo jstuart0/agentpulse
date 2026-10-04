@@ -12,6 +12,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { SQLiteSyncDialect } from "drizzle-orm/sqlite-core";
 import { STORED } from "../../shared/__fixtures__/session-summary-view/index.js";
 import type { StoredSessionSummary } from "../../shared/session-summary.js";
+import { ANONYMOUS_ACTOR } from "../auth/actor.js";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import {
@@ -27,8 +28,15 @@ import { invalidateAiFlagsCache } from "../services/ai/feature.js";
 import type { ProviderKind } from "../services/ai/llm/types.js";
 import { createProvider } from "../services/ai/providers-service.js";
 import { setLabsFlag } from "../services/labs-service.js";
+import {
+	type SummaryRequestCaller,
+	type SummaryRequestResult,
+	_resetSummaryGenerationsForTest,
+	_setSummaryHooksForTest,
+	requestSummaryGeneration,
+} from "../services/session-summary-service.js";
 import { toDbTimestamp } from "../services/util/db-time.js";
-import { type LlmStubServer, startLlmStubServer } from "./llm-stub-server.js";
+import { type LlmStubServer, type RecordedRequest, startLlmStubServer } from "./llm-stub-server.js";
 
 export const KEY = "sk-test-harness-key-0123456789";
 
@@ -208,7 +216,7 @@ export function answer(cite: number[] = [], over: Record<string, unknown> = {}):
 	});
 }
 
-export const STUB_USAGE = { input: 10_000, output: 1_000 } as const;
+export const STUB_USAGE: { input: number; output: number } = { input: 10_000, output: 1_000 };
 
 // ── rows and spend ───────────────────────────────────────────────────────────
 
@@ -365,6 +373,8 @@ export function startStub(): LlmStubServer {
 export async function resetWorld(stub: LlmStubServer | null): Promise<void> {
 	setSystemTime();
 	_resetDrainStateForTest();
+	_setSummaryHooksForTest(null);
+	_resetSummaryGenerationsForTest();
 	const db = getDb();
 	await db.delete(aiSessionSummaries);
 	await db.delete(events);
@@ -391,3 +401,79 @@ export async function countSummaryRows(ids: string[]): Promise<number> {
 }
 
 export { sql };
+
+// ── requests ─────────────────────────────────────────────────────────────────
+
+export const SOLO: SummaryRequestCaller = {
+	subject: "solo-subject",
+	teamMode: false,
+	actor: ANONYMOUS_ACTOR,
+};
+export const asTeamMember = (subject: string): SummaryRequestCaller => ({
+	subject,
+	teamMode: true,
+	actor: { userId: subject, label: "user", role: "member", mode: "team" },
+});
+
+export function request(
+	sessionId: string,
+	caller: SummaryRequestCaller = SOLO,
+): Promise<SummaryRequestResult> {
+	return requestSummaryGeneration(sessionId, caller);
+}
+
+/** Requests a generation, requires it to have started, and returns its `done` (wrapped: a bare promise would be flattened by `await`). */
+export async function startGeneration(
+	sessionId: string,
+	caller: SummaryRequestCaller = SOLO,
+): Promise<{ done: Promise<void> }> {
+	const result = await request(sessionId, caller);
+	if (result.kind !== "started") throw new Error(`expected started, got ${JSON.stringify(result)}`);
+	return { done: result.done };
+}
+
+/** Requests a generation and waits for it to end (every test settles what it starts, C-5). */
+export async function runGeneration(
+	sessionId: string,
+	caller: SummaryRequestCaller = SOLO,
+): Promise<void> {
+	await withDeadline(
+		(await startGeneration(sessionId, caller)).done,
+		20_000,
+		`generation of ${sessionId}`,
+	);
+}
+
+export function refusalOf(result: SummaryRequestResult): string | null {
+	return result.kind === "refused" ? result.refusal.error : null;
+}
+
+/** A default provider at an arbitrary base URL (a dead port, a server that answers badly). */
+export async function seedProviderAt(
+	baseUrl: string,
+	over: { kind?: ProviderKind; model?: string } = {},
+): Promise<void> {
+	await createProvider({
+		name: "Stub provider (never shown)",
+		kind: over.kind ?? "openai",
+		model: over.model ?? "gpt-5-mini",
+		baseUrl,
+		apiKey: KEY,
+		isDefault: true,
+	});
+}
+
+/** The system and user text of a recorded request, whatever the wire shape. */
+export function promptsOf(req: RecordedRequest): { system: string; user: string } {
+	const body = JSON.parse(req.body) as Record<string, unknown>;
+	if (req.shape === "openai") {
+		const messages = body.messages as Array<{ role: string; content: string }>;
+		return { system: messages[0].content, user: messages[1].content };
+	}
+	if (req.shape === "anthropic") {
+		const system = body.system as Array<{ text: string }>;
+		const messages = body.messages as Array<{ content: string }>;
+		return { system: system[0].text, user: messages[0].content };
+	}
+	return { system: String(body.preamble ?? ""), user: String(body.message ?? "") };
+}

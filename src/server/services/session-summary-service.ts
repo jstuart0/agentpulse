@@ -307,6 +307,43 @@ export async function getSessionSummaryView(sessionId: string): Promise<SessionS
 
 // ── generation (phase 5, second pair) ────────────────────────────────────────
 
+/** Points in a request and a generation where a test may observe or hold the flow (see `_setSummaryHooksForTest`). */
+export type SummaryStep =
+	| "row_read"
+	| "slot"
+	| "reserving"
+	| "reserve"
+	| "claim"
+	| "audit"
+	| "start"
+	| "finish_write";
+
+export interface SummaryTestHooks {
+	at?: (step: SummaryStep) => void | Promise<void>;
+}
+
+export function _setSummaryHooksForTest(_hooks: SummaryTestHooks | null): void {}
+
+/** Abandons every running generation as a dead process would: nothing is written or settled. */
+export function _resetSummaryGenerationsForTest(): void {}
+
+export function _summaryGenerationCountForTest(): number {
+	return 0;
+}
+
+/**
+ * The claim: one conditional UPDATE, atomic on both dialects. `db` is for tests that need a second
+ * connection. True when this caller now owns the attempt.
+ */
+export async function claimSummaryAttempt(
+	_sessionId: string,
+	_token: string,
+	_now: Date = new Date(),
+	_db = getDb(),
+): Promise<boolean> {
+	throw new Error("not implemented");
+}
+
 export async function requestSummaryGeneration(
 	_sessionId: string,
 	_caller: SummaryRequestCaller,
