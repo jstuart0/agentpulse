@@ -639,9 +639,11 @@ and relies on keyword search. Stored embeddings stay. Removing
 `AGENTPULSE_VECTOR_SEARCH` turns the feature off at the next boot.
 
 **Known limits.** A Telegram update the poller hasn't confirmed is fetched
-again after a restart; a hung model call delays later Telegram messages in
-polling mode; and the Ask limit has no per-user fairness. See the 0.7.2 entry
-in `CHANGELOG.md`.
+again after a restart; a slow or hung model, embedding or Telegram call delays
+later Telegram messages in polling mode (Telegram API calls have no timeout);
+the Ask limit is per process with no per-user fairness; and the scan and
+limiter counters are only in the log lines above, not on `/health`. See the
+Known limitations list in the 0.7.2 entry of `CHANGELOG.md` for the rest.
 
 ## Homelab overlay
 

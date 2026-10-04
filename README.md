@@ -225,7 +225,7 @@ From then on, any HITL that watcher opens for that session is sent to Telegram. 
 Safety notes:
 - The bot token is instance-wide; every chat that's enrolled via `/start` shares the same bot. The chat id itself is encrypted at rest with `AGENTPULSE_SECRETS_KEY`.
 - The webhook route validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET` on every request (a constant-time comparison, done before the body is read), so a lucky guesser still can't forge approvals. A body over 1 MiB is refused with `413`.
-- A Telegram question that fails gets a fixed reply; the error detail goes to the server log, not to the chat.
+- A Telegram question whose turn fails gets a fixed reply; the error detail goes to the server log, not to the chat. Some launch set-up failures (creating or cloning a project from an Ask message) still include the underlying error message in the reply; see the Known limitations in `CHANGELOG.md`.
 - An approval tapped in Telegram is cross-checked against the HITL row's `channel_id` before any resolve happens — a user who learns a HITL id cannot use a different chat to act on it.
 - Delivery failures never block the in-app HITL path. If Telegram is down or slow, approve/decline still works from the dashboard or `/inbox`.
 

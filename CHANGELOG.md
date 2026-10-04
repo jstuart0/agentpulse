@@ -192,17 +192,18 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   `null` means none), else `400 {"error":"invalid_session_ids","max":20}`. The
   check runs after the message cap and before the turn limiter and before any
   write.
-- **Failures no longer send internal error text to a chat or a web client.**
-  A web Ask turn that fails answers `500 {"error":"ask_failed"}` (the stream
+- **A failed Ask turn no longer sends its error text to a chat or a web
+  client.** A web Ask turn that throws answers `500 {"error":"ask_failed"}` (the stream
   sends a fixed "Couldn't answer that right now. Try again in a moment."
   error frame), and a Telegram chat gets a fixed "Sorry, I couldn't answer
   that just now. Please try again in a moment." The detail goes to the server
   log (`ask_turn_failed`, `telegram_ask_failed`). A mistake the caller can fix
   (an empty message, a thread that belongs to another origin) is
   `400 {"error":"invalid_request","message":...}` with a message that is safe to
-  show. One exception remains by design, see Known limitations: the inline
-  error on a failed assistant message still carries the model provider's error
-  text.
+  show. This covers a turn that throws, and the busy and too-long replies. It
+  is not a promise about every reply the Ask handlers compose: see Known
+  limitations for the launch set-up replies and the inline provider error,
+  which still include an underlying error message.
 - **The Telegram webhook checks its secret in constant time, then caps the
   body.** The order is: bot token present (else `404`), secret (else `401`),
   body limit of 1 MiB (else `413 {"error":"payload_too_large"}`), then parse, so
@@ -294,25 +295,48 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Known limitations
 
+No dates or promises attach to any of these.
+
 - The Telegram poller still re-fetches an update it hasn't confirmed after a
   restart. A message that crashes the server for some reason other than the
   vector read would be fetched again on each restart until it is confirmed.
-- A model or embedding call that hangs delays the Telegram messages behind it
-  in polling mode, because updates are handled one at a time.
-- The Ask limit is per process. With more than one replica each has its own
-  slots.
-- There is no per-user fairness: one chat or browser tab can take every slot
-  and fill the waiting line.
+- A slow or hung model, embedding or Telegram call delays the Telegram
+  messages behind it in polling mode, because updates are handled one at a
+  time. Calls to the Telegram API have no timeout.
+- A Telegram question can wait up to 30 seconds for an Ask slot. If none comes
+  free it gets the busy reply. In webhook mode the webhook request is held open
+  for that wait and is then answered `200` after the busy reply is sent.
+- The Ask limit is per process: with more than one replica each has its own
+  slots. There is no per-user fairness: one chat or browser tab can take every
+  slot and fill the waiting line.
+- Semantic matching covers only the newest vectors, within the row and time
+  budgets (by default 50,000 vectors or 4 seconds, at 30% CPU). Older events
+  are found by keyword search only. A scan that stops on a budget logs
+  `vector_scan_coverage_partial` once per boot.
 - After an embedding-model change, events that have no embeddable text keep a
   placeholder row for the old model, so the backfill examines them again each
   time it runs. This is harmless (they are skipped again) and predates this
   release.
 - The dashboard's inline error on a failed assistant message
   (`assistantMessage.errorMessage`, and the streaming error event for a
-  provider failure) still shows the model provider's error text, by design, so
-  the person using Ask can see why the provider call failed. Treat it as
-  visible to anyone who can read the thread.
-
+  provider failure) shows the model provider's error text, by design, so the
+  person using Ask can see why the provider call failed. Treat it as visible to
+  anyone who can read the thread.
+- Some launch set-up failures still put the underlying error message in the
+  reply. When Ask can't pick a scratch workspace path or prepare a clone for a
+  launch (an error other than a path-validation failure, which has fixed
+  wording), the reply reads "Couldn't scaffold a workspace: <error>" or
+  "Couldn't prepare the clone: <error>". It goes to the Telegram chat or the
+  web client as the assistant's reply and is stored in the thread.
+- In Telegram, the project-choice prompt arrives twice. When a launch request
+  names no project, the numbered list of projects is sent to the chat once
+  directly and once more as the turn's reply. The web shows it once.
+- The scan and limiter counters aren't on `/health` or the diagnostics
+  endpoint yet; the log lines are the way to see them: `ask_vector_scan_started`,
+  `ask_vector_scan`, `ask_vector_scan_error`, `vector_scan_coverage_partial`,
+  `ask_turn_started`, `ask_turn_path`, `ask_turn_done`, and `ask_turn_failed` or
+  `telegram_ask_failed` for a failed turn. A caller refused as busy has no log
+  line.
 
 ## [0.7.1] — 2026-10-03
 
