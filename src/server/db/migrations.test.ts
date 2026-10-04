@@ -184,7 +184,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 
 			const tables = getTableNames(freshDb);
 
-			// Drizzle migrate should have created all 30 SQLite tables.
+			// Drizzle migrate should have created all 31 SQLite tables (30 plus event_embeddings).
 			const required = [
 				"sessions",
 				"events",
@@ -210,6 +210,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 				"ai_action_requests",
 				"ai_pending_project_drafts",
 				"ai_qa_cache",
+				"ai_session_summaries",
 				"ask_threads",
 				"ask_messages",
 				"projects",
@@ -765,7 +766,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 import { describePostgresOnly } from "../test-utils/backend.js";
 
 describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
-	test("fresh Postgres install creates all 29 tables + 7 cascade FKs", async () => {
+	test("TC-1.3 fresh Postgres install creates all 30 tables + 8 cascade FKs, ai_session_summaries among them", async () => {
 		// Requires DATABASE_URL to point at an empty test database.
 		// Run with: AGENTPULSE_TEST_BACKEND=postgres DATABASE_URL=postgres://... bun test
 		const { default: postgres } = await import("postgres");
@@ -804,6 +805,7 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				"ai_action_requests",
 				"ai_pending_project_drafts",
 				"ai_qa_cache",
+				"ai_session_summaries",
 				"ask_threads",
 				"ask_messages",
 				"projects",
@@ -842,7 +844,11 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				  AND rc.delete_rule = 'CASCADE'
 			`) as Array<{ table_name: string; delete_rule: string }>;
 
-			expect(cascadeFks.length, "expected 7 cascade FKs on sessions(session_id)").toBe(7);
+			expect(cascadeFks.length, "expected 8 cascade FKs on sessions(session_id)").toBe(8);
+			expect(
+				cascadeFks.map((r) => r.table_name),
+				"the summaries table is one of the cascade children",
+			).toContain("ai_session_summaries");
 
 			// All 15 user-ownership columns + 3 indexes on Postgres, by
 			// information_schema.columns / pg_indexes.

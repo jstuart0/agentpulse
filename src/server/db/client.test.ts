@@ -36,6 +36,9 @@ describeSqliteOnly("initializeDatabase", () => {
 				"ai_hitl_requests",
 				"ai_watcher_runs",
 				"watcher_configs",
+				// Born with its cascade FK on both dialects; deliberately not in
+				// rebuildSessionChildFks (TC-1.15).
+				"ai_session_summaries",
 			];
 			for (const table of childTables) {
 				const fkRows = raw.prepare(`PRAGMA foreign_key_list('${table}')`).all() as Array<{
