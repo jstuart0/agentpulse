@@ -1216,11 +1216,15 @@ describe("the per-caller limit", () => {
 		const first = await authedMember("lim-a");
 		const second = await authedMember("lim-b");
 		for (let i = 0; i < 6; i++) expect((await post("nope", first.headers)).status).toBe(404);
+		now += 20_000;
 		const seventh = await post("nope", first.headers);
 		expect([seventh.status, seventh.json?.error]).toEqual([429, "summary_rate_limited"]);
-		expect(Number(seventh.retryAfter)).toBeGreaterThanOrEqual(1);
-		expect(Number(seventh.retryAfter)).toBeLessThanOrEqual(60);
-		expect(seventh.json?.retryAfterSeconds).toBe(Number(seventh.retryAfter));
+		expect(seventh.retryAfter).toBe("40");
+		expect(seventh.json?.retryAfterSeconds).toBe(40);
+		now += 39_500;
+		const nearEnd = await post("nope", first.headers);
+		expect(nearEnd.retryAfter).toBe("1");
+		now -= 39_500;
 		expect((await post("nope", second.headers)).status).toBe(404);
 		now += 60_000;
 		expect((await post("nope", first.headers)).status).toBe(404);
@@ -1252,12 +1256,15 @@ describe("the per-caller limit", () => {
 		for (let i = 0; i < 6; i++) await post("nope", headers);
 		setShuttingDown("test");
 		const before = await H.snapshotSpend(SID);
-		const { result, statements } = await H.captureStatements(() => post(SID, headers));
+		const toService = spyOn(svc, "requestSummaryGeneration");
+		let result: Answered;
+		try {
+			result = await post(SID, headers);
+			expect(toService.mock.calls.length).toBe(0);
+		} finally {
+			toService.mockRestore();
+		}
 		expect(result.json?.error).toBe("summary_rate_limited");
-		const touched = statements.filter((s) =>
-			/ai_session_summaries|ai_daily_spend|from\s+"?events"?|from\s+"?sessions"?/i.test(s.text),
-		);
-		expect(touched.map((s) => s.text)).toEqual([]);
 		const delta = await H.spendDelta(before);
 		expect(delta.day).toBe(0);
 		expect(await H.readSummaryRow(SID)).toBeUndefined();
@@ -1376,16 +1383,19 @@ describe("origin, audit, shutdown", () => {
 		const editId = await activeSession(SID);
 		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: editId - 1 });
 		setShuttingDown("test");
-		const { result, statements } = await H.captureStatements(() => post(SID, headers));
+		const toService = spyOn(svc, "requestSummaryGeneration");
+		let result: Answered;
+		try {
+			result = await post(SID, headers);
+			expect(toService.mock.calls.length).toBe(0);
+		} finally {
+			toService.mockRestore();
+		}
 		expect([result.status, result.json?.error, result.retryAfter]).toEqual([
 			503,
 			"shutting_down",
 			"5",
 		]);
-		const reads = statements.filter((s) =>
-			/ai_session_summaries|from\s+"?events"?|from\s+"?sessions"?|llm_providers/i.test(s.text),
-		);
-		expect(reads.map((s) => s.text)).toEqual([]);
 		expect((await get(SID, headers)).status).toBe(200);
 	});
 });
