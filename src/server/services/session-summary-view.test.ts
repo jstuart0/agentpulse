@@ -33,6 +33,9 @@ const { MAX_INPUT_TOKENS, MAX_OUTPUT_TOKENS, MAX_PROMPT_CHARS } = await import(
 const { toDbTimestamp } = await import("./util/db-time.js");
 const { upsertSetting } = await import("./settings-service.js");
 const { STALE_EVENT_COUNT_CAP } = await import("../../shared/session-summary-view.js");
+const { SUMMARY_VIEW_FIXTURES, shapeOf } = await import(
+	"../../shared/__fixtures__/session-summary-view/index.js"
+);
 const { loadEvidence } = await import("./ai/session-summary/evidence-loader.js");
 const { buildLedgerAsync, userPromptTexts } = await import("./ai/session-summary/ledger.js");
 const { buildSummaryPrompt, sessionForPrompt } = await import("./ai/session-summary/prompt.js");
@@ -79,7 +82,7 @@ describe("the empty and ready view", () => {
 		const v = await view();
 		expect(v.stored).toBeNull();
 		expect(v.generatedAt).toBeNull();
-		expect(v.throughAt).toBeNull();
+		expect("throughAt" in v).toBe(false);
 		expect(v.throughEventId).toBeNull();
 		expect(v.attempt).toEqual({ status: "idle", startedAt: null, errorCode: null });
 		expect(v.staleEvents).toBe(0);
@@ -175,6 +178,25 @@ describe("the empty and ready view", () => {
 		}
 		const [{ id }] = await getDb().select({ id: llmProviders.id }).from(llmProviders);
 		expect(body).not.toContain(id);
+	});
+
+	test("TC-5.1f the empty, ready and generating views have the shape of the wire fixtures", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		expect(shapeOf(await view())).toEqual(shapeOf(SUMMARY_VIEW_FIXTURES.empty));
+		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+		expect(shapeOf(await view())).toEqual(shapeOf(SUMMARY_VIEW_FIXTURES.ready));
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({
+				attemptStatus: "generating",
+				attemptStartedAt: toDbTimestamp(new Date()),
+				attemptToken: "t",
+			});
+		const generating = await view();
+		expect(generating.provider).not.toBeNull();
+		expect(generating.stored).not.toBeNull();
+		expect(generating.attempt.status).toBe("generating");
 	});
 
 	test("TC-5.1e an unknown session has no view", async () => {

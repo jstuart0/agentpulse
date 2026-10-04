@@ -127,7 +127,6 @@ const EXPECTED_READERS = [
 	"src/server/db/schema/index.postgres.ts",
 	"src/server/db/schema/index.sqlite.ts",
 	"src/server/db/schema/index.ts",
-	"src/server/services/retention-service.ts",
 	SERVICE,
 ].sort();
 

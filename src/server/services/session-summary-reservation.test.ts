@@ -790,7 +790,9 @@ describe("every exit returns what it holds", () => {
 	}> = [
 		{
 			name: "a throw while reserving",
-			hook: (s) => void (s === "reserving" && Promise.reject(new Error("x")).catch(() => {})),
+			hook: (s) => {
+				if (s === "reserving") throw new Error("while reserving");
+			},
 			claimed: false,
 		},
 		{
