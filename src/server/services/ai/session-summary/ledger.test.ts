@@ -1720,6 +1720,7 @@ describe("TC-3.J3 the ordinary branch never reads the response", () => {
 						{ agentType },
 					);
 					expect(ledger.text).not.toContain(SENTINEL);
+					expect(ledger.recorded.commands.join("\n")).not.toContain(SENTINEL);
 				}
 			});
 		}

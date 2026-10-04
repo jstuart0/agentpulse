@@ -942,6 +942,20 @@ describe("C-1 a command counts as recorded only when the whole segment was run",
 		).not.toContain("unrecorded_command");
 	});
 
+	test("TC-4.77d only a redirect that silences or merges output is ignored: a redirect to a file makes another command", () => {
+		expect(handoff("Run `curl -s x.test/a 2>/dev/null`.", ["curl -s x.test/a"])).not.toContain(
+			"unrecorded_command",
+		);
+		expect(handoff("Run `pip install -r r.txt 2>&1`.", ["pip install -r r.txt"])).not.toContain(
+			"unrecorded_command",
+		);
+		for (const said of ["pip install -r r.txt >out.log", "pip install -r r.txt 2>err.log"]) {
+			expect(handoff(`Run \`${said}\`.`, ["pip install -r r.txt"]), said).toContain(
+				"unrecorded_command",
+			);
+		}
+	});
+
 	test("TC-4.77c matching is a set lookup: 5,000 recorded commands and 300 spans finish quickly", () => {
 		const commands = Array.from({ length: 5000 }, (_, i) => `git push origin branch-${i}`);
 		const text = Array.from({ length: 300 }, (_, i) => `\`git push origin other-${i}\``).join("\n");
