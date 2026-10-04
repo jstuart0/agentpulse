@@ -287,7 +287,8 @@ describeSqliteOnly("the cursor and the id window", () => {
 		useAdapter({
 			embed: async (text: string) => {
 				texts.push(text);
-				if (!injected) {
+				// Inserted from the last row's embed call, after the final batch was read.
+				if (!injected && text === "first 39") {
 					injected = true;
 					insertEventRow({ type: "UserPromptSubmit", rawPayload: { prompt: "late one" } });
 					insertEventRow({ type: "UserPromptSubmit", rawPayload: { prompt: "late two" } });
