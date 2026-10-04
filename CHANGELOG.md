@@ -7,7 +7,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
-## [0.7.2] — 2026-10-03
+## [0.7.2] — 2026-10-04
 
 ### Added
 
@@ -86,8 +86,9 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   statement before it had decided what kind of question it was. One affected
   table held about 164,000 vectors of 4,096 dimensions, roughly 2.7 GB, which
   is enough to exhaust a container's memory and stall the event loop for
-  seconds; because the Telegram poller re-fetches an update it hasn't
-  confirmed, the same question could then be replayed after every restart.
+  seconds. The Telegram poller re-fetches an update it hasn't confirmed after
+  a restart, so the same question was fetched again each time the server came
+  back up.
   Installs without vector search, and Postgres installs (vector search is
   SQLite-only), were not affected. The semantic lookup now reads the table a
   few vectors at a time through an index, under a row and time budget and a
@@ -99,7 +100,35 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - **A turn reads only the history it renders.** A Telegram thread is never
   archived and grows without bound; each turn now reads the newest 12 messages
   of its thread instead of all of them, and an opening turn that ends at a gate
-  reads none.
+  reads none. On Postgres the read now orders by `created_at` then `id`, so the
+  window is deterministic; rows written in one transaction that share a
+  `created_at` come back in `id` order, which is not insertion order.
+- **The embeddings backfill no longer reads whole payloads into memory.** It
+  used to select every pending event's `raw_payload` (a hook payload can be
+  16 MiB) and parse it in JavaScript. It now walks an id cursor in windows of
+  5,000 ids, reads only each pending event's id and `octet_length(raw_payload)`
+  first, and extracts the text in SQL for the longest run of rows whose
+  payloads add up to 4 MiB (at most 32 rows; a single larger row is taken
+  alone), so no payload comes back to JavaScript. A payload over 4 MiB is not
+  parsed; that event's `content` is embedded instead. An id window with
+  nothing pending (retention leaves gaps) moves the cursor on, the run yields
+  to the event loop after every batch, and a failed batch is retried from the
+  same cursor. Text is cut to 3,000 characters by character, where it used to
+  be cut by UTF-16 code unit.
+- **Inline embedding checks the event type before it reads anything else.**
+  `embedEvent` now reads the event's type and, only for an embeddable type, its
+  text, in one statement, before it resolves an embedding adapter; most
+  ingested events aren't embeddable and now cost one small read.
+- **The vector scan skips a stored vector whose size doesn't match its
+  dimension without reading it** (the size is checked in SQL), so a malformed
+  or oversize blob is never copied into memory.
+- **The scan's time budget is also checked after a pacing sleep**, so a scan
+  that slept past its budget stops instead of running one more statement. A
+  scan always runs at least one.
+- **A Telegram question takes its Ask slot before a thread is created**, so a
+  message refused as busy leaves no empty thread, and the slot is released
+  before the reply is sent, so a slow Telegram call can't hold it. The typing
+  indicator is no longer waited on.
 
 ### Changed
 
@@ -123,7 +152,10 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   scan scores the newest 50,000 vectors of the active embedding model and
   stops there, or after 4 seconds, whichever comes first, and all scans in the
   process together use at most 30% of CPU, so a scan is paced rather than
-  fast. Events older than what the scan reached are still found by keyword
+  fast. The pacer counts CPU time (user plus system, never more than the
+  chunk's wall time), not wall time: a read that waited on storage uses no CPU
+  and is not slept off on top. In the `ask_vector_scan` log line `busyMs` is
+  that CPU time. Events older than what the scan reached are still found by keyword
   search; they just don't contribute semantic matches. When a scan stops early
   the server logs `vector_scan_coverage_partial` once per boot. The budgets
   are set by `AGENTPULSE_VECTOR_SCAN_MAX_ROWS`, `AGENTPULSE_VECTOR_SCAN_MAX_MS`
@@ -151,6 +183,31 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - **Oversize Ask request bodies get `413 {"error":"payload_too_large"}`.** The
   limit is 256 KiB on `POST /api/v1/ai/ask` and `/api/v1/ai/ask/stream`. A
   body that isn't valid JSON is `400 {"error":"invalid_body"}`.
+
+### Security
+
+- **Pinned `sessionIds` on the web Ask routes are validated.** On
+  `POST /api/v1/ai/ask` and `/api/v1/ai/ask/stream`, `sessionIds` must be an
+  array of at most 20 non-empty strings of at most 128 characters (absent or
+  `null` means none), else `400 {"error":"invalid_session_ids","max":20}`. The
+  check runs after the message cap and before the turn limiter and before any
+  write.
+- **Failures no longer send internal error text to a chat or a web client.**
+  A web Ask turn that fails answers `500 {"error":"ask_failed"}` (the stream
+  sends a fixed "Couldn't answer that right now. Try again in a moment."
+  error frame), and a Telegram chat gets a fixed "Sorry, I couldn't answer
+  that just now. Please try again in a moment." The detail goes to the server
+  log (`ask_turn_failed`, `telegram_ask_failed`). A mistake the caller can fix
+  (an empty message, a thread that belongs to another origin) is
+  `400 {"error":"invalid_request","message":...}` with a message that is safe to
+  show. One exception remains by design, see Known limitations: the inline
+  error on a failed assistant message still carries the model provider's error
+  text.
+- **The Telegram webhook checks its secret in constant time, then caps the
+  body.** The order is: bot token present (else `404`), secret (else `401`),
+  body limit of 1 MiB (else `413 {"error":"payload_too_large"}`), then parse, so
+  an unauthenticated caller's body is never read. Malformed JSON is still
+  acknowledged with `200` and dropped.
 
 ### Upgrade notes
 
@@ -209,6 +266,21 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   memory accounting can include, so we can't say what limit is sufficient for
   your table. Watch the container's memory after the first free-form questions
   and size from that.
+- **The backfill needs SQLite with `octet_length()`** (SQLite 3.43 or later).
+  The code doesn't check the SQLite version. On an older one the backfill
+  stops and records the error (`progress.error` in
+  `GET /api/v1/ai/vector-search/status`, and a `[embeddings] backfill failed`
+  warning in the log), and the inline embed's statement fails too, with
+  nothing catching it at its call site. Whether the SQLite your build bundles is
+  new enough is not something this repository states; check it (`SELECT
+  sqlite_version()`) if you build your own image.
+- **Watching the backfill.** `GET /api/v1/ai/vector-search/status` returns
+  `progress` (`total`, `embedded`, `pending`, `model`, `running`, `startedAt`,
+  `finishedAt`, `error`); it needs the `manage` scope for an API key. The server
+  also logs `embedding_backfill_batch_started` (`cursor`, `rows`,
+  `payloadBytes`) and `embedding_backfill_batch` (`cursor`, `embedded`,
+  `skipped`, `ms`) per batch. `POST /api/v1/ai/vector-search/rebuild` starts a
+  run.
 - **A manual benchmark** is in `scripts/bench-vector-scan.ts`; it is never run
   in CI. It builds or reuses a synthetic SQLite database and reports the longest
   event-loop stall, wall time and peak memory of a scan, and hook latency while
@@ -224,13 +296,22 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 - The Telegram poller still re-fetches an update it hasn't confirmed after a
   restart. A message that crashes the server for some reason other than the
-  vector read would still be replayed on each restart until it is confirmed.
+  vector read would be fetched again on each restart until it is confirmed.
 - A model or embedding call that hangs delays the Telegram messages behind it
   in polling mode, because updates are handled one at a time.
 - The Ask limit is per process. With more than one replica each has its own
   slots.
 - There is no per-user fairness: one chat or browser tab can take every slot
   and fill the waiting line.
+- After an embedding-model change, events that have no embeddable text keep a
+  placeholder row for the old model, so the backfill examines them again each
+  time it runs. This is harmless (they are skipped again) and predates this
+  release.
+- The dashboard's inline error on a failed assistant message
+  (`assistantMessage.errorMessage`, and the streaming error event for a
+  provider failure) still shows the model provider's error text, by design, so
+  the person using Ask can see why the provider call failed. Treat it as
+  visible to anyone who can read the thread.
 
 
 ## [0.7.1] — 2026-10-03
