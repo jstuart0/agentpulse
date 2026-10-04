@@ -198,3 +198,37 @@ describe("vector scan settings", () => {
 		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "" })).ms).toBe(4_000);
 	});
 });
+
+describe("ask turn concurrency", () => {
+	const KEY = "AGENTPULSE_ASK_MAX_CONCURRENT";
+	const saved = process.env[KEY];
+	let fresh = 0;
+
+	afterEach(() => {
+		if (saved === undefined) delete process.env[KEY];
+		else process.env[KEY] = saved;
+	});
+
+	async function load(value?: string): Promise<number> {
+		if (value === undefined) delete process.env[KEY];
+		else process.env[KEY] = value;
+		const mod = (await import(`./config.js?ask-concurrency-${++fresh}`)) as {
+			config: typeof config;
+		};
+		return (mod.config as unknown as Record<string, number>).askMaxConcurrent as number;
+	}
+
+	test("defaults to 2", async () => {
+		expect(await load()).toBe(2);
+	});
+
+	test("clamps to 1..8 with the boundaries accepted exactly, and junk falls back to 2", async () => {
+		expect(await load("0")).toBe(1);
+		expect(await load("1")).toBe(1);
+		expect(await load("8")).toBe(8);
+		expect(await load("9")).toBe(8);
+		expect(await load("4")).toBe(4);
+		expect(await load("many")).toBe(2);
+		expect(await load("")).toBe(2);
+	});
+});
