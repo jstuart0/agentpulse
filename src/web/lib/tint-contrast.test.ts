@@ -224,10 +224,6 @@ function classStrings(source: string, pattern: RegExp): string[] {
 }
 
 const SESSION_DETAIL_PILLS: Record<string, string[]> = {
-	"the working pill": classStrings(
-		HEADER,
-		/className="([^"]*)">\s*<span className="w-1\.5 h-1\.5 rounded-full bg-amber-400 animate-pulse-dot"/g,
-	),
 	"the project link pill": classStrings(HEADER, /className="([^"]*)"\s*title=\{`Project:/g),
 	"the branch pill": classStrings(HEADER, /className="([^"]*)">\s*\{session\.gitBranch\}/g),
 	"Dismiss error and Stop (header)": classStrings(
@@ -238,7 +234,7 @@ const SESSION_DETAIL_PILLS: Record<string, string[]> = {
 };
 
 describe("the session page's pills and buttons, light theme", () => {
-	test("positive control: every one was found, and the old working pill colour fails", () => {
+	test("positive control: every one was found, and the old amber-on-wash working colour fails", () => {
 		for (const [name, found] of Object.entries(SESSION_DETAIL_PILLS)) {
 			expect(found.length, name).toBeGreaterThanOrEqual(1);
 		}
@@ -268,12 +264,10 @@ describe("the session page's pills and buttons, light theme", () => {
 			expect(classes).toMatch(/dark:text-(amber|blue|emerald|red)-(300|400)/);
 		}
 		const originalDark = {
-			working: "dark:text-amber-400",
 			project: "dark:text-blue-400",
 			branch: "dark:text-emerald-400",
 			dismiss: "dark:text-red-300",
 		};
-		expect(SESSION_DETAIL_PILLS["the working pill"][0]).toContain(originalDark.working);
 		expect(SESSION_DETAIL_PILLS["the project link pill"][0]).toContain(originalDark.project);
 		expect(SESSION_DETAIL_PILLS["the branch pill"][0]).toContain(originalDark.branch);
 		for (const classes of SESSION_DETAIL_PILLS["Dismiss error and Stop (header)"]) {
