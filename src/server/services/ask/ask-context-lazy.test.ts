@@ -477,7 +477,11 @@ describeSqliteOnly(
 			getSqlite().exec("DELETE FROM notification_channels");
 			const { channel } = await createPendingChannel({ kind: "telegram", label: "cap test" });
 			await completeEnrollment({ channelId: channel.id, chatId: "4242" });
+			// The credentials cache is process-wide and may hold another test's state.
+			const credentials = await import("../channels/telegram-credentials.js");
+			await credentials.clearTelegramCredentials();
 			(config as Record<string, unknown>).telegramBotToken = "test-token";
+			await credentials.refreshTelegramCredentials();
 			const sent: Array<{ url: string; body: { text?: string } }> = [];
 			const realFetch = globalThis.fetch;
 			globalThis.fetch = (async (url: string, init?: RequestInit) => {
