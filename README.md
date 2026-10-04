@@ -154,6 +154,7 @@ When enabled, AgentPulse can use an LLM provider you choose (Anthropic, OpenAI, 
   - *"summarize session brave-falcon"* / *"why did session amber-wolf fail"* — bounded-transcript Q&A with provenance footer; cached for 15 minutes per `(session, normalized question)` and invalidated by new events
   - *"show me failed sessions"* / *"what happened today"* — read-only NL search and digest; both heuristic-only (no LLM call), so they're fast and free
   - *"which sessions are waiting"* / *"what needs attention"* — answered from the same operational state as the dashboard's status cards (waiting, or error for needs attention). The project digest and the bulk actions (*"archive completed sessions…"*) still use the lifecycle states (active, completed, failed): they have no waiting or needs-attention filter.
+  - **Limits:** at most two Ask turns run at once, across the web and Telegram together (`AGENTPULSE_ASK_MAX_CONCURRENT`). A turn that finds both slots taken waits up to 30 seconds in a short line, then is refused: the web answers `503` with `Retry-After`, the streaming web reply sends an error frame, and Telegram replies that Ask is busy. A message over 8,000 characters is refused (`400 message_too_long` on the web, a reply on Telegram), pinned `sessionIds` must be at most 20 strings of at most 128 characters (`400 invalid_session_ids`), and a request body over 256 KiB is `413`. When vector search is on, semantic matching covers the newest 50,000 vectors of the active model within a 4-second budget; older events are still found by keyword search (see `AGENTPULSE_VECTOR_SCAN_MAX_ROWS` and `AGENTPULSE_VECTOR_SCAN_MAX_MS`).
 - **Operator inbox** -- single `/inbox` view that aggregates open HITL requests, Ask-driven action requests, stuck / risky sessions, and recently failed proposals across every session and project. Approve / decline inline, snooze noisy failed proposals for 1h / 4h / 24h / 7d, or batch decline.
 - **Project digest** -- `/digest` rolls up the last 24 hours of activity grouped by working directory: active / blocked / stuck / completed counts per repo, top plan completions, notable failures. Cached daily, manual refresh available.
 - **Project alert rules** -- per-project rules that fire when sessions transition (`status_failed`, `status_completed`, `status_stuck`, `no_activity_minutes`) or when a freeform LLM-evaluated condition matches an event. Evaluation runs in `WatcherRunner`'s 60-second sweep with re-entry guard and first-run backfill (so a new `status_stuck` rule on a project with thirty already-stuck sessions doesn't notification-storm). Freeform rules carry their own daily token budget so cost stays bounded.
@@ -223,7 +224,8 @@ From then on, any HITL that watcher opens for that session is sent to Telegram. 
 
 Safety notes:
 - The bot token is instance-wide; every chat that's enrolled via `/start` shares the same bot. The chat id itself is encrypted at rest with `AGENTPULSE_SECRETS_KEY`.
-- The webhook route validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET` on every request, so a lucky guesser still can't forge approvals.
+- The webhook route validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET` on every request (a constant-time comparison, done before the body is read), so a lucky guesser still can't forge approvals. A body over 1 MiB is refused with `413`.
+- A Telegram question whose turn fails gets a fixed reply; the error detail goes to the server log, not to the chat. Some launch set-up failures (creating or cloning a project from an Ask message) still include the underlying error message in the reply; see the Known limitations in `CHANGELOG.md`.
 - An approval tapped in Telegram is cross-checked against the HITL row's `channel_id` before any resolve happens — a user who learns a HITL id cannot use a different chat to act on it.
 - Delivery failures never block the in-app HITL path. If Telegram is down or slow, approve/decline still works from the dashboard or `/inbox`.
 
@@ -455,7 +457,7 @@ Both:
 | `codex-pull-state.json` | Which Codex names were already sent to the dashboard |
 | `codex-pushed.jsonl` | Every name the relay wrote into Codex's `session_index.jsonl` |
 | `hook-queue/` | Hooks waiting to be forwarded |
-| `cache/` | Claude names the statusline already sent to the dashboard |
+| `cache/` | A checksum of each Claude name the statusline already sent to the dashboard (not the name itself) |
 
 Plus the service (`~/Library/LaunchAgents/dev.agentpulse.relay.plist` or `~/.config/systemd/user/agentpulse-relay.service`) and `~/.claude/statusline-agentpulse.sh`.
 
@@ -544,6 +546,10 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `AGENTPULSE_AI_ENABLED` | `false` | Compile the AI Labs layer in at boot. Off = zero AI services, routes, or UI (non-AI install footprint is identical to pre-AI). |
 | `AGENTPULSE_SECRETS_KEY` | | Required when `AGENTPULSE_AI_ENABLED=true`. 32+ random chars; encrypts provider credentials at rest (AES-256-GCM). |
 | `AGENTPULSE_OTEL_ENDPOINT` | | Optional OTLP metrics endpoint. When set, `ai_metric` log events are also forwarded as OTLP. |
+| `AGENTPULSE_VECTOR_SCAN_MAX_ROWS` | `50000` | Vector search only (SQLite). Most vectors one Ask semantic scan reads, newest first. Range 1,000 to 5,000,000; out-of-range values are clamped. |
+| `AGENTPULSE_VECTOR_SCAN_MAX_MS` | `4000` | Longest one Ask semantic scan runs, in milliseconds, pacing included. Range 250 to 60,000. |
+| `AGENTPULSE_VECTOR_SCAN_CPU_SHARE` | `0.3` | Share of CPU all concurrent semantic scans together may use. Range 0.05 to 1; `1` turns pacing off. |
+| `AGENTPULSE_ASK_MAX_CONCURRENT` | `2` | Ask turns that may run at once, web and Telegram together, per process. Range 1 to 8. |
 | `DATABASE_URL` | `""` (SQLite) | Postgres connection string. When set to a `postgres://...` URL, AgentPulse uses PostgreSQL instead of SQLite. Example: `postgres://agentpulse:password@host:5432/agentpulse?sslmode=require`. Leave unset or empty for SQLite. |
 | `AGENTPULSE_PG_POOL_MAX` | `10` | Maximum Postgres connection pool size. Integer in [1, 100]. Tune based on your Postgres server's `max_connections` and replica count. |
 | `AGENTPULSE_LEGACY_INIT` | (unset) | SQLite existing-install migration behaviour. Set to `"false"` to force a fresh Drizzle migrate on an existing SQLite install (opt-in, non-destructive if schema is already current). Unset keeps the legacy `initializeDatabase()` path for existing SQLite installs. |
@@ -721,6 +727,8 @@ Add to `~/.claude/settings.json`:
 **Native-name sync**: when Claude Code sets a native session name (`.session_name` in the statusline JSON, requires Claude Code with statusline session-name support), the script pushes it into AgentPulse's `displayName` via `PUT /api/v1/sessions/:id/native-name`. An ingest-scoped key is enough. This is pull-only -- the native name flows one direction, into AgentPulse -- and it never overwrites a name you've set on the dashboard: the session shows **Renamed by you**, and the agent's names don't replace it. To go back to the agent's name, use **Use agent name** on the session. The push is fire-and-forget with a 1s timeout so it can never slow down statusline rendering.
 
 If you copied the statusline by hand before this sync behavior shipped, **re-run the `cp` step above** to pick it up.
+
+**The name lookup is small**: the statusline asks the relay for the name only (`GET /api/v1/sessions/<id>?fields=displayName`, tens of bytes however long the session is; the relay remembers it for five seconds), and shows the first characters of the session id if a lookup ever fails. This needs the server at 0.7.2 or later; re-run the installer (or the `cp` step) to update the statusline and relay.
 
 ## Manage a local install
 

@@ -139,3 +139,96 @@ describe("config.adminSsoSubjects", () => {
 		expect(config.adminSsoSubjects).toEqual(["two"]);
 	});
 });
+
+describe("vector scan settings", () => {
+	const KEYS = [
+		"AGENTPULSE_VECTOR_SCAN_MAX_ROWS",
+		"AGENTPULSE_VECTOR_SCAN_MAX_MS",
+		"AGENTPULSE_VECTOR_SCAN_CPU_SHARE",
+	] as const;
+	const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+	let fresh = 0;
+
+	afterEach(() => {
+		for (const key of KEYS) {
+			if (saved[key] === undefined) delete process.env[key];
+			else process.env[key] = saved[key];
+		}
+	});
+
+	/** config.ts computes these once at import, so each case imports a fresh copy of the module. */
+	async function load(env: Partial<Record<(typeof KEYS)[number], string>>) {
+		for (const key of KEYS) delete process.env[key];
+		Object.assign(process.env, env);
+		const mod = (await import(`./config.js?vector-scan-${++fresh}`)) as { config: typeof config };
+		const c = mod.config as unknown as Record<string, number>;
+		return {
+			rows: c.vectorScanMaxRows,
+			ms: c.vectorScanMaxMs,
+			share: c.vectorScanCpuShare,
+		};
+	}
+
+	test("defaults are 50,000 rows, 4,000 ms and a 0.30 share", async () => {
+		expect(await load({})).toEqual({ rows: 50_000, ms: 4_000, share: 0.3 });
+	});
+
+	test("rows clamp to 1,000..5,000,000, with the boundaries accepted exactly", async () => {
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "999" })).rows).toBe(1_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "1000" })).rows).toBe(1_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "5000000" })).rows).toBe(5_000_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "5000001" })).rows).toBe(5_000_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "70000" })).rows).toBe(70_000);
+	});
+
+	test("time clamps to 250..60,000 ms, with the boundaries accepted exactly", async () => {
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "249" })).ms).toBe(250);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "250" })).ms).toBe(250);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "60000" })).ms).toBe(60_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "60001" })).ms).toBe(60_000);
+	});
+
+	test("CPU share clamps to 0.05..1, and junk falls back to the default", async () => {
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_CPU_SHARE: "0.04" })).share).toBe(0.05);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_CPU_SHARE: "0.05" })).share).toBe(0.05);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_CPU_SHARE: "1" })).share).toBe(1);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_CPU_SHARE: "1.01" })).share).toBe(1);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_CPU_SHARE: "junk" })).share).toBe(0.3);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_ROWS: "junk" })).rows).toBe(50_000);
+		expect((await load({ AGENTPULSE_VECTOR_SCAN_MAX_MS: "" })).ms).toBe(4_000);
+	});
+});
+
+describe("ask turn concurrency", () => {
+	const KEY = "AGENTPULSE_ASK_MAX_CONCURRENT";
+	const saved = process.env[KEY];
+	let fresh = 0;
+
+	afterEach(() => {
+		if (saved === undefined) delete process.env[KEY];
+		else process.env[KEY] = saved;
+	});
+
+	async function load(value?: string): Promise<number> {
+		if (value === undefined) delete process.env[KEY];
+		else process.env[KEY] = value;
+		const mod = (await import(`./config.js?ask-concurrency-${++fresh}`)) as {
+			config: typeof config;
+		};
+		return (mod.config as unknown as Record<string, number>).askMaxConcurrent as number;
+	}
+
+	test("defaults to 2", async () => {
+		expect(await load()).toBe(2);
+	});
+
+	test("clamps to 1..8 with the boundaries accepted exactly, and junk falls back to 2", async () => {
+		expect(await load("0")).toBe(1);
+		expect(await load("1")).toBe(1);
+		expect(await load("8")).toBe(8);
+		expect(await load("9")).toBe(8);
+		expect(await load("4")).toBe(4);
+		expect(await load("many")).toBe(2);
+		expect(await load("")).toBe(2);
+	});
+});

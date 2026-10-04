@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type {
 	ManagedSession,
 	ManagedSessionEventInput,
@@ -16,6 +16,7 @@ import {
 } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { insertNormalizedEvents } from "./event-processor.js";
+import { cleanMachineName } from "./machine-name.js";
 import { generateSessionName } from "./name-generator.js";
 import { ownerForNewSession } from "./session-attribution.js";
 import { mapSessionDto } from "./session-dto.js";
@@ -217,7 +218,7 @@ export async function upsertManagedSessionState(
 			providerCapabilitySnapshot,
 			createdAt: timestamp,
 			updatedAt: timestamp,
-			hostName: existingManaged?.hostName ?? supervisor?.hostName ?? null,
+			hostName: existingManaged?.hostName ?? cleanMachineName(supervisor?.hostName),
 			hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
 		})
 		.onConflictDoUpdate({
@@ -237,7 +238,7 @@ export async function upsertManagedSessionState(
 				lastProviderSyncAt,
 				providerProtocolVersion,
 				providerCapabilitySnapshot,
-				hostName: existingManaged?.hostName ?? supervisor?.hostName ?? null,
+				hostName: existingManaged?.hostName ?? cleanMachineName(supervisor?.hostName),
 				hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
 				updatedAt: timestamp,
 			},
@@ -304,6 +305,15 @@ export async function attachManagedSessionToLaunch(input: {
 		.from(managedSessions)
 		.where(eq(managedSessions.sessionId, input.sessionId))
 		.limit(1);
+	// The claiming supervisor is authenticated, so its row exists unless it was
+	// deleted since; its name is the session's machine (a supervisor-launched
+	// session is on its supervisor's host, whatever a relay reports for it). Read
+	// inside the write, so the hot path costs no extra statement; supervisor names
+	// are cleaned when written, so the copy is already clean.
+	const supervisorHost = sql<
+		string | null
+	>`(SELECT ${supervisors.hostName} FROM ${supervisors} WHERE ${supervisors.id} = ${input.supervisorId})`;
+	const hostName = existingManaged?.hostName ?? supervisorHost;
 	// Narrow Drizzle row's `string` to ManagedState. Every producer only
 	// writes union members, so this cast is safe at the boundary.
 	const resolvedManagedState: ManagedState =
@@ -327,7 +337,7 @@ export async function attachManagedSessionToLaunch(input: {
 			lastProviderSyncAt: existingManaged?.lastProviderSyncAt ?? null,
 			providerProtocolVersion: existingManaged?.providerProtocolVersion ?? null,
 			providerCapabilitySnapshot: existingManaged?.providerCapabilitySnapshot ?? null,
-			hostName: existingManaged?.hostName ?? null,
+			hostName,
 			hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
 			createdAt: timestamp,
 			updatedAt: timestamp,
@@ -349,7 +359,7 @@ export async function attachManagedSessionToLaunch(input: {
 				lastProviderSyncAt: existingManaged?.lastProviderSyncAt ?? null,
 				providerProtocolVersion: existingManaged?.providerProtocolVersion ?? null,
 				providerCapabilitySnapshot: existingManaged?.providerCapabilitySnapshot ?? null,
-				hostName: existingManaged?.hostName ?? null,
+				hostName,
 				hostAffinityReason: existingManaged?.hostAffinityReason ?? "manual_target",
 				updatedAt: timestamp,
 			},

@@ -23,7 +23,9 @@ import { StatCard } from "../components/StatCard.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { useAllWaitingSessions } from "../hooks/useAllWaitingSessions.js";
 import { useDefaultOwnerScope } from "../hooks/useDefaultOwnerScope.js";
+import { useHostScope } from "../hooks/useHostScope.js";
 import { useListFollowsCount } from "../hooks/useListFollowsCount.js";
+import { useMachineStats } from "../hooks/useMachineStats.js";
 import { useNoteUnknownOwners } from "../hooks/useNoteUnknownOwners.js";
 import { useOperationalSessionList } from "../hooks/useOperationalSessionList.js";
 import { useOwnerGroupStats } from "../hooks/useOwnerGroupStats.js";
@@ -31,6 +33,7 @@ import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
 import { useSessions } from "../hooks/useSessions.js";
 import { type ListedTab, useTabSessionList } from "../hooks/useTabSessionList.js";
 import { ApiError, api } from "../lib/api.js";
+import { HOST_ALL } from "../lib/host-scope.js";
 import { browserStorage } from "../lib/id-set-storage.js";
 import { ownerChipVisible } from "../lib/owner-chip.js";
 import { ownerLabel } from "../lib/owner-label.js";
@@ -54,7 +57,28 @@ import {
 	tabListCaption,
 	tabViewState,
 } from "./dashboard-empty.js";
-import { type GroupBy, groupByStorageKey, parseGroupBy } from "./dashboard-groups.js";
+import {
+	type GroupBy,
+	groupByStorageKey,
+	hostStatsByKey,
+	machineKeysWithSessions,
+	parseGroupBy,
+} from "./dashboard-groups.js";
+import {
+	MACHINE_DROPPED_NOTE,
+	MACHINE_REFUSED_NOTE,
+	groupByOptions,
+	hasUnlistedMachine,
+	machineAnnouncement,
+	machineControlVisible,
+	machineEmptyState,
+	machineLabel,
+	machineOptions,
+	machineScopeText,
+	teamLineText,
+	viewControlsVisible,
+	waitingOnOtherMachines,
+} from "./dashboard-machines.js";
 import {
 	type ViewKind,
 	nextRefreshDelay,
@@ -113,12 +137,14 @@ export function DashboardPage() {
 
 	// ONE description of what the page shows: whose sessions, and whether scratch
 	// workspaces are in. Every request below is built from it with scopedQuery().
-	const { owner, resolved: scopeResolved, choose: chooseOwner } = useDefaultOwnerScope();
+	const { owner, resolved: ownerResolved, choose: chooseOwner } = useDefaultOwnerScope();
+	const { host, resolved: hostResolved, choose: chooseHost, storedChoiceDropped } = useHostScope();
+	const scopeResolved = ownerResolved && hostResolved;
 	const scope = useMemo<DashboardScope | null>(
-		() => (scopeResolved ? { owner, excludeScratch: !showScratch } : null),
-		[scopeResolved, owner, showScratch],
+		() => (scopeResolved ? { owner, excludeScratch: !showScratch, host } : null),
+		[scopeResolved, owner, showScratch, host],
 	);
-	const scopeForLists = scope ?? { owner: OWNER_ALL, excludeScratch: !showScratch };
+	const scopeForLists = scope ?? { owner: OWNER_ALL, excludeScratch: !showScratch, host };
 	const viewKindNow: ViewKind = viewKind(ui.showScope, owner);
 	// Phone-width compaction (four cards in a row, a collapsed Live Sessions panel, a
 	// short mark-all label) is for team mode; solo keeps its layout exactly.
@@ -137,6 +163,34 @@ export function DashboardPage() {
 		}
 	}
 	const ownerGroupStats = useOwnerGroupStats(scope, ui.showGroupBy && groupBy === "user");
+	// The machines the filter offers and the Group by Machine headers' counts: one
+	// request for both, always about every machine in the owner scope on screen.
+	const machineStats = useMachineStats(scope);
+	const machineControl = machineControlVisible({
+		machineCount: machineStats.machineCount,
+		host,
+		groupBy,
+	});
+	// A "user" grouping stored in a team has nothing to group by in solo.
+	const groupByNow: GroupBy = !ui.showGroupBy && groupBy === "user" ? "project" : groupBy;
+	const machineSelectRef = useRef<HTMLSelectElement>(null);
+	const [machineNote, setMachineNote] = useState("");
+	const chooseMachine = useCallback(
+		(next: string) => {
+			if (chooseHost(next)) setMachineNote(machineAnnouncement(next));
+			else setMachineNote(MACHINE_REFUSED_NOTE);
+		},
+		[chooseHost],
+	);
+	// A saved machine the filter can't express was dropped at load: say so.
+	useEffect(() => {
+		if (storedChoiceDropped) setMachineNote(MACHINE_DROPPED_NOTE);
+	}, [storedChoiceDropped]);
+	// Group-by "machine" counts come from the same answer as the filter's options.
+	const machineCountsByKey = useMemo(
+		() => (machineStats.groups ? hostStatsByKey(machineStats.groups) : null),
+		[machineStats.groups],
+	);
 	useNoteUnknownOwners([personOwnerId(owner)]);
 
 	const [filter, setFilter] = useState<string>("active");
@@ -207,6 +261,7 @@ export function DashboardPage() {
 		refreshCounts,
 	} = useSessions(scope, (reason) => {
 		if (ui.showGroupBy && groupBy === "user") void ownerGroupStats.refresh();
+		void machineStats.refresh();
 		if (reason === "retry") {
 			// A refused or failed list is asked again with the counts, then focus returns to the header.
 			operationalList.reload();
@@ -295,6 +350,15 @@ export function DashboardPage() {
 			firstPendingRef.current = null;
 			void refreshCounts();
 			if (ui.showGroupBy && groupBy === "user") void ownerGroupStats.refresh();
+			// A pushed session on a machine the control doesn't list yet brings the control (or
+			// its new option) in now, not at the next poll.
+			if (
+				machineControl ||
+				groupBy === "machine" ||
+				hasUnlistedMachine(useSessionStore.getState().sessions, machineStats.groups)
+			) {
+				void machineStats.refresh();
+			}
 		}, delay);
 		operationalList.scheduleRefresh();
 		tabList.scheduleRefresh();
@@ -503,6 +567,21 @@ export function DashboardPage() {
 			: tabList.rows
 		: operationalList.rows;
 
+	// The last session of a chosen machine leaving the view is said, not just shown.
+	const hadMachineRowsRef = useRef(false);
+	useEffect(() => {
+		const settled = !isLoading && (listedTab ? !tabList.loading : true);
+		if (host === HOST_ALL || !settled) {
+			hadMachineRowsRef.current = false;
+			return;
+		}
+		if (filtered.length > 0) hadMachineRowsRef.current = true;
+		else if (hadMachineRowsRef.current) {
+			hadMachineRowsRef.current = false;
+			setMachineNote(`No sessions left on ${machineLabel(host)} in this view.`);
+		}
+	}, [filtered.length, host, isLoading, listedTab, tabList.loading]);
+
 	// Live strip: the active operational set, ordered so the ones that need a
 	// human (waiting, error) come first, then working, then idle.
 	// The strip follows the Active tab's full list when it has loaded, else the newest page.
@@ -584,6 +663,7 @@ export function DashboardPage() {
 		isLoading,
 		loadedCount: sessions.length,
 		owner,
+		host,
 		failed: loadError !== null,
 		stats,
 	});
@@ -620,6 +700,15 @@ export function DashboardPage() {
 	// Team views only. Others' active sessions are the unscoped count minus this view's.
 	const othersActive = owner === OWNER_ME ? othersActiveCount(othersStats, activeTotal) : 0;
 	const tabBadge = tabBadgeCount(filter, stats, filter === "active" ? statusFilter : null);
+	const machineEmpty = machineEmptyState({
+		host,
+		tab: filter,
+		statusFilter: filter === "active" ? statusFilter : null,
+		searchActive: searchTerm.length > 0,
+		scopeTotal,
+		tabCount: tabBadge,
+		ownerNarrowed: owner !== OWNER_ALL,
+	});
 	const emptyState = ui.showScope
 		? dashboardEmptyState({
 				kind: viewKindNow,
@@ -653,6 +742,15 @@ export function DashboardPage() {
 	const showAllOf = (ownerId: string) => {
 		chooseOwner(ownerFromSelectValue(ownerId, viewerUserId));
 		requestAnimationFrame(() => ownerSelectRef.current?.focus());
+	};
+	// "Show all" over a machine's group narrows to that machine; focus follows to the Machine select, where the change is.
+	const showAllOfHost = (machine: string) => {
+		chooseMachine(machine);
+		requestAnimationFrame(() => machineSelectRef.current?.focus());
+	};
+	const viewAllMachines = () => {
+		chooseMachine(HOST_ALL);
+		focusList();
 	};
 
 	return (
@@ -706,6 +804,9 @@ export function DashboardPage() {
 					{announcement}
 				</div>
 			)}
+			<div aria-live="polite" className="sr-only">
+				{machineNote}
+			</div>
 
 			{scopeMismatch ? (
 				<div
@@ -735,6 +836,25 @@ export function DashboardPage() {
 						<output className="mb-2 block text-xs text-hint">Updates are delayed. Retrying…</output>
 					)}
 					<ConnectMachineCard suppress={emptyState?.actions.includes("setup") ?? false} />
+
+					{host !== HOST_ALL && (
+						<p className="mb-2 text-xs text-foreground [overflow-wrap:anywhere]" data-machine-scope>
+							<span className="font-medium">
+								{machineScopeText(
+									host,
+									waitingOnOtherMachines(machineStats.groups, host),
+									machineStats.groupsTruncated,
+								)}
+							</span>{" "}
+							<button
+								type="button"
+								onClick={viewAllMachines}
+								className="min-h-[44px] rounded font-medium text-primary underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:min-h-0"
+							>
+								Show all machines
+							</button>
+						</p>
+					)}
 
 					{/* Operational status cards — the four states every active session is
 			    in exactly one of, counted over the full active set. Clicking a card
@@ -782,7 +902,7 @@ export function DashboardPage() {
 					)}
 					{othersActive > 0 && !emptyState?.actions.includes("viewEveryone") && (
 						<p className="mb-2 text-xs text-hint">
-							{othersActive} more active across the team.{" "}
+							{teamLineText(othersActive, host)}{" "}
 							<button
 								type="button"
 								onClick={viewEveryone}
@@ -914,7 +1034,7 @@ export function DashboardPage() {
 						{tabHint(filter) && <p className="-mt-1 text-xs text-hint">{tabHint(filter)}</p>}
 
 						<div className="flex flex-wrap items-center gap-3">
-							<div className="relative w-full md:max-w-xs">
+							<div className="relative w-full min-w-0 md:w-auto md:min-w-[9rem] md:max-w-xs md:flex-1 md:basis-44">
 								<svg
 									aria-hidden="true"
 									className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground"
@@ -960,10 +1080,30 @@ export function DashboardPage() {
 									</button>
 								)}
 							</div>
-							{ui.showGroupBy ? (
+							{viewControlsVisible({
+								team: ui.showGroupBy,
+								machineControl,
+								groupBy,
+							}) ? (
 								<DashboardViewControls
-									groupBy={groupBy}
+									groupBy={groupByNow}
+									groupOptions={groupByOptions({ team: ui.showGroupBy, machineControl })}
 									onGroupByChange={setGroupBy}
+									machine={
+										machineControl
+											? {
+													host,
+													options: machineOptions(machineStats.groups, host, {
+														tab: filter,
+														statusFilter: filter === "active" ? statusFilter : null,
+														groupsTruncated: machineStats.groupsTruncated,
+														otherMachines: machineStats.otherMachines,
+													}),
+													onChange: chooseMachine,
+													selectRef: machineSelectRef,
+												}
+											: null
+									}
 									showScratch={showScratch}
 									onShowScratchChange={setShowScratch}
 									scratchHidden={stats?.scratchHidden ?? 0}
@@ -1160,10 +1300,29 @@ export function DashboardPage() {
 							quietWhenEmpty={listFailed || tabState === "more" || tabState === "recount"}
 							filter={filter === "active" && statusFilter ? statusFilter : filter}
 							searchQuery={search}
+							machineView={{
+								groupBy: groupByNow,
+								stats: machineCountsByKey,
+								machineKeys: machineKeysWithSessions(
+									machineStats.groups,
+									filter,
+									filter === "active" ? statusFilter : null,
+								),
+								otherMachines: machineStats.groupsTruncated
+									? { machines: machineStats.otherMachines, sessions: machineStats.otherTotal }
+									: null,
+								tab: filter,
+								statusFilter,
+								searchActive,
+								currentHost: host,
+								emptyState: machineEmpty,
+								onShowAllOfHost: showAllOfHost,
+								onViewAllMachines: viewAllMachines,
+							}}
 							team={
 								ui.showGroupBy
 									? {
-											groupBy,
+											groupBy: groupByNow,
 											owner,
 											tab: filter,
 											statusFilter,

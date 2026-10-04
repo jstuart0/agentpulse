@@ -1020,10 +1020,7 @@ export async function processHookEvent(
 
 	// Try to extract git branch from tool responses
 	if (eventType === "PostToolUse" && payload.tool_name === "Bash" && payload.tool_response) {
-		const response =
-			typeof payload.tool_response === "string"
-				? payload.tool_response
-				: JSON.stringify(payload.tool_response);
+		const response = toolResponseText(payload.tool_response);
 		const input = payload.tool_input as Record<string, unknown> | undefined;
 		const command = typeof input?.command === "string" ? input.command : "";
 
@@ -1127,6 +1124,38 @@ export async function markSessionFailed(sessionId: string): Promise<void> {
 }
 
 // Process a semantic status update from CLAUDE.md snippet
+/** How deep into a structured tool response its text is looked for, and how many strings are taken. */
+const TOOL_TEXT_MAX_DEPTH = 6;
+const TOOL_TEXT_MAX_STRINGS = 200;
+
+function collectToolText(value: unknown, depth: number, out: string[]): void {
+	if (out.length >= TOOL_TEXT_MAX_STRINGS) return;
+	if (typeof value === "string") {
+		out.push(value);
+		return;
+	}
+	if (depth >= TOOL_TEXT_MAX_DEPTH || value === null || typeof value !== "object") return;
+	for (const child of Array.isArray(value) ? value : Object.values(value)) {
+		collectToolText(child, depth + 1, out);
+	}
+}
+
+/**
+ * The text of a Bash tool response, for matching. A structured response (an
+ * object such as { stdout, stderr }, an array of content blocks, or either nested
+ * in the other) carries the output in string leaves: those are joined by newlines
+ * in order, so a real newline stays a newline (serialising the response to JSON
+ * would turn it into a backslash and an n, which no pattern for a line start or an
+ * end of word can then see). A response with no string within reach has no text to
+ * match, and sets nothing.
+ */
+function toolResponseText(response: unknown): string {
+	if (typeof response === "string") return response;
+	const texts: string[] = [];
+	collectToolText(response, 0, texts);
+	return texts.join("\n");
+}
+
 /** True only for the declared SEMANTIC_STATUSES values. */
 export function isSemanticStatus(value: unknown): value is SemanticStatus {
 	return typeof value === "string" && (SEMANTIC_STATUSES as readonly string[]).includes(value);

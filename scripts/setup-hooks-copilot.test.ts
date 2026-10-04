@@ -6,10 +6,13 @@
  * installers-run.test.ts's setup-relay.sh test; this file covers
  * setup-hooks.sh's own CLI-flag refusals directly, with no server needed.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// These tests start real shell installers; under load one can take longer than Bun's 5 s default.
+setDefaultTimeout(60_000);
 
 const INSTALLER = join(import.meta.dir, "setup-hooks.sh");
 

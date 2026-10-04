@@ -15,11 +15,14 @@ export const OWNER_SERVICE = "service";
 export interface DashboardScope {
 	owner: OwnerParam;
 	excludeScratch: boolean;
+	/** Which machine's sessions (see host-scope.ts); absent or empty is every machine. */
+	host?: string;
 }
 
 export interface ScopeQuery {
 	owner?: string;
 	excludeScratch?: boolean;
+	host?: string;
 }
 
 export interface OwnedSession {
@@ -48,11 +51,12 @@ export function personOwnerId(owner: OwnerParam): string | null {
 	return KEYWORDS.has(owner) ? null : owner;
 }
 
-/** The query parameters every list, stats and paging request carries for this scope. */
+/** The query parameters every list, stats and paging request carries for this scope: the owner, the scratch toggle and the machine. */
 export function scopeQuery(scope: DashboardScope): ScopeQuery {
 	const query: ScopeQuery = {};
 	if (scope.owner !== OWNER_ALL) query.owner = scope.owner;
 	if (scope.excludeScratch) query.excludeScratch = true;
+	if (scope.host) query.host = scope.host;
 	return query;
 }
 

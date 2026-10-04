@@ -1,3 +1,4 @@
+import { type HostParam, hostVerdict } from "../lib/host-scope.js";
 import {
 	OWNER_ALL,
 	type OwnedSession,
@@ -13,6 +14,8 @@ import {
  */
 export interface SocketContext {
 	owner: OwnerParam;
+	/** Which machine's sessions the dashboard shows; absent or empty is every machine. */
+	host?: HostParam;
 	viewerUserId: string | null;
 	/** Team mode: notifications are for the viewer's own sessions only. */
 	teamMode: boolean;
@@ -32,7 +35,7 @@ export interface SessionMessagePlan {
  * else's) and never about other people's; solo tells about everything.
  */
 export function planSessionMessage(
-	session: OwnedSession,
+	session: OwnedSession & { machine?: string | null },
 	wasInStore: boolean,
 	ctx: SocketContext,
 ): SessionMessagePlan {
@@ -44,6 +47,11 @@ export function planSessionMessage(
 	if (!matchesOwnerScope(session, ctx.owner, ctx.viewerUserId)) {
 		return { store: wasInStore ? "remove" : "ignore", notify };
 	}
+	// A row that doesn't say its machine can't be judged by a machine filter, as
+	// with an ownerless row: one already shown stays, one that isn't waits for the poll.
+	const verdict = hostVerdict(session, ctx.host ?? "");
+	if (verdict === "unknown") return { store: wasInStore ? "upsert" : "ignore", notify };
+	if (verdict === "out") return { store: wasInStore ? "remove" : "ignore", notify };
 	return { store: "upsert", notify };
 }
 

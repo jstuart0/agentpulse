@@ -103,3 +103,11 @@ describe("ownerChipVisible", () => {
 		expect(ownerChipVisible(false, "all", "project")).toBe(false);
 	});
 });
+
+describe("ownerChipVisible with the machine grouping", () => {
+	test("grouping by machine says nothing about owners, so the chip stays", () => {
+		expect(ownerChipVisible(true, "all", "machine")).toBe(true);
+		expect(ownerChipVisible(false, "all", "machine")).toBe(false);
+		expect(ownerChipVisible(true, "me", "machine")).toBe(false);
+	});
+});

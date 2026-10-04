@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { ActiveOperationalStatus } from "../../shared/session-state.js";
 import { api } from "../lib/api.js";
+import { assertHostEchoMatches } from "../lib/host-scope.js";
 import { requestKey } from "../lib/live-request.js";
 import { type DashboardScope, assertEchoMatches } from "../lib/owner-scope.js";
 import { scopedQuery } from "../lib/scoped-query.js";
@@ -31,9 +32,10 @@ export function useOperationalSessionList(
 	const viewerUserId = useUserStore((s) => s.userId);
 	const owner = scope.owner;
 	const excludeScratch = scope.excludeScratch;
+	const host = scope.host;
 	const spec = useMemo<PagedListSpec | null>(() => {
 		if (!status) return null;
-		const asked: DashboardScope = { owner, excludeScratch };
+		const asked: DashboardScope = { owner, excludeScratch, host };
 		return {
 			key: requestKey(asked, "operational", status, search),
 			fetch: async (cursor, want) => {
@@ -41,6 +43,7 @@ export function useOperationalSessionList(
 					scopedQuery(asked, { operational: status, q: search, limit: want, offset: cursor }),
 				);
 				assertEchoMatches(owner, viewerUserId, res.ownerScope);
+				assertHostEchoMatches(host, res.hostFilter);
 				const next = cursor + res.sessions.length;
 				return {
 					rows: res.sessions,
@@ -50,6 +53,6 @@ export function useOperationalSessionList(
 				};
 			},
 		};
-	}, [status, search, owner, excludeScratch, viewerUserId]);
+	}, [status, search, owner, excludeScratch, host, viewerUserId]);
 	return useScopedPagedList(spec, isInteracting);
 }

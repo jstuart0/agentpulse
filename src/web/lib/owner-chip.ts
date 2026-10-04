@@ -59,7 +59,7 @@ export function ownerChip(session: OwnedSession, ctx: OwnerChipContext): OwnerCh
 export function ownerChipVisible(
 	featureOn: boolean,
 	owner: OwnerParam,
-	groupBy: "project" | "user" | "agent",
+	groupBy: "project" | "user" | "agent" | "machine",
 ): boolean {
 	return featureOn && owner === OWNER_ALL && groupBy !== "user";
 }

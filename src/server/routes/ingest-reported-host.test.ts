@@ -452,6 +452,125 @@ describe("display only: the reported host decides nothing", () => {
 		expect((await row(id))?.lastUserAcknowledgedAt).toBeNull();
 	});
 
+	test("the effective machine is read by the session list and counts, and wired into the live push by the composition root, and by nothing that decides access", async () => {
+		const serverRoot = join(import.meta.dir, "..");
+		const IMPORTS = /effective-machine/;
+		expect(IMPORTS.test('import { x } from "./effective-machine.js";')).toBe(true);
+		const files = (await readdir(serverRoot, { recursive: true })).filter(
+			(n) => n.endsWith(".ts") && !n.endsWith(".test.ts"),
+		);
+		expect(files.length).toBeGreaterThan(100);
+		const importers: string[] = [];
+		for (const file of files) {
+			if (IMPORTS.test(await readFile(join(serverRoot, file), "utf8"))) importers.push(file);
+		}
+		// session-tracker answers the list and the counts; index.ts only hands the
+		// stamp to the socket broadcaster (a view of the same name). Neither is an
+		// access, ownership, routing or attribution decision.
+		expect(importers.sort()).toEqual(["index.ts", "services/session-tracker.ts"]);
+	});
+
+	describe("the machine, by every name an access check could reach it through", () => {
+		/** Comments stripped, so prose about "the machine" isn't a reader. */
+		const withoutComments = (text: string) =>
+			text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+		/** String contents blanked, so a message or an import path that says "machine" isn't a reader. */
+		const withoutStrings = (text: string) =>
+			text.replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g, '""');
+		/**
+		 * Any identifier `machine` (a property read in any spelling: `.machine`,
+		 * `?.machine`, `!.machine`, a destructured `{ machine }`, an object key), the
+		 * names that lead to it, and the bracket spelling `row["machine"]`.
+		 */
+		const NAMES =
+			/EFFECTIVE_MACHINE|MACHINE_JOINED|SUPERVISOR_JOIN|hostScopeCondition|stampMachine|\bmachine\b/;
+		const BRACKET = /\[\s*(["'`])machine\1\s*\]/;
+		const reachesMachine = (text: string) => {
+			const bare = withoutComments(text);
+			return NAMES.test(withoutStrings(bare)) || BRACKET.test(bare);
+		};
+		/** Every file that reaches the effective machine, and why it may. */
+		const ALLOWED = new Set([
+			"services/effective-machine.ts", // the definition
+			"services/session-tracker.ts", // the list rows, the filter and the counts
+			"index.ts", // hands the stamp to the socket broadcaster
+		]);
+		const readers = (files: Record<string, string>) =>
+			Object.entries(files)
+				.filter(([name, text]) => reachesMachine(text) && !ALLOWED.has(name))
+				.map(([name]) => name)
+				.sort();
+
+		test("the matcher flags each name, in a file that decides access", () => {
+			for (const use of [
+				"import { EFFECTIVE_MACHINE } from './effective-machine.js'",
+				"where(MACHINE_JOINED)",
+				"const c = hostScopeCondition(h)",
+				"await stampMachine(s)",
+				"if (session.machine === 'x') deny()",
+				"return { machine: row.x }",
+				"leftJoin(SUPERVISOR_JOIN)",
+				// The spellings a plain `.machine` pattern misses.
+				"if (session?.machine === 'x') deny()",
+				"if (session!.machine === 'x') deny()",
+				"if (session['machine'] === 'x') deny()",
+				'if (session["machine"] === "x") deny()',
+				"if (session[`machine`] === 'x') deny()",
+				"const { machine } = session; if (machine) deny()",
+				"const { machine: where } = session",
+				"const { id, machine, ...rest } = session",
+				"function f({ machine }: S) { return machine }",
+			]) {
+				expect({ use, flagged: readers({ "auth/middleware.ts": use }).length }).toEqual({
+					use,
+					flagged: 1,
+				});
+			}
+		});
+
+		test("prose about a machine is not a reader, and the allowlisted files are not flagged", () => {
+			expect(
+				readers({
+					"auth/middleware.ts":
+						"/* the request left the machine: ok */\n// this machine.\nconst a = 1;",
+				}),
+			).toEqual([]);
+			expect(
+				readers({ "services/session-tracker.ts": "row.machine", "index.ts": "stampMachine" }),
+			).toEqual([]);
+		});
+
+		test("it fails when an auth, attribution or routing file uses one", () => {
+			expect(
+				readers({
+					"services/authorization.ts": "if (row.machine) allow()",
+					"services/session-ownership.ts": "EFFECTIVE_MACHINE",
+				}),
+			).toEqual(["services/authorization.ts", "services/session-ownership.ts"]);
+		});
+
+		test("in the tree: no file outside the allowlist reaches the machine, and the allowlist is accounted for", async () => {
+			const serverRoot = join(import.meta.dir, "..");
+			const names = (await readdir(serverRoot, { recursive: true })).filter(
+				(n) => n.endsWith(".ts") && !n.endsWith(".test.ts"),
+			);
+			expect(names.length).toBeGreaterThan(100);
+			for (const named of [
+				"auth/middleware.ts",
+				"services/authorization.ts",
+				"services/session-attribution.ts",
+				"services/launch-dispatch.ts",
+				"services/session-ownership.ts",
+			]) {
+				expect(names).toContain(named);
+			}
+			const files: Record<string, string> = {};
+			for (const name of names) files[name] = await readFile(join(serverRoot, name), "utf8");
+			expect(readers(files)).toEqual([]);
+			for (const allowed of ALLOWED) expect(reachesMachine(files[allowed])).toBe(true);
+		});
+	});
+
 	test("only the known write and DTO sites mention the reported host", async () => {
 		const serverRoot = join(import.meta.dir, "..");
 		const MENTION = /reportedHost|reported_host|HOST_HEADER|reported-host/;
@@ -463,6 +582,10 @@ describe("display only: the reported host decides nothing", () => {
 			"db/schema/core/sessions.ts",
 			"services/event-dedup.ts",
 			"db/client.ts",
+			// The effective machine for the dashboard's filter and grouping: the one read site.
+			"services/effective-machine.ts",
+			// The one cleaner of a supervisor's host name, applied where it is written.
+			"services/machine-name.ts",
 		]);
 
 		// Positive control: the matcher does flag a reader.

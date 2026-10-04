@@ -21,6 +21,7 @@ import type {
 	Digest,
 	HitlReplyKind,
 	HitlRequestRecord,
+	HostFilterEcho,
 	Inbox,
 	LaunchMode,
 	LaunchRequest,
@@ -134,6 +135,11 @@ export interface ListSessionsParams {
 	 * `owner` query param and returns everyone's sessions.
 	 */
 	owner?: string;
+	/**
+	 * Which machine's sessions: an exact name, or the reserved token for none
+	 * (see enums.ts). A server predating the machine filter ignores it.
+	 */
+	host?: string;
 	limit?: number;
 	offset?: number;
 }
@@ -143,6 +149,8 @@ export interface ListSessionsResult {
 	total: number;
 	/** The owner scope the server applied; absent on a server that predates owner scoping. */
 	ownerScope?: OwnerScopeEcho;
+	/** The machine filter the server applied; absent on a server that predates it. */
+	hostFilter?: HostFilterEcho;
 }
 
 export interface GetSessionResult {
@@ -245,7 +253,7 @@ export interface CreateApiKeyResult {
 export interface AgentPulseClient {
 	/** The canonicalized base URL (`<origin>/api/v1`) — surfaced for error messages. */
 	readonly baseUrl: string;
-	getStats(params?: { owner?: string }): Promise<DashboardStats>;
+	getStats(params?: { owner?: string; host?: string }): Promise<DashboardStats>;
 	getAuthMe(): Promise<AuthMeResponse>;
 
 	// --- Observe-scoped reads (D2) ---
@@ -430,7 +438,9 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 	return {
 		baseUrl,
 		getStats: (params) =>
-			request<DashboardStats>(`/sessions/stats${toQuery({ owner: params?.owner })}`),
+			request<DashboardStats>(
+				`/sessions/stats${toQuery({ owner: params?.owner, host: params?.host })}`,
+			),
 		getAuthMe: () => request<AuthMeResponse>("/auth/me"),
 
 		getSessions: (params) =>
@@ -441,6 +451,7 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 					projectId: params?.projectId,
 					operational: params?.operational,
 					owner: params?.owner,
+					host: params?.host,
 					limit: params?.limit,
 					offset: params?.offset,
 				})}`,

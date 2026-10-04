@@ -12,9 +12,9 @@
  * reversal of the F23 reconcile above, which still governs list_projects.
  */
 import { z } from "zod";
-import { LAUNCHABLE_AGENT_TYPE_ENUM, OWNER_SCOPE } from "../enums.js";
+import { HOST_NAME, LAUNCHABLE_AGENT_TYPE_ENUM, NO_HOST, OWNER_SCOPE } from "../enums.js";
 import { capList, capText } from "../output.js";
-import { assertOwnerScopeEchoed } from "../scopes.js";
+import { assertHostFilterEchoed, assertOwnerScopeEchoed, resolveHostFilter } from "../scopes.js";
 import { registerReadTool } from "../server.js";
 import type { ScopeFlags, ToolContext } from "../server.js";
 
@@ -25,12 +25,16 @@ export function registerCatalogTools(ctx: ToolContext, flags: ScopeFlags): void 
 			{
 				name: "get_stats",
 				description:
-					"Dashboard KPI stats: active session count, sessions started today, tool uses today, a breakdown by agent type, completed/archived counts and the waiting/working/idle/error counts. `owner` (me, a user id, unassigned, service, or all — the default) scopes every count to that owner's sessions. The server must confirm the scope it applied (`ownerScope` in the response); an older server ignores `owner`, so a response that doesn't confirm it is refused instead of returning everyone's counts.",
-				inputSchema: { owner: OWNER_SCOPE.optional() },
+					"Dashboard KPI stats: active session count, sessions started today, tool uses today, a breakdown by agent type, completed/archived counts and the waiting/working/idle/error counts. `owner` (me, a user id, unassigned, service, or all — the default) scopes every count to that owner's sessions. The server must confirm the scope it applied (`ownerScope` in the response); an older server ignores `owner`, so a response that doesn't confirm it is refused instead of returning everyone's counts. `host` (an exact machine name) or `no_host` (sessions with no machine) scopes every count to one machine, and combines with `owner`; the server must confirm it (`hostFilter`) or the response is refused. A machine name is self-declared, for display and filtering only.",
+				inputSchema: { owner: OWNER_SCOPE.optional(), host: HOST_NAME, no_host: NO_HOST },
 			},
 			async (args, client) => {
-				const stats = await client.getStats(args.owner ? { owner: args.owner } : undefined);
+				const host = resolveHostFilter(args);
+				const stats = await client.getStats(
+					args.owner || host ? { owner: args.owner, host } : undefined,
+				);
 				assertOwnerScopeEchoed(args.owner, stats.ownerScope);
+				assertHostFilterEchoed(host, stats.hostFilter);
 				return stats;
 			},
 		);

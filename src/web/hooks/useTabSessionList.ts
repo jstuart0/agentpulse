@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { api } from "../lib/api.js";
+import { assertHostEchoMatches } from "../lib/host-scope.js";
 import { requestKey } from "../lib/live-request.js";
 import { type DashboardScope, assertEchoMatches } from "../lib/owner-scope.js";
 import { scopedQuery } from "../lib/scoped-query.js";
@@ -29,9 +30,10 @@ export function useTabSessionList(
 	const viewerUserId = useUserStore((s) => s.userId);
 	const owner = scope.owner;
 	const excludeScratch = scope.excludeScratch;
+	const host = scope.host;
 	const spec = useMemo<PagedListSpec | null>(() => {
 		if (!tab) return null;
-		const asked: DashboardScope = { owner, excludeScratch };
+		const asked: DashboardScope = { owner, excludeScratch, host };
 		return {
 			key: requestKey(asked, "tab", tab, search),
 			fetch: async (cursor, want) => {
@@ -44,6 +46,7 @@ export function useTabSessionList(
 					}),
 				);
 				assertEchoMatches(owner, viewerUserId, res.ownerScope);
+				assertHostEchoMatches(host, res.hostFilter);
 				const next = cursor + res.sessions.length;
 				return {
 					rows:
@@ -54,6 +57,6 @@ export function useTabSessionList(
 				};
 			},
 		};
-	}, [tab, search, owner, excludeScratch, viewerUserId]);
+	}, [tab, search, owner, excludeScratch, host, viewerUserId]);
 	return useScopedPagedList(spec, isInteracting);
 }

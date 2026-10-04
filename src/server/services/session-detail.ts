@@ -53,3 +53,20 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
 		mode: modeFromStoredColumn(row.storedMode),
 	};
 }
+
+/**
+ * The name-only read behind `GET /sessions/:id?fields=displayName` (the status
+ * line's lookup, on every render): the sessions row's id and name and nothing
+ * else, one statement, however long the session is. Null when there is no such
+ * session.
+ */
+export async function getSessionName(
+	sessionId: string,
+): Promise<{ sessionId: string; displayName: string | null } | null> {
+	const [row] = await getDb()
+		.select({ sessionId: sessions.sessionId, displayName: sessions.displayName })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	return row ?? null;
+}

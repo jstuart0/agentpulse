@@ -12,7 +12,7 @@
  * structural check; scripts/test-install-local.ps1 (Phase 7's Windows CI
  * job) is the real execution coverage.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
@@ -38,6 +38,9 @@ import {
 } from "../src/shared/hook-command.js";
 import * as hookCommandModule from "../src/shared/hook-command.js";
 import { psFunctionBody, runPsBuilder } from "./powershell-installer-eval.js";
+
+// These tests start real shell installers; under load one can take longer than Bun's 5 s default.
+setDefaultTimeout(60_000);
 
 const ROOT = join(import.meta.dir, "..");
 
