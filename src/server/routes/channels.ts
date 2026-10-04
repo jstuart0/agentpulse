@@ -7,7 +7,11 @@ import { getActionRequest, resolveActionRequest } from "../services/ai/action-re
 import { emitAiEvent } from "../services/ai/ai-events.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import { getHitlRequest, resolveHitlRequest } from "../services/ai/hitl-service.js";
-import { findOrCreateTelegramThread, runAskTurn } from "../services/ask/ask-service.js";
+import {
+	ASK_MESSAGE_MAX_CHARS,
+	findOrCreateTelegramThread,
+	runAskTurn,
+} from "../services/ask/ask-service.js";
 import {
 	completeEnrollment,
 	createPendingChannel,
@@ -35,6 +39,7 @@ import {
 	startTelegramPolling,
 	stopTelegramPolling,
 } from "../services/channels/telegram-poller.js";
+import { ASK_TOO_LONG_REPLY } from "../services/channels/telegram-replies.js";
 import {
 	type TelegramCallbackQuery,
 	type TelegramMessage,
@@ -132,6 +137,12 @@ async function handleTelegramAskMessage(message: TelegramMessage): Promise<void>
 	// channel config to silence the assistant for a chat even if labs
 	// is on globally.
 	if (channel.config && (channel.config as Record<string, unknown>).askEnabled === false) {
+		return;
+	}
+
+	// Refused before a thread exists or any work is done; the user is told why.
+	if (normalized.length > ASK_MESSAGE_MAX_CHARS) {
+		await telegramSendMessage(chatId, ASK_TOO_LONG_REPLY);
 		return;
 	}
 

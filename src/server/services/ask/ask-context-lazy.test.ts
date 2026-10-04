@@ -375,7 +375,7 @@ describeSqliteOnly("the history a turn reads is bounded to what it renders", () 
 			expect(reads[0]?.rows).toBeLessThanOrEqual(12);
 			const transcript = llm.callsOfKind("answer")[0]?.transcriptPrompt ?? "";
 			const history = transcript.slice(0, transcript.indexOf("</history>") + "</history>".length);
-			expect(history).toBe(expectedHistory(count).replace("USER: hello there caching\n", ""));
+			expect(history).toBe(expectedHistory(count));
 		});
 	}
 

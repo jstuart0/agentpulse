@@ -4,6 +4,7 @@ import { requireAuth } from "../auth/middleware.js";
 import { getRequestActor, requireOperatorScope } from "../auth/route-scope-policy.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import {
+	ASK_MESSAGE_MAX_CHARS,
 	archiveThread,
 	getThread,
 	listMessages,
@@ -80,6 +81,9 @@ askRouter.post("/ai/ask", async (c) => {
 	if (!body.message || typeof body.message !== "string") {
 		return c.json({ error: "message required" }, 400);
 	}
+	if (body.message.trim().length > ASK_MESSAGE_MAX_CHARS) {
+		return c.json({ error: "message_too_long", max: ASK_MESSAGE_MAX_CHARS }, 400);
+	}
 	try {
 		const res = await runAskTurn({
 			threadId: body.threadId ?? null,
@@ -111,6 +115,9 @@ askRouter.post("/ai/ask/stream", async (c) => {
 	}>();
 	if (!body.message || typeof body.message !== "string") {
 		return c.json({ error: "message required" }, 400);
+	}
+	if (body.message.trim().length > ASK_MESSAGE_MAX_CHARS) {
+		return c.json({ error: "message_too_long", max: ASK_MESSAGE_MAX_CHARS }, 400);
 	}
 	const actor = await getRequestActor(c);
 	// Build the SSE stream by hand instead of using hono/streaming. That
