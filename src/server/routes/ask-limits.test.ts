@@ -15,7 +15,7 @@ import {
 	spyOn,
 	test,
 } from "bun:test";
-import { describeSqliteOnly } from "../test-utils/backend.js";
+import { describeSqliteOnly, isSqliteTest } from "../test-utils/backend.js";
 import "../services/ai/__test_db.js";
 
 const llm = await import("../test-utils/scripted-llm.js");
@@ -106,18 +106,22 @@ function chunkedStream(totalBytes: number, chunkBytes: number, counter: { pulls:
 }
 
 beforeAll(async () => {
+	if (!isSqliteTest) return;
 	await fixture.setupAskFixture();
 	key = (await createApiKey(`ask-limits-${crypto.randomUUID()}`, ["manage"])).key;
 });
 afterAll(() => {
+	if (!isSqliteTest) return;
 	fixture.teardownAskFixture();
 });
 beforeEach(async () => {
+	if (!isSqliteTest) return;
 	limiter?.__resetAskTurnLimiterForTests();
 	cfg.askMaxConcurrent = 2;
 	await fixture.resetAskWorld();
 });
 afterEach(() => {
+	if (!isSqliteTest) return;
 	for (const slot of held.splice(0)) slot.release();
 	limiter?.__resetAskTurnLimiterForTests();
 	cfg.askMaxConcurrent = originalMax;
