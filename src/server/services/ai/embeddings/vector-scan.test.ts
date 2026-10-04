@@ -516,9 +516,17 @@ describeSqliteOnly("one pacer for every scan in the process", () => {
 		expect(totalSlept).toBeGreaterThan(debtGenerated - 2 * 23.4);
 	});
 
-	test("a chunk that throws still pays its debt: the next scan's first sleep is that chunk's", async () => {
+	test("a chunk that throws still pays its debt: the next scan sleeps one chunk's worth before its first statement", async () => {
 		seedPlain(800, DIM);
-		const clock = useFakeClock(10);
+		const clock = createFakeClock({ autoAdvance: true });
+		const sleepsAt: Array<{ ms: number; statementsSoFar: number }> = [];
+		scan.__setVectorScanClockForTests({
+			now: clock.now,
+			sleep: (ms) => {
+				sleepsAt.push({ ms, statementsSoFar: meter.matching(CHUNK_SQL).length });
+				return clock.sleep(ms);
+			},
+		});
 		setBudgets({ share: 0.3 });
 		let chunk = 0;
 		meter.setAfterExecute((execution) => {
@@ -530,14 +538,17 @@ describeSqliteOnly("one pacer for every scan in the process", () => {
 		await expect(scan.scanSessionSimilarity(query, { model: MODEL, dim: DIM })).rejects.toThrow(
 			/disk I\/O/,
 		);
-		const sleepsBefore = clock.sleeps.length;
+		const statementsBeforeSecondScan = meter.matching(CHUNK_SQL).length;
+		const sleepsBeforeSecondScan = sleepsAt.length;
 		meter.setAfterExecute((execution) => {
 			if (CHUNK_SQL.test(execution.sql)) clock.advance(10);
 		});
 
 		await scan.scanSessionSimilarity(query, { model: MODEL, dim: DIM });
 
-		expect(Math.abs((clock.sleeps[sleepsBefore] as number) - 23.33)).toBeLessThan(1);
+		const first = sleepsAt[sleepsBeforeSecondScan];
+		expect(first?.statementsSoFar).toBe(statementsBeforeSecondScan);
+		expect(Math.abs((first?.ms ?? 0) - 23.33)).toBeLessThan(1);
 	});
 
 	test("two scans with no mutex both complete within their own budgets, each with correct results", async () => {
