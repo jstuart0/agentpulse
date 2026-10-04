@@ -39,15 +39,13 @@ describePostgresOnly("the history window on Postgres", () => {
 				.insert(askMessages)
 				.values({ id, threadId: THREAD, role: "user", content: id, createdAt: TIE });
 		}
-		await getDb()
-			.insert(askMessages)
-			.values({
-				id: "m-newest",
-				threadId: THREAD,
-				role: "user",
-				content: "newest",
-				createdAt: "2026-01-01 00:00:05+00",
-			});
+		await getDb().insert(askMessages).values({
+			id: "m-newest",
+			threadId: THREAD,
+			role: "user",
+			content: "newest",
+			createdAt: "2026-01-01 00:00:05+00",
+		});
 
 		const first = await listRecentMessages(THREAD, 12);
 		const second = await listRecentMessages(THREAD, 12);
