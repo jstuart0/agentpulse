@@ -603,8 +603,9 @@ for these JSON lines:
 - `ask_vector_scan_started`: `model`, `dim`. One per scan, before it reads.
 - `ask_vector_scan`: `returned` (rows read), `scored`, `skipped` (orphans and
   wrong-size blobs), `statements`, `stopReason` (`exhausted`, `row_budget` or
-  `time_budget`), `ms`, `busyMs` (time spent reading and scoring; `ms`
-  also includes the sleeps that pace the scan), `maxSliceMs` (the longest stretch without yielding to the
+  `time_budget`), `ms`, `busyMs` (CPU time the chunks used, user plus
+  system, which is what the pacer sleeps off; `ms` also includes the sleeps that
+  pace the scan and any time blocked on storage), `maxSliceMs` (the longest stretch without yielding to the
   event loop) and `oldestEventAt` (the oldest event the scan reached, or null).
   `stopReason: exhausted` means the scan covered every vector of the active
   model.
@@ -618,6 +619,18 @@ for these JSON lines:
 Each turn also logs `ask_turn_started`, `ask_turn_path` and `ask_turn_done`
 (counts, path and duration; never message text). Callers refused for load
 get `503 busy` on the web; there is no log counter for them yet.
+
+**Watching the embeddings backfill.** `GET /api/v1/ai/vector-search/status`
+(`manage` scope for an API key) returns `progress`: `total`, `embedded`,
+`pending`, `model`, `running`, `startedAt`, `finishedAt` and `error`. The log
+has one `embedding_backfill_batch_started` (`cursor`, `rows`, `payloadBytes`)
+and one `embedding_backfill_batch` (`cursor`, `embedded`, `skipped`, `ms`) per
+batch. The backfill walks an id cursor in windows of 5,000 ids, never reads a
+whole payload into JavaScript, and takes at most 32 rows or about 4 MiB of
+payload per batch, so it can run beside ingest on a large table. It uses
+SQLite's `octet_length()` (SQLite 3.43 or later); the code doesn't check the
+version, so on an older SQLite the status shows an `error` and the log shows
+`[embeddings] backfill failed`.
 
 **Turning semantic search off.** Without a redeploy: Settings → AI → Vector
 search → Enabled off, or `PUT /api/v1/ai/vector-search/status` with
