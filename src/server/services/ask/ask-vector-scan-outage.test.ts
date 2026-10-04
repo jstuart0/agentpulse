@@ -5,7 +5,8 @@
  * what the event loop does between statements, never RSS or wall time:
  * those are integers fixed by the code's shape, so they hold on any machine.
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, mock, test } from "bun:test";
+import { describeSqliteOnly, isSqliteTest } from "../../test-utils/backend.js";
 import "../ai/__test_db.js";
 
 mock.module("../ai/llm/registry.js", () => ({
@@ -88,6 +89,7 @@ function useAdapter(model: string, dim: number, query: Float32Array) {
 }
 
 beforeAll(async () => {
+	if (!isSqliteTest) return;
 	await initializeDatabase();
 	config.secretsKey = "test-secrets-key-32-characters!!";
 	(config as Record<string, unknown>).vectorSearchEnabled = true;
@@ -105,12 +107,14 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+	if (!isSqliteTest) return;
 	config.secretsKey = originalSecretsKey;
 	(config as Record<string, unknown>).vectorSearchEnabled = originalVectorSearch;
 	__resetEmbeddingAdapterForTests();
 });
 
 beforeEach(async () => {
+	if (!isSqliteTest) return;
 	await getDb().delete(askMessages).execute();
 	await getDb().delete(askThreads).execute();
 	clearEmbeddingFixtures();
@@ -124,11 +128,12 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	if (!isSqliteTest) return;
 	meter.restore();
 	Object.assign(scanConfig, originalScanConfig);
 });
 
-describe("an Ask turn over 1,200 stored vectors of 4096 dims", () => {
+describeSqliteOnly("an Ask turn over 1,200 stored vectors of 4096 dims", () => {
 	test("no statement returns more than 16 rows or 256 KiB, and the planted neighbour is found", async () => {
 		const query = seedCorpus({ count: 1_200, dim: 4096, model: "fake-4096", plantedId: 600 });
 		useAdapter("fake-4096", 4096, query);
@@ -191,7 +196,7 @@ describe("an Ask turn over 1,200 stored vectors of 4096 dims", () => {
 	});
 });
 
-describe("statement size follows the vector dimension", () => {
+describeSqliteOnly("statement size follows the vector dimension", () => {
 	for (const [dim, rowCap] of [
 		[1024, 256],
 		[64, 256],
@@ -210,7 +215,7 @@ describe("statement size follows the vector dimension", () => {
 	}
 });
 
-describe("the scan shares the process with everything else", () => {
+describeSqliteOnly("the scan shares the process with everything else", () => {
 	test("a real HTTP request and a real hook delivery are served while a paced scan is mid-flight", async () => {
 		const { app } = await import("../../app.js");
 		const { createApiKey } = await import("../../auth/api-key.js");
@@ -296,7 +301,7 @@ describe("the scan shares the process with everything else", () => {
 	});
 });
 
-describe("a missing scan index degrades the turn instead of failing it", () => {
+describeSqliteOnly("a missing scan index degrades the turn instead of failing it", () => {
 	const INDEX = "idx_event_embeddings_model_dim_event";
 
 	beforeEach(() => {

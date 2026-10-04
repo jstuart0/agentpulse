@@ -5,7 +5,7 @@
  * suffix / orphan / mixed-model cases run in `vector-scan.shapes.test.ts`.
  */
 import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
-import { describeSqliteOnly } from "../../../test-utils/backend.js";
+import { describeSqliteOnly, isSqliteTest } from "../../../test-utils/backend.js";
 import "../../../db/__test_db.js";
 
 const { config } = await import("../../../config.js");
@@ -115,10 +115,12 @@ function captureLogs() {
 }
 
 beforeAll(async () => {
+	if (!isSqliteTest) return;
 	await initializeDatabase();
 });
 
 beforeEach(() => {
+	if (!isSqliteTest) return;
 	clearEmbeddingFixtures();
 	scan.__resetVectorScanStateForTests();
 	setBudgets({ maxRows: 50_000, maxMs: 60_000, share: 1 });
@@ -126,6 +128,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	if (!isSqliteTest) return;
 	meter.restore();
 	scan.__resetVectorScanStateForTests();
 	Object.assign(scanConfig, originalScanConfig);

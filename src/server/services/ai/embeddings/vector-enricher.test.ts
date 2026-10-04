@@ -4,7 +4,11 @@
  * resolved adapter's model and dimension are what the statement is bound to.
  */
 import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
-import { describeSqliteOnly } from "../../../test-utils/backend.js";
+import {
+	describePostgresOnly,
+	describeSqliteOnly,
+	isSqliteTest,
+} from "../../../test-utils/backend.js";
 import "../../../db/__test_db.js";
 
 const { config } = await import("../../../config.js");
@@ -51,10 +55,12 @@ function captureLogs() {
 }
 
 beforeAll(async () => {
+	if (!isSqliteTest) return;
 	await initializeDatabase();
 });
 
 beforeEach(() => {
+	if (!isSqliteTest) return;
 	clearEmbeddingFixtures();
 	scan.__resetVectorScanStateForTests();
 	scanConfig.vectorScanCpuShare = 1;
@@ -64,6 +70,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	if (!isSqliteTest) return;
 	meter.restore();
 	scan.__resetVectorScanStateForTests();
 	Object.assign(scanConfig, originalScanConfig);
@@ -201,5 +208,24 @@ describeSqliteOnly("a scan that fails", () => {
 		expect(kinds).toContain("ask_vector_scan_started");
 		expect(kinds).toContain("ask_vector_scan");
 		expect(kinds.indexOf("ask_vector_scan_started")).toBeLessThan(kinds.indexOf("ask_vector_scan"));
+	});
+});
+
+describePostgresOnly("on the Postgres backend (event_embeddings is SQLite-only)", () => {
+	test("the factory returns null and the enricher returns nothing without touching the database", async () => {
+		const { getVectorEnricher } = await import("./vector-enricher.js");
+		expect(await getVectorEnricher()).toBeNull();
+
+		let embeds = 0;
+		const result = await new VectorEmbeddingEnricher(
+			adapterFor(new Float32Array(DIM), {
+				embed: async () => {
+					embeds++;
+					return new Float32Array(DIM);
+				},
+			}),
+		).enrich("anything");
+		expect(result.directHits.size).toBe(0);
+		expect(embeds).toBe(0);
 	});
 });
