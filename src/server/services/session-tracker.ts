@@ -1718,10 +1718,13 @@ export const MAX_MACHINE_GROUPS = 50;
 
 /**
  * On top of those, the machines named by a registered (non-revoked) supervisor are
- * always listed, up to this many, so a real machine can't be pushed out of the
- * listing (and out of the select, where an unlisted machine can't be chosen) by
- * invented busy names. Registering a supervisor needs a manage-level credential,
- * which an ingest key is not, so this bound can't be inflated from outside.
+ * always listed, up to this many, so a supervisor-registered machine can't be
+ * pushed out of the listing (and out of the select, where an unlisted machine
+ * can't be chosen) by invented busy names. Registering a supervisor needs a
+ * manage-level credential, which an ingest key is not, so this bound can't be
+ * inflated from outside. A machine only a relay reports has no such protection:
+ * invented busy names can still push it past the busiest MAX_MACHINE_GROUPS into
+ * the rolled-up remainder, so the listing is approximate for those.
  */
 export const MAX_REGISTERED_MACHINE_GROUPS = 200;
 

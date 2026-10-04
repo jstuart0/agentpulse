@@ -47,6 +47,17 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Fixed
 
+- **An unrecognised `fields` value on `GET /api/v1/sessions/:id` is now a 400**
+  (`invalid_field`); it used to be ignored and the whole detail came back. Every
+  value of a repeated `fields` is checked.
+- **The status line forgets what it may not keep.** The last name it saw is
+  removed when the relay says the session is excluded (and the native-name
+  record with it), unknown, or the exclude rules are invalid, and while
+  `AGENTPULSE_SKIP` is on, so a later timeout never prints a stale name. Those
+  files are private (0700/0600), never followed through a link, written
+  atomically, and pruned after 30 days. Names are stripped of terminal-acting
+  characters (C1 controls, bidi and zero-width format characters) before they
+  are printed; ordinary accents, CJK and emoji are unchanged.
 - **The status line could show the first characters of the session id instead of
   the session's name on a long session.** It fetched the whole session detail
   (about 1.6 MB for a long session) on every render and gave up after one
