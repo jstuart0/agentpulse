@@ -188,12 +188,15 @@ elif [ "$SKIP_ACTIVE" = true ]; then
   fi
 fi
 
-# What this script remembers (the last name seen, the last native name pushed)
-# lives in $AGENTPULSE_DIR/cache, private to the user: the directory is 0700 and
-# the files 0600 whatever the umask, a link or a non-regular file is never read,
-# written through or replaced, and a write goes to a private temp file that is
-# renamed into place. Nothing is kept about a session that may not be named: see
-# cache_forget below.
+# What this script remembers is one thing: for each session, a digest of the last
+# native name it pushed (cache/native-name-<id>), so a name isn't pushed again on
+# every render. It holds a digest, never the name itself. The directory is 0700
+# and the files 0600 whatever the umask (an older, looser one is tightened
+# whenever this script touches it, written or not), a link or a non-regular file
+# is never read, written through or replaced, and a write goes to a private temp
+# file that is renamed into place. An excluded session's file is removed (see
+# cache_forget below). A lookup that fails shows the short session id; no display
+# name is ever kept or read from disk.
 CACHE_DIR="$AGENTPULSE_DIR/cache"
 
 # Creates (or tightens) the directory; false when it can't be used as one.
@@ -205,6 +208,17 @@ cache_dir_ready() {
   [ -d "$CACHE_DIR" ] && [ ! -L "$CACHE_DIR" ]
 }
 
+# Drops group and other access to the directory and to the given files, whether or
+# not anything is about to be written (one chmod; never through a link).
+cache_tighten() {
+  [ -L "$CACHE_DIR" ] && return 0
+  [ -d "$CACHE_DIR" ] || return 0
+  local f args=("$CACHE_DIR")
+  for f in "$@"; do [ -f "$f" ] && [ ! -L "$f" ] && args+=("$f"); done
+  chmod go-rwx "${args[@]}" 2>/dev/null
+  return 0
+}
+
 # The first line of a remembered file, only if it is a regular file (not a link).
 cache_read() {
   [ -L "$CACHE_DIR" ] && return 1
@@ -214,6 +228,7 @@ cache_read() {
 # Removes files from the directory (never through a link to the directory).
 cache_forget() {
   [ -L "$CACHE_DIR" ] && return 0
+  cache_tighten
   local f
   for f in "$@"; do rm -f "$CACHE_DIR/$f" 2>/dev/null; done
 }
@@ -221,11 +236,11 @@ cache_forget() {
 # Once a day at most, and only when something was just written (so a steady-state
 # render pays nothing), drops remembered files untouched for 30 days: a session
 # that old isn't being rendered, and one file per session would otherwise pile up
-# forever. The cost is one stat of a marker file, plus one find a day.
+# forever. (Only native-name files: nothing else is kept.) The cost is one stat of a marker file, plus one find a day.
 cache_sweep() {
   local marker="$CACHE_DIR/.swept"
   if [ -f "$marker" ] && [ ! -L "$marker" ] && [ -z "$(find "$marker" -mtime +0 2>/dev/null)" ]; then return 0; fi
-  find "$CACHE_DIR" -maxdepth 1 -type f \( -name 'name-*' -o -name 'native-name-*' \) -mtime +30 -exec rm -f {} + 2>/dev/null
+  find "$CACHE_DIR" -maxdepth 1 -type f -name 'native-name-*' -mtime +30 -exec rm -f {} + 2>/dev/null
   [ -L "$marker" ] || (umask 077; : > "$marker") 2>/dev/null
   return 0
 }
@@ -267,19 +282,10 @@ PLAIN_NAME_JQ='gsub("[\u0080-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066
 # refuses an excluded session says so locally with 404 {"error":"excluded"}, and
 # then nothing more is asked about the session, including the name push below.
 # A 404 {"error":"unknown_session"} only means the relay has never seen the id.
-# The last name seen for the session is kept in cache/name-<id>, used only when
-# the lookup itself fails (no answer in time, a server error): a miss, an
-# unknown session and an excluded one never show a remembered name.
 NAME=""
 EXCLUDED_BY_RELAY=false
-NAME_CACHE_FILE=""
-if [ -n "$CACHE_ID" ]; then
-  NAME_CACHE_FILE="$CACHE_DIR/name-$CACHE_ID"
-  # While a skip is active, or the rules are marked invalid, nothing is remembered
-  # about the session and no remembered name is shown.
-  if [ "$SKIP_ACTIVE" = true ]; then cache_forget "name-$CACHE_ID" "native-name-$CACHE_ID"; fi
-  if [ "$MARKER_PRESENT" = true ]; then cache_forget "name-$CACHE_ID"; fi
-fi
+# While a skip is active nothing about the session is kept: its pushed-name record goes.
+if [ -n "$CACHE_ID" ] && [ "$SKIP_ACTIVE" = true ]; then cache_forget "native-name-$CACHE_ID"; fi
 if [ -n "$SAFE_ID" ]; then
   LOOKUP=$(curl -s -m 1 -w '\n%{http_code}' "http://localhost:${AGENTPULSE_PORT}/api/v1/sessions/${SAFE_ID}?fields=displayName" 2>/dev/null)
   LOOKUP_CODE="${LOOKUP##*$'\n'}"
@@ -287,42 +293,41 @@ if [ -n "$SAFE_ID" ]; then
   if [ "$LOOKUP_CODE" = "404" ] && [ "$(printf '%s' "$LOOKUP_BODY" | jq -r '.error // ""' 2>/dev/null)" = "excluded" ]; then
     EXCLUDED_BY_RELAY=true
     SAFE_ID=""
-    cache_forget "name-$CACHE_ID" "native-name-$CACHE_ID"
+    cache_forget "native-name-$CACHE_ID"
   elif [ "$LOOKUP_CODE" = "200" ]; then
     NAME=$(printf '%s' "$LOOKUP_BODY" | jq -r ".session.displayName // \"\" | $PLAIN_NAME_JQ" 2>/dev/null | tr -d '\000-\037\177')
-    if [ -n "$NAME" ] && [ "$NAME" != "null" ] && [ "$MARKER_PRESENT" != true ]; then
-      REMEMBERED=$(cache_read "$NAME_CACHE_FILE")
-      if [ "$NAME" != "$REMEMBERED" ]; then cache_write "$NAME_CACHE_FILE" "$NAME"; fi
-    fi
-  elif [ "$LOOKUP_CODE" = "404" ]; then
-    # Unknown to the relay, a plain 404, rules_invalid: a name remembered earlier is stale.
-    cache_forget "name-$CACHE_ID"
-  elif [ "$MARKER_PRESENT" != true ]; then
-    # No answer in time, a server error: the last name seen, if there is one.
-    NAME=$(cache_read "$NAME_CACHE_FILE" | jq -Rr "$PLAIN_NAME_JQ" 2>/dev/null | tr -d '\000-\037\177')
   fi
+  # Anything else (no answer in time, a server error, an unknown session): no name,
+  # and the line shows the short session id.
 fi
 if [ "$EXCLUDED_BY_RELAY" = true ] && [ -z "$EXCLUDE_LINE" ] && relay_covers_this_session; then
   EXCLUDE_LINE="AgentPulse: not reported (excluded)"
 fi
 
 # Pull-only sync (F5): push Claude Code's native session name to AgentPulse
-# once per distinct name. The cache records the last name the server accepted
-# (200) or permanently refused (400); anything else (not yet ingested, rate
-# limited, relay down) is retried on the next render. Backgrounded with all
-# output discarded, because anything this script prints lands in the
-# statusline verbatim.
+# once per distinct name. The cache records a digest (cksum: POSIX, so the same
+# everywhere) of the last name the server accepted (200) or permanently refused
+# (400); anything else (not yet ingested, rate limited, relay down) is retried on
+# the next render. A digest, not the name: the name can derive from a prompt, and
+# a render that was already pushing when another render learned the session is
+# excluded can still write the file a moment after that render removed it; what
+# it can leave behind then says that a push happened and nothing about the name,
+# and the next render of the session (which is told "excluded") removes it.
+# Backgrounded with all output discarded, because anything this script prints
+# lands in the statusline verbatim.
 if [ -n "$SAFE_ID" ] && [ -n "$NATIVE_NAME" ] && [ "$NATIVE_NAME" != "null" ]; then
   CACHE_FILE="$CACHE_DIR/native-name-$SAFE_ID"
+  cache_tighten "$CACHE_FILE"
+  NATIVE_DIGEST=$(printf '%s' "$NATIVE_NAME" | cksum | cut -d' ' -f1,2)
   LAST_PUSHED=$(cache_read "$CACHE_FILE")
-  if [ "$NATIVE_NAME" != "$LAST_PUSHED" ]; then
+  if [ "$NATIVE_DIGEST" != "$LAST_PUSHED" ]; then
     (
       BODY="{\"name\":$(printf '%s' "$NATIVE_NAME" | jq -Rs .)}"
       CODE=$(curl -s -m 1 -o /dev/null -w '%{http_code}' -X PUT \
         "http://localhost:${AGENTPULSE_PORT}/api/v1/sessions/${SAFE_ID}/native-name" \
         -H "Content-Type: application/json" -d "$BODY")
       case "$CODE" in
-        200 | 400) cache_write "$CACHE_FILE" "$NATIVE_NAME" ;;
+        200 | 400) cache_write "$CACHE_FILE" "$NATIVE_DIGEST" ;;
       esac
     ) > /dev/null 2>&1 &
   fi
