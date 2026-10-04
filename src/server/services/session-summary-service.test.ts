@@ -17,13 +17,14 @@ import {
 	test,
 } from "bun:test";
 import * as nodeCrypto from "node:crypto";
+import { eq } from "drizzle-orm";
 import "./ai/__test_db.js";
 import type { SessionSummary, SummaryProvenance } from "../../shared/session-summary.js";
 import type { StubGate } from "../test-utils/llm-stub-server.js";
 import type { SeedEvent } from "../test-utils/summary-service-harness.js";
 
 const { getDb, initializeDatabase } = await import("../db/client.js");
-const { aiSessionSummaries } = await import("../db/schema/index.js");
+const { aiSessionSummaries, sessions } = await import("../db/schema/index.js");
 const H = await import("../test-utils/summary-service-harness.js");
 const svc = await import("./session-summary-service.js");
 const secrets = await import("./ai/secrets.js");
@@ -755,4 +756,50 @@ describe("the evidence read", () => {
 		}
 		expect(stub.requests().length).toBe(1);
 	}, 120_000);
+});
+
+describe("what the verifier is given", () => {
+	test("TC-5.7b the session is read again after the last model call: one that started working meanwhile has its outcome clamped", async () => {
+		const { editId } = await H.seedActiveSession(SID);
+		const gate = stub.createGate();
+		script({
+			text: H.answer([editId], { outcome: { status: "completed", explanation: "all done" } }),
+			stop: "stop",
+			usage: H.STUB_USAGE,
+			gate,
+		} as never);
+		const { done } = await H.startGeneration(SID);
+		await H.withDeadline(gate.arrived);
+		await getDb().update(sessions).set({ isWorking: true }).where(eq(sessions.sessionId, SID));
+		gate.release();
+		await H.withDeadline(done);
+		const codes = (await summaryOf(SID))?.provenance?.adjustments.map((a) => a.code) ?? [];
+		expect(codes).toContain("outcome_clamped");
+	});
+
+	test("TC-5.7c the ledger is built with the session's agent type: a Claude Code Bash call with no exit code counts as a pass", async () => {
+		await H.seedSession(SID);
+		const [, testId] = await H.seedEvents(SID, [
+			H.prompt("run the tests"),
+			{
+				eventType: "PostToolUse",
+				category: "tool_event",
+				toolName: "Bash",
+				toolInput: { command: "bun test" },
+				toolResponse: "4 pass\n0 fail",
+			},
+		]);
+		script(
+			ok([testId], {
+				validation: [
+					{ what: "bun test", result: "passed", detail: "finished", evidence: [`E${testId}`] },
+				],
+			}),
+		);
+		await H.runGeneration(SID);
+		const stored = await summaryOf(SID);
+		const validation = stored?.summary?.validation[0];
+		expect(validation?.result).toBe("passed");
+		expect(validation?.adjusted).toBe(false);
+	});
 });

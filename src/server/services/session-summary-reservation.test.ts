@@ -280,6 +280,26 @@ describe("the claim and its races", () => {
 		expect((await rowOf(other))?.attemptStatus).toBe("idle");
 	});
 
+	test("TC-5.21c the claim's own fences are strict: exactly 30 s of cooldown and exactly 300 s of lease still hold; one second more gives way", async () => {
+		await H.seedActiveSession(SID);
+		await H.seedSummaryRow(SID, {
+			attemptStatus: "failed",
+			attemptErrorCode: "provider_error",
+			attemptStartedAt: toDbTimestamp(new Date(BASE)),
+		});
+		expect(await svc.claimSummaryAttempt(SID, "t30", new Date(BASE + 30_000))).toBe(false);
+		expect(await svc.claimSummaryAttempt(SID, "t31", new Date(BASE + 31_000))).toBe(true);
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({
+				attemptStatus: "generating",
+				attemptStartedAt: toDbTimestamp(new Date(BASE)),
+				attemptToken: "old",
+			});
+		expect(await svc.claimSummaryAttempt(SID, "l300", new Date(BASE + 300_000))).toBe(false);
+		expect(await svc.claimSummaryAttempt(SID, "l301", new Date(BASE + 301_000))).toBe(true);
+	});
+
 	test("TC-5.22 lease: a generation 300 s old is joined; at 301 s a new claim wins inside the cooldown", async () => {
 		const { editId } = await H.seedActiveSession(SID);
 		setSystemTime(new Date(BASE));

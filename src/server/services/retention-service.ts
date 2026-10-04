@@ -287,7 +287,7 @@ async function tryAdvisoryXactLock(
  * sides of the comparison are `toDbTimestamp` text. On Postgres the delete runs in its own
  * transaction that first takes the retention advisory lock, and is skipped without it.
  */
-async function deleteExpiredSummaries(
+export async function deleteExpiredSummaries(
 	cutoff: string,
 	leaseCutoff: string,
 ): Promise<{ deleted: number; lockLost: boolean }> {

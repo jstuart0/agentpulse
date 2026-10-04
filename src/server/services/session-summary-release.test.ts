@@ -241,6 +241,21 @@ describe("release, finish, and the two orderings", () => {
 		expect((await rowOf(SID))?.attemptStatus).toBe("idle");
 	});
 
+	test("TC-5.63c a write needs the generating status as well as the token: a second write of any kind matches nothing", async () => {
+		const { gate, done } = await startHeld(SID);
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({ attemptStatus: "failed", attemptErrorCode: "interrupted" })
+			.where(eq(aiSessionSummaries.sessionId, SID));
+		gate.release();
+		await H.withDeadline(done);
+		const row = await rowOf(SID);
+		expect(row?.attemptStatus).toBe("failed");
+		expect(row?.attemptErrorCode).toBe("interrupted");
+		expect(row?.summary).toBeNull();
+		expect(row?.attemptToken).toBeTruthy();
+	});
+
 	test("BN-9 a release that lands between the claim and the hand-over skips the half-built entry; the run then completes", async () => {
 		const { editId } = await H.seedActiveSession(SID);
 		script(ok([editId]));

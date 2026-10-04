@@ -23,6 +23,7 @@ const {
 	getRetentionStatus,
 	getRetentionLimits,
 	PG_RETENTION_LOCK_ID,
+	deleteExpiredSummaries,
 } = await import("./retention-service.js");
 
 beforeAll(() => {
@@ -446,6 +447,23 @@ describe("retention of session summaries (TC-5.45, 5.56, 5.57)", () => {
 			const after = await runRetentionPass(NOW);
 			expect(after.skippedReason).toBeUndefined();
 			expect(after.summariesDeleted).toBe(1);
+		});
+
+		test("TC-5.57 the summary delete takes the lock itself: held elsewhere, it deletes nothing and says so", async () => {
+			await seedSummary("old", { generatedAt: at(CUTOFF_MS - DAY), attemptStatus: "idle" });
+			const postgres = (await import("postgres")).default;
+			const holder = postgres(config.databaseUrl, { max: 1 });
+			try {
+				await holder`SELECT pg_advisory_lock(${PG_RETENTION_LOCK_ID})`;
+				const held = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
+				expect(held).toEqual({ deleted: 0, lockLost: true });
+				expect(await present("old")).toBe(true);
+			} finally {
+				await holder`SELECT pg_advisory_unlock(${PG_RETENTION_LOCK_ID})`;
+				await holder.end({ timeout: 2 });
+			}
+			const free = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
+			expect(free).toEqual({ deleted: 1, lockLost: false });
 		});
 	});
 });
