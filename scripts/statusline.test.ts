@@ -1191,7 +1191,7 @@ describe("statusline.sh — what is printed is a plain name", () => {
 	const INPUT = { session_id: "abc123", model: { display_name: "Opus" } };
 	const U = (...codes: number[]) => String.fromCodePoint(...codes);
 	const shown = async () => stripAnsi((await run(INPUT)).stdout);
-	const KEEP = ["Zoë-Müller", "日本語のセッション", "rocket-" + U(0x1f680) + "-ship", "naïve café"];
+	const KEEP = ["Zoë-Müller", "日本語のセッション", `rocket-${U(0x1f680)}-ship`, "naïve café"];
 	const STRIPPED: Array<[string, string]> = [
 		["a C1 control", `a${U(0x85)}b`],
 		["a right-to-left override", `a${U(0x202e)}b`],
