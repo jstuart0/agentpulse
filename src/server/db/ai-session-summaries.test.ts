@@ -19,7 +19,6 @@ import {
 	existsSync,
 	mkdtempSync,
 	readFileSync,
-	readdirSync,
 	rmSync,
 	unlinkSync,
 	writeFileSync,
@@ -27,14 +26,21 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { type SQL, eq, sql } from "drizzle-orm";
+import { getTableConfig as getPgTableConfig } from "drizzle-orm/pg-core";
+import { getTableConfig as getSqliteTableConfig } from "drizzle-orm/sqlite-core";
 import "../services/ai/__test_db.js";
 import { ANONYMOUS_ACTOR } from "../auth/actor.js";
-import { describePostgresOnly, itSqliteOnly } from "../test-utils/backend.js";
+import { TEST_BACKEND, describePostgresOnly, itSqliteOnly } from "../test-utils/backend.js";
 
 const { config } = await import("../config.js");
 const { getDb, initializeDatabase } = await import("./client.js");
 const { executeRows } = await import("./sql-helpers.js");
-const { controlActions, projects, sessions, supervisors } = await import("./schema/index.js");
+const { aiSessionSummaries, controlActions, projects, sessions, supervisors } = await import(
+	"./schema/index.js"
+);
+const { aiSessionSummariesPg, aiSessionSummariesSqlite } = await import(
+	"./schema/ai/ai-session-summaries.js"
+);
 const { claimNextControlAction, queueCleanupWorkArea, updateControlAction } = await import(
 	"../services/control-actions.js"
 );
@@ -186,13 +192,20 @@ function insertSession(db: Database, sessionId: string): void {
 	);
 }
 
-/** Exactly one migration file whose name starts with the number; its text. */
-function migrationSql(dialect: "sqlite" | "postgres", number: string): string {
+/**
+ * The summaries migration, found by its journal tag rather than a number: this
+ * branch may be renumbered at merge when another branch takes the same slot.
+ */
+function migrationSql(dialect: "sqlite" | "postgres"): string {
 	const dir = join(MIGRATIONS_ROOT, dialect);
-	const files = readdirSync(dir).filter((n) => n.startsWith(`${number}_`) && n.endsWith(".sql"));
-	expect(files, `drizzle/${dialect} must hold exactly one ${number}_*.sql`).toHaveLength(1);
-	expect(files[0], "the migration is named for the table").toContain("ai_session_summaries");
-	return readFileSync(join(dir, files[0]), "utf8");
+	const journal = JSON.parse(readFileSync(join(dir, "meta", "_journal.json"), "utf8")) as {
+		entries: Array<{ tag: string }>;
+	};
+	const entries = journal.entries.filter((e) => e.tag.endsWith("_ai_session_summaries"));
+	expect(entries, `the ${dialect} journal has exactly one ai_session_summaries entry`).toHaveLength(
+		1,
+	);
+	return readFileSync(join(dir, `${entries[0]?.tag}.sql`), "utf8");
 }
 
 function statements(text: string): string[] {
@@ -226,7 +239,57 @@ async function seedSessionWithSummary(sessionId: string): Promise<void> {
 	expect(await summaryCount(sessionId), "positive control: the summary row exists").toBe(1);
 }
 
+// ── TC-1.0: the selector the Postgres-only blocks skip on ────────────────────
+
+test("TC-1.0 backend selector agrees with config.dialect", () => {
+	// AGENTPULSE_TEST_BACKEND picks which blocks run; DATABASE_URL picks the
+	// database. Set to different backends, the dialect-only blocks skip silently
+	// while every other test runs against the other database.
+	expect(TEST_BACKEND).toBe(config.dialect);
+});
+
 // ── TC-1.1 / TC-1.2: columns, in the Data table's order ──────────────────────
+
+test("TC-1.1 the TypeScript tables declare the ten columns in the Data table's order, with their nullability and defaults", () => {
+	const wantNotNull = new Set(["session_id", "schema_version", "attempt_status"]);
+	const sqliteCols = getSqliteTableConfig(aiSessionSummariesSqlite).columns;
+	const pgCols = getPgTableConfig(aiSessionSummariesPg).columns;
+	for (const cols of [sqliteCols, pgCols]) {
+		expect(cols.map((c) => c.name)).toEqual(EXPECTED_ORDER);
+		for (const c of cols) {
+			expect(c.notNull, `${c.name} notNull`).toBe(wantNotNull.has(c.name));
+		}
+		expect(cols.filter((c) => c.primary).map((c) => c.name)).toEqual(["session_id"]);
+		expect(cols.find((c) => c.name === "schema_version")?.default).toBe(1);
+		expect(cols.find((c) => c.name === "attempt_status")?.default).toBe("idle");
+	}
+});
+
+test("TC-1.1 a Drizzle round trip through the runtime table: insert a session id alone, read back the defaults", async () => {
+	const sessionId = `sum-rt-${crypto.randomUUID()}`;
+	await getDb().insert(sessions).values({ sessionId, agentType: "claude_code" });
+	try {
+		await getDb().insert(aiSessionSummaries).values({ sessionId });
+		const [row] = await getDb()
+			.select()
+			.from(aiSessionSummaries)
+			.where(eq(aiSessionSummaries.sessionId, sessionId));
+		expect(row).toEqual({
+			sessionId,
+			schemaVersion: 1,
+			generatedAt: null,
+			attemptStatus: "idle",
+			throughEventId: null,
+			attemptStartedAt: null,
+			attemptToken: null,
+			attemptErrorCode: null,
+			summary: null,
+			provenance: null,
+		});
+	} finally {
+		await getDb().delete(sessions).where(eq(sessions.sessionId, sessionId));
+	}
+});
 
 itSqliteOnly(
 	"TC-1.1 fresh Drizzle install: ten columns in the Data table's order, with the plan's types, keys and defaults",
@@ -263,14 +326,26 @@ describePostgresOnly("ai_session_summaries on Postgres", () => {
 			ORDER BY ordinal_position`);
 		expect(cols.map((c) => c.column_name)).toEqual(EXPECTED_ORDER);
 		const by = (n: string) => cols.find((c) => c.column_name === n);
-		expect(by("summary")?.data_type).toBe("json");
-		expect(by("provenance")?.data_type).toBe("json");
-		expect(by("schema_version")?.data_type).toBe("integer");
+		const wantType: Record<string, string> = {
+			session_id: "text",
+			schema_version: "integer",
+			generated_at: "text",
+			attempt_status: "text",
+			through_event_id: "integer",
+			attempt_started_at: "text",
+			attempt_token: "text",
+			attempt_error_code: "text",
+			summary: "json",
+			provenance: "json",
+		};
+		for (const [name, type] of Object.entries(wantType)) {
+			expect(by(name)?.data_type, `${name} data_type`).toBe(type);
+		}
 		expect(by("schema_version")?.is_nullable).toBe("NO");
 		expect(by("schema_version")?.column_default).toBe("1");
 		expect(by("attempt_status")?.is_nullable).toBe("NO");
 		expect(by("attempt_status")?.column_default).toContain("'idle'");
-		expect(by("through_event_id")?.data_type).toBe("integer");
+		expect(by("session_id")?.is_nullable).toBe("NO");
 		for (const nullable of [
 			"generated_at",
 			"through_event_id",
@@ -282,6 +357,14 @@ describePostgresOnly("ai_session_summaries on Postgres", () => {
 		]) {
 			expect(by(nullable)?.is_nullable, `${nullable} nullable`).toBe("YES");
 		}
+		const pk = await rows<{ column_name: string }>(sql`SELECT kcu.column_name
+			FROM information_schema.table_constraints tc
+			JOIN information_schema.key_column_usage kcu
+				ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+			WHERE tc.table_schema = 'public' AND tc.table_name = ${TABLE}
+			  AND tc.constraint_type = 'PRIMARY KEY'
+			ORDER BY kcu.ordinal_position`);
+		expect(pk.map((r) => r.column_name)).toEqual(["session_id"]);
 		expect(cols.map((c) => c.column_name)).not.toContain("attempt_error_message");
 	});
 
@@ -379,7 +462,7 @@ itSqliteOnly(
 
 // ── TC-1.10: every other delete site ─────────────────────────────────────────
 
-test("TC-1.10 control-actions cleanup_workarea (finalizeCleanupWorkArea) removes the summary row", async () => {
+test("TC-1.10a control-actions cleanup_workarea (finalizeCleanupWorkArea) removes the summary row", async () => {
 	const now = new Date().toISOString();
 	const supervisorId = `sup-${crypto.randomUUID()}`;
 	const projectId = crypto.randomUUID();
@@ -453,7 +536,7 @@ test("TC-1.10 control-actions cleanup_workarea (finalizeCleanupWorkArea) removes
 	}
 });
 
-test("TC-1.10 an approved AI session_delete action request removes the summary row", async () => {
+test("TC-1.10b an approved AI session_delete action request removes the summary row", async () => {
 	const sessionId = `sum-ai-${crypto.randomUUID()}`;
 	await seedSessionWithSummary(sessionId);
 	try {
@@ -476,7 +559,7 @@ test("TC-1.10 an approved AI session_delete action request removes the summary r
 	}
 });
 
-test("TC-1.10 an approved AI bulk delete (deleteOne) removes the summary row", async () => {
+test("TC-1.10c an approved AI bulk delete (deleteOne) removes the summary row", async () => {
 	const sessionId = `sum-bulk-${crypto.randomUUID()}`;
 	await seedSessionWithSummary(sessionId);
 	// deleteOne refuses a session that is still running; finish it first.
@@ -537,9 +620,30 @@ itSqliteOnly(
 
 // ── TC-1.12: the migration SQL is idempotent ─────────────────────────────────
 
+/** Scratch schemas and databases a crashed earlier run left behind. */
+async function sweepStaleScratch(postgres: typeof import("postgres")): Promise<void> {
+	const admin = postgres(config.databaseUrl, { max: 1, idle_timeout: 5 });
+	try {
+		const schemas = (await admin.unsafe(
+			"SELECT nspname FROM pg_namespace WHERE nspname LIKE 'ap\\_sum\\_%'",
+		)) as unknown as Array<{ nspname: string }>;
+		for (const { nspname } of schemas) {
+			await admin.unsafe(`DROP SCHEMA IF EXISTS "${nspname}" CASCADE`);
+		}
+		const dbs = (await admin.unsafe(
+			"SELECT datname FROM pg_database WHERE datname LIKE 'ap\\_sum\\_upgrade\\_%'",
+		)) as unknown as Array<{ datname: string }>;
+		for (const { datname } of dbs) {
+			await admin.unsafe(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`);
+		}
+	} finally {
+		await admin.end();
+	}
+}
+
 test("TC-1.12 the migration SQL runs twice without error, and beside a pre-created table", async () => {
 	if (config.dialect === "sqlite") {
-		const text = migrationSql("sqlite", "0010");
+		const text = migrationSql("sqlite");
 		expect(text.match(/CREATE TABLE IF NOT EXISTS/g)).toHaveLength(1);
 		expect(text).not.toMatch(/DROP|ALTER/i);
 		const db = legacyFixture();
@@ -563,10 +667,11 @@ test("TC-1.12 the migration SQL runs twice without error, and beside a pre-creat
 		return;
 	}
 
-	const text = migrationSql("postgres", "0011");
+	const text = migrationSql("postgres");
 	expect(text.match(/CREATE TABLE IF NOT EXISTS/g)).toHaveLength(1);
 	expect(text).not.toMatch(/DROP|ALTER/i);
 	const { default: postgres } = await import("postgres");
+	await sweepStaleScratch(postgres);
 	const schema = `ap_sum_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 	const client = postgres(config.databaseUrl, { max: 1, idle_timeout: 5 });
 	try {
@@ -637,6 +742,7 @@ test("TC-1.13 a database migrated to just before the table keeps every row and g
 	const { migrate } = await import("drizzle-orm/postgres-js/migrator");
 	const { drizzle: drizzlePg } = await import("drizzle-orm/postgres-js");
 	const prior = priorMigrationsDir("postgres");
+	await sweepStaleScratch(postgres);
 	const dbName = `ap_sum_upgrade_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 	const scratchUrl = new URL(config.databaseUrl);
 	scratchUrl.pathname = `/${dbName}`;
@@ -691,9 +797,15 @@ test("TC-1.14 a summary row for an unknown session is rejected", async () => {
 	try {
 		await run(sql`INSERT INTO ai_session_summaries (session_id) VALUES (${real})`);
 		expect(await summaryCount(real), "positive control: a real session is accepted").toBe(1);
-		await expect(
-			run(sql`INSERT INTO ai_session_summaries (session_id) VALUES (${unknown})`),
-		).rejects.toThrow();
+		// Drizzle wraps the driver error; the constraint text is on the cause.
+		const failure = await run(
+			sql`INSERT INTO ai_session_summaries (session_id) VALUES (${unknown})`,
+		).then(
+			() => null,
+			(e: unknown) => e as Error & { cause?: Error },
+		);
+		expect(failure, "the insert was rejected").not.toBeNull();
+		expect(`${failure?.message} ${failure?.cause?.message ?? ""}`).toMatch(/foreign key|violates/i);
 		expect(await summaryCount(unknown)).toBe(0);
 	} finally {
 		await run(sql`DELETE FROM sessions WHERE session_id = ${real}`);
@@ -741,6 +853,10 @@ itSqliteOnly(
 				"positive control: the rebuild did run for the re-armed table",
 			).toBe(true);
 			expect(lines.some((l) => l.includes(`Rebuilding ${TABLE}`))).toBe(false);
+			expect(
+				fkList(db, "watcher_configs").map((f) => f.on_delete),
+				"positive control: the rebuild restored watcher_configs' cascade FK",
+			).toEqual(["CASCADE"]);
 			expect(
 				(db.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(TABLE) as { sql: string })
 					.sql,

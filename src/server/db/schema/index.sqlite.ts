@@ -4,7 +4,7 @@
  * drizzle-kit SQLite config points here unconditionally (Decision 18).
  * The runtime barrel (index.ts) selects this file when config.dialect === "sqlite".
  *
- * Phase 2a: all 30 tables now exported from domain-specific files.
+ * Phase 2a: all 31 tables now exported from domain-specific files.
  * eventEmbeddings is SQLite-only (no pgTable equivalent — Decision 3).
  */
 

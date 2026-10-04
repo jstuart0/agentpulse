@@ -841,6 +841,8 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 					ON rc.unique_constraint_name = ccu.constraint_name
 				WHERE ccu.table_name = 'sessions'
 				  AND ccu.column_name = 'session_id'
+				  AND tc.table_schema = 'public'
+				  AND ccu.table_schema = 'public'
 				  AND rc.delete_rule = 'CASCADE'
 			`) as Array<{ table_name: string; delete_rule: string }>;
 

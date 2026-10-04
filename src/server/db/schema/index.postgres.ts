@@ -4,7 +4,7 @@
  * drizzle-kit Postgres config will point here unconditionally (Decision 18).
  * The runtime barrel (index.ts) selects this file when config.dialect === "postgres".
  *
- * Phase 2a: all 29 tables exported (eventEmbeddings is SQLite-only — Decision 3).
+ * Phase 2a: all 30 tables exported (eventEmbeddings is SQLite-only — Decision 3).
  * eventEmbeddings is NOT re-exported here; callers on the Postgres path must
  * gate on config.dialect === "sqlite" before accessing it.
  */

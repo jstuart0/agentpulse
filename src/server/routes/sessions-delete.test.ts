@@ -166,7 +166,7 @@ describe("DELETE /sessions/:id", () => {
 		expect(await summaryCount(sessionId)).toBe(0);
 	});
 
-	test("TC-1.9 the real DELETE route removes the session's summary row", async () => {
+	test("TC-1.9a the real DELETE route removes the session's summary row", async () => {
 		const sessionId = `tc19-del-${crypto.randomUUID()}`;
 		await getDb().insert(sessions).values({ sessionId, agentType: "claude_code" });
 		await seedSummary(sessionId);
@@ -177,7 +177,7 @@ describe("DELETE /sessions/:id", () => {
 		expect(await summaryCount(sessionId)).toBe(0);
 	});
 
-	test("TC-1.9 archiving a session keeps its summary row", async () => {
+	test("TC-1.9b archiving a session keeps its summary row", async () => {
 		const sessionId = `tc19-arch-${crypto.randomUUID()}`;
 		await getDb().insert(sessions).values({ sessionId, agentType: "claude_code" });
 		await seedSummary(sessionId);
