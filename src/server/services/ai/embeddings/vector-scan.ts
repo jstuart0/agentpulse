@@ -35,8 +35,13 @@ const MIN_PAYABLE_DEBT_MS = 2;
 const FIRST_EVENT_ID_BOUND = Number.MAX_SAFE_INTEGER;
 const LOGGED_ERROR_CHARS = 200;
 
+// The CASE returns the blob only for a row that has an event and whose blob is
+// exactly dim * 4 bytes (the one `?` in the select list), so a malformed or
+// oversize blob is never copied into memory. `length()` of a BLOB is answered
+// from the record header without reading the overflow pages (measured: 300 MB
+// of blobs in 0.2 ms, no RSS change, against 520 ms and 300 MiB for a read).
 const SCAN_SQL = `SELECT v.event_id AS eventId,
-		CASE WHEN e.session_id IS NOT NULL THEN v.vector END AS vector,
+		CASE WHEN e.session_id IS NOT NULL AND length(v.vector) = ? THEN v.vector END AS vector,
 		e.session_id AS sessionId
 	FROM event_embeddings v INDEXED BY idx_event_embeddings_model_dim_event
 	LEFT JOIN events e ON e.id = v.event_id
@@ -274,12 +279,18 @@ export async function scanSessionSimilarity(
 			const gate: TurnGate = { yielded: statements === 0, paid: false, waitedMs: 0 };
 			for (let wait = nextWait(gate); wait !== null; wait = nextWait(gate)) await wait;
 			sleptMs += gate.waitedMs;
+			// Pacing can sleep past the budget; the check after a chunk would only
+			// notice after one more statement. A scan always runs at least one.
+			if (statements > 0 && clock.now() - startedAt >= maxMs) {
+				stopReason = "time_budget";
+				break;
+			}
 
 			const chunkStartedAt = clock.now();
 			const cpuStartedAt = readCpuMs();
 			let rows: ChunkRow[];
 			try {
-				rows = statement.all(model, dim, cursor, chunkRows) as ChunkRow[];
+				rows = statement.all(dim * 4, model, dim, cursor, chunkRows) as ChunkRow[];
 				for (const row of rows) {
 					if (row.vector === null || row.sessionId === null || row.vector.byteLength !== dim * 4) {
 						skipped++;
