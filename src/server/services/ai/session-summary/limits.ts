@@ -35,12 +35,21 @@ export const SQL_REDACTION_MARGIN = 256;
 export const TOOL_INPUT_FIELD_SQL_CAP = 556;
 /** SQL reads at most this many characters of a stored response (the writer's own cap is the same). */
 export const RESPONSE_SQL_CAP = 2000;
-/** A pass summary line is cut here (code points). */
-export const PASS_LINE_CAP = 120;
 /** Most characters of `tool_input` bytes whose fields one chunk extracts; rows past it are `[not shown]`. */
 export const TOOL_INPUT_BYTE_BUDGET = 8_000_000;
 /** A Post row with no input is paired with a Pre row of the same call at most this many ids before it. */
 export const PAIR_WINDOW_IDS = 200;
+/**
+ * The pairing probe parses a row's `raw_payload` to read its call id; a payload
+ * over this many stored bytes (extra keys can run to the body cap) is never
+ * parsed for pairing, so the call stays name-and-status or `[not shown]`.
+ * Codex observer payloads (a tool_input plus a short response) are far smaller.
+ * The measure is the stored size, so on Postgres a highly compressible payload
+ * counts at its compressed size (pglz shrinks at most about 90 to 1).
+ */
+/** Agents whose Post rows carry no input, so the probe runs for every shell-class row. */
+export const PAIRING_AGENTS: readonly string[] = ["codex_cli"];
+export const PAIR_RAW_PAYLOAD_MAX_BYTES = 65_536;
 /** The ledger builds this many rows, then yields the event loop. */
 export const LEDGER_SLICE_ROWS = 100;
 
@@ -86,60 +95,3 @@ export const SHELL_TOOLS: readonly string[] = ["bash", "shell", "exec_command"];
 
 /** Agents whose hooks include a failure event: for them a PostToolUse row is evidence of success. */
 export const FAILURE_EVENT_AGENTS: readonly string[] = ["claude_code", "copilot_cli"];
-
-// The ordinary-failure tail allowlist (ruling R-A.1). Deliberately short: a
-// command's failure output is sent only when every segment's head is a tool that
-// neither reads files nor interprets code, so its error text cannot be a file's
-// contents. Not measured against real sessions. Entries a reviewer may question:
-// `docker build` echoes Dockerfile RUN lines; `bun/npm add` run package scripts;
-// `kubectl get` is allowed only without -o yaml|json and not for configmaps.
-export const FAILURE_TAIL_PLAIN_HEADS: readonly string[] = [
-	"ls",
-	"mkdir",
-	"rm",
-	"mv",
-	"touch",
-	"chmod",
-	"cd",
-	"pwd",
-	"which",
-];
-/** `git` is allowed for any subcommand except these (they print file or history content or config). */
-export const FAILURE_TAIL_GIT_DENIED: readonly string[] = [
-	"show",
-	"diff",
-	"log",
-	"config",
-	"remote",
-	"cat-file",
-	"grep",
-	"blame",
-	"diff-tree",
-	"diff-index",
-	"difftool",
-	"format-patch",
-	"whatchanged",
-	"archive",
-	"bundle",
-	"credential",
-	"var",
-	"notes",
-	"reflog",
-	"fast-export",
-	"show-branch",
-];
-/** Head -> first operand(s) that are allowed. A two-word entry is `a b`. */
-export const FAILURE_TAIL_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = {
-	bun: ["install", "add", "remove", "i"],
-	npm: ["install", "ci", "i"],
-	pnpm: ["install", "add", "i"],
-	yarn: ["install", "add"],
-	pip: ["install"],
-	pip3: ["install"],
-	cargo: ["add"],
-	go: ["mod tidy", "mod download"],
-	docker: ["build", "pull", "push", "compose up", "compose down"],
-	"docker-compose": ["up", "down"],
-	kubectl: ["apply", "rollout", "get"],
-	gh: ["pr", "issue", "run"],
-};

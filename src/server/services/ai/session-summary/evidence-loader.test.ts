@@ -411,8 +411,7 @@ describe("reads, caps and order", () => {
 		expect(result.diagnostics.chunks).toBe(limits.MAX_CHUNKS);
 		expect(result.diagnostics.jobs).toBe(12);
 		expect(statements).toHaveLength(12);
-		expect(result.scan.eventsRead).toBeGreaterThanOrEqual(50_000);
-		expect(result.scan.eventsRead).toBeLessThanOrEqual(50_003);
+		expect(result.scan.eventsRead).toBe(50_003);
 		expect(result.scan.reachedFirstEvent).toBe(false);
 		expect(result.scan.droppedByCap).toBe(0);
 		const chunkParams = statements
@@ -571,7 +570,11 @@ describe("what SQL selects", () => {
 			.replace(/json_extract\(\w+\.raw_payload, \?\)/g, "")
 			.replace(/json_valid\(\w+\.raw_payload\)/g, "")
 			.replace(/strpos\(CAST\(\w+\.raw_payload AS text\), \$\d+\)/g, "")
-			.replace(/CAST\(\w+\.raw_payload AS text\) !~ \$\d+/g, "");
+			.replace(/CAST\(\w+\.raw_payload AS text\) !~ \$\d+/g, "")
+			.replace(
+				/COALESCE\((?:length\(CAST\(\w+\.raw_payload AS BLOB\)\)|pg_column_size\(\w+\.raw_payload\)), 0\)/g,
+				"",
+			);
 		expect(withoutAllowedRawReads, "raw_payload only inside those extractions").not.toMatch(
 			/raw_payload/,
 		);
@@ -1089,10 +1092,10 @@ describe("through the real ingest path", () => {
 		expect(lines(text).map((l) => l.replace(/^\S+ \S+ /, ""))).toEqual([
 			'CLAIMED user prompt: "fix the flaky test"',
 			expect.stringMatching(
-				/^OBSERVED command \[validation\] `bun test` \(desc "Run tests"\) -> ok: "4 pass"$/,
+				/^OBSERVED command \[validation\] `bun test` \(desc "Run tests"\) -> ok: "4 pass, 0 fail"$/,
 			) as unknown as string,
 			'OBSERVED edit "src/a.ts"',
-			'OBSERVED command `rm -rf build` -> FAILED: "permission denied"',
+			"OBSERVED command `rm -rf build` -> FAILED",
 			'CLAIMED agent message: "Fixed and verified."',
 		]);
 		expect(text).not.toMatch(/SENTINEL/);
@@ -1400,11 +1403,11 @@ describe("TC-3.43 allowlist sweep", () => {
 					toolResponse: forbidden.okOut,
 				}),
 			),
-			row(bashEv(sid, "bun test", { toolResponse: "PERMIT-VALIDATION-OUTPUT 3 pass" })),
+			row(bashEv(sid, "bun test", { toolResponse: "FORBID-PASSTEXT 3 pass" })),
 			row(
 				bashEv(sid, "rm -rf x", {
 					eventType: "PostToolUseFailure",
-					toolResponse: "PERMIT-FAILURE-TAIL",
+					toolResponse: "FORBID-FAILURE-TAIL",
 				}),
 			),
 			row(
@@ -1444,6 +1447,10 @@ describe("TC-3.43 allowlist sweep", () => {
 		// A withheld command's description and an ordinary command's ok output are read by SQL (it cannot know) but never reach the ledger.
 		// A shell row's response is read into JS (to find an exit code); only the ledger is the boundary.
 		const ledgerOnly = new Set([forbidden.withheld, forbidden.okOut]);
+		// G-1/G-2: no ordinary command's output and no pass text is ever sent, only counts.
+		expect(ledgerText).not.toContain("FORBID-PASSTEXT");
+		expect(ledgerText).toContain("3 pass, 0 fail");
+		expect(ledgerText).not.toContain("FORBID-FAILURE-TAIL");
 		for (const value of Object.values(forbidden)) {
 			expect(ledgerOnly.has(value) ? ledgerText : everything, value).not.toContain(value);
 		}
@@ -1455,8 +1462,6 @@ describe("TC-3.43 allowlist sweep", () => {
 			"PERMIT-AGENT",
 			"PERMIT-PATH",
 			"PERMIT-DESC",
-			"PERMIT-VALIDATION-OUTPUT",
-			"PERMIT-FAILURE-TAIL",
 			"PERMIT-ONELINER",
 		]) {
 			expect(text, permitted).toContain(permitted);
@@ -1576,10 +1581,10 @@ describe("P3-8 Codex observer rows, through the real ingest path", () => {
 		const ledger = buildLedger(bundle);
 		expect(bodies(ledger.text)).toEqual([
 			"OBSERVED command `echo hello` -> completed",
-			'OBSERVED command [validation] `["bash","-lc","bun test"]` -> ok: "4 pass"',
+			'OBSERVED command [validation] `["bash","-lc","bun test"]` -> ok: "4 pass, 0 fail"',
 			'OBSERVED edit "src/x.ts"',
 			"OBSERVED command [withheld: reads credentials] -> completed",
-			'OBSERVED command `rm -rf build` -> FAILED: "rm: denied"',
+			"OBSERVED command `rm -rf build` -> FAILED",
 		]);
 		expect(ledger.text).not.toContain("SECRET-BODY");
 		expect(bundle.agentType).toBe("codex_cli");
@@ -1759,7 +1764,7 @@ describe("P3-10 JSON-shaped responses and the Claude failure shapes", () => {
 		]);
 		const ledger = buildLedger(await loadEvidence(sid));
 		const line = (n: number) => lines(ledger.text).find((l) => l.startsWith(`E${ids[n]} `)) ?? "";
-		expect(line(1), "the first line a pass pattern matched").toMatch(/-> ok: "ok {2}pkg 0\.1s"$/);
+		expect(line(1), "the counts a pass pattern captured").toMatch(/-> ok: "4 pass, 0 fail"$/);
 		expect(line(2)).toMatch(/-> FAILED: "ok line FAIL src\/a\.test\.ts more"$/);
 		expect(line(3)).toMatch(/-> unknown$/);
 		expect(line(4)).toMatch(/-> FAILED/);
@@ -1778,7 +1783,7 @@ describe("P3-10 JSON-shaped responses and the Claude failure shapes", () => {
 			cwd: "/w",
 			hook_event_name: "PostToolUseFailure",
 			tool_name: "Bash",
-			tool_input: { command: "rm -rf build" },
+			tool_input: { command: "bun test" },
 			tool_use_id: "f1",
 			error: "Exit code 1\nrm: cannot remove build: Permission denied",
 			is_interrupt: false,
@@ -1786,7 +1791,7 @@ describe("P3-10 JSON-shaped responses and the Claude failure shapes", () => {
 		const bundle = await loadEvidence(sid);
 		const ledger = buildLedger(bundle);
 		expect(bodies(ledger.text).at(-1)).toMatch(
-			/^OBSERVED command `rm -rf build` -> FAILED: ".*Permission denied"$/,
+			/^OBSERVED command \[validation\] `bun test` -> FAILED: ".*Permission denied"$/,
 		);
 	});
 });
@@ -1966,7 +1971,10 @@ function quotedOfLine(text: string, n: number): string {
 }
 
 describe("TC-3.G5 the pairing probe is bounded", () => {
-	const PRE_PAYLOAD_PADDING = "p".repeat(100_000);
+	// Incompressible: Postgres measures the stored (compressed) size, and a run of one character shrinks below the cap.
+	const PRE_PAYLOAD_PADDING = Buffer.from(crypto.getRandomValues(new Uint8Array(150_000))).toString(
+		"base64",
+	);
 	test("a Claude Bash Post row without input is not paired (positive control: unknown_tool still is)", async () => {
 		const sid = await newSession("g5-claude");
 		await seed([
@@ -2014,3 +2022,76 @@ describe("TC-3.G5 the pairing probe is bounded", () => {
 		expect(text).toContain("echo SMALL-PRE");
 	}, 60_000);
 });
+
+describe("TC-3.H1 pairing never crosses a session and respects its window", () => {
+	const pre = (sid: string, callId: string, command: string) =>
+		ev(sid, {
+			eventType: "PreToolUse",
+			category: "tool_event",
+			toolName: "exec_command",
+			toolInput: { cmd: command },
+			rawPayload: { tool_use_id: callId },
+		});
+	const post = (sid: string, callId: string) =>
+		toolEv(sid, "exec_command", null, { rawPayload: { tool_use_id: callId } });
+	const filler = (sid: string) => ev(sid, { eventType: "SessionStart", category: "system_event" });
+
+	test("another session's Pre with the same tool_use_id is never paired", async () => {
+		const a = await newSession("h1-a", "codex_cli");
+		const b = await newSession("h1-b", "codex_cli");
+		await seed([pre(b, "shared", "echo SECRET-B")]);
+		await seed([post(a, "shared")]);
+		const bundle = await loadEvidence(a);
+		const ledger = buildLedger(bundle);
+		expect(bodies(ledger.text)).toEqual(["OBSERVED command [not shown] -> completed"]);
+		expect(JSON.stringify(bundle.rows)).not.toContain("SECRET-B");
+		expect(ledger.text).not.toContain("SECRET-B");
+	});
+
+	test("a Pre exactly PAIR_WINDOW_IDS ids before the Post is paired; one id further is not", async () => {
+		expect(limits.PAIR_WINDOW_IDS).toBe(200);
+		for (const [gap, paired] of [
+			[200, true],
+			[201, false],
+		] as const) {
+			const sid = await newSession(`h1-edge-${gap}`, "codex_cli");
+			const ids = await seedIds([
+				pre(sid, "edge", "echo EDGE-PRE"),
+				...Array.from({ length: gap - 1 }, () => filler(sid)),
+				post(sid, "edge"),
+			]);
+			expect((ids.at(-1) as number) - (ids[0] as number), "the fixture's id gap").toBe(gap);
+			const text = buildLedger(await loadEvidence(sid)).text;
+			expect(text.includes("echo EDGE-PRE"), `gap ${gap}`).toBe(paired);
+		}
+	}, 60_000);
+
+	test("when several Pre rows match, the newest one before the Post is used", async () => {
+		const sid = await newSession("h1-newest", "codex_cli");
+		await seed([
+			pre(sid, "dup", "echo OLDEST"),
+			pre(sid, "dup", "echo MIDDLE"),
+			pre(sid, "dup", "echo NEWEST"),
+			post(sid, "dup"),
+		]);
+		const text = buildLedger(await loadEvidence(sid)).text;
+		expect(text).toContain("echo NEWEST");
+		expect(text).not.toContain("echo OLDEST");
+		expect(text).not.toContain("echo MIDDLE");
+	});
+});
+
+describe("TC-3.H2 raw_payload is read for exactly the intended keys", () => {
+	test("the key list is pinned and the chunk statement reads no other key (a new read changes the mention count)", async () => {
+		expect([...loader.RAW_PAYLOAD_KEYS]).toEqual(["tool_use_id", "error", "error_message"]);
+		const sid = await newSession("h2");
+		await seed([bashEv(sid, "echo x")]);
+		const { statements } = await capture(() => loadEvidence(sid));
+		const chunk = statements.find((s) => /ROW_NUMBER/i.test(s.text)) as Captured;
+		const mentions = (chunk.text.match(/raw_payload/g) ?? []).length;
+		expect(mentions, "raw_payload mentions in the statement (a new read adds one)").toBe(
+			isPg ? EXPECTED_RAW_MENTIONS.postgres : EXPECTED_RAW_MENTIONS.sqlite,
+		);
+	});
+});
+const EXPECTED_RAW_MENTIONS = { sqlite: 9, postgres: 12 };

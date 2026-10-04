@@ -36,7 +36,6 @@ import {
 	ONE_LINER_CAP,
 	OUTPUT_HEAD,
 	OUTPUT_TAIL,
-	PASS_LINE_CAP,
 	PATH_CAP,
 	PROMPT_CAP,
 	READ_CLASS_TOOLS,
@@ -237,12 +236,6 @@ function field(raw: string | null | undefined, cap: number, ctx: Ctx, inQuotes =
 	return cut ? `${text}…` : text;
 }
 
-/** Redacts the WHOLE text first and only then keeps the last `cap` code points. */
-function tailField(raw: string, cap: number, ctx: Ctx): string {
-	const { text, cut } = takeEnd(clean(raw, ctx, true).trim(), cap);
-	return cut ? `…${text}` : text;
-}
-
 function excerpt(raw: string, ctx: Ctx): string {
 	const text = clean(raw, ctx, true).trim();
 	if (Array.from(text).length <= OUTPUT_HEAD + OUTPUT_TAIL) return text;
@@ -398,24 +391,25 @@ function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: C
 		: "";
 	const read = readResponse(row.response ?? row.responseTail);
 	if (cls.kind === "validation") {
-		const result = validationResult(read.text, status === "failed", cls.masked);
+		const result = validationResult(
+			read.text,
+			status === "failed",
+			cls.masked,
+			status === "completed",
+		);
 		let out = "";
 		if (result === "failed" && read.text) out = `: "${excerpt(read.text, ctx)}"`;
 		else if (result === "ok") {
 			const line = passSummaryLine(read.text);
-			if (line) out = `: "${field(line, PASS_LINE_CAP, ctx)}"`;
+			if (line) out = `: "${line}"`;
 		}
 		return {
 			body: `OBSERVED command [validation] \`${command}\`${description} -> ${resultWord(result)}${out}`,
 			fact: commandFact("validation", result),
 		};
 	}
-	const out =
-		status === "failed" && cls.tailAllowed && read.text
-			? `: "${tailField(read.text, OUTPUT_TAIL, ctx)}"`
-			: "";
 	return {
-		body: `OBSERVED command \`${command}\`${description} -> ${resultWord(status)}${out}`,
+		body: `OBSERVED command \`${command}\`${description} -> ${resultWord(status)}`,
 		fact: commandFact("command", status),
 	};
 }

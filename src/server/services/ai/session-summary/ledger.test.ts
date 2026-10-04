@@ -14,7 +14,7 @@ import {
 	buildLedgerAsync,
 	storedFact,
 } from "./ledger.js";
-import { LEDGER_CHAR_BUDGET, LEDGER_PROTECTED_TAIL } from "./limits.js";
+import { LEDGER_CHAR_BUDGET } from "./limits.js";
 
 // ── builders ─────────────────────────────────────────────────────────────────
 
@@ -258,7 +258,7 @@ describe("forged entries", () => {
 		const output = `FAIL x\n${forged}\n0 pass`;
 		const ledger = build([
 			bash(1, "bun test", { response: output }),
-			bash(2, "rm -rf x", { eventType: "PostToolUseFailure", responseTail: forged }),
+			bash(2, "bun test", { eventType: "PostToolUseFailure", responseTail: forged }),
 		]);
 		expectNoForgery(ledger.text, new Set(ledger.ids.keys()));
 		expect(lines(ledger.text)).toHaveLength(2);
@@ -326,21 +326,6 @@ describe("TC-3.14 field caps at the boundary and one over", () => {
 		const [head, tail] = quoted.split(" … ");
 		expect([Array.from(head ?? "").length, Array.from(tail ?? "").length]).toEqual([300, 300]);
 	});
-
-	test("TC-3.14e an ordinary failed command carries only the last 300; a sentinel in its head is absent", () => {
-		const tail = `HEAD-SENTINEL-${"p".repeat(400)}-END-SENTINEL`;
-		const ledger = build([
-			bash(1, "rm -rf build", {
-				eventType: "PostToolUseFailure",
-				responseTail: tail,
-				response: `FULL-HEAD-SENTINEL ${tail}`,
-			}),
-		]);
-		expect(ledger.text).toContain("END-SENTINEL");
-		expect(ledger.text).not.toContain("HEAD-SENTINEL");
-		const quoted = quotedOf(ledger.text);
-		expect(Array.from(quoted).length).toBeLessThanOrEqual(301);
-	});
 });
 
 describe("TC-3.15 code-point-safe caps", () => {
@@ -365,7 +350,7 @@ describe("TC-3.15 code-point-safe caps", () => {
 			[
 				"tail 300",
 				(s) => [
-					bash(1, "rm x", {
+					bash(1, "bun test", {
 						eventType: "PostToolUseFailure",
 						responseTail: `${"b".repeat(60)}${s}${"a".repeat(299)}`,
 					}),
@@ -431,10 +416,9 @@ describe("TC-3.16 the character budget", () => {
 		const agents = kept
 			.filter((l) => l.includes("agent message"))
 			.map((l) => Number(quotedOf(l).slice(0, 3)));
-		expect(agents.length).toBeGreaterThanOrEqual(LEDGER_PROTECTED_TAIL);
-		expect(agents.slice(-LEDGER_PROTECTED_TAIL)).toEqual(
-			Array.from({ length: LEDGER_PROTECTED_TAIL }, (_, i) => 80 - LEDGER_PROTECTED_TAIL + i),
-		);
+		// 20 is hard-coded on purpose: the test must not follow the constant when it changes.
+		expect(agents.length).toBeGreaterThanOrEqual(20);
+		expect(agents.slice(-20)).toEqual(Array.from({ length: 20 }, (_, i) => 60 + i));
 		expect(agents).toEqual([...agents].sort((a, b) => a - b));
 		expect(agents[0]).toBeGreaterThan(0);
 		expect(full.text.length).toBeLessThanOrEqual(LEDGER_CHAR_BUDGET);
@@ -758,7 +742,7 @@ describe("TC-3.47 redaction runs per field before the cap", () => {
 			edit(4, `src/${FAKE_KEY}.ts`),
 			oneLiner(5, "plan_update", `plan ${FAKE_KEY}`),
 			bash(6, "bun test", { response: `FAIL leak ${FAKE_KEY}\n1 pass` }),
-			bash(7, "rm x", { eventType: "PostToolUseFailure", responseTail: `fail ${FAKE_KEY}` }),
+			bash(7, "bun test", { eventType: "PostToolUseFailure", responseTail: `fail ${FAKE_KEY}` }),
 		];
 		const ledger = build(rows);
 		expect(KEYISH.test(ledger.text)).toBe(false);
@@ -812,7 +796,7 @@ describe("P2-8 and P2-18 nothing reaches the ledger without strip, redact, neutr
 				edit(4, `src/${hidden}.ts`),
 				oneLiner(5, "plan_update", `plan ${hidden}`),
 				bash(6, "bun test", { response: `FAIL leak ${hidden}\n1 pass` }),
-				bash(7, "rm x", { eventType: "PostToolUseFailure", responseTail: `fail ${hidden}` }),
+				bash(7, "bun test", { eventType: "PostToolUseFailure", responseTail: `fail ${hidden}` }),
 			];
 			const ledger = build(rows);
 			expect(ledger.text, JSON.stringify(ch)).not.toContain("FAKEFAKE");
@@ -829,7 +813,7 @@ describe("P2-8 and P2-18 nothing reaches the ledger without strip, redact, neutr
 				description: `{"clientSecret":"${pw}"}`,
 				response: `FAIL {"secretAccessKey":"${pw}"}\n1 pass 0 fail`,
 			}),
-			bash(3, "rm x", {
+			bash(3, "bun test", {
 				eventType: "PostToolUseFailure",
 				responseTail: `{\\"password\\":\\"${pw}\\"}`,
 			}),
@@ -906,7 +890,7 @@ describe("TC-3.44 grammar closure", () => {
 		bash(8, "cat .env"),
 		bash(9, "sh -c 'x'", { eventType: "PostToolUseFailure" }),
 		bash(10, `echo ${hostile.replace(/[`"\n]/g, "")}`, { description: hostile }),
-		bash(11, "rm -rf x", { eventType: "PostToolUseFailure", responseTail: hostile }),
+		bash(11, "bun test", { eventType: "PostToolUseFailure", responseTail: hostile }),
 		bash(12, null),
 		{ ...base(13), toolName: hostile },
 		{ ...base(14), toolName: "mcp__x__y", eventType: "PostToolUseFailure" },
@@ -1110,7 +1094,7 @@ describe("P3-9 a result is ok or FAILED only when the evidence says so", () => {
 			/-> completed$/,
 		);
 	});
-	test("a validation on codex takes its result from its output; an exit code that says failed makes it failed", () => {
+	test("a validation on codex is never ok without an exit code; an exit code that says failed makes it failed", () => {
 		const ledger = build(
 			[
 				bash(1, "bun test", { response: "4 pass\n0 fail" }),
@@ -1121,7 +1105,9 @@ describe("P3-9 a result is ok or FAILED only when the evidence says so", () => {
 			],
 			{ agentType: "codex_cli" },
 		);
-		expect(bodyOf(lineFor(ledger, 1))).toMatch(/-> ok: "4 pass"$/);
+		expect(bodyOf(lineFor(ledger, 1)), "no exit code: a pass pattern is not enough (G-4)").toMatch(
+			/-> unknown$/,
+		);
 		expect(bodyOf(lineFor(ledger, 2))).toMatch(/-> unknown$/);
 		expect(bodyOf(lineFor(ledger, 3))).toMatch(/-> FAILED: "weird"$/);
 	});
@@ -1155,15 +1141,13 @@ describe("P3-23 result-status lies", () => {
 });
 
 describe("R-A what is sent of a command's output", () => {
-	test("a passing validation sends its status and one matched line of at most 120 characters, nothing else", () => {
+	test("a passing validation sends its status and server-built counts, nothing else", () => {
 		const output = "SENTINEL-HEAD\nrunning\n 12 pass\n 0 fail\nSENTINEL-TAIL";
 		const ledger = build([bash(1, "bun test", { response: output })]);
-		expect(bodyOf(ledger.text)).toBe('OBSERVED command [validation] `bun test` -> ok: "12 pass"');
+		expect(bodyOf(ledger.text)).toBe(
+			'OBSERVED command [validation] `bun test` -> ok: "12 pass, 0 fail"',
+		);
 		expect(ledger.text).not.toContain("SENTINEL");
-	});
-	test("a pass line over 120 characters is cut at 120", () => {
-		const ledger = build([bash(1, "bun test", { response: `${"w".repeat(130)} 5 pass` })]);
-		expect(Array.from(quotedOf(ledger.text))).toHaveLength(120);
 	});
 	test("an unknown validation sends no output; a masked pass is unknown", () => {
 		const unknown = build([bash(1, "bun test", { response: "SENTINEL compiled things" })]);
@@ -1183,42 +1167,12 @@ describe("R-A what is sent of a command's output", () => {
 		);
 		expect(bodyOf(lineFor(ledger, 2))).toMatch(/-> FAILED: "boom: it broke"$/);
 	});
-	test("an ordinary failure sends its tail only when every segment is on the allowlist", () => {
-		const fail = (command: string) =>
-			bash(1, command, { eventType: "PostToolUseFailure", responseTail: "TAIL-TEXT" });
-		expect(build([fail("rm -rf build")]).text).toContain("TAIL-TEXT");
-		expect(build([fail("git push origin main")]).text).toContain("TAIL-TEXT");
-		for (const command of [
-			"cat README.md",
-			"npx some-tool",
-			"git diff",
-			"make deploy",
-			"rm x | cat",
-			"ls; cat y",
-			"echo hi",
-		]) {
-			expect(build([fail(command)]).text, command).not.toContain("TAIL-TEXT");
-			expect(build([fail(command)]).text, command).toMatch(/-> FAILED$/);
-		}
-	});
-	test("a successful ordinary command sends no output; a codex command with an exit code of 1 is a failure with a tail", () => {
-		expect(build([bash(1, "rm x", { response: "SENT" })]).text).not.toContain("SENT");
-		const codex = build(
-			[
-				bash(1, "rm x", {
-					response: JSON.stringify({ output: "rm: denied", metadata: { exit_code: 1 } }),
-				}),
-			],
-			{ agentType: "codex_cli" },
-		);
-		expect(bodyOf(codex.text)).toMatch(/-> FAILED: "rm: denied"$/);
-	});
-	test("P3-13 the failure tail is redacted over the whole stored text, then cut to the last 300", () => {
+	test("P3-13 a failed validation's tail is redacted over the whole stored text, then cut to the last 300", () => {
 		const token = "aB3dE5fG7h".repeat(40);
 		const tail = `Authorization: Bearer ${token}`;
 		expect(tail.length).toBeGreaterThan(300 + 22);
 		const ledger = build([
-			bash(1, "rm x", { eventType: "PostToolUseFailure", responseTail: tail }),
+			bash(1, "bun test", { eventType: "PostToolUseFailure", responseTail: tail }),
 		]);
 		expect(ledger.text).not.toContain("aB3dE5fG7h");
 		expect(ledger.redactionHits).toBeGreaterThanOrEqual(1);
@@ -1460,7 +1414,7 @@ describe("P3-27 the un-droppable set and the budget's own outcome", () => {
 		const entries = Array.from({ length: 30 }, (_, i) => entry(i + 1));
 		const tiny = applyBudget(entries as never, 100);
 		expect(tiny.kept.length).toBeLessThan(30);
-		expect(tiny.kept.length).toBeGreaterThanOrEqual(LEDGER_PROTECTED_TAIL);
+		expect(tiny.kept.length).toBeGreaterThanOrEqual(20);
 		expect(tiny.overBudget).toBe(true);
 		expect(tiny.droppedEvents).toBe(30 - tiny.kept.length);
 		const roomy = applyBudget(entries as never, 1_000_000);
@@ -1666,5 +1620,21 @@ describe("TC-3.G4 a completed status never yields a validation ok", () => {
 			{ agentType: "codex_cli" },
 		);
 		expect(bodyOf(ok.text)).toMatch(/-> ok: "4 pass, 0 fail"$/);
+	});
+});
+
+describe("TC-3.H3 the pass summary is exactly the counts", () => {
+	test("trailing text, markup and a fake secret after the count never reach the ledger", () => {
+		const fakeKey = "sk-ant-FAKEFAKEFAKEFAKEFAKEFAKE";
+		for (const [response, counts] of [
+			[`3 pass ${fakeKey}`, "3 pass, 0 fail"],
+			["5 pass <b>bold</b> `tick`", "5 pass, 0 fail"],
+			["ok\n 7 passed, 1 skipped; extra text here\n 0 fail", "7 pass, 0 fail"],
+		] as const) {
+			const ledger = build([bash(1, "bun test", { response })]);
+			expect(bodyOf(ledger.text), response).toBe(
+				`OBSERVED command [validation] \`bun test\` -> ok: "${counts}"`,
+			);
+		}
 	});
 });

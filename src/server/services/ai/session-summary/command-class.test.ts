@@ -441,14 +441,6 @@ describe("BN-4 classifier additions", () => {
 			expect(kind(command), command).toBe("withheld");
 		}
 	});
-	test("BN-4b a failed ordinary command outside the tail allowlist is flagged status-only; one on it is not", () => {
-		expect(classifyCommand("cat notes.txt; false")).toEqual({
-			kind: "ordinary",
-			tailAllowed: false,
-		});
-		expect(classifyCommand("grep -r foo src")).toEqual({ kind: "ordinary", tailAllowed: false });
-		expect(classifyCommand("rm -rf build")).toEqual({ kind: "ordinary", tailAllowed: true });
-	});
 	test("BN-4c an unparseable command is itself a fail-closed trigger, even if it names a credential", () => {
 		expect(classifyCommand('cat .env "oops')).toEqual({ kind: "not_shown" });
 	});
@@ -465,7 +457,6 @@ function sendsNoOutput(command: unknown) {
 	const cls = classifyCommand(command);
 	if (cls.kind === "validation")
 		throw new Error(`${JSON.stringify(command)} is a clean validation`);
-	if (cls.kind === "ordinary") expect(cls.tailAllowed, JSON.stringify(command)).toBe(false);
 }
 
 describe("P3-7 unparseable input with a complete segment before the break", () => {
@@ -855,7 +846,6 @@ describe("P3-3 validation arguments have a strict shape", () => {
 			"bun test | tail -n 5",
 			"bun test | head -c 500",
 			"bun test | grep pass",
-			"bun test | grep -E 'pass|fail'",
 			"bun test 2>&1 | tail -20",
 			"bun test | tee out.log",
 			"cd x && bun test | tail -3",
@@ -865,101 +855,10 @@ describe("P3-3 validation arguments have a strict shape", () => {
 	});
 });
 
-describe("P3-2 the ordinary-failure tail allowlist", () => {
-	const allowed = [
-		"ls -la",
-		"mkdir -p build",
-		"rm -rf build",
-		"mv a b",
-		"touch x",
-		"chmod +x run",
-		"cd src",
-		"pwd",
-		"which bun",
-		"git status",
-		"git add -A",
-		"git commit -m msg",
-		"git push origin main",
-		"git checkout -b x",
-		"bun install",
-		"bun add zod",
-		"bun remove zod",
-		"npm install",
-		"npm ci",
-		"pnpm install",
-		"pnpm add x",
-		"yarn install",
-		"yarn add x",
-		"pip install x",
-		"cargo add x",
-		"go mod tidy",
-		"go mod download",
-		"docker build .",
-		"docker pull x",
-		"docker push x",
-		"docker compose up -d",
-		"docker compose down",
-		"kubectl apply -f x.yaml",
-		"kubectl rollout status deploy/x",
-		"kubectl get pods",
-		"gh pr view 1",
-		"gh issue list",
-		"gh run list",
-		"cd x && rm -rf y",
-	];
-	for (const command of allowed) {
-		test(`${command} may send its failure tail`, () => {
-			expect(classifyCommand(command)).toEqual({ kind: "ordinary", tailAllowed: true });
-		});
-	}
-	const notAllowed = [
-		"git show HEAD",
-		"git diff",
-		"git log -p",
-		"git config user.name",
-		"git blame x",
-		"git cat-file -p HEAD",
-		"git grep x",
-		"git stash show -p",
-		"git -c core.pager=x diff",
-		"git diff-tree -p HEAD",
-		"git format-patch -1",
-		"git archive HEAD",
-		"cat README.md",
-		"head x.txt",
-		"grep -r x src",
-		"sed -n 1p x",
-		"awk 1 x",
-		"jq . x.json",
-		"find . -name x",
-		"echo hi",
-		"curl https://example.com",
-		"make deploy",
-		"terraform plan",
-		"npx some-tool",
-		"kubectl get configmap x -o yaml",
-		"kubectl get pods -o json",
-		"kubectl describe pod x",
-		"kubectl logs x",
-		"gh auth status",
-		"gh run view 1 --log",
-		"gh api /user",
-		"docker run x",
-		"docker logs x",
-		"npm run build",
-		"rm x | cat",
-		"ls; cat x",
-		"pip download x",
-		"go build ./...",
-		"cargo run",
-	];
-	for (const command of notAllowed) {
-		test(`${command} is status only on failure`, () => {
-			const cls = classifyCommand(command);
-			if (cls.kind === "ordinary") expect(cls.tailAllowed).toBe(false);
-			else expect(["withheld", "not_shown", "validation"]).toContain(cls.kind);
-		});
-	}
+describe("G-3 a quoted filler operand is no longer clean", () => {
+	test("grep -E 'pass|fail' has a quoted operand, so the command is not a clean validation", () => {
+		expect(kind("bun test | grep -E 'pass|fail'")).not.toBe("validation");
+	});
 });
 
 describe("P3-4 apply_patch shows its file names and never its body", () => {
@@ -987,28 +886,6 @@ describe("P3-4 apply_patch shows its file names and never its body", () => {
 		).toEqual({ kind: "patch", files: ["a.txt"] });
 	});
 });
-
-describe("P3-1 pass summary line", () => {
-	test("the first line a pass pattern matched, at most 120 characters", () => {
-		expect(passSummaryLine("compiling\n 4 pass\n 0 fail")).toBe(" 4 pass".trim());
-		expect(passSummaryLine("Found 0 errors.")).toBe("Found 0 errors.");
-		expect(
-			Array.from(passSummaryLine(`${"x".repeat(200)} 5 passed ${"y".repeat(200)}`) ?? ""),
-		).toHaveLength(120);
-		expect(passSummaryLine("compiling...\ndone")).toBeNull();
-		expect(passSummaryLine("")).toBeNull();
-		expect(passSummaryLine(null)).toBeNull();
-	});
-	test("a pass line is not taken from a failing output", () => {
-		expect(passSummaryLine("3 pass\n1 fail")).toBe("3 pass");
-		expect(validationResult("3 pass\n1 fail", false, false)).toBe("failed");
-	});
-	test("real newlines, not the escaped pair, separate lines", () => {
-		expect(passSummaryLine("a\\n 4 pass")).toBe("a\\n 4 pass");
-	});
-});
-
-// ── phase 3 re-check fixes (G-1, G-3, G-6) ───────────────────────────────────
 
 describe("TC-3.G1b an ordinary command carries no output permission", () => {
 	test("the classification is just `ordinary`", () => {
@@ -1070,5 +947,19 @@ describe("TC-3.G2b the pass summary is built from counts", () => {
 		expect(passSummaryLine("5 passed")).toBe("5 pass, 0 fail");
 		expect(passSummaryLine("Found 0 errors. SECRET")).toBeNull();
 		expect(passSummaryLine("")).toBeNull();
+	});
+});
+
+describe("TC-3.H4 a filler after ; is rejected by the pipe rule, with no path operand to blame", () => {
+	test("a bare filler that is not the consumer of a pipe makes the command not a clean validation", () => {
+		for (const command of [
+			"bun test; tail -5",
+			"bun test; head -n 3",
+			"bun test; grep FAIL",
+			"bun test && grep FAIL",
+		]) {
+			expect(kind(command), command).not.toBe("validation");
+		}
+		expect(kind("bun test | tail -5")).toBe("validation");
 	});
 });

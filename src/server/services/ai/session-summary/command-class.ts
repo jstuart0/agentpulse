@@ -18,15 +18,9 @@
  * every segment is searched for credential paths, interpreters and wrappers
  * the code cannot read fail closed, and a validation's arguments must have a
  * strict shape. What may be sent of a command's OUTPUT is decided by the
- * ledger from `kind`, `masked` and `tailAllowed`.
+ * ledger from `kind` and `masked`: an ordinary command never sends output.
  */
-import {
-	FAILURE_TAIL_GIT_DENIED,
-	FAILURE_TAIL_PLAIN_HEADS,
-	FAILURE_TAIL_SUBCOMMANDS,
-	PASS_LINE_CAP,
-	TOOL_INPUT_FIELD_SQL_CAP,
-} from "./limits.js";
+import { TOOL_INPUT_FIELD_SQL_CAP } from "./limits.js";
 
 export type CommandClass =
 	| { kind: "validation"; masked: boolean }
@@ -34,8 +28,8 @@ export type CommandClass =
 	| { kind: "not_shown" }
 	/** An `apply_patch` call: only the file names it names, never its body. */
 	| { kind: "patch"; files: string[] }
-	/** `tailAllowed`: every segment is on the failure-tail allowlist (limits.ts), so a failure's last lines may be sent. */
-	| { kind: "ordinary"; tailAllowed: boolean };
+	/** Sent as its text and its status only: no output of an ordinary command is ever sent. */
+	| { kind: "ordinary" };
 
 export type ValidationResult = "ok" | "failed" | "unknown";
 
@@ -197,6 +191,7 @@ const DENIED_VALIDATION_FLAGS = new Set([
 	"--loader",
 	"--plugin",
 	"--rcfile",
+	"--package",
 ]);
 const PATCH_FILE_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+?)\s*$/gm;
 const PATCH_HEAD_RE = /^\s*(?:(?:shell|bash|sh)\s+(?:-\w+\s+)?['"]?)?(?:\S*\/)?apply_patch(?:\s|$)/;
@@ -935,84 +930,6 @@ function isUnreadable(final: Final): boolean {
 	return false;
 }
 
-// ── failure tail ─────────────────────────────────────────────────────────────
-
-const KUBECTL_FLAGS_WITH_VALUE = new Set([
-	"--context",
-	"-n",
-	"--namespace",
-	"--kubeconfig",
-	"-s",
-	"--server",
-	"--cluster",
-	"--user",
-]);
-const KUBECTL_STRUCTURED_OUTPUT_RE = /^(yaml|json|jsonpath|go-template|template|custom-columns)/;
-
-function kubectlOperands(args: string[]): string[] {
-	const out: string[] = [];
-	for (let i = 0; i < args.length; i++) {
-		const a = args[i] as string;
-		if (a.startsWith("-")) {
-			if (KUBECTL_FLAGS_WITH_VALUE.has(a)) i++;
-			continue;
-		}
-		out.push(a);
-	}
-	return out;
-}
-
-function kubectlStructuredOutput(args: string[]): boolean {
-	for (let i = 0; i < args.length; i++) {
-		const a = args[i] as string;
-		const eq = a.indexOf("=");
-		const flag = eq === -1 ? a : a.slice(0, eq);
-		if (flag === "-o" || flag === "--output") {
-			const value = eq === -1 ? (args[i + 1] ?? "") : a.slice(eq + 1);
-			if (KUBECTL_STRUCTURED_OUTPUT_RE.test(value)) return true;
-		} else if (/^-o[a-z]/.test(a) && KUBECTL_STRUCTURED_OUTPUT_RE.test(a.slice(2))) return true;
-	}
-	return false;
-}
-
-/** True when this segment's failure output may be sent: its head neither reads files nor interprets code. */
-function tailAllowedFor(final: Final): boolean {
-	const head = final.words[0];
-	if (!head) return false;
-	const cmd = baseName(head.value);
-	const args = final.words.slice(1).map((w) => w.value);
-	if (FAILURE_TAIL_PLAIN_HEADS.includes(cmd)) return true;
-	if (cmd === "git") {
-		if (args.some((a) => a === "-c" || a.startsWith("--exec-path"))) return false;
-		const sub = gitSubcommand(args);
-		if (sub === undefined) return true;
-		if (FAILURE_TAIL_GIT_DENIED.includes(sub)) return false;
-		return !(sub === "stash" && args[args.indexOf("stash") + 1] === "show");
-	}
-	const allowedSubs = FAILURE_TAIL_SUBCOMMANDS[cmd];
-	if (!allowedSubs) return false;
-	if (cmd === "kubectl") {
-		const ops = kubectlOperands(args);
-		if (!ops[0] || !allowedSubs.includes(ops[0])) return false;
-		if (ops[0] === "get") {
-			if (kubectlStructuredOutput(args)) return false;
-			if (ops.slice(1).some((o) => /^(configmaps?|cm)(\/|$)/i.test(o))) return false;
-		}
-		return true;
-	}
-	if (cmd === "gh") {
-		const ops = operandsOf(args);
-		if (!ops[0] || !allowedSubs.includes(ops[0])) return false;
-		return !args.some(
-			(a) => a === "--log" || a === "--log-failed" || a === "--json" || a.startsWith("--jq"),
-		);
-	}
-	const ops = operandsOf(args);
-	const one = ops[0] ?? "";
-	const two = `${ops[0] ?? ""} ${ops[1] ?? ""}`;
-	return allowedSubs.includes(one) || allowedSubs.includes(two);
-}
-
 // ── validation ───────────────────────────────────────────────────────────────
 
 /** Drops redirections (`> out.log`, `2>&1`, `&>f`, `< in`) so the arguments left are the tool's own. */
@@ -1091,7 +1008,17 @@ const FILLER_DENIED_FLAG_RE =
 	/^(?:-[A-Za-z]*[rRfF][A-Za-z]*|--(?:include|exclude|file|recursive|dereference-recursive|directories|follow|retry).*)$/;
 const NUMERIC_RE = /^[+-]?\d+$/;
 
-/** A filter after a pipe that reads only its input: no file operand, no recursion, one pattern at most. */
+/** The shell would expand these (or this word is not a plain literal): never a filler operand. */
+const EXPANDING_RE = /[*?[$~]/;
+
+/** An operand the shell passes through unchanged and that has the plain shape of a pattern or file name. */
+function plainOperand(word: Word | undefined): boolean {
+	if (!word) return false;
+	const v = word.value;
+	return word.raw === v && OPERAND_RE.test(v) && !EXPANDING_RE.test(v) && !isCredentialPath(v);
+}
+
+/** A filter after a pipe that reads only its input: no file operand, no recursion, one pattern at most, every operand a plain literal. */
 function isBenignPipeFiller(final: Final, cmd: string): boolean {
 	if (final.sep !== "|") return false;
 	const args = withoutRedirects(final.words.slice(1));
@@ -1105,6 +1032,7 @@ function isBenignPipeFiller(final: Final, cmd: string): boolean {
 				if (!NUMERIC_RE.test(args[i + 1]?.value ?? "x")) return false;
 				i++;
 			} else if (cmd === "grep" && v === "-e") {
+				if (!plainOperand(args[i + 1])) return false;
 				i++;
 				operands++;
 			}
@@ -1112,10 +1040,11 @@ function isBenignPipeFiller(final: Final, cmd: string): boolean {
 		}
 		if (cmd === "head" || cmd === "tail") {
 			if (!NUMERIC_RE.test(v)) return false;
-		} else if (cmd === "tee") {
-			if ((args[i] as Word).raw !== v || !OPERAND_RE.test(v) || isCredentialPath(v)) return false;
-			if (++operands > 1) return false;
-		} else if (++operands > 1) return false;
+		} else if (!plainOperand(args[i])) {
+			return false;
+		} else if (++operands > 1) {
+			return false;
+		}
 	}
 	return true;
 }
@@ -1227,7 +1156,7 @@ function classify(input: unknown): CommandClass {
 		}
 	}
 	if (unreadable || flags.shDashC) return { kind: "not_shown" };
-	return { kind: "ordinary", tailAllowed: finals.every(tailAllowedFor) };
+	return { kind: "ordinary" };
 }
 
 // ── validation results ───────────────────────────────────────────────────────
@@ -1261,29 +1190,34 @@ const PASS_PATTERNS: RegExp[] = [
 /**
  * The result of a clean validation, from the FULL stored response (never the
  * excerpt): `failed` for a failure hook or pattern, `ok` only with a pass
- * pattern and no exit masking, otherwise `unknown`.
+ * pattern, an exit signal and no exit masking, otherwise `unknown`.
+ * `noExitSignal` is a call that carries neither an exit code nor a failure
+ * event (status `completed`): its text is attacker-controlled and cannot say it
+ * passed, though a failure pattern in it still counts.
  */
 export function validationResult(
 	response: string | null | undefined,
 	failedHook: boolean,
 	masked: boolean,
+	noExitSignal = false,
 ): ValidationResult {
 	const text = response ?? "";
 	if (failedHook || FAILURE_PATTERNS.some((p) => p.test(text))) return "failed";
-	if (masked) return "unknown";
+	if (masked || noExitSignal) return "unknown";
 	return PASS_PATTERNS.some((p) => p.test(text)) ? "ok" : "unknown";
 }
 
+const PASS_COUNT_RE = /\b([1-9]\d{0,5}) pass(?:ed|ing)?\b/i;
+const FAIL_COUNT_RE = /\b(\d{1,6}) fail(?:ed|ing|ures?)?\b/i;
+
 /**
- * The first line of `response` a pass pattern matched, trimmed and cut to
- * PASS_LINE_CAP code points: the one line of a passing validation that may be
- * sent. Null when no line matched. Lines are split on real newlines only.
+ * A server-built `N pass, M fail` from the counts a pass output carried, never
+ * the output's own text; null when no pass count was captured. The one thing a
+ * passing validation sends.
  */
 export function passSummaryLine(response: string | null | undefined): string | null {
-	for (const line of (response ?? "").split(/\r?\n/)) {
-		if (PASS_PATTERNS.some((p) => p.test(line))) {
-			return Array.from(line.trim()).slice(0, PASS_LINE_CAP).join("");
-		}
-	}
-	return null;
+	const text = response ?? "";
+	const pass = PASS_COUNT_RE.exec(text)?.[1];
+	if (!pass) return null;
+	return `${pass} pass, ${FAIL_COUNT_RE.exec(text)?.[1] ?? "0"} fail`;
 }

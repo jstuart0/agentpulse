@@ -49,6 +49,8 @@ import {
 	LAST_AGENT_MESSAGE_CAP,
 	MAX_CHUNKS,
 	ONE_LINER_CAP,
+	PAIRING_AGENTS,
+	PAIR_RAW_PAYLOAD_MAX_BYTES,
 	PAIR_WINDOW_IDS,
 	PROMPT_CAP,
 	READ_CLASS_TOOLS,
@@ -143,26 +145,45 @@ function shellToolTest(alias: string): SQL {
 	return sql`lower(${sql.raw(alias)}.tool_name) IN (${literalList(SHELL_RESPONSE_TOOLS)})`;
 }
 
+/**
+ * Every key the loader reads out of a row's `raw_payload` (an untrusted document
+ * that can hold anything): the call id for pairing, and the failure text of a row
+ * with no response. A key is read only through `rawKey`, so this list is the whole set.
+ */
+export const RAW_PAYLOAD_KEYS = ["tool_use_id", "error", "error_message"] as const;
+type RawPayloadKey = (typeof RAW_PAYLOAD_KEYS)[number];
+
+function rawKey(alias: string, key: RawPayloadKey): SQL {
+	return jsonExtractText(sql.raw(`${alias}.raw_payload`), `$.${key}`);
+}
+
 /** The call id a row's `raw_payload` carries, NULL for a document that cannot be read by key. */
 function callIdOf(alias: string): SQL {
 	const raw = sql.raw(`${alias}.raw_payload`);
 	const readable = config.dialect === "postgres" ? postgresReadable(raw) : jsonReadable(raw);
-	return sql`CASE WHEN ${readable} THEN ${jsonExtractText(raw, "$.tool_use_id")} END`;
+	const bytes = storedBytes(raw);
+	// Nested: the size test must run before the document is parsed (an AND is not ordered).
+	return sql`CASE WHEN ${bytes} <= ${literalInt(PAIR_RAW_PAYLOAD_MAX_BYTES)} THEN
+		CASE WHEN ${readable} THEN ${rawKey(alias, "tool_use_id")} END END`;
 }
 
 /** The `error` text of a failed row, NULL when its `raw_payload` cannot be read by key. */
 function errorTextOf(alias: string): SQL {
 	const raw = sql.raw(`${alias}.raw_payload`);
 	const readable = config.dialect === "postgres" ? postgresReadable(raw) : jsonReadable(raw);
-	return sql`CASE WHEN ${readable} THEN COALESCE(${jsonExtractText(raw, "$.error")}, ${jsonExtractText(raw, "$.error_message")}) END`;
+	return sql`CASE WHEN ${readable} THEN COALESCE(${rawKey(alias, "error")}, ${rawKey(alias, "error_message")}) END`;
 }
 
-/** The size of a row's `tool_input` in bytes, without detoasting it on Postgres. */
-function inputBytes(alias: string): SQL {
-	const col = sql.raw(`${alias}.tool_input`);
+/** The stored size of a column in bytes, without detoasting it on Postgres. */
+function storedBytes(col: SQL): SQL {
 	return config.dialect === "postgres"
 		? sql`COALESCE(pg_column_size(${col}), 0)`
 		: sql`COALESCE(length(CAST(${col} AS BLOB)), 0)`;
+}
+
+/** The size of a row's `tool_input` in bytes. */
+function inputBytes(alias: string): SQL {
+	return storedBytes(sql.raw(`${alias}.tool_input`));
 }
 
 const INPUT_KEYS = ["file_path", "path", "command", "cmd", "description"] as const;
@@ -229,6 +250,8 @@ export interface ChunkParams {
 	actionLimit: number;
 	/** The newest chunk may hold the session's last agent message, which is read at a larger cap. */
 	newestChunk: boolean;
+	/** The session's agent type; only a Codex session (or an `unknown_tool` row) probes for a Pre row. */
+	agentType?: string | null;
 	/** Retry mode: tool rows are returned with no input fields, no pairing and no raw_payload read. */
 	withoutInputs?: boolean;
 }
@@ -268,8 +291,11 @@ export function buildChunkStatement(params: ChunkParams): SQL {
 	const filePath = orNull(sql`COALESCE(${ownField("file_path")}, ${ownField("path")})`);
 	const command = orNull(sql`COALESCE(${ownField("command")}, ${ownField("cmd")})`);
 	const description = orNull(ownField("description"));
+	const mayPair = PAIRING_AGENTS.includes(params.agentType ?? "")
+		? sql`1 = 1`
+		: sql`lower(e.tool_name) = 'unknown_tool'`;
 	const callId = orNull(
-		sql`CASE WHEN p.cls = 'action' AND e.tool_input IS NULL THEN ${callIdOf("e")} END`,
+		sql`CASE WHEN p.cls = 'action' AND e.tool_input IS NULL AND ${mayPair} THEN ${callIdOf("e")} END`,
 	);
 	const shell = shellToolTest("e");
 	const response = wantAction
@@ -516,6 +542,7 @@ export async function loadEvidence(sessionId: string): Promise<EvidenceBundle> {
 			spineLimit: spineLeft,
 			actionLimit: Math.min(actionLeft, ACTION_ROWS_PER_CHUNK),
 			newestChunk: diagnostics.chunks === 0,
+			agentType,
 		};
 		// A chunk that fails is retried once without reading any tool input: its tool rows come
 		// back as `[not shown]` entries, so one unreadable row cannot make the session unsummarisable.
