@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { getDb } from "../../db/client.js";
+import { type Db, getDb } from "../../db/client.js";
 import { aiDailySpend, sessions } from "../../db/schema/index.js";
 
 function today(): string {
@@ -70,7 +70,7 @@ export async function addGlobalSpendCents(cents: number, userId = "local"): Prom
 		});
 }
 
-const DEFAULT_DAILY_CAP_CENTS = 500; // $5/day per plan
+export const DEFAULT_DAILY_CAP_CENTS = 500; // $5/day per plan
 
 export interface SpendCheck {
 	allowed: boolean;
@@ -106,4 +106,39 @@ export async function checkSpendBudget(
 		};
 	}
 	return { allowed: true, spent, cap };
+}
+
+/** Cents set aside for one generation, on the day they were reserved. */
+export interface SpendReservation {
+	date: string;
+	cents: number;
+}
+
+/** Phase 2a stub. */
+export async function reserveSpendCents(
+	_cents: number,
+	_db?: Db,
+): Promise<SpendReservation | null> {
+	throw new Error("reserveSpendCents: not implemented");
+}
+
+/** Phase 2a stub. */
+export async function topUpReservation(
+	_reservation: SpendReservation,
+	_extraCents: number,
+): Promise<boolean> {
+	throw new Error("topUpReservation: not implemented");
+}
+
+/** Phase 2a stub. */
+export async function settleReservedSpend(
+	_reservation: SpendReservation,
+	_actual: { sessionId: string; actualCents: number },
+): Promise<void> {
+	throw new Error("settleReservedSpend: not implemented");
+}
+
+/** Phase 2a stub. */
+export async function releaseReservedSpend(_reservation: SpendReservation): Promise<void> {
+	throw new Error("releaseReservedSpend: not implemented");
 }

@@ -319,3 +319,10 @@ export function likeContains(col: AnyColumn | SQLWrapper, fragment: string): SQL
 	}
 	return sql`${col as SQL} LIKE ${pattern} ESCAPE '\\'`;
 }
+
+// ── textTail ─────────────────────────────────────────────────────────────────
+
+/** The last `n` characters of a text column. (Phase 2a stub.) */
+export function textTail(_col: AnyColumn | SQLWrapper, _n: number): SQL {
+	throw new Error("textTail: not implemented");
+}

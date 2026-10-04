@@ -23,6 +23,7 @@ import {
 	likeContains,
 	likeStartsWith,
 	nowSql,
+	textTail,
 } from "./sql-helpers.js";
 
 // ── Minimal query config for rendering SQL fragments ─────────────────────────
@@ -265,5 +266,31 @@ describe("likeContains()", () => {
 		setDialect("sqlite");
 		const { params } = renderSql(likeContains(colSql, "a\\b"));
 		expect(params).toContain("%a\\\\b%");
+	});
+});
+
+// ── textTail (AGEN-69 TC-2.12; the real-database half is text-tail.test.ts) ──
+
+describe("textTail()", () => {
+	afterEach(restoreDialect);
+
+	test("SQLite renders a negative-start substr with the count as a bound parameter", () => {
+		setDialect("sqlite");
+		const { sql: rendered, params } = renderSql(textTail(colSql, 40));
+		expect(rendered).toBe('substr("sessions"."cwd", ?)');
+		expect(params).toEqual([-40]);
+	});
+
+	test("Postgres renders right() with the count as a bound parameter", () => {
+		setDialect("postgres");
+		const { sql: rendered, params } = renderSql(textTail(colSql, 40));
+		expect(rendered).toBe('right("sessions"."cwd", ?)');
+		expect(params).toEqual([40]);
+	});
+
+	test("rejects a count that is not a positive integer", () => {
+		for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(() => textTail(colSql, bad)).toThrow(/positive integer/);
+		}
 	});
 });

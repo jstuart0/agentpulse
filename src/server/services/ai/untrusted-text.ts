@@ -21,3 +21,14 @@ export function formatUntrustedInline(value: string): string {
 		.replace(LINE_BREAKS_RE, " ")
 		.replace(INVISIBLE_CHARS_RE, "");
 }
+
+export interface FencedText {
+	/** The body wrapped in one open and one close tag carrying the nonce. */
+	text: string;
+	nonce: string;
+}
+
+/** Wrap untrusted text in nonce-tagged delimiters. (Phase 2a stub.) */
+export function fenceUntrusted(_tag: string, _body: string): FencedText {
+	throw new Error("fenceUntrusted: not implemented");
+}

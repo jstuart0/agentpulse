@@ -44,9 +44,21 @@ export interface LlmUsage {
 	estimated: boolean;
 }
 
+/**
+ * Why the provider stopped generating, normalised across adapters. An adapter
+ * reports `other` for a missing, null or unknown provider value and never
+ * invents `end`; callers act only on `length` and `refusal`.
+ */
+export type LlmStopReason = "end" | "length" | "refusal" | "other";
+
 export interface LlmResponse {
 	/** Raw text content returned by the model. */
 	text: string;
+	/**
+	 * Optional so existing callers and fakes that build an LlmResponse
+	 * literal keep compiling; every real adapter sets it.
+	 */
+	stopReason?: LlmStopReason;
 	usage: LlmUsage;
 	/** Full provider response — kept for debugging / audit trail. */
 	rawResponse: unknown;
