@@ -997,6 +997,70 @@ describe("through the real ingest path", () => {
 
 // ── TC-3.41: query plans ─────────────────────────────────────────────────────
 
+// A database from the legacy boot path also has idx_events_session_id(session_id),
+// and SQLite may pick it over idx_events_session_id_id for a statement that needs
+// only session_id and the rowid: an entry of either index ends in the rowid, so
+// the two answer `session_id=? AND id>? AND id<?` the same way. What matters is
+// the shape: a search led by session_id with the id range in the index condition,
+// never a scan of events and never a walk of the created_at index.
+const SESSION_LED_INDEXES = "idx_events_session_id_id|idx_events_session_id";
+const SESSION_SEARCH_RE = new RegExp(
+	`^SEARCH (?:events|e) USING (?:COVERING )?INDEX (?:${SESSION_LED_INDEXES}) \\(session_id=\\?(?: AND (?:rowid|id)[<>]=?\\?)*\\)$`,
+);
+const RANGE_RE = /AND (?:rowid|id)[<>]/;
+const PRIMARY_KEY_LOOKUP_RE = /^SEARCH (?:events|e) USING INTEGER PRIMARY KEY \(rowid=\?\)$/;
+
+/** Every way one SQLite plan reaches `events` other than the allowed shapes. */
+function sqliteEventsPlanViolations(plan: string[]): string[] {
+	const eventsLines = plan.filter((d) => /^(?:SEARCH|SCAN) (?:events|e)\b/.test(d));
+	const violations = eventsLines
+		.filter((d) => !SESSION_SEARCH_RE.test(d) && !PRIMARY_KEY_LOOKUP_RE.test(d))
+		.map((d) => `not an allowed access to events: ${d}`);
+	const sessionSearches = eventsLines.filter((d) => SESSION_SEARCH_RE.test(d));
+	if (sessionSearches.length === 0) violations.push("no session-led index search of events");
+	if (!sessionSearches.some((d) => RANGE_RE.test(d))) {
+		violations.push("no session-led search carries an id range");
+	}
+	if (plan.some((d) => d.includes("idx_events_created_at"))) {
+		violations.push("walks a created_at index");
+	}
+	return violations;
+}
+
+describe("TC-3.41 plan matcher controls", () => {
+	const ok =
+		"SEARCH events USING COVERING INDEX idx_events_session_id_id (session_id=? AND id>? AND id<?)";
+	const legacy =
+		"SEARCH events USING COVERING INDEX idx_events_session_id (session_id=? AND rowid>? AND rowid<?)";
+	test("TC-3.41 both session-led index shapes pass, with a primary-key point lookup beside them", () => {
+		expect(sqliteEventsPlanViolations([ok])).toEqual([]);
+		expect(sqliteEventsPlanViolations([legacy])).toEqual([]);
+		expect(
+			sqliteEventsPlanViolations([ok, "SEARCH e USING INTEGER PRIMARY KEY (rowid=?)", "SCAN cand"]),
+		).toEqual([]);
+	});
+
+	test("TC-3.41 a table scan, a created_at walk, a range-less or id-led search are all refused", () => {
+		expect(sqliteEventsPlanViolations(["SCAN events"]).length).toBeGreaterThan(0);
+		expect(sqliteEventsPlanViolations([ok, "SCAN e"]).length).toBeGreaterThan(0);
+		expect(
+			sqliteEventsPlanViolations([
+				"SEARCH events USING INDEX idx_events_created_at_id (created_at>?)",
+			]).length,
+		).toBeGreaterThan(0);
+		expect(
+			sqliteEventsPlanViolations([
+				"SEARCH events USING COVERING INDEX idx_events_session_id (session_id=?)",
+			]),
+		).toContain("no session-led search carries an id range");
+		expect(
+			sqliteEventsPlanViolations(["SEARCH events USING INDEX idx_events_session_id_id (id>?)"])
+				.length,
+		).toBeGreaterThan(0);
+		expect(sqliteEventsPlanViolations([]).length).toBeGreaterThan(0);
+	});
+});
+
 describe("TC-3.41 query plans", () => {
 	async function planOf(query: SQL): Promise<string[]> {
 		if (isPg) {
@@ -1007,7 +1071,7 @@ describe("TC-3.41 query plans", () => {
 		return rows.map((r) => r.detail);
 	}
 
-	test("TC-3.41 every evidence statement uses idx_events_session_id_id on a fixture that interleaves 200 other sessions, after ANALYZE", async () => {
+	test("TC-3.41 every evidence statement reaches events through a session-led index on a fixture that interleaves 200 other sessions, after ANALYZE", async () => {
 		const { target } = await fixtureC();
 		const { statements, result } = await capture(() => loadEvidence(target));
 		expect(statements.length).toBeGreaterThanOrEqual(3);
@@ -1050,18 +1114,14 @@ describe("TC-3.41 query plans", () => {
 			const plan = await planOf(query);
 			dump.push(plan.join(" | "));
 			const joined = plan.join("\n");
-			expect(joined).toContain("idx_events_session_id_id");
 			if (isPg) {
+				expect(joined).toContain("idx_events_session_id_id");
 				expect(joined, "never a backward events_pkey scan").not.toMatch(
 					/Backward using events_pkey/,
 				);
 				expect(joined).not.toMatch(/Seq Scan on events/);
 			} else {
-				expect(joined).toMatch(/SEARCH .*USING (COVERING )?INDEX idx_events_session_id_id/);
-				expect(
-					plan.filter((d) => /^SCAN (e|events)\b/.test(d)),
-					"no table scan of events",
-				).toEqual([]);
+				expect(sqliteEventsPlanViolations(plan), plan.join(" | ")).toEqual([]);
 			}
 		}
 		console.log(`[plans] ${config.dialect} chunk: ${dump[statements.length] ?? dump[0]}`);
