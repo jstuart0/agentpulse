@@ -175,7 +175,10 @@ export async function listRecentMessages(
 	const newestFirst =
 		config.dialect === "sqlite"
 			? [desc(askMessages.createdAt), desc(sql`rowid`)]
-			: [desc(askMessages.createdAt)];
+			: // Postgres: created_at is microsecond text and the only other column is a random
+				// UUID, so ties (rows written in one transaction) break by id: the window is
+				// deterministic, but a tie is not in insertion order.
+				[desc(askMessages.createdAt), desc(askMessages.id)];
 	const rows = await getDb()
 		.select()
 		.from(askMessages)
@@ -273,7 +276,42 @@ async function appendMessage(input: {
 /** The longest message an Ask turn accepts, in UTF-16 code units (`String.length`), after trimming. */
 export const ASK_MESSAGE_MAX_CHARS = 8_000;
 
-export class AskMessageTooLongError extends Error {
+/** A mistake in the request that the caller can fix; its message is safe to show them. */
+export class AskRequestError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "AskRequestError";
+	}
+}
+
+/** The most sessions a request may pin: what the context builder takes for a broad question. */
+export const ASK_MAX_SESSION_IDS = 20;
+export const ASK_SESSION_ID_MAX_CHARS = 128;
+
+export class AskInvalidSessionIdsError extends AskRequestError {
+	readonly max = ASK_MAX_SESSION_IDS;
+	constructor() {
+		super(
+			`sessionIds must be an array of at most ${ASK_MAX_SESSION_IDS} non-empty strings of at most ${ASK_SESSION_ID_MAX_CHARS} characters.`,
+		);
+		this.name = "AskInvalidSessionIdsError";
+	}
+}
+
+/** Pinned session ids from a request: absent or null means none; anything else must be a short array of short strings. */
+export function validateAskSessionIds(value: unknown): string[] | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (!Array.isArray(value) || value.length > ASK_MAX_SESSION_IDS)
+		throw new AskInvalidSessionIdsError();
+	for (const id of value) {
+		if (typeof id !== "string" || id.length === 0 || id.length > ASK_SESSION_ID_MAX_CHARS) {
+			throw new AskInvalidSessionIdsError();
+		}
+	}
+	return value as string[];
+}
+
+export class AskMessageTooLongError extends AskRequestError {
 	readonly max = ASK_MESSAGE_MAX_CHARS;
 	constructor() {
 		super(`Message is too long (the limit is ${ASK_MESSAGE_MAX_CHARS} characters).`);
@@ -378,14 +416,14 @@ async function openTurn(input: AskTurnInput): Promise<{
 	text: string;
 }> {
 	const text = input.message.trim();
-	if (!text) throw new Error("Empty message.");
+	if (!text) throw new AskRequestError("Empty message.");
 	if (text.length > ASK_MESSAGE_MAX_CHARS) throw new AskMessageTooLongError();
 
 	const callerOrigin: AskThreadOrigin = input.origin ?? "web";
 	if (input.threadId) {
 		const existing = await getThread(input.threadId);
 		if (existing && existing.origin !== callerOrigin) {
-			throw new Error(
+			throw new AskRequestError(
 				`This thread is ${existing.origin}-only. Start a new thread to reply from ${callerOrigin}.`,
 			);
 		}
@@ -810,6 +848,7 @@ interface TurnTrace {
 }
 
 export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
+	validateAskSessionIds(input.sessionIds);
 	// The slot comes before anything is written or computed: a refused turn leaves no trace.
 	const slot = input.slot ?? (await acquireAskTurn({ signal: input.signal }));
 	const startedAt = Date.now();
@@ -1056,6 +1095,7 @@ export type AskStreamEvent =
  * about the deltas once it lands).
  */
 export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskStreamEvent> {
+	validateAskSessionIds(input.sessionIds);
 	const slot = input.slot ?? (await acquireAskTurn({ signal: input.signal }));
 	const startedAt = Date.now();
 	const trace: TurnTrace = { path: "handled" };
