@@ -5,7 +5,18 @@
  * without breaking the one-line statusline protocol.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readFile,
+	readdir,
+	rm,
+	symlink,
+	utimes,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,7 +33,15 @@ let healthRelay: boolean | null;
 /** Whether the stub's health answer carries the field that says the relay enforces exclude rules (an older relay has none). */
 let healthEnforces: boolean | undefined;
 /** What the stub's session lookup answers: normally, with the relay's local 404 {error:"excluded"} or {error:"unknown_session"}, or with a plain 404. */
-let sessionLookup: "ok" | "excluded" | "unknown" | "missing" | "full" | "error" | "slow";
+let sessionLookup:
+	| "ok"
+	| "excluded"
+	| "unknown"
+	| "missing"
+	| "full"
+	| "error"
+	| "slow"
+	| "rules_invalid";
 let server: ReturnType<typeof Bun.serve>;
 
 beforeEach(async () => {
@@ -55,6 +74,8 @@ beforeEach(async () => {
 					return Response.json({ error: "not found" }, { status: 404 });
 				if (sessionLookup === "unknown")
 					return Response.json({ error: "unknown_session" }, { status: 404 });
+				if (sessionLookup === "rules_invalid")
+					return Response.json({ error: "rules_invalid" }, { status: 404 });
 				if (sessionLookup === "error") return Response.json({ error: "down" }, { status: 502 });
 				if (sessionLookup === "slow") {
 					await new Promise((resolve) => setTimeout(resolve, 1600));
@@ -981,5 +1002,233 @@ describe("statusline.sh — the name lookup is the small read", () => {
 		await rm(join(agentpulseDir(), "cache"), { recursive: true, force: true });
 		await run(INPUT, { AGENTPULSE_SKIP: "1" });
 		expect(await readdir(agentpulseDir()).catch(() => [])).not.toContain("cache");
+	});
+});
+
+describe("statusline.sh — what is kept about a session is kept only while it may be", () => {
+	const INPUT = {
+		session_id: "abc123",
+		session_name: "native-thread",
+		model: { display_name: "Opus" },
+		context_window: { used_percentage: 10 },
+	};
+	const cache = () => join(agentpulseDir(), "cache");
+	const nameFile = () => join(cache(), "name-abc123");
+	const nativeFile = () => join(cache(), "native-name-abc123");
+	const printed = (stdout: string) => stripAnsi(stdout);
+	const exists = (f: string) => Bun.file(f).exists();
+
+	async function remember() {
+		await run(INPUT);
+		await waitFor(() => exists(nameFile()));
+		await waitFor(() => exists(nativeFile()));
+		requests.length = 0;
+	}
+
+	test("an excluded answer removes both remembered files, and a later failed lookup prints no name", async () => {
+		await remember();
+		sessionLookup = "excluded";
+		await run(INPUT);
+		expect([await exists(nameFile()), await exists(nativeFile())]).toEqual([false, false]);
+		sessionLookup = "error";
+		expect(printed((await run(INPUT)).stdout)).not.toContain("brave-falcon");
+	});
+
+	test("an unknown session, a plain 404 and rules_invalid remove the remembered name, so a later failure shows the id", async () => {
+		for (const mode of ["unknown", "missing", "rules_invalid"] as const) {
+			await rm(cache(), { recursive: true, force: true });
+			sessionLookup = "ok";
+			await remember();
+			sessionLookup = mode;
+			await run(INPUT);
+			expect({ mode, name: await exists(nameFile()) }).toEqual({ mode, name: false });
+			sessionLookup = "error";
+			const out = printed((await run(INPUT)).stdout);
+			expect({ mode, shown: out.includes("brave-falcon") }).toEqual({ mode, shown: false });
+			expect(out).toContain("abc123");
+		}
+	});
+
+	test("while AGENTPULSE_SKIP is active both files are removed and nothing is read from them", async () => {
+		await remember();
+		sessionLookup = "error";
+		const out = printed((await run(INPUT, { AGENTPULSE_SKIP: "1" })).stdout);
+		expect(out).not.toContain("brave-falcon");
+		expect([await exists(nameFile()), await exists(nativeFile())]).toEqual([false, false]);
+	});
+
+	test("with the exclude rules marked invalid no remembered name is printed, and the file goes", async () => {
+		await remember();
+		await writeFile(join(agentpulseDir(), "exclude.invalid"), "");
+		sessionLookup = "error";
+		const out = printed((await run(INPUT)).stdout);
+		expect(out).not.toContain("brave-falcon");
+		expect(await exists(nameFile())).toBe(false);
+	});
+});
+
+describe("statusline.sh — the remembered files are private and are never followed through a link", () => {
+	const INPUT = {
+		session_id: "abc123",
+		session_name: "native-thread",
+		model: { display_name: "Opus" },
+	};
+	const cache = () => join(agentpulseDir(), "cache");
+	const mode = async (f: string) => (await lstat(f)).mode & 0o777;
+
+	test("under umask 022 the directory is 0700 and the files 0600, an existing looser directory is tightened, and no temp file is left", async () => {
+		await mkdir(cache(), { recursive: true, mode: 0o755 });
+		await chmod(cache(), 0o755);
+		const proc = Bun.spawn(["sh", "-c", 'umask 022; exec bash "$0"', SCRIPT], {
+			stdin: new TextEncoder().encode(JSON.stringify(INPUT)),
+			stdout: "pipe",
+			stderr: "pipe",
+			env: {
+				PATH: process.env.PATH ?? "/usr/bin:/bin",
+				HOME: tmp,
+				AGENTPULSE_PORT: String(server.port),
+				AGENTPULSE_DIR: agentpulseDir(),
+			},
+		});
+		await new Response(proc.stdout).text();
+		await proc.exited;
+		await waitFor(() => Bun.file(join(cache(), "native-name-abc123")).exists());
+		expect(await mode(cache())).toBe(0o700);
+		expect(await mode(join(cache(), "name-abc123"))).toBe(0o600);
+		expect(await mode(join(cache(), "native-name-abc123"))).toBe(0o600);
+		expect((await readdir(cache())).filter((n) => n.startsWith(".tmp"))).toEqual([]);
+	});
+
+	test("a planted symlink at the name file is neither written through nor read", async () => {
+		const outside = join(tmp, "outside-secret");
+		await writeFile(outside, "outside-name");
+		await mkdir(cache(), { recursive: true });
+		await symlink(outside, join(cache(), "name-abc123"));
+		await run(INPUT);
+		expect(await readFile(outside, "utf-8")).toBe("outside-name");
+		sessionLookup = "error";
+		const out = stripAnsi((await run(INPUT)).stdout);
+		expect(out).not.toContain("outside-name");
+	});
+
+	test("a planted symlink at the native-name file is not written through either", async () => {
+		const outside = join(tmp, "outside-native");
+		await writeFile(outside, "untouched");
+		await mkdir(cache(), { recursive: true });
+		await symlink(outside, join(cache(), "native-name-abc123"));
+		await run(INPUT);
+		await waitFor(() => puts().length >= 1);
+		await Bun.sleep(300);
+		expect(await readFile(outside, "utf-8")).toBe("untouched");
+	});
+
+	test("a cache directory that is itself a symlink is not used", async () => {
+		const elsewhere = join(tmp, "elsewhere");
+		await mkdir(elsewhere, { recursive: true });
+		await symlink(elsewhere, cache());
+		await run(INPUT);
+		await Bun.sleep(300);
+		expect(await readdir(elsewhere)).toEqual([]);
+	});
+
+	test("a name file that is not a regular file is not read or replaced", async () => {
+		await mkdir(join(cache(), "name-abc123"), { recursive: true });
+		sessionLookup = "error";
+		expect(stripAnsi((await run(INPUT)).stdout)).toContain("abc123");
+		sessionLookup = "ok";
+		await run(INPUT);
+		expect((await lstat(join(cache(), "name-abc123"))).isDirectory()).toBe(true);
+	});
+});
+
+describe("statusline.sh — the remembered files don't pile up", () => {
+	const INPUT = (id: string) => ({ session_id: id, model: { display_name: "Opus" } });
+	const cache = () => join(agentpulseDir(), "cache");
+	const DAY = 86_400;
+	const aged = async (name: string, days: number) => {
+		await mkdir(cache(), { recursive: true });
+		await writeFile(join(cache(), name), "old");
+		const when = Date.now() / 1000 - days * DAY;
+		await utimes(join(cache(), name), when, when);
+	};
+
+	test("files untouched for 30 days go the next time something is written, recent ones stay", async () => {
+		await aged("name-stale1", 45);
+		await aged("native-name-stale1", 45);
+		await aged("name-recent", 5);
+		await run(INPUT("fresh1"));
+		const left = (await readdir(cache())).sort();
+		expect(left).toContain("name-fresh1");
+		expect(left).toContain("name-recent");
+		expect(left).not.toContain("name-stale1");
+		expect(left).not.toContain("native-name-stale1");
+	});
+
+	test("the sweep is rate limited, not run on every render: a second sweep inside a day finds nothing to do, one after a day does", async () => {
+		await run(INPUT("fresh1"));
+		await aged("name-stale2", 45);
+		serverDisplayName = "another-name";
+		await run(INPUT("fresh1"));
+		expect(await Bun.file(join(cache(), "name-stale2")).exists()).toBe(true);
+		const longAgo = Date.now() / 1000 - 2 * DAY;
+		await utimes(join(cache(), ".swept"), longAgo, longAgo);
+		serverDisplayName = "third-name";
+		await run(INPUT("fresh1"));
+		expect(await Bun.file(join(cache(), "name-stale2")).exists()).toBe(false);
+	});
+
+	test("a render that writes nothing never sweeps", async () => {
+		await run(INPUT("fresh1"));
+		await aged("name-stale3", 45);
+		await rm(join(cache(), ".swept"), { force: true });
+		await run(INPUT("fresh1"));
+		expect(await Bun.file(join(cache(), "name-stale3")).exists()).toBe(true);
+	});
+});
+
+describe("statusline.sh — what is printed is a plain name", () => {
+	const INPUT = { session_id: "abc123", model: { display_name: "Opus" } };
+	const U = (...codes: number[]) => String.fromCodePoint(...codes);
+	const shown = async () => stripAnsi((await run(INPUT)).stdout);
+	const KEEP = ["Zoë-Müller", "日本語のセッション", "rocket-" + U(0x1f680) + "-ship", "naïve café"];
+	const STRIPPED: Array<[string, string]> = [
+		["a C1 control", `a${U(0x85)}b`],
+		["a right-to-left override", `a${U(0x202e)}b`],
+		["a zero-width space", `a${U(0x200b)}b`],
+		["a left-to-right isolate", `a${U(0x2066)}b`],
+		["a BOM", `a${U(0xfeff)}b`],
+		["a word joiner", `a${U(0x2060)}b`],
+		["an ESC sequence", `a${U(0x1b)}[2Jb`],
+	];
+
+	test("ordinary non-ASCII names survive (accents, CJK, emoji), fresh and remembered", async () => {
+		for (const name of KEEP) {
+			serverDisplayName = name;
+			expect(await shown()).toContain(name);
+			sessionLookup = "error";
+			expect({ name, cached: (await shown()).includes(name) }).toEqual({ name, cached: true });
+			sessionLookup = "ok";
+		}
+	});
+
+	test("C1 controls and bidi / zero-width format characters are stripped, fresh and remembered, and the line stays one line", async () => {
+		for (const [what, name] of STRIPPED) {
+			await rm(join(agentpulseDir(), "cache"), { recursive: true, force: true });
+			serverDisplayName = name;
+			const fresh = (await run(INPUT)).stdout;
+			expect({ what, line: fresh.trimEnd().split("\n").length }).toEqual({ what, line: 1 });
+			expect({
+				what,
+				clean: stripAnsi(fresh).includes("ab") || stripAnsi(fresh).includes("a[2Jb"),
+			}).toEqual({ what, clean: true });
+			sessionLookup = "error";
+			const cached = (await run(INPUT)).stdout;
+			sessionLookup = "ok";
+			for (const out of [fresh, cached]) {
+				for (const bad of [U(0x85), U(0x202e), U(0x200b), U(0x2066), U(0xfeff), U(0x2060)]) {
+					expect({ what, leaked: stripAnsi(out).includes(bad) }).toEqual({ what, leaked: false });
+				}
+			}
+		}
 	});
 });
