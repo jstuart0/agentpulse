@@ -214,18 +214,26 @@ function claim(record: Record<string, unknown>): { text: string; evidence: strin
 	return text ? { text, evidence: evidenceIds(own(record, "evidence")) } : null;
 }
 
+/** Least-claiming defaults: a missing or unrecognised word never becomes "completed" or "passed". */
+function knownOr<T extends string>(value: unknown, known: readonly T[], fallback: T): T {
+	const word = enumWord(value);
+	return known.find((k) => k === word) ?? fallback;
+}
+
 function normalise(root: Record<string, unknown>): unknown {
 	const outcomeRaw = own(root, "outcome");
 	const list = (key: string, max: number, build: (r: Record<string, unknown>) => object | null) =>
 		section(own(root, key), max, build);
 	return {
 		overview: str(own(root, "overview"), OVERVIEW_MAX_CHARS),
-		outcome: isRecord(outcomeRaw)
-			? {
-					status: enumWord(own(outcomeRaw, "status")),
-					explanation: str(own(outcomeRaw, "explanation"), ITEM_MAX_CHARS),
-				}
-			: undefined,
+		outcome: {
+			status: knownOr(
+				isRecord(outcomeRaw) ? own(outcomeRaw, "status") : undefined,
+				SUMMARY_OUTCOME_STATUSES,
+				"unclear",
+			),
+			explanation: isRecord(outcomeRaw) ? str(own(outcomeRaw, "explanation"), ITEM_MAX_CHARS) : "",
+		},
 		accomplishments: list("accomplishments", MAX_SECTION_ITEMS, claim),
 		changes: list("changes", MAX_SECTION_ITEMS, (r) => {
 			const base = claim(r);
@@ -243,7 +251,7 @@ function normalise(root: Record<string, unknown>): unknown {
 			if (!what) return null;
 			return {
 				what,
-				result: enumWord(own(r, "result")),
+				result: knownOr(own(r, "result"), SUMMARY_VALIDATION_RESULTS, "unknown"),
 				detail: str(own(r, "detail"), ITEM_MAX_CHARS),
 				evidence: evidenceIds(own(r, "evidence")),
 			};
@@ -256,6 +264,9 @@ function normalise(root: Record<string, unknown>): unknown {
 }
 
 // ── parse ────────────────────────────────────────────────────────────────────
+
+/** The answer is read to this many characters; an answer is at most a few thousand, so more is not one. */
+const MAX_ANSWER_CHARS = 200_000;
 
 export type ParseResult = { ok: true; draft: SummaryDraft } | { ok: false; path: string };
 
@@ -271,7 +282,9 @@ function schemaPath(path: ReadonlyArray<string | number>): string {
 export function parseAnswer(raw: string, nonce: string): ParseResult {
 	try {
 		if (typeof raw !== "string") return { ok: false, path: TOP_LEVEL };
-		const text = stripFence(stripThinkTag(removeNonce(raw, nonce)).trim());
+		const text = stripFence(
+			stripThinkTag(removeNonce(raw.slice(0, MAX_ANSWER_CHARS), nonce)).trim(),
+		);
 		const root = findSummaryObject(text);
 		if (!root) return { ok: false, path: TOP_LEVEL };
 		const checked = summaryDraftSchema.safeParse(normalise(root));

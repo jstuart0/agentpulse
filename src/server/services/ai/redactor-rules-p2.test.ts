@@ -750,6 +750,7 @@ const SELF_SCAN_FILES_ABOUT_REDACTION = new Set([
 	"src/server/services/ai/redactor.ts",
 	"src/server/services/ai/redactor-rules.test.ts",
 	"src/server/services/ai/redactor-rules-p2.test.ts",
+	"src/server/services/ai/redactor-rules-p3.test.ts",
 	"src/server/services/ai/redactor.test.ts",
 	"src/server/services/ai/untrusted-text.test.ts",
 	"src/server/services/ai/__fixtures__/redaction-benign.json",

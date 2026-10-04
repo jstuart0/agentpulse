@@ -585,6 +585,11 @@ const ADVERSARIAL: Record<string, (size: number) => string> = {
 	"://u: then one long run without @": (n) => `://u:${repeat("a", n)}`,
 	"://u: then a long run of @": (n) => `://u:${repeat("@", n)}`,
 	"curl then a long run of -sS": (n) => `curl ${repeat("-sS ", n / 4)}`,
+	// P3-37.1: the flag letters are tried at every split point of a run
+	"curl - then a long run of u": (n) => `curl -${repeat("u", n)}`,
+	"a space, a dash and a long run of u": (n) => ` -${repeat("u", n)}`,
+	"curl --user then a long run with no colon": (n) => `curl --user ${repeat("a", n)}`,
+	"repeated curl -uuuuuuuuuu": (n) => repeat("curl -uuuuuuuuuuuuuuuu ", Math.ceil(n / 23)),
 	"yaml keys with 8 prefix segments, repeated": (n) =>
 		repeat("A_B_C_D_E_F_G_H_token: abcdefghij\n", Math.ceil(n / 35)),
 	"a long CRLF yaml file": (n) =>

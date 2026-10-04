@@ -3,7 +3,12 @@
  * tests do not depend on the ledger's exact types (see the adapter conformance
  * test, TC-4.9c, for the one place that does).
  */
-import type { SessionSummary, SummaryDraft } from "../../../../../shared/session-summary.js";
+import type {
+	EvidenceFactKind,
+	EvidenceFactResult,
+	SessionSummary,
+	SummaryDraft,
+} from "../../../../../shared/session-summary.js";
 import type {
 	LedgerFactForVerify,
 	LedgerForVerify,
@@ -14,9 +19,9 @@ import type {
 export const NONCE = "5f0c1d7e-3a4b-4c8d-9e1f-0a2b3c4d5e6f";
 
 export function fact(
-	kind: string,
+	kind: EvidenceFactKind,
 	observed: boolean,
-	result?: string,
+	result?: EvidenceFactResult,
 	extra: Partial<LedgerFactForVerify> = {},
 ): LedgerFactForVerify {
 	return {
@@ -41,13 +46,25 @@ export const IDS: Record<string, LedgerFactForVerify> = {
 	E9: fact("command", true, "ok"),
 	E10: fact("tool", true, "ok"),
 	E11: fact("event", false),
+	// The population the real ledger produces beyond the basics (see adapter-conformance.test.ts):
+	E12: fact("event", true), // OBSERVED permission / ai_hitl_response: an event the system saw, not a result
+	E13: fact("edit", false), // hand-built: an edit flagged CLAIMED (the real ledger never produces one)
+	E14: fact("command", true, "completed"),
+	E15: fact("command", true, "unknown"),
+	E16: fact("edit", true, "failed"),
+	E17: fact("command", true, "failed"),
+	E18: fact("validation", false, "ok"), // hand-built: a validation flagged CLAIMED
+	E19: fact("validation", true, "completed"), // hand-built: the real ledger never gives a validation `completed`
 	E20: fact("validation", true, "ok", { count: 3 }),
 	E21: fact("validation", true, "ok", { count: 3 }),
 	E22: fact("validation", true, "ok", { count: 3 }),
 };
 
-export function ledgerOf(ids: Record<string, LedgerFactForVerify> = IDS): LedgerForVerify {
-	return { ids: new Map(Object.entries(ids)) };
+export function ledgerOf(
+	ids: Record<string, LedgerFactForVerify> = IDS,
+	recorded: LedgerForVerify["recorded"] = { paths: [], commands: [] },
+): LedgerForVerify {
+	return { ids: new Map(Object.entries(ids)), recorded };
 }
 
 export const IDLE: SessionStateForVerify = {

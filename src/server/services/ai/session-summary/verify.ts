@@ -6,44 +6,66 @@
  * command lines, the outcome clamp, scrubbed text, the instruction tripwire,
  * and evidence facts for the cited ids (no text).
  *
- * It depends on the ledger only through `LedgerForVerify`: the id map and, for
- * each id, its kind, time, result, count and whether it was OBSERVED.
+ * It depends on the ledger only through `LedgerForVerify`: the id map (each
+ * id's kind, time, result, count, validation class and whether it was OBSERVED)
+ * and what the ledger shows of file paths and commands. Phase 5 passes the
+ * ledger's own `ids` map as is; a fact that went through `storedFact()` has no
+ * `observed` and is a type error here.
  */
-import type { OperationalStatus } from "../../../../shared/session-state.js";
-import type {
-	DraftItem,
-	SessionSummary,
-	StoredEvidenceFact,
-	StoredSessionSummary,
-	SummaryAdjustment,
-	SummaryClaimItem,
-	SummaryDraft,
-	SummaryOutcomeStatus,
-	SummarySuspectReason,
-	SummaryValidation,
-	ValidationAdjustReason,
+import {
+	type OperationalStatus,
+	type OperationalStatusInput,
+	getOperationalStatus,
+	hasOutstandingPermissionWait,
+} from "../../../../shared/session-state.js";
+import {
+	type DraftItem,
+	type EvidenceFactKind,
+	type EvidenceFactResult,
+	SUMMARY_SCHEMA_VERSION,
+	type SessionSummary,
+	type StoredEvidenceFact,
+	type StoredSessionSummary,
+	type SummaryAdjustment,
+	type SummaryChangeKind,
+	type SummaryClaimItem,
+	type SummaryDraft,
+	type SummaryOutcomeStatus,
+	type SummarySuspectReason,
+	type SummaryValidation,
+	type ValidationAdjustReason,
 } from "../../../../shared/session-summary.js";
+import { parseDbTimestamp } from "../../util/db-time.js";
 import { type RedactionRule, redact } from "../redactor.js";
 import { stripInvisibleKeepNewlines } from "../untrusted-text.js";
 import { removeNonce } from "./output-schema.js";
-import { runTripwire } from "./tripwire.js";
+import { type TripwireContext, runTripwire } from "./tripwire.js";
 
+/**
+ * A ledger fact as verification reads it. `observed` is required: it is what
+ * separates a recorded call from a claim, and the ledger's id map carries it.
+ */
 export interface LedgerFactForVerify {
-	kind: string;
+	kind: EvidenceFactKind;
 	at: string | null;
-	result?: string;
+	result?: EvidenceFactResult;
 	count?: number;
-	/**
-	 * OBSERVED (the system recorded it) vs CLAIMED. Optional only until the
-	 * ledger carries it on every fact; absent, it is derived from `kind`.
-	 */
-	observed?: boolean;
+	validationClass?: string;
+	/** OBSERVED (the system recorded it) versus CLAIMED (a person or a model said it). */
+	observed: boolean;
 }
 
 export interface LedgerForVerify {
 	ids: ReadonlyMap<string, LedgerFactForVerify>;
+	/** What the ledger shows, as shown; the tripwire's evidence for "the session ran this" and "this file exists". */
+	recorded: { paths: readonly string[]; commands: readonly string[] };
 }
 
+/**
+ * The session as it is AFTER the model call: read the row again once the answer
+ * is in, so a session that started or stopped working meanwhile is judged as it
+ * stands. Build it with `sessionStateForVerify`.
+ */
 export interface SessionStateForVerify {
 	/** `getOperationalStatus` of the session row. */
 	operational: OperationalStatus;
@@ -53,11 +75,27 @@ export interface SessionStateForVerify {
 	lifecycleStatus: string;
 }
 
+/** The columns `sessionStateForVerify` reads; a wider row (a whole `sessions` row) is fine. */
+export type SessionRowForVerify = OperationalStatusInput;
+
+export function sessionStateForVerify(row: SessionRowForVerify): SessionStateForVerify {
+	return {
+		operational: getOperationalStatus(row),
+		permissionWaitOutstanding: hasOutstandingPermissionWait(row),
+		lifecycleStatus: row.status,
+	};
+}
+
 export interface VerifyInput {
 	draft: SummaryDraft;
 	ledger: LedgerForVerify;
 	session: SessionStateForVerify;
-	/** Normalised URLs the user typed, from `collectUserPromptUrls` over the uncapped prompt text. */
+	/**
+	 * Normalised URLs the user typed, from `collectUserPromptUrls` over `userPromptTexts(bundle)`.
+	 * That text is the loader's SQL-cut prompt text (1,756 / 4,256 code points) and only prompts
+	 * inside the scanned window exist, so a URL past the cut or in an unread prompt raises
+	 * `unexpected_url`, which fails toward a warning.
+	 */
 	userPromptUrls: ReadonlySet<string>;
 	/** The fence nonce of the prompt that produced the draft. */
 	nonce: string;
@@ -85,22 +123,57 @@ function scrubber(nonce: string, rules: RedactionRule[] | undefined) {
 
 // ── facts ────────────────────────────────────────────────────────────────────
 
-/** Kinds that record something the system itself saw happen. */
-const OBSERVED_KINDS = new Set(["edit", "command", "validation", "tool"]);
+/**
+ * What backs a claim (ruling R-E): an OBSERVED fact that is a recorded edit that
+ * did not fail, or a command or validation that finished `ok`. A `completed` or
+ * `unknown` command, a `tool` entry, a failed entry, and anything CLAIMED back
+ * nothing on their own: "the command ran" is not "the claim is true".
+ */
+function backsClaim(fact: LedgerFactForVerify): boolean {
+	if (!fact.observed) return false;
+	switch (fact.kind) {
+		case "edit":
+			return fact.result !== "failed";
+		case "command":
+		case "validation":
+			return fact.result === "ok";
+		default:
+			return false;
+	}
+}
 
-const isObserved = (fact: LedgerFactForVerify): boolean =>
-	fact.observed ?? OBSERVED_KINDS.has(fact.kind);
+/** The fact kind each change kind needs: edits for file changes, commands for git and infrastructure. */
+const CHANGE_NEEDS: Record<SummaryChangeKind, EvidenceFactKind[] | null> = {
+	created: ["edit"],
+	modified: ["edit"],
+	deleted: ["edit"],
+	config: ["edit"],
+	dependency: ["edit"],
+	schema: ["edit"],
+	git: ["command"],
+	infrastructure: ["command"],
+	other: null,
+};
 
-const STORED_RESULTS = new Set(["ok", "failed", "unknown", "completed"]);
+function backsChange(kind: SummaryChangeKind, fact: LedgerFactForVerify): boolean {
+	if (!backsClaim(fact)) return false;
+	const needs = CHANGE_NEEDS[kind];
+	if (!needs) return true;
+	// A validation that passed is a command that ran, and backs a git or infrastructure change as one.
+	return needs.includes(fact.kind) || (fact.kind === "validation" && needs.includes("command"));
+}
 
 function storedFact(fact: LedgerFactForVerify): StoredEvidenceFact {
 	const out: StoredEvidenceFact = { kind: fact.kind, at: fact.at };
-	if (fact.result && STORED_RESULTS.has(fact.result)) {
-		out.result = fact.result as StoredEvidenceFact["result"];
-	}
+	if (fact.result) out.result = fact.result;
 	if (typeof fact.count === "number") out.count = fact.count;
+	if (fact.validationClass) out.validationClass = fact.validationClass;
 	return out;
 }
+
+const idNumber = (id: string): number => Number(id.slice(1));
+
+const timeOf = (at: string | null): number => (at ? Date.parse(at) : Number.NaN);
 
 // ── validation ───────────────────────────────────────────────────────────────
 
@@ -110,6 +183,7 @@ const VALIDATION_DETAIL: Record<ValidationAdjustReason, string> = {
 	cited_failed: "Unknown: the cited command failed, so this was not shown to pass",
 	mixed: "Unknown: the cited commands had different results",
 	not_failed: "Unknown: the cited commands do not show a failure",
+	edited_after_validation: "Unknown: files were edited after the cited command ran",
 };
 
 interface ValidationJudgement {
@@ -117,12 +191,23 @@ interface ValidationJudgement {
 	reason?: ValidationAdjustReason;
 }
 
+/** Every observed `edit` that did not fail and is newer than `than`. */
+function editedAfter(ledger: LedgerForVerify, than: number): boolean {
+	if (Number.isNaN(than)) return false;
+	for (const fact of ledger.ids.values()) {
+		if (fact.kind !== "edit" || !fact.observed || fact.result === "failed") continue;
+		if (timeOf(fact.at) > than) return true;
+	}
+	return false;
+}
+
 function judgeValidation(
 	claimed: SummaryValidation["result"],
 	cited: LedgerFactForVerify[],
+	ledger: LedgerForVerify,
 ): ValidationJudgement {
 	if (claimed !== "passed" && claimed !== "failed") return { result: claimed };
-	const validations = cited.filter((f) => f.kind === "validation" && isObserved(f));
+	const validations = cited.filter((f) => f.kind === "validation" && f.observed);
 	const anyFailed = validations.some((f) => f.result === "failed");
 	if (claimed === "failed") {
 		if (anyFailed) return { result: "failed" };
@@ -132,12 +217,27 @@ function judgeValidation(
 		};
 	}
 	if (validations.length === 0) return { result: "unknown", reason: "no_validation_cited" };
-	if (validations.every((f) => f.result === "ok")) return { result: "passed" };
+	if (validations.every((f) => f.result === "ok")) {
+		const newest = Math.max(...validations.map((f) => timeOf(f.at)));
+		if (editedAfter(ledger, newest))
+			return { result: "unknown", reason: "edited_after_validation" };
+		return { result: "passed" };
+	}
 	if (anyFailed) {
 		const allFailed = validations.every((f) => f.result === "failed");
 		return { result: "unknown", reason: allFailed ? "cited_failed" : "mixed" };
 	}
 	return { result: "unknown", reason: "cited_unknown" };
+}
+
+/** The newest validation fact in the ledger (ids rise with event ids), if its result is `failed`. */
+function lastValidationFailedId(ledger: LedgerForVerify): string | null {
+	let lastId: string | null = null;
+	for (const [id, fact] of ledger.ids) {
+		if (fact.kind !== "validation" || !fact.observed) continue;
+		if (lastId === null || idNumber(id) > idNumber(lastId)) lastId = id;
+	}
+	return lastId !== null && ledger.ids.get(lastId)?.result === "failed" ? lastId : null;
 }
 
 // ── outcome ──────────────────────────────────────────────────────────────────
@@ -155,6 +255,14 @@ function stillRunning(session: SessionStateForVerify): "working" | "permission_w
 	if (session.operational === "waiting" && session.permissionWaitOutstanding)
 		return "permission_wait";
 	return null;
+}
+
+function tripwireContext(input: VerifyInput): TripwireContext {
+	return {
+		userPromptUrls: input.userPromptUrls,
+		recordedPaths: input.ledger.recorded.paths,
+		recordedCommands: input.ledger.recorded.commands,
+	};
 }
 
 // ── verify ───────────────────────────────────────────────────────────────────
@@ -180,19 +288,26 @@ export function verifySummary(input: VerifyInput): VerifyResult {
 		text: scrub(item.text),
 		evidence: survivors(item.evidence),
 	});
-	const claim = (item: DraftItem): SummaryClaimItem => {
+	const claim = (item: DraftItem, backs = backsClaim): SummaryClaimItem => {
 		const evidence = survivors(item.evidence);
 		return {
 			text: scrub(item.text),
 			evidence,
-			unverified: !factsOf(evidence).some(isObserved),
+			unverified: !factsOf(evidence).some(backs),
 		};
 	};
 
 	const adjustments: SummaryAdjustment[] = [];
 	const validation: SummaryValidation[] = draft.validation.map((v, index) => {
 		const evidence = survivors(v.evidence);
-		const judged = judgeValidation(v.result, factsOf(evidence));
+		const judged = judgeValidation(v.result, factsOf(evidence), ledger);
+		const classes = [
+			...new Set(
+				factsOf(evidence)
+					.filter((f) => f.kind === "validation" && f.validationClass)
+					.map((f) => f.validationClass as string),
+			),
+		];
 		const adjusted = judged.reason !== undefined;
 		if (judged.reason) {
 			adjustments.push({
@@ -208,6 +323,7 @@ export function verifySummary(input: VerifyInput): VerifyResult {
 			detail: judged.reason ? VALIDATION_DETAIL[judged.reason] : scrub(v.detail),
 			evidence,
 			adjusted,
+			...(classes.length > 0 ? { classes } : {}),
 		};
 	});
 
@@ -220,15 +336,15 @@ export function verifySummary(input: VerifyInput): VerifyResult {
 	if (status === "completed" && session.lifecycleStatus === "failed") {
 		adjustments.push({ code: "note_lifecycle_failed" });
 	}
-	if (status === "completed" && validation.some((v) => v.result === "failed")) {
-		adjustments.push({ code: "note_completed_with_failed_validation" });
-	}
 
 	const summary: SessionSummary = {
 		overview: scrub(draft.overview),
 		outcome: { status, explanation: scrub(draft.outcome.explanation) },
-		accomplishments: draft.accomplishments.map(claim),
-		changes: draft.changes.map((c) => ({ ...claim(c), kind: c.kind })),
+		accomplishments: draft.accomplishments.map((item) => claim(item)),
+		changes: draft.changes.map((c) => ({
+			...claim(c, (fact) => backsChange(c.kind, fact)),
+			kind: c.kind,
+		})),
 		decisions: draft.decisions.map((d) => ({ ...plain(d), why: scrub(d.why) })),
 		validation,
 		problems: draft.problems.map(plain),
@@ -237,9 +353,19 @@ export function verifySummary(input: VerifyInput): VerifyResult {
 		handoff: scrub(draft.handoff, true),
 	};
 
-	const suspectReasons = runTripwire(summary, input.userPromptUrls);
+	// The last validation the ledger shows failed and nothing the summary cites mentions it.
+	const lastFailed = lastValidationFailedId(ledger);
+	const claimsDone = status === "completed" || status === "mostly_completed";
+	if (
+		(status === "completed" && validation.some((v) => v.result === "failed")) ||
+		(claimsDone && lastFailed !== null && !cited.has(lastFailed))
+	) {
+		adjustments.push({ code: "note_completed_with_failed_validation" });
+	}
+
+	const suspectReasons = runTripwire(summary, tripwireContext(input));
 	const evidence: Record<string, StoredEvidenceFact> = {};
-	const ordered = [...cited.keys()].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+	const ordered = [...cited.keys()].sort((a, b) => idNumber(a) - idNumber(b));
 	for (const id of ordered) evidence[id] = storedFact(cited.get(id) as LedgerFactForVerify);
 
 	return {
@@ -270,8 +396,22 @@ export interface StoredSummaryInput {
 		droppedByCap: number;
 		droppedByBudget: number;
 		cutoffAt: string | null;
+		/** The ledger's `overBudget`: the protected entries alone exceeded the budget. */
+		overBudget: boolean;
 	};
 	firstEventId: number | null;
+	/** `newestEventAt(bundle.rows)`. */
+	throughAt: string | null;
+}
+
+/** ISO time of the newest event among the loader's rows; null when none carried a readable time. */
+export function newestEventAt(rows: ReadonlyArray<{ createdAt: string }>): string | null {
+	let newest = Number.NaN;
+	for (const row of rows) {
+		const ms = parseDbTimestamp(row.createdAt);
+		if (ms !== null && !(ms <= newest)) newest = ms;
+	}
+	return Number.isNaN(newest) ? null : new Date(newest).toISOString();
 }
 
 /** The summary and its provenance, by named fields only (nothing is spread in). */
@@ -280,6 +420,7 @@ export function buildStoredSummary(input: StoredSummaryInput): StoredSessionSumm
 	return {
 		summary: verified.summary,
 		provenance: {
+			schemaVersion: SUMMARY_SCHEMA_VERSION,
 			promptVersion: input.promptVersion,
 			provider: { kind: input.provider.kind, model: input.provider.model },
 			inputTokens: input.usage.inputTokens,
@@ -296,10 +437,13 @@ export function buildStoredSummary(input: StoredSummaryInput): StoredSessionSumm
 				droppedByCap: coverage.droppedByCap,
 				droppedByBudget: coverage.droppedByBudget,
 				cutoffAt: coverage.cutoffAt,
+				overBudget: coverage.overBudget,
 			},
 			firstEventId: input.firstEventId,
+			throughAt: input.throughAt,
 			adjustments: verified.adjustments,
-			suspect: verified.suspect,
+			suspectReasons: verified.suspectReasons,
+			suspect: verified.suspectReasons.length > 0,
 			evidence: verified.evidence,
 		},
 	};

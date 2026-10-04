@@ -29,7 +29,7 @@ function ci(word: string): string {
 // A JSON key that names a secret: any identifier prefix (`db_`, `client-`,
 // `access`, `Session`), then the secret word, and nothing after it, so
 // `max_tokens`, `token_count`, `password_hint` and `tokenType` are other keys.
-const JSON_SECRET_KEY = String.raw`[a-z0-9_\-.]{0,40}(?:password|passwd|secret|api[_-]?key|token|private[_-]?key(?:[_-]?id)?|secret[_-]?key|secret[_-]?access[_-]?key|access[_-]?key|signing[_-]?key|encryption[_-]?key|connection[_-]?string|authorization|credentials?)`;
+const JSON_SECRET_KEY = String.raw`[a-z0-9_\-.]{0,40}(?:password|passwd|secret|api[_-]?key|token|private[_-]?key(?:[_-]?id)?|secret[_-]?key|secret[_-]?access[_-]?key|access[_-]?key|signing[_-]?key|encryption[_-]?key|connection[_-]?string|authorization|credentials?|cookie)`;
 // A value that is not a secret: the name of a type (`"token": "string"`), a
 // scheme word alone (`"Authorization": "Bearer "`), or a placeholder standing
 // for one (`${API_KEY}`, `$API_KEY`, `<your-key>`, `{{ key }}`, optionally after a
@@ -46,6 +46,32 @@ const JSON_NOT_A_SECRET = String.raw`(?:string|number|boolean|object|array|integ
  */
 const JSON_SECRET_VALUE_PATTERN = new RegExp(
 	String.raw`(?=\\?")(?<=(?:^|[{,\[])\s*)(?:"(?:${JSON_SECRET_KEY})"\s*:\s*"(?!\[REDACTED)(?!${JSON_NOT_A_SECRET}")(?:[^"\\\n]|\\.){6,}"|\\"(?:${JSON_SECRET_KEY})\\"\s*:\s*\\"(?!\[REDACTED)(?!${JSON_NOT_A_SECRET}\\")(?:[^"\\\n]|\\(?!")){6,}\\")`,
+	"gim",
+);
+
+/**
+ * The object-literal forms a log line carries: a Python repr (`{'password': 'x'}`)
+ * and `console.log` output (`{ password: 'x' }`): a quoted or bare key naming a
+ * secret, a single-quoted value of 6 or more characters (the double-quoted form is
+ * the JSON rule's, and in source code it is a call argument). Same key
+ * and not-a-secret rules as the JSON rule, and no CamelCase or hyphenated-name
+ * exception: a hyphenated value is masked under every key. The key must open
+ * a member on the same line (right after `{`, `,` or `[`, with at most 40
+ * blanks between): a key at the start of a line is the YAML rule's, or source
+ * code's. `passwordField:` is another key. Every repeat is bounded.
+ */
+const OBJECT_LITERAL_SECRET_PATTERN = new RegExp(
+	String.raw`(?=['"A-Za-z0-9_.-])(?<=[{,\[][ \t]{0,40})(?:'(?:${JSON_SECRET_KEY})'|"(?:${JSON_SECRET_KEY})"|(?:${JSON_SECRET_KEY}))[ \t]*:[ \t]*(?:'(?!\[REDACTED)(?!${JSON_NOT_A_SECRET}')(?:[^'\\\n]|\\.){6,}')`,
+	"gim",
+);
+
+/**
+ * `{"name":"DB_PASSWORD","value":"..."}`, the pair `kubectl get pod -o json`
+ * prints for an environment variable: the value is masked when the name is a
+ * secret key, whatever the value looks like (4 or more characters).
+ */
+const NAME_VALUE_SECRET_PATTERN = new RegExp(
+	String.raw`(?="name")(?<=(?:^|[{,\[])[ \t\r\n]{0,40})"name"\s*:\s*"(?:${JSON_SECRET_KEY})"\s*,\s*"value"\s*:\s*"(?!\[REDACTED)(?!${JSON_NOT_A_SECRET}")(?:[^"\\\n]|\\.){4,}"`,
 	"gim",
 );
 
@@ -310,6 +336,19 @@ export const DEFAULT_RULES: RedactionRule[] = [
 		},
 	},
 	{
+		name: "object_literal_secret",
+		pattern: OBJECT_LITERAL_SECRET_PATTERN,
+		replacement: (match) => {
+			const quote = /:[ \t]*(['"])/.exec(match)?.[1] ?? '"';
+			return `${match.slice(0, match.indexOf(":") + 1)} ${quote}[REDACTED]${quote}`;
+		},
+	},
+	{
+		name: "name_value_secret",
+		pattern: NAME_VALUE_SECRET_PATTERN,
+		replacement: (match) => `${/^[\s\S]*?"value"\s*:/.exec(match)?.[0] ?? ""} "[REDACTED]"`,
+	},
+	{
 		name: "yaml_secret_value",
 		pattern: YAML_SECRET_VALUE_PATTERN,
 		replacement: (match) => `${match.slice(0, match.indexOf(":") + 1)} [REDACTED]`,
@@ -334,9 +373,12 @@ export const DEFAULT_RULES: RedactionRule[] = [
 		// tests come first and the look-behind for `curl` last, so the cost is
 		// paid only at the few places a `-u` flag sits, not at every `curl`.
 		pattern:
-			/(?<=[ \t]|\\\n)(?=(?:-[A-Za-z]*u|--user)[ =]?["']?[^\s:"']+:)(?<=\bcurl\b(?:[^\n]|\\\n){0,500})(?:-[A-Za-z]*u|--user)[ =]?["']?[^\s:"']+:(?!\[REDACTED)[^\s"']+/g,
+			/(?<=[ \t]|\\\n)(?=(?:-[A-Za-z]{0,8}u|--user)[ =]?["']?[^\s:"']{1,256}:)(?<=\bcurl\b(?:[^\n]|\\\n){0,500})(?:-[A-Za-z]{0,8}u|--user)[ =]?["']?[^\s:"']{1,256}:(?!\[REDACTED)[^\s"']+/g,
 		replacement: (match) =>
-			match.replace(/^((?:-[A-Za-z]*u|--user)[ =]?["']?[^\s:"']+:)[^\s"']+$/, "$1[REDACTED]"),
+			match.replace(
+				/^((?:-[A-Za-z]{0,8}u|--user)[ =]?["']?[^\s:"']{1,256}:)[^\s"']+$/,
+				"$1[REDACTED]",
+			),
 	},
 ];
 

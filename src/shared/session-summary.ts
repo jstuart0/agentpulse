@@ -20,11 +20,11 @@ export type SummaryOutcomeStatus = (typeof SUMMARY_OUTCOME_STATUSES)[number];
 
 export const SUMMARY_OUTCOME_LABELS: Record<SummaryOutcomeStatus, string> = {
 	completed: "Completed",
-	mostly_completed: "Mostly Completed",
-	partially_completed: "Partially Completed",
+	mostly_completed: "Mostly completed",
+	partially_completed: "Partially completed",
 	blocked: "Blocked",
 	failed: "Failed",
-	in_progress: "In Progress",
+	in_progress: "In progress",
 	abandoned: "Abandoned",
 	unclear: "Unclear",
 };
@@ -104,6 +104,8 @@ export interface SummaryChange extends SummaryClaimItem {
 export interface SummaryValidation extends DraftValidation {
 	/** True when the server replaced the model's result (always with "unknown"). */
 	adjusted: boolean;
+	/** Classes (`bun test`, `tsc`) of the cited validation commands, server-chosen; absent when none was cited. */
+	classes?: string[];
 }
 export interface SessionSummary {
 	overview: string;
@@ -119,6 +121,8 @@ export interface SessionSummary {
 }
 
 export type ValidationAdjustReason =
+	/** An edit recorded after the newest cited validation: the pass does not cover the final code. */
+	| "edited_after_validation"
 	/** Nothing was cited, or nothing cited is a recorded test or build command. */
 	| "no_validation_cited"
 	/** A cited validation ran but its output did not show a pass or a failure. */
@@ -147,21 +151,64 @@ export type SummaryAdjustment =
 			reason: ValidationAdjustReason;
 	  };
 
-export type SummarySuspectReason =
-	| "role_marker"
-	| "override_phrase"
-	| "unexpected_url"
-	| "pipe_to_shell";
+/**
+ * Every rule of the instruction tripwire has its own code, in the order they are
+ * stored. `pipe_to_shell` covers both a pipe into a shell or interpreter and a
+ * download followed by a run step.
+ */
+export const SUMMARY_SUSPECT_REASONS = [
+	"role_marker",
+	"override_phrase",
+	"pipe_to_shell",
+	"unexpected_url",
+	"unrecorded_command",
+] as const;
+export type SummarySuspectReason = (typeof SUMMARY_SUSPECT_REASONS)[number];
+
+/**
+ * `warning`: text that addresses an agent or runs downloaded code; the page uses
+ * its warning wording and the "... anyway" buttons. `note`: an address the user
+ * never typed, or a command the session never ran; a neutral line, normal buttons.
+ */
+export const SUSPECT_REASON_TIER: Record<SummarySuspectReason, "warning" | "note"> = {
+	role_marker: "warning",
+	override_phrase: "warning",
+	pipe_to_shell: "warning",
+	unexpected_url: "note",
+	unrecorded_command: "note",
+};
+
+/** The kinds of fact a ledger id can be: what the summary's citations may point at. */
+export const EVIDENCE_FACT_KINDS = [
+	"prompt",
+	"agent_message",
+	"edit",
+	"command",
+	"validation",
+	"tool",
+	"event",
+] as const;
+export type EvidenceFactKind = (typeof EVIDENCE_FACT_KINDS)[number];
+
+/** How a recorded call ended. `completed`: the call finished and nothing recorded says whether it worked. */
+export const EVIDENCE_FACT_RESULTS = ["ok", "failed", "unknown", "completed"] as const;
+export type EvidenceFactResult = (typeof EVIDENCE_FACT_RESULTS)[number];
 
 /** What may be said about a cited id: a kind, a time, a result, a count. No text, ever. */
 export interface StoredEvidenceFact {
-	kind: string;
+	kind: EvidenceFactKind;
 	at: string | null;
-	result?: "ok" | "failed" | "unknown" | "completed";
+	result?: EvidenceFactResult;
 	count?: number;
+	/** For a validation: its class (`bun test`, `tsc`), a label the server chose, never the command text. */
+	validationClass?: string;
 }
 
+/** The stored shape of a summary changes only with this number. */
+export const SUMMARY_SCHEMA_VERSION = 1;
+
 export interface SummaryProvenance {
+	schemaVersion: number;
 	promptVersion: string;
 	/** Provider kind and model only: never an id, a name or an endpoint. */
 	provider: { kind: string; model: string };
@@ -170,6 +217,7 @@ export interface SummaryProvenance {
 	usageEstimated: boolean;
 	costCents: number;
 	calls: number;
+	/** Rule matches in what was sent (one secret can match two rules): known patterns masked, not a count of secrets. */
 	redactionHits: number;
 	eventsTotal: number;
 	eventsRead: number;
@@ -180,9 +228,16 @@ export interface SummaryProvenance {
 		droppedByBudget: number;
 		/** ISO time; null when the scan reached the session's first event (an interior omission has no cut-off). */
 		cutoffAt: string | null;
+		/** The protected entries alone exceeded the budget (not reachable at the current limits). */
+		overBudget: boolean;
 	};
 	firstEventId: number | null;
+	/** ISO time of the newest event the summary covers, from the rows the loader returned (null when none carried a time). */
+	throughAt: string | null;
 	adjustments: SummaryAdjustment[];
+	/** The tripwire's reason codes (no matched text), de-duplicated, in `SUMMARY_SUSPECT_REASONS` order. */
+	suspectReasons: SummarySuspectReason[];
+	/** `suspectReasons.length > 0`. */
 	suspect: boolean;
 	/** Facts for the ids the summary cites, keyed by id. */
 	evidence: Record<string, StoredEvidenceFact>;
