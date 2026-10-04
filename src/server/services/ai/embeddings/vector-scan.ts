@@ -35,8 +35,13 @@ const MIN_PAYABLE_DEBT_MS = 2;
 const FIRST_EVENT_ID_BOUND = Number.MAX_SAFE_INTEGER;
 const LOGGED_ERROR_CHARS = 200;
 
+// The CASE returns the blob only for a row that has an event and whose blob is
+// exactly dim * 4 bytes (the one `?` in the select list), so a malformed or
+// oversize blob is never copied into memory. `length()` of a BLOB is answered
+// from the record header without reading the overflow pages (measured: 300 MB
+// of blobs in 0.2 ms, no RSS change, against 520 ms and 300 MiB for a read).
 const SCAN_SQL = `SELECT v.event_id AS eventId,
-		CASE WHEN e.session_id IS NOT NULL THEN v.vector END AS vector,
+		CASE WHEN e.session_id IS NOT NULL AND length(v.vector) = ? THEN v.vector END AS vector,
 		e.session_id AS sessionId
 	FROM event_embeddings v INDEXED BY idx_event_embeddings_model_dim_event
 	LEFT JOIN events e ON e.id = v.event_id
@@ -65,7 +70,10 @@ export interface VectorScanStats {
 	truncated: boolean;
 	stopReason: VectorScanStopReason;
 	ms: number;
+	/** CPU time the chunks used (user + system): what the pacer charges and sleeps off. */
 	busyMs: number;
+	/** Wall time the chunks took, including time blocked on storage; busyMs is at most this. */
+	chunkWallMs: number;
 	/** Time spent asleep paying CPU debt, or waiting on another scan's sleep. */
 	sleptMs: number;
 	/** The longest synchronous slice: one chunk's read and scoring. */
@@ -83,11 +91,17 @@ export interface VectorScanResult {
 interface ScanClock {
 	now(): number;
 	sleep(ms: number): Promise<void>;
+	/** Process CPU time in ms (user + system). A clock without one is charged wall time. */
+	cpuMs?(): number;
 }
 
 const realClock: ScanClock = {
 	now: () => performance.now(),
 	sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+	cpuMs: () => {
+		const { user, system } = process.cpuUsage();
+		return (user + system) / 1000;
+	},
 };
 
 let clock: ScanClock = realClock;
@@ -108,6 +122,15 @@ function logOnce(key: string, fields: Record<string, unknown>): void {
 	console.log(JSON.stringify(fields));
 }
 
+/**
+ * Debt for a chunk that used `busyMs` of CPU. A chunk is a synchronous read,
+ * so its wall time includes time blocked on storage; a blocked process uses
+ * no CPU quota and sleeping on top of it buys nothing, so the pacer charges
+ * CPU, never more than the chunk's wall time (a process-wide CPU reading can
+ * include other threads' work). There is no per-chunk cap: at a share of 0.05
+ * the legitimate debt for one chunk is 19 times its CPU, and a cap would let
+ * the scan exceed the configured share.
+ */
 function chargeDebt(busyMs: number): void {
 	const share = config.vectorScanCpuShare;
 	if (share >= 1) return;
@@ -174,6 +197,11 @@ function nextWait(gate: TurnGate): Promise<void> | null {
 	return null;
 }
 
+/** CPU time now; a clock with no CPU reader is charged wall time. */
+function readCpuMs(): number {
+	return clock.cpuMs ? clock.cpuMs() : clock.now();
+}
+
 function chunkRowsFor(dim: number): number {
 	return Math.min(MAX_CHUNK_ROWS, Math.max(1, Math.floor(CHUNK_BYTES / (dim * 4))));
 }
@@ -235,6 +263,7 @@ export async function scanSessionSimilarity(
 	let statements = 0;
 	let maxRowsPerStatement = 0;
 	let busyMs = 0;
+	let chunkWallMs = 0;
 	let sleptMs = 0;
 	let maxSliceMs = 0;
 	let oldestEventId: number | null = null;
@@ -250,11 +279,18 @@ export async function scanSessionSimilarity(
 			const gate: TurnGate = { yielded: statements === 0, paid: false, waitedMs: 0 };
 			for (let wait = nextWait(gate); wait !== null; wait = nextWait(gate)) await wait;
 			sleptMs += gate.waitedMs;
+			// Pacing can sleep past the budget; the check after a chunk would only
+			// notice after one more statement. A scan always runs at least one.
+			if (statements > 0 && clock.now() - startedAt >= maxMs) {
+				stopReason = "time_budget";
+				break;
+			}
 
 			const chunkStartedAt = clock.now();
+			const cpuStartedAt = readCpuMs();
 			let rows: ChunkRow[];
 			try {
-				rows = statement.all(model, dim, cursor, chunkRows) as ChunkRow[];
+				rows = statement.all(dim * 4, model, dim, cursor, chunkRows) as ChunkRow[];
 				for (const row of rows) {
 					if (row.vector === null || row.sessionId === null || row.vector.byteLength !== dim * 4) {
 						skipped++;
@@ -273,8 +309,10 @@ export async function scanSessionSimilarity(
 				}
 			} finally {
 				const chunkMs = clock.now() - chunkStartedAt;
-				chargeDebt(chunkMs);
-				busyMs += chunkMs;
+				const cpuMs = Math.min(readCpuMs() - cpuStartedAt, chunkMs);
+				chargeDebt(cpuMs);
+				busyMs += cpuMs;
+				chunkWallMs += chunkMs;
 				if (chunkMs > maxSliceMs) maxSliceMs = chunkMs;
 			}
 
@@ -306,6 +344,7 @@ export async function scanSessionSimilarity(
 			stopReason,
 			ms: clock.now() - startedAt,
 			busyMs,
+			chunkWallMs,
 			sleptMs,
 			maxSliceMs,
 			oldestEventId,

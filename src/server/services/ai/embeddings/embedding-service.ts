@@ -4,7 +4,7 @@
 import { eq, sql } from "drizzle-orm";
 import { config } from "../../../config.js";
 import { getDb, getSqlite } from "../../../db/client.js";
-import { events, settings } from "../../../db/schema/index.js";
+import { settings } from "../../../db/schema/index.js";
 import { SYNTHETIC_STOP_CONTENT } from "../../event-normalizer.js";
 import {
 	DEFAULT_EMBEDDING_MODEL,
@@ -126,67 +126,80 @@ export async function resolveEmbeddingAdapter(): Promise<EmbeddingAdapter | null
 	}
 }
 
+/** The ids one stage-one read looks across above the cursor: bounds the work of a statement however many rows are already embedded. */
+export const BACKFILL_ID_WINDOW = 5_000;
+/** Most events one batch embeds. */
+export const BACKFILL_BATCH_ROWS = 32;
+/** What one batch's payloads may add up to; a single larger row is taken alone. */
+export const BACKFILL_BATCH_PAYLOAD_BYTES = 4 * 1024 * 1024;
+/** A payload larger than this is never handed to SQLite's JSON functions; the event's `content` stands in. */
+const PAYLOAD_PARSE_CAP_BYTES = 4 * 1024 * 1024;
+/** Cap so a runaway tool output doesn't blow our token budget; most embedding models cap near 512 tokens anyway. */
+const EMBED_TEXT_CHARS = 3_000;
+
+const EMBEDDED_TYPE_PLACEHOLDERS = EMBEDDED_EVENT_TYPES.map(() => "?").join(",");
+
 /**
- * Compose the text to embed for a single event row. Mirrors the FTS
- * trigger's COALESCE chain so the two indexes see equivalent input.
+ * SQL for the text to embed for an `events` row, evaluated by SQLite so the
+ * payload is never returned to JavaScript. The first non-empty string among
+ * prompt, message, summary, why, title wins (a non-string value falls
+ * through), then `content`, except that the synthetic Stop marker counts as
+ * no text: every turn would otherwise embed a near-duplicate of it. Mirrors
+ * the FTS trigger's COALESCE chain. The JSON functions run only on a payload
+ * of at most PAYLOAD_PARSE_CAP_BYTES that is valid JSON; anything else falls
+ * back to `content`, so a 16 MiB hook payload costs a length check. Truncation
+ * is by character (SQLite `substr`), where the old JavaScript cut UTF-16 units.
+ * One `?` parameter: the synthetic Stop marker content.
  */
-function eventTextFromRow(row: {
-	eventType: string;
-	rawPayload: unknown;
-	content: string | null;
-}): string {
-	const p = (row.rawPayload ?? {}) as Record<string, unknown>;
-	// A hook Stop event with no per-line message content normalizes to the
-	// synthetic SYNTHETIC_STOP_CONTENT marker (D14, F34) — every turn in
-	// every session would otherwise embed a near-duplicate of it. Real
-	// content in one of the payload fields above still wins.
-	const isSyntheticStop = row.eventType === "Stop" && row.content === SYNTHETIC_STOP_CONTENT;
-	const text =
-		(typeof p.prompt === "string" && p.prompt) ||
-		(typeof p.message === "string" && p.message) ||
-		(typeof p.summary === "string" && p.summary) ||
-		(typeof p.why === "string" && p.why) ||
-		(typeof p.title === "string" && p.title) ||
-		(isSyntheticStop ? "" : row.content) ||
-		"";
-	// Cap so a runaway tool output doesn't blow our token budget. Most
-	// embedding models cap at 512 tokens anyway; ~3000 chars is a
-	// comfortable upper bound.
-	return text.slice(0, 3000);
+const EVENT_TEXT_SQL = `substr(COALESCE(
+	CASE WHEN octet_length(raw_payload) <= ${PAYLOAD_PARSE_CAP_BYTES} THEN
+		CASE WHEN json_valid(raw_payload) THEN COALESCE(
+			CASE WHEN json_type(raw_payload, '$.prompt') = 'text' THEN NULLIF(json_extract(raw_payload, '$.prompt'), '') END,
+			CASE WHEN json_type(raw_payload, '$.message') = 'text' THEN NULLIF(json_extract(raw_payload, '$.message'), '') END,
+			CASE WHEN json_type(raw_payload, '$.summary') = 'text' THEN NULLIF(json_extract(raw_payload, '$.summary'), '') END,
+			CASE WHEN json_type(raw_payload, '$.why') = 'text' THEN NULLIF(json_extract(raw_payload, '$.why'), '') END,
+			CASE WHEN json_type(raw_payload, '$.title') = 'text' THEN NULLIF(json_extract(raw_payload, '$.title'), '') END
+		) END
+	END,
+	CASE WHEN event_type = 'Stop' AND content = ? THEN NULL ELSE NULLIF(content, '') END,
+	''
+), 1, ${EMBED_TEXT_CHARS})`;
+
+let inlineEmbedOk = 0;
+let inlineEmbedFailed = 0;
+
+/** How many inline embeds (one per ingested event) have succeeded and failed since boot. */
+export function getInlineEmbedCounters(): { ok: number; failed: number } {
+	return { ok: inlineEmbedOk, failed: inlineEmbedFailed };
 }
 
 /**
  * Embed and persist a single event. Idempotent — re-embedding overwrites
  * the existing row (used by model-switch flows). Silent no-op when:
  *   - vector search is disabled
- *   - adapter resolution fails
- *   - the event isn't a meaningful type
+ *   - the event is missing or isn't a meaningful type
  *   - text is empty
+ *   - adapter resolution fails
+ * One statement reads the event's type and, only for an embeddable type, its
+ * text; the type is known before the payload is touched and before any
+ * adapter is resolved, since most ingested events are not embeddable.
  */
 export async function embedEvent(eventId: number): Promise<void> {
 	if (config.dialect !== "sqlite" || !isVectorSearchBuildEnabled()) return;
+	const row = getSqlite()
+		.prepare(
+			`SELECT CASE WHEN event_type IN (${EMBEDDED_TYPE_PLACEHOLDERS}) THEN ${EVENT_TEXT_SQL} END AS text
+			 FROM events WHERE id = ?`,
+		)
+		.get(...EMBEDDED_EVENT_TYPES, SYNTHETIC_STOP_CONTENT, eventId) as {
+		text: string | null;
+	} | null;
+	if (!row?.text?.trim()) return;
 	const adapter = await resolveEmbeddingAdapter();
 	if (!adapter) return;
 
-	const [row] = await getDb()
-		.select({
-			id: events.id,
-			eventType: events.eventType,
-			content: events.content,
-			rawPayload: events.rawPayload,
-		})
-		.from(events)
-		.where(eq(events.id, eventId))
-		.limit(1);
-	if (!row) return;
-	if (!EMBEDDED_EVENT_TYPES.includes(row.eventType as (typeof EMBEDDED_EVENT_TYPES)[number])) {
-		return;
-	}
-	const text = eventTextFromRow(row);
-	if (!text.trim()) return;
-
 	try {
-		const vector = await adapter.embed(text);
+		const vector = await adapter.embed(row.text);
 		const stmt = getSqlite().prepare(
 			"INSERT INTO event_embeddings (event_id, model, dim, vector, created_at) " +
 				"VALUES (?, ?, ?, ?, datetime('now')) " +
@@ -194,8 +207,10 @@ export async function embedEvent(eventId: number): Promise<void> {
 				"vector = excluded.vector, created_at = excluded.created_at",
 		);
 		stmt.run(eventId, adapter.model, adapter.dim, vectorToBuffer(vector));
+		inlineEmbedOk++;
 	} catch (err) {
 		// Swallow — backfill will retry, ingest path stays cheap.
+		inlineEmbedFailed++;
 		console.warn(`[embeddings] embedEvent(${eventId}) failed:`, err);
 	}
 }
@@ -270,62 +285,112 @@ export async function runBackfill(): Promise<BackfillProgress> {
 			.get(...EMBEDDED_EVENT_TYPES) as { n: number };
 		backfillState.total = totalRow.n;
 
-		// Loop in batches; each batch picks up rows missing this model's
-		// vector. Survives concurrent ingest because new events get embedded
-		// inline and queries for "missing" reflect that immediately.
-		const batchSize = 32;
+		// An id cursor walks the table once. Each pass reads (stage one) the ids
+		// and payload sizes of up to a batch of pending rows inside an id window
+		// above the cursor, then (stage two) extracts text in SQL for the longest
+		// prefix whose payloads add up to the byte budget. An empty window moves
+		// the cursor on, since retention leaves gaps; the run ends when the cursor
+		// reaches the highest id, read again at that point so events ingested
+		// during the run are covered.
+		const sqlite = getSqlite();
+		const readMaxEventId = () =>
+			(sqlite.prepare("SELECT COALESCE(MAX(id), ?) AS m FROM events").get(0) as { m: number }).m;
+		const stageOne = sqlite.prepare(
+			`SELECT e.id AS id, COALESCE(octet_length(e.raw_payload), 0) AS payloadBytes
+			 FROM events e
+			 LEFT JOIN event_embeddings v ON v.event_id = e.id AND v.model = ?
+			 WHERE e.id > ? AND e.id <= ? AND e.event_type IN (${placeholders}) AND v.event_id IS NULL
+			 ORDER BY e.id ASC
+			 LIMIT ${BACKFILL_BATCH_ROWS}`,
+		);
+		// Placeholder INSERT for events that have no extractable text. Without
+		// it the pending query keeps re-surfacing them and the run never makes
+		// forward progress. dim=0 + empty buffer is silently filtered by the
+		// cosine query (which requires dim = adapter.dim).
+		const skipMarker = sqlite.prepare(
+			"INSERT OR IGNORE INTO event_embeddings (event_id, model, dim, vector, created_at) " +
+				"VALUES (?, ?, 0, X'', datetime('now'))",
+		);
+		const insert = sqlite.prepare(
+			"INSERT INTO event_embeddings (event_id, model, dim, vector, created_at) " +
+				"VALUES (?, ?, ?, ?, datetime('now')) " +
+				"ON CONFLICT(event_id) DO UPDATE SET model = excluded.model, dim = excluded.dim, " +
+				"vector = excluded.vector, created_at = excluded.created_at",
+		);
+		const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 		let processed = 0;
 		let consecutiveFailures = 0;
 		let circuitOpen = false;
+		let cursor = 0;
+		let maxId = readMaxEventId();
 		while (true) {
-			const batch = getSqlite()
-				.prepare(
-					`SELECT e.id, e.event_type AS eventType, e.content, e.raw_payload AS rawPayload
-					 FROM events e
-					 LEFT JOIN event_embeddings v ON v.event_id = e.id AND v.model = ?
-					 WHERE e.event_type IN (${placeholders}) AND v.event_id IS NULL
-					 ORDER BY e.id ASC
-					 LIMIT ${batchSize}`,
-				)
-				.all(adapter.model, ...EMBEDDED_EVENT_TYPES) as Array<{
+			if (cursor >= maxId) {
+				maxId = readMaxEventId();
+				if (cursor >= maxId) break;
+			}
+			const windowEnd = cursor + BACKFILL_ID_WINDOW;
+			const candidates = stageOne.all(
+				adapter.model,
+				cursor,
+				windowEnd,
+				...EMBEDDED_EVENT_TYPES,
+			) as Array<{
 				id: number;
-				eventType: string;
-				content: string | null;
-				rawPayload: string;
+				payloadBytes: number;
 			}>;
-			if (batch.length === 0) break;
+			if (candidates.length === 0) {
+				cursor = Math.min(windowEnd, maxId);
+				await yieldToLoop();
+				continue;
+			}
+
+			// The longest prefix within the byte budget, and always at least one row.
+			let payloadBytes = 0;
+			let take = 0;
+			for (const c of candidates) {
+				if (take > 0 && payloadBytes + c.payloadBytes > BACKFILL_BATCH_PAYLOAD_BYTES) break;
+				payloadBytes += c.payloadBytes;
+				take++;
+			}
+			const batch = candidates.slice(0, take);
+			const nextCursor =
+				take === candidates.length && candidates.length < BACKFILL_BATCH_ROWS
+					? Math.min(windowEnd, maxId)
+					: (batch[batch.length - 1] as { id: number }).id;
+			const rows = sqlite
+				.prepare(
+					`SELECT e.id AS id, ${EVENT_TEXT_SQL} AS text FROM events e
+					 WHERE e.id IN (${batch.map(() => "?").join(",")}) ORDER BY e.id ASC`,
+				)
+				.all(SYNTHETIC_STOP_CONTENT, ...batch.map((c) => c.id)) as Array<{
+				id: number;
+				text: string;
+			}>;
 
 			const texts: string[] = [];
 			const ids: number[] = [];
-			// Placeholder INSERT for events that have no extractable text.
-			// Without it, the LEFT JOIN keeps re-surfacing them on every
-			// batch query and the loop never makes forward progress (we
-			// burned 22 events × N pods diagnosing exactly this). dim=0 +
-			// empty buffer is silently filtered by the cosine query
-			// (which requires dim = adapter.dim).
-			const skipMarker = getSqlite().prepare(
-				"INSERT OR IGNORE INTO event_embeddings (event_id, model, dim, vector, created_at) " +
-					"VALUES (?, ?, 0, X'', datetime('now'))",
-			);
-			for (const row of batch) {
-				const parsed =
-					typeof row.rawPayload === "string"
-						? (JSON.parse(row.rawPayload) as unknown)
-						: row.rawPayload;
-				const text = eventTextFromRow({
-					eventType: row.eventType,
-					rawPayload: parsed,
-					content: row.content,
-				});
-				if (!text.trim()) {
+			let skipped = 0;
+			for (const row of rows) {
+				if (!row.text.trim()) {
 					skipMarker.run(row.id, adapter.model);
-					processed += 1;
+					skipped += 1;
 					continue;
 				}
-				texts.push(text);
+				texts.push(row.text);
 				ids.push(row.id);
 			}
 
+			const batchStartedAt = Date.now();
+			console.log(
+				JSON.stringify({
+					kind: "embedding_backfill_batch_started",
+					level: "info",
+					cursor,
+					rows: batch.length,
+					payloadBytes,
+				}),
+			);
 			if (texts.length > 0) {
 				let vectors: Float32Array[];
 				try {
@@ -350,33 +415,37 @@ export async function runBackfill(): Promise<BackfillProgress> {
 						circuitOpen = true;
 						break;
 					}
+					// The cursor stays where it is, so the same rows are tried again.
 					const delay = _backoffDelayMs(consecutiveFailures);
 					await new Promise((r) => setTimeout(r, delay));
 					continue;
 				}
 
-				const insert = getSqlite().prepare(
-					"INSERT INTO event_embeddings (event_id, model, dim, vector, created_at) " +
-						"VALUES (?, ?, ?, ?, datetime('now')) " +
-						"ON CONFLICT(event_id) DO UPDATE SET model = excluded.model, dim = excluded.dim, " +
-						"vector = excluded.vector, created_at = excluded.created_at",
-				);
-				const txn = getSqlite().transaction((rows: Array<{ id: number; vec: Float32Array }>) => {
-					for (const r of rows) {
+				const txn = sqlite.transaction((embedded: Array<{ id: number; vec: Float32Array }>) => {
+					for (const r of embedded) {
 						insert.run(r.id, adapter.model, adapter.dim, vectorToBuffer(r.vec));
 					}
 				});
-				txn(ids.map((id, i) => ({ id, vec: vectors[i] })));
+				txn(ids.map((id, i) => ({ id, vec: vectors[i] as Float32Array })));
 				consecutiveFailures = 0; // reset on successful batch
-				processed += texts.length;
-			} else {
-				processed += batch.length;
 			}
+			processed += rows.length;
+			cursor = nextCursor;
+			console.log(
+				JSON.stringify({
+					kind: "embedding_backfill_batch",
+					level: "info",
+					cursor,
+					embedded: texts.length,
+					skipped,
+					ms: Date.now() - batchStartedAt,
+				}),
+			);
 
 			backfillState.embedded = processed;
 			backfillState.pending = Math.max(0, backfillState.total - processed);
 			// Yield so the event loop processes other work between batches.
-			await new Promise((r) => setTimeout(r, 0));
+			await yieldToLoop();
 		}
 
 		backfillState.running = false;
@@ -437,6 +506,12 @@ export function loadEventVector(eventId: number, expectedModel: string): Float32
 	const view = new Uint8Array(row.vector);
 	const f32 = new Float32Array(view.buffer, view.byteOffset, view.byteLength / 4);
 	return f32;
+}
+
+/** Test-only — zero the inline embed counters. */
+export function __resetInlineEmbedCountersForTests(): void {
+	inlineEmbedOk = 0;
+	inlineEmbedFailed = 0;
 }
 
 /** Test-only — drop the cached adapter so a settings change picks up. */

@@ -139,8 +139,8 @@ describeSqliteOnly("what reaches the statement and what doesn't", () => {
 		await new VectorEmbeddingEnricher(adapterFor(query)).enrich("anything");
 		const chunk = meter.matching(/FROM event_embeddings v[\s\S]*LIMIT/)[0];
 		expect(chunk).toBeDefined();
-		expect(chunk?.params[0]).toBe(MODEL);
-		expect(chunk?.params[1]).toBe(DIM);
+		// params: the blob length the row must have, then model, dimension, cursor, limit
+		expect(chunk?.params.slice(0, 3)).toEqual([DIM * 4, MODEL, DIM]);
 	});
 
 	test("a failing embed returns empty and never touches the table; a blank query never embeds", async () => {

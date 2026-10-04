@@ -138,3 +138,31 @@ export function readAllEmbeddingRows(
 		)
 		.all(model, dim) as Array<{ eventId: number; sessionId: string; vector: Uint8Array }>;
 }
+
+/** Inserts one `events` row (and its session) with a JSON payload given as text or an object; returns its id. */
+export function insertEventRow(opts: {
+	id?: number;
+	sessionId?: string;
+	type: string;
+	content?: string | null;
+	rawPayload: string | Record<string, unknown> | unknown[] | number | null;
+}): number {
+	const sqlite = getSqlite();
+	const sessionId = opts.sessionId ?? "emb-session";
+	ensureSessions([sessionId]);
+	const payload =
+		typeof opts.rawPayload === "string" ? opts.rawPayload : JSON.stringify(opts.rawPayload);
+	const result = sqlite
+		.prepare(
+			"INSERT INTO events (id, session_id, event_type, content, raw_payload) VALUES (?, ?, ?, ?, ?)",
+		)
+		.run(opts.id ?? null, sessionId, opts.type, opts.content ?? null, payload);
+	return Number(result.lastInsertRowid);
+}
+
+/** Empties the tables an embedding run reads and writes. */
+export function resetEmbeddingWorld(): void {
+	const sqlite = getSqlite();
+	sqlite.exec("DELETE FROM event_embeddings");
+	sqlite.exec("DELETE FROM events");
+}

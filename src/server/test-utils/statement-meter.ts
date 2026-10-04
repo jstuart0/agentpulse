@@ -15,6 +15,8 @@ export interface StatementExecution {
 	rows: number;
 	/** Bytes of BLOB values returned (strings and numbers are not counted). */
 	bytes: number;
+	/** Characters of TEXT values returned (a payload read back as text shows up here). */
+	chars: number;
 	seq: number;
 	/** The executor used: all, get, values, run or iterate. */
 	method: string;
@@ -36,16 +38,20 @@ function sizeOf(value: unknown): number {
 	return value instanceof Uint8Array ? value.byteLength : 0;
 }
 
-function measure(result: unknown): { rows: number; bytes: number } {
+function measure(result: unknown): { rows: number; bytes: number; chars: number } {
 	const list = Array.isArray(result) ? result : result == null ? [] : [result];
 	let bytes = 0;
+	let chars = 0;
 	for (const row of list) {
 		if (row && typeof row === "object" && !(row instanceof Uint8Array)) {
 			const cells = Array.isArray(row) ? row : Object.values(row as Record<string, unknown>);
-			for (const cell of cells) bytes += sizeOf(cell);
+			for (const cell of cells) {
+				bytes += sizeOf(cell);
+				if (typeof cell === "string") chars += cell.length;
+			}
 		}
 	}
-	return { rows: list.length, bytes };
+	return { rows: list.length, bytes, chars };
 }
 
 export function installStatementMeter(): StatementMeter {
@@ -66,8 +72,8 @@ export function installStatementMeter(): StatementMeter {
 				if (!(EXECUTORS as readonly string[]).includes(prop as string)) return value.bind(target);
 				return (...params: unknown[]) => {
 					const result = value.apply(target, params);
-					const { rows, bytes } = measure(result);
-					const execution = { sql, params, rows, bytes, seq: seq++, method: prop as string };
+					const { rows, bytes, chars } = measure(result);
+					const execution = { sql, params, rows, bytes, chars, seq: seq++, method: prop as string };
 					executions.push(execution);
 					afterExecute?.(execution);
 					return result;

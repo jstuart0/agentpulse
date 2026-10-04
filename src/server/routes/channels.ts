@@ -1,4 +1,6 @@
+import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { TELEGRAM_ACTOR } from "../auth/actor.js";
 import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
@@ -12,7 +14,7 @@ import {
 	findOrCreateTelegramThread,
 	runAskTurn,
 } from "../services/ask/ask-service.js";
-import { AskBusyError } from "../services/ask/ask-turn-limiter.js";
+import { AskBusyError, acquireAskTurn } from "../services/ask/ask-turn-limiter.js";
 import {
 	completeEnrollment,
 	createPendingChannel,
@@ -40,7 +42,11 @@ import {
 	startTelegramPolling,
 	stopTelegramPolling,
 } from "../services/channels/telegram-poller.js";
-import { ASK_BUSY_REPLY, ASK_TOO_LONG_REPLY } from "../services/channels/telegram-replies.js";
+import {
+	ASK_BUSY_REPLY,
+	ASK_FAILED_REPLY,
+	ASK_TOO_LONG_REPLY,
+} from "../services/channels/telegram-replies.js";
 import {
 	type TelegramCallbackQuery,
 	type TelegramMessage,
@@ -71,19 +77,45 @@ import { isLabsFlagEnabled } from "../services/labs-service.js";
  */
 const telegramWebhookRouter = new Hono();
 
-telegramWebhookRouter.post("/channels/telegram/webhook", async (c) => {
-	if (!getTelegramBotToken()) return c.json({ error: "telegram_disabled" }, 404);
-	const providedSecret = c.req.header("X-Telegram-Bot-Api-Secret-Token") ?? "";
-	if (!getTelegramWebhookSecret() || providedSecret !== getTelegramWebhookSecret()) {
-		return c.json({ error: "invalid secret" }, 401);
-	}
+/** A Telegram update is a few KiB of JSON; 1 MiB is far beyond any real one. */
+const WEBHOOK_BODY_LIMIT_BYTES = 1024 * 1024;
 
-	const update = (await c.req.json().catch(() => null)) as TelegramUpdate | null;
-	if (!update) return c.json({ ok: true });
+/** Constant-time comparison of the shared secret; lengths are compared first because timingSafeEqual throws on unequal lengths. */
+function secretMatches(provided: string, expected: string): boolean {
+	const providedBuf = Buffer.from(provided);
+	const expectedBuf = Buffer.from(expected);
+	return providedBuf.length === expectedBuf.length && timingSafeEqual(providedBuf, expectedBuf);
+}
 
-	await handleTelegramUpdate(update);
-	return c.json({ ok: true });
-});
+telegramWebhookRouter.post(
+	"/channels/telegram/webhook",
+	// The secret is checked first, so an unauthenticated caller's body is never read.
+	async (c, next) => {
+		if (!getTelegramBotToken()) return c.json({ error: "telegram_disabled" }, 404);
+		const providedSecret = c.req.header("X-Telegram-Bot-Api-Secret-Token") ?? "";
+		const expectedSecret = getTelegramWebhookSecret();
+		if (!expectedSecret || !secretMatches(providedSecret, expectedSecret)) {
+			return c.json({ error: "invalid secret" }, 401);
+		}
+		await next();
+	},
+	bodyLimit({
+		maxSize: WEBHOOK_BODY_LIMIT_BYTES,
+		onError: (c) => c.json({ error: "payload_too_large" }, 413),
+	}),
+	async (c) => {
+		// Only malformed JSON is acknowledged and dropped; any other failure, such as
+		// the body limit cutting off an oversized read, must propagate.
+		const update = (await c.req.json().catch((err: unknown) => {
+			if (!(err instanceof SyntaxError)) throw err;
+			return null;
+		})) as TelegramUpdate | null;
+		if (!update) return c.json({ ok: true });
+
+		await handleTelegramUpdate(update);
+		return c.json({ ok: true });
+	},
+);
 
 /**
  * Process a Telegram update (from webhook *or* long-poll). Shapes we
@@ -147,46 +179,61 @@ async function handleTelegramAskMessage(message: TelegramMessage): Promise<void>
 		return;
 	}
 
-	const thread = await findOrCreateTelegramThread({
-		telegramChatId: chatId,
-		seedTitle: normalized,
-	});
-
-	// Typing indicator so the user sees the bot is thinking.
-	await telegramChatAction(chatId, "typing").catch(() => {
-		// ignore — informational only
-	});
-
+	// The slot comes before a thread exists or a typing indicator is shown, so a
+	// message refused as busy leaves no trace but the reply.
+	let slot: Awaited<ReturnType<typeof acquireAskTurn>>;
 	try {
+		slot = await acquireAskTurn();
+	} catch (err) {
+		if (!(err instanceof AskBusyError)) throw err;
+		await telegramSendMessage(chatId, ASK_BUSY_REPLY).catch(() => {
+			// ignore
+		});
+		return;
+	}
+	// The slot guards the turn, not the Telegram calls around it: those have no
+	// timeout, so a stalled connection must never be able to hold a slot.
+	let answer: string;
+	try {
+		const thread = await findOrCreateTelegramThread({
+			telegramChatId: chatId,
+			seedTitle: normalized,
+		});
+
+		// Typing indicator so the user sees the bot is thinking. Informational, so
+		// not waited on.
+		telegramChatAction(chatId, "typing").catch(() => {
+			// ignore
+		});
+
 		const res = await runAskTurn({
 			threadId: thread.id,
 			message: normalized,
 			origin: "telegram",
 			telegramChatId: chatId,
 			actor: TELEGRAM_ACTOR,
+			slot,
 		});
-		await telegramSendMessage(
-			chatId,
-			res.assistantMessage.errorMessage
-				? `⚠️ ${res.assistantMessage.content}`
-				: res.assistantMessage.content,
-		);
+		answer = res.assistantMessage.errorMessage
+			? `⚠️ ${res.assistantMessage.content}`
+			: res.assistantMessage.content;
 	} catch (err) {
-		if (err instanceof AskBusyError) {
-			// The turn never started: no slot came free in 30 s. Nothing was saved.
-			await telegramSendMessage(chatId, ASK_BUSY_REPLY).catch(() => {
-				// ignore
-			});
-			return;
-		}
-		const msg = err instanceof Error ? err.message : String(err);
-		console.error("[telegram-ask] turn failed:", msg);
-		await telegramSendMessage(chatId, `⚠️ Couldn't answer that one: ${msg.slice(0, 400)}`).catch(
-			() => {
-				// ignore
-			},
+		// The detail goes to the log; the chat is told nothing about it.
+		const detail = err instanceof Error ? err.message : String(err);
+		console.error(
+			JSON.stringify({
+				kind: "telegram_ask_failed",
+				level: "error",
+				error: detail.slice(0, 300),
+			}),
 		);
+		answer = ASK_FAILED_REPLY;
+	} finally {
+		slot.release();
 	}
+	await telegramSendMessage(chatId, answer).catch(() => {
+		// ignore
+	});
 }
 
 /**

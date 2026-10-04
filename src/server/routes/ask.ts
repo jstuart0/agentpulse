@@ -5,13 +5,17 @@ import { requireAuth } from "../auth/middleware.js";
 import { getRequestActor, requireOperatorScope } from "../auth/route-scope-policy.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import {
+	ASK_MAX_SESSION_IDS,
 	ASK_MESSAGE_MAX_CHARS,
+	AskInvalidSessionIdsError,
+	AskRequestError,
 	archiveThread,
 	getThread,
 	listMessages,
 	listThreads,
 	runAskTurn,
 	runAskTurnStream,
+	validateAskSessionIds,
 } from "../services/ask/ask-service.js";
 import {
 	ASK_BUSY_MESSAGE,
@@ -34,6 +38,16 @@ const askBodyLimit = bodyLimit({
 	maxSize: ASK_BODY_LIMIT_BYTES,
 	onError: (c) => c.json({ error: "payload_too_large" }, 413),
 });
+
+/** What a client sees when a turn fails for a reason that is not theirs: no paths, no SQL; the detail goes to the log. */
+const ASK_FAILED_MESSAGE = "Couldn't answer that right now. Try again in a moment.";
+
+function logAskFailure(err: unknown): void {
+	const detail = err instanceof Error ? err.message : String(err);
+	console.error(
+		JSON.stringify({ kind: "ask_turn_failed", level: "error", error: detail.slice(0, 300) }),
+	);
+}
 
 /** Parses the request body. Only malformed JSON is the caller's mistake; any other failure, such as the body limit cutting off an oversized read, must propagate. */
 async function readAskBody(c: Context): Promise<{
@@ -106,11 +120,20 @@ askRouter.post("/ai/ask", askBodyLimit, async (c) => {
 	if (body.message.trim().length > ASK_MESSAGE_MAX_CHARS) {
 		return c.json({ error: "message_too_long", max: ASK_MESSAGE_MAX_CHARS }, 400);
 	}
+	let sessionIds: string[] | undefined;
+	try {
+		sessionIds = validateAskSessionIds(body.sessionIds);
+	} catch (err) {
+		if (err instanceof AskInvalidSessionIdsError) {
+			return c.json({ error: "invalid_session_ids", max: ASK_MAX_SESSION_IDS }, 400);
+		}
+		throw err;
+	}
 	try {
 		const res = await runAskTurn({
 			threadId: body.threadId ?? null,
 			message: body.message,
-			sessionIds: body.sessionIds,
+			sessionIds,
 			actor: await getRequestActor(c),
 			// A caller that goes away while waiting for a slot leaves the queue;
 			// once its turn has started it runs to completion regardless.
@@ -121,8 +144,11 @@ askRouter.post("/ai/ask", askBodyLimit, async (c) => {
 		if (err instanceof AskBusyError || err instanceof AskTurnAbortedError) {
 			return c.json({ error: "busy" }, 503, { "Retry-After": "5" });
 		}
-		const message = err instanceof Error ? err.message : String(err);
-		return c.json({ error: message }, 500);
+		if (err instanceof AskRequestError) {
+			return c.json({ error: "invalid_request", message: err.message }, 400);
+		}
+		logAskFailure(err);
+		return c.json({ error: "ask_failed" }, 500);
 	}
 });
 
@@ -143,6 +169,15 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 	}
 	if (body.message.trim().length > ASK_MESSAGE_MAX_CHARS) {
 		return c.json({ error: "message_too_long", max: ASK_MESSAGE_MAX_CHARS }, 400);
+	}
+	let sessionIds: string[] | undefined;
+	try {
+		sessionIds = validateAskSessionIds(body.sessionIds);
+	} catch (err) {
+		if (err instanceof AskInvalidSessionIdsError) {
+			return c.json({ error: "invalid_session_ids", max: ASK_MAX_SESSION_IDS }, 400);
+		}
+		throw err;
 	}
 	const actor = await getRequestActor(c);
 	// Build the SSE stream by hand instead of using hono/streaming. That
@@ -186,7 +221,7 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 				for await (const evt of runAskTurnStream({
 					threadId: body.threadId ?? null,
 					message: body.message ?? "",
-					sessionIds: body.sessionIds,
+					sessionIds,
 					origin: "web",
 					actor,
 					signal: AbortSignal.any([c.req.raw.signal, clientGone.signal]),
@@ -196,12 +231,14 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 				}
 			} catch (err) {
 				if (!clientGone.signal.aborted) {
-					const message =
-						err instanceof AskBusyError || err instanceof AskTurnAbortedError
-							? ASK_BUSY_MESSAGE
-							: err instanceof Error
-								? err.message
-								: String(err);
+					let message = ASK_FAILED_MESSAGE;
+					if (err instanceof AskBusyError || err instanceof AskTurnAbortedError) {
+						message = ASK_BUSY_MESSAGE;
+					} else if (err instanceof AskRequestError) {
+						message = err.message;
+					} else {
+						logAskFailure(err);
+					}
 					write({ kind: "error", message, assistantMessage: null });
 				}
 			} finally {
