@@ -9,6 +9,7 @@ import {
 	type NotificationChannelRecord,
 	api,
 } from "../../lib/api.js";
+import { useAiStatusStore } from "../../stores/ai-status-store.js";
 import { useLabsStore } from "../../stores/labs-store.js";
 
 interface AiPanelProps {
@@ -17,7 +18,7 @@ interface AiPanelProps {
 }
 
 export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
-	const [featureActive, setFeatureActive] = useState<boolean | null>(null);
+	const featureActive = useAiStatusStore((s) => s.status?.active ?? null);
 	const [providers, setProviders] = useState<AiProvider[]>([]);
 	const [config, setConfig] = useState<AiWatcherConfig | null>(null);
 	const [proposals, setProposals] = useState<AiProposal[]>([]);
@@ -29,8 +30,7 @@ export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 
 	const reload = useCallback(async () => {
 		try {
-			const status = await api.getAiStatus();
-			setFeatureActive(status.active);
+			const status = await useAiStatusStore.getState().refresh();
 			if (!status.build) {
 				setLoading(false);
 				return;

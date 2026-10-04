@@ -29,6 +29,20 @@ import type {
 	WatcherPolicy,
 } from "../../shared/types.js";
 
+import {
+	SUMMARY_REFUSAL_CODES,
+	type SessionSummaryStartBody,
+	type SessionSummaryView,
+	type SummaryRefusalCode,
+} from "../../shared/session-summary-view.js";
+
+export type {
+	SessionSummaryRefusalBody,
+	SessionSummaryStartBody,
+	SessionSummaryView,
+	SummaryRefusalCode,
+} from "../../shared/session-summary-view.js";
+
 export type {
 	ActionRequestDecision,
 	AskThreadOrigin,
@@ -867,6 +881,22 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
+	// --- Session summary (AGEN-69) ---
+	getSessionSummary: (sessionId: string) =>
+		request<SessionSummaryView>(`/ai/sessions/${encodeURIComponent(sessionId)}/summary`),
+	generateSessionSummary: async (sessionId: string): Promise<GenerateSummaryResult> => {
+		try {
+			const body = await request<SessionSummaryStartBody>(
+				`/ai/sessions/${encodeURIComponent(sessionId)}/summary`,
+				{ method: "POST" },
+			);
+			return { ok: true, body };
+		} catch (err) {
+			if (err instanceof ApiError) return { ok: false, refusal: toSummaryRefusal(err) };
+			throw err;
+		}
+	},
+
 	// --- Vector search ---
 	getVectorSearchStatus: () =>
 		request<{
@@ -1335,6 +1365,38 @@ export interface AiWatcherConfig {
 	systemPrompt: string | null;
 	createdAt: string;
 	updatedAt: string;
+}
+
+/** A refused `POST /ai/sessions/:id/summary` as the web sees it (AGEN-69). `code` is null for a body the contract doesn't list. */
+export interface SummaryRefusal {
+	status: number;
+	code: SummaryRefusalCode | null;
+	retryAfterSeconds: number | null;
+}
+
+export type GenerateSummaryResult =
+	| { ok: true; body: SessionSummaryStartBody }
+	| { ok: false; refusal: SummaryRefusal };
+
+const KNOWN_SUMMARY_REFUSALS: ReadonlySet<string> = new Set(SUMMARY_REFUSAL_CODES);
+
+/** The body's `retryAfterSeconds` wins; the `Retry-After` header (already parsed onto the error) is the fallback. */
+function toSummaryRefusal(err: ApiError): SummaryRefusal {
+	const body = err.body as { retryAfterSeconds?: unknown } | null;
+	const fromBody =
+		typeof body?.retryAfterSeconds === "number" &&
+		Number.isFinite(body.retryAfterSeconds) &&
+		body.retryAfterSeconds >= 0
+			? Math.ceil(body.retryAfterSeconds)
+			: null;
+	return {
+		status: err.status,
+		code:
+			err.code !== null && KNOWN_SUMMARY_REFUSALS.has(err.code)
+				? (err.code as SummaryRefusalCode)
+				: null,
+		retryAfterSeconds: fromBody ?? err.retryAfterSeconds,
+	};
 }
 
 export interface AiStatusResponse {
