@@ -7,6 +7,20 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Changed
+
+- **The watcher and Ask prompts redact more and strip more.** Before a session's
+  text is sent to a model provider, the redactor now also masks quoted and YAML
+  secret values (`"password": "..."`, `api_key: ...`), passwords in URLs
+  (`scheme://user:pass@host`, including an empty user), private-key blocks,
+  `Cookie` / `Set-Cookie` and `X-Api-Key` / `X-Auth-Token` headers, `--password`
+  / `--token` / `--secret` / `--api-key` flags, `curl -u user:pass`, and Stripe
+  live, Hugging Face, GitLab and npm tokens. The invisible-character filter also
+  removes the Unicode tag block, variation selector-16, the byte order mark, soft
+  hyphens and word joiners. The existing env-assignment rule is rewritten so it
+  runs in linear time (a 100 KB run of `A_A_A_...` took 7 s). Ordinary text
+  (`max_tokens: 100`, "token count", URLs without credentials) is unchanged.
+
 ## [0.7.1] — 2026-10-03
 
 Ideas from a fork by @flexi767 (https://github.com/flexi767/agentpulse); re-implemented here.

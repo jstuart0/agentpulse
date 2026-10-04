@@ -95,12 +95,103 @@ export const DEFAULT_RULES: RedactionRule[] = [
 		// KEY=value style. Prefix allows underscores/prefixes like DB_PASSWORD,
 		// APP_SECRET, etc. The opening boundary uses a character class instead
 		// of \b so `DB_PASSWORD` still matches (underscore is a word char).
+		//
+		// The prefix repeat is bounded at 8 segments. Unbounded, a long run of
+		// `A_A_A_...` made every start position rescan the whole run: 7.3 s on
+		// 100 KB. A longer key still redacts to the same text: `_` is itself a
+		// boundary character, so the match simply starts inside the key.
 		pattern:
-			/(^|[^A-Za-z0-9])((?:[A-Z][A-Z0-9]*_)*(?:PASSWORD|SECRET|API_KEY|APIKEY|TOKEN|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN))\s*=\s*["']?[^\s"'\n]{4,}/gi,
+			/(^|[^A-Za-z0-9])((?:[A-Z][A-Z0-9]*_){0,8}(?:PASSWORD|SECRET|API_KEY|APIKEY|TOKEN|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN))\s*=\s*["']?[^\s"'\n]{4,}/gi,
 		replacement: (match) => {
 			const eq = match.indexOf("=");
 			return `${match.slice(0, eq + 1)} [REDACTED]`;
 		},
+	},
+	// Rules below were added for the session summary (AGEN-69). Every pattern
+	// is bounded so no input makes the scan super-linear, and every replacement
+	// is itself unmatched by its own rule so redacting twice is stable.
+	{
+		name: "pem_private_key",
+		// A BEGIN with no END is caught too: the body is capped at 4,000
+		// characters and the END is optional.
+		pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]{0,4000}(?:-----END[^-]*-----)?/g,
+		replacement: "[REDACTED:pem_private_key]",
+	},
+	{
+		name: "cookie_header",
+		// A cookie pair (`name=`) must follow, so the word "cookie" followed by
+		// a colon in prose is left alone. The rest of the line is taken, to a cap.
+		pattern: /(?<![A-Za-z0-9_-])(?:Set-)?Cookie:[ \t]*[\w.%~-]+=[^\r\n]{0,4096}/gi,
+		replacement: "[REDACTED:cookie_header]",
+	},
+	{
+		name: "api_key_header",
+		pattern: /\bX-(?:Api-Key|Auth-Token):[ \t]*\S{8,}/gi,
+		replacement: "[REDACTED:api_key_header]",
+	},
+	{
+		name: "url_userinfo",
+		// `scheme://user:password@host`. The username may be empty
+		// (`redis://:secret@host`). Neither group crosses a `/`, so
+		// `http://localhost:3000/@scope/pkg` is not userinfo.
+		pattern: /:\/\/[^/\s:@]*:[^/\s@]+@/g,
+		replacement: "://[REDACTED]@",
+	},
+	{
+		name: "stripe_live_key",
+		pattern: /\bsk_live_[A-Za-z0-9]{24,}/g,
+		replacement: "[REDACTED:stripe_live_key]",
+	},
+	{
+		name: "huggingface_token",
+		pattern: /\bhf_[A-Za-z0-9]{30,}/g,
+		replacement: "[REDACTED:huggingface_token]",
+	},
+	{
+		name: "gitlab_token",
+		pattern: /\bglpat-[A-Za-z0-9_-]{20,}/g,
+		replacement: "[REDACTED:gitlab_token]",
+	},
+	{
+		name: "npm_token",
+		pattern: /\bnpm_[A-Za-z0-9]{36}\b/g,
+		replacement: "[REDACTED:npm_token]",
+	},
+	{
+		name: "json_secret_value",
+		// A quoted exact key, `:`, a quoted value of 6 or more characters (an
+		// escaped quote does not end it). `"max_tokens"` and `"password_hint"`
+		// are different keys. An already-masked value is skipped.
+		pattern:
+			/"(?:password|passwd|secret|client_secret|api_key|apikey|api_token|access_token|refresh_token|auth_token|token|private_key)"\s*:\s*"(?!\[REDACTED)(?:[^"\\\n]|\\.){6,}"/gi,
+		replacement: (match) => `${match.slice(0, match.indexOf(":") + 1)} "[REDACTED]"`,
+	},
+	{
+		name: "yaml_secret_value",
+		// The key starts the line (after indentation and an optional list
+		// dash) and the value is the rest of the line: 8 or more characters, none
+		// of which is part of code or a type (`< > ( ) $ { } [ ] | ; ,`), not a
+		// type word. The excluded `[` also keeps an already-masked value out.
+		pattern:
+			/^[ \t]*(?:-[ \t]+)?(?:password|passwd|secret|client_secret|api_key|apikey|api_token|access_token|refresh_token|auth_token|token|private_key)[ \t]*:[ \t]+["']?(?!(?:true|false|null|undefined|string|number|boolean|unknown|object|Optional|Union|Callable|datetime|Decimal)\b)[^\s<>()${}[\]|;,"']{8,}["']?[ \t]*(?:#[^\n]*)?$/gim,
+		replacement: (match) => `${match.slice(0, match.indexOf(":") + 1)} [REDACTED]`,
+	},
+	{
+		name: "cli_secret_flag",
+		// `--token-file path` is hit too: accepted, since telling a path from a
+		// secret is not possible here. `--tokens` and `--passwordless` are not.
+		pattern:
+			/--(?:password|token|secret|api-key)(?![A-Za-z0-9_])[^\s=]{0,64}(?:=|[ \t]+)(?!\[REDACTED)\S+/g,
+		replacement: (match) => `${match.slice(0, match.search(/[=\s]/) + 1)}[REDACTED]`,
+	},
+	{
+		name: "curl_user",
+		// `-u`/`--user name:secret` inside a curl command, the command at most
+		// 500 characters before the flag.
+		pattern:
+			/\bcurl\b(?:[^\n]|\\\n){0,500}?[ \t](?:-u|--user)[ =]?["']?[^\s:"']+:(?!\[REDACTED)[^\s"']+/g,
+		replacement: (match) =>
+			match.replace(/([ \t](?:-u|--user)[ =]?["']?[^\s:"']+:)[^\s"']+$/, "$1[REDACTED]"),
 	},
 ];
 

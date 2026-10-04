@@ -7,12 +7,27 @@
 // xander F91: NEL (U+0085), LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR
 // (U+2029) are line breaks too, so they collapse like CR/LF.
 const LINE_BREAKS_RE = /[\r\n\u0085\u2028\u2029]+/g;
-// Remaining C0 controls + DEL, plus the zero-width and bidi ranges
-// name-sanitizer.ts strips (U+200B-200F, U+202A-202E, U+2066-2069). Global
-// patterns are only ever used with .replace() here, never .test() (F93).
-const INVISIBLE_CHARS_RE =
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0/DEL control characters from untrusted input
-	/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g;
+// Zero-width, bidi and invisible format characters. Shared by both helpers:
+// U+00AD soft hyphen, U+034F combining grapheme joiner, U+180E, U+200B-200F
+// (zero-width, direction marks), U+202A-202E and U+2066-2069 (bidi), U+2060-2064
+// (word joiner and invisible operators), U+FE0F (variation selector-16), U+FEFF
+// (BOM) and the whole Unicode tag block U+E0000-E007F, which can carry a hidden
+// ASCII message. Global patterns are only ever used with .replace() here,
+// never .test() (F93).
+const INVISIBLE_FORMAT_CLASS =
+	"\\u00AD\\u034F\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u2069\\uFE0F\\uFEFF\\u{E0000}-\\u{E007F}";
+// Remaining C0 controls + DEL, except LF and CR (collapsed to a space earlier
+// by formatUntrustedInline).
+const INVISIBLE_CHARS_RE = new RegExp(
+	`[\\x00-\\x09\\x0B\\x0C\\x0E-\\x1F\\x7F${INVISIBLE_FORMAT_CLASS}]`,
+	"gu",
+);
+// The same, for text that keeps its lines: every C0 control and DEL goes except
+// LF and TAB.
+const INVISIBLE_KEEP_NEWLINES_RE = new RegExp(
+	`[\\x00-\\x08\\x0B-\\x1F\\x7F${INVISIBLE_FORMAT_CLASS}]`,
+	"gu",
+);
 
 export function formatUntrustedInline(value: string): string {
 	return value
@@ -41,7 +56,11 @@ export function fenceUntrusted(tag: string, body: string): FencedText {
 	return { text: `<${tag}-${nonce}>\n${safeBody}\n</${tag}-${nonce}>`, nonce };
 }
 
-/** Like formatUntrustedInline but keeps `\n`. (Phase 2b stub.) */
+/**
+ * Strips the same invisible characters as formatUntrustedInline but keeps
+ * `\n` (and tabs), for multi-line text such as a handoff. CR is stripped, so
+ * CRLF becomes LF.
+ */
 export function stripInvisibleKeepNewlines(value: string): string {
-	return value;
+	return value.replace(INVISIBLE_KEEP_NEWLINES_RE, "");
 }

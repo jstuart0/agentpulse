@@ -126,6 +126,8 @@ describe("TC-2.8 yaml_secret_value", () => {
 
 	test("TC-2.8 the key must start the line", () => {
 		expectUntouched("see password: hunter2hunter2 in the docs");
+		expectUntouched("see password: hunter2hunter2");
+		expectUntouched("note password: hunter2hunter2");
 	});
 });
 
@@ -244,21 +246,28 @@ describe("TC-2.8 cookie_header", () => {
 	test("TC-2.8 a value over 4,096 characters is redacted up to the cap", () => {
 		const long = `Cookie: a=${"b".repeat(6000)}`;
 		const { text } = redact(long);
+		expect(text.length).toBeGreaterThan(1500); // the cap leaves the rest of the run
 		expect(text.length).toBeLessThan(2100);
 		expect(text).toContain("[REDACTED:cookie_header]");
 	});
 });
 
 describe("TC-2.8 cli_secret_flag", () => {
-	test("TC-2.8 = and space forms are redacted, the flag stays", () => {
-		expect(expectHit("run --password=hunter2 now", "cli_secret_flag", ["hunter2"])).toBe(
-			"run --password=[REDACTED] now",
-		);
+	test("TC-2.8 the space form is redacted, the flag stays", () => {
 		expect(expectHit("run --token abc123xyz now", "cli_secret_flag", ["abc123xyz"])).toBe(
 			"run --token [REDACTED] now",
 		);
-		expectHit("--secret=x1y2", "cli_secret_flag", ["x1y2"]);
+		expectHit("run --password hunter2 now", "cli_secret_flag", ["hunter2"]);
+		expectHit("--secret x1y2z3", "cli_secret_flag", ["x1y2z3"]);
 		expectHit("--api-key sk1234", "cli_secret_flag", ["sk1234"]);
+	});
+
+	test("TC-2.8 the = form is redacted, by this rule for --api-key and by env_assignment_secret otherwise", () => {
+		expectHit("--api-key=sk1234", "cli_secret_flag", ["sk1234"]);
+		expect(expectHit("run --password=hunter2 now", "env_assignment_secret", ["hunter2"])).toBe(
+			"run --password= [REDACTED] now",
+		);
+		expect(redact("--secret=x1y2z3").text).not.toContain("x1y2z3");
 	});
 
 	test("TC-2.8 --tokens 5 and --passwordless are untouched", () => {
@@ -421,6 +430,9 @@ describe("TC-2.9 no regression", () => {
 				count: oracle.count,
 			});
 		}
+		console.log(
+			`[redactor-fuzz] ${total} strings, ${crossedBound} assignments past 8 prefix segments, ${withMatch} strings with a match, ${withDifferentOutput} changed by the rule; new rule equals old on all`,
+		);
 		expect(total).toBeGreaterThanOrEqual(2000);
 		expect(crossedBound).toBeGreaterThan(500);
 		expect(withMatch).toBeGreaterThan(1000);
