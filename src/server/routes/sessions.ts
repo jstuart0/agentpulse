@@ -523,10 +523,11 @@ sessionsRouter.get("/sessions/:sessionId", async (c: Context) => {
 	// answer however long the session is. The shape is a subset of the detail's
 	// (`{ session: { sessionId, displayName } }`), so a client asking a server that
 	// predates this (which ignores the parameter) still finds the name.
-	const rawFields = c.req.query("fields");
+	const rawFields = c.req.queries("fields");
 	if (rawFields !== undefined) {
+		// Every value counts: a repeated parameter can't carry a second field past the check.
 		const invalid = rawFields
-			.split(",")
+			.flatMap((value) => value.split(","))
 			.map((field) => field.trim())
 			.find((field) => !(SESSION_DETAIL_FIELDS as readonly string[]).includes(field));
 		if (invalid !== undefined) {

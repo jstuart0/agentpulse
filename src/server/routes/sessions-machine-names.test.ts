@@ -29,7 +29,6 @@ const { sessions, managedSessions, supervisors } = await import("../db/schema/in
 const { app } = await import("../app.js");
 const {
 	normalizeStoredMachineNames,
-	normalizeStoredMachineNamesSafely,
 	_normalizeStoredMachineNamesWithHookForTest,
 	_normalizeStoredMachineNamesSafelyForTest,
 } = await import("../services/effective-machine.js");

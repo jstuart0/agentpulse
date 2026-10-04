@@ -4084,8 +4084,9 @@ const SESSION_DETAIL_PATH_RE = /^\/api\/v1\/sessions\/[^/]+$/;
  * few dozen bytes. A successful answer is remembered for a few seconds so a
  * render costs no server round trip; a rename on the dashboard shows within that
  * window, and pushing a name through this relay forgets the entry at once. Only
- * small 200 answers are kept (a server that predates the projection answers the
- * whole detail, which is never held), never a miss or an error, at most
+ * a 200 answer that is exactly the projection is kept (a server that predates it
+ * answers the whole detail, never held, however small the session), never a miss
+ * or an error, at most
  * NAME_CACHE_MAX_ENTRIES sessions (the oldest go first), and never for a session
  * the exclude rules refuse: the gate runs before the memory is read, and a
  * refusal drops the entry.
@@ -4114,8 +4115,27 @@ function nameCacheGet(ctx: RelayContext, id: string): string | null {
 	return entry.body;
 }
 
+/** Exactly `{ session: { sessionId, displayName } }`: a small full detail from a server that predates the projection has more keys, and is not remembered. */
+function isNameProjection(body: string): boolean {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(body);
+	} catch {
+		return false;
+	}
+	const keys = (value: unknown): string[] | null =>
+		value !== null && typeof value === "object" && !Array.isArray(value)
+			? Object.keys(value).sort()
+			: null;
+	if (keys(parsed)?.join() !== "session") return false;
+	const session = (parsed as { session: unknown }).session;
+	if (keys(session)?.join() !== "displayName,sessionId") return false;
+	const { sessionId, displayName } = session as { sessionId: unknown; displayName: unknown };
+	return typeof sessionId === "string" && (displayName === null || typeof displayName === "string");
+}
+
 function nameCacheSet(ctx: RelayContext, id: string, body: string): void {
-	if (Buffer.byteLength(body) > NAME_CACHE_MAX_BODY_BYTES) return;
+	if (Buffer.byteLength(body) > NAME_CACHE_MAX_BODY_BYTES || !isNameProjection(body)) return;
 	const cache = ctx.state.nameCache;
 	cache.delete(id);
 	cache.set(id, { body, at: ctx.now() });

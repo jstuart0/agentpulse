@@ -85,15 +85,23 @@ export async function stampMachine(session: Session): Promise<Session> {
  * stands). Idempotent, and run at every boot so a name written by an older
  * server is covered too.
  */
-export async function normalizeStoredMachineNames(seams?: {
-	/** Test seam: runs between the read and the writes, where another replica could write. */
-	afterRead?: () => Promise<void>;
+export async function normalizeStoredMachineNames(): Promise<void> {
+	await repairStoredMachineNames();
+}
+
+/** Test-only: the repair with a hook that runs between its read and its writes, where another replica could write. */
+export async function _normalizeStoredMachineNamesWithHookForTest(hooks: {
+	afterRead: () => Promise<void>;
 }): Promise<void> {
+	await repairStoredMachineNames(hooks.afterRead);
+}
+
+async function repairStoredMachineNames(afterRead?: () => Promise<void>): Promise<void> {
 	const db = getDb();
 	const stored = await db
 		.select({ id: supervisors.id, name: supervisors.hostName })
 		.from(supervisors);
-	await seams?.afterRead?.();
+	await afterRead?.();
 	// Compare-and-set on the id AND the name that was read: a re-registration that
 	// another replica accepted since keeps the name it wrote.
 	for (const { id, name } of stored) {
@@ -147,11 +155,20 @@ export async function normalizeStoredMachineNames(seams?: {
 /**
  * The boot step: the cleanup is cosmetic, so a failure (a transient database
  * error) is logged as one structured line and boot carries on rather than
- * crash-looping over it. `cleanup` is the seam a test drives.
+ * crash-looping over it.
  */
-export async function normalizeStoredMachineNamesSafely(
-	cleanup: () => Promise<void> = normalizeStoredMachineNames,
+export async function normalizeStoredMachineNamesSafely(): Promise<void> {
+	await runCleanupSafely(normalizeStoredMachineNames);
+}
+
+/** Test-only: the safe wrapper around a cleanup the test supplies (one that throws, say). */
+export async function _normalizeStoredMachineNamesSafelyForTest(
+	cleanup: () => Promise<void>,
 ): Promise<void> {
+	await runCleanupSafely(cleanup);
+}
+
+async function runCleanupSafely(cleanup: () => Promise<void>): Promise<void> {
 	try {
 		await cleanup();
 	} catch (err) {
