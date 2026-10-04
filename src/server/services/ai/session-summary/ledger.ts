@@ -18,6 +18,7 @@ import {
 	classifyCommand,
 	passSummaryLine,
 	patchFilesOf,
+	validationClassOf,
 	validationResult,
 } from "./command-class.js";
 import {
@@ -114,6 +115,8 @@ export interface EvidenceFact {
 	at: string | null;
 	result?: "ok" | "failed" | "unknown" | "completed";
 	count?: number;
+	/** For a validation: its class (`bun test`, `tsc`), chosen by the server from the command, never the command text. */
+	validationClass?: string;
 }
 
 /** A cited id as the ledger knows it: the fact, and whether it records something the system saw. */
@@ -176,6 +179,12 @@ export interface Ledger {
 	entries: LedgerEntry[];
 	coverage: Coverage;
 	counts: LedgerCounts;
+	/**
+	 * What the ledger shows, as shown (redacted and capped): every edited path and every
+	 * command line that appears in `text`. The tripwire compares a summary's file names and
+	 * commands against these, never against anything the ledger left out.
+	 */
+	recorded: { paths: string[]; commands: string[] };
 	/** Redactions in the text that is in `text` (not in entries the budget dropped), once per collapsed entry. */
 	redactionHits: number;
 	/** True when the protected entries alone exceed the budget (not reachable at the limits' defaults). */
@@ -288,6 +297,23 @@ const READ_CLASS = new Set(READ_CLASS_TOOLS);
 const EDITS = new Set(EDIT_TOOLS);
 const SHELLS = new Set(SHELL_TOOLS);
 
+/**
+ * The text of every user prompt in the loader's bundle (`rows` and
+ * `firstPromptRows`, once per id, oldest first): what the user typed, as the
+ * loader's SQL cut it (1,756 / 4,256 code points), unredacted. Feed it to
+ * `collectUserPromptUrls`; a URL past the cut, or in a prompt the scan did not
+ * reach, is not seen.
+ */
+export function userPromptTexts(input: Pick<LedgerInput, "rows" | "firstPromptRows">): string[] {
+	const byId = new Map<number, EvidenceRow>();
+	for (const row of input.rows) byId.set(row.id, row);
+	for (const row of input.firstPromptRows) byId.set(row.id, row);
+	return [...byId.values()]
+		.sort((a, b) => a.id - b.id)
+		.filter((row) => classifyRow(row).kind === "prompt")
+		.map((row) => row.content ?? "");
+}
+
 function classifyRow(row: EvidenceRow): RowClass {
 	const category =
 		row.category ??
@@ -343,6 +369,8 @@ interface Draft {
 	hits: number;
 	isCommand: boolean;
 	failed: boolean;
+	/** For a command entry: the command as printed. */
+	shownCommand?: string;
 }
 
 function resultWord(result: Status | "ok" | "failed" | "unknown" | "completed"): string {
@@ -366,10 +394,16 @@ function statusOf(row: EvidenceRow, hasFailureEvent: boolean): Status {
 interface Rendered {
 	body: string;
 	fact: Draft["fact"];
+	/** The command as printed (redacted, capped), for the tripwire's comparison with what a summary tells the next agent to run. */
+	shownCommand?: string;
 }
 
-function commandFact(kind: FactKind, result: EvidenceFact["result"]): Draft["fact"] {
-	return { kind, result };
+function commandFact(
+	kind: FactKind,
+	result: EvidenceFact["result"],
+	validationClass?: string | null,
+): Draft["fact"] {
+	return validationClass ? { kind, result, validationClass } : { kind, result };
 }
 
 function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: Ctx): Rendered {
@@ -405,12 +439,14 @@ function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: C
 		}
 		return {
 			body: `OBSERVED command [validation] \`${command}\`${description} -> ${resultWord(result)}${out}`,
-			fact: commandFact("validation", result),
+			fact: commandFact("validation", result, validationClassOf(row.command)),
+			shownCommand: command,
 		};
 	}
 	return {
 		body: `OBSERVED command \`${command}\`${description} -> ${resultWord(status)}`,
 		fact: commandFact("command", status),
+		shownCommand: command,
 	};
 }
 
@@ -540,6 +576,7 @@ function draftFor(
 				observed: true,
 				collapseKey: null,
 				editPaths: [],
+				shownCommand: rendered.shownCommand,
 				isCommand: true,
 				failed: status === "failed",
 			});
@@ -592,6 +629,7 @@ export interface Built extends LedgerEntry {
 	at: string | null;
 	fact: Draft["fact"];
 	editPaths: string[];
+	shownCommand?: string;
 	/** Redactions in this entry's text. */
 	hits: number;
 }
@@ -616,6 +654,7 @@ function finish(collapsed: Collapsed): Built {
 		at: draft.at.iso,
 		fact: count > 1 ? { ...draft.fact, count } : draft.fact,
 		editPaths: draft.editPaths,
+		shownCommand: draft.shownCommand,
 		hits: draft.hits,
 	};
 }
@@ -729,6 +768,16 @@ function runSlice(state: BuildState): boolean {
 	return state.next < state.rows.length;
 }
 
+function recordedOf(kept: Built[]): Ledger["recorded"] {
+	const paths = new Set<string>();
+	const commands: string[] = [];
+	for (const entry of kept) {
+		for (const path of entry.editPaths) if (path !== "[path not shown]") paths.add(path);
+		if (entry.shownCommand) commands.push(entry.shownCommand);
+	}
+	return { paths: [...paths], commands };
+}
+
 function conclude(input: LedgerInput, state: BuildState): Ledger {
 	const started = performance.now();
 	const built = collapse(state.drafts).map(finish);
@@ -769,6 +818,7 @@ function conclude(input: LedgerInput, state: BuildState): Ledger {
 			cutoffAt,
 		},
 		counts,
+		recorded: recordedOf(kept),
 		redactionHits: kept.reduce((n, e) => n + e.hits, 0),
 		overBudget,
 		diagnostics: {

@@ -969,7 +969,8 @@ describe("P3-18 / P3-19 OBSERVED versus CLAIMED travels with the entry and the i
 			expect(ledger.ids.get(id)?.observed, id).toBe(want);
 		}
 		const fact = storedFact(ledger.ids.get("E4") as NonNullable<ReturnType<typeof ledger.ids.get>>);
-		expect(Object.keys(fact).sort()).toEqual(["at", "kind", "result"]);
+		expect(Object.keys(fact).sort()).toEqual(["at", "kind", "result", "validationClass"]);
+		expect(fact.validationClass).toBe("bun test");
 		expect(JSON.stringify(fact)).not.toContain("observed");
 	});
 

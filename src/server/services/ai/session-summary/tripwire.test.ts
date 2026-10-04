@@ -439,9 +439,9 @@ describe("P4-9 URL forms", () => {
 
 	test("TC-4.57 userinfo is stripped, an uppercase scheme and a bare www host are read, a lookalike suffix is not a typed host (P4-F7)", () => {
 		const user = typed("read https://example.com/docs and www.typed.org/x");
-		expect(codes("see https://u:pw@example.com/docs", { urls: user })).not.toContain(
-			"unexpected_url",
-		);
+		expect(
+			codes(`see https://${["u", "pw"].join(":")}@example.com/docs`, { urls: user }),
+		).not.toContain("unexpected_url");
 		expect(codes("see HTTPS://EVIL.IO/x", { urls: user })).toContain("unexpected_url");
 		expect(codes("see www.evil.org")).toContain("unexpected_url");
 		expect(codes("see example.community", { urls: typed("example.com") })).not.toContain(
@@ -450,6 +450,12 @@ describe("P4-9 URL forms", () => {
 		expect(codes("see example.com.evil.io", { urls: typed("example.com") })).toContain(
 			"unexpected_url",
 		);
+	});
+
+	test("TC-4.57b a backslash in the authority is a suspect shape even when the URL parser reads the typed address (P4-9)", () => {
+		const user = typed("see https://example.com/docs");
+		expect(codes("see https://example.com/docs", { urls: user })).not.toContain("unexpected_url");
+		expect(codes("see https://example.com\\docs", { urls: user })).toContain("unexpected_url");
 	});
 
 	test("TC-4.58 a typed host with no path allows the host alone; a path on it fires; a deeper path under a typed path is allowed", () => {

@@ -15,6 +15,7 @@
  */
 import { integer as pgInteger, pgTable, text as pgText } from "drizzle-orm/pg-core";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import type { SessionSummary, SummaryProvenance } from "../../../../shared/session-summary.js";
 import { sessionsPg, sessionsSqlite } from "../core/sessions.js";
 import { jsonColumn } from "../factory.js";
 
@@ -29,8 +30,8 @@ export const aiSessionSummariesSqlite = sqliteTable("ai_session_summaries", {
 	attemptStartedAt: text("attempt_started_at"),
 	attemptToken: text("attempt_token"),
 	attemptErrorCode: text("attempt_error_code"),
-	summary: text("summary", { mode: "json" }).$type<Record<string, unknown>>(),
-	provenance: text("provenance", { mode: "json" }).$type<Record<string, unknown>>(),
+	summary: text("summary", { mode: "json" }).$type<SessionSummary>(),
+	provenance: text("provenance", { mode: "json" }).$type<SummaryProvenance>(),
 });
 
 export const aiSessionSummariesPg = pgTable("ai_session_summaries", {
@@ -44,6 +45,6 @@ export const aiSessionSummariesPg = pgTable("ai_session_summaries", {
 	attemptStartedAt: pgText("attempt_started_at"),
 	attemptToken: pgText("attempt_token"),
 	attemptErrorCode: pgText("attempt_error_code"),
-	summary: jsonColumn<Record<string, unknown>>("postgres", "summary"),
-	provenance: jsonColumn<Record<string, unknown>>("postgres", "provenance"),
+	summary: jsonColumn<SessionSummary>("postgres", "summary"),
+	provenance: jsonColumn<SummaryProvenance>("postgres", "provenance"),
 });

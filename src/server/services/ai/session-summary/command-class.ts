@@ -1159,6 +1159,54 @@ function classify(input: unknown): CommandClass {
 	return { kind: "ordinary" };
 }
 
+/** The words that name the check: `bun test`, `bun run typecheck`, `tsc`, `go vet`. Fixed vocabulary or a tool name from the fixed sets above. */
+function validationLabelOf(words: Word[]): string {
+	const cmd = baseName((words[0] as Word).value);
+	const args = words.slice(1).map((w) => w.value);
+	if (JS_TOOL_RUNNERS.has(cmd)) {
+		const tool = words[skipFlags(words, 1, new Set())];
+		return baseName(tool?.value ?? cmd);
+	}
+	if (STANDALONE_VALIDATORS.has(cmd)) return cmd;
+	switch (cmd) {
+		case "bun":
+		case "npm":
+		case "pnpm":
+		case "yarn":
+			return args[0] === "run"
+				? `${cmd} run ${args[1] ?? ""}`.trim()
+				: `${cmd} ${args[0] ?? ""}`.trim();
+		case "go":
+		case "cargo":
+		case "make":
+			return `${cmd} ${args[0] ?? ""}`.trim();
+		default:
+			return "pytest";
+	}
+}
+
+/**
+ * The class of a clean validation command, such as `bun test` or `tsc`, for the
+ * evidence fact: a server-chosen label, never the command text. Null when the
+ * command is not a clean validation.
+ */
+export function validationClassOf(input: unknown): string | null {
+	try {
+		const text = toCommandString(input);
+		if (text === null || text === "" || storedLength(input) >= TOOL_INPUT_FIELD_SQL_CAP)
+			return null;
+		const parsed = parse(text);
+		if (parsed.flags.unparseable) return null;
+		const finals: Final[] = [];
+		for (const segment of parsed.segments)
+			unwrap(segment.words, segment.sep, parsed.flags, 0, finals);
+		const first = finals.find((f) => isValidationCommand(f.words));
+		return first ? validationLabelOf(first.words) : null;
+	} catch {
+		return null;
+	}
+}
+
 // ── validation results ───────────────────────────────────────────────────────
 
 const FAILURE_PATTERNS: RegExp[] = [
