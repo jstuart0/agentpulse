@@ -92,6 +92,13 @@ export const LABS_REGISTRY: readonly LabsFlagDefinition[] = [
 			"Global chat that answers questions about your running sessions. Uses the default LLM provider configured in AI settings.",
 		defaultEnabled: false,
 	},
+	{
+		key: "sessionSummary",
+		label: "Session summary",
+		description:
+			"Summary tab on each session: what it set out to do, what changed, what was checked, what's left. Nothing is sent to your AI provider until you ask for a summary.",
+		defaultEnabled: false,
+	},
 ] as const;
 
 // Compile-time assertion: every shared LabsFlag must have a registry

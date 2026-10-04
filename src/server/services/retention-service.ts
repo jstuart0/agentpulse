@@ -159,7 +159,8 @@ export function _resetRetentionStateForTest(): void {
 	}
 }
 
-async function readRetentionDays(): Promise<number> {
+/** The configured `eventsRetentionDays`, floored; 0 when retention is off (unset, 0, negative or not a number). */
+export async function readRetentionDays(): Promise<number> {
 	const [row] = await getDb()
 		.select()
 		.from(settings)

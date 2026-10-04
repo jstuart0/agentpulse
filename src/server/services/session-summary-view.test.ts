@@ -107,14 +107,14 @@ describe("the empty and ready view", () => {
 		const realTz = process.env.TZ;
 		try {
 			process.env.TZ = "America/New_York";
-			// Spring forward 2031-03-09 02:00 local: from 01:00 the next midnight is 23 hours away.
+			// Spring forward 2031-03-09 02:00 local: from 01:00 the next midnight is 22 real hours away, not 24.
 			setSystemTime(new Date(2031, 2, 9, 1, 0, 0));
 			expect(new Date(2031, 2, 9, 1).getTimezoneOffset()).not.toBe(
 				new Date(2031, 2, 10, 1).getTimezoneOffset(),
 			);
 			const v = await view();
 			expect(v.spend.resetsAt).toBe(new Date(2031, 2, 10, 0, 0, 0).toISOString());
-			expect(new Date(v.spend.resetsAt).getTime() - Date.now()).toBe(23 * 3600 * 1000);
+			expect(new Date(v.spend.resetsAt).getTime() - Date.now()).toBe(22 * 3600 * 1000);
 			// And the ordinary case: 10:30 local the next midnight is 13.5 hours away.
 			setSystemTime(new Date(2031, 5, 1, 10, 30, 0));
 			const w = await view();
