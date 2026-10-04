@@ -51,6 +51,7 @@ const EVIDENCE: Record<string, StoredEvidenceFact> = {
 };
 
 const PROVENANCE: SummaryProvenance = {
+	schemaVersion: 1,
 	promptVersion: "1",
 	provider: { kind: "anthropic", model: "claude-sonnet-4-6" },
 	inputTokens: 9000,
@@ -62,9 +63,17 @@ const PROVENANCE: SummaryProvenance = {
 	eventsTotal: 140,
 	eventsRead: 140,
 	eventsRepresented: 120,
-	coverage: { status: "full", droppedByCap: 0, droppedByBudget: 0, cutoffAt: null },
+	coverage: {
+		status: "full",
+		droppedByCap: 0,
+		droppedByBudget: 0,
+		cutoffAt: null,
+		overBudget: false,
+	},
 	firstEventId: 1,
+	throughAt: "2026-10-04T06:41:00.000Z",
 	adjustments: [],
+	suspectReasons: [],
 	suspect: false,
 	evidence: EVIDENCE,
 };
@@ -139,7 +148,10 @@ export const SUMMARY_VIEW_FIXTURES = {
 	evidence_shrunk: { ...READY, evidenceShrunk: true },
 	suspect: {
 		...READY,
-		stored: { summary: SUMMARY, provenance: { ...PROVENANCE, suspect: true } },
+		stored: {
+			summary: SUMMARY,
+			provenance: { ...PROVENANCE, suspect: true, suspectReasons: ["role_marker"] },
+		},
 	},
 	retention: { ...READY, retentionDays: 30 },
 } satisfies Record<string, SessionSummaryView>;

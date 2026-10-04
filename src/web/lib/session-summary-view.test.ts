@@ -628,10 +628,14 @@ describe("evidenceLabel", () => {
 		expect(evidenceLabel({ kind: "command", at, result: "completed" }, CLOCK)).toBe(
 			"command (finished) 10:07",
 		);
-		expect(evidenceLabel({ kind: "mystery", at }, CLOCK)).toBe("activity 10:07");
+		expect(evidenceLabel({ kind: "mystery" as never, at }, CLOCK)).toBe("activity 10:07");
 		expect(evidenceLabel(undefined, CLOCK)).toBe("activity");
 		expect(evidenceLabel({ kind: "command", at: null }, CLOCK)).toBe("command");
-		for (const fact of [undefined, { kind: "command", at }, { kind: "x", at: null }]) {
+		for (const fact of [
+			undefined,
+			{ kind: "command" as const, at },
+			{ kind: "x" as never, at: null },
+		]) {
 			expect(evidenceLabel(fact, CLOCK)).not.toMatch(/E\d+/);
 		}
 	});
@@ -776,6 +780,7 @@ describe("sections and chips", () => {
 			droppedByCap: 0,
 			droppedByBudget: 0,
 			cutoffAt: null,
+			overBudget: false,
 			...c,
 		});
 		expect(partialEvidenceNotice({ ...cov({}), status: "full" }, CLOCK)).toBeNull();
@@ -1074,7 +1079,7 @@ describe("clipboard builders", () => {
 			provenance: STORED.provenance,
 		};
 		const md = buildHandoffMarkdown(stored, META);
-		expect(md).toContain("Mostly Completed");
+		expect(md).toContain("Mostly completed");
 		expect(md).toContain("Everything but the docs landed.");
 		expect(md).toContain("- Write the docs");
 		expect(md).toContain("1. Write the docs");
