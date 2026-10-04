@@ -168,12 +168,10 @@ export function SessionHeader(props: SessionHeaderProps) {
 						onRefresh={onRefresh}
 						renameBlockedReason={access.canRename ? null : RENAME_BLOCKED_REASON}
 					/>
-					{session.isWorking && (
-						<span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-900 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
-							<span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse-dot" />
-							working
-						</span>
-					)}
+					{/* The state is said once, here. The raw isWorking flag used to add a second chip
+					    reading "working" beside this badge (so a working session read "working WORKING"),
+					    and a stale flag could read "working" beside ARCHIVED; the operational classifier
+					    already counts the flag, so nothing is lost. */}
 					{/* AGEN: visible on phone widths too -- this was previously
 					    inside the "hidden md:flex" action row below, so a phone
 					    visitor saw no operational state at all. */}
