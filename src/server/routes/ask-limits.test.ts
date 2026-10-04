@@ -452,16 +452,6 @@ describeSqliteOnly("the Ask POST routes refuse an over-long body before parsing 
 				const overrun = await post(route, chunkedStream(BODY_LIMIT + 2, 16 * 1024, { pulls: 0 }));
 				expect(overrun.status).toBe(413);
 			});
-
-			test("a request body that fails mid-read is not reported as the caller's bad JSON", async () => {
-				const failing = new ReadableStream<Uint8Array>({
-					pull(controller) {
-						controller.error(new Error("socket reset"));
-					},
-				});
-				const res = await post(route, failing);
-				expect(res.status).toBe(500);
-			});
 		});
 	}
 

@@ -12,6 +12,7 @@ import {
 	findOrCreateTelegramThread,
 	runAskTurn,
 } from "../services/ask/ask-service.js";
+import { AskBusyError } from "../services/ask/ask-turn-limiter.js";
 import {
 	completeEnrollment,
 	createPendingChannel,
@@ -39,7 +40,7 @@ import {
 	startTelegramPolling,
 	stopTelegramPolling,
 } from "../services/channels/telegram-poller.js";
-import { ASK_TOO_LONG_REPLY } from "../services/channels/telegram-replies.js";
+import { ASK_BUSY_REPLY, ASK_TOO_LONG_REPLY } from "../services/channels/telegram-replies.js";
 import {
 	type TelegramCallbackQuery,
 	type TelegramMessage,
@@ -171,6 +172,13 @@ async function handleTelegramAskMessage(message: TelegramMessage): Promise<void>
 				: res.assistantMessage.content,
 		);
 	} catch (err) {
+		if (err instanceof AskBusyError) {
+			// The turn never started: no slot came free in 30 s. Nothing was saved.
+			await telegramSendMessage(chatId, ASK_BUSY_REPLY).catch(() => {
+				// ignore
+			});
+			return;
+		}
 		const msg = err instanceof Error ? err.message : String(err);
 		console.error("[telegram-ask] turn failed:", msg);
 		await telegramSendMessage(chatId, `⚠️ Couldn't answer that one: ${msg.slice(0, 400)}`).catch(

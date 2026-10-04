@@ -91,6 +91,10 @@ export const config = {
 	),
 	vectorScanCpuShare: clampedEnvNumber("AGENTPULSE_VECTOR_SCAN_CPU_SHARE", 0.3, 0.05, 1),
 
+	// How many Ask turns may run at once, across the web and Telegram (see
+	// services/ask/ask-turn-limiter.ts). Read on every acquisition.
+	askMaxConcurrent: Math.floor(clampedEnvNumber("AGENTPULSE_ASK_MAX_CONCURRENT", 2, 1, 8)),
+
 	// Telegram HITL channel — instance-wide bot token serves every
 	// per-user channel enrollment. When unset, Telegram features stay
 	// dark regardless of the labs flag.

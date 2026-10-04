@@ -32,6 +32,7 @@ import { handleSessionQa } from "./ask-qa-handler.js";
 import { handleResumeIntent } from "./ask-resume-handler.js";
 import { handleNlSearch } from "./ask-search-handler.js";
 import { handleSessionAction } from "./ask-session-action-handler.js";
+import { type AskTurnSlot, acquireAskTurn } from "./ask-turn-limiter.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
 import {
 	createLaunchCloneDraft,
@@ -317,6 +318,13 @@ export interface AskTurnInput {
 	 * for this actor.
 	 */
 	actor: Actor;
+	/**
+	 * A slot the caller already holds from the turn limiter. The turn then takes
+	 * none and does not release this one: that stays with the caller.
+	 */
+	slot?: AskTurnSlot;
+	/** Aborts the wait for a slot (not a turn that has started). */
+	signal?: AbortSignal;
 }
 
 export interface AskTurnResult {
@@ -408,10 +416,12 @@ async function buildTurnContext(
 	input: AskTurnInput,
 	thread: AskThreadRecord,
 	text: string,
+	trace: TurnTrace,
 ): Promise<{
 	context: Awaited<ReturnType<typeof buildAskContext>>;
 	transcript: string;
 }> {
+	trace.path = "free_form";
 	const breadthHints = /\b(all|every|everything|across|overall|each)\b/i;
 	const wantsBreadth = breadthHints.test(text);
 	const pinned = input.sessionIds && input.sessionIds.length > 0;
@@ -794,20 +804,29 @@ const ASK_GATES: Gate[] = [
 	}),
 ];
 
+/** How a turn ended, for its closing log line: `free_form` once it reached the LLM answer, `handled` otherwise. */
+interface TurnTrace {
+	path: "handled" | "free_form";
+}
+
 export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
+	// The slot comes before anything is written or computed: a refused turn leaves no trace.
+	const slot = input.slot ?? (await acquireAskTurn({ signal: input.signal }));
 	const startedAt = Date.now();
+	const trace: TurnTrace = { path: "handled" };
 	let outcome = "ok";
 	try {
-		return await runAskTurnBody(input);
+		return await runAskTurnBody(input, trace);
 	} catch (err) {
 		outcome = "error";
 		throw err;
 	} finally {
-		logTurn("ask_turn_done", { outcome, ms: Date.now() - startedAt });
+		logTurn("ask_turn_done", { outcome, path: trace.path, ms: Date.now() - startedAt });
+		if (!input.slot) slot.release();
 	}
 }
 
-async function runAskTurnBody(input: AskTurnInput): Promise<AskTurnResult> {
+async function runAskTurnBody(input: AskTurnInput, trace: TurnTrace): Promise<AskTurnResult> {
 	const { thread, userMessage, text } = await openTurn(input);
 
 	const origin = input.origin ?? "web";
@@ -950,7 +969,7 @@ async function runAskTurnBody(input: AskTurnInput): Promise<AskTurnResult> {
 			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
 	}
 
-	const { context, transcript } = await buildTurnContext(input, thread, text);
+	const { context, transcript } = await buildTurnContext(input, thread, text, trace);
 	const llm = await getDefaultLlm();
 	if ("error" in llm) {
 		const errMsg = await appendMessage({
@@ -1037,19 +1056,25 @@ export type AskStreamEvent =
  * about the deltas once it lands).
  */
 export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskStreamEvent> {
+	const slot = input.slot ?? (await acquireAskTurn({ signal: input.signal }));
 	const startedAt = Date.now();
+	const trace: TurnTrace = { path: "handled" };
 	let outcome = "ok";
 	try {
-		yield* runAskTurnStreamBody(input);
+		yield* runAskTurnStreamBody(input, trace);
 	} catch (err) {
 		outcome = "error";
 		throw err;
 	} finally {
-		logTurn("ask_turn_done", { outcome, ms: Date.now() - startedAt });
+		logTurn("ask_turn_done", { outcome, path: trace.path, ms: Date.now() - startedAt });
+		if (!input.slot) slot.release();
 	}
 }
 
-async function* runAskTurnStreamBody(input: AskTurnInput): AsyncIterable<AskStreamEvent> {
+async function* runAskTurnStreamBody(
+	input: AskTurnInput,
+	trace: TurnTrace,
+): AsyncIterable<AskStreamEvent> {
 	const { thread, userMessage, text } = await openTurn(input);
 
 	const origin = input.origin ?? "web";
@@ -1211,7 +1236,7 @@ async function* runAskTurnStreamBody(input: AskTurnInput): AsyncIterable<AskStre
 
 	// The context (and with it the semantic scan) is built here, not before the
 	// gates: the start event reports which sessions the answer will use.
-	const { context, transcript } = await buildTurnContext(input, thread, text);
+	const { context, transcript } = await buildTurnContext(input, thread, text, trace);
 	yield {
 		kind: "start",
 		thread,
