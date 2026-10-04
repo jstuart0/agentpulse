@@ -13,7 +13,12 @@ import {
 import { createAnthropicAdapter } from "./anthropic.js";
 import { createCohereAdapter } from "./cohere.js";
 import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
-import type { LlmAdapter, LlmStopReason } from "./types.js";
+import {
+	type LlmAdapter,
+	type LlmStopReason,
+	type LlmStreamEvent,
+	mapStopReason,
+} from "./types.js";
 
 const started: LlmStubServer[] = [];
 afterEach(async () => {
@@ -38,9 +43,8 @@ async function stopReasonFor(
 	const stub = startLlmStubServer();
 	started.push(stub);
 	stub.script(shape, { text: "the answer", stop, usage: { input: 11, output: 7 } });
-	// The adapters are built directly, not through registry.ts: another test
-	// file replaces that module process-wide (mock.module) and the replacement
-	// outlives its file.
+	// The adapters are built directly rather than through registry.ts; the
+	// registry canary (ask/llm-registry-canary.test.ts) covers that path.
 	const baseUrl = stub.baseUrl(shape);
 	const adapter: LlmAdapter =
 		shape === "openai"
@@ -128,4 +132,103 @@ describe("TC-2.6 Cohere adapter stop reason", () => {
 			expect(out.outputTokens).toBe(7);
 		});
 	}
+});
+
+describe("P2-23 OpenAI-compatible stream path keeps the stop reason", () => {
+	async function streamDone(answer: {
+		stop?: string | null;
+		pieces?: string[];
+		usage?: { input: number; output: number };
+	}) {
+		const stub = startLlmStubServer();
+		started.push(stub);
+		stub.script("openai", {
+			text: (answer.pieces ?? ["the answer"]).join(""),
+			streamPieces: answer.pieces,
+			stop: answer.stop,
+			usage: answer.usage,
+		});
+		const adapter = createOpenAICompatibleAdapter({
+			apiKey: "k",
+			baseUrl: stub.baseUrl("openai"),
+			kind: "openai",
+		});
+		const events: LlmStreamEvent[] = [];
+		for await (const e of adapter.completeStream?.({
+			systemPrompt: "sys",
+			transcriptPrompt: "user",
+			model: "m",
+		}) ?? []) {
+			events.push(e);
+		}
+		const done = events.at(-1);
+		if (!done || done.kind !== "done") throw new Error("the stream did not end with done");
+		return {
+			deltas: events.filter((e) => e.kind === "delta").map((e) => (e as { text: string }).text),
+			response: done.response,
+			request: JSON.parse(stub.requests("openai")[0].body),
+		};
+	}
+
+	test("P2-23 finish_reason length on the last content chunk survives a trailing usage-only chunk with choices []", async () => {
+		const out = await streamDone({
+			stop: "length",
+			pieces: ["The ans", "wer is cut"],
+			usage: { input: 11, output: 7 },
+		});
+		expect(out.response.stopReason).toBe("length");
+		expect(out.response.text).toBe("The answer is cut");
+		expect(out.deltas).toEqual(["The ans", "wer is cut"]);
+		expect(out.response.usage).toMatchObject({
+			inputTokens: 11,
+			outputTokens: 7,
+			estimated: false,
+		});
+		expect(out.request.stream).toBe(true);
+	});
+
+	test("P2-23 the other stop values map as they do without streaming", async () => {
+		const cases: Array<[string | null | undefined, LlmStopReason]> = [
+			["stop", "end"],
+			["content_filter", "refusal"],
+			["tool_calls", "other"],
+			[null, "other"],
+			[undefined, "other"],
+		];
+		for (const [raw, expected] of cases) {
+			const out = await streamDone({ stop: raw, usage: { input: 1, output: 1 } });
+			expect(out.response.stopReason, String(raw)).toBe(expected);
+		}
+	});
+
+	test("P2-23 a stream with no usage chunk still reports the stop reason, with estimated usage", async () => {
+		const out = await streamDone({ stop: "length", pieces: ["a", "b"] });
+		expect(out.response.stopReason).toBe("length");
+		expect(out.response.usage.estimated).toBe(true);
+	});
+});
+
+describe("P2-25 mapStopReason looks only at the adapter's own table", () => {
+	const table = { stop: "end", length: "length" } as const;
+
+	test("P2-25 names inherited from Object.prototype map to other", () => {
+		for (const raw of ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]) {
+			expect(mapStopReason(raw, table), raw).toBe("other");
+		}
+	});
+
+	test("P2-25 listed values map, and anything that is not a string is other", () => {
+		expect(mapStopReason("stop", table)).toBe("end");
+		expect(mapStopReason("length", table)).toBe("length");
+		for (const raw of [undefined, null, 1, {}, ["stop"], Symbol("stop")]) {
+			expect(mapStopReason(raw, table)).toBe("other");
+		}
+	});
+
+	test("P2-25 a provider that really sends constructor as a stop value gets other from every adapter", async () => {
+		for (const shape of ["openai", "anthropic", "cohere"] as const) {
+			expect((await stopReasonFor(shape, "constructor")).stopReason, shape).toBe("other");
+			expect((await stopReasonFor(shape, "toString")).stopReason, shape).toBe("other");
+		}
+	});
 });

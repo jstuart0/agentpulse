@@ -459,9 +459,14 @@ describe("TC-2.22 ledger property", () => {
 		};
 	}
 
-	test("TC-2.22 50 seeded random sequences across 2 days: each day row equals settled actuals plus open reservations", async () => {
+	test("TC-2.22 50 seeded random sequences across 2 days: each day row equals settled actuals plus open reservations, and sessions.ai_spend_cents equals the settled actuals", async () => {
 		for (let seed = 1; seed <= 50; seed++) {
 			await getDb().delete(aiDailySpend).execute();
+			await getDb()
+				.update(sessions)
+				.set({ aiSpendCents: 0 })
+				.where(eq(sessions.sessionId, SESSION));
+			let expectedSession = 0;
 			const rand = mulberry32(seed);
 			const int = (lo: number, hi: number) => lo + Math.floor(rand() * (hi - lo + 1));
 			setSystemTime(AT_END_OF_DAY);
@@ -483,6 +488,7 @@ describe("TC-2.22 ledger property", () => {
 					if (op === 1) {
 						const actual = int(0, 130);
 						expected.set(r.date, (expected.get(r.date) ?? 0) + actual - r.cents);
+						expectedSession += actual;
 						await settleReservedSpend(r, { sessionId: SESSION, actualCents: actual });
 						open.splice(i, 1);
 					} else if (op === 2) {
@@ -500,8 +506,173 @@ describe("TC-2.22 ledger property", () => {
 					const actualRow = (await dayRow(date)) ?? 0;
 					expect({ seed, step, date, cents: actualRow }).toEqual({ seed, step, date, cents });
 				}
+				// Contract C-9: the session's own running spend is the settled actuals.
+				expect({ seed, step, session: await sessionSpend() }).toEqual({
+					seed,
+					step,
+					session: expectedSession,
+				});
 			}
 			for (const r of open) await releaseReservedSpend(r);
 		}
 	}, 60_000);
+});
+
+describe("P2-19 a reservation is an opaque handle", () => {
+	async function reserved(base: number, cents: number) {
+		await setDay(todayLocal(), base);
+		const r = await reserveSpendCents(cents);
+		if (!r) throw new Error("expected a reservation");
+		return r;
+	}
+
+	test("P2-19 a spread copy cannot release after the original settled, nor settle after it released", async () => {
+		const a = await reserved(100, 70);
+		const copyOfA = { ...a } as unknown as typeof a;
+		await settleReservedSpend(a, { sessionId: SESSION, actualCents: 20 });
+		await expect(releaseReservedSpend(copyOfA)).rejects.toThrow(/reservation/i);
+		await expect(
+			settleReservedSpend(copyOfA, { sessionId: SESSION, actualCents: 20 }),
+		).rejects.toThrow(/reservation/i);
+		expect(await dayRow(todayLocal())).toBe(120);
+		expect(await sessionSpend()).toBe(20);
+
+		const b = await reserved(100, 70);
+		const copyOfB = { ...b } as unknown as typeof b;
+		await releaseReservedSpend(b);
+		await expect(releaseReservedSpend(copyOfB)).rejects.toThrow(/reservation/i);
+		expect(await dayRow(todayLocal())).toBe(100);
+	});
+
+	test("P2-19 a copy of an open reservation is refused by every operation and changes nothing", async () => {
+		const r = await reserved(100, 70);
+		const fake = { date: r.date, cents: r.cents } as unknown as typeof r;
+		await expect(topUpReservation(fake, 10)).rejects.toThrow(/reservation/i);
+		await expect(releaseReservedSpend(fake)).rejects.toThrow(/reservation/i);
+		await expect(settleReservedSpend(fake, { sessionId: SESSION, actualCents: 1 })).rejects.toThrow(
+			/reservation/i,
+		);
+		expect(await dayRow(todayLocal())).toBe(170);
+		await releaseReservedSpend(r);
+		expect(await dayRow(todayLocal())).toBe(100);
+	});
+
+	test("P2-19 cents and date cannot be changed by the caller, so release returns exactly what was reserved", async () => {
+		const r = await reserved(100, 70);
+		const writable = r as unknown as { cents: number; date: string };
+		expect(() => {
+			writable.cents = 1_000_000;
+		}).toThrow();
+		expect(() => {
+			writable.date = "1999-01-01";
+		}).toThrow();
+		expect(r.cents).toBe(70);
+		expect(r.date).toBe(todayLocal());
+		await releaseReservedSpend(r);
+		expect(await dayRow(todayLocal())).toBe(100);
+	});
+
+	test("P2-19 cents and date read as plain values, and the handle still compares by value", async () => {
+		const r = await reserved(0, 25);
+		expect({ date: r.date, cents: r.cents }).toEqual({ date: todayLocal(), cents: 25 });
+		expect(r).toEqual({ date: todayLocal(), cents: 25 });
+		expect(JSON.parse(JSON.stringify(r))).toEqual({ date: todayLocal(), cents: 25 });
+	});
+});
+
+describe("P2-20 top-up against a concurrent settle or release", () => {
+	async function reserved(base: number, cents: number) {
+		await setDay(todayLocal(), base);
+		const r = await reserveSpendCents(cents);
+		if (!r) throw new Error("expected a reservation");
+		return r;
+	}
+
+	test("P2-20 a top-up in flight when the reservation settles is rolled back and refused", async () => {
+		const r = await reserved(100, 100);
+		const [topped] = await Promise.all([
+			topUpReservation(r, 10),
+			settleReservedSpend(r, { sessionId: SESSION, actualCents: 40 }),
+		]);
+		expect(topped).toBe(false);
+		expect(r.cents).toBe(100);
+		expect(await dayRow(todayLocal())).toBe(140);
+		expect(await sessionSpend()).toBe(40);
+	});
+
+	test("P2-20 a top-up in flight when the reservation is released is rolled back and refused", async () => {
+		const r = await reserved(100, 100);
+		const [topped] = await Promise.all([topUpReservation(r, 10), releaseReservedSpend(r)]);
+		expect(topped).toBe(false);
+		expect(await dayRow(todayLocal())).toBe(100);
+	});
+
+	test("P2-20 the same, with the settle started first", async () => {
+		const r = await reserved(100, 100);
+		const settling = settleReservedSpend(r, { sessionId: SESSION, actualCents: 40 });
+		const topped = await topUpReservation(r, 10);
+		await settling;
+		expect(topped).toBe(false);
+		expect(await dayRow(todayLocal())).toBe(140);
+	});
+
+	test("P2-20 a top-up that finishes before the settle is counted by it", async () => {
+		const r = await reserved(100, 100);
+		expect(await topUpReservation(r, 10)).toBe(true);
+		await settleReservedSpend(r, { sessionId: SESSION, actualCents: 40 });
+		expect(await dayRow(todayLocal())).toBe(140);
+	});
+});
+
+describe("P2-21 amounts must be non-negative safe integers", () => {
+	const BAD: Array<[string, number]> = [
+		["NaN", Number.NaN],
+		["Infinity", Number.POSITIVE_INFINITY],
+		["-Infinity", Number.NEGATIVE_INFINITY],
+		["a fraction", 1.5],
+		["a negative", -1],
+		["beyond the safe range", Number.MAX_SAFE_INTEGER + 2],
+	];
+
+	for (const [name, value] of BAD) {
+		test(`P2-21 reserveSpendCents rejects ${name} and writes nothing`, async () => {
+			await expect(reserveSpendCents(value)).rejects.toThrow(RangeError);
+			expect(await allDayRows()).toEqual([]);
+		});
+
+		test(`P2-21 topUpReservation rejects ${name}, leaving the reservation open and unchanged`, async () => {
+			const r = await reserveSpendCents(50);
+			if (!r) throw new Error("expected a reservation");
+			await expect(topUpReservation(r, value)).rejects.toThrow(RangeError);
+			expect(r.cents).toBe(50);
+			expect(await dayRow(todayLocal())).toBe(50);
+			await releaseReservedSpend(r);
+		});
+
+		test(`P2-21 settleReservedSpend rejects ${name} and the reservation can still be settled`, async () => {
+			const r = await reserveSpendCents(50);
+			if (!r) throw new Error("expected a reservation");
+			await expect(
+				settleReservedSpend(r, { sessionId: SESSION, actualCents: value }),
+			).rejects.toThrow(RangeError);
+			expect(await dayRow(todayLocal())).toBe(50);
+			await settleReservedSpend(r, { sessionId: SESSION, actualCents: 30 });
+			expect(await dayRow(todayLocal())).toBe(30);
+		});
+	}
+
+	test("P2-21 zero is valid for all three, and a settle can never take the day below what it held before the reservation", async () => {
+		await setDay(todayLocal(), 200);
+		const r = await reserveSpendCents(0);
+		if (!r) throw new Error("expected a reservation");
+		expect(await topUpReservation(r, 0)).toBe(true);
+		await settleReservedSpend(r, { sessionId: SESSION, actualCents: 0 });
+		expect(await dayRow(todayLocal())).toBe(200);
+
+		await setDay(todayLocal(), 200);
+		const big = await reserveSpendCents(80);
+		if (!big) throw new Error("expected a reservation");
+		await settleReservedSpend(big, { sessionId: SESSION, actualCents: 0 });
+		expect(await dayRow(todayLocal())).toBe(200);
+	});
 });

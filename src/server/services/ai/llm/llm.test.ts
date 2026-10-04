@@ -543,11 +543,6 @@ describe("TC-2.7 the optional stopReason does not disturb other callers", () => 
 		rawResponse: null,
 	};
 
-	test("TC-2.7 an LlmResponse literal without stopReason is still a valid response", () => {
-		// Compile-time half: the field is optional, so existing literals typecheck.
-		expect(withoutStopReason.stopReason).toBeUndefined();
-	});
-
 	test("TC-2.7 streamWithFallback passes a response with or without stopReason through untouched", async () => {
 		for (const response of [
 			withoutStopReason,
@@ -570,29 +565,22 @@ describe("TC-2.7 the optional stopReason does not disturb other callers", () => 
 	});
 
 	test("TC-2.7 a real adapter response keeps its text, usage and raw body next to the new field", async () => {
-		mockFetch(
-			new Response(
-				JSON.stringify({
-					content: [{ type: "text", text: "hi" }],
-					stop_reason: "end_turn",
-					usage: { input_tokens: 10, output_tokens: 2 },
-				}),
-				{ status: 200 },
-			),
-		);
+		const raw = {
+			content: [{ type: "text", text: "hi" }],
+			stop_reason: "end_turn",
+			usage: { input_tokens: 10, output_tokens: 2 },
+		};
+		mockFetch(new Response(JSON.stringify(raw), { status: 200 }));
 		const res = await createAnthropicAdapter({ apiKey: "k" }).complete({
 			systemPrompt: "s",
 			transcriptPrompt: "t",
 			model: "claude-sonnet-4-6",
 		});
-		expect(Object.keys(res).sort()).toEqual(["rawResponse", "stopReason", "text", "usage"]);
-		expect(res.text).toBe("hi");
-		expect(res.usage).toEqual({
-			inputTokens: 10,
-			outputTokens: 2,
-			cacheReadTokens: undefined,
-			cacheWriteTokens: undefined,
-			estimated: false,
+		expect(res).toMatchObject({
+			text: "hi",
+			stopReason: "end",
+			usage: { inputTokens: 10, outputTokens: 2, estimated: false },
+			rawResponse: raw,
 		});
 	});
 });

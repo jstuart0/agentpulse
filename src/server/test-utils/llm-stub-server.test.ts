@@ -134,6 +134,7 @@ describe("TC-2.23 stub server", () => {
 		const res = await post(`${s.origin}/nope`, {});
 		expect(res.status).toBe(UNSCRIPTED_STATUS);
 		expect(() => s.verify()).toThrow(/unscripted/i);
+		s.reset();
 	});
 
 	test("TC-2.23 an exhausted script fails the next request loudly", async () => {
@@ -143,5 +144,119 @@ describe("TC-2.23 stub server", () => {
 		const res = await post(`${s.baseUrl("cohere")}/v1/chat`, {});
 		expect(res.status).toBe(UNSCRIPTED_STATUS);
 		expect(() => s.verify()).toThrow(/unscripted/i);
+		s.reset();
+	});
+});
+
+describe("P2-24 the stub cannot be stopped past an unscripted request, nor given a foreign gate", () => {
+	test("P2-24 stop() throws when an unscripted request was received, and still stops the server", async () => {
+		const s = startLlmStubServer();
+		await post(`${s.baseUrl("openai")}/chat/completions`, {});
+		await expect(s.stop()).rejects.toThrow(/unscripted/i);
+		await expect(post(`${s.baseUrl("openai")}/chat/completions`, {})).rejects.toThrow();
+	});
+
+	test("P2-24 stop() is quiet when everything was scripted, or after reset()", async () => {
+		const a = startLlmStubServer();
+		a.script("openai", { text: "x", stop: "stop" });
+		await post(`${a.baseUrl("openai")}/chat/completions`, {});
+		await a.stop();
+
+		const b = startLlmStubServer();
+		await post(`${b.baseUrl("openai")}/chat/completions`, {});
+		b.reset();
+		await b.stop();
+	});
+
+	test("P2-24 script() throws when the answer's gate was not made by createGate()", () => {
+		const s = start();
+		const forged = { arrived: Promise.resolve(), release() {} };
+		expect(() => s.script("openai", { text: "x", gate: forged })).toThrow(/createGate/);
+		expect(() => s.script("openai", { text: "x", gate: undefined })).not.toThrow();
+		expect(() => s.script("openai", { text: "y", gate: s.createGate() })).not.toThrow();
+		s.reset();
+	});
+
+	test("P2-24 a gate made by another stub instance is accepted and holds the response", async () => {
+		const other = start();
+		const s = start();
+		const gate = other.createGate();
+		s.script("openai", { text: "held", stop: "stop", gate });
+		const pending = post(`${s.baseUrl("openai")}/chat/completions`, {});
+		await gate.arrived;
+		gate.release();
+		expect((await (await pending).json()).choices[0].message.content).toBe("held");
+	});
+
+	test("P2-24 a script that was never consumed does not fail stop()", async () => {
+		const s = startLlmStubServer();
+		s.script("openai", { text: "never asked", stop: "stop" });
+		await s.stop();
+	});
+});
+
+describe("P2-23 the stub answers an OpenAI stream request as server-sent events", () => {
+	async function stream(s: LlmStubServer, body: unknown = { stream: true }): Promise<string> {
+		const res = await post(`${s.baseUrl("openai")}/chat/completions`, body);
+		expect(res.headers.get("content-type")).toContain("text/event-stream");
+		return res.text();
+	}
+	const frames = (text: string) =>
+		text
+			.split("\n\n")
+			.filter(Boolean)
+			.map((f) => f.replace(/^data: /, ""));
+
+	test("P2-23 pieces are content deltas, the last carries finish_reason, usage trails with no choices, then [DONE]", async () => {
+		const s = start();
+		s.script("openai", {
+			text: "ignored when pieces are given",
+			streamPieces: ["Hel", "lo"],
+			stop: "length",
+			usage: { input: 11, output: 7 },
+		});
+		const out = frames(await stream(s));
+		expect(out.at(-1)).toBe("[DONE]");
+		const chunks = out.slice(0, -1).map((f) => JSON.parse(f));
+		expect(chunks).toEqual([
+			{ choices: [{ delta: { content: "Hel" } }] },
+			{ choices: [{ delta: { content: "lo" }, finish_reason: "length" }] },
+			{ choices: [], usage: { prompt_tokens: 11, completion_tokens: 7 } },
+		]);
+	});
+
+	test("P2-23 without pieces the text is one delta; without a stop or usage those frames are left out", async () => {
+		const s = start();
+		s.script("openai", { text: "whole" });
+		const chunks = frames(await stream(s))
+			.slice(0, -1)
+			.map((f) => JSON.parse(f));
+		expect(chunks).toEqual([{ choices: [{ delta: { content: "whole" } }] }]);
+	});
+
+	test("P2-23 a null stop is sent as null on the last content chunk", async () => {
+		const s = start();
+		s.script("openai", { text: "x", stop: null });
+		const chunks = frames(await stream(s))
+			.slice(0, -1)
+			.map((f) => JSON.parse(f));
+		expect(chunks[0].choices[0].finish_reason).toBeNull();
+	});
+
+	test("P2-23 a request without stream:true still gets the plain JSON body", async () => {
+		const s = start();
+		s.script("openai", { text: "plain", stop: "stop", streamPieces: ["pl", "ain"] });
+		const res = await post(`${s.baseUrl("openai")}/chat/completions`, { stream: false });
+		expect(res.headers.get("content-type")).toContain("application/json");
+		expect((await res.json()).choices[0].message.content).toBe("plain");
+	});
+
+	test("P2-23 a stream request on the Anthropic or Cohere path is unscripted, not silently answered", async () => {
+		const s = start();
+		s.script("anthropic", { text: "x", stop: "end_turn" });
+		const res = await post(`${s.baseUrl("anthropic")}/v1/messages`, { stream: true });
+		expect(res.status).toBe(UNSCRIPTED_STATUS);
+		expect(() => s.verify()).toThrow(/stream/i);
+		s.reset();
 	});
 });

@@ -243,12 +243,9 @@ describe("TC-2.8 cookie_header", () => {
 		expectUntouched("Cookies are small files");
 	});
 
-	test("TC-2.8 a value over 4,096 characters is redacted up to the cap", () => {
-		const long = `Cookie: a=${"b".repeat(6000)}`;
-		const { text } = redact(long);
-		expect(text.length).toBeGreaterThan(1500); // the cap leaves the rest of the run
-		expect(text.length).toBeLessThan(2100);
-		expect(text).toContain("[REDACTED:cookie_header]");
+	test("TC-2.8 a header line of any length is redacted whole, with no cap", () => {
+		const long = `Cookie: a=${"b".repeat(60000)}\nHost: x`;
+		expect(redact(long).text).toBe("[REDACTED:cookie_header]\nHost: x");
 	});
 });
 
@@ -439,7 +436,7 @@ describe("TC-2.9 no regression", () => {
 		expect(withDifferentOutput).toBeGreaterThan(1000);
 	});
 
-	test("TC-2.9 a key of 12 prefix segments is still redacted (the {0,8} bound is crossed)", () => {
+	test("TC-2.9 a key of 12 prefix segments is still redacted (the {0,8} bound is a performance bound, not a behaviour: the match starts inside the key)", () => {
 		const key = `${repeat("AB_", 12)}PASSWORD`;
 		const { text } = redact(`${key}=hunter2hunter2`);
 		expect(text).toBe(`${key}= [REDACTED]`);
@@ -531,6 +528,38 @@ const ADVERSARIAL: Record<string, (size: number) => string> = {
 	"X-Api-Key: then spaces": (n) => `X-Api-Key:${repeat(" ", n)}`,
 	"key: then one long value": (n) => `token: ${repeat("a", n)}`,
 	"repeated yaml keys": (n) => repeat("token: abcdefghij\n", Math.ceil(n / 18)),
+	// P2-16
+	'"password":" then \\a with no closing quote': (n) => `"password":"${repeat("\\a", n / 2)}`,
+	'repeated "password":"\\a': (n) => repeat('"password":"\\a', Math.ceil(n / 14)),
+	"curl then backslash-newline, repeated": (n) => `curl ${repeat("\\\n", n / 2)}`,
+	"repeated curl with backslash-newline": (n) => repeat("curl \\\n", n / 8),
+	// P2-5
+	"repeated -----BEGIN PRIVATE KEY-----": (n) =>
+		repeat("-----BEGIN PRIVATE KEY-----", Math.ceil(n / 27)),
+	"-----BEGIN RSA PRIVATE KEY----- with Proc-Type headers, no END": (n) =>
+		`-----BEGIN RSA PRIVATE KEY-----\n${repeat("Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0A1B\n", n / 50)}`,
+	// P2-6, P2-9
+	'repeated PASSWORD="': (n) => repeat('PASSWORD="', Math.ceil(n / 10)),
+	'repeated PASSWORD=" with a space': (n) => repeat('PASSWORD=" ', Math.ceil(n / 11)),
+	"PASSWORD=' then one long unterminated run": (n) => `PASSWORD='${repeat("a ", n / 2)}`,
+	// P2-7
+	"repeated Authorization:": (n) => repeat("Authorization: ", Math.ceil(n / 15)),
+	"Authorization: Digest then a long run": (n) => `Authorization: Digest ${repeat('a="', n / 3)}`,
+	"Authorization: then spaces": (n) => `Authorization:${repeat(" ", n)}`,
+	// P2-8
+	'a long key before "token"': (n) => `"${repeat("a", n)}token":"abcdefgh"`,
+	'repeated "accessToken":"': (n) => repeat('"accessToken":"', Math.ceil(n / 15)),
+	'repeated \\"password\\":\\"': (n) => repeat('\\"password\\":\\"', Math.ceil(n / 16)),
+	// P2-10, P2-12, P2-13
+	"repeated --client-secret": (n) => repeat("--client-secret ", Math.ceil(n / 16)),
+	"repeated ://u:": (n) => repeat("://u:", Math.ceil(n / 5)),
+	"://u: then one long run without @": (n) => `://u:${repeat("a", n)}`,
+	"://u: then a long run of @": (n) => `://u:${repeat("@", n)}`,
+	"curl then a long run of -sS": (n) => `curl ${repeat("-sS ", n / 4)}`,
+	"yaml keys with 8 prefix segments, repeated": (n) =>
+		repeat("A_B_C_D_E_F_G_H_token: abcdefghij\n", Math.ceil(n / 35)),
+	"a long CRLF yaml file": (n) =>
+		repeat("name: demo\r\npassword: hunter2hunter2\r\n", Math.ceil(n / 40)),
 };
 
 function bestOf(runs: number, input: string): number {
@@ -545,22 +574,25 @@ function bestOf(runs: number, input: string): number {
 
 const HARD_CAP_MS_100KB = 1000;
 const NOISE_FLOOR_MS = 15;
+// Linear time is 4x for 4x the input, quadratic is 16x. A bound of 8x plus the
+// noise floor fails any quadratic rule and a mildly quadratic one the old
+// 200 KB / 3.5x form let through whenever the 100 KB run took under 30 ms.
+const LINEARITY_FACTOR = 8;
 
 describe("TC-2.10 linear time on adversarial input", () => {
 	for (const [name, build] of Object.entries(ADVERSARIAL)) {
-		test(`TC-2.10 ${name}: 100 KB finishes, 200 KB is under 3.5x`, () => {
+		test(`TC-2.10 ${name}: 100 KB finishes, 400 KB is under ${LINEARITY_FACTOR}x`, () => {
 			const small = build(100_000);
 			const start = performance.now();
 			redact(small);
 			const first = performance.now() - start;
-			console.log(`[redactor-perf] ${name}: 100KB first run ${first.toFixed(1)} ms`);
 			expect(first).toBeLessThan(HARD_CAP_MS_100KB);
-			const t100 = bestOf(3, small);
-			const t200 = bestOf(3, build(200_000));
+			const t100 = bestOf(5, small);
+			const t400 = bestOf(5, build(400_000));
 			console.log(
-				`[redactor-perf] ${name}: best of 3 -> 100KB ${t100.toFixed(1)} ms, 200KB ${t200.toFixed(1)} ms`,
+				`[redactor-perf] ${name}: best of 5 -> 100KB ${t100.toFixed(1)} ms, 400KB ${t400.toFixed(1)} ms`,
 			);
-			expect(t200).toBeLessThan(3.5 * t100 + NOISE_FLOOR_MS);
+			expect(t400).toBeLessThan(LINEARITY_FACTOR * t100 + NOISE_FLOOR_MS);
 		}, 120_000);
 	}
 });
