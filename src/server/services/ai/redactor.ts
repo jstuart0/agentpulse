@@ -1,3 +1,5 @@
+import { stripInvisibleKeepNewlines } from "./untrusted-text.js";
+
 export interface RedactionRule {
 	name: string;
 	pattern: RegExp;
@@ -16,6 +18,96 @@ export interface RedactionResult {
 	text: string;
 	hits: RedactionHit[];
 }
+
+/** Case-insensitive spelling of a literal, for patterns that must stay case-sensitive elsewhere. */
+function ci(word: string): string {
+	return [...word]
+		.map((c) => (/[a-z]/i.test(c) ? `[${c.toLowerCase()}${c.toUpperCase()}]` : c))
+		.join("");
+}
+
+// A JSON key that names a secret: any identifier prefix (`db_`, `client-`,
+// `access`, `Session`), then the secret word, and nothing after it, so
+// `max_tokens`, `token_count`, `password_hint` and `tokenType` are other keys.
+const JSON_SECRET_KEY = String.raw`[a-z0-9_\-.]{0,40}(?:password|passwd|secret|api[_-]?key|token|private[_-]?key(?:[_-]?id)?|secret[_-]?key|secret[_-]?access[_-]?key|access[_-]?key|signing[_-]?key|encryption[_-]?key|connection[_-]?string|authorization|credentials?)`;
+// A value that is not a secret: the name of a type (`"token": "string"`), a
+// scheme word alone (`"Authorization": "Bearer "`), or a placeholder standing
+// for one (`${API_KEY}`, `$API_KEY`, `<your-key>`, `{{ key }}`, optionally after a
+// scheme word). Judged on the whole value, so `${x}realsecret` is still masked.
+const JSON_NOT_A_SECRET = String.raw`(?:string|number|boolean|object|array|integer|null|undefined|true|false|unknown|(?:bearer|basic|digest) ?|(?:(?:bearer|basic|digest) )?(?:\\?\$\{[^}"\\]*\}|\\?\$[a-z_][a-z0-9_]*|<[^>"\\]*>|\{\{[^}"\\]*\}\}))`;
+
+/**
+ * A quoted exact key, `:`, a quoted value of 6 or more characters (an escaped
+ * quote does not end it); or the same one level down, inside a JSON string
+ * (`\"password\":\"...\"`). The key must open an object member: start of a line
+ * or right after `{`, `,` or `[` (and whitespace), which keeps a ternary like
+ * `ok ? "current-password" : "new-password"` out. The cheap lookahead comes
+ * first so the look-behind only runs where a quote starts.
+ */
+const JSON_SECRET_VALUE_PATTERN = new RegExp(
+	String.raw`(?=\\?")(?<=(?:^|[{,\[])\s*)(?:"(?:${JSON_SECRET_KEY})"\s*:\s*"(?!\[REDACTED)(?!${JSON_NOT_A_SECRET}")(?:[^"\\\n]|\\.){6,}"|\\"(?:${JSON_SECRET_KEY})\\"\s*:\s*\\"(?!\[REDACTED)(?!${JSON_NOT_A_SECRET}\\")(?:[^"\\\n]|\\(?!")){6,}\\")`,
+	"gim",
+);
+
+const YAML_SECRET_WORDS = [
+	"password",
+	"passwd",
+	"secret",
+	"api[_-]?key",
+	"token",
+	"private[_-]?key",
+	"secret[_-]?key",
+	"signing[_-]?key",
+	"encryption[_-]?key",
+]
+	.map((w) => w.split("[_-]?").map(ci).join("[_-]?"))
+	.join("|");
+const YAML_TYPE_WORDS = [
+	"true",
+	"false",
+	"null",
+	"undefined",
+	"string",
+	"number",
+	"boolean",
+	"unknown",
+	"object",
+	"Optional",
+	"Union",
+	"Callable",
+	"datetime",
+	"Decimal",
+]
+	.map(ci)
+	.join("|");
+const YAML_VALUE_END = String.raw`["']?[ \t]*(?:#[^\r\n]*)?$`;
+
+/**
+ * `key: value` with the key at the start of a line (after indentation and an
+ * optional list dash; any prefix like `DB_` or `ssh-`), the value the rest of
+ * the line: 8 or more characters, none of which is part of code or a type
+ * (`< > ( ) $ { } [ ] | ; ,`). Not a secret: a type word, a CamelCase word
+ * (`SecretStr`, `AccessToken`) or a lowercase hyphenated name (`my-secret-name`):
+ * ACCEPTED, a passphrase of either shape is left alone. `$` already matches
+ * before a CR, and the comment stops at it, so CRLF files keep their endings.
+ * The excluded `[` also keeps an already-masked value out.
+ */
+const YAML_SECRET_VALUE_PATTERN = new RegExp(
+	String.raw`^[ \t]*(?:-[ \t]+)?(?:[A-Za-z0-9]+[_-]){0,8}(?:${YAML_SECRET_WORDS})[ \t]*:[ \t]+["']?(?!(?:${YAML_TYPE_WORDS})\b)(?!(?:[A-Z][a-z]+){2,}${YAML_VALUE_END})(?![a-z]+(?:-[a-z]+)+${YAML_VALUE_END})[^\s<>()$\{\}[\]|;,"']{8,}${YAML_VALUE_END}`,
+	"gm",
+);
+
+const COOKIE_PAIR = String.raw`[ \t]*[\w.%~-]+=`;
+const COOKIE_NAME_ANY_CASE = `(?:${ci("Set-")})?${ci("Cookie")}:`;
+const COOKIE_HEADER_FLAG = `(?:-[Hh]|${ci("--header")})`;
+const COOKIE_HEADER_PATTERN = new RegExp(
+	[
+		String.raw`${COOKIE_HEADER_FLAG}[ \t=]*(["'])${COOKIE_NAME_ANY_CASE}${COOKIE_PAIR}(?:(?!\1)[^\r\n])*`,
+		String.raw`(?:^[ \t]*|${COOKIE_HEADER_FLAG}[ \t=]+)${COOKIE_NAME_ANY_CASE}${COOKIE_PAIR}[^\r\n]*`,
+		String.raw`(?<=[\s>"'])(?:Set-)?Cookie:${COOKIE_PAIR}[^\r\n"']*`,
+	].join("|"),
+	"gm",
+);
 
 // Default deny-list. Kept short on purpose; users add patterns via settings.
 // Each rule must be `g`-flagged so `replace` walks the entire input.
@@ -54,6 +146,13 @@ export const DEFAULT_RULES: RedactionRule[] = [
 		replacement: "[REDACTED:github_token]",
 	},
 	{
+		name: "github_pat",
+		// Fine-grained personal access tokens: `github_pat_` and 22 or more of
+		// letters, digits and underscores (real ones carry 82).
+		pattern: /\bgithub_pat_[A-Za-z0-9_]{22,}/g,
+		replacement: "[REDACTED:github_pat]",
+	},
+	{
 		name: "agentpulse_api_key",
 		pattern: /\bap_[a-f0-9]{32}\b/g,
 		replacement: "[REDACTED:agentpulse_api_key]",
@@ -75,8 +174,14 @@ export const DEFAULT_RULES: RedactionRule[] = [
 	},
 	{
 		name: "slack_token",
-		pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+		pattern: /\b(?:xox[baprs]|xapp)-[A-Za-z0-9-]{10,}\b/g,
 		replacement: "[REDACTED:slack_token]",
+	},
+	{
+		name: "slack_webhook",
+		// The URL is the credential: anyone holding it can post to the channel.
+		pattern: /\bhooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]+/g,
+		replacement: "[REDACTED:slack_webhook]",
 	},
 	{
 		name: "jwt",
@@ -86,9 +191,30 @@ export const DEFAULT_RULES: RedactionRule[] = [
 	},
 	{
 		name: "authorization_header",
-		// Matches `Authorization: Bearer <token>` and `authorization: <token>`.
-		pattern: /\b[Aa]uthorization:\s*(?:Bearer\s+|Basic\s+)?[A-Za-z0-9_\-\.]{12,}/g,
+		// `Authorization: <scheme> <credentials>` and the JSON form
+		// `"Authorization":"Bearer ..."`, in any case. Bearer, Basic, Token and
+		// similar schemes take a token of 8 or more characters (`+ / = ~` included:
+		// base64 and tokens carry them). Digest and AWS4-HMAC-* take the whole
+		// parameter list: `name="quoted"` pairs, or any characters up to a quote
+		// or the end of the line, so a one-line curl keeps its URL. With no
+		// scheme, a token of 12 or more characters.
+		pattern:
+			/\bauthorization["']?[ \t]*:[ \t]*["']?(?:(?:Digest|AWS4-[A-Z0-9-]+)[ \t]+(?:\\.|="[^"\r\n]*"|[^\r\n'"\\]){8,}|(?:Bearer|Basic|Token|Negotiate|NTLM|Hawk|OAuth|Bot)[ \t]+[A-Za-z0-9_\-.+/=~]{8,}|[A-Za-z0-9_\-.+/=~]{12,})/gi,
 		replacement: "Authorization: [REDACTED]",
+	},
+	{
+		name: "pem_private_key",
+		// Runs before env_assignment_secret: `PRIVATE_KEY="-----BEGIN ...` would
+		// otherwise lose its first line to that rule and leak the body. The body
+		// is base64, whitespace, the literal two-character `\n` / `\r` escapes of a
+		// quoted or JSON-embedded key, and the `Proc-Type:` / `DEK-Info:` header
+		// lines of a legacy encrypted key: everything up to the END line, which
+		// the lookahead stops at. The 16,000 bound (an RSA-8192 key is about
+		// 6,500) only keeps the scan linear when an END is missing; a BEGIN with
+		// no END is redacted as far as the bound.
+		pattern:
+			/-----BEGIN [A-Z ]{0,40}PRIVATE KEY(?: BLOCK)?-----(?:(?!-----END)[A-Za-z0-9+/=\s\\:,.-]){0,16000}(?:-----END[^-]*-----)?/g,
+		replacement: "[REDACTED:pem_private_key]",
 	},
 	{
 		name: "env_assignment_secret",
@@ -100,8 +226,16 @@ export const DEFAULT_RULES: RedactionRule[] = [
 		// `A_A_A_...` made every start position rescan the whole run: 7.3 s on
 		// 100 KB. A longer key still redacts to the same text: `_` is itself a
 		// boundary character, so the match simply starts inside the key.
+		//
+		// Only spaces and tabs may surround `=`: a value cannot start on the next
+		// line (`export TOKEN=` then a command). A quoted value that contains
+		// whitespace is taken whole (`PASSWORD="my pass phrase"`); a quoted value
+		// without whitespace keeps the earlier behaviour, leftover quote and all.
+		// PASS counts only when `=` follows it directly (`DB_PASS=x`), so a constant
+		// like `MAX_BATCHES_PER_PASS = 1_000` is left alone.
+		// ACCEPTED over-match: `const token = await getToken()` is masked.
 		pattern:
-			/(^|[^A-Za-z0-9])((?:[A-Z][A-Z0-9]*_){0,8}(?:PASSWORD|SECRET|API_KEY|APIKEY|TOKEN|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN))\s*=\s*["']?[^\s"'\n]{4,}/gi,
+			/(^|[^A-Za-z0-9])((?:[A-Z][A-Z0-9]*_){0,8}(?:PASSWORD|PASSWD|PASS(?==)|SECRET_KEY|SECRET|SIGNING_KEY|ENCRYPTION_KEY|API_KEY|APIKEY|TOKEN|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN|CREDENTIALS))[ \t]*=[ \t]*(?:"(?=[^"\n]*[ \t])[^"\n]{4,}"|'(?=[^'\n]*[ \t])[^'\n]{4,}'|["']?[^\s"'\n]{4,})/gi,
 		replacement: (match) => {
 			const eq = match.indexOf("=");
 			return `${match.slice(0, eq + 1)} [REDACTED]`;
@@ -111,18 +245,21 @@ export const DEFAULT_RULES: RedactionRule[] = [
 	// is bounded so no input makes the scan super-linear, and every replacement
 	// is itself unmatched by its own rule so redacting twice is stable.
 	{
-		name: "pem_private_key",
-		// A BEGIN with no END is caught too: the body is capped at 4,000
-		// characters and the END is optional.
-		pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]{0,4000}(?:-----END[^-]*-----)?/g,
-		replacement: "[REDACTED:pem_private_key]",
-	},
-	{
 		name: "cookie_header",
-		// A cookie pair (`name=`) must follow, so the word "cookie" followed by
-		// a colon in prose is left alone. The rest of the line is taken, to a cap.
-		pattern: /(?<![A-Za-z0-9_-])(?:Set-)?Cookie:[ \t]*[\w.%~-]+=[^\r\n]{0,4096}/gi,
-		replacement: "[REDACTED:cookie_header]",
+		// The header, not the word. Three contexts: `Cookie:` / `Set-Cookie:` at the
+		// start of a line (any case), after `-H` / `--header` (any case), or the
+		// capitalised name after whitespace, `>` or a quote (a transcript line reads
+		// `USER> Cookie: ...`; lower-case `cookie:` mid-line is code, not a header).
+		// Inside a quoted -H argument, and in the third context, the value ends at
+		// a closing quote, so the URL and later arguments of a one-line curl
+		// survive; on a line of its own it runs to the end of the line, with no
+		// cap. A cookie pair (`name=`) must follow, so prose is left alone.
+		// ACCEPTED over-match: a bare `cookie: a=b` field at the start of a line.
+		pattern: COOKIE_HEADER_PATTERN,
+		replacement: (match) => {
+			const lead = /^(?:-[Hh]|--header)[ \t=]*["']?|^[ \t]*/.exec(match)?.[0] ?? "";
+			return `${lead}[REDACTED:cookie_header]`;
+		},
 	},
 	{
 		name: "api_key_header",
@@ -132,9 +269,15 @@ export const DEFAULT_RULES: RedactionRule[] = [
 	{
 		name: "url_userinfo",
 		// `scheme://user:password@host`. The username may be empty
-		// (`redis://:secret@host`). Neither group crosses a `/`, so
+		// (`redis://:secret@host`). The password runs to the last `@` before a
+		// `/`, `?`, `#` or whitespace, so `p@ssw0rd` is masked whole and
+		// `http://example.com:8080?email=a@b.com` (a query after a port) is not
+		// userinfo. Or a token alone as the userinfo (`https://<token>@host`): 20
+		// or more characters from the set a token uses. A placeholder password
+		// (`<pw>`, `${PW}`, `$PW`) is not a secret. The user part never crosses a `/`, so
 		// `http://localhost:3000/@scope/pkg` is not userinfo.
-		pattern: /:\/\/[^/\s:@]*:[^/\s@]+@/g,
+		pattern:
+			/:\/\/(?:[^/\s:@]*:(?!(?:<[^>\s@]*>|\$\{[^}\s@]*\}|\$[A-Za-z_]\w*)@)[^/\s?#]*|[A-Za-z0-9_\-.~%]{20,})@/g,
 		replacement: "://[REDACTED]@",
 	},
 	{
@@ -159,39 +302,41 @@ export const DEFAULT_RULES: RedactionRule[] = [
 	},
 	{
 		name: "json_secret_value",
-		// A quoted exact key, `:`, a quoted value of 6 or more characters (an
-		// escaped quote does not end it). `"max_tokens"` and `"password_hint"`
-		// are different keys. An already-masked value is skipped.
-		pattern:
-			/"(?:password|passwd|secret|client_secret|api_key|apikey|api_token|access_token|refresh_token|auth_token|token|private_key)"\s*:\s*"(?!\[REDACTED)(?:[^"\\\n]|\\.){6,}"/gi,
-		replacement: (match) => `${match.slice(0, match.indexOf(":") + 1)} "[REDACTED]"`,
+		pattern: JSON_SECRET_VALUE_PATTERN,
+		replacement: (match) => {
+			const escaped = match.startsWith('\\"');
+			const head = match.slice(0, match.indexOf(":") + 1);
+			return `${head} ${escaped ? '\\"[REDACTED]\\"' : '"[REDACTED]"'}`;
+		},
 	},
 	{
 		name: "yaml_secret_value",
-		// The key starts the line (after indentation and an optional list
-		// dash) and the value is the rest of the line: 8 or more characters, none
-		// of which is part of code or a type (`< > ( ) $ { } [ ] | ; ,`), not a
-		// type word. The excluded `[` also keeps an already-masked value out.
-		pattern:
-			/^[ \t]*(?:-[ \t]+)?(?:password|passwd|secret|client_secret|api_key|apikey|api_token|access_token|refresh_token|auth_token|token|private_key)[ \t]*:[ \t]+["']?(?!(?:true|false|null|undefined|string|number|boolean|unknown|object|Optional|Union|Callable|datetime|Decimal)\b)[^\s<>()${}[\]|;,"']{8,}["']?[ \t]*(?:#[^\n]*)?$/gim,
+		pattern: YAML_SECRET_VALUE_PATTERN,
 		replacement: (match) => `${match.slice(0, match.indexOf(":") + 1)} [REDACTED]`,
 	},
 	{
 		name: "cli_secret_flag",
-		// `--token-file path` is hit too: accepted, since telling a path from a
-		// secret is not possible here. `--tokens` and `--passwordless` are not.
+		// Four names, each with an optional client-/access-/auth-/api-/refresh-/
+		// bearer- prefix, and only a -file / -path suffix: `--token-file path` is
+		// masked (a path cannot be told from a secret here) while `--token-budget`,
+		// `--secret-name`, `--api-key-env`, `--password-stdin`, `--tokens` and
+		// `--passwordless` are not secrets at all. Nothing unbounded, so linear.
+		// ACCEPTED over-match: prose after a flag (`no --api-key was provided`).
 		pattern:
-			/--(?:password|token|secret|api-key)(?![A-Za-z0-9_])[^\s=]{0,64}(?:=|[ \t]+)(?!\[REDACTED)\S+/g,
+			/--(?:(?:client|access|auth|api|refresh|bearer)-)?(?:password|token|secret|api-key)(?:-file|-path)?(?:=|[ \t]+)(?!\[REDACTED)\S+/g,
 		replacement: (match) => `${match.slice(0, match.search(/[=\s]/) + 1)}[REDACTED]`,
 	},
 	{
 		name: "curl_user",
-		// `-u`/`--user name:secret` inside a curl command, the command at most
-		// 500 characters before the flag.
+		// `-u`/`--user name:secret`, or short flags ending in u (`-sSu name:secret`),
+		// in a curl command: the flag follows a space or a backslash-newline
+		// continuation and `curl` is at most 500 characters before it. The cheap
+		// tests come first and the look-behind for `curl` last, so the cost is
+		// paid only at the few places a `-u` flag sits, not at every `curl`.
 		pattern:
-			/\bcurl\b(?:[^\n]|\\\n){0,500}?[ \t](?:-u|--user)[ =]?["']?[^\s:"']+:(?!\[REDACTED)[^\s"']+/g,
+			/(?<=[ \t]|\\\n)(?=(?:-[A-Za-z]*u|--user)[ =]?["']?[^\s:"']+:)(?<=\bcurl\b(?:[^\n]|\\\n){0,500})(?:-[A-Za-z]*u|--user)[ =]?["']?[^\s:"']+:(?!\[REDACTED)[^\s"']+/g,
 		replacement: (match) =>
-			match.replace(/([ \t](?:-u|--user)[ =]?["']?[^\s:"']+:)[^\s"']+$/, "$1[REDACTED]"),
+			match.replace(/^((?:-[A-Za-z]*u|--user)[ =]?["']?[^\s:"']+:)[^\s"']+$/, "$1[REDACTED]"),
 	},
 ];
 
@@ -267,4 +412,17 @@ export function parseUserRules(rows: unknown): RedactionRule[] {
 		}
 	}
 	return rules;
+}
+
+/**
+ * The order a summary prompt must follow for any text it takes from a session:
+ * strip, then redact, then fence. Redacting first lets a secret split by an
+ * invisible character (a zero-width space, a variation selector, a tag
+ * character) slip past every rule, and the model, which reads the characters
+ * as nothing, sees the whole secret. This is the first two steps; the third is
+ * `fenceUntrusted`. Line separators become real newlines here, before the
+ * line-anchored rules run.
+ */
+export function stripAndRedact(input: string, extraRules: RedactionRule[] = []): RedactionResult {
+	return redact(stripInvisibleKeepNewlines(input), extraRules);
 }

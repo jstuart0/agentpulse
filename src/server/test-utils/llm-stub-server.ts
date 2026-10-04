@@ -5,8 +5,12 @@
  * messages, Cohere chat) on the loopback address only, so the real adapters
  * run unmodified against it. Answers are scripted per shape and replayed in
  * order. There is no default answer: a request nothing was scripted for gets
- * `UNSCRIPTED_STATUS`, is recorded, and makes `verify()` throw, so a test can
- * never pass because the stub quietly said something plausible.
+ * `UNSCRIPTED_STATUS`, is recorded, and makes `verify()` and `stop()` throw, so a
+ * test can never pass because the stub quietly said something plausible, even
+ * when it only exercises a failure path and never calls `verify()`. `reset()`
+ * clears the record for a test that expects an unscripted request.
+ *
+ * An OpenAI request with `stream: true` is answered as server-sent events.
  */
 
 export type WireShape = "openai" | "anthropic" | "cohere";
@@ -30,8 +34,14 @@ export interface ScriptedAnswer {
 	/** A non-2xx status makes `errorBody` the whole response. */
 	status?: number;
 	errorBody?: string;
-	/** Holds the response until released. */
+	/** Holds the response until released. Must come from a stub's `createGate()`. */
 	gate?: StubGate;
+	/**
+	 * OpenAI stream requests only: the content deltas, in order (default: `text` as
+	 * one delta). The last carries `finish_reason`; a usage-only chunk with
+	 * `choices: []` follows when `usage` is set, then `[DONE]`.
+	 */
+	streamPieces?: string[];
 }
 
 export interface RecordedRequest {
@@ -40,6 +50,8 @@ export interface RecordedRequest {
 	headers: Record<string, string>;
 	/** The raw request body, exactly as received. */
 	body: string;
+	/** Whether the body asked for a stream (`"stream": true`). */
+	stream: boolean;
 }
 
 export interface LlmStubServer {
@@ -58,6 +70,7 @@ export interface LlmStubServer {
 	verify(): void;
 	/** Clears scripts, recordings and the unscripted list. */
 	reset(): void;
+	/** Stops the server, then throws if any request arrived unscripted. */
 	stop(): Promise<void>;
 }
 
@@ -99,6 +112,39 @@ function successBody(shape: WireShape, a: ScriptedAnswer): unknown {
 	}
 }
 
+function streamBody(a: ScriptedAnswer): string {
+	const pieces = a.streamPieces ?? [a.text];
+	const frames: unknown[] = pieces.map((piece, i) => {
+		const last = i === pieces.length - 1;
+		return {
+			choices: [
+				{
+					delta: { content: piece },
+					...(last && a.stop !== undefined ? { finish_reason: a.stop } : {}),
+				},
+			],
+		};
+	});
+	if (a.usage) {
+		frames.push({
+			choices: [],
+			usage: { prompt_tokens: a.usage.input, completion_tokens: a.usage.output },
+		});
+	}
+	return `${frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("")}data: [DONE]\n\n`;
+}
+
+function wantsStream(body: string): boolean {
+	try {
+		return (JSON.parse(body) as { stream?: unknown } | null)?.stream === true;
+	} catch {
+		return false;
+	}
+}
+
+/** Every gate any stub made, so a gate from one stub can hold a response on another. */
+const madeGates = new WeakMap<StubGate, ReturnType<typeof createGate>>();
+
 function createGate(): StubGate & { wait(): Promise<void>; markArrived(): void } {
 	let release!: () => void;
 	let markArrived!: () => void;
@@ -115,7 +161,6 @@ export function startLlmStubServer(): LlmStubServer {
 	const scripts: Record<WireShape, ScriptedAnswer[]> = { openai: [], anthropic: [], cohere: [] };
 	let recorded: RecordedRequest[] = [];
 	let unscripted: RecordedRequest[] = [];
-	const gates = new WeakMap<StubGate, ReturnType<typeof createGate>>();
 
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
@@ -127,13 +172,18 @@ export function startLlmStubServer(): LlmStubServer {
 			req.headers.forEach((value, key) => {
 				headers[key] = value;
 			});
+			const body = await req.text();
 			const record = {
 				shape: shape ?? ("openai" as WireShape),
 				path,
 				headers,
-				body: await req.text(),
+				body,
+				stream: wantsStream(body),
 			};
-			const answer = shape ? scripts[shape].shift() : undefined;
+			// Only the OpenAI shape streams: a stream request for another shape is
+			// unscripted, so it cannot be answered with a body the adapter did not ask for.
+			const unstreamable = record.stream && shape !== "openai";
+			const answer = shape && !unstreamable ? scripts[shape].shift() : undefined;
 			if (!shape || !answer) {
 				unscripted.push(record);
 				return new Response(`llm-stub: unscripted ${req.method} ${path}`, {
@@ -142,7 +192,7 @@ export function startLlmStubServer(): LlmStubServer {
 			}
 			recorded.push(record);
 			if (answer.gate) {
-				const gate = gates.get(answer.gate);
+				const gate = madeGates.get(answer.gate);
 				if (gate) {
 					gate.markArrived();
 					await gate.wait();
@@ -151,9 +201,23 @@ export function startLlmStubServer(): LlmStubServer {
 			if (answer.status !== undefined && answer.status >= 400) {
 				return new Response(answer.errorBody ?? "", { status: answer.status });
 			}
+			if (record.stream) {
+				return new Response(streamBody(answer), {
+					headers: { "Content-Type": "text/event-stream" },
+				});
+			}
 			return Response.json(successBody(shape, answer));
 		},
 	});
+
+	function verify(): void {
+		if (unscripted.length > 0) {
+			const lines = unscripted
+				.map((r) => `${r.shape} ${r.path}${r.stream ? " (stream)" : ""}`)
+				.join(", ");
+			throw new Error(`llm-stub: ${unscripted.length} unscripted request(s): ${lines}`);
+		}
+	}
 
 	const origin = `http://${server.hostname}:${server.port}`;
 	return {
@@ -161,24 +225,24 @@ export function startLlmStubServer(): LlmStubServer {
 		origin,
 		baseUrl: (shape) => (shape === "openai" ? `${origin}/v1` : origin),
 		script(shape, ...answers) {
+			for (const answer of answers) {
+				if (answer.gate && !madeGates.has(answer.gate)) {
+					throw new Error("llm-stub: answer.gate was not made by createGate()");
+				}
+			}
 			scripts[shape].push(...answers);
 		},
 		createGate() {
 			const gate = createGate();
 			const handle: StubGate = { arrived: gate.arrived, release: gate.release };
-			gates.set(handle, gate);
+			madeGates.set(handle, gate);
 			return handle;
 		},
 		requests: (shape) => (shape ? recorded.filter((r) => r.shape === shape) : [...recorded]),
 		get unscripted() {
 			return unscripted;
 		},
-		verify() {
-			if (unscripted.length > 0) {
-				const lines = unscripted.map((r) => `${r.shape} ${r.path}`).join(", ");
-				throw new Error(`llm-stub: ${unscripted.length} unscripted request(s): ${lines}`);
-			}
-		},
+		verify,
 		reset() {
 			for (const shape of Object.keys(scripts) as WireShape[]) scripts[shape] = [];
 			recorded = [];
@@ -186,6 +250,7 @@ export function startLlmStubServer(): LlmStubServer {
 		},
 		async stop() {
 			await server.stop(true);
+			verify();
 		},
 	};
 }

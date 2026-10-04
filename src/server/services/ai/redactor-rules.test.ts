@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Session, SessionEvent } from "../../../shared/types.js";
 import benign from "./__fixtures__/redaction-benign.json";
+import { OLD_RULES } from "./__fixtures__/redactor-old-rules.js";
 import { buildWatcherContext } from "./context.js";
 import { DEFAULT_RULES, redact } from "./redactor.js";
 
@@ -320,9 +321,19 @@ describe("TC-2.8 api_key_header", () => {
 // ── TC-2.9 ────────────────────────────────────────────────────────────────────
 
 /** The `env_assignment_secret` rule as it stood before phase 2b: the oracle. */
-const OLD_ENV_PATTERN =
-	/(^|[^A-Za-z0-9])((?:[A-Z][A-Z0-9]*_)*(?:PASSWORD|SECRET|API_KEY|APIKEY|TOKEN|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN))\s*=\s*["']?[^\s"'\n]{4,}/gi;
-const oldEnvReplacement = (match: string) => `${match.slice(0, match.indexOf("=") + 1)} [REDACTED]`;
+const OLD_ENV_RULE = OLD_RULES.find((r) => r.name === "env_assignment_secret");
+if (!OLD_ENV_RULE) throw new Error("the frozen old env rule is missing");
+const OLD_ENV_PATTERN = OLD_ENV_RULE.pattern;
+const oldEnvReplacement = OLD_ENV_RULE.replacement as (match: string) => string;
+/**
+ * The old rule with one deliberate change, the newline: only spaces and tabs
+ * may surround `=`, so a value cannot start on the next line (P2-14). Everything
+ * else is the old rule byte for byte.
+ */
+const OLD_ENV_NO_NEWLINE_PATTERN = new RegExp(
+	OLD_ENV_PATTERN.source.replace("\\s*=\\s*", "[ \\t]*=[ \\t]*"),
+	OLD_ENV_PATTERN.flags,
+);
 
 function applyRule(
 	pattern: RegExp,
@@ -357,9 +368,11 @@ describe("TC-2.9 no regression", () => {
 		}
 	});
 
-	test("TC-2.9 the rewritten env_assignment_secret equals the old rule on 3,000 seeded strings", () => {
+	test("TC-2.9 the env_assignment_secret rule equals the old rule on 3,000 seeded strings, except two named classes", () => {
 		const rule = DEFAULT_RULES.find((r) => r.name === "env_assignment_secret");
 		if (!rule) throw new Error("env_assignment_secret rule is missing");
+		expect(OLD_ENV_PATTERN.source).toContain("\\s*=\\s*");
+		expect(OLD_ENV_NO_NEWLINE_PATTERN.source).not.toBe(OLD_ENV_PATTERN.source);
 		const keywords = [
 			"PASSWORD",
 			"SECRET",
@@ -372,7 +385,11 @@ describe("TC-2.9 no regression", () => {
 		];
 		const separators = ["=", " = ", "=\t", "  =  ", ":", " : ", "==", "=\n", "= ", " ="];
 		const quotes = ["", "", '"', "'"];
-		const boundaries = ["", " ", "\n", "-", ".", "x", "export ", "(", "_", "$", "\t"];
+		// `=` is a boundary too (P2-6). After it a key with more than 8 prefix segments
+		// differs from the old rule in the safe direction (the key name is kept); that
+		// case is pinned in redactor-rules-p2.test.ts, so here `=` is only paired with 8
+		// segments or fewer.
+		const boundaries = ["", " ", "\n", "-", ".", "x", "export ", "(", "_", "$", "\t", "="];
 		const glue = [" ", "\n", ";", " && ", ", "];
 		const valueChars = "abcxyz019-_./\"' \n=";
 		const rand = mulberry32(20261003);
@@ -395,45 +412,57 @@ describe("TC-2.9 no regression", () => {
 			for (let i = 0; i < extra; i++) s += rand() < 0.2 ? String(int(0, 9)) : letters[int(0, 25)];
 			return s;
 		};
+		// A quoted value that holds whitespace and is 4 or more characters: the
+		// shape the new rule takes whole (class 2).
+		const SPACED_QUOTE =
+			/(?:PASSWORD|SECRET|API_KEY|APIKEY|TOKEN|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN)[ \t]*=[ \t]*(["'])(?=(?:(?!\1)[^\n])*[ \t])(?:(?!\1)[^\n]){4,}\1/i;
 		let crossedBound = 0;
 		let withMatch = 0;
-		let withDifferentOutput = 0;
+		let class1NewlineAfterOrBeforeEquals = 0;
+		let class2SpacedQuote = 0;
+		let identical = 0;
 		const total = 3000;
 		for (let n = 0; n < total; n++) {
 			const pieces: string[] = [];
 			const assignments = int(1, 3);
 			for (let a = 0; a < assignments; a++) {
-				const segments = rand() < 0.4 ? int(9, 20) : int(0, 8);
+				const boundary = pick(boundaries);
+				const segments = boundary !== "=" && rand() < 0.4 ? int(9, 20) : int(0, 8);
 				if (segments > 8) crossedBound++;
 				const prefix = Array.from({ length: segments }, () => `${segment()}_`).join("");
 				let value = "";
 				for (let i = int(0, 10); i > 0; i--) value += valueChars[int(0, valueChars.length - 1)];
 				pieces.push(
-					pick(boundaries) +
-						caseOf(prefix + pick(keywords)) +
-						pick(separators) +
-						pick(quotes) +
-						value,
+					boundary + caseOf(prefix + pick(keywords)) + pick(separators) + pick(quotes) + value,
 				);
 			}
 			const input = pieces.join(pick(glue));
-			const oracle = applyRule(OLD_ENV_PATTERN, oldEnvReplacement, input);
+			const old = applyRule(OLD_ENV_PATTERN, oldEnvReplacement, input);
+			const oldFixed = applyRule(OLD_ENV_NO_NEWLINE_PATTERN, oldEnvReplacement, input);
 			const actual = applyRule(rule.pattern, rule.replacement, input);
-			if (oracle.count > 0) withMatch++;
-			if (oracle.text !== input) withDifferentOutput++;
+			if (old.count > 0) withMatch++;
+			if (old.text !== oldFixed.text || old.count !== oldFixed.count)
+				class1NewlineAfterOrBeforeEquals++;
+			if (SPACED_QUOTE.test(input)) {
+				class2SpacedQuote++;
+				continue;
+			}
+			identical++;
 			expect({ input, text: actual.text, count: actual.count }).toEqual({
 				input,
-				text: oracle.text,
-				count: oracle.count,
+				text: oldFixed.text,
+				count: oldFixed.count,
 			});
 		}
 		console.log(
-			`[redactor-fuzz] ${total} strings, ${crossedBound} assignments past 8 prefix segments, ${withMatch} strings with a match, ${withDifferentOutput} changed by the rule; new rule equals old on all`,
+			`[redactor-fuzz] ${total} strings, ${crossedBound} assignments past 8 prefix segments, ${withMatch} with an old-rule match; ${class1NewlineAfterOrBeforeEquals} differ from the old rule by the newline fix, ${class2SpacedQuote} hold a quoted value with whitespace (exempt); the other ${identical} equal the old rule with the newline fix`,
 		);
 		expect(total).toBeGreaterThanOrEqual(2000);
 		expect(crossedBound).toBeGreaterThan(500);
 		expect(withMatch).toBeGreaterThan(1000);
-		expect(withDifferentOutput).toBeGreaterThan(1000);
+		expect(class1NewlineAfterOrBeforeEquals).toBeGreaterThan(100);
+		expect(class2SpacedQuote).toBeGreaterThan(100);
+		expect(identical).toBeGreaterThan(1500);
 	});
 
 	test("TC-2.9 a key of 12 prefix segments is still redacted (the {0,8} bound is a performance bound, not a behaviour: the match starts inside the key)", () => {

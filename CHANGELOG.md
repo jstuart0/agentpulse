@@ -9,17 +9,36 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Changed
 
-- **The watcher and Ask prompts redact more and strip more.** Before a session's
-  text is sent to a model provider, the redactor now also masks quoted and YAML
-  secret values (`"password": "..."`, `api_key: ...`), passwords in URLs
-  (`scheme://user:pass@host`, including an empty user), private-key blocks,
-  `Cookie` / `Set-Cookie` and `X-Api-Key` / `X-Auth-Token` headers, `--password`
-  / `--token` / `--secret` / `--api-key` flags, `curl -u user:pass`, and Stripe
-  live, Hugging Face, GitLab and npm tokens. The invisible-character filter also
-  removes the Unicode tag block, variation selector-16, the byte order mark, soft
-  hyphens and word joiners. The existing env-assignment rule is rewritten so it
-  runs in linear time (a 100 KB run of `A_A_A_...` took 7 s). Ordinary text
-  (`max_tokens: 100`, "token count", URLs without credentials) is unchanged.
+- **The watcher redacts more, and the watcher and Ask strip more invisible
+  characters.** The redaction changes apply to what the watcher sends to a model
+  provider (its transcript, and now also the CLAUDE.md excerpt in its system
+  prompt, which was sent as written) and to the redaction preview in Settings.
+  Ask does not redact. The redactor now also masks quoted and YAML secret values
+  (`"password": "..."`, `"accessToken": "..."`, `api_key: ...`, including one
+  level of escaped JSON), passwords in URLs (`scheme://user:pass@host`, an empty
+  user, a password containing `@`, and a token alone as the userinfo),
+  private-key blocks of any length (including legacy encrypted keys and PGP
+  blocks), `Cookie` / `Set-Cookie`, `Authorization` (Bearer, Basic, Token,
+  Digest, AWS4, JSON form) and `X-Api-Key` / `X-Auth-Token` headers,
+  `--password` / `--token` / `--secret` / `--api-key` flags (and their
+  `--client-`, `--access-`, `--auth-`, `--api-`, `--refresh-` and `--bearer-`
+  forms), `curl -u user:pass`, quoted env values with spaces
+  (`PASSWORD="my pass phrase"`), more env names (`SECRET_KEY`, `SIGNING_KEY`,
+  `ENCRYPTION_KEY`, `PASSWD`, `PASS=`, `CREDENTIALS`), and Stripe live, Hugging
+  Face, GitLab, npm, GitHub fine-grained and Slack (`xapp-`, webhook URL)
+  tokens. Both the watcher and Ask now strip the whole variation-selector
+  ranges (FE00-FE0F and E0100-E01EF), the Unicode tag block, the byte order
+  mark, soft hyphens, word joiners, bidi controls, hangul fillers and C1
+  controls. The existing env-assignment rule is rewritten to run in linear time
+  (a 100 KB run of `A_A_A_...` took 7 s), and a value can no longer start on
+  the line after `=`.
+  Not every ordinary line is untouched: a few over-matches are accepted
+  (`const token = await getToken()`, the word after a secret flag in prose such
+  as "no --api-key was provided", a line that starts `cookie: a=b`), and a
+  YAML value that looks like a type or resource name (`password: SecretStr`,
+  `secret: my-secret-name`) is left alone, as is a CamelCase or all-lowercase
+  hyphenated passphrase. Rules you add in Settings run after the built-in ones,
+  so a rule of yours for a shape the built-ins now catch stops firing.
 
 ## [0.7.1] — 2026-10-03
 

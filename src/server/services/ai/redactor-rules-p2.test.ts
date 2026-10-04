@@ -9,13 +9,7 @@ import type { Session } from "../../../shared/types.js";
 import benign from "./__fixtures__/redaction-benign.json";
 import { oldRedact } from "./__fixtures__/redactor-old-rules.js";
 import { buildWatcherContext } from "./context.js";
-import { type RedactionRule, redact } from "./redactor.js";
-import * as redactorModule from "./redactor.js";
-
-// Called through the namespace so a missing export fails the tests that use it
-// instead of failing the whole file at link time.
-const stripAndRedact = (input: string, extra: RedactionRule[] = []) =>
-	redactorModule.stripAndRedact(input, extra);
+import { type RedactionRule, redact, stripAndRedact } from "./redactor.js";
 
 const repeat = (s: string, n: number) => s.repeat(n);
 
@@ -196,7 +190,7 @@ describe("P2-6 and P2-14 env_assignment_secret", () => {
 	});
 
 	test("P2-14 spaces and tabs around the = still count", () => {
-		expect(masked("TOKEN = hunter2hunter2", ["hunter2"])).toBe("TOKEN= [REDACTED]");
+		expect(masked("TOKEN = hunter2hunter2", ["hunter2"])).toBe("TOKEN = [REDACTED]");
 		expect(masked("TOKEN\t=\thunter2hunter2", ["hunter2"])).toBe("TOKEN\t= [REDACTED]");
 	});
 
@@ -695,8 +689,62 @@ describe("P2-15 the benign corpus equals the old rule set", () => {
 
 const ROOT = new URL("../../../../", import.meta.url).pathname;
 
-/** `file` plus a substring of the original line: a place the new rules mask on purpose. */
-const SELF_SCAN_ALLOWLIST: Array<{ file: string; includes: string; why: string }> = [];
+/**
+ * Places the new rules mask on purpose, each a line of a non-test file: `file`
+ * plus a substring of the original line. Every entry is an accepted over-match
+ * or the intended widening, named in `why`.
+ */
+const SELF_SCAN_ALLOWLIST: Array<{ file: string; includes: string; why: string }> = [
+	{
+		file: "src/web/lib/auth-session.ts",
+		includes: "WRONG_CURRENT_PASSWORD",
+		why: "a quoted value with spaces after PASSWORD= is masked whole (P2-6); the old rule masked its first word",
+	},
+	{
+		file: "README.md",
+		includes: "--api-key ap_your_key_here",
+		why: "ACCEPTED: the word after a secret flag is read as its value, placeholder or not",
+	},
+	{
+		file: "README.md",
+		includes: "DATABASE_URL=postgres://user:password@host",
+		why: "a documentation password: the word `password` cannot be told from one",
+	},
+	{
+		file: "README.md",
+		includes: '`DATABASE_URL` | `""` (SQLite)',
+		why: "a documentation password in an example URL",
+	},
+	{
+		file: "scripts/install-local.sh",
+		includes: "--api-key",
+		why: "ACCEPTED: usage text and prose after a secret flag are read as its value",
+	},
+	{
+		file: "scripts/setup-relay.sh",
+		includes: 'API_KEY="${KEY_ARG',
+		why: "a quoted value with spaces after API_KEY= is masked whole (P2-6)",
+	},
+	{
+		file: "scripts/ai-live-test.ts",
+		includes: '"apiKey":"',
+		why: "a JSON example in a comment, with an example key",
+	},
+];
+/** Test files whose literals are fake credentials on purpose (auth, URL and header handling). */
+const SELF_SCAN_FAKE_CREDENTIAL_FIXTURES = new Set([
+	"src/supervisor/services/prelaunch-actions.test.ts",
+	"src/server/app.integration.test.ts",
+	"src/server/services/workspace/clone.test.ts",
+	"src/server/routes/ingest-latency.test.ts",
+	"src/server/routes/ingest-p7.test.ts",
+	"src/server/db/dialect.test.ts",
+	"src/server/auth/route-scope-policy.test.ts",
+	"src/server/auth/origin-check.test.ts",
+	"src/web/lib/setup-steps.test.ts",
+	"scripts/install-local-private-write.test.ts",
+	"scripts/write-private-no-follow.test.ts",
+]);
 /** Files that are about redaction itself: their text is the rules' own test input. */
 const SELF_SCAN_FILES_ABOUT_REDACTION = new Set([
 	"src/server/services/ai/redactor.ts",
@@ -728,7 +776,12 @@ describe("P2-15 repo self-scan", () => {
 		let files = 0;
 		for (const pattern of patterns) {
 			for await (const file of new Glob(pattern).scan({ cwd: ROOT })) {
-				if (SELF_SCAN_FILES_ABOUT_REDACTION.has(file)) continue;
+				if (
+					SELF_SCAN_FILES_ABOUT_REDACTION.has(file) ||
+					SELF_SCAN_FAKE_CREDENTIAL_FIXTURES.has(file)
+				) {
+					continue;
+				}
 				const text = await Bun.file(`${ROOT}${file}`).text();
 				files++;
 				const was = oldRedact(text);

@@ -117,16 +117,53 @@ export async function checkSpendBudget(
  * made on: settle, release and top-up act on that date's row, never on a fresh
  * "today", so a run that straddles midnight cannot touch the new day. A day
  * row is never taken below zero. Each reservation is single-use.
+ *
+ * A reservation is an opaque handle: its state lives in a module-private map
+ * keyed by the instance, `date` and `cents` are read-only views, and every
+ * operation refuses anything that is not an instance made here. A spread copy
+ * or a hand-built `{ date, cents }` can therefore never release or settle, and
+ * a caller cannot raise `cents` before releasing. All amounts must be
+ * non-negative safe integers.
  */
-export interface SpendReservation {
+interface ReservationState {
 	date: string;
 	cents: number;
+	/** Settled or released; set synchronously, once. */
+	consumed: boolean;
+}
+
+const reservationStates = new WeakMap<object, ReservationState>();
+const MINT = Symbol("spend-reservation");
+
+export class SpendReservation {
+	declare readonly date: string;
+	declare readonly cents: number;
+
+	constructor(mint: symbol, date: string, cents: number) {
+		if (mint !== MINT) throw new TypeError("a spend reservation is made by reserveSpendCents");
+		const state: ReservationState = { date, cents, consumed: false };
+		reservationStates.set(this, state);
+		Object.defineProperties(this, {
+			date: { enumerable: true, get: () => state.date },
+			cents: { enumerable: true, get: () => state.cents },
+		});
+		Object.freeze(this);
+	}
+}
+
+function stateOf(reservation: SpendReservation): ReservationState {
+	const state = reservationStates.get(reservation);
+	if (!state) throw new TypeError("not a spend reservation: only reserveSpendCents makes one");
+	return state;
+}
+
+function assertCents(value: number, name: string): void {
+	if (!Number.isSafeInteger(value) || value < 0) {
+		throw new RangeError(`${name} must be a non-negative safe integer, got ${String(value)}`);
+	}
 }
 
 const LOCAL_USER = "local";
-
-/** Reservations already settled or released; consumed synchronously, once. */
-const consumedReservations = new WeakSet<SpendReservation>();
 
 /** Adds `cents` to the date's row only if the total stays strictly under the cap. */
 async function addUnderCap(date: string, cents: number, db: Db): Promise<boolean> {
@@ -169,8 +206,9 @@ export async function reserveSpendCents(
 	cents: number,
 	db: Db = getDb(),
 ): Promise<SpendReservation | null> {
+	assertCents(cents, "cents");
 	const date = today();
-	if (cents <= 0) return { date, cents: 0 };
+	if (cents === 0) return new SpendReservation(MINT, date, 0);
 	await db
 		.insert(aiDailySpend)
 		.values({
@@ -180,22 +218,30 @@ export async function reserveSpendCents(
 			updatedAt: new Date().toISOString(),
 		})
 		.onConflictDoNothing();
-	return (await addUnderCap(date, cents, db)) ? { date, cents } : null;
+	return (await addUnderCap(date, cents, db)) ? new SpendReservation(MINT, date, cents) : null;
 }
 
 /**
  * Grows an open reservation by `extraCents` against the reserved date's cap,
  * atomically. A refused top-up (or one on a spent reservation) leaves the
- * reservation and the row unchanged.
+ * reservation and the row unchanged. A top-up that lands while the reservation
+ * is being settled or released is rolled back: settle and release have already
+ * fixed the amount they act on, so the extra would otherwise stay on the day.
  */
 export async function topUpReservation(
 	reservation: SpendReservation,
 	extraCents: number,
 ): Promise<boolean> {
-	if (consumedReservations.has(reservation)) return false;
-	if (extraCents <= 0) return true;
-	if (!(await addUnderCap(reservation.date, extraCents, getDb()))) return false;
-	reservation.cents += extraCents;
+	const state = stateOf(reservation);
+	assertCents(extraCents, "extraCents");
+	if (state.consumed) return false;
+	if (extraCents === 0) return true;
+	if (!(await addUnderCap(state.date, extraCents, getDb()))) return false;
+	if (state.consumed) {
+		await adjustDay(state.date, -extraCents);
+		return false;
+	}
+	state.cents += extraCents;
 	return true;
 }
 
@@ -208,9 +254,11 @@ export async function settleReservedSpend(
 	reservation: SpendReservation,
 	{ sessionId, actualCents }: { sessionId: string; actualCents: number },
 ): Promise<void> {
-	if (consumedReservations.has(reservation)) return;
-	consumedReservations.add(reservation);
-	await adjustDay(reservation.date, actualCents - reservation.cents);
+	const state = stateOf(reservation);
+	assertCents(actualCents, "actualCents");
+	if (state.consumed) return;
+	state.consumed = true;
+	await adjustDay(state.date, actualCents - state.cents);
 	if (actualCents > 0) {
 		await getDb()
 			.update(sessions)
@@ -221,7 +269,8 @@ export async function settleReservedSpend(
 
 /** Returns a whole reservation to the reserved date's row. */
 export async function releaseReservedSpend(reservation: SpendReservation): Promise<void> {
-	if (consumedReservations.has(reservation)) return;
-	consumedReservations.add(reservation);
-	await adjustDay(reservation.date, -reservation.cents);
+	const state = stateOf(reservation);
+	if (state.consumed) return;
+	state.consumed = true;
+	await adjustDay(state.date, -state.cents);
 }

@@ -1027,6 +1027,33 @@ function sqliteEventsPlanViolations(plan: string[]): string[] {
 	return violations;
 }
 
+// Postgres: the planner may answer a statement from idx_events_session_id_id or
+// from the unique (session_id, dedup_key) index, both led by session_id (a
+// min/max over one session's ids came back as a bitmap scan of the second on
+// some runs). Never a sequential scan, a backward walk of the primary key, or an
+// index that is not led by session_id; the primary key is fine for point lookups.
+const PG_SESSION_LED_INDEXES = new Set(["idx_events_session_id_id", "uq_events_session_dedup_key"]);
+const PG_INDEX_SCAN_RE =
+	/(?:Index Only Scan|Index Scan|Bitmap Index Scan)( Backward)?(?: using| on) (\w+)/;
+
+/** Every way one Postgres plan reaches `events` other than the allowed shapes. */
+function pgEventsPlanViolations(plan: string[]): string[] {
+	const violations: string[] = [];
+	let sessionLed = 0;
+	for (const line of plan) {
+		if (/Seq Scan on events\b/.test(line)) violations.push(`sequential scan: ${line.trim()}`);
+		const m = PG_INDEX_SCAN_RE.exec(line);
+		if (!m) continue;
+		const [, backward, index] = m;
+		if (!/^(?:idx_events_|uq_events_|events_)/.test(index)) continue;
+		if (PG_SESSION_LED_INDEXES.has(index)) sessionLed++;
+		else if (index === "events_pkey" && !backward) continue;
+		else violations.push(`not a session-led index: ${line.trim()}`);
+	}
+	if (sessionLed === 0) violations.push("no scan through a session-led index");
+	return violations;
+}
+
 describe("TC-3.41 plan matcher controls", () => {
 	const ok =
 		"SEARCH events USING COVERING INDEX idx_events_session_id_id (session_id=? AND id>? AND id<?)";
@@ -1058,6 +1085,40 @@ describe("TC-3.41 plan matcher controls", () => {
 				.length,
 		).toBeGreaterThan(0);
 		expect(sqliteEventsPlanViolations([]).length).toBeGreaterThan(0);
+	});
+});
+
+describe("TC-3.41 Postgres plan matcher controls", () => {
+	const idLed =
+		"Index Only Scan Backward using idx_events_session_id_id on events e  (cost=0.42..1.0 rows=1)";
+	const dedupLed =
+		"  ->  Bitmap Index Scan on uq_events_session_dedup_key  (cost=0.00..8.00 rows=477 width=0)";
+	test("TC-3.41 either session-led index passes, with a primary-key point lookup beside it", () => {
+		expect(pgEventsPlanViolations([idLed])).toEqual([]);
+		expect(pgEventsPlanViolations([dedupLed])).toEqual([]);
+		expect(
+			pgEventsPlanViolations([
+				idLed,
+				"Index Scan using events_pkey on events e  (cost=0.42..8.44)",
+			]),
+		).toEqual([]);
+	});
+
+	test("TC-3.41 a sequential scan, a backward primary-key walk, a created_at walk and a plan with no session index are refused", () => {
+		expect(
+			pgEventsPlanViolations([idLed, "Seq Scan on events e  (cost=0.00..9.0)"]).length,
+		).toBeGreaterThan(0);
+		expect(
+			pgEventsPlanViolations([idLed, "Index Scan Backward using events_pkey on events e"]).length,
+		).toBeGreaterThan(0);
+		expect(
+			pgEventsPlanViolations([idLed, "Index Scan using idx_events_created_at_id on events e"])
+				.length,
+		).toBeGreaterThan(0);
+		expect(pgEventsPlanViolations(["Index Scan using events_pkey on events e"])).toContain(
+			"no scan through a session-led index",
+		);
+		expect(pgEventsPlanViolations([]).length).toBeGreaterThan(0);
 	});
 });
 
@@ -1115,11 +1176,7 @@ describe("TC-3.41 query plans", () => {
 			dump.push(plan.join(" | "));
 			const joined = plan.join("\n");
 			if (isPg) {
-				expect(joined).toContain("idx_events_session_id_id");
-				expect(joined, "never a backward events_pkey scan").not.toMatch(
-					/Backward using events_pkey/,
-				);
-				expect(joined).not.toMatch(/Seq Scan on events/);
+				expect(pgEventsPlanViolations(plan), joined).toEqual([]);
 			} else {
 				expect(sqliteEventsPlanViolations(plan), plan.join(" | ")).toEqual([]);
 			}

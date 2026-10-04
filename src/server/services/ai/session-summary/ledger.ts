@@ -7,11 +7,12 @@
  *
  * Every field that reaches the text is allowlisted by construction: this file
  * reads only the named columns of `EvidenceRow`, and each one goes through
- * `field()` (invisible characters stripped, redacted, neutralised, capped).
+ * `field()` (invisible characters stripped, redacted, neutralised, capped; in
+ * that order).
  */
 import { parseDbTimestamp } from "../../util/db-time.js";
-import { redact } from "../redactor.js";
-import { formatUntrustedInline, stripInvisibleKeepNewlines } from "../untrusted-text.js";
+import { stripAndRedact } from "../redactor.js";
+import { formatUntrustedInline } from "../untrusted-text.js";
 import { type CommandClass, classifyCommand, validationResult } from "./command-class.js";
 import {
 	AGENT_MESSAGE_CAP,
@@ -157,9 +158,15 @@ interface Ctx {
 	hits: number;
 }
 
-/** Strip invisibles, redact, neutralise (one line, no angle brackets). */
+/**
+ * Strip invisibles, redact, neutralise (one line, no angle brackets). The order
+ * is required: redacting first lets a secret split by an invisible character
+ * through (see `stripAndRedact`). Every text field reaches the ledger through
+ * here and nowhere else, so nothing taken from a tool's input or response is
+ * ever written unredacted.
+ */
 function clean(raw: string, ctx: Ctx): string {
-	const redacted = redact(stripInvisibleKeepNewlines(raw));
+	const redacted = stripAndRedact(raw);
 	ctx.hits += redacted.hits.length;
 	return formatUntrustedInline(redacted.text).replace(/`/g, "'");
 }

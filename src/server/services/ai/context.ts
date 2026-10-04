@@ -114,6 +114,14 @@ export function buildWatcherContext(params: BuildParams): WatcherContext {
 		intelligenceHint,
 	} = params;
 
+	// The excerpt is agent-writable (PUT /sessions/:id/claude-md), so it is
+	// redacted like the transcript. Redacting the whole text first, then cutting,
+	// keeps a secret that straddles the cut from leaving a recognisable piece.
+	// It is not fenced: that changes the watcher's prompt structure (follow-up).
+	const claudeMdExcerpt = session.claudeMdContent
+		? truncate(redact(session.claudeMdContent, extraRedactionRules).text, 2000)
+		: null;
+
 	// System prompt: stable per-session, so it lands in the cacheable prefix.
 	const systemPrompt = [
 		customSystemPrompt?.trim() || SYSTEM_INSTRUCTIONS,
@@ -130,9 +138,7 @@ export function buildWatcherContext(params: BuildParams): WatcherContext {
 		"",
 		// A short CLAUDE.md excerpt goes in the stable block because it
 		// rarely changes within a session. If it's huge, truncate.
-		session.claudeMdContent
-			? `# Repository instructions (excerpt)\n${truncate(session.claudeMdContent, 2000)}`
-			: null,
+		claudeMdExcerpt ? `# Repository instructions (excerpt)\n${claudeMdExcerpt}` : null,
 	]
 		.filter(Boolean)
 		.join("\n");

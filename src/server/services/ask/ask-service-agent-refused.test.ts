@@ -9,7 +9,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "b
 import "../ai/__test_db.js";
 
 let mockedClassifierText = "";
-mock.module("../ai/llm/registry.js", () => ({
+// mock.module replaces the module for every file in the process, and a mock is
+// not undone when its file ends. Keep the real one and put it back in afterAll,
+// or every file that runs after this one gets the fake (AGEN-69 P2-26).
+const REGISTRY_PATH = "../ai/llm/registry.js";
+const realRegistry = { ...(await import("../ai/llm/registry.js")) };
+mock.module(REGISTRY_PATH, () => ({
 	getAdapter: () => ({
 		complete: async () => ({
 			text: mockedClassifierText,
@@ -44,6 +49,7 @@ beforeAll(async () => {
 
 afterAll(() => {
 	config.secretsKey = originalSecretsKey;
+	mock.module(REGISTRY_PATH, () => realRegistry);
 });
 
 beforeEach(async () => {
