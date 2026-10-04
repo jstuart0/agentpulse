@@ -63,8 +63,10 @@ describe("capacity", () => {
 		]);
 		expect(limiter.getAskTurnLimiterStats()).toMatchObject({ running: 2, waiting: 4 });
 
-		const seventh = limiter.acquireAskTurn();
-		await expect(seventh).rejects.toBeInstanceOf(limiter.AskBusyError);
+		const seventh = track(limiter.acquireAskTurn());
+		await settle();
+		expect(seventh.status).toBe("refused");
+		expect(seventh.error).toBeInstanceOf(limiter.AskBusyError);
 		expect(clock.pendingTimers()).toBe(4);
 		expect(limiter.getAskTurnLimiterStats()).toMatchObject({ running: 2, waiting: 4, rejected: 1 });
 	});
