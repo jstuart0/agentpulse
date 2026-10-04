@@ -340,3 +340,112 @@ describe("runRetentionPass", () => {
 		});
 	});
 });
+
+// ── AGEN-69 phase 5: the retention pass also deletes expired session summaries ──
+describe("retention of session summaries (TC-5.45, 5.56, 5.57)", () => {
+	const NOW = new Date(Date.UTC(2031, 5, 15, 12, 0, 0));
+	const DAY = 24 * 60 * 60 * 1000;
+	const LEASE_MS = 300 * 1000;
+	const at = (ms: number) => toDbTimestamp(new Date(ms));
+	const CUTOFF_MS = NOW.getTime() - 30 * DAY;
+
+	async function seedSummary(
+		sessionId: string,
+		row: Partial<typeof import("../db/schema/index.js")["aiSessionSummaries"]["$inferInsert"]>,
+	): Promise<void> {
+		const { aiSessionSummaries } = await import("../db/schema/index.js");
+		await seedSession(sessionId);
+		await getDb()
+			.insert(aiSessionSummaries)
+			.values({ sessionId, ...row });
+	}
+	async function present(sessionId: string): Promise<boolean> {
+		const { aiSessionSummaries } = await import("../db/schema/index.js");
+		const rows = await getDb()
+			.select({ id: aiSessionSummaries.sessionId })
+			.from(aiSessionSummaries)
+			.where(eq(aiSessionSummaries.sessionId, sessionId));
+		return rows.length === 1;
+	}
+
+	test("TC-5.45 a summary older than the cutoff goes; 1 s older is deleted, exactly at and 1 s newer are kept; summariesDeleted is reported", async () => {
+		await upsertSetting("eventsRetentionDays", 30);
+		await seedSummary("old", { generatedAt: at(CUTOFF_MS - 1000), attemptStatus: "idle" });
+		await seedSummary("edge", { generatedAt: at(CUTOFF_MS), attemptStatus: "idle" });
+		await seedSummary("new", { generatedAt: at(CUTOFF_MS + 1000), attemptStatus: "failed" });
+		const result = await runRetentionPass(NOW);
+		expect(result.summariesDeleted).toBe(1);
+		expect(await present("old")).toBe(false);
+		expect(await present("edge")).toBe(true);
+		expect(await present("new")).toBe(true);
+	});
+
+	test("TC-5.45 retention disabled deletes no summary and reports 0", async () => {
+		await seedSummary("old", { generatedAt: at(CUTOFF_MS - 10 * DAY), attemptStatus: "idle" });
+		const result = await runRetentionPass(NOW);
+		expect(result.disabled).toBe(true);
+		expect(result.summariesDeleted).toBe(0);
+		expect(await present("old")).toBe(true);
+	});
+
+	test("TC-5.56 a generating row whose lease has lapsed is deleted; one inside its lease and one with NULL generated_at are kept", async () => {
+		await upsertSetting("eventsRetentionDays", 30);
+		const old = at(CUTOFF_MS - DAY);
+		await seedSummary("crashed", {
+			generatedAt: old,
+			attemptStatus: "generating",
+			attemptStartedAt: at(NOW.getTime() - LEASE_MS - 1000),
+			attemptToken: "t",
+		});
+		await seedSummary("running", {
+			generatedAt: old,
+			attemptStatus: "generating",
+			attemptStartedAt: at(NOW.getTime() - LEASE_MS),
+			attemptToken: "t",
+		});
+		await seedSummary("never", {
+			generatedAt: null,
+			attemptStatus: "failed",
+			attemptStartedAt: old,
+		});
+		const result = await runRetentionPass(NOW);
+		expect(result.summariesDeleted).toBe(1);
+		expect(await present("crashed")).toBe(false);
+		expect(await present("running")).toBe(true);
+		expect(await present("never")).toBe(true);
+	});
+
+	describeSqliteOnly("on SQLite", () => {
+		test("TC-5.57 the summary delete runs after the events batches in the same pass", async () => {
+			await upsertSetting("eventsRetentionDays", 30);
+			await seedSummary("old", { generatedAt: at(CUTOFF_MS - DAY), attemptStatus: "idle" });
+			await seedEvent("old", at(CUTOFF_MS - DAY));
+			const result = await runRetentionPass(NOW);
+			expect(result.rowsDeleted).toBe(1);
+			expect(result.summariesDeleted).toBe(1);
+		});
+	});
+
+	describePostgresOnly("on Postgres", () => {
+		test("TC-5.57 with the retention lock held by another session nothing is deleted, summariesDeleted is 0 and a skip is reported", async () => {
+			await upsertSetting("eventsRetentionDays", 30);
+			await seedSummary("old", { generatedAt: at(CUTOFF_MS - DAY), attemptStatus: "idle" });
+			const postgres = (await import("postgres")).default;
+			const holder = postgres(config.databaseUrl, { max: 1 });
+			try {
+				await holder`SELECT pg_advisory_lock(${PG_RETENTION_LOCK_ID})`;
+				const result = await runRetentionPass(NOW);
+				expect(result.skippedReason).toBe("lock_held_elsewhere");
+				expect(result.summariesDeleted).toBe(0);
+				expect(await present("old")).toBe(true);
+				expect(getRetentionStatus().lastSkip?.reason).toBe("lock_held_elsewhere");
+			} finally {
+				await holder`SELECT pg_advisory_unlock(${PG_RETENTION_LOCK_ID})`;
+				await holder.end({ timeout: 2 });
+			}
+			const after = await runRetentionPass(NOW);
+			expect(after.skippedReason).toBeUndefined();
+			expect(after.summariesDeleted).toBe(1);
+		});
+	});
+});
