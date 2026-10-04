@@ -3,7 +3,13 @@ import { createAnthropicAdapter } from "./anthropic.js";
 import { createCohereAdapter } from "./cohere.js";
 import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
 import { priceCompletion } from "./pricing.js";
-import { LlmError, estimateTokens } from "./types.js";
+import {
+	type LlmAdapter,
+	LlmError,
+	type LlmResponse,
+	estimateTokens,
+	streamWithFallback,
+} from "./types.js";
 
 const originalFetch = globalThis.fetch;
 let capturedRequests: Array<{ url: string; init: RequestInit }> = [];
@@ -527,5 +533,66 @@ describe("cohere adapter", () => {
 		expect(res.usage.estimated).toBe(true);
 		expect(res.usage.inputTokens).toBeGreaterThan(0);
 		expect(res.usage.outputTokens).toBeGreaterThan(0);
+	});
+});
+
+describe("TC-2.7 the optional stopReason does not disturb other callers", () => {
+	const withoutStopReason: LlmResponse = {
+		text: "hi",
+		usage: { inputTokens: 1, outputTokens: 1, estimated: false },
+		rawResponse: null,
+	};
+
+	test("TC-2.7 an LlmResponse literal without stopReason is still a valid response", () => {
+		// Compile-time half: the field is optional, so existing literals typecheck.
+		expect(withoutStopReason.stopReason).toBeUndefined();
+	});
+
+	test("TC-2.7 streamWithFallback passes a response with or without stopReason through untouched", async () => {
+		for (const response of [
+			withoutStopReason,
+			{ ...withoutStopReason, stopReason: "length" as const },
+		]) {
+			const adapter: LlmAdapter = { kind: "openai", complete: async () => response };
+			const events = [];
+			for await (const evt of streamWithFallback(adapter, {
+				systemPrompt: "s",
+				transcriptPrompt: "t",
+				model: "m",
+			})) {
+				events.push(evt);
+			}
+			expect(events).toEqual([
+				{ kind: "delta", text: "hi" },
+				{ kind: "done", response },
+			]);
+		}
+	});
+
+	test("TC-2.7 a real adapter response keeps its text, usage and raw body next to the new field", async () => {
+		mockFetch(
+			new Response(
+				JSON.stringify({
+					content: [{ type: "text", text: "hi" }],
+					stop_reason: "end_turn",
+					usage: { input_tokens: 10, output_tokens: 2 },
+				}),
+				{ status: 200 },
+			),
+		);
+		const res = await createAnthropicAdapter({ apiKey: "k" }).complete({
+			systemPrompt: "s",
+			transcriptPrompt: "t",
+			model: "claude-sonnet-4-6",
+		});
+		expect(Object.keys(res).sort()).toEqual(["rawResponse", "stopReason", "text", "usage"]);
+		expect(res.text).toBe("hi");
+		expect(res.usage).toEqual({
+			inputTokens: 10,
+			outputTokens: 2,
+			cacheReadTokens: undefined,
+			cacheWriteTokens: undefined,
+			estimated: false,
+		});
 	});
 });

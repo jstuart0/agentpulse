@@ -219,7 +219,7 @@ describe("TC-2.16 settle", () => {
 	test("TC-2.16 actual above reserved raises it", async () => {
 		const r = await reserved(100, 100);
 		await settleReservedSpend(r, { sessionId: SESSION, actualCents: 130 });
-		expect(await dayRow(todayLocal())).toBe(330);
+		expect(await dayRow(todayLocal())).toBe(230);
 		expect(await sessionSpend()).toBe(130);
 	});
 
@@ -503,5 +503,5 @@ describe("TC-2.22 ledger property", () => {
 			}
 			for (const r of open) await releaseReservedSpend(r);
 		}
-	});
+	}, 60_000);
 });

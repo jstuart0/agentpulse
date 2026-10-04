@@ -28,7 +28,15 @@ export interface FencedText {
 	nonce: string;
 }
 
-/** Wrap untrusted text in nonce-tagged delimiters. (Phase 2a stub.) */
-export function fenceUntrusted(_tag: string, _body: string): FencedText {
-	throw new Error("fenceUntrusted: not implemented");
+/**
+ * Wraps untrusted text in `<tag-NONCE>` ... `</tag-NONCE>`. The nonce is a
+ * fresh random UUID per call, so nothing in the body can forge the closing
+ * tag; as defence in depth every literal occurrence of the nonce (any case) is
+ * scrubbed from the body first. The caller keeps `nonce` to scrub it from the
+ * model's answer as well.
+ */
+export function fenceUntrusted(tag: string, body: string): FencedText {
+	const nonce = crypto.randomUUID();
+	const safeBody = body.replace(new RegExp(nonce, "gi"), "[NONCE-REDACTED]");
+	return { text: `<${tag}-${nonce}>\n${safeBody}\n</${tag}-${nonce}>`, nonce };
 }

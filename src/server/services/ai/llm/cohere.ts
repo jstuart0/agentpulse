@@ -5,7 +5,14 @@ import {
 	type LlmResponse,
 	classifyHttpError,
 	estimateTokens,
+	mapStopReason,
 } from "./types.js";
+
+const COHERE_STOP_REASONS = {
+	COMPLETE: "end",
+	STOP_SEQUENCE: "end",
+	MAX_TOKENS: "length",
+} as const;
 
 interface CohereRequestParams {
 	apiKey: string;
@@ -68,6 +75,7 @@ export function createCohereAdapter(params: CohereRequestParams): LlmAdapter {
 
 			const json = (await response.json()) as {
 				text?: string;
+				finish_reason?: string | null;
 				meta?: {
 					tokens?: {
 						input_tokens?: number;
@@ -81,6 +89,7 @@ export function createCohereAdapter(params: CohereRequestParams): LlmAdapter {
 			const inputReported = typeof tokens.input_tokens === "number";
 			return {
 				text,
+				stopReason: mapStopReason(json.finish_reason, COHERE_STOP_REASONS),
 				usage: {
 					inputTokens: tokens.input_tokens ?? estimateTokens(request.transcriptPrompt),
 					outputTokens: tokens.output_tokens ?? estimateTokens(text),

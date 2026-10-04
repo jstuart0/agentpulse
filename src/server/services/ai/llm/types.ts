@@ -51,6 +51,19 @@ export interface LlmUsage {
  */
 export type LlmStopReason = "end" | "length" | "refusal" | "other";
 
+/**
+ * Maps a provider's own stop value to an LlmStopReason. `table` lists the
+ * values the adapter knows; anything else, including a missing or null value,
+ * is `other` (D-M: an adapter never invents `end`).
+ */
+export function mapStopReason(
+	raw: unknown,
+	table: Readonly<Record<string, Exclude<LlmStopReason, "other">>>,
+): LlmStopReason {
+	if (typeof raw !== "string") return "other";
+	return Object.hasOwn(table, raw) ? table[raw] : "other";
+}
+
 export interface LlmResponse {
 	/** Raw text content returned by the model. */
 	text: string;

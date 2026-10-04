@@ -322,7 +322,23 @@ export function likeContains(col: AnyColumn | SQLWrapper, fragment: string): SQL
 
 // ── textTail ─────────────────────────────────────────────────────────────────
 
-/** The last `n` characters of a text column. (Phase 2a stub.) */
-export function textTail(_col: AnyColumn | SQLWrapper, _n: number): SQL {
-	throw new Error("textTail: not implemented");
+/**
+ * The last `n` characters of a text column (NULL stays NULL; a value shorter
+ * than `n` comes back whole). Characters are code points on both dialects, so
+ * an astral character at the boundary is kept or dropped whole, never halved.
+ *
+ *   SQLite:   substr(<col>, -n)
+ *   Postgres: right(<col>, n)
+ *
+ * `n` must be a positive integer: `substr(x, -0)` would return the whole value
+ * on SQLite. The count is a bound parameter.
+ */
+export function textTail(col: AnyColumn | SQLWrapper, n: number): SQL {
+	if (!Number.isInteger(n) || n <= 0) {
+		throw new RangeError(`textTail: n must be a positive integer, got ${n}`);
+	}
+	if (config.dialect === "postgres") {
+		return sql`right(${col as SQL}, ${n})`;
+	}
+	return sql`substr(${col as SQL}, ${-n})`;
 }

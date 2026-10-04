@@ -10,8 +10,10 @@ import {
 	type WireShape,
 	startLlmStubServer,
 } from "../../../test-utils/llm-stub-server.js";
-import { getAdapter } from "./registry.js";
-import type { LlmStopReason, ProviderKind } from "./types.js";
+import { createAnthropicAdapter } from "./anthropic.js";
+import { createCohereAdapter } from "./cohere.js";
+import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
+import type { LlmAdapter, LlmStopReason } from "./types.js";
 
 const started: LlmStubServer[] = [];
 afterEach(async () => {
@@ -25,7 +27,6 @@ afterEach(async () => {
 });
 
 async function stopReasonFor(
-	kind: ProviderKind,
 	shape: WireShape,
 	stop: string | null | undefined,
 ): Promise<{
@@ -37,7 +38,16 @@ async function stopReasonFor(
 	const stub = startLlmStubServer();
 	started.push(stub);
 	stub.script(shape, { text: "the answer", stop, usage: { input: 11, output: 7 } });
-	const adapter = getAdapter({ kind, apiKey: "k", baseUrl: stub.baseUrl(shape) });
+	// The adapters are built directly, not through registry.ts: another test
+	// file replaces that module process-wide (mock.module) and the replacement
+	// outlives its file.
+	const baseUrl = stub.baseUrl(shape);
+	const adapter: LlmAdapter =
+		shape === "openai"
+			? createOpenAICompatibleAdapter({ apiKey: "k", baseUrl, kind: "openai" })
+			: shape === "anthropic"
+				? createAnthropicAdapter({ apiKey: "k", baseUrl })
+				: createCohereAdapter({ apiKey: "k", baseUrl });
 	const res = await adapter.complete({
 		systemPrompt: "sys",
 		transcriptPrompt: "user",
@@ -66,7 +76,7 @@ describe("TC-2.4 OpenAI-compatible adapter stop reason", () => {
 	];
 	for (const [raw, expected] of cases) {
 		test(`TC-2.4 finish_reason ${raw === undefined ? "(missing)" : JSON.stringify(raw)} gives ${expected}`, async () => {
-			const out = await stopReasonFor("openai", "openai", raw);
+			const out = await stopReasonFor("openai", raw);
 			expect(out.stopReason).toBe(expected);
 			expect(out.text).toBe("the answer");
 			expect(out.inputTokens).toBe(11);
@@ -89,7 +99,7 @@ describe("TC-2.5 Anthropic adapter stop reason", () => {
 	];
 	for (const [raw, expected] of cases) {
 		test(`TC-2.5 stop_reason ${raw === undefined ? "(missing)" : JSON.stringify(raw)} gives ${expected}`, async () => {
-			const out = await stopReasonFor("anthropic", "anthropic", raw);
+			const out = await stopReasonFor("anthropic", raw);
 			expect(out.stopReason).toBe(expected);
 			expect(out.text).toBe("the answer");
 			expect(out.inputTokens).toBe(11);
@@ -111,7 +121,7 @@ describe("TC-2.6 Cohere adapter stop reason", () => {
 	];
 	for (const [raw, expected] of cases) {
 		test(`TC-2.6 finish_reason ${raw === undefined ? "(missing)" : JSON.stringify(raw)} gives ${expected}`, async () => {
-			const out = await stopReasonFor("cohere", "cohere", raw);
+			const out = await stopReasonFor("cohere", raw);
 			expect(out.stopReason).toBe(expected);
 			expect(out.text).toBe("the answer");
 			expect(out.inputTokens).toBe(11);

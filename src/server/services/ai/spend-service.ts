@@ -108,37 +108,120 @@ export async function checkSpendBudget(
 	return { allowed: true, spent, cap };
 }
 
-/** Cents set aside for one generation, on the day they were reserved. */
+/**
+ * Spend reservation (AGEN-69, D-8, D-26, D-27).
+ *
+ * A generation sets its worst-case cost aside before it runs, so concurrent
+ * generations can never push the day past the cap together, then settles at
+ * the real cost or returns everything. A reservation remembers the date it was
+ * made on: settle, release and top-up act on that date's row, never on a fresh
+ * "today", so a run that straddles midnight cannot touch the new day. A day
+ * row is never taken below zero. Each reservation is single-use.
+ */
 export interface SpendReservation {
 	date: string;
 	cents: number;
 }
 
-/** Phase 2a stub. */
+const LOCAL_USER = "local";
+
+/** Reservations already settled or released; consumed synchronously, once. */
+const consumedReservations = new WeakSet<SpendReservation>();
+
+/** Adds `cents` to the date's row only if the total stays strictly under the cap. */
+async function addUnderCap(date: string, cents: number, db: Db): Promise<boolean> {
+	const rows = await db
+		.update(aiDailySpend)
+		.set({
+			spendCents: sql`${aiDailySpend.spendCents} + ${cents}`,
+			updatedAt: new Date().toISOString(),
+		})
+		.where(
+			and(
+				eq(aiDailySpend.userId, LOCAL_USER),
+				eq(aiDailySpend.date, date),
+				sql`${aiDailySpend.spendCents} + ${cents} < ${DEFAULT_DAILY_CAP_CENTS}`,
+			),
+		)
+		.returning({ spendCents: aiDailySpend.spendCents });
+	return rows.length > 0;
+}
+
+/** Moves the date's row by `delta` (never below zero); never creates a row. */
+async function adjustDay(date: string, delta: number): Promise<void> {
+	if (delta === 0) return;
+	await getDb()
+		.update(aiDailySpend)
+		.set({
+			spendCents: sql`CASE WHEN ${aiDailySpend.spendCents} + ${delta} < 0 THEN 0 ELSE ${aiDailySpend.spendCents} + ${delta} END`,
+			updatedAt: new Date().toISOString(),
+		})
+		.where(and(eq(aiDailySpend.userId, LOCAL_USER), eq(aiDailySpend.date, date)));
+}
+
+/**
+ * Sets `cents` aside against today's cap in one conditional statement, or
+ * returns null when it would not fit (a total of cap - 1 fits, cap does not).
+ * Zero cents (a free provider) is a reservation that writes nothing, even when
+ * the day is at the cap. `db` is for tests that need a second connection.
+ */
 export async function reserveSpendCents(
-	_cents: number,
-	_db?: Db,
+	cents: number,
+	db: Db = getDb(),
 ): Promise<SpendReservation | null> {
-	throw new Error("reserveSpendCents: not implemented");
+	const date = today();
+	if (cents <= 0) return { date, cents: 0 };
+	await db
+		.insert(aiDailySpend)
+		.values({
+			userId: LOCAL_USER,
+			date,
+			spendCents: 0,
+			updatedAt: new Date().toISOString(),
+		})
+		.onConflictDoNothing();
+	return (await addUnderCap(date, cents, db)) ? { date, cents } : null;
 }
 
-/** Phase 2a stub. */
+/**
+ * Grows an open reservation by `extraCents` against the reserved date's cap,
+ * atomically. A refused top-up (or one on a spent reservation) leaves the
+ * reservation and the row unchanged.
+ */
 export async function topUpReservation(
-	_reservation: SpendReservation,
-	_extraCents: number,
+	reservation: SpendReservation,
+	extraCents: number,
 ): Promise<boolean> {
-	throw new Error("topUpReservation: not implemented");
+	if (consumedReservations.has(reservation)) return false;
+	if (extraCents <= 0) return true;
+	if (!(await addUnderCap(reservation.date, extraCents, getDb()))) return false;
+	reservation.cents += extraCents;
+	return true;
 }
 
-/** Phase 2a stub. */
+/**
+ * Settles a reservation at the real cost: the reserved date's row moves by
+ * `actual - reserved` and the real cost is added to the session's running
+ * spend. A session deleted in the meantime is not an error.
+ */
 export async function settleReservedSpend(
-	_reservation: SpendReservation,
-	_actual: { sessionId: string; actualCents: number },
+	reservation: SpendReservation,
+	{ sessionId, actualCents }: { sessionId: string; actualCents: number },
 ): Promise<void> {
-	throw new Error("settleReservedSpend: not implemented");
+	if (consumedReservations.has(reservation)) return;
+	consumedReservations.add(reservation);
+	await adjustDay(reservation.date, actualCents - reservation.cents);
+	if (actualCents > 0) {
+		await getDb()
+			.update(sessions)
+			.set({ aiSpendCents: sql`${sessions.aiSpendCents} + ${actualCents}` })
+			.where(eq(sessions.sessionId, sessionId));
+	}
 }
 
-/** Phase 2a stub. */
-export async function releaseReservedSpend(_reservation: SpendReservation): Promise<void> {
-	throw new Error("releaseReservedSpend: not implemented");
+/** Returns a whole reservation to the reserved date's row. */
+export async function releaseReservedSpend(reservation: SpendReservation): Promise<void> {
+	if (consumedReservations.has(reservation)) return;
+	consumedReservations.add(reservation);
+	await adjustDay(reservation.date, -reservation.cents);
 }
