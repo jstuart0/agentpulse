@@ -16,6 +16,7 @@ import { formatUntrustedInline } from "../untrusted-text.js";
 import {
 	type CommandClass,
 	classifyCommand,
+	failureExcerptAllowed,
 	passSummaryLine,
 	patchFilesOf,
 	validationClassOf,
@@ -432,8 +433,9 @@ function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: C
 			status === "completed",
 		);
 		let out = "";
-		if (result === "failed" && read.text) out = `: "${excerpt(read.text, ctx)}"`;
-		else if (result === "ok") {
+		if (result === "failed" && read.text && failureExcerptAllowed(row.command)) {
+			out = `: "${excerpt(read.text, ctx)}"`;
+		} else if (result === "ok") {
 			const line = passSummaryLine(read.text);
 			if (line) out = `: "${line}"`;
 		}

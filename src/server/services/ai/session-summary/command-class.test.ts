@@ -1014,7 +1014,7 @@ describe("TC-3.J2 flags are an allowlist per tool, and a short-flag cluster is j
 		"pytest -q -x -k foo",
 		"pytest -vv",
 		"pytest -rA",
-		"tsc --noEmit -p tsconfig.json",
+		"tsc --noEmit --pretty",
 		"biome check --max-diagnostics=50",
 		"eslint --max-warnings=0 --quiet src",
 		"ruff check --select=E,F .",

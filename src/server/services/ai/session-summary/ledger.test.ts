@@ -1645,7 +1645,9 @@ describe("TC-3.H3 the pass summary is exactly the counts", () => {
 describe("TC-3.J1 lint, format and type-check failures send no excerpt", () => {
 	const SENTINEL = "DB_HOST=SENTINEL_FILE_LINE";
 	const failed = (command: string) =>
-		build([bash(1, command, { eventType: "PostToolUseFailure", responseTail: `x\n${SENTINEL}\ny` })]);
+		build([
+			bash(1, command, { eventType: "PostToolUseFailure", responseTail: `x\n${SENTINEL}\ny` }),
+		]);
 
 	for (const command of [
 		"biome check cfg/appsettings.json",

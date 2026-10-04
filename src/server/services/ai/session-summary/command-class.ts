@@ -20,7 +20,7 @@
  * strict shape. What may be sent of a command's OUTPUT is decided by the
  * ledger from `kind` and `masked`: an ordinary command never sends output.
  */
-import { TOOL_INPUT_FIELD_SQL_CAP } from "./limits.js";
+import { FAILURE_EXCERPT_VALIDATIONS, TOOL_INPUT_FIELD_SQL_CAP } from "./limits.js";
 
 export type CommandClass =
 	| { kind: "validation"; masked: boolean }
@@ -82,17 +82,6 @@ const LEADING_KEYWORDS = new Set([
 ]);
 const JS_TOOL_RUNNERS = new Set(["npx", "bunx"]);
 const JS_TOOLS = new Set(["vitest", "jest", "tsc", "biome", "eslint"]);
-const STANDALONE_VALIDATORS = new Set([
-	"vitest",
-	"jest",
-	"pytest",
-	"tox",
-	"tsc",
-	"biome",
-	"eslint",
-	"ruff",
-	"mypy",
-]);
 const SUDO_FLAGS_WITH_ARG = new Set(["-u", "-g", "-h", "-p", "-C", "-r", "-t", "-U"]);
 const XARGS_FLAGS_WITH_ARG = new Set(["-n", "-I", "-P", "-L", "-d", "-E", "-s", "-a"]);
 const DOCKER_EXEC_FLAGS_WITH_ARG = new Set([
@@ -176,23 +165,6 @@ const PLAIN_HEAD_RE = /^[A-Za-z0-9_.+/-]+$/;
 const CREDENTIAL_SPLIT_RE = /[\s=:,;<>@|&()'"\\]/;
 const FLAG_RE = /^--?[A-Za-z][\w-]*(=[\w./,:@-]+)?$/;
 const OPERAND_RE = /^[\w./@%+:-]+$/;
-/** Flags that load or run code, or point a tool at an arbitrary file. */
-const DENIED_VALIDATION_FLAGS = new Set([
-	"-exec",
-	"-vettool",
-	"--config",
-	"-p",
-	"-c",
-	"--reporter",
-	"--exec",
-	"--preload",
-	"--require",
-	"--import",
-	"--loader",
-	"--plugin",
-	"--rcfile",
-	"--package",
-]);
 const PATCH_FILE_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+?)\s*$/gm;
 const PATCH_HEAD_RE = /^\s*(?:(?:shell|bash|sh)\s+(?:-\w+\s+)?['"]?)?(?:\S*\/)?apply_patch(?:\s|$)/;
 
@@ -948,60 +920,236 @@ function withoutRedirects(words: Word[]): Word[] {
 	return out;
 }
 
-/** Every argument has a plain shape: no quoting, no expansion, no flag that loads or runs code, no credential path. */
-function validationArgsClean(words: Word[]): boolean {
+/**
+ * The flags a validation tool may carry, per tool (an ALLOWLIST: a flag that is
+ * not here makes the command not a clean validation, so it is shown as an
+ * ordinary command and never gets an output excerpt). A short-flag cluster
+ * (`-ks`, `-j4`, `-pn`) is judged letter by letter: every letter must be a
+ * no-value letter, or a value letter that ends the cluster.
+ *
+ * Each list is short on purpose and holds only flags that pick what runs or how
+ * loudly it reports. Left out, always: anything that names a config, plugin,
+ * reporter, output format, output file, makefile, working directory or
+ * manifest, anything that prints a tool's internal state (`make -p`,
+ * `tsc --showConfig`, `pytest --showlocals`), and anything that writes
+ * (`--fix`, `--write`, `-o`, `--coverprofile`).
+ */
+interface FlagPolicy {
+	long: ReadonlySet<string>;
+	/** One-letter flags that take no value. */
+	shortFlags: string;
+	/** One-letter flags that take a value, attached (`-j4`) or as the next operand. */
+	shortValue: string;
+	/** Go style single-dash words (`-race`, `-count=1`). */
+	singleDash?: ReadonlySet<string>;
+	/** The only operands the tool may be given; undefined: any plain operand. */
+	operands?: RegExp;
+}
+
+const flagSet = (list: string): ReadonlySet<string> => new Set(list.split(" "));
+
+const FLAG_POLICIES = {
+	// `-j N`, `-jN`, `-k`, `-s`, `--keep-going`, `--silent`: nothing else. `-p`, `-n`,
+	// `-f`, `-C`, `-c...` print make's whole database or read another makefile.
+	// Targets are test|check|lint (and the digits of `-j 4`): `make test install` runs install.
+	make: {
+		long: flagSet("keep-going silent"),
+		shortFlags: "ks",
+		shortValue: "j",
+		operands: /^(?:test|check|lint|\d+)$/,
+	},
+	// `bun test`: reporting and selection only. `--preload` runs code; `--reporter` writes files.
+	bunTest: {
+		long: flagSet("bail timeout rerun-each coverage test-name-pattern only"),
+		shortFlags: "",
+		shortValue: "t",
+	},
+	// package scripts (`bun|npm|pnpm|yarn run X`, `npm test`): arguments reach an unknown tool, so only verbosity and exit behaviour.
+	script: {
+		long: flagSet("silent bail ci coverage runInBand if-present"),
+		shortFlags: "s",
+		shortValue: "",
+	},
+	// go test and go vet. `-exec`, `-vettool`, `-o`, `-coverprofile` run or write.
+	go: {
+		long: flagSet(""),
+		shortFlags: "",
+		shortValue: "",
+		singleDash: flagSet("v race short failfast cover count run timeout p parallel shuffle"),
+	},
+	// `-p`, `-j`, `-F`, `-D`: package, jobs, feature, lint level. `--manifest-path` and `--config` are left out.
+	cargo: {
+		long: flagSet(
+			"release all workspace all-targets all-features no-fail-fast lib bins tests quiet locked offline frozen package jobs features nocapture test-threads ignored exact show-output",
+		),
+		shortFlags: "q",
+		shortValue: "pjFD",
+	},
+	// `-p` (load a plugin), `-c` (config file), `--rootdir`, `--showlocals` (prints variable values) are left out.
+	pytest: {
+		long: flagSet(
+			"tb maxfail cov ignore deselect no-header lf last-failed ff failed-first durations strict-markers disable-warnings quiet verbose",
+		),
+		shortFlags: "qvx",
+		shortValue: "kmnr",
+	},
+	tox: { long: flagSet("quiet verbose"), shortFlags: "qv", shortValue: "e" },
+	// `--config` and `--reporter` are left out.
+	jsTest: {
+		long: flagSet("ci bail coverage silent runInBand passWithNoTests no-cache run"),
+		shortFlags: "i",
+		shortValue: "t",
+	},
+	// `-p`/`--project` (any file as the config; kept denied since round 2), `--showConfig`, `--listFiles`, `--generateTrace` and the emit flags are left out.
+	tsc: {
+		long: flagSet("noEmit pretty incremental skipLibCheck strict build"),
+		shortFlags: "b",
+		shortValue: "",
+	},
+	// `--write`, `--apply`, `--reporter`, `--config-path` are left out.
+	biome: {
+		long: flagSet(
+			"max-diagnostics error-on-warnings no-errors-on-unmatched verbose colors diagnostic-level",
+		),
+		shortFlags: "",
+		shortValue: "",
+	},
+	// `-f` and `--format` (the JSON form carries the source text), `--fix`, `-c`, `--plugin`, `--rulesdir` are left out.
+	eslint: {
+		long: flagSet("max-warnings quiet cache ext no-warn-ignored no-error-on-unmatched-pattern"),
+		shortFlags: "",
+		shortValue: "",
+	},
+	// `--output-format`, `--diff`, `--fix`, `--config` are left out. `--check` is `ruff format`'s validation.
+	ruff: {
+		long: flagSet("select ignore quiet no-cache check"),
+		shortFlags: "q",
+		shortValue: "",
+	},
+	// `--html-report` and the other report writers, `--config-file`, `--python-executable` are left out.
+	mypy: {
+		long: flagSet("strict ignore-missing-imports no-incremental no-error-summary"),
+		shortFlags: "",
+		shortValue: "",
+	},
+} satisfies Record<string, FlagPolicy>;
+
+interface ValidationHead {
+	/** The words that name the check: `bun test`, `bun run typecheck`, `tsc`, `go vet`. Fixed vocabulary. */
+	label: string;
+	policy: FlagPolicy;
+}
+
+const SCRIPT_RUNNERS = new Set(["bun", "npm", "pnpm", "yarn"]);
+
+function standaloneHead(cmd: string): ValidationHead | null {
+	switch (cmd) {
+		case "vitest":
+		case "jest":
+			return { label: cmd, policy: FLAG_POLICIES.jsTest };
+		case "pytest":
+			return { label: "pytest", policy: FLAG_POLICIES.pytest };
+		case "tox":
+			return { label: "tox", policy: FLAG_POLICIES.tox };
+		case "tsc":
+			return { label: "tsc", policy: FLAG_POLICIES.tsc };
+		case "biome":
+			return { label: "biome", policy: FLAG_POLICIES.biome };
+		case "eslint":
+			return { label: "eslint", policy: FLAG_POLICIES.eslint };
+		case "ruff":
+			return { label: "ruff", policy: FLAG_POLICIES.ruff };
+		case "mypy":
+			return { label: "mypy", policy: FLAG_POLICIES.mypy };
+		default:
+			return null;
+	}
+}
+
+/** The check a segment runs and the flags it may carry; null when the segment is not a validation head. */
+function validationHead(words: Word[]): ValidationHead | null {
+	const head = words[0];
+	if (!head) return null;
+	const cmd = baseName(head.value);
+	const args = words.slice(1).map((w) => w.value);
+	if (JS_TOOL_RUNNERS.has(cmd)) {
+		const tool = words[skipFlags(words, 1, new Set())];
+		const name = tool ? baseName(tool.value) : "";
+		return JS_TOOLS.has(name) ? standaloneHead(name) : null;
+	}
+	const standalone = standaloneHead(cmd);
+	if (standalone) return standalone;
+	if (SCRIPT_RUNNERS.has(cmd)) {
+		if (cmd === "bun" && args[0] === "test") {
+			return { label: "bun test", policy: FLAG_POLICIES.bunTest };
+		}
+		if (args[0] === "test") return { label: `${cmd} test`, policy: FLAG_POLICIES.script };
+		const scripts =
+			cmd === "bun"
+				? ["check", "typecheck", "test", "build"]
+				: ["test", "lint", "build", "typecheck", "check"];
+		if (args[0] === "run" && scripts.includes(args[1] ?? "")) {
+			return { label: `${cmd} run ${args[1]}`, policy: FLAG_POLICIES.script };
+		}
+		return null;
+	}
+	switch (cmd) {
+		case "go":
+			return args[0] === "test" || args[0] === "vet"
+				? { label: `go ${args[0]}`, policy: FLAG_POLICIES.go }
+				: null;
+		case "cargo":
+			return ["test", "check", "clippy", "build"].includes(args[0] ?? "")
+				? { label: `cargo ${args[0]}`, policy: FLAG_POLICIES.cargo }
+				: null;
+		case "make":
+			return ["test", "check", "lint"].includes(args[0] ?? "")
+				? { label: `make ${args[0]}`, policy: FLAG_POLICIES.make }
+				: null;
+		default:
+			return /^python[\d.]*$/.test(cmd) && args[0] === "-m" && args[1] === "pytest"
+				? { label: "pytest", policy: FLAG_POLICIES.pytest }
+				: null;
+	}
+}
+
+/** True when a flag is on the tool's allowlist, a short-flag cluster letter by letter. */
+function flagAllowed(flag: string, policy: FlagPolicy): boolean {
+	if (flag.startsWith("--")) return policy.long.has(flag.slice(2).split("=")[0] as string);
+	if (policy.singleDash?.has(flag.slice(1).split("=")[0] as string)) return true;
+	if (flag.includes("=")) return false;
+	const letters = flag.slice(1);
+	for (let i = 0; i < letters.length; i++) {
+		const letter = letters[i] as string;
+		if (policy.shortFlags.includes(letter)) continue;
+		if (policy.shortValue.includes(letter)) {
+			const attached = letters.slice(i + 1);
+			return attached === "" || (/^[\w.,:-]+$/.test(attached) && !isCredentialPath(attached));
+		}
+		return false;
+	}
+	return true;
+}
+
+/** Every argument has a plain shape: no quoting, no expansion, only flags on the tool's allowlist, no credential path. */
+function validationArgsClean(words: Word[], policy: FlagPolicy): boolean {
 	for (const w of withoutRedirects(words.slice(1))) {
 		const v = w.value;
 		if (w.raw !== v) return false;
 		if (v === "--") continue;
 		if (v.startsWith("-")) {
-			if (!FLAG_RE.test(v)) return false;
-			if (DENIED_VALIDATION_FLAGS.has(v.split("=")[0] as string)) return false;
+			if (!FLAG_RE.test(v) || !flagAllowed(v, policy)) return false;
 			continue;
 		}
 		if (!OPERAND_RE.test(v) || isCredentialPath(v)) return false;
+		if (policy.operands && !policy.operands.test(v)) return false;
 	}
 	return true;
 }
 
-function isValidationHead(words: Word[]): boolean {
-	const head = words[0];
-	if (!head) return false;
-	const cmd = baseName(head.value);
-	const args = words.slice(1).map((w) => w.value);
-	if (JS_TOOL_RUNNERS.has(cmd)) {
-		const j = skipFlags(words, 1, new Set());
-		const tool = words[j];
-		return tool !== undefined && JS_TOOLS.has(baseName(tool.value));
-	}
-	if (STANDALONE_VALIDATORS.has(cmd)) return true;
-	switch (cmd) {
-		case "bun":
-			return (
-				args[0] === "test" ||
-				(args[0] === "run" && ["check", "typecheck", "test", "build"].includes(args[1] ?? ""))
-			);
-		case "npm":
-		case "pnpm":
-		case "yarn":
-			return (
-				args[0] === "test" ||
-				(args[0] === "run" &&
-					["test", "lint", "build", "typecheck", "check"].includes(args[1] ?? ""))
-			);
-		case "go":
-			return args[0] === "test" || args[0] === "vet";
-		case "cargo":
-			return ["test", "check", "clippy", "build"].includes(args[0] ?? "");
-		case "make":
-			return ["test", "check", "lint"].includes(args[0] ?? "");
-		default:
-			return /^python[\d.]*$/.test(cmd) && args[0] === "-m" && args[1] === "pytest";
-	}
-}
-
 function isValidationCommand(words: Word[]): boolean {
-	return isValidationHead(words) && validationArgsClean(words);
+	const head = validationHead(words);
+	return head !== null && validationArgsClean(words, head.policy);
 }
 
 const FILLER_DENIED_FLAG_RE =
@@ -1159,38 +1307,17 @@ function classify(input: unknown): CommandClass {
 	return { kind: "ordinary" };
 }
 
-/** The words that name the check: `bun test`, `bun run typecheck`, `tsc`, `go vet`. Fixed vocabulary or a tool name from the fixed sets above. */
-function validationLabelOf(words: Word[]): string {
-	const cmd = baseName((words[0] as Word).value);
-	const args = words.slice(1).map((w) => w.value);
-	if (JS_TOOL_RUNNERS.has(cmd)) {
-		const tool = words[skipFlags(words, 1, new Set())];
-		return baseName(tool?.value ?? cmd);
-	}
-	if (STANDALONE_VALIDATORS.has(cmd)) return cmd;
-	switch (cmd) {
-		case "bun":
-		case "npm":
-		case "pnpm":
-		case "yarn":
-			return args[0] === "run"
-				? `${cmd} run ${args[1] ?? ""}`.trim()
-				: `${cmd} ${args[0] ?? ""}`.trim();
-		case "go":
-		case "cargo":
-		case "make":
-			return `${cmd} ${args[0] ?? ""}`.trim();
-		default:
-			return "pytest";
-	}
-}
-
 /**
  * The class of a clean validation command, such as `bun test` or `tsc`, for the
  * evidence fact: a server-chosen label, never the command text. Null when the
  * command is not a clean validation.
  */
 export function validationClassOf(input: unknown): string | null {
+	return validationLabelsOf(input)?.[0] ?? null;
+}
+
+/** The label of every validation segment of a command, in order; null when it has none. */
+function validationLabelsOf(input: unknown): string[] | null {
 	try {
 		const text = toCommandString(input);
 		if (text === null || text === "" || storedLength(input) >= TOOL_INPUT_FIELD_SQL_CAP)
@@ -1200,11 +1327,25 @@ export function validationClassOf(input: unknown): string | null {
 		const finals: Final[] = [];
 		for (const segment of parsed.segments)
 			unwrap(segment.words, segment.sep, parsed.flags, 0, finals);
-		const first = finals.find((f) => isValidationCommand(f.words));
-		return first ? validationLabelOf(first.words) : null;
+		const labels: string[] = [];
+		for (const final of finals) {
+			const head = validationHead(final.words);
+			if (head && validationArgsClean(final.words, head.policy)) labels.push(head.label);
+		}
+		return labels.length > 0 ? labels : null;
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * True when a failing validation may show an output excerpt: every validation in
+ * the command is a test runner or a build (`FAILURE_EXCERPT_VALIDATIONS`). A lint,
+ * format or type-check failure prints lines of the file it was pointed at.
+ */
+export function failureExcerptAllowed(input: unknown): boolean {
+	const labels = validationLabelsOf(input);
+	return labels?.every((l) => FAILURE_EXCERPT_VALIDATIONS.has(l)) === true;
 }
 
 // ── validation results ───────────────────────────────────────────────────────
