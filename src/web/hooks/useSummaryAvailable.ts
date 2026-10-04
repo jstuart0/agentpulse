@@ -1,6 +1,7 @@
 import {
 	type Availability,
 	SESSION_SUMMARY_FLAG,
+	type UnavailableReason,
 	summaryAvailability,
 } from "../lib/session-summary-view.js";
 import { useAiStatusStore } from "../stores/ai-status-store.js";
@@ -26,3 +27,9 @@ export function useSummaryAvailability(): Availability {
 export function useSummaryAvailable(): boolean {
 	return useSummaryAvailability() === "available";
 }
+
+export function useSummaryUnavailableReason(): UnavailableReason | null {
+	return null;
+}
+
+export async function reloadSummaryAvailability(): Promise<void> {}

@@ -1240,3 +1240,10 @@ export function buildSummaryMarkdown(stored: StoredSessionSummary, meta: CopyMet
 export function buildContextMarkdown(stored: StoredSessionSummary): string {
 	return wrap([...section("Key Context", fence(stored.summary.handoff))], stored.provenance);
 }
+
+// ── skeleton for the phase 7 review fixes, part two (replaced in the green commit) ──
+
+export const selectSummaryFlag = (_labs: Pick<LabsSlice, "flags">): boolean | null => null;
+export const selectLabsLoadFailed = (_labs: LabsSlice): boolean => false;
+export const selectAiBuild = (_ai: Pick<AiStatusSlice, "status">): boolean | null => null;
+export const selectAiLoadFailed = (_ai: AiStatusSlice): boolean => false;

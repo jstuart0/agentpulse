@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { TimelineMode } from "../components/session-detail/TimelineView.js";
+import { type TimelineMode, getVisibleEvents } from "../components/session-detail/TimelineView.js";
 import {
+	EVENT_NOT_FOUND_COPY,
+	EVENT_NOT_SHOWN_COPY,
 	type RevealFilters,
 	type RevealInput,
 	emptyRevealGuard,
@@ -135,10 +137,164 @@ describe("planEventReveal", () => {
 		);
 	});
 
-	test("TC-7.31h an event the filters can never show is not found, without a fetch", () => {
+	test("TC-7.31h an event no mode can show is recorded but not shown, without a fetch, and never reads as missing", () => {
 		expect(plan({ events: [ev(5, "assistant_message", { content: "" })], eventId: 5 })).toEqual({
+			action: "not_shown",
+		});
+		expect(plan({ events: [ev(5, "ai_proposal")], eventId: 5 })).toEqual({ action: "not_shown" });
+		expect(plan({ events: [ev(5, "ai_error")], eventId: 5, mode: "debug" })).toEqual({
+			action: "not_shown",
+		});
+	});
+
+	test("TC-7.31i the copy for the two dead ends says which one it is", () => {
+		expect(EVENT_NOT_FOUND_COPY).toBe("That event is no longer in this session's activity.");
+		expect(EVENT_NOT_SHOWN_COPY).toBe(
+			"That event is recorded, but Activity doesn't show this kind.",
+		);
+		expect(EVENT_NOT_FOUND_COPY).not.toBe(EVENT_NOT_SHOWN_COPY);
+	});
+});
+
+const ALL_MODES: TimelineMode[] = ["prompts", "conversation", "progress", "terminal", "debug"];
+/** Quietest first: the order the plan should prefer when it has to change mode. */
+const QUIET_TO_NOISY: TimelineMode[] = ["prompts", "conversation", "progress", "terminal", "debug"];
+const SHOWN_CATEGORIES: Ev["category"][] = [
+	"prompt",
+	"assistant_message",
+	"progress_update",
+	"plan_update",
+	"status_update",
+	"tool_event",
+	"system_event",
+	"permission_event",
+	"user_ack",
+];
+
+describe("planEventReveal: timeline modes (TC-7.41)", () => {
+	test("TC-7.41a agent messages hidden in prompts mode switch to conversation, the quietest mode that shows them", () => {
+		expect(plan({ events: [ev(5, "assistant_message")], eventId: 5, mode: "prompts" })).toEqual({
+			action: "reveal",
+			mode: "conversation",
+			filters: {},
+		});
+	});
+
+	test("TC-7.41b plan, status, progress and permission events switch to progress mode from prompts and from conversation", () => {
+		for (const category of [
+			"plan_update",
+			"status_update",
+			"progress_update",
+			"permission_event",
+		] as Ev["category"][]) {
+			for (const mode of ["prompts", "conversation"] as TimelineMode[]) {
+				expect(
+					plan({ events: [ev(5, category)], eventId: 5, mode }),
+					`${category} in ${mode}`,
+				).toEqual({
+					action: "reveal",
+					mode: "progress",
+					filters: {},
+				});
+			}
+		}
+	});
+
+	test("TC-7.41c a system event hidden by the mode needs the mode and the system filter; with the filter already on, only the mode", () => {
+		for (const mode of ["prompts", "conversation"] as TimelineMode[]) {
+			expect(plan({ events: [ev(5, "system_event")], eventId: 5, mode })).toEqual({
+				action: "reveal",
+				mode: "progress",
+				filters: { showSystem: true },
+			});
+		}
+		expect(
+			plan({
+				events: [ev(5, "system_event")],
+				eventId: 5,
+				mode: "prompts",
+				filters: { ...OFF, showSystem: true },
+			}),
+		).toEqual({ action: "reveal", mode: "progress", filters: {} });
+	});
+
+	test("TC-7.41d a tool event stays in the current mode with the filter (tools show in every mode once switched on); a debug-only event switches to debug", () => {
+		expect(plan({ events: [ev(5, "tool_event")], eventId: 5, mode: "prompts" })).toEqual({
+			action: "reveal",
+			filters: { showTools: true },
+		});
+		expect(
+			plan({ events: [ev(5, "tool_event", { isNoise: true })], eventId: 5, mode: "conversation" }),
+		).toEqual({ action: "reveal", filters: { showTools: true, showNoisyTools: true } });
+		expect(plan({ events: [ev(5, "user_ack")], eventId: 5, mode: "prompts" })).toEqual({
+			action: "reveal",
+			mode: "debug",
+			filters: {},
+		});
+		expect(plan({ events: [ev(5, "user_ack")], eventId: 5, mode: "terminal" })).toEqual({
+			action: "reveal",
+			mode: "debug",
+			filters: {},
+		});
+	});
+
+	test("TC-7.41e an event the current mode already shows scrolls, with no mode in the plan", () => {
+		expect(plan({ events: [ev(5, "plan_update")], eventId: 5, mode: "progress" })).toEqual({
+			action: "scroll",
+		});
+		expect(plan({ events: [ev(5, "prompt")], eventId: 5, mode: "prompts" })).toEqual({
+			action: "scroll",
+		});
+	});
+
+	test("TC-7.41f applying any plan makes every shown category visible, from every mode", () => {
+		for (const category of SHOWN_CATEGORIES) {
+			for (const from of ALL_MODES) {
+				const target = ev(5, category);
+				const result = plan({ events: [target], eventId: 5, mode: from });
+				const label = `${category} from ${from}`;
+				if (result.action === "scroll") {
+					expect(getVisibleEvents([target], from, false, false, false), label).toHaveLength(1);
+					continue;
+				}
+				if (result.action !== "reveal") throw new Error(`${label}: ${result.action}`);
+				const mode = result.mode ?? from;
+				const on = { ...OFF, ...result.filters };
+				const shown = getVisibleEvents(
+					[target],
+					mode,
+					on.showTools || mode === "debug" || mode === "terminal",
+					on.showNoisyTools,
+					on.showSystem,
+				);
+				expect(shown, label).toHaveLength(1);
+			}
+		}
+	});
+
+	test("TC-7.41g when the mode must change it is the quietest one that works, and a mode is named only when it changes", () => {
+		for (const category of SHOWN_CATEGORIES) {
+			for (const from of ALL_MODES) {
+				const target = ev(5, category);
+				const result = plan({ events: [target], eventId: 5, mode: from });
+				if (result.action !== "reveal" || result.mode === undefined) continue;
+				const label = `${category} from ${from}`;
+				expect(result.mode, label).not.toBe(from);
+				const worksIn = (m: TimelineMode) =>
+					getVisibleEvents([target], m, m === "debug" || m === "terminal", false, true).length ===
+					1;
+				const quietest = QUIET_TO_NOISY.find((m) => m !== from && worksIn(m));
+				expect(result.mode, label).toBe(quietest);
+			}
+		}
+	});
+
+	test("TC-7.41h absent events keep their own outcomes: fetch once, then not found", () => {
+		const events = [ev(1, "prompt")];
+		expect(plan({ events, eventId: 9, mode: "prompts" })).toEqual({ action: "fetch" });
+		const after = markContextFetched(emptyRevealGuard(), "s1", 9);
+		expect(plan({ events, eventId: 9, mode: "prompts", guard: after })).toEqual({
 			action: "not_found",
 		});
-		expect(plan({ events: [ev(5, "user_ack")], eventId: 5 })).toEqual({ action: "not_found" });
 	});
 });

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type AiStatusResponse, api } from "../lib/api.js";
 import { deferred } from "../test-utils/render-hook.js";
-import { useAiStatusStore } from "./ai-status-store.js";
+import { resetAiStatusStore, useAiStatusStore } from "./ai-status-store.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: the client is replaced method by method
 const client = api as any;
@@ -20,7 +20,7 @@ const STATUS: AiStatusResponse = {
 let statusCalls = 0;
 
 function reset() {
-	useAiStatusStore.setState({ status: null, loadState: "idle", error: null });
+	resetAiStatusStore();
 }
 beforeEach(() => {
 	statusCalls = 0;
@@ -130,13 +130,58 @@ describe("ai-status-store", () => {
 		expect(useAiStatusStore.getState().status?.killSwitch).toBe(true);
 	});
 
-	test("TC-7.29g AiPanel and AiSettingsPanel go through the store's fetcher, not the client", () => {
+	test("TC-7.29g AiPanel and AiSettingsPanel read and change the status only through the store", () => {
 		const root = join(import.meta.dir, "..", "components");
-		for (const file of ["session-detail/AiPanel.tsx", "settings/AiSettingsPanel.tsx"]) {
-			const source = readFileSync(join(root, file), "utf8");
-			expect(source, file).not.toContain("api.getAiStatus");
-			expect(source, file).not.toContain("api.updateAiStatus");
-			expect(source, file).toContain("useAiStatusStore");
+		const read = (file: string) => readFileSync(join(root, file), "utf8");
+		const panel = read("session-detail/AiPanel.tsx");
+		const settings = read("settings/AiSettingsPanel.tsx");
+		for (const [file, source] of [
+			["session-detail/AiPanel.tsx", panel],
+			["settings/AiSettingsPanel.tsx", settings],
+		] as const) {
+			expect(source, file).toContain("useAiStatusStore.getState().refresh()");
+			expect(source, file).not.toMatch(/\bgetAiStatus\b/);
+			expect(source, file).not.toMatch(/\bupdateAiStatus\b/);
+			expect(source, file).not.toMatch(/\bsetStatus\s*\(/);
+			expect(source, file).not.toContain("useAiStatusStore.setState");
 		}
+		expect(settings).toContain("useAiStatusStore.getState().update(");
+	});
+
+	test("TC-7.29h a refresh that never answers does not poison the next test: reset clears the shared request and the state", async () => {
+		client.getAiStatus = () => {
+			statusCalls++;
+			return new Promise(() => {});
+		};
+		void useAiStatusStore.getState().refresh();
+		expect(useAiStatusStore.getState().loadState).toBe("loading");
+		expect(statusCalls).toBe(1);
+		resetAiStatusStore();
+		expect(useAiStatusStore.getState()).toMatchObject({
+			status: null,
+			loadState: "idle",
+			error: null,
+		});
+		client.getAiStatus = async () => {
+			statusCalls++;
+			return STATUS;
+		};
+		await useAiStatusStore.getState().refresh();
+		expect(statusCalls).toBe(2);
+		expect(useAiStatusStore.getState().status).toEqual(STATUS);
+	});
+
+	test("TC-7.29i the answer of a request that was reset away does not land in the fresh state", async () => {
+		const stale = deferred<AiStatusResponse>();
+		client.getAiStatus = () => {
+			statusCalls++;
+			return stale.promise;
+		};
+		const old = useAiStatusStore.getState().refresh();
+		resetAiStatusStore();
+		stale.resolve(STATUS);
+		await old.catch(() => {});
+		expect(useAiStatusStore.getState().status).toBeNull();
+		expect(useAiStatusStore.getState().loadState).toBe("idle");
 	});
 });

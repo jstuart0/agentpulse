@@ -110,3 +110,6 @@ export function planEventReveal(input: RevealInput): RevealPlan {
 	}
 	return { action: "not_found" };
 }
+
+export const EVENT_NOT_FOUND_COPY = "";
+export const EVENT_NOT_SHOWN_COPY = "";

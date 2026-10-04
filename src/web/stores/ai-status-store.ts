@@ -67,3 +67,7 @@ export const useAiStatusStore = create<AiStatusState>((set, get) => ({
 		return next;
 	},
 }));
+
+export function resetAiStatusStore(): void {
+	useAiStatusStore.setState({ status: null, loadState: "idle", error: null });
+}

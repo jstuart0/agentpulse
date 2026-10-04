@@ -1,12 +1,13 @@
-import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, setSystemTime, test } from "bun:test";
 import { act } from "react";
 import {
 	SUMMARY_VIEW_FIXTURES as F,
 	FIXTURE_NOW,
 } from "../../shared/__fixtures__/session-summary-view/index.js";
 import type { SessionSummaryView } from "../../shared/session-summary-view.js";
+import type { AiStatusResponse } from "../lib/api.js";
 import { ApiError, type GenerateSummaryResult, api } from "../lib/api.js";
-import { useAiStatusStore } from "../stores/ai-status-store.js";
+import { resetAiStatusStore, useAiStatusStore } from "../stores/ai-status-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import {
 	deferred,
@@ -30,6 +31,7 @@ type Responder = SessionSummaryView | Error | (() => Promise<SessionSummaryView>
 let queue: Responder[] = [];
 let gets: string[] = [];
 let posts = 0;
+let postIds: string[] = [];
 let aiStatusCalls = 0;
 let labsCalls = 0;
 const mounted: Array<{ unmount: () => Promise<void> }> = [];
@@ -59,10 +61,24 @@ const refused = (
 	refusal: { status, code: code as any, retryAfterSeconds },
 });
 function postReturns(result: GenerateSummaryResult | Promise<GenerateSummaryResult>) {
-	client.generateSessionSummary = () => {
+	client.generateSessionSummary = (sessionId: string) => {
 		posts++;
+		postIds.push(sessionId);
 		return Promise.resolve(result);
 	};
+}
+const AI_ON: AiStatusResponse = { build: true, runtime: true, killSwitch: false, active: true };
+const AI_PAUSED: AiStatusResponse = { build: true, runtime: true, killSwitch: true, active: false };
+/** The tab only exists once both sources have answered, so a mounted hook sees loaded stores. */
+function loadedStores(ai: AiStatusResponse = AI_ON) {
+	useAiStatusStore.setState({ status: ai, loadState: "loaded", error: null });
+	useLabsStore.setState({
+		// biome-ignore lint/suspicious/noExplicitAny: the flag joins LabsFlags in phase 5
+		flags: { sessionSummary: true } as any,
+		registry: [],
+		loading: false,
+		error: null,
+	});
 }
 
 async function settle() {
@@ -117,6 +133,7 @@ beforeEach(() => {
 	queue = [];
 	gets = [];
 	posts = 0;
+	postIds = [];
 	aiStatusCalls = 0;
 	labsCalls = 0;
 	client.getSessionSummary = (id: string) => {
@@ -133,11 +150,12 @@ beforeEach(() => {
 		labsCalls++;
 		return { flags: { sessionSummary: true }, registry: [] };
 	};
-	useAiStatusStore.setState({ status: null, loadState: "idle", error: null });
+	resetAiStatusStore();
 	useLabsStore.setState({ flags: null, registry: [], loading: false, error: null });
 });
 afterEach(async () => {
 	for (const h of mounted.splice(0)) await h.unmount();
+	expect(jest.getTimerCount()).toBe(0);
 	jest.useRealTimers();
 	removeDomStubs();
 	client.getSessionSummary = real.getSessionSummary;
@@ -232,6 +250,51 @@ describe("generating and polling", () => {
 		expect(gets).toHaveLength(3);
 	});
 
+	test("TC-7.17b the POST names the session it was clicked on, and follows a session change", async () => {
+		postReturns(STARTED);
+		script(F.empty);
+		const m = await mount("s1");
+		await generateOnce(m);
+		expect(postIds).toEqual(["s1"]);
+		await m.rerender({ id: "s2", enabled: true });
+		await generateOnce(m);
+		expect(postIds).toEqual(["s1", "s2"]);
+		expect(posts).toBe(2);
+	});
+
+	test("TC-7.17c a read asked for while one is in flight waits for it: one GET at a time, the later view wins", async () => {
+		const held = deferred<SessionSummaryView>();
+		script(() => held.promise, F.ready);
+		const m = await mount();
+		expect(gets).toEqual(["s1"]);
+		await act(async () => m.v.retry());
+		await settle();
+		expect(gets).toEqual(["s1"]);
+		held.resolve(F.empty);
+		await settle();
+		expect(gets).toEqual(["s1", "s1"]);
+		expect(viewOf(m).stored).not.toBeNull();
+		await tick(SUMMARY_POLL_INTERVAL_MS * 3);
+		expect(gets).toHaveLength(2);
+	});
+
+	test("TC-7.17d a late answer that lost the race cannot replace the later view", async () => {
+		const first = deferred<SessionSummaryView>();
+		const second = deferred<SessionSummaryView>();
+		script(
+			() => first.promise,
+			() => second.promise,
+		);
+		const m = await mount();
+		await act(async () => m.v.retry());
+		first.resolve(F.empty);
+		await settle();
+		second.resolve(F.ready);
+		await settle();
+		expect(viewOf(m).stored).not.toBeNull();
+		expect(gets).toHaveLength(2);
+	});
+
 	test("TC-7.18a unmount clears the timer", async () => {
 		script(F.generating);
 		const m = await mount();
@@ -240,6 +303,32 @@ describe("generating and polling", () => {
 		mounted.length = 0;
 		await tick(SUMMARY_POLL_INTERVAL_MS * 5);
 		expect(gets).toHaveLength(1);
+	});
+
+	test("TC-7.18c unmounting with a cooldown, a poll or a refusal countdown pending leaves no timer behind", async () => {
+		script({ ...F.cooldown, cooldownSeconds: 20 });
+		const cooling = await mount();
+		expect(jest.getTimerCount()).toBeGreaterThan(0);
+		await cooling.h.unmount();
+		mounted.length = 0;
+		expect(jest.getTimerCount()).toBe(0);
+
+		script(F.generating);
+		const polling = await mount("s3");
+		expect(jest.getTimerCount()).toBe(1);
+		await polling.h.unmount();
+		mounted.length = 0;
+		expect(jest.getTimerCount()).toBe(0);
+
+		postReturns(refused(429, "summary_rate_limited", 30));
+		script(F.empty);
+		const limited = await mount("s4");
+		await generateOnce(limited);
+		expect(limited.v.refusal).not.toBeNull();
+		expect(jest.getTimerCount()).toBeGreaterThan(0);
+		await limited.h.unmount();
+		mounted.length = 0;
+		expect(jest.getTimerCount()).toBe(0);
 	});
 
 	test("TC-7.18b a response arriving after unmount sets no state and triggers no GET", async () => {
@@ -293,10 +382,54 @@ describe("generating and polling", () => {
 			expect(m.v.load.status).toBe("ready");
 		}
 		await tick(SUMMARY_POLL_INTERVAL_MS);
-		expect(m.v.load.status).toBe("error");
+		expect(m.v.load.status).toBe("ready");
+		expect(m.v.lostContact).toBe(true);
 		const after = gets.length;
 		await tick(SUMMARY_POLL_INTERVAL_MS * 5);
 		expect(gets).toHaveLength(after);
+	});
+
+	test("TC-7.20b after the retries fail the last view stays readable with a separate lost-contact state, and Retry brings it back", async () => {
+		const boom = new Error("down");
+		script(F.generating, boom, boom, boom, boom);
+		const g = await mount();
+		expect(g.v.lostContact).toBe(false);
+		for (let i = 0; i < 4; i++) await tick(SUMMARY_POLL_INTERVAL_MS);
+		expect(g.v.lostContact).toBe(true);
+		expect(g.v.load.status).toBe("ready");
+		expect(viewOf(g).attempt.status).toBe("generating");
+		script(boom);
+		await act(async () => g.v.retry());
+		await settle();
+		expect(g.v.lostContact).toBe(true);
+		expect(g.v.load.status).toBe("ready");
+		script(F.ready);
+		await act(async () => g.v.retry());
+		await settle();
+		expect(g.v.lostContact).toBe(false);
+		expect(viewOf(g).stored).not.toBeNull();
+		expect(g.v.generating).toBe(false);
+	});
+
+	test("TC-7.20c a first load that never succeeds is still the load-failed state, not lost contact", async () => {
+		script(new Error("down"));
+		const m = await mount();
+		expect(m.v.load.status).toBe("error");
+		expect(m.v.lostContact).toBe(false);
+	});
+
+	test("TC-7.20d lost contact ends polling, and a later view arriving by another path clears it", async () => {
+		const boom = new Error("down");
+		script(F.generating, boom, boom, boom, boom, F.ready);
+		const m = await mount();
+		for (let i = 0; i < 4; i++) await tick(SUMMARY_POLL_INTERVAL_MS);
+		expect(m.v.lostContact).toBe(true);
+		const seen = gets.length;
+		await tick(SUMMARY_POLL_INTERVAL_MS * 5);
+		expect(gets).toHaveLength(seen);
+		await act(async () => m.v.retry());
+		await settle();
+		expect(m.v.lostContact).toBe(false);
 	});
 
 	test("TC-7.21 a session change mid-flight ignores the late old response and stops the old poll", async () => {
@@ -401,6 +534,7 @@ describe("generate", () => {
 	});
 
 	test("TC-7.22f AI and Labs refusals re-read their own source", async () => {
+		loadedStores();
 		postReturns(refused(409, "ai_paused"));
 		script(F.empty);
 		const a = await mount();
@@ -412,6 +546,51 @@ describe("generate", () => {
 		await generateOnce(a);
 		expect(a.v.refusal?.text).toBe("Session summaries were just turned off.");
 		expect(labsCalls).toBe(1);
+	});
+
+	test("TC-7.22g an inline refusal clears when the re-read changes what the action says", async () => {
+		loadedStores();
+		client.getAiStatus = async () => {
+			aiStatusCalls++;
+			return AI_PAUSED;
+		};
+		postReturns(refused(409, "ai_paused"));
+		script(F.empty);
+		const m = await mount();
+		await generateOnce(m);
+		expect(aiStatusCalls).toBe(1);
+		expect(useAiStatusStore.getState().status?.killSwitch).toBe(true);
+		expect(m.v.refusal).toBeNull();
+	});
+
+	test("TC-7.22h the same for a view re-read that changes the blocker, and a refusal that outlives nothing it explained stays", async () => {
+		loadedStores();
+		postReturns(refused(409, "provider_key_unreadable"));
+		script(F.empty, F.no_provider);
+		const m = await mount();
+		await generateOnce(m);
+		expect(gets).toHaveLength(2);
+		expect(viewOf(m).blocked).toBe("no_provider");
+		expect(m.v.refusal).toBeNull();
+		script(F.empty, F.empty);
+		const stays = await mount("s2");
+		await generateOnce(stays);
+		expect(stays.v.refusal?.text).toBe(
+			"The provider's API key can't be read. Enter it again in Settings.",
+		);
+	});
+
+	test("TC-7.22i a refusal does not outlive the generation that follows it", async () => {
+		loadedStores();
+		postReturns(refused(409, "provider_key_unreadable"));
+		script(F.empty, F.generating, F.ready);
+		const m = await mount();
+		await generateOnce(m);
+		expect(m.v.refusal).toBeNull();
+		expect(m.v.generating).toBe(true);
+		await tick(SUMMARY_POLL_INTERVAL_MS);
+		expect(m.v.generating).toBe(false);
+		expect(m.v.refusal).toBeNull();
 	});
 
 	test("TC-7.24a a second generate during an in-flight POST sends no second POST", async () => {
@@ -447,6 +626,21 @@ describe("generate", () => {
 		expect(await generateOnce(m, { confirmed: true })).toBe("started");
 		expect(posts).toBe(1);
 	});
+
+	test("TC-7.25b it asks exactly when the model supplies confirm text: shrunk with a stored summary, not shrunk, and shrunk with nothing stored", async () => {
+		postReturns(STARTED);
+		script({ ...F.empty, evidenceShrunk: true }, F.generating);
+		const none = await mount();
+		expect(await generateOnce(none)).toBe("started");
+		expect(posts).toBe(1);
+		await none.h.unmount();
+		mounted.length = 0;
+		posts = 0;
+		script(F.ready, F.generating);
+		const plain = await mount("s2");
+		expect(await generateOnce(plain)).toBe("started");
+		expect(posts).toBe(1);
+	});
 });
 
 describe("cooldown", () => {
@@ -465,6 +659,35 @@ describe("cooldown", () => {
 		expect(viewOf(m).blocked).toBeNull();
 		await tick(COOLDOWN_TICK_MS * 5);
 		expect(gets).toHaveLength(2);
+	});
+});
+
+describe("cooldown deadlines", () => {
+	test("TC-7.14b the countdown counts from a deadline: a throttled tick that fires late shows the true time left", async () => {
+		script({ ...F.cooldown, cooldownSeconds: 20 }, F.ready);
+		const m = await mount();
+		expect(viewOf(m).cooldownSeconds).toBe(20);
+		setSystemTime(new Date(Date.now() + 7_000));
+		await tick(COOLDOWN_TICK_MS);
+		expect(viewOf(m).cooldownSeconds).toBe(12);
+		setSystemTime(new Date(Date.now() + 60_000));
+		await tick(COOLDOWN_TICK_MS);
+		expect(gets).toHaveLength(2);
+		expect(viewOf(m).blocked).toBeNull();
+	});
+
+	test("TC-7.14c a rate-limit countdown is a deadline too", async () => {
+		postReturns(refused(429, "summary_rate_limited", 30));
+		script(F.empty);
+		const m = await mount();
+		await generateOnce(m);
+		expect(m.v.refusal?.text).toBe("Too many summary requests. Try again in 30s.");
+		setSystemTime(new Date(Date.now() + 12_000));
+		await tick(COOLDOWN_TICK_MS);
+		expect(m.v.refusal?.text).toBe("Too many summary requests. Try again in 17s.");
+		setSystemTime(new Date(Date.now() + 60_000));
+		await tick(COOLDOWN_TICK_MS);
+		expect(m.v.refusal).toBeNull();
 	});
 });
 
@@ -526,5 +749,31 @@ describe("announcements and the New badge", () => {
 		const m = await mount();
 		await tick(SUMMARY_POLL_INTERVAL_MS);
 		expect(m.v.newResult).toBe(false);
+	});
+
+	test("TC-7.36d a failed attempt is not New even when an older summary is stored", async () => {
+		script(F.generating, F.failed_ai_inactive);
+		const m = await mount();
+		await tick(SUMMARY_POLL_INTERVAL_MS);
+		expect(viewOf(m).stored).not.toBeNull();
+		expect(viewOf(m).attempt.status).toBe("failed");
+		expect(m.v.newResult).toBe(false);
+	});
+
+	test("TC-7.36e started here turns false once the generation finishes, whichever way it ends", async () => {
+		for (const outcome of [F.ready, F.failed]) {
+			postReturns(STARTED);
+			script(F.empty, F.generating, outcome);
+			const m = await mount();
+			await generateOnce(m);
+			expect(m.v.startedHere).toBe(true);
+			await tick(SUMMARY_POLL_INTERVAL_MS);
+			expect(m.v.startedHere).toBe(true);
+			await tick(SUMMARY_POLL_INTERVAL_MS);
+			expect(m.v.generating).toBe(false);
+			expect(m.v.startedHere).toBe(false);
+			await m.h.unmount();
+			mounted.length = 0;
+		}
 	});
 });
