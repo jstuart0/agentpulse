@@ -707,6 +707,63 @@ describeSqliteOnly("rows that cannot be scored", () => {
 	});
 });
 
+describeSqliteOnly("a blob of the wrong length is never read into memory", () => {
+	test("rows whose blob is too long or too short for the dimension add nothing to the statement's size and are counted as skipped", async () => {
+		const query = randomUnitVector(makeRng(5), DIM);
+		const sessions = Array.from({ length: 32 }, (_, i) => `bad-${i}`);
+		ensureSessions([...sessions, "good"]);
+		seedRows([
+			// the newest 32 rows are malformed: 1 MiB too long, or 100 bytes short
+			...sessions.map((sessionId, i) => ({
+				id: 100 + i,
+				sessionId,
+				model: MODEL,
+				dim: DIM,
+				vector: new Uint8Array(i % 2 === 0 ? 1_048_576 : 100),
+			})),
+			{ id: 1, sessionId: "good", model: MODEL, dim: DIM, vector: query },
+		]);
+
+		const result = await scan.scanSessionSimilarity(query, { model: MODEL, dim: DIM });
+
+		const chunks = meter.matching(CHUNK_SQL);
+		expect(Math.max(...chunks.map((c) => c.bytes))).toBeLessThanOrEqual(DIM * 4);
+		expect(chunks[0]?.bytes).toBe(0);
+		expect(result.stats.skipped).toBe(32);
+		expect(result.stats.scored).toBe(1);
+		expect(result.perSession.get("good")?.count).toBe(1);
+	});
+});
+
+describeSqliteOnly("the time budget is checked after waiting on the pacer too", () => {
+	test("a sleep that crosses the budget ends the scan with no further statement", async () => {
+		seedPlain(800, DIM);
+		const clock = useFakeClock(10);
+		setBudgets({ share: 0.05, maxMs: 1_000 });
+
+		const result = await scan.scanSessionSimilarity(randomUnitVector(makeRng(9), DIM), {
+			model: MODEL,
+			dim: DIM,
+		});
+
+		// chunks end at 10, 210, 410, 610, 810; the sleep after the fifth reaches 1,000
+		expect(result.stats.statements).toBe(5);
+		expect(result.stats.stopReason).toBe("time_budget");
+		expect(clock.now()).toBeLessThan(1_000 + 1);
+	});
+
+	test("a scan that has run no statement yet always runs one", async () => {
+		seedPlain(100, DIM);
+		useFakeClock(10);
+		setBudgets({ maxMs: 0 });
+		const result = await scan.scanSessionSimilarity(randomUnitVector(makeRng(9), DIM), {
+			model: MODEL,
+			dim: DIM,
+		});
+		expect(result.stats.statements).toBe(1);
+	});
+});
+
 describeSqliteOnly("stats", () => {
 	test("stats match what the statement meter saw and the fake clock measured", async () => {
 		seedPlain(400, DIM);
