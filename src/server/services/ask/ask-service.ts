@@ -1,6 +1,7 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { AskMessageRole, AskThreadOrigin } from "../../../shared/types.js";
 import type { Actor } from "../../auth/actor.js";
+import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
 import { askMessages, askThreads, sessionTemplates } from "../../db/schema/index.js";
 import { getAdapter } from "../ai/llm/registry.js";
@@ -31,6 +32,7 @@ import { handleSessionQa } from "./ask-qa-handler.js";
 import { handleResumeIntent } from "./ask-resume-handler.js";
 import { handleNlSearch } from "./ask-search-handler.js";
 import { handleSessionAction } from "./ask-session-action-handler.js";
+import { type AskTurnSlot, acquireAskTurn } from "./ask-turn-limiter.js";
 import { ASK_SYSTEM_PROMPT, buildAskContext } from "./context-builder.js";
 import {
 	createLaunchCloneDraft,
@@ -159,6 +161,30 @@ export async function listMessages(threadId: string): Promise<AskMessageRecord[]
 	return rows.map(toMessage);
 }
 
+/**
+ * The last `limit` messages of a thread, oldest first. A Telegram thread is
+ * never archived and grows without bound, so a turn reads only what it
+ * renders. Newest-first with a LIMIT is served by the (thread_id, created_at)
+ * index; on SQLite `created_at` has one-second resolution, so rowid (the
+ * index's own tiebreak) keeps same-second messages in insertion order.
+ */
+export async function listRecentMessages(
+	threadId: string,
+	limit: number,
+): Promise<AskMessageRecord[]> {
+	const newestFirst =
+		config.dialect === "sqlite"
+			? [desc(askMessages.createdAt), desc(sql`rowid`)]
+			: [desc(askMessages.createdAt)];
+	const rows = await getDb()
+		.select()
+		.from(askMessages)
+		.where(eq(askMessages.threadId, threadId))
+		.orderBy(...newestFirst)
+		.limit(limit);
+	return rows.reverse().map(toMessage);
+}
+
 export async function archiveThread(id: string): Promise<boolean> {
 	const now = new Date().toISOString();
 	const res = await getDb()
@@ -244,6 +270,17 @@ async function appendMessage(input: {
 	return toMessage(row);
 }
 
+/** The longest message an Ask turn accepts, in UTF-16 code units (`String.length`), after trimming. */
+export const ASK_MESSAGE_MAX_CHARS = 8_000;
+
+export class AskMessageTooLongError extends Error {
+	readonly max = ASK_MESSAGE_MAX_CHARS;
+	constructor() {
+		super(`Message is too long (the limit is ${ASK_MESSAGE_MAX_CHARS} characters).`);
+		this.name = "AskMessageTooLongError";
+	}
+}
+
 // Keep the history block small — the resolver already loaded a lot of
 // session context, and local models (Qwen 8B) can choke on giant prompts.
 const MAX_HISTORY_TURNS = 6;
@@ -281,6 +318,13 @@ export interface AskTurnInput {
 	 * for this actor.
 	 */
 	actor: Actor;
+	/**
+	 * A slot the caller already holds from the turn limiter. The turn then takes
+	 * none and does not release this one: that stays with the caller.
+	 */
+	slot?: AskTurnSlot;
+	/** Aborts the wait for a slot (not a turn that has started). */
+	signal?: AbortSignal;
 }
 
 export interface AskTurnResult {
@@ -323,20 +367,19 @@ async function getDefaultLlm(): Promise<
 }
 
 /**
- * Shared setup path: validates origin, creates/looks-up the thread,
- * persists the user message, runs the resolver + context builder, and
- * preps the transcript the LLM will see. Both the sync and streaming
- * turn implementations hand-off to the LLM from here.
+ * First half of a turn, shared by the sync and streaming paths: refuses an
+ * over-long message, validates the thread's origin, creates the thread and
+ * saves the user message. It does no resolving, no embedding and reads no
+ * history: most turns end at a gate or an intercept and never need them.
  */
-async function prepareTurn(input: AskTurnInput): Promise<{
+async function openTurn(input: AskTurnInput): Promise<{
 	thread: AskThreadRecord;
 	userMessage: AskMessageRecord;
-	context: Awaited<ReturnType<typeof buildAskContext>>;
-	transcript: string;
 	text: string;
 }> {
 	const text = input.message.trim();
 	if (!text) throw new Error("Empty message.");
+	if (text.length > ASK_MESSAGE_MAX_CHARS) throw new AskMessageTooLongError();
 
 	const callerOrigin: AskThreadOrigin = input.origin ?? "web";
 	if (input.threadId) {
@@ -359,34 +402,61 @@ async function prepareTurn(input: AskTurnInput): Promise<{
 		role: "user",
 		content: text,
 	});
+	logTurn("ask_turn_started", { origin: callerOrigin, messageChars: text.length });
+	return { thread, userMessage, text };
+}
 
+/**
+ * Second half of a turn, run only where its output is consumed (the free-form
+ * LLM answer): resolves candidate sessions (with semantic enrichment unless
+ * the caller pinned sessions), builds the context block and the transcript the
+ * LLM will see.
+ */
+async function buildTurnContext(
+	input: AskTurnInput,
+	thread: AskThreadRecord,
+	text: string,
+	trace: TurnTrace,
+): Promise<{
+	context: Awaited<ReturnType<typeof buildAskContext>>;
+	transcript: string;
+}> {
+	trace.path = "free_form";
 	const breadthHints = /\b(all|every|everything|across|overall|each)\b/i;
 	const wantsBreadth = breadthHints.test(text);
+	const pinned = input.sessionIds && input.sessionIds.length > 0;
+	logTurn("ask_turn_path", {
+		path: "free_form",
+		enrichment: pinned ? "skipped_pinned" : "semantic",
+	});
 	// Build the semantic enricher once per turn. Returns null when AI
 	// isn't active or no default provider — the resolver then falls back
-	// to lexical-only search automatically.
-	const enricher = await getSemanticEnricher();
-	const resolved =
-		input.sessionIds && input.sessionIds.length > 0
-			? await fetchSessionsById(input.sessionIds)
-			: await resolveCandidateSessions({
-					message: text,
-					limit: wantsBreadth ? 20 : 5,
-					fallbackToActive: true,
-					enricher,
-				});
+	// to lexical-only search automatically. Pinned sessions need no resolving.
+	const resolved = pinned
+		? await fetchSessionsById(input.sessionIds as string[])
+		: await resolveCandidateSessions({
+				message: text,
+				limit: wantsBreadth ? 20 : 5,
+				fallbackToActive: true,
+				enricher: await getSemanticEnricher(),
+			});
 	// Hand the FTS query to the context builder so per-session snapshots
 	// include the events that *matched* — not just the most-recent 12.
 	// Skip when the caller passed explicit sessionIds (no resolver query
 	// to hand over).
-	const ftsQuery = input.sessionIds && input.sessionIds.length > 0 ? undefined : text;
+	const ftsQuery = pinned ? undefined : text;
 	const context = await buildAskContext({ resolved, ftsQuery });
 
-	const history = await listMessages(thread.id);
+	const history = await listRecentMessages(thread.id, MAX_HISTORY_TURNS * 2);
 	const transcript = [renderHistory(history), context.block, `USER: ${text}`]
 		.filter(Boolean)
 		.join("\n\n");
-	return { thread, userMessage, context, transcript, text };
+	return { context, transcript };
+}
+
+/** One structured line per turn event: counts and names, never message text. */
+function logTurn(kind: string, fields: Record<string, unknown>): void {
+	console.log(JSON.stringify({ kind, level: "info", ...fields }));
 }
 
 // === Slice F: gate table + runner ===
@@ -734,8 +804,30 @@ const ASK_GATES: Gate[] = [
 	}),
 ];
 
+/** How a turn ended, for its closing log line: `free_form` once it reached the LLM answer, `handled` otherwise. */
+interface TurnTrace {
+	path: "handled" | "free_form";
+}
+
 export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
-	const { thread, userMessage, context, transcript, text } = await prepareTurn(input);
+	// The slot comes before anything is written or computed: a refused turn leaves no trace.
+	const slot = input.slot ?? (await acquireAskTurn({ signal: input.signal }));
+	const startedAt = Date.now();
+	const trace: TurnTrace = { path: "handled" };
+	let outcome = "ok";
+	try {
+		return await runAskTurnBody(input, trace);
+	} catch (err) {
+		outcome = "error";
+		throw err;
+	} finally {
+		logTurn("ask_turn_done", { outcome, path: trace.path, ms: Date.now() - startedAt });
+		if (!input.slot) slot.release();
+	}
+}
+
+async function runAskTurnBody(input: AskTurnInput, trace: TurnTrace): Promise<AskTurnResult> {
+	const { thread, userMessage, text } = await openTurn(input);
 
 	const origin = input.origin ?? "web";
 	const askArgs = {
@@ -877,6 +969,7 @@ export async function runAskTurn(input: AskTurnInput): Promise<AskTurnResult> {
 			"_(Heads up: I tried to check whether this was a session-launch request but the AI provider didn't respond — answering as a normal question.)_\n\n";
 	}
 
+	const { context, transcript } = await buildTurnContext(input, thread, text, trace);
 	const llm = await getDefaultLlm();
 	if ("error" in llm) {
 		const errMsg = await appendMessage({
@@ -963,7 +1056,26 @@ export type AskStreamEvent =
  * about the deltas once it lands).
  */
 export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskStreamEvent> {
-	const { thread, userMessage, context, transcript, text } = await prepareTurn(input);
+	const slot = input.slot ?? (await acquireAskTurn({ signal: input.signal }));
+	const startedAt = Date.now();
+	const trace: TurnTrace = { path: "handled" };
+	let outcome = "ok";
+	try {
+		yield* runAskTurnStreamBody(input, trace);
+	} catch (err) {
+		outcome = "error";
+		throw err;
+	} finally {
+		logTurn("ask_turn_done", { outcome, path: trace.path, ms: Date.now() - startedAt });
+		if (!input.slot) slot.release();
+	}
+}
+
+async function* runAskTurnStreamBody(
+	input: AskTurnInput,
+	trace: TurnTrace,
+): AsyncIterable<AskStreamEvent> {
+	const { thread, userMessage, text } = await openTurn(input);
 
 	const origin = input.origin ?? "web";
 	const askArgs = {
@@ -1122,6 +1234,9 @@ export async function* runAskTurnStream(input: AskTurnInput): AsyncIterable<AskS
 		return;
 	}
 
+	// The context (and with it the semantic scan) is built here, not before the
+	// gates: the start event reports which sessions the answer will use.
+	const { context, transcript } = await buildTurnContext(input, thread, text, trace);
 	yield {
 		kind: "start",
 		thread,

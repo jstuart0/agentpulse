@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS `idx_event_embeddings_model_dim_event` ON `event_embeddings` (`model`,`dim`,`event_id`);

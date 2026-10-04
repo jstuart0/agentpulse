@@ -1139,6 +1139,9 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			// cascade configured and we don't want to retrofit one here).
 			"CREATE TRIGGER IF NOT EXISTS trg_events_ad_embeddings AFTER DELETE ON events BEGIN DELETE FROM event_embeddings WHERE event_id = OLD.id; END",
 			"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model ON event_embeddings(model)",
+			// Serves the bounded Ask scan (services/ai/embeddings/vector-scan.ts).
+			// Mirrors the drizzle migration for installs on the legacy init path.
+			"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model_dim_event ON event_embeddings(model, dim, event_id)",
 		);
 	}
 

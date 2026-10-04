@@ -1,9 +1,11 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { requireAuth } from "../auth/middleware.js";
 import { getRequestActor, requireOperatorScope } from "../auth/route-scope-policy.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import {
+	ASK_MESSAGE_MAX_CHARS,
 	archiveThread,
 	getThread,
 	listMessages,
@@ -11,6 +13,11 @@ import {
 	runAskTurn,
 	runAskTurnStream,
 } from "../services/ask/ask-service.js";
+import {
+	ASK_BUSY_MESSAGE,
+	AskBusyError,
+	AskTurnAbortedError,
+} from "../services/ask/ask-turn-limiter.js";
 import { isLabsFlagEnabled } from "../services/labs-service.js";
 
 /**
@@ -20,6 +27,25 @@ import { isLabsFlagEnabled } from "../services/labs-service.js";
  * who haven't opted in don't accidentally spin up LLM calls.
  */
 const askRouter = new Hono();
+
+/** A turn's request is one short message and a few ids; 256 KiB is far more than any real one. */
+const ASK_BODY_LIMIT_BYTES = 256 * 1024;
+const askBodyLimit = bodyLimit({
+	maxSize: ASK_BODY_LIMIT_BYTES,
+	onError: (c) => c.json({ error: "payload_too_large" }, 413),
+});
+
+/** Parses the request body. Only malformed JSON is the caller's mistake; any other failure, such as the body limit cutting off an oversized read, must propagate. */
+async function readAskBody(c: Context): Promise<{
+	threadId?: string | null;
+	message?: string;
+	sessionIds?: string[];
+} | null> {
+	return c.req.json().catch((err: unknown) => {
+		if (!(err instanceof SyntaxError)) throw err;
+		return null;
+	});
+}
 // Router-level guards so any future route on this router is covered regardless
 // of its path (path-prefixed use() only fires on matching paths, which would
 // silently miss a hypothetical non-/ai/ask route added later).
@@ -69,16 +95,16 @@ askRouter.delete("/ai/ask/threads/:id", async (c) => {
 	return c.json({ ok: true });
 });
 
-askRouter.post("/ai/ask", async (c) => {
+askRouter.post("/ai/ask", askBodyLimit, async (c) => {
 	const gate = await ensureEnabled(c);
 	if (gate) return gate;
-	const body = await c.req.json<{
-		threadId?: string | null;
-		message?: string;
-		sessionIds?: string[];
-	}>();
+	const body = await readAskBody(c);
+	if (!body) return c.json({ error: "invalid_body" }, 400);
 	if (!body.message || typeof body.message !== "string") {
 		return c.json({ error: "message required" }, 400);
+	}
+	if (body.message.trim().length > ASK_MESSAGE_MAX_CHARS) {
+		return c.json({ error: "message_too_long", max: ASK_MESSAGE_MAX_CHARS }, 400);
 	}
 	try {
 		const res = await runAskTurn({
@@ -86,9 +112,15 @@ askRouter.post("/ai/ask", async (c) => {
 			message: body.message,
 			sessionIds: body.sessionIds,
 			actor: await getRequestActor(c),
+			// A caller that goes away while waiting for a slot leaves the queue;
+			// once its turn has started it runs to completion regardless.
+			signal: c.req.raw.signal,
 		});
 		return c.json(res);
 	} catch (err) {
+		if (err instanceof AskBusyError || err instanceof AskTurnAbortedError) {
+			return c.json({ error: "busy" }, 503, { "Retry-After": "5" });
+		}
 		const message = err instanceof Error ? err.message : String(err);
 		return c.json({ error: message }, 500);
 	}
@@ -101,16 +133,16 @@ askRouter.post("/ai/ask", async (c) => {
  * using the non-streaming `/ai/ask` endpoint because Telegram's rate
  * limits make per-token message edits hostile.
  */
-askRouter.post("/ai/ask/stream", async (c) => {
+askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 	const gate = await ensureEnabled(c);
 	if (gate) return gate;
-	const body = await c.req.json<{
-		threadId?: string | null;
-		message?: string;
-		sessionIds?: string[];
-	}>();
+	const body = await readAskBody(c);
+	if (!body) return c.json({ error: "invalid_body" }, 400);
 	if (!body.message || typeof body.message !== "string") {
 		return c.json({ error: "message required" }, 400);
+	}
+	if (body.message.trim().length > ASK_MESSAGE_MAX_CHARS) {
+		return c.json({ error: "message_too_long", max: ASK_MESSAGE_MAX_CHARS }, 400);
 	}
 	const actor = await getRequestActor(c);
 	// Build the SSE stream by hand instead of using hono/streaming. That
@@ -121,7 +153,14 @@ askRouter.post("/ai/ask/stream", async (c) => {
 	// lets Bun/Traefik handle framing natively (HTTP/2 DATA frames or
 	// HTTP/1.1 chunked, picked per-connection).
 	const encoder = new TextEncoder();
+	// `cancel` below fires when the client goes away. A turn still waiting for a
+	// slot is then dropped from the queue; one that has started is not cancelled
+	// (nothing in it can be), it stops at its next event and frees its slot then.
+	const clientGone = new AbortController();
 	const stream = new ReadableStream<Uint8Array>({
+		cancel() {
+			clientGone.abort();
+		},
 		async start(controller) {
 			const write = (event: unknown) => {
 				controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
@@ -150,15 +189,24 @@ askRouter.post("/ai/ask/stream", async (c) => {
 					sessionIds: body.sessionIds,
 					origin: "web",
 					actor,
+					signal: AbortSignal.any([c.req.raw.signal, clientGone.signal]),
 				})) {
+					if (clientGone.signal.aborted) break;
 					write(evt);
 				}
 			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				write({ kind: "error", message, assistantMessage: null });
+				if (!clientGone.signal.aborted) {
+					const message =
+						err instanceof AskBusyError || err instanceof AskTurnAbortedError
+							? ASK_BUSY_MESSAGE
+							: err instanceof Error
+								? err.message
+								: String(err);
+					write({ kind: "error", message, assistantMessage: null });
+				}
 			} finally {
 				clearInterval(keepAlive);
-				controller.close();
+				if (!clientGone.signal.aborted) controller.close();
 			}
 		},
 	});

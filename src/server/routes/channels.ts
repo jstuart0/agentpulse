@@ -7,7 +7,12 @@ import { getActionRequest, resolveActionRequest } from "../services/ai/action-re
 import { emitAiEvent } from "../services/ai/ai-events.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import { getHitlRequest, resolveHitlRequest } from "../services/ai/hitl-service.js";
-import { findOrCreateTelegramThread, runAskTurn } from "../services/ask/ask-service.js";
+import {
+	ASK_MESSAGE_MAX_CHARS,
+	findOrCreateTelegramThread,
+	runAskTurn,
+} from "../services/ask/ask-service.js";
+import { AskBusyError } from "../services/ask/ask-turn-limiter.js";
 import {
 	completeEnrollment,
 	createPendingChannel,
@@ -35,6 +40,7 @@ import {
 	startTelegramPolling,
 	stopTelegramPolling,
 } from "../services/channels/telegram-poller.js";
+import { ASK_BUSY_REPLY, ASK_TOO_LONG_REPLY } from "../services/channels/telegram-replies.js";
 import {
 	type TelegramCallbackQuery,
 	type TelegramMessage,
@@ -135,6 +141,12 @@ async function handleTelegramAskMessage(message: TelegramMessage): Promise<void>
 		return;
 	}
 
+	// Refused before a thread exists or any work is done; the user is told why.
+	if (normalized.length > ASK_MESSAGE_MAX_CHARS) {
+		await telegramSendMessage(chatId, ASK_TOO_LONG_REPLY);
+		return;
+	}
+
 	const thread = await findOrCreateTelegramThread({
 		telegramChatId: chatId,
 		seedTitle: normalized,
@@ -160,6 +172,13 @@ async function handleTelegramAskMessage(message: TelegramMessage): Promise<void>
 				: res.assistantMessage.content,
 		);
 	} catch (err) {
+		if (err instanceof AskBusyError) {
+			// The turn never started: no slot came free in 30 s. Nothing was saved.
+			await telegramSendMessage(chatId, ASK_BUSY_REPLY).catch(() => {
+				// ignore
+			});
+			return;
+		}
 		const msg = err instanceof Error ? err.message : String(err);
 		console.error("[telegram-ask] turn failed:", msg);
 		await telegramSendMessage(chatId, `⚠️ Couldn't answer that one: ${msg.slice(0, 400)}`).catch(
