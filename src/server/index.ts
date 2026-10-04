@@ -27,6 +27,7 @@ import {
 } from "./services/projects/projects-service.js";
 import { scheduleRetentionInterval } from "./services/retention-service.js";
 import { buildSqliteScaleWarning, detectOrchestratorHint } from "./services/scale-warning.js";
+import { releaseOwnSummaryClaims } from "./services/session-summary-service.js";
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
@@ -61,6 +62,9 @@ const MAX_DRAIN_MS = 30_000; // matches preStop curl budget
 
 async function gracefulExit(reason: string, code = 0): Promise<never> {
 	setShuttingDown(reason);
+	// A summary generation still running is marked interrupted and its spend settled now,
+	// rather than left "generating" until its lease lapses (bounded to 2 s inside).
+	await releaseOwnSummaryClaims().catch(() => {});
 	const start = Date.now();
 	while (getInFlightCount() > 0 && Date.now() - start < MAX_DRAIN_MS) {
 		await new Promise((r) => setTimeout(r, 100));

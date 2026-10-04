@@ -54,6 +54,7 @@ import {
 	MAX_INPUT_TOKENS,
 	MAX_OUTPUT_TOKENS,
 	SCAN_BUSY_RETRY_AFTER_SECONDS,
+	SHUTDOWN_RELEASE_BUDGET_MS,
 	SHUTTING_DOWN_RETRY_AFTER_SECONDS,
 	SUMMARY_COOLDOWN_SECONDS,
 	SUMMARY_LEASE_SECONDS,
@@ -967,6 +968,58 @@ export async function requestSummaryGeneration(
 	}
 }
 
+/** Gives one taken entry back at shutdown: the row says interrupted, the reservation is settled per D-25. */
+async function releaseEntry(entry: Entry): Promise<void> {
+	try {
+		await writeAttempt(entry.sessionId, entry.token as string, failedRow("interrupted"));
+	} catch (error) {
+		console.error(
+			"[session-summary] release write failed",
+			JSON.stringify({ code: errorName(error) }),
+		);
+	}
+	try {
+		const reservation = entry.reservation as SpendReservation;
+		if (entry.phase === "reading") await releaseReservedSpend(reservation);
+		else {
+			// A call is, or may be, in flight: charge what returned plus the priced input of that call.
+			await settleReservedSpend(reservation, {
+				sessionId: entry.sessionId,
+				actualCents: entry.settledCents + entry.pendingInputEstimateCents,
+			});
+		}
+	} catch (error) {
+		console.error(
+			"[session-summary] release settlement failed",
+			JSON.stringify({ code: errorName(error) }),
+		);
+	} finally {
+		entries.delete(entry);
+	}
+}
+
+/**
+ * Shutdown: every running generation that is not already writing its result is taken,
+ * its row marked failed / interrupted (token cleared) and its reservation settled. A
+ * released run that later completes writes and settles nothing. An entry with no token
+ * yet (between the claim and the hand-over) is skipped: nothing was sent, and its own
+ * request returns any reservation. Idempotent, and returns within the budget even when
+ * a write hangs.
+ */
 export async function releaseOwnSummaryClaims(): Promise<void> {
-	throw new Error("not implemented");
+	const work: Promise<void>[] = [];
+	for (const entry of entries) {
+		if (entry.taken || entry.token === null || entry.phase === "finishing") continue;
+		entry.taken = true;
+		work.push(releaseEntry(entry));
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const budget = new Promise<void>((resolve) => {
+		timer = setTimeout(resolve, SHUTDOWN_RELEASE_BUDGET_MS);
+	});
+	try {
+		await Promise.race([Promise.allSettled(work), budget]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
