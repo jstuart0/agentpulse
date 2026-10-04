@@ -28,6 +28,7 @@ const SOLO_ROW = {
 	showTeamCopy: false,
 	ownerGatesSessionActions: false,
 	adminMayClearOthersAttention: false,
+	showSummarySharedNote: false,
 	machinesMenuLabel: "Admin" as const,
 };
 
@@ -88,6 +89,7 @@ describe("ownershipUi in team mode", () => {
 			showTeamCopy: true,
 			ownerGatesSessionActions: true,
 			adminMayClearOthersAttention: false,
+			showSummarySharedNote: true,
 			machinesMenuLabel: "Machines",
 		});
 	});
@@ -109,6 +111,7 @@ describe("ownershipUi in team mode", () => {
 			showTeamCopy: true,
 			ownerGatesSessionActions: true,
 			adminMayClearOthersAttention: true,
+			showSummarySharedNote: true,
 			machinesMenuLabel: "Machines",
 		});
 	});
@@ -223,5 +226,13 @@ describe("viewerIsAdmin", () => {
 		expect(viewerIsAdmin({ effectiveRole: "member" })).toBe(false);
 		expect(viewerIsAdmin({ effectiveRole: null })).toBe(false);
 		expect(viewerIsAdmin({})).toBe(false);
+	});
+});
+
+describe("the summary shared note (AGEN-69)", () => {
+	test("TC-7.26a false in solo, true in team for a member and an admin alike", () => {
+		expect(ownershipUi("solo", { effectiveRole: "admin" }).showSummarySharedNote).toBe(false);
+		expect(ownershipUi("team", { effectiveRole: "member" }).showSummarySharedNote).toBe(true);
+		expect(ownershipUi("team", { effectiveRole: "admin" }).showSummarySharedNote).toBe(true);
 	});
 });

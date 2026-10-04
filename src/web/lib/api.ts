@@ -29,6 +29,19 @@ import type {
 	WatcherPolicy,
 } from "../../shared/types.js";
 
+import type {
+	SessionSummaryStartBody,
+	SessionSummaryView,
+	SummaryRefusalCode,
+} from "../../shared/session-summary-view.js";
+
+export type {
+	SessionSummaryRefusalBody,
+	SessionSummaryStartBody,
+	SessionSummaryView,
+	SummaryRefusalCode,
+} from "../../shared/session-summary-view.js";
+
 export type {
 	ActionRequestDecision,
 	AskThreadOrigin,
@@ -867,6 +880,14 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
+	// --- Session summary (AGEN-69) ---
+	getSessionSummary: (_sessionId: string): Promise<SessionSummaryView> => {
+		throw new Error("not implemented");
+	},
+	generateSessionSummary: (_sessionId: string): Promise<GenerateSummaryResult> => {
+		throw new Error("not implemented");
+	},
+
 	// --- Vector search ---
 	getVectorSearchStatus: () =>
 		request<{
@@ -1336,6 +1357,17 @@ export interface AiWatcherConfig {
 	createdAt: string;
 	updatedAt: string;
 }
+
+/** A refused `POST /ai/sessions/:id/summary` as the web sees it (AGEN-69). `code` is null for a body the contract doesn't list. */
+export interface SummaryRefusal {
+	status: number;
+	code: SummaryRefusalCode | null;
+	retryAfterSeconds: number | null;
+}
+
+export type GenerateSummaryResult =
+	| { ok: true; body: SessionSummaryStartBody }
+	| { ok: false; refusal: SummaryRefusal };
 
 export interface AiStatusResponse {
 	build: boolean;

@@ -38,6 +38,8 @@ export interface OwnershipUi {
 	ownerGatesSessionActions: boolean;
 	/** An admin may mark anyone's session as seen. */
 	adminMayClearOthersAttention: boolean;
+	/** The Summary panel says everyone on the instance can read a generated summary. */
+	showSummarySharedNote: boolean;
 	machinesMenuLabel: "Admin" | "Machines";
 }
 
@@ -57,6 +59,7 @@ const SOLO_UI: OwnershipUi = {
 	showTeamCopy: false,
 	ownerGatesSessionActions: false,
 	adminMayClearOthersAttention: false,
+	showSummarySharedNote: false,
 	machinesMenuLabel: "Admin",
 };
 
@@ -79,6 +82,7 @@ export function ownershipUi(mode: InstanceMode, viewer: OwnershipViewer): Owners
 		showTeamCopy: true,
 		ownerGatesSessionActions: true,
 		adminMayClearOthersAttention: isAdmin,
+		showSummarySharedNote: false,
 		machinesMenuLabel: "Machines",
 	};
 }
