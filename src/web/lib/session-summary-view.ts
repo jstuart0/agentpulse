@@ -527,7 +527,7 @@ export function footerText(
 	const stored = view.stored;
 	if (!stored) return null;
 	const { provenance } = stored;
-	const through = view.throughAt ? formatMoment(view.throughAt, clock) : "";
+	const through = provenance.throughAt ? formatMoment(provenance.throughAt, clock) : "";
 	const generated = view.generatedAt ? relativeAgo(view.generatedAt, clock) : "";
 	const line = [
 		`Based on ${provenance.eventsTotal} events${through ? ` through ${through}` : ""}`,
@@ -627,7 +627,7 @@ function copyLabels(suspect: boolean): SummaryViewModel["copyLabels"] {
 	};
 }
 
-function staleText(newEvents: number): string {
+export function staleText(newEvents: number): string {
 	const count =
 		newEvents >= STALE_EVENT_COUNT_CAP ? `${STALE_EVENT_COUNT_CAP}+` : String(newEvents);
 	const what = newEvents === 1 ? "prompt or tool call" : "prompts and tool calls";
@@ -946,4 +946,31 @@ export function buildSummaryMarkdown(stored: StoredSessionSummary, meta: CopyMet
 
 export function buildContextMarkdown(stored: StoredSessionSummary): string {
 	return wrap([...section("Key Context", fence(stored.summary.handoff))]);
+}
+
+// ── skeleton for the phase 7 review fixes (replaced in the green commit) ────
+
+export const CLAIM_ONLY_LABEL = "";
+export const CLAIM_ONLY_HELP = "";
+export const CLAIM_ONLY_SECTION_NOTE = "";
+export const CODEX_CLAIM_ONLY_LINE = "";
+export function claimOnlyCopy(_agentType: string | null | undefined): {
+	label: string;
+	help: string;
+	sectionNote: string;
+	extra: string | null;
+} {
+	return { label: "", help: "", sectionNote: "", extra: null };
+}
+export function tabBadgeAccessibleName(_badge: "Summarizing" | "New" | null): string | null {
+	return null;
+}
+export const SUSPECT_LEAD = "";
+export const SUSPECT_REASON_LINES = {} as Record<string, string>;
+export type UnavailableReason = "flag_off" | "not_built" | "load_failed";
+export function summaryAvailabilityDetail(_input: AvailabilityInput): {
+	availability: Availability;
+	reason: UnavailableReason | null;
+} {
+	return { availability: "pending", reason: null };
 }
