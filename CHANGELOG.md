@@ -79,6 +79,27 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   Measured on a scratch server with a 4,848-event session: the
   request went from 2.9 MB to 60 bytes, and over a simulated 10 Mbit/s link
   from 2.2 s to about 1 ms.
+- **A single Ask message could make the server read every stored embedding
+  vector into memory.** On an install with vector search enabled
+  (`AGENTPULSE_VECTOR_SEARCH=true`, switched on in Settings) and a large
+  `event_embeddings` table, an Ask turn read the whole table in one
+  statement before it had decided what kind of question it was. One affected
+  table held about 164,000 vectors of 4,096 dimensions, roughly 2.7 GB, which
+  is enough to exhaust a container's memory and stall the event loop for
+  seconds; because the Telegram poller re-fetches an update it hasn't
+  confirmed, the same question could then be replayed after every restart.
+  Installs without vector search, and Postgres installs (vector search is
+  SQLite-only), were not affected. The semantic lookup now reads the table a
+  few vectors at a time through an index, under a row and time budget and a
+  CPU share (see Changed), and holds no memory in proportion to the table.
+- **Semantic lookup runs only for free-form questions.** Turns that end at a
+  gate or an intercept no longer embed the question or touch the vectors at all, and neither does
+  a turn with sessions pinned to it. It runs once, when a question reaches the
+  LLM answer.
+- **A turn reads only the history it renders.** A Telegram thread is never
+  archived and grows without bound; each turn now reads the newest 12 messages
+  of its thread instead of all of them, and an opening turn that ends at a gate
+  reads none.
 
 ### Changed
 
@@ -98,6 +119,38 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - A dashboard card shows the machine the filter selects on: for a
   supervisor-launched session that is the supervisor's host, where it used to
   show the name the session reported.
+- **Semantic matching covers the newest vectors, within a budget.** The Ask
+  scan scores the newest 50,000 vectors of the active embedding model and
+  stops there, or after 4 seconds, whichever comes first, and all scans in the
+  process together use at most 30% of CPU, so a scan is paced rather than
+  fast. Events older than what the scan reached are still found by keyword
+  search; they just don't contribute semantic matches. When a scan stops early
+  the server logs `vector_scan_coverage_partial` once per boot. The budgets
+  are set by `AGENTPULSE_VECTOR_SCAN_MAX_ROWS`, `AGENTPULSE_VECTOR_SCAN_MAX_MS`
+  and `AGENTPULSE_VECTOR_SCAN_CPU_SHARE` (see Upgrade notes). The scan is exact
+  cosine similarity, not approximate.
+- **Ask turns are limited to two at a time.** The web and Telegram share the
+  limit (`AGENTPULSE_ASK_MAX_CONCURRENT`, default 2). A caller that finds the
+  slots taken waits in line (up to four waiting, first in first out) for at
+  most 30 seconds; past that, or when the line is full, it is refused and
+  nothing is saved:
+  - `POST /api/v1/ai/ask` answers `503 {"error":"busy"}` with `Retry-After: 5`.
+  - `POST /api/v1/ai/ask/stream` sends an `error` frame whose message is "Ask
+    is busy right now. Try again in a few seconds." (the stream itself is
+    already open, so the HTTP status is 200).
+  - Telegram gets "I'm answering other questions right now. Please send that
+    again in a minute." A question can wait up to 30 seconds for a slot first,
+    and while the Telegram poller is waiting it handles no other update, so
+    in polling mode later messages queue behind it.
+  A caller that disconnects while waiting leaves the line at once; a turn that
+  has started runs to completion.
+- **Ask messages over 8,000 characters are refused.** The count is of the
+  trimmed message in UTF-16 code units (JavaScript `String.length`). The web
+  routes answer `400 {"error":"message_too_long","max":8000}` before anything
+  is created; Telegram replies that the message is too long and to shorten it.
+- **Oversize Ask request bodies get `413 {"error":"payload_too_large"}`.** The
+  limit is 256 KiB on `POST /api/v1/ai/ask` and `/api/v1/ai/ask/stream`. A
+  body that isn't valid JSON is `400 {"error":"invalid_body"}`.
 
 ### Upgrade notes
 
@@ -112,9 +165,73 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   upgraded server); an older status line against the new server is unchanged.
   `GET /api/v1/health`'s `clients.statusline` / `clients.relay` checksums and
   the relay's `drift` field tell a machine it is behind.
-- No migration. The new web and the new server go together: a web client asking
+- **SQLite: a new index is built on `event_embeddings` at first boot.**
+  `idx_event_embeddings_model_dim_event` on `(model, dim, event_id)` serves the
+  bounded scan, and the scan names it (`INDEXED BY`), so without it a scan
+  fails and logs `ask_vector_scan_error` rather than falling back to a table
+  scan. It is created with `CREATE INDEX IF NOT EXISTS` in both boot paths:
+  Drizzle migration `drizzle/sqlite/0010_event_embeddings_scan_index.sql` (fresh
+  installs, and `AGENTPULSE_LEGACY_INIT=false`) and, for an existing install on
+  the legacy init path, the additive list in `src/server/db/client.ts`, which
+  adds it only when `AGENTPULSE_VECTOR_SEARCH=true` (without that flag the
+  table doesn't exist there). The index build runs during boot and the server
+  does not serve until it finishes. What is known: on a warm table of about
+  164,000 rows it took about 100 ms in the builder's measurement. What is not:
+  how long it takes with the table's pages cold on a slow volume, which was not
+  measured. Postgres installs are unaffected: vector search is SQLite-only, so
+  there is no Postgres counterpart and no migration there.
+- **New environment variables** (all optional; an out-of-range number is
+  clamped into range, and a value that isn't a number falls back to the
+  default):
+
+  | Variable | Default | Range | What it does |
+  |---|---|---|---|
+  | `AGENTPULSE_VECTOR_SCAN_MAX_ROWS` | `50000` | 1,000 to 5,000,000 | Most vectors one scan reads. |
+  | `AGENTPULSE_VECTOR_SCAN_MAX_MS` | `4000` | 250 to 60,000 | Longest one scan runs, in milliseconds, including time spent paced. |
+  | `AGENTPULSE_VECTOR_SCAN_CPU_SHARE` | `0.3` | 0.05 to 1 | Share of CPU all concurrent scans together may use; `1` turns pacing off. |
+  | `AGENTPULSE_ASK_MAX_CONCURRENT` | `2` | 1 to 8 | Ask turns that may run at once, web and Telegram together, per process. |
+
+  Raise the row or time budget if you want semantic matches from further back
+  and can spare the time on each free-form question; lower them (or the CPU
+  share) on a small host. With the default CPU share the time budget, not the
+  row budget, is usually what stops a scan on slower hardware.
+- **Turning semantic search off without a redeploy.** Settings → AI → Vector
+  search has an Enabled toggle (the `vectorSearch.enabled` setting), or call
+  `PUT /api/v1/ai/vector-search/status` with `{"enabled":false}`. The setting
+  is read through a short-lived cache that a write invalidates, so no restart
+  is needed; embeddings already stored stay in place. Unsetting
+  `AGENTPULSE_VECTOR_SEARCH` turns the feature off at the next boot (the table
+  is left in place).
+- **Memory.** The scan no longer needs memory proportional to the table: it
+  holds a few vectors at a time, and the builder's measurements on synthetic
+  4,096-dimension data stayed near 100 MiB over a large table. The scan window
+  is still read through the operating system's page cache, which a container's
+  memory accounting can include, so we can't say what limit is sufficient for
+  your table. Watch the container's memory after the first free-form questions
+  and size from that.
+- **A manual benchmark** is in `scripts/bench-vector-scan.ts`; it is never run
+  in CI. It builds or reuses a synthetic SQLite database and reports the longest
+  event-loop stall, wall time and peak memory of a scan, and hook latency while
+  scans run, for example
+  `bun scripts/bench-vector-scan.ts --db /tmp/bench.db --rows 60000 --dim 4096 --mode all`.
+  Its `old` mode replays the pre-fix read and needs about 1.6 GiB of RAM at that
+  size; run it only on a machine that can spare that.
+- No other migration. The new web and the new server go together: a web client asking
   an older server for a machine refuses the answer rather than showing every
   machine's sessions under one machine's name.
+
+### Known limitations
+
+- The Telegram poller still re-fetches an update it hasn't confirmed after a
+  restart. A message that crashes the server for some reason other than the
+  vector read would still be replayed on each restart until it is confirmed.
+- A model or embedding call that hangs delays the Telegram messages behind it
+  in polling mode, because updates are handled one at a time.
+- The Ask limit is per process. With more than one replica each has its own
+  slots.
+- There is no per-user fairness: one chat or browser tab can take every slot
+  and fill the waiting line.
+
 
 ## [0.7.1] — 2026-10-03
 
