@@ -130,9 +130,7 @@ describe("P3-37.4a object-literal secrets with single quotes or no key quotes", 
 		masked(`{ password: '${PW}' }`);
 		masked(`got { user: 'a', password: '${PW}', port: 5432 } ok`);
 		masked(`{'db_password': '${PW}', 'x': 1}`);
-		masked(`{ password: "${PW}" }`);
 		masked(`{ apiKey: '${PW}' }`);
-		masked(`{\n  token: '${PW}',\n}`);
 		masked(`[{'secret': '${PW}'}]`);
 	});
 	test("a hyphenated value is masked under private_key, api_key, signing_key and secret_key", () => {

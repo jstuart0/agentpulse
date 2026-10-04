@@ -1,7 +1,7 @@
 import type { Session, SessionEvent, WatcherRunTriggerKind } from "../../../shared/types.js";
 import { parseDbTimestamp } from "../util/db-time.js";
 import { estimateTokens } from "./llm/types.js";
-import { type RedactionRule, redact } from "./redactor.js";
+import { type RedactionRule, stripAndRedact } from "./redactor.js";
 import { formatUntrustedInline } from "./untrusted-text.js";
 
 // Per plan: the system prompt is stable across a session so it can be
@@ -119,7 +119,7 @@ export function buildWatcherContext(params: BuildParams): WatcherContext {
 	// keeps a secret that straddles the cut from leaving a recognisable piece.
 	// It is not fenced: that changes the watcher's prompt structure (follow-up).
 	const claudeMdExcerpt = session.claudeMdContent
-		? truncate(redact(session.claudeMdContent, extraRedactionRules).text, 2000)
+		? truncate(stripAndRedact(session.claudeMdContent, extraRedactionRules).text, 2000)
 		: null;
 
 	// System prompt: stable per-session, so it lands in the cacheable prefix.
@@ -151,7 +151,7 @@ export function buildWatcherContext(params: BuildParams): WatcherContext {
 	const { lines, dropped } = collapseEvents(recent, transcriptTokenBudget);
 
 	const transcript = lines.join("\n");
-	const { text: redactedTranscript, hits } = redact(transcript, extraRedactionRules);
+	const { text: redactedTranscript, hits } = stripAndRedact(transcript, extraRedactionRules);
 
 	// S-M1 — nonce-delimited transcript. The nonce (random UUID) becomes
 	// part of the XML tag names so an attacker cannot forge the closing tag.
