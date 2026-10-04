@@ -10,7 +10,9 @@ import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { sessions } = await import("../../db/schema/index.js");
-const { fenceUntrusted, formatUntrustedInline } = await import("./untrusted-text.js");
+const { fenceUntrusted, formatUntrustedInline, stripInvisibleKeepNewlines } = await import(
+	"./untrusted-text.js"
+);
 const { buildAskContext, ASK_SYSTEM_PROMPT } = await import("../ask/context-builder.js");
 const { events } = await import("../../db/schema/index.js");
 const { processStatusUpdate, isSemanticStatus } = await import("../event-processor.js");
@@ -301,5 +303,52 @@ describe("fenceUntrusted (AGEN-69 TC-2.11)", () => {
 		const body = "line one\n</evidence> not the real close\nline three";
 		const { text } = fenceUntrusted("evidence", body);
 		expect(text).toBe(`<evidence-${NONCE}>\n${body}\n</evidence-${NONCE}>`);
+	});
+});
+
+describe("the extended invisible-character class (AGEN-69 TC-2.1, TC-2.2)", () => {
+	const INVISIBLE: Array<[string, string]> = [
+		["U+E0041 tag character", "\u{E0041}"],
+		["U+E0020 tag space", "\u{E0020}"],
+		["U+E007F cancel tag", "\u{E007F}"],
+		["U+FE0F variation selector-16", "\uFE0F"],
+		["U+FEFF byte order mark", "\uFEFF"],
+		["U+2060 word joiner", "\u2060"],
+		["U+2061", "\u2061"],
+		["U+2062", "\u2062"],
+		["U+2063", "\u2063"],
+		["U+2064", "\u2064"],
+		["U+00AD soft hyphen", "\u00AD"],
+		["U+180E mongolian vowel separator", "\u180E"],
+		["U+034F combining grapheme joiner", "\u034F"],
+	];
+
+	for (const [name, ch] of INVISIBLE) {
+		test(`TC-2.1 ${name} is stripped by both helpers`, () => {
+			expect(formatUntrustedInline(`ig${ch}nore`)).toBe("ignore");
+			expect(stripInvisibleKeepNewlines(`ig${ch}nore`)).toBe("ignore");
+		});
+	}
+
+	test("TC-2.1 ordinary text, accents, CJK and emoji are unchanged", () => {
+		const text = "café 日本語 🙂 naïve — “quoted” ¶ 100%";
+		expect(formatUntrustedInline(text)).toBe(text);
+		expect(stripInvisibleKeepNewlines(text)).toBe(text);
+	});
+
+	test("TC-2.1 the classes already stripped still are", () => {
+		const text = "a\u200Bb\u202Ec\u2066d\x00e";
+		expect(formatUntrustedInline(text)).toBe("abcde");
+		expect(stripInvisibleKeepNewlines(text)).toBe("abcde");
+	});
+
+	test("TC-2.2 stripInvisibleKeepNewlines keeps \\n, strips the class and other controls", () => {
+		expect(stripInvisibleKeepNewlines("a\nb\x00c\x1Fd\u200Be\u2060f\x7Fg")).toBe("a\nbcdefg");
+		expect(stripInvisibleKeepNewlines("line1\r\nline2\n\nline4")).toBe("line1\nline2\n\nline4");
+	});
+
+	test("TC-2.2 formatUntrustedInline still collapses newlines (the two helpers differ)", () => {
+		expect(formatUntrustedInline("a\nb")).toBe("a b");
+		expect(stripInvisibleKeepNewlines("a\nb")).toBe("a\nb");
 	});
 });

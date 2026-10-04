@@ -40,3 +40,8 @@ export function fenceUntrusted(tag: string, body: string): FencedText {
 	const safeBody = body.replace(new RegExp(nonce, "gi"), "[NONCE-REDACTED]");
 	return { text: `<${tag}-${nonce}>\n${safeBody}\n</${tag}-${nonce}>`, nonce };
 }
+
+/** Like formatUntrustedInline but keeps `\n`. (Phase 2b stub.) */
+export function stripInvisibleKeepNewlines(value: string): string {
+	return value;
+}
