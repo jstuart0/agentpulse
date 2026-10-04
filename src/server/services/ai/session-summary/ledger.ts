@@ -11,30 +11,39 @@
  * that order).
  */
 import { parseDbTimestamp } from "../../util/db-time.js";
-import { stripAndRedact } from "../redactor.js";
+import { type RedactionRule, stripAndRedact } from "../redactor.js";
 import { formatUntrustedInline } from "../untrusted-text.js";
-import { type CommandClass, classifyCommand, validationResult } from "./command-class.js";
+import {
+	type CommandClass,
+	classifyCommand,
+	passSummaryLine,
+	patchFilesOf,
+	validationResult,
+} from "./command-class.js";
 import {
 	AGENT_MESSAGE_CAP,
 	COMMAND_CAP,
 	DESCRIPTION_CAP,
 	EDIT_TOOLS,
+	FAILURE_EVENT_AGENTS,
 	FIRST_PROMPT_CAP,
 	FIRST_PROMPT_COUNT,
 	LAST_AGENT_MESSAGE_CAP,
 	LEDGER_CHAR_BUDGET,
 	LEDGER_PROTECTED_TAIL,
+	LEDGER_SLICE_ROWS,
 	MAX_IDS_PER_ENTRY,
 	ONE_LINER_CAP,
 	OUTPUT_HEAD,
 	OUTPUT_TAIL,
+	PASS_LINE_CAP,
 	PATH_CAP,
 	PROMPT_CAP,
 	READ_CLASS_TOOLS,
 	SHELL_TOOLS,
-	TOOL_INPUT_FIELD_SQL_CAP,
 	TOP_FILES,
 } from "./limits.js";
+import { readResponse } from "./response-text.js";
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -45,13 +54,19 @@ export interface EvidenceRow {
 	eventType: string;
 	category: string | null;
 	toolName: string | null;
+	/**
+	 * Narrative text as SQL cut it: PROMPT_CAP / AGENT_MESSAGE_CAP / ONE_LINER_CAP plus
+	 * SQL_REDACTION_MARGIN code points (first prompts: FIRST_PROMPT_CAP plus the margin). The
+	 * ledger caps it further and never mutates the row, so a caller holding the bundle sees
+	 * this longer, still-unredacted text (phase 4 extracts typed URLs from it). Redact before sending.
+	 */
 	content: string | null;
 	filePath: string | null;
 	command: string | null;
 	description: string | null;
-	/** The stored response, only for a command that looks like a validation. */
+	/** The stored response (cut to 2,000 characters in SQL), only for a shell-tool row. */
 	response: string | null;
-	/** The last 556 characters of the response, only for a failed tool row. */
+	/** The last 2,000 characters of the response, or the failure's `error` text, only for a failed tool row. */
 	responseTail: string | null;
 }
 
@@ -72,6 +87,14 @@ export interface LedgerInput {
 	rows: EvidenceRow[];
 	firstPromptRows: EvidenceRow[];
 	scan: ScanSummary;
+	/**
+	 * The session's agent type. An agent with a failure event (claude_code,
+	 * copilot_cli) makes PostToolUse evidence of success; for any other value, or
+	 * none, a result is ok or FAILED only when the response carries an exit code.
+	 */
+	agentType?: string | null;
+	/** The operator's own redaction rules, applied after the defaults (as the watcher does). */
+	redactionRules?: RedactionRule[];
 }
 
 export type FactKind =
@@ -83,12 +106,27 @@ export type FactKind =
 	| "tool"
 	| "event";
 
-/** What may be said about a cited id: no text, ever. */
+/**
+ * What may be said about a cited id: no text, ever. `completed` is the result
+ * of a call the evidence does not show to have succeeded or failed.
+ */
 export interface EvidenceFact {
 	kind: FactKind;
 	at: string | null;
-	result?: "ok" | "failed" | "unknown";
+	result?: "ok" | "failed" | "unknown" | "completed";
 	count?: number;
+}
+
+/** A cited id as the ledger knows it: the fact, and whether it records something the system saw. */
+export interface LedgerIdInfo extends EvidenceFact {
+	/** OBSERVED (true) or CLAIMED (false). Not part of the stored fact: see `storedFact`. */
+	observed: boolean;
+}
+
+/** The evidence fact to store for an id: the fields of the fact, without `observed`. */
+export function storedFact(info: LedgerIdInfo | EvidenceFact): EvidenceFact {
+	const { observed: _observed, ...fact } = info as LedgerIdInfo;
+	return fact;
 }
 
 export type EntryKind = "user_prompt" | "agent_message" | "edit" | "command" | "tool" | "one_liner";
@@ -101,16 +139,25 @@ export interface LedgerEntry {
 	eventCount: number;
 	/** The ids printed in `text`, and so the ids a summary may cite. */
 	shownIds: number[];
+	/** OBSERVED (the system saw or did it) versus CLAIMED (a person or a model said it). */
+	observed: boolean;
 }
 
+/**
+ * An interior omission is described by `droppedByCap` and `droppedByBudget`
+ * (tool calls or events the summary may say were left out), never by "n of m
+ * events read": once the scan reached the first event, `eventsRead` is the
+ * total. `eventsRead` is a measure of the scan, not wording for the summary.
+ */
 export interface Coverage {
 	status: "full" | "partial";
 	eventsTotal: number;
+	/** Events the scan covered; a scan measure, not a description. */
 	eventsRead: number;
 	eventsRepresented: number;
 	droppedByCap: number;
 	droppedByBudget: number;
-	/** Set only when the scan ended before the session's first event; null for an interior omission. */
+	/** ISO-8601, set only when the scan ended before the session's first event; null for an interior omission. */
 	cutoffAt: string | null;
 }
 
@@ -126,11 +173,15 @@ export interface LedgerCounts {
 export interface Ledger {
 	/** The entry lines, newest last, joined by newlines. Not fenced. */
 	text: string;
-	ids: Map<string, EvidenceFact>;
+	ids: Map<string, LedgerIdInfo>;
 	entries: LedgerEntry[];
 	coverage: Coverage;
 	counts: LedgerCounts;
+	/** Redactions in the text that is in `text` (not in entries the budget dropped), once per collapsed entry. */
 	redactionHits: number;
+	/** True when the protected entries alone exceed the budget (not reachable at the limits' defaults). */
+	overBudget: boolean;
+	diagnostics: { buildMs: number; slices: number; maxSliceMs: number };
 }
 
 // ── text handling ────────────────────────────────────────────────────────────
@@ -156,35 +207,44 @@ function takeEnd(text: string, n: number): { text: string; cut: boolean } {
 
 interface Ctx {
 	hits: number;
+	rules: RedactionRule[];
 }
 
+/** The closing-quote lookalike put in place of a `"` inside a quoted field. */
+const QUOTE_LOOKALIKE = "”";
+
 /**
- * Strip invisibles, redact, neutralise (one line, no angle brackets). The order
- * is required: redacting first lets a secret split by an invisible character
- * through (see `stripAndRedact`). Every text field reaches the ledger through
- * here and nowhere else, so nothing taken from a tool's input or response is
- * ever written unredacted.
+ * Strip invisibles, redact (defaults, then the operator's rules), neutralise
+ * (one line, no angle brackets). The order is required: redacting first lets a
+ * secret split by an invisible character through (see `stripAndRedact`). Every
+ * text field reaches the ledger through here and nowhere else, so nothing taken
+ * from a tool's input or response is ever written unredacted. A `"` becomes a
+ * lookalike in every field that is printed between double quotes, so a field
+ * cannot close its own quotes and forge the rest of the line; a command is
+ * printed between backticks (replaced here) and keeps its quotes.
  */
-function clean(raw: string, ctx: Ctx): string {
-	const redacted = stripAndRedact(raw);
+function clean(raw: string, ctx: Ctx, inQuotes: boolean): string {
+	const redacted = stripAndRedact(raw, ctx.rules);
 	ctx.hits += redacted.hits.length;
-	return formatUntrustedInline(redacted.text).replace(/`/g, "'");
+	const line = formatUntrustedInline(redacted.text).replace(/`/g, "'");
+	return inQuotes ? line.replace(/"/g, QUOTE_LOOKALIKE) : line;
 }
 
 /** `clean`, then cut to `cap` code points; a longer value ends in an ellipsis. */
-function field(raw: string | null | undefined, cap: number, ctx: Ctx): string {
+function field(raw: string | null | undefined, cap: number, ctx: Ctx, inQuotes = true): string {
 	if (!raw) return "";
-	const { text, cut } = takeStart(clean(raw, ctx), cap);
+	const { text, cut } = takeStart(clean(raw, ctx, inQuotes), cap);
 	return cut ? `${text}…` : text;
 }
 
+/** Redacts the WHOLE text first and only then keeps the last `cap` code points. */
 function tailField(raw: string, cap: number, ctx: Ctx): string {
-	const { text, cut } = takeEnd(clean(raw, ctx), cap);
+	const { text, cut } = takeEnd(clean(raw, ctx, true).trim(), cap);
 	return cut ? `…${text}` : text;
 }
 
 function excerpt(raw: string, ctx: Ctx): string {
-	const text = clean(raw, ctx);
+	const text = clean(raw, ctx, true).trim();
 	if (Array.from(text).length <= OUTPUT_HEAD + OUTPUT_TAIL) return text;
 	return `${takeStart(text, OUTPUT_HEAD).text} … ${takeEnd(text, OUTPUT_TAIL).text}`;
 }
@@ -203,9 +263,26 @@ type RowClass =
 	| { kind: "prompt" }
 	| { kind: "agent_message" }
 	| { kind: "one_liner"; label: string; observed: boolean }
-	| { kind: "edit"; failed: boolean }
-	| { kind: "shell"; failed: boolean }
-	| { kind: "tool"; failed: boolean; name: string };
+	| { kind: "edit" }
+	| { kind: "shell" }
+	| { kind: "tool"; name: string };
+
+// OBSERVED is what the system itself did or saw; CLAIMED is what a person or a
+// model wrote (ruling R-C). The `ai_*` rows, one by one:
+//   ai_proposal_pending  CLAIMED   model-written proposal text
+//   ai_proposal          CLAIMED   model-written proposal text
+//   ai_report            CLAIMED   model-written report
+//   ai_hitl_request      CLAIMED   model-written question to the operator
+//   ai_hitl_response     OBSERVED  the operator's recorded decision
+//   ai_continue_sent     CLAIMED   model-written continuation prompt
+//   ai_continue_blocked  OBSERVED  the system's own refusal
+//   ai_error             OBSERVED  the system's own error
+//   any other ai_*       CLAIMED   unknown content is not observation
+const AI_CATEGORY_OBSERVED: Record<string, boolean> = {
+	ai_hitl_response: true,
+	ai_continue_blocked: true,
+	ai_error: true,
+};
 
 const ONE_LINER_LABELS: Record<string, { label: string; observed: boolean }> = {
 	permission_event: { label: "permission", observed: true },
@@ -232,22 +309,29 @@ function classifyRow(row: EvidenceRow): RowClass {
 	if (category === "assistant_message") return { kind: "agent_message" };
 	const oneLiner = category ? ONE_LINER_LABELS[category] : undefined;
 	if (oneLiner) return { kind: "one_liner", ...oneLiner };
-	if (category?.startsWith("ai_")) return { kind: "one_liner", label: "ai event", observed: true };
+	if (category?.startsWith("ai_")) {
+		return {
+			kind: "one_liner",
+			label: "ai event",
+			observed: AI_CATEGORY_OBSERVED[category] === true,
+		};
+	}
 	if (category === "tool_event") {
 		if (row.eventType !== "PostToolUse" && row.eventType !== "PostToolUseFailure") {
 			return { kind: "skip" };
 		}
-		const failed = row.eventType === "PostToolUseFailure";
 		const name = (row.toolName ?? "").toLowerCase();
 		if (READ_CLASS.has(name)) return { kind: "skip" };
-		if (EDITS.has(name)) return { kind: "edit", failed };
-		if (SHELLS.has(name)) return { kind: "shell", failed };
-		return { kind: "tool", failed, name: row.toolName ?? "" };
+		if (EDITS.has(name)) return { kind: "edit" };
+		if (SHELLS.has(name)) return { kind: "shell" };
+		return { kind: "tool", name: row.toolName ?? "" };
 	}
 	return { kind: "skip" };
 }
 
 // ── entries ──────────────────────────────────────────────────────────────────
+
+type Status = "ok" | "failed" | "completed";
 
 interface Draft {
 	kind: EntryKind;
@@ -256,59 +340,83 @@ interface Draft {
 	/** Everything after "<ids> <time> ". */
 	body: string;
 	fact: Omit<EvidenceFact, "at">;
+	observed: boolean;
 	/** Edits collapse only with the same file and the same status. */
 	collapseKey: string | null;
 	firstPrompt: boolean;
-	editPath: string | null;
+	/** The cleaned paths an edit names, for the per-file counts. */
+	editPaths: string[];
+	/** Redactions made in this entry's text. */
+	hits: number;
+	isCommand: boolean;
+	failed: boolean;
 }
 
-function resultWord(result: "ok" | "failed" | "unknown"): string {
+function resultWord(result: Status | "ok" | "failed" | "unknown" | "completed"): string {
 	return result === "failed" ? "FAILED" : result;
 }
 
-function renderShell(
-	row: EvidenceRow,
-	failed: boolean,
-	ctx: Ctx,
-): { body: string; fact: Draft["fact"] } {
-	const status = failed ? "failed" : "ok";
-	const tooLong = Array.from(row.command ?? "").length >= TOOL_INPUT_FIELD_SQL_CAP;
-	const cls: CommandClass =
-		row.command === null || tooLong ? { kind: "not_shown" } : classifyCommand(row.command);
-	const fact = (kind: FactKind, result?: EvidenceFact["result"]): Draft["fact"] =>
-		result ? { kind, result } : { kind };
+/**
+ * ok or FAILED only when the evidence says so. A failure event is failed; for an
+ * agent that has failure events, a PostToolUse is evidence of success. For any
+ * other agent the response must carry an exit code; without one the call is
+ * `completed`, which claims nothing.
+ */
+function statusOf(row: EvidenceRow, hasFailureEvent: boolean): Status {
+	if (row.eventType === "PostToolUseFailure") return "failed";
+	if (hasFailureEvent) return "ok";
+	const { exitCode } = readResponse(row.response);
+	if (exitCode === null) return "completed";
+	return exitCode === 0 ? "ok" : "failed";
+}
 
+interface Rendered {
+	body: string;
+	fact: Draft["fact"];
+}
+
+function commandFact(kind: FactKind, result: EvidenceFact["result"]): Draft["fact"] {
+	return { kind, result };
+}
+
+function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: Ctx): Rendered {
 	if (cls.kind === "withheld") {
 		return {
 			body: `OBSERVED command [withheld: reads credentials] -> ${resultWord(status)}`,
-			fact: fact("command", status),
+			fact: commandFact("command", status),
 		};
 	}
-	if (cls.kind === "not_shown") {
+	if (cls.kind === "not_shown" || cls.kind === "patch") {
 		return {
 			body: `OBSERVED command [not shown] -> ${resultWord(status)}`,
-			fact: fact("command", status),
+			fact: commandFact("command", status),
 		};
 	}
-	const command = field(row.command, COMMAND_CAP, ctx);
+	const command = field(row.command, COMMAND_CAP, ctx, false);
 	const description = row.description
 		? ` (desc "${field(row.description, DESCRIPTION_CAP, ctx)}")`
 		: "";
+	const read = readResponse(row.response ?? row.responseTail);
 	if (cls.kind === "validation") {
-		const result = validationResult(row.response, failed, cls.masked);
-		const out = row.response ? `: "${excerpt(row.response, ctx)}"` : "";
+		const result = validationResult(read.text, status === "failed", cls.masked);
+		let out = "";
+		if (result === "failed" && read.text) out = `: "${excerpt(read.text, ctx)}"`;
+		else if (result === "ok") {
+			const line = passSummaryLine(read.text);
+			if (line) out = `: "${field(line, PASS_LINE_CAP, ctx)}"`;
+		}
 		return {
 			body: `OBSERVED command [validation] \`${command}\`${description} -> ${resultWord(result)}${out}`,
-			fact: fact("validation", result),
+			fact: commandFact("validation", result),
 		};
 	}
-	let out = "";
-	if (failed && !cls.hasViewer && row.responseTail) {
-		out = `: "${tailField(row.responseTail, OUTPUT_TAIL, ctx)}"`;
-	}
+	const out =
+		status === "failed" && cls.tailAllowed && read.text
+			? `: "${tailField(read.text, OUTPUT_TAIL, ctx)}"`
+			: "";
 	return {
 		body: `OBSERVED command \`${command}\`${description} -> ${resultWord(status)}${out}`,
-		fact: fact("command", status),
+		fact: commandFact("command", status),
 	};
 }
 
@@ -317,68 +425,143 @@ function toolLabel(name: string): string {
 	return safe || "unknown";
 }
 
+const MAX_PATCH_FILES_SHOWN = 10;
+
+/** The cleaned, capped paths an edit entry names (at most MAX_PATCH_FILES_SHOWN), and the rest counted. */
+function cleanPaths(paths: string[], ctx: Ctx): { shown: string[]; more: number } {
+	const shown = paths
+		.slice(0, MAX_PATCH_FILES_SHOWN)
+		.map((p) => field(p, PATH_CAP, ctx) || "[path not shown]");
+	return { shown, more: paths.length - shown.length };
+}
+
+function editDraft(
+	base: Omit<Draft, "kind" | "body" | "fact" | "observed" | "collapseKey" | "editPaths" | "failed">,
+	paths: string[],
+	failed: boolean,
+	ctx: Ctx,
+): Draft {
+	const { shown, more } = cleanPaths(paths, ctx);
+	const text =
+		shown.length === 0
+			? "[path not shown]"
+			: `${shown.map((p) => `"${p}"`).join(", ")}${more > 0 ? ` (+${more} files)` : ""}`;
+	return {
+		...base,
+		kind: "edit",
+		body: `OBSERVED edit ${text}${failed ? " -> FAILED" : ""}`,
+		fact: failed ? { kind: "edit", result: "failed" } : { kind: "edit" },
+		observed: true,
+		collapseKey: `${failed ? "failed" : "ok"}\u0000${text}`,
+		editPaths: shown.length === 0 ? ["[path not shown]"] : shown,
+		failed,
+	};
+}
+
+interface RowEnv {
+	hasFailureEvent: boolean;
+	ctx: Ctx;
+}
+
 function draftFor(
 	row: EvidenceRow,
 	cls: RowClass,
 	firstPrompt: boolean,
 	lastAgent: boolean,
-	ctx: Ctx,
+	env: RowEnv,
 ): Draft | null {
+	if (cls.kind === "skip") return null;
+	const { ctx } = env;
+	const hitsBefore = ctx.hits;
 	const at = clock(row.createdAt);
-	const base = { rowIds: [row.id], at, collapseKey: null, firstPrompt: false, editPath: null };
+	const base = {
+		rowIds: [row.id],
+		at,
+		firstPrompt: false,
+		hits: 0,
+		isCommand: false,
+	};
+	const done = (draft: Draft): Draft => ({ ...draft, hits: ctx.hits - hitsBefore });
 	switch (cls.kind) {
-		case "skip":
-			return null;
 		case "prompt": {
 			const cap = firstPrompt ? FIRST_PROMPT_CAP : PROMPT_CAP;
-			return {
+			return done({
 				...base,
 				kind: "user_prompt",
 				firstPrompt,
 				body: `CLAIMED user prompt: "${field(row.content, cap, ctx)}"`,
 				fact: { kind: "prompt" },
-			};
+				observed: false,
+				collapseKey: null,
+				editPaths: [],
+				failed: false,
+			});
 		}
 		case "agent_message": {
 			const cap = lastAgent ? LAST_AGENT_MESSAGE_CAP : AGENT_MESSAGE_CAP;
-			return {
+			return done({
 				...base,
 				kind: "agent_message",
 				body: `CLAIMED agent message: "${field(row.content, cap, ctx)}"`,
 				fact: { kind: "agent_message" },
-			};
+				observed: false,
+				collapseKey: null,
+				editPaths: [],
+				failed: false,
+			});
 		}
 		case "one_liner":
-			return {
+			return done({
 				...base,
 				kind: "one_liner",
 				body: `${cls.observed ? "OBSERVED" : "CLAIMED"} ${cls.label}: "${field(row.content, ONE_LINER_CAP, ctx)}"`,
 				fact: { kind: "event" },
-			};
+				observed: cls.observed,
+				collapseKey: null,
+				editPaths: [],
+				failed: false,
+			});
 		case "edit": {
-			const path = field(row.filePath, PATH_CAP, ctx) || "[path not shown]";
-			const status = cls.failed ? " -> FAILED" : "";
-			return {
-				...base,
-				kind: "edit",
-				body: `OBSERVED edit ${path}${status}`,
-				fact: cls.failed ? { kind: "edit", result: "failed" } : { kind: "edit" },
-				collapseKey: `${cls.failed ? "failed" : "ok"}\u0000${path}`,
-				editPath: path,
-			};
+			const status = statusOf(row, env.hasFailureEvent);
+			let paths = row.filePath ? [row.filePath] : [];
+			if (paths.length === 0 && row.command) {
+				const command = classifyCommand(row.command);
+				// The apply_patch tool holds the patch text itself; a shell form is classified.
+				paths = command.kind === "patch" ? command.files : patchFilesOf(row.command);
+			}
+			return done(editDraft(base, paths, status === "failed", ctx));
 		}
 		case "shell": {
-			const rendered = renderShell(row, cls.failed, ctx);
-			return { ...base, kind: "command", body: rendered.body, fact: rendered.fact };
+			const status = statusOf(row, env.hasFailureEvent);
+			const command: CommandClass =
+				row.command === null ? { kind: "not_shown" } : classifyCommand(row.command);
+			if (command.kind === "patch")
+				return done(editDraft(base, command.files, status === "failed", ctx));
+			const rendered = renderShell(row, status, command, ctx);
+			return done({
+				...base,
+				kind: "command",
+				body: rendered.body,
+				fact: rendered.fact,
+				observed: true,
+				collapseKey: null,
+				editPaths: [],
+				isCommand: true,
+				failed: status === "failed",
+			});
 		}
 		case "tool": {
-			const result = cls.failed ? "failed" : "ok";
-			return {
+			const status = statusOf(row, env.hasFailureEvent);
+			return done({
 				...base,
 				kind: "tool",
-				body: `OBSERVED tool ${toolLabel(cls.name)} -> ${resultWord(result)}`,
-				fact: { kind: "tool", result },
-			};
+				body: `OBSERVED tool ${toolLabel(cls.name)} -> ${resultWord(status)}`,
+				fact: { kind: "tool", result: status },
+				observed: true,
+				collapseKey: null,
+				editPaths: [],
+				failed: status === "failed",
+			});
 		}
 	}
 }
@@ -394,6 +577,7 @@ function collapse(drafts: Draft[]): Collapsed[] {
 		const last = out[out.length - 1];
 		if (last && draft.collapseKey !== null && last.draft.collapseKey === draft.collapseKey) {
 			last.rowIds.push(...draft.rowIds);
+			// The entry keeps the first row's text and redaction count: the rows share one path.
 			last.draft = { ...last.draft, at: draft.at };
 			continue;
 		}
@@ -413,7 +597,9 @@ export interface Built extends LedgerEntry {
 	rowIds: number[];
 	at: string | null;
 	fact: Draft["fact"];
-	editPath: string | null;
+	editPaths: string[];
+	/** Redactions in this entry's text. */
+	hits: number;
 }
 
 function finish(collapsed: Collapsed): Built {
@@ -430,29 +616,35 @@ function finish(collapsed: Collapsed): Built {
 		text: `${shownIds.map((id) => `E${id}`).join(",")} ${draft.at.hhmm} ${body}`,
 		eventCount: count,
 		shownIds,
+		observed: draft.observed,
 		firstPrompt: draft.firstPrompt,
 		rowIds,
 		at: draft.at.iso,
 		fact: count > 1 ? { ...draft.fact, count } : draft.fact,
-		editPath: draft.editPath,
+		editPaths: draft.editPaths,
+		hits: draft.hits,
 	};
 }
 
 // ── budget ───────────────────────────────────────────────────────────────────
 
-function bodyLength(entries: Built[]): number {
+function bodyLength(entries: Array<{ text: string }>): number {
 	return entries.reduce((sum, e) => sum + e.text.length, 0) + Math.max(0, entries.length - 1);
 }
 
 const ACTION_KINDS = new Set<EntryKind>(["edit", "command", "tool"]);
 
-/** Drops the oldest action entries, then the oldest agent messages, then the rest, until it fits. */
+/**
+ * Drops the oldest action entries, then the oldest agent messages, then the
+ * rest, until the text fits `budget`. The first prompts and the newest
+ * LEDGER_PROTECTED_TAIL entries are never dropped; if they alone exceed the
+ * budget the result says so (`overBudget`) instead of overflowing silently.
+ */
 export function applyBudget(
 	entries: Built[],
-	_budget = LEDGER_CHAR_BUDGET,
+	budget = LEDGER_CHAR_BUDGET,
 ): { kept: Built[]; droppedEvents: number; overBudget: boolean } {
-	if (bodyLength(entries) <= LEDGER_CHAR_BUDGET)
-		return { kept: entries, droppedEvents: 0, overBudget: false };
+	if (bodyLength(entries) <= budget) return { kept: entries, droppedEvents: 0, overBudget: false };
 	const protectedFrom = Math.max(0, entries.length - LEDGER_PROTECTED_TAIL);
 	const isProtected = (entry: Built, index: number) => entry.firstPrompt || index >= protectedFrom;
 	const dropped = new Set<number>();
@@ -463,7 +655,7 @@ export function applyBudget(
 		() => true,
 	];
 	for (const wanted of passes) {
-		for (let i = 0; i < entries.length && length > LEDGER_CHAR_BUDGET; i++) {
+		for (let i = 0; i < entries.length && length > budget; i++) {
 			const entry = entries[i] as Built;
 			if (dropped.has(i) || isProtected(entry, i) || !wanted(entry)) continue;
 			dropped.add(i);
@@ -472,61 +664,106 @@ export function applyBudget(
 	}
 	const kept = entries.filter((_, i) => !dropped.has(i));
 	const droppedEvents = entries.reduce((n, e, i) => n + (dropped.has(i) ? e.eventCount : 0), 0);
-	return { kept, droppedEvents, overBudget: false };
+	return { kept, droppedEvents, overBudget: bodyLength(kept) > budget };
 }
 
 // ── build ────────────────────────────────────────────────────────────────────
 
-export function buildLedger(input: LedgerInput): Ledger {
-	const ctx: Ctx = { hits: 0 };
+interface BuildState {
+	rows: EvidenceRow[];
+	classes: Map<number, RowClass>;
+	firstPromptIds: Set<number>;
+	firstPromptId: number | undefined;
+	lastAgentId: number | undefined;
+	drafts: Draft[];
+	env: RowEnv;
+	slices: number;
+	maxSliceMs: number;
+	sliceMsTotal: number;
+	next: number;
+}
 
+function prepare(input: LedgerInput): BuildState {
 	const byId = new Map<number, EvidenceRow>();
 	for (const row of input.rows) byId.set(row.id, row);
 	// A first-prompt row was read with the larger prompt margin; prefer it.
 	for (const row of input.firstPromptRows) byId.set(row.id, row);
 	const rows = [...byId.values()].sort((a, b) => a.id - b.id);
-
 	const classes = new Map<number, RowClass>(rows.map((r) => [r.id, classifyRow(r)]));
 	const promptIds = rows.filter((r) => classes.get(r.id)?.kind === "prompt").map((r) => r.id);
-	const firstPromptIds = new Set(promptIds.slice(0, FIRST_PROMPT_COUNT));
-	const lastAgentId = [...rows]
-		.reverse()
-		.find((r) => classes.get(r.id)?.kind === "agent_message")?.id;
+	return {
+		rows,
+		classes,
+		firstPromptIds: new Set(promptIds.slice(0, FIRST_PROMPT_COUNT)),
+		firstPromptId: promptIds[0],
+		lastAgentId: [...rows].reverse().find((r) => classes.get(r.id)?.kind === "agent_message")?.id,
+		drafts: [],
+		env: {
+			hasFailureEvent: FAILURE_EVENT_AGENTS.includes(input.agentType ?? ""),
+			ctx: { hits: 0, rules: input.redactionRules ?? [] },
+		},
+		slices: 0,
+		maxSliceMs: 0,
+		sliceMsTotal: 0,
+		next: 0,
+	};
+}
 
-	const drafts: Draft[] = [];
-	for (const row of rows) {
-		const cls = classes.get(row.id) as RowClass;
-		const isFirst = promptIds[0] === row.id;
-		const draft = draftFor(row, cls, isFirst, row.id === lastAgentId, ctx);
+/** Drafts the next LEDGER_SLICE_ROWS rows: the classifier and the redactor run here, so one slice bounds one tick. */
+function runSlice(state: BuildState): boolean {
+	const started = performance.now();
+	const end = Math.min(state.rows.length, state.next + LEDGER_SLICE_ROWS);
+	for (; state.next < end; state.next++) {
+		const row = state.rows[state.next] as EvidenceRow;
+		const cls = state.classes.get(row.id) as RowClass;
+		const draft = draftFor(
+			row,
+			cls,
+			state.firstPromptId === row.id,
+			row.id === state.lastAgentId,
+			state.env,
+		);
 		if (draft) {
-			draft.firstPrompt = firstPromptIds.has(row.id);
-			drafts.push(draft);
+			draft.firstPrompt = state.firstPromptIds.has(row.id);
+			state.drafts.push(draft);
 		}
 	}
+	const elapsed = performance.now() - started;
+	state.slices++;
+	state.maxSliceMs = Math.max(state.maxSliceMs, elapsed);
+	state.sliceMsTotal += elapsed;
+	return state.next < state.rows.length;
+}
 
-	const built = collapse(drafts).map(finish);
-	const counts = countsOf(rows, classes, built);
-	const { kept, droppedEvents } = applyBudget(built);
+function conclude(input: LedgerInput, state: BuildState): Ledger {
+	const started = performance.now();
+	const built = collapse(state.drafts).map(finish);
+	const counts = countsOf(state.rows, state.drafts, built);
+	const { kept, droppedEvents, overBudget } = applyBudget(built);
 
-	const ids = new Map<string, EvidenceFact>();
+	const ids = new Map<string, LedgerIdInfo>();
 	for (const entry of kept) {
 		for (const id of entry.shownIds) {
-			ids.set(`E${id}`, { ...entry.fact, at: entry.at });
+			ids.set(`E${id}`, { ...entry.fact, at: entry.at, observed: entry.observed });
 		}
 	}
 	const represented = kept.reduce((n, e) => n + e.eventCount, 0);
 	const scan = input.scan;
-	const cutoffAt = scan.reachedFirstEvent ? null : scan.oldestReadAt;
+	const cutoffAt =
+		scan.reachedFirstEvent || !scan.oldestReadAt ? null : clock(scan.oldestReadAt).iso;
 	const partial = !scan.reachedFirstEvent || scan.droppedByCap > 0 || droppedEvents > 0;
+	const concludeMs = performance.now() - started;
+	const buildMs = state.sliceMsTotal + concludeMs;
 
 	return {
 		text: kept.map((e) => e.text).join("\n"),
 		ids,
-		entries: kept.map(({ kind, text, eventCount, shownIds }) => ({
+		entries: kept.map(({ kind, text, eventCount, shownIds, observed }) => ({
 			kind,
 			text,
 			eventCount,
 			shownIds,
+			observed,
 		})),
 		coverage: {
 			status: partial ? "partial" : "full",
@@ -538,33 +775,54 @@ export function buildLedger(input: LedgerInput): Ledger {
 			cutoffAt,
 		},
 		counts,
-		redactionHits: ctx.hits,
+		redactionHits: kept.reduce((n, e) => n + e.hits, 0),
+		overBudget,
+		diagnostics: {
+			buildMs,
+			slices: state.slices,
+			maxSliceMs: Math.max(state.maxSliceMs, concludeMs),
+		},
 	};
 }
 
-function countsOf(
-	rows: EvidenceRow[],
-	classes: Map<number, RowClass>,
-	built: Built[],
-): LedgerCounts {
+/** The ledger, built in one go. Pure. See `buildLedgerAsync` for a build that yields the event loop. */
+export function buildLedger(input: LedgerInput): Ledger {
+	const state = prepare(input);
+	while (runSlice(state));
+	return conclude(input, state);
+}
+
+const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * The same ledger, built in slices of LEDGER_SLICE_ROWS rows with the event loop
+ * given a turn between slices, so a long session's classification and redaction
+ * never hold a tick longer than one slice (P3-36). `diagnostics` records the build.
+ */
+export async function buildLedgerAsync(input: LedgerInput): Promise<Ledger> {
+	const state = prepare(input);
+	while (runSlice(state)) await nextTurn();
+	return conclude(input, state);
+}
+
+function countsOf(rows: EvidenceRow[], drafts: Draft[], built: Built[]): LedgerCounts {
 	let prompts = 0;
 	let commands = 0;
 	let failedCommands = 0;
-	let permissionRequests = 0;
-	for (const row of rows) {
-		const cls = classes.get(row.id);
-		if (cls?.kind === "prompt") prompts++;
-		if (cls?.kind === "shell") {
+	for (const draft of drafts) {
+		if (draft.kind === "user_prompt") prompts++;
+		if (draft.isCommand) {
 			commands++;
-			if (cls.failed) failedCommands++;
+			if (draft.failed) failedCommands++;
 		}
-		if (row.eventType === "PermissionRequest") permissionRequests++;
 	}
+	const permissionRequests = rows.filter((r) => r.eventType === "PermissionRequest").length;
 	const perFile = new Map<string, number>();
 	for (const entry of built) {
 		if (entry.kind !== "edit") continue;
-		const path = entry.editPath ?? "[path not shown]";
-		perFile.set(path, (perFile.get(path) ?? 0) + entry.eventCount);
+		for (const path of entry.editPaths) {
+			perFile.set(path, (perFile.get(path) ?? 0) + entry.eventCount);
+		}
 	}
 	const sorted = [...perFile.entries()]
 		.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
@@ -577,12 +835,4 @@ function countsOf(
 		editedFiles: sorted.length,
 		editsByFile: sorted.slice(0, TOP_FILES),
 	};
-}
-
-/** Stub, replaced in the fix commit. */
-export function storedFact(info: EvidenceFact): EvidenceFact {
-	return info;
-}
-export async function buildLedgerAsync(input: LedgerInput): Promise<Ledger> {
-	return buildLedger(input);
 }

@@ -717,6 +717,9 @@ function isCredentialPath(token: string, bare = false): boolean {
 	const path = token.toLowerCase().replace(/\/+$/, "");
 	if (!path) return false;
 	const base = path.slice(path.lastIndexOf("/") + 1);
+	// A bare word such as `secret` or `credentials` in a commit message is prose; a name
+	// counts when it is path-shaped, or is an operand of a file reader.
+	const pathShaped = bare || path.includes("/") || path.includes(".");
 	if (
 		base.startsWith(".env") ||
 		base === ".netrc" ||
@@ -735,8 +738,8 @@ function isCredentialPath(token: string, bare = false): boolean {
 		/\.(pem|key|p12|pfx|jks|keystore|ppk)$/.test(base) ||
 		base.includes(".tfstate") ||
 		base.includes("kubeconfig") ||
-		base.startsWith("credentials") ||
-		/(^|[._-])secrets?([._-]|$)/.test(base) ||
+		(pathShaped && base.startsWith("credentials")) ||
+		(pathShaped && /(^|[._-])secrets?([._-]|$)/.test(base)) ||
 		/(^|\/)config\/prod/.test(path) ||
 		base.endsWith(".tfvars") ||
 		base.endsWith(".tfvars.json") ||
@@ -752,9 +755,7 @@ function isCredentialPath(token: string, bare = false): boolean {
 	}
 	const inDirectory = `/${path}/`;
 	if (CREDENTIAL_DIRS.some((d) => inDirectory.includes(d))) return true;
-	if (bare || path.includes("/") || path.includes(".")) {
-		return path.split("/").some((component) => SECRET_WORD_RE.test(component));
-	}
+	if (pathShaped) return path.split("/").some((component) => SECRET_WORD_RE.test(component));
 	return false;
 }
 
@@ -1181,7 +1182,8 @@ export function classifyCommand(input: unknown): CommandClass {
 	}
 }
 
-function patchFiles(text: string): string[] {
+/** The `*** Add|Update|Delete File:` paths of a patch text; its body is never read. */
+export function patchFilesOf(text: string): string[] {
 	return [...text.matchAll(PATCH_FILE_RE)].map((m) => (m[1] as string).trim());
 }
 
@@ -1190,7 +1192,7 @@ function classify(input: unknown): CommandClass {
 	if (storedLength(input) >= TOOL_INPUT_FIELD_SQL_CAP) return { kind: "not_shown" };
 	const text = toCommandString(input);
 	if (text === null || text === "") return { kind: "not_shown" };
-	if (PATCH_HEAD_RE.test(text)) return { kind: "patch", files: patchFiles(text) };
+	if (PATCH_HEAD_RE.test(text)) return { kind: "patch", files: patchFilesOf(text) };
 	const parsed = parse(text);
 	if (parsed.flags.unparseable) return { kind: "not_shown" };
 
@@ -1285,6 +1287,3 @@ export function passSummaryLine(response: string | null | undefined): string | n
 	}
 	return null;
 }
-
-/** Superseded: the loader reads every shell row's response now (removed with the loader change). */
-export const COARSE_VALIDATION_TERMS: readonly string[] = ["test"];

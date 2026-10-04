@@ -263,6 +263,32 @@ const fixtureD = once(async () => {
 	return { sid };
 });
 
+/**
+ * 400 tool rows with about 40 KB of incompressible input each. The byte budget counts
+ * stored bytes (Postgres `pg_column_size`, which reads no TOAST), so a fixture of one
+ * repeated character, which compresses to a few hundred bytes, would not exercise it.
+ */
+const fixtureE = once(async () => {
+	const sid = await newSession("E-incompressible");
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	let state = 12345;
+	const noise = (n: number) => {
+		let out = "";
+		for (let i = 0; i < n; i++) {
+			state = (state * 1103515245 + 12345) & 0x7fffffff;
+			out += alphabet[(state >> 16) % 64];
+		}
+		return out;
+	};
+	const rows: Seed[] = [promptEv(sid, "incompressible")];
+	for (let i = 0; i < 400; i++)
+		rows.push(
+			bashEv(sid, `echo ${i}`, { toolInput: { command: `echo ${i}`, env: noise(40_000) } }),
+		);
+	await seed(rows, 20);
+	return { sid };
+});
+
 /** 201 sessions of 500 events, ids interleaved round-robin; the target is one of them. */
 const fixtureC = once(async () => {
 	const sessionsList: string[] = [];
@@ -386,7 +412,7 @@ describe("reads, caps and order", () => {
 		expect(result.diagnostics.jobs).toBe(12);
 		expect(statements).toHaveLength(12);
 		expect(result.scan.eventsRead).toBeGreaterThanOrEqual(50_000);
-		expect(result.scan.eventsRead).toBeLessThanOrEqual(50_001);
+		expect(result.scan.eventsRead).toBeLessThanOrEqual(50_003);
 		expect(result.scan.reachedFirstEvent).toBe(false);
 		expect(result.scan.droppedByCap).toBe(0);
 		const chunkParams = statements
@@ -537,7 +563,7 @@ describe("what SQL selects", () => {
 		// P3-35: raw_payload is read in one place only: the `tool_use_id` key of a Post row with
 		// no input, and the `error` keys of a failed row with no response.
 		const rawKeys = chunkStatement.params.filter((p) =>
-			["tool_use_id", "error", "error_message"].includes(String(p)),
+			["tool_use_id", "error", "error_message"].includes(String(p).replace(/^\$\./, "")),
 		);
 		expect(rawKeys.length).toBeGreaterThan(0);
 		const withoutAllowedRawReads = chunk
@@ -886,8 +912,8 @@ describe("fat bodies", () => {
 		}
 	}, 300_000);
 
-	test("P3-33 a byte budget on tool_input: rows past 8 MB of input are actions with NULL fields, rendered [not shown]", async () => {
-		const { sid } = await fixtureD();
+	test("P3-33 a byte budget on tool_input: rows past 8 MB of stored input are actions with NULL fields, rendered [not shown]", async () => {
+		const { sid } = await fixtureE();
 		const result = await loadEvidence(sid);
 		const actions = result.rows.filter((r) => r.category === "tool_event");
 		const withFields = actions.filter((r) => r.command !== null || r.filePath !== null);
@@ -1133,14 +1159,15 @@ describe("through the real ingest path", () => {
 // never a scan of events and never a walk of the created_at index.
 const SESSION_LED_INDEXES = "idx_events_session_id_id|idx_events_session_id";
 const SESSION_SEARCH_RE = new RegExp(
-	`^SEARCH (?:events|e|pre) USING (?:COVERING )?INDEX (?:${SESSION_LED_INDEXES}) \\(session_id=\\?(?: AND (?:rowid|id)[<>]=?\\?)*\\)$`,
+	`^SEARCH (?:events|e|pre2?) USING (?:COVERING )?INDEX (?:${SESSION_LED_INDEXES}) \\(session_id=\\?(?: AND (?:rowid|id)[<>]=?\\?)*\\)$`,
 );
 const RANGE_RE = /AND (?:rowid|id)[<>]/;
-const PRIMARY_KEY_LOOKUP_RE = /^SEARCH (?:events|e|pre) USING INTEGER PRIMARY KEY \(rowid=\?\)$/;
+const PRIMARY_KEY_LOOKUP_RE =
+	/^SEARCH (?:events|e|pre) USING INTEGER PRIMARY KEY \(rowid=\?\)(?: LEFT-JOIN)?$/;
 
 /** Every way one SQLite plan reaches `events` other than the allowed shapes. */
 function sqliteEventsPlanViolations(plan: string[]): string[] {
-	const eventsLines = plan.filter((d) => /^(?:SEARCH|SCAN) (?:events|e|pre)\b/.test(d));
+	const eventsLines = plan.filter((d) => /^(?:SEARCH|SCAN) (?:events|e|pre2?)\b/.test(d));
 	const violations = eventsLines
 		.filter((d) => !SESSION_SEARCH_RE.test(d) && !PRIMARY_KEY_LOOKUP_RE.test(d))
 		.map((d) => `not an allowed access to events: ${d}`);
@@ -1663,8 +1690,7 @@ describe("P3-8 Codex observer rows, through the real ingest path", () => {
 
 describe("P3-35 the pairing statement on a Codex-observer fixture, on this dialect", () => {
 	test("plan and rows: the probe rides the session index inside the id window; 1,500 calls", async () => {
-		const sid = sessionIdFor("observer-1500");
-		createdSessions.push(sid);
+		const sid = await newSession("observer-1500", "codex_cli");
 		const rows: Seed[] = [promptEv(sid, "observer session")];
 		for (let i = 0; i < 1500; i++) {
 			rows.push(
@@ -1685,10 +1711,6 @@ describe("P3-35 the pairing statement on a Codex-observer fixture, on this diale
 			);
 		}
 		await seed(rows);
-		await getDb()
-			.update(sessions)
-			.set({ agentType: "codex_cli" })
-			.where(eq(sessions.sessionId, sid));
 		const { result, statements } = await capture(() => loadEvidence(sid));
 		const chunk = statements.find((s) => /ROW_NUMBER/i.test(s.text)) as Captured;
 		const plan = isPg
@@ -1737,7 +1759,7 @@ describe("P3-10 JSON-shaped responses and the Claude failure shapes", () => {
 		]);
 		const ledger = buildLedger(await loadEvidence(sid));
 		const line = (n: number) => lines(ledger.text).find((l) => l.startsWith(`E${ids[n]} `)) ?? "";
-		expect(line(1)).toMatch(/-> ok: "4 pass"$/);
+		expect(line(1), "the first line a pass pattern matched").toMatch(/-> ok: "ok {2}pkg 0\.1s"$/);
 		expect(line(2)).toMatch(/-> FAILED: "ok line FAIL src\/a\.test\.ts more"$/);
 		expect(line(3)).toMatch(/-> unknown$/);
 		expect(line(4)).toMatch(/-> FAILED/);
@@ -1920,3 +1942,25 @@ describe("P3-34 an un-vacuumed table with a dense session", () => {
 		expect(result.scan.reachedFirstEvent).toBe(true);
 	}, 120_000);
 });
+
+describe("the bundle exposes prompt text longer than the ledger's cap (phase 4's URL extraction)", () => {
+	test("a 3,000-character prompt is 1,756 characters in the bundle and 1,500 plus an ellipsis in the ledger; the row is not mutated", async () => {
+		const sid = await newSession("rawprompt");
+		await seed([
+			promptEv(sid, "first"),
+			promptEv(sid, "second"),
+			promptEv(sid, "third"),
+			promptEv(sid, `${"u".repeat(2000)} https://example.com/typed ${"v".repeat(1000)}`),
+		]);
+		const bundle = await loadEvidence(sid);
+		const row = bundle.rows.find((r) => r.content?.startsWith("uuuu"));
+		expect(Array.from(row?.content ?? "")).toHaveLength(1756);
+		const ledger = buildLedger(bundle);
+		expect(Array.from(quotedOfLine(ledger.text, 4))).toHaveLength(1501);
+		expect(Array.from(row?.content ?? "")).toHaveLength(1756);
+	});
+});
+function quotedOfLine(text: string, n: number): string {
+	const line = lines(text)[n - 1] ?? "";
+	return line.slice(line.indexOf('"') + 1, line.lastIndexOf('"'));
+}

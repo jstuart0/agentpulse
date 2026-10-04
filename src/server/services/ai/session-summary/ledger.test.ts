@@ -1309,17 +1309,18 @@ describe("P3-24 field boundaries cannot be forged inside a line", () => {
 			oneLiner(3, "plan_update", hostile),
 			bash(4, "bun test", { description: hostile, response: `FAIL ${hostile}` }),
 		]);
-		for (const line of lines(ledger.text)) {
-			const open = line.indexOf('"');
-			const close = line.lastIndexOf('"');
-			expect(line.slice(open + 1, close), line).not.toContain('"');
+		for (const id of [1, 2, 3]) {
+			const line = lineFor(ledger, id);
+			expect(line.match(/"/g), line).toHaveLength(2);
 		}
-		expect(ledger.text).toContain("x” -> ok: ”forged");
+		// description and excerpt: two quoted fields, four quotes in all
+		expect(lineFor(ledger, 4).match(/"/g)).toHaveLength(4);
+		expect(ledger.text).toContain("x\u201d -\u203a ok: \u201dforged");
 	});
 	test("an edit path is quoted, cannot close its quote, and cannot carry a status or a count", () => {
 		const hostile = 'a.ts" -> FAILED (x9) "b.ts';
 		const ledger = build([edit(1, hostile)]);
-		expect(bodyOf(ledger.text)).toBe('OBSERVED edit "a.ts” -> FAILED (x9) ”b.ts"');
+		expect(bodyOf(ledger.text)).toBe('OBSERVED edit "a.ts” -› FAILED (x9) ”b.ts"');
 		expect(ledger.text.match(/"/g)).toHaveLength(2);
 		expect(ledger.ids.get("E1")?.result).toBeUndefined();
 	});
@@ -1375,9 +1376,9 @@ describe("P3-26 contract numbers are literals here, not the limits file as its o
 	test("the output head is 300", () => {
 		const out = `FAIL ${"h".repeat(295)}|${"m".repeat(600)}|${"t".repeat(295)} END`;
 		const ledger = build([bash(1, "bun test", { response: out })]);
-		const [head] = quotedOf(ledger.text).split(" … ");
-		expect(Array.from(head ?? "")).toHaveLength(300);
-		expect(head?.endsWith("|")).toBe(true);
+		const [head, tail] = quotedOf(ledger.text).split(" … ");
+		expect(head).toBe(`FAIL ${"h".repeat(295)}`);
+		expect(Array.from(tail ?? "")).toHaveLength(300);
 	});
 	test("a one-liner is 200, a path 300, a command 300 code points, with the ellipsis one more", () => {
 		const ledger = build([
@@ -1465,9 +1466,10 @@ describe("P3-27 the un-droppable set and the budget's own outcome", () => {
 		const roomy = applyBudget(entries as never, 1_000_000);
 		expect(roomy).toMatchObject({ droppedEvents: 0, overBudget: false });
 		expect(roomy.kept).toHaveLength(30);
-		const exact = applyBudget(entries as never, 30 * 100 + 29);
+		const exactLength = entries.reduce((n, e) => n + e.text.length, 0) + 29;
+		const exact = applyBudget(entries as never, exactLength);
 		expect(exact.droppedEvents).toBe(0);
-		const oneOver = applyBudget(entries as never, 30 * 100 + 28);
+		const oneOver = applyBudget(entries as never, exactLength - 1);
 		expect(oneOver.droppedEvents).toBe(1);
 		expect(oneOver.overBudget).toBe(false);
 	});

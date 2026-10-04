@@ -5,7 +5,12 @@
  */
 import { describe, expect, test } from "bun:test";
 import { prng } from "../../../test-utils/random-sessions.js";
-import { classifyCommand, passSummaryLine, validationResult } from "./command-class.js";
+import {
+	type CommandClass,
+	classifyCommand,
+	passSummaryLine,
+	validationResult,
+} from "./command-class.js";
 
 const kind = (input: unknown) => classifyCommand(input).kind;
 
