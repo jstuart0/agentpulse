@@ -5,7 +5,9 @@ import {
 	type RefusalCopy,
 	type SummaryLoad,
 	type SummaryViewer,
+	needsShrinkConfirmation,
 	refusalCopy,
+	selectSummaryFlag,
 } from "../lib/session-summary-view.js";
 import { useAiStatusStore } from "../stores/ai-status-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
@@ -13,15 +15,21 @@ import { useOwnershipUi } from "./useOwnershipUi.js";
 
 /** Milliseconds between polls while a generation runs. */
 export const SUMMARY_POLL_INTERVAL_MS = 2000;
-/** Consecutive poll failures tolerated before the load is reported as failed. */
+/** Consecutive poll failures tolerated before contact is reported lost. */
 export const SUMMARY_POLL_RETRIES = 3;
-/** The countdown for a cooldown or a rate limit ticks once a second. */
+/** The countdown for a cooldown or a rate limit re-reads its deadline once a second. */
 export const COOLDOWN_TICK_MS = 1000;
 
 export type SummaryAnnouncement = "Summarizing" | "Summary ready" | "Summary failed";
 
 export interface UseSessionSummary {
 	load: SummaryLoad;
+	/**
+	 * Polling gave up after repeated failures. `load` still holds the last view, so a readable
+	 * summary is never replaced by "Couldn't load the summary"; show "Lost contact with the
+	 * server" with `retry` beside it. False whenever there is no view yet (that is `load: error`).
+	 */
+	lostContact: boolean;
 	/** A generation is running (started here, elsewhere, or reported by the server on arrival). */
 	generating: boolean;
 	/** The viewer started the running generation (a joined one doesn't count). */
@@ -33,13 +41,14 @@ export interface UseSessionSummary {
 	/** Inline refusal text beside the button, with its countdown applied. */
 	refusal: RefusalCopy | null;
 	/**
-	 * One click. `needs_confirmation` when the evidence has shrunk and the caller hasn't confirmed
-	 * (nothing is sent); `ignored` while a request or generation is already running.
+	 * One click. `needs_confirmation` when the model supplies confirm text (the evidence has
+	 * shrunk and a summary exists) and the caller hasn't confirmed (nothing is sent); `ignored`
+	 * while a request or generation is already running.
 	 */
 	generate: (options?: {
 		confirmed?: boolean;
 	}) => Promise<"started" | "needs_confirmation" | "refused" | "ignored">;
-	/** For the "Couldn't load the summary" Retry button. */
+	/** For the Retry beside "Couldn't load the summary" and "Lost contact with the server". */
 	retry: () => void;
 	clearNew: () => void;
 }
@@ -53,6 +62,7 @@ interface RefusalState {
 interface State {
 	forSession: string | null;
 	load: SummaryLoad;
+	lostContact: boolean;
 	startedHere: boolean;
 	announcement: SummaryAnnouncement | null;
 	newResult: boolean;
@@ -62,6 +72,7 @@ interface State {
 const INITIAL: State = {
 	forSession: null,
 	load: { status: "loading" },
+	lostContact: false,
 	startedHere: false,
 	announcement: null,
 	newResult: false,
@@ -77,12 +88,23 @@ interface Controller {
 	dispose: () => void;
 }
 
+type ReadKind = "initial" | "poll" | "refetch" | "retry";
+
 const isGenerating = (view: SessionSummaryView | null) => view?.attempt.status === "generating";
+
+/** What the refusal was about when it was shown: a change in either makes it stale. */
+interface RefusalAnchor {
+	context: string;
+	view: string;
+}
+
+const secondsLeft = (deadline: number) => Math.ceil((deadline - Date.now()) / 1000);
 
 /**
  * One session's summary: the first read, polling while (and only while) a generation runs, the
  * click, and the countdowns. Everything stateful lives in this closure so one disposal ends every
- * timer and turns every late answer into a no-op, which is what makes a session change safe.
+ * timer and subscription and turns every late answer into a no-op, which is what makes a session
+ * change safe.
  */
 function createController(
 	sessionId: string,
@@ -97,6 +119,9 @@ function createController(
 	let ownGeneration = false;
 	let failures = 0;
 	let refusal: RefusalState | null = null;
+	let refusalAnchor: RefusalAnchor | null = null;
+	let refusalDeadline: number | null = null;
+	let cooldownDeadline: number | null = null;
 	let pollTimer: ReturnType<typeof setTimeout> | null = null;
 	let tickTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -107,6 +132,40 @@ function createController(
 		commit({ load: { status: "ready", view: next } });
 	};
 
+	/** Everything outside the view that decides what the action says: AI state and the Labs flag. */
+	function contextKey(): string {
+		const ai = useAiStatusStore.getState().status;
+		const flag = selectSummaryFlag(useLabsStore.getState());
+		return `${ai ? [ai.build, ai.runtime, ai.killSwitch].join(",") : "unknown"}|${flag ?? "unknown"}`;
+	}
+	/** What in the view decides what the action says. */
+	function viewKey(): string {
+		return view ? `${view.blocked}|${view.attempt.status}|${view.stored !== null}` : "none";
+	}
+
+	function clearRefusal() {
+		if (refusal === null) return;
+		refusal = null;
+		refusalAnchor = null;
+		refusalDeadline = null;
+		commit({ refusal: null });
+	}
+	function showRefusal(next: RefusalState) {
+		refusal = next;
+		refusalAnchor = { context: contextKey(), view: viewKey() };
+		refusalDeadline = next.seconds !== null ? Date.now() + next.seconds * 1000 : null;
+		commit({ refusal: next });
+	}
+	/** An inline refusal explains a click; once the action says something else, it would only contradict it. */
+	function dropStaleRefusal() {
+		if (refusalAnchor === null) return;
+		if (contextKey() !== refusalAnchor.context || viewKey() !== refusalAnchor.view) clearRefusal();
+	}
+	const unsubscribes = [
+		useAiStatusStore.subscribe(dropStaleRefusal),
+		useLabsStore.subscribe(dropStaleRefusal),
+	];
+
 	function schedulePoll() {
 		if (disposed || !isGenerating(view)) return;
 		if (pollTimer) clearTimeout(pollTimer);
@@ -116,35 +175,39 @@ function createController(
 		}, SUMMARY_POLL_INTERVAL_MS);
 	}
 
-	function needsTick() {
-		return (
-			(view?.blocked === "summary_cooldown" && view.cooldownSeconds !== null) ||
-			(refusal !== null && refusal.seconds !== null)
-		);
+	function cooling() {
+		return view?.blocked === "summary_cooldown" && cooldownDeadline !== null;
 	}
 
 	function scheduleTick() {
-		if (disposed || tickTimer || !needsTick()) return;
+		if (disposed || tickTimer || !(cooling() || refusalDeadline !== null)) return;
 		tickTimer = setTimeout(() => {
 			tickTimer = null;
 			tick();
 		}, COOLDOWN_TICK_MS);
 	}
 
+	/** A background tab throttles timers, so each tick reads the clock against the deadline instead of counting itself. */
 	function tick() {
 		if (disposed) return;
-		if (view?.blocked === "summary_cooldown" && view.cooldownSeconds !== null) {
-			const left = view.cooldownSeconds - 1;
-			if (left > 0) commitView({ ...view, cooldownSeconds: left });
-			else {
+		if (view && cooling() && cooldownDeadline !== null) {
+			const left = secondsLeft(cooldownDeadline);
+			if (left > 0) {
+				if (left !== view.cooldownSeconds) commitView({ ...view, cooldownSeconds: left });
+			} else {
+				cooldownDeadline = null;
 				commitView({ ...view, blocked: null, cooldownSeconds: null });
 				void read("refetch");
 			}
 		}
-		if (refusal !== null && refusal.seconds !== null) {
-			const left = refusal.seconds - 1;
-			refusal = left > 0 ? { ...refusal, seconds: left } : null;
-			commit({ refusal });
+		if (refusal !== null && refusalDeadline !== null) {
+			const left = secondsLeft(refusalDeadline);
+			if (left > 0) {
+				if (left !== refusal.seconds) {
+					refusal = { ...refusal, seconds: left };
+					commit({ refusal });
+				}
+			} else clearRefusal();
 		}
 		scheduleTick();
 	}
@@ -156,33 +219,40 @@ function createController(
 		const patch: Partial<State> = { startedHere: false };
 		if (!failed && next.stored !== null) patch.newResult = true;
 		if (own) patch.announcement = failed ? "Summary failed" : "Summary ready";
+		clearRefusal();
 		commit(patch);
 	}
 
 	function accept(next: SessionSummaryView) {
 		const was = isGenerating(view);
 		failures = 0;
+		cooldownDeadline =
+			next.blocked === "summary_cooldown" && next.cooldownSeconds !== null
+				? Date.now() + next.cooldownSeconds * 1000
+				: null;
 		commitView(next);
+		commit({ lostContact: false });
+		dropStaleRefusal();
 		if (was && !isGenerating(next)) finished(next);
 		schedulePoll();
 		scheduleTick();
 	}
 
-	function failedRead(kind: "initial" | "poll" | "refetch") {
+	function failedRead(kind: ReadKind) {
 		if (kind === "poll") {
 			failures++;
 			if (failures <= SUMMARY_POLL_RETRIES) {
 				schedulePoll();
 				return;
 			}
-		} else if (view !== null) {
+		} else if (kind === "refetch" && view !== null) {
 			return;
 		}
-		view = null;
-		commit({ load: { status: "error" } });
+		if (view !== null) commit({ lostContact: true });
+		else commit({ load: { status: "error" } });
 	}
 
-	async function read(kind: "initial" | "poll" | "refetch") {
+	async function read(kind: ReadKind) {
 		if (disposed) return;
 		if (busy) {
 			readAgain = true;
@@ -218,16 +288,15 @@ function createController(
 	const generate: Generate = async (options) => {
 		const before = view;
 		if (disposed || posting || before === null || isGenerating(before)) return "ignored";
-		if (before.evidenceShrunk && !options?.confirmed) return "needs_confirmation";
+		if (needsShrinkConfirmation(before) && !options?.confirmed) return "needs_confirmation";
 		posting = true;
-		refusal = null;
+		clearRefusal();
 		commitView({
 			...before,
 			attempt: { status: "generating", startedAt: new Date().toISOString(), errorCode: null },
 			blocked: null,
 			cooldownSeconds: null,
 		});
-		commit({ refusal: null });
 		const result = await api.generateSessionSummary(sessionId).catch(() => null);
 		posting = false;
 		if (disposed) return "ignored";
@@ -255,8 +324,11 @@ function createController(
 		const refused = result?.refusal ?? { status: 0, code: null, retryAfterSeconds: null };
 		const copy = refusalCopy(refused, getViewer());
 		if (copy.text) {
-			refusal = { status: refused.status, code: refused.code, seconds: copy.countdownSeconds };
-			commit({ refusal });
+			showRefusal({
+				status: refused.status,
+				code: refused.code,
+				seconds: copy.countdownSeconds,
+			});
 			scheduleTick();
 		}
 		if (copy.refetch) reread(copy.refetch);
@@ -269,7 +341,10 @@ function createController(
 		retry() {
 			if (disposed) return;
 			failures = 0;
-			view = null;
+			if (view !== null) {
+				void read("retry");
+				return;
+			}
 			commit({ load: { status: "loading" } });
 			void read("initial");
 		},
@@ -279,6 +354,7 @@ function createController(
 			if (tickTimer) clearTimeout(tickTimer);
 			pollTimer = null;
 			tickTimer = null;
+			for (const unsubscribe of unsubscribes) unsubscribe();
 		},
 	};
 }
@@ -329,6 +405,7 @@ export function useSessionSummary(
 
 	return {
 		load,
+		lostContact: current.lostContact,
 		generating: load.status === "ready" && isGenerating(load.view),
 		startedHere: current.startedHere,
 		announcement: current.announcement,

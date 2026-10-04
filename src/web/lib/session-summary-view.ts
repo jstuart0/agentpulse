@@ -80,12 +80,26 @@ export interface AiStatusSlice {
 	loadState: "idle" | "loading" | "loaded" | "error";
 }
 
+/**
+ * The four primitives the availability rule reads, as pure selectors. The hook subscribes to
+ * each through them (so an unrelated store change re-renders nothing) and `availabilityFromStores`
+ * applies them to whole slices: one implementation, so a test of either is a test of both.
+ */
+export const selectSummaryFlag = (labs: Pick<LabsSlice, "flags">): boolean | null =>
+	labs.flags === null ? null : labs.flags[SESSION_SUMMARY_FLAG] === true;
+export const selectLabsLoadFailed = (labs: LabsSlice): boolean =>
+	labs.flags === null && labs.error !== null && !labs.loading;
+export const selectAiBuild = (ai: Pick<AiStatusSlice, "status">): boolean | null =>
+	ai.status === null ? null : ai.status.build;
+export const selectAiLoadFailed = (ai: AiStatusSlice): boolean =>
+	ai.status === null && ai.loadState === "error";
+
 export function availabilityFromStores(labs: LabsSlice, ai: AiStatusSlice): Availability {
 	return summaryAvailability({
-		flag: labs.flags === null ? null : labs.flags[SESSION_SUMMARY_FLAG] === true,
-		labsLoadFailed: labs.flags === null && labs.error !== null && !labs.loading,
-		aiBuild: ai.status === null ? null : ai.status.build,
-		aiLoadFailed: ai.status === null && ai.loadState === "error",
+		flag: selectSummaryFlag(labs),
+		labsLoadFailed: selectLabsLoadFailed(labs),
+		aiBuild: selectAiBuild(ai),
+		aiLoadFailed: selectAiLoadFailed(ai),
 	});
 }
 
@@ -763,26 +777,51 @@ export function needsShrinkConfirmation(
 }
 
 export const SUSPECT_LEAD = "Check this before pasting it into an agent:";
-export const SUSPECT_UNSPECIFIED_LINE = "Something in it was flagged by the safety check.";
+export const SUSPECT_UNSPECIFIED_LINE = "It was flagged by a safety check.";
 
-/** Keyed by the shared union: a new reason without copy fails the typecheck. */
-export const SUSPECT_REASON_LINES: Record<SummarySuspectReason, string> = {
+/**
+ * Keyed by code string, not by the shared union, so it can carry codes the server is adding
+ * (`risky_command`, `malformed_url`) before they reach `SUMMARY_SUSPECT_REASONS` in this branch.
+ * A test requires an entry and a tier for every code in `SUMMARY_SUSPECT_REASONS`, so a code added
+ * there without copy fails it. A code with no entry here is shown as the unspecified warning line.
+ */
+export const SUSPECT_REASON_LINES: Readonly<Record<string, string>> = {
 	role_marker: "It contains text written as instructions to an AI agent.",
 	override_phrase: "It contains text written as instructions to an AI agent.",
 	pipe_to_shell: "It includes a command that downloads something and runs it.",
 	unexpected_url: "It mentions a web address you didn't type in this session.",
 	unrecorded_command: "The handoff suggests a command this session never ran.",
+	risky_command:
+		"It includes a command that reaches the network or changes the system, aimed at something this session never used.",
+	malformed_url: "It contains a web address written in a misleading form.",
 };
 
 /** The same reasons as a phrase for the line pasted with the text. */
-const SUSPECT_REASON_PHRASES: Record<SummarySuspectReason, string> = {
+const SUSPECT_REASON_PHRASES: Readonly<Record<string, string>> = {
 	role_marker: "text written as instructions to an AI agent",
 	override_phrase: "text written as instructions to an AI agent",
 	pipe_to_shell: "a command that downloads something and runs it",
 	unexpected_url: "a web address you didn't type in this session",
 	unrecorded_command: "a command this session never ran",
+	risky_command:
+		"a command that reaches the network or changes the system, aimed at something this session never used",
+	malformed_url: "a web address written in a misleading form",
 };
-const SUSPECT_UNSPECIFIED_PHRASE = "something the safety check flagged";
+const SUSPECT_UNSPECIFIED_PHRASE = "something a safety check flagged";
+
+/** Tiers for the codes the server is adding; `SUSPECT_REASON_TIER` covers the rest once they are merged. */
+const PENDING_REASON_TIERS: Readonly<Record<string, "warning" | "note">> = {
+	risky_command: "warning",
+	malformed_url: "warning",
+};
+
+/** A code with no tier anywhere is a warning: when in doubt the cautious reading is shown. */
+export function suspectReasonTier(code: string): "warning" | "note" {
+	if (Object.hasOwn(SUSPECT_REASON_TIER, code))
+		return SUSPECT_REASON_TIER[code as SummarySuspectReason];
+	if (Object.hasOwn(PENDING_REASON_TIERS, code)) return PENDING_REASON_TIERS[code];
+	return "warning";
+}
 
 interface SuspectFinding {
 	tone: "warning" | "note";
@@ -805,9 +844,8 @@ function suspectFinding(provenance: SummaryProvenance): SuspectFinding | null {
 	};
 	for (const reason of reasons) {
 		if (Object.hasOwn(SUSPECT_REASON_LINES, reason)) {
-			const known = reason as SummarySuspectReason;
-			add(SUSPECT_REASON_LINES[known], SUSPECT_REASON_PHRASES[known]);
-			if (SUSPECT_REASON_TIER[known] === "warning") found.tone = "warning";
+			add(SUSPECT_REASON_LINES[reason], SUSPECT_REASON_PHRASES[reason]);
+			if (suspectReasonTier(reason) === "warning") found.tone = "warning";
 		} else {
 			add(SUSPECT_UNSPECIFIED_LINE, SUSPECT_UNSPECIFIED_PHRASE);
 			found.tone = "warning";
@@ -1240,10 +1278,3 @@ export function buildSummaryMarkdown(stored: StoredSessionSummary, meta: CopyMet
 export function buildContextMarkdown(stored: StoredSessionSummary): string {
 	return wrap([...section("Key Context", fence(stored.summary.handoff))], stored.provenance);
 }
-
-// ── skeleton for the phase 7 review fixes, part two (replaced in the green commit) ──
-
-export const selectSummaryFlag = (_labs: Pick<LabsSlice, "flags">): boolean | null => null;
-export const selectLabsLoadFailed = (_labs: LabsSlice): boolean => false;
-export const selectAiBuild = (_ai: Pick<AiStatusSlice, "status">): boolean | null => null;
-export const selectAiLoadFailed = (_ai: AiStatusSlice): boolean => false;

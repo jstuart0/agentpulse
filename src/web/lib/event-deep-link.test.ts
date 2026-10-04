@@ -284,6 +284,7 @@ describe("planEventReveal: timeline modes (TC-7.41)", () => {
 					getVisibleEvents([target], m, m === "debug" || m === "terminal", false, true).length ===
 					1;
 				const quietest = QUIET_TO_NOISY.find((m) => m !== from && worksIn(m));
+				if (!quietest) throw new Error(`${label}: no mode works`);
 				expect(result.mode, label).toBe(quietest);
 			}
 		}

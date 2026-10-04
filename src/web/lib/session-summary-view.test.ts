@@ -64,6 +64,7 @@ import {
 	summaryAvailability,
 	summaryAvailabilityDetail,
 	summaryHref,
+	suspectReasonTier,
 	tabBadge,
 	tabBadgeAccessibleName,
 	validationResultText,
@@ -679,7 +680,7 @@ describe("blockers: one winner", () => {
 });
 
 describe("the suspect notice", () => {
-	const SUSPECT_FALLBACK = "Something in it was flagged by the safety check.";
+	const SUSPECT_FALLBACK = "It was flagged by a safety check.";
 	const withReasons = (suspectReasons: string[], suspect = true) => ({
 		...F.ready,
 		stored: {
@@ -698,8 +699,56 @@ describe("the suspect notice", () => {
 			expect(SUSPECT_REASON_LINES[code], code).toBeTruthy();
 			expect(["warning", "note"], code).toContain(SUSPECT_REASON_TIER[code]);
 		}
-		expect(Object.keys(SUSPECT_REASON_LINES).sort()).toEqual([...SUMMARY_SUSPECT_REASONS].sort());
+		for (const code of SUMMARY_SUSPECT_REASONS) {
+			expect(Object.keys(SUSPECT_REASON_LINES)).toContain(code);
+			expect(suspectReasonTier(code), code).toBe(SUSPECT_REASON_TIER[code]);
+		}
 		expect(SUSPECT_LEAD).toBe("Check this before pasting it into an agent:");
+	});
+
+	test("TC-7.42g the two codes the server is adding already have copy and the warning tier; an unknown code is a warning too", () => {
+		expect(SUSPECT_REASON_LINES.risky_command).toBe(
+			"It includes a command that reaches the network or changes the system, aimed at something this session never used.",
+		);
+		expect(SUSPECT_REASON_LINES.malformed_url).toBe(
+			"It contains a web address written in a misleading form.",
+		);
+		expect(suspectReasonTier("risky_command")).toBe("warning");
+		expect(suspectReasonTier("malformed_url")).toBe("warning");
+		expect(suspectReasonTier("never_heard_of_it")).toBe("warning");
+		expect(suspectReasonTier("constructor")).toBe("warning");
+		for (const code of ["risky_command", "malformed_url"]) {
+			const m = derive(withReasons([code]));
+			expect(m.suspectNotice, code).toEqual({
+				tone: "warning",
+				lead: SUSPECT_LEAD,
+				lines: [SUSPECT_REASON_LINES[code]],
+			});
+			expect(m.copyLabels.summary, code).toBe("Copy summary anyway");
+		}
+		expect(derive(F.suspect_risky).suspectNotice?.tone).toBe("warning");
+		const unknown = derive(withReasons(["constructor"]));
+		expect(unknown.suspectNotice?.lines).toEqual([SUSPECT_FALLBACK]);
+	});
+
+	test("TC-7.44 nothing the panel or the clipboard says claims a record was verified: it is observed or recorded", () => {
+		const strings: string[] = [];
+		for (const view of Object.values(F)) {
+			const m = derive(view);
+			strings.push(JSON.stringify(m.action), JSON.stringify(m.notice));
+			if (m.suspectNotice) strings.push(...m.suspectNotice.lines);
+			const f = footerText(view, CLOCK);
+			if (f) strings.push(f.line, f.masked ?? "", f.retention ?? "");
+			if (view.stored) {
+				strings.push(...outcomeNotes(view.stored));
+				strings.push(buildSummaryMarkdown(view.stored, { name: "n", branch: null, cwd: null }));
+			}
+		}
+		strings.push(CLAIM_ONLY_LABEL, CLAIM_ONLY_HELP, CLAIM_ONLY_SECTION_NOTE, CODEX_CLAIM_ONLY_LINE);
+		for (const text of strings) {
+			const withoutVerifyLine = text.replaceAll(VERIFY_LINE, "").replaceAll(/\bunverified\b/g, "");
+			expect(withoutVerifyLine).not.toMatch(/verified/i);
+		}
 	});
 
 	test("TC-7.42b the warning-tier reasons use the warning tone and the anyway buttons", () => {
@@ -1504,6 +1553,7 @@ describe("fixtures from the server shape", () => {
 		suspect: "ready/available/none",
 		suspect_warning: "ready/available/none",
 		suspect_note: "ready/available/none",
+		suspect_risky: "ready/available/none",
 		partial: "ready/available/none",
 		adjusted: "ready/available/none",
 		free_cost: "ready/available/none",

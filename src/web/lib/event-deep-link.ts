@@ -63,11 +63,27 @@ export interface RevealInput {
 export type RevealPlan =
 	| { action: "wait" }
 	| { action: "scroll" }
-	| { action: "reveal"; filters: Partial<Record<keyof RevealFilters, true>> }
+	/** `mode` is present only when the timeline must change mode; `filters` are the toggles to switch on. */
+	| { action: "reveal"; mode?: TimelineMode; filters: Partial<Record<keyof RevealFilters, true>> }
 	| { action: "fetch" }
-	| { action: "not_found" };
+	/** The event is not in this session's activity (after asking the server once). */
+	| { action: "not_found" }
+	/** The event is recorded, but no timeline mode or filter shows this kind of event. */
+	| { action: "not_shown" };
+
+export const EVENT_NOT_FOUND_COPY = "That event is no longer in this session's activity.";
+export const EVENT_NOT_SHOWN_COPY = "That event is recorded, but Activity doesn't show this kind.";
 
 const FILTER_KEYS = ["showTools", "showNoisyTools", "showSystem"] as const;
+
+/** The order a mode is chosen in when the current one can't show the event: least noise first. */
+const MODES_QUIET_TO_NOISY: readonly TimelineMode[] = [
+	"prompts",
+	"conversation",
+	"progress",
+	"terminal",
+	"debug",
+];
 
 /** Subsets of `keys` of exactly `size`, in key order. */
 function subsetsOfSize<T>(keys: readonly T[], size: number): T[][] {
@@ -77,11 +93,42 @@ function subsetsOfSize<T>(keys: readonly T[], size: number): T[][] {
 	);
 }
 
+type RevealTarget = RevealInput["events"][number];
+
+function shownIn(target: RevealTarget, mode: TimelineMode, f: RevealFilters): boolean {
+	return (
+		getVisibleEvents(
+			[target],
+			mode,
+			f.showTools || mode === "debug" || mode === "terminal",
+			f.showNoisyTools,
+			f.showSystem,
+		).length === 1
+	);
+}
+
+/** The fewest filters to switch on, in `mode`, to show the event: `{}` when it already shows, null when none helps. */
+function fewestFilters(
+	target: RevealTarget,
+	mode: TimelineMode,
+	filters: RevealFilters,
+): Partial<Record<keyof RevealFilters, true>> | null {
+	const off = FILTER_KEYS.filter((key) => !filters[key]);
+	for (let size = 0; size <= off.length; size++) {
+		for (const combo of subsetsOfSize(off, size)) {
+			const turnedOn = Object.fromEntries(combo.map((key) => [key, true as const]));
+			if (shownIn(target, mode, { ...filters, ...turnedOn })) return turnedOn;
+		}
+	}
+	return null;
+}
+
 /**
- * What the page does about `#event-<id>`, decided from what it holds: scroll to it, turn on the
- * fewest timeline filters that show it, ask the server for its surroundings (once per session and
- * event, as the guard records), or give up with "could not be found". Stateless: the same input
- * gives the same answer, so a link clicked twice runs again.
+ * What the page does about `#event-<id>`, decided from what it holds: scroll to it; turn on the
+ * fewest timeline filters that show it in the current mode; failing that, switch to the quietest
+ * mode that shows it (with the fewest filters there); ask the server for its surroundings (once
+ * per session and event, as the guard records); or say it is gone (`not_found`) or never shown
+ * (`not_shown`). Stateless: the same input gives the same answer, so a link clicked twice runs again.
  */
 export function planEventReveal(input: RevealInput): RevealPlan {
 	const { events, eventId, mode, filters, guard, sessionId } = input;
@@ -92,24 +139,16 @@ export function planEventReveal(input: RevealInput): RevealPlan {
 			? { action: "not_found" }
 			: { action: "fetch" };
 	}
-	const shownWith = (f: RevealFilters) =>
-		getVisibleEvents(
-			[target],
-			mode,
-			f.showTools || mode === "debug" || mode === "terminal",
-			f.showNoisyTools,
-			f.showSystem,
-		).length === 1;
-	if (shownWith(filters)) return { action: "scroll" };
-	const off = FILTER_KEYS.filter((key) => !filters[key]);
-	for (let size = 1; size <= off.length; size++) {
-		for (const combo of subsetsOfSize(off, size)) {
-			const turnedOn = Object.fromEntries(combo.map((key) => [key, true as const]));
-			if (shownWith({ ...filters, ...turnedOn })) return { action: "reveal", filters: turnedOn };
-		}
+	const here = fewestFilters(target, mode, filters);
+	if (here) {
+		return Object.keys(here).length === 0
+			? { action: "scroll" }
+			: { action: "reveal", filters: here };
 	}
-	return { action: "not_found" };
+	for (const other of MODES_QUIET_TO_NOISY) {
+		if (other === mode) continue;
+		const there = fewestFilters(target, other, filters);
+		if (there) return { action: "reveal", mode: other, filters: there };
+	}
+	return { action: "not_shown" };
 }
-
-export const EVENT_NOT_FOUND_COPY = "";
-export const EVENT_NOT_SHOWN_COPY = "";

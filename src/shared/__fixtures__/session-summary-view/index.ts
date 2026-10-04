@@ -174,6 +174,15 @@ export const SUMMARY_VIEW_FIXTURES = {
 			suspectReasons: ["role_marker", "pipe_to_shell", "unexpected_url"],
 		}),
 	},
+	// `risky_command` is a warning-tier code the server adds in a parallel pass; until it joins
+	// `SUMMARY_SUSPECT_REASONS` it is typed in through `unknown`. Drop the cast once merged.
+	suspect_risky: {
+		...READY,
+		stored: storedWith({
+			suspect: true,
+			suspectReasons: ["risky_command"] as unknown as SummaryProvenance["suspectReasons"],
+		}),
+	},
 	suspect_note: {
 		...READY,
 		stored: storedWith({

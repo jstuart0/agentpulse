@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, jest, setSystemTime, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { act } from "react";
 import {
 	SUMMARY_VIEW_FIXTURES as F,
@@ -81,6 +81,19 @@ function loadedStores(ai: AiStatusResponse = AI_ON) {
 	});
 }
 
+/**
+ * A background tab fires timers late while the clock keeps running. Fake timers reset `Date` on
+ * every advance, so the lateness is added on top of whatever `Date.now` says.
+ */
+let fakeNow: (() => number) | null = null;
+let clockSkewMs = 0;
+function skewClock(ms: number) {
+	const base = fakeNow ?? Date.now;
+	fakeNow = base;
+	clockSkewMs += ms;
+	Date.now = () => base() + clockSkewMs;
+}
+
 async function settle() {
 	await act(async () => {
 		for (let i = 0; i < 12; i++) await Promise.resolve();
@@ -154,6 +167,9 @@ beforeEach(() => {
 	useLabsStore.setState({ flags: null, registry: [], loading: false, error: null });
 });
 afterEach(async () => {
+	if (fakeNow) Date.now = fakeNow;
+	fakeNow = null;
+	clockSkewMs = 0;
 	for (const h of mounted.splice(0)) await h.unmount();
 	expect(jest.getTimerCount()).toBe(0);
 	jest.useRealTimers();
@@ -667,10 +683,10 @@ describe("cooldown deadlines", () => {
 		script({ ...F.cooldown, cooldownSeconds: 20 }, F.ready);
 		const m = await mount();
 		expect(viewOf(m).cooldownSeconds).toBe(20);
-		setSystemTime(new Date(Date.now() + 7_000));
+		skewClock(7_000);
 		await tick(COOLDOWN_TICK_MS);
 		expect(viewOf(m).cooldownSeconds).toBe(12);
-		setSystemTime(new Date(Date.now() + 60_000));
+		skewClock(60_000);
 		await tick(COOLDOWN_TICK_MS);
 		expect(gets).toHaveLength(2);
 		expect(viewOf(m).blocked).toBeNull();
@@ -682,10 +698,10 @@ describe("cooldown deadlines", () => {
 		const m = await mount();
 		await generateOnce(m);
 		expect(m.v.refusal?.text).toBe("Too many summary requests. Try again in 30s.");
-		setSystemTime(new Date(Date.now() + 12_000));
+		skewClock(12_000);
 		await tick(COOLDOWN_TICK_MS);
 		expect(m.v.refusal?.text).toBe("Too many summary requests. Try again in 17s.");
-		setSystemTime(new Date(Date.now() + 60_000));
+		skewClock(60_000);
 		await tick(COOLDOWN_TICK_MS);
 		expect(m.v.refusal).toBeNull();
 	});

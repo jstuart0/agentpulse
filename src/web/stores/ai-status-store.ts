@@ -19,6 +19,8 @@ interface AiStatusState {
 }
 
 let inFlight: Promise<AiStatusResponse> | null = null;
+/** Bumped by a reset: an answer to a request from before it is not applied. */
+let epoch = 0;
 
 /**
  * The one holder of the AI status, so the Settings panel, the session AI tab and the Summary
@@ -31,24 +33,28 @@ export const useAiStatusStore = create<AiStatusState>((set, get) => ({
 
 	refresh() {
 		if (inFlight) return inFlight;
+		const mine = epoch;
 		if (!get().status) set({ loadState: "loading", error: null });
-		inFlight = api
+		const request: Promise<AiStatusResponse> = api
 			.getAiStatus()
 			.then(
 				(status) => {
-					set({ status, loadState: "loaded", error: null });
+					if (mine === epoch) set({ status, loadState: "loaded", error: null });
 					return status;
 				},
 				(err: unknown) => {
-					const error = plainErrorMessage(err);
-					set(get().status ? { error } : { loadState: "error", error });
+					if (mine === epoch) {
+						const error = plainErrorMessage(err);
+						set(get().status ? { error } : { loadState: "error", error });
+					}
 					throw err;
 				},
 			)
 			.finally(() => {
-				inFlight = null;
+				if (inFlight === request) inFlight = null;
 			});
-		return inFlight;
+		inFlight = request;
+		return request;
 	},
 
 	async load() {
@@ -68,6 +74,9 @@ export const useAiStatusStore = create<AiStatusState>((set, get) => ({
 	},
 }));
 
+/** For tests: forget the shared request and the held status, so one test cannot poison the next. */
 export function resetAiStatusStore(): void {
+	epoch++;
+	inFlight = null;
 	useAiStatusStore.setState({ status: null, loadState: "idle", error: null });
 }
