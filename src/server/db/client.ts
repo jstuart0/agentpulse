@@ -1060,6 +1060,22 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			expires_at TEXT NOT NULL
 		)`,
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_cache_session_question ON ai_qa_cache(session_id, question_hash)",
+		// AGEN-69: latest AI summary of a session. Born with its cascade FK (the
+		// SQLite schema convention is to retrofit it in rebuildSessionChildFks,
+		// which this table deliberately is not in). Column order matches the
+		// Drizzle schema and migration 0010; ai-session-summaries.test.ts pins it.
+		`CREATE TABLE IF NOT EXISTS ai_session_summaries (
+			session_id TEXT PRIMARY KEY NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+			schema_version INTEGER NOT NULL DEFAULT 1,
+			generated_at TEXT,
+			attempt_status TEXT NOT NULL DEFAULT 'idle',
+			through_event_id INTEGER,
+			attempt_started_at TEXT,
+			attempt_token TEXT,
+			attempt_error_code TEXT,
+			summary TEXT,
+			provenance TEXT
+		)`,
 		// Slice D: freeform_match rule columns. Idempotent — SQLite ignores duplicate columns silently.
 		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_cents INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_date TEXT",
