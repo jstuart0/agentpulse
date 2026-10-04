@@ -16,11 +16,14 @@ export interface RecordedLlmCall {
 
 export const llmCalls: RecordedLlmCall[] = [];
 
+let hold: Promise<void> | null = null;
+
 /** Classifier replies keyed by a substring of the classifier's system prompt. */
 let classifierReplies: Array<[string, string]> = [];
 let answerText = "ANSWER";
 
 export function resetScriptedLlm(): void {
+	hold = null;
 	llmCalls.length = 0;
 	classifierReplies = [];
 	answerText = "ANSWER";
@@ -51,6 +54,7 @@ export const scriptedAdapter = {
 	complete: async (req: { systemPrompt: string; transcriptPrompt: string }) => {
 		const kind = kindOf(req);
 		llmCalls.push({ kind, systemPrompt: req.systemPrompt, transcriptPrompt: req.transcriptPrompt });
+		if (hold) await hold;
 		let text = "";
 		if (kind === "answer") text = answerText;
 		else if (kind === "classifier") {
@@ -60,3 +64,15 @@ export const scriptedAdapter = {
 		return { text, usage: { estimated: true, inputTokens: 1, outputTokens: 1 } };
 	},
 };
+
+/** Makes every LLM call wait until the returned function is called. */
+export function holdLlmCalls(): () => void {
+	let release = () => {};
+	hold = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return () => {
+		hold = null;
+		release();
+	};
+}
