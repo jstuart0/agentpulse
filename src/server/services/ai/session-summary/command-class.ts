@@ -938,3 +938,8 @@ export const COARSE_VALIDATION_TERMS: readonly string[] = [
 	"vet",
 	"clippy",
 ];
+
+/** The first line a pass pattern matched, capped (stub, replaced in the fix commit). */
+export function passSummaryLine(_response: string | null | undefined): string | null {
+	return null;
+}
