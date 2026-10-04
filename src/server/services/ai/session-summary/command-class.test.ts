@@ -963,3 +963,67 @@ describe("TC-3.H4 a filler after ; is rejected by the pipe rule, with no path op
 		expect(kind("bun test | tail -5")).toBe("validation");
 	});
 });
+
+describe("TC-3.J2 flags are an allowlist per tool, and a short-flag cluster is judged by each letter", () => {
+	for (const command of [
+		"make test -pn",
+		"make test --print-data-base",
+		"make test -pfoo",
+		"make test -cfoo",
+		"make test -ks -p",
+		"make test -sp",
+		"make test -n",
+		"make test -f Makefile",
+		"make test install",
+		"pytest -p myplugin",
+		"pytest -cfoo.ini",
+		"pytest --rootdir=x",
+		"pytest --showlocals",
+		"pytest -l",
+		"go test -coverprofile=cov.out ./...",
+		"go test -o out ./...",
+		"tsc --showConfig",
+		"eslint -f json file.js",
+		"eslint --format=json file.js",
+		"eslint --fix src",
+		"ruff check --output-format=full local_settings.py",
+		"ruff format --diff f.py",
+		"biome check --write",
+		"mypy --html-report=x src",
+		"cargo test --manifest-path=x/Cargo.toml",
+	]) {
+		test(`TC-3.J2 ${command} is not a clean validation`, () => {
+			expect(kind(command)).not.toBe("validation");
+		});
+	}
+	for (const command of [
+		"make test -j 4",
+		"make test -j4",
+		"make test -k",
+		"make test -s",
+		"make test --keep-going",
+		"make test --silent",
+		"make test -ks",
+		"make check -sj4",
+		"bun test --bail",
+		"bun test --timeout=5000",
+		"bun test -t foo",
+		"go test -v -race ./...",
+		"go test -count=1 -run=TestX ./...",
+		"cargo test --release --workspace -- --nocapture",
+		"pytest -q -x -k foo",
+		"pytest -vv",
+		"pytest -rA",
+		"tsc --noEmit -p tsconfig.json",
+		"biome check --max-diagnostics=50",
+		"eslint --max-warnings=0 --quiet src",
+		"ruff check --select=E,F .",
+		"mypy --strict src",
+		"vitest run --coverage",
+		"jest --ci --runInBand",
+	]) {
+		test(`TC-3.J2 positive control: ${command} stays a clean validation`, () => {
+			expect(kind(command)).toBe("validation");
+		});
+	}
+});

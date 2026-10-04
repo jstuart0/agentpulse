@@ -1639,3 +1639,112 @@ describe("TC-3.H3 the pass summary is exactly the counts", () => {
 		}
 	});
 });
+
+// ── fix pass 2, section A: what a failing validation may send ────────────────
+
+describe("TC-3.J1 lint, format and type-check failures send no excerpt", () => {
+	const SENTINEL = "DB_HOST=SENTINEL_FILE_LINE";
+	const failed = (command: string) =>
+		build([bash(1, command, { eventType: "PostToolUseFailure", responseTail: `x\n${SENTINEL}\ny` })]);
+
+	for (const command of [
+		"biome check cfg/appsettings.json",
+		"ruff check --output-format=full local_settings.py",
+		"ruff format --diff f.py",
+		"eslint -f json file.js",
+		"tsc",
+		"mypy src",
+		"go vet ./...",
+		"cargo clippy",
+		"npm run lint",
+		"pnpm run lint",
+		"bun run check",
+		"bun run typecheck",
+		"make lint",
+		"npx tsc --noEmit",
+		"bun test && tsc",
+	]) {
+		test(`TC-3.J1 ${command} failing emits no excerpt`, () => {
+			const ledger = failed(command);
+			expect(ledger.text).not.toContain("SENTINEL");
+			expect(bodyOf(ledger.text)).toMatch(/-> FAILED$/);
+		});
+	}
+
+	for (const command of [
+		"bun test",
+		"npm test",
+		"pnpm test",
+		"yarn test",
+		"pytest",
+		"go test ./...",
+		"cargo test",
+		"cargo build",
+		"bun run build",
+		"bun run test",
+		"make test",
+		"make check",
+		"vitest",
+		"jest",
+	]) {
+		test(`TC-3.J1 positive control: ${command} failing keeps its excerpt`, () => {
+			expect(failed(command).text).toContain(SENTINEL);
+		});
+	}
+});
+
+describe("TC-3.J3 the ordinary branch never reads the response", () => {
+	const SENTINEL = "RESPONSE_SENTINEL_ZZZ";
+	const commands = [
+		"git push origin main",
+		"rm -rf build",
+		"cat .env",
+		"node -e 'x'",
+		"echo $(date)",
+		"curl -s localhost:3000/x",
+	];
+	for (const agentType of ["claude_code", "codex_cli"]) {
+		for (const command of commands) {
+			test(`TC-3.J3 ${agentType}: ${command} never shows its response`, () => {
+				for (const eventType of ["PostToolUse", "PostToolUseFailure"]) {
+					const ledger = build(
+						[
+							bash(1, command, {
+								eventType,
+								response: `FAIL ${SENTINEL}`,
+								responseTail: `FAIL ${SENTINEL}`,
+							}),
+						],
+						{ agentType },
+					);
+					expect(ledger.text).not.toContain(SENTINEL);
+				}
+			});
+		}
+	}
+	test("TC-3.J3 positive control: a failing test run does show its response", () => {
+		const ledger = build([
+			bash(1, "bun test", { eventType: "PostToolUseFailure", responseTail: SENTINEL }),
+		]);
+		expect(ledger.text).toContain(SENTINEL);
+	});
+});
+
+describe("TC-3.J4 the excerpt is gated by output text, and the label then reads FAILED", () => {
+	test("FAIL text on a Codex row with no exit code is FAILED with an excerpt (test runner)", () => {
+		const ledger = build([bash(1, "bun test", { response: "FAIL src/a.test.ts" })], {
+			agentType: "codex_cli",
+		});
+		expect(bodyOf(ledger.text)).toMatch(/-> FAILED: "FAIL src\/a\.test\.ts"$/);
+	});
+	test("FAIL text on a Claude row the hook reported as success is FAILED, never ok", () => {
+		const ledger = build([bash(1, "bun test", { response: "FAIL src/a.test.ts\n3 pass" })]);
+		expect(bodyOf(ledger.text)).toMatch(/-> FAILED: "/);
+		expect(bodyOf(ledger.text)).not.toMatch(/-> ok/);
+	});
+	test("the same on a lint-class tool reads FAILED with no excerpt", () => {
+		const ledger = build([bash(1, "tsc", { response: "FAIL SENTINEL_LINE" })]);
+		expect(bodyOf(ledger.text)).toMatch(/-> FAILED$/);
+		expect(ledger.text).not.toContain("SENTINEL");
+	});
+});
