@@ -6,13 +6,16 @@
  * (with and without a key). The relay installer's own run is asserted in
  * scripts/installers-run.test.ts, which has the stubs it needs.
  */
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import "../src/server/db/__test_db.js";
 import { expectClaudeHooksCarrySkip } from "./claude-hook-assertions.js";
+
+// These tests start real shell installers; under load one can take longer than Bun's 5 s default.
+setDefaultTimeout(60_000);
 
 const ROOT = join(import.meta.dir, "..");
 const PATH = process.env.PATH ?? "/usr/bin:/bin";

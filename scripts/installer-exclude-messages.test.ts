@@ -11,7 +11,7 @@
  * Every run uses a throwaway HOME (and no CODEX_HOME), so nothing here can
  * touch a real ~/.codex, ~/.claude, ~/.copilot or ~/.agentpulse.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,9 @@ import {
 	EXCLUDE_CHECK_HINT,
 	STATUSLINE_OFFER_LINE,
 } from "../src/shared/hook-headers.js";
+
+// These tests start real shell installers; under load one can take longer than Bun's 5 s default.
+setDefaultTimeout(60_000);
 
 const ROOT = join(import.meta.dir, "..");
 const SETUP_HOOKS = join(ROOT, "scripts", "setup-hooks.sh");

@@ -37,13 +37,16 @@
  * tests below; these new ones additionally prove the python3 branch's
  * rewritten form doesn't regress to either shape).
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { lstat, mkdir, mkdtemp, readdir, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Glob } from "bun";
 import { Hono } from "hono";
 import "../src/server/db/__test_db.js";
+
+// These tests start real shell installers; under load one can take longer than Bun's 5 s default.
+setDefaultTimeout(60_000);
 
 const { setup } = await import("../src/server/routes/setup.js");
 
