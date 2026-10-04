@@ -473,6 +473,99 @@ describeSqliteOnly("pacing", () => {
 	});
 });
 
+describeSqliteOnly("pacing charges CPU time, not time spent blocked", () => {
+	/** A chunk that takes `wallMs` of wall time and `cpuMs` of CPU time, on a clock that reports both. */
+	function useCpuClock(wallMs: number, cpuMs: number, options: { autoAdvance?: boolean } = {}) {
+		const clock = createFakeClock({ autoAdvance: options.autoAdvance ?? true });
+		let cpuTotal = 0;
+		scan.__setVectorScanClockForTests({
+			now: clock.now,
+			sleep: clock.sleep,
+			cpuMs: () => cpuTotal,
+		});
+		meter.setAfterExecute((execution) => {
+			if (!CHUNK_SQL.test(execution.sql)) return;
+			clock.advance(wallMs);
+			cpuTotal += cpuMs;
+		});
+		return clock;
+	}
+
+	test("a chunk that takes 100 ms of wall time but 10 ms of CPU sleeps about 23 ms, not 233 ms", async () => {
+		seedPlain(800, DIM);
+		const clock = useCpuClock(100, 10);
+		setBudgets({ share: 0.3 });
+
+		const result = await scan.scanSessionSimilarity(randomUnitVector(makeRng(9), DIM), {
+			model: MODEL,
+			dim: DIM,
+		});
+
+		expect(clock.sleeps.length).toBeGreaterThan(40);
+		for (const slept of clock.sleeps) expect(Math.abs(slept - 23.33)).toBeLessThan(0.5);
+		// busyMs is the CPU the pacer charged; chunkWallMs is what the chunks took on the clock
+		expect(result.stats.busyMs).toBeCloseTo(10 * result.stats.statements, 5);
+		expect(result.stats.chunkWallMs).toBeCloseTo(100 * result.stats.statements, 5);
+		expect(result.stats.maxSliceMs).toBeCloseTo(100, 5);
+	});
+
+	test("CPU time beyond the chunk's wall time (other threads) is never charged: the charge is capped at wall", async () => {
+		seedPlain(800, DIM);
+		const clock = useCpuClock(10, 50);
+		setBudgets({ share: 0.3 });
+
+		const result = await scan.scanSessionSimilarity(randomUnitVector(makeRng(9), DIM), {
+			model: MODEL,
+			dim: DIM,
+		});
+
+		for (const slept of clock.sleeps) expect(Math.abs(slept - 23.33)).toBeLessThan(0.5);
+		expect(result.stats.busyMs).toBeCloseTo(10 * result.stats.statements, 5);
+	});
+
+	test("a chunk that is all CPU behaves exactly as before", async () => {
+		seedPlain(800, DIM);
+		const clock = useCpuClock(10, 10);
+		setBudgets({ share: 0.3 });
+		const result = await scan.scanSessionSimilarity(randomUnitVector(makeRng(9), DIM), {
+			model: MODEL,
+			dim: DIM,
+		});
+		for (const slept of clock.sleeps) expect(Math.abs(slept - 23.33)).toBeLessThan(0.5);
+		const { busyMs, sleptMs } = result.stats;
+		expect(Math.abs(sleptMs / (busyMs + sleptMs) - 0.7)).toBeLessThan(0.02);
+	});
+
+	test("two concurrent scans on slow storage still share one debt: total sleep is the configured share of their CPU", async () => {
+		seedPlain(800, DIM);
+		const clock = useCpuClock(40, 10, { autoAdvance: false });
+		setBudgets({ share: 0.3 });
+		const a = scan.scanSessionSimilarity(randomUnitVector(makeRng(21), DIM), {
+			model: MODEL,
+			dim: DIM,
+		});
+		const b = scan.scanSessionSimilarity(randomUnitVector(makeRng(22), DIM), {
+			model: MODEL,
+			dim: DIM,
+		});
+		const both = await runWithClock(clock, Promise.all([a, b]));
+
+		const cpu = 10 * both.reduce((sum, r) => sum + r.stats.statements, 0);
+		const totalSlept = clock.sleeps.reduce((sum, ms) => sum + ms, 0);
+		expect(cpu).toBeGreaterThan(900);
+		expect(Math.abs(totalSlept / (cpu * (0.7 / 0.3)) - 1)).toBeLessThan(0.03);
+		for (const slept of clock.sleeps) expect(slept).toBeGreaterThan(0);
+	});
+
+	test("without a CPU reader the wall time is charged, as before (clocks that only know wall time)", async () => {
+		seedPlain(400, DIM);
+		const clock = useFakeClock(10);
+		setBudgets({ share: 0.3 });
+		await scan.scanSessionSimilarity(randomUnitVector(makeRng(9), DIM), { model: MODEL, dim: DIM });
+		for (const slept of clock.sleeps) expect(Math.abs(slept - 23.33)).toBeLessThan(0.5);
+	});
+});
+
 describeSqliteOnly("one pacer for every scan in the process", () => {
 	async function twoScans(chunkCostMs: number) {
 		seedPlain(800, DIM);
