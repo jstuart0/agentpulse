@@ -76,6 +76,47 @@ describe("git branch from a tool response", () => {
 		);
 	});
 
+	test("several string fields are joined by a newline, in order: the branch may be in stderr, and a `* ` marker in the second field is still at a line start", async () => {
+		// Joined by a space the marker would be mid-line and missed; reading only the first field would miss stderr.
+		expect(
+			await branchAfter("git branch", { stdout: "  main", stderr: "* feat/second-field\n" }),
+		).toBe("feat/second-field");
+		expect(await branchAfter("git status", { stdout: "", stderr: STATUS })).toBe(
+			"tooling/env-example-curation-12",
+		);
+		expect(
+			await branchAfter("git status", { stdout: "warning: something\n", stderr: STATUS }),
+		).toBe("tooling/env-example-curation-12");
+		expect(await branchAfter("git status", { stdout: STATUS, stderr: "warning: noise" })).toBe(
+			"tooling/env-example-curation-12",
+		);
+	});
+
+	test("array and nested responses are read as text too, not serialised (the same newline bug)", async () => {
+		expect(await branchAfter("git status", [{ type: "text", text: STATUS }])).toBe(
+			"tooling/env-example-curation-12",
+		);
+		expect(
+			await branchAfter("git branch", {
+				content: [{ type: "text", text: "  main\n* feat/nested\n" }],
+			}),
+		).toBe("feat/nested");
+		expect(await branchAfter("git status", { result: { output: { stdout: STATUS } } })).toBe(
+			"tooling/env-example-curation-12",
+		);
+		expect(await branchAfter("git branch", ["  main", "* feat/array-of-lines"])).toBe(
+			"feat/array-of-lines",
+		);
+	});
+
+	test("a response with no text anywhere, or one nested absurdly deep, sets nothing and does not throw", async () => {
+		expect(await branchAfter("git status", { code: 0, ok: true })).toBeNull();
+		expect(await branchAfter("git status", null)).toBeNull();
+		let deep: unknown = { stdout: STATUS };
+		for (let i = 0; i < 40; i++) deep = { next: deep };
+		expect(await branchAfter("git status", deep)).toBeNull();
+	});
+
 	test("nothing that isn't a git command, or has no branch, sets one", async () => {
 		expect(await branchAfter("ls", { stdout: STATUS })).toBeNull();
 		expect(await branchAfter("git status", { stdout: "fatal: not a git repository" })).toBeNull();
