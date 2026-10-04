@@ -1020,10 +1020,7 @@ export async function processHookEvent(
 
 	// Try to extract git branch from tool responses
 	if (eventType === "PostToolUse" && payload.tool_name === "Bash" && payload.tool_response) {
-		const response =
-			typeof payload.tool_response === "string"
-				? payload.tool_response
-				: JSON.stringify(payload.tool_response);
+		const response = toolResponseText(payload.tool_response);
 		const input = payload.tool_input as Record<string, unknown> | undefined;
 		const command = typeof input?.command === "string" ? input.command : "";
 
@@ -1127,6 +1124,24 @@ export async function markSessionFailed(sessionId: string): Promise<void> {
 }
 
 // Process a semantic status update from CLAUDE.md snippet
+/**
+ * The text of a Bash tool response, for matching. An object response carries the
+ * output in string fields (stdout, stderr, ...): those are joined as they are, so
+ * a real newline stays a newline (serialising the object to JSON would turn it
+ * into a backslash and an n, which no pattern for a line start or an end of word
+ * can then see). Anything without a string field is serialised, as before.
+ */
+function toolResponseText(response: unknown): string {
+	if (typeof response === "string") return response;
+	if (response !== null && typeof response === "object") {
+		const texts = Object.values(response as Record<string, unknown>).filter(
+			(value): value is string => typeof value === "string",
+		);
+		if (texts.length > 0) return texts.join("\n");
+	}
+	return JSON.stringify(response);
+}
+
 /** True only for the declared SEMANTIC_STATUSES values. */
 export function isSemanticStatus(value: unknown): value is SemanticStatus {
 	return typeof value === "string" && (SEMANTIC_STATUSES as readonly string[]).includes(value);
