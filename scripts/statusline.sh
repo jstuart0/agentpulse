@@ -28,6 +28,9 @@ case "$SESSION_ID" in
   '' | *[!A-Za-z0-9_-]*) ;;
   *) SAFE_ID="$SESSION_ID" ;;
 esac
+# The same id, kept even while the skip below blanks SAFE_ID: what this script
+# remembers about a session is also forgotten for it.
+CACHE_ID="$SAFE_ID"
 
 # Exclude rules. AGENTPULSE_SKIP is read exactly the way the hooks read it:
 # trimmed of space, tab, CR and LF only, then compared (any case) with
@@ -185,6 +188,74 @@ elif [ "$SKIP_ACTIVE" = true ]; then
   fi
 fi
 
+# What this script remembers (the last name seen, the last native name pushed)
+# lives in $AGENTPULSE_DIR/cache, private to the user: the directory is 0700 and
+# the files 0600 whatever the umask, a link or a non-regular file is never read,
+# written through or replaced, and a write goes to a private temp file that is
+# renamed into place. Nothing is kept about a session that may not be named: see
+# cache_forget below.
+CACHE_DIR="$AGENTPULSE_DIR/cache"
+
+# Creates (or tightens) the directory; false when it can't be used as one.
+cache_dir_ready() {
+  [ -L "$CACHE_DIR" ] && return 1
+  if [ -e "$CACHE_DIR" ] && [ ! -d "$CACHE_DIR" ]; then return 1; fi
+  if [ ! -d "$CACHE_DIR" ]; then (umask 077; mkdir -p "$CACHE_DIR") 2>/dev/null || return 1; fi
+  chmod 700 "$CACHE_DIR" 2>/dev/null
+  [ -d "$CACHE_DIR" ] && [ ! -L "$CACHE_DIR" ]
+}
+
+# The first line of a remembered file, only if it is a regular file (not a link).
+cache_read() {
+  [ -L "$CACHE_DIR" ] && return 1
+  [ -f "$1" ] && [ ! -L "$1" ] && head -n 1 "$1" 2>/dev/null
+}
+
+# Removes files from the directory (never through a link to the directory).
+cache_forget() {
+  [ -L "$CACHE_DIR" ] && return 0
+  local f
+  for f in "$@"; do rm -f "$CACHE_DIR/$f" 2>/dev/null; done
+}
+
+# Once a day at most, and only when something was just written (so a steady-state
+# render pays nothing), drops remembered files untouched for 30 days: a session
+# that old isn't being rendered, and one file per session would otherwise pile up
+# forever. The cost is one stat of a marker file, plus one find a day.
+cache_sweep() {
+  local marker="$CACHE_DIR/.swept"
+  if [ -f "$marker" ] && [ ! -L "$marker" ] && [ -z "$(find "$marker" -mtime +0 2>/dev/null)" ]; then return 0; fi
+  find "$CACHE_DIR" -maxdepth 1 -type f \( -name 'name-*' -o -name 'native-name-*' \) -mtime +30 -exec rm -f {} + 2>/dev/null
+  [ -L "$marker" ] || (umask 077; : > "$marker") 2>/dev/null
+  return 0
+}
+
+# cache_write FILE CONTENT: false when it refuses (a link, a non-regular file, no usable directory).
+cache_write() {
+  cache_dir_ready || return 1
+  case "$1" in "$CACHE_DIR"/*) ;; *) return 1 ;; esac
+  [ -L "$1" ] && return 1
+  if [ -e "$1" ] && [ ! -f "$1" ]; then return 1; fi
+  local tmp
+  tmp=$(umask 077; mktemp "$CACHE_DIR/.tmp.XXXXXX" 2>/dev/null) || return 1
+  if printf '%s' "$2" > "$tmp" 2>/dev/null && chmod 600 "$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null; then
+    cache_sweep
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null
+  return 1
+}
+
+# A name is server data, so before it reaches the terminal everything that can
+# act on the terminal is removed: C0 controls and DEL (tr), then C1 controls
+# (U+0080-U+009F), the zero-width and bidirectional format characters
+# (U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+2066-U+2069) and the BOM (jq,
+# which reads UTF-8 properly where bash 3.2 and BSD tools do not). Ordinary
+# non-ASCII names (accents, CJK, emoji) pass. Not stripped: other format
+# characters (such as U+00AD soft hyphen or the Arabic marks), which don't act
+# on the terminal.
+PLAIN_NAME_JQ='gsub("[\u0080-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]"; "")'
+
 # Look up the AgentPulse display name from the local relay. It's server data,
 # so control characters are stripped before it reaches the terminal.
 # The ask is for the name only (?fields=displayName): a few dozen bytes however
@@ -202,26 +273,33 @@ fi
 NAME=""
 EXCLUDED_BY_RELAY=false
 NAME_CACHE_FILE=""
+if [ -n "$CACHE_ID" ]; then
+  NAME_CACHE_FILE="$CACHE_DIR/name-$CACHE_ID"
+  # While a skip is active, or the rules are marked invalid, nothing is remembered
+  # about the session and no remembered name is shown.
+  if [ "$SKIP_ACTIVE" = true ]; then cache_forget "name-$CACHE_ID" "native-name-$CACHE_ID"; fi
+  if [ "$MARKER_PRESENT" = true ]; then cache_forget "name-$CACHE_ID"; fi
+fi
 if [ -n "$SAFE_ID" ]; then
-  NAME_CACHE_FILE="$AGENTPULSE_DIR/cache/name-$SAFE_ID"
   LOOKUP=$(curl -s -m 1 -w '\n%{http_code}' "http://localhost:${AGENTPULSE_PORT}/api/v1/sessions/${SAFE_ID}?fields=displayName" 2>/dev/null)
   LOOKUP_CODE="${LOOKUP##*$'\n'}"
   LOOKUP_BODY="${LOOKUP%$'\n'*}"
   if [ "$LOOKUP_CODE" = "404" ] && [ "$(printf '%s' "$LOOKUP_BODY" | jq -r '.error // ""' 2>/dev/null)" = "excluded" ]; then
     EXCLUDED_BY_RELAY=true
     SAFE_ID=""
+    cache_forget "name-$CACHE_ID" "native-name-$CACHE_ID"
   elif [ "$LOOKUP_CODE" = "200" ]; then
-    NAME=$(printf '%s' "$LOOKUP_BODY" | jq -r '.session.displayName // ""' 2>/dev/null | tr -d '\000-\037\177')
-    if [ -n "$NAME" ] && [ "$NAME" != "null" ]; then
-      REMEMBERED=""
-      [ -f "$NAME_CACHE_FILE" ] && REMEMBERED=$(cat "$NAME_CACHE_FILE" 2>/dev/null)
-      if [ "$NAME" != "$REMEMBERED" ]; then
-        { mkdir -p "$AGENTPULSE_DIR/cache" && printf '%s' "$NAME" > "$NAME_CACHE_FILE"; } 2>/dev/null
-      fi
+    NAME=$(printf '%s' "$LOOKUP_BODY" | jq -r ".session.displayName // \"\" | $PLAIN_NAME_JQ" 2>/dev/null | tr -d '\000-\037\177')
+    if [ -n "$NAME" ] && [ "$NAME" != "null" ] && [ "$MARKER_PRESENT" != true ]; then
+      REMEMBERED=$(cache_read "$NAME_CACHE_FILE")
+      if [ "$NAME" != "$REMEMBERED" ]; then cache_write "$NAME_CACHE_FILE" "$NAME"; fi
     fi
-  elif [ "$LOOKUP_CODE" != "404" ] && [ -f "$NAME_CACHE_FILE" ]; then
-    # No answer in time, a server error, anything but a clear "no such session".
-    NAME=$(head -n 1 "$NAME_CACHE_FILE" 2>/dev/null | tr -d '\000-\037\177')
+  elif [ "$LOOKUP_CODE" = "404" ]; then
+    # Unknown to the relay, a plain 404, rules_invalid: a name remembered earlier is stale.
+    cache_forget "name-$CACHE_ID"
+  elif [ "$MARKER_PRESENT" != true ]; then
+    # No answer in time, a server error: the last name seen, if there is one.
+    NAME=$(cache_read "$NAME_CACHE_FILE" | jq -Rr "$PLAIN_NAME_JQ" 2>/dev/null | tr -d '\000-\037\177')
   fi
 fi
 if [ "$EXCLUDED_BY_RELAY" = true ] && [ -z "$EXCLUDE_LINE" ] && relay_covers_this_session; then
@@ -235,10 +313,8 @@ fi
 # output discarded, because anything this script prints lands in the
 # statusline verbatim.
 if [ -n "$SAFE_ID" ] && [ -n "$NATIVE_NAME" ] && [ "$NATIVE_NAME" != "null" ]; then
-  CACHE_DIR="$AGENTPULSE_DIR/cache"
   CACHE_FILE="$CACHE_DIR/native-name-$SAFE_ID"
-  LAST_PUSHED=""
-  [ -f "$CACHE_FILE" ] && LAST_PUSHED=$(cat "$CACHE_FILE" 2>/dev/null)
+  LAST_PUSHED=$(cache_read "$CACHE_FILE")
   if [ "$NATIVE_NAME" != "$LAST_PUSHED" ]; then
     (
       BODY="{\"name\":$(printf '%s' "$NATIVE_NAME" | jq -Rs .)}"
@@ -246,7 +322,7 @@ if [ -n "$SAFE_ID" ] && [ -n "$NATIVE_NAME" ] && [ "$NATIVE_NAME" != "null" ]; t
         "http://localhost:${AGENTPULSE_PORT}/api/v1/sessions/${SAFE_ID}/native-name" \
         -H "Content-Type: application/json" -d "$BODY")
       case "$CODE" in
-        200 | 400) mkdir -p "$CACHE_DIR" && printf '%s' "$NATIVE_NAME" > "$CACHE_FILE" ;;
+        200 | 400) cache_write "$CACHE_FILE" "$NATIVE_NAME" ;;
       esac
     ) > /dev/null 2>&1 &
   fi

@@ -1125,6 +1125,7 @@ describe("statusline.sh — the remembered files are private and are never follo
 	test("a cache directory that is itself a symlink is not used", async () => {
 		const elsewhere = join(tmp, "elsewhere");
 		await mkdir(elsewhere, { recursive: true });
+		await mkdir(agentpulseDir(), { recursive: true });
 		await symlink(elsewhere, cache());
 		await run(INPUT);
 		await Bun.sleep(300);
