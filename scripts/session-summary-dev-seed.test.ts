@@ -37,12 +37,15 @@ const PLAN_SCREENS = [
 	"digest-row",
 	"activity-after-evidence-link",
 	"settings-labs-anchor",
+	"suspect-note",
+	"lost-contact",
+	"activity-mode-switched",
 ];
 
 describe("session-summary dev seed", () => {
-	test("one entry per named screen, no more, no fewer", () => {
+	test("one entry per named screen (the plan's 34 and the review's three), no more, no fewer", () => {
 		expect(SCREENS.map((s) => s.name)).toEqual(PLAN_SCREENS);
-		expect(new Set(SCREENS.map((s) => s.name)).size).toBe(34);
+		expect(new Set(SCREENS.map((s) => s.name)).size).toBe(37);
 	});
 
 	test("a screen that isn't a real server state of its own session says how to reach it", () => {
@@ -60,5 +63,12 @@ describe("session-summary dev seed", () => {
 		const err = await new Response(proc.stderr).text();
 		expect(code).not.toBe(0);
 		expect(err).toContain("isn't a loopback address");
+	});
+});
+
+describe("the long screen fills every section to the server's cap", () => {
+	test("ten items of three hundred characters", async () => {
+		const seed = await import("./session-summary-dev-seed.js");
+		expect(seed.SCREENS.find((s) => s.name === "ready-long")?.variant).toBe("long");
 	});
 });
