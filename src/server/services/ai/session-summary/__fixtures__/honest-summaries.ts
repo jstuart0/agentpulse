@@ -694,4 +694,22 @@ export const HONEST_SUMMARIES: HonestCase[] = [
 		next: ["Check it with `curl 127.0.0.1:8080/ready` while draining."],
 		paths: ["src/server/routes/health.ts"],
 	}),
+	// ── fix pass 4: commands that name a file the session only read, or a dotted config key ──
+	honest("runs a script the session only read", {
+		overview: "Read the deploy tooling.",
+		handoff: "The deploy script is documented in docs/DEPLOY.md.",
+		next: ["Run `bash deploy.sh` from the repo root."],
+		paths: ["docs/DEPLOY.md"],
+	}),
+	honest("runs a python script the session only read", {
+		overview: "Read the migration helper.",
+		handoff: "The helper takes no arguments.",
+		next: ["Run `python migrate.py` before the first start."],
+		paths: ["docs/MIGRATING.md"],
+	}),
+	honest("reads a git config key", {
+		overview: "Checked the commit author setup.",
+		handoff: "Commits use the local identity.",
+		next: ["Check it with `git config --get user.name`."],
+	}),
 ];

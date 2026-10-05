@@ -20,7 +20,7 @@ import {
 	type SummarySuspectReason,
 } from "../../../../shared/session-summary.js";
 import { stripInvisibleKeepNewlines } from "../untrusted-text.js";
-import { classifyCommand } from "./command-class.js";
+import { type RealCommand, classifyCommand, realCommandsOf } from "./command-class.js";
 
 // ── folding ──────────────────────────────────────────────────────────────────
 
@@ -386,6 +386,12 @@ const COMMAND_VERBS = new Set([
 	"env",
 	"nohup",
 	"timeout",
+	"uv",
+	"poetry",
+	"gem",
+	"composer",
+	"invoke-webrequest",
+	"invoke-restmethod",
 	"osascript",
 	"powershell",
 	"pwsh",
@@ -652,7 +658,7 @@ function fetchesAndRuns(folded: string): boolean {
 
 /** A fetch tool and a run step anywhere in the text, in either order: a copy payload that carries both. */
 function fetchAndRunInAnyOrder(folded: string): boolean {
-	return firstFetchEnd(folded) !== -1 && RUN_STEP_RE.test(`\u0001${folded}`);
+	return firstFetchEnd(folded) !== -1 && RUN_STEP_RE.test(folded);
 }
 
 function hasPipeToShell(folded: string): boolean {
@@ -669,33 +675,143 @@ const RUN_PHRASE_RE = new RegExp(
 	"gi",
 );
 
+// ── how a command segment is read ────────────────────────────────────────────
+
+interface SegView {
+	key: string;
+	cmds: RealCommand[];
+}
+
+/**
+ * A segment as the classifier's parser reads it: the commands it really runs,
+ * past wrappers, quoting and flag values. What the parser cannot read is one
+ * opaque command judged by its first word. Cached per scan.
+ */
+function viewOf(tokens: string[], cache: Map<string, SegView>): SegView {
+	const key = segmentKey(tokens);
+	const hit = cache.get(key);
+	if (hit) return hit;
+	const cmds = realCommandsOf(key) ?? [
+		{ words: tokens, wrappers: [], assigned: false, opaque: true },
+	];
+	const view = { key, cmds };
+	cache.set(key, view);
+	return view;
+}
+
+/** The verb of a command, lowercase: the leading name of its first word, whatever quoting or expansion follows it. */
+function verbOf(cmd: RealCommand): string {
+	const head = (cmd.words[0] ?? "").replace(/^[\\"'`$({]+/, "");
+	const base = head.slice(head.lastIndexOf("/") + 1);
+	return (/^[A-Za-z][\w.+-]*/.exec(base)?.[0] ?? "").toLowerCase();
+}
+
+/** Verbs whose first operand is a subcommand that fetches, installs, runs or changes things. */
+const RISKY_VERBS = new Set([
+	"curl",
+	"wget",
+	"iwr",
+	"irm",
+	"invoke-webrequest",
+	"invoke-restmethod",
+	"ssh",
+	"scp",
+	"nc",
+	"ncat",
+	"npx",
+	"bunx",
+	"pipx",
+	"uv",
+	"chmod",
+	"chown",
+	"sudo",
+	"doas",
+	"rm",
+	"dd",
+	"crontab",
+	"kill",
+	// wrappers the parser does not look through: what they run cannot be read
+	"strace",
+	"ltrace",
+	"flock",
+	"watch",
+	"stdbuf",
+	"unbuffer",
+	"chroot",
+	"nsenter",
+	"parallel",
+	"su",
+	"script",
+	"busybox",
+	"fish",
+]);
+/** Wrappers whose presence alone makes the command risky. */
+const RISKY_WRAPPERS = new Set(["sudo", "doas", "ssh"]);
+
+const isHeadVerb = (v: string): boolean => COMMAND_VERBS.has(v) || RISKY_VERBS.has(v);
+const isCommandCmd = (cmd: RealCommand): boolean => [...cmd.wrappers, verbOf(cmd)].some(isHeadVerb);
+
+/** A command that is only a check or a look, with nothing hidden in front of it or inside it. */
+function isBenignCmd(cmd: RealCommand): boolean {
+	return (
+		!cmd.opaque &&
+		!cmd.assigned &&
+		cmd.wrappers.length === 0 &&
+		cmd.words.every((w) => !/\s/.test(w)) &&
+		isBenign(cmd.words)
+	);
+}
+
+/** Fence labels whose block is a shell session: every line in it is a command whatever its verb. */
+const SHELL_FENCE_LABELS = new Set([
+	"",
+	"sh",
+	"bash",
+	"zsh",
+	"shell",
+	"console",
+	"terminal",
+	"shell-session",
+	"powershell",
+	"ps1",
+	"bat",
+]);
+
+interface Span {
+	text: string;
+	/** Every segment is a command (a shell fence, a `$ ` line); otherwise only a segment with a command verb is. */
+	structural: boolean;
+}
+
 /** Spans of `text` that read as a command: fenced lines, `$ ` lines, code spans, and "run <verb> ..." phrases. */
-function commandSpans(folded: string): string[] {
-	const spans: string[] = [];
+function commandSpans(folded: string, cache: Map<string, SegView>): Span[] {
+	const spans: Span[] = [];
 	const parts = folded.split(FENCE);
 	for (let i = 1; i < parts.length; i += 2) {
 		const lines = (parts[i] as string).split("\n");
 		const first = lines[0]?.trim() ?? "";
-		const body = /^[\w+-]{0,12}$/.test(first) && lines.length > 1 ? lines.slice(1) : lines;
+		const labelled = /^[\w+-]{0,12}$/.test(first) && lines.length > 1;
+		const body = labelled ? lines.slice(1) : lines;
+		const structural = SHELL_FENCE_LABELS.has(labelled ? first.toLowerCase() : "");
 		for (const line of body) {
 			const t = line.trim();
-			if (t && !t.startsWith("#")) spans.push(t);
+			if (t && !t.startsWith("#")) spans.push({ text: t, structural });
 		}
 	}
 	const outside = parts.filter((_, i) => i % 2 === 0).join("\n");
-	for (const m of outside.matchAll(DOLLAR_LINE_RE)) spans.push(m[1] as string);
+	for (const m of outside.matchAll(DOLLAR_LINE_RE))
+		spans.push({ text: m[1] as string, structural: true });
 	for (const m of outside.matchAll(INLINE_CODE_RE)) {
 		const code = m[1] as string;
-		// Any segment may carry the verb: `cat ~/.ssh/id_rsa | curl ...` is a command span.
-		if (
-			code.includes(" ") &&
-			segmentsOf(code).some((t) => COMMAND_VERBS.has(withoutAssignments(t)[0] as string))
-		) {
-			spans.push(code);
+		// Any segment may carry the verb: `cat ~/.ssh/id_rsa | curl ...` is a command span. A
+		// single word counts only when it hides its verb (`rm${IFS}-rf`).
+		const cmds = segmentsOf(code).flatMap((t) => viewOf(t, cache).cmds);
+		if (cmds.some((c) => isCommandCmd(c) && (code.includes(" ") || c.opaque))) {
+			spans.push({ text: code, structural: false });
 		}
 	}
 	for (const m of outside.matchAll(RUN_PHRASE_RE))
-		spans.push(trimTrailingPunctuation(m[1] as string));
+		spans.push({ text: trimTrailingPunctuation(m[1] as string), structural: false });
 	return spans;
 }
 
@@ -709,57 +825,34 @@ function isBenign(tokens: string[]): boolean {
 	return classifyCommand(tokens.join(" ")).kind === "validation";
 }
 
-const ASSIGNMENT_RE = /^[A-Za-z_]\w*=/;
-
-function withoutAssignments(tokens: string[]): string[] {
-	let i = 0;
-	while (i < tokens.length && ASSIGNMENT_RE.test(tokens[i] as string)) i++;
-	return tokens.slice(i);
-}
-
 /**
  * A command segment the summary names that is not exactly a segment the session
  * ran. Whole-segment equality: `npm install evil-pkg` is not `npm install`, and
- * `rm -rf /` is not `rm -rf /tmp/build`. The only looseness is `isBenign` (a
- * fixed list of read-only forms and clean validations).
+ * `rm -rf /` is not `rm -rf /tmp/build`. The only looseness is `isBenignCmd` (a
+ * fixed list of read-only forms and clean validations). What the parser cannot
+ * read (an expansion, a quoted verb) is always a command when its verb is known.
  */
-function isUnrecorded(tokens: string[], records: RecordIndex): boolean {
-	// Leading NAME=value tokens are skipped to find the verb, and they void the benign list.
-	const t = withoutAssignments(tokens);
-	if (t.length < 2 || !COMMAND_VERBS.has(t[0] as string)) return false;
-	if (t.length === tokens.length && isBenign(t)) return false;
-	return !records.segments.has(segmentKey(tokens));
+function isUnrecorded(view: SegView, records: RecordIndex): boolean {
+	if (records.segments.has(view.key)) return false;
+	for (const cmd of view.cmds) {
+		if (!isCommandCmd(cmd)) continue;
+		if (!cmd.opaque && cmd.words.length + cmd.wrappers.length < 2) continue;
+		if (isBenignCmd(cmd)) continue;
+		return true;
+	}
+	return false;
 }
 
-function hasUnrecordedCommand(folded: string, records: RecordIndex): boolean {
-	for (const span of commandSpans(folded)) {
-		for (const tokens of segmentsOf(span)) if (isUnrecorded(tokens, records)) return true;
+function hasUnrecordedCommand(folded: string, index: Index): boolean {
+	for (const span of commandSpans(folded, index.segCache)) {
+		for (const tokens of segmentsOf(span.text)) {
+			if (isUnrecorded(viewOf(tokens, index.segCache), index.records)) return true;
+		}
 	}
 	return false;
 }
 
 // ── risky commands ───────────────────────────────────────────────────────────
-
-/** Verbs that reach the network, run what they fetch, or delete and change things, whatever follows. */
-const RISKY_VERBS = new Set([
-	"curl",
-	"wget",
-	"iwr",
-	"irm",
-	"ssh",
-	"scp",
-	"nc",
-	"ncat",
-	"npx",
-	"bunx",
-	"chmod",
-	"chown",
-	"sudo",
-	"rm",
-	"dd",
-	"crontab",
-	"kill",
-]);
 
 /** Verbs that are risky only with one of these subcommands (`git status` is not, `git push` is). */
 const RISKY_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
@@ -770,45 +863,25 @@ const RISKY_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
 	bun: new Set(["add", "install", "i", "ci"]),
 	pip: new Set(["install"]),
 	pip3: new Set(["install"]),
-	go: new Set(["install"]),
+	go: new Set(["get", "install"]),
 	docker: new Set(["run", "pull"]),
 	make: new Set(["install"]),
+	cargo: new Set(["install"]),
+	poetry: new Set(["add"]),
+	gem: new Set(["install"]),
+	composer: new Set(["require"]),
+	brew: new Set(["install", "tap"]),
+	apt: new Set(["install"]),
+	"apt-get": new Set(["install"]),
+	yum: new Set(["install"]),
+	dnf: new Set(["install"]),
+	deno: new Set(["run", "install"]),
 };
-
-const LEADING_WRAPPERS = new Set([
-	"env",
-	"nohup",
-	"time",
-	"exec",
-	"command",
-	"nice",
-	"xargs",
-	"timeout",
-]);
-
-/**
- * The tokens after leading assignments (`FOO=1`) and wrappers that only run what
- * follows, and whether an assignment was among them. An assignment turns every
- * exception below off: `PIP_INDEX_URL=... pip install -r r.txt` is not a manifest install.
- */
-function unwrapCommand(tokens: string[]): { t: string[]; assigned: boolean } {
-	let i = 0;
-	let assigned = false;
-	while (i < tokens.length) {
-		const t = tokens[i] as string;
-		if (ASSIGNMENT_RE.test(t)) {
-			assigned = true;
-			i++;
-		} else if (LEADING_WRAPPERS.has(t)) i++;
-		else if (i > 0 && (t.startsWith("-") || /^\d+$/.test(t))) i++;
-		else break;
-	}
-	return { t: tokens.slice(i), assigned };
-}
 
 const LOOPBACK_TOKEN_RE =
 	/^(?:\w+:\/\/)?(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?::\d{1,5})?(?:[/?#]\S*)?$/i;
-const FETCH_TOOLS = new Set(["curl", "wget", "iwr", "irm"]);
+/** curl and wget only: PowerShell's web cmdlets take other parameters, so they never get the exception. */
+const FETCH_TOOLS = new Set(["curl", "wget"]);
 const NETWORK_GIT = new Set(["push", "pull", "fetch"]);
 const MANIFEST_INSTALLERS = new Set(["bun", "npm", "pnpm", "yarn"]);
 
@@ -823,9 +896,41 @@ const isRepoPath = (p: string): boolean =>
 const LONG_WRITE_FLAG_RE =
 	/^--(?:data(?:-[a-z]+)?|json|form(?:-string)?|upload-file|post-data|post-file|body-data|body-file|cookie-jar)(?:=|$)/;
 const OUTPUT_LONG_FLAGS = new Set(["--output", "--output-document", "--output-file"]);
+/** Flags that read the request from elsewhere, follow redirects, or change where it goes. */
+const REDIRECTING_LONG_FLAGS = new Set([
+	"--config",
+	"--next",
+	"--location",
+	"--location-trusted",
+	"--url",
+	"--unix-socket",
+	"--directory-prefix",
+	"--input-file",
+]);
+/** Long flags that take their value as the next word (so it is not a positional address). */
+const VALUE_LONG_FLAGS = new Set([
+	"--request",
+	"--method",
+	"--output",
+	"--output-document",
+	"--output-file",
+	"--write-out",
+	"--header",
+	"--user-agent",
+	"--max-time",
+	"--connect-timeout",
+	"--retry",
+	"--timeout",
+	"--tries",
+	"--referer",
+	"--user",
+	"--cookie",
+]);
 const READ_METHODS = new Set(["GET", "HEAD"]);
 /** Short flags that send a body or an upload, or write a cookie jar (curl `-d -F -T -c`). */
 const BODY_LETTERS = "dFTc";
+/** Short flags that read a config, follow redirects, use a proxy or set a directory (`-K -L -x -P`). */
+const REDIRECTING_LETTERS = "KLxP";
 /** Short flags that take a value, so they end a cluster. */
 const VALUE_LETTERS = "XoOwHAuebmxKErUz";
 
@@ -835,10 +940,11 @@ const isSafeOutput = (target: string): boolean =>
 
 /**
  * True when a curl or wget argument list is not a plain read: a method other than
- * GET or HEAD, any request body or upload, a cookie jar, or output written
- * anywhere but stdout, /dev/null or a relative path.
+ * GET or HEAD (also by header override), any request body or upload, a cookie jar,
+ * a config or redirect or proxy or directory flag, or output written anywhere but
+ * stdout, /dev/null or a relative path.
  */
-function writesOrSends(args: string[]): boolean {
+function writesOrSends(verb: string, args: string[]): boolean {
 	for (let i = 0; i < args.length; i++) {
 		const x = args[i] as string;
 		if (x === "--request" || x === "--method") {
@@ -849,9 +955,15 @@ function writesOrSends(args: string[]): boolean {
 			if (!READ_METHODS.has(x.slice(x.indexOf("=") + 1).toUpperCase())) return true;
 			continue;
 		}
-		if (LONG_WRITE_FLAG_RE.test(x)) return true;
-		const longOutput = x.split("=")[0] as string;
-		if (OUTPUT_LONG_FLAGS.has(longOutput)) {
+		const long = x.split("=")[0] as string;
+		if (LONG_WRITE_FLAG_RE.test(x) || REDIRECTING_LONG_FLAGS.has(long) || x.startsWith("--proxy"))
+			return true;
+		if (
+			long === "--header" &&
+			/^x-http-method/i.test(x.includes("=") ? x.slice(x.indexOf("=") + 1) : (args[i + 1] ?? ""))
+		)
+			return true;
+		if (OUTPUT_LONG_FLAGS.has(long)) {
 			const target = x.includes("=") ? x.slice(x.indexOf("=") + 1) : (args[i + 1] ?? "");
 			if (!isSafeOutput(target)) return true;
 			continue;
@@ -861,38 +973,56 @@ function writesOrSends(args: string[]): boolean {
 		const letters = x.slice(1);
 		for (let k = 0; k < letters.length; k++) {
 			const letter = letters[k] as string;
-			if (BODY_LETTERS.includes(letter)) return true;
+			if (BODY_LETTERS.includes(letter) || REDIRECTING_LETTERS.includes(letter)) return true;
+			if (letter === "i" && verb === "wget") return true;
 			if (!VALUE_LETTERS.includes(letter)) continue;
 			const given = letters.slice(k + 1) || (args[i + 1] ?? "");
 			if (letter === "X" && !READ_METHODS.has(given.toUpperCase())) return true;
 			if ((letter === "o" || letter === "O") && !isSafeOutput(given)) return true;
+			if (letter === "H" && /^x-http-method/i.test(given)) return true;
 			break;
 		}
 	}
 	return false;
 }
 
-/**
- * Exception 1: a fetch tool whose every target is a loopback address (at least
- * one), doing a plain read: no body, upload, non-GET method or write outside the
- * working directory (the Docker API and this app's own API are on loopback), and
- * no pipe or download-then-run in the span. Any other host, a malformed address
- * or an upload makes it risky.
- */
-function isLoopbackOnly(t: string[], spanPiped: () => boolean, index: Index): boolean {
-	if (!FETCH_TOOLS.has(t[0] as string)) return false;
-	if (t.some((x) => x.startsWith("@") || x.includes("=@"))) return false;
-	if (writesOrSends(t.slice(1))) return false;
-	if (spanPiped()) return false;
-	let loopback = 0;
-	for (const x of t.slice(1)) if (LOOPBACK_TOKEN_RE.test(x)) loopback++;
-	if (loopback === 0) return false;
-	const rest = t.slice(1).filter((x) => !LOOPBACK_TOKEN_RE.test(x));
-	for (const c of candidates(rest.join(" "), true)) {
-		if (c.malformed || !LOOPBACK_HOSTS.test(c.host)) return false;
+/** The words of a curl or wget command line that are addresses or files, not flags or flag values. */
+function positionals(args: string[]): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		const x = args[i] as string;
+		if (!x.startsWith("-")) {
+			out.push(x);
+			continue;
+		}
+		if (x.startsWith("--")) {
+			if (!x.includes("=") && VALUE_LONG_FLAGS.has(x)) i++;
+			continue;
+		}
+		const letters = x.slice(1);
+		for (let k = 0; k < letters.length; k++) {
+			if (!VALUE_LETTERS.includes(letters[k] as string)) continue;
+			if (letters.slice(k + 1) === "") i++;
+			break;
+		}
 	}
-	for (const c of candidates(t.slice(1).join(" "), true)) if (c.malformed) return false;
-	return urlFindings(rest.join(" "), index.typed, index.records, false).unexpected === false;
+	return out;
+}
+
+/**
+ * Exception 1: curl or wget whose every address is a loopback one (at least one),
+ * doing a plain read: no body, upload, non-GET method, redirect, proxy, config or
+ * write outside the working directory (the Docker API and this app's own API are
+ * on loopback), no word that is not itself a loopback address, and no pipe or
+ * download-then-run in the span. Anything else makes it risky.
+ */
+function isLoopbackOnly(verb: string, args: string[], spanPiped: () => boolean): boolean {
+	if (!FETCH_TOOLS.has(verb)) return false;
+	if (args.some((x) => x.startsWith("@") || x.includes("=@"))) return false;
+	if (writesOrSends(verb, args)) return false;
+	const where = positionals(args);
+	if (where.length === 0 || !where.every((x) => LOOPBACK_TOKEN_RE.test(x))) return false;
+	return !spanPiped();
 }
 
 /** Install flags that cannot point at another registry, index, prefix or script. */
@@ -915,9 +1045,7 @@ const PIP_INSTALL_FLAGS = new Set(["--no-deps", "--quiet", "-q"]);
  * only allowlisted flags: `bun install`, `npm ci`, `pip install -r requirements.txt`,
  * `pip install -e .`.
  */
-function isManifestInstall(t: string[]): boolean {
-	const verb = t[0] as string;
-	const args = t.slice(1);
+function isManifestInstall(verb: string, args: string[]): boolean {
 	if (MANIFEST_INSTALLERS.has(verb)) {
 		const sub = args.find((x) => !x.startsWith("-"));
 		if (sub !== "install" && sub !== "i" && sub !== "ci") return false;
@@ -943,18 +1071,28 @@ function isManifestInstall(t: string[]): boolean {
 	return sawManifest;
 }
 
-/** The git subcommand, past global options; `override` is set when a `-c` came first. */
-function gitSub(t: string[]): { sub: string | undefined; override: boolean; rest: string[] } {
+/** The git subcommand; `globals` is set when any option came before it, `override` for a `-c`. */
+function gitSub(args: string[]): {
+	sub: string | undefined;
+	override: boolean;
+	globals: boolean;
+	rest: string[];
+} {
 	let override = false;
-	for (let i = 1; i < t.length; i++) {
-		const x = t[i] as string;
+	let globals = false;
+	for (let i = 0; i < args.length; i++) {
+		const x = args[i] as string;
 		if (x === "-c") {
 			override = true;
+			globals = true;
 			i++;
-		} else if (x === "-C") i++;
-		else if (!x.startsWith("-")) return { sub: x, override, rest: t.slice(i + 1) };
+		} else if (x === "-C") {
+			globals = true;
+			i++;
+		} else if (x.startsWith("-")) globals = true;
+		else return { sub: x, override, globals, rest: args.slice(i + 1) };
 	}
-	return { sub: undefined, override, rest: [] };
+	return { sub: undefined, override, globals, rest: [] };
 }
 
 const GIT_ALLOWED_FLAGS = new Set([
@@ -972,10 +1110,11 @@ const REMOTE_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 const REF_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/;
 
 /**
- * Exception 3: `git push|pull|fetch` whose every remaining token is an allowlisted
- * flag or a plain name: at most one remote (letters, digits, `_`, `-`) and one ref
- * (no `:`, not `refs/`, not `+`). `--delete`, `-d`, `--mirror`, `--prune`, `--force*`,
- * `-f`, `--all` (but for fetch) and every refspec with a colon are out.
+ * Exception 3: `git push|pull|fetch` with no option before the subcommand, whose
+ * every remaining token is an allowlisted flag or a plain name: at most one remote
+ * (letters, digits, `_`, `-`) and one ref (no `:`, not `refs/`, not `+`). `--delete`,
+ * `-d`, `--mirror`, `--prune`, `--force*`, `-f`, `--all` (but for fetch) and every
+ * refspec with a colon are out.
  */
 function isNamedRemoteGit(sub: string, rest: string[]): boolean {
 	if (!NETWORK_GIT.has(sub)) return false;
@@ -1001,20 +1140,31 @@ const GIT_READ_CONFIG_FLAGS = new Set([
 const PACKAGE_CONFIG_WRITES = new Set(["set", "delete", "edit", "unset"]);
 const CONFIG_TOOLS = new Set(["npm", "yarn", "pnpm", "pip", "pip3"]);
 
-function isRiskyCommand(tokens: string[], spanPiped: () => boolean, index: Index): boolean {
-	const { t, assigned } = unwrapCommand(tokens);
-	const verb = t[0];
-	if (!verb) return false;
+/** Whether one command is risky by what it is: opaque, wrapped in sudo or ssh, or a risky verb that no exception clears. */
+function isRiskyCmd(cmd: RealCommand, spanPiped: () => boolean): boolean {
+	if (cmd.opaque || cmd.wrappers.some((w) => RISKY_WRAPPERS.has(w))) return true;
+	let verb = verbOf(cmd);
+	let args = cmd.words.slice(1);
+	// `python -m pip install ...` is pip.
+	if (
+		/^python[\d.]*$/.test(verb) &&
+		args[0] === "-m" &&
+		(args[1] === "pip" || args[1] === "pip3")
+	) {
+		verb = args[1];
+		args = args.slice(2);
+	}
+	const assigned = cmd.assigned;
 	if (verb === "git") {
-		const { sub, override, rest } = gitSub(t);
+		const { sub, override, globals, rest } = gitSub(args);
 		if (override) return true;
 		// Any form of `git config` that does not read is a write (core.hooksPath, core.sshCommand, ...).
 		if (sub === "config") return !rest.some((x) => GIT_READ_CONFIG_FLAGS.has(x));
 		if (sub === undefined || !RISKY_SUBCOMMANDS.git?.has(sub)) return false;
-		return assigned || !isNamedRemoteGit(sub, rest);
+		return assigned || globals || !isNamedRemoteGit(sub, rest);
 	}
-	if (RISKY_VERBS.has(verb)) return assigned || !isLoopbackOnly(t, spanPiped, index);
-	const operands = t.slice(1).filter((x) => !x.startsWith("-"));
+	if (RISKY_VERBS.has(verb)) return assigned || !isLoopbackOnly(verb, args, spanPiped);
+	const operands = args.filter((x) => !x.startsWith("-"));
 	if (
 		CONFIG_TOOLS.has(verb) &&
 		operands[0] === "config" &&
@@ -1025,30 +1175,36 @@ function isRiskyCommand(tokens: string[], spanPiped: () => boolean, index: Index
 	if (!subs) return false;
 	const sub = operands[0];
 	if (sub === undefined || !subs.has(sub)) return false;
-	return assigned || !isManifestInstall(t);
+	return assigned || !isManifestInstall(verb, args);
 }
 
 /**
- * An address the user never typed, or (in the sections Copy handoff emits) a
- * command the session never ran, inside a command whose verb is risky. A segment
- * the session ran exactly is not risky. The pipe check is made once per span.
+ * Risky when a command carries an address the user never typed (or a malformed
+ * one), whatever its verb, unless it is a check or a look; and, in the sections
+ * Copy handoff emits, when it is a command the session never ran whose verb is
+ * risky or whose text cannot be read. A segment the session ran exactly is never
+ * risky. The pipe check is made once per span. A span counts when it is a shell
+ * block or a `$ ` line, or when one of its commands has a command verb.
  */
 function hasRiskyCommand(folded: string, index: Index, emitsHandoff: boolean): boolean {
-	for (const span of commandSpans(folded)) {
+	for (const span of commandSpans(folded, index.segCache)) {
 		let piped: boolean | undefined;
 		const spanPiped = () => {
-			piped ??= hasPipeToShell(span);
+			piped ??= hasPipeToShell(span.text);
 			return piped;
 		};
-		for (const tokens of segmentsOf(span)) {
-			if (
-				!isRiskyCommand(tokens, spanPiped, index) ||
-				index.records.segments.has(segmentKey(tokens))
-			)
-				continue;
-			if (urlFindings(segmentKey(tokens), index.typed, index.records, false).unexpected)
-				return true;
-			if (emitsHandoff && isUnrecorded(tokens, index.records)) return true;
+		for (const tokens of segmentsOf(span.text)) {
+			const view = viewOf(tokens, index.segCache);
+			if (index.records.segments.has(view.key)) continue;
+			if (!span.structural && !view.cmds.some(isCommandCmd)) continue;
+			const urls = urlFindings(view.key, index.typed, index.records, false);
+			const addressed = urls.unexpected || urls.malformed;
+			for (const cmd of view.cmds) {
+				if (isBenignCmd(cmd)) continue;
+				if (addressed) return true;
+				if (emitsHandoff && isRiskyCmd(cmd, spanPiped) && isUnrecorded(view, index.records))
+					return true;
+			}
 		}
 	}
 	return false;
@@ -1059,10 +1215,16 @@ function hasRiskyCommand(folded: string, index: Index, emitsHandoff: boolean): b
 interface Index {
 	typed: TypedUrls;
 	records: RecordIndex;
+	/** Command segments as the parser read them, once per scan. */
+	segCache: Map<string, SegView>;
 }
 
 function indexOfContext(ctx: TripwireContext): Index {
-	return { typed: indexTyped(ctx.userPromptUrls), records: indexRecords(ctx) };
+	return {
+		typed: indexTyped(ctx.userPromptUrls),
+		records: indexRecords(ctx),
+		segCache: new Map(),
+	};
 }
 
 function scan(text: string, index: Index, emitsHandoff: boolean): SummarySuspectReason[] {
@@ -1081,7 +1243,7 @@ function scanFolded(folded: string, index: Index, emitsHandoff: boolean): Summar
 	if (urls.unexpected) reasons.push("unexpected_url");
 	if (urls.malformed) reasons.push("malformed_url");
 	if (hasPipeToShell(folded)) reasons.push("pipe_to_shell");
-	if (emitsHandoff && hasUnrecordedCommand(folded, index.records)) {
+	if (emitsHandoff && hasUnrecordedCommand(folded, index)) {
 		reasons.push("unrecorded_command");
 	}
 	if (hasRiskyCommand(folded, index, emitsHandoff)) reasons.push("risky_command");

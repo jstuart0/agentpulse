@@ -15,11 +15,12 @@ import { type RedactionRule, stripAndRedact } from "../redactor.js";
 import { formatUntrustedInline } from "../untrusted-text.js";
 import {
 	type CommandClass,
+	type SingleCommand,
 	classifyCommand,
 	failureExcerptAllowed,
 	passSummaryLine,
 	patchFilesOf,
-	singleCommandVerb,
+	singleCommand,
 	validationClassOf,
 	validationResult,
 } from "./command-class.js";
@@ -127,6 +128,10 @@ export interface EvidenceFact {
 	shown?: boolean;
 	/** For a shown command that is exactly one segment: its verb (`git`, `kubectl`). Not part of the stored fact. */
 	verb?: string;
+	/** With `verb`: the first operands (`["push", "origin"]`); absent when the subcommand is not read. Not stored. */
+	operands?: string[];
+	/** With `verb`: the command was a dry run. Not stored. */
+	dryRun?: boolean;
 }
 
 /** A cited id as the ledger knows it: the fact, and whether it records something the system saw. */
@@ -137,7 +142,14 @@ export interface LedgerIdInfo extends EvidenceFact {
 
 /** The evidence fact to store for an id: the fields of the fact, without `observed` and `shown`. */
 export function storedFact(info: LedgerIdInfo | EvidenceFact): EvidenceFact {
-	const { observed: _observed, shown: _shown, verb: _verb, ...fact } = info as LedgerIdInfo;
+	const {
+		observed: _observed,
+		shown: _shown,
+		verb: _verb,
+		operands: _operands,
+		dryRun: _dryRun,
+		...fact
+	} = info as LedgerIdInfo;
 	return fact;
 }
 
@@ -420,12 +432,20 @@ interface Rendered {
 function commandFact(
 	kind: FactKind,
 	result: EvidenceFact["result"],
-	options: { validationClass?: string | null; shown?: boolean; verb?: string | null } = {},
+	options: {
+		validationClass?: string | null;
+		shown?: boolean;
+		command?: SingleCommand | null;
+	} = {},
 ): Draft["fact"] {
 	const fact: Draft["fact"] = { kind, result };
 	if (options.validationClass) fact.validationClass = options.validationClass;
 	if (options.shown) fact.shown = true;
-	if (options.shown && options.verb) fact.verb = options.verb;
+	if (options.shown && options.command) {
+		fact.verb = options.command.verb;
+		if (options.command.operands) fact.operands = options.command.operands;
+		if (options.command.dryRun) fact.dryRun = true;
+	}
 	return fact;
 }
 
@@ -446,7 +466,7 @@ function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: C
 	// Shown means the whole command is on the page: not cut at the display cap, and no
 	// newline collapsed into a space (the classifier read all of it, the page did not).
 	const whole = !cut && !/[\r\n]/.test(row.command ?? "");
-	const verb = whole ? singleCommandVerb(row.command) : null;
+	const single = whole ? singleCommand(row.command) : null;
 	const description = row.description
 		? ` (desc "${field(row.description, DESCRIPTION_CAP, ctx)}")`
 		: "";
@@ -470,14 +490,14 @@ function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: C
 			fact: commandFact("validation", result, {
 				validationClass: validationClassOf(row.command),
 				shown: whole,
-				verb,
+				command: single,
 			}),
 			shownCommand: command,
 		};
 	}
 	return {
 		body: `OBSERVED command \`${command}\`${description} -> ${resultWord(status)}`,
-		fact: commandFact("command", status, { shown: whole, verb }),
+		fact: commandFact("command", status, { shown: whole, command: single }),
 		shownCommand: command,
 	};
 }

@@ -58,6 +58,10 @@ export interface LedgerFactForVerify {
 	shown?: boolean;
 	/** For a shown command that is exactly one segment: its verb. Absent for a chain, a pipe, `|| true`, a newline. */
 	verb?: string;
+	/** With `verb`: the first operands (subcommand first). */
+	operands?: readonly string[];
+	/** With `verb`: a dry run. */
+	dryRun?: boolean;
 	/** OBSERVED (the system recorded it) versus CLAIMED (a person or a model said it). */
 	observed: boolean;
 }
@@ -166,13 +170,30 @@ const CHANGE_NEEDS: Record<SummaryChangeKind, EvidenceFactKind[] | null> = {
 };
 
 /**
- * A git change is backed by a cited command that is ONE segment whose verb is
- * `git`: `git push || true` and `cd x && git push` end `ok` through their last
- * segment and prove nothing about the push. An infrastructure change is backed by
- * one segment whose verb is an infrastructure tool, not any command: "Deployed"
- * citing `ls` is not backed. Chosen narrow so that the label errs toward "Agent's
- * claim only"; a `make deploy` or a script is therefore not backing.
+ * A git change is backed by a cited command that is ONE segment, whose verb is
+ * `git` (no `/`: a repo-local shim backs nothing), whose subcommand changes
+ * something (`status`, `log` and `push --dry-run` do not), and which was not a dry
+ * run. An infrastructure change is backed the same way by an infrastructure or
+ * deploy CLI with a mutating subcommand (`kubectl get`, `terraform plan` do not;
+ * for the cloud CLIs any subcommand that is not a read). `make deploy` and scripts
+ * back nothing. Chosen narrow so that the label errs toward "Agent's claim only".
  */
+const GIT_MUTATING: ReadonlySet<string> = new Set(
+	"commit push merge rebase tag cherry-pick reset checkout switch branch stash revert add rm mv restore pull".split(
+		" ",
+	),
+);
+const INFRA_MUTATING: ReadonlySet<string> = new Set(
+	"apply create delete patch rollout scale up down deploy restart start stop install upgrade uninstall run build push destroy sync".split(
+		" ",
+	),
+);
+const CLOUD_CLIS: ReadonlySet<string> = new Set(["aws", "gcloud", "az"]);
+const DEPLOY_CLIS: ReadonlySet<string> = new Set(
+	"flyctl fly vercel wrangler firebase netlify heroku sam cdk serverless kustomize argocd flux".split(
+		" ",
+	),
+);
 const INFRASTRUCTURE_VERBS: ReadonlySet<string> = new Set([
 	"kubectl",
 	"helm",
@@ -183,24 +204,40 @@ const INFRASTRUCTURE_VERBS: ReadonlySet<string> = new Set([
 	"podman",
 	"ansible",
 	"ansible-playbook",
-	"aws",
-	"gcloud",
-	"az",
 	"systemctl",
 	"pulumi",
+	...CLOUD_CLIS,
+	...DEPLOY_CLIS,
 ]);
-const CHANGE_VERBS: Partial<Record<SummaryChangeKind, ReadonlySet<string>>> = {
-	git: new Set(["git"]),
-	infrastructure: INFRASTRUCTURE_VERBS,
-};
+const ROLLOUT_WRITES: ReadonlySet<string> = new Set(["restart", "undo", "pause", "resume"]);
+const isReadOperand = (op: string): boolean =>
+	/^(?:ls|list|describe|get|show|status)$/.test(op) || /^(?:describe|list|get|show)-/.test(op);
+
+function mutatesGit(fact: LedgerFactForVerify): boolean {
+	const sub = fact.operands?.[0];
+	return sub !== undefined && GIT_MUTATING.has(sub) && fact.dryRun !== true;
+}
+
+function mutatesInfrastructure(fact: LedgerFactForVerify): boolean {
+	const verb = fact.verb ?? "";
+	const ops = fact.operands ?? [];
+	if (!INFRASTRUCTURE_VERBS.has(verb) || ops.length === 0 || fact.dryRun === true) return false;
+	if (CLOUD_CLIS.has(verb)) return !ops.some(isReadOperand);
+	if (verb === "kubectl" && ops[0] === "rollout") return ROLLOUT_WRITES.has(ops[1] ?? "");
+	if (verb === "docker" && ops[0] === "compose") return INFRA_MUTATING.has(ops[1] ?? "");
+	// `argocd app sync`, `flux reconcile`: the verb may sit one word in.
+	if (DEPLOY_CLIS.has(verb)) return ops.slice(0, 2).some((o) => INFRA_MUTATING.has(o));
+	return INFRA_MUTATING.has(ops[0] as string);
+}
 
 function backsChange(kind: SummaryChangeKind, fact: LedgerFactForVerify): boolean {
 	if (!backsClaim(fact)) return false;
 	const needs = CHANGE_NEEDS[kind];
 	if (!needs) return true;
 	if (!needs.includes(fact.kind)) return false;
-	const verbs = CHANGE_VERBS[kind];
-	return verbs === undefined || (fact.verb !== undefined && verbs.has(fact.verb));
+	if (kind === "git") return fact.verb === "git" && mutatesGit(fact);
+	if (kind === "infrastructure") return mutatesInfrastructure(fact);
+	return true;
 }
 
 function storedFact(fact: LedgerFactForVerify): StoredEvidenceFact {
