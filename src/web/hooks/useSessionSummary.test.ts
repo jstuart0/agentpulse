@@ -868,4 +868,18 @@ describe("polled views that leave the stored summary out (AGEN-69 phase 8a)", ()
 		await tick(SUMMARY_POLL_INTERVAL_MS);
 		expect(seen).toEqual([{ poll: false }, { poll: false }]);
 	});
+
+	test("T-5 a server that answers every read idle + storedOmitted cannot make the hook spin", async () => {
+		const stuck = {
+			...generatingWithPrevious,
+			...OMITTED,
+			attempt: { status: "idle", startedAt: FIXTURE_NOW, errorCode: null },
+		} as SessionSummaryView;
+		script(generatingWithPrevious, stuck);
+		const m = await mount();
+		await tick(SUMMARY_POLL_INTERVAL_MS);
+		await tick(SUMMARY_POLL_INTERVAL_MS * 3);
+		expect(gets.length).toBeLessThan(12);
+		await m.h.unmount();
+	});
 });

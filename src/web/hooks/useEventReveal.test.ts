@@ -4,7 +4,9 @@
  * event and say so, fetch the surroundings once, and say when the event is gone or never shown.
  */
 import { describe, expect, test } from "bun:test";
+import { act } from "react";
 import {
+	EVENT_LOAD_FAILED_COPY,
 	EVENT_NOT_FOUND_COPY,
 	EVENT_NOT_SHOWN_COPY,
 	emptyRevealGuard,
@@ -165,6 +167,33 @@ describe("useEventReveal", () => {
 		await s.render({ events: [ev(1, "prompt")] });
 		await s.render({ sessionId: "s2", events: [ev(1, "prompt")] });
 		expect(s.calls.fetched).toEqual([7, 7]);
+		await s.probe.unmount();
+		removeDomStubs();
+	});
+
+	test("T-4 a failed fetch says it couldn't load, offers Try again, and does not call the event deleted", async () => {
+		let attempts = 0;
+		const s = await run({
+			events: [ev(1, "prompt")],
+			fetchContext: async () => {
+				attempts++;
+				throw new Error("network");
+			},
+		});
+		await s.render({
+			events: [ev(1, "prompt")],
+			fetchContext: async () => {
+				attempts++;
+				throw new Error("network");
+			},
+		});
+		expect(s.probe.current.value?.notice).toBe(EVENT_LOAD_FAILED_COPY);
+		expect(s.probe.current.value?.notice).not.toBe(EVENT_NOT_FOUND_COPY);
+		expect(attempts).toBe(1);
+		const before = attempts;
+		await act(async () => s.probe.current.value?.retry());
+		await flush();
+		expect(attempts).toBeGreaterThan(before);
 		await s.probe.unmount();
 		removeDomStubs();
 	});

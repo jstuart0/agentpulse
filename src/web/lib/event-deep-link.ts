@@ -76,6 +76,7 @@ export function modeSwitchedCopy(mode: TimelineMode): string {
 	return `Switched Activity to ${mode.charAt(0).toUpperCase()}${mode.slice(1)} to show this event.`;
 }
 
+export const EVENT_LOAD_FAILED_COPY = "";
 export const EVENT_NOT_FOUND_COPY = "That event is no longer in this session's activity.";
 export const EVENT_NOT_SHOWN_COPY = "That event is recorded, but Activity doesn't show this kind.";
 

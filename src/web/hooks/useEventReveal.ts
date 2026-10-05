@@ -43,6 +43,7 @@ export interface EventRevealInput {
 export function useEventReveal(input: EventRevealInput): {
 	notice: string | null;
 	loadingContext: boolean;
+	retry: () => void;
 } {
 	const { sessionId, tab, eventId, events, eventsLoaded, mode, filters } = input;
 	const onActivity = tab === "activity";
@@ -126,5 +127,5 @@ export function useEventReveal(input: EventRevealInput): {
 		}
 	});
 
-	return { notice, loadingContext };
+	return { notice, loadingContext, retry: () => {} };
 }
