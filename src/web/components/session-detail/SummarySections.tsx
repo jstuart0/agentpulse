@@ -388,7 +388,7 @@ function ValidationSection({
 						<span className={cn("text-xs font-medium", RESULT_TONE[v.result])}>
 							{validationResultText(v, i, stored.provenance)}
 						</span>
-						{v.detail && (
+						{v.detail && !v.adjusted && (
 							<span className="mt-0.5 block text-xs text-muted-foreground">{v.detail}</span>
 						)}
 						{evidence(v.evidence)}
