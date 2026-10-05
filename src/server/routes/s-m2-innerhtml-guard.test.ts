@@ -19,6 +19,11 @@ const WEB_SRC = join(REPO_ROOT, "src/web");
 const ALLOWED_OCCURRENCES: Record<string, number> = {
 	// FTS5 snippet — guarded by sanitizeSnippet(); reviewed P8.
 	"src/web/pages/SearchPage.tsx": 1,
+	// Reviewed AGEN-69: these test files only name the attribute to assert its ABSENCE from the
+	// summary components; none renders it.
+	"src/web/components/session-detail/summary-contract.test.ts": 2,
+	"src/web/components/session-detail/SessionSummaryPanel.test.ts": 1,
+	"src/web/components/session-detail/CopyFallback.test.ts": 1,
 };
 
 function walkFiles(dir: string, ext: string[]): string[] {
