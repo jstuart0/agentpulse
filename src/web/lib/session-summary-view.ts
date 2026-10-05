@@ -21,6 +21,7 @@ import {
 } from "../../shared/session-summary.js";
 import { aiSettingsHref } from "../pages/settings-panels.js";
 import type { AiStatusResponse } from "./api.js";
+import { evidenceHref } from "./event-deep-link.js";
 import {
 	type ClockOptions,
 	type SummaryViewer,
@@ -157,9 +158,12 @@ const VALIDATION_WORDS: Array<[SessionSummary["validation"][number]["result"], s
 /** "2 passed · 1 failed", in words. */
 /** The tally as parts, so each can take its result's colour. */
 export function validationTallyParts(
-	_validation: SessionSummary["validation"],
+	validation: SessionSummary["validation"],
 ): Array<{ result: SessionSummary["validation"][number]["result"]; text: string }> {
-	return [];
+	return VALIDATION_WORDS.flatMap(([result, word]) => {
+		const n = validation.filter((v) => v.result === result).length;
+		return n > 0 ? [{ result, text: `${n} ${word}` }] : [];
+	});
 }
 
 /**
@@ -167,19 +171,34 @@ export function validationTallyParts(
  * links would share one, an ordinal ("... (2 of 3)"). `lists` is one list of ledger ids per item.
  */
 export function linkNames(
-	_lists: readonly (readonly string[])[],
-	_facts: Record<string, StoredEvidenceFact>,
-	_clock?: ClockOptions,
+	lists: readonly (readonly string[])[],
+	facts: Record<string, StoredEvidenceFact>,
+	clock?: ClockOptions,
 ): string[][] {
-	return [];
+	const named = lists.map((ids) =>
+		[...new Set(ids)].flatMap((id) =>
+			evidenceHref("s", id) === null
+				? []
+				: [evidenceAccessibleName(Object.hasOwn(facts, id) ? facts[id] : undefined, clock)],
+		),
+	);
+	const totals = new Map<string, number>();
+	for (const name of named.flat()) totals.set(name, (totals.get(name) ?? 0) + 1);
+	const seen = new Map<string, number>();
+	return named.map((names) =>
+		names.map((name) => {
+			const total = totals.get(name) ?? 1;
+			if (total === 1) return name;
+			const nth = (seen.get(name) ?? 0) + 1;
+			seen.set(name, nth);
+			return `${name} (${nth} of ${total})`;
+		}),
+	);
 }
 
 export function validationTally(validation: SessionSummary["validation"]): string {
-	return VALIDATION_WORDS.map(([result, word]) => {
-		const n = validation.filter((v) => v.result === result).length;
-		return n > 0 ? `${n} ${word}` : null;
-	})
-		.filter((part) => part !== null)
+	return validationTallyParts(validation)
+		.map((p) => p.text)
 		.join(" · ");
 }
 
@@ -438,7 +457,7 @@ export interface SummaryViewModel {
 }
 
 const GENERATING_STATUS =
-	"Summarizing. This can take a couple of minutes on a long session. You can leave this page; it keeps going.";
+	"This can take a couple of minutes on a long session. You can leave this page; it keeps going.";
 
 export const SHRUNK_CONFIRM: SummaryConfirm = {
 	title: "Replace this summary?",
@@ -451,10 +470,9 @@ export const SUSPECT_LEAD = "Check this before pasting it into an agent:";
 export const SUSPECT_UNSPECIFIED_LINE = "It was flagged by a safety check.";
 
 /**
- * Keyed by code string, not by the shared union, so it can carry codes the server is adding
- * (`risky_command`, `malformed_url`) before they reach `SUMMARY_SUSPECT_REASONS` in this branch.
- * A test requires an entry and a tier for every code in `SUMMARY_SUSPECT_REASONS`, so a code added
- * there without copy fails it. A code with no entry here is shown as the unspecified warning line.
+ * Keyed by code string so a code from a newer server still reads (as the unspecified warning
+ * line). A test requires a line, a phrase and the shared tier for every code in
+ * `SUMMARY_SUSPECT_REASONS`, so a code added there without copy fails it.
  */
 export const SUSPECT_REASON_LINES: Readonly<Record<string, string>> = {
 	role_marker: "It contains text written as instructions to an AI agent.",
@@ -463,7 +481,7 @@ export const SUSPECT_REASON_LINES: Readonly<Record<string, string>> = {
 	unexpected_url: "It mentions a web address you didn't type in this session.",
 	unrecorded_command: "The handoff suggests a command this session never ran.",
 	risky_command:
-		"It includes a command that reaches the network or changes the system, with a target this session never touched.",
+		"It includes a command this session never ran that can reach the network, install or delete things, or change settings, or a command with a web address you didn't type.",
 	malformed_url: "It contains a web address written in a misleading form.",
 };
 
@@ -475,22 +493,15 @@ export const SUSPECT_REASON_PHRASES: Readonly<Record<string, string>> = {
 	unexpected_url: "a web address the user didn't type in this session",
 	unrecorded_command: "a command this session never ran",
 	risky_command:
-		"a command that reaches the network or changes the system, with a target this session never touched",
+		"a command the session never ran that can reach the network, install or delete things, or change settings, or one with a web address the user didn't type",
 	malformed_url: "a web address written in a misleading form",
 };
 const SUSPECT_UNSPECIFIED_PHRASE = "something a safety check flagged";
-
-/** Tiers for the codes the server is adding; `SUSPECT_REASON_TIER` covers the rest once they are merged. */
-const PENDING_REASON_TIERS: Readonly<Record<string, "warning" | "note">> = {
-	risky_command: "warning",
-	malformed_url: "warning",
-};
 
 /** A code with no tier anywhere is a warning: when in doubt the cautious reading is shown. */
 export function suspectReasonTier(code: string): "warning" | "note" {
 	if (Object.hasOwn(SUSPECT_REASON_TIER, code))
 		return SUSPECT_REASON_TIER[code as SummarySuspectReason];
-	if (Object.hasOwn(PENDING_REASON_TIERS, code)) return PENDING_REASON_TIERS[code];
 	return "warning";
 }
 
@@ -533,7 +544,7 @@ function copyLabels(warning: boolean): SummaryViewModel["copyLabels"] {
 	const anyway = warning ? " anyway" : "";
 	return {
 		handoff: `Copy handoff${anyway}`,
-		summary: `Copy summary${anyway}`,
+		summary: `Copy full summary${anyway}`,
 		context: `Copy context${anyway}`,
 	};
 }

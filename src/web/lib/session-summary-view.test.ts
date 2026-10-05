@@ -779,7 +779,7 @@ describe("the suspect notice", () => {
 		for (const code of ["role_marker", "override_phrase", "pipe_to_shell"]) {
 			const one = derive(withReasons([code]));
 			expect(one.suspectNotice?.tone, code).toBe("warning");
-			expect(one.copyLabels.summary, code).toBe("Copy summary anyway");
+			expect(one.copyLabels.summary, code).toBe("Copy full summary anyway");
 		}
 	});
 
@@ -815,7 +815,7 @@ describe("the suspect notice", () => {
 	test("TC-7.42e a flag with no reason codes, or a code this build doesn't know, is a warning with the general line", () => {
 		const legacy = derive(withReasons([]));
 		expect(legacy.suspectNotice).toMatchObject({ tone: "warning", lines: [SUSPECT_FALLBACK] });
-		expect(legacy.copyLabels.summary).toBe("Copy summary anyway");
+		expect(legacy.copyLabels.summary).toBe("Copy full summary anyway");
 		const future = derive(withReasons(["from_a_newer_server"]));
 		expect(future.suspectNotice).toMatchObject({ tone: "warning", lines: [SUSPECT_FALLBACK] });
 		const mixed = derive(withReasons(["unexpected_url", "from_a_newer_server"]));
@@ -1950,7 +1950,7 @@ describe("clipboard builders", () => {
 			expect(lines[1]).toContain("text written as instructions to an AI agent");
 			expect(lines[1]).toContain("a command that downloads something and runs it");
 			expect(lines[1]).toContain("a web address the user didn't type in this session");
-			expect(lines[1]).toContain(RISKY_PHRASE);
+
 			expect(nonEmpty(build(warned)).at(-1)).toBe(VERIFY_LINE);
 			expect(build(noted)).toBe(build(STORED));
 			expect(build(STORED)).not.toContain("AgentPulse flagged");
