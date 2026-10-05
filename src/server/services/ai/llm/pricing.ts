@@ -122,17 +122,28 @@ export function priceCompletion(kind: ProviderKind, model: string, usage: LlmUsa
 	}
 	const rate = matched ?? FALLBACK_RATE;
 
-	// Floor at zero: malformed usage (cacheReadTokens reported greater than
-	// inputTokens) must not discount the call below the cache-read-alone cost.
-	const inputTokens = Math.max(0, usage.inputTokens - (usage.cacheReadTokens ?? 0));
+	const cacheReadTokens = usage.cacheReadTokens ?? 0;
+	// Anthropic reports `input_tokens` WITHOUT the cached tokens (cache reads and cache creation are
+	// separate counters), so nothing is subtracted and cache creation is billed at 1.25x the input
+	// rate. OpenAI-style usage reports cached tokens INSIDE the prompt count, so they come off the
+	// input line; the floor at zero stops malformed usage (more cache reads than input) from
+	// discounting the call below the cache-read-alone cost. Only the Anthropic adapter maps cache
+	// counters today; the OpenAI-style branch is for an adapter that later maps `cached_tokens`.
+	const anthropicStyle = kind === "anthropic";
+	const inputTokens = anthropicStyle
+		? usage.inputTokens
+		: Math.max(0, usage.inputTokens - cacheReadTokens);
 	const inputCost = (inputTokens * rate.inputPer1M) / 1_000_000;
+	const cacheWriteCost = anthropicStyle
+		? ((usage.cacheWriteTokens ?? 0) * 1.25 * rate.inputPer1M) / 1_000_000
+		: 0;
 	const cacheCost =
-		rate.cacheReadPer1M && usage.cacheReadTokens
-			? (usage.cacheReadTokens * rate.cacheReadPer1M) / 1_000_000
+		rate.cacheReadPer1M && cacheReadTokens
+			? (cacheReadTokens * rate.cacheReadPer1M) / 1_000_000
 			: 0;
 	const outputCost = (usage.outputTokens * rate.outputPer1M) / 1_000_000;
 
 	// Round up — err on the side of "spend slightly more than advertised"
 	// so we never undercharge and miss a cap.
-	return Math.ceil(inputCost + cacheCost + outputCost);
+	return Math.ceil(inputCost + cacheWriteCost + cacheCost + outputCost);
 }

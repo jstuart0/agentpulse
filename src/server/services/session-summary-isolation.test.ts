@@ -156,6 +156,45 @@ describe("TC-5.35 one service owns the summary table", () => {
 	});
 });
 
+/** Source with comments removed, so a sentence naming the table is not a use of it. */
+const withoutComments = (text: string): string =>
+	text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+/** Files (non-test) whose code names the raw table `ai_session_summaries`. */
+function rawTableNamers(files: Map<string, string>): string[] {
+	return [...files.entries()]
+		.filter(([name]) => !/\.test\.tsx?$/.test(name) && !name.includes("__fixtures__"))
+		.filter(([, text]) => /\bai_session_summaries\b/.test(withoutComments(text)))
+		.map(([name]) => name)
+		.sort();
+}
+
+describe("TC-5.35b the raw table name", () => {
+	test("only the database client (legacy bootstrap) and the schema definition name it in code, outside every service and route", () => {
+		const files = new Map<string, string>();
+		for (const f of sourceFiles(join(ROOT, "src")))
+			files.set(relative(ROOT, f), readFileSync(f, "utf8"));
+		expect(files.size).toBeGreaterThan(200);
+		expect(rawTableNamers(files)).toEqual([
+			"src/server/db/client.ts",
+			"src/server/db/schema/ai/ai-session-summaries.ts",
+		]);
+	});
+
+	test("the scanner flags a raw-SQL reader in a service, and ignores a comment and a test", () => {
+		const files = new Map<string, string>([
+			["src/server/db/client.ts", "CREATE TABLE ai_session_summaries"],
+			["src/server/services/ai/raw.ts", 'db.run("SELECT * FROM ai_session_summaries")'],
+			["src/server/services/ai/commented.ts", "// ai_session_summaries is read elsewhere"],
+			["src/server/services/ai/raw.test.ts", "ai_session_summaries"],
+		]);
+		expect(rawTableNamers(files)).toEqual([
+			"src/server/db/client.ts",
+			"src/server/services/ai/raw.ts",
+		]);
+	});
+});
+
 describe("TC-5.36 the service reads sessions through named columns", () => {
 	test("no whole-row sessions select in the service or its helpers", () => {
 		const text = readFileSync(join(ROOT, SERVICE), "utf8");

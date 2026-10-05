@@ -19,6 +19,7 @@ import type { LlmStopReason } from "../llm/types.js";
 import { stripThinkTag } from "../parser.js";
 import {
 	HANDOFF_MAX_CHARS,
+	ITEM_DETAIL_MAX_CHARS,
 	ITEM_MAX_CHARS,
 	MAX_EVIDENCE_PER_ITEM,
 	MAX_NEXT_ACTIONS,
@@ -232,7 +233,9 @@ function normalise(root: Record<string, unknown>): unknown {
 				SUMMARY_OUTCOME_STATUSES,
 				"unclear",
 			),
-			explanation: isRecord(outcomeRaw) ? str(own(outcomeRaw, "explanation"), ITEM_MAX_CHARS) : "",
+			explanation: isRecord(outcomeRaw)
+				? str(own(outcomeRaw, "explanation"), ITEM_DETAIL_MAX_CHARS)
+				: "",
 		},
 		accomplishments: list("accomplishments", MAX_SECTION_ITEMS, claim),
 		changes: list("changes", MAX_SECTION_ITEMS, (r) => {
@@ -244,7 +247,7 @@ function normalise(root: Record<string, unknown>): unknown {
 		}),
 		decisions: list("decisions", MAX_SECTION_ITEMS, (r) => {
 			const base = claim(r);
-			return base ? { ...base, why: str(own(r, "why"), ITEM_MAX_CHARS) } : null;
+			return base ? { ...base, why: str(own(r, "why"), ITEM_DETAIL_MAX_CHARS) } : null;
 		}),
 		validation: list("validation", MAX_SECTION_ITEMS, (r) => {
 			const what = str(own(r, "what"), ITEM_MAX_CHARS);
@@ -252,7 +255,7 @@ function normalise(root: Record<string, unknown>): unknown {
 			return {
 				what,
 				result: knownOr(own(r, "result"), SUMMARY_VALIDATION_RESULTS, "unknown"),
-				detail: str(own(r, "detail"), ITEM_MAX_CHARS),
+				detail: str(own(r, "detail"), ITEM_DETAIL_MAX_CHARS),
 				evidence: evidenceIds(own(r, "evidence")),
 			};
 		}),

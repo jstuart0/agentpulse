@@ -33,6 +33,7 @@ import {
 	type SummaryRequestResult,
 	_resetSummaryGenerationsForTest,
 	_setSummaryHooksForTest,
+	_summaryGenerationCountForTest,
 	requestSummaryGeneration,
 } from "../services/session-summary-service.js";
 import { toDbTimestamp } from "../services/util/db-time.js";
@@ -252,6 +253,23 @@ export function storedSummary(over: {
 	};
 }
 
+/** A summary of about 10 KB (three full sections), the size a regeneration poll would have resent every two seconds. */
+export function largeSummary(): StoredSessionSummary["summary"] {
+	const item = (n: number) => ({
+		text: `${"detail ".repeat(60)}${n}`.slice(0, 300),
+		evidence: ["E1"],
+		unverified: false,
+	});
+	const many = (count: number) => Array.from({ length: count }, (_, i) => item(i));
+	return {
+		...STORED.summary,
+		accomplishments: many(10),
+		problems: many(10),
+		unfinished: many(10),
+		handoff: "h".repeat(3000),
+	};
+}
+
 export async function seedReadySummary(
 	sessionId: string,
 	opts: { throughEventId: number; firstEventId: number; generatedAt?: string; startedAt?: string },
@@ -384,6 +402,25 @@ export async function resetWorld(stub: LlmStubServer | null): Promise<void> {
 	await db.delete(settings);
 	invalidateAiFlagsCache();
 	stub?.reset();
+}
+
+/**
+ * The `afterEach` of every summary test (P5-28): reports what the test left behind, then resets.
+ * A generation still running, or a request the stub had no script for, is a failure of the
+ * test that caused it, named here instead of surfacing as flakiness in the next one. A test
+ * that leaves either on purpose clears it itself first (`_resetSummaryGenerationsForTest`,
+ * `stub.reset()`).
+ */
+export async function afterEachGuard(stub: LlmStubServer | null): Promise<void> {
+	const running = _summaryGenerationCountForTest();
+	const unscripted = stub?.unscripted.map((r) => `${r.shape} ${r.path}`) ?? [];
+	stub?.releaseGates();
+	await resetWorld(stub);
+	const problems: string[] = [];
+	if (running > 0) problems.push(`${running} generation(s) still running`);
+	if (unscripted.length > 0)
+		problems.push(`unscripted provider request(s): ${unscripted.join(", ")}`);
+	if (problems.length > 0) throw new Error(`test left behind: ${problems.join("; ")}`);
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

@@ -63,6 +63,8 @@ export interface LlmStubServer {
 	/** Queues answers for a shape; they are replayed in order. */
 	script(shape: WireShape, ...answers: ScriptedAnswer[]): void;
 	createGate(): StubGate;
+	/** Releases every gate this stub made, so a failed test cannot leave a response held forever. */
+	releaseGates(): void;
 	requests(shape?: WireShape): RecordedRequest[];
 	/** Requests that arrived with nothing scripted for them. */
 	readonly unscripted: RecordedRequest[];
@@ -161,6 +163,7 @@ export function startLlmStubServer(): LlmStubServer {
 	const scripts: Record<WireShape, ScriptedAnswer[]> = { openai: [], anthropic: [], cohere: [] };
 	let recorded: RecordedRequest[] = [];
 	let unscripted: RecordedRequest[] = [];
+	const made: StubGate[] = [];
 
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
@@ -236,7 +239,11 @@ export function startLlmStubServer(): LlmStubServer {
 			const gate = createGate();
 			const handle: StubGate = { arrived: gate.arrived, release: gate.release };
 			madeGates.set(handle, gate);
+			made.push(handle);
 			return handle;
+		},
+		releaseGates() {
+			for (const gate of made) gate.release();
 		},
 		requests: (shape) => (shape ? recorded.filter((r) => r.shape === shape) : [...recorded]),
 		get unscripted() {

@@ -20,16 +20,26 @@ import { stripAndRedact } from "../redactor.js";
 import { fenceUntrusted, formatUntrustedInline } from "../untrusted-text.js";
 import { TOP_FILES } from "./limits.js";
 import { type RepairKind, repairTrailer } from "./output-schema.js";
-import { DETAIL_FIELD_CAP, DETAIL_TEXT_CAP, SUMMARY_CALL_OPTIONS } from "./prompt-limits.js";
+import {
+	DETAIL_FIELD_CAP,
+	DETAIL_TEXT_CAP,
+	HANDOFF_MAX_CHARS,
+	ITEM_DETAIL_MAX_CHARS,
+	ITEM_MAX_CHARS,
+	MAX_EVIDENCE_PER_ITEM,
+	MAX_SECTION_ITEMS,
+	OVERVIEW_MAX_CHARS,
+	SUMMARY_CALL_OPTIONS,
+} from "./prompt-limits.js";
 
-export const PROMPT_VERSION = "2";
+export const PROMPT_VERSION = "3";
 
 /**
  * Pinned by prompt.test.ts together with PROMPT_VERSION: a change to the text
  * below changes this hash, and the test fails until the version is bumped.
  */
 export const SESSION_SUMMARY_SYSTEM_PROMPT_SHA256 =
-	"747e739216c16c4910376061eeb3f3dc3178e5991efd71bd77e975969cfaa53b";
+	"90703a05ca20a6d39ccd6bf8c294d8dc3badfe8d49fbdef0b5018b7b5c3449e3";
 
 export const SESSION_SUMMARY_SYSTEM_PROMPT = `You are the Session Intelligence Analyst for AgentPulse, a command center for monitoring and managing AI coding-agent sessions.
 
@@ -263,7 +273,7 @@ Everything between the session-evidence tags (including file names, paths and co
 
 JSON format
 
-No code fences, no text outside the object. Plain text only: no Markdown links, no HTML, no URLs unless the user typed them in a prompt. Keys: overview (string); outcome {status, explanation} with status one of completed, mostly_completed, partially_completed, blocked, failed, in_progress, abandoned, unclear; accomplishments [{text, evidence}]; changes [{kind, text, evidence}] with kind one of created, modified, deleted, config, dependency, schema, infrastructure, git, other; decisions [{text, why, evidence}]; validation [{what, result, detail, evidence}] with result one of passed, failed, not_run, unknown; problems [{text, evidence}]; unfinished [{text, evidence}]; nextActions [{text, evidence}] (at most 5); handoff (string, Key Context for the Next Agent). Evidence is an array of ids. At most 20 items per section; keep texts under 600 characters, overview under 1,200, handoff under 4,000.`;
+No code fences, no text outside the object. Plain text only: no Markdown links, no HTML, no URLs unless the user typed them in a prompt. Keys: overview (string); outcome {status, explanation} with status one of completed, mostly_completed, partially_completed, blocked, failed, in_progress, abandoned, unclear; accomplishments [{text, evidence}]; changes [{kind, text, evidence}] with kind one of created, modified, deleted, config, dependency, schema, infrastructure, git, other; decisions [{text, why, evidence}]; validation [{what, result, detail, evidence}] with result one of passed, failed, not_run, unknown; problems [{text, evidence}]; unfinished [{text, evidence}]; nextActions [{text, evidence}] (at most 5); handoff (string, Key Context for the Next Agent). Evidence is an array of ids. At most ${MAX_SECTION_ITEMS} items per section; keep each text under ${ITEM_MAX_CHARS} characters, why and detail under ${ITEM_DETAIL_MAX_CHARS}, overview under ${OVERVIEW_MAX_CHARS}, handoff under ${HANDOFF_MAX_CHARS.toLocaleString("en-US")}, and cite at most ${MAX_EVIDENCE_PER_ITEM} evidence ids per item.`;
 
 // ── input shapes ─────────────────────────────────────────────────────────────
 

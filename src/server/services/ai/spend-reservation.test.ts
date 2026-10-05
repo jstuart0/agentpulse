@@ -5,7 +5,7 @@
  * `{ date, cents }`: settle, release and top-up act on that date's row, a day
  * row never goes below zero, and a reservation is single-use (D-8, D-26, D-27).
  */
-import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { itPostgresOnly } from "../../test-utils/backend.js";
 import "./__test_db.js";
@@ -674,5 +674,39 @@ describe("P2-21 amounts must be non-negative safe integers", () => {
 		if (!big) throw new Error("expected a reservation");
 		await settleReservedSpend(big, { sessionId: SESSION, actualCents: 0 });
 		expect(await dayRow(todayLocal())).toBe(200);
+	});
+});
+
+describe("a settlement that fails part-way (Q-7)", () => {
+	test("TC-2.24 the session credit fails once after the day moved: the retry credits the session once and never moves the day twice, and a third call is a no-op", async () => {
+		const start = 100;
+		await setDay(todayLocal(), start);
+		const reservation = await reserveSpendCents(10);
+		expect(reservation).not.toBeNull();
+		if (!reservation) return;
+		expect(await dayRow(todayLocal())).toBe(start + 10);
+		const db = getDb() as unknown as { update: (table: unknown) => unknown };
+		const original = db.update.bind(db);
+		let failed = 0;
+		const spy = spyOn(db, "update").mockImplementation((table: unknown) => {
+			if (table === sessions && failed === 0) {
+				failed++;
+				throw new Error("disk I/O error (simulated)");
+			}
+			return original(table);
+		});
+		try {
+			await expect(
+				settleReservedSpend(reservation, { sessionId: SESSION, actualCents: 4 }),
+			).rejects.toThrow("disk I/O");
+			expect(await dayRow(todayLocal())).toBe(start + 4);
+			await settleReservedSpend(reservation, { sessionId: SESSION, actualCents: 4 });
+			await settleReservedSpend(reservation, { sessionId: SESSION, actualCents: 4 });
+		} finally {
+			spy.mockRestore();
+		}
+		expect(failed).toBe(1);
+		expect(await dayRow(todayLocal())).toBe(start + 4);
+		expect(await sessionSpend()).toBe(4);
 	});
 });

@@ -58,8 +58,20 @@ export const STALE_EVENT_COUNT_CAP = 100;
  * Built without writing, decrypting or calling a model.
  */
 export interface SessionSummaryView {
-	/** The stored verified summary and its provenance (Model contract → "What is stored"); null when none exists. */
+	/**
+	 * The stored verified summary and its provenance (Model contract → "What is stored"); null when
+	 * none exists, and always null in a polled view (`?poll=1`, see `storedOmitted`).
+	 */
 	stored: StoredSessionSummary | null;
+	/**
+	 * Present, and `true`, only in a polled view (`GET …/summary?poll=1`): `stored` is null because
+	 * the poll leaves the summary out, not because none exists (a regeneration poll would otherwise
+	 * resend the previous 30 to 60 KB summary every two seconds). The client keeps the `stored` of
+	 * its last full view. Every other field is the same as in the full view, except that
+	 * `evidenceShrunk` and `retentionDays` are placeholders (false, absent) while `attempt.status`
+	 * is `generating`, in a full view too. Absent in a full view.
+	 */
+	storedOmitted?: true;
 	/** `generated_at` (Data, column 3); null with no stored summary. */
 	generatedAt: string | null;
 	/**
@@ -70,12 +82,22 @@ export interface SessionSummaryView {
 	/** The attempt row (Data, columns 4, 6, 8). A lapsed lease is already reported here as `failed` / `interrupted` (TC-5.22). */
 	attempt: {
 		status: SummaryAttemptStatus;
-		/** `attempt_started_at`; when the last attempt began (also the "Last attempt, 3 min ago" time). */
+		/**
+		 * `attempt_started_at`; when the last attempt began (also the "Last attempt, 3 min ago" time).
+		 * Null only when nothing has been attempted. A view in a cooldown always has it. A failed
+		 * `provider_key_unreadable` attempt is dated 25 s back, so it reads as a 5-second cooldown.
+		 */
 		startedAt: string | null;
 		/** Non-null only with status `failed`. */
 		errorCode: SummaryErrorCode | null;
 	};
-	/** D-21: material events (everything but `user_ack`) after `throughEventId`, counted up to STALE_EVENT_COUNT_CAP. 0 = current or nothing stored. */
+	/**
+	 * D-21: material events (everything but `user_ack`) after `throughEventId`, counted up to
+	 * STALE_EVENT_COUNT_CAP, in a window of the 500 events after it (a lower bound if the window
+	 * fills). 0 = current or nothing stored. Measured while `attempt.status` is `generating` too, so
+	 * a stale summary is not shown as current during its own update: the count is against the
+	 * previous summary's `throughEventId`, which a finishing generation then advances.
+	 */
 	staleEvents: number;
 	/** Data → "Lifecycle": the session's `min(id)` is above `provenance.firstEventId`, or it has no events left (D-N). */
 	evidenceShrunk: boolean;
@@ -89,7 +111,11 @@ export interface SessionSummaryView {
 	cooldownSeconds: number | null;
 	/** Default provider kind and model only (D-13, TC-5.10); null exactly when there is no default provider. */
 	provider: { kind: string; model: string } | null;
-	/** UX → budget line (D-33). `maxCostCents` 0 means a free provider: "No cost is recorded for this provider" (D-27). */
+	/**
+	 * UX → budget line (D-33). `maxCostCents` is meaningful only when `provider` is non-null: with no
+	 * default provider it is 0 and means nothing; with one, 0 means a free provider: "No cost is
+	 * recorded for this provider" (D-27).
+	 */
 	spend: {
 		spentCents: number;
 		capCents: number;
@@ -128,6 +154,11 @@ export const SUMMARY_REFUSAL_CODES = [
 	"too_little_activity",
 	"busy",
 	"no_provider",
+	/**
+	 * No longer produced by the server (the key is read after the claim, and an unreadable key is a
+	 * failed attempt with error code `provider_key_unreadable`); kept so a client built against it, or
+	 * an older server, still type-checks.
+	 */
 	"provider_key_unreadable",
 	"summary_cooldown",
 	"caller_generation_running",

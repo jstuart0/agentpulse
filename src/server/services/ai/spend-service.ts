@@ -128,8 +128,12 @@ export async function checkSpendBudget(
 interface ReservationState {
 	date: string;
 	cents: number;
-	/** Settled or released; set synchronously, once. */
+	/** Settled or released; set synchronously, once (cleared again only by a failed attempt, so a retry can finish it). */
 	consumed: boolean;
+	/** The day row has been moved for this settlement or release: a retry after a later failure must not move it twice. */
+	dayMoved: boolean;
+	/** The session's running spend has been credited. */
+	sessionCredited: boolean;
 }
 
 const reservationStates = new WeakMap<object, ReservationState>();
@@ -141,7 +145,13 @@ export class SpendReservation {
 
 	constructor(mint: symbol, date: string, cents: number) {
 		if (mint !== MINT) throw new TypeError("a spend reservation is made by reserveSpendCents");
-		const state: ReservationState = { date, cents, consumed: false };
+		const state: ReservationState = {
+			date,
+			cents,
+			consumed: false,
+			dayMoved: false,
+			sessionCredited: false,
+		};
 		reservationStates.set(this, state);
 		Object.defineProperties(this, {
 			date: { enumerable: true, get: () => state.date },
@@ -248,7 +258,9 @@ export async function topUpReservation(
 /**
  * Settles a reservation at the real cost: the reserved date's row moves by
  * `actual - reserved` and the real cost is added to the session's running
- * spend. A session deleted in the meantime is not an error.
+ * spend. A session deleted in the meantime is not an error. A database error
+ * leaves the reservation unspent for a retry that finishes only the steps not
+ * yet done, so a retry can never move the day twice.
  */
 export async function settleReservedSpend(
 	reservation: SpendReservation,
@@ -258,19 +270,36 @@ export async function settleReservedSpend(
 	assertCents(actualCents, "actualCents");
 	if (state.consumed) return;
 	state.consumed = true;
-	await adjustDay(state.date, actualCents - state.cents);
-	if (actualCents > 0) {
-		await getDb()
-			.update(sessions)
-			.set({ aiSpendCents: sql`${sessions.aiSpendCents} + ${actualCents}` })
-			.where(eq(sessions.sessionId, sessionId));
+	try {
+		if (!state.dayMoved) {
+			await adjustDay(state.date, actualCents - state.cents);
+			state.dayMoved = true;
+		}
+		if (actualCents > 0 && !state.sessionCredited) {
+			await getDb()
+				.update(sessions)
+				.set({ aiSpendCents: sql`${sessions.aiSpendCents} + ${actualCents}` })
+				.where(eq(sessions.sessionId, sessionId));
+			state.sessionCredited = true;
+		}
+	} catch (error) {
+		state.consumed = false;
+		throw error;
 	}
 }
 
-/** Returns a whole reservation to the reserved date's row. */
+/** Returns a whole reservation to the reserved date's row (a database error leaves it open for a retry). */
 export async function releaseReservedSpend(reservation: SpendReservation): Promise<void> {
 	const state = stateOf(reservation);
 	if (state.consumed) return;
 	state.consumed = true;
-	await adjustDay(state.date, -state.cents);
+	try {
+		if (!state.dayMoved) {
+			await adjustDay(state.date, -state.cents);
+			state.dayMoved = true;
+		}
+	} catch (error) {
+		state.consumed = false;
+		throw error;
+	}
 }

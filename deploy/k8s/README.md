@@ -77,9 +77,13 @@ an out-of-range or non-integer value falls back to the 1-hour default with
 a warning) that deletes `events` rows older than that many days, in
 batches of 1,000 (percy TB10 review: 5,000-row batches held the event loop
 148–202ms each on SQLite), without blocking ingest. The `sessions` row and
-its denormalized state are never touched — only the `events` history ages
-out. `GET /api/v1/health`'s `retention` field reports the last pass
-(`rowsDeleted`, `durationMs`, `disabled`) and, separately, `lastSkip` when
+its denormalized state are never touched — the `events` history ages out, and
+so do stored session summaries: the same pass deletes a summary generated
+before the cutoff (and a row left `generating` past its lease by a crash), in
+batches of 500, in its own transaction under the same advisory lock on
+Postgres. A summary is the only other thing this pass deletes.
+`GET /api/v1/health`'s `retention` field reports the last pass
+(`rowsDeleted`, `summariesDeleted`, `durationMs`, `disabled`) and, separately, `lastSkip` when
 a pass was skipped (`already_running`, or on Postgres `lock_held_elsewhere`
 — another replica already held the per-batch advisory lock), plus the next
 scheduled tick.

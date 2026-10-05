@@ -182,24 +182,24 @@ describe("normalisation and schema", () => {
 		expect(draft.changes.map((c) => c.kind)).toEqual(["other", "other", "dependency"]);
 	});
 
-	test("TC-4.16a arrays are sliced to 20 and next actions to 5, at the boundary and one over", () => {
+	test("TC-4.16a arrays are sliced to 10 and next actions to 5, at the boundary and one over (R-L)", () => {
 		const items = (n: number) =>
 			Array.from({ length: n }, (_, i) => ({ text: `t${i}`, evidence: [] }));
 		const at = draftFrom(
-			JSON.stringify(answer({ accomplishments: items(20), nextActions: items(5) })),
+			JSON.stringify(answer({ accomplishments: items(10), nextActions: items(5) })),
 		);
-		expect(at.accomplishments).toHaveLength(20);
+		expect(at.accomplishments).toHaveLength(10);
 		expect(at.nextActions).toHaveLength(5);
 		const over = draftFrom(
 			JSON.stringify(
 				answer({
-					accomplishments: items(21),
-					problems: items(21),
-					unfinished: items(21),
+					accomplishments: items(11),
+					problems: items(11),
+					unfinished: items(11),
 					nextActions: items(6),
-					changes: items(21).map((i) => ({ ...i, kind: "other" })),
-					decisions: items(21).map((i) => ({ ...i, why: "w" })),
-					validation: items(21).map((i) => ({
+					changes: items(11).map((i) => ({ ...i, kind: "other" })),
+					decisions: items(11).map((i) => ({ ...i, why: "w" })),
+					validation: items(11).map((i) => ({
 						what: i.text,
 						result: "unknown",
 						detail: "",
@@ -216,50 +216,56 @@ describe("normalisation and schema", () => {
 			"decisions",
 			"validation",
 		] as const) {
-			expect(over[key]).toHaveLength(20);
+			expect(over[key]).toHaveLength(10);
 		}
 		expect(over.nextActions).toHaveLength(5);
-		expect(over.accomplishments[19]?.text).toBe("t19");
+		expect(over.accomplishments[9]?.text).toBe("t9");
 	});
 
-	test("TC-4.16b strings are cut at 1,200 / 600 / 4,000 code points, at the boundary and one over", () => {
+	test("TC-4.16b strings are cut at 800 / 300 / 250 / 3,000 code points, at the boundary and one over (R-L)", () => {
 		const len = (s: string) => Array.from(s).length;
-		const draft = (o: number, i: number, h: number) =>
+		const draft = (o: number, item: number, side: number, h: number) =>
 			draftFrom(
 				JSON.stringify(
 					answer({
 						overview: "o".repeat(o),
 						handoff: "h".repeat(h),
-						outcome: { status: "completed", explanation: "e".repeat(i) },
-						accomplishments: [{ text: "t".repeat(i), evidence: [] }],
-						decisions: [{ text: "d", why: "w".repeat(i), evidence: [] }],
+						outcome: { status: "completed", explanation: "e".repeat(side) },
+						accomplishments: [{ text: "t".repeat(item), evidence: [] }],
+						decisions: [{ text: "d", why: "w".repeat(side), evidence: [] }],
 						validation: [
-							{ what: "v".repeat(i), result: "unknown", detail: "x".repeat(i), evidence: [] },
+							{
+								what: "v".repeat(item),
+								result: "unknown",
+								detail: "x".repeat(side),
+								evidence: [],
+							},
 						],
 					}),
 				),
 			);
-		const at = draft(1200, 600, 4000);
+		const at = draft(800, 300, 250, 3000);
 		expect([len(at.overview), len(at.handoff), len(at.accomplishments[0]?.text ?? "")]).toEqual([
-			1200, 4000, 600,
+			800, 3000, 300,
 		]);
-		const over = draft(1201, 601, 4001);
-		expect(len(over.overview)).toBe(1200);
-		expect(len(over.handoff)).toBe(4000);
-		expect(len(over.accomplishments[0]?.text ?? "")).toBe(600);
-		expect(len(over.outcome.explanation)).toBe(600);
-		expect(len(over.decisions[0]?.why ?? "")).toBe(600);
-		expect(len(over.validation[0]?.what ?? "")).toBe(600);
-		expect(len(over.validation[0]?.detail ?? "")).toBe(600);
+		expect(len(at.outcome.explanation)).toBe(250);
+		const over = draft(801, 301, 251, 3001);
+		expect(len(over.overview)).toBe(800);
+		expect(len(over.handoff)).toBe(3000);
+		expect(len(over.accomplishments[0]?.text ?? "")).toBe(300);
+		expect(len(over.outcome.explanation)).toBe(250);
+		expect(len(over.decisions[0]?.why ?? "")).toBe(250);
+		expect(len(over.validation[0]?.what ?? "")).toBe(300);
+		expect(len(over.validation[0]?.detail ?? "")).toBe(250);
 	});
 
 	test("TC-4.16c the cut is code-point safe (no lone surrogate from an astral character at the boundary)", () => {
-		const straddle = `${"a".repeat(1199)}\u{1F600}tail`;
+		const straddle = `${"a".repeat(799)}\u{1F600}tail`;
 		const draft = draftFrom(JSON.stringify(answer({ overview: straddle })));
 		expect(hasLoneSurrogate(draft.overview)).toBe(false);
-		expect(Array.from(draft.overview).length).toBe(1200);
+		expect(Array.from(draft.overview).length).toBe(800);
 		expect(draft.overview.endsWith("\u{1F600}")).toBe(true);
-		const past = draftFrom(JSON.stringify(answer({ overview: `${"a".repeat(1200)}\u{1F600}` })));
+		const past = draftFrom(JSON.stringify(answer({ overview: `${"a".repeat(800)}\u{1F600}` })));
 		expect(hasLoneSurrogate(past.overview)).toBe(false);
 	});
 
@@ -329,12 +335,12 @@ describe("normalisation and schema", () => {
 		expect(draft.accomplishments[0]?.evidence).toEqual(["E12", "E012", "E99999999999999999999"]);
 	});
 
-	test("TC-4.18c evidence ids are deduplicated and capped per item", () => {
+	test("TC-4.18c evidence ids are deduplicated and capped at 3 per item (R-L)", () => {
 		const many = Array.from({ length: 40 }, (_, i) => `E${i}`);
 		const draft = draftFrom(
 			JSON.stringify(answer({ accomplishments: [{ text: "a", evidence: [...many, ...many] }] })),
 		);
-		expect(draft.accomplishments[0]?.evidence).toEqual(many.slice(0, 12));
+		expect(draft.accomplishments[0]?.evidence).toEqual(many.slice(0, 3));
 	});
 
 	test("TC-4.19 evidence given as a string becomes an array", () => {
@@ -416,5 +422,50 @@ describe("repair", () => {
 		for (const stop of ["end", "other", undefined] as const) {
 			expect(classifyStopReason(stop)).toBe("parse");
 		}
+	});
+});
+
+describe("the answer caps (R-L)", () => {
+	test("TC-4.16d the caps are the ruled numbers, chosen so a stored summary with maximal evidence is at most 64 KB", async () => {
+		const limits = (await import("./prompt-limits.js")) as Record<string, unknown>;
+		expect({
+			sectionItems: limits.MAX_SECTION_ITEMS,
+			nextActions: limits.MAX_NEXT_ACTIONS,
+			overview: limits.OVERVIEW_MAX_CHARS,
+			item: limits.ITEM_MAX_CHARS,
+			itemDetail: limits.ITEM_DETAIL_MAX_CHARS,
+			handoff: limits.HANDOFF_MAX_CHARS,
+			evidencePerItem: limits.MAX_EVIDENCE_PER_ITEM,
+		}).toEqual({
+			sectionItems: 10,
+			nextActions: 5,
+			overview: 800,
+			item: 300,
+			itemDetail: 250,
+			handoff: 3000,
+			evidencePerItem: 3,
+		});
+	});
+
+	test("TC-4.16e an answer over every cap is cut at the caps with no repair signal: still a successful parse", () => {
+		const big = (n: number) => ({
+			text: "x".repeat(2000),
+			evidence: Array.from({ length: 30 }, (_, i) => `E${n + i}`),
+		});
+		const result = parseAnswer(
+			JSON.stringify(
+				answer({
+					overview: "o".repeat(5000),
+					handoff: "h".repeat(9000),
+					accomplishments: Array.from({ length: 50 }, (_, i) => big(i)),
+				}),
+			),
+			NONCE,
+		);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.draft.accomplishments).toHaveLength(10);
+		expect(Array.from(result.draft.accomplishments[0]?.text ?? "").length).toBe(300);
+		expect(result.draft.accomplishments[0]?.evidence).toHaveLength(3);
 	});
 });

@@ -58,7 +58,7 @@ beforeEach(async () => {
 	await H.seedProvider(stub);
 });
 afterEach(async () => {
-	await H.resetWorld(stub);
+	await H.afterEachGuard(stub);
 });
 
 const ok = (cite: number[], over: Record<string, unknown> = {}) => ({
@@ -410,17 +410,20 @@ describe("refusal", () => {
 });
 
 describe("provider failures", () => {
-	const CASES: Array<[number, string, boolean]> = [
-		[401, "provider_auth", false],
-		[403, "provider_auth", false],
-		[429, "provider_rate_limit", false],
-		[503, "provider_timeout", true],
-		[400, "provider_error", false],
-		[404, "provider_error", false],
-		[422, "provider_error", false],
-		[418, "provider_error", false],
+	// R-I (b): what each status charges. The exact arithmetic per row is pinned in session-summary-money.test.ts.
+	type Charge = "zero" | "input" | "max";
+	const CASES: Array<[number, string, Charge]> = [
+		[401, "provider_auth", "zero"],
+		[403, "provider_auth", "zero"],
+		[429, "provider_rate_limit", "zero"],
+		[503, "provider_timeout", "input"],
+		[400, "provider_error", "zero"],
+		[404, "provider_error", "zero"],
+		[422, "provider_error", "zero"],
+		[418, "provider_error", "zero"],
+		[504, "provider_timeout", "max"],
 	];
-	for (const [status, code, possiblyBilled] of CASES) {
+	for (const [status, code, charge] of CASES) {
 		test(`TC-5.14 HTTP ${status} gives ${code}; the row leaves generating and keeps the previous summary`, async () => {
 			const { promptId, editId } = await H.seedActiveSession(SID);
 			await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
@@ -430,18 +433,23 @@ describe("provider failures", () => {
 			await H.runGeneration(SID);
 			const row = await summaryOf(SID);
 			expect(row.attemptStatus).toBe("failed");
-			expect(row.attemptErrorCode).toBe(code);
+			// A maximum-charged failure is stored with the long-cooldown class suffix; the view strips it.
+			expect(row.attemptErrorCode).toBe(charge === "max" ? `${code}~long` : code);
 			expect(row.attemptToken).toBeNull();
 			expect(JSON.parse(await serialized(SID)).summary).toEqual(previous.summary);
 			expect(stub.requests().length).toBe(1);
 			const { system, user } = H.promptsOf(stub.requests()[0]);
-			const inputOnly = priceCompletion("openai", "gpt-5-mini", {
-				inputTokens: estimateTokens(system + user),
-				outputTokens: 0,
-				estimated: true,
-			});
-			// TC-5.16: a call rejected before billing settles at 0; one that may have been billed is charged its input.
-			expect((await H.spendDelta(before)).day).toBe(possiblyBilled ? inputOnly : 0);
+			const sent = system + user;
+			const worst = Math.max(estimateTokens(sent), Math.ceil(Buffer.byteLength(sent, "utf8") / 2));
+			const chargeOf = (outputTokens: number) =>
+				priceCompletion("openai", "gpt-5-mini", {
+					inputTokens: worst,
+					outputTokens,
+					estimated: true,
+				});
+			// TC-5.16: rejected before billing is 0; an explicit 5xx is the priced input; anything else is unknown, the maximum.
+			const expected = { zero: 0, input: chargeOf(0), max: chargeOf(4000) }[charge];
+			expect((await H.spendDelta(before)).day).toBe(expected);
 		});
 	}
 
@@ -457,22 +465,27 @@ describe("provider failures", () => {
 			await H.seedProviderAt(`http://127.0.0.1:${bad.port}/v1`);
 			await H.seedActiveSession(SID);
 			await H.runGeneration(SID);
-			expect((await summaryOf(SID)).attemptErrorCode).toBe("internal_error");
+			expect((await summaryOf(SID)).attemptErrorCode).toBe("internal_error~long");
 		} finally {
 			bad.stop(true);
 		}
 	});
 
-	test("TC-5.14c an undecryptable key is refused at the request, and the row is untouched", async () => {
+	test("TC-5.14c an undecryptable key is a failed attempt after the claim (P5-7): provider_key_unreadable, a 5 s soft cooldown, nothing sent", async () => {
 		await H.seedActiveSession(SID);
 		const { llmProviders } = await import("../db/schema/index.js");
 		await getDb()
 			.update(llmProviders)
 			.set({ credentialCiphertext: "bm90LWEtcmVhbC1jaXBoZXJ0ZXh0" });
 		const result = await H.request(SID);
-		expect(H.refusalOf(result)).toBe("provider_key_unreadable");
-		expect(await summaryOf(SID)).toBeUndefined();
-		expect(await getSessionSummaryView(SID)).not.toBeNull();
+		expect(result.kind).toBe("started");
+		if (result.kind === "started") await H.withDeadline(result.done);
+		const row = await summaryOf(SID);
+		expect(row?.attemptStatus).toBe("failed");
+		expect(row?.attemptErrorCode).toBe("provider_key_unreadable");
+		expect(row?.attemptStartedAt).not.toBeNull();
+		expect(stub.requests().length).toBe(0);
+		expect((await getSessionSummaryView(SID))?.cooldownSeconds).toBeLessThanOrEqual(5);
 	});
 
 	test("TC-5.15 a secret-shaped string in the provider's error body is not stored, shown or logged", async () => {
@@ -498,7 +511,7 @@ describe("provider failures", () => {
 		}
 	});
 
-	test("TC-5.16a a call that never left (connection refused) settles at 0 and returns the reservation", async () => {
+	test("TC-5.16a a connection refused cannot have been billed: charged 0 and the reservation is returned (Q-1)", async () => {
 		await H.resetWorld(stub);
 		await H.enableAi();
 		await H.seedProviderAt("http://127.0.0.1:1/v1");
@@ -632,7 +645,15 @@ describe("top-up of the reservation", () => {
 		expect((await H.spendDelta(before)).day).toBe(max);
 		gates[0].release();
 		await H.withDeadline(gates[1].arrived);
-		expect((await H.spendDelta(before)).day).toBe(first + max);
+		// R-I (a): topped up to call 1's actual plus the maximum of the text this call actually sends (worst-case ratio).
+		const sent = H.promptsOf(stub.requests()[1]);
+		const text = sent.system + sent.user;
+		const secondMax = priceCompletion("openai", PRICEY, {
+			inputTokens: Math.max(estimateTokens(text), Math.ceil(Buffer.byteLength(text, "utf8") / 2)),
+			outputTokens: 4000,
+			estimated: true,
+		});
+		expect((await H.spendDelta(before)).day).toBe(first + secondMax);
 		gates[1].release();
 		await H.withDeadline(done);
 		const second = cost({ input: 1000, output: 100 }, PRICEY);
@@ -683,8 +704,11 @@ describe("top-up of the reservation", () => {
 		expect(req).toBeDefined();
 		const { system, user } = H.promptsOf(req);
 		const text = H.answer([ids[ids.length - 1]]);
+		// Q-1: an adapter that reports no usage is priced at the worst-case ratio of the whole prompt.
+		const sent = system + user;
+		const worst = Math.max(estimateTokens(sent), Math.ceil(Buffer.byteLength(sent, "utf8") / 2));
 		const wanted = priceCompletion("anthropic", "claude-opus-4-1", {
-			inputTokens: estimateTokens(system + user),
+			inputTokens: worst,
 			outputTokens: estimateTokens(text),
 			estimated: true,
 		});
@@ -698,7 +722,7 @@ describe("top-up of the reservation", () => {
 		const row = await summaryOf(SID);
 		expect(row.provenance?.usageEstimated).toBe(true);
 		expect(row.provenance?.costCents).toBe(wanted);
-		expect(row.provenance?.inputTokens).toBe(estimateTokens(system + user));
+		expect(row.provenance?.inputTokens).toBe(worst);
 	});
 });
 

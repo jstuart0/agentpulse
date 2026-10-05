@@ -9,6 +9,26 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Changed
 
+- **A session summary no longer charges a call that cannot have been billed.** A refused
+  connection, a DNS or TLS failure before the request left, and any 4xx other than 499 cost
+  nothing; a 499, 504, 524, timeout or mid-call drop is charged the single-call maximum; other
+  5xx the priced input. Three maximum-charged failures by one caller within ten minutes make that caller's new summary
+  requests from that caller answer busy for 5, then 10, 20, 40 and 60 minutes on each consecutive re-open, until one of their calls succeeds; a session charged the maximum stays shut for 10 minutes; and once unknown-outcome charges reach 25% of the daily cap in a local day the summary feature answers with the budget refusal until the day rolls over (all per process).
+- **Recorded AI spend for Anthropic providers reads higher than before.** It was
+  under-counted: Anthropic reports input tokens without the cached ones, and the
+  old formula subtracted the cached reads from them anyway, and never billed cache
+  creation at all. The price is now input tokens, plus cache creation at 1.25 times
+  the input rate, plus cache reads at the cache-read rate. This changes the figure
+  the watcher, Ask and launch recommendations record against the daily cap. Other
+  providers are unchanged.
+- **The retention pass also deletes expired session summaries.** A stored summary
+  generated before the retention cutoff (and a summary row left generating past its
+  five-minute lease by a crash) is deleted in batches of 500, after the events
+  batches, under the same advisory lock on Postgres. Retention is off by default.
+  `GET /api/v1/health` reports `retention.lastRun.summariesDeleted` beside
+  `rowsDeleted`. "Only the `events` history ages out" is no longer true when
+  retention is on.
+
 - **The watcher redacts more, and the watcher and Ask strip more invisible
   characters.** The redaction changes apply to what the watcher sends to a model
   provider (its transcript, and now also the CLAUDE.md excerpt in its system

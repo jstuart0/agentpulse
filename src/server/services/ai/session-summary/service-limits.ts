@@ -13,10 +13,42 @@ export const SUMMARY_COOLDOWN_SECONDS = 30;
 export const SUMMARY_LEASE_SECONDS = 300;
 /** Generations running at once in this process, counting one that is writing its result. */
 export const MAX_CONCURRENT_GENERATIONS = 2;
-/** The too-little-activity probe looks for an action in this many newest events (a prompt counts anywhere). */
+/**
+ * The too-little-activity probe (R-N) scans two bounded windows of the session's events: a prompt
+ * in the oldest `ACTIVITY_PROMPT_OLDEST_WINDOW`, or a prompt or an action in the newest
+ * `ACTIVITY_ACTION_WINDOW`. A session whose only prompt sits in the unscanned middle of a very
+ * long history reads as "too little activity" until it has newer activity.
+ */
 export const ACTIVITY_ACTION_WINDOW = 5000;
+export const ACTIVITY_PROMPT_OLDEST_WINDOW = 2000;
+/** The stale probe scans at most this many events after a summary's last one; a full window makes the count a lower bound. */
+export const STALE_SCAN_WINDOW = 500;
+/** A caller refused a slot waits at most this long for a same-session request that holds one, then answers busy. */
+export const JOIN_WAIT_BUDGET_MS = 5000;
+/** Prompt text is scanned for typed URLs in slices of about this many characters, yielding the event loop between them. */
+export const URL_SCAN_SLICE_CHARS = 32_768;
+/** A key that cannot be read leaves this much of the cooldown (a scrypt per retry otherwise). */
+export const KEY_UNREADABLE_COOLDOWN_SECONDS = 5;
 /** `releaseOwnSummaryClaims` returns after this long even if a write is still pending. */
 export const SHUTDOWN_RELEASE_BUDGET_MS = 2000;
+
+/**
+ * The per-caller breaker: this many maximum-charged failures by one subject within the window close
+ * the door for that subject; each consecutive re-open (one failure of the probe after the open
+ * period) takes the next, longer period; a success by that subject resets it.
+ */
+export const BREAKER_FAILURES = 3;
+export const BREAKER_WINDOW_MS = 10 * 60 * 1000;
+export const BREAKER_OPEN_STEPS_MS: readonly number[] = [5, 10, 20, 40, 60].map(
+	(m) => m * 60 * 1000,
+);
+/** An entry with nothing open and no failure for this long is forgotten; the map holds at most this many. */
+export const BREAKER_IDLE_DROP_MS = 60 * 60 * 1000;
+export const BREAKER_MAX_ENTRIES = 1000;
+/** A session whose last attempt was charged the maximum for an unknown outcome stays shut this long, for everyone. */
+export const MAX_CHARGED_COOLDOWN_SECONDS = 10 * 60;
+/** Unknown-outcome maximum charges per process and local day may reach this share of the daily cap; then the feature stops until tomorrow. */
+export const UNKNOWN_OUTCOME_CEILING_PERCENT = 25;
 
 export const BUSY_RETRY_AFTER_SECONDS = 5;
 export const SCAN_BUSY_RETRY_AFTER_SECONDS = 1;
