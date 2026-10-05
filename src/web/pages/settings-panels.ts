@@ -30,3 +30,11 @@ export function resolvePanel(
 export function aiSettingsHref(aiPanelAvailable: boolean): string {
 	return aiPanelAvailable ? "/settings?panel=ai" : "/settings";
 }
+
+/** The section a `?panel=` link opens on this page, or null when the page doesn't have it. */
+export function panelToReveal(
+	_search: string,
+	_available: { account: boolean; ai: boolean },
+): SettingsPanel | null {
+	return null;
+}

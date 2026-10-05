@@ -15,6 +15,11 @@ import { useOwnershipUi } from "./useOwnershipUi.js";
 
 /** Milliseconds between polls while a generation runs. */
 export const SUMMARY_POLL_INTERVAL_MS = 2000;
+/**
+ * Whether a poll asks the server to leave the stored summary out (`?poll=1`). Off until the server
+ * route that answers it ships: the hook already copes with a view that says `storedOmitted`.
+ */
+export const SUMMARY_SEND_POLL_PARAM = false;
 /** Consecutive poll failures tolerated before contact is reported lost. */
 export const SUMMARY_POLL_RETRIES = 3;
 /** The countdown for a cooldown or a rate limit re-reads its deadline once a second. */

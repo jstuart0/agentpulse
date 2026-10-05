@@ -48,9 +48,11 @@ import {
 	evidenceLabel,
 	evidenceResultCounts,
 	failureCopy,
+	fellBackCopy,
 	finePrint,
 	footerText,
 	formatCost,
+	formatElapsed,
 	formatMoment,
 	formatMoney,
 	labsPointer,
@@ -708,7 +710,7 @@ describe("the suspect notice", () => {
 
 	test("TC-7.42g the two codes the server is adding already have copy and the warning tier; an unknown code is a warning too", () => {
 		expect(SUSPECT_REASON_LINES.risky_command).toBe(
-			"It includes a command that reaches the network or changes the system, aimed at something this session never used.",
+			"It includes a command that reaches the network or changes the system, with a target this session never touched.",
 		);
 		expect(SUSPECT_REASON_LINES.malformed_url).toBe(
 			"It contains a web address written in a misleading form.",
@@ -1925,7 +1927,7 @@ describe("clipboard builders", () => {
 			expect(lines[1]).toEndWith(FLAG_END);
 			expect(lines[1]).toContain("text written as instructions to an AI agent");
 			expect(lines[1]).toContain("a command that downloads something and runs it");
-			expect(lines[1]).toContain("a web address you didn't type in this session");
+			expect(lines[1]).toContain("a web address the user didn't type in this session");
 			expect(nonEmpty(build(warned)).at(-1)).toBe(VERIFY_LINE);
 			expect(build(noted)).toBe(build(STORED));
 			expect(build(STORED)).not.toContain("AgentPulse flagged");
@@ -1946,7 +1948,7 @@ describe("settings link seen from the model", () => {
 		const link = (aiPanelAvailable: boolean) =>
 			deriveSummaryView(ready(view), AI_ON, { ...ADMIN, aiPanelAvailable }, CLOCK)?.action;
 		expect(link(true)).toMatchObject({ link: { href: "/settings?panel=ai" } });
-		expect(link(false)).toMatchObject({ link: { href: "/settings", label: "Open AI settings" } });
+		expect(link(false)).toMatchObject({ link: { href: "/settings", label: "Open Settings" } });
 		expect(resolvePanel("ai", { account: true, ai: true })).toBe("ai");
 		expect(resolvePanel("ai", { account: true, ai: false })).toBeNull();
 	});
@@ -1958,7 +1960,7 @@ describe("settings link seen from the model", () => {
 		};
 		expect(link(AI_PAUSED, { ...ADMIN, aiPanelAvailable: false })).toEqual({
 			href: "/settings",
-			label: "Open AI settings",
+			label: "Open Settings",
 		});
 		expect(link(AI_OFF, { ...ADMIN, aiPanelAvailable: true })).toEqual({
 			href: "/settings?panel=ai",
@@ -1966,5 +1968,33 @@ describe("settings link seen from the model", () => {
 		});
 		expect(link(AI_PAUSED, { ...MEMBER, aiPanelAvailable: true })).toBeNull();
 		expect(link({ ...AI_OFF, build: false }, ADMIN)).toBeNull();
+	});
+});
+
+describe("the lines phase 8a adds to the lib", () => {
+	test("BN-24 each reason a summary link fell back has its own sentence; an unknown reason has none", () => {
+		expect(fellBackCopy("flag_off")).toBe(
+			"Session summaries are off, so this link opened Activity.",
+		);
+		expect(fellBackCopy("not_built")).toBe(
+			"This server doesn't include AI features, so there is no Summary tab.",
+		);
+		expect(fellBackCopy("load_failed")).toBe("Couldn't check whether summaries are available.");
+		expect(fellBackCopy(null)).toBeNull();
+	});
+
+	test("BN-19 elapsed time is minutes and seconds from the start, clamped at zero", () => {
+		const now = new Date("2026-10-04T12:00:00.000Z");
+		expect(formatElapsed("2026-10-04T12:00:00.000Z", now)).toBe("0:00");
+		expect(formatElapsed("2026-10-04T11:59:53.000Z", now)).toBe("0:07");
+		expect(formatElapsed("2026-10-04T11:57:55.000Z", now)).toBe("2:05");
+		expect(formatElapsed("2026-10-04T10:00:00.000Z", now)).toBe("120:00");
+		expect(formatElapsed("2026-10-04T12:00:30.000Z", now)).toBe("0:00");
+	});
+
+	test("elapsed is empty when the start is unknown or unreadable", () => {
+		const now = new Date("2026-10-04T12:00:00.000Z");
+		expect(formatElapsed(null, now)).toBe("");
+		expect(formatElapsed("not a time", now)).toBe("");
 	});
 });

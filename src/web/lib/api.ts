@@ -882,7 +882,7 @@ export const api = {
 		}),
 
 	// --- Session summary (AGEN-69) ---
-	getSessionSummary: (sessionId: string) =>
+	getSessionSummary: (sessionId: string, _options: { poll?: boolean } = {}) =>
 		request<SessionSummaryView>(`/ai/sessions/${encodeURIComponent(sessionId)}/summary`),
 	generateSessionSummary: async (sessionId: string): Promise<GenerateSummaryResult> => {
 		try {

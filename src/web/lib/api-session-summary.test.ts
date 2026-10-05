@@ -35,6 +35,18 @@ describe("api session summary", () => {
 		expect(view).toEqual({ stored: null } as never);
 	});
 
+	test("phase 8a the poll form asks for ?poll=1 only when told to", async () => {
+		stub(() => json(200, { stored: null }));
+		await api.getSessionSummary("s1", { poll: true });
+		await api.getSessionSummary("s1", { poll: false });
+		await api.getSessionSummary("s1", {});
+		expect(calls.map((c) => c.url)).toEqual([
+			"/app-api/v1/ai/sessions/s1/summary?poll=1",
+			"/app-api/v1/ai/sessions/s1/summary",
+			"/app-api/v1/ai/sessions/s1/summary",
+		]);
+	});
+
 	test("TC-7.27b getSessionSummary rejects with the ApiError on a refusal", async () => {
 		stub(() => json(503, { error: "busy" }, { "Retry-After": "1" }));
 		const err = await api.getSessionSummary("s1").catch((e) => e);

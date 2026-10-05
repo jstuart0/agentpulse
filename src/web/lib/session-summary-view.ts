@@ -152,6 +152,16 @@ export function resolveWorkspaceTab(
 	return { kind: "tab", tab: DEFAULT_WORKSPACE_TAB, fellBack: true, reason };
 }
 
+/** The one line shown above Activity when a `?tab=summary` link fell back; null when the reason is unknown. */
+export function fellBackCopy(_reason: UnavailableReason | null): string | null {
+	return null;
+}
+
+/** "2:05" since the generation began; clamped at zero, because the optimistic start uses the browser clock. */
+export function formatElapsed(_startedAt: string | null, _now: Date): string {
+	return "";
+}
+
 export function summaryHref(sessionId: string): string {
 	return `/sessions/${encodeURIComponent(sessionId)}?tab=summary`;
 }

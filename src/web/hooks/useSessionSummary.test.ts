@@ -19,6 +19,7 @@ import {
 	COOLDOWN_TICK_MS,
 	SUMMARY_POLL_INTERVAL_MS,
 	SUMMARY_POLL_RETRIES,
+	SUMMARY_SEND_POLL_PARAM,
 	type UseSessionSummary,
 	useSessionSummary,
 } from "./useSessionSummary.js";
@@ -791,5 +792,80 @@ describe("announcements and the New badge", () => {
 			await m.h.unmount();
 			mounted.length = 0;
 		}
+	});
+});
+
+describe("polled views that leave the stored summary out (AGEN-69 phase 8a)", () => {
+	const OMITTED = { stored: null, storedOmitted: true } as unknown as Partial<SessionSummaryView>;
+	const generatingWithPrevious: SessionSummaryView = {
+		...F.ready,
+		attempt: { status: "generating", startedAt: FIXTURE_NOW, errorCode: null },
+	};
+
+	test("a poll that says storedOmitted keeps the summary already on screen", async () => {
+		script(generatingWithPrevious, { ...generatingWithPrevious, ...OMITTED });
+		const m = await mount();
+		expect(viewOf(m).stored).not.toBeNull();
+		await tick(SUMMARY_POLL_INTERVAL_MS);
+		expect(gets).toHaveLength(2);
+		expect(viewOf(m).stored).toEqual(F.ready.stored);
+		expect(m.v.generating).toBe(true);
+	});
+
+	test("a poll without the flag and without a stored summary is taken at its word", async () => {
+		script(generatingWithPrevious, { ...generatingWithPrevious, stored: null });
+		const m = await mount();
+		await tick(SUMMARY_POLL_INTERVAL_MS);
+		expect(viewOf(m).stored).toBeNull();
+	});
+
+	test("when the generation finishes in a poll that omits the summary, the new one is read in full", async () => {
+		const done = { ...F.ready, ...OMITTED } as SessionSummaryView;
+		const fresh: SessionSummaryView = { ...F.ready, generatedAt: "2026-10-04T12:01:00.000Z" };
+		script(generatingWithPrevious, done, fresh);
+		const m = await mount();
+		await tick(SUMMARY_POLL_INTERVAL_MS);
+		expect(gets).toHaveLength(3);
+		expect(viewOf(m).stored).not.toBeNull();
+		expect(viewOf(m).generatedAt).toBe("2026-10-04T12:01:00.000Z");
+		expect(m.v.generating).toBe(false);
+		expect(m.v.newResult).toBe(true);
+	});
+
+	test("a failed generation in a poll that omits the summary keeps the old one and does not re-read", async () => {
+		const failed = {
+			...F.ready,
+			...OMITTED,
+			attempt: { status: "failed", startedAt: FIXTURE_NOW, errorCode: "parse_failed" },
+		} as SessionSummaryView;
+		script(generatingWithPrevious, failed);
+		const m = await mount();
+		await tick(SUMMARY_POLL_INTERVAL_MS);
+		await tick(SUMMARY_POLL_INTERVAL_MS * 3);
+		expect(gets).toHaveLength(2);
+		expect(viewOf(m).stored).toEqual(F.ready.stored);
+		expect(viewOf(m).attempt.status).toBe("failed");
+	});
+
+	test("a failed full re-read after a finish picks polling back up instead of freezing on 'generating'", async () => {
+		const done = { ...F.ready, ...OMITTED } as SessionSummaryView;
+		script(generatingWithPrevious, done, new Error("down"), F.ready);
+		const m = await mount();
+		await tick(SUMMARY_POLL_INTERVAL_MS);
+		await tick(SUMMARY_POLL_INTERVAL_MS);
+		expect(gets.length).toBeGreaterThanOrEqual(4);
+		expect(m.v.generating).toBe(false);
+	});
+
+	test("the poll form is not asked for yet: every read is the plain one", async () => {
+		expect(SUMMARY_SEND_POLL_PARAM).toBe(false);
+		const seen: unknown[] = [];
+		client.getSessionSummary = (_id: string, options: unknown) => {
+			seen.push(options);
+			return Promise.resolve(seen.length === 1 ? generatingWithPrevious : F.ready);
+		};
+		await mount();
+		await tick(SUMMARY_POLL_INTERVAL_MS);
+		expect(seen).toEqual([{ poll: false }, { poll: false }]);
 	});
 });

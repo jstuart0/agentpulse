@@ -4,6 +4,7 @@ import {
 	RETRY_BASE_MS,
 	RETRY_MAX_MS,
 	decideFetchFailure,
+	isOutageResponse,
 	parseRetryAfter,
 	readLastBounce,
 	recordBounce,
@@ -157,5 +158,27 @@ describe("when session storage is unavailable", () => {
 		expect(readLastBounce(storage)).toBeNull();
 		expect(recordBounce(storage, 7_000)).toBe(true);
 		expect(readLastBounce(storage)).toBe(7_000);
+	});
+});
+
+describe("isOutageResponse (AGEN-69 phase 8a)", () => {
+	test("BN-27 a deliberate 503 busy or shutting_down answer is not an outage", () => {
+		expect(isOutageResponse(503, "busy", "/ai/sessions/s1/summary")).toBe(false);
+		expect(isOutageResponse(503, "shutting_down", "/ai/sessions/s1/summary")).toBe(false);
+	});
+
+	test("a gateway error without those codes is still an outage, on any path", () => {
+		for (const status of [502, 503, 504]) {
+			expect(isOutageResponse(status, null, "/sessions")).toBe(true);
+			expect(isOutageResponse(status, "something_else", "/sessions")).toBe(true);
+		}
+		expect(isOutageResponse(500, null, "/sessions")).toBe(false);
+		expect(isOutageResponse(409, "ai_paused", "/sessions")).toBe(false);
+	});
+
+	test("the identity check treats every 5xx and 429 as an outage, even a busy one", () => {
+		expect(isOutageResponse(503, "shutting_down", "/auth/me")).toBe(true);
+		expect(isOutageResponse(429, null, "/auth/me")).toBe(true);
+		expect(isOutageResponse(401, null, "/auth/me")).toBe(false);
 	});
 });
