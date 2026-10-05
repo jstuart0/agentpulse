@@ -162,6 +162,7 @@ When enabled, AgentPulse can use an LLM provider you choose (Anthropic, OpenAI, 
 - **Risk classes + ask_on_risk** (API only) -- configurable list of risk matchers (destructive command patterns, credential references, recent test failures) that escalate a proposed `continue` to HITL regardless of policy. See `GET /api/v1/ai/risk-classes`.
 - **Guarded `auto` policy** -- dispatch without HITL only when the session is managed, the supervisor is connected, no risk class matched, and the dispatch-filter accepts the prompt. Every other case still routes to HITL. Everything is auditable via `ai_continue_sent` events.
 - **Spend + kill switch** -- per-user daily spend cap, per-rule cap for freeform alert rules, a global kill switch in Settings that immediately pauses all watchers, and HITL / action requests carry optional timeouts that auto-expire if ignored.
+- **Session summary** (off by default) -- an on-demand, checkable summary of any session: outcome, what changed, what was validated, what is unfinished, a handoff to paste into another agent. See [Session summary](#session-summary-experimental-labssessionsummary).
 - **Summary spend** -- money set aside for a session summary in progress counts toward "Today's spend" until the summary settles at its real cost; after a hard crash it stays counted until the server's local midnight. A call that cannot have been billed (the connection never opened, or the provider answered with a 4xx) costs nothing; a call whose outcome is unknown (a timeout, a gateway cut-off, a connection dropped mid-call) is charged its worst case, and the daily cap is checked against the worst case of the prompt actually sent. Three such failures in ten minutes pause new summary requests (they answer busy) until a call succeeds or five minutes pass.
 - **Local-model thinking suppression** -- when the configured provider is OpenAI-compatible (Ollama, vLLM, llama.cpp), classifier calls send `reasoning_effort: "none"` so qwen3 and similar reasoning models return clean JSON instead of burying the response in chain-of-thought. Anthropic / OpenAI / Google / OpenRouter providers receive prompts unchanged.
 - **Observability** -- every wake emits a structured JSON log line prefixed with `ai_metric` (watcher run queued / completed, HITL resolution latency, classifier distribution, etc.). Pipe them into Loki / Datadog / Splunk / Elastic. Optional OTLP forwarding via `AGENTPULSE_OTEL_ENDPOINT`. A `/api/v1/ai/diagnostics` endpoint returns a point-in-time queue and flag snapshot for in-dashboard viewing.
@@ -199,6 +200,7 @@ Each AI surface has its own Labs toggle under **Settings → Labs**:
 | `templateDistillation` | off | Experimental, API-only for now |
 | `launchRecommendation` | off | Experimental, API-only for now |
 | `riskClasses` | off | Experimental, API-only for now |
+| `sessionSummary` | off | Hides the **Summary** tab and the Summary entry points; the routes answer `session_summary_disabled`. Nothing is sent to your provider until you ask for a summary. See [Session summary](#session-summary-experimental-labssessionsummary) |
 | `telegramChannel` | off | Forward HITL requests to a Telegram chat with inline Approve / Decline buttons (requires `TELEGRAM_BOT_TOKEN` + `TELEGRAM_WEBHOOK_SECRET`) |
 
 Direct URLs (`/inbox`, `/digest`, etc.) stay reachable when a flag is off -- toggling a flag hides it from the nav, not from bookmarks.
@@ -227,6 +229,32 @@ Safety notes:
 - The webhook route validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET` on every request, so a lucky guesser still can't forge approvals.
 - An approval tapped in Telegram is cross-checked against the HITL row's `channel_id` before any resolve happens — a user who learns a HITL id cannot use a different chat to act on it.
 - Delivery failures never block the in-app HITL path. If Telegram is down or slow, approve/decline still works from the dashboard or `/inbox`.
+
+### Session summary (experimental, `labs.sessionSummary`)
+
+A **Summary** tab on each session that summarizes it on request: what it set out to do, what changed, what was checked and how that ended, what is unfinished, the next actions, and a handoff you can copy into another agent. It is never automatic: nothing is sent to your provider until you press **Summarize this session**.
+
+**Turn it on.** AI enabled with a default provider (see [Enable it](#enable-it)), then **Settings → Labs → Session summary**, or press **Turn on** on a session's **AI** tab. In team mode only an admin can change Labs flags.
+
+**What is sent to the provider.** The session's prompts, agent replies, notes, current task, plan summary, commands and file paths. Known secret patterns (API keys, tokens, passwords in URLs, private keys, auth headers, and the rest of the watcher's redaction rules) are masked before anything leaves. Command output is sent only for a test or build that failed, and then only its first and last 300 characters after masking. A command that reads a credential file is withheld whole. Your own Settings redaction rules apply too.
+
+**What it costs.** Each summary is one provider call, plus one repair call if the first answer is unusable. The most it can cost, and the most with a repair, is shown under the button before you press it, and counts against the same daily AI cap as the watcher and Ask (500 cents by default). A new summary of the same session can start 30 seconds after the last attempt began. A free or local provider records no cost.
+
+**How it is checked.** The model cites numbered events from the session. The server checks each cited event exists and what kind it is and how it ended, drops the ones that don't, and marks a claim with no confirming citation "Agent's claim only". A test or build the session ran that failed cannot be shown as passed (the result becomes "unknown", marked adjusted), nor can a pass stand when an edit came after it. A summary whose text looks like it carries instructions for whoever pastes it shows a "check before pasting" notice and relabels the copy buttons.
+
+**Limits.**
+
+- "Observed" means a hook reported the event happened. It does not mean anyone checked a claim.
+- A cited event is checked for existence, kind and result, not for whether it proves the sentence that cites it.
+- "Agent's claim only" marks what nothing recorded confirms. Absence of that mark is not proof.
+- The check-before-pasting notice is a heuristic tripwire, not a control. Read a handoff before you paste it into an agent. It does not catch: commands in inline code whose verb is outside its list (`find -delete`, `tar`, `ln`), writes done by redirects, interpreter scripts and `source`/`eval`, bare hosts whose top-level domain isn't on its list, prose instructions with no code in them, loopback GET requests that have side effects, `git` pointed at a plain remote name, and PowerShell syntax (not parsed).
+- A summary is a snapshot. When the session moves on, a notice says how many events came after it; **Update** makes a new one.
+- Summaries are on demand. Nothing summarizes in the background.
+- Spend is one shared daily cap. A failure that may have been billed (a timeout, a gateway cut-off, a dropped connection) is charged the per-call maximum. Three of those in ten minutes make that caller's new requests answer busy for 5 minutes, then longer on each repeat. Once such charges reach a quarter of the daily cap, summaries are refused for everyone until local midnight, so one member who can make the provider time out can switch summaries off for everyone for the rest of the day.
+- The request limit (6 a minute per caller), the two generation slots, the breaker and the daily ceiling live in each server process; with more than one replica they loosen, and a restart clears them.
+- A summary is visible to everyone who can read the session. Team mode shares reads, so that is everyone on the instance with dashboard access. Observe-only API keys can't read it.
+- Stored summaries are deleted by the event-retention pass when retention is on; otherwise they stay until the session is deleted.
+- The Windows / PowerShell hook paths were never executed in this project's tests, so a summary of a Windows session depends on hook code that hasn't been tested here.
 
 ### Safety posture
 

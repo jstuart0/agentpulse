@@ -7,6 +7,42 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+### Added
+
+- **Session summary (Labs, off by default).** A Summary tab on each session
+  with an on-demand summary: what the session set out to do, what changed,
+  what was checked, what is unfinished, the next actions, and a handoff you can
+  copy into another agent. Turn it on under **Settings → Labs → Session
+  summary**, or with **Turn on** on a session's AI tab; AI must be enabled and a
+  default provider set. Nothing is sent to your provider until you press
+  **Summarize this session**, and the button shows the most one summary can
+  cost before you press it. A summary is a snapshot: when the session moves on
+  it says so, and **Update** makes a new one.
+  What makes it checkable: the model cites numbered events from the session,
+  and the server confirms each one exists and what kind of event it was and how
+  it ended. A claim nothing recorded confirms is marked "Agent's claim only".
+  A test or build the session ran and that failed can't be reported as passed
+  (the server replaces the result with "unknown" and marks it adjusted), nor
+  can a pass count when an edit came after it. An outcome of "completed" is
+  held to "in progress" while the session is still working or waiting on a
+  permission.
+  What is sent to the provider: the session's prompts, agent replies, notes,
+  current task, plan summary, commands and file paths, with known secret
+  patterns masked first. Command output is sent only for a failing test or
+  build, and only its first and last 300 characters. A command that reads a
+  credential file is withheld entirely.
+  What it does not do: it is never automatic, and it is a summary of what hooks
+  reported, not an audit. The "check before pasting" notice on a summary that
+  looks like it carries instructions is a heuristic tripwire, not a control; see
+  the README's "Session summary" section for the list of limits.
+  Operators: migration sqlite `0010` / postgres `0011` adds the
+  `ai_session_summaries` table; the retention pass deletes expired summaries
+  (below); the request limits, generation slots and breaker are per process;
+  after a restore or bulk load run `VACUUM (ANALYZE) events;` (see
+  `deploy/k8s/README.md`). New routes: `GET` and `POST
+  /api/v1/ai/sessions/:sessionId/summary` (manage-scoped; `?poll=1` for the
+  polled view).
+
 ### Changed
 
 - **A session summary no longer charges a call that cannot have been billed.** A refused
