@@ -80,7 +80,11 @@ describePostgresOnly("on Postgres, at the trap shape", () => {
 	});
 
 	const planOf = async (text: string, params: unknown[]): Promise<string> => {
-		const client = (getDb() as unknown as { $client: { unsafe: Function } }).$client;
+		const client = (
+			getDb() as unknown as {
+				$client: { unsafe: (text: string, params: unknown[], options: object) => Promise<unknown> };
+			}
+		).$client;
 		const rows = (await client.unsafe(`EXPLAIN (COSTS OFF) ${text}`, params, {
 			prepare: false,
 		})) as Array<Record<string, string>>;
