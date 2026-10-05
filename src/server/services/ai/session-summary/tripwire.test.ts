@@ -1494,6 +1494,9 @@ describe("fix pass 3: the tuned exceptions are narrow", () => {
 		]) {
 			risky(c);
 		}
+		// the benign list (clean validations) does not survive an assignment either
+		expect(say("FOO=1 bun test"), "assignment before a validation").toContain("unrecorded_command");
+		expect(say("bun test"), "positive control").not.toContain("unrecorded_command");
 		expect(say("FOO=1 docker build -t x ."), "assignment before a plain verb").toContain(
 			"unrecorded_command",
 		);
@@ -1556,6 +1559,9 @@ describe("fix pass 3: the tuned exceptions are narrow", () => {
 			"curl -X DELETE http://localhost:3000/api/v1/sessions/abc",
 			"curl -XPOST http://localhost:3000/x",
 			"curl --request=PUT http://localhost:3000/x",
+			"curl --request POST http://localhost:3000/x",
+			"wget --method POST http://localhost:3000/x",
+			"wget --method=DELETE http://localhost:3000/x",
 			"curl -d x=1 http://localhost:3000/x",
 			"curl -sd x=1 http://localhost:3000/x",
 			"curl --data-raw x http://localhost:3000/x",
