@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { SessionSummaryView } from "../../../shared/session-summary-view.js";
 import type { StoredSessionSummary } from "../../../shared/session-summary.js";
+import { useCopiedFlash } from "../../hooks/useCopiedFlash.js";
 import type { SummaryAnnouncement, UseSessionSummary } from "../../hooks/useSessionSummary.js";
 import type { AiStatusResponse } from "../../lib/api.js";
 import {
@@ -59,6 +60,7 @@ const QUIET =
 	"min-h-[44px] rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent md:min-h-0";
 const OUTLINED =
 	"min-h-[44px] rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent md:min-h-0";
+export const COPIED_LABEL = "Copied";
 const MUTED = "text-xs text-muted-foreground";
 const WRAP = "[overflow-wrap:anywhere]";
 
@@ -95,8 +97,29 @@ export function SessionSummaryPanel(props: SessionSummaryPanelProps) {
 	const now = useNow(generating && !lostContact, props.clock?.now);
 	const clock: ClockOptions = { ...props.clock, now };
 	const model = deriveSummaryView(load, aiStatus, viewer, clock);
+	const [fallback, setFallback] = useState<string | null>(null);
+	const [copied, flashCopied] = useCopiedFlash();
 	if (load.status === "unavailable") return null;
 	const view = load.status === "ready" ? load.view : null;
+	const stored =
+		model && (model.content.kind === "ready" || model.content.kind === "stale")
+			? model.content.stored
+			: null;
+	const stale = model?.content.kind === "stale";
+	async function copy(kind: CopyKind) {
+		if (!stored) return;
+		const text = buildCopyText(kind, stored, {
+			...(props.meta ?? { name: null, branch: null, cwd: null }),
+			generatedAt: view?.generatedAt,
+			staleEvents: view?.staleEvents,
+		});
+		if ((await copyToClipboard(text)) === "copied") {
+			setFallback(null);
+			flashCopied(kind);
+			props.announce?.(COPY_ANNOUNCEMENT[kind]);
+		} else setFallback(text);
+	}
+	const body = model ? { ...props, model, view, clock } : null;
 	return (
 		<section
 			ref={root}
@@ -104,21 +127,37 @@ export function SessionSummaryPanel(props: SessionSummaryPanelProps) {
 			data-summary-state={model?.stateTag}
 			className="max-w-3xl space-y-4 p-3 md:p-6"
 		>
-			<div className="flex items-center gap-2">
-				<h2
-					id={headingId}
-					ref={heading}
-					tabIndex={-1}
-					className="text-base font-semibold focus:outline-none"
-				>
-					Summary
-				</h2>
-				<LabsBadge />
+			<div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+				<div className="flex items-center gap-2">
+					<h2
+						id={headingId}
+						ref={heading}
+						tabIndex={-1}
+						className="text-base font-semibold focus:outline-none"
+					>
+						Summary
+					</h2>
+					<LabsBadge />
+				</div>
+				{body && stored && (
+					<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+						<Freshness view={view} stored={stored} clock={clock} />
+						{!stale && <ActionControl {...body} />}
+						<CopyBar
+							handoffLabel={body.model.copyLabels.handoff}
+							summaryLabel={body.model.copyLabels.summary}
+							copied={copied}
+							onCopy={(kind) => void copy(kind)}
+							fallback={fallback}
+							onCloseFallback={() => setFallback(null)}
+						/>
+					</div>
+				)}
 			</div>
-			{model === null ? (
+			{body === null ? (
 				<Skeleton />
 			) : (
-				<PanelBody {...props} model={model} view={view} clock={clock} />
+				<PanelBody {...body} copy={(kind) => void copy(kind)} copied={copied} />
 			)}
 		</section>
 	);
@@ -130,7 +169,7 @@ type BodyProps = SessionSummaryPanelProps & {
 	clock: ClockOptions;
 };
 
-function PanelBody(props: BodyProps) {
+function PanelBody(props: BodyProps & { copy: (kind: CopyKind) => void; copied: CopyKind | null }) {
 	const { model } = props;
 	switch (model.content.kind) {
 		case "loading":
@@ -168,7 +207,9 @@ function EmptyBody(props: BodyProps) {
 	const { model } = props;
 	return (
 		<div className="space-y-3">
-			<p className="text-sm text-muted-foreground">No summary yet.</p>
+			{model.action.kind !== "generating" && (
+				<p className="text-sm text-muted-foreground">No summary yet.</p>
+			)}
 			<GeneratingStatus {...props} />
 			<LostContact {...props} />
 			<LastAttempt notice={model.notice} />
@@ -179,32 +220,24 @@ function EmptyBody(props: BodyProps) {
 
 // ── a stored summary ────────────────────────────────────────────────────────
 
-function StoredBody(props: BodyProps & { stored: StoredSessionSummary }) {
-	const { model, view, stored, clock } = props;
+function StoredBody(
+	props: BodyProps & {
+		stored: StoredSessionSummary;
+		copy: (kind: CopyKind) => void;
+		copied: CopyKind | null;
+	},
+) {
+	const { model, stored, clock } = props;
 	const stale = model.content.kind === "stale" ? model.content : null;
-	const [fallback, setFallback] = useState<string | null>(null);
-	const copyMeta = {
-		...(props.meta ?? { name: null, branch: null, cwd: null }),
-		generatedAt: view?.generatedAt,
-		staleEvents: view?.staleEvents,
-	};
-	async function copy(kind: CopyKind) {
-		const text = buildCopyText(kind, stored, copyMeta);
-		if ((await copyToClipboard(text)) === "copied") {
-			setFallback(null);
-			props.announce?.(COPY_ANNOUNCEMENT[kind]);
-		} else setFallback(text);
-	}
 	const contextCopy = (
-		<CopyButton label={model.copyLabels.context} onCopy={() => void copy("context")} />
+		<CopyButton
+			label={props.copied === "context" ? COPIED_LABEL : model.copyLabels.context}
+			onCopy={() => props.copy("context")}
+		/>
 	);
 	return (
 		<div className="space-y-4">
 			<GeneratingStatus {...props} />
-			<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-				<Freshness view={view} stored={stored} clock={clock} />
-				{!stale && <ActionControl {...props} />}
-			</div>
 			<LostContact {...props} />
 			{model.suspectNotice && <SuspectBlock notice={model.suspectNotice} />}
 			{stale && (
@@ -213,15 +246,7 @@ function StoredBody(props: BodyProps & { stored: StoredSessionSummary }) {
 					<ActionControl {...props} />
 				</div>
 			)}
-			<CopyBar
-				handoffLabel={model.copyLabels.handoff}
-				summaryLabel={model.copyLabels.summary}
-				onCopy={(kind) => void copy(kind)}
-				fallback={fallback}
-				onCloseFallback={() => setFallback(null)}
-			/>
 			<LastAttempt notice={model.notice} />
-			<PartialEvidence stored={stored} clock={clock} />
 			<SummarySections
 				contextAction={contextCopy}
 				stored={stored}
@@ -229,7 +254,7 @@ function StoredBody(props: BodyProps & { stored: StoredSessionSummary }) {
 				agentType={props.agentType}
 				clock={clock}
 			/>
-			<Footer view={view} clock={clock} />
+			<Footer view={props.view} clock={clock} />
 		</div>
 	);
 }
@@ -251,17 +276,18 @@ function Freshness({
 	const through = stored.provenance.throughAt
 		? formatMoment(stored.provenance.throughAt, clock)
 		: "";
-	if (!made && !through) return <span />;
+	const partial = partialEvidenceNotice(stored.provenance.coverage, clock);
+	const generated = [made && `Generated ${made}`, through && `through ${through}`]
+		.filter(Boolean)
+		.join(", ");
+	if (!generated && !partial) return <span />;
 	return (
 		<p className={MUTED}>
-			{[made && `Generated ${made}`, through && `through ${through}`].filter(Boolean).join(", ")}
+			{generated}
+			{generated && partial ? ". " : ""}
+			{partial}
 		</p>
 	);
-}
-
-function PartialEvidence({ stored, clock }: { stored: StoredSessionSummary; clock: ClockOptions }) {
-	const line = partialEvidenceNotice(stored.provenance.coverage, clock);
-	return line ? <p className={MUTED}>{line}</p> : null;
 }
 
 function Footer({ view, clock }: { view: SessionSummaryView | null; clock: ClockOptions }) {
@@ -358,7 +384,9 @@ function GeneratingStatus(props: BodyProps) {
 			/>
 			<span>
 				{action.statusText}
-				{elapsed && <span className="ml-2 tabular-nums text-muted-foreground">{elapsed}</span>}
+				{elapsed && (
+					<span className="ml-2 tabular-nums text-muted-foreground">{elapsed} so far</span>
+				)}
 			</span>
 		</p>
 	);

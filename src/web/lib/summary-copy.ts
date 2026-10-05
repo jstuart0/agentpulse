@@ -15,6 +15,10 @@ export const COPY_ANNOUNCEMENT: Record<CopyKind, string> = {
 	context: "Context copied",
 };
 
+/** What Copy handoff holds, as its description and its visible hint. */
+export const COPY_HANDOFF_HINT =
+	"Outcome, unfinished work, next actions and key context, for another agent";
+
 export const COPY_FALLBACK_LINE = "Couldn't copy automatically. Select the text below and copy it.";
 
 export function buildCopyText(

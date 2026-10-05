@@ -81,7 +81,7 @@ describe("WorkspaceTabBar", () => {
 			/<button[^>]*id="workspace-tab-summary"[^>]*aria-label="Summary, summarizing now"/,
 		);
 		expect(render({ summaryBadge: "New" })).toContain('aria-label="Summary, new summary ready"');
-		expect(render({ summaryBadge: null })).not.toContain("aria-label");
+		expect(render({ summaryBadge: null })).not.toContain('aria-label="Summary');
 	});
 
 	test("the Summarizing badge shows on the Summary tab, in words", () => {

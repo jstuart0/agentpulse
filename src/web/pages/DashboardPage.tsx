@@ -1079,7 +1079,7 @@ export function DashboardPage() {
 												</div>
 											</div>
 										</div>
-										<div className="flex items-start gap-2">
+										<div className="flex flex-wrap items-start gap-2">
 											<button
 												type="button"
 												onClick={() => navigate(`/sessions/${selectedActiveSession.sessionId}`)}

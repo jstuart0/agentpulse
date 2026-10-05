@@ -47,6 +47,7 @@ import type { WorkspaceTabId } from "../lib/session-summary-core.js";
 import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
 import { useEventStore } from "../stores/event-store.js";
 import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
+import { useSummaryViewStore } from "../stores/summary-view-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { useUsersStore } from "../stores/users-store.js";
@@ -122,6 +123,12 @@ export function SessionDetailPage() {
 	// switch; it reads once per page view and polls only while one runs.
 	const summary = useSessionSummary(sessionId, summaryAvailable);
 	const summaryBadge = useSummaryTabBadge(summary, workspaceTab);
+	// Open/closed and "Show all" state live for this visit to this session, across tab switches.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the session id is the trigger
+	useEffect(() => {
+		useSummaryViewStore.getState().reset();
+		return () => useSummaryViewStore.getState().reset();
+	}, [sessionId]);
 	const summaryAnnouncement = summary.announcement;
 	useEffect(() => {
 		if (summaryAnnouncement) setLiveAnnouncement(summaryAnnouncement);

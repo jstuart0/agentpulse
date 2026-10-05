@@ -9,27 +9,31 @@ import {
 import { evidenceHref } from "../../lib/event-deep-link.js";
 import {
 	type ClockOptions,
-	NOTHING_RECORDED,
-	NO_UNFINISHED_WORK,
+	NO_VALIDATION_RECORDED,
 	type OutcomeFamily,
+	VALIDATION_FAILED_NOTE,
 	claimOnlyCopy,
-	claimOnlyMode,
-	evidenceAccessibleName,
 	evidenceLabel,
+	linkNames,
 	outcomeChip,
 	outcomeNotes,
 	validationResultText,
-	validationTally,
+	validationTallyParts,
 } from "../../lib/session-summary-view.js";
 import { cn } from "../../lib/utils.js";
+import { useSummaryViewStore } from "../../stores/summary-view-store.js";
 
 /**
  * The ten sections of a stored summary. Every string that came from the model is placed as a
  * React text node: no markup, no markdown, no links but the evidence links built from the ids the
- * server verified.
+ * server verified. Sections start open; a section of more than `VISIBLE_ITEMS` items shows that
+ * many and a "Show all" button. What the person opened, closed or expanded is held in
+ * `summary-view-store` for the life of the page.
  */
 
 const WRAP = "[overflow-wrap:anywhere]";
+export const VISIBLE_ITEMS = 5;
+export const VALIDATION_ANCHOR = "summary-validation";
 
 interface SectionsProps {
 	stored: StoredSessionSummary;
@@ -40,6 +44,17 @@ interface SectionsProps {
 	contextAction?: ReactNode;
 }
 
+type Claims = ReturnType<typeof claimOnlyCopy>;
+
+interface Ctx {
+	stored: StoredSessionSummary;
+	sessionId: string;
+	clock?: ClockOptions;
+	claims: Claims;
+	/** The first section with an "Agent's claim only" chip carries the one explanatory line. */
+	claimHome: string | null;
+}
+
 export function SummarySections({
 	stored,
 	sessionId,
@@ -48,82 +63,112 @@ export function SummarySections({
 	contextAction,
 }: SectionsProps) {
 	const { summary } = stored;
-	const evidence = (ids: string[]) => (
-		<EvidenceLinks ids={ids} stored={stored} sessionId={sessionId} clock={clock} />
-	);
 	const claims = claimOnlyCopy(agentType);
+	const claimHome = summary.accomplishments.some((a) => a.unverified)
+		? "accomplishments"
+		: summary.changes.some((c) => c.unverified)
+			? "changes"
+			: null;
+	const ctx: Ctx = { stored, sessionId, clock, claims, claimHome };
+	const empty = [
+		["Accomplishments", summary.accomplishments],
+		["Changes", summary.changes],
+		["Decisions & Assumptions", summary.decisions],
+		["Problems & Risks", summary.problems],
+		["Unfinished Work", summary.unfinished],
+		["Recommended Next Actions", summary.nextActions],
+	]
+		.filter(([, items]) => (items as unknown[]).length === 0)
+		.map(([title]) => title as string);
 	return (
 		<div className="space-y-5">
 			<PlainSection title="Overview">
-				<p className={cn("text-sm text-foreground", WRAP)}>{summary.overview}</p>
+				<p className={cn("text-base text-foreground", WRAP)}>{summary.overview}</p>
 			</PlainSection>
 			<OutcomeSection stored={stored} />
-			<ClaimSection
-				title="Accomplishments"
-				items={summary.accomplishments}
-				claims={claims}
-				render={(item) => (
-					<>
-						<span>{item.text}</span>
-						{evidence(item.evidence)}
-					</>
-				)}
-			/>
-			<ChangesSection stored={stored} evidence={evidence} claims={claims} />
-			<Section title="Decisions & Assumptions" count={summary.decisions.length}>
-				<ul className="space-y-2">
-					{summary.decisions.map((d, i) => (
-						// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
-						<li key={i} className={WRAP}>
+			<Section k="accomplishments" title="Accomplishments" count={summary.accomplishments.length}>
+				{ctx.claimHome === "accomplishments" && <ClaimLine claims={claims} />}
+				<Items
+					k="accomplishments"
+					items={summary.accomplishments}
+					lists={summary.accomplishments.map((a) => a.evidence)}
+					ctx={ctx}
+					render={(item, links) => (
+						<>
+							<span>{item.text}</span>
+							{links}
+							{item.unverified && <ClaimLabel claims={claims} />}
+						</>
+					)}
+				/>
+			</Section>
+			<ChangesSection ctx={ctx} />
+			<Section k="decisions" title="Decisions & Assumptions" count={summary.decisions.length}>
+				<Items
+					k="decisions"
+					items={summary.decisions}
+					lists={summary.decisions.map((d) => d.evidence)}
+					ctx={ctx}
+					render={(d, links) => (
+						<>
 							<span>{d.text}</span>
 							<span className="mt-0.5 block text-xs text-muted-foreground">
 								<span>Why: </span>
 								{d.why}
 							</span>
-							{evidence(d.evidence)}
-						</li>
-					))}
-				</ul>
+							{links}
+						</>
+					)}
+				/>
 			</Section>
-			<ValidationSection summary={summary} stored={stored} evidence={evidence} />
-			<Section title="Problems & Risks" count={summary.problems.length}>
-				<ul className="space-y-2">
-					{summary.problems.map((p, i) => (
-						// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
-						<li key={i} className={WRAP}>
+			<ValidationSection ctx={ctx} />
+			<Section k="problems" title="Problems & Risks" count={summary.problems.length}>
+				<Items
+					k="problems"
+					items={summary.problems}
+					lists={summary.problems.map((p) => p.evidence)}
+					ctx={ctx}
+					render={(p, links) => (
+						<>
 							<span>{p.text}</span>
-							{evidence(p.evidence)}
-						</li>
-					))}
-				</ul>
+							{links}
+						</>
+					)}
+				/>
 			</Section>
-			<Section
-				title="Unfinished Work"
-				count={summary.unfinished.length}
-				emptyLine={NO_UNFINISHED_WORK}
-			>
-				<ul className="space-y-2">
-					{summary.unfinished.map((u, i) => (
-						// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
-						<li key={i} className={WRAP}>
+			<Section k="unfinished" title="Unfinished Work" count={summary.unfinished.length}>
+				<Items
+					k="unfinished"
+					items={summary.unfinished}
+					lists={summary.unfinished.map((u) => u.evidence)}
+					ctx={ctx}
+					render={(u, links) => (
+						<>
 							<span>{u.text}</span>
-							{evidence(u.evidence)}
-						</li>
-					))}
-				</ul>
+							{links}
+						</>
+					)}
+				/>
 			</Section>
-			<Section title="Recommended Next Actions" count={summary.nextActions.length}>
-				<ol className="list-decimal space-y-2 pl-5">
-					{summary.nextActions.map((n, i) => (
-						// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
-						<li key={i} className={WRAP}>
+			<Section k="nextActions" title="Recommended Next Actions" count={summary.nextActions.length}>
+				<Items
+					k="nextActions"
+					ordered
+					items={summary.nextActions}
+					lists={summary.nextActions.map((n) => n.evidence)}
+					ctx={ctx}
+					render={(n, links) => (
+						<>
 							<span>{n.text}</span>
-							{evidence(n.evidence)}
-						</li>
-					))}
-				</ol>
+							{links}
+						</>
+					)}
+				/>
 			</Section>
 			<KeyContextSection handoff={summary.handoff} action={contextAction} />
+			{empty.length > 0 && (
+				<p className="text-xs text-muted-foreground">Nothing recorded for: {empty.join(", ")}.</p>
+			)}
 		</div>
 	);
 }
@@ -131,6 +176,8 @@ export function SummarySections({
 // ── section shells ──────────────────────────────────────────────────────────
 
 const HEADING = "text-sm font-semibold text-foreground";
+const SUMMARY_ROW =
+	"cursor-pointer select-none rounded-sm py-1 marker:text-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring";
 
 function PlainSection({ title, children }: { title: string; children: ReactNode }) {
 	return (
@@ -142,33 +189,35 @@ function PlainSection({ title, children }: { title: string; children: ReactNode 
 }
 
 /**
- * A collapsible section with its count (or tally) in the heading. An empty one is the heading and
- * one muted line, never missing, so a reader can tell "nothing" from "not shown".
+ * A collapsible section with its count (or tally) in the heading. An empty one isn't drawn here:
+ * the sections fold into one "Nothing recorded for" line (a Validation section says it itself).
  */
 function Section({
+	k,
 	title,
 	count,
 	tally,
-	emptyLine = NOTHING_RECORDED,
+	id,
 	children,
 }: {
+	k: string;
 	title: string;
 	count: number;
-	tally?: string;
-	emptyLine?: string;
+	tally?: ReactNode;
+	id?: string;
 	children: ReactNode;
 }) {
-	if (count === 0) {
-		return (
-			<section className="space-y-1">
-				<h3 className={HEADING}>{title}</h3>
-				<p className="text-xs text-muted-foreground">{emptyLine}</p>
-			</section>
-		);
-	}
+	const closed = useSummaryViewStore((s) => s.closed[k] === true);
+	const setOpen = useSummaryViewStore((s) => s.setOpen);
+	if (count === 0) return null;
 	return (
-		<details open className="group">
-			<summary className="cursor-pointer select-none rounded-sm py-1 marker:text-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
+		<details
+			id={id}
+			open={!closed}
+			onToggle={(e) => setOpen(k, e.currentTarget.open)}
+			className="group scroll-mt-20"
+		>
+			<summary className={SUMMARY_ROW}>
 				<h3 className={cn(HEADING, "inline")}>
 					{title}
 					<span className="font-normal text-muted-foreground"> · {tally ?? count}</span>
@@ -176,6 +225,67 @@ function Section({
 			</summary>
 			<div className="mt-1.5 space-y-2 text-sm text-foreground">{children}</div>
 		</details>
+	);
+}
+
+/** A list of items, trimmed to the first few with a real button for the rest. */
+function Items<T>({
+	k,
+	items,
+	lists,
+	ctx,
+	render,
+	ordered = false,
+}: {
+	k: string;
+	items: T[];
+	/** The ledger ids each item cites, for the evidence links. */
+	lists: string[][];
+	ctx: Ctx;
+	render: (item: T, links: ReactNode) => ReactNode;
+	ordered?: boolean;
+}) {
+	const expanded = useSummaryViewStore((s) => s.expanded[k] === true);
+	const setExpanded = useSummaryViewStore((s) => s.setExpanded);
+	const names = linkNames(lists, ctx.stored.provenance.evidence, ctx.clock);
+	const shown = expanded ? items : items.slice(0, VISIBLE_ITEMS);
+	const List = ordered ? "ol" : "ul";
+	return (
+		<>
+			<List className={cn("space-y-2", ordered && "list-decimal pl-5")}>
+				{shown.map((item, i) => (
+					// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
+					<li key={i} className={WRAP}>
+						{render(item, <EvidenceLinks ids={lists[i]} names={names[i]} ctx={ctx} />)}
+					</li>
+				))}
+			</List>
+			<ShowAll k={k} total={items.length} expanded={expanded} onToggle={setExpanded} />
+		</>
+	);
+}
+
+function ShowAll({
+	k,
+	total,
+	expanded,
+	onToggle,
+}: {
+	k: string;
+	total: number;
+	expanded: boolean;
+	onToggle: (k: string, expanded: boolean) => void;
+}) {
+	if (total <= VISIBLE_ITEMS) return null;
+	return (
+		<button
+			type="button"
+			aria-expanded={expanded}
+			onClick={() => onToggle(k, !expanded)}
+			className="min-h-[44px] rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent md:min-h-0"
+		>
+			{expanded ? `Show first ${VISIBLE_ITEMS}` : `Show all ${total}`}
+		</button>
 	);
 }
 
@@ -189,16 +299,31 @@ const CHIP_FAMILY: Record<OutcomeFamily, string> = {
 	slate: "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-300",
 };
 
+function jumpToValidation(event: { preventDefault: () => void }) {
+	event.preventDefault();
+	const target = document.getElementById(VALIDATION_ANCHOR);
+	target?.scrollIntoView({ block: "start" });
+	target?.querySelector("summary")?.focus();
+}
+
+/**
+ * The answer: the chip, then what the server corrected or noted at body size (so a corrected
+ * outcome never reads as a contradiction of the model's sentence under it), then the model's
+ * sentence.
+ */
 function OutcomeSection({ stored }: { stored: StoredSessionSummary }) {
-	const { outcome } = stored.summary;
+	const { outcome, validation } = stored.summary;
 	const chip = outcomeChip(outcome.status);
+	const notes = outcomeNotes(stored);
+	const validationFailed =
+		validation.some((v) => v.result === "failed") || notes.includes(VALIDATION_FAILED_NOTE);
 	return (
 		<PlainSection title="Outcome">
 			<p>
 				<span
 					data-outcome={outcome.status}
 					className={cn(
-						"inline-block rounded-md border border-l-4 px-2.5 py-0.5 text-xs font-medium",
+						"inline-block rounded-md border border-l-4 px-3 py-1 text-sm font-medium",
 						CHIP_FAMILY[chip.family],
 						chip.dashed && "border-dashed",
 					)}
@@ -206,12 +331,25 @@ function OutcomeSection({ stored }: { stored: StoredSessionSummary }) {
 					{chip.label}
 				</span>
 			</p>
-			<p className={cn("text-sm text-foreground", WRAP)}>{outcome.explanation}</p>
-			{outcomeNotes(stored).map((note) => (
-				<p key={note} className="text-xs text-muted-foreground">
-					{note}
+			{notes
+				.filter((note) => note !== VALIDATION_FAILED_NOTE)
+				.map((note) => (
+					<p key={note} className="text-sm text-foreground">
+						{note}
+					</p>
+				))}
+			{validationFailed && (
+				<p className="text-sm text-red-800 dark:text-red-300">
+					<a
+						href={`#${VALIDATION_ANCHOR}`}
+						onClick={jumpToValidation}
+						className="underline underline-offset-2"
+					>
+						{VALIDATION_FAILED_NOTE}
+					</a>
 				</p>
-			))}
+			)}
+			<p className={cn("text-sm text-foreground", WRAP)}>{outcome.explanation}</p>
 		</PlainSection>
 	);
 }
@@ -220,91 +358,51 @@ function OutcomeSection({ stored }: { stored: StoredSessionSummary }) {
 
 function EvidenceLinks({
 	ids,
-	stored,
-	sessionId,
-	clock,
+	names,
+	ctx,
 }: {
 	ids: string[];
-	stored: StoredSessionSummary;
-	sessionId: string;
-	clock?: ClockOptions;
+	names: string[];
+	ctx: Ctx;
 }) {
 	const links = [...new Set(ids)].flatMap((id) => {
-		const to = evidenceHref(sessionId, id);
+		const to = evidenceHref(ctx.sessionId, id);
 		if (!to) return [];
-		const fact = Object.hasOwn(stored.provenance.evidence, id)
-			? stored.provenance.evidence[id]
+		const fact = Object.hasOwn(ctx.stored.provenance.evidence, id)
+			? ctx.stored.provenance.evidence[id]
 			: undefined;
 		return [{ id, to, fact }];
 	});
 	if (links.length === 0) return null;
 	return (
 		<span className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
-			{links.map(({ id, to, fact }) => (
+			{links.map(({ id, to, fact }, i) => (
 				<Link
 					key={id}
 					to={to}
-					aria-label={evidenceAccessibleName(fact, clock)}
+					aria-label={names[i]}
 					className="inline-flex min-h-[44px] items-center text-xs text-primary underline underline-offset-2 hover:text-foreground md:min-h-0"
 				>
-					{evidenceLabel(fact, clock)}
+					{evidenceLabel(fact, ctx.clock)}
 				</Link>
 			))}
 		</span>
 	);
 }
 
-type Claims = ReturnType<typeof claimOnlyCopy>;
-
-function ClaimSection<T extends { unverified: boolean }>({
-	title,
-	items,
-	claims,
-	render,
-}: {
-	title: string;
-	items: T[];
-	claims: Claims;
-	render: (item: T) => ReactNode;
-}) {
-	const mode = claimOnlyMode(items);
-	return (
-		<Section title={title} count={items.length}>
-			<ClaimNote mode={mode} claims={claims} />
-			<ul className="space-y-2">
-				{items.map((item, i) => (
-					// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
-					<li key={i} className={WRAP}>
-						{render(item)}
-						{item.unverified && <ClaimLabel claims={claims} />}
-					</li>
-				))}
-			</ul>
-		</Section>
-	);
-}
-
+/** Every unverified item has its own chip: visible text at the meta size, explained by one line per summary. */
 function ClaimLabel({ claims }: { claims: Claims }) {
 	return (
-		<span
-			title={claims.help}
-			className="ml-2 inline-block rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-		>
+		<span className="ml-2 inline-block rounded border border-border px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
 			{claims.label}
 		</span>
 	);
 }
 
-/**
- * Past half "agent's claim only", the section says so once as well; each unverified item keeps
- * its own chip either way, so a reader can always tell which items are backed. A Codex session
- * also says why its commands can't confirm a claim.
- */
-function ClaimNote({ mode, claims }: { mode: "none" | "per_item" | "section"; claims: Claims }) {
-	if (mode === "none") return null;
+function ClaimLine({ claims }: { claims: Claims }) {
 	return (
 		<div className="space-y-0.5 text-xs text-muted-foreground">
-			{mode === "section" && <p>{claims.sectionNote}</p>}
+			<p>{claims.summaryLine}</p>
 			{claims.extra && <p>{claims.extra}</p>}
 		</div>
 	);
@@ -324,39 +422,41 @@ const KIND_LABELS: Record<SummaryChangeKind, string> = {
 	other: "Other",
 };
 
-function ChangesSection({
-	stored,
-	evidence,
-	claims,
-}: {
-	stored: StoredSessionSummary;
-	evidence: (ids: string[]) => ReactNode;
-	claims: Claims;
-}) {
-	const { changes } = stored.summary;
-	const mode = claimOnlyMode(changes);
+function ChangesSection({ ctx }: { ctx: Ctx }) {
+	const { changes } = ctx.stored.summary;
+	const expanded = useSummaryViewStore((s) => s.expanded.changes === true);
+	const setExpanded = useSummaryViewStore((s) => s.setExpanded);
+	const names = linkNames(
+		changes.map((c) => c.evidence),
+		ctx.stored.provenance.evidence,
+		ctx.clock,
+	);
+	const ordered = SUMMARY_CHANGE_KINDS.flatMap((kind) =>
+		changes.flatMap((c, i) => (c.kind === kind ? [{ c, i }] : [])),
+	);
+	const shown = expanded ? ordered : ordered.slice(0, VISIBLE_ITEMS);
 	return (
-		<Section title="Changes" count={changes.length}>
-			<ClaimNote mode={mode} claims={claims} />
+		<Section k="changes" title="Changes" count={changes.length}>
+			{ctx.claimHome === "changes" && <ClaimLine claims={ctx.claims} />}
 			{SUMMARY_CHANGE_KINDS.map((kind) => {
-				const group = changes.filter((c) => c.kind === kind);
+				const group = shown.filter((x) => x.c.kind === kind);
 				if (group.length === 0) return null;
 				return (
 					<div key={kind}>
 						<h4 className="text-xs font-medium text-muted-foreground">{KIND_LABELS[kind]}</h4>
 						<ul className="mt-1 space-y-2">
-							{group.map((c, i) => (
-								// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
+							{group.map(({ c, i }) => (
 								<li key={i} className={WRAP}>
 									<span className="font-mono text-xs">{c.text}</span>
-									{evidence(c.evidence)}
-									{c.unverified && <ClaimLabel claims={claims} />}
+									<EvidenceLinks ids={c.evidence} names={names[i]} ctx={ctx} />
+									{c.unverified && <ClaimLabel claims={ctx.claims} />}
 								</li>
 							))}
 						</ul>
 					</div>
 				);
 			})}
+			<ShowAll k="changes" total={changes.length} expanded={expanded} onToggle={setExpanded} />
 		</Section>
 	);
 }
@@ -368,41 +468,61 @@ const RESULT_TONE: Record<SessionSummary["validation"][number]["result"], string
 	unknown: "text-amber-800 dark:text-amber-300",
 };
 
-function ValidationSection({
-	summary,
-	stored,
-	evidence,
-}: {
-	summary: SessionSummary;
-	stored: StoredSessionSummary;
-	evidence: (ids: string[]) => ReactNode;
-}) {
-	const { validation } = summary;
+function ValidationSection({ ctx }: { ctx: Ctx }) {
+	const { validation } = ctx.stored.summary;
+	if (validation.length === 0) {
+		return (
+			<section id={VALIDATION_ANCHOR} className="space-y-1">
+				<h3 className={HEADING}>Validation</h3>
+				<p className="text-xs text-muted-foreground">{NO_VALIDATION_RECORDED}</p>
+			</section>
+		);
+	}
+	const parts = validationTallyParts(validation);
 	return (
-		<Section title="Validation" count={validation.length} tally={validationTally(validation)}>
-			<ul className="space-y-2">
-				{validation.map((v, i) => (
-					// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
-					<li key={i} className={WRAP}>
-						<span>{v.what}</span>{" "}
-						<span className={cn("text-xs font-medium", RESULT_TONE[v.result])}>
-							{validationResultText(v, i, stored.provenance)}
-						</span>
-						{v.detail && !v.adjusted && (
-							<span className="mt-0.5 block text-xs text-muted-foreground">{v.detail}</span>
-						)}
-						{evidence(v.evidence)}
-					</li>
-				))}
-			</ul>
+		<Section
+			k="validation"
+			id={VALIDATION_ANCHOR}
+			title="Validation"
+			count={validation.length}
+			tally={parts.map((part, i) => (
+				<span key={part.result}>
+					{i > 0 && " · "}
+					<span className={RESULT_TONE[part.result]}>{part.text}</span>
+				</span>
+			))}
+		>
+			<Items
+				k="validation"
+				items={validation}
+				lists={validation.map((v) => v.evidence)}
+				ctx={ctx}
+				render={(v, links) => {
+					const index = validation.indexOf(v);
+					return (
+						<>
+							<span>{v.what}</span>{" "}
+							<span className={cn("text-xs font-medium", RESULT_TONE[v.result])}>
+								{validationResultText(v, index, ctx.stored.provenance)}
+							</span>
+							{v.detail && !v.adjusted && (
+								<span className="mt-0.5 block text-xs text-muted-foreground">{v.detail}</span>
+							)}
+							{links}
+						</>
+					);
+				}}
+			/>
 		</Section>
 	);
 }
 
 function KeyContextSection({ handoff, action }: { handoff: string; action?: ReactNode }) {
+	const closed = useSummaryViewStore((s) => s.closed.handoff === true);
+	const setOpen = useSummaryViewStore((s) => s.setOpen);
 	return (
-		<details open>
-			<summary className="cursor-pointer select-none rounded-sm py-1 marker:text-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
+		<details open={!closed} onToggle={(e) => setOpen("handoff", e.currentTarget.open)}>
+			<summary className={SUMMARY_ROW}>
 				<h3 className={cn(HEADING, "inline")}>Key Context for the Next Agent</h3>
 			</summary>
 			<p className={cn("mt-1.5 whitespace-pre-wrap break-words text-sm text-foreground", WRAP)}>

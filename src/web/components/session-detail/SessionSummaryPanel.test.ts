@@ -233,9 +233,7 @@ describe("generating", () => {
 		expect(button).toContain('aria-disabled="true"');
 		expect(button).not.toMatch(/\sdisabled(=|\s|>)/);
 		expect(h).toMatch(/<button[^>]*>Summarizing…<\/button>/);
-		expect(textOf(h)).toContain(
-			"Summarizing. This can take a couple of minutes on a long session.",
-		);
+		expect(textOf(h)).toContain("This can take a couple of minutes on a long session.");
 	});
 
 	test("elapsed time counts from the start and is clamped at zero when the browser clock is behind", () => {
@@ -305,14 +303,6 @@ describe("ready", () => {
 		expect(h).toContain("A validation step failed (see Validation).");
 	});
 
-	test("phase 8b: Update sits beside the 'Generated' text in one row, not floating at the far end", () => {
-		const h = html(F.ready);
-		expect(h).not.toContain("justify-between");
-		expect(h).toMatch(
-			/Generated 3 h ago[^<]*<\/p><div[^>]*>(?:(?!<\/div>)[\s\S])*>Update<\/button>/,
-		);
-	});
-
 	test("nothing is filled in the ready state: one quiet Update, no second action", () => {
 		const h = html(F.ready);
 		expect(buttons(h)).toBe(1);
@@ -342,31 +332,14 @@ describe("ready", () => {
 
 	test("phase 8b: every unverified item carries its own 'Agent's claim only' chip; a backed item (one with links) never does", () => {
 		const h = html(F.ready);
-		expect(count(textOf(h), /Agent's claim only/g)).toBe(2);
+		expect(count(textOf(h), /Agent's claim only(?!:)/g)).toBe(2);
 		for (const li of h.match(/<li[\s\S]*?<\/li>/g) ?? []) {
 			if (li.includes('href="')) expect(li).not.toContain("Agent&#x27;s claim only");
 		}
-		expect(h).toMatch(/title="Nothing recorded confirms these[^"]*"[^>]*>Agent&#x27;s claim only</);
 	});
 
 	test("phase 8b: no section line says 'nothing recorded' above items whose edits are drawn beneath it", () => {
 		expect(textOf(html(F.ready))).not.toContain("Nothing recorded confirms these");
-	});
-
-	test("phase 8b: past half the section also says so, and every unverified item keeps its chip; a Codex session gets its extra line", () => {
-		const mostly = withSummary({
-			accomplishments: [
-				{ text: "a", evidence: [], unverified: true },
-				{ text: "b", evidence: [], unverified: true },
-				{ text: "c", evidence: [], unverified: false },
-			],
-			changes: [],
-		});
-		const h = textOf(html(mostly, { agentType: "codex_cli" }));
-		expect(h).toContain("Most of these are the agent's claim only.");
-		expect(count(h, /Agent's claim only\b/g)).toBe(2);
-		expect(h).toContain("Codex often records no result for a command");
-		expect(textOf(html(mostly))).not.toContain("Codex often records");
 	});
 
 	test("phase 8b: every section opens expanded, so the whole summary reads at a glance", () => {
@@ -450,23 +423,6 @@ describe("ready", () => {
 	test("a downgraded validation says why in words", () => {
 		const h = textOf(html(F.adjusted));
 		expect(h).toContain("Unknown: files were edited after this run");
-	});
-
-	test("empty sections stay as one muted line instead of vanishing", () => {
-		const empty = withSummary({
-			accomplishments: [],
-			changes: [],
-			decisions: [],
-			validation: [],
-			problems: [],
-			unfinished: [],
-			nextActions: [],
-		});
-		const h = html(empty);
-		const headings = [...h.matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>/g)].length;
-		expect(headings).toBe(10);
-		expect(count(textOf(h), /None recorded\./g)).toBe(6);
-		expect(textOf(h)).toContain("No significant unfinished work identified.");
 	});
 
 	test("changes are grouped by kind; decisions carry their why; next actions are numbered", () => {
@@ -684,9 +640,9 @@ describe("TC-8.11 model text is only ever a React text node", () => {
 });
 
 describe("phase 8b: copying", () => {
-	test("a ready summary offers Copy handoff and Copy summary, and Copy context inside Key Context", () => {
+	test("a ready summary offers Copy handoff and Copy full summary, and Copy context inside Key Context", () => {
 		const h = html(F.ready);
-		expect(copyButtons(h)).toEqual(["Copy handoff", "Copy summary", "Copy context"]);
+		expect(copyButtons(h)).toEqual(["Copy handoff", "Copy full summary", "Copy context"]);
 		const key = /<details[^>]*>(?:(?!<\/details>)[\s\S])*Key Context[\s\S]*?<\/details>/.exec(
 			h,
 		)?.[0] as string;
@@ -702,19 +658,14 @@ describe("phase 8b: copying", () => {
 	test("a flagged summary's buttons all say 'anyway' (the check-before-pasting notice interaction)", () => {
 		expect(copyButtons(html(F.suspect_warning))).toEqual([
 			"Copy handoff anyway",
-			"Copy summary anyway",
+			"Copy full summary anyway",
 			"Copy context anyway",
 		]);
 		expect(copyButtons(html(F.suspect_note))).toEqual([
 			"Copy handoff",
-			"Copy summary",
+			"Copy full summary",
 			"Copy context",
 		]);
-	});
-
-	test("the notice comes before the buttons that act on it", () => {
-		const h = html(F.suspect_warning);
-		expect(h.indexOf("Check this before pasting")).toBeLessThan(h.indexOf("Copy handoff anyway"));
 	});
 });
 
@@ -877,7 +828,7 @@ describe("phase 8 review fixes: the panel", () => {
 			"Nothing recorded for: Accomplishments, Changes, Decisions & Assumptions, Problems & Risks, Unfinished Work, Recommended Next Actions.",
 		);
 		expect(text).toContain("No validation was recorded.");
-		expect(count(h, /<h3/g)).toBe(5);
+		expect(count(h, /<h3/g)).toBe(4);
 		expect(html(F.ready)).not.toContain("Nothing recorded for");
 	});
 

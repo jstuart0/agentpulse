@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { COPY_FALLBACK_LINE } from "../../lib/summary-copy.js";
+import { useEffect, useId, useRef } from "react";
+import { COPY_FALLBACK_LINE, COPY_HANDOFF_HINT } from "../../lib/summary-copy.js";
 
 /** The text, selected and ready to copy by hand, when the browser refused the clipboard. */
 export function CopyFallback({ text, onClose }: { text: string; onClose: () => void }) {
@@ -35,10 +35,16 @@ const BUTTON =
 const OUTLINED =
 	"min-h-[44px] rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent md:min-h-0";
 
-/** Copy handoff (outlined) and Copy summary (quiet), with the by-hand fallback under them after a refusal. */
+/**
+ * Copy handoff (outlined) and Copy full summary (quiet) for the heading row, then, under them on
+ * a line of their own, the by-hand fallback after a refusal. The pressed button says "Copied" for
+ * a moment (the clipboard changes nothing the eye can see). Copy handoff says what it holds, as
+ * its description and as a visible hint from the desktop width up.
+ */
 export function CopyBar({
 	handoffLabel,
 	summaryLabel,
+	copied = null,
 	onCopy,
 	fallback,
 	onCloseFallback,
@@ -52,17 +58,32 @@ export function CopyBar({
 	fallback: string | null;
 	onCloseFallback: () => void;
 }) {
+	const hintId = useId();
 	return (
-		<div className="space-y-2">
-			<div className="flex flex-wrap items-center gap-2">
-				<button type="button" data-copy onClick={() => onCopy("handoff")} className={OUTLINED}>
-					{handoffLabel}
-				</button>
-				<button type="button" data-copy onClick={() => onCopy("summary")} className={BUTTON}>
-					{summaryLabel}
-				</button>
-			</div>
-			{fallback !== null && <CopyFallback text={fallback} onClose={onCloseFallback} />}
-		</div>
+		<>
+			<button
+				type="button"
+				data-copy
+				aria-describedby={hintId}
+				onClick={() => onCopy("handoff")}
+				className={OUTLINED}
+			>
+				{copied === "handoff" ? "Copied" : handoffLabel}
+			</button>
+			<button type="button" data-copy onClick={() => onCopy("summary")} className={BUTTON}>
+				{copied === "summary" ? "Copied" : summaryLabel}
+			</button>
+			<span
+				id={hintId}
+				className="sr-only text-xs text-muted-foreground md:not-sr-only md:basis-full"
+			>
+				{COPY_HANDOFF_HINT}
+			</span>
+			{fallback !== null && (
+				<div className="basis-full">
+					<CopyFallback text={fallback} onClose={onCloseFallback} />
+				</div>
+			)}
+		</>
 	);
 }

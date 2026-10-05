@@ -259,6 +259,8 @@ export function claimOnlyMode(
 /** The one visible line, once per summary, under the first section that has an "Agent's claim only" chip. */
 export const CLAIM_ONLY_SUMMARY_LINE =
 	"Agent's claim only: nothing recorded confirms it (no successful edit, no command recorded as succeeded, no passing test or build).";
+/** An empty Validation section stays visible and says so: nothing is ever implied to have been validated. */
+export const NO_VALIDATION_RECORDED = "No validation was recorded.";
 export const VALIDATION_FAILED_NOTE = "A validation step failed (see Validation).";
 export const CLAIM_ONLY_LABEL = "Agent's claim only";
 export const CLAIM_ONLY_HELP =
