@@ -1,0 +1,402 @@
+/**
+ * AGEN-69 phase 5 review fixes, section B: concurrency and lifecycle (P5-5 to P5-13, P5-18, P5-19).
+ * Real database, the real registry and adapters through the stub provider; the `at()` hooks hold
+ * requests at named steps so each race is deterministic, never a sleep.
+ */
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	spyOn,
+	test,
+} from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import "./ai/__test_db.js";
+
+const { config } = await import("../config.js");
+const { getDb, initializeDatabase } = await import("../db/client.js");
+const { aiSessionSummaries } = await import("../db/schema/index.js");
+const H = await import("../test-utils/summary-service-harness.js");
+const svc = await import("./session-summary-service.js");
+const spend = await import("./ai/spend-service.js");
+const evidenceLoader = await import("./ai/session-summary/evidence-loader.js");
+const tripwire = await import("./ai/session-summary/tripwire.js");
+const { setShuttingDown } = await import("../drain-state.js");
+const { priceCompletion } = await import("./ai/llm/pricing.js");
+const { MAX_INPUT_TOKENS, MAX_OUTPUT_TOKENS } = await import(
+	"./ai/session-summary/service-limits.js"
+);
+const { toDbTimestamp } = await import("./util/db-time.js");
+
+let stub: ReturnType<typeof H.startStub>;
+
+beforeAll(async () => {
+	await initializeDatabase();
+	stub = H.startStub();
+});
+afterAll(async () => {
+	await stub.stop();
+});
+beforeEach(async () => {
+	await H.resetWorld(stub);
+	await H.enableAi();
+	await H.seedProvider(stub);
+});
+afterEach(async () => {
+	await H.afterEachGuard(stub);
+});
+
+const ok = (cite: number[]) => ({ text: H.answer(cite), stop: "stop", usage: H.STUB_USAGE });
+const script = (...answers: Array<Record<string, unknown>>) =>
+	stub.script("openai", ...(answers as never[]));
+const reservationOfOneCall = () =>
+	priceCompletion("openai", "gpt-5-mini", {
+		inputTokens: MAX_INPUT_TOKENS,
+		outputTokens: MAX_OUTPUT_TOKENS,
+		estimated: true,
+	});
+
+/** A request held at a named step until `release()`; only the first request to reach it is held. */
+function holdAt(step: string) {
+	let reached!: () => void;
+	const atStep = new Promise<void>((resolve) => {
+		reached = resolve;
+	});
+	let release!: () => void;
+	const hold = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let joinWaiting!: () => void;
+	const atJoinWait = new Promise<void>((resolve) => {
+		joinWaiting = resolve;
+	});
+	let taken = false;
+	svc._setSummaryHooksForTest({
+		at: async (s) => {
+			if (s === "join_wait") joinWaiting();
+			if (s === step && !taken) {
+				taken = true;
+				reached();
+				await hold;
+			}
+		},
+	});
+	return { atStep, release, atJoinWait };
+}
+
+/** A generation held at its model call: it occupies a slot until the gate is released. */
+async function occupySlot(id: string) {
+	const { editId } = await H.seedActiveSession(id);
+	const gate = stub.createGate();
+	script({ ...ok([editId]), gate });
+	const { done } = await H.startGeneration(id);
+	await H.withDeadline(gate.arrived);
+	return { gate, done };
+}
+
+describe("P5-6 one audit line per accepted request, written after the last shutdown check", () => {
+	const auditLines = (lines: string[]) =>
+		lines.filter((l) => l.includes("session_summary_requested"));
+
+	test("a started request logs exactly one line; a join logs none", async () => {
+		const { editId } = await H.seedActiveSession("lc-audit");
+		const gate = stub.createGate();
+		script({ ...ok([editId]), gate });
+		const logs = H.captureLogs();
+		try {
+			const { done } = await H.startGeneration("lc-audit");
+			await H.withDeadline(gate.arrived);
+			expect((await H.request("lc-audit")).kind).toBe("joined");
+			expect(auditLines(logs.lines)).toHaveLength(1);
+			gate.release();
+			await H.withDeadline(done);
+			expect(auditLines(logs.lines)).toHaveLength(1);
+		} finally {
+			logs.restore();
+		}
+	});
+
+	test("a request refused shutting_down at the hand-over logs nothing", async () => {
+		await H.seedActiveSession("lc-audit-shut");
+		svc._setSummaryHooksForTest({
+			at: (step) => {
+				if (step === "start") setShuttingDown("test");
+			},
+		});
+		const logs = H.captureLogs();
+		try {
+			const result = await H.request("lc-audit-shut");
+			expect(H.refusalOf(result)).toBe("shutting_down");
+			expect(auditLines(logs.lines)).toHaveLength(0);
+		} finally {
+			logs.restore();
+		}
+	});
+});
+
+describe("P5-8 a caller that raced a same-session request joins it; the wait is bounded", () => {
+	test("A held at the reservation, the second slot taken by another session: a request for A's session is joined, never busy; one reservation for the session on the day, two generations counted", async () => {
+		const other = await occupySlot("lc-other");
+		const { editId } = await H.seedActiveSession("lc-same");
+		const gateSame = stub.createGate();
+		script({ ...ok([editId]), gate: gateSame });
+		const held = holdAt("reserve");
+		const a = H.request("lc-same");
+		await H.withDeadline(held.atStep);
+		const b = H.request("lc-same");
+		// B has been refused the slot and is waiting for A's answer: only now does A go on.
+		await H.withDeadline(held.atJoinWait);
+		held.release();
+		const [ra, rb] = await Promise.all([a, b]);
+		expect(ra.kind).toBe("started");
+		expect(rb.kind).toBe("joined");
+		await H.withDeadline(gateSame.arrived);
+		expect(await H.daySpend()).toBe(2 * reservationOfOneCall());
+		expect(svc._summaryGenerationCountForTest()).toBe(2);
+		expect(stub.requests().length).toBe(2);
+		gateSame.release();
+		other.gate.release();
+		await H.withDeadline(other.done);
+		if (ra.kind === "started") await H.withDeadline(ra.done);
+	});
+
+	test("A held at its slot and never released: the same-session request is answered busy within about 5 s, not left waiting", async () => {
+		const other = await occupySlot("lc-other");
+		const { editId } = await H.seedActiveSession("lc-stuck");
+		script(ok([editId]));
+		const held = holdAt("slot");
+		const a = H.request("lc-stuck");
+		await H.withDeadline(held.atStep);
+		const t = performance.now();
+		const bPending = H.request("lc-stuck");
+		await H.withDeadline(held.atJoinWait);
+		const b = await H.withDeadline(bPending, 9000, "the bounded wait");
+		const waited = performance.now() - t;
+		expect(H.refusalOf(b)).toBe("busy");
+		expect(waited).toBeGreaterThan(4000);
+		expect(waited).toBeLessThan(8000);
+		held.release();
+		const ra = await a;
+		other.gate.release();
+		await H.withDeadline(other.done);
+		if (ra.kind === "started") await H.withDeadline(ra.done);
+	}, 30_000);
+});
+
+describe("P5-10 a watchdog frees a slot whose run hangs", () => {
+	test("two runs hung before they call the model: at the lease expiry both are failed / interrupted, their reservations returned and their slots free, so a third request starts", async () => {
+		for (const id of ["lc-hang-a", "lc-hang-b"]) await H.seedActiveSession(id);
+		const { editId } = await H.seedActiveSession("lc-after");
+		const spy = spyOn(evidenceLoader, "loadEvidence").mockImplementation(
+			() => new Promise(() => {}),
+		);
+		svc._setSummaryHooksForTest({ watchdogMs: 60 });
+		try {
+			await H.startGeneration("lc-hang-a");
+			await H.startGeneration("lc-hang-b");
+			expect(svc._summaryGenerationCountForTest()).toBe(2);
+			await H.until(() => svc._summaryGenerationCountForTest() === 0);
+			for (const id of ["lc-hang-a", "lc-hang-b"]) {
+				const row = await H.readSummaryRow(id);
+				expect(row?.attemptStatus, id).toBe("failed");
+				expect(row?.attemptErrorCode, id).toBe("interrupted");
+				expect(row?.attemptToken, id).toBeNull();
+			}
+			expect(await H.daySpend()).toBe(0);
+		} finally {
+			spy.mockRestore();
+		}
+		script(ok([editId]));
+		await H.runGeneration("lc-after");
+		expect((await H.readSummaryRow("lc-after"))?.attemptStatus).toBe("idle");
+	});
+
+	test("a run with a call pending is settled as an unknown outcome when the watchdog fires, and the late answer settles nothing more", async () => {
+		const { editId } = await H.seedActiveSession("lc-hang-call");
+		const gate = stub.createGate();
+		script({ ...ok([editId]), gate });
+		svc._setSummaryHooksForTest({ watchdogMs: 150 });
+		const { done } = await H.startGeneration("lc-hang-call");
+		await H.withDeadline(gate.arrived);
+		await H.until(() => svc._summaryGenerationCountForTest() === 0);
+		const { system, user } = H.promptsOf(stub.requests()[0]);
+		const text = system + user;
+		const charged = priceCompletion("openai", "gpt-5-mini", {
+			inputTokens: Math.max(Math.ceil(text.length / 4.5), Math.ceil(Buffer.byteLength(text) / 2)),
+			outputTokens: MAX_OUTPUT_TOKENS,
+			estimated: true,
+		});
+		expect(await H.daySpend()).toBe(charged);
+		gate.release();
+		await H.withDeadline(done);
+		const row = await H.readSummaryRow("lc-hang-call");
+		expect(row?.attemptErrorCode).toBe("interrupted");
+		expect(row?.summary).toBeNull();
+		expect(await H.daySpend()).toBe(charged);
+	});
+});
+
+describe("P5-11 boot and shutdown", () => {
+	test("recoverInterruptedSummaries marks rows left generating as failed / interrupted (single-replica SQLite only; on Postgres another replica may own the row)", async () => {
+		await H.seedActiveSession("lc-boot-a");
+		await H.seedActiveSession("lc-boot-b");
+		await H.seedActiveSession("lc-boot-idle");
+		await H.seedSummaryRow("lc-boot-a", {
+			attemptStatus: "generating",
+			attemptToken: "t1",
+			attemptStartedAt: toDbTimestamp(new Date()),
+		});
+		await H.seedSummaryRow("lc-boot-b", {
+			attemptStatus: "generating",
+			attemptToken: "t2",
+			attemptStartedAt: toDbTimestamp(new Date(Date.now() - 3600_000)),
+		});
+		await H.seedSummaryRow("lc-boot-idle", { attemptStatus: "idle" });
+		const recovered = await svc.recoverInterruptedSummaries();
+		if (config.dialect === "postgres") {
+			expect(recovered).toBe(0);
+			for (const id of ["lc-boot-a", "lc-boot-b"]) {
+				expect((await H.readSummaryRow(id))?.attemptStatus, id).toBe("generating");
+			}
+			return;
+		}
+		expect(recovered).toBe(2);
+		for (const id of ["lc-boot-a", "lc-boot-b"]) {
+			const row = await H.readSummaryRow(id);
+			expect(row?.attemptStatus, id).toBe("failed");
+			expect(row?.attemptErrorCode, id).toBe("interrupted");
+			expect(row?.attemptToken, id).toBeNull();
+		}
+		expect((await H.readSummaryRow("lc-boot-idle"))?.attemptStatus).toBe("idle");
+		const view = await svc.getSessionSummaryView("lc-boot-a");
+		expect(view?.attempt).toMatchObject({ status: "failed", errorCode: "interrupted" });
+	});
+
+	test("index.ts runs the recovery before it marks the database ready", () => {
+		const code = readFileSync(join(import.meta.dir, "../index.ts"), "utf8")
+			.replace(/\/\*[\s\S]*?\*\//g, "")
+			.replace(/^\s*\/\/.*$/gm, "");
+		const recover = code.indexOf("await recoverInterruptedSummaries(");
+		expect(recover).toBeGreaterThan(-1);
+		expect(recover).toBeGreaterThan(code.indexOf("await initializeDatabase("));
+		expect(recover).toBeLessThan(code.indexOf("markDbReady()"));
+	});
+
+	test("a release waits for an entry that is writing its result (bounded), so a kill during the write does not lose a billed answer", async () => {
+		const { editId } = await H.seedActiveSession("lc-finishing");
+		script(ok([editId]));
+		const held = holdAt("finish_write");
+		const { done } = await H.startGeneration("lc-finishing");
+		await H.withDeadline(held.atStep);
+		let released = false;
+		const release = svc.releaseOwnSummaryClaims().then(() => {
+			released = true;
+		});
+		await new Promise((r) => setTimeout(r, 100));
+		expect(released).toBe(false);
+		held.release();
+		await H.withDeadline(release, 5000, "the release");
+		expect((await H.readSummaryRow("lc-finishing"))?.attemptStatus).toBe("idle");
+		await H.withDeadline(done);
+	});
+});
+
+describe("P5-12 the release is bounded even when a settlement hangs", () => {
+	test("a releaseReservedSpend that never resolves: the release returns within about 2 s", async () => {
+		const { editId } = await H.seedActiveSession("lc-hung-release");
+		script(ok([editId]));
+		const spy = spyOn(spend, "releaseReservedSpend").mockImplementation(
+			() => new Promise(() => {}),
+		);
+		// A run still reading: the release returns the whole reservation, which is where the hang is.
+		const ownTurn = await import("../util/own-turn.js");
+		const real = ownTurn.runInOwnTurn;
+		let n = 0;
+		let unblock!: () => void;
+		const blocked = new Promise<void>((resolve) => {
+			unblock = resolve;
+		});
+		const turn = spyOn(ownTurn, "runInOwnTurn").mockImplementation((work) =>
+			n++ === 0 ? real(work) : blocked.then(() => real(work)),
+		);
+		try {
+			const { done } = await H.startGeneration("lc-hung-release");
+			const t = performance.now();
+			await svc.releaseOwnSummaryClaims();
+			const elapsed = performance.now() - t;
+			expect(elapsed).toBeGreaterThan(1500);
+			expect(elapsed).toBeLessThan(3500);
+			// The hung entry stays in the map until the process exits: this test is the one that clears it.
+			expect(svc._summaryGenerationCountForTest()).toBe(1);
+			svc._resetSummaryGenerationsForTest();
+			expect(svc._summaryGenerationCountForTest()).toBe(0);
+			unblock();
+			await H.withDeadline(done);
+		} finally {
+			unblock();
+			spy.mockRestore();
+			turn.mockRestore();
+			stub.reset();
+		}
+	}, 20_000);
+});
+
+describe("P5-18 the POST reads the attempt columns only", () => {
+	test("with a 59 KB stored summary on the row, no select of the request names the summary or the provenance", async () => {
+		const { promptId, editId } = await H.seedActiveSession("lc-cols");
+		await H.seedReadySummary("lc-cols", { throughEventId: editId, firstEventId: promptId });
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({ attemptStartedAt: toDbTimestamp(new Date(Date.now() - 3600_000)) });
+		script(ok([editId]));
+		const db = getDb() as unknown as { select: (fields?: Record<string, unknown>) => unknown };
+		const original = db.select.bind(db);
+		const shapes: string[][] = [];
+		const spy = spyOn(db, "select").mockImplementation((fields?: Record<string, unknown>) => {
+			shapes.push(Object.keys(fields ?? {}));
+			return original(fields);
+		});
+		try {
+			await H.runGeneration("lc-cols");
+		} finally {
+			spy.mockRestore();
+		}
+		const request = shapes.slice(0, 6);
+		expect(request.length).toBeGreaterThan(0);
+		for (const keys of request) {
+			expect(keys).not.toContain("summary");
+			expect(keys).not.toContain("provenance");
+		}
+	});
+});
+
+describe("P5-19 the prompt URLs are collected in slices that yield the event loop", () => {
+	test("170,000 characters of prompts reach collectUserPromptUrls in several bounded calls", async () => {
+		await H.seedSession("lc-urls");
+		const rows = Array.from({ length: 100 }, (_, i) =>
+			H.prompt(`see https://example.test/${i} ${"word ".repeat(340)}`),
+		);
+		rows.push(H.edit("src/a.ts"));
+		const ids = await H.seedEvents("lc-urls", rows);
+		script(ok([ids[ids.length - 1]]));
+		const real = tripwire.collectUserPromptUrls;
+		const sizes: number[] = [];
+		const spy = spyOn(tripwire, "collectUserPromptUrls").mockImplementation((texts) => {
+			const list = [...texts];
+			sizes.push(list.reduce((n, t) => n + t.length, 0));
+			return real(list);
+		});
+		try {
+			await H.runGeneration("lc-urls");
+		} finally {
+			spy.mockRestore();
+		}
+		expect(sizes.length).toBeGreaterThanOrEqual(4);
+		expect(Math.max(...sizes)).toBeLessThanOrEqual(64 * 1024);
+		expect(sizes.reduce((a, b) => a + b, 0)).toBeGreaterThan(100_000);
+	});
+});

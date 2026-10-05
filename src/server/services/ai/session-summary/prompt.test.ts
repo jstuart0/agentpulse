@@ -140,8 +140,17 @@ describe("system prompt", () => {
 		expect(p).not.toContain("failure tail");
 	});
 
-	test("TC-4.1c the version constant is '2'", () => {
-		expect(PROMPT_VERSION).toBe("2");
+	test("TC-4.1c the version constant is '3'", () => {
+		expect(PROMPT_VERSION).toBe("3");
+	});
+
+	test("TC-4.1d the prompt tells the model the caps the normaliser enforces (R-L), so an answer is not cut mid-sentence by surprise", () => {
+		const p = SESSION_SUMMARY_SYSTEM_PROMPT;
+		expect(p).toContain(
+			"At most 10 items per section; keep each text under 300 characters, why and detail under 250, overview under 800, handoff under 3,000, and cite at most 3 evidence ids per item.",
+		);
+		expect(p).not.toContain("At most 20 items");
+		expect(p).not.toContain("under 600 characters");
 	});
 
 	test("TC-4.2a every prompt version has one pinned hash, and the current prompt matches the current row", () => {
@@ -149,6 +158,7 @@ describe("system prompt", () => {
 		const PINNED: Record<string, string> = {
 			"1": "175a86a8351b3eb75995daa5028b106fac8dd14d4fc57c32dc42deb7a36aa663",
 			"2": "747e739216c16c4910376061eeb3f3dc3178e5991efd71bd77e975969cfaa53b",
+			"3": "to be pinned with the version bump",
 		};
 		expect(Object.keys(PINNED)).toHaveLength(Number(PROMPT_VERSION));
 		expect(PINNED[PROMPT_VERSION]).toBe(sha256(SESSION_SUMMARY_SYSTEM_PROMPT));

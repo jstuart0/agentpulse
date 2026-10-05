@@ -6,6 +6,7 @@ import {
 } from "../../session-summary-view.js";
 import {
 	FAILED_VIEW_FIXTURES,
+	FIXTURE_NOW,
 	REFUSAL_BODY_FIXTURES,
 	SUMMARY_VIEW_FIXTURES,
 	failedWith,
@@ -123,3 +124,48 @@ describe("the fixtures", () => {
 		}
 	});
 });
+
+describe("fixture truth (P5-20): each fixture is a view the server can really produce", () => {
+	const COOLDOWN_SECONDS = 30;
+	const elapsed = (startedAt: string) =>
+		Math.floor((Date.parse(FIXTURE_NOW) - Date.parse(startedAt)) / 1000);
+
+	test("TC-6.5i a cooldown view always has the attempt's start, and the seconds left agree with it", () => {
+		const view = SUMMARY_VIEW_FIXTURES.cooldown;
+		expect(view.attempt.startedAt).not.toBeNull();
+		expect(view.cooldownSeconds).toBe(COOLDOWN_SECONDS - elapsed(view.attempt.startedAt as string));
+	});
+
+	test("TC-6.5j a freshly failed run reads back inside the cooldown; an interrupted one and an unreadable key start none", () => {
+		for (const code of SUMMARY_ERROR_CODES) {
+			const view = FAILED_VIEW_FIXTURES[code];
+			if (code === "provider_key_unreadable") {
+				expect(view.attempt.startedAt, code).toBeNull();
+				expect(view.blocked, code).toBeNull();
+			} else if (code === "interrupted") {
+				expect(view.attempt.startedAt, code).not.toBeNull();
+				expect(view.blocked, code).toBeNull();
+			} else {
+				expect(view.blocked, code).toBe("summary_cooldown");
+				const seconds = COOLDOWN_SECONDS - elapsed(view.attempt.startedAt as string);
+				expect(seconds, code).toBeGreaterThanOrEqual(1);
+				expect(view.cooldownSeconds, code).toBe(seconds);
+			}
+		}
+		expect(SUMMARY_VIEW_FIXTURES.failed_ai_inactive.blocked).toBe("summary_cooldown");
+	});
+
+	test("TC-6.5k spend.maxCostCents is meaningful only with a provider: no provider means 0, in every fixture", () => {
+		for (const [name, view] of [
+			...Object.entries(SUMMARY_VIEW_FIXTURES),
+			...Object.entries(FAILED_VIEW_FIXTURES),
+		]) {
+			if (view.provider === null) {
+				expect(view.spend.maxCostCents, name).toBe(0);
+				expect(view.spend.maxCostWithRetryCents, name).toBe(0);
+			}
+		}
+		expect(SUMMARY_VIEW_FIXTURES.no_provider.provider).toBeNull();
+	});
+});
+

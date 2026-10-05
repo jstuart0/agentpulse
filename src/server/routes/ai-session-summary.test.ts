@@ -139,9 +139,13 @@ async function call(
 	id: string,
 	headers: Headers = new Headers(),
 	mount: Mount = MOUNTS[0],
-	init: { body?: string } = {},
+	init: { body?: string; query?: string } = {},
 ): Promise<Answered> {
-	const res = await app.request(pathFor(mount, id), { method, headers, ...init });
+	const res = await app.request(`${pathFor(mount, id)}${init.query ?? ""}`, {
+		method,
+		headers,
+		...(init.body === undefined ? {} : { body: init.body }),
+	});
 	const text = await res.text();
 	let json: Record<string, unknown> | null = null;
 	try {
@@ -153,6 +157,8 @@ async function call(
 }
 
 const get = (id: string, headers?: Headers, mount?: Mount) => call("GET", id, headers, mount);
+const poll = (id: string, headers?: Headers, mount?: Mount) =>
+	call("GET", id, headers, mount, { query: "?poll=1" });
 const post = (id: string, headers?: Headers, mount?: Mount) => {
 	startedSessions.add(id);
 	return call("POST", id, headers, mount);
@@ -1005,7 +1011,7 @@ describe("the GET body has the fixture's shape", () => {
 // ── TC-6.22: body sizes ──────────────────────────────────────────────────────
 
 describe("body sizes", () => {
-	test("TC-6.22 a generating body is at most 2 KB and a large honest ready body at most 64 KB and one at every cap at most 128 KB", async () => {
+	test("TC-6.22 a generating body is at most 2 KB and a ready body at most 64 KB, a large honest one and one at every cap (R-L)", async () => {
 		const headers = disableAuth();
 		const edit = await activeSession(SID);
 		const gate = scriptGated([edit]);
@@ -1049,26 +1055,47 @@ describe("body sizes", () => {
 			nextActions: many(5, modest),
 			handoff: "h".repeat(2000),
 		};
-		// What phase 5 measured as "at the schema's caps": three sections full, the rest honest.
-		const phase5Max = {
-			...base.summary,
-			overview: "o".repeat(1200),
-			accomplishments: many(20, cap),
-			changes: many(8, (n) => ({ ...modest(n), kind: "modified" })),
-			decisions: many(8, (n) => ({ ...modest(n), why: "w".repeat(200) })),
-			validation: validation(8, 200),
-			problems: many(20, cap),
-			unfinished: many(20, cap),
-			nextActions: many(5, modest),
-			handoff: "h".repeat(4000),
-		};
-		// Every section at its true cap (20 items of 600 characters, why/detail too): recorded, not asserted.
+		// R-L: every section at the answer caps, each item citing the most ids the caps allow.
+		const L = await import("../services/ai/session-summary/prompt-limits.js");
+		let evidenceN = 0;
+		const facts: Record<string, unknown> = {};
+		const capIds = () =>
+			many(L.MAX_EVIDENCE_PER_ITEM, () => {
+				const id = `E${100000 + evidenceN++}`;
+				facts[id] = {
+					kind: "agent_message",
+					at: "2026-10-04T10:04:00.000Z",
+					result: "completed",
+					count: 99999,
+					validationClass: "terraform plan",
+				};
+				return id;
+			});
+		const atCap = () => ({
+			text: "x".repeat(L.ITEM_MAX_CHARS),
+			evidence: capIds(),
+			unverified: false,
+		});
 		const trueMax = {
-			...phase5Max,
-			changes: many(20, (n) => ({ ...cap(n), kind: "modified" })),
-			decisions: many(20, (n) => ({ ...cap(n), why: "w".repeat(600) })),
-			validation: validation(20, 600),
-			nextActions: many(5, cap),
+			...base.summary,
+			overview: "o".repeat(L.OVERVIEW_MAX_CHARS),
+			accomplishments: many(L.MAX_SECTION_ITEMS, atCap),
+			changes: many(L.MAX_SECTION_ITEMS, () => ({ ...atCap(), kind: "modified" })),
+			decisions: many(L.MAX_SECTION_ITEMS, () => ({
+				...atCap(),
+				why: "w".repeat(L.ITEM_DETAIL_MAX_CHARS),
+			})),
+			validation: many(L.MAX_SECTION_ITEMS, () => ({
+				what: "v".repeat(L.ITEM_MAX_CHARS),
+				result: "passed",
+				detail: "d".repeat(L.ITEM_DETAIL_MAX_CHARS),
+				evidence: capIds(),
+				adjusted: false,
+			})),
+			problems: many(L.MAX_SECTION_ITEMS, atCap),
+			unfinished: many(L.MAX_SECTION_ITEMS, atCap),
+			nextActions: many(L.MAX_NEXT_ACTIONS, atCap),
+			handoff: "h".repeat(L.HANDOFF_MAX_CHARS),
 		};
 		const evidence = Object.fromEntries(
 			Array.from({ length: 150 }, (_, i) => [
@@ -1076,7 +1103,7 @@ describe("body sizes", () => {
 				{ kind: "edit", at: "2026-10-04T10:04:00.000Z", count: 3 },
 			]),
 		);
-		const bytesWith = async (summary: unknown): Promise<number> => {
+		const bytesWith = async (summary: unknown, provenanceEvidence = evidence): Promise<number> => {
 			await getDb().delete(aiSessionSummaries).where(eq(aiSessionSummaries.sessionId, SID));
 			await getDb()
 				.insert(aiSessionSummaries)
@@ -1085,22 +1112,64 @@ describe("body sizes", () => {
 					generatedAt: toDbTimestamp(new Date()),
 					throughEventId: edit,
 					summary: summary as never,
-					provenance: { ...base.provenance, evidence } as never,
+					provenance: { ...base.provenance, evidence: provenanceEvidence } as never,
 				});
 			const ready = await get(SID, headers);
 			expect(ready.status).toBe(200);
 			return ready.text.length;
 		};
 		const honestBytes = await bytesWith(honest);
-		const threeFull = await bytesWith(phase5Max);
-		const trueBytes = await bytesWith(trueMax);
+		const trueBytes = await bytesWith(trueMax, facts as typeof evidence);
 		console.log(
-			`[perf] ${JSON.stringify({ label: "ready view bytes", honest: honestBytes, threeSectionsAtCap: threeFull, everySectionAtItsCap: trueBytes, ruledLimit: 65536 })}`,
+			`[perf] ${JSON.stringify({ label: "ready view bytes", honest: honestBytes, everySectionAtItsCap: trueBytes, ruledLimit: 65536 })}`,
 		);
-		// The ruling's 64 KB holds for a large honest summary. The schema's own item caps allow far
-		// more (spec finding, reported): the ceiling asserted at the caps is twice the ruled number.
 		expect(honestBytes).toBeLessThanOrEqual(64 * 1024);
-		expect(trueBytes).toBeLessThanOrEqual(128 * 1024);
+		expect(trueBytes).toBeLessThanOrEqual(64 * 1024);
+	});
+});
+
+describe("the polled view (R-K)", () => {
+	test("TC-6.23 ?poll=1 answers the view without the stored summary and says so; without it the summary is whole", async () => {
+		const headers = disableAuth();
+		const edit = await activeSession(SID);
+		await H.seedReadySummary(SID, { throughEventId: edit, firstEventId: edit - 1 });
+		const full = await get(SID, headers);
+		const polled = await poll(SID, headers);
+		expect(full.status).toBe(200);
+		expect(polled.status).toBe(200);
+		expect(full.json?.stored).not.toBeNull();
+		expect("storedOmitted" in (full.json ?? {})).toBe(false);
+		expect(polled.json?.stored).toBeNull();
+		expect(polled.json?.storedOmitted).toBe(true);
+		expect(polled.json?.throughEventId).toBe(full.json?.throughEventId);
+		expect(polled.text.length).toBeLessThan(full.text.length / 2);
+	});
+
+	test("TC-6.24 a regeneration poll is at most 2 KB; the full body of the same moment carries the previous summary", async () => {
+		const headers = disableAuth();
+		const edit = await activeSession(SID);
+		await H.seedReadySummary(SID, { throughEventId: edit, firstEventId: edit - 1 });
+		const gate = scriptGated([edit]);
+		expect((await post(SID, headers)).status).toBe(202);
+		await H.withDeadline(gate.arrived);
+		const polled = await poll(SID, headers);
+		const full = await get(SID, headers);
+		expect((polled.json?.attempt as { status: string }).status).toBe("generating");
+		expect(polled.text.length).toBeLessThanOrEqual(2048);
+		expect(full.text.length).toBeGreaterThan(8000);
+		expect(full.json?.stored).not.toBeNull();
+		gate.release();
+		await waitForGenerations();
+	});
+
+	test("TC-6.25 only the value 1 turns the omission on", async () => {
+		const headers = disableAuth();
+		const edit = await activeSession(SID);
+		await H.seedReadySummary(SID, { throughEventId: edit, firstEventId: edit - 1 });
+		for (const query of ["?poll=0", "?poll=true", "?poll=", "?polling=1"]) {
+			const res = await call("GET", SID, headers, MOUNTS[0], { query });
+			expect(res.json?.stored, query).not.toBeNull();
+		}
 	});
 });
 
