@@ -50,3 +50,8 @@ export async function reloadSummaryAvailability(): Promise<void> {
 		useAiStatusStore.getState().load(),
 	]);
 }
+
+/** For pages that only link to the Summary tab: availability, asking for whatever hasn't loaded yet. */
+export function useEnsuredSummaryAvailability(): Availability {
+	return useSummaryAvailability();
+}
