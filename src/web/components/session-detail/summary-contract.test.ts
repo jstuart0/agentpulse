@@ -26,7 +26,7 @@ const FORBIDDEN =
 const NOT_RENDERED_BY_THE_PANEL = ["/src/web/components/session-detail/TimelineView.tsx"];
 
 /** The panel's source files: itself and every relative import under src/web, transitively. */
-export function importClosure(entry: string): string[] {
+function importClosure(entry: string): string[] {
 	const seen = new Set<string>();
 	const walk = (file: string) => {
 		if (seen.has(file) || NOT_RENDERED_BY_THE_PANEL.some((x) => file.endsWith(x))) return;
@@ -35,7 +35,7 @@ export function importClosure(entry: string): string[] {
 		for (const m of text.matchAll(/from\s+"(\.[^"]+)"/g)) {
 			const base = resolve(dirname(file), m[1].replace(/\.js$/, ""));
 			const found = [".tsx", ".ts"].map((e) => base + e).find((c) => existsSync(c));
-			if (found && found.includes("/src/web/")) walk(found);
+			if (found?.includes("/src/web/")) walk(found);
 		}
 	};
 	walk(entry);
