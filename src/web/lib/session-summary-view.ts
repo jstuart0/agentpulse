@@ -434,17 +434,9 @@ const isFreeProvider = (spend: SessionSummaryView["spend"]) => spend.maxCostCent
 
 /** The fine print as the three lines it is shown in: what is sent, what is masked, the cost. Null when there is no provider to name. */
 export function finePrintLines(
-	_view: SessionSummaryView,
-	_viewer: Pick<SummaryViewer, "showSummarySharedNote">,
-): string[] | null {
-	return null;
-}
-
-/** The fine print under "Summarize this session". Null when there is no provider to name. */
-export function finePrint(
 	view: SessionSummaryView,
 	viewer: Pick<SummaryViewer, "showSummarySharedNote">,
-): string | null {
+): string[] | null {
 	if (!view.provider) return null;
 	const { spend } = view;
 	const where = `${view.provider.kind} · ${view.provider.model}`;
@@ -452,7 +444,19 @@ export function finePrint(
 		? "No cost is recorded for this provider."
 		: `Up to ${formatCost(spend.maxCostCents)}, or ${formatCost(spend.maxCostWithRetryCents)} if the answer has to be retried; ${formatMoney(spend.spentCents)} of today's ${formatMoney(spend.capCents)} used.`;
 	const shared = viewer.showSummarySharedNote ? " Everyone on this instance can read it." : "";
-	return `Sends this session's prompts, agent replies, notes, current task, plan summary, commands and file paths to ${where}. Command output is sent only for tests and builds that failed. Known secret patterns are masked first. ${cost}${shared}`;
+	return [
+		`Sends this session's prompts, agent replies, notes, current task, plan summary, commands and file paths to ${where}.`,
+		"Command output is sent only for tests and builds that failed. Known secret patterns are masked first.",
+		`${cost}${shared}`,
+	];
+}
+
+/** The fine print under "Summarize this session", as one string. Null when there is no provider to name. */
+export function finePrint(
+	view: SessionSummaryView,
+	viewer: Pick<SummaryViewer, "showSummarySharedNote">,
+): string | null {
+	return finePrintLines(view, viewer)?.join(" ") ?? null;
 }
 
 // ── evidence ────────────────────────────────────────────────────────────────
@@ -752,6 +756,8 @@ export type ActionState =
 			/** The confirmation dialog's wording when the evidence has shrunk; null otherwise. */
 			confirm: SummaryConfirm | null;
 			finePrint: string | null;
+			/** The same text as three short lines, for display. */
+			finePrintLines: string[] | null;
 	  }
 	| { kind: "generating"; label: string; statusText: string; startedAt: string | null }
 	| {
@@ -998,6 +1004,7 @@ function deriveAction(
 					: "Update",
 		confirm: needsShrinkConfirmation(view) ? SHRUNK_CONFIRM : null,
 		finePrint: finePrint(view, viewer),
+		finePrintLines: finePrintLines(view, viewer),
 	};
 }
 

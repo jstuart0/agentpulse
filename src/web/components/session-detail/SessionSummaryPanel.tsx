@@ -157,7 +157,7 @@ function StoredBody(props: BodyProps & { stored: StoredSessionSummary }) {
 	return (
 		<div className="space-y-4">
 			<GeneratingStatus {...props} />
-			<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+			<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
 				<Freshness view={view} stored={stored} clock={clock} />
 				{!stale && <ActionControl {...props} />}
 			</div>
@@ -371,9 +371,13 @@ function AvailableAction(
 			</div>
 			{action.finePrint &&
 				(action.variant === "summarize" ? (
-					<p id={printId} className={cn("max-w-prose", MUTED, WRAP)}>
-						{action.finePrint}
-					</p>
+					<div id={printId} className={cn("max-w-prose space-y-1", MUTED, WRAP)}>
+						{(action.finePrintLines ?? [action.finePrint]).map((line) => (
+							<p key={line} data-fine-print-line>
+								{line}
+							</p>
+						))}
+					</div>
 				) : (
 					<span id={printId} className="sr-only">
 						{action.finePrint}

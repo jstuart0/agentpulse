@@ -39,7 +39,7 @@ interface SectionsProps {
 }
 
 export function SummarySections({ stored, sessionId, agentType, clock }: SectionsProps) {
-	const { summary, provenance } = stored;
+	const { summary } = stored;
 	const evidence = (ids: string[]) => (
 		<EvidenceLinks ids={ids} stored={stored} sessionId={sessionId} clock={clock} />
 	);
@@ -54,7 +54,6 @@ export function SummarySections({ stored, sessionId, agentType, clock }: Section
 				title="Accomplishments"
 				items={summary.accomplishments}
 				claims={claims}
-				open
 				render={(item) => (
 					<>
 						<span>{item.text}</span>
@@ -79,7 +78,7 @@ export function SummarySections({ stored, sessionId, agentType, clock }: Section
 				</ul>
 			</Section>
 			<ValidationSection summary={summary} stored={stored} evidence={evidence} />
-			<Section title="Problems & Risks" count={summary.problems.length} open>
+			<Section title="Problems & Risks" count={summary.problems.length}>
 				<ul className="space-y-2">
 					{summary.problems.map((p, i) => (
 						// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
@@ -93,7 +92,6 @@ export function SummarySections({ stored, sessionId, agentType, clock }: Section
 			<Section
 				title="Unfinished Work"
 				count={summary.unfinished.length}
-				open
 				emptyLine={NO_UNFINISHED_WORK}
 			>
 				<ul className="space-y-2">
@@ -106,7 +104,7 @@ export function SummarySections({ stored, sessionId, agentType, clock }: Section
 					))}
 				</ul>
 			</Section>
-			<Section title="Recommended Next Actions" count={summary.nextActions.length} open>
+			<Section title="Recommended Next Actions" count={summary.nextActions.length}>
 				<ol className="list-decimal space-y-2 pl-5">
 					{summary.nextActions.map((n, i) => (
 						// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
@@ -117,7 +115,7 @@ export function SummarySections({ stored, sessionId, agentType, clock }: Section
 					))}
 				</ol>
 			</Section>
-			<KeyContextSection handoff={summary.handoff} open={provenance.suspect} />
+			<KeyContextSection handoff={summary.handoff} />
 		</div>
 	);
 }
@@ -143,14 +141,12 @@ function Section({
 	title,
 	count,
 	tally,
-	open = false,
 	emptyLine = NOTHING_RECORDED,
 	children,
 }: {
 	title: string;
 	count: number;
 	tally?: string;
-	open?: boolean;
 	emptyLine?: string;
 	children: ReactNode;
 }) {
@@ -163,7 +159,7 @@ function Section({
 		);
 	}
 	return (
-		<details open={open} className="group">
+		<details open className="group">
 			<summary className="cursor-pointer select-none rounded-sm py-1 marker:text-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
 				<h3 className={cn(HEADING, "inline")}>
 					{title}
@@ -256,56 +252,51 @@ function ClaimSection<T extends { unverified: boolean }>({
 	title,
 	items,
 	claims,
-	open,
 	render,
 }: {
 	title: string;
 	items: T[];
 	claims: Claims;
-	open?: boolean;
 	render: (item: T) => ReactNode;
 }) {
 	const mode = claimOnlyMode(items);
 	return (
-		<Section title={title} count={items.length} open={open}>
+		<Section title={title} count={items.length}>
 			<ClaimNote mode={mode} claims={claims} />
 			<ul className="space-y-2">
 				{items.map((item, i) => (
 					// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
 					<li key={i} className={WRAP}>
 						{render(item)}
-						{mode === "per_item" && item.unverified && <ClaimLabel claims={claims} />}
+						{item.unverified && <ClaimLabel claims={claims} />}
 					</li>
 				))}
 			</ul>
-			<ClaimNote mode={mode} claims={claims} after />
 		</Section>
 	);
 }
 
 function ClaimLabel({ claims }: { claims: Claims }) {
 	return (
-		<span className="ml-2 inline-block rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+		<span
+			title={claims.help}
+			className="ml-2 inline-block rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+		>
 			{claims.label}
 		</span>
 	);
 }
 
-/** One line per section, not one per item; a Codex session also says why its commands can't confirm a claim. */
-function ClaimNote({
-	mode,
-	claims,
-	after = false,
-}: {
-	mode: "none" | "per_item" | "section";
-	claims: Claims;
-	/** Rendered under the list it explains: the per-item label is read first, then what it means. */
-	after?: boolean;
-}) {
-	if (mode === "none" || (mode === "per_item") !== after) return null;
+/**
+ * Past half "agent's claim only", the section says so once as well; each unverified item keeps
+ * its own chip either way, so a reader can always tell which items are backed. A Codex session
+ * also says why its commands can't confirm a claim.
+ */
+function ClaimNote({ mode, claims }: { mode: "none" | "per_item" | "section"; claims: Claims }) {
+	if (mode === "none") return null;
 	return (
 		<div className="space-y-0.5 text-xs text-muted-foreground">
-			<p>{mode === "section" ? claims.sectionNote : claims.help}</p>
+			{mode === "section" && <p>{claims.sectionNote}</p>}
 			{claims.extra && <p>{claims.extra}</p>}
 		</div>
 	);
@@ -351,14 +342,13 @@ function ChangesSection({
 								<li key={i} className={WRAP}>
 									<span className="font-mono text-xs">{c.text}</span>
 									{evidence(c.evidence)}
-									{mode === "per_item" && c.unverified && <ClaimLabel claims={claims} />}
+									{c.unverified && <ClaimLabel claims={claims} />}
 								</li>
 							))}
 						</ul>
 					</div>
 				);
 			})}
-			<ClaimNote mode={mode} claims={claims} after />
 		</Section>
 	);
 }
@@ -381,12 +371,7 @@ function ValidationSection({
 }) {
 	const { validation } = summary;
 	return (
-		<Section
-			title="Validation"
-			count={validation.length}
-			tally={validationTally(validation)}
-			open={validation.some((v) => v.result === "failed")}
-		>
+		<Section title="Validation" count={validation.length} tally={validationTally(validation)}>
 			<ul className="space-y-2">
 				{validation.map((v, i) => (
 					// biome-ignore lint/suspicious/noArrayIndexKey: a stored list, never reordered
@@ -406,9 +391,9 @@ function ValidationSection({
 	);
 }
 
-function KeyContextSection({ handoff, open }: { handoff: string; open: boolean }) {
+function KeyContextSection({ handoff }: { handoff: string }) {
 	return (
-		<details open={open}>
+		<details open>
 			<summary className="cursor-pointer select-none rounded-sm py-1 marker:text-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
 				<h3 className={cn(HEADING, "inline")}>Key Context for the Next Agent</h3>
 			</summary>
