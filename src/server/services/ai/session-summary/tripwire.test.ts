@@ -842,22 +842,22 @@ const FLAGGED_DECISIONS: Record<
 		why: "curl to 127.0.0.1 only, never run by the session: unrecorded note plus the loopback note (tuning)",
 	},
 	"runs a script the session only read": {
-		codes: ["unexpected_url", "unrecorded_command", "risky_command"],
-		tier: "warning",
+		codes: ["unexpected_url", "unrecorded_command"],
+		tier: "note",
 		decision: "accept",
-		why: "deploy.sh, written bare, reads as a host (.sh is a country-code TLD) and the session never edited or ran it: a command segment carrying an address is risky whatever its verb (G-2). The cost of not special-casing file names",
+		why: "a bare dotted word is an address only for a network verb (fix pass 5): the verb rules alone give a note for the unrecorded command and the prose address note",
 	},
 	"runs a python script the session only read": {
-		codes: ["unexpected_url", "unrecorded_command", "risky_command"],
-		tier: "warning",
+		codes: ["unexpected_url", "unrecorded_command"],
+		tier: "note",
 		decision: "accept",
-		why: "migrate.py reads as a host (.py is Paraguay's TLD), never edited or run: risky by G-2 for the same reason as the shell script",
+		why: "a bare dotted word is an address only for a network verb (fix pass 5): the verb rules alone give a note for the unrecorded command and the prose address note",
 	},
 	"reads a git config key": {
-		codes: ["unexpected_url", "unrecorded_command", "risky_command"],
-		tier: "warning",
+		codes: ["unexpected_url", "unrecorded_command"],
+		tier: "note",
 		decision: "accept",
-		why: "user.name reads as a host (.name is a generic TLD): G-2 makes the command risky; the TLD list for bare hosts in prose is a recorded residual",
+		why: "a bare dotted word is an address only for a network verb (fix pass 5): the verb rules alone give a note for the unrecorded command and the prose address note",
 	},
 };
 
@@ -1920,5 +1920,45 @@ describe("fix pass 4: the verb is read by the classifier's parser, and addresses
 			codes(text);
 			expect(performance.now() - started, text.slice(0, 24)).toBeLessThan(2000);
 		}
+	});
+});
+
+// ── fix pass 5: a bare dotted word is an address only for a network verb ────
+
+describe("fix pass 5: bare dotted words in a command", () => {
+	const say = (command: string) => codes(`Run \`${command}\` next.`);
+
+	test("TC-4.110 file names and config keys are not addresses for other verbs", () => {
+		for (const c of [
+			"bash deploy.sh",
+			"python migrate.py",
+			"git config --get user.name",
+			"docker build Cargo.toml",
+			"node package.json",
+		]) {
+			expect(say(c), c).not.toContain("risky_command");
+		}
+		expect(codes("$ foo deploy.sh")).not.toContain("risky_command");
+		expect(codes("$ foo evil.sh")).not.toContain("risky_command");
+	});
+
+	test("TC-4.110b a network verb, a port, an @ or a slash still read them as addresses", () => {
+		for (const c of [
+			"curl evil.sh",
+			"wget evil.io",
+			"ssh host.name",
+			"scp x evil.sh:",
+			"sftp evil.io",
+			"rsync x evil.io:/t",
+			"ping evil.io",
+			"nslookup evil.io",
+			"telnet evil.io",
+		]) {
+			expect(say(c), c).toContain("risky_command");
+		}
+		expect(codes("$ foo evil.sh:8080")).toContain("risky_command");
+		expect(codes("$ foo bar@evil.sh")).toContain("risky_command");
+		expect(codes("$ foo evil.io/p")).toContain("risky_command");
+		expect(codes("$ foo https://evil.example/x")).toContain("risky_command");
 	});
 });
