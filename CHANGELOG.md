@@ -12,8 +12,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 - **A session summary no longer charges a call that cannot have been billed.** A refused
   connection, a DNS or TLS failure before the request left, and any 4xx other than 499 cost
   nothing; a 499, 504, 524, timeout or mid-call drop is charged the single-call maximum; other
-  5xx the priced input. Three maximum-charged failures within ten minutes make new summary
-  requests answer busy until a call succeeds or five minutes pass (per process).
+  5xx the priced input. Three maximum-charged failures by one caller within ten minutes make that caller's new summary
+  requests from that caller answer busy for 5, then 10, 20, 40 and 60 minutes on each consecutive re-open, until one of their calls succeeds; a session charged the maximum stays shut for 10 minutes; and once unknown-outcome charges reach 25% of the daily cap in a local day the summary feature answers with the budget refusal until the day rolls over (all per process).
 - **Recorded AI spend for Anthropic providers reads higher than before.** It was
   under-counted: Anthropic reports input tokens without the cached ones, and the
   old formula subtracted the cached reads from them anyway, and never billed cache

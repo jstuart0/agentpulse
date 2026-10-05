@@ -7,7 +7,7 @@
  * names the `ai_session_summaries` table (TC-5.35).
  */
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, ne, notLike, or, sql } from "drizzle-orm";
 import {
 	STALE_EVENT_COUNT_CAP,
 	type SessionSummaryRefusalBody,
@@ -52,11 +52,14 @@ import {
 	ACTIVITY_ACTION_WINDOW,
 	ACTIVITY_PROMPT_OLDEST_WINDOW,
 	BREAKER_FAILURES,
-	BREAKER_OPEN_MS,
+	BREAKER_IDLE_DROP_MS,
+	BREAKER_MAX_ENTRIES,
+	BREAKER_OPEN_STEPS_MS,
 	BREAKER_WINDOW_MS,
 	BUSY_RETRY_AFTER_SECONDS,
 	JOIN_WAIT_BUDGET_MS,
 	KEY_UNREADABLE_COOLDOWN_SECONDS,
+	MAX_CHARGED_COOLDOWN_SECONDS,
 	MAX_CONCURRENT_GENERATIONS,
 	MAX_INPUT_TOKENS,
 	MAX_OUTPUT_TOKENS,
@@ -66,6 +69,7 @@ import {
 	STALE_SCAN_WINDOW,
 	SUMMARY_COOLDOWN_SECONDS,
 	SUMMARY_LEASE_SECONDS,
+	UNKNOWN_OUTCOME_CEILING_PERCENT,
 	URL_SCAN_SLICE_CHARS,
 } from "./ai/session-summary/service-limits.js";
 import { collectUserPromptUrls } from "./ai/session-summary/tripwire.js";
@@ -112,6 +116,7 @@ interface Clock {
 	nowMs: number;
 	leaseCutoff: string;
 	cooldownCutoff: string;
+	longCooldownCutoff: string;
 }
 
 function clockAt(date: Date = new Date()): Clock {
@@ -120,6 +125,7 @@ function clockAt(date: Date = new Date()): Clock {
 		nowMs,
 		leaseCutoff: toDbTimestamp(new Date(nowMs - SUMMARY_LEASE_SECONDS * 1000)),
 		cooldownCutoff: toDbTimestamp(new Date(nowMs - SUMMARY_COOLDOWN_SECONDS * 1000)),
+		longCooldownCutoff: toDbTimestamp(new Date(nowMs - MAX_CHARGED_COOLDOWN_SECONDS * 1000)),
 	};
 }
 
@@ -148,11 +154,17 @@ function judgeAttempt(row: AttemptColumns, clock: Clock): AttemptJudgement {
 	}
 	if (
 		started !== null &&
-		!(started < clock.cooldownCutoff) &&
+		!(
+			started <
+			(isLongCooldown(row.attemptErrorCode) ? clock.longCooldownCutoff : clock.cooldownCutoff)
+		) &&
 		row.attemptErrorCode !== "interrupted"
 	) {
 		const startedMs = parseDbTimestamp(started) as number;
-		const left = SUMMARY_COOLDOWN_SECONDS - Math.floor((clock.nowMs - startedMs) / 1000);
+		const period = isLongCooldown(row.attemptErrorCode)
+			? MAX_CHARGED_COOLDOWN_SECONDS
+			: SUMMARY_COOLDOWN_SECONDS;
+		const left = period - Math.floor((clock.nowMs - startedMs) / 1000);
 		return { kind: "cooldown", retryAfterSeconds: Math.max(1, left) };
 	}
 	return { kind: "open" };
@@ -352,7 +364,8 @@ function attemptOf(
 			: "idle";
 	const errorCode =
 		status === "failed"
-			? ((row.attemptErrorCode as SummaryErrorCode | null) ?? "internal_error")
+			? ((row.attemptErrorCode?.replace(LONG_COOLDOWN_MARK, "") as SummaryErrorCode | undefined) ??
+				"internal_error")
 			: null;
 	return { status, startedAt, errorCode };
 }
@@ -367,7 +380,7 @@ function attemptOf(
  */
 export async function getSessionSummaryView(
 	sessionId: string,
-	options: { omitStored?: boolean } = {},
+	options: { omitStored?: boolean; subject?: string } = {},
 ): Promise<SessionSummaryView | null> {
 	const omitStored = options.omitStored === true;
 	const row = await readSessionAndRow(sessionId, omitStored);
@@ -424,11 +437,17 @@ export async function getSessionSummaryView(
 
 	let blocked: SummaryBlockReason | null = null;
 	let cooldownSeconds: number | null = null;
+	const breakerWait = options.subject === undefined ? 0 : breakerRetryAfterSeconds(options.subject);
 	if (!enoughActivity) blocked = "too_little_activity";
 	else if (!provider) blocked = "no_provider";
 	else if (judgement.kind === "cooldown") {
 		blocked = "summary_cooldown";
 		cooldownSeconds = judgement.retryAfterSeconds;
+	} else if (breakerWait > 0) {
+		blocked = "summary_cooldown";
+		cooldownSeconds = breakerWait;
+	} else if (unknownOutcomeCeilingReached()) {
+		blocked = "spend_cap_reached";
 	} else if (maxCostCents > 0 && spentCents + maxCostCents >= DEFAULT_DAILY_CAP_CENTS) {
 		blocked = "spend_cap_reached";
 	}
@@ -509,6 +528,8 @@ export interface SummaryTestHooks {
 	joinWaitMs?: number;
 	/** The shutdown release budget in place of its bound. */
 	releaseBudgetMs?: number;
+	/** The unknown-outcome ceiling in place of its share of the cap (cents). */
+	unknownCeilingCents?: number;
 	/** The model call's timeout in place of the call options' (a response that never arrives). */
 	callTimeoutMs?: number;
 }
@@ -530,7 +551,8 @@ export function _setSummaryHooksForTest(next: SummaryTestHooks | null): void {
 
 /** Abandons every running generation as a dead process would: nothing is written or settled. */
 export function _resetSummaryGenerationsForTest(): void {
-	maxChargedFailures = [];
+	breakers.clear();
+	unknownOutcome = { date: "", cents: 0 };
 	for (const entry of [...entries]) {
 		entry.taken = true;
 		dropEntry(entry);
@@ -573,7 +595,14 @@ export async function claimSummaryAttempt(
 				),
 				or(
 					isNull(aiSessionSummaries.attemptStartedAt),
-					lt(aiSessionSummaries.attemptStartedAt, clock.cooldownCutoff),
+					and(
+						lt(aiSessionSummaries.attemptStartedAt, clock.cooldownCutoff),
+						or(
+							isNull(aiSessionSummaries.attemptErrorCode),
+							notLike(aiSessionSummaries.attemptErrorCode, `%${LONG_COOLDOWN_MARK}`),
+						),
+					),
+					lt(aiSessionSummaries.attemptStartedAt, clock.longCooldownCutoff),
 					eq(aiSessionSummaries.attemptErrorCode, "interrupted"),
 					eq(aiSessionSummaries.attemptStatus, "generating"),
 				),
@@ -625,9 +654,18 @@ async function writeAttempt(
 		);
 }
 
-const failedRow = (code: SummaryErrorCode) => ({
+/**
+ * A failure that was charged the maximum for an unknown outcome keeps its session shut longer. The
+ * class rides on the stored error code (no schema change): the code with this suffix, which the
+ * view strips, so the wire still carries the plain code.
+ */
+const LONG_COOLDOWN_MARK = "~long";
+const isLongCooldown = (code: string | null): boolean =>
+	code?.endsWith(LONG_COOLDOWN_MARK) === true;
+
+const failedRow = (code: SummaryErrorCode, longCooldown = false) => ({
 	attemptStatus: "failed" as const,
-	attemptErrorCode: code,
+	attemptErrorCode: longCooldown ? `${code}${LONG_COOLDOWN_MARK}` : code,
 });
 
 // ── one generation ───────────────────────────────────────────────────────────
@@ -641,7 +679,7 @@ interface RunContext {
 
 type Outcome =
 	| { ok: true; stored: StoredSessionSummary; throughEventId: number | null }
-	| { ok: false; code: SummaryErrorCode; chargeCents: number };
+	| { ok: false; code: SummaryErrorCode; chargeCents: number; longCooldown?: boolean };
 
 interface FailureDetail {
 	code: SummaryErrorCode;
@@ -733,35 +771,103 @@ function describeFailure(error: unknown, entry: Entry): FailureDetail {
 	};
 }
 
-// ── the breaker ──────────────────────────────────────────────────────────────
+// ── the breaker and the ceiling ─────────────────────────────────────────────
 
 /**
  * A provider that times out, or that a gateway cuts off, costs the single-call maximum on every
- * attempt. After `BREAKER_FAILURES` such failures within `BREAKER_WINDOW_MS`, with no call
- * succeeding since, new requests are refused `busy` (nothing reserved, claimed or charged) until a
- * call succeeds or `BREAKER_OPEN_MS` have passed since the last one. Process-wide and in memory,
- * like the other limiters here: with N replicas it is N times looser.
+ * attempt. Per caller (the same `subject` as the in-flight rule; solo and auth-disabled have one, so
+ * there it is process-wide), `BREAKER_FAILURES` such failures within `BREAKER_WINDOW_MS` close the
+ * door for that subject: new requests answer `busy` with the wait, nothing reserved, claimed or
+ * charged. After the open period one probe goes through; a failure re-opens it for the next, longer
+ * period (5, 10, 20, 40, then 60 minutes); a success by that subject resets it. Process-wide and in
+ * memory like the other limiters here: with N replicas it is N times looser.
  */
-let maxChargedFailures: number[] = [];
+interface BreakerState {
+	failures: number[];
+	/** Opens since the last success: the index of the next open period. */
+	opens: number;
+	openUntil: number;
+	lastFailure: number;
+}
+const breakers = new Map<string, BreakerState>();
 
-function recordMaxChargedFailure(): void {
-	maxChargedFailures.push(Date.now());
-	if (maxChargedFailures.length > BREAKER_FAILURES) maxChargedFailures.shift();
+function pruneBreakers(now: number): void {
+	for (const [subject, state] of breakers) {
+		// Idle is counted from the end of the open period, so a probe just after a 60-minute one keeps its level.
+		if (now - Math.max(state.openUntil, state.lastFailure) > BREAKER_IDLE_DROP_MS) {
+			breakers.delete(subject);
+		}
+	}
 }
 
-function recordCallSuccess(): void {
-	maxChargedFailures = [];
+function recordMaxChargedFailure(subject: string, now = Date.now()): void {
+	pruneBreakers(now);
+	const state = breakers.get(subject) ?? { failures: [], opens: 0, openUntil: 0, lastFailure: now };
+	breakers.delete(subject);
+	state.lastFailure = now;
+	state.failures = state.failures.filter((t) => now - t < BREAKER_WINDOW_MS);
+	state.failures.push(now);
+	if (now >= state.openUntil && (state.failures.length >= BREAKER_FAILURES || state.opens > 0)) {
+		const step = Math.min(state.opens, BREAKER_OPEN_STEPS_MS.length - 1);
+		state.openUntil = now + (BREAKER_OPEN_STEPS_MS[step] as number);
+		state.opens += 1;
+		state.failures = [];
+	}
+	breakers.set(subject, state);
+	while (breakers.size > BREAKER_MAX_ENTRIES) {
+		breakers.delete(breakers.keys().next().value as string);
+	}
 }
 
-/** Whole seconds a request must wait while the breaker is open; 0 when it is closed. */
-function breakerRetryAfterSeconds(): number {
-	const now = Date.now();
-	maxChargedFailures = maxChargedFailures.filter((t) => now - t < BREAKER_WINDOW_MS);
-	if (maxChargedFailures.length < BREAKER_FAILURES) return 0;
-	const last = maxChargedFailures[maxChargedFailures.length - 1] as number;
-	const left = BREAKER_OPEN_MS - (now - last);
+function recordCallSuccess(subject: string): void {
+	breakers.delete(subject);
+}
+
+/** Whole seconds this subject must wait while its breaker is open; 0 when it is closed. */
+function breakerRetryAfterSeconds(subject: string, now = Date.now()): number {
+	const left = (breakers.get(subject)?.openUntil ?? 0) - now;
 	return left > 0 ? Math.max(1, Math.ceil(left / 1000)) : 0;
 }
+
+/** For tests: the breaker's state without running a generation. */
+export const _breakerForTest = {
+	reset: (): void => breakers.clear(),
+	record: (subject: string): void => recordMaxChargedFailure(subject),
+	retryAfter: (subject: string): number => breakerRetryAfterSeconds(subject),
+	size: (): number => breakers.size,
+	has: (subject: string): boolean => breakers.has(subject),
+};
+
+/**
+ * The ceiling on unknown-outcome charges: the maximum charged for calls whose outcome was unknown,
+ * summed per process and per local day. Once it reaches `UNKNOWN_OUTCOME_CEILING_PERCENT` of the
+ * daily cap every new request is refused with the spend-cap refusal until the local day rolls over
+ * (nothing reserved, claimed or decrypted). A request that starts below it runs, so the most a day
+ * can lose to an outage is the ceiling plus the calls in flight. Successful summaries and failures
+ * that charged nothing or the priced input never count. Per process: N replicas give N ceilings.
+ */
+let unknownOutcome = { date: "", cents: 0 };
+
+function localDay(now = new Date()): string {
+	return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+}
+
+export const unknownOutcomeCeilingCents = (): number =>
+	hooks?.unknownCeilingCents ??
+	Math.floor((DEFAULT_DAILY_CAP_CENTS * UNKNOWN_OUTCOME_CEILING_PERCENT) / 100);
+
+function unknownOutcomeCents(): number {
+	return unknownOutcome.date === localDay() ? unknownOutcome.cents : 0;
+}
+
+function recordUnknownOutcomeCharge(cents: number): void {
+	const day = localDay();
+	if (unknownOutcome.date !== day) unknownOutcome = { date: day, cents: 0 };
+	unknownOutcome.cents += cents;
+}
+
+const unknownOutcomeCeilingReached = (): boolean =>
+	unknownOutcomeCents() >= unknownOutcomeCeilingCents();
 
 const failure = (entry: Entry, code: SummaryErrorCode): Outcome => ({
 	ok: false,
@@ -833,7 +939,7 @@ async function callModel(
 	entry.pendingMaxCents = maxCents;
 	entry.phase = "calling";
 	const response = await adapter.complete(request);
-	recordCallSuccess();
+	recordCallSuccess(entry.subject);
 	// An adapter that reports no usage estimates the input from the transcript alone: price the whole
 	// prompt at the worst-case ratio.
 	const inputTokens = response.usage.estimated
@@ -1011,7 +1117,7 @@ async function settleRun(
 						status: detail?.status ?? null,
 					}),
 				);
-				await writeAttempt(entry.sessionId, token, failedRow(outcome.code));
+				await writeAttempt(entry.sessionId, token, failedRow(outcome.code, outcome.longCooldown));
 			}
 		} catch (error) {
 			console.error(
@@ -1055,15 +1161,20 @@ async function withOneRetry(label: string, work: () => Promise<void>): Promise<v
 async function runGeneration(ctx: RunContext): Promise<void> {
 	let outcome: Outcome;
 	let detail: FailureDetail | null = null;
+	let longCooldown = false;
 	try {
 		outcome = await generate(ctx);
 	} catch (error) {
 		detail = describeFailure(error, ctx.entry);
-		if (detail.maxCharged && !ctx.entry.taken) recordMaxChargedFailure();
+		if (detail.maxCharged && !ctx.entry.taken) {
+			recordMaxChargedFailure(ctx.entry.subject);
+			recordUnknownOutcomeCharge(ctx.entry.pendingMaxCents);
+			longCooldown = true;
+		}
 		if (error instanceof EvidenceReadError) {
 			console.error("[session-summary] evidence read failed", JSON.stringify({ code: error.code }));
 		}
-		outcome = { ok: false, code: detail.code, chargeCents: detail.chargeCents };
+		outcome = { ok: false, code: detail.code, chargeCents: detail.chargeCents, longCooldown };
 	}
 	try {
 		await finish(ctx, outcome, detail);
@@ -1200,8 +1311,16 @@ export async function requestSummaryGeneration(
 	if (!enough) return refuse({ error: "too_little_activity" });
 	const provider = await readDefaultProvider();
 	if (!provider) return refuse({ error: "no_provider" });
-	const breakerWait = breakerRetryAfterSeconds();
+	const breakerWait = breakerRetryAfterSeconds(caller.subject);
 	if (breakerWait > 0) return refuse({ error: "busy", retryAfterSeconds: breakerWait });
+	if (unknownOutcomeCeilingReached()) {
+		return refuse({
+			error: "spend_cap_reached",
+			spentCents: await getTodaySpendCents(),
+			capCents: DEFAULT_DAILY_CAP_CENTS,
+			maxCostCents: maxCallCostCents(provider),
+		});
+	}
 
 	let settleRequest!: () => void;
 	const entry: Entry = {

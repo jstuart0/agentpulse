@@ -92,6 +92,7 @@ aiSessionSummaryRouter.get("/ai/sessions/:sessionId/summary", async (c) => {
 	try {
 		view = await getSessionSummaryView(c.req.param("sessionId") ?? "", {
 			omitStored: c.req.query("poll") === "1",
+			subject: callerSubject(c),
 		});
 	} catch (error) {
 		if (!(error instanceof OwnTurnBusyError)) throw error;

@@ -145,7 +145,7 @@ describe("P5-2 the charging table (R-I b): one row, one test, the exact day delt
 		const before = await H.snapshotSpend(SID);
 		await H.runGeneration(SID);
 		expect(stub.requests().length).toBe(1);
-		expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("provider_timeout");
+		expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("provider_timeout~long");
 		expect((await H.spendDelta(before)).day).toBe(maxCall(textOf(stub.requests()[0])));
 	});
 
@@ -178,7 +178,7 @@ describe("P5-2 the charging table (R-I b): one row, one test, the exact day delt
 			expect(bodies.length).toBe(1);
 			const sent = JSON.parse(bodies[0]) as { messages: Array<{ content: string }> };
 			const text = sent.messages[0].content + sent.messages[1].content;
-			expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("provider_error");
+			expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("provider_error~long");
 			expect((await H.spendDelta(before)).day).toBe(maxCall(text));
 		} finally {
 			server.stop(true);
@@ -204,7 +204,7 @@ describe("P5-2 the charging table (R-I b): one row, one test, the exact day delt
 			await H.runGeneration(SID);
 			const sent = JSON.parse(seen[0]) as { messages: Array<{ content: string }> };
 			const text = sent.messages[0].content + sent.messages[1].content;
-			expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("internal_error");
+			expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("internal_error~long");
 			expect((await H.spendDelta(before)).day).toBe(maxCall(text));
 		} finally {
 			bad.stop(true);
@@ -780,7 +780,7 @@ describe("Q-1 the breaker: three maximum-charged failures in ten minutes close t
 		} finally {
 			spy.mockRestore();
 		}
-		expect((await H.readSummaryRow(id))?.attemptErrorCode).toBe("provider_timeout");
+		expect((await H.readSummaryRow(id))?.attemptErrorCode).toBe("provider_timeout~long");
 	}
 	async function freshRequest() {
 		const id = `brk-${session++}`;

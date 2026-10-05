@@ -433,7 +433,8 @@ describe("provider failures", () => {
 			await H.runGeneration(SID);
 			const row = await summaryOf(SID);
 			expect(row.attemptStatus).toBe("failed");
-			expect(row.attemptErrorCode).toBe(code);
+			// A maximum-charged failure is stored with the long-cooldown class suffix; the view strips it.
+			expect(row.attemptErrorCode).toBe(charge === "max" ? `${code}~long` : code);
 			expect(row.attemptToken).toBeNull();
 			expect(JSON.parse(await serialized(SID)).summary).toEqual(previous.summary);
 			expect(stub.requests().length).toBe(1);
@@ -464,7 +465,7 @@ describe("provider failures", () => {
 			await H.seedProviderAt(`http://127.0.0.1:${bad.port}/v1`);
 			await H.seedActiveSession(SID);
 			await H.runGeneration(SID);
-			expect((await summaryOf(SID)).attemptErrorCode).toBe("internal_error");
+			expect((await summaryOf(SID)).attemptErrorCode).toBe("internal_error~long");
 		} finally {
 			bad.stop(true);
 		}
