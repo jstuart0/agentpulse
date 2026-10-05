@@ -119,7 +119,11 @@ beforeEach(async () => {
 });
 afterEach(async () => {
 	await waitForGenerations();
+	const unscripted = stub.unscripted.map((r) => `${r.shape} ${r.path}`);
+	stub.releaseGates();
 	await resetAll();
+	// A request the stub had no script for is a failure of the test that caused it (P5-28).
+	expect(unscripted).toEqual([]);
 });
 
 // ── helpers ──────────────────────────────────────────────────────────────────

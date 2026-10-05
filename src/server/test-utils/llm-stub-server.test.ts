@@ -259,4 +259,24 @@ describe("P2-23 the stub answers an OpenAI stream request as server-sent events"
 		expect(() => s.verify()).toThrow(/stream/i);
 		s.reset();
 	});
+
+	test("releaseGates lets every held response go, so a failed test cannot leave one held", async () => {
+		const s = start();
+		const first = s.createGate();
+		const second = s.createGate();
+		s.script(
+			"openai",
+			{ text: "a", stop: "stop", gate: first },
+			{ text: "b", stop: "stop", gate: second },
+		);
+		const calls = [
+			post(`${s.baseUrl("openai")}/chat/completions`, {}),
+			post(`${s.baseUrl("openai")}/chat/completions`, {}),
+		];
+		await first.arrived;
+		await second.arrived;
+		s.releaseGates();
+		const answers = await Promise.all(calls);
+		expect(answers.map((r) => r.status)).toEqual([200, 200]);
+	});
 });
