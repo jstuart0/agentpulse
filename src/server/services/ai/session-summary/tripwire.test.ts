@@ -1957,7 +1957,7 @@ describe("fix pass 5: bare dotted words in a command", () => {
 			expect(say(c), c).toContain("risky_command");
 		}
 		expect(codes("$ foo evil.sh:8080")).toContain("risky_command");
-		expect(codes("$ foo bar@evil.sh")).toContain("risky_command");
+		expect(codes("$ foo bar@evil.sh:/x")).toContain("risky_command");
 		expect(codes("$ foo evil.io/p")).toContain("risky_command");
 		expect(codes("$ foo https://evil.example/x")).toContain("risky_command");
 	});

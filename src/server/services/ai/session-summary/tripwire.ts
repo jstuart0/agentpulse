@@ -387,6 +387,12 @@ const COMMAND_VERBS = new Set([
 	"nohup",
 	"timeout",
 	"uv",
+	"sftp",
+	"telnet",
+	"ftp",
+	"ping",
+	"dig",
+	"nslookup",
 	"poetry",
 	"gem",
 	"composer",
@@ -471,6 +477,11 @@ function indexTyped(userPromptUrls: ReadonlySet<string>): TypedUrls {
 	return { keys: userPromptUrls, hosts, paths };
 }
 
+function hasPortOrAt(text: string, token: string): boolean {
+	const lower = text.toLowerCase();
+	return lower.includes(`${token}:`) || lower.includes(`@${token}`);
+}
+
 interface UrlFindings {
 	/** An address the user never typed (and, outside `loopbackNote`, not a loopback one). */
 	unexpected: boolean;
@@ -488,6 +499,7 @@ function urlFindings(
 	typed: TypedUrls,
 	records: RecordIndex,
 	loopbackNote: boolean,
+	ignoreBareWords = false,
 ): UrlFindings {
 	const found: UrlFindings = { unexpected: false, malformed: false };
 	for (const c of candidates(folded, true)) {
@@ -501,6 +513,9 @@ function urlFindings(
 			continue;
 		}
 		if (!loopbackNote && LOOPBACK_HOSTS.test(c.host)) continue;
+		// A bare dotted word with no slash is a file name or a key unless a port or an `@` says otherwise.
+		if (ignoreBareWords && c.bare && !c.token.includes("/") && !hasPortOrAt(folded, c.token))
+			continue;
 		if (typed.keys.has(keyOf(c))) continue;
 		if (c.path === "" && typed.hosts.has(c.host)) continue;
 		// A deeper path under a URL the user typed, on the same host, is the same document tree.
@@ -705,6 +720,27 @@ function verbOf(cmd: RealCommand): string {
 	const base = head.slice(head.lastIndexOf("/") + 1);
 	return (/^[A-Za-z][\w.+-]*/.exec(base)?.[0] ?? "").toLowerCase();
 }
+
+/** Verbs whose bare dotted operands (`evil.sh`, `host.name`) are addresses; for any other verb they are file names. */
+const NETWORK_VERBS = new Set([
+	"curl",
+	"wget",
+	"ssh",
+	"scp",
+	"sftp",
+	"rsync",
+	"nc",
+	"ncat",
+	"telnet",
+	"ftp",
+	"ping",
+	"dig",
+	"nslookup",
+	"iwr",
+	"irm",
+	"invoke-webrequest",
+	"invoke-restmethod",
+]);
 
 /** Verbs whose first operand is a subcommand that fetches, installs, runs or changes things. */
 const RISKY_VERBS = new Set([
@@ -1197,7 +1233,10 @@ function hasRiskyCommand(folded: string, index: Index, emitsHandoff: boolean): b
 			const view = viewOf(tokens, index.segCache);
 			if (index.records.segments.has(view.key)) continue;
 			if (!span.structural && !view.cmds.some(isCommandCmd)) continue;
-			const urls = urlFindings(view.key, index.typed, index.records, false);
+			const network = view.cmds.some((c) =>
+				[...c.wrappers, verbOf(c)].some((v) => NETWORK_VERBS.has(v)),
+			);
+			const urls = urlFindings(view.key, index.typed, index.records, false, !network);
 			const addressed = urls.unexpected || urls.malformed;
 			for (const cmd of view.cmds) {
 				if (isBenignCmd(cmd)) continue;
