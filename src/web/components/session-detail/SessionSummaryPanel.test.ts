@@ -832,10 +832,13 @@ describe("phase 8 review fixes: the panel", () => {
 		const text = textOf(h);
 		expect(text).not.toContain("None recorded.");
 		expect(text).toContain(
-			"Nothing recorded for: Accomplishments, Changes, Decisions & Assumptions, Problems & Risks, Unfinished Work, Recommended Next Actions.",
+			"Nothing recorded for: Accomplishments, Changes, Decisions & Assumptions, Problems & Risks, Recommended Next Actions.",
 		);
 		expect(text).toContain("No validation was recorded.");
-		expect(count(h, /<h3/g)).toBe(4);
+		// V-7: an empty Unfinished Work reads the owner's sentence, not the fold.
+		expect(text).toContain("No significant unfinished work identified.");
+		expect(text).not.toMatch(/Nothing recorded for:[^.]*Unfinished Work/);
+		expect(count(h, /<h3/g)).toBe(5);
 		expect(html(F.ready)).not.toContain("Nothing recorded for");
 	});
 

@@ -236,7 +236,7 @@ A **Summary** tab on each session that summarizes it on request: what it set out
 
 **Turn it on.** AI enabled with a default provider (see [Enable it](#enable-it)), then **Settings → Labs → Session summary**, or press **Turn on** on a session's **AI** tab. In team mode only an admin can change Labs flags.
 
-**What is sent to the provider.** The session's prompts, agent replies, notes, current task, plan summary, commands and file paths. Known secret patterns (API keys, tokens, passwords in URLs, private keys, auth headers, and the rest of the watcher's redaction rules) are masked before anything leaves. Command output is sent only for a test or build that failed, and then only its first and last 300 characters after masking. A command that reads a credential file is withheld whole. Your own Settings redaction rules apply too.
+**What is sent to the provider.** The session's prompts, agent replies, notes, current task, plan summary, commands and file paths. Known secret patterns (API keys, tokens, passwords in URLs, private keys, auth headers, and the rest of the watcher's redaction rules) are masked before anything leaves. Command output is sent only for a test or build that failed, and then only its first and last 300 characters after masking. A command that reads a credential file is withheld whole. Session summaries use the built-in redaction rules only; rules you add in Settings are used by the redaction preview, not by summaries.
 
 **What it costs.** Each summary is one provider call, plus one repair call if the first answer is unusable. The most it can cost, and the most with a repair, is shown under the button before you press it, and counts against the same daily AI cap as the watcher and Ask (500 cents by default). A new summary of the same session can start 30 seconds after the last attempt began. A free or local provider records no cost.
 
@@ -260,7 +260,7 @@ A **Summary** tab on each session that summarizes it on request: what it set out
 
 - **HITL by default** -- a Claude/Codex watcher can propose, but `auto`-dispatch only runs when the session is managed and the supervisor is connected.
 - **Dispatch filter** -- every prompt (watcher-proposed or user-approved) is screened against a deny-list of destructive / injection-flavored patterns before dispatch.
-- **Redactor** -- transcripts are scrubbed of common secret patterns before being sent to any provider, with a dry-run preview available.
+- **Redactor** -- the watcher's transcripts and session summaries are scrubbed of common secret patterns before being sent to your provider, with a dry-run preview available. Ask and Q&A do not redact.
 - **Prompt injection hardening** -- user transcripts are embedded in an explicit `<transcript>` UNTRUSTED block with instructions for the model to treat the contents as data.
 - **Kill switch** -- flipping the single kill-switch setting pauses every watcher instantly; no per-session unwinding needed.
 

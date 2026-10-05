@@ -9,6 +9,7 @@ import {
 import { evidenceHref } from "../../lib/event-deep-link.js";
 import {
 	type ClockOptions,
+	NO_UNFINISHED_WORK,
 	NO_VALIDATION_RECORDED,
 	type OutcomeFamily,
 	VALIDATION_FAILED_NOTE,
@@ -75,7 +76,6 @@ export function SummarySections({
 		["Changes", summary.changes],
 		["Decisions & Assumptions", summary.decisions],
 		["Problems & Risks", summary.problems],
-		["Unfinished Work", summary.unfinished],
 		["Recommended Next Actions", summary.nextActions],
 	]
 		.filter(([, items]) => (items as unknown[]).length === 0)
@@ -136,6 +136,11 @@ export function SummarySections({
 					)}
 				/>
 			</Section>
+			{summary.unfinished.length === 0 && (
+				<PlainSection title="Unfinished Work">
+					<p className={cn("text-sm text-muted-foreground", WRAP)}>{NO_UNFINISHED_WORK}</p>
+				</PlainSection>
+			)}
 			<Section k="unfinished" title="Unfinished Work" count={summary.unfinished.length}>
 				<Items
 					k="unfinished"

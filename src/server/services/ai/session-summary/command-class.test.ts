@@ -128,7 +128,7 @@ describe("TC-3.45 withheld commands", () => {
 		"/usr/bin/env",
 		"env | grep KEY",
 		"kubectl get secret x -o yaml",
-		"kubectl --context thor -n a get secrets",
+		"kubectl --context prod -n a get secrets",
 		"kubectl get secret x -o jsonpath=... | base64 -d",
 		"security find-generic-password -s x",
 		"op read op://v/i/f",

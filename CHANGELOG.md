@@ -93,8 +93,9 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   as "no --api-key was provided", a line that starts `cookie: a=b`), and a
   YAML value that looks like a type or resource name (`password: SecretStr`,
   `secret: my-secret-name`) is left alone, as is a CamelCase or all-lowercase
-  hyphenated passphrase. Rules you add in Settings run after the built-in ones,
-  so a rule of yours for a shape the built-ins now catch stops firing.
+  hyphenated passphrase. Rules you add in Settings run after the built-in ones
+  in the watcher, so a rule of yours for a shape the built-ins now catch stops firing; session
+  summaries use the built-in rules only.
 
 ## [0.7.1] — 2026-10-03
 
