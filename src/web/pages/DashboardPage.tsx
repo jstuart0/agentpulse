@@ -21,6 +21,7 @@ import { ScopeSwitch } from "../components/ScopeSwitch.js";
 import { SessionGrid } from "../components/SessionGrid.js";
 import { StatCard } from "../components/StatCard.js";
 import { StatusBadge } from "../components/StatusBadge.js";
+import { SummaryLink } from "../components/SummaryLink.js";
 import { useAllWaitingSessions } from "../hooks/useAllWaitingSessions.js";
 import { useDefaultOwnerScope } from "../hooks/useDefaultOwnerScope.js";
 import { useListFollowsCount } from "../hooks/useListFollowsCount.js";
@@ -1095,6 +1096,7 @@ export function DashboardPage() {
 											>
 												Open Activity
 											</button>
+											<SummaryLink sessionId={selectedActiveSession.sessionId} variant="button" />
 										</div>
 									</div>
 								)}

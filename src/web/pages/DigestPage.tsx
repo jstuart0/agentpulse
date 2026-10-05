@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { LabsBadge } from "../components/LabsBadge.js";
 import { SkeletonCard, SkeletonCardList } from "../components/SkeletonCard.js";
 import { StatCard } from "../components/StatCard.js";
+import { SummaryLink } from "../components/SummaryLink.js";
 import { plainErrorMessage } from "../lib/api-errors.js";
 import { type Digest, type RepoDigest, api } from "../lib/api.js";
 import { formatTimeAgo } from "../lib/utils.js";
@@ -214,6 +215,7 @@ function RepoCard({ repo }: { repo: RepoDigest }) {
 							</Link>
 							<Chip label={s.status} />
 							{s.health && <Chip label={s.health} />}
+							<SummaryLink sessionId={s.sessionId} variant="text" />
 							<span className="text-muted-foreground ml-auto">
 								{formatTimeAgo(s.lastActivityAt)}
 							</span>
