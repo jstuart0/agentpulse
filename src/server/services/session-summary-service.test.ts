@@ -420,7 +420,8 @@ describe("provider failures", () => {
 		[400, "provider_error", "zero"],
 		[404, "provider_error", "zero"],
 		[422, "provider_error", "zero"],
-		[418, "provider_error", "max"],
+		[418, "provider_error", "zero"],
+		[504, "provider_timeout", "max"],
 	];
 	for (const [status, code, charge] of CASES) {
 		test(`TC-5.14 HTTP ${status} gives ${code}; the row leaves generating and keeps the previous summary`, async () => {
@@ -509,40 +510,17 @@ describe("provider failures", () => {
 		}
 	});
 
-	test("TC-5.16a a connection refused cannot be told from a failure after the request left: charged the single-call maximum (R-I)", async () => {
+	test("TC-5.16a a connection refused cannot have been billed: charged 0 and the reservation is returned (Q-1)", async () => {
 		await H.resetWorld(stub);
 		await H.enableAi();
 		await H.seedProviderAt("http://127.0.0.1:1/v1");
 		await H.seedActiveSession(SID);
-		let sent = "";
-		const real = registry.getAdapter;
-		const spy = spyOn(registry, "getAdapter").mockImplementation((provider) => {
-			const adapter = real(provider);
-			return {
-				...adapter,
-				complete: (request) => {
-					sent = request.systemPrompt + request.transcriptPrompt;
-					return adapter.complete(request);
-				},
-			};
-		});
-		try {
-			const before = await H.snapshotSpend(SID);
-			await H.runGeneration(SID);
-			expect((await summaryOf(SID)).attemptErrorCode).toBe("provider_error");
-			const worst = Math.max(estimateTokens(sent), Math.ceil(Buffer.byteLength(sent, "utf8") / 2));
-			const expected = priceCompletion("openai", "gpt-5-mini", {
-				inputTokens: worst,
-				outputTokens: 4000,
-				estimated: true,
-			});
-			const delta = await H.spendDelta(before);
-			expect(sent.length).toBeGreaterThan(0);
-			expect(delta.day).toBe(expected);
-			expect(delta.sessions[SID]).toBe(expected);
-		} finally {
-			spy.mockRestore();
-		}
+		const before = await H.snapshotSpend(SID);
+		await H.runGeneration(SID);
+		expect((await summaryOf(SID)).attemptErrorCode).toBe("provider_error");
+		const delta = await H.spendDelta(before);
+		expect(delta.day).toBe(0);
+		expect(delta.sessions[SID]).toBe(0);
 	});
 
 	test("TC-5.16b a first call that billed and a repair call rejected before billing settles only the first", async () => {
@@ -725,8 +703,11 @@ describe("top-up of the reservation", () => {
 		expect(req).toBeDefined();
 		const { system, user } = H.promptsOf(req);
 		const text = H.answer([ids[ids.length - 1]]);
+		// Q-1: an adapter that reports no usage is priced at the worst-case ratio of the whole prompt.
+		const sent = system + user;
+		const worst = Math.max(estimateTokens(sent), Math.ceil(Buffer.byteLength(sent, "utf8") / 2));
 		const wanted = priceCompletion("anthropic", "claude-opus-4-1", {
-			inputTokens: estimateTokens(system + user),
+			inputTokens: worst,
 			outputTokens: estimateTokens(text),
 			estimated: true,
 		});
@@ -740,7 +721,7 @@ describe("top-up of the reservation", () => {
 		const row = await summaryOf(SID);
 		expect(row.provenance?.usageEstimated).toBe(true);
 		expect(row.provenance?.costCents).toBe(wanted);
-		expect(row.provenance?.inputTokens).toBe(estimateTokens(system + user));
+		expect(row.provenance?.inputTokens).toBe(worst);
 	});
 });
 

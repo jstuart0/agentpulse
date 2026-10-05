@@ -14,6 +14,7 @@ import {
 	beforeEach,
 	describe,
 	expect,
+	setSystemTime,
 	spyOn,
 	test,
 } from "bun:test";
@@ -106,8 +107,8 @@ async function runFailing(...answers: Array<Record<string, unknown>>) {
 }
 
 describe("P5-2 the charging table (R-I b): one row, one test, the exact day delta", () => {
-	for (const status of [400, 401, 403, 404, 408, 422, 429]) {
-		test(`HTTP ${status} is an explicit pre-billing rejection: charged 0`, async () => {
+	for (const status of [400, 401, 402, 403, 404, 408, 409, 413, 418, 422, 429]) {
+		test(`HTTP ${status} is a 4xx other than 499: nothing can have been billed, charged 0`, async () => {
 			const { delta, row } = await runFailing({ text: "", status, errorBody: "no" });
 			expect(stub.requests().length).toBe(1);
 			expect(row?.attemptStatus).toBe("failed");
@@ -116,8 +117,8 @@ describe("P5-2 the charging table (R-I b): one row, one test, the exact day delt
 		});
 	}
 
-	for (const status of [500, 502, 503, 504]) {
-		test(`HTTP ${status} is an explicit 5xx: charged the priced input of the text sent`, async () => {
+	for (const status of [500, 502, 503]) {
+		test(`HTTP ${status} is a 5xx other than 504 and 524: charged the priced input of the text sent`, async () => {
 			const { delta } = await runFailing({ text: "", status, errorBody: "boom" });
 			const expected = pricedInput(textOf(stub.requests()[0]));
 			const text = textOf(stub.requests()[0]);
@@ -129,8 +130,8 @@ describe("P5-2 the charging table (R-I b): one row, one test, the exact day delt
 		});
 	}
 
-	for (const status of [402, 409, 418]) {
-		test(`HTTP ${status} is not a pre-billing rejection: unknown, charged the single-call maximum`, async () => {
+	for (const status of [499, 504, 524]) {
+		test(`HTTP ${status} may have been billed (the provider or a gateway gave up mid-call): unknown, charged the single-call maximum`, async () => {
 			const { delta } = await runFailing({ text: "", status, errorBody: "odd" });
 			expect(delta.day).toBe(maxCall(textOf(stub.requests()[0])));
 		});
@@ -234,7 +235,7 @@ describe("P5-2 the charging table (R-I b): one row, one test, the exact day delt
 
 	test("a first call that billed and a repair call with an unknown outcome charges call 1's actual plus the maximum", async () => {
 		await seedBigSession();
-		script(unusable(), { text: "", status: 418, errorBody: "odd" });
+		script(unusable(), { text: "", status: 524, errorBody: "odd" });
 		const before = await H.snapshotSpend(SID);
 		await H.runGeneration(SID);
 		const second = maxCall(textOf(stub.requests()[1]));
@@ -658,5 +659,221 @@ describe("P5-5 a released run never sends a billed repair call nobody settles", 
 			spy.mockRestore();
 			stub.reset();
 		}
+	});
+});
+
+/** An adapter whose call throws `error` after capturing the text it was given. */
+function throwingAdapter(error: () => unknown, capture?: (text: string) => void) {
+	return spyOn(registry, "getAdapter").mockImplementation(
+		() =>
+			({
+				kind: "openai",
+				complete: async (request: { systemPrompt: string; transcriptPrompt: string }) => {
+					capture?.(request.systemPrompt + request.transcriptPrompt);
+					throw error();
+				},
+			}) as never,
+	);
+}
+const causeCoded = (code: string, message = "fetch failed") =>
+	new LlmError("unknown", message, undefined, Object.assign(new Error("low level"), { code }));
+
+describe("Q-1 nothing can have been billed before the request leaves", () => {
+	for (const code of [
+		"ConnectionRefused",
+		"ECONNREFUSED",
+		"ENOTFOUND",
+		"EAI_AGAIN",
+		"FailedToOpenSocket",
+		"UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+		"CERT_HAS_EXPIRED",
+		"ERR_TLS_CERT_ALTNAME_INVALID",
+	]) {
+		test(`a connect-phase failure (cause.code ${code}) is charged 0`, async () => {
+			await seedBigSession();
+			const spy = throwingAdapter(() => causeCoded(code));
+			try {
+				const before = await H.snapshotSpend(SID);
+				await H.runGeneration(SID);
+				expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("provider_error");
+				expect((await H.spendDelta(before)).day).toBe(0);
+			} finally {
+				spy.mockRestore();
+			}
+		});
+	}
+
+	test("ECONNRESET cannot be told from a reset after the request was written: charged the single-call maximum", async () => {
+		await seedBigSession();
+		let sent = "";
+		const spy = throwingAdapter(
+			() => causeCoded("ECONNRESET"),
+			(t) => {
+				sent = t;
+			},
+		);
+		try {
+			const before = await H.snapshotSpend(SID);
+			await H.runGeneration(SID);
+			expect((await H.spendDelta(before)).day).toBe(maxCall(sent));
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("only the cause's code counts, never message text: a message that says ECONNREFUSED with no cause is an unknown failure, charged the maximum", async () => {
+		await seedBigSession();
+		let sent = "";
+		const spy = throwingAdapter(
+			() => new LlmError("unknown", "request failed: connect ECONNREFUSED 127.0.0.1:1"),
+			(t) => {
+				sent = t;
+			},
+		);
+		try {
+			const before = await H.snapshotSpend(SID);
+			await H.runGeneration(SID);
+			expect((await H.spendDelta(before)).day).toBe(maxCall(sent));
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("a real refused connection to a dead port is charged 0", async () => {
+		await H.resetWorld(stub);
+		await H.enableAi();
+		await H.seedProviderAt("http://127.0.0.1:1/v1", { model: MODEL });
+		await seedBigSession();
+		const before = await H.snapshotSpend(SID);
+		await H.runGeneration(SID);
+		expect((await H.spendDelta(before)).day).toBe(0);
+		expect((await H.spendDelta(before)).sessions[SID]).toBe(0);
+	});
+
+	test("a throw from getAdapter itself is before anything is pending: charged 0", async () => {
+		await seedBigSession();
+		const spy = spyOn(registry, "getAdapter").mockImplementation(() => {
+			throw new Error("no adapter for this kind");
+		});
+		try {
+			const before = await H.snapshotSpend(SID);
+			await H.runGeneration(SID);
+			expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("internal_error");
+			expect((await H.spendDelta(before)).day).toBe(0);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+});
+
+describe("Q-1 the breaker: three maximum-charged failures in ten minutes close the door until a call succeeds or five minutes pass", () => {
+	const MINUTE = 60_000;
+	const T0 = Date.UTC(2031, 0, 1, 12, 0, 0);
+	let session = 0;
+	afterEach(() => setSystemTime());
+
+	/** One request for a fresh session whose call times out (a maximum-charged failure). */
+	async function timeoutRun(): Promise<void> {
+		const id = `brk-${session++}`;
+		await H.seedActiveSession(id);
+		const spy = throwingAdapter(() => new LlmError("transient_timeout", "timed out"));
+		try {
+			await H.runGeneration(id);
+		} finally {
+			spy.mockRestore();
+		}
+		expect((await H.readSummaryRow(id))?.attemptErrorCode).toBe("provider_timeout");
+	}
+	async function freshRequest() {
+		const id = `brk-${session++}`;
+		await H.seedActiveSession(id);
+		const before = await H.snapshotSpend(id);
+		const decrypt = spyOn(secrets, "decryptSecret");
+		const result = await H.request(id);
+		const calls = decrypt.mock.calls.length;
+		decrypt.mockRestore();
+		return { id, result, before, decrypts: calls };
+	}
+	async function succeed(): Promise<void> {
+		const id = `brk-${session++}`;
+		const { editId } = await H.seedActiveSession(id);
+		script(ok([editId]));
+		await H.runGeneration(id);
+		expect((await H.readSummaryRow(id))?.attemptStatus).toBe("idle");
+	}
+
+	beforeEach(() => {
+		session = 0;
+		setSystemTime(new Date(T0));
+	});
+
+	test("the fourth request after three timeouts is refused busy: no reservation, no claim, no decrypt, no charge, nothing sent", async () => {
+		for (let i = 0; i < 3; i++) await timeoutRun();
+		const dayBefore = await H.daySpend();
+		const { id, result, decrypts } = await freshRequest();
+		expect(H.refusalOf(result)).toBe("busy");
+		if (result.kind === "refused")
+			expect(result.refusal.retryAfterSeconds).toBeGreaterThanOrEqual(1);
+		expect(await H.daySpend()).toBe(dayBefore);
+		expect(await H.readSummaryRow(id)).toBeUndefined();
+		expect(decrypts).toBe(0);
+		expect(stub.requests().length).toBe(0);
+		expect(svc._summaryGenerationCountForTest()).toBe(0);
+	});
+
+	test("two timeouts do not open it", async () => {
+		await timeoutRun();
+		await timeoutRun();
+		await succeed();
+	});
+
+	test("a success resets the count: two timeouts, a success, two timeouts leave it closed", async () => {
+		await timeoutRun();
+		await timeoutRun();
+		await succeed();
+		await timeoutRun();
+		await timeoutRun();
+		await succeed();
+	});
+
+	test("failures older than ten minutes do not count", async () => {
+		await timeoutRun();
+		await timeoutRun();
+		setSystemTime(new Date(T0 + 11 * MINUTE));
+		await timeoutRun();
+		await succeed();
+	});
+
+	test("it stays open until five minutes after the last such failure, then one request goes through, and its success clears the count", async () => {
+		for (let i = 0; i < 3; i++) await timeoutRun();
+		setSystemTime(new Date(T0 + 5 * MINUTE - 1000));
+		expect(H.refusalOf((await freshRequest()).result)).toBe("busy");
+		setSystemTime(new Date(T0 + 5 * MINUTE + 1000));
+		await succeed();
+		// Cleared: two more timeouts do not reopen it.
+		await timeoutRun();
+		await timeoutRun();
+		await succeed();
+	});
+
+	test("failures that charge nothing or the priced input never count toward it", async () => {
+		for (let i = 0; i < 4; i++) {
+			const id = `brk-${session++}`;
+			await H.seedActiveSession(id);
+			script({ text: "", status: i % 2 === 0 ? 401 : 503, errorBody: "no" });
+			await H.runGeneration(id);
+		}
+		await succeed();
+	});
+
+	test("a join and a cooldown answer are not refused by it", async () => {
+		for (let i = 0; i < 3; i++) await timeoutRun();
+		await H.seedActiveSession("brk-live");
+		await H.seedSummaryRow("brk-live", {
+			attemptStatus: "generating",
+			attemptToken: "t",
+			attemptStartedAt: toDbTimestamp(new Date()),
+		});
+		expect((await H.request("brk-live")).kind).toBe("joined");
 	});
 });
