@@ -71,6 +71,11 @@ export type RevealPlan =
 	/** The event is recorded, but no timeline mode or filter shows this kind of event. */
 	| { action: "not_shown" };
 
+/** The line above the timeline when showing the event needed a different mode. */
+export function modeSwitchedCopy(_mode: TimelineMode): string {
+	return "";
+}
+
 export const EVENT_NOT_FOUND_COPY = "That event is no longer in this session's activity.";
 export const EVENT_NOT_SHOWN_COPY = "That event is recorded, but Activity doesn't show this kind.";
 
