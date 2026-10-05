@@ -268,19 +268,35 @@ async function probeActivity(
  * and a flood of acknowledgements must not read as "up to date", so it reads 1.
  */
 async function countStaleEvents(sessionId: string, throughEventId: number): Promise<number> {
-	// A row comparison starts the scan at the exact place in the composite index: with `id > t`
-	// beside a range on `session_id`, Postgres prefers the primary key (every newer event of every
-	// session) and a sort.
-	const query = sql`WITH w AS (
-			SELECT category FROM events
-			WHERE (session_id, id) > (${sessionId}, ${throughEventId}) AND session_id <= ${sessionId}
-			ORDER BY session_id ASC, id ASC LIMIT ${sql.raw(String(STALE_SCAN_WINDOW))}
-		)
-		SELECT
-			(SELECT count(*) FROM (
-				SELECT 1 FROM w WHERE COALESCE(w.category, '') <> 'user_ack' LIMIT ${sql.raw(String(STALE_EVENT_COUNT_CAP))}
-			) AS stale) AS n,
-			(SELECT count(*) FROM w) AS scanned`;
+	// Postgres: seek by row comparison with no upper `session_id` bound, and filter to the session
+	// outside the limit (R3-5). A bounded range, or an equality beside `id > t`, lets the planner pick
+	// the single-column index or the primary key and read the whole session behind a sort. The window
+	// may run into the next session's rows; `scanned` counts only this session's, so they never trip
+	// the full-window test. SQLite has no such hazard: the equality form is a true seek there.
+	const query =
+		config.dialect === "postgres"
+			? sql`WITH w AS (
+					SELECT session_id, category FROM events
+					WHERE (session_id, id) > (${sessionId}, ${throughEventId})
+					ORDER BY session_id ASC, id ASC LIMIT ${sql.raw(String(STALE_SCAN_WINDOW))}
+				)
+				SELECT
+					(SELECT count(*) FROM (
+						SELECT 1 FROM w WHERE session_id = ${sessionId} AND COALESCE(category, '') <> 'user_ack'
+						LIMIT ${sql.raw(String(STALE_EVENT_COUNT_CAP))}
+					) AS stale) AS n,
+					(SELECT count(*) FROM w WHERE session_id = ${sessionId}) AS scanned`
+			: sql`WITH w AS (
+					SELECT category FROM events
+					WHERE session_id = ${sessionId} AND id > ${throughEventId}
+					ORDER BY id ASC LIMIT ${sql.raw(String(STALE_SCAN_WINDOW))}
+				)
+				SELECT
+					(SELECT count(*) FROM (
+						SELECT 1 FROM w WHERE COALESCE(w.category, '') <> 'user_ack'
+						LIMIT ${sql.raw(String(STALE_EVENT_COUNT_CAP))}
+					) AS stale) AS n,
+					(SELECT count(*) FROM w) AS scanned`;
 	const [row] = await runInOwnTurn(() =>
 		executeRows<{ n: number | string; scanned: number | string }>(getDb(), query),
 	);
