@@ -666,7 +666,15 @@ describe("top-up of the reservation", () => {
 		expect((await H.spendDelta(before)).day).toBe(max);
 		gates[0].release();
 		await H.withDeadline(gates[1].arrived);
-		expect((await H.spendDelta(before)).day).toBe(first + max);
+		// R-I (a): topped up to call 1's actual plus the maximum of the text this call actually sends (worst-case ratio).
+		const sent = H.promptsOf(stub.requests()[1]);
+		const text = sent.system + sent.user;
+		const secondMax = priceCompletion("openai", PRICEY, {
+			inputTokens: Math.max(estimateTokens(text), Math.ceil(Buffer.byteLength(text, "utf8") / 2)),
+			outputTokens: 4000,
+			estimated: true,
+		});
+		expect((await H.spendDelta(before)).day).toBe(first + secondMax);
 		gates[1].release();
 		await H.withDeadline(done);
 		const second = cost({ input: 1000, output: 100 }, PRICEY);

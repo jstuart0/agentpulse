@@ -488,7 +488,7 @@ describe("P5-7 the key is decrypted after the claim is won", () => {
 			expect(H.refusalOf(await H.request("dec-few"))).toBe("too_little_activity");
 			expect(H.refusalOf(await H.request("dec-missing"))).toBe("session_not_found");
 
-			setShuttingDown(true);
+			setShuttingDown("test");
 			expect(H.refusalOf(await H.request("dec-cap"))).toBe("shutting_down");
 			_resetDrainStateForTest();
 

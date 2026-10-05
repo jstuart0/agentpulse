@@ -181,6 +181,15 @@ function maxCallCostCents(provider: Pick<DefaultProvider, "kind" | "model">): nu
 	});
 }
 
+/**
+ * The most tokens a prompt can be, whatever its characters: the larger of the 4.5-characters-per-token
+ * estimate and one token per two UTF-8 bytes (dense text, CJK and emoji run at 1 to 2 bytes per token,
+ * where the estimate counts characters). Used wherever the budget must not be under-counted.
+ */
+function worstCaseInputTokens(text: string): number {
+	return Math.max(estimateTokens(text), Math.ceil(Buffer.byteLength(text, "utf8") / 2));
+}
+
 /** The next midnight of the server's local date, as an instant (the spend day is the server-local date). */
 function nextLocalMidnightIso(now: Date = new Date()): string {
 	return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
@@ -366,8 +375,9 @@ interface Entry {
 	phase: Phase;
 	/** Actual cost of the calls that have returned. */
 	settledCents: number;
-	/** The priced input of the call in flight (a call that may have been billed). */
-	pendingInputEstimateCents: number;
+	/** The call in flight, if any (both 0 otherwise): its input priced at the worst-case ratio, and its single-call maximum. */
+	pendingInputCents: number;
+	pendingMaxCents: number;
 	taken: boolean;
 	/** Settles when the request that created this entry has its answer (claim won or lost, or an exit). */
 	requestSettled: Promise<void>;
@@ -506,7 +516,6 @@ interface RunContext {
 	token: string;
 	provider: DefaultProvider;
 	key: string;
-	maxCostCents: number;
 }
 
 type Outcome =
@@ -528,27 +537,40 @@ const LLM_CODES: Record<LlmError["subType"], SummaryErrorCode> = {
 	unknown: "provider_error",
 };
 
+/** Statuses a provider answers before it bills: the call is charged nothing. */
+const PRE_BILLING_STATUSES: ReadonlySet<number> = new Set([400, 401, 403, 404, 408, 422, 429]);
+
 /**
- * What an exception ended the run as. Only the code, the sub-type and the HTTP status
- * are taken from it: its message and cause can carry a provider's body or a key.
- * A call that may have been billed (a timeout, or anything that failed after the
- * provider answered) is charged its priced input; one rejected before billing is not.
+ * What an exception ended the run as, and what it cost (R-I b). Only the code, the sub-type and the
+ * HTTP status are taken from it: its message and cause can carry a provider's body or a key. The
+ * calls that returned are charged as they were. The call in flight when it threw is charged by
+ * what is known of it: nothing for an explicit pre-billing rejection, the priced input for an
+ * explicit 5xx, and the single-call maximum for everything else (a client-side timeout, a network
+ * failure, an unexpected status, an error after the provider answered), since its outcome is unknown.
  */
 function describeFailure(error: unknown, entry: Entry): FailureDetail {
 	const completed = entry.settledCents;
-	const inFlight = entry.pendingInputEstimateCents;
 	if (error instanceof LlmError) {
+		const status = error.status ?? null;
+		let inFlight = entry.pendingMaxCents;
+		if (status !== null && PRE_BILLING_STATUSES.has(status)) inFlight = 0;
+		else if (status !== null && status >= 500 && status <= 599) inFlight = entry.pendingInputCents;
 		return {
 			code: LLM_CODES[error.subType] ?? "provider_error",
 			subType: error.subType,
-			status: error.status ?? null,
-			chargeCents: completed + (error.subType === "transient_timeout" ? inFlight : 0),
+			status,
+			chargeCents: completed + inFlight,
 		};
 	}
 	if (error instanceof OwnTurnBusyError) {
 		return { code: "busy", subType: null, status: null, chargeCents: completed };
 	}
-	return { code: "internal_error", subType: null, status: null, chargeCents: completed + inFlight };
+	return {
+		code: "internal_error",
+		subType: null,
+		status: null,
+		chargeCents: completed + entry.pendingMaxCents,
+	};
 }
 
 const failure = (entry: Entry, code: SummaryErrorCode): Outcome => ({
@@ -569,20 +591,47 @@ interface Totals {
 	calls: number;
 }
 
+/** What `callModel` gives back: the answer, or the outcome that ended the run before the call was sent. */
+type CallResult = { response: LlmResponse } | { outcome: Outcome };
+
+/**
+ * One model call. The text actually sent is priced at the worst-case token ratio and the
+ * reservation is topped up to hold the calls that returned plus this call's maximum; a refused
+ * top-up ends the run before anything is sent (R-I a). The ownership check and the move into the
+ * `calling` phase follow the last await before the send, so a release that lands during the
+ * top-up is honoured and a call is never sent that nobody will settle.
+ */
 async function callModel(
 	ctx: RunContext,
 	totals: Totals,
 	built: ReturnType<typeof buildSummaryPrompt>,
 	repair?: RepairKind,
-): Promise<LlmResponse> {
+): Promise<CallResult> {
 	const { entry, provider } = ctx;
 	const request = buildSummaryLlmRequest(built, provider.model, repair);
 	const sentText = request.systemPrompt + request.transcriptPrompt;
-	entry.pendingInputEstimateCents = priceCompletion(provider.kind, provider.model, {
-		inputTokens: estimateTokens(sentText),
+	const worstInputTokens = worstCaseInputTokens(sentText);
+	const pricedInputCents = priceCompletion(provider.kind, provider.model, {
+		inputTokens: worstInputTokens,
 		outputTokens: 0,
 		estimated: true,
 	});
+	const maxCents = priceCompletion(provider.kind, provider.model, {
+		inputTokens: worstInputTokens,
+		outputTokens: MAX_OUTPUT_TOKENS,
+		estimated: true,
+	});
+	const reservation = entry.reservation as SpendReservation;
+	const needed = entry.settledCents + maxCents;
+	if (
+		reservation.cents < needed &&
+		!(await topUpReservation(reservation, needed - reservation.cents))
+	) {
+		return { outcome: entry.taken ? RELEASED : failure(entry, "spend_cap") };
+	}
+	if (entry.taken) return { outcome: RELEASED };
+	entry.pendingInputCents = pricedInputCents;
+	entry.pendingMaxCents = maxCents;
 	entry.phase = "calling";
 	const adapter = getAdapter({
 		kind: provider.kind,
@@ -598,12 +647,13 @@ async function callModel(
 		...response.usage,
 		inputTokens,
 	});
-	entry.pendingInputEstimateCents = 0;
+	entry.pendingInputCents = 0;
+	entry.pendingMaxCents = 0;
 	totals.inputTokens += inputTokens;
 	totals.outputTokens += response.usage.outputTokens;
 	totals.estimated ||= response.usage.estimated;
 	totals.calls += 1;
-	return response;
+	return { response };
 }
 
 /** The session row, by named columns (no ownership ids), or null when it is gone. */
@@ -666,7 +716,9 @@ async function generate(ctx: RunContext): Promise<Outcome> {
 	};
 
 	if (entry.taken) return RELEASED;
-	const first = await callModel(ctx, totals, built);
+	const firstCall = await callModel(ctx, totals, built);
+	if ("outcome" in firstCall) return firstCall.outcome;
+	const first = firstCall.response;
 	const firstStop = classifyStopReason(first.stopReason);
 	if (firstStop === "refusal") return failure(entry, "provider_refused");
 	let repair: RepairKind;
@@ -680,16 +732,9 @@ async function generate(ctx: RunContext): Promise<Outcome> {
 	// One repair call, on the same reservation, if the run still owns the generation and the gates are open.
 	if (entry.taken) return RELEASED;
 	if (!(await gatesStillOpen())) return failure(entry, "ai_inactive");
-	const reservation = entry.reservation as SpendReservation;
-	const needed = entry.settledCents + ctx.maxCostCents;
-	if (
-		reservation.cents < needed &&
-		!(await topUpReservation(reservation, needed - reservation.cents))
-	) {
-		return failure(entry, "spend_cap");
-	}
-	if (entry.taken) return RELEASED;
-	const second = await callModel(ctx, totals, built, repair);
+	const secondCall = await callModel(ctx, totals, built, repair);
+	if ("outcome" in secondCall) return secondCall.outcome;
+	const second = secondCall.response;
 	const secondStop = classifyStopReason(second.stopReason);
 	if (secondStop === "refusal") return failure(entry, "provider_refused");
 	if (secondStop === "length") return failure(entry, "output_truncated");
@@ -738,14 +783,11 @@ async function finish(
 		console.error("[session-summary] row write failed", JSON.stringify({ code: errorName(error) }));
 	}
 	try {
-		await settleReservedSpend(entry.reservation as SpendReservation, {
-			sessionId: entry.sessionId,
-			actualCents: outcome.ok ? entry.settledCents : outcome.chargeCents,
-		});
-	} catch (error) {
-		console.error(
-			"[session-summary] settlement failed",
-			JSON.stringify({ code: errorName(error) }),
+		await withOneRetry("settlement", () =>
+			settleReservedSpend(entry.reservation as SpendReservation, {
+				sessionId: entry.sessionId,
+				actualCents: outcome.ok ? entry.settledCents : outcome.chargeCents,
+			}),
 		);
 	} finally {
 		entries.delete(entry);
@@ -754,6 +796,25 @@ async function finish(
 
 /** An error's class name only: never its message, which can carry a body or a key. */
 const errorName = (error: unknown): string => (error instanceof Error ? error.name : "unknown");
+
+/**
+ * Runs money work that must not be lost to one transient database error: a second attempt
+ * after the first fails, each failure logged by class name. A reservation that is neither
+ * settled nor released would stay counted on the day until its midnight.
+ */
+async function withOneRetry(label: string, work: () => Promise<void>): Promise<void> {
+	for (let attempt = 1; attempt <= 2; attempt++) {
+		try {
+			await work();
+			return;
+		} catch (error) {
+			console.error(
+				`[session-summary] ${label} failed`,
+				JSON.stringify({ code: errorName(error) }),
+			);
+		}
+	}
+}
 
 async function runGeneration(ctx: RunContext): Promise<void> {
 	let outcome: Outcome;
@@ -792,6 +853,29 @@ function joinedOf(row: AttemptColumns): SummaryRequestResult {
 			},
 		},
 	};
+}
+
+function startedResult(now: Date, done: Promise<void>): SummaryRequestResult {
+	return {
+		kind: "started",
+		body: {
+			attempt: {
+				status: "generating",
+				startedAt: new Date(clockAt(now).nowMs).toISOString(),
+				joined: false,
+			},
+		},
+		done,
+	};
+}
+
+/** The default provider's key, or null when it cannot be read (the row is gone or the ciphertext does not decrypt). */
+async function readProviderKey(providerId: string): Promise<string | null> {
+	try {
+		return await getProviderApiKey(providerId);
+	} catch {
+		return null;
+	}
 }
 
 /** Takes a slot, synchronously, or says why not. Counts every entry, including one that is writing its result. */
@@ -864,13 +948,6 @@ export async function requestSummaryGeneration(
 	if (!enough) return refuse({ error: "too_little_activity" });
 	const provider = await readDefaultProvider();
 	if (!provider) return refuse({ error: "no_provider" });
-	let key: string | null;
-	try {
-		key = await getProviderApiKey(provider.id);
-	} catch {
-		return refuse({ error: "provider_key_unreadable" });
-	}
-	if (key === null) return refuse({ error: "no_provider" });
 
 	let settleRequest!: () => void;
 	const entry: Entry = {
@@ -880,7 +957,8 @@ export async function requestSummaryGeneration(
 		reservation: null,
 		phase: "reading",
 		settledCents: 0,
-		pendingInputEstimateCents: 0,
+		pendingInputCents: 0,
+		pendingMaxCents: 0,
 		taken: false,
 		requestSettled: new Promise<void>((resolve) => {
 			settleRequest = resolve;
@@ -893,6 +971,7 @@ export async function requestSummaryGeneration(
 	let claimedToken: string | null = null;
 	let handedOver = false;
 	let exitCode: SummaryErrorCode = "internal_error";
+	let startsNoCooldown = false;
 	try {
 		await at("slot");
 		const maxCostCents = maxCallCostCents(provider);
@@ -919,6 +998,10 @@ export async function requestSummaryGeneration(
 		}
 		claimedToken = token;
 		await at("claim");
+		// The key is decrypted (a blocking scrypt) only now that this request owns the attempt: a
+		// refusal or a lost claim never pays for it. An unreadable key is a failed attempt that
+		// starts no cooldown, so someone fixing their key is not locked out.
+		const key = await readProviderKey(provider.id);
 		await at("audit");
 		logAdminAction("session_summary_requested", caller.actor, {
 			sessionId,
@@ -934,33 +1017,35 @@ export async function requestSummaryGeneration(
 			});
 		}
 
+		if (key === null) {
+			exitCode = "provider_key_unreadable";
+			startsNoCooldown = true;
+			return startedResult(now, Promise.resolve());
+		}
+
 		// Hand over: from here the entry owns the token and the reservation, and the run owns the rest.
 		entry.token = token;
 		entry.reservation = reservation;
 		handedOver = true;
-		const ctx: RunContext = { entry, token, provider, key, maxCostCents };
+		const ctx: RunContext = { entry, token, provider, key };
 		const done = runGeneration(ctx).catch((error: unknown) => {
 			console.error("[session-summary] run failed", JSON.stringify({ code: errorName(error) }));
 		});
-		return {
-			kind: "started",
-			body: {
-				attempt: {
-					status: "generating",
-					startedAt: new Date(clockAt(now).nowMs).toISOString(),
-					joined: false,
-				},
-			},
-			done,
-		};
+		return startedResult(now, done);
 	} finally {
 		try {
 			if (!handedOver) {
 				entries.delete(entry);
 				if (claimedToken) {
-					await writeAttempt(sessionId, claimedToken, failedRow(exitCode)).catch(() => {});
+					await writeAttempt(sessionId, claimedToken, {
+						...failedRow(exitCode),
+						...(startsNoCooldown ? { attemptStartedAt: null } : {}),
+					}).catch(() => {});
 				}
-				if (reservation) await releaseReservedSpend(reservation).catch(() => {});
+				if (reservation) {
+					const held = reservation;
+					await withOneRetry("reservation release", () => releaseReservedSpend(held));
+				}
 			}
 		} finally {
 			settleRequest();
@@ -980,19 +1065,18 @@ async function releaseEntry(entry: Entry): Promise<void> {
 	}
 	try {
 		const reservation = entry.reservation as SpendReservation;
-		if (entry.phase === "reading") await releaseReservedSpend(reservation);
-		else {
-			// A call is, or may be, in flight: charge what returned plus the priced input of that call.
-			await settleReservedSpend(reservation, {
-				sessionId: entry.sessionId,
-				actualCents: entry.settledCents + entry.pendingInputEstimateCents,
-			});
+		if (entry.phase === "reading") {
+			await withOneRetry("reservation release", () => releaseReservedSpend(reservation));
+		} else {
+			// A call that returned is charged as it was; one in flight has an unknown outcome (R-I b):
+			// its single-call maximum (0 when no call is in flight).
+			await withOneRetry("release settlement", () =>
+				settleReservedSpend(reservation, {
+					sessionId: entry.sessionId,
+					actualCents: entry.settledCents + entry.pendingMaxCents,
+				}),
+			);
 		}
-	} catch (error) {
-		console.error(
-			"[session-summary] release settlement failed",
-			JSON.stringify({ code: errorName(error) }),
-		);
 	} finally {
 		entries.delete(entry);
 	}
