@@ -72,8 +72,8 @@ export type RevealPlan =
 	| { action: "not_shown" };
 
 /** The line above the timeline when showing the event needed a different mode. */
-export function modeSwitchedCopy(_mode: TimelineMode): string {
-	return "";
+export function modeSwitchedCopy(mode: TimelineMode): string {
+	return `Switched Activity to ${mode.charAt(0).toUpperCase()}${mode.slice(1)} to show this event.`;
 }
 
 export const EVENT_NOT_FOUND_COPY = "That event is no longer in this session's activity.";

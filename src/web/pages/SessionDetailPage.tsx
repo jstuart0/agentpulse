@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { AGENT_METADATA } from "../../shared/constants.js";
 import { type OperationalStatus, getOperationalStatus } from "../../shared/session-state.js";
@@ -30,6 +30,7 @@ import {
 	mergeSessionEvents,
 } from "../components/session-detail/TimelineView.js";
 import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
+import { useEventReveal } from "../hooks/useEventReveal.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { useSessionSummary } from "../hooks/useSessionSummary.js";
 import { reloadSummaryAvailability } from "../hooks/useSummaryAvailable.js";
@@ -65,6 +66,16 @@ const SessionSummaryTab = lazy(() =>
 	})),
 );
 
+/** Scrolls to an event's element and flashes it; false while it isn't in the DOM yet. */
+function flashEvent(eventId: number): boolean {
+	const el = document.getElementById(`event-${eventId}`);
+	if (!el) return false;
+	el.scrollIntoView({ behavior: "smooth", block: "center" });
+	el.classList.add("event-flash");
+	setTimeout(() => el.classList.remove("event-flash"), 2200);
+	return true;
+}
+
 /** Merge new events into the existing persisted events array, de-duped by id, sorted asc. */
 function insertEvents(existing: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
 	const byId = new Map<number, SessionEvent>();
@@ -98,8 +109,7 @@ export function SessionDetailPage() {
 	// availability loads and falls to Activity (with a line saying why) if the tab isn't there.
 	const { workspaceTab, fellBack, summaryAvailable } = useSummaryRoute(searchParams.get("tab"));
 
-	const [loadingContext, setLoadingContext] = useState(false);
-	const [contextNotFound, setContextNotFound] = useState(false);
+	const [eventsLoaded, setEventsLoaded] = useState(false);
 
 	// AGEN: the auto-acknowledge effect's only visible side effect used to be
 	// the badge quietly flipping from WAITING to IDLE -- nothing told a
@@ -135,19 +145,13 @@ export function SessionDetailPage() {
 		return () => watchSession(null);
 	}, [sessionId, watchSession]);
 
-	// Tracks which (sessionId, eventId) combo has already been flashed so that
-	// incoming WebSocket events don't re-trigger the scroll/flash.
-	const flashedRef = useRef<{ sessionId: string | null; eventId: string | null }>({
-		sessionId: null,
-		eventId: null,
-	});
-
 	const loadSessionWorkspace = useCallback(async () => {
 		if (!sessionId) return;
 		try {
 			const data = await api.getSession(sessionId);
 			setSession(data.session as Session);
 			setEvents(data.events as SessionEvent[]);
+			setEventsLoaded(true);
 			setControlActions((data.controlActions as ControlAction[]) || []);
 		} catch (err) {
 			console.error("Failed to fetch session:", err);
@@ -162,6 +166,7 @@ export function SessionDetailPage() {
 		const cached = useSessionStore.getState().sessions.find((s) => s.sessionId === sessionId);
 		setSession(cached ?? null);
 		setEvents([]);
+		setEventsLoaded(false);
 		setControlActions([]);
 		setLoading(!cached);
 	}, [sessionId]);
@@ -351,59 +356,6 @@ export function SessionDetailPage() {
 		};
 	}, [sessionId, clearLiveEvents, loadSessionWorkspace]);
 
-	// Reset the flash guard whenever we navigate to a different session so that
-	// back-and-forth navigation re-runs the scroll/flash for each destination.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: sessionId is the trigger, not a value read inside the callback
-	useEffect(() => {
-		flashedRef.current = { sessionId: null, eventId: null };
-	}, [sessionId]);
-
-	// Read the URL hash and scroll-and-flash the matching event once it appears
-	// in the DOM. Depends on both sessionId and events.length:
-	// - sessionId: re-arms on navigation
-	// - events.length: retries when the event list grows (async load / WS events)
-	// The ref guard ensures exactly one flash per (sessionId, eventId) pair.
-	useEffect(() => {
-		if (workspaceTab !== "activity") return;
-		if (!session) return;
-		const hash = window.location.hash;
-		const m = hash.match(/^#event-(\d+)$/);
-		if (!m) return;
-		const eventId = m[1];
-		if (flashedRef.current.sessionId === sessionId && flashedRef.current.eventId === eventId) {
-			return;
-		}
-		const el = document.getElementById(`event-${eventId}`);
-		if (el) {
-			flashedRef.current = { sessionId: sessionId ?? null, eventId };
-			el.scrollIntoView({ behavior: "smooth", block: "center" });
-			el.classList.add("event-flash");
-			const t = setTimeout(() => el.classList.remove("event-flash"), 2200);
-			return () => clearTimeout(t);
-		}
-		// Element not in DOM yet. If the events list has loaded (length > 0) and
-		// we still can't find it, the event is outside the loaded window — fetch
-		// the context window from the server and splice it in.
-		if (events.length === 0) return;
-		if (loadingContext) return;
-		setLoadingContext(true);
-		setContextNotFound(false);
-		api
-			.getEventContext(sessionId ?? "", Number(eventId))
-			.then((res) => {
-				setEvents((prev) => insertEvents(prev, res.events as SessionEvent[]));
-			})
-			.catch(() => {
-				flashedRef.current = { sessionId: sessionId ?? null, eventId };
-				setContextNotFound(true);
-			})
-			.finally(() => {
-				setLoadingContext(false);
-			});
-		// Why both deps: events.length re-triggers after context splice so the
-		// flash runs once the DOM has the newly inserted event.
-	}, [workspaceTab, sessionId, session, events.length, loadingContext]);
-
 	const openTab = useTabsStore((s) => s.open);
 	useEffect(() => {
 		if (!session) return;
@@ -418,6 +370,30 @@ export function SessionDetailPage() {
 
 	const liveEvents = ((sessionId && liveEventsMap.get(sessionId)) || []) as SessionEvent[];
 	const allEvents = mergeSessionEvents([...events].reverse(), liveEvents);
+	const eventHash = /^#event-(\d+)$/.exec(useLocation().hash);
+	const reveal = useEventReveal({
+		sessionId,
+		tab: workspaceTab,
+		eventId: eventHash ? Number(eventHash[1]) : null,
+		events: allEvents,
+		eventsLoaded,
+		mode,
+		filters: { showTools, showNoisyTools, showSystem },
+		apply: {
+			setMode,
+			setFilters: (f) => {
+				if (f.showTools) setShowTools(true);
+				if (f.showNoisyTools) setShowNoisyTools(true);
+				if (f.showSystem) setShowSystem(true);
+			},
+		},
+		fetchContext: async (id) => {
+			const res = await api.getEventContext(sessionId ?? "", id);
+			setEvents((prev) => insertEvents(prev, res.events as SessionEvent[]));
+		},
+		flash: flashEvent,
+		announce: setLiveAnnouncement,
+	});
 	const visibleEvents = getVisibleEvents(
 		allEvents,
 		mode,
@@ -712,6 +688,12 @@ export function SessionDetailPage() {
 
 			<ControlHistory actions={controlActions} />
 
+			{workspaceTab === "activity" && reveal.notice ? (
+				<p className="flex-shrink-0 px-3 pt-2 text-xs text-muted-foreground md:px-6">
+					{reveal.notice}
+				</p>
+			) : null}
+
 			{fellBack ? (
 				<div className="flex-shrink-0 pb-1">
 					<SummaryFellBackNotice
@@ -800,20 +782,13 @@ export function SessionDetailPage() {
 					</Suspense>
 				) : workspaceTab === "activity" ? (
 					<>
-						{contextNotFound ? (
-							<div className="px-4 pt-2">
-								<p className="text-xs text-amber-500/80 text-center">
-									The linked event could not be found — it may have been deleted.
-								</p>
-							</div>
-						) : null}
 						<ActivityTimeline
 							ref={timelineContainerRef}
 							endRef={timelineEndRef}
 							visibleEvents={visibleEvents}
 							mode={mode}
 							onScroll={handleTimelineScroll}
-							loadingContext={loadingContext}
+							loadingContext={reveal.loadingContext}
 						/>
 					</>
 				) : workspaceTab === "notes" ? (
