@@ -56,6 +56,8 @@ export interface LedgerFactForVerify {
 	 * and a command that was not shown (withheld, over the SQL cap, a patch) backs nothing.
 	 */
 	shown?: boolean;
+	/** For a shown command that is exactly one segment: its verb. Absent for a chain, a pipe, `|| true`, a newline. */
+	verb?: string;
 	/** OBSERVED (the system recorded it) versus CLAIMED (a person or a model said it). */
 	observed: boolean;
 }
@@ -163,12 +165,42 @@ const CHANGE_NEEDS: Record<SummaryChangeKind, EvidenceFactKind[] | null> = {
 	other: null,
 };
 
+/**
+ * A git change is backed by a cited command that is ONE segment whose verb is
+ * `git`: `git push || true` and `cd x && git push` end `ok` through their last
+ * segment and prove nothing about the push. An infrastructure change is backed by
+ * one segment whose verb is an infrastructure tool, not any command: "Deployed"
+ * citing `ls` is not backed. Chosen narrow so that the label errs toward "Agent's
+ * claim only"; a `make deploy` or a script is therefore not backing.
+ */
+const INFRASTRUCTURE_VERBS: ReadonlySet<string> = new Set([
+	"kubectl",
+	"helm",
+	"terraform",
+	"tofu",
+	"docker",
+	"docker-compose",
+	"podman",
+	"ansible",
+	"ansible-playbook",
+	"aws",
+	"gcloud",
+	"az",
+	"systemctl",
+	"pulumi",
+]);
+const CHANGE_VERBS: Partial<Record<SummaryChangeKind, ReadonlySet<string>>> = {
+	git: new Set(["git"]),
+	infrastructure: INFRASTRUCTURE_VERBS,
+};
+
 function backsChange(kind: SummaryChangeKind, fact: LedgerFactForVerify): boolean {
 	if (!backsClaim(fact)) return false;
 	const needs = CHANGE_NEEDS[kind];
 	if (!needs) return true;
-	// A passing test run says nothing about a push or a deploy: only a cited command backs those.
-	return needs.includes(fact.kind);
+	if (!needs.includes(fact.kind)) return false;
+	const verbs = CHANGE_VERBS[kind];
+	return verbs === undefined || (fact.verb !== undefined && verbs.has(fact.verb));
 }
 
 function storedFact(fact: LedgerFactForVerify): StoredEvidenceFact {

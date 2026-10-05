@@ -19,6 +19,7 @@ import {
 	failureExcerptAllowed,
 	passSummaryLine,
 	patchFilesOf,
+	singleCommandVerb,
 	validationClassOf,
 	validationResult,
 } from "./command-class.js";
@@ -124,6 +125,8 @@ export interface EvidenceFact {
 	 * specific. Not part of the stored fact: see `storedFact`.
 	 */
 	shown?: boolean;
+	/** For a shown command that is exactly one segment: its verb (`git`, `kubectl`). Not part of the stored fact. */
+	verb?: string;
 }
 
 /** A cited id as the ledger knows it: the fact, and whether it records something the system saw. */
@@ -134,7 +137,7 @@ export interface LedgerIdInfo extends EvidenceFact {
 
 /** The evidence fact to store for an id: the fields of the fact, without `observed` and `shown`. */
 export function storedFact(info: LedgerIdInfo | EvidenceFact): EvidenceFact {
-	const { observed: _observed, shown: _shown, ...fact } = info as LedgerIdInfo;
+	const { observed: _observed, shown: _shown, verb: _verb, ...fact } = info as LedgerIdInfo;
 	return fact;
 }
 
@@ -246,10 +249,19 @@ function clean(raw: string, ctx: Ctx, inQuotes: boolean): string {
 }
 
 /** `clean`, then cut to `cap` code points; a longer value ends in an ellipsis. */
-function field(raw: string | null | undefined, cap: number, ctx: Ctx, inQuotes = true): string {
-	if (!raw) return "";
+function fieldCut(
+	raw: string | null | undefined,
+	cap: number,
+	ctx: Ctx,
+	inQuotes = true,
+): { text: string; cut: boolean } {
+	if (!raw) return { text: "", cut: false };
 	const { text, cut } = takeStart(clean(raw, ctx, inQuotes), cap);
-	return cut ? `${text}…` : text;
+	return { text: cut ? `${text}…` : text, cut };
+}
+
+function field(raw: string | null | undefined, cap: number, ctx: Ctx, inQuotes = true): string {
+	return fieldCut(raw, cap, ctx, inQuotes).text;
 }
 
 function excerpt(raw: string, ctx: Ctx): string {
@@ -408,11 +420,12 @@ interface Rendered {
 function commandFact(
 	kind: FactKind,
 	result: EvidenceFact["result"],
-	options: { validationClass?: string | null; shown?: boolean } = {},
+	options: { validationClass?: string | null; shown?: boolean; verb?: string | null } = {},
 ): Draft["fact"] {
 	const fact: Draft["fact"] = { kind, result };
 	if (options.validationClass) fact.validationClass = options.validationClass;
 	if (options.shown) fact.shown = true;
+	if (options.shown && options.verb) fact.verb = options.verb;
 	return fact;
 }
 
@@ -429,7 +442,11 @@ function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: C
 			fact: commandFact("command", status),
 		};
 	}
-	const command = field(row.command, COMMAND_CAP, ctx, false);
+	const { text: command, cut } = fieldCut(row.command, COMMAND_CAP, ctx, false);
+	// Shown means the whole command is on the page: not cut at the display cap, and no
+	// newline collapsed into a space (the classifier read all of it, the page did not).
+	const whole = !cut && !/[\r\n]/.test(row.command ?? "");
+	const verb = whole ? singleCommandVerb(row.command) : null;
 	const description = row.description
 		? ` (desc "${field(row.description, DESCRIPTION_CAP, ctx)}")`
 		: "";
@@ -452,14 +469,15 @@ function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: C
 			body: `OBSERVED command [validation] \`${command}\`${description} -> ${resultWord(result)}${out}`,
 			fact: commandFact("validation", result, {
 				validationClass: validationClassOf(row.command),
-				shown: true,
+				shown: whole,
+				verb,
 			}),
 			shownCommand: command,
 		};
 	}
 	return {
 		body: `OBSERVED command \`${command}\`${description} -> ${resultWord(status)}`,
-		fact: commandFact("command", status, { shown: true }),
+		fact: commandFact("command", status, { shown: whole, verb }),
 		shownCommand: command,
 	};
 }

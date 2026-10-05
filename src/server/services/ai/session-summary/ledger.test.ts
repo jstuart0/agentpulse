@@ -1778,7 +1778,7 @@ describe("TC-3.J5 the ledger marks the commands whose text it printed", () => {
 describe("TC-3.K1 `shown` is true only for a command that is on the page whole", () => {
 	const padded = (head: string, total: number) => `${head}; echo ${"x".repeat(total)}; true`;
 	test("a command cut at the display cap is not shown, though it classifies and finishes ok", () => {
-		for (const length of [301, 400, 520]) {
+		for (const length of [260, 350, 480]) {
 			const command = padded("git push origin nonexistent 2>/dev/null", length);
 			expect(Array.from(command).length).toBeLessThan(556);
 			const ledger = build([bash(1, command)]);

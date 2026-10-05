@@ -1339,6 +1339,32 @@ function validationLabelsOf(input: unknown): string[] | null {
 }
 
 /**
+ * The verb of a command that is exactly one segment (no `&&`, `||`, `;`, `|`, `&`,
+ * newline, substitution or heredoc), past wrappers such as `sudo` and `env` and
+ * leading assignments; null otherwise. What a git or infrastructure change is
+ * backed by: `git push || true` and `cd x && git push` are not one segment.
+ */
+export function singleCommandVerb(input: unknown): string | null {
+	try {
+		const text = toCommandString(input);
+		if (text === null || text === "" || storedLength(input) >= TOOL_INPUT_FIELD_SQL_CAP)
+			return null;
+		if (/[\r\n]/.test(text)) return null;
+		const parsed = parse(text);
+		const { flags } = parsed;
+		if (flags.unparseable || flags.subst || flags.heredoc || parsed.segments.length !== 1)
+			return null;
+		const finals: Final[] = [];
+		unwrap((parsed.segments[0] as Segment).words, "", flags, 0, finals);
+		if (flags.unparseable || finals.length !== 1) return null;
+		const head = (finals[0] as Final).words[0];
+		return head ? baseName(head.value) : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * True when a failing validation may show an output excerpt: every validation in
  * the command is a test runner or a build (`FAILURE_EXCERPT_VALIDATIONS`). A lint,
  * format or type-check failure prints lines of the file it was pointed at.
