@@ -130,7 +130,8 @@ describe("generate click", () => {
 		const t = probe("started");
 		await t.render();
 		await act(async () => t.p.current.value?.click());
-		expect(t.calls).toEqual([undefined]);
+		expect(t.calls).toHaveLength(1);
+		expect(t.calls[0]).toBeUndefined();
 		expect(t.p.current.value?.confirming).toBe(false);
 		await t.p.unmount();
 	});
@@ -139,7 +140,7 @@ describe("generate click", () => {
 		const t = probe("started", true);
 		await t.render();
 		await act(async () => t.p.current.value?.click());
-		expect(t.calls).toEqual([]);
+		expect(t.calls).toHaveLength(0);
 		await t.p.unmount();
 	});
 
@@ -148,7 +149,8 @@ describe("generate click", () => {
 		await t.render();
 		await act(async () => t.p.current.value?.click());
 		expect(t.p.current.value?.confirming).toBe(true);
-		expect(t.calls).toEqual([undefined]);
+		expect(t.calls).toHaveLength(1);
+		expect(t.calls[0]).toBeUndefined();
 		await act(async () => t.p.current.value?.cancel());
 		expect(t.p.current.value?.confirming).toBe(false);
 		expect(t.calls).toHaveLength(1);
