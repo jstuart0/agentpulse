@@ -44,15 +44,36 @@ const option = (name: string): string | null => {
 	return at >= 0 && args[at + 1] ? args[at + 1] : null;
 };
 
+/** Exact host match on the parsed URL: `localhost.evil.com` and `http://127.0.0.1@evil.com` are not loopback. */
+export function isLoopbackUrl(raw: string): boolean {
+	try {
+		return LOOPBACK_HOSTS.has(new URL(raw).hostname);
+	} catch {
+		return false;
+	}
+}
+
+/** Sessions on an existing server that this script did not make (it names its own `scr-` and, in older runs, `demo-`). */
+export function foreignSessionIds(ids: readonly string[]): string[] {
+	return ids.filter((id) => !id.startsWith("scr-") && !id.startsWith("demo-"));
+}
+
+export const HELP = `Seeds the session Summary tab for trying by hand.
+
+It WRITES, to the server it uses: it turns AI on, adds a provider named "Stub provider" pointing at a stub on this machine, sets the Labs flag sessionSummary, and creates one session per screen named scr-<screen> with hook events, plus summaries made through the stub.
+With no AGENTPULSE_URL it starts its own throwaway server on a scratch database and removes it on exit.
+With AGENTPULSE_URL it writes to that server instead: refused unless the address is loopback (--allow-remote overrides) and unless the server holds no sessions other than scr-/demo- ones (--allow-existing overrides; loopback does not prove a throwaway, a port-forward to a real server is loopback too).
+
+Options: --flag-on  --hold-ms <n>  --port <n>  --keep  --list  --allow-remote  --allow-existing  --help`;
+
 function refuseNonLoopback(raw: string): URL {
-	const url = new URL(raw);
-	if (!LOOPBACK_HOSTS.has(url.hostname) && !flag("--allow-remote")) {
+	if (!isLoopbackUrl(raw) && !flag("--allow-remote")) {
 		console.error(
-			`Refusing ${url.origin}: it isn't a loopback address. This script seeds sessions and points a provider at a stub that only listens on this machine. Pass --allow-remote if you mean it.`,
+			`Refusing ${new URL(raw).origin}: it isn't a loopback address. This script seeds sessions and points a provider at a stub that only listens on this machine. Pass --allow-remote if you mean it.`,
 		);
 		process.exit(2);
 	}
-	return url;
+	return new URL(raw);
 }
 
 // ── what the model "says" ────────────────────────────────────────────────────
@@ -517,6 +538,10 @@ function printTable(): void {
 }
 
 async function main(): Promise<void> {
+	if (flag("--help")) {
+		console.log(HELP);
+		return;
+	}
 	if (flag("--list")) {
 		printTable();
 		return;
@@ -530,6 +555,21 @@ async function main(): Promise<void> {
 	const existing = process.env.AGENTPULSE_URL;
 	if (existing) {
 		base = refuseNonLoopback(existing).origin;
+		if (!flag("--allow-existing")) {
+			const res = await fetch(`${base}/api/v1/sessions?limit=200`).catch(() => null);
+			const body = res?.ok
+				? ((await res.json()) as { sessions?: Array<{ sessionId: string }> })
+				: null;
+			const foreign = foreignSessionIds((body?.sessions ?? []).map((x) => x.sessionId));
+			if (!body || foreign.length > 0) {
+				console.error(
+					body
+						? `Refusing ${base}: it already holds ${foreign.length} session(s) this script did not make (for example ${foreign[0]}). Pass --allow-existing to seed it anyway.`
+						: `Refusing ${base}: couldn't read its sessions to check it is a throwaway. Pass --allow-existing to seed it anyway.`,
+				);
+				process.exit(2);
+			}
+		}
 	} else {
 		const port = Number(option("--port") ?? DEFAULT_PORT);
 		const scratch = mkdtempSync(join(tmpdir(), "agentpulse-summary-seed-"));

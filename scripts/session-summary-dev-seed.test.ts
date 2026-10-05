@@ -1,6 +1,6 @@
 /** AGEN-69 phase 8b: the dev seed names the plan's 34 screens and refuses a non-loopback server. */
 import { describe, expect, test } from "bun:test";
-import { SCREENS } from "./session-summary-dev-seed.js";
+import { HELP, SCREENS, foreignSessionIds, isLoopbackUrl } from "./session-summary-dev-seed.js";
 
 const PLAN_SCREENS = [
 	"loading",
@@ -70,5 +70,54 @@ describe("the long screen fills every section to the server's cap", () => {
 	test("ten items of three hundred characters", async () => {
 		const seed = await import("./session-summary-dev-seed.js");
 		expect(seed.SCREENS.find((s) => s.name === "ready-long")?.variant).toBe("long");
+	});
+});
+
+describe("T-7 what counts as a throwaway loopback target", () => {
+	test("loopback by exact host only", () => {
+		for (const ok of ["http://127.0.0.1:3199", "http://localhost:3000", "http://[::1]:3000"]) {
+			expect(isLoopbackUrl(ok), ok).toBe(true);
+		}
+		for (const bad of [
+			"https://example.com",
+			"http://localhost.evil.com",
+			"http://127.0.0.1.nip.io",
+			"http://127.0.0.1@evil.com",
+			"not a url",
+		]) {
+			expect(isLoopbackUrl(bad), bad).toBe(false);
+		}
+	});
+
+	test("a lookalike host is refused as a script (exit 2) and --allow-remote lets it past that check", async () => {
+		const run = async (url: string, ...args: string[]) => {
+			const p = Bun.spawn(["bun", "scripts/session-summary-dev-seed.ts", ...args], {
+				cwd: `${import.meta.dir}/..`,
+				env: { ...process.env, AGENTPULSE_URL: url },
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const killer = setTimeout(() => p.kill(), 8000);
+			const code = await p.exited;
+			clearTimeout(killer);
+			return { code, err: await new Response(p.stderr).text() };
+		};
+		const refused = await run("http://localhost.evil.com");
+		expect(refused.code).toBe(2);
+		expect(refused.err).toContain("isn't a loopback address");
+		// With --allow-remote the loopback refusal is gone; the next check (an unreachable server) refuses instead.
+		const past = await run("http://localhost.evil.com:9", "--allow-remote");
+		expect(past.err).not.toContain("isn't a loopback address");
+	});
+
+	test("sessions this script didn't make mark a server as not a throwaway", () => {
+		expect(foreignSessionIds(["scr-ready", "demo-fresh"])).toEqual([]);
+		expect(foreignSessionIds(["scr-ready", "9f3c-real-work"])).toEqual(["9f3c-real-work"]);
+	});
+
+	test("the help says plainly what it writes and names both overrides", () => {
+		expect(HELP).toContain("WRITES");
+		expect(HELP).toContain("--allow-remote");
+		expect(HELP).toContain("--allow-existing");
 	});
 });
