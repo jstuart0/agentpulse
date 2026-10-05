@@ -119,14 +119,35 @@ const READY: SessionSummaryView = {
 	throughEventId: 140,
 };
 
-/** A view whose last attempt failed with `code`; with `base` READY it also carries the older stored summary. */
+/**
+ * A view whose last attempt failed with `code`; with `base` READY it also carries the older stored
+ * summary. It is a view the server can really produce at `FIXTURE_NOW`: a run that failed 20 seconds
+ * ago is inside the 30-second cooldown (`blocked: "summary_cooldown"`, the seconds left), except
+ * `interrupted` (a lapsed lease starts no cooldown, and its start is older) and
+ * `provider_key_unreadable` (written after the claim with the start cleared, so no cooldown and no
+ * start time).
+ */
 export function failedWith(
 	code: SummaryErrorCode,
 	base: SessionSummaryView = EMPTY,
 ): SessionSummaryView {
+	if (code === "provider_key_unreadable") {
+		return {
+			...base,
+			attempt: { status: "failed", startedAt: null, errorCode: code },
+		};
+	}
+	if (code === "interrupted") {
+		return {
+			...base,
+			attempt: { status: "failed", startedAt: "2026-10-04T11:50:00.000Z", errorCode: code },
+		};
+	}
 	return {
 		...base,
-		attempt: { status: "failed", startedAt: "2026-10-04T11:57:00.000Z", errorCode: code },
+		attempt: { status: "failed", startedAt: "2026-10-04T11:59:40.000Z", errorCode: code },
+		blocked: "summary_cooldown",
+		cooldownSeconds: 10,
 	};
 }
 
@@ -148,7 +169,13 @@ export const SUMMARY_VIEW_FIXTURES = {
 	failed: FAILED_VIEW_FIXTURES.parse_failed,
 	failed_ai_inactive: failedWith("ai_inactive", READY),
 	interrupted: FAILED_VIEW_FIXTURES.interrupted,
-	no_provider: { ...EMPTY, provider: null, blocked: "no_provider" },
+	// With no default provider `spend.maxCostCents` is 0 and means nothing.
+	no_provider: {
+		...EMPTY,
+		provider: null,
+		spend: { ...SPEND, maxCostCents: 0, maxCostWithRetryCents: 0 },
+		blocked: "no_provider",
+	},
 	spend_cap: {
 		...EMPTY,
 		spend: {
@@ -161,7 +188,13 @@ export const SUMMARY_VIEW_FIXTURES = {
 		blocked: "spend_cap_reached",
 	},
 	too_little_activity: { ...EMPTY, blocked: "too_little_activity" },
-	cooldown: { ...READY, blocked: "summary_cooldown", cooldownSeconds: 17 },
+	// A cooldown view always has the attempt's start: 13 s before FIXTURE_NOW leaves 17 s of 30.
+	cooldown: {
+		...READY,
+		attempt: { status: "idle", startedAt: "2026-10-04T11:59:47.000Z", errorCode: null },
+		blocked: "summary_cooldown",
+		cooldownSeconds: 17,
+	},
 	evidence_shrunk: { ...READY, evidenceShrunk: true },
 	suspect: {
 		...READY,

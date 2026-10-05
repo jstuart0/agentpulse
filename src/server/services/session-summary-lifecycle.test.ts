@@ -210,6 +210,7 @@ describe("P5-10 a watchdog frees a slot whose run hangs", () => {
 		} finally {
 			spy.mockRestore();
 		}
+		svc._setSummaryHooksForTest(null);
 		script(ok([editId]));
 		await H.runGeneration("lc-after");
 		expect((await H.readSummaryRow("lc-after"))?.attemptStatus).toBe("idle");

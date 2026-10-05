@@ -18,6 +18,7 @@ import {
 } from "../../shared/session-summary-view.js";
 import { SUMMARY_SCHEMA_VERSION, type StoredSessionSummary } from "../../shared/session-summary.js";
 import type { Actor } from "../auth/actor.js";
+import { config } from "../config.js";
 import { type Db, getDb } from "../db/client.js";
 import { aiSessionSummaries, llmProviders, sessions } from "../db/schema/index.js";
 import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../db/session-columns.js";
@@ -49,15 +50,19 @@ import {
 } from "./ai/session-summary/prompt.js";
 import {
 	ACTIVITY_ACTION_WINDOW,
+	ACTIVITY_PROMPT_OLDEST_WINDOW,
 	BUSY_RETRY_AFTER_SECONDS,
+	JOIN_WAIT_BUDGET_MS,
 	MAX_CONCURRENT_GENERATIONS,
 	MAX_INPUT_TOKENS,
 	MAX_OUTPUT_TOKENS,
 	SCAN_BUSY_RETRY_AFTER_SECONDS,
 	SHUTDOWN_RELEASE_BUDGET_MS,
 	SHUTTING_DOWN_RETRY_AFTER_SECONDS,
+	STALE_SCAN_WINDOW,
 	SUMMARY_COOLDOWN_SECONDS,
 	SUMMARY_LEASE_SECONDS,
+	URL_SCAN_SLICE_CHARS,
 } from "./ai/session-summary/service-limits.js";
 import { collectUserPromptUrls } from "./ai/session-summary/tripwire.js";
 import {
@@ -197,40 +202,66 @@ function nextLocalMidnightIso(now: Date = new Date()): string {
 
 // ── probes ───────────────────────────────────────────────────────────────────
 
-/** A prompt anywhere, or an action (not read-class) among the newest events. */
-async function hasEnoughActivity(sessionId: string): Promise<boolean> {
-	const query = sql`SELECT CASE WHEN
-		EXISTS (SELECT 1 FROM events p WHERE p.session_id = ${sessionId} AND ${effectiveCategory("p")} = 'prompt')
-		OR EXISTS (
-			SELECT 1 FROM (
-				SELECT id, category, event_type, tool_name FROM events
-				WHERE session_id = ${sessionId} ORDER BY id DESC LIMIT ${sql.raw(String(ACTIVITY_ACTION_WINDOW))}
-			) a WHERE ${classExpression("a")} = 'action')
+/**
+ * Whether the session has enough to summarise, and its oldest event id now (null when it has no
+ * events), in one statement. "Enough" is a prompt in the oldest `ACTIVITY_PROMPT_OLDEST_WINDOW`
+ * or newest `ACTIVITY_ACTION_WINDOW` events, or an action (not read-class) in the newest ones.
+ * Both windows are index range scans on (session_id, id), so a view costs a bounded read, never a
+ * scan of a long session. A session whose only prompt sits in the unscanned middle of a very long
+ * history reads as "too little activity" until it has newer activity. The view and the POST both
+ * ask this one question, so the button is never offered and then refused.
+ */
+async function probeActivity(
+	sessionId: string,
+): Promise<{ enough: boolean; firstEventId: number | null }> {
+	const query = sql`SELECT
+		(SELECT min(id) FROM events WHERE session_id = ${sessionId}) AS min_id,
+		CASE WHEN
+			EXISTS (
+				SELECT 1 FROM (
+					SELECT id, category, event_type FROM events
+					WHERE session_id = ${sessionId} ORDER BY id ASC LIMIT ${sql.raw(String(ACTIVITY_PROMPT_OLDEST_WINDOW))}
+				) o WHERE ${effectiveCategory("o")} = 'prompt')
+			OR EXISTS (
+				SELECT 1 FROM (
+					SELECT id, category, event_type, tool_name FROM events
+					WHERE session_id = ${sessionId} ORDER BY id DESC LIMIT ${sql.raw(String(ACTIVITY_ACTION_WINDOW))}
+				) n WHERE ${effectiveCategory("n")} = 'prompt' OR ${classExpression("n")} = 'action')
 		THEN 1 ELSE 0 END AS enough`;
-	const [row] = await runInOwnTurn(() => executeRows<{ enough: number | string }>(getDb(), query));
-	return Number(row?.enough ?? 0) === 1;
+	const [row] = await runInOwnTurn(() =>
+		executeRows<{ enough: number | string; min_id: number | string | null }>(getDb(), query),
+	);
+	return {
+		enough: Number(row?.enough ?? 0) === 1,
+		firstEventId: row?.min_id === null || row?.min_id === undefined ? null : Number(row.min_id),
+	};
 }
 
-/** Material events after `throughEventId` (everything but `user_ack`, NULL categories included), counted up to the cap. */
+/**
+ * Material events after `throughEventId` (everything but `user_ack`, NULL categories included),
+ * counted up to the cap, inside a window of `STALE_SCAN_WINDOW` rows: a long tail of
+ * acknowledgements cannot make a view cost a session scan. When the window fills before the cap is
+ * reached the count is a lower bound.
+ */
 async function countStaleEvents(sessionId: string, throughEventId: number): Promise<number> {
 	const query = sql`SELECT count(*) AS n FROM (
-		SELECT 1 FROM events WHERE session_id = ${sessionId} AND id > ${throughEventId}
-		AND COALESCE(category, '') <> 'user_ack' LIMIT ${sql.raw(String(STALE_EVENT_COUNT_CAP))}
+		SELECT 1 FROM (
+			SELECT category FROM events WHERE session_id = ${sessionId} AND id > ${throughEventId}
+			ORDER BY id ASC LIMIT ${sql.raw(String(STALE_SCAN_WINDOW))}
+		) w WHERE COALESCE(w.category, '') <> 'user_ack' LIMIT ${sql.raw(String(STALE_EVENT_COUNT_CAP))}
 	) AS stale`;
 	const [row] = await runInOwnTurn(() => executeRows<{ n: number | string }>(getDb(), query));
 	return Number(row?.n ?? 0);
 }
 
-/** The session's oldest event id now; null when it has none. */
-async function readFirstEventId(sessionId: string): Promise<number | null> {
-	const query = sql`SELECT min(id) AS min_id FROM events WHERE session_id = ${sessionId}`;
-	const [row] = await executeRows<{ min_id: number | string | null }>(getDb(), query);
-	return row?.min_id === null || row?.min_id === undefined ? null : Number(row.min_id);
-}
-
 // ── the view ─────────────────────────────────────────────────────────────────
 
-async function readSessionAndRow(sessionId: string) {
+/**
+ * The session and its summary row in one read. `omitSummary` leaves out the summary body (the
+ * 30 to 60 KB column) for a polled view, which never returns it; the provenance is still read,
+ * because the shrunk-evidence rule needs its first event id.
+ */
+async function readSessionAndRow(sessionId: string, omitSummary = false) {
 	const [row] = await getDb()
 		.select({
 			sessionId: sessions.sessionId,
@@ -240,8 +271,23 @@ async function readSessionAndRow(sessionId: string) {
 			throughEventId: aiSessionSummaries.throughEventId,
 			attemptStartedAt: aiSessionSummaries.attemptStartedAt,
 			attemptErrorCode: aiSessionSummaries.attemptErrorCode,
-			summary: aiSessionSummaries.summary,
+			summary: omitSummary ? sql<null>`NULL` : aiSessionSummaries.summary,
 			provenance: aiSessionSummaries.provenance,
+		})
+		.from(sessions)
+		.leftJoin(aiSessionSummaries, eq(aiSessionSummaries.sessionId, sessions.sessionId))
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	return row ?? null;
+}
+
+/** The attempt columns only (the POST never reads the summary or its provenance), or null for an unknown session. */
+async function readAttemptRow(sessionId: string): Promise<AttemptColumns | null> {
+	const [row] = await getDb()
+		.select({
+			attemptStatus: aiSessionSummaries.attemptStatus,
+			attemptStartedAt: aiSessionSummaries.attemptStartedAt,
+			attemptErrorCode: aiSessionSummaries.attemptErrorCode,
 		})
 		.from(sessions)
 		.leftJoin(aiSessionSummaries, eq(aiSessionSummaries.sessionId, sessions.sessionId))
@@ -258,7 +304,10 @@ function storedOf(row: SessionAndRow): StoredSessionSummary | null {
 		: null;
 }
 
-function attemptOf(row: SessionAndRow, judgement: AttemptJudgement): SessionSummaryView["attempt"] {
+function attemptOf(
+	row: AttemptColumns,
+	judgement: AttemptJudgement,
+): SessionSummaryView["attempt"] {
 	const startedAt = isoOf(row.attemptStartedAt);
 	if (judgement.kind === "lapsed") return { status: "failed", startedAt, errorCode: "interrupted" };
 	const status =
@@ -275,19 +324,27 @@ function attemptOf(row: SessionAndRow, judgement: AttemptJudgement): SessionSumm
 /**
  * The summary of a session as the Summary tab shows it, or null for an unknown
  * session. Rejects with `OwnTurnBusyError` when the scan queue is full. While a
- * generation is live only the row is read: the provider, spend and staleness
- * fields are then placeholders (see the phase 5 report).
+ * generation is live nothing blocks (a joiner needs no budget) and only the capped stale
+ * probe reads events, so a stale summary is not shown as current during its own update; the
+ * shrunk-evidence and retention fields are then placeholders. `omitStored` is the polled
+ * view (`?poll=1`): the same view without the stored summary, marked `storedOmitted`.
  */
-export async function getSessionSummaryView(sessionId: string): Promise<SessionSummaryView | null> {
-	const row = await readSessionAndRow(sessionId);
+export async function getSessionSummaryView(
+	sessionId: string,
+	options: { omitStored?: boolean } = {},
+): Promise<SessionSummaryView | null> {
+	const omitStored = options.omitStored === true;
+	const row = await readSessionAndRow(sessionId, omitStored);
 	if (!row) return null;
 	const clock = clockAt();
 	const judgement = judgeAttempt(row, clock);
-	const stored = storedOf(row);
+	const stored = omitStored ? null : storedOf(row);
+	const hasStored = omitStored ? row.provenance !== null : stored !== null;
 	const base = {
 		stored,
-		generatedAt: stored ? isoOf(row.generatedAt) : null,
-		throughEventId: stored ? row.throughEventId : null,
+		...(omitStored ? { storedOmitted: true as const } : {}),
+		generatedAt: hasStored ? isoOf(row.generatedAt) : null,
+		throughEventId: hasStored ? row.throughEventId : null,
 		attempt: attemptOf(row, judgement),
 	};
 	const midnight = nextLocalMidnightIso();
@@ -302,11 +359,14 @@ export async function getSessionSummaryView(sessionId: string): Promise<SessionS
 		resetsAt: midnight,
 	};
 	const shownProvider = provider ? { kind: provider.kind, model: provider.model } : null;
+	const staleEvents =
+		hasStored && row.throughEventId !== null
+			? await countStaleEvents(sessionId, row.throughEventId)
+			: 0;
 	if (judgement.kind === "live") {
-		// A joiner needs no budget: nothing blocks, and staleness is not read while a generation runs.
 		return {
 			...base,
-			staleEvents: 0,
+			staleEvents,
 			evidenceShrunk: false,
 			blocked: null,
 			cooldownSeconds: null,
@@ -314,21 +374,14 @@ export async function getSessionSummaryView(sessionId: string): Promise<SessionS
 			spend,
 		};
 	}
-	let staleEvents = 0;
+	const { enough: enoughActivity, firstEventId: firstNow } = await probeActivity(sessionId);
 	let evidenceShrunk = false;
-	let enoughActivity = true;
 	let retentionDays: number | undefined;
-	if (stored) {
-		if (row.throughEventId !== null)
-			staleEvents = await countStaleEvents(sessionId, row.throughEventId);
-		const firstNow = await readFirstEventId(sessionId);
-		const firstThen = stored.provenance.firstEventId;
+	if (hasStored) {
+		const firstThen = (row.provenance as { firstEventId: number | null }).firstEventId;
 		evidenceShrunk = firstNow === null || (firstThen !== null && firstNow > firstThen);
-		enoughActivity = firstNow !== null;
 		const days = await readRetentionDays();
 		if (days > 0) retentionDays = days;
-	} else {
-		enoughActivity = await hasEnoughActivity(sessionId);
 	}
 
 	let blocked: SummaryBlockReason | null = null;
@@ -381,9 +434,20 @@ interface Entry {
 	taken: boolean;
 	/** Settles when the request that created this entry has its answer (claim won or lost, or an exit). */
 	requestSettled: Promise<void>;
+	/** Set by `finish` when it takes the entry: settles when the row write and the settlement are done. */
+	settling: Promise<void> | null;
+	/** Fires at the lease expiry if the run is still hanging: see `expireEntry`. */
+	watchdog: ReturnType<typeof setTimeout> | null;
 }
 
 const entries = new Set<Entry>();
+
+/** Takes an entry out of the set for good, and stops its watchdog. */
+function dropEntry(entry: Entry): void {
+	if (entry.watchdog !== null) clearTimeout(entry.watchdog);
+	entry.watchdog = null;
+	entries.delete(entry);
+}
 
 /** Points where a test may observe or hold the flow; production never sets them. */
 export type SummaryStep =
@@ -394,10 +458,13 @@ export type SummaryStep =
 	| "claim"
 	| "audit"
 	| "start"
+	| "join_wait"
 	| "finish_write";
 
 export interface SummaryTestHooks {
 	at?: (step: SummaryStep) => void | Promise<void>;
+	/** The watchdog's delay in place of the lease (milliseconds). */
+	watchdogMs?: number;
 }
 
 let hooks: SummaryTestHooks | null = null;
@@ -412,8 +479,10 @@ export function _setSummaryHooksForTest(next: SummaryTestHooks | null): void {
 
 /** Abandons every running generation as a dead process would: nothing is written or settled. */
 export function _resetSummaryGenerationsForTest(): void {
-	for (const entry of entries) entry.taken = true;
-	entries.clear();
+	for (const entry of [...entries]) {
+		entry.taken = true;
+		dropEntry(entry);
+	}
 }
 
 export function _summaryGenerationCountForTest(): number {
@@ -656,6 +725,30 @@ async function callModel(
 	return { response };
 }
 
+const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * The URLs the user typed, collected in slices of about `URL_SCAN_SLICE_CHARS` characters with the
+ * event loop let go between them: one pass over up to half a megabyte of prompt text held it for
+ * 200 ms under load, long enough to delay a hook ingest.
+ */
+async function collectUrlsInSlices(texts: string[]): Promise<Set<string>> {
+	const urls = new Set<string>();
+	let slice: string[] = [];
+	let chars = 0;
+	for (const text of texts) {
+		slice.push(text);
+		chars += text.length;
+		if (chars < URL_SCAN_SLICE_CHARS) continue;
+		for (const url of collectUserPromptUrls(slice)) urls.add(url);
+		slice = [];
+		chars = 0;
+		await nextTurn();
+	}
+	for (const url of collectUserPromptUrls(slice)) urls.add(url);
+	return urls;
+}
+
 /** The session row, by named columns (no ownership ids), or null when it is gone. */
 async function readSessionRow(sessionId: string) {
 	const [row] = await getDb()
@@ -672,7 +765,7 @@ async function generate(ctx: RunContext): Promise<Outcome> {
 	const { entry, provider } = ctx;
 	const bundle = await loadEvidence(entry.sessionId);
 	if (bundle.throughEventId === null) return failure(entry, "internal_error");
-	const userPromptUrls = collectUserPromptUrls(userPromptTexts(bundle));
+	const userPromptUrls = await collectUrlsInSlices(userPromptTexts(bundle));
 	const ledger: Ledger = await buildLedgerAsync({
 		rows: bundle.rows,
 		firstPromptRows: bundle.firstPromptRows,
@@ -756,33 +849,48 @@ async function finish(
 	if (entry.taken) return;
 	entry.taken = true;
 	entry.phase = "finishing";
+	const settling = settleRun(entry, token, outcome, detail);
+	entry.settling = settling;
+	await settling;
+}
+
+/** The finisher's work after it owns the entry: the row write, the settlement, then the slot goes. */
+async function settleRun(
+	entry: Entry,
+	token: string,
+	outcome: Outcome,
+	detail: FailureDetail | null,
+): Promise<void> {
 	try {
-		await at("finish_write");
-		if (outcome.ok) {
-			await writeAttempt(entry.sessionId, token, {
-				summary: outcome.stored.summary,
-				provenance: outcome.stored.provenance,
-				schemaVersion: SUMMARY_SCHEMA_VERSION,
-				generatedAt: toDbTimestamp(new Date()),
-				throughEventId: outcome.throughEventId,
-				attemptStatus: "idle",
-				attemptErrorCode: null,
-			});
-		} else {
-			console.warn(
-				"[session-summary] attempt failed",
-				JSON.stringify({
-					code: outcome.code,
-					subType: detail?.subType ?? null,
-					status: detail?.status ?? null,
-				}),
+		try {
+			await at("finish_write");
+			if (outcome.ok) {
+				await writeAttempt(entry.sessionId, token, {
+					summary: outcome.stored.summary,
+					provenance: outcome.stored.provenance,
+					schemaVersion: SUMMARY_SCHEMA_VERSION,
+					generatedAt: toDbTimestamp(new Date()),
+					throughEventId: outcome.throughEventId,
+					attemptStatus: "idle",
+					attemptErrorCode: null,
+				});
+			} else {
+				console.warn(
+					"[session-summary] attempt failed",
+					JSON.stringify({
+						code: outcome.code,
+						subType: detail?.subType ?? null,
+						status: detail?.status ?? null,
+					}),
+				);
+				await writeAttempt(entry.sessionId, token, failedRow(outcome.code));
+			}
+		} catch (error) {
+			console.error(
+				"[session-summary] row write failed",
+				JSON.stringify({ code: errorName(error) }),
 			);
-			await writeAttempt(entry.sessionId, token, failedRow(outcome.code));
 		}
-	} catch (error) {
-		console.error("[session-summary] row write failed", JSON.stringify({ code: errorName(error) }));
-	}
-	try {
 		await withOneRetry("settlement", () =>
 			settleReservedSpend(entry.reservation as SpendReservation, {
 				sessionId: entry.sessionId,
@@ -790,7 +898,7 @@ async function finish(
 			}),
 		);
 	} finally {
-		entries.delete(entry);
+		dropEntry(entry);
 	}
 }
 
@@ -831,7 +939,7 @@ async function runGeneration(ctx: RunContext): Promise<void> {
 	try {
 		await finish(ctx, outcome, detail);
 	} finally {
-		if (!ctx.entry.taken) entries.delete(ctx.entry);
+		if (!ctx.entry.taken) dropEntry(ctx.entry);
 	}
 }
 
@@ -899,12 +1007,27 @@ function takeSlot(entry: Entry, caller: SummaryRequestCaller): SessionSummaryRef
 async function joinOrRefuse(
 	sessionId: string,
 	fallback: SessionSummaryRefusalBody,
+	own: Entry,
 ): Promise<SummaryRequestResult> {
 	// A request for this very session that holds a slot is about to win the claim or lose it:
-	// wait for its answer, so a caller that raced it joins instead of being told "busy".
-	const racing = [...entries].filter((held) => held.sessionId === sessionId);
-	await Promise.all(racing.map((held) => held.requestSettled));
-	const row = await readSessionAndRow(sessionId);
+	// wait for its answer, so a caller that raced it joins instead of being told "busy". The
+	// caller's own entry is not waited on (its request settles only when this call returns, so
+	// waiting on it would never end), and the wait is bounded: a holder stuck before its claim
+	// must not hold this caller too.
+	const racing = [...entries].filter((held) => held !== own && held.sessionId === sessionId);
+	if (racing.length > 0) {
+		await at("join_wait");
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const bound = new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, JOIN_WAIT_BUDGET_MS);
+		});
+		try {
+			await Promise.race([Promise.all(racing.map((held) => held.requestSettled)), bound]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+	const row = await readAttemptRow(sessionId);
 	if (!row) return refuse({ error: "session_not_found" });
 	const judgement = judgeAttempt(row, clockAt());
 	if (judgement.kind === "live") return joinedOf(row);
@@ -924,7 +1047,7 @@ export async function requestSummaryGeneration(
 	sessionId: string,
 	caller: SummaryRequestCaller,
 ): Promise<SummaryRequestResult> {
-	const row = await readSessionAndRow(sessionId);
+	const row = await readAttemptRow(sessionId);
 	if (!row) return refuse({ error: "session_not_found" });
 	await at("row_read");
 	if (isShuttingDown()) {
@@ -938,7 +1061,7 @@ export async function requestSummaryGeneration(
 
 	let enough: boolean;
 	try {
-		enough = await hasEnoughActivity(sessionId);
+		enough = (await probeActivity(sessionId)).enough;
 	} catch (error) {
 		if (error instanceof OwnTurnBusyError) {
 			return refuse({ error: "busy", retryAfterSeconds: SCAN_BUSY_RETRY_AFTER_SECONDS });
@@ -963,9 +1086,12 @@ export async function requestSummaryGeneration(
 		requestSettled: new Promise<void>((resolve) => {
 			settleRequest = resolve;
 		}),
+		settling: null,
+		watchdog: null,
 	};
 	const slotRefusal = takeSlot(entry, caller);
-	if (slotRefusal) return joinOrRefuse(sessionId, slotRefusal);
+	if (slotRefusal) return joinOrRefuse(sessionId, slotRefusal, entry);
+	armWatchdog(entry);
 
 	let reservation: SpendReservation | null = null;
 	let claimedToken: string | null = null;
@@ -985,16 +1111,18 @@ export async function requestSummaryGeneration(
 				maxCostCents,
 			});
 		}
+		entry.reservation = reservation;
 		await at("reserve");
 		const now = new Date();
 		const token = randomUUID();
 		const claim = await claimOrNotFound(sessionId, token, now);
 		if (claim === "not_found") return refuse({ error: "session_not_found" });
 		if (claim === "lost") {
-			return joinOrRefuse(sessionId, {
-				error: "busy",
-				retryAfterSeconds: SCAN_BUSY_RETRY_AFTER_SECONDS,
-			});
+			return joinOrRefuse(
+				sessionId,
+				{ error: "busy", retryAfterSeconds: SCAN_BUSY_RETRY_AFTER_SECONDS },
+				entry,
+			);
 		}
 		claimedToken = token;
 		await at("claim");
@@ -1003,19 +1131,22 @@ export async function requestSummaryGeneration(
 		// starts no cooldown, so someone fixing their key is not locked out.
 		const key = await readProviderKey(provider.id);
 		await at("audit");
-		logAdminAction("session_summary_requested", caller.actor, {
-			sessionId,
-			providerKind: provider.kind,
-			model: provider.model,
-		});
 		await at("start");
-		if (isShuttingDown()) {
+		// The last check before the hand-over; the audit line follows it, so a request refused here
+		// logs nothing (one line per accepted request). An entry the watchdog took while this request
+		// was stuck is no longer ours to run.
+		if (isShuttingDown() || entry.taken) {
 			exitCode = "interrupted";
 			return refuse({
 				error: "shutting_down",
 				retryAfterSeconds: SHUTTING_DOWN_RETRY_AFTER_SECONDS,
 			});
 		}
+		logAdminAction("session_summary_requested", caller.actor, {
+			sessionId,
+			providerKind: provider.kind,
+			model: provider.model,
+		});
 
 		if (key === null) {
 			exitCode = "provider_key_unreadable";
@@ -1035,7 +1166,7 @@ export async function requestSummaryGeneration(
 	} finally {
 		try {
 			if (!handedOver) {
-				entries.delete(entry);
+				dropEntry(entry);
 				if (claimedToken) {
 					await writeAttempt(sessionId, claimedToken, {
 						...failedRow(exitCode),
@@ -1051,6 +1182,59 @@ export async function requestSummaryGeneration(
 			settleRequest();
 		}
 	}
+}
+
+/**
+ * The watchdog: a run still holding its slot at the lease expiry is hanging (an evidence read or a
+ * database call that never returns), and without this the slot would stay taken until restart, so
+ * two such hangs would switch the feature off. The entry is taken and settled as a shutdown release
+ * does (a call in flight is an unknown outcome, charged its maximum), which frees the slot; if the
+ * run ever wakes, it finds the entry taken and writes and settles nothing.
+ */
+function armWatchdog(entry: Entry): void {
+	const delayMs = hooks?.watchdogMs ?? SUMMARY_LEASE_SECONDS * 1000;
+	const timer = setTimeout(() => {
+		void expireEntry(entry).catch((error: unknown) => {
+			console.error(
+				"[session-summary] watchdog failed",
+				JSON.stringify({ code: errorName(error) }),
+			);
+		});
+	}, delayMs);
+	timer.unref?.();
+	entry.watchdog = timer;
+}
+
+async function expireEntry(entry: Entry): Promise<void> {
+	entry.watchdog = null;
+	if (entry.taken) return;
+	entry.taken = true;
+	console.error("[session-summary] run outlived its lease", JSON.stringify({ phase: entry.phase }));
+	if (entry.token === null) {
+		// Stuck before the hand-over: free the slot and give back the reservation now; if the
+		// request wakes it sees the entry taken, ends interrupted and releases nothing twice.
+		const held = entry.reservation;
+		dropEntry(entry);
+		if (held) await withOneRetry("reservation release", () => releaseReservedSpend(held));
+		return;
+	}
+	await releaseEntry(entry);
+}
+
+/**
+ * Boot, single-replica (SQLite) only: a row left `generating` by a process that was killed is
+ * marked `failed / interrupted` with its token cleared, so the page does not say "generating" for
+ * the rest of the lease. On Postgres another replica may own the row, so nothing is touched.
+ * Returns how many rows it recovered.
+ */
+export async function recoverInterruptedSummaries(): Promise<number> {
+	if (config.dialect === "postgres") return 0;
+	const rows = await getDb()
+		.update(aiSessionSummaries)
+		.set({ attemptStatus: "failed", attemptErrorCode: "interrupted", attemptToken: null })
+		.where(eq(aiSessionSummaries.attemptStatus, "generating"))
+		.returning({ id: aiSessionSummaries.sessionId });
+	return rows.length;
 }
 
 /** Gives one taken entry back at shutdown: the row says interrupted, the reservation is settled per D-25. */
@@ -1078,7 +1262,7 @@ async function releaseEntry(entry: Entry): Promise<void> {
 			);
 		}
 	} finally {
-		entries.delete(entry);
+		dropEntry(entry);
 	}
 }
 
@@ -1087,13 +1271,19 @@ async function releaseEntry(entry: Entry): Promise<void> {
  * its row marked failed / interrupted (token cleared) and its reservation settled. A
  * released run that later completes writes and settles nothing. An entry with no token
  * yet (between the claim and the hand-over) is skipped: nothing was sent, and its own
- * request returns any reservation. Idempotent, and returns within the budget even when
- * a write hangs.
+ * request returns any reservation. An entry already writing its result is waited for. Idempotent,
+ * and returns within the budget even when a write hangs.
  */
 export async function releaseOwnSummaryClaims(): Promise<void> {
 	const work: Promise<void>[] = [];
 	for (const entry of entries) {
-		if (entry.taken || entry.token === null || entry.phase === "finishing") continue;
+		if (entry.taken) {
+			// A finisher that is writing its result owns the entry; wait for it, within the budget,
+			// so a kill during the write does not lose a billed answer.
+			if (entry.phase === "finishing" && entry.settling) work.push(entry.settling);
+			continue;
+		}
+		if (entry.token === null) continue;
 		entry.taken = true;
 		work.push(releaseEntry(entry));
 	}

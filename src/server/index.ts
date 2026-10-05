@@ -27,7 +27,10 @@ import {
 } from "./services/projects/projects-service.js";
 import { scheduleRetentionInterval } from "./services/retention-service.js";
 import { buildSqliteScaleWarning, detectOrchestratorHint } from "./services/scale-warning.js";
-import { releaseOwnSummaryClaims } from "./services/session-summary-service.js";
+import {
+	recoverInterruptedSummaries,
+	releaseOwnSummaryClaims,
+} from "./services/session-summary-service.js";
 import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
@@ -168,6 +171,11 @@ try {
 	console.error(`[boot] ${err instanceof Error ? err.message : String(err)}`);
 	process.exit(1);
 }
+// A summary the previous process left "generating" is marked interrupted now, not after its lease
+// (single-replica SQLite only; the function does nothing on Postgres).
+await recoverInterruptedSummaries().catch((err) => {
+	console.error("[boot] summary recovery failed:", err instanceof Error ? err.name : "unknown");
+});
 // The default key is minted before the warning looks for unlisted admin service keys.
 const defaultKey = await ensureDefaultKeyThenWarn();
 await warnAboutRiskySubjectSourceAdmins();

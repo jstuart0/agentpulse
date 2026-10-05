@@ -13,8 +13,20 @@ export const SUMMARY_COOLDOWN_SECONDS = 30;
 export const SUMMARY_LEASE_SECONDS = 300;
 /** Generations running at once in this process, counting one that is writing its result. */
 export const MAX_CONCURRENT_GENERATIONS = 2;
-/** The too-little-activity probe looks for an action in this many newest events (a prompt counts anywhere). */
+/**
+ * The too-little-activity probe (R-N) scans two bounded windows of the session's events: a prompt
+ * in the oldest `ACTIVITY_PROMPT_OLDEST_WINDOW`, or a prompt or an action in the newest
+ * `ACTIVITY_ACTION_WINDOW`. A session whose only prompt sits in the unscanned middle of a very
+ * long history reads as "too little activity" until it has newer activity.
+ */
 export const ACTIVITY_ACTION_WINDOW = 5000;
+export const ACTIVITY_PROMPT_OLDEST_WINDOW = 2000;
+/** The stale probe scans at most this many events after a summary's last one; a full window makes the count a lower bound. */
+export const STALE_SCAN_WINDOW = 500;
+/** A caller refused a slot waits at most this long for a same-session request that holds one, then answers busy. */
+export const JOIN_WAIT_BUDGET_MS = 5000;
+/** Prompt text is scanned for typed URLs in slices of about this many characters, yielding the event loop between them. */
+export const URL_SCAN_SLICE_CHARS = 32_768;
 /** `releaseOwnSummaryClaims` returns after this long even if a write is still pending. */
 export const SHUTDOWN_RELEASE_BUDGET_MS = 2000;
 

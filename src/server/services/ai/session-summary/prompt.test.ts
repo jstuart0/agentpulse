@@ -158,7 +158,7 @@ describe("system prompt", () => {
 		const PINNED: Record<string, string> = {
 			"1": "175a86a8351b3eb75995daa5028b106fac8dd14d4fc57c32dc42deb7a36aa663",
 			"2": "747e739216c16c4910376061eeb3f3dc3178e5991efd71bd77e975969cfaa53b",
-			"3": "to be pinned with the version bump",
+			"3": "90703a05ca20a6d39ccd6bf8c294d8dc3badfe8d49fbdef0b5018b7b5c3449e3",
 		};
 		expect(Object.keys(PINNED)).toHaveLength(Number(PROMPT_VERSION));
 		expect(PINNED[PROMPT_VERSION]).toBe(sha256(SESSION_SUMMARY_SYSTEM_PROMPT));

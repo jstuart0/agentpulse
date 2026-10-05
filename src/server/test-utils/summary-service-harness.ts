@@ -253,6 +253,23 @@ export function storedSummary(over: {
 	};
 }
 
+/** A summary of about 10 KB (three full sections), the size a regeneration poll would have resent every two seconds. */
+export function largeSummary(): StoredSessionSummary["summary"] {
+	const item = (n: number) => ({
+		text: `${"detail ".repeat(60)}${n}`.slice(0, 300),
+		evidence: ["E1"],
+		unverified: false,
+	});
+	const many = (count: number) => Array.from({ length: count }, (_, i) => item(i));
+	return {
+		...STORED.summary,
+		accomplishments: many(10),
+		problems: many(10),
+		unfinished: many(10),
+		handoff: "h".repeat(3000),
+	};
+}
+
 export async function seedReadySummary(
 	sessionId: string,
 	opts: { throughEventId: number; firstEventId: number; generatedAt?: string; startedAt?: string },

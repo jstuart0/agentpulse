@@ -168,4 +168,3 @@ describe("fixture truth (P5-20): each fixture is a view the server can really pr
 		expect(SUMMARY_VIEW_FIXTURES.no_provider.provider).toBeNull();
 	});
 });
-

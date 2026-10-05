@@ -45,7 +45,7 @@ const REFUSAL_STATUS: Record<SummaryRefusalCode, ContentfulStatusCode> = {
 	too_little_activity: 409,
 	busy: 503,
 	no_provider: 409,
-	provider_key_unreadable: 409,
+	provider_key_unreadable: 409, // no longer produced: an unreadable key is a failed attempt
 	summary_cooldown: 429,
 	caller_generation_running: 409,
 	spend_cap_reached: 409,
@@ -79,6 +79,7 @@ function callerSubject(c: Context): string {
 }
 
 // GET: build + flag. A stored summary stays readable while AI is switched off or paused (D-5).
+// `?poll=1` (and only the value 1) is the polled view: the same view without the stored summary.
 aiSessionSummaryRouter.get("/ai/sessions/:sessionId/summary", async (c) => {
 	const build = await requireAiBuild(c);
 	if (build) return asContractRefusal(c, build);
@@ -87,7 +88,9 @@ aiSessionSummaryRouter.get("/ai/sessions/:sessionId/summary", async (c) => {
 
 	let view: Awaited<ReturnType<typeof getSessionSummaryView>>;
 	try {
-		view = await getSessionSummaryView(c.req.param("sessionId") ?? "");
+		view = await getSessionSummaryView(c.req.param("sessionId") ?? "", {
+			omitStored: c.req.query("poll") === "1",
+		});
 	} catch (error) {
 		if (!(error instanceof OwnTurnBusyError)) throw error;
 		return refuse(c, { error: "busy", retryAfterSeconds: 1 });

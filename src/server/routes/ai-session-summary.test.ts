@@ -914,7 +914,7 @@ describe("the GET body has the fixture's shape", () => {
 					generatedAt: toDbTimestamp(new Date(Date.now() - 600_000)),
 					throughEventId: edit,
 					attemptStatus: "failed",
-					attemptStartedAt: toDbTimestamp(new Date(Date.now() - 300_000)),
+					attemptStartedAt: toDbTimestamp(new Date(Date.now() - 20_000)),
 					attemptErrorCode: "ai_inactive",
 					summary: H.storedSummary({ firstEventId: edit - 1 }).summary,
 					provenance: H.storedSummary({ firstEventId: edit - 1 }).provenance,
@@ -956,7 +956,10 @@ describe("the GET body has the fixture's shape", () => {
 			await activeSession(SID);
 			await H.seedSummaryRow(SID, {
 				attemptStatus: "failed",
-				attemptStartedAt: toDbTimestamp(new Date(Date.now() - 300_000)),
+				// A real freshly failed run is inside its cooldown, except one that was interrupted and one
+				// whose key could not be read (written with no start): the fixtures say so too.
+				attemptStartedAt:
+					code === "provider_key_unreadable" ? null : toDbTimestamp(new Date(Date.now() - 20_000)),
 				attemptErrorCode: code,
 			});
 			const { answered, shape } = await viewShape();
@@ -1149,6 +1152,10 @@ describe("the polled view (R-K)", () => {
 		const headers = disableAuth();
 		const edit = await activeSession(SID);
 		await H.seedReadySummary(SID, { throughEventId: edit, firstEventId: edit - 1 });
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({ summary: H.largeSummary() as never })
+			.where(eq(aiSessionSummaries.sessionId, SID));
 		const gate = scriptGated([edit]);
 		expect((await post(SID, headers)).status).toBe(202);
 		await H.withDeadline(gate.arrived);
