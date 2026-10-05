@@ -2,8 +2,8 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { SessionSummaryView } from "../../../shared/session-summary-view.js";
 import type { StoredSessionSummary } from "../../../shared/session-summary.js";
-import { useCopiedFlash } from "../../hooks/useCopiedFlash.js";
 import type { SummaryAnnouncement, UseSessionSummary } from "../../hooks/useSessionSummary.js";
+import { useCopyActions, useGenerateClick } from "../../hooks/useSummaryActions.js";
 import type { AiStatusResponse } from "../../lib/api.js";
 import {
 	type ActionState,
@@ -21,12 +21,7 @@ import {
 	relativeAgo,
 	shouldFocusHeading,
 } from "../../lib/session-summary-view.js";
-import {
-	COPY_ANNOUNCEMENT,
-	type CopyKind,
-	buildCopyText,
-	copyToClipboard,
-} from "../../lib/summary-copy.js";
+import type { CopyKind } from "../../lib/summary-copy.js";
 import { cn } from "../../lib/utils.js";
 import { ConfirmDialog } from "../ConfirmDialog.js";
 import { LabsBadge } from "../LabsBadge.js";
@@ -97,8 +92,18 @@ export function SessionSummaryPanel(props: SessionSummaryPanelProps) {
 	const now = useNow(generating && !lostContact, props.clock?.now);
 	const clock: ClockOptions = { ...props.clock, now };
 	const model = deriveSummaryView(load, aiStatus, viewer, clock);
-	const [fallback, setFallback] = useState<string | null>(null);
-	const [copied, flashCopied] = useCopiedFlash();
+	const stored0 =
+		model && (model.content.kind === "ready" || model.content.kind === "stale")
+			? model.content.stored
+			: null;
+	const actions = useCopyActions({
+		stored: stored0,
+		meta: props.meta,
+		generatedAt: load.status === "ready" ? load.view.generatedAt : null,
+		staleEvents: load.status === "ready" ? load.view.staleEvents : 0,
+		announce: props.announce,
+	});
+	const { copied, fallback } = actions;
 	if (load.status === "unavailable") return null;
 	const view = load.status === "ready" ? load.view : null;
 	const stored =
@@ -106,19 +111,7 @@ export function SessionSummaryPanel(props: SessionSummaryPanelProps) {
 			? model.content.stored
 			: null;
 	const stale = model?.content.kind === "stale";
-	async function copy(kind: CopyKind) {
-		if (!stored) return;
-		const text = buildCopyText(kind, stored, {
-			...(props.meta ?? { name: null, branch: null, cwd: null }),
-			generatedAt: view?.generatedAt,
-			staleEvents: view?.staleEvents,
-		});
-		if ((await copyToClipboard(text)) === "copied") {
-			setFallback(null);
-			flashCopied(kind);
-			props.announce?.(COPY_ANNOUNCEMENT[kind]);
-		} else setFallback(text);
-	}
+	const copy = actions.copy;
 	const body = model ? { ...props, model, view, clock } : null;
 	return (
 		<section
@@ -149,7 +142,7 @@ export function SessionSummaryPanel(props: SessionSummaryPanelProps) {
 							copied={copied}
 							onCopy={(kind) => void copy(kind)}
 							fallback={fallback}
-							onCloseFallback={() => setFallback(null)}
+							onCloseFallback={actions.closeFallback}
 						/>
 					</div>
 				)}
@@ -431,16 +424,15 @@ function AvailableAction(
 	props: BodyProps & { action: Extract<ActionState, { kind: "available" }> },
 ) {
 	const { action, refusal } = props;
-	const [confirming, setConfirming] = useState(false);
+	const counting0 = refusal?.countdownSeconds != null;
+	const { confirming, click, confirm, cancel } = useGenerateClick({
+		generate: props.generate,
+		counting: counting0,
+	});
 	const printId = useId();
 	const buttonId = useId();
 	const counting = refusal?.countdownSeconds != null;
 	const filled = action.variant !== "update";
-
-	async function click() {
-		if (counting) return;
-		if ((await props.generate()) === "needs_confirmation") setConfirming(true);
-	}
 
 	return (
 		<div className="space-y-2">
@@ -478,11 +470,8 @@ function AvailableAction(
 					cancelLabel={action.confirm.cancelLabel}
 					focusCancel
 					fallbackFocusId={buttonId}
-					onConfirm={() => {
-						setConfirming(false);
-						void props.generate({ confirmed: true });
-					}}
-					onCancel={() => setConfirming(false)}
+					onConfirm={confirm}
+					onCancel={cancel}
 				>
 					<p>{action.confirm.body}</p>
 				</ConfirmDialog>

@@ -16,6 +16,7 @@ import {
 	FIXTURE_NOW,
 	REFUSAL_BODY_FIXTURES,
 	STORED,
+	failedWith,
 } from "../../../shared/__fixtures__/session-summary-view/index.js";
 import type { SessionSummaryView } from "../../../shared/session-summary-view.js";
 import type { StoredSessionSummary } from "../../../shared/session-summary.js";
@@ -878,5 +879,46 @@ describe("phase 8 review fixes: the panel", () => {
 			"Open the 10:04 edit in Activity (1 of 2)",
 			"Open the 10:04 edit in Activity (2 of 2)",
 		]);
+	});
+});
+
+describe("T-2 the muted last-attempt notice stays with a stored summary", () => {
+	test("every error code reads 'Last attempt' and its own sentence over a stored summary", () => {
+		for (const code of Object.keys(FAILED_VIEW_FIXTURES)) {
+			const view = failedWith(code as never, F.ready);
+			const sentence = failureCopy(code, ADMIN, view.spend.resetsAt, CLOCK);
+			const h = html(view);
+			expect(textOf(h), code).toContain("Last attempt");
+			expect(textOf(h), code).toContain(sentence);
+			expect(stateOf(h), code).toBe("ready/available/failed-muted");
+		}
+	});
+});
+
+describe("T-9 small assertions", () => {
+	test("'No summary yet.' shows when empty and not while generating", () => {
+		expect(textOf(html(F.empty))).toContain("No summary yet.");
+		expect(textOf(html(F.generating))).not.toContain("No summary yet.");
+	});
+
+	test("the Update fine print is the button's description, not visible text, in a ready view", () => {
+		const h = html(F.ready);
+		const id = /<button[^>]*aria-describedby="([^"]+)"[^>]*>Update</.exec(h)?.[1];
+		expect(id).toBeTruthy();
+		expect(h).toMatch(new RegExp(`<span id="${id}" class="sr-only">Sends this session`));
+	});
+
+	test("an invalid evidence id makes no link", () => {
+		const bad = withSummary({
+			accomplishments: [{ text: "x", evidence: ["nonsense", "E-1", "E0"], unverified: true }],
+			changes: [],
+			validation: [],
+		});
+		expect(html(bad)).not.toContain("tab=activity#event-");
+	});
+
+	test("lost contact while generating stops the elapsed timer", () => {
+		expect(textOf(html(F.generating))).toContain("so far");
+		expect(textOf(html(F.generating, { lostContact: true }))).not.toContain("so far");
 	});
 });
