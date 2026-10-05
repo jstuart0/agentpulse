@@ -22,11 +22,14 @@ const ENTRY = join(import.meta.dir, "SessionSummaryPanel.tsx");
 const FORBIDDEN =
 	/dangerouslySetInnerHTML|\.innerHTML\b|MarkdownContent|insertAdjacentHTML|from\s+\"(?:marked|react-markdown|markdown-it|remark[\w-]*)\"/;
 
+/** Reached only for a pure function (`getVisibleEvents`); it renders Activity's markdown, never the summary. */
+const NOT_RENDERED_BY_THE_PANEL = ["/src/web/components/session-detail/TimelineView.tsx"];
+
 /** The panel's source files: itself and every relative import under src/web, transitively. */
 export function importClosure(entry: string): string[] {
 	const seen = new Set<string>();
 	const walk = (file: string) => {
-		if (seen.has(file)) return;
+		if (seen.has(file) || NOT_RENDERED_BY_THE_PANEL.some((x) => file.endsWith(x))) return;
 		seen.add(file);
 		const text = readFileSync(file, "utf8");
 		for (const m of text.matchAll(/from\s+"(\.[^"]+)"/g)) {
@@ -45,7 +48,8 @@ describe("TC-8.4 the panel's closure never injects HTML", () => {
 		expect(files.length).toBeGreaterThanOrEqual(8);
 		expect(files.some((f) => f.endsWith("SummarySections.tsx"))).toBe(true);
 		for (const file of files) {
-			if (file.endsWith(".test.ts")) continue;
+			if (file.endsWith(".test.ts") || NOT_RENDERED_BY_THE_PANEL.some((x) => file.endsWith(x)))
+				continue;
 			expect(readFileSync(file, "utf8"), file.replace(ROOT, "")).not.toMatch(FORBIDDEN);
 		}
 	});

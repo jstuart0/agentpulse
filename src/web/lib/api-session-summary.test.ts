@@ -74,6 +74,17 @@ describe("api session summary", () => {
 		});
 	});
 
+	test("T-9 API2 a fractional retryAfterSeconds rounds up at the boundary", async () => {
+		stub(() => json(429, { error: "summary_rate_limited", retryAfterSeconds: 4.2 }));
+		expect(await api.generateSessionSummary("s1")).toMatchObject({
+			refusal: { retryAfterSeconds: 5 },
+		});
+		stub(() => json(429, { error: "summary_rate_limited", retryAfterSeconds: 0.1 }));
+		expect(await api.generateSessionSummary("s1")).toMatchObject({
+			refusal: { retryAfterSeconds: 1 },
+		});
+	});
+
 	test("TC-7.27e retryAfterSeconds falls back to the header when the body has none", async () => {
 		stub(() => json(503, { error: "busy" }, { "Retry-After": "1" }));
 		expect(await api.generateSessionSummary("s1")).toEqual({
