@@ -239,7 +239,7 @@ describe("P5-10 a watchdog frees a slot whose run hangs", () => {
 		gate.release();
 		await H.withDeadline(done);
 		const row = await H.readSummaryRow("lc-hang-call");
-		expect(row?.attemptErrorCode).toBe("interrupted");
+		expect(row?.attemptErrorCode).toBe("interrupted~long");
 		expect(row?.summary).toBeNull();
 		expect(await H.daySpend()).toBe(charged);
 	});
@@ -536,5 +536,93 @@ describe("Q-8a the URL scan lets the event loop go between slices", () => {
 			spy.mockRestore();
 		}
 		expect(order.slice(0, 3)).toEqual(["call0", "marker", "call1"]);
+	});
+});
+
+describe("F-1 a released in-flight call moves the failure controls", () => {
+	async function heldCall(id: string, hooks: Record<string, number> = {}) {
+		const { editId } = await H.seedActiveSession(id);
+		const gate = stub.createGate();
+		script({ ...ok([editId]), gate });
+		svc._setSummaryHooksForTest(hooks);
+		const { done } = await H.startGeneration(id);
+		await H.withDeadline(gate.arrived);
+		return { gate, done };
+	}
+	/** What the release must have moved: the breaker entry, the session cooldown, the daily ceiling. */
+	async function effects(id: string) {
+		svc._setSummaryHooksForTest({ unknownCeilingCents: 1 });
+		const { editId } = await H.seedActiveSession("f1-probe");
+		script(ok([editId]));
+		const probe = await H.request("f1-probe");
+		const ceiling = H.refusalOf(probe);
+		if (probe.kind === "started") await H.withDeadline(probe.done);
+		const view = await svc.getSessionSummaryView(id);
+		const row = await H.readSummaryRow(id);
+		return {
+			breaker: svc._breakerForTest.has(H.SOLO.subject),
+			ceiling,
+			code: row?.attemptErrorCode,
+			blocked: view?.blocked,
+			cooldown: view?.cooldownSeconds ?? 0,
+		};
+	}
+
+	test("a watchdog release during a hung call records the breaker and the ceiling and cools the session for 10 minutes", async () => {
+		svc._breakerForTest.reset();
+		const { gate, done } = await heldCall("f1-wd", { watchdogMs: 300 });
+		await H.until(() => svc._summaryGenerationCountForTest() === 0, 10_000);
+		const e = await effects("f1-wd");
+		expect(e.breaker).toBe(true);
+		expect(e.ceiling).toBe("spend_cap_reached");
+		expect(e.code).toBe("interrupted~long");
+		expect(e.blocked).toBe("summary_cooldown");
+		expect(e.cooldown).toBeGreaterThan(590);
+		gate.release();
+		await H.withDeadline(done);
+	});
+
+	test("a shutdown release during a call in flight does the same", async () => {
+		svc._breakerForTest.reset();
+		const { gate, done } = await heldCall("f1-sd");
+		await svc.releaseOwnSummaryClaims();
+		const e = await effects("f1-sd");
+		expect(e.breaker).toBe(true);
+		expect(e.ceiling).toBe("spend_cap_reached");
+		expect(e.code).toBe("interrupted~long");
+		expect(e.cooldown).toBeGreaterThan(590);
+		gate.release();
+		await H.withDeadline(done);
+	});
+
+	test("a release with nothing pending changes none of them: plain interrupted, no cooldown", async () => {
+		svc._breakerForTest.reset();
+		const { editId } = await H.seedActiveSession("f1-none");
+		script(ok([editId]));
+		const real = (await import("../util/own-turn.js")).runInOwnTurn;
+		const ownTurn = await import("../util/own-turn.js");
+		let n = 0;
+		let unblock!: () => void;
+		const blocked = new Promise<void>((resolve) => {
+			unblock = resolve;
+		});
+		const turn = spyOn(ownTurn, "runInOwnTurn").mockImplementation((work) =>
+			n++ === 0 ? real(work) : blocked.then(() => real(work)),
+		);
+		try {
+			const { done } = await H.startGeneration("f1-none");
+			await svc.releaseOwnSummaryClaims();
+			unblock();
+			await H.withDeadline(done);
+			const e = await effects("f1-none");
+			expect(e.breaker).toBe(false);
+			expect(e.ceiling).not.toBe("spend_cap_reached");
+			expect(e.code).toBe("interrupted");
+			expect(e.cooldown).toBe(0);
+		} finally {
+			unblock();
+			turn.mockRestore();
+			stub.reset();
+		}
 	});
 });

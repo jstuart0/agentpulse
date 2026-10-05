@@ -1,6 +1,7 @@
 /** AGEN-69 phase 8b: the web bundle budget check, and its self-test with a shrunk threshold. */
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUDGETS, HEADROOM, checkBudget } from "./check-web-bundle-budget.js";
 
@@ -38,10 +39,9 @@ describe("checkBudget", () => {
 });
 
 describe("T-6 main(), run as a script against a fixture build", () => {
-	const SCRATCH =
-		"/private/tmp/claude-501/-Users-jaystuart-dev-agentpulse/fbeacef5-c9bb-44f7-b38c-c6c81641ae6f/scratchpad/jackson/phase8a";
+	const SCRATCH = mkdtempSync(join(tmpdir(), "agentpulse-budget-"));
+	afterAll(() => rmSync(SCRATCH, { recursive: true, force: true }));
 	function fixture(extra: Record<string, string> = {}): string {
-		mkdirSync(SCRATCH, { recursive: true });
 		const dir = mkdtempSync(join(SCRATCH, "budget-fixture-"));
 		for (const b of BUDGETS)
 			writeFileSync(
