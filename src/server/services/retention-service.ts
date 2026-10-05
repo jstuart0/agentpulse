@@ -281,11 +281,43 @@ async function tryAdvisoryXactLock(
 	return Boolean(result?.[0]?.locked);
 }
 
+/** Summaries deleted per batch: a summary row is large (tens of KB), so a batch is smaller than the events batch. */
+const SUMMARY_BATCH_SIZE = 500;
+const summaryBatchSize = () => Math.min(batchSize, SUMMARY_BATCH_SIZE);
+
+/**
+ * Deletes up to a batch of summary rows matching `predicate` with `db` (the shared pool on SQLite,
+ * the batch's transaction on Postgres). The ids are selected first and the delete repeats the
+ * predicate, so a row claimed for a new generation in between is not deleted; no id comes back
+ * from the delete. Returns how many rows it selected.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+async function deleteSummaryBatch(db: any, predicate: SQL | undefined): Promise<number> {
+	const rows: Array<{ id: string }> = await db
+		.select({ id: aiSessionSummaries.sessionId })
+		.from(aiSessionSummaries)
+		.where(predicate)
+		.limit(summaryBatchSize());
+	if (rows.length === 0) return 0;
+	await db.delete(aiSessionSummaries).where(
+		and(
+			inArray(
+				aiSessionSummaries.sessionId,
+				rows.map((r) => r.id),
+			),
+			predicate,
+		),
+	);
+	return rows.length;
+}
+
 /**
  * Deletes session summaries (AGEN-69) generated before the cutoff, and a row whose lease lapsed
- * while still `generating` (a crash). A row with NULL `generated_at` is never matched. Both
- * sides of the comparison are `toDbTimestamp` text. On Postgres the delete runs in its own
- * transaction that first takes the retention advisory lock, and is skipped without it.
+ * while still `generating` (a crash), in batches. A row with NULL `generated_at` is never matched.
+ * Both sides of the comparison are `toDbTimestamp` text. On SQLite the loop yields the event loop
+ * between batches. On Postgres each batch is its own transaction that first takes the retention
+ * advisory lock, and the loop stops when it cannot: `deleted` is what the earlier batches removed,
+ * `lockLost` says the rest was skipped.
  */
 export async function deleteExpiredSummaries(
 	cutoff: string,
@@ -298,22 +330,27 @@ export async function deleteExpiredSummaries(
 			lt(aiSessionSummaries.attemptStartedAt, leaseCutoff),
 		),
 	);
-	// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
-	const run = async (db: any): Promise<number> => {
-		const rows: unknown[] = await db
-			.delete(aiSessionSummaries)
-			.where(predicate)
-			.returning({ id: aiSessionSummaries.sessionId });
-		return rows.length;
-	};
-	if (config.dialect !== "postgres") return { deleted: await run(getDb()), lockLost: false };
 	let deleted = 0;
-	let acquired = false;
-	await withTransaction(async (tx) => {
-		acquired = await tryAdvisoryXactLock(tx);
-		if (acquired) deleted = await run(tx);
-	});
-	return { deleted, lockLost: !acquired };
+	for (let i = 0; i < MAX_BATCHES_PER_PASS; i++) {
+		if (config.dialect !== "postgres") {
+			const batch = await deleteSummaryBatch(getDb(), predicate);
+			if (batch === 0) break;
+			deleted += batch;
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			continue;
+		}
+		let acquired = false;
+		let batch = 0;
+		await withTransaction(async (tx) => {
+			acquired = await tryAdvisoryXactLock(tx);
+			if (acquired) batch = await deleteSummaryBatch(tx, predicate);
+		});
+		if (!acquired) return { deleted, lockLost: true };
+		if (batch === 0) break;
+		deleted += batch;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	return { deleted, lockLost: false };
 }
 
 /**
