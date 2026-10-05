@@ -125,7 +125,7 @@ export function SessionSummaryPanel(props: SessionSummaryPanelProps) {
 			ref={root}
 			aria-labelledby={headingId}
 			data-summary-state={model?.stateTag}
-			className="max-w-3xl space-y-4 p-3 md:p-6"
+			className="max-w-4xl space-y-4 p-3 md:p-6"
 		>
 			<div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
 				<div className="flex items-center gap-2">
