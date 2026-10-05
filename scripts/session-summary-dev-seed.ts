@@ -103,6 +103,8 @@ const LONG_ITEM =
 		.padEnd(300, " more detail")
 		.slice(0, 300);
 const LONG_ITEMS = 10;
+/** Next actions are capped at five by the server. */
+const NEXT_ACTIONS_CAP = 5;
 const longItem = (i: number) => `${i + 1}. ${LONG_ITEM}`.slice(0, 300);
 
 /**
@@ -206,7 +208,7 @@ function modelAnswer(cite: CitableEvents | null, variant: Variant = "default"): 
 		),
 		nextActions: list(
 			long
-				? many(LONG_ITEMS, (i) => ({ text: longItem(i), evidence: [] }))
+				? many(NEXT_ACTIONS_CAP, (i) => ({ text: longItem(i), evidence: [] }))
 				: [
 						{ text: "Add jitter to the backoff in src/retry.ts.", evidence: [] },
 						{ text: "Write the README section.", evidence: [] },
@@ -296,6 +298,10 @@ export const SCREENS: Screen[] = [
 	{
 		name: "failed-with-summary",
 		...GLOBAL("Make the stub fail an Update on scr-ready (stop the stub, press Update)."),
+	},
+	{
+		name: "failed-key-unreadable",
+		...GLOBAL("Give the provider a key that can't be decrypted, then press Summarize."),
 	},
 	{ name: "cooling-down", ...GLOBAL("Open any session within 20 s of making its summary.") },
 	{

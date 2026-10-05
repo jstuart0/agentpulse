@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { SessionSummaryView } from "../../../shared/session-summary-view.js";
 import type { StoredSessionSummary } from "../../../shared/session-summary.js";
+import { useHeadingFocus } from "../../hooks/useHeadingFocus.js";
 import type { SummaryAnnouncement, UseSessionSummary } from "../../hooks/useSessionSummary.js";
 import { useCopyActions, useGenerateClick } from "../../hooks/useSummaryActions.js";
 import type { AiStatusResponse } from "../../lib/api.js";
@@ -19,7 +20,6 @@ import {
 	formatMoment,
 	partialEvidenceNotice,
 	relativeAgo,
-	shouldFocusHeading,
 } from "../../lib/session-summary-view.js";
 import type { CopyKind } from "../../lib/summary-copy.js";
 import { cn } from "../../lib/utils.js";
@@ -82,12 +82,7 @@ export function SessionSummaryPanel(props: SessionSummaryPanelProps) {
 	const headingId = useId();
 	const root = useRef<HTMLElement>(null);
 	const heading = useRef<HTMLHeadingElement>(null);
-	const { announcement } = props;
-	// biome-ignore lint/correctness/useExhaustiveDependencies: runs when the announcement changes, nothing else
-	useEffect(() => {
-		const inside = root.current?.contains(document.activeElement) ?? false;
-		if (shouldFocusHeading(announcement ?? null, inside)) heading.current?.focus();
-	}, [announcement]);
+	useHeadingFocus(root, heading, props.announcement ?? null);
 	const generating = load.status === "ready" && load.view.attempt.status === "generating";
 	const now = useNow(generating && !lostContact, props.clock?.now);
 	const clock: ClockOptions = { ...props.clock, now };

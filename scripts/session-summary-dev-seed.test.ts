@@ -28,6 +28,7 @@ const PLAN_SCREENS = [
 	"stale-over-budget",
 	"failed-no-summary",
 	"failed-with-summary",
+	"failed-key-unreadable",
 	"cooling-down",
 	"evidence-shrunk-dialog",
 	"suspect",
@@ -45,7 +46,7 @@ const PLAN_SCREENS = [
 describe("session-summary dev seed", () => {
 	test("one entry per named screen (the plan's 34 and the review's three), no more, no fewer", () => {
 		expect(SCREENS.map((s) => s.name)).toEqual(PLAN_SCREENS);
-		expect(new Set(SCREENS.map((s) => s.name)).size).toBe(37);
+		expect(new Set(SCREENS.map((s) => s.name)).size).toBe(38);
 	});
 
 	test("a screen that isn't a real server state of its own session says how to reach it", () => {
