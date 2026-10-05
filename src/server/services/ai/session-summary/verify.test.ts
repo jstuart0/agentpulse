@@ -942,8 +942,8 @@ describe("B-1 claim backing is not overstated", () => {
 		}).summary.accomplishments[0]?.unverified;
 
 	test("TC-4.73 a passing validation does not back a git or infrastructure change; a single-segment command of the right verb does", () => {
-		const gitCommand = fact("command", true, "ok", { verb: "git" });
-		const kubectlCommand = fact("command", true, "ok", { verb: "kubectl" });
+		const gitCommand = fact("command", true, "ok", { verb: "git", operands: ["push", "origin"] });
+		const kubectlCommand = fact("command", true, "ok", { verb: "kubectl", operands: ["apply"] });
 		for (const kind of ["git", "infrastructure"] as const) {
 			expect(unvChange(kind, fact("validation", true, "ok", { verb: "git" })), kind).toBe(true);
 		}
@@ -1023,5 +1023,83 @@ describe("B-1 claim backing is not overstated", () => {
 			at: "2026-10-03T10:00:00.000Z",
 			result: "ok",
 		});
+	});
+});
+
+describe("G-4 backing needs a mutating subcommand", () => {
+	const unv = (kind: SummaryDraft["changes"][number]["kind"], f: LedgerFactForVerify) =>
+		run({
+			ledger: ledgerOf({ E1: f }),
+			draft: draftOf({ changes: [{ kind, text: "Did it", evidence: ["E1"] }] }),
+		}).summary.changes[0]?.unverified;
+	const cmd = (verb: string, operands: string[], extra: Partial<LedgerFactForVerify> = {}) =>
+		fact("command", true, "ok", { verb, operands, ...extra });
+
+	test("TC-4.108 git: mutating subcommands back, read-only and dry runs do not", () => {
+		for (const sub of "commit push merge rebase tag cherry-pick reset checkout switch branch stash revert add rm mv restore pull".split(
+			" ",
+		)) {
+			expect(unv("git", cmd("git", [sub])), sub).toBe(false);
+		}
+		for (const sub of ["status", "log", "diff", "show", "fetch", "remote", "config"]) {
+			expect(unv("git", cmd("git", [sub])), sub).toBe(true);
+		}
+		expect(unv("git", cmd("git", ["push", "origin"], { dryRun: true }))).toBe(true);
+		expect(unv("git", cmd("git", []))).toBe(true);
+		expect(unv("git", fact("command", true, "ok", { verb: "git" }))).toBe(true);
+	});
+
+	test("TC-4.109 infrastructure: mutating subcommands back, reads and plans do not", () => {
+		for (const [verb, operands] of [
+			["kubectl", ["apply"]],
+			["kubectl", ["delete"]],
+			["kubectl", ["rollout", "restart"]],
+			["helm", ["upgrade"]],
+			["terraform", ["apply"]],
+			["terraform", ["destroy"]],
+			["docker", ["build"]],
+			["docker", ["push"]],
+			["docker", ["compose", "up"]],
+			["systemctl", ["restart"]],
+			["aws", ["s3", "rm"]],
+			["gcloud", ["run", "deploy"]],
+			["az", ["webapp", "restart"]],
+			["fly", ["deploy"]],
+			["flyctl", ["deploy"]],
+			["vercel", ["deploy"]],
+			["wrangler", ["deploy"]],
+			["firebase", ["deploy"]],
+			["netlify", ["deploy"]],
+			["heroku", ["restart"]],
+			["sam", ["deploy"]],
+			["cdk", ["deploy"]],
+			["serverless", ["deploy"]],
+			["kustomize", ["build"]],
+			["argocd", ["app", "sync"]],
+			["flux", ["install"]],
+		] as Array<[string, string[]]>) {
+			expect(unv("infrastructure", cmd(verb, operands)), `${verb} ${operands.join(" ")}`).toBe(
+				false,
+			);
+		}
+		for (const [verb, operands] of [
+			["kubectl", ["get"]],
+			["kubectl", ["rollout", "status"]],
+			["terraform", ["plan"]],
+			["docker", ["ps"]],
+			["helm", ["list"]],
+			["aws", ["s3", "ls"]],
+			["aws", ["ec2", "describe-instances"]],
+			["gcloud", ["compute", "instances", "list"]],
+			["az", ["group", "show"]],
+			["systemctl", ["status"]],
+			["fly", ["status"]],
+		] as Array<[string, string[]]>) {
+			expect(unv("infrastructure", cmd(verb, operands)), `${verb} ${operands.join(" ")}`).toBe(
+				true,
+			);
+		}
+		expect(unv("infrastructure", cmd("kubectl", ["apply"], { dryRun: true }))).toBe(true);
+		expect(unv("infrastructure", cmd("make", ["deploy"]))).toBe(true);
 	});
 });

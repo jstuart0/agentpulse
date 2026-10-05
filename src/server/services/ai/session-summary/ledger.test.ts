@@ -1830,3 +1830,44 @@ describe("TC-3.K2 the ledger records the verb of a command that is one segment",
 		expect("verb" in stored).toBe(false);
 	});
 });
+
+describe("TC-3.K3 the ledger carries the operands and a dry-run flag with the verb", () => {
+	test("operands skip flags and flag values; --dry-run is recorded; a slashed verb has no verb", () => {
+		const ledger = build([
+			bash(1, "git push origin main"),
+			bash(2, "git status"),
+			bash(3, "git push --dry-run origin main"),
+			bash(4, "git push -n origin main"),
+			bash(5, "kubectl -n prod apply -f x.yaml"),
+			bash(6, "aws s3 ls"),
+			bash(7, "kubectl apply --dry-run=client -f x.yaml"),
+			bash(8, "./git push origin main"),
+			bash(9, "/usr/bin/git push origin main"),
+			bash(10, "git -c core.pager=x push origin main"),
+		]);
+		const f = (id: number) => ledger.ids.get(`E${id}`);
+		expect(f(1)?.operands).toEqual(["push", "origin", "main"]);
+		expect(f(2)?.operands).toEqual(["status"]);
+		expect(f(3)?.dryRun).toBe(true);
+		expect(f(4)?.dryRun).toBe(true);
+		expect(f(1)?.dryRun).not.toBe(true);
+		expect(f(5)?.operands?.[0]).toBe("apply");
+		expect(f(6)?.operands).toEqual(["s3", "ls"]);
+		expect(f(7)?.dryRun).toBe(true);
+		expect(f(8)?.verb).toBeUndefined();
+		expect(f(9)?.verb).toBeUndefined();
+		expect(f(10)?.operands, "a git config override leaves no subcommand to back").toBeUndefined();
+	});
+	test("storedFact drops operands and dryRun", () => {
+		const stored = storedFact({
+			kind: "command",
+			at: null,
+			observed: true,
+			verb: "git",
+			operands: ["push"],
+			dryRun: true,
+		});
+		expect("operands" in stored).toBe(false);
+		expect("dryRun" in stored).toBe(false);
+	});
+});
