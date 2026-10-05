@@ -30,6 +30,12 @@ export const URL_SCAN_SLICE_CHARS = 32_768;
 /** `releaseOwnSummaryClaims` returns after this long even if a write is still pending. */
 export const SHUTDOWN_RELEASE_BUDGET_MS = 2000;
 
+/** The breaker (Q-1): this many maximum-charged failures within the window, with no success since, close the door. */
+export const BREAKER_FAILURES = 3;
+export const BREAKER_WINDOW_MS = 10 * 60 * 1000;
+/** ... until a call succeeds or this long after the last such failure. */
+export const BREAKER_OPEN_MS = 5 * 60 * 1000;
+
 export const BUSY_RETRY_AFTER_SECONDS = 5;
 export const SCAN_BUSY_RETRY_AFTER_SECONDS = 1;
 export const SHUTTING_DOWN_RETRY_AFTER_SECONDS = 5;

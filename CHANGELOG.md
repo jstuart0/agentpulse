@@ -9,6 +9,11 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Changed
 
+- **A session summary no longer charges a call that cannot have been billed.** A refused
+  connection, a DNS or TLS failure before the request left, and any 4xx other than 499 cost
+  nothing; a 499, 504, 524, timeout or mid-call drop is charged the single-call maximum; other
+  5xx the priced input. Three maximum-charged failures within ten minutes make new summary
+  requests answer busy until a call succeeds or five minutes pass (per process).
 - **Recorded AI spend for Anthropic providers reads higher than before.** It was
   under-counted: Anthropic reports input tokens without the cached ones, and the
   old formula subtracted the cached reads from them anyway, and never billed cache

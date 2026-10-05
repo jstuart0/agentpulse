@@ -51,6 +51,9 @@ import {
 import {
 	ACTIVITY_ACTION_WINDOW,
 	ACTIVITY_PROMPT_OLDEST_WINDOW,
+	BREAKER_FAILURES,
+	BREAKER_OPEN_MS,
+	BREAKER_WINDOW_MS,
 	BUSY_RETRY_AFTER_SECONDS,
 	JOIN_WAIT_BUDGET_MS,
 	MAX_CONCURRENT_GENERATIONS,
@@ -479,6 +482,7 @@ export function _setSummaryHooksForTest(next: SummaryTestHooks | null): void {
 
 /** Abandons every running generation as a dead process would: nothing is written or settled. */
 export function _resetSummaryGenerationsForTest(): void {
+	maxChargedFailures = [];
 	for (const entry of [...entries]) {
 		entry.taken = true;
 		dropEntry(entry);
@@ -596,6 +600,8 @@ interface FailureDetail {
 	subType: string | null;
 	status: number | null;
 	chargeCents: number;
+	/** The failure cost the single-call maximum: it counts toward the breaker. */
+	maxCharged: boolean;
 }
 
 const LLM_CODES: Record<LlmError["subType"], SummaryErrorCode> = {
@@ -606,40 +612,107 @@ const LLM_CODES: Record<LlmError["subType"], SummaryErrorCode> = {
 	unknown: "provider_error",
 };
 
-/** Statuses a provider answers before it bills: the call is charged nothing. */
-const PRE_BILLING_STATUSES: ReadonlySet<number> = new Set([400, 401, 403, 404, 408, 422, 429]);
+/**
+ * How much of a call in flight a failure may have cost: nothing (the request cannot have left, or
+ * the provider refused it with a 4xx), the priced input (an ordinary 5xx), or the single-call
+ * maximum (the outcome is unknown).
+ */
+type ChargeClass = "none" | "input" | "max";
+
+/** Codes of a failure before any byte was written: no connection, no DNS, no TLS session. */
+const CONNECT_PHASE_CODES: ReadonlySet<string> = new Set([
+	"ConnectionRefused",
+	"ECONNREFUSED",
+	"ENOTFOUND",
+	"EAI_AGAIN",
+	"FailedToOpenSocket",
+]);
+
+/** The cause's own code, never message text (a message can carry anything a provider or a proxy wrote). */
+function connectPhaseFailure(error: LlmError): boolean {
+	const code = (error.cause as { code?: unknown } | null | undefined)?.code;
+	if (typeof code !== "string") return false;
+	return (
+		CONNECT_PHASE_CODES.has(code) ||
+		code.startsWith("ERR_TLS_") ||
+		code.startsWith("CERT_") ||
+		code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
+		code === "SELF_SIGNED_CERT_IN_CHAIN" ||
+		code === "DEPTH_ZERO_SELF_SIGNED_CERT" ||
+		code === "UNABLE_TO_GET_ISSUER_CERT" ||
+		code === "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"
+	);
+}
+
+function chargeClassOf(error: LlmError): ChargeClass {
+	const status = error.status ?? null;
+	if (status === null) return connectPhaseFailure(error) ? "none" : "max";
+	if (status >= 400 && status <= 499) return status === 499 ? "max" : "none";
+	if (status >= 500 && status <= 599) return status === 504 || status === 524 ? "max" : "input";
+	return "max";
+}
 
 /**
- * What an exception ended the run as, and what it cost (R-I b). Only the code, the sub-type and the
- * HTTP status are taken from it: its message and cause can carry a provider's body or a key. The
- * calls that returned are charged as they were. The call in flight when it threw is charged by
- * what is known of it: nothing for an explicit pre-billing rejection, the priced input for an
- * explicit 5xx, and the single-call maximum for everything else (a client-side timeout, a network
- * failure, an unexpected status, an error after the provider answered), since its outcome is unknown.
+ * What an exception ended the run as, and what it cost (R-I b, Q-1). Only the code, the sub-type
+ * and the HTTP status are taken from it: its message and cause text can carry a provider's body or
+ * a key. The calls that returned are charged as they were. The call in flight when it threw is
+ * charged by `chargeClassOf`; anything that is not an `LlmError` after a call was sent (the provider
+ * answered, then something broke) is an unknown outcome and costs the maximum.
  */
 function describeFailure(error: unknown, entry: Entry): FailureDetail {
 	const completed = entry.settledCents;
 	if (error instanceof LlmError) {
-		const status = error.status ?? null;
-		let inFlight = entry.pendingMaxCents;
-		if (status !== null && PRE_BILLING_STATUSES.has(status)) inFlight = 0;
-		else if (status !== null && status >= 500 && status <= 599) inFlight = entry.pendingInputCents;
+		const charge = chargeClassOf(error);
+		const inFlight =
+			charge === "none" ? 0 : charge === "input" ? entry.pendingInputCents : entry.pendingMaxCents;
 		return {
 			code: LLM_CODES[error.subType] ?? "provider_error",
 			subType: error.subType,
-			status,
+			status: error.status ?? null,
 			chargeCents: completed + inFlight,
+			maxCharged: charge === "max" && entry.pendingMaxCents > 0,
 		};
 	}
 	if (error instanceof OwnTurnBusyError) {
-		return { code: "busy", subType: null, status: null, chargeCents: completed };
+		return { code: "busy", subType: null, status: null, chargeCents: completed, maxCharged: false };
 	}
 	return {
 		code: "internal_error",
 		subType: null,
 		status: null,
 		chargeCents: completed + entry.pendingMaxCents,
+		maxCharged: entry.pendingMaxCents > 0,
 	};
+}
+
+// ── the breaker ──────────────────────────────────────────────────────────────
+
+/**
+ * A provider that times out, or that a gateway cuts off, costs the single-call maximum on every
+ * attempt. After `BREAKER_FAILURES` such failures within `BREAKER_WINDOW_MS`, with no call
+ * succeeding since, new requests are refused `busy` (nothing reserved, claimed or charged) until a
+ * call succeeds or `BREAKER_OPEN_MS` have passed since the last one. Process-wide and in memory,
+ * like the other limiters here: with N replicas it is N times looser.
+ */
+let maxChargedFailures: number[] = [];
+
+function recordMaxChargedFailure(): void {
+	maxChargedFailures.push(Date.now());
+	if (maxChargedFailures.length > BREAKER_FAILURES) maxChargedFailures.shift();
+}
+
+function recordCallSuccess(): void {
+	maxChargedFailures = [];
+}
+
+/** Whole seconds a request must wait while the breaker is open; 0 when it is closed. */
+function breakerRetryAfterSeconds(): number {
+	const now = Date.now();
+	maxChargedFailures = maxChargedFailures.filter((t) => now - t < BREAKER_WINDOW_MS);
+	if (maxChargedFailures.length < BREAKER_FAILURES) return 0;
+	const last = maxChargedFailures[maxChargedFailures.length - 1] as number;
+	const left = BREAKER_OPEN_MS - (now - last);
+	return left > 0 ? Math.max(1, Math.ceil(left / 1000)) : 0;
 }
 
 const failure = (entry: Entry, code: SummaryErrorCode): Outcome => ({
@@ -699,18 +772,22 @@ async function callModel(
 		return { outcome: entry.taken ? RELEASED : failure(entry, "spend_cap") };
 	}
 	if (entry.taken) return { outcome: RELEASED };
-	entry.pendingInputCents = pricedInputCents;
-	entry.pendingMaxCents = maxCents;
-	entry.phase = "calling";
+	// The adapter is built before anything is marked pending: a throw from here sent nothing and
+	// charges nothing.
 	const adapter = getAdapter({
 		kind: provider.kind,
 		apiKey: ctx.key,
 		baseUrl: provider.baseUrl ?? undefined,
 	});
+	entry.pendingInputCents = pricedInputCents;
+	entry.pendingMaxCents = maxCents;
+	entry.phase = "calling";
 	const response = await adapter.complete(request);
-	// Some adapters estimate a missing input count from the transcript alone: price the whole prompt.
+	recordCallSuccess();
+	// An adapter that reports no usage estimates the input from the transcript alone: price the whole
+	// prompt at the worst-case ratio.
 	const inputTokens = response.usage.estimated
-		? estimateTokens(sentText)
+		? worstCaseInputTokens(sentText)
 		: response.usage.inputTokens;
 	entry.settledCents += priceCompletion(provider.kind, provider.model, {
 		...response.usage,
@@ -931,6 +1008,7 @@ async function runGeneration(ctx: RunContext): Promise<void> {
 		outcome = await generate(ctx);
 	} catch (error) {
 		detail = describeFailure(error, ctx.entry);
+		if (detail.maxCharged && !ctx.entry.taken) recordMaxChargedFailure();
 		if (error instanceof EvidenceReadError) {
 			console.error("[session-summary] evidence read failed", JSON.stringify({ code: error.code }));
 		}
@@ -1071,6 +1149,8 @@ export async function requestSummaryGeneration(
 	if (!enough) return refuse({ error: "too_little_activity" });
 	const provider = await readDefaultProvider();
 	if (!provider) return refuse({ error: "no_provider" });
+	const breakerWait = breakerRetryAfterSeconds();
+	if (breakerWait > 0) return refuse({ error: "busy", retryAfterSeconds: breakerWait });
 
 	let settleRequest!: () => void;
 	const entry: Entry = {
