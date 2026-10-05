@@ -595,6 +595,32 @@ describe("P5-5 a released run never sends a billed repair call nobody settles", 
 		stub.reset();
 	});
 
+	test("released while call 1 is in flight when the reservation already covers the repair (no top-up to refuse it): still exactly one request, nothing for nobody to settle", async () => {
+		// gpt-5-mini: the held reservation covers call 1's actual plus the repair's maximum, so the
+		// only thing between the released run and a second billed call is the ownership check.
+		await H.resetWorld(stub);
+		await H.enableAi();
+		await H.seedProvider(stub);
+		await H.seedActiveSession(SID);
+		const gate = stub.createGate();
+		script({ ...unusable(), gate }, ok([1]));
+		const topUp = spyOn(spend, "topUpReservation");
+		try {
+			const { done } = await H.startGeneration(SID);
+			await H.withDeadline(gate.arrived);
+			await svc.releaseOwnSummaryClaims();
+			gate.release();
+			await H.withDeadline(done);
+			expect(topUp.mock.calls.length).toBe(0);
+			expect(stub.requests().length).toBe(1);
+			expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("interrupted");
+			expect(svc._summaryGenerationCountForTest()).toBe(0);
+		} finally {
+			topUp.mockRestore();
+			stub.reset();
+		}
+	});
+
 	test("released during the top-up before the repair call: still one request, the day at call 1's actual (the late top-up is rolled back)", async () => {
 		await H.seedActiveSession(SID);
 		const gate = stub.createGate();
