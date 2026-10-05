@@ -28,13 +28,16 @@ import {
 	CLAIM_ONLY_HELP,
 	CLAIM_ONLY_LABEL,
 	CLAIM_ONLY_SECTION_NOTE,
+	CLAIM_ONLY_SUMMARY_LINE,
 	CODEX_CLAIM_ONLY_LINE,
 	NO_UNFINISHED_WORK,
 	type RefusalCopy,
 	SUSPECT_LEAD,
 	SUSPECT_REASON_LINES,
+	SUSPECT_REASON_PHRASES,
 	type SummaryLoad,
 	type SummaryViewer,
+	VALIDATION_FAILED_NOTE,
 	VERIFY_LINE,
 	availabilityFromStores,
 	budgetSentence,
@@ -57,6 +60,7 @@ import {
 	formatMoment,
 	formatMoney,
 	labsPointer,
+	linkNames,
 	outcomeChip,
 	outcomeNotes,
 	partialEvidenceNotice,
@@ -73,6 +77,7 @@ import {
 	tabBadgeAccessibleName,
 	validationResultText,
 	validationTally,
+	validationTallyParts,
 	visibleWorkspaceTabs,
 } from "./session-summary-view.js";
 
@@ -384,7 +389,7 @@ describe("deriveSummaryView: the three pieces", () => {
 		if (a.kind === "generating") {
 			expect(a.label).toBe("Summarizing…");
 			expect(a.statusText).toBe(
-				"Summarizing. This can take a couple of minutes on a long session. You can leave this page; it keeps going.",
+				"This can take a couple of minutes on a long session. You can leave this page; it keeps going.",
 			);
 			expect(a.startedAt).toBe("2026-10-04T11:58:00.000Z");
 		}
@@ -533,13 +538,13 @@ describe("deriveSummaryView: the pieces combine independently", () => {
 		});
 		expect(m.copyLabels).toEqual({
 			handoff: "Copy handoff anyway",
-			summary: "Copy summary anyway",
+			summary: "Copy full summary anyway",
 			context: "Copy context anyway",
 		});
 		expect(derive(F.ready).suspectNotice).toBeNull();
 		expect(derive(F.ready).copyLabels).toEqual({
 			handoff: "Copy handoff",
-			summary: "Copy summary",
+			summary: "Copy full summary",
 			context: "Copy context",
 		});
 	});
@@ -712,7 +717,7 @@ describe("the suspect notice", () => {
 
 	test("TC-7.42g the two codes the server is adding already have copy and the warning tier; an unknown code is a warning too", () => {
 		expect(SUSPECT_REASON_LINES.risky_command).toBe(
-			"It includes a command that reaches the network or changes the system, with a target this session never touched.",
+			"It includes a command this session never ran that can reach the network, install or delete things, or change settings, or a command with a web address you didn't type.",
 		);
 		expect(SUSPECT_REASON_LINES.malformed_url).toBe(
 			"It contains a web address written in a misleading form.",
@@ -728,7 +733,7 @@ describe("the suspect notice", () => {
 				lead: SUSPECT_LEAD,
 				lines: [SUSPECT_REASON_LINES[code]],
 			});
-			expect(m.copyLabels.summary, code).toBe("Copy summary anyway");
+			expect(m.copyLabels.summary, code).toBe("Copy full summary anyway");
 		}
 		expect(derive(F.suspect_risky).suspectNotice?.tone).toBe("warning");
 		const unknown = derive(withReasons(["constructor"]));
@@ -768,7 +773,7 @@ describe("the suspect notice", () => {
 		});
 		expect(m.copyLabels).toEqual({
 			handoff: "Copy handoff anyway",
-			summary: "Copy summary anyway",
+			summary: "Copy full summary anyway",
 			context: "Copy context anyway",
 		});
 		for (const code of ["role_marker", "override_phrase", "pipe_to_shell"]) {
@@ -790,7 +795,7 @@ describe("the suspect notice", () => {
 		});
 		expect(m.copyLabels).toEqual({
 			handoff: "Copy handoff",
-			summary: "Copy summary",
+			summary: "Copy full summary",
 			context: "Copy context",
 		});
 		for (const code of ["unexpected_url", "unrecorded_command"]) {
@@ -1186,6 +1191,7 @@ describe("sections and chips", () => {
 			label: CLAIM_ONLY_LABEL,
 			help: CLAIM_ONLY_HELP,
 			sectionNote: CLAIM_ONLY_SECTION_NOTE,
+			summaryLine: CLAIM_ONLY_SUMMARY_LINE,
 			extra: CODEX_CLAIM_ONLY_LINE,
 		});
 		expect(claimOnlyCopy("claude_code").extra).toBeNull();
@@ -1944,6 +1950,7 @@ describe("clipboard builders", () => {
 			expect(lines[1]).toContain("text written as instructions to an AI agent");
 			expect(lines[1]).toContain("a command that downloads something and runs it");
 			expect(lines[1]).toContain("a web address the user didn't type in this session");
+			expect(lines[1]).toContain(RISKY_PHRASE);
 			expect(nonEmpty(build(warned)).at(-1)).toBe(VERIFY_LINE);
 			expect(build(noted)).toBe(build(STORED));
 			expect(build(STORED)).not.toContain("AgentPulse flagged");
@@ -2022,5 +2029,62 @@ describe("phase 8b focus after your own generation", () => {
 		expect(shouldFocusHeading("Summary ready", false)).toBe(false);
 		expect(shouldFocusHeading("Summarizing", true)).toBe(false);
 		expect(shouldFocusHeading(null, true)).toBe(false);
+	});
+});
+
+const RISKY_PHRASE =
+	"a command the session never ran that can reach the network, install or delete things, or change settings, or one with a web address the user didn't type";
+
+describe("phase 8 review fixes: lib", () => {
+	test("U-10 every reason in the shared list has an on-screen line, a clipboard phrase and the shared tier", () => {
+		for (const code of SUMMARY_SUSPECT_REASONS) {
+			expect(SUSPECT_REASON_LINES[code], code).toBeTruthy();
+			expect(SUSPECT_REASON_PHRASES[code], code).toBeTruthy();
+			expect(suspectReasonTier(code), code).toBe(SUSPECT_REASON_TIER[code]);
+		}
+		expect(SUSPECT_REASON_PHRASES.risky_command).toBe(RISKY_PHRASE);
+		expect(Object.keys(SUSPECT_REASON_PHRASES).sort()).toEqual([...SUMMARY_SUSPECT_REASONS].sort());
+		expect(Object.keys(SUSPECT_REASON_LINES).sort()).toEqual([...SUMMARY_SUSPECT_REASONS].sort());
+	});
+
+	test("U-2 the claim line is the one sentence, and Codex adds its own", () => {
+		expect(claimOnlyCopy("claude_code").summaryLine).toBe(
+			"Agent's claim only: nothing recorded confirms it (no successful edit, no command recorded as succeeded, no passing test or build).",
+		);
+		expect(claimOnlyCopy("codex_cli").extra).toContain("Codex");
+	});
+
+	test("U-4 the tally comes in parts, each with its result, in the tally's order", () => {
+		const v = (result: "passed" | "failed" | "unknown" | "not_run") => ({
+			what: "x",
+			result,
+			detail: "",
+			evidence: [],
+			adjusted: false,
+		});
+		const parts = validationTallyParts([v("passed"), v("passed"), v("failed"), v("not_run")]);
+		expect(parts).toEqual([
+			{ result: "passed", text: "2 passed" },
+			{ result: "failed", text: "1 failed" },
+			{ result: "not_run", text: "1 not run" },
+		]);
+		expect(parts.map((p) => p.text).join(" · ")).toBe(
+			validationTally([v("passed"), v("passed"), v("failed"), v("not_run")]),
+		);
+		expect(VALIDATION_FAILED_NOTE).toBe("A validation step failed (see Validation).");
+	});
+
+	test("polish: links in one section that would share a name get an ordinal; unique ones stay as they are", () => {
+		const facts = {
+			E1: { kind: "edit" as const, at: "2026-10-04T10:04:00.000Z" },
+			E2: { kind: "edit" as const, at: "2026-10-04T10:04:00.000Z" },
+			E3: { kind: "command" as const, at: "2026-10-04T10:07:00.000Z", result: "ok" as const },
+		};
+		const names = linkNames([["E1", "E3"], ["E2"]], facts, CLOCK);
+		expect(names[0][1]).toBe(evidenceAccessibleName(facts.E3, CLOCK));
+		expect(names[0][0]).toBe(`${evidenceAccessibleName(facts.E1, CLOCK)} (1 of 2)`);
+		expect(names[1][0]).toBe(`${evidenceAccessibleName(facts.E2, CLOCK)} (2 of 2)`);
+		expect(linkNames([["E3"]], facts, CLOCK)).toEqual([[evidenceAccessibleName(facts.E3, CLOCK)]]);
+		expect(linkNames([["bogus"]], facts, CLOCK)).toEqual([[]]);
 	});
 });

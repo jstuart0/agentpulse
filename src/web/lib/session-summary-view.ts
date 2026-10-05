@@ -155,6 +155,25 @@ const VALIDATION_WORDS: Array<[SessionSummary["validation"][number]["result"], s
 ];
 
 /** "2 passed · 1 failed", in words. */
+/** The tally as parts, so each can take its result's colour. */
+export function validationTallyParts(
+	_validation: SessionSummary["validation"],
+): Array<{ result: SessionSummary["validation"][number]["result"]; text: string }> {
+	return [];
+}
+
+/**
+ * The accessible name of every evidence link in one section: the lib's own name, and where two
+ * links would share one, an ordinal ("... (2 of 3)"). `lists` is one list of ledger ids per item.
+ */
+export function linkNames(
+	_lists: readonly (readonly string[])[],
+	_facts: Record<string, StoredEvidenceFact>,
+	_clock?: ClockOptions,
+): string[][] {
+	return [];
+}
+
 export function validationTally(validation: SessionSummary["validation"]): string {
 	return VALIDATION_WORDS.map(([result, word]) => {
 		const n = validation.filter((v) => v.result === result).length;
@@ -218,6 +237,10 @@ export function claimOnlyMode(
 	return unverified * 2 > items.length ? "section" : "per_item";
 }
 
+/** The one visible line, once per summary, under the first section that has an "Agent's claim only" chip. */
+export const CLAIM_ONLY_SUMMARY_LINE =
+	"Agent's claim only: nothing recorded confirms it (no successful edit, no command recorded as succeeded, no passing test or build).";
+export const VALIDATION_FAILED_NOTE = "A validation step failed (see Validation).";
 export const CLAIM_ONLY_LABEL = "Agent's claim only";
 export const CLAIM_ONLY_HELP =
 	"Nothing recorded confirms these: no successful file edit, no command recorded as succeeded, no passing test or build.";
@@ -231,12 +254,14 @@ export function claimOnlyCopy(agentType: string | null | undefined): {
 	label: string;
 	help: string;
 	sectionNote: string;
+	summaryLine: string;
 	extra: string | null;
 } {
 	return {
 		label: CLAIM_ONLY_LABEL,
 		help: CLAIM_ONLY_HELP,
 		sectionNote: CLAIM_ONLY_SECTION_NOTE,
+		summaryLine: CLAIM_ONLY_SUMMARY_LINE,
 		extra: agentType === "codex_cli" ? CODEX_CLAIM_ONLY_LINE : null,
 	};
 }
@@ -281,7 +306,7 @@ export function outcomeNotes(stored: StoredSessionSummary): string[] {
 		} else if (adjustment.code === "note_lifecycle_failed") {
 			notes.push("The session itself ended as failed.");
 		} else if (adjustment.code === "note_completed_with_failed_validation") {
-			notes.push("A validation step failed (see Validation).");
+			notes.push(VALIDATION_FAILED_NOTE);
 		}
 	}
 	return notes;
@@ -443,7 +468,7 @@ export const SUSPECT_REASON_LINES: Readonly<Record<string, string>> = {
 };
 
 /** The same reasons as a phrase for the line pasted with the text. */
-const SUSPECT_REASON_PHRASES: Readonly<Record<string, string>> = {
+export const SUSPECT_REASON_PHRASES: Readonly<Record<string, string>> = {
 	role_marker: "text written as instructions to an AI agent",
 	override_phrase: "text written as instructions to an AI agent",
 	pipe_to_shell: "a command that downloads something and runs it",
