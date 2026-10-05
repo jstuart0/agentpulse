@@ -71,6 +71,14 @@ describePostgresOnly("on Postgres, at the trap shape", () => {
 		await H.seedReadySummary(SID, { throughEventId: ids[100], firstEventId: ids[0] });
 		return ids[100];
 	}
+	// The fixture leaves 156,000 rows and statistics saying so; the next test file in the same
+	// database must not inherit either.
+	afterEach(async () => {
+		const db = getDb() as unknown as { execute: (q: unknown) => Promise<unknown> };
+		await db.execute(sql`TRUNCATE events`);
+		await db.execute(sql`ANALYZE events`);
+	});
+
 	const planOf = async (text: string, params: unknown[]): Promise<string> => {
 		const client = (getDb() as unknown as { $client: { unsafe: Function } }).$client;
 		const rows = (await client.unsafe(`EXPLAIN (COSTS OFF) ${text}`, params, {
@@ -81,14 +89,20 @@ describePostgresOnly("on Postgres, at the trap shape", () => {
 
 	test("TC-5.64 the fixture is a real trap: the old statement walks events_pkey; neither probe does, and both use idx_events_session_id_id with no sort", async () => {
 		await seedTrap();
-		const old = await planOf(
-			`SELECT 1 FROM (SELECT id, category, event_type FROM events WHERE session_id = $1 ORDER BY id ASC LIMIT 2000) o WHERE o.category = 'prompt'`,
-			[SID],
-		);
-		expect(old, `the old oldest-window statement should walk the primary key:\n${old}`).toContain(
-			"events_pkey",
-		);
 		const { activity, stale } = await probeStatements();
+		// The old statement is the new one with the range turned back into an equality and the
+		// session_id sort key dropped: the trap must catch exactly that.
+		const oldText = activity.text
+			.replace(
+				/session_id >= (\$\d+) AND session_id <= (\$\d+)/g,
+				"session_id = $1 AND $2::text IS NOT NULL",
+			)
+			.replace(/ORDER BY session_id (ASC|DESC), id/g, "ORDER BY id");
+		const old = await planOf(oldText, activity.params);
+		console.log(
+			`[plan] old activity statement\n${old.replace(/Filter: .*\(COALESCE.*/g, "Filter: (category rules)")}`,
+		);
+		expect(old, `the old statement should walk the primary key:\n${old}`).toContain("events_pkey");
 		for (const [name, probe] of [
 			["activity", activity],
 			["stale", stale],
