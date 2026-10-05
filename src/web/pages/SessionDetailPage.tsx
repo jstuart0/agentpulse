@@ -721,6 +721,15 @@ export function SessionDetailPage() {
 
 			<ControlHistory actions={controlActions} />
 
+			{fellBack ? (
+				<div className="flex-shrink-0 pb-1">
+					<SummaryFellBackNotice
+						reason={fellBack.reason}
+						onRetry={() => void reloadSummaryAvailability()}
+					/>
+				</div>
+			) : null}
+
 			<div className="flex-1 min-h-0">
 				{workspaceTab === null ? (
 					<div aria-busy="true" className="space-y-3 p-6">
@@ -786,12 +795,6 @@ export function SessionDetailPage() {
 					/>
 				) : workspaceTab === "activity" ? (
 					<>
-						{fellBack ? (
-							<SummaryFellBackNotice
-								reason={fellBack.reason}
-								onRetry={() => void reloadSummaryAvailability()}
-							/>
-						) : null}
 						{contextNotFound ? (
 							<div className="px-4 pt-2">
 								<p className="text-xs text-amber-500/80 text-center">

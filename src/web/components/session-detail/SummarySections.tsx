@@ -278,6 +278,7 @@ function ClaimSection<T extends { unverified: boolean }>({
 					</li>
 				))}
 			</ul>
+			<ClaimNote mode={mode} claims={claims} after />
 		</Section>
 	);
 }
@@ -291,8 +292,17 @@ function ClaimLabel({ claims }: { claims: Claims }) {
 }
 
 /** One line per section, not one per item; a Codex session also says why its commands can't confirm a claim. */
-function ClaimNote({ mode, claims }: { mode: "none" | "per_item" | "section"; claims: Claims }) {
-	if (mode === "none") return null;
+function ClaimNote({
+	mode,
+	claims,
+	after = false,
+}: {
+	mode: "none" | "per_item" | "section";
+	claims: Claims;
+	/** Rendered under the list it explains: the per-item label is read first, then what it means. */
+	after?: boolean;
+}) {
+	if (mode === "none" || (mode === "per_item") !== after) return null;
 	return (
 		<div className="space-y-0.5 text-xs text-muted-foreground">
 			<p>{mode === "section" ? claims.sectionNote : claims.help}</p>
@@ -348,6 +358,7 @@ function ChangesSection({
 					</div>
 				);
 			})}
+			<ClaimNote mode={mode} claims={claims} after />
 		</Section>
 	);
 }
