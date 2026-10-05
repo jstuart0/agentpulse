@@ -5,6 +5,8 @@
 // per-batch Postgres advisory-lock re-acquisition, and skipped-pass
 // reporting for /health.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import "./ai/__test_db.js";
 import { describePostgresOnly, describeSqliteOnly } from "../test-utils/backend.js";
 
@@ -465,5 +467,130 @@ describe("retention of session summaries (TC-5.45, 5.56, 5.57)", () => {
 			const free = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
 			expect(free).toEqual({ deleted: 1, lockLost: false });
 		});
+	});
+
+	// ── P5-21: the summaries delete is batched (500 rows), yields on SQLite, re-takes the lock per batch on Postgres ──
+	async function seedExpiredSummaries(count: number): Promise<string[]> {
+		const { aiSessionSummaries } = await import("../db/schema/index.js");
+		const ids = Array.from({ length: count }, (_, i) => `bulk-${i}`);
+		for (let i = 0; i < ids.length; i += 200) {
+			const chunk = ids.slice(i, i + 200);
+			await getDb()
+				.insert(sessions)
+				.values(chunk.map((sessionId) => ({ sessionId, agentType: "claude_code" })));
+			await getDb()
+				.insert(aiSessionSummaries)
+				.values(
+					chunk.map((sessionId) => ({
+						sessionId,
+						generatedAt: at(CUTOFF_MS - DAY),
+						attemptStatus: "idle",
+					})),
+				);
+		}
+		return ids;
+	}
+	const count = async (): Promise<number> => {
+		const { aiSessionSummaries } = await import("../db/schema/index.js");
+		return (await getDb().select({ id: aiSessionSummaries.sessionId }).from(aiSessionSummaries))
+			.length;
+	};
+
+	test("TC-5.45b 1,200 expired summaries all go, whatever the batching", async () => {
+		await seedExpiredSummaries(1200);
+		const result = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
+		expect(result).toEqual({ deleted: 1200, lockLost: false });
+		expect(await count()).toBe(0);
+	}, 60_000);
+
+	describeSqliteOnly("P5-21 on SQLite", () => {
+		test("TC-5.45c 1,200 rows are deleted in three batches of at most 500, and the event loop is let go between them", async () => {
+			await seedExpiredSummaries(1200);
+			const db = getDb() as unknown as { delete: (t: unknown) => unknown };
+			const original = db.delete.bind(db);
+			const { spyOn } = await import("bun:test");
+			const spy = spyOn(db, "delete").mockImplementation((t: unknown) => original(t));
+			let ticks = 0;
+			const timer = setInterval(() => ticks++, 0);
+			try {
+				const result = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
+				expect(result.deleted).toBe(1200);
+				expect(spy.mock.calls.length).toBe(3);
+				expect(ticks).toBeGreaterThanOrEqual(2);
+			} finally {
+				clearInterval(timer);
+				spy.mockRestore();
+			}
+		}, 60_000);
+	});
+
+	describePostgresOnly("P5-21 on Postgres", () => {
+		test("TC-5.57b every batch is its own transaction that takes the lock: 1,200 rows are four transactions (three with rows, one empty)", async () => {
+			await seedExpiredSummaries(1200);
+			const wt = await import("../db/with-transaction.js");
+			const { spyOn } = await import("bun:test");
+			const real = wt.withTransaction;
+			const spy = spyOn(wt, "withTransaction").mockImplementation(((fn: never) =>
+				real(fn)) as typeof wt.withTransaction);
+			try {
+				const result = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
+				expect(result).toEqual({ deleted: 1200, lockLost: false });
+				expect(spy.mock.calls.length).toBe(4);
+			} finally {
+				spy.mockRestore();
+			}
+		}, 60_000);
+
+		test("TC-5.57c a pass that deleted its event batches and some summaries, then lost the lock, reports what it deleted and the skip", async () => {
+			await upsertSetting("eventsRetentionDays", 30);
+			_setRetentionBatchSizeForTest(1);
+			await seedSummary("keep-a", { generatedAt: at(CUTOFF_MS - DAY), attemptStatus: "idle" });
+			await seedSummary("keep-b", { generatedAt: at(CUTOFF_MS - DAY), attemptStatus: "idle" });
+			await seedEvent("keep-a", at(CUTOFF_MS - DAY));
+			await seedEvent("keep-a", at(CUTOFF_MS - DAY + 1000));
+			const wt = await import("../db/with-transaction.js");
+			const { spyOn } = await import("bun:test");
+			const postgres = (await import("postgres")).default;
+			const holder = postgres(config.databaseUrl, { max: 1 });
+			const real = wt.withTransaction;
+			let calls = 0;
+			// Calls 1 to 3 are the event batches (1, 1, then empty); 4 and 5 are summary batches.
+			// Another replica takes the lock just before the fifth.
+			const spy = spyOn(wt, "withTransaction").mockImplementation((async (fn: never) => {
+				calls++;
+				if (calls === 5) await holder`SELECT pg_advisory_lock(${PG_RETENTION_LOCK_ID})`;
+				return real(fn);
+			}) as typeof wt.withTransaction);
+			try {
+				const result = await runRetentionPass(NOW);
+				expect(result.rowsDeleted).toBe(2);
+				expect(result.summariesDeleted).toBe(1);
+				expect(result.skippedReason).toBe("lock_held_elsewhere");
+				expect(await count()).toBe(1);
+			} finally {
+				spy.mockRestore();
+				await holder`SELECT pg_advisory_unlock(${PG_RETENTION_LOCK_ID})`;
+				await holder.end({ timeout: 2 });
+			}
+		}, 60_000);
+	});
+});
+
+describe("the statements about what retention deletes are true (P5-23)", () => {
+	const root = join(import.meta.dir, "../../..");
+	const read = (path: string) => readFileSync(join(root, path), "utf8");
+
+	test("TC-5.45d the operator README, CLAUDE.md, the health comment and the CHANGELOG say summaries are deleted and name summariesDeleted; the old guarantee is gone", () => {
+		const k8s = read("deploy/k8s/README.md");
+		const claude = read("CLAUDE.md");
+		const health = read("src/server/routes/health.ts");
+		const changelog = read("CHANGELOG.md");
+		for (const [name, text] of Object.entries({ k8s, claude, health, changelog })) {
+			expect(text, name).toContain("summariesDeleted");
+		}
+		expect(k8s).not.toContain("only the `events` history ages out");
+		expect(claude).not.toContain("Only `events` rows are deleted");
+		expect(k8s).toMatch(/session summaries/i);
+		expect(claude).toContain("ai_session_summaries");
 	});
 });

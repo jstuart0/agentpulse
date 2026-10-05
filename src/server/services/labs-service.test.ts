@@ -57,4 +57,16 @@ describe("labs-service", () => {
 			expect(flags[def.key]).toBe(def.defaultEnabled);
 		}
 	});
+
+	test("TC-5.59 the sessionSummary flag is registered by this key and label with the exact description, off by default", () => {
+		const entry = LABS_REGISTRY.find((def) => def.key === "sessionSummary");
+		expect(entry).toBeDefined();
+		expect(entry?.key).toBe("sessionSummary");
+		expect(entry?.label).toBe("Session summary");
+		expect(entry?.description).toBe(
+			"Summary tab on each session: what it set out to do, what changed, what was checked, what's left. Nothing is sent to your AI provider until you ask for a summary.",
+		);
+		expect(entry?.defaultEnabled).toBe(false);
+		expect(defaultLabsFlags().sessionSummary).toBe(false);
+	});
 });

@@ -180,7 +180,7 @@ describe("release, finish, and the two orderings", () => {
 		expect(await H.daySpend()).toBe(ACTUAL());
 	});
 
-	test("TC-5.38e release is bounded to 2 s even with a hung adapter", async () => {
+	test("TC-5.38e a hung adapter never blocks the release (the settlement hang is pinned in session-summary-lifecycle.test.ts)", async () => {
 		const { gate, done } = await startHeld(SID);
 		const t = performance.now();
 		await svc.releaseOwnSummaryClaims();
@@ -349,15 +349,23 @@ describe("TC-5.52 the slot map is empty after every terminal path", () => {
 });
 
 describe("gracefulExit releases the claims", () => {
-	test("index.ts calls releaseOwnSummaryClaims after setShuttingDown and before process.exit", () => {
-		const text = readFileSync(join(import.meta.dir, "../index.ts"), "utf8");
+	test("index.ts awaits releaseOwnSummaryClaims() after setShuttingDown and before process.exit, outside comments", () => {
+		const raw = readFileSync(join(import.meta.dir, "../index.ts"), "utf8");
+		const text = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 		const body = text.slice(text.indexOf("async function gracefulExit"));
 		const shut = body.indexOf("setShuttingDown(");
-		const release = body.indexOf("releaseOwnSummaryClaims(");
+		const release = body.indexOf("await releaseOwnSummaryClaims()");
 		const exit = body.indexOf("process.exit(");
 		expect(shut).toBeGreaterThan(-1);
 		expect(release).toBeGreaterThan(shut);
 		expect(exit).toBeGreaterThan(release);
 		expect(text).toContain("session-summary-service.js");
+	});
+
+	test("the scan ignores a mention in a comment: a release that is only commented out does not count", () => {
+		const raw =
+			"async function gracefulExit() {\n// await releaseOwnSummaryClaims()\n process.exit(0);\n}";
+		const text = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+		expect(text.indexOf("await releaseOwnSummaryClaims()")).toBe(-1);
 	});
 });
