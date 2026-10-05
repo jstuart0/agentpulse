@@ -643,7 +643,6 @@ describe("R-E what backs a claim (P4-12)", () => {
 			expect(unv(kind, ["E5"]), `${kind} by a validation`).toBe(true);
 		}
 		for (const kind of ["git", "infrastructure"] as const) {
-			expect(unv(kind, ["E4"]), `${kind} by a command`).toBe(false);
 			expect(unv(kind, ["E3"]), `${kind} by an edit`).toBe(true);
 			expect(unv(kind, ["E14"]), `${kind} by a completed command`).toBe(true);
 		}
@@ -942,11 +941,65 @@ describe("B-1 claim backing is not overstated", () => {
 			draft: draftOf({ accomplishments: [{ text: "did it", evidence: ["E1"] }] }),
 		}).summary.accomplishments[0]?.unverified;
 
-	test("TC-4.73 a passing validation does not back a git or infrastructure change", () => {
+	test("TC-4.73 a passing validation does not back a git or infrastructure change; a single-segment command of the right verb does", () => {
+		const gitCommand = fact("command", true, "ok", { verb: "git" });
+		const kubectlCommand = fact("command", true, "ok", { verb: "kubectl" });
 		for (const kind of ["git", "infrastructure"] as const) {
-			expect(unvChange(kind, fact("validation", true, "ok")), kind).toBe(true);
-			expect(unvChange(kind, fact("command", true, "ok")), `${kind} by a command`).toBe(false);
+			expect(unvChange(kind, fact("validation", true, "ok", { verb: "git" })), kind).toBe(true);
 		}
+		expect(unvChange("git", gitCommand)).toBe(false);
+		expect(unvChange("infrastructure", kubectlCommand)).toBe(false);
+	});
+
+	test("TC-4.100 T-6 a command with no recorded verb (a chain, a `|| true`) backs no git change; a command of another verb backs neither", () => {
+		const noVerb = fact("command", true, "ok");
+		expect(unvChange("git", noVerb)).toBe(true);
+		expect(unvChange("infrastructure", noVerb)).toBe(true);
+		expect(unvChange("git", fact("command", true, "ok", { verb: "npm" }))).toBe(true);
+		expect(unvChange("git", fact("command", true, "ok", { verb: "kubectl" }))).toBe(true);
+		expect(unvChange("infrastructure", fact("command", true, "ok", { verb: "git" }))).toBe(true);
+		// a git verb that is not shown still backs nothing
+		expect(unvChange("git", fact("command", true, "ok", { verb: "git", shown: false }))).toBe(true);
+		// the other kinds are unchanged: any shown ok command backs "other"
+		expect(unvChange("other", noVerb)).toBe(false);
+	});
+
+	test("TC-4.101 T-6 end to end: a fully visible `git push || true` no longer backs a git change; the plain push does", async () => {
+		const { buildLedger } = await import("./ledger.js");
+		const row = (id: number, command: string) => ({
+			id,
+			createdAt: `2026-10-03 10:00:${String(id).padStart(2, "0")}`,
+			eventType: "PostToolUse",
+			category: "tool_event",
+			toolName: "Bash",
+			content: null,
+			filePath: null,
+			command,
+			description: null,
+			response: null,
+			responseTail: null,
+		});
+		const rows = [row(1, "git push origin main"), row(2, "git push origin main || true")];
+		const ledger = buildLedger({
+			rows,
+			firstPromptRows: [],
+			agentType: "claude_code",
+			scan: {
+				eventsTotal: 2,
+				eventsRead: 2,
+				eligibleRead: 2,
+				droppedByCap: 0,
+				reachedFirstEvent: true,
+				oldestReadAt: "2026-10-03 09:00:00",
+			},
+		});
+		const unv = (id: string) =>
+			run({
+				ledger,
+				draft: draftOf({ changes: [{ kind: "git", text: "Pushed", evidence: [id] }] }),
+			}).summary.changes[0]?.unverified;
+		expect(unv("E1")).toBe(false);
+		expect(unv("E2")).toBe(true);
 	});
 
 	test("TC-4.74 a command whose text is not shown backs nothing, whether `shown` is false or absent", () => {

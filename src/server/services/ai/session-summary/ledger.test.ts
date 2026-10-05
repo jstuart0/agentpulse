@@ -1774,3 +1774,59 @@ describe("TC-3.J5 the ledger marks the commands whose text it printed", () => {
 		expect("shown" in stored).toBe(false);
 	});
 });
+
+describe("TC-3.K1 `shown` is true only for a command that is on the page whole", () => {
+	const padded = (head: string, total: number) => `${head}; echo ${"x".repeat(total)}; true`;
+	test("a command cut at the display cap is not shown, though it classifies and finishes ok", () => {
+		for (const length of [301, 400, 520]) {
+			const command = padded("git push origin nonexistent 2>/dev/null", length);
+			expect(Array.from(command).length).toBeLessThan(556);
+			const ledger = build([bash(1, command)]);
+			expect(ledger.text).toContain("…");
+			expect(ledger.ids.get("E1")?.shown, String(length)).not.toBe(true);
+		}
+	});
+	test("a command with a newline in it is not shown", () => {
+		const ledger = build([bash(1, "git push origin nonexistent\ntrue")]);
+		expect(ledger.ids.get("E1")?.shown).not.toBe(true);
+	});
+	test("positive control: a short one-line command is shown", () => {
+		expect(build([bash(1, "git push origin main")]).ids.get("E1")?.shown).toBe(true);
+	});
+	test("a validation cut at the display cap is not shown either", () => {
+		const ledger = build([bash(1, `bun test ${"a".repeat(310)}`, { response: "3 pass" })]);
+		expect(ledger.ids.get("E1")?.shown).not.toBe(true);
+	});
+});
+
+describe("TC-3.K2 the ledger records the verb of a command that is one segment", () => {
+	test("single segment: its verb; a chain, a pipe, a `|| true`, a newline: none", () => {
+		const ledger = build([
+			bash(1, "git push origin main"),
+			bash(2, "cd app && git push origin main"),
+			bash(3, "git push origin main || true"),
+			bash(4, "git push origin main; true"),
+			bash(5, "git push origin main | tee out.log"),
+			bash(6, "git push origin main\ntrue"),
+			bash(7, "sudo systemctl restart x"),
+			bash(8, "FOO=1 kubectl apply -f x.yaml"),
+			bash(9, "bun test", { response: "3 pass" }),
+		]);
+		const verb = (id: number) => ledger.ids.get(`E${id}`)?.verb;
+		expect(verb(1)).toBe("git");
+		for (const id of [2, 3, 4, 5, 6]) expect(verb(id), String(id)).toBeUndefined();
+		expect(verb(7)).toBe("systemctl");
+		expect(verb(8)).toBe("kubectl");
+		expect(verb(9)).toBe("bun");
+	});
+	test("storedFact drops `verb`", () => {
+		const stored = storedFact({
+			kind: "command",
+			at: null,
+			observed: true,
+			shown: true,
+			verb: "git",
+		});
+		expect("verb" in stored).toBe(false);
+	});
+});
