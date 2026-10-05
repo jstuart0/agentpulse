@@ -874,7 +874,7 @@ describe("P5-16 staleness is measured while generating, in a bounded window (R-M
 		expect(live.blocked).toBeNull();
 	});
 
-	test("TC-5.55c the stale probe scans a window of 500 rows inside the 100-row count: 600 acknowledgements then a prompt read as a lower bound, and the statement says so", async () => {
+	test("TC-5.55c the stale probe scans a window of 500 rows inside the 100-row count: 600 acknowledgements then a prompt cannot read as up to date (a full window with nothing found reads 1, Q-3a)", async () => {
 		const { promptId, editId } = await H.seedActiveSession(SID);
 		await H.seedProvider(stub);
 		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
@@ -884,7 +884,66 @@ describe("P5-16 staleness is measured while generating, in a bounded window (R-M
 		expect(probe).toHaveLength(1);
 		expect(probe[0].text).toMatch(/\blimit\s+500\b/i);
 		expect(probe[0].text).toMatch(/\blimit\s+100\b/i);
-		// The prompt is past the 500-row window: the count is a lower bound (0 here), never an overcount.
-		expect(result.staleEvents).toBe(0);
+		// The prompt is past the 500-row window, so the count is a lower bound; a flood of
+		// acknowledgements must not read as "up to date".
+		expect(result.staleEvents).toBe(1);
+	});
+});
+
+describe("Q-3 the stale window and the live poll", () => {
+	test("TC-5.55d a window that is not full and holds only acknowledgements is genuinely up to date: 0", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+		await H.seedEvents(
+			SID,
+			Array.from({ length: 499 }, () => H.ack()),
+		);
+		expect((await view()).staleEvents).toBe(0);
+	});
+
+	test("TC-5.56c a live polled view reads no summary and no provenance: no select of it names either column", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, {
+			throughEventId: editId,
+			firstEventId: promptId,
+			startedAt: toDbTimestamp(new Date()),
+		});
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({ attemptStatus: "generating", attemptToken: "t" });
+		const db = getDb() as unknown as { select: (fields?: Record<string, unknown>) => unknown };
+		const original = db.select.bind(db);
+		const shapes: string[][] = [];
+		const spy = spyOn(db, "select").mockImplementation((fields?: Record<string, unknown>) => {
+			shapes.push(Object.keys(fields ?? {}));
+			return original(fields);
+		});
+		try {
+			const polled = await getSessionSummaryView(SID, { omitStored: true });
+			expect(polled?.attempt.status).toBe("generating");
+			expect(polled?.throughEventId).toBe(editId);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(shapes.length).toBeGreaterThan(0);
+		for (const keys of shapes) {
+			expect(keys).not.toContain("summary");
+			expect(keys).not.toContain("provenance");
+		}
+	});
+
+	test("TC-5.56d a non-live polled view still knows the evidence has shrunk (it reads the provenance only then)", async () => {
+		const { events } = await import("../db/schema/index.js");
+		await H.seedSession(SID);
+		const ids = await H.seedEvents(SID, [H.prompt("one"), H.edit("a.ts"), H.edit("b.ts")]);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: ids[2], firstEventId: ids[0] });
+		expect((await getSessionSummaryView(SID, { omitStored: true }))?.evidenceShrunk).toBe(false);
+		await getDb().delete(events).where(eq(events.id, ids[0]));
+		const polled = await getSessionSummaryView(SID, { omitStored: true });
+		expect(polled?.evidenceShrunk).toBe(true);
+		expect(polled?.storedOmitted).toBe(true);
 	});
 });

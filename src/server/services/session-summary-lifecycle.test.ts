@@ -23,6 +23,8 @@ const { aiSessionSummaries } = await import("../db/schema/index.js");
 const H = await import("../test-utils/summary-service-harness.js");
 const svc = await import("./session-summary-service.js");
 const spend = await import("./ai/spend-service.js");
+const labs = await import("./labs-service.js");
+const limits = await import("./ai/session-summary/service-limits.js");
 const evidenceLoader = await import("./ai/session-summary/evidence-loader.js");
 const tripwire = await import("./ai/session-summary/tripwire.js");
 const { setShuttingDown } = await import("../drain-state.js");
@@ -61,7 +63,7 @@ const reservationOfOneCall = () =>
 	});
 
 /** A request held at a named step until `release()`; only the first request to reach it is held. */
-function holdAt(step: string) {
+function holdAt(step: string, extra: Record<string, number> = {}) {
 	let reached!: () => void;
 	const atStep = new Promise<void>((resolve) => {
 		reached = resolve;
@@ -76,6 +78,7 @@ function holdAt(step: string) {
 	});
 	let taken = false;
 	svc._setSummaryHooksForTest({
+		...extra,
 		at: async (s) => {
 			if (s === "join_wait") joinWaiting();
 			if (s === step && !taken) {
@@ -164,11 +167,11 @@ describe("P5-8 a caller that raced a same-session request joins it; the wait is 
 		if (ra.kind === "started") await H.withDeadline(ra.done);
 	});
 
-	test("A held at its slot and never released: the same-session request is answered busy within about 5 s, not left waiting", async () => {
+	test("A held at its slot and never released: the same-session request is answered busy at the join-wait bound, not left waiting", async () => {
 		const other = await occupySlot("lc-other");
 		const { editId } = await H.seedActiveSession("lc-stuck");
 		script(ok([editId]));
-		const held = holdAt("slot");
+		const held = holdAt("slot", { joinWaitMs: 400 });
 		const a = H.request("lc-stuck");
 		await H.withDeadline(held.atStep);
 		const t = performance.now();
@@ -177,8 +180,9 @@ describe("P5-8 a caller that raced a same-session request joins it; the wait is 
 		const b = await H.withDeadline(bPending, 9000, "the bounded wait");
 		const waited = performance.now() - t;
 		expect(H.refusalOf(b)).toBe("busy");
-		expect(waited).toBeGreaterThan(4000);
-		expect(waited).toBeLessThan(8000);
+		// The injected bound (400 ms), not the default 5 s: the band is against that value.
+		expect(waited).toBeGreaterThan(350);
+		expect(waited).toBeLessThan(3000);
 		held.release();
 		const ra = await a;
 		other.gate.release();
@@ -307,7 +311,7 @@ describe("P5-11 boot and shutdown", () => {
 });
 
 describe("P5-12 the release is bounded even when a settlement hangs", () => {
-	test("a releaseReservedSpend that never resolves: the release returns within about 2 s", async () => {
+	test("a releaseReservedSpend that never resolves: the release returns within its budget", async () => {
 		const { editId } = await H.seedActiveSession("lc-hung-release");
 		script(ok([editId]));
 		const spy = spyOn(spend, "releaseReservedSpend").mockImplementation(
@@ -325,12 +329,14 @@ describe("P5-12 the release is bounded even when a settlement hangs", () => {
 			n++ === 0 ? real(work) : blocked.then(() => real(work)),
 		);
 		try {
+			svc._setSummaryHooksForTest({ releaseBudgetMs: 300 });
 			const { done } = await H.startGeneration("lc-hung-release");
 			const t = performance.now();
 			await svc.releaseOwnSummaryClaims();
 			const elapsed = performance.now() - t;
-			expect(elapsed).toBeGreaterThan(1500);
-			expect(elapsed).toBeLessThan(3500);
+			// The injected budget (300 ms), not the default 2 s.
+			expect(elapsed).toBeGreaterThan(250);
+			expect(elapsed).toBeLessThan(1500);
 			// The hung entry stays in the map until the process exits: this test is the one that clears it.
 			expect(svc._summaryGenerationCountForTest()).toBe(1);
 			svc._resetSummaryGenerationsForTest();
@@ -399,5 +405,135 @@ describe("P5-19 the prompt URLs are collected in slices that yield the event loo
 		expect(sizes.length).toBeGreaterThanOrEqual(4);
 		expect(Math.max(...sizes)).toBeLessThanOrEqual(64 * 1024);
 		expect(sizes.reduce((a, b) => a + b, 0)).toBeGreaterThan(100_000);
+	});
+});
+
+describe("the timings are pinned (Q-6, Q-8b)", () => {
+	test("TC-5.65 with no hook set the watchdog is the lease (300 s), the join wait 5 s and the release budget 2 s, and the hooks override each", () => {
+		svc._setSummaryHooksForTest(null);
+		expect(svc.watchdogDelayMs()).toBe(300_000);
+		expect(svc.joinWaitMs()).toBe(5000);
+		expect(svc.releaseBudgetMs()).toBe(2000);
+		expect(limits.SUMMARY_LEASE_SECONDS * 1000).toBe(300_000);
+		expect(limits.JOIN_WAIT_BUDGET_MS).toBe(5000);
+		expect(limits.SHUTDOWN_RELEASE_BUDGET_MS).toBe(2000);
+		svc._setSummaryHooksForTest({ watchdogMs: 11, joinWaitMs: 22, releaseBudgetMs: 33 });
+		expect([svc.watchdogDelayMs(), svc.joinWaitMs(), svc.releaseBudgetMs()]).toEqual([11, 22, 33]);
+	});
+});
+
+describe("Q-4 a release that lands while the gates are re-read", () => {
+	test("held in the Labs flag read after call 1's unusable answer, with a reservation that already covers the repair: one request, interrupted", async () => {
+		await H.seedActiveSession("lc-gates");
+		const gate = stub.createGate();
+		script({ text: "nope", stop: "stop", usage: H.STUB_USAGE, gate }, ok([1]));
+		const real = labs.isLabsFlagEnabled;
+		let reached!: () => void;
+		const atGates = new Promise<void>((resolve) => {
+			reached = resolve;
+		});
+		let proceed!: () => void;
+		const hold = new Promise<void>((resolve) => {
+			proceed = resolve;
+		});
+		const spy = spyOn(labs, "isLabsFlagEnabled").mockImplementation(
+			async (...args: Parameters<typeof real>) => {
+				reached();
+				await hold;
+				return real(...args);
+			},
+		);
+		const topUp = spyOn(spend, "topUpReservation");
+		try {
+			const { done } = await H.startGeneration("lc-gates");
+			await H.withDeadline(gate.arrived);
+			gate.release();
+			await H.withDeadline(atGates);
+			await svc.releaseOwnSummaryClaims();
+			proceed();
+			await H.withDeadline(done);
+			expect(topUp.mock.calls.length).toBe(0);
+			expect(stub.requests().length).toBe(1);
+			expect((await H.readSummaryRow("lc-gates"))?.attemptErrorCode).toBe("interrupted");
+			expect(svc._summaryGenerationCountForTest()).toBe(0);
+		} finally {
+			proceed();
+			topUp.mockRestore();
+			spy.mockRestore();
+			stub.reset();
+		}
+	});
+});
+
+describe("Q-5 the watchdog before the hand-over", () => {
+	test("a request held after its reservation: the watchdog frees its slot and returns the reservation; once woken it ends interrupted and releases nothing twice", async () => {
+		const other = await occupySlot("lc-wd-other");
+		const { editId } = await H.seedActiveSession("lc-wd-pre");
+		script(ok([editId]));
+		const held = holdAt("reserve", { watchdogMs: 400 });
+		const request = H.request("lc-wd-pre");
+		await H.withDeadline(held.atStep);
+		expect(svc._summaryGenerationCountForTest()).toBe(2);
+		await H.until(() => svc._summaryGenerationCountForTest() === 1, 10_000);
+		// The other session's reservation is all that is left on the day.
+		expect(await H.daySpend()).toBe(reservationOfOneCall());
+		held.release();
+		const result = await H.withDeadline(request);
+		expect(H.refusalOf(result)).toBe("shutting_down");
+		const row = await H.readSummaryRow("lc-wd-pre");
+		expect(row?.attemptStatus).toBe("failed");
+		expect(row?.attemptErrorCode).toBe("interrupted");
+		expect(row?.attemptToken).toBeNull();
+		expect(await H.daySpend()).toBe(reservationOfOneCall());
+		expect(stub.requests().length).toBe(1);
+		other.gate.release();
+		await H.withDeadline(other.done);
+		stub.reset();
+	});
+});
+
+describe("Q-3d the watchdog also covers a finishing entry whose write hangs", () => {
+	test("held in the row write with the watchdog short: the slot is freed and the reservation is settled at the actual cost", async () => {
+		const { editId } = await H.seedActiveSession("lc-wd-fin");
+		script(ok([editId]));
+		const held = holdAt("finish_write", { watchdogMs: 600 });
+		const { done } = await H.startGeneration("lc-wd-fin");
+		await H.withDeadline(held.atStep);
+		expect(svc._summaryGenerationCountForTest()).toBe(1);
+		await H.until(() => svc._summaryGenerationCountForTest() === 0, 10_000);
+		const actual = priceCompletion("openai", "gpt-5-mini", {
+			inputTokens: H.STUB_USAGE.input,
+			outputTokens: H.STUB_USAGE.output,
+			estimated: false,
+		});
+		expect(await H.daySpend()).toBe(actual);
+		held.release();
+		await H.withDeadline(done);
+		expect(await H.daySpend()).toBe(actual);
+	});
+});
+
+describe("Q-8a the URL scan lets the event loop go between slices", () => {
+	test("a setImmediate marker scheduled in the first slice runs before the second slice starts", async () => {
+		await H.seedSession("lc-yield");
+		const rows = Array.from({ length: 60 }, (_, i) =>
+			H.prompt(`see https://example.test/${i} ${"word ".repeat(340)}`),
+		);
+		rows.push(H.edit("src/a.ts"));
+		const ids = await H.seedEvents("lc-yield", rows);
+		script(ok([ids[ids.length - 1]]));
+		const real = tripwire.collectUserPromptUrls;
+		const order: string[] = [];
+		const spy = spyOn(tripwire, "collectUserPromptUrls").mockImplementation((texts) => {
+			order.push(`call${order.filter((o) => o.startsWith("call")).length}`);
+			if (order.length === 1) setImmediate(() => order.push("marker"));
+			return real([...texts]);
+		});
+		try {
+			await H.runGeneration("lc-yield");
+		} finally {
+			spy.mockRestore();
+		}
+		expect(order.slice(0, 3)).toEqual(["call0", "marker", "call1"]);
 	});
 });

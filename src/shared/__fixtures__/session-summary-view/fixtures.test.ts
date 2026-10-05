@@ -136,12 +136,14 @@ describe("fixture truth (P5-20): each fixture is a view the server can really pr
 		expect(view.cooldownSeconds).toBe(COOLDOWN_SECONDS - elapsed(view.attempt.startedAt as string));
 	});
 
-	test("TC-6.5j a freshly failed run reads back inside the cooldown; an interrupted one and an unreadable key start none", () => {
+	test("TC-6.5j a freshly failed run reads back inside the cooldown; an interrupted one starts none and an unreadable key a soft 5 s one", () => {
 		for (const code of SUMMARY_ERROR_CODES) {
 			const view = FAILED_VIEW_FIXTURES[code];
 			if (code === "provider_key_unreadable") {
-				expect(view.attempt.startedAt, code).toBeNull();
-				expect(view.blocked, code).toBeNull();
+				// A soft cooldown of 5 s, not the full 30.
+				expect(view.blocked, code).toBe("summary_cooldown");
+				expect(view.cooldownSeconds, code).toBe(5);
+				expect(view.attempt.startedAt, code).toBe("2026-10-04T11:59:35.000Z");
 			} else if (code === "interrupted") {
 				expect(view.attempt.startedAt, code).not.toBeNull();
 				expect(view.blocked, code).toBeNull();

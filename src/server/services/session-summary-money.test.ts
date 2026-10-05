@@ -137,28 +137,16 @@ describe("P5-2 the charging table (R-I b): one row, one test, the exact day delt
 		});
 	}
 
-	test("a client-side timeout is unknown: charged the single-call maximum", async () => {
+	test("a client-side timeout (a response that never arrives, a short injected timeout) is unknown: charged the single-call maximum", async () => {
 		await seedBigSession();
-		let sent = "";
-		const spy = spyOn(registry, "getAdapter").mockImplementation(
-			() =>
-				({
-					kind: "openai",
-					complete: async (request: { systemPrompt: string; transcriptPrompt: string }) => {
-						sent = request.systemPrompt + request.transcriptPrompt;
-						throw new LlmError("transient_timeout", "timed out");
-					},
-				}) as never,
-		);
-		try {
-			const before = await H.snapshotSpend(SID);
-			await H.runGeneration(SID);
-			expect(sent.length).toBeGreaterThan(0);
-			expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("provider_timeout");
-			expect((await H.spendDelta(before)).day).toBe(maxCall(sent));
-		} finally {
-			spy.mockRestore();
-		}
+		const gate = stub.createGate();
+		script({ ...ok([1]), gate });
+		svc._setSummaryHooksForTest({ callTimeoutMs: 300 });
+		const before = await H.snapshotSpend(SID);
+		await H.runGeneration(SID);
+		expect(stub.requests().length).toBe(1);
+		expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("provider_timeout");
+		expect((await H.spendDelta(before)).day).toBe(maxCall(textOf(stub.requests()[0])));
 	});
 
 	test("a network failure after the request left (the peer closes the socket) is unknown: charged the single-call maximum", async () => {
@@ -546,7 +534,7 @@ describe("P5-7 the key is decrypted after the claim is won", () => {
 		}
 	});
 
-	test("an unreadable key after the claim is a failed attempt: provider_key_unreadable, nothing sent or spent, and no cooldown", async () => {
+	test("an unreadable key after the claim is a failed attempt with a soft cooldown of about 5 s: nothing sent or spent, retry refused until it passes (Q-3c)", async () => {
 		await H.seedActiveSession(SID);
 		await getDb()
 			.update(llmProviders)
@@ -559,18 +547,28 @@ describe("P5-7 the key is decrypted after the claim is won", () => {
 		expect(row?.attemptStatus).toBe("failed");
 		expect(row?.attemptErrorCode).toBe("provider_key_unreadable");
 		expect(row?.attemptToken).toBeNull();
-		expect(row?.attemptStartedAt).toBeNull();
 		expect(stub.requests().length).toBe(0);
 		expect((await H.spendDelta(before)).day).toBe(0);
 		expect(svc._summaryGenerationCountForTest()).toBe(0);
-		// The person who fixes the key is not locked out for the cooldown: the view allows it at once.
+		// About 5 s, not the full 30: a broken key cannot be retried in a tight loop (a scrypt each time),
+		// and someone fixing it waits seconds.
 		const view = await svc.getSessionSummaryView(SID);
 		expect(view?.attempt).toMatchObject({ status: "failed", errorCode: "provider_key_unreadable" });
-		expect(view?.blocked).toBeNull();
-		expect(view?.cooldownSeconds).toBeNull();
+		expect(view?.attempt.startedAt).not.toBeNull();
+		expect(view?.blocked).toBe("summary_cooldown");
+		expect(view?.cooldownSeconds).toBeGreaterThanOrEqual(1);
+		expect(view?.cooldownSeconds).toBeLessThanOrEqual(5);
 		const again = await H.request(SID);
-		expect(again.kind).toBe("started");
-		if (again.kind === "started") await H.withDeadline(again.done);
+		expect(H.refusalOf(again)).toBe("summary_cooldown");
+		if (again.kind === "refused") expect(again.refusal.retryAfterSeconds).toBeLessThanOrEqual(5);
+		setSystemTime(new Date(Date.now() + 6000));
+		try {
+			const later = await H.request(SID);
+			expect(later.kind).toBe("started");
+			if (later.kind === "started") await H.withDeadline(later.done);
+		} finally {
+			setSystemTime();
+		}
 	});
 });
 

@@ -470,7 +470,7 @@ describe("provider failures", () => {
 		}
 	});
 
-	test("TC-5.14c an undecryptable key is a failed attempt after the claim (P5-7): provider_key_unreadable, no cooldown, nothing sent", async () => {
+	test("TC-5.14c an undecryptable key is a failed attempt after the claim (P5-7): provider_key_unreadable, a 5 s soft cooldown, nothing sent", async () => {
 		await H.seedActiveSession(SID);
 		const { llmProviders } = await import("../db/schema/index.js");
 		await getDb()
@@ -482,9 +482,9 @@ describe("provider failures", () => {
 		const row = await summaryOf(SID);
 		expect(row?.attemptStatus).toBe("failed");
 		expect(row?.attemptErrorCode).toBe("provider_key_unreadable");
-		expect(row?.attemptStartedAt).toBeNull();
+		expect(row?.attemptStartedAt).not.toBeNull();
 		expect(stub.requests().length).toBe(0);
-		expect(await getSessionSummaryView(SID)).not.toBeNull();
+		expect((await getSessionSummaryView(SID))?.cooldownSeconds).toBeLessThanOrEqual(5);
 	});
 
 	test("TC-5.15 a secret-shaped string in the provider's error body is not stored, shown or logged", async () => {

@@ -720,10 +720,11 @@ describe("every refusal body, with the fixture's status", () => {
 		expect(view.status).toBe(200);
 		expect((view.json as { attempt: unknown }).attempt).toMatchObject({
 			status: "failed",
-			startedAt: null,
 			errorCode: "provider_key_unreadable",
 		});
-		expect((view.json as { blocked: unknown }).blocked).toBeNull();
+		expect((view.json as { attempt: { startedAt: unknown } }).attempt.startedAt).not.toBeNull();
+		expect((view.json as { blocked: unknown }).blocked).toBe("summary_cooldown");
+		expect((view.json as { cooldownSeconds: number }).cooldownSeconds).toBeLessThanOrEqual(5);
 	});
 
 	test("TC-6.5r3 summary_cooldown", async () => {
@@ -963,7 +964,9 @@ describe("the GET body has the fixture's shape", () => {
 				// A real freshly failed run is inside its cooldown, except one that was interrupted and one
 				// whose key could not be read (written with no start): the fixtures say so too.
 				attemptStartedAt:
-					code === "provider_key_unreadable" ? null : toDbTimestamp(new Date(Date.now() - 20_000)),
+					code === "provider_key_unreadable"
+						? toDbTimestamp(new Date(Date.now() - 25_000))
+						: toDbTimestamp(new Date(Date.now() - 20_000)),
 				attemptErrorCode: code,
 			});
 			const { answered, shape } = await viewShape();
@@ -1671,5 +1674,16 @@ describe("what a response never carries", () => {
 		}
 		expect(rejections).toEqual([]);
 		expect((await H.readSummaryRow(SID))?.attemptStatus).toBe("failed");
+	});
+});
+
+describe("the route's refusal table (Q-8c)", () => {
+	test("TC-6.26 it claims no status for provider_key_unreadable, which the server no longer produces as a refusal", async () => {
+		const { readFileSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const text = readFileSync(join(import.meta.dir, "ai-session-summary.ts"), "utf8")
+			.replace(/\/\*[\s\S]*?\*\//g, "")
+			.replace(/\/\/.*$/gm, "");
+		expect(text).not.toContain("provider_key_unreadable");
 	});
 });

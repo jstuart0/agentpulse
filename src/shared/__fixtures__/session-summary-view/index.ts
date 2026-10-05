@@ -124,17 +124,19 @@ const READY: SessionSummaryView = {
  * summary. It is a view the server can really produce at `FIXTURE_NOW`: a run that failed 20 seconds
  * ago is inside the 30-second cooldown (`blocked: "summary_cooldown"`, the seconds left), except
  * `interrupted` (a lapsed lease starts no cooldown, and its start is older) and
- * `provider_key_unreadable` (written after the claim with the start cleared, so no cooldown and no
- * start time).
+ * `provider_key_unreadable` (written after the claim with a soft 5-second cooldown).
  */
 export function failedWith(
 	code: SummaryErrorCode,
 	base: SessionSummaryView = EMPTY,
 ): SessionSummaryView {
 	if (code === "provider_key_unreadable") {
+		// A soft cooldown of 5 s: written after the claim as if the attempt began 25 s ago.
 		return {
 			...base,
-			attempt: { status: "failed", startedAt: null, errorCode: code },
+			attempt: { status: "failed", startedAt: "2026-10-04T11:59:35.000Z", errorCode: code },
+			blocked: "summary_cooldown",
+			cooldownSeconds: 5,
 		};
 	}
 	if (code === "interrupted") {
