@@ -13,13 +13,10 @@ import {
 	NotesPanel,
 	SummaryField,
 } from "../components/session-detail/Panels.js";
-import {
-	SessionHeader,
-	WORKSPACE_TABS,
-	type WorkspaceTab,
-} from "../components/session-detail/SessionHeader.js";
+import { SessionHeader } from "../components/session-detail/SessionHeader.js";
 import { SessionOwnerDialog } from "../components/session-detail/SessionOwnerDialog.js";
 import { SessionPromptComposer } from "../components/session-detail/SessionPromptComposer.js";
+import { SessionSummaryTab } from "../components/session-detail/SessionSummaryTab.js";
 import {
 	AgentObserveOnlyHint,
 	CodexStatusHint,
@@ -27,6 +24,7 @@ import {
 	ManagedCodexStatus,
 	selectStatusHint,
 } from "../components/session-detail/StatusHints.js";
+import { SummaryFellBackNotice } from "../components/session-detail/SummaryFellBackNotice.js";
 import {
 	type TimelineMode,
 	getVisibleEvents,
@@ -34,6 +32,12 @@ import {
 } from "../components/session-detail/TimelineView.js";
 import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
+import { useSessionSummary } from "../hooks/useSessionSummary.js";
+import {
+	reloadSummaryAvailability,
+	useSummaryAvailability,
+	useSummaryUnavailableReason,
+} from "../hooks/useSummaryAvailable.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
 import { applyManualRename } from "../lib/name-source.js";
@@ -42,6 +46,7 @@ import { ownerLabel, sessionOwnerText } from "../lib/owner-label.js";
 import { NOTES_BLOCKED_REASON, sessionActionAccess } from "../lib/ownership-ui.js";
 import { assignablePeople, withCurrentOwner } from "../lib/people.js";
 import { sessionHostLabel } from "../lib/session-host.js";
+import { type WorkspaceTabId, resolveWorkspaceTab, tabBadge } from "../lib/session-summary-view.js";
 import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
 import { useEventStore } from "../stores/event-store.js";
 import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
@@ -86,10 +91,17 @@ export function SessionDetailPage() {
 	const [showNoisyTools, setShowNoisyTools] = useState(false);
 	const [showSystem, setShowSystem] = useState(true);
 
-	const requestedTab = searchParams.get("tab") as WorkspaceTab | null;
-	const initialWorkspaceTab: WorkspaceTab =
-		requestedTab && WORKSPACE_TABS.includes(requestedTab) ? requestedTab : "activity";
-	const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(initialWorkspaceTab);
+	// The tab is the URL's, resolved against what exists right now: a Summary link waits while
+	// availability loads and falls to Activity (with a line saying why) if the tab isn't there.
+	const summaryAvailability = useSummaryAvailability();
+	const resolvedTab = resolveWorkspaceTab(
+		searchParams.get("tab"),
+		summaryAvailability,
+		useSummaryUnavailableReason(),
+	);
+	const workspaceTab: WorkspaceTabId | null = resolvedTab.kind === "tab" ? resolvedTab.tab : null;
+	const fellBack = resolvedTab.kind === "tab" && resolvedTab.fellBack ? resolvedTab : null;
+	const summaryAvailable = summaryAvailability === "available";
 
 	const [loadingContext, setLoadingContext] = useState(false);
 	const [contextNotFound, setContextNotFound] = useState(false);
@@ -100,6 +112,17 @@ export function SessionDetailPage() {
 	// a moment had no way to undo it. Announced via this live region and a
 	// toast with its own Undo (see the auto-ack effect below).
 	const [liveAnnouncement, setLiveAnnouncement] = useState("");
+
+	// AGEN-69: the summary's state lives here, not in its tab, so a generation survives a tab
+	// switch; it reads once per page view and polls only while one runs.
+	const summary = useSessionSummary(sessionId, summaryAvailable);
+	const summaryAnnouncement = summary.announcement;
+	useEffect(() => {
+		if (summaryAnnouncement) setLiveAnnouncement(summaryAnnouncement);
+	}, [summaryAnnouncement]);
+	useEffect(() => {
+		void reloadSummaryAvailability();
+	}, []);
 
 	const timelineContainerRef = useRef<HTMLDivElement>(null);
 	const timelineEndRef = useRef<HTMLDivElement>(null);
@@ -408,13 +431,6 @@ export function SessionDetailPage() {
 	);
 
 	useEffect(() => {
-		const requested = searchParams.get("tab") as WorkspaceTab | null;
-		if (requested && WORKSPACE_TABS.includes(requested)) {
-			setWorkspaceTab(requested);
-		}
-	}, [searchParams]);
-
-	useEffect(() => {
 		const hasNewEvents = allEvents.length > previousEventCountRef.current;
 		const behavior = previousEventCountRef.current === 0 ? "auto" : "smooth";
 		if (hasNewEvents && shouldFollowTimelineRef.current) {
@@ -603,8 +619,7 @@ export function SessionDetailPage() {
 		shouldFollowTimelineRef.current = true;
 	}
 
-	function selectWorkspaceTab(tab: WorkspaceTab) {
-		setWorkspaceTab(tab);
+	function selectWorkspaceTab(tab: WorkspaceTabId) {
 		const next = new URLSearchParams(searchParams);
 		next.set("tab", tab);
 		setSearchParams(next, { replace: true });
@@ -656,6 +671,12 @@ export function SessionDetailPage() {
 				allEvents={allEvents}
 				workspaceTab={workspaceTab}
 				onSelectTab={selectWorkspaceTab}
+				summaryAvailable={summaryAvailable}
+				summaryBadge={tabBadge({
+					generating: summary.generating,
+					newResult: false,
+					tabActive: workspaceTab === "summary",
+				})}
 				mode={mode}
 				onModeChange={setMode}
 				showTools={showTools}
@@ -701,7 +722,12 @@ export function SessionDetailPage() {
 			<ControlHistory actions={controlActions} />
 
 			<div className="flex-1 min-h-0">
-				{workspaceTab === "overview" ? (
+				{workspaceTab === null ? (
+					<div aria-busy="true" className="space-y-3 p-6">
+						<div className="h-4 w-1/3 rounded bg-muted motion-safe:animate-pulse" />
+						<div className="h-4 w-1/2 rounded bg-muted motion-safe:animate-pulse" />
+					</div>
+				) : workspaceTab === "overview" ? (
 					<div className="grid gap-4 p-3 md:p-6 md:grid-cols-2 xl:grid-cols-4">
 						<SummaryField label="Project" value={session.cwd} mono />
 						<SummaryField
@@ -752,8 +778,20 @@ export function SessionDetailPage() {
 							/>
 						) : null}
 					</div>
+				) : workspaceTab === "summary" ? (
+					<SessionSummaryTab
+						sessionId={session.sessionId}
+						agentType={session.agentType}
+						summary={summary}
+					/>
 				) : workspaceTab === "activity" ? (
 					<>
+						{fellBack ? (
+							<SummaryFellBackNotice
+								reason={fellBack.reason}
+								onRetry={() => void reloadSummaryAvailability()}
+							/>
+						) : null}
 						{contextNotFound ? (
 							<div className="px-4 pt-2">
 								<p className="text-xs text-amber-500/80 text-center">

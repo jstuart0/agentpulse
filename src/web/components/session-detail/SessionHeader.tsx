@@ -9,6 +9,7 @@ import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
 import type { OwnerChipModel } from "../../lib/owner-chip.js";
 import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/ownership-ui.js";
 import { sessionHostLabel } from "../../lib/session-host.js";
+import type { WorkspaceTabId } from "../../lib/session-summary-view.js";
 import { formatDuration } from "../../lib/utils.js";
 import { type AckActionKind, ackActionLabel } from "../../pages/dashboard-view-state.js";
 import { useLabsStore } from "../../stores/labs-store.js";
@@ -20,32 +21,21 @@ import { SessionHostTag } from "../SessionHostTag.js";
 import { StatusBadge } from "../StatusBadge.js";
 import { InlineRename } from "./InlineRename.js";
 import { SessionOverflowMenu } from "./SessionOverflowMenu.js";
-import {
-	FilterToggle,
-	ModeButton,
-	ScrollJumpControls,
-	WorkspaceTabButton,
-} from "./SharedControls.js";
+import { FilterToggle, ModeButton, ScrollJumpControls } from "./SharedControls.js";
 import type { TimelineMode } from "./TimelineView.js";
+import { WorkspaceTabBar } from "./WorkspaceTabBar.js";
 import { buildExportMarkdown } from "./export-markdown.js";
-
-export type WorkspaceTab = "overview" | "activity" | "notes" | "instructions" | "launch" | "ai";
-
-export const WORKSPACE_TABS: WorkspaceTab[] = [
-	"overview",
-	"activity",
-	"notes",
-	"instructions",
-	"launch",
-	"ai",
-];
 
 interface SessionHeaderProps {
 	session: Session;
 	displayName: string;
 	allEvents: SessionEvent[];
-	workspaceTab: WorkspaceTab;
-	onSelectTab: (tab: WorkspaceTab) => void;
+	/** The tab showing now; null while a `?tab=summary` link waits for availability. */
+	workspaceTab: WorkspaceTabId | null;
+	onSelectTab: (tab: WorkspaceTabId) => void;
+	/** The Summary tab exists (AGEN-69). */
+	summaryAvailable: boolean;
+	summaryBadge: string | null;
 	mode: TimelineMode;
 	onModeChange: (mode: TimelineMode) => void;
 	showTools: boolean;
@@ -85,6 +75,8 @@ export function SessionHeader(props: SessionHeaderProps) {
 		allEvents,
 		workspaceTab,
 		onSelectTab,
+		summaryAvailable,
+		summaryBadge,
 		mode,
 		onModeChange,
 		showTools,
@@ -347,43 +339,18 @@ export function SessionHeader(props: SessionHeaderProps) {
 
 			{/* Workspace tabs + activity filters */}
 			<div className="px-3 md:px-6 py-1.5 md:py-2 border-t border-border/70 flex flex-col items-stretch gap-1.5 md:flex-row md:flex-wrap md:items-center md:justify-between md:gap-3">
-				<div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto md:flex-wrap md:gap-2">
-					<WorkspaceTabButton
-						active={workspaceTab === "overview"}
-						label="Overview"
-						onClick={() => onSelectTab("overview")}
-					/>
-					<WorkspaceTabButton
-						active={workspaceTab === "activity"}
-						label="Activity"
-						badge={session.isWorking ? "Working" : null}
-						onClick={() => onSelectTab("activity")}
-					/>
-					<WorkspaceTabButton
-						active={workspaceTab === "notes"}
-						label="Notes"
-						onClick={() => onSelectTab("notes")}
-					/>
-					<WorkspaceTabButton
-						active={workspaceTab === "instructions"}
-						label={AGENT_METADATA[session.agentType as AgentType]?.instructionsFile ?? "CLAUDE.md"}
-						onClick={() => onSelectTab("instructions")}
-					/>
-					{session.managedSession?.launchRequestId && (
-						<WorkspaceTabButton
-							active={workspaceTab === "launch"}
-							label="Launch"
-							onClick={() => onSelectTab("launch")}
-						/>
-					)}
-					{aiTabEnabled && (
-						<WorkspaceTabButton
-							active={workspaceTab === "ai"}
-							label="AI"
-							onClick={() => onSelectTab("ai")}
-						/>
-					)}
-				</div>
+				<WorkspaceTabBar
+					active={workspaceTab}
+					onSelect={onSelectTab}
+					instructionsLabel={
+						AGENT_METADATA[session.agentType as AgentType]?.instructionsFile ?? "CLAUDE.md"
+					}
+					isWorking={session.isWorking}
+					hasLaunch={Boolean(session.managedSession?.launchRequestId)}
+					aiTabEnabled={aiTabEnabled}
+					summaryAvailable={summaryAvailable}
+					summaryBadge={summaryBadge}
+				/>
 				{workspaceTab === "activity" && (
 					<>
 						{/* Mobile: one-button toggle. Desktop: inline toolbar. */}

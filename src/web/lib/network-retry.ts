@@ -101,14 +101,16 @@ export const IDENTITY_PATH = "/auth/me";
 const GATEWAY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 /** The code a server that is shedding load answers with: "try again shortly", not an outage. */
 export const BUSY_CODE = "busy";
+/** The code a server that is draining answers with: it is restarting on purpose, not down. */
+export const SHUTTING_DOWN_CODE = "shutting_down";
 
 /**
  * Whether an answered request still says the server is not serving: a gateway
  * error (what a proxy answers while the app is down) other than a deliberate
- * "busy", or, for the identity check that the whole app waits on, any 5xx or a
+ * "busy" or "shutting_down", or, for the identity check that the whole app waits on, any 5xx or a
  * 429. Everything else is an answer and counts as the server being reachable.
  */
 export function isOutageResponse(status: number, code: string | null, path: string): boolean {
 	if (path === IDENTITY_PATH) return status >= 500 || status === 429;
-	return GATEWAY_STATUSES.has(status) && code !== BUSY_CODE;
+	return GATEWAY_STATUSES.has(status) && code !== BUSY_CODE && code !== SHUTTING_DOWN_CODE;
 }

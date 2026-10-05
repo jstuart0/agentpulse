@@ -363,7 +363,7 @@ describe("ready", () => {
 		expect(text).toMatch(/e2e[^|]*Not run/);
 		expect(text).toMatch(/types[^|]*Unknown: /);
 		expect(count(text, /Passed/g)).toBe(1);
-		expect(text).toContain("validation (no result recorded)");
+		expect(text).toContain("test or build (no result recorded)");
 		// Something failed, so the section is open.
 		expect(section).toMatch(/^<details[^>]*\sopen/);
 	});
@@ -428,7 +428,7 @@ describe("ready", () => {
 
 	test("BN-13 the partial-evidence line, in its time form", () => {
 		const h = textOf(html(F.partial));
-		expect(h).toContain("Based on part of this session: activity before 22:10");
+		expect(h).toContain("Based on part of this session: activity before Sat 22:10");
 		expect(textOf(html(F.ready))).not.toContain("Based on part of this session");
 	});
 
@@ -505,7 +505,7 @@ describe("failures and refusals", () => {
 				expect(h, code).toMatch(/<output[^>]*>[^<]*\S/);
 				expect(buttons(h), code).toBe(1);
 			} else {
-				expect(h, code).not.toContain("<output");
+				expect(h, code).toMatch(/<output[^>]*><\/output>/);
 			}
 		}
 		expect(shown).toBeGreaterThan(5);
@@ -584,7 +584,7 @@ describe("TC-8.11 model text is only ever a React text node", () => {
 		const h = html(hostileView);
 		expect(h).not.toContain("<img");
 		expect(h).not.toContain("<script");
-		expect(h).not.toMatch(/\sonerror=/);
+		expect(h).not.toMatch(/<[^>]*\sonerror=/);
 		expect(h).toContain("&lt;img src=x onerror=alert(1)&gt;");
 		expect(h).not.toContain("<strong");
 		expect(h).not.toMatch(/href="[^"]*(evil|auto\.example|javascript)/);

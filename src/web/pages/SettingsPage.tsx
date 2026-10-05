@@ -8,6 +8,7 @@ import { AdminSettingsGroup } from "../components/settings/AdminSettingsGroup.js
 import { AiSettingsPanel } from "../components/settings/AiSettingsPanel.js";
 import { ApiKeysPanel } from "../components/settings/ApiKeysPanel.js";
 import { LabsPanel } from "../components/settings/LabsPanel.js";
+import { SettingsSection } from "../components/settings/SettingsSection.js";
 import { TeamPanel } from "../components/settings/TeamPanel.js";
 import { TelegramChannelPanel } from "../components/settings/TelegramChannelPanel.js";
 import { WorkspacesPanel } from "../components/settings/WorkspacesPanel.js";
@@ -25,7 +26,7 @@ import {
 import { useLabsStore } from "../stores/labs-store.js";
 import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 import { useUserStore } from "../stores/user-store.js";
-import { panelAnchorId, panelFromSearch, resolvePanel } from "./settings-panels.js";
+import { panelAnchorId, panelToReveal } from "./settings-panels.js";
 import {
 	type FetchStatus,
 	type SettingsSectionId,
@@ -142,12 +143,15 @@ export function SettingsPage() {
 	// focus on its heading, once the page has loaded.
 	useEffect(() => {
 		if (loading) return;
-		const panel = resolvePanel(panelFromSearch(location.search), { account: isLocalAccount });
+		const panel = panelToReveal(location.search, {
+			account: isLocalAccount,
+			ai: aiSettingsEnabled,
+		});
 		if (!panel) return;
 		const heading = document.getElementById(panelAnchorId(panel))?.querySelector("h2");
 		heading?.scrollIntoView({ block: "start" });
 		heading?.focus({ preventScroll: true });
-	}, [loading, location.search, isLocalAccount]);
+	}, [loading, location.search, isLocalAccount, aiSettingsEnabled]);
 
 	// Toggle theme. In team mode the choice is this browser's own: writing the
 	// shared setting would change everyone's screen.
@@ -435,36 +439,29 @@ export function SettingsPage() {
 		),
 		labs: (
 			<>
-				<section className="border border-border bg-card rounded-lg p-5 mb-6 relative">
-					<div className="flex items-center gap-2 mb-1">
-						<h2 className="text-sm font-semibold">Labs</h2>
-						<LabsBadge />
-					</div>
-					<p className="text-xs text-muted-foreground mb-4">
-						Experimental features. Toggles here hide the related nav items, tabs, and surfaces from
-						the rest of the app. Defaults preserve what's already shipped.
-					</p>
+				<SettingsSection
+					panel="labs"
+					title="Labs"
+					description="Experimental features. Toggles here hide the related nav items, tabs, and surfaces from the rest of the app. Defaults preserve what's already shipped."
+				>
 					<AdminSettingsGroup locked={ui.adminSettingsLocked}>
 						<LabsPanel />
 					</AdminSettingsGroup>
-				</section>
+				</SettingsSection>
 			</>
 		),
 		ai: (
 			<>
 				{aiSettingsEnabled && (
-					<section className="border border-border bg-card rounded-lg p-5 mb-6 relative">
-						<div className="flex items-center gap-2 mb-1">
-							<h2 className="text-sm font-semibold">AI watcher</h2>
-							<LabsBadge />
-						</div>
-						<p className="text-xs text-muted-foreground mb-4">
-							Attach an LLM to any session. Watcher proposals require human approval.
-						</p>
+					<SettingsSection
+						panel="ai"
+						title="AI watcher"
+						description="Attach an LLM to any session. Watcher proposals require human approval."
+					>
 						<AdminSettingsGroup locked={ui.adminSettingsLocked}>
 							<AiSettingsPanel />
 						</AdminSettingsGroup>
-					</section>
+					</SettingsSection>
 				)}
 			</>
 		),

@@ -1,25 +1,400 @@
+import { useEffect, useId, useState } from "react";
+import { Link } from "react-router-dom";
+import type { SessionSummaryView } from "../../../shared/session-summary-view.js";
+import type { StoredSessionSummary } from "../../../shared/session-summary.js";
 import type { UseSessionSummary } from "../../hooks/useSessionSummary.js";
 import type { AiStatusResponse } from "../../lib/api.js";
-import type {
-	ClockOptions,
-	RefusalCopy,
-	SummaryLoad,
-	SummaryViewer,
+import {
+	type ActionState,
+	type ClockOptions,
+	type RefusalCopy,
+	type SummaryLoad,
+	type SummaryViewModel,
+	type SummaryViewer,
+	type SuspectNotice,
+	deriveSummaryView,
+	footerText,
+	formatElapsed,
+	formatMoment,
+	partialEvidenceNotice,
+	relativeAgo,
 } from "../../lib/session-summary-view.js";
+import { cn } from "../../lib/utils.js";
+import { ConfirmDialog } from "../ConfirmDialog.js";
+import { LabsBadge } from "../LabsBadge.js";
+import { SummarySections } from "./SummarySections.js";
 
 export interface SessionSummaryPanelProps {
 	sessionId: string;
 	agentType: string | null;
 	load: SummaryLoad;
+	/** Polling gave up: the last view stays, with Retry beside the action. */
 	lostContact: boolean;
 	refusal: RefusalCopy | null;
 	aiStatus: AiStatusResponse | null;
 	viewer: SummaryViewer;
 	generate: UseSessionSummary["generate"];
 	retry: () => void;
+	/** A fixed clock, for tests; the browser's own otherwise. */
 	clock?: ClockOptions;
 }
 
-export function SessionSummaryPanel(_props: SessionSummaryPanelProps) {
-	return null;
+const FILLED =
+	"min-h-[44px] rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 aria-disabled:cursor-not-allowed aria-disabled:bg-muted aria-disabled:text-muted-foreground md:min-h-0";
+const QUIET =
+	"min-h-[44px] rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent md:min-h-0";
+const OUTLINED =
+	"min-h-[44px] rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent md:min-h-0";
+const MUTED = "text-xs text-muted-foreground";
+const WRAP = "[overflow-wrap:anywhere]";
+
+/** The browser's clock, ticking each second while `running`, unless a fixed one is given. */
+function useNow(running: boolean, fixed: Date | undefined): Date {
+	const [tick, setTick] = useState(() => new Date());
+	useEffect(() => {
+		if (!running || fixed) return;
+		setTick(new Date());
+		const timer = setInterval(() => setTick(new Date()), 1000);
+		return () => clearInterval(timer);
+	}, [running, fixed]);
+	return fixed ?? tick;
+}
+
+/**
+ * The Summary tab's content. What it shows is decided by `deriveSummaryView` (three independent
+ * pieces: what is stored, what the person can do, how the last attempt ended); this renders them.
+ * One primary action is on screen at a time, and a blocked action is its reason in the button's
+ * place.
+ */
+export function SessionSummaryPanel(props: SessionSummaryPanelProps) {
+	const { load, lostContact, aiStatus, viewer } = props;
+	const headingId = useId();
+	const generating = load.status === "ready" && load.view.attempt.status === "generating";
+	const now = useNow(generating && !lostContact, props.clock?.now);
+	const clock: ClockOptions = { ...props.clock, now };
+	const model = deriveSummaryView(load, aiStatus, viewer, clock);
+	if (load.status === "unavailable") return null;
+	const view = load.status === "ready" ? load.view : null;
+	return (
+		<section
+			aria-labelledby={headingId}
+			data-summary-state={model?.stateTag}
+			className="max-w-3xl space-y-4 p-3 md:p-6"
+		>
+			<div className="flex items-center gap-2">
+				<h2 id={headingId} tabIndex={-1} className="text-base font-semibold focus:outline-none">
+					Summary
+				</h2>
+				<LabsBadge />
+			</div>
+			{model === null ? (
+				<Skeleton />
+			) : (
+				<PanelBody {...props} model={model} view={view} clock={clock} />
+			)}
+		</section>
+	);
+}
+
+type BodyProps = SessionSummaryPanelProps & {
+	model: SummaryViewModel;
+	view: SessionSummaryView | null;
+	clock: ClockOptions;
+};
+
+function PanelBody(props: BodyProps) {
+	const { model } = props;
+	switch (model.content.kind) {
+		case "loading":
+			return <Skeleton />;
+		case "load_failed":
+			return (
+				<div className="flex flex-wrap items-center gap-3">
+					<p className="text-sm text-foreground">Couldn't load the summary.</p>
+					<button type="button" onClick={props.retry} className={OUTLINED}>
+						Retry
+					</button>
+				</div>
+			);
+		case "none":
+			return <EmptyBody {...props} />;
+		case "ready":
+		case "stale":
+			return <StoredBody {...props} stored={model.content.stored} />;
+	}
+}
+
+function Skeleton() {
+	return (
+		<div aria-busy="true" className="space-y-3">
+			<div className="h-4 w-1/3 rounded bg-muted motion-safe:animate-pulse" />
+			<div className="h-4 w-2/3 rounded bg-muted motion-safe:animate-pulse" />
+			<div className="h-4 w-1/2 rounded bg-muted motion-safe:animate-pulse" />
+		</div>
+	);
+}
+
+// ── no summary yet ──────────────────────────────────────────────────────────
+
+function EmptyBody(props: BodyProps) {
+	const { model } = props;
+	return (
+		<div className="space-y-3">
+			<p className="text-sm text-muted-foreground">No summary yet.</p>
+			<GeneratingStatus {...props} />
+			<LostContact {...props} />
+			<LastAttempt notice={model.notice} />
+			<ActionControl {...props} />
+		</div>
+	);
+}
+
+// ── a stored summary ────────────────────────────────────────────────────────
+
+function StoredBody(props: BodyProps & { stored: StoredSessionSummary }) {
+	const { model, view, stored, clock } = props;
+	const stale = model.content.kind === "stale" ? model.content : null;
+	return (
+		<div className="space-y-4">
+			<GeneratingStatus {...props} />
+			<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+				<Freshness view={view} stored={stored} clock={clock} />
+				{!stale && <ActionControl {...props} />}
+			</div>
+			<LostContact {...props} />
+			{model.suspectNotice && <SuspectBlock notice={model.suspectNotice} />}
+			{stale && (
+				<div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border border-border px-3 py-2">
+					<p className="text-sm text-foreground">{stale.text}</p>
+					<ActionControl {...props} />
+				</div>
+			)}
+			<LastAttempt notice={model.notice} />
+			<PartialEvidence stored={stored} clock={clock} />
+			<SummarySections
+				stored={stored}
+				sessionId={props.sessionId}
+				agentType={props.agentType}
+				clock={clock}
+			/>
+			<Footer view={view} clock={clock} />
+		</div>
+	);
+}
+
+function Freshness({
+	view,
+	stored,
+	clock,
+}: { view: SessionSummaryView | null; stored: StoredSessionSummary; clock: ClockOptions }) {
+	const made = view?.generatedAt ? relativeAgo(view.generatedAt, clock) : "";
+	const through = stored.provenance.throughAt
+		? formatMoment(stored.provenance.throughAt, clock)
+		: "";
+	if (!made && !through) return <span />;
+	return (
+		<p className={MUTED}>
+			{[made && `Generated ${made}`, through && `through ${through}`].filter(Boolean).join(", ")}
+		</p>
+	);
+}
+
+function PartialEvidence({ stored, clock }: { stored: StoredSessionSummary; clock: ClockOptions }) {
+	const line = partialEvidenceNotice(stored.provenance.coverage, clock);
+	return line ? <p className={MUTED}>{line}</p> : null;
+}
+
+function Footer({ view, clock }: { view: SessionSummaryView | null; clock: ClockOptions }) {
+	const footer = view ? footerText(view, clock) : null;
+	if (!footer) return null;
+	return (
+		<footer className={cn("space-y-0.5 border-t border-border pt-3", MUTED, WRAP)}>
+			<p>{footer.line}</p>
+			{footer.masked && <p>{footer.masked}</p>}
+			{footer.retention && <p>{footer.retention}</p>}
+		</footer>
+	);
+}
+
+// ── notices ─────────────────────────────────────────────────────────────────
+
+/** "Check this before pasting it into an agent": a bordered amber notice for text that addresses an agent or runs code, neutral text for the milder reasons. */
+function SuspectBlock({ notice }: { notice: SuspectNotice }) {
+	const warning = notice.tone === "warning";
+	return (
+		<div
+			data-tone={notice.tone}
+			className={cn(
+				"space-y-1 text-xs",
+				warning
+					? "rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-900 dark:text-amber-200"
+					: "text-muted-foreground",
+			)}
+		>
+			<p className={warning ? "font-medium" : undefined}>{notice.lead}</p>
+			<ul className="list-disc space-y-0.5 pl-4">
+				{notice.lines.map((line) => (
+					<li key={line}>{line}</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+function LastAttempt({ notice }: { notice: SummaryViewModel["notice"] }) {
+	if (notice.kind === "none") return null;
+	const error = notice.tone === "error";
+	return (
+		<output
+			className={cn(
+				"block rounded-md border px-3 py-2 text-xs",
+				error
+					? "border-red-500/30 bg-red-500/10 text-red-800 dark:text-red-300"
+					: "border-border text-muted-foreground",
+			)}
+		>
+			<span className="font-medium">{notice.lead}</span> {notice.reason}
+		</output>
+	);
+}
+
+function LostContact(props: BodyProps) {
+	if (!props.lostContact || props.model.action.kind === "generating") return null;
+	return (
+		<div className="flex flex-wrap items-center gap-3">
+			<output className="text-xs text-red-800 dark:text-red-300">
+				Lost contact with the server.
+			</output>
+			<button type="button" onClick={props.retry} className={OUTLINED}>
+				Retry
+			</button>
+		</div>
+	);
+}
+
+// ── the one action ──────────────────────────────────────────────────────────
+
+function GeneratingStatus(props: BodyProps) {
+	const { action } = props.model;
+	if (action.kind !== "generating") return null;
+	if (props.lostContact) {
+		return (
+			<div className="flex flex-wrap items-center gap-3">
+				<output className="text-xs text-red-800 dark:text-red-300">
+					Lost contact with the server. The summary may still be finishing.
+				</output>
+				<button type="button" onClick={props.retry} className={OUTLINED}>
+					Retry
+				</button>
+			</div>
+		);
+	}
+	const elapsed = formatElapsed(action.startedAt, props.clock.now ?? new Date());
+	return (
+		<p className="flex items-start gap-2 text-sm text-foreground">
+			<span
+				aria-hidden="true"
+				className="mt-1 inline-block h-3 w-3 flex-shrink-0 rounded-full border-2 border-muted-foreground border-t-transparent motion-safe:animate-spin"
+			/>
+			<span>
+				{action.statusText}
+				{elapsed && <span className="ml-2 tabular-nums text-muted-foreground">{elapsed}</span>}
+			</span>
+		</p>
+	);
+}
+
+/** The button where the action is possible, its reason where it isn't. Never both, never two. */
+function ActionControl(props: BodyProps) {
+	const { action } = props.model;
+	switch (action.kind) {
+		case "none":
+			return null;
+		case "blocked":
+			return <BlockedText action={action} />;
+		case "generating":
+			return (
+				<button type="button" aria-disabled="true" className={QUIET}>
+					{action.label}
+				</button>
+			);
+		case "available":
+			return <AvailableAction {...props} action={action} />;
+	}
+}
+
+function BlockedText({ action }: { action: Extract<ActionState, { kind: "blocked" }> }) {
+	return (
+		<p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+			<span className={WRAP}>{action.text}</span>
+			{action.link && (
+				<Link
+					to={action.link.href}
+					className="inline-flex min-h-[44px] items-center text-xs text-primary underline underline-offset-2 hover:text-foreground md:min-h-0"
+				>
+					{action.link.label}
+				</Link>
+			)}
+		</p>
+	);
+}
+
+function AvailableAction(
+	props: BodyProps & { action: Extract<ActionState, { kind: "available" }> },
+) {
+	const { action, refusal } = props;
+	const [confirming, setConfirming] = useState(false);
+	const printId = useId();
+	const buttonId = useId();
+	const counting = refusal?.countdownSeconds != null;
+	const filled = action.variant !== "update";
+
+	async function click() {
+		if (counting) return;
+		if ((await props.generate()) === "needs_confirmation") setConfirming(true);
+	}
+
+	return (
+		<div className="space-y-2">
+			<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+				<button
+					id={buttonId}
+					type="button"
+					aria-describedby={action.finePrint ? printId : undefined}
+					aria-disabled={counting ? "true" : undefined}
+					onClick={() => void click()}
+					className={filled ? FILLED : QUIET}
+				>
+					{action.label}
+				</button>
+				<output className={cn("text-xs text-muted-foreground", WRAP)}>{refusal?.text}</output>
+			</div>
+			{action.finePrint &&
+				(action.variant === "summarize" ? (
+					<p id={printId} className={cn("max-w-prose", MUTED, WRAP)}>
+						{action.finePrint}
+					</p>
+				) : (
+					<span id={printId} className="sr-only">
+						{action.finePrint}
+					</span>
+				))}
+			{confirming && action.confirm && (
+				<ConfirmDialog
+					title={action.confirm.title}
+					confirmLabel={action.confirm.confirmLabel}
+					cancelLabel={action.confirm.cancelLabel}
+					focusCancel
+					fallbackFocusId={buttonId}
+					onConfirm={() => {
+						setConfirming(false);
+						void props.generate({ confirmed: true });
+					}}
+					onCancel={() => setConfirming(false)}
+				>
+					<p>{action.confirm.body}</p>
+				</ConfirmDialog>
+			)}
+		</div>
+	);
 }

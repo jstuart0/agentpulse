@@ -33,8 +33,8 @@ export function aiSettingsHref(aiPanelAvailable: boolean): string {
 
 /** The section a `?panel=` link opens on this page, or null when the page doesn't have it. */
 export function panelToReveal(
-	_search: string,
-	_available: { account: boolean; ai: boolean },
+	search: string,
+	available: { account: boolean; ai: boolean },
 ): SettingsPanel | null {
-	return null;
+	return resolvePanel(panelFromSearch(search), available);
 }

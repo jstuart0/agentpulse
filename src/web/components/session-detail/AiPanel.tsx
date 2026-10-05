@@ -11,13 +11,26 @@ import {
 } from "../../lib/api.js";
 import { useAiStatusStore } from "../../stores/ai-status-store.js";
 import { useLabsStore } from "../../stores/labs-store.js";
+import { SummaryLabsPointer } from "./SummaryLabsPointer.js";
 
 interface AiPanelProps {
 	sessionId: string;
 	sessionIsManaged: boolean;
 }
 
-export function AiPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
+/** The AI tab: a line about Session summaries while they're off, above whatever the tab itself shows. */
+export function AiPanel(props: AiPanelProps) {
+	return (
+		<>
+			<div className="px-4 pt-4 empty:hidden md:px-6">
+				<SummaryLabsPointer />
+			</div>
+			<AiWatcherPanel {...props} />
+		</>
+	);
+}
+
+function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 	const featureActive = useAiStatusStore((s) => s.status?.active ?? null);
 	const [providers, setProviders] = useState<AiProvider[]>([]);
 	const [config, setConfig] = useState<AiWatcherConfig | null>(null);

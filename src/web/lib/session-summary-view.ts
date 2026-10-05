@@ -153,13 +153,26 @@ export function resolveWorkspaceTab(
 }
 
 /** The one line shown above Activity when a `?tab=summary` link fell back; null when the reason is unknown. */
-export function fellBackCopy(_reason: UnavailableReason | null): string | null {
-	return null;
+export function fellBackCopy(reason: UnavailableReason | null): string | null {
+	switch (reason) {
+		case "flag_off":
+			return "Session summaries are off, so this link opened Activity.";
+		case "not_built":
+			return "This server doesn't include AI features, so there is no Summary tab.";
+		case "load_failed":
+			return "Couldn't check whether summaries are available.";
+		case null:
+			return null;
+	}
 }
 
 /** "2:05" since the generation began; clamped at zero, because the optimistic start uses the browser clock. */
-export function formatElapsed(_startedAt: string | null, _now: Date): string {
-	return "";
+export function formatElapsed(startedAt: string | null, now: Date): string {
+	if (!startedAt) return "";
+	const at = parseDate(startedAt);
+	if (Number.isNaN(at)) return "";
+	const total = Math.max(0, Math.floor((now.getTime() - at) / 1000));
+	return `${Math.floor(total / MINUTE_S)}:${String(total % MINUTE_S).padStart(2, "0")}`;
 }
 
 export function summaryHref(sessionId: string): string {
@@ -802,7 +815,7 @@ export const SUSPECT_REASON_LINES: Readonly<Record<string, string>> = {
 	unexpected_url: "It mentions a web address you didn't type in this session.",
 	unrecorded_command: "The handoff suggests a command this session never ran.",
 	risky_command:
-		"It includes a command that reaches the network or changes the system, aimed at something this session never used.",
+		"It includes a command that reaches the network or changes the system, with a target this session never touched.",
 	malformed_url: "It contains a web address written in a misleading form.",
 };
 
@@ -811,10 +824,10 @@ const SUSPECT_REASON_PHRASES: Readonly<Record<string, string>> = {
 	role_marker: "text written as instructions to an AI agent",
 	override_phrase: "text written as instructions to an AI agent",
 	pipe_to_shell: "a command that downloads something and runs it",
-	unexpected_url: "a web address you didn't type in this session",
+	unexpected_url: "a web address the user didn't type in this session",
 	unrecorded_command: "a command this session never ran",
 	risky_command:
-		"a command that reaches the network or changes the system, aimed at something this session never used",
+		"a command that reaches the network or changes the system, with a target this session never touched",
 	malformed_url: "a web address written in a misleading form",
 };
 const SUSPECT_UNSPECIFIED_PHRASE = "something a safety check flagged";
@@ -892,7 +905,9 @@ function blocked(
 	return { kind: "blocked", reason, text, link };
 }
 
-const AI_SETTINGS_LABEL = "Open AI settings";
+/** The link names what it opens: the AI section when Settings has one, otherwise Settings itself. */
+const settingsLabel = (aiPanelAvailable: boolean) =>
+	aiPanelAvailable ? "Open AI settings" : "Open Settings";
 
 /** Paused or off: what can't be done, and what the person can do about it (or that only an admin can). */
 function aiBlocked(
@@ -912,7 +927,12 @@ function aiBlocked(
 	return blocked(
 		reason,
 		what,
-		ai.build ? { href: aiSettingsHref(viewer.aiPanelAvailable), label: AI_SETTINGS_LABEL } : null,
+		ai.build
+			? {
+					href: aiSettingsHref(viewer.aiPanelAvailable),
+					label: settingsLabel(viewer.aiPanelAvailable),
+				}
+			: null,
 	);
 }
 
@@ -945,7 +965,7 @@ function deriveAction(
 				? blocked("no_provider", "No AI provider is set up. Ask an admin to add one.")
 				: blocked("no_provider", "No AI provider is set up.", {
 						href: aiSettingsHref(viewer.aiPanelAvailable),
-						label: AI_SETTINGS_LABEL,
+						label: settingsLabel(viewer.aiPanelAvailable),
 					});
 		case "summary_cooldown":
 			return blocked(
@@ -1105,7 +1125,7 @@ export function labsPointer(
 
 export const VERIFY_LINE = "AI-generated from session activity. Verify before acting on it.";
 export const NO_UNFINISHED_WORK = "No significant unfinished work identified.";
-const NOTHING_RECORDED = "None recorded.";
+export const NOTHING_RECORDED = "None recorded.";
 const META_FIELD_MAX = 200;
 
 export interface CopyMeta {

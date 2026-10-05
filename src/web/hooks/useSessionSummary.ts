@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionSummaryView } from "../../shared/session-summary-view.js";
-import { api } from "../lib/api.js";
+import { type PolledSessionSummaryView, api } from "../lib/api.js";
 import {
 	type RefusalCopy,
 	type SummaryLoad,
@@ -11,7 +11,7 @@ import {
 } from "../lib/session-summary-view.js";
 import { useAiStatusStore } from "../stores/ai-status-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
-import { useOwnershipUi } from "./useOwnershipUi.js";
+import { useSummaryViewer } from "./useSummaryViewer.js";
 
 /** Milliseconds between polls while a generation runs. */
 export const SUMMARY_POLL_INTERVAL_MS = 2000;
@@ -96,6 +96,17 @@ interface Controller {
 type ReadKind = "initial" | "poll" | "refetch" | "retry";
 
 const isGenerating = (view: SessionSummaryView | null) => view?.attempt.status === "generating";
+
+/** A view that says it left the stored summary out keeps the one already on screen. */
+function withKeptSummary(
+	next: PolledSessionSummaryView,
+	previous: SessionSummaryView | null,
+): SessionSummaryView {
+	const { storedOmitted, ...view } = next;
+	return storedOmitted && view.stored === null && previous
+		? { ...view, stored: previous.stored }
+		: view;
+}
 
 /** What the refusal was about when it was shown: a change in either makes it stale. */
 interface RefusalAnchor {
@@ -251,6 +262,8 @@ function createController(
 				return;
 			}
 		} else if (kind === "refetch" && view !== null) {
+			// The view on screen stays; a generation it still shows as running needs its poll back.
+			schedulePoll();
 			return;
 		}
 		if (view !== null) commit({ lostContact: true });
@@ -264,15 +277,20 @@ function createController(
 			return;
 		}
 		busy = true;
-		let next: SessionSummaryView | null = null;
+		let next: PolledSessionSummaryView | null = null;
 		try {
-			next = await api.getSessionSummary(sessionId);
+			next = await api.getSessionSummary(sessionId, {
+				poll: kind === "poll" && SUMMARY_SEND_POLL_PARAM,
+			});
 		} catch {
 			next = null;
 		}
 		busy = false;
 		if (disposed) return;
-		if (next) accept(next);
+		if (next?.storedOmitted && next.attempt.status === "idle" && isGenerating(view)) {
+			// The poll saw the generation end but left the new summary out: read it in full.
+			readAgain = true;
+		} else if (next) accept(withKeptSummary(next, view));
 		else failedRead(kind);
 		if (readAgain) {
 			readAgain = false;
@@ -373,9 +391,7 @@ export function useSessionSummary(
 	enabled: boolean,
 ): UseSessionSummary {
 	const [state, setState] = useState<State>(INITIAL);
-	const { adminSettingsLocked, showSummarySharedNote } = useOwnershipUi();
-	const aiPanelAvailable = useLabsStore((s) => s.isEnabled("aiSettingsPanel"));
-	const viewer: SummaryViewer = { adminSettingsLocked, showSummarySharedNote, aiPanelAvailable };
+	const viewer = useSummaryViewer();
 	const viewerRef = useRef<SummaryViewer>(viewer);
 	viewerRef.current = viewer;
 	const controller = useRef<Controller | null>(null);
@@ -395,6 +411,7 @@ export function useSessionSummary(
 	const active = enabled && !!sessionId && state.forSession === sessionId;
 	const current = active ? state : INITIAL;
 	const load: SummaryLoad = !enabled || !sessionId ? { status: "unavailable" } : current.load;
+	const { adminSettingsLocked } = viewer;
 	const refusal = useMemo(() => {
 		if (!current.refusal) return null;
 		const copy = refusalCopy(
