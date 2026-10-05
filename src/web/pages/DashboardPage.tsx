@@ -18,10 +18,10 @@ import { DashboardViewControls, ScratchToggle } from "../components/DashboardVie
 import { FirstRunWelcome } from "../components/FirstRunWelcome.js";
 import { OwnerSelect } from "../components/OwnerSelect.js";
 import { ScopeSwitch } from "../components/ScopeSwitch.js";
+import { SelectedSessionActions } from "../components/SelectedSessionActions.js";
 import { SessionGrid } from "../components/SessionGrid.js";
 import { StatCard } from "../components/StatCard.js";
 import { StatusBadge } from "../components/StatusBadge.js";
-import { SummaryLink } from "../components/SummaryLink.js";
 import { useAllWaitingSessions } from "../hooks/useAllWaitingSessions.js";
 import { useDefaultOwnerScope } from "../hooks/useDefaultOwnerScope.js";
 import { useListFollowsCount } from "../hooks/useListFollowsCount.js";
@@ -1079,25 +1079,10 @@ export function DashboardPage() {
 												</div>
 											</div>
 										</div>
-										<div className="flex flex-wrap items-start gap-2">
-											<button
-												type="button"
-												onClick={() => navigate(`/sessions/${selectedActiveSession.sessionId}`)}
-												className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-											>
-												Open Workspace
-											</button>
-											<button
-												type="button"
-												onClick={() =>
-													navigate(`/sessions/${selectedActiveSession.sessionId}?tab=activity`)
-												}
-												className="rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors"
-											>
-												Open Activity
-											</button>
-											<SummaryLink sessionId={selectedActiveSession.sessionId} variant="button" />
-										</div>
+										<SelectedSessionActions
+											sessionId={selectedActiveSession.sessionId}
+											navigate={navigate}
+										/>
 									</div>
 								)}
 							</div>

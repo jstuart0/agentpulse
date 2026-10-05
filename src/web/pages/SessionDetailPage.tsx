@@ -32,11 +32,10 @@ import {
 import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
 import { useEventReveal } from "../hooks/useEventReveal.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
-import { useSessionSummary } from "../hooks/useSessionSummary.js";
-import { reloadSummaryAvailability } from "../hooks/useSummaryAvailable.js";
-import { useSummaryRoute, useSummaryTabBadge } from "../hooks/useSummaryPageState.js";
+import { useSessionSummaryPage } from "../hooks/useSessionSummaryPage.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
+import { EVENT_LOAD_FAILED_COPY } from "../lib/event-deep-link.js";
 import { applyManualRename } from "../lib/name-source.js";
 import { ownerChip } from "../lib/owner-chip.js";
 import { ownerLabel, sessionOwnerText } from "../lib/owner-label.js";
@@ -47,7 +46,6 @@ import type { WorkspaceTabId } from "../lib/session-summary-core.js";
 import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
 import { useEventStore } from "../stores/event-store.js";
 import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
-import { useSummaryViewStore } from "../stores/summary-view-store.js";
 import { useTabsStore } from "../stores/tabs-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { useUsersStore } from "../stores/users-store.js";
@@ -106,10 +104,6 @@ export function SessionDetailPage() {
 	const [showNoisyTools, setShowNoisyTools] = useState(false);
 	const [showSystem, setShowSystem] = useState(true);
 
-	// The tab is the URL's, resolved against what exists right now: a Summary link waits while
-	// availability loads and falls to Activity (with a line saying why) if the tab isn't there.
-	const { workspaceTab, fellBack, summaryAvailable } = useSummaryRoute(searchParams.get("tab"));
-
 	const [eventsLoaded, setEventsLoaded] = useState(false);
 
 	// AGEN: the auto-acknowledge effect's only visible side effect used to be
@@ -119,23 +113,17 @@ export function SessionDetailPage() {
 	// toast with its own Undo (see the auto-ack effect below).
 	const [liveAnnouncement, setLiveAnnouncement] = useState("");
 
-	// AGEN-69: the summary's state lives here, not in its tab, so a generation survives a tab
-	// switch; it reads once per page view and polls only while one runs.
-	const summary = useSessionSummary(sessionId, summaryAvailable);
-	const summaryBadge = useSummaryTabBadge(summary, workspaceTab);
-	// Open/closed and "Show all" state live for this visit to this session, across tab switches.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: the session id is the trigger
-	useEffect(() => {
-		useSummaryViewStore.getState().reset();
-		return () => useSummaryViewStore.getState().reset();
-	}, [sessionId]);
-	const summaryAnnouncement = summary.announcement;
-	useEffect(() => {
-		if (summaryAnnouncement) setLiveAnnouncement(summaryAnnouncement);
-	}, [summaryAnnouncement]);
-	useEffect(() => {
-		void reloadSummaryAvailability();
-	}, []);
+	// AGEN-69: the summary's state lives here, not in its tab, so a generation survives a tab switch.
+	const {
+		route: { workspaceTab, fellBack },
+		summary,
+		badge: summaryBadge,
+		retryAvailability,
+	} = useSessionSummaryPage({
+		sessionId,
+		tabParam: searchParams.get("tab"),
+		announce: setLiveAnnouncement,
+	});
 
 	const timelineContainerRef = useRef<HTMLDivElement>(null);
 	const timelineEndRef = useRef<HTMLDivElement>(null);
@@ -696,17 +684,23 @@ export function SessionDetailPage() {
 			<ControlHistory actions={controlActions} />
 
 			{workspaceTab === "activity" && reveal.notice ? (
-				<p className="flex-shrink-0 px-3 pt-2 text-xs text-muted-foreground md:px-6">
+				<p className="flex flex-shrink-0 flex-wrap items-center gap-2 px-3 pt-2 text-xs text-muted-foreground md:px-6">
 					{reveal.notice}
+					{reveal.notice === EVENT_LOAD_FAILED_COPY ? (
+						<button
+							type="button"
+							onClick={reveal.retry}
+							className="min-h-[44px] rounded-md border border-border px-3 py-1.5 font-medium text-foreground hover:bg-accent md:min-h-0"
+						>
+							Try again
+						</button>
+					) : null}
 				</p>
 			) : null}
 
 			{fellBack ? (
 				<div className="flex-shrink-0 pb-1">
-					<SummaryFellBackNotice
-						reason={fellBack.reason}
-						onRetry={() => void reloadSummaryAvailability()}
-					/>
+					<SummaryFellBackNotice reason={fellBack.reason} onRetry={retryAvailability} />
 				</div>
 			) : null}
 
