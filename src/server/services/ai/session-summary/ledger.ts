@@ -15,9 +15,12 @@ import { type RedactionRule, stripAndRedact } from "../redactor.js";
 import { formatUntrustedInline } from "../untrusted-text.js";
 import {
 	type CommandClass,
+	type SingleCommand,
 	classifyCommand,
+	failureExcerptAllowed,
 	passSummaryLine,
 	patchFilesOf,
+	singleCommand,
 	validationClassOf,
 	validationResult,
 } from "./command-class.js";
@@ -117,6 +120,18 @@ export interface EvidenceFact {
 	count?: number;
 	/** For a validation: its class (`bun test`, `tsc`), chosen by the server from the command, never the command text. */
 	validationClass?: string;
+	/**
+	 * For a command or validation: the ledger printed the command's text. Absent for a
+	 * withheld, not-shown, over-cap or patch command, whose result can back nothing
+	 * specific. Not part of the stored fact: see `storedFact`.
+	 */
+	shown?: boolean;
+	/** For a shown command that is exactly one segment: its verb (`git`, `kubectl`). Not part of the stored fact. */
+	verb?: string;
+	/** With `verb`: the first operands (`["push", "origin"]`); absent when the subcommand is not read. Not stored. */
+	operands?: string[];
+	/** With `verb`: the command was a dry run. Not stored. */
+	dryRun?: boolean;
 }
 
 /** A cited id as the ledger knows it: the fact, and whether it records something the system saw. */
@@ -125,9 +140,16 @@ export interface LedgerIdInfo extends EvidenceFact {
 	observed: boolean;
 }
 
-/** The evidence fact to store for an id: the fields of the fact, without `observed`. */
+/** The evidence fact to store for an id: the fields of the fact, without `observed` and `shown`. */
 export function storedFact(info: LedgerIdInfo | EvidenceFact): EvidenceFact {
-	const { observed: _observed, ...fact } = info as LedgerIdInfo;
+	const {
+		observed: _observed,
+		shown: _shown,
+		verb: _verb,
+		operands: _operands,
+		dryRun: _dryRun,
+		...fact
+	} = info as LedgerIdInfo;
 	return fact;
 }
 
@@ -239,10 +261,19 @@ function clean(raw: string, ctx: Ctx, inQuotes: boolean): string {
 }
 
 /** `clean`, then cut to `cap` code points; a longer value ends in an ellipsis. */
-function field(raw: string | null | undefined, cap: number, ctx: Ctx, inQuotes = true): string {
-	if (!raw) return "";
+function fieldCut(
+	raw: string | null | undefined,
+	cap: number,
+	ctx: Ctx,
+	inQuotes = true,
+): { text: string; cut: boolean } {
+	if (!raw) return { text: "", cut: false };
 	const { text, cut } = takeStart(clean(raw, ctx, inQuotes), cap);
-	return cut ? `${text}…` : text;
+	return { text: cut ? `${text}…` : text, cut };
+}
+
+function field(raw: string | null | undefined, cap: number, ctx: Ctx, inQuotes = true): string {
+	return fieldCut(raw, cap, ctx, inQuotes).text;
 }
 
 function excerpt(raw: string, ctx: Ctx): string {
@@ -401,9 +432,21 @@ interface Rendered {
 function commandFact(
 	kind: FactKind,
 	result: EvidenceFact["result"],
-	validationClass?: string | null,
+	options: {
+		validationClass?: string | null;
+		shown?: boolean;
+		command?: SingleCommand | null;
+	} = {},
 ): Draft["fact"] {
-	return validationClass ? { kind, result, validationClass } : { kind, result };
+	const fact: Draft["fact"] = { kind, result };
+	if (options.validationClass) fact.validationClass = options.validationClass;
+	if (options.shown) fact.shown = true;
+	if (options.shown && options.command) {
+		fact.verb = options.command.verb;
+		if (options.command.operands) fact.operands = options.command.operands;
+		if (options.command.dryRun) fact.dryRun = true;
+	}
+	return fact;
 }
 
 function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: Ctx): Rendered {
@@ -419,7 +462,11 @@ function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: C
 			fact: commandFact("command", status),
 		};
 	}
-	const command = field(row.command, COMMAND_CAP, ctx, false);
+	const { text: command, cut } = fieldCut(row.command, COMMAND_CAP, ctx, false);
+	// Shown means the whole command is on the page: not cut at the display cap, and no
+	// newline collapsed into a space (the classifier read all of it, the page did not).
+	const whole = !cut && !/[\r\n]/.test(row.command ?? "");
+	const single = whole ? singleCommand(row.command) : null;
 	const description = row.description
 		? ` (desc "${field(row.description, DESCRIPTION_CAP, ctx)}")`
 		: "";
@@ -432,20 +479,25 @@ function renderShell(row: EvidenceRow, status: Status, cls: CommandClass, ctx: C
 			status === "completed",
 		);
 		let out = "";
-		if (result === "failed" && read.text) out = `: "${excerpt(read.text, ctx)}"`;
-		else if (result === "ok") {
+		if (result === "failed" && read.text && failureExcerptAllowed(row.command)) {
+			out = `: "${excerpt(read.text, ctx)}"`;
+		} else if (result === "ok") {
 			const line = passSummaryLine(read.text);
 			if (line) out = `: "${line}"`;
 		}
 		return {
 			body: `OBSERVED command [validation] \`${command}\`${description} -> ${resultWord(result)}${out}`,
-			fact: commandFact("validation", result, validationClassOf(row.command)),
+			fact: commandFact("validation", result, {
+				validationClass: validationClassOf(row.command),
+				shown: whole,
+				command: single,
+			}),
 			shownCommand: command,
 		};
 	}
 	return {
 		body: `OBSERVED command \`${command}\`${description} -> ${resultWord(status)}`,
-		fact: commandFact("command", status),
+		fact: commandFact("command", status, { shown: whole, command: single }),
 		shownCommand: command,
 	};
 }

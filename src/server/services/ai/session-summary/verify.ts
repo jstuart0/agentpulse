@@ -51,6 +51,17 @@ export interface LedgerFactForVerify {
 	result?: EvidenceFactResult;
 	count?: number;
 	validationClass?: string;
+	/**
+	 * For a command or validation: the ledger printed its text. Absent means not shown,
+	 * and a command that was not shown (withheld, over the SQL cap, a patch) backs nothing.
+	 */
+	shown?: boolean;
+	/** For a shown command that is exactly one segment: its verb. Absent for a chain, a pipe, `|| true`, a newline. */
+	verb?: string;
+	/** With `verb`: the first operands (subcommand first). */
+	operands?: readonly string[];
+	/** With `verb`: a dry run. */
+	dryRun?: boolean;
 	/** OBSERVED (the system recorded it) versus CLAIMED (a person or a model said it). */
 	observed: boolean;
 }
@@ -94,7 +105,7 @@ export interface VerifyInput {
 	 * Normalised URLs the user typed, from `collectUserPromptUrls` over `userPromptTexts(bundle)`.
 	 * That text is the loader's SQL-cut prompt text (1,756 / 4,256 code points) and only prompts
 	 * inside the scanned window exist, so a URL past the cut or in an unread prompt raises
-	 * `unexpected_url`, which fails toward a warning.
+	 * `unexpected_url`, a note (inside a risky command it also raises `risky_command`, a warning).
 	 */
 	userPromptUrls: ReadonlySet<string>;
 	/** The fence nonce of the prompt that produced the draft. */
@@ -125,9 +136,12 @@ function scrubber(nonce: string, rules: RedactionRule[] | undefined) {
 
 /**
  * What backs a claim (ruling R-E): an OBSERVED fact that is a recorded edit that
- * did not fail, or a command or validation that finished `ok`. A `completed` or
- * `unknown` command, a `tool` entry, a failed entry, and anything CLAIMED back
- * nothing on their own: "the command ran" is not "the claim is true".
+ * did not fail, or a command or validation whose text the ledger SHOWED and that
+ * finished `ok`. A withheld or not-shown command has hidden text, so it supports
+ * nothing specific ("not shown" is reachable by padding a command past the SQL
+ * cap). A `completed` or `unknown` command, a `tool` entry, a failed entry, and
+ * anything CLAIMED back nothing on their own: "the command ran" is not "the
+ * claim is true".
  */
 function backsClaim(fact: LedgerFactForVerify): boolean {
 	if (!fact.observed) return false;
@@ -136,7 +150,7 @@ function backsClaim(fact: LedgerFactForVerify): boolean {
 			return fact.result !== "failed";
 		case "command":
 		case "validation":
-			return fact.result === "ok";
+			return fact.result === "ok" && fact.shown === true;
 		default:
 			return false;
 	}
@@ -155,12 +169,75 @@ const CHANGE_NEEDS: Record<SummaryChangeKind, EvidenceFactKind[] | null> = {
 	other: null,
 };
 
+/**
+ * A git change is backed by a cited command that is ONE segment, whose verb is
+ * `git` (no `/`: a repo-local shim backs nothing), whose subcommand changes
+ * something (`status`, `log` and `push --dry-run` do not), and which was not a dry
+ * run. An infrastructure change is backed the same way by an infrastructure or
+ * deploy CLI with a mutating subcommand (`kubectl get`, `terraform plan` do not;
+ * for the cloud CLIs any subcommand that is not a read). `make deploy` and scripts
+ * back nothing. Chosen narrow so that the label errs toward "Agent's claim only".
+ */
+const GIT_MUTATING: ReadonlySet<string> = new Set(
+	"commit push merge rebase tag cherry-pick reset checkout switch branch stash revert add rm mv restore pull".split(
+		" ",
+	),
+);
+const INFRA_MUTATING: ReadonlySet<string> = new Set(
+	"apply create delete patch rollout scale up down deploy restart start stop install upgrade uninstall run build push destroy sync".split(
+		" ",
+	),
+);
+const CLOUD_CLIS: ReadonlySet<string> = new Set(["aws", "gcloud", "az"]);
+const DEPLOY_CLIS: ReadonlySet<string> = new Set(
+	"flyctl fly vercel wrangler firebase netlify heroku sam cdk serverless kustomize argocd flux".split(
+		" ",
+	),
+);
+const INFRASTRUCTURE_VERBS: ReadonlySet<string> = new Set([
+	"kubectl",
+	"helm",
+	"terraform",
+	"tofu",
+	"docker",
+	"docker-compose",
+	"podman",
+	"ansible",
+	"ansible-playbook",
+	"systemctl",
+	"pulumi",
+	...CLOUD_CLIS,
+	...DEPLOY_CLIS,
+]);
+const ROLLOUT_WRITES: ReadonlySet<string> = new Set(["restart", "undo", "pause", "resume"]);
+const isReadOperand = (op: string): boolean =>
+	/^(?:ls|list|describe|get|show|status)$/.test(op) || /^(?:describe|list|get|show)-/.test(op);
+
+function mutatesGit(fact: LedgerFactForVerify): boolean {
+	const sub = fact.operands?.[0];
+	return sub !== undefined && GIT_MUTATING.has(sub) && fact.dryRun !== true;
+}
+
+function mutatesInfrastructure(fact: LedgerFactForVerify): boolean {
+	const verb = fact.verb ?? "";
+	const ops = fact.operands ?? [];
+	if (!INFRASTRUCTURE_VERBS.has(verb) || ops.length === 0 || fact.dryRun === true) return false;
+	if (CLOUD_CLIS.has(verb)) return !ops.some(isReadOperand);
+	if (verb === "kubectl" && ops[0] === "rollout") return ROLLOUT_WRITES.has(ops[1] ?? "");
+	if (verb === "docker" && ops[0] === "compose") return INFRA_MUTATING.has(ops[1] ?? "");
+	// `argocd app sync`, `flux reconcile`: the verb may sit one word in.
+	if (DEPLOY_CLIS.has(verb)) return ops.slice(0, 2).some((o) => INFRA_MUTATING.has(o));
+	return INFRA_MUTATING.has(ops[0] as string);
+}
+
 function backsChange(kind: SummaryChangeKind, fact: LedgerFactForVerify): boolean {
 	if (!backsClaim(fact)) return false;
 	const needs = CHANGE_NEEDS[kind];
 	if (!needs) return true;
-	// A validation that passed is a command that ran, and backs a git or infrastructure change as one.
-	return needs.includes(fact.kind) || (fact.kind === "validation" && needs.includes("command"));
+	if (!needs.includes(fact.kind)) return false;
+	if (kind === "git") return fact.verb === "git" && mutatesGit(fact);
+	if (kind === "infrastructure") return mutatesInfrastructure(fact);
+	return true;
 }
 
 function storedFact(fact: LedgerFactForVerify): StoredEvidenceFact {

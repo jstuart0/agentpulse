@@ -24,11 +24,15 @@ export function fact(
 	result?: EvidenceFactResult,
 	extra: Partial<LedgerFactForVerify> = {},
 ): LedgerFactForVerify {
+	// A command or validation fact is `shown` unless a test says otherwise: the ledger
+	// marks the ones whose text it printed, and only those can back a claim.
+	const shown = observed && (kind === "command" || kind === "validation") ? { shown: true } : {};
 	return {
 		kind,
 		at: "2026-10-03T10:00:00.000Z",
 		observed,
 		...(result ? { result } : {}),
+		...shown,
 		...extra,
 	};
 }

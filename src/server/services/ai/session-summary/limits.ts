@@ -95,3 +95,38 @@ export const SHELL_TOOLS: readonly string[] = ["bash", "shell", "exec_command"];
 
 /** Agents whose hooks include a failure event: for them a PostToolUse row is evidence of success. */
 export const FAILURE_EVENT_AGENTS: readonly string[] = ["claude_code", "copilot_cli"];
+
+/**
+ * Validations whose FAILURE may show an output excerpt (the first and last
+ * OUTPUT_HEAD / OUTPUT_TAIL characters): test runners and builds, whose output
+ * is test names, assertion text and compiler messages. Everything else that
+ * `command-class.ts` reads as a validation is a lint, format or type-check
+ * class (`tsc`, `biome`, `eslint`, `ruff`, `mypy`, `go vet`, `cargo check|clippy`,
+ * `bun|npm|pnpm|yarn run lint|check|typecheck`, `make lint`): when those fail
+ * they print lines of whatever file they were pointed at (`eslint -f json`
+ * carries the file text), so a failure renders as FAILED with no excerpt. A
+ * chain shows an excerpt only if every validation in it is listed here.
+ */
+export const FAILURE_EXCERPT_VALIDATIONS: ReadonlySet<string> = new Set([
+	"bun test",
+	"bun run test",
+	"bun run build",
+	"npm test",
+	"pnpm test",
+	"yarn test",
+	"npm run test",
+	"pnpm run test",
+	"yarn run test",
+	"npm run build",
+	"pnpm run build",
+	"yarn run build",
+	"pytest",
+	"tox",
+	"vitest",
+	"jest",
+	"go test",
+	"cargo test",
+	"cargo build",
+	"make test",
+	"make check",
+]);

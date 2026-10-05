@@ -1639,3 +1639,235 @@ describe("TC-3.H3 the pass summary is exactly the counts", () => {
 		}
 	});
 });
+
+// ── fix pass 2, section A: what a failing validation may send ────────────────
+
+describe("TC-3.J1 lint, format and type-check failures send no excerpt", () => {
+	const SENTINEL = "DB_HOST=SENTINEL_FILE_LINE";
+	const failed = (command: string) =>
+		build([
+			bash(1, command, { eventType: "PostToolUseFailure", responseTail: `x\n${SENTINEL}\ny` }),
+		]);
+
+	for (const command of [
+		"biome check cfg/appsettings.json",
+		"ruff check --output-format=full local_settings.py",
+		"ruff format --diff f.py",
+		"eslint -f json file.js",
+		"tsc",
+		"mypy src",
+		"go vet ./...",
+		"cargo clippy",
+		"npm run lint",
+		"pnpm run lint",
+		"bun run check",
+		"bun run typecheck",
+		"make lint",
+		"npx tsc --noEmit",
+		"bun test && tsc",
+	]) {
+		test(`TC-3.J1 ${command} failing emits no excerpt`, () => {
+			const ledger = failed(command);
+			expect(ledger.text).not.toContain("SENTINEL");
+			expect(bodyOf(ledger.text)).toMatch(/-> FAILED$/);
+		});
+	}
+
+	for (const command of [
+		"bun test",
+		"npm test",
+		"pnpm test",
+		"yarn test",
+		"pytest",
+		"go test ./...",
+		"cargo test",
+		"cargo build",
+		"bun run build",
+		"bun run test",
+		"make test",
+		"make check",
+		"vitest",
+		"jest",
+	]) {
+		test(`TC-3.J1 positive control: ${command} failing keeps its excerpt`, () => {
+			expect(failed(command).text).toContain(SENTINEL);
+		});
+	}
+});
+
+describe("TC-3.J3 the ordinary branch never reads the response", () => {
+	const SENTINEL = "RESPONSE_SENTINEL_ZZZ";
+	const commands = [
+		"git push origin main",
+		"rm -rf build",
+		"cat .env",
+		"node -e 'x'",
+		"echo $(date)",
+		"curl -s localhost:3000/x",
+	];
+	for (const agentType of ["claude_code", "codex_cli"]) {
+		for (const command of commands) {
+			test(`TC-3.J3 ${agentType}: ${command} never shows its response`, () => {
+				for (const eventType of ["PostToolUse", "PostToolUseFailure"]) {
+					const ledger = build(
+						[
+							bash(1, command, {
+								eventType,
+								response: `FAIL ${SENTINEL}`,
+								responseTail: `FAIL ${SENTINEL}`,
+							}),
+						],
+						{ agentType },
+					);
+					expect(ledger.text).not.toContain(SENTINEL);
+					expect(ledger.recorded.commands.join("\n")).not.toContain(SENTINEL);
+				}
+			});
+		}
+	}
+	test("TC-3.J3 positive control: a failing test run does show its response", () => {
+		const ledger = build([
+			bash(1, "bun test", { eventType: "PostToolUseFailure", responseTail: SENTINEL }),
+		]);
+		expect(ledger.text).toContain(SENTINEL);
+	});
+});
+
+describe("TC-3.J4 the excerpt is gated by output text, and the label then reads FAILED", () => {
+	test("FAIL text on a Codex row with no exit code is FAILED with an excerpt (test runner)", () => {
+		const ledger = build([bash(1, "bun test", { response: "FAIL src/a.test.ts" })], {
+			agentType: "codex_cli",
+		});
+		expect(bodyOf(ledger.text)).toMatch(/-> FAILED: "FAIL src\/a\.test\.ts"$/);
+	});
+	test("FAIL text on a Claude row the hook reported as success is FAILED, never ok", () => {
+		const ledger = build([bash(1, "bun test", { response: "FAIL src/a.test.ts\n3 pass" })]);
+		expect(bodyOf(ledger.text)).toMatch(/-> FAILED: "/);
+		expect(bodyOf(ledger.text)).not.toMatch(/-> ok/);
+	});
+	test("the same on a lint-class tool reads FAILED with no excerpt", () => {
+		const ledger = build([bash(1, "tsc", { response: "FAIL SENTINEL_LINE" })]);
+		expect(bodyOf(ledger.text)).toMatch(/-> FAILED$/);
+		expect(ledger.text).not.toContain("SENTINEL");
+	});
+});
+
+describe("TC-3.J5 the ledger marks the commands whose text it printed", () => {
+	test("a validation and an ordinary command are shown; withheld, not-shown and over-cap commands are not", () => {
+		const padded = `true # ${"x".repeat(600)}`;
+		const ledger = build([
+			bash(1, "bun test", { response: "3 pass" }),
+			bash(2, "git push origin main"),
+			bash(3, "cat .env"),
+			bash(4, "node -e 'x'"),
+			bash(5, padded),
+		]);
+		expect(ledger.ids.get("E1")?.shown).toBe(true);
+		expect(ledger.ids.get("E2")?.shown).toBe(true);
+		for (const id of ["E3", "E4", "E5"]) {
+			expect(ledger.ids.get(id)?.shown, id).not.toBe(true);
+			expect(ledger.text, id).toContain("[withheld");
+		}
+	});
+	test("storedFact drops `shown` with `observed`", () => {
+		const stored = storedFact({ kind: "command", at: null, observed: true, shown: true });
+		expect("shown" in stored).toBe(false);
+	});
+});
+
+describe("TC-3.K1 `shown` is true only for a command that is on the page whole", () => {
+	const padded = (head: string, total: number) => `${head}; echo ${"x".repeat(total)}; true`;
+	test("a command cut at the display cap is not shown, though it classifies and finishes ok", () => {
+		for (const length of [260, 350, 480]) {
+			const command = padded("git push origin nonexistent 2>/dev/null", length);
+			expect(Array.from(command).length).toBeLessThan(556);
+			const ledger = build([bash(1, command)]);
+			expect(ledger.text).toContain("…");
+			expect(ledger.ids.get("E1")?.shown, String(length)).not.toBe(true);
+		}
+	});
+	test("a command with a newline in it is not shown", () => {
+		const ledger = build([bash(1, "git push origin nonexistent\ntrue")]);
+		expect(ledger.ids.get("E1")?.shown).not.toBe(true);
+	});
+	test("positive control: a short one-line command is shown", () => {
+		expect(build([bash(1, "git push origin main")]).ids.get("E1")?.shown).toBe(true);
+	});
+	test("a validation cut at the display cap is not shown either", () => {
+		const ledger = build([bash(1, `bun test ${"a".repeat(310)}`, { response: "3 pass" })]);
+		expect(ledger.ids.get("E1")?.shown).not.toBe(true);
+	});
+});
+
+describe("TC-3.K2 the ledger records the verb of a command that is one segment", () => {
+	test("single segment: its verb; a chain, a pipe, a `|| true`, a newline: none", () => {
+		const ledger = build([
+			bash(1, "git push origin main"),
+			bash(2, "cd app && git push origin main"),
+			bash(3, "git push origin main || true"),
+			bash(4, "git push origin main; true"),
+			bash(5, "git push origin main | tee out.log"),
+			bash(6, "git push origin main\ntrue"),
+			bash(7, "sudo systemctl restart x"),
+			bash(8, "FOO=1 kubectl apply -f x.yaml"),
+			bash(9, "bun test", { response: "3 pass" }),
+		]);
+		const verb = (id: number) => ledger.ids.get(`E${id}`)?.verb;
+		expect(verb(1)).toBe("git");
+		for (const id of [2, 3, 4, 5, 6]) expect(verb(id), String(id)).toBeUndefined();
+		expect(verb(7)).toBe("systemctl");
+		expect(verb(8)).toBe("kubectl");
+		expect(verb(9)).toBe("bun");
+	});
+	test("storedFact drops `verb`", () => {
+		const stored = storedFact({
+			kind: "command",
+			at: null,
+			observed: true,
+			shown: true,
+			verb: "git",
+		});
+		expect("verb" in stored).toBe(false);
+	});
+});
+
+describe("TC-3.K3 the ledger carries the operands and a dry-run flag with the verb", () => {
+	test("operands skip flags and flag values; --dry-run is recorded; a slashed verb has no verb", () => {
+		const ledger = build([
+			bash(1, "git push origin main"),
+			bash(2, "git status"),
+			bash(3, "git push --dry-run origin main"),
+			bash(4, "git push -n origin main"),
+			bash(5, "kubectl -n prod apply -f x.yaml"),
+			bash(6, "aws s3 ls"),
+			bash(7, "kubectl apply --dry-run=client -f x.yaml"),
+			bash(8, "./git push origin main"),
+			bash(9, "/usr/bin/git push origin main"),
+			bash(10, "git -c core.pager=x push origin main"),
+		]);
+		const f = (id: number) => ledger.ids.get(`E${id}`);
+		expect(f(1)?.operands).toEqual(["push", "origin", "main"]);
+		expect(f(2)?.operands).toEqual(["status"]);
+		expect(f(3)?.dryRun).toBe(true);
+		expect(f(4)?.dryRun).toBe(true);
+		expect(f(1)?.dryRun).not.toBe(true);
+		expect(f(5)?.operands?.[0]).toBe("apply");
+		expect(f(6)?.operands).toEqual(["s3", "ls"]);
+		expect(f(7)?.dryRun).toBe(true);
+		expect(f(8)?.verb).toBeUndefined();
+		expect(f(9)?.verb).toBeUndefined();
+		expect(f(10)?.operands, "a git config override leaves no subcommand to back").toBeUndefined();
+	});
+	test("storedFact drops operands and dryRun", () => {
+		const stored = storedFact({
+			kind: "command",
+			at: null,
+			observed: true,
+			verb: "git",
+			operands: ["push"],
+			dryRun: true,
+		});
+		expect("operands" in stored).toBe(false);
+		expect("dryRun" in stored).toBe(false);
+	});
+});

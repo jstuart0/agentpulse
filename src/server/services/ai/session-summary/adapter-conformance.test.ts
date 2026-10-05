@@ -71,7 +71,7 @@ const EXPECTED_UNVERIFIED: Record<string, boolean> = {
 	E14: true, // a validation with an unknown result
 	E15: false, // a plain command that finished ok
 	E16: true, // a tool entry
-	E17: false, // a withheld command that finished ok is a command that ran ok: it backs a claim
+	E17: true, // a withheld command: its text is hidden, so it backs nothing (fix pass 2, B-1b)
 };
 
 const SESSION = {
