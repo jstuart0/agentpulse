@@ -587,7 +587,7 @@ describe("P5-5 a released run never sends a billed repair call nobody settles", 
 		expect(stub.requests().length).toBe(1);
 		const row = await H.readSummaryRow(SID);
 		expect(row?.attemptStatus).toBe("failed");
-		expect(row?.attemptErrorCode).toBe("interrupted");
+		expect(row?.attemptErrorCode).toBe("interrupted~long");
 		expect(await H.daySpend()).toBe(charged);
 		expect(await H.sessionSpend(SID)).toBe(charged);
 		expect(svc._summaryGenerationCountForTest()).toBe(0);
@@ -612,7 +612,7 @@ describe("P5-5 a released run never sends a billed repair call nobody settles", 
 			await H.withDeadline(done);
 			expect(topUp.mock.calls.length).toBe(0);
 			expect(stub.requests().length).toBe(1);
-			expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("interrupted");
+			expect((await H.readSummaryRow(SID))?.attemptErrorCode).toBe("interrupted~long");
 			expect(svc._summaryGenerationCountForTest()).toBe(0);
 		} finally {
 			topUp.mockRestore();

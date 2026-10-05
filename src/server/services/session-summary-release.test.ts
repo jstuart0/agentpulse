@@ -25,6 +25,7 @@ const svc = await import("./session-summary-service.js");
 const ownTurn = await import("../util/own-turn.js");
 const registry = await import("./ai/llm/registry.js");
 const { setShuttingDown } = await import("../drain-state.js");
+const { toDbTimestamp } = await import("./util/db-time.js");
 const { priceCompletion } = await import("./ai/llm/pricing.js");
 const { estimateTokens } = await import("./ai/llm/types.js");
 const { MAX_OUTPUT_TOKENS } = await import("./ai/session-summary/service-limits.js");
@@ -100,15 +101,15 @@ describe("release, finish, and the two orderings", () => {
 		await svc.releaseOwnSummaryClaims();
 		const row = await rowOf(SID);
 		expect(row?.attemptStatus).toBe("failed");
-		expect(row?.attemptErrorCode).toBe("interrupted");
+		expect(row?.attemptErrorCode).toBe("interrupted~long");
 		expect(row?.attemptToken).toBeNull();
 		const charged = unknownOutcomeCents();
 		expect(await H.daySpend()).toBe(charged);
 		expect(await H.sessionSpend(SID)).toBe(charged);
-		// the view reads it at once, and a new claim wins inside the cooldown
+		// the view reads it at once; the call in flight was charged as unknown, so the session cools down
 		const view = await svc.getSessionSummaryView(SID);
 		expect(view?.attempt).toMatchObject({ status: "failed", errorCode: "interrupted" });
-		expect(view?.blocked).toBeNull();
+		expect(view?.blocked).toBe("summary_cooldown");
 		gate.release();
 		await H.withDeadline(done);
 		const after = await rowOf(SID);
@@ -224,13 +225,19 @@ describe("release, finish, and the two orderings", () => {
 		gate.release();
 		await H.withDeadline(done);
 		expect(await H.daySpend()).toBe(unknownOutcomeCents());
-		expect((await rowOf(SID))?.attemptErrorCode).toBe("interrupted");
+		expect((await rowOf(SID))?.attemptErrorCode).toBe("interrupted~long");
 		expect((await rowOf(SID))?.summary).toBeNull();
 	});
 
 	test("TC-5.63b after a release and a new claim, the released run's late finish cannot touch the newer row", async () => {
 		const { gate, done, editId } = await startHeld(SID);
 		await svc.releaseOwnSummaryClaims();
+		// The release charged an unknown outcome, so the session is cooling down for 10 minutes; a new
+		// claim needs that to have passed (the controls are pinned in the lifecycle tests).
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({ attemptStartedAt: toDbTimestamp(new Date(Date.now() - 11 * 60_000)) });
+		svc._breakerForTest.reset();
 		const gateB = stub.createGate();
 		script({ ...ok([editId]), gate: gateB });
 		const { done: doneB } = await H.startGeneration(SID);
