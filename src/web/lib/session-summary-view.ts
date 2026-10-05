@@ -1101,6 +1101,14 @@ export function tabBadgeAccessibleName(badge: "Summarizing" | "New" | null): str
 	return badge === null ? null : BADGE_ACCESSIBLE_NAMES[badge];
 }
 
+/** After your own generation ends: move focus to the panel heading, but only if focus is still inside the panel. */
+export function shouldFocusHeading(
+	announcement: "Summarizing" | "Summary ready" | "Summary failed" | null,
+	focusInsidePanel: boolean,
+): boolean {
+	return false;
+}
+
 export type LabsPointer =
 	| { visible: false }
 	| {

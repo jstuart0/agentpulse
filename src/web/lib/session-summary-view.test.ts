@@ -63,6 +63,7 @@ import {
 	refusalCopy,
 	relativeAgo,
 	resolveWorkspaceTab,
+	shouldFocusHeading,
 	staleText,
 	summaryAvailability,
 	summaryAvailabilityDetail,
@@ -2011,5 +2012,15 @@ describe("the lines phase 8a adds to the lib", () => {
 		const now = new Date("2026-10-04T12:00:00.000Z");
 		expect(formatElapsed(null, now)).toBe("");
 		expect(formatElapsed("not a time", now)).toBe("");
+	});
+});
+
+describe("phase 8b focus after your own generation", () => {
+	test("BN-20 the heading takes focus when it ends, only if focus is still inside the panel", () => {
+		expect(shouldFocusHeading("Summary ready", true)).toBe(true);
+		expect(shouldFocusHeading("Summary failed", true)).toBe(true);
+		expect(shouldFocusHeading("Summary ready", false)).toBe(false);
+		expect(shouldFocusHeading("Summarizing", true)).toBe(false);
+		expect(shouldFocusHeading(null, true)).toBe(false);
 	});
 });

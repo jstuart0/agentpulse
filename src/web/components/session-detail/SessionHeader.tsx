@@ -34,7 +34,7 @@ interface SessionHeaderProps {
 	workspaceTab: WorkspaceTabId | null;
 	onSelectTab: (tab: WorkspaceTabId) => void;
 	/** The Summary tab exists (AGEN-69). */
-	summaryAvailable: boolean;
+	summaryAvailable?: boolean;
 	summaryBadge: string | null;
 	mode: TimelineMode;
 	onModeChange: (mode: TimelineMode) => void;
@@ -348,7 +348,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 					isWorking={session.isWorking}
 					hasLaunch={Boolean(session.managedSession?.launchRequestId)}
 					aiTabEnabled={aiTabEnabled}
-					summaryAvailable={summaryAvailable}
+					summaryAvailable={summaryAvailable === true}
 					summaryBadge={summaryBadge}
 				/>
 				{workspaceTab === "activity" && (

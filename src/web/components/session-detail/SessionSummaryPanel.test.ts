@@ -75,7 +75,10 @@ function html(view: SessionSummaryView | SummaryLoad, over: Over = {}): string {
 }
 
 const count = (haystack: string, needle: RegExp) => (haystack.match(needle) ?? []).length;
-const buttons = (h: string) => count(h, /<button/g);
+/** Action buttons: the copy buttons are a separate group. */
+const buttons = (h: string) => count(h, /<button(?![^>]*data-copy)/g);
+const copyButtons = (h: string) =>
+	[...h.matchAll(/<button[^>]*data-copy[^>]*>([^<]*)<\/button>/g)].map((m) => m[1]);
 const textOf = (h: string) =>
 	h
 		.replace(/<[^>]+>/g, " ")
@@ -643,5 +646,40 @@ describe("TC-8.11 model text is only ever a React text node", () => {
 		);
 		expect(h).toContain(path);
 		expect(h).toMatch(/\[overflow-wrap:anywhere\]/);
+	});
+});
+
+describe("phase 8b: copying", () => {
+	test("a ready summary offers Copy handoff and Copy summary, and Copy context inside Key Context", () => {
+		const h = html(F.ready);
+		expect(copyButtons(h)).toEqual(["Copy handoff", "Copy summary", "Copy context"]);
+		const key = /<details[^>]*>(?:(?!<\/details>)[\s\S])*Key Context[\s\S]*?<\/details>/.exec(
+			h,
+		)?.[0] as string;
+		expect(key).toContain("Copy context");
+	});
+
+	test("a stale summary can still be copied; with no summary there is nothing to copy", () => {
+		expect(copyButtons(html(F.stale))).toHaveLength(3);
+		expect(copyButtons(html(F.empty))).toEqual([]);
+		expect(copyButtons(html(F.generating))).toEqual([]);
+	});
+
+	test("a flagged summary's buttons all say 'anyway' (the check-before-pasting notice interaction)", () => {
+		expect(copyButtons(html(F.suspect_warning))).toEqual([
+			"Copy handoff anyway",
+			"Copy summary anyway",
+			"Copy context anyway",
+		]);
+		expect(copyButtons(html(F.suspect_note))).toEqual([
+			"Copy handoff",
+			"Copy summary",
+			"Copy context",
+		]);
+	});
+
+	test("the notice comes before the buttons that act on it", () => {
+		const h = html(F.suspect_warning);
+		expect(h.indexOf("Check this before pasting")).toBeLessThan(h.indexOf("Copy handoff anyway"));
 	});
 });
