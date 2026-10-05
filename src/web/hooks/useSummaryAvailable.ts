@@ -6,7 +6,7 @@ import {
 	selectLabsLoadFailed,
 	selectSummaryFlag,
 	summaryAvailabilityDetail,
-} from "../lib/session-summary-view.js";
+} from "../lib/session-summary-core.js";
 import { useAiStatusStore } from "../stores/ai-status-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
 

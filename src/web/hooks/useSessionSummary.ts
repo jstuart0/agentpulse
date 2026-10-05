@@ -3,12 +3,12 @@ import type { SessionSummaryView } from "../../shared/session-summary-view.js";
 import { type PolledSessionSummaryView, api } from "../lib/api.js";
 import {
 	type RefusalCopy,
-	type SummaryLoad,
 	type SummaryViewer,
 	needsShrinkConfirmation,
 	refusalCopy,
 	selectSummaryFlag,
-} from "../lib/session-summary-view.js";
+} from "../lib/session-summary-core.js";
+import type { SummaryLoad } from "../lib/session-summary-view.js";
 import { useAiStatusStore } from "../stores/ai-status-store.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useSummaryViewer } from "./useSummaryViewer.js";

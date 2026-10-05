@@ -1,4 +1,4 @@
-import type { WorkspaceTabId } from "../../lib/session-summary-view.js";
+import type { WorkspaceTabId } from "../../lib/session-summary-core.js";
 import { WorkspaceTabButton } from "./SharedControls.js";
 
 export interface WorkspaceTabBarProps {

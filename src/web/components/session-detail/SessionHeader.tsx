@@ -10,7 +10,7 @@ import { useSummaryAvailability } from "../../hooks/useSummaryAvailable.js";
 import type { OwnerChipModel } from "../../lib/owner-chip.js";
 import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/ownership-ui.js";
 import { sessionHostLabel } from "../../lib/session-host.js";
-import type { WorkspaceTabId } from "../../lib/session-summary-view.js";
+import type { WorkspaceTabId } from "../../lib/session-summary-core.js";
 import { formatDuration } from "../../lib/utils.js";
 import { type AckActionKind, ackActionLabel } from "../../pages/dashboard-view-state.js";
 import { useLabsStore } from "../../stores/labs-store.js";

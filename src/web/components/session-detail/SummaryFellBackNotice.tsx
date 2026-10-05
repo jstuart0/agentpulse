@@ -1,4 +1,4 @@
-import { type UnavailableReason, fellBackCopy } from "../../lib/session-summary-view.js";
+import { type UnavailableReason, fellBackCopy } from "../../lib/session-summary-core.js";
 import { SummaryLabsPointer } from "./SummaryLabsPointer.js";
 
 /**

@@ -4,7 +4,7 @@ import {
 	SESSION_SUMMARY_FLAG,
 	labsPointer,
 	selectAiBuild,
-} from "../../lib/session-summary-view.js";
+} from "../../lib/session-summary-core.js";
 import { useAiStatusStore } from "../../stores/ai-status-store.js";
 import { useLabsStore } from "../../stores/labs-store.js";
 import { workspaceTabButtonId } from "./WorkspaceTabBar.js";

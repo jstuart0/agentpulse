@@ -1,4 +1,4 @@
-import type { SummaryViewer } from "../lib/session-summary-view.js";
+import type { SummaryViewer } from "../lib/session-summary-core.js";
 import { useLabsStore } from "../stores/labs-store.js";
 import { useOwnershipUi } from "./useOwnershipUi.js";
 

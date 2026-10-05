@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { AGENT_METADATA } from "../../shared/constants.js";
@@ -16,7 +16,6 @@ import {
 import { SessionHeader } from "../components/session-detail/SessionHeader.js";
 import { SessionOwnerDialog } from "../components/session-detail/SessionOwnerDialog.js";
 import { SessionPromptComposer } from "../components/session-detail/SessionPromptComposer.js";
-import { SessionSummaryTab } from "../components/session-detail/SessionSummaryTab.js";
 import {
 	AgentObserveOnlyHint,
 	CodexStatusHint,
@@ -43,7 +42,7 @@ import { ownerLabel, sessionOwnerText } from "../lib/owner-label.js";
 import { NOTES_BLOCKED_REASON, sessionActionAccess } from "../lib/ownership-ui.js";
 import { assignablePeople, withCurrentOwner } from "../lib/people.js";
 import { sessionHostLabel } from "../lib/session-host.js";
-import type { WorkspaceTabId } from "../lib/session-summary-view.js";
+import type { WorkspaceTabId } from "../lib/session-summary-core.js";
 import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
 import { useEventStore } from "../stores/event-store.js";
 import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
@@ -58,6 +57,13 @@ import {
 	deriveAckActionForViewer,
 	shouldAutoAcknowledge,
 } from "./dashboard-view-state.js";
+
+// The Summary panel is behind a Labs flag that is off by default: it loads when the tab opens.
+const SessionSummaryTab = lazy(() =>
+	import("../components/session-detail/SessionSummaryTab.js").then((m) => ({
+		default: m.SessionSummaryTab,
+	})),
+);
 
 /** Merge new events into the existing persisted events array, de-duped by id, sorted asc. */
 function insertEvents(existing: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
@@ -773,17 +779,25 @@ export function SessionDetailPage() {
 						) : null}
 					</div>
 				) : workspaceTab === "summary" ? (
-					<SessionSummaryTab
-						sessionId={session.sessionId}
-						agentType={session.agentType}
-						summary={summary}
-						meta={{
-							name: displayName,
-							branch: session.gitBranch ?? null,
-							cwd: session.cwd ?? null,
-						}}
-						announce={setLiveAnnouncement}
-					/>
+					<Suspense
+						fallback={
+							<div aria-busy="true" className="p-6 text-sm text-muted-foreground">
+								Loading…
+							</div>
+						}
+					>
+						<SessionSummaryTab
+							sessionId={session.sessionId}
+							agentType={session.agentType}
+							summary={summary}
+							meta={{
+								name: displayName,
+								branch: session.gitBranch ?? null,
+								cwd: session.cwd ?? null,
+							}}
+							announce={setLiveAnnouncement}
+						/>
+					</Suspense>
 				) : workspaceTab === "activity" ? (
 					<>
 						{contextNotFound ? (

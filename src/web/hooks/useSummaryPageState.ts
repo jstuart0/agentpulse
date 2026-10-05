@@ -4,7 +4,7 @@ import {
 	type WorkspaceTabId,
 	resolveWorkspaceTab,
 	tabBadge,
-} from "../lib/session-summary-view.js";
+} from "../lib/session-summary-core.js";
 import type { UseSessionSummary } from "./useSessionSummary.js";
 import { useSummaryAvailability, useSummaryUnavailableReason } from "./useSummaryAvailable.js";
 
