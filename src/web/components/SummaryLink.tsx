@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useSummaryAvailability } from "../hooks/useSummaryAvailable.js";
+import { useEnsuredSummaryAvailability } from "../hooks/useSummaryAvailable.js";
 import { summaryHref } from "../lib/session-summary-core.js";
 
 /**
@@ -10,7 +10,7 @@ export function SummaryLink({
 	sessionId,
 	variant,
 }: { sessionId: string; variant: "button" | "text" }) {
-	if (useSummaryAvailability() !== "available") return null;
+	if (useEnsuredSummaryAvailability() !== "available") return null;
 	return variant === "button" ? (
 		<Link
 			to={summaryHref(sessionId)}

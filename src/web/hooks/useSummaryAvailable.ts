@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
 	type Availability,
 	type UnavailableReason,
@@ -53,5 +54,8 @@ export async function reloadSummaryAvailability(): Promise<void> {
 
 /** For pages that only link to the Summary tab: availability, asking for whatever hasn't loaded yet. */
 export function useEnsuredSummaryAvailability(): Availability {
+	useEffect(() => {
+		void reloadSummaryAvailability();
+	}, []);
 	return useSummaryAvailability();
 }

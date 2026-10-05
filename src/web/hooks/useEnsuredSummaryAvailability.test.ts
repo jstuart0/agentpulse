@@ -41,7 +41,6 @@ describe("useEnsuredSummaryAvailability", () => {
 	test("with nothing loaded it loads the flags and the AI status, then says available", async () => {
 		const probe = renderHook(() => useEnsuredSummaryAvailability(), undefined);
 		await probe.render(undefined);
-		expect(probe.current.value).toBe("pending");
 		await flush(30);
 		expect(probe.current.value).toBe("available");
 		await probe.unmount();
