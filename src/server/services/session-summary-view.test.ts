@@ -494,12 +494,14 @@ describe("stale and shrunk", () => {
 		expect(probe[0].text).toMatch(/from\s*\(\s*select/i);
 	}, 30_000);
 
-	test("TC-5.55b the shrunk probe is one min(id) statement with no count(", async () => {
+	test("TC-5.55b the shrunk probe is a LIMIT 1 subquery of the activity statement, with no count(", async () => {
 		await ready();
 		const { statements } = await H.captureStatements(() => view());
-		const minProbes = statements.filter((s) => /min\(/i.test(s.text));
-		expect(minProbes).toHaveLength(1);
-		expect(minProbes[0].text).not.toMatch(/count\(/i);
+		const probes = statements.filter((s) => /\blimit\s+2000\b/i.test(s.text));
+		expect(probes).toHaveLength(1);
+		expect(probes[0].text).toMatch(/\blimit\s+1\b/i);
+		expect(probes[0].text).not.toMatch(/count\(/i);
+		expect(statements.filter((s) => /min\(/i.test(s.text))).toHaveLength(0);
 	});
 
 	test("TC-5.30 evidenceShrunk: oldest pruned true, add-only false, prune 10 + add 50 true, none stored false, all pruned true", async () => {

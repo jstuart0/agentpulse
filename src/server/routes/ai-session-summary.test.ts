@@ -1684,6 +1684,6 @@ describe("the route's refusal table (Q-8c)", () => {
 		const text = readFileSync(join(import.meta.dir, "ai-session-summary.ts"), "utf8")
 			.replace(/\/\*[\s\S]*?\*\//g, "")
 			.replace(/\/\/.*$/gm, "");
-		expect(text).not.toContain("provider_key_unreadable");
+		expect(text).not.toMatch(/provider_key_unreadable\s*:/);
 	});
 });

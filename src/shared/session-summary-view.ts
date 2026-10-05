@@ -84,9 +84,8 @@ export interface SessionSummaryView {
 		status: SummaryAttemptStatus;
 		/**
 		 * `attempt_started_at`; when the last attempt began (also the "Last attempt, 3 min ago" time).
-		 * Null when the attempt began no cooldown (`failed` / `provider_key_unreadable`, which is
-		 * written after the claim and clears it so someone fixing a key is not locked out), or when
-		 * nothing has been attempted. A view in a cooldown always has it.
+		 * Null only when nothing has been attempted. A view in a cooldown always has it. A failed
+		 * `provider_key_unreadable` attempt is dated 25 s back, so it reads as a 5-second cooldown.
 		 */
 		startedAt: string | null;
 		/** Non-null only with status `failed`. */

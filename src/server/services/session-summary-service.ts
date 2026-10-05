@@ -56,6 +56,7 @@ import {
 	BREAKER_WINDOW_MS,
 	BUSY_RETRY_AFTER_SECONDS,
 	JOIN_WAIT_BUDGET_MS,
+	KEY_UNREADABLE_COOLDOWN_SECONDS,
 	MAX_CONCURRENT_GENERATIONS,
 	MAX_INPUT_TOKENS,
 	MAX_OUTPUT_TOKENS,
@@ -217,18 +218,25 @@ function nextLocalMidnightIso(now: Date = new Date()): string {
 async function probeActivity(
 	sessionId: string,
 ): Promise<{ enough: boolean; firstEventId: number | null }> {
+	// `session_id` is a range and stays in the sort (Q-2): on Postgres, with statistics, the equality
+	// form (`session_id = $1 ORDER BY id`) walks the primary key and filters by session, 2,000,000
+	// rows removed per leg for a session at the newest ids; only the composite index
+	// (session_id, id) can supply this order. SQLite takes the same index either way.
 	const query = sql`SELECT
-		(SELECT min(id) FROM events WHERE session_id = ${sessionId}) AS min_id,
+		(SELECT id FROM events WHERE session_id >= ${sessionId} AND session_id <= ${sessionId}
+			ORDER BY session_id ASC, id ASC LIMIT 1) AS min_id,
 		CASE WHEN
 			EXISTS (
 				SELECT 1 FROM (
 					SELECT id, category, event_type FROM events
-					WHERE session_id = ${sessionId} ORDER BY id ASC LIMIT ${sql.raw(String(ACTIVITY_PROMPT_OLDEST_WINDOW))}
+					WHERE session_id >= ${sessionId} AND session_id <= ${sessionId}
+					ORDER BY session_id ASC, id ASC LIMIT ${sql.raw(String(ACTIVITY_PROMPT_OLDEST_WINDOW))}
 				) o WHERE ${effectiveCategory("o")} = 'prompt')
 			OR EXISTS (
 				SELECT 1 FROM (
 					SELECT id, category, event_type, tool_name FROM events
-					WHERE session_id = ${sessionId} ORDER BY id DESC LIMIT ${sql.raw(String(ACTIVITY_ACTION_WINDOW))}
+					WHERE session_id >= ${sessionId} AND session_id <= ${sessionId}
+					ORDER BY session_id DESC, id DESC LIMIT ${sql.raw(String(ACTIVITY_ACTION_WINDOW))}
 				) n WHERE ${effectiveCategory("n")} = 'prompt' OR ${classExpression("n")} = 'action')
 		THEN 1 ELSE 0 END AS enough`;
 	const [row] = await runInOwnTurn(() =>
@@ -242,19 +250,27 @@ async function probeActivity(
 
 /**
  * Material events after `throughEventId` (everything but `user_ack`, NULL categories included),
- * counted up to the cap, inside a window of `STALE_SCAN_WINDOW` rows: a long tail of
- * acknowledgements cannot make a view cost a session scan. When the window fills before the cap is
- * reached the count is a lower bound.
+ * counted up to the cap, inside a window of `STALE_SCAN_WINDOW` rows (same range form as the
+ * activity probe, for the same reason): a long tail of acknowledgements cannot make a view cost a
+ * session scan. When the window fills before anything material is found the true count is unknown,
+ * and a flood of acknowledgements must not read as "up to date", so it reads 1.
  */
 async function countStaleEvents(sessionId: string, throughEventId: number): Promise<number> {
-	const query = sql`SELECT count(*) AS n FROM (
-		SELECT 1 FROM (
-			SELECT category FROM events WHERE session_id = ${sessionId} AND id > ${throughEventId}
-			ORDER BY id ASC LIMIT ${sql.raw(String(STALE_SCAN_WINDOW))}
-		) w WHERE COALESCE(w.category, '') <> 'user_ack' LIMIT ${sql.raw(String(STALE_EVENT_COUNT_CAP))}
-	) AS stale`;
-	const [row] = await runInOwnTurn(() => executeRows<{ n: number | string }>(getDb(), query));
-	return Number(row?.n ?? 0);
+	const query = sql`WITH w AS (
+			SELECT category FROM events
+			WHERE session_id >= ${sessionId} AND session_id <= ${sessionId} AND id > ${throughEventId}
+			ORDER BY session_id ASC, id ASC LIMIT ${sql.raw(String(STALE_SCAN_WINDOW))}
+		)
+		SELECT
+			(SELECT count(*) FROM (
+				SELECT 1 FROM w WHERE COALESCE(w.category, '') <> 'user_ack' LIMIT ${sql.raw(String(STALE_EVENT_COUNT_CAP))}
+			) AS stale) AS n,
+			(SELECT count(*) FROM w) AS scanned`;
+	const [row] = await runInOwnTurn(() =>
+		executeRows<{ n: number | string; scanned: number | string }>(getDb(), query),
+	);
+	const found = Number(row?.n ?? 0);
+	return found === 0 && Number(row?.scanned ?? 0) >= STALE_SCAN_WINDOW ? 1 : found;
 }
 
 // ── the view ─────────────────────────────────────────────────────────────────
@@ -274,14 +290,28 @@ async function readSessionAndRow(sessionId: string, omitSummary = false) {
 			throughEventId: aiSessionSummaries.throughEventId,
 			attemptStartedAt: aiSessionSummaries.attemptStartedAt,
 			attemptErrorCode: aiSessionSummaries.attemptErrorCode,
-			summary: omitSummary ? sql<null>`NULL` : aiSessionSummaries.summary,
-			provenance: aiSessionSummaries.provenance,
+			// A polled view names neither body column: whether a summary exists is a boolean, and the
+			// provenance is read separately, only where the shrunk-evidence rule needs it.
+			...(omitSummary
+				? {}
+				: { summary: aiSessionSummaries.summary, provenance: aiSessionSummaries.provenance }),
+			hasProvenance: sql<number>`CASE WHEN ${aiSessionSummaries.provenance} IS NOT NULL THEN 1 ELSE 0 END`,
 		})
 		.from(sessions)
 		.leftJoin(aiSessionSummaries, eq(aiSessionSummaries.sessionId, sessions.sessionId))
 		.where(eq(sessions.sessionId, sessionId))
 		.limit(1);
 	return row ?? null;
+}
+
+/** The first event id a stored summary covers (a polled view reads the provenance only for this). */
+async function readProvenanceFirstEventId(sessionId: string): Promise<number | null> {
+	const [row] = await getDb()
+		.select({ provenance: aiSessionSummaries.provenance })
+		.from(aiSessionSummaries)
+		.where(eq(aiSessionSummaries.sessionId, sessionId))
+		.limit(1);
+	return row?.provenance?.firstEventId ?? null;
 }
 
 /** The attempt columns only (the POST never reads the summary or its provenance), or null for an unknown session. */
@@ -342,7 +372,7 @@ export async function getSessionSummaryView(
 	const clock = clockAt();
 	const judgement = judgeAttempt(row, clock);
 	const stored = omitStored ? null : storedOf(row);
-	const hasStored = omitStored ? row.provenance !== null : stored !== null;
+	const hasStored = omitStored ? Number(row.hasProvenance) === 1 : stored !== null;
 	const base = {
 		stored,
 		...(omitStored ? { storedOmitted: true as const } : {}),
@@ -381,7 +411,9 @@ export async function getSessionSummaryView(
 	let evidenceShrunk = false;
 	let retentionDays: number | undefined;
 	if (hasStored) {
-		const firstThen = (row.provenance as { firstEventId: number | null }).firstEventId;
+		const firstThen = omitStored
+			? await readProvenanceFirstEventId(sessionId)
+			: (row.provenance?.firstEventId ?? null);
 		evidenceShrunk = firstNow === null || (firstThen !== null && firstNow > firstThen);
 		const days = await readRetentionDays();
 		if (days > 0) retentionDays = days;
@@ -439,6 +471,8 @@ interface Entry {
 	requestSettled: Promise<void>;
 	/** Set by `finish` when it takes the entry: settles when the row write and the settlement are done. */
 	settling: Promise<void> | null;
+	/** What the finisher will settle at; read by the watchdog if the finisher's write hangs. */
+	finishCents: number | null;
 	/** Fires at the lease expiry if the run is still hanging: see `expireEntry`. */
 	watchdog: ReturnType<typeof setTimeout> | null;
 }
@@ -468,9 +502,20 @@ export interface SummaryTestHooks {
 	at?: (step: SummaryStep) => void | Promise<void>;
 	/** The watchdog's delay in place of the lease (milliseconds). */
 	watchdogMs?: number;
+	/** The same-session join wait in place of its bound. */
+	joinWaitMs?: number;
+	/** The shutdown release budget in place of its bound. */
+	releaseBudgetMs?: number;
+	/** The model call's timeout in place of the call options' (a response that never arrives). */
+	callTimeoutMs?: number;
 }
 
 let hooks: SummaryTestHooks | null = null;
+
+/** The delays the module waits on: the limits, unless a test hook shortens one. */
+export const watchdogDelayMs = (): number => hooks?.watchdogMs ?? SUMMARY_LEASE_SECONDS * 1000;
+export const joinWaitMs = (): number => hooks?.joinWaitMs ?? JOIN_WAIT_BUDGET_MS;
+export const releaseBudgetMs = (): number => hooks?.releaseBudgetMs ?? SHUTDOWN_RELEASE_BUDGET_MS;
 
 async function at(step: SummaryStep): Promise<void> {
 	await hooks?.at?.(step);
@@ -750,7 +795,9 @@ async function callModel(
 	repair?: RepairKind,
 ): Promise<CallResult> {
 	const { entry, provider } = ctx;
-	const request = buildSummaryLlmRequest(built, provider.model, repair);
+	const built1 = buildSummaryLlmRequest(built, provider.model, repair);
+	const request =
+		hooks?.callTimeoutMs === undefined ? built1 : { ...built1, timeoutMs: hooks.callTimeoutMs };
 	const sentText = request.systemPrompt + request.transcriptPrompt;
 	const worstInputTokens = worstCaseInputTokens(sentText);
 	const pricedInputCents = priceCompletion(provider.kind, provider.model, {
@@ -938,6 +985,7 @@ async function settleRun(
 	outcome: Outcome,
 	detail: FailureDetail | null,
 ): Promise<void> {
+	entry.finishCents = outcome.ok ? entry.settledCents : outcome.chargeCents;
 	try {
 		try {
 			await at("finish_write");
@@ -1097,7 +1145,7 @@ async function joinOrRefuse(
 		await at("join_wait");
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const bound = new Promise<void>((resolve) => {
-			timer = setTimeout(resolve, JOIN_WAIT_BUDGET_MS);
+			timer = setTimeout(resolve, joinWaitMs());
 		});
 		try {
 			await Promise.race([Promise.all(racing.map((held) => held.requestSettled)), bound]);
@@ -1167,6 +1215,7 @@ export async function requestSummaryGeneration(
 			settleRequest = resolve;
 		}),
 		settling: null,
+		finishCents: null,
 		watchdog: null,
 	};
 	const slotRefusal = takeSlot(entry, caller);
@@ -1177,7 +1226,7 @@ export async function requestSummaryGeneration(
 	let claimedToken: string | null = null;
 	let handedOver = false;
 	let exitCode: SummaryErrorCode = "internal_error";
-	let startsNoCooldown = false;
+	let softCooldown = false;
 	try {
 		await at("slot");
 		const maxCostCents = maxCallCostCents(provider);
@@ -1207,8 +1256,8 @@ export async function requestSummaryGeneration(
 		claimedToken = token;
 		await at("claim");
 		// The key is decrypted (a blocking scrypt) only now that this request owns the attempt: a
-		// refusal or a lost claim never pays for it. An unreadable key is a failed attempt that
-		// starts no cooldown, so someone fixing their key is not locked out.
+		// refusal or a lost claim never pays for it. An unreadable key is a failed attempt with
+		// a soft cooldown of a few seconds.
 		const key = await readProviderKey(provider.id);
 		await at("audit");
 		await at("start");
@@ -1230,7 +1279,7 @@ export async function requestSummaryGeneration(
 
 		if (key === null) {
 			exitCode = "provider_key_unreadable";
-			startsNoCooldown = true;
+			softCooldown = true;
 			return startedResult(now, Promise.resolve());
 		}
 
@@ -1250,7 +1299,18 @@ export async function requestSummaryGeneration(
 				if (claimedToken) {
 					await writeAttempt(sessionId, claimedToken, {
 						...failedRow(exitCode),
-						...(startsNoCooldown ? { attemptStartedAt: null } : {}),
+						// Dated as if it began 25 s ago, so the cooldown is the last 5 s of the 30: a broken key
+						// (a scrypt per try) cannot be retried in a tight loop, and fixing it costs seconds.
+						...(softCooldown
+							? {
+									attemptStartedAt: toDbTimestamp(
+										new Date(
+											Date.now() -
+												(SUMMARY_COOLDOWN_SECONDS - KEY_UNREADABLE_COOLDOWN_SECONDS) * 1000,
+										),
+									),
+								}
+							: {}),
 					}).catch(() => {});
 				}
 				if (reservation) {
@@ -1272,7 +1332,7 @@ export async function requestSummaryGeneration(
  * run ever wakes, it finds the entry taken and writes and settles nothing.
  */
 function armWatchdog(entry: Entry): void {
-	const delayMs = hooks?.watchdogMs ?? SUMMARY_LEASE_SECONDS * 1000;
+	const delayMs = watchdogDelayMs();
 	const timer = setTimeout(() => {
 		void expireEntry(entry).catch((error: unknown) => {
 			console.error(
@@ -1287,7 +1347,19 @@ function armWatchdog(entry: Entry): void {
 
 async function expireEntry(entry: Entry): Promise<void> {
 	entry.watchdog = null;
-	if (entry.taken) return;
+	if (entry.taken) {
+		// A finisher whose row write hangs still holds the slot: free it and settle at the amount it
+		// was going to; its own settlement, if it ever runs, finds the reservation spent.
+		if (entry.phase !== "finishing" || entry.finishCents === null) return;
+		console.error("[session-summary] result write outlived its lease");
+		const reservation = entry.reservation as SpendReservation;
+		const cents = entry.finishCents;
+		dropEntry(entry);
+		await withOneRetry("settlement", () =>
+			settleReservedSpend(reservation, { sessionId: entry.sessionId, actualCents: cents }),
+		);
+		return;
+	}
 	entry.taken = true;
 	console.error("[session-summary] run outlived its lease", JSON.stringify({ phase: entry.phase }));
 	if (entry.token === null) {
@@ -1369,7 +1441,7 @@ export async function releaseOwnSummaryClaims(): Promise<void> {
 	}
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const budget = new Promise<void>((resolve) => {
-		timer = setTimeout(resolve, SHUTDOWN_RELEASE_BUDGET_MS);
+		timer = setTimeout(resolve, releaseBudgetMs());
 	});
 	try {
 		await Promise.race([Promise.allSettled(work), budget]);

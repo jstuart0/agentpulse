@@ -27,6 +27,8 @@ export const STALE_SCAN_WINDOW = 500;
 export const JOIN_WAIT_BUDGET_MS = 5000;
 /** Prompt text is scanned for typed URLs in slices of about this many characters, yielding the event loop between them. */
 export const URL_SCAN_SLICE_CHARS = 32_768;
+/** A key that cannot be read leaves this much of the cooldown (a scrypt per retry otherwise). */
+export const KEY_UNREADABLE_COOLDOWN_SECONDS = 5;
 /** `releaseOwnSummaryClaims` returns after this long even if a write is still pending. */
 export const SHUTDOWN_RELEASE_BUDGET_MS = 2000;
 

@@ -34,8 +34,11 @@ const aiSessionSummaryRouter = new Hono();
 
 const SESSION_NOT_FOUND = "session_not_found";
 
+/** Still in the shared contract, no longer produced: an unreadable key is a failed attempt. */
+type RetiredRefusal = "provider_key_unreadable";
+
 /** The status of each refusal of these routes: the wire contract (`SessionSummaryRefusalBody`). */
-const REFUSAL_STATUS: Record<SummaryRefusalCode, ContentfulStatusCode> = {
+const REFUSAL_STATUS: Record<Exclude<SummaryRefusalCode, RetiredRefusal>, ContentfulStatusCode> = {
 	ai_disabled: 409,
 	ai_paused: 409,
 	session_summary_disabled: 409,
@@ -45,7 +48,6 @@ const REFUSAL_STATUS: Record<SummaryRefusalCode, ContentfulStatusCode> = {
 	too_little_activity: 409,
 	busy: 503,
 	no_provider: 409,
-	provider_key_unreadable: 409, // no longer produced: an unreadable key is a failed attempt
 	summary_cooldown: 429,
 	caller_generation_running: 409,
 	spend_cap_reached: 409,
@@ -54,7 +56,7 @@ const REFUSAL_STATUS: Record<SummaryRefusalCode, ContentfulStatusCode> = {
 /** A refusal in the contract's shape, with `Retry-After` wherever the body names a wait. */
 function refuse(c: Context, body: SessionSummaryRefusalBody, status?: ContentfulStatusCode) {
 	if (body.retryAfterSeconds !== undefined) c.header("Retry-After", String(body.retryAfterSeconds));
-	return c.json(body, status ?? REFUSAL_STATUS[body.error]);
+	return c.json(body, status ?? REFUSAL_STATUS[body.error as keyof typeof REFUSAL_STATUS]);
 }
 
 /**

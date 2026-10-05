@@ -94,6 +94,9 @@ describePostgresOnly("on Postgres, at the trap shape", () => {
 			["stale", stale],
 		] as const) {
 			const plan = await planOf(probe.text, probe.params);
+			console.log(
+				`[plan] ${name} probe\n${plan.replace(/Filter: .*\(COALESCE.*/g, "Filter: (category rules)")}`,
+			);
 			expect(plan, `${name} probe plan:\n${plan}`).not.toContain("events_pkey");
 			expect(plan, `${name} probe plan:\n${plan}`).toContain("idx_events_session_id_id");
 			expect(plan, `${name} probe plan:\n${plan}`).not.toMatch(/\bSort\b/);
