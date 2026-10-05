@@ -475,8 +475,8 @@ describe("Q-5 the watchdog before the hand-over", () => {
 		await H.withDeadline(held.atStep);
 		expect(svc._summaryGenerationCountForTest()).toBe(2);
 		await H.until(() => svc._summaryGenerationCountForTest() === 1, 10_000);
-		// The other session's reservation is all that is left on the day.
-		expect(await H.daySpend()).toBe(reservationOfOneCall());
+		// The other session's reservation is all that is left on the day (the release follows the slot).
+		await H.until(async () => (await H.daySpend()) === reservationOfOneCall(), 10_000);
 		held.release();
 		const result = await H.withDeadline(request);
 		expect(H.refusalOf(result)).toBe("shutting_down");
@@ -506,7 +506,8 @@ describe("Q-3d the watchdog also covers a finishing entry whose write hangs", ()
 			outputTokens: H.STUB_USAGE.output,
 			estimated: false,
 		});
-		expect(await H.daySpend()).toBe(actual);
+		// The slot is freed first and the settlement follows: wait for the money, not a tick.
+		await H.until(async () => (await H.daySpend()) === actual, 10_000);
 		held.release();
 		await H.withDeadline(done);
 		expect(await H.daySpend()).toBe(actual);

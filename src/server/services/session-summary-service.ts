@@ -256,9 +256,12 @@ async function probeActivity(
  * and a flood of acknowledgements must not read as "up to date", so it reads 1.
  */
 async function countStaleEvents(sessionId: string, throughEventId: number): Promise<number> {
+	// A row comparison starts the scan at the exact place in the composite index: with `id > t`
+	// beside a range on `session_id`, Postgres prefers the primary key (every newer event of every
+	// session) and a sort.
 	const query = sql`WITH w AS (
 			SELECT category FROM events
-			WHERE session_id >= ${sessionId} AND session_id <= ${sessionId} AND id > ${throughEventId}
+			WHERE (session_id, id) > (${sessionId}, ${throughEventId}) AND session_id <= ${sessionId}
 			ORDER BY session_id ASC, id ASC LIMIT ${sql.raw(String(STALE_SCAN_WINDOW))}
 		)
 		SELECT
