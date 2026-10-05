@@ -432,6 +432,14 @@ export function budgetSentence(spend: SessionSummaryView["spend"], clock?: Clock
 
 const isFreeProvider = (spend: SessionSummaryView["spend"]) => spend.maxCostCents === 0;
 
+/** The fine print as the three lines it is shown in: what is sent, what is masked, the cost. Null when there is no provider to name. */
+export function finePrintLines(
+	_view: SessionSummaryView,
+	_viewer: Pick<SummaryViewer, "showSummarySharedNote">,
+): string[] | null {
+	return null;
+}
+
 /** The fine print under "Summarize this session". Null when there is no provider to name. */
 export function finePrint(
 	view: SessionSummaryView,

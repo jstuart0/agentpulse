@@ -145,7 +145,17 @@ describe("empty", () => {
 		expect(print).toContain("Up to $0.04, or $0.08");
 		const describedBy = /<button[^>]*aria-describedby="([^"]+)"/.exec(h)?.[1];
 		expect(describedBy).toBeTruthy();
-		expect(h).toMatch(new RegExp(`<p[^>]*id="${describedBy}"`));
+		expect(h).toMatch(new RegExp(`<div[^>]*id="${describedBy}"`));
+	});
+
+	test("phase 8b: the fine print is three short lines (what is sent, what is masked, cost), not one block", () => {
+		const lines = [...html(F.empty).matchAll(/<p[^>]*data-fine-print-line[^>]*>([^<]*)<\/p>/g)].map(
+			(m) => m[1],
+		);
+		expect(lines).toHaveLength(3);
+		expect(lines[0]).toStartWith("Sends this session&#x27;s prompts");
+		expect(lines[1]).toContain("Known secret patterns are masked first.");
+		expect(lines[2]).toStartWith("Up to $0.04");
 	});
 
 	test("a team member's fine print says who can read it; a free provider says no cost is recorded", () => {
@@ -290,6 +300,14 @@ describe("ready", () => {
 		expect(h).toContain("A validation step failed (see Validation).");
 	});
 
+	test("phase 8b: Update sits beside the 'Generated' text in one row, not floating at the far end", () => {
+		const h = html(F.ready);
+		expect(h).not.toContain("justify-between");
+		expect(h).toMatch(
+			/Generated 3 h ago[^<]*<\/p><div[^>]*>(?:(?!<\/div>)[\s\S])*>Update<\/button>/,
+		);
+	});
+
 	test("nothing is filled in the ready state: one quiet Update, no second action", () => {
 		const h = html(F.ready);
 		expect(buttons(h)).toBe(1);
@@ -317,13 +335,20 @@ describe("ready", () => {
 		expect(h).toMatch(/<a[^>]*min-h-\[44px\][^>]*md:min-h-0/);
 	});
 
-	test("'Agent's claim only' marks unverified items, with one help line per section", () => {
+	test("phase 8b: every unverified item carries its own 'Agent's claim only' chip; a backed item (one with links) never does", () => {
 		const h = html(F.ready);
-		expect(count(textOf(h), /Agent's claim only/g)).toBeGreaterThanOrEqual(2);
-		expect(textOf(h)).toContain("Nothing recorded confirms these");
+		expect(count(textOf(h), /Agent's claim only/g)).toBe(2);
+		for (const li of h.match(/<li[\s\S]*?<\/li>/g) ?? []) {
+			if (li.includes('href="')) expect(li).not.toContain("Agent&#x27;s claim only");
+		}
+		expect(h).toMatch(/title="Nothing recorded confirms these[^"]*"[^>]*>Agent&#x27;s claim only</);
 	});
 
-	test("past half, one section note replaces the per-item labels; a Codex session gets its extra line", () => {
+	test("phase 8b: no section line says 'nothing recorded' above items whose edits are drawn beneath it", () => {
+		expect(textOf(html(F.ready))).not.toContain("Nothing recorded confirms these");
+	});
+
+	test("phase 8b: past half the section also says so, and every unverified item keeps its chip; a Codex session gets its extra line", () => {
 		const mostly = withSummary({
 			accomplishments: [
 				{ text: "a", evidence: [], unverified: true },
@@ -334,8 +359,17 @@ describe("ready", () => {
 		});
 		const h = textOf(html(mostly, { agentType: "codex_cli" }));
 		expect(h).toContain("Most of these are the agent's claim only.");
+		expect(count(h, /Agent's claim only\b/g)).toBe(2);
 		expect(h).toContain("Codex often records no result for a command");
 		expect(textOf(html(mostly))).not.toContain("Codex often records");
+	});
+
+	test("phase 8b: every section opens expanded, so the whole summary reads at a glance", () => {
+		for (const name of ["ready", "suspect", "stale", "partial"] as const) {
+			const tags = html(F[name]).match(/<details[^>]*>/g) ?? [];
+			expect(tags.length, name).toBeGreaterThanOrEqual(8);
+			for (const tag of tags) expect(tag, name).toMatch(/\sopen/);
+		}
 	});
 
 	test("BN-14 validation shows Passed, Failed, Not run and Unknown distinctly; 'completed' is never drawn as passed", () => {
@@ -406,20 +440,12 @@ describe("ready", () => {
 		expect(h).toMatch(/<ol[\s\S]*Write the docs[\s\S]*Run the live check[\s\S]*<\/ol>/);
 	});
 
-	test("Key Context is its own block that keeps line breaks, closed unless the summary is flagged", () => {
-		const closed = html(F.ready);
+	test("Key Context is its own block that keeps line breaks", () => {
 		const key = /<details[^>]*>(?:(?!<\/details>)[\s\S])*Key Context[\s\S]*?<\/details>/.exec(
-			closed,
+			html(F.ready),
 		)?.[0] as string;
-		expect(key).not.toMatch(/^<details[^>]*\sopen/);
 		expect(key).toContain("whitespace-pre-wrap");
 		expect(key).toContain("break-words");
-		const flagged = html(F.suspect);
-		const keyFlagged =
-			/<details[^>]*>(?:(?!<\/details>)[\s\S])*Key Context[\s\S]*?<\/details>/.exec(
-				flagged,
-			)?.[0] as string;
-		expect(keyFlagged).toMatch(/^<details[^>]*\sopen/);
 	});
 
 	test("the footer, the masked count and the retention line", () => {

@@ -50,6 +50,7 @@ import {
 	failureCopy,
 	fellBackCopy,
 	finePrint,
+	finePrintLines,
 	footerText,
 	formatCost,
 	formatElapsed,
@@ -1334,6 +1335,20 @@ describe("sections and chips", () => {
 			stored: { ...STORED, provenance: { ...STORED.provenance, throughAt: null } },
 		};
 		expect(footerText(noTime, CLOCK)?.line).toStartWith("Based on 140 events ·");
+	});
+
+	test("phase 8b the fine print splits into three short lines with the same facts", () => {
+		const lines = finePrintLines(F.empty, { showSummarySharedNote: false }) as string[];
+		expect(lines).toEqual([
+			"Sends this session's prompts, agent replies, notes, current task, plan summary, commands and file paths to anthropic · claude-sonnet-4-6.",
+			"Command output is sent only for tests and builds that failed. Known secret patterns are masked first.",
+			"Up to $0.04, or $0.08 if the answer has to be retried; $1.20 of today's $5.00 used.",
+		]);
+		expect(lines.join(" ")).toBe(finePrint(F.empty, { showSummarySharedNote: false }) as string);
+		const shared = finePrintLines(F.empty, { showSummarySharedNote: true }) as string[];
+		expect(shared.at(-1)).toEndWith(" Everyone on this instance can read it.");
+		expect(shared.join(" ")).toBe(finePrint(F.empty, { showSummarySharedNote: true }) as string);
+		expect(finePrintLines(F.no_provider, { showSummarySharedNote: false })).toBeNull();
 	});
 
 	test("TC-7.40j the fine print under Summarize says what is sent, literally", () => {
