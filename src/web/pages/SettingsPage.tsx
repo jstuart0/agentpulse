@@ -13,6 +13,7 @@ import { TeamPanel } from "../components/settings/TeamPanel.js";
 import { TelegramChannelPanel } from "../components/settings/TelegramChannelPanel.js";
 import { WorkspacesPanel } from "../components/settings/WorkspacesPanel.js";
 import { useOwnershipUi } from "../hooks/useOwnershipUi.js";
+import { useSettingsPanelToReveal } from "../hooks/useSettingsPanelToReveal.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { type ApiKeyRow, api } from "../lib/api.js";
 import { BROWSER_WS_PATH } from "../lib/paths.js";
@@ -26,7 +27,7 @@ import {
 import { useLabsStore } from "../stores/labs-store.js";
 import { useUiPrefsStore } from "../stores/ui-prefs-store.js";
 import { useUserStore } from "../stores/user-store.js";
-import { panelAnchorId, panelToReveal } from "./settings-panels.js";
+import { panelAnchorId } from "./settings-panels.js";
 import {
 	type FetchStatus,
 	type SettingsSectionId,
@@ -46,6 +47,7 @@ export function SettingsPage() {
 	const ui = useOwnershipUi();
 	const isLocalAccount = useUserStore((s) => s.user?.source === "local");
 	const location = useLocation();
+	const panelToOpen = useSettingsPanelToReveal(location.search);
 	const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
 	const [loading, setLoading] = useState(true);
 	// A fetch that failed is not an empty answer: each section knows which it has.
@@ -143,15 +145,11 @@ export function SettingsPage() {
 	// focus on its heading, once the page has loaded.
 	useEffect(() => {
 		if (loading) return;
-		const panel = panelToReveal(location.search, {
-			account: isLocalAccount,
-			ai: aiSettingsEnabled,
-		});
-		if (!panel) return;
-		const heading = document.getElementById(panelAnchorId(panel))?.querySelector("h2");
+		if (!panelToOpen) return;
+		const heading = document.getElementById(panelAnchorId(panelToOpen))?.querySelector("h2");
 		heading?.scrollIntoView({ block: "start" });
 		heading?.focus({ preventScroll: true });
-	}, [loading, location.search, isLocalAccount, aiSettingsEnabled]);
+	}, [loading, panelToOpen]);
 
 	// Toggle theme. In team mode the choice is this browser's own: writing the
 	// shared setting would change everyone's screen.

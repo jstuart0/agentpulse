@@ -306,6 +306,14 @@ describe("ready", () => {
 		expect(textOf(h)).toContain("prompt 10:02");
 		expect(h).toContain('aria-label="Open the 3 edits from 10:04 in Activity"');
 		expect(textOf(h)).not.toMatch(/\bE1[234]\b/);
+		// Exactly the links the stored items cite, and no others: 12 and 13, 12, 14.
+		const hrefs = [...h.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => m[1]);
+		expect(hrefs).toEqual([
+			"/sessions/s-1?tab=activity#event-12",
+			"/sessions/s-1?tab=activity#event-13",
+			"/sessions/s-1?tab=activity#event-12",
+			"/sessions/s-1?tab=activity#event-14",
+		]);
 		expect(h).toMatch(/<a[^>]*min-h-\[44px\][^>]*md:min-h-0/);
 	});
 
