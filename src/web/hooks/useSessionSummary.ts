@@ -288,8 +288,10 @@ function createController(
 		busy = false;
 		if (disposed) return;
 		if (next?.storedOmitted && next.attempt.status === "idle" && isGenerating(view)) {
-			// The poll saw the generation end but left the new summary out: read it in full.
-			readAgain = true;
+			// A poll saw the generation end but left the new summary out: read it in full. A full
+			// read that still leaves it out is a failed read: back off on the poll interval, bounded.
+			if (kind === "poll") readAgain = true;
+			else failedRead("poll");
 		} else if (next) accept(withKeptSummary(next, view));
 		else failedRead(kind);
 		if (readAgain) {

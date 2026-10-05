@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { TimelineMode } from "../components/session-detail/TimelineView.js";
 import {
+	EVENT_LOAD_FAILED_COPY,
 	EVENT_NOT_FOUND_COPY,
 	EVENT_NOT_SHOWN_COPY,
 	type RevealFilters,
@@ -53,7 +54,10 @@ export function useEventReveal(input: EventRevealInput): {
 	const flashed = useRef<string | null>(null);
 	const announced = useRef<string | null>(null);
 	const fetching = useRef(false);
+	const [failed, setFailed] = useState(false);
+	const [attempt, setAttempt] = useState(0);
 	const applied = useRef<string | null>(null);
+	const lastTry = useRef(-1);
 	const latest = useRef(input);
 	latest.current = input;
 
@@ -65,6 +69,8 @@ export function useEventReveal(input: EventRevealInput): {
 			flashed.current = null;
 			announced.current = null;
 			applied.current = null;
+			lastTry.current = -1;
+			setFailed(false);
 		};
 	}, [sessionId, onActivity, eventId]);
 
@@ -101,16 +107,22 @@ export function useEventReveal(input: EventRevealInput): {
 				return;
 			}
 			case "fetch": {
-				if (fetching.current) return;
+				if (fetching.current || (failed && attempt === lastTry.current)) return;
+				lastTry.current = attempt;
 				fetching.current = true;
 				setLoadingContext(true);
 				void now
 					.fetchContext(eventId)
-					.catch(() => {})
+					.then(
+						() => {
+							setFailed(false);
+							setGuard((g) => markContextFetched(g, sessionId, eventId));
+						},
+						() => setFailed(true),
+					)
 					.finally(() => {
 						fetching.current = false;
 						setLoadingContext(false);
-						setGuard((g) => markContextFetched(g, sessionId, eventId));
 					});
 				return;
 			}
@@ -127,5 +139,9 @@ export function useEventReveal(input: EventRevealInput): {
 		}
 	});
 
-	return { notice, loadingContext, retry: () => {} };
+	return {
+		notice: failed ? EVENT_LOAD_FAILED_COPY : notice,
+		loadingContext,
+		retry: () => setAttempt((n) => n + 1),
+	};
 }
