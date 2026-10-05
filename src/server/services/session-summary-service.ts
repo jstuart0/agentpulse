@@ -1529,8 +1529,20 @@ export async function recoverInterruptedSummaries(): Promise<number> {
 
 /** Gives one taken entry back at shutdown: the row says interrupted, the reservation is settled per D-25. */
 async function releaseEntry(entry: Entry): Promise<void> {
+	// A call in flight has an unknown outcome and is charged the maximum: it must move the same
+	// controls a failed call does (the caller's breaker, the daily ceiling, the session's long
+	// cooldown), or repeated hangs released by the watchdog or a shutdown drain the day unchecked.
+	const unknownCharge = entry.phase !== "reading" ? entry.pendingMaxCents : 0;
+	if (unknownCharge > 0) {
+		recordMaxChargedFailure(entry.subject);
+		recordUnknownOutcomeCharge(unknownCharge);
+	}
 	try {
-		await writeAttempt(entry.sessionId, entry.token as string, failedRow("interrupted"));
+		await writeAttempt(
+			entry.sessionId,
+			entry.token as string,
+			failedRow("interrupted", unknownCharge > 0),
+		);
 	} catch (error) {
 		console.error(
 			"[session-summary] release write failed",
