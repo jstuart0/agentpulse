@@ -1106,7 +1106,9 @@ export function shouldFocusHeading(
 	announcement: "Summarizing" | "Summary ready" | "Summary failed" | null,
 	focusInsidePanel: boolean,
 ): boolean {
-	return false;
+	return (
+		focusInsidePanel && (announcement === "Summary ready" || announcement === "Summary failed")
+	);
 }
 
 export type LabsPointer =

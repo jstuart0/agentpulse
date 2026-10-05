@@ -6,6 +6,7 @@ import { getOperationalStatus } from "../../../shared/session-state.js";
 import type { AgentType, Session, SessionEvent } from "../../../shared/types.js";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback.js";
 import { useOwnershipUi } from "../../hooks/useOwnershipUi.js";
+import { useSummaryAvailability } from "../../hooks/useSummaryAvailable.js";
 import type { OwnerChipModel } from "../../lib/owner-chip.js";
 import { RENAME_BLOCKED_REASON, sessionActionAccess } from "../../lib/ownership-ui.js";
 import { sessionHostLabel } from "../../lib/session-host.js";
@@ -33,8 +34,7 @@ interface SessionHeaderProps {
 	/** The tab showing now; null while a `?tab=summary` link waits for availability. */
 	workspaceTab: WorkspaceTabId | null;
 	onSelectTab: (tab: WorkspaceTabId) => void;
-	/** The Summary tab exists (AGEN-69). */
-	summaryAvailable?: boolean;
+	/** The word on the Summary tab while a summary runs or a new one is waiting. */
 	summaryBadge: string | null;
 	mode: TimelineMode;
 	onModeChange: (mode: TimelineMode) => void;
@@ -75,7 +75,6 @@ export function SessionHeader(props: SessionHeaderProps) {
 		allEvents,
 		workspaceTab,
 		onSelectTab,
-		summaryAvailable,
 		summaryBadge,
 		mode,
 		onModeChange,
@@ -97,6 +96,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 	} = props;
 	const navigate = useNavigate();
 	const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+	const summaryAvailable = useSummaryAvailability() === "available";
 	const aiTabEnabled = useLabsStore((s) => s.isEnabled("aiSessionTab"));
 	const linkedProject = useProjectsStore((s) => s.getById(session.projectId));
 	const { copy } = useCopyFeedback();
@@ -348,7 +348,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 					isWorking={session.isWorking}
 					hasLaunch={Boolean(session.managedSession?.launchRequestId)}
 					aiTabEnabled={aiTabEnabled}
-					summaryAvailable={summaryAvailable === true}
+					summaryAvailable={summaryAvailable}
 					summaryBadge={summaryBadge}
 				/>
 				{workspaceTab === "activity" && (

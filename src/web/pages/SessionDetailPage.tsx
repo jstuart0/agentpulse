@@ -33,11 +33,8 @@ import {
 import { useDirectoryInitials } from "../hooks/useDirectoryInitials.js";
 import { useOwnershipUi, useViewerIsAdmin } from "../hooks/useOwnershipUi.js";
 import { useSessionSummary } from "../hooks/useSessionSummary.js";
-import {
-	reloadSummaryAvailability,
-	useSummaryAvailability,
-	useSummaryUnavailableReason,
-} from "../hooks/useSummaryAvailable.js";
+import { reloadSummaryAvailability } from "../hooks/useSummaryAvailable.js";
+import { useSummaryRoute, useSummaryTabBadge } from "../hooks/useSummaryPageState.js";
 import { describeApiError } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
 import { applyManualRename } from "../lib/name-source.js";
@@ -46,7 +43,7 @@ import { ownerLabel, sessionOwnerText } from "../lib/owner-label.js";
 import { NOTES_BLOCKED_REASON, sessionActionAccess } from "../lib/ownership-ui.js";
 import { assignablePeople, withCurrentOwner } from "../lib/people.js";
 import { sessionHostLabel } from "../lib/session-host.js";
-import { type WorkspaceTabId, resolveWorkspaceTab, tabBadge } from "../lib/session-summary-view.js";
+import type { WorkspaceTabId } from "../lib/session-summary-view.js";
 import { canAcknowledgeSession, explicitAckAccess } from "../lib/utils.js";
 import { useEventStore } from "../stores/event-store.js";
 import { mergeSessionIntoDetail, useSessionStore } from "../stores/session-store.js";
@@ -93,15 +90,7 @@ export function SessionDetailPage() {
 
 	// The tab is the URL's, resolved against what exists right now: a Summary link waits while
 	// availability loads and falls to Activity (with a line saying why) if the tab isn't there.
-	const summaryAvailability = useSummaryAvailability();
-	const resolvedTab = resolveWorkspaceTab(
-		searchParams.get("tab"),
-		summaryAvailability,
-		useSummaryUnavailableReason(),
-	);
-	const workspaceTab: WorkspaceTabId | null = resolvedTab.kind === "tab" ? resolvedTab.tab : null;
-	const fellBack = resolvedTab.kind === "tab" && resolvedTab.fellBack ? resolvedTab : null;
-	const summaryAvailable = summaryAvailability === "available";
+	const { workspaceTab, fellBack, summaryAvailable } = useSummaryRoute(searchParams.get("tab"));
 
 	const [loadingContext, setLoadingContext] = useState(false);
 	const [contextNotFound, setContextNotFound] = useState(false);
@@ -116,6 +105,7 @@ export function SessionDetailPage() {
 	// AGEN-69: the summary's state lives here, not in its tab, so a generation survives a tab
 	// switch; it reads once per page view and polls only while one runs.
 	const summary = useSessionSummary(sessionId, summaryAvailable);
+	const summaryBadge = useSummaryTabBadge(summary, workspaceTab);
 	const summaryAnnouncement = summary.announcement;
 	useEffect(() => {
 		if (summaryAnnouncement) setLiveAnnouncement(summaryAnnouncement);
@@ -671,12 +661,7 @@ export function SessionDetailPage() {
 				allEvents={allEvents}
 				workspaceTab={workspaceTab}
 				onSelectTab={selectWorkspaceTab}
-				summaryAvailable={summaryAvailable}
-				summaryBadge={tabBadge({
-					generating: summary.generating,
-					newResult: false,
-					tabActive: workspaceTab === "summary",
-				})}
+				summaryBadge={summaryBadge}
 				mode={mode}
 				onModeChange={setMode}
 				showTools={showTools}
@@ -792,6 +777,12 @@ export function SessionDetailPage() {
 						sessionId={session.sessionId}
 						agentType={session.agentType}
 						summary={summary}
+						meta={{
+							name: displayName,
+							branch: session.gitBranch ?? null,
+							cwd: session.cwd ?? null,
+						}}
+						announce={setLiveAnnouncement}
 					/>
 				) : workspaceTab === "activity" ? (
 					<>

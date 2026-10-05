@@ -1,8 +1,8 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { SessionSummaryView } from "../../../shared/session-summary-view.js";
 import type { StoredSessionSummary } from "../../../shared/session-summary.js";
-import type { UseSessionSummary } from "../../hooks/useSessionSummary.js";
+import type { SummaryAnnouncement, UseSessionSummary } from "../../hooks/useSessionSummary.js";
 import type { AiStatusResponse } from "../../lib/api.js";
 import {
 	type ActionState,
@@ -18,10 +18,18 @@ import {
 	formatMoment,
 	partialEvidenceNotice,
 	relativeAgo,
+	shouldFocusHeading,
 } from "../../lib/session-summary-view.js";
+import {
+	COPY_ANNOUNCEMENT,
+	type CopyKind,
+	buildCopyText,
+	copyToClipboard,
+} from "../../lib/summary-copy.js";
 import { cn } from "../../lib/utils.js";
 import { ConfirmDialog } from "../ConfirmDialog.js";
 import { LabsBadge } from "../LabsBadge.js";
+import { CopyFallback } from "./CopyFallback.js";
 import { SummarySections } from "./SummarySections.js";
 
 export interface SessionSummaryPanelProps {
@@ -37,6 +45,12 @@ export interface SessionSummaryPanelProps {
 	retry: () => void;
 	/** A fixed clock, for tests; the browser's own otherwise. */
 	clock?: ClockOptions;
+	/** The session's name, branch and directory, for the line at the top of copied text. */
+	meta?: { name: string | null; branch: string | null; cwd: string | null };
+	/** Says something through the page's polite live region. */
+	announce?: (text: string) => void;
+	/** The hook's announcement, so the heading can take focus when your own generation ends. */
+	announcement?: SummaryAnnouncement | null;
 }
 
 const FILLED =
@@ -69,6 +83,14 @@ function useNow(running: boolean, fixed: Date | undefined): Date {
 export function SessionSummaryPanel(props: SessionSummaryPanelProps) {
 	const { load, lostContact, aiStatus, viewer } = props;
 	const headingId = useId();
+	const root = useRef<HTMLElement>(null);
+	const heading = useRef<HTMLHeadingElement>(null);
+	const { announcement } = props;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs when the announcement changes, nothing else
+	useEffect(() => {
+		const inside = root.current?.contains(document.activeElement) ?? false;
+		if (shouldFocusHeading(announcement ?? null, inside)) heading.current?.focus();
+	}, [announcement]);
 	const generating = load.status === "ready" && load.view.attempt.status === "generating";
 	const now = useNow(generating && !lostContact, props.clock?.now);
 	const clock: ClockOptions = { ...props.clock, now };
@@ -77,12 +99,18 @@ export function SessionSummaryPanel(props: SessionSummaryPanelProps) {
 	const view = load.status === "ready" ? load.view : null;
 	return (
 		<section
+			ref={root}
 			aria-labelledby={headingId}
 			data-summary-state={model?.stateTag}
 			className="max-w-3xl space-y-4 p-3 md:p-6"
 		>
 			<div className="flex items-center gap-2">
-				<h2 id={headingId} tabIndex={-1} className="text-base font-semibold focus:outline-none">
+				<h2
+					id={headingId}
+					ref={heading}
+					tabIndex={-1}
+					className="text-base font-semibold focus:outline-none"
+				>
 					Summary
 				</h2>
 				<LabsBadge />
@@ -154,6 +182,22 @@ function EmptyBody(props: BodyProps) {
 function StoredBody(props: BodyProps & { stored: StoredSessionSummary }) {
 	const { model, view, stored, clock } = props;
 	const stale = model.content.kind === "stale" ? model.content : null;
+	const [fallback, setFallback] = useState<string | null>(null);
+	const copyMeta = {
+		...(props.meta ?? { name: null, branch: null, cwd: null }),
+		generatedAt: view?.generatedAt,
+		staleEvents: view?.staleEvents,
+	};
+	async function copy(kind: CopyKind) {
+		const text = buildCopyText(kind, stored, copyMeta);
+		if ((await copyToClipboard(text)) === "copied") {
+			setFallback(null);
+			props.announce?.(COPY_ANNOUNCEMENT[kind]);
+		} else setFallback(text);
+	}
+	const contextCopy = (
+		<CopyButton label={model.copyLabels.context} onCopy={() => void copy("context")} />
+	);
 	return (
 		<div className="space-y-4">
 			<GeneratingStatus {...props} />
@@ -169,9 +213,17 @@ function StoredBody(props: BodyProps & { stored: StoredSessionSummary }) {
 					<ActionControl {...props} />
 				</div>
 			)}
+			<div className="flex flex-wrap items-center gap-2">
+				<button type="button" data-copy onClick={() => void copy("handoff")} className={OUTLINED}>
+					{model.copyLabels.handoff}
+				</button>
+				<CopyButton label={model.copyLabels.summary} onCopy={() => void copy("summary")} />
+			</div>
+			{fallback !== null && <CopyFallback text={fallback} onClose={() => setFallback(null)} />}
 			<LastAttempt notice={model.notice} />
 			<PartialEvidence stored={stored} clock={clock} />
 			<SummarySections
+				contextAction={contextCopy}
 				stored={stored}
 				sessionId={props.sessionId}
 				agentType={props.agentType}
@@ -179,6 +231,14 @@ function StoredBody(props: BodyProps & { stored: StoredSessionSummary }) {
 			/>
 			<Footer view={view} clock={clock} />
 		</div>
+	);
+}
+
+function CopyButton({ label, onCopy }: { label: string; onCopy: () => void }) {
+	return (
+		<button type="button" data-copy onClick={onCopy} className={QUIET}>
+			{label}
+		</button>
 	);
 }
 

@@ -87,7 +87,7 @@ describe("SessionSummaryTab", () => {
 		});
 		const html = render(F.ready);
 		expect(html).toContain("This summary can&#x27;t be updated while AI is paused.");
-		expect(html).not.toContain("<button");
+		expect(html).not.toMatch(/<button(?![^>]*data-copy)/);
 	});
 
 	test("a team member sees the shared note and the member wording", () => {

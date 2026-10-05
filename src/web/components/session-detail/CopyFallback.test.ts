@@ -9,7 +9,7 @@ describe("CopyFallback", () => {
 		const html = renderToStaticMarkup(
 			createElement(CopyFallback, { text: "line 1\n<b>2</b>", onClose: () => {} }),
 		);
-		expect(html).toMatch(/<textarea[^>]*readonly[^>]*>line 1\n&lt;b&gt;2&lt;\/b&gt;<\/textarea>/);
+		expect(html).toMatch(/<textarea[^>]*readOnly[^>]*>line 1\n&lt;b&gt;2&lt;\/b&gt;<\/textarea>/);
 		expect(html).toMatch(
 			/<output[^>]*>Couldn&#x27;t copy automatically\. Select the text below and copy it\.<\/output>/,
 		);

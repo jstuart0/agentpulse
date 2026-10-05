@@ -36,9 +36,17 @@ interface SectionsProps {
 	sessionId: string;
 	agentType: string | null;
 	clock?: ClockOptions;
+	/** The Copy context button, shown inside Key Context. */
+	contextAction?: ReactNode;
 }
 
-export function SummarySections({ stored, sessionId, agentType, clock }: SectionsProps) {
+export function SummarySections({
+	stored,
+	sessionId,
+	agentType,
+	clock,
+	contextAction,
+}: SectionsProps) {
 	const { summary } = stored;
 	const evidence = (ids: string[]) => (
 		<EvidenceLinks ids={ids} stored={stored} sessionId={sessionId} clock={clock} />
@@ -115,7 +123,7 @@ export function SummarySections({ stored, sessionId, agentType, clock }: Section
 					))}
 				</ol>
 			</Section>
-			<KeyContextSection handoff={summary.handoff} />
+			<KeyContextSection handoff={summary.handoff} action={contextAction} />
 		</div>
 	);
 }
@@ -391,7 +399,7 @@ function ValidationSection({
 	);
 }
 
-function KeyContextSection({ handoff }: { handoff: string }) {
+function KeyContextSection({ handoff, action }: { handoff: string; action?: ReactNode }) {
 	return (
 		<details open>
 			<summary className="cursor-pointer select-none rounded-sm py-1 marker:text-muted-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
@@ -400,6 +408,7 @@ function KeyContextSection({ handoff }: { handoff: string }) {
 			<p className={cn("mt-1.5 whitespace-pre-wrap break-words text-sm text-foreground", WRAP)}>
 				{handoff}
 			</p>
+			{action && <div className="mt-1">{action}</div>}
 		</details>
 	);
 }
