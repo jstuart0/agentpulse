@@ -4,6 +4,7 @@
  *
  *   bun run build && bun scripts/check-web-bundle-budget.ts
  *   bun scripts/check-web-bundle-budget.ts --scale 0.5     # self-test: must exit non-zero
+ *   bun scripts/check-web-bundle-budget.ts --dir <assets>  # check another build's assets
  *
  * Limits are gzipped bytes of the built chunks, set from what the build measured at the end of
  * phase 8 plus modest headroom. Base (before the Summary work): SessionDetailPage 19,952,
@@ -20,7 +21,12 @@ export interface Budget {
 	chunk: string;
 	/** Largest gzipped size, in bytes. */
 	maxGzip: number;
+	/** What the build measured when the limit was set; the limit is at most this plus HEADROOM. */
+	measured: number;
 }
+
+/** The most a limit may sit above what was measured. */
+export const HEADROOM = 0.1;
 export interface Finding {
 	chunk: string;
 	gzip: number | null;
@@ -29,10 +35,10 @@ export interface Finding {
 }
 
 export const BUDGETS: Budget[] = [
-	{ chunk: "SessionDetailPage", maxGzip: 23_500 },
-	{ chunk: "SessionSummaryTab", maxGzip: 12_500 },
-	{ chunk: "DashboardPage", maxGzip: 23_900 },
-	{ chunk: "index", maxGzip: 117_600 },
+	{ chunk: "SessionDetailPage", maxGzip: 23_500, measured: 22_260 },
+	{ chunk: "SessionSummaryTab", maxGzip: 12_500, measured: 11_582 },
+	{ chunk: "DashboardPage", maxGzip: 23_900, measured: 23_003 },
+	{ chunk: "index", maxGzip: 117_600, measured: 117_056 },
 ];
 
 /** A missing chunk fails: a renamed chunk must not silently escape its budget. `scale` shrinks every limit (the self-test). */
@@ -48,10 +54,13 @@ export function checkBudget(
 	});
 }
 
-function main(): number {
-	const scaleAt = process.argv.indexOf("--scale");
-	const scale = scaleAt >= 0 ? Number(process.argv[scaleAt + 1]) : 1;
-	const dir = join(import.meta.dir, "..", "dist", "web", "assets");
+export function main(argv: string[] = process.argv.slice(2)): number {
+	const option = (name: string): string | null => {
+		const at = argv.indexOf(name);
+		return at >= 0 ? (argv[at + 1] ?? null) : null;
+	};
+	const scale = Number(option("--scale") ?? 1);
+	const dir = option("--dir") ?? join(import.meta.dir, "..", "dist", "web", "assets");
 	let files: string[];
 	try {
 		files = readdirSync(dir).filter((f) => f.endsWith(".js"));
@@ -64,7 +73,7 @@ function main(): number {
 	for (const file of files) {
 		const bytes = readFileSync(join(dir, file));
 		const name = file.replace(/-[\w-]{6,}\.js$/, "");
-		sizes[name] = gzipSync(bytes).length;
+		sizes[name] = Math.max(sizes[name] ?? 0, gzipSync(bytes).length);
 		if (!zod && bytes.includes("ZodError")) zod = file;
 	}
 	let failed = false;
