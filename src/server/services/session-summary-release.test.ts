@@ -27,6 +27,7 @@ const registry = await import("./ai/llm/registry.js");
 const { setShuttingDown } = await import("../drain-state.js");
 const { priceCompletion } = await import("./ai/llm/pricing.js");
 const { estimateTokens } = await import("./ai/llm/types.js");
+const { MAX_OUTPUT_TOKENS } = await import("./ai/session-summary/service-limits.js");
 
 const SID = "rel-s1";
 let stub: ReturnType<typeof H.startStub>;
@@ -44,7 +45,7 @@ beforeEach(async () => {
 	await H.seedProvider(stub);
 });
 afterEach(async () => {
-	await H.resetWorld(stub);
+	await H.afterEachGuard(stub);
 });
 
 const ok = (cite: number[]) => ({ text: H.answer(cite), stop: "stop", usage: H.STUB_USAGE });
@@ -58,12 +59,16 @@ const ACTUAL = () =>
 		estimated: false,
 	});
 
-/** The priced input of the recorded request: what a release charges for a call in flight. */
-function inputOnlyCents(): number {
+/**
+ * What a release charges for a call in flight (R-I): its outcome is unknown, so the single-call
+ * maximum of the text actually sent, at the worst-case token ratio (written out here, not imported).
+ */
+function unknownOutcomeCents(): number {
 	const { system, user } = H.promptsOf(stub.requests()[0]);
+	const text = system + user;
 	return priceCompletion("openai", "gpt-5-mini", {
-		inputTokens: estimateTokens(system + user),
-		outputTokens: 0,
+		inputTokens: Math.max(estimateTokens(text), Math.ceil(Buffer.byteLength(text, "utf8") / 2)),
+		outputTokens: MAX_OUTPUT_TOKENS,
 		estimated: true,
 	});
 }
@@ -97,7 +102,7 @@ describe("release, finish, and the two orderings", () => {
 		expect(row?.attemptStatus).toBe("failed");
 		expect(row?.attemptErrorCode).toBe("interrupted");
 		expect(row?.attemptToken).toBeNull();
-		const charged = inputOnlyCents();
+		const charged = unknownOutcomeCents();
 		expect(await H.daySpend()).toBe(charged);
 		expect(await H.sessionSpend(SID)).toBe(charged);
 		// the view reads it at once, and a new claim wins inside the cooldown
@@ -218,7 +223,7 @@ describe("release, finish, and the two orderings", () => {
 		await svc.releaseOwnSummaryClaims();
 		gate.release();
 		await H.withDeadline(done);
-		expect(await H.daySpend()).toBe(inputOnlyCents());
+		expect(await H.daySpend()).toBe(unknownOutcomeCents());
 		expect((await rowOf(SID))?.attemptErrorCode).toBe("interrupted");
 		expect((await rowOf(SID))?.summary).toBeNull();
 	});

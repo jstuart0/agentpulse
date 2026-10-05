@@ -54,7 +54,7 @@ beforeEach(async () => {
 	await H.seedProvider(stub);
 });
 afterEach(async () => {
-	await H.resetWorld(stub);
+	await H.afterEachGuard(stub);
 });
 
 const ok = (cite: number[]) => ({ text: H.answer(cite), stop: "stop", usage: H.STUB_USAGE });
@@ -448,20 +448,6 @@ describe("refusals take nothing", () => {
 			arrange: async () => {
 				await getDb().update(llmProviders).set({ isDefault: false });
 				return async () => void (await getDb().update(llmProviders).set({ isDefault: true }));
-			},
-		},
-		{
-			name: "key unreadable",
-			reason: "provider_key_unreadable",
-			arrange: async () => {
-				const [p] = await getDb().select().from(llmProviders);
-				await getDb()
-					.update(llmProviders)
-					.set({ credentialCiphertext: "bm90LWEtcmVhbC1jaXBoZXJ0ZXh0" });
-				return async () =>
-					void (await getDb()
-						.update(llmProviders)
-						.set({ credentialCiphertext: p.credentialCiphertext }));
 			},
 		},
 		{

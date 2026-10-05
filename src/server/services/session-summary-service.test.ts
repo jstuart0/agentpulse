@@ -58,7 +58,7 @@ beforeEach(async () => {
 	await H.seedProvider(stub);
 });
 afterEach(async () => {
-	await H.resetWorld(stub);
+	await H.afterEachGuard(stub);
 });
 
 const ok = (cite: number[], over: Record<string, unknown> = {}) => ({
@@ -410,17 +410,19 @@ describe("refusal", () => {
 });
 
 describe("provider failures", () => {
-	const CASES: Array<[number, string, boolean]> = [
-		[401, "provider_auth", false],
-		[403, "provider_auth", false],
-		[429, "provider_rate_limit", false],
-		[503, "provider_timeout", true],
-		[400, "provider_error", false],
-		[404, "provider_error", false],
-		[422, "provider_error", false],
-		[418, "provider_error", false],
+	// R-I (b): what each status charges. The exact arithmetic per row is pinned in session-summary-money.test.ts.
+	type Charge = "zero" | "input" | "max";
+	const CASES: Array<[number, string, Charge]> = [
+		[401, "provider_auth", "zero"],
+		[403, "provider_auth", "zero"],
+		[429, "provider_rate_limit", "zero"],
+		[503, "provider_timeout", "input"],
+		[400, "provider_error", "zero"],
+		[404, "provider_error", "zero"],
+		[422, "provider_error", "zero"],
+		[418, "provider_error", "max"],
 	];
-	for (const [status, code, possiblyBilled] of CASES) {
+	for (const [status, code, charge] of CASES) {
 		test(`TC-5.14 HTTP ${status} gives ${code}; the row leaves generating and keeps the previous summary`, async () => {
 			const { promptId, editId } = await H.seedActiveSession(SID);
 			await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
@@ -435,13 +437,17 @@ describe("provider failures", () => {
 			expect(JSON.parse(await serialized(SID)).summary).toEqual(previous.summary);
 			expect(stub.requests().length).toBe(1);
 			const { system, user } = H.promptsOf(stub.requests()[0]);
-			const inputOnly = priceCompletion("openai", "gpt-5-mini", {
-				inputTokens: estimateTokens(system + user),
-				outputTokens: 0,
-				estimated: true,
-			});
-			// TC-5.16: a call rejected before billing settles at 0; one that may have been billed is charged its input.
-			expect((await H.spendDelta(before)).day).toBe(possiblyBilled ? inputOnly : 0);
+			const sent = system + user;
+			const worst = Math.max(estimateTokens(sent), Math.ceil(Buffer.byteLength(sent, "utf8") / 2));
+			const chargeOf = (outputTokens: number) =>
+				priceCompletion("openai", "gpt-5-mini", {
+					inputTokens: worst,
+					outputTokens,
+					estimated: true,
+				});
+			// TC-5.16: rejected before billing is 0; an explicit 5xx is the priced input; anything else is unknown, the maximum.
+			const expected = { zero: 0, input: chargeOf(0), max: chargeOf(4000) }[charge];
+			expect((await H.spendDelta(before)).day).toBe(expected);
 		});
 	}
 
@@ -463,15 +469,20 @@ describe("provider failures", () => {
 		}
 	});
 
-	test("TC-5.14c an undecryptable key is refused at the request, and the row is untouched", async () => {
+	test("TC-5.14c an undecryptable key is a failed attempt after the claim (P5-7): provider_key_unreadable, no cooldown, nothing sent", async () => {
 		await H.seedActiveSession(SID);
 		const { llmProviders } = await import("../db/schema/index.js");
 		await getDb()
 			.update(llmProviders)
 			.set({ credentialCiphertext: "bm90LWEtcmVhbC1jaXBoZXJ0ZXh0" });
 		const result = await H.request(SID);
-		expect(H.refusalOf(result)).toBe("provider_key_unreadable");
-		expect(await summaryOf(SID)).toBeUndefined();
+		expect(result.kind).toBe("started");
+		if (result.kind === "started") await H.withDeadline(result.done);
+		const row = await summaryOf(SID);
+		expect(row?.attemptStatus).toBe("failed");
+		expect(row?.attemptErrorCode).toBe("provider_key_unreadable");
+		expect(row?.attemptStartedAt).toBeNull();
+		expect(stub.requests().length).toBe(0);
 		expect(await getSessionSummaryView(SID)).not.toBeNull();
 	});
 
@@ -498,17 +509,40 @@ describe("provider failures", () => {
 		}
 	});
 
-	test("TC-5.16a a call that never left (connection refused) settles at 0 and returns the reservation", async () => {
+	test("TC-5.16a a connection refused cannot be told from a failure after the request left: charged the single-call maximum (R-I)", async () => {
 		await H.resetWorld(stub);
 		await H.enableAi();
 		await H.seedProviderAt("http://127.0.0.1:1/v1");
 		await H.seedActiveSession(SID);
-		const before = await H.snapshotSpend(SID);
-		await H.runGeneration(SID);
-		expect((await summaryOf(SID)).attemptErrorCode).toBe("provider_error");
-		const delta = await H.spendDelta(before);
-		expect(delta.day).toBe(0);
-		expect(delta.sessions[SID]).toBe(0);
+		let sent = "";
+		const real = registry.getAdapter;
+		const spy = spyOn(registry, "getAdapter").mockImplementation((provider) => {
+			const adapter = real(provider);
+			return {
+				...adapter,
+				complete: (request) => {
+					sent = request.systemPrompt + request.transcriptPrompt;
+					return adapter.complete(request);
+				},
+			};
+		});
+		try {
+			const before = await H.snapshotSpend(SID);
+			await H.runGeneration(SID);
+			expect((await summaryOf(SID)).attemptErrorCode).toBe("provider_error");
+			const worst = Math.max(estimateTokens(sent), Math.ceil(Buffer.byteLength(sent, "utf8") / 2));
+			const expected = priceCompletion("openai", "gpt-5-mini", {
+				inputTokens: worst,
+				outputTokens: 4000,
+				estimated: true,
+			});
+			const delta = await H.spendDelta(before);
+			expect(sent.length).toBeGreaterThan(0);
+			expect(delta.day).toBe(expected);
+			expect(delta.sessions[SID]).toBe(expected);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 
 	test("TC-5.16b a first call that billed and a repair call rejected before billing settles only the first", async () => {

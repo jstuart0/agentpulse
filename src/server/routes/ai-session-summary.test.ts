@@ -697,12 +697,23 @@ describe("every refusal body, with the fixture's status", () => {
 		await expectRefusal("no_provider", await post(SID, disableAuth()));
 	});
 
-	test("TC-6.5r3 provider_key_unreadable", async () => {
+	test("TC-6.5r3 an unreadable key is no longer a refusal (P5-7): 202, then the view shows the failed attempt", async () => {
+		const headers = disableAuth();
 		await activeSession(SID);
 		await getDb()
 			.update(llmProviders)
 			.set({ credentialCiphertext: "bm90LWEtcmVhbC1jaXBoZXJ0ZXh0" });
-		await expectRefusal("provider_key_unreadable", await post(SID, disableAuth()));
+		const started = await post(SID, headers);
+		expect(started.status).toBe(202);
+		await waitForGenerations();
+		const view = await get(SID, headers);
+		expect(view.status).toBe(200);
+		expect((view.json as { attempt: unknown }).attempt).toMatchObject({
+			status: "failed",
+			startedAt: null,
+			errorCode: "provider_key_unreadable",
+		});
+		expect((view.json as { blocked: unknown }).blocked).toBeNull();
 	});
 
 	test("TC-6.5r3 summary_cooldown", async () => {

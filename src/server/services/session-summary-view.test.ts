@@ -56,7 +56,7 @@ beforeEach(async () => {
 	await H.enableAi();
 });
 afterEach(async () => {
-	await H.resetWorld(stub);
+	await H.afterEachGuard(stub);
 });
 
 async function view(sessionId = SID) {
