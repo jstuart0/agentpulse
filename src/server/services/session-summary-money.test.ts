@@ -875,3 +875,225 @@ describe("Q-1 the breaker: three maximum-charged failures in ten minutes close t
 		expect((await H.request("brk-live")).kind).toBe("joined");
 	});
 });
+
+const timeoutOn = async (id: string, caller = H.SOLO) => {
+	const spy = throwingAdapter(() => new LlmError("transient_timeout", "timed out"));
+	try {
+		await H.runGeneration(id, caller);
+	} finally {
+		spy.mockRestore();
+	}
+};
+
+describe("R3-1 / R3-2 / R3-3: per caller, per session, per day", () => {
+	const MINUTE = 60_000;
+	const T0 = Date.UTC(2031, 0, 1, 12, 0, 0);
+	let n = 0;
+	const A = H.asTeamMember("member-a");
+	const B = H.asTeamMember("member-b");
+	beforeEach(() => {
+		n = 0;
+		setSystemTime(new Date(T0));
+	});
+	afterEach(() => {
+		setSystemTime();
+		svc._setSummaryHooksForTest(null);
+	});
+	const fresh = async (): Promise<string> => {
+		const id = `r3-${n++}`;
+		await H.seedActiveSession(id);
+		return id;
+	};
+	const timeoutAs = async (caller: typeof A) => timeoutOn(await fresh(), caller);
+	const attempt = async (caller: typeof A) => {
+		const id = await fresh();
+		const result = await H.request(id, caller);
+		return { id, result };
+	};
+	const retryAfter = (result: Awaited<ReturnType<typeof H.request>>) =>
+		result.kind === "refused" ? (result.refusal.retryAfterSeconds ?? 0) : -1;
+	const at = (ms: number) => setSystemTime(new Date(T0 + ms));
+
+	test("R3-1 one subject's three timeouts refuse that subject and nobody else", async () => {
+		for (let i = 0; i < 3; i++) await timeoutAs(A);
+		const refusedA = await attempt(A);
+		expect(H.refusalOf(refusedA.result)).toBe("busy");
+		expect(retryAfter(refusedA.result)).toBeGreaterThan(290);
+		expect(retryAfter(refusedA.result)).toBeLessThanOrEqual(300);
+		const b = await attempt(B);
+		expect(b.result.kind).toBe("started");
+		if (b.result.kind === "started") {
+			stub.script("openai", ok([1]));
+			await H.withDeadline(b.result.done);
+		}
+		stub.reset();
+	});
+
+	test("R3-1 the open period doubles on each consecutive re-open: 5, 10, 20, 40, then 60 minutes; a success resets it", async () => {
+		for (let i = 0; i < 3; i++) await timeoutAs(A);
+		const waits: number[] = [];
+		let clock = 0;
+		for (const minutes of [5, 10, 20, 40, 60, 60]) {
+			const refused = await attempt(A);
+			waits.push(Math.round(retryAfter(refused.result) / 60));
+			clock += minutes * MINUTE + 1000;
+			at(clock);
+			await timeoutAs(A); // the probe after the open period fails: one failure re-opens
+		}
+		const last = await attempt(A);
+		waits.push(Math.round(retryAfter(last.result) / 60));
+		expect(waits).toEqual([5, 10, 20, 40, 60, 60, 60]);
+		clock += 60 * MINUTE + 1000;
+		at(clock);
+		const id = await fresh();
+		const { editId } = await H.seedActiveSession(`${id}-ok`);
+		stub.script("openai", ok([editId]));
+		await H.runGeneration(`${id}-ok`, A);
+		// Reset by the success: two further timeouts do not open it again.
+		await timeoutAs(A);
+		await timeoutAs(A);
+		const open = await attempt(A);
+		expect(open.result.kind).toBe("started");
+		if (open.result.kind === "started") {
+			stub.script("openai", ok([1]));
+			await H.withDeadline(open.result.done);
+		}
+		stub.reset();
+	}, 60_000);
+
+	test("R3-1 the map is bounded: entries idle over an hour are dropped, and the size is capped with the oldest dropped", () => {
+		const breaker = svc._breakerForTest;
+		breaker.reset();
+		breaker.record("old");
+		expect(breaker.size()).toBe(1);
+		at(61 * MINUTE);
+		breaker.record("new");
+		expect(breaker.size()).toBe(1);
+		for (let i = 0; i < 1100; i++) breaker.record(`s-${i}`);
+		expect(breaker.size()).toBeLessThanOrEqual(1000);
+		for (let i = 0; i < 3; i++) breaker.record("latest");
+		expect(breaker.retryAfter("latest")).toBeGreaterThan(0);
+		expect(breaker.has("s-0")).toBe(false);
+	});
+
+	test("R3-2 a maximum-charged failure keeps that session shut for 10 minutes, for everyone; an ordinary failure for the usual 30 seconds", async () => {
+		const id = await fresh();
+		await timeoutOn(id, A);
+		const bySomeoneElse = await H.request(id, B);
+		expect(H.refusalOf(bySomeoneElse)).toBe("summary_cooldown");
+		expect(retryAfter(bySomeoneElse)).toBeGreaterThan(590);
+		expect(retryAfter(bySomeoneElse)).toBeLessThanOrEqual(600);
+		expect((await svc.getSessionSummaryView(id))?.cooldownSeconds).toBeGreaterThan(590);
+		at(31_000);
+		expect(H.refusalOf(await H.request(id, B))).toBe("summary_cooldown");
+		at(9 * MINUTE);
+		expect(H.refusalOf(await H.request(id, B))).toBe("summary_cooldown");
+		at(10 * MINUTE + 1000);
+		const later = await H.request(id, B);
+		expect(later.kind).toBe("started");
+		if (later.kind === "started") {
+			stub.script("openai", ok([1]));
+			await H.withDeadline(later.done);
+		}
+		stub.reset();
+
+		const plain = await fresh();
+		stub.script("openai", { text: "", status: 401, errorBody: "no" });
+		await H.runGeneration(plain, A);
+		expect(retryAfter(await H.request(plain, B))).toBeLessThanOrEqual(30);
+		at(10 * MINUTE + 1000 + 31_000);
+		const ok2 = await H.request(plain, B);
+		expect(ok2.kind).toBe("started");
+		if (ok2.kind === "started") {
+			stub.script("openai", ok([1]));
+			await H.withDeadline(ok2.done);
+		}
+		stub.reset();
+	});
+
+	test("R3-3 the default ceiling is 25% of the daily cap", () => {
+		svc._setSummaryHooksForTest(null);
+		expect(svc.unknownOutcomeCeilingCents()).toBe(Math.floor(spend.DEFAULT_DAILY_CAP_CENTS / 4));
+	});
+
+	test("R3-3 once unknown-outcome charges reach the ceiling every new request is refused with the budget refusal, until the local day rolls over; the request that crosses it ran", async () => {
+		const subjects = [H.asTeamMember("c1"), H.asTeamMember("c2"), H.asTeamMember("c3")];
+		const before = await H.daySpend();
+		await timeoutAs(subjects[0]);
+		const one = (await H.daySpend()) - before;
+		expect(one).toBeGreaterThan(0);
+		// A ceiling of exactly two such charges: the second request runs (the total is below it when
+		// it starts), reaching the ceiling exactly.
+		svc._setSummaryHooksForTest({ unknownCeilingCents: 2 * one });
+		await timeoutAs(subjects[1]);
+		const dayBefore = await H.daySpend();
+		const decrypt = spyOn(secrets, "decryptSecret");
+		const refused = await attempt(subjects[2]);
+		const refusedAgain = await attempt(H.SOLO);
+		expect(decrypt.mock.calls.length).toBe(0);
+		decrypt.mockRestore();
+		for (const r of [refused, refusedAgain]) {
+			expect(H.refusalOf(r.result)).toBe("spend_cap_reached");
+			expect(await H.readSummaryRow(r.id)).toBeUndefined();
+		}
+		expect(await H.daySpend()).toBe(dayBefore);
+		expect(stub.requests().length).toBe(0);
+		// The view tells the person, with a value the contract already has.
+		expect((await svc.getSessionSummaryView(refused.id))?.blocked).toBe("spend_cap_reached");
+		// The next local day lifts it.
+		at(26 * 60 * MINUTE);
+		const next = await attempt(subjects[2]);
+		expect(next.result.kind).toBe("started");
+		if (next.result.kind === "started") {
+			stub.script("openai", ok([1]));
+			await H.withDeadline(next.result.done);
+		}
+		stub.reset();
+	});
+
+	test("R3-3 one charge short of the ceiling still runs", async () => {
+		const before = await H.daySpend();
+		await timeoutAs(H.asTeamMember("d1"));
+		const one = (await H.daySpend()) - before;
+		svc._setSummaryHooksForTest({ unknownCeilingCents: 2 * one });
+		const r = await attempt(H.asTeamMember("d2"));
+		expect(r.result.kind).toBe("started");
+		if (r.result.kind === "started") {
+			stub.script("openai", ok([1]));
+			await H.withDeadline(r.result.done);
+		}
+		stub.reset();
+	});
+
+	test("R3-3 successful summaries and failures that charge nothing or the priced input never count toward it", async () => {
+		svc._setSummaryHooksForTest({ unknownCeilingCents: 1 });
+		for (let i = 0; i < 4; i++) {
+			const id = await fresh();
+			if (i < 2) {
+				const { editId } = await H.seedActiveSession(`${id}-s`);
+				stub.script("openai", ok([editId]));
+				await H.runGeneration(`${id}-s`, H.asTeamMember(`e${i}`));
+			} else {
+				stub.script("openai", { text: "", status: i === 2 ? 401 : 503, errorBody: "x" });
+				await H.runGeneration(id, H.asTeamMember(`e${i}`));
+			}
+		}
+		const r = await attempt(H.asTeamMember("e-last"));
+		expect(r.result.kind).toBe("started");
+		if (r.result.kind === "started") {
+			stub.script("openai", ok([1]));
+			await H.withDeadline(r.result.done);
+		}
+		stub.reset();
+	});
+
+	test("R3-4 the view of the open caller says summary_cooldown with the seconds left; another caller's view says nothing", async () => {
+		for (let i = 0; i < 3; i++) await timeoutAs(A);
+		const id = await fresh();
+		const forA = await svc.getSessionSummaryView(id, { subject: "member-a" });
+		const forB = await svc.getSessionSummaryView(id, { subject: "member-b" });
+		expect(forA?.blocked).toBe("summary_cooldown");
+		expect(forA?.cooldownSeconds).toBeGreaterThan(290);
+		expect(forB?.blocked).toBeNull();
+	});
+});
