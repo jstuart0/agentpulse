@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CopyFallback } from "./CopyFallback.js";
+import { CopyBar, CopyFallback } from "./CopyFallback.js";
 
 describe("CopyFallback", () => {
 	test("a read-only text box holds the exact text, with the instruction in a status region and a Close button", () => {
@@ -15,5 +15,30 @@ describe("CopyFallback", () => {
 		);
 		expect(html).toMatch(/<button[^>]*type="button"[^>]*>Close<\/button>/);
 		expect(html).not.toContain("dangerouslySetInnerHTML");
+	});
+});
+
+describe("CopyBar", () => {
+	const render = (fallback: string | null) =>
+		renderToStaticMarkup(
+			createElement(CopyBar, {
+				handoffLabel: "Copy handoff",
+				summaryLabel: "Copy summary",
+				onCopy: () => {},
+				fallback,
+				onCloseFallback: () => {},
+			}),
+		);
+
+	test("two copy buttons and no text box while the last copy worked", () => {
+		const html = render(null);
+		expect(html.match(/data-copy/g)).toHaveLength(2);
+		expect(html).not.toContain("<textarea");
+	});
+
+	test("after a refusal the text box appears with the text to copy by hand", () => {
+		const html = render("the text");
+		expect(html).toContain(">the text</textarea>");
+		expect(html).toContain("Select the text below and copy it.");
 	});
 });

@@ -29,7 +29,7 @@ import {
 import { cn } from "../../lib/utils.js";
 import { ConfirmDialog } from "../ConfirmDialog.js";
 import { LabsBadge } from "../LabsBadge.js";
-import { CopyFallback } from "./CopyFallback.js";
+import { CopyBar } from "./CopyFallback.js";
 import { SummarySections } from "./SummarySections.js";
 
 export interface SessionSummaryPanelProps {
@@ -213,13 +213,13 @@ function StoredBody(props: BodyProps & { stored: StoredSessionSummary }) {
 					<ActionControl {...props} />
 				</div>
 			)}
-			<div className="flex flex-wrap items-center gap-2">
-				<button type="button" data-copy onClick={() => void copy("handoff")} className={OUTLINED}>
-					{model.copyLabels.handoff}
-				</button>
-				<CopyButton label={model.copyLabels.summary} onCopy={() => void copy("summary")} />
-			</div>
-			{fallback !== null && <CopyFallback text={fallback} onClose={() => setFallback(null)} />}
+			<CopyBar
+				handoffLabel={model.copyLabels.handoff}
+				summaryLabel={model.copyLabels.summary}
+				onCopy={(kind) => void copy(kind)}
+				fallback={fallback}
+				onCloseFallback={() => setFallback(null)}
+			/>
 			<LastAttempt notice={model.notice} />
 			<PartialEvidence stored={stored} clock={clock} />
 			<SummarySections
