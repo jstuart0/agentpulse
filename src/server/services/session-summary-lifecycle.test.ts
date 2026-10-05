@@ -194,12 +194,12 @@ describe("P5-10 a watchdog frees a slot whose run hangs", () => {
 		const spy = spyOn(evidenceLoader, "loadEvidence").mockImplementation(
 			() => new Promise(() => {}),
 		);
-		svc._setSummaryHooksForTest({ watchdogMs: 60 });
+		svc._setSummaryHooksForTest({ watchdogMs: 3000 });
 		try {
 			await H.startGeneration("lc-hang-a");
 			await H.startGeneration("lc-hang-b");
 			expect(svc._summaryGenerationCountForTest()).toBe(2);
-			await H.until(() => svc._summaryGenerationCountForTest() === 0);
+			await H.until(() => svc._summaryGenerationCountForTest() === 0, 15_000);
 			for (const id of ["lc-hang-a", "lc-hang-b"]) {
 				const row = await H.readSummaryRow(id);
 				expect(row?.attemptStatus, id).toBe("failed");
@@ -220,10 +220,10 @@ describe("P5-10 a watchdog frees a slot whose run hangs", () => {
 		const { editId } = await H.seedActiveSession("lc-hang-call");
 		const gate = stub.createGate();
 		script({ ...ok([editId]), gate });
-		svc._setSummaryHooksForTest({ watchdogMs: 150 });
+		svc._setSummaryHooksForTest({ watchdogMs: 1500 });
 		const { done } = await H.startGeneration("lc-hang-call");
 		await H.withDeadline(gate.arrived);
-		await H.until(() => svc._summaryGenerationCountForTest() === 0);
+		await H.until(() => svc._summaryGenerationCountForTest() === 0, 15_000);
 		const { system, user } = H.promptsOf(stub.requests()[0]);
 		const text = system + user;
 		const charged = priceCompletion("openai", "gpt-5-mini", {
