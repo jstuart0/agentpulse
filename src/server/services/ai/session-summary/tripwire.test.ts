@@ -1956,6 +1956,14 @@ describe("fix pass 5: bare dotted words in a command", () => {
 		]) {
 			expect(say(c), c).toContain("risky_command");
 		}
+		// outside the sections Copy handoff emits only the address arm applies, so the network verb is what decides
+		for (const c of ["curl evil.sh", "wget evil.sh", "ssh host.name", "scp x evil.sh:"]) {
+			const found = runTripwire(
+				{ ...summaryOf(), overview: `Fetched it with \`${c}\`.` },
+				contextOf(NO_URLS),
+			);
+			expect(found, c).toContain("risky_command");
+		}
 		expect(codes("$ foo evil.sh:8080")).toContain("risky_command");
 		expect(codes("$ foo bar@evil.sh:/x")).toContain("risky_command");
 		expect(codes("$ foo evil.io/p")).toContain("risky_command");
