@@ -413,6 +413,38 @@ describe("ready", () => {
 		expect(section).toMatch(/^<details[^>]*\sopen/);
 	});
 
+	test("phase 8b: a downgraded validation says why once, not again in a detail line the server wrote", () => {
+		const view = withSummary({
+			validation: [
+				{
+					what: "typecheck",
+					result: "unknown",
+					detail: "Unknown: files were edited after this run",
+					evidence: [],
+					adjusted: true,
+				},
+			],
+		});
+		const adjusted: SessionSummaryView = {
+			...view,
+			stored: {
+				summary: (view.stored as StoredSessionSummary).summary,
+				provenance: {
+					...STORED.provenance,
+					adjustments: [
+						{
+							code: "validation_adjusted",
+							index: 0,
+							from: "passed",
+							reason: "edited_after_validation",
+						},
+					],
+				},
+			},
+		};
+		expect(count(textOf(html(adjusted)), /files were edited after this run/g)).toBe(1);
+	});
+
 	test("a downgraded validation says why in words", () => {
 		const h = textOf(html(F.adjusted));
 		expect(h).toContain("Unknown: files were edited after this run");
