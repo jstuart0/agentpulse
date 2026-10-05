@@ -45,6 +45,8 @@ export function CopyBar({
 }: {
 	handoffLabel: string;
 	summaryLabel: string;
+	/** The button just pressed shows "Copied" for a moment. */
+	copied?: "handoff" | "summary" | "context" | null;
 	onCopy: (kind: "handoff" | "summary") => void;
 	/** The text to show for copying by hand; null when the last copy worked. */
 	fallback: string | null;

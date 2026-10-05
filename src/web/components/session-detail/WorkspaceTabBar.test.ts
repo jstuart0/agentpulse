@@ -76,6 +76,14 @@ describe("WorkspaceTabBar", () => {
 		expect(render()).toContain('id="workspace-tab-summary"');
 	});
 
+	test("U-9 the badge has its own accessible wording on the button", () => {
+		expect(render({ summaryBadge: "Summarizing" })).toMatch(
+			/<button[^>]*id="workspace-tab-summary"[^>]*aria-label="Summary, summarizing now"/,
+		);
+		expect(render({ summaryBadge: "New" })).toContain('aria-label="Summary, new summary ready"');
+		expect(render({ summaryBadge: null })).not.toContain("aria-label");
+	});
+
 	test("the Summarizing badge shows on the Summary tab, in words", () => {
 		expect(render({ summaryBadge: "Summarizing" })).toMatch(
 			/Summary<\/span><span[^>]*>Summarizing</,

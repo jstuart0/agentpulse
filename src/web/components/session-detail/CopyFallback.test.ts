@@ -42,3 +42,25 @@ describe("CopyBar", () => {
 		expect(html).toContain("Select the text below and copy it.");
 	});
 });
+
+describe("CopyBar: the pressed button says Copied (U-1)", () => {
+	const render = (copied: "handoff" | "summary" | null) =>
+		renderToStaticMarkup(
+			createElement(CopyBar, {
+				handoffLabel: "Copy handoff",
+				summaryLabel: "Copy full summary",
+				copied,
+				onCopy: () => {},
+				fallback: null,
+				onCloseFallback: () => {},
+			}),
+		);
+
+	test("only the pressed one changes", () => {
+		expect(render("handoff")).toMatch(/data-copy[^>]*>Copied</);
+		expect(render("handoff")).toContain("Copy full summary");
+		expect(render("summary")).toContain("Copy handoff");
+		expect(render("summary")).not.toContain("Copy full summary");
+		expect(render(null)).not.toContain("Copied");
+	});
+});

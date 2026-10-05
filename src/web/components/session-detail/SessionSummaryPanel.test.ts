@@ -32,6 +32,8 @@ import {
 	refusalCopy,
 	staleText,
 } from "../../lib/session-summary-view.js";
+import { useSummaryViewStore } from "../../stores/summary-view-store.js";
+import { followLiveState } from "../../test-utils/live-stores.js";
 import { SessionSummaryPanel, type SessionSummaryPanelProps } from "./SessionSummaryPanel.js";
 
 const CLOCK: ClockOptions = { now: new Date(FIXTURE_NOW), timeZone: "UTC", locale: "en-GB" };
@@ -713,5 +715,217 @@ describe("phase 8b: copying", () => {
 	test("the notice comes before the buttons that act on it", () => {
 		const h = html(F.suspect_warning);
 		expect(h.indexOf("Check this before pasting")).toBeLessThan(h.indexOf("Copy handoff anyway"));
+	});
+});
+
+describe("phase 8 review fixes: the panel", () => {
+	const many = (n: number, text = "item") =>
+		Array.from({ length: n }, (_, i) => ({
+			text: `${text} ${i + 1}`,
+			evidence: [] as string[],
+			unverified: false,
+		}));
+	const section = (h: string, title: string) =>
+		new RegExp(
+			`<(?:details|section)[^>]*>(?:(?!<(?:details|section)[ >])[\\s\\S])*?<h3[^>]*>${title}[\\s\\S]*?(?=<(?:details|section)[ >]|<footer)`,
+		).exec(h)?.[0] ?? "";
+
+	test("U-2 the claim line shows once, visibly, under the first section with a chip; the chip is 12px and has no title", () => {
+		const h = html(F.ready);
+		const line =
+			"Agent&#x27;s claim only: nothing recorded confirms it (no successful edit, no command recorded as succeeded, no passing test or build).";
+		expect(count(h, new RegExp(line.replace(/[()]/g, "\\$&"), "g"))).toBe(1);
+		expect(h.indexOf(line)).toBeGreaterThan(h.indexOf("Accomplishments"));
+		expect(h.indexOf(line)).toBeLessThan(h.indexOf(">Changes"));
+		const chip = /<span[^>]*>Agent&#x27;s claim only<\/span>/.exec(h)?.[0] as string;
+		expect(chip).toContain("text-xs");
+		expect(chip).not.toContain("text-[10px]");
+		expect(chip).not.toContain("title=");
+	});
+
+	test("U-2 when most items are claims the one line replaces the repeated section sentence", () => {
+		const mostly = withSummary({
+			accomplishments: [
+				{ text: "a", evidence: [], unverified: true },
+				{ text: "b", evidence: [], unverified: true },
+			],
+			changes: [{ kind: "modified", text: "x.ts", evidence: [], unverified: true }],
+		});
+		const h = textOf(html(mostly));
+		expect(count(h, /Agent's claim only: nothing recorded confirms it/g)).toBe(1);
+		expect(h).not.toContain("Most of these are the agent's claim only");
+		expect(count(h, /Agent's claim only(?!:)/g)).toBe(3);
+	});
+
+	test("U-2 the line sits under Changes when that is the first section with a chip, and is absent when everything is backed", () => {
+		const onlyChanges = withSummary({
+			accomplishments: [{ text: "a", evidence: ["E12"], unverified: false }],
+			changes: [{ kind: "modified", text: "x.ts", evidence: [], unverified: true }],
+		});
+		const h = html(onlyChanges);
+		expect(h.indexOf("nothing recorded confirms it")).toBeGreaterThan(h.indexOf(">Changes"));
+		const backed = withSummary({
+			accomplishments: [{ text: "a", evidence: ["E12"], unverified: false }],
+			changes: [],
+		});
+		expect(textOf(html(backed))).not.toContain("nothing recorded confirms it");
+	});
+
+	test("U-3 a corrected outcome puts the correction directly under the chip at body size, then the model's sentence", () => {
+		const h = html(F.adjusted);
+		const chipAt = h.indexOf('data-outcome="in_progress"');
+		const fixAt = h.indexOf("The model said Completed.");
+		const sentenceAt = h.indexOf("The session is still running.");
+		expect(chipAt).toBeGreaterThan(0);
+		expect(fixAt).toBeGreaterThan(chipAt);
+		expect(sentenceAt).toBeGreaterThan(fixAt);
+		expect(/<p[^>]*text-sm[^>]*>The model said Completed\./.test(h)).toBe(true);
+	});
+
+	test("U-4 a failed validation colours its heading tally and says so under the outcome chip, linking to the section", () => {
+		const view = withSummary({
+			validation: [
+				{ what: "unit", result: "passed", detail: "", evidence: [], adjusted: false },
+				{ what: "lint", result: "failed", detail: "", evidence: [], adjusted: false },
+			],
+		});
+		const h = html(view);
+		const heading = /<h3[^>]*>Validation[\s\S]*?<\/h3>/.exec(h)?.[0] as string;
+		expect(heading).toMatch(/<span[^>]*text-emerald[^>]*>1 passed<\/span>/);
+		expect(heading).toMatch(/<span[^>]*text-red[^>]*>1 failed<\/span>/);
+		expect(h).toMatch(
+			/<a[^>]*href="#summary-validation"[^>]*>A validation step failed \(see Validation\)\.<\/a>/,
+		);
+		expect(h).toContain('id="summary-validation"');
+		expect(h.indexOf("A validation step failed")).toBeGreaterThan(h.indexOf("data-outcome="));
+		expect(h.indexOf("A validation step failed")).toBeLessThan(
+			h.indexOf("Everything but the docs landed."),
+		);
+		expect(html(F.ready)).not.toContain("A validation step failed");
+	});
+
+	test("U-5 a section with more than five items shows five and a real Show all button; the store holds the choice", () => {
+		const undo = followLiveState(useSummaryViewStore);
+		try {
+			const view = withSummary({ accomplishments: many(8) });
+			let h = html(view);
+			let part = section(h, "Accomplishments");
+			expect(count(part, /<li/g)).toBe(5);
+			expect(part).toMatch(
+				/<button[^>]*type="button"[^>]*aria-expanded="false"[^>]*>Show all 8<\/button>/,
+			);
+			useSummaryViewStore.setState({ expanded: { accomplishments: true } });
+			h = html(view);
+			part = section(h, "Accomplishments");
+			expect(count(part, /<li/g)).toBe(8);
+			expect(part).toMatch(/<button[^>]*aria-expanded="true"[^>]*>Show first 5<\/button>/);
+			useSummaryViewStore.setState({ expanded: {}, closed: { accomplishments: true } });
+			h = html(view);
+			expect(/<details(?![^>]*\sopen)[^>]*>(?:(?!<\/details>)[\s\S])*Accomplishments/.test(h)).toBe(
+				true,
+			);
+			expect(html(withSummary({ accomplishments: many(5) }))).not.toContain("Show all");
+		} finally {
+			undo();
+			useSummaryViewStore.getState().reset();
+		}
+	});
+
+	test("U-6 the freshness, Update and the copy buttons share the heading row, before any section", () => {
+		const h = html(F.ready);
+		const firstSection = h.indexOf("<h3");
+		for (const needle of [
+			"Generated 3 h ago",
+			">Update</button>",
+			"Copy handoff",
+			"Copy full summary",
+		]) {
+			expect(h.indexOf(needle), needle).toBeGreaterThan(h.indexOf("<h2"));
+			expect(h.indexOf(needle), needle).toBeLessThan(firstSection);
+		}
+		const row =
+			/<div[^>]*flex-wrap[^>]*justify-between[^>]*>[\s\S]*?Copy full summary/.exec(h)?.[0] ?? "";
+		expect(row).toContain("<h2");
+		expect(row).toContain(">Update</button>");
+		expect(h).toMatch(/<h3[^>]*>Overview<\/h3><p[^>]*text-base/);
+		expect(h).toMatch(
+			/data-outcome="mostly_completed"[^>]*text-sm|text-sm[^>]*data-outcome|data-outcome="mostly_completed" class="[^"]*text-sm/,
+		);
+	});
+
+	test("U-8 while generating there is one 'Summarizing…', no 'No summary yet.', and the elapsed time says what it is", () => {
+		const h = textOf(html(F.generating));
+		expect(h).not.toContain("No summary yet.");
+		expect(count(h, /Summarizing…/g)).toBe(1);
+		expect(h).toMatch(/2:00 so far/);
+	});
+
+	test("polish: empty sections fold into one line; Validation stays and says none was recorded", () => {
+		const empty = withSummary({
+			accomplishments: [],
+			changes: [],
+			decisions: [],
+			validation: [],
+			problems: [],
+			unfinished: [],
+			nextActions: [],
+		});
+		const h = html(empty);
+		const text = textOf(h);
+		expect(text).not.toContain("None recorded.");
+		expect(text).toContain(
+			"Nothing recorded for: Accomplishments, Changes, Decisions & Assumptions, Problems & Risks, Unfinished Work, Recommended Next Actions.",
+		);
+		expect(text).toContain("No validation was recorded.");
+		expect(count(h, /<h3/g)).toBe(5);
+		expect(html(F.ready)).not.toContain("Nothing recorded for");
+	});
+
+	test("polish: 'Copy full summary', and Copy handoff says what it holds, as its description and as a hint", () => {
+		const h = html(F.ready);
+		expect(copyButtons(h)[1]).toBe("Copy full summary");
+		const describedBy = /<button[^>]*data-copy[^>]*aria-describedby="([^"]+)"/.exec(h)?.[1];
+		expect(describedBy).toBeTruthy();
+		expect(h).toMatch(
+			new RegExp(
+				`id="${describedBy}"[^>]*>Outcome, unfinished work, next actions and key context, for another agent<`,
+			),
+		);
+	});
+
+	test("polish: the partial-evidence line sits beside 'Generated', before the sections", () => {
+		const h = html(F.partial);
+		expect(h.indexOf("Based on part of this session")).toBeGreaterThan(h.indexOf("Generated"));
+		expect(h.indexOf("Based on part of this session")).toBeLessThan(h.indexOf("<h3"));
+	});
+
+	test("polish: links in one section that would share an accessible name get ordinals", () => {
+		const view: SessionSummaryView = {
+			...F.ready,
+			stored: {
+				summary: {
+					...STORED.summary,
+					accomplishments: [
+						{ text: "a", evidence: ["E20"], unverified: false },
+						{ text: "b", evidence: ["E21"], unverified: false },
+					],
+				},
+				provenance: {
+					...STORED.provenance,
+					evidence: {
+						...STORED.provenance.evidence,
+						E20: { kind: "edit", at: "2026-10-04T10:04:00.000Z" },
+						E21: { kind: "edit", at: "2026-10-04T10:04:00.000Z" },
+					},
+				},
+			},
+		};
+		const names = [...html(view).matchAll(/aria-label="(Open the 10:04 edit[^"]*)"/g)].map(
+			(m) => m[1],
+		);
+		expect(names).toEqual([
+			"Open the 10:04 edit in Activity (1 of 2)",
+			"Open the 10:04 edit in Activity (2 of 2)",
+		]);
 	});
 });

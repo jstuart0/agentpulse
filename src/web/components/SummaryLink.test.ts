@@ -45,6 +45,13 @@ describe("SummaryLink", () => {
 		);
 	});
 
+	test("polish: the button does not wrap its own label; the Digest link is muted, not the session-name colour", () => {
+		state(true);
+		expect(render("button")).toContain("whitespace-nowrap");
+		expect(render("text")).toContain("text-muted-foreground");
+		expect(render("text")).not.toMatch(/class="[^"]*\btext-primary\b/);
+	});
+
 	test("flag off, AI not built in, or still loading: nothing at all", () => {
 		state(false);
 		expect(render("button")).toBe("");
