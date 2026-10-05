@@ -8,7 +8,7 @@
  * Limits are gzipped bytes of the built chunks, set from what the build measured at the end of
  * phase 8 plus modest headroom. Base (before the Summary work): SessionDetailPage 19,952,
  * DashboardPage 22,878, index 116,568. The plan allows the session page + 8 kB and the others
- * + 1 kB. The Summary panel is a lazy chunk the page loads only when the tab opens, so a person
+ * + 1 kB; measured at the end of phase 8b: 22,108, 22,9xx and 117,041. The Summary panel is a lazy chunk the page loads only when the tab opens, so a person
  * who never opens it never pays for it. No chunk may carry zod (the validating schema is
  * server-only).
  */
@@ -29,7 +29,7 @@ export interface Finding {
 }
 
 export const BUDGETS: Budget[] = [
-	{ chunk: "SessionDetailPage", maxGzip: 27_000 },
+	{ chunk: "SessionDetailPage", maxGzip: 23_500 },
 	{ chunk: "SessionSummaryTab", maxGzip: 11_500 },
 	{ chunk: "DashboardPage", maxGzip: 23_900 },
 	{ chunk: "index", maxGzip: 117_600 },
