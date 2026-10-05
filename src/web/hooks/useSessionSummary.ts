@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionSummaryView } from "../../shared/session-summary-view.js";
-import { type PolledSessionSummaryView, api } from "../lib/api.js";
+import { api } from "../lib/api.js";
 import {
 	type RefusalCopy,
 	type SummaryViewer,
@@ -15,11 +15,6 @@ import { useSummaryViewer } from "./useSummaryViewer.js";
 
 /** Milliseconds between polls while a generation runs. */
 export const SUMMARY_POLL_INTERVAL_MS = 2000;
-/**
- * Whether a poll asks the server to leave the stored summary out (`?poll=1`). Off until the server
- * route that answers it ships: the hook already copes with a view that says `storedOmitted`.
- */
-export const SUMMARY_SEND_POLL_PARAM = false;
 /** Consecutive poll failures tolerated before contact is reported lost. */
 export const SUMMARY_POLL_RETRIES = 3;
 /** The countdown for a cooldown or a rate limit re-reads its deadline once a second. */
@@ -99,7 +94,7 @@ const isGenerating = (view: SessionSummaryView | null) => view?.attempt.status =
 
 /** A view that says it left the stored summary out keeps the one already on screen. */
 function withKeptSummary(
-	next: PolledSessionSummaryView,
+	next: SessionSummaryView,
 	previous: SessionSummaryView | null,
 ): SessionSummaryView {
 	const { storedOmitted, ...view } = next;
@@ -277,10 +272,10 @@ function createController(
 			return;
 		}
 		busy = true;
-		let next: PolledSessionSummaryView | null = null;
+		let next: SessionSummaryView | null = null;
 		try {
 			next = await api.getSessionSummary(sessionId, {
-				poll: kind === "poll" && SUMMARY_SEND_POLL_PARAM,
+				poll: kind === "poll",
 			});
 		} catch {
 			next = null;

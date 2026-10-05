@@ -5,6 +5,7 @@ import {
 	STORED,
 	SUMMARY_VIEW_FIXTURES,
 	type SummaryViewFixtureName,
+	failedWith,
 } from "../../shared/__fixtures__/session-summary-view/index.js";
 import {
 	SUMMARY_BLOCK_REASONS,
@@ -59,6 +60,7 @@ import {
 	formatElapsed,
 	formatMoment,
 	formatMoney,
+	formatWait,
 	labsPointer,
 	linkNames,
 	outcomeChip,
@@ -464,11 +466,11 @@ describe("deriveSummaryView: the three pieces", () => {
 		expect(derive(F.cooldown).action).toMatchObject({
 			kind: "blocked",
 			reason: "cooling_down",
-			text: "You can update again in 17s",
+			text: "You can update again in 17s.",
 		});
 		expect(derive({ ...F.cooldown, stored: null, generatedAt: null }).action).toMatchObject({
 			reason: "cooling_down",
-			text: "You can try again in 17s",
+			text: "You can try again in 17s.",
 		});
 	});
 
@@ -524,7 +526,7 @@ describe("deriveSummaryView: the pieces combine independently", () => {
 		expect(m.action).toMatchObject({
 			kind: "blocked",
 			reason: "cooling_down",
-			text: "You can try again in 5s",
+			text: "You can try again in 5s.",
 		});
 	});
 
@@ -833,7 +835,7 @@ describe("failureCopy", () => {
 		["provider_auth", "The provider rejected the API key. Check it in Settings."],
 		[
 			"provider_key_unreadable",
-			"The provider's API key can't be read. Enter it again in Settings.",
+			"The provider's API key can't be read. An admin needs to enter it again in AI settings.",
 		],
 		["provider_rate_limit", "The provider is rate-limiting. Try again shortly."],
 		["provider_timeout", "The provider took too long to answer. Try again."],
@@ -873,7 +875,7 @@ describe("failureCopy", () => {
 			"The provider rejected the API key. Ask an admin to check the provider.",
 		);
 		expect(failureCopy("provider_key_unreadable", MEMBER)).toBe(
-			"The provider's API key can't be read. Ask an admin to check the provider.",
+			"The provider's API key can't be read. Ask an admin to enter it again in AI settings.",
 		);
 		expect(failureCopy("ai_inactive", MEMBER)).not.toContain("Enter it again");
 		expect(failureCopy("ai_inactive", MEMBER)).not.toContain("Settings");
@@ -940,9 +942,22 @@ describe("formatting", () => {
 		expect(budgetSentence(spend, CLOCK)).toBe(
 			"Not enough of today's AI budget left for a summary: $4.20 of $5.00 used, and one can cost up to $0.45, or $0.90 if the answer has to be retried. The budget resets Mon at 00:00.",
 		);
-		const bigger = budgetSentence({ ...spend, capCents: 1000 }, CLOCK);
-		expect(bigger).toContain("$4.20 of $10.00");
-		expect(bigger).not.toContain("$5.00");
+		const smaller = budgetSentence({ ...spend, capCents: 480 }, CLOCK);
+		expect(smaller).toContain("$4.20 of $4.80");
+		expect(smaller).not.toContain("$5.00");
+	});
+
+	test("phase 8 web follow-up: blocked with money to spare (the day's ceiling on failed calls) doesn't talk about spend", () => {
+		const spend = {
+			spentCents: 120,
+			capCents: 500,
+			maxCostCents: 4,
+			maxCostWithRetryCents: 8,
+			resetsAt: "2026-10-05T00:00:00.000Z",
+		};
+		expect(budgetSentence(spend, CLOCK)).toBe(
+			"Today's budget for summaries is used up. It resets Mon at 00:00.",
+		);
 	});
 
 	test("TC-7.9b the reset time is the server's instant shown in the browser's zone, not a local midnight", () => {
@@ -1438,7 +1453,7 @@ describe("refusalCopy", () => {
 			},
 			no_provider: { text: null, refetch: "view" },
 			provider_key_unreadable: {
-				text: "The provider's API key can't be read. Enter it again in Settings.",
+				text: "The provider's API key can't be read. An admin needs to enter it again in AI settings.",
 				refetch: "view",
 			},
 			summary_cooldown: { text: null, refetch: "view" },
@@ -1519,10 +1534,10 @@ describe("refusalCopy", () => {
 
 	test("TC-7.39d provider_key_unreadable reads as the failure line, with the member variant", () => {
 		expect(refusalCopy(r(409, "provider_key_unreadable"), ADMIN).text).toBe(
-			"The provider's API key can't be read. Enter it again in Settings.",
+			"The provider's API key can't be read. An admin needs to enter it again in AI settings.",
 		);
 		expect(refusalCopy(r(409, "provider_key_unreadable"), MEMBER).text).toBe(
-			"The provider's API key can't be read. Ask an admin to check the provider.",
+			"The provider's API key can't be read. Ask an admin to enter it again in AI settings.",
 		);
 	});
 
@@ -1566,8 +1581,8 @@ describe("fixtures from the server shape", () => {
 		stale: "stale/available/none",
 		stale_one: "stale/available/none",
 		stale_capped: "stale/available/none",
-		failed: "none/available/failed-error",
-		failed_ai_inactive: "ready/available/failed-muted",
+		failed: "none/blocked:cooling_down/failed-error",
+		failed_ai_inactive: "ready/blocked:cooling_down/failed-muted",
 		interrupted: "none/available/failed-error",
 		no_provider: "none/blocked:no_provider/none",
 		spend_cap: "none/blocked:over_budget/none",
@@ -2086,5 +2101,71 @@ describe("phase 8 review fixes: lib", () => {
 		expect(names[1][0]).toBe(`${evidenceAccessibleName(facts.E2, CLOCK)} (2 of 2)`);
 		expect(linkNames([["E3"]], facts, CLOCK)).toEqual([[evidenceAccessibleName(facts.E3, CLOCK)]]);
 		expect(linkNames([["bogus"]], facts, CLOCK)).toEqual([[]]);
+	});
+});
+
+describe("phase 8 web follow-up: waits and the key copy", () => {
+	test("formatWait reads seconds, minutes and hours", () => {
+		expect(formatWait(9)).toBe("9s");
+		expect(formatWait(59.2)).toBe("1:00");
+		expect(formatWait(582)).toBe("9:42");
+		expect(formatWait(600)).toBe("10:00");
+		expect(formatWait(3600)).toBe("1:00:00");
+		expect(formatWait(0)).toBe("1s");
+	});
+
+	test("a ten-minute cooldown reads as minutes, in place of the button", () => {
+		const view = failedWith("provider_timeout", F.ready);
+		const m = derive({ ...view, cooldownSeconds: 582 });
+		expect(m.action).toMatchObject({
+			kind: "blocked",
+			reason: "cooling_down",
+			text: "You can update again in 9:42.",
+		});
+		expect(m.notice.kind).toBe("failed");
+	});
+
+	test("a failed key-unreadable attempt says an admin must re-enter it, with the settings link only for someone who may", () => {
+		const view = failedWith("provider_key_unreadable");
+		const admin = derive(view, AI_ON, ADMIN);
+		expect(admin.notice).toMatchObject({
+			kind: "failed",
+			reason:
+				"The provider's API key can't be read. An admin needs to enter it again in AI settings.",
+			link: { href: "/settings?panel=ai", label: "Open AI settings" },
+		});
+		expect(admin.action).toMatchObject({ kind: "blocked", reason: "cooling_down" });
+		const member = derive(view, AI_ON, MEMBER);
+		expect(member.notice).toMatchObject({
+			reason:
+				"The provider's API key can't be read. Ask an admin to enter it again in AI settings.",
+			link: null,
+		});
+		expect(derive(view, AI_ON, { ...ADMIN, aiPanelAvailable: false }).notice).toMatchObject({
+			link: { href: "/settings", label: "Open Settings" },
+		});
+	});
+
+	test("busy with a long retry-after is the caller's failure breaker, not server load", () => {
+		const breaker = refusalCopy({ status: 503, code: "busy", retryAfterSeconds: 3000 });
+		expect(breaker.text).toBe(
+			"Several of your summaries failed recently. You can try again in 50:00.",
+		);
+		expect(breaker.refetch).toBe("view");
+		expect(refusalCopy({ status: 503, code: "busy", retryAfterSeconds: 1 }).text).toBe(
+			"The server is busy with other summaries. Try again in a few seconds.",
+		);
+	});
+
+	test("the view reports both new refusals as the blocks it already has", () => {
+		expect(
+			derive({ ...F.ready, blocked: "summary_cooldown", cooldownSeconds: 3000 }).action,
+		).toMatchObject({
+			reason: "cooling_down",
+			text: "You can update again in 50:00.",
+		});
+		expect(derive({ ...F.ready, blocked: "spend_cap_reached" }).action).toMatchObject({
+			reason: "over_budget",
+		});
 	});
 });

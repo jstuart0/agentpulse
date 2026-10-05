@@ -128,7 +128,7 @@ describe("every state: the heading row and the state tag", () => {
 		expect(stateOf(html(F.generating))).toBe("none/generating/none");
 		expect(stateOf(html(F.ready))).toBe("ready/available/none");
 		expect(stateOf(html(F.stale))).toBe("stale/available/none");
-		expect(stateOf(html(F.failed))).toBe("none/available/failed-error");
+		expect(stateOf(html(F.failed))).toBe("none/blocked:cooling_down/failed-error");
 		expect(stateOf(html(F.no_provider))).toBe("none/blocked:no_provider/none");
 		expect(stateOf(html({ status: "loading" }))).toBe("loading/none/none");
 		expect(stateOf(html({ status: "error" }))).toBe("load_failed/none/none");
@@ -197,7 +197,7 @@ describe("blocked: the reason sits where the button would be, and there is no bu
 		expect(textOf(budget)).toContain(budgetSentence(F.spend_cap.spend, CLOCK));
 		const cooling = html(F.cooldown);
 		expect(buttons(cooling)).toBe(0);
-		expect(textOf(cooling)).toContain("You can update again in 17s");
+		expect(textOf(cooling)).toContain("You can update again in 17s.");
 		expect(stateOf(cooling)).toBe("ready/blocked:cooling_down/none");
 	});
 
@@ -217,7 +217,7 @@ describe("blocked: the reason sits where the button would be, and there is no bu
 	});
 
 	test("stale and over budget: the notice stays and the over-budget sentence is where Update would be", () => {
-		const h = html({ ...F.stale, blocked: "spend_cap_reached" });
+		const h = html({ ...F.stale, spend: F.spend_cap.spend, blocked: "spend_cap_reached" });
 		expect(buttons(h)).toBe(0);
 		expect(textOf(h)).toContain(staleText(12));
 		expect(textOf(h)).toContain("Not enough of today's AI budget left");
@@ -500,8 +500,14 @@ describe("failures and refusals", () => {
 			const h = html(view);
 			const sentence = failureCopy(code, ADMIN, view.spend.resetsAt, CLOCK);
 			expect(textOf(h), code).toContain(sentence);
-			expect(h, code).toMatch(/<output[^>]*>[\s\S]*Last attempt, 3 min ago, didn&#x27;t finish:/);
-			expect(stateOf(h), code).toBe("none/available/failed-error");
+			expect(h, code).toMatch(
+				/<output[^>]*>[\s\S]*Last attempt, (?:just now|\d+ min ago), didn&#x27;t finish:/,
+			);
+			expect(stateOf(h), code).toBe(
+				code === "interrupted"
+					? "none/available/failed-error"
+					: "none/blocked:cooling_down/failed-error",
+			);
 			expect(h, code).not.toContain('role="alert"');
 			expect(h, code).toMatch(/text-red-/);
 		}
@@ -509,7 +515,7 @@ describe("failures and refusals", () => {
 
 	test("a failure beside a stored summary is muted and keeps the summary", () => {
 		const h = html(F.failed_ai_inactive);
-		expect(stateOf(h)).toBe("ready/available/failed-muted");
+		expect(stateOf(h)).toBe("ready/blocked:cooling_down/failed-muted");
 		expect(textOf(h)).toContain(STORED.summary.overview);
 		expect(h).not.toMatch(/<output[^>]*text-red-/);
 	});
@@ -890,7 +896,11 @@ describe("T-2 the muted last-attempt notice stays with a stored summary", () => 
 			const h = html(view);
 			expect(textOf(h), code).toContain("Last attempt");
 			expect(textOf(h), code).toContain(sentence);
-			expect(stateOf(h), code).toBe("ready/available/failed-muted");
+			expect(stateOf(h), code).toBe(
+				code === "interrupted"
+					? "ready/available/failed-muted"
+					: "ready/blocked:cooling_down/failed-muted",
+			);
 		}
 	});
 });
@@ -920,5 +930,26 @@ describe("T-9 small assertions", () => {
 	test("lost contact while generating stops the elapsed timer", () => {
 		expect(textOf(html(F.generating))).toContain("so far");
 		expect(textOf(html(F.generating, { lostContact: true }))).not.toContain("so far");
+	});
+});
+
+describe("phase 8 web follow-up: failed attempts with a cooldown", () => {
+	test("the notice and the wait show together, with no button; a ten-minute wait reads as minutes", () => {
+		const view = { ...failedWith("provider_timeout"), cooldownSeconds: 582 };
+		const h = html(view);
+		expect(buttons(h)).toBe(0);
+		expect(textOf(h)).toContain("You can try again in 9:42.");
+		expect(textOf(h)).toContain("Last attempt");
+	});
+
+	test("an unreadable key shows its sentence and an Open AI settings link in the notice", () => {
+		const h = html(failedWith("provider_key_unreadable"));
+		expect(textOf(h)).toContain("An admin needs to enter it again in AI settings.");
+		expect(h).toMatch(
+			/<output[^>]*>[\s\S]*<a[^>]*href="\/settings\?panel=ai"[^>]*>Open AI settings<\/a>/,
+		);
+		const member = html(failedWith("provider_key_unreadable"), { viewer: MEMBER });
+		expect(textOf(member)).toContain("Ask an admin to enter it again in AI settings.");
+		expect(member).not.toContain("<a ");
 	});
 });

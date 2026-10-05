@@ -154,6 +154,16 @@ export function fellBackCopy(reason: UnavailableReason | null): string | null {
 }
 
 /** "2:05" since the generation began; clamped at zero, because the optimistic start uses the browser clock. */
+/** A wait as a person reads it: "9s", "9:42", "1:00:00". Whole seconds, rounded up. */
+export function formatWait(seconds: number): string {
+	const total = Math.max(1, Math.ceil(Number.isFinite(seconds) ? seconds : 1));
+	if (total < MINUTE_S) return `${total}s`;
+	const m = Math.floor(total / MINUTE_S) % 60;
+	const sec = String(total % MINUTE_S).padStart(2, "0");
+	if (total < HOUR_S) return `${m}:${sec}`;
+	return `${Math.floor(total / HOUR_S)}:${String(m).padStart(2, "0")}:${sec}`;
+}
+
 export function formatElapsed(startedAt: string | null, now: Date): string {
 	if (!startedAt) return "";
 	const at = parseDate(startedAt);
@@ -328,7 +338,9 @@ export function failureCopy(
 			}`;
 		case "provider_key_unreadable":
 			return `The provider's API key can't be read. ${
-				viewer.adminSettingsLocked ? ASK_ADMIN_TO_CHECK_PROVIDER : "Enter it again in Settings."
+				viewer.adminSettingsLocked
+					? "Ask an admin to enter it again in AI settings."
+					: "An admin needs to enter it again in AI settings."
 			}`;
 		case "spend_cap": {
 			const reset = resetsAt ? atMoment(resetsAt, clock ?? {}) : "";
@@ -363,6 +375,9 @@ function inline(text: string, refetch: RefusalRefetch | null = null): RefusalCop
 
 type RefusalInput = Pick<SummaryRefusal, "status" | "code" | "retryAfterSeconds">;
 
+/** A `busy` that asks for longer than this is the failure breaker, not load. */
+const BUSY_BREAKER_MIN_SECONDS = 15;
+
 /** Keyed by the contract's codes: a new refusal code without copy here fails the typecheck. */
 const REFUSAL_COPY: Record<
 	SummaryRefusalCode,
@@ -384,7 +399,17 @@ const REFUSAL_COPY: Record<
 	caller_generation_running: () =>
 		inline("You already have a summary being made. Wait for it to finish."),
 	shutting_down: () => inline("The server is restarting. Try again in a moment."),
-	busy: () => inline("The server is busy with other summaries. Try again in a few seconds."),
+	busy: (refusal) => {
+		const wait = refusal.retryAfterSeconds;
+		// A long wait is the caller's own failure breaker, not load on the server.
+		return wait !== null && wait > BUSY_BREAKER_MIN_SECONDS
+			? {
+					text: `Several of your summaries failed recently. You can try again in ${formatWait(wait)}.`,
+					refetch: "view",
+					countdownSeconds: null,
+				}
+			: inline("The server is busy with other summaries. Try again in a few seconds.");
+	},
 	session_summary_disabled: () => inline("Session summaries were just turned off.", "availability"),
 	ai_disabled: () => inline("AI was just turned off.", "ai_status"),
 	ai_paused: () => inline("AI was just paused.", "ai_status"),

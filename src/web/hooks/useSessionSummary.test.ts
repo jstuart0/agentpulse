@@ -19,7 +19,6 @@ import {
 	COOLDOWN_TICK_MS,
 	SUMMARY_POLL_INTERVAL_MS,
 	SUMMARY_POLL_RETRIES,
-	SUMMARY_SEND_POLL_PARAM,
 	type UseSessionSummary,
 	useSessionSummary,
 } from "./useSessionSummary.js";
@@ -362,15 +361,8 @@ describe("generating and polling", () => {
 		expect(gets).toHaveLength(2);
 	});
 
-	test("TC-7.19 every terminal state stops polling", async () => {
-		for (const name of [
-			"ready",
-			"failed",
-			"interrupted",
-			"too_little_activity",
-			"no_provider",
-			"failed_ai_inactive",
-		] as const) {
+	test("TC-7.19 every terminal state stops polling; a cooldown is waited out by its countdown, not by polls", async () => {
+		for (const name of ["ready", "interrupted", "too_little_activity", "no_provider"] as const) {
 			gets = [];
 			script(F.generating, F[name]);
 			const m = await mount();
@@ -378,6 +370,20 @@ describe("generating and polling", () => {
 			expect(gets, name).toHaveLength(2);
 			await tick(SUMMARY_POLL_INTERVAL_MS * 5);
 			expect(gets, `${name} kept polling`).toHaveLength(2);
+			await m.h.unmount();
+			mounted.length = 0;
+		}
+		for (const name of ["failed", "failed_ai_inactive"] as const) {
+			gets = [];
+			script(F.generating, F[name]);
+			const m = await mount();
+			await tick(SUMMARY_POLL_INTERVAL_MS);
+			expect(gets, name).toHaveLength(2);
+			// The fixture's cooldown is 10 s: no read until it ends, then one.
+			await tick(6_000);
+			expect(gets, `${name} polled during its cooldown`).toHaveLength(2);
+			await tick(4_000);
+			expect(gets, `${name} re-read when the cooldown ended`).toHaveLength(3);
 			await m.h.unmount();
 			mounted.length = 0;
 		}
@@ -593,7 +599,7 @@ describe("generate", () => {
 		const stays = await mount("s2");
 		await generateOnce(stays);
 		expect(stays.v.refusal?.text).toBe(
-			"The provider's API key can't be read. Enter it again in Settings.",
+			"The provider's API key can't be read. An admin needs to enter it again in AI settings.",
 		);
 	});
 
@@ -857,16 +863,17 @@ describe("polled views that leave the stored summary out (AGEN-69 phase 8a)", ()
 		expect(m.v.generating).toBe(false);
 	});
 
-	test("the poll form is not asked for yet: every read is the plain one", async () => {
-		expect(SUMMARY_SEND_POLL_PARAM).toBe(false);
+	test("only a poll asks for ?poll=1; the first read and a re-read after a finish are full", async () => {
 		const seen: unknown[] = [];
 		client.getSessionSummary = (_id: string, options: unknown) => {
 			seen.push(options);
-			return Promise.resolve(seen.length === 1 ? generatingWithPrevious : F.ready);
+			if (seen.length === 1) return Promise.resolve(generatingWithPrevious);
+			if (seen.length === 2) return Promise.resolve({ ...F.ready, ...OMITTED });
+			return Promise.resolve(F.ready);
 		};
 		await mount();
 		await tick(SUMMARY_POLL_INTERVAL_MS);
-		expect(seen).toEqual([{ poll: false }, { poll: false }]);
+		expect(seen).toEqual([{ poll: false }, { poll: true }, { poll: false }]);
 	});
 
 	test("T-5 a server that answers every read idle + storedOmitted cannot make the hook spin", async () => {
@@ -875,7 +882,12 @@ describe("polled views that leave the stored summary out (AGEN-69 phase 8a)", ()
 			...OMITTED,
 			attempt: { status: "idle", startedAt: FIXTURE_NOW, errorCode: null },
 		} as SessionSummaryView;
-		script(generatingWithPrevious, stuck);
+		let n = 0;
+		client.getSessionSummary = (_id: string) => {
+			gets.push(_id);
+			if (++n > 40) throw new Error("spinning: more than 40 reads");
+			return Promise.resolve(n === 1 ? generatingWithPrevious : stuck);
+		};
 		const m = await mount();
 		await tick(SUMMARY_POLL_INTERVAL_MS);
 		await tick(SUMMARY_POLL_INTERVAL_MS * 3);

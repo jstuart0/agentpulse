@@ -333,6 +333,14 @@ function LastAttempt({ notice }: { notice: SummaryViewModel["notice"] }) {
 			)}
 		>
 			<span className="font-medium">{notice.lead}</span> {notice.reason}
+			{notice.link && (
+				<>
+					{" "}
+					<Link to={notice.link.href} className="underline underline-offset-2">
+						{notice.link.label}
+					</Link>
+				</>
+			)}
 		</output>
 	);
 }

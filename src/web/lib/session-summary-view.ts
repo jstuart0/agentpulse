@@ -30,6 +30,7 @@ import {
 	formatCost,
 	formatMoment,
 	formatMoney,
+	formatWait,
 	needsShrinkConfirmation,
 	plural,
 	relativeAgo,
@@ -42,6 +43,10 @@ export * from "./session-summary-core.js";
 /** The over-budget sentence, from the view's own numbers and the server's reset instant. */
 export function budgetSentence(spend: SessionSummaryView["spend"], clock?: ClockOptions): string {
 	const reset = atMoment(spend.resetsAt, clock ?? {});
+	// Blocked with money to spare: the day's ceiling on failed calls, not what anyone spent.
+	if (spend.spentCents + spend.maxCostWithRetryCents <= spend.capCents) {
+		return `Today's budget for summaries is used up.${reset ? ` It resets ${reset}.` : ""}`;
+	}
 	return `Not enough of today's AI budget left for a summary: ${formatMoney(spend.spentCents)} of ${formatMoney(spend.capCents)} used, and one can cost up to ${formatCost(spend.maxCostCents)}, or ${formatCost(spend.maxCostWithRetryCents)} if the answer has to be retried.${
 		reset ? ` The budget resets ${reset}.` : ""
 	}`;
@@ -437,6 +442,8 @@ export type NoticeState =
 			lead: string;
 			reason: string;
 			startedAt: string | null;
+			/** Where an admin fixes it (the provider's key), when the viewer may. */
+			link: { href: string; label: string } | null;
 	  };
 
 /** The "check before pasting" notice. `warning` tone also turns the copy buttons into "... anyway". */
@@ -631,7 +638,7 @@ function deriveAction(
 		case "summary_cooldown":
 			return blocked(
 				"cooling_down",
-				`You can ${hasSummary ? "update" : "try"} again in ${view.cooldownSeconds ?? 1}s`,
+				`You can ${hasSummary ? "update" : "try"} again in ${formatWait(view.cooldownSeconds ?? 1)}.`,
 			);
 		case "spend_cap_reached":
 			return blocked("over_budget", budgetSentence(view.spend, clock));
@@ -670,6 +677,15 @@ function deriveNotice(
 			: "Last attempt didn't finish:",
 		reason: failureCopy(view.attempt.errorCode, viewer, view.spend.resetsAt, clock),
 		startedAt,
+		link:
+			(view.attempt.errorCode === "provider_key_unreadable" ||
+				view.attempt.errorCode === "provider_auth") &&
+			!viewer.adminSettingsLocked
+				? {
+						href: aiSettingsHref(viewer.aiPanelAvailable),
+						label: settingsLabel(viewer.aiPanelAvailable),
+					}
+				: null,
 	};
 }
 

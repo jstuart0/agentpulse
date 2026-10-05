@@ -884,7 +884,7 @@ export const api = {
 	// --- Session summary (AGEN-69) ---
 	/** `poll` asks the server to leave the stored summary out of the answer (it answers `storedOmitted`). */
 	getSessionSummary: (sessionId: string, options: { poll?: boolean } = {}) =>
-		request<PolledSessionSummaryView>(
+		request<SessionSummaryView>(
 			`/ai/sessions/${encodeURIComponent(sessionId)}/summary${options.poll ? "?poll=1" : ""}`,
 		),
 	generateSessionSummary: async (sessionId: string): Promise<GenerateSummaryResult> => {
@@ -1369,12 +1369,6 @@ export interface AiWatcherConfig {
 	createdAt: string;
 	updatedAt: string;
 }
-
-/**
- * A summary view as a poll may answer it: the same view, with `stored` left out and
- * `storedOmitted: true` when the caller asked for that (`?poll=1`).
- */
-export type PolledSessionSummaryView = SessionSummaryView & { storedOmitted?: boolean };
 
 /** A refused `POST /ai/sessions/:id/summary` as the web sees it (AGEN-69). `code` is null for a body the contract doesn't list. */
 export interface SummaryRefusal {
