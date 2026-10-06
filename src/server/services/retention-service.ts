@@ -62,11 +62,12 @@
  * concurrent INSERTs on unrelated rows, so ingest is not blocked while a
  * batch's transaction is open.
  */
-import { type SQL, asc, eq, inArray, lt, sql } from "drizzle-orm";
+import { type SQL, and, asc, eq, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { config } from "../config.js";
 import { getDb, getSqlite } from "../db/client.js";
-import { events, settings } from "../db/schema/index.js";
+import { events, aiSessionSummaries, settings } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { SUMMARY_LEASE_SECONDS } from "./ai/session-summary/service-limits.js";
 import { toDbTimestamp } from "./util/db-time.js";
 
 export const EVENTS_RETENTION_DAYS_KEY = "eventsRetentionDays";
@@ -110,6 +111,8 @@ export interface RetentionRunResult {
 	finishedAt: string;
 	durationMs: number;
 	rowsDeleted: number;
+	/** Session summaries (AGEN-69) deleted by this pass; 0 when skipped or disabled. */
+	summariesDeleted: number;
 	batches: number;
 	retentionDays: number;
 	/** true when the setting was unset/0/invalid — the pass did nothing. */
@@ -159,7 +162,8 @@ export function _resetRetentionStateForTest(): void {
 	}
 }
 
-async function readRetentionDays(): Promise<number> {
+/** The configured `eventsRetentionDays`, floored; 0 when retention is off (unset, 0, negative or not a number). */
+export async function readRetentionDays(): Promise<number> {
 	const [row] = await getDb()
 		.select()
 		.from(settings)
@@ -277,6 +281,78 @@ async function tryAdvisoryXactLock(
 	return Boolean(result?.[0]?.locked);
 }
 
+/** Summaries deleted per batch: a summary row is large (tens of KB), so a batch is smaller than the events batch. */
+const SUMMARY_BATCH_SIZE = 500;
+const summaryBatchSize = () => Math.min(batchSize, SUMMARY_BATCH_SIZE);
+
+/**
+ * Deletes up to a batch of summary rows matching `predicate` with `db` (the shared pool on SQLite,
+ * the batch's transaction on Postgres). The ids are selected first and the delete repeats the
+ * predicate, so a row claimed for a new generation in between is not deleted; no id comes back
+ * from the delete. Returns how many rows it selected.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+async function deleteSummaryBatch(db: any, predicate: SQL | undefined): Promise<number> {
+	const rows: Array<{ id: string }> = await db
+		.select({ id: aiSessionSummaries.sessionId })
+		.from(aiSessionSummaries)
+		.where(predicate)
+		.limit(summaryBatchSize());
+	if (rows.length === 0) return 0;
+	await db.delete(aiSessionSummaries).where(
+		and(
+			inArray(
+				aiSessionSummaries.sessionId,
+				rows.map((r) => r.id),
+			),
+			predicate,
+		),
+	);
+	return rows.length;
+}
+
+/**
+ * Deletes session summaries (AGEN-69) generated before the cutoff, and a row whose lease lapsed
+ * while still `generating` (a crash), in batches. A row with NULL `generated_at` is never matched.
+ * Both sides of the comparison are `toDbTimestamp` text. On SQLite the loop yields the event loop
+ * between batches. On Postgres each batch is its own transaction that first takes the retention
+ * advisory lock, and the loop stops when it cannot: `deleted` is what the earlier batches removed,
+ * `lockLost` says the rest was skipped.
+ */
+export async function deleteExpiredSummaries(
+	cutoff: string,
+	leaseCutoff: string,
+): Promise<{ deleted: number; lockLost: boolean }> {
+	const predicate = and(
+		lt(aiSessionSummaries.generatedAt, cutoff),
+		or(
+			ne(aiSessionSummaries.attemptStatus, "generating"),
+			lt(aiSessionSummaries.attemptStartedAt, leaseCutoff),
+		),
+	);
+	let deleted = 0;
+	for (let i = 0; i < MAX_BATCHES_PER_PASS; i++) {
+		if (config.dialect !== "postgres") {
+			const batch = await deleteSummaryBatch(getDb(), predicate);
+			if (batch === 0) break;
+			deleted += batch;
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			continue;
+		}
+		let acquired = false;
+		let batch = 0;
+		await withTransaction(async (tx) => {
+			acquired = await tryAdvisoryXactLock(tx);
+			if (acquired) batch = await deleteSummaryBatch(tx, predicate);
+		});
+		if (!acquired) return { deleted, lockLost: true };
+		if (batch === 0) break;
+		deleted += batch;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	return { deleted, lockLost: false };
+}
+
 /**
  * Run one retention pass. Safe to call directly from tests — does not
  * depend on the interval scheduler.
@@ -293,6 +369,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			finishedAt: now.toISOString(),
 			durationMs: 0,
 			rowsDeleted: 0,
+			summariesDeleted: 0,
 			batches: 0,
 			retentionDays: 0,
 			disabled: false,
@@ -311,6 +388,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 				finishedAt: now.toISOString(),
 				durationMs: 0,
 				rowsDeleted: 0,
+				summariesDeleted: 0,
 				batches: 0,
 				retentionDays: 0,
 				disabled: true,
@@ -338,6 +416,14 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			}
 		}
 
+		let summariesDeleted = 0;
+		if (!skippedReason) {
+			const leaseCutoff = toDbTimestamp(new Date(now.getTime() - SUMMARY_LEASE_SECONDS * 1000));
+			const summaries = await deleteExpiredSummaries(cutoff, leaseCutoff);
+			summariesDeleted = summaries.deleted;
+			if (summaries.lockLost) skippedReason = "lock_held_elsewhere";
+		}
+
 		if (skippedReason) recordSkip(skippedReason);
 
 		const finishedAtMs = Date.now();
@@ -346,6 +432,7 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 			finishedAt: new Date(finishedAtMs).toISOString(),
 			durationMs: finishedAtMs - startedAtMs,
 			rowsDeleted,
+			summariesDeleted,
 			batches,
 			retentionDays: days,
 			disabled: false,

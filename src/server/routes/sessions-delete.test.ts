@@ -5,9 +5,10 @@ import { itSqliteOnly } from "../test-utils/backend.js";
 
 const { Database } = await import("bun:sqlite");
 const { Hono } = await import("hono");
-const { eq } = await import("drizzle-orm");
+const { eq, sql } = await import("drizzle-orm");
 const { config } = await import("../config.js");
 const { getDb, initializeDatabase } = await import("../db/client.js");
+const { executeRows } = await import("../db/sql-helpers.js");
 const {
 	aiHitlRequests,
 	aiWatcherRuns,
@@ -42,8 +43,29 @@ beforeEach(async () => {
 	await getDb().delete(sessions).execute();
 });
 
+// ai_session_summaries (AGEN-69) is the eighth cascade child. Raw SQL, because
+// this file's other children go through Drizzle but this one is pinned by name.
+async function seedSummary(sessionId: string): Promise<void> {
+	const insert = sql`INSERT INTO ai_session_summaries (session_id, attempt_status)
+		VALUES (${sessionId}, 'failed')`;
+	if (config.dialect === "postgres") {
+		await (getDb() as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(insert);
+	} else {
+		getDb().run(insert);
+	}
+}
+
+async function summaryCount(sessionId: string): Promise<number> {
+	const found = await executeRows<{ n: number | string }>(
+		getDb(),
+		sql`SELECT COUNT(*) AS n FROM ai_session_summaries WHERE session_id = ${sessionId}`,
+	);
+	return Number(found[0]?.n);
+}
+
 async function seedSessionWithChildren(sessionId: string): Promise<void> {
 	await getDb().insert(sessions).values({ sessionId, agentType: "claude_code" });
+	await seedSummary(sessionId);
 	await getDb()
 		.insert(events)
 		.values({
@@ -89,6 +111,7 @@ describe("DELETE /sessions/:id", () => {
 	test("cascade removes every child row in one transaction", async () => {
 		const sessionId = `del-${crypto.randomUUID()}`;
 		await seedSessionWithChildren(sessionId);
+		expect(await summaryCount(sessionId), "positive control: the summary row exists").toBe(1);
 
 		const res = await app.request(`/api/v1/sessions/${sessionId}`, {
 			method: "DELETE",
@@ -139,6 +162,35 @@ describe("DELETE /sessions/:id", () => {
 			.from(aiWatcherRuns)
 			.where(eq(aiWatcherRuns.sessionId, sessionId));
 		expect(runRow.length).toBe(0);
+
+		expect(await summaryCount(sessionId)).toBe(0);
+	});
+
+	test("TC-1.9a the real DELETE route removes the session's summary row", async () => {
+		const sessionId = `tc19-del-${crypto.randomUUID()}`;
+		await getDb().insert(sessions).values({ sessionId, agentType: "claude_code" });
+		await seedSummary(sessionId);
+		expect(await summaryCount(sessionId), "positive control: the summary row exists").toBe(1);
+
+		const res = await app.request(`/api/v1/sessions/${sessionId}`, { method: "DELETE" });
+		expect(res.status).toBe(200);
+		expect(await summaryCount(sessionId)).toBe(0);
+	});
+
+	test("TC-1.9b archiving a session keeps its summary row", async () => {
+		const sessionId = `tc19-arch-${crypto.randomUUID()}`;
+		await getDb().insert(sessions).values({ sessionId, agentType: "claude_code" });
+		await seedSummary(sessionId);
+
+		const res = await app.request(`/api/v1/sessions/${sessionId}/archive`, {
+			method: "PUT",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ archived: true }),
+		});
+		expect(res.status).toBe(200);
+		const [row] = await getDb().select().from(sessions).where(eq(sessions.sessionId, sessionId));
+		expect(row?.isArchived, "positive control: the archive took effect").toBe(true);
+		expect(await summaryCount(sessionId)).toBe(1);
 	});
 
 	// SQLite-only: asserts FTS5 row removal via raw bun:sqlite handle.

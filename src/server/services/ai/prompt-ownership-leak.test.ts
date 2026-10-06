@@ -50,7 +50,10 @@ const SCAN_ROOTS = [
 	"src/server/services/ask",
 	"src/server/services/channels",
 ];
-const SCAN_SINGLE_FILES = ["src/server/services/notifier.ts"];
+const SCAN_SINGLE_FILES = [
+	"src/server/services/notifier.ts",
+	"src/server/services/session-summary-service.ts",
+];
 
 // Matches `.select()` (zero-argument — a whole-row select) immediately
 // followed by `.from(sessions)`, allowing only whitespace/newlines between

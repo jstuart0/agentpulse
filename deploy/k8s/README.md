@@ -77,9 +77,13 @@ an out-of-range or non-integer value falls back to the 1-hour default with
 a warning) that deletes `events` rows older than that many days, in
 batches of 1,000 (percy TB10 review: 5,000-row batches held the event loop
 148–202ms each on SQLite), without blocking ingest. The `sessions` row and
-its denormalized state are never touched — only the `events` history ages
-out. `GET /api/v1/health`'s `retention` field reports the last pass
-(`rowsDeleted`, `durationMs`, `disabled`) and, separately, `lastSkip` when
+its denormalized state are never touched — the `events` history ages out, and
+so do stored session summaries: the same pass deletes a summary generated
+before the cutoff (and a row left `generating` past its lease by a crash), in
+batches of 500, in its own transaction under the same advisory lock on
+Postgres. A summary is the only other thing this pass deletes.
+`GET /api/v1/health`'s `retention` field reports the last pass as `lastRun`
+(`rowsDeleted`, `summariesDeleted`, `durationMs`, `disabled`) and, separately, `lastSkip` when
 a pass was skipped (`already_running`, or on Postgres `lock_held_elsewhere`
 — another replica already held the per-batch advisory lock), plus the next
 scheduled tick.
@@ -356,6 +360,12 @@ don't break correctness (the fallback still catches a slow plan and
 completes it correctly), but they can make Plan A fall back more often
 than necessary. `VACUUM (ANALYZE) events;` is safe to run at any time,
 including against a live database.
+
+The session summary (AGEN-69, below) reads `events` through bounded probes
+whose plans depend on the same statistics, so the same advice holds after a
+restore or bulk load: run `VACUUM (ANALYZE) events;`. Stale statistics make
+the summary's "too little activity" and "this session has moved on" probes
+slower, not wrong.
 
 **A build failure never blocks boot (percy AGEN-27 review, Critical 2)** —
 the index-build step is wrapped in its own exception handler: a transient
@@ -644,6 +654,42 @@ later Telegram messages in polling mode (Telegram API calls have no timeout);
 the Ask limit is per process with no per-user fairness; and the scan and
 limiter counters are only in the log lines above, not on `/health`. See the
 Known limitations list in the 0.7.2 entry of `CHANGELOG.md` for the rest.
+
+## Upgrading to migration 0011 (SQLite and Postgres): session summaries
+
+`drizzle/sqlite/0011_ai_session_summaries.sql` and
+`drizzle/postgres/0011_ai_session_summaries.sql` create one new
+table, `ai_session_summaries`: one row per session, keyed by `session_id`,
+cascading when the session is deleted. Both use `CREATE TABLE IF NOT EXISTS`
+and touch no existing table, so there is no lock window and nothing to
+pre-create out-of-band. Existing SQLite installs on the legacy
+`initializeDatabase()` path get the same table through its additive step.
+The table stays empty until someone turns on the Labs flag `sessionSummary`
+and asks for a summary.
+
+What a summary stores: the verified summary text (at most about 64 KB) and
+its provenance (provider kind and model, token counts, cost, which events it
+covers). Derived from prompts, agent replies and commands, so it is as
+sensitive as the session. It is deleted with the session, and by the
+retention pass when `eventsRetentionDays` is on (see Event retention above).
+
+Limits that live in each server process, and so loosen with more than one
+replica (keep the single-replica recommendation):
+
+- Two summary generations run at once per process.
+- A caller may make 6 summary requests a minute; in team mode, one running
+  generation per caller.
+- The per-caller breaker: three provider failures charged the per-call
+  maximum within ten minutes make that caller's new requests answer busy for
+  5, then 10, 20, 40 and 60 minutes on each consecutive re-open, until one of
+  their calls succeeds. A session charged the maximum stays shut for 10
+  minutes.
+- The daily failure ceiling: once those maximum charges reach 25% of the
+  daily AI cap in a local day, every summary request answers with the budget
+  refusal until local midnight. With N replicas that is N quarters.
+
+The daily AI cap itself is in the database (`ai_daily_spend`) and is shared
+by every replica, the watcher and Ask. A restart clears the limits above.
 
 ## Homelab overlay
 

@@ -15,7 +15,7 @@ export function LabsBadge({
 	return (
 		<span
 			title={title}
-			className={`inline-flex items-center gap-1 rounded ${padding} ${textSize} font-semibold uppercase tracking-wide text-amber-300 bg-amber-500/10 border border-amber-500/30`}
+			className={`inline-flex items-center gap-1 rounded ${padding} ${textSize} font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30`}
 		>
 			<span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
 			Labs

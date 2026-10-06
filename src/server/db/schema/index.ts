@@ -86,6 +86,9 @@ export const aiPendingProjectDrafts =
 	active.aiPendingProjectDrafts as typeof sqliteSchema.aiPendingProjectDrafts;
 // biome-ignore format: dialect-resolved re-exports keep one line each
 export const aiQaCache = active.aiQaCache as typeof sqliteSchema.aiQaCache;
+// biome-ignore format: dialect-resolved re-exports keep one line each
+export const aiSessionSummaries =
+	active.aiSessionSummaries as typeof sqliteSchema.aiSessionSummaries;
 
 // SQLite-only — undefined on the Postgres path (no pgvector this campaign).
 // Callers must gate on config.dialect === "sqlite" before accessing this.

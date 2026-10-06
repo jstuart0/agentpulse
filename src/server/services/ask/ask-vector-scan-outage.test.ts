@@ -9,7 +9,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, mock, test } from "
 import { describeSqliteOnly, isSqliteTest } from "../../test-utils/backend.js";
 import "../ai/__test_db.js";
 
-mock.module("../ai/llm/registry.js", () => ({
+// mock.module replaces the module for the whole process and is not undone when the file ends;
+// keep the real registry and put it back in afterAll (AGEN-69 P2-26).
+const REGISTRY_PATH = "../ai/llm/registry.js";
+const realRegistry = { ...(await import("../ai/llm/registry.js")) };
+mock.module(REGISTRY_PATH, () => ({
 	getAdapter: () => ({
 		complete: async () => ({
 			text: "ok",
@@ -107,6 +111,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+	mock.module(REGISTRY_PATH, () => realRegistry);
 	if (!isSqliteTest) return;
 	config.secretsKey = originalSecretsKey;
 	(config as Record<string, unknown>).vectorSearchEnabled = originalVectorSearch;

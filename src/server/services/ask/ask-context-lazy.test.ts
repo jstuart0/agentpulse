@@ -26,7 +26,11 @@ import { describeSqliteOnly } from "../../test-utils/backend.js";
 import "../ai/__test_db.js";
 
 const llm = await import("../../test-utils/scripted-llm.js");
-mock.module("../ai/llm/registry.js", () => ({ getAdapter: () => llm.scriptedAdapter }));
+// mock.module replaces the module for the whole process and is not undone when the file ends;
+// keep the real registry and put it back in afterAll (AGEN-69 P2-26).
+const REGISTRY_PATH = "../ai/llm/registry.js";
+const realRegistry = { ...(await import("../ai/llm/registry.js")) };
+mock.module(REGISTRY_PATH, () => ({ getAdapter: () => llm.scriptedAdapter }));
 
 const { config } = await import("../../config.js");
 const { getDb, getSqlite } = await import("../../db/client.js");
@@ -114,6 +118,7 @@ beforeAll(async () => {
 	await setupAskFixture();
 });
 afterAll(() => {
+	mock.module(REGISTRY_PATH, () => realRegistry);
 	if (!isSqlite()) return;
 	teardownAskFixture();
 	if (process.env.ASK_PRINT_TABLE) {

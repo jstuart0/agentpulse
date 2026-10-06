@@ -155,6 +155,7 @@ export const KNOWN_LABS_FLAGS = [
 	"riskClasses",
 	"telegramChannel",
 	"askAssistant",
+	"sessionSummary",
 ] as const;
 export type LabsFlag = (typeof KNOWN_LABS_FLAGS)[number];
 export type LabsFlags = Record<LabsFlag, boolean>;

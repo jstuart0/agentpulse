@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { panelAnchorId, panelFromSearch, resolvePanel } from "./settings-panels.js";
+import {
+	aiSettingsHref,
+	panelAnchorId,
+	panelFromSearch,
+	panelToReveal,
+	resolvePanel,
+} from "./settings-panels.js";
 
 describe("panelFromSearch", () => {
 	test("?panel=account and ?panel=team", () => {
@@ -27,5 +33,42 @@ describe("panelAnchorId and resolvePanel", () => {
 		expect(resolvePanel("account", { account: true })).toBe("account");
 		expect(resolvePanel("account", { account: false })).toBeNull();
 		expect(resolvePanel(null, { account: true })).toBeNull();
+	});
+});
+
+describe("the labs and ai panels (AGEN-69)", () => {
+	test("TC-7.32a both resolve from the query and have anchors", () => {
+		expect(panelFromSearch("?panel=labs")).toBe("labs");
+		expect(panelFromSearch("?panel=ai")).toBe("ai");
+		expect(panelAnchorId("labs")).toBe("settings-labs");
+		expect(panelAnchorId("ai")).toBe("settings-ai");
+	});
+
+	test("TC-7.32b labs is always there; ai falls back when unavailable, including when the caller doesn't say", () => {
+		expect(resolvePanel("labs", { account: false })).toBe("labs");
+		expect(resolvePanel("ai", { account: false, ai: true })).toBe("ai");
+		expect(resolvePanel("ai", { account: true, ai: false })).toBeNull();
+		expect(resolvePanel("ai", { account: true })).toBeNull();
+	});
+
+	test("TC-7.32d the no-provider link is never dead", () => {
+		expect(aiSettingsHref(true)).toBe("/settings?panel=ai");
+		expect(aiSettingsHref(false)).toBe("/settings");
+	});
+});
+
+describe("panelToReveal (AGEN-69 phase 8a)", () => {
+	test("?panel=ai opens the AI section only when the page has one; labs and team always", () => {
+		expect(panelToReveal("?panel=ai", { account: true, ai: true })).toBe("ai");
+		expect(panelToReveal("?panel=ai", { account: true, ai: false })).toBeNull();
+		expect(panelToReveal("?panel=labs", { account: false, ai: false })).toBe("labs");
+		expect(panelToReveal("?panel=team", { account: false, ai: false })).toBe("team");
+	});
+
+	test("account still needs a local account; anything else is nothing", () => {
+		expect(panelToReveal("?panel=account", { account: false, ai: true })).toBeNull();
+		expect(panelToReveal("?panel=account", { account: true, ai: true })).toBe("account");
+		expect(panelToReveal("", { account: true, ai: true })).toBeNull();
+		expect(panelToReveal("?panel=nope", { account: true, ai: true })).toBeNull();
 	});
 });

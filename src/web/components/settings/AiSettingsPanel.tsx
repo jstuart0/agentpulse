@@ -1,15 +1,8 @@
 import { useEffect, useState } from "react";
 import { plainErrorMessage } from "../../lib/api-errors.js";
 import { type AiProvider, type AiProviderKind, api } from "../../lib/api.js";
+import { useAiStatusStore } from "../../stores/ai-status-store.js";
 import { VectorSearchSection } from "./VectorSearchSection.js";
-
-type Status = {
-	build: boolean;
-	runtime: boolean;
-	killSwitch: boolean;
-	active: boolean;
-	autoEnableWatcherForAsk?: boolean;
-};
 
 // `as const` preserves narrow `value` literals for the exhaustiveness
 // check below. The wider `AiProviderKind` constraint is enforced by the
@@ -31,7 +24,10 @@ const _checkProviderKindCoverage: [_MissingProviderKind] extends [never] ? true 
 void _checkProviderKindCoverage;
 
 export function AiSettingsPanel() {
-	const [status, setStatus] = useState<Status | null>(null);
+	const status = useAiStatusStore((s) => s.status);
+	// The store may already hold a status from app start; this panel shows "Failed to load"
+	// until its own first load succeeds, as it did when it held the status itself.
+	const [statusLoaded, setStatusLoaded] = useState(false);
 	const [providers, setProviders] = useState<AiProvider[]>([]);
 	const [defaultProviderId, setDefaultProviderId] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
@@ -40,8 +36,8 @@ export function AiSettingsPanel() {
 
 	async function reload() {
 		try {
-			const s = await api.getAiStatus();
-			setStatus(s);
+			const s = await useAiStatusStore.getState().refresh();
+			setStatusLoaded(true);
 			if (s.build) {
 				const [p, spend] = await Promise.all([api.getAiProviders(), api.getAiSpend()]);
 				setProviders(p.providers);
@@ -61,8 +57,7 @@ export function AiSettingsPanel() {
 
 	async function toggleRuntime(enabled: boolean) {
 		try {
-			const next = await api.updateAiStatus({ enabled });
-			setStatus(next);
+			await useAiStatusStore.getState().update({ enabled });
 			if (enabled) void reload();
 		} catch (err) {
 			setBanner({ kind: "error", text: plainErrorMessage(err) });
@@ -71,8 +66,7 @@ export function AiSettingsPanel() {
 
 	async function toggleKillSwitch(killSwitch: boolean) {
 		try {
-			const next = await api.updateAiStatus({ killSwitch });
-			setStatus(next);
+			await useAiStatusStore.getState().update({ killSwitch });
 		} catch (err) {
 			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		}
@@ -80,8 +74,7 @@ export function AiSettingsPanel() {
 
 	async function toggleAutoEnableWatcherForAsk(autoEnableWatcherForAsk: boolean) {
 		try {
-			const next = await api.updateAiStatus({ autoEnableWatcherForAsk });
-			setStatus(next);
+			await useAiStatusStore.getState().update({ autoEnableWatcherForAsk });
 		} catch (err) {
 			setBanner({ kind: "error", text: plainErrorMessage(err) });
 		}
@@ -110,7 +103,7 @@ export function AiSettingsPanel() {
 		return <div className="text-sm text-muted-foreground">Loading AI settings…</div>;
 	}
 
-	if (!status) {
+	if (!status || !statusLoaded) {
 		return <div className="text-sm text-red-400">Failed to load AI settings.</div>;
 	}
 

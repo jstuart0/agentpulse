@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { DigestSessionRow } from "../components/DigestSessionRow.js";
 import { LabsBadge } from "../components/LabsBadge.js";
 import { SkeletonCard, SkeletonCardList } from "../components/SkeletonCard.js";
 import { StatCard } from "../components/StatCard.js";
@@ -205,19 +206,7 @@ function RepoCard({ repo }: { repo: RepoDigest }) {
 				</summary>
 				<ul className="mt-2 space-y-1 border-t border-border/40 pt-2">
 					{repo.sessions.map((s) => (
-						<li key={s.sessionId} className="flex items-center gap-2 text-xs">
-							<Link
-								to={`/sessions/${s.sessionId}`}
-								className="text-primary hover:underline font-mono"
-							>
-								{s.displayName ?? s.sessionId.slice(0, 8)}
-							</Link>
-							<Chip label={s.status} />
-							{s.health && <Chip label={s.health} />}
-							<span className="text-muted-foreground ml-auto">
-								{formatTimeAgo(s.lastActivityAt)}
-							</span>
-						</li>
+						<DigestSessionRow key={s.sessionId} session={s} />
 					))}
 				</ul>
 			</details>

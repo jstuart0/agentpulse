@@ -5,7 +5,15 @@ import {
 	type LlmResponse,
 	classifyHttpError,
 	estimateTokens,
+	mapStopReason,
 } from "./types.js";
+
+const ANTHROPIC_STOP_REASONS = {
+	end_turn: "end",
+	stop_sequence: "end",
+	max_tokens: "length",
+	refusal: "refusal",
+} as const;
 
 interface AnthropicRequestParams {
 	apiKey: string;
@@ -70,6 +78,7 @@ export function createAnthropicAdapter(params: AnthropicRequestParams): LlmAdapt
 
 			const json = (await response.json()) as {
 				content?: Array<{ type: string; text?: string }>;
+				stop_reason?: string | null;
 				usage?: {
 					input_tokens?: number;
 					output_tokens?: number;
@@ -86,6 +95,7 @@ export function createAnthropicAdapter(params: AnthropicRequestParams): LlmAdapt
 			const usage = json.usage ?? {};
 			return {
 				text,
+				stopReason: mapStopReason(json.stop_reason, ANTHROPIC_STOP_REASONS),
 				usage: {
 					inputTokens: usage.input_tokens ?? estimateTokens(request.transcriptPrompt),
 					outputTokens: usage.output_tokens ?? estimateTokens(text),

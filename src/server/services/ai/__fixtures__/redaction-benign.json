@@ -1,0 +1,211 @@
+{
+	"note": "Watcher-style strings that must pass through redact() byte-identical (AGEN-69 TC-2.9). Nothing here is a secret.",
+	"strings": [
+		"\"max_tokens\": 4000",
+		"\"max_tokens\": 100",
+		"\"token_count\": 5",
+		"\"password_hint\": \"your first pet's name\"",
+		"\"secret_name\": \"my-secret\"",
+		"the token count is 5 and max_tokens: 100 is the limit",
+		"tokenizer",
+		"const tokenizer = new Tokenizer(config);",
+		"https://example.com/a/b?c=d",
+		"http://localhost:3000/@scope/pkg",
+		"http://localhost:3000/api/v1/health",
+		"https://example.com:443/path@fragment",
+		"http://[::1]:3000/@x",
+		"ssh://git@host/x",
+		"git@github.com:x/y.git",
+		"user@example.com",
+		"e3b0c442-98fc-4c1f-9a3b-6f1d2c9b7a10",
+		"const secretName = \"my-secret\";",
+		"function getSecret(name) { return vault.get(name); }",
+		"secretName: my-secret",
+		"token: Promise<string>",
+		"password: string;",
+		"secret: true",
+		"api_key: Optional[str]",
+		"token: abcdefg",
+		"see password: hunter2hunter2 in the docs",
+		"Please accept the cookie policy to continue.",
+		"the cookie: chocolate chip",
+		"run curl -I https://example.com to check the header",
+		"curl -u name https://example.com",
+		"ls -u a:b",
+		"node build.js --tokens 5",
+		"node build.js --passwordless",
+		"X-Api-Key",
+		"X-Api-Key: short",
+		"npm_config_registry=https://registry.npmjs.org/",
+		"import { hf_hub_download } from 'hub';",
+		"-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----",
+		"-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUQ\n-----END CERTIFICATE-----",
+		"git commit -m \"fix: rotate the session token on login\"",
+		"user_id=42 session_count=3 retries=5",
+		"The operating system: macOS"
+	],
+	"watcherEvents": [
+		"ran the build with max_tokens: 100 and the token count printed as 5",
+		"fetched https://example.com/docs/page and http://localhost:3000/@scope/pkg",
+		"git@github.com:org/repo.git is the remote"
+	],
+	"watcherEventWithIntentionalHit": "Cookie: sid=abc123def456; theme=dark",
+	"corpus": [
+		{
+			"id": "py-signature-defaults",
+			"text": "def authenticate(self, user: str, password: str = \"\", token: Optional[str] = None) -> bool:"
+		},
+		{
+			"id": "py-settings-class",
+			"text": "class Settings(BaseSettings):\n    api_key: str\n    token: Optional[str] = None\n    password: SecretStr\n    secret_name: str = \"my-secret\""
+		},
+		{
+			"id": "py-dataclass-cookie",
+			"text": "def f(cookie: str=\"\", x=1):\n    return cookie"
+		},
+		{
+			"id": "ts-interface-semicolons",
+			"text": "interface Credentials {\n  token: string;\n  password: string;\n  secret: unknown;\n}"
+		},
+		{
+			"id": "ts-interface-no-semicolons",
+			"text": "type Auth = {\n  accessToken: AccessTokenResponse\n  password: string\n  tokenType: 'Bearer'\n}"
+		},
+		{
+			"id": "ts-destructure",
+			"text": "const { password, token } = req.body;\nif (!token) return res.status(401).end();"
+		},
+		{
+			"id": "ts-bearer-template",
+			"text": "headers: { Authorization: `Bearer ${token}` },"
+		},
+		{
+			"id": "py-bearer-concat",
+			"text": "requests.get(url, headers={\"Authorization\": \"Bearer \" + token})"
+		},
+		{
+			"id": "k8s-secret-ref",
+			"text": "env:\n  - name: DB_PASSWORD\n    valueFrom:\n      secretKeyRef:\n        name: db-creds\n        key: password"
+		},
+		{
+			"id": "k8s-secret-name",
+			"text": "volumes:\n  - name: certs\n    secret:\n      secretName: my-secret\n      defaultMode: 0400"
+		},
+		{
+			"id": "shell-curl-health",
+			"text": "curl -s https://api.example.com/v1/health | jq .status"
+		},
+		{
+			"id": "shell-curl-write-out",
+			"text": "curl -sS -o /dev/null -w \"%{http_code}\" https://example.com"
+		},
+		{
+			"id": "shell-curl-header-bearer-var",
+			"text": "curl -H \"Authorization: Bearer $TOKEN\" https://api.example.com/v1/me"
+		},
+		{
+			"id": "shell-docker-login",
+			"text": "echo \"$REGISTRY_TOKEN\" | docker login ghcr.io -u myuser --password-stdin"
+		},
+		{
+			"id": "shell-docker-env-name",
+			"text": "docker run -e API_KEY -e LOG_LEVEL=debug registry.example.com/app:1.2.3"
+		},
+		{
+			"id": "readme-env-vars",
+			"text": "Set the `TOKEN` environment variable before running, or pass `--token-budget 8000`."
+		},
+		{
+			"id": "readme-flag-table",
+			"text": "| `--token` | Your API token |\n| `--secret-name` | Name of the secret to read |"
+		},
+		{
+			"id": "lockfile-integrity",
+			"text": "    \"integrity\": \"sha512-Q7jmz9YhR2nQ0pYw9t0i3H1o0nqkk4Y8m1Q4o8pX2k0s5JQhJm0rJq0V0kQ9bY3c7y1kq0Hn5tW7lq9Z0aXw==\","
+		},
+		{
+			"id": "git-sha-line",
+			"text": "commit 3f2a9c1b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a\nAuthor: Dev <dev@example.com>"
+		},
+		{
+			"id": "base64-blob",
+			"text": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+		},
+		{
+			"id": "log-line",
+			"text": "2026-10-03T10:00:00Z INFO request_id=abc123 user_id=42 tokens=1500 duration=35ms"
+		},
+		{
+			"id": "sql-columns",
+			"text": "SELECT token_count, password_hint FROM users WHERE token IS NOT NULL;"
+		},
+		{
+			"id": "html-password-input",
+			"text": "<input type=\"password\" name=\"password\" placeholder=\"Enter password\">"
+		},
+		{
+			"id": "md-field-doc",
+			"text": "The `password:` field is required (min 12 characters)."
+		},
+		{
+			"id": "url-port-query-email",
+			"text": "open http://example.com:8080?email=a@b.com to confirm"
+		},
+		{
+			"id": "url-db-no-userinfo",
+			"text": "DATABASE_URL=postgres://localhost:5432/mydb"
+		},
+		{
+			"id": "env-public-key",
+			"text": "PUBLIC_KEY=ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC"
+		},
+		{
+			"id": "env-secret-key-base-name",
+			"text": "export SECRET_KEY_BASE_NAME=release-1"
+		},
+		{
+			"id": "git-clone-https",
+			"text": "git clone https://github.com/org/repo.git && git push origin main"
+		},
+		{
+			"id": "env-token-already-masked-by-old",
+			"text": "export GITHUB_TOKEN=<your token>"
+		},
+		{
+			"id": "curl-u-already-covered-by-env-in-old",
+			"text": "API_KEY=abcd1234 curl https://example.com"
+		}
+	],
+	"deliberateDifferences": [
+		{
+			"id": "k8s-secret-data-token",
+			"text": "data:\n  token: dGhpc2lzbm90YXNlY3JldGF0YWxsb2s=",
+			"expected": "data:\n  token: [REDACTED]",
+			"why": "a Kubernetes Secret's data value is a secret; the old rules had no YAML rule"
+		},
+		{
+			"id": "curl-user-variables",
+			"text": "curl -u $USER:$PASS https://example.com/x",
+			"expected": "curl -u $USER:[REDACTED] https://example.com/x",
+			"why": "curl -u name:secret; variable references are masked too since a literal cannot be told from one"
+		},
+		{
+			"id": "env-pass-keyword",
+			"text": "export DB_PASS=letmein99",
+			"expected": "export DB_PASS= [REDACTED]",
+			"why": "PASS is a new env keyword"
+		},
+		{
+			"id": "cli-api-key-prose",
+			"text": "auth is enabled and no --api-key was provided",
+			"expected": "auth is enabled and no --api-key [REDACTED] provided",
+			"why": "ACCEPTED over-match: prose after a secret flag is read as its value"
+		},
+		{
+			"id": "json-token-value",
+			"text": "{\"accessToken\":\"abcdef123456\"}",
+			"expected": "{\"accessToken\": \"[REDACTED]\"}",
+			"why": "camelCase JSON keys are covered; the old rules had no JSON rule"
+		}
+	]
+}

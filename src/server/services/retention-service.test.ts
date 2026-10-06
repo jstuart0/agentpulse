@@ -5,6 +5,8 @@
 // per-batch Postgres advisory-lock re-acquisition, and skipped-pass
 // reporting for /health.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import "./ai/__test_db.js";
 import { describePostgresOnly, describeSqliteOnly } from "../test-utils/backend.js";
 
@@ -23,6 +25,7 @@ const {
 	getRetentionStatus,
 	getRetentionLimits,
 	PG_RETENTION_LOCK_ID,
+	deleteExpiredSummaries,
 } = await import("./retention-service.js");
 
 beforeAll(() => {
@@ -338,5 +341,256 @@ describe("runRetentionPass", () => {
 			expect(result.rowsDeleted).toBe(5);
 			expect(result.batches).toBe(3); // 2 + 2 + 1, each its own transaction+lock
 		});
+	});
+});
+
+// ── AGEN-69 phase 5: the retention pass also deletes expired session summaries ──
+describe("retention of session summaries (TC-5.45, 5.56, 5.57)", () => {
+	const NOW = new Date(Date.UTC(2031, 5, 15, 12, 0, 0));
+	const DAY = 24 * 60 * 60 * 1000;
+	const LEASE_MS = 300 * 1000;
+	const at = (ms: number) => toDbTimestamp(new Date(ms));
+	const CUTOFF_MS = NOW.getTime() - 30 * DAY;
+
+	async function seedSummary(
+		sessionId: string,
+		row: Partial<typeof import("../db/schema/index.js")["aiSessionSummaries"]["$inferInsert"]>,
+	): Promise<void> {
+		const { aiSessionSummaries } = await import("../db/schema/index.js");
+		await seedSession(sessionId);
+		await getDb()
+			.insert(aiSessionSummaries)
+			.values({ sessionId, ...row });
+	}
+	async function present(sessionId: string): Promise<boolean> {
+		const { aiSessionSummaries } = await import("../db/schema/index.js");
+		const rows = await getDb()
+			.select({ id: aiSessionSummaries.sessionId })
+			.from(aiSessionSummaries)
+			.where(eq(aiSessionSummaries.sessionId, sessionId));
+		return rows.length === 1;
+	}
+
+	test("TC-5.45 a summary older than the cutoff goes; 1 s older is deleted, exactly at and 1 s newer are kept; summariesDeleted is reported", async () => {
+		await upsertSetting("eventsRetentionDays", 30);
+		await seedSummary("old", { generatedAt: at(CUTOFF_MS - 1000), attemptStatus: "idle" });
+		await seedSummary("edge", { generatedAt: at(CUTOFF_MS), attemptStatus: "idle" });
+		await seedSummary("new", { generatedAt: at(CUTOFF_MS + 1000), attemptStatus: "failed" });
+		const result = await runRetentionPass(NOW);
+		expect(result.summariesDeleted).toBe(1);
+		expect(await present("old")).toBe(false);
+		expect(await present("edge")).toBe(true);
+		expect(await present("new")).toBe(true);
+	});
+
+	test("TC-5.45 retention disabled deletes no summary and reports 0", async () => {
+		await seedSummary("old", { generatedAt: at(CUTOFF_MS - 10 * DAY), attemptStatus: "idle" });
+		const result = await runRetentionPass(NOW);
+		expect(result.disabled).toBe(true);
+		expect(result.summariesDeleted).toBe(0);
+		expect(await present("old")).toBe(true);
+	});
+
+	test("TC-5.56 a generating row whose lease has lapsed is deleted; one inside its lease and one with NULL generated_at are kept", async () => {
+		await upsertSetting("eventsRetentionDays", 30);
+		const old = at(CUTOFF_MS - DAY);
+		await seedSummary("crashed", {
+			generatedAt: old,
+			attemptStatus: "generating",
+			attemptStartedAt: at(NOW.getTime() - LEASE_MS - 1000),
+			attemptToken: "t",
+		});
+		await seedSummary("running", {
+			generatedAt: old,
+			attemptStatus: "generating",
+			attemptStartedAt: at(NOW.getTime() - LEASE_MS),
+			attemptToken: "t",
+		});
+		await seedSummary("never", {
+			generatedAt: null,
+			attemptStatus: "failed",
+			attemptStartedAt: old,
+		});
+		const result = await runRetentionPass(NOW);
+		expect(result.summariesDeleted).toBe(1);
+		expect(await present("crashed")).toBe(false);
+		expect(await present("running")).toBe(true);
+		expect(await present("never")).toBe(true);
+	});
+
+	describeSqliteOnly("on SQLite", () => {
+		test("TC-5.57 the summary delete runs after the events batches in the same pass", async () => {
+			await upsertSetting("eventsRetentionDays", 30);
+			await seedSummary("old", { generatedAt: at(CUTOFF_MS - DAY), attemptStatus: "idle" });
+			await seedEvent("old", at(CUTOFF_MS - DAY));
+			const result = await runRetentionPass(NOW);
+			expect(result.rowsDeleted).toBe(1);
+			expect(result.summariesDeleted).toBe(1);
+		});
+	});
+
+	describePostgresOnly("on Postgres", () => {
+		test("TC-5.57 with the retention lock held by another session nothing is deleted, summariesDeleted is 0 and a skip is reported", async () => {
+			await upsertSetting("eventsRetentionDays", 30);
+			await seedSummary("old", { generatedAt: at(CUTOFF_MS - DAY), attemptStatus: "idle" });
+			const postgres = (await import("postgres")).default;
+			const holder = postgres(config.databaseUrl, { max: 1 });
+			try {
+				await holder`SELECT pg_advisory_lock(${PG_RETENTION_LOCK_ID})`;
+				const result = await runRetentionPass(NOW);
+				expect(result.skippedReason).toBe("lock_held_elsewhere");
+				expect(result.summariesDeleted).toBe(0);
+				expect(await present("old")).toBe(true);
+				expect(getRetentionStatus().lastSkip?.reason).toBe("lock_held_elsewhere");
+			} finally {
+				await holder`SELECT pg_advisory_unlock(${PG_RETENTION_LOCK_ID})`;
+				await holder.end({ timeout: 2 });
+			}
+			const after = await runRetentionPass(NOW);
+			expect(after.skippedReason).toBeUndefined();
+			expect(after.summariesDeleted).toBe(1);
+		});
+
+		test("TC-5.57 the summary delete takes the lock itself: held elsewhere, it deletes nothing and says so", async () => {
+			await seedSummary("old", { generatedAt: at(CUTOFF_MS - DAY), attemptStatus: "idle" });
+			const postgres = (await import("postgres")).default;
+			const holder = postgres(config.databaseUrl, { max: 1 });
+			try {
+				await holder`SELECT pg_advisory_lock(${PG_RETENTION_LOCK_ID})`;
+				const held = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
+				expect(held).toEqual({ deleted: 0, lockLost: true });
+				expect(await present("old")).toBe(true);
+			} finally {
+				await holder`SELECT pg_advisory_unlock(${PG_RETENTION_LOCK_ID})`;
+				await holder.end({ timeout: 2 });
+			}
+			const free = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
+			expect(free).toEqual({ deleted: 1, lockLost: false });
+		});
+	});
+
+	// ── P5-21: the summaries delete is batched (500 rows), yields on SQLite, re-takes the lock per batch on Postgres ──
+	async function seedExpiredSummaries(count: number): Promise<string[]> {
+		const { aiSessionSummaries } = await import("../db/schema/index.js");
+		const ids = Array.from({ length: count }, (_, i) => `bulk-${i}`);
+		for (let i = 0; i < ids.length; i += 200) {
+			const chunk = ids.slice(i, i + 200);
+			await getDb()
+				.insert(sessions)
+				.values(chunk.map((sessionId) => ({ sessionId, agentType: "claude_code" })));
+			await getDb()
+				.insert(aiSessionSummaries)
+				.values(
+					chunk.map((sessionId) => ({
+						sessionId,
+						generatedAt: at(CUTOFF_MS - DAY),
+						attemptStatus: "idle",
+					})),
+				);
+		}
+		return ids;
+	}
+	const count = async (): Promise<number> => {
+		const { aiSessionSummaries } = await import("../db/schema/index.js");
+		return (await getDb().select({ id: aiSessionSummaries.sessionId }).from(aiSessionSummaries))
+			.length;
+	};
+
+	test("TC-5.45b 1,200 expired summaries all go, whatever the batching", async () => {
+		await seedExpiredSummaries(1200);
+		const result = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
+		expect(result).toEqual({ deleted: 1200, lockLost: false });
+		expect(await count()).toBe(0);
+	}, 60_000);
+
+	describeSqliteOnly("P5-21 on SQLite", () => {
+		test("TC-5.45c 1,200 rows are deleted in three batches of at most 500, and the event loop is let go between them", async () => {
+			await seedExpiredSummaries(1200);
+			const db = getDb() as unknown as { delete: (t: unknown) => unknown };
+			const original = db.delete.bind(db);
+			const { spyOn } = await import("bun:test");
+			const spy = spyOn(db, "delete").mockImplementation((t: unknown) => original(t));
+			let ticks = 0;
+			const timer = setInterval(() => ticks++, 0);
+			try {
+				const result = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
+				expect(result.deleted).toBe(1200);
+				expect(spy.mock.calls.length).toBe(3);
+				expect(ticks).toBeGreaterThanOrEqual(2);
+			} finally {
+				clearInterval(timer);
+				spy.mockRestore();
+			}
+		}, 60_000);
+	});
+
+	describePostgresOnly("P5-21 on Postgres", () => {
+		test("TC-5.57b every batch is its own transaction that takes the lock: 1,200 rows are four transactions (three with rows, one empty)", async () => {
+			await seedExpiredSummaries(1200);
+			const wt = await import("../db/with-transaction.js");
+			const { spyOn } = await import("bun:test");
+			const real = wt.withTransaction;
+			const spy = spyOn(wt, "withTransaction").mockImplementation(((fn: never) =>
+				real(fn)) as typeof wt.withTransaction);
+			try {
+				const result = await deleteExpiredSummaries(at(CUTOFF_MS), at(NOW.getTime() - LEASE_MS));
+				expect(result).toEqual({ deleted: 1200, lockLost: false });
+				expect(spy.mock.calls.length).toBe(4);
+			} finally {
+				spy.mockRestore();
+			}
+		}, 60_000);
+
+		test("TC-5.57c a pass that deleted its event batches and some summaries, then lost the lock, reports what it deleted and the skip", async () => {
+			await upsertSetting("eventsRetentionDays", 30);
+			_setRetentionBatchSizeForTest(1);
+			await seedSummary("keep-a", { generatedAt: at(CUTOFF_MS - DAY), attemptStatus: "idle" });
+			await seedSummary("keep-b", { generatedAt: at(CUTOFF_MS - DAY), attemptStatus: "idle" });
+			await seedEvent("keep-a", at(CUTOFF_MS - DAY));
+			await seedEvent("keep-a", at(CUTOFF_MS - DAY + 1000));
+			const wt = await import("../db/with-transaction.js");
+			const { spyOn } = await import("bun:test");
+			const postgres = (await import("postgres")).default;
+			const holder = postgres(config.databaseUrl, { max: 1 });
+			const real = wt.withTransaction;
+			let calls = 0;
+			// Calls 1 to 3 are the event batches (1, 1, then empty); 4 and 5 are summary batches.
+			// Another replica takes the lock just before the fifth.
+			const spy = spyOn(wt, "withTransaction").mockImplementation((async (fn: never) => {
+				calls++;
+				if (calls === 5) await holder`SELECT pg_advisory_lock(${PG_RETENTION_LOCK_ID})`;
+				return real(fn);
+			}) as typeof wt.withTransaction);
+			try {
+				const result = await runRetentionPass(NOW);
+				expect(result.rowsDeleted).toBe(2);
+				expect(result.summariesDeleted).toBe(1);
+				expect(result.skippedReason).toBe("lock_held_elsewhere");
+				expect(await count()).toBe(1);
+			} finally {
+				spy.mockRestore();
+				await holder`SELECT pg_advisory_unlock(${PG_RETENTION_LOCK_ID})`;
+				await holder.end({ timeout: 2 });
+			}
+		}, 60_000);
+	});
+});
+
+describe("the statements about what retention deletes are true (P5-23)", () => {
+	const root = join(import.meta.dir, "../../..");
+	const read = (path: string) => readFileSync(join(root, path), "utf8");
+
+	test("TC-5.45d the operator README, CLAUDE.md, the health comment and the CHANGELOG say summaries are deleted and name summariesDeleted; the old guarantee is gone", () => {
+		const k8s = read("deploy/k8s/README.md");
+		const claude = read("CLAUDE.md");
+		const health = read("src/server/routes/health.ts");
+		const changelog = read("CHANGELOG.md");
+		for (const [name, text] of Object.entries({ k8s, claude, health, changelog })) {
+			expect(text, name).toContain("summariesDeleted");
+		}
+		expect(k8s).not.toContain("only the `events` history ages out");
+		expect(claude).not.toContain("Only `events` rows are deleted");
+		expect(k8s).toMatch(/session summaries/i);
+		expect(claude).toContain("ai_session_summaries");
 	});
 });

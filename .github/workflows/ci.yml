@@ -71,6 +71,9 @@ jobs:
       - name: Build frontend
         run: bunx vite build
 
+      - name: Web bundle budget
+        run: bun run check:web-bundle-budget
+
       - name: Build server
         run: bun run build:server
 

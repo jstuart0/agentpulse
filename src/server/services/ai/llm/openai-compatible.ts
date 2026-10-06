@@ -7,7 +7,10 @@ import {
 	type ProviderKind,
 	classifyHttpError,
 	estimateTokens,
+	mapStopReason,
 } from "./types.js";
+
+const OPENAI_STOP_REASONS = { stop: "end", length: "length", content_filter: "refusal" } as const;
 
 interface OpenAICompatibleParams {
 	apiKey: string;
@@ -90,7 +93,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 			const json = (await response.json()) as {
 				choices?: Array<{
 					message?: { content?: string | null; reasoning?: string | null };
-					finish_reason?: string;
+					finish_reason?: string | null;
 				}>;
 				usage?: {
 					prompt_tokens?: number;
@@ -110,6 +113,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 
 			return {
 				text,
+				stopReason: mapStopReason(json.choices?.[0]?.finish_reason, OPENAI_STOP_REASONS),
 				usage: {
 					inputTokens:
 						usage.prompt_tokens ?? estimateTokens(request.systemPrompt + request.transcriptPrompt),
@@ -168,6 +172,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 			let promptTokens: number | undefined;
 			let completionTokens: number | undefined;
 			let finalRaw: unknown = null;
+			let finishReason: string | null | undefined;
 
 			try {
 				while (true) {
@@ -200,6 +205,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 								continue;
 							}
 							finalRaw = parsed;
+							finishReason = parsed.choices?.[0]?.finish_reason ?? finishReason;
 							const delta = parsed.choices?.[0]?.delta?.content;
 							if (typeof delta === "string" && delta.length > 0) {
 								fullText += delta;
@@ -224,6 +230,7 @@ export function createOpenAICompatibleAdapter(params: OpenAICompatibleParams): L
 				kind: "done",
 				response: {
 					text: fullText,
+					stopReason: mapStopReason(finishReason, OPENAI_STOP_REASONS),
 					usage: {
 						inputTokens:
 							promptTokens ?? estimateTokens(request.systemPrompt + request.transcriptPrompt),

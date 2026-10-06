@@ -3,7 +3,13 @@ import { createAnthropicAdapter } from "./anthropic.js";
 import { createCohereAdapter } from "./cohere.js";
 import { createOpenAICompatibleAdapter } from "./openai-compatible.js";
 import { priceCompletion } from "./pricing.js";
-import { LlmError, estimateTokens } from "./types.js";
+import {
+	type LlmAdapter,
+	LlmError,
+	type LlmResponse,
+	estimateTokens,
+	streamWithFallback,
+} from "./types.js";
 
 const originalFetch = globalThis.fetch;
 let capturedRequests: Array<{ url: string; init: RequestInit }> = [];
@@ -199,15 +205,68 @@ describe("pricing", () => {
 		expect(cents).toBe(600);
 	});
 
-	test("subtracts cached reads from input cost and adds cache read price", () => {
+	test("anthropic: input_tokens already excludes cached tokens, so nothing is subtracted (P5-3)", () => {
 		const cents = priceCompletion("anthropic", "claude-sonnet-4-6", {
 			inputTokens: 1_000_000,
 			outputTokens: 0,
 			cacheReadTokens: 500_000,
 			estimated: false,
 		});
-		// billed input 500k * 300 + cached 500k * 30 = 150 + 15 = 165c
-		expect(cents).toBe(165);
+		// 1M * 300c/1M + cache read 500k * 30c/1M = 300 + 15 = 315c (was 165c: the old formula took 500k off input)
+		expect(cents).toBe(315);
+	});
+
+	test("anthropic: cache creation tokens are billed at 1.25x the input rate (P5-3)", () => {
+		const cents = priceCompletion("anthropic", "claude-sonnet-4-6", {
+			inputTokens: 1_000_000,
+			outputTokens: 0,
+			cacheReadTokens: 500_000,
+			cacheWriteTokens: 200_000,
+			estimated: false,
+		});
+		// 300 + 200k * 1.25 * 300c/1M (= 75) + 500k * 30c/1M (= 15) = 390c
+		expect(cents).toBe(390);
+	});
+
+	test("anthropic: the usage the adapter really maps from the provider's response prices as input + creation + read (P5-3)", async () => {
+		mockFetch(
+			new Response(
+				JSON.stringify({
+					content: [{ type: "text", text: "hi" }],
+					usage: {
+						input_tokens: 2_000,
+						output_tokens: 1_000,
+						cache_creation_input_tokens: 40_000,
+						cache_read_input_tokens: 100_000,
+					},
+				}),
+				{ status: 200 },
+			),
+		);
+		const adapter = createAnthropicAdapter({ apiKey: "sk-ant-test" });
+		const res = await adapter.complete({
+			systemPrompt: "s",
+			transcriptPrompt: "t",
+			model: "claude-sonnet-4-6",
+		});
+		expect(res.usage).toMatchObject({
+			inputTokens: 2_000,
+			cacheReadTokens: 100_000,
+			cacheWriteTokens: 40_000,
+		});
+		// 2k * 300/1M = 0.6; 40k * 1.25 * 300/1M = 15; 100k * 30/1M = 3; 1k * 1500/1M = 1.5 => 20.1 => 21c
+		expect(priceCompletion("anthropic", "claude-sonnet-4-6", res.usage)).toBe(21);
+	});
+
+	test("openai-style usage (cached tokens included in prompt_tokens) keeps the subtraction (P5-3)", () => {
+		const cents = priceCompletion("openai", "gpt-5", {
+			inputTokens: 1_000_000,
+			outputTokens: 0,
+			cacheReadTokens: 500_000,
+			estimated: false,
+		});
+		// billed input 500k * 125c/1M + cached 500k * 13c/1M = 62.5 + 6.5 = 69c
+		expect(cents).toBe(69);
 	});
 
 	test("falls back to a default rate for unknown models", () => {
@@ -285,8 +344,8 @@ describe("pricing", () => {
 		expect(cents).toBe(0);
 	});
 
-	test("clamps billed input at zero when cacheReadTokens exceeds inputTokens", () => {
-		const cents = priceCompletion("anthropic", "claude-sonnet-4-6", {
+	test("clamps billed input at zero when cacheReadTokens exceeds inputTokens (openai-style usage)", () => {
+		const cents = priceCompletion("openai", "unknown-clamp-model", {
 			inputTokens: 100,
 			outputTokens: 0,
 			cacheReadTokens: 1_000_000,
@@ -527,5 +586,54 @@ describe("cohere adapter", () => {
 		expect(res.usage.estimated).toBe(true);
 		expect(res.usage.inputTokens).toBeGreaterThan(0);
 		expect(res.usage.outputTokens).toBeGreaterThan(0);
+	});
+});
+
+describe("TC-2.7 the optional stopReason does not disturb other callers", () => {
+	const withoutStopReason: LlmResponse = {
+		text: "hi",
+		usage: { inputTokens: 1, outputTokens: 1, estimated: false },
+		rawResponse: null,
+	};
+
+	test("TC-2.7 streamWithFallback passes a response with or without stopReason through untouched", async () => {
+		for (const response of [
+			withoutStopReason,
+			{ ...withoutStopReason, stopReason: "length" as const },
+		]) {
+			const adapter: LlmAdapter = { kind: "openai", complete: async () => response };
+			const events = [];
+			for await (const evt of streamWithFallback(adapter, {
+				systemPrompt: "s",
+				transcriptPrompt: "t",
+				model: "m",
+			})) {
+				events.push(evt);
+			}
+			expect(events).toEqual([
+				{ kind: "delta", text: "hi" },
+				{ kind: "done", response },
+			]);
+		}
+	});
+
+	test("TC-2.7 a real adapter response keeps its text, usage and raw body next to the new field", async () => {
+		const raw = {
+			content: [{ type: "text", text: "hi" }],
+			stop_reason: "end_turn",
+			usage: { input_tokens: 10, output_tokens: 2 },
+		};
+		mockFetch(new Response(JSON.stringify(raw), { status: 200 }));
+		const res = await createAnthropicAdapter({ apiKey: "k" }).complete({
+			systemPrompt: "s",
+			transcriptPrompt: "t",
+			model: "claude-sonnet-4-6",
+		});
+		expect(res).toMatchObject({
+			text: "hi",
+			stopReason: "end",
+			usage: { inputTokens: 10, outputTokens: 2, estimated: false },
+			rawResponse: raw,
+		});
 	});
 });

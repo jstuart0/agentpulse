@@ -197,13 +197,13 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** Strip any leading <think>...</think> block emitted by reasoning models. */
-function stripThinkTag(input: string): string {
+export function stripThinkTag(input: string): string {
 	const close = input.lastIndexOf("</think>");
 	if (close < 0) return input;
 	return input.slice(close + "</think>".length).trim();
 }
 
-function stripCodeFence(input: string): string {
+export function stripCodeFence(input: string): string {
 	if (!input.startsWith("```")) return input;
 	const fenceMatch = input.match(/^```(?:json)?\n?([\s\S]*?)\n?```$/);
 	if (fenceMatch) return fenceMatch[1];
@@ -216,7 +216,7 @@ function stripCodeFence(input: string): string {
  * close the object. Returns the first balanced top-level JSON object found
  * or null.
  */
-function extractJsonObject(input: string): string | null {
+export function extractJsonObject(input: string): string | null {
 	let depth = 0;
 	let start = -1;
 	let inString = false;

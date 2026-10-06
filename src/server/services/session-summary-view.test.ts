@@ -1,0 +1,951 @@
+/**
+ * AGEN-69 phase 5: the read model `getSessionSummaryView` (TC-5.1 to 5.6, 5.22 view half,
+ * 5.29 to 5.31, 5.44 view half, 5.54, 5.55). Real database, nothing stubbed; the stub
+ * provider is only a base URL here (the view never calls a model).
+ */
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	setSystemTime,
+	spyOn,
+	test,
+} from "bun:test";
+import * as nodeCrypto from "node:crypto";
+import { eq } from "drizzle-orm";
+import "./ai/__test_db.js";
+import type { SeedEvent } from "../test-utils/summary-service-harness.js";
+
+const { getDb, initializeDatabase } = await import("../db/client.js");
+const { aiSessionSummaries, llmProviders, sessions } = await import("../db/schema/index.js");
+const { getSessionSummaryView } = await import("./session-summary-service.js");
+const H = await import("../test-utils/summary-service-harness.js");
+const { countDbCalls } = await import("../test-utils/db-call-counter.js");
+const secrets = await import("./ai/secrets.js");
+const { priceCompletion } = await import("./ai/llm/pricing.js");
+const { estimateTokens } = await import("./ai/llm/types.js");
+const { MAX_INPUT_TOKENS, MAX_OUTPUT_TOKENS, MAX_PROMPT_CHARS } = await import(
+	"./ai/session-summary/service-limits.js"
+);
+const { toDbTimestamp } = await import("./util/db-time.js");
+const { upsertSetting } = await import("./settings-service.js");
+const { STALE_EVENT_COUNT_CAP } = await import("../../shared/session-summary-view.js");
+const { SUMMARY_VIEW_FIXTURES, shapeOf } = await import(
+	"../../shared/__fixtures__/session-summary-view/index.js"
+);
+const { loadEvidence } = await import("./ai/session-summary/evidence-loader.js");
+const { buildLedgerAsync, userPromptTexts } = await import("./ai/session-summary/ledger.js");
+const { buildSummaryPrompt, sessionForPrompt } = await import("./ai/session-summary/prompt.js");
+const { SESSION_COLUMNS_SANS_OWNERSHIP } = await import("../db/session-columns.js");
+
+const SID = "view-s1";
+let stub: ReturnType<typeof H.startStub>;
+
+beforeAll(async () => {
+	await initializeDatabase();
+	stub = H.startStub();
+});
+afterAll(async () => {
+	await stub.stop();
+});
+beforeEach(async () => {
+	await H.resetWorld(stub);
+	await H.enableAi();
+});
+afterEach(async () => {
+	await H.afterEachGuard(stub);
+});
+
+async function view(sessionId = SID) {
+	const v = await getSessionSummaryView(sessionId);
+	if (!v) throw new Error("no view");
+	return v;
+}
+const allKeys = (value: unknown, out = new Set<string>()): Set<string> => {
+	if (Array.isArray(value)) for (const v of value) allKeys(v, out);
+	else if (value && typeof value === "object")
+		for (const [k, v] of Object.entries(value)) {
+			out.add(k);
+			allKeys(v, out);
+		}
+	return out;
+};
+
+describe("the empty and ready view", () => {
+	test("TC-5.1a nothing stored, allowed: provider kind and model, spend, cap, max cost, reset time", async () => {
+		await H.seedActiveSession(SID);
+		await H.seedProvider(stub, { kind: "openai", model: "gpt-5-mini" });
+		await H.setDaySpend(120);
+		const v = await view();
+		expect(v.stored).toBeNull();
+		expect(v.generatedAt).toBeNull();
+		expect("throughAt" in v).toBe(false);
+		expect(v.throughEventId).toBeNull();
+		expect(v.attempt).toEqual({ status: "idle", startedAt: null, errorCode: null });
+		expect(v.staleEvents).toBe(0);
+		expect(v.evidenceShrunk).toBe(false);
+		expect(v.blocked).toBeNull();
+		expect(v.cooldownSeconds).toBeNull();
+		expect(v.provider).toEqual({ kind: "openai", model: "gpt-5-mini" });
+		expect(v.spend.spentCents).toBe(120);
+		expect(v.spend.capCents).toBe(500);
+		expect(v.spend.maxCostCents).toBe(
+			priceCompletion("openai", "gpt-5-mini", {
+				inputTokens: MAX_INPUT_TOKENS,
+				outputTokens: MAX_OUTPUT_TOKENS,
+				estimated: true,
+			}),
+		);
+		expect(v.spend.maxCostCents).toBeGreaterThan(0);
+		expect(v.spend.maxCostWithRetryCents).toBe(2 * v.spend.maxCostCents);
+		expect("retentionDays" in v).toBe(false);
+	});
+
+	test("TC-5.1b resetsAt is the next local midnight, not UTC and not +24 h (DST-change day)", async () => {
+		await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		const realTz = process.env.TZ;
+		try {
+			process.env.TZ = "America/New_York";
+			// Spring forward 2031-03-09 02:00 local: from 01:00 the next midnight is 22 real hours away, not 24.
+			setSystemTime(new Date(2031, 2, 9, 1, 0, 0));
+			expect(new Date(2031, 2, 9, 1).getTimezoneOffset()).not.toBe(
+				new Date(2031, 2, 10, 1).getTimezoneOffset(),
+			);
+			const v = await view();
+			expect(v.spend.resetsAt).toBe(new Date(2031, 2, 10, 0, 0, 0).toISOString());
+			expect(new Date(v.spend.resetsAt).getTime() - Date.now()).toBe(22 * 3600 * 1000);
+			// And the ordinary case: 10:30 local the next midnight is 13.5 hours away.
+			setSystemTime(new Date(2031, 5, 1, 10, 30, 0));
+			const w = await view();
+			expect(w.spend.resetsAt).toBe(new Date(2031, 5, 2, 0, 0, 0).toISOString());
+			expect(w.spend.resetsAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+		} finally {
+			if (realTz === undefined) Reflect.deleteProperty(process.env, "TZ");
+			else process.env.TZ = realTz;
+		}
+	});
+
+	test("TC-5.1c retentionDays only with a stored summary and retention on", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await upsertSetting("eventsRetentionDays", 30);
+		expect("retentionDays" in (await view())).toBe(false);
+		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+		expect((await view()).retentionDays).toBe(30);
+		await upsertSetting("eventsRetentionDays", 0);
+		expect("retentionDays" in (await view())).toBe(false);
+	});
+
+	test("TC-5.1d the view carries no AI state (key scan) and no owner, key or provider identity", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID, {
+			ownerUserId: "owner-sentinel-7c1f",
+			ingestKeyId: "key-sentinel-93aa",
+			reportedHost: "host-sentinel-55",
+			metadata: { secret: "metadata-sentinel-11" },
+		});
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+		const v = await view();
+		const keys = [...allKeys(v)].map((k) => k.toLowerCase());
+		for (const forbidden of [
+			"paused",
+			"killswitch",
+			"aienabled",
+			"aipaused",
+			"runtime",
+			"build",
+			"enabled",
+			"active",
+			"ai",
+		]) {
+			expect(keys).not.toContain(forbidden);
+		}
+		const body = JSON.stringify(v);
+		for (const s of [
+			"owner-sentinel",
+			"key-sentinel",
+			"host-sentinel",
+			"metadata-sentinel",
+			"Stub provider",
+			stub.origin,
+			"baseUrl",
+		]) {
+			expect(body).not.toContain(s);
+		}
+		const [{ id }] = await getDb().select({ id: llmProviders.id }).from(llmProviders);
+		expect(body).not.toContain(id);
+	});
+
+	test("TC-5.1f the empty, ready and generating views have the shape of the wire fixtures", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		expect(shapeOf(await view())).toEqual(shapeOf(SUMMARY_VIEW_FIXTURES.empty));
+		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+		expect(shapeOf(await view())).toEqual(shapeOf(SUMMARY_VIEW_FIXTURES.ready));
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({
+				attemptStatus: "generating",
+				attemptStartedAt: toDbTimestamp(new Date()),
+				attemptToken: "t",
+			});
+		const generating = await view();
+		expect(generating.provider).not.toBeNull();
+		expect(generating.stored).not.toBeNull();
+		expect(generating.attempt.status).toBe("generating");
+	});
+
+	test("TC-5.1e an unknown session has no view", async () => {
+		expect(await getSessionSummaryView("no-such-session")).toBeNull();
+	});
+});
+
+describe("blocked reasons", () => {
+	test("TC-5.2 too-little-activity table, and the 5,000-event action window", async () => {
+		await H.seedProvider(stub);
+		const cases: Array<[string, SeedEvent[], boolean]> = [
+			["no events", [], true],
+			["only user_ack", [H.ack(), H.ack()], true],
+			[
+				"only system events",
+				[
+					{ eventType: "SessionStart", category: "system_event" },
+					{ eventType: "Notification", category: "notification" },
+				],
+				true,
+			],
+			[
+				"only a Read-class action",
+				[
+					{
+						eventType: "PostToolUse",
+						category: "tool_event",
+						toolName: "Read",
+						toolInput: { file_path: "a.ts" },
+					},
+				],
+				true,
+			],
+			["one prompt", [H.prompt("hello")], false],
+			["one non-Read action", [H.edit("src/a.ts")], false],
+		];
+		for (const [name, rows, blocked] of cases) {
+			const id = `view-act-${name.replace(/\W+/g, "-")}`;
+			await H.seedSession(id);
+			await H.seedEvents(id, rows);
+			expect((await view(id)).blocked, name).toBe(blocked ? "too_little_activity" : null);
+		}
+		const filler = (n: number): SeedEvent[] => Array.from({ length: n }, () => H.ack());
+		// An action with exactly 5,000 events from the end (itself included) counts; 5,001 does not.
+		await H.seedSession("view-win-in");
+		await H.seedEvents("view-win-in", [H.edit("src/a.ts"), ...filler(4999)]);
+		expect((await view("view-win-in")).blocked).toBeNull();
+		await H.seedSession("view-win-out");
+		await H.seedEvents("view-win-out", [H.edit("src/a.ts"), ...filler(5000)]);
+		expect((await view("view-win-out")).blocked).toBe("too_little_activity");
+		// A prompt counts anywhere in the session.
+		await H.seedSession("view-prompt-far");
+		await H.seedEvents("view-prompt-far", [H.prompt("first"), ...filler(5200)]);
+		expect((await view("view-prompt-far")).blocked).toBeNull();
+	}, 60_000);
+
+	test("TC-5.3a no_provider only when there is no default provider row", async () => {
+		await H.seedActiveSession(SID);
+		const none = await view();
+		expect(none.blocked).toBe("no_provider");
+		expect(none.provider).toBeNull();
+		await H.seedProvider(stub);
+		await getDb().update(llmProviders).set({ isDefault: false });
+		expect((await view()).blocked).toBe("no_provider");
+		await getDb().update(llmProviders).set({ isDefault: true });
+		expect((await view()).blocked).toBeNull();
+	});
+
+	test("TC-5.3b an undecryptable key leaves the view allowed and never throws", async () => {
+		await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await getDb()
+			.update(llmProviders)
+			.set({ credentialCiphertext: "bm90LWEtcmVhbC1jaXBoZXJ0ZXh0" });
+		const v = await view();
+		expect(v.blocked).toBeNull();
+		expect(v.provider?.kind).toBe("openai");
+	});
+
+	test("TC-5.4 cap edge: cap - m - 1 allowed, cap - m and cap refused", async () => {
+		await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		const m = (await view()).spend.maxCostCents;
+		const cap = 500;
+		for (const [spent, blocked] of [
+			[cap - m - 1, null],
+			[cap - m, "spend_cap_reached"],
+			[cap, "spend_cap_reached"],
+		] as const) {
+			await H.setDaySpend(spent);
+			expect((await view()).blocked, `spent ${spent}`).toBe(blocked);
+		}
+	});
+
+	test("TC-5.5a a free provider is allowed at cap - 1 and at cap, and shows maxCostCents 0", async () => {
+		await H.seedActiveSession(SID);
+		await H.seedProvider(stub, { kind: "openai_compatible" });
+		for (const spent of [499, 500]) {
+			await H.setDaySpend(spent);
+			const v = await view();
+			expect(v.blocked).toBeNull();
+			expect(v.spend.maxCostCents).toBe(0);
+			expect(v.spend.maxCostWithRetryCents).toBe(0);
+		}
+	});
+
+	test("TC-5.6 the reservation bound covers the worst-case prompt", async () => {
+		const longPath = `${"d/".repeat(140)}file.ts`;
+		await H.seedSession(SID, {
+			displayName: "n".repeat(400),
+			cwd: "c".repeat(400),
+			gitBranch: "b".repeat(400),
+			model: "m".repeat(400),
+			currentTask: "t".repeat(2000),
+			notes: "x".repeat(2000),
+			planSummary: ["p".repeat(2000)],
+		});
+		const rows: SeedEvent[] = [];
+		for (let i = 0; i < 320; i++) rows.push(H.prompt(`${i} ${"word ".repeat(300)}`));
+		for (let i = 0; i < 400; i++)
+			rows.push({
+				eventType: "PostToolUse",
+				category: "tool_event",
+				toolName: "Bash",
+				toolInput: { command: `bun test ${"a".repeat(250)} ${i}` },
+				toolResponse: `${"out ".repeat(120)}`,
+			});
+		for (let i = 0; i < 60; i++) rows.push(H.edit(`${longPath}${i}`));
+		await H.seedEvents(SID, rows);
+		const bundle = await loadEvidence(SID);
+		const ledger = await buildLedgerAsync({
+			rows: bundle.rows,
+			firstPromptRows: bundle.firstPromptRows,
+			scan: bundle.scan,
+			agentType: bundle.agentType,
+		});
+		const [row] = await getDb()
+			.select(SESSION_COLUMNS_SANS_OWNERSHIP)
+			.from(sessions)
+			.where(eq(sessions.sessionId, SID));
+		const built = buildSummaryPrompt(sessionForPrompt(row), ledger);
+		expect(userPromptTexts(bundle).length).toBeGreaterThan(100);
+		const tokens = estimateTokens(built.systemPrompt + built.transcriptPrompt);
+		expect(tokens).toBeLessThanOrEqual(MAX_INPUT_TOKENS);
+		expect(built.systemPrompt.length + built.transcriptPrompt.length).toBeLessThanOrEqual(
+			MAX_PROMPT_CHARS,
+		);
+		// It is a real bound, not a slack figure: the worst case lands within 2x of it.
+		expect(tokens).toBeGreaterThan(MAX_INPUT_TOKENS / 2);
+	}, 60_000);
+});
+
+describe("the attempt", () => {
+	test("TC-5.22a lease: 300 s is still generating, 301 s reads failed / interrupted without writing", async () => {
+		await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		setSystemTime(new Date(Date.UTC(2031, 0, 1, 12, 0, 0)));
+		const started = toDbTimestamp(new Date());
+		await H.seedSummaryRow(SID, {
+			attemptStatus: "generating",
+			attemptStartedAt: started,
+			attemptToken: "tok",
+		});
+		setSystemTime(new Date(Date.UTC(2031, 0, 1, 12, 5, 0)));
+		const at300 = await view();
+		expect(at300.attempt.status).toBe("generating");
+		expect(at300.attempt.errorCode).toBeNull();
+		expect(at300.blocked).toBeNull();
+		setSystemTime(new Date(Date.UTC(2031, 0, 1, 12, 5, 1)));
+		const at301 = await view();
+		expect(at301.attempt).toEqual({
+			status: "failed",
+			startedAt: "2031-01-01T12:00:00.000Z",
+			errorCode: "interrupted",
+		});
+		const row = await H.readSummaryRow(SID);
+		expect(row.attemptStatus).toBe("generating");
+		expect(row.attemptToken).toBe("tok");
+	});
+
+	test("TC-5.21a the view reports the cooldown at second granularity and none after an interrupted attempt", async () => {
+		await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		const base = Date.UTC(2031, 0, 1, 12, 0, 0);
+		setSystemTime(new Date(base));
+		const started = toDbTimestamp(new Date(base));
+		await H.seedSummaryRow(SID, {
+			attemptStatus: "failed",
+			attemptErrorCode: "provider_error",
+			attemptStartedAt: started,
+		});
+		for (const [elapsed, blocked, secs] of [
+			[29, "summary_cooldown", 1],
+			[30, "summary_cooldown", 1],
+			[31, null, null],
+		] as const) {
+			setSystemTime(new Date(base + elapsed * 1000));
+			const v = await view();
+			expect(v.blocked, `${elapsed}s`).toBe(blocked);
+			expect(v.cooldownSeconds, `${elapsed}s`).toBe(secs);
+		}
+		setSystemTime(new Date(base + 10_000));
+		await getDb().update(aiSessionSummaries).set({ attemptErrorCode: "interrupted" });
+		const interrupted = await view();
+		expect(interrupted.blocked).toBeNull();
+		expect(interrupted.cooldownSeconds).toBeNull();
+	});
+
+	test("TC-5.21b a longer cooldown reports the whole seconds left", async () => {
+		await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		const base = Date.UTC(2031, 0, 1, 12, 0, 0);
+		setSystemTime(new Date(base));
+		await H.seedSummaryRow(SID, {
+			attemptStatus: "idle",
+			attemptStartedAt: toDbTimestamp(new Date(base - 5000)),
+		});
+		const v = await view();
+		expect(v.cooldownSeconds).toBe(25);
+		expect(v.blocked).toBe("summary_cooldown");
+	});
+
+	test("TC-5.27a blocked is the first applicable reason: activity, provider, cooldown, cap", async () => {
+		await H.seedSession(SID);
+		const base = Date.UTC(2031, 0, 1, 12, 0, 0);
+		setSystemTime(new Date(base));
+		await H.seedSummaryRow(SID, {
+			attemptStatus: "failed",
+			attemptErrorCode: "provider_error",
+			attemptStartedAt: toDbTimestamp(new Date(base - 1000)),
+		});
+		await H.setDaySpend(500, H.localDate());
+		expect((await view()).blocked).toBe("too_little_activity");
+		await H.seedEvents(SID, [H.prompt("hi")]);
+		expect((await view()).blocked).toBe("no_provider");
+		await H.seedProvider(stub);
+		expect((await view()).blocked).toBe("summary_cooldown");
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({ attemptStartedAt: toDbTimestamp(new Date(base - 60_000)) });
+		expect((await view()).blocked).toBe("spend_cap_reached");
+	});
+
+	test("TC-5.27b while generating nothing blocks (a joiner needs no budget)", async () => {
+		await H.seedActiveSession(SID);
+		await H.setDaySpend(500);
+		await H.seedSummaryRow(SID, {
+			attemptStatus: "generating",
+			attemptStartedAt: toDbTimestamp(new Date()),
+			attemptToken: "t",
+		});
+		const v = await view();
+		expect(v.attempt.status).toBe("generating");
+		expect(v.blocked).toBeNull();
+		expect(v.cooldownSeconds).toBeNull();
+	});
+});
+
+describe("stale and shrunk", () => {
+	async function ready(): Promise<{ ids: number[] }> {
+		await H.seedSession(SID);
+		const ids = await H.seedEvents(SID, [H.prompt("one"), H.edit("a.ts"), H.edit("b.ts")]);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: ids[2], firstEventId: ids[0] });
+		return { ids };
+	}
+
+	test("TC-5.29 staleness: a prompt gives 1, user_ack 0, a NULL category counts, SessionEnd counts, only later events", async () => {
+		await ready();
+		expect((await view()).staleEvents).toBe(0);
+		await H.seedEvents(SID, [H.ack(), H.ack()]);
+		expect((await view()).staleEvents).toBe(0);
+		await H.seedEvents(SID, [H.prompt("two")]);
+		expect((await view()).staleEvents).toBe(1);
+		await H.seedEvents(SID, [{ eventType: "Whatever", category: null }]);
+		expect((await view()).staleEvents).toBe(2);
+		await H.seedEvents(SID, [{ eventType: "SessionEnd", category: "lifecycle" }]);
+		expect((await view()).staleEvents).toBe(3);
+	});
+
+	test("TC-5.55a the stale probe reads at most 100 rows: 5,000 later events give 100, with LIMIT 100 inside the count", async () => {
+		await ready();
+		await H.seedEvents(
+			SID,
+			Array.from({ length: 5000 }, () => H.prompt("more")),
+		);
+		const { result, statements } = await H.captureStatements(() => view());
+		expect(result.staleEvents).toBe(STALE_EVENT_COUNT_CAP);
+		const probe = statements.filter((s) => /count\(/i.test(s.text));
+		expect(probe).toHaveLength(1);
+		expect(probe[0].text).toMatch(/\blimit\s+100\b/i);
+		expect(probe[0].text.toLowerCase().indexOf("limit")).toBeLessThan(
+			probe[0].text.toLowerCase().lastIndexOf(")"),
+		);
+		expect(probe[0].text).toMatch(/from\s*\(\s*select/i);
+	}, 30_000);
+
+	test("TC-5.55b the shrunk probe is a LIMIT 1 subquery of the activity statement, with no count(", async () => {
+		await ready();
+		const { statements } = await H.captureStatements(() => view());
+		const probes = statements.filter((s) => /\blimit\s+2000\b/i.test(s.text));
+		expect(probes).toHaveLength(1);
+		expect(probes[0].text).toMatch(/\blimit\s+1\b/i);
+		expect(probes[0].text).not.toMatch(/count\(/i);
+		expect(statements.filter((s) => /min\(/i.test(s.text))).toHaveLength(0);
+	});
+
+	test("TC-5.30 evidenceShrunk: oldest pruned true, add-only false, prune 10 + add 50 true, none stored false, all pruned true", async () => {
+		const noSummary = "view-shrunk-none";
+		await H.seedActiveSession(noSummary);
+		await H.seedProvider(stub);
+		expect((await view(noSummary)).evidenceShrunk).toBe(false);
+
+		await H.seedSession(SID);
+		const ids = await H.seedEvents(
+			SID,
+			Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? H.prompt(`p${i}`) : H.edit(`f${i}.ts`))),
+		);
+		await H.seedReadySummary(SID, { throughEventId: ids[29], firstEventId: ids[0] });
+		expect((await view()).evidenceShrunk).toBe(false);
+		await H.seedEvents(SID, [H.prompt("later")]);
+		expect((await view()).evidenceShrunk).toBe(false);
+		const { events } = await import("../db/schema/index.js");
+		const { inArray } = await import("drizzle-orm");
+		await getDb().delete(events).where(eq(events.id, ids[0]));
+		expect((await view()).evidenceShrunk).toBe(true);
+		await getDb()
+			.delete(events)
+			.where(inArray(events.id, ids.slice(1, 10)));
+		await H.seedEvents(
+			SID,
+			Array.from({ length: 50 }, () => H.prompt("new")),
+		);
+		expect((await view()).evidenceShrunk).toBe(true);
+		await getDb().delete(events).where(eq(events.sessionId, SID));
+		const gone = await view();
+		expect(gone.evidenceShrunk).toBe(true);
+		expect(gone.blocked).toBe("too_little_activity");
+	});
+});
+
+describe("cost of the view", () => {
+	test("TC-5.31a no write; exactly 4 statements idle, 6 ready, 3 for a first generation, 4 for a regeneration (R-M adds the capped stale probe); a poll body is at most 2 KB", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await upsertSetting("eventsRetentionDays", 30);
+		const db = getDb() as unknown as Record<string, (...a: unknown[]) => unknown>;
+		const writers = (["insert", "update", "delete"] as const).map((m) => spyOn(db, m));
+		try {
+			const idle = await countDbCalls(async () => void (await view()));
+			await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+			let body = "";
+			const ready = await countDbCalls(async () => {
+				body = JSON.stringify(await view());
+			});
+			expect(body.length).toBeGreaterThan(0);
+			await getDb().delete(aiSessionSummaries);
+			await H.seedSummaryRow(SID, {
+				attemptStatus: "generating",
+				attemptStartedAt: toDbTimestamp(new Date()),
+				attemptToken: "t",
+			});
+			for (const w of writers) w.mockClear();
+			let firstBody = "";
+			const first = await countDbCalls(async () => {
+				firstBody = JSON.stringify(await view());
+			});
+			await getDb().delete(aiSessionSummaries);
+			await H.seedReadySummary(SID, {
+				throughEventId: editId,
+				firstEventId: promptId,
+				startedAt: toDbTimestamp(new Date()),
+			});
+			await getDb()
+				.update(aiSessionSummaries)
+				.set({ attemptStatus: "generating", attemptToken: "t" });
+			for (const w of writers) w.mockClear();
+			let regenBody = "";
+			const regen = await countDbCalls(async () => {
+				regenBody = JSON.stringify(await view());
+			});
+			let pollBody = "";
+			const poll = await countDbCalls(async () => {
+				pollBody = JSON.stringify(await getSessionSummaryView(SID, { omitStored: true }));
+			});
+			expect({ idle, ready, first, regen, poll }).toEqual({
+				idle: 4,
+				ready: 6,
+				first: 3,
+				regen: 4,
+				poll: 4,
+			});
+			expect(firstBody.length).toBeLessThanOrEqual(2048);
+			expect(pollBody.length).toBeLessThanOrEqual(2048);
+			expect(regenBody.length).toBeGreaterThan(pollBody.length);
+			for (const w of writers) expect(w.mock.calls.length).toBe(0);
+			console.log(
+				`[perf] ${JSON.stringify({ label: "view statements", idle, ready, first, regen, poll })}`,
+			);
+		} finally {
+			for (const w of writers) w.mockRestore();
+		}
+	});
+
+	test("TC-5.31b the view's CPU time per call and its median are asserted at 4x the contract; p95 is only recorded (it was inflated 44x by machine load)", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+		const times: number[] = [];
+		const cpu0 = process.cpuUsage();
+		for (let i = 0; i < 30; i++) {
+			const t = performance.now();
+			await view();
+			times.push(performance.now() - t);
+		}
+		const cpu = process.cpuUsage(cpu0);
+		const cpuPerCallMs = (cpu.user + cpu.system) / 1000 / 30;
+		times.sort((a, b) => a - b);
+		const median = times[Math.floor(times.length / 2)];
+		const p95 = times[Math.floor(times.length * 0.95)];
+		console.log(
+			`[perf] ${JSON.stringify({ label: "view timing", cpuPerCallMs: Number(cpuPerCallMs.toFixed(2)), medianMs: Number(median.toFixed(2)), p95Ms: Number(p95.toFixed(2)), contractMs: 50, hardMs: 200 })}`,
+		);
+		expect(cpuPerCallMs).toBeLessThan(200);
+		expect(median).toBeLessThan(200);
+	});
+
+	test("TC-5.44a the view never decrypts: no decryptSecret and no scryptSync", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+		const decrypt = spyOn(secrets, "decryptSecret");
+		const scrypt = spyOn(nodeCrypto, "scryptSync");
+		try {
+			await view();
+			await getDb().update(llmProviders).set({ credentialCiphertext: "garbage" });
+			await view();
+			expect(decrypt.mock.calls.length).toBe(0);
+			expect(scrypt.mock.calls.length).toBe(0);
+		} finally {
+			decrypt.mockRestore();
+			scrypt.mockRestore();
+		}
+	});
+
+	test("TC-5.54 a ready body is at most 32 KB for a large honest summary, and at most 64 KB at every answer cap with the most evidence facts the caps allow (R-L)", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		const base = H.storedSummary({ firstEventId: promptId });
+		const item = (n: number) => ({
+			text: `${"detail ".repeat(36)}${n}`.slice(0, 250),
+			evidence: ["E1", "E2", "E3"],
+			unverified: false,
+		});
+		const eight = (f: (n: number) => unknown) => Array.from({ length: 8 }, (_, i) => f(i));
+		const honest = {
+			...base.summary,
+			overview: "o".repeat(1200),
+			accomplishments: eight(item),
+			changes: eight((n) => ({ ...item(n), kind: "modified" })),
+			decisions: eight((n) => ({ ...item(n), why: "w".repeat(200) })),
+			validation: eight((n) => ({
+				what: `bun test ${n}`,
+				result: "passed",
+				detail: "d".repeat(200),
+				evidence: ["E1"],
+				adjusted: false,
+			})),
+			problems: eight(item),
+			unfinished: eight(item),
+			nextActions: [0, 1, 2, 3, 4].map(item),
+			handoff: "h".repeat(2000),
+		};
+		const evidence = Object.fromEntries(
+			Array.from({ length: 150 }, (_, i) => [
+				`E${i + 1}`,
+				{ kind: "edit", at: "2026-10-04T10:04:00.000Z", count: 3 },
+			]),
+		);
+		await getDb()
+			.insert(aiSessionSummaries)
+			.values({
+				sessionId: SID,
+				generatedAt: toDbTimestamp(new Date()),
+				throughEventId: editId,
+				summary: honest as never,
+				provenance: { ...base.provenance, evidence } as never,
+			});
+		const honestBytes = JSON.stringify(await view()).length;
+		console.log(
+			`[perf] ${JSON.stringify({ label: "ready view bytes", honest: honestBytes, limit: 32768 })}`,
+		);
+		expect(honestBytes).toBeLessThanOrEqual(32 * 1024);
+		// R-L: every section at the answer caps, each item citing the most ids the caps allow, every id a
+		// distinct fact with every field present. The body must fit the ruled 64 KB by construction.
+		const L = await import("./ai/session-summary/prompt-limits.js");
+		let n = 0;
+		const facts: Record<string, unknown> = {};
+		const ids = () =>
+			Array.from({ length: L.MAX_EVIDENCE_PER_ITEM }, () => {
+				const id = `E${100000 + n++}`;
+				facts[id] = {
+					kind: "agent_message",
+					at: "2026-10-04T10:04:00.000Z",
+					result: "completed",
+					count: 99999,
+					validationClass: "terraform plan",
+				};
+				return id;
+			});
+		const many = <T>(count: number, f: () => T) => Array.from({ length: count }, f);
+		const claim = () => ({
+			text: "x".repeat(L.ITEM_MAX_CHARS),
+			evidence: ids(),
+			unverified: false,
+		});
+		const atCaps = {
+			...honest,
+			overview: "o".repeat(L.OVERVIEW_MAX_CHARS),
+			outcome: { status: "completed", explanation: "e".repeat(L.ITEM_DETAIL_MAX_CHARS) },
+			accomplishments: many(L.MAX_SECTION_ITEMS, claim),
+			changes: many(L.MAX_SECTION_ITEMS, () => ({ ...claim(), kind: "modified" })),
+			decisions: many(L.MAX_SECTION_ITEMS, () => ({
+				...claim(),
+				why: "w".repeat(L.ITEM_DETAIL_MAX_CHARS),
+			})),
+			validation: many(L.MAX_SECTION_ITEMS, () => ({
+				what: "v".repeat(L.ITEM_MAX_CHARS),
+				result: "passed",
+				detail: "d".repeat(L.ITEM_DETAIL_MAX_CHARS),
+				evidence: ids(),
+				adjusted: false,
+				classes: ["terraform plan"],
+			})),
+			problems: many(L.MAX_SECTION_ITEMS, claim),
+			unfinished: many(L.MAX_SECTION_ITEMS, claim),
+			nextActions: many(L.MAX_NEXT_ACTIONS, claim),
+			handoff: "h".repeat(L.HANDOFF_MAX_CHARS),
+		};
+		await getDb().delete(aiSessionSummaries);
+		await getDb()
+			.insert(aiSessionSummaries)
+			.values({
+				sessionId: SID,
+				generatedAt: toDbTimestamp(new Date()),
+				throughEventId: editId,
+				summary: atCaps as never,
+				provenance: { ...base.provenance, evidence: facts } as never,
+			});
+		const capBytes = JSON.stringify(await view()).length;
+		console.log(
+			`[perf] ${JSON.stringify({ label: "ready view bytes at every cap", bytes: capBytes, facts: Object.keys(facts).length, limit: 65536 })}`,
+		);
+		expect(capBytes).toBeLessThanOrEqual(64 * 1024);
+	});
+});
+
+const readEvent = (): SeedEvent => ({
+	eventType: "PostToolUse",
+	category: "tool_event",
+	toolName: "Read",
+	toolInput: { file_path: "a.ts" },
+});
+
+describe("P5-17 the activity probe is bounded (R-N): a prompt in the oldest 2,000 or newest 5,000 events, or an action in the newest 5,000", () => {
+	const TOTAL = 8000;
+	/** 8,000 Read-class events (not evidence of activity) with one prompt at the 1-based `position`. */
+	async function promptAt(id: string, position: number): Promise<void> {
+		await H.seedSession(id);
+		const rows = Array.from({ length: TOTAL }, readEvent);
+		rows[position - 1] = H.prompt("the only prompt");
+		await H.seedEvents(id, rows);
+	}
+
+	test("TC-5.2b the window edges: position 2,000 and 3,001 are seen; 2,001 and 3,000 are the unscanned middle", async () => {
+		await H.seedProvider(stub);
+		const blockedAt: Record<number, string | null> = {};
+		for (const position of [2000, 2001, 3000, 3001]) {
+			await promptAt(`view-win-${position}`, position);
+			blockedAt[position] = (await view(`view-win-${position}`)).blocked;
+		}
+		expect(blockedAt).toEqual({
+			2000: null,
+			2001: "too_little_activity",
+			3000: "too_little_activity",
+			3001: null,
+		});
+	}, 90_000);
+
+	test("TC-5.2c a session whose only prompt is in the unscanned middle is refused by the POST the same way, and reads as active once it has a newer action", async () => {
+		await H.seedProvider(stub);
+		await promptAt("view-mid", 2500);
+		expect(H.refusalOf(await H.request("view-mid"))).toBe("too_little_activity");
+		const [editId] = await H.seedEvents("view-mid", [H.edit("src/a.ts")]);
+		expect((await view("view-mid")).blocked).toBeNull();
+		stub.script("openai", { text: H.answer([editId]), stop: "stop", usage: H.STUB_USAGE });
+		await H.runGeneration("view-mid");
+	}, 90_000);
+
+	test("TC-5.2d the probe is one statement that scans two bounded windows (LIMIT 2000 and LIMIT 5000) and no whole-session prompt scan", async () => {
+		await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		const { statements } = await H.captureStatements(() => view());
+		const probe = statements.filter((s) => /\blimit\s+2000\b/i.test(s.text));
+		expect(probe).toHaveLength(1);
+		expect(probe[0].text).toMatch(/\blimit\s+5000\b/i);
+		expect(probe[0].text).toMatch(/order by[^)]*\bid\b[^)]*\basc\b/i);
+		expect(probe[0].text).toMatch(/order by[^)]*\bid\b[^)]*\bdesc\b/i);
+	});
+});
+
+describe("P5-13 one rule for the button and the request", () => {
+	test("TC-5.2e a stored summary and nothing but a Read-class event: the view says too little activity and so does the POST", async () => {
+		await H.seedSession(SID);
+		const [readId] = await H.seedEvents(SID, [readEvent()]);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: readId, firstEventId: readId });
+		const v = await view();
+		expect(v.blocked).toBe("too_little_activity");
+		expect(H.refusalOf(await H.request(SID))).toBe("too_little_activity");
+	});
+});
+
+describe("P5-14 the polled view (R-K)", () => {
+	test("TC-5.56a poll gives stored null and storedOmitted true, keeps the small fields, and the full view is complete and has no storedOmitted", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+		const full = await view();
+		const polled = await getSessionSummaryView(SID, { omitStored: true });
+		expect(full.stored).not.toBeNull();
+		expect("storedOmitted" in full).toBe(false);
+		expect(polled?.stored).toBeNull();
+		expect(polled?.storedOmitted).toBe(true);
+		expect(polled?.generatedAt).toBe(full.generatedAt);
+		expect(polled?.throughEventId).toBe(full.throughEventId);
+		expect(polled?.attempt).toEqual(full.attempt);
+		expect(polled?.spend).toEqual(full.spend);
+		expect(polled?.evidenceShrunk).toBe(full.evidenceShrunk);
+	});
+
+	test("TC-5.56b a regeneration poll is at most 2 KB while the full view still carries the previous summary", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, {
+			throughEventId: editId,
+			firstEventId: promptId,
+			startedAt: toDbTimestamp(new Date()),
+		});
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({ attemptStatus: "generating", attemptToken: "t", summary: H.largeSummary() as never });
+		const full = JSON.stringify(await view());
+		const polled = JSON.stringify(await getSessionSummaryView(SID, { omitStored: true }));
+		expect(polled.length).toBeLessThanOrEqual(2048);
+		expect(full.length).toBeGreaterThan(8000);
+		expect(JSON.parse(full).stored).not.toBeNull();
+	});
+});
+
+describe("P5-16 staleness is measured while generating, in a bounded window (R-M)", () => {
+	test("TC-5.29b a stale summary is not shown as current during its own update: the live view counts the later events", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, {
+			throughEventId: editId,
+			firstEventId: promptId,
+			startedAt: toDbTimestamp(new Date()),
+		});
+		await H.seedEvents(SID, [H.prompt("two"), H.prompt("three"), H.ack(), H.edit("b.ts")]);
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({ attemptStatus: "generating", attemptToken: "t" });
+		const live = await view();
+		expect(live.attempt.status).toBe("generating");
+		expect(live.staleEvents).toBe(3);
+		expect(live.blocked).toBeNull();
+	});
+
+	test("TC-5.55c the stale probe scans a window of 500 rows inside the 100-row count: 600 acknowledgements then a prompt cannot read as up to date (a full window with nothing found reads 1, Q-3a)", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+		await H.seedEvents(SID, [...Array.from({ length: 600 }, () => H.ack()), H.prompt("late")]);
+		const { result, statements } = await H.captureStatements(() => view());
+		const probe = statements.filter((s) => /count\(/i.test(s.text));
+		expect(probe).toHaveLength(1);
+		expect(probe[0].text).toMatch(/\blimit\s+500\b/i);
+		expect(probe[0].text).toMatch(/\blimit\s+100\b/i);
+		// The prompt is past the 500-row window, so the count is a lower bound; a flood of
+		// acknowledgements must not read as "up to date".
+		expect(result.staleEvents).toBe(1);
+	});
+});
+
+describe("Q-3 the stale window and the live poll", () => {
+	test("TC-5.55d a window that is not full and holds only acknowledgements is genuinely up to date: 0", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: editId, firstEventId: promptId });
+		await H.seedEvents(
+			SID,
+			Array.from({ length: 499 }, () => H.ack()),
+		);
+		expect((await view()).staleEvents).toBe(0);
+	});
+
+	test("TC-5.56c a live polled view reads no summary and no provenance: no select of it names either column", async () => {
+		const { promptId, editId } = await H.seedActiveSession(SID);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, {
+			throughEventId: editId,
+			firstEventId: promptId,
+			startedAt: toDbTimestamp(new Date()),
+		});
+		await getDb()
+			.update(aiSessionSummaries)
+			.set({ attemptStatus: "generating", attemptToken: "t" });
+		const db = getDb() as unknown as { select: (fields?: Record<string, unknown>) => unknown };
+		const original = db.select.bind(db);
+		const shapes: string[][] = [];
+		const spy = spyOn(db, "select").mockImplementation((fields?: Record<string, unknown>) => {
+			shapes.push(Object.keys(fields ?? {}));
+			return original(fields);
+		});
+		try {
+			const polled = await getSessionSummaryView(SID, { omitStored: true });
+			expect(polled?.attempt.status).toBe("generating");
+			expect(polled?.throughEventId).toBe(editId);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(shapes.length).toBeGreaterThan(0);
+		for (const keys of shapes) {
+			expect(keys).not.toContain("summary");
+			expect(keys).not.toContain("provenance");
+		}
+	});
+
+	test("TC-5.56d a non-live polled view still knows the evidence has shrunk (it reads the provenance only then)", async () => {
+		const { events } = await import("../db/schema/index.js");
+		await H.seedSession(SID);
+		const ids = await H.seedEvents(SID, [H.prompt("one"), H.edit("a.ts"), H.edit("b.ts")]);
+		await H.seedProvider(stub);
+		await H.seedReadySummary(SID, { throughEventId: ids[2], firstEventId: ids[0] });
+		expect((await getSessionSummaryView(SID, { omitStored: true }))?.evidenceShrunk).toBe(false);
+		await getDb().delete(events).where(eq(events.id, ids[0]));
+		const polled = await getSessionSummaryView(SID, { omitStored: true });
+		expect(polled?.evidenceShrunk).toBe(true);
+		expect(polled?.storedOmitted).toBe(true);
+	});
+});

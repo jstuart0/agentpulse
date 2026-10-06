@@ -23,9 +23,12 @@ describe("SessionHeader says the state once", () => {
 	});
 
 	test("no chip is driven by the raw isWorking flag; the only use is the Activity tab's badge", () => {
-		const uses = [...code.matchAll(/isWorking/g)].length;
-		expect(uses).toBe(1);
-		expect(code).toMatch(/badge=\{session\.isWorking \? "Working" : null\}/);
+		// The header only hands the flag to WorkspaceTabBar; the tab bar's Activity tab is the one place it is read.
+		expect([...code.matchAll(/session\.isWorking/g)].length).toBe(1);
+		expect(code).toMatch(/<WorkspaceTabBar[\s\S]*?isWorking=\{session\.isWorking\}/);
+		const tabBar = readFileSync(join(import.meta.dir, "WorkspaceTabBar.tsx"), "utf-8");
+		expect([...tabBar.matchAll(/props\.isWorking/g)].length).toBe(1);
+		expect(tabBar).toMatch(/tab\("activity", "Activity", props\.isWorking \? "Working" : null\)/);
 		// the removed chip: a pulsing dot beside the word "working"
 		expect(code).not.toMatch(/animate-pulse-dot[\s\S]{0,80}working/);
 	});

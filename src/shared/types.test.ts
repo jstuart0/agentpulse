@@ -199,11 +199,12 @@ describe("shared kind allowlists", () => {
 			"riskClasses",
 			"telegramChannel",
 			"askAssistant",
+			"sessionSummary",
 		];
 		for (const flag of expected) {
 			expect(KNOWN_LABS_FLAGS.includes(flag)).toBe(true);
 		}
-		expect(KNOWN_LABS_FLAGS.length).toBe(10);
+		expect(KNOWN_LABS_FLAGS.length).toBe(11);
 		expect(KNOWN_LABS_FLAGS.includes("bogusFlag" as LabsFlag)).toBe(false);
 	});
 

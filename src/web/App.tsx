@@ -11,6 +11,7 @@ import { api } from "./lib/api.js";
 import { deriveAppGate } from "./lib/app-gate.js";
 import { useToastPosition } from "./lib/dialog-open.js";
 import { applyTheme, getStoredTheme, themeToApply } from "./lib/theme.js";
+import { useAiStatusStore } from "./stores/ai-status-store.js";
 import { useDbFingerprintStore } from "./stores/db-fingerprint-store.js";
 import { useLabsStore } from "./stores/labs-store.js";
 import { useProjectsStore } from "./stores/projects-store.js";
@@ -103,6 +104,7 @@ function RouteFallback() {
 export function App() {
 	useNotificationPermission();
 	const loadLabs = useLabsStore((s) => s.load);
+	const loadAiStatus = useAiStatusStore((s) => s.load);
 	const loadUser = useUserStore((s) => s.load);
 	const loadProjects = useProjectsStore((s) => s.load);
 	const loaded = useUserStore((s) => s.loaded);
@@ -129,8 +131,9 @@ export function App() {
 	useEffect(() => {
 		if (!appReady) return;
 		void loadLabs();
+		void loadAiStatus();
 		void loadProjects();
-	}, [appReady, loadLabs, loadProjects]);
+	}, [appReady, loadLabs, loadAiStatus, loadProjects]);
 
 	// Owner names, and the people a key or host can be handed to. Team mode only.
 	useEffect(() => {

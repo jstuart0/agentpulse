@@ -7,6 +7,98 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-05
+
+### Added
+
+- **Session summary (Labs, off by default).** A Summary tab on each session
+  with an on-demand summary: what the session set out to do, what changed,
+  what was checked, what is unfinished, the next actions, and a handoff you can
+  copy into another agent. Turn it on under **Settings → Labs → Session
+  summary**, or with **Turn on** on a session's AI tab; AI must be enabled and a
+  default provider set. Nothing is sent to your provider until you press
+  **Summarize this session**, and the button shows the most one summary can
+  cost before you press it. A summary is a snapshot: when the session moves on
+  it says so, and **Update** makes a new one.
+  What makes it checkable: the model cites numbered events from the session,
+  and the server confirms each one exists and what kind of event it was and how
+  it ended. A claim nothing recorded confirms is marked "Agent's claim only".
+  A test or build the session ran and that failed can't be reported as passed
+  (the server replaces the result with "unknown" and marks it adjusted), nor
+  can a pass count when an edit came after it. An outcome of "completed" is
+  held to "in progress" while the session is still working or waiting on a
+  permission.
+  What is sent to the provider: the session's prompts, agent replies, notes,
+  current task, plan summary, commands and file paths, with known secret
+  patterns masked first. Command output is sent only for a failing test or
+  build, and only its first and last 300 characters. A command that reads a
+  credential file is withheld entirely.
+  What it does not do: it is never automatic, and it is a summary of what hooks
+  reported, not an audit. The "check before pasting" notice on a summary that
+  looks like it carries instructions is a heuristic tripwire, not a control; see
+  the README's "Session summary" section for the list of limits.
+  Operators: migration sqlite `0011` / postgres `0011` adds the
+  `ai_session_summaries` table; the retention pass deletes expired summaries
+  (below); the request limits, generation slots and breaker are per process;
+  after a restore or bulk load run `VACUUM (ANALYZE) events;` (see
+  `deploy/k8s/README.md`). New routes: `GET` and `POST
+  /api/v1/ai/sessions/:sessionId/summary` (manage-scoped; `?poll=1` for the
+  polled view).
+
+### Changed
+
+- **A session summary no longer charges a call that cannot have been billed.** A refused
+  connection, a DNS or TLS failure before the request left, and any 4xx other than 499 cost
+  nothing; a 499, 504, 524, timeout or mid-call drop is charged the single-call maximum; other
+  5xx the priced input. Three maximum-charged failures by one caller within ten minutes make that caller's new summary
+  requests from that caller answer busy for 5, then 10, 20, 40 and 60 minutes on each consecutive re-open, until one of their calls succeeds; a session charged the maximum stays shut for 10 minutes; and once unknown-outcome charges reach 25% of the daily cap in a local day the summary feature answers with the budget refusal until the day rolls over (all per process).
+- **Recorded AI spend for Anthropic providers reads higher than before.** It was
+  under-counted: Anthropic reports input tokens without the cached ones, and the
+  old formula subtracted the cached reads from them anyway, and never billed cache
+  creation at all. The price is now input tokens, plus cache creation at 1.25 times
+  the input rate, plus cache reads at the cache-read rate. This changes the figure
+  the watcher, Ask and launch recommendations record against the daily cap. Other
+  providers are unchanged.
+- **The retention pass also deletes expired session summaries.** A stored summary
+  generated before the retention cutoff (and a summary row left generating past its
+  five-minute lease by a crash) is deleted in batches of 500, after the events
+  batches, under the same advisory lock on Postgres. Retention is off by default.
+  `GET /api/v1/health` reports `retention.lastRun.summariesDeleted` beside
+  `rowsDeleted`. "Only the `events` history ages out" is no longer true when
+  retention is on.
+
+- **The watcher redacts more, and the watcher and Ask strip more invisible
+  characters.** The redaction changes apply to what the watcher sends to a model
+  provider (its transcript, and now also the CLAUDE.md excerpt in its system
+  prompt, which was sent as written) and to the redaction preview in Settings.
+  Ask does not redact. The redactor now also masks quoted and YAML secret values
+  (`"password": "..."`, `"accessToken": "..."`, `api_key: ...`, including one
+  level of escaped JSON), passwords in URLs (`scheme://user:pass@host`, an empty
+  user, a password containing `@`, and a token alone as the userinfo),
+  private-key blocks of any length (including legacy encrypted keys and PGP
+  blocks), `Cookie` / `Set-Cookie`, `Authorization` (Bearer, Basic, Token,
+  Digest, AWS4, JSON form) and `X-Api-Key` / `X-Auth-Token` headers,
+  `--password` / `--token` / `--secret` / `--api-key` flags (and their
+  `--client-`, `--access-`, `--auth-`, `--api-`, `--refresh-` and `--bearer-`
+  forms), `curl -u user:pass`, quoted env values with spaces
+  (`PASSWORD="my pass phrase"`), more env names (`SECRET_KEY`, `SIGNING_KEY`,
+  `ENCRYPTION_KEY`, `PASSWD`, `PASS=`, `CREDENTIALS`), and Stripe live, Hugging
+  Face, GitLab, npm, GitHub fine-grained and Slack (`xapp-`, webhook URL)
+  tokens. Both the watcher and Ask now strip the whole variation-selector
+  ranges (FE00-FE0F and E0100-E01EF), the Unicode tag block, the byte order
+  mark, soft hyphens, word joiners, bidi controls, hangul fillers and C1
+  controls. The existing env-assignment rule is rewritten to run in linear time
+  (a 100 KB run of `A_A_A_...` took 7 s), and a value can no longer start on
+  the line after `=`.
+  Not every ordinary line is untouched: a few over-matches are accepted
+  (`const token = await getToken()`, the word after a secret flag in prose such
+  as "no --api-key was provided", a line that starts `cookie: a=b`), and a
+  YAML value that looks like a type or resource name (`password: SecretStr`,
+  `secret: my-secret-name`) is left alone, as is a CamelCase or all-lowercase
+  hyphenated passphrase. Rules you add in Settings run after the built-in ones
+  in the watcher, so a rule of yours for a shape the built-ins now catch stops firing; session
+  summaries use the built-in rules only.
+
 ## [0.7.2] — 2026-10-04
 
 ### Added

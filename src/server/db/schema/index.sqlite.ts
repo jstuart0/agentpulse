@@ -4,7 +4,7 @@
  * drizzle-kit SQLite config points here unconditionally (Decision 18).
  * The runtime barrel (index.ts) selects this file when config.dialect === "sqlite".
  *
- * Phase 2a: all 30 tables now exported from domain-specific files.
+ * Phase 2a: all 31 tables now exported from domain-specific files.
  * eventEmbeddings is SQLite-only (no pgTable equivalent — Decision 3).
  */
 
@@ -45,6 +45,7 @@ export { aiHitlRequestsSqlite as aiHitlRequests } from "./ai/ai-hitl-requests.js
 export { aiActionRequestsSqlite as aiActionRequests } from "./ai/ai-action-requests.js";
 export { aiPendingProjectDraftsSqlite as aiPendingProjectDrafts } from "./ai/ai-pending-project-drafts.js";
 export { aiQaCacheSqlite as aiQaCache } from "./ai/ai-qa-cache.js";
+export { aiSessionSummariesSqlite as aiSessionSummaries } from "./ai/ai-session-summaries.js";
 // SQLite-only: no pgTable for eventEmbeddings (Decision 3 / pgvector is a follow-up).
 export { eventEmbeddingsSqlite as eventEmbeddings } from "./ai/event-embeddings.js";
 

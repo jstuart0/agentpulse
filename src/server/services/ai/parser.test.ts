@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseDecision } from "./parser.js";
+import { extractJsonObject, parseDecision, stripCodeFence, stripThinkTag } from "./parser.js";
 
 describe("parser: happy path", () => {
 	test("parses continue", () => {
@@ -119,5 +119,22 @@ describe("parser: failures", () => {
 		expect(schema.ok).toBe(false);
 		if (schema.ok) throw new Error("expected fail");
 		expect(schema.schemaViolation).toBe(true);
+	});
+});
+
+describe("parser: exported helpers (AGEN-69 TC-2.3, pins existing behaviour)", () => {
+	test("TC-2.3 stripThinkTag drops everything up to the last </think>", () => {
+		expect(stripThinkTag("<think>a</think>b</think>  {}")).toBe("{}");
+		expect(stripThinkTag("{}")).toBe("{}");
+	});
+
+	test("TC-2.3 stripCodeFence unwraps one fence and leaves other text alone", () => {
+		expect(stripCodeFence('```json\n{"a":1}\n```')).toBe('{"a":1}');
+		expect(stripCodeFence('{"a":1}')).toBe('{"a":1}');
+	});
+
+	test("TC-2.3 extractJsonObject finds the first balanced object, string-aware", () => {
+		expect(extractJsonObject('noise {"a":"}"} tail')).toBe('{"a":"}"}');
+		expect(extractJsonObject("no object")).toBeNull();
 	});
 });

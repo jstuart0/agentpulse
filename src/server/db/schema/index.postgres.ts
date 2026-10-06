@@ -4,7 +4,7 @@
  * drizzle-kit Postgres config will point here unconditionally (Decision 18).
  * The runtime barrel (index.ts) selects this file when config.dialect === "postgres".
  *
- * Phase 2a: all 29 tables exported (eventEmbeddings is SQLite-only — Decision 3).
+ * Phase 2a: all 30 tables exported (eventEmbeddings is SQLite-only — Decision 3).
  * eventEmbeddings is NOT re-exported here; callers on the Postgres path must
  * gate on config.dialect === "sqlite" before accessing it.
  */
@@ -46,6 +46,7 @@ export { aiHitlRequestsPg as aiHitlRequests } from "./ai/ai-hitl-requests.js";
 export { aiActionRequestsPg as aiActionRequests } from "./ai/ai-action-requests.js";
 export { aiPendingProjectDraftsPg as aiPendingProjectDrafts } from "./ai/ai-pending-project-drafts.js";
 export { aiQaCachePg as aiQaCache } from "./ai/ai-qa-cache.js";
+export { aiSessionSummariesPg as aiSessionSummaries } from "./ai/ai-session-summaries.js";
 // eventEmbeddings intentionally omitted — SQLite-only (Decision 3).
 
 // ── ask-projects/ ─────────────────────────────────────────────────────────────

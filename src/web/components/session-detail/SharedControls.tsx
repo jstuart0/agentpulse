@@ -86,15 +86,25 @@ export function WorkspaceTabButton({
 	active,
 	label,
 	badge,
+	badgeName,
+	id,
 	onClick,
 }: {
 	active: boolean;
 	label: string;
 	badge?: string | null;
+	/** What a screen reader says for the badge, appended to the label. */
+	badgeName?: string | null;
+	/** Lets focus be moved to this tab from elsewhere on the page. */
+	id?: string;
 	onClick: () => void;
 }) {
 	return (
 		<button
+			type="button"
+			id={id}
+			aria-label={badge && badgeName ? `${label}, ${badgeName}` : undefined}
+			aria-current={active ? "page" : undefined}
 			onClick={onClick}
 			className={cn(
 				"inline-flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors",

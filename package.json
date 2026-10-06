@@ -1,6 +1,6 @@
 {
 	"name": "agentpulse",
-	"version": "0.7.2",
+	"version": "0.8.0",
 	"description": "Command center for AI coding agents across all your machines",
 	"type": "module",
 	"workspaces": ["packages/*"],
@@ -51,6 +51,7 @@
 		"embed:exclude-rules": "bun scripts/embed-exclude-rules.ts",
 		"check:ownership-guards": "bun scripts/check-ownership-guards.ts",
 		"check:no-exclude-provider-outside-tests": "bun scripts/check-no-exclude-provider-outside-tests.ts",
+		"check:web-bundle-budget": "bun scripts/check-web-bundle-budget.ts",
 		"check:architecture": "bun run check:no-raw-fetch && bun run check:no-sync-transcript-io && bun run check:installers && bun run check:no-bun-sqlite-only-apis && bun run check:no-legacy-schema-import && bun run check:no-authentik-literals && bun run check:hook-event-parity && bun run check:agent-type-parity && bun run check:dto-field-parity && bun run check:no-console-log-mcp && bun run check:mcp-no-raw-register-tool && bun run check:mcp-no-cross-boundary-import && bun run check:no-test-seam-leaks && bun run check:no-exclude-provider-outside-tests && bun run check:relay-exclude-embed && bun run check:ownership-guards"
 	},
 	"dependencies": {
