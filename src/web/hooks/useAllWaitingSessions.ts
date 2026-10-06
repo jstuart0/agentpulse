@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Session } from "../../shared/types.js";
 import { api } from "../lib/api.js";
+import { assertHostEchoMatches } from "../lib/host-scope.js";
 import { requestKey, useRequestGuard } from "../lib/live-request.js";
 import { type DashboardScope, ScopeMismatchError, assertEchoMatches } from "../lib/owner-scope.js";
 import { scopedQuery } from "../lib/scoped-query.js";
@@ -26,7 +27,8 @@ export function useAllWaitingSessions(
 	const viewerUserId = useUserStore((s) => s.userId);
 	const owner = scope?.owner ?? null;
 	const excludeScratch = scope?.excludeScratch ?? false;
-	const liveKey = owner === null ? "" : requestKey({ owner, excludeScratch }, "waiting");
+	const host = scope?.host;
+	const liveKey = owner === null ? "" : requestKey({ owner, excludeScratch, host }, "waiting");
 	const isCurrent = useRequestGuard(liveKey);
 
 	useEffect(() => {
@@ -34,7 +36,7 @@ export function useAllWaitingSessions(
 			setHeld({ key: "", sessions: [] });
 			return;
 		}
-		const asked = { owner, excludeScratch };
+		const asked = { owner, excludeScratch, host };
 		const askedKey = requestKey(asked, "waiting");
 		const timer = setTimeout(async () => {
 			try {
@@ -43,6 +45,7 @@ export function useAllWaitingSessions(
 						scopedQuery(asked, { operational: "waiting", limit, offset }),
 					);
 					assertEchoMatches(owner, viewerUserId, res.ownerScope);
+					assertHostEchoMatches(host, res.hostFilter);
 					return { sessions: res.sessions as Session[], total: res.total };
 				});
 				if (isCurrent(askedKey)) setHeld({ key: askedKey, sessions: collected });
@@ -55,7 +58,7 @@ export function useAllWaitingSessions(
 			}
 		}, MARK_ALL_SETTLE_MS);
 		return () => clearTimeout(timer);
-	}, [owner, excludeScratch, waitingCount, viewerUserId, isCurrent]);
+	}, [owner, excludeScratch, host, waitingCount, viewerUserId, isCurrent]);
 
 	return held.key === liveKey ? held.sessions : [];
 }

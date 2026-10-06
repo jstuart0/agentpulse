@@ -1063,7 +1063,7 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		// AGEN-69: latest AI summary of a session. Born with its cascade FK (the
 		// SQLite schema convention is to retrofit it in rebuildSessionChildFks,
 		// which this table deliberately is not in). Column order matches the
-		// Drizzle schema and migration 0010; ai-session-summaries.test.ts pins it.
+		// Drizzle schema and migration 0011; ai-session-summaries.test.ts pins it.
 		`CREATE TABLE IF NOT EXISTS ai_session_summaries (
 			session_id TEXT PRIMARY KEY NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
 			schema_version INTEGER NOT NULL DEFAULT 1,
@@ -1155,6 +1155,9 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			// cascade configured and we don't want to retrofit one here).
 			"CREATE TRIGGER IF NOT EXISTS trg_events_ad_embeddings AFTER DELETE ON events BEGIN DELETE FROM event_embeddings WHERE event_id = OLD.id; END",
 			"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model ON event_embeddings(model)",
+			// Serves the bounded Ask scan (services/ai/embeddings/vector-scan.ts).
+			// Mirrors the drizzle migration for installs on the legacy init path.
+			"CREATE INDEX IF NOT EXISTS idx_event_embeddings_model_dim_event ON event_embeddings(model, dim, event_id)",
 		);
 	}
 

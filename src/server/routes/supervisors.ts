@@ -31,6 +31,7 @@ import {
 import { claimNextControlAction, updateControlAction } from "../services/control-actions.js";
 import { claimNextLaunchRequest, updateLaunchDispatchStatus } from "../services/launch-dispatch.js";
 import { associateObservedSession } from "../services/launch-dispatch.js";
+import { cleanMachineName } from "../services/machine-name.js";
 import {
 	appendManagedSessionEvents,
 	listManagedSessionsNeedingSync,
@@ -226,14 +227,18 @@ supervisorsAgentRouter.post("/supervisors/register", registerBodyLimit, async (c
 		return c.json({ error: "Request body must be a JSON object" }, 400);
 	}
 	const registrationInput: SupervisorRegistrationInput = { ...body };
+	const cleanedHostName = cleanMachineName(
+		typeof registrationInput.hostName === "string" ? registrationInput.hostName : null,
+	);
 	if (
-		!registrationInput.hostName ||
+		!cleanedHostName ||
 		!registrationInput.platform ||
 		!registrationInput.arch ||
 		!registrationInput.version
 	) {
 		return c.json({ error: "Missing required supervisor fields" }, 400);
 	}
+	registrationInput.hostName = cleanedHostName;
 
 	let credential: { id: string; supervisorId: string; name: string } | null = null;
 	// The enrollment token's creator, threaded into registerSupervisor below

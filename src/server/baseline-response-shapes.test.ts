@@ -30,7 +30,9 @@
  * ("idle" for that same session — active, not working, nothing finished yet).
  *
  * The session-host change adds one more nullable session field, `reportedHost`
- * (null for a session no relay or observer reported a machine for).
+ * (null for a session no relay or observer reported a machine for). The machine
+ * filter adds `machine` to list rows (the effective machine, null here); the
+ * detail response is unchanged.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import "./db/__test_db.js";
@@ -425,7 +427,7 @@ describe("sessions and api-keys endpoints for a manage caller — baseline shape
 		const listBody = (await listRes.json()) as { sessions: Array<{ id: string }> };
 		const listedSession = listBody.sessions.find((s) => s.id === dbId);
 		expect(listedSession).toBeDefined();
-		expect(normalize(listedSession)).toEqual({ ...sessionShape, managed: false });
+		expect(normalize(listedSession)).toEqual({ ...sessionShape, machine: null, managed: false });
 
 		expect(normalize(detailBody)).toEqual({
 			controlActions: [],

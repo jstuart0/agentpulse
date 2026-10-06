@@ -204,3 +204,23 @@ describe("shouldShowFirstRun", () => {
 		expect(shouldShowFirstRun({ ...base, stats: { total: 0 } })).toBe(true);
 	});
 });
+
+describe("shouldShowFirstRun under a machine filter", () => {
+	test("a machine with nothing on it keeps the page, and the control that clears the filter, even when the whole answer is empty", () => {
+		const base = {
+			isLoading: false,
+			loadedCount: 0,
+			owner: "all",
+			stats: { total: 0, scratchHidden: 0 },
+		};
+		expect(shouldShowFirstRun({ ...base, host: "build-01" })).toBe(false);
+		expect(shouldShowFirstRun({ ...base, host: "\u001funknown" })).toBe(false);
+		expect(shouldShowFirstRun({ ...base, stats: null, host: "build-01" })).toBe(false);
+	});
+
+	test("every machine, or none given, is the empty install it always was", () => {
+		const base = { isLoading: false, loadedCount: 0, owner: "all" };
+		expect(shouldShowFirstRun({ ...base, host: "" })).toBe(true);
+		expect(shouldShowFirstRun(base)).toBe(true);
+	});
+});

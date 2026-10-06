@@ -333,6 +333,26 @@ describe("createHttpClient — Phase 3 request construction (tessa H-3)", () => 
 		expect(getUrl()).toBe("http://localhost:3000/api/v1/sessions/stats");
 	});
 
+	test("getSessions() and getStats() forward host as one encoded query value, and omit it when not given", async () => {
+		const { fetchImpl, getUrl } = recordingFetch({ sessions: [], total: 0 });
+		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });
+
+		await client.getSessions({ host: "Alice's MBP & co", limit: 5 });
+		expect(new URL(getUrl() ?? "").searchParams.get("host")).toBe("Alice's MBP & co");
+		await client.getSessions({ host: "\u001funknown" });
+		expect(getUrl()).toContain("host=%1Funknown");
+		await client.getSessions({ limit: 5 });
+		expect(new URL(getUrl() ?? "").searchParams.has("host")).toBe(false);
+
+		await client.getStats({ host: "build-01", owner: "me" });
+		const stats = new URL(getUrl() ?? "");
+		expect(stats.pathname).toBe("/api/v1/sessions/stats");
+		expect(stats.searchParams.get("host")).toBe("build-01");
+		expect(stats.searchParams.get("owner")).toBe("me");
+		await client.getStats({ owner: "me" });
+		expect(new URL(getUrl() ?? "").searchParams.has("host")).toBe(false);
+	});
+
 	test("getSessions() with no params omits every query key entirely", async () => {
 		const { fetchImpl, getUrl } = recordingFetch({ sessions: [], total: 0 });
 		const client = createHttpClient({ baseUrl: "http://localhost:3000", apiKey: "k", fetchImpl });

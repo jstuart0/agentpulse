@@ -52,7 +52,11 @@ describeSqliteOnly("admin lock isolation on SQLite", () => {
 	test("a body that waits on a timer is refused loudly", async () => {
 		await expect(
 			withAdminLock(async () => {
-				await new Promise((resolve) => setTimeout(resolve, 0));
+				// Long enough that the lock's setImmediate sentinel always fires first. A 0 ms
+				// timer is floored to 1 ms, and on Linux that timer could come due before
+				// the sentinel's loop iteration was checked, so the yield went unreported
+				// and this test failed about 0.2-1.5% of the time (none missed at 10 or 25 ms).
+				await new Promise((resolve) => setTimeout(resolve, 25));
 			}),
 		).rejects.toThrow(/yielded to the event loop/);
 	});

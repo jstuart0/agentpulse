@@ -100,7 +100,7 @@ afterEach(async () => {
 		if (value === undefined) delete g[key];
 		else g[key] = value;
 	}
-	useDashboardScopeStore.setState({ owner: "all", resolved: true });
+	useDashboardScopeStore.setState({ owner: "all", host: "", resolved: true });
 	useUserStore.setState({ mode: "solo" } as never);
 });
 
@@ -258,5 +258,69 @@ describe("a socket that reconnects re-asks who the viewer is", () => {
 		});
 		await new Promise((r) => setTimeout(r, 20));
 		expect(meCalls).toBe(1);
+	});
+});
+
+describe("a machine filter on the dashboard", () => {
+	const onMachine = (id: string, machine: string | null | undefined, working = true) => ({
+		...row(id, ME, working),
+		...(machine === undefined ? {} : { machine }),
+	});
+	const shown = () => useSessionStore.getState().sessions.map((s) => s.sessionId);
+
+	test("a session pushed on the chosen machine appears; one on another machine does not", async () => {
+		useDashboardScopeStore.setState({ host: "build-01" });
+		await deliver(socket, {
+			type: "session_created",
+			data: { session: onMachine("on", "build-01") },
+		});
+		await deliver(socket, {
+			type: "session_created",
+			data: { session: onMachine("off", "edge-02") },
+		});
+		await deliver(socket, { type: "session_updated", data: { session: onMachine("none", null) } });
+		expect(shown()).toEqual(["on"]);
+	});
+
+	test("a shown session that moves to another machine leaves the list", async () => {
+		useDashboardScopeStore.setState({ host: "build-01" });
+		await deliver(socket, {
+			type: "session_created",
+			data: { session: onMachine("a", "build-01") },
+		});
+		await deliver(socket, {
+			type: "session_updated",
+			data: { session: onMachine("a", "edge-02") },
+		});
+		expect(shown()).toEqual([]);
+	});
+
+	test("unknown takes the sessions with no machine", async () => {
+		useDashboardScopeStore.setState({ host: "\u001funknown" });
+		await deliver(socket, { type: "session_created", data: { session: onMachine("n", null) } });
+		await deliver(socket, {
+			type: "session_created",
+			data: { session: onMachine("m", "build-01") },
+		});
+		expect(shown()).toEqual(["n"]);
+	});
+
+	test("every machine takes everything, as before", async () => {
+		await deliver(socket, {
+			type: "session_created",
+			data: { session: onMachine("a", "build-01") },
+		});
+		await deliver(socket, {
+			type: "session_created",
+			data: { session: onMachine("b", "edge-02") },
+		});
+		expect(shown().sort()).toEqual(["a", "b"]);
+	});
+
+	test("which machine is on screen doesn't decide who is notified", async () => {
+		useDashboardScopeStore.setState({ host: "edge-02" });
+		await finishedAfterWorking(socket, (w) => onMachine("s-mine", "build-01", w));
+		expect(notifications.map((n) => n.title)).toEqual(["s-mine finished"]);
+		expect(shown()).toEqual([]);
 	});
 });

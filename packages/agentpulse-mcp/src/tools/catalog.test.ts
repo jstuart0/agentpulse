@@ -9,7 +9,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../server.js";
 import { FAKE_STATS, fakeClient } from "../test-support.js";
-import type { LaunchRequest, OwnerScopeEcho, SessionTemplate } from "../types.js";
+import type { HostFilterEcho, LaunchRequest, OwnerScopeEcho, SessionTemplate } from "../types.js";
 import { registerCatalogTools } from "./catalog.js";
 
 /** Minimal fixtures — LaunchRequest/SessionTemplate carry ~15-30 fields irrelevant to these pass-through happy-path tests; cast rather than enumerate every one. */
@@ -102,6 +102,74 @@ describe("get_stats — owner scope", () => {
 	test("no request for the caller's identity is made", async () => {
 		const { authMeCalls } = await callStats({ owner: "me" }, { kind: "me", userId: USER_ID });
 		expect(authMeCalls()).toBe(0);
+	});
+});
+
+describe("get_stats — machine filter", () => {
+	async function callStats(args: Record<string, unknown>, echo: HostFilterEcho | undefined) {
+		const asked: Array<string | undefined> = [];
+		const ctx = newContext(
+			fakeClient({
+				getStats: async (params) => {
+					asked.push(params?.host);
+					return { ...FAKE_STATS, ...(echo ? { hostFilter: echo } : {}) };
+				},
+			}),
+		);
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "get_stats", arguments: args });
+		return { result, asked };
+	}
+
+	test("a machine is forwarded and counts that say they cover it are accepted", async () => {
+		const { result, asked } = await callStats(
+			{ host: "build-01" },
+			{ kind: "host", host: "build-01" },
+		);
+		expect(result.isError).toBeFalsy();
+		expect(asked).toEqual(["build-01"]);
+		const unknown = await callStats({ no_host: true }, { kind: "unknown" });
+		expect(unknown.result.isError).toBeFalsy();
+		expect(unknown.asked).toEqual(["\u001funknown"]);
+	});
+
+	test("counts without the echo, or for another machine, are refused", async () => {
+		for (const echo of [undefined, { kind: "all" }, { kind: "host", host: "edge-02" }] as Array<
+			HostFilterEcho | undefined
+		>) {
+			const { result } = await callStats({ host: "build-01" }, echo);
+			expect({ echo, isError: result.isError }).toEqual({ echo, isError: true });
+		}
+	});
+
+	test("it composes with owner: both must be confirmed", async () => {
+		const ctx = newContext(
+			fakeClient({
+				getStats: async (params) => {
+					expect(params).toEqual({ owner: "service", host: "build-01" });
+					return { ...FAKE_STATS, ownerScope: { kind: "service" }, hostFilter: { kind: "all" } };
+				},
+			}),
+		);
+		registerCatalogTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({
+			name: "get_stats",
+			arguments: { owner: "service", host: "build-01" },
+		});
+		expect(result.isError).toBe(true);
+	});
+
+	test("both flags together, or a bad name, are rejected before any request; no filter needs nothing", async () => {
+		const both = await callStats({ host: "x", no_host: true }, { kind: "all" });
+		expect(both.result.isError).toBe(true);
+		expect(both.asked).toEqual([]);
+		const bad = await callStats({ host: "a\nb" }, { kind: "all" });
+		expect(bad.result.isError).toBe(true);
+		const bare = await callStats({}, undefined);
+		expect(bare.result.isError).toBeFalsy();
+		expect(bare.asked).toEqual([undefined]);
 	});
 });
 

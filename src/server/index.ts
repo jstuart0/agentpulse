@@ -16,6 +16,7 @@ import {
 	initTelegramCredentials,
 } from "./services/channels/telegram-credentials.js";
 import { startTelegramPolling } from "./services/channels/telegram-poller.js";
+import { normalizeStoredMachineNamesSafely, stampMachine } from "./services/effective-machine.js";
 import { assertBootable, warnAboutRiskySubjectSourceAdmins } from "./services/instance-mode.js";
 import { ensureBootstrapAdmin } from "./services/local-auth-bootstrap.js";
 import { reapExpiredSessions } from "./services/local-auth-service.js";
@@ -160,6 +161,7 @@ if (config.forwardauthTrustSecret && !config.allowSignup) {
 // ensures markDbReady() only fires after all migrations complete, preserving
 // the synchronous-assumption guarantee that previously held (codex C3).
 await initializeDatabase();
+await normalizeStoredMachineNamesSafely();
 
 // Refuse to start in a mode configuration that can't work (see
 // assertBootable). Before markDbReady so the readiness probe never goes green
@@ -224,7 +226,7 @@ startHeartbeat();
 
 // A-M3: Wire the WS broadcaster as a subscriber on the session bus.
 // Must run after Bun.serve() so the WS broadcast function is ready.
-initWsBroadcaster(sessionBus);
+initWsBroadcaster(sessionBus, { annotate: stampMachine });
 
 // Start anonymous telemetry (opt-out with AGENTPULSE_TELEMETRY=off)
 startTelemetry();

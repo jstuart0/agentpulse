@@ -565,11 +565,100 @@ session (active, not working) as IDLE until its next Stop or prompt
 stamps one of the timestamps — nothing has finished yet, so nothing is
 awaiting the user. No action is required; no backfill.
 
-## Upgrading to migration 0010 (SQLite) / 0011 (Postgres): session summaries
+## Upgrading to SQLite migration 0010 (bounded Ask vector scan)
 
-`drizzle/sqlite/0010_ai_session_summaries.sql` and
-`drizzle/postgres/0011_ai_session_summaries.sql` (the numbers differ for the
-same reason as the acknowledgement-timestamp pair above) create one new
+Applies to SQLite installs with vector search on (`AGENTPULSE_VECTOR_SEARCH=true`).
+Postgres installs are unaffected: `event_embeddings` is SQLite-only, and there
+is no Postgres counterpart to this migration (the dialects' numbers are level
+again at `0010`; see `CLAUDE.md`'s "DB migrations" paragraph).
+
+**What it does.** `drizzle/sqlite/0010_event_embeddings_scan_index.sql` adds
+`idx_event_embeddings_model_dim_event` on `event_embeddings (model, dim,
+event_id)`, which the Ask semantic scan names with `INDEXED BY`. An existing
+install on the legacy init path gets the same index from `db/client.ts`
+(only when `AGENTPULSE_VECTOR_SEARCH=true`); fresh installs and
+`AGENTPULSE_LEGACY_INIT=false` get it from the Drizzle migration. Both use
+`CREATE INDEX IF NOT EXISTS`, so an index you created by hand under that name
+is left alone.
+
+**First boot.** The index is built during boot, before the server serves, so
+`/api/v1/health` stays 503 until it finishes (see the boot-window note under
+"Known limitations" below for how long monitoring should tolerate that). On a warm table of about 164,000
+rows (4,096-dimension vectors) the builder measured about 100 ms. A cold table
+on a slow volume was not measured; if your probe window is tight and the table
+is large, watch the first boot. The index is small (about 4 MiB at that size
+in the builder's measurement) because it holds keys, not vectors.
+
+**Memory.** The scan no longer needs memory proportional to the table: it
+reads a few vectors at a time. The rows it reads still pass through the page
+cache, which container memory accounting can include, so this section can't
+tell you what limit is enough for your table. Size the limit from what you
+observe after the first free-form Ask questions rather than from a formula,
+and expect the first scan after a restart to read from a cold cache.
+
+**Environment variables** (optional; set them on the Deployment). Out-of-range
+numbers are clamped; a non-number falls back to the default.
+
+| Variable | Default | Range | Effect |
+|---|---|---|---|
+| `AGENTPULSE_VECTOR_SCAN_MAX_ROWS` | `50000` | 1,000 to 5,000,000 | Most vectors one scan reads, newest first. |
+| `AGENTPULSE_VECTOR_SCAN_MAX_MS` | `4000` | 250 to 60,000 | Longest one scan runs, pacing included. |
+| `AGENTPULSE_VECTOR_SCAN_CPU_SHARE` | `0.3` | 0.05 to 1 | Share of CPU all concurrent scans together may use (`1` = no pacing). A lower share leaves more CPU for hook ingest while a scan runs, at the cost of a slower scan. |
+| `AGENTPULSE_ASK_MAX_CONCURRENT` | `2` | 1 to 8 | Ask turns that run at once, web and Telegram together. Per process: with N replicas the real limit is N times this. |
+
+**Checking a scan after deploy.** Ask a free-form question (one that isn't a
+launch, an approval or another direct command), then look in the server log
+for these JSON lines:
+
+- `ask_vector_scan_started`: `model`, `dim`. One per scan, before it reads.
+- `ask_vector_scan`: `returned` (rows read), `scored`, `skipped` (orphans and
+  wrong-size blobs), `statements`, `stopReason` (`exhausted`, `row_budget` or
+  `time_budget`), `ms`, `busyMs` (CPU time the chunks used, user plus
+  system, which is what the pacer sleeps off; `ms` also includes the sleeps that
+  pace the scan and any time blocked on storage), `maxSliceMs` (the longest stretch without yielding to the
+  event loop) and `oldestEventAt` (the oldest event the scan reached, or null).
+  `stopReason: exhausted` means the scan covered every vector of the active
+  model.
+- `ask_vector_scan_error`: `reason` (`index_missing`, `table_missing` or
+  `scan_failed`) and a truncated `message`. Logged once per boot per reason;
+  the Ask turn goes on without semantic matches. `index_missing` means the
+  migration above didn't run for this database.
+- `vector_scan_coverage_partial`: once per boot, when a scan stopped on a
+  budget; `stopReason`, `returned`, `oldestEventAt`.
+
+Each turn also logs `ask_turn_started`, `ask_turn_path` and `ask_turn_done`
+(counts, path and duration; never message text). Callers refused for load
+get `503 busy` on the web; there is no log counter for them yet.
+
+**Watching the embeddings backfill.** `GET /api/v1/ai/vector-search/status`
+(`manage` scope for an API key) returns `progress`: `total`, `embedded`,
+`pending`, `model`, `running`, `startedAt`, `finishedAt` and `error`. The log
+has one `embedding_backfill_batch_started` (`cursor`, `rows`, `payloadBytes`)
+and one `embedding_backfill_batch` (`cursor`, `embedded`, `skipped`, `ms`) per
+batch. The backfill walks an id cursor in windows of 5,000 ids, never reads a
+whole payload into JavaScript, and takes at most 32 rows or about 4 MiB of
+payload per batch, so it can run beside ingest on a large table. It uses
+SQLite's `octet_length()` (SQLite 3.43 or later); the code doesn't check the
+version, so on an older SQLite the status shows an `error` and the log shows
+`[embeddings] backfill failed`.
+
+**Turning semantic search off.** Without a redeploy: Settings → AI → Vector
+search → Enabled off, or `PUT /api/v1/ai/vector-search/status` with
+`{"enabled":false}` (it takes effect without a restart). Ask then makes no semantic matches
+and relies on keyword search. Stored embeddings stay. Removing
+`AGENTPULSE_VECTOR_SEARCH` turns the feature off at the next boot.
+
+**Known limits.** A Telegram update the poller hasn't confirmed is fetched
+again after a restart; a slow or hung model, embedding or Telegram call delays
+later Telegram messages in polling mode (Telegram API calls have no timeout);
+the Ask limit is per process with no per-user fairness; and the scan and
+limiter counters are only in the log lines above, not on `/health`. See the
+Known limitations list in the 0.7.2 entry of `CHANGELOG.md` for the rest.
+
+## Upgrading to migration 0011 (SQLite and Postgres): session summaries
+
+`drizzle/sqlite/0011_ai_session_summaries.sql` and
+`drizzle/postgres/0011_ai_session_summaries.sql` create one new
 table, `ai_session_summaries`: one row per session, keyed by `session_id`,
 cascading when the session is deleted. Both use `CREATE TABLE IF NOT EXISTS`
 and touch no existing table, so there is no lock window and nothing to

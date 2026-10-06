@@ -35,7 +35,7 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   reported, not an audit. The "check before pasting" notice on a summary that
   looks like it carries instructions is a heuristic tripwire, not a control; see
   the README's "Session summary" section for the list of limits.
-  Operators: migration sqlite `0010` / postgres `0011` adds the
+  Operators: migration sqlite `0011` / postgres `0011` adds the
   `ai_session_summaries` table; the retention pass deletes expired summaries
   (below); the request limits, generation slots and breaker are per process;
   after a restore or bulk load run `VACUUM (ANALYZE) events;` (see
@@ -96,6 +96,337 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   hyphenated passphrase. Rules you add in Settings run after the built-in ones
   in the watcher, so a rule of yours for a shape the built-ins now catch stops firing; session
   summaries use the built-in rules only.
+
+## [0.7.2] — 2026-10-04
+
+### Added
+
+- **Filter or group the dashboard by machine.** A Machine select narrows the
+  dashboard to the sessions on one machine (or to the sessions with no machine),
+  and Group by gains Machine. The choice is applied by the server, so the
+  cards, the Active, Completed and Archived tabs, the status cards, Load more,
+  search, the per-owner headers, "Mark all as seen" and every count describe the
+  same set, and a session arriving live is included or left out by the same
+  rule. It is remembered per person, works in solo and in a team (and combines
+  with Mine | Everyone and the Owner select), and stays out of the way until a
+  second machine appears. A machine is the supervisor's host for a
+  supervisor-launched session, otherwise the name its relay reported; that name
+  is self-declared, so the filter is a view and nothing about access reads it.
+  "Show all" over a machine's group, and an empty machine view that names the
+  machine and offers the way back, are included.
+- **`host=` on `GET /sessions` and `GET /sessions/stats`, `group_by=host`, and
+  `hostFilter`.** `host=<name>` is an exact, case-sensitive machine name;
+  `host=%1Funknown` selects sessions with no machine. Every list and stats
+  answer says which filter it applied (`hostFilter`), and list rows carry
+  `machine`. `group_by=host` counts each machine the way `group_by=owner`
+  counts each owner. A bad value is `400 invalid_host`.
+- **MCP: `host` and `no_host` on `list_sessions` and `get_stats`**, with the
+  same echo check as `owner`: an answer that doesn't confirm the machine filter
+  asked for is refused, so a server that predates it can't return every
+  machine's sessions as one machine's.
+
+- `group_by=host` lists at most 50 machines (the busiest, plus the sessions with
+  no machine reported and every machine that has sessions and that a registered supervisor names, up to 200) and rolls the rest into `otherMachines` / `otherTotal`
+  with `groupsTruncated`, so a key that invents machine names can't bloat every
+  viewer's poll. A machine's count includes sessions that only claim that name.
+- A chosen machine shows as active: the select is highlighted, a line by the
+  stat cards says "Showing <machine> only" with how many are waiting on other
+  machines, and "Show all machines" is one click away. Machine counts in the
+  select follow the selected tab. Group by Machine shows a header for every
+  machine from the first page on.
+
+### Fixed
+
+- **The session detail header no longer says "working" twice.** A working
+  session read "working WORKING": a small amber chip driven by the raw
+  `isWorking` flag, then the operational badge. The badge already counts that
+  flag, so the chip is gone and the state is said once (it could also read
+  "working" beside ARCHIVED when the flag was stale).
+- **The git branch no longer runs on into the next line of output** (it read
+  `feat/x\nYour`). A branch read from a `git status` or `git branch` response
+  now ends at the end of its name, and `git branch`'s `* ` marker is found in an
+  object response; array and nested content-block responses (and responses with
+  both stdout and stderr) are read the same way. A branch already stored wrongly is replaced the next time
+  the session runs a git command.
+- **An unrecognised `fields` value on `GET /api/v1/sessions/:id` is now a 400**
+  (`invalid_field`); it used to be ignored and the whole detail came back. Every
+  value of a repeated `fields` is checked.
+- **The status line's record of pushed names is private and holds no name.**
+  `~/.agentpulse/cache/native-name-<id>` (what stops a name being pushed on every
+  render) now stores a checksum of the name, not the name; it is removed when the
+  relay says the session is excluded and while `AGENTPULSE_SKIP` is on, is 0600
+  in a 0700 directory (an older, looser one is tightened whenever the script
+  touches it), is never followed through a link, is written atomically, and is
+  pruned after 30 days. Names printed to the terminal are stripped of
+  terminal-acting characters (C1 controls, bidi and zero-width format
+  characters); ordinary accents, CJK and emoji are unchanged.
+- **The status line could show the first characters of the session id instead of
+  the session's name on a long session.** It fetched the whole session detail
+  (about 1.6 MB for a long session) on every render and gave up after one
+  second. It now asks for the name only (`?fields=displayName`, about 60 bytes
+  however long the session is), and the relay remembers the answer for five
+  seconds. If a lookup does fail the line shows the short session id, as before.
+  Measured on a scratch server with a 4,848-event session: the
+  request went from 2.9 MB to 60 bytes, and over a simulated 10 Mbit/s link
+  from 2.2 s to about 1 ms.
+- **A single Ask message could make the server read every stored embedding
+  vector into memory.** On an install with vector search enabled
+  (`AGENTPULSE_VECTOR_SEARCH=true`, switched on in Settings) and a large
+  `event_embeddings` table, an Ask turn read the whole table in one
+  statement before it had decided what kind of question it was. One affected
+  table held about 164,000 vectors of 4,096 dimensions, roughly 2.7 GB, which
+  is enough to exhaust a container's memory and stall the event loop for
+  seconds. The Telegram poller re-fetches an update it hasn't confirmed after
+  a restart, so the same question was fetched again each time the server came
+  back up.
+  Installs without vector search, and Postgres installs (vector search is
+  SQLite-only), were not affected. The semantic lookup now reads the table a
+  few vectors at a time through an index, under a row and time budget and a
+  CPU share (see Changed), and holds no memory in proportion to the table.
+- **Semantic lookup runs only for free-form questions.** Turns that end at a
+  gate or an intercept no longer embed the question or touch the vectors at all, and neither does
+  a turn with sessions pinned to it. It runs once, when a question reaches the
+  LLM answer.
+- **A turn reads only the history it renders.** A Telegram thread is never
+  archived and grows without bound; each turn now reads the newest 12 messages
+  of its thread instead of all of them, and an opening turn that ends at a gate
+  reads none. On Postgres the read now orders by `created_at` then `id`, so the
+  window is deterministic; rows written in one transaction that share a
+  `created_at` come back in `id` order, which is not insertion order.
+- **The embeddings backfill no longer reads whole payloads into memory.** It
+  used to select every pending event's `raw_payload` (a hook payload can be
+  16 MiB) and parse it in JavaScript. It now walks an id cursor in windows of
+  5,000 ids, reads only each pending event's id and `octet_length(raw_payload)`
+  first, and extracts the text in SQL for the longest run of rows whose
+  payloads add up to 4 MiB (at most 32 rows; a single larger row is taken
+  alone), so no payload comes back to JavaScript. A payload over 4 MiB is not
+  parsed; that event's `content` is embedded instead. An id window with
+  nothing pending (retention leaves gaps) moves the cursor on, the run yields
+  to the event loop after every batch, and a failed batch is retried from the
+  same cursor. Text is cut to 3,000 characters by character, where it used to
+  be cut by UTF-16 code unit.
+- **Inline embedding checks the event type before it reads anything else.**
+  `embedEvent` now reads the event's type and, only for an embeddable type, its
+  text, in one statement, before it resolves an embedding adapter; most
+  ingested events aren't embeddable and now cost one small read.
+- **The vector scan skips a stored vector whose size doesn't match its
+  dimension without reading it** (the size is checked in SQL), so a malformed
+  or oversize blob is never copied into memory.
+- **The scan's time budget is also checked after a pacing sleep**, so a scan
+  that slept past its budget stops instead of running one more statement. A
+  scan always runs at least one.
+- **A Telegram question takes its Ask slot before a thread is created**, so a
+  message refused as busy leaves no empty thread, and the slot is released
+  before the reply is sent, so a slow Telegram call can't hold it. The typing
+  indicator is no longer waited on.
+
+### Changed
+
+- Sessions pushed over the WebSocket now carry their `machine`, looked up
+  concurrently with a short timeout and sent in order within each session, so a
+  slow lookup never stalls anyone else's live feed.
+- A session linked to a supervisor's launch is now on that supervisor's host,
+  not on whatever name its relay reports: the host is filled in when the
+  session is attached, and sessions an older server attached without one are
+  repaired at boot. A launched session that showed its relay's name will show
+  the supervisor's host.
+- Supervisor host names are cleaned like reported names (and rows stored by an
+  older server once at boot), so every machine the grouping lists can be
+  selected. The sessions with no machine reported are called "No machine
+  reported" everywhere; the session detail labels say "Machine" / "Reported
+  machine".
+- A dashboard card shows the machine the filter selects on: for a
+  supervisor-launched session that is the supervisor's host, where it used to
+  show the name the session reported.
+- **Semantic matching covers the newest vectors, within a budget.** The Ask
+  scan scores the newest 50,000 vectors of the active embedding model and
+  stops there, or after 4 seconds, whichever comes first, and all scans in the
+  process together use at most 30% of CPU, so a scan is paced rather than
+  fast. The pacer counts CPU time (user plus system, never more than the
+  chunk's wall time), not wall time: a read that waited on storage uses no CPU
+  and is not slept off on top. In the `ask_vector_scan` log line `busyMs` is
+  that CPU time. Events older than what the scan reached are still found by keyword
+  search; they just don't contribute semantic matches. When a scan stops early
+  the server logs `vector_scan_coverage_partial` once per boot. The budgets
+  are set by `AGENTPULSE_VECTOR_SCAN_MAX_ROWS`, `AGENTPULSE_VECTOR_SCAN_MAX_MS`
+  and `AGENTPULSE_VECTOR_SCAN_CPU_SHARE` (see Upgrade notes). The scan is exact
+  cosine similarity, not approximate.
+- **Ask turns are limited to two at a time.** The web and Telegram share the
+  limit (`AGENTPULSE_ASK_MAX_CONCURRENT`, default 2). A caller that finds the
+  slots taken waits in line (up to four waiting, first in first out) for at
+  most 30 seconds; past that, or when the line is full, it is refused and
+  nothing is saved:
+  - `POST /api/v1/ai/ask` answers `503 {"error":"busy"}` with `Retry-After: 5`.
+  - `POST /api/v1/ai/ask/stream` sends an `error` frame whose message is "Ask
+    is busy right now. Try again in a few seconds." (the stream itself is
+    already open, so the HTTP status is 200).
+  - Telegram gets "I'm answering other questions right now. Please send that
+    again in a minute." A question can wait up to 30 seconds for a slot first,
+    and while the Telegram poller is waiting it handles no other update, so
+    in polling mode later messages queue behind it.
+  A caller that disconnects while waiting leaves the line at once; a turn that
+  has started runs to completion.
+- **Ask messages over 8,000 characters are refused.** The count is of the
+  trimmed message in UTF-16 code units (JavaScript `String.length`). The web
+  routes answer `400 {"error":"message_too_long","max":8000}` before anything
+  is created; Telegram replies that the message is too long and to shorten it.
+- **Oversize Ask request bodies get `413 {"error":"payload_too_large"}`.** The
+  limit is 256 KiB on `POST /api/v1/ai/ask` and `/api/v1/ai/ask/stream`. A
+  body that isn't valid JSON is `400 {"error":"invalid_body"}`.
+
+### Security
+
+- **Pinned `sessionIds` on the web Ask routes are validated.** On
+  `POST /api/v1/ai/ask` and `/api/v1/ai/ask/stream`, `sessionIds` must be an
+  array of at most 20 non-empty strings of at most 128 characters (absent or
+  `null` means none), else `400 {"error":"invalid_session_ids","max":20}`. The
+  check runs after the message cap and before the turn limiter and before any
+  write.
+- **A failed Ask turn no longer sends its error text to a chat or a web
+  client.** A web Ask turn that throws answers `500 {"error":"ask_failed"}` (the stream
+  sends a fixed "Couldn't answer that right now. Try again in a moment."
+  error frame), and a Telegram chat gets a fixed "Sorry, I couldn't answer
+  that just now. Please try again in a moment." The detail goes to the server
+  log (`ask_turn_failed`, `telegram_ask_failed`). A mistake the caller can fix
+  (an empty message, a thread that belongs to another origin) is
+  `400 {"error":"invalid_request","message":...}` with a message that is safe to
+  show. This covers a turn that throws, and the busy and too-long replies. It
+  is not a promise about every reply the Ask handlers compose: see Known
+  limitations for the launch set-up replies and the inline provider error,
+  which still include an underlying error message.
+- **The Telegram webhook checks its secret in constant time, then caps the
+  body.** The order is: bot token present (else `404`), secret (else `401`),
+  body limit of 1 MiB (else `413 {"error":"payload_too_large"}`), then parse, so
+  an unauthenticated caller's body is never read. Malformed JSON is still
+  acknowledged with `200` and dropped.
+
+### Upgrade notes
+
+- **To get the status-line fix, re-run the installer on each machine that has
+  the relay**, after upgrading the server: `curl -sSL https://<your-server>/setup-relay.sh | bash`
+  (it asks for the key on the terminal, or use `AGENTPULSE_KEY`). It replaces
+  `~/.agentpulse/relay.ts` and `~/.claude/statusline-agentpulse.sh` and restarts
+  the relay. A hand-copied status line needs `cp scripts/statusline.sh
+  ~/.claude/statusline-agentpulse.sh` again. Every mix works in the meantime:
+  a new status line against an older relay or server still shows the name (an
+  older server answers the whole detail, as before, so the fix needs the
+  upgraded server); an older status line against the new server is unchanged.
+  `GET /api/v1/health`'s `clients.statusline` / `clients.relay` checksums and
+  the relay's `drift` field tell a machine it is behind.
+- **SQLite: a new index is built on `event_embeddings` at first boot.**
+  `idx_event_embeddings_model_dim_event` on `(model, dim, event_id)` serves the
+  bounded scan, and the scan names it (`INDEXED BY`), so without it a scan
+  fails and logs `ask_vector_scan_error` rather than falling back to a table
+  scan. It is created with `CREATE INDEX IF NOT EXISTS` in both boot paths:
+  Drizzle migration `drizzle/sqlite/0010_event_embeddings_scan_index.sql` (fresh
+  installs, and `AGENTPULSE_LEGACY_INIT=false`) and, for an existing install on
+  the legacy init path, the additive list in `src/server/db/client.ts`, which
+  adds it only when `AGENTPULSE_VECTOR_SEARCH=true` (without that flag the
+  table doesn't exist there). The index build runs during boot and the server
+  does not serve until it finishes. What is known: on a warm table of about
+  164,000 rows it took about 100 ms in the builder's measurement. What is not:
+  how long it takes with the table's pages cold on a slow volume, which was not
+  measured. Postgres installs are unaffected: vector search is SQLite-only, so
+  there is no Postgres counterpart and no migration there.
+- **New environment variables** (all optional; an out-of-range number is
+  clamped into range, and a value that isn't a number falls back to the
+  default):
+
+  | Variable | Default | Range | What it does |
+  |---|---|---|---|
+  | `AGENTPULSE_VECTOR_SCAN_MAX_ROWS` | `50000` | 1,000 to 5,000,000 | Most vectors one scan reads. |
+  | `AGENTPULSE_VECTOR_SCAN_MAX_MS` | `4000` | 250 to 60,000 | Longest one scan runs, in milliseconds, including time spent paced. |
+  | `AGENTPULSE_VECTOR_SCAN_CPU_SHARE` | `0.3` | 0.05 to 1 | Share of CPU all concurrent scans together may use; `1` turns pacing off. |
+  | `AGENTPULSE_ASK_MAX_CONCURRENT` | `2` | 1 to 8 | Ask turns that may run at once, web and Telegram together, per process. |
+
+  Raise the row or time budget if you want semantic matches from further back
+  and can spare the time on each free-form question; lower them (or the CPU
+  share) on a small host. With the default CPU share the time budget, not the
+  row budget, is usually what stops a scan on slower hardware.
+- **Turning semantic search off without a redeploy.** Settings → AI → Vector
+  search has an Enabled toggle (the `vectorSearch.enabled` setting), or call
+  `PUT /api/v1/ai/vector-search/status` with `{"enabled":false}`. The setting
+  is read through a short-lived cache that a write invalidates, so no restart
+  is needed; embeddings already stored stay in place. Unsetting
+  `AGENTPULSE_VECTOR_SEARCH` turns the feature off at the next boot (the table
+  is left in place).
+- **Memory.** The scan no longer needs memory proportional to the table: it
+  holds a few vectors at a time, and the builder's measurements on synthetic
+  4,096-dimension data stayed near 100 MiB over a large table. The scan window
+  is still read through the operating system's page cache, which a container's
+  memory accounting can include, so we can't say what limit is sufficient for
+  your table. Watch the container's memory after the first free-form questions
+  and size from that.
+- **The backfill needs SQLite with `octet_length()`** (SQLite 3.43 or later).
+  The code doesn't check the SQLite version. On an older one the backfill
+  stops and records the error (`progress.error` in
+  `GET /api/v1/ai/vector-search/status`, and a `[embeddings] backfill failed`
+  warning in the log), and the inline embed's statement fails too, with
+  nothing catching it at its call site. Whether the SQLite your build bundles is
+  new enough is not something this repository states; check it (`SELECT
+  sqlite_version()`) if you build your own image.
+- **Watching the backfill.** `GET /api/v1/ai/vector-search/status` returns
+  `progress` (`total`, `embedded`, `pending`, `model`, `running`, `startedAt`,
+  `finishedAt`, `error`); it needs the `manage` scope for an API key. The server
+  also logs `embedding_backfill_batch_started` (`cursor`, `rows`,
+  `payloadBytes`) and `embedding_backfill_batch` (`cursor`, `embedded`,
+  `skipped`, `ms`) per batch. `POST /api/v1/ai/vector-search/rebuild` starts a
+  run.
+- **A manual benchmark** is in `scripts/bench-vector-scan.ts`; it is never run
+  in CI. It builds or reuses a synthetic SQLite database and reports the longest
+  event-loop stall, wall time and peak memory of a scan, and hook latency while
+  scans run, for example
+  `bun scripts/bench-vector-scan.ts --db /tmp/bench.db --rows 60000 --dim 4096 --mode all`.
+  Its `old` mode replays the pre-fix read and needs about 1.6 GiB of RAM at that
+  size; run it only on a machine that can spare that.
+- No other migration. The new web and the new server go together: a web client asking
+  an older server for a machine refuses the answer rather than showing every
+  machine's sessions under one machine's name.
+
+### Known limitations
+
+No dates or promises attach to any of these.
+
+- The Telegram poller still re-fetches an update it hasn't confirmed after a
+  restart. A message that crashes the server for some reason other than the
+  vector read would be fetched again on each restart until it is confirmed.
+- A slow or hung model, embedding or Telegram call delays the Telegram
+  messages behind it in polling mode, because updates are handled one at a
+  time. Calls to the Telegram API have no timeout.
+- A Telegram question can wait up to 30 seconds for an Ask slot. If none comes
+  free it gets the busy reply. In webhook mode the webhook request is held open
+  for that wait and is then answered `200` after the busy reply is sent.
+- The Ask limit is per process: with more than one replica each has its own
+  slots. There is no per-user fairness: one chat or browser tab can take every
+  slot and fill the waiting line.
+- Semantic matching covers only the newest vectors, within the row and time
+  budgets (by default 50,000 vectors or 4 seconds, at 30% CPU). Older events
+  are found by keyword search only. A scan that stops on a budget logs
+  `vector_scan_coverage_partial` once per boot.
+- After an embedding-model change, events that have no embeddable text keep a
+  placeholder row for the old model, so the backfill examines them again each
+  time it runs. This is harmless (they are skipped again) and predates this
+  release.
+- The dashboard's inline error on a failed assistant message
+  (`assistantMessage.errorMessage`, and the streaming error event for a
+  provider failure) shows the model provider's error text, by design, so the
+  person using Ask can see why the provider call failed. Treat it as visible to
+  anyone who can read the thread.
+- Some launch set-up failures still put the underlying error message in the
+  reply. When Ask can't pick a scratch workspace path or prepare a clone for a
+  launch (an error other than a path-validation failure, which has fixed
+  wording), the reply reads "Couldn't scaffold a workspace: <error>" or
+  "Couldn't prepare the clone: <error>". It goes to the Telegram chat or the
+  web client as the assistant's reply and is stored in the thread.
+- In Telegram, the project-choice prompt arrives twice. When a launch request
+  names no project, the numbered list of projects is sent to the chat once
+  directly and once more as the turn's reply. The web shows it once.
+- The scan and limiter counters aren't on `/health` or the diagnostics
+  endpoint yet; the log lines are the way to see them: `ask_vector_scan_started`,
+  `ask_vector_scan`, `ask_vector_scan_error`, `vector_scan_coverage_partial`,
+  `ask_turn_started`, `ask_turn_path`, `ask_turn_done`, and `ask_turn_failed` or
+  `telegram_ask_failed` for a failed turn. A caller refused as busy has no log
+  line.
 
 ## [0.7.1] — 2026-10-03
 

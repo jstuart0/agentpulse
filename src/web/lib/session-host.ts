@@ -8,10 +8,13 @@
  * reported and used for display only. Never feed it into a permission, routing
  * or ownership decision.
  *
- * Where each shows: the dashboard card only has the list row, which carries no
- * managed session, so a managed session's card shows its reported host (if any);
- * its detail view loads `managedSession` and shows the supervisor host instead.
- * The two can differ.
+ * Where each shows: a list row carries no managed session but does carry
+ * `machine`, the one name the server files the session under (the supervisor's
+ * host, else the reported one, else none), so the card, the Machine filter and
+ * Group by Machine always agree. The detail view loads `managedSession` and
+ * shows the supervisor host from it, which is the same name. They can differ
+ * only where `machine` is absent: a push whose lookup failed, or an older
+ * server, where the card falls back to the reported host until the next poll.
  */
 import type { Session } from "../../shared/types.js";
 
@@ -21,14 +24,14 @@ export interface SessionHostLabel {
 	/** The short chip text. */
 	text: string;
 	/** The Overview field's label. */
-	fieldLabel: "Host" | "Reported host";
+	fieldLabel: "Machine" | "Reported machine";
 	/** The mouse tooltip. */
 	title: string;
 	/** What a screen reader says in place of the visual chip. */
 	srText: string;
 }
 
-type HostSource = Pick<Session, "reportedHost"> & {
+type HostSource = Pick<Session, "reportedHost" | "machine"> & {
 	managedSession?: { hostName: string | null } | null;
 };
 
@@ -39,26 +42,37 @@ function present(value: string | null | undefined): string | null {
 
 export function sessionHostLabel(session: HostSource): SessionHostLabel | null {
 	const supervisorHost = present(session.managedSession?.hostName);
-	if (supervisorHost) {
-		return {
-			source: "supervisor",
-			name: supervisorHost,
-			text: `on ${supervisorHost}`,
-			fieldLabel: "Host",
-			title: `Runs on ${supervisorHost}, the machine whose AgentPulse supervisor launched it.`,
-			srText: `Host: ${supervisorHost}`,
-		};
-	}
+	if (supervisorHost) return supervisorLabel(supervisorHost);
 	const reported = present(session.reportedHost);
-	if (reported) {
-		return {
-			source: "reported",
-			name: reported,
-			text: `on ${reported}`,
-			fieldLabel: "Reported host",
-			title: `Reported by the machine that sent this session's events (${reported}); not verified.`,
-			srText: `Reported machine: ${reported}`,
-		};
+	// A row the server listed or pushed carries the machine it files the session
+	// under, which is what the Machine filter and grouping select on: the card
+	// says exactly that, and says "reported" only when the reported name is it.
+	if (session.machine !== undefined) {
+		const machine = present(session.machine);
+		if (machine === null) return null;
+		return machine === reported ? reportedLabel(machine) : supervisorLabel(machine);
 	}
-	return null;
+	return reported ? reportedLabel(reported) : null;
+}
+
+function supervisorLabel(name: string): SessionHostLabel {
+	return {
+		source: "supervisor",
+		name,
+		text: `on ${name}`,
+		fieldLabel: "Machine",
+		title: `Runs on ${name}, the machine whose AgentPulse supervisor launched it.`,
+		srText: `Machine: ${name}`,
+	};
+}
+
+function reportedLabel(name: string): SessionHostLabel {
+	return {
+		source: "reported",
+		name,
+		text: `on ${name}`,
+		fieldLabel: "Reported machine",
+		title: `Reported by the machine that sent this session's events (${name}); not verified.`,
+		srText: `Reported machine: ${name}`,
+	};
 }

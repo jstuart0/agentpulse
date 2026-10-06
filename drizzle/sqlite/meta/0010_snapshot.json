@@ -1,7 +1,7 @@
 {
 	"version": "6",
 	"dialect": "sqlite",
-	"id": "d82eca27-954f-4849-b92a-cc38978b055c",
+	"id": "a00360b7-1e07-4b1f-adf0-e91bb34bd7da",
 	"prevId": "4b9a8325-9242-4f76-8813-2a0706a4b45c",
 	"tables": {
 		"ai_action_requests": {
@@ -471,98 +471,6 @@
 				}
 			},
 			"foreignKeys": {},
-			"compositePrimaryKeys": {},
-			"uniqueConstraints": {},
-			"checkConstraints": {}
-		},
-		"ai_session_summaries": {
-			"name": "ai_session_summaries",
-			"columns": {
-				"session_id": {
-					"name": "session_id",
-					"type": "text",
-					"primaryKey": true,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"schema_version": {
-					"name": "schema_version",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false,
-					"default": 1
-				},
-				"generated_at": {
-					"name": "generated_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"attempt_status": {
-					"name": "attempt_status",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false,
-					"default": "'idle'"
-				},
-				"through_event_id": {
-					"name": "through_event_id",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"attempt_started_at": {
-					"name": "attempt_started_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"attempt_token": {
-					"name": "attempt_token",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"attempt_error_code": {
-					"name": "attempt_error_code",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"summary": {
-					"name": "summary",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"provenance": {
-					"name": "provenance",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				}
-			},
-			"indexes": {},
-			"foreignKeys": {
-				"ai_session_summaries_session_id_sessions_session_id_fk": {
-					"name": "ai_session_summaries_session_id_sessions_session_id_fk",
-					"tableFrom": "ai_session_summaries",
-					"tableTo": "sessions",
-					"columnsFrom": ["session_id"],
-					"columnsTo": ["session_id"],
-					"onDelete": "cascade",
-					"onUpdate": "no action"
-				}
-			},
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {},
 			"checkConstraints": {}
@@ -1150,7 +1058,13 @@
 					"default": "(datetime('now'))"
 				}
 			},
-			"indexes": {},
+			"indexes": {
+				"idx_event_embeddings_model_dim_event": {
+					"name": "idx_event_embeddings_model_dim_event",
+					"columns": ["model", "dim", "event_id"],
+					"isUnique": false
+				}
+			},
 			"foreignKeys": {},
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {},

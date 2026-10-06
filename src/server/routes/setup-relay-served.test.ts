@@ -128,6 +128,22 @@ describe("F165: the installers are embedded at build time", () => {
 	});
 });
 
+describe("the status line the installer ships asks for the name only", () => {
+	test("the served statusline carries the small-read lookup, and /health's checksum is the served bytes' (a machine can tell it is behind)", async () => {
+		setPublicUrl("https://agentpulse.example.com");
+		const health = (await (await get("/api/v1/health")).json()) as {
+			clients: { statusline: string };
+		};
+		const served = await (await get("/setup-relay.sh")).text();
+		const statusline = served
+			.split("<< 'AGENTPULSE_STATUSLINE_SH_EOF'\n")[1]
+			.split("\nAGENTPULSE_STATUSLINE_SH_EOF\n")[0];
+		// If the shipped script still asked for the whole detail, this line would be missing.
+		expect(statusline).toContain("/api/v1/sessions/${SAFE_ID}?fields=displayName");
+		expect(await computeChecksum(statusline, { trimEnd: true })).toBe(health.clients.statusline);
+	});
+});
+
 describe("/setup-relay.sh — one installer, canonical sources spliced in", () => {
 	test("the body carries relay.ts and statusline.sh byte-for-byte, no markers, and parses", async () => {
 		setPublicUrl("https://agentpulse.example.com");

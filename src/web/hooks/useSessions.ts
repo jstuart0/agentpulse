@@ -3,6 +3,7 @@ import type { Session } from "../../shared/types.js";
 import { plainErrorMessage } from "../lib/api-errors.js";
 import { api } from "../lib/api.js";
 import { BUSY_BANNER_AFTER, busyWaitMs } from "../lib/busy.js";
+import { echoMatchesHost } from "../lib/host-scope.js";
 import { requestKey, useRequestGuard } from "../lib/live-request.js";
 import {
 	type DashboardScope,
@@ -22,6 +23,17 @@ export type PollReason = "poll" | "reconnect" | "retry";
 const POLL_INTERVAL_MS = 30_000;
 const NO_SESSIONS: Session[] = [];
 const PAGE_LIMIT = 100;
+
+/** The team line's other half counts everyone, on the same machines as the view it is subtracted from. */
+function everyoneIsThisView(
+	res: { ownerScope?: unknown; hostFilter?: unknown },
+	viewer: string | null,
+	host: string | undefined,
+): boolean {
+	return (
+		echoMatchesRequest(OWNER_ALL, viewer, res.ownerScope) && echoMatchesHost(host, res.hostFilter)
+	);
+}
 
 /**
  * The dashboard's session list and counts for one scope. The list, the stats
@@ -57,6 +69,7 @@ export function useSessions(scope: DashboardScope | null, onPolled?: (reason: Po
 
 	const owner = scope?.owner ?? null;
 	const excludeScratch = scope?.excludeScratch ?? false;
+	const host = scope?.host;
 	const key = requestKey(scope);
 	const isCurrent = useRequestGuard(key);
 	const viewerRef = useRef(viewerUserId);
@@ -77,7 +90,7 @@ export function useSessions(scope: DashboardScope | null, onPolled?: (reason: Po
 
 	useEffect(() => {
 		if (owner === null) return;
-		const active: DashboardScope = { owner, excludeScratch };
+		const active: DashboardScope = { owner, excludeScratch, host };
 		const askedKey = requestKey(active);
 		const store = useSessionStore.getState();
 		// Whatever is on screen describes another view: clear it, and stay loading
@@ -100,13 +113,15 @@ export function useSessions(scope: DashboardScope | null, onPolled?: (reason: Po
 				const [sessionsRes, statsRes, everyoneRes] = await Promise.all([
 					api.getSessions(scopedQuery(active, { limit: PAGE_LIMIT })),
 					api.getStats(scopedQuery(active)),
-					owner === OWNER_ME ? api.getEveryoneStats(excludeScratch) : Promise.resolve(null),
+					owner === OWNER_ME ? api.getEveryoneStats(excludeScratch, host) : Promise.resolve(null),
 				]);
 				if (!wanted()) return false;
 				const viewer = viewerRef.current;
 				if (
 					!echoMatchesRequest(owner as string, viewer, sessionsRes.ownerScope) ||
-					!echoMatchesRequest(owner as string, viewer, statsRes.ownerScope)
+					!echoMatchesRequest(owner as string, viewer, statsRes.ownerScope) ||
+					!echoMatchesHost(host, sessionsRes.hostFilter) ||
+					!echoMatchesHost(host, statsRes.hostFilter)
 				) {
 					refuse();
 					return false;
@@ -120,9 +135,7 @@ export function useSessions(scope: DashboardScope | null, onPolled?: (reason: Po
 				next.setStats(statsRes);
 				next.setTotalSessions(sessionsRes.total);
 				next.setOthersStats(
-					everyoneRes && echoMatchesRequest(OWNER_ALL, viewer, everyoneRes.ownerScope)
-						? everyoneRes
-						: null,
+					everyoneRes && everyoneIsThisView(everyoneRes, viewer, host) ? everyoneRes : null,
 				);
 				return true;
 			} catch (err) {
@@ -173,7 +186,17 @@ export function useSessions(scope: DashboardScope | null, onPolled?: (reason: Po
 			clearInterval(interval);
 			if (retryTimer) clearTimeout(retryTimer);
 		};
-	}, [owner, excludeScratch, viewerUserId, unconfirmed, recoveries, retryNonce, isCurrent, refuse]);
+	}, [
+		owner,
+		excludeScratch,
+		host,
+		viewerUserId,
+		unconfirmed,
+		recoveries,
+		retryNonce,
+		isCurrent,
+		refuse,
+	]);
 
 	// The socket coming back after a drop: whatever changed while it was down
 	// was never pushed, so ask for everything again, lists included.
@@ -199,21 +222,22 @@ export function useSessions(scope: DashboardScope | null, onPolled?: (reason: Po
 			const [statsRes, everyoneRes] = await Promise.all([
 				api.getStats(scopedQuery(asked)),
 				asked.owner === OWNER_ME
-					? api.getEveryoneStats(asked.excludeScratch)
+					? api.getEveryoneStats(asked.excludeScratch, asked.host)
 					: Promise.resolve(null),
 			]);
 			if (!isCurrent(askedKey)) return;
 			const viewer = viewerRef.current;
-			if (!echoMatchesRequest(asked.owner, viewer, statsRes.ownerScope)) {
+			if (
+				!echoMatchesRequest(asked.owner, viewer, statsRes.ownerScope) ||
+				!echoMatchesHost(asked.host, statsRes.hostFilter)
+			) {
 				refuse();
 				return;
 			}
 			const store = useSessionStore.getState();
 			store.setStats(statsRes);
 			store.setOthersStats(
-				everyoneRes && echoMatchesRequest(OWNER_ALL, viewer, everyoneRes.ownerScope)
-					? everyoneRes
-					: null,
+				everyoneRes && everyoneIsThisView(everyoneRes, viewer, asked.host) ? everyoneRes : null,
 			);
 		} catch {
 			// Best-effort: the next poll asks again.

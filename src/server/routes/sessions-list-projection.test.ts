@@ -103,12 +103,14 @@ describe("GET /sessions?fields= (F128)", () => {
 
 	test("without fields the response is exactly getSessions(): full rows plus total, tagged with the applied scope", async () => {
 		const res = await get("?agent_type=codex_cli&limit=50");
-		const { ownerScope, ...body } = (await res.json()) as {
+		const { ownerScope, hostFilter, ...body } = (await res.json()) as {
 			sessions: Array<Record<string, unknown>>;
 			total: number;
 			ownerScope: unknown;
+			hostFilter: unknown;
 		};
 		expect(ownerScope).toEqual({ kind: "all" });
+		expect(hostFilter).toEqual({ kind: "all" });
 		expect(body.total).toBe(3);
 		expect(body.sessions[0].claudeMdContent).toBe("x".repeat(2000));
 		expect("managed" in body.sessions[0]).toBe(true);

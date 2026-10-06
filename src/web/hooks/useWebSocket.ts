@@ -23,6 +23,7 @@ function sendNotification(title: string, body: string) {
 function socketContext(): SocketContext {
 	return {
 		owner: useDashboardScopeStore.getState().owner,
+		host: useDashboardScopeStore.getState().host,
 		viewerUserId: useUserStore.getState().userId,
 		teamMode: currentOwnershipUi().showTeamCopy,
 		watchedSessionId: useEventStore.getState().watchedSessionId,

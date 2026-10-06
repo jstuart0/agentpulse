@@ -2,11 +2,11 @@
 // see thoughts/postgres-followup-plans/pgvector-event-embeddings.md.
 
 import { config } from "../../../config.js";
-import { getSqlite } from "../../../db/client.js";
 import { isVectorSearchActive } from "../feature.js";
 import type { EnrichmentResult, SemanticEnricher } from "../semantic-enricher.js";
 import { resolveEmbeddingAdapter } from "./embedding-service.js";
-import { type EmbeddingAdapter, bufferToVector, cosineSimilarity } from "./types.js";
+import type { EmbeddingAdapter } from "./types.js";
+import { scanSessionSimilarity } from "./vector-scan.js";
 
 /**
  * Vector-similarity enricher. Embeds the user's query, scans the
@@ -19,10 +19,9 @@ import { type EmbeddingAdapter, bufferToVector, cosineSimilarity } from "./types
  * path so a session with many moderate matches outranks one with a
  * single rare hit.
  *
- * Brute-force scan over all rows for the active model. With ~10K
- * events × 1024-dim float32 = 40MB and a single dot-product per
- * row we're well under 100ms even on the modest k8s pod we're
- * running. Swap to sqlite-vss when we hit ~100K events.
+ * The scan itself lives in `vector-scan.ts`: exact cosine over the newest
+ * vectors of the active model, read a few at a time through an index under
+ * a row and time budget and a CPU share. Older events are found by keyword.
  */
 export class VectorEmbeddingEnricher implements SemanticEnricher {
 	readonly name = "vector-embedding" as const;
@@ -44,44 +43,44 @@ export class VectorEmbeddingEnricher implements SemanticEnricher {
 			return EMPTY;
 		}
 
-		// Pull only rows that match the active model — different models
-		// have different dims and different vector spaces; mixing them
-		// in one cosine query is meaningless.
-		const rows = getSqlite()
-			.prepare(
-				`SELECT v.event_id AS eventId, v.vector AS vector, e.session_id AS sessionId
-				 FROM event_embeddings v
-				 JOIN events e ON e.id = v.event_id
-				 WHERE v.model = ? AND v.dim = ?`,
-			)
-			.all(this.adapter.model, this.adapter.dim) as Array<{
-			eventId: number;
-			vector: Buffer;
-			sessionId: string;
-		}>;
-
-		if (rows.length === 0) {
+		let result: Awaited<ReturnType<typeof scanSessionSimilarity>>;
+		console.log(
+			JSON.stringify({
+				kind: "ask_vector_scan_started",
+				level: "info",
+				model: this.adapter.model,
+				dim: this.adapter.dim,
+			}),
+		);
+		try {
+			result = await scanSessionSimilarity(queryVec, {
+				model: this.adapter.model,
+				dim: this.adapter.dim,
+			});
+		} catch {
+			// The scan has already logged why (once per boot per reason). Semantic
+			// enrichment is an optional extra; the Ask turn goes on without it.
 			return EMPTY;
 		}
-
-		// Per-session aggregate: max score + count of hits above a low
-		// floor. Floor screens out the long tail of marginal matches that
-		// would otherwise inflate the count term.
-		const FLOOR = 0.4; // typical for unit-normalized embeddings;
-		// below this, hits are essentially noise on retrieval-trained models
-		const per = new Map<string, { max: number; count: number }>();
-		for (const row of rows) {
-			const v = bufferToVector(row.vector);
-			const sim = cosineSimilarity(queryVec, v);
-			if (sim < FLOOR) continue;
-			const entry = per.get(row.sessionId) ?? { max: 0, count: 0 };
-			if (sim > entry.max) entry.max = sim;
-			entry.count += 1;
-			per.set(row.sessionId, entry);
-		}
+		const { perSession, stats } = result;
+		console.log(
+			JSON.stringify({
+				kind: "ask_vector_scan",
+				level: "info",
+				returned: stats.returned,
+				scored: stats.scored,
+				skipped: stats.skipped,
+				statements: stats.statements,
+				stopReason: stats.stopReason,
+				ms: Math.round(stats.ms),
+				busyMs: Math.round(stats.busyMs),
+				maxSliceMs: Math.round(stats.maxSliceMs),
+				oldestEventAt: stats.oldestEventAt,
+			}),
+		);
 
 		const directHits = new Map<string, number>();
-		for (const [sessionId, { max, count }] of per) {
+		for (const [sessionId, { max, count }] of perSession) {
 			directHits.set(sessionId, max + Math.log1p(count) * 0.05);
 		}
 		// Cap at topN so the resolver doesn't try to pool-extend with

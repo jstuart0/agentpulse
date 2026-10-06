@@ -9,6 +9,7 @@ import type {
 	DashboardStats,
 	DecisionKind,
 	HitlReplyKind,
+	HostStatsResponse,
 	Inbox,
 	InboxFilter,
 	InboxSeverity,
@@ -273,6 +274,7 @@ function statsQuery(params?: ScopeQuery, extra?: string): string {
 	const query = new URLSearchParams(extra);
 	if (params?.excludeScratch) query.set("excludeScratch", "true");
 	if (params?.owner) query.set("owner", params.owner);
+	if (params?.host) query.set("host", params.host);
 	const qs = query.toString();
 	return qs ? `?${qs}` : "";
 }
@@ -287,6 +289,7 @@ function sessionsQueryString(params: SessionFilters & ScopeQuery): string {
 	if (params.q) query.set("q", params.q);
 	if (params.excludeScratch) query.set("excludeScratch", "true");
 	if (params.owner) query.set("owner", params.owner);
+	if (params.host) query.set("host", params.host);
 	if (params.limit) query.set("limit", String(params.limit));
 	if (params.offset) query.set("offset", String(params.offset));
 	const qs = query.toString();
@@ -308,7 +311,12 @@ function whenScoped<T>(query: ScopedQuery, run: () => Promise<T>): Promise<T> {
 	return run();
 }
 
-type SessionsResponse = { sessions: Session[]; total: number; ownerScope?: unknown };
+type SessionsResponse = {
+	sessions: Session[];
+	total: number;
+	ownerScope?: unknown;
+	hostFilter?: unknown;
+};
 
 export const api = {
 	search: (filters: {
@@ -392,13 +400,15 @@ export const api = {
 	/** Counts for the dashboard's scope; same one-function rule as getSessions. */
 	getStats: (query: ScopedQuery) =>
 		whenScoped(query, () =>
-			request<DashboardStats & { ownerScope?: unknown }>(`/sessions/stats${statsQuery(query)}`),
+			request<DashboardStats & { ownerScope?: unknown; hostFilter?: unknown }>(
+				`/sessions/stats${statsQuery(query)}`,
+			),
 		),
 
-	/** Counts for everyone, following only the scratch toggle: the other half of "N more active across the team" under Mine. Deliberately not the dashboard's scope. */
-	getEveryoneStats: (excludeScratch: boolean) =>
-		request<DashboardStats & { ownerScope?: unknown }>(
-			`/sessions/stats${statsQuery({ excludeScratch })}`,
+	/** Counts for everyone, following only the scratch toggle and the machine: the other half of "N more active across the team" under Mine, so both halves describe the same machines. Deliberately not the dashboard's owner scope. */
+	getEveryoneStats: (excludeScratch: boolean, host?: string) =>
+		request<DashboardStats & { ownerScope?: unknown; hostFilter?: unknown }>(
+			`/sessions/stats${statsQuery({ excludeScratch, host })}`,
 		),
 
 	/** Per-owner counts for the same scope (the dashboard's Group by User headers). */
@@ -406,6 +416,14 @@ export const api = {
 		whenScoped(query, () =>
 			request<OwnerStatsResponse & { ownerScope?: unknown }>(
 				`/sessions/stats${statsQuery(query, "group_by=owner")}`,
+			),
+		),
+
+	/** Per-machine counts for the same scope (the machine filter's options and the Group by Machine headers). */
+	getStatsByHost: (query: ScopedQuery) =>
+		whenScoped(query, () =>
+			request<HostStatsResponse & { ownerScope?: unknown }>(
+				`/sessions/stats${statsQuery(query, "group_by=host")}`,
 			),
 		),
 

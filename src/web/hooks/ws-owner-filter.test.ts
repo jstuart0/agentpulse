@@ -133,3 +133,59 @@ describe("live events (only a session id)", () => {
 		expect(shouldAcceptLiveEvent("s-hers", known, solo)).toBe(true);
 	});
 });
+
+describe("under a machine filter", () => {
+	const onBuild = { ownerUserId: ME, ownerKind: "user" as const, machine: "build-01" };
+	const onEdge = { ownerUserId: ME, ownerKind: "user" as const, machine: "edge-02" };
+	const nowhere = { ownerUserId: ME, ownerKind: "user" as const, machine: null };
+	const silent = { ownerUserId: ME, ownerKind: "user" as const };
+	const viewing = (host: string, owner = "all") => ({
+		owner,
+		viewerUserId: ME,
+		teamMode: true,
+		host,
+	});
+
+	test("a new session on the machine is added; one on another machine is not", () => {
+		expect(planSessionMessage(onBuild, false, viewing("build-01")).store).toBe("upsert");
+		expect(planSessionMessage(onEdge, false, viewing("build-01")).store).toBe("ignore");
+		expect(planSessionMessage(nowhere, false, viewing("build-01")).store).toBe("ignore");
+	});
+
+	test("a row that moved to another machine leaves the view; one that moved onto it joins", () => {
+		expect(planSessionMessage(onEdge, true, viewing("build-01")).store).toBe("remove");
+		expect(planSessionMessage(onBuild, false, viewing("build-01")).store).toBe("upsert");
+	});
+
+	test("unknown keeps the sessions with no machine and nothing else", () => {
+		expect(planSessionMessage(nowhere, false, viewing("\u001funknown")).store).toBe("upsert");
+		expect(planSessionMessage(onBuild, false, viewing("\u001funknown")).store).toBe("ignore");
+		expect(planSessionMessage(onBuild, true, viewing("\u001funknown")).store).toBe("remove");
+	});
+
+	test("a row that doesn't say its machine is kept if shown and never added on a guess", () => {
+		expect(planSessionMessage(silent, true, viewing("build-01")).store).toBe("upsert");
+		expect(planSessionMessage(silent, false, viewing("build-01")).store).toBe("ignore");
+	});
+
+	test("every machine, or no host in the context at all, judges nobody by machine", () => {
+		expect(planSessionMessage(onEdge, false, viewing("")).store).toBe("upsert");
+		expect(planSessionMessage(silent, false, team("all")).store).toBe("upsert");
+	});
+
+	test("it composes with the owner: both must hold", () => {
+		const hers = { ownerUserId: ALICE, ownerKind: "user" as const, machine: "build-01" };
+		expect(planSessionMessage(hers, false, viewing("build-01", "me")).store).toBe("ignore");
+		expect(planSessionMessage(onBuild, false, viewing("build-01", "me")).store).toBe("upsert");
+		expect(planSessionMessage(onEdge, false, viewing("build-01", "me")).store).toBe("ignore");
+	});
+
+	test("who is told doesn't depend on the machine view", () => {
+		expect(planSessionMessage(onEdge, false, viewing("build-01")).notify).toBe(true);
+		const soloOnBuild = { owner: "all", viewerUserId: null, teamMode: false, host: "build-01" };
+		expect(planSessionMessage(onEdge, false, soloOnBuild)).toEqual({
+			store: "ignore",
+			notify: true,
+		});
+	});
+});
