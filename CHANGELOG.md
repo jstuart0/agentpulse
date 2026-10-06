@@ -7,6 +7,8 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-05
+
 ### Added
 
 - **Session summary (Labs, off by default).** A Summary tab on each session
