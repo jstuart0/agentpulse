@@ -15,7 +15,11 @@ import { describeSqliteOnly } from "../../test-utils/backend.js";
 import "../ai/__test_db.js";
 
 const llm = await import("../../test-utils/scripted-llm.js");
-mock.module("../ai/llm/registry.js", () => ({ getAdapter: () => llm.scriptedAdapter }));
+// mock.module replaces the module for the whole process and is not undone when the file ends;
+// keep the real registry and put it back in afterAll (AGEN-69 P2-26).
+const REGISTRY_PATH = "../ai/llm/registry.js";
+const realRegistry = { ...(await import("../ai/llm/registry.js")) };
+mock.module(REGISTRY_PATH, () => ({ getAdapter: () => llm.scriptedAdapter }));
 
 const { resetAskWorld, setupAskFixture, teardownAskFixture } = await import(
 	"../../test-utils/ask-turn-fixture.js"
@@ -108,7 +112,10 @@ const EXPECTED: Record<string, { reply: string; included: string[]; transcript?:
 
 describeSqliteOnly("what an Ask turn answers today", () => {
 	beforeAll(setupAskFixture);
-	afterAll(teardownAskFixture);
+	afterAll(() => {
+		mock.module(REGISTRY_PATH, () => realRegistry);
+		teardownAskFixture();
+	});
 	beforeEach(resetAskWorld);
 
 	for (const c of HANDLED_CASES) {

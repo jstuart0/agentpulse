@@ -730,6 +730,26 @@ const SELF_SCAN_ALLOWLIST: Array<{ file: string; includes: string; why: string }
 		includes: '"apiKey":"',
 		why: "a JSON example in a comment, with an example key",
 	},
+	{
+		file: "src/server/services/ask/ask-context-lazy.test.ts",
+		includes: "const credentials = await",
+		why: "a variable named credentials assigned from an awaited call: the word reads as a secret keyword, there is no value",
+	},
+	{
+		file: "src/server/routes/telegram-webhook.test.ts",
+		includes: "const credentials = await",
+		why: "a variable named credentials assigned from an awaited call: the word reads as a secret keyword, there is no value",
+	},
+	{
+		file: "src/server/routes/ask-hardening.test.ts",
+		includes: "const credentials = await",
+		why: "a variable named credentials assigned from an awaited call: the word reads as a secret keyword, there is no value",
+	},
+	{
+		file: "src/server/routes/ask-limits.test.ts",
+		includes: "const credentials = await",
+		why: "a variable named credentials assigned from an awaited call: the word reads as a secret keyword, there is no value",
+	},
 ];
 /** Test files whose literals are fake credentials on purpose (auth, URL and header handling). */
 const SELF_SCAN_FAKE_CREDENTIAL_FIXTURES = new Set([
