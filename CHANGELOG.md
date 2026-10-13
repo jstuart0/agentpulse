@@ -20,6 +20,10 @@ section with a `⚠ breaking` prefix so they're easy to spot.
   Nothing was ever published under the other two names, so there are no installs
   to migrate. 0.2.0 is the first published version (with npm provenance). The
   older notes below are left as written.
+- **`@craze0/agentpulse-mcp` 0.2.1** is published by the release workflow through
+  npm trusted publishing (GitHub Actions OIDC), with no long-lived npm token. The
+  package's `bin` path is normalized to `dist/cli.js` (npm warned about the
+  `./` prefix on publish); the installed command and the tools are unchanged.
 
 ## [0.8.0] — 2026-10-05
 

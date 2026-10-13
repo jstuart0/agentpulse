@@ -1,6 +1,6 @@
 {
 	"name": "@craze0/agentpulse-mcp",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "Standalone MCP server for AgentPulse — monitor and orchestrate AI coding agent sessions from any MCP-compatible client.",
 	"type": "module",
 	"license": "MIT",
@@ -10,7 +10,7 @@
 		"url": "https://github.com/jstuart0/agentpulse/issues"
 	},
 	"bin": {
-		"agentpulse-mcp": "./dist/cli.js"
+		"agentpulse-mcp": "dist/cli.js"
 	},
 	"exports": {
 		".": {
