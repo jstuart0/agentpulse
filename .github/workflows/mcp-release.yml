@@ -26,11 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      # id-token: write is required for npm OIDC "trusted publishing" — npm
+      # id-token: write is required for npm OIDC trusted publishing — npm
       # exchanges this workflow's OIDC token for a short-lived publish
-      # credential, no long-lived NODE_AUTH_TOKEN secret required once
-      # trusted publishing is configured (see the one-time setup note
-      # below). contents: read is the minimum needed to check out the repo.
+      # credential (see the publish step). contents: read is the minimum
+      # needed to check out the repo.
       id-token: write
       contents: read
     steps:
@@ -66,14 +65,24 @@ jobs:
       - name: Build agentpulse-mcp package
         run: bun run build:mcp
 
-      # check:mcp-tarball shells out to the system `npm pack` — pin the
-      # Node/npm version so that behavior is deterministic across runs
-      # rather than whatever npm happens to ship with the runner image
-      # (matches ci.yml's own tarball-audit step).
+      # check:mcp-tarball shells out to the system `npm pack`, and the publish
+      # step authenticates through npm's OIDC trusted publishing, which needs
+      # npm 11.5.1 or later (Node 20 and 22 bundle npm 10). No registry-url:
+      # with one, setup-node writes an .npmrc that reads NODE_AUTH_TOKEN, and
+      # this workflow no longer has a token to give it.
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          registry-url: https://registry.npmjs.org
+          node-version: "24"
+
+      - name: Require npm 11.5.1 or later (trusted publishing)
+        run: |
+          NPM_VERSION=$(npm --version)
+          node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number);
+            const ok = a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1)));
+            if (!ok) { console.error(`::error::npm ${process.argv[1]} is too old for trusted publishing (needs 11.5.1+)`); process.exit(1); }
+          ' "$NPM_VERSION"
+          echo "npm $NPM_VERSION"
 
       - name: Tarball audit
         run: bun run check:mcp-tarball
@@ -99,23 +108,18 @@ jobs:
           fi
           echo "GITHUB_REF '$GITHUB_REF' matches packages/agentpulse-mcp/package.json version '$PKG_VERSION'."
 
-      # --- One-time maintainer setup for npm OIDC trusted publishing ---
-      # On npmjs.com: open the @craze0/agentpulse-mcp package page
-      # (https://www.npmjs.com/package/@craze0/agentpulse-mcp) → Settings → "Trusted
-      # Publisher" → add a GitHub Actions publisher with:
+      # Publishes through npm OIDC trusted publishing: npm exchanges this
+      # job's OIDC token (the `id-token: write` permission above) for a
+      # short-lived publish credential. No npm token is passed. The trusted
+      # publisher is configured on npmjs.com (@craze0/agentpulse-mcp →
+      # Settings → Trusted Publisher → GitHub Actions):
       #   Organization or user: jstuart0
       #   Repository:           agentpulse
       #   Workflow filename:    mcp-release.yml
-      #   Environment:          (leave blank unless this job is scoped to one)
-      # Once configured, `npm publish` below authenticates via the OIDC
-      # token from this job's `id-token: write` permission — no
-      # NODE_AUTH_TOKEN needed. Until that's set up (e.g. for the very
-      # first publish of @craze0/agentpulse-mcp, which has to exist before a trusted
-      # publisher can be attached to it), fall back to a classic
-      # automation token stored as the NPM_TOKEN repo secret; npm CLI reads
-      # NODE_AUTH_TOKEN from the environment when set.
+      #   Environment:          (blank)
+      # Renaming this file, or moving the repo, breaks publishing until that
+      # entry is updated to match. Trusted publishing attaches provenance on
+      # its own; --provenance is kept to make that explicit.
       - name: Publish to npm
         working-directory: packages/agentpulse-mcp
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public
