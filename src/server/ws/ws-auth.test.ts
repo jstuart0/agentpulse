@@ -62,7 +62,12 @@ describe("guardWsUpgrade — manage-scoped api_key → allowed", () => {
 		const result = await guardWsUpgrade(bearerHeaders(key));
 		expect(result.allowed).toBe(true);
 		if (!result.allowed) return;
-		expect(result.data).toEqual({ userId: null, keyId: id });
+		expect(result.data).toEqual({
+			userId: null,
+			keyId: id,
+			scopes: ["ingest", "manage"],
+			profile: "web",
+		});
 	});
 
 	test("manage-only key → allowed (WS does not require ingest)", async () => {
@@ -118,7 +123,12 @@ describe("guardWsUpgrade — DISABLE_AUTH", () => {
 			const result = await guardWsUpgrade(new Headers());
 			expect(result.allowed).toBe(true);
 			if (!result.allowed) return;
-			expect(result.data).toEqual({ userId: null, keyId: null });
+			expect(result.data).toEqual({
+				userId: null,
+				keyId: null,
+				scopes: ["*"],
+				profile: "web",
+			});
 		} finally {
 			(config as Record<string, unknown>).disableAuth = false;
 		}

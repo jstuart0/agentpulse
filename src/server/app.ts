@@ -35,6 +35,7 @@ import aiStatusRouter from "./routes/ai-status.js";
 import aiWatcherRouter from "./routes/ai-watcher.js";
 import { askRouter } from "./routes/ask.js";
 import { authRouter } from "./routes/auth.js";
+import { capabilitiesRouter } from "./routes/capabilities.js";
 import { channelsRouter, telegramWebhookRouter } from "./routes/channels.js";
 import { cspReportRouter } from "./routes/csp-report.js";
 import { health } from "./routes/health.js";
@@ -108,6 +109,7 @@ api.route("/v1", aiRouter);
 api.route("/v1", askRouter);
 api.route("/v1", searchRouter);
 api.route("/v1", labsRouter);
+api.route("/v1", capabilitiesRouter);
 api.route("/v1", channelsRouter);
 
 // Public Telegram webhook lives OUTSIDE the `api` bundle. Other routers

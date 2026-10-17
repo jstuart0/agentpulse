@@ -33,13 +33,20 @@ const { app } = await import("../app.js");
 const { controlActions, launchRequests, projects, sessionTemplates, sessions } = await import(
 	"../db/schema/index.js"
 );
-const { createApiKey, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE } = await import("./api-key.js");
+const { createApiKey, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE, SCOPE_RESPOND } = await import(
+	"./api-key.js"
+);
 const {
 	classifyRoute,
 	OBSERVE_READ_PATHS,
 	INTENTIONALLY_MANAGE_ONLY,
 	INGEST_WRITABLE_ROUTES,
+	ALWAYS_ADMIN_ROUTES,
+	TEAM_ADMIN_ROUTES,
+	SCOPE_GRANTS,
 	isIngestWritable,
+	resolveEffectiveRole,
+	scopeGrantAllows,
 } = await import("./route-scope-policy.js");
 
 const TEST_SECRET = "rsp-test-secret-32-characters!!!";
@@ -1006,6 +1013,7 @@ describe("Route-drift guard — every GET/HEAD route in the swapped bundle is cl
 		"ai",
 		"users",
 		"instance",
+		"capabilities",
 	]);
 
 	function normalize(routePath: string): string | null {
@@ -1164,5 +1172,280 @@ describe("the team routes' reads are classified (observe-readable: /instance, /u
 		for (const path of ["/instance", "/users/directory", "/users", "/api-keys/:id"]) {
 			expect({ path, registered: registered.has(path) }).toEqual({ path, registered: true });
 		}
+	});
+});
+
+// ─── respond scope (mobile companion, S1) ────────────────────────────────────
+
+describe("respond scope — grants table", () => {
+	const mounted = () =>
+		app.routes
+			.map((route) => ({
+				method: route.method,
+				path: route.path.replace(/^\/(api|app-api)\/v1/, ""),
+				prefixed: /^\/(api|app-api)\/v1/.test(route.path),
+			}))
+			.filter((route) => route.prefixed);
+
+	test("the legacy sets are views of SCOPE_GRANTS, not copies", () => {
+		expect(OBSERVE_READ_PATHS).toBe(SCOPE_GRANTS.observe.reads);
+		expect(INGEST_WRITABLE_ROUTES).toBe(SCOPE_GRANTS.ingest.writes);
+		expect(SCOPE_GRANTS.observe.writes.size).toBe(0);
+		expect(SCOPE_GRANTS.ingest.reads.size).toBe(0);
+	});
+
+	test("respond holds only its S1 grants: observe's reads and exactly two acknowledge writes", () => {
+		expect([...SCOPE_GRANTS.respond.reads].sort()).toEqual([...OBSERVE_READ_PATHS].sort());
+		expect([...SCOPE_GRANTS.respond.writes].sort()).toEqual([
+			"DELETE /sessions/:sessionId/acknowledge",
+			"POST /sessions/:sessionId/acknowledge",
+		]);
+		expect(SCOPE_GRANTS.respond.ws).toBe(true);
+		expect(SCOPE_GRANTS.observe.ws).toBe(false);
+		expect(SCOPE_GRANTS.ingest.ws).toBe(false);
+	});
+
+	test("every grant of every scope matches a mounted route (and the walk is not vacuous)", () => {
+		const routes = mounted();
+		expect(routes.length).toBeGreaterThan(50);
+		for (const scope of [SCOPE_OBSERVE, SCOPE_INGEST, SCOPE_RESPOND] as const) {
+			for (const read of SCOPE_GRANTS[scope].reads) {
+				const found = routes.some((r) => r.method === "GET" && r.path === read);
+				expect({ scope, read, found }).toEqual({ scope, read, found: true });
+			}
+			for (const write of SCOPE_GRANTS[scope].writes) {
+				const found = routes.some((r) => `${r.method} ${r.path}` === write);
+				expect({ scope, write, found }).toEqual({ scope, write, found: true });
+			}
+		}
+	});
+
+	test("no respond grant is an admin route, and every respond read is observe-readable or knowingly manage-only", () => {
+		const adminEntries = new Set([...ALWAYS_ADMIN_ROUTES.keys(), ...TEAM_ADMIN_ROUTES]);
+		// not vacuous: the sets being compared against really hold entries
+		expect(adminEntries.size).toBeGreaterThan(10);
+		expect(SCOPE_GRANTS.respond.writes.size).toBeGreaterThan(0);
+		for (const write of SCOPE_GRANTS.respond.writes) expect(adminEntries.has(write)).toBe(false);
+		for (const read of SCOPE_GRANTS.respond.reads) {
+			expect(adminEntries.has(`GET ${read}`)).toBe(false);
+			expect(OBSERVE_READ_PATHS.has(read) || INTENTIONALLY_MANAGE_ONLY.has(read)).toBe(true);
+		}
+	});
+
+	test("every respond write is owner-checked in its handler", async () => {
+		const { OWNER_CHECKED_ROUTES } = await import("./route-scope-policy.js");
+		for (const write of SCOPE_GRANTS.respond.writes)
+			expect(OWNER_CHECKED_ROUTES.has(write)).toBe(true);
+	});
+
+	test("the matcher is method-qualified and structural", () => {
+		expect(scopeGrantAllows(SCOPE_RESPOND, "POST", "/api/v1/sessions/a/acknowledge")).toBe(true);
+		expect(scopeGrantAllows(SCOPE_RESPOND, "DELETE", "/app-api/v1/sessions/a/acknowledge")).toBe(
+			true,
+		);
+		expect(scopeGrantAllows(SCOPE_RESPOND, "PUT", "/api/v1/sessions/a/acknowledge")).toBe(false);
+		expect(scopeGrantAllows(SCOPE_RESPOND, "POST", "/api/v1/sessions/a/acknowledge/x")).toBe(false);
+		expect(scopeGrantAllows(SCOPE_RESPOND, "GET", "/api/v1/capabilities")).toBe(true);
+		expect(scopeGrantAllows(SCOPE_RESPOND, "POST", "/api/v1/capabilities")).toBe(false);
+		expect(scopeGrantAllows(SCOPE_RESPOND, "HEAD", "/api/v1/sessions")).toBe(true);
+		expect(scopeGrantAllows(SCOPE_RESPOND, "GET", "/api/v1/settings")).toBe(false);
+		expect(scopeGrantAllows(SCOPE_OBSERVE, "POST", "/api/v1/sessions/a/acknowledge")).toBe(false);
+		expect(scopeGrantAllows(SCOPE_INGEST, "POST", "/api/v1/sessions/a/acknowledge")).toBe(false);
+	});
+});
+
+describe("respond scope — caller matrix (real app.request())", () => {
+	let respondKey: string;
+	const sessionId = "respond-matrix-session";
+
+	beforeAll(async () => {
+		respondKey = (await createApiKey("rsp-respond-key", [SCOPE_RESPOND])).key;
+		await getDb()
+			.insert(sessions)
+			.values({ sessionId, agentType: "claude_code", status: "active" });
+	});
+
+	const ALLOWED_READS = [
+		"/sessions",
+		"/sessions/stats",
+		`/sessions/${sessionId}`,
+		"/ai/status",
+		"/capabilities",
+	];
+
+	test("respond reads what observe reads, plus capabilities", async () => {
+		for (const mount of MOUNTS) {
+			for (const path of ALLOWED_READS) {
+				const res = await app.request(`${mount}${path}`, { headers: authBearer(respondKey) });
+				expect({ path, status: res.status }).toEqual({ path, status: 200 });
+			}
+		}
+	});
+
+	test("respond can acknowledge and un-acknowledge a session", async () => {
+		for (const mount of MOUNTS) {
+			for (const method of ["POST", "DELETE"]) {
+				const res = await app.request(`${mount}/sessions/${sessionId}/acknowledge`, {
+					method,
+					headers: authBearer(respondKey),
+				});
+				expect({ method, status: res.status }).toEqual({ method, status: 200 });
+			}
+		}
+	});
+
+	const REFUSED: Array<[string, string]> = [
+		["GET", "/ai/inbox"],
+		["GET", "/ai/inbox/snoozes"],
+		["POST", "/ai/inbox/snooze"],
+		["DELETE", "/ai/inbox/snooze/x"],
+		["POST", "/ai/proposals/x/decision"],
+		["POST", "/ai/inbox/hitl/x/decide"],
+		["POST", "/ai/action-requests/x/decide"],
+		["GET", "/ai/action-requests"],
+		["POST", "/ai/ask"],
+		["GET", "/settings"],
+		["PUT", "/settings"],
+		["GET", "/api-keys"],
+		["POST", "/api-keys"],
+		["POST", "/sessions/x/prompt"],
+		["POST", "/sessions/x/stop"],
+		["PUT", "/sessions/x/rename"],
+		["PUT", "/sessions/x/notes"],
+		["DELETE", "/sessions/x"],
+		["GET", "/templates"],
+		["POST", "/templates"],
+		["GET", "/launches"],
+		["GET", "/projects"],
+		["GET", "/users"],
+		["PUT", "/instance/mode"],
+		["GET", "/channels"],
+		["GET", "/admin/supervisors"],
+		["POST", "/admin/supervisors/enroll"],
+	];
+
+	test("respond is refused on inbox, snooze, decisions, prompts, settings, keys, CRUD and the admin mount", async () => {
+		for (const mount of MOUNTS) {
+			for (const [method, path] of REFUSED) {
+				const res = await app.request(`${mount}${path}`, {
+					method,
+					headers: authBearer(respondKey),
+				});
+				expect({ method, path, status: res.status }).toEqual({ method, path, status: 403 });
+			}
+		}
+	});
+
+	test("every other operator route, derived from the mounted routes, refuses a respond key with 403", async () => {
+		const OPERATOR_TOP = new Set([
+			"sessions",
+			"settings",
+			"api-keys",
+			"telemetry",
+			"templates",
+			"projects",
+			"launches",
+			"search",
+			"labs",
+			"channels",
+			"ai",
+			"users",
+			"instance",
+			"admin",
+		]);
+		// Mounted outside the operator bundle on purpose: authenticated by its own
+		// shared secret, not by a key (see app.public-surface.test.ts).
+		const EDGE_PUBLIC = new Set(["POST /channels/telegram/webhook"]);
+		const seen = new Set<string>();
+		const targets: Array<{ method: string; path: string }> = [];
+		for (const route of app.routes) {
+			if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(route.method)) continue;
+			if (!route.path.startsWith("/api/v1/")) continue;
+			const template = route.path.slice("/api/v1".length);
+			const top = template.split("/").filter(Boolean)[0] ?? "";
+			if (!OPERATOR_TOP.has(top)) continue;
+			if (scopeGrantAllows(SCOPE_RESPOND, route.method, template)) continue;
+			const key = `${route.method} ${template}`;
+			if (seen.has(key) || EDGE_PUBLIC.has(key)) continue;
+			seen.add(key);
+			targets.push({ method: route.method, path: template.replace(/:[A-Za-z]+/g, "x") });
+		}
+		// the matrix must be a real population, and must have found the sensitive ones
+		expect(targets.length).toBeGreaterThan(80);
+		for (const must of [
+			"POST /ai/inbox/snooze",
+			"POST /ai/proposals/x/decision",
+			"PUT /settings",
+		]) {
+			expect(targets.some((t) => `${t.method} ${t.path}` === must)).toBe(true);
+		}
+
+		const failures: string[] = [];
+		for (const { method, path } of targets) {
+			const res = await app.request(`/api/v1${path}`, {
+				method,
+				headers: authBearer(respondKey),
+			});
+			if (res.status !== 403) failures.push(`${method} ${path} -> ${res.status}`);
+		}
+		expect(failures).toEqual([]);
+	});
+
+	test("an observe key and an ingest key still cannot acknowledge", async () => {
+		for (const key of [observeKey, ingestKey]) {
+			const res = await app.request(`/api/v1/sessions/${sessionId}/acknowledge`, {
+				method: "POST",
+				headers: authBearer(key),
+			});
+			expect(res.status).toBe(403);
+		}
+	});
+
+	test("the observe grant gained /capabilities and nothing else: an observe key reads it", async () => {
+		const res = await app.request("/api/v1/capabilities", { headers: authBearer(observeKey) });
+		expect(res.status).toBe(200);
+	});
+
+	test("literal-manage sites: respond is not manage (session detail omits controlActions and reportedByKey)", async () => {
+		const res = await app.request(`/api/v1/sessions/${sessionId}`, {
+			headers: authBearer(respondKey),
+		});
+		const body = (await res.json()) as Record<string, unknown>;
+		expect("controlActions" in body).toBe(false);
+		expect("reportedByKey" in body).toBe(false);
+	});
+
+	test("literal-manage sites: an ownerless respond key is a member in team mode and in solo, never an admin", async () => {
+		const identity = {
+			source: "api_key" as const,
+			name: "k",
+			userId: null,
+			keyId: "k1",
+			scopes: [SCOPE_RESPOND],
+			mustChangePassword: false,
+			displayName: null,
+		};
+		expect(await resolveEffectiveRole(identity, "solo")).toBe("member");
+		expect(await resolveEffectiveRole(identity, "team")).toBe("member");
+	});
+
+	test("a key may not mint a respond-or-manage key for itself: respond cannot POST /api-keys", async () => {
+		const res = await app.request("/api/v1/api-keys", {
+			method: "POST",
+			headers: new Headers({
+				...Object.fromEntries(authBearer(respondKey)),
+				"Content-Type": "application/json",
+			}),
+			body: JSON.stringify({ name: "x", scopes: ["manage"] }),
+		});
+		expect(res.status).toBe(403);
+	});
+});
+
+describe("respond scope — minting", () => {
+	test("respond is a recognized scope; an unknown one is still refused", async () => {
+		const ok = await createApiKey("rsp-mint-respond", [SCOPE_RESPOND, SCOPE_OBSERVE]);
+		expect(ok.key.startsWith("ap_")).toBe(true);
+		await expect(createApiKey("rsp-mint-bogus", ["respondd"])).rejects.toThrow(/Unknown scope/);
 	});
 });

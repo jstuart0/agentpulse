@@ -12,6 +12,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { assertOwnerAssignable } from "../auth/owner-state.js";
 import { withAdminLock } from "../db/admin-lock.js";
 import { apiKeys, sessions } from "../db/schema/index.js";
+import { requestWsRevalidation } from "../ws/revalidation.js";
 
 /** Gives every session with no owner and no recorded key to the user. Returns how many. */
 export async function claimUnassignedSessions(userId: string): Promise<number> {
@@ -23,6 +24,9 @@ export async function claimUnassignedSessions(userId: string): Promise<number> {
 			.where(and(isNull(sessions.ownerUserId), isNull(sessions.ingestKeyId)))
 			.returning({ id: sessions.id });
 		return claimed.length;
+	}).then(async (count) => {
+		await requestWsRevalidation();
+		return count;
 	});
 }
 
@@ -60,6 +64,9 @@ export async function changeSessionOwner(
 			.set(staleKey ? { ownerUserId, ingestKeyId: null } : { ownerUserId })
 			.where(eq(sessions.sessionId, sessionId));
 		return { found: true as const, from: row.ownerUserId, to: ownerUserId };
+	}).then(async (result) => {
+		if (result.found) await requestWsRevalidation();
+		return result;
 	});
 }
 

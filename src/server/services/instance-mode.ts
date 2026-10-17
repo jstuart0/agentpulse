@@ -20,6 +20,7 @@ import { config } from "../config.js";
 import { awaitSeamInsideAdminLock, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, sessions, settings, users } from "../db/schema/index.js";
+import { requestWsRevalidation } from "../ws/revalidation.js";
 import {
 	type ServiceKeySummary,
 	countUndecidedServiceKeys,
@@ -300,6 +301,7 @@ export async function setMode(input: SetModeInput, actor: Actor): Promise<SetMod
 	});
 
 	if (!outcome.changed) return { mode: input.mode, changed: false };
+	await requestWsRevalidation();
 	console.log(
 		JSON.stringify({
 			kind: "instance_mode_changed",

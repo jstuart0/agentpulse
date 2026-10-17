@@ -36,7 +36,7 @@ import { config } from "../config.js";
 import { type InstanceMode, getMode } from "../services/instance-mode.js";
 import { getAdminServiceKeyIds } from "../services/service-keys.js";
 import { type Actor, type EffectiveRole, actorFromAuthUser } from "./actor.js";
-import { SCOPE_ALL, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE } from "./api-key.js";
+import { SCOPE_ALL, SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE, SCOPE_RESPOND } from "./api-key.js";
 import { type AuthUser, authenticate } from "./middleware.js";
 import { isAcceptedOrigin } from "./request-origin.js";
 
@@ -45,9 +45,10 @@ const READ_METHODS = new Set(["GET", "HEAD"]);
 /**
  * Route templates reachable with an `observe`-scoped API key (GET/HEAD only).
  * Exact route patterns (Hono's resolved `c.req.routePath` shape, mount
- * prefix stripped) — never a prefix/substring set.
+ * prefix stripped) — never a prefix/substring set. Exported as
+ * OBSERVE_READ_PATHS, a view of SCOPE_GRANTS.observe.reads.
  */
-export const OBSERVE_READ_PATHS: ReadonlySet<string> = new Set([
+const OBSERVE_READS: ReadonlySet<string> = new Set([
 	"/sessions",
 	"/sessions/stats",
 	"/sessions/:sessionId",
@@ -69,6 +70,9 @@ export const OBSERVE_READ_PATHS: ReadonlySet<string> = new Set([
 	// mode, nothing secret-bearing.
 	"/users/directory",
 	"/instance",
+	// What this server can do (features, push events, mode, the caller's own
+	// scopes): booleans and labels, no secret-bearing field.
+	"/capabilities",
 ]);
 
 /**
@@ -84,9 +88,10 @@ export const OBSERVE_READ_PATHS: ReadonlySet<string> = new Set([
 export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
 	// C1 — leaking DTOs (env vars, launchSpec, claimToken, injected prompts)
 	"/sessions/:sessionId/control-actions",
-	// AGEN — a mutation (POST), already manage-only via classifyRoute's
-	// method gate; listed for documentation/consistency with the rest of
-	// this set, not because the route-drift guard (GET/HEAD only) needs it.
+	// A mutation (POST): manage-only via classifyRoute's method gate, and the
+	// one write `respond` is granted (SCOPE_GRANTS.respond). Listed for
+	// documentation/consistency with the rest of this set, not because the
+	// route-drift guard (GET/HEAD only) needs it.
 	"/sessions/:sessionId/acknowledge",
 	"/templates",
 	"/templates/:id",
@@ -137,9 +142,56 @@ export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
  * refactor. The route-drift guard (route-scope-policy.test.ts) walks the
  * real app.routes bidirectionally against this set.
  */
-export const INGEST_WRITABLE_ROUTES: ReadonlySet<string> = new Set([
-	"PUT /sessions/:sessionId/native-name",
+const INGEST_WRITES: ReadonlySet<string> = new Set(["PUT /sessions/:sessionId/native-name"]);
+
+/**
+ * `respond` reads: everything `observe` reads. Every entry is also in
+ * OBSERVE_READ_PATHS or INTENTIONALLY_MANAGE_ONLY (guarded by the drift test),
+ * so a respond key never reads more than a manage key and never reads a DTO the
+ * C1/F23 exclusions keep from observe. Later phases add their reads here in the
+ * same change that mounts the guarded route (/devices, /ai/inbox ...).
+ */
+const RESPOND_READS: ReadonlySet<string> = new Set(OBSERVE_READS);
+
+/**
+ * `respond` writes (method-qualified). A grant lands only in the phase that
+ * installs its guard: both routes below are owner-checked in their handler
+ * (OWNER_CHECKED_ROUTES), and the acknowledge route answers
+ * `{acknowledged:false, reason:"not_owner"}` rather than clearing someone
+ * else's attention. Decisions, snooze and device routes arrive with their guards.
+ */
+const RESPOND_WRITES: ReadonlySet<string> = new Set([
+	"POST /sessions/:sessionId/acknowledge",
+	"DELETE /sessions/:sessionId/acknowledge",
 ]);
+
+export interface ScopeGrant {
+	/** GET/HEAD route templates the scope reaches. */
+	readonly reads: ReadonlySet<string>;
+	/** "METHOD /template" entries the scope may write to. */
+	readonly writes: ReadonlySet<string>;
+	/** May the scope open the live-update WebSocket (alone, without `manage`)? */
+	readonly ws: boolean;
+}
+
+/**
+ * What each non-manage scope may reach: the one table the route policy, the
+ * WebSocket upgrade and the drift tests read. `manage` and `*` are not in it —
+ * they reach every operator route. Adding a grant is a conscious security
+ * decision made in the phase that installs its guard, never a side effect of
+ * mounting a route.
+ */
+export const SCOPE_GRANTS: Readonly<
+	Record<typeof SCOPE_OBSERVE | typeof SCOPE_INGEST | typeof SCOPE_RESPOND, ScopeGrant>
+> = {
+	[SCOPE_OBSERVE]: { reads: OBSERVE_READS, writes: new Set(), ws: false },
+	[SCOPE_INGEST]: { reads: new Set(), writes: INGEST_WRITES, ws: false },
+	[SCOPE_RESPOND]: { reads: RESPOND_READS, writes: RESPOND_WRITES, ws: true },
+};
+
+/** Legacy names, kept as views of SCOPE_GRANTS. */
+export const OBSERVE_READ_PATHS: ReadonlySet<string> = SCOPE_GRANTS[SCOPE_OBSERVE].reads;
+export const INGEST_WRITABLE_ROUTES: ReadonlySet<string> = SCOPE_GRANTS[SCOPE_INGEST].writes;
 
 function parseRouteEntry(entry: string): { method: string; segments: string[] } {
 	const spaceIndex = entry.indexOf(" ");
@@ -148,21 +200,35 @@ function parseRouteEntry(entry: string): { method: string; segments: string[] } 
 	return { method, segments: splitSegments(path) };
 }
 
+export type GrantedScope = keyof typeof SCOPE_GRANTS;
+
 /**
- * True when (method, path) is a literal member of INGEST_WRITABLE_ROUTES,
- * using the same structural segment-by-segment matcher as classifyRoute
- * (never a prefix/substring test).
+ * The one matcher over SCOPE_GRANTS: does `scope` reach (method, path)? GET and
+ * HEAD are judged against `reads`, every other method against the
+ * method-qualified `writes`, both with the same structural segment-by-segment
+ * match as classifyRoute (never a prefix/substring test).
  */
-export function isIngestWritable(method: string, path: string): boolean {
-	const normalized = normalizeRoutePath(path);
-	const pathSegments = splitSegments(normalized);
+export function scopeGrantAllows(scope: GrantedScope, method: string, path: string): boolean {
+	const grant = SCOPE_GRANTS[scope];
+	const pathSegments = splitSegments(normalizeRoutePath(path));
 	const upperMethod = method.toUpperCase();
-	for (const entry of INGEST_WRITABLE_ROUTES) {
+	if (READ_METHODS.has(upperMethod)) {
+		return [...grant.reads].some((template) =>
+			matchesTemplate(pathSegments, splitSegments(template)),
+		);
+	}
+	for (const entry of grant.writes) {
 		const parsed = parseRouteEntry(entry);
-		if (parsed.method !== upperMethod) continue;
-		if (matchesTemplate(pathSegments, parsed.segments)) return true;
+		if (parsed.method === upperMethod && matchesTemplate(pathSegments, parsed.segments)) {
+			return true;
+		}
 	}
 	return false;
+}
+
+/** True when (method, path) is a literal member of INGEST_WRITABLE_ROUTES. */
+export function isIngestWritable(method: string, path: string): boolean {
+	return scopeGrantAllows(SCOPE_INGEST, method, path);
 }
 
 /**
@@ -485,9 +551,15 @@ export function classifyRoute(
 export function callerHasManageScope(authUser: AuthUser | undefined): boolean {
 	if (!authUser) return false;
 	if (authUser.source !== "api_key") return true;
-	const scopes = authUser.scopes ?? [];
+	return scopesIncludeManage(authUser.scopes ?? []);
+}
+
+/** Do these key scopes carry `manage` (or the wildcard)? `respond` and `observe` never do. */
+export function scopesIncludeManage(scopes: readonly string[]): boolean {
 	return scopes.includes(SCOPE_ALL) || scopes.includes(SCOPE_MANAGE);
 }
+
+const GRANTED_SCOPES: readonly GrantedScope[] = [SCOPE_OBSERVE, SCOPE_RESPOND, SCOPE_INGEST];
 
 /**
  * Middleware: centralized operator-route scope policy (D1). Replaces the
@@ -501,6 +573,8 @@ export function callerHasManageScope(authUser: AuthUser | undefined): boolean {
  *    used here rather than c.req.routePath).
  *  - api_key callers holding `ingest` → pass only on (method, path) pairs
  *    in INGEST_WRITABLE_ROUTES (D1) — today just PUT .../native-name.
+ *  - api_key callers holding `respond` → pass on the observe reads plus the
+ *    method-qualified writes in SCOPE_GRANTS.respond (acknowledge, today).
  *  - Otherwise → 403 { error: "insufficient_scope", required: "manage" }.
  *    `required` is always "manage": the message names the scope that
  *    unconditionally unlocks every operator route, not the (possibly lower)
@@ -530,15 +604,10 @@ export function requireOperatorScope() {
 			return next();
 		}
 
-		if (
-			scopes.includes(SCOPE_OBSERVE) &&
-			classifyRoute(c.req.method, c.req.path) === SCOPE_OBSERVE
-		) {
-			return next();
-		}
-
-		if (scopes.includes(SCOPE_INGEST) && isIngestWritable(c.req.method, c.req.path)) {
-			return next();
+		for (const scope of GRANTED_SCOPES) {
+			if (scopes.includes(scope) && scopeGrantAllows(scope, c.req.method, c.req.path)) {
+				return next();
+			}
 		}
 
 		return c.json({ error: "insufficient_scope", required: SCOPE_MANAGE }, 403);

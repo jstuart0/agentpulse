@@ -556,3 +556,89 @@ describe("DISABLE_AUTH sessions are created unassigned", () => {
 		}
 	});
 });
+
+describe("open sockets are re-judged when an owner is filled, and only then", () => {
+	async function countingRevalidations<T>(run: () => Promise<T>): Promise<number> {
+		const { setWsRevalidationListener } = await import("../ws/revalidation.js");
+		const { heartbeatTick } = await import("../ws/handler.js");
+		let calls = 0;
+		setWsRevalidationListener(async () => {
+			calls++;
+		});
+		try {
+			await run();
+		} finally {
+			setWsRevalidationListener(heartbeatTick);
+		}
+		return calls;
+	}
+
+	function winnerRow(sessionId: string, ownerUserId: string | null) {
+		return getDb()
+			.insert(sessions)
+			.values({
+				sessionId,
+				displayName: "winner",
+				agentType: "claude_code",
+				status: "active",
+				startedAt: new Date().toISOString(),
+				lastActivityAt: new Date().toISOString(),
+				metadata: {},
+				ownerUserId,
+				ingestKeyId: ownerUserId ? "key-winner" : null,
+			})
+			.onConflictDoNothing();
+	}
+
+	const attribution = { ownerUserId: "user-loser", ingestKeyId: "key-loser" };
+	const ctx = { keyId: "key-loser", deliveryId: null, origin: "native" as const, attribution };
+
+	test("the race loser's first fill re-judges once", async () => {
+		const sessionId = uniqueId("reval-fill");
+		_setPreInsertRaceHookForTest(async (id) => {
+			if (id === sessionId) await winnerRow(sessionId, null);
+		});
+		const calls = await countingRevalidations(() =>
+			processHookEvent(
+				{ session_id: sessionId, hook_event_name: "SessionStart" },
+				"claude_code",
+				ctx,
+			),
+		);
+		expect(calls).toBe(1);
+	});
+
+	test("a loser whose fill does not take (the winner already has an owner) re-judges nothing", async () => {
+		const sessionId = uniqueId("reval-no-fill");
+		_setPreInsertRaceHookForTest(async (id) => {
+			if (id === sessionId) await winnerRow(sessionId, "user-winner");
+		});
+		const calls = await countingRevalidations(() =>
+			processHookEvent(
+				{ session_id: sessionId, hook_event_name: "SessionStart" },
+				"claude_code",
+				ctx,
+			),
+		);
+		expect(calls).toBe(0);
+	});
+
+	test("the event stream never re-judges: many events on an existing session, none", async () => {
+		const sessionId = uniqueId("reval-hot-path");
+		await processHookEvent(
+			{ session_id: sessionId, hook_event_name: "SessionStart" },
+			"claude_code",
+			ctx,
+		);
+		const calls = await countingRevalidations(async () => {
+			for (let i = 0; i < 5; i++) {
+				await processHookEvent(
+					{ session_id: sessionId, hook_event_name: "UserPromptSubmit", prompt: `p${i}` },
+					"claude_code",
+					ctx,
+				);
+			}
+		});
+		expect(calls).toBe(0);
+	});
+});

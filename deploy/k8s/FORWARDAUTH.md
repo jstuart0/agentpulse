@@ -418,10 +418,19 @@ passed Traefik's edge Bearer-bypass rule with an invalid key.
 
 ### WebSocket limitation
 
-WS upgrades use the `ap_session` cookie minted during the prior SPA document load. The
-bridge does not run on WS upgrades (no HTML response to set the cookie on). If the SSO
-cookie expires while a WS session is open, the WS session continues until disconnect;
-it is not re-validated mid-stream.
+WS upgrades from a browser use the `ap_session` cookie minted during the prior SPA
+document load, and must carry an allowed `Origin`. The bridge does not run on WS upgrades
+(no HTML response to set the cookie on). If the SSO cookie expires while a WS session is
+open, the WS session continues until disconnect; a cookie session is not re-validated
+mid-stream. (Sockets held by API keys, and sockets of disabled or password-gated users,
+are re-checked every 30 s; the server closes them with code 4001 when the credential is
+revoked, or 4003 when its authority changed and a reconnect is the right answer. A key may hold at most 8 open sockets; the next upgrade gets 429.)
+
+A native client (the mobile companion) opens the socket with `Authorization: Bearer ap_...`
+and no `Origin` header, as browsers cannot set `Authorization`. The server accepts a
+missing `Origin` only for a valid API key; a cookie or forwardauth identity with no
+`Origin` is refused. The edge Bearer-bypass rule routes such requests around forwardauth,
+so the key is the only identity the server sees.
 
 ### Trust secret requirement
 

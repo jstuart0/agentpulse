@@ -324,3 +324,16 @@ describe("a machine filter on the dashboard", () => {
 		expect(shown()).toEqual([]);
 	});
 });
+
+describe("a message type this client doesn't know", () => {
+	test("is ignored: no session, no event, no notification, and the socket keeps working", async () => {
+		await deliver(socket, { type: "inbox_changed", data: { at: "2026-10-01T00:00:00Z" } });
+		await deliver(socket, { type: "subscribe_rejected", reason: "rate_limited" });
+		await deliver(socket, { type: "something_new", data: { session: row("s-x", ME, true) } });
+		expect(useSessionStore.getState().sessions).toEqual([]);
+		expect(notifications).toEqual([]);
+
+		await deliver(socket, { type: "session_updated", data: { session: row("s-mine", ME, true) } });
+		expect(useSessionStore.getState().sessions.map((s) => s.sessionId)).toEqual(["s-mine"]);
+	});
+});

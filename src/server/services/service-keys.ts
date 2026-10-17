@@ -17,6 +17,7 @@ import { assertOwnerActive, assertOwnerAssignable } from "../auth/owner-state.js
 import { withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, sessions, users } from "../db/schema/index.js";
+import { requestWsRevalidation } from "../ws/revalidation.js";
 import {
 	delistAdminServiceKey,
 	delistServiceKey,
@@ -118,13 +119,18 @@ export async function revokeApiKey(keyId: string): Promise<boolean> {
 		await tx.update(apiKeys).set({ isActive: false }).where(eq(apiKeys.id, keyId));
 		await delistFromAllServiceKeyLists(keyId, tx);
 		return true;
+	}).then(async (revoked) => {
+		if (revoked) await requestWsRevalidation();
+		return revoked;
 	});
 }
 
 /**
  * Sets (or clears, with null) a key's owner. Giving a key an owner takes it
  * off the admin-service list: its authority is now its owner's role. Refuses a
- * disabled owner. False when there is no such key.
+ * disabled owner. False when there is no such key. The live route is
+ * PATCH /api-keys/:id (applyApiKeyPatch); this narrower form is kept hooked to
+ * the same socket re-check.
  */
 export async function reassignApiKeyOwner(
 	keyId: string,
@@ -141,6 +147,9 @@ export async function reassignApiKeyOwner(
 		await tx.update(apiKeys).set({ ownerUserId }).where(eq(apiKeys.id, keyId));
 		if (ownerUserId) await delistFromAllServiceKeyLists(keyId, tx);
 		return true;
+	}).then(async (reassigned) => {
+		if (reassigned) await requestWsRevalidation();
+		return reassigned;
 	});
 }
 
@@ -274,5 +283,10 @@ export async function applyApiKeyPatch(
 			adminService: admin.includes(keyId),
 			serviceKey: isServiceKeyRow({ id: keyId, ownerUserId: ownerAfter }, { admin, plain }),
 		};
+	}).then(async (result) => {
+		// A new owner changes what the key's open sockets may read, and
+		// `attributeSessions` rewrites session owners; re-judge them once it commits.
+		if (result.found) await requestWsRevalidation();
+		return result;
 	});
 }

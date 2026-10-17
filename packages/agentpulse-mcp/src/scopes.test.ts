@@ -87,6 +87,34 @@ describe("discoverScopes", () => {
 		}
 	});
 
+	test("respond-only key (the mobile companion's scope) → fail-fast: MCP never treats it as observe or manage", async () => {
+		const client = fakeClient(
+			authMe({
+				authenticated: true,
+				user: { name: "t", source: "api_key", id: "1", role: null, scopes: ["respond"] },
+			}),
+		);
+		await expect(discoverScopes(client)).rejects.toThrow(ScopeDiscoveryError);
+	});
+
+	test("respond alongside observe → only observe is registered, respond adds nothing", async () => {
+		const scopes = await discoverScopes(
+			fakeClient(
+				authMe({
+					authenticated: true,
+					user: {
+						name: "t",
+						source: "api_key",
+						id: "1",
+						role: null,
+						scopes: ["respond", "observe"],
+					},
+				}),
+			),
+		);
+		expect(scopes).toEqual(["observe"]);
+	});
+
 	test('unrecognized-only scopes (e.g. ["admin"], not just a recognized-but-insufficient scope like "ingest") → fail-fast, same as neither observe nor manage', async () => {
 		// xander X6 (2026-07-23-deliver-agentpulse-mcp-package, Phase 3 step
 		// 7b): distinct from the "ingest-only" case above, which uses a

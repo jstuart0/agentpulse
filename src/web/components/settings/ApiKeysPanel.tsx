@@ -56,10 +56,11 @@ export function ApiKeysPanel({ apiKeys, status, setApiKeys, reloadKeys }: ApiKey
 
 	const [newKeyName, setNewKeyName] = useState("");
 	const [newKeyValue, setNewKeyValue] = useState<string | null>(null);
-	// Scope picker: ingest is on by default; manage and observe are opt-in.
+	// Scope picker: ingest is on by default; manage, observe and respond are opt-in.
 	const [newKeyScopeIngest, setNewKeyScopeIngest] = useState(true);
 	const [newKeyScopeManage, setNewKeyScopeManage] = useState(false);
 	const [newKeyScopeObserve, setNewKeyScopeObserve] = useState(false);
+	const [newKeyScopeRespond, setNewKeyScopeRespond] = useState(false);
 	const [newKeyService, setNewKeyService] = useState(false);
 	const [createError, setCreateError] = useState<string | null>(null);
 	const [pending, setPending] = useState<PendingAction | null>(null);
@@ -88,6 +89,7 @@ export function ApiKeysPanel({ apiKeys, status, setApiKeys, reloadKeys }: ApiKey
 			ingest: newKeyScopeIngest,
 			manage: newKeyScopeManage,
 			observe: newKeyScopeObserve,
+			respond: newKeyScopeRespond,
 			service: newKeyService,
 			allowService,
 		});
@@ -105,6 +107,7 @@ export function ApiKeysPanel({ apiKeys, status, setApiKeys, reloadKeys }: ApiKey
 				setNewKeyScopeIngest(true);
 				setNewKeyScopeManage(false);
 				setNewKeyScopeObserve(false);
+				setNewKeyScopeRespond(false);
 				setNewKeyService(false);
 				await reloadKeys();
 			}
@@ -289,6 +292,16 @@ export function ApiKeysPanel({ apiKeys, status, setApiKeys, reloadKeys }: ApiKey
 							/>
 							<span>Observe (read-only)</span>
 							<span className="text-muted-foreground/60">(sessions, search, AI reads)</span>
+						</label>
+						<label className="flex items-center gap-1.5 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={newKeyScopeRespond}
+								onChange={(e) => setNewKeyScopeRespond(e.target.checked)}
+								className="rounded border-input"
+							/>
+							<span>Respond (mobile)</span>
+							<span className="text-muted-foreground/60">(read, mark as seen, live updates)</span>
 						</label>
 					</div>
 					{allowService && (

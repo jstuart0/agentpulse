@@ -17,6 +17,7 @@ import { awaitSeamInsideAdminLock, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, sessions, supervisors, users } from "../db/schema/index.js";
 import { closeSocketsForUser } from "../ws/handler.js";
+import { requestWsRevalidation } from "../ws/revalidation.js";
 import {
 	type LocalUser,
 	createUser,
@@ -119,6 +120,9 @@ export async function setUserRole(
 			.returning();
 
 		return { user: toLocalUser(updated) };
+	}).then(async (result) => {
+		await requestWsRevalidation();
+		return result;
 	});
 }
 
@@ -174,6 +178,9 @@ export async function disableUser(
 	// connection is not a DB write and must not be rolled back alongside one
 	// (nor should an in-memory close block the lock's release).
 	closeSocketsForUser(targetUserId);
+	// Their keys were deactivated in the same transaction (deactivateApiKeysOwnedByUser);
+	// sockets held through another replica's view of them are re-judged too.
+	await requestWsRevalidation();
 }
 
 /** Clear disabled_at only. Does not restore revoked keys or hosts. Runs under the admin lock. */

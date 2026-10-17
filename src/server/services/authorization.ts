@@ -84,6 +84,44 @@ function isOwnerOrAdmin(actor: Actor, ownerUserId: string | null, unownedIsOpen:
 	return actor.userId !== null && actor.userId === ownerUserId;
 }
 
+/**
+ * May this actor see this session through a live, per-viewer channel (the
+ * mobile WebSocket profile, push targeting, the inbox)? Solo: always. Team: the
+ * session's owner, an admin, or any identified member for an unowned session.
+ *
+ * Fails closed: a host credential (role `none`) reads nothing; an actor whose
+ * mode is unknown is judged as in team mode; a session row with no owner field
+ * at all (as opposed to a null owner, "unowned") is readable only by an admin.
+ *
+ * This is the only definition: the REST routes keep their "team mode shares
+ * every read" rule, and everything that filters per viewer asks here. Note that
+ * a key owned by an admin resolves to admin (see resolveEffectiveRole), so it
+ * reads every session whatever its scope.
+ */
+export function canReadSession(actor: Actor, session: { ownerUserId?: string | null }): boolean {
+	if (actor.role === "none") return false;
+	if (actor.mode === "solo") return true;
+	// A row with no owner field is not "unowned" (null): only an admin reads it.
+	if (session.ownerUserId === undefined) return actor.role === "admin";
+	return isOwnerOrAdmin(actor, session.ownerUserId, true);
+}
+
+/**
+ * Who a session's live events are for, as user ids: `"all"` when ownership
+ * doesn't narrow it (solo, or an unowned session), else its owner. Admins read
+ * every session (canReadSession) but aren't enumerable from the session row, so
+ * a consumer that fans out per user adds them itself. A row with no owner field
+ * is for nobody; an unknown mode is judged as team.
+ */
+export function sessionAudience(
+	session: { ownerUserId?: string | null },
+	mode: InstanceModeName,
+): readonly string[] | "all" {
+	if (mode === "solo") return "all";
+	if (session.ownerUserId === undefined) return [];
+	return session.ownerUserId === null ? "all" : [session.ownerUserId];
+}
+
 async function assertSessionOwnerOrAdmin(actor: Actor, sessionId: string): Promise<void> {
 	if ((await modeOf(actor)) === "solo") return;
 	const [row] = await getDb()

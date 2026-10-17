@@ -24,10 +24,17 @@ export const SCOPE_MANAGE = "manage";
  * excludes every DTO that carries env vars, launch payloads, or claim tokens.
  */
 export const SCOPE_OBSERVE = "observe";
+/**
+ * Authorizes the mobile companion's narrow write set (acknowledge a session,
+ * and later the grants listed under SCOPE_GRANTS.respond) on top of every read
+ * `observe` allows. Never implies `manage`: it is not a stepping stone to any
+ * operator route.
+ */
+export const SCOPE_RESPOND = "respond";
 /** Wildcard — all scopes. Only valid when stored in the DB (never accepted from a client request). */
 export const SCOPE_ALL = "*";
 
-const RECOGNIZED_SCOPES = new Set([SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE]);
+const RECOGNIZED_SCOPES = new Set([SCOPE_INGEST, SCOPE_MANAGE, SCOPE_OBSERVE, SCOPE_RESPOND]);
 
 // ── Scope utilities ───────────────────────────────────────────────────────────
 
@@ -265,6 +272,41 @@ export async function getInactiveApiKeyIds(keyIds: string[]): Promise<Set<string
 		.where(inArray(apiKeys.id, keyIds));
 	const active = new Set(rows.filter((r) => r.isActive).map((r) => r.id));
 	return new Set(keyIds.filter((id) => !active.has(id)));
+}
+
+export interface ApiKeyLiveState {
+	isActive: boolean;
+	ownerUserId: string | null;
+	/** The owner's CURRENT role; null for an ownerless key or an owner with no row. */
+	ownerRole: "user" | "admin" | null;
+}
+
+/**
+ * Batched live state of keys: whether each is still active, who owns it now and
+ * that owner's current role. A key id with no row is absent from the map (deleted).
+ * Used by the WebSocket sweep to judge sockets held by a restricted (respond) key.
+ */
+export async function getApiKeyLiveStates(keyIds: string[]): Promise<Map<string, ApiKeyLiveState>> {
+	const result = new Map<string, ApiKeyLiveState>();
+	if (keyIds.length === 0) return result;
+	const rows = await getDb()
+		.select({
+			id: apiKeys.id,
+			isActive: apiKeys.isActive,
+			ownerUserId: apiKeys.ownerUserId,
+			ownerRole: users.role,
+		})
+		.from(apiKeys)
+		.leftJoin(users, eq(users.id, apiKeys.ownerUserId))
+		.where(inArray(apiKeys.id, keyIds));
+	for (const row of rows) {
+		result.set(row.id, {
+			isActive: row.isActive,
+			ownerUserId: row.ownerUserId,
+			ownerRole: row.ownerRole === "admin" ? "admin" : row.ownerRole === "user" ? "user" : null,
+		});
+	}
+	return result;
 }
 
 /**

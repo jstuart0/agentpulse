@@ -467,7 +467,7 @@ describe("creating a service key", () => {
 	});
 
 	test("the request carries service: true only when asked for and allowed", () => {
-		const input = { name: " ci ", ingest: true, manage: false, observe: false };
+		const input = { name: " ci ", ingest: true, manage: false, observe: false, respond: false };
 		expect(createKeyRequest({ ...input, service: true, allowService: true })).toEqual({
 			name: "ci",
 			scopes: ["ingest"],
@@ -490,6 +490,7 @@ describe("creating a service key", () => {
 				ingest: true,
 				manage: true,
 				observe: true,
+				respond: false,
 				service: false,
 				allowService: false,
 			}).scopes,
@@ -500,10 +501,28 @@ describe("creating a service key", () => {
 				ingest: false,
 				manage: false,
 				observe: false,
+				respond: false,
 				service: false,
 				allowService: false,
 			}).scopes,
 		).toEqual(["ingest"]);
+	});
+
+	test("respond is sent as its own scope, last, and alone it does not fall back to ingest", () => {
+		const none = { name: "k", ingest: false, manage: false, observe: false, service: false };
+		expect(createKeyRequest({ ...none, respond: true, allowService: false }).scopes).toEqual([
+			"respond",
+		]);
+		expect(
+			createKeyRequest({
+				...none,
+				ingest: true,
+				manage: true,
+				observe: true,
+				respond: true,
+				allowService: false,
+			}).scopes,
+		).toEqual(["ingest", "manage", "observe", "respond"]);
 	});
 });
 

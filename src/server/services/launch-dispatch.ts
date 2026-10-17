@@ -3,6 +3,7 @@ import type { LaunchRequest, LaunchRequestStatus } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
 import { launchRequests, sessions } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
+import { requestWsRevalidation } from "../ws/revalidation.js";
 import { applyAskInitiatedWatcher } from "./ai/auto-watcher.js";
 import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import { markSessionFailed } from "./event-processor.js";
@@ -257,10 +258,14 @@ export async function associateObservedSession(input: {
 	// with no launch context yet). Guarded in SQL — it can never take a
 	// session that already has an owner.
 	if (resolution.launchRequest.requestedByUserId !== null) {
-		await getDb()
+		const filled = await getDb()
 			.update(sessions)
 			.set({ ownerUserId: resolution.launchRequest.requestedByUserId })
-			.where(and(eq(sessions.sessionId, input.sessionId), isNull(sessions.ownerUserId)));
+			.where(and(eq(sessions.sessionId, input.sessionId), isNull(sessions.ownerUserId)))
+			.returning({ id: sessions.id });
+		// An unowned session just gained an owner: sockets that followed it as
+		// "open to members" are re-judged. Only when the guarded write took.
+		if (filled.length > 0) await requestWsRevalidation();
 	}
 
 	await applyLaunchProvenanceToSession(input.sessionId, resolution.launchRequest.metadata);

@@ -101,8 +101,9 @@ Agent (Claude Code / Codex / Copilot CLI)
   alias `AGENTPULSE_AUTHENTIK_TRUST_SECRET` accepted until v0.8.0); see
   `deploy/k8s/FORWARDAUTH.md`.
   - API keys carry explicit scopes: `ingest` (hooks), `observe` (read-only,
-    provably secret-free at the REST boundary), `manage` (full operator
-    control). See `src/server/auth/route-scope-policy.ts`.
+    provably secret-free at the REST boundary), `respond` (the mobile
+    companion: those reads, marking sessions seen, and a filtered live feed; never
+    operator control), `manage` (full operator control). See `src/server/auth/route-scope-policy.ts`.
 
 ### AI gate rejection codes
 
@@ -164,7 +165,7 @@ Do NOT use `503 / ai_kill_switch_active` — that code was never shipped.
 
 **Other:**
 - `GET /api/v1/search?kinds=session&q=` — Full-text search (FTS5 on SQLite, ILIKE on Postgres)
-- `GET/POST/DELETE /api/v1/api-keys` — Manage API keys (scopes: `ingest`, `observe`, `manage`)
+- `GET/POST/DELETE /api/v1/api-keys` — Manage API keys (scopes: `ingest`, `observe`, `respond`, `manage`)
 - `WS /api/v1/ws` — Real-time event stream
 
 **MCP:** `agentpulse mcp serve` exposes this API over the Model Context Protocol for external agents (Claude Code, Codex CLI). `list_sessions` accepts `agent_type: "copilot_cli"` for filtering; orchestration tools (launch/template) accept only `claude_code`/`codex_cli`. See `docs/MCP.md` for the full tool catalog and scope model.

@@ -318,6 +318,7 @@ export function createKeyRequest(input: {
 	ingest: boolean;
 	manage: boolean;
 	observe: boolean;
+	respond: boolean;
 	service: boolean;
 	allowService: boolean;
 }): { name: string; scopes: string[]; service?: true } {
@@ -325,6 +326,7 @@ export function createKeyRequest(input: {
 	if (input.ingest) scopes.push("ingest");
 	if (input.manage) scopes.push("manage");
 	if (input.observe) scopes.push("observe");
+	if (input.respond) scopes.push("respond");
 	if (scopes.length === 0) scopes.push("ingest");
 	return {
 		name: input.name.trim(),

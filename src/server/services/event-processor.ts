@@ -16,6 +16,7 @@ import {
 	incrementIngestUnacknowledgeDropped,
 	incrementSessionCreationLimited,
 } from "../routes/ingest-counters.js";
+import { requestWsRevalidation } from "../ws/revalidation.js";
 import { evaluateAlertRules } from "./ai/alert-rule-evaluator.js";
 import {
 	type ForeignKeyVerdict,
@@ -909,7 +910,7 @@ export async function processHookEvent(
 		// can't double-apply.
 		const fill = fillForUnownedRow(priorRow, attribution);
 		if (fill) {
-			await getDb()
+			const filled = await getDb()
 				.update(sessions)
 				.set(fill)
 				.where(
@@ -917,7 +918,11 @@ export async function processHookEvent(
 						eq(sessions.sessionId, sessionId),
 						sql`${sessions.ownerUserId} IS NULL AND ${sessions.ingestKeyId} IS NULL`,
 					),
-				);
+				)
+				.returning({ id: sessions.id });
+			// Only the creation-race loser's first fill reaches here (once per
+			// session, never per event), and only a write that took re-judges sockets.
+			if (filled.length > 0 && fill.ownerUserId) await requestWsRevalidation();
 		}
 		if (isOwnerMismatch(priorRow, attribution)) {
 			incrementIngestOwnerMismatch();

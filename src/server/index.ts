@@ -36,13 +36,7 @@ import { updateStaleSessions } from "./services/session-tracker.js";
 import { startTelemetry } from "./services/telemetry.js";
 import { startTranscriptSync } from "./services/transcript-sync.js";
 import { validateForwardauthProviderConfig } from "./services/user-identity.js";
-import {
-	handleWsClose,
-	handleWsMessage,
-	handleWsOpen,
-	initWsBroadcaster,
-	startHeartbeat,
-} from "./ws/handler.js";
+import { initWsBroadcaster, startHeartbeat, wsHandlers } from "./ws/handler.js";
 
 // ── Graceful drain state ──────────────────────────────────────────────────────
 //
@@ -214,11 +208,7 @@ bunServer = Bun.serve({
 	port: config.port,
 	hostname: config.host,
 	fetch: handleServerRequest,
-	websocket: {
-		open: handleWsOpen,
-		message: handleWsMessage,
-		close: handleWsClose,
-	},
+	websocket: wsHandlers,
 });
 
 // Start heartbeat for WebSocket connections
