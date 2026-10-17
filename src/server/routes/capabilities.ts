@@ -34,6 +34,11 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 	{ name: "wsNativeAuth", proof: { kind: "ws" }, value: true },
 	{ name: "wsMobileProfile", proof: { kind: "ws" }, value: true },
 	{
+		name: "pairing",
+		proof: { kind: "route", method: "POST", path: "/pairing-codes" },
+		value: true,
+	},
+	{
 		name: "respondAck",
 		proof: { kind: "route", method: "POST", path: "/sessions/:sessionId/acknowledge" },
 		value: true,

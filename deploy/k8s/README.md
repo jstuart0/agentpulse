@@ -819,6 +819,7 @@ is applied to exactly these 6 paths:
 | `/install-local.sh` | `agentpulse-ratelimit-public` |
 | `/install-local.ps1` | `agentpulse-ratelimit-public` |
 | `/api/v1/csp-report` | `agentpulse-ratelimit-public` |
+| `/api/v1/pair` | `agentpulse-ratelimit-public` |
 
 **Explicitly excluded** from rate limiting:
 - `/api/v1/hooks` — in-process per-key limiter (P7); always-200 contract

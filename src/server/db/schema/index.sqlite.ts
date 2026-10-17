@@ -24,6 +24,7 @@ export { eventsSqlite as events } from "./core/events.js";
 export { usersSqlite as users } from "./core/users.js";
 export { authSessionsSqlite as authSessions } from "./core/auth-sessions.js";
 export { apiKeysSqlite as apiKeys } from "./core/api-keys.js";
+export { pairingCodesSqlite as pairingCodes } from "./core/pairing-codes.js";
 export { settingsSqlite as settings } from "./core/settings.js";
 export { sessionTemplatesSqlite as sessionTemplates } from "./core/session-templates.js";
 export { supervisorsSqlite as supervisors } from "./core/supervisors.js";

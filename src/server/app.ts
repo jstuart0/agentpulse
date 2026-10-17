@@ -44,6 +44,7 @@ import { instanceRouter } from "./routes/instance.js";
 import { internalRouter } from "./routes/internal.js";
 import { labsRouter } from "./routes/labs.js";
 import { launchesRouter } from "./routes/launches.js";
+import { pairRouter, pairingCodesRouter } from "./routes/pairing.js";
 import { projectsRouter } from "./routes/projects.js";
 import { searchRouter } from "./routes/search.js";
 import { sessionsRouter } from "./routes/sessions.js";
@@ -110,6 +111,7 @@ api.route("/v1", askRouter);
 api.route("/v1", searchRouter);
 api.route("/v1", labsRouter);
 api.route("/v1", capabilitiesRouter);
+api.route("/v1", pairingCodesRouter);
 api.route("/v1", channelsRouter);
 
 // Public Telegram webhook lives OUTSIDE the `api` bundle. Other routers
@@ -119,6 +121,12 @@ api.route("/v1", channelsRouter);
 // Mounting the webhook on the root app sidesteps that entirely.
 app.route("/api/v1", telegramWebhookRouter);
 app.route("/app-api/v1", telegramWebhookRouter);
+
+// Pairing redemption: the code is the credential, so /pair is reachable with
+// no session. Root-mounted for the same wildcard-merge reason as the Telegram
+// webhook; the edge exemption is in deploy/k8s/07-ingressroute.yaml.
+app.route("/api/v1", pairRouter);
+app.route("/app-api/v1", pairRouter);
 
 // Auth router — lives OUTSIDE the `api` bundle for the same Hono
 // wildcard-merge reason as telegramWebhookRouter and cspReportRouter.

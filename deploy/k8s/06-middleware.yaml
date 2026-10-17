@@ -133,7 +133,8 @@ spec:
 # Rate-limit middleware for public (unauthenticated) endpoints (S-22, I-M5).
 #
 # Applied to: /api/v1/channels/telegram/webhook, /setup.sh, /setup-relay.sh,
-#             /install-local.sh, /install-local.ps1, /api/v1/csp-report.
+#             /install-local.sh, /install-local.ps1, /api/v1/csp-report,
+#             /api/v1/pair.
 #
 # NOT applied to /api/v1/hooks or /api/v1/hooks/status — those routes carry
 # an in-process per-key rate limiter (P7) and must never return 429 (always-

@@ -103,7 +103,7 @@ export function buildForwardauthAuthUser(input: {
 	};
 }
 
-function parseCookieHeader(cookieHeader: string | null, name: string): string | null {
+export function parseCookieHeader(cookieHeader: string | null, name: string): string | null {
 	if (!cookieHeader) return null;
 	for (const part of cookieHeader.split(";")) {
 		const [rawKey, ...rest] = part.split("=");

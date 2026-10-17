@@ -32,7 +32,7 @@ describe("sectionLoad", () => {
 });
 
 describe("settingsSectionOrder", () => {
-	test("solo: the order the page has always had", () => {
+	test("solo: the order the page has always had, with Mobile after the keys", () => {
 		expect(settingsSectionOrder(false)).toEqual([
 			"appearance",
 			"supervisor",
@@ -44,6 +44,7 @@ describe("settingsSectionOrder", () => {
 			"telegram",
 			"team",
 			"keys",
+			"mobile",
 			"account",
 			"server",
 		]);
@@ -54,6 +55,7 @@ describe("settingsSectionOrder", () => {
 			"appearance",
 			"team",
 			"keys",
+			"mobile",
 			"account",
 			"supervisor",
 			"launches",
@@ -70,7 +72,7 @@ describe("settingsSectionOrder", () => {
 		for (const teamOn of [false, true]) {
 			const order = settingsSectionOrder(teamOn);
 			expect(new Set(order).size).toBe(order.length);
-			expect(order).toHaveLength(12);
+			expect(order).toHaveLength(13);
 		}
 	});
 });

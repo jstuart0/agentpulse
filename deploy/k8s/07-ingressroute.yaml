@@ -233,6 +233,20 @@ spec:
         - name: agentpulse
           port: 3000
 
+    # Mobile pairing redemption: the single-use code in the body is the
+    # credential, so a phone with no SSO session can redeem it. The app limits
+    # failures per client IP and globally; this edge limit is a second guard.
+    # priority: 100 — same reason as telegram/webhook above.
+    - match: Host(`agentpulse.example.com`) && Path(`/api/v1/pair`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: agentpulse-ratelimit-public
+          namespace: agentpulse
+      services:
+        - name: agentpulse
+          port: 3000
+
     # ── Authenticated surface ─────────────────────────────────────────────────
 
     # API-key-bearing requests bypass forwardauth so the relay

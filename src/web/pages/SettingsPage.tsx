@@ -8,6 +8,7 @@ import { AdminSettingsGroup } from "../components/settings/AdminSettingsGroup.js
 import { AiSettingsPanel } from "../components/settings/AiSettingsPanel.js";
 import { ApiKeysPanel } from "../components/settings/ApiKeysPanel.js";
 import { LabsPanel } from "../components/settings/LabsPanel.js";
+import { PairDevicePanel } from "../components/settings/PairDevicePanel.js";
 import { SettingsSection } from "../components/settings/SettingsSection.js";
 import { TeamPanel } from "../components/settings/TeamPanel.js";
 import { TelegramChannelPanel } from "../components/settings/TelegramChannelPanel.js";
@@ -515,6 +516,17 @@ export function SettingsPage() {
 					reloadKeys={reloadKeys}
 				/>
 			</>
+		),
+		mobile: (
+			<SettingsSection
+				panel="mobile"
+				title="Mobile"
+				labs={false}
+				description="Pair a phone: scan a one-time code with the AgentPulse app."
+			>
+				<h3 className="text-xs font-semibold text-foreground mb-2">Pair a phone</h3>
+				<PairDevicePanel />
+			</SettingsSection>
 		),
 		account: (
 			<>

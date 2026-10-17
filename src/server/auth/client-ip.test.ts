@@ -6,8 +6,16 @@
  * which the implementation reads as its Plan B fallback.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { getTrustedClientIp, isTrustedProxy, isValidIp, parseCidrList } from "./client-ip.js";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import {
+	TRUSTED_PROXY_CHECK_SAMPLES,
+	_resetTrustedProxyCheckForTest,
+	getTrustedClientIp,
+	isTrustedProxy,
+	isValidIp,
+	parseCidrList,
+	rateLimitKeyForIp,
+} from "./client-ip.js";
 import type { ParsedCidr } from "./client-ip.js";
 
 // ── CIDR / isTrustedProxy tests ──────────────────────────────────────────────
@@ -213,5 +221,139 @@ describe("getTrustedClientIp — with trusted proxies", () => {
 		const ctx2 = makeCtx("10.42.0.1", "203.0.113.2");
 		expect(getTrustedClientIp(ctx1)).toBe("203.0.113.1");
 		expect(getTrustedClientIp(ctx2)).toBe("203.0.113.2");
+	});
+});
+
+describe("rateLimitKeyForIp", () => {
+	const table: Array<[string, string, string]> = [
+		["IPv4 is itself", "203.0.113.9", "203.0.113.9"],
+		["IPv4-mapped IPv6 is the IPv4 address", "::ffff:203.0.113.9", "203.0.113.9"],
+		["IPv6 is its /64", "2001:db8:1:2:3:4:5:6", "2001:0db8:0001:0002::/64"],
+		["compression expands", "2001:db8:1:2::1", "2001:0db8:0001:0002::/64"],
+		[
+			"the same /64, a different host part",
+			"2001:db8:1:2:ffff:eeee:dddd:cccc",
+			"2001:0db8:0001:0002::/64",
+		],
+		[
+			"upper case and leading zeros are one address",
+			"2001:0DB8:0001:0002::7",
+			"2001:0db8:0001:0002::/64",
+		],
+		["brackets and a zone are dropped", "[2001:db8:1:2::1%eth0]", "2001:0db8:0001:0002::/64"],
+		["a different /64 is a different key", "2001:db8:1:3::1", "2001:0db8:0001:0003::/64"],
+		["compression inside the first 64 bits", "2001:db8::5", "2001:0db8:0000:0000::/64"],
+		["the loopback", "::1", "0000:0000:0000:0000::/64"],
+		["the unspecified address", "::", "0000:0000:0000:0000::/64"],
+		["something that isn't an address is its own key", "not-an-ip", "not-an-ip"],
+		["too many groups is its own key", "1:2:3:4:5:6:7:8:9", "1:2:3:4:5:6:7:8:9"],
+		["two compressions is its own key", "1::2::3", "1::2::3"],
+		["a group that isn't hex is its own key", "2001:db8:xyz::1", "2001:db8:xyz::1"],
+	];
+	for (const [name, input, expected] of table) {
+		test(name, () => expect(rateLimitKeyForIp(input)).toBe(expected));
+	}
+});
+
+describe("the trusted-proxy setup check", () => {
+	const saved = process.env.AGENTPULSE_TRUSTED_PROXIES;
+	beforeEach(() => _resetTrustedProxyCheckForTest());
+	afterEach(() => {
+		if (saved === undefined) process.env.AGENTPULSE_TRUSTED_PROXIES = undefined;
+		else process.env.AGENTPULSE_TRUSTED_PROXIES = saved;
+	});
+
+	function ctx(peer: string, xff?: string) {
+		return {
+			get: (key: string) => (key === "peerIp" ? peer : undefined),
+			req: { header: (name: string) => (name === "X-Forwarded-For" ? xff : undefined) },
+			// biome-ignore lint/suspicious/noExplicitAny: a minimal Hono context stand-in
+		} as any;
+	}
+	function warnings(run: () => void): Array<Record<string, unknown>> {
+		const spy = spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			run();
+			return spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+		} finally {
+			spy.mockRestore();
+		}
+	}
+	const unverified = (list: Array<Record<string, unknown>>) =>
+		list.filter((w) => w.kind === "trusted_proxies_unverified");
+
+	test("nothing is checked when no proxies are configured", () => {
+		process.env.AGENTPULSE_TRUSTED_PROXIES = undefined;
+		const out = warnings(() => {
+			for (let i = 0; i < TRUSTED_PROXY_CHECK_SAMPLES * 2; i++)
+				getTrustedClientIp(ctx("203.0.113.20"));
+		});
+		expect(out).toEqual([]);
+	});
+
+	test("peers outside the range: one warning after the sample size, saying the range is wrong", () => {
+		process.env.AGENTPULSE_TRUSTED_PROXIES = "192.0.2.0/24";
+		const out = unverified(
+			warnings(() => {
+				for (let i = 0; i < TRUSTED_PROXY_CHECK_SAMPLES * 2; i++)
+					getTrustedClientIp(ctx("203.0.113.9", "198.51.100.1"));
+			}),
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.trustedPeers).toBe(0);
+		expect(String(out[0]?.detail)).toContain("range");
+	});
+
+	test("trusted peers that never forward the address: one warning saying so", () => {
+		process.env.AGENTPULSE_TRUSTED_PROXIES = "192.0.2.0/24";
+		const out = unverified(
+			warnings(() => {
+				for (let i = 0; i < TRUSTED_PROXY_CHECK_SAMPLES; i++) getTrustedClientIp(ctx("192.0.2.5"));
+			}),
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.trustedPeers).toBe(TRUSTED_PROXY_CHECK_SAMPLES);
+		expect(String(out[0]?.detail)).toContain("X-Forwarded-For");
+	});
+
+	test("one trusted peer that forwards ends the check: no warning, however many requests follow", () => {
+		process.env.AGENTPULSE_TRUSTED_PROXIES = "192.0.2.0/24";
+		const out = unverified(
+			warnings(() => {
+				getTrustedClientIp(ctx("192.0.2.5", "198.51.100.1"));
+				for (let i = 0; i < TRUSTED_PROXY_CHECK_SAMPLES * 3; i++)
+					getTrustedClientIp(ctx("203.0.113.9"));
+			}),
+		);
+		expect(out).toEqual([]);
+	});
+
+	test("loopback requests (internal probes) are not counted", () => {
+		process.env.AGENTPULSE_TRUSTED_PROXIES = "192.0.2.0/24";
+		const out = unverified(
+			warnings(() => {
+				for (let i = 0; i < TRUSTED_PROXY_CHECK_SAMPLES * 2; i++)
+					getTrustedClientIp(ctx("127.0.0.1"));
+			}),
+		);
+		expect(out).toEqual([]);
+	});
+
+	test("a value that holds no CIDR (an unreplaced placeholder) is reported once and ignored", () => {
+		process.env.AGENTPULSE_TRUSTED_PROXIES = "<ingress-pod-cidr>";
+		const out = warnings(() => {
+			for (let i = 0; i < 5; i++) {
+				expect(getTrustedClientIp(ctx("203.0.113.9", "198.51.100.1"))).toBe("203.0.113.9");
+			}
+		});
+		expect(out.filter((w) => w.kind === "trusted_proxies_invalid")).toHaveLength(1);
+	});
+
+	test("the client address is unchanged by the check", () => {
+		process.env.AGENTPULSE_TRUSTED_PROXIES = "192.0.2.0/24";
+		warnings(() => {
+			expect(getTrustedClientIp(ctx("192.0.2.5", "198.51.100.1, 192.0.2.5"))).toBe("198.51.100.1");
+			expect(getTrustedClientIp(ctx("203.0.113.9", "198.51.100.1"))).toBe("203.0.113.9");
+		});
 	});
 });

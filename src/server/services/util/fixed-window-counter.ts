@@ -37,6 +37,23 @@ export class FixedWindowCounter {
 		return true;
 	}
 
+	/**
+	 * Like tryConsume, but hands back the window it counted in (null when the
+	 * subject is at its limit), so a later refund can tell whether that window is
+	 * still the live one. For callers that count an attempt up front and give it
+	 * back if it turns out not to count.
+	 */
+	tryReserve(subject: string, limit: number): number | null {
+		if (!this.tryConsume(subject, limit)) return null;
+		return this.windows.get(subject)?.startedAtMs ?? null;
+	}
+
+	/** Gives back one reserved unit, only if the window it was reserved in is still current. */
+	refund(subject: string, windowStartedAtMs: number): void {
+		const window = this.windows.get(subject);
+		if (window && window.startedAtMs === windowStartedAtMs && window.count > 0) window.count--;
+	}
+
 	/** True when the subject has already used `limit` in its current window (counts nothing). */
 	isAtLimit(subject: string, limit: number): boolean {
 		const window = this.windows.get(subject);

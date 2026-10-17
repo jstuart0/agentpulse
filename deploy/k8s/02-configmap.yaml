@@ -11,6 +11,17 @@ data:
   PUBLIC_URL: "https://agentpulse.example.com"
   LOG_LEVEL: "info"
   NODE_ENV: "production"
+  # Peers whose X-Forwarded-For is believed: the ingress controller's pod network.
+  # Without it every request looks like it comes from the ingress, and per-client
+  # limits (pairing failures, auth throttles) all count against one address.
+  # "<ingress-pod-cidr>" is a placeholder: REPLACE it with the CIDR of the INGRESS
+  # (Traefik) pods, for example "192.0.2.0/24" (a documentation range; use your own).
+  # Not your cluster's whole pod range: every address listed here
+  # can set the client address AgentPulse sees (login throttles, pairing limits,
+  # CSP-report limits), so a range that covers ordinary workloads lets any pod in
+  # it pick its own. If the range is wrong, AgentPulse logs a
+  # trusted_proxies_unverified warning after the first 25 non-loopback requests.
+  AGENTPULSE_TRUSTED_PROXIES: "<ingress-pod-cidr>"
   # ── Forwardauth header customisation ──────────────────────────────────────
   # Defaults shown — uncomment and override for non-Authentik providers.
   # These env vars couple to the header names in 06-middleware.yaml: when you

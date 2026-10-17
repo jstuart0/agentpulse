@@ -1014,6 +1014,7 @@ describe("Route-drift guard — every GET/HEAD route in the swapped bundle is cl
 		"users",
 		"instance",
 		"capabilities",
+		"pairing-codes",
 	]);
 
 	function normalize(routePath: string): string | null {
@@ -1351,6 +1352,7 @@ describe("respond scope — caller matrix (real app.request())", () => {
 			"ai",
 			"users",
 			"instance",
+			"pairing-codes",
 			"admin",
 		]);
 		// Mounted outside the operator bundle on purpose: authenticated by its own

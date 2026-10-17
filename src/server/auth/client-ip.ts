@@ -64,6 +64,36 @@ export function isValidIp(addr: string): boolean {
 }
 
 /**
+ * The key a client counts under in a per-client limit. IPv4 is itself. An IPv6
+ * address is reduced to its /64, because one subscriber is routinely given a whole
+ * /64 and could otherwise rotate through 2^64 addresses; an IPv4-mapped IPv6
+ * address counts as the IPv4 address. Anything that doesn't parse is its own key.
+ */
+export function rateLimitKeyForIp(addr: string): string {
+	const bare = addr
+		.trim()
+		.toLowerCase()
+		.replace(/^\[|\]$/g, "")
+		.replace(/%.*$/, "");
+	const mapped = bare.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+	if (mapped) return mapped[1] as string;
+	if (!bare.includes(":")) return bare;
+
+	const halves = bare.split("::");
+	if (halves.length > 2) return bare;
+	const head = halves[0] ? (halves[0] as string).split(":") : [];
+	const tail = halves.length === 2 && halves[1] ? (halves[1] as string).split(":") : [];
+	const missing = 8 - head.length - tail.length;
+	if (halves.length === 1 ? head.length !== 8 : missing < 1) return bare;
+	const groups = [...head, ...Array(halves.length === 2 ? missing : 0).fill("0"), ...tail];
+	if (groups.length !== 8 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return bare;
+	return `${groups
+		.slice(0, 4)
+		.map((g) => g.padStart(4, "0"))
+		.join(":")}::/64`;
+}
+
+/**
  * Parse a comma-separated list of CIDR strings into `ParsedCidr` objects.
  * Entries that cannot be parsed are silently skipped (logged at debug level).
  */
@@ -119,6 +149,73 @@ export function isTrustedProxy(addr: string, cidrs: ParsedCidr[]): boolean {
 	return cidrs.some((cidr) => (n & cidr.mask) >>> 0 === cidr.network);
 }
 
+// ── Misconfiguration check ───────────────────────────────────────────────────
+
+/** Requests (not from loopback) watched before judging a configured AGENTPULSE_TRUSTED_PROXIES. */
+export const TRUSTED_PROXY_CHECK_SAMPLES = 25;
+
+const proxyCheck = { samples: 0, trustedPeers: 0, done: false };
+
+function isLoopbackPeer(peer: string): boolean {
+	return peer === "::1" || peer.replace(/^::ffff:/i, "").startsWith("127.");
+}
+
+/**
+ * With AGENTPULSE_TRUSTED_PROXIES set, the first requests should show it working:
+ * a peer inside the range that sends X-Forwarded-For. One that does ends the check.
+ * If TRUSTED_PROXY_CHECK_SAMPLES requests go by without it, say once (a warning,
+ * never a refusal) which half is missing: either no request came from the range, so
+ * it doesn't contain the ingress pods, or the ingress isn't forwarding the client
+ * address. Either way every client would otherwise count as the ingress.
+ */
+function checkTrustedProxySetup(peer: string, peerIsTrusted: boolean, forwarded: boolean): void {
+	if (proxyCheck.done || isLoopbackPeer(peer)) return;
+	if (peerIsTrusted && forwarded) {
+		proxyCheck.done = true;
+		return;
+	}
+	proxyCheck.samples++;
+	if (peerIsTrusted) proxyCheck.trustedPeers++;
+	if (proxyCheck.samples < TRUSTED_PROXY_CHECK_SAMPLES) return;
+	proxyCheck.done = true;
+	console.warn(
+		JSON.stringify({
+			kind: "trusted_proxies_unverified",
+			level: "warn",
+			samples: proxyCheck.samples,
+			trustedPeers: proxyCheck.trustedPeers,
+			detail:
+				proxyCheck.trustedPeers === 0
+					? "no request came from a peer inside AGENTPULSE_TRUSTED_PROXIES; the range probably does not contain the ingress pods"
+					: "requests came from a trusted peer but none carried X-Forwarded-For; the ingress is not forwarding the client address",
+		}),
+	);
+}
+
+let warnedUnparseable = false;
+
+/** A value that is set but yields no CIDR (an unreplaced placeholder, a typo) behaves like "unset"; say so once. */
+function warnOnceIfProxiesUnparseable(raw: string): void {
+	if (warnedUnparseable || !raw.trim() || raw.trim() === "undefined") return;
+	warnedUnparseable = true;
+	console.warn(
+		JSON.stringify({
+			kind: "trusted_proxies_invalid",
+			level: "warn",
+			detail:
+				"AGENTPULSE_TRUSTED_PROXIES is set but holds no valid CIDR, so X-Forwarded-For is ignored; replace the placeholder with the ingress pods' CIDR",
+		}),
+	);
+}
+
+/** Starts the misconfiguration check over. */
+export function _resetTrustedProxyCheckForTest(): void {
+	proxyCheck.samples = 0;
+	proxyCheck.trustedPeers = 0;
+	proxyCheck.done = false;
+	warnedUnparseable = false;
+}
+
 /**
  * Resolve the trusted client IP from a Hono context.
  *
@@ -145,17 +242,22 @@ export function getTrustedClientIp(c: Context): string {
 		peer = (c.get("peerIp") as string | undefined) ?? "0.0.0.0";
 	}
 
-	const trustedCidrs = parseCidrList(process.env.AGENTPULSE_TRUSTED_PROXIES ?? "");
+	const rawProxies = process.env.AGENTPULSE_TRUSTED_PROXIES ?? "";
+	const trustedCidrs = parseCidrList(rawProxies);
 
-	if (trustedCidrs.length > 0 && isTrustedProxy(peer, trustedCidrs)) {
-		const xff = c.req.header("X-Forwarded-For");
-		if (xff) {
-			const leftmost = xff.split(",")[0]?.trim();
-			if (leftmost && isValidIp(leftmost)) return leftmost;
-			// Malformed XFF from a trusted peer: fall back to peer + warn.
-			console.warn(JSON.stringify({ kind: "trusted_xff_malformed", peer, xff }));
-		}
+	if (trustedCidrs.length === 0) {
+		warnOnceIfProxiesUnparseable(rawProxies);
+		return peer;
 	}
+
+	const peerIsTrusted = isTrustedProxy(peer, trustedCidrs);
+	const xff = peerIsTrusted ? c.req.header("X-Forwarded-For") : undefined;
+	const leftmost = xff?.split(",")[0]?.trim();
+	const forwarded = leftmost !== undefined && isValidIp(leftmost);
+	checkTrustedProxySetup(peer, peerIsTrusted, forwarded);
+	if (forwarded) return leftmost as string;
+	// Malformed XFF from a trusted peer: fall back to peer + warn.
+	if (xff) console.warn(JSON.stringify({ kind: "trusted_xff_malformed", peer, xff }));
 
 	return peer;
 }

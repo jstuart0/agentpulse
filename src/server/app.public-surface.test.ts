@@ -142,6 +142,8 @@ const NON_AGENT_PUBLIC_ROUTES: Array<{ method: string; path: string }> = [
 	{ method: "GET", path: "/install-local.sh" },
 	{ method: "GET", path: "/install-local.ps1" },
 	{ method: "POST", path: "/api/v1/csp-report" },
+	// Mobile pairing redemption: the code in the body is the credential.
+	{ method: "POST", path: "/api/v1/pair" },
 ];
 
 const PUBLIC_ROUTES = [...NON_AGENT_PUBLIC_ROUTES, ...agentRouteProbes];
@@ -304,6 +306,7 @@ const PUBLIC_NO_CRED_EXPECT: Record<string, { status: number; error?: string }> 
 	"POST /app-api/v1/auth/change-password": { status: 401 },
 	"POST /api/v1/channels/telegram/webhook": { status: 404, error: "telegram_disabled" },
 	"POST /api/v1/csp-report": { status: 204 },
+	"POST /api/v1/pair": { status: 400, error: "invalid_code" },
 };
 
 // Bodies needed for handlers that read the request body before any auth
@@ -324,7 +327,11 @@ function noCredentialProbeBody(path: string): string | undefined {
 	if (path.endsWith("/auth/login") || path.endsWith("/auth/signup")) {
 		return JSON.stringify({ username: "probe-b2-user", password: "y" });
 	}
-	if (path === "/api/v1/channels/telegram/webhook" || path === "/api/v1/csp-report") {
+	if (
+		path === "/api/v1/channels/telegram/webhook" ||
+		path === "/api/v1/csp-report" ||
+		path === "/api/v1/pair"
+	) {
 		return JSON.stringify({});
 	}
 	return undefined;

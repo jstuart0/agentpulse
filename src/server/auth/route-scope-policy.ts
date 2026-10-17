@@ -124,6 +124,8 @@ export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
 	"/ai/sessions/:sessionId/watcher",
 	"/ai/inbox/snoozes",
 	"/ai/risk-classes",
+	// A pairing code's status: only for the person who minted it (checked in the handler).
+	"/pairing-codes/:id",
 	// AGEN-69 — the session summary is derived from prompts and tool data, so
 	// the read is manage-only, never observe. Its POST is manage by method and
 	// deliberately in no other set (not OWNER_CHECKED_ROUTES): any reader of a

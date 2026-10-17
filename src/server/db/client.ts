@@ -1076,6 +1076,30 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 			summary TEXT,
 			provenance TEXT
 		)`,
+		// Mobile pairing: single-use codes (only the hash is stored). Same columns
+		// as the Drizzle schema and migration 0012.
+		`CREATE TABLE IF NOT EXISTS pairing_codes (
+			id TEXT PRIMARY KEY NOT NULL,
+			code_hash TEXT NOT NULL,
+			user_id TEXT,
+			access TEXT NOT NULL,
+			device_label TEXT,
+			minter_credential TEXT,
+			created_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			redeemed_at TEXT,
+			redeemed_key_id TEXT,
+			redeemed_device_name TEXT
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS pairing_codes_code_hash_unique ON pairing_codes(code_hash)",
+		"CREATE INDEX IF NOT EXISTS idx_pairing_codes_redeemed_key ON pairing_codes(redeemed_key_id)",
+		// A code's redeemed key is provenance and never changes once set (migration 0012).
+		`CREATE TRIGGER IF NOT EXISTS pairing_codes_redeemed_key_immutable
+			BEFORE UPDATE OF redeemed_key_id ON pairing_codes
+			WHEN OLD.redeemed_key_id IS NOT NULL AND NEW.redeemed_key_id IS NOT OLD.redeemed_key_id
+			BEGIN
+				SELECT RAISE(ABORT, 'pairing_codes.redeemed_key_id is immutable once set');
+			END`,
 		// Slice D: freeform_match rule columns. Idempotent — SQLite ignores duplicate columns silently.
 		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_cents INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE project_alert_rules ADD COLUMN daily_token_spend_date TEXT",

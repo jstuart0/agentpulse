@@ -42,6 +42,7 @@ export const users = active.users as typeof sqliteSchema.users;
 export const authSessions = active.authSessions as typeof sqliteSchema.authSessions;
 // biome-ignore format: dialect-resolved re-exports keep one line each
 export const apiKeys = active.apiKeys as typeof sqliteSchema.apiKeys;
+export const pairingCodes = active.pairingCodes as typeof sqliteSchema.pairingCodes;
 // biome-ignore format: dialect-resolved re-exports keep one line each
 export const settings = active.settings as typeof sqliteSchema.settings;
 // biome-ignore format: dialect-resolved re-exports keep one line each

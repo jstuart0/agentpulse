@@ -211,6 +211,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 				"ai_pending_project_drafts",
 				"ai_qa_cache",
 				"ai_session_summaries",
+				"pairing_codes",
 				"ask_threads",
 				"ask_messages",
 				"projects",
@@ -766,7 +767,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 import { describePostgresOnly } from "../test-utils/backend.js";
 
 describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
-	test("TC-1.3 fresh Postgres install creates all 30 tables + 8 cascade FKs, ai_session_summaries among them", async () => {
+	test("TC-1.3 fresh Postgres install creates every table (pairing_codes and ai_session_summaries among them) + 8 cascade FKs", async () => {
 		// Requires DATABASE_URL to point at an empty test database.
 		// Run with: AGENTPULSE_TEST_BACKEND=postgres DATABASE_URL=postgres://... bun test
 		const { default: postgres } = await import("postgres");
@@ -806,6 +807,7 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				"ai_pending_project_drafts",
 				"ai_qa_cache",
 				"ai_session_summaries",
+				"pairing_codes",
 				"ask_threads",
 				"ask_messages",
 				"projects",
@@ -1262,4 +1264,251 @@ describeSqliteOnly("vector scan index on both SQLite install shapes", () => {
 			db.close();
 		}
 	});
+});
+
+// ── Migration 0012: pairing_codes ────────────────────────────────────────────
+//
+// The table has to arrive on every install shape: a legacy-init SQLite install
+// that already has sessions, a SQLite or Postgres install migrated up from 0011
+// with data in it, and a second boot of any of them must change nothing.
+
+const PAIRING_INDEXES = ["pairing_codes_code_hash_unique", "idx_pairing_codes_redeemed_key"];
+const PAIRING_TRIGGER = "pairing_codes_redeemed_key_immutable";
+
+/** A copy of drizzle/<dialect> with every migration from 0012_pairing_codes on removed: the database as 0011 left it. */
+async function migrationsBefore0012(dialect: "sqlite" | "postgres"): Promise<string> {
+	const { cpSync, readFileSync, unlinkSync, writeFileSync } = await import("node:fs");
+	const dir = mkdtempSync(join(tmpdir(), `ap-prior-${dialect}-0012-`));
+	cpSync(join(process.cwd(), "drizzle", dialect), dir, { recursive: true });
+	const journalPath = join(dir, "meta", "_journal.json");
+	const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
+		entries: Array<{ tag: string }>;
+	};
+	const cut = journal.entries.findIndex((e) => e.tag === "0012_pairing_codes");
+	expect(cut, "the journal lists 0012_pairing_codes").toBeGreaterThan(0);
+	for (const dropped of journal.entries.slice(cut)) unlinkSync(join(dir, `${dropped.tag}.sql`));
+	writeFileSync(
+		journalPath,
+		JSON.stringify({ ...journal, entries: journal.entries.slice(0, cut) }, null, 2),
+	);
+	return dir;
+}
+
+function sqliteTriggerNames(db: Database): string[] {
+	return (
+		db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all() as Array<{
+			name: string;
+		}>
+	).map((r) => r.name);
+}
+
+function uniqueIndexNames(db: Database, table: string): string[] {
+	return (
+		db.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string; unique: number }>
+	)
+		.filter((r) => r.unique === 1)
+		.map((r) => r.name);
+}
+
+describeSqliteOnly("pairing_codes on SQLite", () => {
+	test("legacy init on an existing install (it already has sessions) creates the table, its unique code_hash index, the key index and the trigger; a second boot is a no-op", async () => {
+		const db = new Database(":memory:");
+		db.exec(`CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL UNIQUE,
+			agent_type TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			started_at TEXT NOT NULL DEFAULT (datetime('now')),
+			last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+			cwd TEXT,
+			current_task TEXT,
+			total_tool_uses INTEGER NOT NULL DEFAULT 0,
+			metadata TEXT DEFAULT '{}'
+		)`);
+		try {
+			await initializeDatabase(db);
+			expect(getTableNames(db)).toContain("pairing_codes");
+			expect(getTableNames(db)).not.toContain("__drizzle_migrations"); // the legacy path ran
+			expect(getColumnNames(db, "pairing_codes")).toEqual([
+				"id",
+				"code_hash",
+				"user_id",
+				"access",
+				"device_label",
+				"minter_credential",
+				"created_at",
+				"expires_at",
+				"redeemed_at",
+				"redeemed_key_id",
+				"redeemed_device_name",
+			]);
+			for (const index of PAIRING_INDEXES) expect(getIndexNames(db)).toContain(index);
+			expect(uniqueIndexNames(db, "pairing_codes")).toContain("pairing_codes_code_hash_unique");
+			expect(sqliteTriggerNames(db)).toContain(PAIRING_TRIGGER);
+
+			db.exec(
+				"INSERT INTO pairing_codes (id, code_hash, access, created_at, expires_at) VALUES ('a', 'h', 'respond', 'x', 'y')",
+			);
+			await initializeDatabase(db); // a second boot changes nothing and keeps the row
+			expect(getIndexNames(db).filter((n) => PAIRING_INDEXES.includes(n)).length).toBe(2);
+			expect(sqliteTriggerNames(db).filter((n) => n === PAIRING_TRIGGER).length).toBe(1);
+			expect((db.prepare("SELECT COUNT(*) AS n FROM pairing_codes").get() as { n: number }).n).toBe(
+				1,
+			);
+			expect(() =>
+				db.exec(
+					"INSERT INTO pairing_codes (id, code_hash, access, created_at, expires_at) VALUES ('b', 'h', 'respond', 'x', 'y')",
+				),
+			).toThrow(); // the unique index is live
+		} finally {
+			db.close();
+		}
+	});
+
+	test("migrating from 0011 with data in it, then applying 0012: the table appears, a duplicate code_hash is refused, the trigger guards redeemed_key_id, and the earlier rows survive", async () => {
+		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+		const { drizzle } = await import("drizzle-orm/bun-sqlite");
+		const prior = await migrationsBefore0012("sqlite");
+		const full = join(process.cwd(), "drizzle", "sqlite");
+		const db = new Database(tmpDbPath());
+		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		try {
+			migrate(drizzle(db), { migrationsFolder: prior });
+			expect(getTableNames(db)).not.toContain("pairing_codes");
+			db.exec(
+				"INSERT INTO sessions (id, session_id, agent_type) VALUES ('s-row', 's-1', 'claude_code')",
+			);
+			db.exec(
+				"INSERT INTO api_keys (id, name, key_hash, key_prefix) VALUES ('k-1', 'seed', 'seed-hash', 'ap_seed')",
+			);
+
+			migrate(drizzle(db), { migrationsFolder: full });
+
+			expect(getTableNames(db)).toContain("pairing_codes");
+			for (const index of PAIRING_INDEXES) expect(getIndexNames(db)).toContain(index);
+			expect(sqliteTriggerNames(db)).toContain(PAIRING_TRIGGER);
+			expect((db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n).toBe(1);
+			expect((db.prepare("SELECT COUNT(*) AS n FROM api_keys").get() as { n: number }).n).toBe(1);
+
+			const insert = (id: string, hash: string) =>
+				db.exec(
+					`INSERT INTO pairing_codes (id, code_hash, access, created_at, expires_at) VALUES ('${id}', '${hash}', 'full', 'x', 'y')`,
+				);
+			insert("c-1", "dup");
+			expect(() => insert("c-2", "dup")).toThrow();
+			db.exec("UPDATE pairing_codes SET redeemed_key_id = 'k-1' WHERE id = 'c-1'");
+			expect(() =>
+				db.exec("UPDATE pairing_codes SET redeemed_key_id = 'k-2' WHERE id = 'c-1'"),
+			).toThrow(/immutable/);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("re-running 0012's SQL on a database that has it is a no-op", async () => {
+		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+		const { drizzle } = await import("drizzle-orm/bun-sqlite");
+		const { readFileSync } = await import("node:fs");
+		const folder = join(process.cwd(), "drizzle", "sqlite");
+		const db = new Database(tmpDbPath());
+		try {
+			migrate(drizzle(db), { migrationsFolder: folder });
+			const sql = readFileSync(join(folder, "0012_pairing_codes.sql"), "utf8");
+			for (const statement of sql.split("--> statement-breakpoint")) db.exec(statement);
+			expect(sqliteTriggerNames(db).filter((n) => n === PAIRING_TRIGGER).length).toBe(1);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+/** The message a statement fails with ("" if it succeeds). postgres.js queries are thenables that bun's `.rejects` spins on, so catch by hand. */
+async function failureOf(statement: PromiseLike<unknown>): Promise<string> {
+	try {
+		await statement;
+		return "";
+	} catch (err) {
+		return err instanceof Error ? err.message : String(err);
+	}
+}
+
+describePostgresOnly("pairing_codes on Postgres", () => {
+	test("migrating from 0011 with data in it, then applying 0012: the table appears, a duplicate code_hash is refused, the trigger guards redeemed_key_id, and the earlier rows survive; re-running the SQL is a no-op", async () => {
+		const { default: postgres } = await import("postgres");
+		const { migrate } = await import("drizzle-orm/postgres-js/migrator");
+		const { drizzle: drizzlePg } = await import("drizzle-orm/postgres-js");
+		const { readFileSync } = await import("node:fs");
+		const prior = await migrationsBefore0012("postgres");
+		const full = join(process.cwd(), "drizzle", "postgres");
+
+		const baseUrl = process.env.DATABASE_URL ?? "";
+		const dbName = `ap_pairing_upgrade_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+		const scratch = new URL(baseUrl);
+		scratch.pathname = `/${dbName}`;
+
+		const admin = postgres(baseUrl, { max: 1, idle_timeout: 5 });
+		try {
+			await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+		} finally {
+			await admin.end();
+		}
+		try {
+			const before = postgres(scratch.toString(), { max: 1, idle_timeout: 5 });
+			try {
+				await migrate(drizzlePg(before), { migrationsFolder: prior });
+				const missing = await before`SELECT to_regclass('public.pairing_codes') AS t`;
+				expect(missing[0]?.t).toBeNull();
+				await before`INSERT INTO sessions (id, session_id, agent_type) VALUES ('s-row', 's-1', 'claude_code')`;
+				await before`INSERT INTO api_keys (id, name, key_hash, key_prefix) VALUES ('k-1', 'seed', 'seed-hash', 'ap_seed')`;
+			} finally {
+				await before.end();
+			}
+
+			const after = postgres(scratch.toString(), { max: 1, idle_timeout: 5 });
+			try {
+				await migrate(drizzlePg(after), { migrationsFolder: full });
+				const present = await after`SELECT to_regclass('public.pairing_codes') AS t`;
+				expect(present[0]?.t).not.toBeNull();
+				const indexes =
+					(await after`SELECT indexname FROM pg_indexes WHERE tablename = 'pairing_codes'`) as Array<{
+						indexname: string;
+					}>;
+				for (const index of PAIRING_INDEXES)
+					expect(indexes.map((r) => r.indexname)).toContain(index);
+				const triggers =
+					await after`SELECT tgname FROM pg_trigger WHERE tgname = ${PAIRING_TRIGGER}`;
+				expect(triggers).toHaveLength(1);
+				expect((await after`SELECT COUNT(*)::int AS n FROM sessions`)[0]?.n).toBe(1);
+				expect((await after`SELECT COUNT(*)::int AS n FROM api_keys`)[0]?.n).toBe(1);
+
+				await after`INSERT INTO pairing_codes (id, code_hash, access, created_at, expires_at) VALUES ('c-1', 'dup', 'full', 'x', 'y')`;
+				expect(
+					await failureOf(
+						after`INSERT INTO pairing_codes (id, code_hash, access, created_at, expires_at) VALUES ('c-2', 'dup', 'full', 'x', 'y')`,
+					),
+				).toMatch(/./);
+				await after`UPDATE pairing_codes SET redeemed_key_id = 'k-1' WHERE id = 'c-1'`;
+				expect(
+					await failureOf(after`UPDATE pairing_codes SET redeemed_key_id = 'k-2' WHERE id = 'c-1'`),
+				).toMatch(/immutable/);
+
+				const sqlText = readFileSync(join(full, "0012_pairing_codes.sql"), "utf8");
+				for (const statement of sqlText.split("--> statement-breakpoint")) {
+					await after.unsafe(statement);
+				}
+				expect(
+					await after`SELECT tgname FROM pg_trigger WHERE tgname = ${PAIRING_TRIGGER}`,
+				).toHaveLength(1);
+			} finally {
+				await after.end();
+			}
+		} finally {
+			const cleanup = postgres(baseUrl, { max: 1, idle_timeout: 5 });
+			try {
+				await cleanup.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+			} finally {
+				await cleanup.end();
+			}
+		}
+	}, 60_000);
 });

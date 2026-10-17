@@ -62,10 +62,23 @@
  * concurrent INSERTs on unrelated rows, so ingest is not blocked while a
  * batch's transaction is open.
  */
-import { type SQL, and, asc, eq, inArray, lt, ne, or, sql } from "drizzle-orm";
+import {
+	type SQL,
+	and,
+	asc,
+	eq,
+	inArray,
+	isNotNull,
+	isNull,
+	lt,
+	ne,
+	notExists,
+	or,
+	sql,
+} from "drizzle-orm";
 import { config } from "../config.js";
 import { getDb, getSqlite } from "../db/client.js";
-import { events, aiSessionSummaries, settings } from "../db/schema/index.js";
+import { events, aiSessionSummaries, apiKeys, pairingCodes, settings } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { SUMMARY_LEASE_SECONDS } from "./ai/session-summary/service-limits.js";
 import { toDbTimestamp } from "./util/db-time.js";
@@ -353,6 +366,41 @@ export async function deleteExpiredSummaries(
 	return { deleted, lockLost: false };
 }
 
+/** How long an unredeemed pairing code is kept after it expired. */
+export const PAIRING_CODE_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Purges pairing codes. An unredeemed code goes 24 h after it expired. A
+ * redeemed one is provenance for the key it produced (it is how a device
+ * delete knows a key was minted by pairing, and so may be revoked), so it
+ * stays for as long as that key is active and goes only once the key is
+ * inactive or gone. Independent of the events retention setting: those
+ * windows apply even when event retention is off.
+ */
+export async function deleteExpiredPairingCodes(now: Date = new Date()): Promise<number> {
+	const db = getDb();
+	const unredeemedCutoff = new Date(now.getTime() - PAIRING_CODE_GRACE_MS).toISOString();
+	const unredeemed = await db
+		.delete(pairingCodes)
+		.where(and(isNull(pairingCodes.redeemedAt), lt(pairingCodes.expiresAt, unredeemedCutoff)))
+		.returning({ id: pairingCodes.id });
+	const retired = await db
+		.delete(pairingCodes)
+		.where(
+			and(
+				isNotNull(pairingCodes.redeemedAt),
+				notExists(
+					db
+						.select({ one: sql`1` })
+						.from(apiKeys)
+						.where(and(eq(apiKeys.id, pairingCodes.redeemedKeyId), eq(apiKeys.isActive, true))),
+				),
+			),
+		)
+		.returning({ id: pairingCodes.id });
+	return unredeemed.length + retired.length;
+}
+
 /**
  * Run one retention pass. Safe to call directly from tests — does not
  * depend on the interval scheduler.
@@ -381,6 +429,9 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 	const startedAtMs = Date.now();
 
 	try {
+		await deleteExpiredPairingCodes(now).catch((err) => {
+			console.error("[retention] pairing code purge failed:", err);
+		});
 		const days = await readRetentionDays();
 		if (days <= 0) {
 			lastRun = {

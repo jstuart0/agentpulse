@@ -28,6 +28,7 @@ export type SettingsSectionId =
 	| "telegram"
 	| "team"
 	| "keys"
+	| "mobile"
 	| "account"
 	| "server";
 
@@ -43,6 +44,6 @@ export function settingsSectionOrder(teamOn: boolean): SettingsSectionId[] {
 		"telegram",
 	];
 	return teamOn
-		? ["appearance", "team", "keys", "account", ...tail, "server"]
-		: ["appearance", ...tail, "team", "keys", "account", "server"];
+		? ["appearance", "team", "keys", "mobile", "account", ...tail, "server"]
+		: ["appearance", ...tail, "team", "keys", "mobile", "account", "server"];
 }

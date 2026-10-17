@@ -708,6 +708,21 @@ export const api = {
 			body: JSON.stringify(body),
 		}),
 
+	/** A single-use code that pairs a phone; shown once. `id` is for polling the status. */
+	createPairingCode: (access: "full" | "respond", deviceLabel?: string) =>
+		request<{ id: string; code: string; expiresAt: string }>("/pairing-codes", {
+			method: "POST",
+			body: JSON.stringify({ access, ...(deviceLabel ? { deviceLabel } : {}) }),
+		}),
+
+	getPairingCodeStatus: (id: string) =>
+		request<{
+			state: "pending" | "redeemed" | "expired";
+			expiresAt: string;
+			redeemedDeviceName: string | null;
+			redeemedKeyId: string | null;
+		}>(`/pairing-codes/${id}`),
+
 	revokeApiKey: (id: string) =>
 		request<{ ok: true }>(`/api-keys/${id}`, {
 			method: "DELETE",

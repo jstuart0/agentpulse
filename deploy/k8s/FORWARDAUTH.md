@@ -406,6 +406,56 @@ UPDATE launch_requests SET status = 'cancelled',
 WHERE status = 'validated' AND created_at < '<cutoff ISO>';
 ```
 
+### Mobile clients
+
+The mobile app pairs without an SSO session, then talks to the API with the API key it
+was given. Two things at the edge make that work; neither needs a change to forwardauth
+itself.
+
+- **`POST /api/v1/pair`** redeems a single-use pairing code (the code is the credential)
+  and is therefore exempt from forwardauth, like `/api/v1/auth/login`. The bundled
+  IngressRoute already has the rule, rate-limited with the public middleware. If you
+  maintain your own ingress, add an exact-path exemption for
+  `https://agentpulse.example.com/api/v1/pair`. Without it the phone gets the IdP's login
+  redirect instead of a key.
+- **Everything after pairing** is `Authorization: Bearer ap_...` on `/api/` paths, which
+  the existing Bearer-bypass rule already sends around forwardauth (see "Bearer API key
+  precedence" below). The WebSocket at `/api/v1/ws` is the same: it needs the Bearer rule,
+  and a request with no `Origin` header is accepted only for a valid key.
+
+A pairing code is 20 characters, minted by a signed-in person in Settings > Mobile, shown
+only as a QR, valid five minutes, usable once, and it stops working if the session or key
+that minted it is revoked first. Do not rewrite or log request bodies for `/api/v1/pair`
+at the proxy: the code is in the body.
+
+#### Client address behind the ingress
+
+Pairing failures are limited per client address (10 per 10 minutes; an IPv6 client counts
+by its /64), with a slower global backstop that delays responses instead of refusing them.
+That only works if AgentPulse sees the real client address:
+
+- Set `AGENTPULSE_TRUSTED_PROXIES` to the range your ingress controller's pods connect
+  from. The bundled ConfigMap sets it to the placeholder `<ingress-pod-cidr>`: replace it with
+  the CIDR of your ingress pods (for example `192.0.2.0/24`, a documentation range; use your own).
+  Left as the placeholder it matches nothing, and AgentPulse logs `trusted_proxies_invalid`. Only a peer inside this list may
+  set the client address through `X-Forwarded-For`; list the ingress and nothing else.
+- It is not specific to pairing. The same client address feeds the login and signup
+  throttles in `routes/auth.ts` and the rate limit in `routes/csp-report.ts`, so setting
+  it correctly (or leaving it unset) changes those too.
+- Narrow the range to the ingress pods' CIDR, not the cluster's whole pod range: any
+  address inside it can claim any client address. AgentPulse checks the first 25 requests
+  that don't come from loopback and logs one `trusted_proxies_unverified` warning if none
+  came from inside the range (the range is wrong) or the peers inside it sent no
+  `X-Forwarded-For` (the ingress isn't forwarding it).
+- Make the ingress pass the real address through. With a `LoadBalancer` Service in front of
+  Traefik, set `externalTrafficPolicy: Local` on that Service so the source address isn't
+  rewritten to a node's, and configure Traefik to trust the load balancer's range with
+  `--entryPoints.websecure.forwardedHeaders.trustedIPs=<load balancer CIDR, for example 203.0.113.0/24>`
+  (or `...proxyProtocol.trustedIPs` if you use PROXY protocol).
+- If the variable is unset, `X-Forwarded-For` is ignored and every request counts under the
+  ingress's own address: a handful of failed codes from one phone then locks pairing for
+  everyone for ten minutes.
+
 ### Bearer API key precedence
 
 When a request presents `Authorization: Bearer ap_*`, that credential is the only one
