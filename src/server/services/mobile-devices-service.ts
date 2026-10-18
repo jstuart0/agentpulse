@@ -26,7 +26,8 @@ type DeviceRow = typeof mobileDevices.$inferSelect;
 export const DEVICE_PLATFORMS = ["ios", "android"] as const;
 export const DEVICE_ENVIRONMENTS = ["sandbox", "production", "development"] as const;
 export type DeviceEnvironment = (typeof DEVICE_ENVIRONMENTS)[number];
-const ID_PATTERN = /^[A-Za-z0-9._~:-]{1,128}$/;
+/** What the sealed push payload's ids allow (push-payload.schema.json ShortId). A phone whose ids don't fit could never be pushed to, so registration refuses them. */
+const ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
 /** Printable ASCII, no spaces: what a relay token or key id is made of. */
 const TOKEN_PATTERN = /^[\x21-\x7e]+$/;
 const MAX_TOKEN_LENGTH = 512;
@@ -268,11 +269,11 @@ export async function parseRegistration(body: unknown): Promise<DeviceRegistrati
 	return {
 		platform: b.platform as DeviceRegistration["platform"],
 		environment: b.environment as DeviceEnvironment,
-		relayDeviceId: requireText(b.relayDeviceId, "relayDeviceId", 128, ID_PATTERN),
+		relayDeviceId: requireText(b.relayDeviceId, "relayDeviceId", 64, ID_PATTERN),
 		sendToken: requireText(b.sendToken, "sendToken", MAX_TOKEN_LENGTH, TOKEN_PATTERN),
-		kid: requireText(b.kid, "kid", MAX_KID_LENGTH, TOKEN_PATTERN),
+		kid: requireText(b.kid, "kid", MAX_KID_LENGTH, ID_PATTERN),
 		publicKey: b.publicKey as string,
-		clientServerRef: requireText(b.clientServerRef, "clientServerRef", 128, ID_PATTERN),
+		clientServerRef: requireText(b.clientServerRef, "clientServerRef", 64, ID_PATTERN),
 		deviceName: optionalText(b.deviceName, "deviceName", MAX_NAME_LENGTH),
 		appVersion: optionalText(b.appVersion, "appVersion", MAX_VERSION_LENGTH),
 		osVersion: optionalText(b.osVersion, "osVersion", MAX_VERSION_LENGTH),
@@ -396,9 +397,12 @@ export async function isPairingMintedKey(keyId: string): Promise<boolean> {
 // ── The send token, encrypted at rest ────────────────────────────────────────
 
 /**
- * The only way to read a device's relay send token: decrypts it, or returns null
- * for a revoked device (whose token is wiped) or one whose token can't be read
- * (the secrets key changed). Nothing else returns or logs it.
+ * Reads a device's relay send token: decrypts it, or returns null for a revoked
+ * device (whose token is wiped) or one whose token can't be read (the secrets key
+ * changed). Nothing else returns or logs it. This is the synchronous read, for
+ * tests and one-off tooling: it stalls the event loop for tens of milliseconds
+ * (scrypt), so the push send path never uses it and decrypts the stored token
+ * through `decryptSecretAsync` instead.
  */
 export function readSendToken(
 	device: Pick<DeviceRow, "id" | "sendToken" | "revokedAt">,

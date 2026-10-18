@@ -7,6 +7,7 @@ import { config } from "../config.js";
 import { isAiActive, isAiBuildEnabled, isVectorSearchActive } from "../services/ai/feature.js";
 import { getDefaultProvider } from "../services/ai/providers-service.js";
 import { getMode } from "../services/instance-mode.js";
+import { pushAvailability } from "../services/push/push-runtime.js";
 
 /** Bumped when a client-visible contract changes incompatibly; clients gate on it before the feature flags. */
 export const CAPABILITIES_API_LEVEL = 1;
@@ -23,6 +24,8 @@ export interface CapabilityFeature {
 	value: true | Record<string, unknown>;
 	/** Push event names this feature makes the server able to send. */
 	pushEvents?: readonly string[];
+	/** Advertised only while this holds (the route is mounted either way). Absent means always. */
+	isAvailable?: () => boolean;
 }
 
 /**
@@ -48,7 +51,18 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		proof: { kind: "route", method: "POST", path: "/sessions/:sessionId/acknowledge" },
 		value: true,
 	},
+	{
+		// Needs a configured relay and the instance secrets key; `push.relayOrigin` travels with it.
+		name: "mobilePush",
+		proof: { kind: "route", method: "POST", path: "/devices/:id/test" },
+		value: true,
+		isAvailable: () => pushAvailability().available,
+	},
 ];
+
+function advertisedFeatures(): readonly CapabilityFeature[] {
+	return CAPABILITY_FEATURES.filter((f) => f.isAvailable?.() ?? true);
+}
 
 const capabilitiesRouter = new Hono();
 capabilitiesRouter.use("*", requireAuth());
@@ -63,6 +77,8 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 	const mode = await getMode();
 	const aiBuild = isAiBuildEnabled();
 	const provider = aiBuild ? await getDefaultProvider() : null;
+	const features = advertisedFeatures();
+	const push = pushAvailability();
 
 	return c.json({
 		apiLevel: CAPABILITIES_API_LEVEL,
@@ -87,8 +103,10 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 			provider: provider?.kind ?? null,
 			vectorSearch: await isVectorSearchActive(),
 		},
-		features: Object.fromEntries(CAPABILITY_FEATURES.map((f) => [f.name, f.value])),
-		pushEvents: [...new Set(CAPABILITY_FEATURES.flatMap((f) => f.pushEvents ?? []))],
+		features: Object.fromEntries(features.map((f) => [f.name, f.value])),
+		// Present only with features.mobilePush, so a client that sees the flag always has the origin.
+		...(push.available ? { push: { relayOrigin: push.relayOrigin } } : {}),
+		pushEvents: [...new Set(features.flatMap((f) => f.pushEvents ?? []))],
 	});
 });
 

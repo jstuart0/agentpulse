@@ -108,7 +108,7 @@ afterEach(() => {
 	for (const s of servers.splice(0)) s.stop(true);
 });
 
-function startRelay(
+function startMockRelay(
 	handler: (
 		body: Record<string, unknown>,
 		seen: SeenRequest[],
@@ -205,7 +205,7 @@ const permissionWait = (over: Record<string, unknown> = {}): PushEvent =>
 
 describe("the sealed alert", () => {
 	test("a permission wait reaches the relay sealed, with the device's send token, and opens to the schema's members", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device, open } = await makeDevice();
 		const { service, clock } = makeService(liveClient(relay.url));
 		const event = permissionWait({
@@ -254,7 +254,7 @@ describe("the sealed alert", () => {
 	});
 
 	test("the relay never sees a session id, a name, a machine or any text: the body is the envelope and cleartext routing only", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice({ prefs: { includeAgentText: true } });
 		const { service } = makeService(liveClient(relay.url));
 		await service.sendToDevices(
@@ -280,7 +280,7 @@ describe("the sealed alert", () => {
 	});
 
 	test("the collapse id is opaque and stable per session and category", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service, clock } = makeService(liveClient(relay.url));
 		await service.sendToDevices([device], permissionWait({ sessionId: "sess-same" }));
@@ -325,7 +325,7 @@ describe("category, interruption level and relay priority", () => {
 	];
 
 	test.each(cases)("%j -> %s, %s, %s", async (event, category, level, priority) => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device, open } = await makeDevice({
 			prefs: { categories: { SESSION_COMPLETED: true, LAUNCH_STATUS: true, DIGEST: true } },
 		});
@@ -340,7 +340,7 @@ describe("category, interruption level and relay priority", () => {
 	});
 
 	test("the server always sends the base category: a Free phone downgrades decision categories itself", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device, open } = await makeDevice();
 		const { service } = makeService(liveClient(relay.url));
 		await service.sendToDevices([device], {
@@ -362,7 +362,7 @@ describe("category, interruption level and relay priority", () => {
 	});
 
 	test("per-event members: hitl ids and prompt hash, action ids, launch id, durations", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device, open } = await makeDevice({
 			prefs: { categories: { SESSION_COMPLETED: true, LAUNCH_STATUS: true } },
 		});
@@ -403,7 +403,7 @@ describe("category, interruption level and relay priority", () => {
 	});
 
 	test("members that break the schema are left out, not sent: a bad prompt hash, an oversized id", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device, open } = await makeDevice();
 		const { service } = makeService(liveClient(relay.url));
 		await service.sendToDevices([device], {
@@ -423,7 +423,7 @@ describe("category, interruption level and relay priority", () => {
 
 describe("device prefs", () => {
 	const send = async (prefs: DevicePrefs, event: PushEvent) => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device, open } = await makeDevice({ prefs });
 		const { service, clock } = makeService(liveClient(relay.url));
 		const [outcome] = await service.sendToDevices([device], event);
@@ -494,7 +494,7 @@ describe("device prefs", () => {
 	});
 
 	test("a skipped alert uses up nothing: it neither dedupes nor counts toward the hourly limit", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice({ prefs: { categories: { NEEDS_YOU_PERMISSION: false } } });
 		const { service } = makeService(liveClient(relay.url));
 		const event = permissionWait({ sessionId: "sess-fixed" });
@@ -510,7 +510,7 @@ describe("device prefs", () => {
 			...(timezone ? { timezone } : {}),
 		});
 		const levelAt = async (prefs: DevicePrefs, iso: string) => {
-			const relay = startRelay();
+			const relay = startMockRelay();
 			const { device, open } = await makeDevice({ prefs });
 			const { service, clock } = makeService(liveClient(relay.url));
 			clock.set(Date.parse(iso));
@@ -576,7 +576,7 @@ describe("device prefs", () => {
 		});
 
 		test("quiet hours turn an alert down, they never drop it", async () => {
-			const relay = startRelay();
+			const relay = startMockRelay();
 			const { device } = await makeDevice({ prefs: quiet("00:00", "23:59", "UTC") });
 			const { service } = makeService(liveClient(relay.url));
 			expect((await service.sendToDevices([device], event()))[0]?.status).toBe("sent");
@@ -586,7 +586,7 @@ describe("device prefs", () => {
 
 describe("fan-out", () => {
 	test("at most 10 devices per user are sent to; the rest are reported as capped", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const made = await Promise.all(
 			Array.from({ length: 13 }, () => makeDevice({ userId: "user-big" })),
 		);
@@ -604,7 +604,7 @@ describe("fan-out", () => {
 	});
 
 	test("never more than four posts at a time", async () => {
-		const relay = startRelay(async () => {
+		const relay = startMockRelay(async () => {
 			await new Promise((r) => setTimeout(r, 40));
 			return accepted();
 		});
@@ -622,7 +622,7 @@ describe("fan-out", () => {
 	});
 
 	test("one device failing does not stop the others, and outcomes keep the input order", async () => {
-		const relay = startRelay((body) =>
+		const relay = startMockRelay((body) =>
 			(body.envelope as RelayEnvelope).d.endsWith("2") ? jsonResponse(503, {}) : accepted(),
 		);
 		const made = await Promise.all(
@@ -640,7 +640,7 @@ describe("fan-out", () => {
 
 describe("dedupe (60 s)", () => {
 	const sentCount = async (gapMs: number) => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service, clock } = makeService(liveClient(relay.url));
 		const event = permissionWait({ sessionId: "sess-dup" });
@@ -661,7 +661,7 @@ describe("dedupe (60 s)", () => {
 	});
 
 	test("a different device, session or type is not a repeat", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const a = await makeDevice();
 		const b = await makeDevice();
 		const { service } = makeService(liveClient(relay.url));
@@ -678,7 +678,7 @@ describe("dedupe (60 s)", () => {
 	});
 
 	test("the key is the thing the event is about: two HITL requests in one session are two alerts", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service } = makeService(liveClient(relay.url));
 		const hitl = (hitlId: string): PushEvent => ({
@@ -746,7 +746,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 	}
 
 	test("one session gets 5 an hour in an ordinary category and 10 in a decision category, then is held", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service, clock } = makeService(liveClient(relay.url));
 		const ordinary = await repeat(
@@ -771,7 +771,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 	});
 
 	test("the session's window slides: its oldest alert ages out and frees a place", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service, clock } = makeService(liveClient(relay.url));
 		await repeat(service, clock, device, failed("slide"), SESSION_LIMIT_PER_HOUR);
@@ -783,7 +783,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 	});
 
 	test("a full category bucket holds a session that already has alerts, not one that has none", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service, clock } = makeService(liveClient(relay.url));
 		// 10 sessions with 2 alerts each fill the 20-a-hour bucket.
@@ -794,7 +794,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 	});
 
 	test("even new sessions stop at twice the bucket", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service } = makeService(liveClient(relay.url));
 		const results: string[] = [];
@@ -810,7 +810,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 	});
 
 	test("fabricated sessions can't silence a different session's permission_wait", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service, clock } = makeService(liveClient(relay.url));
 		// Six invented sessions each push as much as they are allowed: 60 alerts against a 40-an-hour bucket.
@@ -829,7 +829,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 	});
 
 	test("what bounds it: enough fabricated sessions to pass twice the bucket do silence a new one", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service } = makeService(liveClient(relay.url));
 		for (let s = 0; s < TIME_SENSITIVE_LIMIT_PER_HOUR * NEW_SESSION_CEILING_MULTIPLE; s++) {
@@ -841,7 +841,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 	});
 
 	test("traffic in the other categories can't use up the decision categories' bucket", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice({
 			prefs: { categories: { SESSION_COMPLETED: true, LAUNCH_STATUS: true } },
 		});
@@ -876,7 +876,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 	});
 
 	test("another category or another device is not held by a session's use", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const a = await makeDevice();
 		const b = await makeDevice();
 		const { service, clock } = makeService(liveClient(relay.url));
@@ -892,7 +892,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 	});
 
 	test("a deduped repeat uses no place", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service, clock } = makeService(liveClient(relay.url));
 		await service.sendToDevices([device], failed("d"));
@@ -904,7 +904,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 
 	describe("places are kept only for a push that reached the phone", () => {
 		const attemptsThen = async (answer: () => Response) => {
-			const relay = startRelay(answer);
+			const relay = startMockRelay(answer);
 			const { device } = await makeDevice();
 			const ctx = makeService(liveClient(relay.url));
 			return { relay, device, ...ctx };
@@ -934,7 +934,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 		});
 
 		test("so does a payload that could not be sealed", async () => {
-			const relay = startRelay();
+			const relay = startMockRelay();
 			const { device } = await makeDevice({ publicKey: "AAAA" });
 			const { service } = makeService(liveClient(relay.url));
 			const event = failed("unsealable");
@@ -946,7 +946,7 @@ describe("quotas: per session, per category, and the decision categories' own bu
 
 		test("after the outage ends the same event goes out at once", async () => {
 			let up = false;
-			const relay = startRelay(() => (up ? accepted() : jsonResponse(503, {})));
+			const relay = startMockRelay(() => (up ? accepted() : jsonResponse(503, {})));
 			const { device } = await makeDevice();
 			const { service } = makeService(liveClient(relay.url));
 			const event = permission("recovers");
@@ -966,8 +966,8 @@ describe("quotas: per session, per category, and the decision categories' own bu
 });
 
 describe("what the relay says back", () => {
-	const one = async (handler: Parameters<typeof startRelay>[0]) => {
-		const relay = startRelay(handler);
+	const one = async (handler: Parameters<typeof startMockRelay>[0]) => {
+		const relay = startMockRelay(handler);
 		const { device } = await makeDevice();
 		const ctx = makeService(liveClient(relay.url));
 		const [outcome] = await ctx.service.sendToDevices([device], permissionWait());
@@ -975,7 +975,7 @@ describe("what the relay says back", () => {
 	};
 
 	test("gone:device revokes that device only", async () => {
-		const relay = startRelay((body) =>
+		const relay = startMockRelay((body) =>
 			(body.envelope as RelayEnvelope).d.endsWith("1")
 				? jsonResponse(410, { gone: "device" })
 				: accepted(),
@@ -1016,7 +1016,7 @@ describe("what the relay says back", () => {
 		expect(down.outcome?.status).toBe("unavailable");
 		expect(down.calls).toEqual([]);
 
-		const relay = startRelay(() => jsonResponse(503, {}));
+		const relay = startMockRelay(() => jsonResponse(503, {}));
 		const { device } = await makeDevice();
 		const clock = makeClock();
 		const client = new RelayClient({ relayUrl: relay.url, clock, logger: makeLogger().logger });
@@ -1028,7 +1028,7 @@ describe("what the relay says back", () => {
 	});
 
 	test("a revocation sink that throws does not lose the outcome or crash the batch", async () => {
-		const relay = startRelay(() => jsonResponse(410, { gone: "device" }));
+		const relay = startMockRelay(() => jsonResponse(410, { gone: "device" }));
 		const a = await makeDevice();
 		const b = await makeDevice();
 		const log = makeLogger();
@@ -1051,7 +1051,7 @@ describe("what the relay says back", () => {
 	});
 
 	test("a device whose identity can't be put in a payload, or whose key is bad, is reported and nothing is posted", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const badKid = await makeDevice({ kid: "has spaces!" });
 		const badKey = await makeDevice({ publicKey: Buffer.alloc(65, 4).toString("base64url") });
 		const { service } = makeService(liveClient(relay.url));
@@ -1064,7 +1064,7 @@ describe("what the relay says back", () => {
 	});
 
 	test("a very long name and text are trimmed to fit and the push still goes out", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device, open } = await makeDevice({ prefs: { includeAgentText: true } });
 		const { service, lines } = makeService(liveClient(relay.url));
 		const [outcome] = await service.sendToDevices(
@@ -1081,7 +1081,7 @@ describe("what the relay says back", () => {
 
 describe("logs", () => {
 	test("carry device ids, types and counts, and never a token, a key, an envelope or a payload", async () => {
-		const failing = startRelay((body) => {
+		const failing = startMockRelay((body) => {
 			const d = (body.envelope as RelayEnvelope).d;
 			return d.endsWith("1")
 				? jsonResponse(503, {})
@@ -1136,7 +1136,7 @@ describe("Live Activity updates", () => {
 	};
 
 	test("posts a liveactivity request with its own members and the device's send token", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service } = makeService(liveClient(relay.url));
 		const outcome = await service.sendActivityUpdate(device, {
@@ -1160,7 +1160,7 @@ describe("Live Activity updates", () => {
 
 	test("gone:activity ends that activity only; gone:device revokes the device", async () => {
 		let answer: "activity" | "device" = "activity";
-		const relay = startRelay(() => jsonResponse(410, { gone: answer }));
+		const relay = startMockRelay(() => jsonResponse(410, { gone: answer }));
 		const { device } = await makeDevice();
 		const { service, calls } = makeService(liveClient(relay.url));
 		expect(
@@ -1189,7 +1189,7 @@ describe("Live Activity updates", () => {
 		const gate = new Promise<void>((r) => {
 			release = r;
 		});
-		const relay = startRelay(async (body) => {
+		const relay = startMockRelay(async (body) => {
 			if (body.slot === "slot-block") await gate;
 			return accepted();
 		});
@@ -1244,7 +1244,7 @@ describe("Live Activity updates", () => {
 	});
 
 	test("a device is held to the relay's own rate: a burst of 10, then refused until it refills", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service, clock } = makeService(liveClient(relay.url));
 		const send = (i: number) =>
@@ -1264,7 +1264,7 @@ describe("Live Activity updates", () => {
 	});
 
 	test("a budget answer is reported", async () => {
-		const relay = startRelay(() =>
+		const relay = startMockRelay(() =>
 			jsonResponse(429, { budget: "activity" }, { "retry-after": "2" }),
 		);
 		const { device } = await makeDevice();
@@ -1286,7 +1286,7 @@ describe("alerts and Live Activities do not share a queue (H-G)", () => {
 		const gate = new Promise<void>((r) => {
 			releaseActivities = r;
 		});
-		const relay = startRelay(async (body) => {
+		const relay = startMockRelay(async (body) => {
 			if (body.kind === "liveactivity") await gate; // the relay is stuck on every activity
 			return accepted();
 		});
@@ -1370,7 +1370,7 @@ describe("alerts and Live Activities do not share a queue (H-G)", () => {
 
 describe("the stored send token", () => {
 	test("is read right before each post, once per post, and the plain token is never logged", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const reads: string[] = [];
 		const { service, lines } = makeService(liveClient(relay.url), {
@@ -1395,7 +1395,7 @@ describe("the stored send token", () => {
 	});
 
 	test("a revoked device (empty token) is no target: skipped, nothing read or posted, no dedupe or limit used", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice({ sendTokenCiphertext: "" });
 		let reads = 0;
 		const { service } = makeService(liveClient(relay.url), {
@@ -1422,7 +1422,7 @@ describe("the stored send token", () => {
 	});
 
 	test("a token that cannot be read is reported once, never retried, and nothing is posted", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice({ sendTokenCiphertext: "garbage-not-ours" });
 		const { service, lines, calls } = makeService(liveClient(relay.url));
 		expect((await service.sendToDevices([device], permissionWait()))[0]).toEqual({
@@ -1449,7 +1449,7 @@ describe("the stored send token", () => {
 	});
 
 	test("a reader that returns an empty string counts as unreadable", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device } = await makeDevice();
 		const { service } = makeService(liveClient(relay.url), { readSendToken: () => "" });
 		expect((await service.sendToDevices([device], permissionWait()))[0]?.status).toBe("invalid");
@@ -1459,7 +1459,7 @@ describe("the stored send token", () => {
 
 describe("a push is only a hint (D27)", () => {
 	test("a decision event carries ids and a hash to re-check, and no member that reads as an instruction or a verdict", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device, open } = await makeDevice();
 		const { service } = makeService(liveClient(relay.url));
 		await service.sendToDevices([device], {
@@ -1496,7 +1496,7 @@ describe("a 401 revokes only when the relay said it", () => {
 	const ev = (n: number): PushEvent => ({ type: "permission_wait", sessionId: `sess-401-${n}` });
 
 	test("the relay's own 401 revokes at once", async () => {
-		const relay = startRelay(() => jsonResponse(401, { error: "unauthorized" }));
+		const relay = startMockRelay(() => jsonResponse(401, { error: "unauthorized" }));
 		const { device } = await makeDevice();
 		const { service, calls } = makeService(liveClient(relay.url));
 		expect((await service.sendToDevices([device], ev(1)))[0]?.status).toBe("unauthorized");
@@ -1504,7 +1504,7 @@ describe("a 401 revokes only when the relay said it", () => {
 	});
 
 	test("a proxy's 401 is reported but revokes nothing the first time, and does after two in a row", async () => {
-		const relay = startRelay(html401);
+		const relay = startMockRelay(html401);
 		const { device } = await makeDevice();
 		const { service, calls } = makeService(liveClient(relay.url));
 		expect((await service.sendToDevices([device], ev(1)))[0]?.status).toBe("unauthorized");
@@ -1515,7 +1515,7 @@ describe("a 401 revokes only when the relay said it", () => {
 
 	test("an answer that isn't a 401 in between starts the count again", async () => {
 		let answer: () => Response = html401;
-		const relay = startRelay(() => answer());
+		const relay = startMockRelay(() => answer());
 		const { device } = await makeDevice();
 		const { service, calls } = makeService(liveClient(relay.url));
 		await service.sendToDevices([device], ev(1));
@@ -1527,7 +1527,7 @@ describe("a 401 revokes only when the relay said it", () => {
 	});
 
 	test("the same rule holds for Live Activity updates", async () => {
-		const relay = startRelay(html401);
+		const relay = startMockRelay(html401);
 		const { device } = await makeDevice();
 		const { service, calls } = makeService(liveClient(relay.url));
 		const update = { slot: "s", generation: 1, event: "update" as const, contentState: {} };
@@ -1543,7 +1543,7 @@ describe("Retry-After is honoured (a not-before per device and budget)", () => {
 
 	test("after a 429 with Retry-After the device's alerts are held without calling the relay", async () => {
 		let limited = true;
-		const relay = startRelay(() =>
+		const relay = startMockRelay(() =>
 			limited ? jsonResponse(429, { budget: "alert" }, { "retry-after": "30" }) : accepted(),
 		);
 		const { device } = await makeDevice();
@@ -1566,7 +1566,7 @@ describe("Retry-After is honoured (a not-before per device and budget)", () => {
 	});
 
 	test("a hold uses no dedupe or quota place, and is per device", async () => {
-		const relay = startRelay((body) =>
+		const relay = startMockRelay((body) =>
 			(body.envelope as RelayEnvelope).d.endsWith("1")
 				? jsonResponse(429, { budget: "alert" }, { "retry-after": "60" })
 				: accepted(),
@@ -1581,7 +1581,7 @@ describe("Retry-After is honoured (a not-before per device and budget)", () => {
 	});
 
 	test("an alert budget hold doesn't hold Live Activities, nor the other way round", async () => {
-		const relay = startRelay((body) =>
+		const relay = startMockRelay((body) =>
 			body.kind === "alert"
 				? jsonResponse(429, { budget: "alert" }, { "retry-after": "60" })
 				: accepted(),
@@ -1592,7 +1592,7 @@ describe("Retry-After is honoured (a not-before per device and budget)", () => {
 		const update = { slot: "s", generation: 1, event: "update" as const, contentState: {} };
 		expect(await service.sendActivityUpdate(device, update)).toMatchObject({ status: "sent" });
 
-		const relay2 = startRelay((body) =>
+		const relay2 = startMockRelay((body) =>
 			body.kind === "liveactivity"
 				? jsonResponse(429, { budget: "activity" }, { "retry-after": "60" })
 				: accepted(),
@@ -1612,7 +1612,7 @@ describe("Retry-After is honoured (a not-before per device and budget)", () => {
 	});
 
 	test("a 429 without Retry-After holds nothing", async () => {
-		const relay = startRelay(() => jsonResponse(429, { budget: "alert" }));
+		const relay = startMockRelay(() => jsonResponse(429, { budget: "alert" }));
 		const { device } = await makeDevice();
 		const { service } = makeService(liveClient(relay.url));
 		await service.sendToDevices([device], ev(1));
@@ -1695,14 +1695,13 @@ describe("the alert line: two lanes by relay priority", () => {
 });
 
 describe("the service queues alerts by relay priority", () => {
-	test("while every worker is busy, a needs-you alert queued later still goes out before a quiet one queued earlier", async () => {
-		let release: () => void = () => undefined;
-		const gate = new Promise<void>((r) => {
-			release = r;
-		});
+	test("when one worker frees up, the next job is the needs-you alert queued later, not the quiet one queued earlier", async () => {
+		const releases: (() => void)[] = [];
 		let arrivals = 0;
-		const relay = startRelay(async () => {
-			if (++arrivals <= ALERT_CONCURRENCY) await gate;
+		const relay = startMockRelay(async () => {
+			if (++arrivals <= ALERT_CONCURRENCY) {
+				await new Promise<void>((resolve) => releases.push(resolve));
+			}
 			return accepted();
 		});
 		const busy = await Promise.all(
@@ -1723,7 +1722,11 @@ describe("the service queues alerts by relay priority", () => {
 		});
 		const highLater = service.sendToDevices([urgent.device], permissionWait());
 		await new Promise((r) => setTimeout(r, 30));
-		release();
+		// Free exactly one worker: whatever the pool starts next is the one it prefers.
+		releases[0]?.();
+		while (relay.seen.length < ALERT_CONCURRENCY + 1) await new Promise((r) => setTimeout(r, 5));
+		expect(relay.seen[ALERT_CONCURRENCY]?.body.priority).toBe("needs-you");
+		for (const release of releases) release();
 		await Promise.all([...running, lowFirst, highLater]);
 		expect(relay.seen.slice(ALERT_CONCURRENCY).map((s) => s.body.priority)).toEqual([
 			"needs-you",
@@ -1735,7 +1738,7 @@ describe("the service queues alerts by relay priority", () => {
 describe("labels go through the redactor too (names, agent, machine)", () => {
 	test("a secret in a session name, agent or machine never reaches the plaintext", async () => {
 		const secret = "AKIAIOSFODNN7EXAMPLE";
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const { device, open } = await makeDevice();
 		const { service } = makeService(liveClient(relay.url));
 		await service.sendToDevices(
@@ -1779,7 +1782,7 @@ describe("reading the stored send token does not block the event loop", () => {
 	}
 
 	test("N cold sends (a fresh salt each) leave the loop responsive; warm sends skip scrypt", async () => {
-		const relay = startRelay();
+		const relay = startMockRelay();
 		const devices = await Promise.all(
 			Array.from({ length: 8 }, async (_, i) => {
 				const { device } = await makeDevice({ userId: `u-${i}` });

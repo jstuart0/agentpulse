@@ -51,6 +51,7 @@ const RULES: Record<PushEvent["type"], CategoryRule> = {
 	stuck: { category: "STUCK", level: "active", defaultOn: true },
 	risky: { category: "RISKY", level: "time-sensitive", defaultOn: true },
 	daily_digest: { category: "DIGEST", level: "passive", defaultOn: false },
+	device_test: { category: "GENERIC_OPEN", level: "active", defaultOn: true },
 };
 
 export function categoryFor(event: PushEvent): PushCategory {
@@ -64,6 +65,8 @@ export function baseLevelFor(event: PushEvent): InterruptionLevel {
 }
 
 export function isCategoryEnabled(prefs: DevicePrefs, category: PushCategory): boolean {
+	// The generic category is the test button's: pressing it is the request, so no toggle can refuse it.
+	if (category === "GENERIC_OPEN") return true;
 	const explicit = prefs.categories?.[category];
 	if (typeof explicit === "boolean") return explicit;
 	const rule = Object.values(RULES).find((r) => r.category === category);
@@ -129,6 +132,8 @@ export function primaryIdFor(event: PushEvent): string {
 			return event.launchId;
 		case "daily_digest":
 			return event.digestDate;
+		case "device_test":
+			return event.testId;
 		default:
 			return event.sessionId;
 	}

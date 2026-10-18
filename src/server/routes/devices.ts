@@ -34,6 +34,10 @@ import {
 	tryConsumeRegistration,
 	updateDevice,
 } from "../services/mobile-devices-service.js";
+import { getPushDevice } from "../services/push/device-source.js";
+import { getPushRuntime } from "../services/push/dispatch.js";
+import { pushAvailability } from "../services/push/push-runtime.js";
+import type { AlertOutcome } from "../services/push/push-service.js";
 import { revokeApiKey } from "../services/service-keys.js";
 
 /** A body is a few short fields plus a small prefs object. */
@@ -188,7 +192,7 @@ devicesRouter.delete("/devices/:id", async (c: Context) => {
 
 // POST /api/v1/devices/:id/test - a test push, 5 a minute per device and 10 per
 // person. A request that is refused (not yours, revoked, over a limit) spends no
-// budget. Sending arrives with the push service; until it is wired the answer is 503.
+// budget. Push not set up on this server (no relay, or no secrets key) answers 503.
 devicesRouter.post("/devices/:id/test", async (c: Context) => {
 	const refusal = refuseBadOrigin(c);
 	if (refusal) return refusal;
@@ -200,7 +204,39 @@ devicesRouter.post("/devices/:id/test", async (c: Context) => {
 		c.header("Retry-After", "60");
 		return c.json({ error: "rate_limited" }, 429);
 	}
-	return c.json({ error: "push_unavailable" }, 503);
+	const runtime = getPushRuntime();
+	if (!runtime || !pushAvailability().available) return c.json({ error: "push_unavailable" }, 503);
+	const pushDevice = await getPushDevice(own.device.id);
+	if (!pushDevice) return c.json({ error: "not_found" }, 404);
+	const [outcome] = await runtime.service.sendToDevices([pushDevice], {
+		type: "device_test",
+		testId: crypto.randomUUID(),
+	});
+	return testResponse(c, outcome);
 });
+
+/** What the relay's answer means to the person who pressed "Send test". */
+function testResponse(c: Context, outcome: AlertOutcome | undefined) {
+	switch (outcome?.status) {
+		case "sent":
+			return c.json({ ok: true, ...(outcome.pushId ? { pushId: outcome.pushId } : {}) });
+		case "gone":
+			return c.json({ error: "device_gone" }, 404);
+		case "budget_limited": {
+			if (outcome.retryAfterSec !== null) c.header("Retry-After", String(outcome.retryAfterSec));
+			return c.json({ error: "rate_limited" }, 429);
+		}
+		case "category_limited":
+		case "session_limited":
+		case "deduped":
+			c.header("Retry-After", "60");
+			return c.json({ error: "rate_limited" }, 429);
+		case "unavailable":
+		case "queue_full":
+			return c.json({ error: "push_unavailable" }, 503);
+		default:
+			return c.json({ error: "push_failed", reason: outcome?.status ?? "unknown" }, 502);
+	}
+}
 
 export { devicesRouter };

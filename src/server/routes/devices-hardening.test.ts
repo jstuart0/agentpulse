@@ -716,23 +716,33 @@ describe("field rules", () => {
 		expect((await status({ environment: "staging" })).field).toBe("environment");
 	});
 
-	test("sendToken and kid are printable ASCII with no spaces", async () => {
-		for (const field of ["sendToken", "kid"]) {
-			for (const value of [
-				"has space",
-				"tab\there",
-				"new\nline",
-				"café",
-				"\u0000nul",
-				"emoji\u{1F600}",
-				"del\u007f",
-			]) {
-				expect(await status({ [field]: value })).toEqual({ status: 400, field });
-			}
-			expect((await status({ [field]: "ok-._~+/=:ABC123" })).status).toBe(201);
+	const unprintable = [
+		"has space",
+		"tab\there",
+		"new\nline",
+		"café",
+		"\u0000nul",
+		"emoji\u{1F600}",
+		"del\u007f",
+	];
+
+	test("sendToken is printable ASCII with no spaces", async () => {
+		for (const value of unprintable) {
+			expect(await status({ sendToken: value })).toEqual({ status: 400, field: "sendToken" });
 		}
+		expect((await status({ sendToken: "ok-._~+/=:ABC123" })).status).toBe(201);
 	});
 
+	test("kid, relayDeviceId and clientServerRef fit the sealed payload's ids: 1 to 64 of A-Z a-z 0-9 . _ : -", async () => {
+		// A phone whose ids don't fit could be registered but never pushed to, so registration refuses it.
+		for (const field of ["kid", "relayDeviceId", "clientServerRef"]) {
+			for (const value of [...unprintable, "a|b", "a/b", "tilde~", "x".repeat(65)]) {
+				expect(await status({ [field]: value })).toEqual({ status: 400, field });
+			}
+			expect((await status({ [field]: "ok-._:ABC123" })).status).toBe(201);
+			expect((await status({ [field]: "x".repeat(64) })).status).toBe(201);
+		}
+	}, 60_000);
 	test("prefs follow the DevicePrefs contract", async () => {
 		const good: unknown[] = [
 			{},

@@ -566,7 +566,7 @@ describe("DELETE /devices/:id", () => {
 });
 
 describe("POST /devices/:id/test", () => {
-	test("is limited to five a minute per phone; until push is wired the answer is 503", async () => {
+	test("is limited to five a minute per phone; with push not set up the answer is 503", async () => {
 		const a = await alice();
 		const device = await json(await call("POST", "/devices", a.headers, await deviceBody()));
 		const statuses: number[] = [];

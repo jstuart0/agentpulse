@@ -494,6 +494,11 @@ describe("display only: the reported host decides nothing", () => {
 			"services/effective-machine.ts", // the definition
 			"services/session-tracker.ts", // the list rows, the filter and the counts
 			"index.ts", // hands the stamp to the socket broadcaster
+			// The push payload carries the session's machine name as a display label (the member is named
+			// `machine` in the sealed payload); nothing there decides access, routing or attribution.
+			"services/push/types.ts",
+			"services/push/push-payload.ts",
+			"services/push/hpke-seal.ts",
 		]);
 		const readers = (files: Record<string, string>) =>
 			Object.entries(files)

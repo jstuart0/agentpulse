@@ -26,6 +26,7 @@ import {
 	listProjects,
 	resolveAllSessionsForProject,
 } from "./services/projects/projects-service.js";
+import { startPush } from "./services/push/push-runtime.js";
 import { scheduleRetentionInterval } from "./services/retention-service.js";
 import { buildSqliteScaleWarning, detectOrchestratorHint } from "./services/scale-warning.js";
 import {
@@ -271,6 +272,9 @@ setInterval(async () => {
 // operator has explicitly set eventsRetentionDays > 0 (see
 // services/retention-service.ts for the full data-safety rationale).
 scheduleRetentionInterval(config.retentionIntervalMs);
+
+// Mobile push: on only when a relay URL and the instance secrets key are both set.
+startPush();
 
 console.log("");
 console.log("  ╔═══════════════════════════════════════════╗");

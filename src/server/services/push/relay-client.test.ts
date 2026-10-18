@@ -34,7 +34,7 @@ afterEach(() => {
 	for (const s of servers.splice(0)) s.stop(true);
 });
 
-function startRelay(handler: Handler) {
+function startMockRelay(handler: Handler) {
 	const seen: Seen[] = [];
 	const server = Bun.serve({
 		port: 0,
@@ -91,7 +91,9 @@ function makeClient(
 
 describe("the request", () => {
 	test("posts exactly {kind, envelope, priority} to /v1/push with the send token as a Bearer", async () => {
-		const relay = startRelay(() => json(202, { pushId: "11111111-2222-3333-4444-555555555555" }));
+		const relay = startMockRelay(() =>
+			json(202, { pushId: "11111111-2222-3333-4444-555555555555" }),
+		);
 		const { client } = makeClient(relay.url);
 		const result = await client.postAlert(SEND_TOKEN, { envelope, priority: "needs-you" });
 		expect(result).toEqual({ kind: "accepted", pushId: "11111111-2222-3333-4444-555555555555" });
@@ -105,7 +107,7 @@ describe("the request", () => {
 	});
 
 	test("adds collapseId only when given", async () => {
-		const relay = startRelay(() => json(202, { pushId: "p" }));
+		const relay = startMockRelay(() => json(202, { pushId: "p" }));
 		const { client } = makeClient(relay.url);
 		await client.postAlert(SEND_TOKEN, { envelope, priority: "quiet", collapseId: "abc123" });
 		expect(relay.seen[0]?.body).toEqual({
@@ -117,7 +119,7 @@ describe("the request", () => {
 	});
 
 	test("a Live Activity update carries exactly its own members", async () => {
-		const relay = startRelay(() => json(202, { pushId: "p" }));
+		const relay = startMockRelay(() => json(202, { pushId: "p" }));
 		const { client } = makeClient(relay.url);
 		const contentState = {
 			status: "waiting",
@@ -158,7 +160,7 @@ describe("the request", () => {
 	});
 
 	test("an accepted push without a body still counts as accepted", async () => {
-		const relay = startRelay(() => new Response(null, { status: 202 }));
+		const relay = startMockRelay(() => new Response(null, { status: 202 }));
 		const { client } = makeClient(relay.url);
 		expect(await client.postAlert(SEND_TOKEN, { envelope, priority: "normal" })).toEqual({
 			kind: "accepted",
@@ -169,7 +171,7 @@ describe("the request", () => {
 
 describe("what each answer means", () => {
 	const send = async (handler: Handler) => {
-		const relay = startRelay(handler);
+		const relay = startMockRelay(handler);
 		const { client, lines } = makeClient(relay.url);
 		return {
 			result: await client.postAlert(SEND_TOKEN, { envelope, priority: "normal" }),
@@ -227,7 +229,7 @@ describe("what each answer means", () => {
 			kind: "budget",
 			budget: "alert",
 		});
-		const relay = startRelay(() => json(429, {}));
+		const relay = startMockRelay(() => json(429, {}));
 		const { client } = makeClient(relay.url);
 		const result = await client.postLiveActivity(SEND_TOKEN, {
 			slot: "s",
@@ -310,8 +312,8 @@ describe("what each answer means", () => {
 
 describe("redirects, timeouts and the network", () => {
 	test("a redirect, even to loopback, is not followed and counts as a failure", async () => {
-		const target = startRelay(() => json(202, { pushId: "should-not-happen" }));
-		const redirecting = startRelay(
+		const target = startMockRelay(() => json(202, { pushId: "should-not-happen" }));
+		const redirecting = startMockRelay(
 			() => new Response(null, { status: 302, headers: { location: `${target.url}/v1/push` } }),
 		);
 		const { client } = makeClient(redirecting.url);
@@ -328,8 +330,8 @@ describe("redirects, timeouts and the network", () => {
 
 	test("every kind of redirect status is refused", async () => {
 		for (const status of [301, 302, 303, 307, 308]) {
-			const target = startRelay(() => json(202, {}));
-			const relay = startRelay(
+			const target = startMockRelay(() => json(202, {}));
+			const relay = startMockRelay(
 				() => new Response(null, { status, headers: { location: target.url } }),
 			);
 			const { client } = makeClient(relay.url);
@@ -342,7 +344,7 @@ describe("redirects, timeouts and the network", () => {
 	});
 
 	test("a relay that does not answer within the timeout is a timeout failure", async () => {
-		const relay = startRelay(async () => {
+		const relay = startMockRelay(async () => {
 			await new Promise((r) => setTimeout(r, 400));
 			return json(202, { pushId: "late" });
 		});
@@ -358,7 +360,7 @@ describe("redirects, timeouts and the network", () => {
 	});
 
 	test("a relay that sends its headers and then stalls the body is a timeout failure, not a hang", async () => {
-		const relay = startRelay(
+		const relay = startMockRelay(
 			() =>
 				new Response(new ReadableStream({ start() {} }), {
 					status: 202,
@@ -388,7 +390,7 @@ describe("redirects, timeouts and the network", () => {
 			[429, { kind: "unavailable", reason: "timeout" }],
 			[202, { kind: "accepted", pushId: null }],
 		] as const) {
-			const relay = startRelay(trickle(status));
+			const relay = startMockRelay(trickle(status));
 			const { client } = makeClient(relay.url, { timeoutMs: 200 });
 			const started = Date.now();
 			const result = await client.postAlert(SEND_TOKEN, { envelope, priority: "normal" });
@@ -402,7 +404,7 @@ describe("redirects, timeouts and the network", () => {
 	});
 
 	test("a refused connection is a network failure", async () => {
-		const relay = startRelay(() => json(202, {}));
+		const relay = startMockRelay(() => json(202, {}));
 		const dead = relay.url;
 		relay.server.stop(true);
 		const { client } = makeClient(dead);
@@ -415,7 +417,7 @@ describe("redirects, timeouts and the network", () => {
 
 describe("circuit breaker (5 consecutive failures, 60 s)", () => {
 	test("opens after five failures and then sends nothing", async () => {
-		const relay = startRelay(() => json(503, {}));
+		const relay = startMockRelay(() => json(503, {}));
 		const { client } = makeClient(relay.url);
 		for (let i = 0; i < BREAKER_FAILURE_THRESHOLD; i++) {
 			expect((await client.postAlert(SEND_TOKEN, { envelope, priority: "normal" })).kind).toBe(
@@ -430,7 +432,7 @@ describe("circuit breaker (5 consecutive failures, 60 s)", () => {
 	});
 
 	test("four failures leave it closed", async () => {
-		const relay = startRelay(() => json(503, {}));
+		const relay = startMockRelay(() => json(503, {}));
 		const { client } = makeClient(relay.url);
 		for (let i = 0; i < 4; i++)
 			await client.postAlert(SEND_TOKEN, { envelope, priority: "normal" });
@@ -443,7 +445,7 @@ describe("circuit breaker (5 consecutive failures, 60 s)", () => {
 
 	test("stays open for 60 s, admits one probe, and a successful probe closes it", async () => {
 		let healthy = false;
-		const relay = startRelay(() => (healthy ? json(202, { pushId: "ok" }) : json(503, {})));
+		const relay = startMockRelay(() => (healthy ? json(202, { pushId: "ok" }) : json(503, {})));
 		const { client, clock } = makeClient(relay.url);
 		for (let i = 0; i < 5; i++)
 			await client.postAlert(SEND_TOKEN, { envelope, priority: "normal" });
@@ -467,7 +469,7 @@ describe("circuit breaker (5 consecutive failures, 60 s)", () => {
 	});
 
 	test("a failed probe reopens it for another full 60 s", async () => {
-		const relay = startRelay(() => json(503, {}));
+		const relay = startMockRelay(() => json(503, {}));
 		const { client, clock } = makeClient(relay.url);
 		for (let i = 0; i < 5; i++)
 			await client.postAlert(SEND_TOKEN, { envelope, priority: "normal" });
@@ -493,7 +495,7 @@ describe("circuit breaker (5 consecutive failures, 60 s)", () => {
 			release = r;
 		});
 		let calls = 0;
-		const relay = startRelay(async () => {
+		const relay = startMockRelay(async () => {
 			calls++;
 			if (calls > 5) await gate;
 			return calls > 5 ? json(202, { pushId: "ok" }) : json(503, {});
@@ -517,7 +519,7 @@ describe("circuit breaker (5 consecutive failures, 60 s)", () => {
 			401, 503,
 		];
 		let i = 0;
-		const relay = startRelay(() => {
+		const relay = startMockRelay(() => {
 			const status = statuses[i++] ?? 503;
 			return status === 410
 				? json(410, { gone: "device" })
@@ -533,7 +535,7 @@ describe("circuit breaker (5 consecutive failures, 60 s)", () => {
 	});
 
 	test("timeouts, network errors and redirects count toward it like 5xx do", async () => {
-		const mixed = startRelay(
+		const mixed = startMockRelay(
 			() => new Response(null, { status: 302, headers: { location: "http://127.0.0.1:1/" } }),
 		);
 		const { client } = makeClient(mixed.url, { failureThreshold: 3 });
@@ -543,7 +545,7 @@ describe("circuit breaker (5 consecutive failures, 60 s)", () => {
 	});
 
 	test("the Live Activity path shares the same breaker as the alert path", async () => {
-		const relay = startRelay(() => json(503, {}));
+		const relay = startMockRelay(() => json(503, {}));
 		const { client } = makeClient(relay.url);
 		for (let i = 0; i < 5; i++)
 			await client.postLiveActivity(SEND_TOKEN, {
@@ -566,11 +568,11 @@ describe("logging", () => {
 			new Response(null, { status: 302, headers: { location: "http://127.0.0.1:1/" } }),
 		];
 		let i = 0;
-		const relay = startRelay(() => bodies[i++ % bodies.length] as Response);
+		const relay = startMockRelay(() => bodies[i++ % bodies.length] as Response);
 		const { client, lines } = makeClient(relay.url, { failureThreshold: 2 });
 		for (let n = 0; n < 6; n++)
 			await client.postAlert(SEND_TOKEN, { envelope, priority: "normal" });
-		const dead = startRelay(() => json(202, {}));
+		const dead = startMockRelay(() => json(202, {}));
 		dead.server.stop(true);
 		await makeClient(dead.url, {
 			logger: {

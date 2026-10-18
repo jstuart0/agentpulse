@@ -16,6 +16,7 @@ export const PUSH_EVENT_TYPES = [
 	"stuck",
 	"risky",
 	"daily_digest",
+	"device_test",
 ] as const;
 export type PushEventType = (typeof PUSH_EVENT_TYPES)[number];
 
@@ -31,6 +32,7 @@ export const PUSH_CATEGORIES = [
 	"STUCK",
 	"RISKY",
 	"DIGEST",
+	"GENERIC_OPEN",
 ] as const;
 export type PushCategory = (typeof PUSH_CATEGORIES)[number];
 
@@ -83,7 +85,9 @@ export type PushEvent =
 	| ({ type: "launch_status"; launchId: string; failed?: boolean } & Partial<SessionScoped>)
 	| ({ type: "stuck"; text?: string | null } & SessionScoped)
 	| ({ type: "risky"; text?: string | null } & SessionScoped)
-	| { type: "daily_digest"; digestDate: string };
+	| { type: "daily_digest"; digestDate: string }
+	/** The "Send test" button: reaches one chosen device whatever its category toggles say. */
+	| { type: "device_test"; testId: string };
 
 export interface QuietHours {
 	enabled: boolean;

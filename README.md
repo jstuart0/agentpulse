@@ -573,7 +573,8 @@ AgentPulse ships a `Content-Security-Policy-Report-Only` header (as of 0.3.0). T
 | `AGENTPULSE_TELEMETRY_MODE` | inferred | Telemetry install class override: `self_hosted_real`, `production`, `dev`, `test`, or `ci` |
 | `AGENTPULSE_TELEMETRY_TEST` | | Set `1` to force this install to report as `test` |
 | `AGENTPULSE_AI_ENABLED` | `false` | Compile the AI Labs layer in at boot. Off = zero AI services, routes, or UI (non-AI install footprint is identical to pre-AI). |
-| `AGENTPULSE_SECRETS_KEY` | | Required when `AGENTPULSE_AI_ENABLED=true`. 32+ random chars; encrypts provider credentials at rest (AES-256-GCM). |
+| `AGENTPULSE_SECRETS_KEY` | | Required when `AGENTPULSE_AI_ENABLED=true`, and for mobile push (it encrypts each phone's relay send token; without it phones can't register). 32+ random chars; encrypts credentials at rest (AES-256-GCM). |
+| `AGENTPULSE_PUSH_RELAY_URL` | | The push relay for the companion app, e.g. `https://relay.example.com`. https only (plain http only for loopback outside production). Push is off unless this and `AGENTPULSE_SECRETS_KEY` are both set. |
 | `AGENTPULSE_OTEL_ENDPOINT` | | Optional OTLP metrics endpoint. When set, `ai_metric` log events are also forwarded as OTLP. |
 | `AGENTPULSE_VECTOR_SCAN_MAX_ROWS` | `50000` | Vector search only (SQLite). Most vectors one Ask semantic scan reads, newest first. Range 1,000 to 5,000,000; out-of-range values are clamped. |
 | `AGENTPULSE_VECTOR_SCAN_MAX_MS` | `4000` | Longest one Ask semantic scan runs, in milliseconds, pacing included. Range 250 to 60,000. |
