@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Observability vs. Orchestration for AI Coding Agents — AgentPulse</title>
+	<meta name="description" content="Monitoring Claude Code and Codex CLI sessions isn't the same as orchestrating them. Here's how the two differ, what each needs, and how to choose for your setup.">
+	<link rel="canonical" href="https://jstuart0.github.io/agentpulse/guides/observability-vs-orchestration/">
+	<meta property="og:type" content="article">
+	<meta property="og:site_name" content="AgentPulse">
+	<meta property="og:title" content="Observability vs. orchestration for AI coding agents">
+	<meta property="og:description" content="How monitoring and orchestrating Claude Code and Codex CLI sessions differ, and how to choose.">
+	<meta property="og:url" content="https://jstuart0.github.io/agentpulse/guides/observability-vs-orchestration/">
+	<meta property="og:image" content="https://jstuart0.github.io/agentpulse/assets/claude-code-codex-session-dashboard.png">
+	<meta name="twitter:card" content="summary_large_image">
+	<link rel="stylesheet" href="../../assets/style.css">
+	<script type="application/ld+json">
+	{
+		"@context": "https://schema.org",
+		"@type": "TechArticle",
+		"headline": "Observability vs. orchestration for AI coding agents",
+		"datePublished": "2026-10-18",
+		"author": { "@type": "Person", "name": "jstuart0", "url": "https://github.com/jstuart0" },
+		"image": "https://jstuart0.github.io/agentpulse/assets/claude-code-codex-session-dashboard.png",
+		"mainEntityOfPage": "https://jstuart0.github.io/agentpulse/guides/observability-vs-orchestration/"
+	}
+	</script>
+</head>
+<body>
+<header class="site">
+	<div class="wrap">
+		<a class="brand" href="../../">AgentPulse</a>
+		<nav>
+			<a href="../">Guides</a>
+			<a href="https://github.com/jstuart0/agentpulse#quick-start">Install</a>
+			<a href="https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md">MCP server</a>
+			<a href="https://github.com/jstuart0/agentpulse">GitHub</a>
+		</nav>
+	</div>
+</header>
+<main>
+	<article class="wrap">
+		<h1>Observability vs. orchestration for AI coding agents</h1>
+		<p class="lede">Tools for coding agents tend to do one of two jobs. Observability tells you what your agents did. Orchestration starts them, steers them and decides where they run. Knowing which you need saves you from installing more than you'll use.</p>
+
+		<h2>Observability: knowing what happened</h2>
+		<p>Observability tools read what an agent emits, through hooks, transcripts or logs, and turn it into something you can look at. Typical questions they answer:</p>
+		<ul>
+			<li>Which sessions are running, and which need me?</li>
+			<li>What did I ask this agent, and what did it change?</li>
+			<li>How many tokens or how much money did this cost?</li>
+			<li>Where did that session go wrong?</li>
+		</ul>
+		<p>The cost of adoption is low. You install hooks, and the agents behave exactly as before. You can't act on what you see, though. To answer an agent, you still go back to its terminal.</p>
+
+		<h2>Orchestration: deciding what happens next</h2>
+		<p>Orchestration tools own the agent's process. Because they started it, they can send it a prompt, stop it, restart it or start more like it. Typical jobs:</p>
+		<ul>
+			<li>Launch a session from a template, with the right directory, model and instructions.</li>
+			<li>Send a follow-up prompt without being at the machine.</li>
+			<li>Route work to the machine that has the repository or the hardware.</li>
+			<li>Approve or decline what an automated watcher proposes.</li>
+		</ul>
+		<p>The cost is higher. Something has to run on each machine to hold the processes, and it needs credentials strong enough to launch programs.</p>
+
+		<h2>Side by side</h2>
+		<table>
+			<thead><tr><th></th><th>Observability</th><th>Orchestration</th></tr></thead>
+			<tbody>
+				<tr><td>Data source</td><td>Hooks, transcripts, logs</td><td>A process the tool started</td></tr>
+				<tr><td>Works on sessions you started in a terminal</td><td>Yes</td><td>No, only on sessions it launched</td></tr>
+				<tr><td>Can act on a session</td><td>No</td><td>Yes: prompt, stop, retry</td></tr>
+				<tr><td>Installs on each machine</td><td>Hooks (and a relay for a remote server)</td><td>Hooks plus a long-running supervisor</td></tr>
+				<tr><td>Credential risk</td><td>Read and write events</td><td>Can run programs on your machines</td></tr>
+			</tbody>
+		</table>
+
+		<h2>Choosing</h2>
+		<p><strong>Start with observability</strong> if you mostly sit at one machine and your problem is keeping track of several tabs. It's low-risk and quick to undo.</p>
+		<p><strong>Add orchestration</strong> when you start tasks and walk away, run agents on more than one machine, or want to launch work from your phone or another agent.</p>
+
+		<h2>How AgentPulse handles both</h2>
+		<p>AgentPulse does both, and you choose how far to go. Installed with <code>--skip-supervisor</code>, it's observability only: hooks and a dashboard, nothing that can launch a program. With the default install, a local supervisor adds launch and control on the same machine. With a remote server, relays and a supervisor per host, you get one dashboard that watches every session and controls the ones it launched.</p>
+		<p>Sessions you started yourself in a terminal stay observe-only either way. API keys are scoped the same way: <code>observe</code> keys can read but never act, and only <code>manage</code> keys can launch.</p>
+
+		<div class="related">
+			<h3>Related guides</h3>
+			<ul>
+				<li><a href="../monitor-multiple-claude-code-sessions/">Monitor multiple Claude Code sessions across machines</a></li>
+				<li><a href="../remote-claude-code-dashboard/">Control Claude Code from another computer or your phone</a></li>
+			</ul>
+		</div>
+	</article>
+</main>
+<footer class="site">
+	<div class="wrap">AgentPulse is MIT licensed. Source, issues and releases are on <a href="https://github.com/jstuart0/agentpulse">GitHub</a>.</div>
+</footer>
+</body>
+</html>

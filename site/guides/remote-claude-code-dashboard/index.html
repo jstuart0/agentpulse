@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Remote Claude Code Dashboard: Control Coding Agents from Another Computer or Your Phone — AgentPulse</title>
+	<meta name="description" content="How to check on, prompt, stop and launch Claude Code and Codex CLI sessions from another computer or your phone, using a self-hosted AgentPulse dashboard.">
+	<link rel="canonical" href="https://jstuart0.github.io/agentpulse/guides/remote-claude-code-dashboard/">
+	<meta property="og:type" content="article">
+	<meta property="og:site_name" content="AgentPulse">
+	<meta property="og:title" content="Control Claude Code from another computer or your phone">
+	<meta property="og:description" content="Check on, prompt, stop and launch Claude Code and Codex CLI sessions remotely with a self-hosted dashboard.">
+	<meta property="og:url" content="https://jstuart0.github.io/agentpulse/guides/remote-claude-code-dashboard/">
+	<meta property="og:image" content="https://jstuart0.github.io/agentpulse/assets/claude-code-session-timeline.png">
+	<meta name="twitter:card" content="summary_large_image">
+	<link rel="stylesheet" href="../../assets/style.css">
+	<script type="application/ld+json">
+	{
+		"@context": "https://schema.org",
+		"@type": "TechArticle",
+		"headline": "Control Claude Code from another computer or your phone",
+		"datePublished": "2026-10-18",
+		"author": { "@type": "Person", "name": "jstuart0", "url": "https://github.com/jstuart0" },
+		"image": "https://jstuart0.github.io/agentpulse/assets/claude-code-session-timeline.png",
+		"mainEntityOfPage": "https://jstuart0.github.io/agentpulse/guides/remote-claude-code-dashboard/"
+	}
+	</script>
+</head>
+<body>
+<header class="site">
+	<div class="wrap">
+		<a class="brand" href="../../">AgentPulse</a>
+		<nav>
+			<a href="../">Guides</a>
+			<a href="https://github.com/jstuart0/agentpulse#quick-start">Install</a>
+			<a href="https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md">MCP server</a>
+			<a href="https://github.com/jstuart0/agentpulse">GitHub</a>
+		</nav>
+	</div>
+</header>
+<main>
+	<article class="wrap">
+		<h1>Control Claude Code from another computer or your phone</h1>
+		<p class="lede">You start a long Claude Code task at your desk and walk away. Did it finish? Is it stuck on a permission prompt? Can you give it the next instruction without going back? This guide sets up remote access to your coding agents with a self-hosted AgentPulse server.</p>
+
+		<h2>Two levels of remote access</h2>
+		<p>Before setting anything up, it helps to know what "remote" can mean:</p>
+		<table>
+			<thead><tr><th></th><th>Watch remotely</th><th>Control remotely</th></tr></thead>
+			<tbody>
+				<tr><td>What you can do</td><td>See status, prompts, tool calls and history for every session</td><td>Launch new sessions, send prompts, stop and retry</td></tr>
+				<tr><td>Which sessions</td><td>Any session with AgentPulse hooks installed, including ones you started in a terminal</td><td>Sessions AgentPulse launched through a supervisor (called <em>managed</em> sessions)</td></tr>
+				<tr><td>What you install</td><td>Hooks, plus a relay if the server is on another machine</td><td>The same, plus the supervisor on each machine that runs agents</td></tr>
+			</tbody>
+		</table>
+		<p>The split is deliberate. AgentPulse can only type into a session whose process it holds. A session you started yourself in a terminal belongs to that terminal, so it can be watched but not steered.</p>
+
+		<h2>Step 1: run the server somewhere you can reach</h2>
+		<p>The simplest option is your own machine, with the dashboard opened up to your LAN and login turned on:</p>
+		<pre><code>docker run -d -p 0.0.0.0:3000:3000 -v agentpulse-data:/app/data \
+  -e HOST=0.0.0.0 \
+  -e AGENTPULSE_LOCAL_ADMIN_USERNAME=admin \
+  -e AGENTPULSE_LOCAL_ADMIN_PASSWORD='&lt;strong-password&gt;' \
+  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse</code></pre>
+		<p>Never combine a LAN-facing port with <code>DISABLE_AUTH=true</code>. That would give everyone on the network full control with no password.</p>
+		<p>To reach it from outside your home, put AgentPulse on a server behind HTTPS and single sign-on instead. AgentPulse works with any forwardauth identity provider: Authentik, Authelia, oauth2-proxy, Pomerium or Cloudflare Access. See <a href="../self-hosted-ai-coding-agent-dashboard/">self-hosting AgentPulse</a>.</p>
+
+		<h2>Step 2: connect each machine</h2>
+		<p>On every machine that runs agents, install the relay. It sets up the hooks and forwards events to your server:</p>
+		<pre><code>curl -sSL https://your-agentpulse-server.example.com/setup-relay.sh | bash</code></pre>
+		<p>That's enough to watch every session from your phone. Open the dashboard in a mobile browser to see the same sessions, statuses and timelines you'd see at your desk.</p>
+
+		<h2>Step 3: add a supervisor for control</h2>
+		<p>The supervisor is a small process that runs on each machine and launches agents on AgentPulse's behalf. The one-command local install starts one for you. On other machines, create an enrollment token on the dashboard's <strong>Hosts</strong> page and use it to register that machine's supervisor.</p>
+		<p>With supervisors connected you can, from any browser:</p>
+		<ul>
+			<li><strong>Launch</strong> a headless or interactive Claude Code or Codex session, from scratch or from a saved template, on a host you pick.</li>
+			<li><strong>Prompt</strong> a running managed session, as if you'd typed into its terminal.</li>
+			<li><strong>Stop</strong> or <strong>retry</strong> it.</li>
+		</ul>
+		<figure>
+			<img src="../../assets/claude-code-session-timeline.png" width="1910" height="821" alt="AgentPulse session view showing a Claude Code session's prompt history and tool calls, viewable from any browser" loading="lazy">
+			<figcaption>A session's timeline looks the same from your phone as from your desk.</figcaption>
+		</figure>
+
+		<h2>Step 4 (optional): approvals in Telegram</h2>
+		<p>AgentPulse's experimental AI Labs layer includes a Telegram channel. When a session watcher wants a human decision, it sends the request to a Telegram chat with <strong>Approve</strong> and <strong>Decline</strong> buttons. The same chat accepts plain-language requests through the Ask assistant, such as "open a Claude session for myapp". Anything that changes state still goes through an approval card. Setup steps are in the <a href="https://github.com/jstuart0/agentpulse#telegram-hitl-experimental-labstelegramchannel">README</a>.</p>
+
+		<h2>Security notes</h2>
+		<ul>
+			<li>Hooks and the dashboard use separate credentials. Hook ingestion uses scoped API keys, and the dashboard uses a login or SSO.</li>
+			<li>API keys carry explicit scopes: <code>ingest</code> to post events, <code>observe</code> to read, <code>manage</code> to launch and control. Give each machine only what it needs.</li>
+			<li>A launch carries its prompt and environment to the chosen host's supervisor. Name the host explicitly when that matters.</li>
+		</ul>
+
+		<div class="related">
+			<h3>Related guides</h3>
+			<ul>
+				<li><a href="../monitor-multiple-claude-code-sessions/">Monitor multiple Claude Code sessions across machines</a></li>
+				<li><a href="../mcp-server-for-coding-agents/">Control your agent fleet from Claude Code over MCP</a></li>
+			</ul>
+		</div>
+	</article>
+</main>
+<footer class="site">
+	<div class="wrap">AgentPulse is MIT licensed. Source, issues and releases are on <a href="https://github.com/jstuart0/agentpulse">GitHub</a>.</div>
+</footer>
+</body>
+</html>

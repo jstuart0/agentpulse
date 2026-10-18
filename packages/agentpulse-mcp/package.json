@@ -1,5 +1,6 @@
 {
 	"name": "@craze0/agentpulse-mcp",
+	"mcpName": "io.github.jstuart0/agentpulse",
 	"version": "0.2.1",
 	"description": "Standalone MCP server for AgentPulse — monitor and orchestrate AI coding agent sessions from any MCP-compatible client.",
 	"type": "module",
@@ -42,5 +43,18 @@
 		"url": "git+https://github.com/jstuart0/agentpulse.git",
 		"directory": "packages/agentpulse-mcp"
 	},
-	"keywords": ["mcp", "model-context-protocol", "agentpulse", "claude-code", "codex", "ai", "agent"]
+	"keywords": [
+		"mcp",
+		"mcp-server",
+		"model-context-protocol",
+		"agentpulse",
+		"claude-code",
+		"codex",
+		"codex-cli",
+		"ai",
+		"agent",
+		"coding-agents",
+		"agent-orchestration",
+		"observability"
+	]
 }

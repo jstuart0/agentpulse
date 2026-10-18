@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>AgentPulse — Self-Hosted Dashboard for Claude Code, Codex CLI and Copilot CLI</title>
+	<meta name="description" content="AgentPulse is an open-source, self-hosted dashboard to monitor, orchestrate and remotely control Claude Code, Codex CLI and Copilot CLI sessions across all your machines.">
+	<link rel="canonical" href="https://jstuart0.github.io/agentpulse/">
+	<meta property="og:type" content="website">
+	<meta property="og:site_name" content="AgentPulse">
+	<meta property="og:title" content="AgentPulse — one dashboard for every AI coding agent session">
+	<meta property="og:description" content="Monitor, orchestrate and remotely control Claude Code, Codex CLI and Copilot CLI sessions across all your machines. Open source and self-hosted.">
+	<meta property="og:url" content="https://jstuart0.github.io/agentpulse/">
+	<meta property="og:image" content="https://jstuart0.github.io/agentpulse/assets/agentpulse-social-preview.png">
+	<meta property="og:image:width" content="1280">
+	<meta property="og:image:height" content="640">
+	<meta name="twitter:card" content="summary_large_image">
+	<link rel="stylesheet" href="assets/style.css">
+	<script type="application/ld+json">
+	{
+		"@context": "https://schema.org",
+		"@type": "SoftwareApplication",
+		"name": "AgentPulse",
+		"description": "Open-source, self-hosted dashboard to monitor, orchestrate and remotely control Claude Code, Codex CLI and Copilot CLI sessions across all your machines.",
+		"applicationCategory": "DeveloperApplication",
+		"operatingSystem": "macOS, Linux, Windows",
+		"license": "https://opensource.org/licenses/MIT",
+		"url": "https://jstuart0.github.io/agentpulse/",
+		"codeRepository": "https://github.com/jstuart0/agentpulse",
+		"image": "https://jstuart0.github.io/agentpulse/assets/claude-code-codex-session-dashboard.png",
+		"offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+	}
+	</script>
+</head>
+<body>
+<header class="site">
+	<div class="wrap">
+		<a class="brand" href="./">AgentPulse</a>
+		<nav>
+			<a href="guides/">Guides</a>
+			<a href="https://github.com/jstuart0/agentpulse#quick-start">Install</a>
+			<a href="https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md">MCP server</a>
+			<a href="https://github.com/jstuart0/agentpulse">GitHub</a>
+		</nav>
+	</div>
+</header>
+<main>
+	<div class="wrap">
+		<h1>One dashboard for every Claude Code, Codex and Copilot session</h1>
+		<p class="lede">AgentPulse is an open-source, self-hosted command center for AI coding agents. See what every session on every machine is doing, launch and steer agents from the browser, and pick up where you left off from any device.</p>
+		<div class="cta">
+			<a class="button primary" href="https://github.com/jstuart0/agentpulse#quick-start">Install in one command</a>
+			<a class="button" href="https://github.com/jstuart0/agentpulse">View on GitHub</a>
+		</div>
+
+		<figure>
+			<img src="assets/claude-code-codex-session-dashboard.png" width="1899" height="835" alt="AgentPulse dashboard showing a grid of live Claude Code, Codex CLI and Copilot CLI sessions, each with its status, project, session name and tool-use count">
+			<figcaption>The dashboard: every running Claude Code, Codex CLI and Copilot CLI session in one grid, marked Working, Waiting, Idle or Error.</figcaption>
+		</figure>
+
+		<h2>The problem it solves</h2>
+		<p>Run three or four coding agents at once and the terminal stops being a good interface. Which tab finished? Which one is waiting for a permission prompt? What did you ask the one on the other laptop an hour ago? AgentPulse collects hook events from each agent and shows them in one live view, with a chat-style history of every prompt you've sent.</p>
+
+		<h2>What you can do with it</h2>
+		<div class="grid">
+			<div class="card">
+				<h3>Monitor sessions in real time</h3>
+				<p>Every session gets a memorable name like <code>bold-falcon</code>, a live status and a searchable timeline of prompts and tool calls.</p>
+			</div>
+			<div class="card">
+				<h3>Work across machines</h3>
+				<p>A small relay on each machine forwards events to one AgentPulse server. Filter the dashboard by machine, or see them all.</p>
+			</div>
+			<div class="card">
+				<h3>Launch and steer agents</h3>
+				<p>Start headless or interactive sessions from templates, send follow-up prompts, stop and retry, and route each launch to the right host.</p>
+			</div>
+			<div class="card">
+				<h3>Open it from any device</h3>
+				<p>Self-host it behind SSO and check on your agents from a phone or another computer. Optional Telegram approvals are in Labs.</p>
+			</div>
+			<div class="card">
+				<h3>Drive it over MCP</h3>
+				<p>The <code>@craze0/agentpulse-mcp</code> server lets Claude Code, Codex CLI or any MCP client list, search, launch and steer sessions, with scoped API keys.</p>
+			</div>
+			<div class="card">
+				<h3>Keep your data</h3>
+				<p>MIT licensed and self-hosted. SQLite by default, PostgreSQL for production, and a per-machine exclude list for directories that should never be reported.</p>
+			</div>
+		</div>
+
+		<figure>
+			<img src="assets/claude-code-session-timeline.png" width="1910" height="821" alt="AgentPulse session detail view with a chat-style timeline of the user's prompts and the agent's tool calls shown inline">
+			<figcaption>Session detail: your prompts as a chat timeline, with the agent's tool use inline.</figcaption>
+		</figure>
+
+		<h2>Install</h2>
+		<p>On macOS or Linux, one command installs AgentPulse with Bun and SQLite, starts the dashboard and local supervisor, and configures Claude Code and Codex hooks:</p>
+		<pre><code>curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | bash</code></pre>
+		<p>Then open <code>http://localhost:3000</code>. Windows, Docker, remote-server and Kubernetes installs are in the <a href="https://github.com/jstuart0/agentpulse#install-paths">README</a>.</p>
+
+		<h2>Guides</h2>
+		<ul>
+			<li><a href="guides/monitor-multiple-claude-code-sessions/">How to monitor multiple Claude Code sessions across machines</a></li>
+			<li><a href="guides/remote-claude-code-dashboard/">Check on and control Claude Code from another computer or your phone</a></li>
+			<li><a href="guides/self-hosted-ai-coding-agent-dashboard/">Self-host an AI coding agent dashboard with Docker, Kubernetes and SSO</a></li>
+			<li><a href="guides/observability-vs-orchestration/">Observability vs. orchestration for AI coding agents</a></li>
+			<li><a href="guides/mcp-server-for-coding-agents/">Control your coding agent fleet from Claude Code over MCP</a></li>
+		</ul>
+	</div>
+</main>
+<footer class="site">
+	<div class="wrap">AgentPulse is MIT licensed. Source, issues and releases are on <a href="https://github.com/jstuart0/agentpulse">GitHub</a>.</div>
+</footer>
+</body>
+</html>

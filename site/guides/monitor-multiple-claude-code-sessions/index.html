@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>How to Monitor Multiple Claude Code Sessions Across Machines — AgentPulse</title>
+	<meta name="description" content="Running several Claude Code or Codex CLI sessions at once? Here's how to see every session's status, prompts and tool calls in one live dashboard, across all your machines.">
+	<link rel="canonical" href="https://jstuart0.github.io/agentpulse/guides/monitor-multiple-claude-code-sessions/">
+	<meta property="og:type" content="article">
+	<meta property="og:site_name" content="AgentPulse">
+	<meta property="og:title" content="How to monitor multiple Claude Code sessions across machines">
+	<meta property="og:description" content="See every Claude Code and Codex CLI session's status, prompts and tool calls in one live dashboard.">
+	<meta property="og:url" content="https://jstuart0.github.io/agentpulse/guides/monitor-multiple-claude-code-sessions/">
+	<meta property="og:image" content="https://jstuart0.github.io/agentpulse/assets/claude-code-codex-session-dashboard.png">
+	<meta name="twitter:card" content="summary_large_image">
+	<link rel="stylesheet" href="../../assets/style.css">
+	<script type="application/ld+json">
+	{
+		"@context": "https://schema.org",
+		"@type": "TechArticle",
+		"headline": "How to monitor multiple Claude Code sessions across machines",
+		"datePublished": "2026-10-18",
+		"author": { "@type": "Person", "name": "jstuart0", "url": "https://github.com/jstuart0" },
+		"image": "https://jstuart0.github.io/agentpulse/assets/claude-code-codex-session-dashboard.png",
+		"mainEntityOfPage": "https://jstuart0.github.io/agentpulse/guides/monitor-multiple-claude-code-sessions/"
+	}
+	</script>
+</head>
+<body>
+<header class="site">
+	<div class="wrap">
+		<a class="brand" href="../../">AgentPulse</a>
+		<nav>
+			<a href="../">Guides</a>
+			<a href="https://github.com/jstuart0/agentpulse#quick-start">Install</a>
+			<a href="https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md">MCP server</a>
+			<a href="https://github.com/jstuart0/agentpulse">GitHub</a>
+		</nav>
+	</div>
+</header>
+<main>
+	<article class="wrap">
+		<h1>How to monitor multiple Claude Code sessions across machines</h1>
+		<p class="lede">Once you run more than two coding agents at a time, the terminal stops telling you what you need to know. This guide sets up one live view of every Claude Code, Codex CLI and Copilot CLI session, on one machine or many.</p>
+
+		<h2>Why terminal tabs stop working</h2>
+		<p>Each agent runs in its own tab, and the tab title rarely says what it's doing. To find out whether a session finished, hit an error or is sitting on a permission prompt, you have to switch to it and scroll. Across two laptops and a desktop it gets worse: you can't see the other machines at all.</p>
+		<p>What you want is a single list that answers three questions for every session: what is it working on, does it need me, and what did I last ask it.</p>
+
+		<h2>How AgentPulse gets the data</h2>
+		<p>Claude Code, Codex CLI and Copilot CLI can each run hooks on events like a submitted prompt, a tool call or the end of a turn. AgentPulse installs hooks that post those events to its server. The hooks run asynchronously, so they never slow the agent down, and the server always answers immediately.</p>
+		<p>The server stores each event, keeps one record per session and pushes updates to the dashboard over a WebSocket. Nothing reads your terminal or scrapes the agent's output.</p>
+
+		<h2>Step 1: install on your main machine</h2>
+		<p>On macOS or Linux:</p>
+		<pre><code>curl -fsSL https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.sh | bash</code></pre>
+		<p>On Windows (PowerShell):</p>
+		<pre><code>irm https://raw.githubusercontent.com/jstuart0/agentpulse/main/scripts/install-local.ps1 | iex</code></pre>
+		<p>This installs AgentPulse with Bun and SQLite, starts it as a service and configures the Claude Code and Codex hooks. Open <code>http://localhost:3000</code> and start a new agent session. It shows up on the dashboard as soon as you send your first prompt.</p>
+
+		<h2>Step 2: read the dashboard</h2>
+		<figure>
+			<img src="../../assets/claude-code-codex-session-dashboard.png" width="1899" height="835" alt="AgentPulse dashboard with session cards for several Claude Code and Codex CLI sessions, each showing a status badge, project and tool-use count" loading="lazy">
+			<figcaption>Each card is one session. The status cards above the grid filter by state.</figcaption>
+		</figure>
+		<p>Every session is in exactly one state:</p>
+		<table>
+			<thead><tr><th>State</th><th>Meaning</th></tr></thead>
+			<tbody>
+				<tr><td>Working</td><td>The agent is running a turn right now.</td></tr>
+				<tr><td>Waiting</td><td>The agent finished a turn, or is blocked on a permission prompt, and you haven't looked yet.</td></tr>
+				<tr><td>Error</td><td>The session failed and you haven't dismissed it.</td></tr>
+				<tr><td>Idle</td><td>Nothing is waiting on you and the agent isn't working.</td></tr>
+			</tbody>
+		</table>
+		<p>Each session also gets a random name like <code>bold-falcon</code>, so you can match a card to its terminal tab. If you use the optional status line, the same name shows in Claude Code itself. Click a card for the full timeline: your prompts as a chat history, with the agent's tool calls inline.</p>
+
+		<h2>Step 3: add your other machines</h2>
+		<p>To see sessions from more than one computer, run AgentPulse on a server every machine can reach: a home server, a VPS or a Kubernetes cluster. Then install the relay on each machine that runs agents:</p>
+		<pre><code>curl -sSL https://your-agentpulse-server.example.com/setup-relay.sh | bash</code></pre>
+		<p>The relay listens on <code>127.0.0.1</code>, configures the hooks to post to it, queues events on disk and forwards them to the server with your API key. If the server is unreachable for a while, events wait in the queue instead of being lost. The installer asks for the key on the terminal so it never lands in your shell history.</p>
+		<p>The relay also reports the machine's name. The dashboard shows it on each card and adds a machine filter once more than one machine has reported in.</p>
+
+		<h2>Step 4: keep private projects out</h2>
+		<p>List directories in <code>~/.agentpulse/exclude</code> on a machine that uses the relay, and the relay never sends sessions started there. The rules stay on that machine, and the server never learns what is excluded. For a one-off run, set <code>AGENTPULSE_SKIP=1</code>. The <a href="https://github.com/jstuart0/agentpulse#excluding-directories-from-agentpulse">README</a> lists which senders apply the rules.</p>
+
+		<h2>What else you get</h2>
+		<ul>
+			<li>Full-text search across session names, prompts, plans, notes and events.</li>
+			<li>Notes, pins and archives for each session.</li>
+			<li>An inbox that collects every session waiting for approval, stuck or recently failed.</li>
+			<li>Desktop notifications when a session needs you.</li>
+		</ul>
+
+		<div class="note">Monitoring is only half of it. To launch, prompt or stop agents from the dashboard, see <a href="../remote-claude-code-dashboard/">controlling Claude Code from another computer</a>.</div>
+
+		<div class="related">
+			<h3>Related guides</h3>
+			<ul>
+				<li><a href="../observability-vs-orchestration/">Observability vs. orchestration for AI coding agents</a></li>
+				<li><a href="../self-hosted-ai-coding-agent-dashboard/">Self-host an AI coding agent dashboard</a></li>
+			</ul>
+		</div>
+	</article>
+</main>
+<footer class="site">
+	<div class="wrap">AgentPulse is MIT licensed. Source, issues and releases are on <a href="https://github.com/jstuart0/agentpulse">GitHub</a>.</div>
+</footer>
+</body>
+</html>

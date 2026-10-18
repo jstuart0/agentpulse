@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Self-Host an AI Coding Agent Dashboard with Docker, Kubernetes and SSO — AgentPulse</title>
+	<meta name="description" content="Deploy AgentPulse, an open-source dashboard for Claude Code, Codex CLI and Copilot CLI, with Docker or Kubernetes, SQLite or PostgreSQL, and single sign-on through Authentik, Authelia, oauth2-proxy, Pomerium or Cloudflare Access.">
+	<link rel="canonical" href="https://jstuart0.github.io/agentpulse/guides/self-hosted-ai-coding-agent-dashboard/">
+	<meta property="og:type" content="article">
+	<meta property="og:site_name" content="AgentPulse">
+	<meta property="og:title" content="Self-host an AI coding agent dashboard with Docker, Kubernetes and SSO">
+	<meta property="og:description" content="Deploy AgentPulse with Docker or Kubernetes, SQLite or PostgreSQL, behind single sign-on.">
+	<meta property="og:url" content="https://jstuart0.github.io/agentpulse/guides/self-hosted-ai-coding-agent-dashboard/">
+	<meta property="og:image" content="https://jstuart0.github.io/agentpulse/assets/claude-code-codex-session-dashboard.png">
+	<meta name="twitter:card" content="summary_large_image">
+	<link rel="stylesheet" href="../../assets/style.css">
+	<script type="application/ld+json">
+	{
+		"@context": "https://schema.org",
+		"@type": "TechArticle",
+		"headline": "Self-host an AI coding agent dashboard with Docker, Kubernetes and SSO",
+		"datePublished": "2026-10-18",
+		"author": { "@type": "Person", "name": "jstuart0", "url": "https://github.com/jstuart0" },
+		"image": "https://jstuart0.github.io/agentpulse/assets/claude-code-codex-session-dashboard.png",
+		"mainEntityOfPage": "https://jstuart0.github.io/agentpulse/guides/self-hosted-ai-coding-agent-dashboard/"
+	}
+	</script>
+</head>
+<body>
+<header class="site">
+	<div class="wrap">
+		<a class="brand" href="../../">AgentPulse</a>
+		<nav>
+			<a href="../">Guides</a>
+			<a href="https://github.com/jstuart0/agentpulse#quick-start">Install</a>
+			<a href="https://github.com/jstuart0/agentpulse/blob/main/docs/MCP.md">MCP server</a>
+			<a href="https://github.com/jstuart0/agentpulse">GitHub</a>
+		</nav>
+	</div>
+</header>
+<main>
+	<article class="wrap">
+		<h1>Self-host an AI coding agent dashboard with Docker, Kubernetes and SSO</h1>
+		<p class="lede">Your agents' prompts, file paths and tool output say a lot about your code. AgentPulse keeps all of it on infrastructure you run. This guide covers the deployment options, from a single container to a multi-user Kubernetes install behind single sign-on.</p>
+
+		<h2>Pick a deployment</h2>
+		<table>
+			<thead><tr><th>Setup</th><th>Good for</th><th>Database</th></tr></thead>
+			<tbody>
+				<tr><td>Local service (Bun)</td><td>One machine, no Docker</td><td>SQLite</td></tr>
+				<tr><td>Docker container</td><td>One machine, or a small home server</td><td>SQLite</td></tr>
+				<tr><td>Remote server + relays</td><td>Several machines reporting to one dashboard</td><td>SQLite or PostgreSQL</td></tr>
+				<tr><td>Kubernetes</td><td>A homelab or team install behind SSO</td><td>SQLite, or PostgreSQL with the overlay</td></tr>
+			</tbody>
+		</table>
+
+		<h2>Docker, on your own machine</h2>
+		<p>This starts the container bound to localhost, waits for it to be healthy and configures the agent hooks:</p>
+		<pre><code>docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUTH=true \
+  --restart unless-stopped --name agentpulse ghcr.io/jstuart0/agentpulse \
+  &amp;&amp; until curl -fsSL http://localhost:3000/api/v1/health &gt;/dev/null 2&gt;&amp;1; do sleep 1; done \
+  &amp;&amp; curl -sSL http://localhost:3000/setup.sh | bash</code></pre>
+		<p>The <code>127.0.0.1:</code> prefix matters. <code>DISABLE_AUTH=true</code> turns off login, so the port must not be reachable from your network.</p>
+
+		<h2>A server for several machines</h2>
+		<p>Run AgentPulse with authentication on (the default), then install the relay on each machine that runs agents. The relay listens on localhost, queues events on disk and forwards them to the server with an API key:</p>
+		<pre><code>curl -sSL https://your-agentpulse-server.example.com/setup-relay.sh | bash</code></pre>
+		<p>The relay's key needs the <code>ingest</code> and <code>observe</code> scopes. Mint one per machine in Settings, so you can revoke a single machine without touching the rest.</p>
+
+		<h2>Kubernetes with single sign-on</h2>
+		<p>The repository ships Kustomize manifests in <code>deploy/k8s/</code>: namespace, deployment, service, PVC, network policy, resource limits and a Traefik IngressRoute. Hook ingestion is authenticated with API keys, while the dashboard goes through your identity provider:</p>
+		<pre><code>kubectl apply -k deploy/k8s/</code></pre>
+		<p>AgentPulse trusts identity headers from any forwardauth provider: Authentik (the default header names), Authelia, oauth2-proxy, Pomerium and Cloudflare Access. A shared secret injected by the proxy proves the headers came from it. Provider-specific setup is in <a href="https://github.com/jstuart0/agentpulse/blob/main/deploy/k8s/FORWARDAUTH.md">FORWARDAUTH.md</a>.</p>
+
+		<h3>PostgreSQL</h3>
+		<p>SQLite is the default and works well for one instance. For PostgreSQL, set <code>DATABASE_URL=postgres://...</code>, or apply the overlay in <code>deploy/overlays/postgres/</code>, which also switches the deployment to rolling updates. Migrations run at boot under an advisory lock, so a rolling deploy can't run them twice. Keep to one replica for now: some rate limits and queues are held in process memory.</p>
+
+		<h2>Teams</h2>
+		<p>AgentPulse runs in <strong>solo</strong> mode by default. <strong>Team</strong> mode adds people, admins and per-session owners: each session belongs to whoever's key reported it, and deleting, archiving or renaming needs the owner or an admin. Team mode attributes work to people. It doesn't make sessions private, since every member can read every session.</p>
+
+		<h2>Data and privacy</h2>
+		<ul>
+			<li>Event retention is off by default. Set a retention period in Settings to delete old events automatically.</li>
+			<li>Each machine can list directories in <code>~/.agentpulse/exclude</code>. The relay and supervisor never send sessions from those directories, and the server never learns the list.</li>
+			<li>Anonymous usage telemetry is on by default. Turn it off with <code>AGENTPULSE_TELEMETRY=off</code> or <code>DO_NOT_TRACK=1</code>.</li>
+		</ul>
+
+		<div class="related">
+			<h3>Related guides</h3>
+			<ul>
+				<li><a href="../remote-claude-code-dashboard/">Control Claude Code from another computer or your phone</a></li>
+				<li><a href="../monitor-multiple-claude-code-sessions/">Monitor multiple Claude Code sessions across machines</a></li>
+			</ul>
+		</div>
+	</article>
+</main>
+<footer class="site">
+	<div class="wrap">AgentPulse is MIT licensed. Source, issues and releases are on <a href="https://github.com/jstuart0/agentpulse">GitHub</a>.</div>
+</footer>
+</body>
+</html>
