@@ -15,6 +15,7 @@ export const PUSH_EVENT_TYPES = [
 	"launch_status",
 	"stuck",
 	"risky",
+	"alert_rule_fired",
 	"daily_digest",
 	"device_test",
 ] as const;
@@ -42,6 +43,9 @@ export type InterruptionLevel = "passive" | "active" | "time-sensitive";
 export type RelayPriority = "needs-you" | "normal" | "quiet";
 
 export type PushSessionStatus = "waiting" | "working" | "error" | "idle" | "completed";
+
+/** What an alert rule fires on. The same set the rule evaluator names. */
+export type AlertRuleTrigger = "stuck" | "no_activity" | "failed" | "completed" | "freeform";
 
 interface SessionScoped {
 	sessionId: string;
@@ -82,9 +86,20 @@ export type PushEvent =
 			sessionId?: string;
 			text?: string | null;
 	  }
-	| ({ type: "launch_status"; launchId: string; failed?: boolean } & Partial<SessionScoped>)
+	| ({
+			type: "launch_status";
+			launchId: string;
+			failed?: boolean;
+			/**
+			 * Who asked for the launch. Enrichment names the launch's session only when that session
+			 * belongs to the same person: a correlation id never reaches into someone else's session.
+			 */
+			requesterUserId?: string | null;
+	  } & Partial<SessionScoped>)
 	| ({ type: "stuck"; text?: string | null } & SessionScoped)
 	| ({ type: "risky"; text?: string | null } & SessionScoped)
+	/** A user-defined alert rule fired. The trigger picks the category (stuck-like, failed, completed). */
+	| ({ type: "alert_rule_fired"; trigger: AlertRuleTrigger; ruleId?: string } & SessionScoped)
 	| { type: "daily_digest"; digestDate: string }
 	/** The "Send test" button: reaches one chosen device whatever its category toggles say. */
 	| { type: "device_test"; testId: string };
@@ -133,9 +148,20 @@ export interface PushDevice {
 	prefs: DevicePrefs;
 }
 
-/** Resolves who should hear about an event. S4 supplies the full policy; solo mode is "every active device". */
+/** The session row as the dispatch path reads it: the owner, plus whatever enrichment labels it carries. */
+export type SessionSnapshot = { ownerUserId: string | null } & Readonly<Record<string, unknown>>;
+
+/**
+ * What one dispatch shares between target resolution and enrichment: the session
+ * is read at most once, however many of them ask, and not at all if nobody does.
+ */
+export interface PushDispatchContext {
+	session(sessionId: string): Promise<SessionSnapshot | null>;
+}
+
+/** Resolves who should hear about an event: the targeting policy (see push-targets.ts). */
 export interface PushTargetResolver {
-	resolve(event: PushEvent): Promise<PushDevice[]>;
+	resolve(event: PushEvent, ctx?: PushDispatchContext): Promise<PushDevice[]>;
 }
 
 /** What the push service tells the rest of the server when the relay reports a device or activity gone. */

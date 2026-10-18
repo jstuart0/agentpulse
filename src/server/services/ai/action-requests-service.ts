@@ -33,6 +33,7 @@ import { queueStopAction } from "../control-actions.js";
 import { buildLaunchSpec, pickFirstCapableSupervisor } from "../launch-compatibility.js";
 import { createValidatedLaunchRequest } from "../launch-validator.js";
 import { createProject, deleteProject, updateProject } from "../projects/projects-service.js";
+import { dispatchEvent } from "../push/dispatch.js";
 import { getSearchBackend } from "../search/index.js";
 import { listSupervisors } from "../supervisor-registry.js";
 import { deleteTemplate, updateTemplate } from "../templates/templates-service.js";
@@ -192,6 +193,11 @@ export async function createActionRequest(input: CreateActionRequestInput): Prom
 			updatedAt: now,
 		})
 		.returning();
+	void dispatchEvent({
+		type: "action_request_opened",
+		actionRequestId: row.id,
+		actionKind: input.kind,
+	});
 	return toRecord(row);
 }
 

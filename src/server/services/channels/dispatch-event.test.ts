@@ -1,11 +1,12 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	type PushRuntime,
+	_resetDispatchForTest,
 	configurePushRuntime,
 	dispatchEvent,
 	getPushRuntime,
 } from "../push/dispatch.js";
-import { InMemoryDeviceSource, SoloPushTargets } from "../push/push-targets.js";
+import { InMemoryDeviceSource, PolicyPushTargets } from "../push/push-targets.js";
 import type { PushDevice, PushEvent, PushLogger } from "../push/types.js";
 
 const event: PushEvent = { type: "permission_wait", sessionId: "sess-1" };
@@ -34,6 +35,7 @@ function recorder() {
 	return { order, warnings, logger };
 }
 
+beforeEach(() => _resetDispatchForTest());
 afterEach(() => configurePushRuntime(null));
 
 describe("dispatchEvent", () => {
@@ -203,10 +205,10 @@ describe("dispatchEvent", () => {
 	});
 });
 
-describe("SoloPushTargets", () => {
+describe("PolicyPushTargets", () => {
 	test("returns every active device in solo mode", async () => {
 		const source = new InMemoryDeviceSource([device("a"), device("b")]);
-		const targets = new SoloPushTargets(source, async () => "solo");
+		const targets = new PolicyPushTargets(source, async () => "solo");
 		expect((await targets.resolve(event)).map((d) => d.id)).toEqual(["a", "b"]);
 		source.remove("a");
 		expect((await targets.resolve(event)).map((d) => d.id)).toEqual(["b"]);
@@ -214,7 +216,7 @@ describe("SoloPushTargets", () => {
 
 	test("leaves out revoked devices: an empty stored send token is no target", async () => {
 		const revoked = { ...device("revoked"), sendTokenCiphertext: "" };
-		const targets = new SoloPushTargets(
+		const targets = new PolicyPushTargets(
 			new InMemoryDeviceSource([device("a"), revoked]),
 			async () => "solo",
 		);
@@ -222,25 +224,10 @@ describe("SoloPushTargets", () => {
 	});
 
 	test("fails closed in team mode: nobody is targeted", async () => {
-		const targets = new SoloPushTargets(
+		const targets = new PolicyPushTargets(
 			new InMemoryDeviceSource([device("a")]),
 			async () => "team",
 		);
 		expect(await targets.resolve(event)).toEqual([]);
-	});
-
-	test("does not read devices at all when the mode is not solo", async () => {
-		let listed = false;
-		const targets = new SoloPushTargets(
-			{
-				listActiveDevices: async () => {
-					listed = true;
-					return [];
-				},
-			},
-			async () => "team",
-		);
-		await targets.resolve(event);
-		expect(listed).toBe(false);
 	});
 });

@@ -50,17 +50,24 @@ const RULES: Record<PushEvent["type"], CategoryRule> = {
 	launch_status: { category: "LAUNCH_STATUS", level: "passive", defaultOn: false },
 	stuck: { category: "STUCK", level: "active", defaultOn: true },
 	risky: { category: "RISKY", level: "time-sensitive", defaultOn: true },
+	// The trigger overrides this base rule: see categoryFor and baseLevelFor.
+	alert_rule_fired: { category: "STUCK", level: "active", defaultOn: true },
 	daily_digest: { category: "DIGEST", level: "passive", defaultOn: false },
 	device_test: { category: "GENERIC_OPEN", level: "active", defaultOn: true },
 };
 
 export function categoryFor(event: PushEvent): PushCategory {
+	if (event.type === "alert_rule_fired") {
+		if (event.trigger === "failed") return "SESSION_FAILED";
+		if (event.trigger === "completed") return "SESSION_COMPLETED";
+	}
 	return RULES[event.type].category;
 }
 
 /** The interruption level before quiet hours. A failed launch is the one event that rises above its category. */
 export function baseLevelFor(event: PushEvent): InterruptionLevel {
 	if (event.type === "launch_status" && event.failed) return "active";
+	if (event.type === "alert_rule_fired" && event.trigger === "completed") return "passive";
 	return RULES[event.type].level;
 }
 
@@ -120,6 +127,21 @@ export function inQuietHours(prefs: DevicePrefs, nowMs: number): boolean {
 /** What a per-session limit counts by: the session when the event has one, else the thing the event is about. */
 export function sessionKeyFor(event: PushEvent): string {
 	return "sessionId" in event && event.sessionId ? event.sessionId : primaryIdFor(event);
+}
+
+/**
+ * What "the same event" means for dedupe. Failure and completion are one thing to
+ * the person however they were detected (the session ending, an alert rule on
+ * it), so they share a key per session and the first in a window wins. Everything
+ * else is its own type and thing. A launch status is a separate opt-in push and
+ * never merges with them.
+ */
+export function dedupeKeyFor(event: PushEvent): string {
+	const category = categoryFor(event);
+	if (category === "SESSION_FAILED" || category === "SESSION_COMPLETED") {
+		return `${category}|${sessionKeyFor(event)}`;
+	}
+	return `${event.type}|${primaryIdFor(event)}`;
 }
 
 export function primaryIdFor(event: PushEvent): string {

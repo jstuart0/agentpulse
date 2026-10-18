@@ -22,5 +22,20 @@ export function setWsRevalidationListener(next: Revalidate | null): void {
  * change that asked for it.
  */
 export async function requestWsRevalidation(): Promise<void> {
-	if (listener) await listener().catch(() => undefined);
+	const pending = [...observers].map((observe) => observe().catch(() => undefined));
+	if (listener) pending.push(listener().catch(() => undefined));
+	await Promise.all(pending);
+}
+
+const observers = new Set<Revalidate>();
+
+/**
+ * Another consumer of the same signal (the Live Activity publisher): it runs
+ * alongside the socket sweep and cannot displace it. Returns the unsubscribe.
+ */
+export function observeWsRevalidation(observer: Revalidate): () => void {
+	observers.add(observer);
+	return () => {
+		observers.delete(observer);
+	};
 }

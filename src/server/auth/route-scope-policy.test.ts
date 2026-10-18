@@ -1201,9 +1201,11 @@ describe("respond scope — grants table", () => {
 		);
 		expect([...SCOPE_GRANTS.respond.writes].sort()).toEqual([
 			"DELETE /devices/:id",
+			"DELETE /devices/:id/activities/:sessionId",
 			"DELETE /sessions/:sessionId/acknowledge",
 			"PATCH /devices/:id",
 			"POST /devices",
+			"POST /devices/:id/activities",
 			"POST /devices/:id/test",
 			"POST /sessions/:sessionId/acknowledge",
 		]);

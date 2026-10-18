@@ -175,7 +175,7 @@ describe("routes judged inside the handler (owner-or-admin, through the authoriz
 	test("are listed, pinned in size, registered on the real app, and in neither policy set", async () => {
 		const { app } = await import("../app.js");
 		// 16 from before the mobile companion, plus the four device writes (assertCanManageDevice).
-		expect(OWNER_CHECKED_ROUTES.size).toBe(20);
+		expect(OWNER_CHECKED_ROUTES.size).toBe(22);
 		const registered = new Set(app.routes.map((route) => `${route.method} ${route.path}`));
 		for (const entry of OWNER_CHECKED_ROUTES) {
 			const [method, template] = entry.split(" ");
@@ -193,6 +193,8 @@ describe("routes judged inside the handler (owner-or-admin, through the authoriz
 			"PATCH /devices/:id",
 			"DELETE /devices/:id",
 			"POST /devices/:id/test",
+			"POST /devices/:id/activities",
+			"DELETE /devices/:id/activities/:sessionId",
 		]) {
 			expect(OWNER_CHECKED_ROUTES.has(named)).toBe(true);
 		}

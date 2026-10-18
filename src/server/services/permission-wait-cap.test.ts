@@ -16,6 +16,10 @@ const { eq } = await import("drizzle-orm");
 import type { HookEventPayload } from "../../shared/types.js";
 
 const MAX_STORED_IDS = 256;
+// These tests drive hundreds of sequential transactions (up to 600 round trips on Postgres). Bun's
+// 5 s default is marginal on a busy host, and a timed-out test leaves its loop running into the next
+// test's setup, which turns one slow test into several unrelated failures.
+const MANY_TRANSITIONS_MS = 60_000;
 
 beforeAll(() => initializeDatabase());
 beforeEach(async () => {
@@ -49,17 +53,21 @@ async function wait() {
 }
 
 describe("stored permission-wait ids", () => {
-	test("the newest 256 are kept and the older ones fold into the anonymous count", async () => {
-		for (let i = 0; i < MAX_STORED_IDS + 44; i++) {
-			await applyPermissionWaitTransition("cap-1", payload("PermissionRequest", `id-${i}`));
-		}
-		const { semanticStatus, wait: stored } = await wait();
-		expect(semanticStatus).toBe("waiting");
-		expect(stored?.ids).toHaveLength(MAX_STORED_IDS);
-		expect(stored?.ids[0]).toBe("id-44");
-		expect(stored?.ids.at(-1)).toBe(`id-${MAX_STORED_IDS + 43}`);
-		expect(stored?.anon).toBe(44);
-	});
+	test(
+		"the newest 256 are kept and the older ones fold into the anonymous count",
+		async () => {
+			for (let i = 0; i < MAX_STORED_IDS + 44; i++) {
+				await applyPermissionWaitTransition("cap-1", payload("PermissionRequest", `id-${i}`));
+			}
+			const { semanticStatus, wait: stored } = await wait();
+			expect(semanticStatus).toBe("waiting");
+			expect(stored?.ids).toHaveLength(MAX_STORED_IDS);
+			expect(stored?.ids[0]).toBe("id-44");
+			expect(stored?.ids.at(-1)).toBe(`id-${MAX_STORED_IDS + 43}`);
+			expect(stored?.anon).toBe(44);
+		},
+		MANY_TRANSITIONS_MS,
+	);
 
 	test("under the bound nothing changes", async () => {
 		for (let i = 0; i < 5; i++) {
@@ -71,40 +79,48 @@ describe("stored permission-wait ids", () => {
 		});
 	});
 
-	test("a kept id still clears, the folded ones keep the session waiting, and a new prompt clears them all", async () => {
-		for (let i = 0; i < MAX_STORED_IDS + 3; i++) {
-			await applyPermissionWaitTransition("cap-1", payload("PermissionRequest", `id-${i}`));
-		}
-		await applyPermissionWaitTransition(
-			"cap-1",
-			payload("PostToolUse", `id-${MAX_STORED_IDS + 2}`),
-		);
-		let state = await wait();
-		expect(state.wait?.ids).toHaveLength(MAX_STORED_IDS - 1);
-		expect(state.wait?.anon).toBe(3);
-		expect(state.semanticStatus).toBe("waiting");
-
-		await applyPermissionWaitTransition("cap-1", payload("UserPromptSubmit"));
-		state = await wait();
-		expect(state.wait).toBeUndefined();
-	});
-
-	for (const order of ["oldest first", "newest first"] as const) {
-		test(`300 open requests all answered, ${order}, leave the session not waiting`, async () => {
-			const open = 300;
-			await getDb().update(sessions).set({ semanticStatus: "working" }).execute();
-			for (let i = 0; i < open; i++) {
+	test(
+		"a kept id still clears, the folded ones keep the session waiting, and a new prompt clears them all",
+		async () => {
+			for (let i = 0; i < MAX_STORED_IDS + 3; i++) {
 				await applyPermissionWaitTransition("cap-1", payload("PermissionRequest", `id-${i}`));
 			}
-			const answers = Array.from({ length: open }, (_, i) => `id-${i}`);
-			if (order === "newest first") answers.reverse();
-			for (const id of answers) {
-				await applyPermissionWaitTransition("cap-1", payload("PostToolUse", id));
-			}
-			const state = await wait();
+			await applyPermissionWaitTransition(
+				"cap-1",
+				payload("PostToolUse", `id-${MAX_STORED_IDS + 2}`),
+			);
+			let state = await wait();
+			expect(state.wait?.ids).toHaveLength(MAX_STORED_IDS - 1);
+			expect(state.wait?.anon).toBe(3);
+			expect(state.semanticStatus).toBe("waiting");
+
+			await applyPermissionWaitTransition("cap-1", payload("UserPromptSubmit"));
+			state = await wait();
 			expect(state.wait).toBeUndefined();
-			expect(state.semanticStatus).toBe("working");
-		});
+		},
+		MANY_TRANSITIONS_MS,
+	);
+
+	for (const order of ["oldest first", "newest first"] as const) {
+		test(
+			`300 open requests all answered, ${order}, leave the session not waiting`,
+			async () => {
+				const open = 300;
+				await getDb().update(sessions).set({ semanticStatus: "working" }).execute();
+				for (let i = 0; i < open; i++) {
+					await applyPermissionWaitTransition("cap-1", payload("PermissionRequest", `id-${i}`));
+				}
+				const answers = Array.from({ length: open }, (_, i) => `id-${i}`);
+				if (order === "newest first") answers.reverse();
+				for (const id of answers) {
+					await applyPermissionWaitTransition("cap-1", payload("PostToolUse", id));
+				}
+				const state = await wait();
+				expect(state.wait).toBeUndefined();
+				expect(state.semanticStatus).toBe("working");
+			},
+			MANY_TRANSITIONS_MS,
+		);
 	}
 
 	test("an answer for an id nobody opened does nothing while no folded request is outstanding", async () => {

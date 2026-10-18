@@ -6,9 +6,14 @@
  */
 import { and, eq, isNull, ne } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { mobileDevices } from "../../db/schema/index.js";
-import type { PushDeviceSource } from "./push-targets.js";
-import type { DevicePrefs, PushDevice, QuietHours } from "./types.js";
+import { apiKeys, launchRequests, mobileDevices, sessions, users } from "../../db/schema/index.js";
+import type {
+	EligibleDevice,
+	PushDeviceSource,
+	PushSubjectReader,
+	SubjectOwner,
+} from "./push-targets.js";
+import type { DevicePrefs, PushDevice, QuietHours, SessionSnapshot } from "./types.js";
 
 type DeviceRow = typeof mobileDevices.$inferSelect;
 
@@ -74,6 +79,10 @@ export async function getPushDevice(id: string): Promise<PushDevice | null> {
 
 /** Every live device that still has a send token (a revoked device's token is wiped, so it is never here). */
 export class DbPushDeviceSource implements PushDeviceSource {
+	listEligibleDevices(): Promise<EligibleDevice[]> {
+		return listEligibleDevices();
+	}
+
 	async listActiveDevices(): Promise<PushDevice[]> {
 		const rows = await getDb()
 			.select()
@@ -82,4 +91,88 @@ export class DbPushDeviceSource implements PushDeviceSource {
 			.orderBy(mobileDevices.createdAt);
 		return rows.map(toPushDevice);
 	}
+}
+
+interface EligibilityRow {
+	device: DeviceRow;
+	keyActive: boolean;
+	keyOwnerUserId: string | null;
+	userId: string | null;
+	userRole: string | null;
+	userDisabledAt: string | null;
+}
+
+/**
+ * The one eligibility rule, for every send (alerts and activity updates alike):
+ * the device is live, its linked key is active and still belongs to the
+ * device's user, and that user exists and isn't disabled. An ownerless key's
+ * device has no user to check and carries no role.
+ */
+function toEligible(row: EligibilityRow): EligibleDevice | null {
+	if (row.device.revokedAt !== null || row.device.sendToken === "") return null;
+	if (!row.keyActive) return null;
+	if ((row.keyOwnerUserId ?? null) !== (row.device.userId ?? null)) return null;
+	if (row.device.userId === null) return { device: toPushDevice(row.device), role: null };
+	if (row.userId === null || row.userDisabledAt !== null) return null;
+	return { device: toPushDevice(row.device), role: row.userRole === "admin" ? "admin" : "member" };
+}
+
+function eligibilityQuery() {
+	return getDb()
+		.select({
+			device: mobileDevices,
+			keyActive: apiKeys.isActive,
+			keyOwnerUserId: apiKeys.ownerUserId,
+			userId: users.id,
+			userRole: users.role,
+			userDisabledAt: users.disabledAt,
+		})
+		.from(mobileDevices)
+		.innerJoin(apiKeys, eq(apiKeys.id, mobileDevices.apiKeyId))
+		.leftJoin(users, eq(users.id, mobileDevices.userId));
+}
+
+/** One device if it may be sent to right now, else null. The Live Activity publisher asks this before every send. */
+export async function getEligibleDevice(id: string): Promise<EligibleDevice | null> {
+	const [row] = await eligibilityQuery().where(eq(mobileDevices.id, id)).limit(1);
+	return row ? toEligible(row) : null;
+}
+
+/** The devices that may be sent to right now, with the role of each one's owner. */
+export async function listEligibleDevices(): Promise<EligibleDevice[]> {
+	const rows = await eligibilityQuery()
+		.where(and(isNull(mobileDevices.revokedAt), ne(mobileDevices.sendToken, "")))
+		.orderBy(mobileDevices.createdAt);
+	return rows.flatMap((row) => toEligible(row) ?? []);
+}
+
+/** Who owns the session or launch an event is about, read at send time so a handover is honored. */
+export class DbPushSubjects implements PushSubjectReader {
+	async sessionOwner(sessionId: string): Promise<SubjectOwner | null> {
+		const [row] = await getDb()
+			.select({ ownerUserId: sessions.ownerUserId })
+			.from(sessions)
+			.where(eq(sessions.sessionId, sessionId))
+			.limit(1);
+		return row ? { ownerUserId: row.ownerUserId ?? null } : null;
+	}
+
+	async launchRequester(launchId: string): Promise<SubjectOwner | null> {
+		const [row] = await getDb()
+			.select({ ownerUserId: launchRequests.requestedByUserId })
+			.from(launchRequests)
+			.where(eq(launchRequests.id, launchId))
+			.limit(1);
+		return row ? { ownerUserId: row.ownerUserId ?? null } : null;
+	}
+}
+
+/** The whole session row, for one dispatch to share between targeting and enrichment. */
+export async function readSessionSnapshot(sessionId: string): Promise<SessionSnapshot | null> {
+	const [row] = await getDb()
+		.select()
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	return row ? { ...row, ownerUserId: row.ownerUserId ?? null } : null;
 }

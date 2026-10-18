@@ -358,6 +358,19 @@ describe("the device table as the target source", () => {
 			sname: "refactor",
 		});
 	});
+
+	test("a phone revoked a moment after a dispatch hears nothing from the next one, although the device list is cached", async () => {
+		const a = await owner();
+		const staying = await phone(a.headers);
+		const leaving = await phone(a.headers);
+		enable();
+		await dispatchEvent({ type: "permission_wait", sessionId: "warm-cache" });
+		expect(seen).toHaveLength(2);
+		seen = [];
+		expect((await call("DELETE", `/devices/${leaving.id}`, a.headers)).status).toBe(200);
+		await dispatchEvent({ type: "permission_wait", sessionId: "right-after" });
+		expect(seen.map((r) => r.auth)).toEqual([`Bearer ${staying.body.sendToken}`]);
+	});
 });
 
 describe("POST /devices/:id/test sends for real", () => {

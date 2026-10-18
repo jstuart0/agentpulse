@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { config } from "../../config.js";
-import { decryptSecret, decryptSecretAsync, encryptSecret } from "./secrets.js";
+import { decryptSecret, decryptSecretAsync, encryptSecret, encryptSecretAsync } from "./secrets.js";
 
 describe("decryptSecretAsync", () => {
 	let originalKey: string;
@@ -53,5 +53,55 @@ describe("decryptSecretAsync", () => {
 		const stored = encryptSecret("needs a key");
 		config.secretsKey = "";
 		await expect(decryptSecretAsync(stored)).rejects.toThrow("AGENTPULSE_SECRETS_KEY");
+	});
+});
+
+describe("encryptSecretAsync", () => {
+	let originalKey: string;
+	beforeEach(() => {
+		originalKey = config.secretsKey;
+		config.secretsKey = "c".repeat(32);
+	});
+	afterEach(() => {
+		config.secretsKey = originalKey;
+	});
+
+	test("writes the stored format both readers read: async and sync decrypt agree on what it wrote", async () => {
+		for (const value of ["short", "send-token-0123456789abcdef", "ünïcode ✓", "x".repeat(4000)]) {
+			const stored = await encryptSecretAsync(value);
+			expect(await decryptSecretAsync(stored)).toBe(value);
+			expect(decryptSecret(stored)).toBe(value);
+		}
+	});
+
+	test("is the same format as the synchronous writer: same length for the same plaintext, readable the other way round", async () => {
+		const sync = encryptSecret("same-shape");
+		const fromAsync = await encryptSecretAsync("same-shape");
+		expect(Buffer.from(fromAsync, "base64").length).toBe(Buffer.from(sync, "base64").length);
+		expect(await decryptSecretAsync(sync)).toBe("same-shape");
+	});
+
+	test("every call uses a fresh salt and iv: the same plaintext never stores the same way twice", async () => {
+		const [a, b] = await Promise.all([encryptSecretAsync("repeat"), encryptSecretAsync("repeat")]);
+		expect(a).not.toBe(b);
+		expect(a).not.toContain("repeat");
+	});
+
+	test("does not block the event loop: a timer fires while it runs", async () => {
+		let ticked = false;
+		const timer = setTimeout(() => {
+			ticked = true;
+		}, 0);
+		const pending = encryptSecretAsync("unblocked");
+		await new Promise((resolve) => setTimeout(resolve, 1));
+		const stillRunningWhenTimerFired = ticked;
+		await pending;
+		clearTimeout(timer);
+		expect(stillRunningWhenTimerFired).toBe(true);
+	});
+
+	test("with no instance key it refuses, naming the setting", async () => {
+		config.secretsKey = "";
+		await expect(encryptSecretAsync("needs a key")).rejects.toThrow("AGENTPULSE_SECRETS_KEY");
 	});
 });

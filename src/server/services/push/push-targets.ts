@@ -1,56 +1,183 @@
 /**
- * Who hears about an event.
+ * Who hears about an event: the one targeting policy.
  *
- * `PushTargetResolver` (see types.ts) is the single policy point: given an event,
- * which registered phones get it. This file ships the solo-mode policy and an
- * in-memory device source; the team policy (session owner's devices, admins for
- * the unowned) and the device table come with the phases that own them.
+ * `PolicyPushTargets` is the only `PushTargetResolver`. Given an event it returns
+ * the phones that should get it, and it is built on the same two predicates as
+ * every other per-viewer channel (`sessionAudience` and `canReadSession`), so a
+ * push can never reach someone the mobile WebSocket would not show the session.
  *
- * Solo mode means one person owns the instance, so every active phone is a
- * target. The resolver fails closed: it needs the instance mode handed to it and
- * returns nobody unless that mode is solo, so wiring it into a team instance by
- * mistake delivers nothing instead of delivering everyone's sessions to everyone.
- * A device with an empty stored send token is revoked and is no target.
+ * The rule, in a table:
+ *
+ *   event                          solo          team
+ *   session-scoped events          all devices   the session owner's devices;
+ *   (permission, turn, failed,                   an unowned session: admins'
+ *   completed, hitl, alert rule,
+ *   stuck, risky)
+ *   action_request_opened          all devices   admins' devices
+ *   launch_status                  all devices   the requester's devices;
+ *                                                none recorded: admins'
+ *   daily_digest                   each device   each device
+ *   device_test                    nobody here (the route targets one chosen device)
+ *
+ * Eligibility comes first and applies to every send, alerts and Live Activity
+ * updates alike (the source applies it): the device is live, its linked key is
+ * active, and the key's owner exists and isn't disabled. Team mode fails closed:
+ * a session or launch that can't be found, or a device whose key has no owner,
+ * reaches nobody.
  */
-import type { PushDevice, PushEvent, PushTargetResolver } from "./types.js";
+import type { Actor } from "../../auth/actor.js";
+import { canReadSession, sessionAudience } from "../authorization.js";
+import type { PushDevice, PushDispatchContext, PushEvent, PushTargetResolver } from "./types.js";
 
-/** Where the active (registered, not revoked) devices come from. The device table implements this. */
+/** A device that may be sent to, with the role of the user behind it (null for an ownerless key). */
+export interface EligibleDevice {
+	device: PushDevice;
+	role: "admin" | "member" | null;
+}
+
+/** Where the eligible devices come from. The device table implements this. */
 export interface PushDeviceSource {
-	listActiveDevices(): Promise<PushDevice[]>;
+	listEligibleDevices(): Promise<EligibleDevice[]>;
+}
+
+/** The owner recorded on a session or a launch request; `ownerUserId` null means nobody owns it. */
+export interface SubjectOwner {
+	ownerUserId: string | null;
+}
+
+/** Looks up who owns the thing an event is about. Null means the thing doesn't exist. */
+export interface PushSubjectReader {
+	sessionOwner(sessionId: string): Promise<SubjectOwner | null>;
+	launchRequester(launchId: string): Promise<SubjectOwner | null>;
 }
 
 export type InstanceModeReader = () => Promise<"solo" | "team">;
 
-export class SoloPushTargets implements PushTargetResolver {
+const NO_SUBJECTS: PushSubjectReader = {
+	sessionOwner: async () => null,
+	launchRequester: async () => null,
+};
+
+function adminDevices(eligible: EligibleDevice[]): PushDevice[] {
+	return eligible.filter((e) => e.role === "admin").map((e) => e.device);
+}
+
+function devicesOf(eligible: EligibleDevice[], userIds: ReadonlySet<string>): EligibleDevice[] {
+	return eligible.filter((e) => e.role !== null && userIds.has(e.device.userId));
+}
+
+export class PolicyPushTargets implements PushTargetResolver {
 	constructor(
 		private readonly source: PushDeviceSource,
 		private readonly mode: InstanceModeReader,
+		private readonly subjects: PushSubjectReader = NO_SUBJECTS,
+		private readonly cache: { ms: number; now: () => number } = { ms: 0, now: Date.now },
 	) {}
 
-	async resolve(_event: PushEvent): Promise<PushDevice[]> {
-		if ((await this.mode()) !== "solo") return [];
-		const devices = await this.source.listActiveDevices();
-		return devices.filter((device) => device.sendTokenCiphertext !== "");
+	private cached: { at: number; devices: EligibleDevice[] } | null = null;
+	private epoch = 0;
+
+	/**
+	 * Forgets the cached device list. Called when a device, a key or a user's standing changed, so the
+	 * next event judges eligibility afresh. A read that was already running when this was called is
+	 * answered to its own caller but not remembered: it may predate the change.
+	 */
+	invalidate(): void {
+		this.epoch += 1;
+		this.cached = null;
 	}
+
+	/**
+	 * The eligible devices, reused for `cache.ms` (about a second in production): a flood of events
+	 * costs one join, not one per event. Revoking a device, revoking a key, disabling a user or changing
+	 * a role calls `invalidate`; every Live Activity send also judges eligibility afresh.
+	 */
+	private async eligibleDevices(): Promise<EligibleDevice[]> {
+		const now = this.cache.now();
+		if (this.cached && now - this.cached.at < this.cache.ms) return this.cached.devices;
+		const epoch = this.epoch;
+		const devices = await this.source.listEligibleDevices();
+		if (epoch === this.epoch) this.cached = { at: now, devices };
+		return devices;
+	}
+
+	async resolve(event: PushEvent, ctx?: PushDispatchContext): Promise<PushDevice[]> {
+		if (event.type === "device_test") return [];
+		const eligible = (await this.eligibleDevices()).filter(
+			(e) => e.device.sendTokenCiphertext !== "",
+		);
+		if (eligible.length === 0) return [];
+		const mode = await this.mode();
+		if (mode === "solo" || event.type === "daily_digest") return eligible.map((e) => e.device);
+		if (event.type === "action_request_opened") return adminDevices(eligible);
+		if (event.type === "launch_status") return this.launchTargets(event.launchId, eligible);
+		return this.sessionTargets(event.sessionId, eligible, ctx);
+	}
+
+	private async sessionTargets(
+		sessionId: string,
+		eligible: EligibleDevice[],
+		ctx?: PushDispatchContext,
+	): Promise<PushDevice[]> {
+		const session = ctx
+			? await ctx.session(sessionId)
+			: await this.subjects.sessionOwner(sessionId);
+		if (!session) return [];
+		const audience = sessionAudience({ ownerUserId: session.ownerUserId }, "team");
+		if (audience === "all") return adminDevices(eligible);
+		return devicesOf(eligible, new Set(audience))
+			.filter((e) => canReadSession(actorFor(e), { ownerUserId: session.ownerUserId }))
+			.map((e) => e.device);
+	}
+
+	private async launchTargets(launchId: string, eligible: EligibleDevice[]): Promise<PushDevice[]> {
+		const launch = await this.subjects.launchRequester(launchId);
+		if (!launch) return [];
+		if (launch.ownerUserId === null) return adminDevices(eligible);
+		return devicesOf(eligible, new Set([launch.ownerUserId])).map((e) => e.device);
+	}
+}
+
+/**
+ * May this device's owner read a session with this owner? The Live Activity
+ * publisher asks it for every update: solo, always; team, `canReadSession` for
+ * the device's user, so a handover or a lost role ends the activity.
+ */
+export function canDeviceReadSession(
+	entry: EligibleDevice,
+	sessionOwnerUserId: string | null,
+	mode: "solo" | "team",
+): boolean {
+	if (mode === "solo") return true;
+	return canReadSession(actorFor(entry), { ownerUserId: sessionOwnerUserId });
+}
+
+function actorFor(entry: EligibleDevice): Actor {
+	return {
+		userId: entry.device.userId,
+		label: "api_key",
+		role: entry.role ?? "none",
+		mode: "team",
+	};
 }
 
 /** A device source that holds devices in memory: for tests and for running the push modules without the device table. */
 export class InMemoryDeviceSource implements PushDeviceSource {
-	private readonly devices = new Map<string, PushDevice>();
+	private readonly entries = new Map<string, EligibleDevice>();
 
-	constructor(devices: PushDevice[] = []) {
-		for (const device of devices) this.devices.set(device.id, device);
+	constructor(devices: PushDevice[] = [], roles: Record<string, EligibleDevice["role"]> = {}) {
+		for (const device of devices) this.add(device, roles[device.id] ?? "member");
 	}
 
-	add(device: PushDevice): void {
-		this.devices.set(device.id, device);
+	add(device: PushDevice, role: EligibleDevice["role"] = "member"): void {
+		this.entries.set(device.id, { device, role });
 	}
 
 	remove(deviceId: string): void {
-		this.devices.delete(deviceId);
+		this.entries.delete(deviceId);
 	}
 
-	async listActiveDevices(): Promise<PushDevice[]> {
-		return [...this.devices.values()];
+	async listEligibleDevices(): Promise<EligibleDevice[]> {
+		return [...this.entries.values()];
 	}
 }

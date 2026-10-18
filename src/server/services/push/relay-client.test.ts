@@ -261,6 +261,37 @@ describe("what each answer means", () => {
 		}
 	});
 
+	test("an unconfirmed 401 opens the breaker at once and says so; the relay's own 401 does not", async () => {
+		const proxy = startMockRelay(() => json(401, {}));
+		const a = makeClient(proxy.url);
+		await a.client.postAlert(SEND_TOKEN, { envelope, priority: "quiet" });
+		expect(a.client.circuitOpen).toBe(true);
+		expect(a.lines.some((l) => l.includes("unconfirmed 401"))).toBe(true);
+		expect(await a.client.postAlert(SEND_TOKEN, { envelope, priority: "quiet" })).toMatchObject({
+			kind: "circuit_open",
+		});
+		expect(proxy.seen).toHaveLength(1);
+
+		const relay = startMockRelay(() => json(401, { error: "unauthorized" }));
+		const b = makeClient(relay.url);
+		await b.client.postAlert(SEND_TOKEN, { envelope, priority: "quiet" });
+		expect(b.client.circuitOpen).toBe(false);
+	});
+
+	test("after the open period a probe is let through, and a good answer closes the breaker", async () => {
+		let healthy = false;
+		const relay = startMockRelay(() => (healthy ? json(202, { pushId: "p" }) : json(401, {})));
+		const { client, clock } = makeClient(relay.url);
+		await client.postAlert(SEND_TOKEN, { envelope, priority: "quiet" });
+		expect(client.circuitOpen).toBe(true);
+		healthy = true;
+		clock.advance(10 * 60_000);
+		expect(await client.postAlert(SEND_TOKEN, { envelope, priority: "quiet" })).toMatchObject({
+			kind: "accepted",
+		});
+		expect(client.circuitOpen).toBe(false);
+	});
+
 	test("other 4xx are rejections that carry only a short error code", async () => {
 		for (const [status, error] of [
 			[400, "invalid_envelope"],
@@ -513,7 +544,7 @@ describe("circuit breaker (5 consecutive failures, 60 s)", () => {
 		expect((await probe).kind).toBe("accepted");
 	});
 
-	test("answers that are not failures reset the streak: 4xx, 410, 429 and 401 all prove the relay is up", async () => {
+	test("answers that are not failures reset the streak: 4xx, 410, 429 and the relay's own 401 all prove the relay is up", async () => {
 		const statuses = [
 			503, 503, 503, 503, 400, 503, 503, 503, 503, 410, 503, 503, 503, 503, 429, 503, 503, 503, 503,
 			401, 503,
@@ -525,7 +556,9 @@ describe("circuit breaker (5 consecutive failures, 60 s)", () => {
 				? json(410, { gone: "device" })
 				: status === 429
 					? json(429, { budget: "alert" })
-					: json(status, {});
+					: status === 401
+						? json(401, { error: "unauthorized" })
+						: json(status, {});
 		});
 		const { client } = makeClient(relay.url);
 		for (let n = 0; n < statuses.length; n++)

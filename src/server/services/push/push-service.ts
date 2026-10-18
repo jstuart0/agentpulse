@@ -25,9 +25,9 @@ import {
 	buildPushPayload,
 	categoryFor,
 	collapseIdFor,
+	dedupeKeyFor,
 	inQuietHours,
 	isCategoryEnabled,
-	primaryIdFor,
 	relayPriorityFor,
 	sessionKeyFor,
 } from "./push-payload.js";
@@ -58,8 +58,6 @@ export const TIME_SENSITIVE_SESSION_LIMIT_PER_HOUR = 10;
 export const NEW_SESSION_CEILING_MULTIPLE = 2;
 export const SESSION_MAX_KEYS = 20_000;
 export const HOLD_MAX_KEYS = 10_000;
-/** Consecutive 401s that revoke when the body isn't the relay's own. */
-export const UNCONFIRMED_401_THRESHOLD = 2;
 const TIME_SENSITIVE_CATEGORIES: ReadonlySet<PushCategory> = new Set([
 	"NEEDS_YOU_TURN",
 	"NEEDS_YOU_PERMISSION",
@@ -84,7 +82,7 @@ export interface RelayPoster {
 }
 
 /** An alert that never reached the phone for a reason that may pass gives its dedupe and quota places back. */
-const REFUNDED_OUTCOMES: ReadonlySet<string> = new Set([
+export const REFUNDED_OUTCOMES: ReadonlySet<string> = new Set([
 	"unavailable",
 	"budget_limited",
 	"invalid",
@@ -253,7 +251,6 @@ export class PushService {
 	private readonly sessionLog = new LruMap<number[]>(SESSION_MAX_KEYS);
 	/** Not-before times the relay asked for (Retry-After), per device and budget. */
 	private readonly holds = new LruMap<number>(HOLD_MAX_KEYS);
-	private readonly unconfirmed401s = new LruMap<number>(HOLD_MAX_KEYS);
 
 	// The Live Activity line: one waiting entry per (device, slot), newest wins.
 	private readonly activityWaiting = new Map<string, PendingActivity>();
@@ -272,17 +269,18 @@ export class PushService {
 	}
 
 	/**
-	 * Whether a 401 means this send token is bad. The relay's own answer does; a 401 from anything in front of
-	 * it (a proxy, an SSO gateway) does not, unless it repeats.
+	 * What a 401 does. Only the relay's own `{error:"unauthorized"}` (confirmed) says the send token
+	 * is bad. A 401 from anything in front of the relay never revokes, however often it repeats: it is
+	 * logged here, and the relay client has already opened its breaker.
 	 */
-	private revokesOn401(device: PushDevice, confirmed: boolean): boolean {
-		if (confirmed) {
-			this.unconfirmed401s.delete(device.id);
-			return true;
+	private async onUnauthorized(device: PushDevice, confirmed: boolean): Promise<void> {
+		if (!confirmed) {
+			this.logger.warn("relay answered 401 without its own error: not revoking", {
+				device: device.id,
+			});
+			return;
 		}
-		const streak = (this.unconfirmed401s.get(device.id) ?? 0) + 1;
-		this.unconfirmed401s.set(device.id, streak);
-		return streak >= UNCONFIRMED_401_THRESHOLD;
+		await this.notify("send token rejected", () => this.revocations.tokenRejected(device), device);
 	}
 
 	/** The bearer token for one post, or null when the stored token cannot be read. Logs the device, never the token. */
@@ -374,7 +372,7 @@ export class PushService {
 			};
 		}
 
-		const dedupeKey = `${event.type}|${primaryIdFor(event)}|${device.id}`;
+		const dedupeKey = `${dedupeKeyFor(event)}|${device.id}`;
 		const last = this.dedupe.get(dedupeKey);
 		if (last !== undefined && now - last < DEDUPE_WINDOW_MS) {
 			return { outcome: { deviceId: device.id, status: "deduped" } };
@@ -493,7 +491,6 @@ export class PushService {
 		type: string,
 		result: RelayResult,
 	): Promise<AlertOutcome> {
-		if (result.kind !== "unauthorized") this.unconfirmed401s.delete(device.id);
 		switch (result.kind) {
 			case "accepted":
 				return { deviceId: device.id, status: "sent", pushId: result.pushId };
@@ -504,13 +501,7 @@ export class PushService {
 				}
 				return { deviceId: device.id, status: "rejected", httpStatus: 410, error: null };
 			case "unauthorized":
-				if (this.revokesOn401(device, result.confirmed)) {
-					await this.notify(
-						"send token rejected",
-						() => this.revocations.tokenRejected(device),
-						device,
-					);
-				}
+				await this.onUnauthorized(device, result.confirmed);
 				return { deviceId: device.id, status: "unauthorized" };
 			case "budget":
 				this.hold(device, "alert", result.retryAfterSec);
@@ -648,7 +639,6 @@ export class PushService {
 			...(update.staleDate !== undefined ? { staleDate: update.staleDate } : {}),
 			...(update.dismissalDate !== undefined ? { dismissalDate: update.dismissalDate } : {}),
 		});
-		if (result.kind !== "unauthorized") this.unconfirmed401s.delete(device.id);
 		switch (result.kind) {
 			case "accepted":
 				return { ...base, status: "sent", pushId: result.pushId };
@@ -664,13 +654,7 @@ export class PushService {
 				await this.notify("device gone", () => this.revocations.deviceGone(device), device);
 				return { ...base, status: "device_gone" };
 			case "unauthorized":
-				if (this.revokesOn401(device, result.confirmed)) {
-					await this.notify(
-						"send token rejected",
-						() => this.revocations.tokenRejected(device),
-						device,
-					);
-				}
+				await this.onUnauthorized(device, result.confirmed);
 				return { ...base, status: "unauthorized" };
 			case "budget":
 				this.hold(device, "activity", result.retryAfterSec);

@@ -1229,7 +1229,7 @@ describe("classification", () => {
 		}
 		expect(ALWAYS_ADMIN_ROUTES.has(POST_ROUTE)).toBe(false);
 		expect(ALWAYS_ADMIN_ROUTES.has(`GET ${GET_ROUTE}`)).toBe(false);
-		expect(OWNER_CHECKED_ROUTES.size).toBe(20); // 16 before the mobile companion + 4 device writes
+		expect(OWNER_CHECKED_ROUTES.size).toBe(22); // 16 before the mobile companion + 4 device writes + 2 Live Activity writes
 
 		const registered = new Set(app.routes.map((r) => `${r.method} ${r.path}`));
 		for (const mount of MOUNTS) {

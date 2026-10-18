@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -9,7 +10,10 @@ import {
 	requireOperatorScope,
 } from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
-import { NotOwnerError, assertCanManageDevice } from "../services/authorization.js";
+import { getDb } from "../db/client.js";
+import { sessions } from "../db/schema/index.js";
+import { NotOwnerError, assertCanManageDevice, canReadSession } from "../services/authorization.js";
+import { getMode } from "../services/instance-mode.js";
 import {
 	type DeviceCaller,
 	DeviceConflictError,
@@ -30,14 +34,17 @@ import {
 	revokeDeviceRow,
 	toDeviceDtoOne,
 	toDeviceDtos,
+	tryConsumeActivityStart,
 	tryConsumeDeviceTest,
 	tryConsumeRegistration,
 	updateDevice,
 } from "../services/mobile-devices-service.js";
-import { getPushDevice } from "../services/push/device-source.js";
+import { getEligibleDevice, getPushDevice } from "../services/push/device-source.js";
 import { getPushRuntime } from "../services/push/dispatch.js";
-import { pushAvailability } from "../services/push/push-runtime.js";
+import { DbActivityStore } from "../services/push/live-activity-publisher.js";
+import { getLiveActivityPublisher, pushAvailability } from "../services/push/push-runtime.js";
 import type { AlertOutcome } from "../services/push/push-service.js";
+import { canDeviceReadSession } from "../services/push/push-targets.js";
 import { revokeApiKey } from "../services/service-keys.js";
 
 /** A body is a few short fields plus a small prefs object. */
@@ -213,6 +220,99 @@ devicesRouter.post("/devices/:id/test", async (c: Context) => {
 		testId: crypto.randomUUID(),
 	});
 	return testResponse(c, outcome);
+});
+
+const ACTIVITY_ID = /^[A-Za-z0-9._:-]{1,64}$/;
+const MAX_GENERATION = 2_147_483_647;
+const activityStore = new DbActivityStore();
+
+interface ActivityStart {
+	sessionId: string;
+	slot: string;
+	generation: number;
+}
+
+function parseActivityStart(body: unknown): ActivityStart | { field: string } {
+	const b = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+	if (typeof b.sessionId !== "string" || b.sessionId.length < 1 || b.sessionId.length > 128) {
+		return { field: "sessionId" };
+	}
+	if (typeof b.slot !== "string" || !ACTIVITY_ID.test(b.slot)) return { field: "slot" };
+	if (
+		typeof b.generation !== "number" ||
+		!Number.isInteger(b.generation) ||
+		b.generation < 0 ||
+		b.generation > MAX_GENERATION
+	) {
+		return { field: "generation" };
+	}
+	return { sessionId: b.sessionId, slot: b.slot, generation: b.generation };
+}
+
+// POST /api/v1/devices/:id/activities - { sessionId, slot, generation }: follow a
+// session on the Lock Screen. The caller must own the phone and be able to read
+// the session, and so must the phone's own user (an admin cannot point someone
+// else's phone at a session that person cannot see). A session the caller or the
+// phone cannot read answers 404, as a missing one does. The same slot and
+// generation again is a 200 that changes nothing; an older generation is a 409.
+devicesRouter.post("/devices/:id/activities", limitBody, async (c: Context) => {
+	const refusal = refuseBadOrigin(c);
+	if (refusal) return refusal;
+	const own = await ownDevice(c);
+	if ("refusal" in own) return own.refusal;
+	if (own.device.revokedAt) return c.json({ error: "not_found" }, 404);
+	const parsed = parseActivityStart(await readJson(c));
+	if ("field" in parsed) return c.json({ error: "invalid_request", field: parsed.field }, 400);
+
+	const publisher = getLiveActivityPublisher();
+	if (!publisher || !pushAvailability().available)
+		return c.json({ error: "push_unavailable" }, 503);
+
+	const [session] = await getDb()
+		.select({ ownerUserId: sessions.ownerUserId })
+		.from(sessions)
+		.where(eq(sessions.sessionId, parsed.sessionId))
+		.limit(1);
+	const ownerUserId = session?.ownerUserId ?? null;
+	const entry = await getEligibleDevice(own.device.id);
+	if (
+		!session ||
+		!entry ||
+		!canReadSession(await getRequestActor(c), { ownerUserId }) ||
+		!canDeviceReadSession(entry, ownerUserId, await getMode())
+	) {
+		return c.json({ error: "not_found" }, 404);
+	}
+
+	if (!tryConsumeActivityStart(own.device.id)) {
+		c.header("Retry-After", "60");
+		return c.json({ error: "rate_limited" }, 429);
+	}
+	const result = await activityStore.upsert({ deviceId: own.device.id, ...parsed });
+	if (result.kind === "stale_generation") return c.json({ error: "stale_generation" }, 409);
+	if (result.kind === "limit") return c.json({ error: "activity_limit" }, 409);
+	// An unchanged repeat is a heartbeat: it answers 200 and sends the relay nothing.
+	if (result.changed) await publisher.follow(result.row);
+	return c.json(
+		{ ok: true, sessionId: parsed.sessionId, slot: parsed.slot, generation: parsed.generation },
+		result.created ? 201 : 200,
+	);
+});
+
+// DELETE /api/v1/devices/:id/activities/:sessionId - stop following. The phone
+// is told to end the activity where it can still be reached; 404 when this phone
+// never followed that session.
+devicesRouter.delete("/devices/:id/activities/:sessionId", async (c: Context) => {
+	const refusal = refuseBadOrigin(c);
+	if (refusal) return refusal;
+	const own = await ownDevice(c);
+	if ("refusal" in own) return own.refusal;
+	const row = await activityStore.row(own.device.id, c.req.param("sessionId") ?? "");
+	if (!row) return c.json({ error: "not_found" }, 404);
+	const publisher = getLiveActivityPublisher();
+	if (publisher) await publisher.unfollow(row);
+	else await activityStore.endRow(row.deviceId, row.sessionId, new Date().toISOString());
+	return c.json({ ok: true });
 });
 
 /** What the relay's answer means to the person who pressed "Send test". */

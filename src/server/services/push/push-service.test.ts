@@ -186,8 +186,12 @@ function makeService(
 	return { service, clock, calls, ...log };
 }
 
-function liveClient(url: string, clock = makeClock()) {
-	return new RelayClient({ relayUrl: url, clock, logger: makeLogger().logger });
+function liveClient(
+	url: string,
+	options: ReturnType<typeof makeClock> | { failureThreshold: number } = makeClock(),
+) {
+	const tuning = "now" in options ? { clock: options } : { clock: makeClock(), ...options };
+	return new RelayClient({ relayUrl: url, logger: makeLogger().logger, ...tuning });
 }
 
 let sessionSeq = 0;
@@ -690,6 +694,78 @@ describe("dedupe (60 s)", () => {
 		expect((await service.sendToDevices([device], hitl("h1")))[0]?.status).toBe("sent");
 		expect((await service.sendToDevices([device], hitl("h2")))[0]?.status).toBe("sent");
 		expect((await service.sendToDevices([device], hitl("h1")))[0]?.status).toBe("deduped");
+	});
+
+	test("D35: a failure detected two ways is one push, the first in the window winning", async () => {
+		const relay = startMockRelay();
+		const { device } = await makeDevice();
+		const { service } = makeService(liveClient(relay.url));
+		const failed: PushEvent = { type: "session_failed", sessionId: "s-f" };
+		const ruleFailed: PushEvent = { type: "alert_rule_fired", sessionId: "s-f", trigger: "failed" };
+		expect((await service.sendToDevices([device], ruleFailed))[0]?.status).toBe("sent");
+		expect((await service.sendToDevices([device], failed))[0]?.status).toBe("deduped");
+	});
+
+	test("D35: a completion detected two ways is one push, in either order", async () => {
+		const relay = startMockRelay();
+		const { device } = await makeDevice({ prefs: { categories: { SESSION_COMPLETED: true } } });
+		const { service } = makeService(liveClient(relay.url));
+		const done: PushEvent = { type: "session_completed", sessionId: "s-c" };
+		const ruleDone: PushEvent = {
+			type: "alert_rule_fired",
+			sessionId: "s-c",
+			trigger: "completed",
+		};
+		expect((await service.sendToDevices([device], done))[0]?.status).toBe("sent");
+		expect((await service.sendToDevices([device], ruleDone))[0]?.status).toBe("deduped");
+	});
+
+	test("D35: failure and completion of the same session are different pushes, as are other rule triggers", async () => {
+		const relay = startMockRelay();
+		const { device } = await makeDevice({ prefs: { categories: { SESSION_COMPLETED: true } } });
+		const { service } = makeService(liveClient(relay.url));
+		expect(
+			(await service.sendToDevices([device], { type: "session_failed", sessionId: "s-x" }))[0]
+				?.status,
+		).toBe("sent");
+		expect(
+			(await service.sendToDevices([device], { type: "session_completed", sessionId: "s-x" }))[0]
+				?.status,
+		).toBe("sent");
+		expect(
+			(
+				await service.sendToDevices([device], {
+					type: "alert_rule_fired",
+					sessionId: "s-x",
+					trigger: "stuck",
+				})
+			)[0]?.status,
+		).toBe("sent");
+	});
+
+	test("D35: a launch status is its own push and never merges with the session's failure", async () => {
+		const relay = startMockRelay();
+		const { device } = await makeDevice({ prefs: { categories: { LAUNCH_STATUS: true } } });
+		const { service } = makeService(liveClient(relay.url));
+		const failed: PushEvent = { type: "session_failed", sessionId: "s-l" };
+		const launch: PushEvent = {
+			type: "launch_status",
+			launchId: "l1",
+			sessionId: "s-l",
+			failed: true,
+		};
+		expect((await service.sendToDevices([device], failed))[0]?.status).toBe("sent");
+		expect((await service.sendToDevices([device], launch))[0]?.status).toBe("sent");
+	});
+
+	test("D35: a launch status is off unless the device turns the category on", async () => {
+		const relay = startMockRelay();
+		const { device } = await makeDevice();
+		const { service } = makeService(liveClient(relay.url));
+		const outcome = (
+			await service.sendToDevices([device], { type: "launch_status", launchId: "l2" })
+		)[0];
+		expect(outcome).toMatchObject({ status: "skipped", reason: "category_off" });
 	});
 
 	test("the dedupe map is bounded to 10,000 keys, least recently used first", async () => {
@@ -1503,37 +1579,50 @@ describe("a 401 revokes only when the relay said it", () => {
 		expect(calls).toEqual([`tokenRejected:${device.id}`]);
 	});
 
-	test("a proxy's 401 is reported but revokes nothing the first time, and does after two in a row", async () => {
+	test("a proxy's 401 never revokes, however many times it repeats", async () => {
 		const relay = startMockRelay(html401);
 		const { device } = await makeDevice();
-		const { service, calls } = makeService(liveClient(relay.url));
+		const { service, calls } = makeService(liveClient(relay.url, { failureThreshold: 1000 }));
 		expect((await service.sendToDevices([device], ev(1)))[0]?.status).toBe("unauthorized");
+		for (let n = 2; n <= 6; n++) await service.sendToDevices([device], ev(n));
 		expect(calls).toEqual([]);
-		expect((await service.sendToDevices([device], ev(2)))[0]?.status).toBe("unauthorized");
-		expect(calls).toEqual([`tokenRejected:${device.id}`]);
 	});
 
-	test("an answer that isn't a 401 in between starts the count again", async () => {
-		let answer: () => Response = html401;
-		const relay = startMockRelay(() => answer());
+	test("an unconfirmed 401 opens the relay breaker, so the next sends are not even posted", async () => {
+		const relay = startMockRelay(html401);
 		const { device } = await makeDevice();
-		const { service, calls } = makeService(liveClient(relay.url));
+		const client = liveClient(relay.url);
+		const { service, calls } = makeService(client);
 		await service.sendToDevices([device], ev(1));
-		answer = () => accepted();
-		await service.sendToDevices([device], ev(2));
-		answer = html401;
-		await service.sendToDevices([device], ev(3));
+		expect(client.circuitOpen).toBe(true);
+		const seenAfterFirst = relay.seen.length;
+		const outcome = (await service.sendToDevices([device], ev(2)))[0];
+		expect(outcome?.status).toBe("unavailable");
+		expect(relay.seen.length).toBe(seenAfterFirst);
 		expect(calls).toEqual([]);
 	});
 
 	test("the same rule holds for Live Activity updates", async () => {
 		const relay = startMockRelay(html401);
 		const { device } = await makeDevice();
-		const { service, calls } = makeService(liveClient(relay.url));
+		const { service, calls } = makeService(liveClient(relay.url, { failureThreshold: 1000 }));
 		const update = { slot: "s", generation: 1, event: "update" as const, contentState: {} };
 		await service.sendActivityUpdate(device, update);
-		expect(calls).toEqual([]);
 		await service.sendActivityUpdate(device, update);
+		await service.sendActivityUpdate(device, update);
+		expect(calls).toEqual([]);
+	});
+
+	test("the relay's own 401 on a Live Activity update still revokes", async () => {
+		const relay = startMockRelay(() => jsonResponse(401, { error: "unauthorized" }));
+		const { device } = await makeDevice();
+		const { service, calls } = makeService(liveClient(relay.url));
+		await service.sendActivityUpdate(device, {
+			slot: "s",
+			generation: 1,
+			event: "update",
+			contentState: {},
+		});
 		expect(calls).toEqual([`tokenRejected:${device.id}`]);
 	});
 });

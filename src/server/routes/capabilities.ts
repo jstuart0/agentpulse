@@ -7,7 +7,7 @@ import { config } from "../config.js";
 import { isAiActive, isAiBuildEnabled, isVectorSearchActive } from "../services/ai/feature.js";
 import { getDefaultProvider } from "../services/ai/providers-service.js";
 import { getMode } from "../services/instance-mode.js";
-import { pushAvailability } from "../services/push/push-runtime.js";
+import { type PushAvailability, pushAvailability } from "../services/push/push-runtime.js";
 
 /** Bumped when a client-visible contract changes incompatibly; clients gate on it before the feature flags. */
 export const CAPABILITIES_API_LEVEL = 1;
@@ -24,8 +24,12 @@ export interface CapabilityFeature {
 	value: true | Record<string, unknown>;
 	/** Push event names this feature makes the server able to send. */
 	pushEvents?: readonly string[];
-	/** Advertised only while this holds (the route is mounted either way). Absent means always. */
-	isAvailable?: () => boolean;
+	/**
+	 * Advertised only while this holds (the route is mounted either way). Absent means always. It is
+	 * judged against one snapshot of the server's state, taken once per request, so a flag and the
+	 * data that travels with it can never disagree.
+	 */
+	isAvailable?: (snapshot: CapabilitySnapshot) => boolean;
 }
 
 /**
@@ -56,12 +60,17 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		name: "mobilePush",
 		proof: { kind: "route", method: "POST", path: "/devices/:id/test" },
 		value: true,
-		isAvailable: () => pushAvailability().available,
+		isAvailable: (snapshot) => snapshot.push.available,
 	},
 ];
 
-function advertisedFeatures(): readonly CapabilityFeature[] {
-	return CAPABILITY_FEATURES.filter((f) => f.isAvailable?.() ?? true);
+/** What the availability checks may look at; read once per request. */
+export interface CapabilitySnapshot {
+	push: PushAvailability;
+}
+
+export function advertisedFeatures(snapshot: CapabilitySnapshot): readonly CapabilityFeature[] {
+	return CAPABILITY_FEATURES.filter((f) => f.isAvailable?.(snapshot) ?? true);
 }
 
 const capabilitiesRouter = new Hono();
@@ -77,8 +86,9 @@ capabilitiesRouter.get("/capabilities", async (c) => {
 	const mode = await getMode();
 	const aiBuild = isAiBuildEnabled();
 	const provider = aiBuild ? await getDefaultProvider() : null;
-	const features = advertisedFeatures();
-	const push = pushAvailability();
+	const snapshot: CapabilitySnapshot = { push: pushAvailability() };
+	const push = snapshot.push;
+	const features = advertisedFeatures(snapshot);
 
 	return c.json({
 		apiLevel: CAPABILITIES_API_LEVEL,

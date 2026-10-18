@@ -222,6 +222,13 @@ export class RelayClient {
 		if (status >= 500) {
 			return this.failed({ kind: "unavailable", reason: "server_error", status, retryAfterSec });
 		}
+		// A 401 whose body is not the relay's own says something in front of it (a proxy, an SSO
+		// gateway) answered. That proves nothing about any send token and nothing about the relay
+		// being up: sending is paused instead, and no caller may read it as a revocation.
+		if (status === 401 && parsed.error !== "unauthorized") {
+			this.tripBreaker();
+			return { kind: "unauthorized", confirmed: false };
+		}
 		// An answer from the relay, whatever it says, proves the relay is up.
 		this.succeeded();
 
@@ -237,7 +244,7 @@ export class RelayClient {
 			this.logger.warn("relay budget spent", { budget: which, retryAfterSec: retryAfterSec ?? -1 });
 			return { kind: "budget", budget: which, retryAfterSec };
 		}
-		if (status === 401) return { kind: "unauthorized", confirmed: parsed.error === "unauthorized" };
+		if (status === 401) return { kind: "unauthorized", confirmed: true };
 		return {
 			kind: "rejected",
 			status,
@@ -275,6 +282,19 @@ export class RelayClient {
 			...(result.status !== null ? { status: result.status } : {}),
 		});
 		return result;
+	}
+
+	/** Opens the breaker now, without waiting for the failure count: used when the answer isn't the relay's. */
+	private tripBreaker(): void {
+		this.consecutiveFailures = Math.max(this.consecutiveFailures + 1, this.failureThreshold);
+		this.probing = false;
+		this.openUntil = this.clock.now() + this.openMs;
+		this.logger.warn(
+			"relay circuit open: an unconfirmed 401 (something in front of the relay answered)",
+			{
+				openSec: this.openMs / 1000,
+			},
+		);
 	}
 
 	private succeeded(): void {

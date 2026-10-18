@@ -48,6 +48,7 @@ import { associateObservedSession } from "./launch-dispatch.js";
 import { generateSessionName } from "./name-generator.js";
 import { getCachedProjects } from "./projects/cache.js";
 import { resolveProjectIdForCwd } from "./projects/resolver.js";
+import { dispatchEvent } from "./push/dispatch.js";
 import {
 	type Attribution,
 	canAcknowledgeOwnedSession,
@@ -484,10 +485,12 @@ export async function applyPermissionWaitTransition(
 	sessionId: string,
 	event: HookEventPayload,
 	d21: D21State = { latched: false, closedTurn: false },
+	pushOrigin?: string,
 ): Promise<void> {
 	const eventType = event.hook_event_name;
 	if (!PERMISSION_WAIT_EVENT_TYPES.has(eventType)) return;
 
+	let waitOpened = false;
 	await enqueuePermissionWaitTask(sessionId, () =>
 		withTransaction(async (tx) => {
 			const [row] = await tx
@@ -519,7 +522,10 @@ export async function applyPermissionWaitTransition(
 				// 0→1 transition is the only point prevStatus is captured — a
 				// second nested PermissionRequest must never overwrite it with
 				// "waiting" itself.
-				if (pendingBefore === 0) next.prevStatus = currentStatus;
+				if (pendingBefore === 0) {
+					next.prevStatus = currentStatus;
+					waitOpened = true;
+				}
 
 				if (event.tool_use_id) {
 					if (!next.ids.includes(event.tool_use_id)) next.ids.push(event.tool_use_id);
@@ -607,6 +613,20 @@ export async function applyPermissionWaitTransition(
 			}
 		}),
 	);
+	// Once, on the 0->1 transition, and only after the transaction committed.
+	if (waitOpened)
+		void dispatchEvent({ type: "permission_wait", sessionId, pending: 1 }, pushOrigin);
+}
+
+/**
+ * Who an ingest-made push counts against: the key's owner, else the key. A poster with no key context
+ * (a supervisor report, auth disabled) has no origin: there is nobody else for it to crowd out, and
+ * the global in-flight budget still bounds it.
+ */
+function pushOriginOf(attribution: Attribution): string | undefined {
+	if (attribution.ownerUserId) return `owner:${attribution.ownerUserId}`;
+	if (attribution.ingestKeyId) return `key:${attribution.ingestKeyId}`;
+	return undefined;
 }
 
 // The session row shape returned by processHookEvent.
@@ -705,6 +725,7 @@ export async function processHookEvent(
 	const eventType = payload.hook_event_name;
 	const now = new Date().toISOString();
 	const attribution: Attribution = ctx.attribution ?? { ownerUserId: null, ingestKeyId: null };
+	const pushOrigin = pushOriginOf(attribution);
 
 	// AGEN (security): "mark as unseen" is never hook-reachable, unlike
 	// UserAcknowledge. This is not an ownership question -- every
@@ -1042,12 +1063,15 @@ export async function processHookEvent(
 	}
 
 	await getDb().update(sessions).set(updates).where(eq(sessions.sessionId, sessionId));
+	// The turn is committed; tell the phones. Fire and forget: dispatch yields before reading anything.
+	if (eventType === "Stop" && !d21.latched)
+		void dispatchEvent({ type: "turn_completed", sessionId }, pushOrigin);
 
 	// Decision 10: permission-wait tracking. Runs after the main update (not
 	// folded into the early-snapshot `updates` object above) via its own late
 	// read-modify-write transaction — see applyPermissionWaitTransition. D21:
 	// gated by the same { latched, closedTurn } computed above for this event.
-	await applyPermissionWaitTransition(sessionId, payload, d21);
+	await applyPermissionWaitTransition(sessionId, payload, d21, pushOrigin);
 
 	// Resolve project_id based on cwd. Compare against the persisted value
 	// so we only write when it actually changed.
@@ -1090,6 +1114,7 @@ export async function processHookEvent(
 	// Evaluate project alert rules for status_completed on SessionEnd.
 	// Best-effort: rule evaluation failure must not block event ingestion.
 	if (eventType === "SessionEnd") {
+		void dispatchEvent({ type: "session_completed", sessionId }, pushOrigin);
 		void evaluateAlertRules(sessionId, "completed").catch((err) => {
 			console.error("[alert-rule] evaluateAlertRules(completed) threw:", err);
 		});
@@ -1121,6 +1146,7 @@ export async function markSessionFailed(sessionId: string): Promise<void> {
 		.update(sessions)
 		.set({ status: "failed", endedAt: now, isWorking: false })
 		.where(eq(sessions.sessionId, sessionId));
+	void dispatchEvent({ type: "session_failed", sessionId });
 	// Evaluate project alert rules for status_failed transition.
 	// Best-effort: a rule evaluation failure must not block the caller.
 	void evaluateAlertRules(sessionId, "failed").catch((err) => {

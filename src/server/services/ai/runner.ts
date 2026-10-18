@@ -6,6 +6,7 @@ import { SESSION_COLUMNS_SANS_OWNERSHIP } from "../../db/session-columns.js";
 import { dispatchHitlToChannel } from "../channels/dispatch.js";
 import { stampUserPrompt, stampWatcherState } from "../managed-session-state.js";
 import { sessionBus } from "../notifier.js";
+import { dispatchEvent } from "../push/dispatch.js";
 import { getSessionOwnerConnections } from "../session-ownership.js";
 import { emitAiEvent } from "./ai-events.js";
 import {
@@ -652,6 +653,15 @@ export class WatcherRunner {
 			usageEstimated,
 			channelId: config.channelId ?? null,
 		});
+
+		if (hitlOpen.hitlId) {
+			void dispatchEvent({
+				type: "hitl_opened",
+				sessionId,
+				hitlId: hitlOpen.hitlId,
+				proposalId: pending.id,
+			});
+		}
 
 		// If the session's watcher config points at a notification channel,
 		// best-effort dispatch the HITL there (Telegram, etc). Delivery

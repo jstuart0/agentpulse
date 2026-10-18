@@ -3,7 +3,7 @@
  * advertises names the route that proves it, and that route must be mounted:
  * a flag with nothing behind it is a lie a native client would act on.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import "../db/__test_db.js";
 
 const { config } = await import("../config.js");
@@ -17,6 +17,7 @@ const { createApiKey } = await import("../auth/api-key.js");
 const { SCOPE_GRANTS } = await import("../auth/route-scope-policy.js");
 const { WS_UPGRADE_PATHS } = await import("../ws/ws-auth.js");
 const { CAPABILITY_FEATURES, CAPABILITIES_API_LEVEL } = await import("./capabilities.js");
+const pushRuntime = await import("../services/push/push-runtime.js");
 
 const originalDisableAuth = config.disableAuth;
 const originalAi = { aiEnabled: config.aiEnabled, secretsKey: config.secretsKey };
@@ -201,6 +202,46 @@ describe("GET /capabilities", () => {
 			expect(body.ai.provider).toBeNull();
 		} finally {
 			Object.assign(config as Record<string, unknown>, originalAi);
+		}
+	});
+});
+
+describe("one snapshot of push availability per request", () => {
+	const on = { available: true, relayOrigin: "https://relay.example.test" } as const;
+	const off = { available: false, reason: "relay_not_configured" } as const;
+
+	test("push availability is read once per request", async () => {
+		const spy = spyOn(pushRuntime, "pushAvailability").mockReturnValue(on);
+		try {
+			await get(respondKey);
+			expect(spy).toHaveBeenCalledTimes(1);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("the mobilePush flag and push.relayOrigin never disagree, even if availability changes between reads", async () => {
+		// First read says on, every later read says off. Two reads in one request would split the flag from its origin.
+		const firstOn = spyOn(pushRuntime, "pushAvailability")
+			.mockReturnValueOnce(on)
+			.mockReturnValue(off);
+		try {
+			const body = (await (await get(respondKey)).json()) as Record<string, any>;
+			expect(body.features.mobilePush).toBe(true);
+			expect(body.push).toEqual({ relayOrigin: "https://relay.example.test" });
+		} finally {
+			firstOn.mockRestore();
+		}
+
+		const firstOff = spyOn(pushRuntime, "pushAvailability")
+			.mockReturnValueOnce(off)
+			.mockReturnValue(on);
+		try {
+			const body = (await (await get(respondKey)).json()) as Record<string, any>;
+			expect("mobilePush" in body.features).toBe(false);
+			expect("push" in body).toBe(false);
+		} finally {
+			firstOff.mockRestore();
 		}
 	});
 });

@@ -7,23 +7,33 @@
  * `/devices/:id/test` answers 503, and capabilities don't advertise it. Nothing
  * else about the server changes.
  *
- * Solo mode is the only targeting policy shipped here: every live phone hears
- * about every event. Team targeting arrives with the triggers.
+ * The Live Activity publisher starts and stops with push. Who hears about an event is `PolicyPushTargets`: solo, every eligible phone;
+ * team, the session owner's phones (see push-targets.ts).
  */
 import { and, eq, isNull } from "drizzle-orm";
 import { config } from "../../config.js";
 import { getDb } from "../../db/client.js";
 import { mobileDeviceActivities } from "../../db/schema/index.js";
+import { observeWsRevalidation } from "../../ws/revalidation.js";
 import { decryptSecretAsync } from "../ai/secrets.js";
 import { getMode } from "../instance-mode.js";
 import { revokeDeviceRow } from "../mobile-devices-service.js";
-import { DbPushDeviceSource } from "./device-source.js";
+import { sessionBus } from "../notifier.js";
+import { DbPushDeviceSource, DbPushSubjects, readSessionSnapshot } from "./device-source.js";
 import { configurePushRuntime, getPushRuntime } from "./dispatch.js";
+import {
+	type LiveActivityPublisher,
+	createDbLiveActivityPublisher,
+} from "./live-activity-publisher.js";
 import { pushCapability } from "./push-capability.js";
+import { enrichPushEvent } from "./push-enrich.js";
 import { PushService } from "./push-service.js";
-import { SoloPushTargets } from "./push-targets.js";
+import { PolicyPushTargets } from "./push-targets.js";
 import { RelayClient, loadRelayUrl } from "./relay-client.js";
 import { type PushLogger, type PushRevocationSink, consolePushLogger } from "./types.js";
+
+/** How long the eligible-device list is reused between events. */
+const ELIGIBLE_CACHE_MS = 1_500;
 
 export type PushOffReason = "relay_not_configured" | "relay_url_invalid" | "secrets_key_missing";
 
@@ -32,6 +42,13 @@ export type PushAvailability =
 	| { available: false; reason: PushOffReason };
 
 let relayOrigin: string | null = null;
+let publisher: LiveActivityPublisher | null = null;
+let stopInvalidatingTargets: (() => void) | null = null;
+
+/** The running Live Activity publisher, or null when push is off. */
+export function getLiveActivityPublisher(): LiveActivityPublisher | null {
+	return publisher;
+}
 let offReason: PushOffReason = "relay_not_configured";
 
 /** What the relay's answers do to the device table. None of them touches an API key. */
@@ -89,23 +106,38 @@ export function startPush(
 		return { available: false, reason: offReason };
 	}
 
-	const revocations = createRevocationSink(logger);
-	configurePushRuntime({
-		targets: new SoloPushTargets(new DbPushDeviceSource(), getMode),
-		service: new PushService({
-			relay: new RelayClient({ relayUrl, logger }),
-			revocations,
-			readSendToken: decryptSecretAsync,
-			logger,
-		}),
+	const service = new PushService({
+		relay: new RelayClient({ relayUrl, logger }),
+		revocations: createRevocationSink(logger),
+		readSendToken: decryptSecretAsync,
 		logger,
 	});
+	const targets = new PolicyPushTargets(new DbPushDeviceSource(), getMode, new DbPushSubjects(), {
+		ms: ELIGIBLE_CACHE_MS,
+		now: Date.now,
+	});
+	// Every change that can make a device ineligible (a revoked device or key, a disabled user, a role
+	// change) requests a revalidation once it has committed; the cached device list is dropped with it.
+	stopInvalidatingTargets = observeWsRevalidation(async () => targets.invalidate());
+	configurePushRuntime({
+		targets,
+		enrich: enrichPushEvent,
+		readSession: readSessionSnapshot,
+		service,
+		logger,
+	});
+	publisher = createDbLiveActivityPublisher(service, sessionBus, logger);
+	publisher.start();
 	relayOrigin = capability.push.relayOrigin;
 	logger.info("push enabled", { relay: relayOrigin });
 	return { available: true, relayOrigin };
 }
 
 export function stopPush(): void {
+	publisher?.stop();
+	publisher = null;
+	stopInvalidatingTargets?.();
+	stopInvalidatingTargets = null;
 	configurePushRuntime(null);
 	relayOrigin = null;
 }

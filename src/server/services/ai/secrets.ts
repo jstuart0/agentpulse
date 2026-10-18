@@ -138,3 +138,18 @@ export async function decryptSecretAsync(ciphertextBase64: string): Promise<stri
 	decipher.setAuthTag(authTag);
 	return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
 }
+
+/**
+ * Same contract and same stored format as `encryptSecret`, without blocking the event loop: for
+ * request paths (a phone registering its send token) where tens of milliseconds of scrypt on the
+ * main thread would stall everything else. The fresh random salt means the derivation is
+ * cached for this record's own later reads, not shared.
+ */
+export async function encryptSecretAsync(plaintext: string): Promise<string> {
+	const salt = randomBytes(SALT_LENGTH);
+	const iv = randomBytes(IV_LENGTH);
+	const key = await deriveKeyAsync(salt);
+	const cipher = createCipheriv("aes-256-gcm", key, iv);
+	const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+	return Buffer.concat([salt, iv, cipher.getAuthTag(), encrypted]).toString("base64");
+}

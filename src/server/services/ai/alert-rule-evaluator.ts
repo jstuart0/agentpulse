@@ -7,6 +7,7 @@ import {
 	projectAlertRules,
 	sessions,
 } from "../../db/schema/index.js";
+import { dispatchEvent } from "../push/dispatch.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 
 // ---- Shared notification dispatch ------------------------------------------
@@ -26,6 +27,15 @@ export async function dispatchAlertRuleNotification(
 ): Promise<void> {
 	const label = sessionName ?? sessionId;
 	console.log(`[alert-rule] rule ${rule.id} fired: session "${label}" trigger=${trigger}`);
+
+	// The phones hear about a fired rule whether or not the rule also names a chat channel.
+	void dispatchEvent({
+		type: "alert_rule_fired",
+		sessionId,
+		sessionName,
+		trigger,
+		ruleId: rule.id,
+	});
 
 	if (!rule.channelId) return;
 

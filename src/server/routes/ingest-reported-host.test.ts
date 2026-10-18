@@ -591,6 +591,8 @@ describe("display only: the reported host decides nothing", () => {
 			"services/effective-machine.ts",
 			// The one cleaner of a supervisor's host name, applied where it is written.
 			"services/machine-name.ts",
+			// The machine label on a push notification: display only, like the dashboard's.
+			"services/push/push-enrich.ts",
 		]);
 
 		// Positive control: the matcher does flag a reader.

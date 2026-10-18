@@ -173,6 +173,8 @@ const RESPOND_WRITES: ReadonlySet<string> = new Set([
 	"PATCH /devices/:id",
 	"DELETE /devices/:id",
 	"POST /devices/:id/test",
+	"POST /devices/:id/activities",
+	"DELETE /devices/:id/activities/:sessionId",
 ]);
 
 export interface ScopeGrant {
@@ -336,6 +338,8 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	"PATCH /devices/:id",
 	"DELETE /devices/:id",
 	"POST /devices/:id/test",
+	"POST /devices/:id/activities",
+	"DELETE /devices/:id/activities/:sessionId",
 ]);
 
 export async function resolveEffectiveRole(

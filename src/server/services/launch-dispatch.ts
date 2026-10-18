@@ -9,6 +9,7 @@ import { resolveObservedSessionCorrelation } from "./correlation-resolver.js";
 import { markSessionFailed } from "./event-processor.js";
 import { mapLaunchRequest } from "./launch-validator.js";
 import { attachManagedSessionToLaunch } from "./managed-session-state.js";
+import { dispatchEvent } from "./push/dispatch.js";
 import { findLaunchRowByCorrelationId } from "./session-ownership.js";
 
 const PENDING_LAUNCH_STATUSES: readonly LaunchRequestStatus[] = [
@@ -106,6 +107,54 @@ function awaitingDeadlineIso() {
 	return new Date(Date.now() + 60_000).toISOString();
 }
 
+/** The statuses a person wants to hear about; the ones before them are plumbing. */
+const ANNOUNCED_LAUNCH_STATUSES: ReadonlySet<string> = new Set([
+	"running",
+	"completed",
+	"failed",
+	"cancelled",
+]);
+
+type LaunchRow = typeof launchRequests.$inferSelect;
+
+/**
+ * The one writer of `launch_requests.status` after a request exists (the inserts
+ * in launch-validator and control-actions create rows; they don't transition
+ * them). It reads the prior status when the caller doesn't have it, writes, and
+ * tells the phones once per real change into a status worth announcing, after
+ * the write has landed.
+ */
+async function transitionLaunchStatus(
+	launchId: string,
+	updates: Partial<LaunchRow> & { status: LaunchRequestStatus },
+	priorStatus?: string,
+): Promise<LaunchRow | undefined> {
+	const prior =
+		priorStatus ??
+		(
+			await getDb()
+				.select({ status: launchRequests.status })
+				.from(launchRequests)
+				.where(eq(launchRequests.id, launchId))
+				.limit(1)
+		)[0]?.status;
+	const [updated] = await getDb()
+		.update(launchRequests)
+		.set(updates)
+		.where(eq(launchRequests.id, launchId))
+		.returning();
+	if (updated && prior !== updates.status && ANNOUNCED_LAUNCH_STATUSES.has(updates.status)) {
+		void dispatchEvent({
+			type: "launch_status",
+			launchId,
+			failed: updates.status === "failed",
+			requesterUserId: updated.requestedByUserId ?? null,
+			...(updated.launchCorrelationId ? { sessionId: updated.launchCorrelationId } : {}),
+		});
+	}
+	return updated;
+}
+
 export async function claimNextLaunchRequest(supervisorId: string) {
 	const [row] = await getDb()
 		.select()
@@ -123,16 +172,11 @@ export async function claimNextLaunchRequest(supervisorId: string) {
 
 	const claimToken = crypto.randomUUID();
 	const now = nowIso();
-	const [claimed] = await getDb()
-		.update(launchRequests)
-		.set({
-			status: "queued",
-			claimedBySupervisorId: supervisorId,
-			claimToken,
-			updatedAt: now,
-		})
-		.where(eq(launchRequests.id, row.id))
-		.returning();
+	const claimed = await transitionLaunchStatus(
+		row.id,
+		{ status: "queued", claimedBySupervisorId: supervisorId, claimToken, updatedAt: now },
+		row.status,
+	);
 
 	return claimed ? mapLaunchRequest(claimed) : null;
 }
@@ -153,7 +197,7 @@ export async function updateLaunchDispatchStatus(input: {
 		.limit(1);
 	if (!row || row.claimedBySupervisorId !== input.supervisorId) return null;
 
-	const updates: Record<string, unknown> = {
+	const updates: Partial<LaunchRow> & { status: LaunchRequestStatus } = {
 		status: input.status,
 		error: input.error ?? null,
 		updatedAt: now,
@@ -188,11 +232,7 @@ export async function updateLaunchDispatchStatus(input: {
 		}
 	}
 
-	const [updated] = await getDb()
-		.update(launchRequests)
-		.set(updates)
-		.where(eq(launchRequests.id, input.launchId))
-		.returning();
+	const updated = await transitionLaunchStatus(input.launchId, updates, row.status);
 
 	// P3: propagate launch failure to the correlated session so
 	// sessions.status = "failed" is written via event-processor.ts,
@@ -213,17 +253,13 @@ export async function findPendingLaunchForObservedSession(sessionId: string) {
 	return mapLaunchRequest(row);
 }
 
-export async function markLaunchRunning(launchId: string) {
+export async function markLaunchRunning(launchId: string, priorStatus?: string) {
 	const timestamp = nowIso();
-	const [updated] = await getDb()
-		.update(launchRequests)
-		.set({
-			status: "running",
-			dispatchFinishedAt: timestamp,
-			updatedAt: timestamp,
-		})
-		.where(eq(launchRequests.id, launchId))
-		.returning();
+	const updated = await transitionLaunchStatus(
+		launchId,
+		{ status: "running", dispatchFinishedAt: timestamp, updatedAt: timestamp },
+		priorStatus,
+	);
 
 	return updated ? mapLaunchRequest(updated) : null;
 }
@@ -272,5 +308,5 @@ export async function associateObservedSession(input: {
 	await applyDesiredDisplayName(input.sessionId, resolution.launchRequest);
 	await applyAskInitiatedWatcher(input.sessionId, resolution.launchRequest.metadata);
 
-	return markLaunchRunning(resolution.launchRequest.id);
+	return markLaunchRunning(resolution.launchRequest.id, resolution.launchRequest.status);
 }

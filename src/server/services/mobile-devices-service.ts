@@ -16,7 +16,8 @@ import { and, count, eq, inArray, isNull, lt } from "drizzle-orm";
 import { config } from "../config.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, mobileDevices, pairingCodes } from "../db/schema/index.js";
-import { decryptSecret, encryptSecret } from "./ai/secrets.js";
+import { requestWsRevalidation } from "../ws/revalidation.js";
+import { decryptSecret, encryptSecretAsync } from "./ai/secrets.js";
 import { cleanDisplayText } from "./util/clean-text.js";
 import { FixedWindowCounter } from "./util/fixed-window-counter.js";
 
@@ -443,7 +444,16 @@ export function tryConsumeDeviceTest(deviceId: string, callerKey: string): boole
 	return true;
 }
 
+/** Follow requests one phone may make a minute. A phone follows a few sessions; this stops a loop. */
+export const DEVICE_ACTIVITY_STARTS_PER_MINUTE = 30;
+const activityStartCounter = new FixedWindowCounter(60_000);
+
+export function tryConsumeActivityStart(deviceId: string): boolean {
+	return activityStartCounter.tryConsume(deviceId, DEVICE_ACTIVITY_STARTS_PER_MINUTE);
+}
+
 export function _resetDeviceLimitsForTest(): void {
+	activityStartCounter.reset();
 	testCounter.reset();
 	userTestCounter.reset();
 	registrationCounter.reset();
@@ -453,6 +463,7 @@ export function _setDeviceLimitClockForTest(clock: (() => number) | null): void 
 	testCounter.setClock(clock);
 	userTestCounter.setClock(clock);
 	registrationCounter.setClock(clock);
+	activityStartCounter.setClock(clock);
 }
 
 // ── Register, read, update ───────────────────────────────────────────────────
@@ -505,7 +516,7 @@ export async function registerDevice(
 	if (!caller.keyId) throw new DeviceKeyRequiredError();
 	if (!config.secretsKey) throw new SecretsKeyMissingError();
 	const nowIso = now.toISOString();
-	const sendToken = encryptSecret(registration.sendToken);
+	const sendToken = await encryptSecretAsync(registration.sendToken);
 	const pairedViaCodeId = await pairingCodeIdForKey(caller.keyId);
 	const db = getDb();
 
@@ -685,7 +696,11 @@ export async function onKeyOwnerChanged(
 	return rows.length;
 }
 
-/** Marks one device revoked and wipes its send token (no effect on one already revoked). */
+/**
+ * Marks one device revoked and wipes its send token (no effect on one already revoked), then asks the
+ * push side to forget what it cached about who may be sent to. Given a transaction the change isn't
+ * committed yet, so the caller requests the revalidation once it has committed.
+ */
 export async function revokeDeviceRow(
 	id: string,
 	reason: string,
@@ -698,6 +713,7 @@ export async function revokeDeviceRow(
 		.update(mobileDevices)
 		.set({ revokedAt: nowIso, revokedReason: reason, sendToken: "", updatedAt: nowIso })
 		.where(and(eq(mobileDevices.id, id), isNull(mobileDevices.revokedAt)));
+	if (!tx) await requestWsRevalidation();
 }
 
 /** Purges devices revoked more than 30 days ago (their activities go with them by cascade). */
