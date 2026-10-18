@@ -81,6 +81,7 @@ import { getDb, getSqlite } from "../db/client.js";
 import { events, aiSessionSummaries, apiKeys, pairingCodes, settings } from "../db/schema/index.js";
 import { withTransaction } from "../db/with-transaction.js";
 import { SUMMARY_LEASE_SECONDS } from "./ai/session-summary/service-limits.js";
+import { deleteRevokedDevices } from "./mobile-devices-service.js";
 import { toDbTimestamp } from "./util/db-time.js";
 
 export const EVENTS_RETENTION_DAYS_KEY = "eventsRetentionDays";
@@ -431,6 +432,9 @@ export async function runRetentionPass(now: Date = new Date()): Promise<Retentio
 	try {
 		await deleteExpiredPairingCodes(now).catch((err) => {
 			console.error("[retention] pairing code purge failed:", err);
+		});
+		await deleteRevokedDevices(now).catch((err) => {
+			console.error("[retention] revoked device purge failed:", err);
 		});
 		const days = await readRetentionDays();
 		if (days <= 0) {

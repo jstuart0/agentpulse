@@ -126,6 +126,8 @@ export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
 	"/ai/risk-classes",
 	// A pairing code's status: only for the person who minted it (checked in the handler).
 	"/pairing-codes/:id",
+	// The caller's own phones (send tokens and keys are never in the answer).
+	"/devices",
 	// AGEN-69 — the session summary is derived from prompts and tool data, so
 	// the read is manage-only, never observe. Its POST is manage by method and
 	// deliberately in no other set (not OWNER_CHECKED_ROUTES): any reader of a
@@ -153,18 +155,24 @@ const INGEST_WRITES: ReadonlySet<string> = new Set(["PUT /sessions/:sessionId/na
  * C1/F23 exclusions keep from observe. Later phases add their reads here in the
  * same change that mounts the guarded route (/devices, /ai/inbox ...).
  */
-const RESPOND_READS: ReadonlySet<string> = new Set(OBSERVE_READS);
+const RESPOND_READS: ReadonlySet<string> = new Set([...OBSERVE_READS, "/devices"]);
 
 /**
  * `respond` writes (method-qualified). A grant lands only in the phase that
  * installs its guard: both routes below are owner-checked in their handler
  * (OWNER_CHECKED_ROUTES), and the acknowledge route answers
  * `{acknowledged:false, reason:"not_owner"}` rather than clearing someone
- * else's attention. Decisions, snooze and device routes arrive with their guards.
+ * else's attention. The device routes are owner-checked by assertCanManageDevice
+ * (a caller reaches only its own phones, and a key only its own registration).
+ * Decisions and snooze arrive with their guards.
  */
 const RESPOND_WRITES: ReadonlySet<string> = new Set([
 	"POST /sessions/:sessionId/acknowledge",
 	"DELETE /sessions/:sessionId/acknowledge",
+	"POST /devices",
+	"PATCH /devices/:id",
+	"DELETE /devices/:id",
+	"POST /devices/:id/test",
 ]);
 
 export interface ScopeGrant {
@@ -324,6 +332,10 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	"POST /admin/supervisors/:id/rotate",
 	"POST /admin/supervisors/:id/revoke",
 	"POST /ai/action-requests/:id/decide",
+	"POST /devices",
+	"PATCH /devices/:id",
+	"DELETE /devices/:id",
+	"POST /devices/:id/test",
 ]);
 
 export async function resolveEffectiveRole(

@@ -1,14 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import {
+	type DeviceListEvent,
+	type DeviceListState,
 	PAIRING_ACCESS_OPTIONS,
 	type RevokeEvent,
 	type RevokeState,
+	type TestPushEvent,
+	type TestPushState,
 	countdownText,
+	deviceListReducer,
+	deviceRevokeWarning,
+	deviceTitle,
 	heldCode,
+	lastSeenText,
 	pairingUri,
 	pairingView,
 	revokeReducer,
 	revokeTarget,
+	testPushMessage,
+	testPushReducer,
 } from "./pairing-flow.js";
 
 describe("pairingUri", () => {
@@ -159,5 +169,109 @@ describe("revokeReducer", () => {
 			revoked,
 		);
 		expect(run([{ type: "reset" }], revoked)).toEqual({ step: "idle" });
+	});
+});
+
+describe("paired phones", () => {
+	test("deviceTitle falls back to the platform", () => {
+		expect(deviceTitle({ deviceName: "Kitchen iPhone", platform: "ios" })).toBe("Kitchen iPhone");
+		expect(deviceTitle({ deviceName: "  ", platform: "ios" })).toBe("ios device");
+		expect(deviceTitle({ deviceName: null, platform: "android" })).toBe("android device");
+	});
+
+	test("the remove warning says whether the phone's key goes with it", () => {
+		const paired = deviceRevokeWarning({ paired: true, deviceName: "P", platform: "ios" });
+		const pasted = deviceRevokeWarning({ paired: false, deviceName: "P", platform: "ios" });
+		expect(paired).toContain("revoked");
+		expect(pasted).toContain("stays valid");
+		expect(pasted).not.toContain("is revoked");
+	});
+
+	test("lastSeenText", () => {
+		const now = Date.parse("2026-10-01T12:00:00Z");
+		const ago = (s: number) => new Date(now - s * 1000).toISOString();
+		expect(lastSeenText(null, now)).toBe("never seen");
+		expect(lastSeenText(ago(30), now)).toBe("just now");
+		expect(lastSeenText(ago(600), now)).toBe("10 min ago");
+		expect(lastSeenText(ago(7200), now)).toBe("2 h ago");
+		expect(lastSeenText(ago(3 * 86_400), now)).toBe("3 d ago");
+		expect(lastSeenText(ago(-50), now)).toBe("just now");
+	});
+
+	test("testPushMessage names what happened", () => {
+		expect(testPushMessage("sent")).toContain("sent");
+		expect(testPushMessage({ status: 503 })).toContain("can't send");
+		expect(testPushMessage({ status: 429 })).toContain("limit");
+		expect(testPushMessage({ status: 404 })).toContain("no longer");
+		expect(testPushMessage({ status: 500 })).toContain("Couldn't");
+	});
+});
+
+describe("deviceListReducer", () => {
+	type D = { id: string; name: string };
+	const a: D = { id: "a", name: "A" };
+	const b: D = { id: "b", name: "B" };
+	const step = (state: DeviceListState<D>, event: DeviceListEvent<D>) =>
+		deviceListReducer(state, event);
+
+	test("loading -> ready on a load, -> failed on a first failure, back to loading on retry", () => {
+		const loading: DeviceListState<D> = { step: "loading" };
+		expect(step(loading, { type: "loaded", devices: [a] })).toEqual({
+			step: "ready",
+			devices: [a],
+		});
+		const failed = step(loading, { type: "failed" });
+		expect(failed).toEqual({ step: "failed" });
+		expect(step(failed, { type: "retry" })).toEqual({ step: "loading" });
+		expect(step(loading, { type: "retry" })).toEqual(loading);
+	});
+
+	test("a failed refresh keeps the list on screen instead of blanking it", () => {
+		const ready: DeviceListState<D> = { step: "ready", devices: [a, b] };
+		expect(step(ready, { type: "failed" })).toBe(ready);
+	});
+
+	test("a refresh replaces the list, including with an empty one", () => {
+		const ready: DeviceListState<D> = { step: "ready", devices: [a, b] };
+		expect(step(ready, { type: "loaded", devices: [b] })).toEqual({ step: "ready", devices: [b] });
+		expect(step(ready, { type: "loaded", devices: [] })).toEqual({ step: "ready", devices: [] });
+	});
+
+	test("a removed phone leaves at once; removing one that isn't there changes nothing", () => {
+		const ready: DeviceListState<D> = { step: "ready", devices: [a, b] };
+		expect(step(ready, { type: "removed", id: "a" })).toEqual({ step: "ready", devices: [b] });
+		expect(step(ready, { type: "removed", id: "zzz" })).toEqual(ready);
+		expect(step({ step: "loading" }, { type: "removed", id: "a" })).toEqual({ step: "loading" });
+		expect(step({ step: "failed" }, { type: "removed", id: "a" })).toEqual({ step: "failed" });
+	});
+});
+
+describe("testPushReducer", () => {
+	const run = (events: TestPushEvent[], from: TestPushState = { step: "idle" }) =>
+		events.reduce(testPushReducer, from);
+
+	test("idle -> sending -> done with the message; dismiss clears it", () => {
+		expect(run([{ type: "start" }])).toEqual({ step: "sending" });
+		expect(run([{ type: "start" }, { type: "finished", message: "sent" }])).toEqual({
+			step: "done",
+			message: "sent",
+		});
+		expect(
+			run([{ type: "start" }, { type: "finished", message: "sent" }, { type: "dismiss" }]),
+		).toEqual({ step: "idle" });
+	});
+
+	test("only one test at a time: a second start while sending changes nothing", () => {
+		const sending: TestPushState = { step: "sending" };
+		expect(run([{ type: "start" }], sending)).toBe(sending);
+	});
+
+	test("a finish nobody started, and a dismiss while sending, are ignored", () => {
+		expect(run([{ type: "finished", message: "stray" }])).toEqual({ step: "idle" });
+		expect(run([{ type: "dismiss" }], { step: "sending" })).toEqual({ step: "sending" });
+	});
+
+	test("a new test starts over a finished one", () => {
+		expect(run([{ type: "start" }], { step: "done", message: "old" })).toEqual({ step: "sending" });
 	});
 });

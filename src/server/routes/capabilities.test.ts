@@ -113,6 +113,7 @@ describe("GET /capabilities", () => {
 				wsNativeAuth: true,
 				wsMobileProfile: true,
 				pairing: true,
+				devices: true,
 				respondAck: true,
 			});
 			expect(body.pushEvents).toEqual([]);

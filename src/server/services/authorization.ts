@@ -33,7 +33,7 @@ import { resolveSessionHost } from "./session-ownership.js";
 export const NOT_OWNER_MESSAGE = "Only the owner or an admin can do that.";
 
 export class NotOwnerError extends Error {
-	constructor(readonly resource: "session" | "key" | "host") {
+	constructor(readonly resource: "session" | "key" | "host" | "device") {
 		super(`Only the ${resource}'s owner or an admin can do that.`);
 		this.name = "NotOwnerError";
 	}
@@ -168,6 +168,22 @@ export const assertCanRenameSession = assertSessionOwnerOrAdmin;
 export const assertCanPinSession = assertSessionOwnerOrAdmin;
 /** Notes and the stored CLAUDE.md (which feeds the owner's AI watcher context). */
 export const assertCanEditSessionNotes = assertSessionOwnerOrAdmin;
+
+/**
+ * May this caller manage this device (change it, test it, delete it)? Solo: yes.
+ * Team: its owner or an admin. A device whose key has no owner is an admin's,
+ * except that the very key it registered with may manage it (an ownerless key is
+ * a member with no identity, and still has to be able to remove its own phone).
+ */
+export async function assertCanManageDevice(
+	actor: Actor,
+	device: { userId: string | null; apiKeyId: string },
+	callerKeyId: string | null,
+): Promise<void> {
+	if ((await modeOf(actor)) === "solo") return;
+	if (device.userId === null && callerKeyId !== null && callerKeyId === device.apiKeyId) return;
+	if (!isOwnerOrAdmin(actor, device.userId, false)) throw new NotOwnerError("device");
+}
 
 async function assertKeyOwnerOrAdmin(actor: Actor, keyId: string): Promise<void> {
 	if ((await modeOf(actor)) === "solo") return;

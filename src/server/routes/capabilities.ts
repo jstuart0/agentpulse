@@ -39,6 +39,11 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		value: true,
 	},
 	{
+		name: "devices",
+		proof: { kind: "route", method: "POST", path: "/devices" },
+		value: true,
+	},
+	{
 		name: "respondAck",
 		proof: { kind: "route", method: "POST", path: "/sessions/:sessionId/acknowledge" },
 		value: true,

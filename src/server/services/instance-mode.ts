@@ -21,6 +21,7 @@ import { awaitSeamInsideAdminLock, withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, sessions, settings, users } from "../db/schema/index.js";
 import { requestWsRevalidation } from "../ws/revalidation.js";
+import { onKeyOwnerChanged, onKeysDeactivated } from "./mobile-devices-service.js";
 import {
 	type ServiceKeySummary,
 	countUndecidedServiceKeys,
@@ -365,6 +366,7 @@ async function applyDecisionsForTeam(
 			tally.kept++;
 		} else if (decision.decision === "revoke") {
 			await tx.update(apiKeys).set({ isActive: false }).where(eq(apiKeys.id, decision.keyId));
+			await onKeysDeactivated([decision.keyId], tx);
 			await delistServiceKey(decision.keyId, tx);
 			tally.revoked++;
 		} else {
@@ -372,6 +374,8 @@ async function applyDecisionsForTeam(
 				.update(apiKeys)
 				.set({ ownerUserId: decision.userId })
 				.where(eq(apiKeys.id, decision.keyId));
+			// An ownerless key getting an owner: its phones register again under that owner.
+			await onKeyOwnerChanged(decision.keyId, null, decision.userId ?? null, tx);
 			await delistServiceKey(decision.keyId, tx);
 			tally.assigned++;
 		}

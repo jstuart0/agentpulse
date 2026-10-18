@@ -108,3 +108,105 @@ export function revokeReducer(state: RevokeState, event: RevokeEvent): RevokeSta
 			return state.step === "revoking" ? { step: "error", message: event.message } : state;
 	}
 }
+
+// ── Paired phones ────────────────────────────────────────────────────────────
+
+/** The line a phone is listed under. */
+export function deviceTitle(device: { deviceName: string | null; platform: string }): string {
+	return device.deviceName?.trim() || `${device.platform} device`;
+}
+
+/** What the revoke confirmation says, depending on whether the phone's key goes with it. */
+export function deviceRevokeWarning(device: {
+	paired: boolean;
+	deviceName: string | null;
+	platform: string;
+}): string {
+	const name = deviceTitle(device);
+	return device.paired
+		? `Remove ${name}? It stops getting notifications and its access key is revoked, so it has to be paired again.`
+		: `Remove ${name}? It stops getting notifications. The API key it uses is yours and stays valid.`;
+}
+
+/** m/h/d ago, or "never". */
+export function lastSeenText(lastSeenAt: string | null, nowMs: number): string {
+	if (!lastSeenAt) return "never seen";
+	const seconds = Math.max(0, Math.floor((nowMs - Date.parse(lastSeenAt)) / 1000));
+	if (seconds < 90) return "just now";
+	if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
+	if (seconds < 86_400) return `${Math.round(seconds / 3600)} h ago`;
+	return `${Math.round(seconds / 86_400)} d ago`;
+}
+
+/** What to tell the person after "Send test": the server answers 503 until push is set up, 429 past five a minute. */
+export function testPushMessage(outcome: { status: number } | "sent"): string {
+	if (outcome === "sent") return "Test notification sent.";
+	switch (outcome.status) {
+		case 503:
+			return "This server can't send notifications yet.";
+		case 429:
+			return "That's the limit for tests. Try again in a minute.";
+		case 404:
+			return "That phone is no longer registered.";
+		default:
+			return "Couldn't send a test notification. Try again.";
+	}
+}
+
+// ── The paired-phones list: loading, refreshing, removing ────────────────────
+
+export type DeviceListState<T> =
+	| { step: "loading" }
+	| { step: "failed" }
+	| { step: "ready"; devices: T[] };
+
+export type DeviceListEvent<T> =
+	| { type: "loaded"; devices: T[] }
+	| { type: "failed" }
+	| { type: "retry" }
+	| { type: "removed"; id: string };
+
+/**
+ * The list a person sees. A failed first load says so (with a retry); a failed
+ * refresh of a list already on screen keeps it, rather than blanking it; a phone
+ * that was removed leaves the list at once, without waiting for the next refresh.
+ */
+export function deviceListReducer<T extends { id: string }>(
+	state: DeviceListState<T>,
+	event: DeviceListEvent<T>,
+): DeviceListState<T> {
+	switch (event.type) {
+		case "loaded":
+			return { step: "ready", devices: event.devices };
+		case "failed":
+			return state.step === "ready" ? state : { step: "failed" };
+		case "retry":
+			return state.step === "failed" ? { step: "loading" } : state;
+		case "removed":
+			return state.step === "ready"
+				? { step: "ready", devices: state.devices.filter((d) => d.id !== event.id) }
+				: state;
+	}
+}
+
+export type TestPushState =
+	| { step: "idle" }
+	| { step: "sending" }
+	| { step: "done"; message: string };
+
+export type TestPushEvent =
+	| { type: "start" }
+	| { type: "finished"; message: string }
+	| { type: "dismiss" };
+
+/** "Send test": one at a time, and the outcome stays on screen until dismissed or the next test starts. */
+export function testPushReducer(state: TestPushState, event: TestPushEvent): TestPushState {
+	switch (event.type) {
+		case "start":
+			return state.step === "sending" ? state : { step: "sending" };
+		case "finished":
+			return state.step === "sending" ? { step: "done", message: event.message } : state;
+		case "dismiss":
+			return state.step === "done" ? { step: "idle" } : state;
+	}
+}

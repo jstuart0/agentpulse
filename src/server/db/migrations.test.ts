@@ -212,6 +212,8 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 				"ai_qa_cache",
 				"ai_session_summaries",
 				"pairing_codes",
+				"mobile_devices",
+				"mobile_device_activities",
 				"ask_threads",
 				"ask_messages",
 				"projects",
@@ -767,7 +769,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 import { describePostgresOnly } from "../test-utils/backend.js";
 
 describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
-	test("TC-1.3 fresh Postgres install creates every table (pairing_codes and ai_session_summaries among them) + 8 cascade FKs", async () => {
+	test("TC-1.3 fresh Postgres install creates every table (pairing_codes and ai_session_summaries among them) + 9 cascade FKs", async () => {
 		// Requires DATABASE_URL to point at an empty test database.
 		// Run with: AGENTPULSE_TEST_BACKEND=postgres DATABASE_URL=postgres://... bun test
 		const { default: postgres } = await import("postgres");
@@ -808,6 +810,8 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				"ai_qa_cache",
 				"ai_session_summaries",
 				"pairing_codes",
+				"mobile_devices",
+				"mobile_device_activities",
 				"ask_threads",
 				"ask_messages",
 				"projects",
@@ -855,11 +859,15 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				  AND rc.delete_rule = 'CASCADE'
 			`) as Array<{ table_name: string; delete_rule: string }>;
 
-			expect(cascadeFks.length, "expected 8 cascade FKs on sessions(session_id)").toBe(8);
+			expect(cascadeFks.length, "expected 9 cascade FKs on sessions(session_id)").toBe(9);
 			expect(
 				cascadeFks.map((r) => r.table_name),
 				"the summaries table is one of the cascade children",
 			).toContain("ai_session_summaries");
+			expect(
+				cascadeFks.map((r) => r.table_name),
+				"so are a phone's live activities",
+			).toContain("mobile_device_activities");
 
 			// All 15 user-ownership columns + 3 indexes on Postgres, by
 			// information_schema.columns / pg_indexes.
@@ -1499,6 +1507,347 @@ describePostgresOnly("pairing_codes on Postgres", () => {
 				expect(
 					await after`SELECT tgname FROM pg_trigger WHERE tgname = ${PAIRING_TRIGGER}`,
 				).toHaveLength(1);
+			} finally {
+				await after.end();
+			}
+		} finally {
+			const cleanup = postgres(baseUrl, { max: 1, idle_timeout: 5 });
+			try {
+				await cleanup.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+			} finally {
+				await cleanup.end();
+			}
+		}
+	}, 60_000);
+});
+
+// ── Migration 0013: mobile_devices and mobile_device_activities ───────────────
+
+const DEVICE_COLUMNS = [
+	"id",
+	"user_id",
+	"api_key_id",
+	"paired_via_code_id",
+	"platform",
+	"environment",
+	"relay_device_id",
+	"send_token",
+	"kid",
+	"public_key",
+	"client_server_ref",
+	"device_name",
+	"app_version",
+	"os_version",
+	"prefs_json",
+	"last_seen_at",
+	"created_at",
+	"updated_at",
+	"revoked_at",
+	"revoked_reason",
+];
+const ACTIVITY_COLUMNS = [
+	"id",
+	"device_id",
+	"session_id",
+	"slot",
+	"generation",
+	"created_at",
+	"ended_at",
+];
+const DEVICE_INDEXES = [
+	"mobile_devices_platform_relay_device_unique",
+	"idx_mobile_devices_api_key",
+	"idx_mobile_devices_user",
+	"mobile_device_activities_device_session_unique",
+	"idx_mobile_device_activities_session",
+];
+
+/** The migrations folder with 0013 and everything after it removed: the database as 0012 left it. */
+async function migrationsBefore0013(dialect: "sqlite" | "postgres"): Promise<string> {
+	const { cpSync, readFileSync, unlinkSync, writeFileSync } = await import("node:fs");
+	const dir = mkdtempSync(join(tmpdir(), `ap-prior-${dialect}-0013-`));
+	cpSync(join(process.cwd(), "drizzle", dialect), dir, { recursive: true });
+	const journalPath = join(dir, "meta", "_journal.json");
+	const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
+		entries: Array<{ tag: string }>;
+	};
+	const cut = journal.entries.findIndex((e) => e.tag === "0013_mobile_devices");
+	expect(cut, "the journal lists 0013_mobile_devices").toBeGreaterThan(0);
+	for (const dropped of journal.entries.slice(cut)) unlinkSync(join(dir, `${dropped.tag}.sql`));
+	writeFileSync(
+		journalPath,
+		JSON.stringify({ ...journal, entries: journal.entries.slice(0, cut) }, null, 2),
+	);
+	return dir;
+}
+
+/** The cascade foreign keys of a SQLite table: [from column, referenced table, on delete]. */
+function sqliteForeignKeys(db: Database, table: string): string[][] {
+	return (
+		db.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+			from: string;
+			table: string;
+			on_delete: string;
+		}>
+	)
+		.map((r) => [r.from, r.table, r.on_delete])
+		.sort();
+}
+
+const EXPECTED_ACTIVITY_FKS = [
+	["device_id", "mobile_devices", "CASCADE"],
+	["session_id", "sessions", "CASCADE"],
+];
+
+function insertDeviceSql(id: string, relay: string): string {
+	return `INSERT INTO mobile_devices (id, api_key_id, platform, environment, relay_device_id, send_token, kid, public_key, client_server_ref, created_at, updated_at) VALUES ('${id}', 'k-1', 'ios', 'sandbox', '${relay}', 't', 'kid', 'pk', 'ref', 'x', 'x')`;
+}
+
+describeSqliteOnly("mobile devices on SQLite", () => {
+	function assertShape(db: Database): void {
+		expect(getColumnNames(db, "mobile_devices")).toEqual(DEVICE_COLUMNS);
+		expect(getColumnNames(db, "mobile_device_activities")).toEqual(ACTIVITY_COLUMNS);
+		for (const index of DEVICE_INDEXES) expect(getIndexNames(db)).toContain(index);
+		expect(uniqueIndexNames(db, "mobile_devices")).toContain(
+			"mobile_devices_platform_relay_device_unique",
+		);
+		expect(uniqueIndexNames(db, "mobile_device_activities")).toContain(
+			"mobile_device_activities_device_session_unique",
+		);
+		expect(sqliteForeignKeys(db, "mobile_device_activities")).toEqual(EXPECTED_ACTIVITY_FKS);
+	}
+
+	function assertBehaviour(db: Database): void {
+		db.exec("PRAGMA foreign_keys = ON");
+		db.exec(
+			"INSERT OR IGNORE INTO sessions (id, session_id, agent_type) VALUES ('s-row', 's-1', 'claude_code')",
+		);
+		db.exec(insertDeviceSql("d-1", "relay-1"));
+		expect(() => db.exec(insertDeviceSql("d-2", "relay-1"))).toThrow(); // (platform, relay id) is unique
+		db.exec(insertDeviceSql("d-3", "relay-3"));
+		db.exec(
+			"INSERT INTO mobile_device_activities (id, device_id, session_id, slot, created_at) VALUES ('a-1', 'd-1', 's-1', 'slot', 'x')",
+		);
+		expect(() =>
+			db.exec(
+				"INSERT INTO mobile_device_activities (id, device_id, session_id, slot, created_at) VALUES ('a-2', 'd-1', 's-1', 'slot', 'x')",
+			),
+		).toThrow(); // one activity per (device, session)
+		expect(() =>
+			db.exec(
+				"INSERT INTO mobile_device_activities (id, device_id, session_id, slot, created_at) VALUES ('a-3', 'd-1', 'no-such-session', 'slot', 'x')",
+			),
+		).toThrow(); // the foreign key is live
+		const count = () =>
+			(db.prepare("SELECT COUNT(*) AS n FROM mobile_device_activities").get() as { n: number }).n;
+		db.exec("DELETE FROM sessions WHERE session_id = 's-1'");
+		expect(count()).toBe(0); // the session took its activities with it
+		db.exec(
+			"INSERT INTO sessions (id, session_id, agent_type) VALUES ('s-row-2', 's-2', 'claude_code')",
+		);
+		db.exec(
+			"INSERT INTO mobile_device_activities (id, device_id, session_id, slot, created_at) VALUES ('a-4', 'd-3', 's-2', 'slot', 'x')",
+		);
+		db.exec("DELETE FROM mobile_devices WHERE id = 'd-3'");
+		expect(count()).toBe(0); // and so did the device
+	}
+
+	test("a fresh Drizzle install has both tables with their columns, indexes, uniqueness and cascades", async () => {
+		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+		const { drizzle } = await import("drizzle-orm/bun-sqlite");
+		const db = new Database(tmpDbPath());
+		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		try {
+			migrate(drizzle(db), { migrationsFolder: join(process.cwd(), "drizzle", "sqlite") });
+			assertShape(db);
+			assertBehaviour(db);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("legacy init on an existing install creates them the same way; a second boot is a no-op and keeps the rows", async () => {
+		const db = new Database(":memory:");
+		db.exec(`CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL UNIQUE,
+			agent_type TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			started_at TEXT NOT NULL DEFAULT (datetime('now')),
+			last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+			cwd TEXT,
+			current_task TEXT,
+			total_tool_uses INTEGER NOT NULL DEFAULT 0,
+			metadata TEXT DEFAULT '{}'
+		)`);
+		try {
+			await initializeDatabase(db);
+			expect(getTableNames(db)).not.toContain("__drizzle_migrations");
+			assertShape(db);
+			db.exec(insertDeviceSql("d-keep", "relay-keep"));
+			await initializeDatabase(db);
+			assertShape(db);
+			expect(
+				(db.prepare("SELECT COUNT(*) AS n FROM mobile_devices").get() as { n: number }).n,
+			).toBe(1);
+			db.exec("DELETE FROM mobile_devices");
+			assertBehaviour(db);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("upgrading from 0012 with data in it: the tables appear, the earlier rows survive, and the constraints hold", async () => {
+		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+		const { drizzle } = await import("drizzle-orm/bun-sqlite");
+		const prior = await migrationsBefore0013("sqlite");
+		const db = new Database(tmpDbPath());
+		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		try {
+			migrate(drizzle(db), { migrationsFolder: prior });
+			expect(getTableNames(db)).not.toContain("mobile_devices");
+			db.exec(
+				"INSERT INTO sessions (id, session_id, agent_type) VALUES ('s-row', 's-1', 'claude_code')",
+			);
+			db.exec(
+				"INSERT INTO api_keys (id, name, key_hash, key_prefix) VALUES ('k-1', 'seed', 'seed-hash', 'ap_seed')",
+			);
+			db.exec(
+				"INSERT INTO pairing_codes (id, code_hash, access, created_at, expires_at) VALUES ('c-1', 'h', 'respond', 'x', 'y')",
+			);
+
+			migrate(drizzle(db), { migrationsFolder: join(process.cwd(), "drizzle", "sqlite") });
+
+			assertShape(db);
+			for (const table of ["sessions", "api_keys", "pairing_codes"]) {
+				expect((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(1);
+			}
+			assertBehaviour(db);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("re-running 0013's SQL on a database that has it is a no-op", async () => {
+		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+		const { drizzle } = await import("drizzle-orm/bun-sqlite");
+		const { readFileSync } = await import("node:fs");
+		const folder = join(process.cwd(), "drizzle", "sqlite");
+		const db = new Database(tmpDbPath());
+		try {
+			migrate(drizzle(db), { migrationsFolder: folder });
+			const sql = readFileSync(join(folder, "0013_mobile_devices.sql"), "utf8");
+			for (const statement of sql.split("--> statement-breakpoint")) db.exec(statement);
+			assertShape(db);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+describePostgresOnly("mobile devices on Postgres", () => {
+	test("upgrading from 0012 with data in it: both tables, their indexes, uniqueness and cascades, the rows survive, re-running the SQL is a no-op", async () => {
+		const { default: postgres } = await import("postgres");
+		const { migrate } = await import("drizzle-orm/postgres-js/migrator");
+		const { drizzle: drizzlePg } = await import("drizzle-orm/postgres-js");
+		const { readFileSync } = await import("node:fs");
+		const prior = await migrationsBefore0013("postgres");
+		const full = join(process.cwd(), "drizzle", "postgres");
+
+		const baseUrl = process.env.DATABASE_URL ?? "";
+		const dbName = `ap_devices_upgrade_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+		const scratch = new URL(baseUrl);
+		scratch.pathname = `/${dbName}`;
+		const admin = postgres(baseUrl, { max: 1, idle_timeout: 5, onnotice: () => {} });
+		try {
+			await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+		} finally {
+			await admin.end();
+		}
+		try {
+			const before = postgres(scratch.toString(), { max: 1, idle_timeout: 5, onnotice: () => {} });
+			try {
+				await migrate(drizzlePg(before), { migrationsFolder: prior });
+				expect((await before`SELECT to_regclass('public.mobile_devices') AS t`)[0]?.t).toBeNull();
+				await before`INSERT INTO sessions (id, session_id, agent_type) VALUES ('s-row', 's-1', 'claude_code')`;
+				await before`INSERT INTO api_keys (id, name, key_hash, key_prefix) VALUES ('k-1', 'seed', 'seed-hash', 'ap_seed')`;
+				await before`INSERT INTO pairing_codes (id, code_hash, access, created_at, expires_at) VALUES ('c-1', 'h', 'respond', 'x', 'y')`;
+			} finally {
+				await before.end();
+			}
+
+			const after = postgres(scratch.toString(), { max: 1, idle_timeout: 5, onnotice: () => {} });
+			try {
+				await migrate(drizzlePg(after), { migrationsFolder: full });
+				for (const table of ["mobile_devices", "mobile_device_activities"]) {
+					expect(
+						(await after.unsafe(`SELECT to_regclass('public.${table}') AS t`))[0]?.t,
+					).not.toBeNull();
+				}
+				const columns = async (table: string) =>
+					(
+						(await after`SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ${table} ORDER BY ordinal_position`) as Array<{
+							column_name: string;
+						}>
+					).map((r) => r.column_name);
+				expect(await columns("mobile_devices")).toEqual(DEVICE_COLUMNS);
+				expect(await columns("mobile_device_activities")).toEqual(ACTIVITY_COLUMNS);
+				const indexes = (
+					(await after`SELECT indexname FROM pg_indexes WHERE tablename IN ('mobile_devices', 'mobile_device_activities')`) as Array<{
+						indexname: string;
+					}>
+				).map((r) => r.indexname);
+				for (const index of DEVICE_INDEXES) expect(indexes).toContain(index);
+				for (const table of ["sessions", "api_keys", "pairing_codes"]) {
+					expect((await after.unsafe(`SELECT COUNT(*)::int AS n FROM ${table}`))[0]?.n).toBe(1);
+				}
+
+				const fks = (await after`
+					SELECT kcu.column_name, ccu.table_name AS ref_table, rc.delete_rule
+					FROM information_schema.referential_constraints rc
+					JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name
+					JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name
+					WHERE kcu.table_name = 'mobile_device_activities'
+					ORDER BY kcu.column_name`) as Array<{
+					column_name: string;
+					ref_table: string;
+					delete_rule: string;
+				}>;
+				expect(fks.map((r) => [r.column_name, r.ref_table, r.delete_rule])).toEqual([
+					["device_id", "mobile_devices", "CASCADE"],
+					["session_id", "sessions", "CASCADE"],
+				]);
+
+				const insertDevice = (id: string, relay: string) =>
+					after.unsafe(insertDeviceSql(id, relay));
+				await insertDevice("d-1", "relay-1");
+				expect(await failureOf(insertDevice("d-2", "relay-1"))).toMatch(/./);
+				await insertDevice("d-3", "relay-3");
+				await after`INSERT INTO mobile_device_activities (id, device_id, session_id, slot, created_at) VALUES ('a-1', 'd-1', 's-1', 'slot', 'x')`;
+				expect(
+					await failureOf(
+						after`INSERT INTO mobile_device_activities (id, device_id, session_id, slot, created_at) VALUES ('a-2', 'd-1', 's-1', 'slot', 'x')`,
+					),
+				).toMatch(/./);
+				expect(
+					await failureOf(
+						after`INSERT INTO mobile_device_activities (id, device_id, session_id, slot, created_at) VALUES ('a-3', 'd-1', 'no-such-session', 'slot', 'x')`,
+					),
+				).toMatch(/./);
+				const activities = async () =>
+					(await after`SELECT COUNT(*)::int AS n FROM mobile_device_activities`)[0]?.n;
+				await after`DELETE FROM sessions WHERE session_id = 's-1'`;
+				expect(await activities()).toBe(0);
+				await after`INSERT INTO sessions (id, session_id, agent_type) VALUES ('s-row-2', 's-2', 'claude_code')`;
+				await after`INSERT INTO mobile_device_activities (id, device_id, session_id, slot, created_at) VALUES ('a-4', 'd-3', 's-2', 'slot', 'x')`;
+				await after`DELETE FROM mobile_devices WHERE id = 'd-3'`;
+				expect(await activities()).toBe(0);
+
+				const sqlText = readFileSync(join(full, "0013_mobile_devices.sql"), "utf8");
+				for (const statement of sqlText.split("--> statement-breakpoint")) {
+					await after.unsafe(statement);
+				}
+				expect((await after`SELECT COUNT(*)::int AS n FROM mobile_devices`)[0]?.n).toBe(1);
 			} finally {
 				await after.end();
 			}

@@ -92,6 +92,13 @@
 			"when": 1792271061764,
 			"tag": "0012_pairing_codes",
 			"breakpoints": true
+		},
+		{
+			"idx": 13,
+			"version": "7",
+			"when": 1792281216360,
+			"tag": "0013_mobile_devices",
+			"breakpoints": true
 		}
 	]
 }

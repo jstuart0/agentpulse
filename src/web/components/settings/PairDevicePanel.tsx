@@ -2,21 +2,28 @@ import QRCode from "qrcode";
 import { useCallback, useEffect, useReducer, useState } from "react";
 import { useSecretLifetime } from "../../hooks/useSecretLifetime.js";
 import { describeApiError } from "../../lib/api-errors.js";
-import { api } from "../../lib/api.js";
+import { ApiError, type PairedDevice, api } from "../../lib/api.js";
 import {
 	PAIRING_ACCESS_OPTIONS,
 	type PairingAccess,
 	type PairingServerStatus,
 	countdownText,
+	deviceListReducer,
+	deviceRevokeWarning,
+	deviceTitle,
 	heldCode,
+	lastSeenText,
 	pairingUri,
 	pairingView,
 	revokeReducer,
 	revokeTarget,
+	testPushMessage,
+	testPushReducer,
 } from "../../lib/pairing-flow.js";
 
 const STATUS_POLL_MS = 2000;
 const QR_WIDTH_PX = 224;
+const DEVICE_POLL_MS = 15_000;
 
 interface MadeCode {
 	id: string;
@@ -311,6 +318,183 @@ export function PairDevicePanel() {
 					{error}
 				</p>
 			)}
+
+			<div>
+				<h3 className="text-xs font-semibold text-foreground mt-2 mb-2">Paired phones</h3>
+				<PairedDevices refreshKey={view === "redeemed" ? 1 : 0} />
+			</div>
 		</div>
+	);
+}
+
+/**
+ * The phones registered with this server: send a test, or remove one. Removing
+ * is two steps, and says whether the phone's key goes with it.
+ */
+export function PairedDevices({ refreshKey }: { refreshKey: number }) {
+	const [list, dispatchList] = useReducer(deviceListReducer<PairedDevice>, { step: "loading" });
+	const [nowMs] = useState(() => Date.now());
+
+	const load = useCallback(async () => {
+		try {
+			dispatchList({ type: "loaded", devices: (await api.getDevices()).devices });
+		} catch {
+			dispatchList({ type: "failed" });
+		}
+	}, []);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is the reload trigger
+	useEffect(() => {
+		void load();
+	}, [load, refreshKey]);
+
+	// A phone registers with the server a moment after it redeems its code.
+	useEffect(() => {
+		const timer = setInterval(() => void load(), DEVICE_POLL_MS);
+		return () => clearInterval(timer);
+	}, [load]);
+
+	if (list.step === "failed") {
+		return (
+			<p role="alert" className="text-xs text-red-700 dark:text-red-400">
+				Couldn't load your phones.{" "}
+				<button
+					type="button"
+					className="underline"
+					onClick={() => {
+						dispatchList({ type: "retry" });
+						void load();
+					}}
+				>
+					Try again
+				</button>
+			</p>
+		);
+	}
+	if (list.step === "loading") {
+		return <p className="text-xs text-muted-foreground">Loading phones…</p>;
+	}
+	const devices = list.devices;
+	if (devices.length === 0) {
+		return <p className="text-xs text-muted-foreground">No phones are paired yet.</p>;
+	}
+	return (
+		<ul className="divide-y divide-border rounded-md border border-border">
+			{devices.map((device) => (
+				<PairedDeviceRow
+					key={device.id}
+					device={device}
+					nowMs={nowMs}
+					onRemoved={() => {
+						dispatchList({ type: "removed", id: device.id });
+						void load();
+					}}
+				/>
+			))}
+		</ul>
+	);
+}
+
+function PairedDeviceRow({
+	device,
+	nowMs,
+	onRemoved,
+}: {
+	device: PairedDevice;
+	nowMs: number;
+	onRemoved: () => void;
+}) {
+	const [revoke, dispatch] = useReducer(revokeReducer, { step: "idle" });
+	const [test, dispatchTest] = useReducer(testPushReducer, { step: "idle" });
+	const testing = test.step === "sending";
+
+	async function sendTest() {
+		dispatchTest({ type: "start" });
+		try {
+			await api.testDevice(device.id);
+			dispatchTest({ type: "finished", message: testPushMessage("sent") });
+		} catch (err) {
+			dispatchTest({
+				type: "finished",
+				message: testPushMessage({ status: err instanceof ApiError ? err.status : 0 }),
+			});
+		}
+	}
+
+	async function remove() {
+		dispatch({ type: "submit" });
+		try {
+			await api.deleteDevice(device.id);
+			dispatch({ type: "succeeded" });
+			onRemoved();
+		} catch (err) {
+			dispatch({
+				type: "failed",
+				message: describeApiError(err, "Couldn't remove that phone. Try again."),
+			});
+		}
+	}
+
+	return (
+		<li className="space-y-2 p-3">
+			<div className="flex flex-wrap items-center justify-between gap-2">
+				<div>
+					<p className="text-sm font-medium text-foreground">{deviceTitle(device)}</p>
+					<p className="text-xs text-muted-foreground">
+						{device.platform}
+						{device.osVersion ? ` ${device.osVersion}` : ""} ·{" "}
+						{lastSeenText(device.lastSeenAt, nowMs)}
+					</p>
+				</div>
+				{revoke.step === "idle" && (
+					<div className="flex gap-2">
+						<button
+							type="button"
+							onClick={() => void sendTest()}
+							disabled={testing}
+							className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+						>
+							{testing ? "Sending…" : "Send test"}
+						</button>
+						<button
+							type="button"
+							onClick={() => dispatch({ type: "ask" })}
+							className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
+						>
+							Remove
+						</button>
+					</div>
+				)}
+			</div>
+			{revoke.step !== "idle" && revoke.step !== "revoked" && (
+				<div className="flex flex-wrap items-center gap-2 text-xs">
+					<span className="text-muted-foreground">{deviceRevokeWarning(device)}</span>
+					<button
+						type="button"
+						onClick={() => void remove()}
+						disabled={revoke.step === "revoking"}
+						className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+					>
+						{revoke.step === "revoking" ? "Removing…" : `Remove ${deviceTitle(device)}`}
+					</button>
+					<button
+						type="button"
+						onClick={() => dispatch({ type: "cancel" })}
+						disabled={revoke.step === "revoking"}
+						className="text-muted-foreground hover:text-foreground underline"
+					>
+						Keep it
+					</button>
+				</div>
+			)}
+			{revoke.step === "error" && (
+				<p role="alert" className="text-xs text-red-700 dark:text-red-400">
+					{revoke.message}
+				</p>
+			)}
+			{test.step === "done" && (
+				<output className="block text-xs text-muted-foreground">{test.message}</output>
+			)}
+		</li>
 	);
 }

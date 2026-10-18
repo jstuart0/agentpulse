@@ -1195,10 +1195,16 @@ describe("respond scope — grants table", () => {
 		expect(SCOPE_GRANTS.ingest.reads.size).toBe(0);
 	});
 
-	test("respond holds only its S1 grants: observe's reads and exactly two acknowledge writes", () => {
-		expect([...SCOPE_GRANTS.respond.reads].sort()).toEqual([...OBSERVE_READ_PATHS].sort());
+	test("respond holds only the grants that have landed: observe's reads plus /devices, and the acknowledge and device writes", () => {
+		expect([...SCOPE_GRANTS.respond.reads].sort()).toEqual(
+			[...OBSERVE_READ_PATHS, "/devices"].sort(),
+		);
 		expect([...SCOPE_GRANTS.respond.writes].sort()).toEqual([
+			"DELETE /devices/:id",
 			"DELETE /sessions/:sessionId/acknowledge",
+			"PATCH /devices/:id",
+			"POST /devices",
+			"POST /devices/:id/test",
 			"POST /sessions/:sessionId/acknowledge",
 		]);
 		expect(SCOPE_GRANTS.respond.ws).toBe(true);

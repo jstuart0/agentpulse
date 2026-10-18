@@ -161,6 +161,19 @@ export function looksLikeAuthBounce(res: Response): boolean {
  * re-parsing a formatted message. `message` is the server's `{message}` or
  * `{error}` text when present, else `res.statusText`.
  */
+export interface PairedDevice {
+	id: string;
+	platform: string;
+	environment: string;
+	deviceName: string | null;
+	appVersion: string | null;
+	osVersion: string | null;
+	/** True when the phone's key came from a pairing code (so removing it revokes the key). */
+	paired: boolean;
+	lastSeenAt: string | null;
+	createdAt: string;
+}
+
 export class ApiError extends Error {
 	readonly status: number;
 	readonly code: string | null;
@@ -722,6 +735,17 @@ export const api = {
 			redeemedDeviceName: string | null;
 			redeemedKeyId: string | null;
 		}>(`/pairing-codes/${id}`),
+
+	/** The signed-in person's registered phones (never a push credential). */
+	getDevices: () => request<{ devices: PairedDevice[] }>("/devices"),
+
+	/** Revokes a phone; its key too if a pairing code made it. */
+	deleteDevice: (id: string) =>
+		request<{ ok: true; keyRevoked: boolean }>(`/devices/${id}`, { method: "DELETE" }),
+
+	/** Asks for a test push; answers 503 until the server has push set up. */
+	testDevice: (id: string) =>
+		request<unknown>(`/devices/${id}/test`, { method: "POST", body: "{}" }),
 
 	revokeApiKey: (id: string) =>
 		request<{ ok: true }>(`/api-keys/${id}`, {

@@ -26,6 +26,10 @@ export { usersPg as users } from "./core/users.js";
 export { authSessionsPg as authSessions } from "./core/auth-sessions.js";
 export { apiKeysPg as apiKeys } from "./core/api-keys.js";
 export { pairingCodesPg as pairingCodes } from "./core/pairing-codes.js";
+export {
+	mobileDevicesPg as mobileDevices,
+	mobileDeviceActivitiesPg as mobileDeviceActivities,
+} from "./core/mobile-devices.js";
 export { settingsPg as settings } from "./core/settings.js";
 export { sessionTemplatesPg as sessionTemplates } from "./core/session-templates.js";
 export { supervisorsPg as supervisors } from "./core/supervisors.js";

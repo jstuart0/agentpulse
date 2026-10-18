@@ -2,6 +2,7 @@ import { eq, inArray } from "drizzle-orm";
 import { withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, users } from "../db/schema/index.js";
+import { onKeysDeactivated } from "../services/mobile-devices-service.js";
 import { listServiceKey } from "../services/service-key-lists.js";
 import { assertOwnerActive } from "./owner-state.js";
 
@@ -256,7 +257,10 @@ export async function deactivateApiKeysOwnedByUser(
 		.set({ isActive: false })
 		.where(eq(apiKeys.ownerUserId, userId))
 		.returning({ id: apiKeys.id });
-	return rows.map((r: { id: string }) => r.id);
+	const ids = rows.map((r: { id: string }) => r.id);
+	// The phones registered with these keys go with them, on the same transaction.
+	await onKeysDeactivated(ids, tx);
+	return ids;
 }
 
 /**

@@ -16,6 +16,10 @@ export { usersSqlite as users } from "../src/server/db/schema/core/users";
 export { authSessionsSqlite as authSessions } from "../src/server/db/schema/core/auth-sessions";
 export { apiKeysSqlite as apiKeys } from "../src/server/db/schema/core/api-keys";
 export { pairingCodesSqlite as pairingCodes } from "../src/server/db/schema/core/pairing-codes";
+export {
+	mobileDevicesSqlite as mobileDevices,
+	mobileDeviceActivitiesSqlite as mobileDeviceActivities,
+} from "../src/server/db/schema/core/mobile-devices";
 export { settingsSqlite as settings } from "../src/server/db/schema/core/settings";
 export { sessionTemplatesSqlite as sessionTemplates } from "../src/server/db/schema/core/session-templates";
 export { supervisorsSqlite as supervisors } from "../src/server/db/schema/core/supervisors";

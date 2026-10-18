@@ -27,6 +27,7 @@ import { getDb } from "../db/client.js";
 import { apiKeys, authSessions, pairingCodes } from "../db/schema/index.js";
 import { getMode } from "./instance-mode.js";
 import { getAdminServiceKeyIds } from "./service-keys.js";
+import { cleanDisplayText } from "./util/clean-text.js";
 import { FixedWindowCounter } from "./util/fixed-window-counter.js";
 
 export type PairingAccess = "full" | "respond";
@@ -89,20 +90,8 @@ export async function hashPairingCode(normalized: string): Promise<string> {
 	return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/**
- * Characters that change how text is laid out or vanish from it: bidirectional
- * controls and marks (which can make a device name read as something else in a
- * list) and zero-width characters (which let two names look the same).
- */
-const HIDDEN_FORMATTING = /[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
-
 function cleanText(input: unknown): string {
-	if (typeof input !== "string") return "";
-	const printable = [...input.replace(HIDDEN_FORMATTING, "")].filter((char) => {
-		const code = char.codePointAt(0) ?? 0;
-		return code > 0x1f && code !== 0x7f;
-	});
-	return printable.join("").trim().slice(0, PAIRING_NAME_MAX_LENGTH);
+	return cleanDisplayText(input, PAIRING_NAME_MAX_LENGTH);
 }
 
 // ── The minter's credential ──────────────────────────────────────────────────

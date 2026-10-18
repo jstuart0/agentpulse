@@ -18,6 +18,7 @@ import { withAdminLock } from "../db/admin-lock.js";
 import { getDb } from "../db/client.js";
 import { apiKeys, sessions, users } from "../db/schema/index.js";
 import { requestWsRevalidation } from "../ws/revalidation.js";
+import { onKeyOwnerChanged, onKeysDeactivated } from "./mobile-devices-service.js";
 import {
 	delistAdminServiceKey,
 	delistServiceKey,
@@ -108,7 +109,14 @@ export async function listUndecidedServiceKeys(): Promise<ServiceKeySummary[]> {
 }
 
 /** Deactivates a key and takes it off the list. False when there is no such key. */
-export async function revokeApiKey(keyId: string): Promise<boolean> {
+export async function revokeApiKey(
+	keyId: string,
+	options: {
+		/** Runs first, on the same transaction: it commits or rolls back with the revocation. */
+		// biome-ignore lint/suspicious/noExplicitAny: dialect-portable handle, same shape as withTransaction's tx
+		withinTransaction?: (tx: any) => Promise<void>;
+	} = {},
+): Promise<boolean> {
 	return withAdminLock(async (tx) => {
 		const [existing] = await tx
 			.select({ id: apiKeys.id })
@@ -116,7 +124,9 @@ export async function revokeApiKey(keyId: string): Promise<boolean> {
 			.where(eq(apiKeys.id, keyId))
 			.limit(1);
 		if (!existing) return false;
+		await options.withinTransaction?.(tx);
 		await tx.update(apiKeys).set({ isActive: false }).where(eq(apiKeys.id, keyId));
+		await onKeysDeactivated([keyId], tx);
 		await delistFromAllServiceKeyLists(keyId, tx);
 		return true;
 	}).then(async (revoked) => {
@@ -138,13 +148,14 @@ export async function reassignApiKeyOwner(
 ): Promise<boolean> {
 	return withAdminLock(async (tx) => {
 		const [existing] = await tx
-			.select({ id: apiKeys.id })
+			.select({ id: apiKeys.id, ownerUserId: apiKeys.ownerUserId })
 			.from(apiKeys)
 			.where(eq(apiKeys.id, keyId))
 			.limit(1);
 		if (!existing) return false;
 		if (ownerUserId) await assertOwnerActive(tx, ownerUserId);
 		await tx.update(apiKeys).set({ ownerUserId }).where(eq(apiKeys.id, keyId));
+		await onKeyOwnerChanged(keyId, existing.ownerUserId, ownerUserId, tx);
 		if (ownerUserId) await delistFromAllServiceKeyLists(keyId, tx);
 		return true;
 	}).then(async (reassigned) => {
@@ -252,6 +263,7 @@ export async function applyApiKeyPatch(
 		let attributedSessions = 0;
 		if (patch.ownerUserId !== undefined) {
 			await tx.update(apiKeys).set({ ownerUserId: patch.ownerUserId }).where(eq(apiKeys.id, keyId));
+			await onKeyOwnerChanged(keyId, existing.ownerUserId, patch.ownerUserId, tx);
 			await delistAdminServiceKey(keyId, tx);
 			if (patch.ownerUserId !== null) await delistServiceKey(keyId, tx);
 			if (patch.attributeSessions && patch.ownerUserId !== null) {

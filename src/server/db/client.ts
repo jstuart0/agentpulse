@@ -1093,6 +1093,45 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		)`,
 		"CREATE UNIQUE INDEX IF NOT EXISTS pairing_codes_code_hash_unique ON pairing_codes(code_hash)",
 		"CREATE INDEX IF NOT EXISTS idx_pairing_codes_redeemed_key ON pairing_codes(redeemed_key_id)",
+		// Mobile devices (migration 0013): same columns as the Drizzle schema. The
+		// activities table is born with its cascade FKs, so it needs no rebuild.
+		`CREATE TABLE IF NOT EXISTS mobile_devices (
+			id TEXT PRIMARY KEY NOT NULL,
+			user_id TEXT,
+			api_key_id TEXT NOT NULL,
+			paired_via_code_id TEXT,
+			platform TEXT NOT NULL,
+			environment TEXT NOT NULL,
+			relay_device_id TEXT NOT NULL,
+			send_token TEXT NOT NULL,
+			kid TEXT NOT NULL,
+			public_key TEXT NOT NULL,
+			client_server_ref TEXT NOT NULL,
+			device_name TEXT,
+			app_version TEXT,
+			os_version TEXT,
+			prefs_json TEXT,
+			last_seen_at TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			revoked_at TEXT,
+			revoked_reason TEXT
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS mobile_devices_platform_relay_device_unique ON mobile_devices(platform, relay_device_id)",
+		"CREATE INDEX IF NOT EXISTS idx_mobile_devices_api_key ON mobile_devices(api_key_id)",
+		"CREATE INDEX IF NOT EXISTS idx_mobile_devices_user ON mobile_devices(user_id)",
+		`CREATE TABLE IF NOT EXISTS mobile_device_activities (
+			id TEXT PRIMARY KEY NOT NULL,
+			device_id TEXT NOT NULL REFERENCES mobile_devices(id) ON DELETE CASCADE,
+			session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+			slot TEXT NOT NULL,
+			generation INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			ended_at TEXT
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS mobile_device_activities_device_session_unique ON mobile_device_activities(device_id, session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_mobile_device_activities_session ON mobile_device_activities(session_id)",
+
 		// A code's redeemed key is provenance and never changes once set (migration 0012).
 		`CREATE TRIGGER IF NOT EXISTS pairing_codes_redeemed_key_immutable
 			BEFORE UPDATE OF redeemed_key_id ON pairing_codes

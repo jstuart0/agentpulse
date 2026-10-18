@@ -18,6 +18,10 @@ export { usersPg as users } from "../src/server/db/schema/core/users";
 export { authSessionsPg as authSessions } from "../src/server/db/schema/core/auth-sessions";
 export { apiKeysPg as apiKeys } from "../src/server/db/schema/core/api-keys";
 export { pairingCodesPg as pairingCodes } from "../src/server/db/schema/core/pairing-codes";
+export {
+	mobileDevicesPg as mobileDevices,
+	mobileDeviceActivitiesPg as mobileDeviceActivities,
+} from "../src/server/db/schema/core/mobile-devices";
 export { settingsPg as settings } from "../src/server/db/schema/core/settings";
 export { sessionTemplatesPg as sessionTemplates } from "../src/server/db/schema/core/session-templates";
 export { supervisorsPg as supervisors } from "../src/server/db/schema/core/supervisors";
