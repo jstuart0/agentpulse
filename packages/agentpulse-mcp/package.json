@@ -42,5 +42,18 @@
 		"url": "git+https://github.com/jstuart0/agentpulse.git",
 		"directory": "packages/agentpulse-mcp"
 	},
-	"keywords": ["mcp", "model-context-protocol", "agentpulse", "claude-code", "codex", "ai", "agent"]
+	"keywords": [
+		"mcp",
+		"mcp-server",
+		"model-context-protocol",
+		"agentpulse",
+		"claude-code",
+		"codex",
+		"codex-cli",
+		"ai",
+		"agent",
+		"coding-agents",
+		"agent-orchestration",
+		"observability"
+	]
 }

@@ -6,12 +6,16 @@
 [![Bun](https://img.shields.io/badge/runtime-Bun-000?logo=bun)](https://bun.sh)
 [![Self-hosted](https://img.shields.io/badge/self--hosted-✓-green)](https://github.com/awesome-selfhosted/awesome-selfhosted)
 [![Wiki](https://img.shields.io/badge/docs-wiki-informational)](https://github.com/jstuart0/agentpulse/wiki)
+[![Website](https://img.shields.io/badge/website-guides-informational)](https://jstuart0.github.io/agentpulse/)
+[![npm](https://img.shields.io/npm/v/@craze0/agentpulse-mcp?label=MCP%20server)](https://www.npmjs.com/package/@craze0/agentpulse-mcp)
 
-**Command center for AI coding agents across all your machines.**
+**Open-source, self-hosted dashboard to monitor, orchestrate and remotely control Claude Code, Codex CLI and Copilot CLI sessions across all your machines.**
 
 If you run multiple Claude Code, Codex CLI, or Copilot CLI sessions across different terminal tabs, you know the pain: *which tab is doing what?* AgentPulse gives you a live dashboard that shows every active session, what it's working on, and a scrollable chat history of everything you've said to each agent.
 
-![AgentPulse dashboard — live view of every active Claude Code / Codex / Copilot session](src/web/assets/screenshots/agentpulse-dashboard.png)
+![AgentPulse dashboard showing a grid of live Claude Code, Codex CLI and Copilot CLI sessions, each with its status, project, session name and tool-use count](src/web/assets/screenshots/agentpulse-dashboard.png)
+
+*The AgentPulse dashboard: every running Claude Code, Codex CLI and Copilot CLI session in one grid, marked Working, Waiting, Idle or Error.*
 
 ## What AgentPulse is
 
@@ -27,6 +31,16 @@ You can run AgentPulse as:
 - **observability only** -- hooks + dashboard, no supervisor/control plane
 - **full local orchestration** -- hooks + dashboard + local supervisor for launch/control on the same machine
 - **remote dashboard** -- relay local events to a remote AgentPulse instance
+
+## Use cases
+
+- **Monitor multiple Claude Code sessions at once.** One live grid instead of a dozen terminal tabs, with each session's state, last prompt and full history. [Guide](https://jstuart0.github.io/agentpulse/guides/monitor-multiple-claude-code-sessions/)
+- **See agents on every machine in one place.** A relay on each laptop, desktop or server forwards events to one dashboard, with a filter by machine. [Guide](https://jstuart0.github.io/agentpulse/guides/monitor-multiple-claude-code-sessions/)
+- **Check on and control Claude Code from your phone or another computer.** Watch any session remotely, and launch, prompt, stop or retry the ones AgentPulse started. [Guide](https://jstuart0.github.io/agentpulse/guides/remote-claude-code-dashboard/)
+- **Self-host it for yourself or a team.** Docker or Kubernetes, SQLite or PostgreSQL, behind Authentik, Authelia, oauth2-proxy, Pomerium or Cloudflare Access. [Guide](https://jstuart0.github.io/agentpulse/guides/self-hosted-ai-coding-agent-dashboard/)
+- **Let your agents manage your other agents over MCP.** Claude Code or Codex CLI can list, search, launch and steer sessions through the `@craze0/agentpulse-mcp` server. [Guide](https://jstuart0.github.io/agentpulse/guides/mcp-server-for-coding-agents/)
+
+Not sure whether you need monitoring or orchestration? See [observability vs. orchestration for AI coding agents](https://jstuart0.github.io/agentpulse/guides/observability-vs-orchestration/).
 
 ## How it works
 
@@ -92,7 +106,9 @@ docker run -d -p 127.0.0.1:3000:3000 -v agentpulse-data:/app/data -e DISABLE_AUT
 
 ## What you'll see
 
-![Session detail — chat-style timeline with inline tool usage](src/web/assets/screenshots/agentpulse-session.png)
+![AgentPulse session detail view with a chat-style timeline of the user's prompts to Claude Code and the agent's tool calls shown inline](src/web/assets/screenshots/agentpulse-session.png)
+
+*Session detail: a chat-style history of your prompts to one agent, with its tool calls inline.*
 
 - **Dashboard** -- grid of all sessions with status, project name, session name, duration, and tool use count. Each session is in exactly one operational state: **Waiting** (the agent finished a turn, or has an outstanding permission prompt, and is waiting on you -- "Mark as seen" clears it), **Error** (the session failed and hasn't been dismissed -- "Dismiss error" clears it), **Working** (the agent is actively working right now), or **Idle** (nothing is waiting and the agent isn't working). Status cards above the grid filter by state; a "What do these states mean?" popover repeats this explanation in the UI
 - **Session detail** -- click a session to see a chat-style timeline with your prompts as blue bubbles and tool usage inline
@@ -125,13 +141,13 @@ Without cloning this repo -- the standalone [`@craze0/agentpulse-mcp`](packages/
 npx @craze0/agentpulse-mcp install --mint my-agent
 ```
 
-> **Not yet published.** The package and its release workflow (`.github/workflows/mcp-release.yml`, triggered by an `mcp-v*` tag) exist, but no version has shipped to npm yet. Until the first tag is cut, run the MCP server from a checkout instead (`agentpulse mcp serve` / `agentpulse mcp install`, above).
-
 Either way, `install` prints ready-to-paste Claude Code and Codex CLI config. See **[docs/MCP.md](docs/MCP.md)** for the full tool catalog, client setup, and a security section covering what a `manage`-scoped key can do and why Codex CLI does not honor Claude Code's confirmation prompt.
 
 ## AI Labs (experimental)
 
-![Ask assistant — grounded conversational interface over live session state](src/web/assets/screenshots/agentpulse-ask.png)
+![AgentPulse Ask assistant answering a natural-language question about live Claude Code and Codex sessions](src/web/assets/screenshots/agentpulse-ask.png)
+
+*The Ask assistant: ask about, launch or search your agent sessions in plain language.*
 
 > **Heads up:** the AI layer is new, shipping under explicit Labs framing. Every feature is toggleable under **Settings → Labs**. Contracts, UI, and defaults may change. Disable any toggle if it gets in your way -- nothing else in AgentPulse depends on it.
 

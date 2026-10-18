@@ -1,7 +1,8 @@
 {
 	"name": "agentpulse",
 	"version": "0.8.0",
-	"description": "Command center for AI coding agents across all your machines",
+	"description": "Open-source, self-hosted dashboard to monitor, orchestrate and remotely control Claude Code, Codex CLI and Copilot CLI sessions across all your machines",
+	"homepage": "https://jstuart0.github.io/agentpulse/",
 	"type": "module",
 	"workspaces": ["packages/*"],
 	"bin": {
@@ -101,6 +102,22 @@
 		"type": "git",
 		"url": "https://github.com/jstuart0/agentpulse"
 	},
-	"keywords": ["ai", "agent", "monitoring", "dashboard", "claude-code", "codex", "developer-tools"],
+	"keywords": [
+		"ai",
+		"agent",
+		"ai-agents",
+		"coding-agents",
+		"monitoring",
+		"observability",
+		"dashboard",
+		"agent-orchestration",
+		"claude-code",
+		"codex",
+		"codex-cli",
+		"copilot-cli",
+		"mcp",
+		"self-hosted",
+		"developer-tools"
+	],
 	"trustedDependencies": ["@biomejs/biome"]
 }
