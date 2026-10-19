@@ -5,7 +5,7 @@
  * managed_sessions.supervisor_id column.
  *
  * Test contract items 60-66 (L1-L4, I1-I3, getSessionOwnerConnections,
- * listLiveOwnedManagedSessionIds).
+ * listLiveOwnedManagedSessions).
  *
  * Deliberately its own file, not session-tracker.test.ts or
  * ai/intelligence-service.test.ts — both are under active sibling edits
@@ -18,11 +18,14 @@ import "./ai/__test_db.js";
 const { getDb, initializeDatabase } = await import("../db/client.js");
 const { managedSessions, sessions, supervisors } = await import("../db/schema/index.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
+const { seedManagedSession, seedSupervisor } = await import("../test-utils/supervisor-fixture.js");
 const { updateStaleSessions } = await import("./session-tracker.js");
+const { processHookEvent } = await import("./event-processor.js");
+const { heartbeatSupervisor } = await import("./supervisor-registry.js");
 const { intelligenceForSession, intelligenceForSessions } = await import(
 	"./ai/intelligence-service.js"
 );
-const { getSessionOwnerConnections, listLiveOwnedManagedSessionIds } = await import(
+const { getSessionOwnerConnections, listLiveOwnedManagedSessions } = await import(
 	"./session-ownership.js"
 );
 
@@ -56,36 +59,12 @@ async function mkSession(sessionId: string) {
 		.execute();
 }
 
-async function seedSupervisorRow(id: string, status: "connected" | "offline") {
-	const now = new Date().toISOString();
-	await getDb()
-		.insert(supervisors)
-		.values({
-			id,
-			hostName: id,
-			platform: "linux",
-			arch: "x64",
-			version: "1.0.0",
-			capabilities: {
-				version: 1,
-				agentTypes: ["claude_code"],
-				launchModes: ["headless"],
-				os: "linux",
-				terminalSupport: [],
-				features: [],
-			},
-			trustedRoots: [],
-			status,
-			capabilitySchemaVersion: 2,
-			configSchemaVersion: 1,
-			lastHeartbeatAt: now,
-			heartbeatLeaseExpiresAt: now,
-			enrollmentState: "active",
-			createdAt: now,
-			updatedAt: now,
-		})
-		.execute();
-}
+const seedSupervisorRow = (id: string, status: "connected" | "offline") =>
+	seedSupervisor(id, {
+		storedStatus: status,
+		leaseOffsetMs: status === "connected" ? 60_000 : -200_000,
+		leaseBaseMs: Date.now(),
+	});
 
 async function seedManagedRowRaw(
 	sessionId: string,
@@ -210,7 +189,7 @@ describe("getSessionOwnerConnections", () => {
 	});
 });
 
-describe("listLiveOwnedManagedSessionIds", () => {
+describe("listLiveOwnedManagedSessions", () => {
 	test("returns exactly the sessions whose owner of record is connected AND in the requested states", async () => {
 		await seedFixtures();
 		// Named member: owner connected but wrong managed_state must be excluded.
@@ -223,12 +202,145 @@ describe("listLiveOwnedManagedSessionIds", () => {
 			"completed",
 		);
 
-		const ids = await listLiveOwnedManagedSessionIds(["headless"]);
-		expect(new Set(ids)).toEqual(new Set(["HIJ-LIVE", "LL-LIVE"]));
+		const rows = await listLiveOwnedManagedSessions(["headless"]);
+		expect(new Set(rows.map((r) => r.sessionId))).toEqual(new Set(["HIJ-LIVE", "LL-LIVE"]));
 	});
 
 	test("empty states returns [] with no query", async () => {
-		const ids = await listLiveOwnedManagedSessionIds([]);
-		expect(ids).toEqual([]);
+		expect(await listLiveOwnedManagedSessions([])).toEqual([]);
+	});
+});
+
+// ─── AGEN-76: the lease decides, not the stored status column ───────────────
+
+const HUNDRED_DAYS = 100 * 24 * 60 * 60 * 1000;
+
+/** Stored "connected", lease 100 days old: the production shape. */
+const seedStaleConnected = (id: string, extra: { enrollmentState?: string } = {}) =>
+	seedSupervisor(id, {
+		storedStatus: "connected",
+		leaseOffsetMs: -HUNDRED_DAYS,
+		leaseBaseMs: Date.now(),
+		...extra,
+	});
+
+describe("a supervisor stored as connected with an expired lease is not live (R1, R2)", () => {
+	test("R1: getSessionOwnerConnections reports false", async () => {
+		await seedStaleConnected("stale-sup");
+		await seedManagedSession({
+			sessionId: "R1",
+			supervisorId: "stale-sup",
+			managedState: "interactive_terminal",
+		});
+		expect((await getSessionOwnerConnections(["R1"])).get("R1")).toBe(false);
+	});
+
+	test("R2: listLiveOwnedManagedSessions excludes it, and a revoked host with a future lease", async () => {
+		await seedStaleConnected("stale-sup");
+		await seedSupervisor("revoked-sup", {
+			leaseOffsetMs: 60_000,
+			leaseBaseMs: Date.now(),
+			enrollmentState: "revoked",
+		});
+		await seedSupervisor("live-sup", { leaseOffsetMs: 60_000, leaseBaseMs: Date.now() });
+		for (const [sessionId, supervisorId] of [
+			["R2-stale", "stale-sup"],
+			["R2-revoked", "revoked-sup"],
+			["R2-live", "live-sup"],
+		] as const) {
+			await seedManagedSession({ sessionId, supervisorId, managedState: "interactive_terminal" });
+		}
+		const rows = await listLiveOwnedManagedSessions(["interactive_terminal"]);
+		expect(rows.map((r) => r.sessionId)).toEqual(["R2-live"]);
+		expect(typeof rows[0]?.lastActivityAt).toBe("string");
+	});
+});
+
+describe("the sweep follows the lease (L5)", () => {
+	const longSilent = () => new Date(Date.now() - HUNDRED_DAYS).toISOString();
+
+	test("L5: an interactive_terminal session under an expired lease completes in one tick; a live lease keeps it", async () => {
+		await seedStaleConnected("dead-host");
+		await seedSupervisor("live-host", { leaseOffsetMs: 60_000, leaseBaseMs: Date.now() });
+		for (const [sessionId, supervisorId] of [
+			["L5-dead", "dead-host"],
+			["L5-live", "live-host"],
+		] as const) {
+			await seedManagedSession({
+				sessionId,
+				supervisorId,
+				managedState: "interactive_terminal",
+				session: { status: "active", isWorking: true, lastActivityAt: longSilent() },
+			});
+		}
+		await updateStaleSessions();
+		const [dead] = await getDb().select().from(sessions).where(eq(sessions.sessionId, "L5-dead"));
+		expect(dead?.status).toBe("completed");
+		expect(dead?.isWorking).toBe(false);
+		expect(dead?.endedAt).toBeTruthy();
+		const [live] = await getDb().select().from(sessions).where(eq(sessions.sessionId, "L5-live"));
+		expect(live?.status).toBe("active");
+		expect(live?.isWorking).toBe(true);
+	});
+});
+
+describe("reopen after late heartbeat (R4)", () => {
+	const row = async (id: string) =>
+		(await getDb().select().from(sessions).where(eq(sessions.sessionId, id)))[0];
+
+	function seedSilent(sessionId: string, supervisorId: string) {
+		return seedManagedSession({
+			sessionId,
+			supervisorId,
+			managedState: "interactive_terminal",
+			session: {
+				status: "active",
+				isWorking: true,
+				lastActivityAt: new Date(Date.now() - HUNDRED_DAYS).toISOString(),
+			},
+		});
+	}
+
+	async function reopenAndGoQuiet(sessionId: string) {
+		await processHookEvent(
+			{
+				hook_event_name: "UserPromptSubmit",
+				session_id: sessionId,
+				prompt: "hello again",
+			} as never,
+			"claude_code",
+		);
+		const reopened = await row(sessionId);
+		expect(reopened?.status).toBe("active");
+		expect(reopened?.endedAt).toBeNull();
+
+		// quiet again, past the end cutoff, not working
+		await getDb()
+			.update(sessions)
+			.set({
+				isWorking: false,
+				lastActivityAt: new Date(Date.now() - 60 * MINUTE).toISOString(),
+			})
+			.where(eq(sessions.sessionId, sessionId));
+	}
+
+	test("a heartbeat re-protects the reopened session; without one it completes", async () => {
+		await seedStaleConnected("late-host");
+		await seedStaleConnected("silent-host");
+		await seedSilent("R4-beat", "late-host");
+		await seedSilent("R4-silent", "silent-host");
+		await updateStaleSessions();
+		expect((await row("R4-beat"))?.status).toBe("completed");
+		expect((await row("R4-silent"))?.status).toBe("completed");
+		await reopenAndGoQuiet("R4-beat");
+		await reopenAndGoQuiet("R4-silent");
+
+		const beat = await heartbeatSupervisor("late-host");
+		const T = Date.now();
+		expect(Date.parse(beat?.heartbeatLeaseExpiresAt ?? "")).toBeGreaterThan(T);
+
+		await updateStaleSessions(T);
+		expect((await row("R4-beat"))?.status).toBe("active");
+		expect((await row("R4-silent"))?.status).toBe("completed");
 	});
 });

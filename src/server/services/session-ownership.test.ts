@@ -26,6 +26,7 @@ const { controlActions, launchRequests, managedSessions, sessions, supervisors }
 const { executeRows } = await import("../db/sql-helpers.js");
 const { findOffendingLeafImports } = await import("../test-utils/leaf-imports.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
+const { seedSupervisor } = await import("../test-utils/supervisor-fixture.js");
 const { claimNextControlAction } = await import("./control-actions.js");
 const {
 	assertSupervisorCanWriteSession,
@@ -111,6 +112,9 @@ const LEAF_ALLOWED_SPECIFIERS = new Set([
 	"drizzle-orm",
 	"../db/client.js",
 	"../db/schema/index.js",
+	// Pure lease predicate (itself a leaf: only ./util/db-time.js); lets the
+	// liveness readers share one evaluator instead of reading a status column.
+	"./supervisor-liveness.js",
 ]);
 
 describe("session-ownership.ts is a leaf module (D17)", () => {
@@ -539,36 +543,8 @@ async function runMarkerSql(
 	return lastRows;
 }
 
-async function seedSupervisorRow(id: string, hostName: string) {
-	const now = new Date().toISOString();
-	await getDb()
-		.insert(supervisors)
-		.values({
-			id,
-			hostName,
-			platform: "linux",
-			arch: "x64",
-			version: "1.0.0",
-			capabilities: {
-				version: 1,
-				agentTypes: ["claude_code"],
-				launchModes: ["headless"],
-				os: "linux",
-				terminalSupport: [],
-				features: [],
-			},
-			trustedRoots: [],
-			status: "connected",
-			capabilitySchemaVersion: 2,
-			configSchemaVersion: 1,
-			lastHeartbeatAt: now,
-			heartbeatLeaseExpiresAt: now,
-			enrollmentState: "active",
-			createdAt: now,
-			updatedAt: now,
-		})
-		.execute();
-}
+const seedSupervisorRow = (id: string, hostName: string) =>
+	seedSupervisor(id, { hostName, leaseOffsetMs: 60_000, leaseBaseMs: Date.now() });
 
 describe("runbook — audit query (deploy/k8s/FORWARDAUTH.md, ownership-audit-sql)", () => {
 	test("flags owner_mismatch, launch-less (no_launch), launch_pointer_mismatch and launch_pointer_missing; leaves healthy rows (including the legacy fallback) alone", async () => {

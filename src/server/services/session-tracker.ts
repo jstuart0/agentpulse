@@ -69,7 +69,7 @@ import { getManagedSession, mapManagedSession } from "./managed-session-state.js
 import { sanitizeNativeName } from "./name-sanitizer.js";
 import { notifySessionUpdated } from "./notifier.js";
 import { mapSessionDto } from "./session-dto.js";
-import { listLiveOwnedManagedSessionIds } from "./session-ownership.js";
+import { listLiveOwnedManagedSessions } from "./session-ownership.js";
 
 /**
  * Rename a session atomically across `sessions` and (when present)
@@ -1861,21 +1861,22 @@ const STUCK_WORKING_RECOVERY_MS = 2 * SESSION_END_TIMEOUT_MS;
  *
  * Working sessions never transition automatically — the user rule is
  * that isWorking=true must block idle/completed until Stop arrives.
- * Sessions whose managed process is still running under a connected
- * owner-of-record supervisor are skipped entirely; those flip to
+ * Sessions whose managed process is still running under an owner-of-record
+ * supervisor with an unexpired heartbeat lease are skipped entirely; those flip to
  * terminal state when the supervisor reports the process exited.
  *
  * Stuck-working recovery: if isWorking=true but there has been no
  * activity for 2× the end timeout, we assume the agent crashed and
  * clear the flag so the normal flow can run on the next tick.
  */
-export async function updateStaleSessions(): Promise<number> {
-	const now = Date.now();
+export async function updateStaleSessions(now: number = Date.now()): Promise<number> {
 	const idleCutoff = new Date(now - SESSION_IDLE_TIMEOUT_MS).toISOString();
 	const endCutoff = new Date(now - SESSION_END_TIMEOUT_MS).toISOString();
 	const stuckWorkingCutoff = new Date(now - STUCK_WORKING_RECOVERY_MS).toISOString();
 
-	const liveSessionIds = await listLiveOwnedManagedSessionIds(LIVE_MANAGED_STATES);
+	const liveSessionIds = (await listLiveOwnedManagedSessions(LIVE_MANAGED_STATES, now)).map(
+		(row) => row.sessionId,
+	);
 
 	const excludeLive =
 		liveSessionIds.length > 0 ? notInArray(sessions.sessionId, liveSessionIds) : undefined;

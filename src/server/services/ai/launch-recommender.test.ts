@@ -4,6 +4,7 @@ import "./__test_db.js";
 const { getDb, initializeDatabase } = await import("../../db/client.js");
 const { events, sessions, supervisors } = await import("../../db/schema/index.js");
 const { recommendLaunch } = await import("./launch-recommender.js");
+const { seedSupervisor } = await import("../../test-utils/supervisor-fixture.js");
 
 beforeAll(() => {
 	return initializeDatabase();
@@ -35,21 +36,14 @@ async function mkSession(
 		.execute();
 }
 
-async function mkSupervisor(id: string, agentTypes: string[], status = "connected") {
-	await getDb()
-		.insert(supervisors)
-		.values({
-			id,
-			hostName: `host-${id}`,
-			platform: "darwin",
-			arch: "arm64",
-			version: "1",
-			status,
-			capabilities: { agentTypes, launchModes: ["interactive_terminal"] },
-			trustedRoots: [],
-		})
-		.execute();
-}
+const mkSupervisor = (id: string, agentTypes: string[], status = "connected") =>
+	seedSupervisor(id, {
+		storedStatus: status,
+		hostName: `host-${id}`,
+		capabilities: { agentTypes, launchModes: ["interactive_terminal"] },
+		leaseOffsetMs: status === "connected" ? 60_000 : -200_000,
+		leaseBaseMs: Date.now(),
+	});
 
 describe("launch-recommender", () => {
 	test("rationalizes prior completions at same cwd", async () => {
@@ -83,6 +77,29 @@ describe("launch-recommender", () => {
 		});
 		expect(rec.suggestedSupervisorId).toBeNull();
 		expect(rec.warnings.some((w) => w.includes("No connected supervisor"))).toBe(true);
+	});
+
+	test("R3: a supervisor stored as connected with a 100-day-old lease is not suggested", async () => {
+		await seedSupervisor("stale", {
+			storedStatus: "connected",
+			leaseOffsetMs: -100 * 24 * 3600 * 1000,
+			leaseBaseMs: Date.now(),
+			capabilities: { agentTypes: ["claude_code"], launchModes: ["interactive_terminal"] },
+		});
+		const rec = await recommendLaunch({
+			template: {
+				name: "t",
+				agentType: "claude_code",
+				cwd: "/p",
+				baseInstructions: "",
+				taskPrompt: "",
+			},
+			preferredSupervisorId: "stale",
+		});
+		expect(rec.suggestedSupervisorId).toBeNull();
+		expect(rec.warnings.some((w) => w.includes("Preferred supervisor stale not connected"))).toBe(
+			true,
+		);
 	});
 
 	test("suggests an alternative model when a different one historically won", async () => {

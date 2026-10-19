@@ -366,6 +366,31 @@ describe("list_sessions — pagination (test-contract 9-10, 12)", () => {
 		expect(parsed.sessions[0].managed).toBe(true);
 	});
 
+	test("a completed session under a stale host keeps managed:true and its completed status (AGEN-76: managed means a supervisor launched it, not that it is live)", async () => {
+		const ctx = newContext(
+			fakeClient({
+				getSessions: async () => ({
+					sessions: [
+						baseSession({
+							sessionId: "stale-1",
+							managed: true,
+							status: "completed",
+							operationalStatus: "completed",
+						}),
+					],
+					total: 1,
+				}),
+			}),
+		);
+		registerSessionsTools(ctx, { hasObserve: true, hasManage: false });
+		const mcpClient = await connect(ctx);
+		const result = await mcpClient.callTool({ name: "list_sessions", arguments: {} });
+		const row = JSON.parse(textOf(result)).sessions[0];
+		expect(row.managed).toBe(true);
+		expect(row.status).toBe("completed");
+		expect(row.operationalStatus).toBe("completed");
+	});
+
 	test("compact rows carry operationalStatus (AGEN) when the server sends it", async () => {
 		const ctx = newContext(
 			fakeClient({

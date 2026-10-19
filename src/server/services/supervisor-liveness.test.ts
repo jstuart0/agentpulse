@@ -23,16 +23,7 @@ const { launchRequests, managedSessions, sessions, supervisors } = await import(
 const { seedManagedSession, seedSupervisor } = await import("../test-utils/supervisor-fixture.js");
 const { getConnectedSupervisor } = await import("./supervisor-registry.js");
 const { recommendLaunch } = await import("./ai/launch-recommender.js");
-// Phase 1 ships before the session-ownership readers take `nowMs` (Phase 2),
-// so their post-Phase-2 signatures are declared here. Part (b) for these two
-// is red until then; drop the cast when Phase 2 lands.
-const ownership = (await import("./session-ownership.js")) as unknown as {
-	getSessionOwnerConnections(ids: string[], nowMs: number): Promise<Map<string, boolean>>;
-	listLiveOwnedManagedSessions(
-		states: string[],
-		nowMs: number,
-	): Promise<{ sessionId: string; lastActivityAt: string }[]>;
-};
+const ownership = await import("./session-ownership.js");
 
 const T = Date.parse("2026-10-19T12:00:00.000Z");
 const SEC = 1000;
@@ -253,8 +244,6 @@ describe("reader agreement (b)", () => {
 		expect(seen).toEqual(liveIds);
 	});
 
-	// Red until Phase 2 for a missing API (listLiveOwnedManagedSessions doesn't
-	// exist yet), not for a wrong answer.
 	test("listLiveOwnedManagedSessions(states, T)", async () => {
 		const { t, ids, liveIds } = await seedPopulation();
 		const rows = await ownership.listLiveOwnedManagedSessions(["interactive_terminal"], t);
