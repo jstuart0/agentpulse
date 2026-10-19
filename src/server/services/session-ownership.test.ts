@@ -24,6 +24,7 @@ const { controlActions, launchRequests, managedSessions, sessions, supervisors }
 	"../db/schema/index.js"
 );
 const { executeRows } = await import("../db/sql-helpers.js");
+const { findOffendingLeafImports } = await import("../test-utils/leaf-imports.js");
 const { seedOwnedLaunch } = await import("../test-utils/owned-launch.js");
 const { claimNextControlAction } = await import("./control-actions.js");
 const {
@@ -105,28 +106,6 @@ async function seedSessionRow(sessionId: string) {
 }
 
 // ─── D17 leaf check ──────────────────────────────────────────────────────────
-
-// F29: tolerates an optional trailing same-line comment after the import
-// statement (`import { x } from "y.js"; // why`) — the prior regex's `$`
-// anchor sat directly after the closing `;`/quote, so any import line
-// carrying a trailing comment silently fell out of the scanned set entirely
-// (not flagged, not cleared — just invisible to the check).
-const LEAF_IMPORT_LINE = /^import\s.+?from\s+["'][^"']+["'];?\s*(?:\/\/.*)?$/gm;
-
-function findOffendingLeafImports(source: string, allowedValueSpecifiers: Set<string>): string[] {
-	const importLines = source.match(LEAF_IMPORT_LINE) ?? [];
-	const offending: string[] = [];
-	for (const line of importLines) {
-		const isTypeOnly = /^import\s+type\s/.test(line);
-		if (isTypeOnly) continue;
-		const match = line.match(/from\s+["']([^"']+)["']/);
-		const specifier = match?.[1];
-		if (!specifier || !allowedValueSpecifiers.has(specifier)) {
-			offending.push(line);
-		}
-	}
-	return offending;
-}
 
 const LEAF_ALLOWED_SPECIFIERS = new Set([
 	"drizzle-orm",
