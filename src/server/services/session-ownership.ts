@@ -41,8 +41,9 @@ export class SessionOwnershipError extends Error {
  */
 export async function findLaunchRowByCorrelationId(
 	sessionId: string,
+	db: ReturnType<typeof getDb> = getDb(),
 ): Promise<typeof launchRequests.$inferSelect | null> {
-	const [row] = await getDb()
+	const [row] = await db
 		.select()
 		.from(launchRequests)
 		.where(eq(launchRequests.launchCorrelationId, sessionId))
@@ -95,10 +96,11 @@ const ownerSupervisorJoin = eq(supervisors.id, sessionOwnerSql);
  */
 export async function getSessionOwnerConnections(
 	sessionIds: readonly string[],
+	db: ReturnType<typeof getDb> = getDb(),
 ): Promise<Map<string, boolean>> {
 	if (sessionIds.length === 0) return new Map();
 
-	const rows = await getDb()
+	const rows = await db
 		.select({ sessionId: managedSessions.sessionId, ownerStatus: supervisors.status })
 		.from(managedSessions)
 		.leftJoin(launchRequests, ownerLaunchJoin)
@@ -159,8 +161,11 @@ export async function resolveSessionHost(
  * Resolve the owner of record for a session (D5). Returns null when nobody
  * owns it (no managed row and no claimed launch).
  */
-export async function resolveSessionOwner(sessionId: string): Promise<string | null> {
-	const [managedOwnerRow] = await getDb()
+export async function resolveSessionOwner(
+	sessionId: string,
+	db: ReturnType<typeof getDb> = getDb(),
+): Promise<string | null> {
+	const [managedOwnerRow] = await db
 		.select({ owner: sessionOwnerSql })
 		.from(managedSessions)
 		.leftJoin(launchRequests, ownerLaunchJoin)
@@ -170,7 +175,7 @@ export async function resolveSessionOwner(sessionId: string): Promise<string | n
 		return managedOwnerRow.owner ?? null;
 	}
 
-	const launch = await findLaunchRowByCorrelationId(sessionId);
+	const launch = await findLaunchRowByCorrelationId(sessionId, db);
 	return launch?.claimedBySupervisorId ?? null;
 }
 

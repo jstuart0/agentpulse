@@ -1,19 +1,19 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { plainErrorMessage } from "../../lib/api-errors.js";
 import type { InboxWorkItem } from "../../lib/api.js";
+import { plainHitlErrorMessage } from "../../lib/hitl-outcome.js";
 import { formatTimeAgo } from "../../lib/utils.js";
 import { KindBadge } from "./shared/KindBadge.js";
 import { severityBorderClass, severityPillClass } from "./shared/cardUtils.js";
 
-type HitlItem = Extract<InboxWorkItem, { kind: "hitl" }>;
+export type HitlItem = Extract<InboxWorkItem, { kind: "hitl" }>;
 
 export function HitlCard({
 	item,
 	onDecide,
 }: {
 	item: HitlItem;
-	onDecide: (id: string, action: "approve" | "decline") => Promise<void>;
+	onDecide: (item: HitlItem, action: "approve" | "decline") => Promise<void>;
 }) {
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
@@ -22,9 +22,9 @@ export function HitlCard({
 		setBusy(true);
 		setErr(null);
 		try {
-			await onDecide(item.id, action);
+			await onDecide(item, action);
 		} catch (e) {
-			setErr(plainErrorMessage(e));
+			setErr(plainHitlErrorMessage(e));
 		} finally {
 			setBusy(false);
 		}
@@ -59,14 +59,20 @@ export function HitlCard({
 				</pre>
 			)}
 			<div className="flex items-center gap-2 mt-3">
-				<button
-					type="button"
-					disabled={busy}
-					onClick={() => handleDecide("approve")}
-					className="text-xs px-3 py-1 rounded bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 disabled:opacity-50"
-				>
-					Approve
-				</button>
+				{item.approvable ? (
+					<button
+						type="button"
+						disabled={busy}
+						onClick={() => handleDecide("approve")}
+						className="text-xs px-3 py-1 rounded bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 disabled:opacity-50"
+					>
+						Approve
+					</button>
+				) : (
+					<span className="text-[11px] text-muted-foreground">
+						No prompt to send. Decline, or answer in the session.
+					</span>
+				)}
 				<button
 					type="button"
 					disabled={busy}

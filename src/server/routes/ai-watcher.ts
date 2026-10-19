@@ -1,10 +1,8 @@
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import type { HitlReplyKind } from "../../shared/types.js";
 import { getDb } from "../db/client.js";
-import { settings } from "../db/schema/index.js";
-import { emitAiEvent } from "../services/ai/ai-events.js";
-import { checkDispatch } from "../services/ai/dispatch-filter.js";
+import { sessions, settings } from "../db/schema/index.js";
 import { getBackfillProgress, runBackfill } from "../services/ai/embeddings/embedding-service.js";
 import {
 	DEFAULT_EMBEDDING_MODEL,
@@ -15,19 +13,21 @@ import {
 	isVectorSearchBuildEnabled,
 } from "../services/ai/feature.js";
 import {
-	cancelOpenHitl,
-	getProposal,
-	listProposalsForSession,
-	resolveProposalHitl,
-} from "../services/ai/proposals-service.js";
+	decideHitl,
+	getDeliveryState,
+	retryDelivery,
+} from "../services/ai/hitl-decision-service.js";
+import { cancelOpenHitl, listProposalsForSession } from "../services/ai/proposals-service.js";
 import {
 	type WatcherPolicy,
 	deleteWatcherConfig,
 	getWatcherConfig,
 	upsertWatcherConfig,
 } from "../services/ai/watcher-config-service.js";
+import { notifyInboxChanged } from "../services/notifier.js";
 import { upsertSetting } from "../services/settings-service.js";
 import { requireAiActive, requireAiBuild } from "./ai-gates.js";
+import { decisionContextFor, refuseUnlessMayChange } from "./decision-context.js";
 
 const aiWatcherRouter = new Hono();
 
@@ -122,6 +122,14 @@ aiWatcherRouter.put("/ai/sessions/:sessionId/watcher", async (c) => {
 	const gate = await requireAiActive(c);
 	if (gate) return gate;
 	const sessionId = c.req.param("sessionId") ?? "";
+	const refusal = await refuseUnlessMayChange(c, sessionId);
+	if (refusal) return refusal;
+	const [known] = await getDb()
+		.select({ sessionId: sessions.sessionId })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	if (!known) return c.json({ error: "not_found", message: "Session not found" }, 404);
 	const body = await c.req.json<{
 		enabled?: boolean;
 		providerId?: string;
@@ -138,6 +146,12 @@ aiWatcherRouter.put("/ai/sessions/:sessionId/watcher", async (c) => {
 	// policy here without forcing additional checks — the runner is the
 	// authoritative gate.
 
+	if (!(await getWatcherConfig(sessionId)) && !body.providerId) {
+		return c.json(
+			{ error: "provider_required", message: "providerId is required to set up a watcher" },
+			400,
+		);
+	}
 	const config = await upsertWatcherConfig({ sessionId, ...body });
 	return c.json({ config });
 });
@@ -146,7 +160,10 @@ aiWatcherRouter.delete("/ai/sessions/:sessionId/watcher", async (c) => {
 	const gate = await requireAiActive(c);
 	if (gate) return gate;
 	const sessionId = c.req.param("sessionId") ?? "";
-	await cancelOpenHitl(sessionId, "watcher_removed");
+	const refusal = await refuseUnlessMayChange(c, sessionId);
+	if (refusal) return refusal;
+	const cancelled = await cancelOpenHitl(sessionId, "watcher_removed");
+	if (cancelled > 0) notifyInboxChanged({ sessionId });
 	const deleted = await deleteWatcherConfig(sessionId);
 	if (!deleted) return c.json({ error: "Watcher not configured" }, 404);
 	return c.json({ ok: true });
@@ -156,6 +173,9 @@ aiWatcherRouter.delete("/ai/sessions/:sessionId/watcher", async (c) => {
 // HITL approve / decline / custom (proposals)
 // --------------------------------------------------------------------------
 
+const PROMPT_HASH_PATTERN = /^[0-9a-f]{64}$/;
+const HITL_ACTIONS: readonly HitlReplyKind[] = ["approve", "decline", "custom"];
+
 aiWatcherRouter.post("/ai/proposals/:id/decision", async (c) => {
 	const gate = await requireAiActive(c);
 	if (gate) return gate;
@@ -163,76 +183,59 @@ aiWatcherRouter.post("/ai/proposals/:id/decision", async (c) => {
 	const body = await c.req.json<{
 		action: HitlReplyKind;
 		customPrompt?: string;
+		promptHash?: string;
 	}>();
-
-	const proposal = await getProposal(id);
-	if (!proposal) return c.json({ error: "Proposal not found" }, 404);
-	if (proposal.state !== "hitl_waiting") {
-		return c.json({ error: `Proposal state is ${proposal.state}, not awaiting a response` }, 409);
+	if (!HITL_ACTIONS.includes(body?.action)) {
+		return c.json(
+			{ error: "invalid_action", message: "action must be approve, decline or custom" },
+			400,
+		);
+	}
+	if (body.promptHash !== undefined && !PROMPT_HASH_PATTERN.test(body.promptHash)) {
+		return c.json(
+			{ error: "invalid_prompt_hash", message: "promptHash must be 64 lowercase hex characters" },
+			400,
+		);
 	}
 
-	const nextPrompt =
-		body.action === "custom"
-			? (body.customPrompt ?? "").trim()
-			: body.action === "approve"
-				? (proposal.nextPrompt ?? "")
-				: null;
-
-	if (body.action !== "decline") {
-		if (!nextPrompt) {
-			return c.json({ error: "Empty prompt" }, 400);
-		}
-		const filter = checkDispatch(nextPrompt);
-		if (!filter.allowed) {
-			await emitAiEvent({
-				sessionId: proposal.sessionId,
-				source: "managed_control",
-				category: "ai_continue_blocked",
-				eventType: "AiContinueBlocked",
-				content: `Dispatch filter tripped on human-approved prompt: ${filter.reason}`,
-				rawPayload: { proposal_id: id, rule: filter.rule },
-			});
-			return c.json({ error: `Prompt rejected by safety filter: ${filter.rule}` }, 400);
-		}
-	}
-
-	if (body.action === "decline") {
-		await resolveProposalHitl({ proposalId: id, action: "decline" });
-		await emitAiEvent({
-			sessionId: proposal.sessionId,
-			source: "managed_control",
-			category: "ai_hitl_response",
-			eventType: "AiHitlResponse",
-			content: "Declined by user.",
-			rawPayload: { proposal_id: id, action: "decline" },
-		});
-		return c.json({ ok: true, dispatched: false });
-	}
-
-	// approve / custom — emit ai_continue_sent audit event.
-	// NB: Actual dispatch into a managed session via the control-actions
-	// queue is Phase 3+ scope. Phase 1 surfaces the approved prompt as an
-	// event so the user can see what would have been sent and, for
-	// managed sessions, copy/paste or kick off manually.
-	await resolveProposalHitl({ proposalId: id, action: body.action, replyText: nextPrompt });
-	await emitAiEvent({
-		sessionId: proposal.sessionId,
-		source: "managed_control",
-		category: "ai_hitl_response",
-		eventType: "AiHitlResponse",
-		content: body.action === "custom" ? `Custom: ${nextPrompt}` : "Approved.",
-		rawPayload: { proposal_id: id, action: body.action },
+	const outcome = await decideHitl(
+		{ kind: "proposal", proposalId: id },
+		body.action,
+		{ customPrompt: body.customPrompt, promptHash: body.promptHash },
+		await decisionContextFor(c),
+	);
+	if (!outcome.ok) return c.json(outcome.refusal.body, outcome.refusal.status);
+	if (body.action === "decline") return c.json({ ok: true, dispatched: false });
+	return c.json({
+		ok: true,
+		dispatched: true,
+		prompt: outcome.prompt,
+		delivery: outcome.delivery,
 	});
-	await emitAiEvent({
-		sessionId: proposal.sessionId,
-		source: "managed_control",
-		category: "ai_continue_sent",
-		eventType: "AiContinueSent",
-		content: nextPrompt ?? "",
-		rawPayload: { proposal_id: id, action: body.action },
-	});
+});
 
-	return c.json({ ok: true, dispatched: true, prompt: nextPrompt });
+// --------------------------------------------------------------------------
+// Where an approved prompt went (derived from the control action carrying it)
+// --------------------------------------------------------------------------
+
+aiWatcherRouter.get("/ai/proposals/:id/delivery", async (c) => {
+	// Reading where a prompt went must keep working while the watcher is paused.
+	const gate = await requireAiBuild(c);
+	if (gate) return gate;
+	const outcome = await getDeliveryState(c.req.param("id") ?? "", await decisionContextFor(c));
+	if (!outcome.ok) return c.json(outcome.refusal.body, outcome.refusal.status);
+	return c.json(outcome.delivery);
+});
+
+aiWatcherRouter.post("/ai/proposals/:id/delivery/retry", async (c) => {
+	const gate = await requireAiActive(c);
+	if (gate) return gate;
+	const body = (await c.req.json().catch(() => ({}))) as { confirm?: unknown } | null;
+	const outcome = await retryDelivery(c.req.param("id") ?? "", await decisionContextFor(c), {
+		confirm: body?.confirm === true,
+	});
+	if (!outcome.ok) return c.json(outcome.refusal.body, outcome.refusal.status);
+	return c.json({ state: outcome.state, deliveryId: outcome.deliveryId });
 });
 
 export default aiWatcherRouter;

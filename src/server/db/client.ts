@@ -1131,6 +1131,23 @@ async function runLegacySqliteInit(sqlite: Database): Promise<void> {
 		)`,
 		"CREATE UNIQUE INDEX IF NOT EXISTS mobile_device_activities_device_session_unique ON mobile_device_activities(device_id, session_id)",
 		"CREATE INDEX IF NOT EXISTS idx_mobile_device_activities_session ON mobile_device_activities(session_id)",
+		// HITL deliveries (migration 0014): where an approved prompt went. Born with its cascade FK.
+		`CREATE TABLE IF NOT EXISTS ai_hitl_deliveries (
+			id TEXT PRIMARY KEY NOT NULL,
+			proposal_id TEXT NOT NULL,
+			hitl_id TEXT NOT NULL,
+			session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+			control_action_id TEXT,
+			attempt INTEGER NOT NULL DEFAULT 1,
+			terminal_state TEXT,
+			approved_by_user_id TEXT,
+			approved_by_key_id TEXT,
+			prompt_hash TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS ai_hitl_deliveries_proposal_unique ON ai_hitl_deliveries(proposal_id)",
+		"CREATE INDEX IF NOT EXISTS idx_ai_hitl_deliveries_session ON ai_hitl_deliveries(session_id)",
 
 		// A code's redeemed key is provenance and never changes once set (migration 0012).
 		`CREATE TRIGGER IF NOT EXISTS pairing_codes_redeemed_key_immutable

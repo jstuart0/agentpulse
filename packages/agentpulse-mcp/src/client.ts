@@ -86,6 +86,14 @@ export interface ClaudeMdResponse {
 	updatedAt: string | null;
 }
 
+/** What became of an approved prompt: whether it was queued for the agent's machine. */
+export interface HitlDelivery {
+	state: "queued" | "running" | "succeeded" | "failed" | "unknown" | "not_managed" | "blocked";
+	deliveryId?: string;
+	/** Why it was blocked, when it was. */
+	reason?: string;
+}
+
 export class ApiError extends Error {
 	readonly status: number;
 	readonly body: unknown;
@@ -309,7 +317,8 @@ export interface AgentPulseClient {
 		hitlId: string,
 		action: HitlReplyKind,
 		customPrompt?: string | null,
-	): Promise<{ hitl: HitlRequestRecord | null }>;
+		promptHash?: string | null,
+	): Promise<{ hitl: HitlRequestRecord | null; delivery?: HitlDelivery }>;
 	decideActionRequest(
 		actionRequestId: string,
 		decision: ActionRequestDecision,
@@ -565,12 +574,16 @@ export function createHttpClient(options: CreateHttpClientOptions): AgentPulseCl
 			}),
 		deleteTemplate: (templateId) =>
 			request<{ ok: true }>(`/templates/${encodeURIComponent(templateId)}`, { method: "DELETE" }),
-		decideHitl: (hitlId, action, customPrompt) =>
-			request<{ hitl: HitlRequestRecord | null }>(
+		decideHitl: (hitlId, action, customPrompt, promptHash) =>
+			request<{ hitl: HitlRequestRecord | null; delivery?: HitlDelivery }>(
 				`/ai/inbox/hitl/${encodeURIComponent(hitlId)}/decide`,
 				{
 					method: "POST",
-					body: JSON.stringify({ action, customPrompt: customPrompt ?? undefined }),
+					body: JSON.stringify({
+						action,
+						customPrompt: customPrompt ?? undefined,
+						promptHash: promptHash ?? undefined,
+					}),
 				},
 			),
 		decideActionRequest: (actionRequestId, decision) =>

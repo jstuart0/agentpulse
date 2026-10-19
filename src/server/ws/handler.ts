@@ -310,6 +310,62 @@ export function broadcast(type: WsMessageType, data: unknown, channel = "session
 	}
 }
 
+/** What an `inbox_changed` is about, so a restricted socket is told only about changes it could see. */
+export type InboxChangeSubject = { sessionId: string } | { adminOnly: true };
+
+/**
+ * Tells connected clients their inbox may have changed. The message is `{at}` and nothing
+ * else: no ids, no kinds; the client re-reads the inbox, which is filtered for it. A dashboard
+ * socket always hears it. A restricted socket hears it in solo mode, and in team mode only when
+ * the change concerns a session its reader may read (or, for an action request, when the
+ * reader is an admin), so one member cannot watch another's inbox activity.
+ */
+export async function broadcastInboxChanged(subject: InboxChangeSubject): Promise<void> {
+	const message = JSON.stringify({
+		type: "inbox_changed",
+		data: { at: new Date().toISOString() },
+	});
+	const listening = [...clients.values()].filter(
+		(client) => client.channels.has("sessions") || client.channels.has("*"),
+	);
+	let owner: { ownerUserId?: string | null } | undefined;
+	let ownerRead = false;
+	for (const client of listening) {
+		if (client.restricted) {
+			const reader = client.reader;
+			if (!reader) continue;
+			if (reader.mode !== "solo") {
+				if ("adminOnly" in subject) {
+					if (reader.actor.role !== "admin") continue;
+				} else {
+					if (!ownerRead) {
+						owner = await sessionOwnerForInbox(subject.sessionId);
+						ownerRead = true;
+					}
+					if (!canReadSession(reader.actor, owner ?? {})) continue;
+				}
+			}
+		}
+		try {
+			client.ws.send(message);
+		} catch {
+			// Client disconnected, will be cleaned up on close
+		}
+	}
+}
+
+/** The session's owner field as `canReadSession` wants it: absent for a session that can't be found. */
+async function sessionOwnerForInbox(
+	sessionId: string,
+): Promise<{ ownerUserId?: string | null } | undefined> {
+	const [row] = await getDb()
+		.select({ ownerUserId: sessions.ownerUserId })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	return row ? { ownerUserId: row.ownerUserId ?? null } : undefined;
+}
+
 /**
  * Restricted sockets get an explicit allow-list; any other message type is
  * denied, so a new broadcast type is private until someone decides otherwise.

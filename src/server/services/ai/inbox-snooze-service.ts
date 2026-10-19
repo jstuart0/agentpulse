@@ -1,7 +1,14 @@
 import { and, desc, eq, gt } from "drizzle-orm";
 import type { InboxWorkItem } from "../../../shared/types.js";
+import type { Actor } from "../../auth/actor.js";
 import { getDb } from "../../db/client.js";
-import { aiInboxSnoozes } from "../../db/schema/index.js";
+import {
+	aiHitlRequests,
+	aiInboxSnoozes,
+	sessions,
+	watcherProposals,
+} from "../../db/schema/index.js";
+import { canReadSession } from "../authorization.js";
 
 /**
  * Operator-inbox snooze. A snooze is an (kind, targetId, until) tuple
@@ -122,4 +129,80 @@ export async function listActiveSnoozes(now: Date = new Date()): Promise<SnoozeR
 
 export function activeSnoozeSet(records: SnoozeRecord[]): Set<string> {
 	return new Set(records.map((r) => `${r.kind}:${r.targetId}`));
+}
+
+/**
+ * The session a snooze target belongs to, or null when it can't be resolved to one. A `hitl`
+ * target is a request id and a `failed_proposal` target a proposal id; `stuck` and `risky`
+ * targets are `<kind>:<sessionId>`.
+ */
+export async function snoozeTargetSession(
+	kind: InboxKind,
+	targetId: string,
+): Promise<string | null> {
+	if (kind === "stuck" || kind === "risky") {
+		const prefix = `${kind}:`;
+		return targetId.startsWith(prefix) && targetId.length > prefix.length
+			? targetId.slice(prefix.length)
+			: null;
+	}
+	if (kind === "hitl") {
+		const [row] = await getDb()
+			.select({ sessionId: aiHitlRequests.sessionId })
+			.from(aiHitlRequests)
+			.where(eq(aiHitlRequests.id, targetId))
+			.limit(1);
+		return row?.sessionId ?? null;
+	}
+	const [row] = await getDb()
+		.select({ sessionId: watcherProposals.sessionId })
+		.from(watcherProposals)
+		.where(eq(watcherProposals.id, targetId))
+		.limit(1);
+	return row?.sessionId ?? null;
+}
+
+/**
+ * May this actor snooze, unsnooze or see the snooze of this item? Solo: yes. Team: only if they
+ * can read the item's session, and only an admin for a target that doesn't resolve to one. A snooze
+ * hides the item from everyone who could see it, so it is judged like the item itself.
+ */
+export async function actorMayTouchSnooze(
+	actor: Actor,
+	kind: InboxKind,
+	targetId: string,
+): Promise<boolean> {
+	if (actor.mode === "solo") return true;
+	const sessionId = await snoozeTargetSession(kind, targetId);
+	if (sessionId === null) return actor.role === "admin";
+	const [row] = await getDb()
+		.select({ ownerUserId: sessions.ownerUserId })
+		.from(sessions)
+		.where(eq(sessions.sessionId, sessionId))
+		.limit(1);
+	return canReadSession(actor, row ? { ownerUserId: row.ownerUserId ?? null } : {});
+}
+
+/** The snooze with this id, for a check before it is removed. */
+export async function getSnooze(id: string): Promise<SnoozeRecord | null> {
+	const [row] = await getDb()
+		.select()
+		.from(aiInboxSnoozes)
+		.where(eq(aiInboxSnoozes.id, id))
+		.limit(1);
+	return row ? toRecord(row) : null;
+}
+
+/** The active snoozes this actor may see. */
+export async function listActiveSnoozesFor(
+	actor: Actor,
+	now: Date = new Date(),
+): Promise<SnoozeRecord[]> {
+	const all = await listActiveSnoozes(now);
+	if (actor.mode === "solo") return all;
+	const allowed: SnoozeRecord[] = [];
+	for (const record of all) {
+		if (await actorMayTouchSnooze(actor, record.kind, record.targetId)) allowed.push(record);
+	}
+	return allowed;
 }

@@ -51,6 +51,8 @@ export interface PushPayload {
 	actionRequestId?: string;
 	actionKind?: string;
 	launchId?: string;
+	threadId?: string;
+	assistantMessageId?: string;
 	durationSec?: number;
 	toolCount?: number;
 	text?: string;

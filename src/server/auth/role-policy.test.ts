@@ -174,8 +174,10 @@ describe("the route sets match the real app", () => {
 describe("routes judged inside the handler (owner-or-admin, through the authorization service)", () => {
 	test("are listed, pinned in size, registered on the real app, and in neither policy set", async () => {
 		const { app } = await import("../app.js");
-		// 16 from before the mobile companion, plus the four device writes (assertCanManageDevice).
-		expect(OWNER_CHECKED_ROUTES.size).toBe(22);
+		// 16 from before the mobile companion, the four device writes (assertCanManageDevice) and the two
+		// Live Activity writes, plus the ten HITL decision, inbox and snooze routes judged by their services, the four session-changing
+		// routes the app composer uses (prompt, stop, retry, the control-actions read, watcher PUT and DELETE) and the Ask cancel.
+		expect(OWNER_CHECKED_ROUTES.size).toBe(39);
 		const registered = new Set(app.routes.map((route) => `${route.method} ${route.path}`));
 		for (const entry of OWNER_CHECKED_ROUTES) {
 			const [method, template] = entry.split(" ");
@@ -195,6 +197,9 @@ describe("routes judged inside the handler (owner-or-admin, through the authoriz
 			"POST /devices/:id/test",
 			"POST /devices/:id/activities",
 			"DELETE /devices/:id/activities/:sessionId",
+			"POST /ai/proposals/:id/decision",
+			"POST /ai/inbox/hitl/:id/decide",
+			"POST /ai/inbox/batch-decline",
 		]) {
 			expect(OWNER_CHECKED_ROUTES.has(named)).toBe(true);
 		}

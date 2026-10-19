@@ -9,6 +9,7 @@ import {
 	revokeKeyFailure,
 } from "./api-errors.js";
 import { ApiError, api } from "./api.js";
+import { describeDelivery, describeHitlError, isStaleItemError } from "./hitl-outcome.js";
 
 const realFetch = globalThis.fetch;
 
@@ -262,5 +263,63 @@ describe("a busy server reads as a sentence", () => {
 		respondWith(503, { error: "busy" });
 		const err = await rejection(() => api.getSettings());
 		expect(plainErrorMessage(err)).toBe("The server is busy. Try again in a moment.");
+	});
+});
+
+describe("answering a HITL request", () => {
+	async function refusal(status: number, error: string) {
+		respondWith(status, { error, message: "a sentence from the server" });
+		return rejection(() => api.decideInboxHitl("h1", { action: "approve" }));
+	}
+
+	test("every code the decision routes can answer has a plain sentence, not the server's text", async () => {
+		const codes: Array<[number, string]> = [
+			[409, "already_resolved"],
+			[409, "prompt_changed"],
+			[409, "control_busy"],
+			[409, "expired"],
+			[409, "not_awaiting"],
+			[409, "confirm_required"],
+			[409, "not_failed"],
+			[409, "not_retryable"],
+			[409, "retry_conflict"],
+			[400, "empty_prompt"],
+			[400, "prompt_hash_required"],
+			[400, "filter_blocked"],
+		];
+		for (const [status, code] of codes) {
+			const sentence = describeHitlError(await refusal(status, code), "fallback");
+			expect({
+				code,
+				plain: sentence !== "fallback" && sentence !== "a sentence from the server",
+			}).toEqual({
+				code,
+				plain: true,
+			});
+		}
+	});
+
+	test("a stale item is a 409 or a 404 on a decision: the list is reloaded", async () => {
+		expect(isStaleItemError(await refusal(409, "already_resolved"))).toBe(true);
+		expect(isStaleItemError(await refusal(409, "control_busy"))).toBe(true);
+		expect(isStaleItemError(await refusal(404, "not_found"))).toBe(true);
+		expect(isStaleItemError(await refusal(400, "empty_prompt"))).toBe(false);
+		expect(isStaleItemError(new Error("offline"))).toBe(false);
+	});
+
+	test("what became of an approved prompt reads as one sentence per state, and a blocked one says why", () => {
+		const states = ["queued", "running", "succeeded", "failed", "unknown", "not_managed"] as const;
+		const sentences = states.map((state) => describeDelivery({ state }));
+		expect(new Set(sentences).size).toBe(states.length);
+		for (const s of sentences) expect(s).toMatch(/^Approved/);
+		expect(describeDelivery({ state: "blocked", reason: "supervisor_offline" })).toContain(
+			"offline",
+		);
+		expect(describeDelivery({ state: "blocked" })).toContain("couldn't be sent");
+		expect(describeDelivery(undefined)).toBeNull();
+		// a reason is looked up as data, never as a property of the table
+		for (const reason of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+			expect(describeDelivery({ state: "blocked", reason })).toContain("couldn't be sent");
+		}
 	});
 });

@@ -48,7 +48,7 @@ import { associateObservedSession } from "./launch-dispatch.js";
 import { generateSessionName } from "./name-generator.js";
 import { getCachedProjects } from "./projects/cache.js";
 import { resolveProjectIdForCwd } from "./projects/resolver.js";
-import { dispatchEvent } from "./push/dispatch.js";
+import { ANON_ORIGIN, dispatchEvent } from "./push/dispatch.js";
 import {
 	type Attribution,
 	canAcknowledgeOwnedSession,
@@ -620,13 +620,13 @@ export async function applyPermissionWaitTransition(
 
 /**
  * Who an ingest-made push counts against: the key's owner, else the key. A poster with no key context
- * (a supervisor report, auth disabled) has no origin: there is nobody else for it to crowd out, and
- * the global in-flight budget still bounds it.
+ * (a supervisor report, auth disabled) shares one anonymous origin, so together they can't fill the
+ * headroom reserved for events that need the person.
  */
-function pushOriginOf(attribution: Attribution): string | undefined {
+function pushOriginOf(attribution: Attribution): string {
 	if (attribution.ownerUserId) return `owner:${attribution.ownerUserId}`;
 	if (attribution.ingestKeyId) return `key:${attribution.ingestKeyId}`;
-	return undefined;
+	return ANON_ORIGIN;
 }
 
 // The session row shape returned by processHookEvent.

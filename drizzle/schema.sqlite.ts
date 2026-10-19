@@ -38,6 +38,7 @@ export { aiWatcherRunsSqlite as aiWatcherRuns } from "../src/server/db/schema/ai
 export { aiInboxSnoozesSqlite as aiInboxSnoozes } from "../src/server/db/schema/ai/ai-inbox-snoozes";
 export { notificationChannelsSqlite as notificationChannels } from "../src/server/db/schema/ai/notification-channels";
 export { aiHitlRequestsSqlite as aiHitlRequests } from "../src/server/db/schema/ai/ai-hitl-requests";
+export { aiHitlDeliveriesSqlite as aiHitlDeliveries } from "../src/server/db/schema/ai/ai-hitl-deliveries";
 export { aiActionRequestsSqlite as aiActionRequests } from "../src/server/db/schema/ai/ai-action-requests";
 export { aiPendingProjectDraftsSqlite as aiPendingProjectDrafts } from "../src/server/db/schema/ai/ai-pending-project-drafts";
 export { aiQaCacheSqlite as aiQaCache } from "../src/server/db/schema/ai/ai-qa-cache";

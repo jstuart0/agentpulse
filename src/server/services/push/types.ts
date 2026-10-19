@@ -13,6 +13,7 @@ export const PUSH_EVENT_TYPES = [
 	"hitl_opened",
 	"action_request_opened",
 	"launch_status",
+	"ask_reply",
 	"stuck",
 	"risky",
 	"alert_rule_fired",
@@ -29,6 +30,7 @@ export const PUSH_CATEGORIES = [
 	"SESSION_COMPLETED",
 	"WATCHER_HITL",
 	"ACTION_REQUEST",
+	"ASK_REPLY",
 	"LAUNCH_STATUS",
 	"STUCK",
 	"RISKY",
@@ -96,6 +98,18 @@ export type PushEvent =
 			 */
 			requesterUserId?: string | null;
 	  } & Partial<SessionScoped>)
+	/**
+	 * An Ask turn finished after its requester had gone away, so the reply is waiting in the thread. Carries
+	 * ids only, never the reply: the app reopens the thread from the server. `requesterUserId` / `requesterKeyId`
+	 * say whose devices hear about it (the person's, else the key's).
+	 */
+	| {
+			type: "ask_reply";
+			threadId: string;
+			assistantMessageId: string;
+			requesterUserId: string | null;
+			requesterKeyId: string | null;
+	  }
 	| ({ type: "stuck"; text?: string | null } & SessionScoped)
 	| ({ type: "risky"; text?: string | null } & SessionScoped)
 	/** A user-defined alert rule fired. The trigger picks the category (stuck-like, failed, completed). */

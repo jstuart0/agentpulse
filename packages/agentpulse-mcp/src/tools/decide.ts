@@ -31,15 +31,24 @@ export function registerDecideTools(ctx: ToolContext, flags: ScopeFlags): void {
 		ctx,
 		{
 			name: "decide_hitl",
-			description: `Resolve a single open human-in-the-loop (HITL) request: approve (send the proposed action as-is), decline, or reply with a custom prompt instead. Single-item only. ${HITL_BYPASS_NOTE} ${CONFIRMATION_PORTABILITY_NOTE}`,
+			description: `Resolve a single open human-in-the-loop (HITL) request: approve, decline, or reply with a custom prompt instead. Approve and custom SEND THE PROMPT TO THE AGENT: on a managed session whose host is connected it is queued as a prompt for that session (the answer's "delivery" says queued, blocked with a reason, or not_managed; read it back with the session's control actions). If another action is already running on the session the call fails with "busy" and nothing changes: wait a few seconds and call again. Pass prompt_hash (from the inbox item's promptHash) to approve only the exact prompt you reviewed. Single-item only. ${HITL_BYPASS_NOTE} ${CONFIRMATION_PORTABILITY_NOTE}`,
 			inputSchema: {
 				hitl_id: z.string(),
 				action: HITL_REPLY_KIND_ENUM,
 				custom_prompt: z.string().optional(),
+				prompt_hash: z
+					.string()
+					.regex(/^[0-9a-f]{64}$/)
+					.optional(),
 			},
 		},
 		async (args, client) =>
-			client.decideHitl(args.hitl_id, args.action, args.custom_prompt ?? null),
+			client.decideHitl(
+				args.hitl_id,
+				args.action,
+				args.custom_prompt ?? null,
+				args.prompt_hash ?? null,
+			),
 	);
 
 	registerMutatingTool(

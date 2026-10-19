@@ -789,6 +789,7 @@ export type WsMessageType =
 	| "session_ended"
 	| "new_event"
 	| "stats_updated"
+	| "inbox_changed"
 	| "heartbeat";
 
 export interface WsMessage {
@@ -1149,6 +1150,10 @@ export type InboxWorkItem =
 			// "ask" is removed from the watcher decision union.
 			decision: Extract<DecisionKind, "continue" | "ask">;
 			prompt: string;
+			/** SHA-256 of the prompt an Approve would send (the `promptHash` to send back); null when there is none. */
+			promptHash: string | null;
+			/** False when the request carries no prompt to send: Approve would be refused. */
+			approvable: boolean;
 			why: string | null;
 			openedAt: string;
 			severity: InboxSeverity;
@@ -1359,6 +1364,8 @@ export interface Inbox {
 	items: InboxWorkItem[];
 	total: number;
 	byKind: Record<InboxWorkItem["kind"], number>;
+	/** Set when the caller's view is empty by rule rather than by fact (a key with no owner in team mode). */
+	notice?: string;
 }
 
 export interface InboxFilter {

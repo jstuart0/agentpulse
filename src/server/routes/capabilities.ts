@@ -56,6 +56,30 @@ export const CAPABILITY_FEATURES: readonly CapabilityFeature[] = [
 		value: true,
 	},
 	{
+		// An approved prompt is forwarded to the agent and its delivery state can be read.
+		name: "hitlForwarding",
+		proof: { kind: "route", method: "GET", path: "/ai/proposals/:id/delivery" },
+		value: true,
+	},
+	{
+		// A finished Ask reply the phone wasn't connected for is pushed as `ask_reply`.
+		name: "askReplyPush",
+		proof: { kind: "route", method: "POST", path: "/ai/ask/threads/:id/cancel" },
+		value: true,
+		pushEvents: ["ask_reply"],
+	},
+	{
+		name: "inboxChanged",
+		proof: { kind: "ws" },
+		value: true,
+	},
+	{
+		// A respond key may approve or decline (never write a prompt).
+		name: "respondDecisions",
+		proof: { kind: "route", method: "POST", path: "/ai/proposals/:id/decision" },
+		value: true,
+	},
+	{
 		// Needs a configured relay and the instance secrets key; `push.relayOrigin` travels with it.
 		name: "mobilePush",
 		proof: { kind: "route", method: "POST", path: "/devices/:id/test" },

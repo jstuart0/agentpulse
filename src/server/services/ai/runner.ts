@@ -20,12 +20,14 @@ import { classifyContinuability } from "./continuability.js";
 import { checkDispatch } from "./dispatch-filter.js";
 import { loadRecentEvents } from "./event-queries.js";
 import { classifierAffectsRunner, isAiBuildEnabled } from "./feature.js";
+import { expireOverdueHitl } from "./hitl-service.js";
 import { intelligenceForSession } from "./intelligence-service.js";
 import { priceCompletion } from "./llm/pricing.js";
 import { getAdapter } from "./llm/registry.js";
 import { LlmError } from "./llm/types.js";
 import { emitAiMetric } from "./metrics.js";
 import { parseDecision } from "./parser.js";
+import { promptHashOf } from "./prompt-hash.js";
 import {
 	cancelOpenHitl,
 	completeProposal,
@@ -70,6 +72,26 @@ interface ScheduledRun {
  * in-process debounce still coalesces rapid-fire events; once the debounce
  * fires we enqueue a durable row and let the leaser drive execution.
  */
+/**
+ * The push for a newly opened HITL. It carries the hash of the prompt an Approve would send, so the
+ * phone sends it back and a prompt that changed meanwhile is refused.
+ */
+export function hitlOpenedEvent(
+	sessionId: string,
+	hitlId: string,
+	proposalId: string,
+	nextPrompt: string | null,
+) {
+	const promptHash = promptHashOf(nextPrompt);
+	return {
+		type: "hitl_opened" as const,
+		sessionId,
+		hitlId,
+		proposalId,
+		...(promptHash ? { promptHash } : {}),
+	};
+}
+
 export class WatcherRunner {
 	private readonly scheduled = new Map<string, ScheduledRun>();
 	// NOTE: inFlight is per-process. Multi-instance deployment is unsupported
@@ -141,6 +163,7 @@ export class WatcherRunner {
 			await evaluateNoActivityRules(now);
 			await evaluateFreeformRules(now);
 			await purgeExpiredQaCache(now);
+			await expireOverdueHitl();
 		} finally {
 			this.alertSweepBusy = false;
 		}
@@ -655,12 +678,7 @@ export class WatcherRunner {
 		});
 
 		if (hitlOpen.hitlId) {
-			void dispatchEvent({
-				type: "hitl_opened",
-				sessionId,
-				hitlId: hitlOpen.hitlId,
-				proposalId: pending.id,
-			});
+			void dispatchEvent(hitlOpenedEvent(sessionId, hitlOpen.hitlId, pending.id, nextPrompt));
 		}
 
 		// If the session's watcher config points at a notification channel,

@@ -52,6 +52,7 @@ import {
 	listControlActionsForSession,
 	queuePromptAction,
 	queueStopAction,
+	redactControlAction,
 	retryLaunchForSession,
 } from "../services/control-actions.js";
 import { toSessionEventDtos } from "../services/event-dto.js";
@@ -85,6 +86,7 @@ import {
 import { computeChecksum } from "../util/checksum.js";
 import { OwnTurnBusyError } from "../util/own-turn.js";
 import { InvalidAgentTypeQueryError, parseAgentTypeQuery } from "./agent-type-query.js";
+import { mayChangeSession, refuseUnlessMayChange } from "./decision-context.js";
 import { incrementIngestForeignKeyDropped } from "./ingest-counters.js";
 
 // AGEN: a generous cap for a human-typed search term — long enough that no
@@ -560,7 +562,12 @@ sessionsRouter.get("/sessions/:sessionId", async (c: Context) => {
 	// detail (it's in OBSERVE_READ_PATHS) but must not see this embed.
 	const authUser = c.get("authUser") as AuthUser | undefined;
 	const operator = callerHasManageScope(authUser);
-	const controlActions = operator ? await listControlActionsForSession(sessionId) : undefined;
+	// Past the scope, the embed is the session's owner's (or an admin's; solo is everyone's): another member
+	// gets none. Either way the launch environment is never in it.
+	const controlActions =
+		operator && (await mayChangeSession(c, sessionId))
+			? await listControlActionsForSession(sessionId, { includePrompt: true })
+			: undefined;
 	const reportedByKey = operator ? await reportedByKeyFor(c, detail) : undefined;
 
 	return c.json({ session, events: sessionEvents, controlActions, reportedByKey });
@@ -742,22 +749,32 @@ sessionsRouter.put(
 	},
 );
 
+// A control action carries the prompt that was sent and the launch's environment, so in team mode it is
+// the session owner's (or an admin's) to read.
 sessionsRouter.get("/sessions/:sessionId/control-actions", async (c) => {
-	const actions = await listControlActionsForSession(c.req.param("sessionId"));
+	const refusal = await refuseUnlessMayChange(c, c.req.param("sessionId") ?? "");
+	if (refusal) return refusal;
+	const actions = await listControlActionsForSession(c.req.param("sessionId"), {
+		includePrompt: true,
+	});
 	return c.json({ controlActions: actions });
 });
 
 sessionsRouter.post("/sessions/:sessionId/stop", async (c: Context) => {
+	const refusal = await refuseUnlessMayChange(c, c.req.param("sessionId") ?? "");
+	if (refusal) return refusal;
 	try {
 		const authUser = c.get("authUser") as AuthUser | undefined;
 		const action = await queueStopAction(c.req.param("sessionId"), actorFromAuthUser(authUser));
-		return c.json({ action }, 202);
+		return c.json({ action: redactControlAction(action, { includePrompt: true }) }, 202);
 	} catch (error) {
 		return c.json({ error: error instanceof Error ? error.message : "Unable to queue stop" }, 400);
 	}
 });
 
 sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
+	const refusal = await refuseUnlessMayChange(c, c.req.param("sessionId") ?? "");
+	if (refusal) return refusal;
 	try {
 		const body = await c.req.json<{ prompt?: string }>();
 		const authUser = c.get("authUser") as AuthUser | undefined;
@@ -766,7 +783,7 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 			body.prompt || "",
 			actorFromAuthUser(authUser),
 		);
-		return c.json({ action }, 202);
+		return c.json({ action: redactControlAction(action, { includePrompt: true }) }, 202);
 	} catch (error) {
 		return c.json(
 			{ error: error instanceof Error ? error.message : "Unable to queue prompt" },
@@ -776,13 +793,22 @@ sessionsRouter.post("/sessions/:sessionId/prompt", async (c: Context) => {
 });
 
 sessionsRouter.post("/sessions/:sessionId/retry", async (c: Context) => {
+	// A retry clones the session's launch (its env, prompt and host), so it is the owner's or an admin's.
+	const refusal = await refuseUnlessMayChange(c, c.req.param("sessionId") ?? "");
+	if (refusal) return refusal;
 	try {
 		const authUser = c.get("authUser") as AuthUser | undefined;
 		const result = await retryLaunchForSession(
 			c.req.param("sessionId"),
 			actorFromAuthUser(authUser),
 		);
-		return c.json(result, 201);
+		// The answer names the new launch; the environment it was cloned with, and its claim token, stay on the server.
+		const { env: _env, claimToken: _claim, ...launch } = result.launchRequest;
+		const { env: _specEnv, ...spec } = (launch.launchSpec ?? {}) as unknown as Record<
+			string,
+			unknown
+		>;
+		return c.json({ ...result, launchRequest: { ...launch, launchSpec: spec } }, 201);
 	} catch (error) {
 		return c.json({ error: error instanceof Error ? error.message : "Unable to retry" }, 400);
 	}

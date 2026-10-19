@@ -198,8 +198,8 @@ describe("team mode: archive, rename, reset-name, pin, notes, CLAUDE.md and dele
 	}
 });
 
-describe("team mode: prompt, stop and retry stay open to any member", () => {
-	test("prompt, stop and retry are not refused for ownership (an unmanaged session answers 400 for its own reasons)", async () => {
+describe("team mode: prompt, stop and retry follow the session's owner (D41, F67)", () => {
+	test("another member is refused prompt, stop and retry with 403 not_owner and nothing is queued; the owner is not refused", async () => {
 		await setStoredMode("team");
 		const w = await world();
 		await seedSession("sg-steer", w.ownerId);
@@ -208,11 +208,18 @@ describe("team mode: prompt, stop and retry stay open to any member", () => {
 			["stop", {}],
 			["retry", {}],
 		] as const) {
-			const res = await app.request(
+			const other = await app.request(
 				`${base("sg-steer")}/${path}`,
 				jsonRequest("POST", body, w.otherCookie),
 			);
-			expect({ path, forbidden: res.status === 403 }).toEqual({ path, forbidden: false });
+			expect({ path, status: other.status }).toEqual({ path, status: 403 });
+			expect(await other.json()).toMatchObject({ error: "not_owner" });
+			const owner = await app.request(
+				`${base("sg-steer")}/${path}`,
+				jsonRequest("POST", body, w.ownerCookie),
+			);
+			// past the owner check the unmanaged session answers 400 for its own reasons
+			expect({ path, status: owner.status }).toEqual({ path, status: 400 });
 		}
 	});
 });

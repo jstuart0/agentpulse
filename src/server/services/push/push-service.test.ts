@@ -320,6 +320,18 @@ describe("category, interruption level and relay priority", () => {
 			"active",
 			"normal",
 		],
+		[
+			{
+				type: "ask_reply",
+				threadId: "t1",
+				assistantMessageId: "m1",
+				requesterUserId: "u",
+				requesterKeyId: null,
+			},
+			"ASK_REPLY",
+			"active",
+			"normal",
+		],
 		[{ type: "stuck", sessionId: "s" }, "STUCK", "active", "normal"],
 		[{ type: "risky", sessionId: "s" }, "RISKY", "time-sensitive", "needs-you"],
 		[{ type: "session_completed", sessionId: "s" }, "SESSION_COMPLETED", "passive", "quiet"],
@@ -1563,6 +1575,51 @@ describe("a push is only a hint (D27)", () => {
 		]);
 		for (const key of keys)
 			expect(key).not.toMatch(/approve|decline|decision|allow|grant|action$|command|prompt$|url/i);
+	});
+});
+
+describe("an Ask reply push", () => {
+	test("names the thread and the message and carries no reply text, even with agent text switched on", async () => {
+		const relay = startMockRelay();
+		const { device, open } = await makeDevice({ prefs: { includeAgentText: true } });
+		const { service } = makeService(liveClient(relay.url));
+		await service.sendToDevices([device], {
+			type: "ask_reply",
+			threadId: "thread-1",
+			assistantMessageId: "msg-1",
+			requesterUserId: "u",
+			requesterKeyId: null,
+		});
+		const payload = await open(relay.seen[0]?.body.envelope as RelayEnvelope);
+		expect(payload).toMatchObject({
+			t: "ask_reply",
+			cat: "ASK_REPLY",
+			threadId: "thread-1",
+			assistantMessageId: "msg-1",
+		});
+		expect(payload.text).toBeUndefined();
+		expect(payload.sid).toBeUndefined();
+		expect(PushPayloadSchema.safeParse(payload).success).toBe(true);
+	});
+
+	test("two replies in one thread are two pushes (deduped by message), and one message is one push", async () => {
+		const relay = startMockRelay();
+		const { device } = await makeDevice();
+		const { service } = makeService(liveClient(relay.url));
+		const reply = (assistantMessageId: string) =>
+			({
+				type: "ask_reply",
+				threadId: "thread-1",
+				assistantMessageId,
+				requesterUserId: "u",
+				requesterKeyId: null,
+			}) as const;
+		const [first] = await service.sendToDevices([device], reply("m1"));
+		const [again] = await service.sendToDevices([device], reply("m1"));
+		const [second] = await service.sendToDevices([device], reply("m2"));
+		expect(first?.status).toBe("sent");
+		expect(again?.status).toBe("deduped");
+		expect(second?.status).toBe("sent");
 	});
 });
 

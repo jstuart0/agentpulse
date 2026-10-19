@@ -48,6 +48,7 @@ const RULES: Record<PushEvent["type"], CategoryRule> = {
 	hitl_opened: { category: "WATCHER_HITL", level: "time-sensitive", defaultOn: true },
 	action_request_opened: { category: "ACTION_REQUEST", level: "active", defaultOn: true },
 	launch_status: { category: "LAUNCH_STATUS", level: "passive", defaultOn: false },
+	ask_reply: { category: "ASK_REPLY", level: "active", defaultOn: true },
 	stuck: { category: "STUCK", level: "active", defaultOn: true },
 	risky: { category: "RISKY", level: "time-sensitive", defaultOn: true },
 	// The trigger overrides this base rule: see categoryFor and baseLevelFor.
@@ -126,6 +127,7 @@ export function inQuietHours(prefs: DevicePrefs, nowMs: number): boolean {
 /** The id the 60-second dedupe keys on: the thing the event is about. */
 /** What a per-session limit counts by: the session when the event has one, else the thing the event is about. */
 export function sessionKeyFor(event: PushEvent): string {
+	if (event.type === "ask_reply") return event.threadId;
 	return "sessionId" in event && event.sessionId ? event.sessionId : primaryIdFor(event);
 }
 
@@ -152,6 +154,8 @@ export function primaryIdFor(event: PushEvent): string {
 			return event.actionRequestId;
 		case "launch_status":
 			return event.launchId;
+		case "ask_reply":
+			return event.assistantMessageId;
 		case "daily_digest":
 			return event.digestDate;
 		case "device_test":
@@ -198,6 +202,8 @@ export const PushPayloadSchema = z
 		actionRequestId: optionalId.optional(),
 		actionKind: optionalId.optional(),
 		launchId: optionalId.optional(),
+		threadId: optionalId.optional(),
+		assistantMessageId: optionalId.optional(),
 		durationSec: z.number().int().min(0).max(31_536_000).optional(),
 		toolCount: z.number().int().min(0).max(1_000_000).optional(),
 		text: z.string().max(MAX_TEXT_CHARS).optional(),
@@ -279,6 +285,8 @@ export function buildPushPayload(
 		actionRequestId: event.type === "action_request_opened" ? event.actionRequestId : undefined,
 		actionKind: event.type === "action_request_opened" ? event.actionKind : undefined,
 		launchId: event.type === "launch_status" ? event.launchId : undefined,
+		threadId: event.type === "ask_reply" ? event.threadId : undefined,
+		assistantMessageId: event.type === "ask_reply" ? event.assistantMessageId : undefined,
 		durationSec:
 			event.type === "session_failed" || event.type === "session_completed"
 				? clampInt(event.durationSec, 0, 31_536_000)

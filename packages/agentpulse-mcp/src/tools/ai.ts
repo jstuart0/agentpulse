@@ -60,7 +60,7 @@ export function registerAiTools(ctx: ToolContext, flags: ScopeFlags): void {
 			{
 				name: "get_inbox",
 				description:
-					"Operator inbox: open HITL requests, stuck/risky sessions, failed proposals, and pending action requests. Manage-scoped: action_* items can embed launch env/claimToken payloads.",
+					"Operator inbox: open HITL requests (each with promptHash and approvable), stuck/risky sessions, failed proposals, and pending action requests. In team mode you see the sessions you own, unowned ones, and (admins) everything; a key with no owner sees nothing and the answer carries a notice saying so. Manage-scoped: action_* items can embed launch env/claimToken payloads.",
 				inputSchema: {
 					kinds: z.array(z.enum(["hitl", "stuck", "risky", "failed_proposal"])).optional(),
 					session_id: z.string().optional(),
@@ -80,6 +80,7 @@ export function registerAiTools(ctx: ToolContext, flags: ScopeFlags): void {
 					items: capped.items,
 					total: inbox.total,
 					byKind: inbox.byKind,
+					...(inbox.notice ? { notice: inbox.notice } : {}),
 					...(capped.hint ? { truncated: capped.hint } : {}),
 				};
 			},

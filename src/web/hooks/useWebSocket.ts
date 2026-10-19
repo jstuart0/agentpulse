@@ -3,6 +3,7 @@ import { BROWSER_WS_PATH } from "../lib/paths.js";
 import { useConnectionStore } from "../stores/connection-store.js";
 import { useDashboardScopeStore } from "../stores/dashboard-scope-store.js";
 import { useEventStore } from "../stores/event-store.js";
+import { useInboxSignalStore } from "../stores/inbox-signal-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUserStore } from "../stores/user-store.js";
 import { currentOwnershipUi } from "./useOwnershipUi.js";
@@ -135,6 +136,9 @@ export function useWebSocket(enabled = true) {
 						) {
 							addLiveEvent(msg.data);
 						}
+						break;
+					case "inbox_changed":
+						useInboxSignalStore.getState().bump();
 						break;
 					case "heartbeat":
 						break;

@@ -3,6 +3,7 @@ import { act } from "react";
 import { useConnectionStore } from "../stores/connection-store.js";
 import { useDashboardScopeStore } from "../stores/dashboard-scope-store.js";
 import { useEventStore } from "../stores/event-store.js";
+import { useInboxSignalStore } from "../stores/inbox-signal-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { _resetIdentityRecheckForTest, useUserStore } from "../stores/user-store.js";
 import {
@@ -327,7 +328,6 @@ describe("a machine filter on the dashboard", () => {
 
 describe("a message type this client doesn't know", () => {
 	test("is ignored: no session, no event, no notification, and the socket keeps working", async () => {
-		await deliver(socket, { type: "inbox_changed", data: { at: "2026-10-01T00:00:00Z" } });
 		await deliver(socket, { type: "subscribe_rejected", reason: "rate_limited" });
 		await deliver(socket, { type: "something_new", data: { session: row("s-x", ME, true) } });
 		expect(useSessionStore.getState().sessions).toEqual([]);
@@ -335,5 +335,15 @@ describe("a message type this client doesn't know", () => {
 
 		await deliver(socket, { type: "session_updated", data: { session: row("s-mine", ME, true) } });
 		expect(useSessionStore.getState().sessions.map((s) => s.sessionId)).toEqual(["s-mine"]);
+	});
+});
+
+describe("inbox_changed", () => {
+	test("tells inbox screens to re-read, and touches nothing else", async () => {
+		const before = useInboxSignalStore.getState().version;
+		await deliver(socket, { type: "inbox_changed", data: { at: "2026-10-01T00:00:00Z" } });
+		expect(useInboxSignalStore.getState().version).toBe(before + 1);
+		expect(useSessionStore.getState().sessions).toEqual([]);
+		expect(notifications).toEqual([]);
 	});
 });

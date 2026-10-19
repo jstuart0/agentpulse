@@ -589,6 +589,10 @@ export type InboxWorkItem =
 			proposalId: string;
 			decision: Extract<DecisionKind, "continue" | "ask">;
 			prompt: string;
+			/** SHA-256 of the prompt an approve would send; null when there is none. */
+			promptHash: string | null;
+			/** False when the request has no prompt to send: approving it is refused. */
+			approvable: boolean;
 			why: string | null;
 			openedAt: string;
 			severity: InboxSeverity;
@@ -781,6 +785,8 @@ export interface Inbox {
 	items: InboxWorkItem[];
 	total: number;
 	byKind: Record<InboxWorkItem["kind"], number>;
+	/** Set when the caller's view is empty by rule rather than by fact (a key with no owner in team mode). */
+	notice?: string;
 }
 
 // ─── AI service response shapes (each has exactly one canonical owner

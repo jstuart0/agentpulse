@@ -40,6 +40,7 @@ export { aiWatcherRunsPg as aiWatcherRuns } from "../src/server/db/schema/ai/ai-
 export { aiInboxSnoozesPg as aiInboxSnoozes } from "../src/server/db/schema/ai/ai-inbox-snoozes";
 export { notificationChannelsPg as notificationChannels } from "../src/server/db/schema/ai/notification-channels";
 export { aiHitlRequestsPg as aiHitlRequests } from "../src/server/db/schema/ai/ai-hitl-requests";
+export { aiHitlDeliveriesPg as aiHitlDeliveries } from "../src/server/db/schema/ai/ai-hitl-deliveries";
 export { aiActionRequestsPg as aiActionRequests } from "../src/server/db/schema/ai/ai-action-requests";
 export { aiPendingProjectDraftsPg as aiPendingProjectDrafts } from "../src/server/db/schema/ai/ai-pending-project-drafts";
 export { aiQaCachePg as aiQaCache } from "../src/server/db/schema/ai/ai-qa-cache";

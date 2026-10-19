@@ -37,11 +37,12 @@ describe("trigger sites", () => {
 		expect([...defined.keys()]).toEqual(["services/push/dispatch.ts"]);
 	});
 
-	test("S4 owns eight of Pattern #5's ten call sites; the scheduler (S7) and the Ask reply (S5) add the other two", () => {
+	test("S4 owns eight of Pattern #5's ten call sites; the Ask reply (S5) is the ninth, and the scheduler (S7) will add the last", () => {
 		const calls = occurrences(/^(?!\s*(\/\/|\*)).*\bvoid dispatchEvent\(/);
 		expect(Object.fromEntries([...calls].sort())).toEqual({
 			"services/ai/action-requests-service.ts": 1,
 			"services/ai/alert-rule-evaluator.ts": 1,
+			"routes/ask.ts": 1,
 			"services/ai/runner.ts": 1,
 			"services/event-processor.ts": 4,
 			"services/launch-dispatch.ts": 1,
@@ -185,6 +186,46 @@ describe("PolicyPushTargets", () => {
 			actionKind: "k",
 		};
 		expect(await ids("team", event)).toEqual(["admin-phone"]);
+	});
+
+	test("an Ask reply reaches the requester's devices in either mode: the person's, else the asking key's; nobody if neither is known", async () => {
+		const byUser: PushEvent = {
+			type: "ask_reply",
+			threadId: "t",
+			assistantMessageId: "m",
+			requesterUserId: "alice",
+			requesterKeyId: "k-x",
+		};
+		const byKey: PushEvent = {
+			...byUser,
+			requesterUserId: null,
+			requesterKeyId: "k1",
+		} as PushEvent;
+		const nobody: PushEvent = {
+			...byUser,
+			requesterUserId: null,
+			requesterKeyId: null,
+		} as PushEvent;
+		for (const mode of ["solo", "team"] as const) {
+			expect(await ids(mode, byUser)).toEqual(["alice-ipad", "alice-phone"]);
+			expect(await ids(mode, byKey)).toEqual(["keyonly-phone"]);
+			expect(await ids(mode, nobody)).toEqual([]);
+		}
+	});
+
+	test("an Ask reply never reaches another person's devices or a device with no live standing", async () => {
+		const event: PushEvent = {
+			type: "ask_reply",
+			threadId: "t",
+			assistantMessageId: "m",
+			requesterUserId: "bob",
+			requesterKeyId: null,
+		};
+		expect(await ids("team", event)).toEqual(["bob-phone"]);
+		const revoked = new InMemoryDeviceSource([device("bob-phone", "bob", "")], {
+			"bob-phone": "member",
+		});
+		expect(await ids("team", event, revoked)).toEqual([]);
 	});
 
 	test("team: a launch status reaches the requester's devices; none recorded, the admins'; unknown launch, nobody", async () => {

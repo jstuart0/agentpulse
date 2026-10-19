@@ -8,6 +8,8 @@ import { RiskyCard } from "../components/inbox/RiskyCard.js";
 import { StuckCard } from "../components/inbox/StuckCard.js";
 import { plainErrorMessage } from "../lib/api-errors.js";
 import { type ActionRequestDecision, type Inbox, type InboxWorkItem, api } from "../lib/api.js";
+import { describeDelivery, isStaleItemError } from "../lib/hitl-outcome.js";
+import { useInboxSignalStore } from "../stores/inbox-signal-store.js";
 
 /**
  * Per-kind display labels for the filter select (longLabel) and the footer
@@ -48,6 +50,8 @@ export function InboxPage() {
 	const [inbox, setInbox] = useState<Inbox | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	const [notice, setNotice] = useState<string | null>(null);
+	const inboxVersion = useInboxSignalStore((s) => s.version);
 	const [kindFilter, setKindFilter] = useState<InboxWorkItem["kind"] | "all">("all");
 
 	const reload = useCallback(async () => {
@@ -65,13 +69,28 @@ export function InboxPage() {
 		}
 	}, [kindFilter]);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: inboxVersion is the trigger: the server said the inbox changed
 	useEffect(() => {
 		void reload();
-	}, [reload]);
+	}, [reload, inboxVersion]);
 
-	async function handleHitlDecide(id: string, action: "approve" | "decline") {
-		await api.decideInboxHitl(id, { action });
-		reload();
+	async function handleHitlDecide(
+		item: Extract<InboxWorkItem, { kind: "hitl" }>,
+		action: "approve" | "decline",
+	) {
+		try {
+			const result = await api.decideInboxHitl(item.id, {
+				action,
+				// Approve exactly the prompt on this card: if the agent changed it meanwhile, the server says so.
+				promptHash: action === "approve" ? (item.promptHash ?? undefined) : undefined,
+			});
+			setNotice(action === "approve" ? describeDelivery(result.delivery) : null);
+		} catch (err) {
+			// Someone else may have answered, or it expired: look again so the stale card goes away.
+			if (isStaleItemError(err)) void reload();
+			throw err;
+		}
+		void reload();
 	}
 
 	async function handleActionDecide(id: string, decision: ActionRequestDecision) {
@@ -165,6 +184,20 @@ export function InboxPage() {
 			{error && (
 				<div className="rounded border border-red-500/30 bg-red-500/10 text-red-300 p-3 text-xs">
 					{error}
+				</div>
+			)}
+
+			{notice && (
+				<div className="flex items-start justify-between gap-2 rounded border border-border bg-card p-3 text-xs">
+					<output>{notice}</output>
+					<button
+						type="button"
+						onClick={() => setNotice(null)}
+						className="text-muted-foreground hover:text-foreground"
+						aria-label="Dismiss"
+					>
+						Dismiss
+					</button>
 				</div>
 			)}
 

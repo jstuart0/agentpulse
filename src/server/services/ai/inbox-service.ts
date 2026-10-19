@@ -9,8 +9,10 @@ import {
 	SESSION_MUTATION_KINDS,
 	type SessionMutationKind,
 } from "../../../shared/types.js";
+import type { Actor } from "../../auth/actor.js";
 import { getDb } from "../../db/client.js";
 import { sessions, watcherProposals } from "../../db/schema/index.js";
+import { canReadSession } from "../authorization.js";
 import { listOpenActionRequests, narrowPayload } from "./action-requests-service.js";
 import { listAllOpenHitl } from "./hitl-service.js";
 import { activeSnoozeSet, listActiveSnoozes } from "./inbox-snooze-service.js";
@@ -42,13 +44,32 @@ const DEFAULT_LIMIT = 100;
  * issue we can memoize or project into its own table without changing
  * the discriminated-union contract.
  */
-export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
+export async function buildInbox(filter: InboxFilter = {}, viewer?: Actor): Promise<Inbox> {
 	const limit = filter.limit ?? DEFAULT_LIMIT;
 	const now = new Date();
 	const items: InboxWorkItem[] = [];
+	// In team mode a viewer sees the items of sessions they can read, and the action requests
+	// only if they are an admin. Solo, and a call with no viewer (nothing but the route calls
+	// this), see everything.
+	const filtered = viewer !== undefined && viewer.mode !== "solo";
 
 	// ---- 1. Open HITL requests ----------------------------------------
-	const openHitl = await listAllOpenHitl(limit);
+	// In team mode the limit counts what the viewer can see: read pages until it is filled, so
+	// newer items of other members can't crowd the viewer's own out of the first page.
+	const openHitl: Awaited<ReturnType<typeof listAllOpenHitl>> = [];
+	const hitlOwners = new Map<string, string | null>();
+	for (let offset = 0; openHitl.length < limit; offset += limit) {
+		const page = await listAllOpenHitl(limit, offset);
+		if (filtered) {
+			const owners = await ownersOf(Array.from(new Set(page.map((h) => h.sessionId))));
+			for (const [id, owner] of owners) hitlOwners.set(id, owner);
+		}
+		for (const h of page) {
+			if (viewer && filtered && !mayRead(viewer, hitlOwners, h.sessionId)) continue;
+			if (openHitl.length < limit) openHitl.push(h);
+		}
+		if (page.length < limit) break;
+	}
 	const sessionIds = Array.from(new Set(openHitl.map((h) => h.sessionId)));
 	const sessionRows = sessionIds.length
 		? await getDb()
@@ -80,6 +101,8 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 			proposalId: h.proposalId,
 			decision,
 			prompt,
+			promptHash: proposal.promptHash,
+			approvable: proposal.approvable,
 			why: why ?? null,
 			openedAt: h.createdAt,
 			severity: "normal",
@@ -93,6 +116,7 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 			sessionId: sessions.sessionId,
 			displayName: sessions.displayName,
 			lastActivityAt: sessions.lastActivityAt,
+			ownerUserId: sessions.ownerUserId,
 		})
 		.from(sessions)
 		.where(
@@ -107,6 +131,8 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 		.limit(Math.max(limit, 50));
 
 	for (const s of activeSessions) {
+		if (viewer && filtered && !canReadSession(viewer, { ownerUserId: s.ownerUserId ?? null }))
+			continue;
 		try {
 			const intel = await intelligenceForSession(s.sessionId);
 			if (!intel) continue;
@@ -138,12 +164,27 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 	}
 
 	// ---- 3. Recently failed proposals ---------------------------------
-	const failedProposals = await getDb()
-		.select()
-		.from(watcherProposals)
-		.where(eq(watcherProposals.state, "failed"))
-		.orderBy(desc(watcherProposals.updatedAt))
-		.limit(Math.max(limit, 20));
+	const failedWant = Math.max(limit, 20);
+	const failedOwners = new Map<string, string | null>();
+	const failedProposals: Array<typeof watcherProposals.$inferSelect> = [];
+	for (let offset = 0; failedProposals.length < failedWant; offset += failedWant) {
+		const page = await getDb()
+			.select()
+			.from(watcherProposals)
+			.where(eq(watcherProposals.state, "failed"))
+			.orderBy(desc(watcherProposals.updatedAt))
+			.limit(failedWant)
+			.offset(offset);
+		if (filtered) {
+			const owners = await ownersOf(Array.from(new Set(page.map((p) => p.sessionId))));
+			for (const [id, owner] of owners) failedOwners.set(id, owner);
+		}
+		for (const p of page) {
+			if (viewer && filtered && !mayRead(viewer, failedOwners, p.sessionId)) continue;
+			if (failedProposals.length < failedWant) failedProposals.push(p);
+		}
+		if (page.length < failedWant) break;
+	}
 
 	const failedIds = Array.from(new Set(failedProposals.map((p) => p.sessionId)));
 	const failedSessionRows = failedIds.length
@@ -171,7 +212,8 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 	}
 
 	// ---- 4. Open action requests (launch approvals + add-project + session mutations) ----
-	const openActions = await listOpenActionRequests();
+	// Action requests have no owner to judge by: in team mode they are an admin's.
+	const openActions = filtered && viewer?.role !== "admin" ? [] : await listOpenActionRequests();
 	for (const a of openActions) {
 		if (a.kind === "launch_request") {
 			const payload = narrowPayload(a, "launch_request");
@@ -426,6 +468,23 @@ export async function buildInbox(filter: InboxFilter = {}): Promise<Inbox> {
 	for (const i of out) byKind[i.kind]++;
 
 	return { items: out, total: out.length, byKind };
+}
+
+/** Owner of each named session; a session that can't be found is absent (readable only by an admin). */
+async function ownersOf(sessionIds: string[]): Promise<Map<string, string | null>> {
+	if (sessionIds.length === 0) return new Map();
+	const rows = await getDb()
+		.select({ sessionId: sessions.sessionId, ownerUserId: sessions.ownerUserId })
+		.from(sessions)
+		.where(inArray(sessions.sessionId, sessionIds));
+	return new Map(rows.map((r) => [r.sessionId, r.ownerUserId ?? null]));
+}
+
+function mayRead(viewer: Actor, owners: Map<string, string | null>, sessionId: string): boolean {
+	return canReadSession(
+		viewer,
+		owners.has(sessionId) ? { ownerUserId: owners.get(sessionId) } : {},
+	);
 }
 
 function cmpNewestFirst(a: InboxWorkItem, b: InboxWorkItem): number {

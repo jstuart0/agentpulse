@@ -1,14 +1,17 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
 const {
+	HITL_TTL_MS,
 	expireOverdueHitl,
 	getOpenHitlForProposal,
 	getOpenHitlForSession,
 	listAllOpenHitl,
 	openHitlRequest,
-	resolveHitlRequest,
 	supersedeOpenHitl,
 } = await import("./hitl-service.js");
 const { aiHitlRequests, sessions } = await import("../../db/schema/index.js");
@@ -30,6 +33,11 @@ beforeEach(async () => {
 	}
 });
 
+/** Closes a request the way a decision does (the decision service is what does it for real). */
+async function closeRow(id: string, status: "applied" | "declined") {
+	await getDb().update(aiHitlRequests).set({ status }).where(eq(aiHitlRequests.id, id));
+}
+
 describe("hitl-service", () => {
 	test("open creates a new awaiting_reply row", async () => {
 		const row = await openHitlRequest({
@@ -50,28 +58,18 @@ describe("hitl-service", () => {
 		expect(open?.id).toBe(b.id);
 	});
 
-	test("resolve applies the operator's reply and closes the row", async () => {
+	test("a request opens with an expiry a day out unless one is given", async () => {
 		const row = await openHitlRequest({ proposalId: "p1", sessionId: "s1" });
-		const resolved = await resolveHitlRequest({
-			id: row.id,
-			status: "applied",
-			replyKind: "custom",
-			replyText: "do the thing",
-		});
-		expect(resolved?.status).toBe("applied");
-		expect(resolved?.replyKind).toBe("custom");
-		expect(resolved?.replyText).toBe("do the thing");
+		const left = Date.parse(row.expiresAt as string) - Date.now();
+		expect(left).toBeGreaterThan(HITL_TTL_MS - 60_000);
+		expect(left).toBeLessThanOrEqual(HITL_TTL_MS);
 	});
 
 	test("listAllOpenHitl returns only awaiting_reply across sessions", async () => {
 		await openHitlRequest({ proposalId: "p1", sessionId: "s1" });
 		await openHitlRequest({ proposalId: "p2", sessionId: "s2" });
 		const first = await openHitlRequest({ proposalId: "p3", sessionId: "s3" });
-		await resolveHitlRequest({
-			id: first.id,
-			status: "declined",
-			replyKind: "decline",
-		});
+		await closeRow(first.id, "declined");
 		const open = await listAllOpenHitl();
 		expect(open.length).toBe(2);
 		for (const h of open) expect(h.status).toBe("awaiting_reply");
@@ -104,14 +102,16 @@ describe("hitl-service", () => {
 
 	test("getOpenHitlForProposal filters by proposal id", async () => {
 		const a = await openHitlRequest({ proposalId: "pA", sessionId: "s1" });
-		await resolveHitlRequest({
-			id: a.id,
-			status: "applied",
-			replyKind: "approve",
-		});
+		await closeRow(a.id, "applied");
 		// Second open for a different proposal on the same session
 		await openHitlRequest({ proposalId: "pB", sessionId: "s1" });
 		expect(await getOpenHitlForProposal("pA")).toBeNull();
 		expect(await getOpenHitlForProposal("pB")).not.toBeNull();
+	});
+
+	test("the watcher's periodic sweep closes overdue requests", () => {
+		const source = readFileSync(join(import.meta.dir, "runner.ts"), "utf8");
+		const sweep = source.slice(source.indexOf("private async runAlertRuleSweep"));
+		expect(sweep.slice(0, sweep.indexOf("\n\t}\n"))).toContain("await expireOverdueHitl()");
 	});
 });

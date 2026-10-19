@@ -31,6 +31,7 @@ const { createActionRequest, getActionRequest } = await import(
 const telegram = await import("../services/channels/telegram.js");
 const { handleTelegramUpdate } = await import("./channels.js");
 
+const CHANNEL = "ar-channel";
 const CHAT_REFUSAL =
 	"Approve this in the dashboard. Chat approvals can't act on a member's session in team mode.";
 
@@ -40,6 +41,10 @@ async function tapFromChat(requestId: string, action: "approve" | "decline"): Pr
 	const spy = spyOn(telegram, "answerCallbackQuery").mockImplementation(async (_id, text) => {
 		answers.push(text ?? "");
 	});
+	const channels = await import("../services/channels/channels-service.js");
+	const finder = spyOn(channels, "findActiveChannelByChatId").mockImplementation((async () => ({
+		id: CHANNEL,
+	})) as never);
 	try {
 		await handleTelegramUpdate({
 			update_id: 1,
@@ -52,6 +57,7 @@ async function tapFromChat(requestId: string, action: "approve" | "decline"): Pr
 		} as never);
 	} finally {
 		spy.mockRestore();
+		finder.mockRestore();
 	}
 	return answers;
 }
@@ -96,6 +102,8 @@ async function archiveRequest(sessionId: string) {
 		question: "Archive?",
 		payload: { sessionId, sessionDisplayName: sessionId },
 		origin: "web",
+		// The chat the request was sent to; a request with no channel was never sent to one.
+		channelId: CHANNEL,
 	});
 }
 const decide = (id: string, headers: Headers, decision: "applied" | "declined" = "applied") =>
@@ -109,50 +117,56 @@ async function archived(id: string) {
 }
 
 describe("the dashboard's decide route", () => {
-	test("a member approving an action on someone else's session is refused with 403 not_owner; nothing is burned", async () => {
+	test("team: a member is refused with 403 admin_required before anything is looked up, owner or not; nothing is burned", async () => {
 		await setStoredMode("team");
 		const w = await world();
 		await seedSession("ar-1", w.alice.id);
 		const request = await archiveRequest("ar-1");
 
-		const res = await decide(request.id, w.bob.cookie);
-
-		expect(res.status).toBe(403);
-		expect(((await res.json()) as { error: string }).error).toBe("not_owner");
+		for (const member of [w.bob, w.alice]) {
+			const res = await decide(request.id, member.cookie);
+			expect(res.status).toBe(403);
+			const body = (await res.json()) as Record<string, unknown>;
+			expect(body.error).toBe("admin_required");
+			expect(body).not.toHaveProperty("actionRequest");
+		}
 		expect((await getActionRequest(request.id))?.status).toBe("awaiting_reply");
 		expect(await archived("ar-1")).toBe(false);
 	});
 
-	test("then the owner approves the same request and it runs; an admin may too", async () => {
+	test("team: a member can't tell a real request from a made-up one, or a decided one from an open one", async () => {
+		await setStoredMode("team");
+		const w = await world();
+		await seedSession("ar-1b", w.alice.id);
+		const real = await archiveRequest("ar-1b");
+		await decide(real.id, w.admin.cookie);
+		const answers = [];
+		for (const id of [real.id, "no-such-request"]) {
+			for (const decision of ["applied", "declined"] as const) {
+				const res = await decide(id, w.bob.cookie, decision);
+				answers.push([res.status, await res.json()]);
+			}
+		}
+		expect(new Set(answers.map((a) => JSON.stringify(a))).size).toBe(1);
+		expect(answers[0]?.[0]).toBe(403);
+	});
+
+	test("team: an admin approves and it runs; the approver is recorded as that person, not as the AI", async () => {
 		await setStoredMode("team");
 		const w = await world();
 		await seedSession("ar-2", w.alice.id);
 		const request = await archiveRequest("ar-2");
-		expect((await decide(request.id, w.bob.cookie)).status).toBe(403);
 
-		const res = await decide(request.id, w.alice.cookie);
+		const res = await decide(request.id, w.admin.cookie);
 
 		expect(res.status).toBe(200);
 		expect((await getActionRequest(request.id))?.status).toBe("applied");
 		expect(await archived("ar-2")).toBe(true);
-
-		await seedSession("ar-2b", w.alice.id);
-		const second = await archiveRequest("ar-2b");
-		expect((await decide(second.id, w.admin.cookie)).status).toBe(200);
-		expect(await archived("ar-2b")).toBe(true);
-	});
-
-	test("the approver is recorded as the person, not as the AI", async () => {
-		await setStoredMode("team");
-		const w = await world();
-		await seedSession("ar-3", w.alice.id);
-		const request = await archiveRequest("ar-3");
-		await decide(request.id, w.alice.cookie);
 		const [row] = await getDb()
 			.select()
 			.from(aiActionRequests)
 			.where(eq(aiActionRequests.id, request.id));
-		expect(row?.resolvedByUserId).toBe(w.alice.id);
+		expect(row?.resolvedByUserId).toBe(w.admin.id);
 	});
 
 	test("solo: any signed-in user approves", async () => {
@@ -177,8 +191,8 @@ describe("a chat approval (Telegram)", () => {
 		expect((await getActionRequest(request.id))?.status).toBe("awaiting_reply");
 		expect(await archived("ar-5")).toBe(false);
 
-		// The dashboard can still take it.
-		expect((await decide(request.id, w.alice.cookie)).status).toBe(200);
+		// The dashboard can still take it, as an admin.
+		expect((await decide(request.id, w.admin.cookie)).status).toBe(200);
 	});
 
 	test("team: an unowned session is refused to a chat too: it has no identity", async () => {
@@ -187,6 +201,22 @@ describe("a chat approval (Telegram)", () => {
 		const request = await archiveRequest("ar-6");
 		expect(await tapFromChat(request.id, "approve")).toEqual([CHAT_REFUSAL]);
 		expect(await archived("ar-6")).toBe(false);
+	});
+
+	test("a request with no channel can't be answered from any chat: Not authorized, in solo too", async () => {
+		const w = await world();
+		await seedSession("ar-10", w.alice.id);
+		const request = await createActionRequest({
+			kind: "session_archive",
+			question: "Archive?",
+			payload: { sessionId: "ar-10", sessionDisplayName: "ar-10" },
+			origin: "web",
+		});
+		for (const action of ["approve", "decline"] as const) {
+			expect(await tapFromChat(request.id, action)).toEqual(["Not authorized."]);
+		}
+		expect((await getActionRequest(request.id))?.status).toBe("awaiting_reply");
+		expect(await archived("ar-10")).toBe(false);
 	});
 
 	test("solo: the chat approves as before", async () => {

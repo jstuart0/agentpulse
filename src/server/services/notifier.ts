@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { Session, SessionEvent, WsMessageType } from "../../shared/types.js";
-import { broadcast } from "../ws/handler.js";
+import { type InboxChangeSubject, broadcast, broadcastInboxChanged } from "../ws/handler.js";
 import { mapSessionDto } from "./session-dto.js";
 
 // A raw sessions row (or a row-shaped object with the extra fields a
@@ -42,6 +42,29 @@ export function notifyChannel(type: WsMessageType, data: unknown, channel = "ses
 	// Direct broadcast: channel-routed messages don't go through sessionBus
 	// because they carry arbitrary WsMessageType payloads, not session state.
 	broadcast(type, data, channel);
+}
+
+const pendingInboxBroadcasts = new Set<Promise<void>>();
+
+/**
+ * The inbox changed (an item opened, was answered, or was snoozed). Fire-and-forget: a
+ * failure to tell sockets never fails the change that caused it.
+ */
+export function notifyInboxChanged(subject: InboxChangeSubject): void {
+	const sent: Promise<void> = broadcastInboxChanged(subject)
+		.catch((err) => {
+			console.error(
+				"[ws] inbox_changed broadcast failed",
+				err instanceof Error ? err.name : "unknown",
+			);
+		})
+		.finally(() => pendingInboxBroadcasts.delete(sent));
+	pendingInboxBroadcasts.add(sent);
+}
+
+/** Test seam: resolves when every inbox_changed broadcast started so far has reached its sockets. */
+export async function awaitInboxBroadcastsForTest(): Promise<void> {
+	while (pendingInboxBroadcasts.size > 0) await Promise.all([...pendingInboxBroadcasts]);
 }
 
 export function notifySessionCreated<T extends SessionLike>(session: T) {

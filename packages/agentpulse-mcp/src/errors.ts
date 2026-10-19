@@ -103,6 +103,56 @@ const ERROR_TABLE: ReadonlyArray<{
 			return `AgentPulse rejected the request: this key lacks the "${required}" scope.`;
 		},
 	},
+	// Answering a HITL request (decide_hitl). Each is a plain sentence; control_busy says it is safe to retry.
+	{
+		status: 409,
+		error: "control_busy",
+		message:
+			"AgentPulse is busy: another action is already running on that session, so the prompt was NOT sent and the request is still open. Retryable: wait a few seconds and call decide_hitl again.",
+	},
+	{
+		status: 409,
+		error: "already_resolved",
+		message: "That request was already answered by someone else. Nothing was changed.",
+	},
+	{
+		status: 409,
+		error: "prompt_changed",
+		message:
+			"The agent's proposed prompt changed since you read it, so nothing was sent. Call get_inbox again and review the new prompt.",
+	},
+	{
+		status: 409,
+		error: "expired",
+		message: "That request has expired. Wait for the agent to ask again.",
+	},
+	{
+		status: 409,
+		error: "not_awaiting",
+		message: "That request isn't waiting for an answer any more.",
+	},
+	{
+		status: 400,
+		error: "empty_prompt",
+		message:
+			"There is no prompt to send (the request has none, or the custom prompt was empty). Decline it, or reply with a custom prompt.",
+	},
+	{
+		status: 400,
+		error: "prompt_hash_required",
+		message:
+			"This key can only approve the exact prompt it was shown: pass prompt_hash from the inbox item's promptHash.",
+	},
+	{
+		status: 400,
+		error: "filter_blocked",
+		message: (body) =>
+			`The safety filter blocked that prompt${
+				body && typeof body === "object" && "rule" in body
+					? ` (${String((body as { rule?: unknown }).rule)})`
+					: ""
+			}. Nothing was sent and the request is still open.`,
+	},
 	// Ownership and role refusals (team mode). The bare codes are opaque to a
 	// model or a script; each says what is needed instead.
 	{

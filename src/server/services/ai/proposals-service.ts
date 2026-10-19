@@ -1,14 +1,10 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
-import type { HitlReplyKind } from "../../../shared/types.js";
 import { getDb } from "../../db/client.js";
 import { aiHitlRequests, watcherProposals } from "../../db/schema/index.js";
-import {
-	type HitlStatus,
-	openHitlRequest,
-	resolveHitlRequest,
-	supersedeOpenHitl,
-} from "./hitl-service.js";
+import { notifyInboxChanged } from "../notifier.js";
+import { type HitlStatus, openHitlRequest, supersedeOpenHitl } from "./hitl-service.js";
 import type { WatcherDecision } from "./parser.js";
+import { promptHashOf } from "./prompt-hash.js";
 
 export type ProposalState =
 	| "pending"
@@ -26,6 +22,10 @@ export interface ProposalRecord {
 	state: ProposalState;
 	decision: WatcherDecision["decision"] | null;
 	nextPrompt: string | null;
+	/** SHA-256 of `nextPrompt` (the hash an approve from a phone must carry); null when there is nothing to approve. */
+	promptHash: string | null;
+	/** False when the proposal carries no prompt: Approve would be refused, so a client shouldn't offer it. */
+	approvable: boolean;
 	reportSummary: string | null;
 	rawResponse: Record<string, unknown> | null;
 	triggerEventId: string | null;
@@ -47,6 +47,8 @@ function toRecordBase(row: typeof watcherProposals.$inferSelect): ProposalRecord
 		state: row.state as ProposalState,
 		decision: (row.decision as ProposalRecord["decision"]) ?? null,
 		nextPrompt: row.nextPrompt,
+		promptHash: promptHashOf(row.nextPrompt),
+		approvable: promptHashOf(row.nextPrompt) !== null,
 		reportSummary: row.reportSummary,
 		rawResponse: row.rawResponse ?? null,
 		triggerEventId: row.triggerEventId,
@@ -146,7 +148,8 @@ export async function completeProposal(
 		.update(watcherProposals)
 		.set({
 			decision: input.decision,
-			nextPrompt: input.nextPrompt ?? null,
+			// Trimmed once, here: every later hash and every sent copy is of this text.
+			nextPrompt: input.nextPrompt?.trim() || null,
 			reportSummary: input.reportSummary ?? null,
 			rawResponse: input.rawResponse ?? null,
 			tokensIn: input.tokensIn,
@@ -181,6 +184,7 @@ export async function completeProposalAsHitl(
 		expiresAt: input.expiresAt ?? null,
 	});
 	const final = await getProposal(input.id);
+	notifyInboxChanged({ sessionId: hitl.sessionId });
 	return { proposal: final, hitlId: hitl.id };
 }
 
@@ -283,50 +287,4 @@ export async function cancelOpenHitl(sessionId: string, reason = "cancelled"): P
 		)
 		.returning();
 	return supersededCount + legacy.length;
-}
-
-/**
- * Resolve a HITL request tied to a proposal (approve/decline/custom).
- * Updates the ai_hitl_requests row and ensures the proposal's physical
- * state no longer claims a stale `hitl_*` value.
- */
-export async function resolveProposalHitl(input: {
-	proposalId: string;
-	action: HitlReplyKind;
-	replyText?: string | null;
-}): Promise<ProposalRecord | null> {
-	const proposal = await getProposal(input.proposalId);
-	if (!proposal) return null;
-
-	const [open] = await getDb()
-		.select()
-		.from(aiHitlRequests)
-		.where(
-			and(
-				eq(aiHitlRequests.proposalId, input.proposalId),
-				eq(aiHitlRequests.status, "awaiting_reply"),
-			),
-		)
-		.limit(1);
-	const now = new Date().toISOString();
-
-	if (open) {
-		await resolveHitlRequest({
-			id: open.id,
-			status: input.action === "decline" ? "declined" : "applied",
-			replyKind: input.action,
-			replyText: input.replyText ?? null,
-		});
-	} else if (proposal.state === "hitl_waiting") {
-		// Legacy row — move proposal state directly so derived state flips.
-		await getDb()
-			.update(watcherProposals)
-			.set({
-				state: input.action === "decline" ? "hitl_declined" : "hitl_applied",
-				updatedAt: now,
-			})
-			.where(eq(watcherProposals.id, input.proposalId));
-	}
-
-	return getProposal(input.proposalId);
 }

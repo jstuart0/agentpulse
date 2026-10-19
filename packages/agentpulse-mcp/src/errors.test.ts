@@ -189,3 +189,33 @@ describe("mapError — unexpected error shapes", () => {
 		expect(result.content[0].text).toContain("malformed JSON");
 	});
 });
+
+describe("mapError — answering a HITL request", () => {
+	const cases: Array<[status: number, code: string, mustContain: string]> = [
+		[409, "control_busy", "Retryable"],
+		[409, "already_resolved", "already answered"],
+		[409, "prompt_changed", "get_inbox again"],
+		[409, "expired", "expired"],
+		[409, "not_awaiting", "isn't waiting"],
+		[400, "empty_prompt", "no prompt to send"],
+		[400, "prompt_hash_required", "prompt_hash"],
+		[400, "filter_blocked", "safety filter"],
+	];
+	for (const [status, code, mustContain] of cases) {
+		test(`${status} ${code} reads as a plain sentence`, () => {
+			const result = mapError(
+				new ApiError(status, { error: code, message: "server words" }),
+				BASE_URL,
+			);
+			expect(result.isError).toBe(true);
+			expect(result.content[0].text).toContain(mustContain);
+			expect(result.content[0].text).not.toContain("server words");
+		});
+	}
+
+	test("control_busy says nothing was sent and the request is still open, so retrying is safe", () => {
+		const text = mapError(new ApiError(409, { error: "control_busy" }), BASE_URL).content[0].text;
+		expect(text).toContain("NOT sent");
+		expect(text).toContain("still open");
+	});
+});

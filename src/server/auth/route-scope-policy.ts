@@ -123,6 +123,8 @@ export const INTENTIONALLY_MANAGE_ONLY: ReadonlySet<string> = new Set([
 	"/ai/vector-search/status",
 	"/ai/sessions/:sessionId/watcher",
 	"/ai/inbox/snoozes",
+	// Where an approved prompt went: owner-checked, and a respond key reads it (S5).
+	"/ai/proposals/:id/delivery",
 	"/ai/risk-classes",
 	// A pairing code's status: only for the person who minted it (checked in the handler).
 	"/pairing-codes/:id",
@@ -155,7 +157,13 @@ const INGEST_WRITES: ReadonlySet<string> = new Set(["PUT /sessions/:sessionId/na
  * C1/F23 exclusions keep from observe. Later phases add their reads here in the
  * same change that mounts the guarded route (/devices, /ai/inbox ...).
  */
-const RESPOND_READS: ReadonlySet<string> = new Set([...OBSERVE_READS, "/devices"]);
+const RESPOND_READS: ReadonlySet<string> = new Set([
+	...OBSERVE_READS,
+	"/devices",
+	"/ai/inbox",
+	"/ai/inbox/snoozes",
+	"/ai/proposals/:id/delivery",
+]);
 
 /**
  * `respond` writes (method-qualified). A grant lands only in the phase that
@@ -164,7 +172,10 @@ const RESPOND_READS: ReadonlySet<string> = new Set([...OBSERVE_READS, "/devices"
  * `{acknowledged:false, reason:"not_owner"}` rather than clearing someone
  * else's attention. The device routes are owner-checked by assertCanManageDevice
  * (a caller reaches only its own phones, and a key only its own registration).
- * Decisions and snooze arrive with their guards.
+ * The decision, snooze and retry routes are owner-checked by the HITL decision
+ * service and the snooze service (the same rule: a team member acts only on
+ * sessions they can read). A respond key may approve or decline but never write a
+ * custom prompt: that is refused inside the decision service.
  */
 const RESPOND_WRITES: ReadonlySet<string> = new Set([
 	"POST /sessions/:sessionId/acknowledge",
@@ -175,6 +186,12 @@ const RESPOND_WRITES: ReadonlySet<string> = new Set([
 	"POST /devices/:id/test",
 	"POST /devices/:id/activities",
 	"DELETE /devices/:id/activities/:sessionId",
+	"POST /ai/proposals/:id/decision",
+	"POST /ai/proposals/:id/delivery/retry",
+	"POST /ai/inbox/snooze",
+	"DELETE /ai/inbox/snooze/:id",
+	"DELETE /ai/inbox/snooze",
+	"POST /ai/ask/threads/:id/cancel",
 ]);
 
 export interface ScopeGrant {
@@ -340,6 +357,25 @@ export const OWNER_CHECKED_ROUTES: ReadonlySet<string> = new Set([
 	"POST /devices/:id/test",
 	"POST /devices/:id/activities",
 	"DELETE /devices/:id/activities/:sessionId",
+	// The HITL decision service and the snooze service judge these against the session's owner.
+	"POST /ai/proposals/:id/decision",
+	"POST /ai/proposals/:id/delivery/retry",
+	"GET /ai/proposals/:id/delivery",
+	"POST /ai/inbox/hitl/:id/decide",
+	"POST /ai/inbox/batch-decline",
+	"GET /ai/inbox",
+	"GET /ai/inbox/snoozes",
+	"POST /ai/inbox/snooze",
+	"DELETE /ai/inbox/snooze/:id",
+	"DELETE /ai/inbox/snooze",
+	// The session-changing routes the app's composer uses, and the Ask cancel (the asker only).
+	"POST /sessions/:sessionId/prompt",
+	"POST /sessions/:sessionId/stop",
+	"POST /sessions/:sessionId/retry",
+	"GET /sessions/:sessionId/control-actions",
+	"PUT /ai/sessions/:sessionId/watcher",
+	"DELETE /ai/sessions/:sessionId/watcher",
+	"POST /ai/ask/threads/:id/cancel",
 ]);
 
 export async function resolveEffectiveRole(

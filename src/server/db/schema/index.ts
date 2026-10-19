@@ -83,6 +83,7 @@ export const notificationChannels =
 	active.notificationChannels as typeof sqliteSchema.notificationChannels;
 // biome-ignore format: dialect-resolved re-exports keep one line each
 export const aiHitlRequests = active.aiHitlRequests as typeof sqliteSchema.aiHitlRequests;
+export const aiHitlDeliveries = active.aiHitlDeliveries as typeof sqliteSchema.aiHitlDeliveries;
 // biome-ignore format: dialect-resolved re-exports keep one line each
 export const aiActionRequests = active.aiActionRequests as typeof sqliteSchema.aiActionRequests;
 // biome-ignore format: dialect-resolved re-exports keep one line each

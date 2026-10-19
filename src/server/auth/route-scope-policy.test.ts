@@ -1195,15 +1195,27 @@ describe("respond scope — grants table", () => {
 		expect(SCOPE_GRANTS.ingest.reads.size).toBe(0);
 	});
 
-	test("respond holds only the grants that have landed: observe's reads plus /devices, and the acknowledge and device writes", () => {
+	test("respond holds only the grants that have landed: observe's reads plus /devices and the S5 inbox reads, and the acknowledge, device, decision and snooze writes", () => {
 		expect([...SCOPE_GRANTS.respond.reads].sort()).toEqual(
-			[...OBSERVE_READ_PATHS, "/devices"].sort(),
+			[
+				...OBSERVE_READ_PATHS,
+				"/devices",
+				"/ai/inbox",
+				"/ai/inbox/snoozes",
+				"/ai/proposals/:id/delivery",
+			].sort(),
 		);
 		expect([...SCOPE_GRANTS.respond.writes].sort()).toEqual([
+			"DELETE /ai/inbox/snooze",
+			"DELETE /ai/inbox/snooze/:id",
 			"DELETE /devices/:id",
 			"DELETE /devices/:id/activities/:sessionId",
 			"DELETE /sessions/:sessionId/acknowledge",
 			"PATCH /devices/:id",
+			"POST /ai/ask/threads/:id/cancel",
+			"POST /ai/inbox/snooze",
+			"POST /ai/proposals/:id/decision",
+			"POST /ai/proposals/:id/delivery/retry",
 			"POST /devices",
 			"POST /devices/:id/activities",
 			"POST /devices/:id/test",
@@ -1304,12 +1316,8 @@ describe("respond scope — caller matrix (real app.request())", () => {
 	});
 
 	const REFUSED: Array<[string, string]> = [
-		["GET", "/ai/inbox"],
-		["GET", "/ai/inbox/snoozes"],
-		["POST", "/ai/inbox/snooze"],
-		["DELETE", "/ai/inbox/snooze/x"],
-		["POST", "/ai/proposals/x/decision"],
 		["POST", "/ai/inbox/hitl/x/decide"],
+		["POST", "/ai/inbox/batch-decline"],
 		["POST", "/ai/action-requests/x/decide"],
 		["GET", "/ai/action-requests"],
 		["POST", "/ai/ask"],
@@ -1333,7 +1341,7 @@ describe("respond scope — caller matrix (real app.request())", () => {
 		["POST", "/admin/supervisors/enroll"],
 	];
 
-	test("respond is refused on inbox, snooze, decisions, prompts, settings, keys, CRUD and the admin mount", async () => {
+	test("respond is refused on the manage-only inbox routes, prompts, settings, keys, CRUD and the admin mount", async () => {
 		for (const mount of MOUNTS) {
 			for (const [method, path] of REFUSED) {
 				const res = await app.request(`${mount}${path}`, {
@@ -1383,8 +1391,8 @@ describe("respond scope — caller matrix (real app.request())", () => {
 		// the matrix must be a real population, and must have found the sensitive ones
 		expect(targets.length).toBeGreaterThan(80);
 		for (const must of [
-			"POST /ai/inbox/snooze",
-			"POST /ai/proposals/x/decision",
+			"POST /ai/inbox/hitl/x/decide",
+			"POST /ai/inbox/batch-decline",
 			"PUT /settings",
 		]) {
 			expect(targets.some((t) => `${t.method} ${t.path}` === must)).toBe(true);
@@ -1457,5 +1465,95 @@ describe("respond scope — minting", () => {
 		const ok = await createApiKey("rsp-mint-respond", [SCOPE_RESPOND, SCOPE_OBSERVE]);
 		expect(ok.key.startsWith("ap_")).toBe(true);
 		await expect(createApiKey("rsp-mint-bogus", ["respondd"])).rejects.toThrow(/Unknown scope/);
+	});
+});
+
+// ─── respond scope (mobile companion, S5) ────────────────────────────────────
+
+describe("respond S5 — decisions, inbox, snooze and delivery", () => {
+	let respondKey: string;
+	let manageKey: string;
+
+	beforeAll(async () => {
+		respondKey = (await createApiKey("rsp5-respond", [SCOPE_RESPOND])).key;
+		manageKey = (await createApiKey("rsp5-manage", ["manage"])).key;
+	});
+
+	const S5_ROUTES: Array<[string, string]> = [
+		["GET", "/ai/inbox"],
+		["GET", "/ai/inbox/snoozes"],
+		["GET", "/ai/proposals/x/delivery"],
+		["POST", "/ai/proposals/x/decision"],
+		["POST", "/ai/proposals/x/delivery/retry"],
+		["POST", "/ai/inbox/snooze"],
+		["DELETE", "/ai/inbox/snooze/x"],
+		["DELETE", "/ai/inbox/snooze"],
+	];
+
+	test("the S5 grants are exactly the 3 reads and 5 writes the plan lists, and every one is owner-checked in its handler", async () => {
+		const { OWNER_CHECKED_ROUTES } = await import("./route-scope-policy.js");
+		const reads = ["/ai/inbox", "/ai/inbox/snoozes", "/ai/proposals/:id/delivery"];
+		const writes = [
+			"POST /ai/proposals/:id/decision",
+			"POST /ai/inbox/snooze",
+			"DELETE /ai/inbox/snooze/:id",
+			"DELETE /ai/inbox/snooze",
+			"POST /ai/proposals/:id/delivery/retry",
+		];
+		for (const read of reads) {
+			expect(SCOPE_GRANTS.respond.reads.has(read)).toBe(true);
+			expect(OWNER_CHECKED_ROUTES.has(`GET ${read}`)).toBe(true);
+		}
+		for (const write of writes) {
+			expect(SCOPE_GRANTS.respond.writes.has(write)).toBe(true);
+			expect(OWNER_CHECKED_ROUTES.has(write)).toBe(true);
+		}
+		// the decide and batch routes are NOT granted: a phone decides through the proposal route
+		expect(SCOPE_GRANTS.respond.writes.has("POST /ai/inbox/hitl/:id/decide")).toBe(false);
+		expect(SCOPE_GRANTS.respond.writes.has("POST /ai/inbox/batch-decline")).toBe(false);
+	});
+
+	test("a respond key passes the scope gate on each S5 route (the handler then answers for itself)", async () => {
+		for (const mount of MOUNTS) {
+			for (const [method, path] of S5_ROUTES) {
+				const res = await app.request(`${mount}${path}`, {
+					method,
+					headers: new Headers({
+						...Object.fromEntries(authBearer(respondKey)),
+						"Content-Type": "application/json",
+					}),
+					body: method === "POST" ? JSON.stringify({}) : undefined,
+				});
+				const body = (await res
+					.clone()
+					.json()
+					.catch(() => ({}))) as { error?: string };
+				expect({ method, path, gated: body.error === "insufficient_scope" }).toEqual({
+					method,
+					path,
+					gated: false,
+				});
+			}
+		}
+	});
+
+	test("an observe key and an ingest key are still refused on every S5 write and on the delivery read", async () => {
+		const observe = (await createApiKey("rsp5-observe", [SCOPE_OBSERVE])).key;
+		const ingest = (await createApiKey("rsp5-ingest", [SCOPE_INGEST])).key;
+		for (const key of [observe, ingest]) {
+			for (const [method, path] of S5_ROUTES) {
+				const res = await app.request(`/api/v1${path}`, { method, headers: authBearer(key) });
+				expect({ method, path, status: res.status }).toEqual({ method, path, status: 403 });
+			}
+		}
+	});
+
+	test("a manage key passes the gate too and the route answers for itself (404, no such delivery)", async () => {
+		const res = await app.request("/api/v1/ai/proposals/x/delivery", {
+			headers: authBearer(manageKey),
+		});
+		// Past the scope gate, the route itself answers: there is no such delivery.
+		expect(res.status).toBe(404);
+		expect(await res.json()).toMatchObject({ error: "not_found" });
 	});
 });

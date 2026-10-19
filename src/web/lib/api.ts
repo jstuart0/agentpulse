@@ -1053,11 +1053,17 @@ export const api = {
 	deleteAiWatcher: (sessionId: string) =>
 		request<{ ok: true }>(`/ai/sessions/${sessionId}/watcher`, { method: "DELETE" }),
 
-	decideAiProposal: (id: string, body: { action: HitlReplyKind; customPrompt?: string }) =>
-		request<{ ok: true; dispatched: boolean; prompt?: string | null }>(
-			`/ai/proposals/${id}/decision`,
-			{ method: "POST", body: JSON.stringify(body) },
-		),
+	decideAiProposal: (
+		id: string,
+		body: { action: HitlReplyKind; customPrompt?: string; promptHash?: string },
+	) =>
+		request<{
+			ok: true;
+			dispatched: boolean;
+			prompt?: string | null;
+			/** What became of an approved prompt; absent for a decline. */
+			delivery?: DeliveryOutcome;
+		}>(`/ai/proposals/${id}/decision`, { method: "POST", body: JSON.stringify(body) }),
 
 	aiRedactorDryRun: (sample: string, userRules?: string[]) =>
 		request<{
@@ -1083,11 +1089,17 @@ export const api = {
 		if (params?.limit) qs.set("limit", String(params.limit));
 		return request<Inbox>(`/ai/inbox${qs.toString() ? `?${qs}` : ""}`);
 	},
-	decideInboxHitl: (id: string, body: { action: HitlReplyKind; customPrompt?: string }) =>
-		request<{ hitl: { id: string; status: string } }>(`/ai/inbox/hitl/${id}/decide`, {
-			method: "POST",
-			body: JSON.stringify(body),
-		}),
+	decideInboxHitl: (
+		id: string,
+		body: { action: HitlReplyKind; customPrompt?: string; promptHash?: string },
+	) =>
+		request<{ hitl: { id: string; status: string }; delivery?: DeliveryOutcome }>(
+			`/ai/inbox/hitl/${id}/decide`,
+			{
+				method: "POST",
+				body: JSON.stringify(body),
+			},
+		),
 	batchDeclineInbox: (body: { hitlIds?: string[]; sessionIds?: string[] }) =>
 		request<{ closed: number }>("/ai/inbox/batch-decline", {
 			method: "POST",
@@ -1490,6 +1502,14 @@ export interface AiWatcherConfigUpdate {
 	systemPrompt?: string | null;
 }
 
+/** What became of an approved prompt (the `delivery` of a decision's answer). */
+export interface DeliveryOutcome {
+	state: "queued" | "running" | "succeeded" | "failed" | "unknown" | "not_managed" | "blocked";
+	deliveryId?: string;
+	/** Why it was blocked, when it was. */
+	reason?: string;
+}
+
 export interface AiProposal {
 	id: string;
 	sessionId: string;
@@ -1504,6 +1524,10 @@ export interface AiProposal {
 		| "failed";
 	decision: DecisionKind | null;
 	nextPrompt: string | null;
+	/** SHA-256 of `nextPrompt`; null when there is nothing to approve. */
+	promptHash: string | null;
+	/** False when Approve would be refused (no prompt to send). */
+	approvable: boolean;
 	reportSummary: string | null;
 	rawResponse: Record<string, unknown> | null;
 	triggerEventId: string | null;

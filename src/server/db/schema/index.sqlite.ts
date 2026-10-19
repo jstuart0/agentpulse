@@ -47,6 +47,7 @@ export { aiWatcherRunsSqlite as aiWatcherRuns } from "./ai/ai-watcher-runs.js";
 export { aiInboxSnoozesSqlite as aiInboxSnoozes } from "./ai/ai-inbox-snoozes.js";
 export { notificationChannelsSqlite as notificationChannels } from "./ai/notification-channels.js";
 export { aiHitlRequestsSqlite as aiHitlRequests } from "./ai/ai-hitl-requests.js";
+export { aiHitlDeliveriesSqlite as aiHitlDeliveries } from "./ai/ai-hitl-deliveries.js";
 export { aiActionRequestsSqlite as aiActionRequests } from "./ai/ai-action-requests.js";
 export { aiPendingProjectDraftsSqlite as aiPendingProjectDrafts } from "./ai/ai-pending-project-drafts.js";
 export { aiQaCacheSqlite as aiQaCache } from "./ai/ai-qa-cache.js";

@@ -88,8 +88,8 @@ describe("the feature registry is backed by mounted routes", () => {
 				true,
 			);
 		}
-		// S1 lands the acknowledge grant only: no decisions flag yet.
-		expect(CAPABILITY_FEATURES.map((f) => f.name)).not.toContain("respondDecisions");
+		// S5 lands the decision grant together with its flag.
+		expect(CAPABILITY_FEATURES.map((f) => f.name)).toContain("respondDecisions");
 	});
 
 	test("names are unique", () => {
@@ -116,8 +116,12 @@ describe("GET /capabilities", () => {
 				pairing: true,
 				devices: true,
 				respondAck: true,
+				askReplyPush: true,
+				hitlForwarding: true,
+				inboxChanged: true,
+				respondDecisions: true,
 			});
-			expect(body.pushEvents).toEqual([]);
+			expect(body.pushEvents).toEqual(["ask_reply"]);
 			expect(Object.keys(body.ai).sort()).toEqual(["active", "build", "provider", "vectorSearch"]);
 			expect("labs" in body).toBe(false);
 		}

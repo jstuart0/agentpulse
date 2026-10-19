@@ -27,8 +27,14 @@ const { events, launchRequests, mobileDeviceActivities, mobileDevices, sessions 
 );
 const { app } = await import("../app.js");
 const { processHookEvent, markSessionFailed } = await import("./event-processor.js");
-const { MAX_INFLIGHT_PER_ORIGIN, configurePushRuntime, getPushRuntime, _resetDispatchForTest } =
-	await import("./push/dispatch.js");
+const {
+	ANON_ORIGIN,
+	MAX_INFLIGHT_PER_ORIGIN,
+	configurePushRuntime,
+	dispatchEvent,
+	getPushRuntime,
+	_resetDispatchForTest,
+} = await import("./push/dispatch.js");
 const { enrichPushEvent } = await import("./push/push-enrich.js");
 const { readSessionSnapshot } = await import("./push/device-source.js");
 const { startPush, stopPush } = await import("./push/push-runtime.js");
@@ -296,11 +302,12 @@ describe("ingest-made pushes count against their origin", () => {
 		await flush();
 	}, 60_000);
 
-	test("a poster with no key context has no origin: it is bounded by the global budget only", async () => {
+	test("posters with no key context share one anonymous origin with the same cap, and server events are not counted against it", async () => {
 		let open!: () => void;
 		const gate = new Promise<void>((resolve) => {
 			open = resolve;
 		});
+		expect(ANON_ORIGIN).toBe("anon");
 		const count = MAX_INFLIGHT_PER_ORIGIN + 20;
 		for (let i = 0; i < count; i++) await mkSession(`n-${i}`);
 		record(() => gate);
@@ -308,7 +315,11 @@ describe("ingest-made pushes count against their origin", () => {
 			await processHookEvent(hook(`n-${i}`, "Stop"), "claude_code", from(null, null));
 		}
 		await flush();
-		expect(seen).toHaveLength(count);
+		expect(seen).toHaveLength(MAX_INFLIGHT_PER_ORIGIN);
+
+		void dispatchEvent({ type: "hitl_opened", sessionId: "n-0", hitlId: "h1", proposalId: "p" });
+		await flush();
+		expect(seen).toHaveLength(MAX_INFLIGHT_PER_ORIGIN + 1);
 		open();
 		await flush();
 	}, 60_000);
@@ -348,7 +359,7 @@ describe("the other triggers", () => {
 	test("hitl_opened is dispatched in the runner right after the HITL request is opened, and only with an id", () => {
 		const source = readFileSync(join(import.meta.dir, "ai/runner.ts"), "utf8");
 		const opened = source.indexOf("await completeProposalAsHitl(");
-		const dispatched = source.indexOf('type: "hitl_opened"');
+		const dispatched = source.indexOf("dispatchEvent(hitlOpenedEvent(");
 		const guard = source.lastIndexOf("if (hitlOpen.hitlId)", dispatched);
 		expect(opened).toBeGreaterThan(-1);
 		expect(dispatched).toBeGreaterThan(opened);
@@ -540,6 +551,17 @@ describe("dispatch never blocks ingest", () => {
 			// window; a busy machine slows some of them, so the quietest window is the one judged.
 			const WINDOWS = 3;
 			const PER_WINDOW = 100;
+			// Events from a fleet of ingest keys. Posters with no key context share one capped origin, so the
+			// 300 hung dispatches are spread over enough keys to stay under each key's cap: the bench still
+			// proves every event is dispatched while the relay sits on all of them.
+			const KEYS = 8;
+			const fromKey = (n: number) => ({
+				keyId: `bench-key-${n % KEYS}`,
+				deliveryId: null,
+				origin: "native" as const,
+				attribution: { ownerUserId: null, ingestKeyId: `bench-key-${n % KEYS}` },
+			});
+			expect(Math.ceil((WINDOWS * PER_WINDOW) / KEYS)).toBeLessThanOrEqual(MAX_INFLIGHT_PER_ORIGIN);
 			const GAP_MS = 10;
 			const p95s: number[] = [];
 			const rates: number[] = [];
@@ -553,7 +575,7 @@ describe("dispatch never blocks ingest", () => {
 					if (wait > 0) await new Promise((r) => setTimeout(r, wait));
 					const begin = performance.now();
 					inflight.push(
-						processHookEvent(hook(`bench-${n++}`, "Stop"), "claude_code").then(() => {
+						processHookEvent(hook(`bench-${n}`, "Stop"), "claude_code", fromKey(n++)).then(() => {
 							latencies.push(performance.now() - begin);
 						}),
 					);

@@ -6,9 +6,13 @@ import { requireAuth } from "../auth/middleware.js";
 import { requireOperatorScope } from "../auth/route-scope-policy.js";
 import { config } from "../config.js";
 import { getActionRequest, resolveActionRequest } from "../services/ai/action-requests-service.js";
-import { emitAiEvent } from "../services/ai/ai-events.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
-import { getHitlRequest, resolveHitlRequest } from "../services/ai/hitl-service.js";
+import {
+	TELEGRAM_APPROVE_UNSUPPORTED_MESSAGE,
+	TELEGRAM_DECISION_CONTEXT,
+	decideHitl,
+} from "../services/ai/hitl-decision-service.js";
+import { getHitlRequest } from "../services/ai/hitl-service.js";
 import {
 	ASK_MESSAGE_MAX_CHARS,
 	findOrCreateTelegramThread,
@@ -285,52 +289,42 @@ async function handleHitlCallback(cb: TelegramCallbackQuery): Promise<void> {
 	}
 	// Verify the callback's chat belongs to the channel tied to this HITL —
 	// prevents a malicious user who learns a hitl id from acting on it.
-	if (hitl.channelId) {
-		const matchingChannel = await findActiveChannelByChatId(String(cb.message?.chat.id ?? ""));
-		if (!matchingChannel || matchingChannel.id !== hitl.channelId) {
-			await answerCallbackQuery(cb.id, "Not authorized.");
-			return;
-		}
+	// A request with no channel was never sent to a chat, so no chat is entitled to answer it.
+	const hitlChannel = hitl.channelId
+		? await findActiveChannelByChatId(String(cb.message?.chat.id ?? ""))
+		: null;
+	if (!hitl.channelId || !hitlChannel || hitlChannel.id !== hitl.channelId) {
+		await answerCallbackQuery(cb.id, "Not authorized.");
+		return;
 	}
 	if (hitl.status !== "awaiting_reply") {
 		await answerCallbackQuery(cb.id, "Already resolved.");
 		return;
 	}
-	const resolved = await resolveHitlRequest({
-		id: hitl.id,
-		status: data.action === "decline" ? "declined" : "applied",
-		replyKind: data.action,
-	});
-	if (!resolved) {
-		await answerCallbackQuery(cb.id, "Could not resolve.");
+	// Approving from a chat is no longer supported (D41): the request stays open for the app. A decline
+	// closes it audit-only, and the audit event names the Telegram user.
+	const outcome = await decideHitl(
+		{ kind: "hitl", hitlId: hitl.id },
+		data.action,
+		{ auditNote: `telegram:${cb.from.id}` },
+		TELEGRAM_DECISION_CONTEXT,
+	);
+	if (!outcome.ok) {
+		const { code } = outcome.refusal;
+		await answerCallbackQuery(
+			cb.id,
+			code === "telegram_approve_unsupported"
+				? TELEGRAM_APPROVE_UNSUPPORTED_MESSAGE
+				: code === "already_resolved"
+					? "Already resolved."
+					: code === "expired"
+						? "This request has expired."
+						: "Could not resolve.",
+		);
 		return;
 	}
-	await answerCallbackQuery(cb.id, data.action === "approve" ? "Approved ✓" : "Declined ✗");
-	// Emit audit events mirroring the in-app approve/decline flow.
-	await emitAiEvent({
-		sessionId: hitl.sessionId,
-		source: "observed_hook",
-		category: "ai_hitl_response",
-		eventType: "AiHitlResponse",
-		content: data.action === "approve" ? "Approved via Telegram." : "Declined via Telegram.",
-		rawPayload: { proposal_id: hitl.proposalId, action: data.action, channel: "telegram" },
-	});
-	if (data.action === "approve") {
-		await emitAiEvent({
-			sessionId: hitl.sessionId,
-			source: "observed_hook",
-			category: "ai_continue_sent",
-			eventType: "AiContinueSent",
-			content: "Approved via Telegram.",
-			rawPayload: { proposal_id: hitl.proposalId, action: "approve", channel: "telegram" },
-		});
-	}
-	if (hitl.channelId) {
-		await sendTelegramPlain(
-			hitl.channelId,
-			data.action === "approve" ? "✅ Approved. Prompt forwarded." : "❌ Declined.",
-		);
-	}
+	await answerCallbackQuery(cb.id, "Declined ✗");
+	if (hitl.channelId) await sendTelegramPlain(hitl.channelId, "❌ Declined.");
 }
 
 /**
@@ -351,12 +345,12 @@ async function handleActionCallback(cb: TelegramCallbackQuery): Promise<void> {
 	}
 	// Verify the callback's chat belongs to the channel tied to this action request —
 	// same auth pattern as handleHitlCallback (channels.ts:243-250).
-	if (request.channelId) {
-		const matchingChannel = await findActiveChannelByChatId(String(cb.message?.chat.id ?? ""));
-		if (!matchingChannel || matchingChannel.id !== request.channelId) {
-			await answerCallbackQuery(cb.id, "Not authorized.");
-			return;
-		}
+	const requestChannel = request.channelId
+		? await findActiveChannelByChatId(String(cb.message?.chat.id ?? ""))
+		: null;
+	if (!request.channelId || !requestChannel || requestChannel.id !== request.channelId) {
+		await answerCallbackQuery(cb.id, "Not authorized.");
+		return;
 	}
 	if (request.status !== "awaiting_reply") {
 		await answerCallbackQuery(cb.id, "Already resolved.");

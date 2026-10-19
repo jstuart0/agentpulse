@@ -48,6 +48,7 @@ export { aiWatcherRunsPg as aiWatcherRuns } from "./ai/ai-watcher-runs.js";
 export { aiInboxSnoozesPg as aiInboxSnoozes } from "./ai/ai-inbox-snoozes.js";
 export { notificationChannelsPg as notificationChannels } from "./ai/notification-channels.js";
 export { aiHitlRequestsPg as aiHitlRequests } from "./ai/ai-hitl-requests.js";
+export { aiHitlDeliveriesPg as aiHitlDeliveries } from "./ai/ai-hitl-deliveries.js";
 export { aiActionRequestsPg as aiActionRequests } from "./ai/ai-action-requests.js";
 export { aiPendingProjectDraftsPg as aiPendingProjectDrafts } from "./ai/ai-pending-project-drafts.js";
 export { aiQaCachePg as aiQaCache } from "./ai/ai-qa-cache.js";

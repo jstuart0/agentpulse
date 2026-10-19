@@ -46,6 +46,46 @@ describe("decide_hitl (assertion 13)", () => {
 		expect(seen).toEqual({ hitlId: "h1", action: "approve", customPrompt: null });
 	});
 
+	test("prompt_hash is passed through, and a malformed one is refused before any call", async () => {
+		const seen: unknown[] = [];
+		const client = fakeClient({
+			decideHitl: async (hitlId, action, customPrompt, promptHash) => {
+				seen.push({ hitlId, action, customPrompt, promptHash });
+				return { hitl: null, delivery: { state: "queued" } };
+			},
+		});
+		const ctx = newContext(client);
+		registerDecideTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const hash = "a".repeat(64);
+
+		const ok = await mcpClient.callTool({
+			name: "decide_hitl",
+			arguments: { hitl_id: "h1", action: "approve", prompt_hash: hash },
+		});
+		const bad = await mcpClient.callTool({
+			name: "decide_hitl",
+			arguments: { hitl_id: "h1", action: "approve", prompt_hash: "ABC" },
+		});
+
+		expect(ok.isError).toBeFalsy();
+		expect(JSON.stringify(ok.content)).toContain("queued");
+		expect(bad.isError).toBe(true);
+		expect(seen).toEqual([
+			{ hitlId: "h1", action: "approve", customPrompt: null, promptHash: hash },
+		]);
+	});
+
+	test("the tool says approving sends the prompt to the agent", async () => {
+		const ctx = newContext(fakeClient({}));
+		registerDecideTools(ctx, { hasObserve: true, hasManage: true });
+		const mcpClient = await connect(ctx);
+		const tools = await mcpClient.listTools();
+		const decide = tools.tools.find((t) => t.name === "decide_hitl");
+		expect(decide?.description).toContain("SEND THE PROMPT TO THE AGENT");
+		expect(decide?.description).toContain("busy");
+	});
+
 	test("action:custom with custom_prompt passes the prompt through", async () => {
 		let seen: unknown;
 		const client = fakeClient({

@@ -9,6 +9,11 @@ import {
 	type NotificationChannelRecord,
 	api,
 } from "../../lib/api.js";
+import {
+	describeDelivery,
+	isStaleItemError,
+	plainHitlErrorMessage,
+} from "../../lib/hitl-outcome.js";
 import { useAiStatusStore } from "../../stores/ai-status-store.js";
 import { useLabsStore } from "../../stores/labs-store.js";
 import { SummaryLabsPointer } from "./SummaryLabsPointer.js";
@@ -201,8 +206,12 @@ function AiWatcherPanel({ sessionId, sessionIsManaged }: AiPanelProps) {
 			{openHitl && (
 				<HitlCard
 					proposal={openHitl}
-					onResolved={reload}
+					onResolved={(note) => {
+						if (note) setBanner({ kind: "info", text: note });
+						void reload();
+					}}
 					onError={(e) => setBanner({ kind: "error", text: e })}
+					onStale={reload}
 				/>
 			)}
 
@@ -386,10 +395,13 @@ function HitlCard({
 	proposal,
 	onResolved,
 	onError,
+	onStale,
 }: {
 	proposal: AiProposal;
-	onResolved: () => void;
+	onResolved: (note: string | null) => void;
 	onError: (err: string) => void;
+	/** The server says this request moved on without us: reload so the card goes away. */
+	onStale: () => void;
 }) {
 	const [submitting, setSubmitting] = useState(false);
 	const [customOpen, setCustomOpen] = useState(false);
@@ -398,13 +410,17 @@ function HitlCard({
 	async function act(action: HitlReplyKind) {
 		setSubmitting(true);
 		try {
-			await api.decideAiProposal(proposal.id, {
+			const result = await api.decideAiProposal(proposal.id, {
 				action,
 				customPrompt: action === "custom" ? customPrompt : undefined,
+				// Approve exactly the prompt on screen: if the agent changed it meanwhile, the server says so.
+				promptHash: action === "approve" ? (proposal.promptHash ?? undefined) : undefined,
 			});
-			onResolved();
+			onResolved(action === "decline" ? null : describeDelivery(result.delivery));
 		} catch (err) {
-			onError(plainErrorMessage(err));
+			onError(plainHitlErrorMessage(err));
+			// Whatever the refusal, what's on screen may be out of date: look again.
+			if (isStaleItemError(err)) onStale();
 		} finally {
 			setSubmitting(false);
 		}
@@ -448,7 +464,7 @@ function HitlCard({
 						<button
 							type="button"
 							onClick={() => act("approve")}
-							disabled={submitting || !proposal.nextPrompt}
+							disabled={submitting || !proposal.approvable}
 							className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground disabled:opacity-40"
 						>
 							Approve

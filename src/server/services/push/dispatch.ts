@@ -12,7 +12,7 @@
  */
 import { decryptSecretAsync } from "../ai/secrets.js";
 import { categoryFor, dedupeKeyFor } from "./push-payload.js";
-import { PushService, REFUNDED_OUTCOMES } from "./push-service.js";
+import { AMBIGUOUS_OUTCOMES, PushService, REFUNDED_OUTCOMES } from "./push-service.js";
 import { RelayClient } from "./relay-client.js";
 import {
 	type PushDispatchContext,
@@ -76,8 +76,16 @@ export const TIME_SENSITIVE_HEADROOM = 100;
  * key could fill the reserved headroom and crowd out everyone else's `hitl_opened`.
  */
 export const MAX_INFLIGHT_PER_ORIGIN = 50;
+/** The shared origin of ingest events that carry no key context (auth disabled, supervisor reports): one pool, one cap. */
+export const ANON_ORIGIN = "anon";
 /** The same event is dispatched at most once in this window, judged before any read. */
 export const DISPATCH_DEDUPE_MS = 60_000;
+/**
+ * How long the dedupe key is kept after a send whose outcome is unknown (the relay may have taken the push
+ * before it timed out) or that the relay's budget refused. Long enough that a repeat of the event doesn't
+ * double-notify, short enough that a transient failure is still retried soon.
+ */
+export const DISPATCH_AMBIGUOUS_HOLD_MS = 7_000;
 const DISPATCH_DEDUPE_MAX_KEYS = 10_000;
 /** The "dropped" line is written at most this often, with how many it stands for. */
 const DROP_LOG_EVERY_MS = 10_000;
@@ -122,6 +130,12 @@ function seenRecently(event: PushEvent, now: number): boolean {
 	return false;
 }
 
+/** Keeps the key, but only for `DISPATCH_AMBIGUOUS_HOLD_MS` more rather than the whole window. */
+function holdBriefly(key: string): void {
+	recent.delete(key);
+	recent.set(key, Date.now() - DISPATCH_DEDUPE_MS + DISPATCH_AMBIGUOUS_HOLD_MS);
+}
+
 function noteDrop(logger: PushLogger, type: string, now: number): void {
 	dropped += 1;
 	if (now - lastDropLogAt < DROP_LOG_EVERY_MS) return;
@@ -132,7 +146,8 @@ function noteDrop(logger: PushLogger, type: string, now: number): void {
 
 /**
  * `origin` names who caused an ingest-made event; it is counted against `MAX_INFLIGHT_PER_ORIGIN`.
- * Events the server makes for itself (hitl, action requests, launches) pass none.
+ * Ingest events with no key context use `ANON_ORIGIN`. Events the server makes for itself
+ * (hitl, action requests, launches) pass none.
  */
 export async function dispatchEvent(event: PushEvent, origin?: string): Promise<void> {
 	const current = runtime;
@@ -167,8 +182,13 @@ export async function dispatchEvent(event: PushEvent, origin?: string): Promise<
 			devices,
 			await enriched(current, event, ctx, logger),
 		);
-		// Every push came back refunded: the service gave back its own dedupe places, so give back ours.
-		if (outcomes.every((o) => REFUNDED_OUTCOMES.has(o.status))) recent.delete(dedupeKey);
+		// Every push came back refunded: the service gave back its own dedupe places. Give ours back too when
+		// nothing could have reached a phone; when the relay may have accepted one (a timeout, a 5xx) or refused
+		// it for budget, keep the key for a short back-off so an immediate repeat doesn't double-notify.
+		if (outcomes.every((o) => REFUNDED_OUTCOMES.has(o.status))) {
+			if (outcomes.some((o) => AMBIGUOUS_OUTCOMES.has(o.status))) holdBriefly(dedupeKey);
+			else recent.delete(dedupeKey);
+		}
 	} catch (err) {
 		recent.delete(dedupeKey); // a dispatch that failed hasn't told anyone; a repeat may try again
 		logger.warn("dispatch failed", {

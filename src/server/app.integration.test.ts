@@ -322,8 +322,9 @@ describe("AGEN-9 extension — C-1/C-2: ingest key → 403 on AI control-plane r
 			body: JSON.stringify({ decision: "approve" }),
 		});
 
-		// Not 403 (scope gate passed); may be 404/409/501 if AI is disabled in test env.
-		expect(res.status).not.toBe(403);
+		// The scope gate passed; the AI runtime is off in this suite, so the route's own gate answers.
+		expect(res.status).toBe(409);
+		expect(await res.json()).toMatchObject({ error: "ai_disabled" });
 	});
 });
 

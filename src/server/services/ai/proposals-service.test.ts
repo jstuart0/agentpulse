@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import "./__test_db.js";
 
 const { getDb, initializeDatabase } = await import("../../db/client.js");
@@ -10,8 +11,8 @@ const {
 	getOpenHitlProposal,
 	getProposal,
 	listProposalsForSession,
-	resolveProposalHitl,
 } = await import("./proposals-service.js");
+const { hashPrompt } = await import("./prompt-hash.js");
 
 beforeAll(() => {
 	return initializeDatabase();
@@ -53,25 +54,34 @@ describe("proposals-service HITL overlay", () => {
 		expect(open?.id).toBe(p.id);
 	});
 
-	test("resolveProposalHitl marks applied and flips derived state", async () => {
-		const p = await createPendingProposal({
-			sessionId: "s1",
-			providerId: "prov",
-		});
+	test("a proposal's hash and approvable flag follow its trimmed prompt", async () => {
+		const withPrompt = await createPendingProposal({ sessionId: "s1", providerId: "prov" });
 		await completeProposalAsHitl({
-			id: p.id,
-			decision: "ask",
-			nextPrompt: null,
+			id: withPrompt.id,
+			decision: "continue",
+			nextPrompt: "  go on  \n",
 			tokensIn: 1,
 			tokensOut: 1,
 			costCents: 0,
 		});
-		const resolved = await resolveProposalHitl({
-			proposalId: p.id,
-			action: "approve",
-			replyText: "ok",
+		const stored = await getProposal(withPrompt.id);
+		expect(stored?.nextPrompt).toBe("go on");
+		expect(stored?.approvable).toBe(true);
+		expect(stored?.promptHash).toBe(hashPrompt("go on"));
+
+		const without = await createPendingProposal({ sessionId: "s2", providerId: "prov" });
+		await completeProposalAsHitl({
+			id: without.id,
+			decision: "ask",
+			nextPrompt: "   ",
+			tokensIn: 1,
+			tokensOut: 1,
+			costCents: 0,
 		});
-		expect(resolved?.state).toBe("hitl_applied");
+		const empty = await getProposal(without.id);
+		expect(empty?.nextPrompt).toBeNull();
+		expect(empty?.approvable).toBe(false);
+		expect(empty?.promptHash).toBeNull();
 	});
 
 	test("cancelOpenHitl supersedes active hitl rows", async () => {
@@ -118,7 +128,10 @@ describe("proposals-service HITL overlay", () => {
 			tokensOut: 0,
 			costCents: 0,
 		});
-		await resolveProposalHitl({ proposalId: p2.id, action: "decline" });
+		await getDb()
+			.update(aiHitlRequests)
+			.set({ status: "declined" })
+			.where(eq(aiHitlRequests.proposalId, p2.id));
 
 		const list = await listProposalsForSession("s2");
 		const byId = new Map(list.map((l) => [l.id, l.state]));

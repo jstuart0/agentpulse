@@ -89,6 +89,9 @@ export const REFUNDED_OUTCOMES: ReadonlySet<string> = new Set([
 	"queue_full",
 ]);
 
+/** The refunded outcomes where the relay may already have accepted the push, or refused it for budget: not safe to repeat at once. */
+export const AMBIGUOUS_OUTCOMES: ReadonlySet<string> = new Set(["unavailable", "budget_limited"]);
+
 export type AlertOutcome =
 	| { deviceId: string; status: "sent"; pushId: string | null }
 	| { deviceId: string; status: "skipped"; reason: "category_off" | "no_target" }

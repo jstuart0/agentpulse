@@ -207,6 +207,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 				"ai_inbox_snoozes",
 				"notification_channels",
 				"ai_hitl_requests",
+				"ai_hitl_deliveries",
 				"ai_action_requests",
 				"ai_pending_project_drafts",
 				"ai_qa_cache",
@@ -769,7 +770,7 @@ describeSqliteOnly("initializeDatabase boot routing — SQLite", () => {
 import { describePostgresOnly } from "../test-utils/backend.js";
 
 describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
-	test("TC-1.3 fresh Postgres install creates every table (pairing_codes and ai_session_summaries among them) + 9 cascade FKs", async () => {
+	test("TC-1.3 fresh Postgres install creates every table (pairing_codes and ai_session_summaries among them) + 10 cascade FKs", async () => {
 		// Requires DATABASE_URL to point at an empty test database.
 		// Run with: AGENTPULSE_TEST_BACKEND=postgres DATABASE_URL=postgres://... bun test
 		const { default: postgres } = await import("postgres");
@@ -805,6 +806,7 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				"ai_inbox_snoozes",
 				"notification_channels",
 				"ai_hitl_requests",
+				"ai_hitl_deliveries",
 				"ai_action_requests",
 				"ai_pending_project_drafts",
 				"ai_qa_cache",
@@ -859,7 +861,7 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				  AND rc.delete_rule = 'CASCADE'
 			`) as Array<{ table_name: string; delete_rule: string }>;
 
-			expect(cascadeFks.length, "expected 9 cascade FKs on sessions(session_id)").toBe(9);
+			expect(cascadeFks.length, "expected 10 cascade FKs on sessions(session_id)").toBe(10);
 			expect(
 				cascadeFks.map((r) => r.table_name),
 				"the summaries table is one of the cascade children",
@@ -868,6 +870,10 @@ describePostgresOnly("initializeDatabase boot routing — Postgres", () => {
 				cascadeFks.map((r) => r.table_name),
 				"so are a phone's live activities",
 			).toContain("mobile_device_activities");
+			expect(
+				cascadeFks.map((r) => r.table_name),
+				"and so is a decided proposal's delivery",
+			).toContain("ai_hitl_deliveries");
 
 			// All 15 user-ownership columns + 3 indexes on Postgres, by
 			// information_schema.columns / pg_indexes.
@@ -1562,17 +1568,17 @@ const DEVICE_INDEXES = [
 	"idx_mobile_device_activities_session",
 ];
 
-/** The migrations folder with 0013 and everything after it removed: the database as 0012 left it. */
-async function migrationsBefore0013(dialect: "sqlite" | "postgres"): Promise<string> {
+/** The migrations folder with `tag` and everything after it removed: the database as the migration before it left it. */
+async function migrationsBefore(dialect: "sqlite" | "postgres", tag: string): Promise<string> {
 	const { cpSync, readFileSync, unlinkSync, writeFileSync } = await import("node:fs");
-	const dir = mkdtempSync(join(tmpdir(), `ap-prior-${dialect}-0013-`));
+	const dir = mkdtempSync(join(tmpdir(), `ap-prior-${dialect}-${tag.slice(0, 4)}-`));
 	cpSync(join(process.cwd(), "drizzle", dialect), dir, { recursive: true });
 	const journalPath = join(dir, "meta", "_journal.json");
 	const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
 		entries: Array<{ tag: string }>;
 	};
-	const cut = journal.entries.findIndex((e) => e.tag === "0013_mobile_devices");
-	expect(cut, "the journal lists 0013_mobile_devices").toBeGreaterThan(0);
+	const cut = journal.entries.findIndex((e) => e.tag === tag);
+	expect(cut, `the journal lists ${tag}`).toBeGreaterThan(0);
 	for (const dropped of journal.entries.slice(cut)) unlinkSync(join(dir, `${dropped.tag}.sql`));
 	writeFileSync(
 		journalPath,
@@ -1580,6 +1586,9 @@ async function migrationsBefore0013(dialect: "sqlite" | "postgres"): Promise<str
 	);
 	return dir;
 }
+
+const migrationsBefore0013 = (dialect: "sqlite" | "postgres") =>
+	migrationsBefore(dialect, "0013_mobile_devices");
 
 /** The cascade foreign keys of a SQLite table: [from column, referenced table, on delete]. */
 function sqliteForeignKeys(db: Database, table: string): string[][] {
@@ -1848,6 +1857,247 @@ describePostgresOnly("mobile devices on Postgres", () => {
 					await after.unsafe(statement);
 				}
 				expect((await after`SELECT COUNT(*)::int AS n FROM mobile_devices`)[0]?.n).toBe(1);
+			} finally {
+				await after.end();
+			}
+		} finally {
+			const cleanup = postgres(baseUrl, { max: 1, idle_timeout: 5 });
+			try {
+				await cleanup.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+			} finally {
+				await cleanup.end();
+			}
+		}
+	}, 60_000);
+});
+
+// ── Migration 0014: ai_hitl_deliveries ────────────────────────────────────────
+
+const DELIVERY_COLUMNS = [
+	"id",
+	"proposal_id",
+	"hitl_id",
+	"session_id",
+	"control_action_id",
+	"attempt",
+	"terminal_state",
+	"approved_by_user_id",
+	"approved_by_key_id",
+	"prompt_hash",
+	"created_at",
+	"updated_at",
+];
+const DELIVERY_INDEXES = ["ai_hitl_deliveries_proposal_unique", "idx_ai_hitl_deliveries_session"];
+
+function insertDeliverySql(id: string, proposal: string, session: string): string {
+	return `INSERT INTO ai_hitl_deliveries (id, proposal_id, hitl_id, session_id, created_at, updated_at) VALUES ('${id}', '${proposal}', 'h-${id}', '${session}', 'x', 'x')`;
+}
+
+describeSqliteOnly("hitl deliveries on SQLite", () => {
+	function assertShape(db: Database): void {
+		expect(getColumnNames(db, "ai_hitl_deliveries")).toEqual(DELIVERY_COLUMNS);
+		for (const index of DELIVERY_INDEXES) expect(getIndexNames(db)).toContain(index);
+		expect(uniqueIndexNames(db, "ai_hitl_deliveries")).toContain(
+			"ai_hitl_deliveries_proposal_unique",
+		);
+		expect(sqliteForeignKeys(db, "ai_hitl_deliveries")).toEqual([
+			["session_id", "sessions", "CASCADE"],
+		]);
+	}
+
+	function assertBehaviour(db: Database): void {
+		db.exec("PRAGMA foreign_keys = ON");
+		db.exec(
+			"INSERT OR IGNORE INTO sessions (id, session_id, agent_type) VALUES ('s-row', 's-1', 'claude_code')",
+		);
+		db.exec(insertDeliverySql("d-1", "p-1", "s-1"));
+		expect(() => db.exec(insertDeliverySql("d-2", "p-1", "s-1"))).toThrow(); // one delivery per proposal
+		expect(() => db.exec(insertDeliverySql("d-3", "p-3", "no-such-session"))).toThrow(); // the FK is live
+		const attempt = db
+			.prepare("SELECT attempt, control_action_id, terminal_state FROM ai_hitl_deliveries")
+			.get() as {
+			attempt: number;
+			control_action_id: string | null;
+			terminal_state: string | null;
+		};
+		expect(attempt).toEqual({ attempt: 1, control_action_id: null, terminal_state: null });
+		db.exec("DELETE FROM sessions WHERE session_id = 's-1'");
+		expect(
+			(db.prepare("SELECT COUNT(*) AS n FROM ai_hitl_deliveries").get() as { n: number }).n,
+		).toBe(0); // the session took its delivery with it
+	}
+
+	test("a fresh Drizzle install has the table with its columns, indexes, uniqueness and cascade", async () => {
+		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+		const { drizzle } = await import("drizzle-orm/bun-sqlite");
+		const db = new Database(tmpDbPath());
+		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		try {
+			migrate(drizzle(db), { migrationsFolder: join(process.cwd(), "drizzle", "sqlite") });
+			assertShape(db);
+			assertBehaviour(db);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("upgrading from 0011 with data in it: the table appears, the earlier rows survive, and the constraints hold", async () => {
+		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+		const { drizzle } = await import("drizzle-orm/bun-sqlite");
+		const prior = await migrationsBefore("sqlite", "0012_pairing_codes");
+		const db = new Database(tmpDbPath());
+		db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+		try {
+			migrate(drizzle(db), { migrationsFolder: prior });
+			expect(getTableNames(db)).not.toContain("ai_hitl_deliveries");
+			db.exec(
+				"INSERT INTO sessions (id, session_id, agent_type) VALUES ('s-row', 's-1', 'claude_code')",
+			);
+			db.exec(
+				"INSERT INTO ai_hitl_requests (id, proposal_id, session_id) VALUES ('h-1', 'p-1', 's-1')",
+			);
+
+			migrate(drizzle(db), { migrationsFolder: join(process.cwd(), "drizzle", "sqlite") });
+
+			assertShape(db);
+			for (const table of ["sessions", "ai_hitl_requests"]) {
+				expect((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(1);
+			}
+			assertBehaviour(db);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("legacy init creates it the same way; a second boot is a no-op and keeps the rows", async () => {
+		const db = new Database(":memory:");
+		db.exec(`CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL UNIQUE,
+			agent_type TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			started_at TEXT NOT NULL DEFAULT (datetime('now')),
+			last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+			cwd TEXT,
+			current_task TEXT,
+			total_tool_uses INTEGER NOT NULL DEFAULT 0,
+			metadata TEXT DEFAULT '{}'
+		)`);
+		try {
+			await initializeDatabase(db);
+			assertShape(db);
+			db.exec(
+				"INSERT INTO sessions (id, session_id, agent_type) VALUES ('s-keep', 's-keep', 'claude_code')",
+			);
+			db.exec(insertDeliverySql("d-keep", "p-keep", "s-keep"));
+			await initializeDatabase(db);
+			assertShape(db);
+			expect(
+				(db.prepare("SELECT COUNT(*) AS n FROM ai_hitl_deliveries").get() as { n: number }).n,
+			).toBe(1);
+			db.exec("DELETE FROM ai_hitl_deliveries");
+			assertBehaviour(db);
+		} finally {
+			db.close();
+		}
+	});
+
+	test("re-running 0014's SQL on a database that has it is a no-op", async () => {
+		const { migrate } = await import("drizzle-orm/bun-sqlite/migrator");
+		const { drizzle } = await import("drizzle-orm/bun-sqlite");
+		const { readFileSync } = await import("node:fs");
+		const folder = join(process.cwd(), "drizzle", "sqlite");
+		const db = new Database(tmpDbPath());
+		try {
+			migrate(drizzle(db), { migrationsFolder: folder });
+			const sql = readFileSync(join(folder, "0014_hitl_deliveries.sql"), "utf8");
+			for (const statement of sql.split("--> statement-breakpoint")) db.exec(statement);
+			assertShape(db);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+describePostgresOnly("hitl deliveries on Postgres", () => {
+	test("upgrading from 0011 with data in it: the table, its indexes, uniqueness and cascade, the rows survive, re-running the SQL is a no-op", async () => {
+		const { default: postgres } = await import("postgres");
+		const { migrate } = await import("drizzle-orm/postgres-js/migrator");
+		const { drizzle: drizzlePg } = await import("drizzle-orm/postgres-js");
+		const { readFileSync } = await import("node:fs");
+		const prior = await migrationsBefore("postgres", "0012_pairing_codes");
+		const full = join(process.cwd(), "drizzle", "postgres");
+
+		const baseUrl = process.env.DATABASE_URL ?? "";
+		const dbName = `ap_deliveries_upgrade_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+		const scratch = new URL(baseUrl);
+		scratch.pathname = `/${dbName}`;
+		const admin = postgres(baseUrl, { max: 1, idle_timeout: 5, onnotice: () => {} });
+		try {
+			await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+		} finally {
+			await admin.end();
+		}
+		try {
+			const before = postgres(scratch.toString(), { max: 1, idle_timeout: 5, onnotice: () => {} });
+			try {
+				await migrate(drizzlePg(before), { migrationsFolder: prior });
+				expect(
+					(await before`SELECT to_regclass('public.ai_hitl_deliveries') AS t`)[0]?.t,
+				).toBeNull();
+				await before`INSERT INTO sessions (id, session_id, agent_type) VALUES ('s-row', 's-1', 'claude_code')`;
+				await before`INSERT INTO ai_hitl_requests (id, proposal_id, session_id) VALUES ('h-1', 'p-1', 's-1')`;
+			} finally {
+				await before.end();
+			}
+
+			const after = postgres(scratch.toString(), { max: 1, idle_timeout: 5, onnotice: () => {} });
+			try {
+				await migrate(drizzlePg(after), { migrationsFolder: full });
+				const columns = (
+					(await after`SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ai_hitl_deliveries' ORDER BY ordinal_position`) as Array<{
+						column_name: string;
+					}>
+				).map((r) => r.column_name);
+				expect(columns).toEqual(DELIVERY_COLUMNS);
+				const indexes = (
+					(await after`SELECT indexname FROM pg_indexes WHERE tablename = 'ai_hitl_deliveries'`) as Array<{
+						indexname: string;
+					}>
+				).map((r) => r.indexname);
+				for (const index of DELIVERY_INDEXES) expect(indexes).toContain(index);
+				for (const table of ["sessions", "ai_hitl_requests"]) {
+					expect((await after.unsafe(`SELECT COUNT(*)::int AS n FROM ${table}`))[0]?.n).toBe(1);
+				}
+
+				const fks = (await after`
+					SELECT kcu.column_name, ccu.table_name AS ref_table, rc.delete_rule
+					FROM information_schema.referential_constraints rc
+					JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name
+					JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name
+					WHERE kcu.table_name = 'ai_hitl_deliveries'
+					ORDER BY kcu.column_name`) as Array<{
+					column_name: string;
+					ref_table: string;
+					delete_rule: string;
+				}>;
+				expect(fks.map((r) => [r.column_name, r.ref_table, r.delete_rule])).toEqual([
+					["session_id", "sessions", "CASCADE"],
+				]);
+
+				await after.unsafe(insertDeliverySql("d-1", "p-1", "s-1"));
+				expect(await failureOf(after.unsafe(insertDeliverySql("d-2", "p-1", "s-1")))).toMatch(/./);
+				expect(
+					await failureOf(after.unsafe(insertDeliverySql("d-3", "p-3", "no-such-session"))),
+				).toMatch(/./);
+				await after`DELETE FROM sessions WHERE session_id = 's-1'`;
+				expect((await after`SELECT COUNT(*)::int AS n FROM ai_hitl_deliveries`)[0]?.n).toBe(0);
+
+				const sqlText = readFileSync(join(full, "0014_hitl_deliveries.sql"), "utf8");
+				for (const statement of sqlText.split("--> statement-breakpoint")) {
+					await after.unsafe(statement);
+				}
+				expect((await after`SELECT COUNT(*)::int AS n FROM ai_hitl_deliveries`)[0]?.n).toBe(0);
 			} finally {
 				await after.end();
 			}

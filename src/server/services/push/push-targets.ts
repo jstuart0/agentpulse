@@ -16,6 +16,8 @@
  *   action_request_opened          all devices   admins' devices
  *   launch_status                  all devices   the requester's devices;
  *                                                none recorded: admins'
+ *   ask_reply                      the requester's devices, in both modes: the person's, else
+ *                                 the devices paired with the key that asked; no requester: nobody
  *   daily_digest                   each device   each device
  *   device_test                    nobody here (the route targets one chosen device)
  *
@@ -107,6 +109,7 @@ export class PolicyPushTargets implements PushTargetResolver {
 			(e) => e.device.sendTokenCiphertext !== "",
 		);
 		if (eligible.length === 0) return [];
+		if (event.type === "ask_reply") return this.askReplyTargets(event, eligible);
 		const mode = await this.mode();
 		if (mode === "solo" || event.type === "daily_digest") return eligible.map((e) => e.device);
 		if (event.type === "action_request_opened") return adminDevices(eligible);
@@ -128,6 +131,17 @@ export class PolicyPushTargets implements PushTargetResolver {
 		return devicesOf(eligible, new Set(audience))
 			.filter((e) => canReadSession(actorFor(e), { ownerUserId: session.ownerUserId }))
 			.map((e) => e.device);
+	}
+
+	/** An Ask reply is private to whoever asked, whatever the mode: their devices, else the asking key's. */
+	private askReplyTargets(
+		event: Extract<PushEvent, { type: "ask_reply" }>,
+		eligible: EligibleDevice[],
+	): PushDevice[] {
+		const requester =
+			event.requesterUserId ?? (event.requesterKeyId ? `key:${event.requesterKeyId}` : null);
+		if (requester === null) return [];
+		return eligible.filter((e) => e.device.userId === requester).map((e) => e.device);
 	}
 
 	private async launchTargets(launchId: string, eligible: EligibleDevice[]): Promise<PushDevice[]> {

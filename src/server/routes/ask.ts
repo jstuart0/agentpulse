@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { requireAuth } from "../auth/middleware.js";
+import { getAuthUser, requireAuth } from "../auth/middleware.js";
 import { getRequestActor, requireOperatorScope } from "../auth/route-scope-policy.js";
 import { isAiActive, isAiBuildEnabled } from "../services/ai/feature.js";
 import {
@@ -22,7 +22,13 @@ import {
 	AskBusyError,
 	AskTurnAbortedError,
 } from "../services/ask/ask-turn-limiter.js";
+import {
+	cancelRunningTurn,
+	isThreadRunning,
+	registerRunningTurn,
+} from "../services/ask/running-turns.js";
 import { isLabsFlagEnabled } from "../services/labs-service.js";
+import { dispatchEvent } from "../services/push/dispatch.js";
 
 /**
  * Ask chat: global conversational assistant over the user's sessions.
@@ -98,6 +104,22 @@ askRouter.get("/ai/ask/threads/:id", async (c) => {
 	if (!thread) return c.json({ error: "Thread not found" }, 404);
 	const messages = await listMessages(id);
 	return c.json({ thread, messages });
+});
+
+// Stops an answer that is still being written (for example one the phone left running). Only the
+// person who asked it, or an admin in team mode; anything else is the same 404 as no answer running.
+askRouter.post("/ai/ask/threads/:id/cancel", async (c) => {
+	const gate = await ensureEnabled(c);
+	if (gate) return gate;
+	const stopped = cancelRunningTurn(c.req.param("id") ?? "", {
+		actor: await getRequestActor(c),
+		keyId: (await getAuthUser(c))?.keyId ?? null,
+	});
+	if (!stopped) {
+		return c.json({ error: "not_found", message: "No answer is running for that thread." }, 404);
+	}
+	// The turn stops at its next stream event, not instantly: say that it is stopping.
+	return c.json({ ok: true, stopping: true });
 });
 
 askRouter.delete("/ai/ask/threads/:id", async (c) => {
@@ -179,7 +201,12 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 		}
 		throw err;
 	}
+	// A thread already streaming a turn takes no second one: say so before anything is written.
+	if (typeof body.threadId === "string" && isThreadRunning(body.threadId)) {
+		return c.json({ error: "thread_busy", message: ASK_BUSY_MESSAGE }, 409);
+	}
 	const actor = await getRequestActor(c);
+	const requesterKeyId = (await getAuthUser(c))?.keyId ?? null;
 	// Build the SSE stream by hand instead of using hono/streaming. That
 	// helper sets `Transfer-Encoding: chunked` which is a connection-
 	// specific header forbidden by HTTP/2 — Traefik terminates HTTP/2
@@ -189,8 +216,9 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 	// HTTP/1.1 chunked, picked per-connection).
 	const encoder = new TextEncoder();
 	// `cancel` below fires when the client goes away. A turn still waiting for a
-	// slot is then dropped from the queue; one that has started is not cancelled
-	// (nothing in it can be), it stops at its next event and frees its slot then.
+	// slot is then dropped from the queue (no turn, no push). One that has started
+	// keeps running with its writes suppressed, so its reply is saved to the thread;
+	// the phone is told it is waiting (`ask_reply`). The 180 s LLM timeout bounds it.
 	const clientGone = new AbortController();
 	const stream = new ReadableStream<Uint8Array>({
 		cancel() {
@@ -217,6 +245,8 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 					clearInterval(keepAlive);
 				}
 			}, 5_000);
+			let detachedReply: { threadId: string; assistantMessageId: string } | null = null;
+			let running: ReturnType<typeof registerRunningTurn> | null = null;
 			try {
 				for await (const evt of runAskTurnStream({
 					threadId: body.threadId ?? null,
@@ -226,8 +256,39 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 					actor,
 					signal: AbortSignal.any([c.req.raw.signal, clientGone.signal]),
 				})) {
-					if (clientGone.signal.aborted) break;
+					if (evt.kind === "start") {
+						running = registerRunningTurn(evt.thread.id, {
+							userId: actor.userId,
+							keyId: requesterKeyId,
+						});
+						if (!running) {
+							// Two turns reached the same thread together: this one yields.
+							if (!clientGone.signal.aborted) {
+								write({ kind: "error", message: ASK_BUSY_MESSAGE, assistantMessage: null });
+							}
+							break;
+						}
+					}
+					if (running?.isCancelled()) break;
+					if (clientGone.signal.aborted) {
+						// Nobody is reading: keep draining so the turn finishes and saves its reply.
+						if (evt.kind === "done") {
+							detachedReply = {
+								threadId: evt.assistantMessage.threadId,
+								assistantMessageId: evt.assistantMessage.id,
+							};
+						}
+						continue;
+					}
 					write(evt);
+				}
+				if (detachedReply) {
+					void dispatchEvent({
+						type: "ask_reply",
+						...detachedReply,
+						requesterUserId: actor.userId,
+						requesterKeyId,
+					});
 				}
 			} catch (err) {
 				if (!clientGone.signal.aborted) {
@@ -242,6 +303,7 @@ askRouter.post("/ai/ask/stream", askBodyLimit, async (c) => {
 					write({ kind: "error", message, assistantMessage: null });
 				}
 			} finally {
+				running?.finish();
 				clearInterval(keepAlive);
 				if (!clientGone.signal.aborted) controller.close();
 			}

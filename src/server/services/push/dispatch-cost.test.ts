@@ -4,8 +4,9 @@
  * events keep headroom when the rest flood; one dispatch reads its session once;
  * and the drop log doesn't become a flood of its own.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import {
+	DISPATCH_AMBIGUOUS_HOLD_MS,
 	DISPATCH_DEDUPE_MS,
 	MAX_INFLIGHT_DISPATCHES,
 	MAX_INFLIGHT_PER_ORIGIN,
@@ -147,6 +148,65 @@ describe("a dispatch that failed", () => {
 		await dispatchEvent(event);
 		expect(calls).toBe(2); // the failure was retried once; the success is then deduped
 	});
+});
+
+describe("a push the relay refused or may have taken", () => {
+	const outcome = (status: string): AlertOutcome[] =>
+		[
+			status === "budget_limited"
+				? { deviceId: "phone", status, retryAfterSec: 30 }
+				: status === "invalid"
+					? { deviceId: "phone", status, reason: "x" }
+					: { deviceId: "phone", status },
+		] as AlertOutcome[];
+	function installReturning(status: string) {
+		resolves = [];
+		configurePushRuntime({
+			targets: {
+				resolve: async (event) => {
+					resolves.push(event);
+					return [phone];
+				},
+			},
+			service: { sendToDevices: async () => outcome(status) },
+			logger,
+		});
+	}
+	afterEach(() => setSystemTime());
+
+	test("the hold is 5 to 10 seconds", () => {
+		expect(DISPATCH_AMBIGUOUS_HOLD_MS).toBeGreaterThanOrEqual(5_000);
+		expect(DISPATCH_AMBIGUOUS_HOLD_MS).toBeLessThanOrEqual(10_000);
+	});
+
+	for (const status of ["unavailable", "budget_limited"]) {
+		test(`${status}: an immediate repeat is deduped, and the key is released after the back-off`, async () => {
+			const start = Date.now();
+			installReturning(status);
+			const event: PushEvent = { type: "stuck", sessionId: `hold-${status}` };
+			await dispatchEvent(event);
+			await dispatchEvent(event);
+			expect(resolves).toHaveLength(1);
+
+			setSystemTime(start + DISPATCH_AMBIGUOUS_HOLD_MS - 1_000);
+			await dispatchEvent(event);
+			expect(resolves).toHaveLength(1);
+
+			setSystemTime(start + DISPATCH_AMBIGUOUS_HOLD_MS + 1_000);
+			await dispatchEvent(event);
+			expect(resolves).toHaveLength(2);
+		});
+	}
+
+	for (const status of ["invalid", "queue_full"]) {
+		test(`${status}: nothing reached the relay, so the key is released at once`, async () => {
+			installReturning(status);
+			const event: PushEvent = { type: "stuck", sessionId: `release-${status}` };
+			await dispatchEvent(event);
+			await dispatchEvent(event);
+			expect(resolves).toHaveLength(2);
+		});
+	}
 });
 
 describe("one session read per dispatch", () => {
@@ -389,11 +449,9 @@ describe("the dedupe key is released when nobody was told", () => {
 		expect(resolved()).toBe(2);
 	});
 
-	test("an event every send of which was refunded may be dispatched again", async () => {
+	test("an event every send of which was refused before reaching the relay may be dispatched again", async () => {
 		const resolved = installWith([phone], () =>
-			["unavailable", "budget_limited", "invalid", "queue_full"].map(
-				(status) => ({ deviceId: "phone", status }) as AlertOutcome,
-			),
+			["invalid", "queue_full"].map((status) => ({ deviceId: "phone", status }) as AlertOutcome),
 		);
 		await dispatchEvent(event);
 		await dispatchEvent(event);

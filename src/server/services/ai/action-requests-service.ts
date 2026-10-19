@@ -32,6 +32,7 @@ import { sendTelegramMessage } from "../channels/telegram.js";
 import { queueStopAction } from "../control-actions.js";
 import { buildLaunchSpec, pickFirstCapableSupervisor } from "../launch-compatibility.js";
 import { createValidatedLaunchRequest } from "../launch-validator.js";
+import { notifyInboxChanged } from "../notifier.js";
 import { createProject, deleteProject, updateProject } from "../projects/projects-service.js";
 import { dispatchEvent } from "../push/dispatch.js";
 import { getSearchBackend } from "../search/index.js";
@@ -198,6 +199,7 @@ export async function createActionRequest(input: CreateActionRequestInput): Prom
 		actionRequestId: row.id,
 		actionKind: input.kind,
 	});
+	notifyInboxChanged({ adminOnly: true });
 	return toRecord(row);
 }
 
@@ -1260,9 +1262,13 @@ async function actorMayApply(id: string, actor: Actor): Promise<boolean> {
 		} else if (request.kind === "session_delete") {
 			const payload = narrowPayload(request, "session_delete");
 			await assertCanDeleteSession(actor, payload.sessionId);
+		} else if (request.kind === "session_stop") {
+			// Stopping a session is owner-or-admin on the route (D41), so an approved request can't be a way around it.
+			const payload = narrowPayload(request, "session_stop");
+			await assertCanChangeSessions(actor, [payload.sessionId]);
 		} else if (request.kind === "bulk_session_action") {
 			const payload = narrowPayload(request, "bulk_session_action");
-			if (payload.action !== "stop") await assertCanChangeSessions(actor, payload.sessionIds);
+			await assertCanChangeSessions(actor, payload.sessionIds);
 		}
 		return true;
 	} catch (err) {
@@ -1279,6 +1285,20 @@ async function actorMayApply(id: string, actor: Actor): Promise<boolean> {
  * delete another user's session through an action request in team mode.
  */
 export async function resolveActionRequest(args: {
+	id: string;
+	decision: ActionRequestDecision;
+	resolvedBy: string;
+	actor: Actor;
+}): Promise<ResolveResult> {
+	const result = await resolveActionRequestOnce(args);
+	// Anything but a refusal or a lost race moved the request out of the inbox.
+	if (result.ok || (result.reason !== "race_lost" && result.reason !== "not_owner")) {
+		notifyInboxChanged({ adminOnly: true });
+	}
+	return result;
+}
+
+async function resolveActionRequestOnce(args: {
 	id: string;
 	decision: ActionRequestDecision;
 	resolvedBy: string;

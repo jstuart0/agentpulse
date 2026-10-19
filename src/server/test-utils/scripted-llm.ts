@@ -17,6 +17,7 @@ export interface RecordedLlmCall {
 export const llmCalls: RecordedLlmCall[] = [];
 
 let hold: Promise<void> | null = null;
+let answerHold: Promise<void> | null = null;
 
 /** Classifier replies keyed by a substring of the classifier's system prompt. */
 let classifierReplies: Array<[string, string]> = [];
@@ -24,6 +25,7 @@ let answerText = "ANSWER";
 
 export function resetScriptedLlm(): void {
 	hold = null;
+	answerHold = null;
 	llmCalls.length = 0;
 	classifierReplies = [];
 	answerText = "ANSWER";
@@ -55,6 +57,7 @@ export const scriptedAdapter = {
 		const kind = kindOf(req);
 		llmCalls.push({ kind, systemPrompt: req.systemPrompt, transcriptPrompt: req.transcriptPrompt });
 		if (hold) await hold;
+		if (kind === "answer" && answerHold) await answerHold;
 		let text = "";
 		if (kind === "answer") text = answerText;
 		else if (kind === "classifier") {
@@ -73,6 +76,18 @@ export function holdLlmCalls(): () => void {
 	});
 	return () => {
 		hold = null;
+		release();
+	};
+}
+
+/** Makes only the free-form answer wait (classifiers and the expander run), so a turn reaches its `start` first. */
+export function holdAnswerCalls(): () => void {
+	let release = () => {};
+	answerHold = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return () => {
+		answerHold = null;
 		release();
 	};
 }

@@ -9,6 +9,60 @@ section with a `⚠ breaking` prefix so they're easy to spot.
 
 ### Changed
 
+- **Approving a HITL request now sends the prompt to the agent** (every mode,
+  including the web): an approved or custom prompt on a managed session with a
+  connected supervisor is queued as a control action, in the same step that
+  closes the request. A `409 control_busy` appears when another control action
+  already holds the session. The decision response gains `delivery`, and
+  `GET /ai/proposals/:id/delivery` reports where the prompt went. Telegram never
+  forwards a prompt (and no longer approves at all; see below).
+- **Every way of answering a HITL request goes through one rule set**: the
+  proposal route, the inbox decide route, batch decline and Telegram. Inbox
+  decide now refuses an empty prompt (400) and an already-answered request (409)
+  instead of overwriting it.
+- **Team mode: the inbox, snooze and decisions follow session ownership.** A
+  member sees only the items of sessions they can read, can no longer decide,
+  snooze or unsnooze another member's items (403), and sees no action requests
+  (admins do). Solo mode is unchanged.
+- **Ask replies are no longer lost when the page or app closes mid-answer**: a
+  turn that has started finishes and saves its reply; a phone is notified.
+- **Stricter, and visible to API clients** (S5 fix round 1):
+  - Approving a HITL request with an API key that lacks `manage` must send `promptHash`
+    (400 `prompt_hash_required`); manage keys and signed-in people may omit it.
+    Approving a request that has no prompt is 400 `empty_prompt`, where the inbox decide route used to mark it applied.
+  - An approve tapped in Telegram no longer does anything: it answers that approving there isn't
+    supported and leaves the request open. A decline still closes it, with the Telegram user recorded.
+  - A request expires a day after it opens (`expiresAt`), is refused after that (409 `expired`), and the watcher sweep closes overdue ones.
+  - `/sessions/:id/prompt`, `/sessions/:id/stop` and the watcher PUT/DELETE are owner-or-admin in team mode (403 `not_owner`).
+    A key with no owner is refused on them in team mode unless it is a kept admin service key, and an approved stop action
+    request needs the same. Stopping also takes the session's control lock with a guarded write (409 when another action holds it).
+  - In team mode a member's `GET /ai/action-requests` is empty, and a refused action-request decision no longer echoes the request.
+  - A key with no owner in team mode gets an empty inbox with a `notice` explaining why.
+  - Batch decline caps each list at 200 ids (400 `invalid_ids` past that or for non-strings). Its `closed` count now counts only
+    requests it actually closed (an already-answered one is no longer counted), and closing by session id writes an audit event per request.
+  - Errors that were sentences (`Empty prompt`, `Proposal not found`, the safety-filter message) are now codes (`empty_prompt`, `not_found`,
+    `filter_blocked`) with the sentence in `message`.
+  - A delivery whose lock ran out reads `unknown` (it may have run), not `failed`; retrying it needs `confirm: true`.
+  - New: `POST /ai/ask/threads/:id/cancel` stops an Ask answer that is still being written (the asker, or an admin in team mode).
+    It answers `{ok:true, stopping:true}`: the turn ends at its next stream event. A thread already streaming a turn takes no
+    second one (409 `thread_busy`).
+  - Round 2: `POST /sessions/:id/retry` (it clones the launch) and `GET /sessions/:id/control-actions` (prompts and environment)
+    are owner-or-admin in team mode, and the retry answer no longer carries the clone's `env`, `claimToken` or `launchSpec.env`.
+    In team mode `POST /ai/action-requests/:id/decide` is an admin's (403 `admin_required`, before the request is looked up),
+    so a member who used to approve an action on their own session must ask an admin.
+  - Round 2: a Telegram tap on a request or action request that has no channel is "Not authorized" (it was never sent to a chat).
+    Requests opened before expiry existed expire a day after they were created, an overdue request is no longer offered in the inbox,
+    the sweep announces what it closes, and a delivery older than a day can't be retried.
+  - Round 2: with authentication switched off the operator can approve without a hash and send custom prompts.
+  - Round 3: `GET /sessions/:id` no longer embeds another member's control actions (their prompts) in team mode: `controlActions` is
+    present only for the session's owner, an admin, and in solo. A control action's launch `env` is never returned by any read, and
+    the prompt/stop answers omit it too.
+  - Action requests are decided by admins only in team mode. A session's owner acts directly through the owner-checked
+    stop, archive and delete routes (`POST /sessions/:id/stop`, `PUT /sessions/:id/archive`, `DELETE /sessions/:id`), not by
+    approving an action request. Requests the AI raises for an owner's session are for an admin to approve.
+- New: `inbox_changed` WebSocket message, `promptHash` on decisions (409
+  `prompt_changed`), and `ask_reply` push.
+
 - **The MCP server package is published to npm as `@craze0/agentpulse-mcp`**
   (the maintainer's own npm scope). `agentpulse mcp install` and the package
   README now print `npx -y @craze0/agentpulse-mcp@<version> serve` (still pinned

@@ -1,0 +1,30 @@
+{
+	"note": "SHA-256 of the UTF-8 bytes of `text`, lowercase hex, from `shasum -a 256`. Copy of the vectors destined for contract/fixtures/prompt-hash-vectors.json (C-sync).",
+	"vectors": [
+		{
+			"name": "abc",
+			"text": "abc",
+			"sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+		},
+		{
+			"name": "the sample prompt",
+			"text": "Run the full test suite and fix what fails.",
+			"sha256": "4d43c48e2ed117498f546bbc902aec050ce7142aa40ea3546bbcafd3cc6ed2c6"
+		},
+		{
+			"name": "accent, check mark and a trailing newline",
+			"text": "caf\u00e9 \u2713\n",
+			"sha256": "7953dfd42d596ffc230a3ba67f3f1e856f53b477e64300f6eda9e4f94021e32e"
+		},
+		{
+			"name": "caf\u00e9, NFC",
+			"text": "caf\u00e9",
+			"sha256": "850f7dc43910ff890f8879c0ed26fe697c93a067ad93a7d50f466a7028a9bf4e"
+		},
+		{
+			"name": "caf\u00e9, NFD",
+			"text": "cafe\u0301",
+			"sha256": "81ef060bcd98adc7824eb5c1ada83c32491b16018e11e79f00ab9d09e04b015a"
+		}
+	]
+}

@@ -105,7 +105,7 @@ default_tools_approval_mode = "writes"
 |---|---|---|
 | `list_templates` / `get_template` | `GET /templates`(`/:id`) | DTO carries `env` (may hold credentials). `list_templates`' `agent_type` filter is validated the same way as `list_sessions` (AGEN-44). |
 | `list_launches` / `get_launch` | `GET /launches`(`/:id`) | DTO carries `env`, `launchSpec`, and `claimToken`. |
-| `get_inbox` | `GET /ai/inbox` | `action_*` items can embed launch `env`/`claimToken` payloads. |
+| `get_inbox` | `GET /ai/inbox` | `action_*` items can embed launch `env`/`claimToken` payloads. HITL items carry `promptHash` and `approvable`. **Team mode:** you see the items of sessions you own, unowned ones, and (admins) everything; action requests are admins' only. A key with no owner sees nothing and the answer carries a `notice` saying so (use a key owned by a person, or keep it as an admin service key). |
 | `list_projects` | `GET /projects` | DTO carries arbitrary operator-set `notes`/`metadata` and a `githubRepoUrl` that may embed userinfo credentials. Need only the id/name/defaults? Use the observe-scoped `list_projects_summary` above instead. |
 | `list_hosts` | `GET /api/v1/admin/supervisors` | Admin router; used to pick `requested_supervisor_id` for `launch_agent`. Each host may carry `excludeRulesState`: `"invalid"` when the exclude file on that host has an error and its supervisor is sending no session data until it is fixed, otherwise `null` or absent (the server keeps no other state). |
 
@@ -122,8 +122,8 @@ default_tools_approval_mode = "writes"
 | `update_session` | `PUT /sessions/:id/{notes,rename,pin,archive}` | One or more fields per call; each field applies independently. rUI. Result reports per-field `applied`/`failed`; only errors if every requested field failed. |
 | `create_template` / `update_template` | `POST /templates`, `PUT /templates/:id` | rUI. |
 | `delete_template` | `DELETE /templates/:id` | rUI + `destructiveHint`. |
-| `decide_hitl` | `POST /ai/inbox/hitl/:id/decide` | Approve/decline/reply-with-custom-prompt a single HITL request. rUI. |
-| `decide_action_request` | `POST /ai/action-requests/:id/decide` | Approve/decline a single pending action request. rUI. |
+| `decide_hitl` | `POST /ai/inbox/hitl/:id/decide` | Approve/decline/reply-with-custom-prompt a single HITL request. **Approve and custom send the prompt to the agent**: on a managed session whose host is connected it is queued as a prompt (the answer's `delivery` is `queued`, `blocked` with a `reason`, or `not_managed`). `control_busy` (another action is running on the session) changes nothing and is safe to retry. Optional `prompt_hash` (the inbox item's `promptHash`) approves only the exact prompt you reviewed. rUI. |
+| `decide_action_request` | `POST /ai/action-requests/:id/decide` | Approve/decline a single pending action request. **Team mode: admins only** (403 `admin_required` otherwise); a session's owner acts directly through the owner-checked stop, archive and delete routes. rUI. |
 
 "Managed sessions only" means AgentPulse rejects the call with `"Session is not managed."` for any session the server isn't holding a live process for (hook-observed-only sessions).
 
@@ -178,7 +178,7 @@ These are tracked follow-ups, not silently accepted gaps:
 - **No env-var denylist on launch.** `launch_agent` and the underlying REST launch pipeline accept an arbitrary `env` map without rejecting known-dangerous names (`LD_PRELOAD`, `NODE_OPTIONS`, `*_PROXY`, `*_API_KEY`, `*_TOKEN`, `*_SECRET`, ...). Pre-existing on the raw `POST /launches` route; MCP makes it reachable in one natural-language-driven call instead of a manual POST.
 - **No per-caller-tool attribution.** MCP-originated mutations record `requestedBy`/`requestedByUserId` exactly like any other API-key caller — `requestedBy: "api_key"` and `requestedByUserId` set to the key's owner (or `null` for an ownerless/service key) — because the MCP server authenticates with a Bearer API key like anything else hitting the REST API. There's no `origin: "mcp"` tag distinguishing an MCP-driven launch/prompt/decide from a raw `curl` using the same key in the audit trail.
 - **No rate limiting on mutating MCP tools.** Nothing currently throttles repeated `launch_agent`/`prompt_session`/etc. calls from a misbehaving or looping client.
-- **No server-side HITL risk-threshold gate.** `decide_hitl`/`decide_action_request` let a `manage`-scoped key approve *any* HITL item, including ones a human would want to review personally for high-risk actions.
+- **No server-side HITL risk-threshold gate.** `decide_hitl`/`decide_action_request` let a `manage`-scoped key approve *any* HITL item, including ones a human would want to review personally for high-risk actions. **Approving now sends the prompt to the agent** (queued on a managed session whose host is connected); it is no longer only a record. In team mode the key still has to belong to the session's owner or an admin (a key with no owner is refused), and `control_busy` means nothing was sent and the call can be repeated.
 - **No server-side recomputation of a submitted `launchSpec`.** `POST /launches` trusts the client-supplied `launchSpec` after reloading the template by id rather than recomputing it fresh — a pre-existing property of the shared launch route (the dashboard's own preview-then-post flow has the same shape), surfaced here because MCP is a new caller of it. One field is the exception: `launchSpec.launchCorrelationId` is always server-generated and the submitted value is silently ignored (see "Launch correlation ids" below) — every other field in `launch_spec` is still trusted as-submitted.
 
 ### Launch correlation ids
